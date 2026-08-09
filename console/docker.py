@@ -15,6 +15,16 @@ HERE = Path(__file__).resolve().parent
 COMPOSE = HERE / "docker-compose.yml"
 
 
+def _set_container_user(environment: dict[str, str]) -> None:
+    """Match the host identity on POSIX so bind-mounted settings stay writable."""
+    if "RUSH_CONTAINER_USER" in environment:
+        return
+    getuid = getattr(os, "getuid", None)
+    getgid = getattr(os, "getgid", None)
+    if callable(getuid) and callable(getgid):
+        environment["RUSH_CONTAINER_USER"] = f"{getuid()}:{getgid()}"
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("action", choices=("up", "down", "config"), nargs="?", default="up")
@@ -27,6 +37,12 @@ def main() -> int:
     environment = os.environ.copy()
     environment.setdefault("RUSH_CODEX_HOME", str(Path.home() / ".codex"))
     environment.setdefault("RUSH_CONFIG_HOME", str(Path.home() / ".agents" / "rush"))
+    _set_container_user(environment)
+    if args.action == "up":
+        config_home = Path(environment["RUSH_CONFIG_HOME"]).expanduser().resolve()
+        config_home.mkdir(parents=True, exist_ok=True)
+        environment["RUSH_CONFIG_HOME"] = str(config_home)
+
     command = ["docker", "compose", "-f", str(COMPOSE)]
     if args.action == "up":
         command.extend(("up", "--build"))
