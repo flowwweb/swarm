@@ -1,0 +1,36 @@
+{
+  "name": "rush",
+  "version": "0.1.0+codex.20260809171811",
+  "description": "Organize outcome-faithful work into parallel Codex tasks with subtractive engineering and independent QC.",
+  "author": {
+    "name": "Flowwweb",
+    "url": "https://flowwweb.com"
+  },
+  "homepage": "https://flowwweb.com/rush",
+  "repository": "https://github.com/flowwweb/rush",
+  "license": "MIT",
+  "keywords": [
+    "coordination",
+    "multi-agent",
+    "review",
+    "workflow"
+  ],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "RUSH",
+    "shortDescription": "Parallel delivery with strict outcome review",
+    "longDescription": "RUSH preserves the requested outcome, prepares the complete finish line, runs worthwhile artifact tasks in parallel, prevents coordination churn, applies subtractive engineering, and requires independent quality review before MOTHER acceptance. Its adaptable MOTHER, optional STEP MOTHER, LEAD, TASK, and REVIEW hierarchy uses configurable role emojis, a soft lane-width preference, and passive heartbeat visibility across active descendants. The loopback-only RUSH Console adds validated global settings, project hierarchy, and honest local analytics with optional Docker packaging. An off-by-default Usage Saver chooses lower-churn coordination without changing models, scope, proof, review, capability, or authority. Global controls also cover model routing, a 5/2/1 Boost glide, and privacy-safe feedback. Its name expands to Rapid Unified Swarm Hierarchy.",
+    "developerName": "Flowwweb",
+    "category": "Productivity",
+    "capabilities": [
+      "Local dashboard",
+      "Docker",
+      "Usage Saver"
+    ],
+    "defaultPrompt": [
+      "Use RUSH to organize this outcome into the fewest worthwhile Codex tasks.",
+      "Open RUSH Console and turn Usage Saver on.",
+      "Start RUSH Boost mode to finish this workflow with review and proof."
+    ]
+  }
+}

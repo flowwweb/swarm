@@ -1,0 +1,88 @@
+{
+  "bootstrap": {
+    "ok": true,
+    "token": "fixture-token",
+    "config_path": "fixture/config.toml",
+    "local_only": true
+  },
+  "config": {
+    "exists": true,
+    "path": "fixture/config.toml",
+    "editable": ["execution.usage_saver"],
+    "settings": {
+      "portfolio": {
+        "max_active_tasks": 4,
+        "default_parallel_tasks": 3,
+        "reuse_existing_tasks": true
+      },
+      "execution": {
+        "usage_profile": "medium",
+        "service_tier": "",
+        "usage_saver": false
+      },
+      "coordination": {
+        "allow_coordinators": true,
+        "preferred_lane_width": 3
+      },
+      "subagents": {
+        "enabled": true,
+        "max_per_task": 8
+      },
+      "monitoring": {
+        "heartbeat_minutes": 30
+      },
+      "review": {
+        "task_enabled": true,
+        "max_parallel_tasks": 3,
+        "scale_when_queue_reaches": 2
+      },
+      "recovery": {
+        "max_attempts": 1,
+        "stall_after_updates": 2
+      },
+      "boost": {
+        "enabled": true
+      },
+      "lifecycle": {
+        "pin_created_tasks": false,
+        "archive_completed_tasks": true
+      },
+      "feedback": {
+        "enabled": true,
+        "prompt_on_close": false
+      },
+      "labels": {
+        "mother": "MOTHER",
+        "step_mother": "STEP MOTHER",
+        "lead": "LEAD",
+        "task": "TASK",
+        "review": "REVIEW"
+      },
+      "role_icons": {
+        "mother": "⚡",
+        "step_mother": "🗂️",
+        "lead": "🧭",
+        "review": "🔎",
+        "fallback": "📋"
+      }
+    }
+  },
+  "overview": {
+    "generated_at": "2026-08-09T00:00:00Z",
+    "heartbeat_minutes": 30,
+    "nodes": [],
+    "links": [],
+    "roots": [],
+    "projects": [],
+    "analytics": {
+      "swarms": 0,
+      "tasks": 0,
+      "tokens": 0,
+      "status": {},
+      "models": {},
+      "roles": {}
+    },
+    "claim_limits": ["Fixture data only."],
+    "source": "fixture"
+  }
+}

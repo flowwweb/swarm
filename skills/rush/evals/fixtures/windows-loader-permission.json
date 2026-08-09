@@ -1,0 +1,25 @@
+{
+  "fixture_kind": "runtime_recovery",
+  "case": "windows_read_only_loader_permission",
+  "operation": {
+    "purpose": "read-only RUSH config load",
+    "script": "scripts/rush_config.py",
+    "arguments": ["show", "--json"],
+    "elevation_allowed": false
+  },
+  "primary_receipt": {
+    "runtime": "python",
+    "result": "tooling_permission_denied",
+    "provider_auth_observed": false
+  },
+  "fallback_receipt": {
+    "runtime": "C:\\authorized-runtime\\python.exe",
+    "authorization_source": "current workspace dependency receipt",
+    "same_script_and_arguments": true,
+    "attempted": false
+  },
+  "portfolio_state": {
+    "new_scheduling_waits_for_config": true,
+    "already_owned_safe_work_can_continue": true
+  }
+}

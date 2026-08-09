@@ -1,0 +1,19 @@
+services:
+  rush-console:
+    build:
+      context: ..
+      dockerfile: console/Dockerfile
+    ports:
+      - "127.0.0.1:4788:4788"
+    environment:
+      CODEX_HOME: /data/codex
+      RUSH_CONFIG_PATH: /data/rush/config.toml
+    volumes:
+      - "${RUSH_CODEX_HOME:?Run python console/docker.py so the Codex home is explicit}:/data/codex:ro"
+      - "${RUSH_CONFIG_HOME:?Run python console/docker.py so the RUSH config home is explicit}:/data/rush"
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+    security_opt:
+      - no-new-privileges:true
+    restart: unless-stopped

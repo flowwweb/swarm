@@ -1,0 +1,15 @@
+{
+  "fixture_kind": "hierarchy_routing",
+  "case": "single_non_overlapping_assist",
+  "acceptor": "LEAD release",
+  "active_assists_for_acceptor": 0,
+  "bottleneck": {
+    "artifact": "signed checksum receipt",
+    "immediate": true,
+    "inspectable": true,
+    "mutable_overlap": false,
+    "tiny_same_surface_work": false
+  },
+  "requested_by": "TASK package",
+  "capacity_available": true
+}

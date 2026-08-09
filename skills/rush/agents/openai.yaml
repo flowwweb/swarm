@@ -1,0 +1,4 @@
+interface:
+  display_name: "RUSH"
+  short_description: "Parallel work with strict outcome review"
+  default_prompt: "Use $rush to preserve the full outcome, shape justified work through MOTHER, optional STEP MOTHER, LEAD, TASK, and REVIEW tasks, monitor active descendants without steering, and require independent QC."

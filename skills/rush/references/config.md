@@ -1,0 +1,283 @@
+# Global RUSH settings
+
+RUSH reads `~/.agents/rush/config.toml` before scheduling or managing a
+portfolio. Run `python scripts/rush_config.py show --json` from the skill
+directory to resolve built-in defaults plus the user's file.
+
+The loader requires Python 3.11 or newer and otherwise uses only the standard
+library. `show --json` writes structured settings to stdout. Parse, schema, and
+read failures write a specific diagnostic to stderr and exit with status 2.
+`init` is idempotent and never overwrites an existing settings file.
+
+## Precedence
+
+1. The latest direct user instruction in the current Codex task.
+2. Applicable project instructions, safety rules, and available tool limits.
+3. `~/.agents/rush/config.toml`.
+4. RUSH's built-in defaults.
+
+Settings affect new scheduling and management decisions. They do not rewrite an
+already-dispatched task contract. Re-read the config before a new scheduling
+wave so edits take effect without reinstalling the plugin.
+
+Packaged values are editable defaults, not a complete operating policy. Keep
+context-dependent decisions in RUSH's general selection rules and add a setting
+only when a user needs that preference to persist across runs. Hard validation
+protects schema integrity and fixed RUSH invariants; it should not encode a
+catalog of project-specific tactics.
+
+## Fixed invariants
+
+Configuration cannot make an unsafe or hidden coordination path valid:
+
+- Portfolio lanes are user-visible host tasks. In Codex, create Codex tasks with
+  thread tools.
+- Subagents may work only inside an owning Codex task and never replace a lane.
+- The latest direct user instruction controls its task.
+- Existing safety, authority, provider, worktree, and proof boundaries remain.
+- If a required task tool is unavailable, report the blocker instead of
+  substituting a local process or subagent hierarchy.
+
+## Settings
+
+| Setting | Meaning | Valid values |
+| --- | --- | --- |
+| `portfolio.max_active_tasks` | Tasks currently producing, integrating, or reviewing, excluding MOTHER | 1-12 |
+| `portfolio.default_parallel_tasks` | Preferred ceiling for an independent wave, never a creation quota | 1-8, not above max |
+| `portfolio.reuse_existing_tasks` | Reuse matching live owners | boolean |
+| `role_icons.mother` | MOTHER title emoji | trimmed single line, 1-24 chars; default ⚡ |
+| `role_icons.step_mother` | STEP MOTHER title emoji | trimmed single line, 1-24 chars |
+| `role_icons.lead` | LEAD title emoji | trimmed single line, 1-24 chars |
+| `role_icons.review` | REVIEW title emoji | trimmed single line, 1-24 chars |
+| `role_icons.fallback` | Generic finite-task emoji when no logical contextual choice exists | trimmed single line, 1-24 chars |
+| `role_icons.task_choices` | Emojis finite tasks may choose by actual work | 1-12 unique trimmed single-line strings |
+| `execution.usage_profile` | Active relative model/effort policy | high, medium, low; default medium |
+| `execution.service_tier` | Optional preferred tier for new tasks when the host exposes it | empty for host default, or advertised tier string; default empty |
+| `execution.usage_saver` | Prefer lower-churn coordination for new work without weakening delivery | boolean; default false |
+| `boost.enabled` | Make explicit, user-started Boost closeout goals available | boolean; default true |
+| `boost.strategies` | Active Boost performance strategies | non-empty unique list of durable_goal, closeout_first, hands_off, spark_simple_work |
+| `boost.plan_at_remaining_percent` | Prepare substantial closeout goals | 1-100; default 5 |
+| `boost.decide_at_remaining_percent` | Freeze goal contracts and final routing | 1-100; default 2 |
+| `boost.launch_at_remaining_percent` | Launch or resume closeout goals | 1-100; default 1 |
+| `boost.goal_levels` | Existing hierarchy levels eligible for substantial closeout goals | non-empty unique list of mother, step_mother, lead, task, review |
+| `boost.spark_model` | Reserve model for simple targeted work | model name; default gpt-5.3-codex-spark |
+| `models.<profile>.<role>_model` | Model for MOTHER, LEAD, TASK, or REVIEW in a profile | trimmed model name up to 64 chars |
+| `models.<profile>.<role>_reasoning` | Reasoning for that role and profile | none, minimal, low, medium, high, xhigh, max, ultra; host/model dependent |
+| `model_capabilities.<MODEL>.provider` | Codex provider ID for a model | trimmed name up to 64 chars |
+| `model_capabilities.<MODEL>.workloads` | Work classes MOTHER may assign | non-empty unique list of simple, general, large_goal, review |
+| `model_capabilities.<MODEL>.tools` | Verified host tools the model may use | up to 32 unique tool names; may be empty |
+| `roles.<ROLE>.icon` | Optional icon for a custom contextual leaf role | trimmed single line, 1-24 chars |
+| `roles.<ROLE>.model` | Optional model override for a contextual leaf role | trimmed model name up to 64 chars |
+| `roles.<ROLE>.reasoning` | Optional reasoning override for a contextual leaf role | supported reasoning value |
+| `labels.mother` | Root planner label | trimmed single line, 1-24 chars |
+| `labels.step_mother` | Optional portfolio-segment coordinator label | trimmed single line, 1-24 chars |
+| `labels.lead` | Coordinator label | trimmed single line, 1-24 chars |
+| `labels.task` | Fallback leaf-task label | trimmed single line, 1-24 chars |
+| `labels.review` | Independent review label | trimmed single line, 1-24 chars |
+| `coordination.allow_coordinators` | Permit justified STEP MOTHER and LEAD tasks | boolean |
+| `coordination.coordinator_min_children` | Minimum children for an otherwise-justified STEP MOTHER or LEAD; not a trigger | 2-8 |
+| `coordination.preferred_lane_width` | Soft child-lane preference for every owner after delegation is justified | 1-8; default 3; never a quota or hard cutoff |
+| `subagents.enabled` | Permit internal task subagents | boolean |
+| `subagents.max_per_task` | Concurrent internal subagents per task | 0-8 |
+| `subagents.allowed_for` | Permitted bounded work classes | exploration, implementation, testing, review |
+| `review.task_enabled` | Make dedicated REVIEW tasks eligible when work warrants them; QC remains mandatory when false | boolean |
+| `review.max_parallel_tasks` | Concurrent REVIEW tasks | 1-8 |
+| `review.scale_when_queue_reaches` | Ready-artifact queue that adds review capacity | 2-8 |
+| `monitoring.heartbeat_minutes` | Passive MOTHER snapshot cadence for active descendants | 1-120; default 30 |
+| `recovery.max_attempts` | Recovery attempts after the first failure | 0-3 |
+| `recovery.stall_after_updates` | Unchanged owner work updates before a lane stalls; heartbeat observations excluded | 1-5 |
+| `lifecycle.pin_created_tasks` | Pin new RUSH tasks | boolean |
+| `lifecycle.archive_completed_tasks` | Archive terminally accepted finite tasks only when no concrete retention reason remains | boolean; default true |
+| `feedback.enabled` | Make the on-demand RUSH feedback workflow available | boolean; default true |
+| `feedback.include_diagnostics` | Include the privacy-safe RUSH diagnostic snapshot | boolean; default true |
+| `feedback.prompt_on_close` | Offer one optional feedback prompt after an accepted portfolio | boolean; default false |
+| `feedback.destination` | Optional issue URL, email, or channel shown before explicit submission | empty, or trimmed single line up to 512 chars |
+
+Unknown tables or keys are errors. If the file is invalid, stop creating new
+portfolio tasks, show the exact validation error, and let already-owned work
+continue safely. If the file is missing, use built-in defaults.
+
+## Accepted-task archive
+
+When `lifecycle.archive_completed_tasks` is true, archive a finite task only
+after terminal acceptance and only when no concrete reason remains to retain its
+user-visible surface. Never archive while review or correction is pending, a
+user choice or continuation is expected (including an image-generation review
+set), a goal, ownership, or handoff remains active, or the state is ambiguous.
+Ambiguous tasks remain open until a later bounded stale audit proves archival is
+safe; then use the host archive control. The setting creates no queue, daemon,
+ledger, polling loop, or telemetry.
+
+The default title hierarchy is `⚡MOTHER - outcome`, optional
+`🗂️STEP MOTHER - segment`, optional `🧭LEAD - domain`, then a contextual title
+such as `🔨BUILD - checkout`, plus `🔎REVIEW - checkout`. Every title has exactly
+one role emoji, concatenated directly with its label; RUSH never inserts a space
+after it. Prefer one familiar ROLE word and a concrete
+two-to-five-word artifact. Fewer characters are better only while the title
+remains clear and obvious. For branch combination, MERGE is usually clearer
+than RECONCILE; keep a longer label when it is the most accurate familiar term.
+`labels.task` is only the fallback. Users may customize hierarchy emojis and
+labels without restricting contextual task roles.
+
+## Models and usage
+
+The default `medium` profile uses Sol/high for MOTHER and STEP MOTHER,
+Terra/medium for LEAD,
+Luna/xhigh for contextual TASK work, and Sol/high for REVIEW. `high` spends more
+model effort; `low` uses cheaper model/effort pairs. These are relative policy
+presets, not token quotas or billing limits. Users may edit every pair and add a
+`roles.<ROLE>` table for a custom leaf role. Unlisted roles inherit TASK.
+
+RUSH passes model and reasoning when the host task API supports them and permits
+saved-config selection. If the host requires a direct request, the resolved
+profile remains a preference until the user requests that model in the current
+task. The default empty `service_tier` keeps the host's normal behavior. Set it
+to `"fast"` as an opt-in preference only when the host exposes and permits that
+tier. A host without per-task tier selection keeps its own tier. Existing tasks
+are never rewritten by a settings change.
+
+## Usage Saver
+
+`execution.usage_saver = true` makes RUSH use the lower-churn option when two
+sound tactics preserve the same outcome. It reuses current-wave context and
+matching owners, batches compatible read-only discovery and passive task waits,
+keeps small or serially dependent work with its existing owner, sends only
+material contract changes, and reruns the failed proof plus the smallest
+relevant regression set after correction. It does not invent a token target or
+claim savings that the host does not report.
+
+Usage Saver never changes the selected model, reasoning, service tier, task
+ceilings, or capability routing. It never hides portfolio work in subagents,
+cuts scope, skips review or proof, weakens authority, suppresses a real blocker,
+or substitutes static evidence for required runtime or live proof. The normal
+lane test and configured recovery budget still decide when work should split or
+stop. Turning the setting on affects new scheduling and management actions, not
+already-dispatched contracts.
+
+MOTHER routes by capability before model preference: the provider/model must be
+available, its workload must fit, and every required tool must be exposed by the
+host and declared for that model. An unlisted model is unverified. The packaged
+catalog keeps `gpt-5.3-codex-spark` on simple shell/web work and declares
+computer use for the GPT-5.6 models, including Luna. Read
+[model-providers.md](model-providers.md) to connect Kimi, Qwen, or another
+Responses-compatible Codex provider and add a capability entry without storing
+credentials in RUSH.
+
+## Boost mode
+
+Boost turns the active RUSH outcome into one durable Codex goal per eligible
+existing owner with substantial closeout work. Together they cover integration,
+remaining outcome-critical work, independent review, proof, and honest closeout
+without routine steering.
+
+Set `boost.enabled = false` to disable it. When enabled, Boost still starts only
+after a direct request such as "start Boost mode". RUSH first checks for an
+unfinished goal in each eligible task. It continues a matching goal without
+recreating it and refuses to replace a different unfinished goal. For each new
+goal, RUSH defines one objective and one stopping condition, then supplies the
+relevant files, proof commands, checkpoints, non-goals, and authority limits.
+It does not add a token budget unless the user explicitly provides one.
+
+The default strategies are all enabled:
+
+- `durable_goal`: use one Codex goal per eligible owner for its verifiable part
+  of the Boost objective;
+- `closeout_first`: prioritize remaining outcome-critical work, integration,
+  review, proof, and closeout over new optional scope;
+- `hands_off`: after launch, suppress owner messaging, steering, and status
+  requests. Passive heartbeat and terminal/attention observation continue
+  without waking owners. Interrupt only for a direct user change, required
+  approval or safety boundary, or a genuine human-only blocker.
+- `spark_simple_work`: route only small, targeted, low-risk work to
+  `boost.spark_model` when that model and its separate allowance are available.
+  Keep substantial closeout goals on their configured RUSH role models.
+
+Inside an explicitly Boost-authorized run, use real host-reported remaining
+usage to glide through three stages. With `durable_goal`, plan substantial
+owner-level goals at 5%, freeze their outcome, stopping condition, proof, and
+routing at 2%, then launch or resume them at 1%. `closeout_first`, `hands_off`,
+and `spark_simple_work` act only when present in `boost.strategies`. If telemetry
+is unavailable, do not estimate it; ask the user to start Boost or report the
+remaining percentage.
+
+When `durable_goal` is enabled, treat configured levels as eligible. Launch only
+for existing owners with substantial remaining closeout work; close tiny or
+complete owners normally and report them as skipped. Never create empty tasks
+to host a goal. A leaf goal owns remaining implementation, tests, proof, and
+  handoff; STEP MOTHER accepts LEAD handoffs only into its segment; LEAD accepts
+  child handoffs only into its domain and integrates them;
+REVIEW owns the cumulative independent verdict; MOTHER alone accepts the full
+integrated outcome. A lookup, single edit, one command, or status relay is never
+a Boost goal. Hands-off forbids messaging and active polling, but permits passive
+heartbeat and terminal/attention waits over launched owners.
+
+RUSH has no account-usage telemetry and does not auto-start Boost at a guessed
+threshold. Codex goals support long-running independent work, but Boost is not a
+promise to bypass account, service, model, rate, or spend limits. If goal tools
+are unavailable or goals are disabled in the host, report that exact blocker.
+
+The functional hierarchy stays root planning, optional STEP MOTHER, optional
+LEAD, finite ownership, and acceptance. Rename levels with `labels`, omit both
+coordinator levels with
+`coordination.allow_coordinators = false`, create arbitrary contextual leaf
+roles, and control dedicated review tasks with `review.task_enabled`. Turning
+off a dedicated REVIEW task never turns off QC.
+
+The role emoji system is always active. Hierarchy roles use their matching
+`role_icons` setting. Contextual tasks use `roles.<ROLE>.icon` when present;
+otherwise select automatically from `role_icons.task_choices` by conventional
+literal meaning. Prefer a familiar object or action understandable without a
+legend, such as a hammer for BUILD or a computer for DEV. Infer other roles from
+the same principle rather than a fixed mapping. Avoid decorative, novel, or
+merely colorful choices. Keep one emoji per title and reuse the same emoji for
+the same contextual role within a portfolio. Use `role_icons.fallback` only
+when no choice is clearly logical. Emojis are required but fully customizable.
+
+Older configs may still contain `portfolio.title_prefix` or
+`role_icons.enabled`. The loader accepts and ignores those two retired settings
+so an update does not break scheduling; neither appears in effective settings
+or changes title behavior. Remove them when next editing the config.
+
+## Soft lane width
+
+`coordination.preferred_lane_width = 3` is one universal per-span shaping preference,
+applied only after delegation is already worthwhile. MOTHER normally keeps
+about three direct LEAD lanes. When more LEAD lanes need repeated grouping and
+the extra layer reduces coordination, MOTHER may also manage about three STEP
+MOTHER tasks, each managing about three additional LEADs. STEP MOTHER is an
+auxiliary coordination span, so it does not consume one of MOTHER's preferred
+direct-LEAD positions. It still counts under `portfolio.max_active_tasks` while
+producing or integrating. LEADs, finite TASK owners, REVIEW owners, and
+consequential planning TASKs use the same preference for their justified
+children or internal subtasks.
+
+Three is not a quota, trigger, or hard maximum. Keep four direct children when
+that is clearer, use waves when capacity is tighter, and stay flat when a STEP
+MOTHER would add handoffs. Do not prebuild a three-by-three tree or recursively
+add STEP MOTHER layers by default. `portfolio.max_active_tasks`,
+`portfolio.default_parallel_tasks`, `review.max_parallel_tasks`, and
+`subagents.max_per_task` remain separate scheduling or safety ceilings. With the
+packaged defaults, eight is the exceptional internal-subagent ceiling while
+three is the normal shape.
+
+## Heartbeat
+
+MOTHER passively snapshots the active task tree every
+`monitoring.heartbeat_minutes` and reports one sentence per active descendant,
+including children and grandchildren. Each sentence names the task, current
+state or material progress, and working duration derived from host timestamps or
+an explicitly approximate first-observed time. Heartbeat never messages or wakes
+owners, never creates a second ledger, and never counts toward stall detection.
+See [monitoring.md](monitoring.md) for batching, stale-state, timing, and Boost
+`hands_off` behavior.
+
+## Feedback
+
+Users can say "give feedback on RUSH" or "report a RUSH bug" at any time. RUSH
+returns a compact portable report and, when enabled, a privacy-safe diagnostic
+snapshot. It never gathers telemetry or sends feedback automatically. A
+configured destination is contacted only after a direct instruction to submit
+the visible packet. Do not store tokens, credentials, or private routing data
+in `feedback.destination`. Set `feedback.prompt_on_close = true` to allow one optional
+prompt after an accepted portfolio; it remains suppressed during Boost
+hands-off execution and is off by default. See [feedback.md](feedback.md).

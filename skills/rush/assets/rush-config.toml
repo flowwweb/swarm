@@ -1,0 +1,184 @@
+# Global RUSH settings
+#
+# Location: ~/.agents/rush/config.toml
+# Changes apply the next time RUSH schedules or manages work. The latest direct
+# user instruction always wins. Safety, user control, and a user-visible host
+# task hierarchy are fixed RUSH invariants and cannot be disabled here.
+
+schema_version = 1
+
+[portfolio]
+# Total user-visible RUSH tasks that may be active at once, excluding MOTHER.
+max_active_tasks = 4
+# Preferred number of independent artifact tasks to start when work supports it.
+default_parallel_tasks = 3
+# Reuse a matching live task instead of creating a duplicate owner.
+reuse_existing_tasks = true
+
+[role_icons]
+# Every RUSH title uses exactly one role emoji. Hierarchy roles use their
+# configured icon; finite tasks choose a logical classic icon from task_choices.
+mother = "⚡"
+step_mother = "🗂️"
+lead = "🧭"
+review = "🔎"
+# Generic TASK icon only when no contextual role has a clearly logical choice.
+fallback = "📋"
+task_choices = ["🔨", "💻", "✏️", "🎨", "📚", "📊", "🔌", "🧪", "✅", "📝", "🔀", "🚀"]
+
+[execution]
+# Select high, medium, or low. Leave service_tier empty to keep the host default.
+# Set it to "fast" only when the host exposes and supports that tier.
+usage_profile = "medium"
+service_tier = ""
+# Reduce avoidable coordination churn in new work without changing the selected
+# models, requested outcome, required proof, independent review, or authority.
+usage_saver = false
+
+[boost]
+# Make manual Boost mode available. Starting a Boost goal still requires a
+# direct user request; RUSH never infers or auto-starts one from quota state.
+enabled = true
+# Valid strategies: durable_goal, closeout_first, hands_off, spark_simple_work.
+strategies = ["durable_goal", "closeout_first", "hands_off", "spark_simple_work"]
+# Percentage of remaining host-reported usage. These activate only inside an
+# explicitly Boost-authorized RUSH run with real usage telemetry.
+plan_at_remaining_percent = 5
+decide_at_remaining_percent = 2
+launch_at_remaining_percent = 1
+# Existing hierarchy levels that receive substantial owner-level closeout goals.
+goal_levels = ["mother", "step_mother", "lead", "task", "review"]
+# Reserve model for simple targeted work when its separate allowance is available.
+spark_model = "gpt-5.3-codex-spark"
+
+[models.high]
+mother_model = "gpt-5.6-sol"
+mother_reasoning = "xhigh"
+lead_model = "gpt-5.6-terra"
+lead_reasoning = "high"
+task_model = "gpt-5.6-luna"
+task_reasoning = "max"
+review_model = "gpt-5.6-sol"
+review_reasoning = "xhigh"
+
+[models.medium]
+mother_model = "gpt-5.6-sol"
+mother_reasoning = "high"
+lead_model = "gpt-5.6-terra"
+lead_reasoning = "medium"
+task_model = "gpt-5.6-luna"
+task_reasoning = "xhigh"
+review_model = "gpt-5.6-sol"
+review_reasoning = "high"
+
+[models.low]
+mother_model = "gpt-5.6-terra"
+mother_reasoning = "medium"
+lead_model = "gpt-5.6-luna"
+lead_reasoning = "low"
+task_model = "gpt-5.6-luna"
+task_reasoning = "medium"
+review_model = "gpt-5.6-terra"
+review_reasoning = "high"
+
+# MOTHER routes only work and tools declared for the selected model. Add Kimi,
+# Qwen, or another Codex provider model here after configuring that provider.
+[model_capabilities."gpt-5.6-sol"]
+provider = "openai"
+workloads = ["general", "large_goal", "review"]
+tools = ["shell", "web", "computer_use", "image_input"]
+
+[model_capabilities."gpt-5.6-terra"]
+provider = "openai"
+workloads = ["simple", "general", "large_goal", "review"]
+tools = ["shell", "web", "computer_use", "image_input"]
+
+[model_capabilities."gpt-5.6-luna"]
+provider = "openai"
+workloads = ["simple", "general", "large_goal"]
+tools = ["shell", "web", "computer_use", "image_input"]
+
+[model_capabilities."gpt-5.3-codex-spark"]
+provider = "openai"
+workloads = ["simple"]
+tools = ["shell", "web"]
+
+[roles]
+# Add explicit overrides only when the automatic logical choice is not desired.
+# Unlisted roles inherit the active profile's TASK model and reasoning.
+# [roles.SECURITY]
+# icon = "🛡️"
+# model = "gpt-5.6-sol"
+# reasoning = "high"
+
+[labels]
+# Root planner; its emoji comes from role_icons.mother.
+mother = "MOTHER"
+# Optional grouped portfolio coordinator; emoji from role_icons.step_mother.
+step_mother = "STEP MOTHER"
+# Domain coordinator; emoji from role_icons.lead.
+lead = "LEAD"
+# Leaf fallback only. Prefer the real role: BUILD, DEV, DESIGN, VISUAL, etc.
+task = "TASK"
+# Independent review role; emoji from role_icons.review.
+review = "REVIEW"
+
+[coordination]
+# Permit justified STEP MOTHER and LEAD coordination tasks.
+allow_coordinators = true
+# A justified STEP MOTHER or LEAD must own at least this many child tasks.
+coordinator_min_children = 2
+# Soft span preference for every justified owner split. Three guides MOTHER,
+# STEP MOTHER, LEAD, TASK, REVIEW, and consequential planning work; it is never
+# a quota, trigger, or hard cutoff. STEP MOTHER is an auxiliary span and does
+# not consume one of MOTHER's preferred direct-LEAD positions.
+preferred_lane_width = 3
+
+[subagents]
+# Permit bounded internal subagents inside an existing Codex task.
+enabled = true
+# Safety ceiling for internal subagents. preferred_lane_width is the normal
+# target; this higher ceiling permits a justified exception without reconfiguring.
+max_per_task = 8
+# Valid values: exploration, implementation, testing, review.
+allowed_for = ["exploration", "implementation", "testing", "review"]
+
+[review]
+# Create a dedicated REVIEW task when RUSH's review rules call for one. Turning
+# this off keeps QC mandatory but performs it inside an owning or MOTHER task.
+task_enabled = true
+# Maximum user-visible REVIEW tasks active at once.
+max_parallel_tasks = 3
+# Add review capacity when at least this many ready artifacts would queue.
+scale_when_queue_reaches = 2
+
+[monitoring]
+# Passive MOTHER heartbeat cadence. It reads active descendants without
+# messaging, interrupting, or steering them.
+heartbeat_minutes = 30
+
+[recovery]
+# Bounded recovery attempts after the first failed attempt.
+max_attempts = 1
+# A lane stalls after this many unchanged owner work updates; heartbeat excluded.
+stall_after_updates = 2
+
+[lifecycle]
+# Pin RUSH-created tasks when they are created.
+pin_created_tasks = false
+# Archive only after terminal acceptance when no concrete retention reason
+# remains. Pending review, correction, choice, continuation, goals, ownership,
+# handoffs, and ambiguity keep the task open.
+archive_completed_tasks = true
+
+[feedback]
+# Make the on-demand RUSH feedback workflow available.
+enabled = true
+# Add privacy-safe RUSH version and policy settings to feedback packets.
+include_diagnostics = true
+# Offer one optional feedback line after an accepted portfolio. Off avoids nagging.
+prompt_on_close = false
+# Optional issue URL, email address, or channel. Empty returns a portable packet.
+# RUSH never submits feedback without a direct user instruction.
+# Do not store tokens, credentials, or private routing data here.
+destination = ""
