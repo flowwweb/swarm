@@ -194,7 +194,8 @@ adds a blocker, required decision, or next action only when one exists. Omit
 internal reasoning, tool or command logistics, repeated boundaries, unchanged
 status, and narration that does not change what the reader should know or do.
 Never omit a material failure, risk, proof gap, authority or ownership change,
-irreversible action, or required decision.
+irreversible action, or required decision. When ownership changes, name the new
+owner's concrete next action.
 
 MOTHER owns priority, collision decisions, integration, and final acceptance;
 outside the compact heartbeat it does not relay routine owner status. Owners

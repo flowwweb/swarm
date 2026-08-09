@@ -2,7 +2,7 @@
 
 **Agents need command.** RUSH gives Codex a visible operating structure for complex work: one accountable outcome owner, a few worthwhile parallel tasks, and independent review before acceptance.
 
-RUSH is a Codex plugin with an optional loopback-only console. Current version: `0.1.0+codex.20260809181816`.
+RUSH is a Codex plugin with an optional loopback-only console. Current version: `0.1.0+codex.20260809183508`.
 
 ## Install
 
