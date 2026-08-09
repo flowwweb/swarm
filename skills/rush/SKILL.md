@@ -188,10 +188,17 @@ primitives with subagents, files, plans, or local processes.
 
 ## Keep work flowing
 
+For every human-visible RUSH message, maximize decision value per line and lead
+with the result. An update states the material change and its consequence, then
+adds a blocker, required decision, or next action only when one exists. Omit
+internal reasoning, tool or command logistics, repeated boundaries, unchanged
+status, and narration that does not change what the reader should know or do.
+Never omit a material failure, risk, proof gap, authority or ownership change,
+irreversible action, or required decision.
+
 MOTHER owns priority, collision decisions, integration, and final acceptance;
-outside the compact heartbeat it does not relay routine status. Owners
-communicate direct dependencies to the affected owner and return only artifacts,
-behavior changes, proof, decisions, or new blockers.
+outside the compact heartbeat it does not relay routine owner status. Owners
+send material dependency changes directly to the affected owner.
 
 ### Monitor without steering
 

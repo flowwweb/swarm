@@ -821,6 +821,20 @@
         "Normal coordinators do not require goals",
         "Only a direct user request or explicit Boost authorization permits goals"
       ]
+    },
+    {
+      "id": 65,
+      "prompt": "Write a human-visible RUSH update from this noisy handoff: the requested source correction is complete and changes future task closeout; focused local proof passed, but the production check failed because provider access is unavailable; ownership now transfers from TASK to REVIEW; applying the production migration would be irreversible and requires the user's decision. The draft also contains internal reasoning, exact tool commands, repeated scope boundaries, and unchanged sibling status.",
+      "expected_output": "RUSH leads with the completed source result and its consequence, states the failed production proof and exact access blocker, names the ownership transfer, irreversible action, required user decision, and next review action, and omits internal reasoning, command logistics, repeated boundaries, and unchanged status.",
+      "files": [],
+      "assertions": [
+        "The update maximizes decision value per line and leads with the result",
+        "The material change and its consequence are explicit",
+        "The material failure, proof gap, access blocker, ownership change, irreversible action, and required decision remain visible",
+        "A next action is included because REVIEW must act",
+        "Internal reasoning, tool or command logistics, repeated boundaries, and unchanged status are omitted",
+        "The update does not weaken the failed production proof or imply unavailable authority"
+      ]
     }
   ]
 }
