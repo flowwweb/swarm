@@ -22,7 +22,10 @@ def _set_container_user(environment: dict[str, str]) -> None:
     getuid = getattr(os, "getuid", None)
     getgid = getattr(os, "getgid", None)
     if callable(getuid) and callable(getgid):
-        environment["RUSH_CONTAINER_USER"] = f"{getuid()}:{getgid()}"
+        uid = getuid()
+        gid = getgid()
+        if uid > 0 and gid > 0:
+            environment["RUSH_CONTAINER_USER"] = f"{uid}:{gid}"
 
 
 def main() -> int:
