@@ -361,10 +361,14 @@ class Swarm:
     def _open_ctrl_decision_sets(self, task_id:str|None=None) -> tuple[str,...]:
         return tuple(item.id for item in self.ctrl_decision_sets.values() if not item.surfaced and (task_id is None or item.task_id==task_id))
     def _uncovered_ctrl_decision_candidates(self, task_id:str|None=None) -> tuple[str,...]:
-        candidates=tuple(item.id for item in self.ctrl_evidence_ledger.values() if item.material and item.steering and item.kind.lower() in {"imagegen","mockup","preview"} and (task_id is None or item.task_id==task_id))
-        if len(candidates)<2: return ()
-        covered={candidate for decision in self.ctrl_decision_sets.values() if decision.surfaced and (task_id is None or decision.task_id==task_id) for candidate in decision.candidate_ids}
-        return tuple(candidate for candidate in candidates if candidate not in covered)
+        task_ids=(task_id,) if task_id is not None else tuple(dict.fromkeys(item.task_id for item in self.ctrl_evidence_ledger.values()))
+        uncovered=[]
+        for current_task_id in task_ids:
+            candidates=tuple(item.id for item in self.ctrl_evidence_ledger.values() if item.task_id==current_task_id and item.material and item.steering and item.kind.lower() in {"imagegen","mockup","preview"})
+            if len(candidates)<2: continue
+            covered={candidate for decision in self.ctrl_decision_sets.values() if decision.task_id==current_task_id and decision.surfaced for candidate in decision.candidate_ids}
+            uncovered.extend(candidate for candidate in candidates if candidate not in covered)
+        return tuple(uncovered)
     def discover(self, artifact: str) -> list[str]:
         return [owner for identity,owner in self.artifact_index.items() if identity==artifact or identity.startswith(f"{artifact}@")]
     def review_depth(self, risk:int) -> str:

@@ -119,6 +119,15 @@ class EvidenceRoutingContractTests(unittest.TestCase):
         with self.assertRaisesRegex(InvariantError, "visual CTRL evidence"):
             self.swarm.surface_ctrl_evidence(Role.CTRL, "browser-shot", surface_kind=CtrlSurfaceKind.INLINE_RECEIPT, caption="Route map.", claim_limit="Local browser only.", surface_receipt="chat:receipt:not-image")
 
+    def test_one_candidate_in_each_unrelated_task_does_not_create_a_false_gallery(self):
+        other=Task("other","other-owner","CTRL",1,{},subagent_receipt="host:thread:other")
+        self.swarm.start_simple(Role.MOTHER,other)
+        for task_id,evidence_id in (("covers","cover-only"),("other","other-only")):
+            self.swarm.register_ctrl_evidence(Role.DOER,task_id,evidence_id,"ImageGen",f"{evidence_id}.png")
+            self.swarm.surface_ctrl_evidence(Role.CTRL,evidence_id,surface_kind=CtrlSurfaceKind.INLINE_IMAGE,caption=f"{evidence_id} candidate.",claim_limit="Concept only.",surface_receipt=f"chat:image:{evidence_id}")
+        self.assertEqual(self.swarm._uncovered_ctrl_decision_candidates(),())
+        self.swarm.advance_ctrl_phase(Role.CTRL,"implementation")
+
     def test_live_feed_doctrine_requires_prompt_surface_and_receipts(self):
         self.assertIn("CTRL is the live human review feed", self.skill)
         self.assertIn("At the next safe message boundary", self.skill)
