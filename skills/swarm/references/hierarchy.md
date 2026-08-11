@@ -23,7 +23,7 @@ selecting ASSIST, naming roles, or transferring ownership.
 ## Authority
 
 The user-facing task opened for a new SWARM objective is CTRL. CTRL adopts the
-title `🐙CTRL - <specific objective>`, inspects or creates the matching
+title `🐙CTRL - <specific objective>`, is pinned by default, and inspects or creates the matching
 durable goal, records the objective ledger, and chooses the shallowest reliable initial
 topology. Hidden subagents do not count as user-visible SWARM ownership. CTRL may
 route an atomic objective directly to one DOER or materialize the justified
@@ -144,7 +144,12 @@ one literal icon for that job, then format `<icon>ROLE - artifact`. The label,
 icon, and concrete artifact should form the shortest unambiguous responsibility
 receipt; use the fallback icon only when no clear metaphor fits.
 
-Count only a host-confirmed task ID as a task, owner, or capacity allocation.
+Count only a host-confirmed task ID as a live task, owner, or capacity allocation.
+A pending `clientThreadId` is still a creation reservation for its objective,
+artifact, mutable surface, and accepting route; do not create a replacement
+while it is unresolved. Search both live tasks and pending reservations before
+every creation. If a duplicate materializes, stop it before mutation, transfer
+any unique receipt to the sole owner, and archive the duplicate.
 Preserve exact title/ID, artifact, mutable surface or external authority, owner
 state, dependency, accepting route, composed acceptance surface, and required
 proof state in one task-tree receipt. Update it only

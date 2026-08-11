@@ -114,7 +114,12 @@ class SwarmSkillStructureTests(unittest.TestCase):
             self.assertIn("🐙CTRL - <specific objective>", text)
             self.assertIn("durable goal", text)
             self.assertIn("subagents", text)
-        self.assertIn("Reuse a matching unfinished SWARM task", skill)
+        self.assertIn("Reuse a matching unfinished task and goal", skill)
+        self.assertIn("is pinned by default", skill)
+        self.assertIn("is pinned by default", hierarchy)
+        self.assertIn("pending ownership reservation", skill)
+        self.assertIn("pending `clientThreadId`", hierarchy)
+        self.assertIn("archive it", skill)
         self.assertIn("chooses the shallowest reliable initial\ntopology", hierarchy)
 
     def test_mandatory_goals_and_passive_heartbeat_are_fixed_contracts(self) -> None:

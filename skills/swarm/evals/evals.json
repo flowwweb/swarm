@@ -924,12 +924,14 @@
       "expected_output": "The opening user-visible task first becomes 🐙CTRL with a specific objective title, creates or continues one matching durable controller goal, inventories the objective, owners, dependencies, collisions, proof and claim limits, then chooses and materializes the shallowest reliable visible topology. Hidden subagents do not replace required SWARM task ownership, and a matching unfinished CTRL task is reused instead of duplicated.",
       "files": [],
       "assertions": [
-        "The opening task is titled 🐙CTRL with the specific objective before substantive work",
+        "The opening task is titled 🐙CTRL with the specific objective and pinned by default before substantive work",
         "CTRL creates or continues exactly one matching durable goal",
         "CTRL identifies artifacts, owners, dependencies, collisions, proof, and claim limits",
         "CTRL selects the shallowest reliable topology before dispatch",
         "Required roles are materialized as user-visible SWARM tasks rather than hidden subagents",
-        "A matching unfinished SWARM task and goal are reused instead of duplicated"
+        "A matching unfinished SWARM task and goal are reused instead of duplicated",
+        "A pending clientThreadId blocks replacement creation until it resolves or explicitly fails",
+        "Any duplicate that materializes is stopped before work and archived after unique receipts transfer"
       ]
     }
   ]
