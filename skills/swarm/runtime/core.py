@@ -87,10 +87,10 @@ class Worker:
 @dataclass
 class Swarm:
     architecture_version: int=1; contract_versions: dict[str,int]=field(default_factory=dict); topology: set[str]=field(default_factory=set)
-    workers: dict[str,Worker]=field(default_factory=dict); tasks: dict[str,Task]=field(default_factory=dict); leases: dict[str,str]=field(default_factory=dict); events: list[tuple[str,str]]=field(default_factory=list); telemetry: dict[str,object]=field(default_factory=dict); telemetry_events:list[dict[str,object]]=field(default_factory=list); artifact_index:dict[str,str]=field(default_factory=dict); hive:dict[str,HiveRecord]=field(default_factory=dict); hive_enabled:bool=True; heartbeat_enabled:bool=True; heartbeat_latch:set[str]=field(default_factory=set); lane_width:int=3; wip_limit:int=3; efficiency_ledger:list[dict[str,str]]=field(default_factory=list); mode:EfficiencyMode=EfficiencyMode.BALANCED
+    workers: dict[str,Worker]=field(default_factory=dict); tasks: dict[str,Task]=field(default_factory=dict); leases: dict[str,str]=field(default_factory=dict); events: list[tuple[str,str]]=field(default_factory=list); telemetry: dict[str,object]=field(default_factory=dict); telemetry_events:list[dict[str,object]]=field(default_factory=list); artifact_index:dict[str,str]=field(default_factory=dict); hive:dict[str,HiveRecord]=field(default_factory=dict); hive_enabled:bool=True; heartbeat_enabled:bool=True; heartbeat_stall_after:int=2; heartbeat_latch:set[str]=field(default_factory=set); lane_width:int=3; wip_limit:int=3; efficiency_ledger:list[dict[str,str]]=field(default_factory=list); mode:EfficiencyMode=EfficiencyMode.BALANCED
     @classmethod
     def from_config(cls, config: dict) -> "Swarm":
-        return cls(lane_width=config["coordination"]["preferred_lane_width"], wip_limit=config["efficiency"]["doer_wip_limit"], mode=EfficiencyMode(config["efficiency"]["mode"]), hive_enabled=config.get("hive",{}).get("enabled",True), heartbeat_enabled=config["monitoring"].get("heartbeat_enabled",True))
+        return cls(lane_width=config["coordination"]["preferred_lane_width"], wip_limit=config["efficiency"]["doer_wip_limit"], mode=EfficiencyMode(config["efficiency"]["mode"]), hive_enabled=config.get("hive",{}).get("enabled",True), heartbeat_enabled=config["monitoring"].get("heartbeat_enabled",True), heartbeat_stall_after=config["recovery"]["stall_after_updates"])
 
     def _role(self, actor: Role, allowed: set[Role]) -> None:
         if actor not in allowed: raise InvariantError(f"{actor} cannot perform this transition")
@@ -178,13 +178,15 @@ class Swarm:
         selected=mode or self.mode; tier=max(architect_floor,historical_floor,initial_tier(risk=risk,uncertainty=uncertainty,blast_radius=blast_radius,family=family,mode=selected)); self.efficiency_ledger.append({"kind":"route","family":family,"tier":str(tier),"reason":"expected_total_accepted_cost"}); return tier
     def dedup(self, identity:str, *, verification:bool=False, uncertainty:bool=False) -> DedupDecision:
         found=bool(self.discover(identity)); decision=DedupDecision.EXECUTE if not found or verification or uncertainty else DedupDecision.REUSE; self.efficiency_ledger.append({"kind":"dedup","decision":decision.value,"reason":"verification" if verification else "uncertainty" if uncertainty else "canonical_artifact"}); return decision
-    def heartbeat(self, actor:Role, task_id:str, *, meaningful_progress:bool, enabled:bool|None=None) -> str|None:
+    def heartbeat(self, actor:Role, task_id:str, *, meaningful_progress:bool, owner_update:bool=True, unchanged_updates:int=1, recovery_attempts:int=0, enabled:bool|None=None) -> str|None:
         self._role(actor,{Role.MOTHER}); t=self.tasks[task_id]
         enabled=self.heartbeat_enabled if enabled is None else enabled
         if not enabled or meaningful_progress: self.heartbeat_latch.discard(task_id); return None
         if t.state in {TaskState.WAITING,TaskState.REVIEW,TaskState.COMPLETE,TaskState.ARCHIVED,TaskState.ARCHIVED_STALE,TaskState.BACKLOG}: return None
         if t.state!=TaskState.ACTIVE: return None
-        if task_id in self.heartbeat_latch: return None
+        action=heartbeat_action(owner_update=owner_update,material_change=False,unchanged_updates=unchanged_updates,recovery_attempts=recovery_attempts,stall_after_updates=self.heartbeat_stall_after)
+        if action=="observe" or task_id in self.heartbeat_latch: return None
+        if action=="release": self.events.append(("RELEASE",f"{task_id}:unchanged blocker")); return f"{task_id}:release/blocker"
         self.heartbeat_latch.add(task_id); self.events.append(("MOTHER_WAKE",f"{task_id}:stall/actionable")); return f"{task_id}:stall/actionable"
     def context_decision(self, *, affinity:int|None=None, bloat:bool|None=None, stale:bool|None=None, stalls:int|None=None, worker_id:str|None=None, replacement:str|None=None) -> str:
         context=self.workers[worker_id].context if worker_id else {}; affinity=context.get("affinity",affinity or 0); bloat=context.get("bloat",bloat or False); stale=context.get("stale",stale or False); stalls=context.get("stalls",stalls or 0)
