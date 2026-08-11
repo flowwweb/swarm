@@ -26,6 +26,17 @@ class VisualApprovalContractTests(unittest.TestCase):
         self.assertIn("Never convert a candidate, reviewer preference, silence, or “best available” judgment into approval", skill)
         self.assertIn("do not infer neighboring approval", skill)
 
+    def test_imagegen_defaults_to_user_choice_with_self_review_not_reconfirmation_loops(self) -> None:
+        skill = SKILL.read_text(encoding="utf-8")
+
+        self.assertIn("For ImageGen and other taste-led generative visuals", skill)
+        self.assertIn("default to user selection", skill)
+        self.assertIn("a clear direction is permission to generate", skill)
+        self.assertIn("Use self-review to remove objective prompt violations", skill)
+        self.assertIn("generate stronger separate alternatives before presentation", skill)
+        self.assertIn("Do not hide or reject a taste-valid candidate solely because an agent prefers another", skill)
+        self.assertIn("unless selection was delegated", skill)
+
 
 if __name__ == "__main__":
     unittest.main()
