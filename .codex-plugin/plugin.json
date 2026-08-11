@@ -1,6 +1,6 @@
 {
   "name": "swarm",
-  "version": "0.2.0+codex.20260811111734",
+  "version": "0.2.0+codex.20260811112156",
   "description": "System for Workload Allocation, Routing & Management.",
   "author": {
     "name": "Flowwweb",
