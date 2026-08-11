@@ -10,3 +10,32 @@
 | P2 Scope Discipline | discovery could expand work implicitly | finish line drift | explicit doctrine/eval preserves only material invariant findings | speculative follow-on work | explicit requirement narrowed | eval 71 |
 
 Implemented commits: `9ee8d85` heartbeat/archive/contention/dependency baseline; `f8afc0a` adaptive direct paths and WARM reuse; `edd6749` configured heartbeat behavior; `0271fb4` SWARM-first configuration fallback; `eccb957` artifact/HIVE/archive authority; this correction consolidates the remaining review findings. P3/no-change console projection and optimizer concerns remain untouched.
+
+## A. Instruction Architecture
+
+`CORE`: shallowest sufficient route, objective-bound scope, ownership, canonical
+runtime state, independent creation/review, reuse, quiet healthy execution, and
+accepted stop. `ROLE`: only PURPOSE, OWNERSHIP, BOUNDARIES, ESCALATION. `TASK`:
+objective, acceptance/non-negotiables, owner, dependencies, mutable surface,
+relevant canonical artifact/version, proof limits, accepting route/blocker.
+`EVENT`: load only for stall/heartbeat, architecture/version conflict, high-risk
+review failure, provider/browser/Docker/security/release, HIVE retirement, or
+feedback.
+
+## B. Removed Friction
+
+MERGED heartbeat classification into runtime; MOVED lane/WIP, identity/dedup,
+self-review, state/dependency/archive/retry, and config validation to runtime;
+MOVED history/rationale to references; LAZY-LOADED exceptional guidance;
+SIMPLIFIED routine CTRL output to attention, blocker, handoff, acceptance, and
+release only. The always-loaded `skills/swarm/SKILL.md` is 28 lines; detailed
+references remain maintainership/event material.
+
+## C. Preserved Safeguards
+
+Authority/state guards prevent unauthorized mutation; typed identity prevents
+duplicate artifacts; independent review prevents self-approval; version and
+dependency state prevent stale or premature work; heartbeat/retry surfaces a
+real stalled owner once; archive/HIVE limits preserve continuity without active
+workspace clutter; config, Docker, browser, security, and legacy migration
+guards preserve safe local/public compatibility.
