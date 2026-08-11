@@ -11,9 +11,9 @@ class RuntimeTests(unittest.TestCase):
  def test_authority_lanes_and_lifecycle(self):
   with self.assertRaises(InvariantError): self.s.add_lead(Role.CTRL,"bad")
   with self.assertRaises(InvariantError): self.s.change_architecture(Role.LEAD,{})
-  self.s.add_worker(Role.LEAD,Worker("D2","L",2)); self.s.add_worker(Role.LEAD,Worker("D3","L",3))
+  self.s.add_worker(Role.LEAD,Worker("D2","L",2)); self.s.add_worker(Role.LEAD,Worker("R","L",3))
   with self.assertRaises(InvariantError): self.s.add_worker(Role.LEAD,Worker("D4","L",1))
-  self.s.add_worker(Role.LEAD,Worker("R","L",1)); self.s.retire(Role.LEAD,"D","R"); self.assertEqual(self.s.workers["D"].state,WorkerState.RETIRED); self.assertEqual(self.s.tasks["A"].owner,"R")
+  self.s.retire(Role.LEAD,"D","R"); self.assertEqual(self.s.workers["D"].state,WorkerState.RETIRED); self.assertEqual(self.s.tasks["A"].owner,"R")
  def test_wip_expert_wait_deadlock_and_recovery(self):
   self.s.assign(Role.LEAD,Task("B","D","author",1,{})); self.s.assign(Role.LEAD,Task("C","D","author",1,{}))
   with self.assertRaises(InvariantError): self.s.assign(Role.LEAD,Task("D","D","author",1,{}))
