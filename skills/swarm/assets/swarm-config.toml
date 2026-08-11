@@ -181,6 +181,8 @@ coordinator_min_children = 2
 # LEAD, DOER, REVIEW, and consequential planning work; it is never a quota,
 # trigger, or hard cutoff.
 preferred_lane_width = 3
+# Maximum locally measurable window for CTRL_DIRECT atomic work.
+ctrl_direct_horizon_minutes = 20
 
 [subagents]
 # Permit bounded internal subagents inside an existing Codex task.
@@ -205,6 +207,10 @@ heartbeat_enabled = true
 # Passive MOTHER heartbeat cadence. It reads active descendants without
 # messaging, interrupting, or steering them.
 heartbeat_minutes = 30
+# Canonical goal review horizons. Small tasks should normally choose 10-20m.
+default_review_horizon_minutes = 30
+max_review_horizon_minutes = 60
+small_task_review_horizon_minutes = 15
 
 [recovery]
 # Exactly one bounded same-surface recovery attempt; this is non-disableable.

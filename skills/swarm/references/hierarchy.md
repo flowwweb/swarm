@@ -5,7 +5,15 @@ selecting ASSIST, naming roles, or transferring ownership.
 
 ## Choose the smallest useful shape
 
-- Every SWARM task, especially CTRL, delegates at least one bounded
+- Use CTRL_DIRECT only for one low-risk atomic outcome on one mutable surface,
+  with no cross-lane dependency and measurable completion inside the configured
+  direct-work horizon. Otherwise CTRL hires a LEAD. LEAD may build a cohesive
+  domain seam and hires DOERs for separable work that shortens accepted proof.
+- Visible tasks are durable topology. Subagents are bounded capacity within an
+  existing owner and never become topology; unavailable visible capacity uses
+  the typed capacity exception rather than a fabricated owner.
+
+- Every `CTRL_DELEGATED` and non-CTRL SWARM task delegates at least one bounded
   outcome-critical slice to a subagent before substantive execution by default.
   The owner retains integration and acceptance. Only unavailable capacity, an
   inseparable mutable-authority collision, a safety or privacy boundary, or

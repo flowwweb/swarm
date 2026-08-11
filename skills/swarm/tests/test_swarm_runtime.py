@@ -139,10 +139,11 @@ class RuntimeTests(unittest.TestCase):
   self.s.retire(Role.LEAD,"D","R",lessons=[lesson],now=3); self.assertEqual(self.s.workers["D"].state,WorkerState.RETIRED); self.assertEqual(self.s.tasks["B"].owner,"R"); self.assertIn("handoff",self.s.hive)
   self.s.hive["handoff"].retention="expired"; self.s.groom_hive(Role.MOTHER,4); self.s.groom_hive(Role.MOTHER,5); self.s.groom_hive(Role.MOTHER,6); self.assertEqual(self.s.hive["handoff"].status,HiveStatus.PURGED); self.assertEqual(self.s.hive["handoff"].provenance,{"task":"B"})
  def test_heartbeat_truth_table_latch_and_wait_resume(self):
-  self.assertIsNone(self.s.heartbeat(Role.MOTHER,"A",meaningful_progress=True)); self.assertIsNone(self.s.heartbeat(Role.MOTHER,"A",meaningful_progress=False,unchanged_updates=1)); self.assertEqual(self.s.heartbeat(Role.MOTHER,"A",meaningful_progress=False,unchanged_updates=2),"A:stall/actionable"); self.assertIsNone(self.s.heartbeat(Role.MOTHER,"A",meaningful_progress=False,unchanged_updates=2)); self.assertIsNone(self.s.heartbeat(Role.MOTHER,"A",meaningful_progress=True)); self.assertIsNotNone(self.s.heartbeat(Role.MOTHER,"A",meaningful_progress=False,unchanged_updates=2))
-  self.s.assign(Role.LEAD,Task("B","D","author",1,{})); self.s.wait(Role.DOER,"B","A"); self.assertIsNone(self.s.heartbeat(Role.MOTHER,"B",meaningful_progress=False)); self.s.tasks["A"].review_passed=True; self.s.tasks["A"].reviewer="review"; self.s.complete(Role.MOTHER,"A",True,True,1); self.assertEqual(self.s.tasks["B"].state,TaskState.ACTIVE)
+  self.s.tasks["A"].active_goal=True; self.s.tasks["A"].goal_id="g"; self.s.tasks["A"].milestone="proof"; self.s.tasks["A"].review_horizon_minutes=30
+  self.assertEqual(self.s.heartbeat(Role.CTRL,"A",meaningful_progress=False),"A:watchdog-recovered:30"); self.assertIsNone(self.s.heartbeat(Role.CTRL,"A",meaningful_progress=False))
+  self.s.assign(Role.LEAD,Task("B","D","author",1,{})); self.s.wait(Role.DOER,"B","A"); self.assertIsNone(self.s.heartbeat(Role.CTRL,"B",meaningful_progress=False)); self.s.tasks["A"].review_passed=True; self.s.tasks["A"].reviewer="review"; self.s.complete(Role.MOTHER,"A",True,True,1); self.assertEqual(self.s.tasks["B"].state,TaskState.ACTIVE)
   with self.assertRaises(InvariantError): self.s.heartbeat(Role.LEAD,"B",meaningful_progress=False)
-  self.s.heartbeat_enabled=False; self.assertIsNone(self.s.heartbeat(Role.MOTHER,"B",meaningful_progress=False)); self.s.recover(Role.MOTHER,"B","heartbeat diagnosis")
+  self.s.heartbeat_enabled=False; self.assertIsNone(self.s.heartbeat(Role.CTRL,"B",meaningful_progress=False)); self.s.recover(Role.MOTHER,"B","heartbeat diagnosis")
  def test_archive_and_contention_are_fail_closed(self):
   self.s.tasks["A"].state=TaskState.COMPLETE; self.s.tasks["A"].completed_at=0; self.s.tasks["A"].active_goal=True; self.assertEqual(self.s.groom(Role.MOTHER,2,{"no_review_archive_delay":0,"low_review_retention":2,"high_review_retention":3,"stale_task_archive_delay":1}),[]); self.assertFalse(self.s.should_spawn(independent=True,critical_path=True,contention=True))
  def test_atomic_simple_and_warm_routes_are_executable(self):
@@ -191,11 +192,8 @@ class RuntimeTests(unittest.TestCase):
   self.assertFalse(self.s.scope_finding(Role.DOER,"A","nice-to-have",material=False)); self.assertEqual(before,(len(self.s.tasks),len(self.s.workers),len(self.s.events),self.s.tasks["A"].state))
   self.assertTrue(self.s.scope_finding(Role.DOER,"A","review invariant missing",material=True)); self.assertTrue(self.s.tasks["A"].correction_pending); self.assertEqual(self.s.tasks["A"].state,TaskState.WAITING)
  def test_heartbeat_uses_canonical_recovery_before_latch(self):
-  self.assertEqual(self.s.heartbeat(Role.MOTHER,"A",meaningful_progress=False,unchanged_updates=2),"A:stall/actionable")
-  self.s.recover(Role.MOTHER,"A","first diagnosis")
-  self.assertEqual(self.s.heartbeat(Role.MOTHER,"A",meaningful_progress=False,unchanged_updates=2),"A:release/blocker")
-  self.assertEqual(self.s.heartbeat(Role.MOTHER,"A",meaningful_progress=False,unchanged_updates=2,recovery_attempts=0),"A:release/blocker")
-  with self.assertRaises(InvariantError): self.s.recover(Role.MOTHER,"A","renamed dimension")
+  self.s.tasks["A"].active_goal=True; self.s.tasks["A"].goal_id="g"; self.s.tasks["A"].milestone="proof"
+  self.assertIn("watchdog-recovered",self.s.heartbeat(Role.CTRL,"A",meaningful_progress=False)); self.assertIsNone(self.s.heartbeat(Role.CTRL,"A",meaningful_progress=False))
  def test_disabled_hive_is_removed_from_prebuilt_context(self):
   record=HiveRecord("prior",content="useful",source="decision")
   package=ContextPackage.build(goal="g",architecture={},dependencies=[],artifacts=[],acceptance=[],history=[],budget=2,hive=[record])

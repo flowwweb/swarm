@@ -19,7 +19,11 @@ PURPOSE: objective and acceptance/non-negotiables.
 OWNERSHIP: owner, exact mutable surface, canonical artifact/version.
 BOUNDARIES: dependencies, proof/claim limits, no hidden scope change.
 ESCALATION: accepting route or exact blocker.
+MODE: CTRL_DIRECT or CTRL_DELEGATED, with the direct-work predicate receipt.
+GOAL: stable goal ID, objective version, measurable milestone, locally chosen review horizon, and watchdog owner.
 ```
+
+An objective amendment increments the version and records authority, reason, requirements delta, new baseline, and prior-miss relevance. A genuinely new project links a distinct successor goal; it never rewrites the prior history.
 
 Integration-ready means immutable artifact identity, required proof state, and an explicit accepting route. `UNVERIFIED` remains open. A composed rendered product needs its composed render comparison when visual work is in scope.
 

@@ -146,6 +146,7 @@ DEFAULTS: dict[str, Any] = {
         "allow_coordinators": True,
         "coordinator_min_children": 2,
         "preferred_lane_width": 3,
+        "ctrl_direct_horizon_minutes": 20,
     },
     "subagents": {
         "enabled": True,
@@ -157,7 +158,7 @@ DEFAULTS: dict[str, Any] = {
         "max_parallel_tasks": 3,
         "scale_when_queue_reaches": 2,
     },
-    "monitoring": {"heartbeat_minutes": 30, "heartbeat_enabled": True},
+    "monitoring": {"heartbeat_minutes": 30, "heartbeat_enabled": True, "default_review_horizon_minutes": 30, "max_review_horizon_minutes": 60, "small_task_review_horizon_minutes": 15},
     "recovery": {
         "max_attempts": 1,
         "stall_after_updates": 2,
@@ -505,6 +506,7 @@ def validate(raw: dict[str, Any]) -> None:
     _boolean(coordination, "allow_coordinators", "coordination")
     _bounded_int(coordination, "coordinator_min_children", 2, 8, "coordination")
     _bounded_int(coordination, "preferred_lane_width", 1, 8, "coordination")
+    _bounded_int(coordination, "ctrl_direct_horizon_minutes", 1, 60, "coordination")
 
     subagents = _expect_table(raw, "subagents")
     _expect_keys(subagents, set(DEFAULTS["subagents"]), "subagents")
@@ -530,6 +532,12 @@ def validate(raw: dict[str, Any]) -> None:
     _expect_keys(monitoring, set(DEFAULTS["monitoring"]), "monitoring")
     _bounded_int(monitoring, "heartbeat_minutes", 1, 120, "monitoring")
     _boolean(monitoring, "heartbeat_enabled", "monitoring")
+    _bounded_int(monitoring, "default_review_horizon_minutes", 1, 60, "monitoring")
+    _bounded_int(monitoring, "max_review_horizon_minutes", 1, 60, "monitoring")
+    _bounded_int(monitoring, "small_task_review_horizon_minutes", 1, 20, "monitoring")
+    small=monitoring.get("small_task_review_horizon_minutes",15); default=monitoring.get("default_review_horizon_minutes",30); maximum=monitoring.get("max_review_horizon_minutes",60)
+    if not small<=default<=maximum: raise ConfigError("monitoring review horizons must satisfy small <= default <= maximum")
+    if coordination.get("ctrl_direct_horizon_minutes",20)>maximum: raise ConfigError("coordination.ctrl_direct_horizon_minutes cannot exceed monitoring maximum review horizon")
 
     recovery = _expect_table(raw, "recovery")
     _expect_keys(recovery, set(DEFAULTS["recovery"]), "recovery")

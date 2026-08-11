@@ -117,6 +117,31 @@ class RushConfigTests(unittest.TestCase):
                 ):
                     config.load(path)
 
+    def test_review_horizon_defaults_are_bounded_and_legacy_configs_merge(self) -> None:
+        effective, _ = config.load(config.TEMPLATE_PATH)
+        self.assertEqual(effective["monitoring"]["small_task_review_horizon_minutes"], 15)
+        self.assertEqual(effective["monitoring"]["default_review_horizon_minutes"], 30)
+        self.assertEqual(effective["monitoring"]["max_review_horizon_minutes"], 60)
+        self.assertEqual(effective["coordination"]["ctrl_direct_horizon_minutes"], 20)
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "legacy.toml"
+            path.write_text("schema_version = 2\n[monitoring]\nheartbeat_minutes = 45\n", encoding="utf-8")
+            legacy, _ = config.load(path)
+        self.assertEqual(legacy["monitoring"]["heartbeat_minutes"], 45)
+        self.assertEqual(legacy["monitoring"]["default_review_horizon_minutes"], 30)
+
+    def test_review_horizon_order_and_direct_bound_are_enforced(self) -> None:
+        invalid = (
+            "[monitoring]\nsmall_task_review_horizon_minutes = 20\ndefault_review_horizon_minutes = 10\n",
+            "[coordination]\nctrl_direct_horizon_minutes = 60\n[monitoring]\nmax_review_horizon_minutes = 30\n",
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            for index, contents in enumerate(invalid):
+                path = Path(directory) / f"invalid-{index}.toml"
+                path.write_text(contents, encoding="utf-8")
+                with self.assertRaises(config.ConfigError):
+                    config.load(path)
+
     def test_legacy_task_role_settings_normalize_to_doer(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "config.toml"

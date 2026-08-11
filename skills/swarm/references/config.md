@@ -102,6 +102,10 @@ Configuration cannot make an unsafe or hidden coordination path valid:
 | `review.max_parallel_tasks` | Concurrent REVIEW tasks | 1-8 |
 | `review.scale_when_queue_reaches` | Ready-artifact queue that adds review capacity | 2-8 |
 | `monitoring.heartbeat_minutes` | Passive MOTHER snapshot cadence for active descendants; mandatory heartbeat remains enabled | 1-120; default 30 |
+| `monitoring.default_review_horizon_minutes` | Default event-driven goal review horizon | 1-60; default 30 |
+| `monitoring.max_review_horizon_minutes` | Hard ceiling for a locally selected review horizon | 1-60; default 60 |
+| `monitoring.small_task_review_horizon_minutes` | Preferred small-task horizon | 1-20; default 15 |
+| `coordination.ctrl_direct_horizon_minutes` | Maximum measurable CTRL_DIRECT window | 1-60; default 20 |
 | `recovery.max_attempts` | One safe same-surface recovery before release | exactly 1; non-disableable |
 | `recovery.stall_after_updates` | Unchanged owner work updates before a lane stalls; heartbeat observations excluded | 1-5 |
 | `lifecycle.pin_created_tasks` | Pin new SWARM tasks | boolean |

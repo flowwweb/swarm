@@ -167,7 +167,8 @@ class EvidenceRoutingContractTests(unittest.TestCase):
         self.assertIn("A message that contains only coordination status is a SWARM contract violation", self.skill)
 
     def test_every_swarm_task_delegates_by_default_with_narrow_exceptions(self):
-        self.assertIn("Every SWARM task, especially CTRL, delegates at least one bounded outcome-critical", self.skill)
+        self.assertIn("`CTRL_DELEGATED` and every non-CTRL SWARM task delegate at least one bounded outcome-critical", self.skill)
+        self.assertIn("unless the task independently satisfies and records `CTRL_DIRECT`", self.skill)
         self.assertIn("Task size, convenience, CTRL status, or preference to work directly are not exceptions", self.skill)
         self.assertIn("This visible-lane threshold never waives default internal-subagent delegation", self.skill)
         self.assertNotIn("Default to CTRL working directly or one atomic owner", self.skill)

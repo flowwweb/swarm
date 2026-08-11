@@ -1,17 +1,21 @@
-# Passive heartbeat
+# Event-driven goal watchdog
 
-MOTHER keeps a current operational view of the hierarchy without waking or
-steering owners. At each `monitoring.heartbeat_minutes` interval, inspect every
-active descendant in the existing task tree: direct children and grandchildren
-at minimum, plus deeper active descendants when present. The heartbeat state is
-carried by the task tree and each role's active durable goal so it survives
-compaction or continuation; never create a private heartbeat log.
-
-Prefer a passive host snapshot such as a bounded `wait_threads` timeout using
-current cursors. Batch only when the host limits targets. Use a read primitive
-only when passive wait is unavailable or an attention event needs detail. Never
-send a task message merely to request heartbeat status, and never create a
+Each accepted milestone schedules exactly one lightweight wakeup at its due
+horizon. CTRL owns the tracker when no MOTHER exists; canonical MOTHER receives
+it through one explicit handoff when materialized. The worker proposes the
+milestone and horizon but never owns or wakes the clock. At due time the tracker
+reads compact raw diff, process, test, dependency, and artifact evidence. It
+does not poll early, request status prose, run a full audit per ping, or create a
 monitoring task, subagent, file, or second ledger.
+
+A successful check records its receipt and either accepts the next milestone
+with one new due event or closes the goal. A documented initialization/readiness
+latency condition permits one evidence-bound reschedule. Otherwise the canonical
+miss ladder applies. Duplicate due delivery is idempotent because the scheduled
+event is consumed once. `monitoring.heartbeat_minutes` remains only a fallback
+integrity audit that recreates a lost or missing due event; it is not a second
+progress clock. The scheduled receipt tied to the durable goal survives
+compaction without a private heartbeat ledger.
 
 Apply EVENT: a passive snapshot is not itself an update. Surface only changed
 attention, blocker, handoff, acceptance, or release in one natural line by
@@ -26,13 +30,10 @@ integration, or review. If the host does not expose it, use MOTHER's first
 observed active timestamp, prefix the duration with `~`, and never present it as
 CPU time or uninterrupted effort.
 
-The heartbeat is an ephemeral user control surface. Do not rewrite the task-tree
-receipt for unchanged observations, narrate between intervals, or repeat terminal
-tasks after their handoff has been reported. A heartbeat observation is neither
-a work update nor an unchanged update for stall accounting. Missing freshness
-alone reports `unknown`; it does not authorize messaging, recovery, interruption,
-or reassignment. A real failure, attention event, or material stall continues
-through the existing bounded recovery rules.
+The watchdog is an internal control surface. Do not rewrite the task-tree receipt
+for unchanged observations, narrate between horizons, or repeat terminal tasks.
+Missing freshness alone is unknown; only raw evidence at a consumed due event can
+advance the goal or count a miss.
 
 Count meaningful progress only when an owner returns a changed inspectable
 artifact, claim-matched proof execution, a cleared prerequisite, or a newly
