@@ -30,8 +30,10 @@ class Depth(StrEnum):
     ATOMIC="CTRL_DOER"; SIMPLE="CTRL_MOTHER_DOER"; WORKSTREAM="CTRL_MOTHER_LEAD_DOER"; PROJECT="CTRL_MOTHER_ARCHITECT_LEADS_DOERS"
 class EfficiencyMode(StrEnum): CONSERVE="CONSERVE"; BALANCED="BALANCED"; FAST="FAST"; MAX="MAX"
 
-def initial_tier(*, risk:int, uncertainty:int, blast_radius:int, mode:EfficiencyMode=EfficiencyMode.BALANCED) -> int:
-    return min(3, 1 + int(risk+uncertainty+blast_radius >= 3) + int(risk+uncertainty+blast_radius >= 6 or mode in {EfficiencyMode.FAST,EfficiencyMode.MAX}))
+def initial_tier(*, risk:int, uncertainty:int, blast_radius:int, family:str="general", mode:EfficiencyMode=EfficiencyMode.BALANCED) -> int:
+    weight=risk+uncertainty+blast_radius+({"security":2,"architecture":1}.get(family,0))
+    bias={EfficiencyMode.CONSERVE:0,EfficiencyMode.BALANCED:1,EfficiencyMode.FAST:2,EfficiencyMode.MAX:3}[mode]
+    return min(3, max(1, 1 + int(weight>=3) + int(weight+bias>=6)))
 
 def choose_depth(*, scope: int, architecture_impact: bool=False, independent_tasks: int=1, dependencies: int=0, uncertainty: int=0, blast_radius: int=0, specialisations: int=1, useful_parallelism: int=1, coordination_overhead: int=0) -> Depth:
     """Choose infrastructure only when its reliability benefit exceeds its cost."""
@@ -82,8 +84,8 @@ class Swarm:
         reason="allow:verification" if verification else "allow:critical_path" if allowed else "refuse:independent=false" if not independent else "refuse:contention" if contention else "refuse:duplicate" if duplicate_artifact else "refuse:noncritical"
         self.efficiency_ledger.append({"kind":"spawn","decision":"allow" if allowed else "refuse","reason":reason})
         return allowed
-    def route(self, *, family:str, risk:int, uncertainty:int, blast_radius:int, architect_floor:int=1, historical_floor:int=1, mode:EfficiencyMode=EfficiencyMode.BALANCED) -> int:
-        tier=max(architect_floor,historical_floor,initial_tier(risk=risk,uncertainty=uncertainty,blast_radius=blast_radius,mode=mode)); self.efficiency_ledger.append({"kind":"route","family":family,"tier":str(tier),"reason":"expected_total_accepted_cost"}); return tier
+    def route(self, *, family:str, risk:int, uncertainty:int, blast_radius:int, architect_floor:int=1, historical_floor:int=1, mode:EfficiencyMode|None=None) -> int:
+        selected=mode or self.mode; tier=max(architect_floor,historical_floor,initial_tier(risk=risk,uncertainty=uncertainty,blast_radius=blast_radius,family=family,mode=selected)); self.efficiency_ledger.append({"kind":"route","family":family,"tier":str(tier),"reason":"expected_total_accepted_cost"}); return tier
     def dedup(self, identity:str, *, verification:bool=False, uncertainty:bool=False) -> bool:
         found=bool(self.discover(identity)); allowed=not found or verification or uncertainty; self.efficiency_ledger.append({"kind":"dedup","decision":"reuse" if found and not allowed else "execute","reason":"verification" if verification else "uncertainty" if uncertainty else "canonical_artifact"}); return allowed
     def context_decision(self, *, affinity:int|None=None, bloat:bool|None=None, stale:bool|None=None, stalls:int|None=None, worker_id:str|None=None, replacement:str|None=None) -> str:
@@ -123,7 +125,8 @@ class Swarm:
     def discover(self, artifact: str) -> list[str]:
         return [t.id for t in self.tasks.values() if artifact in t.evidence]
     def review_depth(self, risk:int) -> str:
-        return "light" if risk <= 1 else "standard" if risk <= 3 else "adversarial"
+        base="light" if risk <= 1 else "standard" if risk <= 3 else "adversarial"
+        return "standard" if base=="light" and self.mode==EfficiencyMode.MAX else base
     def record_telemetry(self, task_type:str, role:str, tier:int, outcome:str, *, productive:int=0, overhead:int=0, usage:int|None=None) -> None:
         self.telemetry.update({"tasks":self.telemetry.get("tasks",0)+1,"productive":self.telemetry.get("productive",0)+productive,"overhead":self.telemetry.get("overhead",0)+overhead})
         if usage is not None: self.telemetry["host_usage"]=self.telemetry.get("host_usage",0)+usage
