@@ -35,19 +35,19 @@ class Task:
     id: str; owner: str; creator: str; architecture_version: int; contracts: dict[str,int]
     state: TaskState=TaskState.ACTIVE; waiting_on: str|None=None; reviewer: str|None=None; findings: list[str]=field(default_factory=list)
     evidence: list[str]=field(default_factory=list); recovery_dimensions: set[str]=field(default_factory=set); review_value: ReviewValue=ReviewValue.NONE
-    completed_at: int|None=None; stale_at: int|None=None; archived_at: int|None=None; stale_reason: str|None=None; superseded_by: str|None=None; promoted: list[str]=field(default_factory=list); extensions: int=0; review_passed: bool=False
+    completed_at: int|None=None; stale_at: int|None=None; archived_at: int|None=None; stale_reason: str|None=None; superseded_by: str|None=None; promoted: list[str]=field(default_factory=list); extensions: int=0; review_passed: bool=False; risk:int=1; review_strategy:str="light"; artifacts:dict[str,str]=field(default_factory=dict)
 
 @dataclass
 class Worker:
-    id: str; lead: str; lane: int; state: WorkerState=WorkerState.SPAWNED; task_ids: set[str]=field(default_factory=set); archive: dict[str, object]=field(default_factory=dict)
+    id: str; lead: str; lane: int; state: WorkerState=WorkerState.SPAWNED; task_ids: set[str]=field(default_factory=set); archive: dict[str, object]=field(default_factory=dict); context:dict[str,object]=field(default_factory=dict)
 
 @dataclass
 class Swarm:
     architecture_version: int=1; contract_versions: dict[str,int]=field(default_factory=dict); topology: set[str]=field(default_factory=set)
-    workers: dict[str,Worker]=field(default_factory=dict); tasks: dict[str,Task]=field(default_factory=dict); leases: dict[str,str]=field(default_factory=dict); events: list[tuple[str,str]]=field(default_factory=list); telemetry: dict[str,int]=field(default_factory=dict); lane_width:int=3; wip_limit:int=3; efficiency_ledger:list[dict[str,str]]=field(default_factory=list)
+    workers: dict[str,Worker]=field(default_factory=dict); tasks: dict[str,Task]=field(default_factory=dict); leases: dict[str,str]=field(default_factory=dict); events: list[tuple[str,str]]=field(default_factory=list); telemetry: dict[str,object]=field(default_factory=dict); lane_width:int=3; wip_limit:int=3; efficiency_ledger:list[dict[str,str]]=field(default_factory=list); mode:EfficiencyMode=EfficiencyMode.BALANCED
     @classmethod
     def from_config(cls, config: dict) -> "Swarm":
-        return cls(lane_width=config["coordination"]["preferred_lane_width"], wip_limit=config["efficiency"]["doer_wip_limit"])
+        return cls(lane_width=config["coordination"]["preferred_lane_width"], wip_limit=config["efficiency"]["doer_wip_limit"], mode=EfficiencyMode(config["efficiency"]["mode"]))
 
     def _role(self, actor: Role, allowed: set[Role]) -> None:
         if actor not in allowed: raise InvariantError(f"{actor} cannot perform this transition")
@@ -61,6 +61,7 @@ class Swarm:
     def assign(self, actor: Role, task: Task) -> None:
         self._role(actor,{Role.LEAD}); w=self.workers.get(task.owner)
         if not w or w.state==WorkerState.RETIRED or len(w.task_ids)>=self.wip_limit: raise InvariantError("owner unavailable or at WIP limit")
+        if any(identity in existing.artifacts for identity in task.artifacts for existing in self.tasks.values()): raise InvariantError("canonical artifact identity already exists")
         self.tasks[task.id]=task; w.task_ids.add(task.id)
     def should_spawn(self, *, independent: bool, critical_path: bool, duplicate_artifact: str|None=None, verification: bool=False, contention:bool=False) -> bool:
         allowed=independent and (critical_path or verification) and (not duplicate_artifact or verification)
@@ -71,7 +72,8 @@ class Swarm:
         tier=max(architect_floor,historical_floor,initial_tier(risk=risk,uncertainty=uncertainty,blast_radius=blast_radius,mode=mode)); self.efficiency_ledger.append({"kind":"route","family":family,"tier":str(tier),"reason":"expected_total_accepted_cost"}); return tier
     def dedup(self, identity:str, *, verification:bool=False, uncertainty:bool=False) -> bool:
         found=bool(self.discover(identity)); allowed=not found or verification or uncertainty; self.efficiency_ledger.append({"kind":"dedup","decision":"reuse" if found and not allowed else "execute","reason":"verification" if verification else "uncertainty" if uncertainty else "canonical_artifact"}); return allowed
-    def context_decision(self, *, affinity:int, bloat:bool, stale:bool, stalls:int, worker_id:str|None=None, replacement:str|None=None) -> str:
+    def context_decision(self, *, affinity:int|None=None, bloat:bool|None=None, stale:bool|None=None, stalls:int|None=None, worker_id:str|None=None, replacement:str|None=None) -> str:
+        context=self.workers[worker_id].context if worker_id else {}; affinity=context.get("affinity",affinity or 0); bloat=context.get("bloat",bloat or False); stale=context.get("stale",stale or False); stalls=context.get("stalls",stalls or 0)
         result="retire" if bloat or stale or stalls>1 or affinity==0 else "reuse"; self.efficiency_ledger.append({"kind":"context","decision":result,"reason":"bounded_spine"})
         if result=="retire" and worker_id: self.retire(Role.LEAD,worker_id,replacement)
         return result
@@ -100,7 +102,9 @@ class Swarm:
     def complexity_mismatch(self, actor: Role, task_id: str, observed_tier: int) -> None:
         self._role(actor,{Role.DOER}); self.tasks[task_id].contracts["complexity_mismatch"]=observed_tier; self.events.append(("MISMATCH",task_id))
     def add_artifact(self, actor: Role, task_id: str, artifact: str, risk: str="") -> None:
-        self._role(actor,{Role.DOER}); t=self.tasks[task_id]; t.evidence.append(artifact); t.findings.extend([risk] if risk else [])
+        self._role(actor,{Role.DOER}); t=self.tasks[task_id]
+        if artifact in t.artifacts or any(artifact in other.artifacts for other in self.tasks.values()): raise InvariantError("duplicate canonical artifact")
+        t.artifacts[artifact]=task_id; t.evidence.append(artifact); t.findings.extend([risk] if risk else [])
     def discover(self, artifact: str) -> list[str]:
         return [t.id for t in self.tasks.values() if artifact in t.evidence]
     def review_depth(self, risk:int) -> str:
@@ -112,6 +116,8 @@ class Swarm:
     def review(self, actor: Role, task_id: str, reviewer: str, passed: bool, finding: str="") -> None:
         self._role(actor,{Role.REVIEW}); t=self.tasks[task_id]
         if reviewer in {t.creator,t.owner}: raise InvariantError("creator cannot be sole independent reviewer")
+        required=self.review_depth(t.risk)
+        if passed and required in {"adversarial"} and not finding.startswith("evidence:"): raise InvariantError("high risk review requires adversarial evidence")
         t.reviewer=reviewer
         if passed: t.review_passed=True; t.state=TaskState.REVIEW
         else: t.state=TaskState.ACTIVE; t.findings.append(finding or "review failed")
