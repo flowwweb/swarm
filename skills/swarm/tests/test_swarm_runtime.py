@@ -144,4 +144,8 @@ class RuntimeTests(unittest.TestCase):
   self.assertIsNone(self.s.reuse_warm(Role.LEAD,Task("N","new","creator",1,{}),architecture={"auth":3},affinity=2))
  def test_duplicate_lane_rejected(self):
   with self.assertRaises(InvariantError): self.s.add_worker(Role.LEAD,Worker("D2","L",1))
+ def test_scope_discipline_blocks_only_material_invariant_findings(self):
+  before=(len(self.s.tasks),len(self.s.workers),len(self.s.events),self.s.tasks["A"].state)
+  self.assertFalse(self.s.scope_finding(Role.DOER,"A","nice-to-have",material=False)); self.assertEqual(before,(len(self.s.tasks),len(self.s.workers),len(self.s.events),self.s.tasks["A"].state))
+  self.assertTrue(self.s.scope_finding(Role.DOER,"A","review invariant missing",material=True)); self.assertTrue(self.s.tasks["A"].correction_pending); self.assertEqual(self.s.tasks["A"].state,TaskState.WAITING)
 if __name__ == "__main__": unittest.main()

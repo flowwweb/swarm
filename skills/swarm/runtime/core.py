@@ -214,6 +214,12 @@ class Swarm:
         self._role(actor,{Role.LEAD,Role.MOTHER}); t=self.tasks[task_id]
         if not dimension or t.recovery_attempts>=1: raise InvariantError("recovery budget exhausted; release blocker")
         t.recovery_dimensions.add(dimension); t.recovery_attempts=1; self.events.append(("RECOVERY",task_id))
+    def scope_finding(self, actor:Role, task_id:str, evidence:str, *, material:bool) -> bool:
+        """Preserve a direct invariant violation; unrelated opportunity changes nothing."""
+        self._role(actor,{Role.DOER,Role.LEAD,Role.ARCHITECT,Role.MOTHER}); t=self.tasks[task_id]
+        if not material: return False
+        if not evidence: raise InvariantError("material scope finding needs evidence")
+        t.findings.append(f"scope:{evidence}"); t.correction_pending=True; t.state=TaskState.WAITING; self.events.append(("SCOPE_ESCALATION",task_id)); return True
     def expert(self, actor: Role, task_id: str) -> None:
         self._role(actor,{Role.DOER,Role.LEAD,Role.ARCHITECT,Role.MOTHER}); self.events.append(("EXPERT",task_id))
     def set_intelligence_floor(self, actor: Role, task_id: str, tier: int) -> None:
