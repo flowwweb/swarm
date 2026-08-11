@@ -244,8 +244,9 @@ the same principle rather than a fixed mapping. Avoid decorative, novel, or
 merely colorful choices. Keep one emoji per title and reuse the same emoji for
 the same contextual role within a portfolio. Use `role_icons.fallback` only
 when no choice is clearly logical. Emojis are required but fully customizable.
-`🐙CTRL` is SWARM's fixed product/control mark rather than a task icon; it does
-not replace MOTHER's configurable default `⚡`.
+`🐙 SWARM` is the product mark, not a task-title prefix. The mandatory opening
+title starts `CTRL - <project>` with no emoji and does not replace MOTHER's
+configurable default `⚡`.
 
 Older configs may still contain `portfolio.title_prefix` or
 `role_icons.enabled`. The loader accepts and ignores those two retired settings

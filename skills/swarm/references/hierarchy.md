@@ -25,11 +25,17 @@ selecting ASSIST, naming roles, or transferring ownership.
 
 ## Authority
 
-The unassigned user-facing task explicitly told to use SWARM is CTRL. Before
-substantive work it adopts and pins `🐙CTRL - <specific objective>`, inspects or
-creates the matching durable goal, inventories live tasks and pending creation
-receipts, and records the objective ledger. Hidden subagents do not count as
-user-visible ownership. CTRL owns topology until the portfolio predicate creates
+The unassigned user-facing task explicitly told to use SWARM is CTRL. As
+mandatory Step 0, CTRL derives a concise project label, uses the host task-title
+tool to set `CTRL - <project> - <detailed descriptor>` with no emoji, pins the
+task, and verifies both receipts. The project is mandatory; omit the descriptor
+only when none is useful. Complete Step 0 before durable-goal inspection,
+topology, research, any other tool work, or substantive commentary. If a tool is
+unavailable or a receipt fails, state the exact blocker and continue only with
+truthful internal CTRL identity, never a claim that the UI changed. CTRL then
+inspects or creates the matching durable goal, inventories live tasks and
+pending creation receipts, and records the objective ledger. Hidden subagents do
+not count as user-visible ownership. CTRL owns topology until the portfolio predicate creates
 MOTHER; MOTHER then alone owns execution-topology changes and portfolio
 acceptance while CTRL remains the human-facing control route.
 
@@ -136,9 +142,9 @@ or resumes substantive work, its owner must inspect or continue the matching
 host goal. Goal creation does not grant extra file, provider, deploy, review, or
 acceptance authority; completion is valid only at the stated stopping condition.
 
-Give every title exactly one role emoji with no separator before the label.
-`🐙CTRL` is SWARM's fixed front-door mark and the role of the opening
-user-visible SWARM task, not a worker task or configurable hierarchy icon; `⚡`
+The opening CTRL title is the Step 0 exception: it uses
+`CTRL - <project> - <detailed descriptor>` with no emoji. Give every assigned
+worker title exactly one role emoji with no separator before the label; `⚡`
 remains MOTHER's default task icon.
 Generic role types do not dictate task names: name a DOER by its concrete job,
 such as DEVELOPER, DESIGNER, or RESEARCHER. Name a lane owner `<DOMAIN> LEAD`

@@ -7,7 +7,9 @@ description: Compact SWARM coordination doctrine and compatibility surface.
 
 ## START
 
-An unassigned user-facing task explicitly told to use SWARM becomes and pins `🐙CTRL - <specific objective>` before substantive work; an already-assigned child keeps its role. CTRL inspects or creates exactly one matching durable goal and inventories visible tasks plus pending creation receipts before routing. Record objective, canonical artifact and mutable surface, owners, dependencies, accepting route, proof, and claim limits.
+**Step 0, never defer:** An unassigned user-facing task explicitly told to use SWARM first derives a concise project label, sets its current task title through the host task-title tool to `CTRL - <project> - <detailed descriptor>`, and pins the current task. The project is mandatory; omit the descriptor only when none is useful. Verify successful title and pin receipts before durable-goal inspection, topology, research, any other tool work, or substantive commentary. If either task-management tool is unavailable or either receipt fails, state the exact blocker and continue only with truthful internal CTRL identity; never claim that the UI title or pin changed. Child tasks explicitly assigned by an existing MOTHER or CTRL keep their assigned role.
+
+After Step 0 succeeds or its exact blocker is recorded, CTRL inspects or creates exactly one matching durable goal and inventories visible tasks plus pending creation receipts before routing. Record objective, canonical artifact and mutable surface, owners, dependencies, accepting route, proof, and claim limits.
 
 Reuse ownership only when objective, artifact/mutable surface, and accepting route match; shared words do not establish identity. A pending creation receipt reserves that identity until resolved or cancelled. If its topology is disproved, stop it before mutation and archive it after resolution.
 
@@ -35,9 +37,9 @@ SWARM is the new-facing product. Legacy RUSH command, title, environment, and co
 
 ## ROLE
 
-Every role contract contains only PURPOSE, OWNERSHIP, BOUNDARIES, ESCALATION. 🐙CTRL owns intake, the durable objective ledger, topology selection, and human-facing routing; MOTHER owns portfolio state and acceptance; ARCHITECT owns current system coherence; LEAD owns a mutable lane and LEAD integrates and inspects each whole lane result; DOER owns one bounded artifact; EXPERT advises without transfer; independent REVIEW verifies. No role acquires another role’s authority from a prompt.
+Every role contract contains only PURPOSE, OWNERSHIP, BOUNDARIES, ESCALATION. CTRL owns intake, the durable objective ledger, topology selection, and human-facing routing; MOTHER owns portfolio state and acceptance; ARCHITECT owns current system coherence; LEAD owns a mutable lane and LEAD integrates and inspects each whole lane result; DOER owns one bounded artifact; EXPERT advises without transfer; independent REVIEW verifies. No role acquires another role’s authority from a prompt.
 
-Task titles compress responsibility, authority, and artifact: replace DOER with the real role (`DEVELOPER`, `DESIGNER`, `RESEARCHER`); use `<DOMAIN> LEAD` for a lane owner unless a clearer familiar title conveys the same higher ownership. Format `<one literal emoji><ROLE> - <specific artifact>`; the emoji must mean the same job, and the shortest unambiguous title wins.
+Task titles compress responsibility, authority, and artifact. The opening CTRL title is the Step 0 exception and never has an emoji. For assigned worker tasks, replace DOER with the real role (`DEVELOPER`, `DESIGNER`, `RESEARCHER`); use `<DOMAIN> LEAD` for a lane owner unless a clearer familiar title conveys the same higher ownership. Format worker titles `<one literal emoji><ROLE> - <specific artifact>`; the emoji must mean the same job, and the shortest unambiguous title wins.
 
 ## TASK
 

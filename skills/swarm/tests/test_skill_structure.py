@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -9,8 +11,28 @@ SKILL_ROOT = Path(__file__).resolve().parents[1]
 SKILL = SKILL_ROOT / "SKILL.md"
 EVALS = SKILL_ROOT / "evals" / "evals.json"
 
+sys.path.insert(0, str(SKILL_ROOT / "scripts"))
+from verify_plugin_install import verify
+
 
 class SwarmSkillStructureTests(unittest.TestCase):
+    def test_install_verifier_requires_complete_declared_skill_tree_hash_parity(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source, installed = root / "source", root / "installed"
+            for plugin in (source, installed):
+                (plugin / ".codex-plugin").mkdir(parents=True)
+                (plugin / "skills" / "swarm" / "references").mkdir(parents=True)
+                (plugin / "skills" / "rush").mkdir(parents=True)
+                (plugin / ".codex-plugin" / "plugin.json").write_text('{"skills":"./skills/"}', encoding="utf-8")
+                (plugin / "skills" / "swarm" / "SKILL.md").write_text("swarm", encoding="utf-8")
+                (plugin / "skills" / "swarm" / "references" / "task-contract.md").write_text("contract", encoding="utf-8")
+                (plugin / "skills" / "rush" / "SKILL.md").write_text("rush", encoding="utf-8")
+            self.assertEqual(verify(source, installed), 4)
+            (installed / "skills" / "rush" / "SKILL.md").unlink()
+            with self.assertRaisesRegex(ValueError, "skills/rush/SKILL.md"):
+                verify(source, installed)
+
     def test_core_skill_stays_below_500_lines(self) -> None:
         self.assertLess(len(SKILL.read_text(encoding="utf-8").splitlines()), 550)
 
@@ -87,31 +109,51 @@ class SwarmSkillStructureTests(unittest.TestCase):
 
         self.assertIn("replace DOER with the real role", skill)
         self.assertIn("use `<DOMAIN> LEAD` for a lane owner", skill)
-        self.assertIn("<one literal emoji><ROLE> - <specific artifact>", skill)
+        self.assertIn("Format worker titles `<one literal emoji><ROLE> - <specific artifact>`", skill)
+        self.assertIn("opening CTRL title is the Step 0 exception and never has an emoji", skill)
         self.assertIn("the shortest unambiguous title wins", skill)
         self.assertIn("Generic role types do not dictate task names", hierarchy)
 
-    def test_octopus_is_the_fixed_swarm_ctrl_mark(self) -> None:
+    def test_octopus_is_product_brand_but_not_ctrl_title_prefix(self) -> None:
         skill = SKILL.read_text(encoding="utf-8")
         hierarchy = (SKILL_ROOT / "references" / "hierarchy.md").read_text(
             encoding="utf-8"
         )
 
         self.assertIn("# 🐙 SWARM", skill)
-        self.assertIn("🐙CTRL owns intake", skill)
-        self.assertIn("`🐙CTRL` is SWARM's fixed front-door mark", hierarchy)
+        self.assertIn("CTRL owns intake", skill)
+        self.assertIn("with no emoji", hierarchy)
+        self.assertNotIn("🐙CTRL", skill)
+        self.assertNotIn("🐙CTRL", hierarchy)
 
     def test_new_swarm_objective_starts_as_durable_ctrl(self) -> None:
         skill = SKILL.read_text(encoding="utf-8")
         hierarchy = (SKILL_ROOT / "references" / "hierarchy.md").read_text(
             encoding="utf-8"
         )
+        task_contract = (SKILL_ROOT / "references" / "task-contract.md").read_text(
+            encoding="utf-8"
+        )
+        for text in (skill, hierarchy, task_contract):
+            self.assertIn("CTRL - <project> - <detailed descriptor>", text)
+            self.assertIn("Step 0", text)
+            self.assertIn("verif", text.lower())
+            self.assertIn("exact blocker", text)
+            self.assertIn("truthful internal CTRL identity", text)
         for text in (skill, hierarchy):
-            self.assertIn("🐙CTRL - <specific objective>", text)
             self.assertIn("durable goal", text)
             self.assertIn("subagents", text)
-        self.assertIn("becomes and pins", skill)
-        self.assertIn("adopts and pins", hierarchy)
+        self.assertIn("project is mandatory", skill)
+        self.assertIn("omit the descriptor only when none is useful", skill)
+        self.assertIn("task-title tool", skill)
+        self.assertIn("pins the current task", skill)
+        self.assertIn("Verify successful title and pin receipts", skill)
+        self.assertIn("before durable-goal inspection", skill)
+        self.assertIn("before durable-goal inspection", hierarchy)
+        self.assertLess(skill.index("**Step 0, never defer:**"), skill.index("After Step 0"))
+        self.assertNotIn("🐙CTRL - <specific objective>", skill)
+        self.assertNotIn("🐙CTRL - <specific objective>", hierarchy)
+        self.assertNotIn("🐙CTRL - <specific objective>", task_contract)
         self.assertIn("pending creation receipt reserves", skill)
         self.assertIn("pending `clientThreadId`", hierarchy)
         self.assertIn("archive it", skill)
