@@ -44,7 +44,7 @@ class Worker:
 @dataclass
 class Swarm:
     architecture_version: int=1; contract_versions: dict[str,int]=field(default_factory=dict); topology: set[str]=field(default_factory=set)
-    workers: dict[str,Worker]=field(default_factory=dict); tasks: dict[str,Task]=field(default_factory=dict); leases: dict[str,str]=field(default_factory=dict); events: list[tuple[str,str]]=field(default_factory=list); telemetry: dict[str,int]=field(default_factory=dict); lane_width:int=3; wip_limit:int=3
+    workers: dict[str,Worker]=field(default_factory=dict); tasks: dict[str,Task]=field(default_factory=dict); leases: dict[str,str]=field(default_factory=dict); events: list[tuple[str,str]]=field(default_factory=list); telemetry: dict[str,int]=field(default_factory=dict); lane_width:int=3; wip_limit:int=3; efficiency_ledger:list[dict[str,str]]=field(default_factory=list)
     @classmethod
     def from_config(cls, config: dict) -> "Swarm":
         return cls(lane_width=config["coordination"]["preferred_lane_width"], wip_limit=config["efficiency"]["doer_wip_limit"])
@@ -63,7 +63,15 @@ class Swarm:
         if not w or w.state==WorkerState.RETIRED or len(w.task_ids)>=self.wip_limit: raise InvariantError("owner unavailable or at WIP limit")
         self.tasks[task.id]=task; w.task_ids.add(task.id)
     def should_spawn(self, *, independent: bool, critical_path: bool, duplicate_artifact: str|None=None, verification: bool=False) -> bool:
-        return independent and (critical_path or verification) and (not duplicate_artifact or verification)
+        allowed=independent and (critical_path or verification) and (not duplicate_artifact or verification)
+        self.efficiency_ledger.append({"kind":"spawn","decision":"allow" if allowed else "refuse","reason":"verification" if verification else "critical_path" if allowed else "duplicate_or_contention"})
+        return allowed
+    def route(self, *, family:str, risk:int, uncertainty:int, blast_radius:int, architect_floor:int=1, historical_floor:int=1, mode:EfficiencyMode=EfficiencyMode.BALANCED) -> int:
+        tier=max(architect_floor,historical_floor,initial_tier(risk=risk,uncertainty=uncertainty,blast_radius=blast_radius,mode=mode)); self.efficiency_ledger.append({"kind":"route","family":family,"tier":str(tier),"reason":"expected_total_accepted_cost"}); return tier
+    def dedup(self, identity:str, *, verification:bool=False, uncertainty:bool=False) -> bool:
+        found=bool(self.discover(identity)); allowed=not found or verification or uncertainty; self.efficiency_ledger.append({"kind":"dedup","decision":"reuse" if found and not allowed else "execute","reason":"verification" if verification else "uncertainty" if uncertainty else "canonical_artifact"}); return allowed
+    def context_decision(self, *, affinity:int, bloat:bool, stale:bool, stalls:int) -> str:
+        result="retire" if bloat or stale or stalls>1 or affinity==0 else "reuse"; self.efficiency_ledger.append({"kind":"context","decision":result,"reason":"bounded_spine"}); return result
     def change_architecture(self, actor: Role, contracts: dict[str,int], now:int=0) -> None:
         self._role(actor,{Role.ARCHITECT}); self.architecture_version+=1; self.contract_versions.update(contracts)
         for task in self.tasks.values():
