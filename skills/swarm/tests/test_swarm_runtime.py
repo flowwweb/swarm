@@ -76,4 +76,9 @@ class RuntimeTests(unittest.TestCase):
   self.s.tasks["A"].risk=4
   with self.assertRaises(InvariantError): self.s.review(Role.REVIEW,"A","independent",True,"standard")
   self.s.review(Role.REVIEW,"A","independent",True,"adversarial"); self.assertTrue(self.s.tasks["A"].review_passed); self.assertEqual(self.s.tasks["A"].review_strategy,"adversarial")
+ def test_artifact_dedup_requires_justified_distinct_provenance(self):
+  self.s.add_artifact(Role.DOER,"A","canonical:v1")
+  self.s.assign(Role.LEAD,Task("B","D","author",1,{}))
+  with self.assertRaises(InvariantError): self.s.add_artifact(Role.DOER,"B","canonical:v1")
+  self.s.add_artifact(Role.DOER,"B","canonical:v1",provenance="review-2",justification="verification"); self.assertIn("canonical:v1@review-2",self.s.tasks["B"].artifacts)
 if __name__ == "__main__": unittest.main()
