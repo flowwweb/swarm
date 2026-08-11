@@ -53,6 +53,8 @@ Configuration cannot make an unsafe or hidden coordination path valid:
 | `portfolio.max_active_tasks` | Tasks currently producing, integrating, or reviewing, excluding MOTHER | 1-12 |
 | `portfolio.default_parallel_tasks` | Preferred ceiling for an independent wave, never a creation quota | 1-8, not above max |
 | `portfolio.reuse_existing_tasks` | Reuse matching live owners | boolean |
+| `role_icons.enabled` | Include exactly one role-matched emoji in every SWARM task title | boolean; default true |
+| `role_icons.ctrl` | CTRL title emoji | trimmed single line, 1-24 chars; default 🐙 |
 | `role_icons.mother` | MOTHER title emoji | trimmed single line, 1-24 chars; default ⚡ |
 | `role_icons.lead` | LEAD title emoji | trimmed single line, 1-24 chars |
 | `role_icons.review` | REVIEW title emoji | trimmed single line, 1-24 chars |
@@ -121,14 +123,15 @@ Ambiguous tasks remain open until a later bounded stale audit proves archival is
 safe; then use the host archive control. The setting creates no queue, daemon,
 ledger, polling loop, or telemetry.
 
-The default title hierarchy is `⚡MOTHER - outcome`, an optional lane owner such
-as `🧭API LEAD - payments`, a contextual owner such as `💻DEVELOPER - webhook`,
-and `🔎REVIEW - webhook`. Generic DOER and LEAD are authority types, not required
-task names: use the concrete job, retaining LEAD unless another familiar title
-communicates the same higher ownership. Every title has exactly one literal role
-emoji, concatenated directly with its label, and a concrete two-to-five-word
-artifact. The label and emoji express the same responsibility. Fewer characters
-are better only while the title remains unambiguous. `labels.doer` is only the
+The default title hierarchy is `🐙CTRL - <project> - <detailed descriptor>`,
+`⚡MOTHER - outcome`, an optional lane owner such as `🔐LEAD - payments`, a
+contextual owner such as `💻DEVELOPER - webhook`, and `🔎REVIEW - webhook`.
+Generic DOER is an authority type, not a required task name: use the concrete
+job. Keep the lane marker `LEAD` stable, put its domain or responsibility after
+the dash, and use a domain-matched icon. With `role_icons.enabled = true`, every
+title has exactly one literal role emoji concatenated directly with its label.
+The label and emoji express the same responsibility. Fewer characters are
+better only while the title remains unambiguous. `labels.doer` is only the
 fallback; custom labels and emojis never change authority.
 
 ## Models and usage
@@ -235,23 +238,23 @@ acceptance. Rename levels with `labels`, omit LEAD with
 roles, and control dedicated review tasks with `review.task_enabled`. Turning
 off a dedicated REVIEW task never turns off QC.
 
-The role emoji system is always active. Hierarchy roles use their matching
-`role_icons` setting. Contextual tasks use `roles.<ROLE>.icon` when present;
+The role emoji system is active by default. Set `role_icons.enabled = false`
+only to remove emojis from all SWARM task titles; direct user instruction still
+wins for the requested task. CTRL uses `role_icons.ctrl`, default `🐙`.
+Hierarchy roles use their matching `role_icons` setting. Contextual tasks use `roles.<ROLE>.icon` when present;
 otherwise select automatically from `role_icons.doer_choices` by conventional
 literal meaning. Prefer a familiar object or action understandable without a
 legend, such as a hammer for BUILD or a computer for DEV. Infer other roles from
 the same principle rather than a fixed mapping. Avoid decorative, novel, or
 merely colorful choices. Keep one emoji per title and reuse the same emoji for
-the same contextual role within a portfolio. Use `role_icons.fallback` only
-when no choice is clearly logical. Emojis are required but fully customizable.
-`🐙 SWARM` is the product mark, not a task-title prefix. The mandatory opening
-title starts `CTRL - <project>` with no emoji and does not replace MOTHER's
-configurable default `⚡`.
+the same contextual role within a portfolio. For a LEAD, choose the domain icon
+rather than a generic leadership icon and use `role_icons.lead` only as the
+fallback when no domain match is clear. Use `role_icons.fallback` only when no
+choice is clearly logical. Enabled emojis are fully customizable.
 
-Older configs may still contain `portfolio.title_prefix` or
-`role_icons.enabled`. The loader accepts and ignores those two retired settings
-so an update does not break scheduling; neither appears in effective settings
-or changes title behavior. Remove them when next editing the config.
+Older configs may still contain `portfolio.title_prefix`. The loader accepts
+and ignores that retired setting so an update does not break scheduling.
+`role_icons.enabled` is current boolean configuration and is never ignored.
 
 ## Soft lane width
 

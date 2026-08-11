@@ -108,13 +108,15 @@ class SwarmSkillStructureTests(unittest.TestCase):
         )
 
         self.assertIn("replace DOER with the real role", skill)
-        self.assertIn("use `<DOMAIN> LEAD` for a lane owner", skill)
-        self.assertIn("Format worker titles `<one literal emoji><ROLE> - <specific artifact>`", skill)
-        self.assertIn("opening CTRL title is the Step 0 exception and never has an emoji", skill)
+        self.assertIn("Format a lane owner as `<one domain-matched emoji>LEAD - <domain or responsibility>`", skill)
+        self.assertIn("keep `LEAD` stable, put the distinguishing role after the dash", skill)
+        self.assertIn("choose an icon that identifies that domain", skill)
+        self.assertIn("Other worker titles use `<one role-matched emoji><ROLE> - <specific artifact>`", skill)
+        self.assertIn("every SWARM title has exactly one role-matched emoji", skill)
         self.assertIn("the shortest unambiguous title wins", skill)
         self.assertIn("Generic role types do not dictate task names", hierarchy)
 
-    def test_octopus_is_product_brand_but_not_ctrl_title_prefix(self) -> None:
+    def test_octopus_is_default_configurable_ctrl_title_prefix(self) -> None:
         skill = SKILL.read_text(encoding="utf-8")
         hierarchy = (SKILL_ROOT / "references" / "hierarchy.md").read_text(
             encoding="utf-8"
@@ -122,9 +124,9 @@ class SwarmSkillStructureTests(unittest.TestCase):
 
         self.assertIn("# 🐙 SWARM", skill)
         self.assertIn("CTRL owns intake", skill)
-        self.assertIn("with no emoji", hierarchy)
-        self.assertNotIn("🐙CTRL", skill)
-        self.assertNotIn("🐙CTRL", hierarchy)
+        self.assertIn("`role_icons.ctrl` configures CTRL and defaults to `🐙`", hierarchy)
+        self.assertIn("🐙CTRL", skill)
+        self.assertIn("🐙CTRL", hierarchy)
 
     def test_new_swarm_objective_starts_as_durable_ctrl(self) -> None:
         skill = SKILL.read_text(encoding="utf-8")
@@ -135,7 +137,7 @@ class SwarmSkillStructureTests(unittest.TestCase):
             encoding="utf-8"
         )
         for text in (skill, hierarchy, task_contract):
-            self.assertIn("CTRL - <project> - <detailed descriptor>", text)
+            self.assertIn("🐙CTRL - <project> - <detailed descriptor>", text)
             self.assertIn("Step 0", text)
             self.assertIn("verif", text.lower())
             self.assertIn("exact blocker", text)

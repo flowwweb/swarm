@@ -91,6 +91,17 @@ class RushConsoleTests(unittest.TestCase):
         self.assertEqual(result["settings"]["monitoring"]["heartbeat_minutes"], 45)
         self.assertTrue(self.config.with_suffix(".toml.rush-console.bak").exists())
 
+    def test_role_icon_controls_preserve_boolean_and_custom_ctrl(self) -> None:
+        before = console.redacted_config_snapshot(self.config)
+        self.assertIn("role_icons.enabled", before["editable"])
+        self.assertIn("role_icons.ctrl", before["editable"])
+        result = console.update_config(
+            self.config,
+            {"role_icons.enabled": False, "role_icons.ctrl": "🕹️"},
+        )
+        self.assertFalse(result["settings"]["role_icons"]["enabled"])
+        self.assertEqual(result["settings"]["role_icons"]["ctrl"], "🕹️")
+
     def test_usage_saver_toggle_uses_validated_config_api(self) -> None:
         before = console.redacted_config_snapshot(self.config)
         self.assertFalse(before["settings"]["execution"]["usage_saver"])

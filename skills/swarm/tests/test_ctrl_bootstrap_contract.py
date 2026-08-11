@@ -7,7 +7,7 @@ from pathlib import Path
 
 SKILL_ROOT = Path(__file__).resolve().parents[1]
 PLUGIN_ROOT = SKILL_ROOT.parents[1]
-NEW_TITLE = "CTRL - <project> - <detailed descriptor>"
+NEW_TITLE = "🐙CTRL - <project> - <detailed descriptor>"
 LEGACY_TITLE = "🐙CTRL - <specific objective>"
 
 
@@ -33,7 +33,7 @@ class CtrlBootstrapContractTests(unittest.TestCase):
         for path in contract_paths:
             with self.subTest(path=path):
                 text = path.read_text(encoding="utf-8")
-                self.assertIn("CTRL - <project>", text)
+                self.assertIn("🐙CTRL - <project>", text)
                 self.assertNotIn(LEGACY_TITLE, text)
 
     def test_intake_evals_contrast_receipted_step_zero_with_late_rename(self) -> None:

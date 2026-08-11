@@ -30,6 +30,44 @@ class RushConfigTests(unittest.TestCase):
         self.assertTrue(exists)
         self.assertFalse(effective["execution"]["usage_saver"])
 
+    def test_role_icons_default_to_enabled_octopus_ctrl(self) -> None:
+        self.assertTrue(config.DEFAULTS["role_icons"]["enabled"])
+        self.assertEqual(config.DEFAULTS["role_icons"]["ctrl"], "🐙")
+        effective, _ = config.load(config.TEMPLATE_PATH)
+        self.assertTrue(effective["role_icons"]["enabled"])
+        self.assertEqual(effective["role_icons"]["ctrl"], "🐙")
+
+    def test_role_icons_accept_custom_ctrl_and_disabled_contrast(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            custom = root / "custom.toml"
+            custom.write_text('[role_icons]\nctrl = "🕹️"\n', encoding="utf-8")
+            custom_effective, _ = config.load(custom)
+            self.assertTrue(custom_effective["role_icons"]["enabled"])
+            self.assertEqual(custom_effective["role_icons"]["ctrl"], "🕹️")
+            self.assertEqual(
+                config.feedback_diagnostics(custom_effective, True)["ctrl_icon"],
+                "🕹️",
+            )
+
+            disabled = root / "disabled.toml"
+            disabled.write_text("[role_icons]\nenabled = false\n", encoding="utf-8")
+            disabled_effective, _ = config.load(disabled)
+            self.assertFalse(disabled_effective["role_icons"]["enabled"])
+            diagnostics = config.feedback_diagnostics(disabled_effective, True)
+            self.assertEqual(diagnostics["emoji_system"], "disabled")
+            self.assertEqual(diagnostics["ctrl_icon"], "")
+
+    def test_role_icons_enabled_must_be_boolean(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "invalid.toml"
+            path.write_text('[role_icons]\nenabled = "no"\n', encoding="utf-8")
+            with self.assertRaisesRegex(
+                config.ConfigError,
+                "role_icons.enabled must be true or false",
+            ):
+                config.load(path)
+
     def test_existing_config_without_usage_saver_merges_off(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "config.toml"

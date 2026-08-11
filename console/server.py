@@ -69,6 +69,8 @@ EDITABLE_SETTINGS: dict[str, type] = {
     "labels.lead": str,
     "labels.doer": str,
     "labels.review": str,
+    "role_icons.enabled": bool,
+    "role_icons.ctrl": str,
     "role_icons.mother": str,
     "role_icons.lead": str,
     "role_icons.review": str,

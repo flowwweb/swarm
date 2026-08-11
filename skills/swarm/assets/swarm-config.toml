@@ -17,8 +17,10 @@ default_parallel_tasks = 3
 reuse_existing_tasks = true
 
 [role_icons]
-# Every SWARM title uses exactly one role emoji. Hierarchy roles use their
-# configured icon; DOERs choose a logical classic icon from doer_choices.
+# Every SWARM title uses exactly one role emoji by default. Set enabled=false
+# only when all SWARM task-title emojis should be disabled.
+enabled = true
+ctrl = "🐙"
 mother = "⚡"
 lead = "🧭"
 review = "🔎"

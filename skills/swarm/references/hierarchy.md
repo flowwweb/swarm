@@ -27,8 +27,9 @@ selecting ASSIST, naming roles, or transferring ownership.
 
 The unassigned user-facing task explicitly told to use SWARM is CTRL. As
 mandatory Step 0, CTRL derives a concise project label, uses the host task-title
-tool to set `CTRL - <project> - <detailed descriptor>` with no emoji, pins the
-task, and verifies both receipts. The project is mandatory; omit the descriptor
+tool to set `🐙CTRL - <project> - <detailed descriptor>` by default, pins the
+task, and verifies both receipts. Only `role_icons.enabled = false` or direct
+user instruction removes the emoji. The project is mandatory; omit the descriptor
 only when none is useful. Complete Step 0 before durable-goal inspection,
 topology, research, any other tool work, or substantive commentary. If a tool is
 unavailable or a receipt fails, state the exact blocker and continue only with
@@ -108,6 +109,19 @@ justify startup and handoff, and has no existing owner that already fits it.
 Keep lookups, single small edits, status relays, and other tiny same-surface work
 inside the owner.
 
+Measure task-start overhead when the host exposes exact data. Record
+request-to-task-ID, task-ID-to-ready, ready-to-first-material-artifact-or-proof,
+worktree setup, and host-reported token usage; never estimate missing token usage.
+Keep same-directory or projectless startup, worktree provisioning, and
+owner orientation or handoff as distinct classes. Use rolling medians only
+after at least five comparable samples; before then use a conservative
+qualitative threshold. Create a visible task only when evidence-backed expected critical-path savings exceed
+measured startup plus orientation, handoff, and
+integration or review cost. Otherwise keep the slice with its current owner.
+Set recovery and proof windows from observed cold-start or setup latency plus
+the actual readiness condition, never from a generic budget shorter than
+initialization. A timeout proves only that the chosen window elapsed; it does not prove service failure.
+
 Treat configured parallel counts, coordinator minimums, lane width, and review
 capacity as ceilings or shaping preferences, never creation targets. Count a
 non-MOTHER task as active only while producing, integrating, or reviewing. A
@@ -142,14 +156,18 @@ or resumes substantive work, its owner must inspect or continue the matching
 host goal. Goal creation does not grant extra file, provider, deploy, review, or
 acceptance authority; completion is valid only at the stated stopping condition.
 
-The opening CTRL title is the Step 0 exception: it uses
-`CTRL - <project> - <detailed descriptor>` with no emoji. Give every assigned
-worker title exactly one role emoji with no separator before the label; `⚡`
-remains MOTHER's default task icon.
+With `role_icons.enabled = true`, the opening title uses
+`🐙CTRL - <project> - <detailed descriptor>` by default and every SWARM task
+title has exactly one role-matched emoji with no separator before the label.
+`role_icons.ctrl` configures CTRL and defaults to `🐙`; `⚡` remains MOTHER's
+default task icon. Disable all title emojis only with
+`role_icons.enabled = false` or direct user instruction.
 Generic role types do not dictate task names: name a DOER by its concrete job,
-such as DEVELOPER, DESIGNER, or RESEARCHER. Name a lane owner `<DOMAIN> LEAD`
-unless a clearer familiar title communicates the same higher ownership. Choose
-one literal icon for that job, then format `<icon>ROLE - artifact`. The label,
+such as DEVELOPER, DESIGNER, or RESEARCHER. Name a lane owner
+`<domain-matched emoji>LEAD - <domain or responsibility>`: keep `LEAD` stable,
+put the distinguishing responsibility after the dash, and choose the icon from
+the domain rather than a generic leadership symbol. Other roles use
+`<role-matched emoji><ROLE> - <specific artifact>`. The label,
 icon, and concrete artifact should form the shortest unambiguous responsibility
 receipt; use the fallback icon only when no clear metaphor fits.
 

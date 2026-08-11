@@ -8,7 +8,7 @@
   "config": {
     "exists": true,
     "path": "fixture/config.toml",
-    "editable": ["execution.usage_saver"],
+    "editable": ["execution.usage_saver", "role_icons.enabled", "role_icons.ctrl"],
     "settings": {
       "portfolio": {
         "max_active_tasks": 4,
@@ -58,6 +58,8 @@
         "review": "REVIEW"
       },
       "role_icons": {
+        "enabled": true,
+        "ctrl": "🐙",
         "mother": "⚡",
         "lead": "🧭",
         "review": "🔎",

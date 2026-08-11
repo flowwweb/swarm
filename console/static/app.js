@@ -65,8 +65,10 @@ const settingGroups = [
   },
   {
     title: "Role signals",
-    copy: "Classic, readable signals for the hierarchy. Contextual DOER icons remain automatic.",
+    copy: "Exactly one role-matched signal by default. Contextual DOER icons remain automatic.",
     fields: [
+      ["role_icons.enabled", "Task title icons", "boolean", "Disable only when all SWARM title emojis should disappear"],
+      ["role_icons.ctrl", "CTRL icon", "text", "Default octopus control signal"],
       ["role_icons.mother", "MOTHER icon", "text", "Default lightning signal"],
       ["role_icons.lead", "LEAD icon", "text", "Domain direction signal"],
       ["role_icons.review", "REVIEW icon", "text", "Independent inspection signal"],

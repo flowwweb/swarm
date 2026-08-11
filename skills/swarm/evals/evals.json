@@ -54,12 +54,12 @@
     {
       "id": 5,
       "prompt": "An older RUSH config contains portfolio.title_prefix = \"\" and role_icons.enabled = false. Organize this project after updating RUSH.",
-      "expected_output": "The legacy settings are accepted only for update compatibility and ignored; every new title still uses exactly one configured role emoji.",
+      "expected_output": "The retired title_prefix is ignored, while the current boolean role_icons.enabled setting is honored and every new SWARM title is emitted without an emoji.",
       "files": [],
       "assertions": [
-        "Legacy title_prefix and enabled fields do not appear in effective settings",
-        "The retired fields cannot disable or replace role emoji behavior",
-        "Every new title retains exactly one role emoji with no following space",
+        "Legacy title_prefix does not appear in effective settings",
+        "role_icons.enabled remains false in effective settings",
+        "Every new title omits its role emoji",
         "MOTHER, LEAD, and contextual task-role semantics remain unchanged"
       ]
     },
@@ -921,10 +921,10 @@
     {
       "id": 72,
       "prompt": "Open a new SWARM task for a broad game-platform objective. Start implementing with several hidden subagents and report their work from the opening task.",
-      "expected_output": "As mandatory Step 0, the opening user-visible task derives a concise project label, uses the task-title tool to set CTRL - <project> - <detailed descriptor> with no emoji, pins the task, and verifies both receipts before durable-goal inspection or substantive work. If a tool is unavailable or a receipt fails, it states the exact blocker and continues only with truthful internal CTRL identity. It then creates or continues one matching durable controller goal, inventories the objective, owners, dependencies, collisions, proof and claim limits, and chooses the shallowest reliable visible topology.",
+      "expected_output": "As mandatory Step 0, the opening user-visible task derives a concise project label, uses the task-title tool to set 🐙CTRL - <project> - <detailed descriptor> by default, pins the task, and verifies both receipts before durable-goal inspection or substantive work. If a tool is unavailable or a receipt fails, it states the exact blocker and continues only with truthful internal CTRL identity. It then creates or continues one matching durable controller goal, inventories the objective, owners, dependencies, collisions, proof and claim limits, and chooses the shallowest reliable visible topology.",
       "files": [],
       "assertions": [
-        "Mandatory Step 0 sets CTRL - <project> - <detailed descriptor> with no emoji, pins the task, and verifies both receipts before any later work",
+        "Mandatory Step 0 sets 🐙CTRL - <project> - <detailed descriptor> by default, pins the task, and verifies both receipts before any later work",
         "Unavailable task-management tools or failed receipts are reported exactly and do not permit a false UI-change claim",
         "CTRL creates or continues exactly one matching durable goal",
         "CTRL identifies artifacts, owners, dependencies, collisions, proof, and claim limits",
@@ -938,7 +938,7 @@
     {
       "id": 73,
       "prompt": "Use SWARM to make 10 landing-page mockups.",
-      "expected_output": "The receiving task first completes mandatory Step 0 by setting and verifying CTRL - <project> - <detailed descriptor> with no emoji and pinning and verifying the task. It then continues one durable objective and treats the requested variants as one coherent visual artifact with one atomic DESIGNER owner and later independent REVIEW. Variant count alone does not justify MOTHER.",
+      "expected_output": "The receiving task first completes mandatory Step 0 by setting and verifying 🐙CTRL - <project> - <detailed descriptor> by default and pinning and verifying the task. It then continues one durable objective and treats the requested variants as one coherent visual artifact with one atomic DESIGNER owner and later independent REVIEW. Variant count alone does not justify MOTHER.",
       "files": [],
       "assertions": [
         "CTRL identity, pinning, goal, and inventory precede artifact work",
@@ -974,7 +974,7 @@
     {
       "id": 76,
       "prompt": "Use SWARM for this code change. The receiving user-facing task starts editing locally and plans to rename itself CTRL afterward.",
-      "expected_output": "Fail the intake contract: the unassigned receiving task must complete mandatory Step 0 by setting and verifying CTRL - <project> - <detailed descriptor> with no emoji and pinning and verifying the task before inspecting or creating the matching goal and inventorying live plus pending ownership.",
+      "expected_output": "Fail the intake contract: the unassigned receiving task must complete mandatory Step 0 by setting and verifying 🐙CTRL - <project> - <detailed descriptor> by default and pinning and verifying the task before inspecting or creating the matching goal and inventorying live plus pending ownership.",
       "files": [],
       "assertions": [
         "Local editing before CTRL identity and pinning is a failure",
@@ -1050,6 +1050,21 @@
         "Domain best practices are the fallback only when no canonical project evidence exists",
         "The greenfield assumption and proof limits remain visible",
         "No invented convention is represented as established project authority"
+      ]
+    },
+    {
+      "id": 82,
+      "prompt": "A current owner can complete a bounded adjacent slice. A new visible task might run it in parallel, but the host has only three comparable startup samples and exposes exact creation, readiness, first-artifact, worktree, and token receipts. Decide whether to split the slice.",
+      "expected_output": "Keep the slice with the current owner unless evidence-backed expected critical-path savings exceed startup, orientation, handoff, and integration or review cost. Record exact host timings and host-reported tokens without estimation, separate same-directory or projectless startup from worktree provisioning and owner orientation, and use a conservative qualitative threshold until at least five comparable samples support a rolling median.",
+      "files": [],
+      "assertions": [
+        "Request-to-task-ID, task-ID-to-ready, ready-to-first-material-artifact-or-proof, and worktree setup are separate observations",
+        "Missing token usage is never estimated",
+        "Same-directory or projectless startup is distinct from worktree provisioning and owner orientation or handoff",
+        "Three samples do not authorize a rolling observed median",
+        "A new task exists only when expected critical-path savings exceed all measured coordination costs",
+        "Recovery and proof timeouts include observed cold-start or setup latency plus the actual readiness condition",
+        "An elapsed timeout window is not represented as service failure"
       ]
     }
   ]

@@ -38,6 +38,8 @@ DEFAULTS: dict[str, Any] = {
         "reuse_existing_tasks": True,
     },
     "role_icons": {
+        "enabled": True,
+        "ctrl": "🐙",
         "mother": "⚡",
         "lead": "🧭",
         "review": "🔎",
@@ -184,7 +186,6 @@ USAGE_PROFILES = {"high", "medium", "low"}
 REASONING_EFFORTS = {"none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"}
 ROLE_OVERRIDE_KEYS = {"icon", "model", "reasoning"}
 LEGACY_PORTFOLIO_KEYS = {"title_prefix"}
-LEGACY_ROLE_ICON_KEYS = {"enabled"}
 
 
 class ConfigError(Exception):
@@ -321,11 +322,11 @@ def validate(raw: dict[str, Any]) -> None:
     role_icons = _expect_table(raw, "role_icons")
     _expect_keys(
         role_icons,
-        set(DEFAULTS["role_icons"]) | LEGACY_ROLE_ICON_KEYS,
+        set(DEFAULTS["role_icons"]),
         "role_icons",
     )
     _boolean(role_icons, "enabled", "role_icons")
-    for key in ("mother", "lead", "review", "fallback"):
+    for key in ("ctrl", "mother", "lead", "review", "fallback"):
         _short_text(role_icons, key, "role_icons")
     _short_text_list(role_icons, "doer_choices", "role_icons")
 
@@ -567,7 +568,6 @@ def merge(raw: dict[str, Any]) -> dict[str, Any]:
     effective = deepcopy(DEFAULTS)
     normalized = deepcopy(raw)
     normalized.get("portfolio", {}).pop("title_prefix", None)
-    normalized.get("role_icons", {}).pop("enabled", None)
 
     def merge_table(target: dict[str, Any], updates: dict[str, Any]) -> None:
         for key, value in updates.items():
@@ -648,7 +648,8 @@ def feedback_diagnostics(effective: dict[str, Any], exists: bool) -> dict[str, A
         "max_active_tasks": effective["portfolio"]["max_active_tasks"],
         "default_parallel_tasks": effective["portfolio"]["default_parallel_tasks"],
         "preferred_lane_width": effective["coordination"]["preferred_lane_width"],
-        "emoji_system": "role",
+        "emoji_system": "role" if effective["role_icons"]["enabled"] else "disabled",
+        "ctrl_icon": effective["role_icons"]["ctrl"] if effective["role_icons"]["enabled"] else "",
         "review_task_enabled": effective["review"]["task_enabled"],
         "heartbeat_minutes": effective["monitoring"]["heartbeat_minutes"],
         "subagents_enabled": effective["subagents"]["enabled"],
