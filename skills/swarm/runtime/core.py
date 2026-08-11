@@ -176,7 +176,14 @@ class Swarm:
                 t.state=TaskState.ARCHIVED_STALE; t.archived_at=now; archived.append(t.id)
             elif t.state==TaskState.COMPLETE and t.completed_at is not None and now-t.completed_at >= delays[t.review_value]:
                 t.state=TaskState.ARCHIVED; t.archived_at=now; archived.append(t.id)
-        self.telemetry.update({"archived":self.telemetry.get("archived",0)+len(archived),"pins":sum(t.review_value==ReviewValue.PINNED for t in self.tasks.values()),"active":sum(t.state in {TaskState.ACTIVE,TaskState.WAITING,TaskState.REVIEW} for t in self.tasks.values()),"stale":sum(t.state==TaskState.STALE for t in self.tasks.values()),"restores":self.telemetry.get("restores",0),"extensions":sum(t.extensions for t in self.tasks.values()),"archive_time":sum((t.archived_at or 0)-(t.completed_at or t.stale_at or 0) for t in self.tasks.values() if t.archived_at is not None),"archive_reasons":len([t for t in self.tasks.values() if t.archived_at is not None]),"age_buckets":len(self.tasks)}); return archived
+        reasons={"completed":0,"stale":0}; ages={"fresh":0,"aged":0}
+        for task_id in archived:
+            t=self.tasks[task_id]; reasons["stale" if t.state==TaskState.ARCHIVED_STALE else "completed"]+=1; ages["fresh" if now-(t.completed_at or t.stale_at or now)<30 else "aged"]+=1
+        self.telemetry.update({"archived":self.telemetry.get("archived",0)+len(archived),"pins":sum(t.review_value==ReviewValue.PINNED for t in self.tasks.values()),"active":sum(t.state in {TaskState.ACTIVE,TaskState.WAITING,TaskState.REVIEW} for t in self.tasks.values()),"stale":sum(t.state==TaskState.STALE for t in self.tasks.values()),"restores":self.telemetry.get("restores",0),"extensions":sum(t.extensions for t in self.tasks.values()),"completion_to_archive":{task_id:now-(self.tasks[task_id].completed_at or self.tasks[task_id].stale_at or now) for task_id in archived},"archive_reasons":reasons,"age_buckets":ages}); return archived
+    def restore(self, actor:Role, task_id:str, reason:str) -> None:
+        self._role(actor,{Role.MOTHER,Role.LEAD}); t=self.tasks[task_id]
+        if t.state not in {TaskState.ARCHIVED,TaskState.ARCHIVED_STALE} or not reason: raise InvariantError("restore requires archived task and provenance")
+        t.state=TaskState.ACTIVE; t.archived_at=None; t.findings.append(f"restored:{reason}"); self.telemetry["restores"]=self.telemetry.get("restores",0)+1
     def ctrl_event(self, event: str, task_id: str) -> str|None:
         if event in {"HEARTBEAT","PROGRESS"}: return None
         return f"{task_id}: {event.lower().replace('_',' ')}"
