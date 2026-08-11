@@ -22,6 +22,10 @@ class VersionedReference:
 class ArtifactIdentity:
     base:str; revision:str; purpose:str
     def key(self)->str: return f"{self.base}@{self.revision}:{self.purpose}"
+class ReviewStrategy(StrEnum): LIGHT="light"; STANDARD="standard"; ADVERSARIAL="adversarial"; SPECIALIST="specialist"
+@dataclass(frozen=True)
+class ReviewEvidence:
+    strategy:ReviewStrategy; reviewer:str; independent:bool; artifact:str; findings:tuple[str,...]=()
 
 @dataclass(frozen=True)
 class ContextPackage:
@@ -60,7 +64,7 @@ class Task:
     id: str; owner: str; creator: str; architecture_version: int; contracts: dict[str,int]
     state: TaskState=TaskState.ACTIVE; waiting_on: str|None=None; reviewer: str|None=None; findings: list[str]=field(default_factory=list)
     evidence: list[str]=field(default_factory=list); recovery_dimensions: set[str]=field(default_factory=set); review_value: ReviewValue=ReviewValue.NONE
-    completed_at: int|None=None; stale_at: int|None=None; archived_at: int|None=None; stale_reason: str|None=None; superseded_by: str|None=None; promoted: list[str]=field(default_factory=list); extensions: int=0; review_passed: bool=False; risk:int=1; review_strategy:str="light"; artifacts:dict[str,str]=field(default_factory=dict)
+    completed_at: int|None=None; stale_at: int|None=None; archived_at: int|None=None; stale_reason: str|None=None; superseded_by: str|None=None; promoted: list[str]=field(default_factory=list); extensions: int=0; review_passed: bool=False; risk:int=1; review_strategy:str="light"; architecture_review_floor:ReviewStrategy=ReviewStrategy.LIGHT; security_review_floor:ReviewStrategy=ReviewStrategy.LIGHT; artifacts:dict[str,str]=field(default_factory=dict)
 
 @dataclass
 class Worker:
@@ -145,15 +149,18 @@ class Swarm:
         if usage is not None: self.telemetry["host_usage"]=self.telemetry.get("host_usage",0)+usage
         self.telemetry_events.append({"task_type":task_type,"role":role,"tier":tier,"model":model,"attempts":attempts,"stalls":stalls,"expert_uses":expert_uses,"review_failures":review_failures,"review_cycles":review_cycles,"worker_count":len(self.workers),"outcome":outcome,"productive_execution":productive,"swarm_overhead":overhead,**({"host_usage":usage} if usage is not None else {})})
         self.events.append(("TELEMETRY",f"{task_type}:{role}:L{tier}:{outcome}"))
-    def review(self, actor: Role, task_id: str, reviewer: str, passed: bool, finding: str="") -> None:
+    def review(self, actor: Role, task_id: str, evidence: ReviewEvidence|str, passed: bool, finding:str="") -> None:
         self._role(actor,{Role.REVIEW}); t=self.tasks[task_id]
-        if reviewer in {t.creator,t.owner}: raise InvariantError("creator cannot be sole independent reviewer")
-        required=self.review_depth(t.risk); t.review_strategy=required
-        if passed and required=="adversarial" and finding not in {"adversarial","specialist"}: raise InvariantError("high risk review requires adversarial evidence")
-        if passed and required=="specialist" and finding!="specialist": raise InvariantError("critical review requires specialist evidence")
-        t.reviewer=reviewer
+        if isinstance(evidence,str):
+            legacy_strategy=ReviewStrategy(finding) if finding in {item.value for item in ReviewStrategy} else ReviewStrategy.LIGHT
+            evidence=ReviewEvidence(legacy_strategy,evidence,True,"legacy",(finding,) if finding else ())
+        if not evidence.independent or evidence.reviewer in {t.creator,t.owner}: raise InvariantError("creator cannot be sole independent reviewer")
+        levels={ReviewStrategy.LIGHT:1,ReviewStrategy.STANDARD:2,ReviewStrategy.ADVERSARIAL:3,ReviewStrategy.SPECIALIST:4}
+        required=max((ReviewStrategy(self.review_depth(t.risk)),t.architecture_review_floor,t.security_review_floor),key=levels.get); t.review_strategy=required.value
+        if passed and levels[evidence.strategy]<levels[required]: raise InvariantError("review evidence does not meet required strategy")
+        t.reviewer=evidence.reviewer
         if passed: t.review_passed=True; t.state=TaskState.REVIEW
-        else: t.state=TaskState.ACTIVE; t.findings.append(finding or "review failed")
+        else: t.state=TaskState.ACTIVE; t.findings.extend(evidence.findings or ("review failed",))
     def lease(self, actor: Role, surface: str, holder: str) -> None:
         self._role(actor,{Role.MOTHER})
         if surface in self.leases and self.leases[surface]!=holder: raise InvariantError("surface already leased")
