@@ -78,6 +78,18 @@ class SwarmSkillStructureTests(unittest.TestCase):
         self.assertIn("composed rendered product", review_contract)
         self.assertIn("required proof blocks approval", review_contract)
 
+    def test_task_titles_compress_real_role_authority_and_artifact(self) -> None:
+        skill = SKILL.read_text(encoding="utf-8")
+        hierarchy = (SKILL_ROOT / "references" / "hierarchy.md").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn("replace DOER with the real role", skill)
+        self.assertIn("use `<DOMAIN> LEAD` for a lane owner", skill)
+        self.assertIn("<one literal emoji><ROLE> - <specific artifact>", skill)
+        self.assertIn("the shortest unambiguous title wins", skill)
+        self.assertIn("Generic role types do not dictate task names", hierarchy)
+
     def test_mandatory_goals_and_passive_heartbeat_are_fixed_contracts(self) -> None:
         skill = SKILL.read_text(encoding="utf-8")
         hierarchy = (SKILL_ROOT / "references" / "hierarchy.md").read_text(encoding="utf-8")

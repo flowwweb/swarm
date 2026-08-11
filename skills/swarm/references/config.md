@@ -121,15 +121,15 @@ Ambiguous tasks remain open until a later bounded stale audit proves archival is
 safe; then use the host archive control. The setting creates no queue, daemon,
 ledger, polling loop, or telemetry.
 
-The default title hierarchy is `⚡MOTHER - outcome`, optional `🧭LEAD - domain`, then a contextual title
-such as `🔨BUILD - checkout`, plus `🔎REVIEW - checkout`. Every title has exactly
-one role emoji, concatenated directly with its label; SWARM never inserts a space
-after it. Prefer one familiar ROLE word and a concrete
-two-to-five-word artifact. Fewer characters are better only while the title
-remains clear and obvious. For branch combination, MERGE is usually clearer
-than RECONCILE; keep a longer label when it is the most accurate familiar term.
-`labels.doer` is only the fallback. Users may customize hierarchy emojis and
-labels without restricting contextual DOER roles.
+The default title hierarchy is `⚡MOTHER - outcome`, an optional lane owner such
+as `🧭API LEAD - payments`, a contextual owner such as `💻DEVELOPER - webhook`,
+and `🔎REVIEW - webhook`. Generic DOER and LEAD are authority types, not required
+task names: use the concrete job, retaining LEAD unless another familiar title
+communicates the same higher ownership. Every title has exactly one literal role
+emoji, concatenated directly with its label, and a concrete two-to-five-word
+artifact. The label and emoji express the same responsibility. Fewer characters
+are better only while the title remains unambiguous. `labels.doer` is only the
+fallback; custom labels and emojis never change authority.
 
 ## Models and usage
 

@@ -125,12 +125,12 @@ host goal. Goal creation does not grant extra file, provider, deploy, review, or
 acceptance authority; completion is valid only at the stated stopping condition.
 
 Give every title exactly one role emoji with no separator before the label.
-Use configured hierarchy icons for MOTHER, LEAD, and REVIEW. For a
-finite contextual role, prefer its configured override or choose a literal,
-familiar icon from `role_icons.doer_choices`; use the fallback only when no
-clear metaphor fits. Format hierarchy titles as `⚡MOTHER - outcome`,
-`🧭LEAD - domain`; format finite titles as
-`<icon>ROLE - artifact`, using a familiar role word and short concrete artifact.
+Generic role types do not dictate task names: name a DOER by its concrete job,
+such as DEVELOPER, DESIGNER, or RESEARCHER. Name a lane owner `<DOMAIN> LEAD`
+unless a clearer familiar title communicates the same higher ownership. Choose
+one literal icon for that job, then format `<icon>ROLE - artifact`. The label,
+icon, and concrete artifact should form the shortest unambiguous responsibility
+receipt; use the fallback icon only when no clear metaphor fits.
 
 Count only a host-confirmed task ID as a task, owner, or capacity allocation.
 Preserve exact title/ID, artifact, mutable surface or external authority, owner
