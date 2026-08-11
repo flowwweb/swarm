@@ -93,8 +93,26 @@ class Swarm:
         self._role(actor,{Role.LEAD});
         if worker.id in self.workers: raise InvariantError("duplicate worker identity")
         if worker.lead not in self.topology or not 1 <= worker.lane <= self.lane_width: raise InvariantError("worker requires a known lead and configured lane")
+        if any(item.lead==worker.lead and item.lane==worker.lane and item.state!=WorkerState.RETIRED for item in self.workers.values()): raise InvariantError("duplicate active lane ownership")
         if sum(w.lead==worker.lead and w.state!=WorkerState.RETIRED for w in self.workers.values()) >= self.lane_width: raise InvariantError("lead capacity reached")
         self.workers[worker.id]=worker
+    def start_atomic(self, actor:Role, task:Task) -> None:
+        """CTRL may create exactly one direct DOER ownership path for atomic work."""
+        self._role(actor,{Role.CTRL})
+        if task.owner in self.workers or task.id in self.tasks: raise InvariantError("atomic ownership already exists")
+        self.workers[task.owner]=Worker(task.owner,"CTRL",1,WorkerState.ACTIVE,{task.id}); self.tasks[task.id]=task
+    def start_simple(self, actor:Role, task:Task) -> None:
+        """MOTHER may add stateful direct DOER ownership without a LEAD."""
+        self._role(actor,{Role.MOTHER})
+        if task.owner in self.workers or task.id in self.tasks: raise InvariantError("simple ownership already exists")
+        self.workers[task.owner]=Worker(task.owner,"MOTHER",1,WorkerState.ACTIVE,{task.id}); self.tasks[task.id]=task
+    def reuse_warm(self, actor:Role, task:Task, *, architecture:dict[str,int], affinity:int) -> str|None:
+        self._role(actor,{Role.LEAD,Role.MOTHER,Role.CTRL})
+        for worker in self.workers.values():
+            context=worker.context
+            if worker.state==WorkerState.WARM and context.get("affinity",0)>=affinity and context.get("architecture",architecture)==architecture:
+                worker.state=WorkerState.ACTIVE; worker.task_ids.add(task.id); task.owner=worker.id; self.tasks[task.id]=task; return worker.id
+        return None
     def package_context(self, actor:Role, worker_id:str, package:ContextPackage) -> None:
         self._role(actor,{Role.LEAD}); worker=self.workers[worker_id]
         worker.context={"goal":package.goal,"architecture":package.architecture,"dependencies":package.dependencies,"artifacts":package.artifacts,"acceptance":package.acceptance,"history":package.history,"hive":package.hive,"transfer_cost":package.transfer_cost,"affinity":worker.context.get("affinity",1),"bloat":False,"stale":False,"stalls":0}

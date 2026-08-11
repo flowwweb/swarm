@@ -134,4 +134,12 @@ class RuntimeTests(unittest.TestCase):
   with self.assertRaises(InvariantError): self.s.heartbeat(Role.LEAD,"B",meaningful_progress=False)
  def test_archive_and_contention_are_fail_closed(self):
   self.s.tasks["A"].state=TaskState.COMPLETE; self.s.tasks["A"].completed_at=0; self.s.tasks["A"].active_goal=True; self.assertEqual(self.s.groom(Role.MOTHER,2,{"no_review_archive_delay":0,"low_review_retention":2,"high_review_retention":3,"stale_task_archive_delay":1}),[]); self.assertFalse(self.s.should_spawn(independent=True,critical_path=True,contention=True))
+ def test_atomic_simple_and_warm_routes_are_executable(self):
+  atomic=Swarm(); atomic.start_atomic(Role.CTRL,Task("T","D","creator",1,{})); self.assertEqual(set(atomic.workers),{"D"}); self.assertEqual(atomic.tasks["T"].owner,"D")
+  with self.assertRaises(InvariantError): atomic.start_atomic(Role.MOTHER,Task("U","E","creator",1,{}))
+  simple=Swarm(); simple.start_simple(Role.MOTHER,Task("S","M","creator",1,{})); self.assertEqual(simple.workers["M"].lead,"MOTHER")
+  self.s.workers["D"].state=WorkerState.WARM; self.s.workers["D"].context={"affinity":2,"architecture":{"auth":2}}; reused=self.s.reuse_warm(Role.LEAD,Task("R","new","creator",1,{}),architecture={"auth":2},affinity=2); self.assertEqual(reused,"D")
+  self.assertIsNone(self.s.reuse_warm(Role.LEAD,Task("N","new","creator",1,{}),architecture={"auth":3},affinity=2))
+ def test_duplicate_lane_rejected(self):
+  with self.assertRaises(InvariantError): self.s.add_worker(Role.LEAD,Worker("D2","L",1))
 if __name__ == "__main__": unittest.main()

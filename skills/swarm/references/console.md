@@ -1,6 +1,6 @@
-# RUSH Console
+# SWARM Console
 
-RUSH Console is the local command surface for global settings, project swarms,
+SWARM Console is the local command surface for global settings, project swarms,
 hierarchy, and host-reported task analytics. It borrows the useful local-service
 shape of codex-lb without adding account pooling, an API proxy, credentials, or a
 second task ledger.
