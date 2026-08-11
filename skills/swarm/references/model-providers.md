@@ -1,11 +1,11 @@
 # Model providers and capability routing
 
-RUSH keeps two concerns separate:
+SWARM keeps two concerns separate:
 
 1. Codex connects to and authenticates a model provider.
-2. RUSH records what each configured model may own.
+2. SWARM records what each configured model may own.
 
-Never place API keys in the RUSH settings file. Use an environment variable or
+Never place API keys in the SWARM settings file. Use an environment variable or
 the provider authentication mechanism supported by Codex.
 
 ## Connect a provider to Codex
@@ -31,11 +31,11 @@ their endpoint, model ID, or environment variable. Codex no longer supports the
 legacy `wire_api = "chat"` provider path. Start a new Codex task after changing
 provider or model configuration.
 
-A RUSH task can select a custom provider or profile only when the host task API
+A SWARM task can select a custom provider or profile only when the host task API
 exposes that control. Otherwise activate the Codex profile before starting the
-RUSH portfolio and report that the provider cannot be changed per task.
+SWARM portfolio and report that the provider cannot be changed per task.
 
-## Declare the model to RUSH
+## Declare the model to SWARM
 
 Add the same exact model ID to `~/.agents/rush/config.toml`:
 
@@ -67,7 +67,7 @@ fit a cheaper model.
 Third-party models can use shell, web, MCP, apps, or computer use only when the
 provider protocol, model tool calling, modalities, and Codex host all support
 the path. Being selectable in Codex does not prove those tools work. Run a
-bounded read-only probe before consequential routing and update the RUSH catalog
+bounded read-only probe before consequential routing and update the SWARM catalog
 with the observed result.
 
 The packaged catalog keeps `gpt-5.3-codex-spark` on simple shell/web work and

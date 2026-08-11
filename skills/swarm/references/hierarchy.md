@@ -1,4 +1,4 @@
-# RUSH hierarchy and finite roles
+# SWARM hierarchy and finite roles
 
 Read this reference when shaping a portfolio, creating user-visible tasks,
 selecting ASSIST, naming roles, or transferring ownership.

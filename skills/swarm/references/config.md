@@ -99,10 +99,10 @@ Configuration cannot make an unsafe or hidden coordination path valid:
 | `monitoring.heartbeat_minutes` | Passive MOTHER snapshot cadence for active descendants; mandatory heartbeat remains enabled | 1-120; default 30 |
 | `recovery.max_attempts` | One safe same-surface recovery before release | exactly 1; non-disableable |
 | `recovery.stall_after_updates` | Unchanged owner work updates before a lane stalls; heartbeat observations excluded | 1-5 |
-| `lifecycle.pin_created_tasks` | Pin new RUSH tasks | boolean |
+| `lifecycle.pin_created_tasks` | Pin new SWARM tasks | boolean |
 | `lifecycle.archive_completed_tasks` | Archive terminally accepted finite tasks only when no concrete retention reason remains | boolean; default true |
-| `feedback.enabled` | Make the on-demand RUSH feedback workflow available | boolean; default true |
-| `feedback.include_diagnostics` | Include the privacy-safe RUSH diagnostic snapshot | boolean; default true |
+| `feedback.enabled` | Make the on-demand SWARM feedback workflow available | boolean; default true |
+| `feedback.include_diagnostics` | Include the privacy-safe SWARM diagnostic snapshot | boolean; default true |
 | `feedback.prompt_on_close` | Offer one optional feedback prompt after an accepted portfolio | boolean; default false |
 | `feedback.destination` | Optional issue URL, email, or channel shown before explicit submission | empty, or trimmed single line up to 512 chars |
 
@@ -123,7 +123,7 @@ ledger, polling loop, or telemetry.
 
 The default title hierarchy is `⚡MOTHER - outcome`, optional `🧭LEAD - domain`, then a contextual title
 such as `🔨BUILD - checkout`, plus `🔎REVIEW - checkout`. Every title has exactly
-one role emoji, concatenated directly with its label; RUSH never inserts a space
+one role emoji, concatenated directly with its label; SWARM never inserts a space
 after it. Prefer one familiar ROLE word and a concrete
 two-to-five-word artifact. Fewer characters are better only while the title
 remains clear and obvious. For branch combination, MERGE is usually clearer
@@ -140,7 +140,7 @@ packaged profile. These are customizable defaults, not token quotas, billing
 limits, or hard caps. Users may edit every pair and add a `roles.<ROLE>` table
 for a custom leaf role; an unlisted custom role requires an explicit override.
 
-RUSH passes model and reasoning when the host task API supports them and permits
+SWARM passes model and reasoning when the host task API supports them and permits
 saved-config selection. If the host requires a direct request, the resolved
 profile remains a preference until the user requests that model in the current
 task. The default empty `service_tier` keeps the host's normal behavior. Set it
@@ -150,7 +150,7 @@ are never rewritten by a settings change.
 
 ## Usage Saver
 
-`execution.usage_saver = true` makes RUSH use the lower-churn option when two
+`execution.usage_saver = true` makes SWARM use the lower-churn option when two
 sound tactics preserve the same outcome. It reuses current-wave context and
 matching owners, batches compatible read-only discovery and passive task waits,
 keeps small or serially dependent work with its existing owner, sends only
@@ -173,11 +173,11 @@ catalog keeps `gpt-5.3-codex-spark` on simple shell/web work and declares
 computer use for the GPT-5.6 models, including Luna. Read
 [model-providers.md](model-providers.md) to connect Kimi, Qwen, or another
 Responses-compatible Codex provider and add a capability entry without storing
-credentials in RUSH.
+credentials in SWARM.
 
 ## Boost mode
 
-Boost turns the active RUSH outcome into one durable Codex goal per eligible
+Boost turns the active SWARM outcome into one durable Codex goal per eligible
 existing owner with substantial closeout work. Together they cover integration,
 remaining outcome-critical work, independent review, proof, and honest closeout
 without routine steering.
@@ -185,10 +185,10 @@ without routine steering.
 Set `boost.enabled = false` to disable optional Boost closeout behavior. It does
 not disable mandatory role goals or the MOTHER heartbeat. When enabled, Boost
 still starts only
-after a direct request such as "start Boost mode". RUSH first checks for an
+after a direct request such as "start Boost mode". SWARM first checks for an
 unfinished goal in each eligible task. It continues a matching goal without
 recreating it and refuses to replace a different unfinished goal. For each new
-goal, RUSH defines one objective and one stopping condition, then supplies the
+goal, SWARM defines one objective and one stopping condition, then supplies the
 relevant files, proof commands, checkpoints, non-goals, and authority limits.
 It does not add a token budget unless the user explicitly provides one.
 
@@ -204,7 +204,7 @@ The default strategies are all enabled:
   approval or safety boundary, or a genuine human-only blocker.
 - `spark_simple_work`: route only small, targeted, low-risk work to
   `boost.spark_model` when that model and its separate allowance are available.
-  Keep substantial closeout goals on their configured RUSH role models.
+  Keep substantial closeout goals on their configured SWARM role models.
 
 Inside an explicitly Boost-authorized run, use real host-reported remaining
 usage to glide through three stages. With `durable_goal`, plan substantial
@@ -224,7 +224,7 @@ integrated outcome. A lookup, single edit, one command, or status relay is never
 a Boost goal. Hands-off forbids messaging and active polling, but permits passive
 heartbeat and terminal/attention waits over launched owners.
 
-RUSH has no account-usage telemetry and does not auto-start Boost at a guessed
+SWARM has no account-usage telemetry and does not auto-start Boost at a guessed
 threshold. Codex goals support long-running independent work, but Boost is not a
 promise to bypass account, service, model, rate, or spend limits. If goal tools
 are unavailable or goals are disabled in the host, report that exact blocker.
@@ -279,7 +279,7 @@ See [monitoring.md](monitoring.md) for batching, stale-state, timing, and Boost
 
 ## Feedback
 
-Users can say "give feedback on RUSH" or "report a RUSH bug" at any time. RUSH
+Users can say "give feedback on SWARM" or "report a SWARM bug" at any time. SWARM
 returns a compact portable report and, when enabled, a privacy-safe diagnostic
 snapshot. It never gathers telemetry or sends feedback automatically. A
 configured destination is contacted only after a direct instruction to submit

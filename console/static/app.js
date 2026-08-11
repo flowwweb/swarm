@@ -47,7 +47,7 @@ const settingGroups = [
     copy: "Control durable finish work and what remains visible after acceptance.",
     fields: [
       ["boost.enabled", "Boost available", "boolean", "Still requires direct run authorization"],
-      ["lifecycle.pin_created_tasks", "Pin new tasks", "boolean", "Keep new RUSH owners visible"],
+      ["lifecycle.pin_created_tasks", "Pin new tasks", "boolean", "Keep new SWARM owners visible"],
       ["lifecycle.archive_completed_tasks", "Archive accepted tasks", "boolean", "Terminal acceptance; ambiguity stays open"],
       ["feedback.enabled", "Feedback workflow", "boolean", "On-demand, never automatic submission"],
       ["feedback.prompt_on_close", "Offer feedback on close", "boolean", "One optional prompt after acceptance"],

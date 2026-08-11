@@ -16,6 +16,11 @@ SPEC.loader.exec_module(console)
 
 
 class RushConsoleTests(unittest.TestCase):
+    def test_new_console_copy_is_swarm_first(self) -> None:
+        static = (Path(__file__).resolve().parents[1] / "static")
+        self.assertIn('aria-label="SWARM summary metrics"', (static / "index.html").read_text(encoding="utf-8"))
+        self.assertIn("Keep new SWARM owners visible", (static / "app.js").read_text(encoding="utf-8"))
+        self.assertNotIn("RUSH summary metrics", (static / "index.html").read_text(encoding="utf-8"))
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name)

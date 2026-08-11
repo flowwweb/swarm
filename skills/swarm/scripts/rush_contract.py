@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Validate RUSH's non-disableable role-goal and heartbeat decisions."""
+"""Legacy `rush` adapter for SWARM role-goal and heartbeat validation."""
 
 from __future__ import annotations
 

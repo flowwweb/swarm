@@ -1,6 +1,6 @@
 # Read-only runtime recovery
 
-Read this reference when the RUSH config loader or another required read-only
+Read this reference when the SWARM config loader or another required read-only
 Python helper fails before it can return its normal receipt.
 
 ## Require an exact runtime receipt
