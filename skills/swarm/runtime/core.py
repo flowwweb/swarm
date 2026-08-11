@@ -154,7 +154,10 @@ class Swarm:
         identity=self._artifact(artifact); key=identity.key()
         if pending is None: pending=set()
         if key in self.artifact_index or key in pending: raise InvariantError("canonical artifact identity already exists")
-        if identity.purpose in {"verification","uncertainty"} and (not source or justification!=identity.purpose): raise InvariantError("justified duplicate requires source and purpose")
+        if identity.purpose in {"verification","uncertainty"}:
+            if not source or justification!=identity.purpose or source not in self.artifact_index: raise InvariantError("justified duplicate requires an existing canonical source and matching purpose")
+            source_identity=self._artifact(source)
+            if source_identity.revision==identity.revision: raise InvariantError("justified duplicate requires distinct revision provenance")
         return identity,key
     def _register_artifact(self, task:Task, artifact:ArtifactIdentity|str, source:str|None, justification:str|None) -> str:
         _,key=self._check_artifact(task,artifact,source,justification)
