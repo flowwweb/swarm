@@ -1,3 +1,8 @@
+---
+name: swarm
+description: Compact SWARM coordination doctrine and compatibility surface.
+---
+
 # SWARM
 
 ## CORE

@@ -29,10 +29,11 @@ MERGED heartbeat classification into runtime; MOVED lane/WIP, identity/dedup,
 self-review, state/dependency/archive/retry, and config validation to runtime;
 MOVED history/rationale to references; LAZY-LOADED exceptional guidance;
 SIMPLIFIED routine CTRL output to attention, blocker, handoff, acceptance, and
-release only. The always-loaded `skills/swarm/SKILL.md` changed from 28 to 18
-lines; `task-contract.md` changed from 134 to 17 lines. Detailed references
-remain maintainership/event material. Events, telemetry events, and efficiency
-receipts retain their newest 64 entries instead of growing unbounded.
+release only. The always-loaded `skills/swarm/SKILL.md` changed from 4,368 to
+2,545 characters; `task-contract.md` changed from 8,366 to 1,026 characters.
+Detailed references remain maintainership/event material. Events, telemetry
+events, and efficiency receipts retain their newest 64 entries instead of
+growing unbounded.
 
 ## C. Preserved Safeguards
 
