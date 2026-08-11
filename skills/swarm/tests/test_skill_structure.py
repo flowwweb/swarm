@@ -159,6 +159,16 @@ class SwarmSkillStructureTests(unittest.TestCase):
         self.assertIn("archive it", skill)
         self.assertIn("CTRL owns topology until the portfolio predicate", hierarchy)
 
+    def test_closeout_archives_terminal_host_tasks_and_reports_failures(self) -> None:
+        skill = SKILL.read_text(encoding="utf-8")
+        self.assertIn("Closeout is part of completion", skill)
+        self.assertIn("inventories every visible task it created or superseded", skill)
+        self.assertIn("call the host archive control", skill)
+        self.assertIn("verify the archive receipt", skill)
+        self.assertIn("superseded coordination version is stale", skill)
+        self.assertIn("exact task ID and error", skill)
+        self.assertIn("archive a finite CTRL after its final handoff", skill)
+
     def test_topology_and_evolution_are_general_subtractive_contracts(self) -> None:
         skill = SKILL.read_text(encoding="utf-8")
         hierarchy = (SKILL_ROOT / "references" / "hierarchy.md").read_text(encoding="utf-8")
