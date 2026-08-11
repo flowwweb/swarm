@@ -5,10 +5,13 @@ selecting ASSIST, naming roles, or transferring ownership.
 
 ## Choose the smallest useful shape
 
-- Use MOTHER -> LEAD -> DOER as the normal shape when a domain needs repeated
-  decisions, child boundaries, or integration.
-- Keep a small flat portfolio as MOTHER -> DOER when its artifacts are clearly
-  independent and do not need repeated domain coordination.
+- Keep CTRL direct or route one atomic owner unless portfolio facts require
+  shared orchestration.
+- Create MOTHER only when multiple distinct owner lanes have real cross-lane
+  dependencies and integration, portfolio acceptance is required, and CTRL
+  cannot cheaply own that integration and acceptance.
+- Artifact or variant count, related branding, shared keywords, and configured
+  role capacity never establish a portfolio.
 - Never build a complete tree from configured counts or role availability. The
   lane test decides every task.
 - CTRL, MOTHER, every LEAD, and every persistent ARCHITECT require an active durable
@@ -22,13 +25,13 @@ selecting ASSIST, naming roles, or transferring ownership.
 
 ## Authority
 
-The user-facing task opened for a new SWARM objective is CTRL. CTRL adopts the
-title `🐙CTRL - <specific objective>`, is pinned by default, and inspects or creates the matching
-durable goal, records the objective ledger, and chooses the shallowest reliable initial
-topology. Hidden subagents do not count as user-visible SWARM ownership. CTRL may
-route an atomic objective directly to one DOER or materialize the justified
-roles below. If a MOTHER is created, MOTHER then owns execution-topology changes
-and portfolio acceptance; CTRL remains the human-facing control route.
+The unassigned user-facing task explicitly told to use SWARM is CTRL. Before
+substantive work it adopts and pins `🐙CTRL - <specific objective>`, inspects or
+creates the matching durable goal, inventories live tasks and pending creation
+receipts, and records the objective ledger. Hidden subagents do not count as
+user-visible ownership. CTRL owns topology until the portfolio predicate creates
+MOTHER; MOTHER then alone owns execution-topology changes and portfolio
+acceptance while CTRL remains the human-facing control route.
 
 | Function | Owns | Stops when |
 | --- | --- | --- |

@@ -933,6 +933,79 @@
         "A pending clientThreadId blocks replacement creation until it resolves or explicitly fails",
         "Any duplicate that materializes is stopped before work and archived after unique receipts transfer"
       ]
+    },
+    {
+      "id": 73,
+      "prompt": "Use SWARM to make 10 landing-page mockups.",
+      "expected_output": "The receiving task first becomes and pins a specific 🐙CTRL, continues one durable objective, and treats the requested variants as one coherent visual artifact with one atomic DESIGNER owner and later independent REVIEW. Variant count alone does not justify MOTHER.",
+      "files": [],
+      "assertions": [
+        "CTRL identity, pinning, goal, and inventory precede artifact work",
+        "One coherent artifact has one mutable owner even when it has ten variants",
+        "No MOTHER is created from artifact count or role availability",
+        "Independent REVIEW remains separate from artifact ownership"
+      ]
+    },
+    {
+      "id": 74,
+      "prompt": "A completed plugin-migration MOTHER contains RUSH-to-SWARM history. A new Flowwweb landing request also mentions RUSH and SWARM. Reuse the existing task if it sounds related.",
+      "expected_output": "CTRL does not reuse the plugin portfolio: the landing objective, canonical artifact and mutable surface, and accepting route differ. Keyword similarity and migration history do not transfer ownership.",
+      "files": [],
+      "assertions": [
+        "Objective, artifact or mutable surface, and accepting route all participate in identity",
+        "The completed plugin MOTHER is not reopened for the landing",
+        "Shared RUSH or SWARM words do not establish reuse",
+        "No owner receives both unrelated mutable surfaces"
+      ]
+    },
+    {
+      "id": 75,
+      "prompt": "Use SWARM for a multi-repo release with three dependent owners, integration sequencing, and one portfolio acceptance decision that CTRL cannot cheaply own.",
+      "expected_output": "CTRL creates MOTHER because distinct ownership lanes, real dependency edges, cross-lane integration, and portfolio acceptance all satisfy the portfolio predicate; architecture is added only if system-coherence facts require it.",
+      "files": [],
+      "assertions": [
+        "MOTHER is justified by the complete portfolio predicate",
+        "Dependency and acceptance facts, not task count, create orchestration",
+        "MOTHER alone changes execution topology after creation",
+        "Architecture depth remains independently fact-gated"
+      ]
+    },
+    {
+      "id": 76,
+      "prompt": "Use SWARM for this code change. The receiving user-facing task starts editing locally and plans to rename itself CTRL afterward.",
+      "expected_output": "Fail the intake contract: the unassigned receiving task must become and pin a specific 🐙CTRL, inspect or create the matching goal, and inventory live plus pending ownership before substantive work.",
+      "files": [],
+      "assertions": [
+        "Local editing before CTRL identity and pinning is a failure",
+        "Goal and ownership inventory precede routing and mutation",
+        "A pre-assigned child role is the only intake-role exception",
+        "The failure does not authorize extra corrective topology"
+      ]
+    },
+    {
+      "id": 77,
+      "prompt": "A healthy artifact owner is making useful progress. Its title has a minor wording mismatch that does not change objective, ownership, authority, mutable surface, or acceptance.",
+      "expected_output": "Correct the wording in place only when that tiny fix reduces future confusion, keep the same owner and topology, do not stop useful work, and return immediately to the artifact objective.",
+      "files": [],
+      "assertions": [
+        "A non-material process imperfection does not interrupt artifact work",
+        "No re-plan, replacement owner, new task, or topology churn occurs",
+        "The correction pays for itself in expected coordination cost",
+        "Recovery is measured by immediate forward progress, not rules added"
+      ]
+    },
+    {
+      "id": 78,
+      "prompt": "Two live tasks now claim the same canonical artifact and mutable surface with conflicting authority. Propose a permanent SWARM correction while restoring artifact progress.",
+      "expected_output": "Treat the duplicate ownership as material, stop the disproven owner before mutation, preserve and resolve any pending receipt, transfer unique evidence, archive the duplicate, and resume through the sole accepting route. Fix the lowest existing identity or topology authority, remove superseded guidance, and add contrasting regression evidence instead of another incident clause.",
+      "files": [],
+      "assertions": [
+        "A real ownership collision triggers one bounded topology correction",
+        "The correction restores one owner and accepting route before work resumes",
+        "Pending reservations remain authoritative until resolved or cancelled",
+        "The doctrine change generalizes, consolidates, tests, and deletes superseded guidance",
+        "No repeated replanning, narration, cascading task, or owner churn follows the fix"
+      ]
     }
   ]
 }

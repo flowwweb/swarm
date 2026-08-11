@@ -3,7 +3,10 @@ import sys
 import unittest
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from runtime import ArtifactIdentity, ArtifactJustification, ArtifactProvenance, ContextPackage, DedupDecision, Depth, EfficiencyMode, HiveRecord, HiveStatus, InvariantError, ReviewEvidence, ReviewStrategy, ReviewValue, Role, Swarm, Task, TaskState, VersionedReference, Worker, WorkerState, choose_depth, initial_tier
+from runtime import ArtifactIdentity, ArtifactJustification, ArtifactProvenance, ContextPackage, CorrectionDecision, DedupDecision, Depth, EfficiencyMode, HiveRecord, HiveStatus, InvariantError, ReviewEvidence, ReviewStrategy, ReviewValue, Role, Swarm, Task, TaskState, TopologyFacts, VersionedReference, Worker, WorkerState, choose_depth, correction_decision, initial_tier
+
+def topology(*, objective="ship artifact", artifacts=(ArtifactIdentity("artifact","v1","work"),), surfaces=("artifact",), route="CTRL", lanes=("owner",), edges=(), integration=False, portfolio=False, ctrl_cheap=True, architecture=False):
+ return TopologyFacts(objective,artifacts,surfaces,route,lanes,edges,integration,portfolio,ctrl_cheap,architecture)
 
 class RuntimeTests(unittest.TestCase):
  def setUp(self):
@@ -32,10 +35,11 @@ class RuntimeTests(unittest.TestCase):
   self.s.lease(Role.MOTHER,"repo","L")
   with self.assertRaises(InvariantError): self.s.lease(Role.MOTHER,"repo","other")
  def test_adaptive_depth_and_collapse(self):
-  self.assertEqual(choose_depth(scope=1),Depth.ATOMIC)
-  self.assertEqual(choose_depth(scope=2,independent_tasks=1),Depth.SIMPLE)
-  self.assertEqual(choose_depth(scope=3,independent_tasks=2,useful_parallelism=2),Depth.WORKSTREAM)
-  self.assertEqual(choose_depth(scope=5,architecture_impact=True,independent_tasks=3,specialisations=2),Depth.PROJECT)
+  self.assertEqual(choose_depth(topology()),Depth.ATOMIC)
+  self.assertEqual(choose_depth(topology(artifacts=tuple(ArtifactIdentity("landing",f"v{i}","variant") for i in range(10)))),Depth.ATOMIC)
+  portfolio=topology(artifacts=(ArtifactIdentity("repo-a","v1","release"),ArtifactIdentity("repo-b","v1","release"),ArtifactIdentity("repo-c","v1","release")),surfaces=("repo-a","repo-b","repo-c"),route="portfolio acceptance",lanes=("A","B","C"),edges=(("A","B"),("B","C")),integration=True,portfolio=True,ctrl_cheap=False)
+  self.assertEqual(choose_depth(portfolio),Depth.WORKSTREAM)
+  self.assertEqual(choose_depth(TopologyFacts(**{**portfolio.__dict__,"architecture_gate":True})),Depth.PROJECT)
   self.s.tasks["A"].state=TaskState.COMPLETE
   self.assertEqual(self.s.collapse(Role.MOTHER,"L"),Depth.ATOMIC)
  def test_hygiene_archives_not_deletes_and_preserves_stale_provenance(self):
@@ -156,7 +160,8 @@ class RuntimeTests(unittest.TestCase):
  def test_hop_receipts_are_bounded_and_proportional(self):
   atomic=Swarm(); atomic.start_atomic(Role.CTRL,Task("T","D","c",1,{})); self.assertEqual(atomic.tasks["T"].topology_receipt,("CTRL","DOER","atomic:isolated"))
   simple=Swarm(); simple.start_simple(Role.MOTHER,Task("S","D","c",1,{})); self.assertEqual(simple.tasks["S"].topology_receipt,("CTRL","MOTHER","DOER","simple:stateful"))
-  self.assertEqual(choose_depth(scope=3,independent_tasks=2),Depth.WORKSTREAM); self.assertEqual(choose_depth(scope=5,architecture_impact=True,independent_tasks=3,specialisations=2),Depth.PROJECT)
+  portfolio=topology(lanes=("A","B","C"),edges=(("A","B"),("B","C")),integration=True,portfolio=True,ctrl_cheap=False)
+  self.assertEqual(choose_depth(portfolio),Depth.WORKSTREAM); self.assertEqual(choose_depth(TopologyFacts(**{**portfolio.__dict__,"architecture_gate":True})),Depth.PROJECT)
  def test_typed_justification_and_bounded_machine_receipts(self):
   self.s.add_artifact(Role.DOER,"A",ArtifactIdentity("canon","v1","work"))
   with self.assertRaises(InvariantError): self.s.add_artifact(Role.DOER,"A",ArtifactIdentity("canon","v2","verification"),source="canon@v1:work",justification="verification")
@@ -184,11 +189,21 @@ class RuntimeTests(unittest.TestCase):
   with self.assertRaises(InvariantError): self.s.add_artifact(Role.DOER,"A",ArtifactIdentity("source","v3","uncertainty"),source="source@v1:work",justification=ArtifactJustification.UNCERTAINTY,provenance=first)
   self.s.add_artifact(Role.DOER,"A",ArtifactIdentity("source","v4","uncertainty"),source="source@v1:work",justification=ArtifactJustification.UNCERTAINTY,provenance=ArtifactProvenance("receipt-2","source@v1:work"))
  def test_mode_depth_shapes_do_not_manufacture_hierarchy(self):
-  for mode in EfficiencyMode:
-   self.assertEqual(choose_depth(scope=1,mode=mode),Depth.ATOMIC)
-   self.assertEqual(choose_depth(scope=2,independent_tasks=1,useful_parallelism=1,mode=mode),Depth.SIMPLE)
-   self.assertEqual(choose_depth(scope=3,independent_tasks=2,useful_parallelism=2,mode=mode),Depth.WORKSTREAM)
-   self.assertEqual(choose_depth(scope=5,architecture_impact=True,independent_tasks=3,specialisations=2,blast_radius=5,mode=mode),Depth.PROJECT)
+  self.assertEqual(choose_depth(topology()),Depth.ATOMIC)
+  portfolio=topology(lanes=("A","B"),edges=(("A","B"),),integration=True,portfolio=True,ctrl_cheap=False)
+  self.assertEqual(choose_depth(portfolio),Depth.WORKSTREAM)
+  self.assertEqual(choose_depth(TopologyFacts(**{**portfolio.__dict__,"architecture_gate":True})),Depth.PROJECT)
+  with self.assertRaises(TypeError): choose_depth(portfolio,mode=EfficiencyMode.MAX)
+ def test_identity_not_keyword_similarity_controls_reuse(self):
+  migration=topology(objective="migrate plugin",artifacts=(ArtifactIdentity("plugin/swarm","v1","migration"),),surfaces=("plugin/swarm",),route="plugin CTRL")
+  landing=topology(objective="redesign landing",artifacts=(ArtifactIdentity("flowwweb/landing","v1","design"),),surfaces=("flowwweb/landing",),route="landing CTRL")
+  self.assertFalse(migration.same_ownership_route(landing))
+  self.assertTrue(migration.same_ownership_route(topology(objective="migrate plugin",artifacts=(ArtifactIdentity("plugin/swarm","v1","migration"),),surfaces=("plugin/swarm",),route="plugin CTRL")))
+ def test_correction_cost_preserves_progress_and_reopens_only_material_authority(self):
+  self.assertEqual(correction_decision(material=False,expected_future_cost=2,correction_cost=1),CorrectionDecision.FIX_FORWARD)
+  self.assertEqual(correction_decision(material=False,expected_future_cost=1,correction_cost=2),CorrectionDecision.CONTINUE)
+  self.assertEqual(correction_decision(material=True,ownership_failure=True,expected_future_cost=5,correction_cost=1),CorrectionDecision.REOPEN_TOPOLOGY)
+  self.assertEqual(correction_decision(material=True,expected_future_cost=5,correction_cost=1),CorrectionDecision.FIX_FORWARD)
  def test_ctrl_events_are_semantic_and_bounded(self):
   expected={"MOTHER_WAKE":"attention","RECOVERY":"attention","DEADLOCK":"blocker","REVIEW_FAIL":"blocker","SCOPE_ESCALATION":"blocker","RELEASE":"release","HANDOFF":"handoff","ACCEPTANCE":"acceptance"}
   for event,category in expected.items(): self.assertEqual(self.s.ctrl_event(event,"A"),f"A: {category}")

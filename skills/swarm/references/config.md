@@ -37,7 +37,7 @@ Configuration cannot make an unsafe or hidden coordination path valid:
 - Existing safety, authority, provider, worktree, and proof boundaries remain.
 - If a required task tool is unavailable, report the blocker instead of
   substituting a local process or subagent hierarchy.
-- MOTHER, every LEAD, and every persistent ARCHITECT require an active durable
+- CTRL, MOTHER, every LEAD, and every persistent ARCHITECT require an active durable
   goal before scheduling or substantive work. Goal controls are required; this
   invariant is not configurable and goal creation does not expand authority.
 - The MOTHER heartbeat is passive when enabled (the default): it reads every active

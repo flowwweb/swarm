@@ -64,7 +64,7 @@ class SwarmSkillStructureTests(unittest.TestCase):
         self.assertIn("LEAD integrates and inspects each whole lane result", skill)
         self.assertIn("zerg rush", skill)
         self.assertIn("shallowest structure", skill)
-        self.assertIn("CTRL owns intake topology", skill)
+        self.assertIn("CTRL owns topology unless MOTHER exists", skill)
         self.assertIn("MOTHER alone changes execution topology", skill)
         self.assertIn("canonical state", skill)
         self.assertIn("independent REVIEW", skill)
@@ -106,21 +106,28 @@ class SwarmSkillStructureTests(unittest.TestCase):
         hierarchy = (SKILL_ROOT / "references" / "hierarchy.md").read_text(
             encoding="utf-8"
         )
-        task_contract = (SKILL_ROOT / "references" / "task-contract.md").read_text(
-            encoding="utf-8"
-        )
-
-        for text in (skill, hierarchy, task_contract):
+        for text in (skill, hierarchy):
             self.assertIn("🐙CTRL - <specific objective>", text)
             self.assertIn("durable goal", text)
             self.assertIn("subagents", text)
-        self.assertIn("Reuse a matching unfinished task and goal", skill)
-        self.assertIn("is pinned by default", skill)
-        self.assertIn("is pinned by default", hierarchy)
-        self.assertIn("pending ownership reservation", skill)
+        self.assertIn("becomes and pins", skill)
+        self.assertIn("adopts and pins", hierarchy)
+        self.assertIn("pending creation receipt reserves", skill)
         self.assertIn("pending `clientThreadId`", hierarchy)
         self.assertIn("archive it", skill)
-        self.assertIn("chooses the shallowest reliable initial\ntopology", hierarchy)
+        self.assertIn("CTRL owns topology until the portfolio predicate", hierarchy)
+
+    def test_topology_and_evolution_are_general_subtractive_contracts(self) -> None:
+        skill = SKILL.read_text(encoding="utf-8")
+        hierarchy = (SKILL_ROOT / "references" / "hierarchy.md").read_text(encoding="utf-8")
+
+        self.assertIn("multiple distinct ownership lanes", skill)
+        self.assertIn("Artifact or variant count", hierarchy)
+        self.assertIn("shared words do not establish identity", skill)
+        self.assertIn("never accumulate incident clauses", skill)
+        self.assertIn("remove superseded guidance", skill)
+        self.assertIn("time to forward progress and net coordination load", skill)
+        self.assertIn("non-material process imperfection", skill)
 
     def test_mandatory_goals_and_passive_heartbeat_are_fixed_contracts(self) -> None:
         skill = SKILL.read_text(encoding="utf-8")

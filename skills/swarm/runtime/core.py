@@ -15,6 +15,7 @@ class WorkerState(StrEnum):
 class HiveStatus(StrEnum): ACTIVE="ACTIVE"; ARCHIVED="ARCHIVED"; PURGEABLE="PURGEABLE"; PURGED="PURGED"
 class DedupDecision(StrEnum): REUSE="REUSE"; EXECUTE="EXECUTE"
 class ArtifactJustification(StrEnum): VERIFICATION="verification"; UNCERTAINTY="uncertainty"
+class CorrectionDecision(StrEnum): CONTINUE="CONTINUE"; FIX_FORWARD="FIX_FORWARD"; REOPEN_TOPOLOGY="REOPEN_TOPOLOGY"
 
 class InvariantError(ValueError): pass
 
@@ -37,6 +38,18 @@ class ArtifactProvenance:
     id:str; source:str
     def __post_init__(self):
         if not all(isinstance(value,str) and value.strip() for value in (self.id,self.source)): raise InvariantError("artifact provenance fields must be nonempty")
+@dataclass(frozen=True)
+class TopologyFacts:
+    objective:str; artifacts:tuple[ArtifactIdentity,...]; mutable_surfaces:tuple[str,...]; accepting_route:str; ownership_lanes:tuple[str,...]
+    dependency_edges:tuple[tuple[str,str],...]=(); cross_lane_integration:bool=False; portfolio_acceptance:bool=False; ctrl_can_cheaply_accept:bool=True; architecture_gate:bool=False
+    def __post_init__(self):
+        if not self.objective.strip() or not self.accepting_route.strip() or not self.artifacts or not self.mutable_surfaces or not self.ownership_lanes: raise InvariantError("topology facts require objective, artifact, mutable surface, accepting route, and owner")
+        lanes=set(self.ownership_lanes)
+        if any(left not in lanes or right not in lanes or left==right for left,right in self.dependency_edges): raise InvariantError("dependency edges require distinct declared owners")
+    def same_ownership_route(self, other:"TopologyFacts") -> bool:
+        return (self.objective,frozenset(item.key() for item in self.artifacts),frozenset(self.mutable_surfaces),self.accepting_route)==(other.objective,frozenset(item.key() for item in other.artifacts),frozenset(other.mutable_surfaces),other.accepting_route)
+    def requires_mother(self) -> bool:
+        return len(set(self.ownership_lanes))>1 and bool(self.dependency_edges) and self.cross_lane_integration and self.portfolio_acceptance and not self.ctrl_can_cheaply_accept
 class ReviewStrategy(StrEnum): LIGHT="light"; STANDARD="standard"; ADVERSARIAL="adversarial"; SPECIALIST="specialist"
 @dataclass(frozen=True)
 class ReviewEvidence:
@@ -71,13 +84,17 @@ def initial_tier(*, risk:int, uncertainty:int, blast_radius:int, family:str="gen
     bias={EfficiencyMode.CONSERVE:0,EfficiencyMode.BALANCED:1,EfficiencyMode.FAST:2,EfficiencyMode.MAX:3}[mode]
     return min(3, max(1, 1 + int(weight>=3) + int(weight+bias>=6)))
 
-def choose_depth(*, scope: int, architecture_impact: bool=False, independent_tasks: int=1, dependencies: int=0, uncertainty: int=0, blast_radius: int=0, specialisations: int=1, useful_parallelism: int=1, coordination_overhead: int=0, mode:EfficiencyMode=EfficiencyMode.BALANCED) -> Depth:
-    """Choose infrastructure only when its reliability benefit exceeds its cost."""
-    if scope <= 1 and independent_tasks <= 1 and not architecture_impact and dependencies == uncertainty == blast_radius == 0: return Depth.ATOMIC
-    if architecture_impact and (independent_tasks >= 3 or specialisations >= 2): return Depth.PROJECT
-    if independent_tasks >= 2 or dependencies >= 2 or specialisations >= 2 or useful_parallelism >= max(2,MODE_POLICY[mode]["parallel"]):
-        return Depth.WORKSTREAM if coordination_overhead < 3 else Depth.SIMPLE
-    return Depth.SIMPLE
+def choose_depth(facts:TopologyFacts) -> Depth:
+    """Materialize portfolio authority only when the portfolio predicate is true."""
+    if not facts.requires_mother(): return Depth.ATOMIC
+    return Depth.PROJECT if facts.architecture_gate else Depth.WORKSTREAM
+
+def correction_decision(*, material:bool, authority_failure:bool=False, ownership_failure:bool=False, acceptance_failure:bool=False, expected_future_cost:int=0, correction_cost:int=0) -> CorrectionDecision:
+    """Pay coordination cost only when it lowers expected future cost, delay, or risk."""
+    if min(expected_future_cost,correction_cost)<0: raise InvariantError("correction costs must be nonnegative")
+    if expected_future_cost<=correction_cost: return CorrectionDecision.CONTINUE
+    if material and any((authority_failure,ownership_failure,acceptance_failure)): return CorrectionDecision.REOPEN_TOPOLOGY
+    return CorrectionDecision.FIX_FORWARD
 
 @dataclass
 class Task:
