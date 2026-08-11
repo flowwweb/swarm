@@ -50,6 +50,12 @@ class EvidenceRoutingContractTests(unittest.TestCase):
             self.swarm.register_ctrl_evidence(Role.DOER, "covers", evidence_id, "ImageGen", f"cover-{index}.png")
             self.swarm.surface_ctrl_evidence(Role.CTRL, evidence_id, surface_kind=CtrlSurfaceKind.INLINE_IMAGE, caption=f"Generated cover option {index + 1}.", claim_limit="Concept art only; user selection and production admission remain open.", surface_receipt=f"chat:image:{index}")
         self.assertEqual(self.swarm.ctrl_feed_due(Role.CTRL), ())
+        self.swarm.review(Role.REVIEW, "covers", "independent", True)
+        with self.assertRaisesRegex(InvariantError,"require one surfaced final gallery"):
+            self.swarm.complete(Role.MOTHER, "covers", True, True, 1)
+        candidate_ids=tuple(f"cover-{index}" for index in range(10))
+        self.swarm.register_ctrl_decision_set(Role.CTRL,"covers","cover-choice",candidate_ids,user_requested_all=True)
+        self.swarm.surface_ctrl_decision_gallery(Role.CTRL,"cover-choice",embedded_ids=candidate_ids,labels_defects={candidate:f"Option {index + 1}: no known objective defect." for index,candidate in enumerate(candidate_ids)},complete_inventory=candidate_ids,surface_receipt="final:gallery:covers")
         self.swarm.advance_ctrl_phase(Role.CTRL, "implementation")
         self.accept()
         self.assertEqual(self.swarm.tasks["covers"].state, TaskState.COMPLETE)

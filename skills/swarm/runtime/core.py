@@ -148,7 +148,7 @@ class Swarm:
         reason=task.subagent_exception_reason.strip()
         if receipt and (exception is not None or reason): raise InvariantError("task must record a subagent receipt or one typed exception, not both")
         if receipt:
-            if not receipt.startswith("host:thread:") or len(receipt)==len("host:thread:"): raise InvariantError("subagent receipt must record a host-confirmed thread identity")
+            if not receipt.startswith("host:thread:") or len(receipt)==len("host:thread:"): raise InvariantError("subagent receipt must record the caller-declared host thread identity")
             return
         if not isinstance(exception,SubagentException) or not reason: raise InvariantError("every SWARM task requires a host subagent receipt or typed exact exception")
     def add_lead(self, actor: Role, lead: str) -> None:
@@ -353,11 +353,18 @@ class Swarm:
         if pending: raise InvariantError(f"open CTRL evidence acceptance failure before phase advance: {','.join(pending)}")
         decisions=self._open_ctrl_decision_sets()
         if decisions: raise InvariantError(f"open CTRL decision gallery acceptance failure before phase advance: {','.join(decisions)}")
+        uncovered=self._uncovered_ctrl_decision_candidates()
+        if uncovered: raise InvariantError(f"material CTRL decision candidates require one surfaced final gallery before phase advance: {','.join(uncovered)}")
         self.ctrl_phase=phase.strip()
     def _open_ctrl_evidence(self, task_id:str|None=None) -> tuple[str,...]:
         return tuple(item.id for item in self.ctrl_evidence_ledger.values() if item.material and item.disposition==EvidenceDisposition.PENDING and (task_id is None or item.task_id==task_id))
     def _open_ctrl_decision_sets(self, task_id:str|None=None) -> tuple[str,...]:
         return tuple(item.id for item in self.ctrl_decision_sets.values() if not item.surfaced and (task_id is None or item.task_id==task_id))
+    def _uncovered_ctrl_decision_candidates(self, task_id:str|None=None) -> tuple[str,...]:
+        candidates=tuple(item.id for item in self.ctrl_evidence_ledger.values() if item.material and item.steering and item.kind.lower() in {"imagegen","mockup","preview"} and (task_id is None or item.task_id==task_id))
+        if len(candidates)<2: return ()
+        covered={candidate for decision in self.ctrl_decision_sets.values() if decision.surfaced and (task_id is None or decision.task_id==task_id) for candidate in decision.candidate_ids}
+        return tuple(candidate for candidate in candidates if candidate not in covered)
     def discover(self, artifact: str) -> list[str]:
         return [owner for identity,owner in self.artifact_index.items() if identity==artifact or identity.startswith(f"{artifact}@")]
     def review_depth(self, risk:int) -> str:
@@ -413,6 +420,8 @@ class Swarm:
         if pending: raise InvariantError(f"open CTRL evidence acceptance failure: {','.join(pending)}")
         decisions=self._open_ctrl_decision_sets(task_id)
         if decisions: raise InvariantError(f"open CTRL decision gallery acceptance failure: {','.join(decisions)}")
+        uncovered=self._uncovered_ctrl_decision_candidates(task_id)
+        if uncovered: raise InvariantError(f"material CTRL decision candidates require one surfaced final gallery: {','.join(uncovered)}")
         if not t.review_passed or not t.reviewer or not integration_ok or not architecture_ok: raise InvariantError("completion requires independent review and integration/architecture gates")
         t.state=TaskState.COMPLETE; t.completed_at=now
         for waiter in self.tasks.values():
@@ -441,7 +450,7 @@ class Swarm:
         self.telemetry.update({"archived":self.telemetry.get("archived",0)+len(archived),"pins":sum(t.review_value==ReviewValue.PINNED for t in self.tasks.values()),"active":sum(t.state in {TaskState.ACTIVE,TaskState.WAITING,TaskState.REVIEW} for t in self.tasks.values()),"stale":sum(t.state==TaskState.STALE for t in self.tasks.values()),"restores":self.telemetry.get("restores",0),"extensions":sum(t.extensions for t in self.tasks.values()),"completion_to_archive":{task_id:now-(self.tasks[task_id].completed_at if self.tasks[task_id].completed_at is not None else self.tasks[task_id].stale_at if self.tasks[task_id].stale_at is not None else now) for task_id in archived},"archive_reasons":reasons,"age_buckets":ages}); return archived
     def archive_eligible(self, task:Task) -> bool:
         owner=self.workers.get(task.owner)
-        return not self._open_ctrl_evidence(task.id) and not self._open_ctrl_decision_sets(task.id) and task.review_value!=ReviewValue.PINNED and not any((task.active_goal,task.handoff_active,task.correction_pending,task.user_choice_pending,task.ambiguous,task.state==TaskState.REVIEW,owner is not None and owner.state!=WorkerState.RETIRED and task.id in owner.task_ids)) and not any(other.waiting_on==task.id and other.state in {TaskState.ACTIVE,TaskState.WAITING,TaskState.REVIEW} for other in self.tasks.values())
+        return not self._open_ctrl_evidence(task.id) and not self._open_ctrl_decision_sets(task.id) and not self._uncovered_ctrl_decision_candidates(task.id) and task.review_value!=ReviewValue.PINNED and not any((task.active_goal,task.handoff_active,task.correction_pending,task.user_choice_pending,task.ambiguous,task.state==TaskState.REVIEW,owner is not None and owner.state!=WorkerState.RETIRED and task.id in owner.task_ids)) and not any(other.waiting_on==task.id and other.state in {TaskState.ACTIVE,TaskState.WAITING,TaskState.REVIEW} for other in self.tasks.values())
     def restore(self, actor:Role, task_id:str, reason:str) -> None:
         self._role(actor,{Role.MOTHER,Role.LEAD}); t=self.tasks[task_id]
         if t.state not in {TaskState.ARCHIVED,TaskState.ARCHIVED_STALE} or not reason: raise InvariantError("restore requires archived task and provenance")
@@ -482,4 +491,4 @@ class Swarm:
         return f"{rendered} Next: {next_checkpoint.strip()}" if next_checkpoint.strip() else rendered
     def project_complete(self, actor: Role, integration_ok: bool, architecture_ok: bool) -> bool:
         self._role(actor,{Role.MOTHER})
-        return not self._open_ctrl_evidence() and not self._open_ctrl_decision_sets() and integration_ok and architecture_ok and all(t.state in {TaskState.COMPLETE,TaskState.ARCHIVED,TaskState.BACKLOG} or (t.state==TaskState.ARCHIVED_STALE and t.superseded_by in self.tasks and self.tasks[t.superseded_by].state==TaskState.COMPLETE) for t in self.tasks.values())
+        return not self._open_ctrl_evidence() and not self._open_ctrl_decision_sets() and not self._uncovered_ctrl_decision_candidates() and integration_ok and architecture_ok and all(t.state in {TaskState.COMPLETE,TaskState.ARCHIVED,TaskState.BACKLOG} or (t.state==TaskState.ARCHIVED_STALE and t.superseded_by in self.tasks and self.tasks[t.superseded_by].state==TaskState.COMPLETE) for t in self.tasks.values())

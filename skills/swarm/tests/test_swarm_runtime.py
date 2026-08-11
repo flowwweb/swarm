@@ -148,7 +148,7 @@ class RuntimeTests(unittest.TestCase):
  def test_atomic_simple_and_warm_routes_are_executable(self):
   atomic=Swarm()
   with self.assertRaisesRegex(InvariantError,"subagent receipt"): atomic.start_atomic(Role.CTRL,RuntimeTask("missing","M","creator",1,{}))
-  with self.assertRaisesRegex(InvariantError,"host-confirmed"): atomic.start_atomic(Role.CTRL,RuntimeTask("fake","F","creator",1,{},subagent_receipt="unverified:any-string"))
+  with self.assertRaisesRegex(InvariantError,"caller-declared host thread"): atomic.start_atomic(Role.CTRL,RuntimeTask("fake","F","creator",1,{},subagent_receipt="unverified:any-string"))
   atomic.start_atomic(Role.CTRL,Task("T","D","creator",1,{},subagent_receipt="host:thread:T")); self.assertEqual(set(atomic.workers),{"D"}); self.assertEqual(atomic.tasks["T"].owner,"D")
   with self.assertRaises(InvariantError): atomic.start_atomic(Role.MOTHER,Task("U","E","creator",1,{},subagent_receipt="host:thread:U"))
   simple=Swarm(); simple.start_simple(Role.MOTHER,RuntimeTask("S","M","creator",1,{},subagent_exception=SubagentException.COLLISION,subagent_exception_reason="single mutable file cannot have two writers")); self.assertEqual(simple.workers["M"].lead,"MOTHER")
