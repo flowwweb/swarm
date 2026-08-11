@@ -61,4 +61,6 @@ class RuntimeTests(unittest.TestCase):
   self.s.add_artifact(Role.DOER,"A","identity"); self.assertFalse(self.s.dedup("identity")); self.assertTrue(self.s.dedup("identity",verification=True)); self.assertEqual(self.s.route(family="auth",risk=3,uncertainty=2,blast_radius=2,architect_floor=2,historical_floor=3),3); self.assertEqual(self.s.context_decision(affinity=2,bloat=False,stale=False,stalls=0),"reuse"); self.assertEqual(self.s.context_decision(affinity=2,bloat=True,stale=False,stalls=0),"retire")
  def test_stale_clock_and_unresolved_completion(self):
   self.s.change_architecture(Role.ARCHITECT,{"x":2},now=90); self.s.groom(Role.MOTHER,100,{"no_review_archive_delay":0,"low_review_retention":2,"high_review_retention":3,"stale_task_archive_delay":30}); self.assertEqual(self.s.tasks["A"].state,TaskState.STALE); self.assertFalse(self.s.project_complete(Role.MOTHER,True,True))
+ def test_archived_only_collapses_and_missing_replacement_blocks_complete(self):
+  self.s.stale(Role.LEAD,"A","gone",now=0,superseded_by="MISSING"); self.s.groom(Role.MOTHER,2,{"no_review_archive_delay":0,"low_review_retention":2,"high_review_retention":3,"stale_task_archive_delay":1}); self.assertFalse(self.s.project_complete(Role.MOTHER,True,True)); self.assertEqual(self.s.collapse(Role.MOTHER,"L"),Depth.ATOMIC)
 if __name__ == "__main__": unittest.main()

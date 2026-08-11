@@ -62,16 +62,19 @@ class Swarm:
         self._role(actor,{Role.LEAD}); w=self.workers.get(task.owner)
         if not w or w.state==WorkerState.RETIRED or len(w.task_ids)>=self.wip_limit: raise InvariantError("owner unavailable or at WIP limit")
         self.tasks[task.id]=task; w.task_ids.add(task.id)
-    def should_spawn(self, *, independent: bool, critical_path: bool, duplicate_artifact: str|None=None, verification: bool=False) -> bool:
+    def should_spawn(self, *, independent: bool, critical_path: bool, duplicate_artifact: str|None=None, verification: bool=False, contention:bool=False) -> bool:
         allowed=independent and (critical_path or verification) and (not duplicate_artifact or verification)
-        self.efficiency_ledger.append({"kind":"spawn","decision":"allow" if allowed else "refuse","reason":"verification" if verification else "critical_path" if allowed else "duplicate_or_contention"})
+        reason="allow:verification" if verification else "allow:critical_path" if allowed else "refuse:independent=false" if not independent else "refuse:contention" if contention else "refuse:duplicate" if duplicate_artifact else "refuse:noncritical"
+        self.efficiency_ledger.append({"kind":"spawn","decision":"allow" if allowed else "refuse","reason":reason})
         return allowed
     def route(self, *, family:str, risk:int, uncertainty:int, blast_radius:int, architect_floor:int=1, historical_floor:int=1, mode:EfficiencyMode=EfficiencyMode.BALANCED) -> int:
         tier=max(architect_floor,historical_floor,initial_tier(risk=risk,uncertainty=uncertainty,blast_radius=blast_radius,mode=mode)); self.efficiency_ledger.append({"kind":"route","family":family,"tier":str(tier),"reason":"expected_total_accepted_cost"}); return tier
     def dedup(self, identity:str, *, verification:bool=False, uncertainty:bool=False) -> bool:
         found=bool(self.discover(identity)); allowed=not found or verification or uncertainty; self.efficiency_ledger.append({"kind":"dedup","decision":"reuse" if found and not allowed else "execute","reason":"verification" if verification else "uncertainty" if uncertainty else "canonical_artifact"}); return allowed
-    def context_decision(self, *, affinity:int, bloat:bool, stale:bool, stalls:int) -> str:
-        result="retire" if bloat or stale or stalls>1 or affinity==0 else "reuse"; self.efficiency_ledger.append({"kind":"context","decision":result,"reason":"bounded_spine"}); return result
+    def context_decision(self, *, affinity:int, bloat:bool, stale:bool, stalls:int, worker_id:str|None=None, replacement:str|None=None) -> str:
+        result="retire" if bloat or stale or stalls>1 or affinity==0 else "reuse"; self.efficiency_ledger.append({"kind":"context","decision":result,"reason":"bounded_spine"})
+        if result=="retire" and worker_id: self.retire(Role.LEAD,worker_id,replacement)
+        return result
     def change_architecture(self, actor: Role, contracts: dict[str,int], now:int=0) -> None:
         self._role(actor,{Role.ARCHITECT}); self.architecture_version+=1; self.contract_versions.update(contracts)
         for task in self.tasks.values():
@@ -126,7 +129,7 @@ class Swarm:
         w.state=WorkerState.RETIRED; w.archive={"tasks":sorted(w.task_ids),"lane":w.lane}; w.task_ids.clear()
     def collapse(self, actor: Role, lead: str) -> Depth:
         """Retire idle capacity and remove a lead when only one isolated task remains."""
-        self._role(actor,{Role.MOTHER}); active=[t for t in self.tasks.values() if t.state not in {TaskState.COMPLETE,TaskState.BACKLOG}]
+        self._role(actor,{Role.MOTHER}); active=[t for t in self.tasks.values() if t.state not in {TaskState.COMPLETE,TaskState.BACKLOG,TaskState.ARCHIVED,TaskState.ARCHIVED_STALE}]
         if len(active) > 1: return Depth.WORKSTREAM
         for worker in self.workers.values():
             if worker.lead == lead and not worker.task_ids and worker.state != WorkerState.RETIRED:
@@ -158,4 +161,4 @@ class Swarm:
         return f"{task_id}: {event.lower().replace('_',' ')}"
     def project_complete(self, actor: Role, integration_ok: bool, architecture_ok: bool) -> bool:
         self._role(actor,{Role.MOTHER})
-        return integration_ok and architecture_ok and all(t.state in {TaskState.COMPLETE,TaskState.ARCHIVED,TaskState.ARCHIVED_STALE,TaskState.BACKLOG} and not (t.state==TaskState.ARCHIVED_STALE and not t.superseded_by) for t in self.tasks.values())
+        return integration_ok and architecture_ok and all(t.state in {TaskState.COMPLETE,TaskState.ARCHIVED,TaskState.BACKLOG} or (t.state==TaskState.ARCHIVED_STALE and t.superseded_by in self.tasks and self.tasks[t.superseded_by].state==TaskState.COMPLETE) for t in self.tasks.values())
