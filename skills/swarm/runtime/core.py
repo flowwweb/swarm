@@ -15,7 +15,7 @@ class WorkerState(StrEnum):
 class HiveStatus(StrEnum): ACTIVE="ACTIVE"; ARCHIVED="ARCHIVED"; PURGEABLE="PURGEABLE"; PURGED="PURGED"
 class DedupDecision(StrEnum): REUSE="REUSE"; EXECUTE="EXECUTE"
 class ArtifactJustification(StrEnum): VERIFICATION="verification"; UNCERTAINTY="uncertainty"
-class CorrectionDecision(StrEnum): CONTINUE="CONTINUE"; FIX_FORWARD="FIX_FORWARD"; REOPEN_TOPOLOGY="REOPEN_TOPOLOGY"
+class CorrectionDecision(StrEnum): CONTINUE="CONTINUE"; FIX_FORWARD="FIX_FORWARD"; ESCALATE="ESCALATE"; REOPEN_TOPOLOGY="REOPEN_TOPOLOGY"
 
 class InvariantError(ValueError): pass
 
@@ -89,11 +89,12 @@ def choose_depth(facts:TopologyFacts) -> Depth:
     if not facts.requires_mother(): return Depth.ATOMIC
     return Depth.PROJECT if facts.architecture_gate else Depth.WORKSTREAM
 
-def correction_decision(*, material:bool, authority_failure:bool=False, ownership_failure:bool=False, acceptance_failure:bool=False, expected_future_cost:int=0, correction_cost:int=0) -> CorrectionDecision:
+def correction_decision(*, material:bool, authority_failure:bool=False, ownership_failure:bool=False, acceptance_failure:bool=False, expected_future_cost:int=0, correction_cost:int=0, fix_forward_consumed:bool=False) -> CorrectionDecision:
     """Pay coordination cost only when it lowers expected future cost, delay, or risk."""
+    if material and any((authority_failure,ownership_failure,acceptance_failure)): return CorrectionDecision.REOPEN_TOPOLOGY
     if min(expected_future_cost,correction_cost)<0: raise InvariantError("correction costs must be nonnegative")
     if expected_future_cost<=correction_cost: return CorrectionDecision.CONTINUE
-    if material and any((authority_failure,ownership_failure,acceptance_failure)): return CorrectionDecision.REOPEN_TOPOLOGY
+    if fix_forward_consumed: return CorrectionDecision.ESCALATE if material else CorrectionDecision.CONTINUE
     return CorrectionDecision.FIX_FORWARD
 
 @dataclass
@@ -101,7 +102,7 @@ class Task:
     id: str; owner: str; creator: str; architecture_version: int; contracts: dict[str,int]
     state: TaskState=TaskState.ACTIVE; waiting_on: str|None=None; reviewer: str|None=None; findings: list[str]=field(default_factory=list)
     evidence: list[str]=field(default_factory=list); recovery_dimensions: set[str]=field(default_factory=set); recovery_attempts:int=0; review_value: ReviewValue=ReviewValue.NONE
-    completed_at: int|None=None; stale_at: int|None=None; archived_at: int|None=None; stale_reason: str|None=None; superseded_by: str|None=None; promoted: list[str]=field(default_factory=list); extensions: int=0; review_passed: bool=False; risk:int=1; review_strategy:str="light"; architecture_review_floor:ReviewStrategy=ReviewStrategy.LIGHT; security_review_floor:ReviewStrategy=ReviewStrategy.LIGHT; artifacts:dict[ArtifactIdentity|str,str]=field(default_factory=dict); artifact_justifications:dict[str,ArtifactJustification]=field(default_factory=dict); artifact_provenance:dict[str,ArtifactProvenance]=field(default_factory=dict); archive:dict[str,object]=field(default_factory=dict); active_goal:bool=False; handoff_active:bool=False; correction_pending:bool=False; user_choice_pending:bool=False; ambiguous:bool=False; topology_receipt:tuple[str,...]=()
+    completed_at: int|None=None; stale_at: int|None=None; archived_at: int|None=None; stale_reason: str|None=None; superseded_by: str|None=None; promoted: list[str]=field(default_factory=list); extensions: int=0; review_passed: bool=False; risk:int=1; review_strategy:str="light"; architecture_review_floor:ReviewStrategy=ReviewStrategy.LIGHT; security_review_floor:ReviewStrategy=ReviewStrategy.LIGHT; artifacts:dict[ArtifactIdentity|str,str]=field(default_factory=dict); artifact_justifications:dict[str,ArtifactJustification]=field(default_factory=dict); artifact_provenance:dict[str,ArtifactProvenance]=field(default_factory=dict); archive:dict[str,object]=field(default_factory=dict); active_goal:bool=False; handoff_active:bool=False; correction_pending:bool=False; user_choice_pending:bool=False; ambiguous:bool=False; topology_receipt:tuple[str,...]=(); ctrl_event_receipt:tuple[str,str]|None=None
 
 @dataclass
 class Worker:
@@ -110,7 +111,7 @@ class Worker:
 @dataclass
 class Swarm:
     architecture_version: int=1; contract_versions: dict[str,int]=field(default_factory=dict); topology: set[str]=field(default_factory=set)
-    workers: dict[str,Worker]=field(default_factory=dict); tasks: dict[str,Task]=field(default_factory=dict); leases: dict[str,str]=field(default_factory=dict); events: list[tuple[str,str]]=field(default_factory=list); telemetry: dict[str,object]=field(default_factory=dict); telemetry_events:list[dict[str,object]]=field(default_factory=list); artifact_index:dict[str,str]=field(default_factory=dict); provenance_index:dict[str,str]=field(default_factory=dict); hive:dict[str,HiveRecord]=field(default_factory=dict); hive_enabled:bool=True; heartbeat_enabled:bool=True; heartbeat_stall_after:int=2; heartbeat_latch:set[str]=field(default_factory=set); lane_width:int=3; wip_limit:int=3; efficiency_ledger:list[dict[str,str]]=field(default_factory=list); mode:EfficiencyMode=EfficiencyMode.BALANCED
+    workers: dict[str,Worker]=field(default_factory=dict); tasks: dict[str,Task]=field(default_factory=dict); leases: dict[str,str]=field(default_factory=dict); events: list[tuple[str,str]]=field(default_factory=list); telemetry: dict[str,object]=field(default_factory=dict); telemetry_events:list[dict[str,object]]=field(default_factory=list); artifact_index:dict[str,str]=field(default_factory=dict); provenance_index:dict[str,str]=field(default_factory=dict); hive:dict[str,HiveRecord]=field(default_factory=dict); hive_enabled:bool=True; heartbeat_enabled:bool=True; heartbeat_stall_after:int=2; heartbeat_latch:set[str]=field(default_factory=set); correction_receipts:dict[str,None]=field(default_factory=dict); lane_width:int=3; wip_limit:int=3; efficiency_ledger:list[dict[str,str]]=field(default_factory=list); mode:EfficiencyMode=EfficiencyMode.BALANCED
     @classmethod
     def from_config(cls, config: dict) -> "Swarm":
         return cls(lane_width=config["coordination"]["preferred_lane_width"], wip_limit=config["efficiency"]["doer_wip_limit"], mode=EfficiencyMode(config["efficiency"]["mode"]), hive_enabled=config.get("hive",{}).get("enabled",True), heartbeat_enabled=config["monitoring"].get("heartbeat_enabled",True), heartbeat_stall_after=config["recovery"]["stall_after_updates"])
@@ -360,9 +361,23 @@ class Swarm:
             elif record.status==HiveStatus.PURGEABLE:
                 record.status=HiveStatus.PURGED; record.content=""; record.reference=""; self.telemetry["hive_purged"]=self.telemetry.get("hive_purged",0)+1
         self._hive_counts()
-    def ctrl_event(self, event: str, task_id: str) -> str|None:
+    def correction(self, incident_id:str, **facts:object) -> CorrectionDecision:
+        """Consume at most one fix-forward receipt for a stable correction incident."""
+        if not incident_id.strip(): raise InvariantError("correction incident identity is required")
+        decision=correction_decision(**facts,fix_forward_consumed=incident_id in self.correction_receipts)
+        if decision==CorrectionDecision.FIX_FORWARD:
+            if len(self.correction_receipts)>=64: return CorrectionDecision.ESCALATE if bool(facts.get("material")) else CorrectionDecision.CONTINUE
+            self.correction_receipts[incident_id]=None
+        return decision
+    def ctrl_event(self, event: str, task_id: str, material_revision:str|int=0) -> str|None:
         category={"MOTHER_WAKE":"attention","RECOVERY":"attention","DEADLOCK":"blocker","REVIEW_FAIL":"blocker","SCOPE_ESCALATION":"blocker","RELEASE":"release","HANDOFF":"handoff","ACCEPTANCE":"acceptance"}.get(event)
-        return f"{task_id}: {category}" if category else None
+        if not category: return None
+        task=self.tasks.get(task_id)
+        if task is None: raise InvariantError("CTRL event requires a canonical task")
+        receipt=(category,str(material_revision))
+        if task.ctrl_event_receipt==receipt: return None
+        task.ctrl_event_receipt=receipt
+        return f"{task_id}: {category}"
     def project_complete(self, actor: Role, integration_ok: bool, architecture_ok: bool) -> bool:
         self._role(actor,{Role.MOTHER})
         return integration_ok and architecture_ok and all(t.state in {TaskState.COMPLETE,TaskState.ARCHIVED,TaskState.BACKLOG} or (t.state==TaskState.ARCHIVED_STALE and t.superseded_by in self.tasks and self.tasks[t.superseded_by].state==TaskState.COMPLETE) for t in self.tasks.values())

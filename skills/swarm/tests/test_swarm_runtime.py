@@ -203,9 +203,33 @@ class RuntimeTests(unittest.TestCase):
   self.assertEqual(correction_decision(material=False,expected_future_cost=2,correction_cost=1),CorrectionDecision.FIX_FORWARD)
   self.assertEqual(correction_decision(material=False,expected_future_cost=1,correction_cost=2),CorrectionDecision.CONTINUE)
   self.assertEqual(correction_decision(material=True,ownership_failure=True,expected_future_cost=5,correction_cost=1),CorrectionDecision.REOPEN_TOPOLOGY)
+  self.assertEqual(correction_decision(material=True,ownership_failure=True,expected_future_cost=0,correction_cost=100),CorrectionDecision.REOPEN_TOPOLOGY)
+  self.assertEqual(correction_decision(material=True,ownership_failure=True,expected_future_cost=-1,correction_cost=-1),CorrectionDecision.REOPEN_TOPOLOGY)
   self.assertEqual(correction_decision(material=True,expected_future_cost=5,correction_cost=1),CorrectionDecision.FIX_FORWARD)
+ def test_correction_incident_consumes_one_fix_forward_without_retry_loop(self):
+  facts={"material":False,"expected_future_cost":5,"correction_cost":1}
+  self.assertEqual(self.s.correction("wording-1",**facts),CorrectionDecision.FIX_FORWARD)
+  self.assertEqual(self.s.correction("wording-1",**facts),CorrectionDecision.CONTINUE)
+  self.assertEqual(self.s.correction("wording-2",**facts),CorrectionDecision.FIX_FORWARD)
+  material={"material":True,"expected_future_cost":5,"correction_cost":1}
+  self.assertEqual(self.s.correction("risk-1",**material),CorrectionDecision.FIX_FORWARD)
+  self.assertEqual(self.s.correction("risk-1",**material),CorrectionDecision.ESCALATE)
+  boundary={"material":True,"ownership_failure":True,"expected_future_cost":0,"correction_cost":100}
+  self.assertEqual(self.s.correction("owner-collision",**boundary),CorrectionDecision.REOPEN_TOPOLOGY)
+  self.assertEqual(self.s.correction("owner-collision",**boundary),CorrectionDecision.REOPEN_TOPOLOGY)
+  bounded=Swarm(); bounded.correction_receipts={f"old-{index}":None for index in range(64)}
+  self.assertEqual(bounded.correction("new-minor",**facts),CorrectionDecision.CONTINUE)
+  self.assertEqual(bounded.correction("new-material",**material),CorrectionDecision.ESCALATE)
+  self.assertEqual(len(bounded.correction_receipts),64)
  def test_ctrl_events_are_semantic_and_bounded(self):
   expected={"MOTHER_WAKE":"attention","RECOVERY":"attention","DEADLOCK":"blocker","REVIEW_FAIL":"blocker","SCOPE_ESCALATION":"blocker","RELEASE":"release","HANDOFF":"handoff","ACCEPTANCE":"acceptance"}
-  for event,category in expected.items(): self.assertEqual(self.s.ctrl_event(event,"A"),f"A: {category}")
+  for revision,(event,category) in enumerate(expected.items()): self.assertEqual(self.s.ctrl_event(event,"A",revision),f"A: {category}")
   self.assertIsNone(self.s.ctrl_event("PROGRESS","A")); self.assertIsNone(self.s.ctrl_event("raw-label","A"))
+ def test_ctrl_event_receipt_suppresses_unchanged_and_rearms_on_material_revision(self):
+  self.assertEqual(self.s.ctrl_event("REVIEW_FAIL","A","evidence-1"),"A: blocker")
+  self.assertIsNone(self.s.ctrl_event("REVIEW_FAIL","A","evidence-1"))
+  self.assertIsNone(self.s.ctrl_event("DEADLOCK","A","evidence-1"))
+  self.assertEqual(self.s.ctrl_event("REVIEW_FAIL","A","evidence-2"),"A: blocker")
+  self.assertEqual(self.s.ctrl_event("HANDOFF","A","evidence-2"),"A: handoff")
+  self.assertIsNone(self.s.ctrl_event("HANDOFF","A","evidence-2"))
 if __name__ == "__main__": unittest.main()
