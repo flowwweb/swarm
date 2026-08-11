@@ -16,11 +16,19 @@ class WorkerState(StrEnum):
 class InvariantError(ValueError): pass
 
 @dataclass(frozen=True)
+class VersionedReference:
+    name:str; version:int; kind:str
+
+@dataclass(frozen=True)
 class ContextPackage:
     goal:str; architecture:dict[str,int]; dependencies:tuple[str,...]; artifacts:tuple[str,...]; acceptance:tuple[str,...]; history:tuple[str,...]; transfer_cost:int
     @classmethod
-    def build(cls, *, goal:str, architecture:dict[str,int], dependencies:list[str], artifacts:list[str], acceptance:list[str], history:list[str], budget:int) -> "ContextPackage":
+    def build(cls, *, goal:str, architecture:dict[str,int], dependencies:list[VersionedReference|str], artifacts:list[VersionedReference|str], acceptance:list[str], history:list[VersionedReference|str], budget:int) -> "ContextPackage":
         if budget < 1: raise InvariantError("context budget must be positive")
+        current=lambda item: not isinstance(item,VersionedReference) or architecture.get(item.name,item.version)==item.version
+        dependencies=[item for item in dependencies if current(item)]; artifacts=[item for item in artifacts if current(item)]; history=[item for item in history if current(item)]
+        render=lambda item: f"{item.name}:v{item.version}" if isinstance(item,VersionedReference) else item
+        dependencies=[render(item) for item in dependencies]; artifacts=[render(item) for item in artifacts]; history=[render(item) for item in history]
         spine=[goal,*acceptance]; optional=[*dependencies,*artifacts,*history]
         if len(spine)>budget: raise InvariantError("budget cannot admit canonical spine")
         kept=optional[:max(0,budget-len(spine))]
