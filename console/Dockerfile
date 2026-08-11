@@ -3,7 +3,7 @@ FROM python:3.12-slim
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     CODEX_HOME=/data/codex \
-    RUSH_CONFIG_PATH=/data/rush/config.toml
+    SWARM_CONFIG_PATH=/data/swarm/config.toml
 
 RUN addgroup --system rush && adduser --system --ingroup rush rush
 WORKDIR /app

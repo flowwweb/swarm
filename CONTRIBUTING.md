@@ -1,6 +1,6 @@
 # Contributing
 
-Bug reports and focused pull requests are welcome. Include the affected RUSH version, the observed behavior, the expected behavior, and the smallest safe reproduction. Remove credentials, private paths, prompts, customer data, task messages, and unrelated logs before submitting anything.
+Bug reports and focused pull requests are welcome. Include the affected SWARM version, the observed behavior, the expected behavior, and the smallest safe reproduction. Remove credentials, private paths, prompts, customer data, task messages, and unrelated logs before submitting anything.
 
 Keep changes narrow. Preserve outcome ownership, authority boundaries, independent review, and honest proof classes. Do not add hierarchy, configuration, dependencies, or compatibility paths for hypothetical use.
 

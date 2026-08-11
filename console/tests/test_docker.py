@@ -37,8 +37,8 @@ class RushDockerTests(unittest.TestCase):
             self.assertEqual(launcher.main(), 0)
 
         expected_environment = environment.copy()
-        expected_environment.setdefault("RUSH_CODEX_HOME", str(TEST_HOME / ".codex"))
-        expected_environment.setdefault("RUSH_CONFIG_HOME", str(TEST_HOME / ".agents" / "rush"))
+        expected_environment.setdefault("SWARM_CODEX_HOME", expected_environment.get("RUSH_CODEX_HOME",str(TEST_HOME / ".codex")))
+        expected_environment.setdefault("SWARM_CONFIG_HOME", str(TEST_HOME / ".agents" / "swarm"))
         invoked_environment = run.call_args.kwargs["env"]
         run.assert_called_once_with(
             ["docker", "compose", "-f", str(COMPOSE), "config", "--quiet"],
@@ -47,8 +47,8 @@ class RushDockerTests(unittest.TestCase):
             check=False,
         )
         self.assertEqual(
-            {key: value for key, value in invoked_environment.items() if key != "RUSH_CONTAINER_USER"},
-            {key: value for key, value in expected_environment.items() if key != "RUSH_CONTAINER_USER"},
+            {key: value for key, value in invoked_environment.items() if key != "SWARM_CONTAINER_USER"},
+            {key: value for key, value in expected_environment.items() if key != "SWARM_CONTAINER_USER"},
         )
         return invoked_environment
 
@@ -58,19 +58,19 @@ class RushDockerTests(unittest.TestCase):
             getuid=mock.Mock(return_value=501),
             getgid=mock.Mock(return_value=20),
         )
-        self.assertEqual(environment["RUSH_CONTAINER_USER"], "501:20")
+        self.assertEqual(environment["SWARM_CONTAINER_USER"], "501:20")
 
     def test_windows_unavailable_identity_uses_compose_fallback_through_main(self) -> None:
         environment = self._run_main({}, getuid=None, getgid=None)
-        self.assertNotIn("RUSH_CONTAINER_USER", environment)
+        self.assertNotIn("SWARM_CONTAINER_USER", environment)
 
     def test_explicit_container_identity_is_preserved_through_main(self) -> None:
         environment = self._run_main(
-            {"RUSH_CONTAINER_USER": "123:456"},
+            {"SWARM_CONTAINER_USER": "123:456"},
             getuid=mock.Mock(return_value=501),
             getgid=mock.Mock(return_value=20),
         )
-        self.assertEqual(environment["RUSH_CONTAINER_USER"], "123:456")
+        self.assertEqual(environment["SWARM_CONTAINER_USER"], "123:456")
 
     def test_zero_host_identity_uses_compose_fallback_through_main(self) -> None:
         for uid, gid in ((0, 20), (501, 0), (0, 0)):
@@ -80,16 +80,16 @@ class RushDockerTests(unittest.TestCase):
                     getuid=mock.Mock(return_value=uid),
                     getgid=mock.Mock(return_value=gid),
                 )
-                self.assertNotIn("RUSH_CONTAINER_USER", environment)
+                self.assertNotIn("SWARM_CONTAINER_USER", environment)
 
     def test_compose_preserves_container_security_and_safe_fallback(self) -> None:
         compose = COMPOSE.read_text(encoding="utf-8")
         dockerfile = DOCKERFILE.read_text(encoding="utf-8")
         self.assertIn("\nUSER rush\n", dockerfile)
-        self.assertIn('user: "${RUSH_CONTAINER_USER:-rush}"', compose)
+        self.assertIn('user: "${SWARM_CONTAINER_USER:-${RUSH_CONTAINER_USER:-swarm}}"', compose)
         self.assertIn('"127.0.0.1:4788:4788"', compose)
         self.assertIn(':/data/codex:ro"', compose)
-        self.assertIn(':/data/rush"', compose)
+        self.assertIn(':/data/swarm"', compose)
         self.assertIn("read_only: true", compose)
         self.assertIn("no-new-privileges:true", compose)
 

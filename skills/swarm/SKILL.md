@@ -1,28 +1,23 @@
----
-name: swarm
-description: Coordinate complex work with the shallowest reliable structure, explicit authority, canonical state, bounded recovery, and independent review.
----
-
 # SWARM
 
-System for Workload Allocation, Routing & Management.
+## CORE
 
-Use the shallowest structure that can finish reliably. `CTRL → DOER` is enough for atomic work. Add MOTHER only when orchestration, state, or lifecycle earns its cost. Add a LEAD for a real workstream; add ARCHITECT and multiple LEADs only for real system design or independent workstreams. Evaluate scope, architecture impact, independent tasks, dependencies, uncertainty, blast radius, specialisation, useful parallelism, and coordination overhead. Collapse idle capacity after work narrows.
+Use the shallowest structure that can reliably finish the agreed objective. MOTHER alone changes topology; canonical state, ownership, artifact identity, and acceptance live in runtime, not prompts. Reuse current evidence and workers before recomputing. Healthy work is quiet; surface only attention, blocker, handoff, acceptance, or release. Stop at the accepted objective.
 
-CTRL speaks with people and never invents technical decisions. MOTHER alone changes topology. ARCHITECT owns architecture and contract versions. LEAD owns one workstream. DOER executes. EXPERT advises without transferring ownership. REVIEW independently verifies and never approves work it authored.
+MOTHER, every LEAD, and every persistent ARCHITECT inspect and continue one durable goal with exact objective, stopping condition, authority boundary, and proof. `UNVERIFIED` is an open acceptance failure. Keep an end-to-end requirement ledger. A conflicting unfinished goal escalates; it is not replaced. Completion requires independent review, integration, and any architecture gate.
 
-Canonical state, not conversation history, holds tasks, owners, versions, artifacts, blockers, findings, leases, and lifecycle. WAITING names a dependency; cycles emit deadlock. Workers are replaceable; retirement archives useful state. Retries are bounded and materially changed. A stale task cannot silently proceed. Completion requires independent review, integration, and any required architecture checkpoint.
+Scope Discipline: preserve or escalate only a material violation of an explicit current invariant. An unrelated opportunity creates no task, worker, depth, review, proof, or finish-line change. It never narrows an explicit safety or acceptance requirement.
 
-MOTHER, every LEAD, and every persistent ARCHITECT continue one durable goal with an objective, stopping condition, authority boundary, and required proof. Keep an end-to-end requirement ledger in the task-tree receipt; `UNVERIFIED` is an open acceptance failure. The MOTHER heartbeat is passive: it observes material change, uses one same-surface recovery, then releases an unchanged lane with its exact blocker and unblock condition.
+SWARM is the new-facing product. Legacy RUSH command, title, environment, and config-path aliases remain read-only compatibility surfaces. “zerg rush” only means disjoint, integration-ready work; it never overrides the shallowest structure or authority.
 
-Scope Discipline is fixed: complete the smallest sufficient agreed upgrade. Discovery does not move the finish line or create follow-on work. Preserve or escalate a new finding only when it materially affects correctness of an explicit current requirement; otherwise leave it for separate consideration. This rule never narrows an explicit addendum, safety floor, proof gate, or acceptance obligation.
+## ROLE
 
-LEAD integrates and inspects each whole lane result before it reaches independent REVIEW. A conflicting unfinished goal is escalated rather than replaced. An atomic route may skip the LEAD, but never independent acceptance where review is required.
+Every role contract contains only PURPOSE, OWNERSHIP, BOUNDARIES, ESCALATION. CTRL routes; MOTHER owns portfolio state and acceptance; ARCHITECT owns current system coherence; LEAD owns a mutable lane and LEAD integrates and inspects each whole lane result; DOER owns one bounded artifact; EXPERT advises without transfer; independent REVIEW verifies. No role acquires another role’s authority from a prompt.
 
-The legacy phrase “zerg rush” means starting only disjoint, integration-ready work; it never overrides adaptive depth, ownership, or the coordination-cost test.
+## TASK
 
-RUSH configuration and state remain readable only as migration compatibility. New user-facing output says SWARM. Prefer one broad runtime invariant over incident-specific prompt rules. Treat the console as a CTRL/observability projection, never a second authority.
+Atomic and simple work receives only CORE + role + objective, acceptance/non-negotiables, owner, dependencies, mutable surface, relevant canonical artifact/version, proof limits, and accepting route/blocker. Use `references/task-contract.md` for the compact template. Do not paste history, a crew handbook, or runtime-enforced laws.
 
-Workspace hygiene is mechanical: classify completed work as NONE, LOW, HIGH, or PINNED review value; archive NONE after verification, retain LOW/HIGH for configured windows, and exempt PINNED items. Archive stale work as `ARCHIVED_STALE` with reason, replacement/version provenance, and promoted operational knowledge. Archive is never delete. Global configuration is schema-validated with packaged defaults → one selected global config; direct task instructions are not file-merge layers. Retention, lanes, WIP, heartbeat, review, telemetry, and CTRL policy are configurable, while single MOTHER, independent review, bounded recovery, and canonical-state continuity are not.
+## EVENT
 
-HIVE is a compact logical namespace for durable SWARM lessons that have no better authoritative home. Current canonical state and repository/project truth outrank HIVE; archive/history is lower. Keep only concise decisions, constraints, meaningful failed approaches, or continuation facts, reference existing durable truth instead of copying it, and hydrate only relevant current records inside the context budget. HIVE never becomes a product-memory prescription: ARCHITECT remains free to design target-product memory from its own requirements. Workers may stay WARM while their compact context has near-term value; retirement flushes zero or a few unique lessons before ownership transfer.
+Lazy-load references only for a stall/HEARTBEAT, architecture or contract version conflict, high-risk review failure, provider/browser/Docker/security/public release, HIVE hydration or retirement, or feedback. Design rationale and migration history stay in docs. Runtime enforces lane/WIP, dedup, self-review, state validity, stale/dependency/archive, retry, and config validation.

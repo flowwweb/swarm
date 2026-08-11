@@ -7,6 +7,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 
 SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "rush_config.py"
@@ -17,6 +18,12 @@ SPEC.loader.exec_module(config)
 
 
 class RushConfigTests(unittest.TestCase):
+    def test_canonical_path_falls_back_only_to_existing_legacy_path(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory); swarm=root / "swarm.toml"; legacy=root / "rush.toml"; legacy.write_text("",encoding="utf-8")
+            with mock.patch.object(config,"SWARM_DEFAULT_PATH",swarm), mock.patch.object(config,"RUSH_LEGACY_PATH",legacy), mock.patch.dict(config.os.environ,{},clear=True):
+                self.assertEqual(config.resolve_config_path(),legacy)
+                swarm.write_text("",encoding="utf-8"); self.assertEqual(config.resolve_config_path(),swarm)
     def test_usage_saver_is_off_in_defaults_and_template(self) -> None:
         self.assertFalse(config.DEFAULTS["execution"]["usage_saver"])
         effective, exists = config.load(config.TEMPLATE_PATH)

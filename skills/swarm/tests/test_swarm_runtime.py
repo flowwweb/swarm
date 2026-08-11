@@ -3,7 +3,7 @@ import sys
 import unittest
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from runtime import ArtifactIdentity, ContextPackage, DedupDecision, Depth, EfficiencyMode, HiveRecord, HiveStatus, InvariantError, ReviewEvidence, ReviewStrategy, ReviewValue, Role, Swarm, Task, TaskState, VersionedReference, Worker, WorkerState, choose_depth, initial_tier
+from runtime import ArtifactIdentity, ArtifactJustification, ContextPackage, DedupDecision, Depth, EfficiencyMode, HiveRecord, HiveStatus, InvariantError, ReviewEvidence, ReviewStrategy, ReviewValue, Role, Swarm, Task, TaskState, VersionedReference, Worker, WorkerState, choose_depth, initial_tier
 
 class RuntimeTests(unittest.TestCase):
  def setUp(self):
@@ -40,6 +40,7 @@ class RuntimeTests(unittest.TestCase):
   self.assertEqual(self.s.collapse(Role.MOTHER,"L"),Depth.ATOMIC)
  def test_hygiene_archives_not_deletes_and_preserves_stale_provenance(self):
   self.s.tasks["A"].state=TaskState.COMPLETE; self.s.tasks["A"].completed_at=0
+  self.s.workers["D"].task_ids.discard("A")
   self.s.tasks["A"].review_value=ReviewValue.NONE
   self.s.stale(Role.LEAD,"A","superseded contract",now=0,superseded_by="B",promote=["race evidence"])
   self.assertEqual(self.s.groom(Role.MOTHER,5,{"no_review_archive_delay":0,"low_review_retention":2,"high_review_retention":3,"stale_task_archive_delay":1}),["A"])
@@ -48,7 +49,7 @@ class RuntimeTests(unittest.TestCase):
  def test_stale_dependency_and_archived_safety(self):
   self.s.assign(Role.LEAD,Task("B","D","author",1,{})); self.s.stale(Role.LEAD,"A","replaced",now=0); self.s.wait(Role.DOER,"B","A")
   self.assertEqual(self.s.groom(Role.MOTHER,5,{"no_review_archive_delay":0,"low_review_retention":2,"high_review_retention":3,"stale_task_archive_delay":1}),[])
-  self.s.tasks["B"].state=TaskState.COMPLETE; self.s.groom(Role.MOTHER,5,{"no_review_archive_delay":0,"low_review_retention":2,"high_review_retention":3,"stale_task_archive_delay":1}); self.s.change_architecture(Role.ARCHITECT,{"a":2}); self.assertEqual(self.s.tasks["A"].state,TaskState.ARCHIVED_STALE)
+  self.s.tasks["B"].state=TaskState.COMPLETE; self.s.workers["D"].task_ids.clear(); self.s.groom(Role.MOTHER,5,{"no_review_archive_delay":0,"low_review_retention":2,"high_review_retention":3,"stale_task_archive_delay":1}); self.s.change_architecture(Role.ARCHITECT,{"a":2}); self.assertEqual(self.s.tasks["A"].state,TaskState.ARCHIVED_STALE)
  def test_review_is_candidate_before_acceptance(self):
   self.s.review(Role.REVIEW,"A","independent",True); self.assertEqual(self.s.tasks["A"].state,TaskState.REVIEW)
   self.s.complete(Role.MOTHER,"A",True,True,7); self.assertEqual(self.s.tasks["A"].completed_at,7)
@@ -62,7 +63,7 @@ class RuntimeTests(unittest.TestCase):
  def test_stale_clock_and_unresolved_completion(self):
   self.s.change_architecture(Role.ARCHITECT,{"x":2},now=90); self.s.groom(Role.MOTHER,100,{"no_review_archive_delay":0,"low_review_retention":2,"high_review_retention":3,"stale_task_archive_delay":30}); self.assertEqual(self.s.tasks["A"].state,TaskState.STALE); self.assertFalse(self.s.project_complete(Role.MOTHER,True,True))
  def test_archived_only_collapses_and_missing_replacement_blocks_complete(self):
-  self.s.stale(Role.LEAD,"A","gone",now=0,superseded_by="MISSING"); self.s.groom(Role.MOTHER,2,{"no_review_archive_delay":0,"low_review_retention":2,"high_review_retention":3,"stale_task_archive_delay":1}); self.assertFalse(self.s.project_complete(Role.MOTHER,True,True)); self.assertEqual(self.s.collapse(Role.MOTHER,"L"),Depth.ATOMIC)
+  self.s.stale(Role.LEAD,"A","gone",now=0,superseded_by="MISSING"); self.s.workers["D"].task_ids.discard("A"); self.s.groom(Role.MOTHER,2,{"no_review_archive_delay":0,"low_review_retention":2,"high_review_retention":3,"stale_task_archive_delay":1}); self.assertFalse(self.s.project_complete(Role.MOTHER,True,True)); self.assertEqual(self.s.collapse(Role.MOTHER,"L"),Depth.ATOMIC)
  def test_bounded_context_spine(self):
   with self.assertRaises(InvariantError): ContextPackage.build(goal="g",architecture={},dependencies=[],artifacts=[],acceptance=["a"],history=[str(i) for i in range(1000)],budget=1)
   package=ContextPackage.build(goal="g",architecture={"a":1},dependencies=["d"],artifacts=["x"],acceptance=[],history=[str(i) for i in range(1000)],budget=1); self.assertEqual(package.goal,"g"); self.assertEqual(package.history,())
@@ -72,10 +73,10 @@ class RuntimeTests(unittest.TestCase):
  def test_context_drops_obsolete_versions(self):
   p=ContextPackage.build(goal="g",architecture={"contract":2},dependencies=[VersionedReference("contract",1,"dependency"),VersionedReference("contract",2,"dependency")],artifacts=[],acceptance=[],history=[],budget=2); self.assertEqual(p.dependencies,("contract:v2",))
  def test_restore_and_keyed_archive_telemetry(self):
-  self.s.tasks["A"].state=TaskState.COMPLETE; self.s.tasks["A"].completed_at=0; self.s.groom(Role.MOTHER,31,{"no_review_archive_delay":0,"low_review_retention":2,"high_review_retention":3,"stale_task_archive_delay":1})
+  self.s.tasks["A"].state=TaskState.COMPLETE; self.s.tasks["A"].completed_at=0; self.s.workers["D"].task_ids.discard("A"); self.s.groom(Role.MOTHER,31,{"no_review_archive_delay":0,"low_review_retention":2,"high_review_retention":3,"stale_task_archive_delay":1})
   self.assertIsInstance(self.s.telemetry["archive_reasons"],dict); self.s.restore(Role.MOTHER,"A","needed"); self.assertEqual(self.s.tasks["A"].state,TaskState.ACTIVE); self.assertEqual(self.s.telemetry["restores"],1)
  def test_zero_completion_timestamp_has_real_archive_duration(self):
-  self.s.tasks["A"].state=TaskState.COMPLETE; self.s.tasks["A"].completed_at=0
+  self.s.tasks["A"].state=TaskState.COMPLETE; self.s.tasks["A"].completed_at=0; self.s.workers["D"].task_ids.discard("A")
   self.s.groom(Role.MOTHER,100,{"no_review_archive_delay":0,"low_review_retention":2,"high_review_retention":3,"stale_task_archive_delay":1})
   self.assertEqual(self.s.telemetry["completion_to_archive"]["A"],100); self.assertEqual(self.s.telemetry["age_buckets"]["aged"],1)
  def test_modes_and_family_preserve_floors(self):
@@ -101,8 +102,8 @@ class RuntimeTests(unittest.TestCase):
   self.s.add_artifact(Role.DOER,"A",ArtifactIdentity("canonical","v1","work"))
   self.s.assign(Role.LEAD,Task("B","D","author",1,{}))
   with self.assertRaises(InvariantError): self.s.add_artifact(Role.DOER,"B",ArtifactIdentity("canonical","v1","work"))
-  with self.assertRaises(InvariantError): self.s.add_artifact(Role.DOER,"B",ArtifactIdentity("canonical","v2","verification"),source="missing@v1:work",justification="verification")
-  self.s.add_artifact(Role.DOER,"B",ArtifactIdentity("canonical","v2","verification"),source="canonical@v1:work",justification="verification"); self.assertIn("canonical@v2:verification",self.s.tasks["B"].artifacts)
+  with self.assertRaises(InvariantError): self.s.add_artifact(Role.DOER,"B",ArtifactIdentity("canonical","v2","verification"),source="missing@v1:work",justification=ArtifactJustification.VERIFICATION)
+  self.s.add_artifact(Role.DOER,"B",ArtifactIdentity("canonical","v2","verification"),source="canonical@v1:work",justification=ArtifactJustification.VERIFICATION); self.assertIn("canonical@v2:verification",self.s.tasks["B"].artifacts)
  def test_assign_registers_artifact_identity(self):
   self.s.assign(Role.LEAD,Task("B","D","author",1,{},artifacts={"canon@v1:work":"B"}))
   with self.assertRaises(InvariantError): self.s.add_artifact(Role.DOER,"A",ArtifactIdentity("canon","v1","work"))
@@ -111,9 +112,9 @@ class RuntimeTests(unittest.TestCase):
   self.s.assign(Role.LEAD,Task("B","D","author",1,{},artifacts={primary:"B"}))
   with self.assertRaises(InvariantError): self.s.add_artifact(Role.DOER,"A",primary)
   verification=ArtifactIdentity("canonical","v2","verification")
-  self.s.assign(Role.LEAD,Task("C","D","author",1,{},artifacts={verification:"canonical@v1:work"},artifact_justifications={verification.key():"verification"}))
+  self.s.assign(Role.LEAD,Task("C","D","author",1,{},artifacts={verification:"canonical@v1:work"},artifact_justifications={verification.key():ArtifactJustification.VERIFICATION}))
   uncertainty=ArtifactIdentity("canonical","v3","uncertainty")
-  self.s.add_artifact(Role.DOER,"A",uncertainty,source="canonical@v1:work",justification="uncertainty")
+  self.s.add_artifact(Role.DOER,"A",uncertainty,source="canonical@v1:work",justification=ArtifactJustification.UNCERTAINTY)
   self.assertIn(verification.key(),self.s.artifact_index); self.assertIn(uncertainty.key(),self.s.artifact_index)
  def test_hive_reuses_truth_and_filters_stale_bounded_hydration(self):
   with self.assertRaises(InvariantError): self.s.remember(Role.DOER,HiveRecord("noise",content="status update",source="task",value="noise"),1)
@@ -144,6 +145,23 @@ class RuntimeTests(unittest.TestCase):
   self.assertIsNone(self.s.reuse_warm(Role.LEAD,Task("N","new","creator",1,{}),architecture={"auth":3},affinity=2))
  def test_duplicate_lane_rejected(self):
   with self.assertRaises(InvariantError): self.s.add_worker(Role.LEAD,Worker("D2","L",1))
+ def test_archive_rejects_every_live_owner_state_until_release(self):
+  for state in (WorkerState.SPAWNED,WorkerState.ACTIVE,WorkerState.WARM,WorkerState.DRAINING):
+   self.s.workers["D"].state=state; self.s.workers["D"].task_ids.add("A"); self.s.tasks["A"].state=TaskState.COMPLETE; self.s.tasks["A"].completed_at=0
+   self.assertEqual(self.s.groom(Role.MOTHER,1,{"no_review_archive_delay":0,"low_review_retention":2,"high_review_retention":3,"stale_task_archive_delay":1}),[])
+  self.s.workers["D"].task_ids.discard("A"); self.assertEqual(self.s.groom(Role.MOTHER,1,{"no_review_archive_delay":0,"low_review_retention":2,"high_review_retention":3,"stale_task_archive_delay":1}),["A"])
+ def test_context_cost_includes_full_canonical_package(self):
+  p=ContextPackage.build(goal="g",architecture={"a":1,"b":2},dependencies=["d"],artifacts=[],acceptance=["accept"],history=[],budget=4)
+  self.assertEqual(p.transfer_cost,5) # goal, acceptance, two architecture entries, admitted dependency
+ def test_hop_receipts_are_bounded_and_proportional(self):
+  atomic=Swarm(); atomic.start_atomic(Role.CTRL,Task("T","D","c",1,{})); self.assertEqual(atomic.tasks["T"].topology_receipt,("CTRL","DOER","atomic:isolated"))
+  simple=Swarm(); simple.start_simple(Role.MOTHER,Task("S","D","c",1,{})); self.assertEqual(simple.tasks["S"].topology_receipt,("CTRL","MOTHER","DOER","simple:stateful"))
+  self.assertEqual(choose_depth(scope=3,independent_tasks=2),Depth.WORKSTREAM); self.assertEqual(choose_depth(scope=5,architecture_impact=True,independent_tasks=3,specialisations=2),Depth.PROJECT)
+ def test_typed_justification_and_bounded_machine_receipts(self):
+  self.s.add_artifact(Role.DOER,"A",ArtifactIdentity("canon","v1","work"))
+  with self.assertRaises(InvariantError): self.s.add_artifact(Role.DOER,"A",ArtifactIdentity("canon","v2","verification"),source="canon@v1:work",justification="verification")
+  for _ in range(70): self.s.record_telemetry("task","DOER",1,"ok")
+  self.assertLessEqual(len(self.s.events),64); self.assertLessEqual(len(self.s.telemetry_events),64)
  def test_scope_discipline_blocks_only_material_invariant_findings(self):
   before=(len(self.s.tasks),len(self.s.workers),len(self.s.events),self.s.tasks["A"].state)
   self.assertFalse(self.s.scope_finding(Role.DOER,"A","nice-to-have",material=False)); self.assertEqual(before,(len(self.s.tasks),len(self.s.workers),len(self.s.events),self.s.tasks["A"].state))

@@ -14,6 +14,7 @@ class WorkerState(StrEnum):
     SPAWNED="SPAWNED"; ACTIVE="ACTIVE"; WARM="WARM"; DRAINING="DRAINING"; RETIRED="RETIRED"
 class HiveStatus(StrEnum): ACTIVE="ACTIVE"; ARCHIVED="ARCHIVED"; PURGEABLE="PURGEABLE"; PURGED="PURGED"
 class DedupDecision(StrEnum): REUSE="REUSE"; EXECUTE="EXECUTE"
+class ArtifactJustification(StrEnum): VERIFICATION="verification"; UNCERTAINTY="uncertainty"
 
 class InvariantError(ValueError): pass
 
@@ -53,7 +54,7 @@ class ContextPackage:
         spine=[goal,*acceptance]; optional=[*dependencies,*artifacts,*hive,*history]
         if len(spine)>budget: raise InvariantError("budget cannot admit canonical spine")
         kept=optional[:max(0,budget-len(spine))]
-        return cls(goal,architecture,tuple(x for x in dependencies if x in kept),tuple(x for x in artifacts if x in kept),tuple(acceptance),tuple(x for x in history if x in kept),len(spine)+len(kept),tuple(x for x in hive if x in kept))
+        return cls(goal,architecture,tuple(x for x in dependencies if x in kept),tuple(x for x in artifacts if x in kept),tuple(acceptance),tuple(x for x in history if x in kept),len(spine)+len(architecture)+len(kept),tuple(x for x in hive if x in kept))
 
 class Depth(StrEnum):
     ATOMIC="CTRL_DOER"; SIMPLE="CTRL_MOTHER_DOER"; WORKSTREAM="CTRL_MOTHER_LEAD_DOER"; PROJECT="CTRL_MOTHER_ARCHITECT_LEADS_DOERS"
@@ -78,7 +79,7 @@ class Task:
     id: str; owner: str; creator: str; architecture_version: int; contracts: dict[str,int]
     state: TaskState=TaskState.ACTIVE; waiting_on: str|None=None; reviewer: str|None=None; findings: list[str]=field(default_factory=list)
     evidence: list[str]=field(default_factory=list); recovery_dimensions: set[str]=field(default_factory=set); recovery_attempts:int=0; review_value: ReviewValue=ReviewValue.NONE
-    completed_at: int|None=None; stale_at: int|None=None; archived_at: int|None=None; stale_reason: str|None=None; superseded_by: str|None=None; promoted: list[str]=field(default_factory=list); extensions: int=0; review_passed: bool=False; risk:int=1; review_strategy:str="light"; architecture_review_floor:ReviewStrategy=ReviewStrategy.LIGHT; security_review_floor:ReviewStrategy=ReviewStrategy.LIGHT; artifacts:dict[ArtifactIdentity|str,str]=field(default_factory=dict); artifact_justifications:dict[str,str]=field(default_factory=dict); archive:dict[str,object]=field(default_factory=dict); active_goal:bool=False; handoff_active:bool=False; correction_pending:bool=False; user_choice_pending:bool=False; ambiguous:bool=False
+    completed_at: int|None=None; stale_at: int|None=None; archived_at: int|None=None; stale_reason: str|None=None; superseded_by: str|None=None; promoted: list[str]=field(default_factory=list); extensions: int=0; review_passed: bool=False; risk:int=1; review_strategy:str="light"; architecture_review_floor:ReviewStrategy=ReviewStrategy.LIGHT; security_review_floor:ReviewStrategy=ReviewStrategy.LIGHT; artifacts:dict[ArtifactIdentity|str,str]=field(default_factory=dict); artifact_justifications:dict[str,ArtifactJustification]=field(default_factory=dict); archive:dict[str,object]=field(default_factory=dict); active_goal:bool=False; handoff_active:bool=False; correction_pending:bool=False; user_choice_pending:bool=False; ambiguous:bool=False; topology_receipt:tuple[str,...]=()
 
 @dataclass
 class Worker:
@@ -94,6 +95,10 @@ class Swarm:
 
     def _role(self, actor: Role, allowed: set[Role]) -> None:
         if actor not in allowed: raise InvariantError(f"{actor} cannot perform this transition")
+    def _record(self, target:str, item:object) -> None:
+        """Keep machine receipts inspectable without retaining an event transcript."""
+        entries=getattr(self,target); entries.append(item)
+        if len(entries)>64: del entries[:-64]
     def add_lead(self, actor: Role, lead: str) -> None:
         self._role(actor,{Role.MOTHER}); self.topology.add(lead)
     def add_worker(self, actor: Role, worker: Worker) -> None:
@@ -107,12 +112,12 @@ class Swarm:
         """CTRL may create exactly one direct DOER ownership path for atomic work."""
         self._role(actor,{Role.CTRL})
         if task.owner in self.workers or task.id in self.tasks: raise InvariantError("atomic ownership already exists")
-        self.workers[task.owner]=Worker(task.owner,"CTRL",1,WorkerState.ACTIVE,{task.id}); self.tasks[task.id]=task
+        task.topology_receipt=("CTRL","DOER","atomic:isolated"); self.workers[task.owner]=Worker(task.owner,"CTRL",1,WorkerState.ACTIVE,{task.id}); self.tasks[task.id]=task
     def start_simple(self, actor:Role, task:Task) -> None:
         """MOTHER may add stateful direct DOER ownership without a LEAD."""
         self._role(actor,{Role.MOTHER})
         if task.owner in self.workers or task.id in self.tasks: raise InvariantError("simple ownership already exists")
-        self.workers[task.owner]=Worker(task.owner,"MOTHER",1,WorkerState.ACTIVE,{task.id}); self.tasks[task.id]=task
+        task.topology_receipt=("CTRL","MOTHER","DOER","simple:stateful"); self.workers[task.owner]=Worker(task.owner,"MOTHER",1,WorkerState.ACTIVE,{task.id}); self.tasks[task.id]=task
     def reuse_warm(self, actor:Role, task:Task, *, architecture:dict[str,int], affinity:int) -> str|None:
         self._role(actor,{Role.LEAD,Role.MOTHER,Role.CTRL})
         for worker in self.workers.values():
@@ -150,16 +155,17 @@ class Swarm:
         except ValueError as exc: raise InvariantError("artifact identity must be base@revision:purpose") from exc
         if not base or not revision or not purpose: raise InvariantError("artifact identity must be complete")
         return ArtifactIdentity(base,revision,purpose)
-    def _check_artifact(self, task:Task, artifact:ArtifactIdentity|str, source:str|None, justification:str|None, *, pending:set[str]|None=None) -> tuple[ArtifactIdentity,str]:
+    def _check_artifact(self, task:Task, artifact:ArtifactIdentity|str, source:str|None, justification:ArtifactJustification|None, *, pending:set[str]|None=None) -> tuple[ArtifactIdentity,str]:
         identity=self._artifact(artifact); key=identity.key()
         if pending is None: pending=set()
         if key in self.artifact_index or key in pending: raise InvariantError("canonical artifact identity already exists")
         if identity.purpose in {"verification","uncertainty"}:
-            if not source or justification!=identity.purpose or source not in self.artifact_index: raise InvariantError("justified duplicate requires an existing canonical source and matching purpose")
+            expected=ArtifactJustification(identity.purpose)
+            if not source or justification is not expected or source not in self.artifact_index: raise InvariantError("justified duplicate requires typed reason, existing canonical source, and matching purpose")
             source_identity=self._artifact(source)
             if source_identity.revision==identity.revision: raise InvariantError("justified duplicate requires distinct revision provenance")
         return identity,key
-    def _register_artifact(self, task:Task, artifact:ArtifactIdentity|str, source:str|None, justification:str|None) -> str:
+    def _register_artifact(self, task:Task, artifact:ArtifactIdentity|str, source:str|None, justification:ArtifactJustification|None) -> str:
         _,key=self._check_artifact(task,artifact,source,justification)
         self.artifact_index[key]=task.id; task.artifacts[key]=source or task.id
         return key
@@ -175,12 +181,12 @@ class Swarm:
     def should_spawn(self, *, independent: bool, critical_path: bool, duplicate_artifact: str|None=None, verification: bool=False, contention:bool=False) -> bool:
         allowed=independent and not contention and (critical_path or verification) and (not duplicate_artifact or verification) and sum(w.state!=WorkerState.RETIRED for w in self.workers.values()) < MODE_POLICY[self.mode]["parallel"]
         reason="allow:verification" if verification else "allow:critical_path" if allowed else "refuse:independent=false" if not independent else "refuse:contention" if contention else "refuse:duplicate" if duplicate_artifact else "refuse:noncritical"
-        self.efficiency_ledger.append({"kind":"spawn","decision":"allow" if allowed else "refuse","reason":reason})
+        self._record("efficiency_ledger",{"kind":"spawn","decision":"allow" if allowed else "refuse","reason":reason})
         return allowed
     def route(self, *, family:str, risk:int, uncertainty:int, blast_radius:int, architect_floor:int=1, historical_floor:int=1, mode:EfficiencyMode|None=None) -> int:
-        selected=mode or self.mode; tier=max(architect_floor,historical_floor,initial_tier(risk=risk,uncertainty=uncertainty,blast_radius=blast_radius,family=family,mode=selected)); self.efficiency_ledger.append({"kind":"route","family":family,"tier":str(tier),"reason":"expected_total_accepted_cost"}); return tier
+        selected=mode or self.mode; tier=max(architect_floor,historical_floor,initial_tier(risk=risk,uncertainty=uncertainty,blast_radius=blast_radius,family=family,mode=selected)); self._record("efficiency_ledger",{"kind":"route","family":family,"tier":str(tier),"reason":"expected_total_accepted_cost"}); return tier
     def dedup(self, identity:str, *, verification:bool=False, uncertainty:bool=False) -> DedupDecision:
-        found=bool(self.discover(identity)); decision=DedupDecision.EXECUTE if not found or verification or uncertainty else DedupDecision.REUSE; self.efficiency_ledger.append({"kind":"dedup","decision":decision.value,"reason":"verification" if verification else "uncertainty" if uncertainty else "canonical_artifact"}); return decision
+        found=bool(self.discover(identity)); decision=DedupDecision.EXECUTE if not found or verification or uncertainty else DedupDecision.REUSE; self._record("efficiency_ledger",{"kind":"dedup","decision":decision.value,"reason":"verification" if verification else "uncertainty" if uncertainty else "canonical_artifact"}); return decision
     def heartbeat(self, actor:Role, task_id:str, *, meaningful_progress:bool, owner_update:bool=True, unchanged_updates:int=1, recovery_attempts:int=0, enabled:bool|None=None) -> str|None:
         self._role(actor,{Role.MOTHER}); t=self.tasks[task_id]
         enabled=self.heartbeat_enabled if enabled is None else enabled
@@ -189,11 +195,11 @@ class Swarm:
         if t.state!=TaskState.ACTIVE: return None
         action=heartbeat_action(owner_update=owner_update,material_change=False,unchanged_updates=unchanged_updates,recovery_attempts=recovery_attempts,stall_after_updates=self.heartbeat_stall_after)
         if action=="observe" or task_id in self.heartbeat_latch: return None
-        if action=="release": self.events.append(("RELEASE",f"{task_id}:unchanged blocker")); return f"{task_id}:release/blocker"
-        self.heartbeat_latch.add(task_id); self.events.append(("MOTHER_WAKE",f"{task_id}:stall/actionable")); return f"{task_id}:stall/actionable"
+        if action=="release": self._record("events",("RELEASE",f"{task_id}:unchanged blocker")); return f"{task_id}:release/blocker"
+        self.heartbeat_latch.add(task_id); self._record("events",("MOTHER_WAKE",f"{task_id}:stall/actionable")); return f"{task_id}:stall/actionable"
     def context_decision(self, *, affinity:int|None=None, bloat:bool|None=None, stale:bool|None=None, stalls:int|None=None, worker_id:str|None=None, replacement:str|None=None) -> str:
         context=self.workers[worker_id].context if worker_id else {}; affinity=context.get("affinity",affinity or 0); bloat=context.get("bloat",bloat or False); stale=context.get("stale",stale or False); stalls=context.get("stalls",stalls or 0)
-        result="retire" if bloat or stale or stalls>1 or affinity==0 else "reuse"; self.efficiency_ledger.append({"kind":"context","decision":result,"reason":"bounded_spine"})
+        result="retire" if bloat or stale or stalls>1 or affinity==0 else "reuse"; self._record("efficiency_ledger",{"kind":"context","decision":result,"reason":"bounded_spine"})
         if result=="retire" and worker_id: self.retire(Role.LEAD,worker_id,replacement)
         return result
     def change_architecture(self, actor: Role, contracts: dict[str,int], now:int=0) -> None:
@@ -204,7 +210,7 @@ class Swarm:
         self._role(actor,{Role.DOER}); t=self.tasks[task_id]
         if not dependency or dependency not in self.tasks: raise InvariantError("WAITING requires a named task dependency")
         t.state=TaskState.WAITING; t.waiting_on=dependency
-        if self._cycle(task_id): self.events.append(("DEADLOCK",task_id))
+        if self._cycle(task_id): self._record("events",("DEADLOCK",task_id))
     def _cycle(self, start: str) -> bool:
         seen=set(); current=start
         while current and current not in seen:
@@ -213,20 +219,20 @@ class Swarm:
     def recover(self, actor: Role, task_id: str, dimension: str) -> None:
         self._role(actor,{Role.LEAD,Role.MOTHER}); t=self.tasks[task_id]
         if not dimension or t.recovery_attempts>=1: raise InvariantError("recovery budget exhausted; release blocker")
-        t.recovery_dimensions.add(dimension); t.recovery_attempts=1; self.events.append(("RECOVERY",task_id))
+        t.recovery_dimensions.add(dimension); t.recovery_attempts=1; self._record("events",("RECOVERY",task_id))
     def scope_finding(self, actor:Role, task_id:str, evidence:str, *, material:bool) -> bool:
         """Preserve a direct invariant violation; unrelated opportunity changes nothing."""
         self._role(actor,{Role.DOER,Role.LEAD,Role.ARCHITECT,Role.MOTHER}); t=self.tasks[task_id]
         if not material: return False
         if not evidence: raise InvariantError("material scope finding needs evidence")
-        t.findings.append(f"scope:{evidence}"); t.correction_pending=True; t.state=TaskState.WAITING; self.events.append(("SCOPE_ESCALATION",task_id)); return True
+        t.findings.append(f"scope:{evidence}"); t.correction_pending=True; t.state=TaskState.WAITING; self._record("events",("SCOPE_ESCALATION",task_id)); return True
     def expert(self, actor: Role, task_id: str) -> None:
-        self._role(actor,{Role.DOER,Role.LEAD,Role.ARCHITECT,Role.MOTHER}); self.events.append(("EXPERT",task_id))
+        self._role(actor,{Role.DOER,Role.LEAD,Role.ARCHITECT,Role.MOTHER}); self._record("events",("EXPERT",task_id))
     def set_intelligence_floor(self, actor: Role, task_id: str, tier: int) -> None:
         self._role(actor,{Role.ARCHITECT}); self.tasks[task_id].contracts["intelligence_floor"]=tier
     def complexity_mismatch(self, actor: Role, task_id: str, observed_tier: int) -> None:
-        self._role(actor,{Role.DOER}); self.tasks[task_id].contracts["complexity_mismatch"]=observed_tier; self.events.append(("MISMATCH",task_id))
-    def add_artifact(self, actor: Role, task_id: str, artifact: ArtifactIdentity, risk: str="", *, source:str|None=None, justification:str|None=None) -> None:
+        self._role(actor,{Role.DOER}); self.tasks[task_id].contracts["complexity_mismatch"]=observed_tier; self._record("events",("MISMATCH",task_id))
+    def add_artifact(self, actor: Role, task_id: str, artifact: ArtifactIdentity, risk: str="", *, source:str|None=None, justification:ArtifactJustification|None=None) -> None:
         self._role(actor,{Role.DOER}); t=self.tasks[task_id]
         identity=self._register_artifact(t,artifact,source,justification); t.evidence.append(identity); t.findings.extend([risk] if risk else [])
     def discover(self, artifact: str) -> list[str]:
@@ -237,8 +243,8 @@ class Swarm:
     def record_telemetry(self, task_type:str, role:str, tier:int, outcome:str, *, model:str="", attempts:int=0, stalls:int=0, expert_uses:int=0, review_failures:int=0, review_cycles:int=0, productive:int=0, overhead:int=0, usage:int|None=None) -> None:
         self.telemetry.update({"tasks":self.telemetry.get("tasks",0)+1,"productive":self.telemetry.get("productive",0)+productive,"overhead":self.telemetry.get("overhead",0)+overhead})
         if usage is not None: self.telemetry["host_usage"]=self.telemetry.get("host_usage",0)+usage
-        self.telemetry_events.append({"task_type":task_type,"role":role,"tier":tier,"model":model,"attempts":attempts,"stalls":stalls,"expert_uses":expert_uses,"review_failures":review_failures,"review_cycles":review_cycles,"worker_count":len(self.workers),"outcome":outcome,"productive_execution":productive,"swarm_overhead":overhead,**({"host_usage":usage} if usage is not None else {})})
-        self.events.append(("TELEMETRY",f"{task_type}:{role}:L{tier}:{outcome}"))
+        self._record("telemetry_events",{"task_type":task_type,"role":role,"tier":tier,"model":model,"attempts":attempts,"stalls":stalls,"expert_uses":expert_uses,"review_failures":review_failures,"review_cycles":review_cycles,"worker_count":len(self.workers),"outcome":outcome,"productive_execution":productive,"swarm_overhead":overhead,**({"host_usage":usage} if usage is not None else {})})
+        self._record("events",("TELEMETRY",f"{task_type}:{role}:L{tier}:{outcome}"))
     def review(self, actor: Role, task_id: str, evidence: ReviewEvidence|str, passed: bool, finding:str="") -> None:
         self._role(actor,{Role.REVIEW}); t=self.tasks[task_id]
         if isinstance(evidence,str):
@@ -307,7 +313,7 @@ class Swarm:
         self.telemetry.update({"archived":self.telemetry.get("archived",0)+len(archived),"pins":sum(t.review_value==ReviewValue.PINNED for t in self.tasks.values()),"active":sum(t.state in {TaskState.ACTIVE,TaskState.WAITING,TaskState.REVIEW} for t in self.tasks.values()),"stale":sum(t.state==TaskState.STALE for t in self.tasks.values()),"restores":self.telemetry.get("restores",0),"extensions":sum(t.extensions for t in self.tasks.values()),"completion_to_archive":{task_id:now-(self.tasks[task_id].completed_at if self.tasks[task_id].completed_at is not None else self.tasks[task_id].stale_at if self.tasks[task_id].stale_at is not None else now) for task_id in archived},"archive_reasons":reasons,"age_buckets":ages}); return archived
     def archive_eligible(self, task:Task) -> bool:
         owner=self.workers.get(task.owner)
-        return task.review_value!=ReviewValue.PINNED and not any((task.active_goal,task.handoff_active,task.correction_pending,task.user_choice_pending,task.ambiguous,task.state==TaskState.REVIEW,owner is not None and owner.state==WorkerState.ACTIVE and task.id in owner.task_ids)) and not any(other.waiting_on==task.id and other.state in {TaskState.ACTIVE,TaskState.WAITING,TaskState.REVIEW} for other in self.tasks.values())
+        return task.review_value!=ReviewValue.PINNED and not any((task.active_goal,task.handoff_active,task.correction_pending,task.user_choice_pending,task.ambiguous,task.state==TaskState.REVIEW,owner is not None and owner.state!=WorkerState.RETIRED and task.id in owner.task_ids)) and not any(other.waiting_on==task.id and other.state in {TaskState.ACTIVE,TaskState.WAITING,TaskState.REVIEW} for other in self.tasks.values())
     def restore(self, actor:Role, task_id:str, reason:str) -> None:
         self._role(actor,{Role.MOTHER,Role.LEAD}); t=self.tasks[task_id]
         if t.state not in {TaskState.ARCHIVED,TaskState.ARCHIVED_STALE} or not reason: raise InvariantError("restore requires archived task and provenance")
@@ -324,7 +330,7 @@ class Swarm:
                 record.status=HiveStatus.PURGED; record.content=""; record.reference=""; self.telemetry["hive_purged"]=self.telemetry.get("hive_purged",0)+1
         self._hive_counts()
     def ctrl_event(self, event: str, task_id: str) -> str|None:
-        if event in {"HEARTBEAT","PROGRESS"}: return None
+        if event not in {"MOTHER_WAKE","DEADLOCK","RECOVERY","REVIEW_FAIL","SCOPE_ESCALATION","RELEASE","HANDOFF","ACCEPTANCE"}: return None
         return f"{task_id}: {event.lower().replace('_',' ')}"
     def project_complete(self, actor: Role, integration_ok: bool, architecture_ok: bool) -> bool:
         self._role(actor,{Role.MOTHER})

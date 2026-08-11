@@ -21,9 +21,9 @@ already-dispatched task contract. Re-read the config before a new scheduling
 wave so edits take effect without reinstalling the plugin.
 
 Packaged values are editable defaults, not a complete operating policy. Keep
-context-dependent decisions in RUSH's general selection rules and add a setting
+context-dependent decisions in SWARM's general selection rules and add a setting
 only when a user needs that preference to persist across runs. Hard validation
-protects schema integrity and fixed RUSH invariants; it should not encode a
+protects schema integrity and fixed SWARM invariants; it should not encode a
 catalog of project-specific tactics.
 
 ## Fixed invariants
@@ -40,11 +40,11 @@ Configuration cannot make an unsafe or hidden coordination path valid:
 - MOTHER, every LEAD, and every persistent ARCHITECT require an active durable
   goal before scheduling or substantive work. Goal controls are required; this
   invariant is not configurable and goal creation does not expand authority.
-- The MOTHER heartbeat is mandatory and passive: it reads every active
+- The MOTHER heartbeat is passive when enabled (the default): it reads every active
   descendant, detects stalls from material-change evidence, performs exactly
   one configured same-surface recovery, and then releases or reassigns on an
-  unchanged result. It cannot be disabled or replaced with polling, a queue,
-  daemon, private log, or activity-based progress.
+  unchanged result. `monitoring.heartbeat_enabled = false` is silent; it never
+  becomes polling, a queue, daemon, private log, or activity-based progress.
 
 ## Settings
 

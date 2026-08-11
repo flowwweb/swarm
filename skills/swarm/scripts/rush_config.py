@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Load and validate RUSH's global TOML settings."""
+"""Load and validate SWARM global TOML settings (with legacy RUSH fallback)."""
 
 from __future__ import annotations
 
@@ -19,6 +19,16 @@ RUSH_LEGACY_PATH = Path.home() / ".agents" / "rush" / "config.toml"
 DEFAULT_PATH = Path(os.environ.get("SWARM_CONFIG_PATH", SWARM_DEFAULT_PATH))
 TEMPLATE_PATH = Path(__file__).resolve().parent.parent / "assets" / "rush-config.toml"
 PLUGIN_MANIFEST_PATH = Path(__file__).resolve().parents[3] / ".codex-plugin" / "plugin.json"
+
+def resolve_config_path(explicit: Path|None=None) -> Path:
+    """One canonical resolver: explicit SWARM path, then existing legacy RUSH."""
+    if explicit is not None:
+        return explicit.expanduser()
+    swarm=Path(os.environ.get("SWARM_CONFIG_PATH", SWARM_DEFAULT_PATH)).expanduser()
+    if "SWARM_CONFIG_PATH" in os.environ or swarm.exists():
+        return swarm
+    legacy=Path(os.environ.get("RUSH_CONFIG_PATH", RUSH_LEGACY_PATH)).expanduser()
+    return legacy if legacy.exists() else swarm
 
 DEFAULTS: dict[str, Any] = {
     "schema_version": 2,
@@ -650,7 +660,7 @@ def feedback_diagnostics(effective: dict[str, Any], exists: bool) -> dict[str, A
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    default = DEFAULT_PATH if DEFAULT_PATH.exists() or not RUSH_LEGACY_PATH.exists() else RUSH_LEGACY_PATH
+    default = resolve_config_path()
     parser.add_argument("--path", type=Path, default=default, help="SWARM config path; legacy RUSH path remains readable")
     subparsers = parser.add_subparsers(dest="command", required=True)
     subparsers.add_parser("path", help="print the global config path")
@@ -672,35 +682,35 @@ def main() -> int:
             return 0
         if args.command == "init":
             if path.exists():
-                print(f"RUSH config already exists: {path}")
+                print(f"SWARM config already exists: {path}")
                 return 0
             path.parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(TEMPLATE_PATH, path)
-            print(f"Created RUSH config: {path}")
+            print(f"Created SWARM config: {path}")
             return 0
 
         effective, exists = load(path)
         if args.command == "validate":
             source = "file" if exists else "built-in defaults (file missing)"
-            print(f"RUSH config valid: {path} [{source}]")
+            print(f"SWARM config valid: {path} [{source}]")
             return 0
         if args.command == "feedback":
             diagnostics = feedback_diagnostics(effective, exists)
             if args.json:
                 print(json.dumps(diagnostics, indent=2))
             else:
-                print("RUSH feedback diagnostics")
+                print("SWARM feedback diagnostics")
                 print(json.dumps(diagnostics, indent=2))
             return 0
         if args.json:
             print(json.dumps({"path": str(path), "exists": exists, "settings": effective}, indent=2))
         else:
-            print(f"RUSH config: {path}")
+            print(f"SWARM config: {path}")
             print(f"Source: {'file' if exists else 'built-in defaults (file missing)'}")
             print(json.dumps(effective, indent=2))
         return 0
     except ConfigError as exc:
-        print(f"RUSH config error: {exc}", file=sys.stderr)
+        print(f"SWARM config error: {exc}", file=sys.stderr)
         return 2
 
 

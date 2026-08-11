@@ -31,7 +31,7 @@ PLUGIN_ROOT = Path(__file__).resolve().parents[1]
 STATIC_ROOT = Path(__file__).resolve().parent / "static"
 CONFIG_SCRIPT = PLUGIN_ROOT / "skills" / "swarm" / "scripts" / "rush_config.py"
 DEFAULT_CODEX_HOME = Path(os.environ.get("CODEX_HOME", Path.home() / ".codex"))
-DEFAULT_CONFIG_PATH = Path(os.environ.get("SWARM_CONFIG_PATH", os.environ.get("RUSH_CONFIG_PATH", Path.home() / ".agents" / "swarm" / "config.toml")))
+DEFAULT_CONFIG_PATH = Path.home() / ".agents" / "swarm" / "config.toml"
 DEFAULT_PORT = 4788
 MAX_BODY_BYTES = 64 * 1024
 
@@ -83,7 +83,7 @@ class ConsoleError(RuntimeError):
 def load_config_module() -> Any:
     spec = importlib.util.spec_from_file_location("rush_console_config", CONFIG_SCRIPT)
     if not spec or not spec.loader:
-        raise ConsoleError(f"could not load RUSH config validator: {CONFIG_SCRIPT}")
+        raise ConsoleError(f"could not load SWARM config validator: {CONFIG_SCRIPT}")
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
@@ -96,6 +96,9 @@ def load_config(config_path: Path) -> tuple[Any, dict[str, Any], bool]:
     except Exception as exc:  # ConfigError is owned by the loaded module.
         raise ConsoleError(str(exc)) from exc
     return module, effective, exists
+
+def resolve_config_path(config_path: Path|None=None) -> Path:
+    return load_config_module().resolve_config_path(config_path)
 
 
 def redacted_config_snapshot(config_path: Path) -> dict[str, Any]:
@@ -589,7 +592,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=DEFAULT_PORT)
     parser.add_argument("--codex-home", type=Path, default=DEFAULT_CODEX_HOME)
-    parser.add_argument("--config", type=Path, default=DEFAULT_CONFIG_PATH)
+    parser.add_argument("--config", type=Path, default=None)
     parser.add_argument("--open", action="store_true", help="open the console in the default browser")
     return parser.parse_args()
 
@@ -597,15 +600,15 @@ def parse_args() -> argparse.Namespace:
 def main() -> int:
     args = parse_args()
     if args.host not in {"127.0.0.1", "localhost", "::1", "0.0.0.0"}:
-        print("RUSH Console only supports loopback or Docker's 0.0.0.0 bind", file=sys.stderr)
+        print("SWARM Console only supports loopback or Docker's 0.0.0.0 bind", file=sys.stderr)
         return 2
-    app = App(args.codex_home, args.config)
+    app = App(args.codex_home, resolve_config_path(args.config))
     server = RushHTTPServer((args.host, args.port), Handler, app)
     display_host = "127.0.0.1" if args.host == "0.0.0.0" else args.host
     url = f"http://{display_host}:{args.port}"
     print(f"SWARM Console: {url}")
     print(f"Codex metadata: {state_database(app.codex_home)} [read-only]")
-    print(f"RUSH config: {app.config_path} [validated writes]")
+    print(f"SWARM config: {app.config_path} [validated writes; legacy RUSH path remains readable]")
     if args.open:
         threading.Timer(0.4, lambda: webbrowser.open(url)).start()
     try:
