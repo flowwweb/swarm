@@ -72,4 +72,8 @@ class RuntimeTests(unittest.TestCase):
  def test_modes_and_family_preserve_floors(self):
   tiers=[Swarm(mode=m).route(family="security",risk=1,uncertainty=1,blast_radius=1,architect_floor=2,historical_floor=1) for m in EfficiencyMode]
   self.assertTrue(all(t>=2 for t in tiers)); self.assertGreaterEqual(tiers[-1],tiers[0]); self.assertEqual(Swarm(mode=EfficiencyMode.MAX).review_depth(1),"standard")
+ def test_high_risk_review_requires_canonical_strategy(self):
+  self.s.tasks["A"].risk=4
+  with self.assertRaises(InvariantError): self.s.review(Role.REVIEW,"A","independent",True,"standard")
+  self.s.review(Role.REVIEW,"A","independent",True,"adversarial"); self.assertTrue(self.s.tasks["A"].review_passed); self.assertEqual(self.s.tasks["A"].review_strategy,"adversarial")
 if __name__ == "__main__": unittest.main()
