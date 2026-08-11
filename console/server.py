@@ -179,7 +179,7 @@ def update_config(config_path: Path, changes: dict[str, Any]) -> dict[str, Any]:
     if exists:
         text = config_path.read_text(encoding="utf-8")
     else:
-        text = (PLUGIN_ROOT / "skills" / "swarm" / "assets" / "rush-config.toml").read_text(
+        text = (PLUGIN_ROOT / "skills" / "swarm" / "assets" / "swarm-config.toml").read_text(
             encoding="utf-8"
         )
     for dotted_key, value in changes.items():

@@ -23,7 +23,7 @@ class RushConsoleTests(unittest.TestCase):
         self.codex_home.mkdir()
         self.config = self.root / "rush" / "config.toml"
         self.config.parent.mkdir()
-        source = console.PLUGIN_ROOT / "skills" / "swarm" / "assets" / "rush-config.toml"
+        source = console.PLUGIN_ROOT / "skills" / "swarm" / "assets" / "swarm-config.toml"
         self.config.write_text(source.read_text(encoding="utf-8"), encoding="utf-8")
         self.database = self.codex_home / "state_5.sqlite"
         self.connection = sqlite3.connect(self.database)

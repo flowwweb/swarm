@@ -17,7 +17,7 @@ from typing import Any
 SWARM_DEFAULT_PATH = Path.home() / ".agents" / "swarm" / "config.toml"
 RUSH_LEGACY_PATH = Path.home() / ".agents" / "rush" / "config.toml"
 DEFAULT_PATH = Path(os.environ.get("SWARM_CONFIG_PATH", SWARM_DEFAULT_PATH))
-TEMPLATE_PATH = Path(__file__).resolve().parent.parent / "assets" / "rush-config.toml"
+TEMPLATE_PATH = Path(__file__).resolve().parent.parent / "assets" / "swarm-config.toml"
 PLUGIN_MANIFEST_PATH = Path(__file__).resolve().parents[3] / ".codex-plugin" / "plugin.json"
 
 def resolve_config_path(explicit: Path|None=None) -> Path:

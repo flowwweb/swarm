@@ -1,6 +1,7 @@
-# Global SWARM settings (legacy RUSH path compatibility)
+# Global SWARM settings
 #
-# Location: ~/.agents/rush/config.toml
+# Canonical location: ~/.agents/swarm/config.toml. A clearly labeled legacy
+# ~/.agents/rush/config.toml path remains read-only compatibility fallback.
 # Changes apply the next time SWARM schedules or manages work. The latest direct
 # user instruction always wins. Safety, user control, and a user-visible host
 # task hierarchy are fixed SWARM invariants and cannot be disabled here.
@@ -8,7 +9,7 @@
 schema_version = 2
 
 [portfolio]
-# Total user-visible RUSH tasks that may be active at once, excluding MOTHER.
+# Total user-visible SWARM tasks that may be active at once, excluding MOTHER.
 max_active_tasks = 4
 # Preferred number of independent artifact tasks to start when work supports it.
 default_parallel_tasks = 3
@@ -16,7 +17,7 @@ default_parallel_tasks = 3
 reuse_existing_tasks = true
 
 [role_icons]
-# Every RUSH title uses exactly one role emoji. Hierarchy roles use their
+# Every SWARM title uses exactly one role emoji. Hierarchy roles use their
 # configured icon; DOERs choose a logical classic icon from doer_choices.
 mother = "⚡"
 lead = "🧭"
@@ -50,12 +51,12 @@ archive_behavior = "provenance"
 # Boost is optional closeout behavior. MOTHER, LEAD, and persistent ARCHITECT
 # goals plus the passive heartbeat are mandatory and cannot be disabled here.
 # Make manual Boost mode available. Starting a Boost goal still requires a
-# direct user request; RUSH never infers or auto-starts one from quota state.
+# direct user request; SWARM never infers or auto-starts one from quota state.
 enabled = true
 # Valid strategies: durable_goal, closeout_first, hands_off, spark_simple_work.
 strategies = ["durable_goal", "closeout_first", "hands_off", "spark_simple_work"]
 # Percentage of remaining host-reported usage. These activate only inside an
-# explicitly Boost-authorized RUSH run with real usage telemetry.
+# explicitly Boost-authorized SWARM run with real usage telemetry.
 plan_at_remaining_percent = 5
 decide_at_remaining_percent = 2
 launch_at_remaining_percent = 1
@@ -147,7 +148,7 @@ workloads = ["simple"]
 tools = ["shell", "web"]
 
 [roles]
-# Add explicit overrides only for a custom leaf role. Every named RUSH role has
+# Add explicit overrides only for a custom leaf role. Every named SWARM role has
 # its own configured model and reasoning pair in the selected profile.
 # [roles.SECURITY]
 # icon = "🛡️"
@@ -189,7 +190,7 @@ max_per_task = 8
 allowed_for = ["exploration", "implementation", "testing", "review"]
 
 [review]
-# Create a dedicated REVIEW task when RUSH's review rules call for one. Turning
+# Create a dedicated REVIEW task when SWARM's review rules call for one. Turning
 # this off keeps QC mandatory but performs it inside an owning or MOTHER task.
 task_enabled = true
 # Maximum user-visible REVIEW tasks active at once.
@@ -210,7 +211,7 @@ max_attempts = 1
 stall_after_updates = 2
 
 [lifecycle]
-# Pin RUSH-created tasks when they are created.
+# Pin SWARM-created tasks when they are created.
 pin_created_tasks = false
 # Archive only after terminal acceptance when no concrete retention reason
 # remains. Pending review, correction, choice, continuation, goals, ownership,
@@ -228,13 +229,13 @@ completed_task_retention = 30
 pinned_item_policy = "manual"
 
 [feedback]
-# Make the on-demand RUSH feedback workflow available.
+# Make the on-demand SWARM feedback workflow available.
 enabled = true
-# Add privacy-safe RUSH version and policy settings to feedback packets.
+# Add privacy-safe SWARM version and policy settings to feedback packets.
 include_diagnostics = true
 # Offer one optional feedback line after an accepted portfolio. Off avoids nagging.
 prompt_on_close = false
 # Optional issue URL, email address, or channel. Empty returns a portable packet.
-# RUSH never submits feedback without a direct user instruction.
+# SWARM never submits feedback without a direct user instruction.
 # Do not store tokens, credentials, or private routing data here.
 destination = ""
