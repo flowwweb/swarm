@@ -45,11 +45,10 @@ selecting ASSIST, naming roles, or transferring ownership.
 ## Authority
 
 The unassigned user-facing task explicitly told to use SWARM is CTRL. As
-mandatory Step 0, CTRL derives a concise project label, uses the host task-title
-tool to set `🐙CTRL - <project> - <detailed descriptor>` by default, pins the
+mandatory Step 0, CTRL derives a concise specific objective, uses the host task-title
+tool to set `🐙CTRL - <objective>` by default, pins the
 task, and verifies both receipts. Only `role_icons.enabled = false` or direct
-user instruction removes the emoji. The project is mandatory; omit the descriptor
-only when none is useful. Complete Step 0 before durable-goal inspection,
+user instruction removes the emoji. Complete Step 0 before durable-goal inspection,
 topology, research, any other tool work, or substantive commentary. If a tool is
 unavailable or a receipt fails, state the exact blocker and continue only with
 truthful internal CTRL identity, never a claim that the UI changed. CTRL then
@@ -177,7 +176,7 @@ host goal. Goal creation does not grant extra file, provider, deploy, review, or
 acceptance authority; completion is valid only at the stated stopping condition.
 
 With `role_icons.enabled = true`, the opening title uses
-`🐙CTRL - <project> - <detailed descriptor>` by default and every SWARM task
+`🐙CTRL - <objective>` by default and every SWARM task
 title has exactly one role-matched emoji with no separator before the label.
 `role_icons.ctrl` configures CTRL and defaults to `🐙`; `🐝` is MOTHER's
 default task icon. Disable all title emojis only with

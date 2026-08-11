@@ -59,7 +59,7 @@ Then ask Codex to use it:
 Use SWARM to ship the next release of this project.
 ```
 
-That task becomes `🐙CTRL - <project> - <detailed descriptor>`: the single place where you direct the objective and review what the swarm returns.
+That task becomes `🐙CTRL - <objective>`: the single place where you direct the objective and review what the swarm returns.
 
 ## Update
 

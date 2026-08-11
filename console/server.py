@@ -246,7 +246,9 @@ def _project_identity(row: sqlite3.Row) -> tuple[str, str]:
     return f"project:{hashlib.sha256(authority.encode()).hexdigest()[:16]}", name or "Local"
 
 
-def _role_from_title(title: str, labels: dict[str, str]) -> dict[str, str] | None:
+def _role_from_title(
+    title: str, labels: dict[str, str], role_icons: dict[str, Any]
+) -> dict[str, str] | None:
     if not title or len(title) > 180 or "\n" in title or "\r" in title:
         return None
     match = re.match(r"^(?P<head>.{1,48}?)\s*(?:-|—|·)\s*(?P<artifact>.{1,120})$", title)
@@ -265,7 +267,7 @@ def _role_from_title(title: str, labels: dict[str, str]) -> dict[str, str] | Non
     for kind, label in configured:
         found = head.casefold().rfind(label.casefold())
         if found >= 0 and not head[found + len(label) :].strip():
-            role_kind, role_label, role_start = kind, label, found
+            role_kind, role_label, role_start = ("doer" if kind == "task" else kind), label, found
             break
     if not role_label:
         role_match = re.search(r"([A-Z][A-Z0-9 /&]{1,23})$", head)
@@ -274,7 +276,9 @@ def _role_from_title(title: str, labels: dict[str, str]) -> dict[str, str] | Non
         role_label = role_match.group(1).strip()
         role_start = role_match.start(1)
         upper = role_label.upper()
-        if upper == "MOTHER":
+        if upper == "CTRL":
+            role_kind = "ctrl"
+        elif upper == "MOTHER":
             role_kind = "mother"
         elif upper == "LEAD":
             role_kind = "lead"
@@ -282,9 +286,10 @@ def _role_from_title(title: str, labels: dict[str, str]) -> dict[str, str] | Non
             role_kind = "doer"
         elif upper == "REVIEW":
             role_kind = "review"
-    icon = head[:role_start].strip()[:12]
-    if not icon:
-        icon = "📋"
+    icon = head[:role_start].strip()[:12] if role_icons["enabled"] else ""
+    if not icon and role_icons["enabled"]:
+        icon_key = role_kind if role_kind in {"ctrl", "mother", "lead", "review"} else "fallback"
+        icon = str(role_icons[icon_key])
     return {
         "role": role_kind,
         "role_label": role_label,
@@ -328,7 +333,7 @@ def build_overview(codex_home: Path, config_path: Path) -> dict[str, Any]:
     parsed = {
         thread_id: role
         for thread_id, row in all_rows.items()
-        if (role := _role_from_title(row["title"], labels))
+        if (role := _role_from_title(row["title"], labels, config["role_icons"]))
     }
     parent_by_child = {edge["child_thread_id"]: edge["parent_thread_id"] for edge in edge_rows}
     edge_status = {edge["child_thread_id"]: edge["status"] for edge in edge_rows}
@@ -384,7 +389,7 @@ def build_overview(codex_home: Path, config_path: Path) -> dict[str, Any]:
         if nearest_swarm:
             links.append({"source": nearest_swarm, "target": thread_id})
             continue
-        if node["role"] == "mother":
+        if node["role"] in {"ctrl", "mother"}:
             continue
         virtual_key = f"swarm:{top}:{node['project_id']}"
         virtual_id = virtual_roots.setdefault(virtual_key, virtual_key)
@@ -396,10 +401,10 @@ def build_overview(codex_home: Path, config_path: Path) -> dict[str, Any]:
             )
             nodes[virtual_id] = {
                 "id": virtual_id,
-                "title": f"{config['role_icons']['mother']}{labels['mother']} - {swarm_name}",
+                "title": f"{config['role_icons']['mother'] if config['role_icons']['enabled'] else ''}{labels['mother']} - {swarm_name}",
                 "role": "mother",
                 "role_label": labels["mother"],
-                "icon": config["role_icons"]["mother"],
+                "icon": config["role_icons"]["mother"] if config["role_icons"]["enabled"] else "",
                 "artifact": swarm_name,
                 "project_id": node["project_id"],
                 "project": node["project"],

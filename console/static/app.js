@@ -127,7 +127,10 @@ function setView(view) {
   $$("[data-view-panel]").forEach((panel) => panel.classList.toggle("is-active", panel.dataset.viewPanel === view));
   const titles = { overview: "Command overview", swarm: "Swarm hierarchy", analytics: "Local analytics", settings: "Global settings" };
   $("#view-title").textContent = titles[view];
-  if (view === "swarm") requestAnimationFrame(renderSwarm);
+  if (view === "swarm") {
+    $("#swarm-canvas").dataset.project = "";
+    requestAnimationFrame(renderSwarm);
+  }
 }
 
 function renderMetrics() {
@@ -164,7 +167,27 @@ function renderProjectFilter() {
 }
 
 function roleColor(role) {
-  return { mother: "#a8ff4f", lead: "#42d9ff", review: "#ffbd59", doer: "#89a9ff" }[role] || "#89a9ff";
+  return { ctrl: "#ff7043", mother: "#a8ff4f", lead: "#42d9ff", review: "#ffbd59", doer: "#89a9ff" }[role] || "#89a9ff";
+}
+
+function hierarchyStatus(status) {
+  const active = status === "active";
+  return `<span class="node-status${active ? " is-processing" : ""}" role="status" aria-label="Status: ${escapeHTML(status)}"><i aria-hidden="true"></i><span>${escapeHTML(status)}</span></span>`;
+}
+
+function leadSlots(lead, nodeById, children) {
+  if (lead.role !== "lead" || lead.status !== "active") return "";
+  const defaults = [
+    { icon: "🔨", role_label: "BUILD", artifact: "Available", status: "quiet" },
+    { icon: "💻", role_label: "DEV", artifact: "Available", status: "quiet" },
+    { icon: "🧪", role_label: "TEST", artifact: "Available", status: "quiet" },
+  ];
+  const workers = (children.get(lead.id) || [])
+    .map((id) => nodeById.get(id))
+    .filter((node) => node?.role === "doer")
+    .slice(0, 3);
+  const slots = defaults.map((fallback, index) => workers[index] || fallback);
+  return `<div class="lead-slots" aria-label="LEAD doer slots">${slots.map((slot) => `<div class="doer-slot" aria-label="${escapeHTML(`${slot.role_label} - ${slot.artifact}. Status: ${slot.status}`)}"><div class="slot-role"><span aria-hidden="true">${escapeHTML(slot.icon)}</span><b>${escapeHTML(slot.role_label)}</b></div><strong>${escapeHTML(slot.artifact)}</strong>${hierarchyStatus(slot.status)}</div>`).join("")}</div>`;
 }
 
 function renderSwarm() {
@@ -176,6 +199,7 @@ function renderSwarm() {
   const incoming = new Map(links.map((link) => [link.target, link.source]));
   const children = new Map();
   links.forEach((link) => children.set(link.source, [...(children.get(link.source) || []), link.target]));
+  const nodeById = new Map(allNodes.map((node) => [node.id, node]));
   const roots = allNodes.filter((node) => !incoming.has(node.id));
   const depth = new Map();
   const queue = roots.map((node) => [node.id, 0]);
@@ -190,12 +214,12 @@ function renderSwarm() {
   allNodes.forEach((node) => levels.set(depth.get(node.id), [...(levels.get(depth.get(node.id)) || []), node]));
   const maxWidth = Math.max(1, ...[...levels.values()].map((items) => items.length));
   const width = Math.max(980, maxWidth * 220 + 120);
-  const height = Math.max(520, levels.size * 160 + 100);
+  const height = Math.max(520, levels.size * 205 + 100);
   const positions = new Map();
   [...levels.entries()].sort(([a], [b]) => a - b).forEach(([level, items]) => {
     items.sort((a, b) => a.project.localeCompare(b.project) || a.created_at - b.created_at);
     const gap = width / (items.length + 1);
-    items.forEach((node, index) => positions.set(node.id, { x: gap * (index + 1), y: 85 + level * 155 }));
+    items.forEach((node, index) => positions.set(node.id, { x: gap * (index + 1), y: 85 + level * 200 }));
   });
   const canvas = $("#swarm-canvas");
   canvas.style.width = `${width}px`;
@@ -210,7 +234,7 @@ function renderSwarm() {
   }).join("");
   $("#swarm-nodes").innerHTML = allNodes.map((node) => {
     const p = positions.get(node.id);
-    return `<article class="swarm-node role-${escapeHTML(node.role)} is-${escapeHTML(node.status)}" style="left:${p.x}px;top:${p.y}px;--node-color:${roleColor(node.role)}" aria-label="${escapeHTML(node.title)}, ${escapeHTML(node.status)}"><div class="node-top"><span class="node-icon" aria-hidden="true">${escapeHTML(node.icon)}</span><span class="node-role">${escapeHTML(node.role_label)}</span></div><strong>${escapeHTML(node.artifact)}</strong><div class="node-meta"><span class="node-status"><i></i>${escapeHTML(node.status)}</span><span>${node.virtual ? "derived root" : formatDuration(node.age_ms)}</span></div></article>`;
+    return `<article class="swarm-node role-${escapeHTML(node.role)} is-${escapeHTML(node.status)}" style="left:${p.x}px;top:${p.y}px;--node-color:${roleColor(node.role)}" aria-label="${escapeHTML(`${node.role_label} - ${node.artifact}. Status: ${node.status}`)}"><div class="node-top"><span class="node-icon" aria-hidden="true">${escapeHTML(node.icon)}</span><span class="node-role">${escapeHTML(node.role_label)}</span></div><strong>${escapeHTML(node.artifact)}</strong><div class="node-meta">${hierarchyStatus(node.status)}</div>${leadSlots(node, nodeById, children)}</article>`;
   }).join("");
   if (!allNodes.length) $("#swarm-nodes").innerHTML = `<div class="empty-state">No SWARM hierarchy exists for this project.</div>`;
   const scroller = $(".swarm-scroll");

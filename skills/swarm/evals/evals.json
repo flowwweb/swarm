@@ -921,10 +921,10 @@
     {
       "id": 72,
       "prompt": "Open a new SWARM task for a broad game-platform objective. Start implementing with several hidden subagents and report their work from the opening task.",
-      "expected_output": "As mandatory Step 0, the opening user-visible task derives a concise project label, uses the task-title tool to set 🐙CTRL - <project> - <detailed descriptor> by default, pins the task, and verifies both receipts before durable-goal inspection or substantive work. If a tool is unavailable or a receipt fails, it states the exact blocker and continues only with truthful internal CTRL identity. It then creates or continues one matching durable controller goal, inventories the objective, owners, dependencies, collisions, proof and claim limits, and chooses the shallowest reliable visible topology.",
+      "expected_output": "As mandatory Step 0, the opening user-visible task derives a concise specific objective, uses the task-title tool to set 🐙CTRL - <objective> by default, pins the task, and verifies both receipts before durable-goal inspection or substantive work. If a tool is unavailable or a receipt fails, it states the exact blocker and continues only with truthful internal CTRL identity. It then creates or continues one matching durable controller goal, inventories the objective, owners, dependencies, collisions, proof and claim limits, and chooses the shallowest reliable visible topology.",
       "files": [],
       "assertions": [
-        "Mandatory Step 0 sets 🐙CTRL - <project> - <detailed descriptor> by default, pins the task, and verifies both receipts before any later work",
+        "Mandatory Step 0 sets 🐙CTRL - <objective> by default, pins the task, and verifies both receipts before any later work",
         "Unavailable task-management tools or failed receipts are reported exactly and do not permit a false UI-change claim",
         "CTRL creates or continues exactly one matching durable goal",
         "CTRL identifies artifacts, owners, dependencies, collisions, proof, and claim limits",
@@ -938,7 +938,7 @@
     {
       "id": 73,
       "prompt": "Use SWARM to make 10 landing-page mockups.",
-      "expected_output": "The receiving task first completes mandatory Step 0 by setting and verifying 🐙CTRL - <project> - <detailed descriptor> by default and pinning and verifying the task. It then continues one durable objective and treats the requested variants as one coherent visual artifact with one atomic DESIGNER owner and later independent REVIEW. Variant count alone does not justify MOTHER.",
+      "expected_output": "The receiving task first completes mandatory Step 0 by setting and verifying 🐙CTRL - <objective> by default and pinning and verifying the task. It then continues one durable objective and treats the requested variants as one coherent visual artifact with one atomic DESIGNER owner and later independent REVIEW. Variant count alone does not justify MOTHER.",
       "files": [],
       "assertions": [
         "CTRL identity, pinning, goal, and inventory precede artifact work",
@@ -974,7 +974,7 @@
     {
       "id": 76,
       "prompt": "Use SWARM for this code change. The receiving user-facing task starts editing locally and plans to rename itself CTRL afterward.",
-      "expected_output": "Fail the intake contract: the unassigned receiving task must complete mandatory Step 0 by setting and verifying 🐙CTRL - <project> - <detailed descriptor> by default and pinning and verifying the task before inspecting or creating the matching goal and inventorying live plus pending ownership.",
+      "expected_output": "Fail the intake contract: the unassigned receiving task must complete mandatory Step 0 by setting and verifying 🐙CTRL - <objective> by default and pinning and verifying the task before inspecting or creating the matching goal and inventorying live plus pending ownership.",
       "files": [],
       "assertions": [
         "Local editing before CTRL identity and pinning is a failure",

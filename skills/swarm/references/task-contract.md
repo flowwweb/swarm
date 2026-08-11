@@ -3,10 +3,9 @@
 Use CORE + role + these fields. Atomic/simple tasks omit every inapplicable field. A durable task keeps only its exact current decision and proof boundary.
 
 For every new SWARM objective, the opening user-visible task completes mandatory
-Step 0 first: derive a concise project label, use the host task-title tool to set
-`🐙CTRL - <project> - <detailed descriptor>` by default, pin the task, and
-verify both receipts. Project is mandatory; omit the descriptor only when none
-is useful. Only `role_icons.enabled = false` removes title emojis. If a tool is unavailable or a receipt fails, state the exact blocker
+Step 0 first: derive a concise specific objective, use the host task-title tool to set
+`🐙CTRL - <objective>` by default, pin the task, and verify both receipts. Only
+`role_icons.enabled = false` removes title emojis. If a tool is unavailable or a receipt fails, state the exact blocker
 and continue only with truthful internal CTRL identity. Only then create or
 continue exactly one matching durable goal before routing work. Its contract
 records the chosen topology and which visible task owns each mutable artifact.

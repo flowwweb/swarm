@@ -129,7 +129,7 @@ Ambiguous tasks remain open until a later bounded stale audit proves archival is
 safe; then use the host archive control. The setting creates no queue, daemon,
 ledger, polling loop, or telemetry.
 
-The default title hierarchy is `🐙CTRL - <project> - <detailed descriptor>`,
+The default title hierarchy is `🐙CTRL - <objective>`,
 `🐝MOTHER - outcome`, an optional lane owner such as `🔐LEAD - payments`, a
 contextual owner such as `💻DEVELOPER - webhook`, and `🔎REVIEW - webhook`.
 Generic DOER is an authority type, not a required task name: use the concrete

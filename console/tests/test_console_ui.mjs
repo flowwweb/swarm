@@ -131,11 +131,59 @@ try {
     );
     const screenshot = path.join(evidenceRoot, `usage-saver-${width}.png`);
     await page.screenshot({ path: screenshot, fullPage: true });
+    await page.locator('[data-view="swarm"]').click();
+    const hierarchy = await page.evaluate(() => {
+      const ctrl = document.querySelector(".swarm-node.role-ctrl").getBoundingClientRect();
+      const lead = document.querySelector(".swarm-node.role-lead").getBoundingClientRect();
+      const stage = document.querySelector(".swarm-stage").getBoundingClientRect();
+      const slots = [...document.querySelectorAll(".swarm-node.role-lead .doer-slot")];
+      const slotRects = slots.map((slot) => slot.getBoundingClientRect());
+      const spinner = document.querySelector(".swarm-node.role-lead > .node-meta .node-status.is-processing i");
+      const spinnerStyle = getComputedStyle(spinner);
+      const hierarchyRoot = document.querySelector("#swarm-nodes");
+      return {
+        ctrlAboveLead: ctrl.top < lead.top,
+        ctrlVisible: ctrl.left < stage.right && ctrl.right > stage.left && ctrl.top < stage.bottom,
+        slots: slots.length,
+        slotTops: slotRects.map((rect) => Math.round(rect.top)),
+        slotWidths: slotRects.map((rect) => Math.round(rect.width)),
+        titleAttributes: hierarchyRoot.querySelectorAll("[title]").length,
+        hasEllipsisIndicator: /(^|\s)(\.{3}|…)(\s|$)/.test(hierarchyRoot.textContent),
+        statusLabel: document.querySelector(".swarm-node.role-lead .node-status").getAttribute("aria-label"),
+        spinner: {
+          width: spinnerStyle.width,
+          height: spinnerStyle.height,
+          borderRadius: spinnerStyle.borderRadius,
+          animationName: spinnerStyle.animationName,
+        },
+      };
+    });
+    assert.equal(hierarchy.ctrlAboveLead, true);
+    assert.equal(hierarchy.ctrlVisible, true);
+    assert.equal(hierarchy.slots, 3);
+    assert.equal(new Set(hierarchy.slotTops).size, 1);
+    assert.ok(hierarchy.slotWidths.every((slotWidth) => slotWidth > 60));
+    assert.equal(hierarchy.titleAttributes, 0);
+    assert.equal(hierarchy.hasEllipsisIndicator, false);
+    assert.equal(hierarchy.statusLabel, "Status: active");
+    assert.equal(hierarchy.spinner.width, "10px");
+    assert.equal(hierarchy.spinner.height, "10px");
+    assert.equal(hierarchy.spinner.borderRadius, "50%");
+    assert.equal(hierarchy.spinner.animationName, "hierarchy-spin");
+    await page.emulateMedia({ reducedMotion: "reduce" });
+    assert.equal(
+      await page.locator(".swarm-node.role-lead > .node-meta .node-status.is-processing i").evaluate(
+        (spinner) => getComputedStyle(spinner).animationName,
+      ),
+      "none",
+    );
+    const hierarchyScreenshot = path.join(evidenceRoot, `hierarchy-${width}.png`);
+    await page.screenshot({ path: hierarchyScreenshot, fullPage: true });
     const runtime = {
       errors: [...runtimeErrors],
       result: runtimeErrors.length === 0 ? "clear" : "errors",
     };
-    results.push({ width, tabPresses, focus, geometry, screenshot, runtime });
+    results.push({ width, tabPresses, focus, geometry, hierarchy, screenshot, hierarchyScreenshot, runtime });
     assert.deepEqual(runtimeErrors, []);
     await page.close();
   }

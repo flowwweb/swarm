@@ -48,7 +48,7 @@ class SwarmConsoleTests(unittest.TestCase):
         )
         now = 2_000_000_000_000
         rows = [
-            ("root", "Unformatted project request", "C:/work/alpha", now, now, "gpt-5.6-sol", "high", 100),
+            ("root", "🐙CTRL - Ship console", "C:/work/alpha", now, now, "gpt-5.6-sol", "high", 100),
             ("lead", "🧭LEAD - Console", "C:/work/alpha", now, now, "gpt-5.6-terra", "medium", 200),
             ("task", "🔨DEV - Local API", "C:/work/alpha", now, now, "gpt-5.6-luna", "xhigh", 300),
             ("review", "🔍REVIEW - Console proof", "C:/work/alpha", now, now, "gpt-5.6-sol", "high", 150),
@@ -77,12 +77,15 @@ class SwarmConsoleTests(unittest.TestCase):
         self.assertIn("task", ids)
         self.assertIn("review", ids)
         self.assertNotIn("unsafe", ids)
-        self.assertNotIn("root", ids)
-        self.assertEqual(overview["analytics"]["tasks"], 3)
-        self.assertEqual(overview["analytics"]["tokens"], 650)
+        self.assertIn("root", ids)
+        self.assertEqual(overview["analytics"]["tasks"], 4)
+        self.assertEqual(overview["analytics"]["tokens"], 750)
         self.assertTrue(all(project["id"].startswith("project:") for project in overview["projects"]))
         self.assertFalse(any("C:/" in json.dumps(item) for item in overview["projects"]))
         self.assertIn({"source": "lead", "target": "task"}, overview["links"])
+        self.assertIn({"source": "root", "target": "lead"}, overview["links"])
+        ctrl = next(node for node in overview["nodes"] if node["id"] == "root")
+        self.assertEqual((ctrl["role"], ctrl["icon"]), ("ctrl", "🐙"))
         self.assertEqual(next(node for node in overview["nodes"] if node["id"] == "review")["status"], "done")
 
     def test_valid_config_update_is_validated_and_backed_up(self) -> None:
@@ -100,6 +103,16 @@ class SwarmConsoleTests(unittest.TestCase):
         )
         self.assertFalse(result["settings"]["role_icons"]["enabled"])
         self.assertEqual(result["settings"]["role_icons"]["ctrl"], "🕹️")
+
+    def test_visible_role_titles_are_normalized_by_icon_setting(self) -> None:
+        _, enabled, _ = console.load_config(self.config)
+        lead = console._role_from_title("LEAD - Console", enabled["labels"], enabled["role_icons"])
+        self.assertEqual(lead["title"], "🧭LEAD - Console")
+        console.update_config(self.config, {"role_icons.enabled": False})
+        _, disabled, _ = console.load_config(self.config)
+        ctrl = console._role_from_title("🐙CTRL - Ship console", disabled["labels"], disabled["role_icons"])
+        self.assertEqual(ctrl["title"], "CTRL - Ship console")
+        self.assertEqual(ctrl["icon"], "")
 
     def test_usage_saver_toggle_uses_validated_config_api(self) -> None:
         before = console.redacted_config_snapshot(self.config)
