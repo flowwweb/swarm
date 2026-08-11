@@ -52,4 +52,7 @@ class RuntimeTests(unittest.TestCase):
  def test_review_is_candidate_before_acceptance(self):
   self.s.review(Role.REVIEW,"A","independent",True); self.assertEqual(self.s.tasks["A"].state,TaskState.REVIEW)
   self.s.complete(Role.MOTHER,"A",True,True,7); self.assertEqual(self.s.tasks["A"].completed_at,7)
+ def test_intelligence_artifacts_and_completion_gates(self):
+  self.s.set_intelligence_floor(Role.ARCHITECT,"A",3); self.s.complexity_mismatch(Role.DOER,"A",3); self.s.add_artifact(Role.DOER,"A","proof","risk survives compression")
+  self.assertEqual(self.s.discover("proof"),["A"]); self.assertIn("risk survives compression",self.s.tasks["A"].findings); self.assertFalse(self.s.project_complete(Role.MOTHER,True,True))
 if __name__ == "__main__": unittest.main()

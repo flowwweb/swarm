@@ -78,6 +78,14 @@ class Swarm:
         t.recovery_dimensions.add(dimension); self.events.append(("RECOVERY",task_id))
     def expert(self, actor: Role, task_id: str) -> None:
         self._role(actor,{Role.DOER,Role.LEAD,Role.ARCHITECT,Role.MOTHER}); self.events.append(("EXPERT",task_id))
+    def set_intelligence_floor(self, actor: Role, task_id: str, tier: int) -> None:
+        self._role(actor,{Role.ARCHITECT}); self.tasks[task_id].contracts["intelligence_floor"]=tier
+    def complexity_mismatch(self, actor: Role, task_id: str, observed_tier: int) -> None:
+        self._role(actor,{Role.DOER}); self.tasks[task_id].contracts["complexity_mismatch"]=observed_tier; self.events.append(("MISMATCH",task_id))
+    def add_artifact(self, actor: Role, task_id: str, artifact: str, risk: str="") -> None:
+        self._role(actor,{Role.DOER}); t=self.tasks[task_id]; t.evidence.append(artifact); t.findings.extend([risk] if risk else [])
+    def discover(self, artifact: str) -> list[str]:
+        return [t.id for t in self.tasks.values() if artifact in t.evidence]
     def review(self, actor: Role, task_id: str, reviewer: str, passed: bool, finding: str="") -> None:
         self._role(actor,{Role.REVIEW}); t=self.tasks[task_id]
         if reviewer in {t.creator,t.owner}: raise InvariantError("creator cannot be sole independent reviewer")
@@ -128,3 +136,6 @@ class Swarm:
     def ctrl_event(self, event: str, task_id: str) -> str|None:
         if event in {"HEARTBEAT","PROGRESS"}: return None
         return f"{task_id}: {event.lower().replace('_',' ')}"
+    def project_complete(self, actor: Role, integration_ok: bool, architecture_ok: bool) -> bool:
+        self._role(actor,{Role.MOTHER})
+        return integration_ok and architecture_ok and all(t.state in {TaskState.COMPLETE,TaskState.ARCHIVED,TaskState.ARCHIVED_STALE,TaskState.BACKLOG} for t in self.tasks.values())
