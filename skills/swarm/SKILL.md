@@ -15,6 +15,8 @@ Canonical state, not conversation history, holds tasks, owners, versions, artifa
 
 MOTHER, every LEAD, and every persistent ARCHITECT continue one durable goal with an objective, stopping condition, authority boundary, and required proof. Keep an end-to-end requirement ledger in the task-tree receipt; `UNVERIFIED` is an open acceptance failure. The MOTHER heartbeat is passive: it observes material change, uses one same-surface recovery, then releases an unchanged lane with its exact blocker and unblock condition.
 
+Scope Discipline is fixed: complete the smallest sufficient agreed upgrade. Discovery does not move the finish line or create follow-on work. Preserve or escalate a new finding only when it materially affects correctness of an explicit current requirement; otherwise leave it for separate consideration. This rule never narrows an explicit addendum, safety floor, proof gate, or acceptance obligation.
+
 LEAD integrates and inspects each whole lane result before it reaches independent REVIEW. A conflicting unfinished goal is escalated rather than replaced. An atomic route may skip the LEAD, but never independent acceptance where review is required.
 
 The legacy phrase “zerg rush” means starting only disjoint, integration-ready work; it never overrides adaptive depth, ownership, or the coordination-cost test.

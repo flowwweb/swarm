@@ -905,6 +905,18 @@
         "Retirement flushes zero or a few unique lessons then permits worker disappearance",
         "HIVE does not prescribe target-product memory architecture or add a role"
       ]
+    },
+    {
+      "id": 71,
+      "prompt": "While implementing the agreed SWARM HIVE upgrade, discovery reveals a possible unrelated console redesign and a potential HIVE bug that could invalidate current version filtering. Decide what enters this correction.",
+      "expected_output": "Finish the explicit HIVE requirements and investigate the version-filtering issue because it affects correctness; preserve the console redesign as a separate finding rather than moving the finish line.",
+      "files": [],
+      "assertions": [
+        "Discovery alone does not expand agreed scope",
+        "Material correctness risk to an explicit requirement is escalated or corrected",
+        "Explicit addendum requirements, safety floors, proof gates, and acceptance obligations remain intact",
+        "Unrelated opportunity is preserved for separate consideration"
+      ]
     }
   ]
 }
