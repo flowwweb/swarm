@@ -66,6 +66,9 @@ class RuntimeTests(unittest.TestCase):
  def test_bounded_context_spine(self):
   with self.assertRaises(InvariantError): ContextPackage.build(goal="g",architecture={},dependencies=[],artifacts=[],acceptance=["a"],history=[str(i) for i in range(1000)],budget=1)
   package=ContextPackage.build(goal="g",architecture={"a":1},dependencies=["d"],artifacts=["x"],acceptance=[],history=[str(i) for i in range(1000)],budget=1); self.assertEqual(package.goal,"g"); self.assertEqual(package.history,())
+ def test_context_signal_executes_retirement_and_transfer(self):
+  self.s.add_worker(Role.LEAD,Worker("R","L",2)); package=ContextPackage.build(goal="g",architecture={},dependencies=[],artifacts=[],acceptance=[],history=[],budget=1); self.s.package_context(Role.LEAD,"D",package); self.s.workers["D"].context["bloat"]=True
+  self.assertEqual(self.s.context_decision(worker_id="D",replacement="R"),"retire"); self.assertEqual(self.s.workers["D"].state,WorkerState.RETIRED); self.assertEqual(self.s.tasks["A"].owner,"R")
  def test_restore_and_keyed_archive_telemetry(self):
   self.s.tasks["A"].state=TaskState.COMPLETE; self.s.tasks["A"].completed_at=0; self.s.groom(Role.MOTHER,31,{"no_review_archive_delay":0,"low_review_retention":2,"high_review_retention":3,"stale_task_archive_delay":1})
   self.assertIsInstance(self.s.telemetry["archive_reasons"],dict); self.s.restore(Role.MOTHER,"A","needed"); self.assertEqual(self.s.tasks["A"].state,TaskState.ACTIVE); self.assertEqual(self.s.telemetry["restores"],1)
