@@ -13,8 +13,8 @@ const staticRoot = path.join(consoleRoot, "static");
 const fixture = JSON.parse(
   fs.readFileSync(path.join(testsRoot, "fixtures", "console-ui.json"), "utf8"),
 );
-const evidenceRoot = process.env.RUSH_UI_EVIDENCE_DIR ||
-  fs.mkdtempSync(path.join(os.tmpdir(), "rush-console-ui-"));
+const evidenceRoot = process.env.SWARM_UI_EVIDENCE_DIR ||
+  fs.mkdtempSync(path.join(os.tmpdir(), "swarm-console-ui-"));
 fs.mkdirSync(evidenceRoot, { recursive: true });
 
 const css = fs.readFileSync(path.join(staticRoot, "styles.css"), "utf8");
@@ -22,7 +22,7 @@ const app = fs.readFileSync(path.join(staticRoot, "app.js"), "utf8");
 const documentHtml = fs.readFileSync(path.join(staticRoot, "index.html"), "utf8")
   .replace('<link rel="stylesheet" href="/styles.css" />', () => `<style>${css}</style>`)
   .replace('<script src="/app.js" defer></script>', () => `<script>${app}</script>`)
-  .replace("<head>", '<head><base href="http://rush.test/">');
+  .replace("<head>", '<head><base href="http://swarm.test/">');
 
 function response(body) {
   return { status: 200, contentType: "application/json", body: JSON.stringify(body) };
@@ -35,7 +35,7 @@ async function mount(page) {
     if (message.type() === "error") runtimeErrors.push(message.text());
   });
   page.on("pageerror", (error) => runtimeErrors.push(error.message));
-  await page.route("http://rush.test/**", async (route) => {
+  await page.route("http://swarm.test/**", async (route) => {
     const request = route.request();
     const pathname = new URL(request.url()).pathname;
     if (pathname === "/") {
@@ -51,7 +51,7 @@ async function mount(page) {
     if (pathname === "/api/config") return route.fulfill(response(config));
     return route.abort();
   });
-  await page.goto("http://rush.test/", { waitUntil: "domcontentloaded" });
+  await page.goto("http://swarm.test/", { waitUntil: "domcontentloaded" });
   await page.locator("#usage-saver-toggle").waitFor({ state: "attached" });
   try {
     await page.waitForFunction(() => {
@@ -75,7 +75,12 @@ async function focusToggleWithKeyboard(page) {
   throw new Error("Usage Saver was not reachable in the first 12 Tab stops");
 }
 
-const browser = await chromium.launch({ headless: true });
+const browser = await chromium.launch({
+  headless: true,
+  ...(process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE
+    ? { executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE }
+    : {}),
+});
 const results = [];
 try {
   for (const width of [320, 390]) {

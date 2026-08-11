@@ -31,7 +31,7 @@ with Proposed outcome. Do not turn feedback into a large questionnaire.
 ## Diagnostics and privacy
 
 When `feedback.include_diagnostics = true`, run
-`python scripts/rush_config.py feedback --json` and include its output. The
+`python scripts/swarm_config.py feedback --json` and include its output. The
 command intentionally excludes filesystem paths, the configured destination,
 credentials, provider settings, project content, prompts, and task messages.
 

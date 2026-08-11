@@ -30,7 +30,7 @@ class HeartbeatSpeedContractTests(unittest.TestCase):
         self.assertIn("miss three triggers one SUPERVISOR", self.skill)
         self.assertIn("completed milestone resets only the consecutive-miss count", self.skill)
         self.assertIn("SUPERVISOR owns progress recovery", self.skill)
-        self.assertIn("without taking implementation, architecture, review, topology, or acceptance authority", self.skill)
+        self.assertIn("without taking implementation, specialist, review, topology, or acceptance authority", self.skill)
 
     def test_speed_reward_tracks_accepted_proof_not_output(self):
         self.assertIn("best recent time-to-accepted-proof and low correction cost", self.skill)

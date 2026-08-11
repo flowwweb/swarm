@@ -23,14 +23,12 @@ class SwarmSkillStructureTests(unittest.TestCase):
             for plugin in (source, installed):
                 (plugin / ".codex-plugin").mkdir(parents=True)
                 (plugin / "skills" / "swarm" / "references").mkdir(parents=True)
-                (plugin / "skills" / "rush").mkdir(parents=True)
                 (plugin / ".codex-plugin" / "plugin.json").write_text('{"skills":"./skills/"}', encoding="utf-8")
                 (plugin / "skills" / "swarm" / "SKILL.md").write_text("swarm", encoding="utf-8")
                 (plugin / "skills" / "swarm" / "references" / "task-contract.md").write_text("contract", encoding="utf-8")
-                (plugin / "skills" / "rush" / "SKILL.md").write_text("rush", encoding="utf-8")
-            self.assertEqual(verify(source, installed), 4)
-            (installed / "skills" / "rush" / "SKILL.md").unlink()
-            with self.assertRaisesRegex(ValueError, "skills/rush/SKILL.md"):
+            self.assertEqual(verify(source, installed), 3)
+            (installed / "skills" / "swarm" / "SKILL.md").unlink()
+            with self.assertRaisesRegex(ValueError, "skills/swarm/SKILL.md"):
                 verify(source, installed)
 
     def test_core_skill_stays_below_500_lines(self) -> None:
@@ -42,7 +40,7 @@ class SwarmSkillStructureTests(unittest.TestCase):
         ids = [item["id"] for item in evals]
         self.assertEqual(ids, list(range(1, len(evals) + 1)))
         self.assertEqual(
-            sum("RUSH-FB-20260809-WINPY-01" in item["prompt"] for item in evals),
+            sum("SWARM-FB-20260809-WINPY-01" in item["prompt"] for item in evals),
             1,
         )
 
@@ -84,7 +82,7 @@ class SwarmSkillStructureTests(unittest.TestCase):
         self.assertIn("end-to-end requirement ledger", skill)
         self.assertIn("`UNVERIFIED` is an open acceptance failure", skill)
         self.assertIn("LEAD integrates and inspects each whole lane result", skill)
-        self.assertIn("zerg rush", skill)
+        self.assertIn("parallel wave", skill)
         self.assertIn("shallowest structure", skill)
         self.assertIn("CTRL owns topology unless MOTHER exists", skill)
         self.assertIn("MOTHER alone changes execution topology", skill)
@@ -111,7 +109,7 @@ class SwarmSkillStructureTests(unittest.TestCase):
         self.assertIn("Format a lane owner as `<one domain-matched emoji>LEAD - <domain or responsibility>`", skill)
         self.assertIn("keep `LEAD` stable, put the distinguishing role after the dash", skill)
         self.assertIn("choose an icon that identifies that domain", skill)
-        self.assertIn("Other worker titles use `<one role-matched emoji><ROLE> - <specific artifact>`", skill)
+        self.assertIn("Other titles use `<one role-matched emoji><ROLE> - <specific artifact>`", skill)
         self.assertIn("every SWARM title has exactly one role-matched emoji", skill)
         self.assertIn("the shortest unambiguous title wins", skill)
         self.assertIn("Generic role types do not dictate task names", hierarchy)
@@ -205,7 +203,7 @@ class SwarmSkillStructureTests(unittest.TestCase):
         for text in (skill, hierarchy, task_contract, config):
             self.assertIn("durable", text)
             self.assertIn("exact", text)
-        self.assertIn("CTRL, MOTHER, every LEAD, and every persistent ARCHITECT", skill)
+        self.assertIn("CTRL, MOTHER, every LEAD, and every persistent SPECIALIST", skill)
         self.assertIn("conflicting unfinished goal", skill)
         self.assertIn("Goal controls are required", config)
         self.assertIn("survives\ncompaction", monitoring)
@@ -248,7 +246,7 @@ class SwarmSkillStructureTests(unittest.TestCase):
         self.assertGreaterEqual(evals.count("No additional Boost goal is created"), 3)
         self.assertGreaterEqual(
             evals.count(
-                "Mandatory MOTHER, LEAD, and persistent ARCHITECT goal inspection"
+                "Mandatory MOTHER, LEAD, and persistent SPECIALIST goal inspection"
             ),
             2,
         )

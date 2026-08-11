@@ -87,5 +87,13 @@ class OperatingModelTests(unittest.TestCase):
         self.assertEqual(swarm.tasks["T"].architecture_map_version,1)
         with self.assertRaises(InvariantError): swarm.architecture_event(Role.LEAD,"T",goal_id="architecture",accepted_change="x",invalidates_map=False,receipt="x")
 
+    def test_free_role_specialist_keeps_an_independent_versioned_ledger(self):
+        swarm=self.tracked()
+        swarm.specialist_event(Role.SPECIALIST,"T",specialist_id="auth-architecture",profession="ARCHITECT",goal_id="auth",accepted_change="auth v2",invalidates_map=True,receipt="contract diff",decision_or_blocker="gate rollout")
+        swarm.specialist_event(Role.SPECIALIST,"T",specialist_id="data-architecture",profession="ARCHITECT",goal_id="data",accepted_change="schema v2",invalidates_map=False,receipt="schema contract")
+        self.assertEqual(swarm.tasks["T"].specialist_professions,{"auth-architecture":"ARCHITECT","data-architecture":"ARCHITECT"})
+        self.assertEqual(swarm.tasks["T"].specialist_map_versions,{"auth-architecture":1,"data-architecture":0})
+        swarm.specialist_event(Role.SPECIALIST,"T",specialist_id="novel",profession="ETHNOGRAPHER",goal_id="research",accepted_change="field note",invalidates_map=False,receipt="source")
+
 
 if __name__ == "__main__": unittest.main()

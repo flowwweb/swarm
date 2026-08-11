@@ -112,7 +112,7 @@ async function api(path, options = {}) {
     ...options,
     headers: {
       "Content-Type": "application/json",
-      ...(state.token ? { "X-Rush-Token": state.token } : {}),
+      ...(state.token ? { "X-Swarm-Token": state.token } : {}),
       ...(options.headers || {}),
     },
   });

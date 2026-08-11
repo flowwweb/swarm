@@ -15,7 +15,7 @@ scope, proof, review, capability, or authority.
 Run the dependency-free local server from the plugin root:
 
 ```powershell
-python skills/swarm/scripts/rush_console.py --open
+python skills/swarm/scripts/swarm_console.py --open
 ```
 
 The default address is `http://127.0.0.1:4788`. Override `--port`, `--codex-home`,
@@ -28,8 +28,7 @@ python console/docker.py up
 ```
 
 Add `--detach` for background mode; run `python console/docker.py down` to stop.
-Direct Compose use must set `SWARM_CODEX_HOME` and `SWARM_CONFIG_HOME` explicitly; the
-legacy `RUSH_CODEX_HOME` and `RUSH_CONFIG_HOME` names remain compatibility aliases.
+Direct Compose use must set `SWARM_CODEX_HOME` and `SWARM_CONFIG_HOME` explicitly.
 
 Compose publishes only `127.0.0.1:4788`, mounts Codex metadata read-only, and
 mounts the SWARM config directory for validated settings writes. Do not expose the
@@ -38,7 +37,7 @@ container port to a LAN or public host.
 ## Authority and privacy
 
 - The console derives hierarchy from Codex task spawn edges and short
-  legacy RUSH-formatted task titles. It does not create, accept, steer, or archive tasks.
+  SWARM-formatted task titles. It does not create, accept, steer, or archive tasks.
 - It reads only the state database columns needed for hierarchy, timestamps,
   model, effort, project grouping, and cumulative thread-token counts. It does
   not read message bodies, previews, rollouts, credentials, or the logs database.

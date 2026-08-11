@@ -1,25 +1,97 @@
-# 🐙 SWARM
+<p align="center">
+  <a href="https://flowwweb.com/swarm">
+    <img src="skills/swarm/assets/swarm-wordmark.png" alt="SWARM" width="640">
+  </a>
+</p>
 
-**System for Workload Allocation, Routing & Management.**
+<p align="center">
+  <strong>Structured Workflows for Autonomous Role Management</strong>
+</p>
 
-SWARM distils RUSH's practical safeguards into seven clear responsibilities: CTRL receives every new objective, holds its durable goal, and chooses the initial topology; MOTHER orchestrates; ARCHITECT owns technical truth; LEAD owns a workstream; DOER executes; EXPERT advises without taking ownership; REVIEW independently verifies.
+<p align="center">
+  <a href="https://github.com/flowwweb/swarm/blob/main/LICENSE"><img alt="MIT License" src="https://img.shields.io/badge/license-MIT-11dff3"></a>
+  <a href="https://flowwweb.com/swarm"><img alt="Built for Codex" src="https://img.shields.io/badge/built_for-Codex-ff5b45"></a>
+  <a href="https://github.com/flowwweb/swarm"><img alt="Open source on GitHub" src="https://img.shields.io/badge/open_source-GitHub-ffffff"></a>
+</p>
 
-A new SWARM task starts with mandatory Step 0: set and verify the title `🐙CTRL - <project> - <detailed descriptor>` by default, then pin and verify the task. Set `role_icons.enabled = false` only when all SWARM title emojis should be disabled. Project is mandatory; the descriptor may be omitted only when none is useful. If task-management tools are unavailable or a receipt fails, report the exact blocker and continue only with truthful internal CTRL identity. Only after Step 0 does CTRL inspect or create the durable controller goal and materialize the smallest useful topology.
+SWARM is an open-source workflow for Codex.
 
-Lane owners use `<domain-matched emoji>LEAD - <domain or responsibility>`: the `LEAD` marker stays stable, the responsibility follows the dash, and the icon identifies the domain. SWARM measures visible-task startup from exact host receipts when available and keeps work with the current owner unless expected critical-path savings exceed startup, orientation, handoff, and integration or review cost.
+Install it as a Codex plugin and run a coordinated team of AI agents from one CTRL task. CTRL routes work to clear leads, leads delegate focused lanes, and independent review checks the combined result. The hierarchy gives parallel agents direction, shared state, and a clean route back to you—without turning every project into a polling loop.
 
-The runtime owns mechanical safeguards: canonical-state ownership, a preferred 3×3 execution cell, worker replacement, named waiting/deadlock detection, version staleness, leases, bounded changed recovery, compressed CTRL events, and completion gates. The console is an observability projection, never canonical authority.
+[Explore SWARM](https://flowwweb.com/swarm) · [View the repository](https://github.com/flowwweb/swarm)
 
-## RUSH migration
+## One command point. A whole team.
 
-Public history is preserved by migrating `flowwweb/rush` to `flowwweb/swarm`; legacy RUSH configuration, title, command, and console seams remain readable during the transition. New documentation and metadata use SWARM.
+```text
+🐙 CTRL — your command point
+├── LEAD — product
+│   └── DESIGNER — product experience
+├── LEAD — engineering
+│   └── DEVELOPER — implementation
+├── LEAD — quality
+│   └── QA ENGINEER — verification
+└── REVIEW — independent acceptance
+```
+
+SWARM chooses the shallowest structure that can reliably finish the objective. Small work stays small. Parallel work gets explicit owners. A MOTHER appears only when genuinely interdependent lanes need portfolio-level integration and acceptance. Persistent specialists can protect a cross-cutting truth—architecture, design, research, strategy, or another profession—without becoming another management layer.
+
+The result is a swarm you can steer from one place:
+
+- **One visible control stream.** Decisions, blockers, evidence, and acceptance come back to CTRL; routine chatter stays quiet.
+- **Parallel work without duplicate ownership.** Every lane has a bounded artifact, mutable surface, and accepting route.
+- **Hierarchy that earns its place.** Roles appear for real dependencies and collapse when they stop helping.
+- **Coherent results.** Leads integrate their lanes and REVIEW verifies the composed outcome before it is accepted.
+- **Recovery without retry theatre.** Durable goals, bounded wakeups, and evidence-driven correction keep stalled work honest.
+
+## Install
+
+Add the Flowwweb marketplace to Codex:
+
+```text
+codex plugin marketplace add flowwweb/swarm --ref main
+```
+
+Run `/plugins`, open the **Flowwweb** marketplace, and install **SWARM**. Start a new Codex task so the plugin loads into fresh context.
+
+Then ask Codex to use it:
+
+```text
+Use SWARM to ship the next release of this project.
+```
+
+That task becomes `🐙CTRL - <project> - <detailed descriptor>`: the single place where you direct the objective and review what the swarm returns.
+
+## Update
+
+```text
+codex plugin marketplace upgrade flowwweb
+codex plugin add swarm@flowwweb
+```
+
+Start a new Codex task after reinstalling so it loads the updated plugin.
+
+## Console
+
+SWARM includes an optional loopback-only console for inspecting hierarchy and validated local settings. Python 3.11 or newer is required; the console uses only the Python standard library.
+
+```text
+python skills/swarm/scripts/swarm_console.py --open
+```
+
+Docker is optional:
+
+```text
+python console/docker.py up
+```
+
+The console is an observability surface, not the authority for task state.
 
 ## Develop
 
 ```text
 python -m unittest discover -s skills/swarm/tests -p "test_*.py"
-python -m unittest discover -s console/tests -p "test_console.py"
+python -m unittest discover -s console/tests -p "test_*.py"
 node --test console/tests/test_console_ui.mjs
 ```
 
-The browser test requires Playwright. This local checkout is not published or installed by these commands.
+The browser test requires Playwright. See [CONTRIBUTING.md](CONTRIBUTING.md), [SECURITY.md](SECURITY.md), and the [MIT License](LICENSE).

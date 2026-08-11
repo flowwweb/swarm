@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Launch the SWARM Console Compose project with legacy RUSH path fallback."""
+"""Launch the SWARM Console Compose project."""
 
 from __future__ import annotations
 
@@ -14,7 +14,7 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 COMPOSE = HERE / "docker-compose.yml"
-CONFIG_SCRIPT = HERE.parent / "skills" / "swarm" / "scripts" / "rush_config.py"
+CONFIG_SCRIPT = HERE.parent / "skills" / "swarm" / "scripts" / "swarm_config.py"
 
 
 def _resolve_config_path() -> Path:
@@ -26,7 +26,7 @@ def _resolve_config_path() -> Path:
 
 def _set_container_user(environment: dict[str, str]) -> None:
     """Match the host identity on POSIX so bind-mounted settings stay writable."""
-    if "SWARM_CONTAINER_USER" in environment or "RUSH_CONTAINER_USER" in environment:
+    if "SWARM_CONTAINER_USER" in environment:
         return
     getuid = getattr(os, "getuid", None)
     getgid = getattr(os, "getgid", None)
@@ -47,7 +47,7 @@ def main() -> int:
         return 2
 
     environment = os.environ.copy()
-    environment.setdefault("SWARM_CODEX_HOME", environment.get("RUSH_CODEX_HOME",str(Path.home() / ".codex")))
+    environment.setdefault("SWARM_CODEX_HOME",str(Path.home() / ".codex"))
     selected_config=_resolve_config_path()
     environment["SWARM_CONFIG_HOME"]=str(selected_config.parent)
     environment["SWARM_CONTAINER_CONFIG_PATH"]=f"/data/swarm/{selected_config.name}"

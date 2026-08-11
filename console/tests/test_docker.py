@@ -10,14 +10,14 @@ from unittest import mock
 DOCKER = Path(__file__).resolve().parents[1] / "docker.py"
 COMPOSE = Path(__file__).resolve().parents[1] / "docker-compose.yml"
 DOCKERFILE = Path(__file__).resolve().parents[1] / "Dockerfile"
-TEST_HOME = Path("C:/Users/rush-test")
-SPEC = importlib.util.spec_from_file_location("rush_docker_tested", DOCKER)
+TEST_HOME = Path("C:/Users/swarm-test")
+SPEC = importlib.util.spec_from_file_location("swarm_docker_tested", DOCKER)
 assert SPEC and SPEC.loader
 launcher = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(launcher)
 
 
-class RushDockerTests(unittest.TestCase):
+class SwarmDockerTests(unittest.TestCase):
     def _run_main(
         self,
         environment: dict[str, str],
@@ -38,8 +38,8 @@ class RushDockerTests(unittest.TestCase):
             self.assertEqual(launcher.main(), 0)
 
         expected_environment = environment.copy()
-        expected_environment.setdefault("SWARM_CODEX_HOME", expected_environment.get("RUSH_CODEX_HOME",str(TEST_HOME / ".codex")))
-        selected=Path(environment.get("SWARM_CONFIG_PATH",environment.get("RUSH_CONFIG_PATH",TEST_HOME / ".agents" / "swarm" / "config.toml")))
+        expected_environment.setdefault("SWARM_CODEX_HOME",str(TEST_HOME / ".codex"))
+        selected=Path(environment.get("SWARM_CONFIG_PATH",TEST_HOME / ".agents" / "swarm" / "config.toml"))
         expected_environment["SWARM_CONFIG_HOME"]=str(selected.parent)
         expected_environment["SWARM_CONTAINER_CONFIG_PATH"]=f"/data/swarm/{selected.name}"
         invoked_environment = run.call_args.kwargs["env"]
@@ -88,8 +88,8 @@ class RushDockerTests(unittest.TestCase):
     def test_compose_preserves_container_security_and_safe_fallback(self) -> None:
         compose = COMPOSE.read_text(encoding="utf-8")
         dockerfile = DOCKERFILE.read_text(encoding="utf-8")
-        self.assertIn("\nUSER rush\n", dockerfile)
-        self.assertIn('user: "${SWARM_CONTAINER_USER:-${RUSH_CONTAINER_USER:-swarm}}"', compose)
+        self.assertIn("\nUSER swarm\n", dockerfile)
+        self.assertIn('user: "${SWARM_CONTAINER_USER:-swarm}"', compose)
         self.assertIn('"127.0.0.1:4788:4788"', compose)
         self.assertIn(':/data/codex:ro"', compose)
         self.assertIn(':/data/swarm"', compose)
@@ -103,12 +103,12 @@ class RushDockerTests(unittest.TestCase):
             self.assertEqual(environment["SWARM_CONFIG_HOME"],str(selected.parent))
             self.assertEqual(environment["SWARM_CONTAINER_CONFIG_PATH"],"/data/swarm/selected.toml")
 
-    def test_existing_legacy_config_is_automatic_fallback(self) -> None:
+    def test_explicit_environment_config_is_mounted(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
-            legacy=Path(directory) / "legacy.toml"; legacy.write_text("",encoding="utf-8")
-            environment=self._run_main({"RUSH_CONFIG_PATH":str(legacy)},getuid=None,getgid=None)
-            self.assertEqual(environment["SWARM_CONFIG_HOME"],str(legacy.parent))
-            self.assertEqual(environment["SWARM_CONTAINER_CONFIG_PATH"],"/data/swarm/legacy.toml")
+            custom=Path(directory) / "custom.toml"; custom.write_text("",encoding="utf-8")
+            environment=self._run_main({"SWARM_CONFIG_PATH":str(custom)},getuid=None,getgid=None)
+            self.assertEqual(environment["SWARM_CONFIG_HOME"],str(custom.parent))
+            self.assertEqual(environment["SWARM_CONTAINER_CONFIG_PATH"],"/data/swarm/custom.toml")
 
 
 if __name__ == "__main__":

@@ -10,20 +10,20 @@ from pathlib import Path
 from unittest import mock
 
 
-SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "rush_config.py"
-SPEC = importlib.util.spec_from_file_location("rush_config_tested", SCRIPT)
+SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "swarm_config.py"
+SPEC = importlib.util.spec_from_file_location("swarm_config_tested", SCRIPT)
 assert SPEC and SPEC.loader
 config = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(config)
 
 
-class RushConfigTests(unittest.TestCase):
-    def test_canonical_path_falls_back_only_to_existing_legacy_path(self) -> None:
+class SwarmConfigTests(unittest.TestCase):
+    def test_canonical_path_and_explicit_override(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
-            root=Path(directory); swarm=root / "swarm.toml"; legacy=root / "rush.toml"; legacy.write_text("",encoding="utf-8")
-            with mock.patch.object(config,"SWARM_DEFAULT_PATH",swarm), mock.patch.object(config,"RUSH_LEGACY_PATH",legacy), mock.patch.dict(config.os.environ,{},clear=True):
-                self.assertEqual(config.resolve_config_path(),legacy)
-                swarm.write_text("",encoding="utf-8"); self.assertEqual(config.resolve_config_path(),swarm)
+            root=Path(directory); canonical=root / "swarm.toml"; override=root / "custom.toml"
+            with mock.patch.object(config,"SWARM_DEFAULT_PATH",canonical), mock.patch.dict(config.os.environ,{},clear=True):
+                self.assertEqual(config.resolve_config_path(),canonical)
+                self.assertEqual(config.resolve_config_path(override),override)
     def test_usage_saver_is_off_in_defaults_and_template(self) -> None:
         self.assertFalse(config.DEFAULTS["execution"]["usage_saver"])
         effective, exists = config.load(config.TEMPLATE_PATH)
@@ -186,7 +186,7 @@ class RushConfigTests(unittest.TestCase):
         self.assertNotIn("assist", config.BOOST_LEVELS)
         self.assertEqual(
             config.MANDATORY_DURABLE_GOAL_ROLES,
-            frozenset({"mother", "lead", "architect"}),
+            frozenset({"mother", "lead", "specialist", "architect"}),
         )
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "config.toml"

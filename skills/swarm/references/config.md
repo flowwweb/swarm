@@ -1,7 +1,7 @@
 # Global SWARM settings
 
 SWARM reads `~/.agents/swarm/config.toml` before scheduling or managing a
-portfolio. Run `python scripts/rush_config.py show --json` from the skill
+portfolio. Run `python scripts/swarm_config.py show --json` from the skill
 directory to resolve built-in defaults plus the user's file.
 
 The loader requires Python 3.11 or newer and otherwise uses only the standard
@@ -12,8 +12,7 @@ read failures write a specific diagnostic to stderr and exit with status 2.
 ## Precedence
 
 The configuration loader has exactly two file layers: packaged defaults, then
-one selected global file (`~/.agents/swarm/config.toml`, with the read-only
-legacy `~/.agents/rush/config.toml` fallback when canonical config is absent). Direct user, project, and session instructions govern task
+one selected global file (`~/.agents/swarm/config.toml`). Direct user, project, and session instructions govern task
 behavior, safety, and authority, but are not loader file-merge layers.
 
 Settings affect new scheduling and management decisions. They do not rewrite an

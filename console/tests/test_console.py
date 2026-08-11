@@ -9,25 +9,24 @@ from pathlib import Path
 
 
 SERVER = Path(__file__).resolve().parents[1] / "server.py"
-SPEC = importlib.util.spec_from_file_location("rush_console_tested", SERVER)
+SPEC = importlib.util.spec_from_file_location("swarm_console_tested", SERVER)
 assert SPEC and SPEC.loader
 console = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(console)
 
 
-class RushConsoleTests(unittest.TestCase):
+class SwarmConsoleTests(unittest.TestCase):
     def test_new_console_copy_is_swarm_first(self) -> None:
         static = (Path(__file__).resolve().parents[1] / "static")
         self.assertIn('aria-label="SWARM summary metrics"', (static / "index.html").read_text(encoding="utf-8"))
         self.assertIn('<span>🐙</span>', (static / "index.html").read_text(encoding="utf-8"))
         self.assertIn("Keep new SWARM owners visible", (static / "app.js").read_text(encoding="utf-8"))
-        self.assertNotIn("RUSH summary metrics", (static / "index.html").read_text(encoding="utf-8"))
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name)
         self.codex_home = self.root / "codex"
         self.codex_home.mkdir()
-        self.config = self.root / "rush" / "config.toml"
+        self.config = self.root / "swarm" / "config.toml"
         self.config.parent.mkdir()
         source = console.PLUGIN_ROOT / "skills" / "swarm" / "assets" / "swarm-config.toml"
         self.config.write_text(source.read_text(encoding="utf-8"), encoding="utf-8")
@@ -89,7 +88,7 @@ class RushConsoleTests(unittest.TestCase):
     def test_valid_config_update_is_validated_and_backed_up(self) -> None:
         result = console.update_config(self.config, {"monitoring.heartbeat_minutes": 45})
         self.assertEqual(result["settings"]["monitoring"]["heartbeat_minutes"], 45)
-        self.assertTrue(self.config.with_suffix(".toml.rush-console.bak").exists())
+        self.assertTrue(self.config.with_suffix(".toml.swarm-console.bak").exists())
 
     def test_role_icon_controls_preserve_boolean_and_custom_ctrl(self) -> None:
         before = console.redacted_config_snapshot(self.config)

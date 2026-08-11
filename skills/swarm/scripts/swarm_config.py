@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Load and validate SWARM global TOML settings (with legacy RUSH fallback)."""
+"""Load and validate SWARM global TOML settings."""
 
 from __future__ import annotations
 
@@ -15,20 +15,15 @@ from typing import Any
 
 
 SWARM_DEFAULT_PATH = Path.home() / ".agents" / "swarm" / "config.toml"
-RUSH_LEGACY_PATH = Path.home() / ".agents" / "rush" / "config.toml"
 DEFAULT_PATH = Path(os.environ.get("SWARM_CONFIG_PATH", SWARM_DEFAULT_PATH))
 TEMPLATE_PATH = Path(__file__).resolve().parent.parent / "assets" / "swarm-config.toml"
 PLUGIN_MANIFEST_PATH = Path(__file__).resolve().parents[3] / ".codex-plugin" / "plugin.json"
 
 def resolve_config_path(explicit: Path|None=None) -> Path:
-    """One canonical resolver: explicit SWARM path, then existing legacy RUSH."""
+    """Resolve an explicit path or the canonical SWARM config location."""
     if explicit is not None:
         return explicit.expanduser()
-    swarm=Path(os.environ.get("SWARM_CONFIG_PATH", SWARM_DEFAULT_PATH)).expanduser()
-    if "SWARM_CONFIG_PATH" in os.environ or swarm.exists():
-        return swarm
-    legacy=Path(os.environ.get("RUSH_CONFIG_PATH", RUSH_LEGACY_PATH)).expanduser()
-    return legacy if legacy.exists() else swarm
+    return Path(os.environ.get("SWARM_CONFIG_PATH", SWARM_DEFAULT_PATH)).expanduser()
 
 DEFAULTS: dict[str, Any] = {
     "schema_version": 2,
@@ -140,6 +135,7 @@ DEFAULTS: dict[str, Any] = {
         "assist": "ASSIST",
         "advisor": "ADVISOR",
         "architect": "ARCHITECT",
+        "specialist": "SPECIALIST",
         "review": "REVIEW",
     },
     "coordination": {
@@ -180,7 +176,7 @@ ALLOWED_SUBAGENT_WORK = {"exploration", "implementation", "testing", "review"}
 BOOST_STRATEGIES = {"durable_goal", "closeout_first", "hands_off", "spark_simple_work"}
 BOOST_LEVELS = {"mother", "lead", "doer", "review"}
 # These role goals are a fixed operating invariant, independent of Boost.
-MANDATORY_DURABLE_GOAL_ROLES = frozenset({"mother", "lead", "architect"})
+MANDATORY_DURABLE_GOAL_ROLES = frozenset({"mother", "lead", "specialist", "architect"})
 MODEL_WORKLOADS = {"simple", "general", "large_goal", "review"}
 MODEL_CAPABILITY_KEYS = {"provider", "workloads", "tools"}
 USAGE_PROFILES = {"high", "medium", "low"}
@@ -403,7 +399,7 @@ def validate(raw: dict[str, Any]) -> None:
         if not isinstance(values, dict):
             raise ConfigError(f"models.{profile} must be a TOML table")
         _expect_keys(values, set(defaults), f"models.{profile}")
-        for role in ("mother", "lead", "doer", "task", "subtask", "assist", "review", "advisor", "architect"):
+        for role in ("mother", "lead", "doer", "task", "subtask", "assist", "review", "advisor", "specialist", "architect"):
             _model_name(values, f"{role}_model", f"models.{profile}")
             _reasoning_effort(values, f"{role}_reasoning", f"models.{profile}")
 
@@ -648,7 +644,7 @@ def _plugin_version() -> str:
 def feedback_diagnostics(effective: dict[str, Any], exists: bool) -> dict[str, Any]:
     """Return a shareable snapshot without paths, destinations, credentials, or project data."""
     return {
-        "rush_version": _plugin_version(),
+        "swarm_version": _plugin_version(),
         "config_schema_version": effective["schema_version"],
         "config_exists": exists,
         "usage_profile": effective["execution"]["usage_profile"],
@@ -670,7 +666,7 @@ def feedback_diagnostics(effective: dict[str, Any], exists: bool) -> dict[str, A
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     default = resolve_config_path()
-    parser.add_argument("--path", type=Path, default=default, help="SWARM config path; legacy RUSH path remains readable")
+    parser.add_argument("--path", type=Path, default=default, help="SWARM config path")
     subparsers = parser.add_subparsers(dest="command", required=True)
     subparsers.add_parser("path", help="print the global config path")
     show = subparsers.add_parser("show", help="print effective settings")

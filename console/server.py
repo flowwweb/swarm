@@ -29,7 +29,7 @@ from urllib.parse import urlparse
 
 PLUGIN_ROOT = Path(__file__).resolve().parents[1]
 STATIC_ROOT = Path(__file__).resolve().parent / "static"
-CONFIG_SCRIPT = PLUGIN_ROOT / "skills" / "swarm" / "scripts" / "rush_config.py"
+CONFIG_SCRIPT = PLUGIN_ROOT / "skills" / "swarm" / "scripts" / "swarm_config.py"
 DEFAULT_CODEX_HOME = Path(os.environ.get("CODEX_HOME", Path.home() / ".codex"))
 DEFAULT_CONFIG_PATH = Path.home() / ".agents" / "swarm" / "config.toml"
 DEFAULT_PORT = 4788
@@ -83,7 +83,7 @@ class ConsoleError(RuntimeError):
 
 
 def load_config_module() -> Any:
-    spec = importlib.util.spec_from_file_location("rush_console_config", CONFIG_SCRIPT)
+    spec = importlib.util.spec_from_file_location("swarm_console_config", CONFIG_SCRIPT)
     if not spec or not spec.loader:
         raise ConsoleError(f"could not load SWARM config validator: {CONFIG_SCRIPT}")
     module = importlib.util.module_from_spec(spec)
@@ -197,7 +197,7 @@ def update_config(config_path: Path, changes: dict[str, Any]) -> dict[str, Any]:
             temporary = Path(handle.name)
         module.load(temporary)
         if config_path.exists():
-            shutil.copy2(config_path, config_path.with_suffix(".toml.rush-console.bak"))
+            shutil.copy2(config_path, config_path.with_suffix(".toml.swarm-console.bak"))
         os.replace(temporary, config_path)
         temporary = None
     except Exception as exc:
@@ -372,17 +372,17 @@ def build_overview(codex_home: Path, config_path: Path) -> dict[str, Any]:
     for thread_id, node in list(nodes.items()):
         parent = parent_by_child.get(thread_id)
         seen = {thread_id}
-        nearest_rush = None
+        nearest_swarm = None
         top = thread_id
         while parent and parent not in seen:
             seen.add(parent)
             top = parent
             if parent in nodes:
-                nearest_rush = parent
+                nearest_swarm = parent
                 break
             parent = parent_by_child.get(parent)
-        if nearest_rush:
-            links.append({"source": nearest_rush, "target": thread_id})
+        if nearest_swarm:
+            links.append({"source": nearest_swarm, "target": thread_id})
             continue
         if node["role"] == "mother":
             continue
@@ -441,16 +441,16 @@ def build_overview(codex_home: Path, config_path: Path) -> dict[str, Any]:
             "roles": dict(role_counts),
         },
         "claim_limits": [
-            "Hierarchy is derived from Codex thread spawn edges and SWARM or legacy RUSH-formatted titles.",
+            "Hierarchy is derived from Codex thread spawn edges and SWARM-formatted titles.",
             "Active means recently updated within two heartbeat windows, not guaranteed CPU work.",
             "Tokens are host-reported cumulative thread tokens, not billing or remaining quota.",
-            "Only title metadata needed to recognize SWARM or legacy RUSH naming is read; message bodies, previews, rollout content, credentials, and the logs database are not.",
+            "Only title metadata needed to recognize SWARM naming is read; message bodies, previews, rollout content, credentials, and the logs database are not.",
         ],
         "source": database.name,
     }
 
 
-class RushHTTPServer(ThreadingHTTPServer):
+class SwarmHTTPServer(ThreadingHTTPServer):
     daemon_threads = True
 
     def __init__(self, address: tuple[str, int], handler: type[BaseHTTPRequestHandler], app: "App"):
@@ -467,11 +467,11 @@ class App:
 
 
 class Handler(BaseHTTPRequestHandler):
-    server: RushHTTPServer
+    server: SwarmHTTPServer
     protocol_version = "HTTP/1.1"
 
     def log_message(self, fmt: str, *args: Any) -> None:
-        sys.stderr.write(f"[rush-console] {self.address_string()} {fmt % args}\n")
+        sys.stderr.write(f"[swarm-console] {self.address_string()} {fmt % args}\n")
 
     def _host_allowed(self) -> bool:
         host = (urlparse(f"//{self.headers.get('Host', '')}").hostname or "").casefold()
@@ -499,7 +499,7 @@ class Handler(BaseHTTPRequestHandler):
         return parsed.hostname in {"localhost", "127.0.0.1", "::1"}
 
     def _authorized_write(self) -> bool:
-        return secrets.compare_digest(self.headers.get("X-Rush-Token", ""), self.server.app.token)
+        return secrets.compare_digest(self.headers.get("X-Swarm-Token", ""), self.server.app.token)
 
     def do_GET(self) -> None:  # noqa: N802
         if not self._host_allowed():
@@ -508,7 +508,7 @@ class Handler(BaseHTTPRequestHandler):
         path = urlparse(self.path).path
         try:
             if path == "/healthz":
-                self._json(HTTPStatus.OK, {"ok": True, "service": "rush-console"})
+                self._json(HTTPStatus.OK, {"ok": True, "service": "swarm-console"})
                 return
             if path == "/api/bootstrap":
                 self._json(
@@ -605,12 +605,12 @@ def main() -> int:
         print("SWARM Console only supports loopback or Docker's 0.0.0.0 bind", file=sys.stderr)
         return 2
     app = App(args.codex_home, resolve_config_path(args.config))
-    server = RushHTTPServer((args.host, args.port), Handler, app)
+    server = SwarmHTTPServer((args.host, args.port), Handler, app)
     display_host = "127.0.0.1" if args.host == "0.0.0.0" else args.host
     url = f"http://{display_host}:{args.port}"
     print(f"SWARM Console: {url}")
     print(f"Codex metadata: {state_database(app.codex_home)} [read-only]")
-    print(f"SWARM config: {app.config_path} [validated writes; legacy RUSH path remains readable]")
+    print(f"SWARM config: {app.config_path} [validated writes]")
     if args.open:
         threading.Timer(0.4, lambda: webbrowser.open(url)).start()
     try:

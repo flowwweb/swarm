@@ -6,7 +6,9 @@ from enum import StrEnum
 
 
 class Role(StrEnum):
-    CTRL="CTRL"; MOTHER="MOTHER"; ARCHITECT="ARCHITECT"; LEAD="LEAD"; DOER="DOER"; EXPERT="EXPERT"; REVIEW="REVIEW"
+    CTRL="CTRL"; MOTHER="MOTHER"; SPECIALIST="SPECIALIST"; ARCHITECT="ARCHITECT"; LEAD="LEAD"; DOER="DOER"; EXPERT="EXPERT"; REVIEW="REVIEW"
+
+BUILT_IN_SPECIALISTS = frozenset({"ARCHITECT", "ENGINEER", "DESIGNER", "RESEARCHER", "ANALYST", "STRATEGIST"})
 class TaskState(StrEnum):
     ACTIVE="ACTIVE"; WAITING="WAITING"; REVIEW="REVIEW"; COMPLETE="COMPLETE"; STALE="STALE"; ARCHIVED="ARCHIVED"; ARCHIVED_STALE="ARCHIVED_STALE"; BACKLOG="BACKLOG"
 class ReviewValue(StrEnum): NONE="NONE"; LOW="LOW"; HIGH="HIGH"; PINNED="PINNED"
@@ -131,7 +133,7 @@ class Task:
     evidence: list[str]=field(default_factory=list); recovery_dimensions: set[str]=field(default_factory=set); recovery_attempts:int=0; review_value: ReviewValue=ReviewValue.NONE
     completed_at: int|None=None; stale_at: int|None=None; archived_at: int|None=None; stale_reason: str|None=None; superseded_by: str|None=None; promoted: list[str]=field(default_factory=list); extensions: int=0; review_passed: bool=False; risk:int=1; review_strategy:str="light"; architecture_review_floor:ReviewStrategy=ReviewStrategy.LIGHT; security_review_floor:ReviewStrategy=ReviewStrategy.LIGHT; artifacts:dict[ArtifactIdentity|str,str]=field(default_factory=dict); artifact_justifications:dict[str,ArtifactJustification]=field(default_factory=dict); artifact_provenance:dict[str,ArtifactProvenance]=field(default_factory=dict); archive:dict[str,object]=field(default_factory=dict); active_goal:bool=False; handoff_active:bool=False; correction_pending:bool=False; user_choice_pending:bool=False; ambiguous:bool=False; topology_receipt:tuple[str,...]=(); ctrl_event_receipt:tuple[str,str]|None=None; subagent_receipt:str=""; subagent_exception:SubagentException|None=None; subagent_exception_reason:str=""; goal_id:str=""; objective_version:int=1; milestone:str=""; review_horizon_minutes:int=30; milestone_started_at:int=0; consecutive_misses:int=0; milestone_history:list[tuple[int,str,str]]=field(default_factory=list)
 
-    ctrl_mode:CtrlMode=CtrlMode.DELEGATED; milestone_proof_kind:str=""; architecture_goal_id:str=""; architecture_map_version:int=0; architecture_receipts:list[tuple[int,str,str]]=field(default_factory=list)
+    ctrl_mode:CtrlMode=CtrlMode.DELEGATED; milestone_proof_kind:str=""; architecture_goal_id:str=""; architecture_map_version:int=0; architecture_receipts:list[tuple[int,str,str]]=field(default_factory=list); specialist_professions:dict[str,str]=field(default_factory=dict); specialist_goal_ids:dict[str,str]=field(default_factory=dict); specialist_map_versions:dict[str,int]=field(default_factory=dict); specialist_receipts:dict[str,list[tuple[int,str,str]]]=field(default_factory=dict)
 
 @dataclass
 class Worker:
@@ -251,7 +253,7 @@ class Swarm:
         hive=package.hive if self.hive_enabled else ()
         worker.context={"goal":package.goal,"architecture":package.architecture,"dependencies":package.dependencies,"artifacts":package.artifacts,"acceptance":package.acceptance,"history":package.history,"hive":hive,"transfer_cost":package.transfer_cost-len(package.hive)+len(hive),"affinity":worker.context.get("affinity",1),"bloat":False,"stale":False,"stalls":0}
     def remember(self, actor:Role, record:HiveRecord, now:int) -> str|None:
-        self._role(actor,{Role.MOTHER,Role.ARCHITECT,Role.LEAD,Role.DOER})
+        self._role(actor,{Role.MOTHER,Role.SPECIALIST,Role.ARCHITECT,Role.LEAD,Role.DOER})
         if not self.hive_enabled: return None
         if not record.id or (not record.content and not record.reference) or len(record.content)>280 or record.value in {"noise","low"}: raise InvariantError("HIVE stores only compact future-useful lessons")
         if record.source in {"repository","canonical"} and record.content: raise InvariantError("reference durable truth instead of copying it")
@@ -328,16 +330,23 @@ class Swarm:
         if result=="retire" and worker_id: self.retire(Role.LEAD,worker_id,replacement)
         return result
     def change_architecture(self, actor: Role, contracts: dict[str,int], now:int=0) -> None:
-        self._role(actor,{Role.ARCHITECT}); self.architecture_version+=1; self.contract_versions.update(contracts)
+        self._role(actor,{Role.SPECIALIST,Role.ARCHITECT}); self.architecture_version+=1; self.contract_versions.update(contracts)
         for task in self.tasks.values():
             if task.state not in {TaskState.COMPLETE,TaskState.BACKLOG,TaskState.ARCHIVED,TaskState.ARCHIVED_STALE} and (task.architecture_version != self.architecture_version or any(task.contracts.get(k,0)!=v for k,v in contracts.items())): task.state=TaskState.STALE; task.stale_reason="architecture or contract version changed"; task.stale_at=now
     def architecture_event(self, actor:Role, task_id:str, *, goal_id:str, accepted_change:str, invalidates_map:bool, receipt:str, decision_or_blocker:str="") -> None:
-        self._role(actor,{Role.ARCHITECT}); t=self.tasks[task_id]
-        if not all(item.strip() for item in (goal_id,accepted_change,receipt)) or (invalidates_map and not decision_or_blocker.strip()): raise InvariantError("architecture event requires durable goal, accepted change, receipt, and consequential decision when invalidated")
-        if t.architecture_goal_id and t.architecture_goal_id!=goal_id: raise InvariantError("architecture durable goal cannot be replaced")
-        t.architecture_goal_id=goal_id
-        if invalidates_map: t.architecture_map_version+=1
-        t.architecture_receipts.append((t.architecture_map_version,"UPDATE" if invalidates_map else "NO_IMPACT",decision_or_blocker or receipt))
+        self._role(actor,{Role.SPECIALIST,Role.ARCHITECT})
+        self.specialist_event(Role.SPECIALIST,task_id,specialist_id="architect",profession="ARCHITECT",goal_id=goal_id,accepted_change=accepted_change,invalidates_map=invalidates_map,receipt=receipt,decision_or_blocker=decision_or_blocker)
+        t=self.tasks[task_id]; t.architecture_goal_id=t.specialist_goal_ids["architect"]; t.architecture_map_version=t.specialist_map_versions["architect"]; t.architecture_receipts=t.specialist_receipts["architect"]
+    def specialist_event(self, actor:Role, task_id:str, *, specialist_id:str, profession:str, goal_id:str, accepted_change:str, invalidates_map:bool, receipt:str, decision_or_blocker:str="") -> None:
+        self._role(actor,{Role.SPECIALIST}); t=self.tasks[task_id]; identity=specialist_id.strip(); name=profession.strip().upper()
+        if not identity or any(character in identity for character in "\r\n\t") or not name or any(character in name for character in "\r\n\t"): raise InvariantError("specialist requires a stable instance identity and concrete profession")
+        if not all(item.strip() for item in (goal_id,accepted_change,receipt)) or (invalidates_map and not decision_or_blocker.strip()): raise InvariantError("specialist event requires durable goal, accepted change, receipt, and consequential decision when invalidated")
+        existing_profession=t.specialist_professions.get(identity)
+        if existing_profession and existing_profession!=name: raise InvariantError("specialist instance profession cannot change")
+        existing=t.specialist_goal_ids.get(identity)
+        if existing and existing!=goal_id: raise InvariantError("specialist durable goal cannot be replaced")
+        t.specialist_professions[identity]=name; t.specialist_goal_ids[identity]=goal_id; version=t.specialist_map_versions.get(identity,0)+(1 if invalidates_map else 0); t.specialist_map_versions[identity]=version
+        t.specialist_receipts.setdefault(identity,[]).append((version,"UPDATE" if invalidates_map else "NO_IMPACT",decision_or_blocker or receipt))
     def wait(self, actor: Role, task_id: str, dependency: str) -> None:
         self._role(actor,{Role.DOER}); t=self.tasks[task_id]
         if not dependency or dependency not in self.tasks: raise InvariantError("WAITING requires a named task dependency")
@@ -354,14 +363,14 @@ class Swarm:
         t.recovery_dimensions.add(dimension); t.recovery_attempts=1; self._record("events",("RECOVERY",task_id))
     def scope_finding(self, actor:Role, task_id:str, evidence:str, *, material:bool) -> bool:
         """Preserve a direct invariant violation; unrelated opportunity changes nothing."""
-        self._role(actor,{Role.DOER,Role.LEAD,Role.ARCHITECT,Role.MOTHER}); t=self.tasks[task_id]
+        self._role(actor,{Role.DOER,Role.LEAD,Role.SPECIALIST,Role.ARCHITECT,Role.MOTHER}); t=self.tasks[task_id]
         if not material: return False
         if not evidence: raise InvariantError("material scope finding needs evidence")
         t.findings.append(f"scope:{evidence}"); t.correction_pending=True; t.state=TaskState.WAITING; self._record("events",("SCOPE_ESCALATION",task_id)); return True
     def expert(self, actor: Role, task_id: str) -> None:
-        self._role(actor,{Role.DOER,Role.LEAD,Role.ARCHITECT,Role.MOTHER}); self._record("events",("EXPERT",task_id))
+        self._role(actor,{Role.DOER,Role.LEAD,Role.SPECIALIST,Role.ARCHITECT,Role.MOTHER}); self._record("events",("EXPERT",task_id))
     def set_intelligence_floor(self, actor: Role, task_id: str, tier: int) -> None:
-        self._role(actor,{Role.ARCHITECT}); self.tasks[task_id].contracts["intelligence_floor"]=tier
+        self._role(actor,{Role.SPECIALIST,Role.ARCHITECT}); self.tasks[task_id].contracts["intelligence_floor"]=tier
     def complexity_mismatch(self, actor: Role, task_id: str, observed_tier: int) -> None:
         self._role(actor,{Role.DOER}); self.tasks[task_id].contracts["complexity_mismatch"]=observed_tier; self._record("events",("MISMATCH",task_id))
     def add_artifact(self, actor: Role, task_id: str, artifact: ArtifactIdentity, risk: str="", *, source:str|None=None, justification:ArtifactJustification|None=None, provenance:ArtifactProvenance|None=None) -> None:
@@ -370,7 +379,7 @@ class Swarm:
         identity=self._register_artifact(t,artifact,source,justification,provenance); t.evidence.append(identity); t.findings.extend([risk] if risk else [])
     def register_ctrl_evidence(self, actor:Role, task_id:str, evidence_id:str, kind:str, locator:str, *, material:bool=True, steering:bool=True) -> str:
         """Register each reviewable result; a path is provenance, never a surface receipt."""
-        self._role(actor,{Role.CTRL,Role.MOTHER,Role.ARCHITECT,Role.LEAD,Role.DOER,Role.REVIEW})
+        self._role(actor,{Role.CTRL,Role.MOTHER,Role.SPECIALIST,Role.ARCHITECT,Role.LEAD,Role.DOER,Role.REVIEW})
         if task_id not in self.tasks: raise InvariantError("CTRL evidence requires a canonical task")
         if evidence_id in self.ctrl_evidence_ledger: raise InvariantError("duplicate CTRL evidence identity")
         self.ctrl_evidence_ledger[evidence_id]=CtrlEvidence(evidence_id,task_id,kind,locator,material,steering)
@@ -506,7 +515,7 @@ class Swarm:
         if worker and worker.context.get("affinity",0)>0 and all(self.tasks[item].state in {TaskState.COMPLETE,TaskState.ARCHIVED,TaskState.ARCHIVED_STALE} for item in worker.task_ids): worker.state=WorkerState.WARM
         if worker: worker.task_ids.discard(task_id)
     def stale(self, actor: Role, task_id: str, reason: str, *, now: int=0, superseded_by: str|None=None, promote: list[str]|None=None) -> None:
-        self._role(actor,{Role.MOTHER,Role.ARCHITECT,Role.LEAD}); t=self.tasks[task_id]
+        self._role(actor,{Role.MOTHER,Role.SPECIALIST,Role.ARCHITECT,Role.LEAD}); t=self.tasks[task_id]
         if not reason: raise InvariantError("stale tasks require reason provenance")
         t.state=TaskState.STALE; t.stale_at=now; t.stale_reason=reason; t.superseded_by=superseded_by; t.promoted.extend(promote or [])
     def groom(self, actor: Role, now: int, policy: dict[str,int]) -> list[str]:

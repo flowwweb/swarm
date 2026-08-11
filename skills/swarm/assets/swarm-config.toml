@@ -1,7 +1,6 @@
 # Global SWARM settings
 #
-# Canonical location: ~/.agents/swarm/config.toml. A clearly labeled legacy
-# ~/.agents/rush/config.toml path remains read-only compatibility fallback.
+# Canonical location: ~/.agents/swarm/config.toml.
 # Changes apply the next time SWARM schedules or manages work. The latest direct
 # user instruction always wins. Safety, user control, and a user-visible host
 # task hierarchy are fixed SWARM invariants and cannot be disabled here.
@@ -150,12 +149,20 @@ workloads = ["simple"]
 tools = ["shell", "web"]
 
 [roles]
-# Add explicit overrides only for a custom leaf role. Every named SWARM role has
-# its own configured model and reasoning pair in the selected profile.
-# [roles.SECURITY]
-# icon = "🛡️"
-# model = "gpt-5.6-sol"
-# reasoning = "high"
+# SPECIALIST is a free role: add any short concrete profession needed. These
+# six examples are defaults, not an allowlist, and each may be used repeatedly.
+[roles.ARCHITECT]
+icon = "🏗️"
+[roles.ENGINEER]
+icon = "⚙️"
+[roles.DESIGNER]
+icon = "🎨"
+[roles.RESEARCHER]
+icon = "🔬"
+[roles.ANALYST]
+icon = "📊"
+[roles.STRATEGIST]
+icon = "🧭"
 
 [labels]
 # Portfolio orchestrator; its emoji comes from role_icons.mother.
@@ -169,6 +176,8 @@ subtask = "SUBTASK"
 assist = "ASSIST"
 advisor = "ADVISOR"
 architect = "ARCHITECT"
+# Generic fallback only; specialist task titles use their concrete role name.
+specialist = "SPECIALIST"
 # Independent review role; emoji from role_icons.review.
 review = "REVIEW"
 

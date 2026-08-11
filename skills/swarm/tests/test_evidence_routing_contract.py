@@ -162,8 +162,8 @@ class EvidenceRoutingContractTests(unittest.TestCase):
 
     def test_progress_reply_cannot_degrade_into_orchestration_narration(self):
         self.assertIn("outcome achieved since the last surfaced event; decisive proof; what remains unproved or failed; next material checkpoint", self.skill)
-        self.assertIn("Do not lead with ARCHITECT, LEAD, REVIEW, task inventory, file counts, import counts, or a tool run", self.skill)
-        self.assertIn("An architecture event is feed-worthy only when it changes the product contract or blocks/clears implementation", self.skill)
+        self.assertIn("Do not lead with SPECIALIST, ARCHITECT, LEAD, REVIEW, task inventory, file counts, import counts, or a tool run", self.skill)
+        self.assertIn("A specialist event is feed-worthy only when it changes the product contract or blocks/clears implementation", self.skill)
         self.assertIn("A message that contains only coordination status is a SWARM contract violation", self.skill)
 
     def test_every_swarm_task_delegates_by_default_with_narrow_exceptions(self):

@@ -1,7 +1,7 @@
 {
   "name": "swarm",
   "version": "0.2.0+codex.20260811125913",
-  "description": "System for Workload Allocation, Routing & Management.",
+  "description": "Structured Workflows for Autonomous Role Management.",
   "author": {
     "name": "Flowwweb",
     "url": "https://flowwweb.com"
@@ -10,22 +10,22 @@
   "repository": "https://github.com/flowwweb/swarm",
   "license": "MIT",
   "keywords": [
-    "coordination",
+    "codex",
     "multi-agent",
-    "review",
+    "orchestration",
     "workflow"
   ],
   "skills": "./skills/",
   "interface": {
     "displayName": "\ud83d\udc19 SWARM",
-    "shortDescription": "Clear authority, durable state, independent review",
-    "longDescription": "SWARM turns RUSH's proven coordination guidance into a smaller model with CTRL, MOTHER, ARCHITECT, LEAD, DOER, EXPERT, REVIEW, canonical state, bounded recovery, and independent verification. Legacy RUSH configuration remains readable during migration.",
+    "shortDescription": "Control a coordinated Codex team from one task",
+    "longDescription": "SWARM is an open-source workflow for Codex. Direct a coordinated team of AI agents from one CTRL task while clear leads route parallel work, focused workers own bounded artifacts, and independent review checks the combined result.",
     "developerName": "Flowwweb",
     "category": "Productivity",
     "capabilities": [
       "Local dashboard",
       "Docker",
-      "Migration compatibility"
+      "Independent review"
     ],
     "defaultPrompt": [
       "Use SWARM to organize this outcome with clear ownership, canonical state, and independent review."

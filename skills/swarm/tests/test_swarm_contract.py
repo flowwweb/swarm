@@ -6,19 +6,19 @@ import unittest
 from pathlib import Path
 
 
-SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "rush_contract.py"
-SPEC = importlib.util.spec_from_file_location("rush_contract_tested", SCRIPT)
+SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "swarm_contract.py"
+SPEC = importlib.util.spec_from_file_location("swarm_contract_tested", SCRIPT)
 assert SPEC and SPEC.loader
 contract = importlib.util.module_from_spec(SPEC)
 sys.modules[SPEC.name] = contract
 SPEC.loader.exec_module(contract)
 
 
-class RushContractTests(unittest.TestCase):
+class SwarmContractTests(unittest.TestCase):
     def test_mandatory_roles_are_independent_of_boost(self) -> None:
         self.assertEqual(
             contract.MANDATORY_DURABLE_GOAL_ROLES,
-            {"mother", "lead", "architect"},
+            {"mother", "lead", "specialist", "architect"},
         )
 
     def test_forward_goal_cases(self) -> None:

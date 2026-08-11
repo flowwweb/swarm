@@ -2,8 +2,8 @@
   "fixture_kind": "runtime_recovery",
   "case": "windows_read_only_loader_permission",
   "operation": {
-    "purpose": "read-only RUSH config load",
-    "script": "scripts/rush_config.py",
+    "purpose": "read-only SWARM config load",
+    "script": "scripts/swarm_config.py",
     "arguments": ["show", "--json"],
     "elevation_allowed": false
   },

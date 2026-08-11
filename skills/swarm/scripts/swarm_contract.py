@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Legacy `rush` adapter for SWARM role-goal and heartbeat validation."""
+"""Validate SWARM role-goal and heartbeat contracts."""
 
 from __future__ import annotations
 
@@ -13,13 +13,14 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from runtime.core import heartbeat_action
 
 
-MANDATORY_DURABLE_GOAL_ROLES = frozenset({"mother", "lead", "architect"})
+MANDATORY_DURABLE_GOAL_ROLES = frozenset({"mother", "lead", "specialist", "architect"})
 
 
 def _canonical_role(role: str) -> str:
     if not isinstance(role, str) or not role.strip():
         raise ValueError("role must be a non-empty string")
-    return role.strip().casefold()
+    canonical = role.strip().casefold()
+    return "specialist" if canonical.startswith("specialist:") else canonical
 
 
 @dataclass(frozen=True)

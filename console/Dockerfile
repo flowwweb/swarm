@@ -5,12 +5,12 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     CODEX_HOME=/data/codex \
     SWARM_CONFIG_PATH=/data/swarm/config.toml
 
-RUN addgroup --system rush && adduser --system --ingroup rush rush
+RUN addgroup --system swarm && adduser --system --ingroup swarm swarm
 WORKDIR /app
-COPY --chown=rush:rush console /app/console
-COPY --chown=rush:rush skills/swarm /app/skills/swarm
+COPY --chown=swarm:swarm console /app/console
+COPY --chown=swarm:swarm skills/swarm /app/skills/swarm
 
-USER rush
+USER swarm
 EXPOSE 4788
 HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
   CMD python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:4788/healthz', timeout=2)"
