@@ -46,7 +46,7 @@ class HeartbeatSpeedContractTests(unittest.TestCase):
             self.assertIn("ready-to-first-material-artifact-or-proof", text)
             self.assertIn("worktree setup", text)
             self.assertIn("host-reported token usage", text)
-            self.assertIn("never estimate missing token usage", text)
+            self.assertIn("never estimate missing token usage", " ".join(text.split()))
             self.assertIn("at least five comparable samples", text)
             self.assertIn("expected critical-path savings exceed", text)
             self.assertIn("keep the slice with its current owner", text)

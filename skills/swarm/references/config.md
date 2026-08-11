@@ -32,7 +32,10 @@ Configuration cannot make an unsafe or hidden coordination path valid:
 
 - Portfolio lanes are user-visible host tasks. In Codex, create Codex tasks with
   thread tools.
-- Subagents may work only inside an owning Codex task and never replace a lane.
+- Every SWARM task delegates at least one bounded outcome-critical slice to a
+  subagent by default. Subagents work only inside an owning Codex task and never
+  replace a lane. Disabled or unavailable capacity requires a typed exact
+  exception; it is not a standing waiver.
 - The latest direct user instruction controls its task.
 - Existing safety, authority, provider, worktree, and proof boundaries remain.
 - If a required task tool is unavailable, report the blocker instead of

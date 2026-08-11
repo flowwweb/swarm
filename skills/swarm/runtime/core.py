@@ -18,6 +18,10 @@ class ArtifactJustification(StrEnum): VERIFICATION="verification"; UNCERTAINTY="
 class CorrectionDecision(StrEnum): CONTINUE="CONTINUE"; FIX_FORWARD="FIX_FORWARD"; ESCALATE="ESCALATE"; REOPEN_TOPOLOGY="REOPEN_TOPOLOGY"
 class EvidenceDisposition(StrEnum): PENDING="PENDING"; SURFACED="SURFACED"; WITHHELD="WITHHELD"
 class WithholdBasis(StrEnum): OBJECTIVE_DEFECT="objective-defect"; DUPLICATE="duplicate"; AUTHORITY="authority"
+class CtrlSurfaceKind(StrEnum):
+    INLINE_IMAGE="inline_image"; INLINE_RECORDING="inline_recording"; INLINE_COMPARISON="inline_comparison"; INLINE_TABLE="inline_table"; INLINE_EXCERPT="inline_excerpt"; INLINE_RECEIPT="inline_receipt"; EXACT_BLOCKER="exact_blocker"
+class SubagentException(StrEnum):
+    CAPACITY="capacity"; COLLISION="collision"; SAFETY="safety"; WHOLE_TASK_COST="whole_task_cost"
 
 class InvariantError(ValueError): pass
 
@@ -43,7 +47,7 @@ class ArtifactProvenance:
 @dataclass
 class CtrlEvidence:
     id:str; task_id:str; kind:str; locator:str; material:bool=True; steering:bool=True
-    disposition:EvidenceDisposition=EvidenceDisposition.PENDING; caption:str=""; claim_limit:str=""; reason:str=""; withhold_basis:WithholdBasis|None=None; receipt:str=""
+    disposition:EvidenceDisposition=EvidenceDisposition.PENDING; caption:str=""; claim_limit:str=""; reason:str=""; withhold_basis:WithholdBasis|None=None; receipt:str=""; surface_kind:CtrlSurfaceKind|None=None
     def __post_init__(self):
         if not all(isinstance(value,str) and value.strip() for value in (self.id,self.task_id,self.kind,self.locator)): raise InvariantError("CTRL evidence identity, task, kind, and locator are required")
 @dataclass(frozen=True)
@@ -110,7 +114,7 @@ class Task:
     id: str; owner: str; creator: str; architecture_version: int; contracts: dict[str,int]
     state: TaskState=TaskState.ACTIVE; waiting_on: str|None=None; reviewer: str|None=None; findings: list[str]=field(default_factory=list)
     evidence: list[str]=field(default_factory=list); recovery_dimensions: set[str]=field(default_factory=set); recovery_attempts:int=0; review_value: ReviewValue=ReviewValue.NONE
-    completed_at: int|None=None; stale_at: int|None=None; archived_at: int|None=None; stale_reason: str|None=None; superseded_by: str|None=None; promoted: list[str]=field(default_factory=list); extensions: int=0; review_passed: bool=False; risk:int=1; review_strategy:str="light"; architecture_review_floor:ReviewStrategy=ReviewStrategy.LIGHT; security_review_floor:ReviewStrategy=ReviewStrategy.LIGHT; artifacts:dict[ArtifactIdentity|str,str]=field(default_factory=dict); artifact_justifications:dict[str,ArtifactJustification]=field(default_factory=dict); artifact_provenance:dict[str,ArtifactProvenance]=field(default_factory=dict); archive:dict[str,object]=field(default_factory=dict); active_goal:bool=False; handoff_active:bool=False; correction_pending:bool=False; user_choice_pending:bool=False; ambiguous:bool=False; topology_receipt:tuple[str,...]=(); ctrl_event_receipt:tuple[str,str]|None=None
+    completed_at: int|None=None; stale_at: int|None=None; archived_at: int|None=None; stale_reason: str|None=None; superseded_by: str|None=None; promoted: list[str]=field(default_factory=list); extensions: int=0; review_passed: bool=False; risk:int=1; review_strategy:str="light"; architecture_review_floor:ReviewStrategy=ReviewStrategy.LIGHT; security_review_floor:ReviewStrategy=ReviewStrategy.LIGHT; artifacts:dict[ArtifactIdentity|str,str]=field(default_factory=dict); artifact_justifications:dict[str,ArtifactJustification]=field(default_factory=dict); artifact_provenance:dict[str,ArtifactProvenance]=field(default_factory=dict); archive:dict[str,object]=field(default_factory=dict); active_goal:bool=False; handoff_active:bool=False; correction_pending:bool=False; user_choice_pending:bool=False; ambiguous:bool=False; topology_receipt:tuple[str,...]=(); ctrl_event_receipt:tuple[str,str]|None=None; subagent_receipt:str=""; subagent_exception:SubagentException|None=None; subagent_exception_reason:str=""
 
 @dataclass
 class Worker:
@@ -130,6 +134,13 @@ class Swarm:
         """Keep machine receipts inspectable without retaining an event transcript."""
         entries=getattr(self,target); entries.append(item)
         if len(entries)>64: del entries[:-64]
+    def _require_subagent_contract(self, task:Task) -> None:
+        receipt=task.subagent_receipt.strip()
+        exception=task.subagent_exception
+        reason=task.subagent_exception_reason.strip()
+        if receipt and (exception is not None or reason): raise InvariantError("task must record a subagent receipt or one typed exception, not both")
+        if receipt: return
+        if not isinstance(exception,SubagentException) or not reason: raise InvariantError("every SWARM task requires a host subagent receipt or typed exact exception")
     def add_lead(self, actor: Role, lead: str) -> None:
         self._role(actor,{Role.MOTHER}); self.topology.add(lead)
     def add_worker(self, actor: Role, worker: Worker) -> None:
@@ -141,16 +152,16 @@ class Swarm:
         self.workers[worker.id]=worker
     def start_atomic(self, actor:Role, task:Task) -> None:
         """CTRL may create exactly one direct DOER ownership path for atomic work."""
-        self._role(actor,{Role.CTRL})
+        self._role(actor,{Role.CTRL}); self._require_subagent_contract(task)
         if task.owner in self.workers or task.id in self.tasks: raise InvariantError("atomic ownership already exists")
         task.topology_receipt=("CTRL","DOER","atomic:isolated"); self.workers[task.owner]=Worker(task.owner,"CTRL",1,WorkerState.ACTIVE,{task.id}); self.tasks[task.id]=task
     def start_simple(self, actor:Role, task:Task) -> None:
         """MOTHER may add stateful direct DOER ownership without a LEAD."""
-        self._role(actor,{Role.MOTHER})
+        self._role(actor,{Role.MOTHER}); self._require_subagent_contract(task)
         if task.owner in self.workers or task.id in self.tasks: raise InvariantError("simple ownership already exists")
         task.topology_receipt=("CTRL","MOTHER","DOER","simple:stateful"); self.workers[task.owner]=Worker(task.owner,"MOTHER",1,WorkerState.ACTIVE,{task.id}); self.tasks[task.id]=task
     def reuse_warm(self, actor:Role, task:Task, *, architecture:dict[str,int], affinity:int) -> str|None:
-        self._role(actor,{Role.LEAD,Role.MOTHER,Role.CTRL})
+        self._role(actor,{Role.LEAD,Role.MOTHER,Role.CTRL}); self._require_subagent_contract(task)
         for worker in self.workers.values():
             context=worker.context
             if worker.state==WorkerState.WARM and context.get("affinity",0)>=affinity and context.get("architecture",architecture)==architecture:
@@ -286,11 +297,12 @@ class Swarm:
         """Return material work due at the next safe CTRL message boundary."""
         self._role(actor,{Role.CTRL})
         return tuple(item.id for item in self.ctrl_evidence_ledger.values() if item.material and item.disposition==EvidenceDisposition.PENDING and (task_id is None or item.task_id==task_id))
-    def surface_ctrl_evidence(self, actor:Role, evidence_id:str, *, caption:str, claim_limit:str) -> str:
+    def surface_ctrl_evidence(self, actor:Role, evidence_id:str, *, surface_kind:CtrlSurfaceKind, caption:str, claim_limit:str, surface_receipt:str) -> str:
         self._role(actor,{Role.CTRL}); item=self.ctrl_evidence_ledger[evidence_id]
         if item.disposition!=EvidenceDisposition.PENDING: raise InvariantError("CTRL evidence may be surfaced exactly once")
-        if not caption.strip() or not claim_limit.strip(): raise InvariantError("surfaced CTRL evidence requires a self-contained caption and claim limit")
-        item.caption=caption.strip(); item.claim_limit=claim_limit.strip(); item.disposition=EvidenceDisposition.SURFACED; item.receipt=f"surface:{self.ctrl_phase}:{evidence_id}"
+        if not isinstance(surface_kind,CtrlSurfaceKind): raise InvariantError("CTRL evidence requires an inline proof surface kind")
+        if not caption.strip() or not claim_limit.strip() or not surface_receipt.strip(): raise InvariantError("surfaced CTRL evidence requires a self-contained caption, claim limit, and external surface receipt")
+        item.caption=caption.strip(); item.claim_limit=claim_limit.strip(); item.surface_kind=surface_kind; item.disposition=EvidenceDisposition.SURFACED; item.receipt=surface_receipt.strip()
         return item.receipt
     def withhold_ctrl_evidence(self, actor:Role, evidence_id:str, *, basis:WithholdBasis, reason:str) -> str:
         self._role(actor,{Role.CTRL}); item=self.ctrl_evidence_ledger[evidence_id]
@@ -356,6 +368,7 @@ class Swarm:
         return Depth.WORKSTREAM
     def complete(self, actor: Role, task_id: str, integration_ok: bool, architecture_ok: bool, now: int) -> None:
         self._role(actor,{Role.MOTHER}); t=self.tasks[task_id]
+        self._require_subagent_contract(t)
         pending=self._open_ctrl_evidence(task_id)
         if pending: raise InvariantError(f"open CTRL evidence acceptance failure: {','.join(pending)}")
         if not t.review_passed or not t.reviewer or not integration_ok or not architecture_ok: raise InvariantError("completion requires independent review and integration/architecture gates")
@@ -410,15 +423,21 @@ class Swarm:
             if len(self.correction_receipts)>=64: return CorrectionDecision.ESCALATE if bool(facts.get("material")) else CorrectionDecision.CONTINUE
             self.correction_receipts[incident_id]=None
         return decision
-    def ctrl_event(self, event: str, task_id: str, material_revision:str|int=0) -> str|None:
-        category={"MOTHER_WAKE":"attention","RECOVERY":"attention","DEADLOCK":"blocker","REVIEW_FAIL":"blocker","SCOPE_ESCALATION":"blocker","RELEASE":"release","HANDOFF":"handoff","ACCEPTANCE":"acceptance"}.get(event)
-        if not category: return None
+    def ctrl_event(self, event: str, task_id: str, material_revision:str|int=0, *, outcome:str="", evidence_id:str="", next_checkpoint:str="") -> str|None:
+        category={"REVIEW_FAIL":"blocker","SCOPE_ESCALATION":"blocker","RELEASE":"release","HANDOFF":"handoff","ACCEPTANCE":"acceptance"}.get(event)
+        if not category:
+            if event in {"PROGRESS","HEARTBEAT","MOTHER_WAKE","RECOVERY","DEADLOCK"}: raise InvariantError("coordination-only telemetry cannot enter the CTRL feed")
+            return None
         task=self.tasks.get(task_id)
         if task is None: raise InvariantError("CTRL event requires a canonical task")
+        evidence=self.ctrl_evidence_ledger.get(evidence_id)
+        if not outcome.strip() or evidence is None or evidence.task_id!=task_id or evidence.disposition!=EvidenceDisposition.SURFACED or not evidence.caption or not evidence.claim_limit or not evidence.receipt: raise InvariantError("CTRL event requires a surfaced proof and human-readable outcome")
+        if not next_checkpoint.strip() and event not in {"ACCEPTANCE","RELEASE"}: raise InvariantError("nonterminal CTRL event requires a material next checkpoint")
         receipt=(category,str(material_revision))
         if task.ctrl_event_receipt==receipt: return None
         task.ctrl_event_receipt=receipt
-        return f"{task_id}: {category}"
+        rendered=f"{outcome.strip()} Proof: {evidence.caption} Claim limit: {evidence.claim_limit}"
+        return f"{rendered} Next: {next_checkpoint.strip()}" if next_checkpoint.strip() else rendered
     def project_complete(self, actor: Role, integration_ok: bool, architecture_ok: bool) -> bool:
         self._role(actor,{Role.MOTHER})
         return not self._open_ctrl_evidence() and integration_ok and architecture_ok and all(t.state in {TaskState.COMPLETE,TaskState.ARCHIVED,TaskState.BACKLOG} or (t.state==TaskState.ARCHIVED_STALE and t.superseded_by in self.tasks and self.tasks[t.superseded_by].state==TaskState.COMPLETE) for t in self.tasks.values())

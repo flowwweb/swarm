@@ -5,8 +5,12 @@ selecting ASSIST, naming roles, or transferring ownership.
 
 ## Choose the smallest useful shape
 
-- Keep CTRL direct or route one atomic owner unless portfolio facts require
-  shared orchestration.
+- Every SWARM task, especially CTRL, delegates at least one bounded
+  outcome-critical slice to a subagent before substantive execution by default.
+  The owner retains integration and acceptance. Only unavailable capacity, an
+  inseparable mutable-authority collision, a safety or privacy boundary, or
+  delegation cost at least as large as the whole bounded task permits a typed,
+  exactly reasoned exception.
 - Create MOTHER only when multiple distinct owner lanes have real cross-lane
   dependencies and integration, portfolio acceptance is required, and CTRL
   cannot cheaply own that integration and acceptance.
@@ -115,9 +119,10 @@ worktree setup, and host-reported token usage; never estimate missing token usag
 Keep same-directory or projectless startup, worktree provisioning, and
 owner orientation or handoff as distinct classes. Use rolling medians only
 after at least five comparable samples; before then use a conservative
-qualitative threshold. Create a visible task only when evidence-backed expected critical-path savings exceed
+qualitative threshold. Create a visible portfolio task only when evidence-backed expected critical-path savings exceed
 measured startup plus orientation, handoff, and
 integration or review cost. Otherwise keep the slice with its current owner.
+This threshold never waives default internal-subagent delegation.
 Set recovery and proof windows from observed cold-start or setup latency plus
 the actual readiness condition, never from a generic budget shorter than
 initialization. A timeout proves only that the chosen window elapsed; it does not prove service failure.
