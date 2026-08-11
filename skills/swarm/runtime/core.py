@@ -94,7 +94,9 @@ class Swarm:
     def assign(self, actor: Role, task: Task) -> None:
         self._role(actor,{Role.LEAD}); w=self.workers.get(task.owner)
         if not w or w.state==WorkerState.RETIRED or len(w.task_ids)>=self.wip_limit: raise InvariantError("owner unavailable or at WIP limit")
-        if any(identity in existing.artifacts for identity in task.artifacts for existing in self.tasks.values()): raise InvariantError("canonical artifact identity already exists")
+        for identity, source in task.artifacts.items():
+            if identity in self.artifact_index: raise InvariantError("canonical artifact identity already exists")
+            self.artifact_index[identity]=source
         self.tasks[task.id]=task; w.task_ids.add(task.id)
     def should_spawn(self, *, independent: bool, critical_path: bool, duplicate_artifact: str|None=None, verification: bool=False, contention:bool=False) -> bool:
         allowed=independent and (critical_path or verification) and (not duplicate_artifact or verification) and sum(w.state!=WorkerState.RETIRED for w in self.workers.values()) < MODE_POLICY[self.mode]["parallel"]

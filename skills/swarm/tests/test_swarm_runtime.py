@@ -89,4 +89,7 @@ class RuntimeTests(unittest.TestCase):
   self.s.assign(Role.LEAD,Task("B","D","author",1,{}))
   with self.assertRaises(InvariantError): self.s.add_artifact(Role.DOER,"B",ArtifactIdentity("canonical","v1","work"))
   self.s.add_artifact(Role.DOER,"B",ArtifactIdentity("canonical","v2","verification"),source="canonical@v1:work",justification="verification"); self.assertIn("canonical@v2:verification",self.s.tasks["B"].artifacts)
+ def test_assign_registers_artifact_identity(self):
+  self.s.assign(Role.LEAD,Task("B","D","author",1,{},artifacts={"canon@v1:work":"B"}))
+  with self.assertRaises(InvariantError): self.s.add_artifact(Role.DOER,"A",ArtifactIdentity("canon","v1","work"))
 if __name__ == "__main__": unittest.main()
