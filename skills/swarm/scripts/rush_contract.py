@@ -5,7 +5,12 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 from dataclasses import asdict, dataclass
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from runtime.core import heartbeat_action
 
 
 MANDATORY_DURABLE_GOAL_ROLES = frozenset({"mother", "lead", "architect"})
@@ -74,15 +79,9 @@ def heartbeat_decision(
 ) -> Decision:
     """Classify one passive observation; heartbeat itself never wakes a lane."""
 
-    if observation.material_change:
-        return Decision("observe", "material artifact, proof, prerequisite, or integration changed")
-    if not observation.owner_update:
-        return Decision("observe", "silence alone is not a stall")
-    if observation.unchanged_updates < stall_after_updates:
-        return Decision("observe", "material-change threshold not reached")
-    if observation.recovery_attempts == 0:
-        return Decision("recover", "one bounded same-surface recovery is due")
-    return Decision("release", "unchanged after the one recovery; return blocker and unblock condition")
+    action=heartbeat_action(owner_update=observation.owner_update,material_change=observation.material_change,unchanged_updates=observation.unchanged_updates,recovery_attempts=observation.recovery_attempts,stall_after_updates=stall_after_updates)
+    reason={"observe":"healthy, silent, or below threshold","recover":"one bounded same-surface recovery is due","release":"unchanged after the one recovery; return blocker and unblock condition"}[action]
+    return Decision(action,reason)
 
 
 def forward_cases() -> dict[str, dict[str, str]]:

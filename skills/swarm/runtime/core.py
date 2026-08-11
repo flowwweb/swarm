@@ -17,6 +17,11 @@ class DedupDecision(StrEnum): REUSE="REUSE"; EXECUTE="EXECUTE"
 
 class InvariantError(ValueError): pass
 
+def heartbeat_action(*, owner_update:bool, material_change:bool, unchanged_updates:int, recovery_attempts:int, stall_after_updates:int) -> str:
+    """Single pure heartbeat classifier shared by runtime compatibility adapters."""
+    if material_change or not owner_update or unchanged_updates < stall_after_updates: return "observe"
+    return "recover" if recovery_attempts==0 else "release"
+
 @dataclass(frozen=True)
 class VersionedReference:
     name:str; version:int; kind:str
