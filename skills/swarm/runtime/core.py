@@ -17,6 +17,10 @@ class InvariantError(ValueError): pass
 
 class Depth(StrEnum):
     ATOMIC="CTRL_DOER"; SIMPLE="CTRL_MOTHER_DOER"; WORKSTREAM="CTRL_MOTHER_LEAD_DOER"; PROJECT="CTRL_MOTHER_ARCHITECT_LEADS_DOERS"
+class EfficiencyMode(StrEnum): CONSERVE="CONSERVE"; BALANCED="BALANCED"; FAST="FAST"; MAX="MAX"
+
+def initial_tier(*, risk:int, uncertainty:int, blast_radius:int, mode:EfficiencyMode=EfficiencyMode.BALANCED) -> int:
+    return min(3, 1 + int(risk+uncertainty+blast_radius >= 3) + int(risk+uncertainty+blast_radius >= 6 or mode in {EfficiencyMode.FAST,EfficiencyMode.MAX}))
 
 def choose_depth(*, scope: int, architecture_impact: bool=False, independent_tasks: int=1, dependencies: int=0, uncertainty: int=0, blast_radius: int=0, specialisations: int=1, useful_parallelism: int=1, coordination_overhead: int=0) -> Depth:
     """Choose infrastructure only when its reliability benefit exceeds its cost."""
@@ -43,7 +47,7 @@ class Swarm:
     workers: dict[str,Worker]=field(default_factory=dict); tasks: dict[str,Task]=field(default_factory=dict); leases: dict[str,str]=field(default_factory=dict); events: list[tuple[str,str]]=field(default_factory=list); telemetry: dict[str,int]=field(default_factory=dict); lane_width:int=3; wip_limit:int=3
     @classmethod
     def from_config(cls, config: dict) -> "Swarm":
-        return cls(lane_width=config["coordination"]["preferred_lane_width"], wip_limit=config.get("execution_limits",{}).get("doer_wip_limit",3))
+        return cls(lane_width=config["coordination"]["preferred_lane_width"], wip_limit=config["efficiency"]["doer_wip_limit"])
 
     def _role(self, actor: Role, allowed: set[Role]) -> None:
         if actor not in allowed: raise InvariantError(f"{actor} cannot perform this transition")
@@ -58,10 +62,12 @@ class Swarm:
         self._role(actor,{Role.LEAD}); w=self.workers.get(task.owner)
         if not w or w.state==WorkerState.RETIRED or len(w.task_ids)>=self.wip_limit: raise InvariantError("owner unavailable or at WIP limit")
         self.tasks[task.id]=task; w.task_ids.add(task.id)
-    def change_architecture(self, actor: Role, contracts: dict[str,int]) -> None:
+    def should_spawn(self, *, independent: bool, critical_path: bool, duplicate_artifact: str|None=None, verification: bool=False) -> bool:
+        return independent and (critical_path or verification) and (not duplicate_artifact or verification)
+    def change_architecture(self, actor: Role, contracts: dict[str,int], now:int=0) -> None:
         self._role(actor,{Role.ARCHITECT}); self.architecture_version+=1; self.contract_versions.update(contracts)
         for task in self.tasks.values():
-            if task.state not in {TaskState.COMPLETE,TaskState.BACKLOG,TaskState.ARCHIVED,TaskState.ARCHIVED_STALE} and (task.architecture_version != self.architecture_version or any(task.contracts.get(k,0)!=v for k,v in contracts.items())): task.state=TaskState.STALE; task.stale_reason="architecture or contract version changed"; task.stale_at=len(self.events)
+            if task.state not in {TaskState.COMPLETE,TaskState.BACKLOG,TaskState.ARCHIVED,TaskState.ARCHIVED_STALE} and (task.architecture_version != self.architecture_version or any(task.contracts.get(k,0)!=v for k,v in contracts.items())): task.state=TaskState.STALE; task.stale_reason="architecture or contract version changed"; task.stale_at=now
     def wait(self, actor: Role, task_id: str, dependency: str) -> None:
         self._role(actor,{Role.DOER}); t=self.tasks[task_id]
         if not dependency or dependency not in self.tasks: raise InvariantError("WAITING requires a named task dependency")
@@ -86,6 +92,12 @@ class Swarm:
         self._role(actor,{Role.DOER}); t=self.tasks[task_id]; t.evidence.append(artifact); t.findings.extend([risk] if risk else [])
     def discover(self, artifact: str) -> list[str]:
         return [t.id for t in self.tasks.values() if artifact in t.evidence]
+    def review_depth(self, risk:int) -> str:
+        return "light" if risk <= 1 else "standard" if risk <= 3 else "adversarial"
+    def record_telemetry(self, task_type:str, role:str, tier:int, outcome:str, *, productive:int=0, overhead:int=0, usage:int|None=None) -> None:
+        self.telemetry.update({"tasks":self.telemetry.get("tasks",0)+1,"productive":self.telemetry.get("productive",0)+productive,"overhead":self.telemetry.get("overhead",0)+overhead})
+        if usage is not None: self.telemetry["host_usage"]=self.telemetry.get("host_usage",0)+usage
+        self.events.append(("TELEMETRY",f"{task_type}:{role}:L{tier}:{outcome}"))
     def review(self, actor: Role, task_id: str, reviewer: str, passed: bool, finding: str="") -> None:
         self._role(actor,{Role.REVIEW}); t=self.tasks[task_id]
         if reviewer in {t.creator,t.owner}: raise InvariantError("creator cannot be sole independent reviewer")
@@ -132,10 +144,10 @@ class Swarm:
                 t.state=TaskState.ARCHIVED_STALE; t.archived_at=now; archived.append(t.id)
             elif t.state==TaskState.COMPLETE and t.completed_at is not None and now-t.completed_at >= delays[t.review_value]:
                 t.state=TaskState.ARCHIVED; t.archived_at=now; archived.append(t.id)
-        self.telemetry.update({"archived":self.telemetry.get("archived",0)+len(archived),"pins":sum(t.review_value==ReviewValue.PINNED for t in self.tasks.values()),"active":sum(t.state in {TaskState.ACTIVE,TaskState.WAITING,TaskState.REVIEW} for t in self.tasks.values()),"stale":sum(t.state==TaskState.STALE for t in self.tasks.values()),"restores":self.telemetry.get("restores",0),"extensions":sum(t.extensions for t in self.tasks.values())}); return archived
+        self.telemetry.update({"archived":self.telemetry.get("archived",0)+len(archived),"pins":sum(t.review_value==ReviewValue.PINNED for t in self.tasks.values()),"active":sum(t.state in {TaskState.ACTIVE,TaskState.WAITING,TaskState.REVIEW} for t in self.tasks.values()),"stale":sum(t.state==TaskState.STALE for t in self.tasks.values()),"restores":self.telemetry.get("restores",0),"extensions":sum(t.extensions for t in self.tasks.values()),"archive_time":sum((t.archived_at or 0)-(t.completed_at or t.stale_at or 0) for t in self.tasks.values() if t.archived_at is not None),"archive_reasons":len([t for t in self.tasks.values() if t.archived_at is not None]),"age_buckets":len(self.tasks)}); return archived
     def ctrl_event(self, event: str, task_id: str) -> str|None:
         if event in {"HEARTBEAT","PROGRESS"}: return None
         return f"{task_id}: {event.lower().replace('_',' ')}"
     def project_complete(self, actor: Role, integration_ok: bool, architecture_ok: bool) -> bool:
         self._role(actor,{Role.MOTHER})
-        return integration_ok and architecture_ok and all(t.state in {TaskState.COMPLETE,TaskState.ARCHIVED,TaskState.ARCHIVED_STALE,TaskState.BACKLOG} for t in self.tasks.values())
+        return integration_ok and architecture_ok and all(t.state in {TaskState.COMPLETE,TaskState.ARCHIVED,TaskState.ARCHIVED_STALE,TaskState.BACKLOG} and not (t.state==TaskState.ARCHIVED_STALE and not t.superseded_by) for t in self.tasks.values())

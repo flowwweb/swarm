@@ -39,6 +39,7 @@ DEFAULTS: dict[str, Any] = {
         "service_tier": "",
         "usage_saver": False,
     },
+    "efficiency": {"mode":"BALANCED", "doer_wip_limit":3},
     "boost": {
         "enabled": True,
         "strategies": [
@@ -322,6 +323,10 @@ def validate(raw: dict[str, Any]) -> None:
         raise ConfigError("execution.usage_profile must be high, medium, or low")
     _short_text(execution, "service_tier", "execution", allow_empty=True)
     _boolean(execution, "usage_saver", "execution")
+    efficiency = _expect_table(raw, "efficiency")
+    _expect_keys(efficiency, set(DEFAULTS["efficiency"]), "efficiency")
+    if "mode" in efficiency and efficiency["mode"] not in {"CONSERVE","BALANCED","FAST","MAX"}: raise ConfigError("efficiency.mode must be CONSERVE, BALANCED, FAST, or MAX")
+    _bounded_int(efficiency, "doer_wip_limit", 1, 8, "efficiency")
 
     boost = _expect_table(raw, "boost")
     _expect_keys(boost, set(DEFAULTS["boost"]), "boost")

@@ -34,6 +34,10 @@ service_tier = ""
 # models, requested outcome, required proof, independent review, or authority.
 usage_saver = false
 
+[efficiency]
+mode = "BALANCED"
+doer_wip_limit = 3
+
 [boost]
 # Boost is optional closeout behavior. MOTHER, LEAD, and persistent ARCHITECT
 # goals plus the passive heartbeat are mandatory and cannot be disabled here.

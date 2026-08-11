@@ -1,3 +1,3 @@
-from .core import Depth, InvariantError, ReviewValue, Role, Swarm, Task, TaskState, Worker, WorkerState, choose_depth
+from .core import Depth, EfficiencyMode, InvariantError, ReviewValue, Role, Swarm, Task, TaskState, Worker, WorkerState, choose_depth, initial_tier
 
-__all__ = ["Depth", "InvariantError", "ReviewValue", "Role", "Swarm", "Task", "TaskState", "Worker", "WorkerState", "choose_depth"]
+__all__ = ["Depth", "EfficiencyMode", "InvariantError", "ReviewValue", "Role", "Swarm", "Task", "TaskState", "Worker", "WorkerState", "choose_depth", "initial_tier"]

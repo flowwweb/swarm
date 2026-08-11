@@ -3,7 +3,7 @@ import sys
 import unittest
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from runtime import Depth, InvariantError, ReviewValue, Role, Swarm, Task, TaskState, Worker, WorkerState, choose_depth
+from runtime import Depth, EfficiencyMode, InvariantError, ReviewValue, Role, Swarm, Task, TaskState, Worker, WorkerState, choose_depth, initial_tier
 
 class RuntimeTests(unittest.TestCase):
  def setUp(self):
@@ -55,4 +55,9 @@ class RuntimeTests(unittest.TestCase):
  def test_intelligence_artifacts_and_completion_gates(self):
   self.s.set_intelligence_floor(Role.ARCHITECT,"A",3); self.s.complexity_mismatch(Role.DOER,"A",3); self.s.add_artifact(Role.DOER,"A","proof","risk survives compression")
   self.assertEqual(self.s.discover("proof"),["A"]); self.assertIn("risk survives compression",self.s.tasks["A"].findings); self.assertFalse(self.s.project_complete(Role.MOTHER,True,True))
+ def test_efficiency_uses_value_not_capacity(self):
+  self.assertFalse(self.s.should_spawn(independent=False,critical_path=True)); self.assertFalse(self.s.should_spawn(independent=True,critical_path=True,duplicate_artifact="proof")); self.assertTrue(self.s.should_spawn(independent=True,critical_path=True))
+  self.assertEqual(initial_tier(risk=3,uncertainty=2,blast_radius=2),3); self.assertEqual(self.s.review_depth(4),"adversarial"); self.s.record_telemetry("auth","DOER",3,"accepted",productive=2,overhead=1); self.assertEqual(self.s.telemetry["productive"],2)
+ def test_stale_clock_and_unresolved_completion(self):
+  self.s.change_architecture(Role.ARCHITECT,{"x":2},now=90); self.s.groom(Role.MOTHER,100,{"no_review_archive_delay":0,"low_review_retention":2,"high_review_retention":3,"stale_task_archive_delay":30}); self.assertEqual(self.s.tasks["A"].state,TaskState.STALE); self.assertFalse(self.s.project_complete(Role.MOTHER,True,True))
 if __name__ == "__main__": unittest.main()
