@@ -45,17 +45,18 @@ class ContextPackage:
 class Depth(StrEnum):
     ATOMIC="CTRL_DOER"; SIMPLE="CTRL_MOTHER_DOER"; WORKSTREAM="CTRL_MOTHER_LEAD_DOER"; PROJECT="CTRL_MOTHER_ARCHITECT_LEADS_DOERS"
 class EfficiencyMode(StrEnum): CONSERVE="CONSERVE"; BALANCED="BALANCED"; FAST="FAST"; MAX="MAX"
+MODE_POLICY={EfficiencyMode.CONSERVE:{"parallel":1,"depth_bias":1,"review_floor":ReviewStrategy.LIGHT},EfficiencyMode.BALANCED:{"parallel":2,"depth_bias":2,"review_floor":ReviewStrategy.LIGHT},EfficiencyMode.FAST:{"parallel":3,"depth_bias":3,"review_floor":ReviewStrategy.STANDARD},EfficiencyMode.MAX:{"parallel":4,"depth_bias":4,"review_floor":ReviewStrategy.STANDARD}}
 
 def initial_tier(*, risk:int, uncertainty:int, blast_radius:int, family:str="general", mode:EfficiencyMode=EfficiencyMode.BALANCED) -> int:
     weight=risk+uncertainty+blast_radius+({"security":2,"architecture":1}.get(family,0))
     bias={EfficiencyMode.CONSERVE:0,EfficiencyMode.BALANCED:1,EfficiencyMode.FAST:2,EfficiencyMode.MAX:3}[mode]
     return min(3, max(1, 1 + int(weight>=3) + int(weight+bias>=6)))
 
-def choose_depth(*, scope: int, architecture_impact: bool=False, independent_tasks: int=1, dependencies: int=0, uncertainty: int=0, blast_radius: int=0, specialisations: int=1, useful_parallelism: int=1, coordination_overhead: int=0) -> Depth:
+def choose_depth(*, scope: int, architecture_impact: bool=False, independent_tasks: int=1, dependencies: int=0, uncertainty: int=0, blast_radius: int=0, specialisations: int=1, useful_parallelism: int=1, coordination_overhead: int=0, mode:EfficiencyMode=EfficiencyMode.BALANCED) -> Depth:
     """Choose infrastructure only when its reliability benefit exceeds its cost."""
     if scope <= 1 and independent_tasks <= 1 and not architecture_impact and dependencies == uncertainty == blast_radius == 0: return Depth.ATOMIC
     if architecture_impact and (independent_tasks >= 3 or specialisations >= 2): return Depth.PROJECT
-    if independent_tasks >= 2 or dependencies >= 2 or specialisations >= 2 or useful_parallelism >= 2:
+    if independent_tasks >= 2 or dependencies >= 2 or specialisations >= 2 or useful_parallelism >= MODE_POLICY[mode]["parallel"]:
         return Depth.WORKSTREAM if coordination_overhead < 3 else Depth.SIMPLE
     return Depth.SIMPLE
 
@@ -64,7 +65,7 @@ class Task:
     id: str; owner: str; creator: str; architecture_version: int; contracts: dict[str,int]
     state: TaskState=TaskState.ACTIVE; waiting_on: str|None=None; reviewer: str|None=None; findings: list[str]=field(default_factory=list)
     evidence: list[str]=field(default_factory=list); recovery_dimensions: set[str]=field(default_factory=set); review_value: ReviewValue=ReviewValue.NONE
-    completed_at: int|None=None; stale_at: int|None=None; archived_at: int|None=None; stale_reason: str|None=None; superseded_by: str|None=None; promoted: list[str]=field(default_factory=list); extensions: int=0; review_passed: bool=False; risk:int=1; review_strategy:str="light"; architecture_review_floor:ReviewStrategy=ReviewStrategy.LIGHT; security_review_floor:ReviewStrategy=ReviewStrategy.LIGHT; artifacts:dict[str,str]=field(default_factory=dict)
+    completed_at: int|None=None; stale_at: int|None=None; archived_at: int|None=None; stale_reason: str|None=None; superseded_by: str|None=None; promoted: list[str]=field(default_factory=list); extensions: int=0; review_passed: bool=False; risk:int=1; review_strategy:str="light"; architecture_review_floor:ReviewStrategy=ReviewStrategy.LIGHT; security_review_floor:ReviewStrategy=ReviewStrategy.LIGHT; artifacts:dict[str,str]=field(default_factory=dict); archive:dict[str,object]=field(default_factory=dict)
 
 @dataclass
 class Worker:
@@ -96,7 +97,7 @@ class Swarm:
         if any(identity in existing.artifacts for identity in task.artifacts for existing in self.tasks.values()): raise InvariantError("canonical artifact identity already exists")
         self.tasks[task.id]=task; w.task_ids.add(task.id)
     def should_spawn(self, *, independent: bool, critical_path: bool, duplicate_artifact: str|None=None, verification: bool=False, contention:bool=False) -> bool:
-        allowed=independent and (critical_path or verification) and (not duplicate_artifact or verification)
+        allowed=independent and (critical_path or verification) and (not duplicate_artifact or verification) and sum(w.state!=WorkerState.RETIRED for w in self.workers.values()) < MODE_POLICY[self.mode]["parallel"]
         reason="allow:verification" if verification else "allow:critical_path" if allowed else "refuse:independent=false" if not independent else "refuse:contention" if contention else "refuse:duplicate" if duplicate_artifact else "refuse:noncritical"
         self.efficiency_ledger.append({"kind":"spawn","decision":"allow" if allowed else "refuse","reason":reason})
         return allowed
@@ -156,7 +157,7 @@ class Swarm:
             evidence=ReviewEvidence(legacy_strategy,evidence,True,"legacy",(finding,) if finding else ())
         if not evidence.independent or evidence.reviewer in {t.creator,t.owner}: raise InvariantError("creator cannot be sole independent reviewer")
         levels={ReviewStrategy.LIGHT:1,ReviewStrategy.STANDARD:2,ReviewStrategy.ADVERSARIAL:3,ReviewStrategy.SPECIALIST:4}
-        required=max((ReviewStrategy(self.review_depth(t.risk)),t.architecture_review_floor,t.security_review_floor),key=levels.get); t.review_strategy=required.value
+        required=max((ReviewStrategy(self.review_depth(t.risk)),t.architecture_review_floor,t.security_review_floor,MODE_POLICY[self.mode]["review_floor"]),key=levels.get); t.review_strategy=required.value
         if passed and levels[evidence.strategy]<levels[required]: raise InvariantError("review evidence does not meet required strategy")
         t.reviewer=evidence.reviewer
         if passed: t.review_passed=True; t.state=TaskState.REVIEW
@@ -208,7 +209,7 @@ class Swarm:
     def restore(self, actor:Role, task_id:str, reason:str) -> None:
         self._role(actor,{Role.MOTHER,Role.LEAD}); t=self.tasks[task_id]
         if t.state not in {TaskState.ARCHIVED,TaskState.ARCHIVED_STALE} or not reason: raise InvariantError("restore requires archived task and provenance")
-        t.state=TaskState.ACTIVE; t.archived_at=None; t.findings.append(f"restored:{reason}"); self.telemetry["restores"]=self.telemetry.get("restores",0)+1
+        history=t.archive or {}; history.setdefault("archive_history",[]).append({"archived_at":t.archived_at,"reason":reason,"state":t.state.value}); t.archive=history; t.state=TaskState.ACTIVE; t.archived_at=None; t.findings.append(f"restored:{reason}"); self.telemetry["restores"]=self.telemetry.get("restores",0)+1
     def ctrl_event(self, event: str, task_id: str) -> str|None:
         if event in {"HEARTBEAT","PROGRESS"}: return None
         return f"{task_id}: {event.lower().replace('_',' ')}"

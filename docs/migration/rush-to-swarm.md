@@ -24,3 +24,5 @@ The public migration must rename the existing repository rather than bootstrap a
 ## Hygiene and configuration
 
 `hygiene` is the compact global policy surface: zero-day NONE archiving after verification, LOW/HIGH review windows, stale delay, completed retention, and pinned policy. It joins the existing validated identity, roles, model/reasoning, lane/WIP, heartbeat/retry, review, lifecycle, telemetry, compatibility, and CTRL settings. Defaults are merged with global config, then supported project or invocation overrides; invalid input fails clearly. Safety invariants stay outside configuration. Grooming records archived/stale/pin counts and preserves stale reason, replacement, versions, promoted knowledge, and archive timestamps.
+
+`efficiency.mode` is one of CONSERVE, BALANCED, FAST, or MAX and `efficiency.doer_wip_limit` controls bounded worker ownership. The loader currently supports built-in defaults plus the selected global config path; it does not merge project or invocation configuration. Restore reactivates an archived task while retaining an immutable archive-history entry with its timestamp, prior state, and restore reason.
