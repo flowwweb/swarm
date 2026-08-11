@@ -58,18 +58,25 @@ class OperatingModelTests(unittest.TestCase):
         self.assertEqual(swarm.review_horizon(Role.CTRL,"T",now=50,raw_evidence="render accepted",milestone_met=True,close_goal=True),HorizonAction.OBSERVE)
         self.assertFalse(swarm.tasks["T"].active_goal)
 
-    def test_miss_ladder_tracker_handoff_and_lost_event_recovery(self):
-        swarm=self.tracked(); swarm.handoff_tracker(Role.CTRL,Role.MOTHER)
-        with self.assertRaises(InvariantError): swarm.review_horizon(Role.CTRL,"T",now=25,raw_evidence="fail")
-        self.assertEqual(swarm.review_horizon(Role.MOTHER,"T",now=25,raw_evidence="test failure",reorientation="fix fixture"),HorizonAction.REORIENT)
+    def test_ctrl_owned_miss_ladder_and_lost_event_recovery(self):
+        swarm=self.tracked()
+        with self.assertRaises(InvariantError): swarm.review_horizon(Role.MOTHER,"T",now=25,raw_evidence="fail")
+        self.assertEqual(swarm.review_horizon(Role.CTRL,"T",now=25,raw_evidence="test failure",reorientation="fix fixture"),HorizonAction.REORIENT)
         self.assertEqual(swarm.scheduled_wakeups["T"],40)
-        self.assertEqual(swarm.review_horizon(Role.MOTHER,"T",now=40,raw_evidence="same failure",independent_review="review:R1"),HorizonAction.REVIEW)
+        self.assertEqual(swarm.review_horizon(Role.CTRL,"T",now=40,raw_evidence="same failure",independent_review="review:R1"),HorizonAction.REVIEW)
         self.assertEqual(swarm.scheduled_wakeups["T"],55)
-        self.assertEqual(swarm.review_horizon(Role.MOTHER,"T",now=55,raw_evidence="same failure"),HorizonAction.SUPERVISOR)
+        self.assertEqual(swarm.review_horizon(Role.CTRL,"T",now=55,raw_evidence="same failure"),HorizonAction.SUPERVISOR)
         self.assertEqual(swarm.scheduled_wakeups["T"],70)
         del swarm.scheduled_wakeups["T"]
-        self.assertEqual(swarm.recover_lost_wakeup(Role.MOTHER,"T",now=60),70)
-        self.assertEqual(swarm.recover_lost_wakeup(Role.MOTHER,"T",now=61),70)
+        self.assertEqual(swarm.recover_lost_wakeup(Role.CTRL,"T",now=60),70)
+        self.assertEqual(swarm.recover_lost_wakeup(Role.CTRL,"T",now=61),70)
+
+    def test_ctrl_heartbeat_recovers_its_own_lost_wakeup(self):
+        swarm=Swarm(); swarm.tasks["CTRL"]=Task("CTRL","controller","CTRL",1,{})
+        swarm.propose_milestone(Role.CTRL,"CTRL",goal_id="control",milestone="accepted result",proof_kind="integration",horizon_minutes=15,now=10)
+        del swarm.scheduled_wakeups["CTRL"]
+        self.assertEqual(swarm.heartbeat(Role.CTRL,"CTRL",meaningful_progress=False),"CTRL:watchdog-recovered:25")
+        with self.assertRaises(InvariantError): swarm.heartbeat(Role.MOTHER,"CTRL",meaningful_progress=False)
 
     def test_versioned_amendment_and_successor_preserve_history(self):
         swarm=self.tracked()

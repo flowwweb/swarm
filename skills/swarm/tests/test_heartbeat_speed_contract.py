@@ -9,6 +9,8 @@ class HeartbeatSpeedContractTests(unittest.TestCase):
 
     def test_event_driven_watchdog_has_one_clock(self):
         self.assertIn("exactly one watchdog owns the clock", self.skill)
+        self.assertIn("CTRL always owns it", self.skill)
+        self.assertIn("including its own", self.skill)
         self.assertIn("schedules exactly one lightweight wakeup", self.skill)
         self.assertIn("fallback integrity audit for a lost or missing scheduled wakeup", self.skill)
 

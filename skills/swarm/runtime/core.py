@@ -142,24 +142,20 @@ class Worker:
 @dataclass
 class Swarm:
     architecture_version: int=1; contract_versions: dict[str,int]=field(default_factory=dict); topology: set[str]=field(default_factory=set)
-    workers: dict[str,Worker]=field(default_factory=dict); tasks: dict[str,Task]=field(default_factory=dict); leases: dict[str,str]=field(default_factory=dict); events: list[tuple[str,str]]=field(default_factory=list); telemetry: dict[str,object]=field(default_factory=dict); telemetry_events:list[dict[str,object]]=field(default_factory=list); artifact_index:dict[str,str]=field(default_factory=dict); provenance_index:dict[str,str]=field(default_factory=dict); ctrl_evidence_ledger:dict[str,CtrlEvidence]=field(default_factory=dict); ctrl_decision_sets:dict[str,CtrlDecisionSet]=field(default_factory=dict); ctrl_phase:str="intake"; hive:dict[str,HiveRecord]=field(default_factory=dict); hive_enabled:bool=True; heartbeat_enabled:bool=True; heartbeat_stall_after:int=2; heartbeat_latch:set[str]=field(default_factory=set); correction_receipts:dict[str,None]=field(default_factory=dict); lane_width:int=3; wip_limit:int=3; efficiency_ledger:list[dict[str,str]]=field(default_factory=list); mode:EfficiencyMode=EfficiencyMode.BALANCED; tracker_owner:Role=Role.CTRL; default_review_horizon:int=30; max_review_horizon:int=60; direct_work_horizon:int=20
+    workers: dict[str,Worker]=field(default_factory=dict); tasks: dict[str,Task]=field(default_factory=dict); leases: dict[str,str]=field(default_factory=dict); events: list[tuple[str,str]]=field(default_factory=list); telemetry: dict[str,object]=field(default_factory=dict); telemetry_events:list[dict[str,object]]=field(default_factory=list); artifact_index:dict[str,str]=field(default_factory=dict); provenance_index:dict[str,str]=field(default_factory=dict); ctrl_evidence_ledger:dict[str,CtrlEvidence]=field(default_factory=dict); ctrl_decision_sets:dict[str,CtrlDecisionSet]=field(default_factory=dict); ctrl_phase:str="intake"; hive:dict[str,HiveRecord]=field(default_factory=dict); hive_enabled:bool=True; heartbeat_stall_after:int=2; heartbeat_latch:set[str]=field(default_factory=set); correction_receipts:dict[str,None]=field(default_factory=dict); lane_width:int=3; wip_limit:int=3; efficiency_ledger:list[dict[str,str]]=field(default_factory=list); mode:EfficiencyMode=EfficiencyMode.BALANCED; default_review_horizon:int=30; max_review_horizon:int=60; direct_work_horizon:int=20
     scheduled_wakeups:dict[str,int]=field(default_factory=dict); latency_rescheduled:set[str]=field(default_factory=set)
     @classmethod
     def from_config(cls, config: dict) -> "Swarm":
         monitoring=config["monitoring"]
-        return cls(lane_width=config["coordination"]["preferred_lane_width"], wip_limit=config["efficiency"]["doer_wip_limit"], mode=EfficiencyMode(config["efficiency"]["mode"]), hive_enabled=config.get("hive",{}).get("enabled",True), heartbeat_enabled=monitoring.get("heartbeat_enabled",True), heartbeat_stall_after=config["recovery"]["stall_after_updates"], default_review_horizon=monitoring.get("default_review_horizon_minutes",monitoring.get("heartbeat_minutes",30)), max_review_horizon=monitoring.get("max_review_horizon_minutes",60), direct_work_horizon=config["coordination"].get("ctrl_direct_horizon_minutes",20))
+        return cls(lane_width=config["coordination"]["preferred_lane_width"], wip_limit=config["efficiency"]["doer_wip_limit"], mode=EfficiencyMode(config["efficiency"]["mode"]), hive_enabled=config.get("hive",{}).get("enabled",True), heartbeat_stall_after=config["recovery"]["stall_after_updates"], default_review_horizon=monitoring.get("default_review_horizon_minutes",monitoring.get("heartbeat_minutes",30)), max_review_horizon=monitoring.get("max_review_horizon_minutes",60), direct_work_horizon=config["coordination"].get("ctrl_direct_horizon_minutes",20))
 
     def _role(self, actor: Role, allowed: set[Role]) -> None:
         if actor not in allowed: raise InvariantError(f"{actor} cannot perform this transition")
     def _worker_identity(self, worker_id:str) -> None:
         if not isinstance(worker_id,str) or not worker_id.strip(): raise InvariantError("mutable worker identity is required")
         if worker_id.strip().upper() in {role.value for role in Role}: raise InvariantError("authority role identity cannot own mutable worker execution")
-    def handoff_tracker(self, actor:Role, to:Role) -> None:
-        self._role(actor,{self.tracker_owner})
-        if (self.tracker_owner,to)!=(Role.CTRL,Role.MOTHER): raise InvariantError("tracker handoff is only CTRL to canonical MOTHER")
-        self.tracker_owner=to; self._record("events",("TRACKER_HANDOFF","CTRL:MOTHER"))
     def propose_milestone(self, actor:Role, task_id:str, *, goal_id:str, milestone:str, proof_kind:str, horizon_minutes:int, now:int) -> None:
-        self._role(actor,{Role.LEAD,Role.DOER}); t=self.tasks[task_id]
+        self._role(actor,{Role.CTRL,Role.MOTHER,Role.SPECIALIST,Role.LEAD,Role.DOER}); t=self.tasks[task_id]
         if not goal_id.strip() or not milestone.strip() or proof_kind not in {"artifact","test","dependency","integration","review","blocker"} or not 1<=horizon_minutes<=self.max_review_horizon: raise InvariantError("active goal requires a measurable proof kind, milestone, and review horizon within configured maximum")
         if t.goal_id and t.goal_id!=goal_id: raise InvariantError("durable goal history cannot be renamed or reset")
         if task_id in self.scheduled_wakeups: raise InvariantError("milestone already has one scheduled watchdog wakeup")
@@ -174,7 +170,7 @@ class Swarm:
         if not evidence.strip() or not prior.goal_id or not successor.goal_id or prior.goal_id==successor.goal_id: raise InvariantError("genuinely new project requires distinct successor goal and evidence")
         successor.milestone_history.append((successor.objective_version,"SUCCESSOR",f"{prior.goal_id}:{evidence}"))
     def review_horizon(self, actor:Role, task_id:str, *, now:int, raw_evidence:str="", latency_audit:str="", milestone_met:bool=False, reorientation:str="", independent_review:str="", next_milestone:str="", next_horizon_minutes:int=0, close_goal:bool=False) -> HorizonAction:
-        self._role(actor,{self.tracker_owner}); t=self.tasks[task_id]
+        self._role(actor,{Role.CTRL}); t=self.tasks[task_id]
         if not t.active_goal or not t.goal_id or not t.milestone: raise InvariantError("tracked task requires an active durable goal and measurable milestone")
         due=self.scheduled_wakeups.get(task_id)
         if due is None: raise InvariantError("watchdog wakeup missing; recover through fallback integrity audit")
@@ -198,7 +194,7 @@ class Swarm:
         del self.scheduled_wakeups[task_id]
         t.consecutive_misses=next_miss; t.milestone_history.append((t.objective_version,action.value,raw_evidence)); t.milestone_started_at=now; self.scheduled_wakeups[task_id]=now+t.review_horizon_minutes; return action
     def recover_lost_wakeup(self, actor:Role, task_id:str, *, now:int) -> int:
-        self._role(actor,{self.tracker_owner}); t=self.tasks[task_id]
+        self._role(actor,{Role.CTRL}); t=self.tasks[task_id]
         if task_id in self.scheduled_wakeups: return self.scheduled_wakeups[task_id]
         if not t.active_goal or not t.milestone: raise InvariantError("fallback heartbeat cannot invent a milestone")
         due=max(now,t.milestone_started_at+t.review_horizon_minutes); self.scheduled_wakeups[task_id]=due; self._record("events",("WATCHDOG_RECOVERY",task_id)); return due
@@ -318,11 +314,10 @@ class Swarm:
         selected=mode or self.mode; tier=max(architect_floor,historical_floor,initial_tier(risk=risk,uncertainty=uncertainty,blast_radius=blast_radius,family=family,mode=selected)); self._record("efficiency_ledger",{"kind":"route","family":family,"tier":str(tier),"reason":"expected_total_accepted_cost"}); return tier
     def dedup(self, identity:str, *, verification:bool=False, uncertainty:bool=False) -> DedupDecision:
         found=bool(self.discover(identity)); decision=DedupDecision.EXECUTE if not found or verification or uncertainty else DedupDecision.REUSE; self._record("efficiency_ledger",{"kind":"dedup","decision":decision.value,"reason":"verification" if verification else "uncertainty" if uncertainty else "canonical_artifact"}); return decision
-    def heartbeat(self, actor:Role, task_id:str, *, meaningful_progress:bool, owner_update:bool=True, unchanged_updates:int=1, recovery_attempts:int|None=None, enabled:bool|None=None) -> str|None:
-        self._role(actor,{self.tracker_owner}); t=self.tasks[task_id]
-        enabled=self.heartbeat_enabled if enabled is None else enabled
-        if not enabled or not t.active_goal or task_id in self.scheduled_wakeups: return None
-        due=self.recover_lost_wakeup(self.tracker_owner,task_id,now=t.milestone_started_at+t.review_horizon_minutes)
+    def heartbeat(self, actor:Role, task_id:str, *, meaningful_progress:bool, owner_update:bool=True, unchanged_updates:int=1, recovery_attempts:int|None=None) -> str|None:
+        self._role(actor,{Role.CTRL}); t=self.tasks[task_id]
+        if not t.active_goal or task_id in self.scheduled_wakeups: return None
+        due=self.recover_lost_wakeup(Role.CTRL,task_id,now=t.milestone_started_at+t.review_horizon_minutes)
         return f"{task_id}:watchdog-recovered:{due}"
     def context_decision(self, *, affinity:int|None=None, bloat:bool|None=None, stale:bool|None=None, stalls:int|None=None, worker_id:str|None=None, replacement:str|None=None) -> str:
         context=self.workers[worker_id].context if worker_id else {}; affinity=context.get("affinity",affinity or 0); bloat=context.get("bloat",bloat or False); stale=context.get("stale",stale or False); stalls=context.get("stalls",stalls or 0)

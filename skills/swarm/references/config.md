@@ -42,11 +42,11 @@ Configuration cannot make an unsafe or hidden coordination path valid:
 - CTRL, MOTHER, every LEAD, and every persistent ARCHITECT require an active durable
   goal before scheduling or substantive work. Goal controls are required; this
   invariant is not configurable and goal creation does not expand authority.
-- The MOTHER heartbeat is passive when enabled (the default): it reads every active
-  descendant, detects stalls from material-change evidence, performs exactly
-  one configured same-surface recovery, and then releases or reassigns on an
-  unchanged result. `monitoring.heartbeat_enabled = false` is silent; it never
-  becomes polling, a queue, daemon, private log, or activity-based progress.
+- CTRL owns the mandatory heartbeat for every active goal, including its own. It
+  restores a lost scheduled wakeup, detects stalls from material-change evidence,
+  performs exactly one configured same-surface recovery, and then releases or
+  reassigns on an unchanged result. It never becomes polling, a queue, daemon,
+  private log, or activity-based progress.
 
 ## Settings
 
@@ -57,7 +57,7 @@ Configuration cannot make an unsafe or hidden coordination path valid:
 | `portfolio.reuse_existing_tasks` | Reuse matching live owners | boolean |
 | `role_icons.enabled` | Include exactly one role-matched emoji in every SWARM task title | boolean; default true |
 | `role_icons.ctrl` | CTRL title emoji | trimmed single line, 1-24 chars; default 🐙 |
-| `role_icons.mother` | MOTHER title emoji | trimmed single line, 1-24 chars; default ⚡ |
+| `role_icons.mother` | MOTHER title emoji | trimmed single line, 1-24 chars; default 🐝 |
 | `role_icons.lead` | LEAD title emoji | trimmed single line, 1-24 chars |
 | `role_icons.review` | REVIEW title emoji | trimmed single line, 1-24 chars |
 | `role_icons.fallback` | Generic finite-task emoji when no logical contextual choice exists | trimmed single line, 1-24 chars |
@@ -100,7 +100,7 @@ Configuration cannot make an unsafe or hidden coordination path valid:
 | `review.task_enabled` | Make dedicated REVIEW tasks eligible when work warrants them; QC remains mandatory when false | boolean |
 | `review.max_parallel_tasks` | Concurrent REVIEW tasks | 1-8 |
 | `review.scale_when_queue_reaches` | Ready-artifact queue that adds review capacity | 2-8 |
-| `monitoring.heartbeat_minutes` | Passive MOTHER snapshot cadence for active descendants; mandatory heartbeat remains enabled | 1-120; default 30 |
+| `monitoring.heartbeat_minutes` | Mandatory CTRL watchdog recovery cadence for active goals, including CTRL | 1-120; default 30 |
 | `monitoring.default_review_horizon_minutes` | Default event-driven goal review horizon | 1-60; default 30 |
 | `monitoring.max_review_horizon_minutes` | Hard ceiling for a locally selected review horizon | 1-60; default 60 |
 | `monitoring.small_task_review_horizon_minutes` | Preferred small-task horizon | 1-20; default 15 |
@@ -130,7 +130,7 @@ safe; then use the host archive control. The setting creates no queue, daemon,
 ledger, polling loop, or telemetry.
 
 The default title hierarchy is `🐙CTRL - <project> - <detailed descriptor>`,
-`⚡MOTHER - outcome`, an optional lane owner such as `🔐LEAD - payments`, a
+`🐝MOTHER - outcome`, an optional lane owner such as `🔐LEAD - payments`, a
 contextual owner such as `💻DEVELOPER - webhook`, and `🔎REVIEW - webhook`.
 Generic DOER is an authority type, not a required task name: use the concrete
 job. Keep the lane marker `LEAD` stable, put its domain or responsibility after
@@ -192,7 +192,7 @@ remaining outcome-critical work, independent review, proof, and honest closeout
 without routine steering.
 
 Set `boost.enabled = false` to disable optional Boost closeout behavior. It does
-not disable mandatory role goals or the MOTHER heartbeat. When enabled, Boost
+not disable mandatory role goals or CTRL's heartbeat. When enabled, Boost
 still starts only
 after a direct request such as "start Boost mode". SWARM first checks for an
 unfinished goal in each eligible task. It continues a matching goal without
@@ -280,8 +280,9 @@ three is the normal shape.
 
 ## Heartbeat
 
-MOTHER passively snapshots the active task tree every
-`monitoring.heartbeat_minutes` and reports one sentence per active descendant,
+CTRL owns the active-goal watchdog and its fallback integrity check every
+`monitoring.heartbeat_minutes`, including for CTRL's own goal, and reports only
+materially changed attention, blocker, handoff, acceptance, or release state,
 including children and grandchildren. Each sentence names the task, current
 state or material progress, and working duration derived from host timestamps or
 an explicitly approximate first-observed time. Heartbeat never messages or wakes

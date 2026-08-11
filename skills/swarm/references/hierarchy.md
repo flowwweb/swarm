@@ -179,7 +179,7 @@ acceptance authority; completion is valid only at the stated stopping condition.
 With `role_icons.enabled = true`, the opening title uses
 `🐙CTRL - <project> - <detailed descriptor>` by default and every SWARM task
 title has exactly one role-matched emoji with no separator before the label.
-`role_icons.ctrl` configures CTRL and defaults to `🐙`; `⚡` remains MOTHER's
+`role_icons.ctrl` configures CTRL and defaults to `🐙`; `🐝` is MOTHER's
 default task icon. Disable all title emojis only with
 `role_icons.enabled = false` or direct user instruction.
 Generic role types do not dictate task names: name a DOER by its concrete job,

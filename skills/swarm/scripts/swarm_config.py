@@ -35,7 +35,7 @@ DEFAULTS: dict[str, Any] = {
     "role_icons": {
         "enabled": True,
         "ctrl": "🐙",
-        "mother": "⚡",
+        "mother": "🐝",
         "lead": "🧭",
         "review": "🔎",
         "fallback": "📋",
@@ -154,7 +154,7 @@ DEFAULTS: dict[str, Any] = {
         "max_parallel_tasks": 3,
         "scale_when_queue_reaches": 2,
     },
-    "monitoring": {"heartbeat_minutes": 30, "heartbeat_enabled": True, "default_review_horizon_minutes": 30, "max_review_horizon_minutes": 60, "small_task_review_horizon_minutes": 15},
+    "monitoring": {"heartbeat_minutes": 30, "default_review_horizon_minutes": 30, "max_review_horizon_minutes": 60, "small_task_review_horizon_minutes": 15},
     "recovery": {
         "max_attempts": 1,
         "stall_after_updates": 2,
@@ -527,7 +527,6 @@ def validate(raw: dict[str, Any]) -> None:
     monitoring = _expect_table(raw, "monitoring")
     _expect_keys(monitoring, set(DEFAULTS["monitoring"]), "monitoring")
     _bounded_int(monitoring, "heartbeat_minutes", 1, 120, "monitoring")
-    _boolean(monitoring, "heartbeat_enabled", "monitoring")
     _bounded_int(monitoring, "default_review_horizon_minutes", 1, 60, "monitoring")
     _bounded_int(monitoring, "max_review_horizon_minutes", 1, 60, "monitoring")
     _bounded_int(monitoring, "small_task_review_horizon_minutes", 1, 20, "monitoring")

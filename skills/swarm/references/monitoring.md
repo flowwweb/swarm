@@ -1,8 +1,8 @@
 # Event-driven goal watchdog
 
 Each accepted milestone schedules exactly one lightweight wakeup at its due
-horizon. CTRL owns the tracker when no MOTHER exists; canonical MOTHER receives
-it through one explicit handoff when materialized. The worker proposes the
+horizon. CTRL always owns the tracker, including for its own durable goal; MOTHER
+never receives the clock. The worker proposes the
 milestone and horizon but never owns or wakes the clock. At due time the tracker
 reads compact raw diff, process, test, dependency, and artifact evidence. It
 does not poll early, request status prose, run a full audit per ping, or create a
@@ -26,7 +26,7 @@ routine progress, or ask owners to report more.
 Internally classify observed state as `active`, `attention`, `ready`, or
 `unknown`; do not call a task progressing when no material signal supports it.
 Compute duration from the host timestamp for entering active production,
-integration, or review. If the host does not expose it, use MOTHER's first
+integration, or review. If the host does not expose it, use CTRL's first
 observed active timestamp, prefix the duration with `~`, and never present it as
 CPU time or uninterrupted effort.
 
@@ -50,7 +50,7 @@ For a deployable lane, report the LEAD's immutable integration SHA, independent
 REVIEW, correction, lease, deployment, rollback, or production-proof state as
 applicable. A pending
 shared-surface lease is `attention`, not progress; keep disjoint lanes moving.
-MOTHER observes and serializes the lease boundary but does not absorb the LEAD's
+CTRL observes the lease receipt while MOTHER, when justified, serializes the portfolio boundary; neither absorbs the LEAD's
 deployment work.
 
 During Boost `hands_off`, keep this passive heartbeat; EVENT still decides

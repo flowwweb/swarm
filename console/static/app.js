@@ -29,7 +29,7 @@ const settingGroups = [
       ["execution.service_tier", "Service tier", "text", "Empty keeps the host default"],
       ["subagents.enabled", "Internal subagents", "boolean", "Bounded work inside an owning task"],
       ["subagents.max_per_task", "Subagent ceiling", "number", "Separate safety ceiling, not a target"],
-      ["monitoring.heartbeat_minutes", "Heartbeat minutes", "number", "Passive MOTHER visibility"],
+      ["monitoring.heartbeat_minutes", "Heartbeat minutes", "number", "CTRL watchdog recovery"],
     ],
   },
   {
@@ -69,7 +69,7 @@ const settingGroups = [
     fields: [
       ["role_icons.enabled", "Task title icons", "boolean", "Disable only when all SWARM title emojis should disappear"],
       ["role_icons.ctrl", "CTRL icon", "text", "Default octopus control signal"],
-      ["role_icons.mother", "MOTHER icon", "text", "Default lightning signal"],
+      ["role_icons.mother", "MOTHER icon", "text", "Default bee signal"],
       ["role_icons.lead", "LEAD icon", "text", "Domain direction signal"],
       ["role_icons.review", "REVIEW icon", "text", "Independent inspection signal"],
       ["role_icons.fallback", "Fallback icon", "text", "Only when no literal DOER metaphor fits"],

@@ -33,9 +33,11 @@ class SwarmConfigTests(unittest.TestCase):
     def test_role_icons_default_to_enabled_octopus_ctrl(self) -> None:
         self.assertTrue(config.DEFAULTS["role_icons"]["enabled"])
         self.assertEqual(config.DEFAULTS["role_icons"]["ctrl"], "🐙")
+        self.assertEqual(config.DEFAULTS["role_icons"]["mother"], "🐝")
         effective, _ = config.load(config.TEMPLATE_PATH)
         self.assertTrue(effective["role_icons"]["enabled"])
         self.assertEqual(effective["role_icons"]["ctrl"], "🐙")
+        self.assertEqual(effective["role_icons"]["mother"], "🐝")
 
     def test_role_icons_accept_custom_ctrl_and_disabled_contrast(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

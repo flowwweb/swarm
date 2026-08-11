@@ -45,7 +45,7 @@
       "files": [],
       "assertions": [
         "Every SWARM task title begins with exactly one role emoji",
-        "MOTHER uses the configured lightning emoji while other roles use their configured or inferred emoji",
+        "MOTHER uses the configured bee emoji while other roles use their configured or inferred emoji",
         "The root uses Captain and the coordinator uses Director",
         "Leaf titles use contextual work roles such as VISUAL and DEV",
         "The hierarchy remains MOTHER to LEAD to TASK despite customized display labels"
@@ -65,7 +65,7 @@
     },
     {
       "id": 6,
-      "prompt": "Use SWARM's default role emoji system. Keep lightning for MOTHER, use distinct hierarchy emojis, and let implementation and visual design tasks choose fitting emojis from the configured palette.",
+      "prompt": "Use SWARM's default role emoji system. Keep the bee for MOTHER, use distinct hierarchy emojis, and let implementation and visual design tasks choose fitting emojis from the configured palette.",
       "expected_output": "A user-visible hierarchy whose role coding is visually distinct but whose MOTHER, LEAD, and contextual task labels remain explicit and authoritative.",
       "files": [],
       "assertions": [
@@ -637,8 +637,8 @@
     },
     {
       "id": 51,
-      "prompt": "MOTHER has two active children and four active grandchildren. Run the configured heartbeat without interrupting their work and show me the whole active system.",
-      "expected_output": "MOTHER passively snapshots every active descendant and emits exactly one sentence per task with title, honest state or material progress, and host-derived or explicitly approximate working duration.",
+      "prompt": "CTRL has two active children and four active grandchildren. Run the configured heartbeat without interrupting their work and show me the whole active system.",
+      "expected_output": "CTRL inspects every active goal, including its own, and emits only materially changed attention, blocker, handoff, acceptance, or release state with honest host-derived or explicitly approximate timing.",
       "files": [],
       "assertions": [
         "Children and grandchildren are read directly from the existing task tree",
@@ -650,7 +650,7 @@
     },
     {
       "id": 52,
-      "prompt": "Boost hands_off is active for several child and grandchild goals. Thirty minutes pass with no attention or terminal event. Run MOTHER's heartbeat.",
+      "prompt": "Boost hands_off is active for several child and grandchild goals. Thirty minutes pass with no attention or terminal event. Run CTRL's heartbeat.",
       "expected_output": "A bounded passive wait timeout returns the latest host state for a compact heartbeat summary without messaging, waking, steering, or changing any goal.",
       "files": [],
       "assertions": [
@@ -664,10 +664,10 @@
     {
       "id": 53,
       "prompt": "One active grandchild has no host start timestamp and no fresh material signal; another host exposes no passive wait or read primitive.",
-      "expected_output": "MOTHER labels the first duration approximate and its state unknown, reports the exact monitoring capability blocker for the second host, and does not manufacture progress or contact the owner.",
+      "expected_output": "CTRL labels the first duration approximate and its state unknown, reports the exact monitoring capability blocker for the second host, and does not manufacture progress or contact the owner.",
       "files": [],
       "assertions": [
-        "Approximate duration starts at MOTHER's first observed active timestamp",
+        "Approximate duration starts at CTRL's first observed active timestamp",
         "Unknown freshness is not called alive and progressing",
         "A heartbeat observation does not count as an unchanged work update",
         "Missing freshness alone does not trigger recovery, reassignment, or messaging",

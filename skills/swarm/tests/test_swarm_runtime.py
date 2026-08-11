@@ -143,7 +143,8 @@ class RuntimeTests(unittest.TestCase):
   self.assertEqual(self.s.heartbeat(Role.CTRL,"A",meaningful_progress=False),"A:watchdog-recovered:30"); self.assertIsNone(self.s.heartbeat(Role.CTRL,"A",meaningful_progress=False))
   self.s.assign(Role.LEAD,Task("B","D","author",1,{})); self.s.wait(Role.DOER,"B","A"); self.assertIsNone(self.s.heartbeat(Role.CTRL,"B",meaningful_progress=False)); self.s.tasks["A"].review_passed=True; self.s.tasks["A"].reviewer="review"; self.s.complete(Role.MOTHER,"A",True,True,1); self.assertEqual(self.s.tasks["B"].state,TaskState.ACTIVE)
   with self.assertRaises(InvariantError): self.s.heartbeat(Role.LEAD,"B",meaningful_progress=False)
-  self.s.heartbeat_enabled=False; self.assertIsNone(self.s.heartbeat(Role.CTRL,"B",meaningful_progress=False)); self.s.recover(Role.MOTHER,"B","heartbeat diagnosis")
+  with self.assertRaises(InvariantError): self.s.heartbeat(Role.MOTHER,"B",meaningful_progress=False)
+  self.s.recover(Role.MOTHER,"B","heartbeat diagnosis")
  def test_archive_and_contention_are_fail_closed(self):
   self.s.tasks["A"].state=TaskState.COMPLETE; self.s.tasks["A"].completed_at=0; self.s.tasks["A"].active_goal=True; self.assertEqual(self.s.groom(Role.MOTHER,2,{"no_review_archive_delay":0,"low_review_retention":2,"high_review_retention":3,"stale_task_archive_delay":1}),[]); self.assertFalse(self.s.should_spawn(independent=True,critical_path=True,contention=True))
  def test_atomic_simple_and_warm_routes_are_executable(self):
