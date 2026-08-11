@@ -3,7 +3,7 @@ import sys
 import unittest
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from runtime import ArtifactIdentity, ContextPackage, Depth, EfficiencyMode, InvariantError, ReviewEvidence, ReviewStrategy, ReviewValue, Role, Swarm, Task, TaskState, VersionedReference, Worker, WorkerState, choose_depth, initial_tier
+from runtime import ArtifactIdentity, ContextPackage, Depth, EfficiencyMode, HiveRecord, HiveStatus, InvariantError, ReviewEvidence, ReviewStrategy, ReviewValue, Role, Swarm, Task, TaskState, VersionedReference, Worker, WorkerState, choose_depth, initial_tier
 
 class RuntimeTests(unittest.TestCase):
  def setUp(self):
@@ -114,4 +114,18 @@ class RuntimeTests(unittest.TestCase):
   uncertainty=ArtifactIdentity("canonical","v3","uncertainty")
   self.s.add_artifact(Role.DOER,"A",uncertainty,source="canonical@v1:work",justification="uncertainty")
   self.assertIn(verification.key(),self.s.artifact_index); self.assertIn(uncertainty.key(),self.s.artifact_index)
+ def test_hive_reuses_truth_and_filters_stale_bounded_hydration(self):
+  with self.assertRaises(InvariantError): self.s.remember(Role.DOER,HiveRecord("noise",content="status update",source="task",value="noise"),1)
+  with self.assertRaises(InvariantError): self.s.remember(Role.DOER,HiveRecord("repo",content="copied",source="repository"),1)
+  current=HiveRecord("current",content="auth constraint",source="decision",source_version="2",applicability={"auth":2})
+  stale=HiveRecord("stale",content="auth old",source="decision",source_version="1",applicability={"auth":1})
+  self.s.remember(Role.DOER,current,1); self.s.remember(Role.DOER,stale,1)
+  hydrated=self.s.hydrate_hive("auth",{"auth":2},1,2); self.assertEqual([r.id for r in hydrated],["current"]); self.assertEqual(self.s.telemetry["hive_hydration_count"],1)
+  package=ContextPackage.build(goal="g",architecture={"auth":2},dependencies=[],artifacts=[],acceptance=[],history=[],hive=hydrated,budget=2); self.assertEqual(package.hive,("current",))
+ def test_hive_warm_retirement_and_provenance_cleanup(self):
+  self.s.workers["D"].context["affinity"]=1; self.s.tasks["A"].review_passed=True; self.s.tasks["A"].reviewer="independent"; self.s.complete(Role.MOTHER,"A",True,True,1); self.assertEqual(self.s.workers["D"].state,WorkerState.WARM)
+  self.s.groom(Role.MOTHER,2,{"no_review_archive_delay":0,"low_review_retention":2,"high_review_retention":3,"stale_task_archive_delay":1}); self.assertEqual(self.s.tasks["A"].state,TaskState.ARCHIVED); self.assertEqual(self.s.workers["D"].state,WorkerState.WARM)
+  self.s.add_worker(Role.LEAD,Worker("R","L",2)); self.s.assign(Role.LEAD,Task("B","D","author",1,{})); lesson=HiveRecord("handoff",content="use migration seam",source="worker",source_version="1",provenance={"task":"B"})
+  self.s.retire(Role.LEAD,"D","R",lessons=[lesson],now=3); self.assertEqual(self.s.workers["D"].state,WorkerState.RETIRED); self.assertEqual(self.s.tasks["B"].owner,"R"); self.assertIn("handoff",self.s.hive)
+  self.s.hive["handoff"].retention="expired"; self.s.groom_hive(Role.MOTHER,4); self.s.groom_hive(Role.MOTHER,5); self.s.groom_hive(Role.MOTHER,6); self.assertEqual(self.s.hive["handoff"].status,HiveStatus.PURGED); self.assertEqual(self.s.hive["handoff"].provenance,{"task":"B"})
 if __name__ == "__main__": unittest.main()

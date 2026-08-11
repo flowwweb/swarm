@@ -38,6 +38,14 @@ usage_saver = false
 mode = "BALANCED"
 doer_wip_limit = 3
 
+[hive]
+# Compact SWARM continuity only: durable lessons without a new memory service.
+enabled = true
+cleanup_strategy = "adaptive"
+retention_strategy = "adaptive"
+worker_strategy = "warm_when_useful"
+archive_behavior = "provenance"
+
 [boost]
 # Boost is optional closeout behavior. MOTHER, LEAD, and persistent ARCHITECT
 # goals plus the passive heartbeat are mandatory and cannot be disabled here.

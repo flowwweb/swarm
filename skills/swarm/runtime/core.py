@@ -11,7 +11,8 @@ class TaskState(StrEnum):
     ACTIVE="ACTIVE"; WAITING="WAITING"; REVIEW="REVIEW"; COMPLETE="COMPLETE"; STALE="STALE"; ARCHIVED="ARCHIVED"; ARCHIVED_STALE="ARCHIVED_STALE"; BACKLOG="BACKLOG"
 class ReviewValue(StrEnum): NONE="NONE"; LOW="LOW"; HIGH="HIGH"; PINNED="PINNED"
 class WorkerState(StrEnum):
-    SPAWNED="SPAWNED"; ACTIVE="ACTIVE"; DRAINING="DRAINING"; RETIRED="RETIRED"
+    SPAWNED="SPAWNED"; ACTIVE="ACTIVE"; WARM="WARM"; DRAINING="DRAINING"; RETIRED="RETIRED"
+class HiveStatus(StrEnum): ACTIVE="ACTIVE"; ARCHIVED="ARCHIVED"; PURGEABLE="PURGEABLE"; PURGED="PURGED"
 
 class InvariantError(ValueError): pass
 
@@ -26,21 +27,25 @@ class ReviewStrategy(StrEnum): LIGHT="light"; STANDARD="standard"; ADVERSARIAL="
 @dataclass(frozen=True)
 class ReviewEvidence:
     strategy:ReviewStrategy; reviewer:str; independent:bool; artifact:ArtifactIdentity|None; findings:tuple[str,...]=(); receipt:tuple[tuple[str,str],...]=()
+@dataclass
+class HiveRecord:
+    id:str; content:str=""; reference:str=""; source:str=""; source_version:str=""; applicability:dict[str,int]=field(default_factory=dict); created_at:int=0; last_used_at:int|None=None; value:str="useful"; retention:str="adaptive"; status:HiveStatus=HiveStatus.ACTIVE; provenance:dict[str,str]=field(default_factory=dict)
 
 @dataclass(frozen=True)
 class ContextPackage:
-    goal:str; architecture:dict[str,int]; dependencies:tuple[str,...]; artifacts:tuple[str,...]; acceptance:tuple[str,...]; history:tuple[str,...]; transfer_cost:int
+    goal:str; architecture:dict[str,int]; dependencies:tuple[str,...]; artifacts:tuple[str,...]; acceptance:tuple[str,...]; history:tuple[str,...]; transfer_cost:int; hive:tuple[str,...]=()
     @classmethod
-    def build(cls, *, goal:str, architecture:dict[str,int], dependencies:list[VersionedReference|str], artifacts:list[VersionedReference|str], acceptance:list[str], history:list[VersionedReference|str], budget:int) -> "ContextPackage":
+    def build(cls, *, goal:str, architecture:dict[str,int], dependencies:list[VersionedReference|str], artifacts:list[VersionedReference|str], acceptance:list[str], history:list[VersionedReference|str], budget:int, hive:list[HiveRecord]|None=None) -> "ContextPackage":
         if budget < 1: raise InvariantError("context budget must be positive")
         current=lambda item: not isinstance(item,VersionedReference) or architecture.get(item.name,item.version)==item.version
         dependencies=[item for item in dependencies if current(item)]; artifacts=[item for item in artifacts if current(item)]; history=[item for item in history if current(item)]
         render=lambda item: f"{item.name}:v{item.version}" if isinstance(item,VersionedReference) else item
         dependencies=[render(item) for item in dependencies]; artifacts=[render(item) for item in artifacts]; history=[render(item) for item in history]
-        spine=[goal,*acceptance]; optional=[*dependencies,*artifacts,*history]
+        hive=[record.id for record in (hive or []) if record.status==HiveStatus.ACTIVE and all(architecture.get(k,v)==v for k,v in record.applicability.items())]
+        spine=[goal,*acceptance]; optional=[*dependencies,*artifacts,*hive,*history]
         if len(spine)>budget: raise InvariantError("budget cannot admit canonical spine")
         kept=optional[:max(0,budget-len(spine))]
-        return cls(goal,architecture,tuple(x for x in dependencies if x in kept),tuple(x for x in artifacts if x in kept),tuple(acceptance),tuple(x for x in history if x in kept),len(kept))
+        return cls(goal,architecture,tuple(x for x in dependencies if x in kept),tuple(x for x in artifacts if x in kept),tuple(acceptance),tuple(x for x in history if x in kept),len(kept),tuple(x for x in hive if x in kept))
 
 class Depth(StrEnum):
     ATOMIC="CTRL_DOER"; SIMPLE="CTRL_MOTHER_DOER"; WORKSTREAM="CTRL_MOTHER_LEAD_DOER"; PROJECT="CTRL_MOTHER_ARCHITECT_LEADS_DOERS"
@@ -74,10 +79,10 @@ class Worker:
 @dataclass
 class Swarm:
     architecture_version: int=1; contract_versions: dict[str,int]=field(default_factory=dict); topology: set[str]=field(default_factory=set)
-    workers: dict[str,Worker]=field(default_factory=dict); tasks: dict[str,Task]=field(default_factory=dict); leases: dict[str,str]=field(default_factory=dict); events: list[tuple[str,str]]=field(default_factory=list); telemetry: dict[str,object]=field(default_factory=dict); telemetry_events:list[dict[str,object]]=field(default_factory=list); artifact_index:dict[str,str]=field(default_factory=dict); lane_width:int=3; wip_limit:int=3; efficiency_ledger:list[dict[str,str]]=field(default_factory=list); mode:EfficiencyMode=EfficiencyMode.BALANCED
+    workers: dict[str,Worker]=field(default_factory=dict); tasks: dict[str,Task]=field(default_factory=dict); leases: dict[str,str]=field(default_factory=dict); events: list[tuple[str,str]]=field(default_factory=list); telemetry: dict[str,object]=field(default_factory=dict); telemetry_events:list[dict[str,object]]=field(default_factory=list); artifact_index:dict[str,str]=field(default_factory=dict); hive:dict[str,HiveRecord]=field(default_factory=dict); hive_enabled:bool=True; lane_width:int=3; wip_limit:int=3; efficiency_ledger:list[dict[str,str]]=field(default_factory=list); mode:EfficiencyMode=EfficiencyMode.BALANCED
     @classmethod
     def from_config(cls, config: dict) -> "Swarm":
-        return cls(lane_width=config["coordination"]["preferred_lane_width"], wip_limit=config["efficiency"]["doer_wip_limit"], mode=EfficiencyMode(config["efficiency"]["mode"]))
+        return cls(lane_width=config["coordination"]["preferred_lane_width"], wip_limit=config["efficiency"]["doer_wip_limit"], mode=EfficiencyMode(config["efficiency"]["mode"]), hive_enabled=config.get("hive",{}).get("enabled",True))
 
     def _role(self, actor: Role, allowed: set[Role]) -> None:
         if actor not in allowed: raise InvariantError(f"{actor} cannot perform this transition")
@@ -90,7 +95,27 @@ class Swarm:
         self.workers[worker.id]=worker
     def package_context(self, actor:Role, worker_id:str, package:ContextPackage) -> None:
         self._role(actor,{Role.LEAD}); worker=self.workers[worker_id]
-        worker.context={"goal":package.goal,"architecture":package.architecture,"dependencies":package.dependencies,"artifacts":package.artifacts,"acceptance":package.acceptance,"history":package.history,"transfer_cost":package.transfer_cost,"affinity":worker.context.get("affinity",1),"bloat":False,"stale":False,"stalls":0}
+        worker.context={"goal":package.goal,"architecture":package.architecture,"dependencies":package.dependencies,"artifacts":package.artifacts,"acceptance":package.acceptance,"history":package.history,"hive":package.hive,"transfer_cost":package.transfer_cost,"affinity":worker.context.get("affinity",1),"bloat":False,"stale":False,"stalls":0}
+    def remember(self, actor:Role, record:HiveRecord, now:int) -> str|None:
+        self._role(actor,{Role.MOTHER,Role.ARCHITECT,Role.LEAD,Role.DOER})
+        if not self.hive_enabled: return None
+        if not record.id or (not record.content and not record.reference) or len(record.content)>280 or record.value in {"noise","low"}: raise InvariantError("HIVE stores only compact future-useful lessons")
+        if record.source in {"repository","canonical"} and record.content: raise InvariantError("reference durable truth instead of copying it")
+        for old in self.hive.values():
+            if old.status==HiveStatus.ACTIVE and (old.id==record.id or (old.source,old.source_version,old.content or old.reference)==(record.source,record.source_version,record.content or record.reference)):
+                old.last_used_at=now; self.telemetry["hive_reused"]=self.telemetry.get("hive_reused",0)+1; return old.id
+            if old.status==HiveStatus.ACTIVE and old.source==record.source and old.applicability==record.applicability and old.source_version!=record.source_version:
+                old.status=HiveStatus.ARCHIVED; old.provenance["superseded_by"]=record.id; self.telemetry["hive_superseded"]=self.telemetry.get("hive_superseded",0)+1
+        if len([item for item in self.hive.values() if item.status==HiveStatus.ACTIVE])>=64: raise InvariantError("HIVE active record bound reached")
+        record.created_at=now; self.hive[record.id]=record; self.telemetry["hive_created"]=self.telemetry.get("hive_created",0)+1; self._hive_counts(); return record.id
+    def _hive_counts(self) -> None:
+        self.telemetry.update({f"hive_{state.value.lower()}":sum(r.status==state for r in self.hive.values()) for state in HiveStatus})
+    def hydrate_hive(self, query:str, architecture:dict[str,int], budget:int, now:int) -> list[HiveRecord]:
+        if not query or budget<1 or not self.hive_enabled: return []
+        matches=[r for r in self.hive.values() if r.status==HiveStatus.ACTIVE and all(architecture.get(k,v)==v for k,v in r.applicability.items()) and query.lower() in f"{r.content} {r.reference} {r.source}".lower()][:budget]
+        for record in matches: record.last_used_at=now
+        self.telemetry.update({"hive_hydration_count":len(matches),"hive_hydration_size":sum(len(r.content)+len(r.reference) for r in matches)})
+        return matches
     def _artifact(self, artifact:ArtifactIdentity|str) -> ArtifactIdentity:
         if isinstance(artifact,ArtifactIdentity): return artifact
         try:
@@ -186,14 +211,15 @@ class Swarm:
         self._role(actor,{Role.MOTHER})
         if surface in self.leases and self.leases[surface]!=holder: raise InvariantError("surface already leased")
         self.leases[surface]=holder
-    def retire(self, actor: Role, worker_id: str, replacement: str|None=None) -> None:
+    def retire(self, actor: Role, worker_id: str, replacement: str|None=None, *, lessons:list[HiveRecord]|None=None, now:int=0) -> None:
         self._role(actor,{Role.LEAD}); w=self.workers[worker_id]
         if w.task_ids and (not replacement or replacement not in self.workers or self.workers[replacement].state==WorkerState.RETIRED): raise InvariantError("retirement needs a live replacement for owned tasks")
+        for lesson in (lessons or [])[:3]: self.remember(Role.LEAD,lesson,now)
         if replacement:
             target=self.workers[replacement]
             if len(target.task_ids)+len(w.task_ids)>self.wip_limit: raise InvariantError("replacement WIP limit")
             for task_id in w.task_ids: self.tasks[task_id].owner=replacement; target.task_ids.add(task_id)
-        w.state=WorkerState.RETIRED; w.archive={"tasks":sorted(w.task_ids),"lane":w.lane}; w.task_ids.clear()
+        w.state=WorkerState.RETIRED; w.archive={"tasks":sorted(w.task_ids),"lane":w.lane,"hive_flush":[item.id for item in (lessons or [])[:3]]}; w.task_ids.clear(); self.telemetry["hive_retirement_flushes"]=self.telemetry.get("hive_retirement_flushes",0)+len((lessons or [])[:3])
     def collapse(self, actor: Role, lead: str) -> Depth:
         """Retire idle capacity and remove a lead when only one isolated task remains."""
         self._role(actor,{Role.MOTHER}); active=[t for t in self.tasks.values() if t.state not in {TaskState.COMPLETE,TaskState.BACKLOG,TaskState.ARCHIVED,TaskState.ARCHIVED_STALE}]
@@ -207,6 +233,8 @@ class Swarm:
         self._role(actor,{Role.MOTHER}); t=self.tasks[task_id]
         if not t.review_passed or not t.reviewer or not integration_ok or not architecture_ok: raise InvariantError("completion requires independent review and integration/architecture gates")
         t.state=TaskState.COMPLETE; t.completed_at=now
+        worker=self.workers.get(t.owner)
+        if worker and worker.context.get("affinity",0)>0 and all(self.tasks[item].state in {TaskState.COMPLETE,TaskState.ARCHIVED,TaskState.ARCHIVED_STALE} for item in worker.task_ids): worker.state=WorkerState.WARM
     def stale(self, actor: Role, task_id: str, reason: str, *, now: int=0, superseded_by: str|None=None, promote: list[str]|None=None) -> None:
         self._role(actor,{Role.MOTHER,Role.ARCHITECT,Role.LEAD}); t=self.tasks[task_id]
         if not reason: raise InvariantError("stale tasks require reason provenance")
@@ -230,6 +258,17 @@ class Swarm:
         self._role(actor,{Role.MOTHER,Role.LEAD}); t=self.tasks[task_id]
         if t.state not in {TaskState.ARCHIVED,TaskState.ARCHIVED_STALE} or not reason: raise InvariantError("restore requires archived task and provenance")
         history=t.archive or {}; history.setdefault("archive_history",[]).append({"archived_at":t.archived_at,"reason":reason,"state":t.state.value}); t.archive=history; t.state=TaskState.ACTIVE; t.archived_at=None; t.findings.append(f"restored:{reason}"); self.telemetry["restores"]=self.telemetry.get("restores",0)+1
+    def groom_hive(self, actor:Role, now:int, *, orphaned_sources:set[str]|None=None) -> None:
+        """Mechanical compact-memory lifecycle; PURGED records retain provenance only."""
+        self._role(actor,{Role.MOTHER}); orphaned_sources=orphaned_sources or set()
+        for record in self.hive.values():
+            if record.status==HiveStatus.ACTIVE and (record.source in orphaned_sources or record.retention=="expired" or record.provenance.get("superseded_by")):
+                record.status=HiveStatus.ARCHIVED; self.telemetry["hive_archived"]=self.telemetry.get("hive_archived",0)+1
+            elif record.status==HiveStatus.ARCHIVED:
+                record.status=HiveStatus.PURGEABLE; self.telemetry["hive_purgeable"]=self.telemetry.get("hive_purgeable",0)+1
+            elif record.status==HiveStatus.PURGEABLE:
+                record.status=HiveStatus.PURGED; record.content=""; record.reference=""; self.telemetry["hive_purged"]=self.telemetry.get("hive_purged",0)+1
+        self._hive_counts()
     def ctrl_event(self, event: str, task_id: str) -> str|None:
         if event in {"HEARTBEAT","PROGRESS"}: return None
         return f"{task_id}: {event.lower().replace('_',' ')}"

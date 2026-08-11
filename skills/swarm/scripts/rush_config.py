@@ -40,6 +40,7 @@ DEFAULTS: dict[str, Any] = {
         "usage_saver": False,
     },
     "efficiency": {"mode":"BALANCED", "doer_wip_limit":3},
+    "hive": {"enabled": True, "cleanup_strategy":"adaptive", "retention_strategy":"adaptive", "worker_strategy":"warm_when_useful", "archive_behavior":"provenance"},
     "boost": {
         "enabled": True,
         "strategies": [
@@ -327,6 +328,12 @@ def validate(raw: dict[str, Any]) -> None:
     _expect_keys(efficiency, set(DEFAULTS["efficiency"]), "efficiency")
     if "mode" in efficiency and efficiency["mode"] not in {"CONSERVE","BALANCED","FAST","MAX"}: raise ConfigError("efficiency.mode must be CONSERVE, BALANCED, FAST, or MAX")
     _bounded_int(efficiency, "doer_wip_limit", 1, 8, "efficiency")
+
+    hive = _expect_table(raw, "hive")
+    _expect_keys(hive, set(DEFAULTS["hive"]), "hive")
+    _boolean(hive, "enabled", "hive")
+    for key, allowed in {"cleanup_strategy":{"adaptive"}, "retention_strategy":{"adaptive"}, "worker_strategy":{"warm_when_useful"}, "archive_behavior":{"provenance"}}.items():
+        if key in hive and hive[key] not in allowed: raise ConfigError(f"hive.{key} has unsupported value")
 
     boost = _expect_table(raw, "boost")
     _expect_keys(boost, set(DEFAULTS["boost"]), "boost")
