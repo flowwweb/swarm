@@ -3,7 +3,7 @@ import sys
 import unittest
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from runtime import ArtifactIdentity, ContextPackage, Depth, EfficiencyMode, HiveRecord, HiveStatus, InvariantError, ReviewEvidence, ReviewStrategy, ReviewValue, Role, Swarm, Task, TaskState, VersionedReference, Worker, WorkerState, choose_depth, initial_tier
+from runtime import ArtifactIdentity, ContextPackage, DedupDecision, Depth, EfficiencyMode, HiveRecord, HiveStatus, InvariantError, ReviewEvidence, ReviewStrategy, ReviewValue, Role, Swarm, Task, TaskState, VersionedReference, Worker, WorkerState, choose_depth, initial_tier
 
 class RuntimeTests(unittest.TestCase):
  def setUp(self):
@@ -58,7 +58,7 @@ class RuntimeTests(unittest.TestCase):
  def test_efficiency_uses_value_not_capacity(self):
   self.assertFalse(self.s.should_spawn(independent=False,critical_path=True)); self.assertFalse(self.s.should_spawn(independent=True,critical_path=True,duplicate_artifact="proof")); self.assertTrue(self.s.should_spawn(independent=True,critical_path=True))
   self.assertEqual(initial_tier(risk=3,uncertainty=2,blast_radius=2),3); self.assertEqual(self.s.review_depth(4),"adversarial"); self.s.record_telemetry("auth","DOER",3,"accepted",model="m",attempts=1,productive=2,overhead=1); self.assertEqual(self.s.telemetry["productive"],2); self.assertNotIn("host_usage",self.s.telemetry_events[-1])
-  self.s.add_artifact(Role.DOER,"A",ArtifactIdentity("identity","v1","work")); self.assertFalse(self.s.dedup("identity@v1:work")); self.assertTrue(self.s.dedup("identity@v1:work",verification=True)); self.assertEqual(self.s.route(family="auth",risk=3,uncertainty=2,blast_radius=2,architect_floor=2,historical_floor=3),3); self.assertEqual(self.s.context_decision(affinity=2,bloat=False,stale=False,stalls=0),"reuse"); self.assertEqual(self.s.context_decision(affinity=2,bloat=True,stale=False,stalls=0),"retire")
+  self.s.add_artifact(Role.DOER,"A",ArtifactIdentity("identity","v1","work")); self.assertEqual(self.s.dedup("identity@v1:work"),DedupDecision.REUSE); self.assertEqual(self.s.dedup("identity@v1:work",verification=True),DedupDecision.EXECUTE); self.assertEqual(self.s.route(family="auth",risk=3,uncertainty=2,blast_radius=2,architect_floor=2,historical_floor=3),3); self.assertEqual(self.s.context_decision(affinity=2,bloat=False,stale=False,stalls=0),"reuse"); self.assertEqual(self.s.context_decision(affinity=2,bloat=True,stale=False,stalls=0),"retire")
  def test_stale_clock_and_unresolved_completion(self):
   self.s.change_architecture(Role.ARCHITECT,{"x":2},now=90); self.s.groom(Role.MOTHER,100,{"no_review_archive_delay":0,"low_review_retention":2,"high_review_retention":3,"stale_task_archive_delay":30}); self.assertEqual(self.s.tasks["A"].state,TaskState.STALE); self.assertFalse(self.s.project_complete(Role.MOTHER,True,True))
  def test_archived_only_collapses_and_missing_replacement_blocks_complete(self):
@@ -128,4 +128,10 @@ class RuntimeTests(unittest.TestCase):
   self.s.add_worker(Role.LEAD,Worker("R","L",2)); self.s.assign(Role.LEAD,Task("B","D","author",1,{})); lesson=HiveRecord("handoff",content="use migration seam",source="worker",source_version="1",provenance={"task":"B"})
   self.s.retire(Role.LEAD,"D","R",lessons=[lesson],now=3); self.assertEqual(self.s.workers["D"].state,WorkerState.RETIRED); self.assertEqual(self.s.tasks["B"].owner,"R"); self.assertIn("handoff",self.s.hive)
   self.s.hive["handoff"].retention="expired"; self.s.groom_hive(Role.MOTHER,4); self.s.groom_hive(Role.MOTHER,5); self.s.groom_hive(Role.MOTHER,6); self.assertEqual(self.s.hive["handoff"].status,HiveStatus.PURGED); self.assertEqual(self.s.hive["handoff"].provenance,{"task":"B"})
+ def test_heartbeat_truth_table_latch_and_wait_resume(self):
+  self.assertIsNone(self.s.heartbeat(Role.MOTHER,"A",meaningful_progress=True)); self.assertEqual(self.s.heartbeat(Role.MOTHER,"A",meaningful_progress=False),"A:stall/actionable"); self.assertIsNone(self.s.heartbeat(Role.MOTHER,"A",meaningful_progress=False)); self.assertIsNone(self.s.heartbeat(Role.MOTHER,"A",meaningful_progress=True)); self.assertIsNotNone(self.s.heartbeat(Role.MOTHER,"A",meaningful_progress=False))
+  self.s.assign(Role.LEAD,Task("B","D","author",1,{})); self.s.wait(Role.DOER,"B","A"); self.assertIsNone(self.s.heartbeat(Role.MOTHER,"B",meaningful_progress=False)); self.s.tasks["A"].review_passed=True; self.s.tasks["A"].reviewer="review"; self.s.complete(Role.MOTHER,"A",True,True,1); self.assertEqual(self.s.tasks["B"].state,TaskState.ACTIVE)
+  with self.assertRaises(InvariantError): self.s.heartbeat(Role.LEAD,"B",meaningful_progress=False)
+ def test_archive_and_contention_are_fail_closed(self):
+  self.s.tasks["A"].state=TaskState.COMPLETE; self.s.tasks["A"].completed_at=0; self.s.tasks["A"].active_goal=True; self.assertEqual(self.s.groom(Role.MOTHER,2,{"no_review_archive_delay":0,"low_review_retention":2,"high_review_retention":3,"stale_task_archive_delay":1}),[]); self.assertFalse(self.s.should_spawn(independent=True,critical_path=True,contention=True))
 if __name__ == "__main__": unittest.main()
