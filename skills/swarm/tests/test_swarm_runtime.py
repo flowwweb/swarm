@@ -13,7 +13,7 @@ class RuntimeTests(unittest.TestCase):
   with self.assertRaises(InvariantError): self.s.change_architecture(Role.LEAD,{})
   self.s.add_worker(Role.LEAD,Worker("D2","L",2)); self.s.add_worker(Role.LEAD,Worker("D3","L",3))
   with self.assertRaises(InvariantError): self.s.add_worker(Role.LEAD,Worker("D4","L",1))
-  self.s.retire(Role.LEAD,"D"); self.assertEqual(self.s.workers["D"].state,WorkerState.RETIRED); self.assertTrue(self.s.workers["D"].archive["tasks"])
+  self.s.add_worker(Role.LEAD,Worker("R","L",1)); self.s.retire(Role.LEAD,"D","R"); self.assertEqual(self.s.workers["D"].state,WorkerState.RETIRED); self.assertEqual(self.s.tasks["A"].owner,"R")
  def test_wip_expert_wait_deadlock_and_recovery(self):
   self.s.assign(Role.LEAD,Task("B","D","author",1,{})); self.s.assign(Role.LEAD,Task("C","D","author",1,{}))
   with self.assertRaises(InvariantError): self.s.assign(Role.LEAD,Task("D","D","author",1,{}))
@@ -26,7 +26,7 @@ class RuntimeTests(unittest.TestCase):
   self.s.tasks["A"].state=TaskState.ACTIVE
   with self.assertRaises(InvariantError): self.s.review(Role.REVIEW,"A","author",True)
   self.s.review(Role.REVIEW,"A","independent",False,"missing proof"); self.assertEqual(self.s.tasks["A"].findings,["missing proof"])
-  self.s.review(Role.REVIEW,"A","independent",True); self.s.complete(Role.MOTHER,"A",True,True)
+  self.s.review(Role.REVIEW,"A","independent",True); self.s.complete(Role.MOTHER,"A",True,True,10)
   self.assertIsNone(self.s.ctrl_event("HEARTBEAT","A")); self.assertIn("review fail",self.s.ctrl_event("REVIEW_FAIL","A"))
  def test_lease(self):
   self.s.lease(Role.MOTHER,"repo","L")
@@ -41,8 +41,15 @@ class RuntimeTests(unittest.TestCase):
  def test_hygiene_archives_not_deletes_and_preserves_stale_provenance(self):
   self.s.tasks["A"].state=TaskState.COMPLETE; self.s.tasks["A"].completed_at=0
   self.s.tasks["A"].review_value=ReviewValue.NONE
-  self.s.stale(Role.LEAD,"A","superseded contract",superseded_by="B",promote=["race evidence"])
+  self.s.stale(Role.LEAD,"A","superseded contract",now=0,superseded_by="B",promote=["race evidence"])
   self.assertEqual(self.s.groom(Role.MOTHER,5,{"no_review_archive_delay":0,"low_review_retention":2,"high_review_retention":3,"stale_task_archive_delay":1}),["A"])
   self.assertEqual(self.s.tasks["A"].state,TaskState.ARCHIVED_STALE); self.assertEqual(self.s.tasks["A"].superseded_by,"B"); self.assertEqual(self.s.tasks["A"].promoted,["race evidence"])
   self.s.tasks["A"].review_value=ReviewValue.PINNED; self.assertEqual(self.s.groom(Role.MOTHER,9,{"no_review_archive_delay":0,"low_review_retention":2,"high_review_retention":3,"stale_task_archive_delay":1}),[])
+ def test_stale_dependency_and_archived_safety(self):
+  self.s.assign(Role.LEAD,Task("B","D","author",1,{})); self.s.stale(Role.LEAD,"A","replaced",now=0); self.s.wait(Role.DOER,"B","A")
+  self.assertEqual(self.s.groom(Role.MOTHER,5,{"no_review_archive_delay":0,"low_review_retention":2,"high_review_retention":3,"stale_task_archive_delay":1}),[])
+  self.s.tasks["B"].state=TaskState.COMPLETE; self.s.groom(Role.MOTHER,5,{"no_review_archive_delay":0,"low_review_retention":2,"high_review_retention":3,"stale_task_archive_delay":1}); self.s.change_architecture(Role.ARCHITECT,{"a":2}); self.assertEqual(self.s.tasks["A"].state,TaskState.ARCHIVED_STALE)
+ def test_review_is_candidate_before_acceptance(self):
+  self.s.review(Role.REVIEW,"A","independent",True); self.assertEqual(self.s.tasks["A"].state,TaskState.REVIEW)
+  self.s.complete(Role.MOTHER,"A",True,True,7); self.assertEqual(self.s.tasks["A"].completed_at,7)
 if __name__ == "__main__": unittest.main()

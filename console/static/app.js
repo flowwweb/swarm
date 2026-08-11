@@ -133,7 +133,7 @@ function renderMetrics() {
   const recent = a.status.active || 0;
   const items = [
     ["Swarms", a.swarms, "visible roots"],
-    ["RUSH tasks", a.tasks, "recognized titles"],
+    ["SWARM tasks", a.tasks, "recognized titles"],
     ["Recent", recent, `within ${state.overview.heartbeat_minutes * 2}m`],
     ["Thread tokens", formatCount(a.tokens), "host reported"],
   ];
@@ -143,8 +143,8 @@ function renderMetrics() {
 function renderProjects() {
   const projects = state.overview.projects;
   $("#project-list").innerHTML = projects.length
-    ? projects.slice(0, 8).map((project) => `<button class="project-row" type="button" data-project="${escapeHTML(project.id)}"><span class="project-sigil">⌘</span><span><strong>${escapeHTML(project.name)}</strong><small>${project.nodes} RUSH tasks · ${project.active} recent</small></span><span class="project-numbers"><b>${formatCount(project.tokens)}</b><span>tokens</span></span></button>`).join("")
-    : `<div class="empty-state">No RUSH-formatted tasks found yet.</div>`;
+    ? projects.slice(0, 8).map((project) => `<button class="project-row" type="button" data-project="${escapeHTML(project.id)}"><span class="project-sigil">⌘</span><span><strong>${escapeHTML(project.name)}</strong><small>${project.nodes} SWARM tasks · ${project.active} recent</small></span><span class="project-numbers"><b>${formatCount(project.tokens)}</b><span>tokens</span></span></button>`).join("")
+    : `<div class="empty-state">No SWARM-formatted tasks found yet.</div>`;
 }
 
 function renderPulse() {
@@ -210,7 +210,7 @@ function renderSwarm() {
     const p = positions.get(node.id);
     return `<article class="swarm-node role-${escapeHTML(node.role)} is-${escapeHTML(node.status)}" style="left:${p.x}px;top:${p.y}px;--node-color:${roleColor(node.role)}" aria-label="${escapeHTML(node.title)}, ${escapeHTML(node.status)}"><div class="node-top"><span class="node-icon" aria-hidden="true">${escapeHTML(node.icon)}</span><span class="node-role">${escapeHTML(node.role_label)}</span></div><strong>${escapeHTML(node.artifact)}</strong><div class="node-meta"><span class="node-status"><i></i>${escapeHTML(node.status)}</span><span>${node.virtual ? "derived root" : formatDuration(node.age_ms)}</span></div></article>`;
   }).join("");
-  if (!allNodes.length) $("#swarm-nodes").innerHTML = `<div class="empty-state">No RUSH hierarchy exists for this project.</div>`;
+  if (!allNodes.length) $("#swarm-nodes").innerHTML = `<div class="empty-state">No SWARM hierarchy exists for this project.</div>`;
   const scroller = $(".swarm-scroll");
   if (canvas.dataset.project !== project) {
     const first = positions.get(roots[0]?.id);

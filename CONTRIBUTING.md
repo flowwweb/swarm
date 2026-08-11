@@ -7,7 +7,7 @@ Keep changes narrow. Preserve outcome ownership, authority boundaries, independe
 Before opening a pull request, run:
 
 ```text
-python -m unittest discover -s skills/rush/tests -p "test_*.py"
+python -m unittest discover -s skills/swarm/tests -p "test_*.py"
 python -m unittest discover -s console/tests -p "test_console.py"
 node --test console/tests/test_console_ui.mjs
 ```
