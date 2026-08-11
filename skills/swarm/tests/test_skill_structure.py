@@ -64,7 +64,8 @@ class SwarmSkillStructureTests(unittest.TestCase):
         self.assertIn("LEAD integrates and inspects each whole lane result", skill)
         self.assertIn("zerg rush", skill)
         self.assertIn("shallowest structure", skill)
-        self.assertIn("MOTHER alone changes topology", skill)
+        self.assertIn("CTRL owns intake topology", skill)
+        self.assertIn("MOTHER alone changes execution topology", skill)
         self.assertIn("canonical state", skill)
         self.assertIn("independent REVIEW", skill)
         self.assertIn("persistent ARCHITECT", hierarchy)
@@ -97,8 +98,24 @@ class SwarmSkillStructureTests(unittest.TestCase):
         )
 
         self.assertIn("# 🐙 SWARM", skill)
-        self.assertIn("🐙CTRL routes", skill)
+        self.assertIn("🐙CTRL owns intake", skill)
         self.assertIn("`🐙CTRL` is SWARM's fixed front-door mark", hierarchy)
+
+    def test_new_swarm_objective_starts_as_durable_ctrl(self) -> None:
+        skill = SKILL.read_text(encoding="utf-8")
+        hierarchy = (SKILL_ROOT / "references" / "hierarchy.md").read_text(
+            encoding="utf-8"
+        )
+        task_contract = (SKILL_ROOT / "references" / "task-contract.md").read_text(
+            encoding="utf-8"
+        )
+
+        for text in (skill, hierarchy, task_contract):
+            self.assertIn("🐙CTRL - <specific objective>", text)
+            self.assertIn("durable goal", text)
+            self.assertIn("subagents", text)
+        self.assertIn("Reuse a matching unfinished SWARM task", skill)
+        self.assertIn("chooses the shallowest reliable initial\ntopology", hierarchy)
 
     def test_mandatory_goals_and_passive_heartbeat_are_fixed_contracts(self) -> None:
         skill = SKILL.read_text(encoding="utf-8")
@@ -110,7 +127,7 @@ class SwarmSkillStructureTests(unittest.TestCase):
         for text in (skill, hierarchy, task_contract, config):
             self.assertIn("durable", text)
             self.assertIn("exact", text)
-        self.assertIn("MOTHER, every LEAD, and every persistent ARCHITECT", skill)
+        self.assertIn("CTRL, MOTHER, every LEAD, and every persistent ARCHITECT", skill)
         self.assertIn("conflicting unfinished goal", skill)
         self.assertIn("Goal controls are required", config)
         self.assertIn("survives\ncompaction", monitoring)

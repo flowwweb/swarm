@@ -2,6 +2,12 @@
 
 Use CORE + role + these fields. Atomic/simple tasks omit every inapplicable field. A durable task keeps only its exact current decision and proof boundary.
 
+For every new SWARM objective, the opening user-visible task first adopts
+`🐙CTRL - <specific objective>` and creates or continues exactly one matching
+durable goal before routing work. Its contract records the chosen topology and
+which visible task owns each mutable artifact. Hidden subagents are execution
+capacity, not a replacement for required SWARM task ownership.
+
 ```text
 ROLE — artifact
 PURPOSE: objective and acceptance/non-negotiables.

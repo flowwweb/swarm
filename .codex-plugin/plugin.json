@@ -1,6 +1,6 @@
 {
   "name": "swarm",
-  "version": "0.2.0+codex.20260811022801",
+  "version": "0.2.0+codex.20260811061611",
   "description": "System for Workload Allocation, Routing & Management.",
   "author": {
     "name": "Flowwweb",
@@ -17,7 +17,7 @@
   ],
   "skills": "./skills/",
   "interface": {
-    "displayName": "🐙 SWARM",
+    "displayName": "\ud83d\udc19 SWARM",
     "shortDescription": "Clear authority, durable state, independent review",
     "longDescription": "SWARM turns RUSH's proven coordination guidance into a smaller model with CTRL, MOTHER, ARCHITECT, LEAD, DOER, EXPERT, REVIEW, canonical state, bounded recovery, and independent verification. Legacy RUSH configuration remains readable during migration.",
     "developerName": "Flowwweb",

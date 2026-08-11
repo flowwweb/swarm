@@ -11,7 +11,7 @@ selecting ASSIST, naming roles, or transferring ownership.
   independent and do not need repeated domain coordination.
 - Never build a complete tree from configured counts or role availability. The
   lane test decides every task.
-- MOTHER, every LEAD, and every persistent ARCHITECT require an active durable
+- CTRL, MOTHER, every LEAD, and every persistent ARCHITECT require an active durable
   goal before scheduling, resuming, or substantive work. Inspect first, create
   when none is unfinished, continue a matching goal, and reconcile or escalate
   a conflicting unfinished goal without replacement. The goal states objective,
@@ -22,8 +22,17 @@ selecting ASSIST, naming roles, or transferring ownership.
 
 ## Authority
 
+The user-facing task opened for a new SWARM objective is CTRL. CTRL adopts the
+title `🐙CTRL - <specific objective>`, inspects or creates the matching
+durable goal, records the objective ledger, and chooses the shallowest reliable initial
+topology. Hidden subagents do not count as user-visible SWARM ownership. CTRL may
+route an atomic objective directly to one DOER or materialize the justified
+roles below. If a MOTHER is created, MOTHER then owns execution-topology changes
+and portfolio acceptance; CTRL remains the human-facing control route.
+
 | Function | Owns | Stops when |
 | --- | --- | --- |
+| CTRL | Intake classification, durable objective goal and ledger, initial topology, user-visible task materialization, human-facing routing | Outcome is accepted or an exact blocker is handed back |
 | MOTHER | WORKER lanes, capacity, ownership, checkpoints, escalations, outcome lock, composed portfolio acceptance, shared release-surface leases | Outcome is accepted or an exact blocker is handed back |
 | LEAD | Deployable-lane decomposition, DOER integration SHA, independent REVIEW routing, correction loop, lane acceptance, provider/deploy/rollback control, production proof | Its accepted lane receipt is handed to MOTHER |
 | DOER | One bounded workstream as developer, designer, researcher, or operator; coordinates TASK artifacts, proof, and handoff | LEAD accepts, transfers, or receives an exact blocker |
@@ -119,14 +128,15 @@ complete a tree, and internal subagents never replace a required portfolio lane.
 Grant child-task authority explicitly and only for a bounded named set that
 passes the same lane test.
 
-Before MOTHER schedules work, and before a LEAD or persistent ARCHITECT starts
+Before CTRL routes work or MOTHER schedules it, and before a LEAD or persistent ARCHITECT starts
 or resumes substantive work, its owner must inspect or continue the matching
 host goal. Goal creation does not grant extra file, provider, deploy, review, or
 acceptance authority; completion is valid only at the stated stopping condition.
 
 Give every title exactly one role emoji with no separator before the label.
-`🐙CTRL` is SWARM's fixed front-door mark, not a worker task or configurable
-hierarchy icon; `⚡` remains MOTHER's default task icon.
+`🐙CTRL` is SWARM's fixed front-door mark and the role of the opening
+user-visible SWARM task, not a worker task or configurable hierarchy icon; `⚡`
+remains MOTHER's default task icon.
 Generic role types do not dictate task names: name a DOER by its concrete job,
 such as DEVELOPER, DESIGNER, or RESEARCHER. Name a lane owner `<DOMAIN> LEAD`
 unless a clearer familiar title communicates the same higher ownership. Choose
