@@ -11,7 +11,8 @@ class OperatingModelTests(unittest.TestCase):
         skill=(Path(__file__).resolve().parents[1] / "SKILL.md").read_text(encoding="utf-8")
         hierarchy=(Path(__file__).resolve().parents[1] / "references" / "hierarchy.md").read_text(encoding="utf-8")
         self.assertIn("outside the exact `CTRL_DIRECT` predicate",skill)
-        self.assertIn("An exception grants no mutable worker authority unless",skill)
+        self.assertIn("other delegation exceptions grant no mutable worker authority unless",skill)
+        self.assertIn("internal-approval fallback is a narrow direct-work exception",skill)
         self.assertIn("Every `CTRL_DELEGATED` and non-CTRL SWARM task delegates",hierarchy)
 
     def test_ctrl_direct_is_exact_and_every_failed_predicate_delegates(self):

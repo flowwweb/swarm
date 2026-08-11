@@ -21,7 +21,7 @@ class WithholdBasis(StrEnum): OBJECTIVE_DEFECT="objective-defect"; DUPLICATE="du
 class CtrlSurfaceKind(StrEnum):
     INLINE_IMAGE="inline_image"; INLINE_RECORDING="inline_recording"; INLINE_COMPARISON="inline_comparison"; INLINE_TABLE="inline_table"; INLINE_EXCERPT="inline_excerpt"; INLINE_RECEIPT="inline_receipt"; EXACT_BLOCKER="exact_blocker"
 class SubagentException(StrEnum):
-    CAPACITY="capacity"; COLLISION="collision"; SAFETY="safety"; WHOLE_TASK_COST="whole_task_cost"
+    CAPACITY="capacity"; HOST_GATE="host_gate"; COLLISION="collision"; SAFETY="safety"; WHOLE_TASK_COST="whole_task_cost"
 class CtrlMode(StrEnum): DIRECT="CTRL_DIRECT"; DELEGATED="CTRL_DELEGATED"
 class HorizonAction(StrEnum): OBSERVE="OBSERVE"; REORIENT="REORIENT"; REVIEW="REVIEW"; SUPERVISOR="SUPERVISOR"
 

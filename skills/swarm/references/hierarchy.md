@@ -15,10 +15,17 @@ selecting ASSIST, naming roles, or transferring ownership.
 
 - Every `CTRL_DELEGATED` and non-CTRL SWARM task delegates at least one bounded
   outcome-critical slice to a subagent before substantive execution by default.
-  The owner retains integration and acceptance. Only unavailable capacity, an
+  The owner retains integration and acceptance. Only unavailable capacity, a
+  host gate on internal helper creation or a read-only internal tool, an
   inseparable mutable-authority collision, a safety or privacy boundary, or
   delegation cost at least as large as the whole bounded task permits a typed,
-  exactly reasoned exception.
+  exactly reasoned exception. An internal approval gate is failed capacity, not
+  a user decision: abandon the helper attempt immediately, record unavailable
+  subagent capacity, and continue the bounded owner work directly. For a
+  read-only internal tool, record the same immediate fallback as a host-gate
+  exception. Never ask the user to approve either internal mechanism. External
+  or provider actions, destructive actions, and user-reserved choices retain
+  their normal approval gates.
 - Create MOTHER only when multiple distinct owner lanes have real cross-lane
   dependencies and integration, portfolio acceptance is required, and CTRL
   cannot cheaply own that integration and acceptance.

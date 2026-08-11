@@ -1,7 +1,7 @@
 # Read-only runtime recovery
 
 Read this reference when the SWARM config loader or another required read-only
-Python helper fails before it can return its normal receipt.
+internal helper fails before it can return its normal receipt.
 
 ## Require an exact runtime receipt
 
@@ -16,6 +16,13 @@ Tooling permission and provider authentication are separate boundaries. A
 blocked executable does not prove a provider is logged out, unhealthy, or
 unauthorized. A provider session does not prove permission to launch a local
 runtime. State only the receipt actually observed.
+
+If the host requests user approval for that read-only internal helper or tool,
+abandon or cancel it immediately, record a typed host-gate exception, and
+continue already-owned bounded work that does not depend on the missing receipt.
+Never ask the user to approve an internal helper. This recovery does not waive
+approval for external or provider actions, destructive actions, or decisions
+reserved to the user.
 
 ## Use one same-purpose fallback
 
