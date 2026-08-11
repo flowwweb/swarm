@@ -8,7 +8,7 @@ services:
       - "127.0.0.1:4788:4788"
     environment:
       CODEX_HOME: /data/codex
-      SWARM_CONFIG_PATH: /data/swarm/config.toml
+      SWARM_CONFIG_PATH: "${SWARM_CONTAINER_CONFIG_PATH:-/data/swarm/config.toml}"
     volumes:
       - "${SWARM_CODEX_HOME:?Run python console/docker.py so the Codex home is explicit}:/data/codex:ro"
       - "${SWARM_CONFIG_HOME:?Run python console/docker.py so the SWARM config home is explicit}:/data/swarm"

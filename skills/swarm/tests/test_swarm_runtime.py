@@ -3,7 +3,7 @@ import sys
 import unittest
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from runtime import ArtifactIdentity, ArtifactJustification, ContextPackage, DedupDecision, Depth, EfficiencyMode, HiveRecord, HiveStatus, InvariantError, ReviewEvidence, ReviewStrategy, ReviewValue, Role, Swarm, Task, TaskState, VersionedReference, Worker, WorkerState, choose_depth, initial_tier
+from runtime import ArtifactIdentity, ArtifactJustification, ArtifactProvenance, ContextPackage, DedupDecision, Depth, EfficiencyMode, HiveRecord, HiveStatus, InvariantError, ReviewEvidence, ReviewStrategy, ReviewValue, Role, Swarm, Task, TaskState, VersionedReference, Worker, WorkerState, choose_depth, initial_tier
 
 class RuntimeTests(unittest.TestCase):
  def setUp(self):
@@ -27,7 +27,7 @@ class RuntimeTests(unittest.TestCase):
   with self.assertRaises(InvariantError): self.s.review(Role.REVIEW,"A","author",True)
   self.s.review(Role.REVIEW,"A","independent",False,"missing proof"); self.assertEqual(self.s.tasks["A"].findings,["missing proof"])
   self.s.review(Role.REVIEW,"A","independent",True); self.s.complete(Role.MOTHER,"A",True,True,10)
-  self.assertIsNone(self.s.ctrl_event("HEARTBEAT","A")); self.assertIn("review fail",self.s.ctrl_event("REVIEW_FAIL","A"))
+  self.assertIsNone(self.s.ctrl_event("HEARTBEAT","A")); self.assertEqual(self.s.ctrl_event("REVIEW_FAIL","A"),"A: blocker")
  def test_lease(self):
   self.s.lease(Role.MOTHER,"repo","L")
   with self.assertRaises(InvariantError): self.s.lease(Role.MOTHER,"repo","other")
@@ -103,7 +103,7 @@ class RuntimeTests(unittest.TestCase):
   self.s.assign(Role.LEAD,Task("B","D","author",1,{}))
   with self.assertRaises(InvariantError): self.s.add_artifact(Role.DOER,"B",ArtifactIdentity("canonical","v1","work"))
   with self.assertRaises(InvariantError): self.s.add_artifact(Role.DOER,"B",ArtifactIdentity("canonical","v2","verification"),source="missing@v1:work",justification=ArtifactJustification.VERIFICATION)
-  self.s.add_artifact(Role.DOER,"B",ArtifactIdentity("canonical","v2","verification"),source="canonical@v1:work",justification=ArtifactJustification.VERIFICATION); self.assertIn("canonical@v2:verification",self.s.tasks["B"].artifacts)
+  self.s.add_artifact(Role.DOER,"B",ArtifactIdentity("canonical","v2","verification"),source="canonical@v1:work",justification=ArtifactJustification.VERIFICATION,provenance=ArtifactProvenance("verify-1","canonical@v1:work")); self.assertIn("canonical@v2:verification",self.s.tasks["B"].artifacts)
  def test_assign_registers_artifact_identity(self):
   self.s.assign(Role.LEAD,Task("B","D","author",1,{},artifacts={"canon@v1:work":"B"}))
   with self.assertRaises(InvariantError): self.s.add_artifact(Role.DOER,"A",ArtifactIdentity("canon","v1","work"))
@@ -112,9 +112,9 @@ class RuntimeTests(unittest.TestCase):
   self.s.assign(Role.LEAD,Task("B","D","author",1,{},artifacts={primary:"B"}))
   with self.assertRaises(InvariantError): self.s.add_artifact(Role.DOER,"A",primary)
   verification=ArtifactIdentity("canonical","v2","verification")
-  self.s.assign(Role.LEAD,Task("C","D","author",1,{},artifacts={verification:"canonical@v1:work"},artifact_justifications={verification.key():ArtifactJustification.VERIFICATION}))
+  self.s.assign(Role.LEAD,Task("C","D","author",1,{},artifacts={verification:"canonical@v1:work"},artifact_justifications={verification.key():ArtifactJustification.VERIFICATION},artifact_provenance={verification.key():ArtifactProvenance("verify-1","canonical@v1:work")}))
   uncertainty=ArtifactIdentity("canonical","v3","uncertainty")
-  self.s.add_artifact(Role.DOER,"A",uncertainty,source="canonical@v1:work",justification=ArtifactJustification.UNCERTAINTY)
+  self.s.add_artifact(Role.DOER,"A",uncertainty,source="canonical@v1:work",justification=ArtifactJustification.UNCERTAINTY,provenance=ArtifactProvenance("uncertain-1","canonical@v1:work"))
   self.assertIn(verification.key(),self.s.artifact_index); self.assertIn(uncertainty.key(),self.s.artifact_index)
  def test_hive_reuses_truth_and_filters_stale_bounded_hydration(self):
   with self.assertRaises(InvariantError): self.s.remember(Role.DOER,HiveRecord("noise",content="status update",source="task",value="noise"),1)
@@ -166,4 +166,31 @@ class RuntimeTests(unittest.TestCase):
   before=(len(self.s.tasks),len(self.s.workers),len(self.s.events),self.s.tasks["A"].state)
   self.assertFalse(self.s.scope_finding(Role.DOER,"A","nice-to-have",material=False)); self.assertEqual(before,(len(self.s.tasks),len(self.s.workers),len(self.s.events),self.s.tasks["A"].state))
   self.assertTrue(self.s.scope_finding(Role.DOER,"A","review invariant missing",material=True)); self.assertTrue(self.s.tasks["A"].correction_pending); self.assertEqual(self.s.tasks["A"].state,TaskState.WAITING)
+ def test_heartbeat_uses_canonical_recovery_before_latch(self):
+  self.assertEqual(self.s.heartbeat(Role.MOTHER,"A",meaningful_progress=False,unchanged_updates=2),"A:stall/actionable")
+  self.s.recover(Role.MOTHER,"A","first diagnosis")
+  self.assertEqual(self.s.heartbeat(Role.MOTHER,"A",meaningful_progress=False,unchanged_updates=2),"A:release/blocker")
+  self.assertEqual(self.s.heartbeat(Role.MOTHER,"A",meaningful_progress=False,unchanged_updates=2,recovery_attempts=0),"A:release/blocker")
+  with self.assertRaises(InvariantError): self.s.recover(Role.MOTHER,"A","renamed dimension")
+ def test_disabled_hive_is_removed_from_prebuilt_context(self):
+  record=HiveRecord("prior",content="useful",source="decision")
+  package=ContextPackage.build(goal="g",architecture={},dependencies=[],artifacts=[],acceptance=[],history=[],budget=2,hive=[record])
+  self.assertEqual(package.hive,("prior",)); self.s.hive[record.id]=record; self.s.hive_enabled=False; self.s.package_context(Role.LEAD,"D",package)
+  self.assertEqual(self.s.workers["D"].context["hive"],()); self.assertEqual(self.s.workers["D"].context["transfer_cost"],1)
+ def test_duplicate_provenance_is_globally_rejected(self):
+  self.s.add_artifact(Role.DOER,"A",ArtifactIdentity("source","v1","work"))
+  self.s.assign(Role.LEAD,Task("B","D","author",1,{})); first=ArtifactProvenance("receipt-1","source@v1:work")
+  self.s.add_artifact(Role.DOER,"B",ArtifactIdentity("source","v2","verification"),source="source@v1:work",justification=ArtifactJustification.VERIFICATION,provenance=first)
+  with self.assertRaises(InvariantError): self.s.add_artifact(Role.DOER,"A",ArtifactIdentity("source","v3","uncertainty"),source="source@v1:work",justification=ArtifactJustification.UNCERTAINTY,provenance=first)
+  self.s.add_artifact(Role.DOER,"A",ArtifactIdentity("source","v4","uncertainty"),source="source@v1:work",justification=ArtifactJustification.UNCERTAINTY,provenance=ArtifactProvenance("receipt-2","source@v1:work"))
+ def test_mode_depth_shapes_do_not_manufacture_hierarchy(self):
+  for mode in EfficiencyMode:
+   self.assertEqual(choose_depth(scope=1,mode=mode),Depth.ATOMIC)
+   self.assertEqual(choose_depth(scope=2,independent_tasks=1,useful_parallelism=1,mode=mode),Depth.SIMPLE)
+   self.assertEqual(choose_depth(scope=3,independent_tasks=2,useful_parallelism=2,mode=mode),Depth.WORKSTREAM)
+   self.assertEqual(choose_depth(scope=5,architecture_impact=True,independent_tasks=3,specialisations=2,blast_radius=5,mode=mode),Depth.PROJECT)
+ def test_ctrl_events_are_semantic_and_bounded(self):
+  expected={"MOTHER_WAKE":"attention","RECOVERY":"attention","DEADLOCK":"blocker","REVIEW_FAIL":"blocker","SCOPE_ESCALATION":"blocker","RELEASE":"release","HANDOFF":"handoff","ACCEPTANCE":"acceptance"}
+  for event,category in expected.items(): self.assertEqual(self.s.ctrl_event(event,"A"),f"A: {category}")
+  self.assertIsNone(self.s.ctrl_event("PROGRESS","A")); self.assertIsNone(self.s.ctrl_event("raw-label","A"))
 if __name__ == "__main__": unittest.main()

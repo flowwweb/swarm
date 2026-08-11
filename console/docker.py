@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import os
 import shutil
 import subprocess
@@ -13,6 +14,14 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 COMPOSE = HERE / "docker-compose.yml"
+CONFIG_SCRIPT = HERE.parent / "skills" / "swarm" / "scripts" / "rush_config.py"
+
+
+def _resolve_config_path() -> Path:
+    spec=importlib.util.spec_from_file_location("swarm_docker_config",CONFIG_SCRIPT)
+    if not spec or not spec.loader: raise RuntimeError(f"could not load SWARM config resolver: {CONFIG_SCRIPT}")
+    module=importlib.util.module_from_spec(spec); spec.loader.exec_module(module)
+    return module.resolve_config_path().expanduser().resolve()
 
 
 def _set_container_user(environment: dict[str, str]) -> None:
@@ -39,12 +48,12 @@ def main() -> int:
 
     environment = os.environ.copy()
     environment.setdefault("SWARM_CODEX_HOME", environment.get("RUSH_CODEX_HOME",str(Path.home() / ".codex")))
-    swarm_home=Path(environment.get("SWARM_CONFIG_HOME",Path.home() / ".agents" / "swarm"))
-    legacy_home=Path(environment.get("RUSH_CONFIG_HOME",Path.home() / ".agents" / "rush"))
-    environment["SWARM_CONFIG_HOME"]=str(swarm_home if swarm_home.exists() or not legacy_home.exists() else legacy_home)
+    selected_config=_resolve_config_path()
+    environment["SWARM_CONFIG_HOME"]=str(selected_config.parent)
+    environment["SWARM_CONTAINER_CONFIG_PATH"]=f"/data/swarm/{selected_config.name}"
     _set_container_user(environment)
     if args.action == "up":
-        config_home = Path(environment["SWARM_CONFIG_HOME"]).expanduser().resolve()
+        config_home = selected_config.parent
         config_home.mkdir(parents=True, exist_ok=True)
         environment["SWARM_CONFIG_HOME"] = str(config_home)
 

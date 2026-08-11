@@ -32,6 +32,11 @@ class ArtifactIdentity:
     def __post_init__(self):
         if not all(isinstance(value,str) and value.strip() for value in (self.base,self.revision,self.purpose)): raise InvariantError("artifact identity fields must be nonempty")
     def key(self)->str: return f"{self.base}@{self.revision}:{self.purpose}"
+@dataclass(frozen=True)
+class ArtifactProvenance:
+    id:str; source:str
+    def __post_init__(self):
+        if not all(isinstance(value,str) and value.strip() for value in (self.id,self.source)): raise InvariantError("artifact provenance fields must be nonempty")
 class ReviewStrategy(StrEnum): LIGHT="light"; STANDARD="standard"; ADVERSARIAL="adversarial"; SPECIALIST="specialist"
 @dataclass(frozen=True)
 class ReviewEvidence:
@@ -70,7 +75,7 @@ def choose_depth(*, scope: int, architecture_impact: bool=False, independent_tas
     """Choose infrastructure only when its reliability benefit exceeds its cost."""
     if scope <= 1 and independent_tasks <= 1 and not architecture_impact and dependencies == uncertainty == blast_radius == 0: return Depth.ATOMIC
     if architecture_impact and (independent_tasks >= 3 or specialisations >= 2): return Depth.PROJECT
-    if independent_tasks >= 2 or dependencies >= 2 or specialisations >= 2 or useful_parallelism >= MODE_POLICY[mode]["parallel"]:
+    if independent_tasks >= 2 or dependencies >= 2 or specialisations >= 2 or useful_parallelism >= max(2,MODE_POLICY[mode]["parallel"]):
         return Depth.WORKSTREAM if coordination_overhead < 3 else Depth.SIMPLE
     return Depth.SIMPLE
 
@@ -79,7 +84,7 @@ class Task:
     id: str; owner: str; creator: str; architecture_version: int; contracts: dict[str,int]
     state: TaskState=TaskState.ACTIVE; waiting_on: str|None=None; reviewer: str|None=None; findings: list[str]=field(default_factory=list)
     evidence: list[str]=field(default_factory=list); recovery_dimensions: set[str]=field(default_factory=set); recovery_attempts:int=0; review_value: ReviewValue=ReviewValue.NONE
-    completed_at: int|None=None; stale_at: int|None=None; archived_at: int|None=None; stale_reason: str|None=None; superseded_by: str|None=None; promoted: list[str]=field(default_factory=list); extensions: int=0; review_passed: bool=False; risk:int=1; review_strategy:str="light"; architecture_review_floor:ReviewStrategy=ReviewStrategy.LIGHT; security_review_floor:ReviewStrategy=ReviewStrategy.LIGHT; artifacts:dict[ArtifactIdentity|str,str]=field(default_factory=dict); artifact_justifications:dict[str,ArtifactJustification]=field(default_factory=dict); archive:dict[str,object]=field(default_factory=dict); active_goal:bool=False; handoff_active:bool=False; correction_pending:bool=False; user_choice_pending:bool=False; ambiguous:bool=False; topology_receipt:tuple[str,...]=()
+    completed_at: int|None=None; stale_at: int|None=None; archived_at: int|None=None; stale_reason: str|None=None; superseded_by: str|None=None; promoted: list[str]=field(default_factory=list); extensions: int=0; review_passed: bool=False; risk:int=1; review_strategy:str="light"; architecture_review_floor:ReviewStrategy=ReviewStrategy.LIGHT; security_review_floor:ReviewStrategy=ReviewStrategy.LIGHT; artifacts:dict[ArtifactIdentity|str,str]=field(default_factory=dict); artifact_justifications:dict[str,ArtifactJustification]=field(default_factory=dict); artifact_provenance:dict[str,ArtifactProvenance]=field(default_factory=dict); archive:dict[str,object]=field(default_factory=dict); active_goal:bool=False; handoff_active:bool=False; correction_pending:bool=False; user_choice_pending:bool=False; ambiguous:bool=False; topology_receipt:tuple[str,...]=()
 
 @dataclass
 class Worker:
@@ -88,7 +93,7 @@ class Worker:
 @dataclass
 class Swarm:
     architecture_version: int=1; contract_versions: dict[str,int]=field(default_factory=dict); topology: set[str]=field(default_factory=set)
-    workers: dict[str,Worker]=field(default_factory=dict); tasks: dict[str,Task]=field(default_factory=dict); leases: dict[str,str]=field(default_factory=dict); events: list[tuple[str,str]]=field(default_factory=list); telemetry: dict[str,object]=field(default_factory=dict); telemetry_events:list[dict[str,object]]=field(default_factory=list); artifact_index:dict[str,str]=field(default_factory=dict); hive:dict[str,HiveRecord]=field(default_factory=dict); hive_enabled:bool=True; heartbeat_enabled:bool=True; heartbeat_stall_after:int=2; heartbeat_latch:set[str]=field(default_factory=set); lane_width:int=3; wip_limit:int=3; efficiency_ledger:list[dict[str,str]]=field(default_factory=list); mode:EfficiencyMode=EfficiencyMode.BALANCED
+    workers: dict[str,Worker]=field(default_factory=dict); tasks: dict[str,Task]=field(default_factory=dict); leases: dict[str,str]=field(default_factory=dict); events: list[tuple[str,str]]=field(default_factory=list); telemetry: dict[str,object]=field(default_factory=dict); telemetry_events:list[dict[str,object]]=field(default_factory=list); artifact_index:dict[str,str]=field(default_factory=dict); provenance_index:dict[str,str]=field(default_factory=dict); hive:dict[str,HiveRecord]=field(default_factory=dict); hive_enabled:bool=True; heartbeat_enabled:bool=True; heartbeat_stall_after:int=2; heartbeat_latch:set[str]=field(default_factory=set); lane_width:int=3; wip_limit:int=3; efficiency_ledger:list[dict[str,str]]=field(default_factory=list); mode:EfficiencyMode=EfficiencyMode.BALANCED
     @classmethod
     def from_config(cls, config: dict) -> "Swarm":
         return cls(lane_width=config["coordination"]["preferred_lane_width"], wip_limit=config["efficiency"]["doer_wip_limit"], mode=EfficiencyMode(config["efficiency"]["mode"]), hive_enabled=config.get("hive",{}).get("enabled",True), heartbeat_enabled=config["monitoring"].get("heartbeat_enabled",True), heartbeat_stall_after=config["recovery"]["stall_after_updates"])
@@ -127,7 +132,8 @@ class Swarm:
         return None
     def package_context(self, actor:Role, worker_id:str, package:ContextPackage) -> None:
         self._role(actor,{Role.LEAD}); worker=self.workers[worker_id]
-        worker.context={"goal":package.goal,"architecture":package.architecture,"dependencies":package.dependencies,"artifacts":package.artifacts,"acceptance":package.acceptance,"history":package.history,"hive":package.hive,"transfer_cost":package.transfer_cost,"affinity":worker.context.get("affinity",1),"bloat":False,"stale":False,"stalls":0}
+        hive=package.hive if self.hive_enabled else ()
+        worker.context={"goal":package.goal,"architecture":package.architecture,"dependencies":package.dependencies,"artifacts":package.artifacts,"acceptance":package.acceptance,"history":package.history,"hive":hive,"transfer_cost":package.transfer_cost-len(package.hive)+len(hive),"affinity":worker.context.get("affinity",1),"bloat":False,"stale":False,"stalls":0}
     def remember(self, actor:Role, record:HiveRecord, now:int) -> str|None:
         self._role(actor,{Role.MOTHER,Role.ARCHITECT,Role.LEAD,Role.DOER})
         if not self.hive_enabled: return None
@@ -155,28 +161,35 @@ class Swarm:
         except ValueError as exc: raise InvariantError("artifact identity must be base@revision:purpose") from exc
         if not base or not revision or not purpose: raise InvariantError("artifact identity must be complete")
         return ArtifactIdentity(base,revision,purpose)
-    def _check_artifact(self, task:Task, artifact:ArtifactIdentity|str, source:str|None, justification:ArtifactJustification|None, *, pending:set[str]|None=None) -> tuple[ArtifactIdentity,str]:
+    def _check_artifact(self, task:Task, artifact:ArtifactIdentity|str, source:str|None, justification:ArtifactJustification|None, provenance:ArtifactProvenance|None=None, *, pending:set[str]|None=None, pending_provenance:set[str]|None=None) -> tuple[ArtifactIdentity,str]:
         identity=self._artifact(artifact); key=identity.key()
         if pending is None: pending=set()
+        if pending_provenance is None: pending_provenance=set()
         if key in self.artifact_index or key in pending: raise InvariantError("canonical artifact identity already exists")
         if identity.purpose in {"verification","uncertainty"}:
             expected=ArtifactJustification(identity.purpose)
             if not source or justification is not expected or source not in self.artifact_index: raise InvariantError("justified duplicate requires typed reason, existing canonical source, and matching purpose")
+            if not isinstance(provenance,ArtifactProvenance) or provenance.source!=source: raise InvariantError("justified duplicate requires typed provenance for its canonical source")
+            if provenance.id in self.provenance_index or provenance.id in pending_provenance: raise InvariantError("artifact provenance identity already exists")
             source_identity=self._artifact(source)
             if source_identity.revision==identity.revision: raise InvariantError("justified duplicate requires distinct revision provenance")
         return identity,key
-    def _register_artifact(self, task:Task, artifact:ArtifactIdentity|str, source:str|None, justification:ArtifactJustification|None) -> str:
-        _,key=self._check_artifact(task,artifact,source,justification)
+    def _register_artifact(self, task:Task, artifact:ArtifactIdentity|str, source:str|None, justification:ArtifactJustification|None, provenance:ArtifactProvenance|None=None) -> str:
+        _,key=self._check_artifact(task,artifact,source,justification,provenance)
         self.artifact_index[key]=task.id; task.artifacts[key]=source or task.id
+        if provenance is not None: self.provenance_index[provenance.id]=key; task.artifact_provenance[key]=provenance
         return key
     def assign(self, actor: Role, task: Task) -> None:
         self._role(actor,{Role.LEAD}); w=self.workers.get(task.owner)
         if not w or w.state==WorkerState.RETIRED or len(w.task_ids)>=self.wip_limit: raise InvariantError("owner unavailable or at WIP limit")
-        staged=[]; pending=set()
+        staged=[]; pending=set(); pending_provenance=set()
         for artifact,source in task.artifacts.items():
-            identity,key=self._check_artifact(task,artifact,source,task.artifact_justifications.get(self._artifact(artifact).key()),pending=pending); staged.append((identity,source,task.artifact_justifications.get(key))); pending.add(key)
+            artifact_key=self._artifact(artifact).key(); provenance=task.artifact_provenance.get(artifact_key)
+            identity,key=self._check_artifact(task,artifact,source,task.artifact_justifications.get(artifact_key),provenance,pending=pending,pending_provenance=pending_provenance); staged.append((identity,source,task.artifact_justifications.get(key),provenance)); pending.add(key)
+            if provenance is not None: pending_provenance.add(provenance.id)
         task.artifacts={}
-        for artifact,source,justification in staged: self._register_artifact(task,artifact,source,justification)
+        task.artifact_provenance={}
+        for artifact,source,justification,provenance in staged: self._register_artifact(task,artifact,source,justification,provenance)
         self.tasks[task.id]=task; w.task_ids.add(task.id)
     def should_spawn(self, *, independent: bool, critical_path: bool, duplicate_artifact: str|None=None, verification: bool=False, contention:bool=False) -> bool:
         allowed=independent and not contention and (critical_path or verification) and (not duplicate_artifact or verification) and sum(w.state!=WorkerState.RETIRED for w in self.workers.values()) < MODE_POLICY[self.mode]["parallel"]
@@ -187,15 +200,16 @@ class Swarm:
         selected=mode or self.mode; tier=max(architect_floor,historical_floor,initial_tier(risk=risk,uncertainty=uncertainty,blast_radius=blast_radius,family=family,mode=selected)); self._record("efficiency_ledger",{"kind":"route","family":family,"tier":str(tier),"reason":"expected_total_accepted_cost"}); return tier
     def dedup(self, identity:str, *, verification:bool=False, uncertainty:bool=False) -> DedupDecision:
         found=bool(self.discover(identity)); decision=DedupDecision.EXECUTE if not found or verification or uncertainty else DedupDecision.REUSE; self._record("efficiency_ledger",{"kind":"dedup","decision":decision.value,"reason":"verification" if verification else "uncertainty" if uncertainty else "canonical_artifact"}); return decision
-    def heartbeat(self, actor:Role, task_id:str, *, meaningful_progress:bool, owner_update:bool=True, unchanged_updates:int=1, recovery_attempts:int=0, enabled:bool|None=None) -> str|None:
+    def heartbeat(self, actor:Role, task_id:str, *, meaningful_progress:bool, owner_update:bool=True, unchanged_updates:int=1, recovery_attempts:int|None=None, enabled:bool|None=None) -> str|None:
         self._role(actor,{Role.MOTHER}); t=self.tasks[task_id]
         enabled=self.heartbeat_enabled if enabled is None else enabled
         if not enabled or meaningful_progress: self.heartbeat_latch.discard(task_id); return None
         if t.user_choice_pending or t.state in {TaskState.WAITING,TaskState.REVIEW,TaskState.COMPLETE,TaskState.ARCHIVED,TaskState.ARCHIVED_STALE,TaskState.BACKLOG}: return None
         if t.state!=TaskState.ACTIVE: return None
-        action=heartbeat_action(owner_update=owner_update,material_change=False,unchanged_updates=unchanged_updates,recovery_attempts=recovery_attempts,stall_after_updates=self.heartbeat_stall_after)
-        if action=="observe" or task_id in self.heartbeat_latch: return None
+        action=heartbeat_action(owner_update=owner_update,material_change=False,unchanged_updates=unchanged_updates,recovery_attempts=t.recovery_attempts,stall_after_updates=self.heartbeat_stall_after)
+        if action=="observe": return None
         if action=="release": self._record("events",("RELEASE",f"{task_id}:unchanged blocker")); return f"{task_id}:release/blocker"
+        if task_id in self.heartbeat_latch: return None
         self.heartbeat_latch.add(task_id); self._record("events",("MOTHER_WAKE",f"{task_id}:stall/actionable")); return f"{task_id}:stall/actionable"
     def context_decision(self, *, affinity:int|None=None, bloat:bool|None=None, stale:bool|None=None, stalls:int|None=None, worker_id:str|None=None, replacement:str|None=None) -> str:
         context=self.workers[worker_id].context if worker_id else {}; affinity=context.get("affinity",affinity or 0); bloat=context.get("bloat",bloat or False); stale=context.get("stale",stale or False); stalls=context.get("stalls",stalls or 0)
@@ -232,9 +246,9 @@ class Swarm:
         self._role(actor,{Role.ARCHITECT}); self.tasks[task_id].contracts["intelligence_floor"]=tier
     def complexity_mismatch(self, actor: Role, task_id: str, observed_tier: int) -> None:
         self._role(actor,{Role.DOER}); self.tasks[task_id].contracts["complexity_mismatch"]=observed_tier; self._record("events",("MISMATCH",task_id))
-    def add_artifact(self, actor: Role, task_id: str, artifact: ArtifactIdentity, risk: str="", *, source:str|None=None, justification:ArtifactJustification|None=None) -> None:
+    def add_artifact(self, actor: Role, task_id: str, artifact: ArtifactIdentity, risk: str="", *, source:str|None=None, justification:ArtifactJustification|None=None, provenance:ArtifactProvenance|None=None) -> None:
         self._role(actor,{Role.DOER}); t=self.tasks[task_id]
-        identity=self._register_artifact(t,artifact,source,justification); t.evidence.append(identity); t.findings.extend([risk] if risk else [])
+        identity=self._register_artifact(t,artifact,source,justification,provenance); t.evidence.append(identity); t.findings.extend([risk] if risk else [])
     def discover(self, artifact: str) -> list[str]:
         return [owner for identity,owner in self.artifact_index.items() if identity==artifact or identity.startswith(f"{artifact}@")]
     def review_depth(self, risk:int) -> str:
@@ -330,8 +344,8 @@ class Swarm:
                 record.status=HiveStatus.PURGED; record.content=""; record.reference=""; self.telemetry["hive_purged"]=self.telemetry.get("hive_purged",0)+1
         self._hive_counts()
     def ctrl_event(self, event: str, task_id: str) -> str|None:
-        if event not in {"MOTHER_WAKE","DEADLOCK","RECOVERY","REVIEW_FAIL","SCOPE_ESCALATION","RELEASE","HANDOFF","ACCEPTANCE"}: return None
-        return f"{task_id}: {event.lower().replace('_',' ')}"
+        category={"MOTHER_WAKE":"attention","RECOVERY":"attention","DEADLOCK":"blocker","REVIEW_FAIL":"blocker","SCOPE_ESCALATION":"blocker","RELEASE":"release","HANDOFF":"handoff","ACCEPTANCE":"acceptance"}.get(event)
+        return f"{task_id}: {category}" if category else None
     def project_complete(self, actor: Role, integration_ok: bool, architecture_ok: bool) -> bool:
         self._role(actor,{Role.MOTHER})
         return integration_ok and architecture_ok and all(t.state in {TaskState.COMPLETE,TaskState.ARCHIVED,TaskState.BACKLOG} or (t.state==TaskState.ARCHIVED_STALE and t.superseded_by in self.tasks and self.tasks[t.superseded_by].state==TaskState.COMPLETE) for t in self.tasks.values())

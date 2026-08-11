@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -38,7 +39,9 @@ class RushDockerTests(unittest.TestCase):
 
         expected_environment = environment.copy()
         expected_environment.setdefault("SWARM_CODEX_HOME", expected_environment.get("RUSH_CODEX_HOME",str(TEST_HOME / ".codex")))
-        expected_environment.setdefault("SWARM_CONFIG_HOME", str(TEST_HOME / ".agents" / "swarm"))
+        selected=Path(environment.get("SWARM_CONFIG_PATH",environment.get("RUSH_CONFIG_PATH",TEST_HOME / ".agents" / "swarm" / "config.toml")))
+        expected_environment["SWARM_CONFIG_HOME"]=str(selected.parent)
+        expected_environment["SWARM_CONTAINER_CONFIG_PATH"]=f"/data/swarm/{selected.name}"
         invoked_environment = run.call_args.kwargs["env"]
         run.assert_called_once_with(
             ["docker", "compose", "-f", str(COMPOSE), "config", "--quiet"],
@@ -92,6 +95,20 @@ class RushDockerTests(unittest.TestCase):
         self.assertIn(':/data/swarm"', compose)
         self.assertIn("read_only: true", compose)
         self.assertIn("no-new-privileges:true", compose)
+
+    def test_explicit_swarm_config_path_drives_safe_mount(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            selected=Path(directory) / "selected.toml"; selected.write_text("",encoding="utf-8")
+            environment=self._run_main({"SWARM_CONFIG_PATH":str(selected)},getuid=None,getgid=None)
+            self.assertEqual(environment["SWARM_CONFIG_HOME"],str(selected.parent))
+            self.assertEqual(environment["SWARM_CONTAINER_CONFIG_PATH"],"/data/swarm/selected.toml")
+
+    def test_existing_legacy_config_is_automatic_fallback(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            legacy=Path(directory) / "legacy.toml"; legacy.write_text("",encoding="utf-8")
+            environment=self._run_main({"RUSH_CONFIG_PATH":str(legacy)},getuid=None,getgid=None)
+            self.assertEqual(environment["SWARM_CONFIG_HOME"],str(legacy.parent))
+            self.assertEqual(environment["SWARM_CONTAINER_CONFIG_PATH"],"/data/swarm/legacy.toml")
 
 
 if __name__ == "__main__":

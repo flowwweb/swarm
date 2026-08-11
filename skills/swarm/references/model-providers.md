@@ -37,7 +37,9 @@ SWARM portfolio and report that the provider cannot be changed per task.
 
 ## Declare the model to SWARM
 
-Add the same exact model ID to `~/.agents/rush/config.toml`:
+Add the same exact model ID to `~/.agents/swarm/config.toml`. When that canonical
+file is absent, an existing `~/.agents/rush/config.toml` is read automatically
+as the clearly labeled legacy fallback:
 
 ```toml
 [model_capabilities."<provider model ID>"]
