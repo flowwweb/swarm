@@ -23,6 +23,8 @@ class VersionedReference:
 @dataclass(frozen=True)
 class ArtifactIdentity:
     base:str; revision:str; purpose:str
+    def __post_init__(self):
+        if not all(isinstance(value,str) and value.strip() for value in (self.base,self.revision,self.purpose)): raise InvariantError("artifact identity fields must be nonempty")
     def key(self)->str: return f"{self.base}@{self.revision}:{self.purpose}"
 class ReviewStrategy(StrEnum): LIGHT="light"; STANDARD="standard"; ADVERSARIAL="adversarial"; SPECIALIST="specialist"
 @dataclass(frozen=True)
@@ -46,7 +48,7 @@ class ContextPackage:
         spine=[goal,*acceptance]; optional=[*dependencies,*artifacts,*hive,*history]
         if len(spine)>budget: raise InvariantError("budget cannot admit canonical spine")
         kept=optional[:max(0,budget-len(spine))]
-        return cls(goal,architecture,tuple(x for x in dependencies if x in kept),tuple(x for x in artifacts if x in kept),tuple(acceptance),tuple(x for x in history if x in kept),len(kept),tuple(x for x in hive if x in kept))
+        return cls(goal,architecture,tuple(x for x in dependencies if x in kept),tuple(x for x in artifacts if x in kept),tuple(acceptance),tuple(x for x in history if x in kept),len(spine)+len(kept),tuple(x for x in hive if x in kept))
 
 class Depth(StrEnum):
     ATOMIC="CTRL_DOER"; SIMPLE="CTRL_MOTHER_DOER"; WORKSTREAM="CTRL_MOTHER_LEAD_DOER"; PROJECT="CTRL_MOTHER_ARCHITECT_LEADS_DOERS"
@@ -212,7 +214,7 @@ class Swarm:
         self._role(actor,{Role.DOER}); t=self.tasks[task_id]
         identity=self._register_artifact(t,artifact,source,justification); t.evidence.append(identity); t.findings.extend([risk] if risk else [])
     def discover(self, artifact: str) -> list[str]:
-        return [t.id for t in self.tasks.values() if any(item == artifact or item.startswith(f"{artifact}@") for item in t.evidence)]
+        return [owner for identity,owner in self.artifact_index.items() if identity==artifact or identity.startswith(f"{artifact}@")]
     def review_depth(self, risk:int) -> str:
         base="light" if risk <= 1 else "standard" if risk <= 3 else "adversarial" if risk <= 4 else "specialist"
         return "standard" if base=="light" and self.mode==EfficiencyMode.MAX else base
@@ -242,12 +244,14 @@ class Swarm:
     def retire(self, actor: Role, worker_id: str, replacement: str|None=None, *, lessons:list[HiveRecord]|None=None, now:int=0) -> None:
         self._role(actor,{Role.LEAD}); w=self.workers[worker_id]
         if w.task_ids and (not replacement or replacement not in self.workers or self.workers[replacement].state==WorkerState.RETIRED): raise InvariantError("retirement needs a live replacement for owned tasks")
-        for lesson in (lessons or [])[:3]: self.remember(Role.LEAD,lesson,now)
+        flushed=(lessons or [])[:3] if self.hive_enabled else []
+        for lesson in flushed: self.remember(Role.LEAD,lesson,now)
         if replacement:
             target=self.workers[replacement]
             if len(target.task_ids)+len(w.task_ids)>self.wip_limit: raise InvariantError("replacement WIP limit")
             for task_id in w.task_ids: self.tasks[task_id].owner=replacement; target.task_ids.add(task_id)
-        w.state=WorkerState.RETIRED; w.archive={"tasks":sorted(w.task_ids),"lane":w.lane,"hive_flush":[item.id for item in (lessons or [])[:3]]}; w.task_ids.clear(); self.telemetry["hive_retirement_flushes"]=self.telemetry.get("hive_retirement_flushes",0)+len((lessons or [])[:3])
+        w.state=WorkerState.RETIRED; w.archive={"tasks":sorted(w.task_ids),"lane":w.lane,"hive_flush":[item.id for item in flushed]}; w.task_ids.clear()
+        if self.hive_enabled: self.telemetry["hive_retirement_flushes"]=self.telemetry.get("hive_retirement_flushes",0)+len(flushed)
     def collapse(self, actor: Role, lead: str) -> Depth:
         """Retire idle capacity and remove a lead when only one isolated task remains."""
         self._role(actor,{Role.MOTHER}); active=[t for t in self.tasks.values() if t.state not in {TaskState.COMPLETE,TaskState.BACKLOG,TaskState.ARCHIVED,TaskState.ARCHIVED_STALE}]
@@ -265,6 +269,7 @@ class Swarm:
             if waiter.state==TaskState.WAITING and waiter.waiting_on==task_id: waiter.state=TaskState.ACTIVE; waiter.waiting_on=None
         worker=self.workers.get(t.owner)
         if worker and worker.context.get("affinity",0)>0 and all(self.tasks[item].state in {TaskState.COMPLETE,TaskState.ARCHIVED,TaskState.ARCHIVED_STALE} for item in worker.task_ids): worker.state=WorkerState.WARM
+        if worker: worker.task_ids.discard(task_id)
     def stale(self, actor: Role, task_id: str, reason: str, *, now: int=0, superseded_by: str|None=None, promote: list[str]|None=None) -> None:
         self._role(actor,{Role.MOTHER,Role.ARCHITECT,Role.LEAD}); t=self.tasks[task_id]
         if not reason: raise InvariantError("stale tasks require reason provenance")
@@ -285,7 +290,8 @@ class Swarm:
             t=self.tasks[task_id]; started=t.completed_at if t.completed_at is not None else t.stale_at if t.stale_at is not None else now; reasons["stale" if t.state==TaskState.ARCHIVED_STALE else "completed"]+=1; ages["fresh" if now-started<30 else "aged"]+=1
         self.telemetry.update({"archived":self.telemetry.get("archived",0)+len(archived),"pins":sum(t.review_value==ReviewValue.PINNED for t in self.tasks.values()),"active":sum(t.state in {TaskState.ACTIVE,TaskState.WAITING,TaskState.REVIEW} for t in self.tasks.values()),"stale":sum(t.state==TaskState.STALE for t in self.tasks.values()),"restores":self.telemetry.get("restores",0),"extensions":sum(t.extensions for t in self.tasks.values()),"completion_to_archive":{task_id:now-(self.tasks[task_id].completed_at if self.tasks[task_id].completed_at is not None else self.tasks[task_id].stale_at if self.tasks[task_id].stale_at is not None else now) for task_id in archived},"archive_reasons":reasons,"age_buckets":ages}); return archived
     def archive_eligible(self, task:Task) -> bool:
-        return task.review_value!=ReviewValue.PINNED and not any((task.active_goal,task.handoff_active,task.correction_pending,task.user_choice_pending,task.ambiguous)) and not any(other.waiting_on==task.id and other.state in {TaskState.ACTIVE,TaskState.WAITING,TaskState.REVIEW} for other in self.tasks.values())
+        owner=self.workers.get(task.owner)
+        return task.review_value!=ReviewValue.PINNED and not any((task.active_goal,task.handoff_active,task.correction_pending,task.user_choice_pending,task.ambiguous,task.state==TaskState.REVIEW,owner is not None and owner.state==WorkerState.ACTIVE and task.id in owner.task_ids)) and not any(other.waiting_on==task.id and other.state in {TaskState.ACTIVE,TaskState.WAITING,TaskState.REVIEW} for other in self.tasks.values())
     def restore(self, actor:Role, task_id:str, reason:str) -> None:
         self._role(actor,{Role.MOTHER,Role.LEAD}); t=self.tasks[task_id]
         if t.state not in {TaskState.ARCHIVED,TaskState.ARCHIVED_STALE} or not reason: raise InvariantError("restore requires archived task and provenance")
