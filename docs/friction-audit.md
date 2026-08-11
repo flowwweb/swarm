@@ -9,4 +9,4 @@
 | P2 dependency/reuse/dedup ambiguity | no completion wake; boolean dedup had reverse semantics | manual wake and confusing reuse choices | completion wakes direct waiters; `DedupDecision` is explicit; duplicate worker IDs reject | polling and ambiguous boolean | premature wake or overwrite | WAITING, dedup, duplicate-ID tests |
 | P2 Scope Discipline | discovery could expand work implicitly | finish line drift | explicit doctrine/eval preserves only material invariant findings | speculative follow-on work | explicit requirement narrowed | eval 71 |
 
-Implemented commits: `4945159` Scope Discipline; current commit adds P0-P2 runtime correction. P3/no-change console projection and optimizer concerns remain untouched.
+Implemented commits: `9ee8d85` heartbeat/archive/contention/dependency baseline; `f8afc0a` adaptive direct paths and WARM reuse; `edd6749` configured heartbeat behavior; `0271fb4` SWARM-first configuration fallback; `eccb957` artifact/HIVE/archive authority; this correction consolidates the remaining review findings. P3/no-change console projection and optimizer concerns remain untouched.
