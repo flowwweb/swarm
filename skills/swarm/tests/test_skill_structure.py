@@ -148,6 +148,20 @@ class SwarmSkillStructureTests(unittest.TestCase):
         self.assertIn("unaffected lanes moving", monitoring)
         self.assertIn("polling loops, queues", monitoring)
 
+    def test_ctrl_stream_is_quiet_compact_and_not_templated(self) -> None:
+        skill = SKILL.read_text(encoding="utf-8")
+        monitoring = (SKILL_ROOT / "references" / "monitoring.md").read_text(encoding="utf-8")
+        evals = (SKILL_ROOT / "evals" / "evals.json").read_text(encoding="utf-8")
+
+        self.assertIn("CTRL is a clean human-facing stream", skill)
+        self.assertIn("one compact, reserved, natural line", skill)
+        self.assertIn("unchanged state quiet", skill)
+        self.assertIn("Never template status or increase worker reporting", skill)
+        self.assertIn("a passive snapshot is not itself an update", monitoring)
+        self.assertNotIn("<title> — <state>", monitoring)
+        self.assertIn('"id": 79', evals)
+        self.assertIn("Workers are not asked to report more often", evals)
+
     def test_boost_eval_wording_does_not_disable_mandatory_role_goals(self) -> None:
         evals = (SKILL_ROOT / "evals" / "evals.json").read_text(encoding="utf-8")
         stale_phrases = (

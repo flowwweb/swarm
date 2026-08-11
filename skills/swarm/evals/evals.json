@@ -1006,6 +1006,20 @@
         "The doctrine change generalizes, consolidates, tests, and deletes superseded guidance",
         "No repeated replanning, narration, cascading task, or owner churn follows the fix"
       ]
+    },
+    {
+      "id": 79,
+      "prompt": "CTRL receives several unchanged passive snapshots, routine implementation notes from healthy owners, and then one new review blocker whose evidence and unblock condition affect acceptance. Keep the user informed without creating a reporting ritual.",
+      "expected_output": "CTRL suppresses the unchanged snapshots and routine progress, then surfaces the meaningful review blocker as one compact, reserved, natural update with enough evidence and unblock context to stay truthful. It expands beyond one line only if the decision or receipt cannot otherwise be understood.",
+      "files": [],
+      "assertions": [
+        "Routine polling, healthy progress, implementation steps, and unchanged state remain quiet",
+        "The meaningful blocker reaches the human-facing CTRL stream",
+        "One natural line is the default rather than a fixed status template",
+        "Multi-line detail is permitted only when truth requires it",
+        "Workers are not asked to report more often",
+        "Tone stays compact and human without machine-log or inflated planning language"
+      ]
     }
   ]
 }

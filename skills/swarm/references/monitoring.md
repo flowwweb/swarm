@@ -13,19 +13,18 @@ only when passive wait is unavailable or an attention event needs detail. Never
 send a task message merely to request heartbeat status, and never create a
 monitoring task, subagent, file, or second ledger.
 
-For each active task, emit one compact line in task-tree order:
+Apply EVENT: a passive snapshot is not itself an update. Surface only changed
+attention, blocker, handoff, acceptance, or release in one natural line by
+default. Use host state, the latest material owner update, and the existing
+receipt. Expand only when truth requires it; never impose fixed fields, narrate
+routine progress, or ask owners to report more.
 
-```text
-<title> — <state>: <material artifact/proof/integration progress>; working
-<duration>; blocker: <exact blocker or none>; unblock: <condition or none>.
-```
-
-Use only host state, the latest material owner update, and the existing receipt.
-States are `active`, `attention`, `ready`, or `unknown`; do not call a task
-progressing when no material signal supports it. Compute duration from the host
-timestamp for entering active production, integration, or review. If the host
-does not expose it, use MOTHER's first observed active timestamp, prefix the
-duration with `~`, and never present it as CPU time or uninterrupted effort.
+Internally classify observed state as `active`, `attention`, `ready`, or
+`unknown`; do not call a task progressing when no material signal supports it.
+Compute duration from the host timestamp for entering active production,
+integration, or review. If the host does not expose it, use MOTHER's first
+observed active timestamp, prefix the duration with `~`, and never present it as
+CPU time or uninterrupted effort.
 
 The heartbeat is an ephemeral user control surface. Do not rewrite the task-tree
 receipt for unchanged observations, narrate between intervals, or repeat terminal
@@ -53,9 +52,9 @@ shared-surface lease is `attention`, not progress; keep disjoint lanes moving.
 MOTHER observes and serializes the lease boundary but does not absorb the LEAD's
 deployment work.
 
-During Boost `hands_off`, keep this passive heartbeat and compact user summary,
-but do not message, wake, steer, or poll an owner. Terminal and attention events
-may still advance integration. If the host cannot passively wait, read task
-state, expose timing, or control goals, report the exact missing capability and
-the resulting claim limit instead of pretending continuous monitoring or
-compliant role startup occurred.
+During Boost `hands_off`, keep this passive heartbeat; EVENT still decides
+whether anything surfaces. Do not message, wake, steer, or poll an owner.
+Terminal and attention events may still advance integration. If the host cannot
+passively wait, read task state, expose timing, or control goals, report the
+exact missing capability and resulting claim limit instead of pretending
+continuous monitoring or compliant role startup occurred.
