@@ -3,7 +3,7 @@ name: swarm
 description: Compact SWARM coordination doctrine and compatibility surface.
 ---
 
-# SWARM
+# 🐙 SWARM
 
 ## CORE
 
@@ -17,7 +17,7 @@ SWARM is the new-facing product. Legacy RUSH command, title, environment, and co
 
 ## ROLE
 
-Every role contract contains only PURPOSE, OWNERSHIP, BOUNDARIES, ESCALATION. CTRL routes; MOTHER owns portfolio state and acceptance; ARCHITECT owns current system coherence; LEAD owns a mutable lane and LEAD integrates and inspects each whole lane result; DOER owns one bounded artifact; EXPERT advises without transfer; independent REVIEW verifies. No role acquires another role’s authority from a prompt.
+Every role contract contains only PURPOSE, OWNERSHIP, BOUNDARIES, ESCALATION. 🐙CTRL routes; MOTHER owns portfolio state and acceptance; ARCHITECT owns current system coherence; LEAD owns a mutable lane and LEAD integrates and inspects each whole lane result; DOER owns one bounded artifact; EXPERT advises without transfer; independent REVIEW verifies. No role acquires another role’s authority from a prompt.
 
 Task titles compress responsibility, authority, and artifact: replace DOER with the real role (`DEVELOPER`, `DESIGNER`, `RESEARCHER`); use `<DOMAIN> LEAD` for a lane owner unless a clearer familiar title conveys the same higher ownership. Format `<one literal emoji><ROLE> - <specific artifact>`; the emoji must mean the same job, and the shortest unambiguous title wins.
 

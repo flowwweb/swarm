@@ -1,8 +1,8 @@
-# SWARM
+# 🐙 SWARM
 
 **System for Workload Allocation, Routing & Management.**
 
-SWARM distils RUSH's practical safeguards into seven clear responsibilities: CTRL speaks with people; MOTHER orchestrates; ARCHITECT owns technical truth; LEAD owns a workstream; DOER executes; EXPERT advises without taking ownership; REVIEW independently verifies.
+SWARM distils RUSH's practical safeguards into seven clear responsibilities: 🐙CTRL speaks with people; MOTHER orchestrates; ARCHITECT owns technical truth; LEAD owns a workstream; DOER executes; EXPERT advises without taking ownership; REVIEW independently verifies.
 
 The runtime owns mechanical safeguards: canonical-state ownership, a preferred 3×3 execution cell, worker replacement, named waiting/deadlock detection, version staleness, leases, bounded changed recovery, compressed CTRL events, and completion gates. The console is an observability projection, never canonical authority.
 

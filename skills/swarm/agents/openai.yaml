@@ -1,4 +1,4 @@
 interface:
-  display_name: "SWARM"
+  display_name: "🐙 SWARM"
   short_description: "Adaptive work with clear authority and independent review"
   default_prompt: "Use $swarm to choose the shallowest reliable structure, preserve canonical state, and require independent review. Legacy RUSH configuration remains readable during migration."

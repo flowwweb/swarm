@@ -90,6 +90,16 @@ class SwarmSkillStructureTests(unittest.TestCase):
         self.assertIn("the shortest unambiguous title wins", skill)
         self.assertIn("Generic role types do not dictate task names", hierarchy)
 
+    def test_octopus_is_the_fixed_swarm_ctrl_mark(self) -> None:
+        skill = SKILL.read_text(encoding="utf-8")
+        hierarchy = (SKILL_ROOT / "references" / "hierarchy.md").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn("# 🐙 SWARM", skill)
+        self.assertIn("🐙CTRL routes", skill)
+        self.assertIn("`🐙CTRL` is SWARM's fixed front-door mark", hierarchy)
+
     def test_mandatory_goals_and_passive_heartbeat_are_fixed_contracts(self) -> None:
         skill = SKILL.read_text(encoding="utf-8")
         hierarchy = (SKILL_ROOT / "references" / "hierarchy.md").read_text(encoding="utf-8")

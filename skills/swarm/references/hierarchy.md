@@ -125,6 +125,8 @@ host goal. Goal creation does not grant extra file, provider, deploy, review, or
 acceptance authority; completion is valid only at the stated stopping condition.
 
 Give every title exactly one role emoji with no separator before the label.
+`🐙CTRL` is SWARM's fixed front-door mark, not a worker task or configurable
+hierarchy icon; `⚡` remains MOTHER's default task icon.
 Generic role types do not dictate task names: name a DOER by its concrete job,
 such as DEVELOPER, DESIGNER, or RESEARCHER. Name a lane owner `<DOMAIN> LEAD`
 unless a clearer familiar title communicates the same higher ownership. Choose

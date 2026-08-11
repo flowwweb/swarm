@@ -17,7 +17,7 @@
   ],
   "skills": "./skills/",
   "interface": {
-    "displayName": "SWARM",
+    "displayName": "🐙 SWARM",
     "shortDescription": "Clear authority, durable state, independent review",
     "longDescription": "SWARM turns RUSH's proven coordination guidance into a smaller model with CTRL, MOTHER, ARCHITECT, LEAD, DOER, EXPERT, REVIEW, canonical state, bounded recovery, and independent verification. Legacy RUSH configuration remains readable during migration.",
     "developerName": "Flowwweb",
