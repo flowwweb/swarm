@@ -57,7 +57,7 @@ class Worker:
 @dataclass
 class Swarm:
     architecture_version: int=1; contract_versions: dict[str,int]=field(default_factory=dict); topology: set[str]=field(default_factory=set)
-    workers: dict[str,Worker]=field(default_factory=dict); tasks: dict[str,Task]=field(default_factory=dict); leases: dict[str,str]=field(default_factory=dict); events: list[tuple[str,str]]=field(default_factory=list); telemetry: dict[str,object]=field(default_factory=dict); lane_width:int=3; wip_limit:int=3; efficiency_ledger:list[dict[str,str]]=field(default_factory=list); mode:EfficiencyMode=EfficiencyMode.BALANCED
+    workers: dict[str,Worker]=field(default_factory=dict); tasks: dict[str,Task]=field(default_factory=dict); leases: dict[str,str]=field(default_factory=dict); events: list[tuple[str,str]]=field(default_factory=list); telemetry: dict[str,object]=field(default_factory=dict); telemetry_events:list[dict[str,object]]=field(default_factory=list); lane_width:int=3; wip_limit:int=3; efficiency_ledger:list[dict[str,str]]=field(default_factory=list); mode:EfficiencyMode=EfficiencyMode.BALANCED
     @classmethod
     def from_config(cls, config: dict) -> "Swarm":
         return cls(lane_width=config["coordination"]["preferred_lane_width"], wip_limit=config["efficiency"]["doer_wip_limit"], mode=EfficiencyMode(config["efficiency"]["mode"]))
@@ -127,9 +127,10 @@ class Swarm:
     def review_depth(self, risk:int) -> str:
         base="light" if risk <= 1 else "standard" if risk <= 3 else "adversarial"
         return "standard" if base=="light" and self.mode==EfficiencyMode.MAX else base
-    def record_telemetry(self, task_type:str, role:str, tier:int, outcome:str, *, productive:int=0, overhead:int=0, usage:int|None=None) -> None:
+    def record_telemetry(self, task_type:str, role:str, tier:int, outcome:str, *, model:str="", attempts:int=0, stalls:int=0, expert_uses:int=0, review_failures:int=0, review_cycles:int=0, productive:int=0, overhead:int=0, usage:int|None=None) -> None:
         self.telemetry.update({"tasks":self.telemetry.get("tasks",0)+1,"productive":self.telemetry.get("productive",0)+productive,"overhead":self.telemetry.get("overhead",0)+overhead})
         if usage is not None: self.telemetry["host_usage"]=self.telemetry.get("host_usage",0)+usage
+        self.telemetry_events.append({"task_type":task_type,"role":role,"tier":tier,"model":model,"attempts":attempts,"stalls":stalls,"expert_uses":expert_uses,"review_failures":review_failures,"review_cycles":review_cycles,"worker_count":len(self.workers),"outcome":outcome,"productive_execution":productive,"swarm_overhead":overhead,**({"host_usage":usage} if usage is not None else {})})
         self.events.append(("TELEMETRY",f"{task_type}:{role}:L{tier}:{outcome}"))
     def review(self, actor: Role, task_id: str, reviewer: str, passed: bool, finding: str="") -> None:
         self._role(actor,{Role.REVIEW}); t=self.tasks[task_id]
