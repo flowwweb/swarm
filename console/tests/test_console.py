@@ -108,6 +108,14 @@ class SwarmConsoleTests(unittest.TestCase):
         _, enabled, _ = console.load_config(self.config)
         lead = console._role_from_title("LEAD - Console", enabled["labels"], enabled["role_icons"])
         self.assertEqual(lead["title"], "🧭LEAD - Console")
+        duplicate = console._role_from_title("🧭🧭LEAD - Console", enabled["labels"], enabled["role_icons"])
+        wrong = console._role_from_title("🔥CTRL - Ship console", enabled["labels"], enabled["role_icons"])
+        repeated = console._role_from_title("🐙🐙CTRL - Ship console", enabled["labels"], enabled["role_icons"])
+        developer = console._role_from_title("🔥DEV - Renderer", enabled["labels"], enabled["role_icons"])
+        self.assertEqual(duplicate["title"], "🧭LEAD - Console")
+        self.assertEqual(wrong["title"], "🐙CTRL - Ship console")
+        self.assertEqual(repeated["title"], "🐙CTRL - Ship console")
+        self.assertEqual(developer["title"], "💻DEV - Renderer")
         console.update_config(self.config, {"role_icons.enabled": False})
         _, disabled, _ = console.load_config(self.config)
         ctrl = console._role_from_title("🐙CTRL - Ship console", disabled["labels"], disabled["role_icons"])
@@ -140,6 +148,12 @@ class SwarmConsoleTests(unittest.TestCase):
         self.assertEqual(set(fixture), {"bootstrap", "config", "overview"})
         self.assertFalse(fixture["config"]["settings"]["execution"]["usage_saver"])
         self.assertIn("execution.usage_saver", fixture["config"]["editable"])
+
+    def test_hierarchy_omits_explanatory_metadata_surfaces(self) -> None:
+        index = (console.STATIC_ROOT / "index.html").read_text(encoding="utf-8")
+        self.assertNotIn("stage-legend", index)
+        self.assertNotIn("claim-note", index)
+        self.assertNotIn("Recent means", index)
 
     def test_invalid_config_update_preserves_source(self) -> None:
         before = self.config.read_bytes()

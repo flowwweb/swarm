@@ -145,9 +145,14 @@ try {
         ctrlAboveLead: ctrl.top < lead.top,
         ctrlVisible: ctrl.left < stage.right && ctrl.right > stage.left && ctrl.top < stage.bottom,
         slots: slots.length,
+        standaloneDoers: hierarchyRoot.querySelectorAll(".swarm-node.role-doer").length,
+        childArtifactCounts: ["Hierarchy renderer", "Visual polish", "Responsive proof"].map(
+          (artifact) => hierarchyRoot.innerText.split(artifact).length - 1,
+        ),
         slotTops: slotRects.map((rect) => Math.round(rect.top)),
         slotWidths: slotRects.map((rect) => Math.round(rect.width)),
         titleAttributes: hierarchyRoot.querySelectorAll("[title]").length,
+        metadataSurfaces: document.querySelectorAll(".stage-legend, .claim-note").length,
         hasEllipsisIndicator: /(^|\s)(\.{3}|…)(\s|$)/.test(hierarchyRoot.textContent),
         statusLabel: document.querySelector(".swarm-node.role-lead .node-status").getAttribute("aria-label"),
         spinner: {
@@ -161,9 +166,12 @@ try {
     assert.equal(hierarchy.ctrlAboveLead, true);
     assert.equal(hierarchy.ctrlVisible, true);
     assert.equal(hierarchy.slots, 3);
+    assert.equal(hierarchy.standaloneDoers, 0);
+    assert.deepEqual(hierarchy.childArtifactCounts, [1, 1, 1]);
     assert.equal(new Set(hierarchy.slotTops).size, 1);
     assert.ok(hierarchy.slotWidths.every((slotWidth) => slotWidth > 60));
     assert.equal(hierarchy.titleAttributes, 0);
+    assert.equal(hierarchy.metadataSurfaces, 0);
     assert.equal(hierarchy.hasEllipsisIndicator, false);
     assert.equal(hierarchy.statusLabel, "Status: active");
     assert.equal(hierarchy.spinner.width, "10px");

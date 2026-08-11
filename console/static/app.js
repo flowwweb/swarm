@@ -195,12 +195,19 @@ function renderSwarm() {
   const project = $("#project-filter").value || "all";
   const allNodes = state.overview.nodes.filter((node) => project === "all" || node.project_id === project);
   const ids = new Set(allNodes.map((node) => node.id));
-  const links = state.overview.links.filter((link) => ids.has(link.source) && ids.has(link.target));
+  const allLinks = state.overview.links.filter((link) => ids.has(link.source) && ids.has(link.target));
+  const allChildren = new Map();
+  allLinks.forEach((link) => allChildren.set(link.source, [...(allChildren.get(link.source) || []), link.target]));
+  const nodeById = new Map(allNodes.map((node) => [node.id, node]));
+  const slottedDoers = new Set(allNodes
+    .filter((node) => node.role === "lead" && node.status === "active")
+    .flatMap((lead) => (allChildren.get(lead.id) || []).filter((id) => nodeById.get(id)?.role === "doer").slice(0, 3)));
+  const displayNodes = allNodes.filter((node) => !slottedDoers.has(node.id));
+  const links = allLinks.filter((link) => !slottedDoers.has(link.source) && !slottedDoers.has(link.target));
   const incoming = new Map(links.map((link) => [link.target, link.source]));
   const children = new Map();
   links.forEach((link) => children.set(link.source, [...(children.get(link.source) || []), link.target]));
-  const nodeById = new Map(allNodes.map((node) => [node.id, node]));
-  const roots = allNodes.filter((node) => !incoming.has(node.id));
+  const roots = displayNodes.filter((node) => !incoming.has(node.id));
   const depth = new Map();
   const queue = roots.map((node) => [node.id, 0]);
   while (queue.length) {
@@ -209,9 +216,9 @@ function renderSwarm() {
     depth.set(id, level);
     (children.get(id) || []).forEach((child) => queue.push([child, level + 1]));
   }
-  allNodes.forEach((node) => { if (!depth.has(node.id)) depth.set(node.id, 0); });
+  displayNodes.forEach((node) => { if (!depth.has(node.id)) depth.set(node.id, 0); });
   const levels = new Map();
-  allNodes.forEach((node) => levels.set(depth.get(node.id), [...(levels.get(depth.get(node.id)) || []), node]));
+  displayNodes.forEach((node) => levels.set(depth.get(node.id), [...(levels.get(depth.get(node.id)) || []), node]));
   const maxWidth = Math.max(1, ...[...levels.values()].map((items) => items.length));
   const width = Math.max(980, maxWidth * 220 + 120);
   const height = Math.max(520, levels.size * 205 + 100);
@@ -232,11 +239,11 @@ function renderSwarm() {
     const active = allNodes.find((node) => node.id === link.target)?.status === "active";
     return `<path class="swarm-link${active ? " is-active" : ""}" d="M ${a.x} ${a.y + 52} C ${a.x} ${a.y + bend}, ${b.x} ${b.y - bend}, ${b.x} ${b.y - 52}"/>`;
   }).join("");
-  $("#swarm-nodes").innerHTML = allNodes.map((node) => {
+  $("#swarm-nodes").innerHTML = displayNodes.map((node) => {
     const p = positions.get(node.id);
-    return `<article class="swarm-node role-${escapeHTML(node.role)} is-${escapeHTML(node.status)}" style="left:${p.x}px;top:${p.y}px;--node-color:${roleColor(node.role)}" aria-label="${escapeHTML(`${node.role_label} - ${node.artifact}. Status: ${node.status}`)}"><div class="node-top"><span class="node-icon" aria-hidden="true">${escapeHTML(node.icon)}</span><span class="node-role">${escapeHTML(node.role_label)}</span></div><strong>${escapeHTML(node.artifact)}</strong><div class="node-meta">${hierarchyStatus(node.status)}</div>${leadSlots(node, nodeById, children)}</article>`;
+    return `<article class="swarm-node role-${escapeHTML(node.role)} is-${escapeHTML(node.status)}" style="left:${p.x}px;top:${p.y}px;--node-color:${roleColor(node.role)}" aria-label="${escapeHTML(`${node.role_label} - ${node.artifact}. Status: ${node.status}`)}"><div class="node-top"><span class="node-icon" aria-hidden="true">${escapeHTML(node.icon)}</span><span class="node-role">${escapeHTML(node.role_label)}</span></div><strong>${escapeHTML(node.artifact)}</strong><div class="node-meta">${hierarchyStatus(node.status)}</div>${leadSlots(node, nodeById, allChildren)}</article>`;
   }).join("");
-  if (!allNodes.length) $("#swarm-nodes").innerHTML = `<div class="empty-state">No SWARM hierarchy exists for this project.</div>`;
+  if (!displayNodes.length) $("#swarm-nodes").innerHTML = `<div class="empty-state">No SWARM hierarchy exists for this project.</div>`;
   const scroller = $(".swarm-scroll");
   if (canvas.dataset.project !== project) {
     const first = positions.get(roots[0]?.id);

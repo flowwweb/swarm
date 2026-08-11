@@ -286,10 +286,28 @@ def _role_from_title(
             role_kind = "doer"
         elif upper == "REVIEW":
             role_kind = "review"
-    icon = head[:role_start].strip()[:12] if role_icons["enabled"] else ""
-    if not icon and role_icons["enabled"]:
-        icon_key = role_kind if role_kind in {"ctrl", "mother", "lead", "review"} else "fallback"
-        icon = str(role_icons[icon_key])
+    icon = ""
+    if role_icons["enabled"]:
+        if role_kind in {"ctrl", "mother", "lead", "review"}:
+            icon = str(role_icons[role_kind])
+        else:
+            upper = role_label.upper()
+            preferred = next(
+                (
+                    value
+                    for marker, value in (
+                        (("DEV", "ENGINEER", "CODE"), "💻"),
+                        (("DESIGN", "ART"), "🎨"),
+                        (("TEST", "QA", "REVIEW"), "🧪"),
+                        (("BUILD", "IMPLEMENT"), "🔨"),
+                        (("RESEARCH", "DOC"), "📚"),
+                    )
+                    if any(token in upper for token in marker)
+                ),
+                str(role_icons["fallback"]),
+            )
+            choices = {str(value) for value in role_icons.get("doer_choices", [])}
+            icon = preferred if preferred in choices else str(role_icons["fallback"])
     return {
         "role": role_kind,
         "role_label": role_label,
