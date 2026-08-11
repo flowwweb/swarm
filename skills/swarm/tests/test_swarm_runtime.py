@@ -150,10 +150,18 @@ class RuntimeTests(unittest.TestCase):
   with self.assertRaisesRegex(InvariantError,"subagent receipt"): atomic.start_atomic(Role.CTRL,RuntimeTask("missing","M","creator",1,{}))
   with self.assertRaisesRegex(InvariantError,"caller-declared host thread"): atomic.start_atomic(Role.CTRL,RuntimeTask("fake","F","creator",1,{},subagent_receipt="unverified:any-string"))
   atomic.start_atomic(Role.CTRL,Task("T","D","creator",1,{},subagent_receipt="host:thread:T")); self.assertEqual(set(atomic.workers),{"D"}); self.assertEqual(atomic.tasks["T"].owner,"D")
+  with self.assertRaisesRegex(InvariantError,"authority role identity"): atomic.start_atomic(Role.CTRL,Task("drift","CTRL","creator",1,{},subagent_receipt="host:thread:drift"))
+  with self.assertRaisesRegex(InvariantError,"authority role identity"): atomic.start_atomic(Role.CTRL,Task("normalized-drift"," ctrl ","creator",1,{},subagent_receipt="host:thread:normalized-drift"))
   with self.assertRaises(InvariantError): atomic.start_atomic(Role.MOTHER,Task("U","E","creator",1,{},subagent_receipt="host:thread:U"))
   simple=Swarm(); simple.start_simple(Role.MOTHER,RuntimeTask("S","M","creator",1,{},subagent_exception=SubagentException.COLLISION,subagent_exception_reason="single mutable file cannot have two writers")); self.assertEqual(simple.workers["M"].lead,"MOTHER")
+  with self.assertRaisesRegex(InvariantError,"authority role identity"): simple.start_simple(Role.MOTHER,RuntimeTask("drift","MOTHER","creator",1,{},subagent_receipt="host:thread:drift"))
+  with self.assertRaisesRegex(InvariantError,"authority role identity"): self.s.add_worker(Role.LEAD,Worker("LEAD","L",2))
   self.s.workers["D"].state=WorkerState.WARM; self.s.workers["D"].context={"affinity":2,"architecture":{"auth":2}}; reused=self.s.reuse_warm(Role.LEAD,Task("R","new","creator",1,{},subagent_receipt="host:thread:R"),architecture={"auth":2},affinity=2); self.assertEqual(reused,"D")
   self.assertIsNone(self.s.reuse_warm(Role.LEAD,Task("N","new","creator",1,{},subagent_receipt="host:thread:N"),architecture={"auth":3},affinity=2))
+ def test_only_doer_mutates_artifacts(self):
+  self.s.add_artifact(Role.DOER,"A",ArtifactIdentity("owned","v1","work"))
+  for controller in (Role.CTRL,Role.MOTHER):
+   with self.assertRaises(InvariantError): self.s.add_artifact(controller,"A",ArtifactIdentity(f"blocked-{controller.value.lower()}","v1","work"))
  def test_assignment_blocks_substantive_work_without_delegation_contract(self):
   blocked=RuntimeTask("blocked","D","creator",1,{})
   with self.assertRaisesRegex(InvariantError,"subagent receipt"): self.s.assign(Role.LEAD,blocked)

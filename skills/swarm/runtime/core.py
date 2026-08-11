@@ -138,6 +138,9 @@ class Swarm:
 
     def _role(self, actor: Role, allowed: set[Role]) -> None:
         if actor not in allowed: raise InvariantError(f"{actor} cannot perform this transition")
+    def _worker_identity(self, worker_id:str) -> None:
+        if not isinstance(worker_id,str) or not worker_id.strip(): raise InvariantError("mutable worker identity is required")
+        if worker_id.strip().upper() in {role.value for role in Role}: raise InvariantError("authority role identity cannot own mutable worker execution")
     def _record(self, target:str, item:object) -> None:
         """Keep machine receipts inspectable without retaining an event transcript."""
         entries=getattr(self,target); entries.append(item)
@@ -155,6 +158,7 @@ class Swarm:
         self._role(actor,{Role.MOTHER}); self.topology.add(lead)
     def add_worker(self, actor: Role, worker: Worker) -> None:
         self._role(actor,{Role.LEAD});
+        self._worker_identity(worker.id)
         if worker.id in self.workers: raise InvariantError("duplicate worker identity")
         if worker.lead not in self.topology or not 1 <= worker.lane <= self.lane_width: raise InvariantError("worker requires a known lead and configured lane")
         if any(item.lead==worker.lead and item.lane==worker.lane and item.state!=WorkerState.RETIRED for item in self.workers.values()): raise InvariantError("duplicate active lane ownership")
@@ -162,17 +166,18 @@ class Swarm:
         self.workers[worker.id]=worker
     def start_atomic(self, actor:Role, task:Task) -> None:
         """CTRL may create exactly one direct DOER ownership path for atomic work."""
-        self._role(actor,{Role.CTRL}); self._require_subagent_contract(task)
+        self._role(actor,{Role.CTRL}); self._require_subagent_contract(task); self._worker_identity(task.owner)
         if task.owner in self.workers or task.id in self.tasks: raise InvariantError("atomic ownership already exists")
         task.topology_receipt=("CTRL","DOER","atomic:isolated"); self.workers[task.owner]=Worker(task.owner,"CTRL",1,WorkerState.ACTIVE,{task.id}); self.tasks[task.id]=task
     def start_simple(self, actor:Role, task:Task) -> None:
         """MOTHER may add stateful direct DOER ownership without a LEAD."""
-        self._role(actor,{Role.MOTHER}); self._require_subagent_contract(task)
+        self._role(actor,{Role.MOTHER}); self._require_subagent_contract(task); self._worker_identity(task.owner)
         if task.owner in self.workers or task.id in self.tasks: raise InvariantError("simple ownership already exists")
         task.topology_receipt=("CTRL","MOTHER","DOER","simple:stateful"); self.workers[task.owner]=Worker(task.owner,"MOTHER",1,WorkerState.ACTIVE,{task.id}); self.tasks[task.id]=task
     def reuse_warm(self, actor:Role, task:Task, *, architecture:dict[str,int], affinity:int) -> str|None:
         self._role(actor,{Role.LEAD,Role.MOTHER,Role.CTRL}); self._require_subagent_contract(task)
         for worker in self.workers.values():
+            self._worker_identity(worker.id)
             context=worker.context
             if worker.state==WorkerState.WARM and context.get("affinity",0)>=affinity and context.get("architecture",architecture)==architecture:
                 worker.state=WorkerState.ACTIVE; worker.task_ids.add(task.id); task.owner=worker.id; self.tasks[task.id]=task; return worker.id
@@ -227,7 +232,7 @@ class Swarm:
         if provenance is not None: self.provenance_index[provenance.id]=key; task.artifact_provenance[key]=provenance
         return key
     def assign(self, actor: Role, task: Task) -> None:
-        self._role(actor,{Role.LEAD}); self._require_subagent_contract(task); w=self.workers.get(task.owner)
+        self._role(actor,{Role.LEAD}); self._require_subagent_contract(task); self._worker_identity(task.owner); w=self.workers.get(task.owner)
         if not w or w.state==WorkerState.RETIRED or len(w.task_ids)>=self.wip_limit: raise InvariantError("owner unavailable or at WIP limit")
         staged=[]; pending=set(); pending_provenance=set()
         for artifact,source in task.artifacts.items():
