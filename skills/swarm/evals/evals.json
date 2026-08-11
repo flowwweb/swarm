@@ -1066,6 +1066,36 @@
         "Recovery and proof timeouts include observed cold-start or setup latency plus the actual readiness condition",
         "An elapsed timeout window is not represented as service failure"
       ]
+    },
+    {
+      "id": 83,
+      "prompt": "Create two visual candidates. The first supplied image is loose inspiration for energy only. The second is explicitly binding for its logo geometry, composition, typography, palette, hierarchy, and forbidden color effects. Both candidates feel thematically similar to their references. Decide what must happen before generation and acceptance.",
+      "expected_output": "Record the first reference as loose inspiration and use only its assigned directional cue without claiming fidelity. Before generating against the binding reference, write a compact checklist for defining geometry and composition, typography or letterform character, palette and color treatment, hierarchy, and prohibited deviations. Inspect the exact final delivered artifact side by side with the binding reference in delivered context against every dimension. Thematic, mood, or vibe similarity alone cannot pass, and unresolved mismatch remains an objective defect. User direction still controls the reference authority and the user retains taste selection unless selection was delegated.",
+      "files": [],
+      "assertions": [
+        "The user's instruction determines whether a reference is loose inspiration or binding",
+        "Loose inspiration guides only its assigned direction and carries no false fidelity claim",
+        "Binding generation begins from the five-part fidelity checklist",
+        "The exact final delivered artifact is inspected side by side in delivered context",
+        "Generic thematic similarity cannot satisfy binding-reference fidelity",
+        "Unresolved binding mismatch remains an objective defect",
+        "User-owned taste selection and explicit direction remain authoritative"
+      ]
+    },
+    {
+      "id": 84,
+      "prompt": "Review an active-play screen labeled minimal. It always shows Reconnect while connected, repeats the current player's identity twice, labels conventional mute and settings icons with extra chrome, and replaces an ambiguous destructive action plus the score state with unlabeled icons.",
+      "expected_output": "Subtract controls and cues that do not help the player act or understand the current state: hide Reconnect until recovery applies, remove redundant self-identity, and use conventional icon-only mute/settings actions only with accessible names and adequate targets. Keep visible text for the ambiguous destructive action and retain the necessary score state. Minimalism is not authority to create mystery icons, inaccessible targets, or missing state.",
+      "files": [],
+      "assertions": [
+        "Visible UI must help the user act or understand current state",
+        "Conditional recovery controls remain hidden until applicable",
+        "Self-evident identity and duplicate cues are removed",
+        "Obvious conventional actions may be icon-only with accessible names and adequate targets",
+        "Ambiguous or consequential actions retain text",
+        "Necessary state is preserved",
+        "Minimalism cannot excuse inaccessible mystery icons"
+      ]
     }
   ]
 }

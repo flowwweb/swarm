@@ -37,12 +37,18 @@ Review in this order:
    reconnect, conflict, and recovery behavior preserves user work and truth.
 4. **Subtraction**: existing primitives are reused; no speculative abstraction,
    duplicate state/authority, unjustified dependency, flag, UI, or task layer.
-5. **Product quality**: behavior and copy help the user act; affected visual,
-   interaction, accessibility, responsive, and performance surfaces are
-   inspected rather than inferred. Visual, design, and image-generation work is
-   distinctive and context-specific by default; generic, boring, or template
-   output is a finding unless the user requested it. Do not reward novelty,
-   decoration, maximalism, or visual noise: intentional project fit is the bar.
+5. **Product quality**: every visible UI element helps the user act or understand
+   the current state; affected visual, interaction, accessibility, responsive,
+   and performance surfaces are inspected rather than inferred. Keep conditional
+   recovery controls hidden until their recovery state applies, and remove
+   self-evident identity or duplicate cues. Prefer conventional icon-only actions
+   when their meaning is obvious, but require an accessible name and adequate
+   target; ambiguous or consequential actions retain visible text. Minimalism
+   cannot justify mystery icons, inaccessible targets, or removal of necessary
+   state. Visual, design, and image-generation work is distinctive and
+   context-specific by default; generic, boring, or template output is a finding
+   unless the user requested it. Do not reward novelty, decoration, maximalism,
+   or visual noise: intentional project fit is the bar.
 6. **Evidence**: tests observe behavior; failures and timeouts stay failures;
    static, local, browser, authenticated, provider, deployed, device, and human
    proof are not conflated.
@@ -67,11 +73,16 @@ the missing runtime class. When the packet is too large, show representative
 coverage and state exactly what was omitted.
 
 For visual or interaction work, inspect the composed rendered product at every
-requested responsive viewport and state against the supplied reference before
-`APPROVE`, acceptance, or deployment. A component crop, isolated route, or
-lane-local screenshot is weaker evidence and cannot close the composed surface.
-If the reference or capture is unavailable, say so, retain `UNVERIFIED`, and
-return `BLOCKED` or `CORRECT` rather than silently lowering the visual bar.
+requested responsive viewport and state before `APPROVE`, acceptance, or
+deployment. Treat a loose-inspiration reference only as the direction the user
+assigned to it; it is not a likeness gate. For an explicitly binding reference,
+compare the exact final artifact side by side in delivered context against its
+geometry/composition, typography/letterforms, palette, hierarchy, and prohibited
+deviations. Generic thematic similarity cannot pass that fidelity gate. A
+component crop, isolated route, or lane-local screenshot is weaker evidence and
+cannot close the composed surface. If a binding reference or required capture
+is unavailable, say so, retain `UNVERIFIED`, and return `BLOCKED` or `CORRECT`
+rather than silently lowering the visual bar.
 
 ## Review the rule as well as the artifact
 

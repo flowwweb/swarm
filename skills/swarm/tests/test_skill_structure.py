@@ -183,6 +183,18 @@ class SwarmSkillStructureTests(unittest.TestCase):
         self.assertIn("time to forward progress and net coordination load", skill)
         self.assertIn("non-material process imperfection", skill)
 
+    def test_product_review_subtracts_chrome_without_erasing_state_or_accessibility(self) -> None:
+        review = (SKILL_ROOT / "references" / "review-contract.md").read_text(encoding="utf-8")
+
+        self.assertIn("every visible UI element helps the user act or understand", review)
+        self.assertIn("the current state", review)
+        self.assertIn("Keep conditional\n   recovery controls hidden until their recovery state applies", review)
+        self.assertIn("remove\n   self-evident identity or duplicate cues", review)
+        self.assertIn("Prefer conventional icon-only actions", review)
+        self.assertIn("require an accessible name and adequate\n   target", review)
+        self.assertIn("ambiguous or consequential actions retain visible text", review)
+        self.assertIn("Minimalism\n   cannot justify mystery icons, inaccessible targets, or removal of necessary\n   state", review)
+
     def test_mandatory_goals_and_passive_heartbeat_are_fixed_contracts(self) -> None:
         skill = SKILL.read_text(encoding="utf-8")
         hierarchy = (SKILL_ROOT / "references" / "hierarchy.md").read_text(encoding="utf-8")
