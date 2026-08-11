@@ -3,7 +3,7 @@ import sys
 import unittest
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from runtime import ArtifactIdentity, ContextPackage, Depth, EfficiencyMode, InvariantError, ReviewValue, Role, Swarm, Task, TaskState, VersionedReference, Worker, WorkerState, choose_depth, initial_tier
+from runtime import ArtifactIdentity, ContextPackage, Depth, EfficiencyMode, InvariantError, ReviewEvidence, ReviewStrategy, ReviewValue, Role, Swarm, Task, TaskState, VersionedReference, Worker, WorkerState, choose_depth, initial_tier
 
 class RuntimeTests(unittest.TestCase):
  def setUp(self):
@@ -74,16 +74,29 @@ class RuntimeTests(unittest.TestCase):
  def test_restore_and_keyed_archive_telemetry(self):
   self.s.tasks["A"].state=TaskState.COMPLETE; self.s.tasks["A"].completed_at=0; self.s.groom(Role.MOTHER,31,{"no_review_archive_delay":0,"low_review_retention":2,"high_review_retention":3,"stale_task_archive_delay":1})
   self.assertIsInstance(self.s.telemetry["archive_reasons"],dict); self.s.restore(Role.MOTHER,"A","needed"); self.assertEqual(self.s.tasks["A"].state,TaskState.ACTIVE); self.assertEqual(self.s.telemetry["restores"],1)
+ def test_zero_completion_timestamp_has_real_archive_duration(self):
+  self.s.tasks["A"].state=TaskState.COMPLETE; self.s.tasks["A"].completed_at=0
+  self.s.groom(Role.MOTHER,100,{"no_review_archive_delay":0,"low_review_retention":2,"high_review_retention":3,"stale_task_archive_delay":1})
+  self.assertEqual(self.s.telemetry["completion_to_archive"]["A"],100); self.assertEqual(self.s.telemetry["age_buckets"]["aged"],1)
  def test_modes_and_family_preserve_floors(self):
   tiers=[Swarm(mode=m).route(family="security",risk=1,uncertainty=1,blast_radius=1,architect_floor=2,historical_floor=1) for m in EfficiencyMode]
   self.assertTrue(all(t>=2 for t in tiers)); self.assertGreaterEqual(tiers[-1],tiers[0]); self.assertEqual(Swarm(mode=EfficiencyMode.MAX).review_depth(1),"standard")
  def test_high_risk_review_requires_canonical_strategy(self):
   self.s.tasks["A"].risk=4
   with self.assertRaises(InvariantError): self.s.review(Role.REVIEW,"A","independent",True,"standard")
-  self.s.review(Role.REVIEW,"A","independent",True,"adversarial"); self.assertTrue(self.s.tasks["A"].review_passed); self.assertEqual(self.s.tasks["A"].review_strategy,"adversarial")
+  adversarial=ReviewEvidence(ReviewStrategy.ADVERSARIAL,"independent",True,ArtifactIdentity("review","v1","adversarial"),("attack path",))
+  self.s.review(Role.REVIEW,"A",adversarial,True); self.assertTrue(self.s.tasks["A"].review_passed); self.assertEqual(self.s.tasks["A"].review_strategy,"adversarial")
   self.s.tasks["A"].review_passed=False; self.s.tasks["A"].risk=5
   with self.assertRaises(InvariantError): self.s.review(Role.REVIEW,"A","independent",True,"adversarial")
-  self.s.review(Role.REVIEW,"A","independent",True,"specialist"); self.assertEqual(self.s.tasks["A"].review_strategy,"specialist")
+  with self.assertRaises(InvariantError): self.s.review(Role.REVIEW,"A",ReviewEvidence(ReviewStrategy.SPECIALIST,"independent",True,None),True)
+  specialist=ReviewEvidence(ReviewStrategy.SPECIALIST,"independent",True,ArtifactIdentity("review","v2","specialist"),("security finding",),(("specialist","security"),))
+  self.s.review(Role.REVIEW,"A",specialist,True); self.assertEqual(self.s.tasks["A"].review_strategy,"specialist")
+ def test_architecture_and_security_review_floors_are_authoritative(self):
+  self.s.tasks["A"].risk=3; self.s.tasks["A"].architecture_review_floor=ReviewStrategy.ADVERSARIAL; self.s.tasks["A"].security_review_floor=ReviewStrategy.SPECIALIST
+  adversarial=ReviewEvidence(ReviewStrategy.ADVERSARIAL,"independent",True,ArtifactIdentity("review","v1","adversarial"))
+  with self.assertRaises(InvariantError): self.s.review(Role.REVIEW,"A",adversarial,True)
+  specialist=ReviewEvidence(ReviewStrategy.SPECIALIST,"independent",True,ArtifactIdentity("review","v2","specialist"),("security reviewed",),(("specialist","security"),))
+  self.s.review(Role.REVIEW,"A",specialist,True); self.assertEqual(self.s.tasks["A"].review_strategy,"specialist")
  def test_artifact_dedup_requires_justified_distinct_provenance(self):
   self.s.add_artifact(Role.DOER,"A",ArtifactIdentity("canonical","v1","work"))
   self.s.assign(Role.LEAD,Task("B","D","author",1,{}))
@@ -92,4 +105,13 @@ class RuntimeTests(unittest.TestCase):
  def test_assign_registers_artifact_identity(self):
   self.s.assign(Role.LEAD,Task("B","D","author",1,{},artifacts={"canon@v1:work":"B"}))
   with self.assertRaises(InvariantError): self.s.add_artifact(Role.DOER,"A",ArtifactIdentity("canon","v1","work"))
+ def test_assignment_and_storage_share_justified_provenance_rules(self):
+  primary=ArtifactIdentity("canonical","v1","work")
+  self.s.assign(Role.LEAD,Task("B","D","author",1,{},artifacts={primary:"B"}))
+  with self.assertRaises(InvariantError): self.s.add_artifact(Role.DOER,"A",primary)
+  verification=ArtifactIdentity("canonical","v2","verification")
+  self.s.assign(Role.LEAD,Task("C","D","author",1,{},artifacts={verification:"canonical@v1:work"},artifact_justifications={verification.key():"verification"}))
+  uncertainty=ArtifactIdentity("canonical","v3","uncertainty")
+  self.s.add_artifact(Role.DOER,"A",uncertainty,source="canonical@v1:work",justification="uncertainty")
+  self.assertIn(verification.key(),self.s.artifact_index); self.assertIn(uncertainty.key(),self.s.artifact_index)
 if __name__ == "__main__": unittest.main()

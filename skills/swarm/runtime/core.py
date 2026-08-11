@@ -25,7 +25,7 @@ class ArtifactIdentity:
 class ReviewStrategy(StrEnum): LIGHT="light"; STANDARD="standard"; ADVERSARIAL="adversarial"; SPECIALIST="specialist"
 @dataclass(frozen=True)
 class ReviewEvidence:
-    strategy:ReviewStrategy; reviewer:str; independent:bool; artifact:str; findings:tuple[str,...]=()
+    strategy:ReviewStrategy; reviewer:str; independent:bool; artifact:ArtifactIdentity|None; findings:tuple[str,...]=(); receipt:tuple[tuple[str,str],...]=()
 
 @dataclass(frozen=True)
 class ContextPackage:
@@ -65,7 +65,7 @@ class Task:
     id: str; owner: str; creator: str; architecture_version: int; contracts: dict[str,int]
     state: TaskState=TaskState.ACTIVE; waiting_on: str|None=None; reviewer: str|None=None; findings: list[str]=field(default_factory=list)
     evidence: list[str]=field(default_factory=list); recovery_dimensions: set[str]=field(default_factory=set); review_value: ReviewValue=ReviewValue.NONE
-    completed_at: int|None=None; stale_at: int|None=None; archived_at: int|None=None; stale_reason: str|None=None; superseded_by: str|None=None; promoted: list[str]=field(default_factory=list); extensions: int=0; review_passed: bool=False; risk:int=1; review_strategy:str="light"; architecture_review_floor:ReviewStrategy=ReviewStrategy.LIGHT; security_review_floor:ReviewStrategy=ReviewStrategy.LIGHT; artifacts:dict[str,str]=field(default_factory=dict); archive:dict[str,object]=field(default_factory=dict)
+    completed_at: int|None=None; stale_at: int|None=None; archived_at: int|None=None; stale_reason: str|None=None; superseded_by: str|None=None; promoted: list[str]=field(default_factory=list); extensions: int=0; review_passed: bool=False; risk:int=1; review_strategy:str="light"; architecture_review_floor:ReviewStrategy=ReviewStrategy.LIGHT; security_review_floor:ReviewStrategy=ReviewStrategy.LIGHT; artifacts:dict[ArtifactIdentity|str,str]=field(default_factory=dict); artifact_justifications:dict[str,str]=field(default_factory=dict); archive:dict[str,object]=field(default_factory=dict)
 
 @dataclass
 class Worker:
@@ -91,12 +91,31 @@ class Swarm:
     def package_context(self, actor:Role, worker_id:str, package:ContextPackage) -> None:
         self._role(actor,{Role.LEAD}); worker=self.workers[worker_id]
         worker.context={"goal":package.goal,"architecture":package.architecture,"dependencies":package.dependencies,"artifacts":package.artifacts,"acceptance":package.acceptance,"history":package.history,"transfer_cost":package.transfer_cost,"affinity":worker.context.get("affinity",1),"bloat":False,"stale":False,"stalls":0}
+    def _artifact(self, artifact:ArtifactIdentity|str) -> ArtifactIdentity:
+        if isinstance(artifact,ArtifactIdentity): return artifact
+        try:
+            base,tail=artifact.rsplit("@",1); revision,purpose=tail.split(":",1)
+        except ValueError as exc: raise InvariantError("artifact identity must be base@revision:purpose") from exc
+        if not base or not revision or not purpose: raise InvariantError("artifact identity must be complete")
+        return ArtifactIdentity(base,revision,purpose)
+    def _check_artifact(self, task:Task, artifact:ArtifactIdentity|str, source:str|None, justification:str|None, *, pending:set[str]|None=None) -> tuple[ArtifactIdentity,str]:
+        identity=self._artifact(artifact); key=identity.key()
+        if pending is None: pending=set()
+        if key in self.artifact_index or key in pending: raise InvariantError("canonical artifact identity already exists")
+        if identity.purpose in {"verification","uncertainty"} and (not source or justification!=identity.purpose): raise InvariantError("justified duplicate requires source and purpose")
+        return identity,key
+    def _register_artifact(self, task:Task, artifact:ArtifactIdentity|str, source:str|None, justification:str|None) -> str:
+        _,key=self._check_artifact(task,artifact,source,justification)
+        self.artifact_index[key]=task.id; task.artifacts[key]=source or task.id
+        return key
     def assign(self, actor: Role, task: Task) -> None:
         self._role(actor,{Role.LEAD}); w=self.workers.get(task.owner)
         if not w or w.state==WorkerState.RETIRED or len(w.task_ids)>=self.wip_limit: raise InvariantError("owner unavailable or at WIP limit")
-        for identity, source in task.artifacts.items():
-            if identity in self.artifact_index: raise InvariantError("canonical artifact identity already exists")
-            self.artifact_index[identity]=source
+        staged=[]; pending=set()
+        for artifact,source in task.artifacts.items():
+            identity,key=self._check_artifact(task,artifact,source,task.artifact_justifications.get(self._artifact(artifact).key()),pending=pending); staged.append((identity,source,task.artifact_justifications.get(key))); pending.add(key)
+        task.artifacts={}
+        for artifact,source,justification in staged: self._register_artifact(task,artifact,source,justification)
         self.tasks[task.id]=task; w.task_ids.add(task.id)
     def should_spawn(self, *, independent: bool, critical_path: bool, duplicate_artifact: str|None=None, verification: bool=False, contention:bool=False) -> bool:
         allowed=independent and (critical_path or verification) and (not duplicate_artifact or verification) and sum(w.state!=WorkerState.RETIRED for w in self.workers.values()) < MODE_POLICY[self.mode]["parallel"]
@@ -138,10 +157,7 @@ class Swarm:
         self._role(actor,{Role.DOER}); self.tasks[task_id].contracts["complexity_mismatch"]=observed_tier; self.events.append(("MISMATCH",task_id))
     def add_artifact(self, actor: Role, task_id: str, artifact: ArtifactIdentity, risk: str="", *, source:str|None=None, justification:str|None=None) -> None:
         self._role(actor,{Role.DOER}); t=self.tasks[task_id]
-        identity=artifact.key()
-        if identity in self.artifact_index: raise InvariantError("duplicate generated artifact identity")
-        if artifact.purpose in {"verification","uncertainty"} and (not source or justification!=artifact.purpose): raise InvariantError("justified duplicate requires source and purpose")
-        self.artifact_index[identity]=task_id; t.artifacts[identity]=source or task_id; t.evidence.append(identity); t.findings.extend([risk] if risk else [])
+        identity=self._register_artifact(t,artifact,source,justification); t.evidence.append(identity); t.findings.extend([risk] if risk else [])
     def discover(self, artifact: str) -> list[str]:
         return [t.id for t in self.tasks.values() if any(item == artifact or item.startswith(f"{artifact}@") for item in t.evidence)]
     def review_depth(self, risk:int) -> str:
@@ -156,9 +172,10 @@ class Swarm:
         self._role(actor,{Role.REVIEW}); t=self.tasks[task_id]
         if isinstance(evidence,str):
             legacy_strategy=ReviewStrategy(finding) if finding in {item.value for item in ReviewStrategy} else ReviewStrategy.LIGHT
-            evidence=ReviewEvidence(legacy_strategy,evidence,True,"legacy",(finding,) if finding else ())
+            evidence=ReviewEvidence(legacy_strategy,evidence,True,ArtifactIdentity("legacy","v1","review"),(finding,) if finding else ())
         if not evidence.independent or evidence.reviewer in {t.creator,t.owner}: raise InvariantError("creator cannot be sole independent reviewer")
-        if evidence.strategy in {ReviewStrategy.ADVERSARIAL,ReviewStrategy.SPECIALIST} and not evidence.artifact: raise InvariantError("strong review evidence requires artifact identity")
+        if evidence.strategy in {ReviewStrategy.ADVERSARIAL,ReviewStrategy.SPECIALIST} and (not isinstance(evidence.artifact,ArtifactIdentity) or not evidence.artifact.base or not evidence.artifact.revision): raise InvariantError("strong review evidence requires typed artifact identity")
+        if evidence.strategy==ReviewStrategy.SPECIALIST and not dict(evidence.receipt).get("specialist"): raise InvariantError("specialist review requires specialist receipt")
         levels={ReviewStrategy.LIGHT:1,ReviewStrategy.STANDARD:2,ReviewStrategy.ADVERSARIAL:3,ReviewStrategy.SPECIALIST:4}
         required=max((ReviewStrategy(self.review_depth(t.risk)),t.architecture_review_floor,t.security_review_floor,MODE_POLICY[self.mode]["review_floor"]),key=levels.get); t.review_strategy=required.value
         if passed and levels[evidence.strategy]<levels[required]: raise InvariantError("review evidence does not meet required strategy")

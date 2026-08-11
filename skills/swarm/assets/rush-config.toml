@@ -1,9 +1,9 @@
-# Global RUSH settings
+# Global SWARM settings (legacy RUSH path compatibility)
 #
 # Location: ~/.agents/rush/config.toml
-# Changes apply the next time RUSH schedules or manages work. The latest direct
+# Changes apply the next time SWARM schedules or manages work. The latest direct
 # user instruction always wins. Safety, user control, and a user-visible host
-# task hierarchy are fixed RUSH invariants and cannot be disabled here.
+# task hierarchy are fixed SWARM invariants and cannot be disabled here.
 
 schema_version = 2
 

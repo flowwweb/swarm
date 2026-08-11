@@ -1,6 +1,6 @@
-# Global RUSH settings
+# Global SWARM settings
 
-RUSH reads `~/.agents/rush/config.toml` before scheduling or managing a
+SWARM reads the legacy-compatible `~/.agents/rush/config.toml` before scheduling or managing a
 portfolio. Run `python scripts/rush_config.py show --json` from the skill
 directory to resolve built-in defaults plus the user's file.
 
@@ -11,10 +11,10 @@ read failures write a specific diagnostic to stderr and exit with status 2.
 
 ## Precedence
 
-1. The latest direct user instruction in the current Codex task.
-2. Applicable project instructions, safety rules, and available tool limits.
-3. `~/.agents/rush/config.toml`.
-4. RUSH's built-in defaults.
+The configuration loader has exactly two file layers: packaged defaults, then
+one selected global file (`~/.agents/rush/config.toml`, or its documented
+selection alias). Direct user, project, and session instructions govern task
+behavior, safety, and authority, but are not loader file-merge layers.
 
 Settings affect new scheduling and management decisions. They do not rewrite an
 already-dispatched task contract. Re-read the config before a new scheduling
@@ -61,6 +61,8 @@ Configuration cannot make an unsafe or hidden coordination path valid:
 | `execution.usage_profile` | Active relative model/effort policy | high, medium, low; default medium |
 | `execution.service_tier` | Optional preferred tier for new tasks when the host exposes it | empty for host default, or advertised tier string; default empty |
 | `execution.usage_saver` | Prefer lower-churn coordination for new work without weakening delivery | boolean; default false |
+| `efficiency.mode` | Resource strategy for useful depth, concurrency, routing, and review; never weakens safety floors | CONSERVE, BALANCED, FAST, MAX; default BALANCED |
+| `efficiency.doer_wip_limit` | Maximum active assignments owned by one DOER | 1-8; default 3 |
 | `boost.enabled` | Make explicit, user-started Boost closeout goals available | boolean; default true |
 | `boost.strategies` | Active Boost performance strategies | non-empty unique list of durable_goal, closeout_first, hands_off, spark_simple_work |
 | `boost.plan_at_remaining_percent` | Prepare substantial closeout goals | 1-100; default 5 |
