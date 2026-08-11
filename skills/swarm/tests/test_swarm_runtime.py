@@ -3,7 +3,7 @@ import sys
 import unittest
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from runtime import Depth, EfficiencyMode, InvariantError, ReviewValue, Role, Swarm, Task, TaskState, Worker, WorkerState, choose_depth, initial_tier
+from runtime import ContextPackage, Depth, EfficiencyMode, InvariantError, ReviewValue, Role, Swarm, Task, TaskState, Worker, WorkerState, choose_depth, initial_tier
 
 class RuntimeTests(unittest.TestCase):
  def setUp(self):
@@ -63,4 +63,7 @@ class RuntimeTests(unittest.TestCase):
   self.s.change_architecture(Role.ARCHITECT,{"x":2},now=90); self.s.groom(Role.MOTHER,100,{"no_review_archive_delay":0,"low_review_retention":2,"high_review_retention":3,"stale_task_archive_delay":30}); self.assertEqual(self.s.tasks["A"].state,TaskState.STALE); self.assertFalse(self.s.project_complete(Role.MOTHER,True,True))
  def test_archived_only_collapses_and_missing_replacement_blocks_complete(self):
   self.s.stale(Role.LEAD,"A","gone",now=0,superseded_by="MISSING"); self.s.groom(Role.MOTHER,2,{"no_review_archive_delay":0,"low_review_retention":2,"high_review_retention":3,"stale_task_archive_delay":1}); self.assertFalse(self.s.project_complete(Role.MOTHER,True,True)); self.assertEqual(self.s.collapse(Role.MOTHER,"L"),Depth.ATOMIC)
+ def test_bounded_context_spine(self):
+  with self.assertRaises(InvariantError): ContextPackage.build(goal="g",architecture={},dependencies=[],artifacts=[],acceptance=["a"],history=[str(i) for i in range(1000)],budget=1)
+  package=ContextPackage.build(goal="g",architecture={"a":1},dependencies=["d"],artifacts=["x"],acceptance=[],history=[str(i) for i in range(1000)],budget=1); self.assertEqual(package.goal,"g"); self.assertEqual(package.history,())
 if __name__ == "__main__": unittest.main()

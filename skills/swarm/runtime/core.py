@@ -15,6 +15,17 @@ class WorkerState(StrEnum):
 
 class InvariantError(ValueError): pass
 
+@dataclass(frozen=True)
+class ContextPackage:
+    goal:str; architecture:dict[str,int]; dependencies:tuple[str,...]; artifacts:tuple[str,...]; acceptance:tuple[str,...]; history:tuple[str,...]; transfer_cost:int
+    @classmethod
+    def build(cls, *, goal:str, architecture:dict[str,int], dependencies:list[str], artifacts:list[str], acceptance:list[str], history:list[str], budget:int) -> "ContextPackage":
+        if budget < 1: raise InvariantError("context budget must be positive")
+        spine=[goal,*acceptance]; optional=[*dependencies,*artifacts,*history]
+        if len(spine)>budget: raise InvariantError("budget cannot admit canonical spine")
+        kept=optional[:max(0,budget-len(spine))]
+        return cls(goal,architecture,tuple(x for x in dependencies if x in kept),tuple(x for x in artifacts if x in kept),tuple(acceptance),tuple(x for x in history if x in kept),len(kept))
+
 class Depth(StrEnum):
     ATOMIC="CTRL_DOER"; SIMPLE="CTRL_MOTHER_DOER"; WORKSTREAM="CTRL_MOTHER_LEAD_DOER"; PROJECT="CTRL_MOTHER_ARCHITECT_LEADS_DOERS"
 class EfficiencyMode(StrEnum): CONSERVE="CONSERVE"; BALANCED="BALANCED"; FAST="FAST"; MAX="MAX"
@@ -116,8 +127,8 @@ class Swarm:
     def review(self, actor: Role, task_id: str, reviewer: str, passed: bool, finding: str="") -> None:
         self._role(actor,{Role.REVIEW}); t=self.tasks[task_id]
         if reviewer in {t.creator,t.owner}: raise InvariantError("creator cannot be sole independent reviewer")
-        required=self.review_depth(t.risk)
-        if passed and required in {"adversarial"} and not finding.startswith("evidence:"): raise InvariantError("high risk review requires adversarial evidence")
+        required=self.review_depth(t.risk); t.review_strategy=required
+        if passed and required=="adversarial" and finding not in {"adversarial","specialist"}: raise InvariantError("high risk review requires adversarial evidence")
         t.reviewer=reviewer
         if passed: t.review_passed=True; t.state=TaskState.REVIEW
         else: t.state=TaskState.ACTIVE; t.findings.append(finding or "review failed")
