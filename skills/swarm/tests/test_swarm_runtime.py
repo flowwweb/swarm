@@ -3,7 +3,7 @@ import sys
 import unittest
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from runtime import Depth, InvariantError, Role, Swarm, Task, TaskState, Worker, WorkerState, choose_depth
+from runtime import Depth, InvariantError, ReviewValue, Role, Swarm, Task, TaskState, Worker, WorkerState, choose_depth
 
 class RuntimeTests(unittest.TestCase):
  def setUp(self):
@@ -38,4 +38,11 @@ class RuntimeTests(unittest.TestCase):
   self.assertEqual(choose_depth(scope=5,architecture_impact=True,independent_tasks=3,specialisations=2),Depth.PROJECT)
   self.s.tasks["A"].state=TaskState.COMPLETE
   self.assertEqual(self.s.collapse(Role.MOTHER,"L"),Depth.ATOMIC)
+ def test_hygiene_archives_not_deletes_and_preserves_stale_provenance(self):
+  self.s.tasks["A"].state=TaskState.COMPLETE; self.s.tasks["A"].completed_at=0
+  self.s.tasks["A"].review_value=ReviewValue.NONE
+  self.s.stale(Role.LEAD,"A","superseded contract",superseded_by="B",promote=["race evidence"])
+  self.assertEqual(self.s.groom(Role.MOTHER,5,{"no_review_archive_delay":0,"low_review_retention":2,"high_review_retention":3,"stale_task_archive_delay":1}),["A"])
+  self.assertEqual(self.s.tasks["A"].state,TaskState.ARCHIVED_STALE); self.assertEqual(self.s.tasks["A"].superseded_by,"B"); self.assertEqual(self.s.tasks["A"].promoted,["race evidence"])
+  self.s.tasks["A"].review_value=ReviewValue.PINNED; self.assertEqual(self.s.groom(Role.MOTHER,9,{"no_review_archive_delay":0,"low_review_retention":2,"high_review_retention":3,"stale_task_archive_delay":1}),[])
 if __name__ == "__main__": unittest.main()

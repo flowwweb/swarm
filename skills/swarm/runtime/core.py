@@ -8,7 +8,8 @@ from enum import StrEnum
 class Role(StrEnum):
     CTRL="CTRL"; MOTHER="MOTHER"; ARCHITECT="ARCHITECT"; LEAD="LEAD"; DOER="DOER"; EXPERT="EXPERT"; REVIEW="REVIEW"
 class TaskState(StrEnum):
-    ACTIVE="ACTIVE"; WAITING="WAITING"; REVIEW="REVIEW"; COMPLETE="COMPLETE"; STALE="STALE"; BACKLOG="BACKLOG"
+    ACTIVE="ACTIVE"; WAITING="WAITING"; REVIEW="REVIEW"; COMPLETE="COMPLETE"; STALE="STALE"; ARCHIVED="ARCHIVED"; ARCHIVED_STALE="ARCHIVED_STALE"; BACKLOG="BACKLOG"
+class ReviewValue(StrEnum): NONE="NONE"; LOW="LOW"; HIGH="HIGH"; PINNED="PINNED"
 class WorkerState(StrEnum):
     SPAWNED="SPAWNED"; ACTIVE="ACTIVE"; DRAINING="DRAINING"; RETIRED="RETIRED"
 
@@ -29,7 +30,8 @@ def choose_depth(*, scope: int, architecture_impact: bool=False, independent_tas
 class Task:
     id: str; owner: str; creator: str; architecture_version: int; contracts: dict[str,int]
     state: TaskState=TaskState.ACTIVE; waiting_on: str|None=None; reviewer: str|None=None; findings: list[str]=field(default_factory=list)
-    evidence: list[str]=field(default_factory=list); recovery_dimensions: set[str]=field(default_factory=set)
+    evidence: list[str]=field(default_factory=list); recovery_dimensions: set[str]=field(default_factory=set); review_value: ReviewValue=ReviewValue.NONE
+    completed_at: int|None=None; archived_at: int|None=None; stale_reason: str|None=None; superseded_by: str|None=None; promoted: list[str]=field(default_factory=list); extensions: int=0
 
 @dataclass
 class Worker:
@@ -38,7 +40,7 @@ class Worker:
 @dataclass
 class Swarm:
     architecture_version: int=1; contract_versions: dict[str,int]=field(default_factory=dict); topology: set[str]=field(default_factory=set)
-    workers: dict[str,Worker]=field(default_factory=dict); tasks: dict[str,Task]=field(default_factory=dict); leases: dict[str,str]=field(default_factory=dict); events: list[tuple[str,str]]=field(default_factory=list)
+    workers: dict[str,Worker]=field(default_factory=dict); tasks: dict[str,Task]=field(default_factory=dict); leases: dict[str,str]=field(default_factory=dict); events: list[tuple[str,str]]=field(default_factory=list); telemetry: dict[str,int]=field(default_factory=dict)
 
     def _role(self, actor: Role, allowed: set[Role]) -> None:
         if actor not in allowed: raise InvariantError(f"{actor} cannot perform this transition")
@@ -56,7 +58,7 @@ class Swarm:
     def change_architecture(self, actor: Role, contracts: dict[str,int]) -> None:
         self._role(actor,{Role.ARCHITECT}); self.architecture_version+=1; self.contract_versions.update(contracts)
         for task in self.tasks.values():
-            if task.state not in {TaskState.COMPLETE,TaskState.BACKLOG} and (task.architecture_version != self.architecture_version or any(task.contracts.get(k,0)!=v for k,v in contracts.items())): task.state=TaskState.STALE
+            if task.state not in {TaskState.COMPLETE,TaskState.BACKLOG} and (task.architecture_version != self.architecture_version or any(task.contracts.get(k,0)!=v for k,v in contracts.items())): task.state=TaskState.STALE; task.stale_reason="architecture or contract version changed"
     def wait(self, actor: Role, task_id: str, dependency: str) -> None:
         self._role(actor,{Role.DOER}); t=self.tasks[task_id]
         if not dependency or dependency not in self.tasks: raise InvariantError("WAITING requires a named task dependency")
@@ -77,7 +79,7 @@ class Swarm:
         self._role(actor,{Role.REVIEW}); t=self.tasks[task_id]
         if reviewer in {t.creator,t.owner}: raise InvariantError("creator cannot be sole independent reviewer")
         t.reviewer=reviewer
-        if passed: t.state=TaskState.COMPLETE
+        if passed: t.state=TaskState.COMPLETE; t.completed_at=len(self.events)
         else: t.state=TaskState.ACTIVE; t.findings.append(finding or "review failed")
     def lease(self, actor: Role, surface: str, holder: str) -> None:
         self._role(actor,{Role.MOTHER})
@@ -97,6 +99,21 @@ class Swarm:
     def complete(self, actor: Role, task_id: str, integration_ok: bool, architecture_ok: bool) -> None:
         self._role(actor,{Role.MOTHER}); t=self.tasks[task_id]
         if t.state!=TaskState.COMPLETE or not t.reviewer or not integration_ok or not architecture_ok: raise InvariantError("completion requires independent review and integration/architecture gates")
+    def stale(self, actor: Role, task_id: str, reason: str, *, superseded_by: str|None=None, promote: list[str]|None=None) -> None:
+        self._role(actor,{Role.MOTHER,Role.ARCHITECT,Role.LEAD}); t=self.tasks[task_id]
+        if not reason: raise InvariantError("stale tasks require reason provenance")
+        t.state=TaskState.STALE; t.stale_reason=reason; t.superseded_by=superseded_by; t.promoted.extend(promote or [])
+    def groom(self, actor: Role, now: int, policy: dict[str,int]) -> list[str]:
+        """Mechanical archive only; archive preserves task provenance and knowledge."""
+        self._role(actor,{Role.MOTHER}); archived=[]
+        delays={ReviewValue.NONE:policy["no_review_archive_delay"],ReviewValue.LOW:policy["low_review_retention"],ReviewValue.HIGH:policy["high_review_retention"]}
+        for t in self.tasks.values():
+            if t.review_value==ReviewValue.PINNED: continue
+            if t.state==TaskState.STALE and now >= policy["stale_task_archive_delay"]:
+                t.state=TaskState.ARCHIVED_STALE; t.archived_at=now; archived.append(t.id)
+            elif t.state==TaskState.COMPLETE and t.completed_at is not None and now-t.completed_at >= delays[t.review_value]:
+                t.state=TaskState.ARCHIVED; t.archived_at=now; archived.append(t.id)
+        self.telemetry["archived"] = self.telemetry.get("archived",0)+len(archived); self.telemetry["pins"]=sum(t.review_value==ReviewValue.PINNED for t in self.tasks.values()); return archived
     def ctrl_event(self, event: str, task_id: str) -> str|None:
         if event in {"HEARTBEAT","PROGRESS"}: return None
         return f"{task_id}: {event.lower().replace('_',' ')}"

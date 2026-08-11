@@ -20,3 +20,5 @@ LEAD integrates and inspects each whole lane result before it reaches independen
 The legacy phrase “zerg rush” means starting only disjoint, integration-ready work; it never overrides adaptive depth, ownership, or the coordination-cost test.
 
 RUSH configuration and state remain readable only as migration compatibility. New user-facing output says SWARM. Prefer one broad runtime invariant over incident-specific prompt rules. Treat the console as a CTRL/observability projection, never a second authority.
+
+Workspace hygiene is mechanical: classify completed work as NONE, LOW, HIGH, or PINNED review value; archive NONE after verification, retain LOW/HIGH for configured windows, and exempt PINNED items. Archive stale work as `ARCHIVED_STALE` with reason, replacement/version provenance, and promoted operational knowledge. Archive is never delete. Global configuration is schema-validated with deterministic defaults → global config → supported project/invocation override precedence; retention, lanes, WIP, heartbeat, review, telemetry, and CTRL policy are configurable, while single MOTHER, independent review, bounded recovery, and canonical-state continuity are not.

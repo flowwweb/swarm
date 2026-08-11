@@ -204,6 +204,16 @@ pin_created_tasks = false
 # handoffs, and ambiguity keep the task open.
 archive_completed_tasks = true
 
+[hygiene]
+# Archive preserves searchable provenance; it never deletes a task. Values are days.
+no_review_archive_delay = 0
+low_review_retention = 7
+high_review_retention = 30
+stale_task_archive_delay = 1
+completed_task_retention = 30
+# Pinned work is exempt until manually unpinned or, if selected, project close.
+pinned_item_policy = "manual"
+
 [feedback]
 # Make the on-demand RUSH feedback workflow available.
 enabled = true

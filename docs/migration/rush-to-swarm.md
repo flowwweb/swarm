@@ -20,3 +20,7 @@ SWARM does not require a fixed hierarchy. Atomic work routes `CTRL → DOER`; si
 Preserved: outcome fidelity, least-useful hierarchy, bounded recovery, evidence-matched review. Simplified: role language and configuration. Promoted: authority, lifecycle, liveness, version, lease, and completion invariants. Retired: duplicate organisational labels and new RUSH-facing product language.
 
 The public migration must rename the existing repository rather than bootstrap a new unrelated history. Before that external action, scan the complete Git history for secrets and independently review the exact SHA.
+
+## Hygiene and configuration
+
+`hygiene` is the compact global policy surface: zero-day NONE archiving after verification, LOW/HIGH review windows, stale delay, completed retention, and pinned policy. It joins the existing validated identity, roles, model/reasoning, lane/WIP, heartbeat/retry, review, lifecycle, telemetry, compatibility, and CTRL settings. Defaults are merged with global config, then supported project or invocation overrides; invalid input fails clearly. Safety invariants stay outside configuration. Grooming records archived/stale/pin counts and preserves stale reason, replacement, versions, promoted knowledge, and archive timestamps.
