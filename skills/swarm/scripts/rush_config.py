@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import shutil
 import sys
 import tomllib
@@ -13,7 +14,9 @@ from pathlib import Path
 from typing import Any
 
 
-DEFAULT_PATH = Path.home() / ".agents" / "rush" / "config.toml"
+SWARM_DEFAULT_PATH = Path.home() / ".agents" / "swarm" / "config.toml"
+RUSH_LEGACY_PATH = Path.home() / ".agents" / "rush" / "config.toml"
+DEFAULT_PATH = Path(os.environ.get("SWARM_CONFIG_PATH", SWARM_DEFAULT_PATH))
 TEMPLATE_PATH = Path(__file__).resolve().parent.parent / "assets" / "rush-config.toml"
 PLUGIN_MANIFEST_PATH = Path(__file__).resolve().parents[3] / ".codex-plugin" / "plugin.json"
 
@@ -647,7 +650,8 @@ def feedback_diagnostics(effective: dict[str, Any], exists: bool) -> dict[str, A
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--path", type=Path, default=DEFAULT_PATH, help="config path override")
+    default = DEFAULT_PATH if DEFAULT_PATH.exists() or not RUSH_LEGACY_PATH.exists() else RUSH_LEGACY_PATH
+    parser.add_argument("--path", type=Path, default=default, help="SWARM config path; legacy RUSH path remains readable")
     subparsers = parser.add_subparsers(dest="command", required=True)
     subparsers.add_parser("path", help="print the global config path")
     show = subparsers.add_parser("show", help="print effective settings")

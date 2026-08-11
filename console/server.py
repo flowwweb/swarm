@@ -31,9 +31,7 @@ PLUGIN_ROOT = Path(__file__).resolve().parents[1]
 STATIC_ROOT = Path(__file__).resolve().parent / "static"
 CONFIG_SCRIPT = PLUGIN_ROOT / "skills" / "swarm" / "scripts" / "rush_config.py"
 DEFAULT_CODEX_HOME = Path(os.environ.get("CODEX_HOME", Path.home() / ".codex"))
-DEFAULT_CONFIG_PATH = Path(
-    os.environ.get("RUSH_CONFIG_PATH", Path.home() / ".agents" / "rush" / "config.toml")
-)
+DEFAULT_CONFIG_PATH = Path(os.environ.get("SWARM_CONFIG_PATH", os.environ.get("RUSH_CONFIG_PATH", Path.home() / ".agents" / "swarm" / "config.toml")))
 DEFAULT_PORT = 4788
 MAX_BODY_BYTES = 64 * 1024
 
