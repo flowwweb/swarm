@@ -77,7 +77,7 @@ def choose_depth(*, scope: int, architecture_impact: bool=False, independent_tas
 class Task:
     id: str; owner: str; creator: str; architecture_version: int; contracts: dict[str,int]
     state: TaskState=TaskState.ACTIVE; waiting_on: str|None=None; reviewer: str|None=None; findings: list[str]=field(default_factory=list)
-    evidence: list[str]=field(default_factory=list); recovery_dimensions: set[str]=field(default_factory=set); review_value: ReviewValue=ReviewValue.NONE
+    evidence: list[str]=field(default_factory=list); recovery_dimensions: set[str]=field(default_factory=set); recovery_attempts:int=0; review_value: ReviewValue=ReviewValue.NONE
     completed_at: int|None=None; stale_at: int|None=None; archived_at: int|None=None; stale_reason: str|None=None; superseded_by: str|None=None; promoted: list[str]=field(default_factory=list); extensions: int=0; review_passed: bool=False; risk:int=1; review_strategy:str="light"; architecture_review_floor:ReviewStrategy=ReviewStrategy.LIGHT; security_review_floor:ReviewStrategy=ReviewStrategy.LIGHT; artifacts:dict[ArtifactIdentity|str,str]=field(default_factory=dict); artifact_justifications:dict[str,str]=field(default_factory=dict); archive:dict[str,object]=field(default_factory=dict); active_goal:bool=False; handoff_active:bool=False; correction_pending:bool=False; user_choice_pending:bool=False; ambiguous:bool=False
 
 @dataclass
@@ -182,7 +182,7 @@ class Swarm:
         self._role(actor,{Role.MOTHER}); t=self.tasks[task_id]
         enabled=self.heartbeat_enabled if enabled is None else enabled
         if not enabled or meaningful_progress: self.heartbeat_latch.discard(task_id); return None
-        if t.state in {TaskState.WAITING,TaskState.REVIEW,TaskState.COMPLETE,TaskState.ARCHIVED,TaskState.ARCHIVED_STALE,TaskState.BACKLOG}: return None
+        if t.user_choice_pending or t.state in {TaskState.WAITING,TaskState.REVIEW,TaskState.COMPLETE,TaskState.ARCHIVED,TaskState.ARCHIVED_STALE,TaskState.BACKLOG}: return None
         if t.state!=TaskState.ACTIVE: return None
         action=heartbeat_action(owner_update=owner_update,material_change=False,unchanged_updates=unchanged_updates,recovery_attempts=recovery_attempts,stall_after_updates=self.heartbeat_stall_after)
         if action=="observe" or task_id in self.heartbeat_latch: return None
@@ -209,8 +209,8 @@ class Swarm:
         return current==start
     def recover(self, actor: Role, task_id: str, dimension: str) -> None:
         self._role(actor,{Role.LEAD,Role.MOTHER}); t=self.tasks[task_id]
-        if not dimension or dimension in t.recovery_dimensions: raise InvariantError("recovery must be bounded and materially changed")
-        t.recovery_dimensions.add(dimension); self.events.append(("RECOVERY",task_id))
+        if not dimension or t.recovery_attempts>=1: raise InvariantError("recovery budget exhausted; release blocker")
+        t.recovery_dimensions.add(dimension); t.recovery_attempts=1; self.events.append(("RECOVERY",task_id))
     def expert(self, actor: Role, task_id: str) -> None:
         self._role(actor,{Role.DOER,Role.LEAD,Role.ARCHITECT,Role.MOTHER}); self.events.append(("EXPERT",task_id))
     def set_intelligence_floor(self, actor: Role, task_id: str, tier: int) -> None:
@@ -273,7 +273,7 @@ class Swarm:
         if not t.review_passed or not t.reviewer or not integration_ok or not architecture_ok: raise InvariantError("completion requires independent review and integration/architecture gates")
         t.state=TaskState.COMPLETE; t.completed_at=now
         for waiter in self.tasks.values():
-            if waiter.state==TaskState.WAITING and waiter.waiting_on==task_id: waiter.state=TaskState.ACTIVE; waiter.waiting_on=None
+            if waiter.state==TaskState.WAITING and waiter.waiting_on==task_id: waiter.state=TaskState.ACTIVE; waiter.waiting_on=None; self.heartbeat_latch.discard(waiter.id)
         worker=self.workers.get(t.owner)
         if worker and worker.context.get("affinity",0)>0 and all(self.tasks[item].state in {TaskState.COMPLETE,TaskState.ARCHIVED,TaskState.ARCHIVED_STALE} for item in worker.task_ids): worker.state=WorkerState.WARM
         if worker: worker.task_ids.discard(task_id)
