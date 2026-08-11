@@ -3,14 +3,18 @@ import sys
 import unittest
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from runtime import ArtifactIdentity, ArtifactJustification, ArtifactProvenance, ContextPackage, CorrectionDecision, CtrlSurfaceKind, DedupDecision, Depth, EfficiencyMode, HiveRecord, HiveStatus, InvariantError, ReviewEvidence, ReviewStrategy, ReviewValue, Role, SubagentException, Swarm, Task, TaskState, TopologyFacts, VersionedReference, Worker, WorkerState, choose_depth, correction_decision, initial_tier
+from runtime import ArtifactIdentity, ArtifactJustification, ArtifactProvenance, ContextPackage, CorrectionDecision, CtrlSurfaceKind, DedupDecision, Depth, EfficiencyMode, HiveRecord, HiveStatus, InvariantError, ReviewEvidence, ReviewStrategy, ReviewValue, Role, SubagentException, Swarm, Task as RuntimeTask, TaskState, TopologyFacts, VersionedReference, Worker, WorkerState, choose_depth, correction_decision, initial_tier
+
+def Task(*args, **kwargs):
+ kwargs.setdefault("subagent_receipt",f"host:thread:{args[0]}")
+ return RuntimeTask(*args,**kwargs)
 
 def topology(*, objective="ship artifact", artifacts=(ArtifactIdentity("artifact","v1","work"),), surfaces=("artifact",), route="CTRL", lanes=("owner",), edges=(), integration=False, portfolio=False, ctrl_cheap=True, architecture=False):
  return TopologyFacts(objective,artifacts,surfaces,route,lanes,edges,integration,portfolio,ctrl_cheap,architecture)
 
 class RuntimeTests(unittest.TestCase):
  def setUp(self):
-  self.s=Swarm(); self.s.add_lead(Role.MOTHER,"L"); self.s.add_worker(Role.LEAD,Worker("D","L",1)); self.s.assign(Role.LEAD,Task("A","D","author",1,{},subagent_receipt="host:A"))
+  self.s=Swarm(); self.s.add_lead(Role.MOTHER,"L"); self.s.add_worker(Role.LEAD,Worker("D","L",1)); self.s.assign(Role.LEAD,Task("A","D","author",1,{},subagent_receipt="host:thread:A"))
  def test_authority_lanes_and_lifecycle(self):
   with self.assertRaises(InvariantError): self.s.add_lead(Role.CTRL,"bad")
   with self.assertRaises(InvariantError): self.s.change_architecture(Role.LEAD,{})
@@ -143,12 +147,17 @@ class RuntimeTests(unittest.TestCase):
   self.s.tasks["A"].state=TaskState.COMPLETE; self.s.tasks["A"].completed_at=0; self.s.tasks["A"].active_goal=True; self.assertEqual(self.s.groom(Role.MOTHER,2,{"no_review_archive_delay":0,"low_review_retention":2,"high_review_retention":3,"stale_task_archive_delay":1}),[]); self.assertFalse(self.s.should_spawn(independent=True,critical_path=True,contention=True))
  def test_atomic_simple_and_warm_routes_are_executable(self):
   atomic=Swarm()
-  with self.assertRaisesRegex(InvariantError,"subagent receipt"): atomic.start_atomic(Role.CTRL,Task("missing","M","creator",1,{}))
-  atomic.start_atomic(Role.CTRL,Task("T","D","creator",1,{},subagent_receipt="host:T")); self.assertEqual(set(atomic.workers),{"D"}); self.assertEqual(atomic.tasks["T"].owner,"D")
-  with self.assertRaises(InvariantError): atomic.start_atomic(Role.MOTHER,Task("U","E","creator",1,{},subagent_receipt="host:U"))
-  simple=Swarm(); simple.start_simple(Role.MOTHER,Task("S","M","creator",1,{},subagent_exception=SubagentException.COLLISION,subagent_exception_reason="single mutable file cannot have two writers")); self.assertEqual(simple.workers["M"].lead,"MOTHER")
-  self.s.workers["D"].state=WorkerState.WARM; self.s.workers["D"].context={"affinity":2,"architecture":{"auth":2}}; reused=self.s.reuse_warm(Role.LEAD,Task("R","new","creator",1,{},subagent_receipt="host:R"),architecture={"auth":2},affinity=2); self.assertEqual(reused,"D")
-  self.assertIsNone(self.s.reuse_warm(Role.LEAD,Task("N","new","creator",1,{},subagent_receipt="host:N"),architecture={"auth":3},affinity=2))
+  with self.assertRaisesRegex(InvariantError,"subagent receipt"): atomic.start_atomic(Role.CTRL,RuntimeTask("missing","M","creator",1,{}))
+  with self.assertRaisesRegex(InvariantError,"host-confirmed"): atomic.start_atomic(Role.CTRL,RuntimeTask("fake","F","creator",1,{},subagent_receipt="unverified:any-string"))
+  atomic.start_atomic(Role.CTRL,Task("T","D","creator",1,{},subagent_receipt="host:thread:T")); self.assertEqual(set(atomic.workers),{"D"}); self.assertEqual(atomic.tasks["T"].owner,"D")
+  with self.assertRaises(InvariantError): atomic.start_atomic(Role.MOTHER,Task("U","E","creator",1,{},subagent_receipt="host:thread:U"))
+  simple=Swarm(); simple.start_simple(Role.MOTHER,RuntimeTask("S","M","creator",1,{},subagent_exception=SubagentException.COLLISION,subagent_exception_reason="single mutable file cannot have two writers")); self.assertEqual(simple.workers["M"].lead,"MOTHER")
+  self.s.workers["D"].state=WorkerState.WARM; self.s.workers["D"].context={"affinity":2,"architecture":{"auth":2}}; reused=self.s.reuse_warm(Role.LEAD,Task("R","new","creator",1,{},subagent_receipt="host:thread:R"),architecture={"auth":2},affinity=2); self.assertEqual(reused,"D")
+  self.assertIsNone(self.s.reuse_warm(Role.LEAD,Task("N","new","creator",1,{},subagent_receipt="host:thread:N"),architecture={"auth":3},affinity=2))
+ def test_assignment_blocks_substantive_work_without_delegation_contract(self):
+  blocked=RuntimeTask("blocked","D","creator",1,{})
+  with self.assertRaisesRegex(InvariantError,"subagent receipt"): self.s.assign(Role.LEAD,blocked)
+  self.assertNotIn("blocked",self.s.tasks)
  def test_duplicate_lane_rejected(self):
   with self.assertRaises(InvariantError): self.s.add_worker(Role.LEAD,Worker("D2","L",1))
  def test_archive_rejects_every_live_owner_state_until_release(self):
@@ -160,8 +169,8 @@ class RuntimeTests(unittest.TestCase):
   p=ContextPackage.build(goal="g",architecture={"a":1,"b":2},dependencies=["d"],artifacts=[],acceptance=["accept"],history=[],budget=4)
   self.assertEqual(p.transfer_cost,5) # goal, acceptance, two architecture entries, admitted dependency
  def test_hop_receipts_are_bounded_and_proportional(self):
-  atomic=Swarm(); atomic.start_atomic(Role.CTRL,Task("T","D","c",1,{},subagent_receipt="host:T")); self.assertEqual(atomic.tasks["T"].topology_receipt,("CTRL","DOER","atomic:isolated"))
-  simple=Swarm(); simple.start_simple(Role.MOTHER,Task("S","D","c",1,{},subagent_receipt="host:S")); self.assertEqual(simple.tasks["S"].topology_receipt,("CTRL","MOTHER","DOER","simple:stateful"))
+  atomic=Swarm(); atomic.start_atomic(Role.CTRL,Task("T","D","c",1,{},subagent_receipt="host:thread:T")); self.assertEqual(atomic.tasks["T"].topology_receipt,("CTRL","DOER","atomic:isolated"))
+  simple=Swarm(); simple.start_simple(Role.MOTHER,Task("S","D","c",1,{},subagent_receipt="host:thread:S")); self.assertEqual(simple.tasks["S"].topology_receipt,("CTRL","MOTHER","DOER","simple:stateful"))
   portfolio=topology(lanes=("A","B","C"),edges=(("A","B"),("B","C")),integration=True,portfolio=True,ctrl_cheap=False)
   self.assertEqual(choose_depth(portfolio),Depth.WORKSTREAM); self.assertEqual(choose_depth(TopologyFacts(**{**portfolio.__dict__,"architecture_gate":True})),Depth.PROJECT)
  def test_typed_justification_and_bounded_machine_receipts(self):
@@ -229,8 +238,11 @@ class RuntimeTests(unittest.TestCase):
   self.s.surface_ctrl_evidence(Role.CTRL,"proof",surface_kind=CtrlSurfaceKind.INLINE_EXCERPT,caption="One receipt mismatch.",claim_limit="Local proof only.",surface_receipt="chat:excerpt:1")
   rendered=self.s.ctrl_event("REVIEW_FAIL","A",1,outcome="Routing acceptance is blocked.",evidence_id="proof",next_checkpoint="Correct the receipt fixture.")
   self.assertIn("Routing acceptance is blocked.",rendered); self.assertIn("Proof: One receipt mismatch.",rendered); self.assertIn("Claim limit: Local proof only.",rendered); self.assertIn("Next: Correct the receipt fixture.",rendered)
-  for event in ("PROGRESS","HEARTBEAT","MOTHER_WAKE","RECOVERY","DEADLOCK"):
+  for event in ("PROGRESS","HEARTBEAT","MOTHER_WAKE","RECOVERY"):
    with self.assertRaises(InvariantError): self.s.ctrl_event(event,"A")
+  self.assertIsNotNone(self.s.ctrl_event("DEADLOCK","A",2,outcome="Routing is blocked.",evidence_id="proof",next_checkpoint="Remove the ownership cycle."))
+  self.assertIsNotNone(self.s.ctrl_event("RESULT","A",3,outcome="Routing proof passed.",evidence_id="proof"))
+  self.assertIsNotNone(self.s.ctrl_event("DECISION","A",4,outcome="Use the canonical transaction.",evidence_id="proof"))
   self.assertIsNone(self.s.ctrl_event("raw-label","A"))
  def test_ctrl_event_receipt_suppresses_unchanged_and_rearms_on_material_revision(self):
   self.s.register_ctrl_evidence(Role.DOER,"A","proof","test","proof.txt")

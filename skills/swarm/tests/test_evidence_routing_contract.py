@@ -13,11 +13,18 @@ class EvidenceRoutingContractTests(unittest.TestCase):
 
     def setUp(self):
         self.swarm = Swarm()
-        self.swarm.start_atomic(Role.CTRL, Task("covers", "artist", "CTRL", 1, {}, subagent_receipt="host:artist"))
+        self.swarm.start_atomic(Role.CTRL, Task("covers", "artist", "CTRL", 1, {}, subagent_receipt="host:thread:artist"))
 
     def accept(self):
         self.swarm.review(Role.REVIEW, "covers", "independent", True)
         self.swarm.complete(Role.MOTHER, "covers", True, True, 1)
+
+    def surface_candidates(self, count):
+        candidate_ids=tuple(f"cover-{index}" for index in range(count))
+        for index,evidence_id in enumerate(candidate_ids):
+            self.swarm.register_ctrl_evidence(Role.DOER, "covers", evidence_id, "ImageGen", f"cover-{index}.png")
+            self.swarm.surface_ctrl_evidence(Role.CTRL, evidence_id, surface_kind=CtrlSurfaceKind.INLINE_IMAGE, caption=f"Generated cover option {index + 1}.", claim_limit="Concept art only; user selection remains open.", surface_receipt=f"commentary:image:{index}")
+        return candidate_ids
 
     def test_worker_produces_ten_images_but_ctrl_only_links_folder_is_rejected(self):
         for index in range(10):
@@ -61,12 +68,50 @@ class EvidenceRoutingContractTests(unittest.TestCase):
         with self.assertRaisesRegex(InvariantError, "surfaced exactly once"):
             self.swarm.surface_ctrl_evidence(Role.CTRL, "cover-1", surface_kind=CtrlSurfaceKind.INLINE_IMAGE, caption="Generated cover option 1 again.", claim_limit="Unapproved preview.", surface_receipt="chat:image:1-again")
 
+    def test_seven_commentary_surfaces_then_final_links_only_is_rejected(self):
+        candidates=self.surface_candidates(7)
+        self.swarm.register_ctrl_decision_set(Role.CTRL,"covers","cover-choice",candidates)
+        self.assertEqual(self.swarm.ctrl_feed_due(Role.CTRL),())
+        self.swarm.review(Role.REVIEW,"covers","independent",True)
+        with self.assertRaisesRegex(InvariantError,"open CTRL decision gallery acceptance failure"):
+            self.swarm.complete(Role.MOTHER,"covers",True,True,1)
+        with self.assertRaisesRegex(InvariantError,"before phase advance"):
+            self.swarm.advance_ctrl_phase(Role.CTRL,"production")
+
+    def test_final_consolidated_gallery_embeds_all_seven_once_and_is_accepted(self):
+        candidates=self.surface_candidates(7)
+        self.swarm.register_ctrl_decision_set(Role.CTRL,"covers","cover-choice",candidates)
+        labels={candidate:f"Option {index + 1}; defect: concept art only." for index,candidate in enumerate(candidates)}
+        receipt=self.swarm.surface_ctrl_decision_gallery(Role.CTRL,"cover-choice",embedded_ids=candidates,labels_defects=labels,complete_inventory=candidates,surface_receipt="final:gallery:cover-choice")
+        self.assertEqual(receipt,"final:gallery:cover-choice")
+        self.assertEqual(self.swarm.ctrl_decision_sets["cover-choice"].embedded_ids,candidates)
+        self.accept()
+
+    def test_large_set_allows_representative_gallery_only_with_inventory_and_exact_omissions(self):
+        candidates=self.surface_candidates(13)
+        shown=candidates[:4]; omitted=candidates[4:]
+        self.swarm.register_ctrl_decision_set(Role.CTRL,"covers","large-choice",candidates)
+        receipt=self.swarm.surface_ctrl_decision_gallery(Role.CTRL,"large-choice",embedded_ids=shown,labels_defects={candidate:f"Representative {candidate}; defect disclosed." for candidate in shown},complete_inventory=candidates,omissions={candidate:"Omitted from inline gallery due to representative large-set limit; present in complete inventory." for candidate in omitted},surface_receipt="final:gallery:large-choice")
+        self.assertEqual(receipt,"final:gallery:large-choice")
+        self.accept()
+
+    def test_representative_gallery_is_rejected_when_user_requested_every_candidate(self):
+        candidates=self.surface_candidates(13)
+        self.swarm.register_ctrl_decision_set(Role.CTRL,"covers","all-requested",candidates,user_requested_all=True)
+        with self.assertRaisesRegex(InvariantError,"embed every material candidate"):
+            self.swarm.surface_ctrl_decision_gallery(Role.CTRL,"all-requested",embedded_ids=candidates[:4],labels_defects={candidate:f"Option {candidate}; defect disclosed." for candidate in candidates[:4]},complete_inventory=candidates,omissions={candidate:"Not shown." for candidate in candidates[4:]},surface_receipt="final:gallery:all-requested")
+
     def test_surface_requires_external_receipt_and_accepts_compact_nonvisual_proof(self):
         self.swarm.register_ctrl_evidence(Role.DOER, "covers", "metrics", "proof", "metrics.json")
         with self.assertRaisesRegex(InvariantError, "external surface receipt"):
             self.swarm.surface_ctrl_evidence(Role.CTRL, "metrics", surface_kind=CtrlSurfaceKind.INLINE_TABLE, caption="Routing improved.", claim_limit="Local run only.", surface_receipt="")
         receipt=self.swarm.surface_ctrl_evidence(Role.CTRL, "metrics", surface_kind=CtrlSurfaceKind.INLINE_TABLE, caption="12 routes: 12 passed, p95 81 ms.", claim_limit="Local API proof only.", surface_receipt="chat:table:metrics")
         self.assertEqual(receipt,"chat:table:metrics")
+
+    def test_visual_evidence_cannot_be_mislabeled_as_a_receipt(self):
+        self.swarm.register_ctrl_evidence(Role.DOER, "covers", "browser-shot", "browser", "route.png")
+        with self.assertRaisesRegex(InvariantError, "visual CTRL evidence"):
+            self.swarm.surface_ctrl_evidence(Role.CTRL, "browser-shot", surface_kind=CtrlSurfaceKind.INLINE_RECEIPT, caption="Route map.", claim_limit="Local browser only.", surface_receipt="chat:receipt:not-image")
 
     def test_live_feed_doctrine_requires_prompt_surface_and_receipts(self):
         self.assertIn("CTRL is the live human review feed", self.skill)
@@ -75,6 +120,11 @@ class EvidenceRoutingContractTests(unittest.TestCase):
         self.assertIn("CTRL evidence ledger", self.skill)
         self.assertIn("open acceptance failure", self.skill)
         self.assertIn("do not accept or archive its producing lane or begin a later CTRL phase", self.skill)
+        self.assertIn("one self-contained final or decision gallery that embeds every candidate", self.skill)
+        self.assertIn("their receipts do not substitute for this consolidated decision surface", self.skill)
+        self.assertIn("Re-embedding each candidate exactly once inside that intentional gallery is not a duplicate", self.skill)
+        self.assertIn("complete candidate inventory", self.skill)
+        self.assertIn("A final containing only paths, links, or an inventory leaves the decision set unaccepted", self.skill)
 
     def test_visual_self_review_binds_to_exact_final_deliverable(self):
         self.assertIn("Bind that self-review to the exact final deliverable", self.skill)
