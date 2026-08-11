@@ -69,6 +69,9 @@ class Swarm:
         if worker.lead not in self.topology or not 1 <= worker.lane <= self.lane_width: raise InvariantError("worker requires a known lead and configured lane")
         if sum(w.lead==worker.lead and w.state!=WorkerState.RETIRED for w in self.workers.values()) >= self.lane_width: raise InvariantError("lead capacity reached")
         self.workers[worker.id]=worker
+    def package_context(self, actor:Role, worker_id:str, package:ContextPackage) -> None:
+        self._role(actor,{Role.LEAD}); worker=self.workers[worker_id]
+        worker.context={"goal":package.goal,"architecture":package.architecture,"dependencies":package.dependencies,"artifacts":package.artifacts,"acceptance":package.acceptance,"history":package.history,"transfer_cost":package.transfer_cost,"affinity":worker.context.get("affinity",1),"bloat":False,"stale":False,"stalls":0}
     def assign(self, actor: Role, task: Task) -> None:
         self._role(actor,{Role.LEAD}); w=self.workers.get(task.owner)
         if not w or w.state==WorkerState.RETIRED or len(w.task_ids)>=self.wip_limit: raise InvariantError("owner unavailable or at WIP limit")
@@ -112,10 +115,11 @@ class Swarm:
         self._role(actor,{Role.ARCHITECT}); self.tasks[task_id].contracts["intelligence_floor"]=tier
     def complexity_mismatch(self, actor: Role, task_id: str, observed_tier: int) -> None:
         self._role(actor,{Role.DOER}); self.tasks[task_id].contracts["complexity_mismatch"]=observed_tier; self.events.append(("MISMATCH",task_id))
-    def add_artifact(self, actor: Role, task_id: str, artifact: str, risk: str="") -> None:
+    def add_artifact(self, actor: Role, task_id: str, artifact: str, risk: str="", *, provenance:str|None=None, justification:str|None=None) -> None:
         self._role(actor,{Role.DOER}); t=self.tasks[task_id]
-        if artifact in t.artifacts or any(artifact in other.artifacts for other in self.tasks.values()): raise InvariantError("duplicate canonical artifact")
-        t.artifacts[artifact]=task_id; t.evidence.append(artifact); t.findings.extend([risk] if risk else [])
+        exists=any(artifact in other.artifacts for other in self.tasks.values())
+        if exists and not (justification in {"verification","uncertainty"} and provenance and provenance != task_id): raise InvariantError("duplicate canonical artifact")
+        identity=artifact if not exists else f"{artifact}@{provenance}"; t.artifacts[identity]=provenance or task_id; t.evidence.append(identity); t.findings.extend([risk] if risk else [])
     def discover(self, artifact: str) -> list[str]:
         return [t.id for t in self.tasks.values() if artifact in t.evidence]
     def review_depth(self, risk:int) -> str:
