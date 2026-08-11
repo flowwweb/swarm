@@ -80,10 +80,10 @@ class Worker:
 @dataclass
 class Swarm:
     architecture_version: int=1; contract_versions: dict[str,int]=field(default_factory=dict); topology: set[str]=field(default_factory=set)
-    workers: dict[str,Worker]=field(default_factory=dict); tasks: dict[str,Task]=field(default_factory=dict); leases: dict[str,str]=field(default_factory=dict); events: list[tuple[str,str]]=field(default_factory=list); telemetry: dict[str,object]=field(default_factory=dict); telemetry_events:list[dict[str,object]]=field(default_factory=list); artifact_index:dict[str,str]=field(default_factory=dict); hive:dict[str,HiveRecord]=field(default_factory=dict); hive_enabled:bool=True; heartbeat_latch:set[str]=field(default_factory=set); lane_width:int=3; wip_limit:int=3; efficiency_ledger:list[dict[str,str]]=field(default_factory=list); mode:EfficiencyMode=EfficiencyMode.BALANCED
+    workers: dict[str,Worker]=field(default_factory=dict); tasks: dict[str,Task]=field(default_factory=dict); leases: dict[str,str]=field(default_factory=dict); events: list[tuple[str,str]]=field(default_factory=list); telemetry: dict[str,object]=field(default_factory=dict); telemetry_events:list[dict[str,object]]=field(default_factory=list); artifact_index:dict[str,str]=field(default_factory=dict); hive:dict[str,HiveRecord]=field(default_factory=dict); hive_enabled:bool=True; heartbeat_enabled:bool=True; heartbeat_latch:set[str]=field(default_factory=set); lane_width:int=3; wip_limit:int=3; efficiency_ledger:list[dict[str,str]]=field(default_factory=list); mode:EfficiencyMode=EfficiencyMode.BALANCED
     @classmethod
     def from_config(cls, config: dict) -> "Swarm":
-        return cls(lane_width=config["coordination"]["preferred_lane_width"], wip_limit=config["efficiency"]["doer_wip_limit"], mode=EfficiencyMode(config["efficiency"]["mode"]), hive_enabled=config.get("hive",{}).get("enabled",True))
+        return cls(lane_width=config["coordination"]["preferred_lane_width"], wip_limit=config["efficiency"]["doer_wip_limit"], mode=EfficiencyMode(config["efficiency"]["mode"]), hive_enabled=config.get("hive",{}).get("enabled",True), heartbeat_enabled=config["monitoring"].get("heartbeat_enabled",True))
 
     def _role(self, actor: Role, allowed: set[Role]) -> None:
         if actor not in allowed: raise InvariantError(f"{actor} cannot perform this transition")
@@ -171,8 +171,9 @@ class Swarm:
         selected=mode or self.mode; tier=max(architect_floor,historical_floor,initial_tier(risk=risk,uncertainty=uncertainty,blast_radius=blast_radius,family=family,mode=selected)); self.efficiency_ledger.append({"kind":"route","family":family,"tier":str(tier),"reason":"expected_total_accepted_cost"}); return tier
     def dedup(self, identity:str, *, verification:bool=False, uncertainty:bool=False) -> DedupDecision:
         found=bool(self.discover(identity)); decision=DedupDecision.EXECUTE if not found or verification or uncertainty else DedupDecision.REUSE; self.efficiency_ledger.append({"kind":"dedup","decision":decision.value,"reason":"verification" if verification else "uncertainty" if uncertainty else "canonical_artifact"}); return decision
-    def heartbeat(self, actor:Role, task_id:str, *, meaningful_progress:bool, enabled:bool=True) -> str|None:
+    def heartbeat(self, actor:Role, task_id:str, *, meaningful_progress:bool, enabled:bool|None=None) -> str|None:
         self._role(actor,{Role.MOTHER}); t=self.tasks[task_id]
+        enabled=self.heartbeat_enabled if enabled is None else enabled
         if not enabled or meaningful_progress: self.heartbeat_latch.discard(task_id); return None
         if t.state in {TaskState.WAITING,TaskState.REVIEW,TaskState.COMPLETE,TaskState.ARCHIVED,TaskState.ARCHIVED_STALE,TaskState.BACKLOG}: return None
         if t.state!=TaskState.ACTIVE: return None
@@ -198,7 +199,7 @@ class Swarm:
             seen.add(current); current=self.tasks[current].waiting_on if current in self.tasks else None
         return current==start
     def recover(self, actor: Role, task_id: str, dimension: str) -> None:
-        self._role(actor,{Role.LEAD}); t=self.tasks[task_id]
+        self._role(actor,{Role.LEAD,Role.MOTHER}); t=self.tasks[task_id]
         if not dimension or dimension in t.recovery_dimensions: raise InvariantError("recovery must be bounded and materially changed")
         t.recovery_dimensions.add(dimension); self.events.append(("RECOVERY",task_id))
     def expert(self, actor: Role, task_id: str) -> None:

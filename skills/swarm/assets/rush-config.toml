@@ -198,6 +198,7 @@ max_parallel_tasks = 3
 scale_when_queue_reaches = 2
 
 [monitoring]
+heartbeat_enabled = true
 # Passive MOTHER heartbeat cadence. It reads active descendants without
 # messaging, interrupting, or steering them.
 heartbeat_minutes = 30
