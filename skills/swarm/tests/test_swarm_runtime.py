@@ -138,7 +138,7 @@ class RuntimeTests(unittest.TestCase):
   self.s.add_worker(Role.LEAD,Worker("R","L",2)); self.s.assign(Role.LEAD,Task("B","D","author",1,{})); lesson=HiveRecord("handoff",content="use migration seam",source="worker",source_version="1",provenance={"task":"B"})
   self.s.retire(Role.LEAD,"D","R",lessons=[lesson],now=3); self.assertEqual(self.s.workers["D"].state,WorkerState.RETIRED); self.assertEqual(self.s.tasks["B"].owner,"R"); self.assertIn("handoff",self.s.hive)
   self.s.hive["handoff"].retention="expired"; self.s.groom_hive(Role.MOTHER,4); self.s.groom_hive(Role.MOTHER,5); self.s.groom_hive(Role.MOTHER,6); self.assertEqual(self.s.hive["handoff"].status,HiveStatus.PURGED); self.assertEqual(self.s.hive["handoff"].provenance,{"task":"B"})
- def test_heartbeat_truth_table_latch_and_wait_resume(self):
+ def test_heartbeat_recovery_and_wait_resume(self):
   self.s.tasks["A"].active_goal=True; self.s.tasks["A"].goal_id="g"; self.s.tasks["A"].milestone="proof"; self.s.tasks["A"].review_horizon_minutes=30
   self.assertEqual(self.s.heartbeat(Role.CTRL,"A",meaningful_progress=False),"A:watchdog-recovered:30"); self.assertIsNone(self.s.heartbeat(Role.CTRL,"A",meaningful_progress=False))
   self.s.assign(Role.LEAD,Task("B","D","author",1,{})); self.s.wait(Role.DOER,"B","A"); self.assertIsNone(self.s.heartbeat(Role.CTRL,"B",meaningful_progress=False)); self.s.tasks["A"].review_passed=True; self.s.tasks["A"].reviewer="review"; self.s.complete(Role.MOTHER,"A",True,True,1); self.assertEqual(self.s.tasks["B"].state,TaskState.ACTIVE)
@@ -245,7 +245,7 @@ class RuntimeTests(unittest.TestCase):
   self.s.surface_ctrl_evidence(Role.CTRL,"proof",surface_kind=CtrlSurfaceKind.INLINE_EXCERPT,caption="One receipt mismatch.",claim_limit="Local proof only.",surface_receipt="chat:excerpt:1")
   rendered=self.s.ctrl_event("REVIEW_FAIL","A",1,outcome="Routing acceptance is blocked.",evidence_id="proof",next_checkpoint="Correct the receipt fixture.")
   self.assertIn("Routing acceptance is blocked.",rendered); self.assertIn("Proof: One receipt mismatch.",rendered); self.assertIn("Claim limit: Local proof only.",rendered); self.assertIn("Next: Correct the receipt fixture.",rendered)
-  for event in ("PROGRESS","HEARTBEAT","MOTHER_WAKE","RECOVERY"):
+  for event in ("PROGRESS","HEARTBEAT","RECOVERY"):
    with self.assertRaises(InvariantError): self.s.ctrl_event(event,"A")
   self.assertIsNotNone(self.s.ctrl_event("DEADLOCK","A",2,outcome="Routing is blocked.",evidence_id="proof",next_checkpoint="Remove the ownership cycle."))
   self.assertIsNotNone(self.s.ctrl_event("RESULT","A",3,outcome="Routing proof passed.",evidence_id="proof"))

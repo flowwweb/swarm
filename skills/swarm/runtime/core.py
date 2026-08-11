@@ -142,7 +142,7 @@ class Worker:
 @dataclass
 class Swarm:
     architecture_version: int=1; contract_versions: dict[str,int]=field(default_factory=dict); topology: set[str]=field(default_factory=set)
-    workers: dict[str,Worker]=field(default_factory=dict); tasks: dict[str,Task]=field(default_factory=dict); leases: dict[str,str]=field(default_factory=dict); events: list[tuple[str,str]]=field(default_factory=list); telemetry: dict[str,object]=field(default_factory=dict); telemetry_events:list[dict[str,object]]=field(default_factory=list); artifact_index:dict[str,str]=field(default_factory=dict); provenance_index:dict[str,str]=field(default_factory=dict); ctrl_evidence_ledger:dict[str,CtrlEvidence]=field(default_factory=dict); ctrl_decision_sets:dict[str,CtrlDecisionSet]=field(default_factory=dict); ctrl_phase:str="intake"; hive:dict[str,HiveRecord]=field(default_factory=dict); hive_enabled:bool=True; heartbeat_stall_after:int=2; heartbeat_latch:set[str]=field(default_factory=set); correction_receipts:dict[str,None]=field(default_factory=dict); lane_width:int=3; wip_limit:int=3; efficiency_ledger:list[dict[str,str]]=field(default_factory=list); mode:EfficiencyMode=EfficiencyMode.BALANCED; default_review_horizon:int=30; max_review_horizon:int=60; direct_work_horizon:int=20
+    workers: dict[str,Worker]=field(default_factory=dict); tasks: dict[str,Task]=field(default_factory=dict); leases: dict[str,str]=field(default_factory=dict); events: list[tuple[str,str]]=field(default_factory=list); telemetry: dict[str,object]=field(default_factory=dict); telemetry_events:list[dict[str,object]]=field(default_factory=list); artifact_index:dict[str,str]=field(default_factory=dict); provenance_index:dict[str,str]=field(default_factory=dict); ctrl_evidence_ledger:dict[str,CtrlEvidence]=field(default_factory=dict); ctrl_decision_sets:dict[str,CtrlDecisionSet]=field(default_factory=dict); ctrl_phase:str="intake"; hive:dict[str,HiveRecord]=field(default_factory=dict); hive_enabled:bool=True; heartbeat_stall_after:int=2; correction_receipts:dict[str,None]=field(default_factory=dict); lane_width:int=3; wip_limit:int=3; efficiency_ledger:list[dict[str,str]]=field(default_factory=list); mode:EfficiencyMode=EfficiencyMode.BALANCED; default_review_horizon:int=30; max_review_horizon:int=60; direct_work_horizon:int=20
     scheduled_wakeups:dict[str,int]=field(default_factory=dict); latency_rescheduled:set[str]=field(default_factory=set)
     @classmethod
     def from_config(cls, config: dict) -> "Swarm":
@@ -505,7 +505,7 @@ class Swarm:
         if not t.review_passed or not t.reviewer or not integration_ok or not architecture_ok: raise InvariantError("completion requires independent review and integration/architecture gates")
         t.state=TaskState.COMPLETE; t.completed_at=now
         for waiter in self.tasks.values():
-            if waiter.state==TaskState.WAITING and waiter.waiting_on==task_id: waiter.state=TaskState.ACTIVE; waiter.waiting_on=None; self.heartbeat_latch.discard(waiter.id)
+            if waiter.state==TaskState.WAITING and waiter.waiting_on==task_id: waiter.state=TaskState.ACTIVE; waiter.waiting_on=None
         worker=self.workers.get(t.owner)
         if worker and worker.context.get("affinity",0)>0 and all(self.tasks[item].state in {TaskState.COMPLETE,TaskState.ARCHIVED,TaskState.ARCHIVED_STALE} for item in worker.task_ids): worker.state=WorkerState.WARM
         if worker: worker.task_ids.discard(task_id)
@@ -557,7 +557,7 @@ class Swarm:
     def ctrl_event(self, event: str, task_id: str, material_revision:str|int=0, *, outcome:str="", evidence_id:str="", next_checkpoint:str="") -> str|None:
         category={"RESULT":"result","DECISION":"decision","DEADLOCK":"blocker","REVIEW_FAIL":"blocker","SCOPE_ESCALATION":"blocker","RELEASE":"release","HANDOFF":"handoff","ACCEPTANCE":"acceptance"}.get(event)
         if not category:
-            if event in {"PROGRESS","HEARTBEAT","MOTHER_WAKE","RECOVERY"}: raise InvariantError("coordination-only telemetry cannot enter the CTRL feed")
+            if event in {"PROGRESS","HEARTBEAT","RECOVERY"}: raise InvariantError("coordination-only telemetry cannot enter the CTRL feed")
             return None
         task=self.tasks.get(task_id)
         if task is None: raise InvariantError("CTRL event requires a canonical task")
