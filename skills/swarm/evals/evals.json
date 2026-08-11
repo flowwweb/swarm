@@ -1020,6 +1020,36 @@
         "Workers are not asked to report more often",
         "Tone stays compact and human without machine-log or inflated planning language"
       ]
+    },
+    {
+      "id": 80,
+      "prompt": "A DOER receives a narrow brief for one artifact in an established product. The current instruction names an outcome and a few exclusions, while the surrounding conversation, repository guidance, current product, and supplied canonical reference reveal the audience, use context, established conventions, and important elements omitted from the last message. Produce the artifact immediately by following only the latest brief and sensible generic defaults.",
+      "expected_output": "Before production, the artifact owner reconstructs the user's coherent actual request from the current instruction, surrounding conversation, supplied references, project guidance, and working surface. It makes a compact execution brief covering intended outcome, user or use context, current canonical state, binding invariants and non-goals, dependencies and risks, chosen approach, and proof; inspects the closest canonical artifact; and preserves established conventions unless explicit direction overrides them. Brief omissions do not erase project truth. Material ambiguity, conflict, inaccessible authority, or missing evidence escalates before production, and REVIEW compares the result against the understood request and canonical artifact rather than literal prompt compliance alone.",
+      "files": [],
+      "assertions": [
+        "The current instruction is interpreted with surrounding conversation, references, project guidance, and the working surface",
+        "Nontrivial work receives a compact execution brief covering outcome, context, current state, invariants, non-goals, dependencies, risks, approach, and proof",
+        "Preflight planning is proportional and useful rather than planning theater or a substitute for execution",
+        "No isolated prompt fragment outranks the coherent user request",
+        "Canonical project evidence is inspected before artifact production or mutation",
+        "Established conventions and invariants remain defaults when a narrow brief omits them",
+        "Generic practice or invented taste does not replace available project truth",
+        "Explicit direction may override a convention without silently discarding unrelated invariants",
+        "Material ambiguity, conflict, inaccessible authority, or missing evidence escalates before production",
+        "Review and acceptance compare the result with the understood request and canonical artifact rather than literal prompt compliance alone"
+      ]
+    },
+    {
+      "id": 81,
+      "prompt": "A DOER receives a bounded artifact objective for a genuinely new project. A bounded inspection finds no current product surface, project guidance, canonical artifact, or prior convention. Decide how to proceed without inventing false project authority.",
+      "expected_output": "The owner records that bounded inspection found the work genuinely greenfield, proceeds with appropriate domain best practices, and keeps the assumption and proof limits visible. It does not claim an invented convention is established project truth.",
+      "files": [],
+      "assertions": [
+        "Bounded inspection distinguishes genuinely greenfield work from omitted context",
+        "Domain best practices are the fallback only when no canonical project evidence exists",
+        "The greenfield assumption and proof limits remain visible",
+        "No invented convention is represented as established project authority"
+      ]
     }
   ]
 }
