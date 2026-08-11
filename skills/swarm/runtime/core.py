@@ -125,7 +125,7 @@ class Swarm:
     def discover(self, artifact: str) -> list[str]:
         return [t.id for t in self.tasks.values() if artifact in t.evidence]
     def review_depth(self, risk:int) -> str:
-        base="light" if risk <= 1 else "standard" if risk <= 3 else "adversarial"
+        base="light" if risk <= 1 else "standard" if risk <= 3 else "adversarial" if risk <= 4 else "specialist"
         return "standard" if base=="light" and self.mode==EfficiencyMode.MAX else base
     def record_telemetry(self, task_type:str, role:str, tier:int, outcome:str, *, model:str="", attempts:int=0, stalls:int=0, expert_uses:int=0, review_failures:int=0, review_cycles:int=0, productive:int=0, overhead:int=0, usage:int|None=None) -> None:
         self.telemetry.update({"tasks":self.telemetry.get("tasks",0)+1,"productive":self.telemetry.get("productive",0)+productive,"overhead":self.telemetry.get("overhead",0)+overhead})
@@ -137,6 +137,7 @@ class Swarm:
         if reviewer in {t.creator,t.owner}: raise InvariantError("creator cannot be sole independent reviewer")
         required=self.review_depth(t.risk); t.review_strategy=required
         if passed and required=="adversarial" and finding not in {"adversarial","specialist"}: raise InvariantError("high risk review requires adversarial evidence")
+        if passed and required=="specialist" and finding!="specialist": raise InvariantError("critical review requires specialist evidence")
         t.reviewer=reviewer
         if passed: t.review_passed=True; t.state=TaskState.REVIEW
         else: t.state=TaskState.ACTIVE; t.findings.append(finding or "review failed")
