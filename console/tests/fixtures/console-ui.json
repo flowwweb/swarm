@@ -53,14 +53,12 @@
       },
       "labels": {
         "mother": "MOTHER",
-        "step_mother": "STEP MOTHER",
         "lead": "LEAD",
         "task": "TASK",
         "review": "REVIEW"
       },
       "role_icons": {
         "mother": "⚡",
-        "step_mother": "🗂️",
         "lead": "🧭",
         "review": "🔎",
         "fallback": "📋"

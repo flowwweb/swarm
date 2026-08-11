@@ -8,7 +8,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 RUN addgroup --system rush && adduser --system --ingroup rush rush
 WORKDIR /app
 COPY --chown=rush:rush console /app/console
-COPY --chown=rush:rush skills/rush /app/skills/rush
+COPY --chown=rush:rush skills/swarm /app/skills/swarm
 
 USER rush
 EXPOSE 4788

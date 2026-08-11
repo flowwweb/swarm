@@ -1,0 +1,102 @@
+"""Deterministic SWARM state transitions; host task storage remains external."""
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from enum import StrEnum
+
+
+class Role(StrEnum):
+    CTRL="CTRL"; MOTHER="MOTHER"; ARCHITECT="ARCHITECT"; LEAD="LEAD"; DOER="DOER"; EXPERT="EXPERT"; REVIEW="REVIEW"
+class TaskState(StrEnum):
+    ACTIVE="ACTIVE"; WAITING="WAITING"; REVIEW="REVIEW"; COMPLETE="COMPLETE"; STALE="STALE"; BACKLOG="BACKLOG"
+class WorkerState(StrEnum):
+    SPAWNED="SPAWNED"; ACTIVE="ACTIVE"; DRAINING="DRAINING"; RETIRED="RETIRED"
+
+class InvariantError(ValueError): pass
+
+class Depth(StrEnum):
+    ATOMIC="CTRL_DOER"; SIMPLE="CTRL_MOTHER_DOER"; WORKSTREAM="CTRL_MOTHER_LEAD_DOER"; PROJECT="CTRL_MOTHER_ARCHITECT_LEADS_DOERS"
+
+def choose_depth(*, scope: int, architecture_impact: bool=False, independent_tasks: int=1, dependencies: int=0, uncertainty: int=0, blast_radius: int=0, specialisations: int=1, useful_parallelism: int=1, coordination_overhead: int=0) -> Depth:
+    """Choose infrastructure only when its reliability benefit exceeds its cost."""
+    if scope <= 1 and independent_tasks <= 1 and not architecture_impact and dependencies == uncertainty == blast_radius == 0: return Depth.ATOMIC
+    if architecture_impact and (independent_tasks >= 3 or specialisations >= 2): return Depth.PROJECT
+    if independent_tasks >= 2 or dependencies >= 2 or specialisations >= 2 or useful_parallelism >= 2:
+        return Depth.WORKSTREAM if coordination_overhead < 3 else Depth.SIMPLE
+    return Depth.SIMPLE
+
+@dataclass
+class Task:
+    id: str; owner: str; creator: str; architecture_version: int; contracts: dict[str,int]
+    state: TaskState=TaskState.ACTIVE; waiting_on: str|None=None; reviewer: str|None=None; findings: list[str]=field(default_factory=list)
+    evidence: list[str]=field(default_factory=list); recovery_dimensions: set[str]=field(default_factory=set)
+
+@dataclass
+class Worker:
+    id: str; lead: str; lane: int; state: WorkerState=WorkerState.SPAWNED; task_ids: set[str]=field(default_factory=set); archive: dict[str, object]=field(default_factory=dict)
+
+@dataclass
+class Swarm:
+    architecture_version: int=1; contract_versions: dict[str,int]=field(default_factory=dict); topology: set[str]=field(default_factory=set)
+    workers: dict[str,Worker]=field(default_factory=dict); tasks: dict[str,Task]=field(default_factory=dict); leases: dict[str,str]=field(default_factory=dict); events: list[tuple[str,str]]=field(default_factory=list)
+
+    def _role(self, actor: Role, allowed: set[Role]) -> None:
+        if actor not in allowed: raise InvariantError(f"{actor} cannot perform this transition")
+    def add_lead(self, actor: Role, lead: str) -> None:
+        self._role(actor,{Role.MOTHER}); self.topology.add(lead)
+    def add_worker(self, actor: Role, worker: Worker) -> None:
+        self._role(actor,{Role.LEAD});
+        if worker.lead not in self.topology or not 1 <= worker.lane <= 3: raise InvariantError("worker requires a known lead and lane 1..3")
+        if sum(w.lead==worker.lead and w.state!=WorkerState.RETIRED for w in self.workers.values()) >= 3: raise InvariantError("lead capacity is three workers")
+        self.workers[worker.id]=worker
+    def assign(self, actor: Role, task: Task) -> None:
+        self._role(actor,{Role.LEAD}); w=self.workers.get(task.owner)
+        if not w or w.state==WorkerState.RETIRED or len(w.task_ids)>=3: raise InvariantError("owner unavailable or at WIP limit")
+        self.tasks[task.id]=task; w.task_ids.add(task.id)
+    def change_architecture(self, actor: Role, contracts: dict[str,int]) -> None:
+        self._role(actor,{Role.ARCHITECT}); self.architecture_version+=1; self.contract_versions.update(contracts)
+        for task in self.tasks.values():
+            if task.state not in {TaskState.COMPLETE,TaskState.BACKLOG} and (task.architecture_version != self.architecture_version or any(task.contracts.get(k,0)!=v for k,v in contracts.items())): task.state=TaskState.STALE
+    def wait(self, actor: Role, task_id: str, dependency: str) -> None:
+        self._role(actor,{Role.DOER}); t=self.tasks[task_id]
+        if not dependency or dependency not in self.tasks: raise InvariantError("WAITING requires a named task dependency")
+        t.state=TaskState.WAITING; t.waiting_on=dependency
+        if self._cycle(task_id): self.events.append(("DEADLOCK",task_id))
+    def _cycle(self, start: str) -> bool:
+        seen=set(); current=start
+        while current and current not in seen:
+            seen.add(current); current=self.tasks[current].waiting_on if current in self.tasks else None
+        return current==start
+    def recover(self, actor: Role, task_id: str, dimension: str) -> None:
+        self._role(actor,{Role.LEAD}); t=self.tasks[task_id]
+        if not dimension or dimension in t.recovery_dimensions: raise InvariantError("recovery must be bounded and materially changed")
+        t.recovery_dimensions.add(dimension); self.events.append(("RECOVERY",task_id))
+    def expert(self, actor: Role, task_id: str) -> None:
+        self._role(actor,{Role.DOER,Role.LEAD,Role.ARCHITECT,Role.MOTHER}); self.events.append(("EXPERT",task_id))
+    def review(self, actor: Role, task_id: str, reviewer: str, passed: bool, finding: str="") -> None:
+        self._role(actor,{Role.REVIEW}); t=self.tasks[task_id]
+        if reviewer in {t.creator,t.owner}: raise InvariantError("creator cannot be sole independent reviewer")
+        t.reviewer=reviewer
+        if passed: t.state=TaskState.COMPLETE
+        else: t.state=TaskState.ACTIVE; t.findings.append(finding or "review failed")
+    def lease(self, actor: Role, surface: str, holder: str) -> None:
+        self._role(actor,{Role.MOTHER})
+        if surface in self.leases and self.leases[surface]!=holder: raise InvariantError("surface already leased")
+        self.leases[surface]=holder
+    def retire(self, actor: Role, worker_id: str) -> None:
+        self._role(actor,{Role.LEAD}); w=self.workers[worker_id]; w.state=WorkerState.RETIRED; w.archive={"tasks":sorted(w.task_ids),"lane":w.lane}; w.task_ids.clear()
+    def collapse(self, actor: Role, lead: str) -> Depth:
+        """Retire idle capacity and remove a lead when only one isolated task remains."""
+        self._role(actor,{Role.MOTHER}); active=[t for t in self.tasks.values() if t.state not in {TaskState.COMPLETE,TaskState.BACKLOG}]
+        if len(active) > 1: return Depth.WORKSTREAM
+        for worker in self.workers.values():
+            if worker.lead == lead and not worker.task_ids and worker.state != WorkerState.RETIRED:
+                worker.state=WorkerState.RETIRED; worker.archive={"tasks":[],"lane":worker.lane}
+        if len(active) <= 1: self.topology.discard(lead); return Depth.ATOMIC if not active else Depth.SIMPLE
+        return Depth.WORKSTREAM
+    def complete(self, actor: Role, task_id: str, integration_ok: bool, architecture_ok: bool) -> None:
+        self._role(actor,{Role.MOTHER}); t=self.tasks[task_id]
+        if t.state!=TaskState.COMPLETE or not t.reviewer or not integration_ok or not architecture_ok: raise InvariantError("completion requires independent review and integration/architecture gates")
+    def ctrl_event(self, event: str, task_id: str) -> str|None:
+        if event in {"HEARTBEAT","PROGRESS"}: return None
+        return f"{task_id}: {event.lower().replace('_',' ')}"

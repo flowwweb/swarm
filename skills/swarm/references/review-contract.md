@@ -18,6 +18,8 @@ Subtract: duplicate authority, speculative layers, unnecessary copy/config/tasks
 Proof: exact checks, rendered/provider/live evidence, and claim limits.
 Evidence surface: embedded screenshots, comparisons, tables, or excerpts that
 make the verdict reviewable at a glance; links are supplemental.
+Composed acceptance: inspect the integrated whole, requirement ledger, and
+every required proof state; lane-local approval cannot substitute.
 Visual direction: context-specific intent, generic/template risks, and any
 explicit request for conventional or restrained treatment.
 Verdict: APPROVE, CORRECT, or BLOCKED with P0-P3 findings.
@@ -64,6 +66,13 @@ never substitute an evidence locator, stale screenshot, or static excerpt for
 the missing runtime class. When the packet is too large, show representative
 coverage and state exactly what was omitted.
 
+For visual or interaction work, inspect the composed rendered product at every
+requested responsive viewport and state against the supplied reference before
+`APPROVE`, acceptance, or deployment. A component crop, isolated route, or
+lane-local screenshot is weaker evidence and cannot close the composed surface.
+If the reference or capture is unavailable, say so, retain `UNVERIFIED`, and
+return `BLOCKED` or `CORRECT` rather than silently lowering the visual bar.
+
 ## Review the rule as well as the artifact
 
 Do not turn every guideline mismatch into an opinionated implementation order.
@@ -102,8 +111,18 @@ the edit. REVIEW APPROVE is evidence for acceptance, not portfolio acceptance:
 LEAD may accept a child handoff into its domain, while MOTHER alone accepts the
 integrated outcome.
 
-`APPROVE` requires all must-haves, no unresolved P0-P2, proportionate proof, and
-honest claim limits. `CORRECT` names the selected repair and proof, or presents
+REVIEW is independent of the LEAD and DOERs it inspects, and independently gates
+the exact immutable integration SHA; it does not deploy, self-accept, or correct
+its own reviewed work. The LEAD integrates DOER handoffs, submits the SHA, routes
+and resolves REVIEW corrections, then accepts and deploys only the independently
+approved SHA with rollback receipt and production proof. MOTHER accepts only the
+composed portfolio. A shared provider/project/channel target
+must show the MOTHER-managed lease before the LEAD's mutation is reviewable as
+safe.
+
+`APPROVE` requires all must-haves, every required ledger proof `VERIFIED`, no
+unresolved P0-P2, proportionate proof, and honest claim limits. `UNVERIFIED`
+required proof blocks approval and portfolio acceptance. `CORRECT` names the selected repair and proof, or presents
 options for the acceptance owner when the governing rule is the disputed part.
 `BLOCKED` names the exact missing authority, environment, credential, product
 decision, or external state. Do not produce a narrative verdict without

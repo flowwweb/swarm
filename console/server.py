@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Loopback-only RUSH settings, hierarchy, and analytics console."""
+"""Loopback-only SWARM settings, hierarchy, and analytics console."""
 
 from __future__ import annotations
 
@@ -29,7 +29,7 @@ from urllib.parse import urlparse
 
 PLUGIN_ROOT = Path(__file__).resolve().parents[1]
 STATIC_ROOT = Path(__file__).resolve().parent / "static"
-CONFIG_SCRIPT = PLUGIN_ROOT / "skills" / "rush" / "scripts" / "rush_config.py"
+CONFIG_SCRIPT = PLUGIN_ROOT / "skills" / "swarm" / "scripts" / "rush_config.py"
 DEFAULT_CODEX_HOME = Path(os.environ.get("CODEX_HOME", Path.home() / ".codex"))
 DEFAULT_CONFIG_PATH = Path(
     os.environ.get("RUSH_CONFIG_PATH", Path.home() / ".agents" / "rush" / "config.toml")
@@ -61,7 +61,6 @@ EDITABLE_SETTINGS: dict[str, type] = {
     "review.max_parallel_tasks": int,
     "review.scale_when_queue_reaches": int,
     "monitoring.heartbeat_minutes": int,
-    "recovery.max_attempts": int,
     "recovery.stall_after_updates": int,
     "lifecycle.pin_created_tasks": bool,
     "lifecycle.archive_completed_tasks": bool,
@@ -69,12 +68,10 @@ EDITABLE_SETTINGS: dict[str, type] = {
     "feedback.include_diagnostics": bool,
     "feedback.prompt_on_close": bool,
     "labels.mother": str,
-    "labels.step_mother": str,
     "labels.lead": str,
-    "labels.task": str,
+    "labels.doer": str,
     "labels.review": str,
     "role_icons.mother": str,
-    "role_icons.step_mother": str,
     "role_icons.lead": str,
     "role_icons.review": str,
     "role_icons.fallback": str,
@@ -181,7 +178,7 @@ def update_config(config_path: Path, changes: dict[str, Any]) -> dict[str, Any]:
     if exists:
         text = config_path.read_text(encoding="utf-8")
     else:
-        text = (PLUGIN_ROOT / "skills" / "rush" / "assets" / "rush-config.toml").read_text(
+        text = (PLUGIN_ROOT / "skills" / "swarm" / "assets" / "rush-config.toml").read_text(
             encoding="utf-8"
         )
     for dotted_key, value in changes.items():
@@ -259,7 +256,7 @@ def _role_from_title(title: str, labels: dict[str, str]) -> dict[str, str] | Non
         key=lambda item: len(item[1]),
         reverse=True,
     )
-    role_kind = "task"
+    role_kind = "doer"
     role_label = ""
     role_start = -1
     for kind, label in configured:
@@ -274,12 +271,12 @@ def _role_from_title(title: str, labels: dict[str, str]) -> dict[str, str] | Non
         role_label = role_match.group(1).strip()
         role_start = role_match.start(1)
         upper = role_label.upper()
-        if "STEP MOTHER" in upper:
-            role_kind = "step_mother"
-        elif upper == "MOTHER":
+        if upper == "MOTHER":
             role_kind = "mother"
         elif upper == "LEAD":
             role_kind = "lead"
+        elif upper == "DOER":
+            role_kind = "doer"
         elif upper == "REVIEW":
             role_kind = "review"
     icon = head[:role_start].strip()[:12]
@@ -441,10 +438,10 @@ def build_overview(codex_home: Path, config_path: Path) -> dict[str, Any]:
             "roles": dict(role_counts),
         },
         "claim_limits": [
-            "Hierarchy is derived from Codex thread spawn edges and RUSH-formatted titles.",
+            "Hierarchy is derived from Codex thread spawn edges and SWARM or legacy RUSH-formatted titles.",
             "Active means recently updated within two heartbeat windows, not guaranteed CPU work.",
             "Tokens are host-reported cumulative thread tokens, not billing or remaining quota.",
-            "Only title metadata needed to recognize RUSH naming is read; message bodies, previews, rollout content, credentials, and the logs database are not.",
+            "Only title metadata needed to recognize SWARM or legacy RUSH naming is read; message bodies, previews, rollout content, credentials, and the logs database are not.",
         ],
         "source": database.name,
     }
@@ -503,7 +500,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self) -> None:  # noqa: N802
         if not self._host_allowed():
-            self._error(HTTPStatus.FORBIDDEN, "RUSH Console accepts localhost requests only")
+            self._error(HTTPStatus.FORBIDDEN, "SWARM Console accepts localhost requests only")
             return
         path = urlparse(self.path).path
         try:
@@ -608,7 +605,7 @@ def main() -> int:
     server = RushHTTPServer((args.host, args.port), Handler, app)
     display_host = "127.0.0.1" if args.host == "0.0.0.0" else args.host
     url = f"http://{display_host}:{args.port}"
-    print(f"RUSH Console: {url}")
+    print(f"SWARM Console: {url}")
     print(f"Codex metadata: {state_database(app.codex_home)} [read-only]")
     print(f"RUSH config: {app.config_path} [validated writes]")
     if args.open:

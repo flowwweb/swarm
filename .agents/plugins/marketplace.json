@@ -1,21 +1,10 @@
 {
   "name": "flowwweb",
-  "interface": {
-    "displayName": "Flowwweb"
-  },
-  "plugins": [
-    {
-      "name": "rush",
-      "source": {
-        "source": "url",
-        "url": "https://github.com/flowwweb/rush.git",
-        "ref": "main"
-      },
-      "policy": {
-        "installation": "AVAILABLE",
-        "authentication": "ON_INSTALL"
-      },
-      "category": "Productivity"
-    }
-  ]
+  "interface": { "displayName": "Flowwweb" },
+  "plugins": [{
+    "name": "swarm",
+    "source": { "source": "url", "url": "https://github.com/flowwweb/swarm.git", "ref": "main" },
+    "policy": { "installation": "AVAILABLE", "authentication": "ON_INSTALL" },
+    "category": "Productivity"
+  }]
 }

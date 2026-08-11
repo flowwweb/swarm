@@ -1,0 +1,4 @@
+interface:
+  display_name: "RUSH"
+  short_description: "Parallel work with strict outcome review"
+  default_prompt: "Use $rush to preserve the full outcome through MOTHER, deployable LEAD lanes, bounded DOER artifacts, temporary ASSIST capacity, and independent REVIEW, monitor active descendants without steering, and require independent QC."

@@ -123,7 +123,7 @@ select, input[type="text"], input[type="number"] { min-height: 42px; border: 1px
 .swarm-node strong { display: block; margin-top: 10px; font-size: 12px; line-height: 1.35; }
 .node-meta { margin-top: 10px; display: flex; justify-content: space-between; color: var(--faint); font-size: 9px; }
 .node-status { display: inline-flex; align-items: center; gap: 5px; }.node-status i { width: 5px; height: 5px; border-radius: 50%; background: currentColor; }
-.role-mother { --node-color: var(--electric); }.role-step_mother { --node-color: var(--violet); }.role-lead { --node-color: var(--cyan); }.role-review { --node-color: var(--amber); }.role-task { --node-color: #89a9ff; }
+.role-mother { --node-color: var(--electric); }.role-lead { --node-color: var(--cyan); }.role-review { --node-color: var(--amber); }.role-doer { --node-color: #89a9ff; }
 .claim-note { margin: 12px 4px 0; color: var(--faint); font-size: 10px; }
 .analytics-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 .chart-panel { min-height: 330px; }.bar-chart { padding: 22px; display: grid; gap: 16px; }

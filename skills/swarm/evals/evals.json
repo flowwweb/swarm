@@ -70,7 +70,7 @@
       "files": [],
       "assertions": [
         "MOTHER uses role_icons.mother",
-        "STEP MOTHER, LEAD, and REVIEW use their dedicated configured emojis",
+        "LEAD and REVIEW use their dedicated configured emojis",
         "Each finite task chooses one configured emoji appropriate to its contextual role",
         "The same contextual role uses the same emoji throughout the portfolio",
         "No title inserts a space between its emoji and role label"
@@ -121,10 +121,11 @@
     {
       "id": 10,
       "prompt": "We may be near our usage limit later. Explain whether RUSH Boost could help, but do not start anything yet.",
-      "expected_output": "A concise explanation of manual Boost mode and its proof-focused durable-goal contract, with no goal created because activation was not directly requested.",
+      "expected_output": "A concise explanation of manual Boost mode and its proof-focused durable-goal contract, with no additional Boost goal created because activation was not directly requested; mandatory MOTHER, LEAD, and persistent ARCHITECT goal inspection still applies when those roles start or resume.",
       "files": [],
       "assertions": [
-        "No Codex goal is created",
+        "No additional Boost goal is created",
+        "Mandatory MOTHER, LEAD, and persistent ARCHITECT goal inspection remains applicable",
         "Boost is described as explicit and user-started",
         "RUSH does not claim access to account-usage telemetry",
         "RUSH does not promise to bypass usage limits"
@@ -133,10 +134,11 @@
     {
       "id": 11,
       "prompt": "Start RUSH Boost mode, but global RUSH settings have boost.enabled = false.",
-      "expected_output": "Boost remains disabled, no goal is created, and the settings boundary is reported without silently overriding it.",
+      "expected_output": "Boost remains disabled, no additional Boost goal is created, mandatory MOTHER, LEAD, and persistent ARCHITECT goals remain required, and the settings boundary is reported without silently overriding it.",
       "files": [],
       "assertions": [
-        "No Codex goal is created",
+        "No additional Boost goal is created",
+        "Mandatory MOTHER, LEAD, and persistent ARCHITECT goals remain required",
         "The configured Boost disablement is reported",
         "No fallback long-running process is substituted"
       ]
@@ -168,11 +170,11 @@
     {
       "id": 14,
       "prompt": "Boost is explicitly authorized for this active RUSH portfolio. Real usage telemetry reports 5% remaining, then 2%, then 1%. MOTHER, LEAD, BUILD, and REVIEW tasks already exist.",
-      "expected_output": "RUSH prepares substantial owner-level closeout goals for eligible owners at 5%, freezes capability-aware goal contracts at 2%, launches or resumes them at 1%, then lets them glide hands-off with passive heartbeat and terminal aggregation.",
+      "expected_output": "RUSH prepares substantial owner-level closeout goals for eligible owners at 5%, locks capability-aware goal contracts at 2%, launches or resumes them at 1%, then lets them glide hands-off with passive heartbeat and terminal aggregation.",
       "files": [],
       "assertions": [
         "Planning begins at 5 percent remaining",
-        "Objectives and routing are frozen at 2 percent remaining",
+        "Objectives and routing are locked at 2 percent remaining",
         "Goals launch or resume at 1 percent remaining",
         "MOTHER, LEAD, leaf TASK, and REVIEW receive goals only when each has substantial remaining owned work",
         "Each user-visible owner starts or resumes the goal inside its own task",
@@ -209,10 +211,11 @@
     {
       "id": 17,
       "prompt": "Boost is authorized with strategies = [\"closeout_first\"] only, and usage reaches 1%.",
-      "expected_output": "RUSH reprioritizes required closeout work but does not create goals, enter hands-off mode, or route work to Spark because those strategies are absent.",
+      "expected_output": "RUSH reprioritizes required closeout work but creates no additional Boost goal, while mandatory MOTHER, LEAD, and persistent ARCHITECT goal inspection still applies; it does not enter hands-off mode or route work to Spark because those strategies are absent.",
       "files": [],
       "assertions": [
-        "No goal is created without durable_goal",
+        "No additional Boost goal is created without durable_goal",
+        "Mandatory MOTHER, LEAD, and persistent ARCHITECT goal inspection remains applicable",
         "Routine steering is not suppressed without hands_off",
         "Spark is not selected without spark_simple_work",
         "Required closeout work is prioritized"
@@ -323,12 +326,12 @@
     },
     {
       "id": 26,
-      "prompt": "Use RUSH to plan and execute a small but multi-step implementation. Should we create a PLANNER task before BUILD?",
-      "expected_output": "MOTHER performs the bounded planning pass itself and creates no PLANNER lane unless planning is independently consequential; BUILD owns its adjacent implementation, tests, proof, and handoff.",
+      "prompt": "Use RUSH to plan and execute a small but multi-step implementation. Should the LEAD consult an ADVISOR before BUILD?",
+      "expected_output": "The LEAD consults ADVISOR only when delivery approach, sequencing, proof strategy, risk, or recovery advice is materially useful; ADVISOR remains advisory and BUILD owns its adjacent implementation, tests, proof, and handoff.",
       "files": [],
       "assertions": [
         "MOTHER is the planning authority",
-        "No ceremonial PLANNER task is created",
+        "No ceremonial ADVISOR role is created",
         "The first useful artifact starts without waiting on a speculative plan",
         "A planning or architecture task remains possible when its output passes the normal lane test"
       ]
@@ -536,7 +539,7 @@
     {
       "id": 43,
       "prompt": "RUSH identifies three bounded domains, each needing repeated shared decisions across its own producers. preferred_lane_width is three.",
-      "expected_output": "MOTHER directly manages the three justified LEAD lanes; it does not add STEP MOTHER because the root span is already compact.",
+      "expected_output": "MOTHER directly manages the three justified LEAD lanes because the root span is already compact.",
       "files": [],
       "assertions": [
         "The lane test justifies every LEAD before the width preference is applied",
@@ -547,65 +550,62 @@
     },
     {
       "id": 44,
-      "prompt": "Nine justified LEAD domains repeatedly need coordination in three related portfolio segments. MOTHER would otherwise relay the same decisions across all nine.",
-      "expected_output": "MOTHER may create about three user-visible STEP MOTHER tasks, each integrating about three related LEAD lanes, while retaining final portfolio acceptance.",
+      "prompt": "Nine justified LEAD domains repeatedly need coordination in three related portfolio segments. MOTHER would otherwise relay the same decisions across all nine. Shape capacity-aware LEAD waves without adding another coordinator role.",
+      "expected_output": "MOTHER keeps the LEAD domains directly accountable, starts capacity-aware waves, and retains final portfolio acceptance without inventing another coordinator layer.",
       "files": [],
       "assertions": [
-        "STEP MOTHER is added only because grouping reduces repeated root coordination",
-        "Each STEP MOTHER has explicit bounded child-task authority and one named segment",
-        "STEP MOTHER accepts LEAD handoffs only into its segment",
-        "No recursive STEP MOTHER layer or prebuilt idle tree is created",
+        "Each LEAD retains explicit bounded authority for its named domain",
+        "MOTHER starts only capacity-safe LEAD waves",
+        "No extra coordinator or prebuilt idle tree is created",
         "MOTHER alone accepts the portfolio"
       ]
     },
     {
       "id": 45,
-      "prompt": "Four clear LEAD domains need almost no cross-domain decisions. preferred_lane_width is three, but adding STEP MOTHER would create another handoff.",
-      "expected_output": "MOTHER keeps four direct LEADs or starts them in capacity-aware waves because three is a soft preference and a STEP MOTHER would cost more than it saves.",
+      "prompt": "Four clear LEAD domains need almost no cross-domain decisions. preferred_lane_width is three, but another coordinator would create another handoff.",
+      "expected_output": "MOTHER keeps four direct LEADs or starts them in capacity-aware waves because three is a soft preference and another coordinator would cost more than it saves.",
       "files": [],
       "assertions": [
         "The fourth lane is not rejected by the preferred width",
-        "No STEP MOTHER is created when flat coordination is cheaper",
+        "No extra coordinator is created when direct LEAD ownership is cheaper",
         "The global active-task ceiling is never bypassed",
         "The setting is neither a quota nor a hard maximum"
       ]
     },
     {
       "id": 46,
-      "prompt": "A consequential planning artifact, an independent REVIEW artifact, and one TASK each have several independently inspectable child artifacts. Apply the default nesting preference without micromanaging them.",
+      "prompt": "A consequential planning artifact, an independent REVIEW artifact, and one DOER each have several independently inspectable child artifacts. Apply the default nesting preference without micromanaging them.",
       "expected_output": "Each authorized owner normally chooses about three worthwhile child lanes or internal subtasks, stays flat when work is cohesive, and may exceed three when another coordinator or wave would slow delivery.",
       "files": [],
       "assertions": [
         "Planning remains MOTHER's bounded pass unless a consequential artifact passes the lane test",
-        "A consequential planning TASK receives explicit child-task authority before creating portfolio children",
+        "A consequential planning artifact receives explicit child-task authority before creating portfolio children",
         "REVIEW children preserve independent verdict authority and do not self-approve corrections",
-        "TASK children preserve one mutable owner per surface",
+        "DOER children preserve one mutable owner per surface",
         "No owner fans out merely because preferred_lane_width equals three"
       ]
     },
     {
       "id": 47,
-      "prompt": "Customize STEP MOTHER's label and emoji, then authorize Boost for an existing STEP MOTHER with substantial integration work. Other eligible owners are tiny or complete.",
-      "expected_output": "The custom STEP MOTHER title uses its configured role emoji with no following space, inherits MOTHER execution policy, and receives its own Boost goal; tiny or complete owners close normally.",
+      "prompt": "Authorize Boost for an existing LEAD with substantial integration work. Other eligible owners are tiny or complete.",
+      "expected_output": "The LEAD receives its own Boost goal under its configured execution policy; tiny or complete owners close normally.",
       "files": [],
       "assertions": [
-        "The STEP MOTHER label is configurable and distinct",
-        "STEP MOTHER uses role_icons.step_mother rather than MOTHER or LEAD's emoji",
-        "STEP MOTHER inherits the selected MOTHER model and reasoning",
-        "step_mother is a valid Boost goal level",
+        "LEAD is a valid Boost goal level",
+        "The LEAD uses its configured model and reasoning",
         "Boost eligibility does not manufacture empty goals"
       ]
     },
     {
       "id": 48,
-      "prompt": "MOTHER already has three justified direct LEAD lanes. Six additional LEAD domains group cleanly under two STEP MOTHER coordinators. preferred_lane_width is three.",
-      "expected_output": "MOTHER keeps its three direct LEAD lanes and may add two auxiliary STEP MOTHER tasks, each grouping about three additional LEADs; neither STEP MOTHER consumes a preferred direct-LEAD position.",
+      "prompt": "MOTHER already has three justified direct LEAD lanes. Six additional LEAD domains also need work. preferred_lane_width is three.",
+      "expected_output": "MOTHER keeps its three direct LEAD lanes and starts the additional justified LEAD domains in capacity-aware waves without inserting an auxiliary coordinator.",
       "files": [],
       "assertions": [
-        "Direct LEAD span and auxiliary STEP MOTHER span are counted separately",
-        "Adding STEP MOTHER does not evict or replace a justified direct LEAD",
+        "Direct LEAD ownership remains explicit across waves",
+        "Starting another wave does not evict or replace a justified direct LEAD",
         "Every grouped LEAD still passes the lane test and has explicit ownership",
-        "STEP MOTHER tasks count under the global active-task ceiling while producing or integrating",
+        "Every active LEAD counts under the global active-task ceiling while producing or integrating",
         "Capacity-aware waves may be required even though the hierarchy retains all justified lanes"
       ]
     },
@@ -624,11 +624,11 @@
     },
     {
       "id": 50,
-      "prompt": "Organize a RUSH portfolio that justifies MOTHER, STEP MOTHER, LEAD, BUILD, DEV, one unusual contextual task, and REVIEW using untouched default emoji settings.",
+      "prompt": "Organize a RUSH portfolio that justifies MOTHER, LEAD, BUILD, DEV, one unusual contextual task, and REVIEW using untouched default emoji settings.",
       "expected_output": "Every title starts with exactly one role-derived emoji: hierarchy roles use their configured defaults, BUILD and DEV use logical classic choices, and only the unusual task uses the generic fallback.",
       "files": [],
       "assertions": [
-        "MOTHER, STEP MOTHER, LEAD, and REVIEW each use their dedicated role_icons setting",
+        "MOTHER, LEAD, and REVIEW each use their dedicated role_icons setting",
         "BUILD uses a hammer and DEV uses a computer",
         "The unusual task uses role_icons.fallback only after no logical configured choice fits",
         "No global prefix or enabled toggle participates in title generation",
@@ -711,7 +711,7 @@
         "The diagnostic handles are preserved without being passed to threadId-only tools",
         "After one bounded setup observation exactly one representative retry targets a real user-visible host task surface",
         "Sibling fan-out waits for a real threadId and the canary's first material artifact-producing action",
-        "MOTHER may perform immediate safety containment only while all non-emergency artifact work remains delegated",
+        "MOTHER may order immediate safety containment only while all non-emergency artifact work remains delegated",
         "A second unmaterialized canary stops further creation and reports the host setup blocker"
       ]
     },
@@ -796,30 +796,27 @@
     },
     {
       "id": 63,
-      "prompt": "A TASK reports the immediate non-overlapping bottleneck in the attached fixture to its LEAD. Decide whether to use ASSIST and define its stop condition.",
-      "expected_output": "The LEAD creates one capacity-counted contextual ASSIST task for the inspectable bottleneck; it has no children, subagents, or durable goal, returns one handoff, and stops.",
+      "prompt": "A DOER reports the immediate non-overlapping bottleneck in the attached fixture to its LEAD. Decide whether an eligible requester should hire ASSIST and define its stop condition.",
+      "expected_output": "The eligible requester hires one temporary ASSIST for the inspectable bottleneck; it returns one handoff and exits without authority beyond that assignment.",
       "files": ["evals/fixtures/assist-bottleneck.json"],
       "assertions": [
-        "ASSIST is a contextual finite TASK rather than a hierarchy level or setting",
-        "The requesting owner routes the request through its accepting parent",
-        "Only one active ASSIST is allowed for the acceptor and it counts normal capacity",
-        "ASSIST cannot create children, use subagents, or own a durable goal",
-        "ASSIST returns one handoff and stops",
+        "ASSIST is temporary wildcard capacity rather than a hierarchy authority layer",
+        "MOTHER, ARCHITECT, LEAD, or DOER may hire ASSIST for a bounded assignment",
+        "ASSIST returns one handoff and exits",
         "Tiny same-surface help would stay internal instead"
       ]
     },
     {
       "id": 64,
-      "prompt": "Shape the attached portfolio fixture without creating an automatic tree or coordinator goals.",
-      "expected_output": "RUSH gives the repeated checkout domain a LEAD with its artifact TASKs, keeps the independent launch-copy TASK directly under MOTHER, omits STEP MOTHER, and creates no goals without user or Boost authorization.",
+      "prompt": "Shape the attached portfolio fixture without creating an automatic tree or optional finite-role goals.",
+      "expected_output": "RUSH gives the repeated checkout domain a LEAD with its artifact DOERs, keeps the independent launch-copy DOER directly under MOTHER, maintains required MOTHER and LEAD goals, and creates no optional finite-role goal.",
       "files": ["evals/fixtures/hierarchy-routing.json"],
       "assertions": [
-        "MOTHER to LEAD to TASK is normal for repeated domain decisions and integration",
-        "A small independent artifact may remain a direct MOTHER TASK",
-        "STEP MOTHER is omitted when multi-LEAD grouping does not reduce coordination",
+        "MOTHER to LEAD to DOER is normal for repeated domain decisions and integration",
+        "A small independent artifact may remain a direct MOTHER DOER",
         "Configured counts do not generate a complete tree",
-        "Normal coordinators do not require goals",
-        "Only a direct user request or explicit Boost authorization permits goals"
+        "MOTHER and LEAD goals are mandatory independent of Boost",
+        "Finite DOER work does not automatically create a durable goal"
       ]
     },
     {
@@ -834,6 +831,66 @@
         "A next action is included because REVIEW must act",
         "Internal reasoning, tool or command logistics, repeated boundaries, and unchanged status are omitted",
         "The update does not weaken the failed production proof or imply unavailable authority"
+      ]
+    },
+    {
+      "id": 66,
+      "prompt": "A fast product redesign has three disjoint lanes: page composition, live data wiring, and responsive visual QA. Each lane reports a passing local check, but no one has rendered the integrated page at the supplied desktop and mobile references; the data lane also has no authenticated provider receipt. Close the work quickly.",
+      "expected_output": "RUSH runs the disjoint critical-path lanes in parallel, continuously integrates their artifacts, and leaves the portfolio unaccepted until MOTHER inspects the composed responsive result against both references and the provider proof is VERIFIED. Lane-local checks, activity, and approvals do not substitute; the missing evidence remains UNVERIFIED with its exact blocker.",
+      "files": [],
+      "assertions": [
+        "Only disjoint critical-path work is parallelized",
+        "Every lane returns an integration-ready handoff rather than a bare status",
+        "MOTHER inspects the composed end-to-end result and requirement ledger",
+        "Supplied desktop and mobile references require composed responsive render comparison before acceptance or deployment",
+        "Missing authenticated provider proof remains UNVERIFIED and blocks acceptance",
+        "Task count, activity, commits, and lane-local approvals are not treated as meaningful progress or acceptance",
+        "One safe same-surface recovery is followed by an exact blocker and release rather than polling or replacement owners"
+      ]
+    },
+    {
+      "id": 67,
+      "prompt": "A RUSH MOTHER sees a 20-minute feature implementation, an image asset to generate, a lane-local browser proof, and a one-line conflict in an already-integrated file. The user also needs a provider deployment decision and a recovery action after a safety incident. Route the work fast.",
+      "expected_output": "MOTHER delegates the feature, asset generation, task-level browser proof, and one-line integration conflict to named DOER, TASK, or ASSIST owners; it retains outcome lock, priority, collision control, composed portfolio acceptance, and shared release-surface leases. A deployable LEAD owns provider/deploy, rollback, and production proof for its lane.",
+      "files": [],
+      "assertions": [
+        "MOTHER is an orchestrator rather than a substantive builder",
+        "Substantive implementation, asset generation, and task-level proof have explicit non-MOTHER owners",
+        "MOTHER retains outcome lock, shaping, priority, collision and ownership control, composed portfolio acceptance, and shared release-surface leases",
+        "A deployable LEAD owns provider/deploy control, rollback receipt, and production proof for its lane",
+        "MOTHER never edits, including a tiny integration or collision seam",
+        "The one-line seam has a bounded DOER, TASK, or ASSIST owner",
+        "The hierarchy remains fast by delegating a bounded worthwhile seam without making MOTHER a builder"
+      ]
+    },
+    {
+      "id": 68,
+      "prompt": "Two LEADs each have a reviewed deployable lane. One deploys a separate Vercel project; the other deploys the same production project and release channel as a third LEAD. DOERs have built the artifacts and REVIEW has independently approved them. Route acceptance and deployment without slowing unrelated work.",
+      "expected_output": "Each LEAD integrates DOER handoffs, completes its correction loop, accepts and deploys its own reviewed lane with rollback receipt and production proof. The disjoint Vercel target may proceed concurrently. MOTHER grants and records a shared-target lease for one of the colliding LEADs, serializes only that mutation, and keeps unrelated lanes moving; MOTHER accepts the portfolio only after accepted lanes return.",
+      "files": [],
+      "assertions": [
+        "DOER builds and REVIEW independently gates",
+        "LEAD owns lane integration, correction, acceptance, provider/deploy control, rollback receipt, and production proof",
+        "MOTHER owns portfolio orchestration and the shared-target lease rather than deployment",
+        "Disjoint provider targets may deploy concurrently",
+        "Shared provider/project/environment/channel mutation is serialized by an explicit lease with holder and unblock condition",
+        "MOTHER accepts only the composed portfolio after accepted lanes return"
+      ]
+    },
+    {
+      "id": 69,
+      "prompt": "A LEAD has three DOER artifacts to integrate into a deployment. One DOER has three independent SUBTASKs: a research check, a design variant, and browser proof, with child capacity available. A shared production channel is currently leased to another LEAD. An ARCHITECT proposes a contract boundary and an ADVISOR proposes delivery, proof, and recovery sequencing.",
+      "expected_output": "The DOER promptly delegates the three independent SUBTASKs to temporary wildcard DOER ASSISTs and remains accountable for their integrated task artifact. The LEAD coordinates its system impact with persistent ARCHITECT, while an ephemeral ADVISOR answers one focused delivery/proof/recovery question then exits. The LEAD integrates the resulting immutable SHA, sends that exact SHA to an independent REVIEW, corrects findings, and deploys only REVIEW-approved SHA after MOTHER grants the shared-channel lease. ASSISTs never review, accept, integrate, mutate providers, or deploy; MOTHER receives only concise lane state, escalations, and the lane acceptance receipt.",
+      "files": [],
+      "assertions": [
+        "DOER owns one bounded task artifact and ASSIST is a temporary wildcard DOER for a delegated SUBTASK",
+        "Two or more independent SUBTASKs with capacity trigger prompt ASSIST delegation",
+        "ASSIST can perform bounded developer, design, research, operations, or proof work but has no independent authority",
+        "ARCHITECT persistently owns system coherence but not building, worker scheduling, review, integration, provider mutation, or deployment; ADVISOR is one-question and ephemeral",
+        "MOTHER receives only concise lane state, cross-lane escalations, and final lane receipts",
+        "LEAD submits an immutable integration SHA to independent REVIEW and deploys only that approved exact SHA",
+        "Shared target mutation waits for the MOTHER deployment lease while unrelated work continues",
+        "Recovery is exactly one safe same-surface attempt before blocker and release"
       ]
     }
   ]

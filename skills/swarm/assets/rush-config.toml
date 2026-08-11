@@ -5,7 +5,7 @@
 # user instruction always wins. Safety, user control, and a user-visible host
 # task hierarchy are fixed RUSH invariants and cannot be disabled here.
 
-schema_version = 1
+schema_version = 2
 
 [portfolio]
 # Total user-visible RUSH tasks that may be active at once, excluding MOTHER.
@@ -17,14 +17,13 @@ reuse_existing_tasks = true
 
 [role_icons]
 # Every RUSH title uses exactly one role emoji. Hierarchy roles use their
-# configured icon; finite tasks choose a logical classic icon from task_choices.
+# configured icon; DOERs choose a logical classic icon from doer_choices.
 mother = "⚡"
-step_mother = "🗂️"
 lead = "🧭"
 review = "🔎"
-# Generic TASK icon only when no contextual role has a clearly logical choice.
+# Generic DOER icon only when no contextual role has a clearly logical choice.
 fallback = "📋"
-task_choices = ["🔨", "💻", "✏️", "🎨", "📚", "📊", "🔌", "🧪", "✅", "📝", "🔀", "🚀"]
+doer_choices = ["🔨", "💻", "✏️", "🎨", "📚", "📊", "🔌", "🧪", "✅", "📝", "🔀", "🚀"]
 
 [execution]
 # Select high, medium, or low. Leave service_tier empty to keep the host default.
@@ -36,6 +35,8 @@ service_tier = ""
 usage_saver = false
 
 [boost]
+# Boost is optional closeout behavior. MOTHER, LEAD, and persistent ARCHITECT
+# goals plus the passive heartbeat are mandatory and cannot be disabled here.
 # Make manual Boost mode available. Starting a Boost goal still requires a
 # direct user request; RUSH never infers or auto-starts one from quota state.
 enabled = true
@@ -47,39 +48,69 @@ plan_at_remaining_percent = 5
 decide_at_remaining_percent = 2
 launch_at_remaining_percent = 1
 # Existing hierarchy levels that receive substantial owner-level closeout goals.
-goal_levels = ["mother", "step_mother", "lead", "task", "review"]
+goal_levels = ["mother", "lead", "doer", "review"]
 # Reserve model for simple targeted work when its separate allowance is available.
 spark_model = "gpt-5.3-codex-spark"
 
 [models.high]
 mother_model = "gpt-5.6-sol"
-mother_reasoning = "xhigh"
-lead_model = "gpt-5.6-terra"
-lead_reasoning = "high"
+mother_reasoning = "medium"
+lead_model = "gpt-5.6-sol"
+lead_reasoning = "medium"
+doer_model = "gpt-5.6-luna"
+doer_reasoning = "xhigh"
 task_model = "gpt-5.6-luna"
-task_reasoning = "max"
+task_reasoning = "high"
+subtask_model = "gpt-5.6-luna"
+subtask_reasoning = "high"
+assist_model = "gpt-5.6-sol"
+assist_reasoning = "medium"
+advisor_model = "gpt-5.6-sol"
+advisor_reasoning = "medium"
+architect_model = "gpt-5.6-sol"
+architect_reasoning = "medium"
 review_model = "gpt-5.6-sol"
-review_reasoning = "xhigh"
+review_reasoning = "medium"
 
 [models.medium]
 mother_model = "gpt-5.6-sol"
-mother_reasoning = "high"
-lead_model = "gpt-5.6-terra"
+mother_reasoning = "medium"
+lead_model = "gpt-5.6-sol"
 lead_reasoning = "medium"
+doer_model = "gpt-5.6-luna"
+doer_reasoning = "xhigh"
 task_model = "gpt-5.6-luna"
-task_reasoning = "xhigh"
+task_reasoning = "high"
+subtask_model = "gpt-5.6-luna"
+subtask_reasoning = "high"
+assist_model = "gpt-5.6-sol"
+assist_reasoning = "medium"
+advisor_model = "gpt-5.6-sol"
+advisor_reasoning = "medium"
+architect_model = "gpt-5.6-sol"
+architect_reasoning = "medium"
 review_model = "gpt-5.6-sol"
-review_reasoning = "high"
+review_reasoning = "medium"
 
 [models.low]
-mother_model = "gpt-5.6-terra"
+mother_model = "gpt-5.6-sol"
 mother_reasoning = "medium"
-lead_model = "gpt-5.6-luna"
-lead_reasoning = "low"
+lead_model = "gpt-5.6-sol"
+lead_reasoning = "medium"
+doer_model = "gpt-5.6-luna"
+doer_reasoning = "xhigh"
 task_model = "gpt-5.6-luna"
-task_reasoning = "medium"
-review_model = "gpt-5.6-terra"
-review_reasoning = "high"
+task_reasoning = "high"
+subtask_model = "gpt-5.6-luna"
+subtask_reasoning = "high"
+assist_model = "gpt-5.6-sol"
+assist_reasoning = "medium"
+advisor_model = "gpt-5.6-sol"
+advisor_reasoning = "medium"
+architect_model = "gpt-5.6-sol"
+architect_reasoning = "medium"
+review_model = "gpt-5.6-sol"
+review_reasoning = "medium"
 
 # MOTHER routes only work and tools declared for the selected model. Add Kimi,
 # Qwen, or another Codex provider model here after configuring that provider.
@@ -104,34 +135,36 @@ workloads = ["simple"]
 tools = ["shell", "web"]
 
 [roles]
-# Add explicit overrides only when the automatic logical choice is not desired.
-# Unlisted roles inherit the active profile's TASK model and reasoning.
+# Add explicit overrides only for a custom leaf role. Every named RUSH role has
+# its own configured model and reasoning pair in the selected profile.
 # [roles.SECURITY]
 # icon = "🛡️"
 # model = "gpt-5.6-sol"
 # reasoning = "high"
 
 [labels]
-# Root planner; its emoji comes from role_icons.mother.
+# Portfolio orchestrator; its emoji comes from role_icons.mother.
 mother = "MOTHER"
-# Optional grouped portfolio coordinator; emoji from role_icons.step_mother.
-step_mother = "STEP MOTHER"
 # Domain coordinator; emoji from role_icons.lead.
 lead = "LEAD"
-# Leaf fallback only. Prefer the real role: BUILD, DEV, DESIGN, VISUAL, etc.
+# Execution fallback only. Prefer the real DOER specialty: BUILD, DEV, DESIGN, VISUAL, etc.
+doer = "DOER"
 task = "TASK"
+subtask = "SUBTASK"
+assist = "ASSIST"
+advisor = "ADVISOR"
+architect = "ARCHITECT"
 # Independent review role; emoji from role_icons.review.
 review = "REVIEW"
 
 [coordination]
-# Permit justified STEP MOTHER and LEAD coordination tasks.
+# Permit justified LEAD coordination tasks.
 allow_coordinators = true
-# A justified STEP MOTHER or LEAD must own at least this many child tasks.
+# A justified LEAD must own at least this many child tasks.
 coordinator_min_children = 2
 # Soft span preference for every justified owner split. Three guides MOTHER,
-# STEP MOTHER, LEAD, TASK, REVIEW, and consequential planning work; it is never
-# a quota, trigger, or hard cutoff. STEP MOTHER is an auxiliary span and does
-# not consume one of MOTHER's preferred direct-LEAD positions.
+# LEAD, DOER, REVIEW, and consequential planning work; it is never a quota,
+# trigger, or hard cutoff.
 preferred_lane_width = 3
 
 [subagents]
@@ -158,7 +191,7 @@ scale_when_queue_reaches = 2
 heartbeat_minutes = 30
 
 [recovery]
-# Bounded recovery attempts after the first failed attempt.
+# Exactly one bounded same-surface recovery attempt; this is non-disableable.
 max_attempts = 1
 # A lane stalls after this many unchanged owner work updates; heartbeat excluded.
 stall_after_updates = 2

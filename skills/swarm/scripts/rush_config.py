@@ -18,7 +18,7 @@ TEMPLATE_PATH = Path(__file__).resolve().parent.parent / "assets" / "rush-config
 PLUGIN_MANIFEST_PATH = Path(__file__).resolve().parents[3] / ".codex-plugin" / "plugin.json"
 
 DEFAULTS: dict[str, Any] = {
-    "schema_version": 1,
+    "schema_version": 2,
     "portfolio": {
         "max_active_tasks": 4,
         "default_parallel_tasks": 3,
@@ -26,11 +26,10 @@ DEFAULTS: dict[str, Any] = {
     },
     "role_icons": {
         "mother": "⚡",
-        "step_mother": "🗂️",
         "lead": "🧭",
         "review": "🔎",
         "fallback": "📋",
-        "task_choices": [
+        "doer_choices": [
             "🔨", "💻", "✏️", "🎨", "📚", "📊",
             "🔌", "🧪", "✅", "📝", "🔀", "🚀",
         ],
@@ -51,39 +50,45 @@ DEFAULTS: dict[str, Any] = {
         "plan_at_remaining_percent": 5,
         "decide_at_remaining_percent": 2,
         "launch_at_remaining_percent": 1,
-        "goal_levels": ["mother", "step_mother", "lead", "task", "review"],
+        "goal_levels": ["mother", "lead", "doer", "review"],
         "spark_model": "gpt-5.3-codex-spark",
     },
     "models": {
         "high": {
-            "mother_model": "gpt-5.6-sol",
-            "mother_reasoning": "xhigh",
-            "lead_model": "gpt-5.6-terra",
-            "lead_reasoning": "high",
-            "task_model": "gpt-5.6-luna",
-            "task_reasoning": "max",
-            "review_model": "gpt-5.6-sol",
-            "review_reasoning": "xhigh",
+            "mother_model": "gpt-5.6-sol", "mother_reasoning": "medium",
+            "lead_model": "gpt-5.6-sol", "lead_reasoning": "medium",
+            "doer_model": "gpt-5.6-luna",
+            "doer_reasoning": "xhigh",
+            "task_model": "gpt-5.6-luna", "task_reasoning": "high",
+            "subtask_model": "gpt-5.6-luna", "subtask_reasoning": "high",
+            "assist_model": "gpt-5.6-sol", "assist_reasoning": "medium",
+            "review_model": "gpt-5.6-sol", "review_reasoning": "medium",
+            "advisor_model": "gpt-5.6-sol", "advisor_reasoning": "medium",
+            "architect_model": "gpt-5.6-sol", "architect_reasoning": "medium",
         },
         "medium": {
-            "mother_model": "gpt-5.6-sol",
-            "mother_reasoning": "high",
-            "lead_model": "gpt-5.6-terra",
-            "lead_reasoning": "medium",
-            "task_model": "gpt-5.6-luna",
-            "task_reasoning": "xhigh",
-            "review_model": "gpt-5.6-sol",
-            "review_reasoning": "high",
+            "mother_model": "gpt-5.6-sol", "mother_reasoning": "medium",
+            "lead_model": "gpt-5.6-sol", "lead_reasoning": "medium",
+            "doer_model": "gpt-5.6-luna",
+            "doer_reasoning": "xhigh",
+            "task_model": "gpt-5.6-luna", "task_reasoning": "high",
+            "subtask_model": "gpt-5.6-luna", "subtask_reasoning": "high",
+            "assist_model": "gpt-5.6-sol", "assist_reasoning": "medium",
+            "review_model": "gpt-5.6-sol", "review_reasoning": "medium",
+            "advisor_model": "gpt-5.6-sol", "advisor_reasoning": "medium",
+            "architect_model": "gpt-5.6-sol", "architect_reasoning": "medium",
         },
         "low": {
-            "mother_model": "gpt-5.6-terra",
-            "mother_reasoning": "medium",
-            "lead_model": "gpt-5.6-luna",
-            "lead_reasoning": "low",
-            "task_model": "gpt-5.6-luna",
-            "task_reasoning": "medium",
-            "review_model": "gpt-5.6-terra",
-            "review_reasoning": "high",
+            "mother_model": "gpt-5.6-sol", "mother_reasoning": "medium",
+            "lead_model": "gpt-5.6-sol", "lead_reasoning": "medium",
+            "doer_model": "gpt-5.6-luna",
+            "doer_reasoning": "xhigh",
+            "task_model": "gpt-5.6-luna", "task_reasoning": "high",
+            "subtask_model": "gpt-5.6-luna", "subtask_reasoning": "high",
+            "assist_model": "gpt-5.6-sol", "assist_reasoning": "medium",
+            "review_model": "gpt-5.6-sol", "review_reasoning": "medium",
+            "advisor_model": "gpt-5.6-sol", "advisor_reasoning": "medium",
+            "architect_model": "gpt-5.6-sol", "architect_reasoning": "medium",
         },
     },
     "model_capabilities": {
@@ -111,9 +116,13 @@ DEFAULTS: dict[str, Any] = {
     "roles": {},
     "labels": {
         "mother": "MOTHER",
-        "step_mother": "STEP MOTHER",
         "lead": "LEAD",
+        "doer": "DOER",
         "task": "TASK",
+        "subtask": "SUBTASK",
+        "assist": "ASSIST",
+        "advisor": "ADVISOR",
+        "architect": "ARCHITECT",
         "review": "REVIEW",
     },
     "coordination": {
@@ -152,7 +161,9 @@ DEFAULTS: dict[str, Any] = {
 
 ALLOWED_SUBAGENT_WORK = {"exploration", "implementation", "testing", "review"}
 BOOST_STRATEGIES = {"durable_goal", "closeout_first", "hands_off", "spark_simple_work"}
-BOOST_LEVELS = {"mother", "step_mother", "lead", "task", "review"}
+BOOST_LEVELS = {"mother", "lead", "doer", "review"}
+# These role goals are a fixed operating invariant, independent of Boost.
+MANDATORY_DURABLE_GOAL_ROLES = frozenset({"mother", "lead", "architect"})
 MODEL_WORKLOADS = {"simple", "general", "large_goal", "review"}
 MODEL_CAPABILITY_KEYS = {"provider", "workloads", "tools"}
 USAGE_PROFILES = {"high", "medium", "low"}
@@ -278,8 +289,8 @@ def validate(raw: dict[str, Any]) -> None:
         raise ConfigError("the config root must be a TOML table")
     _expect_keys(raw, set(DEFAULTS), "root")
     schema_version = raw.get("schema_version", 1)
-    if not _is_int(schema_version) or schema_version != 1:
-        raise ConfigError("schema_version must be 1")
+    if not _is_int(schema_version) or schema_version not in {1, 2}:
+        raise ConfigError("schema_version must be 1 or 2")
 
     portfolio = _expect_table(raw, "portfolio")
     _expect_keys(
@@ -300,9 +311,9 @@ def validate(raw: dict[str, Any]) -> None:
         "role_icons",
     )
     _boolean(role_icons, "enabled", "role_icons")
-    for key in ("mother", "step_mother", "lead", "review", "fallback"):
+    for key in ("mother", "lead", "review", "fallback"):
         _short_text(role_icons, key, "role_icons")
-    _short_text_list(role_icons, "task_choices", "role_icons")
+    _short_text_list(role_icons, "doer_choices", "role_icons")
 
     execution = _expect_table(raw, "execution")
     _expect_keys(execution, set(DEFAULTS["execution"]), "execution")
@@ -366,7 +377,7 @@ def validate(raw: dict[str, Any]) -> None:
         if not isinstance(values, dict):
             raise ConfigError(f"models.{profile} must be a TOML table")
         _expect_keys(values, set(defaults), f"models.{profile}")
-        for role in ("mother", "lead", "task", "review"):
+        for role in ("mother", "lead", "doer", "task", "subtask", "assist", "review", "advisor", "architect"):
             _model_name(values, f"{role}_model", f"models.{profile}")
             _reasoning_effort(values, f"{role}_reasoning", f"models.{profile}")
 
@@ -496,7 +507,8 @@ def validate(raw: dict[str, Any]) -> None:
 
     recovery = _expect_table(raw, "recovery")
     _expect_keys(recovery, set(DEFAULTS["recovery"]), "recovery")
-    _bounded_int(recovery, "max_attempts", 0, 3, "recovery")
+    if recovery.get("max_attempts", DEFAULTS["recovery"]["max_attempts"]) != 1:
+        raise ConfigError("recovery.max_attempts must be exactly 1")
     _bounded_int(recovery, "stall_after_updates", 1, 5, "recovery")
 
     lifecycle = _expect_table(raw, "lifecycle")
@@ -536,6 +548,39 @@ def merge(raw: dict[str, Any]) -> dict[str, Any]:
     return effective
 
 
+def normalize_legacy_task_role(raw: dict[str, Any]) -> dict[str, Any]:
+    """Accept legacy role settings while exposing only the DOER model."""
+    normalized = deepcopy(raw)
+    legacy = normalized.get("schema_version", 1) == 1
+    role_icons = normalized.get("role_icons", {})
+    if legacy and isinstance(role_icons, dict):
+        role_icons.pop("step_mother", None)
+    if isinstance(role_icons, dict) and "task_choices" in role_icons:
+        role_icons.setdefault("doer_choices", role_icons.pop("task_choices"))
+    boost = normalized.get("boost", {})
+    if legacy and isinstance(boost, dict) and isinstance(boost.get("goal_levels"), list):
+        levels = ["doer" if level == "task" else level for level in boost["goal_levels"]]
+        # Legacy STEP MOTHER was a coordinator, never durable ASSIST ownership.
+        levels = [level for level in levels if level not in {"step_mother", "assist"}]
+        boost["goal_levels"] = list(dict.fromkeys(levels)) or deepcopy(DEFAULTS["boost"]["goal_levels"])
+    for profile in normalized.get("models", {}).values():
+        if legacy and isinstance(profile, dict):
+            for suffix in ("model", "reasoning"):
+                legacy = f"task_{suffix}"
+                profile.setdefault(f"doer_{suffix}", profile.pop(legacy, None)) if legacy in profile else None
+    labels = normalized.get("labels", {})
+    if legacy and isinstance(labels, dict) and "step_mother" in labels:
+        legacy_step = labels.pop("step_mother")
+        if legacy_step != "STEP MOTHER":
+            labels.setdefault("assist", legacy_step)
+    if legacy and isinstance(labels, dict) and "task" in labels:
+        legacy_label = labels.pop("task")
+        if legacy_label != "TASK":
+            labels.setdefault("doer", legacy_label)
+    normalized["schema_version"] = 2
+    return normalized
+
+
 def load(path: Path) -> tuple[dict[str, Any], bool]:
     if not path.exists():
         return deepcopy(DEFAULTS), False
@@ -546,8 +591,9 @@ def load(path: Path) -> tuple[dict[str, Any], bool]:
         raise ConfigError(f"invalid TOML in {path}: {exc}") from exc
     except OSError as exc:
         raise ConfigError(f"could not read {path}: {exc}") from exc
-    validate(raw)
-    return merge(raw), True
+    normalized = normalize_legacy_task_role(raw)
+    validate(normalized)
+    return merge(normalized), True
 
 
 def _plugin_version() -> str:

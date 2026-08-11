@@ -23,7 +23,7 @@ class RushConsoleTests(unittest.TestCase):
         self.codex_home.mkdir()
         self.config = self.root / "rush" / "config.toml"
         self.config.parent.mkdir()
-        source = console.PLUGIN_ROOT / "skills" / "rush" / "assets" / "rush-config.toml"
+        source = console.PLUGIN_ROOT / "skills" / "swarm" / "assets" / "rush-config.toml"
         self.config.write_text(source.read_text(encoding="utf-8"), encoding="utf-8")
         self.database = self.codex_home / "state_5.sqlite"
         self.connection = sqlite3.connect(self.database)
@@ -121,6 +121,13 @@ class RushConsoleTests(unittest.TestCase):
     def test_non_editable_setting_is_rejected(self) -> None:
         with self.assertRaises(console.ConsoleError):
             console.update_config(self.config, {"feedback.destination": "https://example.invalid"})
+
+    def test_recovery_attempt_count_is_a_fixed_invariant_not_a_console_control(self) -> None:
+        self.assertNotIn("recovery.max_attempts", console.EDITABLE_SETTINGS)
+        app = (console.STATIC_ROOT / "app.js").read_text(encoding="utf-8")
+        self.assertNotIn('"recovery.max_attempts"', app)
+        with self.assertRaises(console.ConsoleError):
+            console.update_config(self.config, {"recovery.max_attempts": 0})
 
 
 if __name__ == "__main__":

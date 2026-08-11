@@ -10,6 +10,6 @@
     "mutable_overlap": false,
     "tiny_same_surface_work": false
   },
-  "requested_by": "TASK package",
+  "requested_by": "DOER package",
   "capacity_available": true
 }

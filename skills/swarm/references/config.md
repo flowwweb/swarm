@@ -37,6 +37,14 @@ Configuration cannot make an unsafe or hidden coordination path valid:
 - Existing safety, authority, provider, worktree, and proof boundaries remain.
 - If a required task tool is unavailable, report the blocker instead of
   substituting a local process or subagent hierarchy.
+- MOTHER, every LEAD, and every persistent ARCHITECT require an active durable
+  goal before scheduling or substantive work. Goal controls are required; this
+  invariant is not configurable and goal creation does not expand authority.
+- The MOTHER heartbeat is mandatory and passive: it reads every active
+  descendant, detects stalls from material-change evidence, performs exactly
+  one configured same-surface recovery, and then releases or reassigns on an
+  unchanged result. It cannot be disabled or replaced with polling, a queue,
+  daemon, private log, or activity-based progress.
 
 ## Settings
 
@@ -46,22 +54,21 @@ Configuration cannot make an unsafe or hidden coordination path valid:
 | `portfolio.default_parallel_tasks` | Preferred ceiling for an independent wave, never a creation quota | 1-8, not above max |
 | `portfolio.reuse_existing_tasks` | Reuse matching live owners | boolean |
 | `role_icons.mother` | MOTHER title emoji | trimmed single line, 1-24 chars; default ⚡ |
-| `role_icons.step_mother` | STEP MOTHER title emoji | trimmed single line, 1-24 chars |
 | `role_icons.lead` | LEAD title emoji | trimmed single line, 1-24 chars |
 | `role_icons.review` | REVIEW title emoji | trimmed single line, 1-24 chars |
 | `role_icons.fallback` | Generic finite-task emoji when no logical contextual choice exists | trimmed single line, 1-24 chars |
-| `role_icons.task_choices` | Emojis finite tasks may choose by actual work | 1-12 unique trimmed single-line strings |
+| `role_icons.doer_choices` | Emojis DOERs may choose by actual work | 1-12 unique trimmed single-line strings |
 | `execution.usage_profile` | Active relative model/effort policy | high, medium, low; default medium |
 | `execution.service_tier` | Optional preferred tier for new tasks when the host exposes it | empty for host default, or advertised tier string; default empty |
 | `execution.usage_saver` | Prefer lower-churn coordination for new work without weakening delivery | boolean; default false |
 | `boost.enabled` | Make explicit, user-started Boost closeout goals available | boolean; default true |
 | `boost.strategies` | Active Boost performance strategies | non-empty unique list of durable_goal, closeout_first, hands_off, spark_simple_work |
 | `boost.plan_at_remaining_percent` | Prepare substantial closeout goals | 1-100; default 5 |
-| `boost.decide_at_remaining_percent` | Freeze goal contracts and final routing | 1-100; default 2 |
+| `boost.decide_at_remaining_percent` | Lock goal contracts and final routing | 1-100; default 2 |
 | `boost.launch_at_remaining_percent` | Launch or resume closeout goals | 1-100; default 1 |
-| `boost.goal_levels` | Existing hierarchy levels eligible for substantial closeout goals | non-empty unique list of mother, step_mother, lead, task, review |
+| `boost.goal_levels` | Existing hierarchy levels eligible for substantial closeout goals | non-empty unique list of mother, lead, doer, review |
 | `boost.spark_model` | Reserve model for simple targeted work | model name; default gpt-5.3-codex-spark |
-| `models.<profile>.<role>_model` | Model for MOTHER, LEAD, TASK, or REVIEW in a profile | trimmed model name up to 64 chars |
+| `models.<profile>.<role>_model` | Model for MOTHER, LEAD, DOER, TASK, SUBTASK, ASSIST, ADVISOR, ARCHITECT, or REVIEW in a profile | trimmed model name up to 64 chars |
 | `models.<profile>.<role>_reasoning` | Reasoning for that role and profile | none, minimal, low, medium, high, xhigh, max, ultra; host/model dependent |
 | `model_capabilities.<MODEL>.provider` | Codex provider ID for a model | trimmed name up to 64 chars |
 | `model_capabilities.<MODEL>.workloads` | Work classes MOTHER may assign | non-empty unique list of simple, general, large_goal, review |
@@ -69,13 +76,12 @@ Configuration cannot make an unsafe or hidden coordination path valid:
 | `roles.<ROLE>.icon` | Optional icon for a custom contextual leaf role | trimmed single line, 1-24 chars |
 | `roles.<ROLE>.model` | Optional model override for a contextual leaf role | trimmed model name up to 64 chars |
 | `roles.<ROLE>.reasoning` | Optional reasoning override for a contextual leaf role | supported reasoning value |
-| `labels.mother` | Root planner label | trimmed single line, 1-24 chars |
-| `labels.step_mother` | Optional portfolio-segment coordinator label | trimmed single line, 1-24 chars |
+| `labels.mother` | Portfolio orchestrator label | trimmed single line, 1-24 chars |
 | `labels.lead` | Coordinator label | trimmed single line, 1-24 chars |
-| `labels.task` | Fallback leaf-task label | trimmed single line, 1-24 chars |
+| `labels.doer` | Fallback DOER label | trimmed single line, 1-24 chars |
 | `labels.review` | Independent review label | trimmed single line, 1-24 chars |
-| `coordination.allow_coordinators` | Permit justified STEP MOTHER and LEAD tasks | boolean |
-| `coordination.coordinator_min_children` | Minimum children for an otherwise-justified STEP MOTHER or LEAD; not a trigger | 2-8 |
+| `coordination.allow_coordinators` | Permit justified LEAD tasks | boolean |
+| `coordination.coordinator_min_children` | Minimum children for an otherwise-justified LEAD; not a trigger | 2-8 |
 | `coordination.preferred_lane_width` | Soft child-lane preference for every owner after delegation is justified | 1-8; default 3; never a quota or hard cutoff |
 | `subagents.enabled` | Permit internal task subagents | boolean |
 | `subagents.max_per_task` | Concurrent internal subagents per task | 0-8 |
@@ -83,8 +89,8 @@ Configuration cannot make an unsafe or hidden coordination path valid:
 | `review.task_enabled` | Make dedicated REVIEW tasks eligible when work warrants them; QC remains mandatory when false | boolean |
 | `review.max_parallel_tasks` | Concurrent REVIEW tasks | 1-8 |
 | `review.scale_when_queue_reaches` | Ready-artifact queue that adds review capacity | 2-8 |
-| `monitoring.heartbeat_minutes` | Passive MOTHER snapshot cadence for active descendants | 1-120; default 30 |
-| `recovery.max_attempts` | Recovery attempts after the first failure | 0-3 |
+| `monitoring.heartbeat_minutes` | Passive MOTHER snapshot cadence for active descendants; mandatory heartbeat remains enabled | 1-120; default 30 |
+| `recovery.max_attempts` | One safe same-surface recovery before release | exactly 1; non-disableable |
 | `recovery.stall_after_updates` | Unchanged owner work updates before a lane stalls; heartbeat observations excluded | 1-5 |
 | `lifecycle.pin_created_tasks` | Pin new RUSH tasks | boolean |
 | `lifecycle.archive_completed_tasks` | Archive terminally accepted finite tasks only when no concrete retention reason remains | boolean; default true |
@@ -108,25 +114,24 @@ Ambiguous tasks remain open until a later bounded stale audit proves archival is
 safe; then use the host archive control. The setting creates no queue, daemon,
 ledger, polling loop, or telemetry.
 
-The default title hierarchy is `⚡MOTHER - outcome`, optional
-`🗂️STEP MOTHER - segment`, optional `🧭LEAD - domain`, then a contextual title
+The default title hierarchy is `⚡MOTHER - outcome`, optional `🧭LEAD - domain`, then a contextual title
 such as `🔨BUILD - checkout`, plus `🔎REVIEW - checkout`. Every title has exactly
 one role emoji, concatenated directly with its label; RUSH never inserts a space
 after it. Prefer one familiar ROLE word and a concrete
 two-to-five-word artifact. Fewer characters are better only while the title
 remains clear and obvious. For branch combination, MERGE is usually clearer
 than RECONCILE; keep a longer label when it is the most accurate familiar term.
-`labels.task` is only the fallback. Users may customize hierarchy emojis and
-labels without restricting contextual task roles.
+`labels.doer` is only the fallback. Users may customize hierarchy emojis and
+labels without restricting contextual DOER roles.
 
 ## Models and usage
 
-The default `medium` profile uses Sol/high for MOTHER and STEP MOTHER,
-Terra/medium for LEAD,
-Luna/xhigh for contextual TASK work, and Sol/high for REVIEW. `high` spends more
-model effort; `low` uses cheaper model/effort pairs. These are relative policy
-presets, not token quotas or billing limits. Users may edit every pair and add a
-`roles.<ROLE>` table for a custom leaf role. Unlisted roles inherit TASK.
+The packaged profiles use Sol/medium for MOTHER, LEAD, ASSIST, ADVISOR,
+ARCHITECT, and REVIEW; Luna/xhigh for DOER; and Luna/high for TASK and
+SUBTASK. Every named role is resolved from its own configured pair in every
+packaged profile. These are customizable defaults, not token quotas, billing
+limits, or hard caps. Users may edit every pair and add a `roles.<ROLE>` table
+for a custom leaf role; an unlisted custom role requires an explicit override.
 
 RUSH passes model and reasoning when the host task API supports them and permits
 saved-config selection. If the host requires a direct request, the resolved
@@ -170,7 +175,9 @@ existing owner with substantial closeout work. Together they cover integration,
 remaining outcome-critical work, independent review, proof, and honest closeout
 without routine steering.
 
-Set `boost.enabled = false` to disable it. When enabled, Boost still starts only
+Set `boost.enabled = false` to disable optional Boost closeout behavior. It does
+not disable mandatory role goals or the MOTHER heartbeat. When enabled, Boost
+still starts only
 after a direct request such as "start Boost mode". RUSH first checks for an
 unfinished goal in each eligible task. It continues a matching goal without
 recreating it and refuses to replace a different unfinished goal. For each new
@@ -194,7 +201,7 @@ The default strategies are all enabled:
 
 Inside an explicitly Boost-authorized run, use real host-reported remaining
 usage to glide through three stages. With `durable_goal`, plan substantial
-owner-level goals at 5%, freeze their outcome, stopping condition, proof, and
+owner-level goals at 5%, lock their outcome, stopping condition, proof, and
 routing at 2%, then launch or resume them at 1%. `closeout_first`, `hands_off`,
 and `spark_simple_work` act only when present in `boost.strategies`. If telemetry
 is unavailable, do not estimate it; ask the user to start Boost or report the
@@ -204,8 +211,7 @@ When `durable_goal` is enabled, treat configured levels as eligible. Launch only
 for existing owners with substantial remaining closeout work; close tiny or
 complete owners normally and report them as skipped. Never create empty tasks
 to host a goal. A leaf goal owns remaining implementation, tests, proof, and
-  handoff; STEP MOTHER accepts LEAD handoffs only into its segment; LEAD accepts
-  child handoffs only into its domain and integrates them;
+  handoff; LEAD accepts child handoffs only into its domain and integrates them;
 REVIEW owns the cumulative independent verdict; MOTHER alone accepts the full
 integrated outcome. A lookup, single edit, one command, or status relay is never
 a Boost goal. Hands-off forbids messaging and active polling, but permits passive
@@ -216,16 +222,15 @@ threshold. Codex goals support long-running independent work, but Boost is not a
 promise to bypass account, service, model, rate, or spend limits. If goal tools
 are unavailable or goals are disabled in the host, report that exact blocker.
 
-The functional hierarchy stays root planning, optional STEP MOTHER, optional
-LEAD, finite ownership, and acceptance. Rename levels with `labels`, omit both
-coordinator levels with
+The functional hierarchy stays MOTHER, optional LEAD, finite ownership, and
+acceptance. Rename levels with `labels`, omit LEAD with
 `coordination.allow_coordinators = false`, create arbitrary contextual leaf
 roles, and control dedicated review tasks with `review.task_enabled`. Turning
 off a dedicated REVIEW task never turns off QC.
 
 The role emoji system is always active. Hierarchy roles use their matching
 `role_icons` setting. Contextual tasks use `roles.<ROLE>.icon` when present;
-otherwise select automatically from `role_icons.task_choices` by conventional
+otherwise select automatically from `role_icons.doer_choices` by conventional
 literal meaning. Prefer a familiar object or action understandable without a
 legend, such as a hammer for BUILD or a computer for DEV. Infer other roles from
 the same principle rather than a fixed mapping. Avoid decorative, novel, or
@@ -242,19 +247,13 @@ or changes title behavior. Remove them when next editing the config.
 
 `coordination.preferred_lane_width = 3` is one universal per-span shaping preference,
 applied only after delegation is already worthwhile. MOTHER normally keeps
-about three direct LEAD lanes. When more LEAD lanes need repeated grouping and
-the extra layer reduces coordination, MOTHER may also manage about three STEP
-MOTHER tasks, each managing about three additional LEADs. STEP MOTHER is an
-auxiliary coordination span, so it does not consume one of MOTHER's preferred
-direct-LEAD positions. It still counts under `portfolio.max_active_tasks` while
-producing or integrating. LEADs, finite TASK owners, REVIEW owners, and
+about three direct LEAD lanes. LEADs, finite DOER owners, REVIEW owners, and
 consequential planning TASKs use the same preference for their justified
 children or internal subtasks.
 
 Three is not a quota, trigger, or hard maximum. Keep four direct children when
-that is clearer, use waves when capacity is tighter, and stay flat when a STEP
-MOTHER would add handoffs. Do not prebuild a three-by-three tree or recursively
-add STEP MOTHER layers by default. `portfolio.max_active_tasks`,
+that is clearer, use waves when capacity is tighter, and stay flat when another
+handoff would add no value. Do not prebuild a three-by-three tree. `portfolio.max_active_tasks`,
 `portfolio.default_parallel_tasks`, `review.max_parallel_tasks`, and
 `subagents.max_per_task` remain separate scheduling or safety ceilings. With the
 packaged defaults, eight is the exceptional internal-subagent ceiling while

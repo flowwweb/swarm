@@ -18,7 +18,7 @@ const settingGroups = [
       ["portfolio.default_parallel_tasks", "Preferred parallel wave", "number", "A ceiling, never a creation quota"],
       ["portfolio.reuse_existing_tasks", "Reuse matching owners", "boolean", "Avoid duplicate task startup"],
       ["coordination.preferred_lane_width", "Preferred lane width", "number", "Soft shape after delegation is justified"],
-      ["coordination.allow_coordinators", "Allow coordinators", "boolean", "Permit STEP MOTHER and LEAD when useful"],
+      ["coordination.allow_coordinators", "Allow coordinators", "boolean", "Permit LEAD coordination when useful"],
     ],
   },
   {
@@ -39,7 +39,6 @@ const settingGroups = [
       ["review.task_enabled", "Dedicated REVIEW tasks", "boolean", "QC remains required when disabled"],
       ["review.max_parallel_tasks", "Review ceiling", "number", "Concurrent independent review surfaces"],
       ["review.scale_when_queue_reaches", "Scale review at queue", "number", "Ready artifacts before another reviewer"],
-      ["recovery.max_attempts", "Recovery attempts", "number", "Attempts after the first failure"],
       ["recovery.stall_after_updates", "Stall after updates", "number", "Material owner updates, not heartbeat reads"],
     ],
   },
@@ -58,22 +57,20 @@ const settingGroups = [
     title: "Hierarchy names",
     copy: "Keep labels short and obvious. Icons remain role-coded and directly joined.",
     fields: [
-      ["labels.mother", "MOTHER label", "text", "Root planner and final acceptor"],
-      ["labels.step_mother", "STEP MOTHER label", "text", "Auxiliary segment coordinator"],
+      ["labels.mother", "MOTHER label", "text", "WORKER orchestrator and final acceptor"],
       ["labels.lead", "LEAD label", "text", "Bounded domain coordinator"],
       ["labels.review", "REVIEW label", "text", "Independent evidence verdict"],
-      ["labels.task", "Fallback task label", "text", "Used only when no clearer role exists"],
+      ["labels.doer", "Fallback DOER label", "text", "Used only when no clearer role exists"],
     ],
   },
   {
     title: "Role signals",
-    copy: "Classic, readable signals for the hierarchy. Contextual task icons remain automatic.",
+    copy: "Classic, readable signals for the hierarchy. Contextual DOER icons remain automatic.",
     fields: [
       ["role_icons.mother", "MOTHER icon", "text", "Default lightning signal"],
-      ["role_icons.step_mother", "STEP MOTHER icon", "text", "Auxiliary grouping signal"],
       ["role_icons.lead", "LEAD icon", "text", "Domain direction signal"],
       ["role_icons.review", "REVIEW icon", "text", "Independent inspection signal"],
-      ["role_icons.fallback", "Fallback icon", "text", "Only when no literal task metaphor fits"],
+      ["role_icons.fallback", "Fallback icon", "text", "Only when no literal DOER metaphor fits"],
     ],
   },
 ];
@@ -165,7 +162,7 @@ function renderProjectFilter() {
 }
 
 function roleColor(role) {
-  return { mother: "#a8ff4f", step_mother: "#9d73ff", lead: "#42d9ff", review: "#ffbd59", task: "#89a9ff" }[role] || "#89a9ff";
+  return { mother: "#a8ff4f", lead: "#42d9ff", review: "#ffbd59", doer: "#89a9ff" }[role] || "#89a9ff";
 }
 
 function renderSwarm() {
