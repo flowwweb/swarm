@@ -892,6 +892,19 @@
         "Shared target mutation waits for the MOTHER deployment lease while unrelated work continues",
         "Recovery is exactly one safe same-surface attempt before blocker and release"
       ]
+    },
+    {
+      "id": 70,
+      "prompt": "A worker finished a migration task and has a compact, versioned lesson that no repository document contains. A current architecture contract is v2 while an older HIVE record says v1. Continue related work without preserving execution chatter.",
+      "expected_output": "Keep the worker WARM only while its context has near-term value; store at most the compact unique lesson with source and applicability, hydrate only the current relevant record inside context budget, and retire with ownership transfer when value drops.",
+      "files": [],
+      "assertions": [
+        "Current canonical and repository truth outrank HIVE; v1 does not override v2",
+        "Execution noise and copied repository truth are not stored as HIVE memory",
+        "Hydration is bounded, relevant, and smaller than storage",
+        "Retirement flushes zero or a few unique lessons then permits worker disappearance",
+        "HIVE does not prescribe target-product memory architecture or add a role"
+      ]
     }
   ]
 }
