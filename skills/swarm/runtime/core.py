@@ -18,6 +18,10 @@ class InvariantError(ValueError): pass
 @dataclass(frozen=True)
 class VersionedReference:
     name:str; version:int; kind:str
+@dataclass(frozen=True)
+class ArtifactIdentity:
+    base:str; revision:str; purpose:str
+    def key(self)->str: return f"{self.base}@{self.revision}:{self.purpose}"
 
 @dataclass(frozen=True)
 class ContextPackage:
@@ -65,7 +69,7 @@ class Worker:
 @dataclass
 class Swarm:
     architecture_version: int=1; contract_versions: dict[str,int]=field(default_factory=dict); topology: set[str]=field(default_factory=set)
-    workers: dict[str,Worker]=field(default_factory=dict); tasks: dict[str,Task]=field(default_factory=dict); leases: dict[str,str]=field(default_factory=dict); events: list[tuple[str,str]]=field(default_factory=list); telemetry: dict[str,object]=field(default_factory=dict); telemetry_events:list[dict[str,object]]=field(default_factory=list); lane_width:int=3; wip_limit:int=3; efficiency_ledger:list[dict[str,str]]=field(default_factory=list); mode:EfficiencyMode=EfficiencyMode.BALANCED
+    workers: dict[str,Worker]=field(default_factory=dict); tasks: dict[str,Task]=field(default_factory=dict); leases: dict[str,str]=field(default_factory=dict); events: list[tuple[str,str]]=field(default_factory=list); telemetry: dict[str,object]=field(default_factory=dict); telemetry_events:list[dict[str,object]]=field(default_factory=list); artifact_index:dict[str,str]=field(default_factory=dict); lane_width:int=3; wip_limit:int=3; efficiency_ledger:list[dict[str,str]]=field(default_factory=list); mode:EfficiencyMode=EfficiencyMode.BALANCED
     @classmethod
     def from_config(cls, config: dict) -> "Swarm":
         return cls(lane_width=config["coordination"]["preferred_lane_width"], wip_limit=config["efficiency"]["doer_wip_limit"], mode=EfficiencyMode(config["efficiency"]["mode"]))
@@ -125,13 +129,14 @@ class Swarm:
         self._role(actor,{Role.ARCHITECT}); self.tasks[task_id].contracts["intelligence_floor"]=tier
     def complexity_mismatch(self, actor: Role, task_id: str, observed_tier: int) -> None:
         self._role(actor,{Role.DOER}); self.tasks[task_id].contracts["complexity_mismatch"]=observed_tier; self.events.append(("MISMATCH",task_id))
-    def add_artifact(self, actor: Role, task_id: str, artifact: str, risk: str="", *, provenance:str|None=None, justification:str|None=None) -> None:
+    def add_artifact(self, actor: Role, task_id: str, artifact: ArtifactIdentity, risk: str="", *, source:str|None=None, justification:str|None=None) -> None:
         self._role(actor,{Role.DOER}); t=self.tasks[task_id]
-        exists=any(artifact in other.artifacts for other in self.tasks.values())
-        if exists and not (justification in {"verification","uncertainty"} and provenance and provenance != task_id): raise InvariantError("duplicate canonical artifact")
-        identity=artifact if not exists else f"{artifact}@{provenance}"; t.artifacts[identity]=provenance or task_id; t.evidence.append(identity); t.findings.extend([risk] if risk else [])
+        identity=artifact.key()
+        if identity in self.artifact_index: raise InvariantError("duplicate generated artifact identity")
+        if artifact.purpose in {"verification","uncertainty"} and (not source or justification!=artifact.purpose): raise InvariantError("justified duplicate requires source and purpose")
+        self.artifact_index[identity]=task_id; t.artifacts[identity]=source or task_id; t.evidence.append(identity); t.findings.extend([risk] if risk else [])
     def discover(self, artifact: str) -> list[str]:
-        return [t.id for t in self.tasks.values() if artifact in t.evidence]
+        return [t.id for t in self.tasks.values() if any(item == artifact or item.startswith(f"{artifact}@") for item in t.evidence)]
     def review_depth(self, risk:int) -> str:
         base="light" if risk <= 1 else "standard" if risk <= 3 else "adversarial" if risk <= 4 else "specialist"
         return "standard" if base=="light" and self.mode==EfficiencyMode.MAX else base
