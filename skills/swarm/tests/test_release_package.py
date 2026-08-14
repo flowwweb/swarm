@@ -218,14 +218,33 @@ class ReleasePackageTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "source bytes differ from HEAD"):
                 build_package_bytes(root)
 
+    def test_clean_filter_normalization_is_accepted(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = self.make_plugin(Path(temporary))
+            (root / ".gitattributes").write_text("*.md text eol=lf\n", encoding="utf-8")
+            subprocess.run(["git", "-C", str(root), "add", ".gitattributes"], check=True)
+            subprocess.run(["git", "-C", str(root), "add", "--renormalize", "."], check=True)
+            subprocess.run(["git", "-C", str(root), "commit", "-qm", "normalise markdown"], check=True)
+            (root / "README.md").write_bytes(b"# SWARM\r\n")
+
+            payload, metadata = build_package_bytes(root)
+
+            self.assertIn("README.md", metadata["files"])
+            with zipfile.ZipFile(io.BytesIO(payload)) as archive:
+                self.assertEqual(archive.read("README.md"), b"# SWARM\n")
+
     def test_assume_unchanged_cannot_hide_changed_source_bytes(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = self.make_plugin(Path(temporary))
+            (root / ".gitattributes").write_text("*.md text eol=lf\n", encoding="utf-8")
+            subprocess.run(["git", "-C", str(root), "add", ".gitattributes"], check=True)
+            subprocess.run(["git", "-C", str(root), "add", "--renormalize", "."], check=True)
+            subprocess.run(["git", "-C", str(root), "commit", "-qm", "normalise markdown"], check=True)
             subprocess.run(
                 ["git", "-C", str(root), "update-index", "--assume-unchanged", "README.md"],
                 check=True,
             )
-            (root / "README.md").write_text("hidden working-tree edit\n", encoding="utf-8")
+            (root / "README.md").write_bytes(b"hidden working-tree edit\r\n")
             with self.assertRaisesRegex(ValueError, "source bytes differ from HEAD.*README.md"):
                 build_package_bytes(root)
 
