@@ -39,6 +39,19 @@ PACKAGING_IGNORED_DIRECTORIES = frozenset(
 )
 PACKAGING_IGNORED_FILE_NAMES = frozenset({".DS_Store", ".coverage", "Thumbs.db"})
 PACKAGING_IGNORED_SUFFIXES = frozenset({".log", ".pyc", ".pyo", ".sqlite", ".sqlite3"})
+DEVELOPMENT_ONLY_PATHS = frozenset(
+    {
+        "docs/friction-audit.md",
+    }
+)
+DEVELOPMENT_ONLY_DIRECTORIES = frozenset(
+    {
+        ".github",
+        "console/tests",
+        "skills/swarm/evals",
+        "skills/swarm/tests",
+    }
+)
 ZIP_TIMESTAMP = (1980, 1, 1, 0, 0, 0)
 WINDOWS_RESERVED_NAMES = frozenset(
     {"CON", "PRN", "AUX", "NUL", *(f"COM{number}" for number in range(1, 10)), *(f"LPT{number}" for number in range(1, 10))}
@@ -98,6 +111,11 @@ def _source_included(relative: Path) -> bool:
     archive_name = normalise_relative_path(relative)
     parts = PurePosixPath(archive_name).parts
     if any(part in PACKAGING_IGNORED_DIRECTORIES for part in parts[:-1]):
+        return False
+    if archive_name in DEVELOPMENT_ONLY_PATHS or any(
+        archive_name == directory or archive_name.startswith(directory + "/")
+        for directory in DEVELOPMENT_ONLY_DIRECTORIES
+    ):
         return False
     name = parts[-1]
     if archive_name == PACKAGE_METADATA_PATH or name in PACKAGING_IGNORED_FILE_NAMES:
@@ -216,6 +234,20 @@ def _git_bytes(root: Path, *arguments: str) -> bytes:
     return completed.stdout
 
 
+def is_git_repository_root(root: Path) -> bool:
+    """Return whether ``root`` is exactly a usable Git worktree top level."""
+    root = root.resolve()
+    completed = subprocess.run(
+        ["git", "-C", str(root), "rev-parse", "--show-toplevel"],
+        capture_output=True,
+        check=False,
+        text=True,
+    )
+    if completed.returncode:
+        return False
+    return Path(completed.stdout.strip()).resolve() == root
+
+
 def _tracked_product_paths(root: Path) -> set[str]:
     tracked = _git(root, "ls-files", "-z").split("\0")
     paths: set[str] = set()
@@ -235,6 +267,7 @@ class GitSnapshot:
     tree: str
     version: str
     files: dict[str, str]
+    blob_ids: dict[str, str]
     blobs: dict[str, bytes]
 
 
@@ -258,6 +291,7 @@ def _snapshot_manifest(blobs: dict[str, bytes], files: dict[str, str]) -> str:
 def _capture_snapshot(root: Path, commit: str, tree: str) -> GitSnapshot:
     """Read each package blob once from a single immutable commit/tree snapshot."""
     files: dict[str, str] = {}
+    blob_ids: dict[str, str] = {}
     blobs: dict[str, bytes] = {}
     for entry in _git_bytes(root, "ls-tree", "-r", "-z", commit).split(b"\0"):
         if not entry:
@@ -274,13 +308,53 @@ def _capture_snapshot(root: Path, commit: str, tree: str) -> GitSnapshot:
         if object_type != "blob" or mode not in {"100644", "100755"}:
             raise ValueError(f"unsupported tracked source entry: {archive_name} ({mode} {object_type})")
         blob = _git_bytes(root, "cat-file", "blob", object_id)
+        blob_ids[archive_name] = object_id
         blobs[archive_name] = blob
         files[archive_name] = hashlib.sha256(blob).hexdigest()
     validate_canonical_paths(
         [*files, PACKAGE_METADATA_PATH], "captured source snapshot and generated metadata"
     )
     files = dict(sorted(files.items()))
-    return GitSnapshot(commit, tree, _snapshot_manifest(blobs, files), files, blobs)
+    return GitSnapshot(
+        commit,
+        tree,
+        _snapshot_manifest(blobs, files),
+        files,
+        dict(sorted(blob_ids.items())),
+        blobs,
+    )
+
+
+def _working_clean_blob_ids(root: Path) -> dict[str, str]:
+    """Hash product files as Git would store them, applying configured clean filters."""
+    paths = _file_hashes(root, _source_included)
+    blobs: dict[str, str] = {}
+    for archive_name in paths:
+        candidate = root / PurePosixPath(archive_name)
+        completed = subprocess.run(
+            [
+                "git",
+                "-C",
+                str(root),
+                "hash-object",
+                "--filters",
+                f"--path={archive_name}",
+                "--stdin",
+            ],
+            input=candidate.read_bytes(),
+            capture_output=True,
+            check=False,
+        )
+        if completed.returncode:
+            detail = completed.stderr.decode("utf-8", "replace").strip()
+            raise ValueError(
+                f"git verification failed: hash-object --path={archive_name}: {detail}"
+            )
+        object_id = completed.stdout.decode("ascii", "strict").strip()
+        if not object_id:
+            raise ValueError(f"git returned no content hash for tracked source file: {archive_name}")
+        blobs[archive_name] = object_id
+    return blobs
 
 
 def release_identity(root: Path) -> GitSnapshot:
@@ -300,7 +374,7 @@ def release_identity(root: Path) -> GitSnapshot:
     if untracked:
         raise ValueError(f"source repository has untracked files: {untracked}")
 
-    files = source_file_hashes(root)
+    files = _working_clean_blob_ids(root)
     tracked = _tracked_product_paths(root)
     if set(files) != tracked:
         missing = sorted(tracked - set(files))
@@ -308,12 +382,17 @@ def release_identity(root: Path) -> GitSnapshot:
         raise ValueError(
             f"source package surface differs from tracked files: missing={missing}, unexpected={unexpected}"
         )
-    if files != snapshot.files:
+    if files != snapshot.blob_ids:
         missing = sorted(set(snapshot.files) - set(files))
         unexpected = sorted(set(files) - set(snapshot.files))
-        changed = sorted(path for path in set(files) & set(snapshot.files) if files[path] != snapshot.files[path])
+        changed = sorted(
+            path
+            for path in set(files) & set(snapshot.files)
+            if files[path] != snapshot.blob_ids[path]
+        )
         raise ValueError(
-            f"source bytes differ from HEAD: missing={missing}, unexpected={unexpected}, changed={changed}"
+            "source bytes differ from HEAD after configured clean filters: "
+            f"missing={missing}, unexpected={unexpected}, changed={changed}"
         )
 
     return snapshot

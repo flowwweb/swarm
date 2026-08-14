@@ -1,0 +1,13 @@
+{
+  "name": "flowwweb",
+  "description": "Flowwweb agent workflows.",
+  "owner": {
+    "name": "Flowwweb"
+  },
+  "plugins": [
+    {
+      "name": "swarm",
+      "source": "./"
+    }
+  ]
+}

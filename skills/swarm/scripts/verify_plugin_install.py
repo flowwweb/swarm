@@ -6,7 +6,9 @@ import argparse
 import hashlib
 import io
 import json
+import os
 import re
+import shutil
 import sys
 import zipfile
 from pathlib import Path
@@ -16,8 +18,13 @@ sys.path.insert(0, str(REPOSITORY_ROOT / "scripts"))
 from build_package import (
     PACKAGE_METADATA_PATH,
     _installed_included,
+    _is_reparse_path,
+    _source_included,
     normalise_relative_path,
     installed_file_hashes,
+    is_git_repository_root,
+    release_identity,
+    source_file_hashes,
     validate_plugin_manifest,
     validate_canonical_paths,
 )
@@ -40,7 +47,124 @@ def _compare(expected: dict[str, str], actual: dict[str, str]) -> int:
 
 
 def verify(source: Path, installed: Path) -> int:
-    return _compare(declared_files(source), declared_files(installed))
+    source_files = (
+        release_identity(source).files
+        if is_git_repository_root(source)
+        else source_file_hashes(source)
+    )
+    validate_plugin_manifest(source, source_files)
+    return _compare(source_files, declared_files(installed))
+
+
+def _skill_file_hashes(root: Path) -> dict[str, str]:
+    """Hash one complete portable skill tree, rejecting links before copying it."""
+    if not root.is_dir():
+        raise ValueError("canonical skill directory is missing")
+    files: dict[str, str] = {}
+    for directory, directories, filenames in os.walk(root, followlinks=False):
+        directory_path = Path(directory)
+        kept_directories: list[str] = []
+        for name in directories:
+            candidate = directory_path / name
+            if _is_reparse_path(candidate):
+                raise ValueError("canonical skill contains a link or junction")
+            kept_directories.append(name)
+        directories[:] = kept_directories
+        for name in filenames:
+            candidate = directory_path / name
+            if _is_reparse_path(candidate) or not candidate.is_file():
+                raise ValueError("canonical skill contains a non-regular file")
+            relative = normalise_relative_path(candidate.relative_to(root))
+            files[relative] = hashlib.sha256(candidate.read_bytes()).hexdigest()
+    if "SKILL.md" not in files:
+        raise ValueError("canonical skill is missing SKILL.md")
+    return dict(sorted(files.items()))
+
+
+def _declared_skill_file_hashes(root: Path) -> dict[str, str]:
+    """Hash only the canonical skill files selected by the package policy."""
+    root = root.resolve()
+    try:
+        root.relative_to(REPOSITORY_ROOT)
+    except ValueError as error:
+        raise ValueError("canonical skill must be inside the SWARM repository") from error
+    if not root.is_dir():
+        raise ValueError("canonical skill directory is missing")
+
+    files: dict[str, str] = {}
+    for directory, directories, filenames in os.walk(root, followlinks=False):
+        directory_path = Path(directory)
+        kept_directories: list[str] = []
+        for name in directories:
+            candidate = directory_path / name
+            if _is_reparse_path(candidate):
+                raise ValueError("canonical skill contains a link or junction")
+            repository_relative = candidate.relative_to(REPOSITORY_ROOT)
+            if _source_included(repository_relative / "placeholder"):
+                kept_directories.append(name)
+        directories[:] = kept_directories
+        for name in filenames:
+            candidate = directory_path / name
+            if _is_reparse_path(candidate) or not candidate.is_file():
+                raise ValueError("canonical skill contains a non-regular file")
+            repository_relative = candidate.relative_to(REPOSITORY_ROOT)
+            if not _source_included(repository_relative):
+                continue
+            relative = normalise_relative_path(candidate.relative_to(root))
+            files[relative] = hashlib.sha256(candidate.read_bytes()).hexdigest()
+    if "SKILL.md" not in files:
+        raise ValueError("canonical skill is missing SKILL.md")
+    return dict(sorted(files.items()))
+
+
+def _assert_safe_destination_ancestors(project: Path, destination: Path) -> None:
+    """Reject existing reparse points before creating anything below the project."""
+    for ancestor in (
+        project,
+        project / ".agents",
+        project / ".agents" / "skills",
+        destination,
+    ):
+        if (ancestor.exists() or ancestor.is_symlink()) and _is_reparse_path(ancestor):
+            raise ValueError("Agent Skills destination parent contains a link or junction")
+
+
+def install_agent_skill(project_root: Path) -> int:
+    """Copy the declared canonical skill surface to one external project location."""
+    source = (REPOSITORY_ROOT / "skills" / "swarm").resolve()
+    project = project_root.absolute()
+    if not project.is_dir():
+        raise ValueError("project root does not exist")
+    if _is_reparse_path(project):
+        raise ValueError("Agent Skills destination parent contains a link or junction")
+    try:
+        project.resolve().relative_to(REPOSITORY_ROOT)
+    except ValueError:
+        pass
+    else:
+        raise ValueError("refusing to create a duplicate skill inside the SWARM repository")
+    destination = project / ".agents" / "skills" / "swarm"
+    _assert_safe_destination_ancestors(project, destination)
+    if destination.exists() or destination.is_symlink():
+        raise ValueError("Agent Skills destination already exists; refusing to overwrite it")
+    source_files = _declared_skill_file_hashes(source)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    _assert_safe_destination_ancestors(project, destination)
+    try:
+        destination.mkdir()
+        for relative in source_files:
+            source_file = source / relative
+            destination_file = destination / relative
+            destination_file.parent.mkdir(parents=True, exist_ok=True)
+            if _is_reparse_path(destination_file.parent):
+                raise ValueError("Agent Skills destination parent contains a link or junction")
+            shutil.copy2(source_file, destination_file)
+        copied_files = _skill_file_hashes(destination)
+    except Exception:
+        if destination.exists() and not _is_reparse_path(destination):
+            shutil.rmtree(destination)
+        raise
+    return _compare(source_files, copied_files)
 
 
 LOWER_HEX_40 = re.compile(r"[0-9a-f]{40}\Z")
@@ -151,21 +275,30 @@ def _cli_error(error: Exception, paths: list[Path]) -> str:
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("installed", type=Path)
-    source_or_package = parser.add_mutually_exclusive_group(required=True)
+    parser.add_argument("installed", nargs="?", type=Path)
+    parser.add_argument("--install-agent-skill", metavar="PROJECT", type=Path)
+    source_or_package = parser.add_mutually_exclusive_group()
     source_or_package.add_argument("--source", type=Path)
     source_or_package.add_argument("--package", type=Path)
     args = parser.parse_args()
     try:
-        if args.package:
+        if args.install_agent_skill:
+            if args.installed or args.package or args.source:
+                parser.error("--install-agent-skill cannot be combined with verification arguments")
+            count = install_agent_skill(args.install_agent_skill)
+            surface = "canonical Agent Skills files"
+        elif not args.installed:
+            parser.error("installed is required for verification")
+        elif args.package:
             count = verify_package(args.package.resolve(), args.installed.resolve())
             surface = "release package"
         else:
             count = verify(args.source.resolve(), args.installed.resolve())
             surface = "source product"
     except (ValueError, zipfile.BadZipFile, OSError) as error:
-        parser.exit(2, f"error: {_cli_error(error, [args.installed, args.package or args.source])}\n")
-    print(f"verified {count} {surface} files")
+        parser.exit(2, f"error: {_cli_error(error, [path for path in [args.installed, args.package or args.source, args.install_agent_skill] if path])}\n")
+    action = "installed" if args.install_agent_skill else "verified"
+    print(f"{action} {count} {surface}")
     return 0
 
 

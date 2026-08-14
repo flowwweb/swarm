@@ -782,7 +782,7 @@
     },
     {
       "id": 62,
-      "prompt": "SWARM-FB-20260809-WINPY-01: On Windows, the read-only config loader is denied by the tool permission boundary. The attached fixture includes a current receipt for one already-authorized runtime and shows existing owners doing safe work. Recover without elevation or provider assumptions.",
+      "prompt": "On Windows, the read-only config loader is denied by the tool permission boundary. The attached fixture includes a current receipt for one already-authorized runtime and shows existing owners doing safe work. Recover without elevation or provider assumptions.",
       "expected_output": "SWARM retries the same read-only script and arguments once with the receipt-backed non-elevated runtime, distinguishes tooling permission from provider authentication, and pauses only new scheduling or config-dependent actions if the fallback fails while safe already-owned work continues.",
       "files": ["evals/fixtures/windows-loader-permission.json"],
       "assertions": [
@@ -949,7 +949,7 @@
     },
     {
       "id": 74,
-      "prompt": "A completed SWARM plugin-maintenance MOTHER exists. A new Flowwweb landing request also mentions SWARM. Reuse the existing task if it sounds related.",
+      "prompt": "A completed plugin-maintenance portfolio exists. A new unrelated product request also mentions the coordination method. Reuse the existing task if it sounds related.",
       "expected_output": "CTRL does not reuse the plugin portfolio: the landing objective, canonical artifact and mutable surface, and accepting route differ. Keyword similarity and migration history do not transfer ownership.",
       "files": [],
       "assertions": [

@@ -8,11 +8,11 @@ from runtime import AcceptanceContract, ArtifactIdentity, CtrlMode, HorizonActio
 
 class OperatingModelTests(unittest.TestCase):
     def test_direct_mode_is_the_only_ctrl_mutation_exception(self):
-        skill=(Path(__file__).resolve().parents[1] / "SKILL.md").read_text(encoding="utf-8")
+        root=Path(__file__).resolve().parents[1]
+        skill="\n".join((root / name).read_text(encoding="utf-8") for name in ("SKILL.md", "references/hierarchy.md"))
         hierarchy=(Path(__file__).resolve().parents[1] / "references" / "hierarchy.md").read_text(encoding="utf-8")
-        self.assertIn("outside the exact `CTRL_DIRECT` predicate",skill)
-        self.assertIn("other delegation exceptions grant no mutable worker authority unless",skill)
-        self.assertIn("internal-approval fallback is a narrow direct-work exception",skill)
+        self.assertRegex(skill,r"(?is)CTRL_DIRECT.*only one low-risk atomic outcome.*otherwise use.*CTRL_DELEGATED")
+        self.assertRegex(skill,r"(?is)failed capacity.*continue direct bounded owner work.*never grants external")
         self.assertIn("Every `CTRL_DELEGATED` and non-CTRL SWARM task delegates",hierarchy)
 
     def test_ctrl_direct_is_exact_and_every_failed_predicate_delegates(self):

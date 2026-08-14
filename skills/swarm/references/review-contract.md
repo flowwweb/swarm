@@ -2,6 +2,31 @@
 
 ## Two scopes, one final gate
 
+## Classify proof and final visual artifacts honestly
+
+Classify runtime proof by the authority and transport actually exercised, not
+the number of clients or tabs. Mocks, request interception, fixtures, and
+in-memory substitutes prove only that substituted boundary; name it in the
+receipt and leave local-session, emulator, provider, network, deployed, or
+device boundaries that were not exercised `UNVERIFIED`.
+
+Before accepting a visual claim, inspect the exact final rendered frame before
+trusting DOM geometry or receipts. The claimed primary substrate and relevant
+user context must be visibly real; a correct overlay cannot upgrade a blank,
+fallback, mocked, placeholder, or failed substrate. Relevant console warnings,
+page errors, and failed requests block a clean claim until explained by a
+narrower claim.
+
+For taste-led generation, a clear user direction permits generation while a
+reserved choice requires candidates and a wait. Classify each supplied reference
+as loose inspiration or binding. For a binding reference, make a fidelity
+checklist for geometry/composition, typography/letterforms, palette, hierarchy,
+and prohibited deviations, then inspect the exact delivered artifact beside the
+reference in delivered context after every transformation. An intermediate
+preview, source, filename, manifest, or conversion receipt cannot prove final
+fidelity. Loose inspiration carries only the direction the user assigned, never
+a counterfeit likeness claim.
+
 `SOURCE_SEMANTICS` checks the implementation and may return useful findings, but
 it cannot set final `review_passed`. `ACCEPTANCE` checks the declared immutable
 `ArtifactIdentity` against its `AcceptanceContract`. It passes only when every

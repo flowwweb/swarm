@@ -17,6 +17,16 @@ integrity audit that recreates a lost or missing due event; it is not a second
 progress clock. The scheduled receipt tied to the durable goal survives
 compaction without a private heartbeat ledger.
 
+Every active durable goal has one stable identity and a locally chosen horizon
+no longer than 60 minutes (normally 30, preferably 10–20 for small work).
+Do not rename, reset, replace, or shrink a goal to erase a miss; a completed
+milestone resets only the consecutive-miss count. After the one allowed
+readiness reschedule, miss one requires raw-evidence reorientation, miss two
+independent REVIEW, and miss three one SUPERVISOR. SUPERVISOR recovers progress
+without acquiring implementation, specialist, review, topology, or acceptance
+authority. Route repeat work toward recent time-to-accepted-proof with low
+correction cost, while preserving proof and authority.
+
 At every heartbeat, audit each recent user-visible CTRL message through EVENT's
 outcome -> inline proof -> remaining risk -> next material checkpoint hierarchy.
 Outcome and proof are mandatory; risk and checkpoint are optional when empty.
