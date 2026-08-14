@@ -17,11 +17,39 @@ integrity audit that recreates a lost or missing due event; it is not a second
 progress clock. The scheduled receipt tied to the durable goal survives
 compaction without a private heartbeat ledger.
 
+At every heartbeat, audit each recent user-visible CTRL message through EVENT's
+outcome -> inline proof -> remaining risk -> next material checkpoint hierarchy.
+Outcome and proof are mandatory; risk and checkpoint are optional when empty.
+Each message must bind to one unconsumed registered material-event receipt for a
+result, decision, blocker, acceptance, release, or handoff. Proof must match the
+exact surfaced evidence receipts from the same task registered for that event.
+An empty feed is valid when nothing material changed.
+Messages classified as orchestration narration, task/lease/command chatter,
+activity-only progress, fabricated proof, or duplicated MOTHER detail fail the
+audit. Reusing a relevant prior receipt is valid when it genuinely supports a
+new registered material interpretation, acceptance decision, or blocker. The
+event identity is single-use, so stale proof alone cannot manufacture progress.
+
+Do not hardcode word, character, receipt, message, or keyword limits. Compactness
+is a relevance judgment: preserve all detail needed for truth, safety, a complex
+decision, an explicit topology request, or usable proof, and remove only detail
+that does not help the user understand, decide, or act.
+
+On any failure, the heartbeat requires one fully compliant correction before it
+continues. It marks the rejected message IDs superseded, records the correction
+receipt and cumulative drift count, and performs an internal purpose reset:
+CTRL is the compact human progress-and-proof feed, not a coordination narrator.
+The correction itself is the only replacement visible to the user; drift counts,
+audit classifications, and reorientation receipts remain internal telemetry.
+Repeated drift repeats this fail-closed correction instead of normalizing the
+bad style. MOTHER owns portfolio acceptance, integration, and topology; CTRL
+owns the objective ledger and human review route. CTRL may run one bounded proof
+fallback, but the feed receives only the resulting decision and proof.
+
 Apply EVENT: a passive snapshot is not itself an update. Surface only changed
-attention, blocker, handoff, acceptance, or release in one natural line by
-default. Use host state, the latest material owner update, and the existing
-receipt. Expand only when truth requires it; never impose fixed fields, narrate
-routine progress, or ask owners to report more.
+attention, blocker, handoff, acceptance, or release. Use host state, the latest
+material owner update, and the existing receipt. Expand only when truth requires
+it; never narrate routine progress or ask owners to report more.
 
 Internally classify observed state as `active`, `attention`, `ready`, or
 `unknown`; do not call a task progressing when no material signal supports it.

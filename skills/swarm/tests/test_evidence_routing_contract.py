@@ -3,7 +3,7 @@ import sys
 import unittest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from runtime import CtrlSurfaceKind, EvidenceDisposition, InvariantError, Role, Swarm, Task, TaskState, WithholdBasis, WorkerState
+from runtime import AcceptanceContract, CtrlFeedEventKind, CtrlFeedMessage, CtrlFeedPart, CtrlSurfaceKind, EvidenceDisposition, InvariantError, LaneKind, ReviewEvidence, ReviewScope, ReviewStrategy, Role, Swarm, Task, TaskState, WithholdBasis, WorkerState, audit_ctrl_feed
 
 
 class EvidenceRoutingContractTests(unittest.TestCase):
@@ -13,11 +13,18 @@ class EvidenceRoutingContractTests(unittest.TestCase):
 
     def setUp(self):
         self.swarm = Swarm()
-        self.swarm.start_atomic(Role.CTRL, Task("covers", "artist", "CTRL", 1, {}, subagent_receipt="host:thread:artist"))
+        self.swarm.start_atomic(Role.CTRL, Task("covers", "artist", "CTRL", 1, {}, subagent_receipt="host:thread:artist",lane_kind=LaneKind.NON_CODE,mother_id="mother",acceptance_contract=AcceptanceContract.empty()))
 
     def accept(self):
-        self.swarm.review(Role.REVIEW, "covers", "independent", True)
-        self.swarm.complete(Role.MOTHER, "covers", True, True, 1)
+        self.acceptance_review_only()
+        self.swarm.complete(Role.MOTHER, "covers", True, True, 1,actor_id="mother")
+
+    def acceptance_review_only(self):
+        evidence=ReviewEvidence(ReviewStrategy.LIGHT,"independent",True,None,receipt=(("acceptance","review:covers"),),scope=ReviewScope.ACCEPTANCE)
+        self.swarm.review(Role.REVIEW, "covers", evidence, True)
+
+    def feed_event(self, receipt, proof_receipts, task_id="covers", kind=CtrlFeedEventKind.RESULT):
+        return self.swarm.register_ctrl_feed_event(Role.CTRL,task_id,receipt,kind,proof_receipts)
 
     def surface_candidates(self, count):
         candidate_ids=tuple(f"cover-{index}" for index in range(count))
@@ -32,9 +39,9 @@ class EvidenceRoutingContractTests(unittest.TestCase):
         self.swarm.register_ctrl_evidence(Role.DOER, "covers", "cover-folder", "inventory", "covers/", material=False)
         with self.assertRaisesRegex(InvariantError, "inline proof surface kind"):
             self.swarm.surface_ctrl_evidence(Role.CTRL, "cover-folder", surface_kind="path", caption="Folder inventory for ten generated covers.", claim_limit="This link does not display or approve any cover.", surface_receipt="chat:folder")
-        self.swarm.review(Role.REVIEW, "covers", "independent", True)
+        self.acceptance_review_only()
         with self.assertRaisesRegex(InvariantError, "open CTRL evidence acceptance failure"):
-            self.swarm.complete(Role.MOTHER, "covers", True, True, 1)
+            self.swarm.complete(Role.MOTHER, "covers", True, True, 1,actor_id="mother")
         with self.assertRaisesRegex(InvariantError, "before phase advance"):
             self.swarm.advance_ctrl_phase(Role.CTRL, "implementation")
         self.assertEqual(len(self.swarm.ctrl_feed_due(Role.CTRL)), 10)
@@ -50,9 +57,9 @@ class EvidenceRoutingContractTests(unittest.TestCase):
             self.swarm.register_ctrl_evidence(Role.DOER, "covers", evidence_id, "ImageGen", f"cover-{index}.png")
             self.swarm.surface_ctrl_evidence(Role.CTRL, evidence_id, surface_kind=CtrlSurfaceKind.INLINE_IMAGE, caption=f"Generated cover option {index + 1}.", claim_limit="Concept art only; user selection and production admission remain open.", surface_receipt=f"chat:image:{index}")
         self.assertEqual(self.swarm.ctrl_feed_due(Role.CTRL), ())
-        self.swarm.review(Role.REVIEW, "covers", "independent", True)
+        self.acceptance_review_only()
         with self.assertRaisesRegex(InvariantError,"require one surfaced final gallery"):
-            self.swarm.complete(Role.MOTHER, "covers", True, True, 1)
+            self.swarm.complete(Role.MOTHER, "covers", True, True, 1,actor_id="mother")
         candidate_ids=tuple(f"cover-{index}" for index in range(10))
         self.swarm.register_ctrl_decision_set(Role.CTRL,"covers","cover-choice",candidate_ids,user_requested_all=True)
         self.swarm.surface_ctrl_decision_gallery(Role.CTRL,"cover-choice",embedded_ids=candidate_ids,labels_defects={candidate:f"Option {index + 1}: no known objective defect." for index,candidate in enumerate(candidate_ids)},complete_inventory=candidate_ids,surface_receipt="final:gallery:covers")
@@ -78,9 +85,9 @@ class EvidenceRoutingContractTests(unittest.TestCase):
         candidates=self.surface_candidates(7)
         self.swarm.register_ctrl_decision_set(Role.CTRL,"covers","cover-choice",candidates)
         self.assertEqual(self.swarm.ctrl_feed_due(Role.CTRL),())
-        self.swarm.review(Role.REVIEW,"covers","independent",True)
+        self.acceptance_review_only()
         with self.assertRaisesRegex(InvariantError,"open CTRL decision gallery acceptance failure"):
-            self.swarm.complete(Role.MOTHER,"covers",True,True,1)
+            self.swarm.complete(Role.MOTHER,"covers",True,True,1,actor_id="mother")
         with self.assertRaisesRegex(InvariantError,"before phase advance"):
             self.swarm.advance_ctrl_phase(Role.CTRL,"production")
 
@@ -120,7 +127,7 @@ class EvidenceRoutingContractTests(unittest.TestCase):
             self.swarm.surface_ctrl_evidence(Role.CTRL, "browser-shot", surface_kind=CtrlSurfaceKind.INLINE_RECEIPT, caption="Route map.", claim_limit="Local browser only.", surface_receipt="chat:receipt:not-image")
 
     def test_one_candidate_in_each_unrelated_task_does_not_create_a_false_gallery(self):
-        other=Task("other","other-owner","CTRL",1,{},subagent_receipt="host:thread:other")
+        other=Task("other","other-owner","CTRL",1,{},subagent_receipt="host:thread:other",lane_kind=LaneKind.NON_CODE,mother_id="mother",acceptance_contract=AcceptanceContract.empty())
         self.swarm.start_simple(Role.MOTHER,other)
         for task_id,evidence_id in (("covers","cover-only"),("other","other-only")):
             self.swarm.register_ctrl_evidence(Role.DOER,task_id,evidence_id,"ImageGen",f"{evidence_id}.png")
@@ -165,6 +172,154 @@ class EvidenceRoutingContractTests(unittest.TestCase):
         self.assertIn("Do not lead with SPECIALIST, ARCHITECT, LEAD, REVIEW, task inventory, file counts, import counts, or a tool run", self.skill)
         self.assertIn("A specialist event is feed-worthy only when it changes the product contract or blocks/clears implementation", self.skill)
         self.assertIn("A message that contains only coordination status is a SWARM contract violation", self.skill)
+
+    def test_heartbeat_accepts_outcome_proof_risk_checkpoint_hierarchy(self):
+        self.swarm.register_ctrl_evidence(Role.DOER,"covers","replay-proof","test","replay comparison")
+        receipt=self.swarm.surface_ctrl_evidence(Role.CTRL,"replay-proof",surface_kind=CtrlSurfaceKind.INLINE_COMPARISON,caption="Twelve replay cases preserve reconnect state.",claim_limit="Device resume remains unverified.",surface_receipt="chat:replay:12")
+        message=CtrlFeedMessage("release-proof",(
+            (CtrlFeedPart.OUTCOME,"The release candidate now preserves reconnect state."),
+            (CtrlFeedPart.PROOF,"Inline replay comparison: 12 of 12 cases match."),
+            (CtrlFeedPart.RISK,"Device resume remains unverified."),
+            (CtrlFeedPart.CHECKPOINT,"Next review surface is the device-resume capture."),
+        ),(receipt,),"covers","chat:feed:release-proof",self.feed_event("event:release-proof",(receipt,)))
+        self.assertTrue(audit_ctrl_feed((message,)).compliant)
+        self.assertIsNone(self.swarm.heartbeat(Role.CTRL,"covers",meaningful_progress=True,recent_ctrl_feed=(message,)))
+
+    def test_compact_feed_can_omit_empty_risk_and_checkpoint(self):
+        message=CtrlFeedMessage("accepted",(
+            (CtrlFeedPart.OUTCOME,"Reconnect behavior is accepted."),
+            (CtrlFeedPart.PROOF,"The inline replay receipt covers every declared case."),
+        ),("chat:accepted",),"covers","chat:feed:accepted","event:accepted")
+        self.assertTrue(audit_ctrl_feed((message,)).compliant)
+
+    def test_feed_rejects_unbound_proof_without_policing_words(self):
+        unbound=CtrlFeedMessage("unbound",((CtrlFeedPart.OUTCOME,"Reconnect is fixed."),(CtrlFeedPart.PROOF,"Twelve cases pass.")))
+        self.assertIn("unbound:proof-unbound",audit_ctrl_feed((unbound,)).violations)
+        domain_terms=CtrlFeedMessage("domain-terms",(
+            (CtrlFeedPart.OUTCOME,"The task command and heartbeat diagnostics now explain the blocker."),
+            (CtrlFeedPart.PROOF,"The tool trace and worktree evidence establish the failure boundary."),
+        ),("chat:proof",),event_receipt="event:domain-terms")
+        self.assertTrue(audit_ctrl_feed((domain_terms,)).compliant)
+
+    def test_long_complex_proof_is_not_rejected_by_arbitrary_caps(self):
+        message=CtrlFeedMessage("complex-proof",(
+            (CtrlFeedPart.OUTCOME,"The complex migration decision is now reviewable. " + "Necessary outcome context. "*80),
+            (CtrlFeedPart.PROOF,"The evidence covers every authority boundary. " + "Necessary proof context. "*80),
+            (CtrlFeedPart.RISK,"The remaining safety limits require detailed explanation. " + "Necessary risk context. "*40),
+        ),tuple(f"chat:proof:{index}" for index in range(8)),event_receipt="event:complex-proof")
+        self.assertTrue(audit_ctrl_feed((message,)).compliant)
+
+    def test_heartbeat_rejects_internal_narration_until_corrected(self):
+        self.swarm.register_ctrl_evidence(Role.DOER,"covers","trace-proof","trace","restored session trace")
+        receipt=self.swarm.surface_ctrl_evidence(Role.CTRL,"trace-proof",surface_kind=CtrlSurfaceKind.INLINE_EXCERPT,caption="The restored session resumes at turn 8.",claim_limit="Production transport remains unverified.",surface_receipt="chat:trace:turn-8")
+        chatter=CtrlFeedMessage("routing-chatter",(
+            (CtrlFeedPart.ORCHESTRATION,"MOTHER routed REVIEW to the integration SHA."),
+            (CtrlFeedPart.TASK_CHATTER,"Lease acquired; command running."),
+            (CtrlFeedPart.ACTIVITY,"Three agents are still working."),
+            (CtrlFeedPart.MOTHER_DETAIL,"MOTHER accepted lane topology."),
+        ),(),"covers","chat:feed:routing-chatter")
+        with self.assertRaisesRegex(InvariantError,"requires one compliant correction"):
+            self.swarm.heartbeat(Role.CTRL,"covers",meaningful_progress=False,recent_ctrl_feed=(chatter,))
+        correction=CtrlFeedMessage("routing-correction",(
+            (CtrlFeedPart.OUTCOME,"The reconnect decision is ready for review."),
+            (CtrlFeedPart.PROOF,"Inline trace: the restored session resumes at turn 8."),
+            (CtrlFeedPart.RISK,"Production transport remains unverified."),
+        ),(receipt,),"covers","chat:feed:routing-correction",self.feed_event("event:routing-correction",(receipt,)))
+        self.assertEqual(self.swarm.heartbeat(Role.CTRL,"covers",meaningful_progress=False,recent_ctrl_feed=(chatter,),feed_correction=correction),"covers:feed-reoriented:1:routing-correction")
+        audit=self.swarm.telemetry_events[-1]
+        self.assertEqual(audit["kind"],"ctrl_feed_audit")
+        self.assertEqual(audit["correction"],"routing-correction")
+        self.assertEqual(audit["reorientation"],"purpose-reset")
+        self.assertEqual(self.swarm.tasks["covers"].superseded_ctrl_feed_ids,["routing-chatter"])
+        self.assertEqual(self.swarm.tasks["covers"].last_ctrl_feed_correction_id,"routing-correction")
+
+    def test_heartbeat_rejects_fabricated_inline_proof_receipt(self):
+        message=CtrlFeedMessage("fabricated",(
+            (CtrlFeedPart.OUTCOME,"Reconnect behavior changed."),
+            (CtrlFeedPart.PROOF,"The inline comparison passes."),
+        ),("chat:not-surfaced",),"covers","chat:feed:fabricated")
+        correction=CtrlFeedMessage("also-fabricated",(
+            (CtrlFeedPart.OUTCOME,"Reconnect behavior changed."),
+            (CtrlFeedPart.PROOF,"The inline comparison passes."),
+        ),("chat:also-not-surfaced",),"covers","chat:feed:also-fabricated")
+        with self.assertRaisesRegex(InvariantError,"unknown-proof-receipt"):
+            self.swarm.heartbeat(Role.CTRL,"covers",meaningful_progress=False,recent_ctrl_feed=(message,),feed_correction=correction)
+
+    def test_empty_heartbeat_cannot_hide_unaudited_visible_drift(self):
+        drift=CtrlFeedMessage("stored-drift",(
+            (CtrlFeedPart.ORCHESTRATION,"MOTHER routed three tasks."),
+        ),(),"covers","chat:feed:stored-drift")
+        self.swarm.publish_ctrl_feed(Role.CTRL,drift)
+        with self.assertRaisesRegex(InvariantError,"requires one compliant correction"):
+            self.swarm.heartbeat(Role.CTRL,"covers",meaningful_progress=False,recent_ctrl_feed=())
+
+    def test_feed_reorientation_also_recovers_missing_watchdog(self):
+        self.swarm.register_ctrl_evidence(Role.DOER,"covers","watchdog-proof","test","watchdog proof")
+        receipt=self.swarm.surface_ctrl_evidence(Role.CTRL,"watchdog-proof",surface_kind=CtrlSurfaceKind.INLINE_EXCERPT,caption="Reconnect proof is ready.",claim_limit="Production remains unverified.",surface_receipt="chat:watchdog-proof")
+        self.swarm.propose_milestone(Role.CTRL,"covers",goal_id="feed-goal",milestone="accepted feed",proof_kind="review",horizon_minutes=15,now=10)
+        del self.swarm.scheduled_wakeups["covers"]
+        drift=CtrlFeedMessage("drift-with-lost-clock",((CtrlFeedPart.ACTIVITY,"Still running."),),(),"covers","chat:feed:drift-clock")
+        correction=CtrlFeedMessage("corrected-clock",(
+            (CtrlFeedPart.OUTCOME,"Reconnect proof is ready for review."),
+            (CtrlFeedPart.PROOF,"The inline excerpt shows the restored turn."),
+            (CtrlFeedPart.RISK,"Production transport remains unverified."),
+        ),(receipt,),"covers","chat:feed:corrected-clock",self.feed_event("event:corrected-clock",(receipt,),kind=CtrlFeedEventKind.BLOCKER))
+        result=self.swarm.heartbeat(Role.CTRL,"covers",meaningful_progress=False,recent_ctrl_feed=(drift,),feed_correction=correction)
+        self.assertIn("feed-reoriented",result)
+        self.assertIn("watchdog-recovered:25",result)
+        self.assertEqual(self.swarm.scheduled_wakeups["covers"],25)
+
+    def test_portfolio_feed_binds_each_message_to_its_own_task_proof(self):
+        self.swarm.start_atomic(Role.CTRL,Task("second","writer","CTRL",1,{},subagent_receipt="host:thread:writer",lane_kind=LaneKind.NON_CODE,mother_id="mother",acceptance_contract=AcceptanceContract.empty()))
+        messages=[]
+        for task_id in ("covers","second"):
+            evidence_id=f"{task_id}-proof"; surface=f"chat:{task_id}:proof"
+            self.swarm.register_ctrl_evidence(Role.DOER,task_id,evidence_id,"test",f"{task_id} proof")
+            self.swarm.surface_ctrl_evidence(Role.CTRL,evidence_id,surface_kind=CtrlSurfaceKind.INLINE_EXCERPT,caption=f"{task_id} result.",claim_limit="Local proof only.",surface_receipt=surface)
+            event=self.feed_event(f"event:{task_id}",(surface,),task_id)
+            messages.append(CtrlFeedMessage(f"{task_id}-message",((CtrlFeedPart.OUTCOME,f"{task_id} changed."),(CtrlFeedPart.PROOF,"The inline proof passed.")),(surface,),task_id,f"chat:feed:{task_id}",event))
+        self.assertIsNone(self.swarm.heartbeat(Role.CTRL,"covers",meaningful_progress=True,recent_ctrl_feed=tuple(messages)))
+
+    def test_audited_feed_cursor_is_idempotent(self):
+        self.swarm.register_ctrl_evidence(Role.DOER,"covers","cursor-proof","test","cursor proof")
+        receipt=self.swarm.surface_ctrl_evidence(Role.CTRL,"cursor-proof",surface_kind=CtrlSurfaceKind.INLINE_EXCERPT,caption="Cursor proof passed.",claim_limit="Local only.",surface_receipt="chat:cursor-proof")
+        message=CtrlFeedMessage("cursor-message",((CtrlFeedPart.OUTCOME,"The cursor result changed."),(CtrlFeedPart.PROOF,"The inline proof passed.")),(receipt,),"covers","chat:feed:cursor",self.feed_event("event:cursor",(receipt,)))
+        self.assertIsNone(self.swarm.heartbeat(Role.CTRL,"covers",meaningful_progress=True,recent_ctrl_feed=(message,)))
+        self.assertIsNone(self.swarm.heartbeat(Role.CTRL,"covers",meaningful_progress=False,recent_ctrl_feed=()))
+
+    def test_later_material_decision_may_reuse_relevant_audited_proof(self):
+        self.swarm.register_ctrl_evidence(Role.DOER,"covers","repeat-proof","test","repeat proof")
+        receipt=self.swarm.surface_ctrl_evidence(Role.CTRL,"repeat-proof",surface_kind=CtrlSurfaceKind.INLINE_EXCERPT,caption="Repeat proof passed.",claim_limit="Local only.",surface_receipt="chat:repeat-proof")
+        first=CtrlFeedMessage("first-proof-use",((CtrlFeedPart.OUTCOME,"The first result changed."),(CtrlFeedPart.PROOF,"The inline proof passed.")),(receipt,),"covers","chat:feed:first-proof",self.feed_event("event:first",(receipt,)))
+        self.assertIsNone(self.swarm.heartbeat(Role.CTRL,"covers",meaningful_progress=True,recent_ctrl_feed=(first,)))
+        repeated=CtrlFeedMessage("second-proof-use",((CtrlFeedPart.OUTCOME,"The same evidence now supports the acceptance decision."),(CtrlFeedPart.PROOF,"The previously surfaced inline proof remains the decision basis.")),(receipt,),"covers","chat:feed:second-proof",self.feed_event("event:acceptance-decision",(receipt,),kind=CtrlFeedEventKind.DECISION))
+        self.assertIsNone(self.swarm.heartbeat(Role.CTRL,"covers",meaningful_progress=True,recent_ctrl_feed=(repeated,)))
+
+    def test_feed_window_has_no_arbitrary_message_or_receipt_count_cap(self):
+        messages=tuple(CtrlFeedMessage(f"m-{index}",((CtrlFeedPart.OUTCOME,f"Result {index} changed."),(CtrlFeedPart.PROOF,"The inline proof passed.")),("chat:shared-proof",),"covers",f"chat:feed:{index}",f"event:{index}") for index in range(4))
+        self.assertTrue(audit_ctrl_feed(messages).compliant)
+
+    def test_same_batch_cannot_publish_one_material_event_twice(self):
+        self.swarm.register_ctrl_evidence(Role.DOER,"covers","batch-proof","test","batch proof")
+        receipt=self.swarm.surface_ctrl_evidence(Role.CTRL,"batch-proof",surface_kind=CtrlSurfaceKind.INLINE_EXCERPT,caption="Batch proof passed.",claim_limit="Local only.",surface_receipt="chat:batch")
+        event=self.feed_event("event:batch",(receipt,))
+        messages=tuple(CtrlFeedMessage(f"batch-{index}",((CtrlFeedPart.OUTCOME,f"Result {index} changed."),(CtrlFeedPart.PROOF,"The inline proof passed.")),(receipt,),"covers",f"chat:feed:batch:{index}",event) for index in range(2))
+        with self.assertRaisesRegex(InvariantError,"repeated-material-event"):
+            self.swarm.heartbeat(Role.CTRL,"covers",meaningful_progress=True,recent_ctrl_feed=messages)
+
+    def test_same_batch_allows_distinct_material_events(self):
+        self.swarm.register_ctrl_evidence(Role.DOER,"covers","distinct-proof","test","distinct proof")
+        receipt=self.swarm.surface_ctrl_evidence(Role.CTRL,"distinct-proof",surface_kind=CtrlSurfaceKind.INLINE_EXCERPT,caption="Distinct proof passed.",claim_limit="Local only.",surface_receipt="chat:distinct")
+        events=tuple(self.feed_event(f"event:distinct:{index}",(receipt,)) for index in range(2))
+        messages=tuple(CtrlFeedMessage(f"distinct-{index}",((CtrlFeedPart.OUTCOME,f"Result {index} changed."),(CtrlFeedPart.PROOF,"The inline proof passed.")),(receipt,),"covers",f"chat:feed:distinct:{index}",events[index]) for index in range(2))
+        self.assertIsNone(self.swarm.heartbeat(Role.CTRL,"covers",meaningful_progress=True,recent_ctrl_feed=messages))
+
+    def test_heartbeat_rejects_stale_proof_without_a_new_material_event(self):
+        self.swarm.register_ctrl_evidence(Role.DOER,"covers","old-proof","test","old proof")
+        receipt=self.swarm.surface_ctrl_evidence(Role.CTRL,"old-proof",surface_kind=CtrlSurfaceKind.INLINE_EXCERPT,caption="Old proof passed.",claim_limit="Local only.",surface_receipt="chat:old")
+        stale=CtrlFeedMessage("stale-status",((CtrlFeedPart.OUTCOME,"No registered result changed."),(CtrlFeedPart.PROOF,"The old proof is unchanged.")),(receipt,),"covers","chat:feed:stale","event:not-registered")
+        with self.assertRaisesRegex(InvariantError,"unknown-material-event"):
+            self.swarm.heartbeat(Role.CTRL,"covers",meaningful_progress=False,recent_ctrl_feed=(stale,))
 
     def test_every_swarm_task_delegates_by_default_with_narrow_exceptions(self):
         self.assertIn("`CTRL_DELEGATED` and every non-CTRL SWARM task delegate at least one bounded outcome-critical", self.skill)

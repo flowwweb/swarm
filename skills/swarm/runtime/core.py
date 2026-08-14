@@ -3,12 +3,18 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import StrEnum
+from hashlib import sha256
+import json
+import os
+from pathlib import Path, PurePosixPath
+import subprocess
+from .incidents import IncidentLedger, IncidentRecord
 
 
 class Role(StrEnum):
     CTRL="CTRL"; MOTHER="MOTHER"; SPECIALIST="SPECIALIST"; ARCHITECT="ARCHITECT"; LEAD="LEAD"; DOER="DOER"; EXPERT="EXPERT"; REVIEW="REVIEW"
 
-BUILT_IN_SPECIALISTS = frozenset({"ARCHITECT", "ENGINEER", "DESIGNER", "RESEARCHER", "ANALYST", "STRATEGIST"})
+BUILT_IN_SPECIALISTS = frozenset({"ARCHITECT", "ENGINEER", "DEVELOPER", "DESIGNER", "RESEARCHER", "ANALYST", "STRATEGIST"})
 class TaskState(StrEnum):
     ACTIVE="ACTIVE"; WAITING="WAITING"; REVIEW="REVIEW"; COMPLETE="COMPLETE"; STALE="STALE"; ARCHIVED="ARCHIVED"; ARCHIVED_STALE="ARCHIVED_STALE"; BACKLOG="BACKLOG"
 class ReviewValue(StrEnum): NONE="NONE"; LOW="LOW"; HIGH="HIGH"; PINNED="PINNED"
@@ -22,12 +28,87 @@ class EvidenceDisposition(StrEnum): PENDING="PENDING"; SURFACED="SURFACED"; WITH
 class WithholdBasis(StrEnum): OBJECTIVE_DEFECT="objective-defect"; DUPLICATE="duplicate"; AUTHORITY="authority"
 class CtrlSurfaceKind(StrEnum):
     INLINE_IMAGE="inline_image"; INLINE_RECORDING="inline_recording"; INLINE_COMPARISON="inline_comparison"; INLINE_TABLE="inline_table"; INLINE_EXCERPT="inline_excerpt"; INLINE_RECEIPT="inline_receipt"; EXACT_BLOCKER="exact_blocker"
+class CtrlFeedPart(StrEnum):
+    OUTCOME="outcome"; PROOF="proof"; RISK="risk"; CHECKPOINT="checkpoint"; ORCHESTRATION="orchestration"; TASK_CHATTER="task_chatter"; ACTIVITY="activity"; MOTHER_DETAIL="mother_detail"
+class CtrlFeedEventKind(StrEnum):
+    RESULT="result"; DECISION="decision"; BLOCKER="blocker"; ACCEPTANCE="acceptance"; RELEASE="release"; HANDOFF="handoff"
 class SubagentException(StrEnum):
     CAPACITY="capacity"; HOST_GATE="host_gate"; COLLISION="collision"; SAFETY="safety"; WHOLE_TASK_COST="whole_task_cost"
 class CtrlMode(StrEnum): DIRECT="CTRL_DIRECT"; DELEGATED="CTRL_DELEGATED"
 class HorizonAction(StrEnum): OBSERVE="OBSERVE"; REORIENT="REORIENT"; REVIEW="REVIEW"; SUPERVISOR="SUPERVISOR"
+class ReviewScope(StrEnum): SOURCE_SEMANTICS="SOURCE_SEMANTICS"; ACCEPTANCE="ACCEPTANCE"
+class ProofOutcome(StrEnum): PASS="PASS"; FAIL="FAIL"; TIMEOUT="TIMEOUT"
+class LaneKind(StrEnum): CODE="CODE"; NON_CODE="NON_CODE"; OTHER="OTHER"
 
 class InvariantError(ValueError): pass
+
+
+def _observable_pairs(values: object, *, label: str) -> tuple[tuple[str,str],...]:
+    """Normalize small, inspectable state without inventing repository-specific keys."""
+    try: pairs=tuple(values)  # type: ignore[arg-type]
+    except TypeError as error: raise InvariantError(f"{label} must be key/value pairs") from error
+    if any(not isinstance(item,tuple) or len(item)!=2 or not all(isinstance(value,str) and value.strip() for value in item) for item in pairs):
+        raise InvariantError(f"{label} must contain nonempty string key/value pairs")
+    keys=tuple(key for key,_ in pairs)
+    if len(set(keys))!=len(keys): raise InvariantError(f"{label} keys must be distinct")
+    return tuple(sorted(((key.strip(),value.strip()) for key,value in pairs),key=lambda item:item[0]))
+
+
+def _path_observation(path:Path, root:Path) -> str:
+    if path.is_symlink(): return f"link:{sha256(os.readlink(path).encode('utf-8')).hexdigest()}"
+    try: path.resolve().relative_to(root)
+    except ValueError as error: raise InvariantError("artifact observed path resolves outside its local root") from error
+    if not path.exists(): return "missing"
+    if path.is_file():
+        digest=sha256()
+        with path.open("rb") as stream:
+            for chunk in iter(lambda:stream.read(1024*1024),b""): digest.update(chunk)
+        return f"file:{digest.hexdigest()}"
+    raise InvariantError("artifact observation accepts explicit files, missing paths, or safe symlinks only")
+
+@dataclass(frozen=True)
+class CtrlFeedMessage:
+    """One user-visible CTRL message, classified before a heartbeat audit."""
+    id:str; parts:tuple[tuple[CtrlFeedPart,str],...]; proof_receipts:tuple[str,...]=(); task_id:str=""; surface_receipt:str=""; event_receipt:str=""
+    def __post_init__(self):
+        if not self.id.strip() or not self.parts or any(not isinstance(kind,CtrlFeedPart) or not text.strip() for kind,text in self.parts): raise InvariantError("CTRL feed messages require an identity and nonempty classified parts")
+        if any(not isinstance(receipt,str) or not receipt.strip() for receipt in self.proof_receipts) or len(set(self.proof_receipts))!=len(self.proof_receipts): raise InvariantError("CTRL feed proof receipts must be distinct nonempty strings")
+
+@dataclass(frozen=True)
+class CtrlFeedEvent:
+    """A new material result, decision, blocker, acceptance, release, or handoff."""
+    receipt:str; task_id:str; kind:CtrlFeedEventKind; proof_receipts:tuple[str,...]
+    def __post_init__(self):
+        if not self.receipt.strip() or not self.task_id.strip() or not isinstance(self.kind,CtrlFeedEventKind) or not self.proof_receipts: raise InvariantError("CTRL feed event requires identity, task, kind, and proof")
+        if any(not item.strip() for item in self.proof_receipts) or len(set(self.proof_receipts))!=len(self.proof_receipts): raise InvariantError("CTRL feed event proof receipts must be distinct nonempty strings")
+
+@dataclass(frozen=True)
+class CtrlFeedAudit:
+    violations:tuple[str,...]=()
+    @property
+    def compliant(self)->bool: return not self.violations
+
+def audit_ctrl_feed(messages:tuple[CtrlFeedMessage,...]) -> CtrlFeedAudit:
+    """Enforce feed semantics and proof binding without arbitrary content caps."""
+    violations=[]
+    expected=(CtrlFeedPart.OUTCOME,CtrlFeedPart.PROOF,CtrlFeedPart.RISK,CtrlFeedPart.CHECKPOINT)
+    forbidden={CtrlFeedPart.ORCHESTRATION,CtrlFeedPart.TASK_CHATTER,CtrlFeedPart.ACTIVITY,CtrlFeedPart.MOTHER_DETAIL}
+    for message in messages:
+        kinds=tuple(kind for kind,_ in message.parts)
+        bad=tuple(kind.value for kind in kinds if kind in forbidden)
+        if bad: violations.append(f"{message.id}:internal:{','.join(bad)}")
+        material=tuple(kind for kind in kinds if kind in expected)
+        if material:
+            required=(CtrlFeedPart.OUTCOME,CtrlFeedPart.PROOF)
+            missing=tuple(kind.value for kind in required if kind not in material)
+            if missing: violations.append(f"{message.id}:missing:{','.join(missing)}")
+            ordered=tuple(kind for kind in expected if kind in material)
+            if material!=ordered or len(material)!=len(set(material)): violations.append(f"{message.id}:hierarchy")
+            if not message.proof_receipts: violations.append(f"{message.id}:proof-unbound")
+            if not message.event_receipt.strip(): violations.append(f"{message.id}:event-unbound")
+        elif not bad:
+            violations.append(f"{message.id}:activity-only")
+    return CtrlFeedAudit(tuple(dict.fromkeys(violations)))
 
 def heartbeat_action(*, owner_update:bool, material_change:bool, unchanged_updates:int, recovery_attempts:int, stall_after_updates:int) -> str:
     """Single pure heartbeat classifier shared by runtime compatibility adapters."""
@@ -44,15 +125,69 @@ class VersionedReference:
     name:str; version:int; kind:str
 @dataclass(frozen=True)
 class ArtifactIdentity:
-    base:str; revision:str; purpose:str
+    base:str; revision:str; purpose:str; observables:tuple[tuple[str,str],...]=(); observed_paths:tuple[str,...]=()
     def __post_init__(self):
         if not all(isinstance(value,str) and value.strip() for value in (self.base,self.revision,self.purpose)): raise InvariantError("artifact identity fields must be nonempty")
-    def key(self)->str: return f"{self.base}@{self.revision}:{self.purpose}"
+        object.__setattr__(self,"observables",_observable_pairs(self.observables,label="artifact observables"))
+        try: paths=tuple(self.observed_paths)
+        except TypeError as error: raise InvariantError("artifact observed paths must be a tuple") from error
+        if paths:
+            normalized=[]
+            for raw in paths:
+                if not isinstance(raw,str) or not raw.strip(): raise InvariantError("artifact observed paths must be nonempty strings")
+                relative=PurePosixPath(raw.replace("\\","/"))
+                if relative.is_absolute() or ".." in relative.parts or Path(raw).is_absolute(): raise InvariantError("artifact observed paths must be portable relative paths")
+                normalized.append(relative.as_posix())
+            if len(set(normalized))!=len(normalized): raise InvariantError("artifact observed paths must be distinct")
+            object.__setattr__(self,"observed_paths",tuple(sorted(normalized)))
+    def key(self)->str:
+        legacy=f"{self.base}@{self.revision}:{self.purpose}"
+        if not self.observables and not self.observed_paths: return legacy
+        payload={"observables":self.observables,"paths":self.observed_paths}
+        encoded=json.dumps(payload,separators=(",",":"),ensure_ascii=True).encode("utf-8").hex()
+        return f"{legacy}#obs={encoded}"
+    @classmethod
+    def capture(cls, base:str, revision:str, purpose:str, *, root:str, paths:tuple[str,...]) -> "ArtifactIdentity":
+        probe=cls(base,revision,purpose,(),paths)
+        return cls(base,revision,purpose,probe.current_observables(root),probe.observed_paths)
+    def current_observables(self, root:str) -> tuple[tuple[str,str],...]:
+        if not root or not self.observed_paths: raise InvariantError("artifact identity has no runtime-observable paths")
+        local_root=Path(root).resolve()
+        try: return tuple((relative,_path_observation(local_root/Path(relative),local_root)) for relative in self.observed_paths)
+        except OSError as error: raise InvariantError(f"artifact observation failed: {error}") from error
+    def reobserve(self, root:str) -> "ArtifactIdentity":
+        return ArtifactIdentity(self.base,self.revision,self.purpose,self.current_observables(root),self.observed_paths)
 @dataclass(frozen=True)
 class ArtifactProvenance:
     id:str; source:str
     def __post_init__(self):
         if not all(isinstance(value,str) and value.strip() for value in (self.id,self.source)): raise InvariantError("artifact provenance fields must be nonempty")
+@dataclass(frozen=True)
+class AcceptanceContract:
+    artifact:ArtifactIdentity|None; required_gates:tuple[str,...]=(); explicitly_empty:bool=False; observation_root:str=field(default="",compare=False,repr=False)
+    def __post_init__(self):
+        if self.artifact is None and not self.explicitly_empty: raise InvariantError("acceptance contract requires an exact artifact or explicit empty contract")
+        if self.explicitly_empty and (self.artifact is not None or self.required_gates): raise InvariantError("empty acceptance contract cannot declare artifact or gates")
+        if any(not isinstance(gate,str) or not gate.strip() for gate in self.required_gates) or len(set(self.required_gates))!=len(self.required_gates): raise InvariantError("acceptance gates must be distinct nonempty names")
+        if self.observation_root: object.__setattr__(self,"observation_root",str(Path(self.observation_root).resolve()))
+    @classmethod
+    def empty(cls) -> "AcceptanceContract": return cls(None,(),True)
+@dataclass(frozen=True)
+class GateReceipt:
+    """Inspectable gate evidence; only Swarm.run_gate makes it authoritative."""
+    gate:str; artifact:ArtifactIdentity; outcome:ProofOutcome; command:tuple[str,...]; before:tuple[tuple[str,str],...]; after:tuple[tuple[str,str],...]; returncode:int|None
+    _authority:object|None=field(default=None,init=False,repr=False,compare=False); _bound_task_id:str=field(default="",init=False,repr=False,compare=False)
+    def __post_init__(self):
+        if not self.gate.strip() or not isinstance(self.artifact,ArtifactIdentity) or not isinstance(self.outcome,ProofOutcome): raise InvariantError("gate receipt requires gate, artifact, and typed outcome")
+        object.__setattr__(self,"gate",self.gate.strip())
+        try: command=tuple(self.command)
+        except TypeError as error: raise InvariantError("gate receipt command must be an argv tuple") from error
+        if not command or not isinstance(command[0],str) or not command[0] or any(not isinstance(part,str) for part in command): raise InvariantError("gate receipt command must be argv with a nonempty executable")
+        before=_observable_pairs(self.before,label="gate receipt pre-observation"); after=_observable_pairs(self.after,label="gate receipt post-observation")
+        if self.returncode is not None and not isinstance(self.returncode,int): raise InvariantError("gate receipt return code must be an integer or absent")
+        object.__setattr__(self,"command",command); object.__setattr__(self,"before",before); object.__setattr__(self,"after",after)
+    def current_for(self, authority:object, task_id:str, gate:str, artifact:ArtifactIdentity, current:ArtifactIdentity) -> bool:
+        return self._authority is authority and self._bound_task_id==task_id and self.gate==gate and self.artifact==artifact==current and self.outcome is ProofOutcome.PASS and self.before==artifact.observables==self.after
 @dataclass
 class CtrlEvidence:
     id:str; task_id:str; kind:str; locator:str; material:bool=True; steering:bool=True
@@ -82,7 +217,7 @@ class TopologyFacts:
 class ReviewStrategy(StrEnum): LIGHT="light"; STANDARD="standard"; ADVERSARIAL="adversarial"; SPECIALIST="specialist"
 @dataclass(frozen=True)
 class ReviewEvidence:
-    strategy:ReviewStrategy; reviewer:str; independent:bool; artifact:ArtifactIdentity|None; findings:tuple[str,...]=(); receipt:tuple[tuple[str,str],...]=()
+    strategy:ReviewStrategy; reviewer:str; independent:bool; artifact:ArtifactIdentity|None; findings:tuple[str,...]=(); receipt:tuple[tuple[str,str],...]=(); scope:ReviewScope=ReviewScope.SOURCE_SEMANTICS
 @dataclass
 class HiveRecord:
     id:str; content:str=""; reference:str=""; source:str=""; source_version:str=""; applicability:dict[str,int]=field(default_factory=dict); created_at:int=0; last_used_at:int|None=None; value:str="useful"; retention:str="adaptive"; status:HiveStatus=HiveStatus.ACTIVE; provenance:dict[str,str]=field(default_factory=dict)
@@ -104,7 +239,7 @@ class ContextPackage:
         return cls(goal,architecture,tuple(x for x in dependencies if x in kept),tuple(x for x in artifacts if x in kept),tuple(acceptance),tuple(x for x in history if x in kept),len(spine)+len(architecture)+len(kept),tuple(x for x in hive if x in kept))
 
 class Depth(StrEnum):
-    ATOMIC="CTRL_DOER"; SIMPLE="CTRL_MOTHER_DOER"; WORKSTREAM="CTRL_MOTHER_LEAD_DOER"; PROJECT="CTRL_MOTHER_ARCHITECT_LEADS_DOERS"
+    ATOMIC="CTRL_DOER"; SIMPLE="CTRL_MOTHER_DOER"; WORKSTREAM="CTRL_MOTHER_LEAD_DOER"; PROJECT="CTRL_MOTHER_SPECIALIST_LEADS_DOERS"
 class EfficiencyMode(StrEnum): CONSERVE="CONSERVE"; BALANCED="BALANCED"; FAST="FAST"; MAX="MAX"
 MODE_POLICY={EfficiencyMode.CONSERVE:{"parallel":1,"depth_bias":1,"review_floor":ReviewStrategy.LIGHT},EfficiencyMode.BALANCED:{"parallel":2,"depth_bias":2,"review_floor":ReviewStrategy.LIGHT},EfficiencyMode.FAST:{"parallel":3,"depth_bias":3,"review_floor":ReviewStrategy.STANDARD},EfficiencyMode.MAX:{"parallel":4,"depth_bias":4,"review_floor":ReviewStrategy.STANDARD}}
 
@@ -131,9 +266,10 @@ class Task:
     id: str; owner: str; creator: str; architecture_version: int; contracts: dict[str,int]
     state: TaskState=TaskState.ACTIVE; waiting_on: str|None=None; reviewer: str|None=None; findings: list[str]=field(default_factory=list)
     evidence: list[str]=field(default_factory=list); recovery_dimensions: set[str]=field(default_factory=set); recovery_attempts:int=0; review_value: ReviewValue=ReviewValue.NONE
-    completed_at: int|None=None; stale_at: int|None=None; archived_at: int|None=None; stale_reason: str|None=None; superseded_by: str|None=None; promoted: list[str]=field(default_factory=list); extensions: int=0; review_passed: bool=False; risk:int=1; review_strategy:str="light"; architecture_review_floor:ReviewStrategy=ReviewStrategy.LIGHT; security_review_floor:ReviewStrategy=ReviewStrategy.LIGHT; artifacts:dict[ArtifactIdentity|str,str]=field(default_factory=dict); artifact_justifications:dict[str,ArtifactJustification]=field(default_factory=dict); artifact_provenance:dict[str,ArtifactProvenance]=field(default_factory=dict); archive:dict[str,object]=field(default_factory=dict); active_goal:bool=False; handoff_active:bool=False; correction_pending:bool=False; user_choice_pending:bool=False; ambiguous:bool=False; topology_receipt:tuple[str,...]=(); ctrl_event_receipt:tuple[str,str]|None=None; subagent_receipt:str=""; subagent_exception:SubagentException|None=None; subagent_exception_reason:str=""; goal_id:str=""; objective_version:int=1; milestone:str=""; review_horizon_minutes:int=30; milestone_started_at:int=0; consecutive_misses:int=0; milestone_history:list[tuple[int,str,str]]=field(default_factory=list)
+    completed_at: int|None=None; stale_at: int|None=None; archived_at: int|None=None; stale_reason: str|None=None; superseded_by: str|None=None; promoted: list[str]=field(default_factory=list); extensions: int=0; review_passed: bool=False; risk:int=1; review_strategy:str="light"; architecture_review_floor:ReviewStrategy=ReviewStrategy.LIGHT; security_review_floor:ReviewStrategy=ReviewStrategy.LIGHT; artifacts:dict[ArtifactIdentity|str,str]=field(default_factory=dict); artifact_justifications:dict[str,ArtifactJustification]=field(default_factory=dict); artifact_provenance:dict[str,ArtifactProvenance]=field(default_factory=dict); archive:dict[str,object]=field(default_factory=dict); active_goal:bool=False; handoff_active:bool=False; correction_pending:bool=False; user_choice_pending:bool=False; ambiguous:bool=False; topology_receipt:tuple[str,...]=(); ctrl_event_receipt:tuple[str,str]|None=None; subagent_receipt:str=""; subagent_exception:SubagentException|None=None; subagent_exception_reason:str=""; goal_id:str=""; objective_version:int=1; milestone:str=""; review_horizon_minutes:int=30; milestone_started_at:int=0; consecutive_misses:int=0; milestone_history:list[tuple[int,str,str]]=field(default_factory=list); ctrl_feed_drift_count:int=0; superseded_ctrl_feed_ids:list[str]=field(default_factory=list); last_ctrl_feed_correction_id:str=""
 
     ctrl_mode:CtrlMode=CtrlMode.DELEGATED; milestone_proof_kind:str=""; architecture_goal_id:str=""; architecture_map_version:int=0; architecture_receipts:list[tuple[int,str,str]]=field(default_factory=list); specialist_professions:dict[str,str]=field(default_factory=dict); specialist_goal_ids:dict[str,str]=field(default_factory=dict); specialist_map_versions:dict[str,int]=field(default_factory=dict); specialist_receipts:dict[str,list[tuple[int,str,str]]]=field(default_factory=dict)
+    lane_kind:LaneKind=LaneKind.OTHER; owning_lead_id:str=""; mother_id:str=""; acceptance_contract:AcceptanceContract|None=None; gate_receipts:dict[str,GateReceipt]=field(default_factory=dict); unverified_gate_receipts:dict[str,GateReceipt]=field(default_factory=dict); acceptance_review_receipt:ReviewEvidence|None=None; incident_consultation_receipt:str=""
 
 @dataclass
 class Worker:
@@ -143,7 +279,7 @@ class Worker:
 class Swarm:
     architecture_version: int=1; contract_versions: dict[str,int]=field(default_factory=dict); topology: set[str]=field(default_factory=set)
     workers: dict[str,Worker]=field(default_factory=dict); tasks: dict[str,Task]=field(default_factory=dict); leases: dict[str,str]=field(default_factory=dict); events: list[tuple[str,str]]=field(default_factory=list); telemetry: dict[str,object]=field(default_factory=dict); telemetry_events:list[dict[str,object]]=field(default_factory=list); artifact_index:dict[str,str]=field(default_factory=dict); provenance_index:dict[str,str]=field(default_factory=dict); ctrl_evidence_ledger:dict[str,CtrlEvidence]=field(default_factory=dict); ctrl_decision_sets:dict[str,CtrlDecisionSet]=field(default_factory=dict); ctrl_phase:str="intake"; hive:dict[str,HiveRecord]=field(default_factory=dict); hive_enabled:bool=True; heartbeat_stall_after:int=2; correction_receipts:dict[str,None]=field(default_factory=dict); lane_width:int=3; wip_limit:int=3; efficiency_ledger:list[dict[str,str]]=field(default_factory=list); mode:EfficiencyMode=EfficiencyMode.BALANCED; default_review_horizon:int=30; max_review_horizon:int=60; direct_work_horizon:int=20
-    scheduled_wakeups:dict[str,int]=field(default_factory=dict); latency_rescheduled:set[str]=field(default_factory=set)
+    scheduled_wakeups:dict[str,int]=field(default_factory=dict); latency_rescheduled:set[str]=field(default_factory=set); ctrl_feed_messages:list[CtrlFeedMessage]=field(default_factory=list); ctrl_feed_cursor:int=0; ctrl_feed_superseded_by:dict[str,str]=field(default_factory=dict); ctrl_feed_events:dict[str,CtrlFeedEvent]=field(default_factory=dict); ctrl_feed_consumed_events:set[str]=field(default_factory=set); _gate_capability:object=field(default_factory=object,init=False,repr=False,compare=False)
     @classmethod
     def from_config(cls, config: dict) -> "Swarm":
         monitoring=config["monitoring"]
@@ -211,6 +347,19 @@ class Swarm:
             if not receipt.startswith("host:thread:") or len(receipt)==len("host:thread:"): raise InvariantError("subagent receipt must record the caller-declared host thread identity")
             return
         if not isinstance(exception,SubagentException) or not reason: raise InvariantError("every SWARM task requires a host subagent receipt or typed exact exception")
+    def _validate_task_acceptance(self, task:Task) -> None:
+        if not isinstance(task.lane_kind,LaneKind): raise InvariantError("task requires a typed lane kind")
+        empty=task.acceptance_contract is not None and task.acceptance_contract.explicitly_empty
+        if empty and task.lane_kind is not LaneKind.NON_CODE: raise InvariantError("empty acceptance contracts are allowed only for NON_CODE lanes")
+        if task.lane_kind is LaneKind.CODE and (task.acceptance_contract is None or empty or not task.acceptance_contract.required_gates): raise InvariantError("CODE lanes require an exact acceptance contract with at least one named gate")
+        if task.artifacts and (task.acceptance_contract is None or empty): raise InvariantError("artifact-producing lanes cannot use an empty acceptance contract")
+    def _bind_task_lead(self, task:Task, worker:Worker) -> None:
+        if task.owning_lead_id and task.owning_lead_id!=worker.lead: raise InvariantError("task owning LEAD identity must match the assigned worker lead")
+        task.owning_lead_id=worker.lead
+    def _require_lane_actor(self, task:Task, actor:Role, actor_id:str) -> None:
+        identity=actor_id.strip()
+        if actor is Role.LEAD and (not task.owning_lead_id or identity!=task.owning_lead_id): raise InvariantError("lane transition requires the bound owning LEAD identity")
+        if actor is Role.MOTHER and (not task.mother_id or identity!=task.mother_id): raise InvariantError("MOTHER cannot close an arbitrary lane without explicit task binding")
     def add_lead(self, actor: Role, lead: str) -> None:
         self._role(actor,{Role.MOTHER}); self.topology.add(lead)
     def add_worker(self, actor: Role, worker: Worker) -> None:
@@ -223,26 +372,26 @@ class Swarm:
         self.workers[worker.id]=worker
     def start_atomic(self, actor:Role, task:Task) -> None:
         """CTRL may create exactly one direct DOER ownership path for atomic work."""
-        self._role(actor,{Role.CTRL}); self._require_subagent_contract(task); self._worker_identity(task.owner)
+        self._role(actor,{Role.CTRL}); self._require_subagent_contract(task); self._validate_task_acceptance(task); self._worker_identity(task.owner)
         if task.owner in self.workers or task.id in self.tasks: raise InvariantError("atomic ownership already exists")
         task.topology_receipt=("CTRL","DOER","atomic:isolated"); self.workers[task.owner]=Worker(task.owner,"CTRL",1,WorkerState.ACTIVE,{task.id}); self.tasks[task.id]=task
     def start_ctrl_direct(self, actor:Role, task:Task, *, outcomes:int, mutable_surfaces:int, cross_lane_dependency:bool, measurable_minutes:int) -> None:
-        self._role(actor,{Role.CTRL}); self._require_subagent_contract(task)
+        self._role(actor,{Role.CTRL}); self._require_subagent_contract(task); self._validate_task_acceptance(task)
         if ctrl_mode(outcomes=outcomes,mutable_surfaces=mutable_surfaces,cross_lane_dependency=cross_lane_dependency,risk=task.risk,measurable_minutes=measurable_minutes,direct_horizon_minutes=self.direct_work_horizon) is not CtrlMode.DIRECT: raise InvariantError("CTRL_DIRECT predicate failed; hire a LEAD")
         if task.owner.strip().upper()!=Role.CTRL.value or task.id in self.tasks: raise InvariantError("CTRL_DIRECT requires the sole CTRL owner and a new atomic task")
         task.ctrl_mode=CtrlMode.DIRECT; task.topology_receipt=("CTRL_DIRECT","atomic:one-surface"); self.tasks[task.id]=task
     def start_simple(self, actor:Role, task:Task) -> None:
         """MOTHER may add stateful direct DOER ownership without a LEAD."""
-        self._role(actor,{Role.MOTHER}); self._require_subagent_contract(task); self._worker_identity(task.owner)
+        self._role(actor,{Role.MOTHER}); self._require_subagent_contract(task); self._validate_task_acceptance(task); self._worker_identity(task.owner)
         if task.owner in self.workers or task.id in self.tasks: raise InvariantError("simple ownership already exists")
         task.topology_receipt=("CTRL","MOTHER","DOER","simple:stateful"); self.workers[task.owner]=Worker(task.owner,"MOTHER",1,WorkerState.ACTIVE,{task.id}); self.tasks[task.id]=task
     def reuse_warm(self, actor:Role, task:Task, *, architecture:dict[str,int], affinity:int) -> str|None:
-        self._role(actor,{Role.LEAD,Role.MOTHER,Role.CTRL}); self._require_subagent_contract(task)
+        self._role(actor,{Role.LEAD,Role.MOTHER,Role.CTRL}); self._require_subagent_contract(task); self._validate_task_acceptance(task)
         for worker in self.workers.values():
             self._worker_identity(worker.id)
             context=worker.context
             if worker.state==WorkerState.WARM and context.get("affinity",0)>=affinity and context.get("architecture",architecture)==architecture:
-                worker.state=WorkerState.ACTIVE; worker.task_ids.add(task.id); task.owner=worker.id; self.tasks[task.id]=task; return worker.id
+                self._bind_task_lead(task,worker); worker.state=WorkerState.ACTIVE; worker.task_ids.add(task.id); task.owner=worker.id; self.tasks[task.id]=task; return worker.id
         return None
     def package_context(self, actor:Role, worker_id:str, package:ContextPackage) -> None:
         self._role(actor,{Role.LEAD}); worker=self.workers[worker_id]
@@ -273,8 +422,15 @@ class Swarm:
         try:
             base,tail=artifact.rsplit("@",1); revision,purpose=tail.split(":",1)
         except ValueError as exc: raise InvariantError("artifact identity must be base@revision:purpose") from exc
+        observables=(); paths=()
+        if "#obs=" in purpose:
+            purpose,encoded=purpose.rsplit("#obs=",1)
+            try:
+                payload=json.loads(bytes.fromhex(encoded).decode("utf-8"))
+                observables=tuple(tuple(item) for item in payload["observables"]); paths=tuple(payload["paths"])
+            except (ValueError,TypeError,KeyError,UnicodeDecodeError) as exc: raise InvariantError("observed artifact identity is malformed") from exc
         if not base or not revision or not purpose: raise InvariantError("artifact identity must be complete")
-        return ArtifactIdentity(base,revision,purpose)
+        return ArtifactIdentity(base,revision,purpose,observables,paths)
     def _check_artifact(self, task:Task, artifact:ArtifactIdentity|str, source:str|None, justification:ArtifactJustification|None, provenance:ArtifactProvenance|None=None, *, pending:set[str]|None=None, pending_provenance:set[str]|None=None) -> tuple[ArtifactIdentity,str]:
         identity=self._artifact(artifact); key=identity.key()
         if pending is None: pending=set()
@@ -294,8 +450,9 @@ class Swarm:
         if provenance is not None: self.provenance_index[provenance.id]=key; task.artifact_provenance[key]=provenance
         return key
     def assign(self, actor: Role, task: Task) -> None:
-        self._role(actor,{Role.LEAD}); self._require_subagent_contract(task); self._worker_identity(task.owner); w=self.workers.get(task.owner)
+        self._role(actor,{Role.LEAD}); self._require_subagent_contract(task); self._validate_task_acceptance(task); self._worker_identity(task.owner); w=self.workers.get(task.owner)
         if not w or w.state==WorkerState.RETIRED or len(w.task_ids)>=self.wip_limit: raise InvariantError("owner unavailable or at WIP limit")
+        self._bind_task_lead(task,w)
         staged=[]; pending=set(); pending_provenance=set()
         for artifact,source in task.artifacts.items():
             artifact_key=self._artifact(artifact).key(); provenance=task.artifact_provenance.get(artifact_key)
@@ -314,11 +471,57 @@ class Swarm:
         selected=mode or self.mode; tier=max(architect_floor,historical_floor,initial_tier(risk=risk,uncertainty=uncertainty,blast_radius=blast_radius,family=family,mode=selected)); self._record("efficiency_ledger",{"kind":"route","family":family,"tier":str(tier),"reason":"expected_total_accepted_cost"}); return tier
     def dedup(self, identity:str, *, verification:bool=False, uncertainty:bool=False) -> DedupDecision:
         found=bool(self.discover(identity)); decision=DedupDecision.EXECUTE if not found or verification or uncertainty else DedupDecision.REUSE; self._record("efficiency_ledger",{"kind":"dedup","decision":decision.value,"reason":"verification" if verification else "uncertainty" if uncertainty else "canonical_artifact"}); return decision
-    def heartbeat(self, actor:Role, task_id:str, *, meaningful_progress:bool, owner_update:bool=True, unchanged_updates:int=1, recovery_attempts:int|None=None) -> str|None:
+    def publish_ctrl_feed(self, actor:Role, message:CtrlFeedMessage) -> str:
+        """Record the exact externally surfaced CTRL message for later heartbeat audit."""
+        self._role(actor,{Role.CTRL})
+        if not message.task_id or message.task_id not in self.tasks: raise InvariantError("CTRL feed message requires a canonical task identity")
+        if not message.surface_receipt.strip(): raise InvariantError("CTRL feed message requires an external surface receipt")
+        for existing in self.ctrl_feed_messages:
+            if existing==message: return message.surface_receipt
+            if existing.id==message.id or existing.surface_receipt==message.surface_receipt: raise InvariantError("CTRL feed message identity and surface receipt must be unique")
+        self.ctrl_feed_messages.append(message); return message.surface_receipt
+    def register_ctrl_feed_event(self, actor:Role, task_id:str, event_receipt:str, kind:CtrlFeedEventKind, proof_receipts:tuple[str,...]) -> str:
+        """Register semantic authority for one new user-visible feed event."""
+        self._role(actor,{Role.CTRL});
+        if task_id not in self.tasks: raise InvariantError("CTRL feed event requires a canonical task")
+        if event_receipt in self.ctrl_feed_events: raise InvariantError("CTRL feed event receipt must be unique")
+        surfaced={item.receipt for item in self.ctrl_evidence_ledger.values() if item.task_id==task_id and item.disposition==EvidenceDisposition.SURFACED}
+        if any(receipt not in surfaced for receipt in proof_receipts): raise InvariantError("CTRL feed event proof must be surfaced for the same task")
+        event=CtrlFeedEvent(event_receipt,task_id,kind,proof_receipts); self.ctrl_feed_events[event_receipt]=event; return event_receipt
+    def heartbeat(self, actor:Role, task_id:str, *, meaningful_progress:bool, recent_ctrl_feed:tuple[CtrlFeedMessage,...]=(), owner_update:bool=True, unchanged_updates:int=1, recovery_attempts:int|None=None, feed_correction:CtrlFeedMessage|None=None) -> str|None:
         self._role(actor,{Role.CTRL}); t=self.tasks[task_id]
-        if not t.active_goal or task_id in self.scheduled_wakeups: return None
-        due=self.recover_lost_wakeup(Role.CTRL,task_id,now=t.milestone_started_at+t.review_horizon_minutes)
-        return f"{task_id}:watchdog-recovered:{due}"
+        for message in recent_ctrl_feed: self.publish_ctrl_feed(Role.CTRL,message)
+        pending=tuple(self.ctrl_feed_messages[self.ctrl_feed_cursor:]); audit=audit_ctrl_feed(pending)
+        pending_events:set[str]=set()
+        for message in pending:
+            surfaced_receipts={item.receipt for item in self.ctrl_evidence_ledger.values() if item.task_id==message.task_id and item.disposition==EvidenceDisposition.SURFACED}
+            unknown=tuple(receipt for receipt in message.proof_receipts if receipt not in surfaced_receipts)
+            if unknown: audit=CtrlFeedAudit((*audit.violations,f"{message.id}:unknown-proof-receipt"))
+            event=self.ctrl_feed_events.get(message.event_receipt)
+            if event is None or event.task_id!=message.task_id or event.proof_receipts!=message.proof_receipts: audit=CtrlFeedAudit((*audit.violations,f"{message.id}:unknown-material-event"))
+            elif message.event_receipt in self.ctrl_feed_consumed_events or message.event_receipt in pending_events: audit=CtrlFeedAudit((*audit.violations,f"{message.id}:repeated-material-event"))
+            pending_events.add(message.event_receipt)
+        reorientation=""
+        if not audit.compliant:
+            correction_audit=audit_ctrl_feed((feed_correction,)) if feed_correction is not None else CtrlFeedAudit(("missing-correction",))
+            correction_receipts={item.receipt for item in self.ctrl_evidence_ledger.values() if feed_correction is not None and item.task_id==feed_correction.task_id and item.disposition==EvidenceDisposition.SURFACED}
+            if feed_correction is not None and (not feed_correction.surface_receipt.strip() or feed_correction.task_id not in self.tasks): correction_audit=CtrlFeedAudit((*correction_audit.violations,f"{feed_correction.id}:unsurfaced-correction"))
+            if feed_correction is not None and any(receipt not in correction_receipts for receipt in feed_correction.proof_receipts): correction_audit=CtrlFeedAudit((*correction_audit.violations,f"{feed_correction.id}:unknown-proof-receipt"))
+            correction_event=self.ctrl_feed_events.get(feed_correction.event_receipt) if feed_correction is not None else None
+            if feed_correction is not None and (correction_event is None or correction_event.task_id!=feed_correction.task_id or correction_event.proof_receipts!=feed_correction.proof_receipts or feed_correction.event_receipt in self.ctrl_feed_consumed_events): correction_audit=CtrlFeedAudit((*correction_audit.violations,f"{feed_correction.id}:unknown-material-event"))
+            if not correction_audit.compliant: raise InvariantError(f"CTRL heartbeat found feed violations and requires one compliant correction: {','.join(audit.violations)}")
+            self.publish_ctrl_feed(Role.CTRL,feed_correction)
+            self.ctrl_feed_consumed_events.add(feed_correction.event_receipt)
+            t.ctrl_feed_drift_count+=1; t.superseded_ctrl_feed_ids.extend(message.id for message in pending); t.last_ctrl_feed_correction_id=feed_correction.id
+            self.ctrl_feed_superseded_by.update({message.id:feed_correction.id for message in pending}); self.ctrl_feed_cursor=len(self.ctrl_feed_messages)
+            self._record("telemetry_events",{"kind":"ctrl_feed_audit","task_id":task_id,"violations":audit.violations,"correction":feed_correction.id,"drift_count":t.ctrl_feed_drift_count,"reorientation":"purpose-reset"})
+            reorientation=f"{task_id}:feed-reoriented:{t.ctrl_feed_drift_count}:{feed_correction.id}"
+        else:
+            self.ctrl_feed_consumed_events.update(message.event_receipt for message in pending); self.ctrl_feed_cursor=len(self.ctrl_feed_messages)
+        recovery=""
+        if t.active_goal and task_id not in self.scheduled_wakeups:
+            due=self.recover_lost_wakeup(Role.CTRL,task_id,now=t.milestone_started_at+t.review_horizon_minutes); recovery=f"{task_id}:watchdog-recovered:{due}"
+        return "|".join(item for item in (reorientation,recovery) if item) or None
     def context_decision(self, *, affinity:int|None=None, bloat:bool|None=None, stale:bool|None=None, stalls:int|None=None, worker_id:str|None=None, replacement:str|None=None) -> str:
         context=self.workers[worker_id].context if worker_id else {}; affinity=context.get("affinity",affinity or 0); bloat=context.get("bloat",bloat or False); stale=context.get("stale",stale or False); stalls=context.get("stalls",stalls or 0)
         result="retire" if bloat or stale or stalls>1 or affinity==0 else "reuse"; self._record("efficiency_ledger",{"kind":"context","decision":result,"reason":"bounded_spine"})
@@ -371,6 +574,7 @@ class Swarm:
     def add_artifact(self, actor: Role, task_id: str, artifact: ArtifactIdentity, risk: str="", *, source:str|None=None, justification:ArtifactJustification|None=None, provenance:ArtifactProvenance|None=None) -> None:
         self._role(actor,{Role.DOER,Role.CTRL}); t=self.tasks[task_id]
         if actor is Role.CTRL and t.ctrl_mode is not CtrlMode.DIRECT: raise InvariantError("CTRL artifact mutation requires explicit CTRL_DIRECT mode")
+        if t.acceptance_contract is None or t.acceptance_contract.explicitly_empty: raise InvariantError("artifact-producing lanes require an exact nonempty acceptance contract before artifact registration")
         identity=self._register_artifact(t,artifact,source,justification,provenance); t.evidence.append(identity); t.findings.extend([risk] if risk else [])
     def register_ctrl_evidence(self, actor:Role, task_id:str, evidence_id:str, kind:str, locator:str, *, material:bool=True, steering:bool=True) -> str:
         """Register each reviewable result; a path is provenance, never a surface receipt."""
@@ -455,11 +659,70 @@ class Swarm:
         if usage is not None: self.telemetry["host_usage"]=self.telemetry.get("host_usage",0)+usage
         self._record("telemetry_events",{"task_type":task_type,"role":role,"tier":tier,"model":model,"attempts":attempts,"stalls":stalls,"expert_uses":expert_uses,"review_failures":review_failures,"review_cycles":review_cycles,"worker_count":len(self.workers),"outcome":outcome,"productive_execution":productive,"swarm_overhead":overhead,**({"host_usage":usage} if usage is not None else {})})
         self._record("events",("TELEMETRY",f"{task_type}:{role}:L{tier}:{outcome}"))
+    def record_gate_receipt(self, actor:Role, task_id:str, receipt:GateReceipt, *, actor_id:str) -> None:
+        """Retain external PASS/FAIL/TIMEOUT as UNVERIFIED; host supervision is not a runtime gate."""
+        self._role(actor,{Role.LEAD}); t=self.tasks[task_id]; self._require_lane_actor(t,actor,actor_id); contract=t.acceptance_contract
+        if contract is None: raise InvariantError("task requires an explicit acceptance contract")
+        if contract.explicitly_empty: raise InvariantError("empty acceptance contract has no gates")
+        if not t.incident_consultation_receipt: raise InvariantError("LEAD must consult matching unresolved incidents during the execution brief")
+        if receipt.gate not in contract.required_gates: raise InvariantError("gate receipt must name a declared acceptance gate")
+        if receipt.artifact!=contract.artifact: raise InvariantError("gate receipt artifact does not match acceptance contract")
+        if receipt._authority is not None: raise InvariantError("runtime gate receipts cannot re-enter through the UNVERIFIED path")
+        t.unverified_gate_receipts[receipt.gate]=receipt; t.gate_receipts.pop(receipt.gate,None)
+        t.review_passed=False; t.acceptance_review_receipt=None; t.state=TaskState.ACTIVE
+    def run_gate(self, actor:Role, task_id:str, gate:str, argv:tuple[str,...], *, cwd:str, actor_id:str) -> GateReceipt:
+        """Run synchronously without a shell; the host retains timeout and process-tree ownership."""
+        self._role(actor,{Role.LEAD}); t=self.tasks[task_id]; self._require_lane_actor(t,actor,actor_id); contract=t.acceptance_contract
+        if contract is None: raise InvariantError("task requires an explicit acceptance contract")
+        if contract.explicitly_empty: raise InvariantError("empty acceptance contract has no gates")
+        if not t.incident_consultation_receipt: raise InvariantError("LEAD must consult matching unresolved incidents during the execution brief")
+        if gate not in contract.required_gates: raise InvariantError("gate execution must name a declared acceptance gate")
+        if contract.artifact is None: raise InvariantError("gate execution requires an exact artifact")
+        try: command=tuple(argv)
+        except TypeError as error: raise InvariantError("gate execution requires argv") from error
+        if not command or not isinstance(command[0],str) or not command[0] or any(not isinstance(part,str) for part in command): raise InvariantError("gate execution requires argv with a nonempty executable")
+        workdir=Path(cwd).resolve()
+        if not workdir.is_dir(): raise InvariantError("gate execution directory must exist")
+        before=contract.artifact.reobserve(contract.observation_root)
+        if before!=contract.artifact: raise InvariantError("acceptance artifact changed before gate execution")
+        returncode=None; outcome=ProofOutcome.FAIL
+        try:
+            completed=subprocess.run(command,cwd=str(workdir),shell=False,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,check=False)
+            returncode=completed.returncode; outcome=ProofOutcome.PASS if returncode==0 else ProofOutcome.FAIL
+        except OSError: outcome=ProofOutcome.FAIL
+        after=contract.artifact.reobserve(contract.observation_root)
+        if after!=before and outcome is ProofOutcome.PASS: outcome=ProofOutcome.FAIL
+        receipt=GateReceipt(gate,contract.artifact,outcome,command,before.observables,after.observables,returncode)
+        object.__setattr__(receipt,"_authority",self._gate_capability); object.__setattr__(receipt,"_bound_task_id",task_id); t.gate_receipts[gate]=receipt; t.unverified_gate_receipts.pop(gate,None)
+        if outcome is not ProofOutcome.PASS:
+            t.review_passed=False; t.acceptance_review_receipt=None; t.state=TaskState.ACTIVE
+        return receipt
+    def consult_incidents(self, actor:Role, task_id:str, ledger:IncidentLedger, *, artifact:str, scope:str, actor_id:str) -> tuple[IncidentRecord,...]:
+        self._role(actor,{Role.LEAD}); t=self.tasks[task_id]; self._require_lane_actor(t,actor,actor_id); incidents=ledger.unresolved(artifact=artifact,scope=scope); t.incident_consultation_receipt=f"{artifact}:{scope}:{','.join(item.incidentId for item in incidents) or 'none'}"; return incidents
+    def record_post_handoff_incident(self, actor:Role, task_id:str, ledger:IncidentLedger, record:IncidentRecord, *, material:bool, actor_id:str) -> bool:
+        self._role(actor,{Role.LEAD}); t=self.tasks[task_id]; self._require_lane_actor(t,actor,actor_id)
+        if not material: return False
+        ledger.append(record); t.correction_pending=True; t.findings.append(f"incident:{record.incidentId}"); return True
+    def open_gates(self, task_id:str) -> tuple[str,...]:
+        """Re-observe current state and return gates without runtime-executed PASS proof."""
+        t=self.tasks[task_id]; self._validate_task_acceptance(t); contract=t.acceptance_contract
+        if contract is None: raise InvariantError("task requires an explicit acceptance contract")
+        if contract.explicitly_empty: return ()
+        if contract.artifact is None: return contract.required_gates
+        try: current=contract.artifact.reobserve(contract.observation_root)
+        except InvariantError: return contract.required_gates
+        return tuple(gate for gate in contract.required_gates if (receipt:=t.gate_receipts.get(gate)) is None or not receipt.current_for(self._gate_capability,task_id,gate,contract.artifact,current))
+    def _acceptance_ready(self, task:Task) -> bool:
+        evidence=task.acceptance_review_receipt; contract=task.acceptance_contract
+        try: self._validate_task_acceptance(task)
+        except InvariantError: return False
+        return bool(contract is not None and task.review_passed and task.reviewer and evidence and evidence.scope is ReviewScope.ACCEPTANCE and evidence.reviewer==task.reviewer and evidence.artifact==contract.artifact and not self.open_gates(task.id))
     def review(self, actor: Role, task_id: str, evidence: ReviewEvidence|str, passed: bool, finding:str="") -> None:
         self._role(actor,{Role.REVIEW}); t=self.tasks[task_id]
         if isinstance(evidence,str):
+            if passed: raise InvariantError("legacy passed=True cannot grant acceptance; submit typed ACCEPTANCE review evidence")
             legacy_strategy=ReviewStrategy(finding) if finding in {item.value for item in ReviewStrategy} else ReviewStrategy.LIGHT
-            evidence=ReviewEvidence(legacy_strategy,evidence,True,ArtifactIdentity("legacy","v1","review"),(finding,) if finding else ())
+            evidence=ReviewEvidence(legacy_strategy,evidence,True,None,(finding,) if finding else ())
         if not evidence.independent or evidence.reviewer in {t.creator,t.owner}: raise InvariantError("creator cannot be sole independent reviewer")
         if evidence.strategy in {ReviewStrategy.ADVERSARIAL,ReviewStrategy.SPECIALIST} and (not isinstance(evidence.artifact,ArtifactIdentity) or not evidence.artifact.base or not evidence.artifact.revision): raise InvariantError("strong review evidence requires typed artifact identity")
         if evidence.strategy==ReviewStrategy.SPECIALIST and not dict(evidence.receipt).get("specialist"): raise InvariantError("specialist review requires specialist receipt")
@@ -467,8 +730,17 @@ class Swarm:
         required=max((ReviewStrategy(self.review_depth(t.risk)),t.architecture_review_floor,t.security_review_floor,MODE_POLICY[self.mode]["review_floor"]),key=levels.get); t.review_strategy=required.value
         if passed and levels[evidence.strategy]<levels[required]: raise InvariantError("review evidence does not meet required strategy")
         t.reviewer=evidence.reviewer
-        if passed: t.review_passed=True; t.state=TaskState.REVIEW
-        else: t.state=TaskState.ACTIVE; t.findings.extend(evidence.findings or ("review failed",))
+        if passed and evidence.scope is ReviewScope.ACCEPTANCE:
+            self._validate_task_acceptance(t)
+            if t.acceptance_contract is None: raise InvariantError("acceptance review requires an explicit acceptance contract")
+            if evidence.artifact!=t.acceptance_contract.artifact: raise InvariantError("acceptance review artifact does not match acceptance contract")
+            open_gates=self.open_gates(task_id)
+            if open_gates: raise InvariantError(f"acceptance review requires PASS receipts for all gates: {','.join(open_gates)}")
+            if not dict(evidence.receipt).get("acceptance"): raise InvariantError("acceptance review requires an independent acceptance receipt")
+            t.review_passed=True; t.acceptance_review_receipt=evidence; t.state=TaskState.REVIEW
+        elif passed:
+            t.review_passed=False; t.acceptance_review_receipt=None; t.state=TaskState.ACTIVE
+        else: t.review_passed=False; t.acceptance_review_receipt=None; t.state=TaskState.ACTIVE; t.findings.extend(evidence.findings or ("review failed",))
     def lease(self, actor: Role, surface: str, holder: str) -> None:
         self._role(actor,{Role.MOTHER})
         if surface in self.leases and self.leases[surface]!=holder: raise InvariantError("surface already leased")
@@ -493,8 +765,8 @@ class Swarm:
                 worker.state=WorkerState.RETIRED; worker.archive={"tasks":[],"lane":worker.lane}
         if len(active) <= 1: self.topology.discard(lead); return Depth.ATOMIC if not active else Depth.SIMPLE
         return Depth.WORKSTREAM
-    def complete(self, actor: Role, task_id: str, integration_ok: bool, architecture_ok: bool, now: int) -> None:
-        self._role(actor,{Role.MOTHER}); t=self.tasks[task_id]
+    def complete(self, actor: Role, task_id: str, integration_ok: bool, architecture_ok: bool, now: int, *, actor_id:str) -> None:
+        self._role(actor,{Role.LEAD,Role.MOTHER}); t=self.tasks[task_id]; self._require_lane_actor(t,actor,actor_id); self._validate_task_acceptance(t)
         self._require_subagent_contract(t)
         pending=self._open_ctrl_evidence(task_id)
         if pending: raise InvariantError(f"open CTRL evidence acceptance failure: {','.join(pending)}")
@@ -502,7 +774,7 @@ class Swarm:
         if decisions: raise InvariantError(f"open CTRL decision gallery acceptance failure: {','.join(decisions)}")
         uncovered=self._uncovered_ctrl_decision_candidates(task_id)
         if uncovered: raise InvariantError(f"material CTRL decision candidates require one surfaced final gallery: {','.join(uncovered)}")
-        if not t.review_passed or not t.reviewer or not integration_ok or not architecture_ok: raise InvariantError("completion requires independent review and integration/architecture gates")
+        if not self._acceptance_ready(t) or not integration_ok or not architecture_ok: raise InvariantError("completion requires exact-artifact acceptance review and integration/architecture gates")
         t.state=TaskState.COMPLETE; t.completed_at=now
         for waiter in self.tasks.values():
             if waiter.state==TaskState.WAITING and waiter.waiting_on==task_id: waiter.state=TaskState.ACTIVE; waiter.waiting_on=None
@@ -561,6 +833,7 @@ class Swarm:
             return None
         task=self.tasks.get(task_id)
         if task is None: raise InvariantError("CTRL event requires a canonical task")
+        if category=="acceptance" and (task.state is not TaskState.COMPLETE or not self._acceptance_ready(task)): raise InvariantError("CTRL acceptance requires a completed exact-artifact acceptance receipt")
         evidence=self.ctrl_evidence_ledger.get(evidence_id)
         if not outcome.strip() or evidence is None or evidence.task_id!=task_id or evidence.disposition!=EvidenceDisposition.SURFACED or not evidence.caption or not evidence.claim_limit or not evidence.receipt: raise InvariantError("CTRL event requires a surfaced proof and human-readable outcome")
         if category=="blocker" and not next_checkpoint.strip(): raise InvariantError("blocker CTRL event requires an exact recovery checkpoint")
@@ -571,4 +844,5 @@ class Swarm:
         return f"{rendered} Next: {next_checkpoint.strip()}" if next_checkpoint.strip() else rendered
     def project_complete(self, actor: Role, integration_ok: bool, architecture_ok: bool) -> bool:
         self._role(actor,{Role.MOTHER})
-        return not self._open_ctrl_evidence() and not self._open_ctrl_decision_sets() and not self._uncovered_ctrl_decision_candidates() and integration_ok and architecture_ok and all(t.state in {TaskState.COMPLETE,TaskState.ARCHIVED,TaskState.BACKLOG} or (t.state==TaskState.ARCHIVED_STALE and t.superseded_by in self.tasks and self.tasks[t.superseded_by].state==TaskState.COMPLETE) for t in self.tasks.values())
+        terminal=lambda t: t.state==TaskState.BACKLOG or (t.state in {TaskState.COMPLETE,TaskState.ARCHIVED} and self._acceptance_ready(t)) or (t.state==TaskState.ARCHIVED_STALE and t.superseded_by in self.tasks and self.tasks[t.superseded_by].state==TaskState.COMPLETE and self._acceptance_ready(self.tasks[t.superseded_by]))
+        return not self._open_ctrl_evidence() and not self._open_ctrl_decision_sets() and not self._uncovered_ctrl_decision_candidates() and integration_ok and architecture_ok and all(terminal(t) for t in self.tasks.values())

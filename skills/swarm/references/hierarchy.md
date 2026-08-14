@@ -1,4 +1,4 @@
-# SWARM hierarchy and finite roles
+# SWARM hierarchy and specialist roles
 
 Read this reference when shaping a portfolio, creating user-visible tasks,
 selecting ASSIST, naming roles, or transferring ownership.
@@ -33,7 +33,7 @@ selecting ASSIST, naming roles, or transferring ownership.
   role capacity never establish a portfolio.
 - Never build a complete tree from configured counts or role availability. The
   lane test decides every task.
-- CTRL, MOTHER, every LEAD, and every persistent ARCHITECT require an active durable
+- CTRL, MOTHER, every LEAD, and every persistent SPECIALIST require an active durable
   goal before scheduling, resuming, or substantive work. Inspect first, create
   when none is unfinished, continue a matching goal, and reconcile or escalate
   a conflicting unfinished goal without replacement. The goal states objective,
@@ -60,16 +60,16 @@ acceptance while CTRL remains the human-facing control route.
 
 | Function | Owns | Stops when |
 | --- | --- | --- |
-| CTRL | Intake classification, durable objective goal and ledger, initial topology, user-visible task materialization, human-facing routing | Outcome is accepted or an exact blocker is handed back |
+| CTRL | Intake classification, durable objective goal and ledger, initial topology, user-visible task materialization, human-facing routing; refuses portfolio claims without lane acceptance receipts | Outcome is accepted or an exact blocker is handed back |
 | MOTHER | WORKER lanes, capacity, ownership, checkpoints, escalations, outcome lock, composed portfolio acceptance, shared release-surface leases | Outcome is accepted or an exact blocker is handed back |
-| LEAD | Deployable-lane decomposition, DOER integration SHA, independent REVIEW routing, correction loop, lane acceptance, provider/deploy/rollback control, production proof | Its accepted lane receipt is handed to MOTHER |
+| LEAD | Deployable-lane decomposition, bound-identity incident consultation, DOER integration SHA, exact-artifact gate ledger, independent ACCEPTANCE REVIEW routing, correction loop, lane completion, provider/deploy/rollback control, production proof | Its accepted lane receipt is handed to MOTHER |
 | DOER | One bounded workstream as developer, designer, researcher, or operator; coordinates TASK artifacts, proof, and handoff | LEAD accepts, transfers, or receives an exact blocker |
 | TASK | One bounded artifact inside a DOER workstream | Its DOER accepts, transfers, or receives an exact blocker |
 | SUBTASK | One smaller bounded execution unit inside a TASK | Its TASK receives output or an exact blocker |
-| ASSIST | Temporary wildcard capacity hired by MOTHER, ARCHITECT, LEAD, or DOER for one bounded assignment | It returns artifact/evidence and exits |
-| ARCHITECT | Persistent system map, cross-lane dependencies, interface contracts/invariants, integration order, architectural decisions | It returns concise dependency/decision interfaces; no worker/deploy authority |
+| ASSIST | Temporary wildcard capacity hired by MOTHER, SPECIALIST, LEAD, or DOER for one bounded assignment | It returns artifact/evidence and exits |
+| SPECIALIST | One persistent, named professional perspective and its exact cross-cutting truth surface, invariants, and gate | It returns concise decisions or blockers; no worker/deploy authority |
 | ADVISOR | One focused question/problem recommendation with evidence | It returns to its requester then exits; no authority |
-| REVIEW | Independent verdict, failed-proof reruns, and claim limits | It returns APPROVE, CORRECT, or BLOCKED |
+| REVIEW | Independent SOURCE_SEMANTICS or ACCEPTANCE verdict, exact-artifact receipt verification, failed-proof reruns, and claim limits | It returns APPROVE, CORRECT, or BLOCKED |
 
 MOTHER's planning pass is not a standing task or role. LEAD does
 not give final portfolio acceptance. DOER and ASSIST never self-accept. REVIEW
@@ -85,14 +85,14 @@ the lane, and controls provider/deploy/rollback/production proof.
 
 ## Use ASSIST as temporary surge capacity
 
-ASSIST is temporary surge/wildcard capacity hireable by MOTHER, ARCHITECT, LEAD,
+ASSIST is temporary surge/wildcard capacity hireable by MOTHER, SPECIALIST, LEAD,
 or DOER, not a lesser helper or another authority layer. Its customizable default is
 gpt-5.6-sol/medium. It may perform any bounded developer, design, research,
 operations, proof, diagnostic, or execution slice when the hiring owner needs
 parallel capacity, hits a material issue, is clogged, or misses an explicit
 checkpoint/deadline. ASSIST returns artifact/evidence to the hiring owner and
 exits. The hiring owner retains its own final authority: MOTHER orchestration decisions,
-ARCHITECT system coherence, LEAD lane acceptance/deploy, and DOER artifact
+SPECIALIST truth-surface coherence, LEAD lane acceptance/deploy, and DOER artifact
 accountability never transfer. REVIEW remains separately named and independent.
 
 When a DOER has two or more independent SUBTASKs and child capacity, delegate
@@ -102,11 +102,14 @@ self-accept, integrate, mutate providers, deploy, or create further authority.
 It may be spawned as a child or reassigned from
 available capacity, but never becomes permanent ownership or task sprawl.
 
-ARCHITECT is the persistent system-coherence counterpart: it owns the system map,
-cross-lane dependencies, interface contracts/invariants, integration order, and
-architectural decisions. It is not a builder, WORKER scheduler, reviewer,
-integrator, provider mutator, or deployer. LEAD owns one delivery lane and
-coordinates with ARCHITECT for system impacts. ADVISOR is ephemeral: spawn it on
+A SPECIALIST is a free professional role. ARCHITECT, ENGINEER, DEVELOPER,
+DESIGNER, RESEARCHER, ANALYST, and STRATEGIST are built-in examples, not an
+allowlist. Its task contract names the exact truth surface, invariants, and gate
+it owns. Multiple specialists may use the same profession concurrently when
+those owned surfaces or accepting routes differ. A SPECIALIST is not a WORKER
+scheduler, reviewer, integrator, provider mutator, or deployer. LEAD owns one
+delivery lane and coordinates with the relevant SPECIALIST for cross-lane
+impacts. ADVISOR is ephemeral: spawn it on
 demand for one focused question/problem, receive recommendation/evidence, then
 exit. It has no ownership, build, review, integration, provider, or deploy
 authority.
@@ -162,7 +165,7 @@ serializes only that shared mutation; it does not take over the deployment.
 
 ## Materialize user-visible ownership
 
-In Codex, materialize persistent ARCHITECT and every justified LEAD, DOER, TASK,
+In Codex, materialize every persistent SPECIALIST and every justified LEAD, DOER, TASK,
 SUBTASK, and REVIEW as a host agent with the declared owner, artifact, and
 accepting route. Materialize ASSIST and ADVISOR only for their bounded temporary
 assignment; they return evidence and exit. Do not create any role merely to
@@ -170,7 +173,7 @@ complete a tree, and internal subagents never replace a required portfolio lane.
 Grant child-task authority explicitly and only for a bounded named set that
 passes the same lane test.
 
-Before CTRL routes work or MOTHER schedules it, and before a LEAD or persistent ARCHITECT starts
+Before CTRL routes work or MOTHER schedules it, and before a LEAD or persistent SPECIALIST starts
 or resumes substantive work, its owner must inspect or continue the matching
 host goal. Goal creation does not grant extra file, provider, deploy, review, or
 acceptance authority; completion is valid only at the stated stopping condition.
@@ -185,7 +188,10 @@ Generic role types do not dictate task names: name a DOER by its concrete job,
 such as DEVELOPER, DESIGNER, or RESEARCHER. Name a lane owner
 `<domain-matched emoji>LEAD - <domain or responsibility>`: keep `LEAD` stable,
 put the distinguishing responsibility after the dash, and choose the icon from
-the domain rather than a generic leadership symbol. Other roles use
+the domain rather than a generic leadership symbol. Name a specialist
+`<role-matched emoji><PROFESSION> - <owned truth surface>`; never title it
+SPECIALIST, and distinguish concurrent specialists through their owned surface,
+not artificial profession variants. Other roles use
 `<role-matched emoji><ROLE> - <specific artifact>`. The label,
 icon, and concrete artifact should form the shortest unambiguous responsibility
 receipt; use the fallback icon only when no clear metaphor fits.

@@ -1,5 +1,26 @@
 # Compact review contract
 
+## Two scopes, one final gate
+
+`SOURCE_SEMANTICS` checks the implementation and may return useful findings, but
+it cannot set final `review_passed`. `ACCEPTANCE` checks the declared immutable
+`ArtifactIdentity` against its `AcceptanceContract`. It passes only when every
+named gate has an exact-artifact `PASS` receipt. Missing, `FAIL`, `TIMEOUT`, and
+stale-artifact receipts remain open. A legacy `passed=True` boolean is rejected.
+
+Each task declares `CODE`, `NON_CODE`, or `OTHER` and stable owning LEAD and
+applicable MOTHER identities. Assignment and warm reuse bind the task to the
+selected worker's actual LEAD. `CODE` requires at least one named gate. Only
+non-artifact `NON_CODE` work permits an empty contract; `OTHER`, `CODE`, and
+artifact-producing lanes reject it, including a later switch after registration. The
+bound LEAD owns lane integration, incident consultation, gate execution/recording,
+and lane completion. MOTHER can close only a lane explicitly bound to its stable
+identity. REVIEW independently verifies the exact artifact and receipts;
+it never converts source-only approval into acceptance. CTRL surfaces the verdict
+and refuses portfolio acceptance when the acceptance receipt is absent; it does
+not rerun or impersonate the lane owner. MOTHER alone composes accepted lanes
+into portfolio acceptance.
+
 An independent reviewer judges an inspectable artifact. Use a user-visible
 REVIEW task for multi-lane, cross-owner, or consequential work; use a bounded
 internal reviewer for one cohesive low-risk change. Read repository and product
@@ -52,6 +73,19 @@ Review in this order:
 6. **Evidence**: tests observe behavior; failures and timeouts stay failures;
    static, local, browser, authenticated, provider, deployed, device, and human
    proof are not conflated.
+
+Before reading detailed receipts for a visual claim, perform a first-glance user
+reality check on the exact final frame. Name the primary surface the user needs
+to see and verify that its real content and context are visibly present. A map
+without geography, a chart without data, media without the requested subject,
+or a page showing only a correct overlay on a blank, mocked, placeholder, failed,
+or fallback substrate is a failed visual result. A test label, DOM bounds,
+screenshot file, selector pass, or internally correct overlay cannot upgrade the
+missing substrate. Inspect relevant console errors, warnings, page errors,
+network failures, and fallback telemetry before accepting a clean rendered
+claim. Also review the ordinary task at a glance: duplicate actions, controls
+that compete for the same job, and always-visible detail that obscures the
+primary decision are product findings even when every control functions.
 
 ## Make evidence reviewable at a glance
 
@@ -112,6 +146,32 @@ the interaction density. Do not silently weaken an actual minimum requirement;
 identify the authority and ask the acceptance owner to choose when it conflicts
 with the product context.
 
+## Apply a significance gate outside design
+
+For every non-design finding, state the concrete consequence of leaving it and
+the observable improvement expected from changing it. Prefer a metric; when a
+direct metric is impractical, name specific evidence and a falsifiable outcome.
+The expected benefit must justify the combined investigation, implementation,
+review, regression, and coordination cost. Reject as nitpicks stylistic
+preference, theoretical purity, speculative future-proofing, cosmetic
+consistency outside design, marginal refactoring, and technically true defects
+with no credible consequence. Do not record them as P3, backlog, optional
+follow-up, or “while here” work. The act of reviewing is not evidence that a
+change is valuable.
+
+When the agreed outcome and proof pass with no material unresolved finding,
+return `APPROVE` and stop. Do not order another pass merely because deeper
+inspection could find more minor issues. Reopen review only for new evidence,
+changed scope, a failed gate, or a named material risk.
+
+Design review is the explicit exception. Encourage granular critique of visual,
+interaction, motion, copy, and craft details because small design refinements
+can compound into clarity, coherence, and perceived quality. Judge those details
+against the accepted direction and the composed product, and keep the exception
+inside design surfaces. A design nit cannot justify unrelated code,
+architecture, process, or scope churn. In mixed reviews, classify each finding
+before applying the exception.
+
 Rank findings `P0` destructive/security/data loss, `P1` blocked core outcome,
 `P2` confusing or fragile behavior/maintainability, and `P3` bounded polish.
 P0-P2 block approval. A correction must use the narrowest established primitive
@@ -138,3 +198,17 @@ options for the acceptance owner when the governing rule is the disputed part.
 `BLOCKED` names the exact missing authority, environment, credential, product
 decision, or external state. Do not produce a narrative verdict without
 inspecting the artifact.
+
+## Escaped-defect propagation
+
+For a material defect found after handoff or review, the owning LEAD records one
+private Git-ignored local causal trace in `.codex/swarm/incidents.jsonl`: introduction point and
+owner surface, detector and earliest cheap detector, missed-gate reason,
+propagation path, known cost/time lost, correction, generalization candidate,
+disposition, and structured evidence references. Cross-process writes and folds
+serialize without lost updates. The next matching execution brief consults
+unresolved records before gate work. Daily fold promotes only distinct repeated
+failure classes or demonstrably generalizable controls with contrasting regression
+proof. Ineligible candidates remain pending; only an explicit reasoned API rejects. Keep
+repo-specific commands, person blame, local policy, secrets, and one-off incident
+wording out of global SWARM doctrine.

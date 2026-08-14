@@ -32,9 +32,18 @@ doer_choices = ["🔨", "💻", "✏️", "🎨", "📚", "📊", "🔌", "🧪"
 # Set it to "fast" only when the host exposes and supports that tier.
 usage_profile = "medium"
 service_tier = ""
+# Global clamps applied after profile, role, and route-complexity selection.
+min_reasoning = "none"
+max_reasoning = "ultra"
 # Reduce avoidable coordination churn in new work without changing the selected
 # models, requested outcome, required proof, independent review, or authority.
 usage_saver = false
+
+[turbo]
+# Opt-in composite: use the high profile, request the fast service tier, select
+# MAX progress policy, and use the highest declared model-supported reasoning
+# level within the global bounds.
+enabled = false
 
 [efficiency]
 mode = "BALANCED"
@@ -49,7 +58,7 @@ worker_strategy = "warm_when_useful"
 archive_behavior = "provenance"
 
 [boost]
-# Boost is optional closeout behavior. MOTHER, LEAD, and persistent ARCHITECT
+# Boost is optional closeout behavior. MOTHER, LEAD, and persistent SPECIALIST
 # goals plus CTRL's heartbeat are mandatory and cannot be disabled here.
 # Make manual Boost mode available. Starting a Boost goal still requires a
 # direct user request; SWARM never infers or auto-starts one from quota state.
@@ -68,23 +77,25 @@ spark_model = "gpt-5.3-codex-spark"
 
 [models.high]
 mother_model = "gpt-5.6-sol"
-mother_reasoning = "medium"
+mother_reasoning = "high"
 lead_model = "gpt-5.6-sol"
-lead_reasoning = "medium"
+lead_reasoning = "high"
 doer_model = "gpt-5.6-luna"
-doer_reasoning = "xhigh"
+doer_reasoning = "max"
 task_model = "gpt-5.6-luna"
-task_reasoning = "high"
+task_reasoning = "xhigh"
 subtask_model = "gpt-5.6-luna"
-subtask_reasoning = "high"
+subtask_reasoning = "xhigh"
 assist_model = "gpt-5.6-sol"
-assist_reasoning = "medium"
+assist_reasoning = "high"
 advisor_model = "gpt-5.6-sol"
-advisor_reasoning = "medium"
+advisor_reasoning = "high"
+specialist_model = "gpt-5.6-sol"
+specialist_reasoning = "high"
 architect_model = "gpt-5.6-sol"
-architect_reasoning = "medium"
+architect_reasoning = "high"
 review_model = "gpt-5.6-sol"
-review_reasoning = "medium"
+review_reasoning = "high"
 
 [models.medium]
 mother_model = "gpt-5.6-sol"
@@ -101,6 +112,8 @@ assist_model = "gpt-5.6-sol"
 assist_reasoning = "medium"
 advisor_model = "gpt-5.6-sol"
 advisor_reasoning = "medium"
+specialist_model = "gpt-5.6-sol"
+specialist_reasoning = "medium"
 architect_model = "gpt-5.6-sol"
 architect_reasoning = "medium"
 review_model = "gpt-5.6-sol"
@@ -108,23 +121,25 @@ review_reasoning = "medium"
 
 [models.low]
 mother_model = "gpt-5.6-sol"
-mother_reasoning = "medium"
+mother_reasoning = "low"
 lead_model = "gpt-5.6-sol"
-lead_reasoning = "medium"
+lead_reasoning = "low"
 doer_model = "gpt-5.6-luna"
-doer_reasoning = "xhigh"
+doer_reasoning = "medium"
 task_model = "gpt-5.6-luna"
-task_reasoning = "high"
+task_reasoning = "low"
 subtask_model = "gpt-5.6-luna"
-subtask_reasoning = "high"
+subtask_reasoning = "low"
 assist_model = "gpt-5.6-sol"
-assist_reasoning = "medium"
+assist_reasoning = "low"
 advisor_model = "gpt-5.6-sol"
-advisor_reasoning = "medium"
+advisor_reasoning = "low"
+specialist_model = "gpt-5.6-sol"
+specialist_reasoning = "low"
 architect_model = "gpt-5.6-sol"
-architect_reasoning = "medium"
+architect_reasoning = "low"
 review_model = "gpt-5.6-sol"
-review_reasoning = "medium"
+review_reasoning = "low"
 
 # MOTHER routes only work and tools declared for the selected model. Add Kimi,
 # Qwen, or another Codex provider model here after configuring that provider.
@@ -132,29 +147,35 @@ review_reasoning = "medium"
 provider = "openai"
 workloads = ["general", "large_goal", "review"]
 tools = ["shell", "web", "computer_use", "image_input"]
+reasoning = ["low", "medium", "high", "xhigh", "max", "ultra"]
 
 [model_capabilities."gpt-5.6-terra"]
 provider = "openai"
 workloads = ["simple", "general", "large_goal", "review"]
 tools = ["shell", "web", "computer_use", "image_input"]
+reasoning = ["low", "medium", "high", "xhigh", "max", "ultra"]
 
 [model_capabilities."gpt-5.6-luna"]
 provider = "openai"
 workloads = ["simple", "general", "large_goal"]
 tools = ["shell", "web", "computer_use", "image_input"]
+reasoning = ["low", "medium", "high", "xhigh", "max"]
 
 [model_capabilities."gpt-5.3-codex-spark"]
 provider = "openai"
 workloads = ["simple"]
 tools = ["shell", "web"]
+reasoning = ["low", "medium", "high", "xhigh"]
 
 [roles]
 # SPECIALIST is a free role: add any short concrete profession needed. These
-# six examples are defaults, not an allowlist, and each may be used repeatedly.
+# seven examples are defaults, not an allowlist, and each may be used repeatedly.
 [roles.ARCHITECT]
 icon = "🏗️"
 [roles.ENGINEER]
 icon = "⚙️"
+[roles.DEVELOPER]
+icon = "💻"
 [roles.DESIGNER]
 icon = "🎨"
 [roles.RESEARCHER]

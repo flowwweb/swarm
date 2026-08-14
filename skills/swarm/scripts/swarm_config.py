@@ -48,7 +48,10 @@ DEFAULTS: dict[str, Any] = {
         "usage_profile": "medium",
         "service_tier": "",
         "usage_saver": False,
+        "min_reasoning": "none",
+        "max_reasoning": "ultra",
     },
+    "turbo": {"enabled": False},
     "efficiency": {"mode":"BALANCED", "doer_wip_limit":3},
     "hive": {"enabled": True, "cleanup_strategy":"adaptive", "retention_strategy":"adaptive", "worker_strategy":"warm_when_useful", "archive_behavior":"provenance"},
     "boost": {
@@ -67,16 +70,17 @@ DEFAULTS: dict[str, Any] = {
     },
     "models": {
         "high": {
-            "mother_model": "gpt-5.6-sol", "mother_reasoning": "medium",
-            "lead_model": "gpt-5.6-sol", "lead_reasoning": "medium",
+            "mother_model": "gpt-5.6-sol", "mother_reasoning": "high",
+            "lead_model": "gpt-5.6-sol", "lead_reasoning": "high",
             "doer_model": "gpt-5.6-luna",
-            "doer_reasoning": "xhigh",
-            "task_model": "gpt-5.6-luna", "task_reasoning": "high",
-            "subtask_model": "gpt-5.6-luna", "subtask_reasoning": "high",
-            "assist_model": "gpt-5.6-sol", "assist_reasoning": "medium",
-            "review_model": "gpt-5.6-sol", "review_reasoning": "medium",
-            "advisor_model": "gpt-5.6-sol", "advisor_reasoning": "medium",
-            "architect_model": "gpt-5.6-sol", "architect_reasoning": "medium",
+            "doer_reasoning": "max",
+            "task_model": "gpt-5.6-luna", "task_reasoning": "xhigh",
+            "subtask_model": "gpt-5.6-luna", "subtask_reasoning": "xhigh",
+            "assist_model": "gpt-5.6-sol", "assist_reasoning": "high",
+            "review_model": "gpt-5.6-sol", "review_reasoning": "high",
+            "advisor_model": "gpt-5.6-sol", "advisor_reasoning": "high",
+            "specialist_model": "gpt-5.6-sol", "specialist_reasoning": "high",
+            "architect_model": "gpt-5.6-sol", "architect_reasoning": "high",
         },
         "medium": {
             "mother_model": "gpt-5.6-sol", "mother_reasoning": "medium",
@@ -88,19 +92,21 @@ DEFAULTS: dict[str, Any] = {
             "assist_model": "gpt-5.6-sol", "assist_reasoning": "medium",
             "review_model": "gpt-5.6-sol", "review_reasoning": "medium",
             "advisor_model": "gpt-5.6-sol", "advisor_reasoning": "medium",
+            "specialist_model": "gpt-5.6-sol", "specialist_reasoning": "medium",
             "architect_model": "gpt-5.6-sol", "architect_reasoning": "medium",
         },
         "low": {
-            "mother_model": "gpt-5.6-sol", "mother_reasoning": "medium",
-            "lead_model": "gpt-5.6-sol", "lead_reasoning": "medium",
+            "mother_model": "gpt-5.6-sol", "mother_reasoning": "low",
+            "lead_model": "gpt-5.6-sol", "lead_reasoning": "low",
             "doer_model": "gpt-5.6-luna",
-            "doer_reasoning": "xhigh",
-            "task_model": "gpt-5.6-luna", "task_reasoning": "high",
-            "subtask_model": "gpt-5.6-luna", "subtask_reasoning": "high",
-            "assist_model": "gpt-5.6-sol", "assist_reasoning": "medium",
-            "review_model": "gpt-5.6-sol", "review_reasoning": "medium",
-            "advisor_model": "gpt-5.6-sol", "advisor_reasoning": "medium",
-            "architect_model": "gpt-5.6-sol", "architect_reasoning": "medium",
+            "doer_reasoning": "medium",
+            "task_model": "gpt-5.6-luna", "task_reasoning": "low",
+            "subtask_model": "gpt-5.6-luna", "subtask_reasoning": "low",
+            "assist_model": "gpt-5.6-sol", "assist_reasoning": "low",
+            "review_model": "gpt-5.6-sol", "review_reasoning": "low",
+            "advisor_model": "gpt-5.6-sol", "advisor_reasoning": "low",
+            "specialist_model": "gpt-5.6-sol", "specialist_reasoning": "low",
+            "architect_model": "gpt-5.6-sol", "architect_reasoning": "low",
         },
     },
     "model_capabilities": {
@@ -108,21 +114,25 @@ DEFAULTS: dict[str, Any] = {
             "provider": "openai",
             "workloads": ["general", "large_goal", "review"],
             "tools": ["shell", "web", "computer_use", "image_input"],
+            "reasoning": ["low", "medium", "high", "xhigh", "max", "ultra"],
         },
         "gpt-5.6-terra": {
             "provider": "openai",
             "workloads": ["simple", "general", "large_goal", "review"],
             "tools": ["shell", "web", "computer_use", "image_input"],
+            "reasoning": ["low", "medium", "high", "xhigh", "max", "ultra"],
         },
         "gpt-5.6-luna": {
             "provider": "openai",
             "workloads": ["simple", "general", "large_goal"],
             "tools": ["shell", "web", "computer_use", "image_input"],
+            "reasoning": ["low", "medium", "high", "xhigh", "max"],
         },
         "gpt-5.3-codex-spark": {
             "provider": "openai",
             "workloads": ["simple"],
             "tools": ["shell", "web"],
+            "reasoning": ["low", "medium", "high", "xhigh"],
         },
     },
     "roles": {},
@@ -178,9 +188,11 @@ BOOST_LEVELS = {"mother", "lead", "doer", "review"}
 # These role goals are a fixed operating invariant, independent of Boost.
 MANDATORY_DURABLE_GOAL_ROLES = frozenset({"mother", "lead", "specialist", "architect"})
 MODEL_WORKLOADS = {"simple", "general", "large_goal", "review"}
-MODEL_CAPABILITY_KEYS = {"provider", "workloads", "tools"}
+MODEL_CAPABILITY_REQUIRED_KEYS = {"provider", "workloads", "tools"}
+MODEL_CAPABILITY_KEYS = MODEL_CAPABILITY_REQUIRED_KEYS | {"reasoning"}
 USAGE_PROFILES = {"high", "medium", "low"}
 REASONING_EFFORTS = {"none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"}
+REASONING_SCALE = ("none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra")
 ROLE_OVERRIDE_KEYS = {"icon", "model", "reasoning"}
 LEGACY_PORTFOLIO_KEYS = {"title_prefix"}
 
@@ -333,6 +345,15 @@ def validate(raw: dict[str, Any]) -> None:
         raise ConfigError("execution.usage_profile must be high, medium, or low")
     _short_text(execution, "service_tier", "execution", allow_empty=True)
     _boolean(execution, "usage_saver", "execution")
+    _reasoning_effort(execution, "min_reasoning", "execution")
+    _reasoning_effort(execution, "max_reasoning", "execution")
+    minimum = execution.get("min_reasoning", DEFAULTS["execution"]["min_reasoning"])
+    maximum = execution.get("max_reasoning", DEFAULTS["execution"]["max_reasoning"])
+    if REASONING_SCALE.index(minimum) > REASONING_SCALE.index(maximum):
+        raise ConfigError("execution.min_reasoning cannot exceed execution.max_reasoning")
+    turbo = _expect_table(raw, "turbo")
+    _expect_keys(turbo, set(DEFAULTS["turbo"]), "turbo")
+    _boolean(turbo, "enabled", "turbo")
     efficiency = _expect_table(raw, "efficiency")
     _expect_keys(efficiency, set(DEFAULTS["efficiency"]), "efficiency")
     if "mode" in efficiency and efficiency["mode"] not in {"CONSERVE","BALANCED","FAST","MAX"}: raise ConfigError("efficiency.mode must be CONSERVE, BALANCED, FAST, or MAX")
@@ -424,7 +445,7 @@ def validate(raw: dict[str, Any]) -> None:
             raise ConfigError(f"model_capabilities.{model} must be a non-empty TOML table")
         _expect_keys(values, MODEL_CAPABILITY_KEYS, f"model_capabilities.{model}")
         if model not in DEFAULTS["model_capabilities"]:
-            missing = sorted(MODEL_CAPABILITY_KEYS - set(values))
+            missing = sorted(MODEL_CAPABILITY_REQUIRED_KEYS - set(values))
             if missing:
                 raise ConfigError(
                     f"model_capabilities.{model} is missing required setting(s): {', '.join(missing)}"
@@ -463,6 +484,20 @@ def validate(raw: dict[str, Any]) -> None:
                     )
             if len(tools) != len(set(tools)):
                 raise ConfigError(f"model_capabilities.{model}.tools cannot contain duplicates")
+        if "reasoning" in values:
+            efforts = values["reasoning"]
+            if not isinstance(efforts, list) or not efforts:
+                raise ConfigError(f"model_capabilities.{model}.reasoning must be a non-empty array")
+            unknown = sorted(set(efforts) - REASONING_EFFORTS)
+            if unknown:
+                raise ConfigError(
+                    f"model_capabilities.{model}.reasoning has unknown value(s): {', '.join(unknown)}"
+                )
+            if len(efforts) != len(set(efforts)):
+                raise ConfigError(f"model_capabilities.{model}.reasoning cannot contain duplicates")
+            indexes = [REASONING_SCALE.index(effort) for effort in efforts]
+            if indexes != sorted(indexes):
+                raise ConfigError(f"model_capabilities.{model}.reasoning must be ordered")
 
     roles = _expect_table(raw, "roles")
     folded_roles: set[str] = set()
@@ -618,7 +653,7 @@ def normalize_legacy_task_role(raw: dict[str, Any]) -> dict[str, Any]:
 
 def load(path: Path) -> tuple[dict[str, Any], bool]:
     if not path.exists():
-        return deepcopy(DEFAULTS), False
+        return apply_turbo(deepcopy(DEFAULTS)), False
     try:
         with path.open("rb") as handle:
             raw = tomllib.load(handle)
@@ -628,7 +663,65 @@ def load(path: Path) -> tuple[dict[str, Any], bool]:
         raise ConfigError(f"could not read {path}: {exc}") from exc
     normalized = normalize_legacy_task_role(raw)
     validate(normalized)
-    return merge(normalized), True
+    return apply_turbo(merge(normalized)), True
+
+
+def apply_turbo(effective: dict[str, Any]) -> dict[str, Any]:
+    """Resolve Turbo's three supported controls without weakening user bounds."""
+    if effective["turbo"]["enabled"]:
+        effective["execution"]["usage_profile"] = "high"
+        effective["execution"]["service_tier"] = "fast"
+        effective["efficiency"]["mode"] = "MAX"
+    return effective
+
+
+def resolve_role_assignment(
+    effective: dict[str, Any], role: str, *, route_tier: int = 2
+) -> dict[str, str]:
+    """Resolve a host model/thinking pair and clamp thinking to global bounds."""
+    if not isinstance(role, str) or not role.strip():
+        raise ConfigError("role must be a non-empty string")
+    if not _is_int(route_tier) or not 1 <= route_tier <= 3:
+        raise ConfigError("route_tier must be 1, 2, or 3")
+    role_key = role.strip().lower()
+    profile_name = effective["execution"]["usage_profile"]
+    profile = effective["models"][profile_name]
+    model_key, reasoning_key = f"{role_key}_model", f"{role_key}_reasoning"
+    custom_override = next(
+        (
+            override
+            for custom_role, override in effective["roles"].items()
+            if custom_role.casefold() == role.casefold()
+        ),
+        None,
+    )
+    if model_key not in profile or reasoning_key not in profile:
+        if custom_override is None:
+            raise ConfigError(f"role has no configured model pair: {role}")
+        model_key, reasoning_key = "doer_model", "doer_reasoning"
+    model, preferred = profile[model_key], profile[reasoning_key]
+    if custom_override is not None:
+        model = custom_override.get("model", model)
+        preferred = custom_override.get("reasoning", preferred)
+    low = REASONING_SCALE.index(effective["execution"]["min_reasoning"])
+    high = REASONING_SCALE.index(effective["execution"]["max_reasoning"])
+    supported = effective["model_capabilities"].get(model, {}).get("reasoning")
+    supported_indexes = (
+        [REASONING_SCALE.index(effort) for effort in supported]
+        if supported
+        else list(range(len(REASONING_SCALE)))
+    )
+    allowed = [index for index in supported_indexes if low <= index <= high]
+    if not allowed:
+        raise ConfigError(
+            f"global reasoning range has no declared supported value for model: {model}"
+        )
+    if effective["turbo"]["enabled"]:
+        selected = allowed[-1]
+    else:
+        selected = REASONING_SCALE.index(preferred) + (route_tier - 2)
+        selected = min(allowed, key=lambda index: (abs(index - selected), index))
+    return {"model": model, "reasoning": REASONING_SCALE[selected]}
 
 
 def _plugin_version() -> str:
@@ -648,6 +741,9 @@ def feedback_diagnostics(effective: dict[str, Any], exists: bool) -> dict[str, A
         "config_exists": exists,
         "usage_profile": effective["execution"]["usage_profile"],
         "service_tier": effective["execution"]["service_tier"],
+        "min_reasoning": effective["execution"]["min_reasoning"],
+        "max_reasoning": effective["execution"]["max_reasoning"],
+        "turbo_enabled": effective["turbo"]["enabled"],
         "max_active_tasks": effective["portfolio"]["max_active_tasks"],
         "default_parallel_tasks": effective["portfolio"]["default_parallel_tasks"],
         "preferred_lane_width": effective["coordination"]["preferred_lane_width"],
@@ -672,6 +768,15 @@ def parse_args() -> argparse.Namespace:
     show.add_argument("--json", action="store_true", help="emit machine-readable JSON")
     feedback = subparsers.add_parser("feedback", help="print privacy-safe feedback diagnostics")
     feedback.add_argument("--json", action="store_true", help="emit machine-readable JSON")
+    resolve = subparsers.add_parser("resolve", help="resolve one role model and reasoning pair")
+    resolve.add_argument("--role", required=True, help="configured SWARM role name")
+    resolve.add_argument(
+        "--route-tier",
+        type=int,
+        choices=(1, 2, 3),
+        default=2,
+        help="task route tier from 1 (light) to 3 (deep)",
+    )
     subparsers.add_parser("validate", help="validate the config")
     subparsers.add_parser("init", help="create the default config if it is missing")
     return parser.parse_args()
@@ -705,6 +810,18 @@ def main() -> int:
             else:
                 print("SWARM feedback diagnostics")
                 print(json.dumps(diagnostics, indent=2))
+            return 0
+        if args.command == "resolve":
+            print(
+                json.dumps(
+                    resolve_role_assignment(
+                        effective,
+                        args.role,
+                        route_tier=args.route_tier,
+                    ),
+                    indent=2,
+                )
+            )
             return 0
         if args.json:
             print(json.dumps({"path": str(path), "exists": exists, "settings": effective}, indent=2))

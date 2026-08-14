@@ -10,7 +10,7 @@ from unittest import mock
 DOCKER = Path(__file__).resolve().parents[1] / "docker.py"
 COMPOSE = Path(__file__).resolve().parents[1] / "docker-compose.yml"
 DOCKERFILE = Path(__file__).resolve().parents[1] / "Dockerfile"
-TEST_HOME = Path("C:/Users/swarm-test")
+TEST_HOME = Path("C:/fixture/plugin-home")
 SPEC = importlib.util.spec_from_file_location("swarm_docker_tested", DOCKER)
 assert SPEC and SPEC.loader
 launcher = importlib.util.module_from_spec(SPEC)
