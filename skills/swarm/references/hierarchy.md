@@ -85,6 +85,23 @@ the lane, and controls provider/deploy/rollback/production proof.
 
 ## Use ASSIST as temporary surge capacity
 
+## Add specialists and experts only for a real cross-cutting need
+
+During initial topology, before the first mutable handoff, materialize a
+persistent SPECIALIST when one named cross-cutting truth must remain coherent
+across lanes. Give it a short concrete profession, exact truth surface, and
+gate; ARCHITECT, ENGINEER, DEVELOPER, DESIGNER, RESEARCHER, ANALYST, and
+STRATEGIST are examples, not an allowlist. Profession is not singleton
+ownership: reuse only when profession, objective, truth surface, and accepting
+route match, and create separate specialists when they differ. Task size, file
+count, variants, or unrelated artifacts alone do not justify one. If the need
+appears late, stop the next affected mutation, add the gate, and record why the
+initial topology missed it.
+
+Use EXPERT for an independently answerable bounded uncertainty or diagnosis
+that is delaying accepted proof. It is read-only advice routed back to the
+owning LEAD, never artifact ownership, approval, or a ceremonial extra lane.
+
 ASSIST is temporary surge/wildcard capacity hireable by MOTHER, SPECIALIST, LEAD,
 or DOER, not a lesser helper or another authority layer. Its customizable default is
 gpt-5.6-sol/medium. It may perform any bounded developer, design, research,

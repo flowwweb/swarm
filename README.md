@@ -61,6 +61,26 @@ Use SWARM to ship the next release of this project.
 
 That task becomes `🐙CTRL - <objective>`: the single place where you direct the objective and review what the swarm returns.
 
+## Other hosts
+
+The canonical doctrine and resources live only in [`skills/swarm`](skills/swarm). The manifests below point to that same directory; they do not introduce host-specific agents, hooks, or a second skill copy.
+
+| Host | Repository surface | Install or discovery route | Proof supplied here |
+| --- | --- | --- | --- |
+| Claude Code | `.claude-plugin/plugin.json` | `claude plugin marketplace add flowwweb/swarm`, then `claude plugin install swarm@flowwweb` | Manifest and marketplace structure only |
+| Gemini CLI | `gemini-extension.json` and `skills/swarm` | `gemini extensions install https://github.com/flowwweb/swarm.git` | Manifest and skill-layout structure only |
+| GitHub Copilot, Cursor, OpenCode | `.agents/skills/swarm` | Run the copy command below in the target project | Copy and file-hash parity when the command succeeds |
+
+For the shared Agent Skills location, copy the canonical skill into another project without adding a tracked mirror to this repository:
+
+```text
+python <swarm-repository>/skills/swarm/scripts/verify_plugin_install.py --install-agent-skill <target-project-root>
+```
+
+The command only writes `<target-project-root>/.agents/skills/swarm`, refuses an existing destination, rejects links and junctions, and verifies the copied files against the canonical source. It refuses this SWARM repository itself so the copy cannot become a second tracked authority.
+
+These checks do not prove a host installation, activation, prompt loading, agent behavior, marketplace availability, or an external release. Run each host's install command in its own environment before making those claims.
+
 ## Update
 
 ```text
@@ -111,7 +131,7 @@ python skills/swarm/scripts/verify_plugin_install.py <installed-plugin-root> --s
 
 The builder writes `swarm.zip.sha256` beside the archive; package verification
 requires that exact sidecar. The verifier checks the whole shipped surface—plugin
-manifest, skills, console and Docker files, and public documentation/security
-files. Installed parity ignores only host Git metadata, generated `__pycache__`
+manifests, production skill resources, console and Docker files, and public documentation/security
+files. Development-only tests, eval fixtures, CI workflows, and internal friction notes remain in source but are not in a release archive. Installed parity ignores only host Git metadata, generated `__pycache__`
 contents, and generated package metadata; logs, loose bytecode, state, build output,
 and dependency directories fail verification.

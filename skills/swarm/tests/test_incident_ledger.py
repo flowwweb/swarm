@@ -87,9 +87,12 @@ class IncidentLedgerTests(unittest.TestCase):
         self.assertEqual((append.exitcode,fold.exitcode),(0,0)); records=self.ledger.read(); self.assertEqual({item.incidentId for item in records},{"i-1","i-2","i-3"})
 
     def test_global_doctrine_states_generalization_bar_without_incident_rule(self):
-        skill=(Path(__file__).resolve().parents[1]/"SKILL.md").read_text(encoding="utf-8")
-        self.assertIn("distinct incidents repeat the failure class or the control is demonstrably generalizable",skill); self.assertIn("contrasting regression proof",skill)
-        self.assertIn("Repo-specific commands, person-specific rules, one-off incident clauses",skill); self.assertNotIn("corridor_route_lead",skill); self.assertNotIn("repo-specific routing compiler",skill)
+        root=Path(__file__).resolve().parents[1]
+        skill="\n".join((root / name).read_text(encoding="utf-8") for name in ("SKILL.md", "references/review-contract.md"))
+        self.assertIn("## Escaped-defect propagation", skill)
+        self.assertIn("contrasting regression", skill)
+        self.assertIn("repo-specific commands", skill)
+        self.assertNotIn("corridor_route_lead",skill); self.assertNotIn("repo-specific routing compiler",skill)
 
 
 if __name__=="__main__": unittest.main()

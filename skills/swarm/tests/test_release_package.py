@@ -110,6 +110,43 @@ class ReleasePackageTests(unittest.TestCase):
                 f"{checksum}  swarm.zip\n",
             )
 
+    def test_release_excludes_development_only_material_from_the_declared_surface(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = self.make_plugin(Path(temporary))
+            development_files = {
+                "skills/swarm/tests/test_contract.py": "test\n",
+                "skills/swarm/evals/evals.json": "{}\n",
+                "skills/swarm/evals/fixtures/case.json": "{}\n",
+                ".github/workflows/validate.yml": "name: validate\n",
+                "docs/friction-audit.md": "internal\n",
+            }
+            for relative, contents in development_files.items():
+                path = root / relative
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(contents, encoding="utf-8")
+            subprocess.run(["git", "-C", str(root), "add", "."], check=True)
+            subprocess.run(["git", "-C", str(root), "commit", "-qm", "development material"], check=True)
+
+            payload, metadata = build_package_bytes(root)
+            self.assertTrue(set(development_files).isdisjoint(metadata["files"]))
+            with zipfile.ZipFile(io.BytesIO(payload)) as archive:
+                self.assertTrue(set(development_files).isdisjoint(archive.namelist()))
+
+    def test_source_verifier_rejects_development_material_in_an_installed_tree(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            source = self.make_plugin(Path(temporary) / "source")
+            installed = Path(temporary) / "installed"
+            shutil.copytree(source, installed, ignore=shutil.ignore_patterns(".git"))
+            for root in (source, installed):
+                path = root / "skills" / "swarm" / "tests" / "test_contract.py"
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text("test\n", encoding="utf-8")
+            subprocess.run(["git", "-C", str(source), "add", "."], check=True)
+            subprocess.run(["git", "-C", str(source), "commit", "-qm", "development test"], check=True)
+
+            with self.assertRaisesRegex(ValueError, "skills/swarm/tests/test_contract.py"):
+                verifier.verify(source, installed)
+
     def test_path_safety_rejects_absolute_and_traversal_names(self) -> None:
         for path in (
             Path("../escape"),

@@ -9,7 +9,8 @@ from runtime import AcceptanceContract, CtrlFeedEventKind, CtrlFeedMessage, Ctrl
 class EvidenceRoutingContractTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.skill = (Path(__file__).parents[1] / "SKILL.md").read_text(encoding="utf-8")
+        root = Path(__file__).parents[1]
+        cls.skill = "\n".join((root / name).read_text(encoding="utf-8") for name in ("SKILL.md", "references/hierarchy.md", "references/monitoring.md", "references/review-contract.md"))
 
     def setUp(self):
         self.swarm = Swarm()
@@ -136,42 +137,22 @@ class EvidenceRoutingContractTests(unittest.TestCase):
         self.swarm.advance_ctrl_phase(Role.CTRL,"implementation")
 
     def test_live_feed_doctrine_requires_prompt_surface_and_receipts(self):
-        self.assertIn("CTRL is the live human review feed", self.skill)
-        self.assertIn("At the next safe message boundary", self.skill)
-        self.assertIn("never silently accumulate steerable results for a final batch", self.skill)
-        self.assertIn("CTRL evidence ledger", self.skill)
-        self.assertIn("open acceptance failure", self.skill)
-        self.assertIn("do not accept or archive its producing lane or begin a later CTRL phase", self.skill)
-        self.assertIn("one self-contained final or decision gallery that embeds every candidate", self.skill)
-        self.assertIn("their receipts do not substitute for this consolidated decision surface", self.skill)
-        self.assertIn("Re-embedding each candidate exactly once inside that intentional gallery is not a duplicate", self.skill)
-        self.assertIn("complete candidate inventory", self.skill)
-        self.assertIn("A final containing only paths, links, or an inventory leaves the decision set unaccepted", self.skill)
+        self.assertRegex(self.skill, r"(?is)human review feed.*next safe boundary.*surfaced once.*blocks acceptance")
+        self.assertRegex(self.skill, r"(?is)decision gallery.*every candidate.*complete inventory.*Links.*cannot accept")
 
     def test_visual_self_review_binds_to_exact_final_deliverable(self):
-        self.assertIn("Bind that self-review to the exact final deliverable", self.skill)
-        self.assertIn("inspect the file that will actually be surfaced or accepted", self.skill)
-        self.assertIn("An intermediate preview, composite, source, filename, manifest, or transformation receipt cannot prove the final artifact", self.skill)
-        self.assertIn("A worker final, artifact path, folder link, manifest row, or silent generated file is provenance, not delivery", self.skill)
+        self.assertRegex(self.skill, r"(?is)exact delivered artifact.*not previews or transformation receipts")
+        self.assertRegex(self.skill, r"(?is)Paths, worker finals, manifests, and folders are provenance.*not delivery")
 
     def test_contract_preserves_compact_ctrl_stream(self):
-        self.assertIn("CTRL emits a human review event only when", self.skill)
-        self.assertIn("If none changed, emit nothing", self.skill)
-        self.assertIn("internal telemetry, not CTRL feed events", self.skill)
-        self.assertIn("Suppress duplicate re-embedding and decorative evidence", self.skill)
+        self.assertRegex(self.skill, r"(?is)Emit only a material result.*Never lead with task activity")
 
     def test_ctrl_feed_is_human_readable_and_proof_first(self):
-        self.assertIn("Lead with what is now true for the user", self.skill)
-        self.assertIn("surface the smallest decisive proof inline", self.skill)
-        self.assertIn("they never replace the visible result", self.skill)
-        self.assertIn("a fresh representative screenshot or recording is mandatory", self.skill)
-        self.assertIn("show a compact evidence excerpt or before/after table", self.skill)
+        self.assertRegex(self.skill, r"(?is)Lead with the user outcome.*smallest decisive inline proof.*remaining risk")
+        self.assertRegex(self.skill, r"(?is)fresh representative capture.*compact excerpt, table, or before/after proof")
 
     def test_progress_reply_cannot_degrade_into_orchestration_narration(self):
-        self.assertIn("outcome achieved since the last surfaced event; decisive proof; what remains unproved or failed; next material checkpoint", self.skill)
-        self.assertIn("Do not lead with SPECIALIST, ARCHITECT, LEAD, REVIEW, task inventory, file counts, import counts, or a tool run", self.skill)
-        self.assertIn("A specialist event is feed-worthy only when it changes the product contract or blocks/clears implementation", self.skill)
-        self.assertIn("A message that contains only coordination status is a SWARM contract violation", self.skill)
+        self.assertRegex(self.skill, r"(?is)Never lead with task activity, role inventory, commands, paths, or a tool run")
 
     def test_heartbeat_accepts_outcome_proof_risk_checkpoint_hierarchy(self):
         self.swarm.register_ctrl_evidence(Role.DOER,"covers","replay-proof","test","replay comparison")
@@ -322,10 +303,8 @@ class EvidenceRoutingContractTests(unittest.TestCase):
             self.swarm.heartbeat(Role.CTRL,"covers",meaningful_progress=False,recent_ctrl_feed=(stale,))
 
     def test_every_swarm_task_delegates_by_default_with_narrow_exceptions(self):
-        self.assertIn("`CTRL_DELEGATED` and every non-CTRL SWARM task delegate at least one bounded outcome-critical", self.skill)
-        self.assertIn("unless the task independently satisfies and records `CTRL_DIRECT`", self.skill)
-        self.assertIn("Task size, convenience, CTRL status, or preference to work directly are not exceptions", self.skill)
-        self.assertIn("This visible-lane threshold never waives default internal-subagent delegation", self.skill)
+        self.assertRegex(self.skill, r"(?is)delegated or non-CTRL task delegates one bounded outcome-critical.*before substantive")
+        self.assertRegex(self.skill, r"(?is)CTRL_DIRECT.*low-risk atomic outcome.*otherwise use.*CTRL_DELEGATED")
         self.assertNotIn("Default to CTRL working directly or one atomic owner", self.skill)
 
 

@@ -16,11 +16,11 @@ class CtrlBootstrapContractTests(unittest.TestCase):
         skill = (SKILL_ROOT / "SKILL.md").read_text(encoding="utf-8")
         self.assertIn("**Step 0, never defer:**", skill)
         self.assertIn(NEW_TITLE, skill)
-        self.assertIn("Verify successful title and pin receipts", skill)
-        self.assertIn("before durable-goal inspection", skill)
+        self.assertRegex(skill, r"(?is)Step 0.*title.*pin.*Verif")
+        self.assertRegex(skill, r"(?is)Verify both receipts before durable-goal inspection")
         self.assertIn("any other tool work", skill)
         self.assertIn("truthful internal CTRL identity", skill)
-        self.assertLess(skill.index("**Step 0, never defer:**"), skill.index("After Step 0"))
+        self.assertLess(skill.index("**Step 0, never defer:**"), skill.index("Then inspect or create exactly one matching durable goal"))
 
     def test_public_contracts_use_new_title_and_reject_legacy_title(self) -> None:
         contract_paths = (

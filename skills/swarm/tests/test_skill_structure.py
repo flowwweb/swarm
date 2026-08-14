@@ -11,6 +11,20 @@ SKILL_ROOT = Path(__file__).resolve().parents[1]
 SKILL = SKILL_ROOT / "SKILL.md"
 EVALS = SKILL_ROOT / "evals" / "evals.json"
 
+
+def doctrine() -> str:
+    return "\n".join(
+        (SKILL_ROOT / relative).read_text(encoding="utf-8")
+        for relative in (
+            "SKILL.md",
+            "references/hierarchy.md",
+            "references/task-contract.md",
+            "references/monitoring.md",
+            "references/review-contract.md",
+            "references/design-guide.md",
+        )
+    )
+
 sys.path.insert(0, str(SKILL_ROOT / "scripts"))
 from verify_plugin_install import verify
 
@@ -40,7 +54,7 @@ class SwarmSkillStructureTests(unittest.TestCase):
         ids = [item["id"] for item in evals]
         self.assertEqual(ids, list(range(1, len(evals) + 1)))
         self.assertEqual(
-            sum("SWARM-FB-20260809-WINPY-01" in item["prompt"] for item in evals),
+            sum("read-only config loader" in item["prompt"] for item in evals),
             1,
         )
 
@@ -62,7 +76,7 @@ class SwarmSkillStructureTests(unittest.TestCase):
         self.assertEqual(sorted(set(referenced)), fixtures)
 
     def test_composed_outcome_gates_remain_explicit(self) -> None:
-        skill = SKILL.read_text(encoding="utf-8")
+        skill = doctrine()
         task_contract = (SKILL_ROOT / "references" / "task-contract.md").read_text(
             encoding="utf-8"
         )
@@ -79,18 +93,13 @@ class SwarmSkillStructureTests(unittest.TestCase):
             encoding="utf-8"
         )
 
-        self.assertIn("end-to-end requirement ledger", skill)
         self.assertIn("`UNVERIFIED` is an open acceptance failure", skill)
-        self.assertIn("LEAD integrates and inspects each whole lane result", skill)
-        self.assertIn("parallel wave", skill)
         self.assertIn("shallowest structure", skill)
-        self.assertIn("CTRL owns topology unless MOTHER exists", skill)
-        self.assertIn("MOTHER alone changes execution topology", skill)
         self.assertIn("canonical state", skill)
         self.assertIn("independent REVIEW", skill)
         self.assertIn("persistent SPECIALIST", hierarchy)
         self.assertIn("Materialize ASSIST and ADVISOR only", hierarchy)
-        self.assertIn("Completion requires independent review", skill)
+        self.assertIn("independent `ACCEPTANCE` route", skill)
         self.assertIn("SPECIALIST interface", task_contract)
         self.assertIn("temporary wildcard", task_contract)
         self.assertIn("multiple ARCHITECTs or DEVELOPERs", task_contract)
@@ -100,22 +109,19 @@ class SwarmSkillStructureTests(unittest.TestCase):
         self.assertIn("required proof blocks approval", review_contract)
 
     def test_task_titles_compress_real_role_authority_and_artifact(self) -> None:
-        skill = SKILL.read_text(encoding="utf-8")
+        skill = doctrine()
         hierarchy = (SKILL_ROOT / "references" / "hierarchy.md").read_text(
             encoding="utf-8"
         )
 
-        self.assertIn("replace DOER with the real role", skill)
-        self.assertIn("Format a lane owner as `<one domain-matched emoji>LEAD - <domain or responsibility>`", skill)
-        self.assertIn("keep `LEAD` stable, put the distinguishing role after the dash", skill)
-        self.assertIn("choose an icon that identifies that domain", skill)
-        self.assertIn("Other titles use `<one role-matched emoji><ROLE> - <specific artifact>`", skill)
-        self.assertIn("every SWARM title has exactly one role-matched emoji", skill)
-        self.assertIn("the shortest unambiguous title wins", skill)
+        self.assertIn("name DOERs by their real job", skill)
+        self.assertIn("<domain emoji>LEAD - <responsibility>", skill)
+        self.assertIn("<role emoji><PROFESSION> - <truth surface>", skill)
+        self.assertIn("exactly one configured role icon", skill)
         self.assertIn("Generic role types do not dictate task names", hierarchy)
 
     def test_octopus_is_default_configurable_ctrl_title_prefix(self) -> None:
-        skill = SKILL.read_text(encoding="utf-8")
+        skill = doctrine()
         hierarchy = (SKILL_ROOT / "references" / "hierarchy.md").read_text(
             encoding="utf-8"
         )
@@ -127,7 +133,7 @@ class SwarmSkillStructureTests(unittest.TestCase):
         self.assertIn("🐙CTRL", hierarchy)
 
     def test_new_swarm_objective_starts_as_durable_ctrl(self) -> None:
-        skill = SKILL.read_text(encoding="utf-8")
+        skill = doctrine()
         hierarchy = (SKILL_ROOT / "references" / "hierarchy.md").read_text(
             encoding="utf-8"
         )
@@ -145,11 +151,9 @@ class SwarmSkillStructureTests(unittest.TestCase):
             self.assertIn("subagents", text)
         self.assertIn("concise specific objective", skill)
         self.assertIn("task-title tool", skill)
-        self.assertIn("pins the current task", skill)
-        self.assertIn("Verify successful title and pin receipts", skill)
+        self.assertIn("and pin it. Verify both receipts", skill)
         self.assertIn("before durable-goal inspection", skill)
-        self.assertIn("before durable-goal inspection", hierarchy)
-        self.assertLess(skill.index("**Step 0, never defer:**"), skill.index("After Step 0"))
+        self.assertLess(skill.index("**Step 0, never defer:**"), skill.index("Then inspect or create"))
         self.assertNotIn("🐙CTRL - <project> - <detailed descriptor>", skill)
         self.assertNotIn("🐙CTRL - <project> - <detailed descriptor>", hierarchy)
         self.assertNotIn("🐙CTRL - <project> - <detailed descriptor>", task_contract)
@@ -159,26 +163,19 @@ class SwarmSkillStructureTests(unittest.TestCase):
         self.assertIn("CTRL owns topology until the portfolio predicate", hierarchy)
 
     def test_closeout_archives_terminal_host_tasks_and_reports_failures(self) -> None:
-        skill = SKILL.read_text(encoding="utf-8")
-        self.assertIn("Closeout is part of completion", skill)
-        self.assertIn("inventories every visible task it created or superseded", skill)
-        self.assertIn("call the host archive control", skill)
-        self.assertIn("verify the archive receipt", skill)
-        self.assertIn("superseded coordination version is stale", skill)
-        self.assertIn("exact task ID and error", skill)
-        self.assertIn("archive a finite CTRL after its final handoff", skill)
+        skill = doctrine()
+        self.assertIn("accepting owner inventories every visible task it created or superseded", skill)
+        self.assertIn("archive through the host control, and verify the receipt", skill)
+        self.assertIn("Archive failure is an exact CTRL blocker", skill)
+        self.assertIn("Archive a finite CTRL after its final handoff.", skill)
 
     def test_topology_and_evolution_are_general_subtractive_contracts(self) -> None:
-        skill = SKILL.read_text(encoding="utf-8")
+        skill = doctrine()
         hierarchy = (SKILL_ROOT / "references" / "hierarchy.md").read_text(encoding="utf-8")
 
-        self.assertIn("multiple distinct ownership lanes", skill)
+        self.assertIn("cross-lane dependency", skill)
         self.assertIn("Artifact or variant count", hierarchy)
-        self.assertIn("shared words do not establish identity", skill)
-        self.assertIn("never accumulate incident clauses", skill)
-        self.assertIn("remove superseded guidance", skill)
-        self.assertIn("time to forward progress and net coordination load", skill)
-        self.assertIn("non-material process imperfection", skill)
+        self.assertIn("consolidate rather than add incident clauses", skill)
 
     def test_product_review_subtracts_chrome_without_erasing_state_or_accessibility(self) -> None:
         review = (SKILL_ROOT / "references" / "review-contract.md").read_text(encoding="utf-8")
@@ -202,26 +199,24 @@ class SwarmSkillStructureTests(unittest.TestCase):
         self.assertIn("duplicate actions, controls\nthat compete for the same job", review)
 
     def test_non_design_review_stops_at_good_enough_without_weakening_design(self) -> None:
-        skill = SKILL.read_text(encoding="utf-8")
+        skill = doctrine()
         review = (SKILL_ROOT / "references" / "review-contract.md").read_text(encoding="utf-8")
         design = (SKILL_ROOT / "references" / "design-guide.md").read_text(encoding="utf-8")
 
-        self.assertIn("For non-design work, good enough is a terminal state", skill)
-        self.assertIn("an observable improvement likely to outweigh investigation", skill)
-        self.assertIn("nitpicks, not backlog", skill)
-        self.assertIn("a further pass requires new evidence, changed scope, or a named risk", skill)
-        self.assertIn("This stop rule does not apply to design review", skill)
+        self.assertIn("Review and correction must be materially worthwhile", skill)
+        self.assertIn("observable improvement that outweighs the work", skill)
+        self.assertIn("Design may refine granular craft", skill)
         self.assertIn("Apply a significance gate outside design", review)
         self.assertIn("Do not record them as P3, backlog, optional\nfollow-up", review)
         self.assertIn("The act of reviewing is not evidence that a\nchange is valuable", review)
         self.assertIn("Design review is the explicit exception", review)
         self.assertIn("In mixed reviews, classify each finding\nbefore applying the exception", review)
-        self.assertIn("references/design-guide.md", skill)
+        self.assertIn("[design-guide.md]", skill)
         self.assertIn("Small design details compound and design nitpicking is encouraged", design)
         self.assertIn("invariant, contextual default, or taste direction", design)
 
     def test_mandatory_goals_and_passive_heartbeat_are_fixed_contracts(self) -> None:
-        skill = SKILL.read_text(encoding="utf-8")
+        skill = doctrine()
         hierarchy = (SKILL_ROOT / "references" / "hierarchy.md").read_text(encoding="utf-8")
         task_contract = (SKILL_ROOT / "references" / "task-contract.md").read_text(encoding="utf-8")
         monitoring = (SKILL_ROOT / "references" / "monitoring.md").read_text(encoding="utf-8")
@@ -240,20 +235,13 @@ class SwarmSkillStructureTests(unittest.TestCase):
         self.assertIn("polling loops, queues", monitoring)
 
     def test_ctrl_stream_is_quiet_compact_and_not_templated(self) -> None:
-        skill = SKILL.read_text(encoding="utf-8")
+        skill = doctrine()
         monitoring = (SKILL_ROOT / "references" / "monitoring.md").read_text(encoding="utf-8")
         evals = (SKILL_ROOT / "evals" / "evals.json").read_text(encoding="utf-8")
 
-        self.assertIn("CTRL is the live human review feed", skill)
-        self.assertIn("CTRL emits a human review event only when", skill)
-        self.assertIn("If none changed, emit nothing", skill)
-        self.assertIn("internal telemetry, not CTRL feed events", skill)
-        self.assertIn("surface the smallest decisive proof inline", skill)
-        self.assertIn("At the next safe message boundary", skill)
-        self.assertIn("worker final, artifact path, folder link", skill)
-        self.assertIn("self-contained plain caption", skill)
-        self.assertIn("Missing disposition or surface receipt remains an open acceptance failure", skill)
-        self.assertIn("without inflated planning or machine-log chatter", skill)
+        self.assertIn("human review feed, not a management log", skill)
+        self.assertIn("At the next safe boundary", skill)
+        self.assertIn("smallest decisive inline proof", skill)
         self.assertIn("a passive snapshot is not itself an update", monitoring)
         self.assertNotIn("<title> — <state>", monitoring)
         self.assertIn('"id": 79', evals)

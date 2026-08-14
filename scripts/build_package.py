@@ -39,6 +39,18 @@ PACKAGING_IGNORED_DIRECTORIES = frozenset(
 )
 PACKAGING_IGNORED_FILE_NAMES = frozenset({".DS_Store", ".coverage", "Thumbs.db"})
 PACKAGING_IGNORED_SUFFIXES = frozenset({".log", ".pyc", ".pyo", ".sqlite", ".sqlite3"})
+DEVELOPMENT_ONLY_PATHS = frozenset(
+    {
+        "docs/friction-audit.md",
+    }
+)
+DEVELOPMENT_ONLY_DIRECTORIES = frozenset(
+    {
+        ".github",
+        "skills/swarm/evals",
+        "skills/swarm/tests",
+    }
+)
 ZIP_TIMESTAMP = (1980, 1, 1, 0, 0, 0)
 WINDOWS_RESERVED_NAMES = frozenset(
     {"CON", "PRN", "AUX", "NUL", *(f"COM{number}" for number in range(1, 10)), *(f"LPT{number}" for number in range(1, 10))}
@@ -98,6 +110,11 @@ def _source_included(relative: Path) -> bool:
     archive_name = normalise_relative_path(relative)
     parts = PurePosixPath(archive_name).parts
     if any(part in PACKAGING_IGNORED_DIRECTORIES for part in parts[:-1]):
+        return False
+    if archive_name in DEVELOPMENT_ONLY_PATHS or any(
+        archive_name == directory or archive_name.startswith(directory + "/")
+        for directory in DEVELOPMENT_ONLY_DIRECTORIES
+    ):
         return False
     name = parts[-1]
     if archive_name == PACKAGE_METADATA_PATH or name in PACKAGING_IGNORED_FILE_NAMES:
