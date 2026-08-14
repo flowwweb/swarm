@@ -41,7 +41,7 @@ class SwarmDockerTests(unittest.TestCase):
 
         expected_environment = environment.copy()
         expected_environment.setdefault("SWARM_CODEX_HOME",str(TEST_HOME / ".codex"))
-        selected=Path(environment.get("SWARM_CONFIG_PATH",TEST_HOME / ".agents" / "swarm" / "config.toml"))
+        selected=Path(environment.get("SWARM_CONFIG_PATH",TEST_HOME / ".agents" / "swarm" / "config.toml")).expanduser().resolve()
         expected_environment["SWARM_CONFIG_HOME"]=str(selected.parent)
         expected_environment["SWARM_CONTAINER_CONFIG_PATH"]=f"/data/swarm/{selected.name}"
         invoked_environment = run.call_args.kwargs["env"]
@@ -102,14 +102,14 @@ class SwarmDockerTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             selected=Path(directory) / "selected.toml"; selected.write_text("",encoding="utf-8")
             environment=self._run_main({"SWARM_CONFIG_PATH":str(selected)},getuid=None,getgid=None)
-            self.assertEqual(environment["SWARM_CONFIG_HOME"],str(selected.parent))
+            self.assertEqual(environment["SWARM_CONFIG_HOME"],str(selected.resolve().parent))
             self.assertEqual(environment["SWARM_CONTAINER_CONFIG_PATH"],"/data/swarm/selected.toml")
 
     def test_explicit_environment_config_is_mounted(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             custom=Path(directory) / "custom.toml"; custom.write_text("",encoding="utf-8")
             environment=self._run_main({"SWARM_CONFIG_PATH":str(custom)},getuid=None,getgid=None)
-            self.assertEqual(environment["SWARM_CONFIG_HOME"],str(custom.parent))
+            self.assertEqual(environment["SWARM_CONFIG_HOME"],str(custom.resolve().parent))
             self.assertEqual(environment["SWARM_CONTAINER_CONFIG_PATH"],"/data/swarm/custom.toml")
 
 
