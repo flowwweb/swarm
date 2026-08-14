@@ -12,12 +12,12 @@ class SpecialistTriggerContractTests(unittest.TestCase):
         self.assertIn("SPECIALIST is a free role", self.skill)
         self.assertIn("run it before or alongside implementation", self.skill)
 
-    def test_six_built_in_specialists_are_short_professions(self):
-        self.assertIn("The six built-in examples are ARCHITECT, ENGINEER, DESIGNER, RESEARCHER, ANALYST, and STRATEGIST", self.skill)
+    def test_seven_built_in_specialists_are_short_professions(self):
+        self.assertIn("The seven built-in examples are ARCHITECT, ENGINEER, DEVELOPER, DESIGNER, RESEARCHER, ANALYST, and STRATEGIST", self.skill)
         self.assertIn("They are examples, not an allowlist: any profession is valid", self.skill)
 
     def test_professions_are_reusable_concurrently(self):
-        self.assertIn("including multiple ARCHITECTs at the same time", self.skill)
+        self.assertIn("including multiple ARCHITECTs or DEVELOPERs at the same time", self.skill)
         self.assertIn("Profession does not establish singleton ownership", self.skill)
 
     def test_size_alone_does_not_trigger_specialist(self):

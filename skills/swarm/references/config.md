@@ -4,6 +4,10 @@ SWARM reads `~/.agents/swarm/config.toml` before scheduling or managing a
 portfolio. Run `python scripts/swarm_config.py show --json` from the skill
 directory to resolve built-in defaults plus the user's file.
 
+Run `python scripts/swarm_config.py resolve --role lead --route-tier 3` to
+resolve the exact model and reasoning pair for a new assignment after profile,
+route, global-bound, custom-role, and Turbo rules.
+
 The loader requires Python 3.11 or newer and otherwise uses only the standard
 library. `show --json` writes structured settings to stdout. Parse, schema, and
 read failures write a specific diagnostic to stderr and exit with status 2.
@@ -39,7 +43,7 @@ Configuration cannot make an unsafe or hidden coordination path valid:
 - Existing safety, authority, provider, worktree, and proof boundaries remain.
 - If a required task tool is unavailable, report the blocker instead of
   substituting a local process or subagent hierarchy.
-- CTRL, MOTHER, every LEAD, and every persistent ARCHITECT require an active durable
+- CTRL, MOTHER, every LEAD, and every persistent SPECIALIST require an active durable
   goal before scheduling or substantive work. Goal controls are required; this
   invariant is not configurable and goal creation does not expand authority.
 - CTRL owns the mandatory heartbeat for every active goal, including its own. It
@@ -64,7 +68,10 @@ Configuration cannot make an unsafe or hidden coordination path valid:
 | `role_icons.doer_choices` | Emojis DOERs may choose by actual work | 1-12 unique trimmed single-line strings |
 | `execution.usage_profile` | Active relative model/effort policy | high, medium, low; default medium |
 | `execution.service_tier` | Optional preferred tier for new tasks when the host exposes it | empty for host default, or advertised tier string; default empty |
+| `execution.min_reasoning` | Global reasoning floor applied after every profile, role override, and route adjustment | none, minimal, low, medium, high, xhigh, max, ultra; compatibility-neutral default none |
+| `execution.max_reasoning` | Global reasoning ceiling applied after every profile, role override, and route adjustment | none, minimal, low, medium, high, xhigh, max, ultra; compatibility-neutral default ultra; must be at least min |
 | `execution.usage_saver` | Prefer lower-churn coordination for new work without weakening delivery | boolean; default false |
+| `turbo.enabled` | Opt into the high usage profile, fast service-tier preference, MAX progress policy, and the highest declared model-supported reasoning within the global bounds | boolean; default false |
 | `efficiency.mode` | Resource strategy for useful depth, concurrency, routing, and review; never weakens safety floors | CONSERVE, BALANCED, FAST, MAX; default BALANCED |
 | `efficiency.doer_wip_limit` | Maximum active assignments owned by one DOER | 1-8; default 3 |
 | `hive.enabled` | Enable compact SWARM institutional-memory records | boolean; default true |
@@ -79,11 +86,12 @@ Configuration cannot make an unsafe or hidden coordination path valid:
 | `boost.launch_at_remaining_percent` | Launch or resume closeout goals | 1-100; default 1 |
 | `boost.goal_levels` | Existing hierarchy levels eligible for substantial closeout goals | non-empty unique list of mother, lead, doer, review |
 | `boost.spark_model` | Reserve model for simple targeted work | model name; default gpt-5.3-codex-spark |
-| `models.<profile>.<role>_model` | Model for MOTHER, LEAD, DOER, TASK, SUBTASK, ASSIST, ADVISOR, ARCHITECT, or REVIEW in a profile | trimmed model name up to 64 chars |
+| `models.<profile>.<role>_model` | Model for MOTHER, LEAD, DOER, TASK, SUBTASK, ASSIST, ADVISOR, SPECIALIST, legacy ARCHITECT, or REVIEW in a profile | trimmed model name up to 64 chars |
 | `models.<profile>.<role>_reasoning` | Reasoning for that role and profile | none, minimal, low, medium, high, xhigh, max, ultra; host/model dependent |
 | `model_capabilities.<MODEL>.provider` | Codex provider ID for a model | trimmed name up to 64 chars |
 | `model_capabilities.<MODEL>.workloads` | Work classes MOTHER may assign | non-empty unique list of simple, general, large_goal, review |
 | `model_capabilities.<MODEL>.tools` | Verified host tools the model may use | up to 32 unique tool names; may be empty |
+| `model_capabilities.<MODEL>.reasoning` | Ordered reasoning levels verified for the model on the intended host | optional non-empty unique subset of supported reasoning values |
 | `roles.<ROLE>.icon` | Optional icon for a custom contextual leaf role | trimmed single line, 1-24 chars |
 | `roles.<ROLE>.model` | Optional model override for a contextual leaf role | trimmed model name up to 64 chars |
 | `roles.<ROLE>.reasoning` | Optional reasoning override for a contextual leaf role | supported reasoning value |
@@ -142,12 +150,20 @@ fallback; custom labels and emojis never change authority.
 
 ## Models and usage
 
-The packaged profiles use Sol/medium for MOTHER, LEAD, ASSIST, ADVISOR,
-ARCHITECT, and REVIEW; Luna/xhigh for DOER; and Luna/high for TASK and
-SUBTASK. Every named role is resolved from its own configured pair in every
-packaged profile. These are customizable defaults, not token quotas, billing
-limits, or hard caps. Users may edit every pair and add a `roles.<ROLE>` table
-for a custom leaf role; an unlisted custom role requires an explicit override.
+The packaged low, medium, and high profiles use distinct reasoning defaults.
+For a normal run, route tier 1 selects one step below the role default, tier 2
+selects the role default, and tier 3 selects one step above it. SWARM then
+applies `execution.min_reasoning` and `execution.max_reasoning` as global clamps.
+Those bounds override profile defaults and `roles.<ROLE>.reasoning`; they never
+expand a model's declared host-supported reasoning levels. The neutral defaults
+preserve existing explicit `none`, `minimal`, and `ultra` settings. When a
+model declares supported levels, SWARM selects the nearest permitted value
+inside the global range and fails closed if the range and model do not overlap.
+
+Every named role is resolved from its own configured pair in every packaged
+profile. These are customizable defaults, not token quotas, billing limits, or
+hard caps. Users may edit every pair and add a `roles.<ROLE>` table for a custom
+leaf role; an unlisted custom role requires an explicit override.
 
 SWARM passes model and reasoning when the host task API supports them and permits
 saved-config selection. If the host requires a direct request, the resolved
@@ -156,6 +172,30 @@ task. The default empty `service_tier` keeps the host's normal behavior. Set it
 to `"fast"` as an opt-in preference only when the host exposes and permits that
 tier. A host without per-task tier selection keeps its own tier. Existing tasks
 are never rewritten by a settings change.
+
+## Turbo mode
+
+Turbo is a disabled-by-default composite over the three controls SWARM can
+confidently use:
+
+1. **Reasoning envelope:** select the high usage profile and resolve every new
+   assignment at the highest declared model-supported level up to
+   `execution.max_reasoning` and not below `execution.min_reasoning`.
+2. **Fast transport preference:** resolve `execution.service_tier` to `fast`.
+3. **Fast progress policy:** resolve `efficiency.mode` to `MAX`, enabling the
+   runtime's highest critical-path parallelism and routing bias while retaining
+   its standard review floor.
+
+Set `[turbo] enabled = true` to activate it for new scheduling decisions. Turbo
+does not rewrite the user's underlying low/medium/high, tier, or efficiency
+values, so disabling it restores those values on the next load. Direct user
+instructions still win.
+
+Turbo means maximum *configured* reasoning, not guaranteed token consumption.
+It cannot promise spend, latency, quota, fast-tier availability, or literal
+full-token use. It does not weaken safety, authority, WIP, proof, review,
+recovery, heartbeat, or acceptance requirements, and it is independent of
+Boost and Usage Saver.
 
 ## Usage Saver
 
@@ -281,12 +321,11 @@ three is the normal shape.
 ## Heartbeat
 
 CTRL owns the active-goal watchdog and its fallback integrity check every
-`monitoring.heartbeat_minutes`, including for CTRL's own goal, and reports only
-materially changed attention, blocker, handoff, acceptance, or release state,
-including children and grandchildren. Each sentence names the task, current
-state or material progress, and working duration derived from host timestamps or
-an explicitly approximate first-observed time. Heartbeat never messages or wakes
-owners, never creates a second ledger, and never counts toward stall detection.
+`monitoring.heartbeat_minutes`, including for CTRL's own goal. Every heartbeat
+also audits the recent user-visible CTRL feed through EVENT and corrects any
+non-material or internal orchestration narration immediately. Heartbeat never
+messages or wakes owners, never creates a second ledger, and never counts toward
+stall detection.
 See [monitoring.md](monitoring.md) for batching, stale-state, timing, and Boost
 `hands_off` behavior.
 

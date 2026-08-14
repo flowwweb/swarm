@@ -638,12 +638,12 @@
     {
       "id": 51,
       "prompt": "CTRL has two active children and four active grandchildren. Run the configured heartbeat without interrupting their work and show me the whole active system.",
-      "expected_output": "CTRL inspects every active goal, including its own, and emits only materially changed attention, blocker, handoff, acceptance, or release state with honest host-derived or explicitly approximate timing.",
+      "expected_output": "Because the user explicitly requested the whole active system, CTRL inspects every active goal, including its own, and answers once in task-tree order while keeping routine topology out of later progress events.",
       "files": [],
       "assertions": [
         "Children and grandchildren are read directly from the existing task tree",
         "No task receives a status-request message or steering prompt",
-        "Each active task appears once in task-tree order",
+        "Each active task appears once in task-tree order only because the user explicitly requested topology",
         "Every status is one sentence and includes working duration",
         "No second monitoring task, subagent, file, or ledger is created"
       ]
@@ -651,12 +651,12 @@
     {
       "id": 52,
       "prompt": "Boost hands_off is active for several child and grandchild goals. Thirty minutes pass with no attention or terminal event. Run CTRL's heartbeat.",
-      "expected_output": "A bounded passive wait timeout returns the latest host state for a compact heartbeat summary without messaging, waking, steering, or changing any goal.",
+      "expected_output": "The passive timeout is recorded internally and CTRL emits no user-facing event because no material result, blocker, decision, acceptance, or release changed.",
       "files": [],
       "assertions": [
         "Passive heartbeat remains active during hands_off",
         "The timeout is observation rather than active polling of owners",
-        "Commentary does not trigger steering",
+        "No commentary or compact heartbeat summary is emitted for unchanged state",
         "No matching goal is recreated or interrupted",
         "Terminal or attention events may still advance integration"
       ]
@@ -880,13 +880,13 @@
     {
       "id": 69,
       "prompt": "A LEAD has three DOER artifacts to integrate into a deployment. One DOER has three independent SUBTASKs: a research check, a design variant, and browser proof, with child capacity available. A shared production channel is currently leased to another LEAD. An ARCHITECT proposes a contract boundary and an ADVISOR proposes delivery, proof, and recovery sequencing.",
-      "expected_output": "The DOER promptly delegates the three independent SUBTASKs to temporary wildcard DOER ASSISTs and remains accountable for their integrated task artifact. The LEAD coordinates its system impact with persistent ARCHITECT, while an ephemeral ADVISOR answers one focused delivery/proof/recovery question then exits. The LEAD integrates the resulting immutable SHA, sends that exact SHA to an independent REVIEW, corrects findings, and deploys only REVIEW-approved SHA after MOTHER grants the shared-channel lease. ASSISTs never review, accept, integrate, mutate providers, or deploy; MOTHER receives only concise lane state, escalations, and the lane acceptance receipt.",
+      "expected_output": "The DOER promptly delegates the three independent SUBTASKs to temporary wildcard DOER ASSISTs and remains accountable for their integrated task artifact. The LEAD coordinates its system impact with the persistent ARCHITECT specialist, while an ephemeral ADVISOR answers one focused delivery/proof/recovery question then exits. The LEAD integrates the resulting immutable SHA, sends that exact SHA to an independent REVIEW, corrects findings, and deploys only REVIEW-approved SHA after MOTHER grants the shared-channel lease. ASSISTs never review, accept, integrate, mutate providers, or deploy; MOTHER receives only concise lane state, escalations, and the lane acceptance receipt.",
       "files": [],
       "assertions": [
         "DOER owns one bounded task artifact and ASSIST is a temporary wildcard DOER for a delegated SUBTASK",
         "Two or more independent SUBTASKs with capacity trigger prompt ASSIST delegation",
         "ASSIST can perform bounded developer, design, research, operations, or proof work but has no independent authority",
-        "ARCHITECT persistently owns system coherence but not building, worker scheduling, review, integration, provider mutation, or deployment; ADVISOR is one-question and ephemeral",
+        "ARCHITECT is a persistent specialist for system coherence but has no building, worker scheduling, review, integration, provider mutation, or deployment authority; ADVISOR is one-question and ephemeral",
         "MOTHER receives only concise lane state, cross-lane escalations, and final lane receipts",
         "LEAD submits an immutable integration SHA to independent REVIEW and deploys only that approved exact SHA",
         "Shared target mutation waits for the MOTHER deployment lease while unrelated work continues",
@@ -1095,6 +1095,61 @@
         "Ambiguous or consequential actions retain text",
         "Necessary state is preserved",
         "Minimalism cannot excuse inaccessible mystery icons"
+      ]
+    },
+    {
+      "id": 85,
+      "prompt": "Boost hands_off is active. One child returns a new exact blocker with a surfaced proof receipt and a recovery action. Run CTRL's heartbeat.",
+      "expected_output": "CTRL emits exactly one compact human update: what is blocked, the inline proof, the remaining consequence, and the next material recovery checkpoint; it does not narrate roles, tasks, commands, or the heartbeat.",
+      "files": [],
+      "assertions": [
+        "The update is bound to the child's exact surfaced proof receipt",
+        "Outcome and proof are present; risk and checkpoint contain only material information",
+        "The update is proportionate to the blocker and omits only irrelevant coordination detail",
+        "No coordination or machine telemetry appears in the public feed",
+        "Hands_off remains intact for unaffected owners"
+      ]
+    },
+    {
+      "id": 86,
+      "prompt": "Review a browser proof for a route-planning map. The route line, endpoints, and DOM bounds all pass, and the screenshot carries a label saying the route is real. At first glance the geographic basemap is blank. Runtime evidence records a base-style fallback warning and one failed map request. The planner also shows two controls for the same settings job and several always-open panels below the date controls that obscure the route decision. Decide the verdict.",
+      "expected_output": "Reject visual acceptance. Inspect the final frame before trusting geometry or receipts: the missing geographic substrate is a user-visible failure, and the correct overlay or label cannot upgrade a blank or fallback map. Treat the relevant warning and failed request as findings rather than a clean browser run. Review the ordinary planning task too: keep one clear settings action and remove or progressively disclose detail that competes with the primary route decision while preserving necessary safety and result state. Require a fresh composed screenshot with the real claimed map context and clean relevant console, page, and network evidence.",
+      "files": [],
+      "assertions": [
+        "First-glance human inspection precedes geometry and receipt acceptance",
+        "A correct overlay cannot substitute for the claimed primary substrate",
+        "A label cannot upgrade a mocked, fallback, or missing visual boundary",
+        "Relevant warnings and failed requests block a clean-browser claim",
+        "Duplicate actions and always-visible task clutter are reviewed as product defects",
+        "Necessary safety and result state survives the subtraction",
+        "Acceptance requires a fresh final frame and clean relevant runtime evidence"
+      ]
+    },
+    {
+      "id": 87,
+      "prompt": "Review exact-scope browser visual evidence for an authenticated editor. The final frame visibly shows the real claimed rendering substrate, the signed-in user's document and task context, and the completed interaction result. Relevant console, page-error, and network evidence is clean for that interaction. No evidence exercises the external provider, deployed release, or physical-device path. Decide the verdict.",
+      "expected_output": "Accept the browser visual evidence for the exact observed editor interaction: the real claimed substrate and relevant user context are visibly present in the final frame, and the relevant console, page, and network evidence is clean. Keep the external provider, deployed release, and physical-device boundaries UNVERIFIED because this proof did not exercise them. Do not broaden the accepted claim beyond the observed browser substrate, user context, and interaction.",
+      "files": [],
+      "assertions": [
+        "The exact final frame visibly contains the real claimed substrate",
+        "The claimed user and task context are visibly relevant to the interaction",
+        "Relevant console, page-error, and network evidence is clean",
+        "Visual acceptance is limited to the exact observed browser interaction",
+        "Unexercised provider, deployed, and physical-device boundaries remain UNVERIFIED"
+      ]
+    },
+    {
+      "id": 88,
+      "prompt": "A release candidate meets its agreed behavior, security, performance, and proof contracts. REVIEW finds no P0-P2 issue. A reviewer proposes another architecture pass to rename two internal helpers, align harmless formatting in an untouched module, and introduce an abstraction that might help a hypothetical future integration. The same candidate includes a customer-facing settings screen whose spacing rhythm, icon alignment, hover transitions, and empty-state copy still feel uneven. Decide what SWARM should do.",
+      "expected_output": "Approve the non-design implementation and stop the architecture cycle. The helper names, unrelated formatting, and speculative abstraction have no concrete consequence or observable benefit that outweighs change and regression cost, so they are nitpicks rather than findings or backlog. Continue a bounded granular design review of the settings screen because small visual, interaction, motion, and copy refinements can compound into product quality. Keep the design exception confined to those design surfaces and do not use it to reopen architecture or scope.",
+      "files": [],
+      "assertions": [
+        "Good enough is terminal for non-design work once outcome proof and risk gates pass",
+        "A non-design finding requires a concrete consequence and observable worthwhile improvement",
+        "Review does not create backlog from harmless style or speculative future-proofing",
+        "No extra pass is ordered merely because deeper inspection may find minor issues",
+        "Design explicitly permits granular critique of small compounding details",
+        "The design exception remains confined to design surfaces in a mixed review"
       ]
     }
   ]

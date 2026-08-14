@@ -3,10 +3,12 @@ import sys
 import unittest
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from runtime import ArtifactIdentity, ArtifactJustification, ArtifactProvenance, ContextPackage, CorrectionDecision, CtrlSurfaceKind, DedupDecision, Depth, EfficiencyMode, HiveRecord, HiveStatus, InvariantError, ReviewEvidence, ReviewStrategy, ReviewValue, Role, SubagentException, Swarm, Task as RuntimeTask, TaskState, TopologyFacts, VersionedReference, Worker, WorkerState, choose_depth, correction_decision, initial_tier
+from runtime import AcceptanceContract, ArtifactIdentity, ArtifactJustification, ArtifactProvenance, ContextPackage, CorrectionDecision, CtrlSurfaceKind, DedupDecision, Depth, EfficiencyMode, HiveRecord, HiveStatus, InvariantError, LaneKind, ReviewEvidence, ReviewScope, ReviewStrategy, ReviewValue, Role, SubagentException, Swarm, Task as RuntimeTask, TaskState, TopologyFacts, VersionedReference, Worker, WorkerState, choose_depth, correction_decision, initial_tier
 
 def Task(*args, **kwargs):
  kwargs.setdefault("subagent_receipt",f"host:thread:{args[0]}")
+ kwargs.setdefault("lane_kind",LaneKind.OTHER); kwargs.setdefault("owning_lead_id","L"); kwargs.setdefault("mother_id","MOTHER")
+ kwargs.setdefault("acceptance_contract",AcceptanceContract(ArtifactIdentity(f"task-{args[0]}","v1","acceptance"),()))
  return RuntimeTask(*args,**kwargs)
 
 def topology(*, objective="ship artifact", artifacts=(ArtifactIdentity("artifact","v1","work"),), surfaces=("artifact",), route="CTRL", lanes=("owner",), edges=(), integration=False, portfolio=False, ctrl_cheap=True, architecture=False):
@@ -15,6 +17,9 @@ def topology(*, objective="ship artifact", artifacts=(ArtifactIdentity("artifact
 class RuntimeTests(unittest.TestCase):
  def setUp(self):
   self.s=Swarm(); self.s.add_lead(Role.MOTHER,"L"); self.s.add_worker(Role.LEAD,Worker("D","L",1)); self.s.assign(Role.LEAD,Task("A","D","author",1,{},subagent_receipt="host:thread:A"))
+ def accept(self, task_id="A", reviewer="independent"):
+  evidence=ReviewEvidence(ReviewStrategy.LIGHT,reviewer,True,self.s.tasks[task_id].acceptance_contract.artifact,receipt=(("acceptance",f"review:{task_id}"),),scope=ReviewScope.ACCEPTANCE)
+  self.s.review(Role.REVIEW,task_id,evidence,True)
  def test_authority_lanes_and_lifecycle(self):
   with self.assertRaises(InvariantError): self.s.add_lead(Role.CTRL,"bad")
   with self.assertRaises(InvariantError): self.s.change_architecture(Role.LEAD,{})
@@ -33,7 +38,7 @@ class RuntimeTests(unittest.TestCase):
   self.s.tasks["A"].state=TaskState.ACTIVE
   with self.assertRaises(InvariantError): self.s.review(Role.REVIEW,"A","author",True)
   self.s.review(Role.REVIEW,"A","independent",False,"missing proof"); self.assertEqual(self.s.tasks["A"].findings,["missing proof"])
-  self.s.review(Role.REVIEW,"A","independent",True); self.s.complete(Role.MOTHER,"A",True,True,10)
+  self.accept(); self.s.complete(Role.MOTHER,"A",True,True,10,actor_id="MOTHER")
   with self.assertRaises(InvariantError): self.s.ctrl_event("HEARTBEAT","A")
  def test_lease(self):
   self.s.lease(Role.MOTHER,"repo","L")
@@ -59,8 +64,8 @@ class RuntimeTests(unittest.TestCase):
   self.assertEqual(self.s.groom(Role.MOTHER,5,{"no_review_archive_delay":0,"low_review_retention":2,"high_review_retention":3,"stale_task_archive_delay":1}),[])
   self.s.tasks["B"].state=TaskState.COMPLETE; self.s.workers["D"].task_ids.clear(); self.s.groom(Role.MOTHER,5,{"no_review_archive_delay":0,"low_review_retention":2,"high_review_retention":3,"stale_task_archive_delay":1}); self.s.change_architecture(Role.ARCHITECT,{"a":2}); self.assertEqual(self.s.tasks["A"].state,TaskState.ARCHIVED_STALE)
  def test_review_is_candidate_before_acceptance(self):
-  self.s.review(Role.REVIEW,"A","independent",True); self.assertEqual(self.s.tasks["A"].state,TaskState.REVIEW)
-  self.s.complete(Role.MOTHER,"A",True,True,7); self.assertEqual(self.s.tasks["A"].completed_at,7)
+  self.accept(); self.assertEqual(self.s.tasks["A"].state,TaskState.REVIEW)
+  self.s.complete(Role.MOTHER,"A",True,True,7,actor_id="MOTHER"); self.assertEqual(self.s.tasks["A"].completed_at,7)
  def test_intelligence_artifacts_and_completion_gates(self):
   self.s.set_intelligence_floor(Role.ARCHITECT,"A",3); self.s.complexity_mismatch(Role.DOER,"A",3); self.s.add_artifact(Role.DOER,"A",ArtifactIdentity("proof","v1","work"),"risk survives compression")
   self.assertEqual(self.s.discover("proof"),["A"]); self.assertIn("risk survives compression",self.s.tasks["A"].findings); self.assertFalse(self.s.project_complete(Role.MOTHER,True,True))
@@ -94,7 +99,7 @@ class RuntimeTests(unittest.TestCase):
   self.s.tasks["A"].risk=4
   with self.assertRaises(InvariantError): self.s.review(Role.REVIEW,"A","independent",True,"standard")
   adversarial=ReviewEvidence(ReviewStrategy.ADVERSARIAL,"independent",True,ArtifactIdentity("review","v1","adversarial"),("attack path",))
-  self.s.review(Role.REVIEW,"A",adversarial,True); self.assertTrue(self.s.tasks["A"].review_passed); self.assertEqual(self.s.tasks["A"].review_strategy,"adversarial")
+  self.s.review(Role.REVIEW,"A",adversarial,True); self.assertFalse(self.s.tasks["A"].review_passed); self.assertEqual(self.s.tasks["A"].review_strategy,"adversarial")
   self.s.tasks["A"].review_passed=False; self.s.tasks["A"].risk=5
   with self.assertRaises(InvariantError): self.s.review(Role.REVIEW,"A","independent",True,"adversarial")
   with self.assertRaises(InvariantError): self.s.review(Role.REVIEW,"A",ReviewEvidence(ReviewStrategy.SPECIALIST,"independent",True,None),True)
@@ -133,17 +138,17 @@ class RuntimeTests(unittest.TestCase):
   hydrated=self.s.hydrate_hive("auth",{"auth":2},1,2); self.assertEqual([r.id for r in hydrated],["current"]); self.assertEqual(self.s.telemetry["hive_hydration_count"],1)
   package=ContextPackage.build(goal="g",architecture={"auth":2},dependencies=[],artifacts=[],acceptance=[],history=[],hive=hydrated,budget=2); self.assertEqual(package.hive,("current",))
  def test_hive_warm_retirement_and_provenance_cleanup(self):
-  self.s.workers["D"].context["affinity"]=1; self.s.tasks["A"].review_passed=True; self.s.tasks["A"].reviewer="independent"; self.s.complete(Role.MOTHER,"A",True,True,1); self.assertEqual(self.s.workers["D"].state,WorkerState.WARM)
+  self.s.workers["D"].context["affinity"]=1; self.accept(); self.s.complete(Role.MOTHER,"A",True,True,1,actor_id="MOTHER"); self.assertEqual(self.s.workers["D"].state,WorkerState.WARM)
   self.s.groom(Role.MOTHER,2,{"no_review_archive_delay":0,"low_review_retention":2,"high_review_retention":3,"stale_task_archive_delay":1}); self.assertEqual(self.s.tasks["A"].state,TaskState.ARCHIVED); self.assertEqual(self.s.workers["D"].state,WorkerState.WARM)
   self.s.add_worker(Role.LEAD,Worker("R","L",2)); self.s.assign(Role.LEAD,Task("B","D","author",1,{})); lesson=HiveRecord("handoff",content="use migration seam",source="worker",source_version="1",provenance={"task":"B"})
   self.s.retire(Role.LEAD,"D","R",lessons=[lesson],now=3); self.assertEqual(self.s.workers["D"].state,WorkerState.RETIRED); self.assertEqual(self.s.tasks["B"].owner,"R"); self.assertIn("handoff",self.s.hive)
   self.s.hive["handoff"].retention="expired"; self.s.groom_hive(Role.MOTHER,4); self.s.groom_hive(Role.MOTHER,5); self.s.groom_hive(Role.MOTHER,6); self.assertEqual(self.s.hive["handoff"].status,HiveStatus.PURGED); self.assertEqual(self.s.hive["handoff"].provenance,{"task":"B"})
  def test_heartbeat_recovery_and_wait_resume(self):
   self.s.tasks["A"].active_goal=True; self.s.tasks["A"].goal_id="g"; self.s.tasks["A"].milestone="proof"; self.s.tasks["A"].review_horizon_minutes=30
-  self.assertEqual(self.s.heartbeat(Role.CTRL,"A",meaningful_progress=False),"A:watchdog-recovered:30"); self.assertIsNone(self.s.heartbeat(Role.CTRL,"A",meaningful_progress=False))
-  self.s.assign(Role.LEAD,Task("B","D","author",1,{})); self.s.wait(Role.DOER,"B","A"); self.assertIsNone(self.s.heartbeat(Role.CTRL,"B",meaningful_progress=False)); self.s.tasks["A"].review_passed=True; self.s.tasks["A"].reviewer="review"; self.s.complete(Role.MOTHER,"A",True,True,1); self.assertEqual(self.s.tasks["B"].state,TaskState.ACTIVE)
-  with self.assertRaises(InvariantError): self.s.heartbeat(Role.LEAD,"B",meaningful_progress=False)
-  with self.assertRaises(InvariantError): self.s.heartbeat(Role.MOTHER,"B",meaningful_progress=False)
+  self.assertEqual(self.s.heartbeat(Role.CTRL,"A",meaningful_progress=False,recent_ctrl_feed=()),"A:watchdog-recovered:30"); self.assertIsNone(self.s.heartbeat(Role.CTRL,"A",meaningful_progress=False,recent_ctrl_feed=()))
+  self.s.assign(Role.LEAD,Task("B","D","author",1,{})); self.s.wait(Role.DOER,"B","A"); self.assertIsNone(self.s.heartbeat(Role.CTRL,"B",meaningful_progress=False,recent_ctrl_feed=())); self.accept(reviewer="review"); self.s.complete(Role.MOTHER,"A",True,True,1,actor_id="MOTHER"); self.assertEqual(self.s.tasks["B"].state,TaskState.ACTIVE)
+  with self.assertRaises(InvariantError): self.s.heartbeat(Role.LEAD,"B",meaningful_progress=False,recent_ctrl_feed=())
+  with self.assertRaises(InvariantError): self.s.heartbeat(Role.MOTHER,"B",meaningful_progress=False,recent_ctrl_feed=())
   self.s.recover(Role.MOTHER,"B","heartbeat diagnosis")
  def test_archive_and_contention_are_fail_closed(self):
   self.s.tasks["A"].state=TaskState.COMPLETE; self.s.tasks["A"].completed_at=0; self.s.tasks["A"].active_goal=True; self.assertEqual(self.s.groom(Role.MOTHER,2,{"no_review_archive_delay":0,"low_review_retention":2,"high_review_retention":3,"stale_task_archive_delay":1}),[]); self.assertFalse(self.s.should_spawn(independent=True,critical_path=True,contention=True))
@@ -194,7 +199,7 @@ class RuntimeTests(unittest.TestCase):
   self.assertTrue(self.s.scope_finding(Role.DOER,"A","review invariant missing",material=True)); self.assertTrue(self.s.tasks["A"].correction_pending); self.assertEqual(self.s.tasks["A"].state,TaskState.WAITING)
  def test_heartbeat_uses_canonical_recovery_before_latch(self):
   self.s.tasks["A"].active_goal=True; self.s.tasks["A"].goal_id="g"; self.s.tasks["A"].milestone="proof"
-  self.assertIn("watchdog-recovered",self.s.heartbeat(Role.CTRL,"A",meaningful_progress=False)); self.assertIsNone(self.s.heartbeat(Role.CTRL,"A",meaningful_progress=False))
+  self.assertIn("watchdog-recovered",self.s.heartbeat(Role.CTRL,"A",meaningful_progress=False,recent_ctrl_feed=())); self.assertIsNone(self.s.heartbeat(Role.CTRL,"A",meaningful_progress=False,recent_ctrl_feed=()))
  def test_disabled_hive_is_removed_from_prebuilt_context(self):
   record=HiveRecord("prior",content="useful",source="decision")
   package=ContextPackage.build(goal="g",architecture={},dependencies=[],artifacts=[],acceptance=[],history=[],budget=2,hive=[record])
@@ -211,6 +216,7 @@ class RuntimeTests(unittest.TestCase):
   portfolio=topology(lanes=("A","B"),edges=(("A","B"),),integration=True,portfolio=True,ctrl_cheap=False)
   self.assertEqual(choose_depth(portfolio),Depth.WORKSTREAM)
   self.assertEqual(choose_depth(TopologyFacts(**{**portfolio.__dict__,"architecture_gate":True})),Depth.PROJECT)
+  self.assertEqual(Depth.PROJECT.value,"CTRL_MOTHER_SPECIALIST_LEADS_DOERS")
   with self.assertRaises(TypeError): choose_depth(portfolio,mode=EfficiencyMode.MAX)
  def test_identity_not_keyword_similarity_controls_reuse(self):
   migration=topology(objective="migrate plugin",artifacts=(ArtifactIdentity("plugin/swarm","v1","migration"),),surfaces=("plugin/swarm",),route="plugin CTRL")
@@ -258,5 +264,6 @@ class RuntimeTests(unittest.TestCase):
   self.assertIsNotNone(self.s.ctrl_event("HANDOFF","A","evidence-1",**args))
   self.assertIsNone(self.s.ctrl_event("HANDOFF","A","evidence-1",**args))
   self.assertIsNotNone(self.s.ctrl_event("HANDOFF","A","evidence-2",**args))
+  self.accept(); self.s.complete(Role.LEAD,"A",True,True,1,actor_id="L")
   self.assertIsNotNone(self.s.ctrl_event("ACCEPTANCE","A","accepted",outcome="Routing accepted.",evidence_id="proof"))
 if __name__ == "__main__": unittest.main()

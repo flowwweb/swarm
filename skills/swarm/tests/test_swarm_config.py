@@ -79,6 +79,17 @@ class SwarmConfigTests(unittest.TestCase):
         self.assertEqual(effective["execution"]["usage_profile"], "low")
         self.assertFalse(effective["execution"]["usage_saver"])
 
+    def test_legacy_reasoning_extremes_remain_unchanged_in_effective_config(self) -> None:
+        for effort in ("none", "minimal", "ultra"):
+            with self.subTest(effort=effort), tempfile.TemporaryDirectory() as directory:
+                path = Path(directory) / "legacy.toml"
+                path.write_text(
+                    f'[roles.DESIGNER]\nreasoning = "{effort}"\n',
+                    encoding="utf-8",
+                )
+                effective, _ = config.load(path)
+                self.assertEqual(effective["roles"]["DESIGNER"]["reasoning"], effort)
+
     def test_usage_saver_accepts_only_a_boolean(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -199,22 +210,111 @@ class SwarmConfigTests(unittest.TestCase):
             with self.assertRaisesRegex(config.ConfigError, "unknown value"):
                 config.load(path)
 
-    def test_every_named_role_has_an_explicit_profile_pair(self) -> None:
-        roles = {
-            "mother": ("gpt-5.6-sol", "medium"),
-            "architect": ("gpt-5.6-sol", "medium"),
-            "lead": ("gpt-5.6-sol", "medium"),
-            "advisor": ("gpt-5.6-sol", "medium"),
-            "doer": ("gpt-5.6-luna", "xhigh"),
-            "task": ("gpt-5.6-luna", "high"),
-            "subtask": ("gpt-5.6-luna", "high"),
-            "assist": ("gpt-5.6-sol", "medium"),
-            "review": ("gpt-5.6-sol", "medium"),
-        }
-        for profile in config.DEFAULTS["models"].values():
-            for role, (model, reasoning) in roles.items():
-                self.assertEqual(profile[f"{role}_model"], model)
-                self.assertEqual(profile[f"{role}_reasoning"], reasoning)
+    def test_profiles_have_distinct_reasoning_scales(self) -> None:
+        models = config.DEFAULTS["models"]
+        for role in (
+            "mother",
+            "lead",
+            "doer",
+            "task",
+            "subtask",
+            "assist",
+            "advisor",
+            "specialist",
+            "architect",
+            "review",
+        ):
+            efforts = [models[name][f"{role}_reasoning"] for name in ("low", "medium", "high")]
+            indexes = [config.REASONING_SCALE.index(effort) for effort in efforts]
+            self.assertEqual(indexes, sorted(indexes), role)
+            self.assertGreater(indexes[-1], indexes[0], role)
+
+    def test_global_reasoning_bounds_override_profiles_roles_and_route_tier(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "bounded.toml"
+            path.write_text(
+                '[execution]\nusage_profile = "high"\nmin_reasoning = "medium"\nmax_reasoning = "high"\n'
+                '[roles.DESIGNER]\nreasoning = "max"\n',
+                encoding="utf-8",
+            )
+            effective, _ = config.load(path)
+        self.assertEqual(
+            config.resolve_role_assignment(effective, "mother", route_tier=1)["reasoning"],
+            "medium",
+        )
+        self.assertEqual(
+            config.resolve_role_assignment(effective, "DESIGNER", route_tier=3)["reasoning"],
+            "high",
+        )
+
+    def test_invalid_global_reasoning_range_fails_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "invalid.toml"
+            path.write_text('[execution]\nmin_reasoning = "max"\nmax_reasoning = "medium"\n', encoding="utf-8")
+            with self.assertRaisesRegex(config.ConfigError, "min_reasoning cannot exceed"):
+                config.load(path)
+
+    def test_turbo_resolves_only_the_three_supported_controls(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            enabled = root / "enabled.toml"
+            enabled.write_text(
+                '[execution]\nusage_profile = "low"\nservice_tier = ""\nmax_reasoning = "xhigh"\n'
+                '[turbo]\nenabled = true\n[efficiency]\nmode = "CONSERVE"\n',
+                encoding="utf-8",
+            )
+            turbo, _ = config.load(enabled)
+            disabled = root / "disabled.toml"
+            disabled.write_text(
+                '[execution]\nusage_profile = "low"\nservice_tier = ""\n'
+                '[turbo]\nenabled = false\n[efficiency]\nmode = "CONSERVE"\n',
+                encoding="utf-8",
+            )
+            normal, _ = config.load(disabled)
+        self.assertEqual(turbo["execution"]["usage_profile"], "high")
+        self.assertEqual(turbo["execution"]["service_tier"], "fast")
+        self.assertEqual(turbo["efficiency"]["mode"], "MAX")
+        self.assertEqual(
+            config.resolve_role_assignment(turbo, "lead", route_tier=1)["reasoning"],
+            "xhigh",
+        )
+        self.assertEqual(
+            config.resolve_role_assignment(turbo, "doer", route_tier=1)["reasoning"],
+            "xhigh",
+        )
+        self.assertEqual(normal["execution"]["usage_profile"], "low")
+        self.assertEqual(normal["execution"]["service_tier"], "")
+        self.assertEqual(normal["efficiency"]["mode"], "CONSERVE")
+
+    def test_turbo_enabled_must_be_boolean(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "invalid.toml"
+            path.write_text('[turbo]\nenabled = "yes"\n', encoding="utf-8")
+            with self.assertRaisesRegex(config.ConfigError, "turbo.enabled must be true or false"):
+                config.load(path)
+
+    def test_cli_resolve_exposes_the_effective_host_pair(self) -> None:
+        completed = subprocess.run(
+            [
+                sys.executable,
+                str(SCRIPT),
+                "--path",
+                str(config.TEMPLATE_PATH),
+                "resolve",
+                "--role",
+                "lead",
+                "--route-tier",
+                "3",
+            ],
+            capture_output=True,
+            check=False,
+            text=True,
+        )
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertEqual(
+            json.loads(completed.stdout),
+            {"model": "gpt-5.6-sol", "reasoning": "high"},
+        )
 
 
 if __name__ == "__main__":

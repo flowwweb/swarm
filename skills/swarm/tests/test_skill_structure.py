@@ -88,12 +88,12 @@ class SwarmSkillStructureTests(unittest.TestCase):
         self.assertIn("MOTHER alone changes execution topology", skill)
         self.assertIn("canonical state", skill)
         self.assertIn("independent REVIEW", skill)
-        self.assertIn("persistent ARCHITECT", hierarchy)
+        self.assertIn("persistent SPECIALIST", hierarchy)
         self.assertIn("Materialize ASSIST and ADVISOR only", hierarchy)
         self.assertIn("Completion requires independent review", skill)
-        self.assertIn("ARCHITECT system interface", task_contract)
+        self.assertIn("SPECIALIST interface", task_contract)
         self.assertIn("temporary wildcard", task_contract)
-        self.assertIn("ARCHITECT persists system coherence", task_contract)
+        self.assertIn("multiple ARCHITECTs or DEVELOPERs", task_contract)
         self.assertIn("Integration-ready", task_contract)
         self.assertIn("composed render comparison", task_contract)
         self.assertIn("composed rendered product", review_contract)
@@ -191,6 +191,34 @@ class SwarmSkillStructureTests(unittest.TestCase):
         self.assertIn("require an accessible name and adequate\n   target", review)
         self.assertIn("ambiguous or consequential actions retain visible text", review)
         self.assertIn("Minimalism\n   cannot justify mystery icons, inaccessible targets, or removal of necessary\n   state", review)
+
+    def test_visual_review_starts_from_the_user_visible_reality(self) -> None:
+        review = (SKILL_ROOT / "references" / "review-contract.md").read_text(encoding="utf-8")
+
+        self.assertIn("perform a first-glance user\nreality check", review)
+        self.assertIn("A map\nwithout geography", review)
+        self.assertIn("correct overlay on a blank, mocked, placeholder, failed,\nor fallback substrate", review)
+        self.assertIn("console errors, warnings, page errors,\nnetwork failures", review)
+        self.assertIn("duplicate actions, controls\nthat compete for the same job", review)
+
+    def test_non_design_review_stops_at_good_enough_without_weakening_design(self) -> None:
+        skill = SKILL.read_text(encoding="utf-8")
+        review = (SKILL_ROOT / "references" / "review-contract.md").read_text(encoding="utf-8")
+        design = (SKILL_ROOT / "references" / "design-guide.md").read_text(encoding="utf-8")
+
+        self.assertIn("For non-design work, good enough is a terminal state", skill)
+        self.assertIn("an observable improvement likely to outweigh investigation", skill)
+        self.assertIn("nitpicks, not backlog", skill)
+        self.assertIn("a further pass requires new evidence, changed scope, or a named risk", skill)
+        self.assertIn("This stop rule does not apply to design review", skill)
+        self.assertIn("Apply a significance gate outside design", review)
+        self.assertIn("Do not record them as P3, backlog, optional\nfollow-up", review)
+        self.assertIn("The act of reviewing is not evidence that a\nchange is valuable", review)
+        self.assertIn("Design review is the explicit exception", review)
+        self.assertIn("In mixed reviews, classify each finding\nbefore applying the exception", review)
+        self.assertIn("references/design-guide.md", skill)
+        self.assertIn("Small design details compound and design nitpicking is encouraged", design)
+        self.assertIn("invariant, contextual default, or taste direction", design)
 
     def test_mandatory_goals_and_passive_heartbeat_are_fixed_contracts(self) -> None:
         skill = SKILL.read_text(encoding="utf-8")

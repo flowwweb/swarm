@@ -33,7 +33,7 @@ Install it as a Codex plugin and run a coordinated team of AI agents from one CT
 └── REVIEW — independent acceptance
 ```
 
-SWARM chooses the shallowest structure that can reliably finish the objective. Small work stays small. Parallel work gets explicit owners. A MOTHER appears only when genuinely interdependent lanes need portfolio-level integration and acceptance. Persistent specialists can protect a cross-cutting truth—architecture, design, research, strategy, or another profession—without becoming another management layer.
+SWARM chooses the shallowest structure that can reliably finish the objective. Small work stays small. Parallel work gets explicit owners. A MOTHER appears only when genuinely interdependent lanes need portfolio-level integration and acceptance. Persistent specialists can protect a cross-cutting truth without becoming another management layer. ARCHITECT, ENGINEER, DEVELOPER, DESIGNER, RESEARCHER, ANALYST, and STRATEGIST are ready-made examples—not a limit. Any profession is valid, and multiple specialists may share a profession when their owned truth surfaces differ.
 
 The result is a swarm you can steer from one place:
 
@@ -95,3 +95,23 @@ node --test console/tests/test_console_ui.mjs
 ```
 
 The browser test requires Playwright. See [CONTRIBUTING.md](CONTRIBUTING.md), [SECURITY.md](SECURITY.md), and the [MIT License](LICENSE).
+
+## Release verification
+
+Build from a clean, committed checkout. The archive is reproducible and assembled
+from one captured Git commit/tree snapshot: it records the plugin version, commit,
+tree, and a SHA-256 manifest for every shipped product file. Write the archive
+outside the repository so the clean-source check remains meaningful.
+
+```text
+python scripts/build_package.py --output ../swarm.zip --verify-repeat
+python skills/swarm/scripts/verify_plugin_install.py <installed-plugin-root> --package ../swarm.zip
+python skills/swarm/scripts/verify_plugin_install.py <installed-plugin-root> --source .
+```
+
+The builder writes `swarm.zip.sha256` beside the archive; package verification
+requires that exact sidecar. The verifier checks the whole shipped surface—plugin
+manifest, skills, console and Docker files, and public documentation/security
+files. Installed parity ignores only host Git metadata, generated `__pycache__`
+contents, and generated package metadata; logs, loose bytecode, state, build output,
+and dependency directories fail verification.

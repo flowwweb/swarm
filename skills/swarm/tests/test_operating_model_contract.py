@@ -3,7 +3,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
-from runtime import ArtifactIdentity, CtrlMode, HorizonAction, InvariantError, Role, SubagentException, Swarm, Task, ctrl_mode
+from runtime import AcceptanceContract, ArtifactIdentity, CtrlMode, HorizonAction, InvariantError, LaneKind, Role, SubagentException, Swarm, Task, ctrl_mode
 
 
 class OperatingModelTests(unittest.TestCase):
@@ -20,7 +20,7 @@ class OperatingModelTests(unittest.TestCase):
         self.assertEqual(ctrl_mode(**base),CtrlMode.DIRECT)
         for change in ({"outcomes":2},{"mutable_surfaces":2},{"cross_lane_dependency":True},{"risk":2},{"measurable_minutes":21}):
             self.assertEqual(ctrl_mode(**{**base,**change}),CtrlMode.DELEGATED)
-        swarm=Swarm(); direct=Task("direct","CTRL","CTRL",1,{},risk=1,subagent_exception=SubagentException.WHOLE_TASK_COST,subagent_exception_reason="atomic work is shorter than delegation")
+        swarm=Swarm(); direct=Task("direct","CTRL","CTRL",1,{},risk=1,subagent_exception=SubagentException.WHOLE_TASK_COST,subagent_exception_reason="atomic work is shorter than delegation",lane_kind=LaneKind.CODE,acceptance_contract=AcceptanceContract(ArtifactIdentity("direct","v1","acceptance"),("contract",)))
         swarm.start_ctrl_direct(Role.CTRL,direct,outcomes=1,mutable_surfaces=1,cross_lane_dependency=False,measurable_minutes=10)
         swarm.add_artifact(Role.CTRL,"direct",ArtifactIdentity("direct","v1","work"))
         with self.assertRaisesRegex(InvariantError,"hire a LEAD"): swarm.start_ctrl_direct(Role.CTRL,Task("large","CTRL","CTRL",1,{},risk=2,subagent_exception=SubagentException.WHOLE_TASK_COST,subagent_exception_reason="candidate"),outcomes=1,mutable_surfaces=1,cross_lane_dependency=False,measurable_minutes=10)
@@ -75,8 +75,8 @@ class OperatingModelTests(unittest.TestCase):
         swarm=Swarm(); swarm.tasks["CTRL"]=Task("CTRL","controller","CTRL",1,{})
         swarm.propose_milestone(Role.CTRL,"CTRL",goal_id="control",milestone="accepted result",proof_kind="integration",horizon_minutes=15,now=10)
         del swarm.scheduled_wakeups["CTRL"]
-        self.assertEqual(swarm.heartbeat(Role.CTRL,"CTRL",meaningful_progress=False),"CTRL:watchdog-recovered:25")
-        with self.assertRaises(InvariantError): swarm.heartbeat(Role.MOTHER,"CTRL",meaningful_progress=False)
+        self.assertEqual(swarm.heartbeat(Role.CTRL,"CTRL",meaningful_progress=False,recent_ctrl_feed=()),"CTRL:watchdog-recovered:25")
+        with self.assertRaises(InvariantError): swarm.heartbeat(Role.MOTHER,"CTRL",meaningful_progress=False,recent_ctrl_feed=())
 
     def test_versioned_amendment_and_successor_preserve_history(self):
         swarm=self.tracked()
@@ -101,6 +101,10 @@ class OperatingModelTests(unittest.TestCase):
         self.assertEqual(swarm.tasks["T"].specialist_professions,{"auth-architecture":"ARCHITECT","data-architecture":"ARCHITECT"})
         self.assertEqual(swarm.tasks["T"].specialist_map_versions,{"auth-architecture":1,"data-architecture":0})
         swarm.specialist_event(Role.SPECIALIST,"T",specialist_id="novel",profession="ETHNOGRAPHER",goal_id="research",accepted_change="field note",invalidates_map=False,receipt="source")
+
+    def test_builtin_professions_include_developer_without_limiting_free_roles(self):
+        from runtime.core import BUILT_IN_SPECIALISTS
+        self.assertEqual(BUILT_IN_SPECIALISTS,{"ARCHITECT","ENGINEER","DEVELOPER","DESIGNER","RESEARCHER","ANALYST","STRATEGIST"})
 
 
 if __name__ == "__main__": unittest.main()
