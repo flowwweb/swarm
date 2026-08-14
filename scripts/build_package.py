@@ -47,6 +47,7 @@ DEVELOPMENT_ONLY_PATHS = frozenset(
 DEVELOPMENT_ONLY_DIRECTORIES = frozenset(
     {
         ".github",
+        "console/tests",
         "skills/swarm/evals",
         "skills/swarm/tests",
     }

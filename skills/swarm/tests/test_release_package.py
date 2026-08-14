@@ -114,6 +114,7 @@ class ReleasePackageTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             root = self.make_plugin(Path(temporary))
             development_files = {
+                "console/tests/test_console.py": "test\n",
                 "skills/swarm/tests/test_contract.py": "test\n",
                 "skills/swarm/evals/evals.json": "{}\n",
                 "skills/swarm/evals/fixtures/case.json": "{}\n",
