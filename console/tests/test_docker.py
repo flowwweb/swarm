@@ -10,7 +10,9 @@ from unittest import mock
 DOCKER = Path(__file__).resolve().parents[1] / "docker.py"
 COMPOSE = Path(__file__).resolve().parents[1] / "docker-compose.yml"
 DOCKERFILE = Path(__file__).resolve().parents[1] / "Dockerfile"
-TEST_HOME = Path("C:/fixture/plugin-home")
+# Keep the patched home host-native: docker.py resolves the selected config,
+# so expected values must use a path with the same canonical representation.
+TEST_HOME = (Path(tempfile.gettempdir()) / "swarm-plugin-home").resolve()
 SPEC = importlib.util.spec_from_file_location("swarm_docker_tested", DOCKER)
 assert SPEC and SPEC.loader
 launcher = importlib.util.module_from_spec(SPEC)

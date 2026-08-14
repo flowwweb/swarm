@@ -25,7 +25,7 @@ def _fold_existing(root): IncidentLedger(root).daily_fold(FoldCandidate("Bind ac
 
 class IncidentLedgerTests(unittest.TestCase):
     def setUp(self):
-        self.temp=tempfile.TemporaryDirectory(); self.root=Path(self.temp.name); (self.root/".git"/"info").mkdir(parents=True); self.ledger=IncidentLedger(self.root)
+        self.temp=tempfile.TemporaryDirectory(); self.root=Path(self.temp.name).resolve(); (self.root/".git"/"info").mkdir(parents=True); self.ledger=IncidentLedger(self.root)
     def tearDown(self): self.temp.cleanup()
 
     def test_persists_private_ignored_jsonl_and_deduplicates_identity(self):
