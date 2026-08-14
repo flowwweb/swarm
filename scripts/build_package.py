@@ -233,6 +233,20 @@ def _git_bytes(root: Path, *arguments: str) -> bytes:
     return completed.stdout
 
 
+def is_git_repository_root(root: Path) -> bool:
+    """Return whether ``root`` is exactly a usable Git worktree top level."""
+    root = root.resolve()
+    completed = subprocess.run(
+        ["git", "-C", str(root), "rev-parse", "--show-toplevel"],
+        capture_output=True,
+        check=False,
+        text=True,
+    )
+    if completed.returncode:
+        return False
+    return Path(completed.stdout.strip()).resolve() == root
+
+
 def _tracked_product_paths(root: Path) -> set[str]:
     tracked = _git(root, "ls-files", "-z").split("\0")
     paths: set[str] = set()

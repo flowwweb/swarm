@@ -327,6 +327,43 @@ class ReleasePackageTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "extra=.*unexpected.txt"):
                 verifier.verify(root, installed)
 
+    def test_source_verifier_accepts_clean_filter_normalized_source(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = self.make_plugin(Path(temporary))
+            (root / ".gitattributes").write_text("*.md text eol=lf\n", encoding="utf-8")
+            subprocess.run(["git", "-C", str(root), "add", ".gitattributes"], check=True)
+            subprocess.run(["git", "-C", str(root), "add", "--renormalize", "."], check=True)
+            subprocess.run(["git", "-C", str(root), "commit", "-qm", "normalise markdown"], check=True)
+            (root / "README.md").write_bytes(b"# SWARM\r\n")
+            package = Path(temporary) / "swarm.zip"
+            write_package(root, package)
+            installed = Path(temporary) / "installed"
+            with zipfile.ZipFile(package) as archive:
+                archive.extractall(installed)
+
+            self.assertEqual(verifier.verify(root, installed), len(verifier.declared_files(root)))
+
+    def test_source_verifier_rejects_hidden_source_tamper_after_clean_filter(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = self.make_plugin(Path(temporary))
+            (root / ".gitattributes").write_text("*.md text eol=lf\n", encoding="utf-8")
+            subprocess.run(["git", "-C", str(root), "add", ".gitattributes"], check=True)
+            subprocess.run(["git", "-C", str(root), "add", "--renormalize", "."], check=True)
+            subprocess.run(["git", "-C", str(root), "commit", "-qm", "normalise markdown"], check=True)
+            package = Path(temporary) / "swarm.zip"
+            write_package(root, package)
+            installed = Path(temporary) / "installed"
+            with zipfile.ZipFile(package) as archive:
+                archive.extractall(installed)
+            subprocess.run(
+                ["git", "-C", str(root), "update-index", "--assume-unchanged", "README.md"],
+                check=True,
+            )
+            (root / "README.md").write_bytes(b"hidden source tamper\r\n")
+
+            with self.assertRaisesRegex(ValueError, "source bytes differ from HEAD.*README.md"):
+                verifier.verify(root, installed)
+
     def test_cli_reports_expected_parity_failure_without_traceback_or_local_paths(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = self.make_plugin(Path(temporary))

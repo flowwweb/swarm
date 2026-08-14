@@ -22,6 +22,8 @@ from build_package import (
     _source_included,
     normalise_relative_path,
     installed_file_hashes,
+    is_git_repository_root,
+    release_identity,
     source_file_hashes,
     validate_plugin_manifest,
     validate_canonical_paths,
@@ -45,7 +47,11 @@ def _compare(expected: dict[str, str], actual: dict[str, str]) -> int:
 
 
 def verify(source: Path, installed: Path) -> int:
-    source_files = source_file_hashes(source)
+    source_files = (
+        release_identity(source).files
+        if is_git_repository_root(source)
+        else source_file_hashes(source)
+    )
     validate_plugin_manifest(source, source_files)
     return _compare(source_files, declared_files(installed))
 
