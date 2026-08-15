@@ -240,7 +240,10 @@ class ReleasePackageTests(unittest.TestCase):
     def test_mirror_detects_and_repairs_clean_equivalent_crlf_bytes(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = self.make_plugin(Path(temporary))
-            (root / ".gitattributes").write_bytes(b"* text=auto eol=lf\n")
+            # Ask Git to materialize CRLF while retaining canonical LF blobs.
+            # This exercises clean-filter equivalence on every runner instead
+            # of relying on a Windows-only working-tree state.
+            (root / ".gitattributes").write_bytes(b"* text=auto eol=crlf\n")
             for relative in source_file_hashes(root):
                 source = root / relative
                 target = root / "plugins" / "swarm" / relative
