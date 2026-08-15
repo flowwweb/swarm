@@ -255,9 +255,13 @@ class ReleasePackageTests(unittest.TestCase):
 
             source_manifest = root / ".codex-plugin" / "plugin.json"
             mirror_manifest = root / "plugins" / "swarm" / ".codex-plugin" / "plugin.json"
-            for manifest in (source_manifest, mirror_manifest):
-                lf_payload = manifest.read_bytes().replace(b"\r\n", b"\n")
-                manifest.write_bytes(lf_payload.replace(b"\n", b"\r\n"))
+            subprocess.run([
+                "git", "-C", str(root), "checkout-index", "--force", "--",
+                ".codex-plugin/plugin.json",
+                "plugins/swarm/.codex-plugin/plugin.json",
+            ], check=True)
+            self.assertIn(b"\r\n", source_manifest.read_bytes())
+            self.assertIn(b"\r\n", mirror_manifest.read_bytes())
             self.assertFalse(subprocess.run(
                 ["git", "-C", str(root), "status", "--porcelain"],
                 capture_output=True,
