@@ -4,15 +4,15 @@ import tempfile
 import unittest
 
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
-from runtime import AcceptanceContract, ArtifactIdentity, CtrlSurfaceKind, GateReceipt, IncidentLedger, InvariantError, LaneKind, ProofOutcome, ReviewEvidence, ReviewScope, ReviewStrategy, Role, Swarm, Task, TaskState, Worker, WorkerState
+from runtime import AcceptanceContract, ArtifactIdentity, CtrlSurfaceKind, GateReceipt, IncidentLedger, InvariantError, LaneKind, ProofOutcome, ReviewEvidence, ReviewScope, ReviewStrategy, Role, Swarm, Task, TaskState, WatchdogReceipt, WatchdogRouteRole, WatchdogScope, WatchdogSignal, Worker, WorkerState
 
 
 class AcceptanceContractTests(unittest.TestCase):
     def setUp(self):
         self.temp=tempfile.TemporaryDirectory()
         self.artifact_path=Path(self.temp.name)/"artifact.txt"; self.artifact_path.write_text("version-1",encoding="utf-8"); self.artifact=ArtifactIdentity.capture("route","sha-1","release",root=self.temp.name,paths=("artifact.txt",))
-        self.swarm=Swarm(); self.swarm.add_lead(Role.MOTHER,"lead"); self.swarm.add_worker(Role.LEAD,Worker("builder","lead",1))
-        task=Task("route","builder","author",1,{},subagent_receipt="host:thread:route",lane_kind=LaneKind.CODE,owning_lead_id="lead",mother_id="mother",acceptance_contract=AcceptanceContract(self.artifact,("typecheck","test","build"),observation_root=self.temp.name))
+        self.swarm=Swarm(); self.swarm.add_lead(Role.CTRL,"lead"); self.swarm.add_worker(Role.LEAD,Worker("builder","lead",1))
+        task=Task("route","builder","author",1,{},subagent_receipt="host:thread:route",lane_kind=LaneKind.CODE,owning_lead_id="lead",acceptance_contract=AcceptanceContract(self.artifact,("typecheck","test","build"),observation_root=self.temp.name))
         self.swarm.assign(Role.LEAD,task); self.swarm.consult_incidents(Role.LEAD,"route",IncidentLedger(self.temp.name),artifact="route",scope="routing",actor_id="lead")
 
     def tearDown(self): self.temp.cleanup()
@@ -94,34 +94,34 @@ class AcceptanceContractTests(unittest.TestCase):
 
     def test_forced_state_cannot_bypass_complete_project_or_ctrl_acceptance(self):
         task=self.swarm.tasks["route"]; task.review_passed=True; task.reviewer="independent"; task.state=TaskState.COMPLETE
-        with self.assertRaisesRegex(InvariantError,"exact-artifact acceptance"): self.swarm.complete(Role.MOTHER,"route",True,True,1,actor_id="mother")
-        self.assertFalse(self.swarm.project_complete(Role.MOTHER,True,True))
+        with self.assertRaisesRegex(InvariantError,"direct CTRL-bound"): self.swarm.complete(Role.CTRL,"route",True,True,1,actor_id="CTRL")
+        self.assertFalse(self.swarm.project_complete(Role.CTRL,True,True))
         self.swarm.register_ctrl_evidence(Role.LEAD,"route","receipt","proof","receipt.txt")
         self.swarm.surface_ctrl_evidence(Role.CTRL,"receipt",surface_kind=CtrlSurfaceKind.INLINE_RECEIPT,caption="Forced state has no acceptance receipt.",claim_limit="Runtime contract proof only.",surface_receipt="chat:receipt:forced")
         with self.assertRaisesRegex(InvariantError,"completed exact-artifact acceptance"): self.swarm.ctrl_event("ACCEPTANCE","route",1,outcome="Accepted.",evidence_id="receipt")
 
     def test_explicit_empty_contract_supports_non_code_tasks_without_boolean_bypass(self):
-        other=Task("copy","writer","author",1,{},subagent_receipt="host:thread:copy",lane_kind=LaneKind.NON_CODE,owning_lead_id="lead",acceptance_contract=AcceptanceContract.empty())
-        self.swarm.start_simple(Role.MOTHER,other)
+        other=Task("copy","builder","author",1,{},subagent_receipt="host:thread:copy",lane_kind=LaneKind.NON_CODE,owning_lead_id="lead",acceptance_contract=AcceptanceContract.empty())
+        self.swarm.assign(Role.LEAD,other)
         evidence=ReviewEvidence(ReviewStrategy.LIGHT,"copy-review",True,None,receipt=(("acceptance","review:copy"),),scope=ReviewScope.ACCEPTANCE)
         self.swarm.review(Role.REVIEW,"copy",evidence,True); self.swarm.complete(Role.LEAD,"copy",True,True,2,actor_id="lead")
         self.assertEqual(self.swarm.tasks["copy"].state,TaskState.COMPLETE)
 
     def test_omitted_contract_is_not_an_implicit_bypass(self):
-        other=Task("missing-contract","writer","author",1,{},subagent_receipt="host:thread:missing")
-        self.swarm.start_simple(Role.MOTHER,other)
+        other=Task("missing-contract","builder","author",1,{},subagent_receipt="host:thread:missing")
+        self.swarm.assign(Role.LEAD,other)
         evidence=ReviewEvidence(ReviewStrategy.LIGHT,"copy-review",True,None,receipt=(("acceptance","review:missing"),),scope=ReviewScope.ACCEPTANCE)
         with self.assertRaisesRegex(InvariantError,"explicit acceptance contract"): self.swarm.review(Role.REVIEW,"missing-contract",evidence,True)
 
     def test_code_and_artifact_lanes_reject_empty_contracts(self):
         with self.assertRaisesRegex(InvariantError,"only for NON_CODE"):
-            self.swarm.start_simple(Role.MOTHER,Task("code-empty","writer","author",1,{},subagent_receipt="host:thread:code",lane_kind=LaneKind.CODE,acceptance_contract=AcceptanceContract.empty()))
+            self.swarm.assign(Role.LEAD,Task("code-empty","builder","author",1,{},subagent_receipt="host:thread:code",lane_kind=LaneKind.CODE,acceptance_contract=AcceptanceContract.empty()))
         with self.assertRaisesRegex(InvariantError,"at least one named gate"):
-            self.swarm.start_simple(Role.MOTHER,Task("code-zero-gates","writer","author",1,{},subagent_receipt="host:thread:zero",lane_kind=LaneKind.CODE,acceptance_contract=AcceptanceContract(ArtifactIdentity("code","v1","acceptance"),())))
+            self.swarm.assign(Role.LEAD,Task("code-zero-gates","builder","author",1,{},subagent_receipt="host:thread:zero",lane_kind=LaneKind.CODE,acceptance_contract=AcceptanceContract(ArtifactIdentity("code","v1","acceptance"),())))
         with self.assertRaisesRegex(InvariantError,"only for NON_CODE"):
-            self.swarm.start_simple(Role.MOTHER,Task("other-empty","writer","author",1,{},subagent_receipt="host:thread:other",lane_kind=LaneKind.OTHER,acceptance_contract=AcceptanceContract.empty()))
-        noncode=Task("late-artifact","writer","author",1,{},subagent_receipt="host:thread:late",lane_kind=LaneKind.NON_CODE,acceptance_contract=AcceptanceContract.empty())
-        self.swarm.start_simple(Role.MOTHER,noncode)
+            self.swarm.assign(Role.LEAD,Task("other-empty","builder","author",1,{},subagent_receipt="host:thread:other",lane_kind=LaneKind.OTHER,acceptance_contract=AcceptanceContract.empty()))
+        noncode=Task("late-artifact","builder","author",1,{},subagent_receipt="host:thread:late",lane_kind=LaneKind.NON_CODE,acceptance_contract=AcceptanceContract.empty())
+        self.swarm.assign(Role.LEAD,noncode)
         with self.assertRaisesRegex(InvariantError,"artifact-producing lanes"): self.swarm.add_artifact(Role.DOER,"late-artifact",ArtifactIdentity("late","v1","work"))
         self.swarm.add_artifact(Role.DOER,"route",ArtifactIdentity("route-source","v1","work")); self.swarm.tasks["route"].acceptance_contract=AcceptanceContract.empty()
         with self.assertRaisesRegex(InvariantError,"only for NON_CODE"): self.swarm.review(Role.REVIEW,"route",ReviewEvidence(ReviewStrategy.LIGHT,"independent",True,None,receipt=(("acceptance","bad"),),scope=ReviewScope.ACCEPTANCE),True)
@@ -139,7 +139,15 @@ class AcceptanceContractTests(unittest.TestCase):
         with self.assertRaisesRegex(InvariantError,"bound owning LEAD"): self.swarm.record_gate_receipt(Role.LEAD,"route",self.receipt("typecheck"),actor_id="other-lead")
         self.pass_gates(); self.swarm.review(Role.REVIEW,"route",self.acceptance(),True)
         with self.assertRaisesRegex(InvariantError,"bound owning LEAD"): self.swarm.complete(Role.LEAD,"route",True,True,1,actor_id="other-lead")
-        with self.assertRaisesRegex(InvariantError,"arbitrary lane"): self.swarm.complete(Role.MOTHER,"route",True,True,1,actor_id="other-mother")
+        with self.assertRaisesRegex(InvariantError,"direct CTRL-bound"): self.swarm.complete(Role.CTRL,"route",True,True,1,actor_id="CTRL")
+
+    def test_watchdog_receipt_cannot_enter_gate_review_or_acceptance(self):
+        alert=WatchdogReceipt("route","goal","lead",WatchdogScope.OUTCOME_INTEGRITY,WatchdogSignal.BLOCKER,"0"*64,"provider outage","lead",((WatchdogRouteRole.CTRL,"CTRL"),),1)
+        with self.assertRaisesRegex(InvariantError,"watchdog alerts carry no authority"):
+            self.swarm.record_gate_receipt(Role.LEAD,"route",alert,actor_id="lead")
+        with self.assertRaisesRegex(InvariantError,"watchdog alerts carry no review authority"):
+            self.swarm.review(Role.REVIEW,"route",alert,True)
+        self.assertFalse(self.swarm.project_complete(Role.CTRL,True,True))
 
 
 if __name__=="__main__": unittest.main()

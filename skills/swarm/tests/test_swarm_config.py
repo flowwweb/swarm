@@ -30,14 +30,14 @@ class SwarmConfigTests(unittest.TestCase):
         self.assertTrue(exists)
         self.assertFalse(effective["execution"]["usage_saver"])
 
-    def test_role_icons_default_to_enabled_octopus_ctrl(self) -> None:
+    def test_role_icons_default_to_enabled_octopus_ctrl_without_mother_authority_icon(self) -> None:
         self.assertTrue(config.DEFAULTS["role_icons"]["enabled"])
         self.assertEqual(config.DEFAULTS["role_icons"]["ctrl"], "🐙")
-        self.assertEqual(config.DEFAULTS["role_icons"]["mother"], "🐝")
+        self.assertNotIn("mother", config.DEFAULTS["role_icons"])
         effective, _ = config.load(config.TEMPLATE_PATH)
         self.assertTrue(effective["role_icons"]["enabled"])
         self.assertEqual(effective["role_icons"]["ctrl"], "🐙")
-        self.assertEqual(effective["role_icons"]["mother"], "🐝")
+        self.assertEqual(effective["roles"]["MOTHER"], {"icon": "🐝"})
 
     def test_role_icons_accept_custom_ctrl_and_disabled_contrast(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -143,6 +143,60 @@ class SwarmConfigTests(unittest.TestCase):
         self.assertEqual(legacy["monitoring"]["heartbeat_minutes"], 45)
         self.assertEqual(legacy["monitoring"]["default_review_horizon_minutes"], 30)
 
+    def test_v2_mother_authority_settings_migrate_once_to_specialist_mother(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "v2.toml"
+            path.write_text(
+                "schema_version = 2\n"
+                "[role_icons]\nmother = \"🗂️\"\n"
+                "[models.medium]\nmother_model = \"legacy-model\"\n"
+                "mother_reasoning = \"ultra\"\n"
+                "[labels]\nmother = \"MOTHER\"\n"
+                "[boost]\ngoal_levels = [\"mother\", \"lead\"]\n",
+                encoding="utf-8",
+            )
+            effective, _ = config.load(path)
+        self.assertEqual(effective["schema_version"], 3)
+        self.assertEqual(effective["roles"]["MOTHER"], {"icon": "🗂️"})
+        self.assertEqual(effective["boost"]["goal_levels"], ["lead"])
+        self.assertNotIn("mother", effective["role_icons"])
+        self.assertNotIn("mother", effective["labels"])
+        self.assertNotIn("mother_model", effective["models"]["medium"])
+        self.assertEqual(
+            config.resolve_role_assignment(effective, "MOTHER"),
+            config.resolve_role_assignment(effective, "specialist"),
+        )
+
+    def test_schema_v3_rejects_mother_model_or_authority_icon_keys(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            invalid = {
+                "icon": '[role_icons]\nmother = "🐝"\n',
+                "model": '[models.medium]\nmother_model = "gpt-5.6-sol"\n',
+                "role": '[roles.MOTHER]\nicon = "🐝"\nmodel = "gpt-5.6-sol"\n',
+                "watchdog": "[watchdog]\nenabled = true\n",
+            }
+            for name, contents in invalid.items():
+                with self.subTest(name=name):
+                    path = root / f"{name}.toml"
+                    path.write_text("schema_version = 3\n" + contents, encoding="utf-8")
+                    with self.assertRaises(config.ConfigError):
+                        config.load(path)
+
+    def test_schema_v3_allows_a_custom_mother_specialist_icon_only(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "mother.toml"
+            path.write_text(
+                'schema_version = 3\n[roles.MOTHER]\nicon = "🗂️"\n',
+                encoding="utf-8",
+            )
+            effective, _ = config.load(path)
+        self.assertEqual(effective["roles"]["MOTHER"], {"icon": "🗂️"})
+        self.assertEqual(
+            config.resolve_role_assignment(effective, "MOTHER"),
+            config.resolve_role_assignment(effective, "specialist"),
+        )
+
     def test_review_horizon_order_and_direct_bound_are_enforced(self) -> None:
         invalid = (
             "[monitoring]\nsmall_task_review_horizon_minutes = 20\ndefault_review_horizon_minutes = 10\n",
@@ -191,7 +245,7 @@ class SwarmConfigTests(unittest.TestCase):
             )
         self.assertEqual(completed.returncode, 0, completed.stderr)
         effective = json.loads(completed.stdout)["settings"]
-        self.assertEqual(effective["boost"]["goal_levels"], ["mother", "lead", "doer", "review"])
+        self.assertEqual(effective["boost"]["goal_levels"], ["lead", "doer", "review"])
         self.assertEqual(effective["labels"]["assist"], "SURGE")
         self.assertNotIn("step_mother", effective["labels"])
 
@@ -199,7 +253,7 @@ class SwarmConfigTests(unittest.TestCase):
         self.assertNotIn("assist", config.BOOST_LEVELS)
         self.assertEqual(
             config.MANDATORY_DURABLE_GOAL_ROLES,
-            frozenset({"mother", "lead", "specialist", "architect"}),
+            frozenset({"lead", "specialist", "architect"}),
         )
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "config.toml"
@@ -213,7 +267,6 @@ class SwarmConfigTests(unittest.TestCase):
     def test_profiles_have_distinct_reasoning_scales(self) -> None:
         models = config.DEFAULTS["models"]
         for role in (
-            "mother",
             "lead",
             "doer",
             "task",
@@ -239,7 +292,7 @@ class SwarmConfigTests(unittest.TestCase):
             )
             effective, _ = config.load(path)
         self.assertEqual(
-            config.resolve_role_assignment(effective, "mother", route_tier=1)["reasoning"],
+            config.resolve_role_assignment(effective, "MOTHER", route_tier=1)["reasoning"],
             "medium",
         )
         self.assertEqual(

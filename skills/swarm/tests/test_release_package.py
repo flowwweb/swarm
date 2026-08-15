@@ -120,6 +120,8 @@ class ReleasePackageTests(unittest.TestCase):
                 "skills/swarm/evals/fixtures/case.json": "{}\n",
                 ".github/workflows/validate.yml": "name: validate\n",
                 "docs/friction-audit.md": "internal\n",
+                "plugins/swarm/skills/swarm/SKILL.md": "generated mirror\n",
+                "scripts/sync_plugin_mirror.py": "source-only helper\n",
             }
             for relative, contents in development_files.items():
                 path = root / relative

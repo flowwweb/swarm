@@ -98,11 +98,11 @@ class SwarmSkillStructureTests(unittest.TestCase):
         self.assertIn("canonical state", skill)
         self.assertIn("independent REVIEW", skill)
         self.assertIn("persistent SPECIALIST", hierarchy)
-        self.assertIn("Materialize ASSIST and ADVISOR only", hierarchy)
+        self.assertRegex(hierarchy, r"(?s)Materialize ASSIST\s+and ADVISOR only")
         self.assertIn("independent `ACCEPTANCE` route", skill)
         self.assertIn("SPECIALIST interface", task_contract)
         self.assertIn("temporary wildcard", task_contract)
-        self.assertIn("multiple ARCHITECTs or DEVELOPERs", task_contract)
+        self.assertIn("multiple ARCHITECTs, MOTHERs, or DEVELOPERs", task_contract)
         self.assertIn("Integration-ready", task_contract)
         self.assertIn("composed render comparison", task_contract)
         self.assertIn("composed rendered product", review_contract)
@@ -118,7 +118,7 @@ class SwarmSkillStructureTests(unittest.TestCase):
         self.assertIn("<domain emoji>LEAD - <responsibility>", skill)
         self.assertIn("<role emoji><PROFESSION> - <truth surface>", skill)
         self.assertIn("exactly one configured role icon", skill)
-        self.assertIn("Generic role types do not dictate task names", hierarchy)
+        self.assertIn("A title is a readability signal, never an\nauthority token", hierarchy)
 
     def test_octopus_is_default_configurable_ctrl_title_prefix(self) -> None:
         skill = doctrine()
@@ -127,8 +127,8 @@ class SwarmSkillStructureTests(unittest.TestCase):
         )
 
         self.assertIn("# 🐙 SWARM", skill)
-        self.assertIn("CTRL owns intake", skill)
-        self.assertIn("`role_icons.ctrl` configures CTRL and defaults to `🐙`", hierarchy)
+        self.assertIn("CTRL is the sole root and owns intake", skill)
+        self.assertIn("With role icons enabled", hierarchy)
         self.assertIn("🐙CTRL", skill)
         self.assertIn("🐙CTRL", hierarchy)
 
@@ -140,15 +140,15 @@ class SwarmSkillStructureTests(unittest.TestCase):
         task_contract = (SKILL_ROOT / "references" / "task-contract.md").read_text(
             encoding="utf-8"
         )
-        for text in (skill, hierarchy, task_contract):
-            self.assertIn("🐙CTRL - <objective>", text)
-            self.assertIn("Step 0", text)
-            self.assertIn("verif", text.lower())
-            self.assertIn("exact blocker", text)
-            self.assertIn("truthful internal CTRL identity", text)
-        for text in (skill, hierarchy):
-            self.assertIn("durable goal", text)
-            self.assertIn("subagents", text)
+        self.assertIn("🐙CTRL - <objective>", skill)
+        self.assertIn("Step 0", skill)
+        self.assertIn("verif", skill.lower())
+        self.assertIn("exact blocker", skill)
+        self.assertIn("truthful internal CTRL identity", skill)
+        self.assertIn("durable goal", skill)
+        self.assertIn("subagent", skill)
+        self.assertIn("CTRL is the sole root", hierarchy)
+        self.assertIn("The specialist persists one exact cross-cutting truth surface", task_contract)
         self.assertIn("concise specific objective", skill)
         self.assertIn("task-title tool", skill)
         self.assertIn("and pin it. Verify both receipts", skill)
@@ -158,9 +158,9 @@ class SwarmSkillStructureTests(unittest.TestCase):
         self.assertNotIn("🐙CTRL - <project> - <detailed descriptor>", hierarchy)
         self.assertNotIn("🐙CTRL - <project> - <detailed descriptor>", task_contract)
         self.assertIn("pending creation receipt reserves", skill)
-        self.assertIn("pending `clientThreadId`", hierarchy)
+        self.assertIn("pending creation receipt", hierarchy)
         self.assertIn("archive it", skill)
-        self.assertIn("CTRL owns topology until the portfolio predicate", hierarchy)
+        self.assertIn("CTRL is the sole root and final composed authority", hierarchy)
 
     def test_closeout_archives_terminal_host_tasks_and_reports_failures(self) -> None:
         skill = doctrine()
@@ -174,7 +174,7 @@ class SwarmSkillStructureTests(unittest.TestCase):
         hierarchy = (SKILL_ROOT / "references" / "hierarchy.md").read_text(encoding="utf-8")
 
         self.assertIn("cross-lane dependency", skill)
-        self.assertIn("Artifact or variant count", hierarchy)
+        self.assertRegex(hierarchy, r"(?s)Artifact\s+count.*never\s+justify a lane")
         self.assertIn("consolidate rather than add incident clauses", skill)
 
     def test_product_review_subtracts_chrome_without_erasing_state_or_accessibility(self) -> None:
@@ -215,7 +215,7 @@ class SwarmSkillStructureTests(unittest.TestCase):
         self.assertIn("Small design details compound and design nitpicking is encouraged", design)
         self.assertIn("invariant, contextual default, or taste direction", design)
 
-    def test_mandatory_goals_and_passive_heartbeat_are_fixed_contracts(self) -> None:
+    def test_durable_goals_and_optional_watchdog_are_fixed_contracts(self) -> None:
         skill = doctrine()
         hierarchy = (SKILL_ROOT / "references" / "hierarchy.md").read_text(encoding="utf-8")
         task_contract = (SKILL_ROOT / "references" / "task-contract.md").read_text(encoding="utf-8")
@@ -225,14 +225,15 @@ class SwarmSkillStructureTests(unittest.TestCase):
         for text in (skill, hierarchy, task_contract, config):
             self.assertIn("durable", text)
             self.assertIn("exact", text)
-        self.assertIn("CTRL, MOTHER, every LEAD, and every persistent SPECIALIST", skill)
-        self.assertIn("conflicting unfinished goal", skill)
+        self.assertIn("Every durable CTRL, LEAD, and persistent SPECIALIST", skill)
+        self.assertIn("exactly one matching durable goal", skill)
         self.assertIn("Goal controls are required", config)
-        self.assertIn("survives\ncompaction", monitoring)
-        self.assertIn("Silence alone\nis not a stall", monitoring)
-        self.assertIn("exactly one bounded same-surface recovery", monitoring)
-        self.assertIn("unaffected lanes moving", monitoring)
-        self.assertIn("polling loops, queues", monitoring)
+        self.assertIn("# Optional alert-only WATCHDOG", monitoring)
+        self.assertIn("An unbound goal has no watchdog clock", monitoring)
+        self.assertRegex(monitoring, r"exactly three\s+checks")
+        self.assertIn("Owner-heard micro-review after an alert", monitoring)
+        self.assertIn("same-constraints counterfactual", monitoring)
+        self.assertNotIn("SUPERVISOR", monitoring)
 
     def test_ctrl_stream_is_quiet_compact_and_not_templated(self) -> None:
         skill = doctrine()
@@ -242,12 +243,12 @@ class SwarmSkillStructureTests(unittest.TestCase):
         self.assertIn("human review feed, not a management log", skill)
         self.assertIn("At the next safe boundary", skill)
         self.assertIn("smallest decisive inline proof", skill)
-        self.assertIn("a passive snapshot is not itself an update", monitoring)
+        self.assertIn("Unchanged snapshots remain silent", monitoring)
         self.assertNotIn("<title> — <state>", monitoring)
         self.assertIn('"id": 79', evals)
         self.assertIn("Workers are not asked to report more often", evals)
 
-    def test_boost_eval_wording_does_not_disable_mandatory_role_goals(self) -> None:
+    def test_boost_eval_wording_does_not_disable_durable_owner_goals(self) -> None:
         evals = (SKILL_ROOT / "evals" / "evals.json").read_text(encoding="utf-8")
         stale_phrases = (
             "No Codex " + "goal is created",
@@ -261,7 +262,7 @@ class SwarmSkillStructureTests(unittest.TestCase):
         self.assertGreaterEqual(evals.count("No additional Boost goal is created"), 3)
         self.assertGreaterEqual(
             evals.count(
-                "Mandatory MOTHER, LEAD, and persistent SPECIALIST goal inspection"
+                "Mandatory CTRL, LEAD, and persistent SPECIALIST goal inspection"
             ),
             2,
         )

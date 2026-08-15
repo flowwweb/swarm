@@ -24,6 +24,7 @@ class HostContractTests(unittest.TestCase):
         codex = json.loads((REPOSITORY_ROOT / ".codex-plugin" / "plugin.json").read_text(encoding="utf-8"))
         claude = json.loads((REPOSITORY_ROOT / ".claude-plugin" / "plugin.json").read_text(encoding="utf-8"))
         gemini = json.loads((REPOSITORY_ROOT / "gemini-extension.json").read_text(encoding="utf-8"))
+        codex_marketplace = json.loads((REPOSITORY_ROOT / ".agents" / "plugins" / "marketplace.json").read_text(encoding="utf-8"))
         marketplace = json.loads((REPOSITORY_ROOT / ".claude-plugin" / "marketplace.json").read_text(encoding="utf-8"))
 
         for manifest in (codex, claude, gemini):
@@ -35,6 +36,15 @@ class HostContractTests(unittest.TestCase):
         self.assertEqual(marketplace["name"], "flowwweb")
         self.assertEqual(marketplace["owner"], {"name": "Flowwweb"})
         self.assertEqual(marketplace["plugins"], [{"name": "swarm", "source": "./"}])
+        self.assertEqual(codex_marketplace["plugins"][0]["source"], {"source": "local", "path": "./plugins/swarm"})
+
+    def test_codex_marketplace_mirror_matches_the_complete_product_surface(self) -> None:
+        mirror = REPOSITORY_ROOT / "plugins" / "swarm"
+        self.assertEqual(
+            verifier.source_file_hashes(REPOSITORY_ROOT),
+            verifier.installed_file_hashes(mirror),
+        )
+        verifier.validate_plugin_manifest(mirror)
 
     def test_no_duplicate_agent_skill_is_tracked_or_present_in_the_source_tree(self) -> None:
         duplicate = REPOSITORY_ROOT / ".agents" / "skills" / "swarm"

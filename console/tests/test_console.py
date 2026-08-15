@@ -104,6 +104,51 @@ class SwarmConsoleTests(unittest.TestCase):
         self.assertFalse(result["settings"]["role_icons"]["enabled"])
         self.assertEqual(result["settings"]["role_icons"]["ctrl"], "🕹️")
 
+    def test_historical_mother_title_is_a_specialist_under_a_virtual_ctrl_root(self) -> None:
+        now = 2_000_000_000_000
+        connection = sqlite3.connect(self.database)
+        connection.executemany(
+            "INSERT INTO threads VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            [
+                ("mother", "🐝MOTHER - Historical route", "C:/work/beta", now // 1000, now, now, now,
+                 "gpt-5.6-sol", "high", 20, 0, "", "main", "", "", "", 0),
+                ("specialist", "💻DEV - Historical implementation", "C:/work/beta", now // 1000, now, now, now,
+                 "gpt-5.6-luna", "high", 30, 0, "", "main", "", "", "", 0),
+            ],
+        )
+        connection.execute("INSERT INTO thread_spawn_edges VALUES (?,?,?)", ("mother", "specialist", "open"))
+        connection.commit()
+        connection.close()
+
+        overview = console.build_overview(self.codex_home, self.config)
+        mother = next(node for node in overview["nodes"] if node["id"] == "mother")
+        virtual_ctrl = next(
+            node for node in overview["nodes"] if node["virtual"] and node["project"] == "beta"
+        )
+        self.assertEqual((mother["role"], mother["role_label"], mother["icon"]), ("specialist", "MOTHER", "🐝"))
+        self.assertEqual((virtual_ctrl["role"], virtual_ctrl["role_label"], virtual_ctrl["icon"]), ("ctrl", "CTRL", "🐙"))
+        self.assertIn({"source": virtual_ctrl["id"], "target": "mother"}, overview["links"])
+        self.assertNotIn("mother", overview["analytics"]["roles"])
+
+    def test_historical_mother_uses_its_configured_specialist_icon(self) -> None:
+        self.config.write_text(
+            'schema_version = 3\n[roles.MOTHER]\nicon = "🗂️"\n', encoding="utf-8"
+        )
+        _, effective, _ = console.load_config(self.config)
+        mother = console._role_from_title(
+            "🐝MOTHER - Historical route",
+            effective["labels"],
+            effective["role_icons"],
+            effective["roles"],
+        )
+        self.assertEqual((mother["role"], mother["icon"], mother["title"]), ("specialist", "🗂️", "🗂️MOTHER - Historical route"))
+
+    def test_monitoring_copy_is_alert_only_without_a_watchdog_surface(self) -> None:
+        app = (console.STATIC_ROOT / "app.js").read_text(encoding="utf-8")
+        self.assertIn("Optional alert-only sensor", app)
+        self.assertNotIn("watchdog", app.casefold())
+        self.assertNotIn("watchdog", console.EDITABLE_SETTINGS)
+
     def test_visible_role_titles_are_normalized_by_icon_setting(self) -> None:
         _, enabled, _ = console.load_config(self.config)
         lead = console._role_from_title("LEAD - Console", enabled["labels"], enabled["role_icons"])
@@ -112,10 +157,12 @@ class SwarmConsoleTests(unittest.TestCase):
         wrong = console._role_from_title("🔥CTRL - Ship console", enabled["labels"], enabled["role_icons"])
         repeated = console._role_from_title("🐙🐙CTRL - Ship console", enabled["labels"], enabled["role_icons"])
         developer = console._role_from_title("🔥DEV - Renderer", enabled["labels"], enabled["role_icons"])
+        mother = console._role_from_title("🐝MOTHER - Historical route", enabled["labels"], enabled["role_icons"], enabled["roles"])
         self.assertEqual(duplicate["title"], "🧭LEAD - Console")
         self.assertEqual(wrong["title"], "🐙CTRL - Ship console")
         self.assertEqual(repeated["title"], "🐙CTRL - Ship console")
         self.assertEqual(developer["title"], "💻DEV - Renderer")
+        self.assertEqual((mother["role"], mother["title"]), ("specialist", "🐝MOTHER - Historical route"))
         console.update_config(self.config, {"role_icons.enabled": False})
         _, disabled, _ = console.load_config(self.config)
         ctrl = console._role_from_title("🐙CTRL - Ship console", disabled["labels"], disabled["role_icons"])

@@ -1,0 +1,11 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.coverage
+htmlcov/
+coverage/
+*.log
+*.sqlite*
+*.db
+.DS_Store
+Thumbs.db

@@ -31,6 +31,7 @@ jobs:
       - name: Test skill runtime, plugin, and host manifests
         shell: bash
         run: |
+          python scripts/sync_plugin_mirror.py --check
           python -m unittest discover -s skills/swarm/tests -p 'test_*.py'
           python -m unittest discover -s console/tests -p 'test_*.py'
           # console/tests/test_console_ui.mjs deliberately remains optional: it
