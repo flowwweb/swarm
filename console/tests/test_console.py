@@ -121,6 +121,8 @@ class SwarmConsoleTests(unittest.TestCase):
         self.assertFalse(any("C:/" in json.dumps(item) for item in overview["projects"]))
         self.assertIn({"source": "lead", "target": "task", "relationship": "delegated"}, overview["links"])
         self.assertIn({"source": "root", "target": "lead", "relationship": "delegated"}, overview["links"])
+        observed_edges = {("root", "lead"), ("lead", "task"), ("lead", "review")}
+        self.assertTrue(all((link["source"], link["target"]) in observed_edges for link in overview["links"]))
         ctrl = next(node for node in overview["nodes"] if node["id"] == "root")
         self.assertEqual((ctrl["role"], ctrl["icon"]), ("ctrl", "🐙"))
         self.assertEqual(next(node for node in overview["nodes"] if node["id"] == "review")["status"], "done")
@@ -289,7 +291,7 @@ class SwarmConsoleTests(unittest.TestCase):
         self.assertFalse(result["settings"]["role_icons"]["enabled"])
         self.assertEqual(result["settings"]["role_icons"]["ctrl"], "🕹️")
 
-    def test_historical_mother_title_is_a_specialist_under_a_virtual_ctrl_root(self) -> None:
+    def test_formatted_tree_without_controller_scope_is_not_given_a_virtual_ctrl(self) -> None:
         now = 2_000_000_000_000
         connection = sqlite3.connect(self.database)
         connection.executemany(
@@ -306,14 +308,27 @@ class SwarmConsoleTests(unittest.TestCase):
         connection.close()
 
         overview = console.build_overview(self.codex_home, self.config)
-        mother = next(node for node in overview["nodes"] if node["id"] == "mother")
-        virtual_ctrl = next(
-            node for node in overview["nodes"] if node["virtual"] and node["project"] == "beta"
+        ids = {node["id"] for node in overview["nodes"]}
+        self.assertNotIn("mother", ids)
+        self.assertNotIn("specialist", ids)
+        self.assertFalse(any(node["virtual"] for node in overview["nodes"]))
+        self.assertFalse(any(link["target"] in {"mother", "specialist"} for link in overview["links"]))
+
+    def test_standalone_formatted_task_without_spawn_edge_is_omitted(self) -> None:
+        now = 2_000_000_000_000
+        connection = sqlite3.connect(self.database)
+        connection.execute(
+            "INSERT INTO threads VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            ("orphan-task", "💻DEV - Title-only task", "C:/work/beta", now // 1000, now, now, now,
+             "gpt-5.6-terra", "high", 30, 0, "", "main", "", "", "", 0),
         )
-        self.assertEqual((mother["role"], mother["role_label"], mother["worker_role"], mother["icon"]), ("specialist", "TASK", "MOTHER", "📋"))
-        self.assertEqual((virtual_ctrl["role"], virtual_ctrl["role_label"], virtual_ctrl["icon"]), ("ctrl", "CTRL", "🐙"))
-        self.assertIn({"source": virtual_ctrl["id"], "target": "mother", "relationship": "delegated"}, overview["links"])
-        self.assertNotIn("mother", overview["analytics"]["roles"])
+        connection.commit()
+        connection.close()
+
+        overview = console.build_overview(self.codex_home, self.config)
+        self.assertNotIn("orphan-task", {node["id"] for node in overview["nodes"]})
+        self.assertFalse(any("orphan-task" in (link["source"], link["target"]) for link in overview["links"]))
+        self.assertFalse(any(node["virtual"] for node in overview["nodes"]))
 
     def test_historical_mother_uses_its_configured_specialist_icon(self) -> None:
         self.config.write_text(

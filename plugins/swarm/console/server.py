@@ -513,7 +513,9 @@ def build_overview(codex_home: Path, config_path: Path) -> dict[str, Any]:
             ):
                 descendant_ids.add(child)
             queue.append(child)
-    included_ids = recent_parsed_ids.union(controller_seed_ids).union(descendant_ids)
+    # A formatted title is classification evidence, not a spawn receipt. Admit
+    # only controllers and tasks reached through their observed host spawn tree.
+    included_ids = controller_seed_ids.union(descendant_ids)
     # Agent replacement preserves the task identity expressed by its lane path.
     # Keep the latest worker receipt instead of turning replacement into a new node.
     latest_by_task: dict[tuple[str, str], str] = {}
@@ -544,6 +546,15 @@ def build_overview(codex_home: Path, config_path: Path) -> dict[str, Any]:
         else:
             superseded_ids.add(thread_id)
     included_ids.difference_update(superseded_ids)
+    connected_ids = set(controller_seed_ids.intersection(included_ids))
+    queue = list(connected_ids)
+    while queue:
+        parent = queue.pop()
+        for child in raw_children.get(parent, []):
+            if child in included_ids and child not in connected_ids:
+                connected_ids.add(child)
+                queue.append(child)
+    included_ids.intersection_update(connected_ids)
     parsed = {
         thread_id: parsed_titles.get(thread_id) or _generic_agent_role(
             all_rows[thread_id],
@@ -603,54 +614,24 @@ def build_overview(codex_home: Path, config_path: Path) -> dict[str, Any]:
         project["active"] += status == "active"
 
     links: list[dict[str, str]] = []
-    virtual_roots: dict[str, str] = {}
+    unattached_task_ids: list[str] = []
     for thread_id, node in list(nodes.items()):
         parent = parent_by_child.get(thread_id)
-        seen = {thread_id}
-        nearest_swarm = None
-        top = thread_id
-        while parent and parent not in seen:
-            seen.add(parent)
-            top = parent
-            if parent in nodes:
-                nearest_swarm = parent
-                break
-            parent = parent_by_child.get(parent)
-        if nearest_swarm:
-            links.append({"source": nearest_swarm, "target": thread_id, "relationship": "delegated"})
+        if parent in nodes:
+            links.append({"source": parent, "target": thread_id, "relationship": "delegated"})
             continue
         if node["role"] == "ctrl":
             continue
-        virtual_key = f"swarm:{top}:{node['project_id']}"
-        virtual_id = virtual_roots.setdefault(virtual_key, virtual_key)
-        if virtual_id not in nodes:
-            swarm_name = (
-                node["artifact"]
-                if node["artifact"].casefold().endswith("swarm")
-                else f"{node['artifact']} swarm"
-            )
-            nodes[virtual_id] = {
-                "id": virtual_id,
-                "title": f"{config['role_icons']['ctrl'] if config['role_icons']['enabled'] else ''}CTRL - {swarm_name}",
-                "role": "ctrl",
-                "role_label": "CTRL",
-                "icon": config["role_icons"]["ctrl"] if config["role_icons"]["enabled"] else "",
-                "artifact": swarm_name,
-                "project_id": node["project_id"],
-                "project": node["project"],
-                "status": "active" if node["status"] == "active" else "quiet",
-                "model": "derived",
-                "reasoning": "derived",
-                "tokens": 0,
-                "created_at": node["created_at"],
-                "updated_at": node["updated_at"],
-                "age_ms": node["age_ms"],
-                "quiet_ms": node["quiet_ms"],
-                "branch": "",
-                "pinned": False,
-                "virtual": True,
-            }
-        links.append({"source": virtual_id, "target": thread_id, "relationship": "delegated"})
+        unattached_task_ids.append(thread_id)
+
+    for thread_id in unattached_task_ids:
+        node = nodes.pop(thread_id)
+        project = projects[node["project_id"]]
+        project["nodes"] -= 1
+        project["tokens"] -= node["tokens"]
+        project["active"] -= node["status"] == "active"
+        if project["nodes"] == 0:
+            projects.pop(node["project_id"])
 
     incoming = {link["target"] for link in links}
     roots = [node_id for node_id in nodes if node_id not in incoming]

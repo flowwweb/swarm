@@ -159,10 +159,22 @@ class RequestLedgerTests(unittest.TestCase):
             enabled=Swarm(request_continuity_enabled=True); enabled.tasks["T"]=task()
             with self.assertRaises(Exception): enabled.stale(Role.CTRL,"T","blocked")
             self.assertEqual(enabled.tasks["T"].state,TaskState.ACTIVE)
+    def test_enabled_unattached_completion_preserves_task_and_worker_ownership(self):
+        enabled=Swarm(request_continuity_enabled=True); enabled.add_lead(Role.CTRL,"L"); enabled.add_worker(Role.LEAD,Worker("D","L",1)); enabled.assign(Role.LEAD,task())
+        review_receipt="rev-proof_unattached000"; enabled.review(Role.REVIEW,"T",ReviewEvidence(ReviewStrategy.LIGHT,"independent",True,None,receipt=(("acceptance",review_receipt),),scope=ReviewScope.ACCEPTANCE),True); before=(enabled.tasks["T"].state,enabled.tasks["T"].completed_at,set(enabled.workers["D"].task_ids),enabled.workers["D"].state)
+        with self.assertRaisesRegex(Exception,"enabled but unattached"): enabled.complete(Role.LEAD,"T",True,True,6,actor_id="L")
+        self.assertEqual((enabled.tasks["T"].state,enabled.tasks["T"].completed_at,enabled.workers["D"].task_ids,enabled.workers["D"].state),before)
+    def test_attached_completion_rejects_missing_or_provisional_request(self):
+        with tempfile.TemporaryDirectory() as temp:
+            value=swarm(Path(temp)); value.assign(Role.LEAD,task()); review=ReviewEvidence(ReviewStrategy.LIGHT,"independent",True,None,receipt=(("acceptance","rev-proof_missing000"),),scope=ReviewScope.ACCEPTANCE); value.review(Role.REVIEW,"T",review,True)
+            with self.assertRaisesRegex(Exception,"current accepted unresolved"): value.complete(Role.LEAD,"T",True,True,6,actor_id="L")
+            value.stage_request_task(Role.CTRL,value.tasks["T"]); value.review(Role.REVIEW,"T",review,True)
+            with self.assertRaisesRegex(Exception,"provisional"): value.complete(Role.LEAD,"T",True,True,7,actor_id="L")
+            self.assertEqual(value.tasks["T"].state,TaskState.REVIEW); self.assertIsNone(value.tasks["T"].completed_at)
     def test_completion_requires_live_review_task_and_request_bound_acceptance(self):
         with tempfile.TemporaryDirectory() as temp:
             value=swarm(Path(temp)); view=accepted(value); review_receipt="rev-proof_review000"; review=ReviewEvidence(ReviewStrategy.LIGHT,"independent",True,None,receipt=(("acceptance",review_receipt),),scope=ReviewScope.ACCEPTANCE); value.review(Role.REVIEW,"T",review,True)
-            proof_event,_=event(value,"T",(view.record.id,),"review",CtrlFeedEventKind.RESULT,"rev"); value.advance_request(Role.LEAD,view.record.id,proof_event,RequestDue("due-review",5)); value.complete(Role.LEAD,"T",True,True,6,actor_id="L"); acceptance,_=event(value,"T",(view.record.id,),"acceptance",CtrlFeedEventKind.ACCEPTANCE,proof_override=review_receipt); done=value.complete_request(Role.LEAD,view.record.id,acceptance,review_receipt); self.assertEqual(done.record.state,RequestState.COMPLETED); self.assertFalse(value.request_audit(7).unresolved_ids)
+            proof_event,_=event(value,"T",(view.record.id,),"review",CtrlFeedEventKind.RESULT,"rev"); value.advance_request(Role.LEAD,view.record.id,proof_event,RequestDue("due-review",5)); value.complete(Role.LEAD,"T",True,True,6,actor_id="L"); self.assertEqual(value.tasks["T"].state,TaskState.COMPLETE); self.assertNotIn("T",value.workers["D"].task_ids); acceptance,_=event(value,"T",(view.record.id,),"acceptance",CtrlFeedEventKind.ACCEPTANCE,proof_override=review_receipt); done=value.complete_request(Role.LEAD,view.record.id,acceptance,review_receipt); self.assertEqual(done.record.state,RequestState.COMPLETED); self.assertFalse(value.request_audit(7).unresolved_ids)
     def test_completed_record_goal_outcome_route_and_stage_drift_fail_live_audit(self):
         with tempfile.TemporaryDirectory() as temp:
             root=Path(temp); value=swarm(root); view=accepted(value); review_receipt="rev-proof_drift000"; review=ReviewEvidence(ReviewStrategy.LIGHT,"independent",True,None,receipt=(("acceptance",review_receipt),),scope=ReviewScope.ACCEPTANCE); value.review(Role.REVIEW,"T",review,True); progress,_=event(value,"T",(view.record.id,),"drift",CtrlFeedEventKind.RESULT,"rev"); value.advance_request(Role.LEAD,view.record.id,progress,RequestDue("due-drift",5)); value.complete(Role.LEAD,"T",True,True,6,actor_id="L"); acceptance,_=event(value,"T",(view.record.id,),"driftdone",CtrlFeedEventKind.ACCEPTANCE,proof_override=review_receipt); value.complete_request(Role.LEAD,view.record.id,acceptance,review_receipt)

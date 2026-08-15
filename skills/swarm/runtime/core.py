@@ -524,14 +524,17 @@ class Swarm:
             if now>=item.next_due_at and (item.state is RequestState.BLOCKED or progressed): idle.append(item.id)
             if item.state is RequestState.BLOCKED: blocked.append(item.id)
         return RequestAudit(state["sequence"],digest,records,unresolved,tuple(orphaned),tuple(unsurfaced),tuple(idle),tuple(blocked),tuple(identity for identity,stage in state["stages"].items() if stage.get("state")=="PROVISIONAL"),tuple(RequestIntegritySignal(identity) for identity in orphaned))
-    def _request_guard(self, *, task_id:str="", owner:str="", all_open:bool=False, action=lambda:None):
+    def _request_guard(self, *, task_id:str="", owner:str="", all_open:bool=False, require_accepted:bool=False, action=lambda:None):
         if self.request_store is None:
             if self.request_continuity_enabled: raise InvariantError("request continuity is enabled but unattached")
             return action()
         state,digest,records=self._request_snapshot()
         def check(value):
             stages=[stage for stage in value["stages"].values() if stage["state"]=="PROVISIONAL" and (not task_id or stage["task_id"]==task_id) and (not owner or stage["owner"]==owner)]; open_records=[record for record in records if record.state in {RequestState.OPEN,RequestState.BLOCKED} and (all_open or not task_id or record.task_id==task_id) and (not owner or record.accepted_owner==owner)]
-            if stages or open_records: raise InvariantError("request ledger blocks this lifecycle change")
+            if require_accepted:
+                related={record.id for record in records if record.task_id==task_id}; audit=self._request_audit_from(value,digest,records,0)
+                if stages or not open_records or related.intersection(audit.orphaned_ids): raise InvariantError("completion requires a current accepted unresolved request and no provisional or orphaned request state")
+            elif stages or open_records: raise InvariantError("request ledger blocks this lifecycle change")
             return action()
         try: return self._request_store().with_current((state["sequence"],digest),check)[2]
         except RequestStoreError as error: raise InvariantError(str(error)) from error
@@ -1109,12 +1112,14 @@ class Swarm:
         uncovered=self._uncovered_ctrl_decision_candidates(task_id)
         if uncovered: raise InvariantError(f"material CTRL decision candidates require one surfaced final gallery: {','.join(uncovered)}")
         if not self._acceptance_ready(t) or not integration_ok or not architecture_ok: raise InvariantError("completion requires exact-artifact acceptance review and integration/architecture gates")
-        t.state=TaskState.COMPLETE; t.completed_at=now
-        for waiter in self.tasks.values():
-            if waiter.state==TaskState.WAITING and waiter.waiting_on==task_id: waiter.state=TaskState.ACTIVE; waiter.waiting_on=None
-        worker=self.workers.get(t.owner)
-        if worker and worker.context.get("affinity",0)>0 and all(self.tasks[item].state in {TaskState.COMPLETE,TaskState.ARCHIVED,TaskState.ARCHIVED_STALE} for item in worker.task_ids): worker.state=WorkerState.WARM
-        if worker: worker.task_ids.discard(task_id)
+        def finish():
+            t.state=TaskState.COMPLETE; t.completed_at=now
+            for waiter in self.tasks.values():
+                if waiter.state==TaskState.WAITING and waiter.waiting_on==task_id: waiter.state=TaskState.ACTIVE; waiter.waiting_on=None
+            worker=self.workers.get(t.owner)
+            if worker and worker.context.get("affinity",0)>0 and all(self.tasks[item].state in {TaskState.COMPLETE,TaskState.ARCHIVED,TaskState.ARCHIVED_STALE} for item in worker.task_ids): worker.state=WorkerState.WARM
+            if worker: worker.task_ids.discard(task_id)
+        self._request_guard(task_id=task_id,require_accepted=True,action=finish)
     def stale(self, actor: Role, task_id: str, reason: str, *, now: int=0, superseded_by: str|None=None, promote: list[str]|None=None) -> None:
         self._role(actor,{Role.CTRL,Role.ARCHITECT,Role.LEAD}); t=self.tasks[task_id]
         if not reason: raise InvariantError("stale tasks require reason provenance")
