@@ -192,7 +192,7 @@ class WatchdogBinding:
     """Optional alert route for one explicitly owned durable goal."""
     watched_role:Role; watched_owner:str; alert_route:tuple[tuple[WatchdogRouteRole,str],...]; owner_integrity_route:tuple[tuple[WatchdogRouteRole,str],...]
     def __post_init__(self):
-        if self.watched_role not in {Role.CTRL,Role.LEAD,Role.SPECIALIST,Role.ARCHITECT}: raise InvariantError("watchdog may bind only a durable CTRL, LEAD, or persistent specialist goal")
+        if self.watched_role not in {Role.LEAD,Role.SPECIALIST,Role.ARCHITECT}: raise InvariantError("watchdog may bind only a durable LEAD or persistent specialist goal")
         if not isinstance(self.watched_owner,str) or not self.watched_owner.strip() or not self.alert_route or not self.owner_integrity_route: raise InvariantError("watchdog binding requires an explicit watched owner plus ordinary and owner-integrity routes")
         def normalize(route:tuple[tuple[WatchdogRouteRole,str],...], label:str)->tuple[tuple[WatchdogRouteRole,str],...]:
             normalized=[]
@@ -207,7 +207,6 @@ class WatchdogBinding:
         expected_role=WatchdogRouteRole(self.watched_role.value)
         if ordinary[0]!=(expected_role,self.watched_owner.strip()): raise InvariantError("ordinary watchdog alerts must first be heard by the watched owner in its bound role")
         if watched in {identity.casefold() for _,identity in integrity}: raise InvariantError("watchdog owner-integrity route must skip the watched owner")
-        if self.watched_role is Role.CTRL and integrity!=((WatchdogRouteRole.REVIEW,"INDEPENDENT_REVIEW"),(WatchdogRouteRole.HUMAN,"HUMAN")): raise InvariantError("CTRL watchdog owner-integrity requires independent REVIEW then HUMAN")
         object.__setattr__(self,"watched_owner",self.watched_owner.strip()); object.__setattr__(self,"alert_route",ordinary); object.__setattr__(self,"owner_integrity_route",integrity)
 
 @dataclass(frozen=True)
@@ -224,10 +223,9 @@ class WatchdogEvidence:
 
 @dataclass(frozen=True)
 class WatchdogReceipt:
-    task_id:str; goal_id:str; watched_owner:str; scope:WatchdogScope; signal:WatchdogSignal; evidence_digest:str; evidence:str; decision_owner:str; alert_route:tuple[tuple[WatchdogRouteRole,str],...]; observed_at:int
-    _authority:object|None=field(default=None,init=False,repr=False,compare=False)
+    task_id:str; goal_id:str; watched_owner:str; scope:WatchdogScope; signal:WatchdogSignal; evidence_digest:str; evidence:str; decision_owner:str; alert_route:tuple[tuple[WatchdogRouteRole,str],...]; observed_at:int; _authority:object|None=field(default=None,init=False,repr=False,compare=False)
 @dataclass(frozen=True)
-class WatchdogChangeReview: task_id:str; watched_owner:str; evidence_digests:tuple[str,...]; cause:str; uncertainty:str; counterfactual:str; smallest_response:str; reversal_condition:str; urgent_safety:bool=False; _owner_authority:object|None=field(default=None,init=False,repr=False,compare=False); _decision:tuple[str,str]|None=field(default=None,init=False,repr=False,compare=False)
+class WatchdogChangeReview: task_id:str; watched_owner:str; evidence_digests:tuple[str,...]; cause:str; uncertainty:str; counterfactual:str; smallest_response:str; reversal_condition:str; urgent_safety:bool=False; expected_benefit:int=0; total_change_cost:int=0; _owner_authority:object|None=field(default=None,init=False,repr=False,compare=False); _decision:tuple[str,str]|None=field(default=None,init=False,repr=False,compare=False)
 
 @dataclass
 class CtrlEvidence:
@@ -352,14 +350,12 @@ class Swarm:
         return bool(profession) and (role is WatchdogRouteRole.SPECIALIST or profession=="ARCHITECT")
     def _validate_watchdog_binding(self, actor:Role, task:Task, binding:WatchdogBinding) -> None:
         if actor is not binding.watched_role: raise InvariantError("watchdog binding role must match the durable goal owner role")
-        if actor is Role.CTRL:
-            valid=binding.watched_owner=="CTRL"
-        elif actor is Role.LEAD:
+        if actor is Role.LEAD:
             valid=bool(task.owning_lead_id) and binding.watched_owner==task.owning_lead_id
         else:
             profession=task.specialist_professions.get(binding.watched_owner,"")
             valid=bool(profession) and (actor is Role.SPECIALIST or profession=="ARCHITECT")
-        if not valid: raise InvariantError("watchdog watched owner is missing, fabricated, or outside the durable goal scope")
+        if not valid: raise InvariantError("watchdog watched owner is missing, fabricated, or not the actual accountable lane owner")
         if any(not self._known_watchdog_identity(task,role,identity) for route in (binding.alert_route,binding.owner_integrity_route) for role,identity in route): raise InvariantError("watchdog alert route contains a fabricated or wrong-scope identity")
     def propose_milestone(self, actor:Role, task_id:str, *, goal_id:str, milestone:str, proof_kind:str, horizon_minutes:int, now:int, watchdog:WatchdogBinding|None=None) -> None:
         self._role(actor,{Role.CTRL,Role.SPECIALIST,Role.ARCHITECT,Role.LEAD}); t=self.tasks[task_id]
@@ -396,7 +392,7 @@ class Swarm:
         self.scheduled_wakeups[task_id]=now+t.review_horizon_minutes; return receipt
     def watchdog_owner_context(self, actor:Role, task_id:str, *, actor_id:str, evidence_digests:tuple[str,...], cause:str, uncertainty:str, same_constraints_counterfactual:str, smallest_reversible_response:str, reversal_condition:str, urgent_safety:bool=False) -> WatchdogChangeReview:
         t=self.tasks[task_id]; binding=t.watchdog_binding
-        if binding is None or actor is not binding.watched_role or actor_id!=binding.watched_owner: raise InvariantError("watchdog change review requires the exact watched owner to be heard")
+        if binding is None or actor is not binding.watched_role or actor_id!=binding.watched_owner: raise InvariantError("watchdog change review requires the exact accountable owner to be heard")
         if len(set(evidence_digests))<2 or len(receipts:=[r for r in t.watchdog_receipts if r._authority is self._watchdog_capability and r.signal is not WatchdogSignal.CLEAR and r.evidence_digest in evidence_digests])!=len(set(evidence_digests)) or len({receipt.scope for receipt in receipts})!=1: raise InvariantError("permanent change requires two distinct comparable runtime alert receipts")
         if not all(isinstance(value,str) and value.strip() for value in (cause,uncertainty,same_constraints_counterfactual,smallest_reversible_response,reversal_condition)): raise InvariantError("owner context requires cause, uncertainty, same-constraints counterfactual, smallest reversible response, and reversal condition")
         review=WatchdogChangeReview(task_id,binding.watched_owner,tuple(evidence_digests),cause,uncertainty,same_constraints_counterfactual,smallest_reversible_response,reversal_condition,urgent_safety); object.__setattr__(review,"_owner_authority",self._owner_context_capability); return review
@@ -405,7 +401,7 @@ class Swarm:
         if review._owner_authority is not self._owner_context_capability or target_kind not in {"retire","collapse"} or not target_id.strip(): raise InvariantError("CTRL change decision requires exact owner context and bounded target")
         if review.urgent_safety: raise InvariantError("urgent safety containment is temporary and cannot authorize permanent topology change")
         if not isinstance(expected_benefit,int) or not isinstance(total_change_cost,int) or expected_benefit<=total_change_cost or total_change_cost<0: raise InvariantError("expected benefit must exceed total change cost")
-        object.__setattr__(review,"_decision",(target_kind,target_id)); return review
+        object.__setattr__(review,"expected_benefit",expected_benefit); object.__setattr__(review,"total_change_cost",total_change_cost); object.__setattr__(review,"_decision",(target_kind,target_id)); return review
     def _require_watchdog_change(self, tasks:list[Task], kind:str, target:str, review:WatchdogChangeReview|None) -> None:
         if not (owners:={r.watched_owner for task in tasks for r in task.watchdog_receipts if r._authority is self._watchdog_capability and r.signal is not WatchdogSignal.CLEAR}): return
         if len(owners)!=1 or review is None or review._owner_authority is not self._owner_context_capability or review._decision!=(kind,target) or review.watched_owner!=next(iter(owners)) or review.task_id not in {task.id for task in tasks}: raise InvariantError("alerted permanent change requires exact owner-heard CTRL review")

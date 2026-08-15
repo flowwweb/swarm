@@ -29,7 +29,7 @@ For design or taste-led generation, honor the user’s approval boundary: a clea
 
 Review and correction must be materially worthwhile. Outside design, require a concrete consequence and observable improvement that outweighs the work; do not turn preference or theoretical purity into backlog. Stop once outcome, proof, and risk threshold pass. Design may refine granular craft within the accepted direction, never unrelated scope. Correct doctrine at its lowest existing governing layer, consolidate rather than add incident clauses, and regression-test contrasting outcomes. Load the review contract for the full significance, escaped-defect, and independent-review procedure.
 
-WATCHDOG is an optional CTRL-owned, alert-only scoped sensor, never a role or worker. When explicitly bound to a durable goal it performs exactly three checks at the due event or a material failure signal: milestone/deadline/goal progress, flow integrity, and outcome integrity. It emits only `CLEAR`, `ATTENTION`, or `BLOCKER`; it never chooses or applies a correction. Load [monitoring.md](references/monitoring.md) for binding, evidence, alert routing, and the lean owner-heard post-alert review.
+WATCHDOG is an optional alert-only sensor bound to an accountable LEAD or persistent SPECIALIST goal, never CTRL, a role, or a worker. At the due event or a material failure signal it checks milestone/deadline/goal progress, flow integrity, and outcome integrity. It emits only `CLEAR`, `ATTENTION`, or `BLOCKER`; it never chooses or applies a correction. Load [monitoring.md](references/monitoring.md) for binding, evidence, alert routing, and the lean owner-heard post-alert review.
 
 ## ROLE
 

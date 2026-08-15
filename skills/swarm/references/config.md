@@ -46,12 +46,12 @@ Configuration cannot make an unsafe or hidden coordination path valid:
 - CTRL, every LEAD, and every persistent SPECIALIST—including a materialized MOTHER—require an active durable
   goal before scheduling or substantive work. Goal controls are required; this
   invariant is not configurable and goal creation does not expand authority.
-- CTRL owns any explicitly bound WATCHDOG. An unbound goal has no watchdog clock,
-  check, receipt, or alert. A bound sensor restores only its own lost wakeup and
-  detects material progress, flow, or outcome-integrity evidence,
-  performs exactly one configured same-surface recovery, and then releases or
-  reassigns on an unchanged result. It never becomes polling, a queue, daemon,
-  private log, or activity-based progress.
+- A LEAD or persistent SPECIALIST may explicitly bind a WATCHDOG to its durable
+  goal; CTRL may not be watched. An unbound goal has no watchdog clock, check,
+  receipt, or alert. A bound sensor detects material progress, flow, or
+  outcome-integrity evidence and only records or routes `CLEAR`, `ATTENTION`, or
+  `BLOCKER`. It never recovers, releases, reassigns, polls, queues, or becomes a
+  daemon, private log, or activity-based progress system.
 
 ## Settings
 
@@ -319,8 +319,9 @@ three is the normal shape.
 
 ## Optional WATCHDOG
 
-An accountable CTRL, LEAD, or persistent SPECIALIST may explicitly bind one
-WATCHDOG sensor to its durable goal at `monitoring.heartbeat_minutes`. Unbound
+An accountable LEAD or persistent SPECIALIST may explicitly bind one WATCHDOG
+sensor to its durable goal at `monitoring.heartbeat_minutes`; CTRL may not be
+watched. Unbound
 goals create no clock, check, receipt, or alert. The sensor records only
 `CLEAR`, `ATTENTION`, or `BLOCKER`; it never decides, recovers, reassigns,
 restructures, reviews, or accepts work. Ordinary alerts return to the watched

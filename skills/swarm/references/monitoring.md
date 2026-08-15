@@ -1,16 +1,16 @@
 # Optional alert-only WATCHDOG
 
-WATCHDOG is a CTRL-owned scoped sensor, not a role, worker, reviewer, manager,
-planner, or acceptance authority. Do not create a watchdog task or role card.
-An unbound goal has no watchdog clock, check, receipt, or alert.
+WATCHDOG is an alert-only scoped sensor, not a role, worker, reviewer, manager,
+planner, or acceptance authority. It may bind to an accountable LEAD or
+persistent SPECIALIST goal, never CTRL. Do not create a watchdog task or role
+card. An unbound goal has no watchdog clock, check, receipt, or alert.
 
 An explicit binding names one durable goal, its watched owner, and one acyclic
 alert route of existing stable role/ID targets ending at CTRL or human attention.
 At most one watchdog and one due event may exist for a goal. No identity repeats.
 Ordinary alerts route first to the watched owner. An owner-integrity alert skips
-that owner. A watched CTRL requires a named independent REVIEW route ending in
-human attention; REVIEW investigates and surfaces evidence but gains no
-acceptance authority.
+that owner and follows the prevalidated route to existing authority. REVIEW may
+investigate and surface disputed evidence but gains no acceptance authority.
 
 At the due event or a material failure signal, WATCHDOG performs exactly three
 checks:
