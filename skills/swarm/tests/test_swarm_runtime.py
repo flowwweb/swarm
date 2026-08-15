@@ -23,6 +23,12 @@ class RuntimeTests(unittest.TestCase):
  def test_authority_lanes_and_lifecycle(self):
   self.s.add_lead(Role.CTRL,"bad"); self.assertIn("bad",self.s.topology)
   with self.assertRaises(InvariantError): self.s.change_architecture(Role.LEAD,{})
+  with self.assertRaises(InvariantError): self.s.change_architecture(Role.SPECIALIST,{"unauthorized":2})
+  with self.assertRaises(InvariantError): self.s.architecture_event(Role.SPECIALIST,"A",goal_id="architecture",accepted_change="change",invalidates_map=True,receipt="receipt",decision_or_blocker="decision")
+  self.s.specialist_event(Role.SPECIALIST,"A",specialist_id="manager",profession="MOTHER",goal_id="coordinate",accepted_change="advice",invalidates_map=False,receipt="advice-receipt")
+  with self.assertRaisesRegex(InvariantError,"advisory"): self.s.specialist_event(Role.SPECIALIST,"A",specialist_id="manager",profession="MOTHER",goal_id="coordinate",accepted_change="proposal",invalidates_map=True,receipt="receipt",decision_or_blocker="change")
+  with self.assertRaises(InvariantError): self.s.stale(Role.SPECIALIST,"A","manager decision")
+  self.assertEqual(self.s.architecture_version,1); self.assertEqual(self.s.tasks["A"].state,TaskState.ACTIVE)
   self.s.add_worker(Role.LEAD,Worker("D2","L",2)); self.s.add_worker(Role.LEAD,Worker("R","L",3))
   with self.assertRaises(InvariantError): self.s.add_worker(Role.LEAD,Worker("D4","L",1))
   self.s.retire(Role.LEAD,"D","R"); self.assertEqual(self.s.workers["D"].state,WorkerState.RETIRED); self.assertEqual(self.s.tasks["A"].owner,"R")

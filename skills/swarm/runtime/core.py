@@ -226,7 +226,8 @@ class WatchdogEvidence:
 class WatchdogReceipt:
     task_id:str; goal_id:str; watched_owner:str; scope:WatchdogScope; signal:WatchdogSignal; evidence_digest:str; evidence:str; decision_owner:str; alert_route:tuple[tuple[WatchdogRouteRole,str],...]; observed_at:int
     _authority:object|None=field(default=None,init=False,repr=False,compare=False)
-    def alerting(self)->bool: return self.signal is not WatchdogSignal.CLEAR
+@dataclass(frozen=True)
+class WatchdogChangeReview: task_id:str; watched_owner:str; evidence_digests:tuple[str,...]; cause:str; uncertainty:str; counterfactual:str; smallest_response:str; reversal_condition:str; urgent_safety:bool=False; _owner_authority:object|None=field(default=None,init=False,repr=False,compare=False); _decision:tuple[str,str]|None=field(default=None,init=False,repr=False,compare=False)
 
 @dataclass
 class CtrlEvidence:
@@ -256,20 +257,14 @@ class TopologyFacts:
         return len(set(self.ownership_lanes))>1 and bool(self.dependency_edges) and self.cross_lane_integration and self.portfolio_acceptance
 @dataclass(frozen=True)
 class WorkflowNode:
-    id:str; kind:str; state:str=""; owner:str=""; acceptance:str="UNVERIFIED"; recorded_receipts:tuple[tuple[str,str],...]=()
+    id:str; kind:str; state:str=""; owner:str=""; acceptance:str="UNVERIFIED"
 @dataclass(frozen=True)
 class WorkflowEdge:
     source:str; target:str; kind:str
 @dataclass(frozen=True)
 class WorkflowGraph:
     nodes:tuple[WorkflowNode,...]; edges:tuple[WorkflowEdge,...]; diagnostics:tuple[str,...]=()
-    def canonical_bytes(self)->bytes:
-        payload={
-            "nodes":[{"id":node.id,"kind":node.kind,"state":node.state,"owner":node.owner,"acceptance":node.acceptance,"recorded_receipts":[list(receipt) for receipt in sorted(node.recorded_receipts)]} for node in sorted(self.nodes,key=lambda item:item.id)],
-            "edges":[{"source":edge.source,"target":edge.target,"kind":edge.kind} for edge in sorted(self.edges,key=lambda item:(item.source,item.target,item.kind))],
-            "diagnostics":sorted(self.diagnostics),
-        }
-        return json.dumps(payload,sort_keys=True,separators=(",",":"),ensure_ascii=True).encode("utf-8")
+    def canonical_bytes(self)->bytes: return json.dumps({"nodes":[{"id":n.id,"kind":n.kind,"state":n.state,"owner":n.owner,"acceptance":n.acceptance} for n in sorted(self.nodes,key=lambda x:x.id)],"edges":[{"source":e.source,"target":e.target,"kind":e.kind} for e in sorted(self.edges,key=lambda x:(x.source,x.target,x.kind))],"diagnostics":sorted(self.diagnostics)},sort_keys=True,separators=(",",":"),ensure_ascii=True).encode("utf-8")
     def digest(self)->str: return sha256(self.canonical_bytes()).hexdigest()
 class ReviewStrategy(StrEnum): LIGHT="light"; STANDARD="standard"; ADVERSARIAL="adversarial"; SPECIALIST="specialist"
 @dataclass(frozen=True)
@@ -326,7 +321,7 @@ class Task:
     completed_at: int|None=None; stale_at: int|None=None; archived_at: int|None=None; stale_reason: str|None=None; superseded_by: str|None=None; promoted: list[str]=field(default_factory=list); extensions: int=0; review_passed: bool=False; risk:int=1; review_strategy:str="light"; architecture_review_floor:ReviewStrategy=ReviewStrategy.LIGHT; security_review_floor:ReviewStrategy=ReviewStrategy.LIGHT; artifacts:dict[ArtifactIdentity|str,str]=field(default_factory=dict); artifact_justifications:dict[str,ArtifactJustification]=field(default_factory=dict); artifact_provenance:dict[str,ArtifactProvenance]=field(default_factory=dict); archive:dict[str,object]=field(default_factory=dict); active_goal:bool=False; handoff_active:bool=False; correction_pending:bool=False; user_choice_pending:bool=False; ambiguous:bool=False; topology_receipt:tuple[str,...]=(); ctrl_event_receipt:tuple[str,str]|None=None; subagent_receipt:str=""; subagent_exception:SubagentException|None=None; subagent_exception_reason:str=""; goal_id:str=""; objective_version:int=1; milestone:str=""; review_horizon_minutes:int=30; milestone_started_at:int=0; milestone_history:list[tuple[int,str,str]]=field(default_factory=list); ctrl_feed_drift_count:int=0; superseded_ctrl_feed_ids:list[str]=field(default_factory=list); last_ctrl_feed_correction_id:str=""
 
     ctrl_mode:CtrlMode=CtrlMode.DELEGATED; milestone_proof_kind:str=""; architecture_goal_id:str=""; architecture_map_version:int=0; architecture_receipts:list[tuple[int,str,str]]=field(default_factory=list); specialist_professions:dict[str,str]=field(default_factory=dict); specialist_goal_ids:dict[str,str]=field(default_factory=dict); specialist_map_versions:dict[str,int]=field(default_factory=dict); specialist_receipts:dict[str,list[tuple[int,str,str]]]=field(default_factory=dict)
-    lane_kind:LaneKind=LaneKind.OTHER; owning_lead_id:str=""; acceptance_contract:AcceptanceContract|None=None; gate_receipts:dict[str,GateReceipt]=field(default_factory=dict); unverified_gate_receipts:dict[str,GateReceipt]=field(default_factory=dict); acceptance_review_receipt:ReviewEvidence|None=None; incident_consultation_receipt:str=""; watchdog_binding:WatchdogBinding|None=None; watchdog_receipts:list[WatchdogReceipt]=field(default_factory=list); watchdog_seen:set[tuple[str,str,str,str]]=field(default_factory=set)
+    lane_kind:LaneKind=LaneKind.OTHER; owning_lead_id:str=""; acceptance_contract:AcceptanceContract|None=None; gate_receipts:dict[str,GateReceipt]=field(default_factory=dict); unverified_gate_receipts:dict[str,GateReceipt]=field(default_factory=dict); acceptance_review_receipt:ReviewEvidence|None=None; incident_consultation_receipt:str=""; watchdog_binding:WatchdogBinding|None=None; watchdog_receipts:list[WatchdogReceipt]=field(default_factory=list)
 
 @dataclass
 class Worker:
@@ -336,7 +331,7 @@ class Worker:
 class Swarm:
     architecture_version: int=1; contract_versions: dict[str,int]=field(default_factory=dict); topology: set[str]=field(default_factory=set)
     workers: dict[str,Worker]=field(default_factory=dict); tasks: dict[str,Task]=field(default_factory=dict); leases: dict[str,str]=field(default_factory=dict); events: list[tuple[str,str]]=field(default_factory=list); telemetry: dict[str,object]=field(default_factory=dict); telemetry_events:list[dict[str,object]]=field(default_factory=list); artifact_index:dict[str,str]=field(default_factory=dict); provenance_index:dict[str,str]=field(default_factory=dict); ctrl_evidence_ledger:dict[str,CtrlEvidence]=field(default_factory=dict); ctrl_decision_sets:dict[str,CtrlDecisionSet]=field(default_factory=dict); ctrl_phase:str="intake"; hive:dict[str,HiveRecord]=field(default_factory=dict); hive_enabled:bool=True; heartbeat_stall_after:int=2; correction_receipts:dict[str,None]=field(default_factory=dict); lane_width:int=3; wip_limit:int=3; efficiency_ledger:list[dict[str,str]]=field(default_factory=list); mode:EfficiencyMode=EfficiencyMode.BALANCED; default_review_horizon:int=30; max_review_horizon:int=60; direct_work_horizon:int=20
-    scheduled_wakeups:dict[str,int]=field(default_factory=dict); ctrl_feed_messages:list[CtrlFeedMessage]=field(default_factory=list); ctrl_feed_cursor:int=0; ctrl_feed_superseded_by:dict[str,str]=field(default_factory=dict); ctrl_feed_events:dict[str,CtrlFeedEvent]=field(default_factory=dict); ctrl_feed_consumed_events:set[str]=field(default_factory=set); _gate_capability:object=field(default_factory=object,init=False,repr=False,compare=False); _watchdog_capability:object=field(default_factory=object,init=False,repr=False,compare=False)
+    scheduled_wakeups:dict[str,int]=field(default_factory=dict); ctrl_feed_messages:list[CtrlFeedMessage]=field(default_factory=list); ctrl_feed_cursor:int=0; ctrl_feed_superseded_by:dict[str,str]=field(default_factory=dict); ctrl_feed_events:dict[str,CtrlFeedEvent]=field(default_factory=dict); ctrl_feed_consumed_events:set[str]=field(default_factory=set); _gate_capability:object=field(default_factory=object,init=False,repr=False,compare=False); _watchdog_capability:object=field(default_factory=object,init=False,repr=False,compare=False); _owner_context_capability:object=field(default_factory=object,init=False,repr=False,compare=False)
     @classmethod
     def from_config(cls, config: dict) -> "Swarm":
         monitoring=config["monitoring"]
@@ -393,15 +388,27 @@ class Swarm:
         if (evidence.task_id,evidence.goal_id,evidence.watched_owner)!=(task_id,t.goal_id,binding.watched_owner): raise InvariantError("watchdog evidence is outside its bound task, goal, or owner scope")
         decision_owner=first_id
         key=(evidence.evidence_digest,evidence.signal.value,decision_owner,evidence.scope.value)
-        if key in t.watchdog_seen:
-            return next(receipt for receipt in reversed(t.watchdog_receipts) if (receipt.evidence_digest,receipt.signal.value,receipt.decision_owner,receipt.scope.value)==key)
+        existing=next((receipt for receipt in reversed(t.watchdog_receipts) if (receipt.evidence_digest,receipt.signal.value,receipt.decision_owner,receipt.scope.value)==key),None)
+        if existing is not None: self.scheduled_wakeups[task_id]=now+t.review_horizon_minutes; return existing
         route=() if evidence.signal is WatchdogSignal.CLEAR else selected_route
-        receipt=WatchdogReceipt(task_id,t.goal_id,binding.watched_owner,evidence.scope,evidence.signal,evidence.evidence_digest,evidence.evidence,decision_owner,route,now)
-        object.__setattr__(receipt,"_authority",self._watchdog_capability)
-        t.watchdog_seen.add(key); t.watchdog_receipts.append(receipt)
+        receipt=WatchdogReceipt(task_id,t.goal_id,binding.watched_owner,evidence.scope,evidence.signal,evidence.evidence_digest,evidence.evidence,decision_owner,route,now); object.__setattr__(receipt,"_authority",self._watchdog_capability); t.watchdog_receipts.append(receipt)
         if len(t.watchdog_receipts)>64: del t.watchdog_receipts[:-64]
-        self.scheduled_wakeups[task_id]=now+t.review_horizon_minutes
-        return receipt
+        self.scheduled_wakeups[task_id]=now+t.review_horizon_minutes; return receipt
+    def watchdog_owner_context(self, actor:Role, task_id:str, *, actor_id:str, evidence_digests:tuple[str,...], cause:str, uncertainty:str, same_constraints_counterfactual:str, smallest_reversible_response:str, reversal_condition:str, urgent_safety:bool=False) -> WatchdogChangeReview:
+        t=self.tasks[task_id]; binding=t.watchdog_binding
+        if binding is None or actor is not binding.watched_role or actor_id!=binding.watched_owner: raise InvariantError("watchdog change review requires the exact watched owner to be heard")
+        if len(set(evidence_digests))<2 or len(receipts:=[r for r in t.watchdog_receipts if r._authority is self._watchdog_capability and r.signal is not WatchdogSignal.CLEAR and r.evidence_digest in evidence_digests])!=len(set(evidence_digests)) or len({receipt.scope for receipt in receipts})!=1: raise InvariantError("permanent change requires two distinct comparable runtime alert receipts")
+        if not all(isinstance(value,str) and value.strip() for value in (cause,uncertainty,same_constraints_counterfactual,smallest_reversible_response,reversal_condition)): raise InvariantError("owner context requires cause, uncertainty, same-constraints counterfactual, smallest reversible response, and reversal condition")
+        review=WatchdogChangeReview(task_id,binding.watched_owner,tuple(evidence_digests),cause,uncertainty,same_constraints_counterfactual,smallest_reversible_response,reversal_condition,urgent_safety); object.__setattr__(review,"_owner_authority",self._owner_context_capability); return review
+    def authorize_watchdog_change(self, actor:Role, review:WatchdogChangeReview, *, target_kind:str, target_id:str, expected_benefit:int, total_change_cost:int) -> WatchdogChangeReview:
+        self._role(actor,{Role.CTRL})
+        if review._owner_authority is not self._owner_context_capability or target_kind not in {"retire","collapse"} or not target_id.strip(): raise InvariantError("CTRL change decision requires exact owner context and bounded target")
+        if review.urgent_safety: raise InvariantError("urgent safety containment is temporary and cannot authorize permanent topology change")
+        if not isinstance(expected_benefit,int) or not isinstance(total_change_cost,int) or expected_benefit<=total_change_cost or total_change_cost<0: raise InvariantError("expected benefit must exceed total change cost")
+        object.__setattr__(review,"_decision",(target_kind,target_id)); return review
+    def _require_watchdog_change(self, tasks:list[Task], kind:str, target:str, review:WatchdogChangeReview|None) -> None:
+        if not (owners:={r.watched_owner for task in tasks for r in task.watchdog_receipts if r._authority is self._watchdog_capability and r.signal is not WatchdogSignal.CLEAR}): return
+        if len(owners)!=1 or review is None or review._owner_authority is not self._owner_context_capability or review._decision!=(kind,target) or review.watched_owner!=next(iter(owners)) or review.task_id not in {task.id for task in tasks}: raise InvariantError("alerted permanent change requires exact owner-heard CTRL review")
     def _record(self, target:str, item:object) -> None:
         """Keep machine receipts inspectable without retaining an event transcript."""
         entries=getattr(self,target); entries.append(item)
@@ -591,16 +598,17 @@ class Swarm:
         if result=="retire" and worker_id: self.retire(Role.LEAD,worker_id,replacement)
         return result
     def change_architecture(self, actor: Role, contracts: dict[str,int], now:int=0) -> None:
-        self._role(actor,{Role.SPECIALIST,Role.ARCHITECT}); self.architecture_version+=1; self.contract_versions.update(contracts)
+        self._role(actor,{Role.ARCHITECT}); self.architecture_version+=1; self.contract_versions.update(contracts)
         for task in self.tasks.values():
             if task.state not in {TaskState.COMPLETE,TaskState.BACKLOG,TaskState.ARCHIVED,TaskState.ARCHIVED_STALE} and (task.architecture_version != self.architecture_version or any(task.contracts.get(k,0)!=v for k,v in contracts.items())): task.state=TaskState.STALE; task.stale_reason="architecture or contract version changed"; task.stale_at=now
     def architecture_event(self, actor:Role, task_id:str, *, goal_id:str, accepted_change:str, invalidates_map:bool, receipt:str, decision_or_blocker:str="") -> None:
-        self._role(actor,{Role.SPECIALIST,Role.ARCHITECT})
+        self._role(actor,{Role.ARCHITECT})
         self.specialist_event(Role.SPECIALIST,task_id,specialist_id="architect",profession="ARCHITECT",goal_id=goal_id,accepted_change=accepted_change,invalidates_map=invalidates_map,receipt=receipt,decision_or_blocker=decision_or_blocker)
         t=self.tasks[task_id]; t.architecture_goal_id=t.specialist_goal_ids["architect"]; t.architecture_map_version=t.specialist_map_versions["architect"]; t.architecture_receipts=t.specialist_receipts["architect"]
     def specialist_event(self, actor:Role, task_id:str, *, specialist_id:str, profession:str, goal_id:str, accepted_change:str, invalidates_map:bool, receipt:str, decision_or_blocker:str="") -> None:
         self._role(actor,{Role.SPECIALIST}); t=self.tasks[task_id]; identity=specialist_id.strip(); name=profession.strip().upper()
         if not identity or any(character in identity for character in "\r\n\t") or not name or any(character in name for character in "\r\n\t"): raise InvariantError("specialist requires a stable instance identity and concrete profession")
+        if name=="MOTHER" and invalidates_map: raise InvariantError("MOTHER manager specialist is advisory and cannot invalidate architecture")
         if not all(item.strip() for item in (goal_id,accepted_change,receipt)) or (invalidates_map and not decision_or_blocker.strip()): raise InvariantError("specialist event requires durable goal, accepted change, receipt, and consequential decision when invalidated")
         existing_profession=t.specialist_professions.get(identity)
         if existing_profession and existing_profession!=name: raise InvariantError("specialist instance profession cannot change")
@@ -810,8 +818,9 @@ class Swarm:
         self._role(actor,{Role.CTRL})
         if surface in self.leases and self.leases[surface]!=holder: raise InvariantError("surface already leased")
         self.leases[surface]=holder
-    def retire(self, actor: Role, worker_id: str, replacement: str|None=None, *, lessons:list[HiveRecord]|None=None, now:int=0) -> None:
+    def retire(self, actor: Role, worker_id: str, replacement: str|None=None, *, lessons:list[HiveRecord]|None=None, now:int=0, watchdog_review:WatchdogChangeReview|None=None) -> None:
         self._role(actor,{Role.LEAD}); w=self.workers[worker_id]
+        self._require_watchdog_change([task for task in self.tasks.values() if task.owner==worker_id],"retire",worker_id,watchdog_review)
         if w.task_ids and (not replacement or replacement not in self.workers or self.workers[replacement].state==WorkerState.RETIRED): raise InvariantError("retirement needs a live replacement for owned tasks")
         flushed=(lessons or [])[:3] if self.hive_enabled else []
         for lesson in flushed: self.remember(Role.LEAD,lesson,now)
@@ -821,10 +830,11 @@ class Swarm:
             for task_id in w.task_ids: self.tasks[task_id].owner=replacement; target.task_ids.add(task_id)
         w.state=WorkerState.RETIRED; w.archive={"tasks":sorted(w.task_ids),"lane":w.lane,"hive_flush":[item.id for item in flushed]}; w.task_ids.clear()
         if self.hive_enabled: self.telemetry["hive_retirement_flushes"]=self.telemetry.get("hive_retirement_flushes",0)+len(flushed)
-    def collapse(self, actor: Role, lead: str) -> Depth:
+    def collapse(self, actor: Role, lead: str, *, watchdog_review:WatchdogChangeReview|None=None) -> Depth:
         """Retire idle capacity and remove a lead when only one isolated task remains."""
         self._role(actor,{Role.CTRL}); active=[t for t in self.tasks.values() if t.state not in {TaskState.COMPLETE,TaskState.BACKLOG,TaskState.ARCHIVED,TaskState.ARCHIVED_STALE}]
         if len(active) > 1: return Depth.WORKSTREAM
+        self._require_watchdog_change([task for task in self.tasks.values() if task.owning_lead_id==lead],"collapse",lead,watchdog_review)
         for worker in self.workers.values():
             if worker.lead == lead and not worker.task_ids and worker.state != WorkerState.RETIRED:
                 worker.state=WorkerState.RETIRED; worker.archive={"tasks":[],"lane":worker.lane}
@@ -847,7 +857,7 @@ class Swarm:
         if worker and worker.context.get("affinity",0)>0 and all(self.tasks[item].state in {TaskState.COMPLETE,TaskState.ARCHIVED,TaskState.ARCHIVED_STALE} for item in worker.task_ids): worker.state=WorkerState.WARM
         if worker: worker.task_ids.discard(task_id)
     def stale(self, actor: Role, task_id: str, reason: str, *, now: int=0, superseded_by: str|None=None, promote: list[str]|None=None) -> None:
-        self._role(actor,{Role.CTRL,Role.SPECIALIST,Role.ARCHITECT,Role.LEAD}); t=self.tasks[task_id]
+        self._role(actor,{Role.CTRL,Role.ARCHITECT,Role.LEAD}); t=self.tasks[task_id]
         if not reason: raise InvariantError("stale tasks require reason provenance")
         t.state=TaskState.STALE; t.stale_at=now; t.stale_reason=reason; t.superseded_by=superseded_by; t.promoted.extend(promote or [])
     def groom(self, actor: Role, now: int, policy: dict[str,int]) -> list[str]:
@@ -927,10 +937,7 @@ def derive_workflow_graph(swarm:Swarm) -> WorkflowGraph:
             nodes[source]=WorkflowNode(source,"LEAD",owner="CTRL"); diagnostics.add(f"implicit-recorded-lead:{worker.lead}")
         edges.add((source,node_id,"leads"))
     for task_id,task in sorted(swarm.tasks.items()):
-        receipts=[]
-        if task.topology_receipt: receipts.append(("topology","|".join(task.topology_receipt)))
-        receipts.extend((f"watchdog:{receipt.scope.value}",receipt.signal.value) for receipt in task.watchdog_receipts if receipt._authority is swarm._watchdog_capability)
-        node_id=f"task:{task_id}"; nodes[node_id]=WorkflowNode(node_id,"TASK",task.state.value,task.owner,"UNVERIFIED",tuple(receipts))
+        node_id=f"task:{task_id}"; nodes[node_id]=WorkflowNode(node_id,"TASK",task.state.value,task.owner,"UNVERIFIED")
         owner=f"worker:{task.owner}" if task.owner in swarm.workers else "ctrl:CTRL" if task.owner==Role.CTRL.value else ""
         if owner: edges.add((owner,node_id,"owns"))
         else: diagnostics.add(f"missing-owner:{task_id}:{task.owner}")
@@ -942,9 +949,9 @@ def derive_workflow_graph(swarm:Swarm) -> WorkflowGraph:
         if contract is not None and contract.artifact is not None:
             logical_identity=json.dumps((contract.artifact.base,contract.artifact.revision,contract.artifact.purpose),separators=(",",":"),ensure_ascii=True).encode("utf-8")
             artifact_node=f"artifact:{sha256(logical_identity).hexdigest()}"; nodes.setdefault(artifact_node,WorkflowNode(artifact_node,"ARTIFACT",contract.artifact.purpose,acceptance="UNVERIFIED")); edges.add((node_id,artifact_node,"accepts_artifact"))
-        for gate,receipt in sorted(task.gate_receipts.items()):
-            if receipt._authority is not swarm._gate_capability: continue
-            gate_node=f"gate:{task_id}:{gate}"; nodes[gate_node]=WorkflowNode(gate_node,"GATE",receipt.outcome.value,owner=task.owning_lead_id,acceptance="UNVERIFIED"); edges.add((node_id,gate_node,"has_gate"))
+        for gate in (() if contract is None else contract.required_gates):
+            receipt=task.gate_receipts.get(gate); outcome=receipt.outcome.value if receipt is not None and receipt._authority is swarm._gate_capability else "UNVERIFIED"
+            gate_node=f"gate:{task_id}:{gate}"; nodes[gate_node]=WorkflowNode(gate_node,"GATE",outcome,owner=task.owning_lead_id,acceptance="UNVERIFIED"); edges.add((node_id,gate_node,"has_gate"))
         if task.acceptance_review_receipt is not None:
             review=task.acceptance_review_receipt; review_node=f"review:{task_id}:{review.scope.value}"; nodes[review_node]=WorkflowNode(review_node,"REVIEW",review.scope.value,review.reviewer,"UNVERIFIED"); edges.add((node_id,review_node,"has_review"))
         for specialist_id,profession in sorted(task.specialist_professions.items()):

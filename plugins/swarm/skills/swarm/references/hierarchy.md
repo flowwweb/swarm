@@ -59,7 +59,7 @@ will save more friction than it costs.
 - Ownership: that concise truth surface and its receipts only.
 - Boundaries: observe, synthesize, advise, and escalate; never create or
   reparent tasks, assign owners, amend objectives, lease surfaces, integrate,
-  deploy, review, accept, or control a goal clock.
+  deploy, review, accept, or turn a WATCHDOG alert into action.
 - Escalation: return an evidence-backed recommendation or exact blocker to CTRL;
   CTRL decides.
 
