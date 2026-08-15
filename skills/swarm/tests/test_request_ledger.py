@@ -192,6 +192,15 @@ class RequestLedgerTests(unittest.TestCase):
                     payload=json.loads(canonical); change(next(iter(payload["stages"].values()))); path.write_text(json.dumps(payload,separators=(",",":"),sort_keys=True),encoding="utf-8"); tampered=path.read_bytes()
                     with self.assertRaises(Exception): value.request_audit(7)
                     self.assertFalse(value.project_complete(Role.CTRL,True,True)); self.assertEqual(path.read_bytes(),tampered)
+    def test_completed_request_survives_authorized_archive_but_open_request_does_not(self):
+        policy={"no_review_archive_delay":0,"low_review_retention":0,"high_review_retention":0,"stale_task_archive_delay":0}
+        with tempfile.TemporaryDirectory() as temp:
+            value=swarm(Path(temp)); view=accepted(value); review_receipt="rev-proof_archive000"; review=ReviewEvidence(ReviewStrategy.LIGHT,"independent",True,None,receipt=(("acceptance",review_receipt),),scope=ReviewScope.ACCEPTANCE); value.review(Role.REVIEW,"T",review,True); progress,_=event(value,"T",(view.record.id,),"archive",CtrlFeedEventKind.RESULT,"rev"); value.advance_request(Role.LEAD,view.record.id,progress,RequestDue("due-archive",5)); value.complete(Role.LEAD,"T",True,True,6,actor_id="L"); acceptance,_=event(value,"T",(view.record.id,),"archivedone",CtrlFeedEventKind.ACCEPTANCE,proof_override=review_receipt); value.complete_request(Role.LEAD,view.record.id,acceptance,review_receipt)
+            self.assertEqual(value.groom(Role.CTRL,7,policy),["T"]); self.assertEqual(value.tasks["T"].state,TaskState.ARCHIVED); self.assertEqual(value.request_audit(7).orphaned_ids,()); self.assertTrue(value.project_complete(Role.CTRL,True,True))
+            value.tasks["T"].state=TaskState.ARCHIVED_STALE; self.assertEqual(value.request_audit(7).orphaned_ids,(view.record.id,)); self.assertFalse(value.project_complete(Role.CTRL,True,True))
+        with tempfile.TemporaryDirectory() as temp:
+            value=swarm(Path(temp)); view=accepted(value); review_receipt="rev-proof_openarchive000"; review=ReviewEvidence(ReviewStrategy.LIGHT,"independent",True,None,receipt=(("acceptance",review_receipt),),scope=ReviewScope.ACCEPTANCE); value.review(Role.REVIEW,"T",review,True); progress,_=event(value,"T",(view.record.id,),"openarchive",CtrlFeedEventKind.RESULT,"rev"); value.advance_request(Role.LEAD,view.record.id,progress,RequestDue("due-openarchive",5)); value.complete(Role.LEAD,"T",True,True,6,actor_id="L")
+            self.assertEqual(value.groom(Role.CTRL,7,policy),[]); value.tasks["T"].state=TaskState.ARCHIVED; value.tasks["T"].archived_at=7; self.assertEqual(value.request_audit(7).orphaned_ids,(view.record.id,)); self.assertFalse(value.project_complete(Role.CTRL,True,True))
     def test_corrupt_state_and_serialized_mutation_fail_closed(self):
         with tempfile.TemporaryDirectory() as temp:
             root=Path(temp); value=swarm(root); path=root/".codex"/"swarm"/"requests.json"; path.write_text("{",encoding="utf-8")

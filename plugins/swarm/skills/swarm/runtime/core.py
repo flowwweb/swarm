@@ -450,12 +450,12 @@ class Swarm:
         if task is None or stage is None: return False
         owner=Role.CTRL.value if task.ctrl_mode is CtrlMode.DIRECT else task.owning_lead_id
         if not (task.goal_id==record.goal_id and record.accepted_owner==owner==stage["owner"] and (owner=="CTRL" or owner in self.topology) and record.accepting_route==self._request_route(task) and record.outcome_identity==self._request_outcome_identity(task,record.id) and stage["task_id"]==task.id and stage["contract_digest"]==self._request_contract_digest(task,record.id)): return False
-        if record.state in {RequestState.OPEN,RequestState.BLOCKED}: return True
+        if record.state in {RequestState.OPEN,RequestState.BLOCKED}: return task.state in {TaskState.REQUEST_PENDING,TaskState.ACTIVE,TaskState.WAITING,TaskState.REVIEW,TaskState.COMPLETE}
         transition=record.transitions[-1]
         try: event,_=self._published_request_event(record.id,transition.cursor.event_receipt,{transition.kind},transition.cursor)
         except InvariantError: return False
         review=task.acceptance_review_receipt
-        if record.state is RequestState.COMPLETED: return task.state is TaskState.COMPLETE and self._acceptance_ready(task) and review is not None and dict(review.receipt).get("acceptance") in event.proof_receipts and set(event.proof_receipts).issubset(record.evidence_receipts)
+        if record.state is RequestState.COMPLETED: return task.completed_at is not None and (task.state is TaskState.COMPLETE or task.state is TaskState.ARCHIVED and task.archived_at is not None) and self._acceptance_ready(task) and review is not None and dict(review.receipt).get("acceptance") in event.proof_receipts and set(event.proof_receipts).issubset(record.evidence_receipts)
         return any(value.startswith("usr-") for value in event.proof_receipts) and (record.state is RequestState.CANCELLED or record.successor_id in state["requests"])
     def _mutate_request(self, callback, *, expected:tuple[int,str]|None=None):
         def validated(value): self._validate_request_state(value); result=callback(value); self._validate_request_state(value); return result
