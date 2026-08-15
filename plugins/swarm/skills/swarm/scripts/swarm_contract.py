@@ -10,7 +10,8 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from runtime import WatchdogScope, WatchdogSignal
+from runtime import RequestDue, Role, Swarm, WatchdogScope, WatchdogSignal
+from runtime.request_ledger import RequestStore
 
 
 MANDATORY_DURABLE_GOAL_ROLES = frozenset({"ctrl", "lead", "specialist", "architect"})
@@ -120,12 +121,32 @@ def forward_cases() -> dict[str, dict[str, str]]:
     return {name: asdict(decision) for name, decision in cases.items()}
 
 
+def request_bridge(envelope: dict) -> dict:
+    """Read the same private ledger used by the runtime; never grants host authority."""
+    if not isinstance(envelope,dict) or set(envelope)-{"operation","repo_root","now"}: raise ValueError("request envelope has unknown fields")
+    operation, root = envelope.get("operation"), envelope.get("repo_root")
+    if operation not in {"list","audit"} or not isinstance(root,str) or not root or not Path(root).is_absolute(): raise ValueError("standalone request bridge requires read-only list/audit and an absolute repo root")
+    store=RequestStore(Path(root)); state,digest,attached=store.peek(); swarm=Swarm(); records=swarm._validate_request_state(state); audit=swarm._request_audit_from(state,digest,records,int(envelope.get("now",0))); result={"attached":attached,"sequence":audit.sequence,"digest":audit.digest,"records":[{"id":item.id,"task_id":item.task_id,"owner":item.accepted_owner,"state":item.state.value,"due_at":item.next_due_at} for item in audit.records]}
+    if operation == "audit": result.update({"unresolved_ids": audit.unresolved_ids, "orphaned_ids": audit.orphaned_ids, "unsurfaced_ids": audit.unsurfaced_ids, "idle_ids": audit.idle_ids, "blocked_ids": audit.blocked_ids, "provisional_stage_ids": audit.provisional_stage_ids,"integrity_signals":[{"request_id":item.request_id,"scope":item.scope.value,"signal":item.signal.value,"route":item.route.value} for item in audit.integrity_signals]})
+    return result
+
+def register(swarm:Swarm, stage_id:str, decision_event_receipt:str, *, accepted_at:int, due:RequestDue):
+    """Named live bridge; serialized callers cannot mint authority."""
+    if not isinstance(swarm,Swarm): raise ValueError("register requires the current live Swarm")
+    return swarm.accept_request(Role.CTRL,stage_id,decision_event_receipt,accepted_at=accepted_at,due=due)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("command", choices=("forward-test",))
+    parser.add_argument("command", choices=("forward-test", "request"))
     args = parser.parse_args()
     if args.command == "forward-test":
         print(json.dumps(forward_cases(), sort_keys=True))
+    if args.command == "request":
+        try:
+            envelope=json.load(sys.stdin); print(json.dumps(request_bridge(envelope),sort_keys=True,separators=(",",":")))
+        except (ValueError, OSError, json.JSONDecodeError) as error:
+            print(json.dumps({"error":str(error)},sort_keys=True,separators=(",",":"))); return 2
     return 0
 
 

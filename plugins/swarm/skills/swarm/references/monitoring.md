@@ -82,6 +82,8 @@ the owner can respond. Consequential CTRL-owner decisions remain human-owned.
 
 ## CTRL feed integrity
 
+The optional WATCHDOG checks valid bound requests without becoming their owner: the intake/acceptance surface is not work progress, so a due open request without a later surfaced transition is `ATTENTION/OUTCOME_INTEGRITY`; due blocked or later-progressed-but-idle is `ATTENTION/TRAJECTORY`. Orphaned, unsurfaced, and idle records remain explicit CTRL audit blockers. An orphan derives one fixed global `BLOCKER/FLOW_INTEGRITY` signal routed to CTRL; this is not a WATCHDOG identity, task/CTRL binding, receipt clock, decision, or mutation. A bound sensor emits only through its exact eligible LEAD/SPECIALIST binding, never CTRL, and cannot transition, recover, reprioritize, complete, or correct a request.
+
 WATCHDOG may audit recent CTRL messages against EVENT's outcome, inline proof,
 remaining risk, and next material checkpoint order. Activity narration, task
 chatter, fabricated proof, or duplicate orchestration detail fails closed and

@@ -18,9 +18,14 @@ SPEC.loader.exec_module(console)
 class SwarmConsoleTests(unittest.TestCase):
     def test_new_console_copy_is_swarm_first(self) -> None:
         static = (Path(__file__).resolve().parents[1] / "static")
-        self.assertIn('aria-label="SWARM summary metrics"', (static / "index.html").read_text(encoding="utf-8"))
-        self.assertIn('<span>🐙</span>', (static / "index.html").read_text(encoding="utf-8"))
-        self.assertIn("Keep new SWARM owners visible", (static / "app.js").read_text(encoding="utf-8"))
+        index = (static / "index.html").read_text(encoding="utf-8")
+        app = (static / "app.js").read_text(encoding="utf-8")
+        self.assertIn('aria-label="SWARM summary metrics"', index)
+        self.assertIn('<span>🐙</span>', index)
+        self.assertIn('id="controller-filter"', index)
+        self.assertIn('aria-label="Swarm"', index)
+        self.assertIn("Keep new SWARM owners visible", app)
+        self.assertIn('document.visibilityState === "visible"', app)
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name)
@@ -87,6 +92,45 @@ class SwarmConsoleTests(unittest.TestCase):
         ctrl = next(node for node in overview["nodes"] if node["id"] == "root")
         self.assertEqual((ctrl["role"], ctrl["icon"]), ("ctrl", "🐙"))
         self.assertEqual(next(node for node in overview["nodes"] if node["id"] == "review")["status"], "done")
+        self.assertGreaterEqual(overview["observation_window_ms"], 24 * 60 * 60 * 1000)
+        self.assertEqual(overview["controllers"][0]["id"], "root")
+        self.assertEqual(next(node for node in overview["nodes"] if node["id"] == "task")["controller_id"], "root")
+        self.assertLess(overview["performance"]["data_bytes"], overview["performance"]["budget"]["data_bytes"])
+        self.assertEqual(overview["performance"]["budget"]["cache_hit_ms"], 5)
+
+    def test_parent_ctrl_scope_keeps_nested_ctrl_tree_together(self) -> None:
+        now = 2_000_000_000_000
+        connection = sqlite3.connect(self.database)
+        connection.executemany(
+            "INSERT INTO threads VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            [
+                ("child-ctrl", "🐙CTRL - Nested recovery", "C:/work/alpha", now // 1000, now, now, now,
+                 "gpt-5.6-sol", "high", 40, 0, "", "main", "", "", "", 0),
+                ("child-doer", "🔨DEV - Nested repair", "C:/work/alpha", now // 1000, now, now, now,
+                 "gpt-5.6-luna", "high", 20, 0, "", "main", "", "", "", 0),
+            ],
+        )
+        connection.executemany(
+            "INSERT INTO thread_spawn_edges VALUES (?,?,?)",
+            [("lead", "child-ctrl", "open"), ("child-ctrl", "child-doer", "open")],
+        )
+        connection.commit()
+        connection.close()
+
+        overview = console.build_overview(self.codex_home, self.config)
+        controller = next(item for item in overview["controllers"] if item["id"] == "root")
+        by_id = {node["id"]: node for node in overview["nodes"]}
+        self.assertEqual(controller["nodes"], 6)
+        self.assertEqual(by_id["child-ctrl"]["controller_id"], "root")
+        self.assertEqual(by_id["child-doer"]["controller_id"], "root")
+        self.assertIn("not the authoritative runtime workflow graph", overview["claim_limits"][1])
+
+    def test_overview_cache_rebuilds_only_after_a_host_or_config_change(self) -> None:
+        app = console.App(self.codex_home, self.config)
+        first = app.overview()
+        self.assertIs(first, app.overview())
+        self.config.write_text(self.config.read_text(encoding="utf-8") + "\n# updated\n", encoding="utf-8")
+        self.assertIsNot(first, app.overview())
 
     def test_valid_config_update_is_validated_and_backed_up(self) -> None:
         result = console.update_config(self.config, {"monitoring.heartbeat_minutes": 45})

@@ -34,6 +34,8 @@ DEFAULT_CODEX_HOME = Path(os.environ.get("CODEX_HOME", Path.home() / ".codex"))
 DEFAULT_CONFIG_PATH = Path.home() / ".agents" / "swarm" / "config.toml"
 DEFAULT_PORT = 4788
 MAX_BODY_BYTES = 64 * 1024
+MIN_OBSERVATION_WINDOW_MS = 24 * 60 * 60 * 1000
+OBSERVATION_HEARTBEAT_WINDOWS = 48
 
 STATIC_FILES = {
     "/": ("index.html", "text/html; charset=utf-8"),
@@ -221,6 +223,20 @@ def _readonly_connection(path: Path) -> sqlite3.Connection:
     return connection
 
 
+def observation_fingerprint(codex_home: Path, config_path: Path) -> tuple[tuple[str, int, int], ...]:
+    """Return only cheap local metadata needed to invalidate a console snapshot."""
+    database = state_database(codex_home)
+    paths = (database, database.with_name(f"{database.name}-wal"), config_path)
+    fingerprint: list[tuple[str, int, int]] = []
+    for path in paths:
+        try:
+            stat = path.stat()
+            fingerprint.append((path.name, stat.st_mtime_ns, stat.st_size))
+        except FileNotFoundError:
+            fingerprint.append((path.name, 0, 0))
+    return tuple(fingerprint)
+
+
 def _epoch_ms(milliseconds: Any, seconds: Any) -> int:
     if milliseconds:
         return int(milliseconds)
@@ -340,11 +356,17 @@ def _status(row: sqlite3.Row, edge_status: str | None, heartbeat_minutes: int, n
 
 
 def build_overview(codex_home: Path, config_path: Path) -> dict[str, Any]:
+    started_at = time.perf_counter()
     _, config, _ = load_config(config_path)
     labels = config["labels"]
     heartbeat = int(config["monitoring"]["heartbeat_minutes"])
     database = state_database(codex_home)
     now_ms = int(time.time() * 1000)
+    observation_window_ms = max(
+        MIN_OBSERVATION_WINDOW_MS,
+        heartbeat * OBSERVATION_HEARTBEAT_WINDOWS * 60_000,
+    )
+    observed_after_ms = now_ms - observation_window_ms
     with closing(_readonly_connection(database)) as connection:
         rows = connection.execute(
             """
@@ -352,10 +374,18 @@ def build_overview(codex_home: Path, config_path: Path) -> dict[str, Any]:
                    model, reasoning_effort, tokens_used, archived, git_origin_url,
                    git_branch, thread_source, agent_nickname, agent_role, is_pinned
             FROM threads
-            """
+            WHERE COALESCE(archived, 0) = 0 AND updated_at_ms >= ?
+            """,
+            (observed_after_ms,),
         ).fetchall()
         edge_rows = connection.execute(
-            "SELECT parent_thread_id, child_thread_id, status FROM thread_spawn_edges"
+            """
+            SELECT edge.parent_thread_id, edge.child_thread_id, edge.status
+            FROM thread_spawn_edges AS edge
+            INNER JOIN threads AS child ON child.id = edge.child_thread_id
+            WHERE COALESCE(child.archived, 0) = 0 AND child.updated_at_ms >= ?
+            """,
+            (observed_after_ms,),
         ).fetchall()
 
     all_rows = {row["id"]: row for row in rows}
@@ -457,18 +487,56 @@ def build_overview(codex_home: Path, config_path: Path) -> dict[str, Any]:
 
     incoming = {link["target"] for link in links}
     roots = [node_id for node_id in nodes if node_id not in incoming]
+    children: dict[str, list[str]] = {}
+    for link in links:
+        children.setdefault(link["source"], []).append(link["target"])
+
+    # The host gives us spawn edges, not an authoritative SWARM runtime graph.
+    # A controller scope is therefore only an observed, read-only descendant set.
+    controller_by_node: dict[str, str] = {}
+    controllers: list[dict[str, Any]] = []
+    for root_id in roots:
+        root = nodes[root_id]
+        if root["role"] != "ctrl":
+            continue
+        queue = [root_id]
+        descendants: set[str] = set()
+        while queue:
+            node_id = queue.pop()
+            if node_id in descendants:
+                continue
+            descendants.add(node_id)
+            controller_by_node.setdefault(node_id, root_id)
+            queue.extend(children.get(node_id, []))
+        controllers.append(
+            {
+                "id": root_id,
+                "title": root["title"],
+                "artifact": root["artifact"],
+                "project_id": root["project_id"],
+                "project": root["project"],
+                "status": root["status"],
+                "virtual": root["virtual"],
+                "nodes": len(descendants),
+                "active": sum(nodes[node_id]["status"] == "active" for node_id in descendants),
+            }
+        )
+    for node_id, node in nodes.items():
+        node["controller_id"] = controller_by_node.get(node_id, node_id if node["role"] == "ctrl" else "")
     model_counts = Counter(
         node["model"] for node in nodes.values() if not node["virtual"] and node["model"] != "unknown"
     )
     role_counts = Counter(node["role"] for node in nodes.values() if not node["virtual"])
     status_counts = Counter(node["status"] for node in nodes.values() if not node["virtual"])
     total_tokens = sum(node["tokens"] for node in nodes.values() if not node["virtual"])
-    return {
+    overview = {
         "generated_at": datetime.now(UTC).isoformat(),
         "heartbeat_minutes": heartbeat,
+        "observation_window_ms": observation_window_ms,
         "nodes": sorted(nodes.values(), key=lambda node: (node["project"], node["created_at"] or 0)),
         "links": links,
         "roots": roots,
+        "controllers": sorted(controllers, key=lambda item: (-item["active"], item["artifact"])),
         "projects": sorted(projects.values(), key=lambda item: (-item["active"], item["name"])),
         "analytics": {
             "swarms": len(roots),
@@ -480,12 +548,23 @@ def build_overview(codex_home: Path, config_path: Path) -> dict[str, Any]:
         },
         "claim_limits": [
             "Hierarchy is derived from Codex thread spawn edges and SWARM-formatted titles.",
+            "Controller scopes are observed host descendants, not the authoritative runtime workflow graph.",
+            "Only unarchived host tasks updated within the current observation window are shown.",
+            "Visible-tab refreshes reuse the local snapshot until the host database, its WAL, or config changes.",
             "Active means recently updated within two heartbeat windows, not guaranteed CPU work.",
             "Tokens are host-reported cumulative thread tokens, not billing or remaining quota.",
             "Only title metadata needed to recognize SWARM naming is read; message bodies, previews, rollout content, credentials, and the logs database are not.",
         ],
         "source": database.name,
     }
+    data_bytes = len(json.dumps(overview, ensure_ascii=False, separators=(",", ":")).encode("utf-8"))
+    overview["performance"] = {
+        "snapshot_ms": round((time.perf_counter() - started_at) * 1000, 2),
+        "data_bytes": data_bytes,
+        "refresh_seconds": 30,
+        "budget": {"cache_hit_ms": 5, "data_bytes": 262_144},
+    }
+    return overview
 
 
 class SwarmHTTPServer(ThreadingHTTPServer):
@@ -502,6 +581,19 @@ class App:
         self.config_path = config_path.resolve()
         self.token = secrets.token_urlsafe(24)
         self.write_lock = threading.Lock()
+        self.overview_lock = threading.Lock()
+        self._overview_fingerprint: tuple[tuple[str, int, int], ...] | None = None
+        self._overview: dict[str, Any] | None = None
+
+    def overview(self) -> dict[str, Any]:
+        fingerprint = observation_fingerprint(self.codex_home, self.config_path)
+        with self.overview_lock:
+            if self._overview is not None and self._overview_fingerprint == fingerprint:
+                return self._overview
+            overview = build_overview(self.codex_home, self.config_path)
+            self._overview_fingerprint = observation_fingerprint(self.codex_home, self.config_path)
+            self._overview = overview
+            return overview
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -562,7 +654,7 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/api/overview":
                 self._json(
                     HTTPStatus.OK,
-                    build_overview(self.server.app.codex_home, self.server.app.config_path),
+                    self.server.app.overview(),
                 )
                 return
             if path == "/api/config":

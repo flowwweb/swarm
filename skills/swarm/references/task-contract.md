@@ -26,6 +26,12 @@ INCIDENTS: LEAD consultation receipt for matching unresolved `.codex/swarm/incid
 
 An objective amendment increments the version and records authority, reason, requirements delta, new baseline, and prior-miss relevance. A genuinely new project links a distinct successor goal; it never rewrites the prior history.
 
+## Durable request ledger
+
+Each accepted user request has one private, atomic repo-local record: safe request/goal/task IDs, accountable owner, derived outcome digest, accepting route, next due event, state, safe evidence/transition receipts, the last published event/message/surface plus feed sequence, and immutable history. Never store raw user text, artifact body/path, credentials, or host identity claims. `OPEN` and `BLOCKED` remain unresolved through interruption, restart, heartbeat, reprioritization, or objective amendment. Only evidence-backed completion, explicit user supersession, or explicit user cancellation is terminal. The ledger is continuity, not task/gate/review authority: reload must revalidate current runtime facts before a composed or archive claim. A fresh runtime derives its feed-sequence floor from the persisted cursor and accepts only a newly published, fully validated later event; it never reconstructs old feed authority.
+
+Use `REQUEST_PENDING` only between durable staging and matching acceptance/activation. It is non-runnable and blocks worker/artifact work, stale/collapse handling, closeout, and archive until accepted or CTRL rolls it back from an exact surfaced blocker. A single record changes per lifecycle call; shared proof can advance multiple same-task requests only through separate calls. CTRL cannot silently delete or overwrite an accepted request.
+
 Integration-ready means immutable artifact identity, required proof state, and an explicit accepting route. `UNVERIFIED` remains open. A composed rendered product needs its composed render comparison when visual work is in scope.
 
 Gate receipts use only `PASS`, `FAIL`, or `TIMEOUT` and name the exact contract

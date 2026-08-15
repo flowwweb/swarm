@@ -47,6 +47,17 @@ flowchart LR
 
 The runtime workflow graph is a deterministic, read-only view derived from existing task, owner, dependency, artifact, gate, and review facts. It is not a graph service, scheduler, database, or second authority.
 
+Accepted requests add one small private continuity record—not another planner. It retains the accountable owner, accepting route, safe derived outcome identity, next due event, and last published feed cursor across an explicit restart. A fresh runtime uses that cursor only as an ordering floor for a newly validated event; it does not replay old feed authority. New requests can move in priority, but they cannot erase an open request. The record does not grant task, review, gate, or release authority.
+
+```mermaid
+flowchart LR
+  I["Validated intake"] --> P["REQUEST_PENDING"] --> A["Durable accepted request"] --> W["Owned work"]
+  A --> X["Restart / priority shift"] --> A
+  A --> C["Independent acceptance evidence"] --> D["Completed or explicit user terminal action"]
+  A -. eligible lane .-> WD["Optional WATCHDOG alert"]
+  A -. orphan audit .-> G["Global integrity signal to CTRL"]
+```
+
 ```mermaid
 flowchart LR
   B["Optional WATCHDOG binding"] --> E["Due or material evidence"]

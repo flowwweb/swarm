@@ -1151,6 +1151,21 @@
         "Design explicitly permits granular critique of small compounding details",
         "The design exception remains confined to design surfaces in a mixed review"
       ]
+    },
+    {
+      "id": 89,
+      "prompt": "CTRL accepted two user requests. A new priority message arrives while one request is blocked by an internet outage and the other is awaiting independent acceptance. Explain the smallest correct SWARM response.",
+      "expected_output": "Read-only list and audit the exact repository first; a missing store is empty/unattached without a write, not continuity proof. Explicitly attach before consequential request work. Keep both requests unresolved with their accountable owners, routes, history, due events, and last feed cursors. The new message may add or reprioritize work but cannot overwrite either request. After restart, derive the feed-sequence floor from each persisted cursor and require a newly published, fully validated later event without replaying old feed objects. WATCHDOG may emit a bound alert for eligible live lane evidence only; an orphan produces a fixed global flow-integrity blocker routed to CTRL, never a task binding or decision. The outage is context, not authority to fire or reassign. A closeout claim remains blocked until a fresh audit has no unresolved, orphaned, corrupt, or provisional records.",
+      "files": [],
+      "assertions": [
+        "Accepted requests survive interruption and reprioritization",
+        "Internet outage does not justify automatic owner removal",
+        "WATCHDOG alerts but never mutates or decides",
+        "Fresh restart ordering uses persisted cursors without replaying old feed authority",
+        "Missing-store inspection is side-effect free and unattached",
+        "Each request transitions independently through current evidence",
+        "Completion audits every open and provisional request"
+      ]
     }
   ]
 }

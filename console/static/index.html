@@ -21,16 +21,16 @@
           </div>
         </div>
         <nav class="nav-list">
-          <button class="nav-item is-active" data-view="overview" type="button">
+          <button class="nav-item is-active" data-view="overview" type="button" aria-label="Overview">
             <span aria-hidden="true">⌁</span><b>Overview</b>
           </button>
-          <button class="nav-item" data-view="swarm" type="button">
+          <button class="nav-item" data-view="swarm" type="button" aria-label="Swarm">
             <span aria-hidden="true">⌘</span><b>Swarm</b>
           </button>
-          <button class="nav-item" data-view="analytics" type="button">
+          <button class="nav-item" data-view="analytics" type="button" aria-label="Analytics">
             <span aria-hidden="true">↗</span><b>Analytics</b>
           </button>
-          <button class="nav-item" data-view="settings" type="button">
+          <button class="nav-item" data-view="settings" type="button" aria-label="Settings">
             <span aria-hidden="true">⚙</span><b>Settings</b>
           </button>
         </nav>
@@ -90,10 +90,15 @@
 
         <section class="view" id="view-swarm" data-view-panel="swarm">
           <div class="section-intro">
-            <div><p class="eyebrow">LIVE HIERARCHY</p><h2>The swarm,<span> without the noise.</span></h2></div>
-            <label class="project-picker">Project
-              <select id="project-filter" aria-label="Filter swarm by project"></select>
-            </label>
+            <div><p class="eyebrow">LIVE HIERARCHY</p><h2>One CTRL,<span> one clear field.</span></h2><p class="scope-copy" id="scope-copy" role="status" aria-live="polite"></p></div>
+            <div class="graph-filters">
+              <label class="project-picker">CTRL scope
+                <select id="controller-filter" aria-label="Filter graph by CTRL"></select>
+              </label>
+              <label class="project-picker">Project
+                <select id="project-filter" aria-label="Filter swarm by project"></select>
+              </label>
+            </div>
           </div>
           <section class="swarm-stage" aria-label="Animated SWARM hierarchy">
             <div class="swarm-scroll">
@@ -102,6 +107,10 @@
                 <div id="swarm-nodes"></div>
               </div>
             </div>
+          </section>
+          <section class="panel activity-panel" aria-labelledby="activity-heading">
+            <div class="panel-head"><div><p class="eyebrow">LOCAL ACTIVITY</p><h3 id="activity-heading">Observed pulse</h3></div><span class="activity-boundary">Host activity only</span></div>
+            <div class="pulse-list" id="scope-activity"></div>
           </section>
         </section>
 

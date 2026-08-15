@@ -13,6 +13,14 @@ const staticRoot = path.join(consoleRoot, "static");
 const fixture = JSON.parse(
   fs.readFileSync(path.join(testsRoot, "fixtures", "console-ui.json"), "utf8"),
 );
+const multiFixtureOverview = structuredClone(fixture.overview);
+multiFixtureOverview.nodes.push(
+  { id: "branch-ctrl", title: "🐙CTRL - Parallel proof", role: "ctrl", role_label: "CTRL", icon: "🐙", artifact: "Parallel proof", project_id: "project:fixture", project: "swarm", status: "quiet", created_at: 2100, updated_at: 2100, quiet_ms: 0, virtual: false, controller_id: "branch-ctrl" },
+  ...["One", "Two", "Three"].map((artifact, index) => ({ id: `branch-${index}`, title: `🔨DEV - ${artifact}`, role: "doer", role_label: "DEV", icon: "🔨", artifact, project_id: "project:fixture", project: "swarm", status: "quiet", created_at: 2200 + index, updated_at: 2200 + index, quiet_ms: 0, virtual: false, controller_id: "branch-ctrl" })),
+);
+multiFixtureOverview.links.push(...[0, 1, 2].map((index) => ({ source: "branch-ctrl", target: `branch-${index}` })));
+multiFixtureOverview.roots.push("branch-ctrl");
+multiFixtureOverview.controllers.push({ id: "branch-ctrl", title: "🐙CTRL - Parallel proof", artifact: "Parallel proof", project_id: "project:fixture", project: "swarm", status: "quiet", virtual: false, nodes: 4, active: 0 });
 const evidenceRoot = process.env.SWARM_UI_EVIDENCE_DIR ||
   fs.mkdtempSync(path.join(os.tmpdir(), "swarm-console-ui-"));
 fs.mkdirSync(evidenceRoot, { recursive: true });
@@ -28,7 +36,7 @@ function response(body) {
   return { status: 200, contentType: "application/json", body: JSON.stringify(body) };
 }
 
-async function mount(page) {
+async function mount(page, overview = fixture.overview) {
   const config = structuredClone(fixture.config);
   const runtimeErrors = [];
   page.on("console", (message) => {
@@ -42,7 +50,7 @@ async function mount(page) {
       return route.fulfill({ status: 200, contentType: "text/html", body: documentHtml });
     }
     if (pathname === "/api/bootstrap") return route.fulfill(response(fixture.bootstrap));
-    if (pathname === "/api/overview") return route.fulfill(response(fixture.overview));
+    if (pathname === "/api/overview") return route.fulfill(response(overview));
     if (pathname === "/api/config" && request.method() === "POST") {
       const payload = request.postDataJSON();
       config.settings.execution.usage_saver = payload.changes["execution.usage_saver"];
@@ -161,6 +169,13 @@ try {
           borderRadius: spinnerStyle.borderRadius,
           animationName: spinnerStyle.animationName,
         },
+        controllerOptions: document.querySelectorAll("#controller-filter option").length,
+        scopeCopy: document.querySelector("#scope-copy")?.textContent,
+        scopedActivity: document.querySelectorAll("#scope-activity .pulse-row").length,
+        scroll: (() => {
+          const scroller = document.querySelector(".swarm-scroll");
+          return { clientWidth: scroller.clientWidth, scrollWidth: scroller.scrollWidth, clientHeight: scroller.clientHeight, scrollHeight: scroller.scrollHeight };
+        })(),
       };
     });
     assert.equal(hierarchy.ctrlAboveLead, true);
@@ -178,6 +193,13 @@ try {
     assert.equal(hierarchy.spinner.height, "10px");
     assert.equal(hierarchy.spinner.borderRadius, "50%");
     assert.equal(hierarchy.spinner.animationName, "hierarchy-spin");
+    assert.equal(hierarchy.controllerOptions, 1);
+    assert.match(hierarchy.scopeCopy, /Viewing Ship console/);
+    assert.equal(hierarchy.scopedActivity, 3);
+    if (width === 390) {
+      assert.ok(hierarchy.scroll.scrollWidth <= hierarchy.scroll.clientWidth, "sparse graph has horizontal scroll");
+      assert.ok(hierarchy.scroll.scrollHeight <= hierarchy.scroll.clientHeight, "sparse graph has vertical scroll");
+    }
     await page.emulateMedia({ reducedMotion: "reduce" });
     assert.equal(
       await page.locator(".swarm-node.role-lead > .node-meta .node-status.is-processing i").evaluate(
@@ -195,8 +217,23 @@ try {
     assert.deepEqual(runtimeErrors, []);
     await page.close();
   }
+  const multiPage = await browser.newPage({ viewport: { width: 390, height: 844 } });
+  const multiErrors = await mount(multiPage, multiFixtureOverview);
+  await multiPage.locator('[data-view="swarm"]').click();
+  await multiPage.locator("#controller-filter").selectOption("branch-ctrl");
+  const multiGeometry = await multiPage.evaluate(() => {
+    const scroller = document.querySelector(".swarm-scroll");
+    return { documentWidth: document.documentElement.scrollWidth, clientWidth: scroller.clientWidth, scrollWidth: scroller.scrollWidth, nodes: document.querySelectorAll(".swarm-node").length };
+  });
+  assert.ok(multiGeometry.documentWidth <= 391, "multi-node graph leaked into document overflow");
+  assert.ok(multiGeometry.scrollWidth > multiGeometry.clientWidth, "wide multi-node graph did not retain contained navigation");
+  assert.equal(multiGeometry.nodes, 4);
+  assert.deepEqual(multiErrors, []);
+  await multiPage.close();
 } finally {
   await browser.close();
 }
 
+assert.match(app, /document\.visibilityState === "visible"/);
+assert.match(app, /controller-filter/);
 console.log(JSON.stringify({ ok: true, evidenceRoot, results }, null, 2));

@@ -1,5 +1,7 @@
 # Compact review contract
 
+Before completion, release, or archive, audit the explicitly enabled and attached request ledger. Disabled or enabled-but-unattached continuity is `UNVERIFIED`, never evidence of enforcement. Every accepted request must be terminal through current evidence-backed acceptance or explicit user cancellation/supersession. Unresolved, provisional, corrupt, orphaned, or stale-ledger state is `UNVERIFIED`; stored terminal history or event cursors cannot replace the current task, artifact, gate, independent review, published proof, or accepting route.
+
 ## Two independent gates
 
 For consequential implementation, REVIEW first judges an immutable plan artifact.

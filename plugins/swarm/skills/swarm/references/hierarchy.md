@@ -34,6 +34,8 @@ authority.
 
 ## Authority
 
+CTRL owns the durable accepted-request inventory and human route; a LEAD owns each delegated request's live task and evidence transitions. Stored history never restores authority after restart. WATCHDOG may alert an eligible bound owner about a valid request, while orphaned records return only to CTRL's completion audit and never manufacture a sensor identity or correction.
+
 | Function | Owns | Does not own |
 | --- | --- | --- |
 | CTRL | Intake, objective ledger, topology, user-visible task materialization, shared-surface coordination, final composed acceptance, human route | LEAD implementation or independent REVIEW |

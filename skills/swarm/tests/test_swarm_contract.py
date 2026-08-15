@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -75,6 +76,12 @@ class SwarmContractTests(unittest.TestCase):
     def test_finite_roles_do_not_create_goals(self) -> None:
         decision = contract.goal_decision("assist", None, "temporary")
         self.assertEqual(decision.action, "not_required")
+
+    def test_standalone_request_bridge_is_read_only(self) -> None:
+        with tempfile.TemporaryDirectory() as root:
+            result=contract.request_bridge({"operation":"audit","repo_root":root,"now":0})
+            self.assertEqual(result["records"],[]); self.assertEqual(result["unresolved_ids"],())
+            with self.assertRaisesRegex(ValueError,"read-only"): contract.request_bridge({"operation":"accept","repo_root":root})
 
 
 if __name__ == "__main__":

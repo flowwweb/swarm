@@ -1,15 +1,13 @@
 """Private repo-local escaped-defect ledger with serialized daily folds."""
 from __future__ import annotations
 
-from contextlib import contextmanager
 from dataclasses import asdict, dataclass, replace
 from datetime import datetime, timezone
 from enum import StrEnum
 import json
-import os
 from pathlib import Path
 import re
-import tempfile
+from .private_state import LockedPrivateState
 
 
 class IncidentError(ValueError): pass
@@ -87,42 +85,7 @@ class IncidentLedger:
     ignore_rule="/.codex/swarm/"
 
     def __init__(self, repo_root:Path|str):
-        self.repo_root=Path(repo_root).resolve(); self.path=self.repo_root/self.relative_path; self.lock_path=self.path.with_suffix(".lock")
-        self._ensure_private_ignored_state()
-
-    def _ensure_private_ignored_state(self) -> None:
-        self.path.parent.mkdir(parents=True,exist_ok=True)
-        try: os.chmod(self.path.parent,0o700)
-        except OSError: pass
-        git=self.repo_root/".git"; git_dir=git
-        if git.is_file():
-            marker=git.read_text(encoding="utf-8").strip()
-            if marker.lower().startswith("gitdir:"): git_dir=(git.parent/marker.split(":",1)[1].strip()).resolve()
-        if git_dir.is_dir():
-            common_marker=git_dir/"commondir"; common_dir=(git_dir/common_marker.read_text(encoding="utf-8").strip()).resolve() if common_marker.exists() else git_dir
-            exclude=common_dir/"info"/"exclude"; exclude.parent.mkdir(parents=True,exist_ok=True); existing=exclude.read_text(encoding="utf-8") if exclude.exists() else ""
-            if self.ignore_rule not in existing.splitlines():
-                with exclude.open("a",encoding="utf-8",newline="\n") as handle: handle.write(("" if not existing or existing.endswith("\n") else "\n")+self.ignore_rule+"\n")
-
-    @contextmanager
-    def _lock(self):
-        self.lock_path.parent.mkdir(parents=True,exist_ok=True)
-        with self.lock_path.open("a+b") as handle:
-            handle.seek(0,os.SEEK_END)
-            if handle.tell()==0: handle.write(b"\0"); handle.flush()
-            handle.seek(0)
-            if os.name=="nt":
-                import msvcrt
-                msvcrt.locking(handle.fileno(),msvcrt.LK_LOCK,1)
-                try: yield
-                finally:
-                    handle.seek(0); msvcrt.locking(handle.fileno(),msvcrt.LK_UNLCK,1)
-            else:
-                import fcntl
-                fcntl.flock(handle.fileno(),fcntl.LOCK_EX)
-                try: yield
-                finally: fcntl.flock(handle.fileno(),fcntl.LOCK_UN)
-
+        self.repo_root=Path(repo_root).resolve(); self._state=LockedPrivateState(self.repo_root,self.relative_path); self._state.prepare(); self.path=self._state.path
     def _decode(self, raw:dict) -> IncidentRecord:
         raw["disposition"]=IncidentDisposition(raw["disposition"]); raw["propagationPath"]=tuple(raw["propagationPath"])
         raw["evidence"]=tuple(EvidenceReference(EvidenceKind(item["kind"]),item["locator"],item.get("digest","")) for item in raw["evidence"])
@@ -133,23 +96,19 @@ class IncidentLedger:
         return tuple(self._decode(json.loads(line)) for line in self.path.read_text(encoding="utf-8").splitlines() if line.strip())
 
     def read(self) -> tuple[IncidentRecord,...]:
-        with self._lock(): return self._read_unlocked()
+        with self._state.locked(): return self._read_unlocked()
 
     def append(self, record:IncidentRecord) -> None:
-        with self._lock():
+        with self._state.locked():
             if any(existing.incidentId==record.incidentId for existing in self._read_unlocked()): raise IncidentError("incident identity already exists")
             payload=(json.dumps(asdict(record),default=str,ensure_ascii=False,separators=(",",":"))+"\n").encode("utf-8")
-            descriptor=os.open(self.path,os.O_APPEND|os.O_CREAT|os.O_WRONLY,0o600)
-            try: os.write(descriptor,payload); os.fsync(descriptor)
-            finally: os.close(descriptor)
-            try: os.chmod(self.path,0o600)
-            except OSError: pass
+            self._state.replace_bytes_unlocked(self._state.read_bytes_unlocked()+payload)
 
     def unresolved(self, *, artifact:str, scope:str) -> tuple[IncidentRecord,...]:
         return tuple(item for item in self.read() if item.artifact==artifact and item.scope==scope and item.disposition in {IncidentDisposition.LOCAL_ONLY,IncidentDisposition.CANDIDATE})
 
     def daily_fold(self, candidate:FoldCandidate) -> FoldResult:
-        with self._lock():
+        with self._state.locked():
             records={item.incidentId:item for item in self._read_unlocked()}; selected=tuple(records[item] for item in candidate.incident_ids if item in records)
             valid=len(selected)==len(candidate.incident_ids); repeated=len(selected)>=2 and len({item.failure_class for item in selected})==1
             portable=not candidate.repository_specific and not candidate.person_specific and not _REPO_COMMAND.search(candidate.control)
@@ -160,23 +119,14 @@ class IncidentLedger:
 
     def reject(self, incident_ids:tuple[str,...], *, reason:str) -> None:
         if not incident_ids or len(set(incident_ids))!=len(incident_ids) or not reason.strip(): raise IncidentError("explicit rejection requires distinct incident identities and reason")
-        with self._lock():
+        with self._state.locked():
             records={item.incidentId:item for item in self._read_unlocked()}
             if any(identity not in records for identity in incident_ids): raise IncidentError("cannot reject unknown incident")
             self._rewrite_unlocked({identity:(IncidentDisposition.REJECTED,reason.strip()) for identity in incident_ids})
 
     def _rewrite_unlocked(self, dispositions:dict[str,tuple[IncidentDisposition,str]]) -> None:
         records=tuple(replace(item,disposition=dispositions[item.incidentId][0],dispositionReason=dispositions[item.incidentId][1]) if item.incidentId in dispositions else item for item in self._read_unlocked())
-        handle=tempfile.NamedTemporaryFile("w",encoding="utf-8",delete=False,dir=self.path.parent,prefix="incidents-",suffix=".tmp",newline="\n"); temporary=Path(handle.name)
-        try:
-            with handle:
-                for record in records: handle.write(json.dumps(asdict(record),default=str,ensure_ascii=False,separators=(",",":"))+"\n")
-                handle.flush(); os.fsync(handle.fileno())
-            os.replace(temporary,self.path)
-            try: os.chmod(self.path,0o600)
-            except OSError: pass
-        finally:
-            if temporary.exists(): temporary.unlink()
+        payload="".join(json.dumps(asdict(record),default=str,ensure_ascii=False,separators=(",",":"))+"\n" for record in records).encode("utf-8"); self._state.replace_bytes_unlocked(payload)
 
 
 def utc_timestamp() -> str: return datetime.now(timezone.utc).isoformat().replace("+00:00","Z")

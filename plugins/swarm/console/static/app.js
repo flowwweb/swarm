@@ -164,6 +164,18 @@ function renderProjectFilter() {
   select.value = [...select.options].some((option) => option.value === current) ? current : "all";
 }
 
+function renderControllerFilter() {
+  const select = $("#controller-filter");
+  const current = select.value;
+  const controllers = state.overview.controllers || [];
+  select.innerHTML = controllers.length
+    ? controllers.map((controller) => `<option value="${escapeHTML(controller.id)}">${escapeHTML(controller.artifact)} · ${controller.nodes} nodes</option>`).join("")
+    : `<option value="all">No observed CTRL</option>`;
+  select.value = [...select.options].some((option) => option.value === current)
+    ? current
+    : (controllers[0]?.id || "all");
+}
+
 function roleColor(role) {
   return { ctrl: "#ff7043", specialist: "#a8ff4f", lead: "#42d9ff", review: "#ffbd59", doer: "#89a9ff" }[role] || "#89a9ff";
 }
@@ -191,7 +203,11 @@ function leadSlots(lead, nodeById, children) {
 function renderSwarm() {
   if (!state.overview) return;
   const project = $("#project-filter").value || "all";
-  const allNodes = state.overview.nodes.filter((node) => project === "all" || node.project_id === project);
+  const controller = $("#controller-filter").value || "all";
+  const allNodes = state.overview.nodes.filter((node) =>
+    (project === "all" || node.project_id === project) &&
+    (controller === "all" || node.controller_id === controller),
+  );
   const ids = new Set(allNodes.map((node) => node.id));
   const allLinks = state.overview.links.filter((link) => ids.has(link.source) && ids.has(link.target));
   const allChildren = new Map();
@@ -217,14 +233,22 @@ function renderSwarm() {
   displayNodes.forEach((node) => { if (!depth.has(node.id)) depth.set(node.id, 0); });
   const levels = new Map();
   displayNodes.forEach((node) => levels.set(depth.get(node.id), [...(levels.get(depth.get(node.id)) || []), node]));
+  const scroller = $(".swarm-scroll");
   const maxWidth = Math.max(1, ...[...levels.values()].map((items) => items.length));
-  const width = Math.max(980, maxWidth * 220 + 120);
-  const height = Math.max(520, levels.size * 205 + 100);
+  const hasExpandedLead = displayNodes.some((node) => node.role === "lead" && node.status === "active");
+  const levelStride = hasExpandedLead ? 185 : 145;
+  const widestNode = hasExpandedLead ? 320 : 172;
+  const width = Math.max(
+    scroller.clientWidth,
+    maxWidth * widestNode + Math.max(0, maxWidth - 1) * 24 + (maxWidth > 1 ? 32 : 0),
+  );
+  const height = Math.max(scroller.clientHeight, levels.size * levelStride + 70);
   const positions = new Map();
+  const firstLevelY = Math.max(72, (height - Math.max(0, levels.size - 1) * levelStride) / 2);
   [...levels.entries()].sort(([a], [b]) => a - b).forEach(([level, items]) => {
     items.sort((a, b) => a.project.localeCompare(b.project) || a.created_at - b.created_at);
     const gap = width / (items.length + 1);
-    items.forEach((node, index) => positions.set(node.id, { x: gap * (index + 1), y: 85 + level * 200 }));
+    items.forEach((node, index) => positions.set(node.id, { x: gap * (index + 1), y: firstLevelY + level * levelStride }));
   });
   const canvas = $("#swarm-canvas");
   canvas.style.width = `${width}px`;
@@ -242,13 +266,31 @@ function renderSwarm() {
     return `<article class="swarm-node role-${escapeHTML(node.role)} is-${escapeHTML(node.status)}" style="left:${p.x}px;top:${p.y}px;--node-color:${roleColor(node.role)}" aria-label="${escapeHTML(`${node.role_label} - ${node.artifact}. Status: ${node.status}`)}"><div class="node-top"><span class="node-icon" aria-hidden="true">${escapeHTML(node.icon)}</span><span class="node-role">${escapeHTML(node.role_label)}</span></div><strong>${escapeHTML(node.artifact)}</strong><div class="node-meta">${hierarchyStatus(node.status)}</div>${leadSlots(node, nodeById, allChildren)}</article>`;
   }).join("");
   if (!displayNodes.length) $("#swarm-nodes").innerHTML = `<div class="empty-state">No SWARM hierarchy exists for this project.</div>`;
-  const scroller = $(".swarm-scroll");
-  if (canvas.dataset.project !== project) {
+  const scopeKey = `${project}:${controller}`;
+  if (canvas.dataset.project !== scopeKey) {
     const first = positions.get(roots[0]?.id);
     scroller.scrollLeft = first ? Math.max(0, first.x - scroller.clientWidth / 2) : 0;
     scroller.scrollTop = 0;
-    canvas.dataset.project = project;
+    canvas.dataset.project = scopeKey;
   }
+  renderScopeCopy(allNodes, controller);
+  renderScopeActivity(allNodes);
+}
+
+function renderScopeCopy(nodes, controllerId) {
+  const controller = (state.overview.controllers || []).find((item) => item.id === controllerId);
+  const performance = state.overview.performance;
+  const scope = controller ? `Viewing ${controller.artifact}.` : "No observed CTRL scope is available.";
+  const refresh = performance ? `${performance.refresh_seconds}s refresh · ${performance.data_bytes} B snapshot` : "30s refresh";
+  $("#scope-copy").textContent = `${scope} ${nodes.length} visible nodes · ${refresh}.`;
+}
+
+function renderScopeActivity(nodes) {
+  const recent = nodes.filter((node) => !node.virtual && node.status === "active")
+    .sort((a, b) => b.updated_at - a.updated_at).slice(0, 6);
+  $("#scope-activity").innerHTML = recent.length
+    ? recent.map((node) => `<div class="pulse-row"><i class="pulse-dot"></i><span><strong>${escapeHTML(node.title)}</strong><small>${escapeHTML(node.project)} · updated ${formatDuration(node.quiet_ms)} ago</small></span></div>`).join("")
+    : `<div class="empty-state">No recent host activity in this scope. This does not establish whether a task is blocked or complete.</div>`;
 }
 
 function renderChart(selector, entries) {
@@ -339,7 +381,7 @@ async function refreshOverview() {
   clearError();
   try {
     state.overview = await api("/api/overview");
-    renderMetrics(); renderProjects(); renderPulse(); renderProjectFilter(); renderSwarm(); renderAnalytics();
+    renderMetrics(); renderProjects(); renderPulse(); renderProjectFilter(); renderControllerFilter(); renderSwarm(); renderAnalytics();
     $("#sync-time").textContent = new Date(state.overview.generated_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
   } catch (error) {
     showError(error.message);
@@ -369,6 +411,7 @@ document.addEventListener("click", (event) => {
 $("#refresh").addEventListener("click", refreshOverview);
 $("#usage-saver-toggle").addEventListener("change", saveUsageSaver);
 $("#project-filter").addEventListener("change", renderSwarm);
+$("#controller-filter").addEventListener("change", renderSwarm);
 $("#save-settings").addEventListener("click", saveSettings);
 $("#settings-form").addEventListener("input", (event) => {
   const input = event.target.closest("[data-setting]");
@@ -380,4 +423,6 @@ $("#settings-form").addEventListener("input", (event) => {
 window.addEventListener("resize", () => { if (state.view === "swarm") renderSwarm(); });
 
 initialize();
-setInterval(refreshOverview, 30_000);
+setInterval(() => {
+  if (document.visibilityState === "visible") refreshOverview();
+}, 30_000);
