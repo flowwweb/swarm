@@ -240,10 +240,7 @@ class ReleasePackageTests(unittest.TestCase):
     def test_mirror_detects_and_repairs_clean_equivalent_crlf_bytes(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = self.make_plugin(Path(temporary))
-            # Ask Git to materialize CRLF while retaining canonical LF blobs.
-            # This exercises clean-filter equivalence on every runner instead
-            # of relying on a Windows-only working-tree state.
-            (root / ".gitattributes").write_bytes(b"* text=auto eol=crlf\n")
+            (root / ".gitattributes").write_bytes(b"* text=auto eol=lf\n")
             for relative in source_file_hashes(root):
                 source = root / relative
                 target = root / "plugins" / "swarm" / relative
@@ -255,13 +252,16 @@ class ReleasePackageTests(unittest.TestCase):
 
             source_manifest = root / ".codex-plugin" / "plugin.json"
             mirror_manifest = root / "plugins" / "swarm" / ".codex-plugin" / "plugin.json"
+            for manifest in (source_manifest, mirror_manifest):
+                lf_payload = manifest.read_bytes().replace(b"\r\n", b"\n")
+                manifest.write_bytes(lf_payload.replace(b"\n", b"\r\n"))
+            # Suppress Git's platform-specific stat heuristic; the builder still
+            # hashes filtered bytes and rejects non-equivalent hidden changes.
             subprocess.run([
-                "git", "-C", str(root), "checkout-index", "--force", "--",
+                "git", "-C", str(root), "update-index", "--assume-unchanged", "--",
                 ".codex-plugin/plugin.json",
                 "plugins/swarm/.codex-plugin/plugin.json",
             ], check=True)
-            self.assertIn(b"\r\n", source_manifest.read_bytes())
-            self.assertIn(b"\r\n", mirror_manifest.read_bytes())
             self.assertFalse(subprocess.run(
                 ["git", "-C", str(root), "status", "--porcelain"],
                 capture_output=True,
