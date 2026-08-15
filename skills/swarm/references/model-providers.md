@@ -1,5 +1,14 @@
 # Model providers and capability routing
 
+## User choice is binding
+
+An explicit user choice of model, provider, service tier, or reasoning level is
+an assignment constraint, not a preference. Preserve it exactly for CTRL and
+every child assignment. SWARM may explain a mismatch or recommend an
+alternative, but must not silently lower, raise, replace, or reinterpret the
+choice. If the host cannot honor it, return the exact blocker. SWARM chooses
+these settings only when the user explicitly delegates that choice.
+
 SWARM keeps two concerns separate:
 
 1. Codex connects to and authenticates a model provider.

@@ -6,6 +6,7 @@
     <meta name="color-scheme" content="dark" />
     <meta name="description" content="Local SWARM control and analytics console" />
     <title>🐙 SWARM Console</title>
+    <link rel="icon" href="/assets/swarm-wordmark.png" />
     <link rel="stylesheet" href="/styles.css" />
   </head>
   <body>
@@ -14,23 +15,15 @@
     <div class="app-shell">
       <aside class="rail" aria-label="SWARM Console navigation">
         <div class="brand">
-          <div class="brand-mark" aria-hidden="true"><span>🐙</span></div>
-          <div>
-            <strong>SWARM</strong>
-            <small>CONTROL</small>
-          </div>
+          <img class="brand-wordmark" src="/assets/swarm-wordmark.png" alt="SWARM" />
+          <span class="brand-compact" aria-hidden="true">🐙</span>
+          <button class="rail-toggle" id="rail-toggle" type="button" aria-label="Collapse sidebar" aria-expanded="true" title="Collapse sidebar"><span aria-hidden="true">‹</span></button>
         </div>
         <nav class="nav-list">
-          <button class="nav-item is-active" data-view="overview" type="button" aria-label="Overview">
-            <span aria-hidden="true">⌁</span><b>Overview</b>
+          <button class="nav-item is-active" data-view="swarm" type="button" aria-label="Graph" title="Graph">
+            <span aria-hidden="true">⌘</span><b>Graph</b>
           </button>
-          <button class="nav-item" data-view="swarm" type="button" aria-label="Swarm">
-            <span aria-hidden="true">⌘</span><b>Swarm</b>
-          </button>
-          <button class="nav-item" data-view="analytics" type="button" aria-label="Analytics">
-            <span aria-hidden="true">↗</span><b>Analytics</b>
-          </button>
-          <button class="nav-item" data-view="settings" type="button" aria-label="Settings">
+          <button class="nav-item" data-view="settings" type="button" aria-label="Settings" title="Settings">
             <span aria-hidden="true">⚙</span><b>Settings</b>
           </button>
         </nav>
@@ -42,57 +35,18 @@
 
       <main class="workspace">
         <header class="topbar">
-          <div>
-            <p class="eyebrow">Rapid Unified Swarm Hierarchy</p>
-            <h1 id="view-title">Command overview</h1>
-          </div>
+          <h1 id="view-title">Graph</h1>
           <div class="top-actions">
-            <label class="usage-saver" id="usage-saver-control">
-              <span class="usage-saver-copy"><strong>Usage Saver</strong><small id="usage-saver-state" role="status" aria-live="polite">Loading</small></span>
-              <span class="switch"><input id="usage-saver-toggle" type="checkbox" aria-label="Usage Saver" disabled><span aria-hidden="true"></span></span>
-            </label>
             <div class="live-status" role="status"><span></span><b>LIVE</b><small id="sync-time">Connecting</small></div>
             <button class="icon-button" id="refresh" type="button" aria-label="Refresh console">↻</button>
           </div>
         </header>
 
-        <section class="view is-active" id="view-overview" data-view-panel="overview">
-          <div class="hero-band">
-            <div>
-              <p class="eyebrow">THE OPERATION</p>
-              <h2>Every swarm.<br /><em>One clear command.</em></h2>
-              <p class="hero-copy">Real Codex hierarchy, local settings, and honest usage signals without another project ledger.</p>
-            </div>
-            <div class="hero-orbit" aria-hidden="true">
-              <span class="orbit-ring ring-a"></span>
-              <span class="orbit-ring ring-b"></span>
-              <span class="orbit-core">🐝</span>
-              <i class="satellite sat-a"></i><i class="satellite sat-b"></i><i class="satellite sat-c"></i>
-            </div>
-          </div>
-
-          <div class="metric-strip" id="metrics" aria-label="SWARM summary metrics"></div>
-
-          <div class="overview-grid">
-            <section class="panel project-panel" aria-labelledby="projects-heading">
-              <div class="panel-head">
-                <div><p class="eyebrow">PROJECTS</p><h3 id="projects-heading">Swarm field</h3></div>
-                <button class="text-button" data-jump="swarm" type="button">Open map <span>→</span></button>
-              </div>
-              <div class="project-list" id="project-list"></div>
-            </section>
-            <section class="panel pulse-panel" aria-labelledby="pulse-heading">
-              <div class="panel-head"><div><p class="eyebrow">NOW</p><h3 id="pulse-heading">Active pulse</h3></div></div>
-              <div class="pulse-list" id="pulse-list"></div>
-            </section>
-          </div>
-        </section>
-
-        <section class="view" id="view-swarm" data-view-panel="swarm">
+        <section class="view is-active" id="view-swarm" data-view-panel="swarm">
           <div class="section-intro">
-            <div><p class="eyebrow">LIVE HIERARCHY</p><h2>One CTRL,<span> one clear field.</span></h2><p class="scope-copy" id="scope-copy" role="status" aria-live="polite"></p></div>
+            <p class="scope-copy" id="scope-copy" role="status" aria-live="polite"></p>
             <div class="graph-filters">
-              <label class="project-picker">CTRL scope
+              <label class="project-picker">CTRL
                 <select id="controller-filter" aria-label="Filter graph by CTRL"></select>
               </label>
               <label class="project-picker">Project
@@ -108,37 +62,22 @@
               </div>
             </div>
           </section>
+          <p class="graph-boundary">Host-observed graph · SWARM runtime remains authoritative.</p>
           <section class="panel activity-panel" aria-labelledby="activity-heading">
-            <div class="panel-head"><div><p class="eyebrow">LOCAL ACTIVITY</p><h3 id="activity-heading">Observed pulse</h3></div><span class="activity-boundary">Host activity only</span></div>
+            <div class="panel-head"><h2 id="activity-heading">Activity</h2></div>
             <div class="pulse-list" id="scope-activity"></div>
           </section>
         </section>
 
-        <section class="view" id="view-analytics" data-view-panel="analytics">
-          <div class="section-intro">
-            <div><p class="eyebrow">LOCAL SIGNALS</p><h2>Where the swarm spends its motion.</h2></div>
-          </div>
-          <div class="analytics-grid">
-            <section class="panel chart-panel"><div class="panel-head"><div><p class="eyebrow">MODEL MIX</p><h3>Thread distribution</h3></div></div><div id="model-chart" class="bar-chart"></div></section>
-            <section class="panel chart-panel"><div class="panel-head"><div><p class="eyebrow">ROLE MIX</p><h3>Hierarchy shape</h3></div></div><div id="role-chart" class="bar-chart"></div></section>
-          </div>
-          <section class="panel ledger-panel">
-            <div class="panel-head"><div><p class="eyebrow">PROJECT LEDGER</p><h3>Host-reported thread usage</h3></div></div>
-            <div class="table-wrap"><table><thead><tr><th>Project</th><th>Tasks</th><th>Recent</th><th>Thread tokens</th></tr></thead><tbody id="analytics-table"></tbody></table></div>
-          </section>
-          <div class="claim-box" id="claim-limits"></div>
-        </section>
-
         <section class="view" id="view-settings" data-view-panel="settings">
-          <div class="section-intro">
-            <div><p class="eyebrow">GLOBAL CONFIG</p><h2>Shape the hierarchy. Keep the outcome.</h2></div>
+          <div class="settings-actions">
             <button class="primary-button" id="save-settings" type="button" disabled>Save changes</button>
           </div>
           <div class="settings-status" id="settings-status" role="status" aria-live="polite"></div>
           <form id="settings-form">
             <div class="settings-grid" id="settings-grid"></div>
           </form>
-          <div class="config-path"><span>Validated authority</span><code id="config-path"></code></div>
+          <div class="config-path"><span>Config</span><code id="config-path"></code></div>
         </section>
 
         <section class="error-surface" id="error-surface" hidden role="alert">

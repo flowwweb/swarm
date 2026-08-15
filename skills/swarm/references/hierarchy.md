@@ -10,12 +10,25 @@ one low-risk atomic outcome on one mutable surface with no cross-lane dependency
 and measurable completion inside the direct-work horizon. Otherwise CTRL hires
 a LEAD. A LEAD may hire DOERs for separable work that shortens accepted proof.
 
-Create a visible lane only when it produces an inspectable artifact, can advance
-without overlapping mutable ownership, contains enough adjacent work to repay
-startup and handoff cost, and has no existing owner that already fits. Artifact
-count, configured capacity, shared keywords, and a visually complete tree never
-justify a lane. Hidden subagents are bounded capacity inside an existing owner,
-not durable topology.
+Create a visible task lane when any durable boundary matters: independent
+ownership or progress, a separate mutable surface or artifact, independent
+review, work that can continue in parallel, or interruption-safe resumption.
+The lane still needs enough adjacent work to repay startup and handoff cost and
+must not overlap an existing owner. Use a subagent only for a short, bounded
+helper result that stays inside the lane's surface and lifecycle and returns to
+its owner within the current horizon. A subagent never owns durable work and
+never replaces a qualifying visible lane merely because it is easier to spawn.
+
+Use this routing order:
+
+1. Keep one atomic outcome with the current owner when coordination costs more.
+2. Open a visible task lane when a durable boundary above applies.
+3. Add a subagent only for bounded capacity within that lane.
+
+If the host cannot create a required visible task, record the exact capability
+blocker. Do not disguise a subagent as durable ownership. Artifact count,
+configured capacity, shared keywords, and a visually complete tree never
+justify a lane.
 
 An internal approval gate is failed capacity, not a user decision. Cancel that
 helper attempt, record the typed host-gate exception, and continue the same

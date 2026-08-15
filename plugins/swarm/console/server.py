@@ -45,6 +45,12 @@ STATIC_FILES = {
     "/app.js": ("app.js", "text/javascript; charset=utf-8"),
     "/styles.css": ("styles.css", "text/css; charset=utf-8"),
 }
+STATIC_ASSETS = {
+    "/assets/swarm-wordmark.png": (
+        PLUGIN_ROOT / "skills" / "swarm" / "assets" / "swarm-wordmark.png",
+        "image/png",
+    ),
+}
 
 EDITABLE_SETTINGS: dict[str, type] = {
     "portfolio.max_active_tasks": int,
@@ -358,6 +364,53 @@ def _status(row: sqlite3.Row, edge_status: str | None, heartbeat_minutes: int, n
     return "quiet"
 
 
+def _generic_agent_role(
+    row: sqlite3.Row,
+    role_icons: dict[str, Any],
+    *,
+    controller: bool = False,
+) -> dict[str, str]:
+    """Represent an observed child without exposing its prompt-like host title."""
+    nickname = str(row["agent_nickname"] or "").strip()
+    path_name = str(row["agent_path"] or "").replace("\\", "/").rstrip("/").rsplit("/", 1)[-1]
+    safe_path = re.sub(r"[^A-Za-z0-9_-]", "", path_name).strip()[:80]
+    path_tokens = [token for token in re.split(r"[_-]+", safe_path) if token]
+    role_suffixes = {"architect", "designer", "dev", "developer", "lead", "researcher", "review", "reviewer"}
+    while path_tokens and path_tokens[-1].casefold() in role_suffixes:
+        path_tokens.pop()
+    path_tokens = [token for token in path_tokens if not re.fullmatch(r"[0-9a-f]{6,}", token, re.I)]
+    if len(path_tokens) > 2:
+        path_tokens = [path_tokens[0], path_tokens[-1]]
+    artifact = " ".join(path_tokens) or "Task"
+    artifact = re.sub(r"(?i)\bgate\s*(\d+)\b", r"Gate \1", artifact).strip().title()[:48]
+    if controller:
+        artifact = "Current SWARM"
+    worker = re.sub(r"[^A-Za-z0-9 _-]", "", nickname).strip()[:48] if "\n" not in nickname else ""
+    role = "ctrl" if controller else "doer"
+    role_label = "CTRL" if controller else "AGENT"
+    if not controller:
+        path_key = safe_path.casefold()
+        if "lead" in path_key:
+            role, role_label = "lead", "LEAD"
+        elif "review" in path_key:
+            role, role_label = "review", "REVIEW"
+        elif any(marker in path_key for marker in ("developer", " dev", "dev ")):
+            role_label = "DEV"
+        elif "architect" in path_key:
+            role_label = "ARCHITECT"
+    icon = ""
+    if role_icons["enabled"]:
+        icon = str(role_icons[role]) if role in {"ctrl", "lead", "review"} else str(role_icons["fallback"])
+    return {
+        "role": role,
+        "role_label": role_label,
+        "icon": icon,
+        "artifact": artifact,
+        "worker": worker,
+        "title": f"{icon}{role_label} - {artifact}",
+    }
+
+
 def build_overview(codex_home: Path, config_path: Path) -> dict[str, Any]:
     started_at = time.perf_counter()
     _, config, _ = load_config(config_path)
@@ -371,28 +424,35 @@ def build_overview(codex_home: Path, config_path: Path) -> dict[str, Any]:
     )
     observed_after_ms = now_ms - observation_window_ms
     with closing(_readonly_connection(database)) as connection:
+        thread_columns = {
+            str(row["name"])
+            for row in connection.execute("PRAGMA table_info(threads)").fetchall()
+        }
+        agent_path_projection = "agent_path" if "agent_path" in thread_columns else "'' AS agent_path"
         rows = connection.execute(
-            """
+            f"""
             SELECT id, title, cwd, created_at, updated_at, created_at_ms, updated_at_ms,
                    model, reasoning_effort, tokens_used, archived, git_origin_url,
-                   git_branch, thread_source, agent_nickname, agent_role, is_pinned
+                   git_branch, thread_source, agent_nickname, agent_role, is_pinned,
+                   {agent_path_projection}
             FROM threads
-            WHERE COALESCE(archived, 0) = 0 AND updated_at_ms >= ?
+            WHERE archived = 0
+              AND (
+                updated_at_ms >= ?
+                OR (updated_at_ms IS NULL AND updated_at >= ?)
+              )
             """,
-            (observed_after_ms,),
+            (observed_after_ms, observed_after_ms // 1000),
         ).fetchall()
         edge_rows = connection.execute(
             """
-            SELECT edge.parent_thread_id, edge.child_thread_id, edge.status
-            FROM thread_spawn_edges AS edge
-            INNER JOIN threads AS child ON child.id = edge.child_thread_id
-            WHERE COALESCE(child.archived, 0) = 0 AND child.updated_at_ms >= ?
-            """,
-            (observed_after_ms,),
+            SELECT parent_thread_id, child_thread_id, status
+            FROM thread_spawn_edges
+            """
         ).fetchall()
 
     all_rows = {row["id"]: row for row in rows}
-    parsed = {
+    parsed_titles = {
         thread_id: role
         for thread_id, row in all_rows.items()
         if (
@@ -403,11 +463,108 @@ def build_overview(codex_home: Path, config_path: Path) -> dict[str, Any]:
     }
     parent_by_child = {edge["child_thread_id"]: edge["parent_thread_id"] for edge in edge_rows}
     edge_status = {edge["child_thread_id"]: edge["status"] for edge in edge_rows}
+    raw_children: dict[str, list[str]] = {}
+    for edge in edge_rows:
+        raw_children.setdefault(edge["parent_thread_id"], []).append(edge["child_thread_id"])
+    recent_ids = {
+        thread_id
+        for thread_id, row in all_rows.items()
+        if _epoch_ms(row["updated_at_ms"], row["updated_at"]) >= observed_after_ms
+    }
+    fresh_after_ms = now_ms - heartbeat * 2 * 60_000
+    fresh_ids = {
+        thread_id
+        for thread_id, row in all_rows.items()
+        if _epoch_ms(row["updated_at_ms"], row["updated_at"]) >= fresh_after_ms
+    }
+    root_candidate_ids = {
+        parent
+        for parent, child_ids in raw_children.items()
+        if parent in all_rows
+        and parent not in parent_by_child
+        and any(
+            child in fresh_ids
+            and str(all_rows[child]["agent_path"] or "").replace("\\", "/").startswith("/root/")
+            for child in child_ids
+            if child in all_rows
+        )
+    }
+    recent_parsed_ids = recent_ids.intersection(parsed_titles)
+    controller_seed_ids = {
+        thread_id
+        for thread_id in recent_parsed_ids
+        if parsed_titles[thread_id]["role"] == "ctrl"
+    }.union(root_candidate_ids.intersection(recent_ids))
+    descendant_ids: set[str] = set()
+    traversed_ids: set[str] = set(controller_seed_ids)
+    queue = list(controller_seed_ids)
+    while queue:
+        parent = queue.pop()
+        for child in raw_children.get(parent, []):
+            if child in traversed_ids:
+                continue
+            traversed_ids.add(child)
+            child_path = (
+                str(all_rows[child]["agent_path"] or "").replace("\\", "/")
+                if child in all_rows else ""
+            )
+            if child in recent_ids and (
+                child in parsed_titles or (child in fresh_ids and child_path.startswith("/root/"))
+            ):
+                descendant_ids.add(child)
+            queue.append(child)
+    included_ids = recent_parsed_ids.union(controller_seed_ids).union(descendant_ids)
+    # Agent replacement preserves the task identity expressed by its lane path.
+    # Keep the latest worker receipt instead of turning replacement into a new node.
+    latest_by_task: dict[tuple[str, str], str] = {}
+    superseded_ids: set[str] = set()
+    for thread_id in included_ids:
+        if thread_id in parsed_titles or thread_id in controller_seed_ids:
+            continue
+        lane_path = str(all_rows[thread_id]["agent_path"] or "").replace("\\", "/").casefold()
+        if not lane_path.startswith("/root/"):
+            continue
+        owner = thread_id
+        seen: set[str] = set()
+        while owner in parent_by_child and owner not in seen:
+            seen.add(owner)
+            owner = parent_by_child[owner]
+            if owner in controller_seed_ids:
+                break
+        key = (owner, lane_path)
+        previous = latest_by_task.get(key)
+        if previous is None:
+            latest_by_task[key] = thread_id
+            continue
+        previous_updated = _epoch_ms(all_rows[previous]["updated_at_ms"], all_rows[previous]["updated_at"])
+        current_updated = _epoch_ms(all_rows[thread_id]["updated_at_ms"], all_rows[thread_id]["updated_at"])
+        if current_updated >= previous_updated:
+            superseded_ids.add(previous)
+            latest_by_task[key] = thread_id
+        else:
+            superseded_ids.add(thread_id)
+    included_ids.difference_update(superseded_ids)
+    parsed = {
+        thread_id: parsed_titles.get(thread_id) or _generic_agent_role(
+            all_rows[thread_id],
+            config["role_icons"],
+            controller=thread_id in root_candidate_ids,
+        )
+        for thread_id in included_ids
+    }
 
     nodes: dict[str, dict[str, Any]] = {}
     projects: dict[str, dict[str, Any]] = {}
     for thread_id, role in parsed.items():
         row = all_rows[thread_id]
+        delegated_task = role["role"] != "ctrl"
+        worker_role = role["role_label"] if delegated_task else ""
+        visible_role_label = "TASK" if delegated_task else role["role_label"]
+        visible_icon = (
+            str(config["role_icons"]["fallback"])
+            if delegated_task and config["role_icons"]["enabled"]
+            else role["icon"]
+        )
         project_key, project_name = _project_identity(row)
         created_ms = _epoch_ms(row["created_at_ms"], row["created_at"])
         updated_ms = _epoch_ms(row["updated_at_ms"], row["updated_at"])
@@ -419,6 +576,10 @@ def build_overview(codex_home: Path, config_path: Path) -> dict[str, Any]:
         node = {
             "id": thread_id,
             **role,
+            "role_label": visible_role_label,
+            "icon": visible_icon,
+            "title": f"{visible_icon}{visible_role_label} - {role['artifact']}",
+            "worker_role": worker_role,
             "project_id": project_key,
             "project": project_name,
             "status": status,
@@ -432,6 +593,9 @@ def build_overview(codex_home: Path, config_path: Path) -> dict[str, Any]:
             "branch": row["git_branch"] or "",
             "pinned": bool(row["is_pinned"]),
             "virtual": False,
+            "worker": role.get("worker") or re.sub(
+                r"[^A-Za-z0-9 _-]", "", str(row["agent_nickname"] or "")
+            ).strip()[:48],
         }
         nodes[thread_id] = node
         project["nodes"] += 1
@@ -453,7 +617,7 @@ def build_overview(codex_home: Path, config_path: Path) -> dict[str, Any]:
                 break
             parent = parent_by_child.get(parent)
         if nearest_swarm:
-            links.append({"source": nearest_swarm, "target": thread_id})
+            links.append({"source": nearest_swarm, "target": thread_id, "relationship": "delegated"})
             continue
         if node["role"] == "ctrl":
             continue
@@ -486,7 +650,7 @@ def build_overview(codex_home: Path, config_path: Path) -> dict[str, Any]:
                 "pinned": False,
                 "virtual": True,
             }
-        links.append({"source": virtual_id, "target": thread_id})
+        links.append({"source": virtual_id, "target": thread_id, "relationship": "delegated"})
 
     incoming = {link["target"] for link in links}
     roots = [node_id for node_id in nodes if node_id not in incoming]
@@ -511,6 +675,14 @@ def build_overview(codex_home: Path, config_path: Path) -> dict[str, Any]:
             queue.extend(children.get(node_id, []))
         for node_id in descendants:
             controller_ids_by_node[node_id].append(controller_id)
+        observed_descendants: set[str] = set()
+        raw_queue = list(raw_children.get(controller_id, []))
+        while raw_queue:
+            node_id = raw_queue.pop()
+            if node_id in observed_descendants:
+                continue
+            observed_descendants.add(node_id)
+            raw_queue.extend(raw_children.get(node_id, []))
         controllers.append(
             {
                 "id": controller_id,
@@ -522,10 +694,21 @@ def build_overview(codex_home: Path, config_path: Path) -> dict[str, Any]:
                 "virtual": controller["virtual"],
                 "nodes": len(descendants),
                 "active": sum(nodes[node_id]["status"] == "active" for node_id in descendants),
+                "updated_at": max((nodes[node_id]["updated_at"] or 0) for node_id in descendants),
+                "older_lanes_omitted": sum(
+                    node_id not in nodes and node_id not in superseded_ids
+                    for node_id in observed_descendants
+                ),
             }
         )
+    controller_rank = {
+        item["id"]: index
+        for index, item in enumerate(sorted(controllers, key=lambda item: (-item["nodes"], item["artifact"])))
+    }
     for node_id, node in nodes.items():
-        node["controller_ids"] = controller_ids_by_node[node_id]
+        node["controller_ids"] = sorted(
+            controller_ids_by_node[node_id], key=lambda controller_id: controller_rank[controller_id]
+        )
     model_counts = Counter(
         node["model"] for node in nodes.values() if not node["virtual"] and node["model"] != "unknown"
     )
@@ -539,7 +722,7 @@ def build_overview(codex_home: Path, config_path: Path) -> dict[str, Any]:
         "nodes": sorted(nodes.values(), key=lambda node: (node["project"], node["created_at"] or 0)),
         "links": links,
         "roots": roots,
-        "controllers": sorted(controllers, key=lambda item: (-item["active"], item["artifact"])),
+        "controllers": sorted(controllers, key=lambda item: (-item["updated_at"], -item["nodes"], item["artifact"])),
         "projects": sorted(projects.values(), key=lambda item: (-item["active"], item["name"])),
         "analytics": {
             "swarms": len(roots),
@@ -550,9 +733,12 @@ def build_overview(codex_home: Path, config_path: Path) -> dict[str, Any]:
             "roles": dict(role_counts),
         },
         "claim_limits": [
-            "Hierarchy is derived from Codex thread spawn edges and SWARM-formatted titles.",
+            "Task nodes are derived from observed Codex spawn edges and safe agent-path metadata; worker names stay inside their task node.",
+            "Spawn edges are shown as delegated relationships; waits-for and review dependencies are not inferred without runtime receipts.",
             "Controller scopes are observed host descendants, not the authoritative runtime workflow graph.",
             "Only unarchived host tasks updated within the current observation window are shown.",
+            "Unformatted delegated lanes use the existing active-freshness boundary; older lanes are counted, not expanded.",
+            "Older descendant lanes are omitted from the graph and counted on their CTRL scope.",
             "Visible-tab refreshes reuse the local snapshot until the host database, its WAL, or config changes.",
             f"Visible overview refreshes and a lightweight hidden-tab ping preserve portal presence; a closed tab expires after {PORTAL_PRESENCE_TTL_SECONDS} seconds.",
             "Active means recently updated within two heartbeat windows, not guaranteed CPU work.",
@@ -743,6 +929,18 @@ class Handler(BaseHTTPRequestHandler):
                 return
             if path == "/api/config":
                 self._json(HTTPStatus.OK, self._config_payload())
+                return
+            asset = STATIC_ASSETS.get(path)
+            if asset:
+                asset_path, content_type = asset
+                body = asset_path.read_bytes()
+                self.send_response(HTTPStatus.OK)
+                self.send_header("Content-Type", content_type)
+                self.send_header("Content-Length", str(len(body)))
+                self.send_header("Cache-Control", "no-cache")
+                self.send_header("X-Content-Type-Options", "nosniff")
+                self.end_headers()
+                self.wfile.write(body)
                 return
             static = STATIC_FILES.get(path)
             if not static:

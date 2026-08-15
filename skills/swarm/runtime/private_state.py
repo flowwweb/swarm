@@ -1,4 +1,3 @@
-"""Locked repo-private atomic byte state shared by runtime ledgers."""
 from contextlib import contextmanager
 import os
 from pathlib import Path
@@ -20,8 +19,7 @@ class LockedPrivateState:
     def locked(self):
         self.prepare()
         with self.lock_path.open("a+b") as handle:
-            handle.seek(0,2)
-            if not handle.tell(): handle.write(b"\0"); handle.flush()
+            if not handle.seek(0,2): handle.write(b"\0"); handle.flush()
             handle.seek(0)
             if os.name=="nt":
                 import msvcrt; msvcrt.locking(handle.fileno(),msvcrt.LK_LOCK,1)

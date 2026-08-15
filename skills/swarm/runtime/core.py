@@ -85,17 +85,20 @@ class RequestEventCursor:
         _safe_receipt(self.event_receipt,"evt-"); _safe_receipt(self.message_id,"msg-"); _safe_receipt(self.surface_receipt,"srf-")
         if not isinstance(self.feed_sequence,int) or self.feed_sequence<1: raise InvariantError("request event cursor requires a positive feed sequence")
 @dataclass(frozen=True)
+class RequestTransition:
+    state:RequestState; kind:CtrlFeedEventKind; cursor:RequestEventCursor
+_REQUEST_EDGES=frozenset({(RequestState.OPEN,CtrlFeedEventKind.RESULT,RequestState.OPEN),(RequestState.OPEN,CtrlFeedEventKind.HANDOFF,RequestState.OPEN),(RequestState.OPEN,CtrlFeedEventKind.BLOCKER,RequestState.BLOCKED),(RequestState.BLOCKED,CtrlFeedEventKind.BLOCKER,RequestState.BLOCKED),(RequestState.BLOCKED,CtrlFeedEventKind.DECISION,RequestState.OPEN),(RequestState.OPEN,CtrlFeedEventKind.DECISION,RequestState.CANCELLED),(RequestState.BLOCKED,CtrlFeedEventKind.DECISION,RequestState.CANCELLED),(RequestState.OPEN,CtrlFeedEventKind.DECISION,RequestState.SUPERSEDED),(RequestState.BLOCKED,CtrlFeedEventKind.DECISION,RequestState.SUPERSEDED),(RequestState.OPEN,CtrlFeedEventKind.ACCEPTANCE,RequestState.COMPLETED)})
+@dataclass(frozen=True)
 class RequestRecord:
-    id:str; goal_id:str; task_id:str; accepted_owner:str; outcome_identity:RequestOutcomeIdentity; accepting_route:tuple[str,...]; accepted_at:int; next_due_event:str; next_due_at:int; state:RequestState; evidence_receipts:tuple[str,...]=field(repr=False); transition_receipts:tuple[str,...]=field(repr=False); last_event:RequestEventCursor=field(repr=False); successor_id:str=""
+    id:str; goal_id:str; task_id:str; accepted_owner:str; outcome_identity:RequestOutcomeIdentity; accepting_route:tuple[str,...]; accepted_at:int; next_due_event:str; next_due_at:int; evidence_receipts:tuple[str,...]=field(repr=False); transitions:tuple[RequestTransition,...]=field(repr=False); successor_id:str=""; state:RequestState=field(init=False)
     def __post_init__(self):
+        object.__setattr__(self,"state",self.transitions[-1].state if self.transitions else None)
         _safe_token(self.id,prefix="req-"); _safe_token(self.goal_id); _safe_token(self.task_id); _safe_token(self.accepted_owner)
         if not self.accepting_route or any(_safe_token(v) != v for v in self.accepting_route) or not isinstance(self.state,RequestState) or not isinstance(self.accepted_at,int) or self.accepted_at<0: raise InvariantError("request requires a typed state and accepting route")
         RequestDue(self.next_due_event,self.next_due_at)
-        for receipt in (*self.evidence_receipts,*self.transition_receipts): _safe_receipt(receipt)
-        if not self.transition_receipts or self.last_event.event_receipt!=self.transition_receipts[-1] or len(set(self.transition_receipts))!=len(self.transition_receipts) or (self.state is RequestState.SUPERSEDED) != bool(self.successor_id) or self.state is not RequestState.OPEN and len(self.transition_receipts)<2: raise InvariantError("request record has invalid lifecycle history")
-        if self.successor_id:
-            _safe_token(self.successor_id,prefix="req-")
-            if self.successor_id==self.id: raise InvariantError("request cannot supersede itself")
+        for receipt in self.evidence_receipts: _safe_receipt(receipt)
+        if not self.transitions or any(not isinstance(item.state,RequestState) or not isinstance(item.kind,CtrlFeedEventKind) or not isinstance(item.cursor,RequestEventCursor) for item in self.transitions) or self.transitions[0].state is not RequestState.OPEN or self.transitions[0].kind is not CtrlFeedEventKind.DECISION or any((left.state,right.kind,right.state) not in _REQUEST_EDGES or left.cursor.feed_sequence>=right.cursor.feed_sequence for left,right in zip(self.transitions,self.transitions[1:])) or len({item.cursor.event_receipt for item in self.transitions})!=len(self.transitions) or (self.state is RequestState.SUPERSEDED) != bool(self.successor_id) or self.successor_id==self.id: raise InvariantError("request record has invalid typed lifecycle history")
+        if self.successor_id: _safe_token(self.successor_id,prefix="req-")
 @dataclass(frozen=True)
 class RequestView:
     sequence:int; digest:str; record:RequestRecord
@@ -402,19 +405,19 @@ class Swarm:
     def attach_request_store(self, repo_root:Path|str) -> RequestAudit:
         root=Path(repo_root)
         if not root.is_absolute(): raise InvariantError("request continuity requires an explicit absolute repo root")
-        self.request_continuity_enabled=True; self.request_store=RequestStore(root.resolve()); audit=self.request_audit(0); self.request_feed_sequence_floor=max((record.last_event.feed_sequence for record in audit.records),default=0); return audit
+        self.request_continuity_enabled=True; self.request_store=RequestStore(root.resolve()); audit=self.request_audit(0); self.request_feed_sequence_floor=max((record.transitions[-1].cursor.feed_sequence for record in audit.records),default=0); return audit
     enable_request_continuity=attach_request_store
     def _request_store(self) -> RequestStore:
         if self.request_store is None: raise InvariantError("durable request store is not attached")
         return self.request_store
     @staticmethod
     def _record_to_raw(record:RequestRecord) -> dict:
-        return {"id":record.id,"goal_id":record.goal_id,"task_id":record.task_id,"accepted_owner":record.accepted_owner,"outcome_kind":record.outcome_identity.kind.value,"outcome_digest":record.outcome_identity.digest,"accepting_route":list(record.accepting_route),"accepted_at":record.accepted_at,"next_due_event":record.next_due_event,"next_due_at":record.next_due_at,"state":record.state.value,"evidence_receipts":list(record.evidence_receipts),"transition_receipts":list(record.transition_receipts),"last_event":{"event_receipt":record.last_event.event_receipt,"message_id":record.last_event.message_id,"surface_receipt":record.last_event.surface_receipt,"feed_sequence":record.last_event.feed_sequence},"successor_id":record.successor_id}
+        return {"id":record.id,"goal_id":record.goal_id,"task_id":record.task_id,"accepted_owner":record.accepted_owner,"outcome_kind":record.outcome_identity.kind.value,"outcome_digest":record.outcome_identity.digest,"accepting_route":list(record.accepting_route),"accepted_at":record.accepted_at,"next_due_event":record.next_due_event,"next_due_at":record.next_due_at,"evidence_receipts":list(record.evidence_receipts),"transitions":[{"state":item.state.value,"kind":item.kind.value,"cursor":{"event_receipt":item.cursor.event_receipt,"message_id":item.cursor.message_id,"surface_receipt":item.cursor.surface_receipt,"feed_sequence":item.cursor.feed_sequence}} for item in record.transitions],"successor_id":record.successor_id}
     @staticmethod
     def _raw_to_record(raw:dict) -> RequestRecord:
-        if set(raw)!={"id","goal_id","task_id","accepted_owner","outcome_kind","outcome_digest","accepting_route","accepted_at","next_due_event","next_due_at","state","evidence_receipts","transition_receipts","last_event","successor_id"} or set(raw["last_event"])!={"event_receipt","message_id","surface_receipt","feed_sequence"}: raise InvariantError("request record has an invalid schema")
-        cursor=RequestEventCursor(**raw["last_event"])
-        return RequestRecord(raw["id"],raw["goal_id"],raw["task_id"],raw["accepted_owner"],RequestOutcomeIdentity(RequestOutcomeKind(raw["outcome_kind"]),raw["outcome_digest"]),tuple(raw["accepting_route"]),raw["accepted_at"],raw["next_due_event"],raw["next_due_at"],RequestState(raw["state"]),tuple(raw["evidence_receipts"]),tuple(raw["transition_receipts"]),cursor,raw["successor_id"])
+        if set(raw)!={"id","goal_id","task_id","accepted_owner","outcome_kind","outcome_digest","accepting_route","accepted_at","next_due_event","next_due_at","evidence_receipts","transitions","successor_id"} or any(set(item)!={"state","kind","cursor"} or set(item["cursor"])!={"event_receipt","message_id","surface_receipt","feed_sequence"} for item in raw["transitions"]): raise InvariantError("request record has an invalid schema")
+        transitions=tuple(RequestTransition(RequestState(item["state"]),CtrlFeedEventKind(item["kind"]),RequestEventCursor(**item["cursor"])) for item in raw["transitions"])
+        return RequestRecord(raw["id"],raw["goal_id"],raw["task_id"],raw["accepted_owner"],RequestOutcomeIdentity(RequestOutcomeKind(raw["outcome_kind"]),raw["outcome_digest"]),tuple(raw["accepting_route"]),raw["accepted_at"],raw["next_due_event"],raw["next_due_at"],tuple(raw["evidence_receipts"]),transitions,raw["successor_id"])
     @staticmethod
     def _raw_to_stage(identity:str, raw:dict) -> RequestStage:
         if set(raw)!={"task_id","owner","contract_digest","state","request_id","history"}: raise InvariantError("request stage has invalid schema")
@@ -423,14 +426,10 @@ class Swarm:
         records=tuple(self._raw_to_record(state["requests"][identity]) for identity in state["order"])
         stages=tuple(self._raw_to_stage(identity,raw) for identity,raw in state["stages"].items())
         accepted={stage.request_id:stage for stage in stages if stage.state is RequestStageState.ACCEPTED}
-        if len({stage.request_id for stage in stages})!=len(stages) or len(accepted)!=sum(stage.state is RequestStageState.ACCEPTED for stage in stages) or set(accepted)!=set(state["requests"]) or any(accepted[record.id].task_id!=record.task_id or accepted[record.id].owner!=record.accepted_owner or accepted[record.id].history[-1][1]!=record.transition_receipts[0] for record in records): raise InvariantError("accepted request stage does not match its record")
+        if len({stage.request_id for stage in stages})!=len(stages) or len(accepted)!=sum(stage.state is RequestStageState.ACCEPTED for stage in stages) or set(accepted)!=set(state["requests"]) or any(accepted[record.id].task_id!=record.task_id or accepted[record.id].owner!=record.accepted_owner or accepted[record.id].history[-1][1]!=record.transitions[0].cursor.event_receipt for record in records): raise InvariantError("accepted request stage does not match its record")
         return records
     def _request_snapshot(self) -> tuple[dict,str,tuple[RequestRecord,...]]:
-        state,digest=self._request_store().read()
-        try:
-            records=self._validate_request_state(state)
-        except (KeyError,TypeError,ValueError) as error: raise InvariantError("request ledger has invalid records") from error
-        return state,digest,records
+        state,digest=self._request_store().read(); return state,digest,self._validate_request_state(state)
     def _request_route(self, task:Task) -> tuple[str,...]:
         if task.ctrl_mode is CtrlMode.DIRECT: return ("INDEPENDENT_REVIEW","CTRL")
         if not task.owning_lead_id: raise InvariantError("request requires a bound owning LEAD")
@@ -449,7 +448,15 @@ class Swarm:
     def _request_matches_live(self, state:dict, record:RequestRecord) -> bool:
         task=self.tasks.get(record.task_id); stage=next((raw for raw in state["stages"].values() if raw["request_id"]==record.id and raw["state"]=="ACCEPTED"),None)
         if task is None or stage is None: return False
-        owner=Role.CTRL.value if task.ctrl_mode is CtrlMode.DIRECT else task.owning_lead_id; return task.id==record.task_id and task.goal_id==record.goal_id and record.accepted_owner==owner==stage["owner"] and (owner=="CTRL" or owner in self.topology) and record.accepting_route==self._request_route(task) and record.outcome_identity==self._request_outcome_identity(task,record.id) and stage["task_id"]==task.id and stage["contract_digest"]==self._request_contract_digest(task,record.id)
+        owner=Role.CTRL.value if task.ctrl_mode is CtrlMode.DIRECT else task.owning_lead_id
+        if not (task.goal_id==record.goal_id and record.accepted_owner==owner==stage["owner"] and (owner=="CTRL" or owner in self.topology) and record.accepting_route==self._request_route(task) and record.outcome_identity==self._request_outcome_identity(task,record.id) and stage["task_id"]==task.id and stage["contract_digest"]==self._request_contract_digest(task,record.id)): return False
+        if record.state in {RequestState.OPEN,RequestState.BLOCKED}: return True
+        transition=record.transitions[-1]
+        try: event,_=self._published_request_event(record.id,transition.cursor.event_receipt,{transition.kind},transition.cursor)
+        except InvariantError: return False
+        review=task.acceptance_review_receipt
+        if record.state is RequestState.COMPLETED: return task.state is TaskState.COMPLETE and self._acceptance_ready(task) and review is not None and dict(review.receipt).get("acceptance") in event.proof_receipts and set(event.proof_receipts).issubset(record.evidence_receipts)
+        return any(value.startswith("usr-") for value in event.proof_receipts) and (record.state is RequestState.CANCELLED or record.successor_id in state["requests"])
     def _mutate_request(self, callback, *, expected:tuple[int,str]|None=None):
         def validated(value): self._validate_request_state(value); result=callback(value); self._validate_request_state(value); return result
         try: return self._request_store()._mutate_validated(validated,expected)
@@ -466,10 +473,11 @@ class Swarm:
         worker=self.workers.get(task.owner)
         if worker: worker.task_ids.discard(task.id)
         return stage
-    def _published_request_event(self, request_id:str, receipt:str, kinds:set[CtrlFeedEventKind]) -> tuple[CtrlFeedEvent,RequestEventCursor]:
+    def _published_request_event(self, request_id:str, receipt:str, kinds:set[CtrlFeedEventKind], expected:RequestEventCursor|None=None) -> tuple[CtrlFeedEvent,RequestEventCursor]:
         _safe_receipt(receipt,"evt-"); event=self.ctrl_feed_events.get(receipt); messages=[m for m in self.ctrl_feed_messages if m.event_receipt==receipt]
         if event is None or event.kind not in kinds or request_id not in event.request_ids or len(messages)!=1 or messages[0].task_id!=event.task_id or messages[0].proof_receipts!=event.proof_receipts or not audit_ctrl_feed((messages[0],)).compliant or messages[0].id in self.ctrl_feed_superseded_by: raise InvariantError("request transition requires a current compliant published request-bound event")
         message=messages[0]; cursor=RequestEventCursor(event.receipt,_safe_receipt(message.id,"msg-"),_safe_receipt(message.surface_receipt,"srf-"),self.request_feed_sequence_floor+self.ctrl_feed_messages.index(message)+1)
+        if expected is not None and cursor!=expected: raise InvariantError("request transition cursor does not match its current published event")
         for value in event.proof_receipts: _safe_receipt(value)
         return event,cursor
     def accept_request(self, actor:Role, stage_id:str, decision_event_receipt:str, *, accepted_at:int, due:RequestDue) -> RequestView:
@@ -477,7 +485,7 @@ class Swarm:
         if not stage or stage["state"]!="PROVISIONAL": raise InvariantError("request stage is not provisional")
         task=self.tasks.get(stage["task_id"]); event,cursor=self._published_request_event(stage["request_id"],decision_event_receipt,{CtrlFeedEventKind.DECISION})
         if task is None or task.state is not TaskState.REQUEST_PENDING or stage["contract_digest"]!=self._request_contract_digest(task,stage["request_id"]) or stage["owner"]!=(Role.CTRL.value if task.ctrl_mode is CtrlMode.DIRECT else task.owning_lead_id) or event.task_id!=task.id or not any(value.startswith("usr-") for value in event.proof_receipts): raise InvariantError("request registration requires its current staged contract, owner, route, and user decision")
-        record=RequestRecord(stage["request_id"],task.goal_id,task.id,stage["owner"],self._request_outcome_identity(task,stage["request_id"]),self._request_route(task),accepted_at,due.event,due.at,RequestState.OPEN,event.proof_receipts,(event.receipt,),cursor)
+        record=RequestRecord(stage["request_id"],task.goal_id,task.id,stage["owner"],self._request_outcome_identity(task,stage["request_id"]),self._request_route(task),accepted_at,due.event,due.at,event.proof_receipts,(RequestTransition(RequestState.OPEN,event.kind,cursor),))
         def write(value): value["requests"][record.id]=self._record_to_raw(record); value["order"].append(record.id); value["stages"][stage_id].update(state="ACCEPTED",history=[*stage["history"],["ACCEPTED",event.receipt]])
         final_state,final,_=self._mutate_request(write,expected=(state["sequence"],digest)); return RequestView(final_state["sequence"],final,record)
     def rollback_request_stage(self, actor:Role, stage_id:str, blocker_event_receipt:str) -> RequestStage:
@@ -511,7 +519,7 @@ class Swarm:
             is_orphan=not self._request_matches_live(state,item)
             if is_orphan: orphaned.append(item.id)
             if item.id not in unresolved: continue
-            progressed=len(item.transition_receipts)>1
+            progressed=len(item.transitions)>1
             if item.state is RequestState.OPEN and now>=item.next_due_at and not progressed: unsurfaced.append(item.id)
             if now>=item.next_due_at and (item.state is RequestState.BLOCKED or progressed): idle.append(item.id)
             if item.state is RequestState.BLOCKED: blocked.append(item.id)
@@ -531,47 +539,44 @@ class Swarm:
         state,digest,records=self._request_snapshot(); record=next((item for item in records if item.id==request_id),None)
         if record is None or record.state not in prior or not self._request_matches_live(state,record): raise InvariantError("request transition requires its current task, stage, goal, owner, route, and outcome")
         return state,digest,record,self.tasks[record.task_id]
-    def _request_owner(self, actor:Role, record:RequestRecord, task:Task)->None:
-        if actor is Role.LEAD and (record.accepted_owner!=task.owning_lead_id or record.accepted_owner not in self.topology) or actor is Role.CTRL and (record.accepted_owner!="CTRL" or task.ctrl_mode is not CtrlMode.DIRECT) or actor not in {Role.LEAD,Role.CTRL}: raise InvariantError("request transition requires its current accepted owner")
-    def _request_transition(self, actor:Role, request_id:str, prior:set[RequestState], event_receipt:str, kinds:set[CtrlFeedEventKind], *, due:RequestDue|None=None, owner:bool=True, user:bool=False, fresh_proof:bool=True, append_evidence:bool=True):
+    def _request_transition(self, actor:Role, request_id:str, prior:set[RequestState], event_receipt:str, kinds:set[CtrlFeedEventKind], *, next_state:RequestState|None=None, successor_id:str="", due:RequestDue|None=None, owner:bool=True, user:bool=False, fresh_proof:bool=True, append_evidence:bool=True):
         state,digest,record,task=self._request_record(request_id,prior)
-        if owner: self._request_owner(actor,record,task)
+        if owner and actor is not (Role.CTRL if record.accepted_owner=="CTRL" else Role.LEAD): raise InvariantError("request transition requires its current accepted owner")
         event,cursor=self._published_request_event(request_id,event_receipt,kinds)
         if event.task_id!=task.id: raise InvariantError("request event does not match its current task")
-        if event.receipt in record.transition_receipts or cursor.feed_sequence<=record.last_event.feed_sequence: raise InvariantError("request transition requires a later unused published event")
+        if event.receipt in {item.cursor.event_receipt for item in record.transitions} or cursor.feed_sequence<=record.transitions[-1].cursor.feed_sequence: raise InvariantError("request transition requires a later unused published event")
         if due is not None and due.at<=record.next_due_at: raise InvariantError("request transition must advance its due event")
         if fresh_proof and set(event.proof_receipts).issubset(record.evidence_receipts): raise InvariantError("request transition requires new surfaced proof")
         if user and not any(value.startswith("usr-") for value in event.proof_receipts): raise InvariantError("request transition requires explicit user direction")
+        if successor_id and not any(item.id==successor_id and item.state in {RequestState.OPEN,RequestState.BLOCKED} for item in self._validate_request_state(state)): raise InvariantError("supersession requires an accepted unresolved successor")
         evidence=record.evidence_receipts+tuple(value for value in event.proof_receipts if append_evidence and value not in record.evidence_receipts)
-        return state,digest,replace(record,evidence_receipts=evidence,transition_receipts=record.transition_receipts+(event.receipt,),last_event=cursor),task,event
+        return state,digest,replace(record,evidence_receipts=evidence,transitions=record.transitions+(RequestTransition(next_state or record.state,event.kind,cursor),),successor_id=successor_id or record.successor_id),task,event
     def _write_request(self,state:dict,digest:str,record:RequestRecord)->RequestView:
         def write(value): value["requests"][record.id]=self._record_to_raw(record)
         final_state,final,_=self._mutate_request(write,expected=(state["sequence"],digest)); return RequestView(final_state["sequence"],final,record)
     def advance_request(self, actor:Role, request_id:str, event_receipt:str, due:RequestDue) -> RequestView:
         state,digest,record,_,_=self._request_transition(actor,request_id,{RequestState.OPEN},event_receipt,{CtrlFeedEventKind.RESULT,CtrlFeedEventKind.HANDOFF},due=due); return self._write_request(state,digest,replace(record,next_due_event=due.event,next_due_at=due.at))
     def block_request(self, actor:Role, request_id:str, event_receipt:str, due:RequestDue) -> RequestView:
-        state,digest,record,_,_=self._request_transition(actor,request_id,{RequestState.OPEN},event_receipt,{CtrlFeedEventKind.BLOCKER},due=due); return self._write_request(state,digest,replace(record,state=RequestState.BLOCKED,next_due_event=due.event,next_due_at=due.at))
+        state,digest,record,_,_=self._request_transition(actor,request_id,{RequestState.OPEN},event_receipt,{CtrlFeedEventKind.BLOCKER},next_state=RequestState.BLOCKED,due=due); return self._write_request(state,digest,replace(record,next_due_event=due.event,next_due_at=due.at))
     def refresh_blocked_request(self, actor:Role, request_id:str, event_receipt:str, due:RequestDue) -> RequestView:
         state,digest,record,_,_=self._request_transition(actor,request_id,{RequestState.BLOCKED},event_receipt,{CtrlFeedEventKind.BLOCKER},due=due)
         return self._write_request(state,digest,replace(record,next_due_event=due.event,next_due_at=due.at))
     def resume_request(self, actor:Role, request_id:str, event_receipt:str, due:RequestDue) -> RequestView:
-        self._role(actor,{Role.CTRL}); state,digest,record,_,event=self._request_transition(actor,request_id,{RequestState.BLOCKED},event_receipt,{CtrlFeedEventKind.DECISION},due=due,owner=False,user=True)
-        return self._write_request(state,digest,replace(record,state=RequestState.OPEN,next_due_event=due.event,next_due_at=due.at))
+        self._role(actor,{Role.CTRL}); state,digest,record,_,event=self._request_transition(actor,request_id,{RequestState.BLOCKED},event_receipt,{CtrlFeedEventKind.DECISION},next_state=RequestState.OPEN,due=due,owner=False,user=True)
+        return self._write_request(state,digest,replace(record,next_due_event=due.event,next_due_at=due.at))
     def supersede_request(self, actor:Role, request_id:str, successor_id:str, event_receipt:str) -> RequestView:
-        self._role(actor,{Role.CTRL}); state,digest,record,_,event=self._request_transition(actor,request_id,{RequestState.OPEN,RequestState.BLOCKED},event_receipt,{CtrlFeedEventKind.DECISION},owner=False,user=True); records=self._validate_request_state(state)
-        if successor_id==request_id or not any(item.id==successor_id and item.state in {RequestState.OPEN,RequestState.BLOCKED} for item in records): raise InvariantError("supersession requires an accepted unresolved successor")
-        return self._write_request(state,digest,replace(record,state=RequestState.SUPERSEDED,successor_id=successor_id))
+        self._role(actor,{Role.CTRL}); state,digest,record,_,_=self._request_transition(actor,request_id,{RequestState.OPEN,RequestState.BLOCKED},event_receipt,{CtrlFeedEventKind.DECISION},next_state=RequestState.SUPERSEDED,successor_id=successor_id,owner=False,user=True); return self._write_request(state,digest,record)
     def cancel_request(self, actor:Role, request_id:str, event_receipt:str) -> RequestView:
-        self._role(actor,{Role.CTRL}); state,digest,record,_,event=self._request_transition(actor,request_id,{RequestState.OPEN,RequestState.BLOCKED},event_receipt,{CtrlFeedEventKind.DECISION},owner=False,user=True)
-        return self._write_request(state,digest,replace(record,state=RequestState.CANCELLED))
+        self._role(actor,{Role.CTRL}); state,digest,record,_,event=self._request_transition(actor,request_id,{RequestState.OPEN,RequestState.BLOCKED},event_receipt,{CtrlFeedEventKind.DECISION},next_state=RequestState.CANCELLED,owner=False,user=True)
+        return self._write_request(state,digest,record)
     def complete_request(self, actor:Role, request_id:str, event_receipt:str, review_receipt:str) -> RequestView:
-        state,digest,record,task,event=self._request_transition(actor,request_id,{RequestState.OPEN},event_receipt,{CtrlFeedEventKind.ACCEPTANCE},fresh_proof=False,append_evidence=False); review=task.acceptance_review_receipt
+        state,digest,record,task,event=self._request_transition(actor,request_id,{RequestState.OPEN},event_receipt,{CtrlFeedEventKind.ACCEPTANCE},next_state=RequestState.COMPLETED,fresh_proof=False,append_evidence=False); review=task.acceptance_review_receipt
         if task.state is not TaskState.COMPLETE or not self._acceptance_ready(task) or review is None or dict(review.receipt).get("acceptance")!=review_receipt or review_receipt not in event.proof_receipts or not set(event.proof_receipts).issubset(record.evidence_receipts): raise InvariantError("request completion requires current exact acceptance proof")
-        return self._write_request(state,digest,replace(record,state=RequestState.COMPLETED))
+        return self._write_request(state,digest,record)
     def reprioritize_requests(self, actor:Role, unresolved_ids:tuple[str,...]) -> RequestAudit:
         self._role(actor,{Role.CTRL})
         def write(payload:dict):
-            current=tuple(identity for identity in payload["order"] if payload["requests"][identity]["state"] in {"OPEN","BLOCKED"})
+            current=tuple(identity for identity in payload["order"] if payload["requests"][identity]["transitions"][-1]["state"] in {"OPEN","BLOCKED"})
             if set(current)!=set(unresolved_ids) or len(current)!=len(unresolved_ids): raise InvariantError("reprioritization requires an exact unresolved permutation")
             terminal=[identity for identity in payload["order"] if identity not in current]; payload["order"]=[*unresolved_ids,*terminal]
         self._mutate_request(write); return self.request_audit(0)
@@ -1180,7 +1185,7 @@ class Swarm:
         try:
             audit=self.request_audit(0)
             return not audit.orphaned_ids and bool(self._request_guard(all_open=True,action=lambda:not self._open_ctrl_evidence() and not self._open_ctrl_decision_sets() and not self._uncovered_ctrl_decision_candidates() and integration_ok and architecture_ok and all(terminal(t) for t in self.tasks.values())))
-        except InvariantError: return False
+        except (InvariantError,KeyError,TypeError,ValueError): return False
 
 
 def derive_workflow_graph(swarm:Swarm) -> WorkflowGraph:

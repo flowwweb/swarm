@@ -3,17 +3,18 @@ const state = {
   overview: null,
   config: null,
   changes: {},
-  view: "overview",
+  view: "swarm",
   readOnly: false,
 };
 
 const $ = (selector, root = document) => root.querySelector(selector);
 const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
+const RAIL_STATE_KEY = "swarm.console.rail-collapsed";
+const REQUESTED_CONTROLLER = new URLSearchParams(location.search).get("ctrl") || "";
 
 const settingGroups = [
   {
     title: "Portfolio",
-    copy: "Keep the wave useful, visible, and within a deliberate coordination span.",
     fields: [
       ["portfolio.max_active_tasks", "Active task ceiling", "number", "Producing, integrating, or reviewing tasks"],
       ["portfolio.default_parallel_tasks", "Preferred parallel wave", "number", "A ceiling, never a creation quota"],
@@ -24,10 +25,10 @@ const settingGroups = [
   },
   {
     title: "Execution",
-    copy: "Choose the active policy. Capability and proof still outrank preference.",
     fields: [
       ["execution.usage_profile", "Usage profile", "select", "Relative model and effort policy", ["high", "medium", "low"]],
       ["execution.service_tier", "Service tier", "text", "Empty keeps the host default"],
+      ["execution.usage_saver", "Usage Saver", "boolean", "Reduce avoidable coordination churn"],
       ["console.open_on_start", "Open portal on start", "boolean", "Reuse an open portal tab; closed tabs expire after a short grace period"],
       ["subagents.enabled", "Internal subagents", "boolean", "Bounded work inside an owning task"],
       ["subagents.max_per_task", "Subagent ceiling", "number", "Separate safety ceiling, not a target"],
@@ -36,7 +37,6 @@ const settingGroups = [
   },
   {
     title: "Review & recovery",
-    copy: "Preserve independent evidence while keeping correction loops bounded.",
     fields: [
       ["review.task_enabled", "Dedicated REVIEW tasks", "boolean", "QC remains required when disabled"],
       ["review.max_parallel_tasks", "Review ceiling", "number", "Concurrent independent review surfaces"],
@@ -46,7 +46,6 @@ const settingGroups = [
   },
   {
     title: "Closeout",
-    copy: "Control durable finish work and what remains visible after acceptance.",
     fields: [
       ["boost.enabled", "Boost available", "boolean", "Still requires direct run authorization"],
       ["lifecycle.pin_created_tasks", "Pin new tasks", "boolean", "Keep new SWARM owners visible"],
@@ -57,7 +56,6 @@ const settingGroups = [
   },
   {
     title: "Hierarchy names",
-    copy: "Keep labels short and obvious. Icons remain role-coded and directly joined.",
     fields: [
       ["labels.lead", "LEAD label", "text", "Bounded domain coordinator"],
       ["labels.review", "REVIEW label", "text", "Independent evidence verdict"],
@@ -66,7 +64,6 @@ const settingGroups = [
   },
   {
     title: "Role signals",
-    copy: "Exactly one role-matched signal by default. Contextual DOER icons remain automatic.",
     fields: [
       ["role_icons.enabled", "Task title icons", "boolean", "Disable only when all SWARM title emojis should disappear"],
       ["role_icons.ctrl", "CTRL icon", "text", "Default octopus control signal"],
@@ -83,10 +80,6 @@ function escapeHTML(value) {
 
 function getPath(object, path) {
   return path.split(".").reduce((value, key) => value?.[key], object);
-}
-
-function formatCount(value) {
-  return new Intl.NumberFormat("en", { notation: value > 9999 ? "compact" : "standard", maximumFractionDigits: 1 }).format(value || 0);
 }
 
 function formatDuration(ms) {
@@ -107,6 +100,21 @@ function clearError() {
   $("#error-surface").hidden = true;
 }
 
+function setRailCollapsed(collapsed, persist = true) {
+  const shell = $(".app-shell");
+  const button = $("#rail-toggle");
+  shell.classList.toggle("rail-collapsed", collapsed);
+  button.setAttribute("aria-expanded", String(!collapsed));
+  button.setAttribute("aria-label", collapsed ? "Expand sidebar" : "Collapse sidebar");
+  button.title = collapsed ? "Expand sidebar" : "Collapse sidebar";
+  button.querySelector("span").textContent = collapsed ? "›" : "‹";
+  if (persist) {
+    try { localStorage.setItem(RAIL_STATE_KEY, collapsed ? "1" : "0"); } catch {}
+  }
+}
+
+try { setRailCollapsed(localStorage.getItem(RAIL_STATE_KEY) === "1", false); } catch { setRailCollapsed(false, false); }
+
 async function api(path, options = {}) {
   const response = await fetch(path, {
     ...options,
@@ -125,38 +133,12 @@ function setView(view) {
   state.view = view;
   $$(".nav-item").forEach((button) => button.classList.toggle("is-active", button.dataset.view === view));
   $$("[data-view-panel]").forEach((panel) => panel.classList.toggle("is-active", panel.dataset.viewPanel === view));
-  const titles = { overview: "Command overview", swarm: "Swarm hierarchy", analytics: "Local analytics", settings: "Global settings" };
+  const titles = { swarm: "Graph", settings: "Settings" };
   $("#view-title").textContent = titles[view];
   if (view === "swarm") {
     $("#swarm-canvas").dataset.project = "";
     requestAnimationFrame(renderSwarm);
   }
-}
-
-function renderMetrics() {
-  const a = state.overview.analytics;
-  const recent = a.status.active || 0;
-  const items = [
-    ["Swarms", a.swarms, "visible roots"],
-    ["SWARM tasks", a.tasks, "recognized titles"],
-    ["Recent", recent, `within ${state.overview.heartbeat_minutes * 2}m`],
-    ["Thread tokens", formatCount(a.tokens), "host reported"],
-  ];
-  $("#metrics").innerHTML = items.map(([label, value, note]) => `<div class="metric"><span>${label}</span><strong>${value}</strong><small>${note}</small></div>`).join("");
-}
-
-function renderProjects() {
-  const projects = state.overview.projects;
-  $("#project-list").innerHTML = projects.length
-    ? projects.slice(0, 8).map((project) => `<button class="project-row" type="button" data-project="${escapeHTML(project.id)}"><span class="project-sigil">⌘</span><span><strong>${escapeHTML(project.name)}</strong><small>${project.nodes} SWARM tasks · ${project.active} recent</small></span><span class="project-numbers"><b>${formatCount(project.tokens)}</b><span>tokens</span></span></button>`).join("")
-    : `<div class="empty-state">No SWARM-formatted tasks found yet.</div>`;
-}
-
-function renderPulse() {
-  const nodes = state.overview.nodes.filter((node) => !node.virtual && node.status === "active").sort((a, b) => b.updated_at - a.updated_at).slice(0, 7);
-  $("#pulse-list").innerHTML = nodes.length
-    ? nodes.map((node) => `<div class="pulse-row"><i class="pulse-dot"></i><span><strong>${escapeHTML(node.title)}</strong><small>${escapeHTML(node.project)} · quiet ${formatDuration(node.quiet_ms)} · ${escapeHTML(node.model)}</small></span></div>`).join("")
-    : `<div class="empty-state">The swarm is quiet. Nothing is being called active without a recent host signal.</div>`;
 }
 
 function renderProjectFilter() {
@@ -175,31 +157,18 @@ function renderControllerFilter() {
     : `<option value="all">No observed CTRL</option>`;
   select.value = [...select.options].some((option) => option.value === current)
     ? current
-    : (controllers[0]?.id || "all");
+    : ([...select.options].some((option) => option.value === REQUESTED_CONTROLLER)
+      ? REQUESTED_CONTROLLER
+      : (controllers[0]?.id || "all"));
 }
 
 function roleColor(role) {
-  return { ctrl: "#ff7043", specialist: "#a8ff4f", lead: "#42d9ff", review: "#ffbd59", doer: "#89a9ff" }[role] || "#89a9ff";
+  return { ctrl: "#f15936", specialist: "#8cb6ff", lead: "#60daff", review: "#8cb6ff", doer: "#84c2da" }[role] || "#84c2da";
 }
 
 function hierarchyStatus(status) {
   const active = status === "active";
   return `<span class="node-status${active ? " is-processing" : ""}" role="status" aria-label="Status: ${escapeHTML(status)}"><i aria-hidden="true"></i><span>${escapeHTML(status)}</span></span>`;
-}
-
-function leadSlots(lead, nodeById, children) {
-  if (lead.role !== "lead" || lead.status !== "active") return "";
-  const defaults = [
-    { icon: "🔨", role_label: "BUILD", artifact: "Available", status: "quiet" },
-    { icon: "💻", role_label: "DEV", artifact: "Available", status: "quiet" },
-    { icon: "🧪", role_label: "TEST", artifact: "Available", status: "quiet" },
-  ];
-  const workers = (children.get(lead.id) || [])
-    .map((id) => nodeById.get(id))
-    .filter((node) => node?.role === "doer")
-    .slice(0, 3);
-  const slots = defaults.map((fallback, index) => workers[index] || fallback);
-  return `<div class="lead-slots" aria-label="LEAD doer slots">${slots.map((slot) => `<div class="doer-slot" aria-label="${escapeHTML(`${slot.role_label} - ${slot.artifact}. Status: ${slot.status}`)}"><div class="slot-role"><span aria-hidden="true">${escapeHTML(slot.icon)}</span><b>${escapeHTML(slot.role_label)}</b></div><strong>${escapeHTML(slot.artifact)}</strong>${hierarchyStatus(slot.status)}</div>`).join("")}</div>`;
 }
 
 function renderSwarm() {
@@ -212,14 +181,8 @@ function renderSwarm() {
   );
   const ids = new Set(allNodes.map((node) => node.id));
   const allLinks = state.overview.links.filter((link) => ids.has(link.source) && ids.has(link.target));
-  const allChildren = new Map();
-  allLinks.forEach((link) => allChildren.set(link.source, [...(allChildren.get(link.source) || []), link.target]));
-  const nodeById = new Map(allNodes.map((node) => [node.id, node]));
-  const slottedDoers = new Set(allNodes
-    .filter((node) => node.role === "lead" && node.status === "active")
-    .flatMap((lead) => (allChildren.get(lead.id) || []).filter((id) => nodeById.get(id)?.role === "doer").slice(0, 3)));
-  const displayNodes = allNodes.filter((node) => !slottedDoers.has(node.id));
-  const links = allLinks.filter((link) => !slottedDoers.has(link.source) && !slottedDoers.has(link.target));
+  const displayNodes = allNodes;
+  const links = allLinks;
   const incoming = new Map(links.map((link) => [link.target, link.source]));
   const children = new Map();
   links.forEach((link) => children.set(link.source, [...(children.get(link.source) || []), link.target]));
@@ -237,9 +200,8 @@ function renderSwarm() {
   displayNodes.forEach((node) => levels.set(depth.get(node.id), [...(levels.get(depth.get(node.id)) || []), node]));
   const scroller = $(".swarm-scroll");
   const maxWidth = Math.max(1, ...[...levels.values()].map((items) => items.length));
-  const hasExpandedLead = displayNodes.some((node) => node.role === "lead" && node.status === "active");
-  const levelStride = hasExpandedLead ? 185 : 145;
-  const widestNode = hasExpandedLead ? 320 : 172;
+  const levelStride = 150;
+  const widestNode = 188;
   const stage = scroller.getBoundingClientRect();
   const requiredWidth = maxWidth * widestNode + Math.max(0, maxWidth - 1) * 24 + (maxWidth > 1 ? 32 : 0);
   const requiredHeight = levels.size * levelStride + 70;
@@ -269,9 +231,13 @@ function renderSwarm() {
   }).join("");
   $("#swarm-nodes").innerHTML = displayNodes.map((node) => {
     const p = positions.get(node.id);
-    return `<article class="swarm-node role-${escapeHTML(node.role)} is-${escapeHTML(node.status)}" style="left:${p.x}px;top:${p.y}px;--node-color:${roleColor(node.role)}" aria-label="${escapeHTML(`${node.role_label} - ${node.artifact}. Status: ${node.status}`)}"><div class="node-top"><span class="node-icon" aria-hidden="true">${escapeHTML(node.icon)}</span><span class="node-role">${escapeHTML(node.role_label)}</span></div><strong>${escapeHTML(node.artifact)}</strong><div class="node-meta">${hierarchyStatus(node.status)}</div>${leadSlots(node, nodeById, allChildren)}</article>`;
+    const worker = node.worker || node.worker_role
+      ? `<span class="node-worker">${node.worker_role ? `<b>${escapeHTML(node.worker_role)}</b>` : ""}<span aria-hidden="true">●</span>${escapeHTML(node.worker || "unassigned")}</span>`
+      : "";
+    const workerDetail = node.worker ? `. Worker: ${node.worker}${node.worker_role ? ` (${node.worker_role})` : ""}` : "";
+    return `<article class="swarm-node role-${escapeHTML(node.role)} is-${escapeHTML(node.status)}" style="left:${p.x}px;top:${p.y}px;--node-color:${roleColor(node.role)}" aria-label="${escapeHTML(`${node.role_label} - ${node.artifact}${workerDetail}. Status: ${node.status}`)}"><div class="node-top"><span class="node-icon" aria-hidden="true">${escapeHTML(node.icon)}</span><span class="node-role">${escapeHTML(node.role_label)}</span></div><strong>${escapeHTML(node.artifact)}</strong><div class="node-meta">${worker}${hierarchyStatus(node.status)}</div></article>`;
   }).join("");
-  if (!displayNodes.length) $("#swarm-nodes").innerHTML = `<div class="empty-state">No SWARM hierarchy exists for this project.</div>`;
+  if (!displayNodes.length) $("#swarm-nodes").innerHTML = `<div class="empty-state">Host has not exposed a CTRL.</div>`;
   const scopeKey = `${project}:${controller}`;
   if (canvas.dataset.project !== scopeKey) {
     const first = positions.get(roots[0]?.id);
@@ -286,66 +252,28 @@ function renderSwarm() {
 function renderScopeCopy(nodes, controllerId) {
   const controller = (state.overview.controllers || []).find((item) => item.id === controllerId);
   const performance = state.overview.performance;
-  const scope = controller ? `Viewing ${controller.artifact}.` : "No observed CTRL scope is available.";
+  const scope = controller
+    ? (nodes.length > 1 ? `${nodes.length} nodes` : "1 node · host has not exposed child lanes")
+    : "No CTRL";
   const refresh = performance ? `${performance.refresh_seconds}s refresh · ${performance.data_bytes} B snapshot` : "30s refresh";
-  $("#scope-copy").textContent = `${scope} ${nodes.length} visible nodes · ${refresh}.`;
+  const omitted = controller?.older_lanes_omitted ? ` · ${controller.older_lanes_omitted} older lanes omitted` : "";
+  $("#scope-copy").textContent = `${scope}${omitted} · ${refresh}`;
 }
 
 function renderScopeActivity(nodes) {
   const recent = nodes.filter((node) => !node.virtual && node.status === "active")
     .sort((a, b) => b.updated_at - a.updated_at).slice(0, 6);
   $("#scope-activity").innerHTML = recent.length
-    ? recent.map((node) => `<div class="pulse-row"><i class="pulse-dot"></i><span><strong>${escapeHTML(node.title)}</strong><small>${escapeHTML(node.project)} · updated ${formatDuration(node.quiet_ms)} ago</small></span></div>`).join("")
-    : `<div class="empty-state">No recent host activity in this scope. This does not establish whether a task is blocked or complete.</div>`;
-}
-
-function renderChart(selector, entries) {
-  const max = Math.max(1, ...entries.map(([, value]) => value));
-  $(selector).innerHTML = entries.length
-    ? entries.slice(0, 8).map(([label, value]) => `<div class="bar-row"><label title="${escapeHTML(label)}">${escapeHTML(label)}</label><div class="bar-track"><div class="bar-fill" style="--value:${Math.max(3, value / max * 100)}%"></div></div><b>${value}</b></div>`).join("")
-    : `<div class="empty-state">No data yet.</div>`;
-}
-
-function renderAnalytics() {
-  const a = state.overview.analytics;
-  renderChart("#model-chart", Object.entries(a.models).sort((a, b) => b[1] - a[1]));
-  renderChart("#role-chart", Object.entries(a.roles).sort((a, b) => b[1] - a[1]));
-  $("#analytics-table").innerHTML = state.overview.projects.map((project) => `<tr><td>${escapeHTML(project.name)}</td><td>${project.nodes}</td><td>${project.active}</td><td>${formatCount(project.tokens)}</td></tr>`).join("");
-  $("#claim-limits").innerHTML = `<strong>Evidence boundary</strong><br>${state.overview.claim_limits.map(escapeHTML).join(" · ")}`;
+    ? recent.map((node) => `<div class="pulse-row"><i class="pulse-dot"></i><span><strong>${escapeHTML(node.artifact)}</strong><small>${node.worker ? `${escapeHTML(node.worker)} · ` : ""}${escapeHTML(node.project)} · updated ${formatDuration(node.quiet_ms)} ago</small></span></div>`).join("")
+    : `<div class="empty-state">No recent host activity.</div>`;
 }
 
 function renderSettings() {
   if (!state.config) return;
   $("#config-path").textContent = state.config.path;
-  $("#settings-grid").innerHTML = settingGroups.map((group) => `<section class="settings-card"><h3>${group.title}</h3><p>${group.copy}</p><div class="field-list">${group.fields.map(renderField).join("")}</div></section>`).join("");
+  $("#settings-grid").innerHTML = settingGroups.map((group) => `<section class="settings-card"><h3>${group.title}</h3><div class="field-list">${group.fields.map(renderField).join("")}</div></section>`).join("");
   $("#save-settings").disabled = Object.keys(state.changes).length === 0;
   if (state.readOnly) $("#settings-status").textContent = "Remote view is read-only. Open the console on this computer to change settings.";
-  syncUsageSaver();
-}
-
-function syncUsageSaver() {
-  if (!state.config) return;
-  const enabled = Boolean(getPath(state.config.settings, "execution.usage_saver"));
-  const toggle = $("#usage-saver-toggle");
-  toggle.checked = enabled;
-  toggle.disabled = state.readOnly;
-  $("#usage-saver-control").classList.toggle("is-on", enabled);
-  $("#usage-saver-state").textContent = state.readOnly ? "Read only" : (enabled ? "On" : "Off");
-}
-
-async function saveUsageSaver() {
-  if (state.readOnly) return;
-  const toggle = $("#usage-saver-toggle");
-  const desired = toggle.checked;
-  toggle.disabled = true;
-  $("#usage-saver-state").textContent = "Saving";
-  try {
-    state.config = await api("/api/config", { method: "POST", body: JSON.stringify({ changes: { "execution.usage_saver": desired } }) });
-    syncUsageSaver();
-  } catch (error) {
-    syncUsageSaver();
-    showError(error.message);
-  }
 }
 
 function renderField([path, label, type, hint, options]) {
@@ -390,7 +318,7 @@ async function refreshOverview() {
   clearError();
   try {
     state.overview = await api("/api/overview");
-    renderMetrics(); renderProjects(); renderPulse(); renderProjectFilter(); renderControllerFilter(); renderSwarm(); renderAnalytics();
+    renderProjectFilter(); renderControllerFilter(); renderSwarm();
     $("#sync-time").textContent = new Date(state.overview.generated_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
   } catch (error) {
     showError(error.message);
@@ -413,13 +341,14 @@ async function initialize() {
 document.addEventListener("click", (event) => {
   const nav = event.target.closest("[data-view]");
   if (nav) setView(nav.dataset.view);
-  const jump = event.target.closest("[data-jump]");
-  if (jump) setView(jump.dataset.jump);
-  const project = event.target.closest("[data-project]");
-  if (project) { $("#project-filter").value = project.dataset.project; setView("swarm"); }
 });
 $("#refresh").addEventListener("click", refreshOverview);
-$("#usage-saver-toggle").addEventListener("change", saveUsageSaver);
+$("#rail-toggle").addEventListener("click", () => setRailCollapsed(!$(".app-shell").classList.contains("rail-collapsed")));
+$("#rail-toggle").addEventListener("keydown", (event) => {
+  if (event.key !== "Enter" && event.key !== " ") return;
+  event.preventDefault();
+  event.currentTarget.click();
+});
 $("#project-filter").addEventListener("change", renderSwarm);
 $("#controller-filter").addEventListener("change", renderSwarm);
 $("#save-settings").addEventListener("click", saveSettings);

@@ -16,9 +16,9 @@ const fixture = JSON.parse(
 const multiFixtureOverview = structuredClone(fixture.overview);
 multiFixtureOverview.nodes.push(
   { id: "nested-ctrl", title: "🐙CTRL - Nested proof", role: "ctrl", role_label: "CTRL", icon: "🐙", artifact: "Nested proof", project_id: "project:fixture", project: "swarm", status: "active", created_at: 2050, updated_at: 2050, quiet_ms: 0, virtual: false, controller_ids: ["ctrl", "nested-ctrl"] },
-  { id: "nested-doer", title: "🔨DEV - Nested result", role: "doer", role_label: "DEV", icon: "🔨", artifact: "Nested result", project_id: "project:fixture", project: "swarm", status: "active", created_at: 2060, updated_at: 2060, quiet_ms: 0, virtual: false, controller_ids: ["ctrl", "nested-ctrl"] },
+  { id: "nested-doer", title: "📋TASK - Nested result", role: "doer", role_label: "TASK", worker_role: "DEV", icon: "📋", artifact: "Nested result", project_id: "project:fixture", project: "swarm", status: "active", created_at: 2060, updated_at: 2060, quiet_ms: 0, virtual: false, controller_ids: ["ctrl", "nested-ctrl"] },
   { id: "branch-ctrl", title: "🐙CTRL - Parallel proof", role: "ctrl", role_label: "CTRL", icon: "🐙", artifact: "Parallel proof", project_id: "project:fixture", project: "swarm", status: "quiet", created_at: 2100, updated_at: 2100, quiet_ms: 0, virtual: false, controller_ids: ["branch-ctrl"] },
-  ...["One", "Two", "Three"].map((artifact, index) => ({ id: `branch-${index}`, title: `🔨DEV - ${artifact}`, role: "doer", role_label: "DEV", icon: "🔨", artifact, project_id: "project:fixture", project: "swarm", status: "quiet", created_at: 2200 + index, updated_at: 2200 + index, quiet_ms: 0, virtual: false, controller_ids: ["branch-ctrl"] })),
+  ...["One", "Two", "Three"].map((artifact, index) => ({ id: `branch-${index}`, title: `📋TASK - ${artifact}`, role: "doer", role_label: "TASK", worker_role: "DEV", icon: "📋", artifact, project_id: "project:fixture", project: "swarm", status: "quiet", created_at: 2200 + index, updated_at: 2200 + index, quiet_ms: 0, virtual: false, controller_ids: ["branch-ctrl"] })),
 );
 multiFixtureOverview.links.push({ source: "lead", target: "nested-ctrl" }, { source: "nested-ctrl", target: "nested-doer" });
 multiFixtureOverview.links.push(...[0, 1, 2].map((index) => ({ source: "branch-ctrl", target: `branch-${index}` })));
@@ -54,6 +54,9 @@ async function mount(page, overview = fixture.overview) {
     if (pathname === "/") {
       return route.fulfill({ status: 200, contentType: "text/html", body: documentHtml });
     }
+    if (pathname === "/assets/swarm-wordmark.png") {
+      return route.fulfill({ status: 200, contentType: "image/png", body: Buffer.from("fixture") });
+    }
     if (pathname === "/api/bootstrap") return route.fulfill(response(fixture.bootstrap));
     if (pathname === "/api/overview") return route.fulfill(response(overview));
     if (pathname === "/api/config" && request.method() === "POST") {
@@ -65,12 +68,11 @@ async function mount(page, overview = fixture.overview) {
     return route.abort();
   });
   await page.goto("http://swarm.test/", { waitUntil: "domcontentloaded" });
-  await page.locator("#usage-saver-toggle").waitFor({ state: "attached" });
+  await page.locator('[data-setting="execution.usage_saver"]').waitFor({ state: "attached" });
   try {
     await page.waitForFunction(() => {
-      const toggle = document.querySelector("#usage-saver-toggle");
-      return toggle && !toggle.disabled &&
-        document.querySelector("#usage-saver-state")?.textContent === "Off";
+      const toggle = document.querySelector('[data-setting="execution.usage_saver"]');
+      return toggle && !toggle.disabled && document.querySelector("#view-title")?.textContent === "Graph";
     });
   } catch (error) {
     throw new Error(`Console fixture did not initialize: ${runtimeErrors.join(" | ") || error.message}`);
@@ -79,13 +81,13 @@ async function mount(page, overview = fixture.overview) {
 }
 
 async function focusToggleWithKeyboard(page) {
-  for (let presses = 1; presses <= 12; presses += 1) {
+  for (let presses = 1; presses <= 30; presses += 1) {
     await page.keyboard.press("Tab");
-    if (await page.locator("#usage-saver-toggle").evaluate(
+    if (await page.locator('[data-setting="execution.usage_saver"]').evaluate(
       (element) => document.activeElement === element,
     )) return presses;
   }
-  throw new Error("Usage Saver was not reachable in the first 12 Tab stops");
+  throw new Error("Usage Saver was not reachable in the first 30 Tab stops");
 }
 
 const browser = await chromium.launch({
@@ -96,41 +98,32 @@ const browser = await chromium.launch({
 });
 const results = [];
 try {
-  for (const width of [320, 390]) {
-    const page = await browser.newPage({ viewport: { width, height: 844 } });
+  for (const width of [390, 834, 1440]) {
+    const page = await browser.newPage({ viewport: { width, height: width === 1440 ? 1000 : 844 } });
     const runtimeErrors = await mount(page);
 
     const geometry = await page.evaluate(() => {
-      const control = document.querySelector("#usage-saver-control");
-      const label = control.querySelector("strong");
-      const state = document.querySelector("#usage-saver-state");
-      const rect = control.getBoundingClientRect();
       return {
         viewport: innerWidth,
         documentWidth: document.documentElement.scrollWidth,
         bodyWidth: document.body.scrollWidth,
-        control: { left: rect.left, right: rect.right, width: rect.width, height: rect.height },
-        labelVisible: Boolean(label.offsetWidth && label.offsetHeight),
-        stateVisible: Boolean(state.offsetWidth && state.offsetHeight),
-        stateText: state.textContent,
+        title: document.querySelector("#view-title")?.textContent,
       };
     });
     assert.ok(geometry.documentWidth <= width + 1, `${width}px document overflow`);
     assert.ok(geometry.bodyWidth <= width + 1, `${width}px body overflow`);
-    assert.ok(geometry.control.left >= -1 && geometry.control.right <= width + 1);
-    assert.equal(geometry.labelVisible, true);
-    assert.equal(geometry.stateVisible, true);
-    assert.equal(geometry.stateText, "Off");
+    assert.equal(geometry.title, "Graph");
 
+    await page.locator('[data-view="settings"]').click();
     const tabPresses = await focusToggleWithKeyboard(page);
-    const focus = await page.locator("#usage-saver-toggle").evaluate((element) => {
+    const focus = await page.locator('[data-setting="execution.usage_saver"]').evaluate((element) => {
       const indicator = getComputedStyle(element.nextElementSibling);
-      const rect = element.closest("#usage-saver-control").getBoundingClientRect();
+      const rect = element.closest(".switch").getBoundingClientRect();
       const top = document.elementFromPoint(rect.left + rect.width / 2, rect.top + rect.height / 2);
       return {
         outlineStyle: indicator.outlineStyle,
         outlineWidth: indicator.outlineWidth,
-        unobscured: Boolean(top && element.closest("#usage-saver-control").contains(top)),
+        unobscured: Boolean(top && element.closest(".switch").contains(top)),
       };
     });
     assert.notEqual(focus.outlineStyle, "none");
@@ -138,10 +131,7 @@ try {
     assert.equal(focus.unobscured, true);
 
     await page.keyboard.press("Space");
-    await page.waitForFunction(() =>
-      document.querySelector("#usage-saver-toggle")?.checked &&
-      document.querySelector("#usage-saver-state")?.textContent === "On",
-    );
+    await page.waitForFunction(() => document.querySelector('[data-setting="execution.usage_saver"]')?.checked && !document.querySelector("#save-settings")?.disabled);
     const screenshot = path.join(evidenceRoot, `usage-saver-${width}.png`);
     await page.screenshot({ path: screenshot, fullPage: true });
     await page.locator('[data-view="swarm"]').click();
@@ -149,21 +139,19 @@ try {
       const ctrl = document.querySelector(".swarm-node.role-ctrl").getBoundingClientRect();
       const lead = document.querySelector(".swarm-node.role-lead").getBoundingClientRect();
       const stage = document.querySelector(".swarm-stage").getBoundingClientRect();
-      const slots = [...document.querySelectorAll(".swarm-node.role-lead .doer-slot")];
-      const slotRects = slots.map((slot) => slot.getBoundingClientRect());
       const spinner = document.querySelector(".swarm-node.role-lead > .node-meta .node-status.is-processing i");
       const spinnerStyle = getComputedStyle(spinner);
       const hierarchyRoot = document.querySelector("#swarm-nodes");
       return {
         ctrlAboveLead: ctrl.top < lead.top,
         ctrlVisible: ctrl.left < stage.right && ctrl.right > stage.left && ctrl.top < stage.bottom,
-        slots: slots.length,
+        taskNodes: hierarchyRoot.querySelectorAll(".swarm-node").length,
         standaloneDoers: hierarchyRoot.querySelectorAll(".swarm-node.role-doer").length,
+        workers: [...hierarchyRoot.querySelectorAll(".node-worker")].map((node) => node.textContent.trim()),
+        delegatedLabels: [...hierarchyRoot.querySelectorAll(".swarm-node:not(.role-ctrl) .node-role")].map((node) => node.textContent.trim()),
         childArtifactCounts: ["Hierarchy renderer", "Visual polish", "Responsive proof"].map(
           (artifact) => hierarchyRoot.innerText.split(artifact).length - 1,
         ),
-        slotTops: slotRects.map((rect) => Math.round(rect.top)),
-        slotWidths: slotRects.map((rect) => Math.round(rect.width)),
         titleAttributes: hierarchyRoot.querySelectorAll("[title]").length,
         metadataSurfaces: document.querySelectorAll(".stage-legend, .claim-note").length,
         hasEllipsisIndicator: /(^|\s)(\.{3}|…)(\s|$)/.test(hierarchyRoot.textContent),
@@ -185,11 +173,11 @@ try {
     });
     assert.equal(hierarchy.ctrlAboveLead, true);
     assert.equal(hierarchy.ctrlVisible, true);
-    assert.equal(hierarchy.slots, 3);
-    assert.equal(hierarchy.standaloneDoers, 0);
+    assert.equal(hierarchy.taskNodes, 5);
+    assert.equal(hierarchy.standaloneDoers, 3);
+    assert.deepEqual(hierarchy.workers, ["LEAD●Carson", "DEV●Lovelace", "DESIGN●Eames", "TEST●Noether"]);
+    assert.ok(hierarchy.delegatedLabels.every((label) => label === "TASK"));
     assert.deepEqual(hierarchy.childArtifactCounts, [1, 1, 1]);
-    assert.equal(new Set(hierarchy.slotTops).size, 1);
-    assert.ok(hierarchy.slotWidths.every((slotWidth) => slotWidth > 60));
     assert.equal(hierarchy.titleAttributes, 0);
     assert.equal(hierarchy.metadataSurfaces, 0);
     assert.equal(hierarchy.hasEllipsisIndicator, false);
@@ -199,11 +187,20 @@ try {
     assert.equal(hierarchy.spinner.borderRadius, "50%");
     assert.equal(hierarchy.spinner.animationName, "hierarchy-spin");
     assert.equal(hierarchy.controllerOptions, 1);
-    assert.match(hierarchy.scopeCopy, /Viewing Ship console/);
+    assert.match(hierarchy.scopeCopy, /5 nodes/);
     assert.equal(hierarchy.scopedActivity, 3);
-    if (width === 390) {
-      assert.ok(hierarchy.scroll.scrollWidth <= hierarchy.scroll.clientWidth, "sparse graph has horizontal scroll");
-      assert.ok(hierarchy.scroll.scrollHeight <= hierarchy.scroll.clientHeight, "sparse graph has vertical scroll");
+    if (width === 1440) {
+      const toggle = page.locator("#rail-toggle");
+      assert.equal(await toggle.getAttribute("aria-expanded"), "true");
+      await toggle.focus();
+      await page.keyboard.press("Enter");
+      assert.equal(await toggle.getAttribute("aria-expanded"), "false");
+      assert.equal(await page.locator(".app-shell").evaluate((node) => node.classList.contains("rail-collapsed")), true);
+      await page.reload({ waitUntil: "domcontentloaded" });
+      await page.locator('[data-setting="execution.usage_saver"]').waitFor({ state: "attached" });
+      assert.equal(await page.locator("#rail-toggle").getAttribute("aria-expanded"), "false", "collapsed rail state did not persist");
+      await page.screenshot({ path: path.join(evidenceRoot, "hierarchy-1440-collapsed.png"), fullPage: true });
+      await page.locator("#rail-toggle").click();
     }
     await page.emulateMedia({ reducedMotion: "reduce" });
     assert.equal(
@@ -222,6 +219,21 @@ try {
     assert.deepEqual(runtimeErrors, []);
     await page.close();
   }
+  const sparseOverview = structuredClone(fixture.overview);
+  sparseOverview.nodes = sparseOverview.nodes.slice(0, 1);
+  sparseOverview.links = [];
+  sparseOverview.controllers[0].nodes = 1;
+  const sparsePage = await browser.newPage({ viewport: { width: 390, height: 844 } });
+  const sparseErrors = await mount(sparsePage, sparseOverview);
+  const sparseScroll = await sparsePage.evaluate(() => {
+    const scroller = document.querySelector(".swarm-scroll");
+    return { documentWidth: document.documentElement.scrollWidth, clientWidth: scroller.clientWidth, scrollWidth: scroller.scrollWidth, clientHeight: scroller.clientHeight, scrollHeight: scroller.scrollHeight };
+  });
+  assert.ok(sparseScroll.documentWidth <= 391);
+  assert.ok(sparseScroll.scrollWidth <= sparseScroll.clientWidth, "one task graph has horizontal scroll");
+  assert.ok(sparseScroll.scrollHeight <= sparseScroll.clientHeight, "one task graph has vertical scroll");
+  assert.deepEqual(sparseErrors, []);
+  await sparsePage.close();
   const multiPage = await browser.newPage({ viewport: { width: 390, height: 844 } });
   const multiErrors = await mount(multiPage, multiFixtureOverview);
   await multiPage.locator('[data-view="swarm"]').click();

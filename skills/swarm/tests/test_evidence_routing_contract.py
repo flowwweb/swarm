@@ -302,9 +302,12 @@ class EvidenceRoutingContractTests(unittest.TestCase):
         with self.assertRaisesRegex(InvariantError,"unknown-material-event"):
             self.swarm.heartbeat(Role.CTRL,"covers",meaningful_progress=False,recent_ctrl_feed=(stale,))
 
-    def test_every_swarm_task_delegates_by_default_with_narrow_exceptions(self):
-        self.assertRegex(self.skill, r"(?is)delegated or non-CTRL task delegates one bounded outcome-critical.*before substantive")
+    def test_routing_distinguishes_visible_lanes_from_bounded_subagents(self):
+        self.assertRegex(self.skill, r"(?is)Materialize a visible task lane.*durable ownership.*interruption-safe resumption")
+        self.assertRegex(self.skill, r"(?is)Use a subagent only as short bounded capacity inside an existing lane")
+        self.assertIn("never substitutes for a qualifying durable task", self.skill)
         self.assertRegex(self.skill, r"(?is)CTRL_DIRECT.*low-risk atomic outcome.*otherwise use.*CTRL_DELEGATED")
+        self.assertNotIn("each delegated or non-CTRL task delegates", self.skill)
         self.assertNotIn("Default to CTRL working directly or one atomic owner", self.skill)
 
 

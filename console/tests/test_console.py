@@ -23,12 +23,41 @@ class SwarmConsoleTests(unittest.TestCase):
         static = (Path(__file__).resolve().parents[1] / "static")
         index = (static / "index.html").read_text(encoding="utf-8")
         app = (static / "app.js").read_text(encoding="utf-8")
-        self.assertIn('aria-label="SWARM summary metrics"', index)
-        self.assertIn('<span>🐙</span>', index)
+        self.assertIn('src="/assets/swarm-wordmark.png"', index)
+        self.assertIn('id="rail-toggle"', index)
+        self.assertIn('aria-expanded="true"', index)
         self.assertIn('id="controller-filter"', index)
-        self.assertIn('aria-label="Swarm"', index)
+        self.assertIn('aria-label="Graph"', index)
+        self.assertNotIn('aria-label="Overview"', index)
+        self.assertNotIn('aria-label="Analytics"', index)
+        self.assertIn("SWARM runtime remains authoritative", index)
         self.assertIn("Keep new SWARM owners visible", app)
         self.assertIn('document.visibilityState === "visible"', app)
+        self.assertIn('swarm.console.rail-collapsed', app)
+        self.assertIn('event.key !== "Enter" && event.key !== " "', app)
+        self.assertEqual(index.count('id="view-title"'), 1)
+        self.assertNotIn('<h2>Settings</h2>', index)
+        self.assertNotIn('<h2>Graph</h2>', index)
+
+    def test_wordmark_uses_exact_existing_asset_route(self) -> None:
+        asset, content_type = console.STATIC_ASSETS["/assets/swarm-wordmark.png"]
+        self.assertEqual(asset, console.PLUGIN_ROOT / "skills" / "swarm" / "assets" / "swarm-wordmark.png")
+        self.assertEqual(content_type, "image/png")
+        self.assertTrue(asset.is_file())
+        self.assertGreater(asset.stat().st_size, 100_000)
+
+    def test_console_uses_flowwweb_swarm_tokens_without_lime_controls(self) -> None:
+        css = (console.STATIC_ROOT / "styles.css").read_text(encoding="utf-8").casefold()
+        index = (console.STATIC_ROOT / "index.html").read_text(encoding="utf-8")
+        for token in ("#02071f", "#60daff", "#f15936"):
+            self.assertIn(token, css)
+        for stale in ("#a8ff4f", "168,255,79", "#8ef2c2"):
+            self.assertNotIn(stale, css)
+        self.assertIn(".switch input:checked + span", css)
+        self.assertIn("background: var(--cyan)", css)
+        self.assertIn(".role-ctrl { --node-color: var(--coral); }", css)
+        for removed in ("One CTRL", "RAPID UNIFIED", "LIVE HIERARCHY", "Observed pulse"):
+            self.assertNotIn(removed, index)
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name)
@@ -90,14 +119,16 @@ class SwarmConsoleTests(unittest.TestCase):
         self.assertEqual(overview["analytics"]["tokens"], 750)
         self.assertTrue(all(project["id"].startswith("project:") for project in overview["projects"]))
         self.assertFalse(any("C:/" in json.dumps(item) for item in overview["projects"]))
-        self.assertIn({"source": "lead", "target": "task"}, overview["links"])
-        self.assertIn({"source": "root", "target": "lead"}, overview["links"])
+        self.assertIn({"source": "lead", "target": "task", "relationship": "delegated"}, overview["links"])
+        self.assertIn({"source": "root", "target": "lead", "relationship": "delegated"}, overview["links"])
         ctrl = next(node for node in overview["nodes"] if node["id"] == "root")
         self.assertEqual((ctrl["role"], ctrl["icon"]), ("ctrl", "🐙"))
         self.assertEqual(next(node for node in overview["nodes"] if node["id"] == "review")["status"], "done")
         self.assertGreaterEqual(overview["observation_window_ms"], 24 * 60 * 60 * 1000)
         self.assertEqual(overview["controllers"][0]["id"], "root")
         self.assertEqual(next(node for node in overview["nodes"] if node["id"] == "task")["controller_ids"], ["root"])
+        self.assertTrue(all(node["role_label"] == "TASK" for node in overview["nodes"] if node["role"] != "ctrl"))
+        self.assertEqual(next(node for node in overview["nodes"] if node["id"] == "review")["worker_role"], "REVIEW")
         self.assertLess(overview["performance"]["data_bytes"], overview["performance"]["budget"]["data_bytes"])
         self.assertEqual(overview["performance"]["budget"]["cache_hit_ms"], 5)
 
@@ -128,7 +159,59 @@ class SwarmConsoleTests(unittest.TestCase):
         self.assertEqual(by_id["child-ctrl"]["controller_ids"], ["root", "child-ctrl"])
         self.assertEqual(by_id["child-doer"]["controller_ids"], ["root", "child-ctrl"])
         self.assertEqual(by_id["lead"]["controller_ids"], ["root"])
-        self.assertIn("not the authoritative runtime workflow graph", overview["claim_limits"][1])
+        self.assertTrue(any("not the authoritative runtime workflow graph" in claim for claim in overview["claim_limits"]))
+
+    def test_ctrl_includes_unlabelled_host_descendants_without_exposing_prompt_title(self) -> None:
+        now = 2_000_000_000_000
+        connection = sqlite3.connect(self.database)
+        connection.execute("ALTER TABLE threads ADD COLUMN agent_path TEXT")
+        raw_title = "<codex_delegation>\nprivate task instructions\n</codex_delegation>"
+        connection.execute(
+            "INSERT INTO threads VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            ("generic-child", raw_title, "C:/work/alpha", now // 1000, now // 1000, now, now,
+             "gpt-5.6-terra", "high", 25, 0, "", "main", "subagent", "Lovelace", "", 0, "/root/generic_child"),
+        )
+        connection.execute("INSERT INTO thread_spawn_edges VALUES (?,?,?)", ("root", "generic-child", "open"))
+        connection.commit()
+        connection.close()
+
+        overview = console.build_overview(self.codex_home, self.config)
+        child = next(node for node in overview["nodes"] if node["id"] == "generic-child")
+        self.assertEqual((child["role"], child["role_label"], child["worker_role"], child["artifact"], child["worker"]), ("doer", "TASK", "AGENT", "Generic Child", "Lovelace"))
+        self.assertNotIn("private task instructions", json.dumps(overview))
+        self.assertIn({"source": "root", "target": "generic-child", "relationship": "delegated"}, overview["links"])
+
+    def test_unformatted_agent_tree_becomes_private_current_swarm_with_older_count(self) -> None:
+        now = 2_000_000_000_000
+        connection = sqlite3.connect(self.database)
+        connection.execute("ALTER TABLE threads ADD COLUMN agent_path TEXT")
+        columns = "id,title,cwd,created_at,updated_at,created_at_ms,updated_at_ms,model,reasoning_effort,tokens_used,archived,git_origin_url,git_branch,thread_source,agent_nickname,agent_role,is_pinned,agent_path"
+        connection.executemany(
+            f"INSERT INTO threads ({columns}) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            [
+                ("plain-root", "A long user request that must never render\nwith private detail", "C:/work/current", now // 1000, now // 1000, now, now, "gpt-5.6-sol", "high", 10, 0, "", "main", "", "", "", 0, ""),
+                ("plain-lead", "<codex_delegation>private lead prompt</codex_delegation>", "C:/work/current", now // 1000, now // 1000, now, now, "gpt-5.6-terra", "high", 10, 0, "", "main", "subagent", "Carson", "", 0, "/root/portal_lead"),
+                ("plain-lead-replacement", "<codex_delegation>replacement prompt</codex_delegation>", "C:/work/current", now // 1000, now // 1000, now, now + 1, "gpt-5.6-terra", "high", 10, 0, "", "main", "subagent", "Darwin", "", 0, "/root/portal_lead"),
+                ("old-child", "<codex_delegation>old prompt</codex_delegation>", "C:/work/current", 1, 1, 1_000, 1_000, "gpt-5.6-terra", "high", 10, 0, "", "main", "subagent", "Old", "", 0, "/root/old_lane"),
+            ],
+        )
+        connection.executemany(
+            "INSERT INTO thread_spawn_edges VALUES (?,?,?)",
+            [("plain-root", "plain-lead", "closed"), ("plain-root", "plain-lead-replacement", "open"), ("plain-root", "old-child", "closed")],
+        )
+        connection.commit()
+        connection.close()
+
+        overview = console.build_overview(self.codex_home, self.config)
+        root = next(node for node in overview["nodes"] if node["id"] == "plain-root")
+        lead = next(node for node in overview["nodes"] if node["id"] == "plain-lead-replacement")
+        controller = next(item for item in overview["controllers"] if item["id"] == "plain-root")
+        self.assertEqual((root["role_label"], root["artifact"]), ("CTRL", "Current SWARM"))
+        self.assertEqual((lead["role"], lead["role_label"], lead["worker_role"], lead["artifact"], lead["worker"]), ("lead", "TASK", "LEAD", "Portal", "Darwin"))
+        self.assertNotIn("plain-lead", {node["id"] for node in overview["nodes"]})
+        self.assertEqual(controller["older_lanes_omitted"], 1)
+        self.assertNotIn("private lead prompt", json.dumps(overview))
+        self.assertNotIn("old prompt", json.dumps(overview))
 
     def _handler(self, peer: str, host: str, *, origin: str = "", token: str = "secret"):
         handler = object.__new__(console.Handler)
@@ -227,9 +310,9 @@ class SwarmConsoleTests(unittest.TestCase):
         virtual_ctrl = next(
             node for node in overview["nodes"] if node["virtual"] and node["project"] == "beta"
         )
-        self.assertEqual((mother["role"], mother["role_label"], mother["icon"]), ("specialist", "MOTHER", "🐝"))
+        self.assertEqual((mother["role"], mother["role_label"], mother["worker_role"], mother["icon"]), ("specialist", "TASK", "MOTHER", "📋"))
         self.assertEqual((virtual_ctrl["role"], virtual_ctrl["role_label"], virtual_ctrl["icon"]), ("ctrl", "CTRL", "🐙"))
-        self.assertIn({"source": virtual_ctrl["id"], "target": "mother"}, overview["links"])
+        self.assertIn({"source": virtual_ctrl["id"], "target": "mother", "relationship": "delegated"}, overview["links"])
         self.assertNotIn("mother", overview["analytics"]["roles"])
 
     def test_historical_mother_uses_its_configured_specialist_icon(self) -> None:
@@ -292,11 +375,12 @@ class SwarmConsoleTests(unittest.TestCase):
             console.update_config(self.config, {"execution.usage_saver": "yes"})
         self.assertEqual(self.config.read_bytes(), before)
 
-    def test_usage_saver_has_one_console_control(self) -> None:
+    def test_usage_saver_has_one_settings_control(self) -> None:
         index = (console.STATIC_ROOT / "index.html").read_text(encoding="utf-8")
         app = (console.STATIC_ROOT / "app.js").read_text(encoding="utf-8")
-        self.assertEqual(index.count('id="usage-saver-toggle"'), 1)
-        self.assertIn('"execution.usage_saver": desired', app)
+        self.assertNotIn('id="usage-saver-toggle"', index)
+        self.assertEqual(app.count('["execution.usage_saver"'), 1)
+        self.assertNotIn("saveUsageSaver", app)
 
     def test_console_ui_fixture_is_structurally_valid(self) -> None:
         fixture_path = Path(__file__).parent / "fixtures" / "console-ui.json"
