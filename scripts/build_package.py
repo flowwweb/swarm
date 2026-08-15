@@ -236,6 +236,33 @@ def _git_bytes(root: Path, *arguments: str) -> bytes:
     return completed.stdout
 
 
+def _git_hash_object(root: Path, payload: bytes, *, archive_name: str = "") -> str:
+    """Return Git's object ID, optionally applying the path's clean filters."""
+    arguments = ["git", "-C", str(root), "hash-object"]
+    if archive_name:
+        arguments.extend(("--filters", f"--path={archive_name}"))
+    completed = subprocess.run(
+        [*arguments, "--stdin"], input=payload, capture_output=True, check=False
+    )
+    if completed.returncode:
+        detail = completed.stderr.decode("utf-8", "replace").strip()
+        raise ValueError(f"git clean-filter verification failed: {detail}")
+    return completed.stdout.decode("ascii", "strict").strip()
+
+
+def canonical_worktree_bytes(root: Path, archive_name: str, payload: bytes) -> bytes:
+    """Materialize exact clean-filter bytes for raw or CRLF-normalized content."""
+    archive_name = normalise_relative_path(archive_name)
+    expected = _git_hash_object(root, payload, archive_name=archive_name)
+    candidates = (payload, payload.replace(b"\r\n", b"\n"))
+    for candidate in dict.fromkeys(candidates):
+        if _git_hash_object(root, candidate) == expected:
+            return candidate
+    raise ValueError(
+        f"configured clean filter cannot be materialized safely for: {archive_name}"
+    )
+
+
 def is_git_repository_root(root: Path) -> bool:
     """Return whether ``root`` is exactly a usable Git worktree top level."""
     root = root.resolve()

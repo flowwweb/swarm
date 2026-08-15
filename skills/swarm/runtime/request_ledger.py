@@ -1,4 +1,3 @@
-"""Atomic private request continuity; schema authority remains in the live runtime."""
 from copy import deepcopy
 from hashlib import sha256
 import json
@@ -6,8 +5,7 @@ from pathlib import Path
 from .private_state import LockedPrivateState
 class RequestStoreError(ValueError): pass
 class RequestStore:
-    relative_path=Path(".codex")/"swarm"/"requests.json"
-    def __init__(self,repo_root:Path|str): self.state=LockedPrivateState(repo_root,self.relative_path)
+    def __init__(self,repo_root:Path|str): self.state=LockedPrivateState(repo_root,Path(".codex")/"swarm"/"requests.json")
     @staticmethod
     def canonical(value:dict)->bytes: return json.dumps(value,sort_keys=True,separators=(",",":"),ensure_ascii=True).encode()
     @staticmethod

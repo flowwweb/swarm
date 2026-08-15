@@ -4,6 +4,7 @@ const state = {
   config: null,
   changes: {},
   view: "overview",
+  readOnly: false,
 };
 
 const $ = (selector, root = document) => root.querySelector(selector);
@@ -27,6 +28,7 @@ const settingGroups = [
     fields: [
       ["execution.usage_profile", "Usage profile", "select", "Relative model and effort policy", ["high", "medium", "low"]],
       ["execution.service_tier", "Service tier", "text", "Empty keeps the host default"],
+      ["console.open_on_start", "Open portal on start", "boolean", "Reuse an open portal tab; closed tabs expire after a short grace period"],
       ["subagents.enabled", "Internal subagents", "boolean", "Bounded work inside an owning task"],
       ["subagents.max_per_task", "Subagent ceiling", "number", "Separate safety ceiling, not a target"],
       ["monitoring.heartbeat_minutes", "Freshness minutes", "number", "Optional alert-only sensor; ordinary alerts return to the watched owner"],
@@ -206,7 +208,7 @@ function renderSwarm() {
   const controller = $("#controller-filter").value || "all";
   const allNodes = state.overview.nodes.filter((node) =>
     (project === "all" || node.project_id === project) &&
-    (controller === "all" || node.controller_id === controller),
+    (controller === "all" || (node.controller_ids || []).includes(controller)),
   );
   const ids = new Set(allNodes.map((node) => node.id));
   const allLinks = state.overview.links.filter((link) => ids.has(link.source) && ids.has(link.target));
@@ -238,11 +240,13 @@ function renderSwarm() {
   const hasExpandedLead = displayNodes.some((node) => node.role === "lead" && node.status === "active");
   const levelStride = hasExpandedLead ? 185 : 145;
   const widestNode = hasExpandedLead ? 320 : 172;
-  const width = Math.max(
-    scroller.clientWidth,
-    maxWidth * widestNode + Math.max(0, maxWidth - 1) * 24 + (maxWidth > 1 ? 32 : 0),
-  );
-  const height = Math.max(scroller.clientHeight, levels.size * levelStride + 70);
+  const stage = scroller.getBoundingClientRect();
+  const requiredWidth = maxWidth * widestNode + Math.max(0, maxWidth - 1) * 24 + (maxWidth > 1 ? 32 : 0);
+  const requiredHeight = levels.size * levelStride + 70;
+  const overflowX = requiredWidth > Math.floor(stage.width);
+  const overflowY = requiredHeight > Math.floor(stage.height);
+  const width = overflowX ? requiredWidth : Math.floor(stage.width);
+  const height = overflowY ? requiredHeight : Math.floor(stage.height);
   const positions = new Map();
   const firstLevelY = Math.max(72, (height - Math.max(0, levels.size - 1) * levelStride) / 2);
   [...levels.entries()].sort(([a], [b]) => a - b).forEach(([level, items]) => {
@@ -251,8 +255,10 @@ function renderSwarm() {
     items.forEach((node, index) => positions.set(node.id, { x: gap * (index + 1), y: firstLevelY + level * levelStride }));
   });
   const canvas = $("#swarm-canvas");
-  canvas.style.width = `${width}px`;
-  canvas.style.height = `${height}px`;
+  scroller.style.overflowX = overflowX ? "auto" : "hidden";
+  scroller.style.overflowY = overflowY ? "auto" : "hidden";
+  canvas.style.width = overflowX ? `${width}px` : "100%";
+  canvas.style.height = overflowY ? `${height}px` : "100%";
   $("#swarm-links").setAttribute("viewBox", `0 0 ${width} ${height}`);
   $("#swarm-links").innerHTML = links.map((link) => {
     const a = positions.get(link.source), b = positions.get(link.target);
@@ -313,6 +319,7 @@ function renderSettings() {
   $("#config-path").textContent = state.config.path;
   $("#settings-grid").innerHTML = settingGroups.map((group) => `<section class="settings-card"><h3>${group.title}</h3><p>${group.copy}</p><div class="field-list">${group.fields.map(renderField).join("")}</div></section>`).join("");
   $("#save-settings").disabled = Object.keys(state.changes).length === 0;
+  if (state.readOnly) $("#settings-status").textContent = "Remote view is read-only. Open the console on this computer to change settings.";
   syncUsageSaver();
 }
 
@@ -321,12 +328,13 @@ function syncUsageSaver() {
   const enabled = Boolean(getPath(state.config.settings, "execution.usage_saver"));
   const toggle = $("#usage-saver-toggle");
   toggle.checked = enabled;
-  toggle.disabled = false;
+  toggle.disabled = state.readOnly;
   $("#usage-saver-control").classList.toggle("is-on", enabled);
-  $("#usage-saver-state").textContent = enabled ? "On" : "Off";
+  $("#usage-saver-state").textContent = state.readOnly ? "Read only" : (enabled ? "On" : "Off");
 }
 
 async function saveUsageSaver() {
+  if (state.readOnly) return;
   const toggle = $("#usage-saver-toggle");
   const desired = toggle.checked;
   toggle.disabled = true;
@@ -342,13 +350,14 @@ async function saveUsageSaver() {
 
 function renderField([path, label, type, hint, options]) {
   const value = getPath(state.config.settings, path);
+  const disabled = state.readOnly ? " disabled" : "";
   let control;
   if (type === "boolean") {
-    control = `<label class="switch"><input data-setting="${path}" type="checkbox" ${value ? "checked" : ""} aria-label="${escapeHTML(label)}"><span aria-hidden="true"></span></label>`;
+    control = `<label class="switch"><input data-setting="${path}" type="checkbox" ${value ? "checked" : ""}${disabled} aria-label="${escapeHTML(label)}"><span aria-hidden="true"></span></label>`;
   } else if (type === "select") {
-    control = `<select data-setting="${path}" aria-label="${escapeHTML(label)}">${options.map((option) => `<option value="${option}" ${option === value ? "selected" : ""}>${option}</option>`).join("")}</select>`;
+    control = `<select data-setting="${path}"${disabled} aria-label="${escapeHTML(label)}">${options.map((option) => `<option value="${option}" ${option === value ? "selected" : ""}>${option}</option>`).join("")}</select>`;
   } else {
-    control = `<input data-setting="${path}" type="${type}" value="${escapeHTML(value ?? "")}" aria-label="${escapeHTML(label)}">`;
+    control = `<input data-setting="${path}" type="${type}" value="${escapeHTML(value ?? "")}"${disabled} aria-label="${escapeHTML(label)}">`;
   }
   return `<div class="field"><div><label>${escapeHTML(label)}</label><small>${escapeHTML(hint)}</small></div>${control}</div>`;
 }
@@ -360,7 +369,7 @@ function normalizeInput(input) {
 }
 
 async function saveSettings() {
-  if (!Object.keys(state.changes).length) return;
+  if (state.readOnly || !Object.keys(state.changes).length) return;
   const button = $("#save-settings");
   button.disabled = true;
   $("#settings-status").textContent = "Validating…";
@@ -392,6 +401,7 @@ async function initialize() {
   try {
     const bootstrap = await api("/api/bootstrap");
     state.token = bootstrap.token;
+    state.readOnly = Boolean(bootstrap.read_only);
     state.config = await api("/api/config");
     renderSettings();
     await refreshOverview();
@@ -414,6 +424,7 @@ $("#project-filter").addEventListener("change", renderSwarm);
 $("#controller-filter").addEventListener("change", renderSwarm);
 $("#save-settings").addEventListener("click", saveSettings);
 $("#settings-form").addEventListener("input", (event) => {
+  if (state.readOnly) return;
   const input = event.target.closest("[data-setting]");
   if (!input) return;
   state.changes[input.dataset.setting] = normalizeInput(input);
@@ -426,3 +437,8 @@ initialize();
 setInterval(() => {
   if (document.visibilityState === "visible") refreshOverview();
 }, 30_000);
+setInterval(() => {
+  if (document.visibilityState === "hidden" && state.token && !state.readOnly) {
+    api("/api/presence", { method: "POST" }).catch(() => {});
+  }
+}, 60_000);

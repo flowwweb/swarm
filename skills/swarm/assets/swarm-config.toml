@@ -38,6 +38,11 @@ max_reasoning = "ultra"
 # models, requested outcome, required proof, independent review, or authority.
 usage_saver = false
 
+[console]
+# Reuse a recently visible portal tab; otherwise open the local portal when
+# SWARM starts. A browser launch failure never blocks work.
+open_on_start = true
+
 [turbo]
 # Opt-in composite: use the high profile, request the fast service tier, select
 # MAX progress policy, and use the highest declared model-supported reasoning

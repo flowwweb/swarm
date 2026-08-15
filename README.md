@@ -132,8 +132,10 @@ Start a new Codex task after reinstalling so it loads the updated plugin.
 
 SWARM includes an optional loopback-only console for inspecting hierarchy and validated local settings. Python 3.11 or newer is required; the console uses only the Python standard library.
 
+An explicit SWARM start opens the portal in your default browser by default. The launcher reuses the existing local server and any open portal tab. Change **Open portal on start** in Settings to disable this behavior.
+
 ```text
-python skills/swarm/scripts/swarm_console.py --open
+python skills/swarm/scripts/swarm_console.py --start
 ```
 
 Docker is optional:

@@ -446,6 +446,10 @@ class Swarm:
         for value in (task.id,task.goal_id,owner): _safe_token(value)
         outcome=self._request_outcome_identity(task,request_id)
         return sha256(json.dumps((task.id,task.goal_id,owner,self._request_route(task),outcome.kind.value,outcome.digest),separators=(",",":")).encode()).hexdigest()
+    def _request_matches_live(self, state:dict, record:RequestRecord) -> bool:
+        task=self.tasks.get(record.task_id); stage=next((raw for raw in state["stages"].values() if raw["request_id"]==record.id and raw["state"]=="ACCEPTED"),None)
+        if task is None or stage is None: return False
+        owner=Role.CTRL.value if task.ctrl_mode is CtrlMode.DIRECT else task.owning_lead_id; return task.id==record.task_id and task.goal_id==record.goal_id and record.accepted_owner==owner==stage["owner"] and (owner=="CTRL" or owner in self.topology) and record.accepting_route==self._request_route(task) and record.outcome_identity==self._request_outcome_identity(task,record.id) and stage["task_id"]==task.id and stage["contract_digest"]==self._request_contract_digest(task,record.id)
     def _mutate_request(self, callback, *, expected:tuple[int,str]|None=None):
         def validated(value): self._validate_request_state(value); result=callback(value); self._validate_request_state(value); return result
         try: return self._request_store()._mutate_validated(validated,expected)
@@ -504,7 +508,7 @@ class Swarm:
     def _request_audit_from(self, state:dict, digest:str, records:tuple[RequestRecord,...], now:int) -> RequestAudit:
         unresolved=tuple(item.id for item in records if item.state in {RequestState.OPEN,RequestState.BLOCKED}); orphaned=[]; unsurfaced=[]; idle=[]; blocked=[]
         for item in records:
-            task=self.tasks.get(item.task_id); is_orphan=task is None or (item.accepted_owner=="CTRL")!=(task.ctrl_mode is CtrlMode.DIRECT) or item.accepted_owner!="CTRL" and (item.accepted_owner!=task.owning_lead_id or item.accepted_owner not in self.topology)
+            is_orphan=not self._request_matches_live(state,item)
             if is_orphan: orphaned.append(item.id)
             if item.id not in unresolved: continue
             progressed=len(item.transition_receipts)>1
@@ -524,11 +528,9 @@ class Swarm:
         try: return self._request_store().with_current((state["sequence"],digest),check)[2]
         except RequestStoreError as error: raise InvariantError(str(error)) from error
     def _request_record(self, request_id:str, prior:set[RequestState])->tuple[dict,str,RequestRecord,Task]:
-        state,digest,records=self._request_snapshot(); record=next((item for item in records if item.id==request_id),None); task=self.tasks.get(record.task_id) if record else None
-        if record is None or record.state not in prior or task is None: raise InvariantError("request transition has invalid state or missing live task")
-        owner=Role.CTRL.value if task.ctrl_mode is CtrlMode.DIRECT else task.owning_lead_id
-        if record.goal_id!=task.goal_id or record.accepted_owner!=owner or record.accepting_route!=self._request_route(task) or record.outcome_identity!=self._request_outcome_identity(task,record.id): raise InvariantError("request transition requires its current goal, owner, route, and outcome")
-        return state,digest,record,task
+        state,digest,records=self._request_snapshot(); record=next((item for item in records if item.id==request_id),None)
+        if record is None or record.state not in prior or not self._request_matches_live(state,record): raise InvariantError("request transition requires its current task, stage, goal, owner, route, and outcome")
+        return state,digest,record,self.tasks[record.task_id]
     def _request_owner(self, actor:Role, record:RequestRecord, task:Task)->None:
         if actor is Role.LEAD and (record.accepted_owner!=task.owning_lead_id or record.accepted_owner not in self.topology) or actor is Role.CTRL and (record.accepted_owner!="CTRL" or task.ctrl_mode is not CtrlMode.DIRECT) or actor not in {Role.LEAD,Role.CTRL}: raise InvariantError("request transition requires its current accepted owner")
     def _request_transition(self, actor:Role, request_id:str, prior:set[RequestState], event_receipt:str, kinds:set[CtrlFeedEventKind], *, due:RequestDue|None=None, owner:bool=True, user:bool=False, fresh_proof:bool=True, append_evidence:bool=True):

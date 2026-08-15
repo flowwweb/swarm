@@ -156,6 +156,23 @@ class RequestLedgerTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             value=swarm(Path(temp)); view=accepted(value); review_receipt="rev-proof_review000"; review=ReviewEvidence(ReviewStrategy.LIGHT,"independent",True,None,receipt=(("acceptance",review_receipt),),scope=ReviewScope.ACCEPTANCE); value.review(Role.REVIEW,"T",review,True)
             proof_event,_=event(value,"T",(view.record.id,),"review",CtrlFeedEventKind.RESULT,"rev"); value.advance_request(Role.LEAD,view.record.id,proof_event,RequestDue("due-review",5)); value.complete(Role.LEAD,"T",True,True,6,actor_id="L"); acceptance,_=event(value,"T",(view.record.id,),"acceptance",CtrlFeedEventKind.ACCEPTANCE,proof_override=review_receipt); done=value.complete_request(Role.LEAD,view.record.id,acceptance,review_receipt); self.assertEqual(done.record.state,RequestState.COMPLETED); self.assertFalse(value.request_audit(7).unresolved_ids)
+    def test_completed_record_goal_outcome_route_and_stage_drift_fail_live_audit(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root=Path(temp); value=swarm(root); view=accepted(value); review_receipt="rev-proof_drift000"; review=ReviewEvidence(ReviewStrategy.LIGHT,"independent",True,None,receipt=(("acceptance",review_receipt),),scope=ReviewScope.ACCEPTANCE); value.review(Role.REVIEW,"T",review,True); progress,_=event(value,"T",(view.record.id,),"drift",CtrlFeedEventKind.RESULT,"rev"); value.advance_request(Role.LEAD,view.record.id,progress,RequestDue("due-drift",5)); value.complete(Role.LEAD,"T",True,True,6,actor_id="L"); acceptance,_=event(value,"T",(view.record.id,),"driftdone",CtrlFeedEventKind.ACCEPTANCE,proof_override=review_receipt); value.complete_request(Role.LEAD,view.record.id,acceptance,review_receipt)
+            path=root/".codex"/"swarm"/"requests.json"; canonical=path.read_bytes(); self.assertTrue(value.project_complete(Role.CTRL,True,True))
+            for name,change in (
+                ("goal",lambda record,stage:record.update(goal_id="goal-drifted")),
+                ("outcome",lambda record,stage:record.update(outcome_digest="0"*64)),
+                ("route",lambda record,stage:record.update(accepting_route=["L","INDEPENDENT_REVIEW","OTHER"])),
+                ("owner-link",lambda record,stage:(record.update(accepted_owner="OTHER"),stage.update(owner="OTHER"))),
+            ):
+                with self.subTest(name=name):
+                    payload=json.loads(canonical); record=next(iter(payload["requests"].values())); stage=next(iter(payload["stages"].values())); change(record,stage); path.write_text(json.dumps(payload,separators=(",",":"),sort_keys=True),encoding="utf-8"); tampered=path.read_bytes(); audit=value.request_audit(7); self.assertIn(view.record.id,audit.orphaned_ids); self.assertFalse(value.project_complete(Role.CTRL,True,True)); self.assertEqual(path.read_bytes(),tampered)
+            for name,change in (("stage-contract",lambda stage:stage.update(contract_digest="0"*64)),("stage-task",lambda stage:stage.update(task_id="OTHER"))):
+                with self.subTest(name=name):
+                    payload=json.loads(canonical); change(next(iter(payload["stages"].values()))); path.write_text(json.dumps(payload,separators=(",",":"),sort_keys=True),encoding="utf-8"); tampered=path.read_bytes()
+                    with self.assertRaises(Exception): value.request_audit(7)
+                    self.assertFalse(value.project_complete(Role.CTRL,True,True)); self.assertEqual(path.read_bytes(),tampered)
     def test_corrupt_state_and_serialized_mutation_fail_closed(self):
         with tempfile.TemporaryDirectory() as temp:
             root=Path(temp); value=swarm(root); path=root/".codex"/"swarm"/"requests.json"; path.write_text("{",encoding="utf-8")

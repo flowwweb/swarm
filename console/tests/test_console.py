@@ -5,7 +5,10 @@ import json
 import sqlite3
 import tempfile
 import unittest
+from email.message import Message
 from pathlib import Path
+from types import SimpleNamespace
+from unittest import mock
 
 
 SERVER = Path(__file__).resolve().parents[1] / "server.py"
@@ -94,7 +97,7 @@ class SwarmConsoleTests(unittest.TestCase):
         self.assertEqual(next(node for node in overview["nodes"] if node["id"] == "review")["status"], "done")
         self.assertGreaterEqual(overview["observation_window_ms"], 24 * 60 * 60 * 1000)
         self.assertEqual(overview["controllers"][0]["id"], "root")
-        self.assertEqual(next(node for node in overview["nodes"] if node["id"] == "task")["controller_id"], "root")
+        self.assertEqual(next(node for node in overview["nodes"] if node["id"] == "task")["controller_ids"], ["root"])
         self.assertLess(overview["performance"]["data_bytes"], overview["performance"]["budget"]["data_bytes"])
         self.assertEqual(overview["performance"]["budget"]["cache_hit_ms"], 5)
 
@@ -118,12 +121,67 @@ class SwarmConsoleTests(unittest.TestCase):
         connection.close()
 
         overview = console.build_overview(self.codex_home, self.config)
-        controller = next(item for item in overview["controllers"] if item["id"] == "root")
+        controllers = {item["id"]: item for item in overview["controllers"]}
         by_id = {node["id"]: node for node in overview["nodes"]}
-        self.assertEqual(controller["nodes"], 6)
-        self.assertEqual(by_id["child-ctrl"]["controller_id"], "root")
-        self.assertEqual(by_id["child-doer"]["controller_id"], "root")
+        self.assertEqual(controllers["root"]["nodes"], 6)
+        self.assertEqual(controllers["child-ctrl"]["nodes"], 2)
+        self.assertEqual(by_id["child-ctrl"]["controller_ids"], ["root", "child-ctrl"])
+        self.assertEqual(by_id["child-doer"]["controller_ids"], ["root", "child-ctrl"])
+        self.assertEqual(by_id["lead"]["controller_ids"], ["root"])
         self.assertIn("not the authoritative runtime workflow graph", overview["claim_limits"][1])
+
+    def _handler(self, peer: str, host: str, *, origin: str = "", token: str = "secret"):
+        handler = object.__new__(console.Handler)
+        handler.client_address = (peer, 41000)
+        handler.headers = Message()
+        handler.headers["Host"] = host
+        if origin:
+            handler.headers["Origin"] = origin
+        if token:
+            handler.headers["X-Swarm-Token"] = token
+        handler.server = SimpleNamespace(app=SimpleNamespace(token="secret", config_path=self.config))
+        return handler
+
+    def test_remote_peer_cannot_acquire_token_or_write_through_localhost_host(self) -> None:
+        handler = self._handler("192.0.2.44", "localhost", token="secret")
+        self.assertTrue(handler._host_allowed())
+        self.assertFalse(handler._peer_is_loopback())
+        self.assertFalse(handler._authorized_write())
+        self.assertEqual(handler._bootstrap_payload()["token"], "")
+        self.assertEqual(handler._bootstrap_payload()["config_path"], "")
+        self.assertTrue(handler._bootstrap_payload()["read_only"])
+        self.assertTrue(handler._config_payload()["read_only"])
+        self.assertEqual(handler._config_payload()["path"], "")
+
+    def test_write_requires_loopback_peer_allowed_host_origin_and_token(self) -> None:
+        self.assertFalse(self._handler("127.0.0.1", "evil.example")._host_allowed())
+        self.assertFalse(self._handler("127.0.0.1", "localhost", origin="http://evil.example")._authorized_write())
+        self.assertFalse(self._handler("127.0.0.1", "localhost:4788", origin="http://localhost:9999")._authorized_write())
+        self.assertFalse(self._handler("127.0.0.1", "localhost", token="wrong")._authorized_write())
+        self.assertTrue(self._handler("127.0.0.1", "localhost")._authorized_write())
+        self.assertTrue(self._handler("127.0.0.1", "localhost:4788", origin="http://localhost:4788")._authorized_write())
+        self.assertTrue(self._handler("127.0.0.1", "192.168.1.10")._host_allowed())
+
+    def test_portal_open_claim_uses_visible_presence_and_bounded_ttl(self) -> None:
+        app = console.App(self.codex_home, self.config)
+        with mock.patch.object(console.time, "monotonic", return_value=10.0):
+            self.assertTrue(app.claim_portal_open()["should_open"])
+        with mock.patch.object(console.time, "monotonic", return_value=20.0):
+            self.assertEqual(app.claim_portal_open()["reason"], "recent_claim")
+            app.mark_presence()
+        with mock.patch.object(console.time, "monotonic", return_value=80.0):
+            app.mark_presence()
+        with mock.patch.object(console.time, "monotonic", return_value=100.0):
+            self.assertEqual(app.claim_portal_open()["reason"], "active_tab")
+        with mock.patch.object(console.time, "monotonic", return_value=231.0):
+            self.assertTrue(app.claim_portal_open()["should_open"])
+
+    def test_hidden_tab_presence_is_cheap_authenticated_and_stops_on_close(self) -> None:
+        app = (console.STATIC_ROOT / "app.js").read_text(encoding="utf-8")
+        self.assertIn('document.visibilityState === "hidden"', app)
+        self.assertIn('api("/api/presence", { method: "POST" })', app)
+        self.assertIn("60_000", app)
+        self.assertLess(len(json.dumps({"ok": True}, separators=(",", ":")).encode()), 16)
 
     def test_overview_cache_rebuilds_only_after_a_host_or_config_change(self) -> None:
         app = console.App(self.codex_home, self.config)
@@ -221,6 +279,13 @@ class SwarmConsoleTests(unittest.TestCase):
         result = console.update_config(self.config, {"execution.usage_saver": True})
         self.assertTrue(result["settings"]["execution"]["usage_saver"])
 
+    def test_portal_start_setting_defaults_on_and_can_be_disabled(self) -> None:
+        before = console.redacted_config_snapshot(self.config)
+        self.assertTrue(before["settings"]["console"]["open_on_start"])
+        self.assertIn("console.open_on_start", before["editable"])
+        result = console.update_config(self.config, {"console.open_on_start": False})
+        self.assertFalse(result["settings"]["console"]["open_on_start"])
+
     def test_usage_saver_rejects_non_boolean_without_writing(self) -> None:
         before = self.config.read_bytes()
         with self.assertRaisesRegex(console.ConsoleError, "must be a boolean"):
@@ -239,6 +304,8 @@ class SwarmConsoleTests(unittest.TestCase):
         self.assertEqual(set(fixture), {"bootstrap", "config", "overview"})
         self.assertFalse(fixture["config"]["settings"]["execution"]["usage_saver"])
         self.assertIn("execution.usage_saver", fixture["config"]["editable"])
+        self.assertTrue(fixture["config"]["settings"]["console"]["open_on_start"])
+        self.assertIn("console.open_on_start", fixture["config"]["editable"])
 
     def test_hierarchy_omits_explanatory_metadata_surfaces(self) -> None:
         index = (console.STATIC_ROOT / "index.html").read_text(encoding="utf-8")

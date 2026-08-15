@@ -50,6 +50,7 @@ DEFAULTS: dict[str, Any] = {
         "min_reasoning": "none",
         "max_reasoning": "ultra",
     },
+    "console": {"open_on_start": True},
     "turbo": {"enabled": False},
     "efficiency": {"mode":"BALANCED", "doer_wip_limit":3},
     "hive": {"enabled": True, "cleanup_strategy":"adaptive", "retention_strategy":"adaptive", "worker_strategy":"warm_when_useful", "archive_behavior":"provenance"},
@@ -346,6 +347,9 @@ def validate(raw: dict[str, Any]) -> None:
     maximum = execution.get("max_reasoning", DEFAULTS["execution"]["max_reasoning"])
     if REASONING_SCALE.index(minimum) > REASONING_SCALE.index(maximum):
         raise ConfigError("execution.min_reasoning cannot exceed execution.max_reasoning")
+    console = _expect_table(raw, "console")
+    _expect_keys(console, set(DEFAULTS["console"]), "console")
+    _boolean(console, "open_on_start", "console")
     turbo = _expect_table(raw, "turbo")
     _expect_keys(turbo, set(DEFAULTS["turbo"]), "turbo")
     _boolean(turbo, "enabled", "turbo")

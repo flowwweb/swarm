@@ -3,12 +3,13 @@
     "ok": true,
     "token": "fixture-token",
     "config_path": "fixture/config.toml",
-    "local_only": true
+    "local_only": true,
+    "read_only": false
   },
   "config": {
     "exists": true,
     "path": "fixture/config.toml",
-    "editable": ["execution.usage_saver", "role_icons.enabled", "role_icons.ctrl"],
+    "editable": ["execution.usage_saver", "console.open_on_start", "role_icons.enabled", "role_icons.ctrl"],
     "settings": {
       "portfolio": {
         "max_active_tasks": 4,
@@ -19,6 +20,9 @@
         "usage_profile": "medium",
         "service_tier": "",
         "usage_saver": false
+      },
+      "console": {
+        "open_on_start": true
       },
       "coordination": {
         "allow_coordinators": true,
@@ -71,11 +75,11 @@
     "generated_at": "2026-08-09T00:00:00Z",
     "heartbeat_minutes": 30,
     "nodes": [
-      {"id":"ctrl","title":"🐙CTRL - Ship console","role":"ctrl","role_label":"CTRL","icon":"🐙","artifact":"Ship console","project_id":"project:fixture","project":"swarm","status":"active","model":"gpt-5.6-sol","tokens":100,"created_at":1000,"updated_at":2000,"age_ms":1000,"quiet_ms":0,"virtual":false,"controller_id":"ctrl"},
-      {"id":"lead","title":"🧭LEAD - Console UI","role":"lead","role_label":"LEAD","icon":"🧭","artifact":"Console UI","project_id":"project:fixture","project":"swarm","status":"active","model":"gpt-5.6-terra","tokens":200,"created_at":1100,"updated_at":2000,"age_ms":900,"quiet_ms":0,"virtual":false,"controller_id":"ctrl"},
-      {"id":"dev","title":"💻DEV - Hierarchy renderer","role":"doer","role_label":"DEV","icon":"💻","artifact":"Hierarchy renderer","project_id":"project:fixture","project":"swarm","status":"active","model":"gpt-5.6-terra","tokens":300,"created_at":1200,"updated_at":2000,"age_ms":800,"quiet_ms":0,"virtual":false,"controller_id":"ctrl"},
-      {"id":"design","title":"🎨DESIGN - Visual polish","role":"doer","role_label":"DESIGN","icon":"🎨","artifact":"Visual polish","project_id":"project:fixture","project":"swarm","status":"quiet","model":"gpt-5.6-terra","tokens":150,"created_at":1300,"updated_at":1500,"age_ms":700,"quiet_ms":500,"virtual":false,"controller_id":"ctrl"},
-      {"id":"test","title":"🧪TEST - Responsive proof","role":"doer","role_label":"TEST","icon":"🧪","artifact":"Responsive proof","project_id":"project:fixture","project":"swarm","status":"done","model":"gpt-5.6-terra","tokens":250,"created_at":1400,"updated_at":1900,"age_ms":600,"quiet_ms":100,"virtual":false,"controller_id":"ctrl"}
+      {"id":"ctrl","title":"🐙CTRL - Ship console","role":"ctrl","role_label":"CTRL","icon":"🐙","artifact":"Ship console","project_id":"project:fixture","project":"swarm","status":"active","model":"gpt-5.6-sol","tokens":100,"created_at":1000,"updated_at":2000,"age_ms":1000,"quiet_ms":0,"virtual":false,"controller_ids":["ctrl"]},
+      {"id":"lead","title":"🧭LEAD - Console UI","role":"lead","role_label":"LEAD","icon":"🧭","artifact":"Console UI","project_id":"project:fixture","project":"swarm","status":"active","model":"gpt-5.6-terra","tokens":200,"created_at":1100,"updated_at":2000,"age_ms":900,"quiet_ms":0,"virtual":false,"controller_ids":["ctrl"]},
+      {"id":"dev","title":"💻DEV - Hierarchy renderer","role":"doer","role_label":"DEV","icon":"💻","artifact":"Hierarchy renderer","project_id":"project:fixture","project":"swarm","status":"active","model":"gpt-5.6-terra","tokens":300,"created_at":1200,"updated_at":2000,"age_ms":800,"quiet_ms":0,"virtual":false,"controller_ids":["ctrl"]},
+      {"id":"design","title":"🎨DESIGN - Visual polish","role":"doer","role_label":"DESIGN","icon":"🎨","artifact":"Visual polish","project_id":"project:fixture","project":"swarm","status":"quiet","model":"gpt-5.6-terra","tokens":150,"created_at":1300,"updated_at":1500,"age_ms":700,"quiet_ms":500,"virtual":false,"controller_ids":["ctrl"]},
+      {"id":"test","title":"🧪TEST - Responsive proof","role":"doer","role_label":"TEST","icon":"🧪","artifact":"Responsive proof","project_id":"project:fixture","project":"swarm","status":"done","model":"gpt-5.6-terra","tokens":250,"created_at":1400,"updated_at":1900,"age_ms":600,"quiet_ms":100,"virtual":false,"controller_ids":["ctrl"]}
     ],
     "links": [
       {"source":"ctrl","target":"lead"},

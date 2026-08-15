@@ -15,11 +15,16 @@ const fixture = JSON.parse(
 );
 const multiFixtureOverview = structuredClone(fixture.overview);
 multiFixtureOverview.nodes.push(
-  { id: "branch-ctrl", title: "🐙CTRL - Parallel proof", role: "ctrl", role_label: "CTRL", icon: "🐙", artifact: "Parallel proof", project_id: "project:fixture", project: "swarm", status: "quiet", created_at: 2100, updated_at: 2100, quiet_ms: 0, virtual: false, controller_id: "branch-ctrl" },
-  ...["One", "Two", "Three"].map((artifact, index) => ({ id: `branch-${index}`, title: `🔨DEV - ${artifact}`, role: "doer", role_label: "DEV", icon: "🔨", artifact, project_id: "project:fixture", project: "swarm", status: "quiet", created_at: 2200 + index, updated_at: 2200 + index, quiet_ms: 0, virtual: false, controller_id: "branch-ctrl" })),
+  { id: "nested-ctrl", title: "🐙CTRL - Nested proof", role: "ctrl", role_label: "CTRL", icon: "🐙", artifact: "Nested proof", project_id: "project:fixture", project: "swarm", status: "active", created_at: 2050, updated_at: 2050, quiet_ms: 0, virtual: false, controller_ids: ["ctrl", "nested-ctrl"] },
+  { id: "nested-doer", title: "🔨DEV - Nested result", role: "doer", role_label: "DEV", icon: "🔨", artifact: "Nested result", project_id: "project:fixture", project: "swarm", status: "active", created_at: 2060, updated_at: 2060, quiet_ms: 0, virtual: false, controller_ids: ["ctrl", "nested-ctrl"] },
+  { id: "branch-ctrl", title: "🐙CTRL - Parallel proof", role: "ctrl", role_label: "CTRL", icon: "🐙", artifact: "Parallel proof", project_id: "project:fixture", project: "swarm", status: "quiet", created_at: 2100, updated_at: 2100, quiet_ms: 0, virtual: false, controller_ids: ["branch-ctrl"] },
+  ...["One", "Two", "Three"].map((artifact, index) => ({ id: `branch-${index}`, title: `🔨DEV - ${artifact}`, role: "doer", role_label: "DEV", icon: "🔨", artifact, project_id: "project:fixture", project: "swarm", status: "quiet", created_at: 2200 + index, updated_at: 2200 + index, quiet_ms: 0, virtual: false, controller_ids: ["branch-ctrl"] })),
 );
+multiFixtureOverview.links.push({ source: "lead", target: "nested-ctrl" }, { source: "nested-ctrl", target: "nested-doer" });
 multiFixtureOverview.links.push(...[0, 1, 2].map((index) => ({ source: "branch-ctrl", target: `branch-${index}` })));
 multiFixtureOverview.roots.push("branch-ctrl");
+multiFixtureOverview.controllers[0].nodes = 7;
+multiFixtureOverview.controllers.push({ id: "nested-ctrl", title: "🐙CTRL - Nested proof", artifact: "Nested proof", project_id: "project:fixture", project: "swarm", status: "active", virtual: false, nodes: 2, active: 2 });
 multiFixtureOverview.controllers.push({ id: "branch-ctrl", title: "🐙CTRL - Parallel proof", artifact: "Parallel proof", project_id: "project:fixture", project: "swarm", status: "quiet", virtual: false, nodes: 4, active: 0 });
 const evidenceRoot = process.env.SWARM_UI_EVIDENCE_DIR ||
   fs.mkdtempSync(path.join(os.tmpdir(), "swarm-console-ui-"));
@@ -220,6 +225,14 @@ try {
   const multiPage = await browser.newPage({ viewport: { width: 390, height: 844 } });
   const multiErrors = await mount(multiPage, multiFixtureOverview);
   await multiPage.locator('[data-view="swarm"]').click();
+  assert.deepEqual(await multiPage.locator("#controller-filter option").allTextContents(), [
+    "Ship console · 7 nodes", "Nested proof · 2 nodes", "Parallel proof · 4 nodes",
+  ]);
+  await multiPage.locator("#controller-filter").selectOption("nested-ctrl");
+  assert.equal(await multiPage.locator(".swarm-node").count(), 2, "nested CTRL does not own its independent subtree");
+  assert.match(await multiPage.locator("#swarm-nodes").innerText(), /Nested result/);
+  await multiPage.locator("#controller-filter").selectOption("ctrl");
+  assert.match(await multiPage.locator("#swarm-nodes").innerText(), /Nested result/, "parent CTRL lost a nested descendant");
   await multiPage.locator("#controller-filter").selectOption("branch-ctrl");
   const multiGeometry = await multiPage.evaluate(() => {
     const scroller = document.querySelector(".swarm-scroll");
@@ -235,5 +248,7 @@ try {
 }
 
 assert.match(app, /document\.visibilityState === "visible"/);
+assert.match(app, /document\.visibilityState === "hidden"/);
+assert.match(app, /api\("\/api\/presence", \{ method: "POST" \}\)/);
 assert.match(app, /controller-filter/);
 console.log(JSON.stringify({ ok: true, evidenceRoot, results }, null, 2));

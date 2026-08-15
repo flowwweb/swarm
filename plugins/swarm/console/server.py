@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
-"""Loopback-only SWARM settings, hierarchy, and analytics console."""
+"""Local SWARM settings, hierarchy, and analytics console."""
 
 from __future__ import annotations
 
 import argparse
 import hashlib
 import importlib.util
+import ipaddress
 import json
 import os
 import re
@@ -34,6 +35,7 @@ DEFAULT_CODEX_HOME = Path(os.environ.get("CODEX_HOME", Path.home() / ".codex"))
 DEFAULT_CONFIG_PATH = Path.home() / ".agents" / "swarm" / "config.toml"
 DEFAULT_PORT = 4788
 MAX_BODY_BYTES = 64 * 1024
+PORTAL_PRESENCE_TTL_SECONDS = 150
 MIN_OBSERVATION_WINDOW_MS = 24 * 60 * 60 * 1000
 OBSERVATION_HEARTBEAT_WINDOWS = 48
 
@@ -51,6 +53,7 @@ EDITABLE_SETTINGS: dict[str, type] = {
     "execution.usage_profile": str,
     "execution.service_tier": str,
     "execution.usage_saver": bool,
+    "console.open_on_start": bool,
     "boost.enabled": bool,
     "coordination.allow_coordinators": bool,
     "coordination.coordinator_min_children": int,
@@ -493,36 +496,36 @@ def build_overview(codex_home: Path, config_path: Path) -> dict[str, Any]:
 
     # The host gives us spawn edges, not an authoritative SWARM runtime graph.
     # A controller scope is therefore only an observed, read-only descendant set.
-    controller_by_node: dict[str, str] = {}
+    controller_ids_by_node: dict[str, list[str]] = {node_id: [] for node_id in nodes}
     controllers: list[dict[str, Any]] = []
-    for root_id in roots:
-        root = nodes[root_id]
-        if root["role"] != "ctrl":
+    for controller_id, controller in nodes.items():
+        if controller["role"] != "ctrl":
             continue
-        queue = [root_id]
+        queue = [controller_id]
         descendants: set[str] = set()
         while queue:
             node_id = queue.pop()
             if node_id in descendants:
                 continue
             descendants.add(node_id)
-            controller_by_node.setdefault(node_id, root_id)
             queue.extend(children.get(node_id, []))
+        for node_id in descendants:
+            controller_ids_by_node[node_id].append(controller_id)
         controllers.append(
             {
-                "id": root_id,
-                "title": root["title"],
-                "artifact": root["artifact"],
-                "project_id": root["project_id"],
-                "project": root["project"],
-                "status": root["status"],
-                "virtual": root["virtual"],
+                "id": controller_id,
+                "title": controller["title"],
+                "artifact": controller["artifact"],
+                "project_id": controller["project_id"],
+                "project": controller["project"],
+                "status": controller["status"],
+                "virtual": controller["virtual"],
                 "nodes": len(descendants),
                 "active": sum(nodes[node_id]["status"] == "active" for node_id in descendants),
             }
         )
     for node_id, node in nodes.items():
-        node["controller_id"] = controller_by_node.get(node_id, node_id if node["role"] == "ctrl" else "")
+        node["controller_ids"] = controller_ids_by_node[node_id]
     model_counts = Counter(
         node["model"] for node in nodes.values() if not node["virtual"] and node["model"] != "unknown"
     )
@@ -551,6 +554,7 @@ def build_overview(codex_home: Path, config_path: Path) -> dict[str, Any]:
             "Controller scopes are observed host descendants, not the authoritative runtime workflow graph.",
             "Only unarchived host tasks updated within the current observation window are shown.",
             "Visible-tab refreshes reuse the local snapshot until the host database, its WAL, or config changes.",
+            f"Visible overview refreshes and a lightweight hidden-tab ping preserve portal presence; a closed tab expires after {PORTAL_PRESENCE_TTL_SECONDS} seconds.",
             "Active means recently updated within two heartbeat windows, not guaranteed CPU work.",
             "Tokens are host-reported cumulative thread tokens, not billing or remaining quota.",
             "Only title metadata needed to recognize SWARM naming is read; message bodies, previews, rollout content, credentials, and the logs database are not.",
@@ -582,8 +586,11 @@ class App:
         self.token = secrets.token_urlsafe(24)
         self.write_lock = threading.Lock()
         self.overview_lock = threading.Lock()
+        self.presence_lock = threading.Lock()
         self._overview_fingerprint: tuple[tuple[str, int, int], ...] | None = None
         self._overview: dict[str, Any] | None = None
+        self._last_presence_at: float | None = None
+        self._last_open_claim_at: float | None = None
 
     def overview(self) -> dict[str, Any]:
         fingerprint = observation_fingerprint(self.codex_home, self.config_path)
@@ -595,6 +602,42 @@ class App:
             self._overview = overview
             return overview
 
+    def mark_presence(self) -> None:
+        with self.presence_lock:
+            self._last_presence_at = time.monotonic()
+
+    def presence(self) -> dict[str, Any]:
+        with self.presence_lock:
+            now = time.monotonic()
+            age = None if self._last_presence_at is None else max(0.0, now - self._last_presence_at)
+            return {
+                "ok": True,
+                "fresh": age is not None and age <= PORTAL_PRESENCE_TTL_SECONDS,
+                "age_seconds": None if age is None else round(age, 2),
+                "ttl_seconds": PORTAL_PRESENCE_TTL_SECONDS,
+            }
+
+    def claim_portal_open(self) -> dict[str, Any]:
+        with self.presence_lock:
+            now = time.monotonic()
+            presence_fresh = (
+                self._last_presence_at is not None
+                and now - self._last_presence_at <= PORTAL_PRESENCE_TTL_SECONDS
+            )
+            claim_fresh = (
+                self._last_open_claim_at is not None
+                and now - self._last_open_claim_at <= PORTAL_PRESENCE_TTL_SECONDS
+            )
+            should_open = not presence_fresh and not claim_fresh
+            if should_open:
+                self._last_open_claim_at = now
+            return {
+                "ok": True,
+                "should_open": should_open,
+                "reason": "open" if should_open else ("active_tab" if presence_fresh else "recent_claim"),
+                "ttl_seconds": PORTAL_PRESENCE_TTL_SECONDS,
+            }
+
 
 class Handler(BaseHTTPRequestHandler):
     server: SwarmHTTPServer
@@ -605,7 +648,20 @@ class Handler(BaseHTTPRequestHandler):
 
     def _host_allowed(self) -> bool:
         host = (urlparse(f"//{self.headers.get('Host', '')}").hostname or "").casefold()
-        return host in {"localhost", "127.0.0.1", "::1"}
+        if host == "localhost":
+            return True
+        try:
+            ipaddress.ip_address(host)
+        except ValueError:
+            return False
+        return True
+
+    def _peer_is_loopback(self) -> bool:
+        peer = str(self.client_address[0]).split("%", 1)[0]
+        try:
+            return ipaddress.ip_address(peer).is_loopback
+        except ValueError:
+            return False
 
     def _json(self, status: int, payload: Any) -> None:
         body = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
@@ -624,12 +680,44 @@ class Handler(BaseHTTPRequestHandler):
     def _same_origin(self) -> bool:
         origin = self.headers.get("Origin")
         if not origin:
+            # Keep loopback CLI callers viable; browser writes always send Origin.
             return True
         parsed = urlparse(origin)
-        return parsed.hostname in {"localhost", "127.0.0.1", "::1"}
+        requested = urlparse(f"//{self.headers.get('Host', '')}")
+        try:
+            origin_port = parsed.port or 80
+            requested_port = requested.port or 80
+        except ValueError:
+            return False
+        return (
+            parsed.scheme == "http"
+            and (parsed.hostname or "").casefold() == (requested.hostname or "").casefold()
+            and origin_port == requested_port
+        )
 
     def _authorized_write(self) -> bool:
-        return secrets.compare_digest(self.headers.get("X-Swarm-Token", ""), self.server.app.token)
+        return (
+            self._peer_is_loopback()
+            and self._same_origin()
+            and secrets.compare_digest(self.headers.get("X-Swarm-Token", ""), self.server.app.token)
+        )
+
+    def _bootstrap_payload(self) -> dict[str, Any]:
+        local = self._peer_is_loopback()
+        return {
+            "ok": True,
+            "token": self.server.app.token if local else "",
+            "config_path": str(self.server.app.config_path) if local else "",
+            "local_only": local,
+            "read_only": not local,
+        }
+
+    def _config_payload(self) -> dict[str, Any]:
+        payload = redacted_config_snapshot(self.server.app.config_path)
+        if not self._peer_is_loopback():
+            payload["path"] = ""
+            payload["read_only"] = True
+        return payload
 
     def do_GET(self) -> None:  # noqa: N802
         if not self._host_allowed():
@@ -641,24 +729,20 @@ class Handler(BaseHTTPRequestHandler):
                 self._json(HTTPStatus.OK, {"ok": True, "service": "swarm-console"})
                 return
             if path == "/api/bootstrap":
-                self._json(
-                    HTTPStatus.OK,
-                    {
-                        "ok": True,
-                        "token": self.server.app.token,
-                        "config_path": str(self.server.app.config_path),
-                        "local_only": True,
-                    },
-                )
+                self._json(HTTPStatus.OK, self._bootstrap_payload())
                 return
             if path == "/api/overview":
+                self.server.app.mark_presence()
                 self._json(
                     HTTPStatus.OK,
                     self.server.app.overview(),
                 )
                 return
+            if path == "/api/presence":
+                self._json(HTTPStatus.OK, self.server.app.presence())
+                return
             if path == "/api/config":
-                self._json(HTTPStatus.OK, redacted_config_snapshot(self.server.app.config_path))
+                self._json(HTTPStatus.OK, self._config_payload())
                 return
             static = STATIC_FILES.get(path)
             if not static:
@@ -685,13 +769,26 @@ class Handler(BaseHTTPRequestHandler):
             self._error(HTTPStatus.INTERNAL_SERVER_ERROR, str(exc))
 
     def do_POST(self) -> None:  # noqa: N802
-        if not self._host_allowed() or not self._same_origin():
+        if not self._host_allowed():
+            self._error(HTTPStatus.FORBIDDEN, "invalid console host")
+            return
+        if not self._peer_is_loopback():
+            self._error(HTTPStatus.FORBIDDEN, "remote console access is read-only")
+            return
+        if not self._same_origin():
             self._error(HTTPStatus.FORBIDDEN, "local same-origin request required")
             return
         if not self._authorized_write():
             self._error(HTTPStatus.FORBIDDEN, "invalid console write token")
             return
         path = urlparse(self.path).path
+        if path == "/api/presence":
+            self.server.app.mark_presence()
+            self._json(HTTPStatus.OK, {"ok": True})
+            return
+        if path == "/api/launch-claim":
+            self._json(HTTPStatus.OK, self.server.app.claim_portal_open())
+            return
         if path != "/api/config":
             self._error(HTTPStatus.NOT_FOUND, "not found")
             return

@@ -21,6 +21,7 @@ VERIFIER_PATH = Path(__file__).resolve().parents[1] / "scripts" / "verify_plugin
 
 sys.path.insert(0, str(BUILDER_PATH.parent))
 import build_package as package_builder
+import sync_plugin_mirror as mirror_sync
 from build_package import (
     PACKAGE_METADATA_PATH,
     build_package_bytes,
@@ -235,6 +236,46 @@ class ReleasePackageTests(unittest.TestCase):
             self.assertIn("README.md", metadata["files"])
             with zipfile.ZipFile(io.BytesIO(payload)) as archive:
                 self.assertEqual(archive.read("README.md"), b"# SWARM\n")
+
+    def test_mirror_detects_and_repairs_clean_equivalent_crlf_bytes(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = self.make_plugin(Path(temporary))
+            (root / ".gitattributes").write_bytes(b"* text=auto eol=lf\n")
+            for relative in source_file_hashes(root):
+                source = root / relative
+                target = root / "plugins" / "swarm" / relative
+                target.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(source, target)
+            subprocess.run(["git", "-C", str(root), "add", "."], check=True)
+            subprocess.run(["git", "-C", str(root), "add", "--renormalize", "."], check=True)
+            subprocess.run(["git", "-C", str(root), "commit", "-qm", "add mirror policy"], check=True)
+
+            source_manifest = root / ".codex-plugin" / "plugin.json"
+            mirror_manifest = root / "plugins" / "swarm" / ".codex-plugin" / "plugin.json"
+            for manifest in (source_manifest, mirror_manifest):
+                lf_payload = manifest.read_bytes().replace(b"\r\n", b"\n")
+                manifest.write_bytes(lf_payload.replace(b"\n", b"\r\n"))
+            self.assertFalse(subprocess.run(
+                ["git", "-C", str(root), "status", "--porcelain"],
+                capture_output=True,
+                check=True,
+                text=True,
+            ).stdout)
+
+            with self.assertRaisesRegex(ValueError, r"changed=.*\.codex-plugin/plugin\.json"):
+                mirror_sync.check_mirror(root)
+            mirror_sync.write_mirror(root)
+            self.assertNotIn(b"\r\n", mirror_manifest.read_bytes())
+
+            package, _ = build_package_bytes(root)
+            with zipfile.ZipFile(io.BytesIO(package)) as archive:
+                self.assertEqual(
+                    mirror_manifest.read_bytes(), archive.read(".codex-plugin/plugin.json")
+                )
+            self.assertEqual(
+                verifier.verify(root, root / "plugins" / "swarm"),
+                len(verifier.declared_files(root / "plugins" / "swarm")),
+            )
 
     def test_assume_unchanged_cannot_hide_changed_source_bytes(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
