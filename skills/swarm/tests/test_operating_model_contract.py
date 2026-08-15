@@ -1,21 +1,17 @@
-import unittest
+import hashlib
 import sys
+import unittest
 from pathlib import Path
 
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
-from runtime import AcceptanceContract, ArtifactIdentity, CtrlMode, HorizonAction, InvariantError, LaneKind, Role, SubagentException, Swarm, Task, ctrl_mode
+from runtime import AcceptanceContract, ArtifactIdentity, CtrlMode, Depth, InvariantError, LaneKind, Role, SubagentException, Swarm, Task, WatchdogBinding, WatchdogEvidence, WatchdogRouteRole, WatchdogScope, WatchdogSignal, Worker, ctrl_mode
+
+
+def digest(value:str)->str: return hashlib.sha256(value.encode()).hexdigest()
 
 
 class OperatingModelTests(unittest.TestCase):
-    def test_direct_mode_is_the_only_ctrl_mutation_exception(self):
-        root=Path(__file__).resolve().parents[1]
-        skill="\n".join((root / name).read_text(encoding="utf-8") for name in ("SKILL.md", "references/hierarchy.md"))
-        hierarchy=(Path(__file__).resolve().parents[1] / "references" / "hierarchy.md").read_text(encoding="utf-8")
-        self.assertRegex(skill,r"(?is)CTRL_DIRECT.*only one low-risk atomic outcome.*otherwise use.*CTRL_DELEGATED")
-        self.assertRegex(skill,r"(?is)failed capacity.*continue direct bounded owner work.*never grants external")
-        self.assertIn("Every `CTRL_DELEGATED` and non-CTRL SWARM task delegates",hierarchy)
-
-    def test_ctrl_direct_is_exact_and_every_failed_predicate_delegates(self):
+    def test_direct_mode_is_exact(self):
         base=dict(outcomes=1,mutable_surfaces=1,cross_lane_dependency=False,risk=1,measurable_minutes=20,direct_horizon_minutes=20)
         self.assertEqual(ctrl_mode(**base),CtrlMode.DIRECT)
         for change in ({"outcomes":2},{"mutable_surfaces":2},{"cross_lane_dependency":True},{"risk":2},{"measurable_minutes":21}):
@@ -23,88 +19,119 @@ class OperatingModelTests(unittest.TestCase):
         swarm=Swarm(); direct=Task("direct","CTRL","CTRL",1,{},risk=1,subagent_exception=SubagentException.WHOLE_TASK_COST,subagent_exception_reason="atomic work is shorter than delegation",lane_kind=LaneKind.CODE,acceptance_contract=AcceptanceContract(ArtifactIdentity("direct","v1","acceptance"),("contract",)))
         swarm.start_ctrl_direct(Role.CTRL,direct,outcomes=1,mutable_surfaces=1,cross_lane_dependency=False,measurable_minutes=10)
         swarm.add_artifact(Role.CTRL,"direct",ArtifactIdentity("direct","v1","work"))
-        with self.assertRaisesRegex(InvariantError,"hire a LEAD"): swarm.start_ctrl_direct(Role.CTRL,Task("large","CTRL","CTRL",1,{},risk=2,subagent_exception=SubagentException.WHOLE_TASK_COST,subagent_exception_reason="candidate"),outcomes=1,mutable_surfaces=1,cross_lane_dependency=False,measurable_minutes=10)
 
-    def test_subagent_capacity_never_materializes_visible_topology(self):
-        swarm=Swarm()
-        swarm.start_atomic(Role.CTRL,Task("internal","helper","CTRL",1,{},subagent_receipt="host:thread:internal"))
-        self.assertIn("helper",swarm.workers)
-        self.assertNotIn("helper",swarm.topology)
-        self.assertEqual(swarm.topology,set())
+    def lead_binding(self)->WatchdogBinding:
+        return WatchdogBinding(Role.LEAD,"lead",((WatchdogRouteRole.LEAD,"lead"),(WatchdogRouteRole.CTRL,"CTRL")),((WatchdogRouteRole.CTRL,"CTRL"),(WatchdogRouteRole.HUMAN,"HUMAN")))
 
-    def tracked(self):
-        swarm=Swarm(); swarm.tasks["T"]=Task("T","worker","CTRL",1,{})
-        swarm.propose_milestone(Role.DOER,"T",goal_id="goal",milestone="test passes",proof_kind="test",horizon_minutes=15,now=10)
-        return swarm
+    def tracked(self, *, bound:bool=True)->Swarm:
+        swarm=Swarm(); swarm.add_lead(Role.CTRL,"lead"); swarm.add_worker(Role.LEAD,Worker("worker","lead",1)); swarm.tasks["T"]=Task("T","worker","CTRL",1,{},owning_lead_id="lead")
+        swarm.propose_milestone(Role.LEAD,"T",goal_id="goal",milestone="proof",proof_kind="test",horizon_minutes=15,now=10,watchdog=self.lead_binding() if bound else None); return swarm
 
-    def test_activity_only_cannot_be_a_milestone_contract(self):
-        swarm=Swarm(); swarm.tasks["T"]=Task("T","worker","CTRL",1,{})
-        with self.assertRaisesRegex(InvariantError,"measurable proof kind"):
-            swarm.propose_milestone(Role.DOER,"T",goal_id="goal",milestone="still working",proof_kind="activity",horizon_minutes=15,now=0)
+    def evidence(self, scope:WatchdogScope, signal:WatchdogSignal, text:str="observed evidence", owner_integrity:bool=False)->WatchdogEvidence:
+        return WatchdogEvidence("T","goal","lead",scope,signal,digest(text),text,owner_integrity)
 
-    def test_one_event_no_early_poll_and_raw_evidence_required(self):
-        swarm=self.tracked(); self.assertEqual(swarm.scheduled_wakeups,{"T":25})
-        self.assertEqual(swarm.review_horizon(Role.CTRL,"T",now=24),HorizonAction.OBSERVE)
-        with self.assertRaisesRegex(InvariantError,"raw evidence"): swarm.review_horizon(Role.CTRL,"T",now=25)
-        self.assertEqual(swarm.scheduled_wakeups["T"],25)
-        self.assertEqual(swarm.review_horizon(Role.CTRL,"T",now=25,raw_evidence="diff",reorientation="inspect failing test"),HorizonAction.REORIENT)
+    def test_unbound_goal_has_no_watchdog_surface(self):
+        swarm=self.tracked(bound=False)
+        self.assertEqual(swarm.scheduled_wakeups,{})
+        with self.assertRaisesRegex(InvariantError,"unbound goal"):
+            swarm.watchdog_check("T",observer_role=WatchdogRouteRole.LEAD,observer_id="lead",now=25,evidence=self.evidence(WatchdogScope.TRAJECTORY,WatchdogSignal.CLEAR))
+        self.assertEqual(swarm.tasks["T"].watchdog_receipts,[])
 
-    def test_latency_reschedules_once_and_success_schedules_or_closes(self):
+    def test_binding_rejects_missing_self_cyclic_and_fabricated_routes(self):
+        integrity=((WatchdogRouteRole.CTRL,"CTRL"),(WatchdogRouteRole.HUMAN,"HUMAN"))
+        with self.assertRaisesRegex(InvariantError,"ordinary and owner-integrity routes"):
+            WatchdogBinding(Role.LEAD,"lead",(),integrity)
+        with self.assertRaisesRegex(InvariantError,"first be heard"):
+            WatchdogBinding(Role.LEAD,"lead",((WatchdogRouteRole.CTRL,"CTRL"),),integrity)
+        with self.assertRaisesRegex(InvariantError,"skip the watched owner"):
+            WatchdogBinding(Role.LEAD,"lead",((WatchdogRouteRole.LEAD,"lead"),),((WatchdogRouteRole.LEAD,"lead"),))
+        with self.assertRaisesRegex(InvariantError,"acyclic"):
+            WatchdogBinding(Role.LEAD,"lead",((WatchdogRouteRole.LEAD,"lead"),(WatchdogRouteRole.CTRL,"lead")),integrity)
+        swarm=Swarm(); swarm.add_lead(Role.CTRL,"lead"); swarm.tasks["T"]=Task("T","worker","CTRL",1,{},owning_lead_id="lead")
+        fabricated=WatchdogBinding(Role.LEAD,"lead",((WatchdogRouteRole.LEAD,"lead"),),((WatchdogRouteRole.REVIEW,"invented"),))
+        with self.assertRaisesRegex(InvariantError,"fabricated"):
+            swarm.propose_milestone(Role.LEAD,"T",goal_id="goal",milestone="proof",proof_kind="test",horizon_minutes=15,now=0,watchdog=fabricated)
+        with self.assertRaisesRegex(InvariantError,"durable LEAD"):
+            WatchdogBinding(Role.CTRL,"CTRL",((WatchdogRouteRole.CTRL,"CTRL"),),((WatchdogRouteRole.REVIEW,"INDEPENDENT_REVIEW"),(WatchdogRouteRole.HUMAN,"HUMAN")))
+
+    def test_ctrl_binding_is_rejected(self):
+        with self.assertRaisesRegex(InvariantError,"durable LEAD"):
+            WatchdogBinding(Role.CTRL,"CTRL",((WatchdogRouteRole.CTRL,"CTRL"),),((WatchdogRouteRole.HUMAN,"HUMAN"),))
+
+    def test_exact_three_scopes_emit_only_declared_signals(self):
         swarm=self.tracked()
-        self.assertEqual(swarm.review_horizon(Role.CTRL,"T",now=25,latency_audit="setup completed at due time"),HorizonAction.OBSERVE)
-        self.assertEqual(swarm.scheduled_wakeups["T"],40)
-        self.assertEqual(swarm.review_horizon(Role.CTRL,"T",now=40,raw_evidence="tests pass",milestone_met=True,next_milestone="render",next_horizon_minutes=10),HorizonAction.OBSERVE)
-        self.assertEqual(swarm.scheduled_wakeups["T"],50)
-        self.assertEqual(swarm.review_horizon(Role.CTRL,"T",now=50,raw_evidence="render accepted",milestone_met=True,close_goal=True),HorizonAction.OBSERVE)
-        self.assertFalse(swarm.tasks["T"].active_goal)
+        cases=((WatchdogScope.TRAJECTORY,WatchdogSignal.CLEAR,False),(WatchdogScope.FLOW_INTEGRITY,WatchdogSignal.ATTENTION,False),(WatchdogScope.OUTCOME_INTEGRITY,WatchdogSignal.BLOCKER,True))
+        for index,(scope,signal,owner_integrity) in enumerate(cases):
+            observer=(WatchdogRouteRole.CTRL,"CTRL") if owner_integrity else (WatchdogRouteRole.LEAD,"lead")
+            receipt=swarm.watchdog_check("T",observer_role=observer[0],observer_id=observer[1],now=25+index*15,evidence=self.evidence(scope,signal,f"evidence-{index}",owner_integrity))
+            self.assertEqual(receipt.signal,signal)
+            expected=self.lead_binding().owner_integrity_route if owner_integrity else self.lead_binding().alert_route
+            self.assertEqual(receipt.alert_route,() if signal is WatchdogSignal.CLEAR else expected)
+        self.assertEqual(set(WatchdogScope),{WatchdogScope.TRAJECTORY,WatchdogScope.FLOW_INTEGRITY,WatchdogScope.OUTCOME_INTEGRITY})
+        self.assertEqual(set(WatchdogSignal),{WatchdogSignal.CLEAR,WatchdogSignal.ATTENTION,WatchdogSignal.BLOCKER})
 
-    def test_ctrl_owned_miss_ladder_and_lost_event_recovery(self):
+    def test_wrong_scope_observer_and_evidence_fail_closed(self):
         swarm=self.tracked()
-        with self.assertRaises(InvariantError): swarm.review_horizon(Role.MOTHER,"T",now=25,raw_evidence="fail")
-        self.assertEqual(swarm.review_horizon(Role.CTRL,"T",now=25,raw_evidence="test failure",reorientation="fix fixture"),HorizonAction.REORIENT)
-        self.assertEqual(swarm.scheduled_wakeups["T"],40)
-        self.assertEqual(swarm.review_horizon(Role.CTRL,"T",now=40,raw_evidence="same failure",independent_review="review:R1"),HorizonAction.REVIEW)
-        self.assertEqual(swarm.scheduled_wakeups["T"],55)
-        self.assertEqual(swarm.review_horizon(Role.CTRL,"T",now=55,raw_evidence="same failure"),HorizonAction.SUPERVISOR)
-        self.assertEqual(swarm.scheduled_wakeups["T"],70)
-        del swarm.scheduled_wakeups["T"]
-        self.assertEqual(swarm.recover_lost_wakeup(Role.CTRL,"T",now=60),70)
-        self.assertEqual(swarm.recover_lost_wakeup(Role.CTRL,"T",now=61),70)
+        with self.assertRaisesRegex(InvariantError,"due evidence"):
+            swarm.watchdog_check("T",observer_role=WatchdogRouteRole.LEAD,observer_id="lead",now=24,evidence=self.evidence(WatchdogScope.TRAJECTORY,WatchdogSignal.CLEAR))
+        with self.assertRaisesRegex(InvariantError,"selected bound route"):
+            swarm.watchdog_check("T",observer_role=WatchdogRouteRole.REVIEW,observer_id="INDEPENDENT_REVIEW",now=25,evidence=self.evidence(WatchdogScope.TRAJECTORY,WatchdogSignal.CLEAR))
+        wrong=WatchdogEvidence("other","goal","lead",WatchdogScope.TRAJECTORY,WatchdogSignal.CLEAR,digest("wrong"),"wrong")
+        with self.assertRaisesRegex(InvariantError,"outside its bound"):
+            swarm.watchdog_check("T",observer_role=WatchdogRouteRole.LEAD,observer_id="lead",now=25,evidence=wrong)
+        with self.assertRaisesRegex(InvariantError,"must match the evidence"):
+            WatchdogEvidence("T","goal","CTRL",WatchdogScope.TRAJECTORY,WatchdogSignal.CLEAR,digest("different"),"evidence")
 
-    def test_ctrl_heartbeat_recovers_its_own_lost_wakeup(self):
-        swarm=Swarm(); swarm.tasks["CTRL"]=Task("CTRL","controller","CTRL",1,{})
-        swarm.propose_milestone(Role.CTRL,"CTRL",goal_id="control",milestone="accepted result",proof_kind="integration",horizon_minutes=15,now=10)
-        del swarm.scheduled_wakeups["CTRL"]
-        self.assertEqual(swarm.heartbeat(Role.CTRL,"CTRL",meaningful_progress=False,recent_ctrl_feed=()),"CTRL:watchdog-recovered:25")
-        with self.assertRaises(InvariantError): swarm.heartbeat(Role.MOTHER,"CTRL",meaningful_progress=False,recent_ctrl_feed=())
+    def test_identical_evidence_severity_and_decision_owner_dedupes(self):
+        swarm=self.tracked(); evidence=self.evidence(WatchdogScope.FLOW_INTEGRITY,WatchdogSignal.ATTENTION,"same")
+        first=swarm.watchdog_check("T",observer_role=WatchdogRouteRole.LEAD,observer_id="lead",now=25,evidence=evidence)
+        due=swarm.scheduled_wakeups["T"]
+        with self.assertRaisesRegex(InvariantError,"due evidence"): swarm.watchdog_check("T",observer_role=WatchdogRouteRole.LEAD,observer_id="lead",now=25,evidence=evidence)
+        second=swarm.watchdog_check("T",observer_role=WatchdogRouteRole.LEAD,observer_id="lead",now=due,evidence=evidence)
+        self.assertIs(first,second); self.assertEqual(len(swarm.tasks["T"].watchdog_receipts),1); self.assertEqual(swarm.scheduled_wakeups["T"],due+15)
 
-    def test_versioned_amendment_and_successor_preserve_history(self):
-        swarm=self.tracked()
+    def test_alerted_collapse_requires_two_runtime_alerts_owner_context_and_ctrl_decision(self):
+        swarm=self.tracked(); first=WatchdogEvidence("T","goal","lead",WatchdogScope.TRAJECTORY,WatchdogSignal.BLOCKER,digest("outage"),"outage")
+        swarm.watchdog_check("T",observer_role=WatchdogRouteRole.LEAD,observer_id="lead",now=25,evidence=first)
+        with self.assertRaisesRegex(InvariantError,"owner-heard"): swarm.collapse(Role.CTRL,"lead")
+        with self.assertRaisesRegex(InvariantError,"two distinct comparable"): swarm.watchdog_owner_context(Role.LEAD,"T",actor_id="lead",evidence_digests=(first.evidence_digest,),cause="provider outage",uncertainty="provider recovery unknown",same_constraints_counterfactual="same owner after recovery",smallest_reversible_response="wait one horizon",reversal_condition="provider recovers")
+        second=WatchdogEvidence("T","goal","lead",WatchdogScope.TRAJECTORY,WatchdogSignal.ATTENTION,digest("outage-continued"),"outage-continued")
+        swarm.watchdog_check("T",observer_role=WatchdogRouteRole.LEAD,observer_id="lead",now=40,evidence=second)
+        args=dict(evidence_digests=(first.evidence_digest,second.evidence_digest),cause="provider outage",uncertainty="provider recovery unknown",same_constraints_counterfactual="same owner after recovery",smallest_reversible_response="pause lane",reversal_condition="revisit next horizon")
+        with self.assertRaisesRegex(InvariantError,"exact accountable owner"): swarm.watchdog_owner_context(Role.LEAD,"T",actor_id="other",**args)
+        urgent=swarm.watchdog_owner_context(Role.LEAD,"T",actor_id="lead",urgent_safety=True,**args)
+        with self.assertRaisesRegex(InvariantError,"temporary"): swarm.authorize_watchdog_change(Role.CTRL,urgent,target_kind="collapse",target_id="lead",expected_benefit=5,total_change_cost=3)
+        context=swarm.watchdog_owner_context(Role.LEAD,"T",actor_id="lead",**args)
+        decision=swarm.authorize_watchdog_change(Role.CTRL,context,target_kind="collapse",target_id="lead",expected_benefit=5,total_change_cost=3)
+        self.assertEqual((decision.expected_benefit,decision.total_change_cost),(5,3))
+        self.assertEqual(swarm.collapse(Role.CTRL,"lead",watchdog_review=decision),Depth.ATOMIC)
+
+    def test_ordinary_lead_alert_is_heard_by_lead_and_owner_integrity_bypasses_it(self):
+        swarm=Swarm(); swarm.add_lead(Role.CTRL,"lead"); swarm.tasks["T"]=Task("T","worker","CTRL",1,{},owning_lead_id="lead")
+        binding=WatchdogBinding(Role.LEAD,"lead",((WatchdogRouteRole.LEAD,"lead"),(WatchdogRouteRole.CTRL,"CTRL")),((WatchdogRouteRole.CTRL,"CTRL"),(WatchdogRouteRole.HUMAN,"HUMAN")))
+        swarm.propose_milestone(Role.LEAD,"T",goal_id="goal",milestone="proof",proof_kind="test",horizon_minutes=15,now=0,watchdog=binding)
+        ordinary=WatchdogEvidence("T","goal","lead",WatchdogScope.TRAJECTORY,WatchdogSignal.ATTENTION,digest("slow"),"slow")
+        heard=swarm.watchdog_check("T",observer_role=WatchdogRouteRole.LEAD,observer_id="lead",now=15,evidence=ordinary)
+        self.assertEqual(heard.decision_owner,"lead"); self.assertEqual(heard.alert_route[0],(WatchdogRouteRole.LEAD,"lead"))
+        integrity=WatchdogEvidence("T","goal","lead",WatchdogScope.OUTCOME_INTEGRITY,WatchdogSignal.BLOCKER,digest("authority"),"authority",True)
+        bypassed=swarm.watchdog_check("T",observer_role=WatchdogRouteRole.CTRL,observer_id="CTRL",now=30,evidence=integrity)
+        self.assertEqual(bypassed.decision_owner,"CTRL"); self.assertNotIn("lead",{identity for _,identity in bypassed.alert_route})
+
+    def test_external_outage_alert_cannot_mutate_owner_or_topology(self):
+        swarm=self.tracked(); before=(swarm.tasks["T"].state,swarm.tasks["T"].owner,set(swarm.topology),dict(swarm.workers),dict(swarm.leases))
+        receipt=swarm.watchdog_check("T",observer_role=WatchdogRouteRole.LEAD,observer_id="lead",now=25,evidence=self.evidence(WatchdogScope.TRAJECTORY,WatchdogSignal.BLOCKER,"provider outage"))
+        after=(swarm.tasks["T"].state,swarm.tasks["T"].owner,set(swarm.topology),dict(swarm.workers),dict(swarm.leases))
+        self.assertEqual(before,after); self.assertEqual(receipt.decision_owner,"lead"); self.assertEqual(swarm.scheduled_wakeups["T"],40)
+
+    def test_versioned_amendment_remains_ctrl_only(self):
+        swarm=self.tracked(bound=False)
         swarm.amend_objective(Role.CTRL,"T",version=2,authority="user",reason="new requirement",requirements_delta="add export",new_baseline="v2 brief",prior_miss_relevance="all remain relevant")
-        with self.assertRaises(InvariantError): swarm.amend_objective(Role.CTRL,"T",version=2,authority="user",reason="reset",requirements_delta="none",new_baseline="v2",prior_miss_relevance="erase")
-        swarm.tasks["N"]=Task("N","worker2","CTRL",1,{},goal_id="new-goal")
-        swarm.link_successor(Role.CTRL,"T","N",evidence="distinct project brief")
-        self.assertEqual(swarm.tasks["N"].milestone_history[-1][1],"SUCCESSOR")
+        with self.assertRaises(InvariantError): swarm.amend_objective(Role.SPECIALIST,"T",version=3,authority="manager",reason="override",requirements_delta="none",new_baseline="v3",prior_miss_relevance="none")
 
-    def test_architect_event_updates_only_when_map_is_invalidated(self):
-        swarm=self.tracked()
-        swarm.architecture_event(Role.ARCHITECT,"T",goal_id="architecture",accepted_change="artifact v1",invalidates_map=False,receipt="checked contracts")
-        self.assertEqual(swarm.tasks["T"].architecture_receipts[-1][1],"NO_IMPACT")
-        swarm.architecture_event(Role.ARCHITECT,"T",goal_id="architecture",accepted_change="contract v2",invalidates_map=True,receipt="diff",decision_or_blocker="gate integration until adapter lands")
-        self.assertEqual(swarm.tasks["T"].architecture_map_version,1)
-        with self.assertRaises(InvariantError): swarm.architecture_event(Role.LEAD,"T",goal_id="architecture",accepted_change="x",invalidates_map=False,receipt="x")
-
-    def test_free_role_specialist_keeps_an_independent_versioned_ledger(self):
-        swarm=self.tracked()
-        swarm.specialist_event(Role.SPECIALIST,"T",specialist_id="auth-architecture",profession="ARCHITECT",goal_id="auth",accepted_change="auth v2",invalidates_map=True,receipt="contract diff",decision_or_blocker="gate rollout")
-        swarm.specialist_event(Role.SPECIALIST,"T",specialist_id="data-architecture",profession="ARCHITECT",goal_id="data",accepted_change="schema v2",invalidates_map=False,receipt="schema contract")
-        self.assertEqual(swarm.tasks["T"].specialist_professions,{"auth-architecture":"ARCHITECT","data-architecture":"ARCHITECT"})
-        self.assertEqual(swarm.tasks["T"].specialist_map_versions,{"auth-architecture":1,"data-architecture":0})
-        swarm.specialist_event(Role.SPECIALIST,"T",specialist_id="novel",profession="ETHNOGRAPHER",goal_id="research",accepted_change="field note",invalidates_map=False,receipt="source")
-
-    def test_builtin_professions_include_developer_without_limiting_free_roles(self):
+    def test_mother_is_a_specialist_profession_and_watchdog_is_not_a_role(self):
         from runtime.core import BUILT_IN_SPECIALISTS
-        self.assertEqual(BUILT_IN_SPECIALISTS,{"ARCHITECT","ENGINEER","DEVELOPER","DESIGNER","RESEARCHER","ANALYST","STRATEGIST"})
+        self.assertIn("MOTHER",BUILT_IN_SPECIALISTS); self.assertNotIn("WATCHDOG",BUILT_IN_SPECIALISTS)
+        self.assertFalse(hasattr(Role,"MOTHER")); self.assertFalse(hasattr(Role,"WATCHDOG"))
 
 
 if __name__ == "__main__": unittest.main()

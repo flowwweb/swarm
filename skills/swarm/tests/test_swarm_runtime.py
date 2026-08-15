@@ -7,22 +7,28 @@ from runtime import AcceptanceContract, ArtifactIdentity, ArtifactJustification,
 
 def Task(*args, **kwargs):
  kwargs.setdefault("subagent_receipt",f"host:thread:{args[0]}")
- kwargs.setdefault("lane_kind",LaneKind.OTHER); kwargs.setdefault("owning_lead_id","L"); kwargs.setdefault("mother_id","MOTHER")
+ kwargs.setdefault("lane_kind",LaneKind.OTHER); kwargs.setdefault("owning_lead_id","L")
  kwargs.setdefault("acceptance_contract",AcceptanceContract(ArtifactIdentity(f"task-{args[0]}","v1","acceptance"),()))
  return RuntimeTask(*args,**kwargs)
 
-def topology(*, objective="ship artifact", artifacts=(ArtifactIdentity("artifact","v1","work"),), surfaces=("artifact",), route="CTRL", lanes=("owner",), edges=(), integration=False, portfolio=False, ctrl_cheap=True, architecture=False):
- return TopologyFacts(objective,artifacts,surfaces,route,lanes,edges,integration,portfolio,ctrl_cheap,architecture)
+def topology(*, objective="ship artifact", artifacts=(ArtifactIdentity("artifact","v1","work"),), surfaces=("artifact",), route="CTRL", lanes=("owner",), edges=(), integration=False, portfolio=False, architecture=False):
+ return TopologyFacts(objective,artifacts,surfaces,route,lanes,edges,integration,portfolio,architecture)
 
 class RuntimeTests(unittest.TestCase):
  def setUp(self):
-  self.s=Swarm(); self.s.add_lead(Role.MOTHER,"L"); self.s.add_worker(Role.LEAD,Worker("D","L",1)); self.s.assign(Role.LEAD,Task("A","D","author",1,{},subagent_receipt="host:thread:A"))
+  self.s=Swarm(); self.s.add_lead(Role.CTRL,"L"); self.s.add_worker(Role.LEAD,Worker("D","L",1)); self.s.assign(Role.LEAD,Task("A","D","author",1,{},subagent_receipt="host:thread:A"))
  def accept(self, task_id="A", reviewer="independent"):
   evidence=ReviewEvidence(ReviewStrategy.LIGHT,reviewer,True,self.s.tasks[task_id].acceptance_contract.artifact,receipt=(("acceptance",f"review:{task_id}"),),scope=ReviewScope.ACCEPTANCE)
   self.s.review(Role.REVIEW,task_id,evidence,True)
  def test_authority_lanes_and_lifecycle(self):
-  with self.assertRaises(InvariantError): self.s.add_lead(Role.CTRL,"bad")
+  self.s.add_lead(Role.CTRL,"bad"); self.assertIn("bad",self.s.topology)
   with self.assertRaises(InvariantError): self.s.change_architecture(Role.LEAD,{})
+  with self.assertRaises(InvariantError): self.s.change_architecture(Role.SPECIALIST,{"unauthorized":2})
+  with self.assertRaises(InvariantError): self.s.architecture_event(Role.SPECIALIST,"A",goal_id="architecture",accepted_change="change",invalidates_map=True,receipt="receipt",decision_or_blocker="decision")
+  self.s.specialist_event(Role.SPECIALIST,"A",specialist_id="manager",profession="MOTHER",goal_id="coordinate",accepted_change="advice",invalidates_map=False,receipt="advice-receipt")
+  with self.assertRaisesRegex(InvariantError,"advisory"): self.s.specialist_event(Role.SPECIALIST,"A",specialist_id="manager",profession="MOTHER",goal_id="coordinate",accepted_change="proposal",invalidates_map=True,receipt="receipt",decision_or_blocker="change")
+  with self.assertRaises(InvariantError): self.s.stale(Role.SPECIALIST,"A","manager decision")
+  self.assertEqual(self.s.architecture_version,1); self.assertEqual(self.s.tasks["A"].state,TaskState.ACTIVE)
   self.s.add_worker(Role.LEAD,Worker("D2","L",2)); self.s.add_worker(Role.LEAD,Worker("R","L",3))
   with self.assertRaises(InvariantError): self.s.add_worker(Role.LEAD,Worker("D4","L",1))
   self.s.retire(Role.LEAD,"D","R"); self.assertEqual(self.s.workers["D"].state,WorkerState.RETIRED); self.assertEqual(self.s.tasks["A"].owner,"R")
@@ -38,45 +44,45 @@ class RuntimeTests(unittest.TestCase):
   self.s.tasks["A"].state=TaskState.ACTIVE
   with self.assertRaises(InvariantError): self.s.review(Role.REVIEW,"A","author",True)
   self.s.review(Role.REVIEW,"A","independent",False,"missing proof"); self.assertEqual(self.s.tasks["A"].findings,["missing proof"])
-  self.accept(); self.s.complete(Role.MOTHER,"A",True,True,10,actor_id="MOTHER")
+  self.accept(); self.s.complete(Role.LEAD,"A",True,True,10,actor_id="L")
   with self.assertRaises(InvariantError): self.s.ctrl_event("HEARTBEAT","A")
  def test_lease(self):
-  self.s.lease(Role.MOTHER,"repo","L")
-  with self.assertRaises(InvariantError): self.s.lease(Role.MOTHER,"repo","other")
+  self.s.lease(Role.CTRL,"repo","L")
+  with self.assertRaises(InvariantError): self.s.lease(Role.CTRL,"repo","other")
  def test_adaptive_depth_and_collapse(self):
   self.assertEqual(choose_depth(topology()),Depth.ATOMIC)
   self.assertEqual(choose_depth(topology(artifacts=tuple(ArtifactIdentity("landing",f"v{i}","variant") for i in range(10)))),Depth.ATOMIC)
-  portfolio=topology(artifacts=(ArtifactIdentity("repo-a","v1","release"),ArtifactIdentity("repo-b","v1","release"),ArtifactIdentity("repo-c","v1","release")),surfaces=("repo-a","repo-b","repo-c"),route="portfolio acceptance",lanes=("A","B","C"),edges=(("A","B"),("B","C")),integration=True,portfolio=True,ctrl_cheap=False)
+  portfolio=topology(artifacts=(ArtifactIdentity("repo-a","v1","release"),ArtifactIdentity("repo-b","v1","release"),ArtifactIdentity("repo-c","v1","release")),surfaces=("repo-a","repo-b","repo-c"),route="portfolio acceptance",lanes=("A","B","C"),edges=(("A","B"),("B","C")),integration=True,portfolio=True)
   self.assertEqual(choose_depth(portfolio),Depth.WORKSTREAM)
   self.assertEqual(choose_depth(TopologyFacts(**{**portfolio.__dict__,"architecture_gate":True})),Depth.PROJECT)
   self.s.tasks["A"].state=TaskState.COMPLETE
-  self.assertEqual(self.s.collapse(Role.MOTHER,"L"),Depth.ATOMIC)
+  self.assertEqual(self.s.collapse(Role.CTRL,"L"),Depth.ATOMIC)
  def test_hygiene_archives_not_deletes_and_preserves_stale_provenance(self):
   self.s.tasks["A"].state=TaskState.COMPLETE; self.s.tasks["A"].completed_at=0
   self.s.workers["D"].task_ids.discard("A")
   self.s.tasks["A"].review_value=ReviewValue.NONE
   self.s.stale(Role.LEAD,"A","superseded contract",now=0,superseded_by="B",promote=["race evidence"])
-  self.assertEqual(self.s.groom(Role.MOTHER,5,{"no_review_archive_delay":0,"low_review_retention":2,"high_review_retention":3,"stale_task_archive_delay":1}),["A"])
+  self.assertEqual(self.s.groom(Role.CTRL,5,{"no_review_archive_delay":0,"low_review_retention":2,"high_review_retention":3,"stale_task_archive_delay":1}),["A"])
   self.assertEqual(self.s.tasks["A"].state,TaskState.ARCHIVED_STALE); self.assertEqual(self.s.tasks["A"].superseded_by,"B"); self.assertEqual(self.s.tasks["A"].promoted,["race evidence"])
-  self.s.tasks["A"].review_value=ReviewValue.PINNED; self.assertEqual(self.s.groom(Role.MOTHER,9,{"no_review_archive_delay":0,"low_review_retention":2,"high_review_retention":3,"stale_task_archive_delay":1}),[])
+  self.s.tasks["A"].review_value=ReviewValue.PINNED; self.assertEqual(self.s.groom(Role.CTRL,9,{"no_review_archive_delay":0,"low_review_retention":2,"high_review_retention":3,"stale_task_archive_delay":1}),[])
  def test_stale_dependency_and_archived_safety(self):
   self.s.assign(Role.LEAD,Task("B","D","author",1,{})); self.s.stale(Role.LEAD,"A","replaced",now=0); self.s.wait(Role.DOER,"B","A")
-  self.assertEqual(self.s.groom(Role.MOTHER,5,{"no_review_archive_delay":0,"low_review_retention":2,"high_review_retention":3,"stale_task_archive_delay":1}),[])
-  self.s.tasks["B"].state=TaskState.COMPLETE; self.s.workers["D"].task_ids.clear(); self.s.groom(Role.MOTHER,5,{"no_review_archive_delay":0,"low_review_retention":2,"high_review_retention":3,"stale_task_archive_delay":1}); self.s.change_architecture(Role.ARCHITECT,{"a":2}); self.assertEqual(self.s.tasks["A"].state,TaskState.ARCHIVED_STALE)
+  self.assertEqual(self.s.groom(Role.CTRL,5,{"no_review_archive_delay":0,"low_review_retention":2,"high_review_retention":3,"stale_task_archive_delay":1}),[])
+  self.s.tasks["B"].state=TaskState.COMPLETE; self.s.workers["D"].task_ids.clear(); self.s.groom(Role.CTRL,5,{"no_review_archive_delay":0,"low_review_retention":2,"high_review_retention":3,"stale_task_archive_delay":1}); self.s.change_architecture(Role.ARCHITECT,{"a":2}); self.assertEqual(self.s.tasks["A"].state,TaskState.ARCHIVED_STALE)
  def test_review_is_candidate_before_acceptance(self):
   self.accept(); self.assertEqual(self.s.tasks["A"].state,TaskState.REVIEW)
-  self.s.complete(Role.MOTHER,"A",True,True,7,actor_id="MOTHER"); self.assertEqual(self.s.tasks["A"].completed_at,7)
+  self.s.complete(Role.LEAD,"A",True,True,7,actor_id="L"); self.assertEqual(self.s.tasks["A"].completed_at,7)
  def test_intelligence_artifacts_and_completion_gates(self):
   self.s.set_intelligence_floor(Role.ARCHITECT,"A",3); self.s.complexity_mismatch(Role.DOER,"A",3); self.s.add_artifact(Role.DOER,"A",ArtifactIdentity("proof","v1","work"),"risk survives compression")
-  self.assertEqual(self.s.discover("proof"),["A"]); self.assertIn("risk survives compression",self.s.tasks["A"].findings); self.assertFalse(self.s.project_complete(Role.MOTHER,True,True))
+  self.assertEqual(self.s.discover("proof"),["A"]); self.assertIn("risk survives compression",self.s.tasks["A"].findings); self.assertFalse(self.s.project_complete(Role.CTRL,True,True))
  def test_efficiency_uses_value_not_capacity(self):
   self.assertFalse(self.s.should_spawn(independent=False,critical_path=True)); self.assertFalse(self.s.should_spawn(independent=True,critical_path=True,duplicate_artifact="proof")); self.assertTrue(self.s.should_spawn(independent=True,critical_path=True))
   self.assertEqual(initial_tier(risk=3,uncertainty=2,blast_radius=2),3); self.assertEqual(self.s.review_depth(4),"adversarial"); self.s.record_telemetry("auth","DOER",3,"accepted",model="m",attempts=1,productive=2,overhead=1); self.assertEqual(self.s.telemetry["productive"],2); self.assertNotIn("host_usage",self.s.telemetry_events[-1])
   self.s.add_artifact(Role.DOER,"A",ArtifactIdentity("identity","v1","work")); self.assertEqual(self.s.dedup("identity@v1:work"),DedupDecision.REUSE); self.assertEqual(self.s.dedup("identity@v1:work",verification=True),DedupDecision.EXECUTE); self.assertEqual(self.s.route(family="auth",risk=3,uncertainty=2,blast_radius=2,architect_floor=2,historical_floor=3),3); self.assertEqual(self.s.context_decision(affinity=2,bloat=False,stale=False,stalls=0),"reuse"); self.assertEqual(self.s.context_decision(affinity=2,bloat=True,stale=False,stalls=0),"retire")
  def test_stale_clock_and_unresolved_completion(self):
-  self.s.change_architecture(Role.ARCHITECT,{"x":2},now=90); self.s.groom(Role.MOTHER,100,{"no_review_archive_delay":0,"low_review_retention":2,"high_review_retention":3,"stale_task_archive_delay":30}); self.assertEqual(self.s.tasks["A"].state,TaskState.STALE); self.assertFalse(self.s.project_complete(Role.MOTHER,True,True))
+  self.s.change_architecture(Role.ARCHITECT,{"x":2},now=90); self.s.groom(Role.CTRL,100,{"no_review_archive_delay":0,"low_review_retention":2,"high_review_retention":3,"stale_task_archive_delay":30}); self.assertEqual(self.s.tasks["A"].state,TaskState.STALE); self.assertFalse(self.s.project_complete(Role.CTRL,True,True))
  def test_archived_only_collapses_and_missing_replacement_blocks_complete(self):
-  self.s.stale(Role.LEAD,"A","gone",now=0,superseded_by="MISSING"); self.s.workers["D"].task_ids.discard("A"); self.s.groom(Role.MOTHER,2,{"no_review_archive_delay":0,"low_review_retention":2,"high_review_retention":3,"stale_task_archive_delay":1}); self.assertFalse(self.s.project_complete(Role.MOTHER,True,True)); self.assertEqual(self.s.collapse(Role.MOTHER,"L"),Depth.ATOMIC)
+  self.s.stale(Role.LEAD,"A","gone",now=0,superseded_by="MISSING"); self.s.workers["D"].task_ids.discard("A"); self.s.groom(Role.CTRL,2,{"no_review_archive_delay":0,"low_review_retention":2,"high_review_retention":3,"stale_task_archive_delay":1}); self.assertFalse(self.s.project_complete(Role.CTRL,True,True)); self.assertEqual(self.s.collapse(Role.CTRL,"L"),Depth.ATOMIC)
  def test_bounded_context_spine(self):
   with self.assertRaises(InvariantError): ContextPackage.build(goal="g",architecture={},dependencies=[],artifacts=[],acceptance=["a"],history=[str(i) for i in range(1000)],budget=1)
   package=ContextPackage.build(goal="g",architecture={"a":1},dependencies=["d"],artifacts=["x"],acceptance=[],history=[str(i) for i in range(1000)],budget=1); self.assertEqual(package.goal,"g"); self.assertEqual(package.history,())
@@ -86,11 +92,11 @@ class RuntimeTests(unittest.TestCase):
  def test_context_drops_obsolete_versions(self):
   p=ContextPackage.build(goal="g",architecture={"contract":2},dependencies=[VersionedReference("contract",1,"dependency"),VersionedReference("contract",2,"dependency")],artifacts=[],acceptance=[],history=[],budget=2); self.assertEqual(p.dependencies,("contract:v2",))
  def test_restore_and_keyed_archive_telemetry(self):
-  self.s.tasks["A"].state=TaskState.COMPLETE; self.s.tasks["A"].completed_at=0; self.s.workers["D"].task_ids.discard("A"); self.s.groom(Role.MOTHER,31,{"no_review_archive_delay":0,"low_review_retention":2,"high_review_retention":3,"stale_task_archive_delay":1})
-  self.assertIsInstance(self.s.telemetry["archive_reasons"],dict); self.s.restore(Role.MOTHER,"A","needed"); self.assertEqual(self.s.tasks["A"].state,TaskState.ACTIVE); self.assertEqual(self.s.telemetry["restores"],1)
+  self.s.tasks["A"].state=TaskState.COMPLETE; self.s.tasks["A"].completed_at=0; self.s.workers["D"].task_ids.discard("A"); self.s.groom(Role.CTRL,31,{"no_review_archive_delay":0,"low_review_retention":2,"high_review_retention":3,"stale_task_archive_delay":1})
+  self.assertIsInstance(self.s.telemetry["archive_reasons"],dict); self.s.restore(Role.CTRL,"A","needed"); self.assertEqual(self.s.tasks["A"].state,TaskState.ACTIVE); self.assertEqual(self.s.telemetry["restores"],1)
  def test_zero_completion_timestamp_has_real_archive_duration(self):
   self.s.tasks["A"].state=TaskState.COMPLETE; self.s.tasks["A"].completed_at=0; self.s.workers["D"].task_ids.discard("A")
-  self.s.groom(Role.MOTHER,100,{"no_review_archive_delay":0,"low_review_retention":2,"high_review_retention":3,"stale_task_archive_delay":1})
+  self.s.groom(Role.CTRL,100,{"no_review_archive_delay":0,"low_review_retention":2,"high_review_retention":3,"stale_task_archive_delay":1})
   self.assertEqual(self.s.telemetry["completion_to_archive"]["A"],100); self.assertEqual(self.s.telemetry["age_buckets"]["aged"],1)
  def test_modes_and_family_preserve_floors(self):
   tiers=[Swarm(mode=m).route(family="security",risk=1,uncertainty=1,blast_radius=1,architect_floor=2,historical_floor=1) for m in EfficiencyMode]
@@ -138,36 +144,36 @@ class RuntimeTests(unittest.TestCase):
   hydrated=self.s.hydrate_hive("auth",{"auth":2},1,2); self.assertEqual([r.id for r in hydrated],["current"]); self.assertEqual(self.s.telemetry["hive_hydration_count"],1)
   package=ContextPackage.build(goal="g",architecture={"auth":2},dependencies=[],artifacts=[],acceptance=[],history=[],hive=hydrated,budget=2); self.assertEqual(package.hive,("current",))
  def test_hive_warm_retirement_and_provenance_cleanup(self):
-  self.s.workers["D"].context["affinity"]=1; self.accept(); self.s.complete(Role.MOTHER,"A",True,True,1,actor_id="MOTHER"); self.assertEqual(self.s.workers["D"].state,WorkerState.WARM)
-  self.s.groom(Role.MOTHER,2,{"no_review_archive_delay":0,"low_review_retention":2,"high_review_retention":3,"stale_task_archive_delay":1}); self.assertEqual(self.s.tasks["A"].state,TaskState.ARCHIVED); self.assertEqual(self.s.workers["D"].state,WorkerState.WARM)
+  self.s.workers["D"].context["affinity"]=1; self.accept(); self.s.complete(Role.LEAD,"A",True,True,1,actor_id="L"); self.assertEqual(self.s.workers["D"].state,WorkerState.WARM)
+  self.s.groom(Role.CTRL,2,{"no_review_archive_delay":0,"low_review_retention":2,"high_review_retention":3,"stale_task_archive_delay":1}); self.assertEqual(self.s.tasks["A"].state,TaskState.ARCHIVED); self.assertEqual(self.s.workers["D"].state,WorkerState.WARM)
   self.s.add_worker(Role.LEAD,Worker("R","L",2)); self.s.assign(Role.LEAD,Task("B","D","author",1,{})); lesson=HiveRecord("handoff",content="use migration seam",source="worker",source_version="1",provenance={"task":"B"})
   self.s.retire(Role.LEAD,"D","R",lessons=[lesson],now=3); self.assertEqual(self.s.workers["D"].state,WorkerState.RETIRED); self.assertEqual(self.s.tasks["B"].owner,"R"); self.assertIn("handoff",self.s.hive)
-  self.s.hive["handoff"].retention="expired"; self.s.groom_hive(Role.MOTHER,4); self.s.groom_hive(Role.MOTHER,5); self.s.groom_hive(Role.MOTHER,6); self.assertEqual(self.s.hive["handoff"].status,HiveStatus.PURGED); self.assertEqual(self.s.hive["handoff"].provenance,{"task":"B"})
+  self.s.hive["handoff"].retention="expired"; self.s.groom_hive(Role.CTRL,4); self.s.groom_hive(Role.CTRL,5); self.s.groom_hive(Role.CTRL,6); self.assertEqual(self.s.hive["handoff"].status,HiveStatus.PURGED); self.assertEqual(self.s.hive["handoff"].provenance,{"task":"B"})
  def test_heartbeat_recovery_and_wait_resume(self):
   self.s.tasks["A"].active_goal=True; self.s.tasks["A"].goal_id="g"; self.s.tasks["A"].milestone="proof"; self.s.tasks["A"].review_horizon_minutes=30
-  self.assertEqual(self.s.heartbeat(Role.CTRL,"A",meaningful_progress=False,recent_ctrl_feed=()),"A:watchdog-recovered:30"); self.assertIsNone(self.s.heartbeat(Role.CTRL,"A",meaningful_progress=False,recent_ctrl_feed=()))
-  self.s.assign(Role.LEAD,Task("B","D","author",1,{})); self.s.wait(Role.DOER,"B","A"); self.assertIsNone(self.s.heartbeat(Role.CTRL,"B",meaningful_progress=False,recent_ctrl_feed=())); self.accept(reviewer="review"); self.s.complete(Role.MOTHER,"A",True,True,1,actor_id="MOTHER"); self.assertEqual(self.s.tasks["B"].state,TaskState.ACTIVE)
+  self.assertIsNone(self.s.heartbeat(Role.CTRL,"A",meaningful_progress=False,recent_ctrl_feed=())); self.assertNotIn("A",self.s.scheduled_wakeups)
+  self.s.assign(Role.LEAD,Task("B","D","author",1,{})); self.s.wait(Role.DOER,"B","A"); self.assertIsNone(self.s.heartbeat(Role.CTRL,"B",meaningful_progress=False,recent_ctrl_feed=())); self.accept(reviewer="review"); self.s.complete(Role.LEAD,"A",True,True,1,actor_id="L"); self.assertEqual(self.s.tasks["B"].state,TaskState.ACTIVE)
   with self.assertRaises(InvariantError): self.s.heartbeat(Role.LEAD,"B",meaningful_progress=False,recent_ctrl_feed=())
-  with self.assertRaises(InvariantError): self.s.heartbeat(Role.MOTHER,"B",meaningful_progress=False,recent_ctrl_feed=())
-  self.s.recover(Role.MOTHER,"B","heartbeat diagnosis")
+  with self.assertRaises(InvariantError): self.s.heartbeat(Role.SPECIALIST,"B",meaningful_progress=False,recent_ctrl_feed=())
+  self.s.recover(Role.CTRL,"B","accountable diagnosis")
  def test_archive_and_contention_are_fail_closed(self):
-  self.s.tasks["A"].state=TaskState.COMPLETE; self.s.tasks["A"].completed_at=0; self.s.tasks["A"].active_goal=True; self.assertEqual(self.s.groom(Role.MOTHER,2,{"no_review_archive_delay":0,"low_review_retention":2,"high_review_retention":3,"stale_task_archive_delay":1}),[]); self.assertFalse(self.s.should_spawn(independent=True,critical_path=True,contention=True))
- def test_atomic_simple_and_warm_routes_are_executable(self):
+  self.s.tasks["A"].state=TaskState.COMPLETE; self.s.tasks["A"].completed_at=0; self.s.tasks["A"].active_goal=True; self.assertEqual(self.s.groom(Role.CTRL,2,{"no_review_archive_delay":0,"low_review_retention":2,"high_review_retention":3,"stale_task_archive_delay":1}),[]); self.assertFalse(self.s.should_spawn(independent=True,critical_path=True,contention=True))
+ def test_atomic_and_warm_routes_are_executable(self):
   atomic=Swarm()
   with self.assertRaisesRegex(InvariantError,"subagent receipt"): atomic.start_atomic(Role.CTRL,RuntimeTask("missing","M","creator",1,{}))
   with self.assertRaisesRegex(InvariantError,"caller-declared host thread"): atomic.start_atomic(Role.CTRL,RuntimeTask("fake","F","creator",1,{},subagent_receipt="unverified:any-string"))
   atomic.start_atomic(Role.CTRL,Task("T","D","creator",1,{},subagent_receipt="host:thread:T")); self.assertEqual(set(atomic.workers),{"D"}); self.assertEqual(atomic.tasks["T"].owner,"D")
-  with self.assertRaisesRegex(InvariantError,"authority role identity"): atomic.start_atomic(Role.CTRL,Task("drift","CTRL","creator",1,{},subagent_receipt="host:thread:drift"))
-  with self.assertRaisesRegex(InvariantError,"authority role identity"): atomic.start_atomic(Role.CTRL,Task("normalized-drift"," ctrl ","creator",1,{},subagent_receipt="host:thread:normalized-drift"))
-  with self.assertRaises(InvariantError): atomic.start_atomic(Role.MOTHER,Task("U","E","creator",1,{},subagent_receipt="host:thread:U"))
-  simple=Swarm(); simple.start_simple(Role.MOTHER,RuntimeTask("S","M","creator",1,{},subagent_exception=SubagentException.COLLISION,subagent_exception_reason="single mutable file cannot have two writers")); self.assertEqual(simple.workers["M"].lead,"MOTHER")
-  with self.assertRaisesRegex(InvariantError,"authority role identity"): simple.start_simple(Role.MOTHER,RuntimeTask("drift","MOTHER","creator",1,{},subagent_receipt="host:thread:drift"))
-  with self.assertRaisesRegex(InvariantError,"authority role identity"): self.s.add_worker(Role.LEAD,Worker("LEAD","L",2))
+  with self.assertRaisesRegex(InvariantError,"authority or specialist role identity"): atomic.start_atomic(Role.CTRL,Task("drift","CTRL","creator",1,{},subagent_receipt="host:thread:drift"))
+  with self.assertRaisesRegex(InvariantError,"authority or specialist role identity"): atomic.start_atomic(Role.CTRL,Task("normalized-drift"," ctrl ","creator",1,{},subagent_receipt="host:thread:normalized-drift"))
+  self.assertFalse(hasattr(Role,"MOTHER"))
+  with self.assertRaisesRegex(InvariantError,"specialist role identity"): atomic.start_atomic(Role.CTRL,Task("drift-mother","MOTHER","creator",1,{},subagent_receipt="host:thread:drift-mother"))
+  with self.assertRaisesRegex(InvariantError,"reserved sensor identity"): atomic.start_atomic(Role.CTRL,Task("drift-watchdog","WATCHDOG","creator",1,{},subagent_receipt="host:thread:drift-watchdog"))
+  with self.assertRaisesRegex(InvariantError,"authority or specialist role identity"): self.s.add_worker(Role.LEAD,Worker("LEAD","L",2))
   self.s.workers["D"].state=WorkerState.WARM; self.s.workers["D"].context={"affinity":2,"architecture":{"auth":2}}; reused=self.s.reuse_warm(Role.LEAD,Task("R","new","creator",1,{},subagent_receipt="host:thread:R"),architecture={"auth":2},affinity=2); self.assertEqual(reused,"D")
   self.assertIsNone(self.s.reuse_warm(Role.LEAD,Task("N","new","creator",1,{},subagent_receipt="host:thread:N"),architecture={"auth":3},affinity=2))
  def test_only_doer_mutates_artifacts(self):
   self.s.add_artifact(Role.DOER,"A",ArtifactIdentity("owned","v1","work"))
-  for controller in (Role.CTRL,Role.MOTHER):
+  for controller in (Role.CTRL,Role.LEAD):
    with self.assertRaises(InvariantError): self.s.add_artifact(controller,"A",ArtifactIdentity(f"blocked-{controller.value.lower()}","v1","work"))
  def test_assignment_blocks_substantive_work_without_delegation_contract(self):
   blocked=RuntimeTask("blocked","D","creator",1,{})
@@ -178,15 +184,14 @@ class RuntimeTests(unittest.TestCase):
  def test_archive_rejects_every_live_owner_state_until_release(self):
   for state in (WorkerState.SPAWNED,WorkerState.ACTIVE,WorkerState.WARM,WorkerState.DRAINING):
    self.s.workers["D"].state=state; self.s.workers["D"].task_ids.add("A"); self.s.tasks["A"].state=TaskState.COMPLETE; self.s.tasks["A"].completed_at=0
-   self.assertEqual(self.s.groom(Role.MOTHER,1,{"no_review_archive_delay":0,"low_review_retention":2,"high_review_retention":3,"stale_task_archive_delay":1}),[])
-  self.s.workers["D"].task_ids.discard("A"); self.assertEqual(self.s.groom(Role.MOTHER,1,{"no_review_archive_delay":0,"low_review_retention":2,"high_review_retention":3,"stale_task_archive_delay":1}),["A"])
+   self.assertEqual(self.s.groom(Role.CTRL,1,{"no_review_archive_delay":0,"low_review_retention":2,"high_review_retention":3,"stale_task_archive_delay":1}),[])
+  self.s.workers["D"].task_ids.discard("A"); self.assertEqual(self.s.groom(Role.CTRL,1,{"no_review_archive_delay":0,"low_review_retention":2,"high_review_retention":3,"stale_task_archive_delay":1}),["A"])
  def test_context_cost_includes_full_canonical_package(self):
   p=ContextPackage.build(goal="g",architecture={"a":1,"b":2},dependencies=["d"],artifacts=[],acceptance=["accept"],history=[],budget=4)
   self.assertEqual(p.transfer_cost,5) # goal, acceptance, two architecture entries, admitted dependency
  def test_hop_receipts_are_bounded_and_proportional(self):
   atomic=Swarm(); atomic.start_atomic(Role.CTRL,Task("T","D","c",1,{},subagent_receipt="host:thread:T")); self.assertEqual(atomic.tasks["T"].topology_receipt,("CTRL","DOER","atomic:isolated"))
-  simple=Swarm(); simple.start_simple(Role.MOTHER,Task("S","D","c",1,{},subagent_receipt="host:thread:S")); self.assertEqual(simple.tasks["S"].topology_receipt,("CTRL","MOTHER","DOER","simple:stateful"))
-  portfolio=topology(lanes=("A","B","C"),edges=(("A","B"),("B","C")),integration=True,portfolio=True,ctrl_cheap=False)
+  portfolio=topology(lanes=("A","B","C"),edges=(("A","B"),("B","C")),integration=True,portfolio=True)
   self.assertEqual(choose_depth(portfolio),Depth.WORKSTREAM); self.assertEqual(choose_depth(TopologyFacts(**{**portfolio.__dict__,"architecture_gate":True})),Depth.PROJECT)
  def test_typed_justification_and_bounded_machine_receipts(self):
   self.s.add_artifact(Role.DOER,"A",ArtifactIdentity("canon","v1","work"))
@@ -197,9 +202,9 @@ class RuntimeTests(unittest.TestCase):
   before=(len(self.s.tasks),len(self.s.workers),len(self.s.events),self.s.tasks["A"].state)
   self.assertFalse(self.s.scope_finding(Role.DOER,"A","nice-to-have",material=False)); self.assertEqual(before,(len(self.s.tasks),len(self.s.workers),len(self.s.events),self.s.tasks["A"].state))
   self.assertTrue(self.s.scope_finding(Role.DOER,"A","review invariant missing",material=True)); self.assertTrue(self.s.tasks["A"].correction_pending); self.assertEqual(self.s.tasks["A"].state,TaskState.WAITING)
- def test_heartbeat_uses_canonical_recovery_before_latch(self):
+ def test_heartbeat_does_not_recover_or_adapt_work(self):
   self.s.tasks["A"].active_goal=True; self.s.tasks["A"].goal_id="g"; self.s.tasks["A"].milestone="proof"
-  self.assertIn("watchdog-recovered",self.s.heartbeat(Role.CTRL,"A",meaningful_progress=False,recent_ctrl_feed=())); self.assertIsNone(self.s.heartbeat(Role.CTRL,"A",meaningful_progress=False,recent_ctrl_feed=()))
+  before=(self.s.tasks["A"].state,self.s.tasks["A"].owner,set(self.s.topology)); self.assertIsNone(self.s.heartbeat(Role.CTRL,"A",meaningful_progress=False,recent_ctrl_feed=())); self.assertEqual(before,(self.s.tasks["A"].state,self.s.tasks["A"].owner,set(self.s.topology)))
  def test_disabled_hive_is_removed_from_prebuilt_context(self):
   record=HiveRecord("prior",content="useful",source="decision")
   package=ContextPackage.build(goal="g",architecture={},dependencies=[],artifacts=[],acceptance=[],history=[],budget=2,hive=[record])
@@ -213,10 +218,10 @@ class RuntimeTests(unittest.TestCase):
   self.s.add_artifact(Role.DOER,"A",ArtifactIdentity("source","v4","uncertainty"),source="source@v1:work",justification=ArtifactJustification.UNCERTAINTY,provenance=ArtifactProvenance("receipt-2","source@v1:work"))
  def test_mode_depth_shapes_do_not_manufacture_hierarchy(self):
   self.assertEqual(choose_depth(topology()),Depth.ATOMIC)
-  portfolio=topology(lanes=("A","B"),edges=(("A","B"),),integration=True,portfolio=True,ctrl_cheap=False)
+  portfolio=topology(lanes=("A","B"),edges=(("A","B"),),integration=True,portfolio=True)
   self.assertEqual(choose_depth(portfolio),Depth.WORKSTREAM)
   self.assertEqual(choose_depth(TopologyFacts(**{**portfolio.__dict__,"architecture_gate":True})),Depth.PROJECT)
-  self.assertEqual(Depth.PROJECT.value,"CTRL_MOTHER_SPECIALIST_LEADS_DOERS")
+  self.assertEqual(Depth.PROJECT.value,"CTRL_SPECIALIST_LEADS_DOERS")
   with self.assertRaises(TypeError): choose_depth(portfolio,mode=EfficiencyMode.MAX)
  def test_identity_not_keyword_similarity_controls_reuse(self):
   migration=topology(objective="migrate plugin",artifacts=(ArtifactIdentity("plugin/swarm","v1","migration"),),surfaces=("plugin/swarm",),route="plugin CTRL")

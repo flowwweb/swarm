@@ -1,0 +1,4 @@
+interface:
+  display_name: "🐙 SWARM"
+  short_description: "Control a coordinated Codex team from one task"
+  default_prompt: "Use $swarm to direct this objective through the shallowest reliable hierarchy, preserve canonical state, and require independent review."

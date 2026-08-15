@@ -2,17 +2,43 @@ import unittest
 from pathlib import Path
 
 
-class HeartbeatSpeedContractTests(unittest.TestCase):
-    def test_core_routes_one_clock_and_recovery_to_monitoring(self):
+class WatchdogContractTests(unittest.TestCase):
+    def setUp(self) -> None:
         root = Path(__file__).parents[1]
-        core = (root / "SKILL.md").read_text(encoding="utf-8")
-        monitoring = (root / "references" / "monitoring.md").read_text(encoding="utf-8")
-        hierarchy = (root / "references" / "hierarchy.md").read_text(encoding="utf-8")
-        self.assertIn("Load [monitoring.md]", core)
-        self.assertRegex(monitoring, r"(?is)exactly one lightweight wakeup.*CTRL always owns")
-        self.assertRegex(monitoring, r"(?is)raw diff, process, test, dependency, and artifact evidence.*does not poll early")
-        self.assertRegex(monitoring, r"(?is)no longer than 60 minutes.*miss three.*SUPERVISOR")
-        self.assertRegex(hierarchy, r"(?is)request-to-task-ID.*at least five comparable samples.*expected critical-path savings")
+        self.core = (root / "SKILL.md").read_text(encoding="utf-8")
+        self.monitoring = (root / "references" / "monitoring.md").read_text(encoding="utf-8")
+        self.hierarchy = (root / "references" / "hierarchy.md").read_text(encoding="utf-8")
+
+    def test_watchdog_is_optional_alert_only_and_has_exactly_three_checks(self):
+        self.assertIn("optional alert-only sensor bound to an accountable LEAD or persistent SPECIALIST goal, never CTRL", self.core)
+        self.assertIn("An unbound goal has no watchdog clock, check, receipt, or alert", self.monitoring)
+        self.assertEqual(self.monitoring.count("1. **Progress:**"), 1)
+        self.assertEqual(self.monitoring.count("2. **Flow integrity:**"), 1)
+        self.assertEqual(self.monitoring.count("3. **Outcome integrity:**"), 1)
+        self.assertRegex(self.monitoring, r"`CLEAR`, `ATTENTION`, or `BLOCKER`")
+        self.assertRegex(self.monitoring, r"never\nselects or applies a correction")
+        self.assertNotIn("SUPERVISOR", self.monitoring)
+
+    def test_alert_route_hears_owner_and_bypasses_only_owner_integrity(self):
+        self.assertRegex(self.monitoring, r"Ordinary alerts route first to the watched owner")
+        self.assertRegex(self.monitoring, r"owner-integrity alert skips\nthat owner")
+        self.assertRegex(self.monitoring, r"persistent SPECIALIST goal, never CTRL")
+        self.assertNotRegex(self.monitoring, r"watched CTRL")
+        self.assertRegex(self.monitoring, r"Missing, self-referential, cyclic, fabricated, or wrong-scope routes fail closed")
+
+    def test_post_alert_review_is_lean_reversible_and_constraint_aware(self):
+        self.assertIn("Owner-heard micro-review", self.monitoring)
+        self.assertRegex(self.monitoring, r"asynchronous.*accountable decision owner and watched owner")
+        self.assertRegex(self.monitoring, r"same-constraints counterfactual")
+        self.assertRegex(self.monitoring, r"single delay, outage, tool/provider failure, or ambiguous alert cannot remove")
+        self.assertRegex(self.monitoring, r"smallest reversible response")
+        self.assertRegex(self.monitoring, r"repeated comparable evidence or a clear safety")
+        self.assertRegex(self.monitoring, r"(?s)temporary containment.*reversal condition")
+        self.assertRegex(self.monitoring, r"Do not create a meeting, quorum, committee,\nor recurring status ritual")
+
+    def test_lane_economics_remain_evidence_based(self):
+        self.assertRegex(self.hierarchy, r"(?s)request-to-ID.*five comparable samples")
+        self.assertRegex(self.hierarchy, r"expected critical-path\nsavings clearly exceed startup")
 
 
 if __name__ == "__main__":

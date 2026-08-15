@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -18,13 +19,13 @@ class SwarmContractTests(unittest.TestCase):
     def test_mandatory_roles_are_independent_of_boost(self) -> None:
         self.assertEqual(
             contract.MANDATORY_DURABLE_GOAL_ROLES,
-            {"mother", "lead", "specialist", "architect"},
+            {"ctrl", "lead", "specialist", "architect"},
         )
 
     def test_forward_goal_cases(self) -> None:
         cases = contract.forward_cases()
-        self.assertEqual(cases["mother_startup_no_goal"]["action"], "create")
-        self.assertEqual(cases["mother_uppercase_no_goal"]["action"], "create")
+        self.assertEqual(cases["ctrl_startup_no_goal"]["action"], "create")
+        self.assertEqual(cases["mother_specialist_startup"]["action"], "create")
         self.assertEqual(cases["lead_resume_matching_goal"]["action"], "continue")
         self.assertEqual(cases["lead_mixed_case_matching_goal"]["action"], "continue")
         self.assertEqual(cases["architect_startup"]["action"], "create")
@@ -53,21 +54,34 @@ class SwarmContractTests(unittest.TestCase):
             "blocked",
         )
 
-    def test_forward_heartbeat_cases(self) -> None:
+    def test_forward_watchdog_cases_are_alert_only(self) -> None:
         cases = contract.forward_cases()
-        self.assertEqual(cases["heartbeat_healthy"]["action"], "observe")
-        self.assertEqual(cases["heartbeat_stalled"]["action"], "recover")
-        self.assertEqual(cases["heartbeat_second_unchanged"]["action"], "release")
+        self.assertEqual(cases["watchdog_clear"]["action"], "clear")
+        self.assertEqual(cases["watchdog_attention"]["action"], "attention")
+        self.assertEqual(cases["watchdog_blocker"]["action"], "blocker")
+        self.assertNotIn("recover", str(cases).casefold())
+        self.assertNotIn("release", str(cases).casefold())
 
-    def test_silence_does_not_trigger_recovery(self) -> None:
-        decision = contract.heartbeat_decision(
-            contract.LaneObservation("BUILD", False, False, 9, 0)
+    def test_watchdog_does_not_select_a_recovery(self) -> None:
+        decision = contract.watchdog_decision(
+            contract.WatchdogObservation(
+                contract.WatchdogScope.FLOW_INTEGRITY,
+                contract.WatchdogSignal.ATTENTION,
+                "dependency remains blocked",
+            )
         )
-        self.assertEqual(decision.action, "observe")
+        self.assertEqual(decision.action, "attention")
+        self.assertIn("takes no action", decision.reason)
 
     def test_finite_roles_do_not_create_goals(self) -> None:
         decision = contract.goal_decision("assist", None, "temporary")
         self.assertEqual(decision.action, "not_required")
+
+    def test_standalone_request_bridge_is_read_only(self) -> None:
+        with tempfile.TemporaryDirectory() as root:
+            result=contract.request_bridge({"operation":"audit","repo_root":root,"now":0})
+            self.assertEqual(result["records"],[]); self.assertEqual(result["unresolved_ids"],())
+            with self.assertRaisesRegex(ValueError,"read-only"): contract.request_bridge({"operation":"accept","repo_root":root})
 
 
 if __name__ == "__main__":

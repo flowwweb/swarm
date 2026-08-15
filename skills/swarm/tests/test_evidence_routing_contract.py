@@ -14,11 +14,11 @@ class EvidenceRoutingContractTests(unittest.TestCase):
 
     def setUp(self):
         self.swarm = Swarm()
-        self.swarm.start_atomic(Role.CTRL, Task("covers", "artist", "CTRL", 1, {}, subagent_receipt="host:thread:artist",lane_kind=LaneKind.NON_CODE,mother_id="mother",acceptance_contract=AcceptanceContract.empty()))
+        self.swarm.start_atomic(Role.CTRL, Task("covers", "artist", "CTRL", 1, {}, subagent_receipt="host:thread:artist",lane_kind=LaneKind.NON_CODE,acceptance_contract=AcceptanceContract.empty()))
 
     def accept(self):
         self.acceptance_review_only()
-        self.swarm.complete(Role.MOTHER, "covers", True, True, 1,actor_id="mother")
+        self.swarm.complete(Role.CTRL, "covers", True, True, 1,actor_id="CTRL")
 
     def acceptance_review_only(self):
         evidence=ReviewEvidence(ReviewStrategy.LIGHT,"independent",True,None,receipt=(("acceptance","review:covers"),),scope=ReviewScope.ACCEPTANCE)
@@ -42,7 +42,7 @@ class EvidenceRoutingContractTests(unittest.TestCase):
             self.swarm.surface_ctrl_evidence(Role.CTRL, "cover-folder", surface_kind="path", caption="Folder inventory for ten generated covers.", claim_limit="This link does not display or approve any cover.", surface_receipt="chat:folder")
         self.acceptance_review_only()
         with self.assertRaisesRegex(InvariantError, "open CTRL evidence acceptance failure"):
-            self.swarm.complete(Role.MOTHER, "covers", True, True, 1,actor_id="mother")
+            self.swarm.complete(Role.CTRL, "covers", True, True, 1,actor_id="CTRL")
         with self.assertRaisesRegex(InvariantError, "before phase advance"):
             self.swarm.advance_ctrl_phase(Role.CTRL, "implementation")
         self.assertEqual(len(self.swarm.ctrl_feed_due(Role.CTRL)), 10)
@@ -60,7 +60,7 @@ class EvidenceRoutingContractTests(unittest.TestCase):
         self.assertEqual(self.swarm.ctrl_feed_due(Role.CTRL), ())
         self.acceptance_review_only()
         with self.assertRaisesRegex(InvariantError,"require one surfaced final gallery"):
-            self.swarm.complete(Role.MOTHER, "covers", True, True, 1,actor_id="mother")
+            self.swarm.complete(Role.CTRL, "covers", True, True, 1,actor_id="CTRL")
         candidate_ids=tuple(f"cover-{index}" for index in range(10))
         self.swarm.register_ctrl_decision_set(Role.CTRL,"covers","cover-choice",candidate_ids,user_requested_all=True)
         self.swarm.surface_ctrl_decision_gallery(Role.CTRL,"cover-choice",embedded_ids=candidate_ids,labels_defects={candidate:f"Option {index + 1}: no known objective defect." for index,candidate in enumerate(candidate_ids)},complete_inventory=candidate_ids,surface_receipt="final:gallery:covers")
@@ -88,7 +88,7 @@ class EvidenceRoutingContractTests(unittest.TestCase):
         self.assertEqual(self.swarm.ctrl_feed_due(Role.CTRL),())
         self.acceptance_review_only()
         with self.assertRaisesRegex(InvariantError,"open CTRL decision gallery acceptance failure"):
-            self.swarm.complete(Role.MOTHER,"covers",True,True,1,actor_id="mother")
+            self.swarm.complete(Role.CTRL,"covers",True,True,1,actor_id="CTRL")
         with self.assertRaisesRegex(InvariantError,"before phase advance"):
             self.swarm.advance_ctrl_phase(Role.CTRL,"production")
 
@@ -128,8 +128,8 @@ class EvidenceRoutingContractTests(unittest.TestCase):
             self.swarm.surface_ctrl_evidence(Role.CTRL, "browser-shot", surface_kind=CtrlSurfaceKind.INLINE_RECEIPT, caption="Route map.", claim_limit="Local browser only.", surface_receipt="chat:receipt:not-image")
 
     def test_one_candidate_in_each_unrelated_task_does_not_create_a_false_gallery(self):
-        other=Task("other","other-owner","CTRL",1,{},subagent_receipt="host:thread:other",lane_kind=LaneKind.NON_CODE,mother_id="mother",acceptance_contract=AcceptanceContract.empty())
-        self.swarm.start_simple(Role.MOTHER,other)
+        other=Task("other","other-owner","CTRL",1,{},subagent_receipt="host:thread:other",lane_kind=LaneKind.NON_CODE,acceptance_contract=AcceptanceContract.empty())
+        self.swarm.start_atomic(Role.CTRL,other)
         for task_id,evidence_id in (("covers","cover-only"),("other","other-only")):
             self.swarm.register_ctrl_evidence(Role.DOER,task_id,evidence_id,"ImageGen",f"{evidence_id}.png")
             self.swarm.surface_ctrl_evidence(Role.CTRL,evidence_id,surface_kind=CtrlSurfaceKind.INLINE_IMAGE,caption=f"{evidence_id} candidate.",claim_limit="Concept only.",surface_receipt=f"chat:image:{evidence_id}")
@@ -194,10 +194,10 @@ class EvidenceRoutingContractTests(unittest.TestCase):
         self.swarm.register_ctrl_evidence(Role.DOER,"covers","trace-proof","trace","restored session trace")
         receipt=self.swarm.surface_ctrl_evidence(Role.CTRL,"trace-proof",surface_kind=CtrlSurfaceKind.INLINE_EXCERPT,caption="The restored session resumes at turn 8.",claim_limit="Production transport remains unverified.",surface_receipt="chat:trace:turn-8")
         chatter=CtrlFeedMessage("routing-chatter",(
-            (CtrlFeedPart.ORCHESTRATION,"MOTHER routed REVIEW to the integration SHA."),
+            (CtrlFeedPart.ORCHESTRATION,"CTRL routed REVIEW to the integration SHA."),
             (CtrlFeedPart.TASK_CHATTER,"Lease acquired; command running."),
             (CtrlFeedPart.ACTIVITY,"Three agents are still working."),
-            (CtrlFeedPart.MOTHER_DETAIL,"MOTHER accepted lane topology."),
+            (CtrlFeedPart.ORCHESTRATION,"An advisory manager specialist commented on lane topology."),
         ),(),"covers","chat:feed:routing-chatter")
         with self.assertRaisesRegex(InvariantError,"requires one compliant correction"):
             self.swarm.heartbeat(Role.CTRL,"covers",meaningful_progress=False,recent_ctrl_feed=(chatter,))
@@ -228,17 +228,17 @@ class EvidenceRoutingContractTests(unittest.TestCase):
 
     def test_empty_heartbeat_cannot_hide_unaudited_visible_drift(self):
         drift=CtrlFeedMessage("stored-drift",(
-            (CtrlFeedPart.ORCHESTRATION,"MOTHER routed three tasks."),
+            (CtrlFeedPart.ORCHESTRATION,"CTRL routed three tasks."),
         ),(),"covers","chat:feed:stored-drift")
         self.swarm.publish_ctrl_feed(Role.CTRL,drift)
         with self.assertRaisesRegex(InvariantError,"requires one compliant correction"):
             self.swarm.heartbeat(Role.CTRL,"covers",meaningful_progress=False,recent_ctrl_feed=())
 
-    def test_feed_reorientation_also_recovers_missing_watchdog(self):
+    def test_feed_reorientation_does_not_create_an_unbound_watchdog(self):
         self.swarm.register_ctrl_evidence(Role.DOER,"covers","watchdog-proof","test","watchdog proof")
         receipt=self.swarm.surface_ctrl_evidence(Role.CTRL,"watchdog-proof",surface_kind=CtrlSurfaceKind.INLINE_EXCERPT,caption="Reconnect proof is ready.",claim_limit="Production remains unverified.",surface_receipt="chat:watchdog-proof")
         self.swarm.propose_milestone(Role.CTRL,"covers",goal_id="feed-goal",milestone="accepted feed",proof_kind="review",horizon_minutes=15,now=10)
-        del self.swarm.scheduled_wakeups["covers"]
+        self.assertNotIn("covers",self.swarm.scheduled_wakeups)
         drift=CtrlFeedMessage("drift-with-lost-clock",((CtrlFeedPart.ACTIVITY,"Still running."),),(),"covers","chat:feed:drift-clock")
         correction=CtrlFeedMessage("corrected-clock",(
             (CtrlFeedPart.OUTCOME,"Reconnect proof is ready for review."),
@@ -247,11 +247,11 @@ class EvidenceRoutingContractTests(unittest.TestCase):
         ),(receipt,),"covers","chat:feed:corrected-clock",self.feed_event("event:corrected-clock",(receipt,),kind=CtrlFeedEventKind.BLOCKER))
         result=self.swarm.heartbeat(Role.CTRL,"covers",meaningful_progress=False,recent_ctrl_feed=(drift,),feed_correction=correction)
         self.assertIn("feed-reoriented",result)
-        self.assertIn("watchdog-recovered:25",result)
-        self.assertEqual(self.swarm.scheduled_wakeups["covers"],25)
+        self.assertNotIn("watchdog",result)
+        self.assertNotIn("covers",self.swarm.scheduled_wakeups)
 
     def test_portfolio_feed_binds_each_message_to_its_own_task_proof(self):
-        self.swarm.start_atomic(Role.CTRL,Task("second","writer","CTRL",1,{},subagent_receipt="host:thread:writer",lane_kind=LaneKind.NON_CODE,mother_id="mother",acceptance_contract=AcceptanceContract.empty()))
+        self.swarm.start_atomic(Role.CTRL,Task("second","writer","CTRL",1,{},subagent_receipt="host:thread:writer",lane_kind=LaneKind.NON_CODE,acceptance_contract=AcceptanceContract.empty()))
         messages=[]
         for task_id in ("covers","second"):
             evidence_id=f"{task_id}-proof"; surface=f"chat:{task_id}:proof"
@@ -302,9 +302,12 @@ class EvidenceRoutingContractTests(unittest.TestCase):
         with self.assertRaisesRegex(InvariantError,"unknown-material-event"):
             self.swarm.heartbeat(Role.CTRL,"covers",meaningful_progress=False,recent_ctrl_feed=(stale,))
 
-    def test_every_swarm_task_delegates_by_default_with_narrow_exceptions(self):
-        self.assertRegex(self.skill, r"(?is)delegated or non-CTRL task delegates one bounded outcome-critical.*before substantive")
+    def test_routing_distinguishes_visible_lanes_from_bounded_subagents(self):
+        self.assertRegex(self.skill, r"(?is)Materialize a visible task lane.*durable ownership.*interruption-safe resumption")
+        self.assertRegex(self.skill, r"(?is)Use a subagent only as short bounded capacity inside an existing lane")
+        self.assertIn("never substitutes for a qualifying durable task", self.skill)
         self.assertRegex(self.skill, r"(?is)CTRL_DIRECT.*low-risk atomic outcome.*otherwise use.*CTRL_DELEGATED")
+        self.assertNotIn("each delegated or non-CTRL task delegates", self.skill)
         self.assertNotIn("Default to CTRL working directly or one atomic owner", self.skill)
 
 

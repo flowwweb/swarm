@@ -4,6 +4,7 @@ import hashlib
 import importlib.util
 import json
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -12,11 +13,17 @@ from unittest import mock
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[3]
 VERIFIER_PATH = Path(__file__).resolve().parents[1] / "scripts" / "verify_plugin_install.py"
+BUILDER_PATH = REPOSITORY_ROOT / "scripts" / "build_package.py"
 
 SPEC = importlib.util.spec_from_file_location("verify_plugin_install_host_contracts", VERIFIER_PATH)
 assert SPEC and SPEC.loader
 verifier = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(verifier)
+BUILDER_SPEC = importlib.util.spec_from_file_location("build_package_host_contracts", BUILDER_PATH)
+assert BUILDER_SPEC and BUILDER_SPEC.loader
+builder = importlib.util.module_from_spec(BUILDER_SPEC)
+sys.modules[BUILDER_SPEC.name] = builder
+BUILDER_SPEC.loader.exec_module(builder)
 
 
 class HostContractTests(unittest.TestCase):
@@ -24,6 +31,7 @@ class HostContractTests(unittest.TestCase):
         codex = json.loads((REPOSITORY_ROOT / ".codex-plugin" / "plugin.json").read_text(encoding="utf-8"))
         claude = json.loads((REPOSITORY_ROOT / ".claude-plugin" / "plugin.json").read_text(encoding="utf-8"))
         gemini = json.loads((REPOSITORY_ROOT / "gemini-extension.json").read_text(encoding="utf-8"))
+        codex_marketplace = json.loads((REPOSITORY_ROOT / ".agents" / "plugins" / "marketplace.json").read_text(encoding="utf-8"))
         marketplace = json.loads((REPOSITORY_ROOT / ".claude-plugin" / "marketplace.json").read_text(encoding="utf-8"))
 
         for manifest in (codex, claude, gemini):
@@ -35,6 +43,26 @@ class HostContractTests(unittest.TestCase):
         self.assertEqual(marketplace["name"], "flowwweb")
         self.assertEqual(marketplace["owner"], {"name": "Flowwweb"})
         self.assertEqual(marketplace["plugins"], [{"name": "swarm", "source": "./"}])
+        self.assertEqual(codex_marketplace["plugins"][0]["source"], {"source": "local", "path": "./plugins/swarm"})
+
+    def test_codex_marketplace_mirror_matches_the_complete_product_surface(self) -> None:
+        mirror = REPOSITORY_ROOT / "plugins" / "swarm"
+        source = verifier.source_file_hashes(REPOSITORY_ROOT)
+        canonical = {
+            relative: hashlib.sha256(
+                builder.canonical_worktree_bytes(
+                    REPOSITORY_ROOT,
+                    relative,
+                    (REPOSITORY_ROOT / relative).read_bytes(),
+                )
+            ).hexdigest()
+            for relative in source
+        }
+        self.assertEqual(
+            canonical,
+            verifier.installed_file_hashes(mirror),
+        )
+        verifier.validate_plugin_manifest(mirror)
 
     def test_no_duplicate_agent_skill_is_tracked_or_present_in_the_source_tree(self) -> None:
         duplicate = REPOSITORY_ROOT / ".agents" / "skills" / "swarm"

@@ -4,7 +4,7 @@
     {
       "id": 1,
       "prompt": "Organize our mostly built SaaS for a production launch this week. Checkout, payment webhooks, deployment configuration, launch copy, recovery, and production proof may be incomplete. Run useful work in parallel, but do not disable, mock, or defer checkout or payments.",
-      "expected_output": "An outcome-faithful hierarchy that starts independent build, release, and readiness work together, stages provider work when prerequisites exist, and requires independent consequential review before MOTHER acceptance.",
+      "expected_output": "An outcome-faithful hierarchy that starts independent build, release, and readiness work together, stages provider work when prerequisites exist, and requires independent consequential review before CTRL acceptance.",
       "files": [],
       "assertions": [
         "Checkout and payments remain explicit non-negotiables rather than scope cuts",
@@ -48,7 +48,7 @@
         "MOTHER uses the configured bee emoji while other roles use their configured or inferred emoji",
         "The root uses Captain and the coordinator uses Director",
         "Leaf titles use contextual work roles such as VISUAL and DEV",
-        "The hierarchy remains MOTHER to LEAD to TASK despite customized display labels"
+        "The authority hierarchy remains CTRL to LEAD to TASK despite customized display labels; MOTHER is only a display label for an advisory specialist"
       ]
     },
     {
@@ -60,16 +60,16 @@
         "Legacy title_prefix does not appear in effective settings",
         "role_icons.enabled remains false in effective settings",
         "Every new title omits its role emoji",
-        "MOTHER, LEAD, and contextual task-role semantics remain unchanged"
+        "CTRL, LEAD, and contextual task-role authority remain unchanged; the historical MOTHER display label carries no authority"
       ]
     },
     {
       "id": 6,
       "prompt": "Use SWARM's default role emoji system. Keep the bee for MOTHER, use distinct hierarchy emojis, and let implementation and visual design tasks choose fitting emojis from the configured palette.",
-      "expected_output": "A user-visible hierarchy whose role coding is visually distinct but whose MOTHER, LEAD, and contextual task labels remain explicit and authoritative.",
+      "expected_output": "A user-visible hierarchy whose role coding is visually distinct, with CTRL and LEAD authority explicit and MOTHER retained only as an advisory specialist label.",
       "files": [],
       "assertions": [
-        "MOTHER uses role_icons.mother",
+        "MOTHER uses roles.MOTHER.icon and remains a specialist profession",
         "LEAD and REVIEW use their dedicated configured emojis",
         "Each finite task chooses one configured emoji appropriate to its contextual role",
         "The same contextual role uses the same emoji throughout the portfolio",
@@ -82,7 +82,7 @@
       "expected_output": "New tasks use the configured role-specific model and reasoning pairs, while service-tier application is claimed only when the host task primitive supports it.",
       "files": [],
       "assertions": [
-        "MOTHER resolves to gpt-5.6-sol with high reasoning",
+        "A MOTHER-labeled advisory specialist resolves to gpt-5.6-sol with high reasoning without receiving authority",
         "LEAD resolves to gpt-5.6-terra with medium reasoning",
         "TASK resolves to gpt-5.6-luna with xhigh reasoning",
         "REVIEW resolves to gpt-5.6-sol with high reasoning",
@@ -100,7 +100,7 @@
         "No LEAD is created when coordinators are disabled",
         "SECURITY uses its configured role override",
         "No dedicated REVIEW task is created",
-        "Independent QC still blocks MOTHER acceptance"
+        "Independent QC still blocks CTRL acceptance"
       ]
     },
     {
@@ -114,18 +114,18 @@
         "No token budget is invented",
         "Boost does not create speculative task churn",
         "Tiny or complete eligible owners are skipped rather than given artificial goals",
-        "A running hands-off Boost goal is not messaged, actively polled, or routinely steered; passive heartbeat may observe it",
+        "A running hands-off Boost goal is not messaged, actively polled, or routinely steered; a bound WATCHDOG may passively observe it",
         "No claim is made that a Codex goal bypasses account or service limits"
       ]
     },
     {
       "id": 10,
       "prompt": "We may be near our usage limit later. Explain whether SWARM Boost could help, but do not start anything yet.",
-      "expected_output": "A concise explanation of manual Boost mode and its proof-focused durable-goal contract, with no additional Boost goal created because activation was not directly requested; mandatory MOTHER, LEAD, and persistent SPECIALIST goal inspection still applies when those roles start or resume.",
+      "expected_output": "A concise explanation of manual Boost mode and its proof-focused durable-goal contract, with no additional Boost goal created because activation was not directly requested; mandatory CTRL, LEAD, and persistent SPECIALIST goal inspection still applies when those roles start or resume.",
       "files": [],
       "assertions": [
         "No additional Boost goal is created",
-        "Mandatory MOTHER, LEAD, and persistent SPECIALIST goal inspection remains applicable",
+        "Mandatory CTRL, LEAD, and persistent SPECIALIST goal inspection remains applicable",
         "Boost is described as explicit and user-started",
         "SWARM does not claim access to account-usage telemetry",
         "SWARM does not promise to bypass usage limits"
@@ -134,11 +134,11 @@
     {
       "id": 11,
       "prompt": "Start SWARM Boost mode, but global SWARM settings have boost.enabled = false.",
-      "expected_output": "Boost remains disabled, no additional Boost goal is created, mandatory MOTHER, LEAD, and persistent SPECIALIST goals remain required, and the settings boundary is reported without silently overriding it.",
+      "expected_output": "Boost remains disabled, no additional Boost goal is created, mandatory CTRL, LEAD, and persistent SPECIALIST goals remain required, and the settings boundary is reported without silently overriding it.",
       "files": [],
       "assertions": [
         "No additional Boost goal is created",
-        "Mandatory MOTHER, LEAD, and persistent SPECIALIST goals remain required",
+        "Mandatory CTRL, LEAD, and persistent SPECIALIST goals remain required",
         "The configured Boost disablement is reported",
         "No fallback long-running process is substituted"
       ]
@@ -169,24 +169,24 @@
     },
     {
       "id": 14,
-      "prompt": "Boost is explicitly authorized for this active SWARM portfolio. Real usage telemetry reports 5% remaining, then 2%, then 1%. MOTHER, LEAD, BUILD, and REVIEW tasks already exist.",
-      "expected_output": "SWARM prepares substantial owner-level closeout goals for eligible owners at 5%, locks capability-aware goal contracts at 2%, launches or resumes them at 1%, then lets them glide hands-off with passive heartbeat and terminal aggregation.",
+      "prompt": "Boost is explicitly authorized for this active SWARM portfolio. Real usage telemetry reports 5% remaining, then 2%, then 1%. CTRL, LEAD, BUILD, and REVIEW tasks already exist.",
+      "expected_output": "SWARM prepares substantial owner-level closeout goals for eligible owners at 5%, locks capability-aware goal contracts at 2%, launches or resumes them at 1%, then lets them glide hands-off with optional bound WATCHDOG observation and terminal aggregation.",
       "files": [],
       "assertions": [
         "Planning begins at 5 percent remaining",
         "Objectives and routing are locked at 2 percent remaining",
         "Goals launch or resume at 1 percent remaining",
-        "MOTHER, LEAD, leaf TASK, and REVIEW receive goals only when each has substantial remaining owned work",
+        "CTRL, LEAD, persistent SPECIALIST, leaf TASK, and REVIEW receive goals only when each has substantial remaining owned work",
         "Each user-visible owner starts or resumes the goal inside its own task",
         "No goal is only a lookup, one edit, one command, or status relay",
         "No owner messaging, active polling, or steering occurs after launch",
-        "Passive heartbeat and terminal or attention aggregation may observe owners without waking them"
+        "An optional bound WATCHDOG and terminal or attention aggregation may observe owners without waking them"
       ]
     },
     {
       "id": 15,
       "prompt": "A small Boost cleanup can use Spark, but the visual QA lane requires computer use. The catalog lists gpt-5.3-codex-spark for simple shell/web work and gpt-5.6-luna for computer_use.",
-      "expected_output": "MOTHER routes the small targeted cleanup to Spark only when its separate allowance is available and routes visual QA to Luna without dropping computer use.",
+      "expected_output": "CTRL routes the small targeted cleanup to Spark only when its separate allowance is available and routes visual QA to Luna without dropping computer use.",
       "files": [],
       "assertions": [
         "Spark is used only for simple targeted work",
@@ -198,7 +198,7 @@
     {
       "id": 16,
       "prompt": "Codex is configured with Kimi and Qwen provider profiles. SWARM declares Kimi for general shell/web work and Qwen for simple shell work, but neither has verified computer use or image input. Organize a coding lane and a browser-driven visual QA lane.",
-      "expected_output": "MOTHER may use a declared third-party model for the compatible coding work, but routes visual QA to a verified model or reports the exact capability blocker. Provider selection is claimed only when the host can bind it.",
+      "expected_output": "CTRL may use a declared third-party model for the compatible coding work, but routes visual QA to a verified model or reports the exact capability blocker. Provider selection is claimed only when the host can bind it.",
       "files": [],
       "assertions": [
         "Kimi and Qwen capability entries are treated independently",
@@ -211,11 +211,11 @@
     {
       "id": 17,
       "prompt": "Boost is authorized with strategies = [\"closeout_first\"] only, and usage reaches 1%.",
-      "expected_output": "SWARM reprioritizes required closeout work but creates no additional Boost goal, while mandatory MOTHER, LEAD, and persistent SPECIALIST goal inspection still applies; it does not enter hands-off mode or route work to Spark because those strategies are absent.",
+      "expected_output": "SWARM reprioritizes required closeout work but creates no additional Boost goal, while mandatory CTRL, LEAD, and persistent SPECIALIST goal inspection still applies; it does not enter hands-off mode or route work to Spark because those strategies are absent.",
       "files": [],
       "assertions": [
         "No additional Boost goal is created without durable_goal",
-        "Mandatory MOTHER, LEAD, and persistent SPECIALIST goal inspection remains applicable",
+        "Mandatory CTRL, LEAD, and persistent SPECIALIST goal inspection remains applicable",
         "Routine steering is not suppressed without hands_off",
         "Spark is not selected without spark_simple_work",
         "Required closeout work is prioritized"
@@ -314,7 +314,7 @@
     {
       "id": 25,
       "prompt": "Use SWARM for a medium project with three independent artifact lanes and one integration dependency. Set it up so I can manage it without babysitting.",
-      "expected_output": "MOTHER creates only the worthwhile owners and immediately returns one compact task-tree receipt with task IDs, artifacts, mutable authority and owner/release state, dependencies, and acceptance routes.",
+      "expected_output": "CTRL creates only the worthwhile owners and immediately returns one compact task-tree receipt with task IDs, artifacts, mutable authority and owner/release state, dependencies, and acceptance routes.",
       "files": [],
       "assertions": [
         "The first scheduling wave is visible without opening every task",
@@ -330,7 +330,7 @@
       "expected_output": "The LEAD consults ADVISOR only when delivery approach, sequencing, proof strategy, risk, or recovery advice is materially useful; ADVISOR remains advisory and BUILD owns its adjacent implementation, tests, proof, and handoff.",
       "files": [],
       "assertions": [
-        "MOTHER is the planning authority",
+        "CTRL is the sole planning authority",
         "No ceremonial ADVISOR role is created",
         "The first useful artifact starts without waiting on a speculative plan",
         "A planning or architecture task remains possible when its output passes the normal lane test"
@@ -339,7 +339,7 @@
     {
       "id": 27,
       "prompt": "A SWARM task was created but failed before doing artifact work with an account usage-limit error. Three sibling tasks would use the same host boundary.",
-      "expected_output": "MOTHER treats the failure as systemic, preserves the failed task ID, stops creating or retrying affected siblings, and reports one exact blocker instead of churning the wave.",
+      "expected_output": "CTRL treats the failure as systemic, preserves the failed task ID, stops creating or retrying affected siblings, and reports one exact blocker instead of churning the wave.",
       "files": [],
       "assertions": [
         "The pre-artifact failure is classified at the shared host boundary",
@@ -352,7 +352,7 @@
     {
       "id": 28,
       "prompt": "Mid-run, change the requested launch outcome: keep all completed compatible work, add a non-negotiable payment requirement, and remove an obsolete analytics request.",
-      "expected_output": "MOTHER issues one concise outcome-contract delta to affected owners and REVIEW, preserves compatible artifacts, stops only invalidated work, and schedules the smallest payment gap without restarting the portfolio.",
+      "expected_output": "CTRL issues one concise outcome-contract delta to affected owners and REVIEW, preserves compatible artifacts, stops only invalidated work, and schedules the smallest payment gap without restarting the portfolio.",
       "files": [],
       "assertions": [
         "The latest user instruction outranks older task contracts",
@@ -364,8 +364,8 @@
     },
     {
       "id": 29,
-      "prompt": "A product program has three producers that repeatedly share domain decisions. Create a LEAD, but keep MOTHER and REVIEW authority clear and remove the extra layer when it stops helping.",
-      "expected_output": "The LEAD owns bounded child decisions and integration, while MOTHER retains portfolio planning and final acceptance and REVIEW retains the independent verdict; LEAD is released after its child wave is integrated.",
+      "prompt": "A product program has three producers that repeatedly share domain decisions. Create a LEAD, but keep CTRL and REVIEW authority clear and remove the extra layer when it stops helping.",
+      "expected_output": "The LEAD owns bounded child decisions and integration, while CTRL retains portfolio planning and final acceptance and REVIEW retains the independent verdict; LEAD is released after its child wave is integrated.",
       "files": [],
       "assertions": [
         "LEAD is justified by repeated shared decisions across multiple active children",
@@ -378,7 +378,7 @@
     {
       "id": 30,
       "prompt": "A recent host warning makes the next SWARM wave uncertain. The canary task enters active state, then fails before its first artifact-producing action.",
-      "expected_output": "MOTHER does not fan out merely because the task became active; it preserves the canary ID, reports the shared pre-artifact failure, and stops the pending wave.",
+      "expected_output": "CTRL does not fan out merely because the task became active; it preserves the canary ID, reports the shared pre-artifact failure, and stops the pending wave.",
       "files": [],
       "assertions": [
         "Active status alone does not pass the canary",
@@ -390,7 +390,7 @@
     {
       "id": 31,
       "prompt": "A shared task-startup fault appears after two sibling owners have already produced material artifacts and two more siblings are still pending.",
-      "expected_output": "MOTHER stops pending creation and retries, preserves the active proven work, and interrupts an existing owner only when evidence shows that owner is affected.",
+      "expected_output": "CTRL stops pending creation and retries, preserves the active proven work, and interrupts an existing owner only when evidence shows that owner is affected.",
       "files": [],
       "assertions": [
         "Pending creation and retries stop at the shared boundary",
@@ -402,18 +402,18 @@
     {
       "id": 32,
       "prompt": "TASK A owns src/payments/** and the Stripe session. TASK B and a correcting REVIEW both request write access before A has released either surface.",
-      "expected_output": "MOTHER blocks both overlapping mutations, keeps uncertainty read-only, and transfers authority only after A stops, releases, and returns an immutable handoff that the next owner acknowledges.",
+      "expected_output": "CTRL blocks both overlapping mutations, keeps uncertainty read-only, and transfers authority only after A stops, releases, and returns an immutable handoff that the next owner acknowledges.",
       "files": [],
       "assertions": [
         "The receipt names exact mutable surfaces plus current owner and release state",
         "No overlapping write lane or reviewer correction is dispatched",
-        "MOTHER records one explicit transfer without creating a lease subsystem",
+        "CTRL records one explicit transfer without creating a lease subsystem",
         "REVIEW cannot approve a correction it performs"
       ]
     },
     {
       "id": 33,
-      "prompt": "LEAD plus three TASKs fill four non-MOTHER slots. TASK A emits an immutable ready-for-review handoff, but REVIEW has not started yet.",
+      "prompt": "LEAD plus three TASKs fill four non-CTRL work slots. TASK A emits an immutable ready-for-review handoff, but REVIEW has not started yet.",
       "expected_output": "TASK A stops active work and frees one capacity slot for REVIEW while retaining correction ownership until acceptance, explicit transfer, or exact blocker.",
       "files": [],
       "assertions": [
@@ -426,7 +426,7 @@
     {
       "id": 34,
       "prompt": "TASK A must hand off to LEAD, but LEAD is unavailable; A also unblocks an uncreated TASK B, which later unblocks TASK C.",
-      "expected_output": "A attempts delivery once, takes one liveness snapshot, returns the unchanged immutable handoff to MOTHER or the user, and names B plus its unblock condition so the chain survives.",
+      "expected_output": "A attempts delivery once, takes one liveness snapshot, returns the unchanged immutable handoff to CTRL or the user, and names B plus its unblock condition so the chain survives.",
       "files": [],
       "assertions": [
         "The producer never self-accepts",
@@ -438,12 +438,12 @@
     {
       "id": 35,
       "prompt": "Boost is authorized for four existing owners. Two have substantial closeout work, one has only a one-command handoff, and one is complete. Goals finish or request attention at different times.",
-      "expected_output": "Only the two substantial owners receive goals; tiny and complete owners close normally, while passive heartbeat and terminal or attention waits observe them without messaging, steering, or commentary wakeups.",
+      "expected_output": "Only the two substantial owners receive goals; tiny and complete owners close normally, while optional bound WATCHDOG and terminal or attention waits observe them without messaging, steering, or commentary wakeups.",
       "files": [],
       "assertions": [
         "Configured goal levels are eligibility rather than quotas",
         "Tiny and complete owners are reported as skipped, not failed",
-        "Hands-off permits passive heartbeat and terminal aggregation but no task status requests",
+        "Hands-off permits optional bound WATCHDOG observation and terminal aggregation but no task status requests",
         "Attention events can unblock integration without interrupting running goals"
       ]
     },
@@ -462,7 +462,7 @@
     {
       "id": 37,
       "prompt": "create_thread is absent from the initially exposed tools but discoverable. Later, create becomes unavailable while read, wait, and message still work for existing task IDs.",
-      "expected_output": "MOTHER performs one bounded discovery before blocking, creates the first wave when discovery succeeds, and later stops only new lanes while continuing existing handoffs with the remaining primitives.",
+      "expected_output": "CTRL performs one bounded discovery before blocking, creates the first wave when discovery succeeds, and later stops only new lanes while continuing existing handoffs with the remaining primitives.",
       "files": [],
       "assertions": [
         "Create, read or wait, and message capabilities are reported separately",
@@ -486,11 +486,11 @@
     {
       "id": 39,
       "prompt": "A child task receives a portfolio-level scope change that invalidates part of its current mutable work, and REVIEW has returned CORRECT on the same artifact.",
-      "expected_output": "The child escalates the change to MOTHER before mutation; MOTHER issues the contract delta and performs any atomic ownership transfer before the builder or exceptional correcting reviewer writes.",
+      "expected_output": "The child escalates the change to CTRL before mutation; CTRL issues the contract delta and performs any atomic ownership transfer before the builder or exceptional correcting reviewer writes.",
       "files": [],
       "assertions": [
         "The latest user instruction is preserved without letting a child redefine the portfolio",
-        "Invalidated mutation stops until MOTHER resolves ownership",
+        "Invalidated mutation stops until CTRL resolves ownership",
         "REVIEW remains verdict-only unless explicitly assigned the narrow correction",
         "A different independent reviewer or context validates any reviewer-authored correction"
       ]
@@ -498,11 +498,11 @@
     {
       "id": 40,
       "prompt": "Five independent artifact lanes are ready, max_active_tasks is four, default_parallel_tasks is three, and REVIEW must inspect each ready handoff.",
-      "expected_output": "MOTHER starts only the highest-value lanes that fit the preferred wave and hard ceiling, frees capacity on immutable ready handoffs, and schedules REVIEW or the next lane by critical-path value without exceeding four active non-MOTHER tasks.",
+      "expected_output": "CTRL starts only the highest-value lanes that fit the preferred wave and hard ceiling, frees capacity on immutable ready handoffs, and schedules REVIEW or the next lane by critical-path value without exceeding four active non-CTRL work tasks.",
       "files": [],
       "assertions": [
         "The preferred parallel setting guides but does not force exactly three tasks",
-        "No more than four non-MOTHER tasks produce, integrate, or review at once",
+        "No more than four non-CTRL work tasks produce, integrate, or review at once",
         "A ready handoff frees capacity without releasing correction ownership",
         "The fifth lane is not forgotten or represented by an idle task",
         "Review capacity competes by critical-path priority rather than bypassing the ceiling"
@@ -539,31 +539,31 @@
     {
       "id": 43,
       "prompt": "SWARM identifies three bounded domains, each needing repeated shared decisions across its own producers. preferred_lane_width is three.",
-      "expected_output": "MOTHER directly manages the three justified LEAD lanes because the root span is already compact.",
+      "expected_output": "CTRL directly manages the three justified LEAD lanes because the root span is already compact.",
       "files": [],
       "assertions": [
         "The lane test justifies every LEAD before the width preference is applied",
-        "Three direct LEADs remain flat under MOTHER",
+        "Three direct LEADs remain flat under CTRL",
         "No coordinator exists merely to satisfy a configured number",
         "Active-task capacity still controls which children start"
       ]
     },
     {
       "id": 44,
-      "prompt": "Nine justified LEAD domains repeatedly need coordination in three related portfolio segments. MOTHER would otherwise relay the same decisions across all nine. Shape capacity-aware LEAD waves without adding another coordinator role.",
-      "expected_output": "MOTHER keeps the LEAD domains directly accountable, starts capacity-aware waves, and retains final portfolio acceptance without inventing another coordinator layer.",
+      "prompt": "Nine justified LEAD domains repeatedly need coordination in three related portfolio segments. CTRL would otherwise relay the same decisions across all nine. Shape capacity-aware LEAD waves without adding another coordinator role.",
+      "expected_output": "CTRL keeps the LEAD domains directly accountable, starts capacity-aware waves, and retains final portfolio acceptance without inventing another coordinator layer.",
       "files": [],
       "assertions": [
         "Each LEAD retains explicit bounded authority for its named domain",
-        "MOTHER starts only capacity-safe LEAD waves",
+        "CTRL starts only capacity-safe LEAD waves",
         "No extra coordinator or prebuilt idle tree is created",
-        "MOTHER alone accepts the portfolio"
+        "CTRL alone accepts the portfolio"
       ]
     },
     {
       "id": 45,
       "prompt": "Four clear LEAD domains need almost no cross-domain decisions. preferred_lane_width is three, but another coordinator would create another handoff.",
-      "expected_output": "MOTHER keeps four direct LEADs or starts them in capacity-aware waves because three is a soft preference and another coordinator would cost more than it saves.",
+      "expected_output": "CTRL keeps four direct LEADs or starts them in capacity-aware waves because three is a soft preference and another coordinator would cost more than it saves.",
       "files": [],
       "assertions": [
         "The fourth lane is not rejected by the preferred width",
@@ -578,7 +578,7 @@
       "expected_output": "Each authorized owner normally chooses about three worthwhile child lanes or internal subtasks, stays flat when work is cohesive, and may exceed three when another coordinator or wave would slow delivery.",
       "files": [],
       "assertions": [
-        "Planning remains MOTHER's bounded pass unless a consequential artifact passes the lane test",
+        "Planning remains CTRL's bounded pass unless a consequential artifact passes the lane test",
         "A consequential planning artifact receives explicit child-task authority before creating portfolio children",
         "REVIEW children preserve independent verdict authority and do not self-approve corrections",
         "DOER children preserve one mutable owner per surface",
@@ -598,8 +598,8 @@
     },
     {
       "id": 48,
-      "prompt": "MOTHER already has three justified direct LEAD lanes. Six additional LEAD domains also need work. preferred_lane_width is three.",
-      "expected_output": "MOTHER keeps its three direct LEAD lanes and starts the additional justified LEAD domains in capacity-aware waves without inserting an auxiliary coordinator.",
+      "prompt": "CTRL already has three justified direct LEAD lanes. Six additional LEAD domains also need work. preferred_lane_width is three.",
+      "expected_output": "CTRL keeps its three direct LEAD lanes and starts the additional justified LEAD domains in capacity-aware waves without inserting an auxiliary coordinator.",
       "files": [],
       "assertions": [
         "Direct LEAD ownership remains explicit across waves",
@@ -628,7 +628,7 @@
       "expected_output": "Every title starts with exactly one role-derived emoji: hierarchy roles use their configured defaults, BUILD and DEV use logical classic choices, and only the unusual task uses the generic fallback.",
       "files": [],
       "assertions": [
-        "MOTHER, LEAD, and REVIEW each use their dedicated role_icons setting",
+        "MOTHER uses roles.MOTHER.icon while LEAD and REVIEW use their dedicated role_icons settings",
         "BUILD uses a hammer and DEV uses a computer",
         "The unusual task uses role_icons.fallback only after no logical configured choice fits",
         "No global prefix or enabled toggle participates in title generation",
@@ -637,7 +637,7 @@
     },
     {
       "id": 51,
-      "prompt": "CTRL has two active children and four active grandchildren. Run the configured heartbeat without interrupting their work and show me the whole active system.",
+      "prompt": "CTRL has two active children and four active grandchildren. Inspect the whole active system without interrupting their work.",
       "expected_output": "Because the user explicitly requested the whole active system, CTRL inspects every active goal, including its own, and answers once in task-tree order while keeping routine topology out of later progress events.",
       "files": [],
       "assertions": [
@@ -650,13 +650,13 @@
     },
     {
       "id": 52,
-      "prompt": "Boost hands_off is active for several child and grandchild goals. Thirty minutes pass with no attention or terminal event. Run CTRL's heartbeat.",
-      "expected_output": "The passive timeout is recorded internally and CTRL emits no user-facing event because no material result, blocker, decision, acceptance, or release changed.",
+      "prompt": "Boost hands_off is active for several child and grandchild goals. Thirty minutes pass with no attention or terminal event. A WATCHDOG is explicitly bound; run its due check.",
+      "expected_output": "The due WATCHDOG check records a CLEAR receipt internally and CTRL emits no user-facing event because no material result, blocker, decision, acceptance, or release changed.",
       "files": [],
       "assertions": [
-        "Passive heartbeat remains active during hands_off",
+        "The explicitly bound WATCHDOG remains passive during hands_off",
         "The timeout is observation rather than active polling of owners",
-        "No commentary or compact heartbeat summary is emitted for unchanged state",
+        "No commentary or compact WATCHDOG summary is emitted for CLEAR state",
         "No matching goal is recreated or interrupted",
         "Terminal or attention events may still advance integration"
       ]
@@ -669,7 +669,7 @@
       "assertions": [
         "Approximate duration starts at CTRL's first observed active timestamp",
         "Unknown freshness is not called alive and progressing",
-        "A heartbeat observation does not count as an unchanged work update",
+        "A WATCHDOG observation does not count as an unchanged work update",
         "Missing freshness alone does not trigger recovery, reassignment, or messaging",
         "Continuous monitoring is not claimed when host primitives are unavailable"
       ]
@@ -702,8 +702,8 @@
     },
     {
       "id": 56,
-      "prompt": "SWARM dispatched three Codex lanes. Every create_thread call returned only a clientThreadId, no threadId ever appeared in one bounded task inventory, and the host exposes no clientThreadId resolver. The task list still shows only MOTHER, an immediate safety issue needs containment, and normal artifact work remains assigned to the lanes. Recover without duplicating or silently absorbing delegated work.",
-      "expected_output": "SWARM records the queued handles as failed provisioning evidence rather than delegation, uses its recovery budget for one representative retry through the real user-visible task surface, permits MOTHER only the immediate safety containment, and fans out only after a real task ID begins artifact work.",
+      "prompt": "SWARM dispatched three Codex lanes. Every create_thread call returned only a clientThreadId, no threadId ever appeared in one bounded task inventory, and the host exposes no clientThreadId resolver. The task list still shows only CTRL, an immediate safety issue needs containment, and normal artifact work remains assigned to the lanes. Recover without duplicating or silently absorbing delegated work.",
+      "expected_output": "SWARM records the queued handles as failed provisioning evidence rather than delegation, uses its recovery budget for one representative retry through the real user-visible task surface, permits CTRL only the immediate safety containment, and fans out only after a real task ID begins artifact work.",
       "files": [],
       "assertions": [
         "A clientThreadId is not counted as delegation, a task ID, live lane, owner, or capacity allocation",
@@ -711,7 +711,7 @@
         "The diagnostic handles are preserved without being passed to threadId-only tools",
         "After one bounded setup observation exactly one representative retry targets a real user-visible host task surface",
         "Sibling fan-out waits for a real threadId and the canary's first material artifact-producing action",
-        "MOTHER may order immediate safety containment only while all non-emergency artifact work remains delegated",
+        "CTRL may order immediate safety containment only while all non-emergency artifact work remains delegated",
         "A second unmaterialized canary stops further creation and reports the host setup blocker"
       ]
     },
@@ -801,7 +801,7 @@
       "files": ["evals/fixtures/assist-bottleneck.json"],
       "assertions": [
         "ASSIST is temporary wildcard capacity rather than a hierarchy authority layer",
-        "MOTHER, ARCHITECT, LEAD, or DOER may hire ASSIST for a bounded assignment",
+        "CTRL, ARCHITECT, LEAD, or DOER may hire ASSIST for a bounded assignment",
         "ASSIST returns one handoff and exits",
         "Tiny same-surface help would stay internal instead"
       ]
@@ -809,13 +809,13 @@
     {
       "id": 64,
       "prompt": "Shape the attached portfolio fixture without creating an automatic tree or optional finite-role goals.",
-      "expected_output": "SWARM gives the repeated checkout domain a LEAD with its artifact DOERs, keeps the independent launch-copy DOER directly under MOTHER, maintains required MOTHER and LEAD goals, and creates no optional finite-role goal.",
+      "expected_output": "SWARM gives the repeated checkout domain a LEAD with its artifact DOERs, keeps the independent launch-copy DOER directly under CTRL, maintains required CTRL and LEAD goals, and creates no optional finite-role goal.",
       "files": ["evals/fixtures/hierarchy-routing.json"],
       "assertions": [
-        "MOTHER to LEAD to DOER is normal for repeated domain decisions and integration",
-        "A small independent artifact may remain a direct MOTHER DOER",
+        "CTRL to LEAD to DOER is normal for repeated domain decisions and integration",
+        "A small independent artifact may remain a direct CTRL DOER",
         "Configured counts do not generate a complete tree",
-        "MOTHER and LEAD goals are mandatory independent of Boost",
+        "CTRL and LEAD goals are mandatory independent of Boost",
         "Finite DOER work does not automatically create a durable goal"
       ]
     },
@@ -836,12 +836,12 @@
     {
       "id": 66,
       "prompt": "A fast product redesign has three disjoint lanes: page composition, live data wiring, and responsive visual QA. Each lane reports a passing local check, but no one has rendered the integrated page at the supplied desktop and mobile references; the data lane also has no authenticated provider receipt. Close the work quickly.",
-      "expected_output": "SWARM runs the disjoint critical-path lanes in parallel, continuously integrates their artifacts, and leaves the portfolio unaccepted until MOTHER inspects the composed responsive result against both references and the provider proof is VERIFIED. Lane-local checks, activity, and approvals do not substitute; the missing evidence remains UNVERIFIED with its exact blocker.",
+      "expected_output": "SWARM runs the disjoint critical-path lanes in parallel, continuously integrates their artifacts, and leaves the portfolio unaccepted until CTRL inspects the composed responsive result against both references and the provider proof is VERIFIED. Lane-local checks, activity, and approvals do not substitute; the missing evidence remains UNVERIFIED with its exact blocker.",
       "files": [],
       "assertions": [
         "Only disjoint critical-path work is parallelized",
         "Every lane returns an integration-ready handoff rather than a bare status",
-        "MOTHER inspects the composed end-to-end result and requirement ledger",
+        "CTRL inspects the composed end-to-end result and requirement ledger",
         "Supplied desktop and mobile references require composed responsive render comparison before acceptance or deployment",
         "Missing authenticated provider proof remains UNVERIFIED and blocks acceptance",
         "Task count, activity, commits, and lane-local approvals are not treated as meaningful progress or acceptance",
@@ -850,46 +850,46 @@
     },
     {
       "id": 67,
-      "prompt": "A SWARM MOTHER sees a 20-minute feature implementation, an image asset to generate, a lane-local browser proof, and a one-line conflict in an already-integrated file. The user also needs a provider deployment decision and a recovery action after a safety incident. Route the work fast.",
-      "expected_output": "MOTHER delegates the feature, asset generation, task-level browser proof, and one-line integration conflict to named DOER, TASK, or ASSIST owners; it retains outcome lock, priority, collision control, composed portfolio acceptance, and shared release-surface leases. A deployable LEAD owns provider/deploy, rollback, and production proof for its lane.",
+      "prompt": "SWARM CTRL sees a 20-minute feature implementation, an image asset to generate, a lane-local browser proof, and a one-line conflict in an already-integrated file. The user also needs a provider deployment decision and a recovery action after a safety incident. Route the work fast.",
+      "expected_output": "CTRL delegates the feature, asset generation, task-level browser proof, and one-line integration conflict to named DOER, TASK, or ASSIST owners; CTRL retains outcome lock, priority, collision control, composed portfolio acceptance, and shared release-surface leases. A deployable LEAD owns provider/deploy, rollback, and production proof for its lane.",
       "files": [],
       "assertions": [
-        "MOTHER is an orchestrator rather than a substantive builder",
-        "Substantive implementation, asset generation, and task-level proof have explicit non-MOTHER owners",
-        "MOTHER retains outcome lock, shaping, priority, collision and ownership control, composed portfolio acceptance, and shared release-surface leases",
+        "CTRL is the sole root orchestrator rather than a substantive builder",
+        "Substantive implementation, asset generation, and task-level proof have explicit non-CTRL work owners",
+        "CTRL retains outcome lock, shaping, priority, collision and ownership control, composed portfolio acceptance, and shared release-surface leases",
         "A deployable LEAD owns provider/deploy control, rollback receipt, and production proof for its lane",
-        "MOTHER never edits, including a tiny integration or collision seam",
+        "CTRL delegates edits, including a tiny integration or collision seam, unless CTRL_DIRECT is explicitly justified",
         "The one-line seam has a bounded DOER, TASK, or ASSIST owner",
-        "The hierarchy remains fast by delegating a bounded worthwhile seam without making MOTHER a builder"
+        "The hierarchy remains fast by delegating a bounded worthwhile seam without creating another authority layer"
       ]
     },
     {
       "id": 68,
       "prompt": "Two LEADs each have a reviewed deployable lane. One deploys a separate Vercel project; the other deploys the same production project and release channel as a third LEAD. DOERs have built the artifacts and REVIEW has independently approved them. Route acceptance and deployment without slowing unrelated work.",
-      "expected_output": "Each LEAD integrates DOER handoffs, completes its correction loop, accepts and deploys its own reviewed lane with rollback receipt and production proof. The disjoint Vercel target may proceed concurrently. MOTHER grants and records a shared-target lease for one of the colliding LEADs, serializes only that mutation, and keeps unrelated lanes moving; MOTHER accepts the portfolio only after accepted lanes return.",
+      "expected_output": "Each LEAD integrates DOER handoffs, completes its correction loop, accepts and deploys its own reviewed lane with rollback receipt and production proof. The disjoint Vercel target may proceed concurrently. CTRL grants and records a shared-target lease for one of the colliding LEADs, serializes only that mutation, and keeps unrelated lanes moving; CTRL accepts the portfolio only after accepted lanes return.",
       "files": [],
       "assertions": [
         "DOER builds and REVIEW independently gates",
         "LEAD owns lane integration, correction, acceptance, provider/deploy control, rollback receipt, and production proof",
-        "MOTHER owns portfolio orchestration and the shared-target lease rather than deployment",
+        "CTRL owns portfolio orchestration and the shared-target lease rather than deployment",
         "Disjoint provider targets may deploy concurrently",
         "Shared provider/project/environment/channel mutation is serialized by an explicit lease with holder and unblock condition",
-        "MOTHER accepts only the composed portfolio after accepted lanes return"
+        "CTRL accepts only the composed portfolio after accepted lanes return"
       ]
     },
     {
       "id": 69,
       "prompt": "A LEAD has three DOER artifacts to integrate into a deployment. One DOER has three independent SUBTASKs: a research check, a design variant, and browser proof, with child capacity available. A shared production channel is currently leased to another LEAD. An ARCHITECT proposes a contract boundary and an ADVISOR proposes delivery, proof, and recovery sequencing.",
-      "expected_output": "The DOER promptly delegates the three independent SUBTASKs to temporary wildcard DOER ASSISTs and remains accountable for their integrated task artifact. The LEAD coordinates its system impact with the persistent ARCHITECT specialist, while an ephemeral ADVISOR answers one focused delivery/proof/recovery question then exits. The LEAD integrates the resulting immutable SHA, sends that exact SHA to an independent REVIEW, corrects findings, and deploys only REVIEW-approved SHA after MOTHER grants the shared-channel lease. ASSISTs never review, accept, integrate, mutate providers, or deploy; MOTHER receives only concise lane state, escalations, and the lane acceptance receipt.",
+      "expected_output": "The DOER promptly delegates the three independent SUBTASKs to temporary wildcard DOER ASSISTs and remains accountable for their integrated task artifact. The LEAD coordinates its system impact with the persistent ARCHITECT specialist, while an ephemeral ADVISOR answers one focused delivery/proof/recovery question then exits. The LEAD integrates the resulting immutable SHA, sends that exact SHA to an independent REVIEW, corrects findings, and deploys only the REVIEW-approved SHA after CTRL grants the shared-channel lease. ASSISTs never review, accept, integrate, mutate providers, or deploy; CTRL receives only concise lane state, escalations, and the lane acceptance receipt.",
       "files": [],
       "assertions": [
         "DOER owns one bounded task artifact and ASSIST is a temporary wildcard DOER for a delegated SUBTASK",
         "Two or more independent SUBTASKs with capacity trigger prompt ASSIST delegation",
         "ASSIST can perform bounded developer, design, research, operations, or proof work but has no independent authority",
         "ARCHITECT is a persistent specialist for system coherence but has no building, worker scheduling, review, integration, provider mutation, or deployment authority; ADVISOR is one-question and ephemeral",
-        "MOTHER receives only concise lane state, cross-lane escalations, and final lane receipts",
+        "CTRL receives only concise lane state, cross-lane escalations, and final lane receipts",
         "LEAD submits an immutable integration SHA to independent REVIEW and deploys only that approved exact SHA",
-        "Shared target mutation waits for the MOTHER deployment lease while unrelated work continues",
+        "Shared target mutation waits for the CTRL deployment lease while unrelated work continues",
         "Recovery is exactly one safe same-surface attempt before blocker and release"
       ]
     },
@@ -938,12 +938,12 @@
     {
       "id": 73,
       "prompt": "Use SWARM to make 10 landing-page mockups.",
-      "expected_output": "The receiving task first completes mandatory Step 0 by setting and verifying 🐙CTRL - <objective> by default and pinning and verifying the task. It then continues one durable objective and treats the requested variants as one coherent visual artifact with one atomic DESIGNER owner and later independent REVIEW. Variant count alone does not justify MOTHER.",
+      "expected_output": "The receiving task first completes mandatory Step 0 by setting and verifying 🐙CTRL - <objective> by default and pinning and verifying the task. It then continues one durable objective and treats the requested variants as one coherent visual artifact with one atomic DESIGNER owner and later independent REVIEW. Variant count alone does not justify an advisory manager specialist.",
       "files": [],
       "assertions": [
         "CTRL identity, pinning, goal, and inventory precede artifact work",
         "One coherent artifact has one mutable owner even when it has ten variants",
-        "No MOTHER is created from artifact count or role availability",
+        "No advisory manager specialist is created from artifact count or role availability",
         "Independent REVIEW remains separate from artifact ownership"
       ]
     },
@@ -954,7 +954,7 @@
       "files": [],
       "assertions": [
         "Objective, artifact or mutable surface, and accepting route all participate in identity",
-        "The completed plugin MOTHER is not reopened for the landing",
+        "The completed plugin task is not reopened for the landing",
         "Shared SWARM words do not establish reuse",
         "No owner receives both unrelated mutable surfaces"
       ]
@@ -962,12 +962,12 @@
     {
       "id": 75,
       "prompt": "Use SWARM for a multi-repo release with three dependent owners, integration sequencing, and one portfolio acceptance decision that CTRL cannot cheaply own.",
-      "expected_output": "CTRL creates MOTHER because distinct ownership lanes, real dependency edges, cross-lane integration, and portfolio acceptance all satisfy the portfolio predicate; architecture is added only if system-coherence facts require it.",
+      "expected_output": "CTRL remains the sole root, creates the justified LEAD lanes, and owns cross-lane integration plus portfolio acceptance; an optional MOTHER-labeled manager specialist may advise only when its truth-surface benefit exceeds coordination cost, and architecture is added only if system-coherence facts require it.",
       "files": [],
       "assertions": [
-        "MOTHER is justified by the complete portfolio predicate",
+        "LEAD lanes are justified by the complete portfolio predicate while CTRL remains sole root",
         "Dependency and acceptance facts, not task count, create orchestration",
-        "MOTHER alone changes execution topology after creation",
+        "CTRL alone changes execution topology",
         "Architecture depth remains independently fact-gated"
       ]
     },
@@ -1099,8 +1099,8 @@
     },
     {
       "id": 85,
-      "prompt": "Boost hands_off is active. One child returns a new exact blocker with a surfaced proof receipt and a recovery action. Run CTRL's heartbeat.",
-      "expected_output": "CTRL emits exactly one compact human update: what is blocked, the inline proof, the remaining consequence, and the next material recovery checkpoint; it does not narrate roles, tasks, commands, or the heartbeat.",
+      "prompt": "Boost hands_off is active. One child returns a new exact blocker with a surfaced proof receipt and a recovery action. Run the due bound WATCHDOG check.",
+      "expected_output": "WATCHDOG records one BLOCKER alert for the validated route and CTRL emits exactly one compact human update: what is blocked, the inline proof, the remaining consequence, and the next material recovery checkpoint; it does not narrate roles, tasks, commands, or the sensor.",
       "files": [],
       "assertions": [
         "The update is bound to the child's exact surfaced proof receipt",
@@ -1150,6 +1150,21 @@
         "No extra pass is ordered merely because deeper inspection may find minor issues",
         "Design explicitly permits granular critique of small compounding details",
         "The design exception remains confined to design surfaces in a mixed review"
+      ]
+    },
+    {
+      "id": 89,
+      "prompt": "CTRL accepted two user requests. A new priority message arrives while one request is blocked by an internet outage and the other is awaiting independent acceptance. Explain the smallest correct SWARM response.",
+      "expected_output": "Read-only list and audit the exact repository first; a missing store is empty/unattached without a write, not continuity proof. Explicitly attach before consequential request work. Keep both requests unresolved with their accountable owners, routes, history, due events, and last feed cursors. The new message may add or reprioritize work but cannot overwrite either request. After restart, derive the feed-sequence floor from each persisted cursor and require a newly published, fully validated later event without replaying old feed objects. WATCHDOG may emit a bound alert for eligible live lane evidence only; an orphan produces a fixed global flow-integrity blocker routed to CTRL, never a task binding or decision. The outage is context, not authority to fire or reassign. A closeout claim remains blocked until a fresh audit has no unresolved, orphaned, corrupt, or provisional records.",
+      "files": [],
+      "assertions": [
+        "Accepted requests survive interruption and reprioritization",
+        "Internet outage does not justify automatic owner removal",
+        "WATCHDOG alerts but never mutates or decides",
+        "Fresh restart ordering uses persisted cursors without replaying old feed authority",
+        "Missing-store inspection is side-effect free and unattached",
+        "Each request transitions independently through current evidence",
+        "Completion audits every open and provisional request"
       ]
     }
   ]
