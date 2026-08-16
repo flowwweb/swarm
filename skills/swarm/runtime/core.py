@@ -44,6 +44,7 @@ class HandsOffEventKind(StrEnum):
     USER_DIRECTION="user_direction"; MATERIAL_HANDOFF_REVIEW="material_handoff_review"; STOPPING_CONDITION="stopping_condition"; HUMAN_AUTHORITY_BLOCKER="human_authority_blocker"; USAGE_SIGNAL="usage_signal"; MODEL_MESSAGE="model_message"; TASK_MESSAGE="task_message"; ROUTINE_STATUS="routine_status"
 class CtrlMode(StrEnum): DIRECT="CTRL_DIRECT"; DELEGATED="CTRL_DELEGATED"
 class WatchdogSignal(StrEnum): CLEAR="CLEAR"; ATTENTION="ATTENTION"; BLOCKER="BLOCKER"
+class WatchdogEvidenceKind(StrEnum): GENERAL="GENERAL"; USAGE_CAPACITY="USAGE_CAPACITY"
 class WatchdogScope(StrEnum):
     TRAJECTORY="TRAJECTORY"; FLOW_INTEGRITY="FLOW_INTEGRITY"; OUTCOME_INTEGRITY="OUTCOME_INTEGRITY"
 class WatchdogRouteRole(StrEnum):
@@ -353,10 +354,13 @@ class WatchdogBinding:
 
 @dataclass(frozen=True)
 class WatchdogEvidence:
-    task_id:str; goal_id:str; watched_owner:str; scope:WatchdogScope; signal:WatchdogSignal; evidence_digest:str; evidence:str; owner_integrity:bool=False
+    task_id:str; goal_id:str; watched_owner:str; scope:WatchdogScope; signal:WatchdogSignal; evidence_digest:str; evidence:str; owner_integrity:bool=False; kind:WatchdogEvidenceKind=WatchdogEvidenceKind.GENERAL; declared_watched_role:Role|None=None
     def __post_init__(self):
         if not all(isinstance(value,str) and value.strip() for value in (self.task_id,self.goal_id,self.watched_owner,self.evidence_digest,self.evidence)): raise InvariantError("watchdog evidence requires exact task, goal, owner, evidence, and digest")
         if not isinstance(self.scope,WatchdogScope) or not isinstance(self.signal,WatchdogSignal): raise InvariantError("watchdog evidence requires one declared scope and CLEAR, ATTENTION, or BLOCKER")
+        if not isinstance(self.kind,WatchdogEvidenceKind): raise InvariantError("watchdog evidence requires a typed evidence kind")
+        if self.kind is WatchdogEvidenceKind.USAGE_CAPACITY and self.declared_watched_role is not Role.LEAD: raise InvariantError("usage capacity evidence may declare only an accountable LEAD")
+        if self.kind is WatchdogEvidenceKind.GENERAL and self.declared_watched_role is not None: raise InvariantError("general watchdog evidence cannot declare a usage watcher role")
         if not isinstance(self.owner_integrity,bool) or (self.owner_integrity and self.scope is not WatchdogScope.OUTCOME_INTEGRITY): raise InvariantError("owner-integrity routing is valid only for outcome integrity evidence")
         digest=self.evidence_digest.strip().lower()
         if len(digest)!=64 or any(character not in "0123456789abcdef" for character in digest): raise InvariantError("watchdog evidence digest must be a SHA-256 hex digest")
@@ -377,7 +381,7 @@ def usage_watchdog_evidence(*, task_id:str, goal_id:str, watched_role:Role, watc
     signal=WatchdogSignal.BLOCKER if viable_routes==0 else WatchdogSignal.ATTENTION if crossed or changed else WatchdogSignal.CLEAR
     payload={"receipt":current.receipt,"remaining_percent":current.remaining_percent,"task_status":current.task_status.value,"decision_owner":current.decision_owner,"signal":signal.value}
     evidence=json.dumps(payload,sort_keys=True,separators=(",",":"))
-    return WatchdogEvidence(task_id,goal_id,watched_owner,WatchdogScope.FLOW_INTEGRITY,signal,sha256(evidence.encode("utf-8")).hexdigest(),evidence)
+    return WatchdogEvidence(task_id,goal_id,watched_owner,WatchdogScope.FLOW_INTEGRITY,signal,sha256(evidence.encode("utf-8")).hexdigest(),evidence,kind=WatchdogEvidenceKind.USAGE_CAPACITY,declared_watched_role=watched_role)
 
 @dataclass(frozen=True)
 class WatchdogReceipt:
@@ -727,6 +731,7 @@ class Swarm:
         t=self.tasks[task_id]; binding=t.watchdog_binding; due=self.scheduled_wakeups.get(task_id)
         if binding is None or due is None: raise InvariantError("unbound goal has no watchdog clock, check, receipt, or alert")
         if now<due: raise InvariantError("watchdog check requires due evidence")
+        if evidence.kind is WatchdogEvidenceKind.USAGE_CAPACITY and (evidence.declared_watched_role is not Role.LEAD or binding.watched_role is not Role.LEAD): raise InvariantError("usage capacity evidence requires the actual WatchdogBinding role to be LEAD")
         selected_route=binding.owner_integrity_route if evidence.owner_integrity else binding.alert_route
         first_role,first_id=selected_route[0]
         if observer_role is not first_role or observer_id.strip()!=first_id: raise InvariantError("watchdog observation must come from the selected bound route")

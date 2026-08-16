@@ -14,6 +14,10 @@ from skills.swarm.runtime import (
     UsageCapacitySnapshot,
     WatchdogScope,
     WatchdogSignal,
+    WatchdogBinding,
+    WatchdogRouteRole,
+    Swarm,
+    Task,
     WorkRoutingFacts,
     WorkSize,
     hands_off_interrupt,
@@ -106,6 +110,21 @@ class RuntimeRoutingTests(unittest.TestCase):
         for role in (Role.SPECIALIST,Role.ARCHITECT):
             with self.subTest(role=role), self.assertRaisesRegex(InvariantError,"only to an accountable LEAD"):
                 usage_watchdog_evidence(task_id="task-a",goal_id="goal-a",watched_role=role,watched_owner="specialist-a",current=snapshot)
+
+    def test_usage_watchdog_cannot_enter_specialist_or_architect_bound_goals(self) -> None:
+        snapshot=UsageCapacitySnapshot(5,HostTaskCapacity.USAGE_LIMITED,"spec","host:usage:5-limited",1)
+        for role,owner,profession,route_role in (
+            (Role.SPECIALIST,"spec","RESEARCHER",WatchdogRouteRole.SPECIALIST),
+            (Role.ARCHITECT,"architect","ARCHITECT",WatchdogRouteRole.ARCHITECT),
+        ):
+            with self.subTest(role=role):
+                swarm=Swarm(); task=Task("task-a","worker","CTRL",1,{},specialist_professions={owner:profession})
+                swarm.tasks[task.id]=task
+                binding=WatchdogBinding(role,owner,((route_role,owner),(WatchdogRouteRole.CTRL,"CTRL")),((WatchdogRouteRole.CTRL,"CTRL"),(WatchdogRouteRole.HUMAN,"HUMAN")))
+                swarm.propose_milestone(role,task.id,goal_id="goal-a",milestone="capacity",proof_kind="dependency",horizon_minutes=15,now=0,watchdog=binding)
+                evidence=usage_watchdog_evidence(task_id=task.id,goal_id="goal-a",watched_role=Role.LEAD,watched_owner=owner,current=snapshot)
+                with self.assertRaisesRegex(InvariantError,"actual WatchdogBinding role to be LEAD"):
+                    swarm.watchdog_check(task.id,observer_role=route_role,observer_id=owner,now=15,evidence=evidence)
 
     def test_hands_off_mode_ignores_routine_evidence_and_interrupts_true_boundaries(self) -> None:
         for kind in (HandsOffEventKind.ROUTINE_STATUS,HandsOffEventKind.MODEL_MESSAGE,HandsOffEventKind.TASK_MESSAGE):
