@@ -92,7 +92,9 @@ goal_levels = ["lead", "doer", "review"]
 spark_model = "gpt-5.3-codex-spark"
 
 [models.high]
-lead_model = "gpt-5.6-sol"
+ctrl_model = "gpt-5.6-sol"
+ctrl_reasoning = "high"
+lead_model = "gpt-5.6-terra"
 lead_reasoning = "high"
 doer_model = "gpt-5.6-luna"
 doer_reasoning = "max"
@@ -112,7 +114,9 @@ review_model = "gpt-5.6-sol"
 review_reasoning = "high"
 
 [models.medium]
-lead_model = "gpt-5.6-sol"
+ctrl_model = "gpt-5.6-sol"
+ctrl_reasoning = "medium"
+lead_model = "gpt-5.6-terra"
 lead_reasoning = "medium"
 doer_model = "gpt-5.6-luna"
 doer_reasoning = "xhigh"
@@ -132,7 +136,9 @@ review_model = "gpt-5.6-sol"
 review_reasoning = "medium"
 
 [models.low]
-lead_model = "gpt-5.6-sol"
+ctrl_model = "gpt-5.6-sol"
+ctrl_reasoning = "low"
+lead_model = "gpt-5.6-terra"
 lead_reasoning = "low"
 doer_model = "gpt-5.6-luna"
 doer_reasoning = "medium"

@@ -151,6 +151,8 @@ class SwarmConsoleTests(unittest.TestCase):
         self.assertEqual(next(node for node in overview["nodes"] if node["id"] == "task")["controller_ids"], ["root"])
         self.assertTrue(all(node["role_label"] == "TASK" for node in overview["nodes"] if node["role"] != "ctrl"))
         self.assertEqual(next(node for node in overview["nodes"] if node["id"] == "review")["worker_role"], "REVIEW")
+        self.assertEqual(ctrl["proof_snapshot"]["state"], "UNAVAILABLE")
+        self.assertIn("host activity is not proof", ctrl["proof_snapshot"]["claim_limit"].lower())
         self.assertLess(overview["performance"]["data_bytes"], overview["performance"]["budget"]["data_bytes"])
         self.assertEqual(overview["performance"]["budget"]["cache_hit_ms"], 5)
 

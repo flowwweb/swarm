@@ -3,6 +3,14 @@ name: Validate plugin
 on:
   workflow_call:
     inputs:
+      platform_required:
+        description: Require OS-sensitive contracts on all supported platforms
+        type: boolean
+        default: true
+      package_required:
+        description: Build once and verify the exact package on all supported platforms
+        type: boolean
+        default: true
       console_ui_required:
         description: Require provisioned responsive console proof for this exact revision
         type: boolean
@@ -63,6 +71,7 @@ jobs:
 
   platform-floor:
     name: Platform floor / ${{ matrix.os }}
+    if: inputs.platform_required
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -84,6 +93,7 @@ jobs:
 
   package-build:
     name: Build immutable package
+    if: inputs.package_required
     needs: fast-contracts
     runs-on: ubuntu-latest
     steps:
@@ -113,7 +123,8 @@ jobs:
 
   package-verify:
     name: Verify package / ${{ matrix.os }}
-    needs: [package-build, platform-floor]
+    if: inputs.package_required
+    needs: package-build
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false

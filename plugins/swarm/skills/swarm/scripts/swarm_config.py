@@ -79,7 +79,8 @@ DEFAULTS: dict[str, Any] = {
     },
     "models": {
         "high": {
-            "lead_model": "gpt-5.6-sol", "lead_reasoning": "high",
+            "ctrl_model": "gpt-5.6-sol", "ctrl_reasoning": "high",
+            "lead_model": "gpt-5.6-terra", "lead_reasoning": "high",
             "doer_model": "gpt-5.6-luna",
             "doer_reasoning": "max",
             "task_model": "gpt-5.6-luna", "task_reasoning": "xhigh",
@@ -91,7 +92,8 @@ DEFAULTS: dict[str, Any] = {
             "architect_model": "gpt-5.6-sol", "architect_reasoning": "high",
         },
         "medium": {
-            "lead_model": "gpt-5.6-sol", "lead_reasoning": "medium",
+            "ctrl_model": "gpt-5.6-sol", "ctrl_reasoning": "medium",
+            "lead_model": "gpt-5.6-terra", "lead_reasoning": "medium",
             "doer_model": "gpt-5.6-luna",
             "doer_reasoning": "xhigh",
             "task_model": "gpt-5.6-luna", "task_reasoning": "high",
@@ -103,7 +105,8 @@ DEFAULTS: dict[str, Any] = {
             "architect_model": "gpt-5.6-sol", "architect_reasoning": "medium",
         },
         "low": {
-            "lead_model": "gpt-5.6-sol", "lead_reasoning": "low",
+            "ctrl_model": "gpt-5.6-sol", "ctrl_reasoning": "low",
+            "lead_model": "gpt-5.6-terra", "lead_reasoning": "low",
             "doer_model": "gpt-5.6-luna",
             "doer_reasoning": "medium",
             "task_model": "gpt-5.6-luna", "task_reasoning": "low",

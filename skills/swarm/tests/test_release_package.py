@@ -69,6 +69,10 @@ class ReleasePackageTests(unittest.TestCase):
         files = {
             ".codex-plugin/plugin.json": '{"version":"1.2.3","skills":"./skills/"}\n',
             "skills/swarm/SKILL.md": "# SWARM\n",
+            "skills/swarm/assets/swarm-config.toml": '[proof]\npolicy_version = "lean-v1"\n',
+            "skills/swarm/references/review-contract.md": "# Review\n",
+            "skills/swarm/references/task-contract.md": "# Task\n",
+            "skills/swarm/runtime/core.py": "# runtime\n",
             "skills/swarm/scripts/swarm_console.py": "print('console')\n",
             "console/Dockerfile": "FROM python:3.11-slim\n",
             "console/docker-compose.yml": "services: {}\n",
@@ -539,7 +543,38 @@ class ReleasePackageTests(unittest.TestCase):
             self.assertTrue((installed / "docs" / "console.md").is_file())
             self.assertTrue((installed / "SECURITY.md").is_file())
             metadata = json.loads((installed / PACKAGE_METADATA_PATH).read_text(encoding="utf-8"))
-            self.assertEqual(metadata["schema"], "swarm-package-v1")
+            self.assertEqual(metadata["schema"], "swarm-package-v2")
+            self.assertEqual(metadata["planner_version"], "lean-v1")
+            self.assertRegex(metadata["policy_digest"], r"^[0-9a-f]{64}$")
+
+    def test_v2_policy_digest_is_bound_and_v1_remains_readable(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = self.make_plugin(Path(temporary))
+            package = Path(temporary) / "swarm.zip"
+            write_package(root, package)
+            installed = Path(temporary) / "installed"
+            with zipfile.ZipFile(package) as archive:
+                archive.extractall(installed)
+            metadata = json.loads((installed / PACKAGE_METADATA_PATH).read_text(encoding="utf-8"))
+            metadata["policy_digest"] = "0" * 64
+            self.write_archive(package, metadata, [path for path in metadata["files"]])
+            with self.assertRaisesRegex(ValueError, "policy digest"):
+                verifier.verify_package(package, installed)
+
+            legacy = dict(metadata)
+            legacy["schema"] = "swarm-package-v1"
+            legacy.pop("planner_version")
+            legacy.pop("policy_digest")
+            legacy_package = Path(temporary) / "legacy.zip"
+            with zipfile.ZipFile(legacy_package, "w") as archive:
+                archive.writestr(PACKAGE_METADATA_PATH, json.dumps(legacy, sort_keys=True))
+                for relative in legacy["files"]:
+                    archive.write(root / relative, relative)
+            self.write_sidecar(legacy_package)
+            legacy_installed = Path(temporary) / "legacy-installed"
+            with zipfile.ZipFile(legacy_package) as archive:
+                archive.extractall(legacy_installed)
+            self.assertEqual(verifier.verify_package(legacy_package, legacy_installed), len(legacy["files"]))
 
     def test_package_path_swap_after_checksum_cannot_change_verified_zip_snapshot(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

@@ -17,6 +17,7 @@ REPOSITORY_ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(REPOSITORY_ROOT / "scripts"))
 from build_package import (
     PACKAGE_METADATA_PATH,
+    proof_policy_digest,
     _installed_included,
     _is_reparse_path,
     _source_included,
@@ -184,7 +185,7 @@ def _verify_checksum_sidecar(package: Path, package_bytes: bytes) -> None:
 
 
 def _validate_metadata(metadata: object) -> tuple[dict[str, str], dict[str, object]]:
-    if not isinstance(metadata, dict) or metadata.get("schema") != "swarm-package-v1":
+    if not isinstance(metadata, dict) or metadata.get("schema") not in {"swarm-package-v1", "swarm-package-v2"}:
         raise ValueError("package metadata schema is invalid")
     version = metadata.get("version")
     if not isinstance(version, str) or not version:
@@ -204,6 +205,15 @@ def _validate_metadata(metadata: object) -> tuple[dict[str, str], dict[str, obje
         if safe_name != path or not _installed_included(Path(safe_name)):
             raise ValueError(f"package metadata has unsafe product path: {path}")
         expected[safe_name] = digest
+    if metadata["schema"] == "swarm-package-v2":
+        planner_version = metadata.get("planner_version")
+        policy_digest = metadata.get("policy_digest")
+        if not isinstance(planner_version, str) or not planner_version.strip():
+            raise ValueError("package metadata planner version is invalid")
+        if not isinstance(policy_digest, str) or not LOWER_HEX_64.fullmatch(policy_digest):
+            raise ValueError("package metadata policy digest is invalid")
+        if policy_digest != proof_policy_digest(expected):
+            raise ValueError("package metadata policy digest does not match its file manifest")
     return dict(sorted(expected.items())), metadata
 
 

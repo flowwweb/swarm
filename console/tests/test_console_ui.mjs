@@ -290,6 +290,9 @@ try {
         controllerOptions: document.querySelectorAll("#controller-filter option").length,
         scopeCopy: document.querySelector("#scope-copy")?.textContent,
         scopedActivity: document.querySelectorAll("#scope-activity .pulse-row").length,
+        proofBadge: document.querySelector("#proof-badge")?.textContent,
+        proofGates: [...document.querySelectorAll("#scope-proof .proof-columns section:first-child li")].map((node) => node.textContent.trim()),
+        proofClaims: [...document.querySelectorAll("#scope-proof .proof-columns section:nth-child(2) li")].map((node) => node.textContent.trim()),
         scroll: (() => {
           const scroller = document.querySelector(".swarm-scroll");
           return { clientWidth: scroller.clientWidth, scrollWidth: scroller.scrollWidth, clientHeight: scroller.clientHeight, scrollHeight: scroller.scrollHeight };
@@ -301,7 +304,7 @@ try {
     assert.equal(hierarchy.taskNodes, 5);
     assert.equal(hierarchy.standaloneDoers, 3);
     assert.deepEqual(hierarchy.workers, ["LEAD●Carson", "DEV●Lovelace", "DESIGN●Eames", "TEST●Noether"]);
-    assert.deepEqual(hierarchy.models, ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-terra", "gpt-5.6-terra", "gpt-5.6-terra"]);
+    assert.deepEqual(hierarchy.models, ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.6-luna", "gpt-5.6-luna"]);
     assert.ok(hierarchy.delegatedLabels.every((label) => label === "TASK"));
     assert.deepEqual(hierarchy.childArtifactCounts, [1, 1, 1]);
     assert.equal(hierarchy.titleAttributes, 0);
@@ -313,6 +316,9 @@ try {
     assert.equal(hierarchy.spinner.borderRadius, "50%");
     assert.equal(hierarchy.spinner.animationName, "hierarchy-spin");
     assert.equal(hierarchy.controllerOptions, 1);
+    assert.equal(hierarchy.proofBadge, "T2 · PROOF_READY");
+    assert.deepEqual(hierarchy.proofGates, ["contracts-fastSOURCE_STATIC · EXECUTEDPASS", "console-browserBROWSER_LOCAL · EXECUTEDPASS"]);
+    assert.deepEqual(hierarchy.proofClaims, ["responsive consoleBROWSER_LOCALVERIFIED"]);
     assert.match(hierarchy.scopeCopy, /5 nodes/);
     assert.equal(hierarchy.scopedActivity, 3);
     if (width === 1440) {
@@ -382,6 +388,8 @@ try {
   await multiPage.locator("#controller-filter").selectOption("nested-ctrl");
   assert.equal(await multiPage.locator(".swarm-node").count(), 2, "nested CTRL does not own its independent subtree");
   assert.match(await multiPage.locator("#swarm-nodes").innerText(), /Nested result/);
+  assert.equal(await multiPage.locator("#proof-badge").textContent(), "Unavailable");
+  assert.match(await multiPage.locator("#scope-proof").innerText(), /Host activity does not imply a passing gate/);
   await multiPage.locator("#controller-filter").selectOption("ctrl");
   assert.match(await multiPage.locator("#swarm-nodes").innerText(), /Nested result/, "parent CTRL lost a nested descendant");
   await multiPage.locator("#controller-filter").selectOption("branch-ctrl");

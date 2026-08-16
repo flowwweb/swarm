@@ -17,7 +17,8 @@ minimum independent review that matches consequence and evidence:
 
 Unknown dependency reach or missing impact evidence broadens the plan. After a
 correction, rerun the failed proof and every dependent gate, not unrelated
-accepted work.
+accepted work. A failed or timed-out prerequisite stops its dependent gates
+until the prerequisite passes or the plan is revised.
 
 Browser proof is selected only for affected or claimed browser/visual surfaces.
 Release escalation replaces impacted proof with broad proof; it does not run

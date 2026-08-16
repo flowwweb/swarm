@@ -222,7 +222,11 @@ Docker is optional:
 python console/docker.py up
 ```
 
-The console is an observability surface, not the authority for task state.
+The console is an observability surface, not the authority for task state. Its
+Proof panel shows validated runtime snapshots when available and says
+`Proof state unavailable` otherwise; host activity never implies a passing gate.
+The native loopback console permits validated settings writes. Docker remains
+read-only because a bridged container peer is not loopback authority.
 
 ## Develop
 
@@ -247,7 +251,7 @@ the prior tag. See [CONTRIBUTING.md](CONTRIBUTING.md), [SECURITY.md](SECURITY.md
 
 Build from a clean, committed checkout. The archive is reproducible and assembled
 from one captured Git commit/tree snapshot: it records the plugin version, commit,
-tree, and a SHA-256 manifest for every shipped product file. Write the archive
+tree, planner version, proof-policy digest, and a SHA-256 manifest for every shipped product file. Write the archive
 outside the repository so the clean-source check remains meaningful.
 
 ```text

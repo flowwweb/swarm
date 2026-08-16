@@ -389,8 +389,15 @@ class SwarmConfigTests(unittest.TestCase):
         self.assertEqual(completed.returncode, 0, completed.stderr)
         self.assertEqual(
             json.loads(completed.stdout),
-            {"model": "gpt-5.6-sol", "reasoning": "high"},
+            {"model": "gpt-5.6-terra", "reasoning": "high"},
         )
+
+    def test_default_hierarchy_requests_sol_ctrl_terra_lead_and_luna_workers(self) -> None:
+        effective, _ = config.load(config.TEMPLATE_PATH)
+        self.assertEqual(config.resolve_role_assignment(effective, "ctrl")["model"], "gpt-5.6-sol")
+        self.assertEqual(config.resolve_role_assignment(effective, "lead")["model"], "gpt-5.6-terra")
+        self.assertEqual(config.resolve_role_assignment(effective, "doer")["model"], "gpt-5.6-luna")
+        self.assertEqual(config.resolve_role_assignment(effective, "subtask")["model"], "gpt-5.6-luna")
 
     def test_luna_assignment_is_requested_but_actual_execution_stays_unverified_without_host_metadata(self) -> None:
         effective, _ = config.load(config.TEMPLATE_PATH)

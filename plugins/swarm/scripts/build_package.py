@@ -15,6 +15,7 @@ import json
 import os
 import subprocess
 import sys
+import tomllib
 import unicodedata
 import zipfile
 from pathlib import Path, PurePosixPath
@@ -22,6 +23,13 @@ from typing import Callable
 
 
 PACKAGE_METADATA_PATH = "swarm-package.json"
+PROOF_POLICY_PATHS = (
+    "skills/swarm/SKILL.md",
+    "skills/swarm/assets/swarm-config.toml",
+    "skills/swarm/references/review-contract.md",
+    "skills/swarm/references/task-contract.md",
+    "skills/swarm/runtime/core.py",
+)
 PACKAGING_IGNORED_DIRECTORIES = frozenset(
     {
         ".git",
@@ -46,6 +54,7 @@ DEVELOPMENT_ONLY_PATHS = frozenset(
         "docs/friction-audit.md",
         "scripts/sync_plugin_mirror.py",
         "scripts/run_test_tier.py",
+        "scripts/select_ci_scope.py",
     }
 )
 DEVELOPMENT_ONLY_DIRECTORIES = frozenset(
@@ -431,15 +440,34 @@ def release_identity(root: Path) -> GitSnapshot:
     return snapshot
 
 
-def package_metadata(root: Path) -> dict[str, object]:
-    snapshot = release_identity(root)
+def proof_policy_digest(files: dict[str, str]) -> str:
+    try:
+        policy = {path: files[path] for path in PROOF_POLICY_PATHS}
+    except KeyError as error:
+        raise ValueError(f"release snapshot is missing proof policy file: {error.args[0]}") from error
+    return hashlib.sha256(
+        json.dumps(policy, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode("utf-8")
+    ).hexdigest()
+
+
+def _snapshot_metadata(snapshot: GitSnapshot) -> dict[str, object]:
+    config = tomllib.loads(snapshot.blobs["skills/swarm/assets/swarm-config.toml"].decode("utf-8"))
+    planner_version = config.get("proof", {}).get("policy_version")
+    if not isinstance(planner_version, str) or not planner_version.strip():
+        raise ValueError("proof policy version is missing from the release snapshot")
     return {
-        "schema": "swarm-package-v1",
+        "schema": "swarm-package-v2",
         "version": snapshot.version,
         "commit": snapshot.commit,
         "tree": snapshot.tree,
         "files": snapshot.files,
+        "planner_version": planner_version,
+        "policy_digest": proof_policy_digest(snapshot.files),
     }
+
+
+def package_metadata(root: Path) -> dict[str, object]:
+    return _snapshot_metadata(release_identity(root))
 
 
 def _metadata_bytes(metadata: dict[str, object]) -> bytes:
@@ -447,13 +475,7 @@ def _metadata_bytes(metadata: dict[str, object]) -> bytes:
 
 
 def _build_snapshot_bytes(snapshot: GitSnapshot) -> tuple[bytes, dict[str, object]]:
-    metadata = {
-        "schema": "swarm-package-v1",
-        "version": snapshot.version,
-        "commit": snapshot.commit,
-        "tree": snapshot.tree,
-        "files": snapshot.files,
-    }
+    metadata = _snapshot_metadata(snapshot)
     import io
 
     payload = io.BytesIO()

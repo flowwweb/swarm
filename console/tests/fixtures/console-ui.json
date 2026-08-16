@@ -75,11 +75,11 @@
     "generated_at": "2026-08-09T00:00:00Z",
     "heartbeat_minutes": 30,
     "nodes": [
-      {"id":"ctrl","title":"🐙CTRL - Ship console","role":"ctrl","role_label":"CTRL","icon":"🐙","artifact":"Ship console","project_id":"project:fixture","project":"swarm","status":"active","model":"gpt-5.6-sol","tokens":100,"created_at":1000,"updated_at":2000,"age_ms":1000,"quiet_ms":0,"virtual":false,"controller_ids":["ctrl"]},
+      {"id":"ctrl","title":"🐙CTRL - Ship console","role":"ctrl","role_label":"CTRL","icon":"🐙","artifact":"Ship console","project_id":"project:fixture","project":"swarm","status":"active","model":"gpt-5.6-sol","tokens":100,"created_at":1000,"updated_at":2000,"age_ms":1000,"quiet_ms":0,"virtual":false,"controller_ids":["ctrl"],"proof_snapshot":{"available":true,"task_id":"ctrl","plan_digest":"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef","tier":"T2","state":"PROOF_READY","gates":[{"id":"contracts-fast","proof_class":"SOURCE_STATIC","status":"PASS","source":"EXECUTED"},{"id":"console-browser","proof_class":"BROWSER_LOCAL","status":"PASS","source":"EXECUTED"}],"reviews":[{"scope":"ACCEPTANCE","combined_with":["SOURCE_SEMANTICS"],"reason":"one combined exact-artifact review"}],"claims":[{"name":"responsive console","proof_class":"BROWSER_LOCAL","status":"VERIFIED"}],"reasons":{"selected":[],"omitted":[]},"metrics":{"selected":2,"omitted":1,"executed":2,"adopted":0,"open":0,"retries":0,"productive_gate_ms":1800},"claim_limit":"Local browser proof only; deployed and device behavior remain unverified."}},
       {"id":"lead","title":"📋TASK - Console UI","role":"lead","role_label":"TASK","worker_role":"LEAD","icon":"📋","artifact":"Console UI","worker":"Carson","project_id":"project:fixture","project":"swarm","status":"active","model":"gpt-5.6-terra","tokens":200,"created_at":1100,"updated_at":2000,"age_ms":900,"quiet_ms":0,"virtual":false,"controller_ids":["ctrl"]},
-      {"id":"dev","title":"📋TASK - Hierarchy renderer","role":"doer","role_label":"TASK","worker_role":"DEV","icon":"📋","artifact":"Hierarchy renderer","worker":"Lovelace","project_id":"project:fixture","project":"swarm","status":"active","model":"gpt-5.6-terra","tokens":300,"created_at":1200,"updated_at":2000,"age_ms":800,"quiet_ms":0,"virtual":false,"controller_ids":["ctrl"]},
-      {"id":"design","title":"📋TASK - Visual polish","role":"doer","role_label":"TASK","worker_role":"DESIGN","icon":"📋","artifact":"Visual polish","worker":"Eames","project_id":"project:fixture","project":"swarm","status":"quiet","model":"gpt-5.6-terra","tokens":150,"created_at":1300,"updated_at":1500,"age_ms":700,"quiet_ms":500,"virtual":false,"controller_ids":["ctrl"]},
-      {"id":"test","title":"📋TASK - Responsive proof","role":"doer","role_label":"TASK","worker_role":"TEST","icon":"📋","artifact":"Responsive proof","worker":"Noether","project_id":"project:fixture","project":"swarm","status":"done","model":"gpt-5.6-terra","tokens":250,"created_at":1400,"updated_at":1900,"age_ms":600,"quiet_ms":100,"virtual":false,"controller_ids":["ctrl"]}
+      {"id":"dev","title":"📋TASK - Hierarchy renderer","role":"doer","role_label":"TASK","worker_role":"DEV","icon":"📋","artifact":"Hierarchy renderer","worker":"Lovelace","project_id":"project:fixture","project":"swarm","status":"active","model":"gpt-5.6-luna","tokens":300,"created_at":1200,"updated_at":2000,"age_ms":800,"quiet_ms":0,"virtual":false,"controller_ids":["ctrl"]},
+      {"id":"design","title":"📋TASK - Visual polish","role":"doer","role_label":"TASK","worker_role":"DESIGN","icon":"📋","artifact":"Visual polish","worker":"Eames","project_id":"project:fixture","project":"swarm","status":"quiet","model":"gpt-5.6-luna","tokens":150,"created_at":1300,"updated_at":1500,"age_ms":700,"quiet_ms":500,"virtual":false,"controller_ids":["ctrl"]},
+      {"id":"test","title":"📋TASK - Responsive proof","role":"doer","role_label":"TASK","worker_role":"TEST","icon":"📋","artifact":"Responsive proof","worker":"Noether","project_id":"project:fixture","project":"swarm","status":"done","model":"gpt-5.6-luna","tokens":250,"created_at":1400,"updated_at":1900,"age_ms":600,"quiet_ms":100,"virtual":false,"controller_ids":["ctrl"]}
     ],
     "links": [
       {"source":"ctrl","target":"lead","relationship":"delegated"},
@@ -95,7 +95,7 @@
       "tasks": 5,
       "tokens": 1000,
       "status": {"active":3,"quiet":1,"done":1},
-      "models": {"gpt-5.6-sol":1,"gpt-5.6-terra":4},
+      "models": {"gpt-5.6-sol":1,"gpt-5.6-terra":1,"gpt-5.6-luna":3},
       "roles": {"ctrl":1,"lead":1,"doer":3}
     },
     "claim_limits": ["Fixture data only."],

@@ -608,6 +608,11 @@ def build_overview(codex_home: Path, config_path: Path) -> dict[str, Any]:
             "worker": role.get("worker") or re.sub(
                 r"[^A-Za-z0-9 _-]", "", str(row["agent_nickname"] or "")
             ).strip()[:48],
+            "proof_snapshot": {
+                "available": False,
+                "state": "UNAVAILABLE",
+                "claim_limit": "Proof state unavailable; host activity is not proof.",
+            },
         }
         nodes[thread_id] = node
         project["nodes"] += 1
@@ -718,6 +723,7 @@ def build_overview(codex_home: Path, config_path: Path) -> dict[str, Any]:
             "Task nodes are derived from observed Codex spawn edges and safe agent-path metadata; worker names stay inside their task node.",
             "Spawn edges are shown as delegated relationships; waits-for and review dependencies are not inferred without runtime receipts.",
             "Controller scopes are observed host descendants, not the authoritative runtime workflow graph.",
+            "Proof plans appear only from validated runtime snapshots; absent snapshots stay unavailable and never inherit host task status.",
             "Only unarchived host tasks updated within the current observation window are shown.",
             "Unformatted delegated lanes use the existing active-freshness boundary; older lanes are counted, not expanded.",
             "Older descendant lanes are omitted from the graph and counted on their CTRL scope.",

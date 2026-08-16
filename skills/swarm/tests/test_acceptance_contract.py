@@ -6,7 +6,7 @@ import time
 import unittest
 
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
-from runtime import AcceptanceContract, ArtifactIdentity, ChangedSurface, ChangedSurfaceKind, CtrlSurfaceKind, DependencyReach, GateReceipt, IncidentLedger, InvariantError, LaneKind, ProofClaim, ProofClass, ProofInputs, ProofOutcome, RepoProofCapabilities, ReviewEvidence, ReviewScope, ReviewStrategy, Role, Swarm, Task, TaskState, WatchdogReceipt, WatchdogRouteRole, WatchdogScope, WatchdogSignal, Worker, WorkerState, plan_proof
+from runtime import AcceptanceContract, ArtifactIdentity, ChangedSurface, ChangedSurfaceKind, CtrlSurfaceKind, DependencyReach, GateReceipt, IncidentLedger, InvariantError, LaneKind, ProofClaim, ProofClass, ProofInputs, ProofOutcome, RepoProofCapabilities, ReviewEvidence, ReviewScope, ReviewStrategy, Role, RuntimeSignal, Swarm, Task, TaskState, WatchdogReceipt, WatchdogRouteRole, WatchdogScope, WatchdogSignal, Worker, WorkerState, plan_proof
 
 
 class AcceptanceContractTests(unittest.TestCase):
@@ -92,10 +92,46 @@ class AcceptanceContractTests(unittest.TestCase):
             if original is None: os.environ.pop(key,None)
             else: os.environ[key]=original
 
+    def test_failed_gate_stops_only_its_declared_dependants(self):
+        commands=(("contracts-fast",(sys.executable,"-c","raise SystemExit(3)")),("impacted-tests",(sys.executable,"-c","pass")))
+        plan=plan_proof(ProofInputs(self.artifact,(ChangedSurface(ChangedSurfaceKind.RUNTIME,("artifact.txt",)),),dependency_reach=DependencyReach(("focused",),known=True),repo_capabilities=RepoProofCapabilities(gate_commands=commands)))
+        self.swarm.tasks["route"].acceptance_contract=AcceptanceContract(self.artifact,observation_root=self.temp.name,proof_plan=plan)
+        self.swarm.run_gate(Role.LEAD,"route","contracts-fast",commands[0][1],cwd=self.temp.name,actor_id="lead")
+        with self.assertRaisesRegex(InvariantError,"dependencies remain open"):
+            self.swarm.run_gate(Role.LEAD,"route","impacted-tests",commands[1][1],cwd=self.temp.name,actor_id="lead")
+
+    def test_plan_revision_adopts_unchanged_gate_and_opens_only_broadened_closure(self):
+        command=(sys.executable,"-c","pass")
+        capabilities=RepoProofCapabilities(gate_commands=(("contracts-fast",command),("impacted-tests",command),("contracts-full",command)))
+        surfaces=(ChangedSurface(ChangedSurfaceKind.RUNTIME,("artifact.txt",)),)
+        first=self.swarm.plan_proof(ProofInputs(self.artifact,surfaces,dependency_reach=DependencyReach(("focused",),known=True),repo_capabilities=capabilities))
+        self.swarm.tasks["route"].acceptance_contract=AcceptanceContract(self.artifact,observation_root=self.temp.name,proof_plan=first)
+        for gate in ("contracts-fast","impacted-tests"):
+            self.swarm.run_gate(Role.LEAD,"route",gate,command,cwd=self.temp.name,actor_id="lead")
+        revised=self.swarm.revise_proof_plan(Role.LEAD,"route",ProofInputs(self.artifact,surfaces,dependency_reach=DependencyReach(("focused",),known=True),runtime_signals=(RuntimeSignal("selector-disagreement","focused"),),repo_capabilities=capabilities),actor_id="lead")
+        self.assertNotEqual(first.plan_digest,revised.plan_digest)
+        self.assertEqual(self.swarm.open_gates("route"),("contracts-full",))
+        self.assertTrue(self.swarm.tasks["route"].gate_receipts["contracts-fast"].adopted)
+        snapshot=self.swarm.proof_snapshot("route")
+        self.assertEqual(snapshot["metrics"]["adopted"],1)
+
     def test_declared_claim_without_matching_current_proof_stays_open(self):
         plan=plan_proof(ProofInputs(self.artifact,(ChangedSurface(ChangedSurfaceKind.DOCS,("artifact.txt",)),),declared_claims=(ProofClaim("physical device",ProofClass.DEVICE),),dependency_reach=DependencyReach(known=True)))
         self.swarm.tasks["route"].acceptance_contract=AcceptanceContract(self.artifact,observation_root=self.temp.name,proof_plan=plan)
         self.assertEqual(self.swarm.open_claims("route"),("physical device",))
+
+    def test_proof_snapshot_exposes_current_plan_without_inventing_external_truth(self):
+        command=(sys.executable,"-c","pass")
+        capabilities=RepoProofCapabilities(gate_commands=(("contracts-fast",command),))
+        plan=plan_proof(ProofInputs(self.artifact,(ChangedSurface(ChangedSurfaceKind.DOCS,("artifact.txt",)),),declared_claims=(ProofClaim("human approval",ProofClass.HUMAN),),dependency_reach=DependencyReach(known=True),repo_capabilities=capabilities))
+        self.swarm.tasks["route"].acceptance_contract=AcceptanceContract(self.artifact,observation_root=self.temp.name,proof_plan=plan)
+        self.swarm.run_gate(Role.LEAD,"route","contracts-fast",command,cwd=self.temp.name,actor_id="lead")
+        snapshot=self.swarm.proof_snapshot("route")
+        self.assertTrue(snapshot["available"])
+        self.assertEqual(snapshot["tier"],"T4")
+        self.assertEqual(next(gate for gate in snapshot["gates"] if gate["id"]=="contracts-fast")["status"],"PASS")
+        self.assertEqual(next(claim for claim in snapshot["claims"] if claim["name"]=="human approval")["status"],"UNVERIFIED")
+        self.assertGreater(snapshot["metrics"]["open"],0)
 
     def test_external_device_claim_stays_open_without_isolated_host_verifier(self):
         command=(sys.executable,"-c","pass")
@@ -117,6 +153,8 @@ class AcceptanceContractTests(unittest.TestCase):
         capabilities=RepoProofCapabilities(gate_commands=(("contracts-fast",command),("impacted-tests",command),("console-browser",command)))
         plan=plan_proof(ProofInputs(self.artifact,(ChangedSurface(ChangedSurfaceKind.VISUAL,("artifact.txt",)),),dependency_reach=DependencyReach(("focused",),known=True),repo_capabilities=capabilities))
         self.swarm.tasks["route"].acceptance_contract=AcceptanceContract(self.artifact,observation_root=self.temp.name,proof_plan=plan)
+        for gate in ("contracts-fast","impacted-tests"):
+            self.swarm.run_gate(Role.LEAD,"route",gate,command,cwd=self.temp.name,actor_id="lead")
         receipt=self.swarm.run_gate(Role.LEAD,"route","console-browser",command,cwd=self.temp.name,actor_id="lead")
         self.assertNotIn("console-browser",self.swarm.open_gates("route"))
         object.__setattr__(receipt,"finished_at",int(time.time())-86401)

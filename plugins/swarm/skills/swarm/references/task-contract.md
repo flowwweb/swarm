@@ -48,7 +48,11 @@ capabilities, consequence tier, exact commands and environments, gates, reviews,
 Unknown impact broadens proof. Gate receipts bind the plan, gate, artifact,
 input closure, environment, authority, timing, attempt history, stability, and
 proof class. Stable exact-input evidence may be re-observed and adopted, but it
-never transfers review or acceptance authority. Every declared claim remains
+never transfers review or acceptance authority. A plan revision adopts only
+receipts whose gate specification and full binding still match; changed or new
+gates reopen. Gate dependencies stop downstream work after an upstream failure
+or timeout, so a blocked plan does not spend capacity proving a result it cannot
+accept. Every declared claim remains
 open until a current receipt of its matching proof class exists. Gate receipts use only `PASS`,
 `FAIL`, or `TIMEOUT`; timeout never passes and allows at most one typed
 same-state transient retry. Source-semantic review cannot close the lane. A material defect found

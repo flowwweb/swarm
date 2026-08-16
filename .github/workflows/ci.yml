@@ -11,5 +11,33 @@ permissions:
   contents: read
 
 jobs:
+  scope:
+    runs-on: ubuntu-latest
+    outputs:
+      console_ui_required: ${{ steps.select.outputs.console_ui_required }}
+      platform_required: ${{ steps.select.outputs.platform_required }}
+      package_required: ${{ steps.select.outputs.package_required }}
+    steps:
+      - name: Check out history for proof selection
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Select proof from changed surfaces
+        id: select
+        shell: bash
+        env:
+          BASE_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
+          FULL_GRAPH: ${{ github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch' }}
+        run: |
+          args=(--base "$BASE_SHA" --head "$GITHUB_SHA" --github-output "$GITHUB_OUTPUT")
+          if test "$FULL_GRAPH" = "true"; then args+=(--full); fi
+          python scripts/select_ci_scope.py "${args[@]}"
+
   validate:
+    needs: scope
     uses: ./.github/workflows/validate.yml
+    with:
+      console_ui_required: ${{ needs.scope.outputs.console_ui_required == 'true' }}
+      platform_required: ${{ needs.scope.outputs.platform_required == 'true' }}
+      package_required: ${{ needs.scope.outputs.package_required == 'true' }}

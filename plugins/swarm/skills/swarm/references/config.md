@@ -93,7 +93,7 @@ Configuration cannot make an unsafe or hidden coordination path valid:
 | `boost.launch_at_remaining_percent` | Launch or resume closeout goals | 1-100; default 1 |
 | `boost.goal_levels` | Existing hierarchy levels eligible for substantial closeout goals | non-empty unique list of lead, doer, review |
 | `boost.spark_model` | Reserve model for simple targeted work | model name; default gpt-5.3-codex-spark |
-| `models.<profile>.<role>_model` | Model for LEAD, DOER, TASK, SUBTASK, ASSIST, ADVISOR, SPECIALIST, legacy ARCHITECT, or REVIEW in a profile | trimmed model name up to 64 chars; MOTHER uses SPECIALIST policy |
+| `models.<profile>.<role>_model` | Model for CTRL, LEAD, DOER, TASK, SUBTASK, ASSIST, ADVISOR, SPECIALIST, legacy ARCHITECT, or REVIEW in a profile | trimmed model name up to 64 chars; defaults request Sol for CTRL, Terra for LEAD, Luna for DOER/TASK/SUBTASK; MOTHER uses SPECIALIST policy |
 | `models.<profile>.<role>_reasoning` | Reasoning for that role and profile | none, minimal, low, medium, high, xhigh, max, ultra; host/model dependent |
 | `model_capabilities.<MODEL>.provider` | Codex provider ID for a model | trimmed name up to 64 chars |
 | `model_capabilities.<MODEL>.workloads` | Work classes an assigning CTRL or LEAD may route | non-empty unique list of simple, general, large_goal, review |

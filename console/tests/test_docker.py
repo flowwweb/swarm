@@ -94,7 +94,7 @@ class SwarmDockerTests(unittest.TestCase):
         self.assertIn('user: "${SWARM_CONTAINER_USER:-swarm}"', compose)
         self.assertIn('"127.0.0.1:4788:4788"', compose)
         self.assertIn(':/data/codex:ro"', compose)
-        self.assertIn(':/data/swarm"', compose)
+        self.assertIn(':/data/swarm:ro"', compose)
         self.assertIn("read_only: true", compose)
         self.assertIn("no-new-privileges:true", compose)
 

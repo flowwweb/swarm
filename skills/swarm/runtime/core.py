@@ -513,7 +513,15 @@ def plan_proof(inputs:ProofInputs) -> ProofPlan:
     for index,claim in enumerate(inputs.declared_claims):
         if claim.proof_class not in {proof_class for _,proof_class,_,_ in gate_ids}: add(f"claim-{index+1}-{claim.proof_class.value.lower()}",claim.proof_class,CachePolicy.EXTERNAL_FRESH if claim.proof_class in {ProofClass.BROWSER_LOCAL,ProofClass.BROWSER_AUTHENTICATED,ProofClass.PROVIDER,ProofClass.DEPLOYED,ProofClass.DEVICE,ProofClass.HUMAN} else CachePolicy.EXACT_INPUTS,3600 if claim.proof_class in {ProofClass.PROVIDER,ProofClass.DEPLOYED,ProofClass.DEVICE,ProofClass.HUMAN} else 86400 if claim.proof_class in {ProofClass.BROWSER_LOCAL,ProofClass.BROWSER_AUTHENTICATED} else None)
     executor_for=lambda proof_class: GateExecutor.BROWSER if proof_class in {ProofClass.BROWSER_LOCAL,ProofClass.BROWSER_AUTHENTICATED} else GateExecutor.PROVIDER if proof_class in {ProofClass.PROVIDER,ProofClass.DEPLOYED,ProofClass.DEVICE} else GateExecutor.HUMAN if proof_class is ProofClass.HUMAN else GateExecutor.COMMAND
-    gates=tuple(GateSpec(identity,proof_class,executor=executor_for(proof_class),argv=caps.command_for(identity),input_closure_digest=_sha256_text(f"{artifact_digest}:{path_digest}:{identity}"),environment_fingerprint=caps.environment_fingerprint,cache_policy=policy,freshness_seconds=freshness) for identity,proof_class,policy,freshness in gate_ids)
+    local_gate=next((identity for identity,proof_class,_,_ in reversed(gate_ids) if proof_class in {ProofClass.LOCAL_UNIT,ProofClass.LOCAL_INTEGRATION}),caps.fast_contract_gate)
+    def dependencies_for(identity:str, proof_class:ProofClass) -> tuple[str,...]:
+        if identity==caps.fast_contract_gate: return ()
+        if identity in {caps.impacted_gate,caps.broad_gate}: return (caps.fast_contract_gate,)
+        if identity==caps.package_gate: return (caps.broad_gate if caps.broad_gate in {item[0] for item in gate_ids} else local_gate,)
+        if identity==caps.release_gate: return (caps.package_gate,)
+        if proof_class in {ProofClass.BROWSER_LOCAL,ProofClass.BROWSER_AUTHENTICATED,ProofClass.PROVIDER,ProofClass.DEPLOYED,ProofClass.DEVICE,ProofClass.HUMAN}: return (local_gate,)
+        return (caps.fast_contract_gate,)
+    gates=tuple(GateSpec(identity,proof_class,executor=executor_for(proof_class),argv=caps.command_for(identity),input_closure_digest=_sha256_text(f"{artifact_digest}:{path_digest}:{identity}"),environment_fingerprint=caps.environment_fingerprint,dependencies=dependencies_for(identity,proof_class),cache_policy=policy,freshness_seconds=freshness) for identity,proof_class,policy,freshness in gate_ids)
     if tier is ConsequenceTier.T0:
         reviews=(ReviewRequirement(ReviewScope.ACCEPTANCE,combined_with=(ReviewScope.SOURCE_SEMANTICS,),reason="light independent acceptance prevents caller-asserted self-acceptance"),)
     elif tier in {ConsequenceTier.T1,ConsequenceTier.T2}:
@@ -552,7 +560,7 @@ def _gate_spec_digest(spec:GateSpec) -> str:
 class GateReceipt:
     """Inspectable gate evidence; only Swarm.run_gate makes it authoritative."""
     gate:str; artifact:ArtifactIdentity; outcome:ProofOutcome; command:tuple[str,...]; before:tuple[tuple[str,str],...]; after:tuple[tuple[str,str],...]; returncode:int|None
-    plan_digest:str=""; gate_spec_digest:str=""; artifact_digest:str=""; input_closure_digest:str=""; environment_fingerprint:str=""; started_at:int=0; finished_at:int=0; attempts:tuple[ProofOutcome,...]=(); stability:ProofStability=ProofStability.STABLE; proof_class:ProofClass=ProofClass.LOCAL_INTEGRATION; authority_context_digest:str=""; evidence_digest:str=""
+    plan_digest:str=""; gate_spec_digest:str=""; artifact_digest:str=""; input_closure_digest:str=""; environment_fingerprint:str=""; started_at:int=0; finished_at:int=0; attempts:tuple[ProofOutcome,...]=(); stability:ProofStability=ProofStability.STABLE; proof_class:ProofClass=ProofClass.LOCAL_INTEGRATION; authority_context_digest:str=""; evidence_digest:str=""; adopted:bool=False
     _authority:object|None=field(default=None,init=False,repr=False,compare=False); _bound_task_id:str=field(default="",init=False,repr=False,compare=False)
     def __post_init__(self):
         if not self.gate.strip() or not isinstance(self.artifact,ArtifactIdentity) or not isinstance(self.outcome,ProofOutcome): raise InvariantError("gate receipt requires gate, artifact, and typed outcome")
@@ -568,7 +576,7 @@ class GateReceipt:
         if not isinstance(self.started_at,int) or not isinstance(self.finished_at,int) or min(self.started_at,self.finished_at)<0 or self.finished_at and self.finished_at<self.started_at: raise InvariantError("gate timing must be monotonic nonnegative seconds")
         attempts=self.attempts or (self.outcome,)
         if any(not isinstance(item,ProofOutcome) for item in attempts) or attempts[-1] is not self.outcome or len(attempts)>2: raise InvariantError("gate attempts must preserve one or two typed outcomes ending in the final outcome")
-        if not isinstance(self.stability,ProofStability) or not isinstance(self.proof_class,ProofClass): raise InvariantError("gate receipt requires typed stability and proof class")
+        if not isinstance(self.stability,ProofStability) or not isinstance(self.proof_class,ProofClass) or not isinstance(self.adopted,bool): raise InvariantError("gate receipt requires typed stability, proof class, and adoption state")
         object.__setattr__(self,"command",command); object.__setattr__(self,"before",before); object.__setattr__(self,"after",after)
         object.__setattr__(self,"attempts",attempts)
     def current_for(self, authority:object, task_id:str, gate:str, artifact:ArtifactIdentity, current:ArtifactIdentity, plan:ProofPlan, spec:GateSpec, now:int) -> bool:
@@ -806,6 +814,79 @@ class Swarm:
         final_scopes={requirement.scope for requirement in plan.reviews if requirement.scope in {ReviewScope.ACCEPTANCE,ReviewScope.COMPOSED}}
         if final_scopes and (task.acceptance_review_receipt is None or task.acceptance_review_receipt.scope not in final_scopes): return ProofState.ACCEPTANCE_REVIEW
         return ProofState.ACCEPTED
+
+    def proof_snapshot(self, task_id:str) -> dict[str,object]:
+        """Project current proof truth without granting or inferring authority."""
+        task=self.tasks[task_id]; contract=task.acceptance_contract
+        if contract is None or contract.explicitly_empty or contract.proof_plan is None:
+            return {"available":False,"state":"UNAVAILABLE","claim_limit":"Proof state unavailable; host activity is not proof."}
+        plan=contract.proof_plan; open_gates=set(self.open_gates(task_id)); open_claims=set(self.open_claims(task_id))
+        gates=[]
+        for spec in plan.gates:
+            receipt=task.gate_receipts.get(spec.id)
+            if spec.id not in open_gates:
+                status="PASS"
+            elif receipt is None:
+                status="PENDING"
+            elif receipt.outcome is ProofOutcome.PASS:
+                status="STALE"
+            else:
+                status=receipt.outcome.value
+            gates.append({
+                "id":spec.id,"proof_class":spec.proof_class.value,"status":status,
+                "source":"ADOPTED" if receipt and receipt.adopted else "EXECUTED" if receipt else "PENDING",
+            })
+        reasons={"selected":[],"omitted":[]}
+        for reason in plan.reasons:
+            reasons["selected" if reason.selected else "omitted"].append({"item":reason.item,"reason":reason.reason})
+        claims=[{
+            "name":coverage.claim.name,"proof_class":coverage.claim.proof_class.value,
+            "status":"UNVERIFIED" if coverage.claim.name in open_claims else "VERIFIED",
+        } for coverage in plan.claim_matrix]
+        receipts=tuple(task.gate_receipts.values())
+        return {
+            "available":True,"task_id":task_id,"plan_digest":plan.plan_digest,
+            "tier":plan.tier.value,"state":self.proof_state(task_id).value,
+            "gates":gates,"reviews":[{
+                "scope":review.scope.value,"combined_with":[scope.value for scope in review.combined_with],
+                "reason":review.reason,
+            } for review in plan.reviews],"claims":claims,"reasons":reasons,
+            "metrics":{
+                "selected":len(plan.gates),"omitted":len(reasons["omitted"]),
+                "executed":sum(not receipt.adopted for receipt in receipts),
+                "adopted":sum(receipt.adopted for receipt in receipts),
+                "open":len(open_gates),"retries":sum(max(0,len(receipt.attempts)-1) for receipt in receipts),
+                "productive_gate_ms":sum(max(0,receipt.finished_at-receipt.started_at)*1000 for receipt in receipts),
+            },
+            "claim_limit":"Runtime proof projection only; provider, deployed, device, and human claims remain open without isolated host receipts.",
+        }
+
+    def revise_proof_plan(self, actor:Role, task_id:str, inputs:ProofInputs, *, actor_id:str) -> ProofPlan:
+        """Revise a plan while re-observing and adopting only unchanged gate closures."""
+        self._role(actor,{Role.LEAD}); task=self.tasks[task_id]; self._require_lane_actor(task,actor,actor_id)
+        contract=task.acceptance_contract
+        if contract is None or contract.explicitly_empty or contract.artifact is None or contract.proof_plan is None:
+            raise InvariantError("proof-plan revision requires an existing artifact contract")
+        if inputs.artifact!=contract.artifact:
+            raise InvariantError("proof-plan revision must bind the existing exact artifact")
+        old_plan=contract.proof_plan; now=int(time.time()); reusable:dict[str,GateReceipt]={}
+        for old_spec in old_plan.gates:
+            receipt=task.gate_receipts.get(old_spec.id)
+            current=contract.artifact.reobserve(contract.observation_root)
+            if receipt and receipt.current_for(self._gate_capability,task_id,old_spec.id,contract.artifact,current,old_plan,old_spec,now):
+                reusable[old_spec.id]=receipt
+        new_plan=self.plan_proof(inputs)
+        adopted:dict[str,GateReceipt]={}
+        for new_spec in new_plan.gates:
+            receipt=reusable.get(new_spec.id)
+            old_spec=next((item for item in old_plan.gates if item.id==new_spec.id),None)
+            if receipt is None or old_spec is None or _gate_spec_digest(old_spec)!=_gate_spec_digest(new_spec): continue
+            refreshed=replace(receipt,plan_digest=new_plan.plan_digest,authority_context_digest=_sha256_text(f"{task_id}:{actor_id}:{new_plan.plan_digest}"),adopted=True)
+            object.__setattr__(refreshed,"_authority",self._gate_capability); object.__setattr__(refreshed,"_bound_task_id",task_id)
+            adopted[new_spec.id]=refreshed
+        task.acceptance_contract=AcceptanceContract(contract.artifact,observation_root=contract.observation_root,proof_plan=new_plan)
+        task.gate_receipts=adopted; task.unverified_gate_receipts={}; task.plan_review_receipt=None; task.acceptance_review_receipt=None; task.review_passed=False; task.reviewer=None; task.state=TaskState.ACTIVE
+        return new_plan
 
     def attach_request_store(self, repo_root:Path|str) -> RequestAudit:
         root=Path(repo_root)
@@ -1448,6 +1529,8 @@ class Swarm:
         spec=self._gate_spec(contract,gate); plan=contract.proof_plan
         if plan is None: raise InvariantError("gate execution requires a proof plan")
         if any(requirement.scope is ReviewScope.PLAN for requirement in plan.reviews) and (t.plan_review_receipt is None or dict(t.plan_review_receipt.receipt).get("plan")!=plan.plan_digest): raise InvariantError("consequential proof requires PLAN PASS before gate execution")
+        blocked_dependencies=tuple(dependency for dependency in spec.dependencies if dependency in self.open_gates(task_id))
+        if blocked_dependencies: raise InvariantError(f"gate dependencies remain open: {','.join(blocked_dependencies)}")
         try: command=tuple(argv)
         except TypeError as error: raise InvariantError("gate execution requires argv") from error
         if not command or not isinstance(command[0],str) or not command[0] or any(not isinstance(part,str) for part in command): raise InvariantError("gate execution requires argv with a nonempty executable")
@@ -1496,7 +1579,7 @@ class Swarm:
         if receipt.plan_digest!=target_contract.proof_plan.plan_digest or receipt.gate_spec_digest!=_gate_spec_digest(target_spec) or receipt.artifact!=target_contract.artifact or receipt.input_closure_digest!=target_spec.input_closure_digest or receipt.environment_fingerprint!=target_spec.environment_fingerprint or receipt.proof_class is not target_spec.proof_class: raise InvariantError("receipt adoption key does not match the target proof plan")
         current=target_contract.artifact.reobserve(target_contract.observation_root)
         if current!=target_contract.artifact or receipt.before!=current.observables or receipt.after!=current.observables: raise InvariantError("receipt adoption requires current exact artifact observations")
-        adopted=replace(receipt,authority_context_digest=_sha256_text(f"{target_task_id}:{actor_id}:{target_contract.proof_plan.plan_digest}")); object.__setattr__(adopted,"_authority",self._gate_capability); object.__setattr__(adopted,"_bound_task_id",target_task_id); target.gate_receipts[gate]=adopted; target.unverified_gate_receipts.pop(gate,None); return adopted
+        adopted=replace(receipt,authority_context_digest=_sha256_text(f"{target_task_id}:{actor_id}:{target_contract.proof_plan.plan_digest}"),adopted=True); object.__setattr__(adopted,"_authority",self._gate_capability); object.__setattr__(adopted,"_bound_task_id",target_task_id); target.gate_receipts[gate]=adopted; target.unverified_gate_receipts.pop(gate,None); return adopted
     def consult_incidents(self, actor:Role, task_id:str, ledger:IncidentLedger, *, artifact:str, scope:str, actor_id:str) -> tuple[IncidentRecord,...]:
         self._role(actor,{Role.LEAD}); t=self.tasks[task_id]; self._require_lane_actor(t,actor,actor_id); incidents=ledger.unresolved(artifact=artifact,scope=scope); t.incident_consultation_receipt=f"{artifact}:{scope}:{','.join(item.incidentId for item in incidents) or 'none'}"; return incidents
     def record_post_handoff_incident(self, actor:Role, task_id:str, ledger:IncidentLedger, record:IncidentRecord, *, material:bool, actor_id:str) -> bool:

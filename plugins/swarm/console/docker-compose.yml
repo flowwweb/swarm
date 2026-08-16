@@ -11,7 +11,7 @@ services:
       SWARM_CONFIG_PATH: "${SWARM_CONTAINER_CONFIG_PATH:-/data/swarm/config.toml}"
     volumes:
       - "${SWARM_CODEX_HOME:?Run python console/docker.py so the Codex home is explicit}:/data/codex:ro"
-      - "${SWARM_CONFIG_HOME:?Run python console/docker.py so the SWARM config home is explicit}:/data/swarm"
+      - "${SWARM_CONFIG_HOME:?Run python console/docker.py so the SWARM config home is explicit}:/data/swarm:ro"
     read_only: true
     tmpfs:
       - /tmp:size=16m,mode=1777

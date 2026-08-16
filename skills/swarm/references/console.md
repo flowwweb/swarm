@@ -30,9 +30,10 @@ python console/docker.py up
 Add `--detach` for background mode; run `python console/docker.py down` to stop.
 Direct Compose use must set `SWARM_CODEX_HOME` and `SWARM_CONFIG_HOME` explicitly.
 
-Compose publishes only `127.0.0.1:4788`, mounts Codex metadata read-only, and
-mounts the SWARM config directory for validated settings writes. Do not expose the
-container port to a LAN or public host.
+Compose publishes only `127.0.0.1:4788` and mounts both Codex metadata and the
+SWARM config directory read-only. Docker is therefore an inspection surface;
+use the native loopback launcher for validated settings writes. Do not expose
+the container port to a LAN or public host.
 
 ## Authority and privacy
 
@@ -47,9 +48,10 @@ container port to a LAN or public host.
   does not prove that a model is executing.
 - Token totals are host-reported cumulative thread tokens. They are not billing,
   rate-limit, quota, or remaining-usage telemetry.
-- Config writes are same-origin, token-gated, allowlisted, atomically replaced,
-  and accepted only after the existing SWARM validator passes. One prior config
-  backup is retained beside the live file.
+- Native-loopback config writes are same-origin, token-gated, allowlisted,
+  atomically replaced, and accepted only after the existing SWARM validator
+  passes. One prior config backup is retained beside the live file. Docker is
+  explicitly read-only because container peers are not loopback authority.
 - Feedback destinations are redacted and cannot be edited in the console.
 
 ## Visual contract

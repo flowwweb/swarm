@@ -264,6 +264,7 @@ function renderSwarm() {
   }
   renderScopeCopy(allNodes, controller);
   renderScopeActivity(allNodes);
+  renderScopeProof(controller);
 }
 
 function renderScopeCopy(nodes, controllerId) {
@@ -283,6 +284,26 @@ function renderScopeActivity(nodes) {
   $("#scope-activity").innerHTML = recent.length
     ? recent.map((node) => `<div class="pulse-row"><i class="pulse-dot"></i><span><strong>${escapeHTML(node.artifact)}</strong><small>${node.worker ? `${escapeHTML(node.worker)} · ` : ""}${escapeHTML(node.project)} · updated ${formatDuration(node.quiet_ms)} ago</small></span></div>`).join("")
     : `<div class="empty-state">No recent host activity.</div>`;
+}
+
+function renderScopeProof(controllerId) {
+  const node = (state.overview.nodes || []).find((item) => item.id === controllerId);
+  const proof = node?.proof_snapshot;
+  const badge = $("#proof-badge");
+  const body = $("#scope-proof");
+  if (!proof?.available) {
+    badge.textContent = "Unavailable";
+    badge.className = "proof-badge is-unavailable";
+    body.innerHTML = `<div class="empty-state proof-empty"><strong>Proof state unavailable</strong><span>Host activity does not imply a passing gate or accepted claim.</span></div>`;
+    return;
+  }
+  badge.textContent = `${proof.tier} · ${proof.state}`;
+  badge.className = `proof-badge is-${String(proof.state || "unknown").toLowerCase()}`;
+  const metrics = proof.metrics || {};
+  const metric = (label, value) => `<div class="proof-metric"><strong>${escapeHTML(value ?? 0)}</strong><span>${escapeHTML(label)}</span></div>`;
+  const gates = (proof.gates || []).map((gate) => `<li><span><b>${escapeHTML(gate.id)}</b><small>${escapeHTML(gate.proof_class)} · ${escapeHTML(gate.source)}</small></span><em class="proof-status is-${escapeHTML(String(gate.status).toLowerCase())}">${escapeHTML(gate.status)}</em></li>`).join("");
+  const claims = (proof.claims || []).map((claim) => `<li><span><b>${escapeHTML(claim.name)}</b><small>${escapeHTML(claim.proof_class)}</small></span><em class="proof-status is-${escapeHTML(String(claim.status).toLowerCase())}">${escapeHTML(claim.status)}</em></li>`).join("");
+  body.innerHTML = `<div class="proof-summary"><div><span>Plan</span><code>${escapeHTML(String(proof.plan_digest || "").slice(0, 12))}</code></div><div class="proof-metrics">${metric("selected", metrics.selected)}${metric("executed", metrics.executed)}${metric("adopted", metrics.adopted)}${metric("open", metrics.open)}</div></div><div class="proof-columns"><section><h3>Gates</h3><ul>${gates || "<li class=\"proof-none\">No gates selected.</li>"}</ul></section><section><h3>Claims</h3><ul>${claims || "<li class=\"proof-none\">No external claims declared.</li>"}</ul></section></div><p class="proof-limit">${escapeHTML(proof.claim_limit || "Runtime proof projection only.")}</p>`;
 }
 
 function renderSettings() {
