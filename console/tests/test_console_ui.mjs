@@ -31,6 +31,9 @@ multiFixtureOverview.controllers.push({ id: "branch-ctrl", title: "🐙CTRL - Pa
 const evidenceRoot = process.env.SWARM_UI_EVIDENCE_DIR ||
   fs.mkdtempSync(path.join(os.tmpdir(), "swarm-console-ui-"));
 fs.mkdirSync(evidenceRoot, { recursive: true });
+const viewportWidths = process.env.SWARM_UI_WIDTHS
+  ? process.env.SWARM_UI_WIDTHS.split(",").map(Number)
+  : [390, 834, 1440];
 
 const css = fs.readFileSync(path.join(staticRoot, "styles.css"), "utf8");
 const app = fs.readFileSync(path.join(staticRoot, "app.js"), "utf8");
@@ -99,11 +102,22 @@ async function sidepanelAppearance(page) {
   return page.evaluate(() => {
     const icon = document.querySelector("#rail-toggle svg");
     const panel = document.querySelector("#console-sidepanel");
+    const collapse = document.querySelector("#panel-collapse");
     const iconStyle = getComputedStyle(icon);
     const panelStyle = getComputedStyle(panel);
+    const collapseStyle = getComputedStyle(collapse);
+    const collapseRect = collapse.getBoundingClientRect();
+    const collapseTop = document.elementFromPoint(
+      collapseRect.left + collapseRect.width / 2,
+      collapseRect.top + collapseRect.height / 2,
+    );
     return {
       iconVisible: icon.getBoundingClientRect().width > 0 && iconStyle.display !== "none" && iconStyle.visibility !== "hidden" && Number(iconStyle.opacity) > 0,
       panelVisible: panelStyle.display !== "none" && panelStyle.visibility !== "hidden" && Number(panelStyle.opacity) > 0,
+      collapseVisible: collapseRect.width > 0 && collapseRect.height > 0 && collapseStyle.display !== "none" && collapseStyle.visibility !== "hidden" && Number(collapseStyle.opacity) > 0,
+      collapseUnobscured: Boolean(collapseTop && collapse.contains(collapseTop)),
+      collapseSize: { width: collapseRect.width, height: collapseRect.height },
+      collapseLabel: collapse.getAttribute("aria-label"),
       expanded: document.querySelector("#rail-toggle").getAttribute("aria-expanded"),
       panelHidden: panel.getAttribute("aria-hidden"),
       panelInert: panel.hasAttribute("inert"),
@@ -119,7 +133,7 @@ const browser = await chromium.launch({
 });
 const results = [];
 try {
-  for (const width of [390, 834, 1440]) {
+  for (const width of viewportWidths) {
     const page = await browser.newPage({ viewport: { width, height: width === 1440 ? 1000 : 844 }, hasTouch: width === 834 });
     const runtimeErrors = await mount(page);
 
@@ -155,15 +169,32 @@ try {
     let sidepanel = await sidepanelAppearance(page);
     assert.equal(sidepanel.iconVisible && sidepanel.panelVisible, false, `${width}px rail icon and sidepanel rendered together`);
     if (width <= 720) {
-      assert.deepEqual(sidepanel, { iconVisible: false, panelVisible: true, expanded: "false", panelHidden: "false", panelInert: false });
+      assert.equal(sidepanel.iconVisible, false);
+      assert.equal(sidepanel.panelVisible, true);
+      assert.equal(sidepanel.collapseVisible, false);
+      assert.equal(sidepanel.expanded, "false");
+      assert.equal(sidepanel.panelHidden, "false");
+      assert.equal(sidepanel.panelInert, false);
     } else {
-      assert.deepEqual(sidepanel, { iconVisible: true, panelVisible: false, expanded: "false", panelHidden: "true", panelInert: true });
+      assert.equal(sidepanel.iconVisible, true);
+      assert.equal(sidepanel.panelVisible, false);
+      assert.equal(sidepanel.collapseVisible, false);
+      assert.equal(sidepanel.expanded, "false");
+      assert.equal(sidepanel.panelHidden, "true");
+      assert.equal(sidepanel.panelInert, true);
       const toggle = page.locator("#rail-toggle");
+      const collapse = page.locator("#panel-collapse");
       if (width === 1440) {
-        await toggle.hover();
+        const toggleBox = await toggle.boundingBox();
+        assert.ok(toggleBox, "rail control did not have a pointer target");
+        await page.mouse.move(toggleBox.x + toggleBox.width / 2, toggleBox.y + toggleBox.height / 2);
         sidepanel = await sidepanelAppearance(page);
         assert.equal(sidepanel.panelVisible, true, "hover did not reveal the sidepanel");
         assert.equal(sidepanel.iconVisible, false, "rail icon remained visible beside the hover panel");
+        assert.equal(sidepanel.collapseVisible, true, "hover panel did not render its in-panel control");
+        assert.equal(sidepanel.collapseUnobscured, true, "hover panel control was obscured");
+        assert.deepEqual(sidepanel.collapseSize, { width: 44, height: 44 });
+        assert.equal(sidepanel.collapseLabel, "Keep sidepanel open");
         await page.waitForTimeout(220);
         await page.screenshot({ path: path.join(evidenceRoot, "sidepanel-hover-1440.png"), fullPage: true });
         await page.locator(".workspace").hover({ position: { x: 240, y: 160 } });
@@ -172,7 +203,8 @@ try {
         sidepanel = await sidepanelAppearance(page);
         assert.equal(sidepanel.panelVisible, true, "keyboard focus did not reveal the sidepanel");
         assert.equal(sidepanel.iconVisible, false, "rail icon remained visible beside the focused panel");
-        await toggle.press("Enter");
+        assert.equal(await collapse.evaluate((element) => document.activeElement === element), true, "focus did not move to the visible panel control");
+        await collapse.press("Enter");
       } else {
         await toggle.tap();
         await page.waitForTimeout(220);
@@ -181,13 +213,25 @@ try {
       sidepanel = await sidepanelAppearance(page);
       assert.equal(sidepanel.panelVisible, true, `${width}px activation did not pin the sidepanel`);
       assert.equal(sidepanel.iconVisible, false, `${width}px rail icon remained visible beside the pinned panel`);
+      assert.equal(sidepanel.collapseVisible, true, `${width}px pinned panel did not render its collapse control`);
+      assert.equal(sidepanel.collapseUnobscured, true, `${width}px pinned panel collapse control was obscured`);
+      assert.deepEqual(sidepanel.collapseSize, { width: 44, height: 44 });
+      assert.equal(sidepanel.collapseLabel, "Collapse sidepanel");
       assert.equal(sidepanel.panelInert, false);
       if (width === 834) {
-        await toggle.tap();
+        await collapse.tap();
         sidepanel = await sidepanelAppearance(page);
-        assert.equal(sidepanel.panelVisible, false, "touch activation did not collapse the sidepanel");
+        assert.equal(sidepanel.panelVisible, false, "visible touch control did not collapse the sidepanel");
         assert.equal(sidepanel.iconVisible, true, "touch collapse did not restore the rail icon");
+        assert.equal(sidepanel.collapseVisible, false, "touch collapse left the in-panel control visible");
         await toggle.tap();
+      } else {
+        await collapse.click();
+        sidepanel = await sidepanelAppearance(page);
+        assert.equal(sidepanel.panelVisible, false, "visible desktop control did not collapse the sidepanel");
+        assert.equal(sidepanel.iconVisible, true, "desktop collapse did not restore the rail icon");
+        assert.equal(sidepanel.collapseVisible, false, "desktop collapse left the in-panel control visible");
+        await toggle.click();
       }
       await page.waitForTimeout(220);
     }
@@ -273,20 +317,24 @@ try {
     assert.equal(hierarchy.scopedActivity, 3);
     if (width === 1440) {
       const toggle = page.locator("#rail-toggle");
+      const collapse = page.locator("#panel-collapse");
       assert.equal(await toggle.getAttribute("aria-expanded"), "true");
       await page.reload({ waitUntil: "domcontentloaded" });
       await page.locator('[data-setting="execution.usage_saver"]').waitFor({ state: "attached" });
       assert.equal(await page.locator("#rail-toggle").getAttribute("aria-expanded"), "true", "expanded sidepanel state did not persist");
-      await page.locator("#rail-toggle").press("Enter");
+      assert.equal((await sidepanelAppearance(page)).collapseVisible, true, "persisted panel lost its visible collapse control");
+      await page.locator("#panel-collapse").press("Enter");
       assert.equal(await toggle.getAttribute("aria-expanded"), "false");
       await page.reload({ waitUntil: "domcontentloaded" });
       await page.locator('[data-setting="execution.usage_saver"]').waitFor({ state: "attached" });
       assert.equal(await page.locator("#rail-toggle").getAttribute("aria-expanded"), "false", "collapsed sidepanel state did not persist");
       await page.screenshot({ path: path.join(evidenceRoot, "hierarchy-1440-collapsed.png"), fullPage: true });
-      await page.locator("#rail-toggle").click();
+      await page.locator("#rail-toggle").focus();
+      await page.locator("#panel-collapse").press("Enter");
       await page.keyboard.press("Escape");
       assert.equal(await page.locator("#rail-toggle").getAttribute("aria-expanded"), "false", "Escape did not collapse the sidepanel");
-      await page.locator("#rail-toggle").click();
+      await page.locator("#rail-toggle").focus();
+      await page.locator("#panel-collapse").press("Enter");
     }
     await page.emulateMedia({ reducedMotion: "reduce" });
     assert.equal(
@@ -303,7 +351,7 @@ try {
     };
     results.push({ width, tabPresses, focus, geometry, hierarchy, screenshot, hierarchyScreenshot, runtime });
     assert.deepEqual(runtimeErrors, []);
-    if (width > 720) await page.locator("#rail-toggle").click();
+    if (width > 720) await page.locator("#panel-collapse").click();
     await page.close();
   }
   const sparseOverview = structuredClone(fixture.overview);

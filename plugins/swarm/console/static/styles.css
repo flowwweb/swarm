@@ -35,16 +35,14 @@ button:focus-visible, select:focus-visible, input:focus-visible { outline: 2px s
 .sidepanel-region { position: sticky; top: 0; height: 100vh; z-index: 10; }
 .rail-control { position: absolute; inset: 0 auto 0 0; width: 64px; display: flex; justify-content: center; padding-top: 26px; border-right: 1px solid var(--line); background: rgba(2, 7, 31, .78); backdrop-filter: blur(24px); pointer-events: none; z-index: 11; }
 .rail { position: sticky; top: 0; height: 100vh; padding: 28px 20px 22px; display: flex; flex-direction: column; border-right: 1px solid var(--line); background: rgba(2, 7, 31, .78); backdrop-filter: blur(24px); z-index: 10; }
-.brand { position: relative; min-height: 42px; display: flex; align-items: center; padding: 0 4px 34px; }
-.brand-wordmark { display: block; width: 154px; height: auto; }
+.brand { position: relative; min-height: 44px; display: flex; align-items: center; gap: 10px; padding: 0 0 32px; }
+.brand-wordmark { display: block; width: 124px; height: auto; }
 .brand-compact { display: none; width: 38px; height: 38px; place-items: center; border: 1px solid rgba(241,89,54,.46); border-radius: 9px; background: rgba(3,12,38,.9); box-shadow: 0 0 22px rgba(241,89,54,.12); font-size: 19px; }
-.rail-toggle { position: relative; width: 44px; height: 44px; display: grid; place-items: center; border: 1px solid rgba(96,218,255,.32); border-radius: 10px; background: #06102e; color: var(--cyan); box-shadow: 0 8px 24px rgba(0,0,0,.35); pointer-events: auto; transition: border-color .16s ease, background-color .16s ease; }
-.rail-toggle:hover { border-color: rgba(96,218,255,.7); background: #0a1740; }
+.rail-toggle, .panel-collapse { position: relative; flex: 0 0 44px; width: 44px; height: 44px; display: grid; place-items: center; border: 1px solid rgba(96,218,255,.32); border-radius: 10px; background: #06102e; color: var(--cyan); box-shadow: 0 8px 24px rgba(0,0,0,.35); pointer-events: auto; transition: border-color .16s ease, background-color .16s ease; }
+.rail-toggle:hover, .panel-collapse:hover { border-color: rgba(96,218,255,.7); background: #0a1740; }
 .rail { visibility: hidden; opacity: 0; pointer-events: none; }
 .rail-expanded .rail { visibility: visible; opacity: 1; pointer-events: auto; }
-.rail-expanded .rail-control { border-color: transparent; background: transparent; backdrop-filter: none; }
-.rail-expanded .rail-toggle { border-color: transparent; background: transparent; box-shadow: none; }
-.rail-expanded .rail-toggle svg { opacity: 0; }
+.rail-expanded .rail-control { display: none; }
 .nav-list { display: grid; gap: 7px; }
 .nav-item { min-height: 46px; padding: 0 14px; border: 1px solid transparent; border-radius: 8px; background: transparent; color: var(--muted); display: flex; align-items: center; gap: 12px; text-align: left; transition: .2s ease; }
 .nav-item span { width: 22px; font-size: 17px; color: var(--faint); }

@@ -101,17 +101,21 @@ function clearError() {
   $("#error-surface").hidden = true;
 }
 
-const railState = { pinned: false, preview: false };
+const railState = { pinned: false, preview: false, suppressFocusPreview: false, suppressPointerPreview: false };
 
 function renderRail(persist = false) {
   const shell = $(".app-shell");
   const button = $("#rail-toggle");
+  const collapseButton = $("#panel-collapse");
   const panel = $("#console-sidepanel");
   const expanded = !MOBILE_RAIL.matches && (railState.pinned || railState.preview);
   shell.classList.toggle("rail-expanded", expanded);
   button.setAttribute("aria-expanded", String(expanded));
   button.setAttribute("aria-label", expanded ? "Collapse sidepanel" : "Expand sidepanel");
   button.title = expanded ? "Collapse sidepanel" : "Expand sidepanel";
+  collapseButton.setAttribute("aria-expanded", String(expanded));
+  collapseButton.setAttribute("aria-label", railState.pinned ? "Collapse sidepanel" : "Keep sidepanel open");
+  collapseButton.title = railState.pinned ? "Collapse sidepanel" : "Keep sidepanel open";
   panel.toggleAttribute("inert", !expanded && !MOBILE_RAIL.matches);
   panel.setAttribute("aria-hidden", String(!expanded && !MOBILE_RAIL.matches));
   if (persist) {
@@ -357,21 +361,45 @@ document.addEventListener("click", (event) => {
 });
 $("#refresh").addEventListener("click", refreshOverview);
 const sidepanelRegion = $(".sidepanel-region");
-$("#rail-toggle").addEventListener("pointerenter", () => { if (!railState.pinned) { railState.preview = true; renderRail(); } });
-$("#rail-toggle").addEventListener("focus", () => { if (!railState.pinned) { railState.preview = true; renderRail(); } });
+const railToggle = $("#rail-toggle");
+const panelCollapse = $("#panel-collapse");
+railToggle.addEventListener("pointerenter", (event) => { if (!railState.pinned && !railState.suppressPointerPreview && event.pointerType !== "touch") { railState.preview = true; renderRail(); } });
+railToggle.addEventListener("focus", (event) => {
+  if (railState.pinned || railState.suppressFocusPreview || !event.currentTarget.matches(":focus-visible")) return;
+  railState.preview = true;
+  renderRail();
+  panelCollapse.focus();
+});
 $("#rail-toggle").addEventListener("click", (event) => {
   railState.pinned = !railState.pinned;
   railState.preview = false;
   renderRail(true);
-  if (event.detail) event.currentTarget.blur();
+  if (!event.detail && railState.pinned) panelCollapse.focus();
 });
-sidepanelRegion.addEventListener("pointerleave", () => { if (!railState.pinned && !sidepanelRegion.contains(document.activeElement)) { railState.preview = false; renderRail(); } });
+panelCollapse.addEventListener("click", (event) => {
+  if (!railState.pinned && railState.preview) {
+    railState.pinned = true;
+    railState.preview = false;
+    renderRail(true);
+    return;
+  }
+  railState.suppressPointerPreview = Boolean(event.detail);
+  closeRail();
+  if (!event.detail) {
+    railState.suppressFocusPreview = true;
+    railToggle.focus();
+    railState.suppressFocusPreview = false;
+  }
+});
+sidepanelRegion.addEventListener("pointerleave", () => { railState.suppressPointerPreview = false; if (!railState.pinned && !sidepanelRegion.contains(document.activeElement)) { railState.preview = false; renderRail(); } });
 sidepanelRegion.addEventListener("focusout", (event) => { if (!railState.pinned && !sidepanelRegion.contains(event.relatedTarget)) { railState.preview = false; renderRail(); } });
 MOBILE_RAIL.addEventListener("change", () => renderRail());
 document.addEventListener("keydown", (event) => {
   if (event.key !== "Escape" || MOBILE_RAIL.matches || (!railState.pinned && !railState.preview)) return;
-  $("#rail-toggle").focus();
   closeRail();
+  railState.suppressFocusPreview = true;
+  railToggle.focus();
+  railState.suppressFocusPreview = false;
 });
 $("#project-filter").addEventListener("change", renderSwarm);
 $("#controller-filter").addEventListener("change", renderSwarm);
