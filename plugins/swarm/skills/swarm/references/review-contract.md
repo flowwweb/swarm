@@ -2,7 +2,22 @@
 
 Before completion, release, or archive, audit the explicitly enabled and attached request ledger. Disabled or enabled-but-unattached continuity is `UNVERIFIED`, never evidence of enforcement. Every accepted request must be terminal through current evidence-backed acceptance or explicit user cancellation/supersession. Unresolved, provisional, corrupt, orphaned, or stale-ledger state is `UNVERIFIED`; stored terminal history or event cursors cannot replace the current task, artifact, gate, independent review, published proof, or accepting route.
 
-## Two independent gates
+## Minimum independent review
+
+Do not repeat the same review under different names. The ProofPlan chooses the
+minimum independent review that matches consequence and evidence:
+
+| Tier | Required proof and review |
+| --- | --- |
+| T0 atomic/docs | Focused deterministic contract; light independent acceptance only when self-acceptance risk exists |
+| T1 ordinary code | Fast contracts plus impacted proof; one combined source-and-acceptance review |
+| T2 visual/browser | T1 plus exact final browser/visual evidence; one combined browser/source/acceptance review |
+| T3 provider/security/data | Plan review before mutation, authority/failure proof, then final acceptance |
+| T4 release | Reuse unchanged accepted lanes, verify one immutable package across environments, then one composed release review |
+
+Unknown dependency reach or missing impact evidence broadens the plan. After a
+correction, rerun the failed proof and every dependent gate, not unrelated
+accepted work.
 
 For consequential implementation, REVIEW first judges an immutable plan artifact.
 `PLAN PASS` authorizes implementation only; it cannot accept code, behavior,
@@ -11,6 +26,12 @@ to plan review. After implementation and exact named proof are frozen, an
 independent `ACCEPTANCE` review judges that completed artifact. Any correction
 creates a new artifact identity, reopens its gates, and requires a fresh final
 review. CTRL composes only independently accepted lane artifacts.
+
+A current stable gate receipt may be reused only when its plan, gate, artifact,
+input closure, environment, authority context, proof class, and freshness rules
+still match after runtime re-observation. Cache is disposable continuity, not
+acceptance. External proof has bounded freshness. `TIMEOUT` never passes; one
+typed transient retry is the maximum before broadening or blocking.
 
 ## Classify proof and final visual artifacts honestly
 

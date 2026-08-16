@@ -1,0 +1,70 @@
+from __future__ import annotations
+
+import unittest
+
+from skills.swarm.runtime import (
+    AcceptanceContract,
+    CtrlFeedEventKind,
+    CtrlOperation,
+    CtrlSurfaceKind,
+    InvariantError,
+    LaneKind,
+    Role,
+    SubagentException,
+    Swarm,
+    Task,
+)
+from skills.swarm.runtime.core import _sha256_text
+
+
+class CtrlAuthorityGuardTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.swarm=Swarm()
+        ctrl=Task("ctrl-a","CTRL","CTRL",1,{},risk=1,subagent_exception=SubagentException.WHOLE_TASK_COST,subagent_exception_reason="direct control record",lane_kind=LaneKind.NON_CODE,acceptance_contract=AcceptanceContract.empty())
+        self.swarm.start_ctrl_direct(Role.CTRL,ctrl,outcomes=1,mutable_surfaces=1,cross_lane_dependency=False,measurable_minutes=1)
+
+    def authorization(self, operation:CtrlOperation=CtrlOperation.CREATE, *, target:str="ctrl-b", objective:str="objective-b"):
+        user_receipt=f"usr-{operation.value.lower()}-decision000"
+        evidence_id=f"decision-{operation.value.lower()}"
+        self.swarm.register_ctrl_evidence(Role.CTRL,"ctrl-a",evidence_id,"decision","user decision")
+        self.swarm.surface_ctrl_evidence(Role.CTRL,evidence_id,surface_kind=CtrlSurfaceKind.INLINE_RECEIPT,caption="The user explicitly authorized one CTRL operation.",claim_limit="Bound to this operation and target only.",surface_receipt=user_receipt)
+        event=f"evt-{operation.value.lower()}-decision000"
+        self.swarm.register_ctrl_feed_event(Role.CTRL,"ctrl-a",event,CtrlFeedEventKind.DECISION,(user_receipt,))
+        return self.swarm.record_user_ctrl_authorization(Role.CTRL,source_ctrl_id="ctrl-a",event_receipt=event,user_receipt=user_receipt,operation=operation,target_objective_digest=_sha256_text(objective),target_scope_digest=_sha256_text(target),target_identity=target,issued_at=1)
+
+    def test_exact_authorization_emits_one_consumable_intent(self) -> None:
+        authorization=self.authorization()
+        intent=self.swarm.plan_ctrl_materialization(Role.CTRL,authorization,operation=CtrlOperation.CREATE,source_ctrl_id="ctrl-a",target_objective_digest=_sha256_text("objective-b"),target_scope_digest=_sha256_text("ctrl-b"),target_identity="ctrl-b")
+        self.assertEqual(self.swarm.consume_ctrl_materialization_intent(intent),intent.intent_digest)
+        with self.assertRaisesRegex(InvariantError,"replayed"):
+            self.swarm.consume_ctrl_materialization_intent(intent)
+
+    def test_missing_mismatched_and_cross_operation_authority_fail_closed(self) -> None:
+        with self.assertRaisesRegex(InvariantError,"HUMAN_AUTHORITY_BLOCKER"):
+            self.swarm.plan_ctrl_materialization(Role.CTRL,None,operation=CtrlOperation.CREATE,source_ctrl_id="ctrl-a",target_objective_digest=_sha256_text("objective-b"),target_scope_digest=_sha256_text("ctrl-b"),target_identity="ctrl-b")
+        authorization=self.authorization(CtrlOperation.FORK)
+        with self.assertRaisesRegex(InvariantError,"HUMAN_AUTHORITY_BLOCKER"):
+            self.swarm.plan_ctrl_materialization(Role.CTRL,authorization,operation=CtrlOperation.REPLACE,source_ctrl_id="ctrl-a",target_objective_digest=_sha256_text("objective-b"),target_scope_digest=_sha256_text("ctrl-b"),target_identity="ctrl-b")
+
+    def test_recovery_allows_same_identity_but_not_replacement(self) -> None:
+        self.assertEqual(self.swarm.restore_same_ctrl_identity(Role.CTRL,"ctrl-a","ctrl-a",provenance_receipt="evt-restore-same000"),"evt-restore-same000")
+        with self.assertRaisesRegex(InvariantError,"RECOVER_AS_NEW"):
+            self.swarm.restore_same_ctrl_identity(Role.CTRL,"ctrl-a","ctrl-b",provenance_receipt="evt-restore-new000")
+
+    def test_successor_requires_exact_user_authorization(self) -> None:
+        self.swarm.tasks["successor"]=Task("successor","CTRL","CTRL",1,{},goal_id="goal-b",lane_kind=LaneKind.NON_CODE,acceptance_contract=AcceptanceContract.empty())
+        self.swarm.tasks["ctrl-a"].goal_id="goal-a"
+        with self.assertRaisesRegex(InvariantError,"HUMAN_AUTHORITY_BLOCKER"):
+            self.swarm.link_successor(Role.CTRL,"ctrl-a","successor")
+        authorization=self.authorization(CtrlOperation.SUCCESSOR,target="successor",objective="goal-b")
+        self.swarm.link_successor(Role.CTRL,"ctrl-a","successor",authorization=authorization)
+        self.assertEqual(self.swarm.tasks["successor"].milestone_history[-1][1],"SUCCESSOR")
+
+    def test_requested_specialists_do_not_require_ctrl_authorization(self) -> None:
+        self.swarm.specialist_event(Role.SPECIALIST,"ctrl-a",specialist_id="researcher",profession="RESEARCHER",goal_id="research",accepted_change="cost report",invalidates_map=False,receipt="research-pass")
+        self.swarm.specialist_event(Role.SPECIALIST,"ctrl-a",specialist_id="architect",profession="ARCHITECT",goal_id="architecture",accepted_change="lean plan",invalidates_map=False,receipt="architecture-pass")
+        self.assertEqual(self.swarm.tasks["ctrl-a"].specialist_professions,{"researcher":"RESEARCHER","architect":"ARCHITECT"})
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -26,7 +26,7 @@ def resolve_config_path(explicit: Path|None=None) -> Path:
     return Path(os.environ.get("SWARM_CONFIG_PATH", SWARM_DEFAULT_PATH)).expanduser()
 
 DEFAULTS: dict[str, Any] = {
-    "schema_version": 3,
+    "schema_version": 4,
     "portfolio": {
         "max_active_tasks": 4,
         "default_parallel_tasks": 3,
@@ -51,6 +51,15 @@ DEFAULTS: dict[str, Any] = {
         "max_reasoning": "ultra",
     },
     "console": {"open_on_start": True},
+    "proof": {
+        "policy_version": "lean-v1",
+        "impacted_selection": True,
+        "receipt_reuse": True,
+        "gate_timeout_seconds": 120,
+        "browser_freshness_seconds": 86400,
+        "provider_freshness_seconds": 3600,
+        "transient_retry_limit": 1,
+    },
     "turbo": {"enabled": False},
     "efficiency": {"mode":"BALANCED", "doer_wip_limit":3},
     "hive": {"enabled": True, "cleanup_strategy":"adaptive", "retention_strategy":"adaptive", "worker_strategy":"warm_when_useful", "archive_behavior":"provenance"},
@@ -309,8 +318,8 @@ def validate(raw: dict[str, Any]) -> None:
         raise ConfigError("the config root must be a TOML table")
     _expect_keys(raw, set(DEFAULTS), "root")
     schema_version = raw.get("schema_version", 1)
-    if not _is_int(schema_version) or schema_version not in {1, 2, 3}:
-        raise ConfigError("schema_version must be 1, 2, or 3")
+    if not _is_int(schema_version) or schema_version not in {1, 2, 3, 4}:
+        raise ConfigError("schema_version must be 1, 2, 3, or 4")
 
     portfolio = _expect_table(raw, "portfolio")
     _expect_keys(
@@ -350,6 +359,15 @@ def validate(raw: dict[str, Any]) -> None:
     console = _expect_table(raw, "console")
     _expect_keys(console, set(DEFAULTS["console"]), "console")
     _boolean(console, "open_on_start", "console")
+    proof = _expect_table(raw, "proof")
+    _expect_keys(proof, set(DEFAULTS["proof"]), "proof")
+    _short_text(proof, "policy_version", "proof")
+    _boolean(proof, "impacted_selection", "proof")
+    _boolean(proof, "receipt_reuse", "proof")
+    _bounded_int(proof, "gate_timeout_seconds", 1, 3600, "proof")
+    _bounded_int(proof, "browser_freshness_seconds", 0, 604800, "proof")
+    _bounded_int(proof, "provider_freshness_seconds", 0, 86400, "proof")
+    _bounded_int(proof, "transient_retry_limit", 0, 1, "proof")
     turbo = _expect_table(raw, "turbo")
     _expect_keys(turbo, set(DEFAULTS["turbo"]), "turbo")
     _boolean(turbo, "enabled", "turbo")
@@ -677,7 +695,7 @@ def normalize_legacy_task_role(raw: dict[str, Any]) -> dict[str, Any]:
             boost["goal_levels"] = list(dict.fromkeys(levels)) or deepcopy(
                 DEFAULTS["boost"]["goal_levels"]
             )
-    normalized["schema_version"] = 3
+    normalized["schema_version"] = 4
     return normalized
 
 

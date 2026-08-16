@@ -156,7 +156,8 @@ class SwarmConfigTests(unittest.TestCase):
                 encoding="utf-8",
             )
             effective, _ = config.load(path)
-        self.assertEqual(effective["schema_version"], 3)
+        self.assertEqual(effective["schema_version"], 4)
+        self.assertEqual(effective["proof"]["policy_version"], "lean-v1")
         self.assertEqual(effective["roles"]["MOTHER"], {"icon": "🗂️"})
         self.assertEqual(effective["boost"]["goal_levels"], ["lead"])
         self.assertNotIn("mother", effective["role_icons"])
@@ -196,6 +197,21 @@ class SwarmConfigTests(unittest.TestCase):
             config.resolve_role_assignment(effective, "MOTHER"),
             config.resolve_role_assignment(effective, "specialist"),
         )
+
+    def test_v4_proof_policy_defaults_are_lean_and_bounded(self) -> None:
+        effective, _ = config.load(config.TEMPLATE_PATH)
+        self.assertEqual(effective["schema_version"], 4)
+        self.assertTrue(effective["proof"]["impacted_selection"])
+        self.assertTrue(effective["proof"]["receipt_reuse"])
+        self.assertEqual(effective["proof"]["transient_retry_limit"], 1)
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "invalid.toml"
+            path.write_text(
+                "schema_version = 4\n[proof]\ntransient_retry_limit = 2\n",
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(config.ConfigError, "transient_retry_limit"):
+                config.load(path)
 
     def test_review_horizon_order_and_direct_bound_are_enforced(self) -> None:
         invalid = (

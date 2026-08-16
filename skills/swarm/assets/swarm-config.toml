@@ -5,7 +5,7 @@
 # user instruction always wins. Safety, user control, and a user-visible host
 # task hierarchy are fixed SWARM invariants and cannot be disabled here.
 
-schema_version = 3
+schema_version = 4
 
 [portfolio]
 # Total user-visible SWARM tasks that may be active at once, excluding CTRL.
@@ -42,6 +42,18 @@ usage_saver = false
 # Reuse a recently visible portal tab; otherwise open the local portal when
 # SWARM starts. A browser launch failure never blocks work.
 open_on_start = true
+
+[proof]
+# Deterministic minimum-proof planning. Unknown impact broadens proof; these
+# controls cannot weaken user authority, final acceptance, or artifact binding.
+policy_version = "lean-v1"
+impacted_selection = true
+receipt_reuse = true
+gate_timeout_seconds = 120
+browser_freshness_seconds = 86400
+provider_freshness_seconds = 3600
+# At most one retry, and only for a typed transient infrastructure failure.
+transient_retry_limit = 1
 
 [turbo]
 # Opt-in composite: use the high profile, request the fast service tier, select

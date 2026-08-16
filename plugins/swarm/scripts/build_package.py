@@ -41,13 +41,17 @@ PACKAGING_IGNORED_FILE_NAMES = frozenset({".DS_Store", ".coverage", "Thumbs.db"}
 PACKAGING_IGNORED_SUFFIXES = frozenset({".log", ".pyc", ".pyo", ".sqlite", ".sqlite3"})
 DEVELOPMENT_ONLY_PATHS = frozenset(
     {
+        "console/package-lock.json",
+        "console/package.json",
         "docs/friction-audit.md",
         "scripts/sync_plugin_mirror.py",
+        "scripts/run_test_tier.py",
     }
 )
 DEVELOPMENT_ONLY_DIRECTORIES = frozenset(
     {
         ".github",
+        "console/node_modules",
         "console/tests",
         "plugins",
         "skills/swarm/evals",

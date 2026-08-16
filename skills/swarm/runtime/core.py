@@ -7,7 +7,9 @@ from hashlib import sha256
 import json
 import os
 from pathlib import Path, PurePosixPath
+import signal
 import subprocess
+import time
 from .incidents import IncidentLedger, IncidentRecord
 from .request_ledger import RequestStore, RequestStoreError
 
@@ -49,8 +51,18 @@ class WatchdogScope(StrEnum):
     TRAJECTORY="TRAJECTORY"; FLOW_INTEGRITY="FLOW_INTEGRITY"; OUTCOME_INTEGRITY="OUTCOME_INTEGRITY"
 class WatchdogRouteRole(StrEnum):
     CTRL="CTRL"; LEAD="LEAD"; SPECIALIST="SPECIALIST"; ARCHITECT="ARCHITECT"; REVIEW="REVIEW"; HUMAN="HUMAN"
-class ReviewScope(StrEnum): SOURCE_SEMANTICS="SOURCE_SEMANTICS"; ACCEPTANCE="ACCEPTANCE"
+class ReviewScope(StrEnum): PLAN="PLAN"; SOURCE_SEMANTICS="SOURCE_SEMANTICS"; ACCEPTANCE="ACCEPTANCE"; COMPOSED="COMPOSED"
 class ProofOutcome(StrEnum): PASS="PASS"; FAIL="FAIL"; TIMEOUT="TIMEOUT"
+class ProofStability(StrEnum): STABLE="STABLE"; UNSTABLE="UNSTABLE"
+class ProofState(StrEnum): UNPLANNED="UNPLANNED"; PLAN_REVIEW="PLAN_REVIEW"; READY="READY"; RUNNING="RUNNING"; ESCALATE="ESCALATE"; PROOF_READY="PROOF_READY"; ACCEPTANCE_REVIEW="ACCEPTANCE_REVIEW"; ACCEPTED="ACCEPTED"; BLOCKED="BLOCKED"
+class ConsequenceTier(StrEnum): T0="T0"; T1="T1"; T2="T2"; T3="T3"; T4="T4"
+class ChangedSurfaceKind(StrEnum): DOCS="DOCS"; RUNTIME="RUNTIME"; CONTRACT="CONTRACT"; CONFIG="CONFIG"; VISUAL="VISUAL"; BROWSER="BROWSER"; AUTH="AUTH"; DATA="DATA"; PROVIDER="PROVIDER"; SECURITY="SECURITY"; PACKAGING="PACKAGING"; RELEASE="RELEASE"
+class ProofClass(StrEnum): SOURCE_STATIC="SOURCE_STATIC"; LOCAL_UNIT="LOCAL_UNIT"; LOCAL_INTEGRATION="LOCAL_INTEGRATION"; EMULATOR="EMULATOR"; BROWSER_LOCAL="BROWSER_LOCAL"; BROWSER_AUTHENTICATED="BROWSER_AUTHENTICATED"; PROVIDER="PROVIDER"; DEPLOYED="DEPLOYED"; DEVICE="DEVICE"; HUMAN="HUMAN"; PACKAGE="PACKAGE"
+class GateExecutor(StrEnum): COMMAND="COMMAND"; BROWSER="BROWSER"; PROVIDER="PROVIDER"; HUMAN="HUMAN"
+class CachePolicy(StrEnum): NEVER="NEVER"; EXACT_INPUTS="EXACT_INPUTS"; EXTERNAL_FRESH="EXTERNAL_FRESH"
+class FlakePolicy(StrEnum): NO_RETRY="NO_RETRY"; TYPED_TRANSIENT_ONCE="TYPED_TRANSIENT_ONCE"
+class ClaimStatus(StrEnum): REQUIRED="REQUIRED"; VERIFIED="VERIFIED"; UNVERIFIED="UNVERIFIED"
+class CtrlOperation(StrEnum): CREATE="CREATE"; FORK="FORK"; PROMOTE="PROMOTE"; REPLACE="REPLACE"; RENAME="RENAME"; SUCCESSOR="SUCCESSOR"; RECOVER_AS_NEW="RECOVER_AS_NEW"
 class LaneKind(StrEnum): CODE="CODE"; NON_CODE="NON_CODE"; OTHER="OTHER"
 class RequestState(StrEnum): OPEN="OPEN"; BLOCKED="BLOCKED"; COMPLETED="COMPLETED"; SUPERSEDED="SUPERSEDED"; CANCELLED="CANCELLED"
 class RequestOutcomeKind(StrEnum): ARTIFACT="ARTIFACT"; NON_ARTIFACT="NON_ARTIFACT"
@@ -304,13 +316,200 @@ class ArtifactProvenance:
     id:str; source:str
     def __post_init__(self):
         if not all(isinstance(value,str) and value.strip() for value in (self.id,self.source)): raise InvariantError("artifact provenance fields must be nonempty")
+
+def _sha256_text(value:str) -> str: return sha256(value.encode("utf-8")).hexdigest()
+def _require_digest(value:str, label:str) -> str:
+    normalized=value.strip().lower() if isinstance(value,str) else ""
+    if len(normalized)!=64 or any(character not in "0123456789abcdef" for character in normalized): raise InvariantError(f"{label} must be a SHA-256 digest")
+    return normalized
+
+def _run_bounded_process(command:tuple[str,...], *, cwd:Path, timeout:int) -> int:
+    """Run one gate in its own process group so timeout cleans up descendants."""
+    windows=os.name=="nt"
+    process=subprocess.Popen(command,cwd=str(cwd),shell=False,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,start_new_session=not windows,creationflags=getattr(subprocess,"CREATE_NEW_PROCESS_GROUP",0) if windows else 0)
+    try:
+        process.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        if windows:
+            subprocess.run(("taskkill","/PID",str(process.pid),"/T","/F"),shell=False,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,check=False)
+        else:
+            try: os.killpg(process.pid,signal.SIGKILL)
+            except ProcessLookupError: pass
+        if process.poll() is None: process.kill()
+        process.communicate()
+        raise
+    return int(process.returncode)
+
+@dataclass(frozen=True)
+class ChangedSurface:
+    kind:ChangedSurfaceKind; paths:tuple[str,...]; public:bool=False; consequence:int=0
+    def __post_init__(self):
+        if not isinstance(self.kind,ChangedSurfaceKind) or not isinstance(self.consequence,int) or not 0<=self.consequence<=4: raise InvariantError("changed surface requires a typed kind and consequence from 0 to 4")
+        normalized=tuple(sorted(dict.fromkeys(PurePosixPath(path.replace("\\","/")).as_posix() for path in self.paths if isinstance(path,str) and path.strip())))
+        if not normalized or len(normalized)!=len(self.paths) or any(path.startswith("/") or ".." in PurePosixPath(path).parts for path in normalized): raise InvariantError("changed surface paths must be distinct portable relative paths")
+        object.__setattr__(self,"paths",normalized)
+
+@dataclass(frozen=True)
+class ProofClaim:
+    name:str; proof_class:ProofClass
+    def __post_init__(self):
+        if not isinstance(self.name,str) or not self.name.strip() or not isinstance(self.proof_class,ProofClass): raise InvariantError("proof claim requires a name and typed proof class")
+        object.__setattr__(self,"name",self.name.strip())
+
+@dataclass(frozen=True)
+class AuthorityBoundary:
+    name:str; consequential:bool=False
+    def __post_init__(self):
+        if not isinstance(self.name,str) or not self.name.strip(): raise InvariantError("authority boundary requires a name")
+        object.__setattr__(self,"name",self.name.strip())
+
+@dataclass(frozen=True)
+class DependencyReach:
+    impacted_tests:tuple[str,...]=(); shared_core:bool=False; toolchain_changed:bool=False; known:bool=False
+    def __post_init__(self):
+        values=tuple(sorted(dict.fromkeys(value.strip() for value in self.impacted_tests if isinstance(value,str) and value.strip())))
+        if len(values)!=len(self.impacted_tests): raise InvariantError("impacted tests must be distinct nonempty names")
+        object.__setattr__(self,"impacted_tests",values)
+
+@dataclass(frozen=True)
+class IncidentMatch:
+    id:str; detector_gate:str
+    def __post_init__(self):
+        if not all(isinstance(value,str) and value.strip() for value in (self.id,self.detector_gate)): raise InvariantError("incident match requires identity and detector gate")
+
+@dataclass(frozen=True)
+class RuntimeSignal:
+    kind:str; gate:str=""
+    def __post_init__(self):
+        if not isinstance(self.kind,str) or not self.kind.strip(): raise InvariantError("runtime signal requires a kind")
+
+@dataclass(frozen=True)
+class RepoProofCapabilities:
+    fast_contract_gate:str="contracts-fast"; impacted_gate:str="impacted-tests"; broad_gate:str="contracts-full"; browser_gate:str="console-browser"; provider_gate:str="provider-proof"; package_gate:str="package-integrity"; release_gate:str="release-parity"
+    def __post_init__(self):
+        values=(self.fast_contract_gate,self.impacted_gate,self.broad_gate,self.browser_gate,self.provider_gate,self.package_gate,self.release_gate)
+        if any(not isinstance(value,str) or not value.strip() for value in values) or len(set(values))!=len(values): raise InvariantError("repository proof capabilities require distinct gate names")
+
+@dataclass(frozen=True)
+class GateSpec:
+    id:str; proof_class:ProofClass; executor:GateExecutor=GateExecutor.COMMAND; argv:tuple[str,...]=(); working_scope:str=""; input_closure_digest:str=""; environment_fingerprint:str=""; dependencies:tuple[str,...]=(); cache_policy:CachePolicy=CachePolicy.EXACT_INPUTS; freshness_seconds:int|None=None; flake_policy:FlakePolicy=FlakePolicy.NO_RETRY; timeout_seconds:int=120
+    def __post_init__(self):
+        if not isinstance(self.id,str) or not self.id.strip() or not isinstance(self.proof_class,ProofClass) or not isinstance(self.executor,GateExecutor): raise InvariantError("gate spec requires identity, proof class, and executor")
+        if self.input_closure_digest: object.__setattr__(self,"input_closure_digest",_require_digest(self.input_closure_digest,"gate input closure"))
+        if not isinstance(self.timeout_seconds,int) or self.timeout_seconds<1: raise InvariantError("gate timeout must be a positive integer")
+        if self.freshness_seconds is not None and (not isinstance(self.freshness_seconds,int) or self.freshness_seconds<1): raise InvariantError("external freshness must be a positive integer")
+        if self.cache_policy is CachePolicy.EXTERNAL_FRESH and self.freshness_seconds is None: raise InvariantError("external proof reuse requires bounded freshness")
+        if self.executor is GateExecutor.COMMAND and self.argv and (not isinstance(self.argv,tuple) or not self.argv[0] or any(not isinstance(part,str) for part in self.argv)): raise InvariantError("command gate argv must be a tuple of strings")
+
+@dataclass(frozen=True)
+class ReviewRequirement:
+    scope:ReviewScope; combined_with:tuple[ReviewScope,...]=(); reason:str=""
+    def __post_init__(self):
+        if not isinstance(self.scope,ReviewScope) or any(not isinstance(item,ReviewScope) for item in self.combined_with) or self.scope in self.combined_with: raise InvariantError("review requirement must use distinct typed scopes")
+
+@dataclass(frozen=True)
+class ClaimCoverage:
+    claim:ProofClaim; status:ClaimStatus
+    def __post_init__(self):
+        if not isinstance(self.claim,ProofClaim) or not isinstance(self.status,ClaimStatus): raise InvariantError("claim coverage requires typed claim and status")
+
+@dataclass(frozen=True)
+class PlanReason:
+    item:str; reason:str; selected:bool=True
+    def __post_init__(self):
+        if not all(isinstance(value,str) and value.strip() for value in (self.item,self.reason)): raise InvariantError("proof-plan reasons must be nonempty")
+
+@dataclass(frozen=True)
+class EarlyStopPolicy:
+    stop_on_required_failure:bool=True; stop_when_sufficient:bool=True; optional_confidence_gates:bool=False
+
+@dataclass(frozen=True)
+class ProofInputs:
+    artifact:ArtifactIdentity; changed_surfaces:tuple[ChangedSurface,...]; declared_claims:tuple[ProofClaim,...]=(); authority_boundaries:tuple[AuthorityBoundary,...]=(); dependency_reach:DependencyReach=field(default_factory=DependencyReach); incident_matches:tuple[IncidentMatch,...]=(); runtime_signals:tuple[RuntimeSignal,...]=(); repo_capabilities:RepoProofCapabilities=field(default_factory=RepoProofCapabilities); policy_version:str="lean-v1"; self_acceptance_risk:bool=True
+    def __post_init__(self):
+        if not isinstance(self.artifact,ArtifactIdentity) or not self.changed_surfaces or any(not isinstance(item,ChangedSurface) for item in self.changed_surfaces): raise InvariantError("proof inputs require an exact artifact and changed surfaces")
+        if any(not isinstance(item,kind) for values,kind in ((self.declared_claims,ProofClaim),(self.authority_boundaries,AuthorityBoundary),(self.incident_matches,IncidentMatch),(self.runtime_signals,RuntimeSignal)) for item in values): raise InvariantError("proof inputs contain an untyped item")
+        if not isinstance(self.dependency_reach,DependencyReach) or not isinstance(self.repo_capabilities,RepoProofCapabilities) or not self.policy_version.strip(): raise InvariantError("proof inputs require dependency reach, repository capabilities, and policy version")
+
+@dataclass(frozen=True)
+class ProofPlan:
+    schema_version:int; planner_version:str; plan_digest:str; tier:ConsequenceTier; artifact:ArtifactIdentity; gates:tuple[GateSpec,...]; reviews:tuple[ReviewRequirement,...]; claim_matrix:tuple[ClaimCoverage,...]; reasons:tuple[PlanReason,...]; early_stop:EarlyStopPolicy=field(default_factory=EarlyStopPolicy); legacy:bool=False
+    def __post_init__(self):
+        if self.schema_version!=2 or not self.planner_version.strip() or not isinstance(self.tier,ConsequenceTier) or not isinstance(self.artifact,ArtifactIdentity): raise InvariantError("proof plan requires schema v2, planner version, tier, and artifact")
+        if len({gate.id for gate in self.gates})!=len(self.gates) or any(not isinstance(gate,GateSpec) for gate in self.gates): raise InvariantError("proof plan gates must be distinct typed specs")
+        payload={"schema":self.schema_version,"planner":self.planner_version,"tier":self.tier.value,"artifact":self.artifact.key(),"gates":[(gate.id,gate.proof_class.value,gate.executor.value,gate.argv,gate.working_scope,gate.input_closure_digest,gate.environment_fingerprint,gate.dependencies,gate.cache_policy.value,gate.freshness_seconds,gate.flake_policy.value,gate.timeout_seconds) for gate in self.gates],"reviews":[(item.scope.value,tuple(value.value for value in item.combined_with),item.reason) for item in self.reviews],"claims":[(item.claim.name,item.claim.proof_class.value,item.status.value) for item in self.claim_matrix],"reasons":[(item.item,item.reason,item.selected) for item in self.reasons],"early":(self.early_stop.stop_on_required_failure,self.early_stop.stop_when_sufficient,self.early_stop.optional_confidence_gates),"legacy":self.legacy}
+        expected=sha256(json.dumps(payload,sort_keys=True,separators=(",",":"),ensure_ascii=True).encode("utf-8")).hexdigest()
+        if self.plan_digest and self.plan_digest!=expected: raise InvariantError("proof plan digest does not match its canonical inputs")
+        object.__setattr__(self,"plan_digest",expected)
+
+    @classmethod
+    def legacy_plan(cls, artifact:ArtifactIdentity, gates:tuple[str,...]) -> "ProofPlan":
+        specs=tuple(GateSpec(gate,ProofClass.LOCAL_INTEGRATION,cache_policy=CachePolicy.NEVER) for gate in gates)
+        return cls(2,"legacy-v1","",ConsequenceTier.T3,artifact,specs,(ReviewRequirement(ReviewScope.ACCEPTANCE,reason="legacy contracts retain independent acceptance"),),(),tuple(PlanReason(gate,"legacy declared gate",True) for gate in gates),legacy=True)
+
+_TIER_ORDER={ConsequenceTier.T0:0,ConsequenceTier.T1:1,ConsequenceTier.T2:2,ConsequenceTier.T3:3,ConsequenceTier.T4:4}
+def _tier_max(left:ConsequenceTier, right:ConsequenceTier) -> ConsequenceTier: return left if _TIER_ORDER[left]>=_TIER_ORDER[right] else right
+
+def plan_proof(inputs:ProofInputs) -> ProofPlan:
+    """Compile the minimum sufficient monotonic proof plan; uncertainty only broadens it."""
+    if not isinstance(inputs,ProofInputs): raise InvariantError("proof planning requires typed inputs")
+    tier=ConsequenceTier.T0; reasons:list[PlanReason]=[]
+    surface_floor={ChangedSurfaceKind.DOCS:ConsequenceTier.T0,ChangedSurfaceKind.RUNTIME:ConsequenceTier.T1,ChangedSurfaceKind.CONTRACT:ConsequenceTier.T1,ChangedSurfaceKind.CONFIG:ConsequenceTier.T1,ChangedSurfaceKind.VISUAL:ConsequenceTier.T2,ChangedSurfaceKind.BROWSER:ConsequenceTier.T2,ChangedSurfaceKind.AUTH:ConsequenceTier.T3,ChangedSurfaceKind.DATA:ConsequenceTier.T3,ChangedSurfaceKind.PROVIDER:ConsequenceTier.T3,ChangedSurfaceKind.SECURITY:ConsequenceTier.T3,ChangedSurfaceKind.PACKAGING:ConsequenceTier.T4,ChangedSurfaceKind.RELEASE:ConsequenceTier.T4}
+    for surface in inputs.changed_surfaces:
+        floor=surface_floor[surface.kind]
+        if surface.public and _TIER_ORDER[floor]<_TIER_ORDER[ConsequenceTier.T1]: floor=ConsequenceTier.T1
+        floor=_tier_max(floor,ConsequenceTier(f"T{surface.consequence}"))
+        tier=_tier_max(tier,floor); reasons.append(PlanReason(surface.kind.value,f"changed surface sets a {floor.value} consequence floor"))
+    claim_floor={ProofClass.BROWSER_LOCAL:ConsequenceTier.T2,ProofClass.BROWSER_AUTHENTICATED:ConsequenceTier.T2,ProofClass.PROVIDER:ConsequenceTier.T3,ProofClass.DEPLOYED:ConsequenceTier.T4,ProofClass.DEVICE:ConsequenceTier.T4,ProofClass.HUMAN:ConsequenceTier.T4,ProofClass.PACKAGE:ConsequenceTier.T4}
+    for claim in inputs.declared_claims:
+        if claim.proof_class in claim_floor:
+            floor=claim_floor[claim.proof_class]; tier=_tier_max(tier,floor); reasons.append(PlanReason(claim.name,f"declared {claim.proof_class.value} claim requires {floor.value}"))
+    if any(boundary.consequential for boundary in inputs.authority_boundaries):
+        tier=_tier_max(tier,ConsequenceTier.T3); reasons.append(PlanReason("authority","consequential authority boundary requires plan and final review"))
+    broad=not inputs.dependency_reach.known or inputs.dependency_reach.shared_core or inputs.dependency_reach.toolchain_changed
+    if not inputs.dependency_reach.known: reasons.append(PlanReason("dependency-reach","unknown dependency reach broadens proof"))
+    if inputs.incident_matches or inputs.runtime_signals:
+        broad=True; reasons.append(PlanReason("runtime-escalation","incident or runtime signal requires the nearest broad detector"))
+    caps=inputs.repo_capabilities; artifact_digest=_sha256_text(inputs.artifact.key()); path_digest=_sha256_text(json.dumps(tuple(surface.paths for surface in inputs.changed_surfaces),separators=(",",":")))
+    gate_ids:list[tuple[str,ProofClass,CachePolicy,int|None]]=[]
+    def add(identity:str, proof_class:ProofClass, cache_policy:CachePolicy=CachePolicy.EXACT_INPUTS, freshness:int|None=None) -> None:
+        if identity not in {item[0] for item in gate_ids}: gate_ids.append((identity,proof_class,cache_policy,freshness))
+    add(caps.fast_contract_gate,ProofClass.SOURCE_STATIC)
+    if _TIER_ORDER[tier]>=1:
+        add(caps.broad_gate if broad else caps.impacted_gate,ProofClass.LOCAL_INTEGRATION if broad else ProofClass.LOCAL_UNIT)
+    if _TIER_ORDER[tier]>=2: add(caps.browser_gate,ProofClass.BROWSER_LOCAL,CachePolicy.EXTERNAL_FRESH,86400)
+    if _TIER_ORDER[tier]>=3 and (inputs.authority_boundaries or any(claim.proof_class in {ProofClass.PROVIDER,ProofClass.BROWSER_AUTHENTICATED} for claim in inputs.declared_claims)): add(caps.provider_gate,ProofClass.PROVIDER,CachePolicy.EXTERNAL_FRESH,3600)
+    if tier is ConsequenceTier.T4:
+        add(caps.broad_gate,ProofClass.LOCAL_INTEGRATION); add(caps.package_gate,ProofClass.PACKAGE,CachePolicy.EXACT_INPUTS); add(caps.release_gate,ProofClass.PACKAGE,CachePolicy.NEVER)
+    for incident in inputs.incident_matches: add(incident.detector_gate,ProofClass.LOCAL_INTEGRATION)
+    gates=tuple(GateSpec(identity,proof_class,input_closure_digest=_sha256_text(f"{artifact_digest}:{path_digest}:{identity}"),cache_policy=policy,freshness_seconds=freshness) for identity,proof_class,policy,freshness in gate_ids)
+    if tier is ConsequenceTier.T0:
+        reviews=(ReviewRequirement(ReviewScope.ACCEPTANCE,combined_with=(ReviewScope.SOURCE_SEMANTICS,),reason="light independent acceptance prevents self-acceptance"),) if inputs.self_acceptance_risk else ()
+    elif tier in {ConsequenceTier.T1,ConsequenceTier.T2}:
+        reviews=(ReviewRequirement(ReviewScope.ACCEPTANCE,combined_with=(ReviewScope.SOURCE_SEMANTICS,),reason="one combined exact-artifact review"),)
+    elif tier is ConsequenceTier.T3:
+        reviews=(ReviewRequirement(ReviewScope.PLAN,reason="consequential plan gate"),ReviewRequirement(ReviewScope.ACCEPTANCE,combined_with=(ReviewScope.SOURCE_SEMANTICS,),reason="independent final acceptance"))
+    else:
+        reviews=(ReviewRequirement(ReviewScope.COMPOSED,combined_with=(ReviewScope.SOURCE_SEMANTICS,),reason="one composed release review reuses unchanged accepted lanes"),)
+    selected={gate.id for gate in gates}
+    reasons.extend(PlanReason(identity,"minimum sufficient gate selected",identity in selected) for identity in (caps.fast_contract_gate,caps.impacted_gate,caps.broad_gate,caps.browser_gate,caps.provider_gate,caps.package_gate,caps.release_gate) if identity not in {reason.item for reason in reasons})
+    claims=tuple(ClaimCoverage(claim,ClaimStatus.REQUIRED) for claim in inputs.declared_claims)
+    return ProofPlan(2,inputs.policy_version,"",tier,inputs.artifact,gates,reviews,claims,tuple(reasons))
+
 @dataclass(frozen=True)
 class AcceptanceContract:
-    artifact:ArtifactIdentity|None; required_gates:tuple[str,...]=(); explicitly_empty:bool=False; observation_root:str=field(default="",compare=False,repr=False)
+    artifact:ArtifactIdentity|None; required_gates:tuple[str,...]=(); explicitly_empty:bool=False; observation_root:str=field(default="",compare=False,repr=False); proof_plan:ProofPlan|None=None
     def __post_init__(self):
         if self.artifact is None and not self.explicitly_empty: raise InvariantError("acceptance contract requires an exact artifact or explicit empty contract")
-        if self.explicitly_empty and (self.artifact is not None or self.required_gates): raise InvariantError("empty acceptance contract cannot declare artifact or gates")
+        if self.explicitly_empty and (self.artifact is not None or self.required_gates or self.proof_plan is not None): raise InvariantError("empty acceptance contract cannot declare artifact, gates, or proof plan")
         if any(not isinstance(gate,str) or not gate.strip() for gate in self.required_gates) or len(set(self.required_gates))!=len(self.required_gates): raise InvariantError("acceptance gates must be distinct nonempty names")
+        if self.proof_plan is not None:
+            if not isinstance(self.proof_plan,ProofPlan) or self.proof_plan.artifact!=self.artifact: raise InvariantError("acceptance proof plan must bind the exact contract artifact")
+            planned=tuple(gate.id for gate in self.proof_plan.gates)
+            if self.required_gates and self.required_gates!=planned: raise InvariantError("acceptance gates must match the proof plan")
+            object.__setattr__(self,"required_gates",planned)
+        elif self.artifact is not None:
+            object.__setattr__(self,"proof_plan",ProofPlan.legacy_plan(self.artifact,self.required_gates))
         if self.observation_root: object.__setattr__(self,"observation_root",str(Path(self.observation_root).resolve()))
     @classmethod
     def empty(cls) -> "AcceptanceContract": return cls(None,(),True)
@@ -318,6 +517,7 @@ class AcceptanceContract:
 class GateReceipt:
     """Inspectable gate evidence; only Swarm.run_gate makes it authoritative."""
     gate:str; artifact:ArtifactIdentity; outcome:ProofOutcome; command:tuple[str,...]; before:tuple[tuple[str,str],...]; after:tuple[tuple[str,str],...]; returncode:int|None
+    plan_digest:str=""; gate_spec_digest:str=""; artifact_digest:str=""; input_closure_digest:str=""; environment_fingerprint:str=""; started_at:int=0; finished_at:int=0; attempts:tuple[ProofOutcome,...]=(); stability:ProofStability=ProofStability.STABLE; proof_class:ProofClass=ProofClass.LOCAL_INTEGRATION; authority_context_digest:str=""
     _authority:object|None=field(default=None,init=False,repr=False,compare=False); _bound_task_id:str=field(default="",init=False,repr=False,compare=False)
     def __post_init__(self):
         if not self.gate.strip() or not isinstance(self.artifact,ArtifactIdentity) or not isinstance(self.outcome,ProofOutcome): raise InvariantError("gate receipt requires gate, artifact, and typed outcome")
@@ -327,9 +527,16 @@ class GateReceipt:
         if not command or not isinstance(command[0],str) or not command[0] or any(not isinstance(part,str) for part in command): raise InvariantError("gate receipt command must be argv with a nonempty executable")
         before=_observable_pairs(self.before,label="gate receipt pre-observation"); after=_observable_pairs(self.after,label="gate receipt post-observation")
         if self.returncode is not None and not isinstance(self.returncode,int): raise InvariantError("gate receipt return code must be an integer or absent")
+        for value,label in ((self.plan_digest,"gate plan"),(self.gate_spec_digest,"gate spec"),(self.artifact_digest,"gate artifact"),(self.input_closure_digest,"gate input closure"),(self.authority_context_digest,"gate authority context")):
+            if value: _require_digest(value,label)
+        if not isinstance(self.started_at,int) or not isinstance(self.finished_at,int) or min(self.started_at,self.finished_at)<0 or self.finished_at and self.finished_at<self.started_at: raise InvariantError("gate timing must be monotonic nonnegative seconds")
+        attempts=self.attempts or (self.outcome,)
+        if any(not isinstance(item,ProofOutcome) for item in attempts) or attempts[-1] is not self.outcome or len(attempts)>2: raise InvariantError("gate attempts must preserve one or two typed outcomes ending in the final outcome")
+        if not isinstance(self.stability,ProofStability) or not isinstance(self.proof_class,ProofClass): raise InvariantError("gate receipt requires typed stability and proof class")
         object.__setattr__(self,"command",command); object.__setattr__(self,"before",before); object.__setattr__(self,"after",after)
+        object.__setattr__(self,"attempts",attempts)
     def current_for(self, authority:object, task_id:str, gate:str, artifact:ArtifactIdentity, current:ArtifactIdentity) -> bool:
-        return self._authority is authority and self._bound_task_id==task_id and self.gate==gate and self.artifact==artifact==current and self.outcome is ProofOutcome.PASS and self.before==artifact.observables==self.after
+        return self._authority is authority and self._bound_task_id==task_id and self.gate==gate and self.artifact==artifact==current and self.outcome is ProofOutcome.PASS and self.stability is ProofStability.STABLE and self.before==artifact.observables==self.after
 @dataclass(frozen=True)
 class WatchdogBinding:
     """Optional alert route for one explicitly owned durable goal."""
@@ -429,7 +636,9 @@ class WorkflowGraph:
 class ReviewStrategy(StrEnum): LIGHT="light"; STANDARD="standard"; ADVERSARIAL="adversarial"; SPECIALIST="specialist"
 @dataclass(frozen=True)
 class ReviewEvidence:
-    strategy:ReviewStrategy; reviewer:str; independent:bool; artifact:ArtifactIdentity|None; findings:tuple[str,...]=(); receipt:tuple[tuple[str,str],...]=(); scope:ReviewScope=ReviewScope.SOURCE_SEMANTICS
+    strategy:ReviewStrategy; reviewer:str; independent:bool; artifact:ArtifactIdentity|None; findings:tuple[str,...]=(); receipt:tuple[tuple[str,str],...]=(); scope:ReviewScope=ReviewScope.SOURCE_SEMANTICS; plan_digest:str=""
+    def __post_init__(self):
+        if self.plan_digest: object.__setattr__(self,"plan_digest",_require_digest(self.plan_digest,"review proof plan"))
 @dataclass
 class HiveRecord:
     id:str; content:str=""; reference:str=""; source:str=""; source_version:str=""; applicability:dict[str,int]=field(default_factory=dict); created_at:int=0; last_used_at:int|None=None; value:str="useful"; retention:str="adaptive"; status:HiveStatus=HiveStatus.ACTIVE; provenance:dict[str,str]=field(default_factory=dict)
@@ -481,7 +690,23 @@ class Task:
     completed_at: int|None=None; stale_at: int|None=None; archived_at: int|None=None; stale_reason: str|None=None; superseded_by: str|None=None; promoted: list[str]=field(default_factory=list); extensions: int=0; review_passed: bool=False; risk:int=1; review_strategy:str="light"; architecture_review_floor:ReviewStrategy=ReviewStrategy.LIGHT; security_review_floor:ReviewStrategy=ReviewStrategy.LIGHT; artifacts:dict[ArtifactIdentity|str,str]=field(default_factory=dict); artifact_justifications:dict[str,ArtifactJustification]=field(default_factory=dict); artifact_provenance:dict[str,ArtifactProvenance]=field(default_factory=dict); archive:dict[str,object]=field(default_factory=dict); active_goal:bool=False; handoff_active:bool=False; correction_pending:bool=False; user_choice_pending:bool=False; ambiguous:bool=False; topology_receipt:tuple[str,...]=(); ctrl_event_receipt:tuple[str,str]|None=None; subagent_receipt:str=""; subagent_exception:SubagentException|None=None; subagent_exception_reason:str=""; goal_id:str=""; objective_version:int=1; milestone:str=""; review_horizon_minutes:int=30; milestone_started_at:int=0; milestone_history:list[tuple[int,str,str]]=field(default_factory=list); ctrl_feed_drift_count:int=0; superseded_ctrl_feed_ids:list[str]=field(default_factory=list); last_ctrl_feed_correction_id:str=""
 
     ctrl_mode:CtrlMode=CtrlMode.DELEGATED; milestone_proof_kind:str=""; architecture_goal_id:str=""; architecture_map_version:int=0; architecture_receipts:list[tuple[int,str,str]]=field(default_factory=list); specialist_professions:dict[str,str]=field(default_factory=dict); specialist_goal_ids:dict[str,str]=field(default_factory=dict); specialist_map_versions:dict[str,int]=field(default_factory=dict); specialist_receipts:dict[str,list[tuple[int,str,str]]]=field(default_factory=dict)
-    lane_kind:LaneKind=LaneKind.OTHER; owning_lead_id:str=""; acceptance_contract:AcceptanceContract|None=None; gate_receipts:dict[str,GateReceipt]=field(default_factory=dict); unverified_gate_receipts:dict[str,GateReceipt]=field(default_factory=dict); acceptance_review_receipt:ReviewEvidence|None=None; incident_consultation_receipt:str=""; watchdog_binding:WatchdogBinding|None=None; watchdog_receipts:list[WatchdogReceipt]=field(default_factory=list)
+    lane_kind:LaneKind=LaneKind.OTHER; owning_lead_id:str=""; acceptance_contract:AcceptanceContract|None=None; gate_receipts:dict[str,GateReceipt]=field(default_factory=dict); unverified_gate_receipts:dict[str,GateReceipt]=field(default_factory=dict); plan_review_receipt:ReviewEvidence|None=None; acceptance_review_receipt:ReviewEvidence|None=None; incident_consultation_receipt:str=""; watchdog_binding:WatchdogBinding|None=None; watchdog_receipts:list[WatchdogReceipt]=field(default_factory=list)
+
+@dataclass(frozen=True)
+class UserCtrlAuthorization:
+    receipt:str; operation:CtrlOperation; source_ctrl_id:str; target_objective_digest:str; target_scope_digest:str; target_identity:str; issued_at:int; host_event_digest:str
+    _authority:object|None=field(default=None,init=False,repr=False,compare=False)
+    def __post_init__(self):
+        _safe_receipt(self.receipt,"usr-"); _safe_token(self.source_ctrl_id); _safe_token(self.target_identity)
+        object.__setattr__(self,"target_objective_digest",_require_digest(self.target_objective_digest,"CTRL target objective")); object.__setattr__(self,"target_scope_digest",_require_digest(self.target_scope_digest,"CTRL target scope")); object.__setattr__(self,"host_event_digest",_require_digest(self.host_event_digest,"CTRL host event"))
+        if not isinstance(self.operation,CtrlOperation) or not isinstance(self.issued_at,int) or self.issued_at<0: raise InvariantError("CTRL authorization requires a typed operation and nonnegative issuance time")
+
+@dataclass(frozen=True)
+class CtrlMaterializationIntent:
+    authorization_receipt:str; operation:CtrlOperation; source_ctrl_id:str; target_objective_digest:str; target_scope_digest:str; target_identity:str; intent_digest:str
+    _authority:object|None=field(default=None,init=False,repr=False,compare=False)
+    def __post_init__(self):
+        _safe_receipt(self.authorization_receipt,"usr-"); _safe_token(self.source_ctrl_id); _safe_token(self.target_identity); _require_digest(self.target_objective_digest,"CTRL intent objective"); _require_digest(self.target_scope_digest,"CTRL intent scope"); _require_digest(self.intent_digest,"CTRL materialization intent")
 
 @dataclass
 class Worker:
@@ -491,11 +716,36 @@ class Worker:
 class Swarm:
     architecture_version: int=1; contract_versions: dict[str,int]=field(default_factory=dict); topology: set[str]=field(default_factory=set)
     workers: dict[str,Worker]=field(default_factory=dict); tasks: dict[str,Task]=field(default_factory=dict); leases: dict[str,str]=field(default_factory=dict); events: list[tuple[str,str]]=field(default_factory=list); telemetry: dict[str,object]=field(default_factory=dict); telemetry_events:list[dict[str,object]]=field(default_factory=list); artifact_index:dict[str,str]=field(default_factory=dict); provenance_index:dict[str,str]=field(default_factory=dict); ctrl_evidence_ledger:dict[str,CtrlEvidence]=field(default_factory=dict); ctrl_decision_sets:dict[str,CtrlDecisionSet]=field(default_factory=dict); ctrl_phase:str="intake"; hive:dict[str,HiveRecord]=field(default_factory=dict); hive_enabled:bool=True; heartbeat_stall_after:int=2; correction_receipts:dict[str,None]=field(default_factory=dict); lane_width:int=3; wip_limit:int=3; efficiency_ledger:list[dict[str,str]]=field(default_factory=list); mode:EfficiencyMode=EfficiencyMode.BALANCED; default_review_horizon:int=30; max_review_horizon:int=60; direct_work_horizon:int=20
-    scheduled_wakeups:dict[str,int]=field(default_factory=dict); ctrl_feed_messages:list[CtrlFeedMessage]=field(default_factory=list); ctrl_feed_cursor:int=0; ctrl_feed_superseded_by:dict[str,str]=field(default_factory=dict); ctrl_feed_events:dict[str,CtrlFeedEvent]=field(default_factory=dict); ctrl_feed_consumed_events:set[str]=field(default_factory=set); request_store:RequestStore|None=field(default=None,repr=False,compare=False); request_continuity_enabled:bool=False; request_feed_sequence_floor:int=0; _gate_capability:object=field(default_factory=object,init=False,repr=False,compare=False); _watchdog_capability:object=field(default_factory=object,init=False,repr=False,compare=False); _owner_context_capability:object=field(default_factory=object,init=False,repr=False,compare=False)
+    scheduled_wakeups:dict[str,int]=field(default_factory=dict); ctrl_feed_messages:list[CtrlFeedMessage]=field(default_factory=list); ctrl_feed_cursor:int=0; ctrl_feed_superseded_by:dict[str,str]=field(default_factory=dict); ctrl_feed_events:dict[str,CtrlFeedEvent]=field(default_factory=dict); ctrl_feed_consumed_events:set[str]=field(default_factory=set); ctrl_authorizations:dict[str,UserCtrlAuthorization]=field(default_factory=dict); ctrl_materialization_intents:dict[str,CtrlMaterializationIntent]=field(default_factory=dict); consumed_ctrl_authorizations:set[str]=field(default_factory=set); consumed_ctrl_intents:set[str]=field(default_factory=set); proof_policy_version:str="lean-v1"; proof_impacted_selection:bool=True; proof_receipt_reuse:bool=True; proof_gate_timeout_seconds:int=120; proof_browser_freshness_seconds:int=86400; proof_provider_freshness_seconds:int=3600; proof_transient_retry_limit:int=1; request_store:RequestStore|None=field(default=None,repr=False,compare=False); request_continuity_enabled:bool=False; request_feed_sequence_floor:int=0; _gate_capability:object=field(default_factory=object,init=False,repr=False,compare=False); _watchdog_capability:object=field(default_factory=object,init=False,repr=False,compare=False); _owner_context_capability:object=field(default_factory=object,init=False,repr=False,compare=False); _ctrl_authority_capability:object=field(default_factory=object,init=False,repr=False,compare=False)
     @classmethod
     def from_config(cls, config: dict) -> "Swarm":
         monitoring=config["monitoring"]
-        return cls(lane_width=config["coordination"]["preferred_lane_width"], wip_limit=config["efficiency"]["doer_wip_limit"], mode=EfficiencyMode(config["efficiency"]["mode"]), hive_enabled=config.get("hive",{}).get("enabled",True), heartbeat_stall_after=config["recovery"]["stall_after_updates"], default_review_horizon=monitoring.get("default_review_horizon_minutes",monitoring.get("heartbeat_minutes",30)), max_review_horizon=monitoring.get("max_review_horizon_minutes",60), direct_work_horizon=config["coordination"].get("ctrl_direct_horizon_minutes",20))
+        proof=config.get("proof",{})
+        return cls(lane_width=config["coordination"]["preferred_lane_width"], wip_limit=config["efficiency"]["doer_wip_limit"], mode=EfficiencyMode(config["efficiency"]["mode"]), hive_enabled=config.get("hive",{}).get("enabled",True), heartbeat_stall_after=config["recovery"]["stall_after_updates"], default_review_horizon=monitoring.get("default_review_horizon_minutes",monitoring.get("heartbeat_minutes",30)), max_review_horizon=monitoring.get("max_review_horizon_minutes",60), direct_work_horizon=config["coordination"].get("ctrl_direct_horizon_minutes",20), proof_policy_version=proof.get("policy_version","lean-v1"), proof_impacted_selection=proof.get("impacted_selection",True), proof_receipt_reuse=proof.get("receipt_reuse",True), proof_gate_timeout_seconds=proof.get("gate_timeout_seconds",120), proof_browser_freshness_seconds=proof.get("browser_freshness_seconds",86400), proof_provider_freshness_seconds=proof.get("provider_freshness_seconds",3600), proof_transient_retry_limit=proof.get("transient_retry_limit",1))
+
+    def plan_proof(self, inputs:ProofInputs) -> ProofPlan:
+        reach=inputs.dependency_reach if self.proof_impacted_selection else replace(inputs.dependency_reach,known=False)
+        planned=plan_proof(replace(inputs,dependency_reach=reach,policy_version=self.proof_policy_version))
+        gates=[]
+        for gate in planned.gates:
+            freshness=self.proof_browser_freshness_seconds if gate.proof_class in {ProofClass.BROWSER_LOCAL,ProofClass.BROWSER_AUTHENTICATED} else self.proof_provider_freshness_seconds if gate.proof_class is ProofClass.PROVIDER else gate.freshness_seconds
+            cache=gate.cache_policy if self.proof_receipt_reuse else CachePolicy.NEVER
+            flake=FlakePolicy.TYPED_TRANSIENT_ONCE if self.proof_transient_retry_limit else FlakePolicy.NO_RETRY
+            gates.append(replace(gate,cache_policy=cache,freshness_seconds=freshness,flake_policy=flake,timeout_seconds=self.proof_gate_timeout_seconds))
+        return ProofPlan(planned.schema_version,planned.planner_version,"",planned.tier,planned.artifact,tuple(gates),planned.reviews,planned.claim_matrix,planned.reasons,planned.early_stop,planned.legacy)
+
+    def proof_state(self, task_id:str) -> ProofState:
+        task=self.tasks[task_id]; contract=task.acceptance_contract
+        if contract is None or contract.explicitly_empty: return ProofState.UNPLANNED if contract is None else ProofState.ACCEPTED
+        plan=contract.proof_plan
+        if plan is None: return ProofState.UNPLANNED
+        if any(requirement.scope is ReviewScope.PLAN for requirement in plan.reviews) and (task.plan_review_receipt is None or task.plan_review_receipt.artifact!=contract.artifact or dict(task.plan_review_receipt.receipt).get("plan")!=plan.plan_digest): return ProofState.PLAN_REVIEW
+        receipts=tuple(task.gate_receipts.values())
+        if any(receipt.outcome is not ProofOutcome.PASS or receipt.stability is not ProofStability.STABLE for receipt in receipts): return ProofState.ESCALATE
+        if self.open_gates(task_id): return ProofState.RUNNING if receipts else ProofState.READY
+        final_scopes={requirement.scope for requirement in plan.reviews if requirement.scope in {ReviewScope.ACCEPTANCE,ReviewScope.COMPOSED}}
+        if final_scopes and (task.acceptance_review_receipt is None or task.acceptance_review_receipt.scope not in final_scopes): return ProofState.ACCEPTANCE_REVIEW
+        return ProofState.ACCEPTED
 
     def attach_request_store(self, repo_root:Path|str) -> RequestAudit:
         root=Path(repo_root)
@@ -723,10 +973,36 @@ class Swarm:
         receipt=(authority,reason,requirements_delta,new_baseline,prior_miss_relevance)
         if version!=t.objective_version+1 or not all(item.strip() for item in receipt): raise InvariantError("objective amendment requires next version, authority, reason, requirements delta, baseline, and prior-miss relevance")
         t.objective_version=version; t.milestone_history.append((version,"AMEND","|".join(receipt)))
-    def link_successor(self, actor:Role, prior_task_id:str, successor_task_id:str, *, evidence:str) -> None:
+    def record_user_ctrl_authorization(self, actor:Role, *, source_ctrl_id:str, event_receipt:str, user_receipt:str, operation:CtrlOperation, target_objective_digest:str, target_scope_digest:str, target_identity:str, issued_at:int) -> UserCtrlAuthorization:
+        """Bind an explicit user decision already present in the current CTRL feed."""
+        self._role(actor,{Role.CTRL}); event=self.ctrl_feed_events.get(event_receipt)
+        if event is None or event.kind is not CtrlFeedEventKind.DECISION or event.task_id!=source_ctrl_id or user_receipt not in event.proof_receipts or not user_receipt.startswith("usr-"): raise InvariantError("HUMAN_AUTHORITY_BLOCKER: CTRL materialization requires a current user-bound decision event")
+        if user_receipt in self.ctrl_authorizations or user_receipt in self.consumed_ctrl_authorizations: raise InvariantError("HUMAN_AUTHORITY_BLOCKER: CTRL authorization is single-use")
+        event_digest=sha256(json.dumps((event.receipt,event.task_id,event.kind.value,event.proof_receipts,event.request_ids),separators=(",",":"),ensure_ascii=True).encode("utf-8")).hexdigest()
+        authorization=UserCtrlAuthorization(user_receipt,operation,source_ctrl_id,target_objective_digest,target_scope_digest,target_identity,issued_at,event_digest); object.__setattr__(authorization,"_authority",self._ctrl_authority_capability); self.ctrl_authorizations[user_receipt]=authorization; return authorization
+    def plan_ctrl_materialization(self, actor:Role, authorization:UserCtrlAuthorization|None, *, operation:CtrlOperation, source_ctrl_id:str, target_objective_digest:str, target_scope_digest:str, target_identity:str) -> CtrlMaterializationIntent:
+        """Fail closed before any host create/fork/promote/replace/rename call."""
+        self._role(actor,{Role.CTRL})
+        expected=(operation,source_ctrl_id,target_objective_digest,target_scope_digest,target_identity)
+        actual=None if authorization is None else (authorization.operation,authorization.source_ctrl_id,authorization.target_objective_digest,authorization.target_scope_digest,authorization.target_identity)
+        if authorization is None or authorization._authority is not self._ctrl_authority_capability or self.ctrl_authorizations.get(authorization.receipt) is not authorization or authorization.receipt in self.consumed_ctrl_authorizations or actual!=expected: raise InvariantError("HUMAN_AUTHORITY_BLOCKER: missing, mismatched, replayed, or non-user CTRL authorization")
+        if any(intent.authorization_receipt==authorization.receipt for intent in self.ctrl_materialization_intents.values()): raise InvariantError("HUMAN_AUTHORITY_BLOCKER: CTRL authorization already has a pending intent")
+        digest=sha256(json.dumps((authorization.receipt,operation.value,source_ctrl_id,target_objective_digest,target_scope_digest,target_identity),separators=(",",":"),ensure_ascii=True).encode("utf-8")).hexdigest()
+        intent=CtrlMaterializationIntent(authorization.receipt,operation,source_ctrl_id,target_objective_digest,target_scope_digest,target_identity,digest); object.__setattr__(intent,"_authority",self._ctrl_authority_capability); self.ctrl_materialization_intents[digest]=intent; self.telemetry["ctrl_materialization_authorized"]=self.telemetry.get("ctrl_materialization_authorized",0)+1; return intent
+    def consume_ctrl_materialization_intent(self, intent:CtrlMaterializationIntent) -> str:
+        """Host adapters consume exactly one intent immediately before the host action."""
+        if not isinstance(intent,CtrlMaterializationIntent) or intent._authority is not self._ctrl_authority_capability or self.ctrl_materialization_intents.get(intent.intent_digest) is not intent or intent.intent_digest in self.consumed_ctrl_intents or intent.authorization_receipt in self.consumed_ctrl_authorizations: raise InvariantError("HUMAN_AUTHORITY_BLOCKER: CTRL materialization intent is missing, forged, or replayed")
+        self.consumed_ctrl_intents.add(intent.intent_digest); self.consumed_ctrl_authorizations.add(intent.authorization_receipt); self.ctrl_materialization_intents.pop(intent.intent_digest,None); self.ctrl_authorizations.pop(intent.authorization_receipt,None); return intent.intent_digest
+    def restore_same_ctrl_identity(self, actor:Role, archived_identity:str, target_identity:str, *, provenance_receipt:str) -> str:
+        self._role(actor,{Role.CTRL}); _safe_token(archived_identity); _safe_token(target_identity); _safe_receipt(provenance_receipt)
+        if archived_identity!=target_identity: raise InvariantError("HUMAN_AUTHORITY_BLOCKER: replacement identity is RECOVER_AS_NEW and requires explicit user authorization")
+        return provenance_receipt
+    def link_successor(self, actor:Role, prior_task_id:str, successor_task_id:str, *, authorization:UserCtrlAuthorization|None=None, evidence:str="") -> None:
         self._role(actor,{Role.CTRL}); prior=self.tasks[prior_task_id]; successor=self.tasks[successor_task_id]
-        if not evidence.strip() or not prior.goal_id or not successor.goal_id or prior.goal_id==successor.goal_id: raise InvariantError("genuinely new project requires distinct successor goal and evidence")
-        successor.milestone_history.append((successor.objective_version,"SUCCESSOR",f"{prior.goal_id}:{evidence}"))
+        if not prior.goal_id or not successor.goal_id or prior.goal_id==successor.goal_id: raise InvariantError("genuinely new project requires a distinct successor goal")
+        objective_digest=_sha256_text(successor.goal_id); scope_digest=_sha256_text(successor_task_id)
+        intent=self.plan_ctrl_materialization(actor,authorization,operation=CtrlOperation.SUCCESSOR,source_ctrl_id=prior_task_id,target_objective_digest=objective_digest,target_scope_digest=scope_digest,target_identity=successor_task_id); self.consume_ctrl_materialization_intent(intent)
+        successor.milestone_history.append((successor.objective_version,"SUCCESSOR",f"{prior.goal_id}:{intent.intent_digest}"))
     def watchdog_check(self, task_id:str, *, observer_role:WatchdogRouteRole, observer_id:str, now:int, evidence:WatchdogEvidence) -> WatchdogReceipt:
         t=self.tasks[task_id]; binding=t.watchdog_binding; due=self.scheduled_wakeups.get(task_id)
         if binding is None or due is None: raise InvariantError("unbound goal has no watchdog clock, check, receipt, or alert")
@@ -1097,14 +1373,22 @@ class Swarm:
         if receipt._authority is not None: raise InvariantError("runtime gate receipts cannot re-enter through the UNVERIFIED path")
         t.unverified_gate_receipts[receipt.gate]=receipt; t.gate_receipts.pop(receipt.gate,None)
         t.review_passed=False; t.acceptance_review_receipt=None; t.state=TaskState.ACTIVE
-    def run_gate(self, actor:Role, task_id:str, gate:str, argv:tuple[str,...], *, cwd:str, actor_id:str) -> GateReceipt:
-        """Run synchronously without a shell; the host retains timeout and process-tree ownership."""
+    def _gate_spec(self, contract:AcceptanceContract, gate:str) -> GateSpec:
+        if contract.proof_plan is None: raise InvariantError("gate execution requires a proof plan")
+        spec=next((item for item in contract.proof_plan.gates if item.id==gate),None)
+        if spec is None: raise InvariantError("gate execution must name a declared proof-plan gate")
+        return spec
+    def run_gate(self, actor:Role, task_id:str, gate:str, argv:tuple[str,...], *, cwd:str, actor_id:str, timeout_seconds:int|None=None) -> GateReceipt:
+        """Run a planned gate without a shell, preserving timeout and retry history."""
         self._role(actor,{Role.LEAD}); t=self.tasks[task_id]; self._require_lane_actor(t,actor,actor_id); contract=t.acceptance_contract
         if contract is None: raise InvariantError("task requires an explicit acceptance contract")
         if contract.explicitly_empty: raise InvariantError("empty acceptance contract has no gates")
         if not t.incident_consultation_receipt: raise InvariantError("LEAD must consult matching unresolved incidents during the execution brief")
         if gate not in contract.required_gates: raise InvariantError("gate execution must name a declared acceptance gate")
         if contract.artifact is None: raise InvariantError("gate execution requires an exact artifact")
+        spec=self._gate_spec(contract,gate); plan=contract.proof_plan
+        if plan is None: raise InvariantError("gate execution requires a proof plan")
+        if any(requirement.scope is ReviewScope.PLAN for requirement in plan.reviews) and (t.plan_review_receipt is None or dict(t.plan_review_receipt.receipt).get("plan")!=plan.plan_digest): raise InvariantError("consequential proof requires PLAN PASS before gate execution")
         try: command=tuple(argv)
         except TypeError as error: raise InvariantError("gate execution requires argv") from error
         if not command or not isinstance(command[0],str) or not command[0] or any(not isinstance(part,str) for part in command): raise InvariantError("gate execution requires argv with a nonempty executable")
@@ -1112,18 +1396,38 @@ class Swarm:
         if not workdir.is_dir(): raise InvariantError("gate execution directory must exist")
         before=contract.artifact.reobserve(contract.observation_root)
         if before!=contract.artifact: raise InvariantError("acceptance artifact changed before gate execution")
-        returncode=None; outcome=ProofOutcome.FAIL
-        try:
-            completed=subprocess.run(command,cwd=str(workdir),shell=False,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,check=False)
-            returncode=completed.returncode; outcome=ProofOutcome.PASS if returncode==0 else ProofOutcome.FAIL
-        except OSError: outcome=ProofOutcome.FAIL
+        timeout=spec.timeout_seconds if timeout_seconds is None else timeout_seconds
+        if not isinstance(timeout,int) or timeout<1: raise InvariantError("gate timeout must be a positive integer")
+        started=int(time.time()); returncode=None; attempts:list[ProofOutcome]=[]; outcome=ProofOutcome.FAIL
+        max_attempts=2 if spec.flake_policy is FlakePolicy.TYPED_TRANSIENT_ONCE else 1
+        for attempt in range(max_attempts):
+            infrastructure_failure=False
+            try:
+                returncode=_run_bounded_process(command,cwd=workdir,timeout=timeout); outcome=ProofOutcome.PASS if returncode==0 else ProofOutcome.FAIL
+            except subprocess.TimeoutExpired: outcome=ProofOutcome.TIMEOUT; infrastructure_failure=True
+            except OSError: outcome=ProofOutcome.FAIL; infrastructure_failure=True
+            attempts.append(outcome)
+            if outcome is ProofOutcome.PASS or not infrastructure_failure or attempt+1>=max_attempts: break
         after=contract.artifact.reobserve(contract.observation_root)
         if after!=before and outcome is ProofOutcome.PASS: outcome=ProofOutcome.FAIL
-        receipt=GateReceipt(gate,contract.artifact,outcome,command,before.observables,after.observables,returncode)
+        if attempts[-1] is not outcome: attempts[-1]=outcome
+        gate_spec_digest=_sha256_text(json.dumps((spec.id,spec.proof_class.value,spec.executor.value,spec.argv,spec.working_scope,spec.input_closure_digest,spec.environment_fingerprint,spec.dependencies,spec.cache_policy.value,spec.freshness_seconds,spec.flake_policy.value,spec.timeout_seconds),separators=(",",":"),ensure_ascii=True))
+        receipt=GateReceipt(gate,contract.artifact,outcome,command,before.observables,after.observables,returncode,plan.plan_digest,gate_spec_digest,_sha256_text(contract.artifact.key()),spec.input_closure_digest,spec.environment_fingerprint,started,int(time.time()),tuple(attempts),ProofStability.UNSTABLE if len(set(attempts))>1 else ProofStability.STABLE,spec.proof_class,_sha256_text(f"{task_id}:{actor_id}:{plan.plan_digest}"))
         object.__setattr__(receipt,"_authority",self._gate_capability); object.__setattr__(receipt,"_bound_task_id",task_id); t.gate_receipts[gate]=receipt; t.unverified_gate_receipts.pop(gate,None)
         if outcome is not ProofOutcome.PASS:
             t.review_passed=False; t.acceptance_review_receipt=None; t.state=TaskState.ACTIVE
         return receipt
+    def adopt_gate_receipt(self, actor:Role, target_task_id:str, source_task_id:str, gate:str, *, actor_id:str) -> GateReceipt:
+        """Adopt only a current runtime-authoritative receipt with the same exact proof key."""
+        self._role(actor,{Role.LEAD}); target=self.tasks[target_task_id]; source=self.tasks[source_task_id]; self._require_lane_actor(target,actor,actor_id)
+        target_contract=target.acceptance_contract; source_contract=source.acceptance_contract
+        if target_contract is None or source_contract is None or target_contract.artifact is None or target_contract.proof_plan is None: raise InvariantError("receipt adoption requires exact planned contracts")
+        receipt=source.gate_receipts.get(gate); target_spec=self._gate_spec(target_contract,gate)
+        if receipt is None or receipt._authority is not self._gate_capability or receipt.outcome is not ProofOutcome.PASS or receipt.stability is not ProofStability.STABLE: raise InvariantError("receipt adoption requires a stable runtime PASS")
+        if receipt.plan_digest!=target_contract.proof_plan.plan_digest or receipt.artifact!=target_contract.artifact or receipt.input_closure_digest!=target_spec.input_closure_digest or receipt.environment_fingerprint!=target_spec.environment_fingerprint: raise InvariantError("receipt adoption key does not match the target proof plan")
+        current=target_contract.artifact.reobserve(target_contract.observation_root)
+        if current!=target_contract.artifact or receipt.before!=current.observables or receipt.after!=current.observables: raise InvariantError("receipt adoption requires current exact artifact observations")
+        adopted=replace(receipt); object.__setattr__(adopted,"_authority",self._gate_capability); object.__setattr__(adopted,"_bound_task_id",target_task_id); target.gate_receipts[gate]=adopted; target.unverified_gate_receipts.pop(gate,None); return adopted
     def consult_incidents(self, actor:Role, task_id:str, ledger:IncidentLedger, *, artifact:str, scope:str, actor_id:str) -> tuple[IncidentRecord,...]:
         self._role(actor,{Role.LEAD}); t=self.tasks[task_id]; self._require_lane_actor(t,actor,actor_id); incidents=ledger.unresolved(artifact=artifact,scope=scope); t.incident_consultation_receipt=f"{artifact}:{scope}:{','.join(item.incidentId for item in incidents) or 'none'}"; return incidents
     def record_post_handoff_incident(self, actor:Role, task_id:str, ledger:IncidentLedger, record:IncidentRecord, *, material:bool, actor_id:str) -> bool:
@@ -1143,7 +1447,14 @@ class Swarm:
         evidence=task.acceptance_review_receipt; contract=task.acceptance_contract
         try: self._validate_task_acceptance(task)
         except InvariantError: return False
-        return bool(contract is not None and task.review_passed and task.reviewer and evidence and evidence.scope is ReviewScope.ACCEPTANCE and evidence.reviewer==task.reviewer and evidence.artifact==contract.artifact and not self.open_gates(task.id))
+        if contract is None: return False
+        if contract.explicitly_empty: return bool(task.review_passed and task.reviewer and evidence and evidence.scope is ReviewScope.ACCEPTANCE and evidence.reviewer==task.reviewer and evidence.artifact is None)
+        if contract.proof_plan is None: return False
+        final_scopes={requirement.scope for requirement in contract.proof_plan.reviews if requirement.scope in {ReviewScope.ACCEPTANCE,ReviewScope.COMPOSED}}
+        review_ok=not final_scopes or bool(task.review_passed and task.reviewer and evidence and evidence.scope in final_scopes and evidence.reviewer==task.reviewer and evidence.artifact==contract.artifact and evidence.plan_digest in {"",contract.proof_plan.plan_digest})
+        plan_required=any(requirement.scope is ReviewScope.PLAN for requirement in contract.proof_plan.reviews)
+        plan_ok=not plan_required or bool(task.plan_review_receipt and task.plan_review_receipt.artifact==contract.artifact and dict(task.plan_review_receipt.receipt).get("plan")==contract.proof_plan.plan_digest)
+        return bool(review_ok and plan_ok and not self.open_gates(task.id))
     def review(self, actor: Role, task_id: str, evidence: ReviewEvidence|str, passed: bool, finding:str="") -> None:
         self._role(actor,{Role.REVIEW}); t=self.tasks[task_id]
         if isinstance(evidence,str):
@@ -1158,13 +1469,29 @@ class Swarm:
         required=max((ReviewStrategy(self.review_depth(t.risk)),t.architecture_review_floor,t.security_review_floor,MODE_POLICY[self.mode]["review_floor"]),key=levels.get); t.review_strategy=required.value
         if passed and levels[evidence.strategy]<levels[required]: raise InvariantError("review evidence does not meet required strategy")
         t.reviewer=evidence.reviewer
-        if passed and evidence.scope is ReviewScope.ACCEPTANCE:
+        if passed and evidence.scope is ReviewScope.PLAN:
+            self._validate_task_acceptance(t); contract=t.acceptance_contract
+            if contract is None or contract.proof_plan is None or not any(requirement.scope is ReviewScope.PLAN for requirement in contract.proof_plan.reviews): raise InvariantError("plan review is not required by the current proof plan")
+            if evidence.artifact!=contract.artifact or dict(evidence.receipt).get("plan")!=contract.proof_plan.plan_digest or evidence.plan_digest not in {"",contract.proof_plan.plan_digest}: raise InvariantError("PLAN PASS must bind the exact artifact and proof-plan digest")
+            t.plan_review_receipt=evidence; t.review_passed=False; t.state=TaskState.ACTIVE
+        elif passed and evidence.scope in {ReviewScope.ACCEPTANCE,ReviewScope.COMPOSED}:
             self._validate_task_acceptance(t)
             if t.acceptance_contract is None: raise InvariantError("acceptance review requires an explicit acceptance contract")
+            if t.acceptance_contract.explicitly_empty:
+                if evidence.scope is not ReviewScope.ACCEPTANCE or evidence.artifact is not None or not dict(evidence.receipt).get("acceptance"): raise InvariantError("empty NON_CODE acceptance requires an independent acceptance receipt without an artifact")
+                t.review_passed=True; t.acceptance_review_receipt=evidence; t.state=TaskState.REVIEW
+                return
+            plan=t.acceptance_contract.proof_plan
+            if plan is None: raise InvariantError("acceptance review requires a proof plan")
+            allowed={requirement.scope for requirement in plan.reviews if requirement.scope in {ReviewScope.ACCEPTANCE,ReviewScope.COMPOSED}}
+            if evidence.scope not in allowed: raise InvariantError("review scope is not required by the current proof plan")
+            if any(requirement.scope is ReviewScope.PLAN for requirement in plan.reviews) and (t.plan_review_receipt is None or dict(t.plan_review_receipt.receipt).get("plan")!=plan.plan_digest): raise InvariantError("final acceptance requires current PLAN PASS")
             if evidence.artifact!=t.acceptance_contract.artifact: raise InvariantError("acceptance review artifact does not match acceptance contract")
             open_gates=self.open_gates(task_id)
             if open_gates: raise InvariantError(f"acceptance review requires PASS receipts for all gates: {','.join(open_gates)}")
-            if not dict(evidence.receipt).get("acceptance"): raise InvariantError("acceptance review requires an independent acceptance receipt")
+            receipt_key="composed" if evidence.scope is ReviewScope.COMPOSED else "acceptance"
+            if not dict(evidence.receipt).get(receipt_key): raise InvariantError("final review requires an independent exact-scope receipt")
+            if evidence.plan_digest not in {"",plan.plan_digest}: raise InvariantError("final review proof-plan digest mismatch")
             t.review_passed=True; t.acceptance_review_receipt=evidence; t.state=TaskState.REVIEW
         elif passed:
             t.review_passed=False; t.acceptance_review_receipt=None; t.state=TaskState.ACTIVE
@@ -1303,7 +1630,8 @@ def derive_workflow_graph(swarm:Swarm) -> WorkflowGraph:
             nodes[source]=WorkflowNode(source,"LEAD",owner="CTRL"); diagnostics.add(f"implicit-recorded-lead:{worker.lead}")
         edges.add((source,node_id,"leads"))
     for task_id,task in sorted(swarm.tasks.items()):
-        node_id=f"task:{task_id}"; nodes[node_id]=WorkflowNode(node_id,"TASK",task.state.value,task.owner,"UNVERIFIED")
+        node_id=f"task:{task_id}"; proof_state="UNVERIFIED"
+        nodes[node_id]=WorkflowNode(node_id,"TASK",task.state.value,task.owner,"UNVERIFIED")
         owner=f"worker:{task.owner}" if task.owner in swarm.workers else "ctrl:CTRL" if task.owner==Role.CTRL.value else ""
         if owner: edges.add((owner,node_id,"owns"))
         else: diagnostics.add(f"missing-owner:{task_id}:{task.owner}")
@@ -1315,11 +1643,17 @@ def derive_workflow_graph(swarm:Swarm) -> WorkflowGraph:
         if contract is not None and contract.artifact is not None:
             logical_identity=json.dumps((contract.artifact.base,contract.artifact.revision,contract.artifact.purpose),separators=(",",":"),ensure_ascii=True).encode("utf-8")
             artifact_node=f"artifact:{sha256(logical_identity).hexdigest()}"; nodes.setdefault(artifact_node,WorkflowNode(artifact_node,"ARTIFACT",contract.artifact.purpose,acceptance="UNVERIFIED")); edges.add((node_id,artifact_node,"accepts_artifact"))
+        if contract is not None and contract.proof_plan is not None:
+            plan=contract.proof_plan; plan_node=f"proof-plan:{task_id}:{plan.plan_digest}"; nodes[plan_node]=WorkflowNode(plan_node,"PROOF_PLAN",plan.tier.value,task.owning_lead_id,"UNVERIFIED"); edges.add((node_id,plan_node,"uses_plan"))
+            for coverage in plan.claim_matrix:
+                claim_id=_sha256_text(f"{coverage.claim.name}:{coverage.claim.proof_class.value}"); claim_node=f"claim:{task_id}:{claim_id}"; nodes[claim_node]=WorkflowNode(claim_node,"CLAIM",f"{coverage.claim.proof_class.value}:{coverage.status.value}",acceptance="UNVERIFIED"); edges.add((plan_node,claim_node,"covers_claim"))
         for gate in (() if contract is None else contract.required_gates):
             receipt=task.gate_receipts.get(gate); outcome=receipt.outcome.value if receipt is not None and receipt._authority is swarm._gate_capability else "UNVERIFIED"
             gate_node=f"gate:{task_id}:{gate}"; nodes[gate_node]=WorkflowNode(gate_node,"GATE",outcome,owner=task.owning_lead_id,acceptance="UNVERIFIED"); edges.add((node_id,gate_node,"has_gate"))
         if task.acceptance_review_receipt is not None:
             review=task.acceptance_review_receipt; review_node=f"review:{task_id}:{review.scope.value}"; nodes[review_node]=WorkflowNode(review_node,"REVIEW",review.scope.value,review.reviewer,"UNVERIFIED"); edges.add((node_id,review_node,"has_review"))
+        if task.plan_review_receipt is not None:
+            review=task.plan_review_receipt; review_node=f"review:{task_id}:{review.scope.value}"; nodes[review_node]=WorkflowNode(review_node,"REVIEW",review.scope.value,review.reviewer,"UNVERIFIED"); edges.add((node_id,review_node,"has_review"))
         for specialist_id,profession in sorted(task.specialist_professions.items()):
             specialist_node=f"specialist:{specialist_id}"; nodes.setdefault(specialist_node,WorkflowNode(specialist_node,profession,owner="CTRL")); edges.add((specialist_node,node_id,"advises"))
     if swarm.request_store is not None:

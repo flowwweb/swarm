@@ -1,6 +1,7 @@
 from pathlib import Path
 import sys
 import tempfile
+import time
 import unittest
 
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
@@ -34,6 +35,29 @@ class AcceptanceContractTests(unittest.TestCase):
         self.run_gate("typecheck"); self.swarm.record_gate_receipt(Role.LEAD,"route",self.receipt("test",ProofOutcome.TIMEOUT),actor_id="lead"); self.run_gate("build","raise SystemExit(3)")
         self.assertEqual(self.swarm.open_gates("route"),("test","build"))
         with self.assertRaisesRegex(InvariantError,"PASS receipts"): self.swarm.review(Role.REVIEW,"route",self.acceptance(),True)
+
+    def test_runtime_timeout_is_truthful_and_remains_open(self):
+        receipt = self.swarm.run_gate(
+            Role.LEAD,
+            "route",
+            "typecheck",
+            (sys.executable, "-c", "import time; time.sleep(2)"),
+            cwd=self.temp.name,
+            actor_id="lead",
+            timeout_seconds=1,
+        )
+        self.assertEqual(receipt.outcome, ProofOutcome.TIMEOUT)
+        self.assertEqual(receipt.attempts, (ProofOutcome.TIMEOUT,))
+        self.assertIn("typecheck", self.swarm.open_gates("route"))
+
+    def test_runtime_timeout_terminates_descendant_processes(self):
+        marker=Path(self.temp.name)/"late-child.txt"
+        child=f"import time; from pathlib import Path; time.sleep(1.5); Path({str(marker)!r}).write_text('leaked',encoding='utf-8')"
+        parent=f"import subprocess,sys,time; subprocess.Popen([sys.executable,'-c',{child!r}]); time.sleep(5)"
+        receipt=self.swarm.run_gate(Role.LEAD,"route","typecheck",(sys.executable,"-c",parent),cwd=self.temp.name,actor_id="lead",timeout_seconds=1)
+        self.assertEqual(receipt.outcome,ProofOutcome.TIMEOUT)
+        time.sleep(1)
+        self.assertFalse(marker.exists())
 
     def test_stale_artifact_receipt_and_review_fail_closed(self):
         stale=ArtifactIdentity("route","sha-old","release")

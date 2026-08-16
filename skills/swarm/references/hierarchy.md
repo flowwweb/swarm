@@ -10,6 +10,14 @@ one low-risk atomic outcome on one mutable surface with no cross-lane dependency
 and measurable completion inside the direct-work horizon. Otherwise CTRL hires
 a LEAD. A LEAD may hire DOERs for separable work that shortens accepted proof.
 
+An existing CTRL never creates another CTRL by inference. CREATE, FORK,
+PROMOTE, REPLACE, RENAME, SUCCESSOR, and RECOVER_AS_NEW each require a current
+single-use explicit user authorization bound to the source CTRL, operation,
+target identity, objective, and scope. Missing, mismatched, or replayed evidence
+emits a human-authority blocker and no host creation intent. Same-identity
+restore is not CTRL creation; Researcher, Architect, LEAD, DOER, and REVIEW are
+ordinary subordinate roles and do not consume CTRL authorization.
+
 Create a visible task lane when any durable boundary matters: independent or
 resumable ownership, a separate mutable surface or artifact, worktree isolation,
 independent review or acceptance, separate handoff, or interruption-safe resumption.
@@ -55,7 +63,7 @@ CTRL owns the durable accepted-request inventory and human route; a LEAD owns ea
 
 | Function | Owns | Does not own |
 | --- | --- | --- |
-| CTRL | Intake, objective ledger, topology, user-visible task materialization, shared-surface coordination, final composed acceptance, human route | LEAD implementation or independent REVIEW |
+| CTRL | Intake, objective ledger, topology, authorized user-visible task materialization, shared-surface coordination, final composed acceptance, human route | Another CTRL without exact user authorization, LEAD implementation, or independent REVIEW |
 | LEAD | One lane, decomposition, integration, incident consultation, exact-artifact gates, correction loop, lane completion, authorized deploy and rollback | Other lanes or final portfolio acceptance |
 | DOER | One bounded workstream and its artifact handoff | Self-acceptance or topology |
 | TASK / SUBTASK | One bounded artifact or execution unit | Parent ownership or acceptance |

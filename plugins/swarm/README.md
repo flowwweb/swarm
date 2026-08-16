@@ -37,6 +37,13 @@ flowchart TD
 
 SWARM chooses the shallowest structure that can reliably finish the objective. Small work stays small. Parallel work gets explicit owners. CTRL remains the sole root and final composed authority. Persistent specialists protect one cross-cutting truth without becoming another management layer. MOTHER is available only as an optional advisory manager-specialist; it never schedules, leases, reviews, or accepts.
 
+A CTRL cannot create, fork, promote, replace, rename, recover-as-new, or link
+another CTRL unless you explicitly request that exact operation. SWARM consumes
+one authorization bound to the source CTRL, target identity, objective, and
+scope; a mismatch or replay creates no host intent. Researchers, Architects,
+LEADs, DOERs, and REVIEW remain subordinate roles and need no CTRL-creation
+authorization.
+
 ## Pick the lane that earns its overhead
 
 Use a bounded in-lane subagent for small-to-medium work on one surface when it
@@ -58,13 +65,36 @@ flowchart LR
   B -->|"no"| E{"Parallel critical-path gain\npays for lane overhead?"}
   E -->|"yes"| L
   E -->|"no"| S["bounded in-lane subagent\ncurrent owner integrates"]
-  L --> R["named gates and independent review"]
+  L --> R["risk-tiered proof and one sufficient review"]
 ```
 
 Host capacity and usage limits are constraints, not the normal routing rule. If
 a required lane cannot be created, SWARM records the exact host limitation and
 may use a degraded, non-authoritative checkpoint under the current owner; the
 durable ownership, handoff, review, and acceptance claims remain unverified.
+
+## Prove only what changed and what matters
+
+SWARM compiles one deterministic proof plan from the changed surfaces, claims,
+authority boundaries, dependency reach, matching incidents, runtime signals,
+and repository capabilities. Unknown impact broadens proof; known impact keeps
+it focused.
+
+```mermaid
+flowchart LR
+  I["Changed surface + claimed outcome"] --> T{"Consequence tier"}
+  T -->|"T0 atomic/docs"| F["focused contract"]
+  T -->|"T1 ordinary code"| C["fast + impacted proof"]
+  T -->|"T2 visual"| B["impacted + exact browser evidence"]
+  T -->|"T3 consequential"| P["plan gate + authority proof + acceptance"]
+  T -->|"T4 release"| R["one immutable package + parity + composed review"]
+```
+
+Stable exact-input gate receipts can be re-observed and adopted, but never
+transfer acceptance authority. A correction reruns the failed gate and its
+dependents, not unrelated accepted work. Timeouts remain `TIMEOUT`; only one
+typed transient retry is allowed. Final acceptance is always fresh and
+independent at the tier selected by the plan.
 
 ## Model requests are not execution proof
 
@@ -195,12 +225,18 @@ The console is an observability surface, not the authority for task state.
 ```text
 python scripts/sync_plugin_mirror.py --write
 python scripts/sync_plugin_mirror.py --check
-python -m unittest discover -s skills/swarm/tests -p "test_*.py"
+python scripts/run_test_tier.py fast
+python scripts/run_test_tier.py platform
+python -m unittest skills.swarm.tests.test_release_package
 python -m unittest discover -s console/tests -p "test_*.py"
-node --test console/tests/test_console_ui.mjs
+cd console && npm ci && npx playwright install chromium && npm run test:ui
 ```
 
-The browser test requires Playwright. See [CONTRIBUTING.md](CONTRIBUTING.md), [SECURITY.md](SECURITY.md), and the [MIT License](LICENSE).
+The fast tier excludes package integration; run the package tier only when its
+surface is affected or before release. CI builds one immutable ZIP, verifies
+those same bytes on each supported operating system, and publishes those same
+bytes without rebuilding. The pinned browser lane runs only when console
+surfaces change. See [CONTRIBUTING.md](CONTRIBUTING.md), [SECURITY.md](SECURITY.md), and the [MIT License](LICENSE).
 
 ## Release verification
 

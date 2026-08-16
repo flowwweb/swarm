@@ -2,7 +2,7 @@
 
 Use CORE + role + these fields. Atomic/simple tasks omit every inapplicable field. A durable task keeps only its exact current decision and proof boundary.
 
-For every new SWARM objective, the opening user-visible task completes mandatory
+For every user-authorized new SWARM objective, the opening user-visible task completes mandatory
 Step 0 first: derive a concise specific objective, use the host task-title tool to set
 `🐙CTRL - <objective>` by default, pin the task, and verify both receipts. Only
 `role_icons.enabled = false` removes title emojis. If a tool is unavailable or a receipt fails, state the exact blocker
@@ -12,6 +12,11 @@ records the chosen topology and which visible task owns each mutable artifact.
 Hidden subagents are execution capacity, not a replacement for required SWARM
 task ownership.
 
+If a CTRL is already active, a new CTRL or successor is never an inferred
+topology step. Require a current single-use user receipt naming the exact
+operation, source CTRL, target identity, objective, and scope. A mismatch or
+replay is a human-authority blocker and creates no host intent.
+
 ```text
 ROLE — artifact
 PURPOSE: objective and acceptance/non-negotiables.
@@ -20,7 +25,7 @@ BOUNDARIES: dependencies, proof/claim limits, no hidden scope change.
 ESCALATION: accepting route or exact blocker.
 MODE: CTRL_DIRECT or CTRL_DELEGATED, with the direct-work predicate receipt.
 GOAL: stable goal ID, objective version, measurable milestone, and locally chosen review horizon; optional WATCHDOG binding is separate and names the watched owner plus validated alert route.
-ACCEPTANCE: typed lane kind, exact ArtifactIdentity, required named gates, bound owning LEAD identity, and accepting REVIEW route; CODE has at least one gate and only NON_CODE non-artifact work may use an explicit empty contract.
+ACCEPTANCE: typed lane kind, exact ArtifactIdentity, deterministic ProofPlan, bound owning LEAD identity, and accepting REVIEW route; CODE has at least one gate and only NON_CODE non-artifact work may use an explicit empty contract.
 INCIDENTS: LEAD consultation receipt for matching unresolved `.codex/swarm/incidents.jsonl` records.
 ```
 
@@ -34,8 +39,15 @@ Use `REQUEST_PENDING` only between durable staging and matching acceptance/activ
 
 Integration-ready means immutable artifact identity, required proof state, and an explicit accepting route. `UNVERIFIED` remains open. A composed rendered product needs its composed render comparison when visual work is in scope.
 
-Gate receipts use only `PASS`, `FAIL`, or `TIMEOUT` and name the exact contract
-artifact. Source-semantic review cannot close the lane. A material defect found
+The deterministic ProofPlan binds changed surfaces, declared claims, authority
+boundaries, dependency reach, incidents, runtime signals, repository
+capabilities, consequence tier, exact gates, reviews, and claim coverage.
+Unknown impact broadens proof. Gate receipts bind the plan, gate, artifact,
+input closure, environment, authority, timing, attempt history, stability, and
+proof class. Stable exact-input evidence may be re-observed and adopted, but it
+never transfers review or acceptance authority. Gate receipts use only `PASS`,
+`FAIL`, or `TIMEOUT`; timeout never passes and allows at most one typed
+same-state transient retry. Source-semantic review cannot close the lane. A material defect found
 after handoff adds one local causal record; minor failures do not. Daily fold may
 generalize only distinct repeated or demonstrably generalizable candidates backed
 by contrasting regression proof; ineligible candidates remain pending until an

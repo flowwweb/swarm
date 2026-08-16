@@ -1,6 +1,6 @@
 {
   "name": "swarm",
-  "version": "0.3.0+codex.20260815171059",
+  "version": "0.4.0+codex.20260816144420",
   "description": "Structured Workflows for Autonomous Role Management.",
   "author": {
     "name": "Flowwweb",
@@ -19,13 +19,14 @@
   "interface": {
     "displayName": "\ud83d\udc19 SWARM",
     "shortDescription": "Control a coordinated Codex team from one task",
-    "longDescription": "SWARM is an open-source workflow for Codex. Direct a coordinated team of AI agents from one CTRL task while clear leads route parallel work, focused workers own bounded artifacts, and independent review checks the combined result.",
+    "longDescription": "SWARM is an open-source control plane for Codex. Route bounded work to in-task helpers or durable lanes, preserve human authority, and prove each result with the smallest sufficient independent acceptance path.",
     "developerName": "Flowwweb",
     "category": "Productivity",
     "capabilities": [
       "Local dashboard",
       "Docker",
-      "Independent review"
+      "Risk-tiered proof",
+      "Independent acceptance"
     ],
     "defaultPrompt": [
       "Use SWARM to organize this outcome with clear ownership, canonical state, and independent review."

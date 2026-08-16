@@ -71,6 +71,13 @@ Configuration cannot make an unsafe or hidden coordination path valid:
 | `execution.min_reasoning` | Global reasoning floor applied after every profile, role override, and route adjustment | none, minimal, low, medium, high, xhigh, max, ultra; compatibility-neutral default none |
 | `execution.max_reasoning` | Global reasoning ceiling applied after every profile, role override, and route adjustment | none, minimal, low, medium, high, xhigh, max, ultra; compatibility-neutral default ultra; must be at least min |
 | `execution.usage_saver` | Prefer lower-churn coordination for new work without weakening delivery | boolean; default false |
+| `proof.policy_version` | Deterministic proof-planner policy | trimmed identifier; default lean-v1 |
+| `proof.impacted_selection` | Select focused impacted gates when dependency reach is known | boolean; default true |
+| `proof.receipt_reuse` | Permit exact-key stable gate adoption after runtime re-observation; never acceptance reuse | boolean; default true |
+| `proof.gate_timeout_seconds` | Default gate timeout before truthful TIMEOUT | 1-3600; default 120 |
+| `proof.browser_freshness_seconds` | Maximum reusable browser-proof age | 0-604800; default 86400 |
+| `proof.provider_freshness_seconds` | Maximum reusable provider-proof age | 0-86400; default 3600 |
+| `proof.transient_retry_limit` | Same-state retry budget for typed transient infrastructure failure | 0-1; default 1 |
 | `turbo.enabled` | Opt into the high usage profile, fast service-tier preference, MAX progress policy, and the highest declared model-supported reasoning within the global bounds | boolean; default false |
 | `efficiency.mode` | Resource strategy for useful depth, concurrency, routing, and review; never weakens safety floors | CONSERVE, BALANCED, FAST, MAX; default BALANCED |
 | `efficiency.doer_wip_limit` | Maximum active assignments owned by one DOER | 1-8; default 3 |

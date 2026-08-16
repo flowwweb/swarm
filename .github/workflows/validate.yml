@@ -6,42 +6,106 @@ on:
 permissions:
   contents: read
 
+env:
+  PYTHONDONTWRITEBYTECODE: "1"
+
 jobs:
-  validate:
-    name: ${{ matrix.os }}
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
-    env:
-      PYTHONDONTWRITEBYTECODE: "1"
+  fast-contracts:
+    name: Fast contracts
+    runs-on: ubuntu-latest
     steps:
       - name: Check out the triggering revision
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           persist-credentials: false
-
       - name: Set up Python
         uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
           python-version: "3.13"
           check-latest: false
-
-      - name: Test skill runtime, plugin, and host manifests
+      - name: Run contracts without package integration
         shell: bash
         run: |
           python scripts/sync_plugin_mirror.py --check
-          python -m unittest discover -s skills/swarm/tests -p 'test_*.py'
+          python scripts/run_test_tier.py fast
           python -m unittest discover -s console/tests -p 'test_*.py'
-          # console/tests/test_console_ui.mjs deliberately remains optional: it
-          # imports Playwright, which is not declared by this repository.
 
-      - name: Build and verify a deterministic package
+  platform-floor:
+    name: Platform floor / ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - name: Check out the triggering revision
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: "3.13"
+          check-latest: false
+      - name: Run OS-sensitive contracts
+        shell: bash
+        run: python scripts/run_test_tier.py platform
+
+  package-build:
+    name: Build immutable package
+    needs: fast-contracts
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out the triggering revision
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: "3.13"
+          check-latest: false
+      - name: Run package integration and build once
         shell: bash
         run: |
-          archive="$RUNNER_TEMP/swarm-ci-${{ matrix.os }}.zip"
-          installed="$RUNNER_TEMP/swarm-ci-${{ matrix.os }}-installed"
-          python scripts/build_package.py --source . --output "$archive" --verify-repeat
-          python -c "import sys, zipfile; zipfile.ZipFile(sys.argv[1]).extractall(sys.argv[2])" "$archive" "$installed"
-          python skills/swarm/scripts/verify_plugin_install.py "$installed" --package "$archive"
+          python -m unittest skills.swarm.tests.test_release_package
+          mkdir -p dist
+          python scripts/build_package.py --source . --output dist/swarm-release.zip --verify-repeat
+      - name: Upload the immutable package
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: swarm-release-candidate
+          path: |
+            dist/swarm-release.zip
+            dist/swarm-release.zip.sha256
+          if-no-files-found: error
+          retention-days: 7
+
+  package-verify:
+    name: Verify package / ${{ matrix.os }}
+    needs: [package-build, platform-floor]
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - name: Check out the triggering revision
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: "3.13"
+          check-latest: false
+      - name: Download the exact package
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: swarm-release-candidate
+          path: dist
+      - name: Verify installed package bytes
+        shell: bash
+        run: |
+          python -c "import sys, zipfile; zipfile.ZipFile(sys.argv[1]).extractall(sys.argv[2])" dist/swarm-release.zip "$RUNNER_TEMP/swarm-installed"
+          python skills/swarm/scripts/verify_plugin_install.py "$RUNNER_TEMP/swarm-installed" --package dist/swarm-release.zip
