@@ -25,8 +25,9 @@ Install it as a Codex plugin and run a coordinated team of AI agents from one CT
 ```mermaid
 flowchart TD
   U["You"] --> C["🐙 CTRL · sole root"]
-  C --> L1["LEAD · product"] --> D1["DESIGNER · experience"]
-  C --> L2["LEAD · engineering"] --> D2["DEVELOPER · implementation"]
+  C -->|"durable or parallel lane"| L1["LEAD · product"] --> D1["DESIGNER · experience"]
+  C -->|"durable or parallel lane"| L2["LEAD · engineering"] --> D2["DEVELOPER · implementation"]
+  D2 -. "bounded help" .-> SA["in-lane subagent"]
   C -. consults .-> S["SPECIALIST · optional truth surface"]
   S -. may be .-> M["🐝 MOTHER · advisory manager"]
   L1 --> R["REVIEW · independent verdict"]
@@ -35,6 +36,49 @@ flowchart TD
 ```
 
 SWARM chooses the shallowest structure that can reliably finish the objective. Small work stays small. Parallel work gets explicit owners. CTRL remains the sole root and final composed authority. Persistent specialists protect one cross-cutting truth without becoming another management layer. MOTHER is available only as an optional advisory manager-specialist; it never schedules, leases, reviews, or accepts.
+
+## Pick the lane that earns its overhead
+
+Use a bounded in-lane subagent for small-to-medium work on one surface when it
+does not need durable ownership, isolated mutation, a separate handoff, or
+independent acceptance. It keeps the current owner accountable and avoids
+turning quick work into a task tree.
+
+Create a visible task lane when work is large, resumable, isolated in a
+worktree or artifact, independently reviewed or accepted, or needs a durable
+handoff. For independent slices, create the lane when its accepted
+critical-path saving repays task startup, coordination, integration, and review
+overhead. A qualifying durable boundary always wins; a subagent cannot stand in
+for it.
+
+```mermaid
+flowchart LR
+  Q["Work to route"] --> B{"Durable boundary, large work, or independent acceptance?"}
+  B -->|"yes"| L["visible task lane\nCTRL → LEAD → DOER"]
+  B -->|"no"| E{"Parallel critical-path gain\npays for lane overhead?"}
+  E -->|"yes"| L
+  E -->|"no"| S["bounded in-lane subagent\ncurrent owner integrates"]
+  L --> R["named gates and independent review"]
+```
+
+Host capacity and usage limits are constraints, not the normal routing rule. If
+a required lane cannot be created, SWARM records the exact host limitation and
+may use a degraded, non-authoritative checkpoint under the current owner; the
+durable ownership, handoff, review, and acceptance claims remain unverified.
+
+## Model requests are not execution proof
+
+The default request pattern for a full hierarchy is **CTRL → gpt-5.6-sol**,
+**LEAD → gpt-5.6-terra**, and **DOER → gpt-5.6-luna**. These are requested role
+preferences, not a claim that the host executed those models. Explicit user
+model, provider, service-tier, and reasoning choices take precedence. Record a
+host model receipt before claiming actual execution.
+
+```mermaid
+flowchart LR
+  C["🐙 CTRL\nrequested: gpt-5.6-sol"] --> L["LEAD\nrequested: gpt-5.6-terra"] --> D["DOER\nrequested: gpt-5.6-luna"]
+  D -. "host metadata required" .-> V["actual execution verified"]
+```
 
 ```mermaid
 flowchart LR
@@ -79,7 +123,7 @@ The result is a swarm you can steer from one place:
 - **Parallel work without duplicate ownership.** Every lane has a bounded artifact, mutable surface, and accepting route.
 - **Hierarchy that earns its place.** Roles appear for real dependencies and collapse when they stop helping.
 - **Coherent results.** Leads integrate their lanes and REVIEW verifies the composed outcome before it is accepted.
-- **Alerts without management theatre.** An optional WATCHDOG checks progress, flow, and outcome integrity, then leaves every decision with existing authority.
+- **Alerts without management theatre.** An optional WATCHDOG binds only to the accountable LEAD, samples progress, flow, and outcome integrity at a due event or material signal, and leaves every decision with existing authority.
 
 ## Install
 
