@@ -77,7 +77,7 @@ def changed_paths(root: Path, base: str, head: str) -> tuple[str, ...]:
     if not base or base == ZERO_SHA or not head:
         return ()
     completed = subprocess.run(
-        ["git", "-C", str(root), "diff", "--name-only", "--diff-filter=ACMRTUXB", base, head, "--"],
+        ["git", "-C", str(root), "diff", "--name-only", "--diff-filter=ACDMRTUXB", base, head, "--"],
         check=True, capture_output=True, text=True,
     )
     return tuple(line.strip() for line in completed.stdout.splitlines() if line.strip())

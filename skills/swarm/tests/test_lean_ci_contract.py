@@ -3,6 +3,7 @@ from __future__ import annotations
 import unittest
 import importlib.util
 from pathlib import Path
+from unittest.mock import patch
 
 
 ROOT = Path(__file__).resolve().parents[3]
@@ -67,6 +68,15 @@ class LeanCiContractTests(unittest.TestCase):
         workflow=(ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
         self.assertIn("github.ref == 'refs/heads/main'", workflow)
         self.assertIn("package_required: ${{ needs.scope.outputs.package_required == 'true' }}", workflow)
+
+    def test_deleted_paths_remain_in_the_proof_selection_diff(self) -> None:
+        completed = type("Completed", (), {"stdout": "skills/swarm/runtime/core.py\n"})()
+        with patch.object(self.selector.subprocess, "run", return_value=completed) as run:
+            self.assertEqual(
+                self.selector.changed_paths(ROOT, "base", "head"),
+                ("skills/swarm/runtime/core.py",),
+            )
+        self.assertIn("--diff-filter=ACDMRTUXB", run.call_args.args[0])
 
 
 if __name__ == "__main__":
