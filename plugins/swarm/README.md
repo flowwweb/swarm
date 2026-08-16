@@ -38,9 +38,11 @@ flowchart TD
 SWARM chooses the shallowest structure that can reliably finish the objective. Small work stays small. Parallel work gets explicit owners. CTRL remains the sole root and final composed authority. Persistent specialists protect one cross-cutting truth without becoming another management layer. MOTHER is available only as an optional advisory manager-specialist; it never schedules, leases, reviews, or accepts.
 
 A CTRL cannot create, fork, promote, replace, rename, recover-as-new, or link
-another CTRL unless you explicitly request that exact operation. SWARM consumes
-one authorization from a separately held host broker that is absent from the CTRL-visible `Swarm` object graph, bound to the source CTRL, target identity, objective, and
-scope; a mismatch or replay creates no host intent. Researchers, Architects,
+another CTRL unless you explicitly request that exact operation. The plugin may
+prepare a typed request, but the actual Codex task API must independently consume
+a host-owned user receipt bound to the source CTRL, target identity, objective,
+and scope. Without that host gate the request is non-authoritative and no new
+CTRL may be created. Researchers, Architects,
 LEADs, DOERs, and REVIEW remain subordinate roles and need no CTRL-creation
 authorization.
 

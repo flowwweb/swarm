@@ -40,13 +40,11 @@ acceptance. External proof has bounded freshness. `TIMEOUT` never passes; one
 typed transient retry is the maximum before broadening or blocking.
 
 Provider, deployed, device, and human gates are never satisfied by a shell
-command or a caller-authored receipt. The separately held host authority broker
-must ingest a typed observation without exposing itself or its credentials on
-the lane-visible `Swarm` object. `Swarm` may retain only its verifier, sealed at
-construction against replacement or clearing, and must bind the observation's evidence digest,
-observation time, proof class, plan, gate spec, artifact, environment, and
-authority context. Missing, forged, mismatched, replayed, or expired host
-observations remain open.
+command, in-process signer, or caller-authored receipt. They remain `UNVERIFIED`
+until an isolated host verifier records a typed observation bound to its
+evidence digest, observation time, proof class, plan, gate spec, artifact,
+environment, and authority context. Missing, forged, mismatched, replayed,
+expired, or plugin-runtime-only observations remain open.
 
 ## Classify proof and final visual artifacts honestly
 

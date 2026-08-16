@@ -12,10 +12,11 @@ a LEAD. A LEAD may hire DOERs for separable work that shortens accepted proof.
 
 An existing CTRL never creates another CTRL by inference. CREATE, FORK,
 PROMOTE, REPLACE, RENAME, SUCCESSOR, and RECOVER_AS_NEW each require a current
-single-use host-minted explicit user authorization, unavailable to CTRL feed
-APIs and bound to the source CTRL, operation,
-target identity, objective, and scope. Missing, mismatched, or replayed evidence
-emits a human-authority blocker and no host creation intent. Same-identity
+single-use explicit user authorization independently enforced by the actual
+host task API and bound to the source CTRL, operation, target identity,
+objective, and scope. A plugin-runtime request is non-authoritative. Missing,
+mismatched, replayed, or in-process-only evidence emits a human-authority
+blocker and no host action. Same-identity
 restore is not CTRL creation; Researcher, Architect, LEAD, DOER, and REVIEW are
 ordinary subordinate roles and do not consume CTRL authorization.
 

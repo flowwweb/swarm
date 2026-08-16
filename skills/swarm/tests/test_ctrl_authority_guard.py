@@ -49,6 +49,18 @@ class CtrlAuthorityGuardTests(unittest.TestCase):
         with self.assertRaisesRegex(InvariantError,"verifier is immutable"):
             self.swarm._host_authority_public_key=None
 
+    def test_arbitrary_python_mutation_still_cannot_consume_a_host_intent(self) -> None:
+        attacker_private=11
+        attacker_public=pow(runtime_core._HOST_AUTHORITY_GENERATOR,attacker_private,runtime_core._HOST_AUTHORITY_PRIME)
+        object.__setattr__(self.swarm,"_host_authority_public_key",attacker_public)
+        event=HostUserEvent("usr-object-setattr000",CtrlOperation.CREATE,"ctrl-a",_sha256_text("objective-b"),_sha256_text("ctrl-b"),"ctrl-b",1,_sha256_text("object-setattr"))
+        message=runtime_core._authority_message("CTRL_USER_EVENT",(event.receipt,event.operation.value,event.source_ctrl_id,event.target_objective_digest,event.target_scope_digest,event.target_identity,event.issued_at,event.event_digest))
+        object.__setattr__(event,"_signature",runtime_core._authority_sign(attacker_private,message))
+        authorization=self.swarm.record_user_ctrl_authorization(Role.CTRL,event)
+        intent=self.swarm.plan_ctrl_materialization(Role.CTRL,authorization,operation=CtrlOperation.CREATE,source_ctrl_id="ctrl-a",target_objective_digest=_sha256_text("objective-b"),target_scope_digest=_sha256_text("ctrl-b"),target_identity="ctrl-b")
+        with self.assertRaisesRegex(InvariantError,"Codex host must independently consume"):
+            self.swarm.consume_ctrl_materialization_intent(intent)
+
     def test_host_signature_cannot_be_replayed_for_a_changed_objective(self) -> None:
         signed=self.host.mint_user_event(receipt="usr-signed-binding000",operation=CtrlOperation.CREATE,source_ctrl_id="ctrl-a",target_objective_digest=_sha256_text("objective-b"),target_scope_digest=_sha256_text("ctrl-b"),target_identity="ctrl-b",issued_at=1,host_event_digest=_sha256_text("signed-binding"))
         changed=HostUserEvent(signed.receipt,signed.operation,signed.source_ctrl_id,_sha256_text("objective-c"),signed.target_scope_digest,signed.target_identity,signed.issued_at,signed.event_digest)
@@ -61,11 +73,11 @@ class CtrlAuthorityGuardTests(unittest.TestCase):
         with self.assertRaisesRegex(InvariantError,"host-validated user authorization"):
             self.swarm.record_user_ctrl_authorization(Role.CTRL,forged)
 
-    def test_exact_authorization_emits_one_consumable_intent(self) -> None:
+    def test_exact_authorization_emits_only_a_non_authoritative_request(self) -> None:
         authorization=self.authorization()
         intent=self.swarm.plan_ctrl_materialization(Role.CTRL,authorization,operation=CtrlOperation.CREATE,source_ctrl_id="ctrl-a",target_objective_digest=_sha256_text("objective-b"),target_scope_digest=_sha256_text("ctrl-b"),target_identity="ctrl-b")
-        self.assertEqual(self.swarm.consume_ctrl_materialization_intent(intent),intent.intent_digest)
-        with self.assertRaisesRegex(InvariantError,"replayed"):
+        self.assertIn(intent.intent_digest,self.swarm.ctrl_materialization_intents)
+        with self.assertRaisesRegex(InvariantError,"Codex host must independently consume"):
             self.swarm.consume_ctrl_materialization_intent(intent)
 
     def test_missing_mismatched_and_cross_operation_authority_fail_closed(self) -> None:
@@ -86,8 +98,9 @@ class CtrlAuthorityGuardTests(unittest.TestCase):
         with self.assertRaisesRegex(InvariantError,"HUMAN_AUTHORITY_BLOCKER"):
             self.swarm.link_successor(Role.CTRL,"ctrl-a","successor")
         authorization=self.authorization(CtrlOperation.SUCCESSOR,target="successor",objective="goal-b")
-        self.swarm.link_successor(Role.CTRL,"ctrl-a","successor",authorization=authorization)
-        self.assertEqual(self.swarm.tasks["successor"].milestone_history[-1][1],"SUCCESSOR")
+        with self.assertRaisesRegex(InvariantError,"Codex host must independently consume"):
+            self.swarm.link_successor(Role.CTRL,"ctrl-a","successor",authorization=authorization)
+        self.assertEqual(self.swarm.tasks["successor"].milestone_history,[])
 
     def test_requested_specialists_do_not_require_ctrl_authorization(self) -> None:
         self.swarm.specialist_event(Role.SPECIALIST,"ctrl-a",specialist_id="researcher",profession="RESEARCHER",goal_id="research",accepted_change="cost report",invalidates_map=False,receipt="research-pass")

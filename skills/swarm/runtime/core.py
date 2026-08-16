@@ -1050,9 +1050,8 @@ class Swarm:
         digest=sha256(json.dumps((authorization.receipt,operation.value,source_ctrl_id,target_objective_digest,target_scope_digest,target_identity),separators=(",",":"),ensure_ascii=True).encode("utf-8")).hexdigest()
         intent=CtrlMaterializationIntent(authorization.receipt,operation,source_ctrl_id,target_objective_digest,target_scope_digest,target_identity,digest); object.__setattr__(intent,"_authority",self._ctrl_authority_capability); self.ctrl_materialization_intents[digest]=intent; self.telemetry["ctrl_materialization_authorized"]=self.telemetry.get("ctrl_materialization_authorized",0)+1; return intent
     def consume_ctrl_materialization_intent(self, intent:CtrlMaterializationIntent) -> str:
-        """Host adapters consume exactly one intent immediately before the host action."""
-        if not isinstance(intent,CtrlMaterializationIntent) or intent._authority is not self._ctrl_authority_capability or self.ctrl_materialization_intents.get(intent.intent_digest) is not intent or intent.intent_digest in self.consumed_ctrl_intents or intent.authorization_receipt in self.consumed_ctrl_authorizations: raise InvariantError("HUMAN_AUTHORITY_BLOCKER: CTRL materialization intent is missing, forged, or replayed")
-        self.consumed_ctrl_intents.add(intent.intent_digest); self.consumed_ctrl_authorizations.add(intent.authorization_receipt); self.ctrl_materialization_intents.pop(intent.intent_digest,None); self.ctrl_authorizations.pop(intent.authorization_receipt,None); return intent.intent_digest
+        """In-process requests are never host authority, even when cooperatively signed."""
+        raise InvariantError("HUMAN_AUTHORITY_BLOCKER: the Codex host must independently consume a host-owned user receipt; plugin-runtime intents are non-authoritative")
     def restore_same_ctrl_identity(self, actor:Role, archived_identity:str, target_identity:str, *, provenance_receipt:str) -> str:
         self._role(actor,{Role.CTRL}); _safe_token(archived_identity); _safe_token(target_identity); _safe_receipt(provenance_receipt)
         if archived_identity!=target_identity: raise InvariantError("HUMAN_AUTHORITY_BLOCKER: replacement identity is RECOVER_AS_NEW and requires explicit user authorization")
@@ -1483,23 +1482,7 @@ class Swarm:
         return receipt
     def _record_host_external_proof(self, actor:Role, task_id:str, gate:str, *, actor_id:str, evidence_digest:str, observed_at:int, host_signature:str) -> GateReceipt:
         """Host-adapter seam for provider, deployed, device, and human observations."""
-        self._role(actor,{Role.LEAD}); task=self.tasks[task_id]; self._require_lane_actor(task,actor,actor_id); contract=task.acceptance_contract
-        if contract is None or contract.explicitly_empty or contract.artifact is None or contract.proof_plan is None: raise InvariantError("external proof requires an exact planned acceptance contract")
-        if not task.incident_consultation_receipt: raise InvariantError("LEAD must consult matching unresolved incidents during the execution brief")
-        spec=self._gate_spec(contract,gate); plan=contract.proof_plan
-        if spec.executor not in {GateExecutor.PROVIDER,GateExecutor.HUMAN} or spec.argv: raise InvariantError("external proof may close only a host-observed non-command GateSpec")
-        if any(requirement.scope is ReviewScope.PLAN for requirement in plan.reviews) and (task.plan_review_receipt is None or dict(task.plan_review_receipt.receipt).get("plan")!=plan.plan_digest): raise InvariantError("consequential proof requires PLAN PASS before external observation")
-        digest=_require_digest(evidence_digest,"external proof evidence")
-        now=int(time.time())
-        if not isinstance(observed_at,int) or observed_at<1 or observed_at>now: raise InvariantError("external proof observation time must be current nonnegative seconds")
-        if spec.freshness_seconds is not None and now-observed_at>spec.freshness_seconds: raise InvariantError("external proof observation is outside its freshness window")
-        if spec.environment_fingerprint!=_runtime_environment_fingerprint(): raise InvariantError("external proof environment does not match the immutable proof plan")
-        current=contract.artifact.reobserve(contract.observation_root)
-        if current!=contract.artifact: raise InvariantError("acceptance artifact changed before external observation")
-        message=_authority_message("EXTERNAL_PROOF",(task_id,gate,actor_id,digest,observed_at,plan.plan_digest,_gate_spec_digest(spec),contract.artifact.key(),spec.environment_fingerprint,spec.proof_class.value))
-        if not _authority_verify(self._host_authority_public_key,message,host_signature): raise InvariantError("external proof requires a valid signature from the separately held host authority broker")
-        receipt=GateReceipt(gate=gate,artifact=contract.artifact,outcome=ProofOutcome.PASS,command=("external-observation",spec.executor.value),before=current.observables,after=current.observables,returncode=0,plan_digest=plan.plan_digest,gate_spec_digest=_gate_spec_digest(spec),artifact_digest=_sha256_text(contract.artifact.key()),input_closure_digest=spec.input_closure_digest,environment_fingerprint=spec.environment_fingerprint,started_at=observed_at,finished_at=observed_at,attempts=(ProofOutcome.PASS,),stability=ProofStability.STABLE,proof_class=spec.proof_class,authority_context_digest=_sha256_text(f"{task_id}:{actor_id}:{plan.plan_digest}:{digest}"),evidence_digest=digest)
-        object.__setattr__(receipt,"_authority",self._gate_capability); object.__setattr__(receipt,"_bound_task_id",task_id); task.gate_receipts[gate]=receipt; task.unverified_gate_receipts.pop(gate,None); task.review_passed=False; task.acceptance_review_receipt=None; task.state=TaskState.ACTIVE; return receipt
+        raise InvariantError("HOST_AUTHORITY_REQUIRED: external proof stays UNVERIFIED until an isolated host verifier records it")
     def adopt_gate_receipt(self, actor:Role, target_task_id:str, source_task_id:str, gate:str, *, actor_id:str) -> GateReceipt:
         """Adopt only a current runtime-authoritative receipt with the same exact proof key."""
         self._role(actor,{Role.LEAD}); target=self.tasks[target_task_id]; source=self.tasks[source_task_id]; self._require_lane_actor(target,actor,actor_id)
@@ -1779,7 +1762,4 @@ class _HostAuthorityBroker:
     def record_external_proof(self, actor:Role, task_id:str, gate:str, *, actor_id:str, evidence_digest:str, observed_at:int) -> GateReceipt:
         swarm=self._bound_swarm()
         if swarm is None: raise InvariantError("host authority broker is detached")
-        task=swarm.tasks[task_id]; contract=task.acceptance_contract
-        if contract is None or contract.artifact is None or contract.proof_plan is None: raise InvariantError("external proof requires an exact planned acceptance contract")
-        spec=swarm._gate_spec(contract,gate); digest=_require_digest(evidence_digest,"external proof evidence"); message=_authority_message("EXTERNAL_PROOF",(task_id,gate,actor_id,digest,observed_at,contract.proof_plan.plan_digest,_gate_spec_digest(spec),contract.artifact.key(),spec.environment_fingerprint,spec.proof_class.value)); signature=_authority_sign(self.__private_key,message)
-        return swarm._record_host_external_proof(actor,task_id,gate,actor_id=actor_id,evidence_digest=digest,observed_at=observed_at,host_signature=signature)
+        return swarm._record_host_external_proof(actor,task_id,gate,actor_id=actor_id,evidence_digest=evidence_digest,observed_at=observed_at,host_signature="")

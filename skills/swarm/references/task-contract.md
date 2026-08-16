@@ -13,15 +13,12 @@ Hidden subagents are execution capacity, not a replacement for required SWARM
 task ownership.
 
 If a CTRL is already active, a new CTRL or successor is never an inferred
-topology step. Require a current single-use host-minted user receipt naming the exact
-operation, source CTRL, target identity, objective, and scope. A mismatch or
-replay is a human-authority blocker and creates no host intent.
-The composition root gives the host adapter a separate authority broker and
-gives CTRL only the `Swarm` state object. The broker and its credentials must be
-absent from that CTRL-visible object graph; only a construction-sealed public
-verifier may remain. A CTRL-callable mint method, feed
-receipt, naming convention, directly constructed event, or extracted private
-attribute carries no user authority.
+topology step. Require the actual host task API to consume a current single-use
+host-owned user receipt naming the exact operation, source CTRL, target identity,
+objective, and scope. The plugin runtime may prepare a typed request but never
+consumes or upgrades it to host authority. A CTRL-callable mint method, feed
+receipt, naming convention, directly constructed event, signature, or mutated
+private attribute carries no host authority.
 
 ```text
 ROLE — artifact
