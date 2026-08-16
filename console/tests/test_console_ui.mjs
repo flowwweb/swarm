@@ -10,6 +10,7 @@ const { chromium } = require("playwright");
 const testsRoot = path.dirname(fileURLToPath(import.meta.url));
 const consoleRoot = path.resolve(testsRoot, "..");
 const staticRoot = path.join(consoleRoot, "static");
+const wordmark = fs.readFileSync(path.resolve(consoleRoot, "..", "skills", "swarm", "assets", "swarm-wordmark.png"));
 const fixture = JSON.parse(
   fs.readFileSync(path.join(testsRoot, "fixtures", "console-ui.json"), "utf8"),
 );
@@ -55,7 +56,7 @@ async function mount(page, overview = fixture.overview) {
       return route.fulfill({ status: 200, contentType: "text/html", body: documentHtml });
     }
     if (pathname === "/assets/swarm-wordmark.png") {
-      return route.fulfill({ status: 200, contentType: "image/png", body: Buffer.from("fixture") });
+      return route.fulfill({ status: 200, contentType: "image/png", body: wordmark });
     }
     if (pathname === "/api/bootstrap") return route.fulfill(response(fixture.bootstrap));
     if (pathname === "/api/overview") return route.fulfill(response(overview));
@@ -90,6 +91,22 @@ async function focusToggleWithKeyboard(page) {
   throw new Error("Usage Saver was not reachable in the first 30 Tab stops");
 }
 
+async function sidepanelAppearance(page) {
+  return page.evaluate(() => {
+    const icon = document.querySelector("#rail-toggle svg");
+    const panel = document.querySelector("#console-sidepanel");
+    const iconStyle = getComputedStyle(icon);
+    const panelStyle = getComputedStyle(panel);
+    return {
+      iconVisible: icon.getBoundingClientRect().width > 0 && iconStyle.display !== "none" && iconStyle.visibility !== "hidden" && Number(iconStyle.opacity) > 0,
+      panelVisible: panelStyle.display !== "none" && panelStyle.visibility !== "hidden" && Number(panelStyle.opacity) > 0,
+      expanded: document.querySelector("#rail-toggle").getAttribute("aria-expanded"),
+      panelHidden: panel.getAttribute("aria-hidden"),
+      panelInert: panel.hasAttribute("inert"),
+    };
+  });
+}
+
 const browser = await chromium.launch({
   headless: true,
   ...(process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE
@@ -99,7 +116,7 @@ const browser = await chromium.launch({
 const results = [];
 try {
   for (const width of [390, 834, 1440]) {
-    const page = await browser.newPage({ viewport: { width, height: width === 1440 ? 1000 : 844 } });
+    const page = await browser.newPage({ viewport: { width, height: width === 1440 ? 1000 : 844 }, hasTouch: width === 834 });
     const runtimeErrors = await mount(page);
 
     const geometry = await page.evaluate(() => {
@@ -114,6 +131,46 @@ try {
     assert.ok(geometry.bodyWidth <= width + 1, `${width}px body overflow`);
     assert.equal(geometry.title, "Graph");
 
+    let sidepanel = await sidepanelAppearance(page);
+    assert.equal(sidepanel.iconVisible && sidepanel.panelVisible, false, `${width}px rail icon and sidepanel rendered together`);
+    if (width <= 720) {
+      assert.deepEqual(sidepanel, { iconVisible: false, panelVisible: true, expanded: "false", panelHidden: "false", panelInert: false });
+    } else {
+      assert.deepEqual(sidepanel, { iconVisible: true, panelVisible: false, expanded: "false", panelHidden: "true", panelInert: true });
+      const toggle = page.locator("#rail-toggle");
+      if (width === 1440) {
+        await toggle.hover();
+        sidepanel = await sidepanelAppearance(page);
+        assert.equal(sidepanel.panelVisible, true, "hover did not reveal the sidepanel");
+        assert.equal(sidepanel.iconVisible, false, "rail icon remained visible beside the hover panel");
+        await page.waitForTimeout(220);
+        await page.screenshot({ path: path.join(evidenceRoot, "sidepanel-hover-1440.png"), fullPage: true });
+        await page.locator(".workspace").hover({ position: { x: 240, y: 160 } });
+        assert.equal((await sidepanelAppearance(page)).panelVisible, false, "hover preview did not close after pointer exit");
+        await toggle.focus();
+        sidepanel = await sidepanelAppearance(page);
+        assert.equal(sidepanel.panelVisible, true, "keyboard focus did not reveal the sidepanel");
+        assert.equal(sidepanel.iconVisible, false, "rail icon remained visible beside the focused panel");
+        await toggle.press("Enter");
+      } else {
+        await toggle.tap();
+        await page.waitForTimeout(220);
+        await page.screenshot({ path: path.join(evidenceRoot, "sidepanel-touch-834.png"), fullPage: true });
+      }
+      sidepanel = await sidepanelAppearance(page);
+      assert.equal(sidepanel.panelVisible, true, `${width}px activation did not pin the sidepanel`);
+      assert.equal(sidepanel.iconVisible, false, `${width}px rail icon remained visible beside the pinned panel`);
+      assert.equal(sidepanel.panelInert, false);
+      if (width === 834) {
+        await toggle.tap();
+        sidepanel = await sidepanelAppearance(page);
+        assert.equal(sidepanel.panelVisible, false, "touch activation did not collapse the sidepanel");
+        assert.equal(sidepanel.iconVisible, true, "touch collapse did not restore the rail icon");
+        await toggle.tap();
+      }
+      await page.waitForTimeout(220);
+    }
+
     await page.locator('[data-view="settings"]').click();
     const tabPresses = await focusToggleWithKeyboard(page);
     const focus = await page.locator('[data-setting="execution.usage_saver"]').evaluate((element) => {
@@ -124,11 +181,13 @@ try {
         outlineStyle: indicator.outlineStyle,
         outlineWidth: indicator.outlineWidth,
         unobscured: Boolean(top && element.closest(".switch").contains(top)),
+        rect: { top: rect.top, bottom: rect.bottom, left: rect.left, right: rect.right },
+        topElement: top ? `${top.tagName}.${top.className}` : "none",
       };
     });
     assert.notEqual(focus.outlineStyle, "none");
     assert.ok(parseFloat(focus.outlineWidth) >= 2);
-    assert.equal(focus.unobscured, true);
+    assert.equal(focus.unobscured, true, `${width}px focused setting was obscured: ${JSON.stringify(focus)}`);
 
     await page.keyboard.press("Space");
     await page.waitForFunction(() => document.querySelector('[data-setting="execution.usage_saver"]')?.checked && !document.querySelector("#save-settings")?.disabled);
@@ -148,6 +207,7 @@ try {
         taskNodes: hierarchyRoot.querySelectorAll(".swarm-node").length,
         standaloneDoers: hierarchyRoot.querySelectorAll(".swarm-node.role-doer").length,
         workers: [...hierarchyRoot.querySelectorAll(".node-worker")].map((node) => node.textContent.trim()),
+        models: [...hierarchyRoot.querySelectorAll(".node-model")].map((node) => node.textContent.trim()),
         delegatedLabels: [...hierarchyRoot.querySelectorAll(".swarm-node:not(.role-ctrl) .node-role")].map((node) => node.textContent.trim()),
         childArtifactCounts: ["Hierarchy renderer", "Visual polish", "Responsive proof"].map(
           (artifact) => hierarchyRoot.innerText.split(artifact).length - 1,
@@ -176,6 +236,7 @@ try {
     assert.equal(hierarchy.taskNodes, 5);
     assert.equal(hierarchy.standaloneDoers, 3);
     assert.deepEqual(hierarchy.workers, ["LEAD●Carson", "DEV●Lovelace", "DESIGN●Eames", "TEST●Noether"]);
+    assert.deepEqual(hierarchy.models, ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-terra", "gpt-5.6-terra", "gpt-5.6-terra"]);
     assert.ok(hierarchy.delegatedLabels.every((label) => label === "TASK"));
     assert.deepEqual(hierarchy.childArtifactCounts, [1, 1, 1]);
     assert.equal(hierarchy.titleAttributes, 0);
@@ -192,14 +253,18 @@ try {
     if (width === 1440) {
       const toggle = page.locator("#rail-toggle");
       assert.equal(await toggle.getAttribute("aria-expanded"), "true");
-      await toggle.focus();
-      await page.keyboard.press("Enter");
-      assert.equal(await toggle.getAttribute("aria-expanded"), "false");
-      assert.equal(await page.locator(".app-shell").evaluate((node) => node.classList.contains("rail-collapsed")), true);
       await page.reload({ waitUntil: "domcontentloaded" });
       await page.locator('[data-setting="execution.usage_saver"]').waitFor({ state: "attached" });
-      assert.equal(await page.locator("#rail-toggle").getAttribute("aria-expanded"), "false", "collapsed rail state did not persist");
+      assert.equal(await page.locator("#rail-toggle").getAttribute("aria-expanded"), "true", "expanded sidepanel state did not persist");
+      await page.locator("#rail-toggle").press("Enter");
+      assert.equal(await toggle.getAttribute("aria-expanded"), "false");
+      await page.reload({ waitUntil: "domcontentloaded" });
+      await page.locator('[data-setting="execution.usage_saver"]').waitFor({ state: "attached" });
+      assert.equal(await page.locator("#rail-toggle").getAttribute("aria-expanded"), "false", "collapsed sidepanel state did not persist");
       await page.screenshot({ path: path.join(evidenceRoot, "hierarchy-1440-collapsed.png"), fullPage: true });
+      await page.locator("#rail-toggle").click();
+      await page.keyboard.press("Escape");
+      assert.equal(await page.locator("#rail-toggle").getAttribute("aria-expanded"), "false", "Escape did not collapse the sidepanel");
       await page.locator("#rail-toggle").click();
     }
     await page.emulateMedia({ reducedMotion: "reduce" });
@@ -217,6 +282,7 @@ try {
     };
     results.push({ width, tabPresses, focus, geometry, hierarchy, screenshot, hierarchyScreenshot, runtime });
     assert.deepEqual(runtimeErrors, []);
+    if (width > 720) await page.locator("#rail-toggle").click();
     await page.close();
   }
   const sparseOverview = structuredClone(fixture.overview);

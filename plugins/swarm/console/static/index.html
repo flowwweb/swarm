@@ -13,25 +13,34 @@
     <div class="ambient ambient-one" aria-hidden="true"></div>
     <div class="ambient ambient-two" aria-hidden="true"></div>
     <div class="app-shell">
-      <aside class="rail" aria-label="SWARM Console navigation">
-        <div class="brand">
-          <img class="brand-wordmark" src="/assets/swarm-wordmark.png" alt="SWARM" />
-          <span class="brand-compact" aria-hidden="true">🐙</span>
-          <button class="rail-toggle" id="rail-toggle" type="button" aria-label="Collapse sidebar" aria-expanded="true" title="Collapse sidebar"><span aria-hidden="true">‹</span></button>
-        </div>
-        <nav class="nav-list">
-          <button class="nav-item is-active" data-view="swarm" type="button" aria-label="Graph" title="Graph">
-            <span aria-hidden="true">⌘</span><b>Graph</b>
+      <div class="sidepanel-region">
+        <div class="rail-control">
+          <button class="rail-toggle" id="rail-toggle" type="button" aria-label="Expand sidepanel" aria-controls="console-sidepanel" aria-expanded="false" title="Expand sidepanel">
+            <svg aria-hidden="true" class="lucide lucide-panel-left" viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <rect width="18" height="18" x="3" y="3" rx="2"></rect>
+              <path d="M9 3v18"></path>
+            </svg>
           </button>
-          <button class="nav-item" data-view="settings" type="button" aria-label="Settings" title="Settings">
-            <span aria-hidden="true">⚙</span><b>Settings</b>
-          </button>
-        </nav>
-        <div class="rail-foot">
-          <span class="privacy-light" aria-hidden="true"></span>
-          <div><strong>Local only</strong><small>Prompts stay out</small></div>
         </div>
-      </aside>
+        <aside class="rail" id="console-sidepanel" aria-label="SWARM Console navigation" aria-hidden="true" inert>
+          <div class="brand">
+            <img class="brand-wordmark" src="/assets/swarm-wordmark.png" alt="SWARM" />
+            <span class="brand-compact" aria-hidden="true">🐙</span>
+          </div>
+          <nav class="nav-list">
+            <button class="nav-item is-active" data-view="swarm" type="button" aria-label="Graph" title="Graph">
+              <span aria-hidden="true">⌘</span><b>Graph</b>
+            </button>
+            <button class="nav-item" data-view="settings" type="button" aria-label="Settings" title="Settings">
+              <span aria-hidden="true">⚙</span><b>Settings</b>
+            </button>
+          </nav>
+          <div class="rail-foot">
+            <span class="privacy-light" aria-hidden="true"></span>
+            <div><strong>Local only</strong><small>Prompts stay out</small></div>
+          </div>
+        </aside>
+      </div>
 
       <main class="workspace">
         <header class="topbar">

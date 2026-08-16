@@ -10,6 +10,7 @@ const state = {
 const $ = (selector, root = document) => root.querySelector(selector);
 const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
 const RAIL_STATE_KEY = "swarm.console.rail-collapsed";
+const MOBILE_RAIL = window.matchMedia("(max-width: 720px)");
 const REQUESTED_CONTROLLER = new URLSearchParams(location.search).get("ctrl") || "";
 
 const settingGroups = [
@@ -100,20 +101,32 @@ function clearError() {
   $("#error-surface").hidden = true;
 }
 
-function setRailCollapsed(collapsed, persist = true) {
+const railState = { pinned: false, preview: false };
+
+function renderRail(persist = false) {
   const shell = $(".app-shell");
   const button = $("#rail-toggle");
-  shell.classList.toggle("rail-collapsed", collapsed);
-  button.setAttribute("aria-expanded", String(!collapsed));
-  button.setAttribute("aria-label", collapsed ? "Expand sidebar" : "Collapse sidebar");
-  button.title = collapsed ? "Expand sidebar" : "Collapse sidebar";
-  button.querySelector("span").textContent = collapsed ? "›" : "‹";
+  const panel = $("#console-sidepanel");
+  const expanded = !MOBILE_RAIL.matches && (railState.pinned || railState.preview);
+  shell.classList.toggle("rail-expanded", expanded);
+  button.setAttribute("aria-expanded", String(expanded));
+  button.setAttribute("aria-label", expanded ? "Collapse sidepanel" : "Expand sidepanel");
+  button.title = expanded ? "Collapse sidepanel" : "Expand sidepanel";
+  panel.toggleAttribute("inert", !expanded && !MOBILE_RAIL.matches);
+  panel.setAttribute("aria-hidden", String(!expanded && !MOBILE_RAIL.matches));
   if (persist) {
-    try { localStorage.setItem(RAIL_STATE_KEY, collapsed ? "1" : "0"); } catch {}
+    try { localStorage.setItem(RAIL_STATE_KEY, railState.pinned ? "0" : "1"); } catch {}
   }
 }
 
-try { setRailCollapsed(localStorage.getItem(RAIL_STATE_KEY) === "1", false); } catch { setRailCollapsed(false, false); }
+function closeRail() {
+  railState.pinned = false;
+  railState.preview = false;
+  renderRail(true);
+}
+
+try { railState.pinned = localStorage.getItem(RAIL_STATE_KEY) === "0"; } catch {}
+renderRail();
 
 async function api(path, options = {}) {
   const response = await fetch(path, {
@@ -235,7 +248,7 @@ function renderSwarm() {
       ? `<span class="node-worker">${node.worker_role ? `<b>${escapeHTML(node.worker_role)}</b>` : ""}<span aria-hidden="true">●</span>${escapeHTML(node.worker || "unassigned")}</span>`
       : "";
     const workerDetail = node.worker ? `. Worker: ${node.worker}${node.worker_role ? ` (${node.worker_role})` : ""}` : "";
-    return `<article class="swarm-node role-${escapeHTML(node.role)} is-${escapeHTML(node.status)}" style="left:${p.x}px;top:${p.y}px;--node-color:${roleColor(node.role)}" aria-label="${escapeHTML(`${node.role_label} - ${node.artifact}${workerDetail}. Status: ${node.status}`)}"><div class="node-top"><span class="node-icon" aria-hidden="true">${escapeHTML(node.icon)}</span><span class="node-role">${escapeHTML(node.role_label)}</span></div><strong>${escapeHTML(node.artifact)}</strong><div class="node-meta">${worker}${hierarchyStatus(node.status)}</div></article>`;
+    return `<article class="swarm-node role-${escapeHTML(node.role)} is-${escapeHTML(node.status)}" style="left:${p.x}px;top:${p.y}px;--node-color:${roleColor(node.role)}" aria-label="${escapeHTML(`${node.role_label} - ${node.artifact}${workerDetail}. Model: ${node.model || "unknown"}. Status: ${node.status}`)}"><div class="node-top"><span class="node-icon" aria-hidden="true">${escapeHTML(node.icon)}</span><span class="node-role">${escapeHTML(node.role_label)}</span><span class="node-model">${escapeHTML(node.model || "unknown")}</span></div><strong>${escapeHTML(node.artifact)}</strong><div class="node-meta">${worker}${hierarchyStatus(node.status)}</div></article>`;
   }).join("");
   if (!displayNodes.length) $("#swarm-nodes").innerHTML = `<div class="empty-state">Host has not exposed a CTRL.</div>`;
   const scopeKey = `${project}:${controller}`;
@@ -343,11 +356,22 @@ document.addEventListener("click", (event) => {
   if (nav) setView(nav.dataset.view);
 });
 $("#refresh").addEventListener("click", refreshOverview);
-$("#rail-toggle").addEventListener("click", () => setRailCollapsed(!$(".app-shell").classList.contains("rail-collapsed")));
-$("#rail-toggle").addEventListener("keydown", (event) => {
-  if (event.key !== "Enter" && event.key !== " ") return;
-  event.preventDefault();
-  event.currentTarget.click();
+const sidepanelRegion = $(".sidepanel-region");
+$("#rail-toggle").addEventListener("pointerenter", () => { if (!railState.pinned) { railState.preview = true; renderRail(); } });
+$("#rail-toggle").addEventListener("focus", () => { if (!railState.pinned) { railState.preview = true; renderRail(); } });
+$("#rail-toggle").addEventListener("click", (event) => {
+  railState.pinned = !railState.pinned;
+  railState.preview = false;
+  renderRail(true);
+  if (event.detail) event.currentTarget.blur();
+});
+sidepanelRegion.addEventListener("pointerleave", () => { if (!railState.pinned && !sidepanelRegion.contains(document.activeElement)) { railState.preview = false; renderRail(); } });
+sidepanelRegion.addEventListener("focusout", (event) => { if (!railState.pinned && !sidepanelRegion.contains(event.relatedTarget)) { railState.preview = false; renderRail(); } });
+MOBILE_RAIL.addEventListener("change", () => renderRail());
+document.addEventListener("keydown", (event) => {
+  if (event.key !== "Escape" || MOBILE_RAIL.matches || (!railState.pinned && !railState.preview)) return;
+  $("#rail-toggle").focus();
+  closeRail();
 });
 $("#project-filter").addEventListener("change", renderSwarm);
 $("#controller-filter").addEventListener("change", renderSwarm);
