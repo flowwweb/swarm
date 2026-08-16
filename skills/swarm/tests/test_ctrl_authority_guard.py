@@ -24,8 +24,12 @@ class CtrlAuthorityGuardTests(unittest.TestCase):
 
     def authorization(self, operation:CtrlOperation=CtrlOperation.CREATE, *, target:str="ctrl-b", objective:str="objective-b"):
         user_receipt=f"usr-{operation.value.lower()}-decision000"
-        event=self.swarm._ingest_host_user_event(receipt=user_receipt,operation=operation,source_ctrl_id="ctrl-a",target_objective_digest=_sha256_text(objective),target_scope_digest=_sha256_text(target),target_identity=target,issued_at=1,host_event_digest=_sha256_text(f"host:{operation.value}:{target}:{objective}"))
+        event=self.swarm._ingest_host_user_event(self.swarm._host_user_event_capability,receipt=user_receipt,operation=operation,source_ctrl_id="ctrl-a",target_objective_digest=_sha256_text(objective),target_scope_digest=_sha256_text(target),target_identity=target,issued_at=1,host_event_digest=_sha256_text(f"host:{operation.value}:{target}:{objective}"))
         return self.swarm.record_user_ctrl_authorization(Role.CTRL,event)
+
+    def test_ctrl_cannot_call_host_mint_without_runtime_capability(self) -> None:
+        with self.assertRaisesRegex(InvariantError,"HUMAN_AUTHORITY_BLOCKER"):
+            self.swarm._ingest_host_user_event(object(),receipt="usr-forged-host000",operation=CtrlOperation.CREATE,source_ctrl_id="ctrl-a",target_objective_digest=_sha256_text("objective-b"),target_scope_digest=_sha256_text("ctrl-b"),target_identity="ctrl-b",issued_at=1,host_event_digest=_sha256_text("forged-host"))
 
     def test_ctrl_cannot_self_mint_user_authority_from_feed_receipts(self) -> None:
         forged=HostUserEvent("usr-forged-decision000",CtrlOperation.CREATE,"ctrl-a",_sha256_text("objective-b"),_sha256_text("ctrl-b"),"ctrl-b",1,_sha256_text("forged"))

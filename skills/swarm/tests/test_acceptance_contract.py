@@ -1,4 +1,5 @@
 from pathlib import Path
+import os
 import sys
 import tempfile
 import time
@@ -71,11 +72,46 @@ class AcceptanceContractTests(unittest.TestCase):
         second=plan_proof(ProofInputs(self.artifact,inputs.changed_surfaces,dependency_reach=inputs.dependency_reach,repo_capabilities=capabilities,policy_version="policy-two"))
         self.swarm.tasks["route"].acceptance_contract=AcceptanceContract(self.artifact,observation_root=self.temp.name,proof_plan=second)
         self.assertIn("contracts-fast",self.swarm.open_gates("route"))
+        wrong_environment=RepoProofCapabilities(gate_commands=commands,environment_fingerprint="0"*64)
+        foreign=plan_proof(ProofInputs(self.artifact,inputs.changed_surfaces,dependency_reach=inputs.dependency_reach,repo_capabilities=wrong_environment,policy_version="foreign"))
+        self.swarm.tasks["route"].acceptance_contract=AcceptanceContract(self.artifact,observation_root=self.temp.name,proof_plan=foreign)
+        with self.assertRaisesRegex(InvariantError,"environment does not match"):
+            self.swarm.run_gate(Role.LEAD,"route","contracts-fast",commands[0][1],cwd=self.temp.name,actor_id="lead")
+
+    def test_gate_executes_only_the_exact_planned_environment_snapshot(self):
+        key="SWARM_ENV_PROBE"
+        original=os.environ.get(key)
+        commands=(("contracts-fast",(sys.executable,"-c","pass")),)
+        plan=plan_proof(ProofInputs(self.artifact,(ChangedSurface(ChangedSurfaceKind.DOCS,("artifact.txt",)),),dependency_reach=DependencyReach(known=True),repo_capabilities=RepoProofCapabilities(gate_commands=commands)))
+        self.swarm.tasks["route"].acceptance_contract=AcceptanceContract(self.artifact,observation_root=self.temp.name,proof_plan=plan)
+        try:
+            os.environ[key]="changed-after-planning"
+            with self.assertRaisesRegex(InvariantError,"environment does not match"):
+                self.swarm.run_gate(Role.LEAD,"route","contracts-fast",commands[0][1],cwd=self.temp.name,actor_id="lead")
+        finally:
+            if original is None: os.environ.pop(key,None)
+            else: os.environ[key]=original
 
     def test_declared_claim_without_matching_current_proof_stays_open(self):
         plan=plan_proof(ProofInputs(self.artifact,(ChangedSurface(ChangedSurfaceKind.DOCS,("artifact.txt",)),),declared_claims=(ProofClaim("physical device",ProofClass.DEVICE),),dependency_reach=DependencyReach(known=True)))
         self.swarm.tasks["route"].acceptance_contract=AcceptanceContract(self.artifact,observation_root=self.temp.name,proof_plan=plan)
         self.assertEqual(self.swarm.open_claims("route"),("physical device",))
+
+    def test_host_observed_device_proof_closes_the_exact_declared_claim(self):
+        command=(sys.executable,"-c","pass")
+        capabilities=RepoProofCapabilities(gate_commands=(("contracts-fast",command),("contracts-full",command),("package-integrity",command),("release-parity",command)))
+        plan=plan_proof(ProofInputs(self.artifact,(ChangedSurface(ChangedSurfaceKind.DOCS,("artifact.txt",)),),declared_claims=(ProofClaim("physical device",ProofClass.DEVICE),),dependency_reach=DependencyReach(known=True),repo_capabilities=capabilities))
+        self.swarm.tasks["route"].acceptance_contract=AcceptanceContract(self.artifact,observation_root=self.temp.name,proof_plan=plan)
+        for gate in ("contracts-fast","contracts-full","package-integrity","release-parity"):
+            self.swarm.run_gate(Role.LEAD,"route",gate,command,cwd=self.temp.name,actor_id="lead")
+        device_gate=next(gate.id for gate in plan.gates if gate.proof_class is ProofClass.DEVICE)
+        with self.assertRaisesRegex(InvariantError,"runtime-private host capability"):
+            self.swarm._ingest_external_proof(object(),Role.LEAD,"route",device_gate,actor_id="lead",evidence_digest="1"*64,observed_at=int(time.time()))
+        receipt=self.swarm._ingest_external_proof(self.swarm._external_proof_capability,Role.LEAD,"route",device_gate,actor_id="lead",evidence_digest="2"*64,observed_at=int(time.time()))
+        self.assertEqual(receipt.command,("external-observation","PROVIDER"))
+        self.assertEqual(receipt.proof_class,ProofClass.DEVICE)
+        self.assertEqual(self.swarm.open_gates("route"),())
+        self.assertEqual(self.swarm.open_claims("route"),())
 
     def test_external_freshness_expiry_reopens_browser_gate(self):
         command=(sys.executable,"-c","pass")

@@ -7,8 +7,10 @@ from hashlib import sha256
 import json
 import os
 from pathlib import Path, PurePosixPath
+import platform
 import signal
 import subprocess
+import sys
 import time
 from .incidents import IncidentLedger, IncidentRecord
 from .request_ledger import RequestStore, RequestStoreError
@@ -323,10 +325,15 @@ def _require_digest(value:str, label:str) -> str:
     if len(normalized)!=64 or any(character not in "0123456789abcdef" for character in normalized): raise InvariantError(f"{label} must be a SHA-256 digest")
     return normalized
 
-def _run_bounded_process(command:tuple[str,...], *, cwd:Path, timeout:int) -> int:
+def _runtime_environment_fingerprint(environment:dict[str,str]|None=None) -> str:
+    environment=dict(os.environ) if environment is None else environment
+    facts=(os.name,sys.platform,platform.system(),platform.release(),platform.machine(),platform.python_implementation(),platform.python_version(),str(Path(sys.executable).resolve()),str(Path(sys.prefix).resolve()),tuple(sorted(environment.items())))
+    return _sha256_text(json.dumps(facts,separators=(",",":"),ensure_ascii=True))
+
+def _run_bounded_process(command:tuple[str,...], *, cwd:Path, timeout:int, environment:dict[str,str]) -> int:
     """Run one gate in its own process group so timeout cleans up descendants."""
     windows=os.name=="nt"
-    process=subprocess.Popen(command,cwd=str(cwd),shell=False,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,start_new_session=not windows,creationflags=getattr(subprocess,"CREATE_NEW_PROCESS_GROUP",0) if windows else 0)
+    process=subprocess.Popen(command,cwd=str(cwd),env=environment,shell=False,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,start_new_session=not windows,creationflags=getattr(subprocess,"CREATE_NEW_PROCESS_GROUP",0) if windows else 0)
     try:
         process.communicate(timeout=timeout)
     except subprocess.TimeoutExpired:
@@ -385,7 +392,7 @@ class RuntimeSignal:
 
 @dataclass(frozen=True)
 class RepoProofCapabilities:
-    fast_contract_gate:str="contracts-fast"; impacted_gate:str="impacted-tests"; broad_gate:str="contracts-full"; browser_gate:str="console-browser"; provider_gate:str="provider-proof"; package_gate:str="package-integrity"; release_gate:str="release-parity"; gate_commands:tuple[tuple[str,tuple[str,...]],...]=(); environment_fingerprint:str=field(default_factory=lambda:_sha256_text("repo-default-environment"))
+    fast_contract_gate:str="contracts-fast"; impacted_gate:str="impacted-tests"; broad_gate:str="contracts-full"; browser_gate:str="console-browser"; provider_gate:str="provider-proof"; package_gate:str="package-integrity"; release_gate:str="release-parity"; gate_commands:tuple[tuple[str,tuple[str,...]],...]=(); environment_fingerprint:str=field(default_factory=_runtime_environment_fingerprint)
     def __post_init__(self):
         values=(self.fast_contract_gate,self.impacted_gate,self.broad_gate,self.browser_gate,self.provider_gate,self.package_gate,self.release_gate)
         if any(not isinstance(value,str) or not value.strip() for value in values) or len(set(values))!=len(values): raise InvariantError("repository proof capabilities require distinct gate names")
@@ -530,7 +537,7 @@ def _gate_spec_digest(spec:GateSpec) -> str:
 class GateReceipt:
     """Inspectable gate evidence; only Swarm.run_gate makes it authoritative."""
     gate:str; artifact:ArtifactIdentity; outcome:ProofOutcome; command:tuple[str,...]; before:tuple[tuple[str,str],...]; after:tuple[tuple[str,str],...]; returncode:int|None
-    plan_digest:str=""; gate_spec_digest:str=""; artifact_digest:str=""; input_closure_digest:str=""; environment_fingerprint:str=""; started_at:int=0; finished_at:int=0; attempts:tuple[ProofOutcome,...]=(); stability:ProofStability=ProofStability.STABLE; proof_class:ProofClass=ProofClass.LOCAL_INTEGRATION; authority_context_digest:str=""
+    plan_digest:str=""; gate_spec_digest:str=""; artifact_digest:str=""; input_closure_digest:str=""; environment_fingerprint:str=""; started_at:int=0; finished_at:int=0; attempts:tuple[ProofOutcome,...]=(); stability:ProofStability=ProofStability.STABLE; proof_class:ProofClass=ProofClass.LOCAL_INTEGRATION; authority_context_digest:str=""; evidence_digest:str=""
     _authority:object|None=field(default=None,init=False,repr=False,compare=False); _bound_task_id:str=field(default="",init=False,repr=False,compare=False)
     def __post_init__(self):
         if not self.gate.strip() or not isinstance(self.artifact,ArtifactIdentity) or not isinstance(self.outcome,ProofOutcome): raise InvariantError("gate receipt requires gate, artifact, and typed outcome")
@@ -542,6 +549,7 @@ class GateReceipt:
         if self.returncode is not None and not isinstance(self.returncode,int): raise InvariantError("gate receipt return code must be an integer or absent")
         for value,label in ((self.plan_digest,"gate plan"),(self.gate_spec_digest,"gate spec"),(self.artifact_digest,"gate artifact"),(self.input_closure_digest,"gate input closure"),(self.authority_context_digest,"gate authority context")):
             if value: _require_digest(value,label)
+        if self.evidence_digest: object.__setattr__(self,"evidence_digest",_require_digest(self.evidence_digest,"gate evidence"))
         if not isinstance(self.started_at,int) or not isinstance(self.finished_at,int) or min(self.started_at,self.finished_at)<0 or self.finished_at and self.finished_at<self.started_at: raise InvariantError("gate timing must be monotonic nonnegative seconds")
         attempts=self.attempts or (self.outcome,)
         if any(not isinstance(item,ProofOutcome) for item in attempts) or attempts[-1] is not self.outcome or len(attempts)>2: raise InvariantError("gate attempts must preserve one or two typed outcomes ending in the final outcome")
@@ -550,8 +558,11 @@ class GateReceipt:
         object.__setattr__(self,"attempts",attempts)
     def current_for(self, authority:object, task_id:str, gate:str, artifact:ArtifactIdentity, current:ArtifactIdentity, plan:ProofPlan, spec:GateSpec, now:int) -> bool:
         fresh=spec.cache_policy is not CachePolicy.EXTERNAL_FRESH or bool(self.finished_at and spec.freshness_seconds is not None and 0<=now-self.finished_at<=spec.freshness_seconds)
-        command_matches=plan.legacy or self.command==spec.argv
-        return self._authority is authority and self._bound_task_id==task_id and self.gate==gate==spec.id and self.artifact==artifact==current and self.outcome is ProofOutcome.PASS and self.stability is ProofStability.STABLE and self.before==artifact.observables==self.after and self.plan_digest==plan.plan_digest and self.gate_spec_digest==_gate_spec_digest(spec) and self.artifact_digest==_sha256_text(artifact.key()) and self.input_closure_digest==spec.input_closure_digest and self.environment_fingerprint==spec.environment_fingerprint and self.proof_class is spec.proof_class and bool(self.authority_context_digest) and command_matches and fresh
+        expected_command=spec.argv if spec.argv else ("external-observation",spec.executor.value)
+        command_matches=plan.legacy or self.command==expected_command
+        external_evidence=plan.legacy or bool(spec.argv) or bool(self.evidence_digest)
+        environment_matches=plan.legacy or spec.environment_fingerprint==_runtime_environment_fingerprint()
+        return self._authority is authority and self._bound_task_id==task_id and self.gate==gate==spec.id and self.artifact==artifact==current and self.outcome is ProofOutcome.PASS and self.stability is ProofStability.STABLE and self.before==artifact.observables==self.after and self.plan_digest==plan.plan_digest and self.gate_spec_digest==_gate_spec_digest(spec) and self.artifact_digest==_sha256_text(artifact.key()) and self.input_closure_digest==spec.input_closure_digest and self.environment_fingerprint==spec.environment_fingerprint and environment_matches and self.proof_class is spec.proof_class and bool(self.authority_context_digest) and command_matches and external_evidence and fresh
 @dataclass(frozen=True)
 class WatchdogBinding:
     """Optional alert route for one explicitly owned durable goal."""
@@ -740,7 +751,7 @@ class Worker:
 class Swarm:
     architecture_version: int=1; contract_versions: dict[str,int]=field(default_factory=dict); topology: set[str]=field(default_factory=set)
     workers: dict[str,Worker]=field(default_factory=dict); tasks: dict[str,Task]=field(default_factory=dict); leases: dict[str,str]=field(default_factory=dict); events: list[tuple[str,str]]=field(default_factory=list); telemetry: dict[str,object]=field(default_factory=dict); telemetry_events:list[dict[str,object]]=field(default_factory=list); artifact_index:dict[str,str]=field(default_factory=dict); provenance_index:dict[str,str]=field(default_factory=dict); ctrl_evidence_ledger:dict[str,CtrlEvidence]=field(default_factory=dict); ctrl_decision_sets:dict[str,CtrlDecisionSet]=field(default_factory=dict); ctrl_phase:str="intake"; hive:dict[str,HiveRecord]=field(default_factory=dict); hive_enabled:bool=True; heartbeat_stall_after:int=2; correction_receipts:dict[str,None]=field(default_factory=dict); lane_width:int=3; wip_limit:int=3; efficiency_ledger:list[dict[str,str]]=field(default_factory=list); mode:EfficiencyMode=EfficiencyMode.BALANCED; default_review_horizon:int=30; max_review_horizon:int=60; direct_work_horizon:int=20
-    scheduled_wakeups:dict[str,int]=field(default_factory=dict); ctrl_feed_messages:list[CtrlFeedMessage]=field(default_factory=list); ctrl_feed_cursor:int=0; ctrl_feed_superseded_by:dict[str,str]=field(default_factory=dict); ctrl_feed_events:dict[str,CtrlFeedEvent]=field(default_factory=dict); ctrl_feed_consumed_events:set[str]=field(default_factory=set); ctrl_authorizations:dict[str,UserCtrlAuthorization]=field(default_factory=dict); ctrl_materialization_intents:dict[str,CtrlMaterializationIntent]=field(default_factory=dict); consumed_ctrl_authorizations:set[str]=field(default_factory=set); consumed_ctrl_intents:set[str]=field(default_factory=set); proof_policy_version:str="lean-v1"; proof_impacted_selection:bool=True; proof_receipt_reuse:bool=True; proof_gate_timeout_seconds:int=120; proof_browser_freshness_seconds:int=86400; proof_provider_freshness_seconds:int=3600; proof_transient_retry_limit:int=1; request_store:RequestStore|None=field(default=None,repr=False,compare=False); request_continuity_enabled:bool=False; request_feed_sequence_floor:int=0; _gate_capability:object=field(default_factory=object,init=False,repr=False,compare=False); _watchdog_capability:object=field(default_factory=object,init=False,repr=False,compare=False); _owner_context_capability:object=field(default_factory=object,init=False,repr=False,compare=False); _ctrl_authority_capability:object=field(default_factory=object,init=False,repr=False,compare=False); _host_user_event_capability:object=field(default_factory=object,init=False,repr=False,compare=False)
+    scheduled_wakeups:dict[str,int]=field(default_factory=dict); ctrl_feed_messages:list[CtrlFeedMessage]=field(default_factory=list); ctrl_feed_cursor:int=0; ctrl_feed_superseded_by:dict[str,str]=field(default_factory=dict); ctrl_feed_events:dict[str,CtrlFeedEvent]=field(default_factory=dict); ctrl_feed_consumed_events:set[str]=field(default_factory=set); ctrl_authorizations:dict[str,UserCtrlAuthorization]=field(default_factory=dict); ctrl_materialization_intents:dict[str,CtrlMaterializationIntent]=field(default_factory=dict); consumed_ctrl_authorizations:set[str]=field(default_factory=set); consumed_ctrl_intents:set[str]=field(default_factory=set); proof_policy_version:str="lean-v1"; proof_impacted_selection:bool=True; proof_receipt_reuse:bool=True; proof_gate_timeout_seconds:int=120; proof_browser_freshness_seconds:int=86400; proof_provider_freshness_seconds:int=3600; proof_transient_retry_limit:int=1; request_store:RequestStore|None=field(default=None,repr=False,compare=False); request_continuity_enabled:bool=False; request_feed_sequence_floor:int=0; _gate_capability:object=field(default_factory=object,init=False,repr=False,compare=False); _watchdog_capability:object=field(default_factory=object,init=False,repr=False,compare=False); _owner_context_capability:object=field(default_factory=object,init=False,repr=False,compare=False); _ctrl_authority_capability:object=field(default_factory=object,init=False,repr=False,compare=False); _host_user_event_capability:object=field(default_factory=object,init=False,repr=False,compare=False); _external_proof_capability:object=field(default_factory=object,init=False,repr=False,compare=False)
     @classmethod
     def from_config(cls, config: dict) -> "Swarm":
         monitoring=config["monitoring"]
@@ -997,8 +1008,9 @@ class Swarm:
         receipt=(authority,reason,requirements_delta,new_baseline,prior_miss_relevance)
         if version!=t.objective_version+1 or not all(item.strip() for item in receipt): raise InvariantError("objective amendment requires next version, authority, reason, requirements delta, baseline, and prior-miss relevance")
         t.objective_version=version; t.milestone_history.append((version,"AMEND","|".join(receipt)))
-    def _ingest_host_user_event(self, *, receipt:str, operation:CtrlOperation, source_ctrl_id:str, target_objective_digest:str, target_scope_digest:str, target_identity:str, issued_at:int, host_event_digest:str) -> HostUserEvent:
+    def _ingest_host_user_event(self, host_capability:object, *, receipt:str, operation:CtrlOperation, source_ctrl_id:str, target_objective_digest:str, target_scope_digest:str, target_identity:str, issued_at:int, host_event_digest:str) -> HostUserEvent:
         """Host-adapter seam: CTRL-facing APIs cannot mint this capability."""
+        if host_capability is not self._host_user_event_capability: raise InvariantError("HUMAN_AUTHORITY_BLOCKER: host user-event mint requires the runtime-private host capability")
         event=HostUserEvent(receipt,operation,source_ctrl_id,target_objective_digest,target_scope_digest,target_identity,issued_at,host_event_digest)
         object.__setattr__(event,"_authority",self._host_user_event_capability); return event
     def record_user_ctrl_authorization(self, actor:Role, host_event:HostUserEvent|None) -> UserCtrlAuthorization:
@@ -1420,6 +1432,8 @@ class Swarm:
         except TypeError as error: raise InvariantError("gate execution requires argv") from error
         if not command or not isinstance(command[0],str) or not command[0] or any(not isinstance(part,str) for part in command): raise InvariantError("gate execution requires argv with a nonempty executable")
         if not plan.legacy and (not spec.argv or command!=spec.argv): raise InvariantError("gate execution argv must match the immutable proof-plan GateSpec")
+        environment=dict(os.environ)
+        if not plan.legacy and spec.environment_fingerprint!=_runtime_environment_fingerprint(environment): raise InvariantError("gate execution environment does not match the immutable proof plan")
         workdir=Path(cwd).resolve()
         if not workdir.is_dir(): raise InvariantError("gate execution directory must exist")
         before=contract.artifact.reobserve(contract.observation_root)
@@ -1432,7 +1446,7 @@ class Swarm:
         for attempt in range(max_attempts):
             infrastructure_failure=False
             try:
-                returncode=_run_bounded_process(command,cwd=workdir,timeout=timeout); outcome=ProofOutcome.PASS if returncode==0 else ProofOutcome.FAIL
+                returncode=_run_bounded_process(command,cwd=workdir,timeout=timeout,environment=environment); outcome=ProofOutcome.PASS if returncode==0 else ProofOutcome.FAIL
             except subprocess.TimeoutExpired: outcome=ProofOutcome.TIMEOUT; infrastructure_failure=True
             except OSError: outcome=ProofOutcome.FAIL; infrastructure_failure=True
             attempts.append(outcome)
@@ -1446,6 +1460,24 @@ class Swarm:
         if outcome is not ProofOutcome.PASS:
             t.review_passed=False; t.acceptance_review_receipt=None; t.state=TaskState.ACTIVE
         return receipt
+    def _ingest_external_proof(self, host_capability:object, actor:Role, task_id:str, gate:str, *, actor_id:str, evidence_digest:str, observed_at:int) -> GateReceipt:
+        """Host-adapter seam for provider, deployed, device, and human observations."""
+        if host_capability is not self._external_proof_capability: raise InvariantError("external proof requires the runtime-private host capability")
+        self._role(actor,{Role.LEAD}); task=self.tasks[task_id]; self._require_lane_actor(task,actor,actor_id); contract=task.acceptance_contract
+        if contract is None or contract.explicitly_empty or contract.artifact is None or contract.proof_plan is None: raise InvariantError("external proof requires an exact planned acceptance contract")
+        if not task.incident_consultation_receipt: raise InvariantError("LEAD must consult matching unresolved incidents during the execution brief")
+        spec=self._gate_spec(contract,gate); plan=contract.proof_plan
+        if spec.executor not in {GateExecutor.PROVIDER,GateExecutor.HUMAN} or spec.argv: raise InvariantError("external proof may close only a host-observed non-command GateSpec")
+        if any(requirement.scope is ReviewScope.PLAN for requirement in plan.reviews) and (task.plan_review_receipt is None or dict(task.plan_review_receipt.receipt).get("plan")!=plan.plan_digest): raise InvariantError("consequential proof requires PLAN PASS before external observation")
+        digest=_require_digest(evidence_digest,"external proof evidence")
+        now=int(time.time())
+        if not isinstance(observed_at,int) or observed_at<1 or observed_at>now: raise InvariantError("external proof observation time must be current nonnegative seconds")
+        if spec.freshness_seconds is not None and now-observed_at>spec.freshness_seconds: raise InvariantError("external proof observation is outside its freshness window")
+        if spec.environment_fingerprint!=_runtime_environment_fingerprint(): raise InvariantError("external proof environment does not match the immutable proof plan")
+        current=contract.artifact.reobserve(contract.observation_root)
+        if current!=contract.artifact: raise InvariantError("acceptance artifact changed before external observation")
+        receipt=GateReceipt(gate=gate,artifact=contract.artifact,outcome=ProofOutcome.PASS,command=("external-observation",spec.executor.value),before=current.observables,after=current.observables,returncode=0,plan_digest=plan.plan_digest,gate_spec_digest=_gate_spec_digest(spec),artifact_digest=_sha256_text(contract.artifact.key()),input_closure_digest=spec.input_closure_digest,environment_fingerprint=spec.environment_fingerprint,started_at=observed_at,finished_at=observed_at,attempts=(ProofOutcome.PASS,),stability=ProofStability.STABLE,proof_class=spec.proof_class,authority_context_digest=_sha256_text(f"{task_id}:{actor_id}:{plan.plan_digest}:{digest}"),evidence_digest=digest)
+        object.__setattr__(receipt,"_authority",self._gate_capability); object.__setattr__(receipt,"_bound_task_id",task_id); task.gate_receipts[gate]=receipt; task.unverified_gate_receipts.pop(gate,None); task.review_passed=False; task.acceptance_review_receipt=None; task.state=TaskState.ACTIVE; return receipt
     def adopt_gate_receipt(self, actor:Role, target_task_id:str, source_task_id:str, gate:str, *, actor_id:str) -> GateReceipt:
         """Adopt only a current runtime-authoritative receipt with the same exact proof key."""
         self._role(actor,{Role.LEAD}); target=self.tasks[target_task_id]; source=self.tasks[source_task_id]; self._require_lane_actor(target,actor,actor_id)
