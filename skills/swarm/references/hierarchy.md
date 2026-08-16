@@ -12,7 +12,8 @@ a LEAD. A LEAD may hire DOERs for separable work that shortens accepted proof.
 
 An existing CTRL never creates another CTRL by inference. CREATE, FORK,
 PROMOTE, REPLACE, RENAME, SUCCESSOR, and RECOVER_AS_NEW each require a current
-single-use explicit user authorization bound to the source CTRL, operation,
+single-use host-minted explicit user authorization, unavailable to CTRL feed
+APIs and bound to the source CTRL, operation,
 target identity, objective, and scope. Missing, mismatched, or replayed evidence
 emits a human-authority blocker and no host creation intent. Same-identity
 restore is not CTRL creation; Researcher, Architect, LEAD, DOER, and REVIEW are

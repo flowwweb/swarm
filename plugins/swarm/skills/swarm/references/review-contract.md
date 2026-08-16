@@ -9,7 +9,7 @@ minimum independent review that matches consequence and evidence:
 
 | Tier | Required proof and review |
 | --- | --- |
-| T0 atomic/docs | Focused deterministic contract; light independent acceptance only when self-acceptance risk exists |
+| T0 atomic/docs | Focused deterministic contract plus light independent acceptance; callers cannot assert it away |
 | T1 ordinary code | Fast contracts plus impacted proof; one combined source-and-acceptance review |
 | T2 visual/browser | T1 plus exact final browser/visual evidence; one combined browser/source/acceptance review |
 | T3 provider/security/data | Plan review before mutation, authority/failure proof, then final acceptance |
@@ -19,6 +19,11 @@ Unknown dependency reach or missing impact evidence broadens the plan. After a
 correction, rerun the failed proof and every dependent gate, not unrelated
 accepted work.
 
+Browser proof is selected only for affected or claimed browser/visual surfaces.
+Release escalation replaces impacted proof with broad proof; it does not run
+both. T0 independent acceptance cannot be omitted by a caller asserting that
+self-acceptance risk is absent.
+
 For consequential implementation, REVIEW first judges an immutable plan artifact.
 `PLAN PASS` authorizes implementation only; it cannot accept code, behavior,
 deployment, or the portfolio. Corrections create a new plan revision and return
@@ -27,8 +32,9 @@ independent `ACCEPTANCE` review judges that completed artifact. Any correction
 creates a new artifact identity, reopens its gates, and requires a fresh final
 review. CTRL composes only independently accepted lane artifacts.
 
-A current stable gate receipt may be reused only when its plan, gate, artifact,
-input closure, environment, authority context, proof class, and freshness rules
+A current stable gate receipt may be reused only when its plan, exact command
+and gate spec, artifact, input closure, environment, authority context, proof
+class, declared-claim coverage, and freshness rules
 still match after runtime re-observation. Cache is disposable continuity, not
 acceptance. External proof has bounded freshness. `TIMEOUT` never passes; one
 typed transient retry is the maximum before broadening or blocking.

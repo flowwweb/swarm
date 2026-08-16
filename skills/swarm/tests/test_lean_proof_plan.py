@@ -32,6 +32,10 @@ class LeanProofPlanTests(unittest.TestCase):
         self.assertEqual(tuple(gate.id for gate in left.gates),("contracts-fast",))
         self.assertEqual(tuple(review.scope for review in left.reviews),(ReviewScope.ACCEPTANCE,))
 
+    def test_t0_caller_cannot_assert_away_independent_acceptance(self) -> None:
+        plan=plan_proof(ProofInputs(self.artifact(),(ChangedSurface(ChangedSurfaceKind.DOCS,("README.md",)),),dependency_reach=DependencyReach(known=True),self_acceptance_risk=False))
+        self.assertEqual(tuple(review.scope for review in plan.reviews),(ReviewScope.ACCEPTANCE,))
+
     def test_unknown_runtime_reach_broadens_to_full_contracts(self) -> None:
         plan=plan_proof(ProofInputs(self.artifact(),(ChangedSurface(ChangedSurfaceKind.RUNTIME,("skills/swarm/runtime/core.py",),public=True),)))
         self.assertEqual(plan.tier,ConsequenceTier.T1)
@@ -48,6 +52,9 @@ class LeanProofPlanTests(unittest.TestCase):
         self.assertEqual(tuple(review.scope for review in provider.reviews),(ReviewScope.PLAN,ReviewScope.ACCEPTANCE))
         self.assertEqual(release.tier,ConsequenceTier.T4)
         self.assertIn("package-integrity",tuple(gate.id for gate in release.gates))
+        self.assertIn("contracts-full",tuple(gate.id for gate in release.gates))
+        self.assertNotIn("impacted-tests",tuple(gate.id for gate in release.gates))
+        self.assertNotIn("console-browser",tuple(gate.id for gate in release.gates))
         self.assertEqual(tuple(review.scope for review in release.reviews),(ReviewScope.COMPOSED,))
 
     def test_runtime_failure_signal_escalates_known_impacted_selection(self) -> None:

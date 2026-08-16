@@ -213,6 +213,13 @@ class SwarmConfigTests(unittest.TestCase):
             with self.assertRaisesRegex(config.ConfigError, "transient_retry_limit"):
                 config.load(path)
 
+    def test_v4_partial_config_merges_proof_defaults_before_validation(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path=Path(directory)/"partial.toml"
+            path.write_text("schema_version = 4\n[execution]\nusage_profile = \"low\"\n",encoding="utf-8")
+            effective,_=config.load(path)
+        self.assertEqual(effective["proof"],config.DEFAULTS["proof"])
+
     def test_review_horizon_order_and_direct_bound_are_enforced(self) -> None:
         invalid = (
             "[monitoring]\nsmall_task_review_horizon_minutes = 20\ndefault_review_horizon_minutes = 10\n",

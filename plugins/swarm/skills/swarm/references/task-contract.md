@@ -13,7 +13,7 @@ Hidden subagents are execution capacity, not a replacement for required SWARM
 task ownership.
 
 If a CTRL is already active, a new CTRL or successor is never an inferred
-topology step. Require a current single-use user receipt naming the exact
+topology step. Require a current single-use host-minted user receipt naming the exact
 operation, source CTRL, target identity, objective, and scope. A mismatch or
 replay is a human-authority blocker and creates no host intent.
 
@@ -41,11 +41,12 @@ Integration-ready means immutable artifact identity, required proof state, and a
 
 The deterministic ProofPlan binds changed surfaces, declared claims, authority
 boundaries, dependency reach, incidents, runtime signals, repository
-capabilities, consequence tier, exact gates, reviews, and claim coverage.
+capabilities, consequence tier, exact commands and environments, gates, reviews, and claim coverage.
 Unknown impact broadens proof. Gate receipts bind the plan, gate, artifact,
 input closure, environment, authority, timing, attempt history, stability, and
 proof class. Stable exact-input evidence may be re-observed and adopted, but it
-never transfers review or acceptance authority. Gate receipts use only `PASS`,
+never transfers review or acceptance authority. Every declared claim remains
+open until a current receipt of its matching proof class exists. Gate receipts use only `PASS`,
 `FAIL`, or `TIMEOUT`; timeout never passes and allows at most one typed
 same-state transient retry. Source-semantic review cannot close the lane. A material defect found
 after handoff adds one local causal record; minor failures do not. Daily fold may

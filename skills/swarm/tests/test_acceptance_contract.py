@@ -5,7 +5,7 @@ import time
 import unittest
 
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
-from runtime import AcceptanceContract, ArtifactIdentity, CtrlSurfaceKind, GateReceipt, IncidentLedger, InvariantError, LaneKind, ProofOutcome, ReviewEvidence, ReviewScope, ReviewStrategy, Role, Swarm, Task, TaskState, WatchdogReceipt, WatchdogRouteRole, WatchdogScope, WatchdogSignal, Worker, WorkerState
+from runtime import AcceptanceContract, ArtifactIdentity, ChangedSurface, ChangedSurfaceKind, CtrlSurfaceKind, DependencyReach, GateReceipt, IncidentLedger, InvariantError, LaneKind, ProofClaim, ProofClass, ProofInputs, ProofOutcome, RepoProofCapabilities, ReviewEvidence, ReviewScope, ReviewStrategy, Role, Swarm, Task, TaskState, WatchdogReceipt, WatchdogRouteRole, WatchdogScope, WatchdogSignal, Worker, WorkerState, plan_proof
 
 
 class AcceptanceContractTests(unittest.TestCase):
@@ -58,6 +58,34 @@ class AcceptanceContractTests(unittest.TestCase):
         self.assertEqual(receipt.outcome,ProofOutcome.TIMEOUT)
         time.sleep(1)
         self.assertFalse(marker.exists())
+
+    def test_v2_gate_requires_exact_argv_and_policy_drift_reopens(self):
+        commands=(("contracts-fast",(sys.executable,"-c","pass")),("impacted-tests",(sys.executable,"-c","pass")))
+        capabilities=RepoProofCapabilities(gate_commands=commands)
+        inputs=ProofInputs(self.artifact,(ChangedSurface(ChangedSurfaceKind.RUNTIME,("artifact.txt",)),),dependency_reach=DependencyReach(("focused",),known=True),repo_capabilities=capabilities,policy_version="policy-one")
+        first=plan_proof(inputs); self.swarm.tasks["route"].acceptance_contract=AcceptanceContract(self.artifact,observation_root=self.temp.name,proof_plan=first)
+        with self.assertRaisesRegex(InvariantError,"argv must match"):
+            self.run_gate("contracts-fast","raise SystemExit(0)")
+        self.swarm.run_gate(Role.LEAD,"route","contracts-fast",commands[0][1],cwd=self.temp.name,actor_id="lead")
+        self.assertNotIn("contracts-fast",self.swarm.open_gates("route"))
+        second=plan_proof(ProofInputs(self.artifact,inputs.changed_surfaces,dependency_reach=inputs.dependency_reach,repo_capabilities=capabilities,policy_version="policy-two"))
+        self.swarm.tasks["route"].acceptance_contract=AcceptanceContract(self.artifact,observation_root=self.temp.name,proof_plan=second)
+        self.assertIn("contracts-fast",self.swarm.open_gates("route"))
+
+    def test_declared_claim_without_matching_current_proof_stays_open(self):
+        plan=plan_proof(ProofInputs(self.artifact,(ChangedSurface(ChangedSurfaceKind.DOCS,("artifact.txt",)),),declared_claims=(ProofClaim("physical device",ProofClass.DEVICE),),dependency_reach=DependencyReach(known=True)))
+        self.swarm.tasks["route"].acceptance_contract=AcceptanceContract(self.artifact,observation_root=self.temp.name,proof_plan=plan)
+        self.assertEqual(self.swarm.open_claims("route"),("physical device",))
+
+    def test_external_freshness_expiry_reopens_browser_gate(self):
+        command=(sys.executable,"-c","pass")
+        capabilities=RepoProofCapabilities(gate_commands=(("contracts-fast",command),("impacted-tests",command),("console-browser",command)))
+        plan=plan_proof(ProofInputs(self.artifact,(ChangedSurface(ChangedSurfaceKind.VISUAL,("artifact.txt",)),),dependency_reach=DependencyReach(("focused",),known=True),repo_capabilities=capabilities))
+        self.swarm.tasks["route"].acceptance_contract=AcceptanceContract(self.artifact,observation_root=self.temp.name,proof_plan=plan)
+        receipt=self.swarm.run_gate(Role.LEAD,"route","console-browser",command,cwd=self.temp.name,actor_id="lead")
+        self.assertNotIn("console-browser",self.swarm.open_gates("route"))
+        object.__setattr__(receipt,"finished_at",int(time.time())-86401)
+        self.assertIn("console-browser",self.swarm.open_gates("route"))
 
     def test_stale_artifact_receipt_and_review_fail_closed(self):
         stale=ArtifactIdentity("route","sha-old","release")

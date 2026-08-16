@@ -2,6 +2,11 @@ name: Validate plugin
 
 on:
   workflow_call:
+    inputs:
+      console_ui_required:
+        description: Require provisioned responsive console proof for this exact revision
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -10,6 +15,32 @@ env:
   PYTHONDONTWRITEBYTECODE: "1"
 
 jobs:
+  console-ui:
+    name: Required console UI
+    if: inputs.console_ui_required
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out the triggering revision
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Set up Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: console/package-lock.json
+      - name: Install pinned browser tooling
+        shell: bash
+        working-directory: console
+        run: |
+          npm ci
+          npx playwright install --with-deps chromium
+      - name: Run responsive interaction proof
+        shell: bash
+        working-directory: console
+        run: npm run test:ui
+
   fast-contracts:
     name: Fast contracts
     runs-on: ubuntu-latest

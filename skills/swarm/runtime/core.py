@@ -385,10 +385,14 @@ class RuntimeSignal:
 
 @dataclass(frozen=True)
 class RepoProofCapabilities:
-    fast_contract_gate:str="contracts-fast"; impacted_gate:str="impacted-tests"; broad_gate:str="contracts-full"; browser_gate:str="console-browser"; provider_gate:str="provider-proof"; package_gate:str="package-integrity"; release_gate:str="release-parity"
+    fast_contract_gate:str="contracts-fast"; impacted_gate:str="impacted-tests"; broad_gate:str="contracts-full"; browser_gate:str="console-browser"; provider_gate:str="provider-proof"; package_gate:str="package-integrity"; release_gate:str="release-parity"; gate_commands:tuple[tuple[str,tuple[str,...]],...]=(); environment_fingerprint:str=field(default_factory=lambda:_sha256_text("repo-default-environment"))
     def __post_init__(self):
         values=(self.fast_contract_gate,self.impacted_gate,self.broad_gate,self.browser_gate,self.provider_gate,self.package_gate,self.release_gate)
         if any(not isinstance(value,str) or not value.strip() for value in values) or len(set(values))!=len(values): raise InvariantError("repository proof capabilities require distinct gate names")
+        commands=dict(self.gate_commands)
+        if len(commands)!=len(self.gate_commands) or any(gate not in values or not argv or any(not isinstance(part,str) or not part for part in argv) for gate,argv in self.gate_commands): raise InvariantError("repository proof commands must bind distinct declared gates to exact argv")
+        object.__setattr__(self,"gate_commands",tuple(sorted((gate,tuple(argv)) for gate,argv in commands.items()))); object.__setattr__(self,"environment_fingerprint",_require_digest(self.environment_fingerprint,"repository environment"))
+    def command_for(self, gate:str) -> tuple[str,...]: return dict(self.gate_commands).get(gate,())
 
 @dataclass(frozen=True)
 class GateSpec:
@@ -396,6 +400,7 @@ class GateSpec:
     def __post_init__(self):
         if not isinstance(self.id,str) or not self.id.strip() or not isinstance(self.proof_class,ProofClass) or not isinstance(self.executor,GateExecutor): raise InvariantError("gate spec requires identity, proof class, and executor")
         if self.input_closure_digest: object.__setattr__(self,"input_closure_digest",_require_digest(self.input_closure_digest,"gate input closure"))
+        if self.environment_fingerprint: object.__setattr__(self,"environment_fingerprint",_require_digest(self.environment_fingerprint,"gate environment"))
         if not isinstance(self.timeout_seconds,int) or self.timeout_seconds<1: raise InvariantError("gate timeout must be a positive integer")
         if self.freshness_seconds is not None and (not isinstance(self.freshness_seconds,int) or self.freshness_seconds<1): raise InvariantError("external freshness must be a positive integer")
         if self.cache_policy is CachePolicy.EXTERNAL_FRESH and self.freshness_seconds is None: raise InvariantError("external proof reuse requires bounded freshness")
@@ -466,7 +471,7 @@ def plan_proof(inputs:ProofInputs) -> ProofPlan:
             floor=claim_floor[claim.proof_class]; tier=_tier_max(tier,floor); reasons.append(PlanReason(claim.name,f"declared {claim.proof_class.value} claim requires {floor.value}"))
     if any(boundary.consequential for boundary in inputs.authority_boundaries):
         tier=_tier_max(tier,ConsequenceTier.T3); reasons.append(PlanReason("authority","consequential authority boundary requires plan and final review"))
-    broad=not inputs.dependency_reach.known or inputs.dependency_reach.shared_core or inputs.dependency_reach.toolchain_changed
+    broad=not inputs.dependency_reach.known or inputs.dependency_reach.shared_core or inputs.dependency_reach.toolchain_changed or tier is ConsequenceTier.T4
     if not inputs.dependency_reach.known: reasons.append(PlanReason("dependency-reach","unknown dependency reach broadens proof"))
     if inputs.incident_matches or inputs.runtime_signals:
         broad=True; reasons.append(PlanReason("runtime-escalation","incident or runtime signal requires the nearest broad detector"))
@@ -477,14 +482,18 @@ def plan_proof(inputs:ProofInputs) -> ProofPlan:
     add(caps.fast_contract_gate,ProofClass.SOURCE_STATIC)
     if _TIER_ORDER[tier]>=1:
         add(caps.broad_gate if broad else caps.impacted_gate,ProofClass.LOCAL_INTEGRATION if broad else ProofClass.LOCAL_UNIT)
-    if _TIER_ORDER[tier]>=2: add(caps.browser_gate,ProofClass.BROWSER_LOCAL,CachePolicy.EXTERNAL_FRESH,86400)
+    browser_required=any(surface.kind in {ChangedSurfaceKind.VISUAL,ChangedSurfaceKind.BROWSER} for surface in inputs.changed_surfaces) or any(claim.proof_class in {ProofClass.BROWSER_LOCAL,ProofClass.BROWSER_AUTHENTICATED} for claim in inputs.declared_claims)
+    if browser_required: add(caps.browser_gate,ProofClass.BROWSER_LOCAL,CachePolicy.EXTERNAL_FRESH,86400)
     if _TIER_ORDER[tier]>=3 and (inputs.authority_boundaries or any(claim.proof_class in {ProofClass.PROVIDER,ProofClass.BROWSER_AUTHENTICATED} for claim in inputs.declared_claims)): add(caps.provider_gate,ProofClass.PROVIDER,CachePolicy.EXTERNAL_FRESH,3600)
     if tier is ConsequenceTier.T4:
         add(caps.broad_gate,ProofClass.LOCAL_INTEGRATION); add(caps.package_gate,ProofClass.PACKAGE,CachePolicy.EXACT_INPUTS); add(caps.release_gate,ProofClass.PACKAGE,CachePolicy.NEVER)
     for incident in inputs.incident_matches: add(incident.detector_gate,ProofClass.LOCAL_INTEGRATION)
-    gates=tuple(GateSpec(identity,proof_class,input_closure_digest=_sha256_text(f"{artifact_digest}:{path_digest}:{identity}"),cache_policy=policy,freshness_seconds=freshness) for identity,proof_class,policy,freshness in gate_ids)
+    for index,claim in enumerate(inputs.declared_claims):
+        if claim.proof_class not in {proof_class for _,proof_class,_,_ in gate_ids}: add(f"claim-{index+1}-{claim.proof_class.value.lower()}",claim.proof_class,CachePolicy.EXTERNAL_FRESH if claim.proof_class in {ProofClass.BROWSER_LOCAL,ProofClass.BROWSER_AUTHENTICATED,ProofClass.PROVIDER,ProofClass.DEPLOYED,ProofClass.DEVICE,ProofClass.HUMAN} else CachePolicy.EXACT_INPUTS,3600 if claim.proof_class in {ProofClass.PROVIDER,ProofClass.DEPLOYED,ProofClass.DEVICE,ProofClass.HUMAN} else 86400 if claim.proof_class in {ProofClass.BROWSER_LOCAL,ProofClass.BROWSER_AUTHENTICATED} else None)
+    executor_for=lambda proof_class: GateExecutor.BROWSER if proof_class in {ProofClass.BROWSER_LOCAL,ProofClass.BROWSER_AUTHENTICATED} else GateExecutor.PROVIDER if proof_class in {ProofClass.PROVIDER,ProofClass.DEPLOYED,ProofClass.DEVICE} else GateExecutor.HUMAN if proof_class is ProofClass.HUMAN else GateExecutor.COMMAND
+    gates=tuple(GateSpec(identity,proof_class,executor=executor_for(proof_class),argv=caps.command_for(identity),input_closure_digest=_sha256_text(f"{artifact_digest}:{path_digest}:{identity}"),environment_fingerprint=caps.environment_fingerprint,cache_policy=policy,freshness_seconds=freshness) for identity,proof_class,policy,freshness in gate_ids)
     if tier is ConsequenceTier.T0:
-        reviews=(ReviewRequirement(ReviewScope.ACCEPTANCE,combined_with=(ReviewScope.SOURCE_SEMANTICS,),reason="light independent acceptance prevents self-acceptance"),) if inputs.self_acceptance_risk else ()
+        reviews=(ReviewRequirement(ReviewScope.ACCEPTANCE,combined_with=(ReviewScope.SOURCE_SEMANTICS,),reason="light independent acceptance prevents caller-asserted self-acceptance"),)
     elif tier in {ConsequenceTier.T1,ConsequenceTier.T2}:
         reviews=(ReviewRequirement(ReviewScope.ACCEPTANCE,combined_with=(ReviewScope.SOURCE_SEMANTICS,),reason="one combined exact-artifact review"),)
     elif tier is ConsequenceTier.T3:
@@ -513,6 +522,10 @@ class AcceptanceContract:
         if self.observation_root: object.__setattr__(self,"observation_root",str(Path(self.observation_root).resolve()))
     @classmethod
     def empty(cls) -> "AcceptanceContract": return cls(None,(),True)
+
+def _gate_spec_digest(spec:GateSpec) -> str:
+    return _sha256_text(json.dumps((spec.id,spec.proof_class.value,spec.executor.value,spec.argv,spec.working_scope,spec.input_closure_digest,spec.environment_fingerprint,spec.dependencies,spec.cache_policy.value,spec.freshness_seconds,spec.flake_policy.value,spec.timeout_seconds),separators=(",",":"),ensure_ascii=True))
+
 @dataclass(frozen=True)
 class GateReceipt:
     """Inspectable gate evidence; only Swarm.run_gate makes it authoritative."""
@@ -535,8 +548,10 @@ class GateReceipt:
         if not isinstance(self.stability,ProofStability) or not isinstance(self.proof_class,ProofClass): raise InvariantError("gate receipt requires typed stability and proof class")
         object.__setattr__(self,"command",command); object.__setattr__(self,"before",before); object.__setattr__(self,"after",after)
         object.__setattr__(self,"attempts",attempts)
-    def current_for(self, authority:object, task_id:str, gate:str, artifact:ArtifactIdentity, current:ArtifactIdentity) -> bool:
-        return self._authority is authority and self._bound_task_id==task_id and self.gate==gate and self.artifact==artifact==current and self.outcome is ProofOutcome.PASS and self.stability is ProofStability.STABLE and self.before==artifact.observables==self.after
+    def current_for(self, authority:object, task_id:str, gate:str, artifact:ArtifactIdentity, current:ArtifactIdentity, plan:ProofPlan, spec:GateSpec, now:int) -> bool:
+        fresh=spec.cache_policy is not CachePolicy.EXTERNAL_FRESH or bool(self.finished_at and spec.freshness_seconds is not None and 0<=now-self.finished_at<=spec.freshness_seconds)
+        command_matches=plan.legacy or self.command==spec.argv
+        return self._authority is authority and self._bound_task_id==task_id and self.gate==gate==spec.id and self.artifact==artifact==current and self.outcome is ProofOutcome.PASS and self.stability is ProofStability.STABLE and self.before==artifact.observables==self.after and self.plan_digest==plan.plan_digest and self.gate_spec_digest==_gate_spec_digest(spec) and self.artifact_digest==_sha256_text(artifact.key()) and self.input_closure_digest==spec.input_closure_digest and self.environment_fingerprint==spec.environment_fingerprint and self.proof_class is spec.proof_class and bool(self.authority_context_digest) and command_matches and fresh
 @dataclass(frozen=True)
 class WatchdogBinding:
     """Optional alert route for one explicitly owned durable goal."""
@@ -693,6 +708,15 @@ class Task:
     lane_kind:LaneKind=LaneKind.OTHER; owning_lead_id:str=""; acceptance_contract:AcceptanceContract|None=None; gate_receipts:dict[str,GateReceipt]=field(default_factory=dict); unverified_gate_receipts:dict[str,GateReceipt]=field(default_factory=dict); plan_review_receipt:ReviewEvidence|None=None; acceptance_review_receipt:ReviewEvidence|None=None; incident_consultation_receipt:str=""; watchdog_binding:WatchdogBinding|None=None; watchdog_receipts:list[WatchdogReceipt]=field(default_factory=list)
 
 @dataclass(frozen=True)
+class HostUserEvent:
+    receipt:str; operation:CtrlOperation; source_ctrl_id:str; target_objective_digest:str; target_scope_digest:str; target_identity:str; issued_at:int; event_digest:str
+    _authority:object|None=field(default=None,init=False,repr=False,compare=False)
+    def __post_init__(self):
+        _safe_receipt(self.receipt,"usr-"); _safe_token(self.source_ctrl_id); _safe_token(self.target_identity)
+        object.__setattr__(self,"target_objective_digest",_require_digest(self.target_objective_digest,"CTRL target objective")); object.__setattr__(self,"target_scope_digest",_require_digest(self.target_scope_digest,"CTRL target scope")); object.__setattr__(self,"event_digest",_require_digest(self.event_digest,"host user event"))
+        if not isinstance(self.operation,CtrlOperation) or not isinstance(self.issued_at,int) or self.issued_at<0: raise InvariantError("host user event requires a typed operation and nonnegative issuance time")
+
+@dataclass(frozen=True)
 class UserCtrlAuthorization:
     receipt:str; operation:CtrlOperation; source_ctrl_id:str; target_objective_digest:str; target_scope_digest:str; target_identity:str; issued_at:int; host_event_digest:str
     _authority:object|None=field(default=None,init=False,repr=False,compare=False)
@@ -716,7 +740,7 @@ class Worker:
 class Swarm:
     architecture_version: int=1; contract_versions: dict[str,int]=field(default_factory=dict); topology: set[str]=field(default_factory=set)
     workers: dict[str,Worker]=field(default_factory=dict); tasks: dict[str,Task]=field(default_factory=dict); leases: dict[str,str]=field(default_factory=dict); events: list[tuple[str,str]]=field(default_factory=list); telemetry: dict[str,object]=field(default_factory=dict); telemetry_events:list[dict[str,object]]=field(default_factory=list); artifact_index:dict[str,str]=field(default_factory=dict); provenance_index:dict[str,str]=field(default_factory=dict); ctrl_evidence_ledger:dict[str,CtrlEvidence]=field(default_factory=dict); ctrl_decision_sets:dict[str,CtrlDecisionSet]=field(default_factory=dict); ctrl_phase:str="intake"; hive:dict[str,HiveRecord]=field(default_factory=dict); hive_enabled:bool=True; heartbeat_stall_after:int=2; correction_receipts:dict[str,None]=field(default_factory=dict); lane_width:int=3; wip_limit:int=3; efficiency_ledger:list[dict[str,str]]=field(default_factory=list); mode:EfficiencyMode=EfficiencyMode.BALANCED; default_review_horizon:int=30; max_review_horizon:int=60; direct_work_horizon:int=20
-    scheduled_wakeups:dict[str,int]=field(default_factory=dict); ctrl_feed_messages:list[CtrlFeedMessage]=field(default_factory=list); ctrl_feed_cursor:int=0; ctrl_feed_superseded_by:dict[str,str]=field(default_factory=dict); ctrl_feed_events:dict[str,CtrlFeedEvent]=field(default_factory=dict); ctrl_feed_consumed_events:set[str]=field(default_factory=set); ctrl_authorizations:dict[str,UserCtrlAuthorization]=field(default_factory=dict); ctrl_materialization_intents:dict[str,CtrlMaterializationIntent]=field(default_factory=dict); consumed_ctrl_authorizations:set[str]=field(default_factory=set); consumed_ctrl_intents:set[str]=field(default_factory=set); proof_policy_version:str="lean-v1"; proof_impacted_selection:bool=True; proof_receipt_reuse:bool=True; proof_gate_timeout_seconds:int=120; proof_browser_freshness_seconds:int=86400; proof_provider_freshness_seconds:int=3600; proof_transient_retry_limit:int=1; request_store:RequestStore|None=field(default=None,repr=False,compare=False); request_continuity_enabled:bool=False; request_feed_sequence_floor:int=0; _gate_capability:object=field(default_factory=object,init=False,repr=False,compare=False); _watchdog_capability:object=field(default_factory=object,init=False,repr=False,compare=False); _owner_context_capability:object=field(default_factory=object,init=False,repr=False,compare=False); _ctrl_authority_capability:object=field(default_factory=object,init=False,repr=False,compare=False)
+    scheduled_wakeups:dict[str,int]=field(default_factory=dict); ctrl_feed_messages:list[CtrlFeedMessage]=field(default_factory=list); ctrl_feed_cursor:int=0; ctrl_feed_superseded_by:dict[str,str]=field(default_factory=dict); ctrl_feed_events:dict[str,CtrlFeedEvent]=field(default_factory=dict); ctrl_feed_consumed_events:set[str]=field(default_factory=set); ctrl_authorizations:dict[str,UserCtrlAuthorization]=field(default_factory=dict); ctrl_materialization_intents:dict[str,CtrlMaterializationIntent]=field(default_factory=dict); consumed_ctrl_authorizations:set[str]=field(default_factory=set); consumed_ctrl_intents:set[str]=field(default_factory=set); proof_policy_version:str="lean-v1"; proof_impacted_selection:bool=True; proof_receipt_reuse:bool=True; proof_gate_timeout_seconds:int=120; proof_browser_freshness_seconds:int=86400; proof_provider_freshness_seconds:int=3600; proof_transient_retry_limit:int=1; request_store:RequestStore|None=field(default=None,repr=False,compare=False); request_continuity_enabled:bool=False; request_feed_sequence_floor:int=0; _gate_capability:object=field(default_factory=object,init=False,repr=False,compare=False); _watchdog_capability:object=field(default_factory=object,init=False,repr=False,compare=False); _owner_context_capability:object=field(default_factory=object,init=False,repr=False,compare=False); _ctrl_authority_capability:object=field(default_factory=object,init=False,repr=False,compare=False); _host_user_event_capability:object=field(default_factory=object,init=False,repr=False,compare=False)
     @classmethod
     def from_config(cls, config: dict) -> "Swarm":
         monitoring=config["monitoring"]
@@ -742,7 +766,7 @@ class Swarm:
         if any(requirement.scope is ReviewScope.PLAN for requirement in plan.reviews) and (task.plan_review_receipt is None or task.plan_review_receipt.artifact!=contract.artifact or dict(task.plan_review_receipt.receipt).get("plan")!=plan.plan_digest): return ProofState.PLAN_REVIEW
         receipts=tuple(task.gate_receipts.values())
         if any(receipt.outcome is not ProofOutcome.PASS or receipt.stability is not ProofStability.STABLE for receipt in receipts): return ProofState.ESCALATE
-        if self.open_gates(task_id): return ProofState.RUNNING if receipts else ProofState.READY
+        if self.open_gates(task_id) or self.open_claims(task_id): return ProofState.RUNNING if receipts else ProofState.READY
         final_scopes={requirement.scope for requirement in plan.reviews if requirement.scope in {ReviewScope.ACCEPTANCE,ReviewScope.COMPOSED}}
         if final_scopes and (task.acceptance_review_receipt is None or task.acceptance_review_receipt.scope not in final_scopes): return ProofState.ACCEPTANCE_REVIEW
         return ProofState.ACCEPTED
@@ -973,13 +997,16 @@ class Swarm:
         receipt=(authority,reason,requirements_delta,new_baseline,prior_miss_relevance)
         if version!=t.objective_version+1 or not all(item.strip() for item in receipt): raise InvariantError("objective amendment requires next version, authority, reason, requirements delta, baseline, and prior-miss relevance")
         t.objective_version=version; t.milestone_history.append((version,"AMEND","|".join(receipt)))
-    def record_user_ctrl_authorization(self, actor:Role, *, source_ctrl_id:str, event_receipt:str, user_receipt:str, operation:CtrlOperation, target_objective_digest:str, target_scope_digest:str, target_identity:str, issued_at:int) -> UserCtrlAuthorization:
-        """Bind an explicit user decision already present in the current CTRL feed."""
-        self._role(actor,{Role.CTRL}); event=self.ctrl_feed_events.get(event_receipt)
-        if event is None or event.kind is not CtrlFeedEventKind.DECISION or event.task_id!=source_ctrl_id or user_receipt not in event.proof_receipts or not user_receipt.startswith("usr-"): raise InvariantError("HUMAN_AUTHORITY_BLOCKER: CTRL materialization requires a current user-bound decision event")
-        if user_receipt in self.ctrl_authorizations or user_receipt in self.consumed_ctrl_authorizations: raise InvariantError("HUMAN_AUTHORITY_BLOCKER: CTRL authorization is single-use")
-        event_digest=sha256(json.dumps((event.receipt,event.task_id,event.kind.value,event.proof_receipts,event.request_ids),separators=(",",":"),ensure_ascii=True).encode("utf-8")).hexdigest()
-        authorization=UserCtrlAuthorization(user_receipt,operation,source_ctrl_id,target_objective_digest,target_scope_digest,target_identity,issued_at,event_digest); object.__setattr__(authorization,"_authority",self._ctrl_authority_capability); self.ctrl_authorizations[user_receipt]=authorization; return authorization
+    def _ingest_host_user_event(self, *, receipt:str, operation:CtrlOperation, source_ctrl_id:str, target_objective_digest:str, target_scope_digest:str, target_identity:str, issued_at:int, host_event_digest:str) -> HostUserEvent:
+        """Host-adapter seam: CTRL-facing APIs cannot mint this capability."""
+        event=HostUserEvent(receipt,operation,source_ctrl_id,target_objective_digest,target_scope_digest,target_identity,issued_at,host_event_digest)
+        object.__setattr__(event,"_authority",self._host_user_event_capability); return event
+    def record_user_ctrl_authorization(self, actor:Role, host_event:HostUserEvent|None) -> UserCtrlAuthorization:
+        """Consume one opaque host-minted user event; CTRL feed receipts are insufficient."""
+        self._role(actor,{Role.CTRL})
+        if host_event is None or host_event._authority is not self._host_user_event_capability: raise InvariantError("HUMAN_AUTHORITY_BLOCKER: CTRL materialization requires host-validated user authorization")
+        if host_event.receipt in self.ctrl_authorizations or host_event.receipt in self.consumed_ctrl_authorizations: raise InvariantError("HUMAN_AUTHORITY_BLOCKER: CTRL authorization is single-use")
+        authorization=UserCtrlAuthorization(host_event.receipt,host_event.operation,host_event.source_ctrl_id,host_event.target_objective_digest,host_event.target_scope_digest,host_event.target_identity,host_event.issued_at,host_event.event_digest); object.__setattr__(authorization,"_authority",self._ctrl_authority_capability); self.ctrl_authorizations[host_event.receipt]=authorization; return authorization
     def plan_ctrl_materialization(self, actor:Role, authorization:UserCtrlAuthorization|None, *, operation:CtrlOperation, source_ctrl_id:str, target_objective_digest:str, target_scope_digest:str, target_identity:str) -> CtrlMaterializationIntent:
         """Fail closed before any host create/fork/promote/replace/rename call."""
         self._role(actor,{Role.CTRL})
@@ -1392,12 +1419,14 @@ class Swarm:
         try: command=tuple(argv)
         except TypeError as error: raise InvariantError("gate execution requires argv") from error
         if not command or not isinstance(command[0],str) or not command[0] or any(not isinstance(part,str) for part in command): raise InvariantError("gate execution requires argv with a nonempty executable")
+        if not plan.legacy and (not spec.argv or command!=spec.argv): raise InvariantError("gate execution argv must match the immutable proof-plan GateSpec")
         workdir=Path(cwd).resolve()
         if not workdir.is_dir(): raise InvariantError("gate execution directory must exist")
         before=contract.artifact.reobserve(contract.observation_root)
         if before!=contract.artifact: raise InvariantError("acceptance artifact changed before gate execution")
         timeout=spec.timeout_seconds if timeout_seconds is None else timeout_seconds
         if not isinstance(timeout,int) or timeout<1: raise InvariantError("gate timeout must be a positive integer")
+        if not plan.legacy and timeout!=spec.timeout_seconds: raise InvariantError("gate timeout override does not match the immutable proof plan")
         started=int(time.time()); returncode=None; attempts:list[ProofOutcome]=[]; outcome=ProofOutcome.FAIL
         max_attempts=2 if spec.flake_policy is FlakePolicy.TYPED_TRANSIENT_ONCE else 1
         for attempt in range(max_attempts):
@@ -1411,7 +1440,7 @@ class Swarm:
         after=contract.artifact.reobserve(contract.observation_root)
         if after!=before and outcome is ProofOutcome.PASS: outcome=ProofOutcome.FAIL
         if attempts[-1] is not outcome: attempts[-1]=outcome
-        gate_spec_digest=_sha256_text(json.dumps((spec.id,spec.proof_class.value,spec.executor.value,spec.argv,spec.working_scope,spec.input_closure_digest,spec.environment_fingerprint,spec.dependencies,spec.cache_policy.value,spec.freshness_seconds,spec.flake_policy.value,spec.timeout_seconds),separators=(",",":"),ensure_ascii=True))
+        gate_spec_digest=_gate_spec_digest(spec)
         receipt=GateReceipt(gate,contract.artifact,outcome,command,before.observables,after.observables,returncode,plan.plan_digest,gate_spec_digest,_sha256_text(contract.artifact.key()),spec.input_closure_digest,spec.environment_fingerprint,started,int(time.time()),tuple(attempts),ProofStability.UNSTABLE if len(set(attempts))>1 else ProofStability.STABLE,spec.proof_class,_sha256_text(f"{task_id}:{actor_id}:{plan.plan_digest}"))
         object.__setattr__(receipt,"_authority",self._gate_capability); object.__setattr__(receipt,"_bound_task_id",task_id); t.gate_receipts[gate]=receipt; t.unverified_gate_receipts.pop(gate,None)
         if outcome is not ProofOutcome.PASS:
@@ -1423,11 +1452,14 @@ class Swarm:
         target_contract=target.acceptance_contract; source_contract=source.acceptance_contract
         if target_contract is None or source_contract is None or target_contract.artifact is None or target_contract.proof_plan is None: raise InvariantError("receipt adoption requires exact planned contracts")
         receipt=source.gate_receipts.get(gate); target_spec=self._gate_spec(target_contract,gate)
-        if receipt is None or receipt._authority is not self._gate_capability or receipt.outcome is not ProofOutcome.PASS or receipt.stability is not ProofStability.STABLE: raise InvariantError("receipt adoption requires a stable runtime PASS")
-        if receipt.plan_digest!=target_contract.proof_plan.plan_digest or receipt.artifact!=target_contract.artifact or receipt.input_closure_digest!=target_spec.input_closure_digest or receipt.environment_fingerprint!=target_spec.environment_fingerprint: raise InvariantError("receipt adoption key does not match the target proof plan")
+        source_plan=source_contract.proof_plan; source_spec=self._gate_spec(source_contract,gate)
+        if source_plan is None or target_spec.cache_policy is CachePolicy.NEVER: raise InvariantError("receipt adoption is disabled for this proof plan")
+        source_current=source_contract.artifact.reobserve(source_contract.observation_root) if source_contract.artifact is not None else None
+        if source_current is None or receipt is None or not receipt.current_for(self._gate_capability,source_task_id,gate,source_contract.artifact,source_current,source_plan,source_spec,int(time.time())): raise InvariantError("receipt adoption requires a current stable runtime PASS")
+        if receipt.plan_digest!=target_contract.proof_plan.plan_digest or receipt.gate_spec_digest!=_gate_spec_digest(target_spec) or receipt.artifact!=target_contract.artifact or receipt.input_closure_digest!=target_spec.input_closure_digest or receipt.environment_fingerprint!=target_spec.environment_fingerprint or receipt.proof_class is not target_spec.proof_class: raise InvariantError("receipt adoption key does not match the target proof plan")
         current=target_contract.artifact.reobserve(target_contract.observation_root)
         if current!=target_contract.artifact or receipt.before!=current.observables or receipt.after!=current.observables: raise InvariantError("receipt adoption requires current exact artifact observations")
-        adopted=replace(receipt); object.__setattr__(adopted,"_authority",self._gate_capability); object.__setattr__(adopted,"_bound_task_id",target_task_id); target.gate_receipts[gate]=adopted; target.unverified_gate_receipts.pop(gate,None); return adopted
+        adopted=replace(receipt,authority_context_digest=_sha256_text(f"{target_task_id}:{actor_id}:{target_contract.proof_plan.plan_digest}")); object.__setattr__(adopted,"_authority",self._gate_capability); object.__setattr__(adopted,"_bound_task_id",target_task_id); target.gate_receipts[gate]=adopted; target.unverified_gate_receipts.pop(gate,None); return adopted
     def consult_incidents(self, actor:Role, task_id:str, ledger:IncidentLedger, *, artifact:str, scope:str, actor_id:str) -> tuple[IncidentRecord,...]:
         self._role(actor,{Role.LEAD}); t=self.tasks[task_id]; self._require_lane_actor(t,actor,actor_id); incidents=ledger.unresolved(artifact=artifact,scope=scope); t.incident_consultation_receipt=f"{artifact}:{scope}:{','.join(item.incidentId for item in incidents) or 'none'}"; return incidents
     def record_post_handoff_incident(self, actor:Role, task_id:str, ledger:IncidentLedger, record:IncidentRecord, *, material:bool, actor_id:str) -> bool:
@@ -1442,7 +1474,15 @@ class Swarm:
         if contract.artifact is None: return contract.required_gates
         try: current=contract.artifact.reobserve(contract.observation_root)
         except InvariantError: return contract.required_gates
-        return tuple(gate for gate in contract.required_gates if (receipt:=t.gate_receipts.get(gate)) is None or not receipt.current_for(self._gate_capability,task_id,gate,contract.artifact,current))
+        plan=contract.proof_plan
+        if plan is None: return contract.required_gates
+        now=int(time.time())
+        return tuple(gate for gate in contract.required_gates if (receipt:=t.gate_receipts.get(gate)) is None or not receipt.current_for(self._gate_capability,task_id,gate,contract.artifact,current,plan,self._gate_spec(contract,gate),now))
+    def open_claims(self, task_id:str) -> tuple[str,...]:
+        task=self.tasks[task_id]; contract=task.acceptance_contract
+        if contract is None or contract.proof_plan is None or contract.artifact is None: return ()
+        open_gates=set(self.open_gates(task_id)); current=tuple(receipt for gate,receipt in task.gate_receipts.items() if gate not in open_gates)
+        return tuple(coverage.claim.name for coverage in contract.proof_plan.claim_matrix if not any(receipt.proof_class is coverage.claim.proof_class for receipt in current))
     def _acceptance_ready(self, task:Task) -> bool:
         evidence=task.acceptance_review_receipt; contract=task.acceptance_contract
         try: self._validate_task_acceptance(task)
@@ -1454,7 +1494,7 @@ class Swarm:
         review_ok=not final_scopes or bool(task.review_passed and task.reviewer and evidence and evidence.scope in final_scopes and evidence.reviewer==task.reviewer and evidence.artifact==contract.artifact and evidence.plan_digest in {"",contract.proof_plan.plan_digest})
         plan_required=any(requirement.scope is ReviewScope.PLAN for requirement in contract.proof_plan.reviews)
         plan_ok=not plan_required or bool(task.plan_review_receipt and task.plan_review_receipt.artifact==contract.artifact and dict(task.plan_review_receipt.receipt).get("plan")==contract.proof_plan.plan_digest)
-        return bool(review_ok and plan_ok and not self.open_gates(task.id))
+        return bool(review_ok and plan_ok and not self.open_gates(task.id) and not self.open_claims(task.id))
     def review(self, actor: Role, task_id: str, evidence: ReviewEvidence|str, passed: bool, finding:str="") -> None:
         self._role(actor,{Role.REVIEW}); t=self.tasks[task_id]
         if isinstance(evidence,str):
@@ -1489,6 +1529,8 @@ class Swarm:
             if evidence.artifact!=t.acceptance_contract.artifact: raise InvariantError("acceptance review artifact does not match acceptance contract")
             open_gates=self.open_gates(task_id)
             if open_gates: raise InvariantError(f"acceptance review requires PASS receipts for all gates: {','.join(open_gates)}")
+            open_claims=self.open_claims(task_id)
+            if open_claims: raise InvariantError(f"acceptance review requires current matching proof for declared claims: {','.join(open_claims)}")
             receipt_key="composed" if evidence.scope is ReviewScope.COMPOSED else "acceptance"
             if not dict(evidence.receipt).get(receipt_key): raise InvariantError("final review requires an independent exact-scope receipt")
             if evidence.plan_digest not in {"",plan.plan_digest}: raise InvariantError("final review proof-plan digest mismatch")

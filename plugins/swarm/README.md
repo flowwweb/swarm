@@ -39,7 +39,7 @@ SWARM chooses the shallowest structure that can reliably finish the objective. S
 
 A CTRL cannot create, fork, promote, replace, rename, recover-as-new, or link
 another CTRL unless you explicitly request that exact operation. SWARM consumes
-one authorization bound to the source CTRL, target identity, objective, and
+one host-minted authorization that CTRL-facing feed APIs cannot create, bound to the source CTRL, target identity, objective, and
 scope; a mismatch or replay creates no host intent. Researchers, Architects,
 LEADs, DOERs, and REVIEW remain subordinate roles and need no CTRL-creation
 authorization.
@@ -90,10 +90,12 @@ flowchart LR
   T -->|"T4 release"| R["one immutable package + parity + composed review"]
 ```
 
-Stable exact-input gate receipts can be re-observed and adopted, but never
-transfer acceptance authority. A correction reruns the failed gate and its
+Stable exact-input gate receipts can be re-observed and adopted only when the
+plan, command, environment, freshness, proof class, claim, and artifact still
+match, but they never transfer acceptance authority. A correction reruns the failed gate and its
 dependents, not unrelated accepted work. Timeouts remain `TIMEOUT`; only one
-typed transient retry is allowed. Final acceptance is always fresh and
+typed transient retry is allowed. Every declared claim stays open without a
+current receipt of its matching proof class. Final acceptance is always fresh and
 independent at the tier selected by the plan.
 
 ## Model requests are not execution proof
@@ -235,8 +237,9 @@ cd console && npm ci && npx playwright install chromium && npm run test:ui
 The fast tier excludes package integration; run the package tier only when its
 surface is affected or before release. CI builds one immutable ZIP, verifies
 those same bytes on each supported operating system, and publishes those same
-bytes without rebuilding. The pinned browser lane runs only when console
-surfaces change. See [CONTRIBUTING.md](CONTRIBUTING.md), [SECURITY.md](SECURITY.md), and the [MIT License](LICENSE).
+bytes without rebuilding. The pinned browser lane runs when console surfaces
+change and is a required tagged-release gate when those surfaces changed since
+the prior tag. See [CONTRIBUTING.md](CONTRIBUTING.md), [SECURITY.md](SECURITY.md), and the [MIT License](LICENSE).
 
 ## Release verification
 

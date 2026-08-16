@@ -21,6 +21,8 @@ class LeanCiContractTests(unittest.TestCase):
         self.assertIn("Download the exact validated package",workflow)
         self.assertNotIn("scripts/build_package.py",workflow)
         self.assertIn("subject-path:",workflow)
+        self.assertIn("Select release browser proof from changed surfaces",workflow)
+        self.assertIn("needs.scope.outputs.console_ui_required == 'true'",workflow)
 
     def test_console_browser_proof_is_pinned_and_path_scoped(self) -> None:
         workflow=(ROOT / ".github" / "workflows" / "console-ui.yml").read_text(encoding="utf-8")
@@ -29,6 +31,9 @@ class LeanCiContractTests(unittest.TestCase):
         self.assertIn('cache-dependency-path: console/package-lock.json',workflow)
         self.assertIn('working-directory: console',workflow)
         self.assertIn('paths:',workflow)
+        validation=(ROOT / ".github" / "workflows" / "validate.yml").read_text(encoding="utf-8")
+        self.assertIn("if: inputs.console_ui_required",validation)
+        self.assertIn("npm run test:ui",validation)
 
 
 if __name__ == "__main__":

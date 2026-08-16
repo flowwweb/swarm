@@ -9,8 +9,32 @@ permissions:
   contents: read
 
 jobs:
+  scope:
+    runs-on: ubuntu-latest
+    outputs:
+      console_ui_required: ${{ steps.proof.outputs.console_ui_required }}
+    steps:
+      - name: Check out tag history for proof selection
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Select release browser proof from changed surfaces
+        id: proof
+        shell: bash
+        run: |
+          previous="$(git describe --tags --abbrev=0 "$GITHUB_REF_NAME^" 2>/dev/null || true)"
+          if test -z "$previous" || ! git diff --quiet "$previous" "$GITHUB_SHA" -- console skills/swarm/assets/swarm-wordmark.png; then
+            echo "console_ui_required=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "console_ui_required=false" >> "$GITHUB_OUTPUT"
+          fi
+
   gates:
+    needs: scope
     uses: ./.github/workflows/validate.yml
+    with:
+      console_ui_required: ${{ needs.scope.outputs.console_ui_required == 'true' }}
 
   release:
     needs: gates

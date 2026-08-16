@@ -4,9 +4,8 @@ import unittest
 
 from skills.swarm.runtime import (
     AcceptanceContract,
-    CtrlFeedEventKind,
     CtrlOperation,
-    CtrlSurfaceKind,
+    HostUserEvent,
     InvariantError,
     LaneKind,
     Role,
@@ -25,12 +24,13 @@ class CtrlAuthorityGuardTests(unittest.TestCase):
 
     def authorization(self, operation:CtrlOperation=CtrlOperation.CREATE, *, target:str="ctrl-b", objective:str="objective-b"):
         user_receipt=f"usr-{operation.value.lower()}-decision000"
-        evidence_id=f"decision-{operation.value.lower()}"
-        self.swarm.register_ctrl_evidence(Role.CTRL,"ctrl-a",evidence_id,"decision","user decision")
-        self.swarm.surface_ctrl_evidence(Role.CTRL,evidence_id,surface_kind=CtrlSurfaceKind.INLINE_RECEIPT,caption="The user explicitly authorized one CTRL operation.",claim_limit="Bound to this operation and target only.",surface_receipt=user_receipt)
-        event=f"evt-{operation.value.lower()}-decision000"
-        self.swarm.register_ctrl_feed_event(Role.CTRL,"ctrl-a",event,CtrlFeedEventKind.DECISION,(user_receipt,))
-        return self.swarm.record_user_ctrl_authorization(Role.CTRL,source_ctrl_id="ctrl-a",event_receipt=event,user_receipt=user_receipt,operation=operation,target_objective_digest=_sha256_text(objective),target_scope_digest=_sha256_text(target),target_identity=target,issued_at=1)
+        event=self.swarm._ingest_host_user_event(receipt=user_receipt,operation=operation,source_ctrl_id="ctrl-a",target_objective_digest=_sha256_text(objective),target_scope_digest=_sha256_text(target),target_identity=target,issued_at=1,host_event_digest=_sha256_text(f"host:{operation.value}:{target}:{objective}"))
+        return self.swarm.record_user_ctrl_authorization(Role.CTRL,event)
+
+    def test_ctrl_cannot_self_mint_user_authority_from_feed_receipts(self) -> None:
+        forged=HostUserEvent("usr-forged-decision000",CtrlOperation.CREATE,"ctrl-a",_sha256_text("objective-b"),_sha256_text("ctrl-b"),"ctrl-b",1,_sha256_text("forged"))
+        with self.assertRaisesRegex(InvariantError,"host-validated user authorization"):
+            self.swarm.record_user_ctrl_authorization(Role.CTRL,forged)
 
     def test_exact_authorization_emits_one_consumable_intent(self) -> None:
         authorization=self.authorization()
