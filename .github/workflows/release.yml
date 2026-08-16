@@ -22,8 +22,10 @@ jobs:
       - name: Select release browser proof from changed surfaces
         id: proof
         shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
-          previous="$(git describe --tags --abbrev=0 "$GITHUB_REF_NAME^" 2>/dev/null || true)"
+          previous="$(gh release list --exclude-drafts --exclude-pre-releases --limit 1 --json tagName --jq '.[0].tagName')"
           if test -z "$previous" || ! git diff --quiet "$previous" "$GITHUB_SHA" -- console skills/swarm/assets/swarm-wordmark.png; then
             echo "console_ui_required=true" >> "$GITHUB_OUTPUT"
           else

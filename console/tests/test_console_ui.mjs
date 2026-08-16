@@ -337,6 +337,10 @@ try {
       await page.locator("#panel-collapse").press("Enter");
     }
     await page.emulateMedia({ reducedMotion: "reduce" });
+    await page.waitForFunction(() => {
+      const spinner = document.querySelector(".swarm-node.role-lead > .node-meta .node-status.is-processing i");
+      return spinner?.isConnected && getComputedStyle(spinner).animationName === "none";
+    });
     assert.equal(
       await page.locator(".swarm-node.role-lead > .node-meta .node-status.is-processing i").evaluate(
         (spinner) => getComputedStyle(spinner).animationName,

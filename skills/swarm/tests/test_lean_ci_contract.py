@@ -24,6 +24,7 @@ class LeanCiContractTests(unittest.TestCase):
         self.assertNotIn("scripts/build_package.py",workflow)
         self.assertIn("subject-path:",workflow)
         self.assertIn("Select release browser proof from changed surfaces",workflow)
+        self.assertIn("gh release list --exclude-drafts --exclude-pre-releases",workflow)
         self.assertIn("needs.scope.outputs.console_ui_required == 'true'",workflow)
 
     def test_console_browser_proof_is_pinned_and_path_scoped(self) -> None:
