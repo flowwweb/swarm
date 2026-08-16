@@ -41,6 +41,14 @@ class CtrlAuthorityGuardTests(unittest.TestCase):
         with self.assertRaisesRegex(InvariantError,"host-validated user authorization"):
             self.swarm.record_user_ctrl_authorization(Role.CTRL,forged)
 
+    def test_ctrl_cannot_replace_or_clear_the_host_verifier(self) -> None:
+        attacker_private=7
+        attacker_public=pow(runtime_core._HOST_AUTHORITY_GENERATOR,attacker_private,runtime_core._HOST_AUTHORITY_PRIME)
+        with self.assertRaisesRegex(InvariantError,"verifier is immutable"):
+            self.swarm._host_authority_public_key=attacker_public
+        with self.assertRaisesRegex(InvariantError,"verifier is immutable"):
+            self.swarm._host_authority_public_key=None
+
     def test_host_signature_cannot_be_replayed_for_a_changed_objective(self) -> None:
         signed=self.host.mint_user_event(receipt="usr-signed-binding000",operation=CtrlOperation.CREATE,source_ctrl_id="ctrl-a",target_objective_digest=_sha256_text("objective-b"),target_scope_digest=_sha256_text("ctrl-b"),target_identity="ctrl-b",issued_at=1,host_event_digest=_sha256_text("signed-binding"))
         changed=HostUserEvent(signed.receipt,signed.operation,signed.source_ctrl_id,_sha256_text("objective-c"),signed.target_scope_digest,signed.target_identity,signed.issued_at,signed.event_digest)

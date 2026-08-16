@@ -42,7 +42,8 @@ typed transient retry is the maximum before broadening or blocking.
 Provider, deployed, device, and human gates are never satisfied by a shell
 command or a caller-authored receipt. The separately held host authority broker
 must ingest a typed observation without exposing itself or its credentials on
-the lane-visible `Swarm` object, and bind its evidence digest,
+the lane-visible `Swarm` object. `Swarm` may retain only its verifier, sealed at
+construction against replacement or clearing, and must bind the observation's evidence digest,
 observation time, proof class, plan, gate spec, artifact, environment, and
 authority context. Missing, forged, mismatched, replayed, or expired host
 observations remain open.

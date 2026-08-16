@@ -18,7 +18,8 @@ operation, source CTRL, target identity, objective, and scope. A mismatch or
 replay is a human-authority blocker and creates no host intent.
 The composition root gives the host adapter a separate authority broker and
 gives CTRL only the `Swarm` state object. The broker and its credentials must be
-absent from that CTRL-visible object graph; a CTRL-callable mint method, feed
+absent from that CTRL-visible object graph; only a construction-sealed public
+verifier may remain. A CTRL-callable mint method, feed
 receipt, naming convention, directly constructed event, or extracted private
 attribute carries no user authority.
 
