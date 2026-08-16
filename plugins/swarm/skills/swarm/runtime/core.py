@@ -12,6 +12,7 @@ import signal
 import subprocess
 import sys
 import time
+import weakref
 from .incidents import IncidentLedger, IncidentRecord
 from .request_ledger import RequestStore, RequestStoreError
 
@@ -751,12 +752,19 @@ class Worker:
 class Swarm:
     architecture_version: int=1; contract_versions: dict[str,int]=field(default_factory=dict); topology: set[str]=field(default_factory=set)
     workers: dict[str,Worker]=field(default_factory=dict); tasks: dict[str,Task]=field(default_factory=dict); leases: dict[str,str]=field(default_factory=dict); events: list[tuple[str,str]]=field(default_factory=list); telemetry: dict[str,object]=field(default_factory=dict); telemetry_events:list[dict[str,object]]=field(default_factory=list); artifact_index:dict[str,str]=field(default_factory=dict); provenance_index:dict[str,str]=field(default_factory=dict); ctrl_evidence_ledger:dict[str,CtrlEvidence]=field(default_factory=dict); ctrl_decision_sets:dict[str,CtrlDecisionSet]=field(default_factory=dict); ctrl_phase:str="intake"; hive:dict[str,HiveRecord]=field(default_factory=dict); hive_enabled:bool=True; heartbeat_stall_after:int=2; correction_receipts:dict[str,None]=field(default_factory=dict); lane_width:int=3; wip_limit:int=3; efficiency_ledger:list[dict[str,str]]=field(default_factory=list); mode:EfficiencyMode=EfficiencyMode.BALANCED; default_review_horizon:int=30; max_review_horizon:int=60; direct_work_horizon:int=20
-    scheduled_wakeups:dict[str,int]=field(default_factory=dict); ctrl_feed_messages:list[CtrlFeedMessage]=field(default_factory=list); ctrl_feed_cursor:int=0; ctrl_feed_superseded_by:dict[str,str]=field(default_factory=dict); ctrl_feed_events:dict[str,CtrlFeedEvent]=field(default_factory=dict); ctrl_feed_consumed_events:set[str]=field(default_factory=set); ctrl_authorizations:dict[str,UserCtrlAuthorization]=field(default_factory=dict); ctrl_materialization_intents:dict[str,CtrlMaterializationIntent]=field(default_factory=dict); consumed_ctrl_authorizations:set[str]=field(default_factory=set); consumed_ctrl_intents:set[str]=field(default_factory=set); proof_policy_version:str="lean-v1"; proof_impacted_selection:bool=True; proof_receipt_reuse:bool=True; proof_gate_timeout_seconds:int=120; proof_browser_freshness_seconds:int=86400; proof_provider_freshness_seconds:int=3600; proof_transient_retry_limit:int=1; request_store:RequestStore|None=field(default=None,repr=False,compare=False); request_continuity_enabled:bool=False; request_feed_sequence_floor:int=0; _gate_capability:object=field(default_factory=object,init=False,repr=False,compare=False); _watchdog_capability:object=field(default_factory=object,init=False,repr=False,compare=False); _owner_context_capability:object=field(default_factory=object,init=False,repr=False,compare=False); _ctrl_authority_capability:object=field(default_factory=object,init=False,repr=False,compare=False); _host_user_event_capability:object=field(default_factory=object,init=False,repr=False,compare=False); _external_proof_capability:object=field(default_factory=object,init=False,repr=False,compare=False)
+    scheduled_wakeups:dict[str,int]=field(default_factory=dict); ctrl_feed_messages:list[CtrlFeedMessage]=field(default_factory=list); ctrl_feed_cursor:int=0; ctrl_feed_superseded_by:dict[str,str]=field(default_factory=dict); ctrl_feed_events:dict[str,CtrlFeedEvent]=field(default_factory=dict); ctrl_feed_consumed_events:set[str]=field(default_factory=set); ctrl_authorizations:dict[str,UserCtrlAuthorization]=field(default_factory=dict); ctrl_materialization_intents:dict[str,CtrlMaterializationIntent]=field(default_factory=dict); consumed_ctrl_authorizations:set[str]=field(default_factory=set); consumed_ctrl_intents:set[str]=field(default_factory=set); proof_policy_version:str="lean-v1"; proof_impacted_selection:bool=True; proof_receipt_reuse:bool=True; proof_gate_timeout_seconds:int=120; proof_browser_freshness_seconds:int=86400; proof_provider_freshness_seconds:int=3600; proof_transient_retry_limit:int=1; request_store:RequestStore|None=field(default=None,repr=False,compare=False); request_continuity_enabled:bool=False; request_feed_sequence_floor:int=0; _gate_capability:object=field(default_factory=object,init=False,repr=False,compare=False); _watchdog_capability:object=field(default_factory=object,init=False,repr=False,compare=False); _owner_context_capability:object=field(default_factory=object,init=False,repr=False,compare=False); _ctrl_authority_capability:object=field(default_factory=object,init=False,repr=False,compare=False)
+    @classmethod
+    def with_host_authority(cls, **kwargs:object) -> tuple["Swarm","_HostAuthorityBroker"]:
+        """Composition-root factory: return host broker separately from lane-visible state."""
+        swarm=cls(**kwargs); return swarm,_HostAuthorityBroker._bind(swarm)
     @classmethod
     def from_config(cls, config: dict) -> "Swarm":
         monitoring=config["monitoring"]
         proof=config.get("proof",{})
         return cls(lane_width=config["coordination"]["preferred_lane_width"], wip_limit=config["efficiency"]["doer_wip_limit"], mode=EfficiencyMode(config["efficiency"]["mode"]), hive_enabled=config.get("hive",{}).get("enabled",True), heartbeat_stall_after=config["recovery"]["stall_after_updates"], default_review_horizon=monitoring.get("default_review_horizon_minutes",monitoring.get("heartbeat_minutes",30)), max_review_horizon=monitoring.get("max_review_horizon_minutes",60), direct_work_horizon=config["coordination"].get("ctrl_direct_horizon_minutes",20), proof_policy_version=proof.get("policy_version","lean-v1"), proof_impacted_selection=proof.get("impacted_selection",True), proof_receipt_reuse=proof.get("receipt_reuse",True), proof_gate_timeout_seconds=proof.get("gate_timeout_seconds",120), proof_browser_freshness_seconds=proof.get("browser_freshness_seconds",86400), proof_provider_freshness_seconds=proof.get("provider_freshness_seconds",3600), proof_transient_retry_limit=proof.get("transient_retry_limit",1))
+    @classmethod
+    def from_config_with_host_authority(cls, config:dict) -> tuple["Swarm","_HostAuthorityBroker"]:
+        swarm=cls.from_config(config); return swarm,_HostAuthorityBroker._bind(swarm)
 
     def plan_proof(self, inputs:ProofInputs) -> ProofPlan:
         reach=inputs.dependency_reach if self.proof_impacted_selection else replace(inputs.dependency_reach,known=False)
@@ -1008,15 +1016,11 @@ class Swarm:
         receipt=(authority,reason,requirements_delta,new_baseline,prior_miss_relevance)
         if version!=t.objective_version+1 or not all(item.strip() for item in receipt): raise InvariantError("objective amendment requires next version, authority, reason, requirements delta, baseline, and prior-miss relevance")
         t.objective_version=version; t.milestone_history.append((version,"AMEND","|".join(receipt)))
-    def _ingest_host_user_event(self, host_capability:object, *, receipt:str, operation:CtrlOperation, source_ctrl_id:str, target_objective_digest:str, target_scope_digest:str, target_identity:str, issued_at:int, host_event_digest:str) -> HostUserEvent:
-        """Host-adapter seam: CTRL-facing APIs cannot mint this capability."""
-        if host_capability is not self._host_user_event_capability: raise InvariantError("HUMAN_AUTHORITY_BLOCKER: host user-event mint requires the runtime-private host capability")
-        event=HostUserEvent(receipt,operation,source_ctrl_id,target_objective_digest,target_scope_digest,target_identity,issued_at,host_event_digest)
-        object.__setattr__(event,"_authority",self._host_user_event_capability); return event
     def record_user_ctrl_authorization(self, actor:Role, host_event:HostUserEvent|None) -> UserCtrlAuthorization:
         """Consume one opaque host-minted user event; CTRL feed receipts are insufficient."""
         self._role(actor,{Role.CTRL})
-        if host_event is None or host_event._authority is not self._host_user_event_capability: raise InvariantError("HUMAN_AUTHORITY_BLOCKER: CTRL materialization requires host-validated user authorization")
+        broker=_registered_host_broker(self)
+        if host_event is None or broker is None or not broker._valid_user_event(host_event): raise InvariantError("HUMAN_AUTHORITY_BLOCKER: CTRL materialization requires host-validated user authorization")
         if host_event.receipt in self.ctrl_authorizations or host_event.receipt in self.consumed_ctrl_authorizations: raise InvariantError("HUMAN_AUTHORITY_BLOCKER: CTRL authorization is single-use")
         authorization=UserCtrlAuthorization(host_event.receipt,host_event.operation,host_event.source_ctrl_id,host_event.target_objective_digest,host_event.target_scope_digest,host_event.target_identity,host_event.issued_at,host_event.event_digest); object.__setattr__(authorization,"_authority",self._ctrl_authority_capability); self.ctrl_authorizations[host_event.receipt]=authorization; return authorization
     def plan_ctrl_materialization(self, actor:Role, authorization:UserCtrlAuthorization|None, *, operation:CtrlOperation, source_ctrl_id:str, target_objective_digest:str, target_scope_digest:str, target_identity:str) -> CtrlMaterializationIntent:
@@ -1460,9 +1464,9 @@ class Swarm:
         if outcome is not ProofOutcome.PASS:
             t.review_passed=False; t.acceptance_review_receipt=None; t.state=TaskState.ACTIVE
         return receipt
-    def _ingest_external_proof(self, host_capability:object, actor:Role, task_id:str, gate:str, *, actor_id:str, evidence_digest:str, observed_at:int) -> GateReceipt:
+    def _record_host_external_proof(self, host_broker:object, actor:Role, task_id:str, gate:str, *, actor_id:str, evidence_digest:str, observed_at:int) -> GateReceipt:
         """Host-adapter seam for provider, deployed, device, and human observations."""
-        if host_capability is not self._external_proof_capability: raise InvariantError("external proof requires the runtime-private host capability")
+        if _registered_host_broker(self) is not host_broker: raise InvariantError("external proof requires the separately held host authority broker")
         self._role(actor,{Role.LEAD}); task=self.tasks[task_id]; self._require_lane_actor(task,actor,actor_id); contract=task.acceptance_contract
         if contract is None or contract.explicitly_empty or contract.artifact is None or contract.proof_plan is None: raise InvariantError("external proof requires an exact planned acceptance contract")
         if not task.incident_consultation_receipt: raise InvariantError("LEAD must consult matching unresolved incidents during the execution brief")
@@ -1747,3 +1751,27 @@ def derive_workflow_graph(swarm:Swarm) -> WorkflowGraph:
             canonical=min(rotations); diagnostics.add(f"dependency-cycle:{'->'.join((*canonical,canonical[0]))}")
     graph_edges=tuple(WorkflowEdge(*edge) for edge in sorted(edges,key=lambda edge:(edge[0],edge[1],edge[2])))
     return WorkflowGraph(tuple(nodes[key] for key in sorted(nodes)),graph_edges,tuple(sorted(diagnostics)))
+
+_HOST_AUTHORITY_BROKERS:dict[int,"_HostAuthorityBroker"]={}
+
+def _registered_host_broker(swarm:Swarm) -> "_HostAuthorityBroker|None":
+    broker=_HOST_AUTHORITY_BROKERS.get(id(swarm))
+    return broker if broker is not None and broker._bound_swarm() is swarm else None
+
+class _HostAuthorityBroker:
+    """Host-owned mint boundary; never attach this broker or its credentials to Swarm."""
+    def __init__(self, swarm:Swarm):
+        self._swarm_ref=weakref.ref(swarm,lambda _reference,identity=id(swarm):_HOST_AUTHORITY_BROKERS.pop(identity,None))
+        self.__user_event_capability=object()
+    @classmethod
+    def _bind(cls, swarm:Swarm) -> "_HostAuthorityBroker":
+        if _registered_host_broker(swarm) is not None: raise InvariantError("host authority broker is already bound")
+        broker=cls(swarm); _HOST_AUTHORITY_BROKERS[id(swarm)]=broker; return broker
+    def _bound_swarm(self) -> Swarm|None: return self._swarm_ref()
+    def _valid_user_event(self, event:HostUserEvent) -> bool: return isinstance(event,HostUserEvent) and event._authority is self.__user_event_capability
+    def mint_user_event(self, *, receipt:str, operation:CtrlOperation, source_ctrl_id:str, target_objective_digest:str, target_scope_digest:str, target_identity:str, issued_at:int, host_event_digest:str) -> HostUserEvent:
+        event=HostUserEvent(receipt,operation,source_ctrl_id,target_objective_digest,target_scope_digest,target_identity,issued_at,host_event_digest); object.__setattr__(event,"_authority",self.__user_event_capability); return event
+    def record_external_proof(self, actor:Role, task_id:str, gate:str, *, actor_id:str, evidence_digest:str, observed_at:int) -> GateReceipt:
+        swarm=self._bound_swarm()
+        if swarm is None: raise InvariantError("host authority broker is detached")
+        return swarm._record_host_external_proof(self,actor,task_id,gate,actor_id=actor_id,evidence_digest=evidence_digest,observed_at=observed_at)

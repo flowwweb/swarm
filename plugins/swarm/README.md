@@ -39,7 +39,7 @@ SWARM chooses the shallowest structure that can reliably finish the objective. S
 
 A CTRL cannot create, fork, promote, replace, rename, recover-as-new, or link
 another CTRL unless you explicitly request that exact operation. SWARM consumes
-one host-minted authorization that CTRL-facing feed APIs cannot create, bound to the source CTRL, target identity, objective, and
+one authorization from a separately held host broker that is absent from the CTRL-visible `Swarm` object graph, bound to the source CTRL, target identity, objective, and
 scope; a mismatch or replay creates no host intent. Researchers, Architects,
 LEADs, DOERs, and REVIEW remain subordinate roles and need no CTRL-creation
 authorization.

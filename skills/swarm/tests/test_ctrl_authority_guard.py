@@ -18,18 +18,20 @@ from skills.swarm.runtime.core import _sha256_text
 
 class CtrlAuthorityGuardTests(unittest.TestCase):
     def setUp(self) -> None:
-        self.swarm=Swarm()
+        self.swarm,self.host=Swarm.with_host_authority()
         ctrl=Task("ctrl-a","CTRL","CTRL",1,{},risk=1,subagent_exception=SubagentException.WHOLE_TASK_COST,subagent_exception_reason="direct control record",lane_kind=LaneKind.NON_CODE,acceptance_contract=AcceptanceContract.empty())
         self.swarm.start_ctrl_direct(Role.CTRL,ctrl,outcomes=1,mutable_surfaces=1,cross_lane_dependency=False,measurable_minutes=1)
 
     def authorization(self, operation:CtrlOperation=CtrlOperation.CREATE, *, target:str="ctrl-b", objective:str="objective-b"):
         user_receipt=f"usr-{operation.value.lower()}-decision000"
-        event=self.swarm._ingest_host_user_event(self.swarm._host_user_event_capability,receipt=user_receipt,operation=operation,source_ctrl_id="ctrl-a",target_objective_digest=_sha256_text(objective),target_scope_digest=_sha256_text(target),target_identity=target,issued_at=1,host_event_digest=_sha256_text(f"host:{operation.value}:{target}:{objective}"))
+        event=self.host.mint_user_event(receipt=user_receipt,operation=operation,source_ctrl_id="ctrl-a",target_objective_digest=_sha256_text(objective),target_scope_digest=_sha256_text(target),target_identity=target,issued_at=1,host_event_digest=_sha256_text(f"host:{operation.value}:{target}:{objective}"))
         return self.swarm.record_user_ctrl_authorization(Role.CTRL,event)
 
-    def test_ctrl_cannot_call_host_mint_without_runtime_capability(self) -> None:
-        with self.assertRaisesRegex(InvariantError,"HUMAN_AUTHORITY_BLOCKER"):
-            self.swarm._ingest_host_user_event(object(),receipt="usr-forged-host000",operation=CtrlOperation.CREATE,source_ctrl_id="ctrl-a",target_objective_digest=_sha256_text("objective-b"),target_scope_digest=_sha256_text("ctrl-b"),target_identity="ctrl-b",issued_at=1,host_event_digest=_sha256_text("forged-host"))
+    def test_ctrl_cannot_extract_host_mint_authority_from_swarm(self) -> None:
+        self.assertFalse(hasattr(self.swarm,"_host_user_event_capability"))
+        self.assertFalse(hasattr(self.swarm,"_external_proof_capability"))
+        with self.assertRaises(AttributeError): getattr(self.swarm,"_host_user_event_capability")
+        with self.assertRaises(AttributeError): getattr(self.swarm,"_ingest_host_user_event")
 
     def test_ctrl_cannot_self_mint_user_authority_from_feed_receipts(self) -> None:
         forged=HostUserEvent("usr-forged-decision000",CtrlOperation.CREATE,"ctrl-a",_sha256_text("objective-b"),_sha256_text("ctrl-b"),"ctrl-b",1,_sha256_text("forged"))

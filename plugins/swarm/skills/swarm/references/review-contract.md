@@ -40,8 +40,9 @@ acceptance. External proof has bounded freshness. `TIMEOUT` never passes; one
 typed transient retry is the maximum before broadening or blocking.
 
 Provider, deployed, device, and human gates are never satisfied by a shell
-command or a caller-authored receipt. The host adapter must ingest a typed
-observation through its runtime-private capability and bind its evidence digest,
+command or a caller-authored receipt. The separately held host authority broker
+must ingest a typed observation without exposing itself or its credentials on
+the lane-visible `Swarm` object, and bind its evidence digest,
 observation time, proof class, plan, gate spec, artifact, environment, and
 authority context. Missing, forged, mismatched, replayed, or expired host
 observations remain open.

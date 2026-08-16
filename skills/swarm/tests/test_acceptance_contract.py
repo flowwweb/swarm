@@ -13,7 +13,7 @@ class AcceptanceContractTests(unittest.TestCase):
     def setUp(self):
         self.temp=tempfile.TemporaryDirectory()
         self.artifact_path=Path(self.temp.name)/"artifact.txt"; self.artifact_path.write_text("version-1",encoding="utf-8"); self.artifact=ArtifactIdentity.capture("route","sha-1","release",root=self.temp.name,paths=("artifact.txt",))
-        self.swarm=Swarm(); self.swarm.add_lead(Role.CTRL,"lead"); self.swarm.add_worker(Role.LEAD,Worker("builder","lead",1))
+        self.swarm,self.host=Swarm.with_host_authority(); self.swarm.add_lead(Role.CTRL,"lead"); self.swarm.add_worker(Role.LEAD,Worker("builder","lead",1))
         task=Task("route","builder","author",1,{},subagent_receipt="host:thread:route",lane_kind=LaneKind.CODE,owning_lead_id="lead",acceptance_contract=AcceptanceContract(self.artifact,("typecheck","test","build"),observation_root=self.temp.name))
         self.swarm.assign(Role.LEAD,task); self.swarm.consult_incidents(Role.LEAD,"route",IncidentLedger(self.temp.name),artifact="route",scope="routing",actor_id="lead")
 
@@ -105,9 +105,9 @@ class AcceptanceContractTests(unittest.TestCase):
         for gate in ("contracts-fast","contracts-full","package-integrity","release-parity"):
             self.swarm.run_gate(Role.LEAD,"route",gate,command,cwd=self.temp.name,actor_id="lead")
         device_gate=next(gate.id for gate in plan.gates if gate.proof_class is ProofClass.DEVICE)
-        with self.assertRaisesRegex(InvariantError,"runtime-private host capability"):
-            self.swarm._ingest_external_proof(object(),Role.LEAD,"route",device_gate,actor_id="lead",evidence_digest="1"*64,observed_at=int(time.time()))
-        receipt=self.swarm._ingest_external_proof(self.swarm._external_proof_capability,Role.LEAD,"route",device_gate,actor_id="lead",evidence_digest="2"*64,observed_at=int(time.time()))
+        with self.assertRaisesRegex(InvariantError,"separately held host authority broker"):
+            self.swarm._record_host_external_proof(object(),Role.LEAD,"route",device_gate,actor_id="lead",evidence_digest="1"*64,observed_at=int(time.time()))
+        receipt=self.host.record_external_proof(Role.LEAD,"route",device_gate,actor_id="lead",evidence_digest="2"*64,observed_at=int(time.time()))
         self.assertEqual(receipt.command,("external-observation","PROVIDER"))
         self.assertEqual(receipt.proof_class,ProofClass.DEVICE)
         self.assertEqual(self.swarm.open_gates("route"),())

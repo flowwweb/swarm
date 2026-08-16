@@ -16,9 +16,11 @@ If a CTRL is already active, a new CTRL or successor is never an inferred
 topology step. Require a current single-use host-minted user receipt naming the exact
 operation, source CTRL, target identity, objective, and scope. A mismatch or
 replay is a human-authority blocker and creates no host intent.
-The host adapter must present the runtime-private user-event capability at the
-mint boundary; a CTRL-callable method, feed receipt, naming convention, or
-directly constructed event carries no user authority.
+The composition root gives the host adapter a separate authority broker and
+gives CTRL only the `Swarm` state object. The broker and its credentials must be
+absent from that CTRL-visible object graph; a CTRL-callable mint method, feed
+receipt, naming convention, directly constructed event, or extracted private
+attribute carries no user authority.
 
 ```text
 ROLE — artifact
