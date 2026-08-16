@@ -105,8 +105,8 @@ class AcceptanceContractTests(unittest.TestCase):
         for gate in ("contracts-fast","contracts-full","package-integrity","release-parity"):
             self.swarm.run_gate(Role.LEAD,"route",gate,command,cwd=self.temp.name,actor_id="lead")
         device_gate=next(gate.id for gate in plan.gates if gate.proof_class is ProofClass.DEVICE)
-        with self.assertRaisesRegex(InvariantError,"separately held host authority broker"):
-            self.swarm._record_host_external_proof(object(),Role.LEAD,"route",device_gate,actor_id="lead",evidence_digest="1"*64,observed_at=int(time.time()))
+        with self.assertRaisesRegex(InvariantError,"valid signature"):
+            self.swarm._record_host_external_proof(Role.LEAD,"route",device_gate,actor_id="lead",evidence_digest="1"*64,observed_at=int(time.time()),host_signature="forged")
         receipt=self.host.record_external_proof(Role.LEAD,"route",device_gate,actor_id="lead",evidence_digest="2"*64,observed_at=int(time.time()))
         self.assertEqual(receipt.command,("external-observation","PROVIDER"))
         self.assertEqual(receipt.proof_class,ProofClass.DEVICE)

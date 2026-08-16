@@ -8,6 +8,7 @@ import json
 import os
 from pathlib import Path, PurePosixPath
 import platform
+import secrets
 import signal
 import subprocess
 import sys
@@ -325,6 +326,19 @@ def _require_digest(value:str, label:str) -> str:
     normalized=value.strip().lower() if isinstance(value,str) else ""
     if len(normalized)!=64 or any(character not in "0123456789abcdef" for character in normalized): raise InvariantError(f"{label} must be a SHA-256 digest")
     return normalized
+
+_HOST_AUTHORITY_PRIME=int("FFFFFFFFFFFFFFFFC90FDAA22168C234C4C6628B80DC1CD129024E088A67CC74020BBEA63B139B22514A08798E3404DDEF9519B3CD3A431B302B0A6DF25F14374FE1356D6D51C245E485B576625E7EC6F44C42E9A637ED6B0BFF5CB6F406B7EDEE386BFB5A899FA5AE9F24117C4B1FE649286651ECE45B3DC2007CB8A163BF0598DA48361C55D39A69163FA8FD24CF5F83655D23DCA3AD961C62F356208552BB9ED529077096966D670C354E4ABC9804F1746C08CA18217C32905E462E36CE3BE39E772C180E86039B2783A2EC07A28FB5C55DF06F4C52C9DE2BCBF6955817183995497CEA956AE515D2261898FA051015728E5A8AACAA68FFFFFFFFFFFFFFFF",16)
+_HOST_AUTHORITY_GENERATOR=2
+def _authority_message(kind:str, values:tuple[object,...]) -> bytes: return json.dumps((kind,values),separators=(",",":"),ensure_ascii=True).encode("utf-8")
+def _authority_sign(private_key:int, message:bytes) -> str:
+    nonce=secrets.randbelow(_HOST_AUTHORITY_PRIME-2)+1; commitment=pow(_HOST_AUTHORITY_GENERATOR,nonce,_HOST_AUTHORITY_PRIME); challenge=int.from_bytes(sha256(commitment.to_bytes((_HOST_AUTHORITY_PRIME.bit_length()+7)//8,"big")+message).digest(),"big"); response=(nonce+challenge*private_key)%(_HOST_AUTHORITY_PRIME-1); return f"{commitment:x}:{response:x}"
+def _authority_verify(public_key:int|None, message:bytes, signature:str) -> bool:
+    if not isinstance(public_key,int) or public_key<=1 or public_key>=_HOST_AUTHORITY_PRIME or not isinstance(signature,str): return False
+    try: commitment_text,response_text=signature.split(":",1); commitment=int(commitment_text,16); response=int(response_text,16)
+    except (ValueError,TypeError): return False
+    if not 1<=commitment<_HOST_AUTHORITY_PRIME or not 0<=response<_HOST_AUTHORITY_PRIME-1: return False
+    challenge=int.from_bytes(sha256(commitment.to_bytes((_HOST_AUTHORITY_PRIME.bit_length()+7)//8,"big")+message).digest(),"big")
+    return pow(_HOST_AUTHORITY_GENERATOR,response,_HOST_AUTHORITY_PRIME)==commitment*pow(public_key,challenge,_HOST_AUTHORITY_PRIME)%_HOST_AUTHORITY_PRIME
 
 def _runtime_environment_fingerprint(environment:dict[str,str]|None=None) -> str:
     environment=dict(os.environ) if environment is None else environment
@@ -722,7 +736,7 @@ class Task:
 @dataclass(frozen=True)
 class HostUserEvent:
     receipt:str; operation:CtrlOperation; source_ctrl_id:str; target_objective_digest:str; target_scope_digest:str; target_identity:str; issued_at:int; event_digest:str
-    _authority:object|None=field(default=None,init=False,repr=False,compare=False)
+    _signature:str=field(default="",init=False,repr=False,compare=False)
     def __post_init__(self):
         _safe_receipt(self.receipt,"usr-"); _safe_token(self.source_ctrl_id); _safe_token(self.target_identity)
         object.__setattr__(self,"target_objective_digest",_require_digest(self.target_objective_digest,"CTRL target objective")); object.__setattr__(self,"target_scope_digest",_require_digest(self.target_scope_digest,"CTRL target scope")); object.__setattr__(self,"event_digest",_require_digest(self.event_digest,"host user event"))
@@ -752,11 +766,11 @@ class Worker:
 class Swarm:
     architecture_version: int=1; contract_versions: dict[str,int]=field(default_factory=dict); topology: set[str]=field(default_factory=set)
     workers: dict[str,Worker]=field(default_factory=dict); tasks: dict[str,Task]=field(default_factory=dict); leases: dict[str,str]=field(default_factory=dict); events: list[tuple[str,str]]=field(default_factory=list); telemetry: dict[str,object]=field(default_factory=dict); telemetry_events:list[dict[str,object]]=field(default_factory=list); artifact_index:dict[str,str]=field(default_factory=dict); provenance_index:dict[str,str]=field(default_factory=dict); ctrl_evidence_ledger:dict[str,CtrlEvidence]=field(default_factory=dict); ctrl_decision_sets:dict[str,CtrlDecisionSet]=field(default_factory=dict); ctrl_phase:str="intake"; hive:dict[str,HiveRecord]=field(default_factory=dict); hive_enabled:bool=True; heartbeat_stall_after:int=2; correction_receipts:dict[str,None]=field(default_factory=dict); lane_width:int=3; wip_limit:int=3; efficiency_ledger:list[dict[str,str]]=field(default_factory=list); mode:EfficiencyMode=EfficiencyMode.BALANCED; default_review_horizon:int=30; max_review_horizon:int=60; direct_work_horizon:int=20
-    scheduled_wakeups:dict[str,int]=field(default_factory=dict); ctrl_feed_messages:list[CtrlFeedMessage]=field(default_factory=list); ctrl_feed_cursor:int=0; ctrl_feed_superseded_by:dict[str,str]=field(default_factory=dict); ctrl_feed_events:dict[str,CtrlFeedEvent]=field(default_factory=dict); ctrl_feed_consumed_events:set[str]=field(default_factory=set); ctrl_authorizations:dict[str,UserCtrlAuthorization]=field(default_factory=dict); ctrl_materialization_intents:dict[str,CtrlMaterializationIntent]=field(default_factory=dict); consumed_ctrl_authorizations:set[str]=field(default_factory=set); consumed_ctrl_intents:set[str]=field(default_factory=set); proof_policy_version:str="lean-v1"; proof_impacted_selection:bool=True; proof_receipt_reuse:bool=True; proof_gate_timeout_seconds:int=120; proof_browser_freshness_seconds:int=86400; proof_provider_freshness_seconds:int=3600; proof_transient_retry_limit:int=1; request_store:RequestStore|None=field(default=None,repr=False,compare=False); request_continuity_enabled:bool=False; request_feed_sequence_floor:int=0; _gate_capability:object=field(default_factory=object,init=False,repr=False,compare=False); _watchdog_capability:object=field(default_factory=object,init=False,repr=False,compare=False); _owner_context_capability:object=field(default_factory=object,init=False,repr=False,compare=False); _ctrl_authority_capability:object=field(default_factory=object,init=False,repr=False,compare=False)
+    scheduled_wakeups:dict[str,int]=field(default_factory=dict); ctrl_feed_messages:list[CtrlFeedMessage]=field(default_factory=list); ctrl_feed_cursor:int=0; ctrl_feed_superseded_by:dict[str,str]=field(default_factory=dict); ctrl_feed_events:dict[str,CtrlFeedEvent]=field(default_factory=dict); ctrl_feed_consumed_events:set[str]=field(default_factory=set); ctrl_authorizations:dict[str,UserCtrlAuthorization]=field(default_factory=dict); ctrl_materialization_intents:dict[str,CtrlMaterializationIntent]=field(default_factory=dict); consumed_ctrl_authorizations:set[str]=field(default_factory=set); consumed_ctrl_intents:set[str]=field(default_factory=set); proof_policy_version:str="lean-v1"; proof_impacted_selection:bool=True; proof_receipt_reuse:bool=True; proof_gate_timeout_seconds:int=120; proof_browser_freshness_seconds:int=86400; proof_provider_freshness_seconds:int=3600; proof_transient_retry_limit:int=1; request_store:RequestStore|None=field(default=None,repr=False,compare=False); request_continuity_enabled:bool=False; request_feed_sequence_floor:int=0; _host_authority_public_key:int|None=field(default=None,repr=False,compare=False); _gate_capability:object=field(default_factory=object,init=False,repr=False,compare=False); _watchdog_capability:object=field(default_factory=object,init=False,repr=False,compare=False); _owner_context_capability:object=field(default_factory=object,init=False,repr=False,compare=False); _ctrl_authority_capability:object=field(default_factory=object,init=False,repr=False,compare=False)
     @classmethod
     def with_host_authority(cls, **kwargs:object) -> tuple["Swarm","_HostAuthorityBroker"]:
-        """Composition-root factory: return host broker separately from lane-visible state."""
-        swarm=cls(**kwargs); return swarm,_HostAuthorityBroker._bind(swarm)
+        """Composition-root factory: lane state receives only a verifier; host retains signer."""
+        private_key=secrets.randbelow(_HOST_AUTHORITY_PRIME-3)+2; public_key=pow(_HOST_AUTHORITY_GENERATOR,private_key,_HOST_AUTHORITY_PRIME); swarm=cls(_host_authority_public_key=public_key,**kwargs); return swarm,_HostAuthorityBroker(swarm,private_key)
     @classmethod
     def from_config(cls, config: dict) -> "Swarm":
         monitoring=config["monitoring"]
@@ -764,7 +778,7 @@ class Swarm:
         return cls(lane_width=config["coordination"]["preferred_lane_width"], wip_limit=config["efficiency"]["doer_wip_limit"], mode=EfficiencyMode(config["efficiency"]["mode"]), hive_enabled=config.get("hive",{}).get("enabled",True), heartbeat_stall_after=config["recovery"]["stall_after_updates"], default_review_horizon=monitoring.get("default_review_horizon_minutes",monitoring.get("heartbeat_minutes",30)), max_review_horizon=monitoring.get("max_review_horizon_minutes",60), direct_work_horizon=config["coordination"].get("ctrl_direct_horizon_minutes",20), proof_policy_version=proof.get("policy_version","lean-v1"), proof_impacted_selection=proof.get("impacted_selection",True), proof_receipt_reuse=proof.get("receipt_reuse",True), proof_gate_timeout_seconds=proof.get("gate_timeout_seconds",120), proof_browser_freshness_seconds=proof.get("browser_freshness_seconds",86400), proof_provider_freshness_seconds=proof.get("provider_freshness_seconds",3600), proof_transient_retry_limit=proof.get("transient_retry_limit",1))
     @classmethod
     def from_config_with_host_authority(cls, config:dict) -> tuple["Swarm","_HostAuthorityBroker"]:
-        swarm=cls.from_config(config); return swarm,_HostAuthorityBroker._bind(swarm)
+        private_key=secrets.randbelow(_HOST_AUTHORITY_PRIME-3)+2; public_key=pow(_HOST_AUTHORITY_GENERATOR,private_key,_HOST_AUTHORITY_PRIME); swarm=cls.from_config(config); swarm._host_authority_public_key=public_key; return swarm,_HostAuthorityBroker(swarm,private_key)
 
     def plan_proof(self, inputs:ProofInputs) -> ProofPlan:
         reach=inputs.dependency_reach if self.proof_impacted_selection else replace(inputs.dependency_reach,known=False)
@@ -1019,8 +1033,8 @@ class Swarm:
     def record_user_ctrl_authorization(self, actor:Role, host_event:HostUserEvent|None) -> UserCtrlAuthorization:
         """Consume one opaque host-minted user event; CTRL feed receipts are insufficient."""
         self._role(actor,{Role.CTRL})
-        broker=_registered_host_broker(self)
-        if host_event is None or broker is None or not broker._valid_user_event(host_event): raise InvariantError("HUMAN_AUTHORITY_BLOCKER: CTRL materialization requires host-validated user authorization")
+        message=b"" if host_event is None else _authority_message("CTRL_USER_EVENT",(host_event.receipt,host_event.operation.value,host_event.source_ctrl_id,host_event.target_objective_digest,host_event.target_scope_digest,host_event.target_identity,host_event.issued_at,host_event.event_digest))
+        if host_event is None or not _authority_verify(self._host_authority_public_key,message,host_event._signature): raise InvariantError("HUMAN_AUTHORITY_BLOCKER: CTRL materialization requires host-validated user authorization")
         if host_event.receipt in self.ctrl_authorizations or host_event.receipt in self.consumed_ctrl_authorizations: raise InvariantError("HUMAN_AUTHORITY_BLOCKER: CTRL authorization is single-use")
         authorization=UserCtrlAuthorization(host_event.receipt,host_event.operation,host_event.source_ctrl_id,host_event.target_objective_digest,host_event.target_scope_digest,host_event.target_identity,host_event.issued_at,host_event.event_digest); object.__setattr__(authorization,"_authority",self._ctrl_authority_capability); self.ctrl_authorizations[host_event.receipt]=authorization; return authorization
     def plan_ctrl_materialization(self, actor:Role, authorization:UserCtrlAuthorization|None, *, operation:CtrlOperation, source_ctrl_id:str, target_objective_digest:str, target_scope_digest:str, target_identity:str) -> CtrlMaterializationIntent:
@@ -1464,9 +1478,8 @@ class Swarm:
         if outcome is not ProofOutcome.PASS:
             t.review_passed=False; t.acceptance_review_receipt=None; t.state=TaskState.ACTIVE
         return receipt
-    def _record_host_external_proof(self, host_broker:object, actor:Role, task_id:str, gate:str, *, actor_id:str, evidence_digest:str, observed_at:int) -> GateReceipt:
+    def _record_host_external_proof(self, actor:Role, task_id:str, gate:str, *, actor_id:str, evidence_digest:str, observed_at:int, host_signature:str) -> GateReceipt:
         """Host-adapter seam for provider, deployed, device, and human observations."""
-        if _registered_host_broker(self) is not host_broker: raise InvariantError("external proof requires the separately held host authority broker")
         self._role(actor,{Role.LEAD}); task=self.tasks[task_id]; self._require_lane_actor(task,actor,actor_id); contract=task.acceptance_contract
         if contract is None or contract.explicitly_empty or contract.artifact is None or contract.proof_plan is None: raise InvariantError("external proof requires an exact planned acceptance contract")
         if not task.incident_consultation_receipt: raise InvariantError("LEAD must consult matching unresolved incidents during the execution brief")
@@ -1480,6 +1493,8 @@ class Swarm:
         if spec.environment_fingerprint!=_runtime_environment_fingerprint(): raise InvariantError("external proof environment does not match the immutable proof plan")
         current=contract.artifact.reobserve(contract.observation_root)
         if current!=contract.artifact: raise InvariantError("acceptance artifact changed before external observation")
+        message=_authority_message("EXTERNAL_PROOF",(task_id,gate,actor_id,digest,observed_at,plan.plan_digest,_gate_spec_digest(spec),contract.artifact.key(),spec.environment_fingerprint,spec.proof_class.value))
+        if not _authority_verify(self._host_authority_public_key,message,host_signature): raise InvariantError("external proof requires a valid signature from the separately held host authority broker")
         receipt=GateReceipt(gate=gate,artifact=contract.artifact,outcome=ProofOutcome.PASS,command=("external-observation",spec.executor.value),before=current.observables,after=current.observables,returncode=0,plan_digest=plan.plan_digest,gate_spec_digest=_gate_spec_digest(spec),artifact_digest=_sha256_text(contract.artifact.key()),input_closure_digest=spec.input_closure_digest,environment_fingerprint=spec.environment_fingerprint,started_at=observed_at,finished_at=observed_at,attempts=(ProofOutcome.PASS,),stability=ProofStability.STABLE,proof_class=spec.proof_class,authority_context_digest=_sha256_text(f"{task_id}:{actor_id}:{plan.plan_digest}:{digest}"),evidence_digest=digest)
         object.__setattr__(receipt,"_authority",self._gate_capability); object.__setattr__(receipt,"_bound_task_id",task_id); task.gate_receipts[gate]=receipt; task.unverified_gate_receipts.pop(gate,None); task.review_passed=False; task.acceptance_review_receipt=None; task.state=TaskState.ACTIVE; return receipt
     def adopt_gate_receipt(self, actor:Role, target_task_id:str, source_task_id:str, gate:str, *, actor_id:str) -> GateReceipt:
@@ -1752,26 +1767,16 @@ def derive_workflow_graph(swarm:Swarm) -> WorkflowGraph:
     graph_edges=tuple(WorkflowEdge(*edge) for edge in sorted(edges,key=lambda edge:(edge[0],edge[1],edge[2])))
     return WorkflowGraph(tuple(nodes[key] for key in sorted(nodes)),graph_edges,tuple(sorted(diagnostics)))
 
-_HOST_AUTHORITY_BROKERS:dict[int,"_HostAuthorityBroker"]={}
-
-def _registered_host_broker(swarm:Swarm) -> "_HostAuthorityBroker|None":
-    broker=_HOST_AUTHORITY_BROKERS.get(id(swarm))
-    return broker if broker is not None and broker._bound_swarm() is swarm else None
-
 class _HostAuthorityBroker:
-    """Host-owned mint boundary; never attach this broker or its credentials to Swarm."""
-    def __init__(self, swarm:Swarm):
-        self._swarm_ref=weakref.ref(swarm,lambda _reference,identity=id(swarm):_HOST_AUTHORITY_BROKERS.pop(identity,None))
-        self.__user_event_capability=object()
-    @classmethod
-    def _bind(cls, swarm:Swarm) -> "_HostAuthorityBroker":
-        if _registered_host_broker(swarm) is not None: raise InvariantError("host authority broker is already bound")
-        broker=cls(swarm); _HOST_AUTHORITY_BROKERS[id(swarm)]=broker; return broker
+    """Host-owned signer; Swarm retains only the corresponding public verifier."""
+    def __init__(self, swarm:Swarm, private_key:int): self._swarm_ref=weakref.ref(swarm); self.__private_key=private_key
     def _bound_swarm(self) -> Swarm|None: return self._swarm_ref()
-    def _valid_user_event(self, event:HostUserEvent) -> bool: return isinstance(event,HostUserEvent) and event._authority is self.__user_event_capability
     def mint_user_event(self, *, receipt:str, operation:CtrlOperation, source_ctrl_id:str, target_objective_digest:str, target_scope_digest:str, target_identity:str, issued_at:int, host_event_digest:str) -> HostUserEvent:
-        event=HostUserEvent(receipt,operation,source_ctrl_id,target_objective_digest,target_scope_digest,target_identity,issued_at,host_event_digest); object.__setattr__(event,"_authority",self.__user_event_capability); return event
+        event=HostUserEvent(receipt,operation,source_ctrl_id,target_objective_digest,target_scope_digest,target_identity,issued_at,host_event_digest); message=_authority_message("CTRL_USER_EVENT",(event.receipt,event.operation.value,event.source_ctrl_id,event.target_objective_digest,event.target_scope_digest,event.target_identity,event.issued_at,event.event_digest)); object.__setattr__(event,"_signature",_authority_sign(self.__private_key,message)); return event
     def record_external_proof(self, actor:Role, task_id:str, gate:str, *, actor_id:str, evidence_digest:str, observed_at:int) -> GateReceipt:
         swarm=self._bound_swarm()
         if swarm is None: raise InvariantError("host authority broker is detached")
-        return swarm._record_host_external_proof(self,actor,task_id,gate,actor_id=actor_id,evidence_digest=evidence_digest,observed_at=observed_at)
+        task=swarm.tasks[task_id]; contract=task.acceptance_contract
+        if contract is None or contract.artifact is None or contract.proof_plan is None: raise InvariantError("external proof requires an exact planned acceptance contract")
+        spec=swarm._gate_spec(contract,gate); digest=_require_digest(evidence_digest,"external proof evidence"); message=_authority_message("EXTERNAL_PROOF",(task_id,gate,actor_id,digest,observed_at,contract.proof_plan.plan_digest,_gate_spec_digest(spec),contract.artifact.key(),spec.environment_fingerprint,spec.proof_class.value)); signature=_authority_sign(self.__private_key,message)
+        return swarm._record_host_external_proof(actor,task_id,gate,actor_id=actor_id,evidence_digest=digest,observed_at=observed_at,host_signature=signature)

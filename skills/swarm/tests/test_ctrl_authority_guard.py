@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import unittest
+import skills.swarm.runtime.core as runtime_core
 
 from skills.swarm.runtime import (
     AcceptanceContract,
@@ -30,8 +31,22 @@ class CtrlAuthorityGuardTests(unittest.TestCase):
     def test_ctrl_cannot_extract_host_mint_authority_from_swarm(self) -> None:
         self.assertFalse(hasattr(self.swarm,"_host_user_event_capability"))
         self.assertFalse(hasattr(self.swarm,"_external_proof_capability"))
+        self.assertFalse(hasattr(runtime_core,"_HOST_AUTHORITY_BROKERS"))
+        self.assertFalse(hasattr(runtime_core,"_registered_host_broker"))
         with self.assertRaises(AttributeError): getattr(self.swarm,"_host_user_event_capability")
         with self.assertRaises(AttributeError): getattr(self.swarm,"_ingest_host_user_event")
+
+    def test_public_verifier_cannot_mint_user_authority(self) -> None:
+        forged=HostUserEvent("usr-public-key-forgery000",CtrlOperation.CREATE,"ctrl-a",_sha256_text("objective-b"),_sha256_text("ctrl-b"),"ctrl-b",1,_sha256_text("forged-public-key"))
+        with self.assertRaisesRegex(InvariantError,"host-validated user authorization"):
+            self.swarm.record_user_ctrl_authorization(Role.CTRL,forged)
+
+    def test_host_signature_cannot_be_replayed_for_a_changed_objective(self) -> None:
+        signed=self.host.mint_user_event(receipt="usr-signed-binding000",operation=CtrlOperation.CREATE,source_ctrl_id="ctrl-a",target_objective_digest=_sha256_text("objective-b"),target_scope_digest=_sha256_text("ctrl-b"),target_identity="ctrl-b",issued_at=1,host_event_digest=_sha256_text("signed-binding"))
+        changed=HostUserEvent(signed.receipt,signed.operation,signed.source_ctrl_id,_sha256_text("objective-c"),signed.target_scope_digest,signed.target_identity,signed.issued_at,signed.event_digest)
+        object.__setattr__(changed,"_signature",signed._signature)
+        with self.assertRaisesRegex(InvariantError,"host-validated user authorization"):
+            self.swarm.record_user_ctrl_authorization(Role.CTRL,changed)
 
     def test_ctrl_cannot_self_mint_user_authority_from_feed_receipts(self) -> None:
         forged=HostUserEvent("usr-forged-decision000",CtrlOperation.CREATE,"ctrl-a",_sha256_text("objective-b"),_sha256_text("ctrl-b"),"ctrl-b",1,_sha256_text("forged"))
