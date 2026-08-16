@@ -15,6 +15,8 @@ class LeanCiContractTests(unittest.TestCase):
         self.assertIn("name: Build immutable package",workflow)
         self.assertIn("name: Verify package / ${{ matrix.os }}",workflow)
         self.assertIn("name: swarm-release-candidate",workflow)
+        self.assertIn('output "$RUNNER_TEMP/swarm-release.zip"',workflow)
+        self.assertNotIn("--output dist/swarm-release.zip",workflow)
 
     def test_release_consumes_validated_bytes_without_rebuild(self) -> None:
         workflow=(ROOT / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")

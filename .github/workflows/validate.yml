@@ -100,15 +100,14 @@ jobs:
         shell: bash
         run: |
           python -m unittest skills.swarm.tests.test_release_package
-          mkdir -p dist
-          python scripts/build_package.py --source . --output dist/swarm-release.zip --verify-repeat
+          python scripts/build_package.py --source . --output "$RUNNER_TEMP/swarm-release.zip" --verify-repeat
       - name: Upload the immutable package
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: swarm-release-candidate
           path: |
-            dist/swarm-release.zip
-            dist/swarm-release.zip.sha256
+            ${{ runner.temp }}/swarm-release.zip
+            ${{ runner.temp }}/swarm-release.zip.sha256
           if-no-files-found: error
           retention-days: 7
 
