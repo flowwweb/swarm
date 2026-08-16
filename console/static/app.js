@@ -110,6 +110,7 @@ function renderRail(persist = false) {
   const panel = $("#console-sidepanel");
   const expanded = !MOBILE_RAIL.matches && (railState.pinned || railState.preview);
   shell.classList.toggle("rail-expanded", expanded);
+  shell.classList.toggle("rail-preview", expanded && railState.preview && !railState.pinned);
   button.setAttribute("aria-expanded", String(expanded));
   button.setAttribute("aria-label", expanded ? "Collapse sidepanel" : "Expand sidepanel");
   button.title = expanded ? "Collapse sidepanel" : "Expand sidepanel";
@@ -384,7 +385,10 @@ $("#refresh").addEventListener("click", refreshOverview);
 const sidepanelRegion = $(".sidepanel-region");
 const railToggle = $("#rail-toggle");
 const panelCollapse = $("#panel-collapse");
-railToggle.addEventListener("pointerenter", (event) => { if (!railState.pinned && !railState.suppressPointerPreview && event.pointerType !== "touch") { railState.preview = true; renderRail(); } });
+railToggle.addEventListener("pointerenter", (event) => {
+  if (railState.suppressPointerPreview) { railState.suppressPointerPreview = false; return; }
+  if (!railState.pinned && event.pointerType !== "touch") { railState.preview = true; renderRail(); }
+});
 railToggle.addEventListener("focus", (event) => {
   if (railState.pinned || railState.suppressFocusPreview || !event.currentTarget.matches(":focus-visible")) return;
   railState.preview = true;
@@ -412,7 +416,7 @@ panelCollapse.addEventListener("click", (event) => {
     railState.suppressFocusPreview = false;
   }
 });
-sidepanelRegion.addEventListener("pointerleave", () => { railState.suppressPointerPreview = false; if (!railState.pinned && !sidepanelRegion.contains(document.activeElement)) { railState.preview = false; renderRail(); } });
+sidepanelRegion.addEventListener("pointerleave", () => { if (!railState.pinned && !sidepanelRegion.contains(document.activeElement)) { railState.preview = false; renderRail(); } });
 sidepanelRegion.addEventListener("focusout", (event) => { if (!railState.pinned && !sidepanelRegion.contains(event.relatedTarget)) { railState.preview = false; renderRail(); } });
 MOBILE_RAIL.addEventListener("change", () => renderRail());
 document.addEventListener("keydown", (event) => {

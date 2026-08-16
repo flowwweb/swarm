@@ -103,10 +103,16 @@ async function sidepanelAppearance(page) {
     const icon = document.querySelector("#rail-toggle svg");
     const panel = document.querySelector("#console-sidepanel");
     const collapse = document.querySelector("#panel-collapse");
+    const collapseIcon = collapse.querySelector("svg");
+    const wordmark = collapse.querySelector(".brand-wordmark");
     const iconStyle = getComputedStyle(icon);
     const panelStyle = getComputedStyle(panel);
     const collapseStyle = getComputedStyle(collapse);
+    const collapseIconStyle = getComputedStyle(collapseIcon);
+    const wordmarkStyle = getComputedStyle(wordmark);
     const collapseRect = collapse.getBoundingClientRect();
+    const collapseIconRect = collapseIcon.getBoundingClientRect();
+    const wordmarkRect = wordmark.getBoundingClientRect();
     const collapseTop = document.elementFromPoint(
       collapseRect.left + collapseRect.width / 2,
       collapseRect.top + collapseRect.height / 2,
@@ -115,8 +121,14 @@ async function sidepanelAppearance(page) {
       iconVisible: icon.getBoundingClientRect().width > 0 && iconStyle.display !== "none" && iconStyle.visibility !== "hidden" && Number(iconStyle.opacity) > 0,
       panelVisible: panelStyle.display !== "none" && panelStyle.visibility !== "hidden" && Number(panelStyle.opacity) > 0,
       collapseVisible: collapseRect.width > 0 && collapseRect.height > 0 && collapseStyle.display !== "none" && collapseStyle.visibility !== "hidden" && Number(collapseStyle.opacity) > 0,
+      collapseIconVisible: collapseIconRect.width > 0 && collapseIconStyle.visibility !== "hidden" && Number(collapseIconStyle.opacity) > 0.01,
+      wordmarkVisible: wordmarkRect.width > 0 && wordmarkStyle.visibility !== "hidden" && Number(wordmarkStyle.opacity) > 0.01,
       collapseUnobscured: Boolean(collapseTop && collapse.contains(collapseTop)),
       collapseSize: { width: collapseRect.width, height: collapseRect.height },
+      collapseIconSize: { width: collapseIconRect.width, height: collapseIconRect.height },
+      wordmarkWidth: wordmarkRect.width,
+      wordmarkCssWidth: wordmarkStyle.width,
+      collapseBorderWidth: collapseStyle.borderWidth,
       collapseLabel: collapse.getAttribute("aria-label"),
       expanded: document.querySelector("#rail-toggle").getAttribute("aria-expanded"),
       panelHidden: panel.getAttribute("aria-hidden"),
@@ -188,12 +200,17 @@ try {
         const toggleBox = await toggle.boundingBox();
         assert.ok(toggleBox, "rail control did not have a pointer target");
         await page.mouse.move(toggleBox.x + toggleBox.width / 2, toggleBox.y + toggleBox.height / 2);
+        await page.waitForTimeout(180);
         sidepanel = await sidepanelAppearance(page);
         assert.equal(sidepanel.panelVisible, true, "hover did not reveal the sidepanel");
         assert.equal(sidepanel.iconVisible, false, "rail icon remained visible beside the hover panel");
         assert.equal(sidepanel.collapseVisible, true, "hover panel did not render its in-panel control");
+        assert.equal(sidepanel.collapseIconVisible, true, "hover did not swap the wordmark for PanelLeft");
+        assert.equal(sidepanel.wordmarkVisible, false, `hover left the wordmark visible beside PanelLeft: ${JSON.stringify(sidepanel)}`);
         assert.equal(sidepanel.collapseUnobscured, true, "hover panel control was obscured");
-        assert.deepEqual(sidepanel.collapseSize, { width: 44, height: 44 });
+        assert.deepEqual(sidepanel.collapseSize, { width: 112, height: 44 });
+        assert.ok(Math.abs(sidepanel.collapseIconSize.width - 18) < 0.1 && Math.abs(sidepanel.collapseIconSize.height - 18) < 0.1, "PanelLeft was not reduced to 18px");
+        assert.equal(sidepanel.collapseBorderWidth, "0px");
         assert.equal(sidepanel.collapseLabel, "Keep sidepanel open");
         await page.waitForTimeout(220);
         await page.screenshot({ path: path.join(evidenceRoot, "sidepanel-hover-1440.png"), fullPage: true });
@@ -214,8 +231,11 @@ try {
       assert.equal(sidepanel.panelVisible, true, `${width}px activation did not pin the sidepanel`);
       assert.equal(sidepanel.iconVisible, false, `${width}px rail icon remained visible beside the pinned panel`);
       assert.equal(sidepanel.collapseVisible, true, `${width}px pinned panel did not render its collapse control`);
+      assert.equal(sidepanel.collapseIconVisible && sidepanel.wordmarkVisible, false, `${width}px wordmark and PanelLeft rendered together`);
       assert.equal(sidepanel.collapseUnobscured, true, `${width}px pinned panel collapse control was obscured`);
-      assert.deepEqual(sidepanel.collapseSize, { width: 44, height: 44 });
+      assert.deepEqual(sidepanel.collapseSize, { width: 112, height: 44 });
+      assert.equal(sidepanel.wordmarkCssWidth, "112px", `${width}px wordmark was not reduced to 112px`);
+      assert.equal(sidepanel.collapseBorderWidth, "0px");
       assert.equal(sidepanel.collapseLabel, "Collapse sidepanel");
       assert.equal(sidepanel.panelInert, false);
       if (width === 834) {
