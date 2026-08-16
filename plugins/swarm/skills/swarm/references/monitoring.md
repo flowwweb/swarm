@@ -35,6 +35,14 @@ evidence. `BLOCKER` means progress, flow, quality, authority, proof, or goal
 alignment is materially broken. WATCHDOG reports the consequence; it never
 selects or applies a correction.
 
+A usage WATCHDOG remains bound to the accountable LEAD goal and samples only
+bounded host-reported usage/capacity receipts at its declared due event or a
+material capacity signal. Classify that snapshot as `FLOW_INTEGRITY`. Keep
+`CLEAR` internal. Surface `ATTENTION` only when a material threshold,
+capacity state, or decision owner changes. Use `BLOCKER` only when no permitted
+task or subagent structure can progress. A usage limit alone is adaptation
+evidence for the next safe boundary, not an interruption or blocker.
+
 One evidence-backed readiness delay may reschedule once. Repeated misses increase
 severity and route the alert to the next accountable owner; they do not create
 another authority or authorize recovery. Clock and receipt maintenance is the only

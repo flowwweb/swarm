@@ -706,7 +706,8 @@ def apply_turbo(effective: dict[str, Any]) -> dict[str, Any]:
 
 
 def resolve_role_assignment(
-    effective: dict[str, Any], role: str, *, route_tier: int = 2
+    effective: dict[str, Any], role: str, *, route_tier: int = 2,
+    explicit_model: str | None = None, explicit_reasoning: str | None = None,
 ) -> dict[str, str]:
     """Resolve a host model/thinking pair and clamp thinking to global bounds."""
     if not isinstance(role, str) or not role.strip():
@@ -730,12 +731,23 @@ def resolve_role_assignment(
             raise ConfigError(f"role has no configured model pair: {role}")
         model_key, reasoning_key = "doer_model", "doer_reasoning"
     model, preferred = profile[model_key], profile[reasoning_key]
+    reasoning_is_explicit = explicit_reasoning is not None
     if custom_override is not None:
         model = custom_override.get("model", model)
         preferred = custom_override.get("reasoning", preferred)
+        reasoning_is_explicit = reasoning_is_explicit or "reasoning" in custom_override
+    if explicit_model is not None:
+        _model_name({"model": explicit_model}, "model", "explicit assignment")
+        model = explicit_model
+    if explicit_reasoning is not None:
+        _reasoning_effort({"reasoning": explicit_reasoning}, "reasoning", "explicit assignment")
+        preferred = explicit_reasoning
     low = REASONING_SCALE.index(effective["execution"]["min_reasoning"])
     high = REASONING_SCALE.index(effective["execution"]["max_reasoning"])
-    supported = effective["model_capabilities"].get(model, {}).get("reasoning")
+    capability = effective["model_capabilities"].get(model)
+    if capability is None:
+        raise ConfigError(f"selected model has no declared capabilities: {model}")
+    supported = capability.get("reasoning")
     supported_indexes = (
         [REASONING_SCALE.index(effort) for effort in supported]
         if supported
@@ -746,12 +758,49 @@ def resolve_role_assignment(
         raise ConfigError(
             f"global reasoning range has no declared supported value for model: {model}"
         )
-    if effective["turbo"]["enabled"]:
+    if reasoning_is_explicit:
+        if supported and preferred not in supported:
+            raise ConfigError(f"explicit reasoning is not declared for model {model}: {preferred}")
+        selected = REASONING_SCALE.index(preferred)
+    elif effective["turbo"]["enabled"]:
         selected = allowed[-1]
     else:
         selected = REASONING_SCALE.index(preferred) + (route_tier - 2)
         selected = min(allowed, key=lambda index: (abs(index - selected), index))
     return {"model": model, "reasoning": REASONING_SCALE[selected]}
+
+
+def resolve_model_assignment(
+    effective: dict[str, Any], role: str, *, surface: str, route_tier: int = 2,
+    workload: str = "general", required_tools: tuple[str, ...] = (),
+    explicit_model: str | None = None, explicit_reasoning: str | None = None,
+    explicit_provider: str | None = None, explicit_service_tier: str | None = None,
+    host_actual_model: str | None = None, host_receipt: str | None = None,
+) -> dict[str, Any]:
+    """Resolve requested controls without claiming unreported host execution."""
+    if surface not in {"codex_task", "subagent"}: raise ConfigError("surface must be codex_task or subagent")
+    if workload not in MODEL_WORKLOADS: raise ConfigError(f"unknown workload: {workload}")
+    if not isinstance(required_tools, tuple) or any(not isinstance(tool, str) or not tool.strip() for tool in required_tools): raise ConfigError("required_tools must be a tuple of non-empty strings")
+    if (host_actual_model is None) != (host_receipt is None): raise ConfigError("actual model verification requires both host model and receipt")
+    assignment=resolve_role_assignment(effective, role, route_tier=route_tier, explicit_model=explicit_model, explicit_reasoning=explicit_reasoning)
+    capability=effective["model_capabilities"][assignment["model"]]
+    provider=capability["provider"]
+    if explicit_provider is not None and explicit_provider != provider: raise ConfigError(f"explicit provider {explicit_provider} does not match model provider {provider}")
+    if workload not in capability["workloads"]: raise ConfigError(f"model {assignment['model']} does not declare workload: {workload}")
+    missing=sorted(set(required_tools)-set(capability["tools"]))
+    if missing: raise ConfigError(f"model {assignment['model']} does not declare required tool(s): {', '.join(missing)}")
+    if host_actual_model is not None:
+        if not isinstance(host_receipt,str) or not host_receipt.strip(): raise ConfigError("host model receipt must be exact and non-empty")
+        if host_actual_model != assignment["model"]: raise ConfigError(f"host selected {host_actual_model}, requested {assignment['model']}")
+    custom=next((value for name,value in effective["roles"].items() if name.casefold()==role.casefold()), {})
+    explicit=any(value is not None for value in (explicit_model, explicit_reasoning, explicit_provider, explicit_service_tier)) or any(key in custom for key in ("model","reasoning"))
+    return {
+        "surface":surface,"model":assignment["model"],"provider":provider,"reasoning_effort":assignment["reasoning"],
+        "service_tier":explicit_service_tier if explicit_service_tier is not None else effective["execution"]["service_tier"],
+        "selection_source":"explicit_user" if explicit else "configured_default",
+        "actual_model":host_actual_model or "","actual_model_verification":"verified" if host_actual_model is not None else "UNVERIFIED",
+        "host_model_receipt":host_receipt or "",
+    }
 
 
 def _plugin_version() -> str:
@@ -807,6 +856,18 @@ def parse_args() -> argparse.Namespace:
         default=2,
         help="task route tier from 1 (light) to 3 (deep)",
     )
+    assign = subparsers.add_parser("assign", help="emit one task or subagent model-assignment receipt")
+    assign.add_argument("--role", required=True)
+    assign.add_argument("--surface", required=True, choices=("codex_task", "subagent"))
+    assign.add_argument("--route-tier", type=int, choices=(1, 2, 3), default=2)
+    assign.add_argument("--workload", choices=tuple(sorted(MODEL_WORKLOADS)), default="general")
+    assign.add_argument("--required-tool", action="append", default=[])
+    assign.add_argument("--explicit-model")
+    assign.add_argument("--explicit-reasoning", choices=tuple(REASONING_SCALE))
+    assign.add_argument("--explicit-provider")
+    assign.add_argument("--explicit-service-tier")
+    assign.add_argument("--host-actual-model")
+    assign.add_argument("--host-receipt")
     subparsers.add_parser("validate", help="validate the config")
     subparsers.add_parser("init", help="create the default config if it is missing")
     return parser.parse_args()
@@ -852,6 +913,14 @@ def main() -> int:
                     indent=2,
                 )
             )
+            return 0
+        if args.command == "assign":
+            print(json.dumps(resolve_model_assignment(
+                effective,args.role,surface=args.surface,route_tier=args.route_tier,workload=args.workload,
+                required_tools=tuple(args.required_tool),explicit_model=args.explicit_model,explicit_reasoning=args.explicit_reasoning,
+                explicit_provider=args.explicit_provider,explicit_service_tier=args.explicit_service_tier,
+                host_actual_model=args.host_actual_model,host_receipt=args.host_receipt,
+            ),indent=2))
             return 0
         if args.json:
             print(json.dumps({"path": str(path), "exists": exists, "settings": effective}, indent=2))

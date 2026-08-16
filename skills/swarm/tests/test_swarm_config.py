@@ -282,7 +282,7 @@ class SwarmConfigTests(unittest.TestCase):
             self.assertEqual(indexes, sorted(indexes), role)
             self.assertGreater(indexes[-1], indexes[0], role)
 
-    def test_global_reasoning_bounds_override_profiles_roles_and_route_tier(self) -> None:
+    def test_explicit_role_reasoning_is_preserved_across_defaults_and_route_tier(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "bounded.toml"
             path.write_text(
@@ -297,7 +297,7 @@ class SwarmConfigTests(unittest.TestCase):
         )
         self.assertEqual(
             config.resolve_role_assignment(effective, "DESIGNER", route_tier=3)["reasoning"],
-            "high",
+            "max",
         )
 
     def test_invalid_global_reasoning_range_fails_closed(self) -> None:
@@ -368,6 +368,31 @@ class SwarmConfigTests(unittest.TestCase):
             json.loads(completed.stdout),
             {"model": "gpt-5.6-sol", "reasoning": "high"},
         )
+
+    def test_luna_assignment_is_requested_but_actual_execution_stays_unverified_without_host_metadata(self) -> None:
+        effective, _ = config.load(config.TEMPLATE_PATH)
+        receipt = config.resolve_model_assignment(
+            effective,"doer",surface="subagent",workload="general",required_tools=("shell",),
+        )
+        self.assertEqual(receipt["model"],"gpt-5.6-luna")
+        self.assertEqual(receipt["reasoning_effort"],"xhigh")
+        self.assertEqual(receipt["actual_model_verification"],"UNVERIFIED")
+        self.assertEqual(receipt["actual_model"],"")
+
+    def test_explicit_model_provider_reasoning_and_tier_are_preserved(self) -> None:
+        effective, _ = config.load(config.TEMPLATE_PATH)
+        receipt=config.resolve_model_assignment(
+            effective,"doer",surface="codex_task",explicit_model="gpt-5.6-terra",explicit_provider="openai",
+            explicit_reasoning="max",explicit_service_tier="priority",host_actual_model="gpt-5.6-terra",host_receipt="host:model:gpt-5.6-terra",
+        )
+        self.assertEqual((receipt["model"],receipt["provider"],receipt["reasoning_effort"],receipt["service_tier"]),("gpt-5.6-terra","openai","max","priority"))
+        self.assertEqual(receipt["selection_source"],"explicit_user")
+        self.assertEqual(receipt["actual_model_verification"],"verified")
+
+    def test_host_model_mismatch_fails_closed(self) -> None:
+        effective, _ = config.load(config.TEMPLATE_PATH)
+        with self.assertRaisesRegex(config.ConfigError,"host selected"):
+            config.resolve_model_assignment(effective,"doer",surface="subagent",host_actual_model="gpt-5.6-terra",host_receipt="host:model:terra")
 
 
 if __name__ == "__main__":

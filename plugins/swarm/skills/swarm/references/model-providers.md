@@ -73,6 +73,13 @@ If any gate fails, choose another configured model or return the exact blocker.
 Do not silently drop computer use, image inspection, review, tests, or proof to
 fit a cheaper model.
 
+For every task and subagent, record the requested model, provider, reasoning,
+service tier, selection source, and exact host model receipt when the host
+provides one. A request receipt proves only what SWARM asked the host to run.
+Actual model execution remains `UNVERIFIED` unless host metadata identifies it;
+never infer Luna execution from the configured default or successful helper
+completion.
+
 Third-party models can use shell, web, MCP, apps, or computer use only when the
 provider protocol, model tool calling, modalities, and Codex host all support
 the path. Being selectable in Codex does not prove those tools work. Run a

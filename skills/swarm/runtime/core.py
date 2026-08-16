@@ -35,6 +35,13 @@ class CtrlFeedEventKind(StrEnum):
     RESULT="result"; DECISION="decision"; BLOCKER="blocker"; ACCEPTANCE="acceptance"; RELEASE="release"; HANDOFF="handoff"
 class SubagentException(StrEnum):
     CAPACITY="capacity"; HOST_GATE="host_gate"; COLLISION="collision"; SAFETY="safety"; WHOLE_TASK_COST="whole_task_cost"
+class HostTaskCapacity(StrEnum): AVAILABLE="available"; UNAVAILABLE="unavailable"; REJECTED="rejected"; USAGE_LIMITED="usage_limited"
+class ExecutionRoute(StrEnum): NORMAL_SUBAGENT="normal_subagent"; NORMAL_TASK="normal_task"; DEGRADED_SUBAGENT="degraded_subagent"; HARD_BLOCKED="hard_blocked"
+class DegradedCapacityException(StrEnum): TASK_UNAVAILABLE="task_unavailable"; TASK_REJECTED="task_rejected"; TASK_USAGE_LIMITED="task_usage_limited"
+class RoutingEvidenceBasis(StrEnum): OBSERVED="observed"; CONSERVATIVE_ASSUMPTION="conservative_assumption"
+class WorkSize(StrEnum): SMALL="small"; MEDIUM="medium"; LARGE="large"
+class HandsOffEventKind(StrEnum):
+    USER_DIRECTION="user_direction"; MATERIAL_HANDOFF_REVIEW="material_handoff_review"; STOPPING_CONDITION="stopping_condition"; HUMAN_AUTHORITY_BLOCKER="human_authority_blocker"; USAGE_SIGNAL="usage_signal"; MODEL_MESSAGE="model_message"; TASK_MESSAGE="task_message"; ROUTINE_STATUS="routine_status"
 class CtrlMode(StrEnum): DIRECT="CTRL_DIRECT"; DELEGATED="CTRL_DELEGATED"
 class WatchdogSignal(StrEnum): CLEAR="CLEAR"; ATTENTION="ATTENTION"; BLOCKER="BLOCKER"
 class WatchdogScope(StrEnum):
@@ -49,6 +56,74 @@ class RequestOutcomeKind(StrEnum): ARTIFACT="ARTIFACT"; NON_ARTIFACT="NON_ARTIFA
 class RequestStageState(StrEnum): PROVISIONAL="PROVISIONAL"; ACCEPTED="ACCEPTED"; ROLLED_BACK="ROLLED_BACK"
 
 class InvariantError(ValueError): pass
+
+@dataclass(frozen=True)
+class RoutingEconomics:
+    critical_path_savings_ms:int; task_start_ms:int; worktree_ms:int; coordination_ms:int; handoff_ms:int; integration_ms:int; review_ms:int
+    basis:RoutingEvidenceBasis; receipts:tuple[str,...]=(); assumptions:tuple[str,...]=()
+    def __post_init__(self):
+        values=(self.critical_path_savings_ms,self.task_start_ms,self.worktree_ms,self.coordination_ms,self.handoff_ms,self.integration_ms,self.review_ms)
+        if any(not isinstance(value,int) or value<0 for value in values): raise InvariantError("routing economics require nonnegative integer milliseconds")
+        if not isinstance(self.basis,RoutingEvidenceBasis): raise InvariantError("routing economics require a typed evidence basis")
+        if self.basis is RoutingEvidenceBasis.OBSERVED and not self.receipts: raise InvariantError("observed routing economics require host receipts")
+        if self.basis is RoutingEvidenceBasis.CONSERVATIVE_ASSUMPTION and not self.assumptions: raise InvariantError("conservative routing economics require explicit assumptions")
+        if any(not isinstance(value,str) or not value.strip() for value in (*self.receipts,*self.assumptions)): raise InvariantError("routing evidence must be nonempty")
+    @property
+    def task_overhead_ms(self)->int: return self.task_start_ms+self.worktree_ms+self.coordination_ms+self.handoff_ms+self.integration_ms+self.review_ms
+
+@dataclass(frozen=True)
+class WorkRoutingFacts:
+    size:WorkSize; bounded:bool; low_risk:bool; mutable_surface_count:int; independent_work:bool=False; independent_acceptance:bool=False; separate_handoff:bool=False; useful_durable_boundary:bool=False; interruption_safe_resumption:bool=False; worktree_isolation:bool=False; independent_review:bool=False
+    def __post_init__(self):
+        if not isinstance(self.size,WorkSize) or not isinstance(self.mutable_surface_count,int) or self.mutable_surface_count<1: raise InvariantError("routing facts require typed size and at least one mutable surface")
+    def requires_durable_lane(self)->bool: return self.size is WorkSize.LARGE or any((self.independent_acceptance,self.separate_handoff,self.useful_durable_boundary,self.interruption_safe_resumption,self.worktree_isolation,self.independent_review))
+
+@dataclass(frozen=True)
+class HostCapacityEvidence:
+    task_status:HostTaskCapacity; subagents_available:bool; receipt:str
+    def __post_init__(self):
+        if not isinstance(self.task_status,HostTaskCapacity) or not isinstance(self.subagents_available,bool) or not isinstance(self.receipt,str) or not self.receipt.strip(): raise InvariantError("host capacity requires typed availability and an exact receipt")
+
+@dataclass(frozen=True)
+class ExecutionRoutingDecision:
+    route:ExecutionRoute; accountable_owner:str; authority_chain:tuple[str,...]; reason:str; host_receipt:str; economics:RoutingEconomics
+    degraded_exception:DegradedCapacityException|None=None; immutable_checkpoint:str=""; resumption_marker:str=""; unverified_gates:tuple[str,...]=(); pending_route:ExecutionRoute|None=None
+    @property
+    def subagent_authoritative(self)->bool: return False
+
+def _route_candidate(*, facts:WorkRoutingFacts, economics:RoutingEconomics, capacity:HostCapacityEvidence, accountable_owner:str, lead_owner:str, immutable_checkpoint:str, resumption_marker:str, affected_gates:tuple[str,...]) -> ExecutionRoutingDecision:
+    owner=accountable_owner.strip() if isinstance(accountable_owner,str) else ""; lead=lead_owner.strip() if isinstance(lead_owner,str) else ""
+    if not owner: raise InvariantError("routing requires an explicit accountable owner")
+    required=facts.requires_durable_lane()
+    economic_task=facts.independent_work and economics.critical_path_savings_ms>economics.task_overhead_ms
+    prefer_task=required or economic_task
+    if prefer_task and capacity.task_status is HostTaskCapacity.AVAILABLE:
+        if not lead or lead.upper()==Role.CTRL.value: raise InvariantError("delegated task routing requires CTRL -> LEAD -> DOER authority")
+        reason="required durable ownership boundary" if required else "parallel savings exceed measured task overhead"
+        return ExecutionRoutingDecision(ExecutionRoute.NORMAL_TASK,lead,(Role.CTRL.value,Role.LEAD.value,Role.DOER.value),reason,capacity.receipt,economics)
+    if prefer_task and capacity.subagents_available:
+        if not all(isinstance(value,str) and value.strip() for value in (immutable_checkpoint,resumption_marker)) or not affected_gates: raise InvariantError("degraded subagent routing requires an immutable checkpoint, resumption marker, and unverified gates")
+        exception={HostTaskCapacity.UNAVAILABLE:DegradedCapacityException.TASK_UNAVAILABLE,HostTaskCapacity.REJECTED:DegradedCapacityException.TASK_REJECTED,HostTaskCapacity.USAGE_LIMITED:DegradedCapacityException.TASK_USAGE_LIMITED}.get(capacity.task_status)
+        if exception is None: raise InvariantError("degraded subagent routing requires an exact task-capacity failure")
+        return ExecutionRoutingDecision(ExecutionRoute.DEGRADED_SUBAGENT,owner,(owner,"SUBAGENT"),"task lane required but host capacity forced bounded non-authoritative help",capacity.receipt,economics,exception,immutable_checkpoint,resumption_marker,affected_gates)
+    normal_subagent=facts.size in {WorkSize.SMALL,WorkSize.MEDIUM} and facts.bounded and facts.low_risk and facts.mutable_surface_count==1 and not facts.requires_durable_lane() and economics.critical_path_savings_ms<=economics.task_overhead_ms
+    if not prefer_task and normal_subagent and capacity.subagents_available:
+        return ExecutionRoutingDecision(ExecutionRoute.NORMAL_SUBAGENT,owner,(owner,"SUBAGENT"),"bounded small-to-medium slice costs less inside the accountable owner",capacity.receipt,economics)
+    if capacity.task_status is HostTaskCapacity.AVAILABLE:
+        if not lead or lead.upper()==Role.CTRL.value: raise InvariantError("delegated task routing requires CTRL -> LEAD -> DOER authority")
+        return ExecutionRoutingDecision(ExecutionRoute.NORMAL_TASK,lead,(Role.CTRL.value,Role.LEAD.value,Role.DOER.value),"task lane is the only viable permitted structure",capacity.receipt,economics)
+    return ExecutionRoutingDecision(ExecutionRoute.HARD_BLOCKED,owner,(owner,),"no permitted task or subagent structure can progress",capacity.receipt,economics)
+
+def route_execution(*, facts:WorkRoutingFacts, economics:RoutingEconomics, capacity:HostCapacityEvidence, accountable_owner:str, lead_owner:str="", immutable_checkpoint:str="", resumption_marker:str="", affected_gates:tuple[str,...]=(), current:ExecutionRoutingDecision|None=None, safe_boundary:bool=True) -> ExecutionRoutingDecision:
+    candidate=_route_candidate(facts=facts,economics=economics,capacity=capacity,accountable_owner=accountable_owner,lead_owner=lead_owner,immutable_checkpoint=immutable_checkpoint,resumption_marker=resumption_marker,affected_gates=affected_gates)
+    if current is not None and candidate.route is not current.route and not safe_boundary:
+        return replace(current,reason="topology change deferred until the next safe boundary",pending_route=candidate.route)
+    return candidate
+
+def hands_off_interrupt(kind:HandsOffEventKind, *, hard_blocked:bool=False)->bool:
+    if not isinstance(kind,HandsOffEventKind): raise InvariantError("hands-off events require a typed kind")
+    if kind in {HandsOffEventKind.USER_DIRECTION,HandsOffEventKind.MATERIAL_HANDOFF_REVIEW,HandsOffEventKind.STOPPING_CONDITION,HandsOffEventKind.HUMAN_AUTHORITY_BLOCKER}: return True
+    return kind is HandsOffEventKind.USAGE_SIGNAL and hard_blocked
 
 def _safe_token(value:str, *, prefix:str="") -> str:
     if not isinstance(value,str) or not value or prefix and not value.startswith(prefix) or value.startswith(("AKIA","ASIA")) and len(value)==20 or any(c.isspace() or c in "/\\:" or ord(c)<32 or not c.isascii() or not (c.isalnum() or c in "_-") for c in value) or any(token in value.casefold() for token in ("password","secret","api_key","apikey","access_key","token=","bearer")): raise InvariantError("request identity must be a safe ASCII runtime token")
@@ -287,6 +362,21 @@ class WatchdogEvidence:
         if len(digest)!=64 or any(character not in "0123456789abcdef" for character in digest): raise InvariantError("watchdog evidence digest must be a SHA-256 hex digest")
         if digest!=sha256(self.evidence.encode("utf-8")).hexdigest(): raise InvariantError("watchdog evidence digest must match the evidence UTF-8 bytes")
         object.__setattr__(self,"evidence_digest",digest)
+
+@dataclass(frozen=True)
+class UsageCapacitySnapshot:
+    remaining_percent:int; task_status:HostTaskCapacity; decision_owner:str; receipt:str; observed_at:int
+    def __post_init__(self):
+        if not isinstance(self.remaining_percent,int) or not 0<=self.remaining_percent<=100 or not isinstance(self.task_status,HostTaskCapacity) or not isinstance(self.observed_at,int) or self.observed_at<0 or not all(isinstance(value,str) and value.strip() for value in (self.decision_owner,self.receipt)): raise InvariantError("usage snapshot requires bounded host receipt, percent, capacity, owner, and time")
+
+def usage_watchdog_evidence(*, task_id:str, goal_id:str, watched_owner:str, current:UsageCapacitySnapshot, previous:UsageCapacitySnapshot|None=None, viable_routes:int=1, thresholds:tuple[int,...]=(5,2,1)) -> WatchdogEvidence:
+    if not isinstance(viable_routes,int) or viable_routes<0 or any(not isinstance(value,int) or not 0<=value<=100 for value in thresholds): raise InvariantError("usage watchdog requires viable-route count and bounded thresholds")
+    crossed=previous is not None and any(previous.remaining_percent>value>=current.remaining_percent for value in thresholds)
+    changed=previous is not None and (previous.task_status is not current.task_status or previous.decision_owner!=current.decision_owner)
+    signal=WatchdogSignal.BLOCKER if viable_routes==0 else WatchdogSignal.ATTENTION if crossed or changed else WatchdogSignal.CLEAR
+    payload={"receipt":current.receipt,"remaining_percent":current.remaining_percent,"task_status":current.task_status.value,"decision_owner":current.decision_owner,"signal":signal.value}
+    evidence=json.dumps(payload,sort_keys=True,separators=(",",":"))
+    return WatchdogEvidence(task_id,goal_id,watched_owner,WatchdogScope.FLOW_INTEGRITY,signal,sha256(evidence.encode("utf-8")).hexdigest(),evidence)
 
 @dataclass(frozen=True)
 class WatchdogReceipt:

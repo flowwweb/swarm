@@ -10,14 +10,15 @@ one low-risk atomic outcome on one mutable surface with no cross-lane dependency
 and measurable completion inside the direct-work horizon. Otherwise CTRL hires
 a LEAD. A LEAD may hire DOERs for separable work that shortens accepted proof.
 
-Create a visible task lane when any durable boundary matters: independent
-ownership or progress, a separate mutable surface or artifact, independent
-review, work that can continue in parallel, or interruption-safe resumption.
-The lane still needs enough adjacent work to repay startup and handoff cost and
-must not overlap an existing owner. Use a subagent only for a short, bounded
-helper result that stays inside the lane's surface and lifecycle and returns to
-its owner within the current horizon. A subagent never owns durable work and
-never replaces a qualifying visible lane merely because it is easier to spawn.
+Create a visible task lane when any durable boundary matters: independent or
+resumable ownership, a separate mutable surface or artifact, worktree isolation,
+independent review or acceptance, separate handoff, or interruption-safe resumption.
+Economics never overrides this boundary. Large work also uses a task
+lane. Otherwise bounded small-to-medium work may use an in-task subagent when it
+stays on one mutable surface and task startup, worktree, coordination, handoff,
+integration, and review overhead do not clearly repay themselves. A subagent
+never owns durable work and never replaces a qualifying visible lane merely
+because it is easier to spawn.
 
 Use this routing order:
 
@@ -26,7 +27,10 @@ Use this routing order:
 3. Add a subagent only for bounded capacity within that lane.
 
 If the host cannot create a required visible task, record the exact capability
-blocker. Do not disguise a subagent as durable ownership. Artifact count,
+blocker. A degraded subagent remains under the current accountable owner and
+must bind an immutable checkpoint, task-topology resumption marker, and every
+affected gate as `UNVERIFIED`; it cannot satisfy ownership, handoff, independent
+review, or acceptance. Do not disguise a subagent as durable ownership. Artifact count,
 configured capacity, shared keywords, and a visually complete tree never
 justify a lane.
 
@@ -107,12 +111,14 @@ retains integration and accountability.
 
 ## Capacity and dependencies
 
-Measure task startup only from host receipts: request-to-ID, ID-to-ready,
+Measure task startup from host receipts when available: request-to-ID, ID-to-ready,
 ready-to-first-material-result, worktree setup, orientation/handoff, and
-host-reported usage. Never estimate missing usage. Use a rolling median only
-after five comparable samples. Split work only when expected critical-path
-savings clearly exceed startup, coordination, handoff, integration, and review
-cost. Otherwise keep the slice with its current owner.
+host-reported usage. Before enough comparable samples exist, use conservative
+explicit assumptions and label them; never present estimates as observed usage.
+Use a rolling median only after five comparable samples. A required durable
+boundary still wins regardless of cost. Otherwise split work only when expected critical-path
+savings clearly exceed startup, worktree, coordination, handoff, integration,
+and review cost. Keep the bounded slice inside its current owner when it does not.
 
 Parallelize only disjoint lanes that can return integration-ready artifacts.
 Explicit dependencies wait on their named stage; overlapping mutation is
