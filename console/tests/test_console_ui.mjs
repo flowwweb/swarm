@@ -11,6 +11,7 @@ const testsRoot = path.dirname(fileURLToPath(import.meta.url));
 const consoleRoot = path.resolve(testsRoot, "..");
 const staticRoot = path.join(consoleRoot, "static");
 const wordmark = fs.readFileSync(path.resolve(consoleRoot, "..", "skills", "swarm", "assets", "swarm-wordmark.png"));
+const favicon = fs.readFileSync(path.join(staticRoot, "swarm-favicon.svg"));
 const fixture = JSON.parse(
   fs.readFileSync(path.join(testsRoot, "fixtures", "console-ui.json"), "utf8"),
 );
@@ -57,6 +58,9 @@ async function mount(page, overview = fixture.overview) {
     }
     if (pathname === "/assets/swarm-wordmark.png") {
       return route.fulfill({ status: 200, contentType: "image/png", body: wordmark });
+    }
+    if (pathname === "/swarm-favicon.svg") {
+      return route.fulfill({ status: 200, contentType: "image/svg+xml", body: favicon });
     }
     if (pathname === "/api/bootstrap") return route.fulfill(response(fixture.bootstrap));
     if (pathname === "/api/overview") return route.fulfill(response(overview));
@@ -130,6 +134,23 @@ try {
     assert.ok(geometry.documentWidth <= width + 1, `${width}px document overflow`);
     assert.ok(geometry.bodyWidth <= width + 1, `${width}px body overflow`);
     assert.equal(geometry.title, "Graph");
+    if (width === 1440) {
+      const faviconContract = await page.evaluate(async () => {
+        const link = document.querySelector('link[rel~="icon"]');
+        const response = await fetch(link.href);
+        return {
+          href: new URL(link.href).pathname,
+          type: link.type,
+          responseType: response.headers.get("content-type"),
+          body: await response.text(),
+        };
+      });
+      assert.equal(faviconContract.href, "/swarm-favicon.svg");
+      assert.equal(faviconContract.type, "image/svg+xml");
+      assert.match(faviconContract.responseType, /^image\/svg\+xml/);
+      assert.match(faviconContract.body, /viewBox="0 0 128 128"/);
+      assert.doesNotMatch(faviconContract.body, /SWARM/);
+    }
 
     let sidepanel = await sidepanelAppearance(page);
     assert.equal(sidepanel.iconVisible && sidepanel.panelVisible, false, `${width}px rail icon and sidepanel rendered together`);

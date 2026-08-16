@@ -55,6 +55,15 @@ class SwarmConsoleTests(unittest.TestCase):
         self.assertTrue(asset.is_file())
         self.assertGreater(asset.stat().st_size, 100_000)
 
+    def test_console_uses_compact_swarm_favicon_not_wordmark(self) -> None:
+        index = (console.STATIC_ROOT / "index.html").read_text(encoding="utf-8")
+        favicon = (console.STATIC_ROOT / "swarm-favicon.svg").read_text(encoding="utf-8")
+        self.assertIn('<link rel="icon" type="image/svg+xml" href="/swarm-favicon.svg" />', index)
+        self.assertNotIn('rel="icon" href="/assets/swarm-wordmark.png"', index)
+        self.assertEqual(console.STATIC_FILES["/swarm-favicon.svg"], ("swarm-favicon.svg", "image/svg+xml"))
+        self.assertIn('viewBox="0 0 128 128"', favicon)
+        self.assertIn('linearGradient id="coral"', favicon)
+
     def test_console_uses_flowwweb_swarm_tokens_without_lime_controls(self) -> None:
         css = (console.STATIC_ROOT / "styles.css").read_text(encoding="utf-8").casefold()
         index = (console.STATIC_ROOT / "index.html").read_text(encoding="utf-8")
