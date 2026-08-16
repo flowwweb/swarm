@@ -369,7 +369,8 @@ class UsageCapacitySnapshot:
     def __post_init__(self):
         if not isinstance(self.remaining_percent,int) or not 0<=self.remaining_percent<=100 or not isinstance(self.task_status,HostTaskCapacity) or not isinstance(self.observed_at,int) or self.observed_at<0 or not all(isinstance(value,str) and value.strip() for value in (self.decision_owner,self.receipt)): raise InvariantError("usage snapshot requires bounded host receipt, percent, capacity, owner, and time")
 
-def usage_watchdog_evidence(*, task_id:str, goal_id:str, watched_owner:str, current:UsageCapacitySnapshot, previous:UsageCapacitySnapshot|None=None, viable_routes:int=1, thresholds:tuple[int,...]=(5,2,1)) -> WatchdogEvidence:
+def usage_watchdog_evidence(*, task_id:str, goal_id:str, watched_role:Role, watched_owner:str, current:UsageCapacitySnapshot, previous:UsageCapacitySnapshot|None=None, viable_routes:int=1, thresholds:tuple[int,...]=(5,2,1)) -> WatchdogEvidence:
+    if watched_role is not Role.LEAD: raise InvariantError("usage capacity evidence may bind only to an accountable LEAD")
     if not isinstance(viable_routes,int) or viable_routes<0 or any(not isinstance(value,int) or not 0<=value<=100 for value in thresholds): raise InvariantError("usage watchdog requires viable-route count and bounded thresholds")
     crossed=previous is not None and any(previous.remaining_percent>value>=current.remaining_percent for value in thresholds)
     changed=previous is not None and (previous.task_status is not current.task_status or previous.decision_owner!=current.decision_owner)

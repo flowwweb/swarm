@@ -8,6 +8,7 @@ from skills.swarm.runtime import (
     HostCapacityEvidence,
     HostTaskCapacity,
     InvariantError,
+    Role,
     RoutingEconomics,
     RoutingEvidenceBasis,
     UsageCapacitySnapshot,
@@ -91,14 +92,20 @@ class RuntimeRoutingTests(unittest.TestCase):
     def test_usage_watchdog_is_silent_until_material_change_and_blocks_only_without_route(self) -> None:
         prior=UsageCapacitySnapshot(10,HostTaskCapacity.AVAILABLE,"lead-a","host:usage:10",1)
         same=UsageCapacitySnapshot(9,HostTaskCapacity.AVAILABLE,"lead-a","host:usage:9",2)
-        clear=usage_watchdog_evidence(task_id="task-a",goal_id="goal-a",watched_owner="lead-a",current=same,previous=prior)
+        clear=usage_watchdog_evidence(task_id="task-a",goal_id="goal-a",watched_role=Role.LEAD,watched_owner="lead-a",current=same,previous=prior)
         self.assertEqual(clear.scope,WatchdogScope.FLOW_INTEGRITY)
         self.assertEqual(clear.signal,WatchdogSignal.CLEAR)
         crossed=UsageCapacitySnapshot(5,HostTaskCapacity.USAGE_LIMITED,"lead-a","host:usage:5-limited",3)
-        attention=usage_watchdog_evidence(task_id="task-a",goal_id="goal-a",watched_owner="lead-a",current=crossed,previous=same)
+        attention=usage_watchdog_evidence(task_id="task-a",goal_id="goal-a",watched_role=Role.LEAD,watched_owner="lead-a",current=crossed,previous=same)
         self.assertEqual(attention.signal,WatchdogSignal.ATTENTION)
-        blocked=usage_watchdog_evidence(task_id="task-a",goal_id="goal-a",watched_owner="lead-a",current=crossed,previous=same,viable_routes=0)
+        blocked=usage_watchdog_evidence(task_id="task-a",goal_id="goal-a",watched_role=Role.LEAD,watched_owner="lead-a",current=crossed,previous=same,viable_routes=0)
         self.assertEqual(blocked.signal,WatchdogSignal.BLOCKER)
+
+    def test_usage_watchdog_rejects_specialist_and_architect_bindings(self) -> None:
+        snapshot=UsageCapacitySnapshot(10,HostTaskCapacity.AVAILABLE,"lead-a","host:usage:10",1)
+        for role in (Role.SPECIALIST,Role.ARCHITECT):
+            with self.subTest(role=role), self.assertRaisesRegex(InvariantError,"only to an accountable LEAD"):
+                usage_watchdog_evidence(task_id="task-a",goal_id="goal-a",watched_role=role,watched_owner="specialist-a",current=snapshot)
 
     def test_hands_off_mode_ignores_routine_evidence_and_interrupts_true_boundaries(self) -> None:
         for kind in (HandsOffEventKind.ROUTINE_STATUS,HandsOffEventKind.MODEL_MESSAGE,HandsOffEventKind.TASK_MESSAGE):
