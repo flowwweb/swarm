@@ -72,6 +72,34 @@ preview, source, filename, manifest, or conversion receipt cannot prove final
 fidelity. Loose inspiration carries only the direction the user assigned, never
 a counterfeit likeness claim.
 
+### Directional mockups are not pixel-perfect implementation plates
+
+Before assigning a visual finding, declare the artifact class:
+
+- **DIRECTIONAL_MOCKUP** — an ImageGen or design study intended to help the user
+  choose a direction. Judge the user job, hierarchy, content, interaction idea,
+  palette, brand feel, and overall quality. Small expected generator drift in
+  canvas dimensions, shell geometry, wordmarks, avatars, or exact pixels is a
+  `NOTE_FOR_IMPLEMENTATION`, never a rejection by itself.
+- **BINDING_VISUAL_SPEC** — a selected direction or explicitly binding reference
+  that constrains implementation. Gate major composition, hierarchy, palette,
+  content, and prohibited deviations; require exact geometry or asset fidelity
+  only when the task declares that requirement.
+- **IMPLEMENTATION_EVIDENCE** — code-owned output, compositor plate, browser
+  capture, device capture, or release artifact. Gate exact behavior,
+  responsive layout, accessibility, declared assets, and any explicit visual
+  fidelity contract.
+
+For `DIRECTIONAL_MOCKUP`, do not issue P1/P2 or `REJECT` for expected ImageGen
+variation such as 1505×1045 versus a target canvas, a slightly different drawer
+width, a regenerated logo/avatar, or a missing implementation-only shell detail.
+Escalate only when the drift changes the requested user job, contradicts an
+explicit must-have or prohibited element, introduces unsafe or misleading
+content, or makes the direction impossible to evaluate. The correct result is
+usually `KEEP` plus a short implementation handoff. Do not spend another
+generation/review cycle to eliminate expected variation before the user chooses
+the direction.
+
 `SOURCE_SEMANTICS` checks the implementation and may return useful findings, but
 it cannot set final `review_passed`. `ACCEPTANCE` checks the declared immutable
 `ArtifactIdentity` against its `AcceptanceContract`. It passes only when every
@@ -234,12 +262,22 @@ return `APPROVE` and stop. Do not order another pass merely because deeper
 inspection could find more minor issues. Reopen review only for new evidence,
 changed scope, a failed gate, or a named material risk.
 
-Design review is the explicit exception. Encourage granular critique of visual,
-interaction, motion, copy, and craft details because small design refinements
-can compound into clarity, coherence, and perceived quality. Judge those details
-against the accepted direction and the composed product, and keep the exception
-inside design surfaces. A design nit cannot justify unrelated code,
-architecture, process, or scope churn. In mixed reviews, classify each finding
+For a directional mockup, one independent review pass is the default. Once the
+direction is usable, truthful, and clearly helps the user choose, return
+`KEEP` or `APPROVE_DIRECTION` and stop. Do not convert implementation notes into
+new ImageGen attempts before the user selects a direction. A second pass needs
+new evidence or a named material risk, not a desire for a cleaner pixel match.
+
+Design review is the explicit exception, but it is still calibrated. For a
+`DIRECTIONAL_MOCKUP`, critique visual, interaction, motion, copy, and craft
+details only when they materially improve clarity, coherence, product fit, or
+the user's decision. Treat small expected ImageGen variation and taste
+differences as notes, not blockers; do not launch another generation solely to
+chase pixel parity. Judge details against the requested direction and the
+composed product, and keep the exception inside design surfaces. A design nit
+cannot justify unrelated code, architecture, process, or scope churn. For a
+`BINDING_VISUAL_SPEC` or `IMPLEMENTATION_EVIDENCE`, apply the declared fidelity
+and runtime gates. In mixed reviews, classify the artifact and each finding
 before applying the exception.
 
 Rank findings `P0` destructive/security/data loss, `P1` blocked core outcome,
@@ -261,7 +299,10 @@ composed portfolio. A shared provider/project/channel target must show the
 CTRL-managed ownership or lease receipt before the LEAD's mutation is reviewable
 as safe.
 
-`APPROVE` requires all must-haves, every required ledger proof `VERIFIED`, no
+`APPROVE_DIRECTION` means a directional mockup is usable for the user's
+decision and has no material user-job, must-have, safety, or truth failure; it
+does not authorize implementation or claim pixel/runtime parity. `APPROVE`
+requires all must-haves, every required ledger proof `VERIFIED`, no
 unresolved P0-P2, proportionate proof, and honest claim limits. `UNVERIFIED`
 required proof blocks approval and portfolio acceptance. `CORRECT` names the selected repair and proof, or presents
 options for the acceptance owner when the governing rule is the disputed part.
