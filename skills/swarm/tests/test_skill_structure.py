@@ -214,6 +214,10 @@ class SwarmSkillStructureTests(unittest.TestCase):
         self.assertIn("[design-guide.md]", skill)
         self.assertIn("Small design details compound and design nitpicking is encouraged", design)
         self.assertIn("invariant, contextual default, or taste direction", design)
+        self.assertIn("Default new user-facing design work to built-in ImageGen mockups", design)
+        self.assertIn("Do not replace that default with composites, screenshot edits, raster", design)
+        self.assertIn("default to built-in ImageGen mockups before implementation", skill)
+        self.assertIn("Prefer ImageGen over composites, screenshot edits, raster recolors", skill)
 
     def test_durable_goals_and_optional_watchdog_are_fixed_contracts(self) -> None:
         skill = doctrine()

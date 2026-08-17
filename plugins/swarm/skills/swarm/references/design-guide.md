@@ -16,6 +16,16 @@ view derived from an evidence-backed design constitution.
 
 ## Rules
 
+- Default new user-facing design work to built-in ImageGen mockups before
+  implementation. Use ImageGen for screens, page compositions, responsive
+  directions, and raster visual assets so the user can review the direction
+  first.
+- Do not replace that default with composites, screenshot edits, raster
+  recolors, or hand-built placeholder images. Use native/vector/code-native
+  work only when the artifact is inherently native (for example an icon,
+  vector mark, or CSS layout) or the user explicitly approves the exception;
+  keep generation, selection, implementation, and rendered acceptance as
+  separate gates.
 - Make the real task obvious before adding explanation or decoration.
 - Give every screen one clear primary decision; progressively disclose detail.
 - Show system status, accepted input, change, consequence, and next action.
