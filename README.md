@@ -25,25 +25,36 @@ The hierarchy keeps parallel work understandable: one place to steer, one owner 
 This example shows a full three-lane swarm. The professions change with the objective; the hierarchy does not.
 
 ```mermaid
+%%{init: {"theme":"base","themeVariables":{"lineColor":"#36aeca"},"flowchart":{"nodeSpacing":42,"rankSpacing":152,"curve":"basis","padding":24}}}%%
 flowchart TB
-  C["CTRL<br/>gpt-5.6-sol · high<br/>Owns the objective"]
+  C("🐙<br/>CTRL<br/>gpt-5.6-sol · high<br/>Owns the objective")
 
-  C --> P["PRODUCT LEAD<br/>gpt-5.6-terra<br/>Direction"]
-  C --> E["ENGINEERING LEAD<br/>gpt-5.6-terra<br/>Build"]
-  C --> Q["QUALITY LEAD<br/>gpt-5.6-terra<br/>Proof"]
+  C --> P("🧭<br/>PRODUCT LEAD<br/>gpt-5.6-terra<br/>Direction")
+  C --> E("🧭<br/>ENGINEERING LEAD<br/>gpt-5.6-terra<br/>Build")
+  C --> Q("🧭<br/>QUALITY LEAD<br/>gpt-5.6-terra<br/>Proof")
 
-  P --> P1["RESEARCHER<br/>gpt-5.6-luna"]
-  P --> P2["PRODUCT DESIGNER<br/>gpt-5.6-luna"]
-  P --> P3["UX WRITER<br/>gpt-5.6-luna"]
+  P --> P1("📚<br/>RESEARCHER<br/>gpt-5.6-luna")
+  P --> P2("🎨<br/>PRODUCT DESIGNER<br/>gpt-5.6-luna")
+  P --> P3("✏️<br/>UX WRITER<br/>gpt-5.6-luna")
 
-  E --> E1["FRONTEND DEVELOPER<br/>gpt-5.6-luna"]
-  E --> E2["BACKEND DEVELOPER<br/>gpt-5.6-luna"]
-  E --> E3["INTEGRATION ENGINEER<br/>gpt-5.6-luna"]
+  E --> E1("💻<br/>FRONTEND DEVELOPER<br/>gpt-5.6-luna")
+  E --> E2("🔨<br/>BACKEND DEVELOPER<br/>gpt-5.6-luna")
+  E --> E3("🔌<br/>INTEGRATION ENGINEER<br/>gpt-5.6-luna")
 
-  Q --> Q1["TEST ENGINEER<br/>gpt-5.6-luna"]
-  Q --> Q2["ACCESSIBILITY TESTER<br/>gpt-5.6-luna"]
-  Q --> Q3["RELEASE VERIFIER<br/>gpt-5.6-luna"]
+  Q --> Q1("🧪<br/>TEST ENGINEER<br/>gpt-5.6-luna")
+  Q --> Q2("✅<br/>ACCESSIBILITY TESTER<br/>gpt-5.6-luna")
+  Q --> Q3("🚀<br/>RELEASE VERIFIER<br/>gpt-5.6-luna")
+
+  classDef ctrl fill:#fff1ed,stroke:#ff5b45,color:#172033,stroke-width:3px;
+  classDef lead fill:#e9fbff,stroke:#0ea5c6,color:#172033,stroke-width:2px;
+  classDef doer fill:#ffffff,stroke:#78cddd,color:#172033,stroke-width:1px;
+  class C ctrl;
+  class P,E,Q lead;
+  class P1,P2,P3,E1,E2,E3,Q1,Q2,Q3 doer;
+  linkStyle default stroke:#36aeca,stroke-width:1.5px;
 ```
+
+The icons match SWARM task titles: one role icon makes the CTRL, LEAD, and profession of each task recognizable before you read the full name.
 
 - **CTRL** is the sole control point. It understands your objective, chooses the lanes, resolves cross-lane decisions, and returns the combined result.
 - **LEADs** own distinct outcomes. They coordinate their DOERs, integrate the work, and bring back evidence instead of activity reports.

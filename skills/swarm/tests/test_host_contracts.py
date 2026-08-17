@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import importlib.util
 import json
+import re
 import subprocess
 import sys
 import tempfile
@@ -129,6 +130,11 @@ class HostContractTests(unittest.TestCase):
         self.assertEqual(3, readme.count(" LEAD<br/>gpt-5.6-terra"))
         self.assertEqual(9, readme.count("<br/>gpt-5.6-luna"))
         self.assertIn("CTRL<br/>gpt-5.6-sol · high", readme)
+        self.assertIn("🐙<br/>CTRL", readme)
+        self.assertEqual(3, readme.count("🧭<br/>"))
+        spacing = re.search(r'"rankSpacing":(\d+)', readme)
+        self.assertIsNotNone(spacing)
+        self.assertGreaterEqual(int(spacing.group(1)), 120)
         self.assertNotIn("MOTHER", readme)
 
 
