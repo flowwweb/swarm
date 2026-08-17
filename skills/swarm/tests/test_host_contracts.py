@@ -123,6 +123,14 @@ class HostContractTests(unittest.TestCase):
         self.assertIn("do not prove a host installation, activation, prompt loading, agent behavior, marketplace availability, or an external release", readme)
         self.assertNotIn("cross-host certified", readme.lower())
 
+    def test_readme_keeps_one_clear_three_lane_hierarchy(self) -> None:
+        readme = (REPOSITORY_ROOT / "README.md").read_text(encoding="utf-8")
+        self.assertEqual(1, readme.count("```mermaid"))
+        self.assertEqual(3, readme.count(" LEAD<br/>gpt-5.6-terra"))
+        self.assertEqual(9, readme.count("<br/>gpt-5.6-luna"))
+        self.assertIn("CTRL<br/>gpt-5.6-sol · high", readme)
+        self.assertNotIn("MOTHER", readme)
+
 
 if __name__ == "__main__":
     unittest.main()
