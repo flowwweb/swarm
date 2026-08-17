@@ -290,6 +290,7 @@ class SwarmConfigTests(unittest.TestCase):
     def test_profiles_have_distinct_reasoning_scales(self) -> None:
         models = config.DEFAULTS["models"]
         for role in (
+            "ctrl",
             "lead",
             "doer",
             "task",
@@ -305,6 +306,20 @@ class SwarmConfigTests(unittest.TestCase):
             self.assertEqual(indexes, sorted(indexes), role)
             self.assertGreater(indexes[-1], indexes[0], role)
 
+    def test_high_profile_requests_max_for_every_builtin_role(self) -> None:
+        high = config.DEFAULTS["models"]["high"]
+        roles = ("ctrl", "lead", "doer", "task", "subtask", "assist", "advisor", "specialist", "architect", "review")
+        self.assertTrue(all(high[f"{role}_reasoning"] == "max" for role in roles))
+
+    def test_task_event_log_limit_is_small_bounded_and_configurable(self) -> None:
+        effective, _ = config.load(config.TEMPLATE_PATH)
+        self.assertEqual(effective["logging"]["task_event_limit"], 64)
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "invalid.toml"
+            path.write_text("[logging]\ntask_event_limit = 300\n", encoding="utf-8")
+            with self.assertRaisesRegex(config.ConfigError, "logging.task_event_limit"):
+                config.load(path)
+
     def test_explicit_role_reasoning_is_preserved_across_defaults_and_route_tier(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "bounded.toml"
@@ -316,7 +331,7 @@ class SwarmConfigTests(unittest.TestCase):
             effective, _ = config.load(path)
         self.assertEqual(
             config.resolve_role_assignment(effective, "MOTHER", route_tier=1)["reasoning"],
-            "medium",
+            "high",
         )
         self.assertEqual(
             config.resolve_role_assignment(effective, "DESIGNER", route_tier=3)["reasoning"],

@@ -114,6 +114,8 @@ select, input[type="text"], input[type="number"] { min-height: 42px; border: 1px
 .node-icon { font-size: 20px; }.node-icon:empty { display: none; }.node-role { color: var(--node-color, var(--cyan)); font-family: var(--font-code); font-size: 9px; font-weight: 700; letter-spacing: .13em; }
 .node-model { margin-left: auto; color: var(--faint); font-family: var(--font-code); font-size: 8px; letter-spacing: .02em; text-transform: lowercase; }
 .swarm-node strong { display: block; margin-top: 10px; font-family: var(--font-code); font-size: 11px; line-height: 1.4; }
+.swarm-node .node-title { display: flex; align-items: center; gap: 8px; }
+.node-title > span:first-child { min-width: 0; }
 .node-meta { margin-top: 10px; display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; color: var(--faint); font-size: 9px; }
 .node-worker { min-width: 0; max-width: 104px; padding: 4px 7px; display: inline-flex; align-items: center; gap: 5px; overflow: hidden; border: 1px solid rgba(96,218,255,.16); border-radius: 999px; color: var(--muted); font-family: var(--font-code); text-overflow: ellipsis; white-space: nowrap; }
 .node-worker b { color: var(--cyan); font-size: 7px; letter-spacing: .08em; }

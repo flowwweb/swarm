@@ -29,7 +29,10 @@ const settingGroups = [
     fields: [
       ["execution.usage_profile", "Usage profile", "select", "Relative model and effort policy", ["high", "medium", "low"]],
       ["execution.service_tier", "Service tier", "text", "Empty keeps the host default"],
+      ["execution.min_reasoning", "Reasoning floor", "select", "Lowest requested reasoning", ["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"]],
+      ["execution.max_reasoning", "Reasoning ceiling", "select", "Highest requested reasoning", ["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"]],
       ["execution.usage_saver", "Usage Saver", "boolean", "Reduce avoidable coordination churn"],
+      ["logging.task_event_limit", "Task event history", "number", "Metadata only; no prompts or outputs"],
       ["console.open_on_start", "Open portal on start", "boolean", "Reuse an open portal tab; closed tabs expire after a short grace period"],
       ["subagents.enabled", "Internal subagents", "boolean", "Bounded work inside an owning task"],
       ["subagents.max_per_task", "Subagent ceiling", "number", "Separate safety ceiling, not a target"],
@@ -186,7 +189,7 @@ function roleColor(role) {
 
 function hierarchyStatus(status) {
   const active = status === "active";
-  return `<span class="node-status${active ? " is-processing" : ""}" role="status" aria-label="Status: ${escapeHTML(status)}"><i aria-hidden="true"></i><span>${escapeHTML(status)}</span></span>`;
+  return `<span class="node-status${active ? " is-processing" : ""}" role="status" aria-label="Status: ${escapeHTML(status)}"><i aria-hidden="true"></i>${active ? "" : `<span>${escapeHTML(status)}</span>`}</span>`;
 }
 
 function renderSwarm() {
@@ -253,7 +256,11 @@ function renderSwarm() {
       ? `<span class="node-worker">${node.worker_role ? `<b>${escapeHTML(node.worker_role)}</b>` : ""}<span aria-hidden="true">●</span>${escapeHTML(node.worker || "unassigned")}</span>`
       : "";
     const workerDetail = node.worker ? `. Worker: ${node.worker}${node.worker_role ? ` (${node.worker_role})` : ""}` : "";
-    return `<article class="swarm-node role-${escapeHTML(node.role)} is-${escapeHTML(node.status)}" style="left:${p.x}px;top:${p.y}px;--node-color:${roleColor(node.role)}" aria-label="${escapeHTML(`${node.role_label} - ${node.artifact}${workerDetail}. Model: ${node.model || "unknown"}. Status: ${node.status}`)}"><div class="node-top"><span class="node-icon" aria-hidden="true">${escapeHTML(node.icon)}</span><span class="node-role">${escapeHTML(node.role_label)}</span><span class="node-model">${escapeHTML(node.model || "unknown")}</span></div><strong>${escapeHTML(node.artifact)}</strong><div class="node-meta">${worker}${hierarchyStatus(node.status)}</div></article>`;
+    const activeStatus = node.status === "active" ? hierarchyStatus(node.status) : "";
+    const restingStatus = node.status === "active" ? "" : hierarchyStatus(node.status);
+    const reasoning = node.reasoning || "unknown";
+    const meta = worker || restingStatus ? `<div class="node-meta">${worker}${restingStatus}</div>` : "";
+    return `<article class="swarm-node role-${escapeHTML(node.role)} is-${escapeHTML(node.status)}" style="left:${p.x}px;top:${p.y}px;--node-color:${roleColor(node.role)}" aria-label="${escapeHTML(`${node.role_label} - ${node.artifact}${workerDetail}. Model: ${node.model || "unknown"}. Reasoning: ${reasoning}. Status: ${node.status}`)}"><div class="node-top"><span class="node-icon" aria-hidden="true">${escapeHTML(node.icon)}</span><span class="node-role">${escapeHTML(node.role_label)}</span><span class="node-model">${escapeHTML(node.model || "unknown")} · ${escapeHTML(reasoning)}</span></div><strong class="node-title"><span>${escapeHTML(node.artifact)}</span>${activeStatus}</strong>${meta}</article>`;
   }).join("");
   if (!displayNodes.length) $("#swarm-nodes").innerHTML = `<div class="empty-state">Host has not exposed a CTRL.</div>`;
   const scopeKey = `${project}:${controller}`;

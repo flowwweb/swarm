@@ -207,6 +207,7 @@ class SwarmConsoleTests(unittest.TestCase):
         overview = console.build_overview(self.codex_home, self.config)
         child = next(node for node in overview["nodes"] if node["id"] == "generic-child")
         self.assertEqual((child["role"], child["role_label"], child["worker_role"], child["artifact"], child["worker"]), ("doer", "TASK", "AGENT", "Generic Child", "Lovelace"))
+        self.assertEqual(child["reasoning"], "high")
         self.assertNotIn("private task instructions", json.dumps(overview))
         self.assertIn({"source": "root", "target": "generic-child", "relationship": "delegated"}, overview["links"])
 

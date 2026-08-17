@@ -283,7 +283,7 @@ try {
       const ctrl = document.querySelector(".swarm-node.role-ctrl").getBoundingClientRect();
       const lead = document.querySelector(".swarm-node.role-lead").getBoundingClientRect();
       const stage = document.querySelector(".swarm-stage").getBoundingClientRect();
-      const spinner = document.querySelector(".swarm-node.role-lead > .node-meta .node-status.is-processing i");
+      const spinner = document.querySelector(".swarm-node.role-lead > .node-title .node-status.is-processing i");
       const spinnerStyle = getComputedStyle(spinner);
       const hierarchyRoot = document.querySelector("#swarm-nodes");
       return {
@@ -293,6 +293,8 @@ try {
         standaloneDoers: hierarchyRoot.querySelectorAll(".swarm-node.role-doer").length,
         workers: [...hierarchyRoot.querySelectorAll(".node-worker")].map((node) => node.textContent.trim()),
         models: [...hierarchyRoot.querySelectorAll(".node-model")].map((node) => node.textContent.trim()),
+        activeStatusText: document.querySelector(".swarm-node.role-lead .node-status.is-processing").textContent.trim(),
+        maxReasoningOptions: [...document.querySelector('[data-setting="execution.max_reasoning"]').options].map((option) => option.value),
         delegatedLabels: [...hierarchyRoot.querySelectorAll(".swarm-node:not(.role-ctrl) .node-role")].map((node) => node.textContent.trim()),
         childArtifactCounts: ["Hierarchy renderer", "Visual polish", "Responsive proof"].map(
           (artifact) => hierarchyRoot.innerText.split(artifact).length - 1,
@@ -324,7 +326,9 @@ try {
     assert.equal(hierarchy.taskNodes, 5);
     assert.equal(hierarchy.standaloneDoers, 3);
     assert.deepEqual(hierarchy.workers, ["LEAD●Carson", "DEV●Lovelace", "DESIGN●Eames", "TEST●Noether"]);
-    assert.deepEqual(hierarchy.models, ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.6-luna", "gpt-5.6-luna"]);
+    assert.deepEqual(hierarchy.models, ["gpt-5.6-sol · max", "gpt-5.6-terra · xhigh", "gpt-5.6-luna · max", "gpt-5.6-luna · high", "gpt-5.6-luna · unknown"]);
+    assert.equal(hierarchy.activeStatusText, "");
+    assert.ok(hierarchy.maxReasoningOptions.includes("max"));
     assert.ok(hierarchy.delegatedLabels.every((label) => label === "TASK"));
     assert.deepEqual(hierarchy.childArtifactCounts, [1, 1, 1]);
     assert.equal(hierarchy.titleAttributes, 0);
@@ -364,11 +368,11 @@ try {
     }
     await page.emulateMedia({ reducedMotion: "reduce" });
     await page.waitForFunction(() => {
-      const spinner = document.querySelector(".swarm-node.role-lead > .node-meta .node-status.is-processing i");
+      const spinner = document.querySelector(".swarm-node.role-lead > .node-title .node-status.is-processing i");
       return spinner?.isConnected && getComputedStyle(spinner).animationName === "none";
     });
     assert.equal(
-      await page.locator(".swarm-node.role-lead > .node-meta .node-status.is-processing i").evaluate(
+      await page.locator(".swarm-node.role-lead > .node-title .node-status.is-processing i").evaluate(
         (spinner) => getComputedStyle(spinner).animationName,
       ),
       "none",

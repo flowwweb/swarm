@@ -51,6 +51,7 @@ DEFAULTS: dict[str, Any] = {
         "max_reasoning": "ultra",
     },
     "console": {"open_on_start": True},
+    "logging": {"task_event_limit": 64},
     "proof": {
         "policy_version": "lean-v1",
         "impacted_selection": True,
@@ -79,17 +80,17 @@ DEFAULTS: dict[str, Any] = {
     },
     "models": {
         "high": {
-            "ctrl_model": "gpt-5.6-sol", "ctrl_reasoning": "high",
-            "lead_model": "gpt-5.6-terra", "lead_reasoning": "high",
+            "ctrl_model": "gpt-5.6-sol", "ctrl_reasoning": "max",
+            "lead_model": "gpt-5.6-terra", "lead_reasoning": "max",
             "doer_model": "gpt-5.6-luna",
             "doer_reasoning": "max",
-            "task_model": "gpt-5.6-luna", "task_reasoning": "xhigh",
-            "subtask_model": "gpt-5.6-luna", "subtask_reasoning": "xhigh",
-            "assist_model": "gpt-5.6-sol", "assist_reasoning": "high",
-            "review_model": "gpt-5.6-sol", "review_reasoning": "high",
-            "advisor_model": "gpt-5.6-sol", "advisor_reasoning": "high",
-            "specialist_model": "gpt-5.6-sol", "specialist_reasoning": "high",
-            "architect_model": "gpt-5.6-sol", "architect_reasoning": "high",
+            "task_model": "gpt-5.6-luna", "task_reasoning": "max",
+            "subtask_model": "gpt-5.6-luna", "subtask_reasoning": "max",
+            "assist_model": "gpt-5.6-sol", "assist_reasoning": "max",
+            "review_model": "gpt-5.6-sol", "review_reasoning": "max",
+            "advisor_model": "gpt-5.6-sol", "advisor_reasoning": "max",
+            "specialist_model": "gpt-5.6-sol", "specialist_reasoning": "max",
+            "architect_model": "gpt-5.6-sol", "architect_reasoning": "max",
         },
         "medium": {
             "ctrl_model": "gpt-5.6-sol", "ctrl_reasoning": "medium",
@@ -362,6 +363,9 @@ def validate(raw: dict[str, Any]) -> None:
     console = _expect_table(raw, "console")
     _expect_keys(console, set(DEFAULTS["console"]), "console")
     _boolean(console, "open_on_start", "console")
+    logging = _expect_table(raw, "logging")
+    _expect_keys(logging, set(DEFAULTS["logging"]), "logging")
+    _bounded_int(logging, "task_event_limit", 8, 256, "logging")
     proof = _expect_table(raw, "proof")
     _expect_keys(proof, set(DEFAULTS["proof"]), "proof")
     _short_text(proof, "policy_version", "proof")
@@ -440,7 +444,7 @@ def validate(raw: dict[str, Any]) -> None:
         if not isinstance(values, dict):
             raise ConfigError(f"models.{profile} must be a TOML table")
         _expect_keys(values, set(defaults), f"models.{profile}")
-        for role in ("lead", "doer", "task", "subtask", "assist", "review", "advisor", "specialist", "architect"):
+        for role in ("ctrl", "lead", "doer", "task", "subtask", "assist", "review", "advisor", "specialist", "architect"):
             _model_name(values, f"{role}_model", f"models.{profile}")
             _reasoning_effort(values, f"{role}_reasoning", f"models.{profile}")
 

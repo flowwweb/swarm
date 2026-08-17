@@ -71,6 +71,7 @@ Configuration cannot make an unsafe or hidden coordination path valid:
 | `execution.min_reasoning` | Global reasoning floor applied after every profile, role override, and route adjustment | none, minimal, low, medium, high, xhigh, max, ultra; compatibility-neutral default none |
 | `execution.max_reasoning` | Global reasoning ceiling applied after every profile, role override, and route adjustment | none, minimal, low, medium, high, xhigh, max, ultra; compatibility-neutral default ultra; must be at least min |
 | `execution.usage_saver` | Prefer lower-churn coordination for new work without weakening delivery | boolean; default false |
+| `logging.task_event_limit` | Bounded recent task-transition metadata retained in memory; never prompts, responses, artifact bodies, or credentials | 8-256; default 64 |
 | `proof.policy_version` | Deterministic proof-planner policy | trimmed identifier; default lean-v1 |
 | `proof.impacted_selection` | Select focused impacted gates when dependency reach is known | boolean; default true |
 | `proof.receipt_reuse` | Permit exact-key stable gate adoption after runtime re-observation; never acceptance reuse | boolean; default true |
@@ -157,6 +158,8 @@ fallback; custom labels and emojis never change authority.
 ## Models and usage
 
 The packaged low, medium, and high profiles use distinct reasoning defaults.
+The high profile requests `max` for every built-in role; the host-observed value
+remains authoritative and may be unavailable or different.
 For a normal run, route tier 1 selects one step below the role default, tier 2
 selects the role default, and tier 3 selects one step above it. SWARM then
 applies `execution.min_reasoning` and `execution.max_reasoning` as global clamps.

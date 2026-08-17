@@ -198,6 +198,15 @@ class RuntimeTests(unittest.TestCase):
   with self.assertRaises(InvariantError): self.s.add_artifact(Role.DOER,"A",ArtifactIdentity("canon","v2","verification"),source="canon@v1:work",justification="verification")
   for _ in range(70): self.s.record_telemetry("task","DOER",1,"ok")
   self.assertLessEqual(len(self.s.events),64); self.assertLessEqual(len(self.s.telemetry_events),64)
+ def test_configured_task_event_log_keeps_only_recent_metadata(self):
+  self.s.task_event_limit=8
+  for index in range(12): self.s._record("events",("RECOVERY",f"task-{index}"))
+  self.assertEqual(len(self.s.events),8)
+  self.assertEqual(self.s.events[0],("RECOVERY","task-4"))
+  self.s.task_event_limit=0
+  before=tuple(self.s.events)
+  with self.assertRaisesRegex(InvariantError,"task event limit"): self.s._record("events",("RECOVERY","invalid"))
+  self.assertEqual(tuple(self.s.events),before)
  def test_scope_discipline_blocks_only_material_invariant_findings(self):
   before=(len(self.s.tasks),len(self.s.workers),len(self.s.events),self.s.tasks["A"].state)
   self.assertFalse(self.s.scope_finding(Role.DOER,"A","nice-to-have",material=False)); self.assertEqual(before,(len(self.s.tasks),len(self.s.workers),len(self.s.events),self.s.tasks["A"].state))

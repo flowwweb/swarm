@@ -125,7 +125,7 @@ def _source_included(relative: Path) -> bool:
     """Clean-checkout packaging exclusions; never use this for installed parity."""
     archive_name = normalise_relative_path(relative)
     parts = PurePosixPath(archive_name).parts
-    if any(part in PACKAGING_IGNORED_DIRECTORIES for part in parts[:-1]):
+    if any(part in PACKAGING_IGNORED_DIRECTORIES for part in parts):
         return False
     if archive_name in DEVELOPMENT_ONLY_PATHS or any(
         archive_name == directory or archive_name.startswith(directory + "/")
@@ -143,7 +143,7 @@ def _installed_included(relative: Path) -> bool:
     archive_name = normalise_relative_path(relative)
     parts = PurePosixPath(archive_name).parts
     return not (
-        ".git" in parts[:-1]
+        ".git" in parts
         or "__pycache__" in parts[:-1]
         or archive_name == PACKAGE_METADATA_PATH
     )

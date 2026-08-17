@@ -140,6 +140,14 @@ class ReleasePackageTests(unittest.TestCase):
             with zipfile.ZipFile(io.BytesIO(payload)) as archive:
                 self.assertTrue(set(development_files).isdisjoint(archive.namelist()))
 
+    def test_source_hashes_ignore_a_worktree_git_pointer_file(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "worktree"
+            root.mkdir()
+            (root / ".git").write_text("gitdir: C:/repo/.git/worktrees/worktree\n", encoding="utf-8")
+            (root / "README.md").write_text("# SWARM\n", encoding="utf-8")
+            self.assertEqual(set(source_file_hashes(root)), {"README.md"})
+
     def test_source_verifier_rejects_development_material_in_an_installed_tree(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             source = self.make_plugin(Path(temporary) / "source")

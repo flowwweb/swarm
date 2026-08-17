@@ -43,6 +43,11 @@ usage_saver = false
 # SWARM starts. A browser launch failure never blocks work.
 open_on_start = true
 
+[logging]
+# Retain only compact runtime event metadata for recent task transitions. SWARM
+# never stores task prompts, responses, artifact bodies, or credentials here.
+task_event_limit = 64
+
 [proof]
 # Deterministic minimum-proof planning. Unknown impact broadens proof; these
 # controls cannot weaken user authority, final acceptance, or artifact binding.
@@ -93,25 +98,25 @@ spark_model = "gpt-5.3-codex-spark"
 
 [models.high]
 ctrl_model = "gpt-5.6-sol"
-ctrl_reasoning = "high"
+ctrl_reasoning = "max"
 lead_model = "gpt-5.6-terra"
-lead_reasoning = "high"
+lead_reasoning = "max"
 doer_model = "gpt-5.6-luna"
 doer_reasoning = "max"
 task_model = "gpt-5.6-luna"
-task_reasoning = "xhigh"
+task_reasoning = "max"
 subtask_model = "gpt-5.6-luna"
-subtask_reasoning = "xhigh"
+subtask_reasoning = "max"
 assist_model = "gpt-5.6-sol"
-assist_reasoning = "high"
+assist_reasoning = "max"
 advisor_model = "gpt-5.6-sol"
-advisor_reasoning = "high"
+advisor_reasoning = "max"
 specialist_model = "gpt-5.6-sol"
-specialist_reasoning = "high"
+specialist_reasoning = "max"
 architect_model = "gpt-5.6-sol"
-architect_reasoning = "high"
+architect_reasoning = "max"
 review_model = "gpt-5.6-sol"
-review_reasoning = "high"
+review_reasoning = "max"
 
 [models.medium]
 ctrl_model = "gpt-5.6-sol"
