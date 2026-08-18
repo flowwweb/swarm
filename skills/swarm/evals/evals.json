@@ -1169,12 +1169,13 @@
     },
     {
       "id": 90,
-      "prompt": "Use SWARM for a one-file copy typo, then create three landing-page mockups and implement the selected direction. Keep the small-work clause, have the visual work use an efficient Designer skill, and do not let CTRL start producing the mockups.",
-      "expected_output": "Keep the one-file copy typo with CTRL as a low-risk atomic GENERAL direct task when measured coordination overhead exceeds the work. Route mockup and image-generation work as CTRL_DELEGATED to a DESIGNER lane even if the visual slice is small; the DESIGNER owns the candidates and visual proof, and CTRL surfaces the complete decision set, waits for selection, and then delegates implementation. Any agent may request a task-local approved skill with exact source/version or digest, purpose, scope, and host audit/rollback receipt; the skill does not grant authority. If the Designer lane cannot be materialized, preserve the exact blocker or an explicitly degraded unverified route rather than generating the mockups in CTRL.",
+      "prompt": "Use SWARM for a one-file copy typo, a medium landing-page implementation, and three mockups for the selected direction. Keep the small-work clause, let bounded control work use subagents when appropriate, have visual work use an efficient Designer skill, and do not let CTRL start producing the mockups.",
+      "expected_output": "Keep the one-file copy typo with CTRL as a low-risk atomic GENERAL direct task when measured coordination overhead exceeds the work. Route the medium implementation to a visible Codex task with a LEAD and DOERs so it can have its own subagents. Route mockup and image-generation work as CTRL_DELEGATED to a visible DESIGNER lane even if the visual slice is small; the DESIGNER owns the candidates and visual proof, and CTRL surfaces the complete decision set, waits for selection, and then delegates implementation. Small bounded GENERAL control work may use a subagent when its measured economics justify it. Any agent may request a task-local approved skill with exact source/version or digest, purpose, scope, and host audit/rollback receipt; the skill does not grant authority. If the Designer lane cannot be materialized, preserve the exact blocker or an explicitly degraded unverified route rather than generating the mockups in a subagent.",
       "files": [],
       "assertions": [
         "The small-work clause still permits a low-risk atomic GENERAL CTRL_DIRECT outcome",
-        "Non-direct CTRL-owned work opens a visible Codex task rather than using a root-level subagent",
+        "Small bounded GENERAL CTRL work may use a subagent when its economics justify it",
+        "Medium and large CTRL-owned work opens a visible Codex task rather than using a root-level subagent",
         "Mockup and image-generation work cannot enter CTRL_DIRECT merely because it is small",
         "Visual work is assigned to a DESIGNER with CTRL -> LEAD -> DOER authority",
         "CTRL waits at the user's visual choice boundary and does not produce the candidates",

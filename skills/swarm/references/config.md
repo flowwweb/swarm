@@ -373,9 +373,10 @@ One low-risk atomic `GENERAL` outcome may remain with CTRL when measured
 coordination overhead is greater than the work. `DESIGN`, `IMAGEGEN`, mockups,
 and image edits require a DESIGNER lane even when they are small; never make a
 visual task direct merely to avoid startup cost.
-For any other CTRL-owned work, open a visible Codex task; internal subagents
-are only capacity below an existing LEAD/DOER owner, never a substitute for
-that root-level delegation.
+Small bounded `GENERAL` work may use a subagent under CTRL or a LEAD when its
+measured economics favor that route. Medium and large work opens a visible
+Codex task; its LEAD/DOER lanes may then use their own subagents. Visual work
+always remains a visible DESIGNER task.
 
 Any agent may request a skill for its assigned role. Bind the exact skill
 source and version/digest, the reason it improves the lane, the destination

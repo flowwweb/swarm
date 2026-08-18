@@ -120,19 +120,18 @@ def _route_candidate(*, facts:WorkRoutingFacts, economics:RoutingEconomics, capa
         if not lead or lead.upper()==Role.CTRL.value: raise InvariantError("delegated task routing requires CTRL -> LEAD -> DOER authority")
         reason="required durable ownership boundary" if required else "parallel savings exceed measured task overhead"
         return ExecutionRoutingDecision(ExecutionRoute.NORMAL_TASK,lead,(Role.CTRL.value,Role.LEAD.value,Role.DOER.value),reason,capacity.receipt,economics)
-    if prefer_task and capacity.subagents_available:
+    if prefer_task and capacity.subagents_available and not facts.requires_designer():
         if not all(isinstance(value,str) and value.strip() for value in (immutable_checkpoint,resumption_marker)) or not affected_gates: raise InvariantError("degraded subagent routing requires an immutable checkpoint, resumption marker, and unverified gates")
         exception={HostTaskCapacity.UNAVAILABLE:DegradedCapacityException.TASK_UNAVAILABLE,HostTaskCapacity.REJECTED:DegradedCapacityException.TASK_REJECTED,HostTaskCapacity.USAGE_LIMITED:DegradedCapacityException.TASK_USAGE_LIMITED}.get(capacity.task_status)
         if exception is None: raise InvariantError("degraded subagent routing requires an exact task-capacity failure")
         return ExecutionRoutingDecision(ExecutionRoute.DEGRADED_SUBAGENT,owner,(owner,"SUBAGENT"),"task lane required but host capacity forced bounded non-authoritative help",capacity.receipt,economics,exception,immutable_checkpoint,resumption_marker,affected_gates)
-    ctrl_owned=owner.upper()==Role.CTRL.value
-    normal_subagent=not ctrl_owned and facts.size in {WorkSize.SMALL,WorkSize.MEDIUM} and facts.bounded and facts.low_risk and facts.mutable_surface_count==1 and not facts.requires_durable_lane() and economics.critical_path_savings_ms<=economics.task_overhead_ms
+    normal_subagent=facts.size is WorkSize.SMALL and facts.bounded and facts.low_risk and facts.mutable_surface_count==1 and not facts.requires_durable_lane() and economics.critical_path_savings_ms<=economics.task_overhead_ms
     if not prefer_task and normal_subagent and capacity.subagents_available:
         return ExecutionRoutingDecision(ExecutionRoute.NORMAL_SUBAGENT,owner,(owner,"SUBAGENT"),"bounded small-to-medium slice costs less inside the accountable owner",capacity.receipt,economics)
     if capacity.task_status is HostTaskCapacity.AVAILABLE:
         if not lead or lead.upper()==Role.CTRL.value: raise InvariantError("delegated task routing requires CTRL -> LEAD -> DOER authority")
         return ExecutionRoutingDecision(ExecutionRoute.NORMAL_TASK,lead,(Role.CTRL.value,Role.LEAD.value,Role.DOER.value),"task lane is the only viable permitted structure",capacity.receipt,economics)
-    reason="CTRL-owned non-direct work requires a visible Codex task; an internal subagent is not a substitute" if ctrl_owned else "no permitted task or subagent structure can progress"
+    reason="visual work requires a visible DESIGNER task; subagent fallback is prohibited" if facts.requires_designer() else "no permitted task or subagent structure can progress"
     return ExecutionRoutingDecision(ExecutionRoute.HARD_BLOCKED,owner,(owner,),reason,capacity.receipt,economics)
 
 def route_execution(*, facts:WorkRoutingFacts, economics:RoutingEconomics, capacity:HostCapacityEvidence, accountable_owner:str, lead_owner:str="", assigned_profession:str="", immutable_checkpoint:str="", resumption_marker:str="", affected_gates:tuple[str,...]=(), current:ExecutionRoutingDecision|None=None, safe_boundary:bool=True) -> ExecutionRoutingDecision:

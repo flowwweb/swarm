@@ -57,19 +57,22 @@ integration, and review overhead do not clearly repay themselves. A subagent
 never owns durable work and never replaces a qualifying visible lane merely
 because it is easier to spawn.
 
-For root CTRL, the economics exception is narrower: only the explicit
-`CTRL_DIRECT` predicate may keep work in CTRL. Every other CTRL-owned outcome
-opens a visible Codex task with `CTRL -> LEAD -> DOER`; `CTRL -> SUBAGENT` is
-not a valid topology. Internal subagents remain capacity beneath a LEAD or
-DOER after that visible owner exists. If the host cannot materialize the task,
-record the exact capability blocker or degraded `UNVERIFIED` route; do not
-silently replace the task with a subagent.
+For root CTRL, small bounded `GENERAL` work may use an internal subagent when
+it has one surface, low risk, no durable boundary, and measured economics that
+favor the shortcut. Medium or large work opens a visible Codex task with
+`CTRL -> LEAD -> DOER` so the lane can own its own subagents. `DESIGN`,
+`IMAGEGEN`, mockups, and image edits always open a visible `DESIGNER` task;
+`CTRL -> SUBAGENT` is not a substitute for that visual lane, even when a role
+label says DESIGNER. If the required task cannot be materialized, record the
+exact capability blocker or degraded `UNVERIFIED` route; do not silently
+generate the visual artifact in a subagent.
 
 Use this routing order:
 
 1. Keep one atomic outcome with the current owner when coordination costs more.
 2. Open a visible task lane when a durable boundary above applies.
-3. Add a subagent only for bounded capacity within that lane.
+3. Add a subagent only for bounded small `GENERAL` capacity within the current
+   owner or an already-open lane; never for visual artifact production.
 
 If the host cannot create a required visible task, record the exact capability
 blocker. A degraded subagent remains under the current accountable owner and

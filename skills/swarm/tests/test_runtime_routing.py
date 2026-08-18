@@ -45,19 +45,22 @@ AVAILABLE = HostCapacityEvidence(HostTaskCapacity.AVAILABLE, True, "host:capacit
 
 
 class RuntimeRoutingTests(unittest.TestCase):
-    def test_small_and_medium_bounded_work_use_normal_subagent_when_task_economics_do_not_win(self) -> None:
-        for size in (WorkSize.SMALL, WorkSize.MEDIUM):
-            with self.subTest(size=size):
-                decision = route_execution(facts=facts(size), economics=economics(savings=20, overhead=60), capacity=AVAILABLE, accountable_owner="lead-a")
-                self.assertEqual(decision.route, ExecutionRoute.NORMAL_SUBAGENT)
-                self.assertFalse(decision.subagent_authoritative)
+    def test_small_bounded_work_can_use_a_normal_subagent_when_task_economics_do_not_win(self) -> None:
+        decision = route_execution(facts=facts(WorkSize.SMALL), economics=economics(savings=20, overhead=60), capacity=AVAILABLE, accountable_owner="lead-a")
+        self.assertEqual(decision.route, ExecutionRoute.NORMAL_SUBAGENT)
+        self.assertFalse(decision.subagent_authoritative)
+
+    def test_medium_bounded_work_opens_a_visible_task_even_when_task_economics_do_not_win(self) -> None:
+        decision = route_execution(facts=facts(WorkSize.MEDIUM), economics=economics(savings=20, overhead=60), capacity=AVAILABLE, accountable_owner="lead-a", lead_owner="lead-a")
+        self.assertEqual(decision.route, ExecutionRoute.NORMAL_TASK)
+        self.assertEqual(decision.authority_chain, ("CTRL", "LEAD", "DOER"))
 
     def test_parallel_savings_choose_task_lane_with_ctrl_lead_doer_authority(self) -> None:
         decision = route_execution(facts=facts(independent_work=True), economics=economics(savings=100, overhead=60), capacity=AVAILABLE, accountable_owner="lead-a", lead_owner="lead-a")
         self.assertEqual(decision.route, ExecutionRoute.NORMAL_TASK)
         self.assertEqual(decision.authority_chain, ("CTRL", "LEAD", "DOER"))
 
-    def test_root_ctrl_non_direct_work_opens_a_visible_task_instead_of_using_a_subagent(self) -> None:
+    def test_root_ctrl_small_general_work_can_use_a_subagent_but_medium_work_opens_a_task(self) -> None:
         decision = route_execution(
             facts=facts(),
             economics=economics(savings=20, overhead=60),
@@ -65,17 +68,25 @@ class RuntimeRoutingTests(unittest.TestCase):
             accountable_owner="CTRL",
             lead_owner="lead-a",
         )
-        self.assertEqual(decision.route, ExecutionRoute.NORMAL_TASK)
-        self.assertEqual(decision.authority_chain, ("CTRL", "LEAD", "DOER"))
+        self.assertEqual(decision.route, ExecutionRoute.NORMAL_SUBAGENT)
+        medium = route_execution(
+            facts=facts(WorkSize.MEDIUM),
+            economics=economics(savings=20, overhead=60),
+            capacity=AVAILABLE,
+            accountable_owner="CTRL",
+            lead_owner="lead-a",
+        )
+        self.assertEqual(medium.route, ExecutionRoute.NORMAL_TASK)
+        self.assertEqual(medium.authority_chain, ("CTRL", "LEAD", "DOER"))
         blocked = HostCapacityEvidence(HostTaskCapacity.REJECTED, True, "host:error:task rejected")
         no_visible_task = route_execution(
-            facts=facts(),
+            facts=facts(WorkSize.MEDIUM),
             economics=economics(savings=20, overhead=60),
             capacity=blocked,
             accountable_owner="CTRL",
         )
         self.assertEqual(no_visible_task.route, ExecutionRoute.HARD_BLOCKED)
-        self.assertIn("visible Codex task", no_visible_task.reason)
+        self.assertIn("no permitted task", no_visible_task.reason)
 
     def test_design_and_image_generation_require_a_designer_lane(self) -> None:
         for work_kind in (WorkKind.DESIGN, WorkKind.IMAGEGEN):
@@ -91,6 +102,18 @@ class RuntimeRoutingTests(unittest.TestCase):
             )
             self.assertEqual(decision.route, ExecutionRoute.NORMAL_TASK)
             self.assertIn("durable", decision.reason)
+
+    def test_visual_work_never_falls_back_to_a_subagent_when_task_creation_is_unavailable(self) -> None:
+        blocked = HostCapacityEvidence(HostTaskCapacity.REJECTED, True, "host:error:task rejected")
+        decision = route_execution(
+            facts=facts(work_kind=WorkKind.IMAGEGEN),
+            economics=economics(),
+            capacity=blocked,
+            accountable_owner="CTRL",
+            assigned_profession="DESIGNER",
+        )
+        self.assertEqual(decision.route, ExecutionRoute.HARD_BLOCKED)
+        self.assertIn("visual work", decision.reason)
 
     def test_large_or_interruption_prone_single_surface_work_requires_task_without_speedup(self) -> None:
         cases=(facts(WorkSize.LARGE),facts(WorkSize.MEDIUM,interruption_safe_resumption=True))
