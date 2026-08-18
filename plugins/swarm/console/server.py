@@ -30,6 +30,8 @@ from urllib.parse import urlparse
 
 PLUGIN_ROOT = Path(__file__).resolve().parents[1]
 STATIC_ROOT = Path(__file__).resolve().parent / "static"
+CONSOLE_ROOT = Path(__file__).resolve().parent
+INSTANCE_ID = hashlib.sha256(str(CONSOLE_ROOT.resolve()).casefold().encode("utf-8")).hexdigest()[:16]
 CONFIG_SCRIPT = PLUGIN_ROOT / "skills" / "swarm" / "scripts" / "swarm_config.py"
 DEFAULT_CODEX_HOME = Path(os.environ.get("CODEX_HOME", Path.home() / ".codex"))
 DEFAULT_CONFIG_PATH = Path.home() / ".agents" / "swarm" / "config.toml"
@@ -903,7 +905,13 @@ class Handler(BaseHTTPRequestHandler):
         path = urlparse(self.path).path
         try:
             if path == "/healthz":
-                self._json(HTTPStatus.OK, {"ok": True, "service": "swarm-console"})
+                static_ready = all((STATIC_ROOT / filename).is_file() for filename, _ in STATIC_FILES.values())
+                asset_ready = all(asset_path.is_file() for asset_path, _ in STATIC_ASSETS.values())
+                ready = static_ready and asset_ready
+                self._json(
+                    HTTPStatus.OK if ready else HTTPStatus.SERVICE_UNAVAILABLE,
+                    {"ok": ready, "service": "swarm-console", "instance_id": INSTANCE_ID},
+                )
                 return
             if path == "/api/bootstrap":
                 self._json(HTTPStatus.OK, self._bootstrap_payload())
