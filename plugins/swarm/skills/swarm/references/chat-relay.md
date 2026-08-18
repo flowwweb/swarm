@@ -108,6 +108,17 @@ started automatically; construction requires explicit capability and exact
 prompt-confirmation callbacks. If the package, backend, visible receipt, or
 observed configuration is missing, the adapter fails closed.
 
+For a Python caller that must cross from an ordinary local process into a
+bridge-hosted Node runtime, SWARM ships
+`scripts/chatgpt_http_stdio_relay.mjs`. Set
+`CHATGPT_BROWSER_BACKEND_HTTP_URL` to a loopback HTTP endpoint created inside
+the authenticated browser-bridge execution, and use the relay as the Python
+adapter's backend command. The relay forwards only the documented NDJSON
+backend protocol; it does not create a browser session or carry credentials.
+Keep the Node backend and its browser runtime alive in the same host execution
+for the entire Python call. A normal subprocess without that host still gets a
+structured `browser_bridge_unavailable` result and SWARM falls back locally.
+
 ## Deliberate non-goals
 
 This feature does not:

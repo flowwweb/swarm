@@ -55,6 +55,7 @@ DEVELOPMENT_ONLY_PATHS = frozenset(
         "scripts/sync_plugin_mirror.py",
         "scripts/run_test_tier.py",
         "scripts/select_ci_scope.py",
+        "scripts/test_chatgpt_http_stdio_relay.mjs",
     }
 )
 DEVELOPMENT_ONLY_DIRECTORIES = frozenset(

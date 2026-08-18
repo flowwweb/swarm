@@ -94,6 +94,21 @@ class CodexChatGPTControlAdapterTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "no host receipt"):
             adapter.send_consult("bounded prompt", model="gpt-5.6-luna", effort="xhigh")
 
+    def test_python_sdk_state_id_is_preserved_as_host_receipt(self) -> None:
+        runner = FakeRunner(SimpleNamespace(
+            output_text="advice",
+            state=SimpleNamespace(id="run-from-state", thread={"id": "thread-from-state"}),
+        ))
+        adapter = CodexChatGPTControlAdapter(
+            capability_reader=self.capability,
+            confirm_prompt=lambda _: True,
+            runner=runner,
+            agent_factory=lambda **values: values,
+        )
+        response = adapter.send_consult("bounded prompt", model="gpt-5.6-luna", effort="xhigh")
+        self.assertEqual(response.host_receipt, "run-from-state")
+        self.assertEqual(response.transport.thread_id, "thread-from-state")
+
     def test_missing_usage_is_not_estimated(self) -> None:
         runner = FakeRunner(SimpleNamespace(output_text="advice", run_id="run-no-usage"))
         adapter = CodexChatGPTControlAdapter(

@@ -72,6 +72,16 @@ def _usage_fields(result: object) -> tuple[int | None, int | None, int | None, s
     return (*fields, "partial", "provider exposed an incomplete token usage set")  # type: ignore[return-value]
 
 
+def _run_receipt(result: object) -> object:
+    """Read the host receipt from both JS-shaped and Python SDK-shaped runs."""
+
+    direct = _first_value(result, ("receipt", "run_id", "runId", "id"))
+    if direct is not None:
+        return direct
+    state = _value(result, "state")
+    return _first_value(state, ("id", "receipt", "run_id", "runId"))
+
+
 class CodexChatGPTControlAdapter:
     """Bridge SWARM's safe relay contract to the optional Python SDK facade."""
 
@@ -138,13 +148,14 @@ class CodexChatGPTControlAdapter:
         )
         elapsed_ms = (time.perf_counter() - started) * 1000
         text = _value(result, "output_text")
-        receipt = _value(result, "receipt") or _value(result, "run_id") or _value(result, "id")
+        receipt = _run_receipt(result)
         if not isinstance(text, str) or not text.strip():
             raise ValueError("visible Chat adapter returned no advisory text")
         if not isinstance(receipt, str) or not receipt.strip():
             raise ValueError("visible Chat adapter returned no host receipt")
         capability = self.capability()
-        thread = _first_value(result, ("thread", "conversation"))
+        state = _value(result, "state")
+        thread = _first_value(result, ("thread", "conversation")) or _first_value(state, ("thread", "conversation"))
         input_tokens, output_tokens, total_tokens, usage_status, usage_reason = _usage_fields(result)
         provider_latency = _first_value(result, ("latency_ms", "latencyMs"))
         if isinstance(provider_latency, (int, float)) and not isinstance(provider_latency, bool) and provider_latency >= 0:
