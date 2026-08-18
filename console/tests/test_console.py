@@ -405,6 +405,33 @@ class SwarmConsoleTests(unittest.TestCase):
         result = console.update_config(self.config, {"execution.usage_saver": True})
         self.assertTrue(result["settings"]["execution"]["usage_saver"])
 
+    def test_chatgpt_usage_saver_toggle_uses_validated_config_api(self) -> None:
+        before = console.redacted_config_snapshot(self.config)
+        self.assertFalse(before["settings"]["chat_relay"]["enabled"])
+        self.assertIn("chat_relay.enabled", before["editable"])
+
+        result = console.update_config(self.config, {"chat_relay.enabled": True})
+        self.assertTrue(result["settings"]["chat_relay"]["enabled"])
+
+    def test_chatgpt_toggle_preserves_configured_relay_profiles(self) -> None:
+        text = self.config.read_text(encoding="utf-8")
+        text = text.replace(
+            'default_model = "gpt-5.6-luna"',
+            'default_model = "pro"',
+            1,
+        ).replace(
+            'challenging_effort = "pro"',
+            'challenging_effort = "xhigh"',
+            1,
+        )
+        self.config.write_text(text, encoding="utf-8")
+
+        result = console.update_config(self.config, {"chat_relay.enabled": True})
+
+        self.assertTrue(result["settings"]["chat_relay"]["enabled"])
+        self.assertEqual(result["settings"]["chat_relay"]["default_model"], "pro")
+        self.assertEqual(result["settings"]["chat_relay"]["challenging_effort"], "xhigh")
+
     def test_portal_start_setting_defaults_on_and_can_be_disabled(self) -> None:
         before = console.redacted_config_snapshot(self.config)
         self.assertTrue(before["settings"]["console"]["open_on_start"])
@@ -423,7 +450,43 @@ class SwarmConsoleTests(unittest.TestCase):
         app = (console.STATIC_ROOT / "app.js").read_text(encoding="utf-8")
         self.assertNotIn('id="usage-saver-toggle"', index)
         self.assertEqual(app.count('["execution.usage_saver"'), 1)
+        self.assertEqual(app.count('["chat_relay.enabled"'), 1)
+        self.assertIn("Save Codex usage with ChatGPT", app)
         self.assertNotIn("saveUsageSaver", app)
+
+    def test_usage_panel_uses_the_existing_read_only_overview_snapshot(self) -> None:
+        index = (console.STATIC_ROOT / "index.html").read_text(encoding="utf-8")
+        app = (console.STATIC_ROOT / "app.js").read_text(encoding="utf-8")
+        self.assertIn('id="scope-usage"', index)
+        self.assertIn('HOST REPORTED', index)
+        self.assertIn("renderScopeUsage(allNodes)", app)
+        self.assertIn("Cumulative tokens", app)
+        self.assertIn("Not billing, quota, remaining usage, or a new usage request.", app)
+        self.assertNotIn("/api/usage", app)
+
+    def test_chat_relay_usage_is_local_bounded_and_clearable(self) -> None:
+        usage_path = console.chat_relay_usage_path(self.config)
+        usage_path.write_text(
+            json.dumps({
+                "schema_version": 1,
+                "events": [{
+                    "recorded_at": "2026-08-18T00:00:00+00:00",
+                    "task_id": "ctrl/task",
+                    "purpose": "plan",
+                    "model": "pro",
+                    "effort": "pro",
+                    "estimated_tokens_saved": 42,
+                    "response": "must not surface",
+                }],
+            }),
+            encoding="utf-8",
+        )
+        usage = console.App(self.codex_home, self.config).chat_relay_usage()
+        self.assertEqual((usage["routed_tasks"], usage["estimated_tokens_saved"]), (1, 42))
+        self.assertNotIn("response", json.dumps(usage))
+        cleared = console.App(self.codex_home, self.config).clear_chat_relay_usage()
+        self.assertEqual(cleared["consultations"], 0)
+        self.assertFalse(usage_path.exists())
 
     def test_console_ui_fixture_is_structurally_valid(self) -> None:
         fixture_path = Path(__file__).parent / "fixtures" / "console-ui.json"
@@ -431,6 +494,8 @@ class SwarmConsoleTests(unittest.TestCase):
         self.assertEqual(set(fixture), {"bootstrap", "config", "overview"})
         self.assertFalse(fixture["config"]["settings"]["execution"]["usage_saver"])
         self.assertIn("execution.usage_saver", fixture["config"]["editable"])
+        self.assertFalse(fixture["config"]["settings"]["chat_relay"]["enabled"])
+        self.assertIn("chat_relay.enabled", fixture["config"]["editable"])
         self.assertTrue(fixture["config"]["settings"]["console"]["open_on_start"])
         self.assertIn("console.open_on_start", fixture["config"]["editable"])
 

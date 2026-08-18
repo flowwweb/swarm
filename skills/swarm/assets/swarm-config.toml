@@ -38,6 +38,23 @@ max_reasoning = "ultra"
 # models, requested outcome, required proof, independent review, or authority.
 usage_saver = false
 
+[chat_relay]
+# Optional visible ChatGPT consultation for bounded planning, research, or
+# review. It is advisory-only, user-confirmed, and disabled until a compatible
+# visible browser bridge is deliberately configured.
+enabled = false
+provider = "codex-chatgpt-control"
+surface = "chat"
+mode = "consult"
+# Four-level route breadth: light is selective; max uses ChatGPT for every
+# otherwise-eligible advisory task.
+offload_level = "balanced"
+# Default bounded consult: Luna at Xhigh. Challenging consults request Pro.
+default_model = "gpt-5.6-luna"
+default_effort = "xhigh"
+challenging_model = "pro"
+challenging_effort = "pro"
+
 [console]
 # Reuse a recently visible portal tab; otherwise open the local portal when
 # SWARM starts. A browser launch failure never blocks work.
@@ -126,9 +143,9 @@ lead_reasoning = "medium"
 doer_model = "gpt-5.6-luna"
 doer_reasoning = "xhigh"
 task_model = "gpt-5.6-luna"
-task_reasoning = "high"
+task_reasoning = "xhigh"
 subtask_model = "gpt-5.6-luna"
-subtask_reasoning = "high"
+subtask_reasoning = "xhigh"
 assist_model = "gpt-5.6-sol"
 assist_reasoning = "medium"
 advisor_model = "gpt-5.6-sol"

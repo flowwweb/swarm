@@ -48,20 +48,33 @@ class VisualApprovalContractTests(unittest.TestCase):
             "IMPLEMENTATION_EVIDENCE",
         ):
             self.assertIn(artifact_class, review)
-        self.assertIn("Small generator drift", skill)
-        self.assertIn("is not a rejection reason", skill)
-        self.assertIn("1505×1045 versus a target canvas", review)
+        self.assertIn("ordinary generator variation", skill)
+        self.assertIn("is an implementation handoff note", skill)
+        self.assertIn("ordinary generator", review)
+        self.assertIn("variation in canvas", review)
         self.assertIn("NOTE_FOR_IMPLEMENTATION", review)
         self.assertIn("APPROVE_DIRECTION", review)
         self.assertRegex(review, r"Do not spend another\s+generation/review cycle")
+        self.assertIn("screen-specific dimensions", review)
 
     def test_directional_review_has_a_stop_rule_and_major_drift_threshold(self) -> None:
         review = REVIEW_CONTRACT.read_text(encoding="utf-8")
 
-        self.assertIn("changes the requested user job", review)
+        self.assertRegex(review, r"changes the\s+requested user job")
         self.assertRegex(review, r"contradicts an\s+explicit must-have")
         self.assertRegex(review, r"one independent\s+review pass is the default")
         self.assertIn("new evidence or a named material risk", review)
+        self.assertIn("least restrictive class", review)
+
+    def test_image_closeout_embeds_absolute_markdown_and_keeps_links_supplemental(self) -> None:
+        skill = SKILL.read_text(encoding="utf-8")
+        review = REVIEW_CONTRACT.read_text(encoding="utf-8")
+        doctrine = f"{skill}\n{review}"
+        self.assertIn("absolute Markdown image syntax", doctrine)
+        self.assertIn("![caption](/absolute/path/to/image.png)", doctrine)
+        self.assertIn("links may supplement", doctrine)
+        self.assertIn("never replace it", doctrine)
+        self.assertNotIn("local-path Markdown ... do not count", doctrine)
 
 
 if __name__ == "__main__":

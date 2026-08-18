@@ -12,6 +12,12 @@ records the chosen topology and which visible task owns each mutable artifact.
 Hidden subagents are execution capacity, not a replacement for required SWARM
 task ownership.
 
+All durable work also has one `WORK_LEDGER` identity. It moves from `REQUEST`
+to `ASSIGNED` and `PROGRESS`, then to `BLOCKED` or `ACCEPTED`, and finally
+`CLOSED`; assignment, progress, capacity blocking, and proof acceptance never
+create separate request authorities. The accepted-request inventory below is a
+compatible continuity view of that same identity.
+
 If a CTRL is already active, a new CTRL or successor is never an inferred
 topology step. Require the actual host task API to consume a current single-use
 host-owned user receipt naming the exact operation, source CTRL, target identity,

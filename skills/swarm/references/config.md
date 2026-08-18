@@ -29,16 +29,50 @@ only when a user needs that preference to persist across runs. Hard validation
 protects schema integrity and fixed SWARM invariants; it should not encode a
 catalog of project-specific tactics.
 
+### Operational handling
+
+Load effective settings once for each new scheduling wave with
+`scripts/swarm_config.py show --json`, then pass that validated map to
+`Swarm.from_config`. Runtime code, the console, and relay adapters must not
+invent a second settings source. A missing file uses packaged defaults. An
+existing file with TOML, schema, or value errors is a diagnostic: do not guess,
+partially apply, or silently repair it. Safe local work may continue, while a
+ChatGPT relay falls back to local Codex until the file validates.
+
+Explicit user instructions win over persisted preferences. Persisted model,
+provider, service-tier, and reasoning values remain preferences rather than
+authority; preserve them exactly when the host supports them and report the
+exact host blocker when it does not. A setting change is read by the next
+scheduling or relay decision and never rewrites an already-dispatched task
+contract.
+
+`execution.usage_saver` only selects lower-churn tactics when the outcome,
+proof, review, model, reasoning, and authority boundaries remain unchanged.
+`chat_relay.enabled` permits a route but does not force one. Its normal and
+challenging model/effort fields select the requested visible ChatGPT profile;
+the observed visible selection must match it and include a host receipt or the
+relay stays local. These settings never give ChatGPT write, command, upload,
+artifact, or acceptance authority.
+
 ## Fixed invariants
 
 Configuration cannot make an unsafe or hidden coordination path valid:
 
 - Portfolio lanes are user-visible host tasks. In Codex, create Codex tasks with
   thread tools.
-- Every SWARM task delegates at least one bounded outcome-critical slice to a
-  subagent by default. Subagents work only inside an owning Codex task and never
-  replace a lane. Disabled or unavailable capacity requires a typed exact
-  exception; it is not a standing waiver.
+- Substantive artifact-producing work delegates to a LEAD-owned lane and bounded
+  DOER work whenever qualifying host lane capacity is available. CTRL remains
+  the orchestrator for bounded read-only inspection, coordination,
+  plan/goal/receipt work, integration, and final composed acceptance; the
+  existing `CTRL_DIRECT` safe-work predicate remains a narrow explicit
+  exception. Subagents work only inside an owning Codex task and never replace a
+  required lane. Disabled or unavailable capacity requires the exact host
+  observation and one typed exception with affected gates left `UNVERIFIED`; it
+  is not a standing waiver for silent worker execution.
+- The packaged medium profile routes new DOER/TASK/SUBTASK assignments to
+  `gpt-5.6-luna` at `xhigh`, within declared host capabilities. Explicit user,
+  host, and project model or reasoning selections win; an unrequested CTRL
+  adjustment records its risk, latency, cost, and proof basis.
 - The latest direct user instruction controls its task.
 - Existing safety, authority, provider, worktree, and proof boundaries remain.
 - If a required task tool is unavailable, report the blocker instead of
@@ -71,6 +105,15 @@ Configuration cannot make an unsafe or hidden coordination path valid:
 | `execution.min_reasoning` | Global reasoning floor applied after every profile, role override, and route adjustment | none, minimal, low, medium, high, xhigh, max, ultra; compatibility-neutral default none |
 | `execution.max_reasoning` | Global reasoning ceiling applied after every profile, role override, and route adjustment | none, minimal, low, medium, high, xhigh, max, ultra; compatibility-neutral default ultra; must be at least min |
 | `execution.usage_saver` | Prefer lower-churn coordination for new work without weakening delivery | boolean; default false |
+| `chat_relay.enabled` | Permit bounded, visible ChatGPT advisory consultations | boolean; default false |
+| `chat_relay.provider` | Host-owned visible-browser adapter identifier | safe identifier; default `codex-chatgpt-control` |
+| `chat_relay.surface` | User-visible ChatGPT surface for consultations | `chat` only |
+| `chat_relay.mode` | Consultation authority mode | `consult` only |
+| `chat_relay.offload_level` | Breadth of eligible ChatGPT routing | `light`, `balanced`, `high`, or `max`; default `balanced` |
+| `chat_relay.default_model` | ChatGPT model requested for normal offloads | `gpt-5.6-luna` or `pro`; default `gpt-5.6-luna` |
+| `chat_relay.default_effort` | ChatGPT reasoning level requested for normal offloads | supported level; default `xhigh` |
+| `chat_relay.challenging_model` | ChatGPT model requested for explicitly challenging offloads | `gpt-5.6-luna` or `pro`; default `pro` |
+| `chat_relay.challenging_effort` | ChatGPT reasoning level requested for explicitly challenging offloads | supported level; default `pro` |
 | `logging.task_event_limit` | Bounded recent task-transition metadata retained in memory; never prompts, responses, artifact bodies, or credentials | 8-256; default 64 |
 | `proof.policy_version` | Deterministic proof-planner policy | trimmed identifier; default lean-v1 |
 | `proof.impacted_selection` | Select focused impacted gates when dependency reach is known | boolean; default true |
@@ -223,6 +266,41 @@ or substitutes static evidence for required runtime or live proof. The normal
 lane test and configured recovery budget still decide when work should split or
 stop. Turning the setting on affects new scheduling and management actions, not
 already-dispatched contracts.
+
+`Swarm.from_config` retains the flag in runtime state. When the existing
+coordination rules choose canonical deduplication, current-owner context reuse,
+or a non-critical spawn refusal, the efficiency ledger records the
+`usage_saver:` reason; critical-path, proof, authority, model, and reasoning
+requirements remain unchanged.
+
+### Visible ChatGPT advisory relay
+
+The optional `chat_relay` table is a usage-saving consultation seam, not a
+provider route or a quota feature. When enabled, SWARM may ask a compatible
+visible browser bridge to consult the ChatGPT Chat surface for bounded T0/T1
+planning, research, or review. The bridge must expose a signed-in visible
+session, its observed configuration, and a host receipt; the user must confirm
+each prompt at action time.
+
+`chat_relay.offload_level` controls how much eligible work is offered to the
+relay: `light` is selective, `balanced` is the default common set, `high`
+widens to most eligible T0/T1 consultations, and `max` includes every
+otherwise-eligible advisory consultation. Local files, terminals, browser
+state, writes, tests, and artifacts remain local at every level.
+
+Normal offloads request GPT-5.6 Luna at Extra High reasoning. Callers may mark
+an eligible consultation as challenging to request Pro intelligence. The host's
+visible selection and receipt remain authoritative; if the bridge cannot verify
+the requested selection, it must fail closed to local Codex.
+
+The relay never sends writes, uploads, commands, or artifact-producing work. It
+never handles T2-T4 consequence tiers, owns acceptance, replaces independent
+review, or changes the selected Codex model, reasoning, tier, or authority. If
+the session, bridge, or confirmation is missing, SWARM falls back to local
+Codex. The adapter is expected to use the visible user-directed workflow (for
+example, the community `codex-chatgpt-control` pattern), not hidden endpoints,
+cookies, private APIs, scraping, account pooling, or quota bypasses. See
+[chat-relay.md](chat-relay.md) for the contract and claim limits.
 
 The assigning CTRL or LEAD routes by capability before model preference: the provider/model must be
 available, its workload must fit, and every required tool must be exposed by the

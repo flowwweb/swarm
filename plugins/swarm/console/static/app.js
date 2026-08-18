@@ -2,6 +2,7 @@ const state = {
   token: "",
   overview: null,
   config: null,
+  chatRelayUsage: { consultations: 0, routed_tasks: 0, estimated_tokens_saved: 0, events: [] },
   changes: {},
   view: "swarm",
   readOnly: false,
@@ -12,6 +13,14 @@ const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
 const RAIL_STATE_KEY = "swarm.console.rail-collapsed";
 const MOBILE_RAIL = window.matchMedia("(max-width: 720px)");
 const REQUESTED_CONTROLLER = new URLSearchParams(location.search).get("ctrl") || "";
+const CHAT_RELAY_LEVELS = [
+  { value: "light", label: "Light", hint: "Selective" },
+  { value: "balanced", label: "Balanced", hint: "Common advisory work" },
+  { value: "high", label: "High", hint: "Most eligible work" },
+  { value: "max", label: "Max", hint: "Every eligible task" },
+];
+const CHAT_RELAY_LEVEL_VALUES = CHAT_RELAY_LEVELS.map((level) => level.value);
+const CHAT_RELAY_ENABLED = { path: "chat_relay.enabled", value: true };
 
 const settingGroups = [
   {
@@ -32,6 +41,12 @@ const settingGroups = [
       ["execution.min_reasoning", "Reasoning floor", "select", "Lowest requested reasoning", ["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"]],
       ["execution.max_reasoning", "Reasoning ceiling", "select", "Highest requested reasoning", ["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"]],
       ["execution.usage_saver", "Usage Saver", "boolean", "Reduce avoidable coordination churn"],
+      ["chat_relay.enabled", "Save Codex usage with ChatGPT", "boolean", "Offload eligible work to ChatGPT so your Codex usage goes further."],
+      ["chat_relay.offload_level", "ChatGPT offload level", "range", "Light is selective. Max routes every eligible task to ChatGPT.", "chatRelayLevels", CHAT_RELAY_ENABLED],
+      ["chat_relay.default_model", "Standard ChatGPT model", "select", "Used for routine eligible consultations.", ["gpt-5.6-luna", "pro"], CHAT_RELAY_ENABLED],
+      ["chat_relay.default_effort", "Standard reasoning", "select", "Default visible reasoning level.", ["minimal", "low", "medium", "high", "xhigh", "pro"], CHAT_RELAY_ENABLED],
+      ["chat_relay.challenging_model", "Challenging ChatGPT model", "select", "Used when the task requests deeper reasoning.", ["gpt-5.6-luna", "pro"], CHAT_RELAY_ENABLED],
+      ["chat_relay.challenging_effort", "Challenging reasoning", "select", "Visible reasoning level for harder consultations.", ["minimal", "low", "medium", "high", "xhigh", "pro"], CHAT_RELAY_ENABLED],
       ["logging.task_event_limit", "Task event history", "number", "Metadata only; no prompts or outputs"],
       ["console.open_on_start", "Open portal on start", "boolean", "Reuse an open portal tab; closed tabs expire after a short grace period"],
       ["subagents.enabled", "Internal subagents", "boolean", "Bounded work inside an owning task"],
@@ -84,6 +99,23 @@ function escapeHTML(value) {
 
 function getPath(object, path) {
   return path.split(".").reduce((value, key) => value?.[key], object);
+}
+
+function getSettingValue(path) {
+  return Object.prototype.hasOwnProperty.call(state.changes, path)
+    ? state.changes[path]
+    : getPath(state.config?.settings, path);
+}
+
+function isFieldVisible(field) {
+  const condition = field[5];
+  return !condition || getSettingValue(condition.path) === condition.value;
+}
+
+function pruneHiddenChanges() {
+  settingGroups.flatMap((group) => group.fields).forEach((field) => {
+    if (!isFieldVisible(field)) delete state.changes[field[0]];
+  });
 }
 
 function formatDuration(ms) {
@@ -159,6 +191,12 @@ function setView(view) {
   if (view === "swarm") {
     $("#swarm-canvas").dataset.project = "";
     requestAnimationFrame(renderSwarm);
+  } else if (view === "settings") {
+    if (getSettingValue("chat_relay.enabled") === true) {
+      refreshChatRelayUsage().catch((error) => showError(error.message));
+    } else {
+      renderSettings();
+    }
   }
 }
 
@@ -271,6 +309,7 @@ function renderSwarm() {
     canvas.dataset.project = scopeKey;
   }
   renderScopeCopy(allNodes, controller);
+  renderScopeUsage(allNodes);
   renderScopeActivity(allNodes);
   renderScopeProof(controller);
 }
@@ -284,6 +323,25 @@ function renderScopeCopy(nodes, controllerId) {
   const refresh = performance ? `${performance.refresh_seconds}s refresh · ${performance.data_bytes} B snapshot` : "30s refresh";
   const omitted = controller?.older_lanes_omitted ? ` · ${controller.older_lanes_omitted} older lanes omitted` : "";
   $("#scope-copy").textContent = `${scope}${omitted} · ${refresh}`;
+}
+
+function formatCount(value) {
+  const number = Number(value);
+  return Number.isFinite(number) ? new Intl.NumberFormat().format(number) : "—";
+}
+
+function renderScopeUsage(nodes) {
+  const observed = nodes.filter((node) => !node.virtual);
+  const tokens = observed.reduce((total, node) => total + (Number(node.tokens) || 0), 0);
+  const active = observed.filter((node) => node.status === "active").length;
+  const modelCounts = new Map();
+  observed.forEach((node) => {
+    const model = node.model || "unknown";
+    modelCounts.set(model, (modelCounts.get(model) || 0) + 1);
+  });
+  const models = [...modelCounts.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
+  $("#usage-scope").textContent = `${formatCount(observed.length)} observed task${observed.length === 1 ? "" : "s"} in the selected scope · cumulative thread tokens`;
+  $("#scope-usage").innerHTML = `<div class="usage-layout"><div class="usage-metrics"><div class="usage-metric"><strong>${formatCount(tokens)}</strong><span>Cumulative tokens</span></div><div class="usage-metric"><strong>${formatCount(observed.length)}</strong><span>Observed tasks</span></div><div class="usage-metric"><strong>${formatCount(active)}</strong><span>Active now</span></div></div><div class="usage-models"><h3>Model mix</h3><ul>${models.length ? models.map(([model, count]) => `<li><span>${escapeHTML(model)}</span><b>${formatCount(count)}</b></li>`).join("") : "<li class=\"usage-none\">No observed task usage.</li>"}</ul></div></div><p class="usage-limit">Read-only host totals from the existing overview snapshot. Not billing, quota, remaining usage, or a new usage request.</p>`;
 }
 
 function renderScopeActivity(nodes) {
@@ -317,19 +375,36 @@ function renderScopeProof(controllerId) {
 function renderSettings() {
   if (!state.config) return;
   $("#config-path").textContent = state.config.path;
-  $("#settings-grid").innerHTML = settingGroups.map((group) => `<section class="settings-card"><h3>${group.title}</h3><div class="field-list">${group.fields.map(renderField).join("")}</div></section>`).join("");
+  const relayEnabled = getSettingValue("chat_relay.enabled") === true;
+  $("#settings-grid").innerHTML = settingGroups.map((group) => `<section class="settings-card"><h3>${group.title}</h3><div class="field-list">${group.fields.map((field) => `${renderField(field)}${field[0] === "chat_relay.enabled" && relayEnabled ? renderChatRelayUsage() : ""}`).join("")}</div></section>`).join("");
   $("#save-settings").disabled = Object.keys(state.changes).length === 0;
   if (state.readOnly) $("#settings-status").textContent = "Remote view is read-only. Open the console on this computer to change settings.";
 }
 
-function renderField([path, label, type, hint, options]) {
-  const value = getPath(state.config.settings, path);
+function renderChatRelayUsage() {
+  const usage = state.chatRelayUsage || {};
+  const events = Array.isArray(usage.events) ? usage.events.slice(-5).reverse() : [];
+  const log = events.length
+    ? `<ul class="chat-relay-log">${events.map((event) => `<li><span>${escapeHTML(event.task_id || "Unbound consult")} · ${escapeHTML(event.purpose)} · ${escapeHTML(event.model)}</span><b>~${formatCount(event.estimated_tokens_saved)} tokens</b></li>`).join("")}</ul>`
+    : `<p class="chat-relay-empty">No ChatGPT-routed tasks yet.</p>`;
+  return `<div class="chat-relay-usage" aria-live="polite"><div class="chat-relay-summary"><strong>${formatCount(usage.estimated_tokens_saved)} estimated tokens saved</strong><span>${formatCount(usage.routed_tasks)} routed task${usage.routed_tasks === 1 ? "" : "s"} · ${formatCount(usage.consultations)} ChatGPT consult${usage.consultations === 1 ? "" : "s"}</span></div>${log}<div class="chat-relay-usage-foot"><small>Estimate: relay prompt + ChatGPT reply, roughly 4 bytes per token. Not billing or quota data.</small><button class="text-button" id="clear-chat-relay-usage" type="button"${state.readOnly ? " disabled" : ""}>Clear log</button></div></div>`;
+}
+
+function renderField([path, label, type, hint, options, condition]) {
+  const field = [path, label, type, hint, options, condition];
+  if (!isFieldVisible(field)) return "";
+  const value = getSettingValue(path);
   const disabled = state.readOnly ? " disabled" : "";
   let control;
   if (type === "boolean") {
     control = `<label class="switch"><input data-setting="${path}" type="checkbox" ${value ? "checked" : ""}${disabled} aria-label="${escapeHTML(label)}"><span aria-hidden="true"></span></label>`;
   } else if (type === "select") {
     control = `<select data-setting="${path}"${disabled} aria-label="${escapeHTML(label)}">${options.map((option) => `<option value="${option}" ${option === value ? "selected" : ""}>${option}</option>`).join("")}</select>`;
+  } else if (type === "range") {
+    const range = options === "chatRelayLevels" ? CHAT_RELAY_LEVELS : [];
+    const index = Math.max(0, range.findIndex((item) => item.value === value));
+    const selected = range[index] || range[0];
+    control = `<div class="range-control"><div class="range-header"><output data-range-output="${path}">${escapeHTML(selected.label)}</output><span>${escapeHTML(selected.hint)}</span></div><input data-setting="${path}" data-range-options="${escapeHTML(options)}" type="range" min="0" max="${range.length - 1}" step="1" value="${index}"${disabled} aria-label="${escapeHTML(label)}" aria-valuetext="${escapeHTML(selected.label)}"><div class="range-steps" aria-hidden="true">${range.map((item) => `<span>${escapeHTML(item.label)}</span>`).join("")}</div></div>`;
   } else {
     control = `<input data-setting="${path}" type="${type}" value="${escapeHTML(value ?? "")}"${disabled} aria-label="${escapeHTML(label)}">`;
   }
@@ -338,6 +413,10 @@ function renderField([path, label, type, hint, options]) {
 
 function normalizeInput(input) {
   if (input.type === "checkbox") return input.checked;
+  if (input.type === "range") {
+    const values = input.dataset.rangeOptions === "chatRelayLevels" ? CHAT_RELAY_LEVEL_VALUES : [];
+    return values[Number(input.value)] ?? values[0];
+  }
   if (input.type === "number") return Number(input.value);
   return input.value;
 }
@@ -360,6 +439,16 @@ async function saveSettings() {
   }
 }
 
+async function refreshChatRelayUsage() {
+  if (getSettingValue("chat_relay.enabled") !== true) {
+    state.chatRelayUsage = { consultations: 0, routed_tasks: 0, estimated_tokens_saved: 0, events: [] };
+    renderSettings();
+    return;
+  }
+  state.chatRelayUsage = await api("/api/chat-relay-usage");
+  renderSettings();
+}
+
 async function refreshOverview() {
   clearError();
   try {
@@ -377,7 +466,7 @@ async function initialize() {
     state.token = bootstrap.token;
     state.readOnly = Boolean(bootstrap.read_only);
     state.config = await api("/api/config");
-    renderSettings();
+    await refreshChatRelayUsage();
     await refreshOverview();
   } catch (error) {
     showError(error.message);
@@ -436,11 +525,37 @@ document.addEventListener("keydown", (event) => {
 $("#project-filter").addEventListener("change", renderSwarm);
 $("#controller-filter").addEventListener("change", renderSwarm);
 $("#save-settings").addEventListener("click", saveSettings);
+$("#settings-grid").addEventListener("click", async (event) => {
+  const button = event.target.closest("#clear-chat-relay-usage");
+  if (!button || state.readOnly) return;
+  button.disabled = true;
+  try {
+    state.chatRelayUsage = await api("/api/chat-relay-usage/clear", { method: "POST" });
+    renderSettings();
+    $("#settings-status").textContent = "ChatGPT usage log cleared.";
+  } catch (error) {
+    button.disabled = false;
+    $("#settings-status").textContent = error.message;
+  }
+});
 $("#settings-form").addEventListener("input", (event) => {
   if (state.readOnly) return;
   const input = event.target.closest("[data-setting]");
   if (!input) return;
-  state.changes[input.dataset.setting] = normalizeInput(input);
+  const value = normalizeInput(input);
+  state.changes[input.dataset.setting] = value;
+  if (input.type === "range") {
+    const range = CHAT_RELAY_LEVELS[Number(input.value)] || CHAT_RELAY_LEVELS[0];
+    const output = document.querySelector(`[data-range-output="${input.dataset.setting}"]`);
+    if (output) output.textContent = range.label;
+    input.setAttribute("aria-valuetext", range.label);
+  }
+  const parentChanged = input.dataset.setting === "chat_relay.enabled";
+  if (parentChanged) {
+    pruneHiddenChanges();
+    renderSettings();
+    if (value === true) refreshChatRelayUsage().catch((error) => showError(error.message));
+  }
   $("#save-settings").disabled = false;
   $("#settings-status").textContent = `${Object.keys(state.changes).length} unsaved change${Object.keys(state.changes).length === 1 ? "" : "s"}`;
 });

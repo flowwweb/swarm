@@ -90,15 +90,22 @@ Before assigning a visual finding, declare the artifact class:
   responsive layout, accessibility, declared assets, and any explicit visual
   fidelity contract.
 
-For `DIRECTIONAL_MOCKUP`, do not issue P1/P2 or `REJECT` for expected ImageGen
-variation such as 1505×1045 versus a target canvas, a slightly different drawer
-width, a regenerated logo/avatar, or a missing implementation-only shell detail.
-Escalate only when the drift changes the requested user job, contradicts an
-explicit must-have or prohibited element, introduces unsafe or misleading
-content, or makes the direction impossible to evaluate. The correct result is
-usually `KEEP` plus a short implementation handoff. Do not spend another
-generation/review cycle to eliminate expected variation before the user chooses
-the direction.
+For `DIRECTIONAL_MOCKUP`, do not issue P1/P2 or `REJECT` for ordinary generator
+variation in canvas, shell geometry, identity rendering, or exact pixels. Those
+are implementation handoff notes unless the user or project contract made a
+specific fidelity requirement binding. Escalate only when the drift changes the
+requested user job, contradicts an explicit must-have or prohibited element,
+introduces unsafe or misleading content, or makes the direction impossible to
+evaluate. The correct result is usually `KEEP` plus a short implementation
+handoff. Do not spend another generation/review cycle eliminating expected
+variation before the user chooses the direction.
+
+The artifact classes are generalized policy, not a project template. Infer the
+least restrictive class that still answers the user's question, state that
+assumption, and let explicit user or project authority override it. Never add
+screen-specific dimensions, asset names, identity names, pixel thresholds, or
+route-specific gates to global doctrine; put those in the artifact's own
+contract only when fidelity is explicitly required.
 
 `SOURCE_SEMANTICS` checks the implementation and may return useful findings, but
 it cannot set final `review_passed`. `ACCEPTANCE` checks the declared immutable
@@ -192,6 +199,11 @@ highest-signal evidence instead of returning only paths or folders:
 
 - for visual or interaction work, include representative reference/candidate
   or before/after screenshots at the relevant viewport or state;
+- when images are part of the user-facing result, render representative,
+  high-signal images inline with absolute Markdown image syntax such as
+  `![caption](/absolute/path/to/image.png)` (or an equivalent native image
+  block); links may supplement the embed for provenance or the complete
+  inventory, but never replace it;
 - for repeated checks, mappings, or matrices, include a compact table;
 - for source, contract, log, network, or provider findings, include the shortest
   useful excerpt or receipt with sensitive data removed;

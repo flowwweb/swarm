@@ -9,7 +9,7 @@
   "config": {
     "exists": true,
     "path": "fixture/config.toml",
-    "editable": ["execution.usage_saver", "console.open_on_start", "role_icons.enabled", "role_icons.ctrl"],
+    "editable": ["execution.usage_saver", "chat_relay.enabled", "chat_relay.offload_level", "chat_relay.default_model", "chat_relay.default_effort", "chat_relay.challenging_model", "chat_relay.challenging_effort", "console.open_on_start", "role_icons.enabled", "role_icons.ctrl"],
     "settings": {
       "portfolio": {
         "max_active_tasks": 4,
@@ -22,6 +22,14 @@
         "min_reasoning": "none",
         "max_reasoning": "ultra",
         "usage_saver": false
+      },
+      "chat_relay": {
+        "enabled": false,
+        "offload_level": "balanced",
+        "default_model": "gpt-5.6-luna",
+        "default_effort": "xhigh",
+        "challenging_model": "pro",
+        "challenging_effort": "pro"
       },
       "logging": {
         "task_event_limit": 64

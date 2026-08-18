@@ -107,6 +107,11 @@ class SwarmSkillStructureTests(unittest.TestCase):
         self.assertIn("composed render comparison", task_contract)
         self.assertIn("composed rendered product", review_contract)
         self.assertIn("required proof blocks approval", review_contract)
+        self.assertIn("scripts/swarm_config.py show --json", skill)
+        self.assertIn("construct runtime state", skill)
+        self.assertIn("fails closed to local Codex", skill)
+        self.assertIn("already-dispatched task contract", config)
+        self.assertIn("observed visible selection must match it", config)
 
     def test_task_titles_compress_real_role_authority_and_artifact(self) -> None:
         skill = doctrine()

@@ -6,9 +6,33 @@ shape of codex-lb without adding account pooling, an API proxy, credentials, or 
 second task ledger.
 
 The always-visible Usage Saver switch writes the single
-`execution.usage_saver` preference through the same validated settings API. It
-is off by default, applies to new SWARM actions, and does not change model routing,
-scope, proof, review, capability, or authority.
+`execution.usage_saver` preference through the same validated settings API. The
+nearby `Save Codex usage with ChatGPT` switch controls `chat_relay.enabled` and
+uses the description `Offload planning, coding, testing, and review to ChatGPT
+to make your Codex usage go further.` Usage Saver is off by default and does not
+change model routing, scope, proof, review, capability, or authority. The
+ChatGPT switch is also off by default and enables only bounded, user-confirmed
+advisory consultations; it does not grant ChatGPT execution or acceptance
+authority.
+
+Directly below that switch, Settings shows the local ChatGPT usage log: routed
+task count, consultation count, recent metadata-only entries, and an estimated
+Codex-token total. It reads one local JSON file and does not query Codex usage,
+call a model, or start a refresh loop. `Clear log` removes that file through the
+authenticated loopback console action.
+
+The console switch changes only the relay's opt-in flag. It must preserve the
+validated `chat_relay.default_*` and `chat_relay.challenging_*` profile fields;
+those fields remain config-level settings, not UI guesses. After any settings
+change, new scheduling waves reload the effective config, while already-
+dispatched tasks keep their original contract. If validation fails, show the
+diagnostic and leave the source file unchanged.
+
+The Graph view's Usage panel is derived in the browser from the existing cached
+`/api/overview` snapshot. It shows cumulative host-reported thread tokens,
+observed tasks, active tasks, and model mix for the selected scope. It adds no
+usage endpoint, database query, timer, model call, relay call, billing data, or
+quota request.
 
 ## Launch
 

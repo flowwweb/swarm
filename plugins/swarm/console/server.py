@@ -36,6 +36,8 @@ DEFAULT_CONFIG_PATH = Path.home() / ".agents" / "swarm" / "config.toml"
 DEFAULT_PORT = 4788
 MAX_BODY_BYTES = 64 * 1024
 PORTAL_PRESENCE_TTL_SECONDS = 150
+CHAT_RELAY_USAGE_LOG_NAME = "chat-relay-usage.json"
+CHAT_RELAY_USAGE_MAX_EVENTS = 100
 MIN_OBSERVATION_WINDOW_MS = 24 * 60 * 60 * 1000
 OBSERVATION_HEARTBEAT_WINDOWS = 48
 
@@ -62,6 +64,12 @@ EDITABLE_SETTINGS: dict[str, type] = {
     "execution.min_reasoning": str,
     "execution.max_reasoning": str,
     "execution.usage_saver": bool,
+    "chat_relay.enabled": bool,
+    "chat_relay.offload_level": str,
+    "chat_relay.default_model": str,
+    "chat_relay.default_effort": str,
+    "chat_relay.challenging_model": str,
+    "chat_relay.challenging_effort": str,
     "logging.task_event_limit": int,
     "console.open_on_start": bool,
     "boost.enabled": bool,
@@ -224,6 +232,43 @@ def update_config(config_path: Path, changes: dict[str, Any]) -> dict[str, Any]:
 def state_database(codex_home: Path) -> Path:
     candidates = (codex_home / "state_5.sqlite", codex_home / "sqlite" / "state_5.sqlite")
     return next((path for path in candidates if path.exists()), candidates[0])
+
+
+def chat_relay_usage_path(config_path: Path) -> Path:
+    return config_path.resolve().parent / CHAT_RELAY_USAGE_LOG_NAME
+
+
+def read_chat_relay_usage(path: Path) -> dict[str, Any]:
+    empty = {"schema_version": 1, "events": []}
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8")) if path.exists() else empty
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        payload = empty
+    raw_events = payload.get("events", []) if isinstance(payload, dict) and payload.get("schema_version") == 1 else []
+    events: list[dict[str, Any]] = []
+    if isinstance(raw_events, list):
+        for raw in raw_events[-CHAT_RELAY_USAGE_MAX_EVENTS:]:
+            if not isinstance(raw, dict) or not all(isinstance(raw.get(key), str) for key in ("recorded_at", "task_id", "purpose", "model", "effort")):
+                continue
+            tokens = raw.get("estimated_tokens_saved")
+            if isinstance(tokens, int) and tokens >= 0:
+                events.append({
+                    "recorded_at": raw["recorded_at"],
+                    "task_id": raw["task_id"],
+                    "purpose": raw["purpose"],
+                    "model": raw["model"],
+                    "effort": raw["effort"],
+                    "estimated_tokens_saved": tokens,
+                })
+    task_ids = {event["task_id"] for event in events if event["task_id"]}
+    return {
+        "schema_version": 1,
+        "consultations": len(events),
+        "routed_tasks": len(task_ids),
+        "estimated_tokens_saved": sum(event["estimated_tokens_saved"] for event in events),
+        "events": events[-20:],
+        "claim_limit": "Estimated from relay prompt and ChatGPT reply size; not billing, quota, or remaining usage.",
+    }
 
 
 def _readonly_connection(path: Path) -> sqlite3.Connection:
@@ -815,6 +860,13 @@ class App:
                 "ttl_seconds": PORTAL_PRESENCE_TTL_SECONDS,
             }
 
+    def chat_relay_usage(self) -> dict[str, Any]:
+        return read_chat_relay_usage(chat_relay_usage_path(self.config_path))
+
+    def clear_chat_relay_usage(self) -> dict[str, Any]:
+        chat_relay_usage_path(self.config_path).unlink(missing_ok=True)
+        return self.chat_relay_usage()
+
 
 class Handler(BaseHTTPRequestHandler):
     server: SwarmHTTPServer
@@ -921,6 +973,9 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/api/config":
                 self._json(HTTPStatus.OK, self._config_payload())
                 return
+            if path == "/api/chat-relay-usage":
+                self._json(HTTPStatus.OK, self.server.app.chat_relay_usage())
+                return
             asset = STATIC_ASSETS.get(path)
             if asset:
                 asset_path, content_type = asset
@@ -977,6 +1032,9 @@ class Handler(BaseHTTPRequestHandler):
             return
         if path == "/api/launch-claim":
             self._json(HTTPStatus.OK, self.server.app.claim_portal_open())
+            return
+        if path == "/api/chat-relay-usage/clear":
+            self._json(HTTPStatus.OK, self.server.app.clear_chat_relay_usage())
             return
         if path != "/api/config":
             self._error(HTTPStatus.NOT_FOUND, "not found")

@@ -16,6 +16,8 @@ import time
 import weakref
 from .incidents import IncidentLedger, IncidentRecord
 from .request_ledger import RequestStore, RequestStoreError
+from .chat_relay import ChatRelayAdapter, ChatRelayCapability, ChatRelayConsultation, ChatRelayContextPacket, ChatRelayPolicy, ChatRelayRequest, ChatRelayDecision, choose_chat_relay, consult_chat_relay
+from .chat_relay_usage import ChatRelayUsageLedger
 
 
 class Role(StrEnum):
@@ -129,7 +131,8 @@ def _route_candidate(*, facts:WorkRoutingFacts, economics:RoutingEconomics, capa
     if capacity.task_status is HostTaskCapacity.AVAILABLE:
         if not lead or lead.upper()==Role.CTRL.value: raise InvariantError("delegated task routing requires CTRL -> LEAD -> DOER authority")
         return ExecutionRoutingDecision(ExecutionRoute.NORMAL_TASK,lead,(Role.CTRL.value,Role.LEAD.value,Role.DOER.value),"task lane is the only viable permitted structure",capacity.receipt,economics)
-    return ExecutionRoutingDecision(ExecutionRoute.HARD_BLOCKED,owner,(owner,),"no permitted task or subagent structure can progress",capacity.receipt,economics)
+    exception={HostTaskCapacity.UNAVAILABLE:DegradedCapacityException.TASK_UNAVAILABLE,HostTaskCapacity.REJECTED:DegradedCapacityException.TASK_REJECTED,HostTaskCapacity.USAGE_LIMITED:DegradedCapacityException.TASK_USAGE_LIMITED}.get(capacity.task_status)
+    return ExecutionRoutingDecision(ExecutionRoute.HARD_BLOCKED,owner,(owner,),"no permitted task or subagent structure can progress",capacity.receipt,economics,exception)
 
 def route_execution(*, facts:WorkRoutingFacts, economics:RoutingEconomics, capacity:HostCapacityEvidence, accountable_owner:str, lead_owner:str="", immutable_checkpoint:str="", resumption_marker:str="", affected_gates:tuple[str,...]=(), current:ExecutionRoutingDecision|None=None, safe_boundary:bool=True) -> ExecutionRoutingDecision:
     candidate=_route_candidate(facts=facts,economics=economics,capacity=capacity,accountable_owner=accountable_owner,lead_owner=lead_owner,immutable_checkpoint=immutable_checkpoint,resumption_marker=resumption_marker,affected_gates=affected_gates)
@@ -773,10 +776,11 @@ class Worker:
 @dataclass
 class Swarm:
     architecture_version: int=1; contract_versions: dict[str,int]=field(default_factory=dict); topology: set[str]=field(default_factory=set)
-    workers: dict[str,Worker]=field(default_factory=dict); tasks: dict[str,Task]=field(default_factory=dict); leases: dict[str,str]=field(default_factory=dict); events: list[tuple[str,str]]=field(default_factory=list); task_event_limit:int=64; telemetry: dict[str,object]=field(default_factory=dict); telemetry_events:list[dict[str,object]]=field(default_factory=list); artifact_index:dict[str,str]=field(default_factory=dict); provenance_index:dict[str,str]=field(default_factory=dict); ctrl_evidence_ledger:dict[str,CtrlEvidence]=field(default_factory=dict); ctrl_decision_sets:dict[str,CtrlDecisionSet]=field(default_factory=dict); ctrl_phase:str="intake"; hive:dict[str,HiveRecord]=field(default_factory=dict); hive_enabled:bool=True; heartbeat_stall_after:int=2; correction_receipts:dict[str,None]=field(default_factory=dict); lane_width:int=3; wip_limit:int=3; efficiency_ledger:list[dict[str,str]]=field(default_factory=list); mode:EfficiencyMode=EfficiencyMode.BALANCED; default_review_horizon:int=30; max_review_horizon:int=60; direct_work_horizon:int=20
+    workers: dict[str,Worker]=field(default_factory=dict); tasks: dict[str,Task]=field(default_factory=dict); leases: dict[str,str]=field(default_factory=dict); events: list[tuple[str,str]]=field(default_factory=list); task_event_limit:int=64; telemetry: dict[str,object]=field(default_factory=dict); telemetry_events:list[dict[str,object]]=field(default_factory=list); artifact_index:dict[str,str]=field(default_factory=dict); provenance_index:dict[str,str]=field(default_factory=dict); ctrl_evidence_ledger:dict[str,CtrlEvidence]=field(default_factory=dict); ctrl_decision_sets:dict[str,CtrlDecisionSet]=field(default_factory=dict); ctrl_phase:str="intake"; hive:dict[str,HiveRecord]=field(default_factory=dict); hive_enabled:bool=True; heartbeat_stall_after:int=2; correction_receipts:dict[str,None]=field(default_factory=dict); lane_width:int=3; wip_limit:int=3; efficiency_ledger:list[dict[str,str]]=field(default_factory=list); mode:EfficiencyMode=EfficiencyMode.BALANCED; default_review_horizon:int=30; max_review_horizon:int=60; direct_work_horizon:int=20; usage_saver:bool=False; chat_relay_policy:ChatRelayPolicy=field(default_factory=ChatRelayPolicy)
     scheduled_wakeups:dict[str,int]=field(default_factory=dict); ctrl_feed_messages:list[CtrlFeedMessage]=field(default_factory=list); ctrl_feed_cursor:int=0; ctrl_feed_superseded_by:dict[str,str]=field(default_factory=dict); ctrl_feed_events:dict[str,CtrlFeedEvent]=field(default_factory=dict); ctrl_feed_consumed_events:set[str]=field(default_factory=set); ctrl_authorizations:dict[str,UserCtrlAuthorization]=field(default_factory=dict); ctrl_materialization_intents:dict[str,CtrlMaterializationIntent]=field(default_factory=dict); consumed_ctrl_authorizations:set[str]=field(default_factory=set); consumed_ctrl_intents:set[str]=field(default_factory=set); proof_policy_version:str="lean-v1"; proof_impacted_selection:bool=True; proof_receipt_reuse:bool=True; proof_gate_timeout_seconds:int=120; proof_browser_freshness_seconds:int=86400; proof_provider_freshness_seconds:int=3600; proof_transient_retry_limit:int=1; request_store:RequestStore|None=field(default=None,repr=False,compare=False); request_continuity_enabled:bool=False; request_feed_sequence_floor:int=0; _host_authority_public_key:int|None=field(default=None,repr=False,compare=False); _gate_capability:object=field(default_factory=object,init=False,repr=False,compare=False); _watchdog_capability:object=field(default_factory=object,init=False,repr=False,compare=False); _owner_context_capability:object=field(default_factory=object,init=False,repr=False,compare=False); _ctrl_authority_capability:object=field(default_factory=object,init=False,repr=False,compare=False)
     def __setattr__(self, name:str, value:object) -> None:
         if name=="_host_authority_public_key" and name in self.__dict__: raise InvariantError("host authority verifier is immutable after Swarm construction")
+        if name=="usage_saver" and not isinstance(value,bool): raise InvariantError("usage saver must be boolean")
         object.__setattr__(self,name,value)
     @classmethod
     def with_host_authority(cls, **kwargs:object) -> tuple["Swarm","_HostAuthorityBroker"]:
@@ -786,7 +790,7 @@ class Swarm:
     def from_config(cls, config: dict, *, _host_authority_public_key:int|None=None) -> "Swarm":
         monitoring=config["monitoring"]
         proof=config.get("proof",{})
-        return cls(lane_width=config["coordination"]["preferred_lane_width"], wip_limit=config["efficiency"]["doer_wip_limit"], mode=EfficiencyMode(config["efficiency"]["mode"]), hive_enabled=config.get("hive",{}).get("enabled",True), heartbeat_stall_after=config["recovery"]["stall_after_updates"], task_event_limit=config.get("logging",{}).get("task_event_limit",64), default_review_horizon=monitoring.get("default_review_horizon_minutes",monitoring.get("heartbeat_minutes",30)), max_review_horizon=monitoring.get("max_review_horizon_minutes",60), direct_work_horizon=config["coordination"].get("ctrl_direct_horizon_minutes",20), proof_policy_version=proof.get("policy_version","lean-v1"), proof_impacted_selection=proof.get("impacted_selection",True), proof_receipt_reuse=proof.get("receipt_reuse",True), proof_gate_timeout_seconds=proof.get("gate_timeout_seconds",120), proof_browser_freshness_seconds=proof.get("browser_freshness_seconds",86400), proof_provider_freshness_seconds=proof.get("provider_freshness_seconds",3600), proof_transient_retry_limit=proof.get("transient_retry_limit",1), _host_authority_public_key=_host_authority_public_key)
+        return cls(lane_width=config["coordination"]["preferred_lane_width"], wip_limit=config["efficiency"]["doer_wip_limit"], mode=EfficiencyMode(config["efficiency"]["mode"]), hive_enabled=config.get("hive",{}).get("enabled",True), heartbeat_stall_after=config["recovery"]["stall_after_updates"], task_event_limit=config.get("logging",{}).get("task_event_limit",64), default_review_horizon=monitoring.get("default_review_horizon_minutes",monitoring.get("heartbeat_minutes",30)), max_review_horizon=monitoring.get("max_review_horizon_minutes",60), direct_work_horizon=config["coordination"].get("ctrl_direct_horizon_minutes",20), usage_saver=config.get("execution",{}).get("usage_saver",False), chat_relay_policy=ChatRelayPolicy.from_config(config.get("chat_relay",{})), proof_policy_version=proof.get("policy_version","lean-v1"), proof_impacted_selection=proof.get("impacted_selection",True), proof_receipt_reuse=proof.get("receipt_reuse",True), proof_gate_timeout_seconds=proof.get("gate_timeout_seconds",120), proof_browser_freshness_seconds=proof.get("browser_freshness_seconds",86400), proof_provider_freshness_seconds=proof.get("provider_freshness_seconds",3600), proof_transient_retry_limit=proof.get("transient_retry_limit",1), _host_authority_public_key=_host_authority_public_key)
     @classmethod
     def from_config_with_host_authority(cls, config:dict) -> tuple["Swarm","_HostAuthorityBroker"]:
         private_key=secrets.randbelow(_HOST_AUTHORITY_PRIME-3)+2; public_key=pow(_HOST_AUTHORITY_GENERATOR,private_key,_HOST_AUTHORITY_PRIME); swarm=cls.from_config(config,_host_authority_public_key=public_key); return swarm,_HostAuthorityBroker(swarm,private_key)
@@ -1305,13 +1309,19 @@ class Swarm:
         self.tasks[task.id]=task; w.task_ids.add(task.id)
     def should_spawn(self, *, independent: bool, critical_path: bool, duplicate_artifact: str|None=None, verification: bool=False, contention:bool=False) -> bool:
         allowed=independent and not contention and (critical_path or verification) and (not duplicate_artifact or verification) and sum(w.state!=WorkerState.RETIRED for w in self.workers.values()) < MODE_POLICY[self.mode]["parallel"]
-        reason="allow:verification" if verification else "allow:critical_path" if allowed else "refuse:independent=false" if not independent else "refuse:contention" if contention else "refuse:duplicate" if duplicate_artifact else "refuse:noncritical"
+        reason="allow:verification" if verification else "allow:critical_path" if allowed else "refuse:independent=false" if not independent else "refuse:contention" if contention else "refuse:duplicate" if duplicate_artifact else "usage_saver:refuse:noncritical" if self.usage_saver else "refuse:noncritical"
         self._record("efficiency_ledger",{"kind":"spawn","decision":"allow" if allowed else "refuse","reason":reason})
         return allowed
     def route(self, *, family:str, risk:int, uncertainty:int, blast_radius:int, architect_floor:int=1, historical_floor:int=1, mode:EfficiencyMode|None=None) -> int:
         selected=mode or self.mode; tier=max(architect_floor,historical_floor,initial_tier(risk=risk,uncertainty=uncertainty,blast_radius=blast_radius,family=family,mode=selected)); self._record("efficiency_ledger",{"kind":"route","family":family,"tier":str(tier),"reason":"expected_total_accepted_cost"}); return tier
+    def select_chat_relay(self, request:ChatRelayRequest, capability:ChatRelayCapability) -> ChatRelayDecision:
+        """Select the visible Chat advisory route under the runtime policy."""
+        return choose_chat_relay(policy=self.chat_relay_policy, request=request, capability=capability)
+    def consult_chat_relay(self, request:ChatRelayRequest, context:ChatRelayContextPacket, adapter:ChatRelayAdapter, usage_ledger:ChatRelayUsageLedger|None=None) -> ChatRelayConsultation:
+        """Run one host-confirmed advisory consult without transferring authority."""
+        return consult_chat_relay(policy=self.chat_relay_policy, request=request, context=context, adapter=adapter, ledger=usage_ledger or ChatRelayUsageLedger())
     def dedup(self, identity:str, *, verification:bool=False, uncertainty:bool=False) -> DedupDecision:
-        found=bool(self.discover(identity)); decision=DedupDecision.EXECUTE if not found or verification or uncertainty else DedupDecision.REUSE; self._record("efficiency_ledger",{"kind":"dedup","decision":decision.value,"reason":"verification" if verification else "uncertainty" if uncertainty else "canonical_artifact"}); return decision
+        found=bool(self.discover(identity)); decision=DedupDecision.EXECUTE if not found or verification or uncertainty else DedupDecision.REUSE; self._record("efficiency_ledger",{"kind":"dedup","decision":decision.value,"reason":"verification" if verification else "uncertainty" if uncertainty else "usage_saver:reuse_canonical" if self.usage_saver else "canonical_artifact"}); return decision
     def publish_ctrl_feed(self, actor:Role, message:CtrlFeedMessage) -> str:
         """Record the exact externally surfaced CTRL message for later heartbeat audit."""
         self._role(actor,{Role.CTRL})
@@ -1367,7 +1377,7 @@ class Swarm:
         return reorientation or None
     def context_decision(self, *, affinity:int|None=None, bloat:bool|None=None, stale:bool|None=None, stalls:int|None=None, worker_id:str|None=None, replacement:str|None=None) -> str:
         context=self.workers[worker_id].context if worker_id else {}; affinity=context.get("affinity",affinity or 0); bloat=context.get("bloat",bloat or False); stale=context.get("stale",stale or False); stalls=context.get("stalls",stalls or 0)
-        result="retire" if bloat or stale or stalls>1 or affinity==0 else "reuse"; self._record("efficiency_ledger",{"kind":"context","decision":result,"reason":"bounded_spine"})
+        result="retire" if bloat or stale or stalls>1 or affinity==0 else "reuse"; self._record("efficiency_ledger",{"kind":"context","decision":result,"reason":"usage_saver:reuse_current_owner" if self.usage_saver and result=="reuse" else "bounded_spine"})
         if result=="retire" and worker_id: self.retire(Role.LEAD,worker_id,replacement)
         return result
     def change_architecture(self, actor: Role, contracts: dict[str,int], now:int=0) -> None:

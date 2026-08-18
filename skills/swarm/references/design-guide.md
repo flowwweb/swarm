@@ -43,6 +43,11 @@ view derived from an evidence-backed design constitution.
   mockup. Escalate only major drift that changes the requested user job,
   violates an explicit must-have, introduces unsafe or misleading content, or
   makes the direction unusable to evaluate.
+- This classification is intent-driven and extensible, not tied to a project,
+  route, brand, or fixed screen geometry. If intent is ambiguous, choose the
+  least restrictive useful class and state the assumption. Keep dimensions,
+  asset identities, and pixel thresholds in a binding artifact contract only
+  when the user or project explicitly requires fidelity.
 - Make the real task obvious before adding explanation or decoration.
 - Give every screen one clear primary decision; progressively disclose detail.
 - Show system status, accepted input, change, consequence, and next action.

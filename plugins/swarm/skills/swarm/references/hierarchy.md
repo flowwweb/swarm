@@ -78,6 +78,58 @@ CTRL may complete direct work only through its declared direct-work contract.
 LEAD alone completes a LEAD-owned lane after independent exact-artifact review.
 CTRL composes accepted lanes; it cannot impersonate LEAD or REVIEW.
 
+## CTRL is orchestration, not default execution
+
+Classify the actual work before mutation. CTRL may directly perform bounded
+read-only inspection, coordination, plan/goal/receipt work, shared-surface
+integration, and final composed acceptance. Substantive artifact-producing work
+such as code edits, generated media, or provider/device/deploy actions routes to
+a LEAD-owned lane with bounded DOER work whenever qualifying host lane capacity
+is available. A qualifying lane is a routing fact, not a project, brand, route,
+asset, or screen-specific rule.
+
+The existing `CTRL_DIRECT` predicate remains a safe direct-work exception for a
+single low-risk atomic outcome on one surface with no cross-lane dependency and
+a measurable bounded horizon. It is an explicit exception recorded in the task
+contract, never permission for CTRL to become the implementation owner by
+default. Explicit user direction may change the default route only within the
+recorded authority, safety, and host boundaries.
+
+When no qualifying lane capacity exists, CTRL does not silently do the worker
+work. Record the exact host capacity observation and one typed exception (for
+example the existing capacity, host-gate, collision, or safety exception), bind
+an immutable checkpoint and resumption marker when bounded fallback is allowed,
+and leave affected proof gates `UNVERIFIED`. A hard block is preferable to an
+unrecorded role violation.
+
+## One-pass CTRL routing record
+
+For each new user prompt that may cause mutation, CTRL resolves one compact
+routing record before the first handoff or edit:
+
+| Field | Required decision |
+| --- | --- |
+| `OBJECTIVE` | The user outcome and stopping condition |
+| `OWNER` | Role plus exact mutable surface/artifact |
+| `MODE` | `CTRL_DIRECT` for bounded read-only/coordination or genuinely atomic low-risk work; otherwise a LEAD lane with bounded DOER work |
+| `DEPENDENCIES/PROOF` | Relevant dependencies, claims, gates, and accepting evidence |
+| `CAPACITY` | Current host lane/subagent availability, configured ceilings, and exact receipt |
+| `ACCEPTING_ROUTE` | Named LEAD/REVIEW/CTRL route that can accept the result |
+
+This is a routing pass, not a heavyweight planning graph. Recompute only when
+material evidence changes the owner, surface, dependency, capacity, or accepting
+route. Before spawning any subagent, check both host availability and configured
+WIP/parallel ceilings. A full ceiling records the typed `CAPACITY` exception and
+keeps the work waiting or hard-blocked; it never authorizes CTRL to perform the
+DOER work silently.
+
+For new subagent/DOER assignments, the packaged medium profile defaults to
+`gpt-5.6-luna` at `xhigh` within the model's declared capabilities. A user,
+host, or project selection always wins. CTRL may choose another advertised
+model/reasoning pair only when the choice is not explicit, and records the
+adjustment plus its risk, latency, cost, and proof basis; it never overwrites
+an explicit selection.
+
 ## MOTHER is an optional manager SPECIALIST
 
 MOTHER is a profession under SPECIALIST, not a root or coordinator authority.
@@ -134,6 +186,28 @@ Parallelize only disjoint lanes that can return integration-ready artifacts.
 Explicit dependencies wait on their named stage; overlapping mutation is
 serialized by CTRL through an explicit shared-surface receipt. A failure pauses
 only its affected surface while safe independent lanes continue.
+
+### Lightweight parallelism graph
+
+The runtime classifies every lane with the same small record: objective, owner,
+lane type, mutable surfaces, proof requirements, explicit ordering or proof
+dependencies, named exclusive resources, and a host-capacity key/receipt. The
+lane type is descriptive and does not create a category-specific queue. Code,
+research, architecture, automation, payment, design, QA, and future lane types
+follow the same rule: independent records may share a parallel group.
+
+CTRL serializes a candidate only when the graph observes an overlapping mutable
+surface, an explicit dependency, a matching destructive/provider/exclusive lock,
+or exhausted host capacity for that capacity key. A full capacity key creates a
+typed pending/blocked record containing the host observation and the next
+release condition. It never silently waits, changes the owner, or lets CTRL do
+the worker's substantive work. Unrelated capacity keys continue concurrently.
+
+The single `WORK_LEDGER` identity travels through `REQUEST -> ASSIGNED ->
+PROGRESS`, then to `BLOCKED` (with the exact observation and release condition)
+or `ACCEPTED` (with proof), and finally `CLOSED`. The older accepted-request
+inventory remains compatible as a continuity view; it is not a second progress
+authority and does not mint a new identity at assignment or blocking.
 
 Configured task counts, lane widths, and review capacity are ceilings, never
 creation targets. Ready immutable handoffs free execution capacity while the

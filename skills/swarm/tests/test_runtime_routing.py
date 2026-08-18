@@ -4,6 +4,7 @@ import unittest
 
 from skills.swarm.runtime import (
     ExecutionRoute,
+    DegradedCapacityException,
     HandsOffEventKind,
     HostCapacityEvidence,
     HostTaskCapacity,
@@ -84,6 +85,7 @@ class RuntimeRoutingTests(unittest.TestCase):
         blocked=HostCapacityEvidence(HostTaskCapacity.REJECTED,False,"host:error:task rejected and subagents unavailable")
         decision=route_execution(facts=facts(WorkSize.LARGE),economics=economics(),capacity=blocked,accountable_owner="lead-a")
         self.assertEqual(decision.route,ExecutionRoute.HARD_BLOCKED)
+        self.assertEqual(decision.degraded_exception,DegradedCapacityException.TASK_REJECTED)
 
     def test_changed_route_is_deferred_until_safe_boundary(self) -> None:
         current=route_execution(facts=facts(),economics=economics(),capacity=AVAILABLE,accountable_owner="lead-a")

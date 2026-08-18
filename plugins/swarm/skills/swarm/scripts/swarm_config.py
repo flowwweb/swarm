@@ -18,6 +18,9 @@ SWARM_DEFAULT_PATH = Path.home() / ".agents" / "swarm" / "config.toml"
 DEFAULT_PATH = Path(os.environ.get("SWARM_CONFIG_PATH", SWARM_DEFAULT_PATH))
 TEMPLATE_PATH = Path(__file__).resolve().parent.parent / "assets" / "swarm-config.toml"
 PLUGIN_MANIFEST_PATH = Path(__file__).resolve().parents[3] / ".codex-plugin" / "plugin.json"
+CHAT_RELAY_MODELS = {"gpt-5.6-luna", "pro"}
+CHAT_RELAY_EFFORTS = {"minimal", "low", "medium", "high", "xhigh", "max", "ultra", "pro"}
+CHAT_RELAY_OFFLOAD_LEVELS = {"light", "balanced", "high", "max"}
 
 def resolve_config_path(explicit: Path|None=None) -> Path:
     """Resolve an explicit path or the canonical SWARM config location."""
@@ -49,6 +52,17 @@ DEFAULTS: dict[str, Any] = {
         "usage_saver": False,
         "min_reasoning": "none",
         "max_reasoning": "ultra",
+    },
+    "chat_relay": {
+        "enabled": False,
+        "provider": "codex-chatgpt-control",
+        "surface": "chat",
+        "mode": "consult",
+        "offload_level": "balanced",
+        "default_model": "gpt-5.6-luna",
+        "default_effort": "xhigh",
+        "challenging_model": "pro",
+        "challenging_effort": "pro",
     },
     "console": {"open_on_start": True},
     "logging": {"task_event_limit": 64},
@@ -97,8 +111,8 @@ DEFAULTS: dict[str, Any] = {
             "lead_model": "gpt-5.6-terra", "lead_reasoning": "medium",
             "doer_model": "gpt-5.6-luna",
             "doer_reasoning": "xhigh",
-            "task_model": "gpt-5.6-luna", "task_reasoning": "high",
-            "subtask_model": "gpt-5.6-luna", "subtask_reasoning": "high",
+            "task_model": "gpt-5.6-luna", "task_reasoning": "xhigh",
+            "subtask_model": "gpt-5.6-luna", "subtask_reasoning": "xhigh",
             "assist_model": "gpt-5.6-sol", "assist_reasoning": "medium",
             "review_model": "gpt-5.6-sol", "review_reasoning": "medium",
             "advisor_model": "gpt-5.6-sol", "advisor_reasoning": "medium",
@@ -360,6 +374,28 @@ def validate(raw: dict[str, Any]) -> None:
     maximum = execution.get("max_reasoning", DEFAULTS["execution"]["max_reasoning"])
     if REASONING_SCALE.index(minimum) > REASONING_SCALE.index(maximum):
         raise ConfigError("execution.min_reasoning cannot exceed execution.max_reasoning")
+
+    chat_relay = _expect_table(raw, "chat_relay")
+    _expect_keys(chat_relay, set(DEFAULTS["chat_relay"]), "chat_relay")
+    _boolean(chat_relay, "enabled", "chat_relay")
+    _short_text(chat_relay, "provider", "chat_relay")
+    if "surface" in chat_relay and chat_relay["surface"] != "chat":
+        raise ConfigError("chat_relay.surface must be chat")
+    if "mode" in chat_relay and chat_relay["mode"] != "consult":
+        raise ConfigError("chat_relay.mode must be consult")
+    _short_text(chat_relay, "offload_level", "chat_relay")
+    if chat_relay.get("offload_level", DEFAULTS["chat_relay"]["offload_level"]) not in CHAT_RELAY_OFFLOAD_LEVELS:
+        allowed = ", ".join(sorted(CHAT_RELAY_OFFLOAD_LEVELS))
+        raise ConfigError(f"chat_relay.offload_level must be one of: {allowed}")
+    for key in ("default_model", "challenging_model"):
+        _short_text(chat_relay, key, "chat_relay")
+        if chat_relay.get(key, DEFAULTS["chat_relay"][key]) not in CHAT_RELAY_MODELS:
+            raise ConfigError(f"chat_relay.{key} must be gpt-5.6-luna or pro")
+    for key in ("default_effort", "challenging_effort"):
+        _short_text(chat_relay, key, "chat_relay")
+        if chat_relay.get(key, DEFAULTS["chat_relay"][key]) not in CHAT_RELAY_EFFORTS:
+            raise ConfigError(f"chat_relay.{key} has an unsupported reasoning level")
+
     console = _expect_table(raw, "console")
     _expect_keys(console, set(DEFAULTS["console"]), "console")
     _boolean(console, "open_on_start", "console")
@@ -844,6 +880,7 @@ def feedback_diagnostics(effective: dict[str, Any], exists: bool) -> dict[str, A
         "config_schema_version": effective["schema_version"],
         "config_exists": exists,
         "usage_profile": effective["execution"]["usage_profile"],
+        "usage_saver": effective["execution"]["usage_saver"],
         "service_tier": effective["execution"]["service_tier"],
         "min_reasoning": effective["execution"]["min_reasoning"],
         "max_reasoning": effective["execution"]["max_reasoning"],
@@ -856,6 +893,8 @@ def feedback_diagnostics(effective: dict[str, Any], exists: bool) -> dict[str, A
         "review_task_enabled": effective["review"]["task_enabled"],
         "heartbeat_minutes": effective["monitoring"]["heartbeat_minutes"],
         "subagents_enabled": effective["subagents"]["enabled"],
+        "chat_relay_enabled": effective["chat_relay"]["enabled"],
+        "chat_relay_surface": effective["chat_relay"]["surface"],
         "boost_enabled": effective["boost"]["enabled"],
         "boost_strategies": effective["boost"]["strategies"],
         "feedback_destination_configured": bool(effective["feedback"]["destination"]),

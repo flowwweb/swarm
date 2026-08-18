@@ -48,6 +48,16 @@ function response(body) {
 
 async function mount(page, overview = fixture.overview) {
   const config = structuredClone(fixture.config);
+  let relayUsage = {
+    schema_version: 1,
+    consultations: 2,
+    routed_tasks: 2,
+    estimated_tokens_saved: 1234,
+    events: [
+      { recorded_at: "2026-08-18T00:00:00+00:00", task_id: "ctrl/research", purpose: "research", model: "gpt-5.6-luna", effort: "xhigh", estimated_tokens_saved: 734 },
+      { recorded_at: "2026-08-18T00:01:00+00:00", task_id: "ctrl/review", purpose: "review", model: "pro", effort: "pro", estimated_tokens_saved: 500 },
+    ],
+  };
   const runtimeErrors = [];
   page.on("console", (message) => {
     if (message.type() === "error") runtimeErrors.push(message.text());
@@ -67,9 +77,25 @@ async function mount(page, overview = fixture.overview) {
     }
     if (pathname === "/api/bootstrap") return route.fulfill(response(fixture.bootstrap));
     if (pathname === "/api/overview") return route.fulfill(response(overview));
+    if (pathname === "/api/chat-relay-usage" && request.method() === "GET") return route.fulfill(response(relayUsage));
+    if (pathname === "/api/chat-relay-usage/clear" && request.method() === "POST") {
+      relayUsage = { schema_version: 1, consultations: 0, routed_tasks: 0, estimated_tokens_saved: 0, events: [] };
+      return route.fulfill(response(relayUsage));
+    }
     if (pathname === "/api/config" && request.method() === "POST") {
       const payload = request.postDataJSON();
-      config.settings.execution.usage_saver = payload.changes["execution.usage_saver"];
+      if (Object.prototype.hasOwnProperty.call(payload.changes, "execution.usage_saver")) {
+        config.settings.execution.usage_saver = payload.changes["execution.usage_saver"];
+      }
+      if (Object.prototype.hasOwnProperty.call(payload.changes, "chat_relay.enabled")) {
+        config.settings.chat_relay.enabled = payload.changes["chat_relay.enabled"];
+      }
+      for (const key of ["chat_relay.offload_level", "chat_relay.default_model", "chat_relay.default_effort", "chat_relay.challenging_model", "chat_relay.challenging_effort"]) {
+        if (Object.prototype.hasOwnProperty.call(payload.changes, key)) {
+          const field = key.split(".")[1];
+          config.settings.chat_relay[field] = payload.changes[key];
+        }
+      }
       return route.fulfill(response({ ok: true, ...config }));
     }
     if (pathname === "/api/config") return route.fulfill(response(config));
@@ -77,6 +103,7 @@ async function mount(page, overview = fixture.overview) {
   });
   await page.goto("http://swarm.test/", { waitUntil: "domcontentloaded" });
   await page.locator('[data-setting="execution.usage_saver"]').waitFor({ state: "attached" });
+  await page.locator('[data-setting="chat_relay.enabled"]').waitFor({ state: "attached" });
   try {
     await page.waitForFunction(() => {
       const toggle = document.querySelector('[data-setting="execution.usage_saver"]');
@@ -257,6 +284,8 @@ try {
     }
 
     await page.locator('[data-view="settings"]').click();
+    assert.equal(await page.locator('[data-setting="chat_relay.offload_level"]').count(), 0, "disabled ChatGPT parent exposed child settings");
+    assert.equal(await page.locator(".chat-relay-usage").count(), 0, "disabled ChatGPT parent exposed usage telemetry");
     const tabPresses = await focusToggleWithKeyboard(page);
     const focus = await page.locator('[data-setting="execution.usage_saver"]').evaluate((element) => {
       const indicator = getComputedStyle(element.nextElementSibling);
@@ -276,8 +305,42 @@ try {
 
     await page.keyboard.press("Space");
     await page.waitForFunction(() => document.querySelector('[data-setting="execution.usage_saver"]')?.checked && !document.querySelector("#save-settings")?.disabled);
+    const relay = page.locator('[data-setting="chat_relay.enabled"]');
+    await relay.locator("xpath=..").click();
+    await page.locator('[data-setting="chat_relay.offload_level"]').waitFor();
+    assert.equal(await relay.getAttribute("aria-label"), "Save Codex usage with ChatGPT");
+    assert.match(await relay.evaluate((element) => element.closest(".field")?.innerText || ""), /Offload eligible work to ChatGPT/);
+    assert.equal(await page.locator('[data-setting="chat_relay.offload_level"]').count(), 1, "enabled ChatGPT parent did not reveal child settings");
+    assert.equal(await page.locator('[data-range-output="chat_relay.offload_level"]').textContent(), "Balanced");
+    await page.locator('[data-setting="chat_relay.offload_level"]').fill("3");
+    assert.equal(await page.locator('[data-range-output="chat_relay.offload_level"]').textContent(), "Max");
+    await page.locator(".chat-relay-usage").waitFor();
+    assert.match(await page.locator(".chat-relay-usage").innerText(), /1,234 estimated tokens saved/);
+    assert.match(await page.locator(".chat-relay-usage").innerText(), /2 routed tasks · 2 ChatGPT consults/);
+    await page.locator("#save-settings").click();
+    await page.waitForFunction(() => document.querySelector("#settings-status")?.textContent === "Saved. New scheduling waves will use this config.");
+    assert.equal(await relay.isChecked(), true);
+    assert.equal(await page.locator('[data-setting="chat_relay.offload_level"]').inputValue(), "3");
+    const usage = await page.evaluate(() => ({
+      heading: document.querySelector("#usage-heading")?.textContent,
+      scope: document.querySelector("#usage-scope")?.textContent,
+      metrics: [...document.querySelectorAll("#scope-usage .usage-metric strong")].map((node) => node.textContent),
+      models: [...document.querySelectorAll("#scope-usage .usage-models li")].map((node) => node.textContent.trim()),
+      limit: document.querySelector("#scope-usage .usage-limit")?.textContent,
+    }));
+    assert.equal(usage.heading, "Usage");
+    assert.match(usage.scope, /5 observed tasks in the selected scope/);
+    assert.deepEqual(usage.metrics, ["1,000", "5", "3"]);
+    assert.deepEqual(usage.models, ["gpt-5.6-luna3", "gpt-5.6-sol1", "gpt-5.6-terra1"]);
+    assert.match(usage.limit, /Not billing, quota, remaining usage, or a new usage request/);
     const screenshot = path.join(evidenceRoot, `usage-saver-${width}.png`);
     await page.screenshot({ path: screenshot, fullPage: true });
+    await page.locator("#clear-chat-relay-usage").click();
+    await page.waitForFunction(() => document.querySelector(".chat-relay-usage")?.textContent.includes("0 estimated tokens saved"));
+    assert.match(await page.locator("#settings-status").textContent(), /usage log cleared/);
+    await relay.locator("xpath=..").click();
+    assert.equal(await page.locator('[data-setting="chat_relay.offload_level"]').count(), 0, "turning off ChatGPT left child settings visible");
+    assert.equal(await page.locator(".chat-relay-usage").count(), 0, "turning off ChatGPT left usage telemetry visible");
     await page.locator('[data-view="swarm"]').click();
     const hierarchy = await page.evaluate(() => {
       const ctrl = document.querySelector(".swarm-node.role-ctrl").getBoundingClientRect();

@@ -73,6 +73,8 @@ SWARM does not turn every request into a fleet.
 
 This keeps quick work quick while giving larger objectives durable lanes that can progress in parallel.
 
+> **ChatGPT offload.** Turn on **Save Codex usage with ChatGPT**, then choose **Light**, **Balanced**, **High**, or **Max**: Light is selective and Max routes every eligible task. Local files, terminals, browser state, writes, tests, and artifacts stay local; count savings only from provider receipts.
+
 ## What you get back
 
 - **A quiet control stream.** CTRL surfaces decisions, blockers, proof, and completed outcomes—not routine agent chatter.
