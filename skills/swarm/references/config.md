@@ -111,9 +111,9 @@ Configuration cannot make an unsafe or hidden coordination path valid:
 | `chat_relay.mode` | Consultation authority mode | `consult` only |
 | `chat_relay.routing_mode` | Explicit local/cloud routing preference | `auto`, `always_local`, or `always_cloud`; default `auto` |
 | `chat_relay.offload_level` | Breadth of eligible ChatGPT routing | `light`, `balanced`, `high`, or `max`; default `balanced` |
-| `chat_relay.default_model` | ChatGPT model requested for normal offloads | `gpt-5.6-luna` or `pro`; default `gpt-5.6-luna` |
+| `chat_relay.default_model` | ChatGPT model requested for normal offloads | `gpt-5.6-luna`, `gpt-5.6-sol`, or `pro`; default `gpt-5.6-luna` |
 | `chat_relay.default_effort` | ChatGPT reasoning level requested for normal offloads | supported level; default `xhigh` |
-| `chat_relay.challenging_model` | ChatGPT model requested for explicitly challenging offloads | `gpt-5.6-luna` or `pro`; default `pro` |
+| `chat_relay.challenging_model` | ChatGPT model requested for explicitly challenging offloads | `gpt-5.6-luna`, `gpt-5.6-sol`, or `pro`; default `pro` |
 | `chat_relay.challenging_effort` | ChatGPT reasoning level requested for explicitly challenging offloads | supported level; default `pro` |
 | `logging.task_event_limit` | Bounded recent task-transition metadata retained in memory; never prompts, responses, artifact bodies, or credentials | 8-256; default 64 |
 | `proof.policy_version` | Deterministic proof-planner policy | trimmed identifier; default lean-v1 |

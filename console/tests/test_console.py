@@ -71,6 +71,25 @@ class SwarmConsoleTests(unittest.TestCase):
         self.assertIn('viewBox="0 0 128 128"', favicon)
         self.assertIn('linearGradient id="coral"', favicon)
 
+    def test_console_exposes_installable_pwa_shell_without_caching_api_data(self) -> None:
+        index = (console.STATIC_ROOT / "index.html").read_text(encoding="utf-8")
+        self.assertIn('<link rel="manifest" href="/manifest.webmanifest" />', index)
+        self.assertIn('<link rel="apple-touch-icon" href="/swarm-favicon.svg" />', index)
+
+        manifest_body, manifest_type = console.GENERATED_STATIC_FILES["/manifest.webmanifest"]
+        manifest = json.loads(manifest_body.decode("utf-8"))
+        self.assertEqual(manifest_type, "application/manifest+json; charset=utf-8")
+        self.assertEqual(manifest["display"], "standalone")
+        self.assertEqual(manifest["start_url"], "/")
+        self.assertEqual(manifest["icons"][0]["src"], "/swarm-favicon.svg")
+
+        service_worker, service_worker_type = console.GENERATED_STATIC_FILES["/sw.js"]
+        service_worker_source = service_worker.decode("utf-8")
+        self.assertEqual(service_worker_type, "text/javascript; charset=utf-8")
+        self.assertIn('self.addEventListener("fetch"', service_worker_source)
+        self.assertIn('!url.pathname.startsWith("/api/")', service_worker_source)
+        self.assertIn('"/assets/swarm-wordmark.png"', service_worker_source)
+
     def test_console_uses_flowwweb_swarm_tokens_without_lime_controls(self) -> None:
         css = (console.STATIC_ROOT / "styles.css").read_text(encoding="utf-8").casefold()
         index = (console.STATIC_ROOT / "index.html").read_text(encoding="utf-8")

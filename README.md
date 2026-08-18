@@ -126,6 +126,40 @@ python console/docker.py up
 
 The console shows what SWARM knows; it does not invent host activity or passing proof. Native loopback mode permits validated settings writes. Docker mode is read-only.
 
+### Windows or macOS host
+
+The SWARM runtime and console use Python 3.11+ and the standard library, so the same plugin package runs on Windows and macOS. Use `python` on Windows and `python3` on macOS:
+
+```text
+# Windows
+python skills/swarm/scripts/swarm_console.py --start
+
+# macOS
+python3 skills/swarm/scripts/swarm_console.py --start
+```
+
+The Codex plugin and Agent Skills copy are portable too. From a checked-out SWARM repository, install the shared skill into a project with:
+
+```text
+python3 skills/swarm/scripts/verify_plugin_install.py --install-agent-skill <target-project-root>
+```
+
+Use `python` instead of `python3` on Windows. The verifier checks the complete shipped skill surface; it does not require a host-specific installer.
+
+### iPhone or iPad client
+
+The host process stays on Windows or macOS. To use the console from an iPhone or iPad on the same trusted LAN, start the explicit read-only network bind on the host:
+
+```text
+# Windows
+python skills/swarm/scripts/swarm_console.py --host 0.0.0.0
+
+# macOS
+python3 skills/swarm/scripts/swarm_console.py --host 0.0.0.0
+```
+
+Find the host’s LAN IPv4 address (`ipconfig` on Windows, `ifconfig` on macOS), then open `http://<host-lan-ip>:4788` in Safari. Use Safari’s **Add to Home Screen** to install SWARM as a standalone client. Remote clients receive the console and live read-only data; they cannot acquire the local token or write configuration. Keep this mode on a trusted network and stop it with `Ctrl+C` when finished. Loopback mode remains the default.
+
 ## Other hosts
 
 The canonical skill lives in [`skills/swarm`](skills/swarm). Codex installs the generated [`plugins/swarm`](plugins/swarm) mirror; CI rejects drift between them.

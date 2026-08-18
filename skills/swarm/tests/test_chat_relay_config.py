@@ -160,8 +160,8 @@ class ChatRelayConfigTests(unittest.TestCase):
 
     def test_invalid_relay_profile_does_not_silently_fall_back_to_defaults(self) -> None:
         cases = (
-            ("default_model", "unknown-model", "chat_relay.default_model must be gpt-5.6-luna or pro"),
-            ("challenging_model", "unknown-model", "chat_relay.challenging_model must be gpt-5.6-luna or pro"),
+            ("default_model", "unknown-model", "chat_relay.default_model must be one of: gpt-5.6-luna, gpt-5.6-sol, pro"),
+            ("challenging_model", "unknown-model", "chat_relay.challenging_model must be one of: gpt-5.6-luna, gpt-5.6-sol, pro"),
             ("default_effort", "extreme", "chat_relay.default_effort has an unsupported reasoning level"),
             ("challenging_effort", "extreme", "chat_relay.challenging_effort has an unsupported reasoning level"),
         )

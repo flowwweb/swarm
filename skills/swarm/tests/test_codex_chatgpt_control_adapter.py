@@ -58,13 +58,10 @@ class CodexChatGPTControlAdapterTests(unittest.TestCase):
         self.assertEqual(response.transport.usage_status, "reported")
         self.assertEqual(response.transport.latency_source, "provider_reported")
         self.assertEqual(runner.calls[0][1]["experience"], "chat")
-        self.assertEqual(
-            runner.calls[0][1]["configuration"],
-            {"modelVersion": "GPT-5.6 Luna", "intelligence": "Extra High"},
-        )
+        self.assertNotIn("configuration", runner.calls[0][1])
         self.assertEqual(runner.calls[0][1]["response"], {"format": "markdown"})
 
-    def test_pro_selection_uses_visible_chat_intelligence_control(self) -> None:
+    def test_pro_selection_reuses_the_verified_visible_host_profile(self) -> None:
         runner = FakeRunner(SimpleNamespace(output_text="advice", run_id="run-pro"))
         adapter = CodexChatGPTControlAdapter(
             capability_reader=self.capability,
@@ -73,7 +70,18 @@ class CodexChatGPTControlAdapterTests(unittest.TestCase):
             agent_factory=lambda **values: values,
         )
         adapter.send_consult("challenging prompt", model="pro", effort="pro")
-        self.assertEqual(runner.calls[0][1]["configuration"], {"intelligence": "Pro"})
+        self.assertNotIn("configuration", runner.calls[0][1])
+
+    def test_sol_selection_reuses_the_verified_visible_host_profile(self) -> None:
+        runner = FakeRunner(SimpleNamespace(output_text="advice", run_id="run-sol"))
+        adapter = CodexChatGPTControlAdapter(
+            capability_reader=self.capability,
+            confirm_prompt=lambda _: True,
+            runner=runner,
+            agent_factory=lambda **values: values,
+        )
+        adapter.send_consult("routine prompt", model="gpt-5.6-sol", effort="xhigh")
+        self.assertNotIn("configuration", runner.calls[0][1])
 
     def test_missing_receipt_fails_closed(self) -> None:
         runner = FakeRunner(SimpleNamespace(output_text="advice"))

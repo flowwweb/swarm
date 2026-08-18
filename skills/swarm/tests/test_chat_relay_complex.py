@@ -98,10 +98,7 @@ class ComplexChatRelayTests(unittest.TestCase):
             self.assertFalse(result.response.acceptance_authority)
             self.assertEqual(len(confirmations), 1)
             self.assertEqual(confirmations[0], runner.calls[0][1]["input"])
-            self.assertEqual(
-                runner.calls[0][1]["configuration"],
-                {"modelVersion": "GPT-5.6 Luna", "intelligence": "Extra High"},
-            )
+            self.assertNotIn("configuration", runner.calls[0][1])
             prompt = runner.calls[0][1]["input"]
             self.assertIn("FILE: docs/review.md", prompt)
             self.assertIn("FILE: plan.md", prompt)
@@ -140,7 +137,7 @@ class ComplexChatRelayTests(unittest.TestCase):
 
             self.assertIs(result.decision.route, ChatRelayRoute.VISIBLE_CHAT)
             self.assertEqual((result.decision.requested_model, result.decision.requested_effort), ("pro", "pro"))
-            self.assertEqual(runner.calls[0][1]["configuration"], {"intelligence": "Pro"})
+            self.assertNotIn("configuration", runner.calls[0][1])
             self.assertTrue(result.response.advisory_only if result.response else False)
             self.assertFalse(result.response.acceptance_authority if result.response else True)
 

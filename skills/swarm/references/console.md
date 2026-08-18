@@ -45,6 +45,12 @@ python skills/swarm/scripts/swarm_console.py --open
 The default address is `http://127.0.0.1:4788`. Override `--port`, `--codex-home`,
 or `--config` only when needed.
 
+The console is a portable Python 3.11+ process for Windows and macOS. Use
+`python` on Windows and `python3` on macOS. The browser shell is also a PWA:
+Safari can add it to an iPhone or iPad Home Screen when the console is reached
+over a trusted LAN or hosted HTTPS address. The PWA caches only the static shell;
+`/api/*` remains live and is never cached.
+
 Docker is optional. The launcher supplies explicit cross-platform host paths:
 
 ```powershell
@@ -58,6 +64,24 @@ Compose publishes only `127.0.0.1:4788` and mounts both Codex metadata and the
 SWARM config directory read-only. Docker is therefore an inspection surface;
 use the native loopback launcher for validated settings writes. Do not expose
 the container port to a LAN or public host.
+
+## iPhone or iPad access
+
+Run the native server on the Windows or macOS host with the explicit network
+bind:
+
+```text
+# Windows
+python skills/swarm/scripts/swarm_console.py --host 0.0.0.0
+
+# macOS
+python3 skills/swarm/scripts/swarm_console.py --host 0.0.0.0
+```
+
+Open `http://<host-lan-ip>:4788` in Safari and choose **Add to Home Screen**.
+Network clients are read-only by design: they receive no local token and cannot
+write settings. Keep the bind on a trusted network and return to the default
+loopback mode when remote access is not needed.
 
 ## Authority and privacy
 

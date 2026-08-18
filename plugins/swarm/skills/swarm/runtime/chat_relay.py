@@ -66,11 +66,13 @@ class ChatRelayBlocker(StrEnum):
 _SAFE_PROVIDER = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 _DIGEST = re.compile(r"^[0-9a-f]{64}$")
 _CONSULT_TIERS = frozenset({"T0", "T1"})
-_CHAT_RELAY_MODELS = frozenset({"gpt-5.6-luna", "pro"})
+_CHAT_RELAY_MODELS = frozenset({"gpt-5.6-luna", "gpt-5.6-sol", "pro"})
 _CHAT_RELAY_EFFORTS = frozenset({"minimal", "low", "medium", "high", "xhigh", "max", "ultra", "pro"})
 _OBSERVED_MODEL_ALIASES = {
     "gpt-5.6-luna": "gpt-5.6-luna",
     "gpt5.6luna": "gpt-5.6-luna",
+    "gpt-5.6-sol": "gpt-5.6-sol",
+    "gpt5.6sol": "gpt-5.6-sol",
     "pro": "pro",
 }
 _OBSERVED_EFFORT_ALIASES = {

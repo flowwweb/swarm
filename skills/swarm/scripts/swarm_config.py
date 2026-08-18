@@ -18,7 +18,7 @@ SWARM_DEFAULT_PATH = Path.home() / ".agents" / "swarm" / "config.toml"
 DEFAULT_PATH = Path(os.environ.get("SWARM_CONFIG_PATH", SWARM_DEFAULT_PATH))
 TEMPLATE_PATH = Path(__file__).resolve().parent.parent / "assets" / "swarm-config.toml"
 PLUGIN_MANIFEST_PATH = Path(__file__).resolve().parents[3] / ".codex-plugin" / "plugin.json"
-CHAT_RELAY_MODELS = {"gpt-5.6-luna", "pro"}
+CHAT_RELAY_MODELS = {"gpt-5.6-luna", "gpt-5.6-sol", "pro"}
 CHAT_RELAY_EFFORTS = {"minimal", "low", "medium", "high", "xhigh", "max", "ultra", "pro"}
 CHAT_RELAY_OFFLOAD_LEVELS = {"light", "balanced", "high", "max"}
 CHAT_RELAY_ROUTING_MODES = {"auto", "always_local", "always_cloud"}
@@ -396,7 +396,8 @@ def validate(raw: dict[str, Any]) -> None:
     for key in ("default_model", "challenging_model"):
         _short_text(chat_relay, key, "chat_relay")
         if chat_relay.get(key, DEFAULTS["chat_relay"][key]) not in CHAT_RELAY_MODELS:
-            raise ConfigError(f"chat_relay.{key} must be gpt-5.6-luna or pro")
+            allowed = ", ".join(sorted(CHAT_RELAY_MODELS))
+            raise ConfigError(f"chat_relay.{key} must be one of: {allowed}")
     for key in ("default_effort", "challenging_effort"):
         _short_text(chat_relay, key, "chat_relay")
         if chat_relay.get(key, DEFAULTS["chat_relay"][key]) not in CHAT_RELAY_EFFORTS:

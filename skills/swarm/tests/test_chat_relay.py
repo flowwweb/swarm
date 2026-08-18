@@ -115,6 +115,15 @@ class ChatRelayTests(unittest.TestCase):
         self.assertIs(decision.route, ChatRelayRoute.VISIBLE_CHAT)
         self.assertEqual((decision.requested_model, decision.requested_effort), ("pro", "pro"))
 
+    def test_visible_gpt_sol_profile_matches_the_current_chat_surface(self) -> None:
+        decision = choose_chat_relay(
+            policy=ChatRelayPolicy(enabled=True, default_model="gpt-5.6-sol"),
+            request=request(),
+            capability=capability(model="GPT-5.6 Sol", effort="Extra High"),
+        )
+        self.assertIs(decision.route, ChatRelayRoute.VISIBLE_CHAT)
+        self.assertEqual(decision.requested_model, "gpt-5.6-sol")
+
     def test_missing_host_capabilities_fall_back(self) -> None:
         cases = (
             ("session", capability(session=False), ChatRelayBlocker.VISIBLE_SESSION_REQUIRED),

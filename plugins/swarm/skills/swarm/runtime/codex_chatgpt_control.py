@@ -21,37 +21,6 @@ DEFAULT_BACKEND_COMMAND = (
     "codex-chatgpt-control-backend",
 )
 
-_CHAT_MODEL_LABELS = {
-    "gpt-5.6-luna": "GPT-5.6 Luna",
-    "pro": "Pro",
-}
-_CHAT_EFFORT_LABELS = {
-    "minimal": "Minimal",
-    "low": "Low",
-    "medium": "Medium",
-    "high": "High",
-    "xhigh": "Extra High",
-    "max": "Extra High",
-    "ultra": "Extra High",
-    "pro": "Pro",
-}
-
-
-def _visible_configuration(model: str, effort: str) -> dict[str, str]:
-    """Translate SWARM's stable policy names to visible ChatGPT controls."""
-
-    if model not in _CHAT_MODEL_LABELS:
-        raise ValueError(f"unsupported ChatGPT relay model: {model}")
-    if effort not in _CHAT_EFFORT_LABELS:
-        raise ValueError(f"unsupported ChatGPT relay effort: {effort}")
-    if model == "pro" or effort == "pro":
-        return {"intelligence": "Pro"}
-    return {
-        "modelVersion": _CHAT_MODEL_LABELS[model],
-        "intelligence": _CHAT_EFFORT_LABELS[effort],
-    }
-
-
 def _value(result: object, key: str) -> object:
     if isinstance(result, Mapping):
         return result.get(key)
@@ -153,13 +122,17 @@ class CodexChatGPTControlAdapter:
         if not callable(runner):
             raise TypeError("visible Chat adapter runner must expose run_sync")
         started = time.perf_counter()
+        # The routing decision already observed and matched the visible model
+        # and effort. Re-applying configuration here is a second UI mutation,
+        # and current Chat surfaces may reject it even when the selection is
+        # already correct. Reuse the verified host state and let a mismatch
+        # fall back locally before this method is called.
         result = runner(
             agent,
             {
                 "input": prompt,
                 "thread": {"type": "new"},
                 "experience": "chat",
-                "configuration": _visible_configuration(model, effort),
                 "response": {"format": "markdown"},
             },
         )

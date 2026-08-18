@@ -2,9 +2,15 @@
 <html lang="en">
   <head>
     <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
     <meta name="color-scheme" content="dark" />
+    <meta name="theme-color" content="#02071f" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="SWARM" />
     <meta name="description" content="Local SWARM control and analytics console" />
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <link rel="apple-touch-icon" href="/swarm-favicon.svg" />
     <title>🐙 SWARM Console</title>
     <link rel="icon" type="image/svg+xml" href="/swarm-favicon.svg" />
     <link rel="stylesheet" href="/styles.css" />
@@ -94,8 +100,8 @@
         <section class="view" id="view-settings" data-view-panel="settings">
           <div class="settings-actions">
             <button class="primary-button" id="save-settings" type="button" disabled>Save changes</button>
+            <div class="settings-status" id="settings-status" role="status" aria-live="polite"></div>
           </div>
-          <div class="settings-status" id="settings-status" role="status" aria-live="polite"></div>
           <form id="settings-form">
             <div class="settings-grid" id="settings-grid"></div>
           </form>

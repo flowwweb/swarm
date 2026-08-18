@@ -35,10 +35,12 @@ uploads, and artifacts carry a local boundary and remain local in every mode.
 Always cloud does not override those boundaries, mutation checks, consequence
 tiers, visible-session checks, or user confirmation.
 
-The default policy requests GPT-5.6 Luna at Extra High reasoning. An explicitly
+The default policy requests GPT-5.6 Luna at Extra High reasoning. GPT-5.6 Sol
+is also supported when it is the visible host selection. An explicitly
 challenging eligible consultation requests Pro intelligence. These are visible
 host selections, not hidden model aliases. The bridge must report a matching
-visible model and effort (known labels such as `GPT-5.6 Luna`/`Extra High` are
+visible model and effort (known labels such as `GPT-5.6 Luna`, `GPT-5.6 Sol`,
+and `Extra High` are
 normalized to the stable SWARM names) or the consultation falls back to local
 Codex. An unknown or mismatched label is not treated as a match.
 
@@ -80,6 +82,11 @@ preserves provider/client thread, request, response, asset, model, latency, and
 usage fields when the bridge returns them. Missing fields stay empty or
 `UNAVAILABLE`; SWARM never invents IDs, latency, or tokens. The response remains
 transient advisory text rather than a SWARM acceptance receipt.
+
+The Python adapter reuses the already-observed visible model and effort instead
+of applying a second configuration mutation during send. This avoids a
+provider-side UI race: if the visible selection is not the requested profile,
+the decision falls back locally before any prompt is submitted.
 
 The canonical runtime entry points are `Swarm.select_chat_relay()` for a
 decision and `Swarm.consult_chat_relay()` for the host call. `Swarm.from_config`

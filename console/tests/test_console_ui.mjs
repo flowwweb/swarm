@@ -82,6 +82,16 @@ async function mount(page, overview = fixture.overview) {
     if (pathname === "/swarm-favicon.svg") {
       return route.fulfill({ status: 200, contentType: "image/svg+xml", body: favicon });
     }
+    if (pathname === "/manifest.webmanifest") {
+      return route.fulfill({
+        status: 200,
+        contentType: "application/manifest+json",
+        body: JSON.stringify({ name: "SWARM Console", display: "standalone", start_url: "/" }),
+      });
+    }
+    if (pathname === "/sw.js") {
+      return route.fulfill({ status: 200, contentType: "text/javascript", body: 'self.addEventListener("install", () => {});' });
+    }
     if (pathname === "/api/bootstrap") return route.fulfill(response(fixture.bootstrap));
     if (pathname === "/api/overview") return route.fulfill(response(overview));
     if (pathname === "/api/chat-relay-usage" && request.method() === "GET") return route.fulfill(response(relayUsage));
@@ -194,7 +204,26 @@ try {
     assert.ok(geometry.documentWidth <= width + 1, `${width}px document overflow`);
     assert.ok(geometry.bodyWidth <= width + 1, `${width}px body overflow`);
     assert.equal(geometry.title, "Graph");
+    const viewportMeta = await page.locator('meta[name="viewport"]').getAttribute("content");
+    assert.equal(viewportMeta, "width=device-width, initial-scale=1, viewport-fit=cover");
+    assert.equal(await page.locator('meta[name="apple-mobile-web-app-capable"]').getAttribute("content"), "yes");
+    const manifestLink = await page.locator('link[rel="manifest"]').getAttribute("href");
+    assert.equal(manifestLink, "/manifest.webmanifest");
+    assert.equal(await page.locator('link[rel="apple-touch-icon"]').getAttribute("href"), "/swarm-favicon.svg");
     if (width === 1440) {
+      const manifestContract = await page.evaluate(async () => {
+        const link = document.querySelector('link[rel="manifest"]');
+        const response = await fetch(link.href);
+        return {
+          href: new URL(link.href).pathname,
+          responseType: response.headers.get("content-type"),
+          body: await response.json(),
+        };
+      });
+      assert.equal(manifestContract.href, "/manifest.webmanifest");
+      assert.match(manifestContract.responseType, /^application\/manifest\+json/);
+      assert.equal(manifestContract.body.display, "standalone");
+      assert.equal(manifestContract.body.start_url, "/");
       const faviconContract = await page.evaluate(async () => {
         const link = document.querySelector('link[rel~="icon"]');
         const response = await fetch(link.href);
@@ -316,16 +345,29 @@ try {
     await relay.locator("xpath=..").click();
     await page.locator('[data-setting="chat_relay.offload_level"]').waitFor();
     assert.equal(await page.locator('[data-setting="chat_relay.routing_mode"]').count(), 1, "enabled ChatGPT parent did not reveal routing mode");
+    assert.equal(await page.locator('[data-settings-group="chat-relay"] .experimental-badge').textContent(), "Experimental");
     assert.equal(await relay.getAttribute("aria-label"), "Save Codex usage with ChatGPT");
-    assert.match(await relay.evaluate((element) => element.closest(".field")?.innerText || ""), /Offload eligible work to ChatGPT/);
+    assert.match(await relay.evaluate((element) => element.closest(".field")?.innerText || ""), /Save Codex usage with ChatGPT/);
+    const obviousField = page.locator('[data-setting="portfolio.max_active_tasks"]').locator("xpath=ancestor::div[contains(concat(' ', normalize-space(@class), ' '), ' field ')]");
+    assert.equal(await obviousField.locator(".field-info").count(), 0, "obvious labels should not all carry tooltips");
+    const info = page.locator('[data-setting="chat_relay.routing_mode"]').locator("xpath=ancestor::div[contains(concat(' ', normalize-space(@class), ' '), ' field ')]").locator(".field-info");
+    assert.equal(await info.getAttribute("data-tooltip"), "Auto follows the offload level; Always local keeps work in Codex; Always cloud sends eligible advisory work to ChatGPT.");
+    const infoBox = await info.boundingBox();
+    assert.ok(infoBox && infoBox.height === 15, `tooltip icon should use the aligned 15px icon box: ${JSON.stringify(infoBox)}`);
+    const sliderBounds = await page.locator('[data-setting="chat_relay.offload_level"]').evaluate((element) => {
+      const rect = element.getBoundingClientRect();
+      const parent = element.closest(".range-control").getBoundingClientRect();
+      return { left: rect.left, right: rect.right, parentLeft: parent.left, parentRight: parent.right };
+    });
+    assert.ok(sliderBounds.left >= sliderBounds.parentLeft - 1 && sliderBounds.right <= sliderBounds.parentRight + 1, `offload slider escaped its control: ${JSON.stringify(sliderBounds)}`);
     assert.equal(await page.locator('[data-setting="chat_relay.offload_level"]').count(), 1, "enabled ChatGPT parent did not reveal child settings");
     assert.equal(await page.locator('[data-range-output="chat_relay.offload_level"]').textContent(), "Balanced");
     await page.locator('[data-setting="chat_relay.offload_level"]').fill("3");
     assert.equal(await page.locator('[data-range-output="chat_relay.offload_level"]').textContent(), "Max");
     await page.locator(".chat-relay-usage").waitFor();
-    assert.match(await page.locator(".chat-relay-usage").innerText(), /700 in · 300 out · 1,000 total provider-reported tokens/);
-    assert.match(await page.locator(".chat-relay-usage").innerText(), /No savings claim/);
-    assert.match(await page.locator(".chat-relay-usage").innerText(), /2 routed tasks · 2 ChatGPT consults/);
+    assert.match(await page.locator(".chat-relay-usage").innerText(), /1,000 tokens/);
+    assert.match(await page.locator(".chat-relay-usage").innerText(), /2\nOffloaded tasks/);
+    assert.match(await page.locator(".chat-relay-usage").innerText(), /View usage log/);
     await page.locator("#save-settings").click();
     await page.waitForFunction(() => document.querySelector("#settings-status")?.textContent === "Saved. New scheduling waves will use this config.");
     assert.equal(await relay.isChecked(), true);
@@ -344,8 +386,10 @@ try {
     assert.match(usage.limit, /Not billing, quota, remaining usage, or a new usage request/);
     const screenshot = path.join(evidenceRoot, `usage-saver-${width}.png`);
     await page.screenshot({ path: screenshot, fullPage: true });
+    await page.locator(".chat-relay-log-details summary").click();
+    assert.match(await page.locator(".chat-relay-log-details").innerText(), /ctrl\/research/);
     await page.locator("#clear-chat-relay-usage").click();
-    await page.waitForFunction(() => document.querySelector(".chat-relay-usage")?.textContent.includes("Token usage unavailable"));
+    await page.waitForFunction(() => document.querySelector(".chat-relay-usage")?.textContent.includes("No token receipt"));
     assert.match(await page.locator("#settings-status").textContent(), /usage log cleared/);
     await relay.locator("xpath=..").click();
     assert.equal(await page.locator('[data-setting="chat_relay.offload_level"]').count(), 0, "turning off ChatGPT left child settings visible");

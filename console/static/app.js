@@ -21,76 +21,97 @@ const CHAT_RELAY_LEVELS = [
 ];
 const CHAT_RELAY_LEVEL_VALUES = CHAT_RELAY_LEVELS.map((level) => level.value);
 const CHAT_RELAY_ROUTING_LABELS = { auto: "Auto", always_local: "Always local", always_cloud: "Always cloud" };
+const CHAT_RELAY_MODEL_LABELS = { "gpt-5.6-luna": "GPT-5.6 Luna", "gpt-5.6-sol": "GPT-5.6 Sol", pro: "Pro" };
 const CHAT_RELAY_ENABLED = { path: "chat_relay.enabled", value: true };
+const INFO_TOOLTIP_PATHS = new Set([
+  "execution.usage_profile",
+  "execution.service_tier",
+  "execution.min_reasoning",
+  "execution.max_reasoning",
+  "execution.usage_saver",
+  "monitoring.heartbeat_minutes",
+  "chat_relay.routing_mode",
+  "chat_relay.offload_level",
+  "review.scale_when_queue_reaches",
+  "recovery.stall_after_updates",
+]);
 
 const settingGroups = [
   {
     title: "Portfolio",
     fields: [
-      ["portfolio.max_active_tasks", "Active task ceiling", "number", "Producing, integrating, or reviewing tasks"],
-      ["portfolio.default_parallel_tasks", "Preferred parallel wave", "number", "A ceiling, never a creation quota"],
-      ["portfolio.reuse_existing_tasks", "Reuse matching owners", "boolean", "Avoid duplicate task startup"],
-      ["coordination.preferred_lane_width", "Preferred lane width", "number", "Soft shape after delegation is justified"],
-      ["coordination.allow_coordinators", "Allow coordinators", "boolean", "Permit LEAD coordination when useful"],
+      ["portfolio.max_active_tasks", "Active task limit", "number", "Maximum tasks SWARM can run at once."],
+      ["portfolio.default_parallel_tasks", "Parallel task target", "number", "Preferred number of independent tasks to start together."],
+      ["portfolio.reuse_existing_tasks", "Reuse matching tasks", "boolean", "Keep an existing matching task instead of creating a duplicate."],
+      ["coordination.preferred_lane_width", "Lane size", "number", "Preferred number of child tasks when work is split."],
+      ["coordination.allow_coordinators", "Use coordinating LEADs", "boolean", "Allow a LEAD when work benefits from multiple lanes."],
     ],
   },
   {
     title: "Execution",
     fields: [
-      ["execution.usage_profile", "Usage profile", "select", "Relative model and effort policy", ["high", "medium", "low"]],
-      ["execution.service_tier", "Service tier", "text", "Empty keeps the host default"],
-      ["execution.min_reasoning", "Reasoning floor", "select", "Lowest requested reasoning", ["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"]],
-      ["execution.max_reasoning", "Reasoning ceiling", "select", "Highest requested reasoning", ["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"]],
-      ["execution.usage_saver", "Usage Saver", "boolean", "Reduce avoidable coordination churn"],
-      ["chat_relay.enabled", "Save Codex usage with ChatGPT", "boolean", "Offload eligible work to ChatGPT so your Codex usage goes further."],
-      ["chat_relay.routing_mode", "ChatGPT routing mode", "select", "Auto uses ChatGPT only for self-contained advisory work. Local-boundary work stays here.", ["auto", "always_local", "always_cloud"], CHAT_RELAY_ENABLED],
-      ["chat_relay.offload_level", "ChatGPT offload level", "range", "Light is selective. Max routes every eligible task to ChatGPT.", "chatRelayLevels", CHAT_RELAY_ENABLED],
-      ["chat_relay.default_model", "Standard ChatGPT model", "select", "Used for routine eligible consultations.", ["gpt-5.6-luna", "pro"], CHAT_RELAY_ENABLED],
-      ["chat_relay.default_effort", "Standard reasoning", "select", "Default visible reasoning level.", ["minimal", "low", "medium", "high", "xhigh", "pro"], CHAT_RELAY_ENABLED],
-      ["chat_relay.challenging_model", "Challenging ChatGPT model", "select", "Used when the task requests deeper reasoning.", ["gpt-5.6-luna", "pro"], CHAT_RELAY_ENABLED],
-      ["chat_relay.challenging_effort", "Challenging reasoning", "select", "Visible reasoning level for harder consultations.", ["minimal", "low", "medium", "high", "xhigh", "pro"], CHAT_RELAY_ENABLED],
-      ["logging.task_event_limit", "Task event history", "number", "Metadata only; no prompts or outputs"],
-      ["console.open_on_start", "Open portal on start", "boolean", "Reuse an open portal tab; closed tabs expire after a short grace period"],
-      ["subagents.enabled", "Internal subagents", "boolean", "Bounded work inside an owning task"],
-      ["subagents.max_per_task", "Subagent ceiling", "number", "Separate safety ceiling, not a target"],
-      ["monitoring.heartbeat_minutes", "Freshness minutes", "number", "Optional alert-only sensor; ordinary alerts return to the watched owner"],
+      ["execution.usage_profile", "Usage profile", "select", "Sets the default model and reasoning policy.", ["high", "medium", "low"]],
+      ["execution.service_tier", "Service tier", "text", "Leave empty to use the host default."],
+      ["execution.min_reasoning", "Minimum reasoning", "select", "Lowest reasoning level SWARM may request.", ["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"]],
+      ["execution.max_reasoning", "Maximum reasoning", "select", "Highest reasoning level SWARM may request.", ["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"]],
+      ["execution.usage_saver", "Reduce coordination overhead", "boolean", "Use lower-churn coordination when the result stays the same."],
+      ["logging.task_event_limit", "Task history", "number", "Number of recent task events to keep in memory."],
+      ["console.open_on_start", "Open the local console", "boolean", "Reuse the local console when SWARM starts."],
+      ["subagents.enabled", "Use in-task helpers", "boolean", "Allow small helper work inside an existing task."],
+      ["subagents.max_per_task", "Helper limit", "number", "Maximum helpers one task may run at once.", undefined, { path: "subagents.enabled", value: true }],
+      ["monitoring.heartbeat_minutes", "Heartbeat interval", "number", "Optional alert-only sensor interval for freshness checks."],
+    ],
+  },
+  {
+    title: "ChatGPT offload",
+    description: "Use ChatGPT for bounded advisory work while local-boundary work stays in SWARM.",
+    key: "chat-relay",
+    experimental: true,
+    fields: [
+      ["chat_relay.enabled", "Save Codex usage with ChatGPT", "boolean", "Routes eligible planning, research, and review work to ChatGPT."],
+      ["chat_relay.routing_mode", "Where to route work", "select", "Auto follows the offload level; Always local keeps work in Codex; Always cloud sends eligible advisory work to ChatGPT.", ["auto", "always_local", "always_cloud"], CHAT_RELAY_ENABLED],
+      ["chat_relay.offload_level", "How much to offload", "range", "Light is selective; Max uses ChatGPT for every eligible advisory task.", "chatRelayLevels", CHAT_RELAY_ENABLED],
+      ["chat_relay.default_model", "Routine model", "select", "Model used for routine advisory work.", ["gpt-5.6-luna", "gpt-5.6-sol", "pro"], CHAT_RELAY_ENABLED],
+      ["chat_relay.default_effort", "Routine reasoning", "select", "Reasoning level for routine advisory work.", ["minimal", "low", "medium", "high", "xhigh", "pro"], CHAT_RELAY_ENABLED],
+      ["chat_relay.challenging_model", "Challenging model", "select", "Model used when deeper reasoning is requested.", ["gpt-5.6-luna", "gpt-5.6-sol", "pro"], CHAT_RELAY_ENABLED],
+      ["chat_relay.challenging_effort", "Challenging reasoning", "select", "Reasoning level for challenging advisory work.", ["minimal", "low", "medium", "high", "xhigh", "pro"], CHAT_RELAY_ENABLED],
     ],
   },
   {
     title: "Review & recovery",
     fields: [
-      ["review.task_enabled", "Dedicated REVIEW tasks", "boolean", "QC remains required when disabled"],
-      ["review.max_parallel_tasks", "Review ceiling", "number", "Concurrent independent review surfaces"],
-      ["review.scale_when_queue_reaches", "Scale review at queue", "number", "Ready artifacts before another reviewer"],
-      ["recovery.stall_after_updates", "Stall after updates", "number", "Material owner updates, not heartbeat reads"],
+      ["review.task_enabled", "Enable review tasks", "boolean", "Create a separate reviewer when the work needs it."],
+      ["review.max_parallel_tasks", "Review task limit", "number", "Maximum review tasks running at once."],
+      ["review.scale_when_queue_reaches", "Add review capacity at", "number", "Add review capacity when this many artifacts are ready."],
+      ["recovery.stall_after_updates", "Flag stalled work after", "number", "Flag a task after this many meaningful updates without progress."],
     ],
   },
   {
     title: "Closeout",
     fields: [
-      ["boost.enabled", "Boost available", "boolean", "Still requires direct run authorization"],
-      ["lifecycle.pin_created_tasks", "Pin new tasks", "boolean", "Keep new SWARM owners visible"],
-      ["lifecycle.archive_completed_tasks", "Archive accepted tasks", "boolean", "Terminal acceptance; ambiguity stays open"],
-      ["feedback.enabled", "Feedback workflow", "boolean", "On-demand, never automatic submission"],
-      ["feedback.prompt_on_close", "Offer feedback on close", "boolean", "One optional prompt after acceptance"],
+      ["boost.enabled", "Show Boost", "boolean", "Make the manual Boost workflow available."],
+      ["lifecycle.pin_created_tasks", "Pin new tasks", "boolean", "Keep new SWARM owners visible by pinning tasks in the task list."],
+      ["lifecycle.archive_completed_tasks", "Archive accepted tasks", "boolean", "Archive tasks after acceptance; uncertain tasks stay visible."],
+      ["feedback.enabled", "Offer feedback", "boolean", "Make the optional feedback prompt available."],
+      ["feedback.prompt_on_close", "Ask for feedback on close", "boolean", "Show the feedback prompt when a task is accepted.", undefined, { path: "feedback.enabled", value: true }],
     ],
   },
   {
-    title: "Hierarchy names",
+    title: "Hierarchy labels",
     fields: [
-      ["labels.lead", "LEAD label", "text", "Bounded domain coordinator"],
-      ["labels.review", "REVIEW label", "text", "Independent evidence verdict"],
-      ["labels.doer", "Fallback DOER label", "text", "Used only when no clearer role exists"],
+      ["labels.lead", "LEAD label", "text", "Name shown for the lead role."],
+      ["labels.review", "REVIEW label", "text", "Name shown for the independent reviewer."],
+      ["labels.doer", "Fallback worker label", "text", "Name used when no clearer worker role exists."],
     ],
   },
   {
-    title: "Role signals",
+    title: "Role icons",
     fields: [
-      ["role_icons.enabled", "Task title icons", "boolean", "Disable only when all SWARM title emojis should disappear"],
-      ["role_icons.ctrl", "CTRL icon", "text", "Default octopus control signal"],
-      ["role_icons.lead", "LEAD icon", "text", "Domain direction signal"],
-      ["role_icons.review", "REVIEW icon", "text", "Independent inspection signal"],
-      ["role_icons.fallback", "Fallback icon", "text", "Only when no literal DOER metaphor fits"],
+      ["role_icons.enabled", "Show task icons", "boolean", "Show role icons in SWARM task titles."],
+      ["role_icons.ctrl", "CTRL icon", "text", "Icon shown for the control task." , undefined, { path: "role_icons.enabled", value: true }],
+      ["role_icons.lead", "LEAD icon", "text", "Icon shown for lead tasks.", undefined, { path: "role_icons.enabled", value: true }],
+      ["role_icons.review", "REVIEW icon", "text", "Icon shown for review tasks.", undefined, { path: "role_icons.enabled", value: true }],
+      ["role_icons.fallback", "Fallback icon", "text", "Icon used when no specific role fits.", undefined, { path: "role_icons.enabled", value: true }],
     ],
   },
 ];
@@ -378,7 +399,7 @@ function renderSettings() {
   if (!state.config) return;
   $("#config-path").textContent = state.config.path;
   const relayEnabled = getSettingValue("chat_relay.enabled") === true;
-  $("#settings-grid").innerHTML = settingGroups.map((group) => `<section class="settings-card"><h3>${group.title}</h3><div class="field-list">${group.fields.map((field) => `${renderField(field)}${field[0] === "chat_relay.enabled" && relayEnabled ? renderChatRelayUsage() : ""}`).join("")}</div></section>`).join("");
+  $("#settings-grid").innerHTML = settingGroups.map((group) => `<section class="settings-card${group.wide ? " settings-card-wide" : ""}" data-settings-group="${escapeHTML(group.key || group.title.toLowerCase().replace(/[^a-z0-9]+/g, "-"))}"><div class="settings-card-head"><h3>${escapeHTML(group.title)}</h3>${group.experimental ? '<span class="experimental-badge">Experimental</span>' : ""}</div>${group.description ? `<p class="settings-card-description">${escapeHTML(group.description)}</p>` : ""}<div class="field-list">${group.fields.map((field) => `${renderField(field)}${field[0] === "chat_relay.enabled" && relayEnabled ? renderChatRelayUsage() : ""}`).join("")}</div></section>`).join("");
   $("#save-settings").disabled = Object.keys(state.changes).length === 0;
   if (state.readOnly) $("#settings-status").textContent = "Remote view is read-only. Open the console on this computer to change settings.";
 }
@@ -387,13 +408,13 @@ function renderChatRelayUsage() {
   const usage = state.chatRelayUsage || {};
   const events = Array.isArray(usage.events) ? usage.events.slice(-5).reverse() : [];
   const reportedCount = Number(usage.reported_usage_consultations || 0);
-  const usageSummary = reportedCount
-    ? `${formatCount(usage.reported_input_tokens || 0)} in · ${formatCount(usage.reported_output_tokens || 0)} out · ${formatCount(usage.reported_total_tokens || 0)} total provider-reported tokens`
-    : "Token usage unavailable from the provider";
   const log = events.length
     ? `<ul class="chat-relay-log">${events.map((event) => `<li><span>${escapeHTML(event.task_id || "Unbound consult")} · ${escapeHTML(event.purpose)} · ${escapeHTML(event.model)}</span><b>${event.usage_status === "reported" ? `${formatCount(event.total_tokens)} tokens` : escapeHTML(event.usage_status === "partial" ? "Partial usage" : "Usage unavailable")}</b></li>`).join("")}</ul>`
     : `<p class="chat-relay-empty">No ChatGPT-routed tasks yet.</p>`;
-  return `<div class="chat-relay-usage" aria-live="polite"><div class="chat-relay-summary"><strong>${escapeHTML(usageSummary)}</strong><span>${formatCount(usage.routed_tasks)} routed task${usage.routed_tasks === 1 ? "" : "s"} · ${formatCount(usage.consultations)} ChatGPT consult${usage.consultations === 1 ? "" : "s"}</span></div>${log}<div class="chat-relay-usage-foot"><small>${escapeHTML(usage.claim_limit || "No savings claim: provider usage is unavailable or no equivalent local baseline exists.")}</small><button class="text-button" id="clear-chat-relay-usage" type="button"${state.readOnly ? " disabled" : ""}>Clear log</button></div></div>`;
+  const tokenLabel = reportedCount
+    ? `${formatCount(usage.reported_total_tokens || 0)} tokens`
+    : "No token receipt";
+  return `<div class="chat-relay-usage" aria-live="polite"><div class="chat-relay-usage-summary"><div><strong>${tokenLabel}</strong><span>Provider-reported usage</span></div><div><strong>${formatCount(usage.routed_tasks)}</strong><span>Offloaded task${usage.routed_tasks === 1 ? "" : "s"}</span></div><details class="chat-relay-log-details" id="chat-relay-log"><summary>View usage log</summary><div class="chat-relay-log-body">${log}<div class="chat-relay-usage-foot"><button class="text-button" id="clear-chat-relay-usage" type="button"${state.readOnly ? " disabled" : ""}>Clear log</button></div></div></details></div></div>`;
 }
 
 function renderField([path, label, type, hint, options, condition]) {
@@ -405,7 +426,7 @@ function renderField([path, label, type, hint, options, condition]) {
   if (type === "boolean") {
     control = `<label class="switch"><input data-setting="${path}" type="checkbox" ${value ? "checked" : ""}${disabled} aria-label="${escapeHTML(label)}"><span aria-hidden="true"></span></label>`;
   } else if (type === "select") {
-    control = `<select data-setting="${path}"${disabled} aria-label="${escapeHTML(label)}">${options.map((option) => `<option value="${option}" ${option === value ? "selected" : ""}>${escapeHTML(CHAT_RELAY_ROUTING_LABELS[option] || option)}</option>`).join("")}</select>`;
+    control = `<select data-setting="${path}"${disabled} aria-label="${escapeHTML(label)}">${options.map((option) => `<option value="${option}" ${option === value ? "selected" : ""}>${escapeHTML(CHAT_RELAY_ROUTING_LABELS[option] || CHAT_RELAY_MODEL_LABELS[option] || option)}</option>`).join("")}</select>`;
   } else if (type === "range") {
     const range = options === "chatRelayLevels" ? CHAT_RELAY_LEVELS : [];
     const index = Math.max(0, range.findIndex((item) => item.value === value));
@@ -414,7 +435,10 @@ function renderField([path, label, type, hint, options, condition]) {
   } else {
     control = `<input data-setting="${path}" type="${type}" value="${escapeHTML(value ?? "")}"${disabled} aria-label="${escapeHTML(label)}">`;
   }
-  return `<div class="field"><div><label>${escapeHTML(label)}</label><small>${escapeHTML(hint)}</small></div>${control}</div>`;
+  const info = hint && INFO_TOOLTIP_PATHS.has(path)
+    ? `<span class="field-info" tabindex="0" role="img" aria-label="More information about ${escapeHTML(label)}" data-tooltip="${escapeHTML(hint)}">i</span>`
+    : "";
+  return `<div class="field${path === "chat_relay.enabled" ? " field-featured" : ""}"><div class="field-copy"><label>${escapeHTML(label)}${info}</label></div>${control}</div>`;
 }
 
 function normalizeInput(input) {
@@ -566,6 +590,10 @@ $("#settings-form").addEventListener("input", (event) => {
   $("#settings-status").textContent = `${Object.keys(state.changes).length} unsaved change${Object.keys(state.changes).length === 1 ? "" : "s"}`;
 });
 window.addEventListener("resize", () => { if (state.view === "swarm") renderSwarm(); });
+
+if ("serviceWorker" in navigator && /^https?:$/.test(location.protocol)) {
+  navigator.serviceWorker.register("/sw.js", { scope: "/" }).catch(() => {});
+}
 
 initialize();
 setInterval(() => {

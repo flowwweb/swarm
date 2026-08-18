@@ -48,6 +48,77 @@ STATIC_FILES = {
     "/styles.css": ("styles.css", "text/css; charset=utf-8"),
     "/swarm-favicon.svg": ("swarm-favicon.svg", "image/svg+xml"),
 }
+PWA_MANIFEST = {
+    "id": "/",
+    "name": "SWARM Console",
+    "short_name": "SWARM",
+    "description": "Local SWARM control and analytics console",
+    "start_url": "/",
+    "scope": "/",
+    "display": "standalone",
+    "background_color": "#02071f",
+    "theme_color": "#02071f",
+    "icons": [
+        {
+            "src": "/swarm-favicon.svg",
+            "sizes": "128x128",
+            "type": "image/svg+xml",
+            "purpose": "any",
+        }
+    ],
+}
+SERVICE_WORKER_SOURCE = r'''const CACHE_NAME = "swarm-console-shell-v1";
+const SHELL_PATHS = [
+  "/",
+  "/index.html",
+  "/app.js",
+  "/styles.css",
+  "/manifest.webmanifest",
+  "/swarm-favicon.svg",
+  "/assets/swarm-wordmark.png",
+];
+
+self.addEventListener("install", (event) => {
+  event.waitUntil(
+    caches.open(CACHE_NAME)
+      .then((cache) => cache.addAll(SHELL_PATHS))
+      .then(() => self.skipWaiting()),
+  );
+});
+
+self.addEventListener("activate", (event) => {
+  event.waitUntil(self.clients.claim());
+});
+
+self.addEventListener("fetch", (event) => {
+  const request = event.request;
+  const url = new URL(request.url);
+  const cacheable = request.method === "GET"
+    && url.origin === self.location.origin
+    && !url.pathname.startsWith("/api/")
+    && ["document", "script", "style", "image", "manifest"].includes(request.destination);
+  if (!cacheable) return;
+
+  event.respondWith(
+    fetch(request).then((response) => {
+      if (response.ok) {
+        caches.open(CACHE_NAME).then((cache) => cache.put(request, response.clone()));
+      }
+      return response;
+    }).catch(() => caches.match(request).then((cached) => {
+      if (cached) return cached;
+      return request.mode === "navigate" ? caches.match("/") : Response.error();
+    })),
+  );
+});
+'''
+GENERATED_STATIC_FILES = {
+    "/manifest.webmanifest": (
+        (json.dumps(PWA_MANIFEST, indent=2, ensure_ascii=True) + "\n").encode("utf-8"),
+        "application/manifest+json; charset=utf-8",
+    ),
+    "/sw.js": (SERVICE_WORKER_SOURCE.encode("utf-8"), "text/javascript; charset=utf-8"),
+}
 STATIC_ASSETS = {
     "/assets/swarm-wordmark.png": (
         PLUGIN_ROOT / "skills" / "swarm" / "assets" / "swarm-wordmark.png",
@@ -972,7 +1043,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self) -> None:  # noqa: N802
         if not self._host_allowed():
-            self._error(HTTPStatus.FORBIDDEN, "SWARM Console accepts localhost requests only")
+            self._error(HTTPStatus.FORBIDDEN, "SWARM Console accepts localhost or numeric IP hosts only")
             return
         path = urlparse(self.path).path
         try:
@@ -1007,6 +1078,23 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_header("Content-Length", str(len(body)))
                 self.send_header("Cache-Control", "no-cache")
                 self.send_header("X-Content-Type-Options", "nosniff")
+                self.end_headers()
+                self.wfile.write(body)
+                return
+            generated = GENERATED_STATIC_FILES.get(path)
+            if generated:
+                body, content_type = generated
+                self.send_response(HTTPStatus.OK)
+                self.send_header("Content-Type", content_type)
+                self.send_header("Content-Length", str(len(body)))
+                self.send_header("Cache-Control", "no-cache")
+                self.send_header("X-Content-Type-Options", "nosniff")
+                self.send_header("Referrer-Policy", "no-referrer")
+                self.send_header(
+                    "Content-Security-Policy",
+                    "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; "
+                    "connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'",
+                )
                 self.end_headers()
                 self.wfile.write(body)
                 return
