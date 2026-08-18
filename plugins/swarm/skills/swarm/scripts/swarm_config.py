@@ -854,6 +854,8 @@ def resolve_spark_assignment(
     effective: dict[str, Any], role: str, *, surface: str,
     required_tools: tuple[str, ...] = (), route_tier: int = 1,
     explicit_reasoning: str | None = None,
+    host_actual_model: str | None = None, host_receipt: str | None = None,
+    require_host_verification: bool = False,
 ) -> dict[str, Any]:
     """Resolve the opt-in Spark lane and reject work outside its safe scope."""
     boost = effective["boost"]
@@ -869,7 +871,7 @@ def resolve_spark_assignment(
             "Spark is limited to simple shell-only work; unsupported tool(s): "
             + ", ".join(unsupported)
         )
-    return resolve_model_assignment(
+    receipt = resolve_model_assignment(
         effective,
         role,
         surface=surface,
@@ -878,7 +880,18 @@ def resolve_spark_assignment(
         required_tools=required_tools,
         explicit_model=boost["spark_model"],
         explicit_reasoning=explicit_reasoning or boost["spark_reasoning"],
+        host_actual_model=host_actual_model,
+        host_receipt=host_receipt,
     )
+    verified = receipt["actual_model_verification"] == "verified"
+    if require_host_verification and not verified:
+        raise ConfigError(
+            "Spark host execution receipt required; routing is not countable without "
+            "host_actual_model and host_receipt"
+        )
+    receipt["spark_usage_status"] = "verified" if verified else "requested_unverified"
+    receipt["spark_usage_countable"] = verified
+    return receipt
 
 
 def _plugin_version() -> str:
@@ -957,6 +970,9 @@ def parse_args() -> argparse.Namespace:
     spark.add_argument("--route-tier", type=int, choices=(1, 2, 3), default=1)
     spark.add_argument("--required-tool", action="append", default=[])
     spark.add_argument("--explicit-reasoning", choices=tuple(REASONING_SCALE))
+    spark.add_argument("--host-actual-model")
+    spark.add_argument("--host-receipt")
+    spark.add_argument("--require-host-verification", action="store_true")
     subparsers.add_parser("validate", help="validate the config")
     subparsers.add_parser("init", help="create the default config if it is missing")
     return parser.parse_args()
@@ -1019,6 +1035,9 @@ def main() -> int:
                 route_tier=args.route_tier,
                 required_tools=tuple(args.required_tool),
                 explicit_reasoning=args.explicit_reasoning,
+                host_actual_model=args.host_actual_model,
+                host_receipt=args.host_receipt,
+                require_host_verification=args.require_host_verification,
             ), indent=2))
             return 0
         if args.json:

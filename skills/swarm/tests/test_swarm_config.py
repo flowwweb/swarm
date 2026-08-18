@@ -484,6 +484,8 @@ class SwarmConfigTests(unittest.TestCase):
         self.assertEqual(receipt["model"], "gpt-5.3-codex-spark")
         self.assertEqual(receipt["reasoning_effort"], "xhigh")
         self.assertEqual(receipt["actual_model_verification"], "UNVERIFIED")
+        self.assertEqual(receipt["spark_usage_status"], "requested_unverified")
+        self.assertFalse(receipt["spark_usage_countable"])
 
         disabled, _ = config.load(config.TEMPLATE_PATH)
         with self.assertRaisesRegex(config.ConfigError, "disabled by boost.spark_enabled"):
@@ -526,6 +528,39 @@ class SwarmConfigTests(unittest.TestCase):
         )
         self.assertEqual(receipt["reasoning_effort"], "medium")
 
+    def test_spark_host_receipt_makes_usage_countable_only_when_model_matches(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "spark.toml"
+            path.write_text("[boost]\nspark_enabled = true\n", encoding="utf-8")
+            effective, _ = config.load(path)
+        receipt = config.resolve_spark_assignment(
+            effective,
+            "doer",
+            surface="subagent",
+            required_tools=("shell",),
+            host_actual_model="gpt-5.3-codex-spark",
+            host_receipt="host:model:gpt-5.3-codex-spark",
+            require_host_verification=True,
+        )
+        self.assertEqual(receipt["actual_model_verification"], "verified")
+        self.assertEqual(receipt["spark_usage_status"], "verified")
+        self.assertTrue(receipt["spark_usage_countable"])
+
+    def test_spark_verification_guard_fails_closed_without_host_metadata(self) -> None:
+        effective, _ = config.load(config.TEMPLATE_PATH)
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "spark.toml"
+            path.write_text("[boost]\nspark_enabled = true\n", encoding="utf-8")
+            effective, _ = config.load(path)
+        with self.assertRaisesRegex(config.ConfigError, "host execution receipt required"):
+            config.resolve_spark_assignment(
+                effective,
+                "doer",
+                surface="subagent",
+                required_tools=("shell",),
+                require_host_verification=True,
+            )
+
     def test_spark_cli_emits_a_receipt_and_rejects_disabled_default(self) -> None:
         completed = subprocess.run(
             [
@@ -547,6 +582,31 @@ class SwarmConfigTests(unittest.TestCase):
         )
         self.assertEqual(completed.returncode, 2)
         self.assertIn("disabled by boost.spark_enabled", completed.stderr)
+
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "spark.toml"
+            path.write_text("[boost]\nspark_enabled = true\n", encoding="utf-8")
+            guarded = subprocess.run(
+                [
+                    sys.executable,
+                    str(SCRIPT),
+                    "--path",
+                    str(path),
+                    "spark",
+                    "--role",
+                    "doer",
+                    "--surface",
+                    "subagent",
+                    "--required-tool",
+                    "shell",
+                    "--require-host-verification",
+                ],
+                capture_output=True,
+                check=False,
+                text=True,
+            )
+        self.assertEqual(guarded.returncode, 2)
+        self.assertIn("host execution receipt required", guarded.stderr)
 
 
 if __name__ == "__main__":

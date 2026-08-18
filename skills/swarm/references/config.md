@@ -265,7 +265,11 @@ data migrations, auth, payments, security, secrets, provider actions,
 deployment, destructive commands, computer-use/image work, visual acceptance,
 or ambiguous multi-file changes to Spark. If the task is not clearly on the
 allowlist, keep the configured role model. A Spark receipt is a routing request
-only; it does not prove that the host actually ran Spark.
+only; it does not prove that the host actually ran Spark. SWARM marks the
+request `requested_unverified` and does not count it as Spark usage until the
+host returns both the actual model and a matching host receipt. Use the
+verification guard when usage accounting matters; if the host bridge does not
+expose those fields, treat the execution as unverified.
 
 ## Boost mode
 

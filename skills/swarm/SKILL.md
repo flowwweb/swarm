@@ -30,7 +30,9 @@ Require the `simple` workload and shell-only access; a task outside that boundar
 must fail closed rather than being squeezed into Spark. Use
 `boost.spark_reasoning` (default `xhigh`) only after `boost.spark_enabled` and
 the `spark_simple_work` strategy are both active. The setting changes routing
-preference, never ownership, review, acceptance, or release authority.
+preference, never ownership, review, acceptance, or release authority. A
+successful response is not proof of Spark execution: count Spark usage only
+when the host returns the actual Spark model and a matching host receipt.
 
 ## CORE
 
