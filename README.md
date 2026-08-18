@@ -69,9 +69,14 @@ SWARM does not turn every request into a fleet.
 - A small or medium assignment on one surface can stay inside the current task and use bounded subagents.
 - A large, parallel, resumable, isolated, or independently accepted outcome earns a visible task lane.
 - A task lane can use its own subagents when that reduces overhead without hiding ownership.
+- Small `CTRL_DIRECT` work remains available for one low-risk atomic general outcome; design, mockup, and image-generation work goes to a DESIGNER lane even when it is small.
 - Usage limits constrain the available route; they do not decide the structure when normal capacity is available.
 
 This keeps quick work quick while giving larger objectives durable lanes that can progress in parallel.
+
+Every agent may request an approved role skill with an exact source/version or
+digest and task-local scope by default. The host owns installation and audit;
+skills improve execution but never grant authority or turn CTRL into a producer.
 
 ## What you get back
 

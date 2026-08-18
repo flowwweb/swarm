@@ -366,6 +366,24 @@ handoff would add no value. Do not prebuild a three-by-three tree. `portfolio.ma
 packaged defaults, eight is the exceptional internal-subagent ceiling while
 three is the normal shape.
 
+## CTRL direct-work economics and role skills
+
+The direct-work horizon is an economics clause, not a producer-role override.
+One low-risk atomic `GENERAL` outcome may remain with CTRL when measured
+coordination overhead is greater than the work. `DESIGN`, `IMAGEGEN`, mockups,
+and image edits require a DESIGNER lane even when they are small; never make a
+visual task direct merely to avoid startup cost.
+For any other CTRL-owned work, open a visible Codex task; internal subagents
+are only capacity below an existing LEAD/DOER owner, never a substitute for
+that root-level delegation.
+
+Any agent may request a skill for its assigned role. Bind the exact skill
+source and version/digest, the reason it improves the lane, the destination
+scope, and a host audit/rollback receipt. Task-local installation is the
+default. Persistent or global installation is a separate host/user-authorized
+action, and a skill cannot grant tools, models, browser/provider access,
+destructive authority, review authority, or acceptance authority.
+
 ## Optional WATCHDOG
 
 An accountable LEAD or persistent SPECIALIST may explicitly bind one WATCHDOG

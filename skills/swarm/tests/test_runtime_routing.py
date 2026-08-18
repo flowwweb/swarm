@@ -19,6 +19,7 @@ from skills.swarm.runtime import (
     Swarm,
     Task,
     WorkRoutingFacts,
+    WorkKind,
     WorkSize,
     hands_off_interrupt,
     route_execution,
@@ -55,6 +56,41 @@ class RuntimeRoutingTests(unittest.TestCase):
         decision = route_execution(facts=facts(independent_work=True), economics=economics(savings=100, overhead=60), capacity=AVAILABLE, accountable_owner="lead-a", lead_owner="lead-a")
         self.assertEqual(decision.route, ExecutionRoute.NORMAL_TASK)
         self.assertEqual(decision.authority_chain, ("CTRL", "LEAD", "DOER"))
+
+    def test_root_ctrl_non_direct_work_opens_a_visible_task_instead_of_using_a_subagent(self) -> None:
+        decision = route_execution(
+            facts=facts(),
+            economics=economics(savings=20, overhead=60),
+            capacity=AVAILABLE,
+            accountable_owner="CTRL",
+            lead_owner="lead-a",
+        )
+        self.assertEqual(decision.route, ExecutionRoute.NORMAL_TASK)
+        self.assertEqual(decision.authority_chain, ("CTRL", "LEAD", "DOER"))
+        blocked = HostCapacityEvidence(HostTaskCapacity.REJECTED, True, "host:error:task rejected")
+        no_visible_task = route_execution(
+            facts=facts(),
+            economics=economics(savings=20, overhead=60),
+            capacity=blocked,
+            accountable_owner="CTRL",
+        )
+        self.assertEqual(no_visible_task.route, ExecutionRoute.HARD_BLOCKED)
+        self.assertIn("visible Codex task", no_visible_task.reason)
+
+    def test_design_and_image_generation_require_a_designer_lane(self) -> None:
+        for work_kind in (WorkKind.DESIGN, WorkKind.IMAGEGEN):
+            with self.subTest(work_kind=work_kind), self.assertRaisesRegex(InvariantError, "DESIGNER assignment"):
+                route_execution(facts=facts(work_kind=work_kind), economics=economics(), capacity=AVAILABLE, accountable_owner="lead-a", lead_owner="lead-a")
+            decision = route_execution(
+                facts=facts(work_kind=work_kind),
+                economics=economics(),
+                capacity=AVAILABLE,
+                accountable_owner="lead-a",
+                lead_owner="lead-a",
+                assigned_profession="DESIGNER",
+            )
+            self.assertEqual(decision.route, ExecutionRoute.NORMAL_TASK)
+            self.assertIn("durable", decision.reason)
 
     def test_large_or_interruption_prone_single_surface_work_requires_task_without_speedup(self) -> None:
         cases=(facts(WorkSize.LARGE),facts(WorkSize.MEDIUM,interruption_safe_resumption=True))

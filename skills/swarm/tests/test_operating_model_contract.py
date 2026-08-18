@@ -4,7 +4,7 @@ import unittest
 from pathlib import Path
 
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
-from runtime import AcceptanceContract, ArtifactIdentity, CtrlMode, Depth, InvariantError, LaneKind, Role, SubagentException, Swarm, Task, WatchdogBinding, WatchdogEvidence, WatchdogRouteRole, WatchdogScope, WatchdogSignal, Worker, ctrl_mode
+from runtime import AcceptanceContract, ArtifactIdentity, CtrlMode, Depth, InvariantError, LaneKind, Role, SubagentException, Swarm, Task, WatchdogBinding, WatchdogEvidence, WatchdogRouteRole, WatchdogScope, WatchdogSignal, Worker, WorkKind, ctrl_mode
 
 
 def digest(value:str)->str: return hashlib.sha256(value.encode()).hexdigest()
@@ -16,9 +16,17 @@ class OperatingModelTests(unittest.TestCase):
         self.assertEqual(ctrl_mode(**base),CtrlMode.DIRECT)
         for change in ({"outcomes":2},{"mutable_surfaces":2},{"cross_lane_dependency":True},{"risk":2},{"measurable_minutes":21}):
             self.assertEqual(ctrl_mode(**{**base,**change}),CtrlMode.DELEGATED)
+        for work_kind in (WorkKind.DESIGN,WorkKind.IMAGEGEN):
+            self.assertEqual(ctrl_mode(**base,work_kind=work_kind),CtrlMode.DELEGATED)
         swarm=Swarm(); direct=Task("direct","CTRL","CTRL",1,{},risk=1,subagent_exception=SubagentException.WHOLE_TASK_COST,subagent_exception_reason="atomic work is shorter than delegation",lane_kind=LaneKind.CODE,acceptance_contract=AcceptanceContract(ArtifactIdentity("direct","v1","acceptance"),("contract",)))
         swarm.start_ctrl_direct(Role.CTRL,direct,outcomes=1,mutable_surfaces=1,cross_lane_dependency=False,measurable_minutes=10)
         swarm.add_artifact(Role.CTRL,"direct",ArtifactIdentity("direct","v1","work"))
+        visual=Task("visual","CTRL","CTRL",1,{},risk=1,work_kind=WorkKind.IMAGEGEN,assigned_profession="DESIGNER",subagent_exception=SubagentException.WHOLE_TASK_COST,subagent_exception_reason="atomic work is shorter than delegation",lane_kind=LaneKind.CODE,acceptance_contract=AcceptanceContract(ArtifactIdentity("visual","v1","acceptance"),("contract",)))
+        with self.assertRaisesRegex(InvariantError,"CTRL_DIRECT predicate"):
+            swarm.start_ctrl_direct(Role.CTRL,visual,outcomes=1,mutable_surfaces=1,cross_lane_dependency=False,measurable_minutes=10)
+        visual_atomic=Task("visual-atomic","visual-doer","CTRL",1,{},risk=1,work_kind=WorkKind.IMAGEGEN,assigned_profession="DESIGNER",subagent_exception=SubagentException.WHOLE_TASK_COST,subagent_exception_reason="atomic work is shorter than delegation",lane_kind=LaneKind.CODE,acceptance_contract=AcceptanceContract(ArtifactIdentity("visual-atomic","v1","acceptance"),("contract",)))
+        with self.assertRaisesRegex(InvariantError,"CTRL atomic ownership"):
+            swarm.start_atomic(Role.CTRL,visual_atomic)
 
     def lead_binding(self)->WatchdogBinding:
         return WatchdogBinding(Role.LEAD,"lead",((WatchdogRouteRole.LEAD,"lead"),(WatchdogRouteRole.CTRL,"CTRL")),((WatchdogRouteRole.CTRL,"CTRL"),(WatchdogRouteRole.HUMAN,"HUMAN")))

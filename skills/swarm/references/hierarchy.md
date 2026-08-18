@@ -10,6 +10,33 @@ one low-risk atomic outcome on one mutable surface with no cross-lane dependency
 and measurable completion inside the direct-work horizon. Otherwise CTRL hires
 a LEAD. A LEAD may hire DOERs for separable work that shortens accepted proof.
 
+### CTRL is an operator, not a producer
+
+The direct-work clause remains intentional: small, low-risk, atomic `GENERAL`
+work may stay with CTRL when measured task overhead costs more than the
+delegation. It is not permission for CTRL to become the producer. `DESIGN`,
+`IMAGEGEN`, mockup generation, image editing, and taste-led visual work are
+always routed as `CTRL_DELEGATED` with an assigned `DESIGNER` lane; they do not
+qualify for `CTRL_DIRECT` merely because they touch one surface or finish
+quickly. If a designer lane is unavailable, preserve the blocker or an
+explicitly degraded, unverified route rather than falling back to CTRL.
+
+CTRL may route, inspect read-only state, resolve user decisions, surface
+candidate galleries, integrate accepted handoffs, and perform the narrow
+general small-work exception. If CTRL has started producing a mockup, image,
+visual direction, or other delegated artifact, stop at the next safe boundary,
+record the routing error, and transfer the exact surface to the DESIGNER or
+LEAD; do not finish it in CTRL.
+
+Any agent may request a skill that improves its role. Skill installation is a
+bounded host action: the request binds the requester, exact skill source and
+version/digest, purpose, destination scope, and audit/rollback receipt. The
+default is task-local; persistent or global installation requires explicit
+host/user authorization. Skills improve execution but never transfer model,
+tool, browser, provider, destructive, review, or acceptance authority. This
+lets DESIGNER load an approved image-generation skill while keeping CTRL's
+operator boundary intact.
+
 An existing CTRL never creates another CTRL by inference. CREATE, FORK,
 PROMOTE, REPLACE, RENAME, SUCCESSOR, and RECOVER_AS_NEW each require a current
 single-use explicit user authorization independently enforced by the actual
@@ -29,6 +56,14 @@ stays on one mutable surface and task startup, worktree, coordination, handoff,
 integration, and review overhead do not clearly repay themselves. A subagent
 never owns durable work and never replaces a qualifying visible lane merely
 because it is easier to spawn.
+
+For root CTRL, the economics exception is narrower: only the explicit
+`CTRL_DIRECT` predicate may keep work in CTRL. Every other CTRL-owned outcome
+opens a visible Codex task with `CTRL -> LEAD -> DOER`; `CTRL -> SUBAGENT` is
+not a valid topology. Internal subagents remain capacity beneath a LEAD or
+DOER after that visible owner exists. If the host cannot materialize the task,
+record the exact capability blocker or degraded `UNVERIFIED` route; do not
+silently replace the task with a subagent.
 
 Use this routing order:
 
@@ -65,7 +100,7 @@ CTRL owns the durable accepted-request inventory and human route; a LEAD owns ea
 
 | Function | Owns | Does not own |
 | --- | --- | --- |
-| CTRL | Intake, objective ledger, topology, authorized user-visible task materialization, shared-surface coordination, final composed acceptance, human route | Another CTRL without exact user authorization, LEAD implementation, or independent REVIEW |
+| CTRL | Intake, objective ledger, topology, authorized user-visible task materialization, shared-surface coordination, final composed acceptance, human route, narrow general atomic work | Another CTRL without exact user authorization, LEAD/DOER/DESIGNER implementation or artifact production, or independent REVIEW |
 | LEAD | One lane, decomposition, integration, incident consultation, exact-artifact gates, correction loop, lane completion, authorized deploy and rollback | Other lanes or final portfolio acceptance |
 | DOER | One bounded workstream and its artifact handoff | Self-acceptance or topology |
 | TASK / SUBTASK | One bounded artifact or execution unit | Parent ownership or acceptance |
@@ -74,7 +109,8 @@ CTRL owns the durable accepted-request inventory and human route; a LEAD owns ea
 | ADVISOR / EXPERT | One focused answer with evidence | Artifact ownership or authority |
 | REVIEW | Independent verdict on the frozen plan or frozen completed artifact | Implementation, self-correction, deploy, or final composed acceptance |
 
-CTRL may complete direct work only through its declared direct-work contract.
+CTRL may complete direct work only through its declared direct-work contract,
+and only when the work kind is `GENERAL`.
 LEAD alone completes a LEAD-owned lane after independent exact-artifact review.
 CTRL composes accepted lanes; it cannot impersonate LEAD or REVIEW.
 

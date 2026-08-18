@@ -267,6 +267,30 @@ class SwarmSkillStructureTests(unittest.TestCase):
             2,
         )
 
+    def test_ctrl_operator_boundary_preserves_small_direct_work_and_delegates_visuals(self) -> None:
+        skill = SKILL.read_text(encoding="utf-8")
+        hierarchy = (SKILL_ROOT / "references" / "hierarchy.md").read_text(encoding="utf-8")
+        task_contract = (SKILL_ROOT / "references" / "task-contract.md").read_text(encoding="utf-8")
+        evals = json.loads(EVALS.read_text(encoding="utf-8"))
+
+        self.assertIn("CTRL is the operator/orchestrator, not the producer", skill)
+        self.assertIn("CTRL is an operator, not a producer", hierarchy)
+        self.assertIn("image-generation", skill)
+        self.assertIn("IMAGEGEN", hierarchy)
+        for text in (skill, hierarchy):
+            self.assertIn("small", text.casefold())
+            self.assertIn("DESIGNER", text)
+            self.assertIn("stop", text.casefold())
+        self.assertIn("Only `GENERAL` can pass the CTRL_DIRECT predicate", task_contract)
+        self.assertIn("Every agent may request a role skill", skill)
+        self.assertIn("`CTRL -> SUBAGENT` is not a valid", skill)
+        self.assertIn("`CTRL -> SUBAGENT` is", hierarchy)
+        self.assertIn("not a valid topology", hierarchy)
+        visual_eval = next(item for item in evals["evals"] if item["id"] == 90)
+        self.assertIn("mockup", visual_eval["prompt"].casefold())
+        self.assertIn("DESIGNER", visual_eval["expected_output"])
+        self.assertIn("CTRL_DIRECT", " ".join(visual_eval["assertions"]))
+
 
 if __name__ == "__main__":
     unittest.main()

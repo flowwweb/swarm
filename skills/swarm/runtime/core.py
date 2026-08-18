@@ -46,6 +46,7 @@ class ExecutionRoute(StrEnum): NORMAL_SUBAGENT="normal_subagent"; NORMAL_TASK="n
 class DegradedCapacityException(StrEnum): TASK_UNAVAILABLE="task_unavailable"; TASK_REJECTED="task_rejected"; TASK_USAGE_LIMITED="task_usage_limited"
 class RoutingEvidenceBasis(StrEnum): OBSERVED="observed"; CONSERVATIVE_ASSUMPTION="conservative_assumption"
 class WorkSize(StrEnum): SMALL="small"; MEDIUM="medium"; LARGE="large"
+class WorkKind(StrEnum): GENERAL="general"; DESIGN="design"; IMAGEGEN="imagegen"; IMAGE_EDIT="image_edit"
 class HandsOffEventKind(StrEnum):
     USER_DIRECTION="user_direction"; MATERIAL_HANDOFF_REVIEW="material_handoff_review"; STOPPING_CONDITION="stopping_condition"; HUMAN_AUTHORITY_BLOCKER="human_authority_blocker"; USAGE_SIGNAL="usage_signal"; MODEL_MESSAGE="model_message"; TASK_MESSAGE="task_message"; ROUTINE_STATUS="routine_status"
 class CtrlMode(StrEnum): DIRECT="CTRL_DIRECT"; DELEGATED="CTRL_DELEGATED"
@@ -90,10 +91,11 @@ class RoutingEconomics:
 
 @dataclass(frozen=True)
 class WorkRoutingFacts:
-    size:WorkSize; bounded:bool; low_risk:bool; mutable_surface_count:int; independent_work:bool=False; independent_acceptance:bool=False; separate_handoff:bool=False; useful_durable_boundary:bool=False; interruption_safe_resumption:bool=False; worktree_isolation:bool=False; independent_review:bool=False
+    size:WorkSize; bounded:bool; low_risk:bool; mutable_surface_count:int; independent_work:bool=False; independent_acceptance:bool=False; separate_handoff:bool=False; useful_durable_boundary:bool=False; interruption_safe_resumption:bool=False; worktree_isolation:bool=False; independent_review:bool=False; work_kind:WorkKind=WorkKind.GENERAL
     def __post_init__(self):
-        if not isinstance(self.size,WorkSize) or not isinstance(self.mutable_surface_count,int) or self.mutable_surface_count<1: raise InvariantError("routing facts require typed size and at least one mutable surface")
-    def requires_durable_lane(self)->bool: return self.size is WorkSize.LARGE or any((self.independent_acceptance,self.separate_handoff,self.useful_durable_boundary,self.interruption_safe_resumption,self.worktree_isolation,self.independent_review))
+        if not isinstance(self.size,WorkSize) or not isinstance(self.mutable_surface_count,int) or self.mutable_surface_count<1 or not isinstance(self.work_kind,WorkKind): raise InvariantError("routing facts require typed size, work kind, and at least one mutable surface")
+    def requires_designer(self)->bool: return self.work_kind in {WorkKind.DESIGN,WorkKind.IMAGEGEN,WorkKind.IMAGE_EDIT}
+    def requires_durable_lane(self)->bool: return self.size is WorkSize.LARGE or self.requires_designer() or any((self.independent_acceptance,self.separate_handoff,self.useful_durable_boundary,self.interruption_safe_resumption,self.worktree_isolation,self.independent_review))
 
 @dataclass(frozen=True)
 class HostCapacityEvidence:
@@ -123,15 +125,19 @@ def _route_candidate(*, facts:WorkRoutingFacts, economics:RoutingEconomics, capa
         exception={HostTaskCapacity.UNAVAILABLE:DegradedCapacityException.TASK_UNAVAILABLE,HostTaskCapacity.REJECTED:DegradedCapacityException.TASK_REJECTED,HostTaskCapacity.USAGE_LIMITED:DegradedCapacityException.TASK_USAGE_LIMITED}.get(capacity.task_status)
         if exception is None: raise InvariantError("degraded subagent routing requires an exact task-capacity failure")
         return ExecutionRoutingDecision(ExecutionRoute.DEGRADED_SUBAGENT,owner,(owner,"SUBAGENT"),"task lane required but host capacity forced bounded non-authoritative help",capacity.receipt,economics,exception,immutable_checkpoint,resumption_marker,affected_gates)
-    normal_subagent=facts.size in {WorkSize.SMALL,WorkSize.MEDIUM} and facts.bounded and facts.low_risk and facts.mutable_surface_count==1 and not facts.requires_durable_lane() and economics.critical_path_savings_ms<=economics.task_overhead_ms
+    ctrl_owned=owner.upper()==Role.CTRL.value
+    normal_subagent=not ctrl_owned and facts.size in {WorkSize.SMALL,WorkSize.MEDIUM} and facts.bounded and facts.low_risk and facts.mutable_surface_count==1 and not facts.requires_durable_lane() and economics.critical_path_savings_ms<=economics.task_overhead_ms
     if not prefer_task and normal_subagent and capacity.subagents_available:
         return ExecutionRoutingDecision(ExecutionRoute.NORMAL_SUBAGENT,owner,(owner,"SUBAGENT"),"bounded small-to-medium slice costs less inside the accountable owner",capacity.receipt,economics)
     if capacity.task_status is HostTaskCapacity.AVAILABLE:
         if not lead or lead.upper()==Role.CTRL.value: raise InvariantError("delegated task routing requires CTRL -> LEAD -> DOER authority")
         return ExecutionRoutingDecision(ExecutionRoute.NORMAL_TASK,lead,(Role.CTRL.value,Role.LEAD.value,Role.DOER.value),"task lane is the only viable permitted structure",capacity.receipt,economics)
-    return ExecutionRoutingDecision(ExecutionRoute.HARD_BLOCKED,owner,(owner,),"no permitted task or subagent structure can progress",capacity.receipt,economics)
+    reason="CTRL-owned non-direct work requires a visible Codex task; an internal subagent is not a substitute" if ctrl_owned else "no permitted task or subagent structure can progress"
+    return ExecutionRoutingDecision(ExecutionRoute.HARD_BLOCKED,owner,(owner,),reason,capacity.receipt,economics)
 
-def route_execution(*, facts:WorkRoutingFacts, economics:RoutingEconomics, capacity:HostCapacityEvidence, accountable_owner:str, lead_owner:str="", immutable_checkpoint:str="", resumption_marker:str="", affected_gates:tuple[str,...]=(), current:ExecutionRoutingDecision|None=None, safe_boundary:bool=True) -> ExecutionRoutingDecision:
+def route_execution(*, facts:WorkRoutingFacts, economics:RoutingEconomics, capacity:HostCapacityEvidence, accountable_owner:str, lead_owner:str="", assigned_profession:str="", immutable_checkpoint:str="", resumption_marker:str="", affected_gates:tuple[str,...]=(), current:ExecutionRoutingDecision|None=None, safe_boundary:bool=True) -> ExecutionRoutingDecision:
+    if facts.requires_designer() and assigned_profession.strip().upper()!="DESIGNER":
+        raise InvariantError("design and image generation require a DESIGNER assignment")
     candidate=_route_candidate(facts=facts,economics=economics,capacity=capacity,accountable_owner=accountable_owner,lead_owner=lead_owner,immutable_checkpoint=immutable_checkpoint,resumption_marker=resumption_marker,affected_gates=affected_gates)
     if current is not None and candidate.route is not current.route and not safe_boundary:
         return replace(current,reason="topology change deferred until the next safe boundary",pending_route=candidate.route)
@@ -273,9 +279,10 @@ def audit_ctrl_feed(messages:tuple[CtrlFeedMessage,...]) -> CtrlFeedAudit:
             violations.append(f"{message.id}:activity-only")
     return CtrlFeedAudit(tuple(dict.fromkeys(violations)))
 
-def ctrl_mode(*, outcomes:int, mutable_surfaces:int, cross_lane_dependency:bool, risk:int, measurable_minutes:int, direct_horizon_minutes:int) -> CtrlMode:
+def ctrl_mode(*, outcomes:int, mutable_surfaces:int, cross_lane_dependency:bool, risk:int, measurable_minutes:int, direct_horizon_minutes:int, work_kind:WorkKind=WorkKind.GENERAL) -> CtrlMode:
     if min(outcomes,mutable_surfaces,risk,measurable_minutes,direct_horizon_minutes)<0: raise InvariantError("CTRL mode inputs must be nonnegative")
-    direct=outcomes==1 and mutable_surfaces==1 and not cross_lane_dependency and risk<=1 and 0<measurable_minutes<=direct_horizon_minutes
+    if not isinstance(work_kind,WorkKind): raise InvariantError("CTRL mode requires a typed work kind")
+    direct=work_kind is WorkKind.GENERAL and outcomes==1 and mutable_surfaces==1 and not cross_lane_dependency and risk<=1 and 0<measurable_minutes<=direct_horizon_minutes
     return CtrlMode.DIRECT if direct else CtrlMode.DELEGATED
 
 @dataclass(frozen=True)
@@ -738,7 +745,7 @@ class Task:
     evidence: list[str]=field(default_factory=list); recovery_dimensions: set[str]=field(default_factory=set); recovery_attempts:int=0; review_value: ReviewValue=ReviewValue.NONE
     completed_at: int|None=None; stale_at: int|None=None; archived_at: int|None=None; stale_reason: str|None=None; superseded_by: str|None=None; promoted: list[str]=field(default_factory=list); extensions: int=0; review_passed: bool=False; risk:int=1; review_strategy:str="light"; architecture_review_floor:ReviewStrategy=ReviewStrategy.LIGHT; security_review_floor:ReviewStrategy=ReviewStrategy.LIGHT; artifacts:dict[ArtifactIdentity|str,str]=field(default_factory=dict); artifact_justifications:dict[str,ArtifactJustification]=field(default_factory=dict); artifact_provenance:dict[str,ArtifactProvenance]=field(default_factory=dict); archive:dict[str,object]=field(default_factory=dict); active_goal:bool=False; handoff_active:bool=False; correction_pending:bool=False; user_choice_pending:bool=False; ambiguous:bool=False; topology_receipt:tuple[str,...]=(); ctrl_event_receipt:tuple[str,str]|None=None; subagent_receipt:str=""; subagent_exception:SubagentException|None=None; subagent_exception_reason:str=""; goal_id:str=""; objective_version:int=1; milestone:str=""; review_horizon_minutes:int=30; milestone_started_at:int=0; milestone_history:list[tuple[int,str,str]]=field(default_factory=list); ctrl_feed_drift_count:int=0; superseded_ctrl_feed_ids:list[str]=field(default_factory=list); last_ctrl_feed_correction_id:str=""
 
-    ctrl_mode:CtrlMode=CtrlMode.DELEGATED; milestone_proof_kind:str=""; architecture_goal_id:str=""; architecture_map_version:int=0; architecture_receipts:list[tuple[int,str,str]]=field(default_factory=list); specialist_professions:dict[str,str]=field(default_factory=dict); specialist_goal_ids:dict[str,str]=field(default_factory=dict); specialist_map_versions:dict[str,int]=field(default_factory=dict); specialist_receipts:dict[str,list[tuple[int,str,str]]]=field(default_factory=dict)
+    ctrl_mode:CtrlMode=CtrlMode.DELEGATED; work_kind:WorkKind=WorkKind.GENERAL; assigned_profession:str=""; milestone_proof_kind:str=""; architecture_goal_id:str=""; architecture_map_version:int=0; architecture_receipts:list[tuple[int,str,str]]=field(default_factory=list); specialist_professions:dict[str,str]=field(default_factory=dict); specialist_goal_ids:dict[str,str]=field(default_factory=dict); specialist_map_versions:dict[str,int]=field(default_factory=dict); specialist_receipts:dict[str,list[tuple[int,str,str]]]=field(default_factory=dict)
     lane_kind:LaneKind=LaneKind.OTHER; owning_lead_id:str=""; acceptance_contract:AcceptanceContract|None=None; gate_receipts:dict[str,GateReceipt]=field(default_factory=dict); unverified_gate_receipts:dict[str,GateReceipt]=field(default_factory=dict); plan_review_receipt:ReviewEvidence|None=None; acceptance_review_receipt:ReviewEvidence|None=None; incident_consultation_receipt:str=""; watchdog_binding:WatchdogBinding|None=None; watchdog_receipts:list[WatchdogReceipt]=field(default_factory=list)
 
 @dataclass(frozen=True)
@@ -1191,6 +1198,9 @@ class Swarm:
             return
         if not isinstance(exception,SubagentException) or not reason: raise InvariantError("every SWARM task requires a host subagent receipt or typed exact exception")
     def _validate_task_acceptance(self, task:Task) -> None:
+        if not isinstance(task.work_kind,WorkKind): raise InvariantError("task requires a typed work kind")
+        if task.work_kind in {WorkKind.DESIGN,WorkKind.IMAGEGEN,WorkKind.IMAGE_EDIT} and task.assigned_profession.strip().upper()!="DESIGNER": raise InvariantError("design and image work require a DESIGNER assignment")
+        if task.ctrl_mode is CtrlMode.DIRECT and task.work_kind is not WorkKind.GENERAL: raise InvariantError("CTRL_DIRECT tasks must use the GENERAL work kind")
         if not isinstance(task.lane_kind,LaneKind): raise InvariantError("task requires a typed lane kind")
         empty=task.acceptance_contract is not None and task.acceptance_contract.explicitly_empty
         if empty and task.lane_kind is not LaneKind.NON_CODE: raise InvariantError("empty acceptance contracts are allowed only for NON_CODE lanes")
@@ -1219,11 +1229,12 @@ class Swarm:
     def start_atomic(self, actor:Role, task:Task) -> None:
         """CTRL may create exactly one direct DOER ownership path for atomic work."""
         self._role(actor,{Role.CTRL}); self._require_subagent_contract(task); self._validate_task_acceptance(task); self._worker_identity(task.owner)
+        if task.work_kind is not WorkKind.GENERAL: raise InvariantError("CTRL atomic ownership is limited to GENERAL work")
         if task.owner in self.workers or task.id in self.tasks: raise InvariantError("atomic ownership already exists")
         task.topology_receipt=("CTRL","DOER","atomic:isolated"); self.workers[task.owner]=Worker(task.owner,"CTRL",1,WorkerState.ACTIVE,{task.id}); self.tasks[task.id]=task
     def start_ctrl_direct(self, actor:Role, task:Task, *, outcomes:int, mutable_surfaces:int, cross_lane_dependency:bool, measurable_minutes:int) -> None:
         self._role(actor,{Role.CTRL}); self._require_subagent_contract(task); self._validate_task_acceptance(task)
-        if ctrl_mode(outcomes=outcomes,mutable_surfaces=mutable_surfaces,cross_lane_dependency=cross_lane_dependency,risk=task.risk,measurable_minutes=measurable_minutes,direct_horizon_minutes=self.direct_work_horizon) is not CtrlMode.DIRECT: raise InvariantError("CTRL_DIRECT predicate failed; hire a LEAD")
+        if ctrl_mode(outcomes=outcomes,mutable_surfaces=mutable_surfaces,cross_lane_dependency=cross_lane_dependency,risk=task.risk,measurable_minutes=measurable_minutes,direct_horizon_minutes=self.direct_work_horizon,work_kind=task.work_kind) is not CtrlMode.DIRECT: raise InvariantError("CTRL_DIRECT predicate failed; hire a LEAD")
         if task.owner.strip().upper()!=Role.CTRL.value or task.id in self.tasks: raise InvariantError("CTRL_DIRECT requires the sole CTRL owner and a new atomic task")
         task.ctrl_mode=CtrlMode.DIRECT; task.topology_receipt=("CTRL_DIRECT","atomic:one-surface"); self.tasks[task.id]=task
     def reuse_warm(self, actor:Role, task:Task, *, architecture:dict[str,int], affinity:int) -> str|None:
@@ -1417,7 +1428,7 @@ class Swarm:
         self._role(actor,{Role.DOER}); self.tasks[task_id].contracts["complexity_mismatch"]=observed_tier; self._record("events",("MISMATCH",task_id))
     def add_artifact(self, actor: Role, task_id: str, artifact: ArtifactIdentity, risk: str="", *, source:str|None=None, justification:ArtifactJustification|None=None, provenance:ArtifactProvenance|None=None) -> None:
         self._role(actor,{Role.DOER,Role.CTRL}); t=self.tasks[task_id]
-        if actor is Role.CTRL and t.ctrl_mode is not CtrlMode.DIRECT: raise InvariantError("CTRL artifact mutation requires explicit CTRL_DIRECT mode")
+        if actor is Role.CTRL and (t.ctrl_mode is not CtrlMode.DIRECT or t.work_kind is not WorkKind.GENERAL): raise InvariantError("CTRL artifact mutation requires a general CTRL_DIRECT task")
         if t.acceptance_contract is None or t.acceptance_contract.explicitly_empty: raise InvariantError("artifact-producing lanes require an exact nonempty acceptance contract before artifact registration")
         identity=self._register_artifact(t,artifact,source,justification,provenance); t.evidence.append(identity); t.findings.extend([risk] if risk else [])
     def register_ctrl_evidence(self, actor:Role, task_id:str, evidence_id:str, kind:str, locator:str, *, material:bool=True, steering:bool=True) -> str:
