@@ -18,19 +18,23 @@ from skills.swarm.runtime.chat_relay import (
     ChatRelayRequest,
     ChatRelayRoute,
     ChatRelayRoutingMode,
+    ChatRelayTransportReceipt,
     build_chat_relay_context,
     consult_chat_relay,
     choose_chat_relay,
 )
 
 
-def request(*, tier: str = "T0", write: bool = False, artifact: bool = False) -> ChatRelayRequest:
+def request(*, purpose: ChatRelayPurpose = ChatRelayPurpose.PLAN, tier: str = "T0", write: bool = False, artifact: bool = False, provider_artifact: bool = False, local_boundary: bool = False, challenging: bool = False) -> ChatRelayRequest:
     return ChatRelayRequest(
-        purpose=ChatRelayPurpose.PLAN,
+        purpose=purpose,
         consequence_tier=tier,
         prompt_digest=hashlib.sha256(b"bounded consultation").hexdigest(),
         write_intent=write,
         artifact_production=artifact,
+        provider_artifact_request=provider_artifact,
+        local_boundary=local_boundary,
+        challenging=challenging,
     )
 
 
@@ -70,6 +74,17 @@ class FakeAdapter:
             host_receipt="visible-chat-response-receipt",
             observed_model=self.response_model,
             observed_effort=self.host.observed_effort,
+        )
+
+    def send_image(self, prompt: str, *, model: str, effort: str) -> ChatRelayResponse:
+        self.sent.append(prompt)
+        self.selections.append((model, effort))
+        return ChatRelayResponse(
+            text="provider image generated",
+            host_receipt="visible-image-response-receipt",
+            observed_model=self.response_model,
+            observed_effort=self.host.observed_effort,
+            transport=ChatRelayTransportReceipt(asset_ids=("provider-image-1",), model=self.response_model),
         )
 
 
@@ -169,6 +184,36 @@ class ChatRelayTests(unittest.TestCase):
                 self.assertIs(decision.route, ChatRelayRoute.LOCAL_CODEX)
                 self.assertIs(decision.blocker, item[1])
 
+    def test_testing_advice_routes_at_max_but_actual_test_execution_stays_local(self) -> None:
+        advisory = choose_chat_relay(
+            policy=ChatRelayPolicy(enabled=True, offload_level=ChatRelayOffloadLevel.MAX),
+            request=request(purpose=ChatRelayPurpose.TESTING),
+            capability=capability(),
+        )
+        self.assertIs(advisory.route, ChatRelayRoute.VISIBLE_CHAT)
+        execution = choose_chat_relay(
+            policy=ChatRelayPolicy(enabled=True, offload_level=ChatRelayOffloadLevel.MAX),
+            request=request(purpose=ChatRelayPurpose.TESTING, local_boundary=True),
+            capability=capability(),
+        )
+        self.assertIs(execution.route, ChatRelayRoute.LOCAL_CODEX)
+        self.assertIs(execution.blocker, ChatRelayBlocker.LOCAL_BOUNDARY_REQUIRED)
+
+    def test_image_generation_requires_an_explicit_provider_artifact_request(self) -> None:
+        decision = choose_chat_relay(
+            policy=ChatRelayPolicy(enabled=True, offload_level=ChatRelayOffloadLevel.MAX),
+            request=request(purpose=ChatRelayPurpose.IMAGEGEN),
+            capability=capability(),
+        )
+        self.assertIs(decision.route, ChatRelayRoute.LOCAL_CODEX)
+        self.assertIs(decision.blocker, ChatRelayBlocker.PROVIDER_ARTIFACT_REQUIRED)
+        routed = choose_chat_relay(
+            policy=ChatRelayPolicy(enabled=True, offload_level=ChatRelayOffloadLevel.MAX),
+            request=request(purpose=ChatRelayPurpose.IMAGEGEN, provider_artifact=True),
+            capability=capability(),
+        )
+        self.assertIs(routed.route, ChatRelayRoute.VISIBLE_CHAT)
+
     def test_local_boundary_stays_local_in_every_routing_mode(self) -> None:
         boundary_request = ChatRelayRequest(
             purpose=ChatRelayPurpose.PLAN,
@@ -267,6 +312,50 @@ class ChatRelayTests(unittest.TestCase):
             self.assertEqual(adapter.selections, [("gpt-5.6-luna", "xhigh")])
             self.assertIn("SWARM_ADVISORY_CONSULT_V1", adapter.sent[0])
             self.assertIn("plan.md", adapter.sent[0])
+
+    def test_image_request_uses_provider_asset_route_and_receipt(self) -> None:
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "image.md").write_text("a minimal game key art brief", encoding="utf-8")
+            context = build_chat_relay_context(
+                repo_root=root, objective="generate a provider-owned image", relative_paths=("image.md",)
+            )
+            adapter = FakeAdapter(capability())
+            result = consult_chat_relay(
+                policy=ChatRelayPolicy(enabled=True, offload_level=ChatRelayOffloadLevel.MAX),
+                request=request(purpose=ChatRelayPurpose.IMAGEGEN, provider_artifact=True),
+                context=context,
+                adapter=adapter,
+            )
+            self.assertIs(result.decision.route, ChatRelayRoute.VISIBLE_CHAT)
+            self.assertIsNotNone(result.response)
+            assert result.response is not None
+            self.assertEqual(result.response.transport.asset_ids, ("provider-image-1",))
+            self.assertIn("SWARM_PROVIDER_IMAGE_REQUEST_V1", adapter.sent[0])
+            self.assertIn("RETURN_PROVIDER_ASSET: true", adapter.sent[0])
+
+    def test_image_route_falls_back_when_adapter_has_no_image_capability(self) -> None:
+        class NoImageAdapter:
+            def capability(self) -> ChatRelayCapability:
+                return capability()
+
+            def send_consult(self, prompt: str, *, model: str, effort: str) -> ChatRelayResponse:
+                raise AssertionError("image routing must not use advisory send_consult")
+
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "image.md").write_text("image brief", encoding="utf-8")
+            context = build_chat_relay_context(
+                repo_root=root, objective="generate", relative_paths=("image.md",)
+            )
+            result = consult_chat_relay(
+                policy=ChatRelayPolicy(enabled=True, offload_level=ChatRelayOffloadLevel.MAX),
+                request=request(purpose=ChatRelayPurpose.IMAGEGEN, provider_artifact=True),
+                context=context,
+                adapter=NoImageAdapter(),
+            )
+            self.assertIs(result.decision.route, ChatRelayRoute.LOCAL_CODEX)
+            self.assertIs(result.decision.blocker, ChatRelayBlocker.PROVIDER_ADAPTER_REQUIRED)
 
     def test_adapter_is_not_called_when_capability_falls_back(self) -> None:
         with TemporaryDirectory() as directory:

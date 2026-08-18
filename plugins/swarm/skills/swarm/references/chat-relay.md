@@ -1,9 +1,9 @@
 # Visible ChatGPT advisory relay
 
-SWARM can optionally use the user's visible ChatGPT Chat session for a narrow
-consultation before local execution. This is a routing seam for planning,
-research, and review—not a ChatGPT model provider, an API proxy, or a way to
-avoid usage limits.
+SWARM can optionally use the user's visible ChatGPT Chat session for bounded
+planning, research, review, testing advice, and explicitly requested provider
+image generation. This is a routing seam—not a ChatGPT model provider, an API
+proxy, or a way to avoid usage limits.
 
 ## Contract
 
@@ -12,9 +12,12 @@ The relay is eligible only when all of these conditions hold:
 - `chat_relay.enabled = true`;
 - `chat_relay.routing_mode` permits the route (`auto` is the default; `always_local`
   disables cloud routing and `always_cloud` applies only to eligible advisory work);
-- the requested purpose is `plan`, `research`, or `review`;
+- the requested purpose is `plan`, `research`, `review`, `testing`, or
+  `imagegen`;
 - the consequence tier is T0 or T1;
-- the request has no write intent and produces no artifact;
+- the request has no write intent and produces no local artifact;
+- an `imagegen` request explicitly opts into a provider-owned artifact and does
+  not claim local ownership or acceptance;
 - a compatible browser bridge reports a visible, signed-in ChatGPT session;
 - the bridge reports the actual visible model and reasoning effort;
 - the bridge reports the visible surface/configuration and a host receipt; and
@@ -27,13 +30,17 @@ consultation through the visible ChatGPT bridge. Local-boundary work remains
 local in every mode. With `auto`, `chat_relay.offload_level` controls route
 breadth: `light` is selective, `balanced` covers the common bounded
 consultation set, `high` widens that set to most eligible T0/T1 work, and `max`
-routes every otherwise-eligible advisory task.
+routes every otherwise-eligible task.
 
-Auto is the recommended mode: it sends only self-contained advisory work with
-explicitly shared context. Repo files, terminals, browser state, tests, writes,
-uploads, and artifacts carry a local boundary and remain local in every mode.
-Always cloud does not override those boundaries, mutation checks, consequence
-tiers, visible-session checks, or user confirmation.
+Auto is the recommended mode: it sends only self-contained work with
+explicitly shared context. Repo files, terminals, browser state, test
+execution, writes, uploads, local artifacts, and acceptance carry a local
+boundary and remain local in every mode. Testing advice may be relayed, but the
+test command and result must be produced locally. An image request may ask
+ChatGPT to create a provider-owned asset; SWARM records the provider asset
+receipt but does not copy it into the repo, accept it, or treat it as local
+proof. Always cloud does not override these boundaries, mutation checks,
+consequence tiers, visible-session checks, or user confirmation.
 
 The default policy requests GPT-5.6 Luna at Extra High reasoning. GPT-5.6 Sol
 is also supported when it is the visible host selection. An explicitly
@@ -73,15 +80,17 @@ Codex/agentic usage may have separate or shared host accounting; only the host
 can report the current usage and limits.
 
 The runtime exposes a small host boundary: an adapter reports
-`ChatRelayCapability`, then receives one rendered advisory prompt through
-`send_consult`. SWARM calls that method only after routing succeeds; a blocked,
-unconfirmed, unknown, or mismatched capability is returned as a local fallback
-and the adapter is not called. The response must carry its own host receipt,
-observed model and effort, and a typed transport receipt. The transport receipt
-preserves provider/client thread, request, response, asset, model, latency, and
-usage fields when the bridge returns them. Missing fields stay empty or
-`UNAVAILABLE`; SWARM never invents IDs, latency, or tokens. The response remains
-transient advisory text rather than a SWARM acceptance receipt.
+`ChatRelayCapability`, then receives one rendered prompt through `send_consult`
+or, for an explicit `imagegen` request, `send_image`. SWARM calls the selected
+method only after routing succeeds; a blocked, unconfirmed, unknown, or
+mismatched capability is returned as a local fallback and the adapter is not
+called. Image routing additionally requires a provider asset receipt. Every
+response carries its own host receipt, observed model and effort, and a typed
+transport receipt. The transport receipt preserves provider/client thread,
+request, response, asset, model, latency, and usage fields when the bridge
+returns them. Missing fields stay empty or `UNAVAILABLE`; SWARM never invents
+IDs, latency, or tokens. Text responses remain transient advisory context and
+provider images remain unaccepted provider artifacts.
 
 The Python adapter reuses the already-observed visible model and effort instead
 of applying a second configuration mutation during send. This avoids a

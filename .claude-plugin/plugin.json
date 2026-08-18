@@ -2,7 +2,7 @@
   "$schema": "https://json.schemastore.org/claude-code-plugin-manifest.json",
   "name": "swarm",
   "displayName": "SWARM",
-  "version": "0.4.4+codex.20260819040800",
+  "version": "0.4.5+codex.20260819043806",
   "description": "Structured workflows for autonomous role management.",
   "author": {
     "name": "Flowwweb",

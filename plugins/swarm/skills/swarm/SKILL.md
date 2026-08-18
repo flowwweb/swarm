@@ -21,7 +21,7 @@ Use the shallowest structure that can finish the accepted objective. `CTRL_DIREC
 
 Preserve every explicit user-selected model, provider, service tier, and reasoning level exactly across CTRL and all assignments. SWARM may recommend a change but never applies one unless the user explicitly asks SWARM to choose or change it; if the host cannot honor the selection, report the exact blocker instead of substituting. Only when the user delegates that choice may SWARM resolve it from the active profile, route tier, and execution bounds. Treat fast-tier and turbo settings as host-dependent preferences, never proof or a safety exception. Load [model-providers.md](references/model-providers.md) when selecting or probing a model/provider.
 
-An optional visible ChatGPT relay may provide bounded T0/T1 planning, research, or review through a user-confirmed browser bridge. It is advisory context only: no writes, uploads, commands, artifacts, acceptance, hidden endpoints, quota bypasses, or model/usage claims. Missing bridge capability always falls back to local Codex. Load [chat-relay.md](references/chat-relay.md) before configuring it.
+An optional visible ChatGPT relay may provide bounded T0/T1 planning, research, review, testing advice, or explicitly requested provider image generation through a user-confirmed browser bridge. It has no repo-write, command, test-execution, local-artifact, or acceptance authority. Missing bridge capability always falls back to local Codex. Load [chat-relay.md](references/chat-relay.md) before configuring it.
 
 ## SETTINGS
 
@@ -53,7 +53,10 @@ write, command, upload, artifact, or acceptance authority. See
 [config.md](references/config.md) and [chat-relay.md](references/chat-relay.md)
 for the field-level contract. `chat_relay.offload_level` is a four-stop control:
 Light is selective, Balanced is the default, High widens the eligible set, and
-Max routes every otherwise-eligible advisory task.
+Max routes every otherwise-eligible task. Testing advice may route, but test
+execution remains local. Image generation requires an explicit provider-owned
+artifact request and a provider asset receipt; it never grants local write or
+acceptance authority.
 `chat_relay.routing_mode` makes the local/cloud choice explicit: Auto is the
 recommended default, Always local disables cloud routing, and Always cloud is
 still restricted to self-contained advisory work. Transport receipts preserve

@@ -190,11 +190,12 @@ class ComplexChatRelayTests(unittest.TestCase):
         for purpose in ChatRelayPurpose:
             with self.subTest(purpose=purpose):
                 decision = choose_chat_relay(
-                    policy=ChatRelayPolicy(enabled=True),
+                    policy=ChatRelayPolicy(enabled=True, offload_level=ChatRelayOffloadLevel.MAX),
                     request=ChatRelayRequest(
                         purpose=purpose,
                         consequence_tier="T0",
                         prompt_digest=digest(f"purpose:{purpose.value}"),
+                        provider_artifact_request=purpose is ChatRelayPurpose.IMAGEGEN,
                     ),
                     capability=host,
                 )

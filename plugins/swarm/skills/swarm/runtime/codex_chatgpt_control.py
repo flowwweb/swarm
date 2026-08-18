@@ -10,7 +10,13 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping, Sequence
 import time
 
-from .chat_relay import ChatRelayCapability, ChatRelayResponse, ChatRelayTransportReceipt
+from .chat_relay import (
+    ChatRelayCapability,
+    ChatRelayBlocker,
+    ChatRelayResponse,
+    ChatRelayTransportError,
+    ChatRelayTransportReceipt,
+)
 
 
 DEFAULT_BACKEND_COMMAND = (
@@ -36,20 +42,48 @@ def _first_value(result: object, keys: tuple[str, ...]) -> object:
 
 
 def _asset_ids(result: object) -> tuple[str, ...]:
-    raw = _first_value(result, ("asset_ids", "assetIds", "assets"))
-    if raw is None:
-        return ()
-    if isinstance(raw, str):
-        return (raw,)
-    if isinstance(raw, Mapping):
-        raw = (raw,)
-    if not isinstance(raw, Sequence):
-        return ()
     values: list[str] = []
-    for item in raw:
-        value = item if isinstance(item, str) else _first_value(item, ("id", "asset_id", "assetId"))
-        if isinstance(value, str) and value.strip():
+
+    def add(value: object) -> None:
+        if isinstance(value, str) and value.strip() and value.strip() not in values:
             values.append(value.strip())
+
+    def visit(value: object, *, asset_context: bool = False) -> None:
+        if not isinstance(value, (Mapping, str, Sequence)):
+            attributes = getattr(value, "__dict__", None)
+            if isinstance(attributes, Mapping):
+                visit(attributes, asset_context=asset_context)
+            return
+        if isinstance(value, Mapping):
+            for key, child in value.items():
+                if not isinstance(key, str):
+                    continue
+                normalized = key.replace("_", "").replace("-", "").casefold()
+                if normalized in {"assetids", "artifactids"}:
+                    if isinstance(child, str):
+                        add(child)
+                    elif isinstance(child, Mapping):
+                        visit(child, asset_context=True)
+                    elif isinstance(child, Sequence):
+                        for item in child:
+                            visit(item, asset_context=True)
+                    continue
+                if normalized in {"assets", "artifacts", "asset", "artifact"}:
+                    visit(child, asset_context=True)
+                    continue
+                if asset_context and normalized in {"id", "assetid", "artifactid", "key", "artifactkey"}:
+                    add(child)
+                visit(child, asset_context=asset_context)
+            return
+        if isinstance(value, str):
+            if asset_context:
+                add(value)
+            return
+        if isinstance(value, Sequence) and not isinstance(value, (bytes, bytearray)):
+            for item in value:
+                visit(item, asset_context=asset_context)
+
+    visit(result)
     return tuple(values)
 
 
@@ -70,6 +104,16 @@ def _usage_fields(result: object) -> tuple[int | None, int | None, int | None, s
     if all(value is not None for value in fields):
         return (*fields, "reported", "")  # type: ignore[return-value]
     return (*fields, "partial", "provider exposed an incomplete token usage set")  # type: ignore[return-value]
+
+
+def _blocker_message(result: object) -> str:
+    blocker = _first_value(result, ("blocker", "error"))
+    if blocker is None:
+        return ""
+    code = _first_value(blocker, ("code", "kind"))
+    message = _first_value(blocker, ("message", "visibleText"))
+    parts = [value.strip() for value in (code, message) if isinstance(value, str) and value.strip()]
+    return ": ".join(parts)
 
 
 def _run_receipt(result: object) -> object:
@@ -122,12 +166,43 @@ class CodexChatGPTControlAdapter:
         return capability
 
     def send_consult(self, prompt: str, *, model: str, effort: str) -> ChatRelayResponse:
+        return self._send(
+            prompt,
+            model=model,
+            effort=effort,
+            agent_name="swarm-advisory-consult",
+            instructions="Return advisory Markdown only. Do not execute, write, upload, or accept work.",
+            tools=None,
+            require_asset=False,
+        )
+
+    def send_image(self, prompt: str, *, model: str, effort: str) -> ChatRelayResponse:
+        """Request a provider-owned image and require its asset receipt."""
+
+        return self._send(
+            prompt,
+            model=model,
+            effort=effort,
+            agent_name="swarm-provider-image",
+            instructions="Create the requested image only. Do not execute commands, write files, upload files, or accept work.",
+            tools=[{"tool": "create_image"}],
+            require_asset=True,
+        )
+
+    def _send(
+        self,
+        prompt: str,
+        *,
+        model: str,
+        effort: str,
+        agent_name: str,
+        instructions: str,
+        tools: list[dict[str, str]] | None,
+        require_asset: bool,
+    ) -> ChatRelayResponse:
         if not isinstance(prompt, str) or not prompt.strip():
             raise ValueError("visible Chat adapter requires a non-empty prompt")
-        agent = self._agent_factory(
-            name="swarm-advisory-consult",
-            instructions="Return advisory Markdown only. Do not execute, write, upload, or accept work.",
-        )
+        agent = self._agent_factory(name=agent_name, instructions=instructions)
         runner = getattr(self._runner, "run_sync", None)
         if not callable(runner):
             raise TypeError("visible Chat adapter runner must expose run_sync")
@@ -137,19 +212,36 @@ class CodexChatGPTControlAdapter:
         # and current Chat surfaces may reject it even when the selection is
         # already correct. Reuse the verified host state and let a mismatch
         # fall back locally before this method is called.
-        result = runner(
-            agent,
-            {
-                "input": prompt,
-                "thread": {"type": "new"},
-                "experience": "chat",
-                "response": {"format": "markdown"},
-            },
-        )
+        request: dict[str, object] = {
+            "input": prompt,
+            "thread": {"type": "new"},
+            "experience": "chat",
+            "response": {"format": "markdown"},
+        }
+        if tools is not None:
+            request["tools"] = tools
+        result = runner(agent, request)
         elapsed_ms = (time.perf_counter() - started) * 1000
         text = _value(result, "output_text")
         receipt = _run_receipt(result)
+        assets = _asset_ids(result)
+        blocker_message = _blocker_message(result)
+        if require_asset and blocker_message:
+            raise ChatRelayTransportError(
+                f"provider image generation was unavailable: {blocker_message}",
+                blocker=ChatRelayBlocker.PROVIDER_ARTIFACT_UNAVAILABLE,
+            )
+        if require_asset and not assets:
+            raise ChatRelayTransportError(
+                "provider image generation returned no asset receipt",
+                blocker=ChatRelayBlocker.PROVIDER_ARTIFACT_UNAVAILABLE,
+            )
         if not isinstance(text, str) or not text.strip():
+            if require_asset and assets:
+                text = "Provider image generated; see the asset receipt."
+            else:
+                text = ""
+        if not text.strip():
             raise ValueError("visible Chat adapter returned no advisory text")
         if not isinstance(receipt, str) or not receipt.strip():
             raise ValueError("visible Chat adapter returned no host receipt")
@@ -175,7 +267,7 @@ class CodexChatGPTControlAdapter:
                 thread_id=_first_value(result, ("thread_id", "threadId")) or _value(thread, "id") or "",
                 request_id=_first_value(result, ("request_id", "requestId")) or "",
                 response_id=_first_value(result, ("response_id", "responseId")) or _value(result, "id") or "",
-                asset_ids=_asset_ids(result),
+                asset_ids=assets,
                 model=provider_model if isinstance(provider_model, str) else capability.observed_model,
                 latency_ms=latency_ms,
                 latency_source=latency_source,

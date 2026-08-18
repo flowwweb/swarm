@@ -22,6 +22,8 @@ class ChatRelayPurpose(StrEnum):
     PLAN = "plan"
     RESEARCH = "research"
     REVIEW = "review"
+    TESTING = "testing"
+    IMAGEGEN = "imagegen"
 
 
 class ChatRelaySurface(StrEnum):
@@ -61,6 +63,9 @@ class ChatRelayBlocker(StrEnum):
     OFFLOAD_LEVEL_SELECTION = "offload_level_selection"
     ROUTING_MODE_LOCAL = "routing_mode_local"
     LOCAL_BOUNDARY_REQUIRED = "local_boundary_required"
+    PROVIDER_ARTIFACT_REQUIRED = "provider_artifact_required"
+    PROVIDER_ADAPTER_REQUIRED = "provider_adapter_required"
+    PROVIDER_ARTIFACT_UNAVAILABLE = "provider_artifact_unavailable"
 
 
 _SAFE_PROVIDER = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
@@ -229,6 +234,14 @@ class ChatRelayAdapter(Protocol):
 
     def send_consult(self, prompt: str, *, model: str, effort: str) -> "ChatRelayResponse":
         """Send one user-confirmed advisory prompt through the visible host."""
+
+
+class ChatRelayTransportError(RuntimeError):
+    """A host transport failure that can safely fall back to local SWARM."""
+
+    def __init__(self, message: str, *, blocker: ChatRelayBlocker) -> None:
+        super().__init__(message)
+        self.blocker = blocker
 
 
 @dataclass(frozen=True)
@@ -432,17 +445,19 @@ def build_chat_relay_context(
 def render_chat_relay_prompt(
     *, request: "ChatRelayRequest", context: ChatRelayContextPacket
 ) -> str:
-    """Build the exact advisory-only prompt handed to a host adapter."""
+    """Build the exact bounded prompt handed to a host adapter."""
+
+    image_request = request.purpose is ChatRelayPurpose.IMAGEGEN
 
     return "\n".join(
         (
-            "SWARM_ADVISORY_CONSULT_V1",
+            "SWARM_PROVIDER_IMAGE_REQUEST_V1" if image_request else "SWARM_ADVISORY_CONSULT_V1",
             f"PURPOSE: {request.purpose.value}",
             f"REQUEST_DIGEST: {request.prompt_digest}",
-            "RETURN_ADVICE_ONLY: true",
+            "RETURN_PROVIDER_ASSET: true" if image_request else "RETURN_ADVICE_ONLY: true",
             "DO_NOT_WRITE_OR_EXECUTE: true",
             context.render(),
-            "END_SWARM_ADVISORY_CONSULT",
+            "END_SWARM_PROVIDER_IMAGE_REQUEST" if image_request else "END_SWARM_ADVISORY_CONSULT",
         )
     )
 
@@ -456,6 +471,7 @@ class ChatRelayRequest:
     prompt_digest: str
     write_intent: bool = False
     artifact_production: bool = False
+    provider_artifact_request: bool = False
     local_boundary: bool = False
     challenging: bool = False
     task_id: str = ""
@@ -467,7 +483,7 @@ class ChatRelayRequest:
             raise ValueError("chat relay requests require a typed consequence tier")
         if not isinstance(self.prompt_digest, str) or not _DIGEST.fullmatch(self.prompt_digest):
             raise ValueError("chat relay prompt identity must be a lowercase SHA-256 digest")
-        if not all(isinstance(value, bool) for value in (self.write_intent, self.artifact_production, self.local_boundary)):
+        if not all(isinstance(value, bool) for value in (self.write_intent, self.artifact_production, self.provider_artifact_request, self.local_boundary)):
             raise ValueError("chat relay request flags must be boolean")
         if not isinstance(self.challenging, bool):
             raise ValueError("chat relay challenging flag must be boolean")
@@ -518,10 +534,10 @@ def _offload_level_allows(
     if level is ChatRelayOffloadLevel.LIGHT:
         return request.purpose in {ChatRelayPurpose.PLAN, ChatRelayPurpose.RESEARCH} and request.consequence_tier == "T0" and not request.challenging
     if level is ChatRelayOffloadLevel.BALANCED:
-        return (request.purpose in {ChatRelayPurpose.PLAN, ChatRelayPurpose.RESEARCH} and request.consequence_tier in {"T0", "T1"}) or (request.purpose is ChatRelayPurpose.REVIEW and request.consequence_tier == "T0" and not request.challenging)
+        return (request.purpose in {ChatRelayPurpose.PLAN, ChatRelayPurpose.RESEARCH} and request.consequence_tier in {"T0", "T1"}) or (request.purpose is ChatRelayPurpose.REVIEW and request.consequence_tier == "T0" and not request.challenging) or (request.purpose is ChatRelayPurpose.TESTING and request.consequence_tier == "T0" and not request.challenging)
     if level is ChatRelayOffloadLevel.HIGH:
-        return request.purpose in {ChatRelayPurpose.PLAN, ChatRelayPurpose.RESEARCH, ChatRelayPurpose.REVIEW} and request.consequence_tier in {"T0", "T1"} and not request.challenging
-    return request.purpose in {ChatRelayPurpose.PLAN, ChatRelayPurpose.RESEARCH, ChatRelayPurpose.REVIEW} and request.consequence_tier in _CONSULT_TIERS
+        return request.purpose in {ChatRelayPurpose.PLAN, ChatRelayPurpose.RESEARCH, ChatRelayPurpose.REVIEW, ChatRelayPurpose.TESTING} and request.consequence_tier in {"T0", "T1"} and not request.challenging
+    return request.purpose in {ChatRelayPurpose.PLAN, ChatRelayPurpose.RESEARCH, ChatRelayPurpose.REVIEW, ChatRelayPurpose.TESTING, ChatRelayPurpose.IMAGEGEN} and request.consequence_tier in _CONSULT_TIERS
 
 
 def choose_chat_relay(
@@ -553,6 +569,16 @@ def choose_chat_relay(
 
     if not policy.enabled:
         return local("chat relay is disabled", ChatRelayBlocker.DISABLED)
+    if request.purpose is ChatRelayPurpose.IMAGEGEN and not request.provider_artifact_request:
+        return local(
+            "image generation requires an explicit provider-owned artifact request",
+            ChatRelayBlocker.PROVIDER_ARTIFACT_REQUIRED,
+        )
+    if request.provider_artifact_request and request.purpose is not ChatRelayPurpose.IMAGEGEN:
+        return local(
+            "provider-owned artifacts are limited to typed image-generation requests",
+            ChatRelayBlocker.PROVIDER_ARTIFACT_REQUIRED,
+        )
     if request.write_intent or request.artifact_production:
         return local(
             "chat relay is advisory-only and cannot own writes or artifacts",
@@ -565,7 +591,7 @@ def choose_chat_relay(
         )
     if request.local_boundary:
         return local(
-            "repo, terminal, browser-state, test, write, and artifact work must remain local",
+            "repo, terminal, browser-state, test execution, write, and local artifact work must remain local",
             ChatRelayBlocker.LOCAL_BOUNDARY_REQUIRED,
         )
     if policy.routing_mode is ChatRelayRoutingMode.ALWAYS_LOCAL:
@@ -636,11 +662,26 @@ def consult_chat_relay(
             decision = choose_chat_relay(policy=policy, request=request, capability=capability)
     if decision.route is ChatRelayRoute.LOCAL_CODEX:
         return ChatRelayConsultation(decision)
-    response = adapter.send_consult(
-        prompt,
-        model=decision.requested_model,
-        effort=decision.requested_effort,
-    )
+    try:
+        response = adapter.send_consult(
+            prompt,
+            model=decision.requested_model,
+            effort=decision.requested_effort,
+        ) if request.purpose is not ChatRelayPurpose.IMAGEGEN else _send_image(
+            adapter,
+            prompt,
+            model=decision.requested_model,
+            effort=decision.requested_effort,
+        )
+    except ChatRelayTransportError as exc:
+        return ChatRelayConsultation(
+            replace(
+                decision,
+                route=ChatRelayRoute.LOCAL_CODEX,
+                reason=str(exc),
+                blocker=exc.blocker,
+            )
+        )
     if response.observed_model != capability.observed_model or response.observed_effort != capability.observed_effort:
         raise ValueError("chat relay host configuration changed during consultation")
     if ledger is not None:
@@ -654,3 +695,40 @@ def consult_chat_relay(
             # Usage telemetry is deliberately non-blocking for the advisory route.
             pass
     return ChatRelayConsultation(decision, response)
+
+
+def _send_image(
+    adapter: ChatRelayAdapter,
+    prompt: str,
+    *,
+    model: str,
+    effort: str,
+) -> ChatRelayResponse:
+    """Send a provider-owned image request only through an image-capable adapter."""
+
+    sender = getattr(adapter, "send_image", None)
+    if not callable(sender):
+        raise ChatRelayTransportError(
+            "the configured ChatGPT adapter does not expose image generation",
+            blocker=ChatRelayBlocker.PROVIDER_ADAPTER_REQUIRED,
+        )
+    try:
+        response = sender(prompt, model=model, effort=effort)
+    except ChatRelayTransportError:
+        raise
+    except (OSError, RuntimeError, TypeError, ValueError) as exc:
+        raise ChatRelayTransportError(
+            f"provider image generation was unavailable: {exc}",
+            blocker=ChatRelayBlocker.PROVIDER_ARTIFACT_UNAVAILABLE,
+        ) from exc
+    if not isinstance(response, ChatRelayResponse):
+        raise ChatRelayTransportError(
+            "provider image generation returned an invalid response",
+            blocker=ChatRelayBlocker.PROVIDER_ARTIFACT_UNAVAILABLE,
+        )
+    if not response.transport.asset_ids:
+        raise ChatRelayTransportError(
+            "provider image generation returned no asset receipt",
+            blocker=ChatRelayBlocker.PROVIDER_ARTIFACT_UNAVAILABLE,
+        )
+    return response

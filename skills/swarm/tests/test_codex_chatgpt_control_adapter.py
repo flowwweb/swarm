@@ -83,6 +83,53 @@ class CodexChatGPTControlAdapterTests(unittest.TestCase):
         adapter.send_consult("routine prompt", model="gpt-5.6-sol", effort="xhigh")
         self.assertNotIn("configuration", runner.calls[0][1])
 
+    def test_image_route_requests_create_image_and_preserves_asset_receipt(self) -> None:
+        runner = FakeRunner(SimpleNamespace(
+            output_text="generated",
+            run_id="run-image",
+            data={"artifacts": [{"artifactId": "artifact-image-1"}]},
+        ))
+        adapter = CodexChatGPTControlAdapter(
+            capability_reader=self.capability,
+            confirm_prompt=lambda _: True,
+            runner=runner,
+            agent_factory=lambda **values: values,
+        )
+        response = adapter.send_image("image prompt", model="gpt-5.6-sol", effort="xhigh")
+        self.assertEqual(response.transport.asset_ids, ("artifact-image-1",))
+        self.assertEqual(runner.calls[0][1]["tools"], [{"tool": "create_image"}])
+        self.assertEqual(runner.calls[0][1]["experience"], "chat")
+
+    def test_image_route_fails_closed_without_asset_receipt(self) -> None:
+        runner = FakeRunner(SimpleNamespace(output_text="generated", run_id="run-image-no-asset"))
+        adapter = CodexChatGPTControlAdapter(
+            capability_reader=self.capability,
+            confirm_prompt=lambda _: True,
+            runner=runner,
+            agent_factory=lambda **values: values,
+        )
+        with self.assertRaisesRegex(Exception, "no asset receipt"):
+            adapter.send_image("image prompt", model="gpt-5.6-sol", effort="xhigh")
+
+    def test_image_route_preserves_provider_selector_blocker(self) -> None:
+        runner = FakeRunner(SimpleNamespace(
+            output_text="",
+            run_id="run-image-blocked",
+            blocker=SimpleNamespace(
+                kind="selector_drift",
+                code="visible_candidate_not_found",
+                message="Tool Create image was not found or was ambiguous.",
+            ),
+        ))
+        adapter = CodexChatGPTControlAdapter(
+            capability_reader=self.capability,
+            confirm_prompt=lambda _: True,
+            runner=runner,
+            agent_factory=lambda **values: values,
+        )
+        with self.assertRaisesRegex(Exception, "visible_candidate_not_found"):
+            adapter.send_image("image prompt", model="gpt-5.6-sol", effort="xhigh")
+
     def test_missing_receipt_fails_closed(self) -> None:
         runner = FakeRunner(SimpleNamespace(output_text="advice"))
         adapter = CodexChatGPTControlAdapter(
