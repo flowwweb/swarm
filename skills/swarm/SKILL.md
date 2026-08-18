@@ -54,6 +54,11 @@ write, command, upload, artifact, or acceptance authority. See
 for the field-level contract. `chat_relay.offload_level` is a four-stop control:
 Light is selective, Balanced is the default, High widens the eligible set, and
 Max routes every otherwise-eligible advisory task.
+`chat_relay.routing_mode` makes the local/cloud choice explicit: Auto is the
+recommended default, Always local disables cloud routing, and Always cloud is
+still restricted to self-contained advisory work. Transport receipts preserve
+provider IDs, assets, latency, and token fields when exposed; missing usage is
+reported as unavailable and never estimated as savings.
 
 ## CORE
 

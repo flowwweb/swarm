@@ -10,6 +10,8 @@ avoid usage limits.
 The relay is eligible only when all of these conditions hold:
 
 - `chat_relay.enabled = true`;
+- `chat_relay.routing_mode` permits the route (`auto` is the default; `always_local`
+  disables cloud routing and `always_cloud` applies only to eligible advisory work);
 - the requested purpose is `plan`, `research`, or `review`;
 - the consequence tier is T0 or T1;
 - the request has no write intent and produces no artifact;
@@ -18,10 +20,20 @@ The relay is eligible only when all of these conditions hold:
 - the bridge reports the visible surface/configuration and a host receipt; and
 - the user confirms the exact prompt immediately before it is sent.
 
-The `chat_relay.offload_level` setting controls route breadth: `light` is
-selective, `balanced` covers the common bounded consultation set, `high`
-widens that set to most eligible T0/T1 work, and `max` routes every otherwise
-eligible advisory task. Local-boundary work remains local at every level.
+The `chat_relay.routing_mode` setting controls the transport preference:
+`auto` applies the offload level, `always_local` keeps eligible consultations
+in local Codex, and `always_cloud` sends every otherwise-eligible advisory
+consultation through the visible ChatGPT bridge. Local-boundary work remains
+local in every mode. With `auto`, `chat_relay.offload_level` controls route
+breadth: `light` is selective, `balanced` covers the common bounded
+consultation set, `high` widens that set to most eligible T0/T1 work, and `max`
+routes every otherwise-eligible advisory task.
+
+Auto is the recommended mode: it sends only self-contained advisory work with
+explicitly shared context. Repo files, terminals, browser state, tests, writes,
+uploads, and artifacts carry a local boundary and remain local in every mode.
+Always cloud does not override those boundaries, mutation checks, consequence
+tiers, visible-session checks, or user confirmation.
 
 The default policy requests GPT-5.6 Luna at Extra High reasoning. An explicitly
 challenging eligible consultation requests Pro intelligence. These are visible
@@ -62,9 +74,12 @@ The runtime exposes a small host boundary: an adapter reports
 `ChatRelayCapability`, then receives one rendered advisory prompt through
 `send_consult`. SWARM calls that method only after routing succeeds; a blocked,
 unconfirmed, unknown, or mismatched capability is returned as a local fallback
-and the adapter is not called. The response must carry its own host receipt and
-observed model and effort, and remains transient advisory text rather than a
-SWARM acceptance receipt.
+and the adapter is not called. The response must carry its own host receipt,
+observed model and effort, and a typed transport receipt. The transport receipt
+preserves provider/client thread, request, response, asset, model, latency, and
+usage fields when the bridge returns them. Missing fields stay empty or
+`UNAVAILABLE`; SWARM never invents IDs, latency, or tokens. The response remains
+transient advisory text rather than a SWARM acceptance receipt.
 
 The canonical runtime entry points are `Swarm.select_chat_relay()` for a
 decision and `Swarm.consult_chat_relay()` for the host call. `Swarm.from_config`
@@ -72,13 +87,13 @@ loads the validated `chat_relay` policy, so callers do not bypass runtime
 authority by constructing an independent policy accidentally.
 
 Successful visible consultations may write a small local
-`chat-relay-usage.json` ledger beside the SWARM config. It stores only the
-timestamp, optional task identity, purpose, visible model/effort, and a rough
-token estimate; it never stores prompts or responses and retains at most 100
-events. The estimate is `ceil(relay prompt bytes / 4) + ceil(ChatGPT reply
-bytes / 4)`. This is an avoided-Codex-work estimate for the Settings view, not
-billing, quota, or remaining-usage telemetry. Ledger writes are best effort and
-must never block or fail a relay consultation.
+`chat-relay-usage.json` ledger beside the SWARM config. It stores transport
+receipts and provider-reported input/output/total token fields when available;
+it never stores prompts or responses and retains at most 100 events. When the
+provider does not expose usage, the event records the exact unavailable reason.
+The Settings view makes no savings claim because this ledger has no equivalent
+local baseline. Ledger writes are best effort and must never block or fail a
+relay consultation. Legacy estimate logs are discarded rather than displayed.
 
 An optional `CodexChatGPTControlAdapter` is bundled as a lazy Python facade for
 the community SDK's documented backend protocol. It is not installed or

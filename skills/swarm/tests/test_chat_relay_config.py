@@ -13,6 +13,7 @@ from skills.swarm.runtime import (
     ChatRelayPurpose,
     ChatRelayRequest,
     ChatRelayRoute,
+    ChatRelayRoutingMode,
     InvariantError,
     Swarm,
 )
@@ -36,6 +37,7 @@ class ChatRelayConfigTests(unittest.TestCase):
                 "provider": "codex-chatgpt-control",
                 "surface": "chat",
                 "mode": "consult",
+                "routing_mode": "auto",
                 "offload_level": "balanced",
                 "default_model": "gpt-5.6-luna",
                 "default_effort": "xhigh",
@@ -56,6 +58,7 @@ class ChatRelayConfigTests(unittest.TestCase):
             self.assertTrue(effective["chat_relay"]["enabled"])
             self.assertEqual(effective["chat_relay"]["surface"], "chat")
             self.assertEqual(effective["chat_relay"]["mode"], "consult")
+            self.assertEqual(effective["chat_relay"]["routing_mode"], "auto")
             self.assertEqual(effective["chat_relay"]["offload_level"], "balanced")
             self.assertEqual(effective["chat_relay"]["default_model"], "gpt-5.6-luna")
             self.assertEqual(effective["chat_relay"]["default_effort"], "xhigh")
@@ -138,6 +141,22 @@ class ChatRelayConfigTests(unittest.TestCase):
                     ChatRelayRequest(**base), host
                 )
                 self.assertIs(decision.route, expected)
+
+    def test_routing_mode_accepts_auto_local_and_cloud(self) -> None:
+        with TemporaryDirectory() as directory:
+            for mode in ("auto", "always_local", "always_cloud"):
+                path = Path(directory) / f"{mode}.toml"
+                path.write_text(f"[chat_relay]\nrouting_mode = \"{mode}\"\n", encoding="utf-8")
+                effective, _ = config.load(path)
+                self.assertEqual(effective["chat_relay"]["routing_mode"], mode)
+        self.assertEqual(ChatRelayPolicy.from_config({}).routing_mode, ChatRelayRoutingMode.AUTO)
+
+    def test_invalid_routing_mode_is_rejected(self) -> None:
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "invalid.toml"
+            path.write_text('[chat_relay]\nrouting_mode = "cloud"\n', encoding="utf-8")
+            with self.assertRaisesRegex(config.ConfigError, "chat_relay.routing_mode"):
+                config.load(path)
 
     def test_invalid_relay_profile_does_not_silently_fall_back_to_defaults(self) -> None:
         cases = (

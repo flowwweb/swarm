@@ -11,11 +11,13 @@ from skills.swarm.runtime.chat_relay import (
     ChatRelayCapability,
     ChatRelayConsultation,
     ChatRelayContextPacket,
+    ChatRelayOffloadLevel,
     ChatRelayPolicy,
     ChatRelayPurpose,
     ChatRelayResponse,
     ChatRelayRequest,
     ChatRelayRoute,
+    ChatRelayRoutingMode,
     build_chat_relay_context,
     consult_chat_relay,
     choose_chat_relay,
@@ -157,6 +159,48 @@ class ChatRelayTests(unittest.TestCase):
                 )
                 self.assertIs(decision.route, ChatRelayRoute.LOCAL_CODEX)
                 self.assertIs(decision.blocker, item[1])
+
+    def test_local_boundary_stays_local_in_every_routing_mode(self) -> None:
+        boundary_request = ChatRelayRequest(
+            purpose=ChatRelayPurpose.PLAN,
+            consequence_tier="T0",
+            prompt_digest=hashlib.sha256(b"bounded consultation").hexdigest(),
+            local_boundary=True,
+        )
+        for mode in ChatRelayRoutingMode:
+            with self.subTest(mode=mode):
+                decision = choose_chat_relay(
+                    policy=ChatRelayPolicy(enabled=True, routing_mode=mode),
+                    request=boundary_request,
+                    capability=capability(),
+                )
+                self.assertIs(decision.route, ChatRelayRoute.LOCAL_CODEX)
+                self.assertIs(decision.blocker, ChatRelayBlocker.LOCAL_BOUNDARY_REQUIRED)
+
+    def test_explicit_routing_modes_are_predictable(self) -> None:
+        local = choose_chat_relay(
+            policy=ChatRelayPolicy(enabled=True, routing_mode=ChatRelayRoutingMode.ALWAYS_LOCAL),
+            request=request(),
+            capability=capability(),
+        )
+        self.assertIs(local.route, ChatRelayRoute.LOCAL_CODEX)
+        self.assertIs(local.blocker, ChatRelayBlocker.ROUTING_MODE_LOCAL)
+
+        cloud = choose_chat_relay(
+            policy=ChatRelayPolicy(
+                enabled=True,
+                routing_mode=ChatRelayRoutingMode.ALWAYS_CLOUD,
+                offload_level=ChatRelayOffloadLevel.LIGHT,
+            ),
+            request=request(tier="T1"),
+            capability=capability(),
+        )
+        self.assertIs(cloud.route, ChatRelayRoute.VISIBLE_CHAT)
+
+    def test_routing_mode_is_separate_from_consult_authority(self) -> None:
+        self.assertEqual(ChatRelayPolicy.from_config({"routing_mode": "always_cloud"}).routing_mode, ChatRelayRoutingMode.ALWAYS_CLOUD)
+        with self.assertRaises(ValueError):
+            ChatRelayPolicy(routing_mode="cloud")  # type: ignore[arg-type]
 
     def test_surface_and_mode_are_fixed_to_visible_chat_consult(self) -> None:
         with self.assertRaises(ValueError):

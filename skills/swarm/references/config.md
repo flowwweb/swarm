@@ -109,6 +109,7 @@ Configuration cannot make an unsafe or hidden coordination path valid:
 | `chat_relay.provider` | Host-owned visible-browser adapter identifier | safe identifier; default `codex-chatgpt-control` |
 | `chat_relay.surface` | User-visible ChatGPT surface for consultations | `chat` only |
 | `chat_relay.mode` | Consultation authority mode | `consult` only |
+| `chat_relay.routing_mode` | Explicit local/cloud routing preference | `auto`, `always_local`, or `always_cloud`; default `auto` |
 | `chat_relay.offload_level` | Breadth of eligible ChatGPT routing | `light`, `balanced`, `high`, or `max`; default `balanced` |
 | `chat_relay.default_model` | ChatGPT model requested for normal offloads | `gpt-5.6-luna` or `pro`; default `gpt-5.6-luna` |
 | `chat_relay.default_effort` | ChatGPT reasoning level requested for normal offloads | supported level; default `xhigh` |
@@ -282,11 +283,21 @@ planning, research, or review. The bridge must expose a signed-in visible
 session, its observed configuration, and a host receipt; the user must confirm
 each prompt at action time.
 
-`chat_relay.offload_level` controls how much eligible work is offered to the
-relay: `light` is selective, `balanced` is the default common set, `high`
-widens to most eligible T0/T1 consultations, and `max` includes every
-otherwise-eligible advisory consultation. Local files, terminals, browser
-state, writes, tests, and artifacts remain local at every level.
+`chat_relay.routing_mode = auto` is the recommended setting. It offers only
+self-contained advisory work to the visible Chat surface. `always_local`
+keeps every task local. `always_cloud` requests cloud routing for eligible
+bounded advisory work but never overrides local-boundary, mutation, consequence,
+visible-session, or confirmation checks. `chat_relay.offload_level` then gives
+Auto four route-breadth stops: `light` is selective, `balanced` is the default
+common set, `high` widens to most eligible T0/T1 consultations, and `max`
+includes every otherwise-eligible advisory consultation. Local files,
+terminals, browser state, writes, tests, and artifacts remain local at every
+level.
+
+Relay telemetry is provider-reported only. The local ledger preserves request,
+response, thread, asset, latency, and token fields when the bridge returns
+them; missing provider usage is shown as unavailable. It does not estimate
+tokens and cannot claim savings without an equivalent local baseline.
 
 Normal offloads request GPT-5.6 Luna at Extra High reasoning. Callers may mark
 an eligible consultation as challenging to request Pro intelligence. The host's

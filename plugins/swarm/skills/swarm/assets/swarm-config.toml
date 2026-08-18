@@ -46,6 +46,9 @@ enabled = false
 provider = "codex-chatgpt-control"
 surface = "chat"
 mode = "consult"
+# Auto chooses cloud only for self-contained advisory work; Always local
+# disables the relay; Always cloud still refuses local-boundary or mutating work.
+routing_mode = "auto"
 # Four-level route breadth: light is selective; max uses ChatGPT for every
 # otherwise-eligible advisory task.
 offload_level = "balanced"

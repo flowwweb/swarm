@@ -21,6 +21,7 @@ PLUGIN_MANIFEST_PATH = Path(__file__).resolve().parents[3] / ".codex-plugin" / "
 CHAT_RELAY_MODELS = {"gpt-5.6-luna", "pro"}
 CHAT_RELAY_EFFORTS = {"minimal", "low", "medium", "high", "xhigh", "max", "ultra", "pro"}
 CHAT_RELAY_OFFLOAD_LEVELS = {"light", "balanced", "high", "max"}
+CHAT_RELAY_ROUTING_MODES = {"auto", "always_local", "always_cloud"}
 
 def resolve_config_path(explicit: Path|None=None) -> Path:
     """Resolve an explicit path or the canonical SWARM config location."""
@@ -58,6 +59,7 @@ DEFAULTS: dict[str, Any] = {
         "provider": "codex-chatgpt-control",
         "surface": "chat",
         "mode": "consult",
+        "routing_mode": "auto",
         "offload_level": "balanced",
         "default_model": "gpt-5.6-luna",
         "default_effort": "xhigh",
@@ -383,6 +385,10 @@ def validate(raw: dict[str, Any]) -> None:
         raise ConfigError("chat_relay.surface must be chat")
     if "mode" in chat_relay and chat_relay["mode"] != "consult":
         raise ConfigError("chat_relay.mode must be consult")
+    _short_text(chat_relay, "routing_mode", "chat_relay")
+    if chat_relay.get("routing_mode", DEFAULTS["chat_relay"]["routing_mode"]) not in CHAT_RELAY_ROUTING_MODES:
+        allowed = ", ".join(sorted(CHAT_RELAY_ROUTING_MODES))
+        raise ConfigError(f"chat_relay.routing_mode must be one of: {allowed}")
     _short_text(chat_relay, "offload_level", "chat_relay")
     if chat_relay.get("offload_level", DEFAULTS["chat_relay"]["offload_level"]) not in CHAT_RELAY_OFFLOAD_LEVELS:
         allowed = ", ".join(sorted(CHAT_RELAY_OFFLOAD_LEVELS))

@@ -475,18 +475,57 @@ class SwarmConsoleTests(unittest.TestCase):
                     "purpose": "plan",
                     "model": "pro",
                     "effort": "pro",
-                    "estimated_tokens_saved": 42,
                     "response": "must not surface",
                 }],
             }),
             encoding="utf-8",
         )
         usage = console.App(self.codex_home, self.config).chat_relay_usage()
-        self.assertEqual((usage["routed_tasks"], usage["estimated_tokens_saved"]), (1, 42))
-        self.assertNotIn("response", json.dumps(usage))
+        self.assertEqual((usage["routed_tasks"], usage["consultations"]), (0, 0))
+        self.assertTrue(usage["legacy_estimates_discarded"])
+        self.assertNotIn("estimated_tokens_saved", usage)
+        self.assertNotIn('"response":', json.dumps(usage))
         cleared = console.App(self.codex_home, self.config).clear_chat_relay_usage()
         self.assertEqual(cleared["consultations"], 0)
         self.assertFalse(usage_path.exists())
+
+    def test_chat_relay_usage_preserves_provider_receipts_and_tokens(self) -> None:
+        usage_path = console.chat_relay_usage_path(self.config)
+        usage_path.write_text(
+            json.dumps({
+                "schema_version": 2,
+                "events": [{
+                    "recorded_at": "2026-08-18T00:00:00+00:00",
+                    "task_id": "ctrl/task",
+                    "purpose": "plan",
+                    "model": "gpt-5.6-luna",
+                    "effort": "xhigh",
+                    "host_receipt": "host-1",
+                    "transport": "visible_chat",
+                    "client_thread_id": "client-1",
+                    "thread_id": "thread-1",
+                    "request_id": "request-1",
+                    "response_id": "response-1",
+                    "asset_ids": ["asset-1"],
+                    "latency_ms": 25.5,
+                    "latency_source": "provider_reported",
+                    "input_tokens": 10,
+                    "output_tokens": 4,
+                    "total_tokens": 14,
+                    "usage_status": "reported",
+                    "usage_reason": "",
+                    "response": "must not surface",
+                }],
+            }),
+            encoding="utf-8",
+        )
+        usage = console.App(self.codex_home, self.config).chat_relay_usage()
+        self.assertEqual((usage["routed_tasks"], usage["reported_total_tokens"]), (1, 14))
+        self.assertEqual(usage["events"][0]["response_id"], "response-1")
+        self.assertEqual(usage["events"][0]["latency_ms"], 25.5)
+        self.assertEqual(usage["savings_status"], "unavailable")
+        self.assertNotIn('"response":', json.dumps(usage))
+        usage_path.unlink()
 
     def test_console_ui_fixture_is_structurally_valid(self) -> None:
         fixture_path = Path(__file__).parent / "fixtures" / "console-ui.json"

@@ -65,6 +65,7 @@ EDITABLE_SETTINGS: dict[str, type] = {
     "execution.max_reasoning": str,
     "execution.usage_saver": bool,
     "chat_relay.enabled": bool,
+    "chat_relay.routing_mode": str,
     "chat_relay.offload_level": str,
     "chat_relay.default_model": str,
     "chat_relay.default_effort": str,
@@ -239,35 +240,56 @@ def chat_relay_usage_path(config_path: Path) -> Path:
 
 
 def read_chat_relay_usage(path: Path) -> dict[str, Any]:
-    empty = {"schema_version": 1, "events": []}
+    empty = {"schema_version": 2, "events": []}
     try:
         payload = json.loads(path.read_text(encoding="utf-8")) if path.exists() else empty
     except (OSError, UnicodeError, json.JSONDecodeError):
         payload = empty
-    raw_events = payload.get("events", []) if isinstance(payload, dict) and payload.get("schema_version") == 1 else []
+    raw_events = payload.get("events", []) if isinstance(payload, dict) and payload.get("schema_version") == 2 else []
     events: list[dict[str, Any]] = []
     if isinstance(raw_events, list):
         for raw in raw_events[-CHAT_RELAY_USAGE_MAX_EVENTS:]:
-            if not isinstance(raw, dict) or not all(isinstance(raw.get(key), str) for key in ("recorded_at", "task_id", "purpose", "model", "effort")):
+            if not isinstance(raw, dict) or not all(isinstance(raw.get(key), str) for key in (
+                "recorded_at", "task_id", "purpose", "model", "effort", "host_receipt",
+                "transport", "client_thread_id", "thread_id", "request_id", "response_id",
+                "latency_source", "usage_status", "usage_reason",
+            )):
                 continue
-            tokens = raw.get("estimated_tokens_saved")
-            if isinstance(tokens, int) and tokens >= 0:
-                events.append({
-                    "recorded_at": raw["recorded_at"],
-                    "task_id": raw["task_id"],
-                    "purpose": raw["purpose"],
-                    "model": raw["model"],
-                    "effort": raw["effort"],
-                    "estimated_tokens_saved": tokens,
-                })
+            if raw["usage_status"] not in {"reported", "partial", "unavailable"}:
+                continue
+            if not all(raw.get(key) is None or isinstance(raw.get(key), int) and not isinstance(raw.get(key), bool) and raw.get(key) >= 0 for key in ("input_tokens", "output_tokens", "total_tokens")):
+                continue
+            if raw.get("latency_ms") is not None and (
+                isinstance(raw.get("latency_ms"), bool)
+                or not isinstance(raw.get("latency_ms"), (int, float))
+                or raw.get("latency_ms") < 0
+            ):
+                continue
+            if not isinstance(raw.get("asset_ids"), list) or not all(isinstance(item, str) and item for item in raw["asset_ids"]):
+                continue
+            events.append({key: raw[key] for key in (
+                "recorded_at", "task_id", "purpose", "model", "effort", "host_receipt",
+                "transport", "client_thread_id", "thread_id", "request_id", "response_id",
+                "asset_ids", "latency_ms", "latency_source", "input_tokens", "output_tokens", "total_tokens",
+                "usage_status", "usage_reason",
+            )})
     task_ids = {event["task_id"] for event in events if event["task_id"]}
+    reported_events = [event for event in events if event["usage_status"] == "reported"]
+    partial_events = [event for event in events if event["usage_status"] == "partial"]
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "consultations": len(events),
         "routed_tasks": len(task_ids),
-        "estimated_tokens_saved": sum(event["estimated_tokens_saved"] for event in events),
+        "reported_usage_consultations": len(reported_events),
+        "partial_usage_consultations": len(partial_events),
+        "unavailable_usage_consultations": len(events) - len(reported_events) - len(partial_events),
+        "reported_input_tokens": sum(event["input_tokens"] or 0 for event in events),
+        "reported_output_tokens": sum(event["output_tokens"] or 0 for event in events),
+        "reported_total_tokens": sum(event["total_tokens"] or 0 for event in events),
+        "savings_status": "unavailable",
+        "legacy_estimates_discarded": isinstance(payload, dict) and payload.get("schema_version") == 1,
         "events": events[-20:],
-        "claim_limit": "Estimated from relay prompt and ChatGPT reply size; not billing, quota, or remaining usage.",
+        "claim_limit": "No savings claim: this ledger records provider usage only and has no equivalent local baseline.",
     }
 
 

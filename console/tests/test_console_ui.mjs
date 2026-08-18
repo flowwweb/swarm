@@ -49,13 +49,20 @@ function response(body) {
 async function mount(page, overview = fixture.overview) {
   const config = structuredClone(fixture.config);
   let relayUsage = {
-    schema_version: 1,
+    schema_version: 2,
     consultations: 2,
     routed_tasks: 2,
-    estimated_tokens_saved: 1234,
+    reported_usage_consultations: 1,
+    partial_usage_consultations: 0,
+    unavailable_usage_consultations: 1,
+    reported_input_tokens: 700,
+    reported_output_tokens: 300,
+    reported_total_tokens: 1000,
+    savings_status: "unavailable",
+    claim_limit: "No savings claim: this ledger records provider usage only and has no equivalent local baseline.",
     events: [
-      { recorded_at: "2026-08-18T00:00:00+00:00", task_id: "ctrl/research", purpose: "research", model: "gpt-5.6-luna", effort: "xhigh", estimated_tokens_saved: 734 },
-      { recorded_at: "2026-08-18T00:01:00+00:00", task_id: "ctrl/review", purpose: "review", model: "pro", effort: "pro", estimated_tokens_saved: 500 },
+      { recorded_at: "2026-08-18T00:00:00+00:00", task_id: "ctrl/research", purpose: "research", model: "gpt-5.6-luna", effort: "xhigh", host_receipt: "host-1", transport: "visible_chat", client_thread_id: "client-1", thread_id: "thread-1", request_id: "request-1", response_id: "response-1", asset_ids: [], input_tokens: 700, output_tokens: 300, total_tokens: 1000, usage_status: "reported", usage_reason: "" },
+      { recorded_at: "2026-08-18T00:01:00+00:00", task_id: "ctrl/review", purpose: "review", model: "pro", effort: "pro", host_receipt: "host-2", transport: "visible_chat", client_thread_id: "", thread_id: "", request_id: "", response_id: "", asset_ids: [], input_tokens: null, output_tokens: null, total_tokens: null, usage_status: "unavailable", usage_reason: "provider did not expose a usage object" },
     ],
   };
   const runtimeErrors = [];
@@ -79,7 +86,7 @@ async function mount(page, overview = fixture.overview) {
     if (pathname === "/api/overview") return route.fulfill(response(overview));
     if (pathname === "/api/chat-relay-usage" && request.method() === "GET") return route.fulfill(response(relayUsage));
     if (pathname === "/api/chat-relay-usage/clear" && request.method() === "POST") {
-      relayUsage = { schema_version: 1, consultations: 0, routed_tasks: 0, estimated_tokens_saved: 0, events: [] };
+      relayUsage = { schema_version: 2, consultations: 0, routed_tasks: 0, reported_usage_consultations: 0, partial_usage_consultations: 0, unavailable_usage_consultations: 0, reported_input_tokens: 0, reported_output_tokens: 0, reported_total_tokens: 0, savings_status: "unavailable", claim_limit: "No savings claim: provider usage is unavailable or no equivalent local baseline exists.", events: [] };
       return route.fulfill(response(relayUsage));
     }
     if (pathname === "/api/config" && request.method() === "POST") {
@@ -90,7 +97,7 @@ async function mount(page, overview = fixture.overview) {
       if (Object.prototype.hasOwnProperty.call(payload.changes, "chat_relay.enabled")) {
         config.settings.chat_relay.enabled = payload.changes["chat_relay.enabled"];
       }
-      for (const key of ["chat_relay.offload_level", "chat_relay.default_model", "chat_relay.default_effort", "chat_relay.challenging_model", "chat_relay.challenging_effort"]) {
+      for (const key of ["chat_relay.routing_mode", "chat_relay.offload_level", "chat_relay.default_model", "chat_relay.default_effort", "chat_relay.challenging_model", "chat_relay.challenging_effort"]) {
         if (Object.prototype.hasOwnProperty.call(payload.changes, key)) {
           const field = key.split(".")[1];
           config.settings.chat_relay[field] = payload.changes[key];
@@ -308,6 +315,7 @@ try {
     const relay = page.locator('[data-setting="chat_relay.enabled"]');
     await relay.locator("xpath=..").click();
     await page.locator('[data-setting="chat_relay.offload_level"]').waitFor();
+    assert.equal(await page.locator('[data-setting="chat_relay.routing_mode"]').count(), 1, "enabled ChatGPT parent did not reveal routing mode");
     assert.equal(await relay.getAttribute("aria-label"), "Save Codex usage with ChatGPT");
     assert.match(await relay.evaluate((element) => element.closest(".field")?.innerText || ""), /Offload eligible work to ChatGPT/);
     assert.equal(await page.locator('[data-setting="chat_relay.offload_level"]').count(), 1, "enabled ChatGPT parent did not reveal child settings");
@@ -315,7 +323,8 @@ try {
     await page.locator('[data-setting="chat_relay.offload_level"]').fill("3");
     assert.equal(await page.locator('[data-range-output="chat_relay.offload_level"]').textContent(), "Max");
     await page.locator(".chat-relay-usage").waitFor();
-    assert.match(await page.locator(".chat-relay-usage").innerText(), /1,234 estimated tokens saved/);
+    assert.match(await page.locator(".chat-relay-usage").innerText(), /700 in · 300 out · 1,000 total provider-reported tokens/);
+    assert.match(await page.locator(".chat-relay-usage").innerText(), /No savings claim/);
     assert.match(await page.locator(".chat-relay-usage").innerText(), /2 routed tasks · 2 ChatGPT consults/);
     await page.locator("#save-settings").click();
     await page.waitForFunction(() => document.querySelector("#settings-status")?.textContent === "Saved. New scheduling waves will use this config.");
@@ -336,7 +345,7 @@ try {
     const screenshot = path.join(evidenceRoot, `usage-saver-${width}.png`);
     await page.screenshot({ path: screenshot, fullPage: true });
     await page.locator("#clear-chat-relay-usage").click();
-    await page.waitForFunction(() => document.querySelector(".chat-relay-usage")?.textContent.includes("0 estimated tokens saved"));
+    await page.waitForFunction(() => document.querySelector(".chat-relay-usage")?.textContent.includes("Token usage unavailable"));
     assert.match(await page.locator("#settings-status").textContent(), /usage log cleared/);
     await relay.locator("xpath=..").click();
     assert.equal(await page.locator('[data-setting="chat_relay.offload_level"]').count(), 0, "turning off ChatGPT left child settings visible");

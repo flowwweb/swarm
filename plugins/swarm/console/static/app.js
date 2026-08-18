@@ -2,7 +2,7 @@ const state = {
   token: "",
   overview: null,
   config: null,
-  chatRelayUsage: { consultations: 0, routed_tasks: 0, estimated_tokens_saved: 0, events: [] },
+  chatRelayUsage: { consultations: 0, routed_tasks: 0, reported_usage_consultations: 0, partial_usage_consultations: 0, unavailable_usage_consultations: 0, reported_input_tokens: 0, reported_output_tokens: 0, reported_total_tokens: 0, savings_status: "unavailable", claim_limit: "No savings claim: provider usage is unavailable or no equivalent local baseline exists.", events: [] },
   changes: {},
   view: "swarm",
   readOnly: false,
@@ -20,6 +20,7 @@ const CHAT_RELAY_LEVELS = [
   { value: "max", label: "Max", hint: "Every eligible task" },
 ];
 const CHAT_RELAY_LEVEL_VALUES = CHAT_RELAY_LEVELS.map((level) => level.value);
+const CHAT_RELAY_ROUTING_LABELS = { auto: "Auto", always_local: "Always local", always_cloud: "Always cloud" };
 const CHAT_RELAY_ENABLED = { path: "chat_relay.enabled", value: true };
 
 const settingGroups = [
@@ -42,6 +43,7 @@ const settingGroups = [
       ["execution.max_reasoning", "Reasoning ceiling", "select", "Highest requested reasoning", ["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"]],
       ["execution.usage_saver", "Usage Saver", "boolean", "Reduce avoidable coordination churn"],
       ["chat_relay.enabled", "Save Codex usage with ChatGPT", "boolean", "Offload eligible work to ChatGPT so your Codex usage goes further."],
+      ["chat_relay.routing_mode", "ChatGPT routing mode", "select", "Auto uses ChatGPT only for self-contained advisory work. Local-boundary work stays here.", ["auto", "always_local", "always_cloud"], CHAT_RELAY_ENABLED],
       ["chat_relay.offload_level", "ChatGPT offload level", "range", "Light is selective. Max routes every eligible task to ChatGPT.", "chatRelayLevels", CHAT_RELAY_ENABLED],
       ["chat_relay.default_model", "Standard ChatGPT model", "select", "Used for routine eligible consultations.", ["gpt-5.6-luna", "pro"], CHAT_RELAY_ENABLED],
       ["chat_relay.default_effort", "Standard reasoning", "select", "Default visible reasoning level.", ["minimal", "low", "medium", "high", "xhigh", "pro"], CHAT_RELAY_ENABLED],
@@ -384,10 +386,14 @@ function renderSettings() {
 function renderChatRelayUsage() {
   const usage = state.chatRelayUsage || {};
   const events = Array.isArray(usage.events) ? usage.events.slice(-5).reverse() : [];
+  const reportedCount = Number(usage.reported_usage_consultations || 0);
+  const usageSummary = reportedCount
+    ? `${formatCount(usage.reported_input_tokens || 0)} in · ${formatCount(usage.reported_output_tokens || 0)} out · ${formatCount(usage.reported_total_tokens || 0)} total provider-reported tokens`
+    : "Token usage unavailable from the provider";
   const log = events.length
-    ? `<ul class="chat-relay-log">${events.map((event) => `<li><span>${escapeHTML(event.task_id || "Unbound consult")} · ${escapeHTML(event.purpose)} · ${escapeHTML(event.model)}</span><b>~${formatCount(event.estimated_tokens_saved)} tokens</b></li>`).join("")}</ul>`
+    ? `<ul class="chat-relay-log">${events.map((event) => `<li><span>${escapeHTML(event.task_id || "Unbound consult")} · ${escapeHTML(event.purpose)} · ${escapeHTML(event.model)}</span><b>${event.usage_status === "reported" ? `${formatCount(event.total_tokens)} tokens` : escapeHTML(event.usage_status === "partial" ? "Partial usage" : "Usage unavailable")}</b></li>`).join("")}</ul>`
     : `<p class="chat-relay-empty">No ChatGPT-routed tasks yet.</p>`;
-  return `<div class="chat-relay-usage" aria-live="polite"><div class="chat-relay-summary"><strong>${formatCount(usage.estimated_tokens_saved)} estimated tokens saved</strong><span>${formatCount(usage.routed_tasks)} routed task${usage.routed_tasks === 1 ? "" : "s"} · ${formatCount(usage.consultations)} ChatGPT consult${usage.consultations === 1 ? "" : "s"}</span></div>${log}<div class="chat-relay-usage-foot"><small>Estimate: relay prompt + ChatGPT reply, roughly 4 bytes per token. Not billing or quota data.</small><button class="text-button" id="clear-chat-relay-usage" type="button"${state.readOnly ? " disabled" : ""}>Clear log</button></div></div>`;
+  return `<div class="chat-relay-usage" aria-live="polite"><div class="chat-relay-summary"><strong>${escapeHTML(usageSummary)}</strong><span>${formatCount(usage.routed_tasks)} routed task${usage.routed_tasks === 1 ? "" : "s"} · ${formatCount(usage.consultations)} ChatGPT consult${usage.consultations === 1 ? "" : "s"}</span></div>${log}<div class="chat-relay-usage-foot"><small>${escapeHTML(usage.claim_limit || "No savings claim: provider usage is unavailable or no equivalent local baseline exists.")}</small><button class="text-button" id="clear-chat-relay-usage" type="button"${state.readOnly ? " disabled" : ""}>Clear log</button></div></div>`;
 }
 
 function renderField([path, label, type, hint, options, condition]) {
@@ -399,7 +405,7 @@ function renderField([path, label, type, hint, options, condition]) {
   if (type === "boolean") {
     control = `<label class="switch"><input data-setting="${path}" type="checkbox" ${value ? "checked" : ""}${disabled} aria-label="${escapeHTML(label)}"><span aria-hidden="true"></span></label>`;
   } else if (type === "select") {
-    control = `<select data-setting="${path}"${disabled} aria-label="${escapeHTML(label)}">${options.map((option) => `<option value="${option}" ${option === value ? "selected" : ""}>${option}</option>`).join("")}</select>`;
+    control = `<select data-setting="${path}"${disabled} aria-label="${escapeHTML(label)}">${options.map((option) => `<option value="${option}" ${option === value ? "selected" : ""}>${escapeHTML(CHAT_RELAY_ROUTING_LABELS[option] || option)}</option>`).join("")}</select>`;
   } else if (type === "range") {
     const range = options === "chatRelayLevels" ? CHAT_RELAY_LEVELS : [];
     const index = Math.max(0, range.findIndex((item) => item.value === value));
@@ -441,7 +447,7 @@ async function saveSettings() {
 
 async function refreshChatRelayUsage() {
   if (getSettingValue("chat_relay.enabled") !== true) {
-    state.chatRelayUsage = { consultations: 0, routed_tasks: 0, estimated_tokens_saved: 0, events: [] };
+    state.chatRelayUsage = { consultations: 0, routed_tasks: 0, reported_usage_consultations: 0, partial_usage_consultations: 0, unavailable_usage_consultations: 0, reported_input_tokens: 0, reported_output_tokens: 0, reported_total_tokens: 0, savings_status: "unavailable", claim_limit: "No savings claim: provider usage is unavailable or no equivalent local baseline exists.", events: [] };
     renderSettings();
     return;
   }
