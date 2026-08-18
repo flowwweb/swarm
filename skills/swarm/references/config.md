@@ -87,6 +87,10 @@ Configuration cannot make an unsafe or hidden coordination path valid:
 | `hive.retention_strategy` | Compact lesson retention policy | adaptive; default adaptive |
 | `hive.worker_strategy` | Keep useful idle workers warm before retirement | warm_when_useful; default warm_when_useful |
 | `hive.archive_behavior` | Preserve provenance through archive/purge | provenance; default provenance |
+| `chat_relay.enabled` | Keep the optional advice relay available; it never grants execution authority | boolean; default false |
+| `chat_relay.provider` | Advice-relay provider identifier | trimmed text; default codex-chatgpt-control |
+| `chat_relay.surface` | Advice-relay surface | chat only |
+| `chat_relay.mode` | Advice-relay mode | consult only |
 | `boost.enabled` | Make explicit, user-started Boost closeout goals available | boolean; default true |
 | `boost.strategies` | Active Boost performance strategies | non-empty unique list of durable_goal, closeout_first, hands_off, spark_simple_work |
 | `boost.plan_at_remaining_percent` | Prepare substantial closeout goals | 1-100; default 5 |
@@ -94,6 +98,8 @@ Configuration cannot make an unsafe or hidden coordination path valid:
 | `boost.launch_at_remaining_percent` | Launch or resume closeout goals | 1-100; default 1 |
 | `boost.goal_levels` | Existing hierarchy levels eligible for substantial closeout goals | non-empty unique list of lead, doer, review |
 | `boost.spark_model` | Reserve model for simple targeted work | model name; default gpt-5.3-codex-spark |
+| `boost.spark_reasoning` | Reasoning used by the bounded Spark lane | supported reasoning value; default xhigh |
+| `boost.spark_enabled` | Opt into the bounded Spark lane | boolean; default false |
 | `models.<profile>.<role>_model` | Model for CTRL, LEAD, DOER, TASK, SUBTASK, ASSIST, ADVISOR, SPECIALIST, legacy ARCHITECT, or REVIEW in a profile | trimmed model name up to 64 chars; defaults request Sol for CTRL, Terra for LEAD, Luna for DOER/TASK/SUBTASK; MOTHER uses SPECIALIST policy |
 | `models.<profile>.<role>_reasoning` | Reasoning for that role and profile | none, minimal, low, medium, high, xhigh, max, ultra; host/model dependent |
 | `model_capabilities.<MODEL>.provider` | Codex provider ID for a model | trimmed name up to 64 chars |
@@ -233,6 +239,32 @@ computer use for the GPT-5.6 models, including Luna. Read
 Responses-compatible Codex provider and add a capability entry without storing
 credentials in SWARM.
 
+## Spark small-work policy
+
+Spark is an opt-in cost-saving lane, not a general fast model. It is disabled
+by default and may be selected only when all of these conditions hold:
+
+- `boost.spark_enabled = true` and the active strategy list contains
+  `spark_simple_work`;
+- the assignment is the `simple` workload, with no durable closeout, review,
+  architectural, or cross-lane responsibility;
+- the task is bounded, reversible, and easy for the accountable owner to
+  inspect in one pass; and
+- the task needs only shell or web access.
+
+Good Spark work is read-only repository/file inspection, narrow search or
+inventory, deterministic formatting, a typo or copy correction, a small
+documentation edit, or a focused local check with an obvious pass/fail result.
+Spark may prepare a small patch, but the owner retains review, acceptance, and
+release authority.
+
+Never route source-logic or API changes, dependency or lockfile work, schema or
+data migrations, auth, payments, security, secrets, provider actions,
+deployment, destructive commands, computer-use/image work, visual acceptance,
+or ambiguous multi-file changes to Spark. If the task is not clearly on the
+allowlist, keep the configured role model. A Spark receipt is a routing request
+only; it does not prove that the host actually ran Spark.
+
 ## Boost mode
 
 Boost turns the active SWARM outcome into one durable Codex goal per eligible
@@ -260,9 +292,10 @@ The default strategies are all enabled:
   requests. Passive bound-WATCHDOG and terminal/attention observation continue
   without waking owners. Interrupt only for a direct user change, required
   approval or safety boundary, or a genuine human-only blocker.
-- `spark_simple_work`: route only small, targeted, low-risk work to
-  `boost.spark_model` when that model and its separate allowance are available.
-  Keep substantial closeout goals on their configured SWARM role models.
+- `spark_simple_work`: when `boost.spark_enabled` is also true, route only the
+  allowlisted simple work above to `boost.spark_model` at
+  `boost.spark_reasoning`. Keep substantial closeout goals on their configured
+  SWARM role models. The separate toggle is deliberately off by default.
 
 Inside an explicitly Boost-authorized run, use real host-reported remaining
 usage to glide through three stages. With `durable_goal`, plan substantial

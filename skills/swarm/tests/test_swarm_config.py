@@ -30,6 +30,34 @@ class SwarmConfigTests(unittest.TestCase):
         self.assertTrue(exists)
         self.assertFalse(effective["execution"]["usage_saver"])
 
+    def test_spark_is_fail_closed_by_default_and_uses_xhigh(self) -> None:
+        self.assertFalse(config.DEFAULTS["boost"]["spark_enabled"])
+        self.assertEqual(config.DEFAULTS["boost"]["spark_reasoning"], "xhigh")
+        effective, _ = config.load(config.TEMPLATE_PATH)
+        self.assertFalse(effective["boost"]["spark_enabled"])
+        self.assertEqual(effective["boost"]["spark_reasoning"], "xhigh")
+        self.assertEqual(config.SPARK_WORKLOAD, "simple")
+        self.assertEqual(config.SPARK_SAFE_TOOLS, frozenset({"shell", "web"}))
+
+    def test_existing_chat_relay_settings_are_validated_and_preserved(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "config.toml"
+            path.write_text(
+                "[chat_relay]\nenabled = true\nprovider = \"codex-chatgpt-control\"\n"
+                "surface = \"chat\"\nmode = \"consult\"\n",
+                encoding="utf-8",
+            )
+            effective, _ = config.load(path)
+        self.assertEqual(
+            effective["chat_relay"],
+            {
+                "enabled": True,
+                "provider": "codex-chatgpt-control",
+                "surface": "chat",
+                "mode": "consult",
+            },
+        )
+
     def test_role_icons_default_to_enabled_octopus_ctrl_without_mother_authority_icon(self) -> None:
         self.assertTrue(config.DEFAULTS["role_icons"]["enabled"])
         self.assertEqual(config.DEFAULTS["role_icons"]["ctrl"], "🐙")
@@ -438,6 +466,84 @@ class SwarmConfigTests(unittest.TestCase):
         effective, _ = config.load(config.TEMPLATE_PATH)
         with self.assertRaisesRegex(config.ConfigError,"host selected"):
             config.resolve_model_assignment(effective,"doer",surface="subagent",host_actual_model="gpt-5.6-terra",host_receipt="host:model:terra")
+
+    def test_spark_assignment_requires_explicit_opt_in_and_routes_simple_shell_work(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "spark.toml"
+            path.write_text(
+                "[boost]\nspark_enabled = true\n",
+                encoding="utf-8",
+            )
+            effective, _ = config.load(path)
+        receipt = config.resolve_spark_assignment(
+            effective,
+            "doer",
+            surface="subagent",
+            required_tools=("shell",),
+        )
+        self.assertEqual(receipt["model"], "gpt-5.3-codex-spark")
+        self.assertEqual(receipt["reasoning_effort"], "xhigh")
+        self.assertEqual(receipt["actual_model_verification"], "UNVERIFIED")
+
+        disabled, _ = config.load(config.TEMPLATE_PATH)
+        with self.assertRaisesRegex(config.ConfigError, "disabled by boost.spark_enabled"):
+            config.resolve_spark_assignment(
+                disabled,
+                "doer",
+                surface="subagent",
+                required_tools=("shell",),
+            )
+
+    def test_spark_rejects_tools_outside_its_low_risk_boundary(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "spark.toml"
+            path.write_text("[boost]\nspark_enabled = true\n", encoding="utf-8")
+            effective, _ = config.load(path)
+        with self.assertRaisesRegex(config.ConfigError, "unsupported tool.*computer_use"):
+            config.resolve_spark_assignment(
+                effective,
+                "doer",
+                surface="subagent",
+                required_tools=("computer_use",),
+            )
+
+    def test_spark_reasoning_is_configurable_but_must_be_model_supported(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "spark.toml"
+            path.write_text(
+                "[boost]\nspark_enabled = true\nspark_reasoning = \"medium\"\n",
+                encoding="utf-8",
+            )
+            effective, _ = config.load(path)
+        receipt = config.resolve_spark_assignment(
+            effective,
+            "doer",
+            surface="codex_task",
+            required_tools=("web",),
+        )
+        self.assertEqual(receipt["reasoning_effort"], "medium")
+
+    def test_spark_cli_emits_a_receipt_and_rejects_disabled_default(self) -> None:
+        completed = subprocess.run(
+            [
+                sys.executable,
+                str(SCRIPT),
+                "--path",
+                str(config.TEMPLATE_PATH),
+                "spark",
+                "--role",
+                "doer",
+                "--surface",
+                "subagent",
+                "--required-tool",
+                "shell",
+            ],
+            capture_output=True,
+            check=False,
+            text=True,
+        )
+        self.assertEqual(completed.returncode, 2)
+        self.assertIn("disabled by boost.spark_enabled", completed.stderr)
 
 
 if __name__ == "__main__":

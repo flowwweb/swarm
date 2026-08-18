@@ -19,6 +19,19 @@ Use the shallowest structure that can finish the accepted objective. `CTRL_DIREC
 
 Preserve every explicit user-selected model, provider, service tier, and reasoning level exactly across CTRL and all assignments. SWARM may recommend a change but never applies one unless the user explicitly asks SWARM to choose or change it; if the host cannot honor the selection, report the exact blocker instead of substituting. Only when the user delegates that choice may SWARM resolve it from the active profile, route tier, and execution bounds. Treat fast-tier and turbo settings as host-dependent preferences, never proof or a safety exception. Load [model-providers.md](references/model-providers.md) when selecting or probing a model/provider.
 
+Spark is a separate, opt-in lane for extremely low-risk small work. It is
+disabled by default and may handle only read-only inspection, narrow search or
+inventory, deterministic formatting, typo/copy/documentation edits, or a
+focused local check with an obvious result. Keep source logic, APIs,
+dependencies, schemas/data, auth, payments, security, secrets, provider or
+deployment actions, destructive commands, computer-use/image work, visual
+acceptance, and ambiguous multi-file changes on the configured role model.
+Require the `simple` workload and shell/web tools; a task outside that boundary
+must fail closed rather than being squeezed into Spark. Use
+`boost.spark_reasoning` (default `xhigh`) only after `boost.spark_enabled` and
+the `spark_simple_work` strategy are both active. The setting changes routing
+preference, never ownership, review, acceptance, or release authority.
+
 ## CORE
 
 Keep the runtime—not prompts—as the canonical state, ownership, artifact identity, and acceptance authority. Before mutation, establish an evidence-backed execution brief: user outcome and context, canonical state, binding invariants/non-goals, dependencies/risks, approach, and proof. Preserve project conventions unless bounded inspection proves greenfield; escalate material ambiguity, conflict, inaccessible authority, or missing evidence. Explicit user direction outranks SWARM defaults. Make reversible, evidence-backed choices inside the owner’s authority; ask only the smallest decision that changes intent, canonical truth, scope, cost, risk, or the reserved approval boundary.

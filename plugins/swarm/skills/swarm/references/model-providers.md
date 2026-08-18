@@ -88,4 +88,6 @@ with the observed result.
 
 The packaged catalog keeps `gpt-5.3-codex-spark` on simple shell/web work and
 keeps computer-use work on the configured GPT-5.6 models, including Luna. Spark
-is text-only during its research preview and is not a large-goal fallback.
+is text-only during its research preview and is not a large-goal fallback. Its
+separate small-work toggle is off by default; even when enabled, it is limited
+to the allowlist in [config.md](config.md#spark-small-work-policy).

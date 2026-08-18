@@ -64,6 +64,12 @@ DEFAULTS: dict[str, Any] = {
     "turbo": {"enabled": False},
     "efficiency": {"mode":"BALANCED", "doer_wip_limit":3},
     "hive": {"enabled": True, "cleanup_strategy":"adaptive", "retention_strategy":"adaptive", "worker_strategy":"warm_when_useful", "archive_behavior":"provenance"},
+    "chat_relay": {
+        "enabled": False,
+        "provider": "codex-chatgpt-control",
+        "surface": "chat",
+        "mode": "consult",
+    },
     "boost": {
         "enabled": True,
         "strategies": [
@@ -77,6 +83,8 @@ DEFAULTS: dict[str, Any] = {
         "launch_at_remaining_percent": 1,
         "goal_levels": ["lead", "doer", "review"],
         "spark_model": "gpt-5.3-codex-spark",
+        "spark_reasoning": "xhigh",
+        "spark_enabled": False,
     },
     "models": {
         "high": {
@@ -194,6 +202,8 @@ DEFAULTS: dict[str, Any] = {
 ALLOWED_SUBAGENT_WORK = {"exploration", "implementation", "testing", "review"}
 BOOST_STRATEGIES = {"durable_goal", "closeout_first", "hands_off", "spark_simple_work"}
 BOOST_LEVELS = {"lead", "doer", "review"}
+SPARK_SAFE_TOOLS = frozenset({"shell", "web"})
+SPARK_WORKLOAD = "simple"
 # These role goals are a fixed operating invariant, independent of Boost.
 MANDATORY_DURABLE_GOAL_ROLES = frozenset({"lead", "specialist", "architect"})
 MODEL_WORKLOADS = {"simple", "general", "large_goal", "review"}
@@ -389,6 +399,16 @@ def validate(raw: dict[str, Any]) -> None:
     for key, allowed in {"cleanup_strategy":{"adaptive"}, "retention_strategy":{"adaptive"}, "worker_strategy":{"warm_when_useful"}, "archive_behavior":{"provenance"}}.items():
         if key in hive and hive[key] not in allowed: raise ConfigError(f"hive.{key} has unsupported value")
 
+    chat_relay = _expect_table(raw, "chat_relay")
+    _expect_keys(chat_relay, set(DEFAULTS["chat_relay"]), "chat_relay")
+    _boolean(chat_relay, "enabled", "chat_relay")
+    for key in ("provider", "surface", "mode"):
+        _short_text(chat_relay, key, "chat_relay")
+    if chat_relay.get("surface", DEFAULTS["chat_relay"]["surface"]) != "chat":
+        raise ConfigError("chat_relay.surface must be chat")
+    if chat_relay.get("mode", DEFAULTS["chat_relay"]["mode"]) != "consult":
+        raise ConfigError("chat_relay.mode must be consult")
+
     boost = _expect_table(raw, "boost")
     _expect_keys(boost, set(DEFAULTS["boost"]), "boost")
     _boolean(boost, "enabled", "boost")
@@ -421,6 +441,8 @@ def validate(raw: dict[str, Any]) -> None:
         if len(levels) != len(set(levels)):
             raise ConfigError("boost.goal_levels cannot contain duplicates")
     _model_name(boost, "spark_model", "boost")
+    _reasoning_effort(boost, "spark_reasoning", "boost")
+    _boolean(boost, "spark_enabled", "boost")
 
     plan_at = boost.get(
         "plan_at_remaining_percent", DEFAULTS["boost"]["plan_at_remaining_percent"]
@@ -828,6 +850,37 @@ def resolve_model_assignment(
     }
 
 
+def resolve_spark_assignment(
+    effective: dict[str, Any], role: str, *, surface: str,
+    required_tools: tuple[str, ...] = (), route_tier: int = 1,
+    explicit_reasoning: str | None = None,
+) -> dict[str, Any]:
+    """Resolve the opt-in Spark lane and reject work outside its safe scope."""
+    boost = effective["boost"]
+    if not boost["spark_enabled"]:
+        raise ConfigError("Spark routing is disabled by boost.spark_enabled")
+    if "spark_simple_work" not in boost["strategies"]:
+        raise ConfigError("Spark routing requires boost.strategies to include spark_simple_work")
+    if not isinstance(required_tools, tuple):
+        raise ConfigError("required_tools must be a tuple of non-empty strings")
+    unsupported = sorted(set(required_tools) - SPARK_SAFE_TOOLS)
+    if unsupported:
+        raise ConfigError(
+            "Spark is limited to simple shell/web work; unsupported tool(s): "
+            + ", ".join(unsupported)
+        )
+    return resolve_model_assignment(
+        effective,
+        role,
+        surface=surface,
+        route_tier=route_tier,
+        workload=SPARK_WORKLOAD,
+        required_tools=required_tools,
+        explicit_model=boost["spark_model"],
+        explicit_reasoning=explicit_reasoning or boost["spark_reasoning"],
+    )
+
+
 def _plugin_version() -> str:
     try:
         manifest = json.loads(PLUGIN_MANIFEST_PATH.read_text(encoding="utf-8"))
@@ -858,6 +911,11 @@ def feedback_diagnostics(effective: dict[str, Any], exists: bool) -> dict[str, A
         "subagents_enabled": effective["subagents"]["enabled"],
         "boost_enabled": effective["boost"]["enabled"],
         "boost_strategies": effective["boost"]["strategies"],
+        "spark_enabled": effective["boost"]["spark_enabled"],
+        "spark_model": effective["boost"]["spark_model"],
+        "spark_reasoning": effective["boost"]["spark_reasoning"],
+        "spark_workload": SPARK_WORKLOAD,
+        "spark_safe_tools": sorted(SPARK_SAFE_TOOLS),
         "feedback_destination_configured": bool(effective["feedback"]["destination"]),
     }
 
@@ -893,6 +951,12 @@ def parse_args() -> argparse.Namespace:
     assign.add_argument("--explicit-service-tier")
     assign.add_argument("--host-actual-model")
     assign.add_argument("--host-receipt")
+    spark = subparsers.add_parser("spark", help="emit a bounded Spark model-assignment receipt")
+    spark.add_argument("--role", required=True)
+    spark.add_argument("--surface", required=True, choices=("codex_task", "subagent"))
+    spark.add_argument("--route-tier", type=int, choices=(1, 2, 3), default=1)
+    spark.add_argument("--required-tool", action="append", default=[])
+    spark.add_argument("--explicit-reasoning", choices=tuple(REASONING_SCALE))
     subparsers.add_parser("validate", help="validate the config")
     subparsers.add_parser("init", help="create the default config if it is missing")
     return parser.parse_args()
@@ -946,6 +1010,16 @@ def main() -> int:
                 explicit_provider=args.explicit_provider,explicit_service_tier=args.explicit_service_tier,
                 host_actual_model=args.host_actual_model,host_receipt=args.host_receipt,
             ),indent=2))
+            return 0
+        if args.command == "spark":
+            print(json.dumps(resolve_spark_assignment(
+                effective,
+                args.role,
+                surface=args.surface,
+                route_tier=args.route_tier,
+                required_tools=tuple(args.required_tool),
+                explicit_reasoning=args.explicit_reasoning,
+            ), indent=2))
             return 0
         if args.json:
             print(json.dumps({"path": str(path), "exists": exists, "settings": effective}, indent=2))

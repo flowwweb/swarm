@@ -78,6 +78,13 @@ retention_strategy = "adaptive"
 worker_strategy = "warm_when_useful"
 archive_behavior = "provenance"
 
+[chat_relay]
+# Optional, inert ChatGPT advice relay. It never grants execution authority.
+enabled = false
+provider = "codex-chatgpt-control"
+surface = "chat"
+mode = "consult"
+
 [boost]
 # Boost is optional closeout behavior. LEAD and persistent SPECIALIST goals
 # plus CTRL's heartbeat are mandatory and cannot be disabled here.
@@ -95,6 +102,10 @@ launch_at_remaining_percent = 1
 goal_levels = ["lead", "doer", "review"]
 # Reserve model for simple targeted work when its separate allowance is available.
 spark_model = "gpt-5.3-codex-spark"
+# Default Spark effort. The selected model must explicitly declare this level.
+spark_reasoning = "xhigh"
+# Safety gate: Spark is never selected until this is explicitly true.
+spark_enabled = false
 
 [models.high]
 ctrl_model = "gpt-5.6-sol"

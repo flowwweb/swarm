@@ -52,6 +52,9 @@ const settingGroups = [
     title: "Closeout",
     fields: [
       ["boost.enabled", "Boost available", "boolean", "Still requires direct run authorization"],
+      ["boost.spark_enabled", "Spark small-work lane", "boolean", "Off by default; allowlisted simple work only"],
+      ["boost.spark_model", "Spark model", "text", "Must declare the simple workload"],
+      ["boost.spark_reasoning", "Spark reasoning", "select", "Default Xhigh; model-supported", ["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"]],
       ["lifecycle.pin_created_tasks", "Pin new tasks", "boolean", "Keep new SWARM owners visible"],
       ["lifecycle.archive_completed_tasks", "Archive accepted tasks", "boolean", "Terminal acceptance; ambiguity stays open"],
       ["feedback.enabled", "Feedback workflow", "boolean", "On-demand, never automatic submission"],

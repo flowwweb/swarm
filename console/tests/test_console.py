@@ -405,6 +405,19 @@ class SwarmConsoleTests(unittest.TestCase):
         result = console.update_config(self.config, {"execution.usage_saver": True})
         self.assertTrue(result["settings"]["execution"]["usage_saver"])
 
+    def test_spark_small_work_lane_is_off_by_default_and_configurable(self) -> None:
+        before = console.redacted_config_snapshot(self.config)
+        self.assertFalse(before["settings"]["boost"]["spark_enabled"])
+        self.assertEqual(before["settings"]["boost"]["spark_reasoning"], "xhigh")
+        self.assertIn("boost.spark_enabled", before["editable"])
+        self.assertIn("boost.spark_reasoning", before["editable"])
+        result = console.update_config(
+            self.config,
+            {"boost.spark_enabled": True, "boost.spark_reasoning": "medium"},
+        )
+        self.assertTrue(result["settings"]["boost"]["spark_enabled"])
+        self.assertEqual(result["settings"]["boost"]["spark_reasoning"], "medium")
+
     def test_portal_start_setting_defaults_on_and_can_be_disabled(self) -> None:
         before = console.redacted_config_snapshot(self.config)
         self.assertTrue(before["settings"]["console"]["open_on_start"])
