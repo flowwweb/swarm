@@ -66,6 +66,7 @@ class ChatRelayBlocker(StrEnum):
     PROVIDER_ARTIFACT_REQUIRED = "provider_artifact_required"
     PROVIDER_ADAPTER_REQUIRED = "provider_adapter_required"
     PROVIDER_ARTIFACT_UNAVAILABLE = "provider_artifact_unavailable"
+    PROVIDER_RESPONSE_UNAVAILABLE = "provider_response_unavailable"
 
 
 _SAFE_PROVIDER = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")

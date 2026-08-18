@@ -240,9 +240,12 @@ class CodexChatGPTControlAdapter:
             if require_asset and assets:
                 text = "Provider image generated; see the asset receipt."
             else:
-                text = ""
-        if not text.strip():
-            raise ValueError("visible Chat adapter returned no advisory text")
+                blocker = ChatRelayBlocker.PROVIDER_ARTIFACT_UNAVAILABLE if require_asset else ChatRelayBlocker.PROVIDER_RESPONSE_UNAVAILABLE
+                detail = f": {blocker_message}" if blocker_message else ""
+                raise ChatRelayTransportError(
+                    f"visible Chat adapter returned no response{detail}",
+                    blocker=blocker,
+                )
         if not isinstance(receipt, str) or not receipt.strip():
             raise ValueError("visible Chat adapter returned no host receipt")
         capability = self.capability()

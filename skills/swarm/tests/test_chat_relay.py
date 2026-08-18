@@ -19,6 +19,7 @@ from skills.swarm.runtime.chat_relay import (
     ChatRelayRoute,
     ChatRelayRoutingMode,
     ChatRelayTransportReceipt,
+    ChatRelayTransportError,
     build_chat_relay_context,
     consult_chat_relay,
     choose_chat_relay,
@@ -411,6 +412,27 @@ class ChatRelayTests(unittest.TestCase):
                     context=context,
                     adapter=adapter,
                 )
+
+    def test_empty_provider_response_falls_back_locally(self) -> None:
+        class EmptyAdapter(FakeAdapter):
+            def send_consult(self, prompt: str, *, model: str, effort: str) -> ChatRelayResponse:
+                raise ChatRelayTransportError(
+                    "visible Chat adapter returned no response",
+                    blocker=ChatRelayBlocker.PROVIDER_RESPONSE_UNAVAILABLE,
+                )
+
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "plan.md").write_text("bounded plan", encoding="utf-8")
+            context = build_chat_relay_context(repo_root=root, objective="review", relative_paths=("plan.md",))
+            result = consult_chat_relay(
+                policy=ChatRelayPolicy(enabled=True),
+                request=request(),
+                context=context,
+                adapter=EmptyAdapter(capability()),
+            )
+            self.assertIs(result.decision.route, ChatRelayRoute.LOCAL_CODEX)
+            self.assertIs(result.decision.blocker, ChatRelayBlocker.PROVIDER_RESPONSE_UNAVAILABLE)
 
     def test_non_advisory_response_is_rejected(self) -> None:
         with self.assertRaisesRegex(ValueError, "cannot own acceptance"):

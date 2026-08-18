@@ -169,6 +169,21 @@ class CodexChatGPTControlAdapterTests(unittest.TestCase):
         self.assertIn("did not expose", response.transport.usage_reason)
         self.assertIsNone(response.transport.input_tokens)
 
+    def test_empty_advisory_result_uses_typed_fallback_error(self) -> None:
+        runner = FakeRunner(SimpleNamespace(
+            output_text="",
+            run_id="run-empty",
+            blocker=SimpleNamespace(code="response_unavailable", message="No response text was visible."),
+        ))
+        adapter = CodexChatGPTControlAdapter(
+            capability_reader=self.capability,
+            confirm_prompt=lambda _: True,
+            runner=runner,
+            agent_factory=lambda **values: values,
+        )
+        with self.assertRaisesRegex(Exception, "response_unavailable"):
+            adapter.send_consult("bounded prompt", model="gpt-5.6-luna", effort="xhigh")
+
 
 if __name__ == "__main__":
     unittest.main()
