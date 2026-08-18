@@ -86,7 +86,7 @@ the path. Being selectable in Codex does not prove those tools work. Run a
 bounded read-only probe before consequential routing and update the SWARM catalog
 with the observed result.
 
-The packaged catalog keeps `gpt-5.3-codex-spark` on simple shell/web work and
+The packaged catalog keeps `gpt-5.3-codex-spark` on simple shell-only work and
 keeps computer-use work on the configured GPT-5.6 models, including Luna. Spark
 is text-only during its research preview and is not a large-goal fallback. Its
 separate small-work toggle is off by default; even when enabled, it is limited

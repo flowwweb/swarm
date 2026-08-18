@@ -26,7 +26,7 @@ focused local check with an obvious result. Keep source logic, APIs,
 dependencies, schemas/data, auth, payments, security, secrets, provider or
 deployment actions, destructive commands, computer-use/image work, visual
 acceptance, and ambiguous multi-file changes on the configured role model.
-Require the `simple` workload and shell/web tools; a task outside that boundary
+Require the `simple` workload and shell-only access; a task outside that boundary
 must fail closed rather than being squeezed into Spark. Use
 `boost.spark_reasoning` (default `xhigh`) only after `boost.spark_enabled` and
 the `spark_simple_work` strategy are both active. The setting changes routing

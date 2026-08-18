@@ -196,7 +196,7 @@ reasoning = ["low", "medium", "high", "xhigh", "max"]
 [model_capabilities."gpt-5.3-codex-spark"]
 provider = "openai"
 workloads = ["simple"]
-tools = ["shell", "web"]
+tools = ["shell"]
 reasoning = ["low", "medium", "high", "xhigh"]
 
 [roles]

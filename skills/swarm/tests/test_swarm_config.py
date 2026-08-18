@@ -37,7 +37,7 @@ class SwarmConfigTests(unittest.TestCase):
         self.assertFalse(effective["boost"]["spark_enabled"])
         self.assertEqual(effective["boost"]["spark_reasoning"], "xhigh")
         self.assertEqual(config.SPARK_WORKLOAD, "simple")
-        self.assertEqual(config.SPARK_SAFE_TOOLS, frozenset({"shell", "web"}))
+        self.assertEqual(config.SPARK_SAFE_TOOLS, frozenset({"shell"}))
 
     def test_existing_chat_relay_settings_are_validated_and_preserved(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -499,13 +499,16 @@ class SwarmConfigTests(unittest.TestCase):
             path = Path(directory) / "spark.toml"
             path.write_text("[boost]\nspark_enabled = true\n", encoding="utf-8")
             effective, _ = config.load(path)
-        with self.assertRaisesRegex(config.ConfigError, "unsupported tool.*computer_use"):
-            config.resolve_spark_assignment(
-                effective,
-                "doer",
-                surface="subagent",
-                required_tools=("computer_use",),
-            )
+        for tool in ("web", "computer_use", "image_input"):
+            with self.subTest(tool=tool), self.assertRaisesRegex(
+                config.ConfigError, rf"unsupported tool.*{tool}"
+            ):
+                config.resolve_spark_assignment(
+                    effective,
+                    "doer",
+                    surface="subagent",
+                    required_tools=(tool,),
+                )
 
     def test_spark_reasoning_is_configurable_but_must_be_model_supported(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -519,7 +522,7 @@ class SwarmConfigTests(unittest.TestCase):
             effective,
             "doer",
             surface="codex_task",
-            required_tools=("web",),
+            required_tools=("shell",),
         )
         self.assertEqual(receipt["reasoning_effort"], "medium")
 

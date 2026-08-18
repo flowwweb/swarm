@@ -149,7 +149,7 @@ DEFAULTS: dict[str, Any] = {
         "gpt-5.3-codex-spark": {
             "provider": "openai",
             "workloads": ["simple"],
-            "tools": ["shell", "web"],
+            "tools": ["shell"],
             "reasoning": ["low", "medium", "high", "xhigh"],
         },
     },
@@ -202,7 +202,7 @@ DEFAULTS: dict[str, Any] = {
 ALLOWED_SUBAGENT_WORK = {"exploration", "implementation", "testing", "review"}
 BOOST_STRATEGIES = {"durable_goal", "closeout_first", "hands_off", "spark_simple_work"}
 BOOST_LEVELS = {"lead", "doer", "review"}
-SPARK_SAFE_TOOLS = frozenset({"shell", "web"})
+SPARK_SAFE_TOOLS = frozenset({"shell"})
 SPARK_WORKLOAD = "simple"
 # These role goals are a fixed operating invariant, independent of Boost.
 MANDATORY_DURABLE_GOAL_ROLES = frozenset({"lead", "specialist", "architect"})
@@ -866,7 +866,7 @@ def resolve_spark_assignment(
     unsupported = sorted(set(required_tools) - SPARK_SAFE_TOOLS)
     if unsupported:
         raise ConfigError(
-            "Spark is limited to simple shell/web work; unsupported tool(s): "
+            "Spark is limited to simple shell-only work; unsupported tool(s): "
             + ", ".join(unsupported)
         )
     return resolve_model_assignment(

@@ -185,7 +185,7 @@
     },
     {
       "id": 15,
-      "prompt": "A small Boost cleanup can use Spark, but the visual QA lane requires computer use. The catalog lists gpt-5.3-codex-spark for simple shell/web work and gpt-5.6-luna for computer_use.",
+      "prompt": "A small Boost cleanup can use Spark, but the visual QA lane requires computer use. The catalog lists gpt-5.3-codex-spark for simple shell-only work and gpt-5.6-luna for computer_use.",
       "expected_output": "CTRL routes the small targeted cleanup to Spark only when its separate allowance is available and routes visual QA to Luna without dropping computer use.",
       "files": [],
       "assertions": [

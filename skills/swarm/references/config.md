@@ -233,7 +233,7 @@ already-dispatched contracts.
 The assigning CTRL or LEAD routes by capability before model preference: the provider/model must be
 available, its workload must fit, and every required tool must be exposed by the
 host and declared for that model. An unlisted model is unverified. The packaged
-catalog keeps `gpt-5.3-codex-spark` on simple shell/web work and declares
+catalog keeps `gpt-5.3-codex-spark` on simple shell-only work and declares
 computer use for the GPT-5.6 models, including Luna. Read
 [model-providers.md](model-providers.md) to connect Kimi, Qwen, or another
 Responses-compatible Codex provider and add a capability entry without storing
@@ -250,11 +250,13 @@ by default and may be selected only when all of these conditions hold:
   architectural, or cross-lane responsibility;
 - the task is bounded, reversible, and easy for the accountable owner to
   inspect in one pass; and
-- the task needs only shell or web access.
+- the task needs shell access only. Spark has no browser controls or web lookup.
 
 Good Spark work is read-only repository/file inspection, narrow search or
 inventory, deterministic formatting, a typo or copy correction, a small
 documentation edit, or a focused local check with an obvious pass/fail result.
+It must stay on the local filesystem and shell; it cannot browse the web or
+control a browser.
 Spark may prepare a small patch, but the owner retains review, acceptance, and
 release authority.
 
