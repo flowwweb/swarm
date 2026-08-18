@@ -485,14 +485,17 @@ try {
     await page.emulateMedia({ reducedMotion: "reduce" });
     await page.waitForFunction(() => {
       const spinner = document.querySelector(".swarm-node.role-lead > .node-title .node-status.is-processing i");
-      return spinner?.isConnected && getComputedStyle(spinner).animationName === "none";
+      if (!spinner?.isConnected) return false;
+      const animationName = getComputedStyle(spinner).animationName;
+      const runningAnimations = spinner.getAnimations().filter((animation) => animation.playState === "running");
+      return ["", "none"].includes(animationName) && runningAnimations.length === 0;
     });
-    assert.equal(
-      await page.locator(".swarm-node.role-lead > .node-title .node-status.is-processing i").evaluate(
-        (spinner) => getComputedStyle(spinner).animationName,
-      ),
-      "none",
-    );
+    const reducedMotion = await page.locator(".swarm-node.role-lead > .node-title .node-status.is-processing i").evaluate((spinner) => ({
+      animationName: getComputedStyle(spinner).animationName,
+      runningAnimations: spinner.getAnimations().filter((animation) => animation.playState === "running").length,
+    }));
+    assert.ok(["", "none"].includes(reducedMotion.animationName));
+    assert.equal(reducedMotion.runningAnimations, 0);
     const hierarchyScreenshot = path.join(evidenceRoot, `hierarchy-${width}.png`);
     await page.screenshot({ path: hierarchyScreenshot, fullPage: true });
     const runtime = {
