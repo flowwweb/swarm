@@ -485,7 +485,7 @@ class ChatExecutorResponse:
 
 @dataclass(frozen=True)
 class ChatExecutorRequest:
-    """A task eligible for a connected local bridge, with explicit capabilities."""
+    """A task eligible for a connected ChatGPT actor, with explicit capabilities."""
 
     purpose: ChatRelayPurpose
     consequence_tier: str
@@ -600,7 +600,7 @@ def render_chat_executor_prompt(
             "RETURN_HOST_RECEIPT: true",
             "SWARM_REMAINS_ACCEPTANCE_OWNER: true",
             context.render(),
-            "END_SWARM_CHATGPT_LOCAL_TASK",
+            "END_SWARM_CHATGPT_ACTOR_TASK",
         )
     )
 
