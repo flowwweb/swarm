@@ -1,10 +1,11 @@
-"""Explicit, opt-in ChatGPT local-work executor boundary.
+"""Capability-driven ChatGPT actor routing for SWARM.
 
-The existing :mod:`chat_relay` module is deliberately advisory-only. This
-module is the separate contract for a host-owned local MCP bridge that can
-read, edit, and run narrowly scoped work. SWARM selects the route and keeps
-acceptance authority; the adapter owns the actual MCP transport and tool
-enforcement.
+SWARM owns actor selection, task envelopes, scope, approvals, receipts, and
+acceptance. A CodexPro, CCCC, or other MCP-compatible runtime remains an
+external provider and owns its transport and host-enforced tool permissions.
+The provider boundary is deliberately narrow so SWARM can use the full set of
+capabilities a connected runtime advertises without bundling that runtime or
+inventing an additional policy ceiling.
 """
 
 from __future__ import annotations
@@ -41,6 +42,13 @@ class ChatExecutorWriteMode(StrEnum):
 class ChatExecutorCommandMode(StrEnum):
     NONE = "none"
     SAFE = "safe"
+
+
+class ChatGPTBridgeTransport(StrEnum):
+    """Transport exposed by an external ChatGPT actor provider."""
+
+    REMOTE_MCP = "remote_mcp"
+    BROWSER_DELIVERY = "browser_delivery"
 
 
 class ChatExecutorBlocker(StrEnum):
@@ -107,6 +115,9 @@ class ChatExecutorCapability:
     user_confirmed: bool = False
     observed_model: str = ""
     observed_effort: str = ""
+    transport: ChatGPTBridgeTransport = ChatGPTBridgeTransport.REMOTE_MCP
+    actor_id: str = ""
+    tool_capabilities: frozenset[str] = frozenset()
 
     def __post_init__(self) -> None:
         if not all(
@@ -136,13 +147,80 @@ class ChatExecutorCapability:
         for label, value in (("model", self.observed_model), ("effort", self.observed_effort)):
             if not isinstance(value, str) or any(character in value for character in "\r\n"):
                 raise ValueError(f"chat executor observed {label} must be a single line")
+        if not isinstance(self.transport, ChatGPTBridgeTransport):
+            raise ValueError("chat executor capability requires a known bridge transport")
+        if not isinstance(self.actor_id, str) or any(character in self.actor_id for character in "\r\n"):
+            raise ValueError("chat executor actor identity must be a single line")
+        if not isinstance(self.tool_capabilities, frozenset) or any(
+            not isinstance(tool, str) or not tool.strip() or any(character in tool for character in "\r\n")
+            for tool in self.tool_capabilities
+        ):
+            raise ValueError("chat executor tool capabilities must be single-line names")
+        tools = set(self.tool_capabilities)
+        tools.update(
+            name
+            for enabled, name in (
+                (self.read_tools, "workspace.read"),
+                (self.write_tools, "workspace.write"),
+                (self.command_tools, "command.safe"),
+                (self.artifact_tools, "artifact.create"),
+            )
+            if enabled
+        )
+        object.__setattr__(self, "tool_capabilities", frozenset(tools))
 
 
-class ChatExecutorAdapter(Protocol):
-    """Host-owned transport for a connected, scope-limited local MCP bridge."""
+@dataclass(frozen=True)
+class ChatGPTActor:
+    """A registered external ChatGPT worker visible to SWARM."""
+
+    actor_id: str
+    provider: str
+    transport: ChatGPTBridgeTransport
+    workspace_scope: str
+    tool_capabilities: frozenset[str]
+    connected: bool
+    host_receipt: str
+    observed_model: str = ""
+    observed_effort: str = ""
+    user_confirmed: bool = False
+
+    def __post_init__(self) -> None:
+        for label, value in (("actor", self.actor_id), ("provider", self.provider), ("receipt", self.host_receipt)):
+            if not isinstance(value, str) or not value.strip() or any(character in value for character in "\r\n"):
+                raise ValueError(f"ChatGPT actor requires a valid {label}")
+        if not isinstance(self.transport, ChatGPTBridgeTransport):
+            raise ValueError("ChatGPT actor requires a known bridge transport")
+        if not isinstance(self.workspace_scope, str) or any(character in self.workspace_scope for character in "\r\n"):
+            raise ValueError("ChatGPT actor workspace scope must be a single line")
+        if not isinstance(self.tool_capabilities, frozenset) or any(
+            not isinstance(tool, str) or not tool.strip() for tool in self.tool_capabilities
+        ):
+            raise ValueError("ChatGPT actor tool capabilities must be non-empty names")
+        if not isinstance(self.connected, bool) or not isinstance(self.user_confirmed, bool):
+            raise ValueError("ChatGPT actor connection flags must be boolean")
+
+    @classmethod
+    def from_capability(cls, capability: ChatExecutorCapability) -> "ChatGPTActor":
+        return cls(
+            actor_id=capability.actor_id or capability.provider,
+            provider=capability.provider,
+            transport=capability.transport,
+            workspace_scope=capability.workspace_scope,
+            tool_capabilities=capability.tool_capabilities,
+            connected=capability.connected,
+            host_receipt=capability.receipt,
+            observed_model=capability.observed_model,
+            observed_effort=capability.observed_effort,
+            user_confirmed=capability.user_confirmed,
+        )
+
+
+class ChatGPTBridgeProvider(Protocol):
+    """External provider contract; the provider implementation is not bundled."""
 
     def capability(self) -> ChatExecutorCapability:
-        """Inspect the connected bridge and its exact tool scope."""
+        """Return a fresh host-observed capability and scope receipt."""
 
     def execute_task(
         self,
@@ -153,7 +231,50 @@ class ChatExecutorAdapter(Protocol):
         write_mode: ChatExecutorWriteMode,
         command_mode: ChatExecutorCommandMode,
     ) -> "ChatExecutorResponse":
-        """Run one task through host-enforced MCP tools."""
+        """Execute one task using only host-enforced provider tools."""
+
+
+# Compatibility name for existing integrations. New code should use the
+# provider/actor vocabulary, while old adapters remain valid providers.
+ChatExecutorAdapter = ChatGPTBridgeProvider
+
+
+class ChatGPTBridgeRegistry:
+    """In-process registry for optional, externally-owned ChatGPT providers."""
+
+    def __init__(self) -> None:
+        self._providers: dict[str, ChatGPTBridgeProvider] = {}
+        self._actors: dict[str, ChatGPTActor] = {}
+
+    def register(self, provider: ChatGPTBridgeProvider) -> ChatGPTActor:
+        capability = provider.capability()
+        actor = ChatGPTActor.from_capability(capability)
+        self._providers[actor.actor_id] = provider
+        self._actors[actor.actor_id] = actor
+        return actor
+
+    def refresh(self, actor_id: str) -> ChatGPTActor:
+        provider = self._providers.get(actor_id)
+        if provider is None:
+            raise KeyError(f"unknown ChatGPT actor: {actor_id}")
+        actor = ChatGPTActor.from_capability(provider.capability())
+        if actor.actor_id != actor_id:
+            raise ValueError("provider changed its actor identity during refresh")
+        self._actors[actor_id] = actor
+        return actor
+
+    def actor(self, actor_id: str) -> ChatGPTActor | None:
+        return self._actors.get(actor_id)
+
+    def provider(self, actor_id: str) -> ChatGPTBridgeProvider | None:
+        return self._providers.get(actor_id)
+
+    def actors(self) -> tuple[ChatGPTActor, ...]:
+        return tuple(self._actors[key] for key in sorted(self._actors))
+
+    def remove(self, actor_id: str) -> None:
+        self._providers.pop(actor_id, None)
+        self._actors.pop(actor_id, None)
 
 
 @dataclass(frozen=True)
@@ -278,16 +399,22 @@ class ChatExecutorTransportError(RuntimeError):
 def render_chat_executor_prompt(
     *, request: ChatExecutorRequest, context: ChatRelayContextPacket, capability: ChatExecutorCapability
 ) -> str:
-    """Build an explicit, bounded task envelope for the MCP host."""
+    """Build the provider-neutral task envelope sent to a registered actor."""
 
     return "\n".join(
         (
-            "SWARM_CHATGPT_LOCAL_TASK_V1",
+            "SWARM_CHATGPT_ACTOR_TASK_V2",
+            f"ACTOR_ID: {capability.actor_id or capability.provider}",
+            f"PROVIDER: {capability.provider}",
+            f"TRANSPORT: {capability.transport.value}",
             f"PURPOSE: {request.purpose.value}",
+            f"CONSEQUENCE_TIER: {request.consequence_tier}",
+            f"TASK_ID: {request.task_id}",
             f"REQUEST_DIGEST: {request.prompt_digest}",
             f"WORKSPACE_SCOPE: {capability.workspace_scope}",
             f"ALLOW_WORKSPACE_WRITES: {str(request.write_intent or request.artifact_production).lower()}",
             f"ALLOW_SAFE_COMMANDS: {str(request.command_intent).lower()}",
+            f"ADVERTISED_TOOLS: {','.join(sorted(capability.tool_capabilities))}",
             "RETURN_HOST_RECEIPT: true",
             "SWARM_REMAINS_ACCEPTANCE_OWNER: true",
             context.render(),
@@ -297,17 +424,33 @@ def render_chat_executor_prompt(
 
 
 def _offload_level_allows_executor(level: ChatRelayOffloadLevel, request: ChatExecutorRequest) -> bool:
-    """Keep ordinary read-only work on the same four-stop slider as advisory work."""
+    """Apply the user's breadth preference, not a hidden capability ceiling.
 
-    if request.write_intent or request.command_intent or request.artifact_production:
-        return level is ChatRelayOffloadLevel.MAX
+    Tool type and consequence are checked separately below. In particular,
+    implementation, commands, artifacts, and T4 work are eligible at Max
+    when the connected provider advertises the required capabilities. They are
+    not forced local merely because they mutate or require acceptance.
+    """
+
     if level is ChatRelayOffloadLevel.LIGHT:
         return request.purpose in {ChatRelayPurpose.PLAN, ChatRelayPurpose.RESEARCH} and request.consequence_tier == "T0"
     if level is ChatRelayOffloadLevel.BALANCED:
-        return request.purpose in {ChatRelayPurpose.PLAN, ChatRelayPurpose.RESEARCH, ChatRelayPurpose.REVIEW} and request.consequence_tier in {"T0", "T1"}
+        return request.purpose in {
+            ChatRelayPurpose.PLAN,
+            ChatRelayPurpose.RESEARCH,
+            ChatRelayPurpose.REVIEW,
+            ChatRelayPurpose.TESTING,
+            ChatRelayPurpose.IMAGEGEN,
+        } and request.consequence_tier in {"T0", "T1"}
     if level is ChatRelayOffloadLevel.HIGH:
-        return request.purpose in {ChatRelayPurpose.PLAN, ChatRelayPurpose.RESEARCH, ChatRelayPurpose.REVIEW, ChatRelayPurpose.TESTING} and request.consequence_tier in {"T0", "T1"}
-    return request.purpose in {ChatRelayPurpose.PLAN, ChatRelayPurpose.RESEARCH, ChatRelayPurpose.REVIEW, ChatRelayPurpose.TESTING, ChatRelayPurpose.IMAGEGEN} and request.consequence_tier in {"T0", "T1"}
+        return request.purpose in {
+            ChatRelayPurpose.PLAN,
+            ChatRelayPurpose.RESEARCH,
+            ChatRelayPurpose.REVIEW,
+            ChatRelayPurpose.TESTING,
+            ChatRelayPurpose.IMAGEGEN,
+        } and request.consequence_tier in {"T0", "T1", "T2", "T3"}
+    return True
 
 
 def choose_chat_executor(
@@ -335,8 +478,6 @@ def choose_chat_executor(
         return local("routing mode is Always local", ChatExecutorBlocker.ROUTING_MODE_LOCAL)
     if not request.local_boundary:
         return local("local MCP execution requires an explicit local boundary", ChatExecutorBlocker.LOCAL_BOUNDARY_REQUIRED)
-    if request.consequence_tier == "T4":
-        return local("T4 work remains with local SWARM acceptance", ChatExecutorBlocker.CONSEQUENCE_TOO_HIGH)
     if not _offload_level_allows_executor(relay_policy.offload_level, request):
         return local(
             f"chat executor offload level {relay_policy.offload_level.value} keeps this work local",

@@ -107,8 +107,8 @@ Configuration cannot make an unsafe or hidden coordination path valid:
 | `execution.min_reasoning` | Global reasoning floor applied after every profile, role override, and route adjustment | none, minimal, low, medium, high, xhigh, max, ultra; compatibility-neutral default none |
 | `execution.max_reasoning` | Global reasoning ceiling applied after every profile, role override, and route adjustment | none, minimal, low, medium, high, xhigh, max, ultra; compatibility-neutral default ultra; must be at least min |
 | `execution.usage_saver` | Prefer lower-churn coordination for new work without weakening delivery | boolean; default false |
-| `chat_relay.enabled` | Permit bounded, visible ChatGPT advisory consultations | boolean; default false |
-| `chat_relay.provider` | Host-owned visible-browser adapter identifier | safe identifier; default `codex-chatgpt-control` |
+| `chat_relay.enabled` | Permit ChatGPT routing through a visible relay or registered actor provider | boolean; default false |
+| `chat_relay.provider` | External ChatGPT bridge/provider identifier | safe identifier; default `codex-chatgpt-control` |
 | `chat_relay.surface` | User-visible ChatGPT surface for consultations | `chat` only |
 | `chat_relay.mode` | Consultation authority mode | `consult` only |
 | `chat_relay.routing_mode` | Explicit local/cloud routing preference | `auto`, `always_local`, or `always_cloud`; default `auto` |
@@ -117,10 +117,10 @@ Configuration cannot make an unsafe or hidden coordination path valid:
 | `chat_relay.default_effort` | ChatGPT reasoning level requested for normal offloads | supported level; default `xhigh` |
 | `chat_relay.challenging_model` | ChatGPT model requested for explicitly challenging offloads | `gpt-5.6-luna`, `gpt-5.6-sol`, or `pro`; default `pro` |
 | `chat_relay.challenging_effort` | ChatGPT reasoning level requested for explicitly challenging offloads | supported level; default `pro` |
-| `chat_relay.executor_enabled` | Permit the separate host-owned ChatGPT local MCP executor | boolean; default false |
-| `chat_relay.executor_write_mode` | Local executor file authority | `read_only` or `workspace`; default `read_only` |
-| `chat_relay.executor_command_mode` | Local executor command authority | `none` or `safe`; default `none` |
-| `chat_relay.executor_require_confirmation` | Confirm each local executor task before dispatch | boolean; default true |
+| `chat_relay.executor_enabled` | Permit registered ChatGPT actors to use their host-advertised local tools | boolean; default false |
+| `chat_relay.executor_write_mode` | Actor file authority within the host-reported scope | `read_only` or `workspace`; default `read_only` |
+| `chat_relay.executor_command_mode` | Actor command authority within the provider allowlist | `none` or `safe`; default `none` |
+| `chat_relay.executor_require_confirmation` | Confirm each actor task before dispatch | boolean; default true |
 | `logging.task_event_limit` | Bounded recent task-transition metadata retained in memory; never prompts, responses, artifact bodies, or credentials | 8-256; default 64 |
 | `proof.policy_version` | Deterministic proof-planner policy | trimmed identifier; default lean-v1 |
 | `proof.impacted_selection` | Select focused impacted gates when dependency reach is known | boolean; default true |
@@ -280,25 +280,25 @@ or a non-critical spawn refusal, the efficiency ledger records the
 `usage_saver:` reason; critical-path, proof, authority, model, and reasoning
 requirements remain unchanged.
 
-### Visible ChatGPT advisory relay
+### ChatGPT relay and actor routing
 
-The optional `chat_relay` table is a usage-saving consultation seam, not a
-provider route or a quota feature. When enabled, SWARM may ask a compatible
-visible browser bridge to consult the ChatGPT Chat surface for bounded T0/T1
-planning, research, or review. The bridge must expose a signed-in visible
-session, its observed configuration, and a host receipt; the user must confirm
-each prompt at action time.
+The optional `chat_relay` table is a usage-saving routing seam, not a quota
+feature. When enabled, SWARM may use a compatible visible browser bridge for
+bounded consultation or route a registered ChatGPT actor for implementation,
+testing, commands, image generation, and other work supported by its advertised
+tools. The bridge must expose its observed configuration and a host receipt;
+the user must confirm each task when confirmation is enabled.
 
-`chat_relay.routing_mode = auto` is the recommended setting. It offers only
-self-contained advisory work to the visible Chat surface. `always_local`
-keeps every task local. `always_cloud` requests cloud routing for eligible
-bounded advisory work but never overrides local-boundary, mutation, consequence,
-visible-session, or confirmation checks. `chat_relay.offload_level` then gives
-Auto four route-breadth stops: `light` is selective, `balanced` is the default
-common set, `high` widens to most eligible T0/T1 consultations, and `max`
-includes every otherwise-eligible advisory consultation. Local files,
-terminals, browser state, writes, tests, and artifacts remain local at every
-level.
+`chat_relay.routing_mode = auto` is the recommended setting. It chooses between
+local Codex and eligible registered actors. `always_local` keeps every task
+local. `always_cloud` allows every otherwise-eligible actor route but never
+overrides local-boundary, provider capability, scope, permission, or
+confirmation checks. `chat_relay.offload_level` gives four route-breadth
+stops: `light` is selective, `balanced` is the default common set, `high`
+widens the eligible consequence range, and `max` includes every task whose
+provider advertises the required tools. Local files, terminals, writes, tests,
+and artifacts are not inherently local; they require a registered provider
+with the matching host capability.
 
 Relay telemetry is provider-reported only. The local ledger preserves request,
 response, thread, asset, latency, and token fields when the bridge returns
@@ -310,12 +310,13 @@ an eligible consultation as challenging to request Pro intelligence. The host's
 visible selection and receipt remain authoritative; if the bridge cannot verify
 the requested selection, it must fail closed to local Codex.
 
-The relay never sends writes, uploads, commands, or artifact-producing work. It
-never handles T2-T4 consequence tiers, owns acceptance, replaces independent
-review, or changes the selected Codex model, reasoning, tier, or authority. If
-the session, bridge, or confirmation is missing, SWARM falls back to local
-Codex. The adapter is expected to use the visible user-directed workflow (for
-example, the community `codex-chatgpt-control` pattern), not hidden endpoints,
+The visible relay never sends writes, uploads, commands, or local artifact work.
+A registered actor may do those things only when its provider advertises the
+capability and the host policy permits it. No route owns acceptance, replaces
+independent review, or changes the selected Codex model, reasoning, tier, or
+authority. If the session, provider, or confirmation is missing, SWARM falls
+back to local Codex. The provider is expected to use a visible user-directed
+workflow (for example, the community `codex-chatgpt-control` pattern), not hidden endpoints,
 cookies, private APIs, scraping, account pooling, or quota bypasses. See
 [chat-relay.md](chat-relay.md) for the contract and claim limits.
 

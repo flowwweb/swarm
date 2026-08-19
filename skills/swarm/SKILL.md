@@ -21,7 +21,16 @@ Use the shallowest structure that can finish the accepted objective. `CTRL_DIREC
 
 Preserve every explicit user-selected model, provider, service tier, and reasoning level exactly across CTRL and all assignments. SWARM may recommend a change but never applies one unless the user explicitly asks SWARM to choose or change it; if the host cannot honor the selection, report the exact blocker instead of substituting. Only when the user delegates that choice may SWARM resolve it from the active profile, route tier, and execution bounds. Treat fast-tier and turbo settings as host-dependent preferences, never proof or a safety exception. Load [model-providers.md](references/model-providers.md) when selecting or probing a model/provider.
 
-An optional visible ChatGPT relay may provide bounded T0/T1 planning, research, review, testing advice, or explicitly requested provider image generation through a user-confirmed browser bridge. It has no repo-write, command, test-execution, local-artifact, or acceptance authority. Missing bridge capability always falls back to local Codex. A separate `chat_relay.executor_enabled` setting may opt into a host-owned local MCP executor; it requires an explicit local boundary, exact workspace scope, reported tools, confirmation, and a host receipt. SWARM still owns verification and acceptance. Load [chat-relay.md](references/chat-relay.md) before configuring either path.
+An optional ChatGPT actor route can handle planning, research, implementation,
+testing, image generation, and review through an externally registered CodexPro,
+CCCC, or other MCP-compatible provider. SWARM does not bundle those runtimes:
+it owns the actor contract, task envelope, capability negotiation, routing,
+receipts, verification, and acceptance; the provider owns transport and
+host-enforced tools. Missing capability falls back to local Codex. A connected
+actor may use every tool it advertises within its exact workspace scope and
+approval policy, including writes and commands; SWARM does not add an
+arbitrary MAX-only or T4 exclusion. Load [chat-relay.md](references/chat-relay.md)
+before configuring the route.
 
 ## SETTINGS
 
@@ -48,21 +57,21 @@ guaranteed route: normal consultations request the configured normal profile
 (Luna/Xhigh by default) and explicitly challenging consultations request the
 configured challenging profile (Pro/Pro by default). The visible ChatGPT selection must
 match that requested profile and carry a host receipt; otherwise SWARM uses
-local Codex. ChatGPT output remains transient advisory context unless the
-separate local MCP executor is explicitly enabled. The executor may use only
-host-reported workspace, safe-command, and artifact tools within the reported
-scope; it never gains unscoped machine authority, and SWARM retains
-verification and acceptance authority. See
+  local Codex. ChatGPT output may be an actor task result when a bridge provider
+  is registered. The provider may use only host-reported tools within its
+  reported scope; it never gains unscoped machine authority, and SWARM retains
+  verification and acceptance authority. See
 [config.md](references/config.md) and [chat-relay.md](references/chat-relay.md)
 for the field-level contract. `chat_relay.offload_level` is a four-stop control:
 Light is selective, Balanced is the default, High widens the eligible set, and
-Max routes every otherwise-eligible task. Testing advice may route, but test
-execution remains local. Image generation requires an explicit provider-owned
-artifact request and a provider asset receipt; it never grants local write or
-acceptance authority.
+  Max routes every task for which the provider advertises the required tools.
+  Testing, implementation, commands, and image generation may all route when
+  their capabilities and approvals are present. A provider receipt is evidence
+  of host activity, not proof of acceptance; SWARM still verifies the resulting
+  artifact and tests.
 `chat_relay.routing_mode` makes the local/cloud choice explicit: Auto is the
-recommended default, Always local disables cloud routing, and Always cloud is
-still restricted to self-contained advisory work. Transport receipts preserve
+recommended default, Always local disables cloud routing, and Always cloud
+allows every otherwise-eligible registered actor route. Transport receipts preserve
 provider IDs, assets, latency, and token fields when exposed; missing usage is
 reported as unavailable and never estimated as savings.
 

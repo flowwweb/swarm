@@ -39,26 +39,25 @@ max_reasoning = "ultra"
 usage_saver = false
 
 [chat_relay]
-# Optional visible ChatGPT consultation for bounded planning, research, or
-# review. It is advisory-only, user-confirmed, and disabled until a compatible
-# visible browser bridge is deliberately configured.
+# Optional ChatGPT routing through a visible relay or registered external
+# actor provider. It is disabled until a compatible bridge is configured.
 enabled = false
 provider = "codex-chatgpt-control"
 surface = "chat"
 mode = "consult"
-# Auto chooses cloud only for self-contained advisory work; Always local
-# disables the relay; Always cloud still refuses local-boundary or mutating work.
+# Auto follows actor capabilities; Always local disables cloud routing; Always
+# cloud allows every otherwise-eligible registered actor route.
 routing_mode = "auto"
 # Four-level route breadth: light is selective; max uses ChatGPT for every
-# otherwise-eligible advisory task.
+# task the registered provider can handle.
 offload_level = "balanced"
-# Default bounded consult: Luna at Xhigh. Challenging consults request Pro.
+# Default ChatGPT worker: Luna at Xhigh. Challenging work requests Pro.
 default_model = "gpt-5.6-luna"
 default_effort = "xhigh"
 challenging_model = "pro"
 challenging_effort = "pro"
-# Separate opt-in path for a host-owned local MCP bridge. The bridge supplies
-# credentials and the exact workspace scope; SWARM never infers them here.
+# Separate opt-in path for a registered external local MCP actor. The provider
+# supplies credentials, tools, and exact workspace scope; SWARM never infers them.
 executor_enabled = false
 executor_write_mode = "read_only"
 executor_command_mode = "none"

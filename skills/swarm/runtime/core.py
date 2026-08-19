@@ -18,7 +18,7 @@ from .incidents import IncidentLedger, IncidentRecord
 from .request_ledger import RequestStore, RequestStoreError
 from .chat_relay import ChatRelayAdapter, ChatRelayCapability, ChatRelayConsultation, ChatRelayContextPacket, ChatRelayPolicy, ChatRelayRequest, ChatRelayDecision, choose_chat_relay, consult_chat_relay
 from .chat_relay_usage import ChatRelayUsageLedger
-from .chat_executor import ChatExecutorAdapter, ChatExecutorCapability, ChatExecutorPolicy, ChatExecutorRequest, ChatExecutorDecision, ChatExecutorResult, choose_chat_executor, execute_chat_task
+from .chat_executor import ChatGPTActor, ChatGPTBridgeRegistry, ChatGPTBridgeProvider, ChatExecutorAdapter, ChatExecutorCapability, ChatExecutorPolicy, ChatExecutorRequest, ChatExecutorDecision, ChatExecutorResult, choose_chat_executor, execute_chat_task
 
 
 class Role(StrEnum):
@@ -778,7 +778,7 @@ class Worker:
 class Swarm:
     architecture_version: int=1; contract_versions: dict[str,int]=field(default_factory=dict); topology: set[str]=field(default_factory=set)
     workers: dict[str,Worker]=field(default_factory=dict); tasks: dict[str,Task]=field(default_factory=dict); leases: dict[str,str]=field(default_factory=dict); events: list[tuple[str,str]]=field(default_factory=list); task_event_limit:int=64; telemetry: dict[str,object]=field(default_factory=dict); telemetry_events:list[dict[str,object]]=field(default_factory=list); artifact_index:dict[str,str]=field(default_factory=dict); provenance_index:dict[str,str]=field(default_factory=dict); ctrl_evidence_ledger:dict[str,CtrlEvidence]=field(default_factory=dict); ctrl_decision_sets:dict[str,CtrlDecisionSet]=field(default_factory=dict); ctrl_phase:str="intake"; hive:dict[str,HiveRecord]=field(default_factory=dict); hive_enabled:bool=True; heartbeat_stall_after:int=2; correction_receipts:dict[str,None]=field(default_factory=dict); lane_width:int=3; wip_limit:int=3; efficiency_ledger:list[dict[str,str]]=field(default_factory=list); mode:EfficiencyMode=EfficiencyMode.BALANCED; default_review_horizon:int=30; max_review_horizon:int=60; direct_work_horizon:int=20; usage_saver:bool=False; chat_relay_policy:ChatRelayPolicy=field(default_factory=ChatRelayPolicy); chat_executor_policy:ChatExecutorPolicy=field(default_factory=ChatExecutorPolicy)
-    scheduled_wakeups:dict[str,int]=field(default_factory=dict); ctrl_feed_messages:list[CtrlFeedMessage]=field(default_factory=list); ctrl_feed_cursor:int=0; ctrl_feed_superseded_by:dict[str,str]=field(default_factory=dict); ctrl_feed_events:dict[str,CtrlFeedEvent]=field(default_factory=dict); ctrl_feed_consumed_events:set[str]=field(default_factory=set); ctrl_authorizations:dict[str,UserCtrlAuthorization]=field(default_factory=dict); ctrl_materialization_intents:dict[str,CtrlMaterializationIntent]=field(default_factory=dict); consumed_ctrl_authorizations:set[str]=field(default_factory=set); consumed_ctrl_intents:set[str]=field(default_factory=set); proof_policy_version:str="lean-v1"; proof_impacted_selection:bool=True; proof_receipt_reuse:bool=True; proof_gate_timeout_seconds:int=120; proof_browser_freshness_seconds:int=86400; proof_provider_freshness_seconds:int=3600; proof_transient_retry_limit:int=1; request_store:RequestStore|None=field(default=None,repr=False,compare=False); request_continuity_enabled:bool=False; request_feed_sequence_floor:int=0; _host_authority_public_key:int|None=field(default=None,repr=False,compare=False); _gate_capability:object=field(default_factory=object,init=False,repr=False,compare=False); _watchdog_capability:object=field(default_factory=object,init=False,repr=False,compare=False); _owner_context_capability:object=field(default_factory=object,init=False,repr=False,compare=False); _ctrl_authority_capability:object=field(default_factory=object,init=False,repr=False,compare=False)
+    scheduled_wakeups:dict[str,int]=field(default_factory=dict); ctrl_feed_messages:list[CtrlFeedMessage]=field(default_factory=list); ctrl_feed_cursor:int=0; ctrl_feed_superseded_by:dict[str,str]=field(default_factory=dict); ctrl_feed_events:dict[str,CtrlFeedEvent]=field(default_factory=dict); ctrl_feed_consumed_events:set[str]=field(default_factory=set); ctrl_authorizations:dict[str,UserCtrlAuthorization]=field(default_factory=dict); ctrl_materialization_intents:dict[str,CtrlMaterializationIntent]=field(default_factory=dict); consumed_ctrl_authorizations:set[str]=field(default_factory=set); consumed_ctrl_intents:set[str]=field(default_factory=set); proof_policy_version:str="lean-v1"; proof_impacted_selection:bool=True; proof_receipt_reuse:bool=True; proof_gate_timeout_seconds:int=120; proof_browser_freshness_seconds:int=86400; proof_provider_freshness_seconds:int=3600; proof_transient_retry_limit:int=1; request_store:RequestStore|None=field(default=None,repr=False,compare=False); request_continuity_enabled:bool=False; request_feed_sequence_floor:int=0; chat_bridge_registry:ChatGPTBridgeRegistry=field(default_factory=ChatGPTBridgeRegistry); _host_authority_public_key:int|None=field(default=None,repr=False,compare=False); _gate_capability:object=field(default_factory=object,init=False,repr=False,compare=False); _watchdog_capability:object=field(default_factory=object,init=False,repr=False,compare=False); _owner_context_capability:object=field(default_factory=object,init=False,repr=False,compare=False); _ctrl_authority_capability:object=field(default_factory=object,init=False,repr=False,compare=False)
     def __setattr__(self, name:str, value:object) -> None:
         if name=="_host_authority_public_key" and name in self.__dict__: raise InvariantError("host authority verifier is immutable after Swarm construction")
         if name=="usage_saver" and not isinstance(value,bool): raise InvariantError("usage saver must be boolean")
@@ -1321,12 +1321,41 @@ class Swarm:
     def consult_chat_relay(self, request:ChatRelayRequest, context:ChatRelayContextPacket, adapter:ChatRelayAdapter, usage_ledger:ChatRelayUsageLedger|None=None) -> ChatRelayConsultation:
         """Run one host-confirmed advisory consult without transferring authority."""
         return consult_chat_relay(policy=self.chat_relay_policy, request=request, context=context, adapter=adapter, ledger=usage_ledger or ChatRelayUsageLedger())
+    def register_chatgpt_provider(self, provider:ChatGPTBridgeProvider) -> ChatGPTActor:
+        """Register one externally-owned ChatGPT actor for this SWARM instance."""
+        return self.chat_bridge_registry.register(provider)
+    def refresh_chatgpt_actor(self, actor_id:str) -> ChatGPTActor:
+        """Refresh provider capabilities before a new route is selected."""
+        return self.chat_bridge_registry.refresh(actor_id)
+    def chatgpt_actors(self) -> tuple[ChatGPTActor,...]:
+        """Return the currently registered external ChatGPT actors."""
+        return self.chat_bridge_registry.actors()
+    def _chatgpt_provider_for(self, actor_id:str|None=None) -> ChatGPTBridgeProvider|None:
+        target=actor_id or self.chat_relay_policy.provider
+        direct=self.chat_bridge_registry.provider(target)
+        if direct is not None: return direct
+        for actor in self.chat_bridge_registry.actors():
+            if actor.provider==target:
+                return self.chat_bridge_registry.provider(actor.actor_id)
+        return None
     def select_chat_executor(self, request:ChatExecutorRequest, capability:ChatExecutorCapability) -> ChatExecutorDecision:
-        """Select an opt-in, scope-limited ChatGPT MCP execution route."""
+        """Select a capability-driven ChatGPT actor route."""
         return choose_chat_executor(policy=self.chat_executor_policy, relay_policy=self.chat_relay_policy, request=request, capability=capability)
     def execute_chat_task(self, request:ChatExecutorRequest, context:ChatRelayContextPacket, adapter:ChatExecutorAdapter, usage_ledger:ChatRelayUsageLedger|None=None) -> ChatExecutorResult:
-        """Run one host-owned local MCP task; SWARM retains acceptance authority."""
+        """Run one provider task through an explicit external actor."""
         return execute_chat_task(policy=self.chat_executor_policy, relay_policy=self.chat_relay_policy, request=request, context=context, adapter=adapter, ledger=usage_ledger or ChatRelayUsageLedger())
+    def execute_registered_chatgpt_task(self, request:ChatExecutorRequest, context:ChatRelayContextPacket, *, actor_id:str|None=None, usage_ledger:ChatRelayUsageLedger|None=None) -> ChatExecutorResult:
+        """Route through the configured external actor, failing closed if absent."""
+        provider=self._chatgpt_provider_for(actor_id)
+        if provider is not None:
+            return self.execute_chat_task(request, context, provider, usage_ledger)
+        capability=ChatExecutorCapability(
+            connected=False,
+            provider=actor_id or self.chat_relay_policy.provider,
+            receipt="no-registered-chatgpt-bridge",
+            workspace_scope="",
+        )
+        return ChatExecutorResult(self.select_chat_executor(request, capability))
     def dedup(self, identity:str, *, verification:bool=False, uncertainty:bool=False) -> DedupDecision:
         found=bool(self.discover(identity)); decision=DedupDecision.EXECUTE if not found or verification or uncertainty else DedupDecision.REUSE; self._record("efficiency_ledger",{"kind":"dedup","decision":decision.value,"reason":"verification" if verification else "uncertainty" if uncertainty else "usage_saver:reuse_canonical" if self.usage_saver else "canonical_artifact"}); return decision
     def publish_ctrl_feed(self, actor:Role, message:CtrlFeedMessage) -> str:

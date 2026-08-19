@@ -73,7 +73,7 @@ SWARM does not turn every request into a fleet.
 
 This keeps quick work quick while giving larger objectives durable lanes that can progress in parallel.
 
-> **ChatGPT offload.** Turn on **Save Codex usage with ChatGPT**, then choose **Light**, **Balanced**, **High**, or **Max**: Light is selective and Max routes every eligible task. By default this is advisory work. To let ChatGPT read, edit, or test a repository, also enable **Allow local ChatGPT work** and connect a host-owned local MCP bridge with an exact workspace scope. SWARM keeps verification and acceptance local; count savings only from provider receipts.
+> **ChatGPT offload.** Turn on **Save Codex usage with ChatGPT**, then choose **Light**, **Balanced**, **High**, or **Max**: Light is selective and Max routes every task the connected provider can handle. Enable **Allow local ChatGPT work** and register an external CodexPro, CCCC, or compatible MCP bridge to let ChatGPT read, edit, test, run approved commands, or create provider-owned assets inside its exact workspace scope. SWARM keeps verification and acceptance local; count savings only from provider receipts.
 
 ## What you get back
 

@@ -6,6 +6,8 @@ from tempfile import TemporaryDirectory
 import unittest
 
 from skills.swarm.runtime.chat_executor import (
+    ChatGPTBridgeRegistry,
+    ChatGPTBridgeTransport,
     ChatExecutorBlocker,
     ChatExecutorCapability,
     ChatExecutorCommandMode,
@@ -24,6 +26,7 @@ from skills.swarm.runtime.chat_relay import (
     ChatRelayPurpose,
     build_chat_relay_context,
 )
+from skills.swarm.runtime.core import Swarm
 
 
 def executor_request(**changes: object) -> ChatExecutorRequest:
@@ -133,7 +136,7 @@ class ChatExecutorTests(unittest.TestCase):
         self.assertIs(command.route, ChatExecutorRoute.LOCAL_CODEX)
         self.assertIs(command.blocker, ChatExecutorBlocker.COMMAND_CAPABILITY_REQUIRED)
 
-    def test_mutating_and_command_work_requires_max_and_reported_tools(self) -> None:
+    def test_mutating_and_command_work_uses_provider_tools_at_selected_level(self) -> None:
         policy = ChatExecutorPolicy(
             enabled=True,
             write_mode=ChatExecutorWriteMode.WORKSPACE,
@@ -146,7 +149,7 @@ class ChatExecutorTests(unittest.TestCase):
             request=request,
             capability=executor_capability(),
         )
-        self.assertIs(high.blocker, ChatExecutorBlocker.OFFLOAD_LEVEL_SELECTION)
+        self.assertIs(high.route, ChatExecutorRoute.CHATGPT_MCP)
         missing_tool = choose_chat_executor(
             policy=policy,
             relay_policy=ChatRelayPolicy(enabled=True, offload_level=ChatRelayOffloadLevel.MAX),
@@ -162,6 +165,63 @@ class ChatExecutorTests(unittest.TestCase):
         )
         self.assertIs(allowed.route, ChatExecutorRoute.CHATGPT_MCP)
         self.assertEqual(allowed.workspace_scope, "C:/workspace/project")
+
+    def test_max_does_not_make_t4_local(self) -> None:
+        policy = ChatExecutorPolicy(
+            enabled=True,
+            write_mode=ChatExecutorWriteMode.WORKSPACE,
+            command_mode=ChatExecutorCommandMode.SAFE,
+        )
+        decision = choose_chat_executor(
+            policy=policy,
+            relay_policy=ChatRelayPolicy(enabled=True, offload_level=ChatRelayOffloadLevel.MAX),
+            request=executor_request(consequence_tier="T4", write_intent=True, command_intent=True),
+            capability=executor_capability(),
+        )
+        self.assertIs(decision.route, ChatExecutorRoute.CHATGPT_MCP)
+
+    def test_capability_derives_advertised_tool_names(self) -> None:
+        capability = executor_capability(tool_capabilities=frozenset())
+        self.assertEqual(
+            capability.tool_capabilities,
+            frozenset({"workspace.read", "workspace.write", "command.safe", "artifact.create"}),
+        )
+
+    def test_registry_exposes_external_provider_as_a_swarm_actor(self) -> None:
+        adapter = FakeExecutor(executor_capability(transport=ChatGPTBridgeTransport.BROWSER_DELIVERY))
+        registry = ChatGPTBridgeRegistry()
+        actor = registry.register(adapter)
+        self.assertEqual(actor.actor_id, "cccc")
+        self.assertEqual(actor.provider, "cccc")
+        self.assertIs(actor.transport, ChatGPTBridgeTransport.BROWSER_DELIVERY)
+        self.assertIs(registry.provider(actor.actor_id), adapter)
+
+    def test_swarm_can_route_through_registered_provider_without_bundling_it(self) -> None:
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "brief.md").write_text("route me", encoding="utf-8")
+            context = build_chat_relay_context(repo_root=root, objective="route me", relative_paths=("brief.md",))
+            adapter = FakeExecutor(executor_capability())
+            swarm = Swarm(
+                chat_relay_policy=ChatRelayPolicy(
+                    enabled=True,
+                    provider="cccc",
+                    offload_level=ChatRelayOffloadLevel.MAX,
+                ),
+                chat_executor_policy=ChatExecutorPolicy(
+                    enabled=True,
+                    write_mode=ChatExecutorWriteMode.WORKSPACE,
+                    command_mode=ChatExecutorCommandMode.SAFE,
+                ),
+            )
+            actor = swarm.register_chatgpt_provider(adapter)
+            result = swarm.execute_registered_chatgpt_task(
+                executor_request(write_intent=True, command_intent=True, task_id="registered-1"),
+                context,
+                actor_id=actor.actor_id,
+            )
+        self.assertIs(result.decision.route, ChatExecutorRoute.CHATGPT_MCP)
+        self.assertIsNotNone(result.response)
 
     def test_execution_uses_host_receipt_and_preserves_acceptance_boundary(self) -> None:
         with TemporaryDirectory() as directory:

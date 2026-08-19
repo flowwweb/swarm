@@ -1,11 +1,17 @@
-# Visible ChatGPT advisory relay
+# ChatGPT actor and bridge routing
 
-SWARM can optionally use the user's visible ChatGPT Chat session for bounded
-planning, research, review, testing advice, and explicitly requested provider
-image generation. This is a routing seam—not a ChatGPT model provider, an API
-proxy, or a way to avoid usage limits.
+SWARM can optionally route work to ChatGPT through an externally owned CodexPro,
+CCCC, or other MCP-compatible bridge. The visible Chat surface remains a valid
+advisory transport, while a registered local actor may also read, edit, run
+tests, execute approved commands, and create provider-owned artifacts. This is
+a routing seam—not a ChatGPT model provider, an API proxy, or a way to avoid
+usage limits.
 
-## Contract
+## Visible Chat relay contract
+
+The following bounded rules apply to the visible browser relay. They do not
+limit a separately registered local actor provider; that route is defined in
+the actor contract below.
 
 The relay is eligible only when all of these conditions hold:
 
@@ -56,26 +62,35 @@ execution owner, and the bound LEAD/REVIEW route remains the only acceptance
 authority. A missing capability falls back to local Codex instead of blocking
 the task.
 
-## Optional local MCP executor
+## External ChatGPT actor provider
 
-`chat_relay.executor_enabled` is a separate, disabled-by-default path. It is
-the only route that may ask ChatGPT to read, edit, or run work in a local
-workspace. It does not make the visible browser relay a filesystem bridge.
+`chat_relay.executor_enabled` enables the local actor route. The provider is
+still external: SWARM registers it at runtime and does not install, start, or
+bundle CodexPro, CCCC, a tunnel, or browser credentials. The provider is the
+data-plane; SWARM remains the control-plane.
 
-The executor is eligible only when the caller marks an explicit local
-boundary, the four-level offload setting permits the work, and a host-owned
-adapter reports a connected bridge, an exact workspace scope, the required
-read/write/command/artifact tools, the observed model and reasoning effort,
-and a host receipt. User confirmation is required by default.
+An actor is eligible when the caller marks an explicit local boundary, the
+four-level offload setting permits the work, and the registered provider reports
+a connected bridge, an exact workspace scope, the required read/write/command/
+artifact tools, the observed model and reasoning effort, and a host receipt.
+User confirmation is required by default.
 
 `executor_write_mode = "read_only"` never permits writes. `workspace` permits
 only the host's reported workspace write tools. `executor_command_mode =
 "none"` never permits commands; `safe` still depends on the bridge's own
-approved command capability. T4 work remains local, and mutation, command, or
-artifact work requires `Max` so the user makes that breadth choice explicitly.
-The adapter returns a host receipt and transient result; SWARM performs the
+approved command capability. The offload slider is the user's breadth choice,
+not a hidden safety ceiling: at `Max`, T4, mutation, command, testing, and
+artifact work can route when the provider advertises the required capabilities.
+The actor returns a host receipt and transient result; SWARM performs the
 tests, review, artifact checks, and final acceptance. A transport or capability
 failure falls back to local SWARM.
+
+SWARM registers providers through `ChatGPTBridgeRegistry` and exposes each one
+as a `ChatGPTActor`. Registration captures the provider ID, actor identity,
+transport, exact workspace scope, advertised tools, observed model/effort, and
+host receipt. CodexPro can register as a direct remote-MCP actor; CCCC can
+register as a browser-delivery plus remote-MCP actor. Both remain optional
+runtime integrations and are not plugin dependencies.
 
 When repo context is useful, the local side may build a transient context packet
 from an explicit tuple of repo-relative UTF-8 file paths. The packet rejects
@@ -85,11 +100,11 @@ file and for the rendered packet. It does not discover files, include the whole
 repo, or persist prompt content in SWARM state. Sending that packet remains a
 separate visible action requiring confirmation.
 
-## Adapter boundary
+## Provider boundary
 
-The default adapter identifier is `codex-chatgpt-control`. It represents the
+The default provider identifier is `codex-chatgpt-control`. It represents the
 community pattern of controlling an already-visible ChatGPT session through a
-user-directed browser bridge. The adapter must not use hidden endpoints,
+user-directed bridge. A provider must not use hidden endpoints,
 private API calls, cookie or local-storage extraction, UI scraping outside the
 visible session, account pooling, programmatic quota extraction, or bypasses of
 provider limits.
@@ -100,18 +115,16 @@ zero cost, or quota savings from a local routing decision. ChatGPT Work and
 Codex/agentic usage may have separate or shared host accounting; only the host
 can report the current usage and limits.
 
-The runtime exposes a small host boundary: an adapter reports
-`ChatRelayCapability`, then receives one rendered prompt through `send_consult`
-or, for an explicit `imagegen` request, `send_image`. SWARM calls the selected
-method only after routing succeeds; a blocked, unconfirmed, unknown, or
-mismatched capability is returned as a local fallback and the adapter is not
-called. Image routing additionally requires a provider asset receipt. Every
-response carries its own host receipt, observed model and effort, and a typed
-transport receipt. The transport receipt preserves provider/client thread,
-request, response, asset, model, latency, and usage fields when the bridge
-returns them. Missing fields stay empty or `UNAVAILABLE`; SWARM never invents
-IDs, latency, or tokens. Text responses remain transient advisory context and
-provider images remain unaccepted provider artifacts.
+The runtime exposes a provider boundary: a registered actor reports
+`ChatExecutorCapability`, then receives one rendered task envelope through
+`execute_task`. SWARM calls the provider only after routing succeeds; a
+blocked, unconfirmed, unknown, or mismatched capability is returned as a local
+fallback and the provider is not called. Every response carries its own host
+receipt, observed model and effort, changed paths, and a typed transport
+receipt. The transport receipt preserves provider/client thread, request,
+response, asset, model, latency, and usage fields when the bridge returns them.
+Missing fields stay empty or `UNAVAILABLE`; SWARM never invents IDs, latency,
+or tokens. Provider output is execution evidence, not acceptance.
 
 The Python adapter reuses the already-observed visible model and effort instead
 of applying a second configuration mutation during send. This avoids a
