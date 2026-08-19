@@ -53,8 +53,9 @@ challenging model/effort fields select the requested visible ChatGPT profile;
 the observed visible selection must match it and include a host receipt or the
 relay stays local. The advisory route never gives ChatGPT write, command,
 upload, artifact, or acceptance authority. The separate executor settings
-permit only the host-reported local MCP tools and scope described in
-`chat-relay.md`; they never grant unscoped machine authority or acceptance.
+permit only the host-reported actor tools and exact local or cloud workspace
+scope described in `chat-relay.md`; they never grant unscoped machine authority
+or acceptance.
 
 ## Fixed invariants
 
@@ -117,7 +118,7 @@ Configuration cannot make an unsafe or hidden coordination path valid:
 | `chat_relay.default_effort` | ChatGPT reasoning level requested for normal offloads | supported level; default `xhigh` |
 | `chat_relay.challenging_model` | ChatGPT model requested for explicitly challenging offloads | `gpt-5.6-luna`, `gpt-5.6-sol`, or `pro`; default `pro` |
 | `chat_relay.challenging_effort` | ChatGPT reasoning level requested for explicitly challenging offloads | supported level; default `pro` |
-| `chat_relay.executor_enabled` | Permit registered ChatGPT actors to use their host-advertised local tools | boolean; default false |
+| `chat_relay.executor_enabled` | Permit registered ChatGPT actors to use their host-advertised workspace tools | boolean; default false |
 | `chat_relay.executor_write_mode` | Actor file authority within the host-reported scope | `read_only` or `workspace`; default `read_only` |
 | `chat_relay.executor_command_mode` | Actor command authority within the provider allowlist | `none` or `safe`; default `none` |
 | `chat_relay.executor_require_confirmation` | Confirm each actor task before dispatch | boolean; default true |
@@ -292,13 +293,15 @@ the user must confirm each task when confirmation is enabled.
 `chat_relay.routing_mode = auto` is the recommended setting. It chooses between
 local Codex and eligible registered actors. `always_local` keeps every task
 local. `always_cloud` allows every otherwise-eligible actor route but never
-overrides local-boundary, provider capability, scope, permission, or
+overrides workspace-location, provider capability, scope, permission, or
 confirmation checks. `chat_relay.offload_level` gives four route-breadth
 stops: `light` is selective, `balanced` is the default common set, `high`
 widens the eligible consequence range, and `max` includes every task whose
 provider advertises the required tools. Local files, terminals, writes, tests,
 and artifacts are not inherently local; they require a registered provider
-with the matching host capability.
+with the matching host capability and advertised local or cloud workspace
+location. Local requests require an explicit local boundary. Cloud requests
+use a provider-reported cloud scope.
 
 Relay telemetry is provider-reported only. The local ledger preserves request,
 response, thread, asset, latency, and token fields when the bridge returns

@@ -53,6 +53,14 @@ class ChatGPTBridgeTransport(StrEnum):
     BROWSER_DELIVERY = "browser_delivery"
 
 
+class ChatExecutorWorkspaceLocation(StrEnum):
+    """Where the provider's exact workspace lives relative to this host."""
+
+    LOCAL = "local"
+    CLOUD = "cloud"
+    ANY = "any"
+
+
 @dataclass(frozen=True)
 class ChatGPTBridgeManifest:
     """Credential-free durable identity for an optional external provider."""
@@ -61,6 +69,7 @@ class ChatGPTBridgeManifest:
     actor_id: str
     transport: ChatGPTBridgeTransport
     workspace_scope: str = ""
+    workspace_location: ChatExecutorWorkspaceLocation = ChatExecutorWorkspaceLocation.LOCAL
     tool_capabilities: frozenset[str] = frozenset()
     endpoint: str = ""
     enabled: bool = True
@@ -79,6 +88,8 @@ class ChatGPTBridgeManifest:
             raise ValueError("ChatGPT bridge manifest requires a known transport")
         if not isinstance(self.workspace_scope, str) or any(character in self.workspace_scope for character in "\r\n"):
             raise ValueError("ChatGPT bridge manifest workspace scope must be a single line")
+        if not isinstance(self.workspace_location, ChatExecutorWorkspaceLocation) or self.workspace_location is ChatExecutorWorkspaceLocation.ANY:
+            raise ValueError("ChatGPT bridge manifest requires a local or cloud workspace location")
         if not isinstance(self.tool_capabilities, frozenset) or any(
             not isinstance(tool, str) or not tool.strip() or any(character in tool for character in "\r\n")
             for tool in self.tool_capabilities
@@ -100,6 +111,7 @@ class ChatGPTBridgeManifest:
             actor_id=actor.actor_id,
             transport=actor.transport,
             workspace_scope=actor.workspace_scope,
+            workspace_location=actor.workspace_location,
             tool_capabilities=actor.tool_capabilities,
             endpoint=endpoint,
             enabled=enabled,
@@ -117,6 +129,7 @@ class ChatGPTBridgeManifest:
             actor_id=value.get("actor_id", ""),
             transport=ChatGPTBridgeTransport(value.get("transport", "remote_mcp")),
             workspace_scope=value.get("workspace_scope", ""),
+            workspace_location=ChatExecutorWorkspaceLocation(value.get("workspace_location", "local")),
             tool_capabilities=frozenset(tools),
             endpoint=value.get("endpoint", ""),
             enabled=value.get("enabled", True),
@@ -130,6 +143,7 @@ class ChatGPTBridgeManifest:
             "actor_id": self.actor_id,
             "transport": self.transport.value,
             "workspace_scope": self.workspace_scope,
+            "workspace_location": self.workspace_location.value,
             "tool_capabilities": sorted(self.tool_capabilities),
             "endpoint": self.endpoint,
             "enabled": self.enabled,
@@ -140,6 +154,7 @@ class ChatExecutorBlocker(StrEnum):
     DISABLED = "disabled"
     ROUTING_MODE_LOCAL = "routing_mode_local"
     LOCAL_BOUNDARY_REQUIRED = "local_boundary_required"
+    WORKSPACE_LOCATION_REQUIRED = "workspace_location_required"
     CONSEQUENCE_TOO_HIGH = "consequence_too_high"
     OFFLOAD_LEVEL_SELECTION = "offload_level_selection"
     BRIDGE_NOT_CONNECTED = "bridge_not_connected"
@@ -156,7 +171,7 @@ class ChatExecutorBlocker(StrEnum):
 
 @dataclass(frozen=True)
 class ChatExecutorPolicy:
-    """Persisted preference for a local MCP executor, disabled by default."""
+    """Persisted preference for an external ChatGPT actor, disabled by default."""
 
     enabled: bool = False
     write_mode: ChatExecutorWriteMode = ChatExecutorWriteMode.READ_ONLY
@@ -203,6 +218,7 @@ class ChatExecutorCapability:
     transport: ChatGPTBridgeTransport = ChatGPTBridgeTransport.REMOTE_MCP
     actor_id: str = ""
     tool_capabilities: frozenset[str] = frozenset()
+    workspace_location: ChatExecutorWorkspaceLocation = ChatExecutorWorkspaceLocation.LOCAL
 
     def __post_init__(self) -> None:
         if not all(
@@ -234,6 +250,8 @@ class ChatExecutorCapability:
                 raise ValueError(f"chat executor observed {label} must be a single line")
         if not isinstance(self.transport, ChatGPTBridgeTransport):
             raise ValueError("chat executor capability requires a known bridge transport")
+        if not isinstance(self.workspace_location, ChatExecutorWorkspaceLocation) or self.workspace_location is ChatExecutorWorkspaceLocation.ANY:
+            raise ValueError("chat executor capability requires a local or cloud workspace location")
         if not isinstance(self.actor_id, str) or any(character in self.actor_id for character in "\r\n"):
             raise ValueError("chat executor actor identity must be a single line")
         if not isinstance(self.tool_capabilities, frozenset) or any(
@@ -266,6 +284,7 @@ class ChatGPTActor:
     tool_capabilities: frozenset[str]
     connected: bool
     host_receipt: str
+    workspace_location: ChatExecutorWorkspaceLocation = ChatExecutorWorkspaceLocation.LOCAL
     observed_model: str = ""
     observed_effort: str = ""
     user_confirmed: bool = False
@@ -278,6 +297,8 @@ class ChatGPTActor:
             raise ValueError("ChatGPT actor requires a known bridge transport")
         if not isinstance(self.workspace_scope, str) or any(character in self.workspace_scope for character in "\r\n"):
             raise ValueError("ChatGPT actor workspace scope must be a single line")
+        if not isinstance(self.workspace_location, ChatExecutorWorkspaceLocation) or self.workspace_location is ChatExecutorWorkspaceLocation.ANY:
+            raise ValueError("ChatGPT actor requires a local or cloud workspace location")
         if not isinstance(self.tool_capabilities, frozenset) or any(
             not isinstance(tool, str) or not tool.strip() for tool in self.tool_capabilities
         ):
@@ -295,6 +316,7 @@ class ChatGPTActor:
             tool_capabilities=capability.tool_capabilities,
             connected=capability.connected,
             host_receipt=capability.receipt,
+            workspace_location=capability.workspace_location,
             observed_model=capability.observed_model,
             observed_effort=capability.observed_effort,
             user_confirmed=capability.user_confirmed,
@@ -474,6 +496,7 @@ class ChatExecutorRequest:
     artifact_production: bool = False
     challenging: bool = False
     task_id: str = ""
+    workspace_location: ChatExecutorWorkspaceLocation = ChatExecutorWorkspaceLocation.ANY
 
     def __post_init__(self) -> None:
         if not isinstance(self.purpose, ChatRelayPurpose):
@@ -497,6 +520,10 @@ class ChatExecutorRequest:
             raise ValueError("chat executor request flags must be boolean")
         if not isinstance(self.task_id, str) or any(character in self.task_id for character in "\r\n"):
             raise ValueError("chat executor task identity must be a single line")
+        if not isinstance(self.workspace_location, ChatExecutorWorkspaceLocation):
+            raise ValueError("chat executor request workspace location must be local, cloud, or any")
+        if self.workspace_location is ChatExecutorWorkspaceLocation.CLOUD and self.local_boundary:
+            raise ValueError("a cloud workspace request cannot carry a local boundary")
 
 
 @dataclass(frozen=True)
@@ -512,6 +539,7 @@ class ChatExecutorDecision:
     observed_effort: str = ""
     requested_model: str = ""
     requested_effort: str = ""
+    workspace_location: ChatExecutorWorkspaceLocation = ChatExecutorWorkspaceLocation.LOCAL
 
     def __post_init__(self) -> None:
         if not isinstance(self.route, ChatExecutorRoute):
@@ -522,6 +550,8 @@ class ChatExecutorDecision:
             raise ValueError("chat executor decisions require a provider")
         if not isinstance(self.host_receipt, str) or not self.host_receipt.strip():
             raise ValueError("chat executor decisions require a host receipt")
+        if not isinstance(self.workspace_location, ChatExecutorWorkspaceLocation):
+            raise ValueError("chat executor decisions require a typed workspace location")
         if self.acceptance_authority:
             raise ValueError("chat executor decisions cannot own acceptance")
 
@@ -562,6 +592,8 @@ def render_chat_executor_prompt(
             f"TASK_ID: {request.task_id}",
             f"REQUEST_DIGEST: {request.prompt_digest}",
             f"WORKSPACE_SCOPE: {capability.workspace_scope}",
+            f"WORKSPACE_LOCATION: {capability.workspace_location.value}",
+            f"REQUESTED_WORKSPACE_LOCATION: {request.workspace_location.value}",
             f"ALLOW_WORKSPACE_WRITES: {str(request.write_intent or request.artifact_production).lower()}",
             f"ALLOW_SAFE_COMMANDS: {str(request.command_intent).lower()}",
             f"ADVERTISED_TOOLS: {','.join(sorted(capability.tool_capabilities))}",
@@ -622,23 +654,39 @@ def choose_chat_executor(
             blocker=blocker,
             requested_model=requested_model,
             requested_effort=requested_effort,
+            workspace_location=capability.workspace_location,
         )
 
     if not policy.enabled or not relay_policy.enabled:
         return local("ChatGPT local work is disabled", ChatExecutorBlocker.DISABLED)
     if relay_policy.routing_mode.value == "always_local":
         return local("routing mode is Always local", ChatExecutorBlocker.ROUTING_MODE_LOCAL)
-    if not request.local_boundary:
-        return local("local MCP execution requires an explicit local boundary", ChatExecutorBlocker.LOCAL_BOUNDARY_REQUIRED)
+    if request.workspace_location is ChatExecutorWorkspaceLocation.LOCAL and not request.local_boundary:
+        return local("local workspace execution requires an explicit local boundary", ChatExecutorBlocker.LOCAL_BOUNDARY_REQUIRED)
     if not _offload_level_allows_executor(relay_policy.offload_level, request):
         return local(
             f"chat executor offload level {relay_policy.offload_level.value} keeps this work local",
             ChatExecutorBlocker.OFFLOAD_LEVEL_SELECTION,
         )
     if not capability.connected:
-        return local("a connected local MCP bridge is required", ChatExecutorBlocker.BRIDGE_NOT_CONNECTED)
+        return local("a connected ChatGPT actor bridge is required", ChatExecutorBlocker.BRIDGE_NOT_CONNECTED)
     if not capability.workspace_scope.strip():
         return local("the bridge must report an exact workspace scope", ChatExecutorBlocker.WORKSPACE_SCOPE_REQUIRED)
+    if request.local_boundary and capability.workspace_location is not ChatExecutorWorkspaceLocation.LOCAL:
+        return local(
+            "the connected actor is not a local workspace provider",
+            ChatExecutorBlocker.WORKSPACE_LOCATION_REQUIRED,
+        )
+    if (
+        request.workspace_location is not ChatExecutorWorkspaceLocation.ANY
+        and request.workspace_location is not capability.workspace_location
+    ):
+        return local(
+            f"the connected actor reports a {capability.workspace_location.value} workspace",
+            ChatExecutorBlocker.WORKSPACE_LOCATION_REQUIRED,
+        )
+    if capability.workspace_location is ChatExecutorWorkspaceLocation.LOCAL and not request.local_boundary:
+        return local("a local actor requires an explicit local boundary", ChatExecutorBlocker.LOCAL_BOUNDARY_REQUIRED)
     if not capability.read_tools:
         return local("the bridge must report read tools", ChatExecutorBlocker.READ_CAPABILITY_REQUIRED)
     if (request.write_intent or request.artifact_production) and policy.write_mode is not ChatExecutorWriteMode.WORKSPACE:
@@ -661,10 +709,11 @@ def choose_chat_executor(
         return local("user confirmation is required before local ChatGPT work", ChatExecutorBlocker.CONFIRMATION_REQUIRED)
     return ChatExecutorDecision(
         ChatExecutorRoute.CHATGPT_MCP,
-        "scoped ChatGPT local work may use the connected MCP bridge",
+        "scoped ChatGPT work may use the connected actor bridge",
         capability.provider,
         capability.receipt,
         workspace_scope=capability.workspace_scope,
+        workspace_location=capability.workspace_location,
         observed_model=capability.observed_model,
         observed_effort=capability.observed_effort,
         requested_model=requested_model,

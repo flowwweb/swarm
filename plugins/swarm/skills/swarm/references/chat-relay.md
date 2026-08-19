@@ -2,15 +2,16 @@
 
 SWARM can optionally route work to ChatGPT through an externally owned CodexPro,
 CCCC, or other MCP-compatible bridge. The visible Chat surface remains a valid
-advisory transport, while a registered local actor may also read, edit, run
-tests, execute approved commands, and create provider-owned artifacts. This is
+advisory transport, while a registered actor may also read, edit, run tests,
+execute approved commands, and create provider-owned artifacts in a host-owned
+local or cloud workspace. This is
 a routing seam—not a ChatGPT model provider, an API proxy, or a way to avoid
 usage limits.
 
 ## Visible Chat relay contract
 
 The following bounded rules apply to the visible browser relay. They do not
-limit a separately registered local actor provider; that route is defined in
+limit a separately registered actor provider; that route is defined in
 the actor contract below.
 
 The relay is eligible only when all of these conditions hold:
@@ -64,16 +65,20 @@ the task.
 
 ## External ChatGPT actor provider
 
-`chat_relay.executor_enabled` enables the local actor route. The provider is
+`chat_relay.executor_enabled` enables the actor route. The provider is
 still external: SWARM registers it at runtime and does not install, start, or
 bundle CodexPro, CCCC, a tunnel, or browser credentials. The provider is the
 data-plane; SWARM remains the control-plane.
 
-An actor is eligible when the caller marks an explicit local boundary, the
-four-level offload setting permits the work, and the registered provider reports
-a connected bridge, an exact workspace scope, the required read/write/command/
-artifact tools, the observed model and reasoning effort, and a host receipt.
-User confirmation is required by default.
+An actor is eligible when the four-level offload setting permits the work and
+the registered provider reports a connected bridge, an exact workspace scope,
+the required read/write/command/artifact tools, the observed model and
+reasoning effort, and a host receipt. User confirmation is required by
+default. A local actor additionally requires an explicit local boundary; a
+cloud actor may route a request targeted at its cloud workspace without that
+flag. A request may target `local`, `cloud`, or `any`; `any` lets the
+connected actor's advertised location decide, while an explicit mismatch
+falls back locally.
 
 Actor task envelopes name the actual work class—`plan`, `research`, `review`,
 `testing`, `imagegen`, `implementation`, or `command`—so a capable provider is
@@ -83,7 +88,8 @@ host settings supply the required tools. Missing tools, scope, connection,
 profile, or receipt still return ownership to local SWARM.
 
 `executor_write_mode = "read_only"` never permits writes. `workspace` permits
-only the host's reported workspace write tools. `executor_command_mode =
+only the host's reported workspace write tools in either location.
+`executor_command_mode =
 "none"` never permits commands; `safe` still depends on the bridge's own
 approved command capability. The offload slider is the user's breadth choice,
 not a hidden safety ceiling: at `Max`, T4, mutation, command, testing, and
@@ -94,9 +100,10 @@ failure falls back to local SWARM.
 
 SWARM registers providers through `ChatGPTBridgeRegistry` and exposes each one
 as a `ChatGPTActor`. Registration captures the provider ID, actor identity,
-transport, exact workspace scope, advertised tools, observed model/effort, and
-host receipt. A CodexPro MCP endpoint by itself is a workspace-tool server that
-ChatGPT calls; it is not automatically a ChatGPT worker. It can participate
+transport, workspace location, exact workspace scope, advertised tools,
+observed model/effort, and host receipt. A CodexPro MCP endpoint by itself is a
+workspace-tool server that ChatGPT calls; it is not automatically a ChatGPT
+worker. It can participate
 through a companion actor adapter only when the external host also implements
 SWARM's capability, task-execution, and receipt contract. CCCC can provide that
 actor-bound callback when its host exposes it. Both remain optional runtime
@@ -104,9 +111,9 @@ integrations and are not plugin dependencies.
 
 `ChatGPTBridgeRegistry.discover(path)` and `save(path)` provide durable,
 credential-free provider discovery. The manifest stores identity, transport,
-scope, advertised tools, and an optional endpoint without live receipts,
-tokens, prompts, or credentials. A discovered manifest is only a registration
-hint; the provider must reconnect and return a fresh capability receipt before
+workspace location, scope, advertised tools, and an optional endpoint without
+live receipts, tokens, prompts, or credentials. A discovered manifest is only a
+registration hint; the provider must reconnect and return a fresh capability receipt before
 SWARM can route work.
 
 When repo context is useful, the local side may build a transient context packet

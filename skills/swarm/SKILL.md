@@ -27,7 +27,7 @@ CCCC, or other MCP-compatible provider. SWARM does not bundle those runtimes:
 it owns the actor contract, task envelope, capability negotiation, routing,
 receipts, verification, and acceptance; the provider owns transport and
 host-enforced tools. Missing capability falls back to local Codex. A connected
-actor may use every tool it advertises within its exact workspace scope and
+actor may use every tool it advertises within its exact local or cloud workspace scope and
 approval policy, including writes and commands; SWARM does not add an
 arbitrary MAX-only or T4 exclusion. Load [chat-relay.md](references/chat-relay.md)
 before configuring the route.
@@ -59,7 +59,7 @@ configured challenging profile (Pro/Pro by default). The visible ChatGPT selecti
 match that requested profile and carry a host receipt; otherwise SWARM uses
   local Codex. ChatGPT output may be an actor task result when a bridge provider
   is registered. The provider may use only host-reported tools within its
-  reported scope; it never gains unscoped machine authority, and SWARM retains
+  reported local or cloud scope; it never gains unscoped machine authority, and SWARM retains
   verification and acceptance authority. See
 [config.md](references/config.md) and [chat-relay.md](references/chat-relay.md)
 for the field-level contract. `chat_relay.offload_level` is a four-stop control:

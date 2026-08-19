@@ -16,6 +16,7 @@ from skills.swarm.runtime.chat_executor import (
     ChatExecutorRequest,
     ChatExecutorResponse,
     ChatExecutorRoute,
+    ChatExecutorWorkspaceLocation,
     ChatExecutorWriteMode,
     choose_chat_executor,
     execute_chat_task,
@@ -169,6 +170,64 @@ class ChatExecutorTests(unittest.TestCase):
         self.assertIs(allowed.route, ChatExecutorRoute.CHATGPT_MCP)
         self.assertEqual(allowed.workspace_scope, "C:/workspace/project")
 
+    def test_cloud_actor_can_route_without_a_local_boundary(self) -> None:
+        policy = ChatExecutorPolicy(
+            enabled=True,
+            write_mode=ChatExecutorWriteMode.WORKSPACE,
+            command_mode=ChatExecutorCommandMode.SAFE,
+            require_confirmation=False,
+        )
+        request = executor_request(
+            local_boundary=False,
+            workspace_location=ChatExecutorWorkspaceLocation.CLOUD,
+            purpose=ChatRelayPurpose.IMPLEMENTATION,
+            write_intent=True,
+            command_intent=True,
+        )
+        decision = choose_chat_executor(
+            policy=policy,
+            relay_policy=ChatRelayPolicy(enabled=True, offload_level=ChatRelayOffloadLevel.MAX),
+            request=request,
+            capability=executor_capability(workspace_location=ChatExecutorWorkspaceLocation.CLOUD),
+        )
+        self.assertIs(decision.route, ChatExecutorRoute.CHATGPT_MCP)
+        self.assertIs(decision.workspace_location, ChatExecutorWorkspaceLocation.CLOUD)
+
+    def test_cloud_request_rejects_a_local_actor(self) -> None:
+        request = executor_request(
+            local_boundary=False,
+            workspace_location=ChatExecutorWorkspaceLocation.CLOUD,
+        )
+        decision = choose_chat_executor(
+            policy=ChatExecutorPolicy(enabled=True),
+            relay_policy=ChatRelayPolicy(enabled=True, offload_level=ChatRelayOffloadLevel.MAX),
+            request=request,
+            capability=executor_capability(),
+        )
+        self.assertIs(decision.route, ChatExecutorRoute.LOCAL_CODEX)
+        self.assertIs(decision.blocker, ChatExecutorBlocker.WORKSPACE_LOCATION_REQUIRED)
+
+    def test_cloud_task_envelope_preserves_remote_location(self) -> None:
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "brief.md").write_text("cloud task", encoding="utf-8")
+            context = build_chat_relay_context(repo_root=root, objective="cloud task", relative_paths=("brief.md",))
+            adapter = FakeExecutor(executor_capability(workspace_location=ChatExecutorWorkspaceLocation.CLOUD))
+            result = execute_chat_task(
+                policy=ChatExecutorPolicy(enabled=True, require_confirmation=False),
+                relay_policy=ChatRelayPolicy(enabled=True, offload_level=ChatRelayOffloadLevel.MAX),
+                request=executor_request(
+                    local_boundary=False,
+                    workspace_location=ChatExecutorWorkspaceLocation.CLOUD,
+                    purpose=ChatRelayPurpose.RESEARCH,
+                ),
+                context=context,
+                adapter=adapter,
+            )
+        self.assertIs(result.decision.route, ChatExecutorRoute.CHATGPT_MCP)
+        self.assertIn("WORKSPACE_LOCATION: cloud", adapter.sent[0])
+        self.assertIn("REQUESTED_WORKSPACE_LOCATION: cloud", adapter.sent[0])
+
     def test_max_does_not_make_t4_local(self) -> None:
         policy = ChatExecutorPolicy(
             enabled=True,
@@ -303,6 +362,15 @@ class ChatExecutorTests(unittest.TestCase):
         self.assertEqual(discovered[0].endpoint, "https://bridge.example/mcp")
         self.assertNotIn("mcp-execution-receipt", stored)
         self.assertNotIn("GPT-5.6", stored)
+
+    def test_registry_persists_cloud_workspace_location(self) -> None:
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "chatgpt-bridges.json"
+            adapter = FakeExecutor(executor_capability(workspace_location=ChatExecutorWorkspaceLocation.CLOUD))
+            registry = ChatGPTBridgeRegistry(path)
+            registry.register(adapter, persist=True)
+            discovered = ChatGPTBridgeRegistry(path).discover()
+        self.assertEqual(discovered[0].workspace_location, ChatExecutorWorkspaceLocation.CLOUD)
 
     def test_swarm_can_route_through_registered_provider_without_bundling_it(self) -> None:
         with TemporaryDirectory() as directory:
