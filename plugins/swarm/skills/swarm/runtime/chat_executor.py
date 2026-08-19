@@ -640,7 +640,7 @@ def _offload_level_allows_executor(level: ChatRelayOffloadLevel, request: ChatEx
 def choose_chat_executor(
     *, policy: ChatExecutorPolicy, relay_policy: ChatRelayPolicy, request: ChatExecutorRequest, capability: ChatExecutorCapability
 ) -> ChatExecutorDecision:
-    """Choose a local MCP route only when the host reports every needed tool."""
+    """Choose an external ChatGPT actor route only when the host reports every needed tool."""
 
     requested_model = relay_policy.challenging_model if request.challenging else relay_policy.default_model
     requested_effort = relay_policy.challenging_effort if request.challenging else relay_policy.default_effort
@@ -658,7 +658,7 @@ def choose_chat_executor(
         )
 
     if not policy.enabled or not relay_policy.enabled:
-        return local("ChatGPT local work is disabled", ChatExecutorBlocker.DISABLED)
+        return local("ChatGPT actor work is disabled", ChatExecutorBlocker.DISABLED)
     if relay_policy.routing_mode.value == "always_local":
         return local("routing mode is Always local", ChatExecutorBlocker.ROUTING_MODE_LOCAL)
     if request.workspace_location is ChatExecutorWorkspaceLocation.LOCAL and not request.local_boundary:
@@ -706,7 +706,7 @@ def choose_chat_executor(
     ):
         return local("the bridge model and reasoning effort do not match the requested profile", ChatExecutorBlocker.HOST_CONFIG_REQUIRED)
     if policy.require_confirmation and not capability.user_confirmed:
-        return local("user confirmation is required before local ChatGPT work", ChatExecutorBlocker.CONFIRMATION_REQUIRED)
+        return local("user confirmation is required before ChatGPT actor work", ChatExecutorBlocker.CONFIRMATION_REQUIRED)
     return ChatExecutorDecision(
         ChatExecutorRoute.CHATGPT_MCP,
         "scoped ChatGPT work may use the connected actor bridge",
