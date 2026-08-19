@@ -3,6 +3,16 @@
 Read this reference when shaping topology, selecting an owner, creating a
 user-visible task, adding a SPECIALIST, or transferring ownership.
 
+## Intake before graph selection
+
+CTRL begins every new task by asking or confirming two answers: the desired
+goal and the most efficient safe way to complete it. A one-shot prompt may
+provide both; CTRL still records the concise goal and proposed strategy before
+selecting topology. The graph is chosen from objective, domain, ownership,
+dependencies, resumption, integration, acceptance, and the strategy—not from
+an arbitrary number of agents. Load [graph-engineering.md](graph-engineering.md)
+for the graph invariants and registered domain profiles.
+
 ## One root, the shallowest useful shape
 
 CTRL is the sole root and final composed authority. Use `CTRL_DIRECT` only for
@@ -90,6 +100,10 @@ normal approval gates.
 Choose the evidence-backed initial topology before the first mutable handoff.
 Recompute it only when material task evidence changes an ownership, dependency,
 integration, or acceptance fact; user direction remains the highest constraint.
+For a game objective, use the registered game-studio graph and materialize its
+independent design, engineering, art, and audio lanes before the integrated
+playtest/QA and release gates. Medium and large lanes are visible Codex tasks;
+subagents are only bounded capacity inside those lanes.
 
 Every durable CTRL, LEAD, and persistent SPECIALIST has one active goal with an
 objective, stopping condition, authority boundary, and required proof. Finite

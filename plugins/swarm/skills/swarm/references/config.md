@@ -43,9 +43,14 @@ Configuration cannot make an unsafe or hidden coordination path valid:
 - Existing safety, authority, provider, worktree, and proof boundaries remain.
 - If a required task tool is unavailable, report the blocker instead of
   substituting a local process or subagent hierarchy.
-- CTRL, every LEAD, and every persistent SPECIALIST—including a materialized MOTHER—require an active durable
-  goal before scheduling or substantive work. Goal controls are required; this
-  invariant is not configurable and goal creation does not expand authority.
+- Every new task captures the goal and most efficient safe completion strategy
+  before graph selection. `goals.use_goals` defaults true and controls whether
+  the root task creates or continues its durable goal. When false, intake and
+  graph receipts remain required but root-task persistence is explicitly off.
+  Goal controls are required: CTRL, every LEAD, and every persistent
+  SPECIALIST—including a materialized MOTHER—still require their role-owned
+  durable goals before scheduling or substantive work; goal creation never
+  expands authority.
 - A LEAD or persistent SPECIALIST may explicitly bind a WATCHDOG to its durable
   goal; CTRL may not be watched. An unbound goal has no watchdog clock, check,
   receipt, or alert. A bound sensor detects material progress, flow, or
@@ -82,6 +87,7 @@ Configuration cannot make an unsafe or hidden coordination path valid:
 | `turbo.enabled` | Opt into the high usage profile, fast service-tier preference, MAX progress policy, and the highest declared model-supported reasoning within the global bounds | boolean; default false |
 | `efficiency.mode` | Resource strategy for useful depth, concurrency, routing, and review; never weakens safety floors | CONSERVE, BALANCED, FAST, MAX; default BALANCED |
 | `efficiency.doer_wip_limit` | Maximum active assignments owned by one DOER | 1-8; default 3 |
+| `goals.use_goals` | Persist a new task's captured objective as a durable goal and resume/continue a matching goal | boolean; default true |
 | `hive.enabled` | Enable compact SWARM institutional-memory records | boolean; default true |
 | `hive.cleanup_strategy` | Mechanical lifecycle cleanup | adaptive; default adaptive |
 | `hive.retention_strategy` | Compact lesson retention policy | adaptive; default adaptive |

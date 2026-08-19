@@ -162,6 +162,17 @@ class SwarmSkillStructureTests(unittest.TestCase):
         self.assertIn("archive it", skill)
         self.assertIn("CTRL is the sole root and final composed authority", hierarchy)
 
+    def test_new_task_intake_and_domain_graph_contract_is_public(self) -> None:
+        skill = doctrine()
+        graph = (SKILL_ROOT / "references" / "graph-engineering.md").read_text(encoding="utf-8")
+        config = (SKILL_ROOT / "references" / "config.md").read_text(encoding="utf-8")
+        self.assertIn("What is the goal for this task?", skill)
+        self.assertIn("What is the most efficient safe way to complete it?", skill)
+        self.assertIn("goals.use_goals", config)
+        self.assertIn("game_studio", skill)
+        self.assertIn("One `CTRL` root", graph)
+        self.assertIn("independent production lanes", graph)
+
     def test_closeout_archives_terminal_host_tasks_and_reports_failures(self) -> None:
         skill = doctrine()
         self.assertIn("accepting owner inventories every visible task it created or superseded", skill)

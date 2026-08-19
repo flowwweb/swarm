@@ -1183,6 +1183,24 @@
         "A skill never transfers model, tool, browser, provider, destructive, review, or acceptance authority",
         "Missing Designer capacity remains an exact blocker or explicitly degraded UNVERIFIED route"
       ]
+    },
+    {
+      "id": 91,
+      "prompt": "Begin a one-shot request to build a complete game. The user wants persistence, the most efficient route, and a graph that follows proven game-production dependencies. The configured goals.use_goals setting is omitted, then a second run explicitly sets it false. Decide the intake, goal policy, graph, lane materialization, and subagent boundaries.",
+      "expected_output": "CTRL asks or confirms the goal and the most efficient safe completion strategy before routing, even when the prompt is one-shot; it restates both answers in a typed intake receipt. With goals.use_goals omitted, it creates or continues one durable goal by default. It selects the registered game_studio graph with one CTRL root, a game-studio lead, independent DESIGNER, ENGINEER, ARTIST, and AUDIO lanes, then downstream playtest/QA and RELEASE gates. Medium and large lanes are visible Codex tasks and may use their own bounded subagents; subagents never replace lane ownership, handoff, review, or acceptance. With goals.use_goals=false, it preserves the same intake and graph but skips root-task durable-goal creation; role-owned LEAD and persistent SPECIALIST goals remain fixed invariants.",
+      "files": [],
+      "assertions": [
+        "The goal and most efficient safe completion strategy are both asked or confirmed before routing",
+        "A one-shot prompt still produces an inspectable intake receipt",
+        "Durable goals default to enabled when goals.use_goals is omitted",
+        "The game_studio graph has one CTRL root and explicit production dependencies",
+        "Design, engineering, art, and audio are independent production lanes",
+        "Playtest or QA is downstream of integrated production and release is downstream of QA",
+        "Medium and large graph lanes are visible Codex tasks",
+        "Subagents stay inside an accountable lane and cannot replace durable ownership or acceptance",
+        "goals.use_goals=false disables root-task persistence without disabling intake or graph selection",
+        "LEAD and persistent SPECIALIST ownership goals are not disabled by the root persistence option"
+      ]
     }
   ]
 }

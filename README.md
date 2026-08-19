@@ -74,6 +74,20 @@ SWARM does not turn every request into a fleet.
 
 This keeps quick work quick while giving larger objectives durable lanes that can progress in parallel.
 
+## Intake and domain graphs
+
+At the start of every new task, CTRL captures two answers: the goal and the
+most efficient safe way to reach it. Durable goal persistence is on by default
+and can be disabled with `goals.use_goals = false`; disabling persistence does
+not disable intake, graph selection, ownership, or proof.
+
+CTRL then selects the smallest graph that fits the objective. Game projects use
+the registered game-studio flow: design, engineering, art, and audio can run
+as independent production lanes, followed by integrated playtest/QA and
+release gates. The graph is an ownership and dependency contract, not a flat
+agent roster. See [graph engineering](skills/swarm/references/graph-engineering.md)
+for the invariants and profile.
+
 Every agent may request an approved role skill with an exact source/version or
 digest and task-local scope by default. The host owns installation and audit;
 skills improve execution but never grant authority or turn CTRL into a producer.

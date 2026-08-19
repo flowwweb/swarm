@@ -47,6 +47,7 @@ class DegradedCapacityException(StrEnum): TASK_UNAVAILABLE="task_unavailable"; T
 class RoutingEvidenceBasis(StrEnum): OBSERVED="observed"; CONSERVATIVE_ASSUMPTION="conservative_assumption"
 class WorkSize(StrEnum): SMALL="small"; MEDIUM="medium"; LARGE="large"
 class WorkKind(StrEnum): GENERAL="general"; DESIGN="design"; IMAGEGEN="imagegen"; IMAGE_EDIT="image_edit"
+class GraphProfile(StrEnum): GENERAL="general"; GAME_STUDIO="game_studio"
 class HandsOffEventKind(StrEnum):
     USER_DIRECTION="user_direction"; MATERIAL_HANDOFF_REVIEW="material_handoff_review"; STOPPING_CONDITION="stopping_condition"; HUMAN_AUTHORITY_BLOCKER="human_authority_blocker"; USAGE_SIGNAL="usage_signal"; MODEL_MESSAGE="model_message"; TASK_MESSAGE="task_message"; ROUTINE_STATUS="routine_status"
 class CtrlMode(StrEnum): DIRECT="CTRL_DIRECT"; DELEGATED="CTRL_DELEGATED"
@@ -677,6 +678,107 @@ class TopologyFacts:
         return (self.objective,frozenset(item.key() for item in self.artifacts),frozenset(self.mutable_surfaces),self.accepting_route)==(other.objective,frozenset(item.key() for item in other.artifacts),frozenset(other.mutable_surfaces),other.accepting_route)
     def requires_coordination(self) -> bool:
         return len(set(self.ownership_lanes))>1 and bool(self.dependency_edges) and self.cross_lane_integration and self.portfolio_acceptance
+
+INTAKE_QUESTIONS:tuple[str,...]=(
+    "What is the goal for this task?",
+    "What is the most efficient safe way to complete it?",
+)
+_GRAPH_AGENT_TYPES=frozenset({"CTRL","LEAD","DOER","SPECIALIST","REVIEW"})
+
+@dataclass(frozen=True)
+class TaskIntake:
+    """The mandatory user-intent and efficiency answers captured before routing."""
+    goal:str; efficiency_strategy:str; domain:str="general"; questions_asked:tuple[str,...]=INTAKE_QUESTIONS
+    def __post_init__(self):
+        if not isinstance(self.goal,str) or not self.goal.strip() or not isinstance(self.efficiency_strategy,str) or not self.efficiency_strategy.strip():
+            raise InvariantError("task intake requires a goal and an efficiency strategy")
+        if not isinstance(self.domain,str) or not self.domain.strip() or any(character in self.domain for character in "\r\n\t"):
+            raise InvariantError("task intake requires a single-line domain")
+        if self.questions_asked!=INTAKE_QUESTIONS:
+            raise InvariantError("task intake must ask the goal and efficiency questions before routing")
+        object.__setattr__(self,"domain",self.domain.strip().casefold())
+
+@dataclass(frozen=True)
+class GraphNodeSpec:
+    id:str; role:str; agent_type:str; purpose:str; depends_on:tuple[str,...]=()
+    def __post_init__(self):
+        if not all(isinstance(value,str) and value.strip() and not any(character in value for character in "\r\n\t") for value in (self.id,self.role,self.agent_type,self.purpose)):
+            raise InvariantError("graph nodes require safe identity, role, agent type, and purpose")
+        if self.agent_type not in _GRAPH_AGENT_TYPES or any(not isinstance(value,str) or not value.strip() for value in self.depends_on) or self.id in self.depends_on:
+            raise InvariantError("graph nodes require a supported agent type and valid dependencies")
+
+@dataclass(frozen=True)
+class GraphSelection:
+    profile:GraphProfile; objective:str; efficiency_strategy:str; nodes:tuple[GraphNodeSpec,...]; rationale:str
+    def __post_init__(self):
+        if not isinstance(self.profile,GraphProfile) or not self.objective.strip() or not self.efficiency_strategy.strip() or not self.rationale.strip() or not self.nodes:
+            raise InvariantError("graph selection requires a profile, objective, strategy, nodes, and rationale")
+        by_id={node.id:node for node in self.nodes}
+        if len(by_id)!=len(self.nodes) or "ctrl" not in by_id or by_id["ctrl"].agent_type!="CTRL" or by_id["ctrl"].depends_on:
+            raise InvariantError("graph selection requires one dependency-free CTRL root")
+        if any(node.agent_type=="CTRL" and node.id!="ctrl" for node in self.nodes) or any(dependency not in by_id for node in self.nodes for dependency in node.depends_on):
+            raise InvariantError("graph selection cannot contain another CTRL or an unknown dependency")
+        visiting:set[str]=set(); visited:set[str]=set()
+        def visit(node_id:str)->None:
+            if node_id in visiting: raise InvariantError("graph selection cannot contain dependency cycles")
+            if node_id in visited: return
+            visiting.add(node_id)
+            for dependency in by_id[node_id].depends_on: visit(dependency)
+            visiting.remove(node_id); visited.add(node_id)
+        for node_id in by_id: visit(node_id)
+    @property
+    def parallel_lanes(self)->tuple[str,...]:
+        """Nodes sharing a direct dependency can run in parallel after that dependency."""
+        counts:dict[str,int]={}
+        for node in self.nodes:
+            for dependency in node.depends_on: counts[dependency]=counts.get(dependency,0)+1
+        return tuple(sorted(node.id for node in self.nodes if node.id!="ctrl" and counts.get(node.depends_on[0],0)>1 and len(node.depends_on)==1))
+    def canonical_bytes(self)->bytes:
+        payload={"profile":self.profile.value,"objective":self.objective,"efficiency_strategy":self.efficiency_strategy,"rationale":self.rationale,"nodes":[{"id":node.id,"role":node.role,"agent_type":node.agent_type,"purpose":node.purpose,"depends_on":sorted(node.depends_on)} for node in sorted(self.nodes,key=lambda item:item.id)]}
+        return json.dumps(payload,sort_keys=True,separators=(",",":"),ensure_ascii=True).encode("utf-8")
+    def digest(self)->str: return sha256(self.canonical_bytes()).hexdigest()
+
+@dataclass(frozen=True)
+class IntakePlan:
+    intake:TaskIntake; graph:GraphSelection; durable_goal:bool; goal_action:str; goal_id:str=""
+    def __post_init__(self):
+        expected="create_or_continue" if self.durable_goal else "disabled"
+        if self.goal_action!=expected or (self.goal_id and any(character in self.goal_id for character in "\r\n\t")):
+            raise InvariantError("intake goal policy must match the configured durable-goal setting")
+
+def select_graph(intake:TaskIntake, *, profile:GraphProfile|None=None)->GraphSelection:
+    """Select a registered graph from the captured objective and efficiency strategy."""
+    if not isinstance(intake,TaskIntake): raise InvariantError("graph selection requires typed task intake")
+    text=f"{intake.domain} {intake.goal}".casefold()
+    selected=profile or (GraphProfile.GAME_STUDIO if any(term in text for term in ("game","gameplay","unity","unreal","godot","playtest")) else GraphProfile.GENERAL)
+    if not isinstance(selected,GraphProfile): raise InvariantError("graph profile must be typed")
+    if selected is GraphProfile.GAME_STUDIO:
+        nodes=(
+            GraphNodeSpec("ctrl","CTRL","CTRL","Capture the objective, goal policy, graph, and final acceptance."),
+            GraphNodeSpec("studio_lead","GAME_STUDIO_LEAD","LEAD","Own the integrated game plan and handoffs.",("ctrl",)),
+            GraphNodeSpec("game_design","DESIGNER","SPECIALIST","Define the player contract, rules, UX, and content scope.",("studio_lead",)),
+            GraphNodeSpec("game_engineering","ENGINEER","SPECIALIST","Build deterministic runtime, platform, and integration surfaces.",("studio_lead",)),
+            GraphNodeSpec("game_art","ARTIST","SPECIALIST","Produce the visual direction and production assets.",("studio_lead",)),
+            GraphNodeSpec("game_audio","AUDIO","SPECIALIST","Produce the sound and music direction and assets.",("studio_lead",)),
+            GraphNodeSpec("playtest_qa","QA","REVIEW","Exercise the integrated build and verify the player contract.",("game_design","game_engineering","game_art","game_audio")),
+            GraphNodeSpec("release","RELEASE","LEAD","Package, publish, and verify the accepted release surface.",("playtest_qa",)),
+        )
+        rationale="Use the game-studio production graph: contract and plan first, independent design/engineering/art/audio lanes in parallel, then playtest/QA and release gates."
+    else:
+        nodes=(
+            GraphNodeSpec("ctrl","CTRL","CTRL","Capture the objective, goal policy, graph, and final acceptance."),
+            GraphNodeSpec("doer","DOER","DOER","Complete the bounded artifact or inspection inside the accountable lane.",("ctrl",)),
+        )
+        rationale="Use the shallowest general graph that satisfies the objective; expand to a visible LEAD lane only when ownership, dependency, resumption, or acceptance evidence requires it."
+    return GraphSelection(selected,intake.goal,intake.efficiency_strategy,nodes,rationale)
+
+def prepare_task_intake(*, goal:str, efficiency_strategy:str, domain:str="general", use_goals:bool=True, goal_id:str="", profile:GraphProfile|None=None)->IntakePlan:
+    """Capture mandatory intake, select the evidence-backed graph, and apply goal policy."""
+    if not isinstance(use_goals,bool): raise InvariantError("use_goals must be a boolean")
+    intake=TaskIntake(goal,efficiency_strategy,domain)
+    graph=select_graph(intake,profile=profile)
+    if not isinstance(goal_id,str): raise InvariantError("goal_id must be a string")
+    return IntakePlan(intake,graph,use_goals,"create_or_continue" if use_goals else "disabled",goal_id.strip())
 @dataclass(frozen=True)
 class WorkflowNode:
     id:str; kind:str; state:str=""; owner:str=""; acceptance:str="UNVERIFIED"
@@ -780,7 +882,7 @@ class Worker:
 class Swarm:
     architecture_version: int=1; contract_versions: dict[str,int]=field(default_factory=dict); topology: set[str]=field(default_factory=set)
     workers: dict[str,Worker]=field(default_factory=dict); tasks: dict[str,Task]=field(default_factory=dict); leases: dict[str,str]=field(default_factory=dict); events: list[tuple[str,str]]=field(default_factory=list); task_event_limit:int=64; telemetry: dict[str,object]=field(default_factory=dict); telemetry_events:list[dict[str,object]]=field(default_factory=list); artifact_index:dict[str,str]=field(default_factory=dict); provenance_index:dict[str,str]=field(default_factory=dict); ctrl_evidence_ledger:dict[str,CtrlEvidence]=field(default_factory=dict); ctrl_decision_sets:dict[str,CtrlDecisionSet]=field(default_factory=dict); ctrl_phase:str="intake"; hive:dict[str,HiveRecord]=field(default_factory=dict); hive_enabled:bool=True; heartbeat_stall_after:int=2; correction_receipts:dict[str,None]=field(default_factory=dict); lane_width:int=3; wip_limit:int=3; efficiency_ledger:list[dict[str,str]]=field(default_factory=list); mode:EfficiencyMode=EfficiencyMode.BALANCED; default_review_horizon:int=30; max_review_horizon:int=60; direct_work_horizon:int=20
-    scheduled_wakeups:dict[str,int]=field(default_factory=dict); ctrl_feed_messages:list[CtrlFeedMessage]=field(default_factory=list); ctrl_feed_cursor:int=0; ctrl_feed_superseded_by:dict[str,str]=field(default_factory=dict); ctrl_feed_events:dict[str,CtrlFeedEvent]=field(default_factory=dict); ctrl_feed_consumed_events:set[str]=field(default_factory=set); ctrl_authorizations:dict[str,UserCtrlAuthorization]=field(default_factory=dict); ctrl_materialization_intents:dict[str,CtrlMaterializationIntent]=field(default_factory=dict); consumed_ctrl_authorizations:set[str]=field(default_factory=set); consumed_ctrl_intents:set[str]=field(default_factory=set); proof_policy_version:str="lean-v1"; proof_impacted_selection:bool=True; proof_receipt_reuse:bool=True; proof_gate_timeout_seconds:int=120; proof_browser_freshness_seconds:int=86400; proof_provider_freshness_seconds:int=3600; proof_transient_retry_limit:int=1; request_store:RequestStore|None=field(default=None,repr=False,compare=False); request_continuity_enabled:bool=False; request_feed_sequence_floor:int=0; _host_authority_public_key:int|None=field(default=None,repr=False,compare=False); _gate_capability:object=field(default_factory=object,init=False,repr=False,compare=False); _watchdog_capability:object=field(default_factory=object,init=False,repr=False,compare=False); _owner_context_capability:object=field(default_factory=object,init=False,repr=False,compare=False); _ctrl_authority_capability:object=field(default_factory=object,init=False,repr=False,compare=False)
+    scheduled_wakeups:dict[str,int]=field(default_factory=dict); ctrl_feed_messages:list[CtrlFeedMessage]=field(default_factory=list); ctrl_feed_cursor:int=0; ctrl_feed_superseded_by:dict[str,str]=field(default_factory=dict); ctrl_feed_events:dict[str,CtrlFeedEvent]=field(default_factory=dict); ctrl_feed_consumed_events:set[str]=field(default_factory=set); ctrl_authorizations:dict[str,UserCtrlAuthorization]=field(default_factory=dict); ctrl_materialization_intents:dict[str,CtrlMaterializationIntent]=field(default_factory=dict); consumed_ctrl_authorizations:set[str]=field(default_factory=set); consumed_ctrl_intents:set[str]=field(default_factory=set); proof_policy_version:str="lean-v1"; proof_impacted_selection:bool=True; proof_receipt_reuse:bool=True; proof_gate_timeout_seconds:int=120; proof_browser_freshness_seconds:int=86400; proof_provider_freshness_seconds:int=3600; proof_transient_retry_limit:int=1; use_goals:bool=True; request_store:RequestStore|None=field(default=None,repr=False,compare=False); request_continuity_enabled:bool=False; request_feed_sequence_floor:int=0; _host_authority_public_key:int|None=field(default=None,repr=False,compare=False); _gate_capability:object=field(default_factory=object,init=False,repr=False,compare=False); _watchdog_capability:object=field(default_factory=object,init=False,repr=False,compare=False); _owner_context_capability:object=field(default_factory=object,init=False,repr=False,compare=False); _ctrl_authority_capability:object=field(default_factory=object,init=False,repr=False,compare=False)
     def __setattr__(self, name:str, value:object) -> None:
         if name=="_host_authority_public_key" and name in self.__dict__: raise InvariantError("host authority verifier is immutable after Swarm construction")
         object.__setattr__(self,name,value)
@@ -792,10 +894,14 @@ class Swarm:
     def from_config(cls, config: dict, *, _host_authority_public_key:int|None=None) -> "Swarm":
         monitoring=config["monitoring"]
         proof=config.get("proof",{})
-        return cls(lane_width=config["coordination"]["preferred_lane_width"], wip_limit=config["efficiency"]["doer_wip_limit"], mode=EfficiencyMode(config["efficiency"]["mode"]), hive_enabled=config.get("hive",{}).get("enabled",True), heartbeat_stall_after=config["recovery"]["stall_after_updates"], task_event_limit=config.get("logging",{}).get("task_event_limit",64), default_review_horizon=monitoring.get("default_review_horizon_minutes",monitoring.get("heartbeat_minutes",30)), max_review_horizon=monitoring.get("max_review_horizon_minutes",60), direct_work_horizon=config["coordination"].get("ctrl_direct_horizon_minutes",20), proof_policy_version=proof.get("policy_version","lean-v1"), proof_impacted_selection=proof.get("impacted_selection",True), proof_receipt_reuse=proof.get("receipt_reuse",True), proof_gate_timeout_seconds=proof.get("gate_timeout_seconds",120), proof_browser_freshness_seconds=proof.get("browser_freshness_seconds",86400), proof_provider_freshness_seconds=proof.get("provider_freshness_seconds",3600), proof_transient_retry_limit=proof.get("transient_retry_limit",1), _host_authority_public_key=_host_authority_public_key)
+        return cls(lane_width=config["coordination"]["preferred_lane_width"], wip_limit=config["efficiency"]["doer_wip_limit"], mode=EfficiencyMode(config["efficiency"]["mode"]), hive_enabled=config.get("hive",{}).get("enabled",True), heartbeat_stall_after=config["recovery"]["stall_after_updates"], task_event_limit=config.get("logging",{}).get("task_event_limit",64), default_review_horizon=monitoring.get("default_review_horizon_minutes",monitoring.get("heartbeat_minutes",30)), max_review_horizon=monitoring.get("max_review_horizon_minutes",60), direct_work_horizon=config["coordination"].get("ctrl_direct_horizon_minutes",20), proof_policy_version=proof.get("policy_version","lean-v1"), proof_impacted_selection=proof.get("impacted_selection",True), proof_receipt_reuse=proof.get("receipt_reuse",True), proof_gate_timeout_seconds=proof.get("gate_timeout_seconds",120), proof_browser_freshness_seconds=proof.get("browser_freshness_seconds",86400), proof_provider_freshness_seconds=proof.get("provider_freshness_seconds",3600), proof_transient_retry_limit=proof.get("transient_retry_limit",1), use_goals=config.get("goals",{}).get("use_goals",True), _host_authority_public_key=_host_authority_public_key)
     @classmethod
     def from_config_with_host_authority(cls, config:dict) -> tuple["Swarm","_HostAuthorityBroker"]:
         private_key=secrets.randbelow(_HOST_AUTHORITY_PRIME-3)+2; public_key=pow(_HOST_AUTHORITY_GENERATOR,private_key,_HOST_AUTHORITY_PRIME); swarm=cls.from_config(config,_host_authority_public_key=public_key); return swarm,_HostAuthorityBroker(swarm,private_key)
+
+    def plan_task_intake(self, *, goal:str, efficiency_strategy:str, domain:str="general", goal_id:str="", profile:GraphProfile|None=None)->IntakePlan:
+        """Return the typed intake and graph plan under this runtime's goal policy."""
+        return prepare_task_intake(goal=goal,efficiency_strategy=efficiency_strategy,domain=domain,use_goals=self.use_goals,goal_id=goal_id,profile=profile)
 
     def plan_proof(self, inputs:ProofInputs) -> ProofPlan:
         reach=inputs.dependency_reach if self.proof_impacted_selection else replace(inputs.dependency_reach,known=False)

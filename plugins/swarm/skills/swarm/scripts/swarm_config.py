@@ -63,6 +63,7 @@ DEFAULTS: dict[str, Any] = {
     },
     "turbo": {"enabled": False},
     "efficiency": {"mode":"BALANCED", "doer_wip_limit":3},
+    "goals": {"use_goals": True},
     "hive": {"enabled": True, "cleanup_strategy":"adaptive", "retention_strategy":"adaptive", "worker_strategy":"warm_when_useful", "archive_behavior":"provenance"},
     "chat_relay": {
         "enabled": False,
@@ -392,6 +393,10 @@ def validate(raw: dict[str, Any]) -> None:
     _expect_keys(efficiency, set(DEFAULTS["efficiency"]), "efficiency")
     if "mode" in efficiency and efficiency["mode"] not in {"CONSERVE","BALANCED","FAST","MAX"}: raise ConfigError("efficiency.mode must be CONSERVE, BALANCED, FAST, or MAX")
     _bounded_int(efficiency, "doer_wip_limit", 1, 8, "efficiency")
+
+    goals = _expect_table(raw, "goals")
+    _expect_keys(goals, set(DEFAULTS["goals"]), "goals")
+    _boolean(goals, "use_goals", "goals")
 
     hive = _expect_table(raw, "hive")
     _expect_keys(hive, set(DEFAULTS["hive"]), "hive")
