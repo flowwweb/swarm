@@ -56,8 +56,8 @@ default_model = "gpt-5.6-luna"
 default_effort = "xhigh"
 challenging_model = "pro"
 challenging_effort = "pro"
-# Separate opt-in path for a registered external local MCP actor. The provider
-# supplies credentials, tools, and exact workspace scope; SWARM never infers them.
+# Separate opt-in path for a registered external actor. The provider supplies
+# transport, tools, and exact local or cloud workspace scope; SWARM never infers them.
 executor_enabled = false
 executor_write_mode = "read_only"
 executor_command_mode = "none"
