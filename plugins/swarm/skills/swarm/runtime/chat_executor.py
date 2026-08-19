@@ -12,6 +12,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
 from enum import StrEnum
+import json
+from pathlib import Path
 from typing import Callable, Protocol
 
 from .chat_relay import (
@@ -49,6 +51,89 @@ class ChatGPTBridgeTransport(StrEnum):
 
     REMOTE_MCP = "remote_mcp"
     BROWSER_DELIVERY = "browser_delivery"
+
+
+@dataclass(frozen=True)
+class ChatGPTBridgeManifest:
+    """Credential-free durable identity for an optional external provider."""
+
+    provider_id: str
+    actor_id: str
+    transport: ChatGPTBridgeTransport
+    workspace_scope: str = ""
+    tool_capabilities: frozenset[str] = frozenset()
+    endpoint: str = ""
+    enabled: bool = True
+    schema_version: int = 1
+
+    def __post_init__(self) -> None:
+        for label, value in (("provider", self.provider_id), ("actor", self.actor_id), ("endpoint", self.endpoint)):
+            if not isinstance(value, str) or any(character in value for character in "\r\n"):
+                raise ValueError(f"ChatGPT bridge {label} must be a single line")
+        if not self.provider_id.strip() or not self.actor_id.strip():
+            raise ValueError("ChatGPT bridge manifest requires provider and actor identity")
+        lowered_endpoint = self.endpoint.casefold()
+        if any(marker in lowered_endpoint for marker in ("token=", "secret=", "apikey=", "api_key=", "authorization=")):
+            raise ValueError("ChatGPT bridge manifest must not persist credentials in an endpoint")
+        if not isinstance(self.transport, ChatGPTBridgeTransport):
+            raise ValueError("ChatGPT bridge manifest requires a known transport")
+        if not isinstance(self.workspace_scope, str) or any(character in self.workspace_scope for character in "\r\n"):
+            raise ValueError("ChatGPT bridge manifest workspace scope must be a single line")
+        if not isinstance(self.tool_capabilities, frozenset) or any(
+            not isinstance(tool, str) or not tool.strip() or any(character in tool for character in "\r\n")
+            for tool in self.tool_capabilities
+        ):
+            raise ValueError("ChatGPT bridge manifest tools must be single-line names")
+        if not isinstance(self.enabled, bool) or self.schema_version != 1:
+            raise ValueError("ChatGPT bridge manifest has unsupported schema or enabled value")
+
+    @classmethod
+    def from_actor(
+        cls,
+        actor: "ChatGPTActor",
+        *,
+        endpoint: str = "",
+        enabled: bool = True,
+    ) -> "ChatGPTBridgeManifest":
+        return cls(
+            provider_id=actor.provider,
+            actor_id=actor.actor_id,
+            transport=actor.transport,
+            workspace_scope=actor.workspace_scope,
+            tool_capabilities=actor.tool_capabilities,
+            endpoint=endpoint,
+            enabled=enabled,
+        )
+
+    @classmethod
+    def from_dict(cls, value: object) -> "ChatGPTBridgeManifest":
+        if not isinstance(value, dict):
+            raise ValueError("ChatGPT bridge manifest entries must be objects")
+        tools = value.get("tool_capabilities", ())
+        if not isinstance(tools, (list, tuple)):
+            raise ValueError("ChatGPT bridge manifest tools must be a list")
+        return cls(
+            provider_id=value.get("provider_id", ""),
+            actor_id=value.get("actor_id", ""),
+            transport=ChatGPTBridgeTransport(value.get("transport", "remote_mcp")),
+            workspace_scope=value.get("workspace_scope", ""),
+            tool_capabilities=frozenset(tools),
+            endpoint=value.get("endpoint", ""),
+            enabled=value.get("enabled", True),
+            schema_version=value.get("schema_version", 1),
+        )
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "schema_version": self.schema_version,
+            "provider_id": self.provider_id,
+            "actor_id": self.actor_id,
+            "transport": self.transport.value,
+            "workspace_scope": self.workspace_scope,
+            "tool_capabilities": sorted(self.tool_capabilities),
+            "endpoint": self.endpoint,
+            "enabled": self.enabled,
+        }
 
 
 class ChatExecutorBlocker(StrEnum):
@@ -240,17 +325,34 @@ ChatExecutorAdapter = ChatGPTBridgeProvider
 
 
 class ChatGPTBridgeRegistry:
-    """In-process registry for optional, externally-owned ChatGPT providers."""
+    """Registry for optional providers plus a credential-free durable manifest."""
 
-    def __init__(self) -> None:
+    def __init__(self, manifest_path: Path | None = None) -> None:
         self._providers: dict[str, ChatGPTBridgeProvider] = {}
         self._actors: dict[str, ChatGPTActor] = {}
+        self._manifests: dict[str, ChatGPTBridgeManifest] = {}
+        self.manifest_path = manifest_path
 
-    def register(self, provider: ChatGPTBridgeProvider) -> ChatGPTActor:
+    def register(
+        self,
+        provider: ChatGPTBridgeProvider,
+        *,
+        manifest: ChatGPTBridgeManifest | None = None,
+        persist: bool = False,
+    ) -> ChatGPTActor:
         capability = provider.capability()
         actor = ChatGPTActor.from_capability(capability)
+        if manifest is not None and (manifest.provider_id != actor.provider or manifest.actor_id != actor.actor_id):
+            raise ValueError("ChatGPT bridge manifest does not match the provider capability")
         self._providers[actor.actor_id] = provider
         self._actors[actor.actor_id] = actor
+        self._manifests[actor.actor_id] = ChatGPTBridgeManifest.from_actor(
+            actor,
+            endpoint=manifest.endpoint if manifest is not None else "",
+            enabled=manifest.enabled if manifest is not None else True,
+        )
+        if persist:
+            self.save()
         return actor
 
     def refresh(self, actor_id: str) -> ChatGPTActor:
@@ -261,6 +363,12 @@ class ChatGPTBridgeRegistry:
         if actor.actor_id != actor_id:
             raise ValueError("provider changed its actor identity during refresh")
         self._actors[actor_id] = actor
+        previous = self._manifests.get(actor_id)
+        self._manifests[actor_id] = ChatGPTBridgeManifest.from_actor(
+            actor,
+            endpoint=previous.endpoint if previous is not None else "",
+            enabled=previous.enabled if previous is not None else True,
+        )
         return actor
 
     def actor(self, actor_id: str) -> ChatGPTActor | None:
@@ -272,9 +380,51 @@ class ChatGPTBridgeRegistry:
     def actors(self) -> tuple[ChatGPTActor, ...]:
         return tuple(self._actors[key] for key in sorted(self._actors))
 
-    def remove(self, actor_id: str) -> None:
+    def manifests(self) -> tuple[ChatGPTBridgeManifest, ...]:
+        return tuple(self._manifests[key] for key in sorted(self._manifests))
+
+    def manifest(self, actor_id: str) -> ChatGPTBridgeManifest | None:
+        return self._manifests.get(actor_id)
+
+    def discover(self, path: Path | None = None) -> tuple[ChatGPTBridgeManifest, ...]:
+        """Load durable provider identities without connecting or using a provider."""
+        target = path or self.manifest_path
+        if target is None or not target.exists():
+            return self.manifests()
+        try:
+            payload = json.loads(target.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+            raise ValueError(f"ChatGPT bridge manifest could not be read: {exc}") from exc
+        if not isinstance(payload, dict) or payload.get("schema_version") != 1:
+            raise ValueError("ChatGPT bridge manifest store has unsupported schema")
+        entries = payload.get("bridges", ())
+        if not isinstance(entries, list):
+            raise ValueError("ChatGPT bridge manifest store requires a bridges list")
+        manifests = tuple(ChatGPTBridgeManifest.from_dict(entry) for entry in entries)
+        self._manifests = {manifest.actor_id: manifest for manifest in manifests}
+        return manifests
+
+    def save(self, path: Path | None = None) -> Path:
+        """Persist identities and capabilities, never credentials or live receipts."""
+        target = path or self.manifest_path
+        if target is None:
+            raise ValueError("ChatGPT bridge manifest path is required for persistence")
+        target.parent.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "schema_version": 1,
+            "bridges": [manifest.to_dict() for manifest in self.manifests() if manifest.enabled],
+        }
+        temporary = target.with_name(f".{target.name}.tmp")
+        temporary.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        temporary.replace(target)
+        return target
+
+    def remove(self, actor_id: str, *, persist: bool = False) -> None:
         self._providers.pop(actor_id, None)
         self._actors.pop(actor_id, None)
+        self._manifests.pop(actor_id, None)
+        if persist:
+            self.save()
 
 
 @dataclass(frozen=True)

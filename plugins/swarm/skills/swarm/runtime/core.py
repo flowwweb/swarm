@@ -18,7 +18,7 @@ from .incidents import IncidentLedger, IncidentRecord
 from .request_ledger import RequestStore, RequestStoreError
 from .chat_relay import ChatRelayAdapter, ChatRelayCapability, ChatRelayConsultation, ChatRelayContextPacket, ChatRelayPolicy, ChatRelayRequest, ChatRelayDecision, choose_chat_relay, consult_chat_relay
 from .chat_relay_usage import ChatRelayUsageLedger
-from .chat_executor import ChatGPTActor, ChatGPTBridgeRegistry, ChatGPTBridgeProvider, ChatExecutorAdapter, ChatExecutorCapability, ChatExecutorPolicy, ChatExecutorRequest, ChatExecutorDecision, ChatExecutorResult, choose_chat_executor, execute_chat_task
+from .chat_executor import ChatGPTActor, ChatGPTBridgeManifest, ChatGPTBridgeRegistry, ChatGPTBridgeProvider, ChatExecutorAdapter, ChatExecutorCapability, ChatExecutorPolicy, ChatExecutorRequest, ChatExecutorDecision, ChatExecutorResult, choose_chat_executor, execute_chat_task
 
 
 class Role(StrEnum):
@@ -1330,6 +1330,12 @@ class Swarm:
     def chatgpt_actors(self) -> tuple[ChatGPTActor,...]:
         """Return the currently registered external ChatGPT actors."""
         return self.chat_bridge_registry.actors()
+    def discover_chatgpt_bridges(self, path:Path|None=None) -> tuple[ChatGPTBridgeManifest,...]:
+        """Discover credential-free bridge registrations without connecting them."""
+        return self.chat_bridge_registry.discover(path)
+    def save_chatgpt_bridges(self, path:Path|None=None) -> Path:
+        """Persist bridge identity and advertised capabilities without live receipts."""
+        return self.chat_bridge_registry.save(path)
     def _chatgpt_provider_for(self, actor_id:str|None=None) -> ChatGPTBridgeProvider|None:
         target=actor_id or self.chat_relay_policy.provider
         direct=self.chat_bridge_registry.provider(target)

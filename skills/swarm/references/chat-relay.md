@@ -92,6 +92,13 @@ host receipt. CodexPro can register as a direct remote-MCP actor; CCCC can
 register as a browser-delivery plus remote-MCP actor. Both remain optional
 runtime integrations and are not plugin dependencies.
 
+`ChatGPTBridgeRegistry.discover(path)` and `save(path)` provide durable,
+credential-free provider discovery. The manifest stores identity, transport,
+scope, advertised tools, and an optional endpoint without live receipts,
+tokens, prompts, or credentials. A discovered manifest is only a registration
+hint; the provider must reconnect and return a fresh capability receipt before
+SWARM can route work.
+
 When repo context is useful, the local side may build a transient context packet
 from an explicit tuple of repo-relative UTF-8 file paths. The packet rejects
 path traversal, symlink escapes, `.git` and credential/key paths, caps each file

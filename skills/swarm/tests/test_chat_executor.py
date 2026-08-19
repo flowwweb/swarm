@@ -7,6 +7,7 @@ import unittest
 
 from skills.swarm.runtime.chat_executor import (
     ChatGPTBridgeRegistry,
+    ChatGPTBridgeManifest,
     ChatGPTBridgeTransport,
     ChatExecutorBlocker,
     ChatExecutorCapability,
@@ -195,6 +196,27 @@ class ChatExecutorTests(unittest.TestCase):
         self.assertEqual(actor.provider, "cccc")
         self.assertIs(actor.transport, ChatGPTBridgeTransport.BROWSER_DELIVERY)
         self.assertIs(registry.provider(actor.actor_id), adapter)
+
+    def test_registry_persists_and_discovers_credential_free_bridge_manifest(self) -> None:
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "chatgpt-bridges.json"
+            adapter = FakeExecutor(executor_capability())
+            registry = ChatGPTBridgeRegistry(path)
+            manifest = ChatGPTBridgeManifest(
+                provider_id="cccc",
+                actor_id="cccc",
+                transport=ChatGPTBridgeTransport.REMOTE_MCP,
+                workspace_scope="C:/workspace/project",
+                tool_capabilities=frozenset({"workspace.read", "workspace.write", "command.safe"}),
+                endpoint="https://bridge.example/mcp",
+            )
+            registry.register(adapter, manifest=manifest, persist=True)
+            stored = path.read_text(encoding="utf-8")
+            discovered = ChatGPTBridgeRegistry(path).discover()
+        self.assertEqual(len(discovered), 1)
+        self.assertEqual(discovered[0].endpoint, "https://bridge.example/mcp")
+        self.assertNotIn("mcp-execution-receipt", stored)
+        self.assertNotIn("GPT-5.6", stored)
 
     def test_swarm_can_route_through_registered_provider_without_bundling_it(self) -> None:
         with TemporaryDirectory() as directory:
