@@ -56,6 +56,27 @@ execution owner, and the bound LEAD/REVIEW route remains the only acceptance
 authority. A missing capability falls back to local Codex instead of blocking
 the task.
 
+## Optional local MCP executor
+
+`chat_relay.executor_enabled` is a separate, disabled-by-default path. It is
+the only route that may ask ChatGPT to read, edit, or run work in a local
+workspace. It does not make the visible browser relay a filesystem bridge.
+
+The executor is eligible only when the caller marks an explicit local
+boundary, the four-level offload setting permits the work, and a host-owned
+adapter reports a connected bridge, an exact workspace scope, the required
+read/write/command/artifact tools, the observed model and reasoning effort,
+and a host receipt. User confirmation is required by default.
+
+`executor_write_mode = "read_only"` never permits writes. `workspace` permits
+only the host's reported workspace write tools. `executor_command_mode =
+"none"` never permits commands; `safe` still depends on the bridge's own
+approved command capability. T4 work remains local, and mutation, command, or
+artifact work requires `Max` so the user makes that breadth choice explicitly.
+The adapter returns a host receipt and transient result; SWARM performs the
+tests, review, artifact checks, and final acceptance. A transport or capability
+failure falls back to local SWARM.
+
 When repo context is useful, the local side may build a transient context packet
 from an explicit tuple of repo-relative UTF-8 file paths. The packet rejects
 path traversal, symlink escapes, `.git` and credential/key paths, caps each file
@@ -134,7 +155,7 @@ This feature does not:
 
 - reproduce or depend on an unpublished model name or internal route;
 - automate a loophole that suppresses usage accounting;
-- turn ChatGPT into a hidden SWARM worker with repo-write authority;
+- grant ChatGPT unscoped repository or machine authority;
 - make ChatGPT output a test, deployment, provider, device, or acceptance
   receipt; or
 - install a third-party bridge automatically.

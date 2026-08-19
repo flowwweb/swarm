@@ -23,6 +23,7 @@ const CHAT_RELAY_LEVEL_VALUES = CHAT_RELAY_LEVELS.map((level) => level.value);
 const CHAT_RELAY_ROUTING_LABELS = { auto: "Auto", always_local: "Always local", always_cloud: "Always cloud" };
 const CHAT_RELAY_MODEL_LABELS = { "gpt-5.6-luna": "GPT-5.6 Luna", "gpt-5.6-sol": "GPT-5.6 Sol", pro: "Pro" };
 const CHAT_RELAY_ENABLED = { path: "chat_relay.enabled", value: true };
+const CHAT_EXECUTOR_ENABLED = { path: "chat_relay.executor_enabled", value: true };
 const INFO_TOOLTIP_PATHS = new Set([
   "execution.usage_profile",
   "execution.service_tier",
@@ -32,6 +33,8 @@ const INFO_TOOLTIP_PATHS = new Set([
   "monitoring.heartbeat_minutes",
   "chat_relay.routing_mode",
   "chat_relay.offload_level",
+  "chat_relay.executor_write_mode",
+  "chat_relay.executor_command_mode",
   "review.scale_when_queue_reaches",
   "recovery.stall_after_updates",
 ]);
@@ -64,7 +67,7 @@ const settingGroups = [
   },
   {
     title: "ChatGPT offload",
-    description: "Use ChatGPT for bounded advisory work while local-boundary work stays in SWARM.",
+    description: "Offload eligible work to ChatGPT and save Codex usage.",
     key: "chat-relay",
     experimental: true,
     fields: [
@@ -75,6 +78,10 @@ const settingGroups = [
       ["chat_relay.default_effort", "Routine reasoning", "select", "Reasoning level for routine advisory work.", ["minimal", "low", "medium", "high", "xhigh", "pro"], CHAT_RELAY_ENABLED],
       ["chat_relay.challenging_model", "Challenging model", "select", "Model used when deeper reasoning is requested.", ["gpt-5.6-luna", "gpt-5.6-sol", "pro"], CHAT_RELAY_ENABLED],
       ["chat_relay.challenging_effort", "Challenging reasoning", "select", "Reasoning level for challenging advisory work.", ["minimal", "low", "medium", "high", "xhigh", "pro"], CHAT_RELAY_ENABLED],
+      ["chat_relay.executor_enabled", "Allow local ChatGPT work", "boolean", "Let ChatGPT read, edit, and test inside a connected workspace.", undefined, CHAT_RELAY_ENABLED],
+      ["chat_relay.executor_write_mode", "Workspace access", "select", "Read only keeps files unchanged; Workspace allows scoped edits.", ["read_only", "workspace"], CHAT_EXECUTOR_ENABLED],
+      ["chat_relay.executor_command_mode", "Command access", "select", "Safe allows the bridge to run its own approved command set.", ["none", "safe"], CHAT_EXECUTOR_ENABLED],
+      ["chat_relay.executor_require_confirmation", "Confirm local work", "boolean", "Ask before ChatGPT edits files or runs commands.", undefined, CHAT_EXECUTOR_ENABLED],
     ],
   },
   {
@@ -580,11 +587,11 @@ $("#settings-form").addEventListener("input", (event) => {
     if (output) output.textContent = range.label;
     input.setAttribute("aria-valuetext", range.label);
   }
-  const parentChanged = input.dataset.setting === "chat_relay.enabled";
+  const parentChanged = input.dataset.setting === "chat_relay.enabled" || input.dataset.setting === "chat_relay.executor_enabled";
   if (parentChanged) {
     pruneHiddenChanges();
     renderSettings();
-    if (value === true) refreshChatRelayUsage().catch((error) => showError(error.message));
+    if (input.dataset.setting === "chat_relay.enabled" && value === true) refreshChatRelayUsage().catch((error) => showError(error.message));
   }
   $("#save-settings").disabled = false;
   $("#settings-status").textContent = `${Object.keys(state.changes).length} unsaved change${Object.keys(state.changes).length === 1 ? "" : "s"}`;

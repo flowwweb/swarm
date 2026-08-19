@@ -57,6 +57,12 @@ default_model = "gpt-5.6-luna"
 default_effort = "xhigh"
 challenging_model = "pro"
 challenging_effort = "pro"
+# Separate opt-in path for a host-owned local MCP bridge. The bridge supplies
+# credentials and the exact workspace scope; SWARM never infers them here.
+executor_enabled = false
+executor_write_mode = "read_only"
+executor_command_mode = "none"
+executor_require_confirmation = true
 
 [console]
 # Reuse a recently visible portal tab; otherwise open the local portal when

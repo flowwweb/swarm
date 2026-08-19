@@ -107,7 +107,7 @@ async function mount(page, overview = fixture.overview) {
       if (Object.prototype.hasOwnProperty.call(payload.changes, "chat_relay.enabled")) {
         config.settings.chat_relay.enabled = payload.changes["chat_relay.enabled"];
       }
-      for (const key of ["chat_relay.routing_mode", "chat_relay.offload_level", "chat_relay.default_model", "chat_relay.default_effort", "chat_relay.challenging_model", "chat_relay.challenging_effort"]) {
+      for (const key of ["chat_relay.routing_mode", "chat_relay.offload_level", "chat_relay.default_model", "chat_relay.default_effort", "chat_relay.challenging_model", "chat_relay.challenging_effort", "chat_relay.executor_enabled", "chat_relay.executor_write_mode", "chat_relay.executor_command_mode", "chat_relay.executor_require_confirmation"]) {
         if (Object.prototype.hasOwnProperty.call(payload.changes, key)) {
           const field = key.split(".")[1];
           config.settings.chat_relay[field] = payload.changes[key];
@@ -348,6 +348,13 @@ try {
     assert.equal(await page.locator('[data-settings-group="chat-relay"] .experimental-badge').textContent(), "Experimental");
     assert.equal(await relay.getAttribute("aria-label"), "Save Codex usage with ChatGPT");
     assert.match(await relay.evaluate((element) => element.closest(".field")?.innerText || ""), /Save Codex usage with ChatGPT/);
+    const executor = page.locator('[data-setting="chat_relay.executor_enabled"]');
+    assert.equal(await executor.count(), 1, "enabled ChatGPT parent did not reveal the local executor toggle");
+    assert.equal(await page.locator('[data-setting="chat_relay.executor_write_mode"]').count(), 0, "disabled executor exposed workspace access");
+    await executor.locator("xpath=..").click();
+    await page.locator('[data-setting="chat_relay.executor_write_mode"]').waitFor();
+    assert.equal(await page.locator('[data-setting="chat_relay.executor_command_mode"]').count(), 1, "enabled executor did not reveal command access");
+    assert.equal(await page.locator('[data-setting="chat_relay.executor_require_confirmation"]').count(), 1, "enabled executor did not reveal confirmation setting");
     const obviousField = page.locator('[data-setting="portfolio.max_active_tasks"]').locator("xpath=ancestor::div[contains(concat(' ', normalize-space(@class), ' '), ' field ')]");
     assert.equal(await obviousField.locator(".field-info").count(), 0, "obvious labels should not all carry tooltips");
     const info = page.locator('[data-setting="chat_relay.routing_mode"]').locator("xpath=ancestor::div[contains(concat(' ', normalize-space(@class), ' '), ' field ')]").locator(".field-info");
@@ -393,6 +400,7 @@ try {
     assert.match(await page.locator("#settings-status").textContent(), /usage log cleared/);
     await relay.locator("xpath=..").click();
     assert.equal(await page.locator('[data-setting="chat_relay.offload_level"]').count(), 0, "turning off ChatGPT left child settings visible");
+    assert.equal(await page.locator('[data-setting="chat_relay.executor_enabled"]').count(), 0, "turning off ChatGPT left executor toggle visible");
     assert.equal(await page.locator(".chat-relay-usage").count(), 0, "turning off ChatGPT left usage telemetry visible");
     await page.locator('[data-view="swarm"]').click();
     const hierarchy = await page.evaluate(() => {

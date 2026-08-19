@@ -51,8 +51,10 @@ proof, review, model, reasoning, and authority boundaries remain unchanged.
 `chat_relay.enabled` permits a route but does not force one. Its normal and
 challenging model/effort fields select the requested visible ChatGPT profile;
 the observed visible selection must match it and include a host receipt or the
-relay stays local. These settings never give ChatGPT write, command, upload,
-artifact, or acceptance authority.
+relay stays local. The advisory route never gives ChatGPT write, command,
+upload, artifact, or acceptance authority. The separate executor settings
+permit only the host-reported local MCP tools and scope described in
+`chat-relay.md`; they never grant unscoped machine authority or acceptance.
 
 ## Fixed invariants
 
@@ -115,6 +117,10 @@ Configuration cannot make an unsafe or hidden coordination path valid:
 | `chat_relay.default_effort` | ChatGPT reasoning level requested for normal offloads | supported level; default `xhigh` |
 | `chat_relay.challenging_model` | ChatGPT model requested for explicitly challenging offloads | `gpt-5.6-luna`, `gpt-5.6-sol`, or `pro`; default `pro` |
 | `chat_relay.challenging_effort` | ChatGPT reasoning level requested for explicitly challenging offloads | supported level; default `pro` |
+| `chat_relay.executor_enabled` | Permit the separate host-owned ChatGPT local MCP executor | boolean; default false |
+| `chat_relay.executor_write_mode` | Local executor file authority | `read_only` or `workspace`; default `read_only` |
+| `chat_relay.executor_command_mode` | Local executor command authority | `none` or `safe`; default `none` |
+| `chat_relay.executor_require_confirmation` | Confirm each local executor task before dispatch | boolean; default true |
 | `logging.task_event_limit` | Bounded recent task-transition metadata retained in memory; never prompts, responses, artifact bodies, or credentials | 8-256; default 64 |
 | `proof.policy_version` | Deterministic proof-planner policy | trimmed identifier; default lean-v1 |
 | `proof.impacted_selection` | Select focused impacted gates when dependency reach is known | boolean; default true |

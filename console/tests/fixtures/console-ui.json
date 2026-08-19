@@ -9,7 +9,7 @@
   "config": {
     "exists": true,
     "path": "fixture/config.toml",
-    "editable": ["execution.usage_saver", "chat_relay.enabled", "chat_relay.routing_mode", "chat_relay.offload_level", "chat_relay.default_model", "chat_relay.default_effort", "chat_relay.challenging_model", "chat_relay.challenging_effort", "console.open_on_start", "role_icons.enabled", "role_icons.ctrl"],
+    "editable": ["execution.usage_saver", "chat_relay.enabled", "chat_relay.routing_mode", "chat_relay.offload_level", "chat_relay.default_model", "chat_relay.default_effort", "chat_relay.challenging_model", "chat_relay.challenging_effort", "chat_relay.executor_enabled", "chat_relay.executor_write_mode", "chat_relay.executor_command_mode", "chat_relay.executor_require_confirmation", "console.open_on_start", "role_icons.enabled", "role_icons.ctrl"],
     "settings": {
       "portfolio": {
         "max_active_tasks": 4,
@@ -30,7 +30,11 @@
         "default_model": "gpt-5.6-luna",
         "default_effort": "xhigh",
         "challenging_model": "pro",
-        "challenging_effort": "pro"
+        "challenging_effort": "pro",
+        "executor_enabled": false,
+        "executor_write_mode": "read_only",
+        "executor_command_mode": "none",
+        "executor_require_confirmation": true
       },
       "logging": {
         "task_event_limit": 64

@@ -21,7 +21,7 @@ Use the shallowest structure that can finish the accepted objective. `CTRL_DIREC
 
 Preserve every explicit user-selected model, provider, service tier, and reasoning level exactly across CTRL and all assignments. SWARM may recommend a change but never applies one unless the user explicitly asks SWARM to choose or change it; if the host cannot honor the selection, report the exact blocker instead of substituting. Only when the user delegates that choice may SWARM resolve it from the active profile, route tier, and execution bounds. Treat fast-tier and turbo settings as host-dependent preferences, never proof or a safety exception. Load [model-providers.md](references/model-providers.md) when selecting or probing a model/provider.
 
-An optional visible ChatGPT relay may provide bounded T0/T1 planning, research, review, testing advice, or explicitly requested provider image generation through a user-confirmed browser bridge. It has no repo-write, command, test-execution, local-artifact, or acceptance authority. Missing bridge capability always falls back to local Codex. Load [chat-relay.md](references/chat-relay.md) before configuring it.
+An optional visible ChatGPT relay may provide bounded T0/T1 planning, research, review, testing advice, or explicitly requested provider image generation through a user-confirmed browser bridge. It has no repo-write, command, test-execution, local-artifact, or acceptance authority. Missing bridge capability always falls back to local Codex. A separate `chat_relay.executor_enabled` setting may opt into a host-owned local MCP executor; it requires an explicit local boundary, exact workspace scope, reported tools, confirmation, and a host receipt. SWARM still owns verification and acceptance. Load [chat-relay.md](references/chat-relay.md) before configuring either path.
 
 ## SETTINGS
 
@@ -48,8 +48,11 @@ guaranteed route: normal consultations request the configured normal profile
 (Luna/Xhigh by default) and explicitly challenging consultations request the
 configured challenging profile (Pro/Pro by default). The visible ChatGPT selection must
 match that requested profile and carry a host receipt; otherwise SWARM uses
-local Codex. ChatGPT output remains transient advisory context and never gains
-write, command, upload, artifact, or acceptance authority. See
+local Codex. ChatGPT output remains transient advisory context unless the
+separate local MCP executor is explicitly enabled. The executor may use only
+host-reported workspace, safe-command, and artifact tools within the reported
+scope; it never gains unscoped machine authority, and SWARM retains
+verification and acceptance authority. See
 [config.md](references/config.md) and [chat-relay.md](references/chat-relay.md)
 for the field-level contract. `chat_relay.offload_level` is a four-stop control:
 Light is selective, Balanced is the default, High widens the eligible set, and

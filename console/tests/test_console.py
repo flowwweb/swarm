@@ -432,6 +432,20 @@ class SwarmConsoleTests(unittest.TestCase):
         result = console.update_config(self.config, {"chat_relay.enabled": True})
         self.assertTrue(result["settings"]["chat_relay"]["enabled"])
 
+    def test_chatgpt_executor_settings_use_the_same_validated_config_api(self) -> None:
+        result = console.update_config(
+            self.config,
+            {
+                "chat_relay.enabled": True,
+                "chat_relay.executor_enabled": True,
+                "chat_relay.executor_write_mode": "workspace",
+                "chat_relay.executor_command_mode": "safe",
+            },
+        )
+        self.assertTrue(result["settings"]["chat_relay"]["executor_enabled"])
+        self.assertEqual(result["settings"]["chat_relay"]["executor_write_mode"], "workspace")
+        self.assertEqual(result["settings"]["chat_relay"]["executor_command_mode"], "safe")
+
     def test_chatgpt_toggle_preserves_configured_relay_profiles(self) -> None:
         text = self.config.read_text(encoding="utf-8")
         text = text.replace(

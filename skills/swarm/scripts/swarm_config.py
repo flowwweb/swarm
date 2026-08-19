@@ -22,6 +22,8 @@ CHAT_RELAY_MODELS = {"gpt-5.6-luna", "gpt-5.6-sol", "pro"}
 CHAT_RELAY_EFFORTS = {"minimal", "low", "medium", "high", "xhigh", "max", "ultra", "pro"}
 CHAT_RELAY_OFFLOAD_LEVELS = {"light", "balanced", "high", "max"}
 CHAT_RELAY_ROUTING_MODES = {"auto", "always_local", "always_cloud"}
+CHAT_EXECUTOR_WRITE_MODES = {"read_only", "workspace"}
+CHAT_EXECUTOR_COMMAND_MODES = {"none", "safe"}
 
 def resolve_config_path(explicit: Path|None=None) -> Path:
     """Resolve an explicit path or the canonical SWARM config location."""
@@ -65,6 +67,11 @@ DEFAULTS: dict[str, Any] = {
         "default_effort": "xhigh",
         "challenging_model": "pro",
         "challenging_effort": "pro",
+        # The bridge, credentials, and exact workspace scope are host-owned.
+        "executor_enabled": False,
+        "executor_write_mode": "read_only",
+        "executor_command_mode": "none",
+        "executor_require_confirmation": True,
     },
     "console": {"open_on_start": True},
     "logging": {"task_event_limit": 64},
@@ -402,6 +409,16 @@ def validate(raw: dict[str, Any]) -> None:
         _short_text(chat_relay, key, "chat_relay")
         if chat_relay.get(key, DEFAULTS["chat_relay"][key]) not in CHAT_RELAY_EFFORTS:
             raise ConfigError(f"chat_relay.{key} has an unsupported reasoning level")
+    _boolean(chat_relay, "executor_enabled", "chat_relay")
+    _short_text(chat_relay, "executor_write_mode", "chat_relay")
+    if chat_relay.get("executor_write_mode", DEFAULTS["chat_relay"]["executor_write_mode"]) not in CHAT_EXECUTOR_WRITE_MODES:
+        allowed = ", ".join(sorted(CHAT_EXECUTOR_WRITE_MODES))
+        raise ConfigError(f"chat_relay.executor_write_mode must be one of: {allowed}")
+    _short_text(chat_relay, "executor_command_mode", "chat_relay")
+    if chat_relay.get("executor_command_mode", DEFAULTS["chat_relay"]["executor_command_mode"]) not in CHAT_EXECUTOR_COMMAND_MODES:
+        allowed = ", ".join(sorted(CHAT_EXECUTOR_COMMAND_MODES))
+        raise ConfigError(f"chat_relay.executor_command_mode must be one of: {allowed}")
+    _boolean(chat_relay, "executor_require_confirmation", "chat_relay")
 
     console = _expect_table(raw, "console")
     _expect_keys(console, set(DEFAULTS["console"]), "console")

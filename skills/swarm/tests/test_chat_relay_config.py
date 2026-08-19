@@ -43,6 +43,10 @@ class ChatRelayConfigTests(unittest.TestCase):
                 "default_effort": "xhigh",
                 "challenging_model": "pro",
                 "challenging_effort": "pro",
+                "executor_enabled": False,
+                "executor_write_mode": "read_only",
+                "executor_command_mode": "none",
+                "executor_require_confirmation": True,
             },
         )
 
@@ -183,6 +187,26 @@ class ChatRelayConfigTests(unittest.TestCase):
             swarm = Swarm.from_config(effective)
             self.assertTrue(swarm.usage_saver)
             self.assertTrue(swarm.chat_relay_policy.enabled)
+
+    def test_swarm_from_config_loads_the_separate_executor_policy(self) -> None:
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "executor.toml"
+            path.write_text(
+                "[chat_relay]\n"
+                "enabled = true\n"
+                "executor_enabled = true\n"
+                "executor_write_mode = \"workspace\"\n"
+                "executor_command_mode = \"safe\"\n"
+                "executor_require_confirmation = false\n",
+                encoding="utf-8",
+            )
+            effective, _ = config.load(path)
+            swarm = Swarm.from_config(effective)
+
+        self.assertTrue(swarm.chat_executor_policy.enabled)
+        self.assertEqual(swarm.chat_executor_policy.write_mode.value, "workspace")
+        self.assertEqual(swarm.chat_executor_policy.command_mode.value, "safe")
+        self.assertFalse(swarm.chat_executor_policy.require_confirmation)
 
     def test_usage_saver_is_typed_in_runtime_state(self) -> None:
         with self.assertRaises(InvariantError):
