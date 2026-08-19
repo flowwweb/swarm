@@ -281,7 +281,7 @@ class ChatGPTActor:
         if not isinstance(self.tool_capabilities, frozenset) or any(
             not isinstance(tool, str) or not tool.strip() for tool in self.tool_capabilities
         ):
-            raise ValueError("ChatGPT actor tool capabilities must be non-empty names")
+            raise ValueError("ChatGPT actor tool capabilities must be single-line names")
         if not isinstance(self.connected, bool) or not isinstance(self.user_confirmed, bool):
             raise ValueError("ChatGPT actor connection flags must be boolean")
 

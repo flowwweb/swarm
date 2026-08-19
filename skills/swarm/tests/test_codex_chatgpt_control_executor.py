@@ -98,6 +98,27 @@ class CodexChatGPTControlExecutorTests(unittest.TestCase):
                 command_mode=ChatExecutorCommandMode.SAFE,
             )
 
+    def test_executor_rejects_a_provider_blocker_even_with_text(self) -> None:
+        runner = FakeRunner(SimpleNamespace(
+            output_text="partial text is not a successful execution",
+            run_id="run-blocked",
+            blocker=SimpleNamespace(code="workspace_denied", message="Workspace approval was denied."),
+        ))
+        executor = CodexChatGPTControlExecutor(
+            capability_reader=self.capability,
+            runner=runner,
+            agent_factory=lambda **values: values,
+        )
+
+        with self.assertRaisesRegex(ChatExecutorTransportError, "workspace_denied"):
+            executor.execute_task(
+                "SWARM task envelope",
+                model="pro",
+                effort="pro",
+                write_mode=ChatExecutorWriteMode.WORKSPACE,
+                command_mode=ChatExecutorCommandMode.SAFE,
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

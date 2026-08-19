@@ -411,7 +411,7 @@ class CodexChatGPTControlExecutor:
                 f"ChatGPT executor returned no host receipt{detail}",
                 blocker=ChatExecutorBlocker.PROVIDER_RESPONSE_UNAVAILABLE,
             )
-        if blocker_message and not text.strip():
+        if blocker_message:
             raise ChatExecutorTransportError(
                 f"ChatGPT executor was blocked: {blocker_message}",
                 blocker=ChatExecutorBlocker.PROVIDER_RESPONSE_UNAVAILABLE,

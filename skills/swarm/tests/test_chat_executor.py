@@ -261,6 +261,19 @@ class ChatExecutorTests(unittest.TestCase):
             frozenset({"workspace.read", "workspace.write", "command.safe", "artifact.create"}),
         )
 
+    def test_registry_can_represent_a_connected_provider_with_no_tools(self) -> None:
+        adapter = FakeExecutor(
+            executor_capability(
+                read_tools=False,
+                write_tools=False,
+                command_tools=False,
+                artifact_tools=False,
+                tool_capabilities=frozenset(),
+            )
+        )
+        actor = ChatGPTBridgeRegistry().register(adapter)
+        self.assertEqual(actor.tool_capabilities, frozenset())
+
     def test_registry_exposes_external_provider_as_a_swarm_actor(self) -> None:
         adapter = FakeExecutor(executor_capability(transport=ChatGPTBridgeTransport.BROWSER_DELIVERY))
         registry = ChatGPTBridgeRegistry()
