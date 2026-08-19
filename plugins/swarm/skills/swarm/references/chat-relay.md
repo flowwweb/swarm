@@ -95,9 +95,12 @@ failure falls back to local SWARM.
 SWARM registers providers through `ChatGPTBridgeRegistry` and exposes each one
 as a `ChatGPTActor`. Registration captures the provider ID, actor identity,
 transport, exact workspace scope, advertised tools, observed model/effort, and
-host receipt. CodexPro can register as a direct remote-MCP actor; CCCC can
-register as a browser-delivery plus remote-MCP actor. Both remain optional
-runtime integrations and are not plugin dependencies.
+host receipt. A CodexPro MCP endpoint by itself is a workspace-tool server that
+ChatGPT calls; it is not automatically a ChatGPT worker. It can participate
+through a companion actor adapter only when the external host also implements
+SWARM's capability, task-execution, and receipt contract. CCCC can provide that
+actor-bound callback when its host exposes it. Both remain optional runtime
+integrations and are not plugin dependencies.
 
 `ChatGPTBridgeRegistry.discover(path)` and `save(path)` provide durable,
 credential-free provider discovery. The manifest stores identity, transport,
