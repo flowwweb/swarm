@@ -358,7 +358,7 @@ try {
     const obviousField = page.locator('[data-setting="portfolio.max_active_tasks"]').locator("xpath=ancestor::div[contains(concat(' ', normalize-space(@class), ' '), ' field ')]");
     assert.equal(await obviousField.locator(".field-info").count(), 0, "obvious labels should not all carry tooltips");
     const info = page.locator('[data-setting="chat_relay.routing_mode"]').locator("xpath=ancestor::div[contains(concat(' ', normalize-space(@class), ' '), ' field ')]").locator(".field-info");
-    assert.equal(await info.getAttribute("data-tooltip"), "Auto follows the offload level; Always local keeps work in Codex; Always cloud sends eligible advisory work to ChatGPT.");
+    assert.equal(await info.getAttribute("data-tooltip"), "Auto follows the offload level; Always local keeps work in Codex; Always cloud uses connected ChatGPT actors whenever their tools allow it.");
     const infoBox = await info.boundingBox();
     assert.ok(infoBox && infoBox.height === 15, `tooltip icon should use the aligned 15px icon box: ${JSON.stringify(infoBox)}`);
     const sliderBounds = await page.locator('[data-setting="chat_relay.offload_level"]').evaluate((element) => {

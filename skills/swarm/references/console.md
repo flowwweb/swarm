@@ -8,18 +8,19 @@ second task ledger.
 The always-visible Usage Saver switch writes the single
 `execution.usage_saver` preference through the same validated settings API. The
 nearby `Save Codex usage with ChatGPT` switch controls `chat_relay.enabled` and
-uses the description `Offload planning, coding, testing, and review to ChatGPT
-to make your Codex usage go further.` Usage Saver is off by default and does not
-change model routing, scope, proof, review, capability, or authority. The
-ChatGPT switch is also off by default and enables only bounded, user-confirmed
-advisory consultations; it does not grant ChatGPT execution or acceptance
-authority.
+enables eligible routing through a connected ChatGPT bridge. Usage Saver is off
+by default and does not change model routing, scope, proof, review, capability,
+or authority. The ChatGPT switch is also off by default; once enabled, its
+conditional actor controls can allow provider-advertised reads, writes,
+commands, tests, and provider-owned artifacts. SWARM still owns verification
+and acceptance.
 
 Directly below that switch, Settings shows the local ChatGPT usage log: routed
-task count, consultation count, recent metadata-only entries, and an estimated
-Codex-token total. It reads one local JSON file and does not query Codex usage,
-call a model, or start a refresh loop. `Clear log` removes that file through the
-authenticated loopback console action.
+task count, provider-reported token total, and recent metadata-only entries. It
+reads one local JSON file and does not query Codex usage, call a model, or start
+a refresh loop. `Clear log` removes that file through the authenticated
+loopback console action. Missing provider usage is shown as unavailable; the
+console does not estimate savings.
 
 The console switch changes only the relay's opt-in flag. It must preserve the
 validated `chat_relay.default_*` and `chat_relay.challenging_*` profile fields;
