@@ -24,6 +24,8 @@ class ChatRelayPurpose(StrEnum):
     REVIEW = "review"
     TESTING = "testing"
     IMAGEGEN = "imagegen"
+    IMPLEMENTATION = "implementation"
+    COMMAND = "command"
 
 
 class ChatRelaySurface(StrEnum):

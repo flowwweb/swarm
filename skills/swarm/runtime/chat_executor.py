@@ -599,6 +599,8 @@ def _offload_level_allows_executor(level: ChatRelayOffloadLevel, request: ChatEx
             ChatRelayPurpose.REVIEW,
             ChatRelayPurpose.TESTING,
             ChatRelayPurpose.IMAGEGEN,
+            ChatRelayPurpose.IMPLEMENTATION,
+            ChatRelayPurpose.COMMAND,
         } and request.consequence_tier in {"T0", "T1", "T2", "T3"}
     return True
 

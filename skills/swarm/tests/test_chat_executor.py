@@ -25,6 +25,7 @@ from skills.swarm.runtime.chat_relay import (
     ChatRelayOffloadLevel,
     ChatRelayPolicy,
     ChatRelayPurpose,
+    ChatRelayTransportReceipt,
     build_chat_relay_context,
 )
 from skills.swarm.runtime.core import Swarm
@@ -64,6 +65,13 @@ class FakeExecutor:
         self.host = capability
         self.sent: list[str] = []
         self.selections: list[tuple[str, str, ChatExecutorWriteMode, ChatExecutorCommandMode]] = []
+        self.response = ChatExecutorResponse(
+            text="host completed the bounded task",
+            host_receipt="mcp-execution-receipt",
+            observed_model=self.host.observed_model,
+            observed_effort=self.host.observed_effort,
+            changed_paths=("src/app.ts",),
+        )
 
     def capability(self) -> ChatExecutorCapability:
         return self.host
@@ -79,13 +87,7 @@ class FakeExecutor:
     ) -> ChatExecutorResponse:
         self.sent.append(prompt)
         self.selections.append((model, effort, write_mode, command_mode))
-        return ChatExecutorResponse(
-            text="host completed the bounded task",
-            host_receipt="mcp-execution-receipt",
-            observed_model=self.host.observed_model,
-            observed_effort=self.host.observed_effort,
-            changed_paths=("src/app.ts",),
-        )
+        return self.response
 
 
 class ChatExecutorTests(unittest.TestCase):
@@ -180,6 +182,77 @@ class ChatExecutorTests(unittest.TestCase):
             capability=executor_capability(),
         )
         self.assertIs(decision.route, ChatExecutorRoute.CHATGPT_MCP)
+
+    def test_max_routes_the_full_provider_capability_matrix_and_preserves_receipts(self) -> None:
+        policy = ChatExecutorPolicy(
+            enabled=True,
+            write_mode=ChatExecutorWriteMode.WORKSPACE,
+            command_mode=ChatExecutorCommandMode.SAFE,
+            require_confirmation=False,
+        )
+        relay = ChatRelayPolicy(
+            enabled=True,
+            provider="cccc",
+            offload_level=ChatRelayOffloadLevel.MAX,
+            challenging_model="pro",
+            challenging_effort="pro",
+        )
+        provider = FakeExecutor(executor_capability(observed_model="Pro", observed_effort="Pro"))
+        provider.response = ChatExecutorResponse(
+            text="provider completed the requested capability",
+            host_receipt="matrix-execution-receipt",
+            observed_model="Pro",
+            observed_effort="Pro",
+            changed_paths=("src/app.ts",),
+            transport=ChatRelayTransportReceipt(
+                transport="remote_mcp",
+                request_id="matrix-request",
+                response_id="matrix-response",
+                asset_ids=("matrix-asset",),
+                model="pro",
+                input_tokens=120,
+                output_tokens=80,
+                total_tokens=200,
+                usage_status="reported",
+                usage_reason="",
+            ),
+        )
+        matrix = (
+            executor_request(purpose=ChatRelayPurpose.RESEARCH, challenging=True),
+            executor_request(purpose=ChatRelayPurpose.IMPLEMENTATION, write_intent=True, challenging=True),
+            executor_request(purpose=ChatRelayPurpose.COMMAND, command_intent=True, challenging=True),
+            executor_request(purpose=ChatRelayPurpose.TESTING, command_intent=True, challenging=True),
+            executor_request(purpose=ChatRelayPurpose.IMAGEGEN, artifact_production=True, challenging=True),
+            executor_request(
+                purpose=ChatRelayPurpose.REVIEW,
+                consequence_tier="T4",
+                write_intent=True,
+                command_intent=True,
+                artifact_production=True,
+                challenging=True,
+            ),
+        )
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "brief.md").write_text("full capability matrix", encoding="utf-8")
+            context = build_chat_relay_context(repo_root=root, objective="matrix", relative_paths=("brief.md",))
+            for request in matrix:
+                with self.subTest(purpose=request.purpose, tier=request.consequence_tier):
+                    result = execute_chat_task(
+                        policy=policy,
+                        relay_policy=relay,
+                        request=request,
+                        context=context,
+                        adapter=provider,
+                    )
+                    self.assertIs(result.decision.route, ChatExecutorRoute.CHATGPT_MCP)
+                    self.assertIsNotNone(result.response)
+                    assert result.response is not None
+                    self.assertEqual(result.response.host_receipt, "matrix-execution-receipt")
+                    self.assertEqual(result.response.transport.total_tokens, 200)
+                    self.assertEqual(result.response.transport.asset_ids, ("matrix-asset",))
+        self.assertEqual(len(provider.sent), len(matrix))
+        self.assertTrue(all("SWARM_REMAINS_ACCEPTANCE_OWNER: true" in prompt for prompt in provider.sent))
 
     def test_capability_derives_advertised_tool_names(self) -> None:
         capability = executor_capability(tool_capabilities=frozenset())

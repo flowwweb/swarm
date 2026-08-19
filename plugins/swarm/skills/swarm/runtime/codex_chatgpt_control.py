@@ -17,6 +17,14 @@ from .chat_relay import (
     ChatRelayTransportError,
     ChatRelayTransportReceipt,
 )
+from .chat_executor import (
+    ChatExecutorBlocker,
+    ChatExecutorCapability,
+    ChatExecutorCommandMode,
+    ChatExecutorResponse,
+    ChatExecutorTransportError,
+    ChatExecutorWriteMode,
+)
 
 
 DEFAULT_BACKEND_COMMAND = (
@@ -124,6 +132,23 @@ def _run_receipt(result: object) -> object:
         return direct
     state = _value(result, "state")
     return _first_value(state, ("id", "receipt", "run_id", "runId"))
+
+
+def _string_values(result: object, keys: tuple[str, ...]) -> tuple[str, ...]:
+    raw = _first_value(result, keys)
+    if isinstance(raw, str):
+        return (raw,) if raw.strip() else ()
+    if not isinstance(raw, Sequence) or isinstance(raw, (bytes, bytearray)):
+        return ()
+    values: list[str] = []
+    for item in raw:
+        if isinstance(item, str) and item.strip() and item.strip() not in values:
+            values.append(item.strip())
+        elif isinstance(item, Mapping):
+            value = _first_value(item, ("path", "relative_path", "relativePath", "file", "name"))
+            if isinstance(value, str) and value.strip() and value.strip() not in values:
+                values.append(value.strip())
+    return tuple(values)
 
 
 class CodexChatGPTControlAdapter:
@@ -289,6 +314,146 @@ class CodexChatGPTControlAdapter:
                 close()
 
     def __enter__(self) -> "CodexChatGPTControlAdapter":
+        return self
+
+    def __exit__(self, *_: object) -> None:
+        self.close()
+
+
+class CodexChatGPTControlExecutor:
+    """Optional capability-driven actor adapter for SWARM's execution route.
+
+    The external SDK and its browser-hosted tools stay outside the SWARM
+    plugin. A caller supplies the fresh host capability and, when the provider
+    needs custom tool descriptors, a builder for that provider's own schema.
+    """
+
+    def __init__(
+        self,
+        *,
+        capability_reader: Callable[[], ChatExecutorCapability],
+        runner: object | None = None,
+        agent_factory: Callable[..., object] | None = None,
+        tool_builder: Callable[[frozenset[str]], list[dict[str, object]]] | None = None,
+        command: Sequence[str] = DEFAULT_BACKEND_COMMAND,
+    ) -> None:
+        if not callable(capability_reader):
+            raise TypeError("ChatGPT executor requires a capability callback")
+        self._capability_reader = capability_reader
+        self._backend: object | None = None
+        if runner is None:
+            try:
+                from codex_chatgpt_control import Agent, BackendClient, Runner, StdioBackendTransport
+            except ImportError as exc:
+                raise RuntimeError(
+                    "codex-chatgpt-control is optional; install it explicitly before constructing this executor"
+                ) from exc
+            self._backend = BackendClient(StdioBackendTransport(command=list(command)))
+            self._runner = Runner(self._backend)
+            self._agent_factory = Agent
+        else:
+            if not callable(agent_factory):
+                raise TypeError("an injected runner requires an injected agent_factory")
+            self._runner = runner
+            self._agent_factory = agent_factory
+        self._tool_builder = tool_builder
+
+    def capability(self) -> ChatExecutorCapability:
+        capability = self._capability_reader()
+        if not isinstance(capability, ChatExecutorCapability):
+            raise TypeError("capability_reader must return ChatExecutorCapability")
+        return capability
+
+    def execute_task(
+        self,
+        prompt: str,
+        *,
+        model: str,
+        effort: str,
+        write_mode: ChatExecutorWriteMode,
+        command_mode: ChatExecutorCommandMode,
+    ) -> ChatExecutorResponse:
+        if not isinstance(prompt, str) or not prompt.strip():
+            raise ValueError("ChatGPT executor requires a non-empty prompt")
+        capability = self.capability()
+        tools = self._tool_builder(capability.tool_capabilities) if self._tool_builder is not None else []
+        agent = self._agent_factory(
+            name="swarm-capability-driven-worker",
+            instructions=(
+                "Execute the SWARM task using only the provider-advertised tools. "
+                f"Workspace scope: {capability.workspace_scope}. "
+                f"Workspace writes: {write_mode.value}. Safe commands: {command_mode.value}. "
+                "Return a host receipt and factual changed-path or asset evidence. "
+                "SWARM remains the verification and acceptance owner."
+            ),
+            tools=tools,
+        )
+        runner = getattr(self._runner, "run_sync", None)
+        if not callable(runner):
+            raise TypeError("ChatGPT executor runner must expose run_sync")
+        request: dict[str, object] = {
+            "input": prompt,
+            "thread": {"type": "new"},
+            "experience": "chat",
+            "response": {"format": "markdown"},
+        }
+        if tools:
+            request["tools"] = tools
+        result = runner(agent, request)
+        text = _value(result, "output_text")
+        receipt = _run_receipt(result)
+        blocker_message = _blocker_message(result)
+        if not isinstance(text, str):
+            text = ""
+        if not isinstance(receipt, str) or not receipt.strip():
+            detail = f": {blocker_message}" if blocker_message else ""
+            raise ChatExecutorTransportError(
+                f"ChatGPT executor returned no host receipt{detail}",
+                blocker=ChatExecutorBlocker.PROVIDER_RESPONSE_UNAVAILABLE,
+            )
+        if blocker_message and not text.strip():
+            raise ChatExecutorTransportError(
+                f"ChatGPT executor was blocked: {blocker_message}",
+                blocker=ChatExecutorBlocker.PROVIDER_RESPONSE_UNAVAILABLE,
+            )
+        if not text.strip():
+            text = "Provider completed the task; see the host receipt."
+        input_tokens, output_tokens, total_tokens, usage_status, usage_reason = _usage_fields(result)
+        provider_model = _first_value(result, ("model", "model_version", "modelVersion"))
+        latency = _first_value(result, ("latency_ms", "latencyMs"))
+        latency_ms = latency if isinstance(latency, (int, float)) and not isinstance(latency, bool) and latency >= 0 else None
+        latency_source = "provider_reported" if latency_ms is not None else "unavailable"
+        return ChatExecutorResponse(
+            text=text,
+            host_receipt=receipt,
+            observed_model=capability.observed_model,
+            observed_effort=capability.observed_effort,
+            changed_paths=_string_values(result, ("changed_paths", "changedPaths", "files_changed", "filesChanged")),
+            transport=ChatRelayTransportReceipt(
+                transport=capability.transport.value,
+                client_thread_id=_first_value(result, ("client_thread_id", "clientThreadId")) or "",
+                thread_id=_first_value(result, ("thread_id", "threadId")) or "",
+                request_id=_first_value(result, ("request_id", "requestId")) or "",
+                response_id=_first_value(result, ("response_id", "responseId")) or "",
+                asset_ids=_asset_ids(result),
+                model=provider_model if isinstance(provider_model, str) else capability.observed_model,
+                latency_ms=latency_ms,
+                latency_source=latency_source,
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+                total_tokens=total_tokens,
+                usage_status=usage_status,
+                usage_reason=usage_reason,
+            ),
+        )
+
+    def close(self) -> None:
+        if self._backend is not None:
+            close = getattr(self._backend, "close", None)
+            if callable(close):
+                close()
+
+    def __enter__(self) -> "CodexChatGPTControlExecutor":
         return self
 
     def __exit__(self, *_: object) -> None:

@@ -187,7 +187,13 @@ class ComplexChatRelayTests(unittest.TestCase):
 
     def test_each_advisory_purpose_can_route_without_expanding_capability(self) -> None:
         host = capability(model="GPT-5.6 Luna", effort="Extra High", confirmed=True)
-        for purpose in ChatRelayPurpose:
+        for purpose in (
+            ChatRelayPurpose.PLAN,
+            ChatRelayPurpose.RESEARCH,
+            ChatRelayPurpose.REVIEW,
+            ChatRelayPurpose.TESTING,
+            ChatRelayPurpose.IMAGEGEN,
+        ):
             with self.subTest(purpose=purpose):
                 decision = choose_chat_relay(
                     policy=ChatRelayPolicy(enabled=True, offload_level=ChatRelayOffloadLevel.MAX),

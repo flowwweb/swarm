@@ -75,6 +75,13 @@ a connected bridge, an exact workspace scope, the required read/write/command/
 artifact tools, the observed model and reasoning effort, and a host receipt.
 User confirmation is required by default.
 
+Actor task envelopes name the actual work class—`plan`, `research`, `review`,
+`testing`, `imagegen`, `implementation`, or `command`—so a capable provider is
+not forced through an advisory-only label. At `Max`, any of those classes and
+any consequence tier, including T4, may route when the provider and explicit
+host settings supply the required tools. Missing tools, scope, connection,
+profile, or receipt still return ownership to local SWARM.
+
 `executor_write_mode = "read_only"` never permits writes. `workspace` permits
 only the host's reported workspace write tools. `executor_command_mode =
 "none"` never permits commands; `safe` still depends on the bridge's own
