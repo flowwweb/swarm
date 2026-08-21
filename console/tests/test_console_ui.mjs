@@ -88,6 +88,14 @@ try {
   assert.equal(await page.getByRole("button", { name: /https-mail/i }).count(), 0);
   assert.equal(await page.getByText("Task activity").count(), 1);
   assert.equal(await page.locator("#burn-current").textContent(), "42 / min");
+  assert.equal(await page.locator('[data-subagent-parent="ctrl"]').count(), 1);
+  assert.equal(await page.locator('[data-subagent-parent="ctrl"]').isHidden(), true);
+  await page.locator('[data-subagent-toggle="ctrl"]').click();
+  assert.equal(await page.locator('[data-subagent-parent="ctrl"]').isVisible(), true);
+  await page.locator('[data-subagent-toggle="ctrl"]').click();
+  assert.equal(await page.locator('[data-subagent-parent="ctrl"]').isHidden(), true);
+  await page.getByRole("tab", { name: "Hierarchy" }).click();
+  assert.match(await page.locator("#hierarchy-list").textContent(), /1 subagent/);
   assert.ok(requests.some((request) => request.includes("/api/config")));
 
   await page.getByRole("button", { name: /^swarm\b/i }).click();

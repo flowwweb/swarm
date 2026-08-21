@@ -209,16 +209,87 @@ function renderMetrics(nodes) {
   action.dataset.taskId = risk?.id || "";
 }
 
+function isSubagent(node) {
+  if (node?.is_subagent === true) return true;
+  const surface = String(node?.surface ?? node?.thread_source ?? "").trim().toLowerCase();
+  return ["subagent", "internal_subagent"].includes(surface);
+}
+
+function taskTree(nodes) {
+  const byId = new Map(nodes.map((node) => [node.id, node]));
+  const parent = new Map();
+  const children = new Map();
+  const linkedParent = new Map((state.overview?.links || []).map((link) => [link.target, link.source]));
+  nodes.forEach((node) => {
+    const candidate = node.parent_id || linkedParent.get(node.id);
+    if (!candidate || candidate === node.id || !byId.has(candidate)) return;
+    parent.set(node.id, candidate);
+    const list = children.get(candidate) || [];
+    list.push(node);
+    children.set(candidate, list);
+  });
+  return { byId, parent, children };
+}
+
+function subagentDescendants(nodeId, tree) {
+  const descendants = [];
+  const pending = [...(tree.children.get(nodeId) || [])];
+  while (pending.length) {
+    const node = pending.shift();
+    if (isSubagent(node)) descendants.push(node);
+    pending.unshift(...(tree.children.get(node.id) || []));
+  }
+  return descendants;
+}
+
+function subagentToggle(node, count) {
+  if (!count) return "";
+  const label = count + " subagent" + (count === 1 ? "" : "s");
+  return '<button class="subagent-toggle" data-subagent-toggle="' + escapeHTML(node.id) + '" type="button" aria-expanded="false">＋ <span>Show ' + label + '</span></button>';
+}
+
+function renderTaskRow(node, tree, { subagent = false, depth = 0, hidden = false } = {}) {
+  const eta = node.eta || {};
+  const proof = node.proof_snapshot || {};
+  const status = statusLabel(node);
+  const etaLabel = eta.status === "complete" ? "Complete" : (eta.eta_end_ms ? formatEta(eta.eta_end_ms) : "Unforecast");
+  const descendants = subagentDescendants(node.id, tree);
+  const rowClass = subagent ? "task-row subagent-row" : "task-row";
+  const parentAttribute = subagent && tree.parent.has(node.id) ? ' data-subagent-parent="' + escapeHTML(tree.parent.get(node.id)) + '"' : "";
+  const indent = subagent ? '<span class="subagent-indent" aria-hidden="true" style="--subagent-depth:' + depth + '">↳</span>' : "";
+  const label = escapeHTML(node.artifact || node.title || node.id);
+  const worker = escapeHTML(node.worker || node.worker_role || node.role_label || "Unassigned");
+  const rowId = subagent ? ' id="subagents-' + escapeHTML(node.id) + '"' : "";
+  return '<tr class="' + rowClass + '" data-task-id="' + escapeHTML(node.id) + '" data-subagent-depth="' + depth + '"' + parentAttribute + rowId + (hidden ? " hidden" : "") + '><td>' + indent + '<strong>' + label + '</strong><small>' + (subagent ? "Subagent · " : "") + escapeHTML(node.project || "Task") + '</small>' + subagentToggle(node, descendants.length) + '</td><td>' + worker + '</td><td><span class="state-pill ' + status[1] + '">' + status[0] + '</span></td><td><strong>' + escapeHTML(etaLabel) + '</strong><small>' + escapeHTML(eta.status ? humanize(eta.status) : "No forecast") + '</small></td><td>' + (eta.confidence == null ? "—" : escapeHTML(eta.confidence) + "%") + '</td><td><span class="activity-dot ' + status[1] + '" aria-hidden="true"></span>' + escapeHTML(formatRelative(node.updated_at || node.generated_at)) + '</td><td><span class="proof-state ' + (proof.available ? "" : "is-muted") + '">' + (proof.available ? "Available" : "—") + "</span></td></tr>";
+}
+
+function renderSubagentRows(node, tree, depth = 1) {
+  return (tree.children.get(node.id) || []).filter(isSubagent).map((child) => renderTaskRow(child, tree, { subagent: true, depth, hidden: true }) + renderSubagentRows(child, tree, depth + 1)).join("");
+}
+
 function renderTable(nodes) {
   $("#plan-count").textContent = String(nodes.length) + " task" + (nodes.length === 1 ? "" : "s");
   $("#task-empty").hidden = nodes.length > 0;
-  $("#task-table").innerHTML = nodes.map((node) => {
-    const eta = node.eta || {};
-    const proof = node.proof_snapshot || {};
-    const status = statusLabel(node);
-    const etaLabel = eta.status === "complete" ? "Complete" : (eta.eta_end_ms ? formatEta(eta.eta_end_ms) : "Unforecast");
-    return '<tr data-task-id="' + escapeHTML(node.id) + '"><td><strong>' + escapeHTML(node.artifact || node.title || node.id) + '</strong><small>' + escapeHTML(node.project || "Task") + '</small></td><td>' + escapeHTML(node.worker || node.worker_role || node.role_label || "Unassigned") + '</td><td><span class="state-pill ' + status[1] + '">' + status[0] + '</span></td><td><strong>' + escapeHTML(etaLabel) + '</strong><small>' + escapeHTML(eta.status ? humanize(eta.status) : "No forecast") + '</small></td><td>' + (eta.confidence == null ? "—" : escapeHTML(eta.confidence) + "%") + '</td><td><span class="activity-dot ' + status[1] + '" aria-hidden="true"></span>' + escapeHTML(formatRelative(node.updated_at || node.generated_at)) + '</td><td><span class="proof-state ' + (proof.available ? "" : "is-muted") + '">' + (proof.available ? "Available" : "—") + "</span></td></tr>";
-  }).join("");
+  const tree = taskTree(nodes);
+  const roots = nodes.filter((node) => !isSubagent(node) || !tree.parent.has(node.id));
+  $("#task-table").innerHTML = roots.map((node) => renderTaskRow(node, tree) + (isSubagent(node) ? "" : renderSubagentRows(node, tree))).join("");
+}
+
+function setSubagentVisibility(parentId, visible, visited = new Set()) {
+  if (visited.has(parentId)) return;
+  visited.add(parentId);
+  const rows = $$('[data-subagent-parent="' + CSS.escape(parentId) + '"]', $("#task-table"));
+  rows.forEach((row) => {
+    row.hidden = !visible;
+    if (!visible) {
+      row.querySelectorAll("[data-subagent-toggle]").forEach((button) => {
+        button.setAttribute("aria-expanded", "false");
+        const text = button.querySelector("span");
+        if (text) text.textContent = text.textContent.replace(/^Hide /, "Show ");
+      });
+      setSubagentVisibility(row.dataset.taskId, false, visited);
+    }
+  });
 }
 
 function renderProof(nodes) {
@@ -260,8 +331,10 @@ function taskProgress(node) {
 }
 
 function renderHierarchy() {
+  const nodes = scopedNodes();
+  const tree = taskTree(nodes);
   const groups = new Map();
-  scopedNodes().forEach((node) => {
+  nodes.filter((node) => !isSubagent(node)).forEach((node) => {
     const owner = node.controller_ids?.[0] || node.worker || node.worker_role || node.role_label || "Unassigned";
     const list = groups.get(owner) || [];
     list.push(node); groups.set(owner, list);
@@ -271,7 +344,9 @@ function renderHierarchy() {
     const extra = tasks.filter((task) => task.id !== current.id);
     const stalled = ["blocked", "at_risk"].includes(String(current.eta?.status || current.status).toLowerCase());
     const status = statusLabel(current);
-    return '<article class="hierarchy-card"><div class="health-ring ' + status[1] + '"><i></i><span>' + taskProgress(current) + '%</span></div><div class="hierarchy-main"><div class="hierarchy-title"><strong>' + escapeHTML(current.artifact || current.title || owner) + '</strong><span>' + escapeHTML(current.role_label || current.role || "TASK") + '</span></div><p><i class="activity-dot ' + status[1] + '" aria-hidden="true"></i>' + escapeHTML(formatRelative(current.updated_at)) + (stalled ? ' <b class="stalled-cue">Paused attention</b>' : '') + '</p><div class="task-progress"><i style="width:' + taskProgress(current) + '%"></i></div>' + (extra.length ? '<details><summary>' + extra.length + ' more task' + (extra.length === 1 ? '' : 's') + '</summary><ul>' + extra.map((task) => '<li>' + escapeHTML(task.artifact || task.title || task.id) + '</li>').join('') + '</ul></details>' : '') + '</div></article>';
+    const subagents = subagentDescendants(current.id, tree);
+    const subagentMeta = subagents.length ? '<span class="subagent-count">' + subagents.length + ' subagent' + (subagents.length === 1 ? '' : 's') + '</span>' : '';
+    return '<article class="hierarchy-card"><div class="health-ring ' + status[1] + '"><i></i><span>' + taskProgress(current) + '%</span></div><div class="hierarchy-main"><div class="hierarchy-title"><strong>' + escapeHTML(current.artifact || current.title || owner) + '</strong><span>' + escapeHTML(current.role_label || current.role || "TASK") + subagentMeta + '</span></div><p><i class="activity-dot ' + status[1] + '" aria-hidden="true"></i>' + escapeHTML(formatRelative(current.updated_at)) + (stalled ? ' <b class="stalled-cue">Paused attention</b>' : '') + '</p><div class="task-progress"><i style="width:' + taskProgress(current) + '%"></i></div>' + (extra.length ? '<details><summary>' + extra.length + ' more task' + (extra.length === 1 ? '' : 's') + '</summary><ul>' + extra.map((task) => '<li>' + escapeHTML(task.artifact || task.title || task.id) + '</li>').join('') + '</ul></details>' : '') + '</div></article>';
   }).join('') : '<p class="empty-state">No owners in this view.</p>';
 }
 
@@ -427,6 +502,17 @@ function startPresence() {
 }
 
 document.addEventListener("click", (event) => {
+  const subagentToggleButton = event.target.closest("[data-subagent-toggle]");
+  if (subagentToggleButton) {
+    const expanded = subagentToggleButton.getAttribute("aria-expanded") === "true";
+    const parentId = subagentToggleButton.dataset.subagentToggle;
+    setSubagentVisibility(parentId, !expanded);
+    subagentToggleButton.setAttribute("aria-expanded", String(!expanded));
+    const text = subagentToggleButton.querySelector("span");
+    if (text) text.textContent = text.textContent.replace(expanded ? /^Show / : /^Hide /, expanded ? "Show " : "Hide ");
+    event.stopPropagation();
+    return;
+  }
   const tab = event.target.closest("[data-view]");
   if (tab) setView(tab.dataset.view);
   const risk = event.target.closest("#risk-action");

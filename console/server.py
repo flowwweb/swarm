@@ -2085,6 +2085,8 @@ def build_overview(codex_home: Path, config_path: Path) -> dict[str, Any]:
             "quiet_ms": max(0, now_ms - updated_ms) if updated_ms else None,
             "branch": row["git_branch"] or "",
             "pinned": bool(row["is_pinned"]),
+            "surface": str(row["thread_source"] or "task").strip().casefold() or "task",
+            "is_subagent": str(row["thread_source"] or "").strip().casefold() in {"subagent", "internal_subagent"},
             "virtual": False,
             "worker": role.get("worker") or re.sub(
                 r"[^A-Za-z0-9 _-]", "", str(row["agent_nickname"] or "")
@@ -2119,6 +2121,10 @@ def build_overview(codex_home: Path, config_path: Path) -> dict[str, Any]:
         project["active"] -= node["status"] == "active"
         if project["nodes"] == 0:
             projects.pop(node["project_id"])
+
+    for thread_id, node in nodes.items():
+        parent = parent_by_child.get(thread_id)
+        node["parent_id"] = parent if parent in nodes else None
 
     for project_key, inventory in host_projects.items():
         project = projects.setdefault(
@@ -2219,6 +2225,7 @@ def build_overview(codex_home: Path, config_path: Path) -> dict[str, Any]:
         },
         "claim_limits": [
             "Task nodes are derived from observed Codex spawn edges and safe agent-path metadata; worker names stay inside their task node.",
+            "Subagent grouping uses host thread-source metadata plus observed spawn edges; it is a display relationship, not an authoritative runtime workflow graph.",
             "Spawn edges are shown as delegated relationships; waits-for and review dependencies are not inferred without runtime receipts.",
             "Controller scopes are observed host descendants, not the authoritative runtime workflow graph.",
             "Proof plans appear only from validated runtime snapshots; absent snapshots stay unavailable and never inherit host task status.",
