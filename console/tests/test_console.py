@@ -467,7 +467,7 @@ class SwarmConsoleTests(unittest.TestCase):
         with self.assertRaisesRegex(console.ConsoleError, "plain project language"):
             store.record_proof_media({**base, "evidence_id": "internal-copy", "caption": "Localhost proof", "disposition": "PENDING"}, now_ms=4)
 
-    def test_store_normalizes_legacy_surface_rows_to_available(self) -> None:
+    def test_store_migration_normalizes_available_rows_but_preserves_withheld(self) -> None:
         media_path = self.root / "legacy.png"
         media_path.write_bytes(b"\x89PNG\r\n\x1a\nlegacy")
         database = self.root / "console" / "legacy.sqlite3"
@@ -481,6 +481,10 @@ class SwarmConsoleTests(unittest.TestCase):
         connection = sqlite3.connect(database)
         try:
             connection.execute("UPDATE proof_media SET disposition='SURFACED', surface_kind='inline_image' WHERE evidence_id='legacy-proof'")
+            connection.execute(
+                "INSERT INTO proof_media(evidence_id, task_id, project_id, kind, locator, caption, claim_limit, disposition, receipt, surface_kind, media_type, mtime_ns, size_bytes, digest, registered_at_ms, updated_at_ms) "
+                "SELECT 'withheld-proof', task_id, project_id, kind, locator, 'Withheld proof', claim_limit, 'WITHHELD', 'ctrl:withheld', 'withheld', media_type, mtime_ns, size_bytes, digest, registered_at_ms, updated_at_ms FROM proof_media WHERE evidence_id='legacy-proof'"
+            )
             connection.commit()
         finally:
             connection.close()
@@ -488,6 +492,15 @@ class SwarmConsoleTests(unittest.TestCase):
         self.assertEqual(migrated["evidence_id"], item["evidence_id"])
         self.assertEqual(migrated["disposition"], "PENDING")
         self.assertEqual(migrated["surface_kind"], "available_media")
+        connection = sqlite3.connect(database)
+        try:
+            withheld = connection.execute(
+                "SELECT disposition, receipt, surface_kind FROM proof_media WHERE evidence_id='withheld-proof'"
+            ).fetchone()
+        finally:
+            connection.close()
+        self.assertEqual(withheld, ("WITHHELD", "ctrl:withheld", "withheld"))
+        self.assertNotIn("withheld-proof", {item["evidence_id"] for item in console.ConsoleStore(database).proof_feed()})
 
     def test_project_view_scopes_burn_history_and_navigation(self) -> None:
         app = console.App(self.codex_home, self.config)
