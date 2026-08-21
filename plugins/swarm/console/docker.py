@@ -14,6 +14,7 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 COMPOSE = HERE / "docker-compose.yml"
+COMPOSE_PROJECT = "swarm-console"
 CONFIG_SCRIPT = HERE.parent / "skills" / "swarm" / "scripts" / "swarm_config.py"
 
 
@@ -57,7 +58,7 @@ def main() -> int:
         config_home.mkdir(parents=True, exist_ok=True)
         environment["SWARM_CONFIG_HOME"] = str(config_home)
 
-    command = ["docker", "compose", "-f", str(COMPOSE)]
+    command = ["docker", "compose", "--project-name", COMPOSE_PROJECT, "-f", str(COMPOSE)]
     if args.action == "up":
         command.extend(("up", "--build"))
         if args.detach:

@@ -1,3 +1,5 @@
+name: swarm-console
+
 services:
   swarm-console:
     build:
@@ -9,12 +11,18 @@ services:
     environment:
       CODEX_HOME: /data/codex
       SWARM_CONFIG_PATH: "${SWARM_CONTAINER_CONFIG_PATH:-/data/swarm/config.toml}"
+      SWARM_CONSOLE_DATA_DIR: /data/swarm-console
     volumes:
       - "${SWARM_CODEX_HOME:?Run python console/docker.py so the Codex home is explicit}:/data/codex:ro"
-      - "${SWARM_CONFIG_HOME:?Run python console/docker.py so the SWARM config home is explicit}:/data/swarm:ro"
+      - "${SWARM_CONFIG_HOME:?Run python console/docker.py so the SWARM config home is explicit}:/data/swarm:rw"
+      - "swarm_console_state:/data/swarm-console"
     read_only: true
     tmpfs:
       - /tmp:size=16m,mode=1777
     security_opt:
       - no-new-privileges:true
     restart: unless-stopped
+
+volumes:
+  swarm_console_state:
+    name: swarm-console-state

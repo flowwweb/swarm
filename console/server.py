@@ -4,10 +4,12 @@
 from __future__ import annotations
 
 import argparse
+import copy
 import hashlib
 import importlib.util
 import ipaddress
 import json
+import mimetypes
 import os
 import re
 import secrets
@@ -25,7 +27,7 @@ from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
 
 
 PLUGIN_ROOT = Path(__file__).resolve().parents[1]
@@ -38,6 +40,23 @@ MAX_BODY_BYTES = 64 * 1024
 PORTAL_PRESENCE_TTL_SECONDS = 150
 MIN_OBSERVATION_WINDOW_MS = 24 * 60 * 60 * 1000
 OBSERVATION_HEARTBEAT_WINDOWS = 48
+CONSOLE_STATE_PATH_ENV = "SWARM_CONSOLE_STATE_PATH"
+CONSOLE_STATE_DIR_ENV = "SWARM_CONSOLE_DATA_DIR"
+CONSOLE_STATE_FILENAME = "console-state.sqlite3"
+TOKEN_SAMPLE_SECONDS = 60
+TOKEN_RETENTION_DAYS = 30
+MEDIA_MAX_HASH_BYTES = 64 * 1024 * 1024
+CTRL_OVERRIDE_FIELDS: dict[str, type] = {
+    "model": str,
+    "reasoning": str,
+    "service_tier": str,
+}
+MEDIA_KINDS = frozenset({"imagegen", "image", "mockup", "preview", "screenshot", "browser", "recording"})
+MEDIA_EXTENSIONS = frozenset({".png", ".jpg", ".jpeg", ".webp", ".gif", ".svg", ".mp4", ".webm", ".mov"})
+MEDIA_TYPES = frozenset({
+    "image/png", "image/jpeg", "image/webp", "image/gif", "image/svg+xml",
+    "video/mp4", "video/webm", "video/quicktime",
+})
 
 STATIC_FILES = {
     "/": ("index.html", "text/html; charset=utf-8"),
@@ -222,6 +241,502 @@ def update_config(config_path: Path, changes: dict[str, Any]) -> dict[str, Any]:
         if temporary and temporary.exists():
             temporary.unlink(missing_ok=True)
     return redacted_config_snapshot(config_path)
+
+
+def restore_config_defaults(config_path: Path) -> dict[str, Any]:
+    """Restore the packaged config through the canonical validator, atomically."""
+    module = load_config_module()
+    source = PLUGIN_ROOT / "skills" / "swarm" / "assets" / "swarm-config.toml"
+    try:
+        text = source.read_text(encoding="utf-8")
+    except OSError as exc:
+        raise ConsoleError(f"could not read packaged SWARM defaults: {exc}") from exc
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    temporary: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w", encoding="utf-8", newline="\n", dir=config_path.parent, delete=False
+        ) as handle:
+            handle.write(text)
+            temporary = Path(handle.name)
+        module.load(temporary)
+        if config_path.exists():
+            shutil.copy2(config_path, config_path.with_suffix(".toml.swarm-console.bak"))
+        os.replace(temporary, config_path)
+        temporary = None
+    except Exception as exc:
+        raise ConsoleError(str(exc)) from exc
+    finally:
+        if temporary and temporary.exists():
+            temporary.unlink(missing_ok=True)
+    return redacted_config_snapshot(config_path)
+
+
+def console_state_path(codex_home: Path, config_path: Path) -> Path:
+    explicit = os.environ.get(CONSOLE_STATE_PATH_ENV, "").strip()
+    if explicit:
+        return Path(explicit).expanduser().resolve()
+    data_dir = os.environ.get(CONSOLE_STATE_DIR_ENV, "").strip()
+    if data_dir:
+        return (Path(data_dir).expanduser() / CONSOLE_STATE_FILENAME).resolve()
+    return (config_path.parent / CONSOLE_STATE_FILENAME).resolve()
+
+
+def _safe_metadata_text(value: Any, label: str, *, maximum: int = 4096) -> str:
+    if not isinstance(value, str) or not value.strip():
+        raise ConsoleError(f"{label} must be non-empty text")
+    value = value.strip()
+    if "\x00" in value or "\r" in value or "\n" in value or len(value) > maximum:
+        raise ConsoleError(f"{label} contains unsafe or oversized text")
+    return value
+
+
+def _media_metadata(locator: str, supplied_digest: str = "") -> dict[str, Any]:
+    path = Path(locator).expanduser()
+    result: dict[str, Any] = {
+        "path": locator,
+        "mtime_ns": None,
+        "size_bytes": None,
+        "digest": supplied_digest.strip().lower(),
+        "media_type": mimetypes.guess_type(locator)[0] or "application/octet-stream",
+    }
+    try:
+        stat = path.stat()
+    except OSError:
+        return result
+    if not path.is_file():
+        return result
+    result["mtime_ns"] = stat.st_mtime_ns
+    result["size_bytes"] = stat.st_size
+    if not result["digest"] and stat.st_size <= MEDIA_MAX_HASH_BYTES:
+        digest = hashlib.sha256()
+        with path.open("rb") as stream:
+            for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                digest.update(chunk)
+        result["digest"] = digest.hexdigest()
+    return result
+
+
+class ConsoleStore:
+    """Small console-owned persistence layer; host state remains read-only."""
+
+    def __init__(self, path: Path):
+        self.path = path.resolve()
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self._lock = threading.RLock()
+        self._initialize()
+
+    def _connect(self) -> sqlite3.Connection:
+        connection = sqlite3.connect(self.path, timeout=5)
+        connection.row_factory = sqlite3.Row
+        connection.execute("PRAGMA foreign_keys = ON")
+        connection.execute("PRAGMA busy_timeout = 5000")
+        return connection
+
+    def _initialize(self) -> None:
+        with self._lock, closing(self._connect()) as connection:
+            connection.execute("PRAGMA journal_mode = WAL")
+            connection.execute("PRAGMA synchronous = NORMAL")
+            connection.executescript(
+                """
+                CREATE TABLE IF NOT EXISTS token_cursors (
+                    thread_id TEXT PRIMARY KEY,
+                    project_id TEXT NOT NULL,
+                    cumulative_tokens INTEGER NOT NULL,
+                    sampled_at_ms INTEGER NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS token_samples (
+                    bucket_ms INTEGER NOT NULL,
+                    sampled_at_ms INTEGER NOT NULL,
+                    project_id TEXT NOT NULL,
+                    thread_id TEXT NOT NULL,
+                    cumulative_tokens INTEGER NOT NULL,
+                    delta_tokens INTEGER NOT NULL,
+                    source TEXT NOT NULL,
+                    PRIMARY KEY (bucket_ms, thread_id)
+                );
+                CREATE INDEX IF NOT EXISTS token_samples_project_bucket
+                    ON token_samples(project_id, bucket_ms);
+                CREATE TABLE IF NOT EXISTS eta_forecasts (
+                    task_id TEXT NOT NULL,
+                    project_id TEXT NOT NULL,
+                    revision INTEGER NOT NULL,
+                    eta_start_ms INTEGER,
+                    eta_end_ms INTEGER,
+                    confidence INTEGER NOT NULL,
+                    status TEXT NOT NULL,
+                    reason TEXT NOT NULL,
+                    last_progress_at_ms INTEGER,
+                    last_calculated_at_ms INTEGER NOT NULL,
+                    trigger TEXT NOT NULL,
+                    signature TEXT NOT NULL,
+                    PRIMARY KEY (task_id, revision)
+                );
+                CREATE INDEX IF NOT EXISTS eta_forecasts_latest
+                    ON eta_forecasts(task_id, revision DESC);
+                CREATE TABLE IF NOT EXISTS proof_media (
+                    evidence_id TEXT PRIMARY KEY,
+                    task_id TEXT NOT NULL,
+                    project_id TEXT NOT NULL,
+                    kind TEXT NOT NULL,
+                    locator TEXT NOT NULL,
+                    caption TEXT NOT NULL,
+                    claim_limit TEXT NOT NULL,
+                    disposition TEXT NOT NULL,
+                    receipt TEXT NOT NULL,
+                    surface_kind TEXT NOT NULL,
+                    media_type TEXT NOT NULL,
+                    mtime_ns INTEGER,
+                    size_bytes INTEGER,
+                    digest TEXT,
+                    registered_at_ms INTEGER NOT NULL,
+                    updated_at_ms INTEGER NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS proof_media_project_updated
+                    ON proof_media(project_id, updated_at_ms DESC);
+                CREATE TABLE IF NOT EXISTS ctrl_overrides (
+                    ctrl_id TEXT PRIMARY KEY,
+                    revision INTEGER NOT NULL,
+                    fields_json TEXT NOT NULL,
+                    updated_at_ms INTEGER NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS store_metadata (
+                    key TEXT PRIMARY KEY,
+                    value TEXT NOT NULL
+                );
+                """
+            )
+            connection.commit()
+
+    def _retention_cutoff(self, now_ms: int) -> int:
+        return now_ms - TOKEN_RETENTION_DAYS * 24 * 60 * 60 * 1000
+
+    def observe_overview(self, overview: dict[str, Any], *, now_ms: int, trigger: str, heartbeat_minutes: int) -> None:
+        nodes = [node for node in overview.get("nodes", []) if not node.get("virtual")]
+        node_by_id = {str(node["id"]): node for node in nodes}
+        dependencies: dict[str, list[str]] = {}
+        for link in overview.get("links", []):
+            dependencies.setdefault(str(link["target"]), []).append(str(link["source"]))
+        with self._lock, closing(self._connect()) as connection:
+            bucket_ms = now_ms - (now_ms % (TOKEN_SAMPLE_SECONDS * 1000))
+            for node in nodes:
+                thread_id = _safe_metadata_text(str(node["id"]), "thread id", maximum=256)
+                project_id = _safe_metadata_text(str(node["project_id"]), "project id", maximum=256)
+                cumulative = max(0, int(node.get("tokens") or 0))
+                prior = connection.execute(
+                    "SELECT cumulative_tokens FROM token_cursors WHERE thread_id = ?",
+                    (thread_id,),
+                ).fetchone()
+                previous_cumulative = None if prior is None else int(prior["cumulative_tokens"])
+                delta = 0 if previous_cumulative is None else max(0, cumulative - previous_cumulative)
+                connection.execute(
+                    """
+                    INSERT INTO token_cursors(thread_id, project_id, cumulative_tokens, sampled_at_ms)
+                    VALUES (?, ?, ?, ?)
+                    ON CONFLICT(thread_id) DO UPDATE SET
+                        project_id=excluded.project_id,
+                        cumulative_tokens=excluded.cumulative_tokens,
+                        sampled_at_ms=excluded.sampled_at_ms
+                    """,
+                    (thread_id, project_id, cumulative, now_ms),
+                )
+                connection.execute(
+                    """
+                    INSERT INTO token_samples(
+                        bucket_ms, sampled_at_ms, project_id, thread_id,
+                        cumulative_tokens, delta_tokens, source
+                    ) VALUES (?, ?, ?, ?, ?, ?, 'host_reported_cumulative_delta')
+                    ON CONFLICT(bucket_ms, thread_id) DO UPDATE SET
+                        sampled_at_ms=excluded.sampled_at_ms,
+                        project_id=excluded.project_id,
+                        cumulative_tokens=excluded.cumulative_tokens,
+                        delta_tokens=token_samples.delta_tokens + excluded.delta_tokens
+                    """,
+                    (bucket_ms, now_ms, project_id, thread_id, cumulative, delta),
+                )
+
+                updated_at = int(node.get("updated_at") or 0) or None
+                status = str(node.get("status") or "quiet")
+                dependency_ids = dependencies.get(thread_id, [])
+                blocked_dependency = any(
+                    str(node_by_id.get(dependency, {}).get("status")) not in {"done", "archived"}
+                    for dependency in dependency_ids
+                )
+                if status in {"done", "archived"}:
+                    forecast_status, confidence, duration_ms = "complete", 100, 0
+                elif blocked_dependency:
+                    forecast_status, confidence, duration_ms = "blocked", 35, 180 * 60 * 1000
+                elif status == "active":
+                    forecast_status, confidence, duration_ms = "on_track", 80, 60 * 60 * 1000
+                else:
+                    forecast_status, confidence, duration_ms = "at_risk", 50, 120 * 60 * 1000
+                signature = json.dumps(
+                    (status, updated_at, tuple(sorted(dependency_ids)), forecast_status),
+                    separators=(",", ":"),
+                )
+                latest = connection.execute(
+                    "SELECT * FROM eta_forecasts WHERE task_id = ? ORDER BY revision DESC LIMIT 1",
+                    (thread_id,),
+                ).fetchone()
+                should_append = latest is None or str(latest["signature"]) != signature
+                if trigger == "heartbeat" and forecast_status in {"at_risk", "blocked"}:
+                    should_append = should_append or latest is None or int(latest["last_calculated_at_ms"]) < now_ms - heartbeat_minutes * 60 * 1000
+                if should_append:
+                    revision = 1 if latest is None else int(latest["revision"]) + 1
+                    eta_start = None if forecast_status == "complete" else now_ms + (30 * 60 * 1000 if forecast_status == "blocked" else 0)
+                    eta_end = None if eta_start is None else eta_start + duration_ms
+                    reason = (
+                        "Completed host task."
+                        if forecast_status == "complete"
+                        else "Heartbeat found no recent host task update; forecast is at risk."
+                        if forecast_status == "at_risk" and trigger == "heartbeat"
+                        else "Observed dependency is not complete; forecast is blocked."
+                        if forecast_status == "blocked"
+                        else "Forecast derived from host task freshness and observed dependencies."
+                    )
+                    connection.execute(
+                        """
+                        INSERT INTO eta_forecasts(
+                            task_id, project_id, revision, eta_start_ms, eta_end_ms,
+                            confidence, status, reason, last_progress_at_ms,
+                            last_calculated_at_ms, trigger, signature
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            thread_id,
+                            project_id,
+                            revision,
+                            eta_start,
+                            eta_end,
+                            confidence,
+                            forecast_status,
+                            reason,
+                            updated_at,
+                            now_ms,
+                            trigger,
+                            signature,
+                        ),
+                    )
+            connection.execute(
+                "DELETE FROM token_samples WHERE bucket_ms < ?",
+                (self._retention_cutoff(now_ms),),
+            )
+            connection.commit()
+
+    def latest_forecasts(self, project_id: str | None = None) -> dict[str, dict[str, Any]]:
+        query = """
+            SELECT forecast.* FROM eta_forecasts forecast
+            JOIN (
+                SELECT task_id, MAX(revision) revision
+                FROM eta_forecasts GROUP BY task_id
+            ) latest ON latest.task_id = forecast.task_id AND latest.revision = forecast.revision
+        """
+        args: tuple[Any, ...] = ()
+        if project_id:
+            query += " WHERE forecast.project_id = ?"
+            args = (project_id,)
+        query += " ORDER BY forecast.task_id"
+        with self._lock, closing(self._connect()) as connection:
+            rows = connection.execute(query, args).fetchall()
+        return {
+            str(row["task_id"]): {
+                "project_id": row["project_id"],
+                "revision": int(row["revision"]),
+                "eta_start_ms": row["eta_start_ms"],
+                "eta_end_ms": row["eta_end_ms"],
+                "confidence": int(row["confidence"]),
+                "status": row["status"],
+                "reason": row["reason"],
+                "last_progress_at_ms": row["last_progress_at_ms"],
+                "last_calculated_at_ms": int(row["last_calculated_at_ms"]),
+                "trigger": row["trigger"],
+            }
+            for row in rows
+        }
+
+    def proof_feed(self, *, project_id: str | None = None, task_id: str | None = None) -> list[dict[str, Any]]:
+        conditions: list[str] = ["disposition = 'SURFACED'"]
+        args: list[Any] = []
+        if project_id:
+            conditions.append("project_id = ?")
+            args.append(project_id)
+        if task_id:
+            conditions.append("task_id = ?")
+            args.append(task_id)
+        with self._lock, closing(self._connect()) as connection:
+            rows = connection.execute(
+                "SELECT * FROM proof_media WHERE " + " AND ".join(conditions) + " ORDER BY updated_at_ms DESC",
+                tuple(args),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def proof_snapshot(self, task_id: str) -> dict[str, Any]:
+        media = self.proof_feed(task_id=task_id)
+        return {
+            "available": bool(media),
+            "state": "MEDIA_AVAILABLE" if media else "UNAVAILABLE",
+            "task_id": task_id,
+            "media": media,
+            "claim_limit": "Registered CtrlEvidence media is surfaced locally; it is not host acceptance.",
+        }
+
+    def record_proof_media(self, payload: dict[str, Any], *, now_ms: int) -> dict[str, Any]:
+        evidence_id = _safe_metadata_text(payload.get("evidence_id"), "evidence_id", maximum=256)
+        task_id = _safe_metadata_text(payload.get("task_id"), "task_id", maximum=256)
+        project_id = _safe_metadata_text(payload.get("project_id"), "project_id", maximum=256)
+        kind = _safe_metadata_text(payload.get("kind"), "kind", maximum=64).casefold()
+        locator = _safe_metadata_text(payload.get("locator"), "locator", maximum=4096)
+        disposition = _safe_metadata_text(payload.get("disposition"), "disposition", maximum=32).upper()
+        if payload.get("source") != "CtrlEvidence":
+            raise ConsoleError("proof media must name CtrlEvidence as its source")
+        if kind not in MEDIA_KINDS or Path(locator).suffix.casefold() not in MEDIA_EXTENSIONS:
+            raise ConsoleError("proof media kind or file extension is not allowlisted")
+        if disposition not in {"PENDING", "SURFACED", "WITHHELD"}:
+            raise ConsoleError("proof media disposition is invalid")
+        caption = _safe_metadata_text(payload.get("caption", "Registered CtrlEvidence media"), "caption")
+        claim_limit = _safe_metadata_text(payload.get("claim_limit", "Local media only; host acceptance remains unverified."), "claim_limit")
+        receipt = _safe_metadata_text(payload.get("receipt", "ctrl-evidence:registered"), "receipt")
+        surface_kind = _safe_metadata_text(payload.get("surface_kind", "inline_image"), "surface_kind", maximum=64)
+        metadata = _media_metadata(locator, str(payload.get("digest", "")))
+        if metadata["media_type"] not in MEDIA_TYPES:
+            raise ConsoleError("proof media type is not allowlisted")
+        with self._lock, closing(self._connect()) as connection:
+            connection.execute(
+                """
+                INSERT INTO proof_media(
+                    evidence_id, task_id, project_id, kind, locator, caption,
+                    claim_limit, disposition, receipt, surface_kind, media_type,
+                    mtime_ns, size_bytes, digest, registered_at_ms, updated_at_ms
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(evidence_id) DO UPDATE SET
+                    task_id=excluded.task_id,
+                    project_id=excluded.project_id,
+                    kind=excluded.kind,
+                    locator=excluded.locator,
+                    caption=excluded.caption,
+                    claim_limit=excluded.claim_limit,
+                    disposition=excluded.disposition,
+                    receipt=excluded.receipt,
+                    surface_kind=excluded.surface_kind,
+                    media_type=excluded.media_type,
+                    mtime_ns=excluded.mtime_ns,
+                    size_bytes=excluded.size_bytes,
+                    digest=excluded.digest,
+                    updated_at_ms=excluded.updated_at_ms
+                """,
+                (
+                    evidence_id,
+                    task_id,
+                    project_id,
+                    kind,
+                    locator,
+                    caption,
+                    claim_limit,
+                    disposition,
+                    receipt,
+                    surface_kind,
+                    metadata["media_type"],
+                    metadata["mtime_ns"],
+                    metadata["size_bytes"],
+                    metadata["digest"],
+                    now_ms,
+                    now_ms,
+                ),
+            )
+            connection.commit()
+        return next(item for item in self.proof_feed(project_id=project_id) if item["evidence_id"] == evidence_id) if disposition == "SURFACED" else {"evidence_id": evidence_id, "disposition": disposition}
+
+    def token_history(self, *, project_id: str | None = None, hours: int = 24) -> list[dict[str, Any]]:
+        cutoff = int(time.time() * 1000) - max(1, hours) * 60 * 60 * 1000
+        conditions = ["bucket_ms >= ?"]
+        args: list[Any] = [cutoff]
+        if project_id:
+            conditions.append("project_id = ?")
+            args.append(project_id)
+        with self._lock, closing(self._connect()) as connection:
+            rows = connection.execute(
+                "SELECT bucket_ms, SUM(delta_tokens) delta_tokens FROM token_samples WHERE "
+                + " AND ".join(conditions)
+                + " GROUP BY bucket_ms ORDER BY bucket_ms",
+                tuple(args),
+            ).fetchall()
+        return [{"bucket_ms": int(row["bucket_ms"]), "delta_tokens": int(row["delta_tokens"]), "source": "host_reported_cumulative_delta"} for row in rows]
+
+    def get_ctrl_override(self, ctrl_id: str) -> dict[str, Any]:
+        with self._lock, closing(self._connect()) as connection:
+            row = connection.execute("SELECT * FROM ctrl_overrides WHERE ctrl_id = ?", (ctrl_id,)).fetchone()
+        return {
+            "ctrl_id": ctrl_id,
+            "revision": 0 if row is None else int(row["revision"]),
+            "override": {} if row is None else json.loads(row["fields_json"]),
+        }
+
+    def update_ctrl_override(self, ctrl_id: str, fields: dict[str, Any], *, expected_revision: int, now_ms: int) -> dict[str, Any]:
+        if not isinstance(expected_revision, int) or isinstance(expected_revision, bool) or expected_revision < 0:
+            raise ConsoleError("expected_revision must be a nonnegative integer")
+        if not fields or set(fields) - set(CTRL_OVERRIDE_FIELDS):
+            raise ConsoleError("override fields must use the canonical model, reasoning, and service_tier keys")
+        for key, value in fields.items():
+            if not isinstance(value, CTRL_OVERRIDE_FIELDS[key]) or "\n" in value or len(value) > 128:
+                raise ConsoleError(f"override {key} is invalid")
+        with self._lock, closing(self._connect()) as connection:
+            row = connection.execute("SELECT * FROM ctrl_overrides WHERE ctrl_id = ?", (ctrl_id,)).fetchone()
+            current_revision = 0 if row is None else int(row["revision"])
+            if current_revision != expected_revision:
+                raise ConsoleConflict(f"CTRL override revision conflict; expected {expected_revision}, current {current_revision}")
+            current = {} if row is None else json.loads(row["fields_json"])
+            current.update(fields)
+            revision = current_revision + 1
+            connection.execute(
+                "INSERT INTO ctrl_overrides(ctrl_id, revision, fields_json, updated_at_ms) VALUES (?, ?, ?, ?) "
+                "ON CONFLICT(ctrl_id) DO UPDATE SET revision=excluded.revision, fields_json=excluded.fields_json, updated_at_ms=excluded.updated_at_ms",
+                (ctrl_id, revision, json.dumps(current, sort_keys=True), now_ms),
+            )
+            connection.commit()
+        return {"ctrl_id": ctrl_id, "revision": revision, "override": current}
+
+    def reset_ctrl_override(self, ctrl_id: str, *, expected_revision: int) -> dict[str, Any]:
+        with self._lock, closing(self._connect()) as connection:
+            row = connection.execute("SELECT revision FROM ctrl_overrides WHERE ctrl_id = ?", (ctrl_id,)).fetchone()
+            current_revision = 0 if row is None else int(row["revision"])
+            if expected_revision != current_revision:
+                raise ConsoleConflict(f"CTRL override revision conflict; expected {expected_revision}, current {current_revision}")
+            connection.execute("DELETE FROM ctrl_overrides WHERE ctrl_id = ?", (ctrl_id,))
+            connection.commit()
+        return {"ctrl_id": ctrl_id, "revision": 0, "override": {}, "reset": True}
+
+    def clear_history(self) -> dict[str, Any]:
+        with self._lock, closing(self._connect()) as connection:
+            before = self.storage_stats()
+            deleted = {}
+            for table in ("token_samples", "token_cursors", "eta_forecasts", "proof_media", "store_metadata"):
+                deleted[table] = int(connection.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0])
+                connection.execute(f"DELETE FROM {table}")
+            connection.commit()
+            connection.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+            after = self.storage_stats()
+        return {"ok": True, "deleted": deleted, "bytes_before": before["bytes"], "bytes_after": after["bytes"]}
+
+    def reset_overrides(self) -> int:
+        with self._lock, closing(self._connect()) as connection:
+            count = int(connection.execute("SELECT COUNT(*) FROM ctrl_overrides").fetchone()[0])
+            connection.execute("DELETE FROM ctrl_overrides")
+            connection.commit()
+        return count
+
+    def storage_stats(self) -> dict[str, Any]:
+        paths = [self.path, self.path.with_name(self.path.name + "-wal"), self.path.with_name(self.path.name + "-shm")]
+        size = sum(path.stat().st_size for path in paths if path.exists())
+        with self._lock, closing(self._connect()) as connection:
+            counts = {
+                table: int(connection.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0])
+                for table in ("token_samples", "eta_forecasts", "proof_media", "ctrl_overrides")
+            }
+        return {"path": str(self.path), "bytes": size, "retention_days": TOKEN_RETENTION_DAYS, "counts": counts}
+
+
+class ConsoleConflict(ConsoleError):
+    """Optimistic-concurrency conflict for a per-CTRL overlay."""
 
 
 def state_database(codex_home: Path) -> Path:
@@ -760,19 +1275,27 @@ class SwarmHTTPServer(ThreadingHTTPServer):
 
 
 class App:
-    def __init__(self, codex_home: Path, config_path: Path):
+    def __init__(self, codex_home: Path, config_path: Path, state_path: Path | None = None):
         self.codex_home = codex_home.resolve()
         self.config_path = config_path.resolve()
+        self.store = ConsoleStore(state_path or console_state_path(self.codex_home, self.config_path))
         self.token = secrets.token_urlsafe(24)
         self.write_lock = threading.Lock()
-        self.overview_lock = threading.Lock()
+        self.overview_lock = threading.RLock()
         self.presence_lock = threading.Lock()
         self._overview_fingerprint: tuple[tuple[str, int, int], ...] | None = None
         self._overview: dict[str, Any] | None = None
+        self._view: dict[str, Any] | None = None
+        self._view_fingerprint: tuple[tuple[str, int, int], ...] | None = None
+        self._view_store_generation = -1
+        self._store_generation = 0
         self._last_presence_at: float | None = None
         self._last_open_claim_at: float | None = None
+        self._last_observed_fingerprint: tuple[tuple[str, int, int], ...] | None = None
+        self._observer_stop = threading.Event()
+        self._observer_thread: threading.Thread | None = None
 
-    def overview(self) -> dict[str, Any]:
+    def _host_overview(self) -> dict[str, Any]:
         fingerprint = observation_fingerprint(self.codex_home, self.config_path)
         with self.overview_lock:
             if self._overview is not None and self._overview_fingerprint == fingerprint:
@@ -781,6 +1304,238 @@ class App:
             self._overview_fingerprint = observation_fingerprint(self.codex_home, self.config_path)
             self._overview = overview
             return overview
+
+    @staticmethod
+    def _project_view(overview: dict[str, Any], project_id: str | None) -> dict[str, Any]:
+        if not project_id or project_id.casefold() in {"all", "all-projects"}:
+            return overview
+        view = copy.deepcopy(overview)
+        nodes = [node for node in view["nodes"] if node.get("project_id") == project_id]
+        node_ids = {node["id"] for node in nodes}
+        view["nodes"] = nodes
+        view["links"] = [
+            link for link in view["links"]
+            if link["source"] in node_ids and link["target"] in node_ids
+        ]
+        view["roots"] = [node_id for node_id in view["roots"] if node_id in node_ids]
+        view["controllers"] = [
+            controller for controller in view["controllers"]
+            if controller.get("project_id") == project_id
+        ]
+        view["projects"] = [
+            project for project in view["projects"] if project.get("id") == project_id
+        ]
+        view["analytics"] = {
+            **view["analytics"],
+            "swarms": len(view["roots"]),
+            "tasks": sum(not node.get("virtual") for node in nodes),
+            "tokens": sum(int(node.get("tokens") or 0) for node in nodes if not node.get("virtual")),
+            "status": dict(Counter(node["status"] for node in nodes if not node.get("virtual"))),
+            "models": dict(Counter(node["model"] for node in nodes if not node.get("virtual") and node["model"] != "unknown")),
+            "roles": dict(Counter(node["role"] for node in nodes if not node.get("virtual"))),
+        }
+        return view
+
+    def _decorate_overview(self, base: dict[str, Any]) -> dict[str, Any]:
+        view = copy.deepcopy(base)
+        forecasts = self.store.latest_forecasts()
+        for node in view["nodes"]:
+            node["eta"] = forecasts.get(node["id"])
+            node["proof_snapshot"] = self.store.proof_snapshot(node["id"])
+        history = self.store.token_history()
+        view["token_history"] = history
+        latest_delta = history[-1]["delta_tokens"] if history else 0
+        view["analytics"]["burn_rate"] = {
+            "tokens_per_minute": latest_delta,
+            "history": history,
+            "source": "host_reported_cumulative_delta",
+            "label": "Host-reported tokens; not billing.",
+        }
+        return view
+
+    def overview(self, project_id: str | None = None) -> dict[str, Any]:
+        fingerprint = observation_fingerprint(self.codex_home, self.config_path)
+        with self.overview_lock:
+            if (
+                self._view is None
+                or self._view_fingerprint != fingerprint
+                or self._view_store_generation != self._store_generation
+            ):
+                self._view = self._decorate_overview(self._host_overview())
+                self._view_fingerprint = fingerprint
+                self._view_store_generation = self._store_generation
+            return self._project_view(self._view, project_id)
+
+    def observe_once(self, trigger: str = "heartbeat") -> None:
+        overview = self._host_overview()
+        now_ms = int(time.time() * 1000)
+        heartbeat_minutes = max(1, int(overview.get("heartbeat_minutes") or 30))
+        self.store.observe_overview(
+            overview,
+            now_ms=now_ms,
+            trigger=trigger,
+            heartbeat_minutes=heartbeat_minutes,
+        )
+        self._last_observed_fingerprint = observation_fingerprint(self.codex_home, self.config_path)
+        with self.overview_lock:
+            self._store_generation += 1
+
+    def _observer_loop(self) -> None:
+        while not self._observer_stop.wait(TOKEN_SAMPLE_SECONDS):
+            try:
+                fingerprint = observation_fingerprint(self.codex_home, self.config_path)
+                trigger = "state_change" if fingerprint != self._last_observed_fingerprint else "heartbeat"
+                self.observe_once(trigger)
+            except (ConsoleError, OSError, sqlite3.Error):
+                # The host state may be temporarily unavailable; retain the last safe snapshot.
+                continue
+
+    def start_observer(self) -> None:
+        if self._observer_thread and self._observer_thread.is_alive():
+            return
+        try:
+            self.observe_once("startup")
+        except (ConsoleError, OSError, sqlite3.Error):
+            # A fresh console may start before Codex has created its state DB.
+            # The next heartbeat will retry without blocking the localhost service.
+            pass
+        self._observer_stop.clear()
+        self._observer_thread = threading.Thread(
+            target=self._observer_loop,
+            name="swarm-console-observer",
+            daemon=True,
+        )
+        self._observer_thread.start()
+
+    def stop_observer(self) -> None:
+        self._observer_stop.set()
+        if self._observer_thread:
+            self._observer_thread.join(timeout=2)
+
+    def proof_feed(self, *, project_id: str | None = None, task_id: str | None = None) -> list[dict[str, Any]]:
+        return self.store.proof_feed(project_id=project_id, task_id=task_id)
+
+    def register_proof(self, payload: dict[str, Any]) -> dict[str, Any]:
+        result = self.store.record_proof_media(payload, now_ms=int(time.time() * 1000))
+        try:
+            self.observe_once("proof")
+        except (ConsoleError, OSError, sqlite3.Error):
+            pass
+        with self.overview_lock:
+            self._store_generation += 1
+        return result
+
+    def storage(self) -> dict[str, Any]:
+        return self.store.storage_stats()
+
+    def diagnostics(self) -> dict[str, Any]:
+        stats = self.store.storage_stats()
+        try:
+            load_config(self.config_path)
+            config_valid = True
+        except ConsoleError:
+            config_valid = False
+        return {
+            "ok": True,
+            "service": "swarm-console",
+            "host_metadata_read_only": True,
+            "config_valid": config_valid,
+            "storage": {
+                "path": stats["path"],
+                "bytes": stats["bytes"],
+                "retention_days": stats["retention_days"],
+            },
+            "usage_consumed": False,
+            "usage_source": "Console diagnostics does not collect model usage.",
+        }
+
+    def _ctrl_context(self, ctrl_id: str) -> tuple[Any, dict[str, Any], dict[str, Any]]:
+        ctrl_id = _safe_metadata_text(ctrl_id, "ctrl_id", maximum=256)
+        node = next(
+            (item for item in self._host_overview()["nodes"] if item["id"] == ctrl_id and item["role"] == "ctrl"),
+            None,
+        )
+        if node is None:
+            raise ConsoleError("CTRL id must be an observed host CTRL")
+        module, effective, _ = load_config(self.config_path)
+        return module, effective, self.store.get_ctrl_override(ctrl_id)
+
+    def ctrl_settings(self, ctrl_id: str) -> dict[str, Any]:
+        module, effective, overlay = self._ctrl_context(ctrl_id)
+        global_assignment = module.resolve_role_assignment(effective, "ctrl")
+        override = overlay["override"]
+        try:
+            assignment = module.resolve_role_assignment(
+                effective,
+                "ctrl",
+                explicit_model=override.get("model"),
+                explicit_reasoning=override.get("reasoning"),
+            )
+        except Exception as exc:
+            raise ConsoleError(f"CTRL override is not valid for the canonical resolver: {exc}") from exc
+        return {
+            "ctrl_id": overlay["ctrl_id"],
+            "revision": overlay["revision"],
+            "customized": bool(override),
+            "global_defaults": {
+                "model": global_assignment["model"],
+                "reasoning": global_assignment["reasoning"],
+                "service_tier": effective["execution"]["service_tier"],
+            },
+            "override": override,
+            "effective": {
+                "model": assignment["model"],
+                "reasoning": assignment["reasoning"],
+                "service_tier": override.get("service_tier", effective["execution"]["service_tier"]),
+            },
+            "editable_fields": sorted(CTRL_OVERRIDE_FIELDS),
+            "reset_semantics": "Delete the per-CTRL overlay to inherit global defaults.",
+        }
+
+    def update_ctrl_settings(self, ctrl_id: str, changes: dict[str, Any], expected_revision: int) -> dict[str, Any]:
+        module, effective, overlay = self._ctrl_context(ctrl_id)
+        candidate = {**overlay["override"], **changes}
+        try:
+            module.resolve_role_assignment(
+                effective,
+                "ctrl",
+                explicit_model=candidate.get("model"),
+                explicit_reasoning=candidate.get("reasoning"),
+            )
+        except Exception as exc:
+            raise ConsoleError(f"CTRL override is not valid for the canonical resolver: {exc}") from exc
+        result = self.store.update_ctrl_override(
+            ctrl_id,
+            changes,
+            expected_revision=expected_revision,
+            now_ms=int(time.time() * 1000),
+        )
+        with self.overview_lock:
+            self._store_generation += 1
+        return self.ctrl_settings(result["ctrl_id"])
+
+    def reset_ctrl_settings(self, ctrl_id: str, expected_revision: int) -> dict[str, Any]:
+        self._ctrl_context(ctrl_id)
+        result = self.store.reset_ctrl_override(ctrl_id, expected_revision=expected_revision)
+        with self.overview_lock:
+            self._store_generation += 1
+        return {**self.ctrl_settings(ctrl_id), "reset": result["reset"]}
+
+    def clear_history(self) -> dict[str, Any]:
+        result = self.store.clear_history()
+        with self.overview_lock:
+            self._store_generation += 1
+        return result
+
+    def restore_defaults(self) -> dict[str, Any]:
+        with self.write_lock:
+            config = restore_config_defaults(self.config_path)
+            reset_count = self.store.reset_overrides()
+        with self.overview_lock:
+            self._store_generation += 1
+            self._overview_fingerprint = None
+            self._view_fingerprint = None
+        return {"config": config, "ctrl_overrides_reset": reset_count}
 
     def mark_presence(self) -> None:
         with self.presence_lock:
@@ -857,6 +1612,18 @@ class Handler(BaseHTTPRequestHandler):
     def _error(self, status: int, message: str) -> None:
         self._json(status, {"ok": False, "error": message})
 
+    def _payload(self) -> dict[str, Any]:
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+        except ValueError as exc:
+            raise ConsoleError("invalid content length") from exc
+        if length <= 0 or length > MAX_BODY_BYTES:
+            raise ConsoleError("request body must be 1-65536 bytes")
+        payload = json.loads(self.rfile.read(length))
+        if not isinstance(payload, dict):
+            raise ConsoleError("request body must be a JSON object")
+        return payload
+
     def _same_origin(self) -> bool:
         origin = self.headers.get("Origin")
         if not origin:
@@ -903,7 +1670,9 @@ class Handler(BaseHTTPRequestHandler):
         if not self._host_allowed():
             self._error(HTTPStatus.FORBIDDEN, "SWARM Console accepts localhost requests only")
             return
-        path = urlparse(self.path).path
+        parsed = urlparse(self.path)
+        path = parsed.path
+        query = {key: values[-1] for key, values in parse_qs(parsed.query).items() if values}
         try:
             if path == "/healthz":
                 self._json(HTTPStatus.OK, {"ok": True, "service": "swarm-console"})
@@ -915,8 +1684,30 @@ class Handler(BaseHTTPRequestHandler):
                 self.server.app.mark_presence()
                 self._json(
                     HTTPStatus.OK,
-                    self.server.app.overview(),
+                    self.server.app.overview(query.get("project_id")),
                 )
+                return
+            if path == "/api/proof-feed":
+                self._json(
+                    HTTPStatus.OK,
+                    {"ok": True, "items": self.server.app.proof_feed(
+                        project_id=query.get("project_id"),
+                        task_id=query.get("task_id"),
+                    )},
+                )
+                return
+            if path == "/api/storage":
+                self._json(HTTPStatus.OK, {"ok": True, **self.server.app.storage()})
+                return
+            if path == "/api/diagnostics":
+                self._json(HTTPStatus.OK, self.server.app.diagnostics())
+                return
+            if path == "/api/ctrl-settings":
+                ctrl_id = query.get("ctrl_id", "")
+                if not ctrl_id:
+                    self._error(HTTPStatus.BAD_REQUEST, "ctrl_id is required")
+                    return
+                self._json(HTTPStatus.OK, {"ok": True, **self.server.app.ctrl_settings(ctrl_id)})
                 return
             if path == "/api/presence":
                 self._json(HTTPStatus.OK, self.server.app.presence())
@@ -981,30 +1772,51 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/launch-claim":
             self._json(HTTPStatus.OK, self.server.app.claim_portal_open())
             return
-        if path != "/api/config":
+        try:
+            if path == "/api/config":
+                payload = self._payload()
+                changes = payload.get("changes")
+                if not isinstance(changes, dict):
+                    raise ConsoleError("changes must be an object")
+                with self.server.app.write_lock:
+                    result = update_config(self.server.app.config_path, changes)
+                self._json(HTTPStatus.OK, {"ok": True, **result})
+                return
+            if path == "/api/evidence":
+                result = self.server.app.register_proof(self._payload())
+                self._json(HTTPStatus.OK, {"ok": True, "proof": result})
+                return
+            if path == "/api/ctrl-settings":
+                payload = self._payload()
+                ctrl_id = payload.get("ctrl_id")
+                changes = payload.get("changes")
+                expected_revision = payload.get("expected_revision")
+                if not isinstance(changes, dict):
+                    raise ConsoleError("changes must be an object")
+                result = self.server.app.update_ctrl_settings(ctrl_id, changes, expected_revision)
+                self._json(HTTPStatus.OK, {"ok": True, **result})
+                return
+            if path == "/api/ctrl-settings/reset":
+                payload = self._payload()
+                result = self.server.app.reset_ctrl_settings(
+                    payload.get("ctrl_id"), payload.get("expected_revision")
+                )
+                self._json(HTTPStatus.OK, {"ok": True, **result})
+                return
+            if path in {"/api/logs/clear", "/api/storage/clear"}:
+                self._json(HTTPStatus.OK, self.server.app.clear_history())
+                return
+            if path == "/api/settings/restore":
+                self._json(HTTPStatus.OK, {"ok": True, **self.server.app.restore_defaults()})
+                return
             self._error(HTTPStatus.NOT_FOUND, "not found")
-            return
-        try:
-            length = int(self.headers.get("Content-Length", "0"))
-        except ValueError:
-            self._error(HTTPStatus.BAD_REQUEST, "invalid content length")
-            return
-        if length <= 0 or length > MAX_BODY_BYTES:
-            self._error(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, "request body must be 1-65536 bytes")
-            return
-        try:
-            payload = json.loads(self.rfile.read(length))
-            changes = payload.get("changes") if isinstance(payload, dict) else None
-            if not isinstance(changes, dict):
-                raise ConsoleError("changes must be an object")
-            with self.server.app.write_lock:
-                result = update_config(self.server.app.config_path, changes)
-            self._json(HTTPStatus.OK, {"ok": True, **result})
         except (json.JSONDecodeError, UnicodeDecodeError) as exc:
             self._error(HTTPStatus.BAD_REQUEST, f"invalid JSON: {exc}")
+        except ConsoleConflict as exc:
+            self._error(HTTPStatus.CONFLICT, str(exc))
         except ConsoleError as exc:
             self._error(HTTPStatus.BAD_REQUEST, str(exc))
-        except OSError as exc:
+        except (OSError, sqlite3.Error) as exc:
             self._error(HTTPStatus.INTERNAL_SERVER_ERROR, str(exc))
 
 
@@ -1032,11 +1844,13 @@ def main() -> int:
     print(f"SWARM config: {app.config_path} [validated writes]")
     if args.open:
         threading.Timer(0.4, lambda: webbrowser.open(url)).start()
+    app.start_observer()
     try:
         server.serve_forever(poll_interval=0.25)
     except KeyboardInterrupt:
         pass
     finally:
+        app.stop_observer()
         server.server_close()
     return 0
 

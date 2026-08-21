@@ -46,7 +46,7 @@ class SwarmDockerTests(unittest.TestCase):
         expected_environment["SWARM_CONTAINER_CONFIG_PATH"]=f"/data/swarm/{selected.name}"
         invoked_environment = run.call_args.kwargs["env"]
         run.assert_called_once_with(
-            ["docker", "compose", "-f", str(COMPOSE), "config", "--quiet"],
+            ["docker", "compose", "--project-name", "swarm-console", "-f", str(COMPOSE), "config", "--quiet"],
             cwd=DOCKER.parent.parent,
             env=invoked_environment,
             check=False,
@@ -94,9 +94,13 @@ class SwarmDockerTests(unittest.TestCase):
         self.assertIn('user: "${SWARM_CONTAINER_USER:-swarm}"', compose)
         self.assertIn('"127.0.0.1:4788:4788"', compose)
         self.assertIn(':/data/codex:ro"', compose)
-        self.assertIn(':/data/swarm:ro"', compose)
+        self.assertIn(':/data/swarm:rw"', compose)
+        self.assertIn("SWARM_CONSOLE_DATA_DIR: /data/swarm-console", compose)
+        self.assertIn("swarm_console_state:/data/swarm-console", compose)
+        self.assertIn("name: swarm-console-state", compose)
         self.assertIn("read_only: true", compose)
         self.assertIn("no-new-privileges:true", compose)
+        self.assertIn("/data/swarm-console", dockerfile)
 
     def test_explicit_swarm_config_path_drives_safe_mount(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

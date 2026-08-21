@@ -9,6 +9,7 @@ RUN addgroup --system swarm && adduser --system --ingroup swarm swarm
 WORKDIR /app
 COPY --chown=swarm:swarm console /app/console
 COPY --chown=swarm:swarm skills/swarm /app/skills/swarm
+RUN mkdir -p /data/swarm-console && chown swarm:swarm /data/swarm-console
 
 USER swarm
 EXPOSE 4788

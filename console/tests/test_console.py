@@ -4,6 +4,7 @@ import importlib.util
 import json
 import sqlite3
 import tempfile
+import time
 import unittest
 from email.message import Message
 from pathlib import Path
@@ -303,9 +304,110 @@ class SwarmConsoleTests(unittest.TestCase):
         self.config.write_text(self.config.read_text(encoding="utf-8") + "\n# updated\n", encoding="utf-8")
         self.assertIsNot(first, app.overview())
 
+    def test_console_store_survives_restart_and_clamps_counter_resets(self) -> None:
+        path = self.root / "console" / "console-state.sqlite3"
+        now = int(time.time() * 1000)
+        overview = {
+            "heartbeat_minutes": 30,
+            "nodes": [{
+                "id": "thread-1", "project_id": "project:alpha", "tokens": 100,
+                "status": "active", "updated_at": now,
+            }],
+            "links": [],
+        }
+        store = console.ConsoleStore(path)
+        store.observe_overview(overview, now_ms=now, trigger="startup", heartbeat_minutes=30)
+        overview["nodes"][0]["tokens"] = 90
+        store.observe_overview(overview, now_ms=now + 61_000, trigger="heartbeat", heartbeat_minutes=30)
+        overview["nodes"][0]["tokens"] = 130
+        store.observe_overview(overview, now_ms=now + 122_000, trigger="state_change", heartbeat_minutes=30)
+        restarted = console.ConsoleStore(path)
+        history = restarted.token_history(hours=24)
+        self.assertEqual(sum(item["delta_tokens"] for item in history), 40)
+        self.assertEqual(restarted.storage_stats()["counts"]["token_samples"], 3)
+
+    def test_eta_heartbeat_appends_a_stale_progress_revision(self) -> None:
+        path = self.root / "console" / "eta.sqlite3"
+        now = int(time.time() * 1000)
+        overview = {
+            "heartbeat_minutes": 1,
+            "nodes": [{
+                "id": "quiet-task", "project_id": "project:alpha", "tokens": 2,
+                "status": "quiet", "updated_at": now - 120_000,
+            }],
+            "links": [],
+        }
+        store = console.ConsoleStore(path)
+        store.observe_overview(overview, now_ms=now, trigger="startup", heartbeat_minutes=1)
+        first = store.latest_forecasts()["quiet-task"]
+        store.observe_overview(overview, now_ms=now + 61_000, trigger="heartbeat", heartbeat_minutes=1)
+        second = store.latest_forecasts()["quiet-task"]
+        self.assertEqual(first["status"], "at_risk")
+        self.assertGreater(second["revision"], first["revision"])
+        self.assertEqual(second["trigger"], "heartbeat")
+
+    def test_read_only_console_views_do_not_observe_or_record_usage(self) -> None:
+        app = console.App(self.codex_home, self.config)
+        with mock.patch.object(app, "observe_once", side_effect=AssertionError("write path")):
+            diagnostics = app.diagnostics()
+            overview = app.overview()
+        self.assertFalse(diagnostics["usage_consumed"])
+        self.assertNotIn("tokens", diagnostics)
+        self.assertIn("token_history", overview)
+
+    def test_clear_history_does_not_delete_ctrl_overlays(self) -> None:
+        store = console.ConsoleStore(self.root / "console" / "scoped.sqlite3")
+        now = int(time.time() * 1000)
+        store.update_ctrl_override("ctrl-1", {"reasoning": "high"}, expected_revision=0, now_ms=now)
+        store.observe_overview({
+            "heartbeat_minutes": 30,
+            "nodes": [{"id": "task-1", "project_id": "project:alpha", "tokens": 3, "status": "active", "updated_at": now}],
+            "links": [],
+        }, now_ms=now, trigger="startup", heartbeat_minutes=30)
+        result = store.clear_history()
+        self.assertTrue(result["ok"])
+        self.assertEqual(store.get_ctrl_override("ctrl-1")["revision"], 1)
+        self.assertEqual(store.storage_stats()["counts"]["token_samples"], 0)
+
+    def test_proof_feed_accepts_only_surfaced_registered_media(self) -> None:
+        media_path = self.root / "proof.png"
+        media_path.write_bytes(b"png-proof")
+        store = console.ConsoleStore(self.root / "console" / "proof.sqlite3")
+        base = {
+            "source": "CtrlEvidence", "evidence_id": "evidence-1", "task_id": "task-1",
+            "project_id": "project:alpha", "kind": "screenshot", "locator": str(media_path),
+            "caption": "Screenshot proof", "claim_limit": "Local screenshot only.",
+            "receipt": "surface:evidence-1", "surface_kind": "inline_image",
+        }
+        store.record_proof_media({**base, "disposition": "PENDING"}, now_ms=1)
+        self.assertEqual(store.proof_feed(), [])
+        item = store.record_proof_media({**base, "disposition": "SURFACED"}, now_ms=2)
+        self.assertEqual(item["evidence_id"], "evidence-1")
+        self.assertEqual(store.proof_feed(project_id="project:alpha")[0]["media_type"], "image/png")
+        with self.assertRaises(console.ConsoleError):
+            store.record_proof_media({**base, "kind": "text", "disposition": "SURFACED"}, now_ms=3)
+
+    def test_ctrl_overlay_requires_revision_and_can_reset_to_global(self) -> None:
+        store = console.ConsoleStore(self.root / "console" / "overrides.sqlite3")
+        now = int(time.time() * 1000)
+        updated = store.update_ctrl_override(
+            "ctrl-1", {"model": "gpt-5.6-sol"}, expected_revision=0, now_ms=now
+        )
+        self.assertEqual(updated["revision"], 1)
+        with self.assertRaises(console.ConsoleConflict):
+            store.update_ctrl_override("ctrl-1", {"reasoning": "high"}, expected_revision=0, now_ms=now)
+        self.assertTrue(store.reset_ctrl_override("ctrl-1", expected_revision=1)["reset"])
+        self.assertEqual(store.get_ctrl_override("ctrl-1")["revision"], 0)
+
     def test_valid_config_update_is_validated_and_backed_up(self) -> None:
         result = console.update_config(self.config, {"monitoring.heartbeat_minutes": 45})
         self.assertEqual(result["settings"]["monitoring"]["heartbeat_minutes"], 45)
+        self.assertTrue(self.config.with_suffix(".toml.swarm-console.bak").exists())
+
+    def test_restore_defaults_is_canonical_and_keeps_a_backup(self) -> None:
+        console.update_config(self.config, {"monitoring.heartbeat_minutes": 45})
+        result = console.restore_config_defaults(self.config)
+        self.assertEqual(result["settings"]["monitoring"]["heartbeat_minutes"], 30)
         self.assertTrue(self.config.with_suffix(".toml.swarm-console.bak").exists())
 
     def test_role_icon_controls_preserve_boolean_and_custom_ctrl(self) -> None:
