@@ -483,15 +483,21 @@ class SwarmConsoleTests(unittest.TestCase):
             connection.execute("UPDATE proof_media SET disposition='SURFACED', surface_kind='inline_image' WHERE evidence_id='legacy-proof'")
             connection.execute(
                 "INSERT INTO proof_media(evidence_id, task_id, project_id, kind, locator, caption, claim_limit, disposition, receipt, surface_kind, media_type, mtime_ns, size_bytes, digest, registered_at_ms, updated_at_ms) "
+                "SELECT 'available-proof', task_id, project_id, kind, locator, 'Available proof', claim_limit, 'AVAILABLE', 'legacy:available', 'available_media', media_type, mtime_ns, size_bytes, digest, registered_at_ms, updated_at_ms FROM proof_media WHERE evidence_id='legacy-proof'"
+            )
+            connection.execute(
+                "INSERT INTO proof_media(evidence_id, task_id, project_id, kind, locator, caption, claim_limit, disposition, receipt, surface_kind, media_type, mtime_ns, size_bytes, digest, registered_at_ms, updated_at_ms) "
                 "SELECT 'withheld-proof', task_id, project_id, kind, locator, 'Withheld proof', claim_limit, 'WITHHELD', 'ctrl:withheld', 'withheld', media_type, mtime_ns, size_bytes, digest, registered_at_ms, updated_at_ms FROM proof_media WHERE evidence_id='legacy-proof'"
             )
             connection.commit()
         finally:
             connection.close()
-        migrated = console.ConsoleStore(database).proof_feed()[0]
-        self.assertEqual(migrated["evidence_id"], item["evidence_id"])
-        self.assertEqual(migrated["disposition"], "PENDING")
-        self.assertEqual(migrated["surface_kind"], "available_media")
+        migrated = {entry["evidence_id"]: entry for entry in console.ConsoleStore(database).proof_feed()}
+        self.assertEqual(migrated["legacy-proof"]["evidence_id"], item["evidence_id"])
+        self.assertEqual(migrated["legacy-proof"]["disposition"], "PENDING")
+        self.assertEqual(migrated["legacy-proof"]["surface_kind"], "available_media")
+        self.assertEqual(migrated["available-proof"]["disposition"], "PENDING")
+        self.assertEqual(migrated["available-proof"]["surface_kind"], "available_media")
         connection = sqlite3.connect(database)
         try:
             withheld = connection.execute(
