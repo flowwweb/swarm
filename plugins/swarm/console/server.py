@@ -66,16 +66,17 @@ HEALTH_THRESHOLDS = {
     "disk_recover_bytes": 8 * 1024**3,
 }
 MEDIA_MAX_HASH_BYTES = 64 * 1024 * 1024
+PROOF_EVENT_ROOT = Path("swarm") / "proof-events"
+PROOF_MEDIA_ROOT = Path("swarm") / "proof-media"
 CTRL_OVERRIDE_FIELDS: dict[str, type] = {
     "model": str,
     "reasoning": str,
     "service_tier": str,
 }
 MEDIA_KINDS = frozenset({"imagegen", "image", "mockup", "preview", "screenshot", "browser", "recording"})
-MEDIA_EXTENSIONS = frozenset({".png", ".jpg", ".jpeg", ".webp", ".gif", ".svg", ".mp4", ".webm", ".mov"})
+MEDIA_EXTENSIONS = frozenset({".png", ".jpg", ".jpeg", ".webp", ".gif", ".mp4", ".webm"})
 MEDIA_TYPES = frozenset({
-    "image/png", "image/jpeg", "image/webp", "image/gif", "image/svg+xml",
-    "video/mp4", "video/webm", "video/quicktime",
+    "image/png", "image/jpeg", "image/webp", "image/gif", "video/mp4", "video/webm",
 })
 
 STATIC_FILES = {
@@ -303,6 +304,64 @@ def console_state_path(codex_home: Path, config_path: Path) -> Path:
     return (config_path.parent / CONSOLE_STATE_FILENAME).resolve()
 
 
+def _trusted_proof_roots(codex_home: Path) -> tuple[Path, Path] | None:
+    base = codex_home.expanduser().resolve()
+    swarm_root = base / "swarm"
+    event_root = base / PROOF_EVENT_ROOT
+    media_root = base / PROOF_MEDIA_ROOT
+    for path in (swarm_root, event_root, media_root):
+        if path.exists() and path.resolve() != path:
+            return None
+    return event_root, media_root
+
+
+def proof_storage_stats(codex_home: Path) -> dict[str, int]:
+    roots = _trusted_proof_roots(codex_home)
+    if roots is None:
+        return {"bytes": 0, "files": 0, "events": 0, "media": 0}
+    result = {"bytes": 0, "files": 0, "events": 0, "media": 0}
+    for label, root in zip(("events", "media"), roots):
+        if not root.is_dir():
+            continue
+        for path in root.iterdir():
+            try:
+                resolved = path.resolve(strict=True)
+                if not resolved.is_file() or resolved.parent != root:
+                    continue
+                result["bytes"] += resolved.stat().st_size
+                result["files"] += 1
+                result[label] += 1
+            except OSError:
+                continue
+    return result
+
+
+def clear_proof_storage(codex_home: Path) -> dict[str, int]:
+    roots = _trusted_proof_roots(codex_home)
+    if roots is None:
+        raise ConsoleError("proof evidence store is not a trusted directory")
+    before = proof_storage_stats(codex_home)
+    deleted = 0
+    for root in roots:
+        if not root.is_dir():
+            continue
+        for path in list(root.iterdir()):
+            try:
+                resolved = path.resolve(strict=True)
+                if not resolved.is_file() or resolved.parent != root:
+                    continue
+                resolved.unlink()
+                deleted += 1
+            except OSError as exc:
+                raise ConsoleError("proof history could not be cleared completely") from exc
+    after = proof_storage_stats(codex_home)
+    return {
+        "files_deleted": deleted,
+        "bytes_before": before["bytes"],
+        "bytes_after": after["bytes"],
+    }
+
+
 def _safe_metadata_text(value: Any, label: str, *, maximum: int = 4096) -> str:
     if not isinstance(value, str) or not value.strip():
         raise ConsoleError(f"{label} must be non-empty text")
@@ -312,30 +371,81 @@ def _safe_metadata_text(value: Any, label: str, *, maximum: int = 4096) -> str:
     return value
 
 
-def _media_metadata(locator: str, supplied_digest: str = "") -> dict[str, Any]:
-    path = Path(locator).expanduser()
-    result: dict[str, Any] = {
-        "path": locator,
-        "mtime_ns": None,
-        "size_bytes": None,
-        "digest": supplied_digest.strip().lower(),
-        "media_type": mimetypes.guess_type(locator)[0] or "application/octet-stream",
-    }
+def _safe_proof_copy(value: Any, label: str) -> str:
+    copy = _safe_metadata_text(value, label, maximum=512)
+    internal_markers = ("localhost", "host acceptance", "hidden usage", "usage consumed", "developer instruction")
+    if any(marker in copy.casefold() for marker in internal_markers):
+        raise ConsoleError(f"proof {label} must use plain project language")
+    return copy
+
+
+def _media_signature(path: Path) -> str:
     try:
-        stat = path.stat()
-    except OSError:
-        return result
-    if not path.is_file():
-        return result
-    result["mtime_ns"] = stat.st_mtime_ns
-    result["size_bytes"] = stat.st_size
-    if not result["digest"] and stat.st_size <= MEDIA_MAX_HASH_BYTES:
-        digest = hashlib.sha256()
         with path.open("rb") as stream:
-            for chunk in iter(lambda: stream.read(1024 * 1024), b""):
-                digest.update(chunk)
-        result["digest"] = digest.hexdigest()
-    return result
+            head = stream.read(32)
+    except OSError as exc:
+        raise ConsoleError("proof media could not be read") from exc
+    if head.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "image/png"
+    if head.startswith(b"\xff\xd8\xff"):
+        return "image/jpeg"
+    if head.startswith(b"RIFF") and head[8:12] == b"WEBP":
+        return "image/webp"
+    if head.startswith((b"GIF87a", b"GIF89a")):
+        return "image/gif"
+    if len(head) >= 12 and head[4:8] == b"ftyp":
+        return "video/mp4"
+    if head.startswith(b"\x1aE\xdf\xa3"):
+        return "video/webm"
+    raise ConsoleError("proof media signature is not allowlisted")
+
+
+def _media_metadata(
+    locator: str,
+    supplied_digest: str = "",
+    *,
+    allowed_root: Path | None = None,
+    supplied_size: int | None = None,
+    supplied_media_type: str = "",
+) -> dict[str, Any]:
+    path = Path(locator).expanduser()
+    try:
+        resolved = path.resolve(strict=True)
+        stat = resolved.stat()
+    except OSError as exc:
+        raise ConsoleError("proof media is unavailable") from exc
+    if not resolved.is_file() or stat.st_size <= 0 or stat.st_size > MEDIA_MAX_HASH_BYTES:
+        raise ConsoleError("proof media exceeds the delivery guard")
+    if allowed_root is not None:
+        root = allowed_root.expanduser().resolve(strict=True)
+        if not resolved.is_relative_to(root):
+            raise ConsoleError("proof media must stay inside the configured evidence store")
+    media_type = _media_signature(resolved)
+    guessed_type = mimetypes.guess_type(str(resolved))[0] or "application/octet-stream"
+    if guessed_type not in MEDIA_TYPES or media_type != guessed_type:
+        raise ConsoleError("proof media extension does not match its content")
+    digest = hashlib.sha256()
+    with resolved.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    current_digest = digest.hexdigest()
+    expected_digest = supplied_digest.strip().casefold()
+    if expected_digest and (
+        not re.fullmatch(r"[0-9a-f]{64}", expected_digest)
+        or not secrets.compare_digest(current_digest, expected_digest)
+    ):
+        raise ConsoleError("proof media digest does not match its receipt")
+    if supplied_size is not None and int(supplied_size) != stat.st_size:
+        raise ConsoleError("proof media size does not match its receipt")
+    if supplied_media_type and supplied_media_type != media_type:
+        raise ConsoleError("proof media type does not match its receipt")
+    return {
+        "path": str(resolved),
+        "mtime_ns": stat.st_mtime_ns,
+        "size_bytes": stat.st_size,
+        "digest": current_digest,
+        "media_type": media_type,
+    }
 
 
 class DiagnosticsCollector:
@@ -634,6 +744,14 @@ class ConsoleStore:
                 );
                 CREATE INDEX IF NOT EXISTS proof_media_project_updated
                     ON proof_media(project_id, updated_at_ms DESC);
+                CREATE TABLE IF NOT EXISTS proof_event_receipts (
+                    event_name TEXT PRIMARY KEY,
+                    event_mtime_ns INTEGER NOT NULL,
+                    event_size INTEGER NOT NULL,
+                    status TEXT NOT NULL,
+                    evidence_id TEXT NOT NULL,
+                    observed_at_ms INTEGER NOT NULL
+                );
                 CREATE TABLE IF NOT EXISTS ctrl_overrides (
                     ctrl_id TEXT PRIMARY KEY,
                     revision INTEGER NOT NULL,
@@ -688,6 +806,10 @@ class ConsoleStore:
                 CREATE INDEX IF NOT EXISTS health_requests_status
                     ON health_requests(status, created_at_ms DESC);
                 """
+            )
+            connection.execute(
+                "UPDATE proof_media SET disposition='PENDING', receipt='legacy:available', "
+                "surface_kind='available_media' WHERE disposition!='PENDING'"
             )
             connection.commit()
 
@@ -861,8 +983,17 @@ class ConsoleStore:
             for row in rows
         }
 
+    @staticmethod
+    def _public_proof_row(row: sqlite3.Row) -> dict[str, Any]:
+        public_fields = (
+            "evidence_id", "task_id", "project_id", "kind", "caption",
+            "claim_limit", "disposition", "surface_kind", "media_type",
+            "size_bytes", "digest", "registered_at_ms", "updated_at_ms",
+        )
+        return {field: row[field] for field in public_fields}
+
     def proof_feed(self, *, project_id: str | None = None, task_id: str | None = None) -> list[dict[str, Any]]:
-        conditions: list[str] = ["disposition = 'SURFACED'"]
+        conditions: list[str] = ["disposition = 'PENDING'"]
         args: list[Any] = []
         if project_id:
             conditions.append("project_id = ?")
@@ -875,33 +1006,28 @@ class ConsoleStore:
                 "SELECT * FROM proof_media WHERE " + " AND ".join(conditions) + " ORDER BY updated_at_ms DESC",
                 tuple(args),
             ).fetchall()
-        public_fields = (
-            "evidence_id", "task_id", "project_id", "kind", "caption",
-            "claim_limit", "disposition", "surface_kind", "media_type",
-            "size_bytes", "digest", "registered_at_ms", "updated_at_ms",
-        )
-        return [{field: row[field] for field in public_fields} for row in rows]
+        return [self._public_proof_row(row) for row in rows]
 
     def proof_sequence(self) -> int:
         """Return a cheap local cursor for surfaced proof feed changes."""
         with self._lock, closing(self._connect()) as connection:
             row = connection.execute(
-                "SELECT COALESCE(MAX(updated_at_ms), 0) sequence FROM proof_media WHERE disposition='SURFACED'"
+                "SELECT COALESCE(MAX(updated_at_ms), 0) sequence FROM proof_media WHERE disposition='PENDING'"
             ).fetchone()
         return int(row["sequence"] or 0)
 
-    def proof_media_item(self, evidence_id: str, digest: str) -> dict[str, Any]:
+    def proof_media_item(self, evidence_id: str, digest: str, *, allowed_root: Path | None = None) -> dict[str, Any]:
         evidence_id = _safe_metadata_text(evidence_id, "evidence_id", maximum=256)
         digest = _safe_metadata_text(digest, "digest", maximum=64).casefold()
         if not re.fullmatch(r"[0-9a-f]{64}", digest):
             raise ConsoleError("proof media digest must be a SHA-256 hex digest")
         with self._lock, closing(self._connect()) as connection:
             row = connection.execute(
-                "SELECT * FROM proof_media WHERE evidence_id=? AND disposition='SURFACED'",
+                "SELECT * FROM proof_media WHERE evidence_id=? AND disposition='PENDING'",
                 (evidence_id,),
             ).fetchone()
         if row is None or row["media_type"] not in MEDIA_TYPES or not str(row["media_type"]).startswith(("image/", "video/")):
-            raise ConsoleError("registered surfaced proof media was not found")
+            raise ConsoleError("registered proof media was not found")
         if str(row["digest"] or "").casefold() != digest:
             raise ConsoleError("proof media digest does not match the registered evidence")
         path = Path(str(row["locator"])).expanduser()
@@ -914,7 +1040,7 @@ class ConsoleStore:
             raise ConsoleError("registered proof media exceeds the delivery guard")
         if row["size_bytes"] is not None and int(row["size_bytes"]) != stat.st_size:
             raise ConsoleError("registered proof media changed since registration")
-        current = _media_metadata(str(resolved))
+        current = _media_metadata(str(resolved), digest, allowed_root=allowed_root)
         if current["digest"] != digest:
             raise ConsoleError("registered proof media digest no longer matches the file")
         return {
@@ -932,10 +1058,16 @@ class ConsoleStore:
             "state": "MEDIA_AVAILABLE" if media else "UNAVAILABLE",
             "task_id": task_id,
             "media": media,
-            "claim_limit": "Registered CtrlEvidence media is surfaced locally; it is not host acceptance.",
+            "claim_limit": "Available for review; acceptance is recorded separately.",
         }
 
-    def record_proof_media(self, payload: dict[str, Any], *, now_ms: int) -> dict[str, Any]:
+    def record_proof_media(
+        self,
+        payload: dict[str, Any],
+        *,
+        now_ms: int,
+        allowed_root: Path | None = None,
+    ) -> dict[str, Any]:
         evidence_id = _safe_metadata_text(payload.get("evidence_id"), "evidence_id", maximum=256)
         task_id = _safe_metadata_text(payload.get("task_id"), "task_id", maximum=256)
         project_id = _safe_metadata_text(payload.get("project_id"), "project_id", maximum=256)
@@ -946,16 +1078,49 @@ class ConsoleStore:
             raise ConsoleError("proof media must name CtrlEvidence as its source")
         if kind not in MEDIA_KINDS or Path(locator).suffix.casefold() not in MEDIA_EXTENSIONS:
             raise ConsoleError("proof media kind or file extension is not allowlisted")
-        if disposition not in {"PENDING", "SURFACED", "WITHHELD"}:
-            raise ConsoleError("proof media disposition is invalid")
-        caption = _safe_metadata_text(payload.get("caption", "Registered CtrlEvidence media"), "caption")
-        claim_limit = _safe_metadata_text(payload.get("claim_limit", "Local media only; host acceptance remains unverified."), "claim_limit")
+        if disposition != "PENDING":
+            raise ConsoleError("console registration may only make proof available for review")
+        caption = _safe_proof_copy(payload.get("caption", "Proof media"), "caption")
+        claim_limit = _safe_proof_copy(payload.get("claim_limit", "Available for review; acceptance is recorded separately."), "scope")
         receipt = _safe_metadata_text(payload.get("receipt", "ctrl-evidence:registered"), "receipt")
-        surface_kind = _safe_metadata_text(payload.get("surface_kind", "inline_image"), "surface_kind", maximum=64)
-        metadata = _media_metadata(locator, str(payload.get("digest", "")))
+        surface_kind = "available_media"
+        supplied_size = payload.get("size_bytes")
+        if supplied_size is not None and (not isinstance(supplied_size, int) or isinstance(supplied_size, bool)):
+            raise ConsoleError("proof media size must be an integer")
+        metadata = _media_metadata(
+            locator,
+            str(payload.get("digest", "")),
+            allowed_root=allowed_root,
+            supplied_size=supplied_size,
+            supplied_media_type=str(payload.get("media_type", "")),
+        )
         if metadata["media_type"] not in MEDIA_TYPES:
             raise ConsoleError("proof media type is not allowlisted")
         with self._lock, closing(self._connect()) as connection:
+            existing = connection.execute(
+                "SELECT * FROM proof_media WHERE evidence_id=?",
+                (evidence_id,),
+            ).fetchone()
+            values = {
+                "task_id": task_id,
+                "project_id": project_id,
+                "kind": kind,
+                "locator": metadata["path"],
+                "caption": caption,
+                "claim_limit": claim_limit,
+                "disposition": disposition,
+                "receipt": receipt,
+                "surface_kind": surface_kind,
+                "media_type": metadata["media_type"],
+                "mtime_ns": metadata["mtime_ns"],
+                "size_bytes": metadata["size_bytes"],
+                "digest": metadata["digest"],
+            }
+            if existing is not None:
+                immutable_fields = tuple(values)
+                if any(existing[field] != values[field] for field in immutable_fields):
+                    raise ConsoleError("evidence_id already names a different immutable proof receipt")
+                return self._public_proof_row(existing)
             connection.execute(
                 """
                 INSERT INTO proof_media(
@@ -963,28 +1128,13 @@ class ConsoleStore:
                     claim_limit, disposition, receipt, surface_kind, media_type,
                     mtime_ns, size_bytes, digest, registered_at_ms, updated_at_ms
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(evidence_id) DO UPDATE SET
-                    task_id=excluded.task_id,
-                    project_id=excluded.project_id,
-                    kind=excluded.kind,
-                    locator=excluded.locator,
-                    caption=excluded.caption,
-                    claim_limit=excluded.claim_limit,
-                    disposition=excluded.disposition,
-                    receipt=excluded.receipt,
-                    surface_kind=excluded.surface_kind,
-                    media_type=excluded.media_type,
-                    mtime_ns=excluded.mtime_ns,
-                    size_bytes=excluded.size_bytes,
-                    digest=excluded.digest,
-                    updated_at_ms=excluded.updated_at_ms
                 """,
                 (
                     evidence_id,
                     task_id,
                     project_id,
                     kind,
-                    locator,
+                    metadata["path"],
                     caption,
                     claim_limit,
                     disposition,
@@ -999,7 +1149,120 @@ class ConsoleStore:
                 ),
             )
             connection.commit()
-        return next(item for item in self.proof_feed(project_id=project_id) if item["evidence_id"] == evidence_id) if disposition == "SURFACED" else {"evidence_id": evidence_id, "disposition": disposition}
+            row = connection.execute("SELECT * FROM proof_media WHERE evidence_id=?", (evidence_id,)).fetchone()
+        return self._public_proof_row(row)
+
+    def _proof_event_receipts(self) -> dict[str, tuple[int, int, str]]:
+        with self._lock, closing(self._connect()) as connection:
+            rows = connection.execute(
+                "SELECT event_name, event_mtime_ns, event_size, status FROM proof_event_receipts"
+            ).fetchall()
+        return {
+            str(row["event_name"]): (int(row["event_mtime_ns"]), int(row["event_size"]), str(row["status"]))
+            for row in rows
+        }
+
+    def _record_proof_event_receipt(
+        self,
+        event_name: str,
+        *,
+        mtime_ns: int,
+        size: int,
+        status: str,
+        evidence_id: str,
+        now_ms: int,
+    ) -> None:
+        with self._lock, closing(self._connect()) as connection:
+            connection.execute(
+                """
+                INSERT INTO proof_event_receipts(
+                    event_name, event_mtime_ns, event_size, status, evidence_id, observed_at_ms
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT(event_name) DO UPDATE SET
+                    event_mtime_ns=excluded.event_mtime_ns,
+                    event_size=excluded.event_size,
+                    status=excluded.status,
+                    evidence_id=excluded.evidence_id,
+                    observed_at_ms=excluded.observed_at_ms
+                """,
+                (event_name, mtime_ns, size, status, evidence_id, now_ms),
+            )
+            connection.commit()
+
+    def ingest_proof_events(self, codex_home: Path, overview: dict[str, Any], *, now_ms: int) -> int:
+        """Import immutable, content-addressed receipts without reading task messages."""
+        expected_swarm_root = codex_home.resolve() / "swarm"
+        expected_event_root = codex_home.resolve() / PROOF_EVENT_ROOT
+        expected_media_root = codex_home.resolve() / PROOF_MEDIA_ROOT
+        swarm_root = expected_swarm_root.resolve()
+        event_root = expected_event_root.resolve()
+        media_root = expected_media_root.resolve()
+        if swarm_root != expected_swarm_root or event_root != expected_event_root or media_root != expected_media_root:
+            return 0
+        if not event_root.is_dir() or not media_root.is_dir():
+            return 0
+        nodes = {
+            str(node.get("id")): node
+            for node in overview.get("nodes", [])
+            if not node.get("virtual") and node.get("id") and node.get("project_id")
+        }
+        receipts = self._proof_event_receipts()
+        imported = 0
+        for event_path in sorted(event_root.glob("*.json")):
+            event_stat: os.stat_result | None = None
+            evidence_id = ""
+            try:
+                resolved_event = event_path.resolve(strict=True)
+                event_stat = resolved_event.stat()
+                if not resolved_event.is_file() or not resolved_event.is_relative_to(event_root) or event_stat.st_size > 16 * 1024:
+                    continue
+                receipt = receipts.get(resolved_event.name)
+                if receipt == (event_stat.st_mtime_ns, event_stat.st_size, "IMPORTED") or receipt == (event_stat.st_mtime_ns, event_stat.st_size, "REJECTED"):
+                    continue
+                event = json.loads(resolved_event.read_text(encoding="utf-8"))
+                if not isinstance(event, dict) or event.get("schema_version") != 1 or event.get("source") != "CtrlEvidence":
+                    raise ConsoleError("proof event envelope is invalid")
+                evidence_id = _safe_metadata_text(event.get("evidence_id"), "evidence_id", maximum=256)
+                task_id = _safe_metadata_text(event.get("task_id"), "task_id", maximum=256)
+                node = nodes.get(task_id)
+                project_id = str(node["project_id"]) if node is not None else observed_task_project_id(codex_home, task_id)
+                if project_id is None:
+                    continue
+                relative = Path(_safe_metadata_text(event.get("locator"), "locator", maximum=512))
+                if relative.is_absolute() or ".." in relative.parts:
+                    raise ConsoleError("proof event locator escapes the evidence store")
+                locator = (swarm_root / relative).resolve(strict=True)
+                payload = {
+                    **event,
+                    "task_id": task_id,
+                    "project_id": project_id,
+                    "locator": str(locator),
+                    "disposition": "PENDING",
+                    "receipt": f"proof-event:{resolved_event.stem}",
+                    "surface_kind": "available_media",
+                }
+                self.record_proof_media(payload, now_ms=now_ms, allowed_root=media_root)
+                self._record_proof_event_receipt(
+                    resolved_event.name,
+                    mtime_ns=event_stat.st_mtime_ns,
+                    size=event_stat.st_size,
+                    status="IMPORTED",
+                    evidence_id=evidence_id,
+                    now_ms=now_ms,
+                )
+                imported += 1
+            except (ConsoleError, OSError, ValueError, TypeError, json.JSONDecodeError):
+                if event_stat is not None:
+                    self._record_proof_event_receipt(
+                        event_path.name,
+                        mtime_ns=event_stat.st_mtime_ns,
+                        size=event_stat.st_size,
+                        status="REJECTED",
+                        evidence_id=evidence_id,
+                        now_ms=now_ms,
+                    )
+                continue
+        return imported
 
     def token_history(self, *, project_id: str | None = None, hours: int = 24) -> list[dict[str, Any]]:
         cutoff = int(time.time() * 1000) - max(1, hours) * 60 * 60 * 1000
@@ -1321,7 +1584,7 @@ class ConsoleStore:
             before = self.storage_stats()
             deleted = {}
             for table in (
-                "token_samples", "token_cursors", "eta_forecasts", "proof_media", "store_metadata",
+                "token_samples", "token_cursors", "eta_forecasts", "proof_media", "proof_event_receipts", "store_metadata",
                 "diagnostic_samples", "health_incidents", "health_requests",
             ):
                 deleted[table] = int(connection.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0])
@@ -1345,7 +1608,7 @@ class ConsoleStore:
             counts = {
                 table: int(connection.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0])
                 for table in (
-                    "token_samples", "eta_forecasts", "proof_media", "ctrl_overrides",
+                    "token_samples", "eta_forecasts", "proof_media", "proof_event_receipts", "ctrl_overrides",
                     "diagnostic_samples", "health_incidents", "health_requests",
                 )
             }
@@ -1397,6 +1660,19 @@ def active_goal_thread_ids(codex_home: Path, *, observed_after_ms: int) -> set[s
             }
     except (sqlite3.Error, OSError, ConsoleError):
         return set()
+
+
+def observed_task_project_id(codex_home: Path, task_id: str) -> str | None:
+    """Resolve one exact unarchived task to its observed project without reading messages."""
+    try:
+        with closing(_readonly_connection(state_database(codex_home))) as connection:
+            row = connection.execute(
+                "SELECT cwd, git_origin_url FROM threads WHERE id=? AND archived=0",
+                (task_id,),
+            ).fetchone()
+    except (sqlite3.Error, OSError, ConsoleError):
+        return None
+    return None if row is None else _project_identity(row)[0]
 
 
 def observation_fingerprint(codex_home: Path, config_path: Path) -> tuple[tuple[str, int, int], ...]:
@@ -1988,6 +2264,7 @@ class App:
         self.overview_lock = threading.RLock()
         self.overview_refresh_lock = threading.Lock()
         self.presence_lock = threading.Lock()
+        self.proof_lock = threading.Lock()
         self._overview_fingerprint: tuple[tuple[str, int, int], ...] | None = None
         self._overview: dict[str, Any] | None = None
         self._view: dict[str, Any] | None = None
@@ -2141,6 +2418,8 @@ class App:
             trigger=trigger,
             heartbeat_minutes=heartbeat_minutes,
         )
+        with self.proof_lock:
+            self.store.ingest_proof_events(self.codex_home, overview, now_ms=now_ms)
         try:
             sample = self.diagnostics_collector.collect()
             self.store.record_diagnostics(
@@ -2191,13 +2470,39 @@ class App:
         return self.store.proof_feed(project_id=project_id, task_id=task_id)
 
     def proof_media_item(self, evidence_id: str, digest: str) -> dict[str, Any]:
-        return self.store.proof_media_item(evidence_id, digest)
+        return self.store.proof_media_item(
+            evidence_id,
+            digest,
+            allowed_root=self.codex_home / PROOF_MEDIA_ROOT,
+        )
 
     def proof_sequence(self) -> int:
         return self.store.proof_sequence()
 
     def register_proof(self, payload: dict[str, Any]) -> dict[str, Any]:
-        result = self.store.record_proof_media(payload, now_ms=int(time.time() * 1000))
+        task_id = _safe_metadata_text(payload.get("task_id"), "task_id", maximum=256)
+        overview = self._host_overview()
+        node = next(
+            (
+                item for item in overview.get("nodes", [])
+                if str(item.get("id")) == task_id and not item.get("virtual") and item.get("project_id")
+            ),
+            None,
+        )
+        if node is None:
+            raise ConsoleError("proof media requires an observed task")
+        safe_payload = {
+            **payload,
+            "task_id": task_id,
+            "project_id": str(node["project_id"]),
+            "disposition": "PENDING",
+            "receipt": f"ctrl-evidence:registered:{task_id}",
+        }
+        result = self.store.record_proof_media(
+            safe_payload,
+            now_ms=int(time.time() * 1000),
+            allowed_root=self.codex_home / PROOF_MEDIA_ROOT,
+        )
         try:
             self.observe_once("proof")
         except (ConsoleError, OSError, sqlite3.Error):
@@ -2207,10 +2512,18 @@ class App:
         return result
 
     def storage(self) -> dict[str, Any]:
-        return self.store.storage_stats()
+        storage = self.store.storage_stats()
+        proof = proof_storage_stats(self.codex_home)
+        return {
+            **storage,
+            "database_bytes": storage["bytes"],
+            "proof_bytes": proof["bytes"],
+            "proof_files": proof["files"],
+            "bytes": storage["bytes"] + proof["bytes"],
+        }
 
     def diagnostics(self) -> dict[str, Any]:
-        stats = self.store.storage_stats()
+        stats = self.storage()
         try:
             load_config(self.config_path)
             config_valid = True
@@ -2365,10 +2678,12 @@ class App:
         return {**self.ctrl_settings(ctrl_id), "reset": result["reset"]}
 
     def clear_history(self) -> dict[str, Any]:
-        result = self.store.clear_history()
+        with self.write_lock, self.proof_lock:
+            proof = clear_proof_storage(self.codex_home)
+            result = self.store.clear_history()
         with self.overview_lock:
             self._store_generation += 1
-        return result
+        return {**result, "proof": proof}
 
     def restore_defaults(self) -> dict[str, Any]:
         with self.write_lock:

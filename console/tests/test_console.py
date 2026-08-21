@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import hashlib
 import json
 import sqlite3
 import tempfile
@@ -442,26 +443,51 @@ class SwarmConsoleTests(unittest.TestCase):
         self.assertEqual(store.get_ctrl_override("ctrl-1")["revision"], 1)
         self.assertEqual(store.storage_stats()["counts"]["token_samples"], 0)
 
-    def test_proof_feed_accepts_only_surfaced_registered_media(self) -> None:
+    def test_proof_feed_exposes_available_media_without_fabricating_surface(self) -> None:
         media_path = self.root / "proof.png"
-        media_path.write_bytes(b"png-proof")
+        media_path.write_bytes(b"\x89PNG\r\n\x1a\nproof")
         store = console.ConsoleStore(self.root / "console" / "proof.sqlite3")
         base = {
             "source": "CtrlEvidence", "evidence_id": "evidence-1", "task_id": "task-1",
             "project_id": "project:alpha", "kind": "screenshot", "locator": str(media_path),
             "caption": "Screenshot proof", "claim_limit": "Local screenshot only.",
-            "receipt": "surface:evidence-1", "surface_kind": "inline_image",
+            "receipt": "proof-event:evidence-1", "surface_kind": "available_media",
         }
-        store.record_proof_media({**base, "disposition": "PENDING"}, now_ms=1)
-        self.assertEqual(store.proof_feed(), [])
-        item = store.record_proof_media({**base, "disposition": "SURFACED"}, now_ms=2)
+        item = store.record_proof_media({**base, "disposition": "PENDING"}, now_ms=1)
         self.assertEqual(item["evidence_id"], "evidence-1")
         feed_item = store.proof_feed(project_id="project:alpha")[0]
         self.assertEqual(feed_item["media_type"], "image/png")
+        self.assertEqual(feed_item["disposition"], "PENDING")
         self.assertNotIn("locator", feed_item)
-        self.assertEqual(store.proof_sequence(), 2)
+        self.assertEqual(store.proof_sequence(), 1)
         with self.assertRaises(console.ConsoleError):
-            store.record_proof_media({**base, "kind": "text", "disposition": "SURFACED"}, now_ms=3)
+            store.record_proof_media({**base, "disposition": "SURFACED"}, now_ms=2)
+        with self.assertRaises(console.ConsoleError):
+            store.record_proof_media({**base, "caption": "Changed", "disposition": "PENDING"}, now_ms=3)
+        with self.assertRaisesRegex(console.ConsoleError, "plain project language"):
+            store.record_proof_media({**base, "evidence_id": "internal-copy", "caption": "Localhost proof", "disposition": "PENDING"}, now_ms=4)
+
+    def test_store_normalizes_legacy_surface_rows_to_available(self) -> None:
+        media_path = self.root / "legacy.png"
+        media_path.write_bytes(b"\x89PNG\r\n\x1a\nlegacy")
+        database = self.root / "console" / "legacy.sqlite3"
+        store = console.ConsoleStore(database)
+        item = store.record_proof_media({
+            "source": "CtrlEvidence", "evidence_id": "legacy-proof", "task_id": "task-1",
+            "project_id": "project:alpha", "kind": "screenshot", "locator": str(media_path),
+            "caption": "Legacy proof", "claim_limit": "Available for review.",
+            "receipt": "legacy:caller", "disposition": "PENDING",
+        }, now_ms=1)
+        connection = sqlite3.connect(database)
+        try:
+            connection.execute("UPDATE proof_media SET disposition='SURFACED', surface_kind='inline_image' WHERE evidence_id='legacy-proof'")
+            connection.commit()
+        finally:
+            connection.close()
+        migrated = console.ConsoleStore(database).proof_feed()[0]
+        self.assertEqual(migrated["evidence_id"], item["evidence_id"])
+        self.assertEqual(migrated["disposition"], "PENDING")
+        self.assertEqual(migrated["surface_kind"], "available_media")
 
     def test_project_view_scopes_burn_history_and_navigation(self) -> None:
         app = console.App(self.codex_home, self.config)
@@ -494,23 +520,105 @@ class SwarmConsoleTests(unittest.TestCase):
 
     def test_proof_media_delivery_requires_registered_surface_and_current_digest(self) -> None:
         media_path = self.root / "proof.png"
-        media_path.write_bytes(b"png-proof")
+        media_path.write_bytes(b"\x89PNG\r\n\x1a\nproof")
         store = console.ConsoleStore(self.root / "console" / "delivery.sqlite3")
         base = {
             "source": "CtrlEvidence", "evidence_id": "evidence-delivery", "task_id": "task-1",
             "project_id": "project:alpha", "kind": "screenshot", "locator": str(media_path),
             "caption": "Screenshot proof", "claim_limit": "Local screenshot only.",
-            "receipt": "surface:evidence-delivery", "surface_kind": "inline_image", "disposition": "SURFACED",
+            "receipt": "proof-event:evidence-delivery", "surface_kind": "available_media", "disposition": "PENDING",
         }
         registered = store.record_proof_media(base, now_ms=2)
         item = store.proof_media_item("evidence-delivery", registered["digest"])
         self.assertEqual(item["media_type"], "image/png")
-        self.assertEqual(item["size_bytes"], len(b"png-proof"))
+        self.assertEqual(item["size_bytes"], len(b"\x89PNG\r\n\x1a\nproof"))
+        other_root = self.root / "other-proof-root"
+        other_root.mkdir()
+        with self.assertRaisesRegex(console.ConsoleError, "configured evidence store"):
+            store.proof_media_item("evidence-delivery", registered["digest"], allowed_root=other_root)
         with self.assertRaises(console.ConsoleError):
             store.proof_media_item("evidence-delivery", "0" * 64)
         media_path.write_bytes(b"changed")
         with self.assertRaises(console.ConsoleError):
             store.proof_media_item("evidence-delivery", registered["digest"])
+
+    def test_proof_event_ingestion_derives_project_and_enforces_media_root(self) -> None:
+        swarm_root = self.codex_home / "swarm"
+        media_root = swarm_root / "proof-media"
+        event_root = swarm_root / "proof-events"
+        media_root.mkdir(parents=True)
+        event_root.mkdir(parents=True)
+        media = media_root / "proof.png"
+        media.write_bytes(b"\x89PNG\r\n\x1a\nproof")
+        digest = hashlib.sha256(media.read_bytes()).hexdigest()
+        event = {
+            "schema_version": 1,
+            "source": "CtrlEvidence",
+            "evidence_id": "event-proof",
+            "task_id": "task-1",
+            "kind": "screenshot",
+            "locator": "proof-media/proof.png",
+            "caption": "Observed settings screen",
+            "claim_limit": "Available for review; acceptance is recorded separately.",
+            "digest": digest,
+            "size_bytes": media.stat().st_size,
+            "media_type": "image/png",
+            "disposition": "PENDING",
+        }
+        (event_root / "event.json").write_text(json.dumps(event), encoding="utf-8")
+        store = console.ConsoleStore(self.root / "console" / "events.sqlite3")
+        overview = {"nodes": [{"id": "task-1", "project_id": "project:alpha", "virtual": False}]}
+        self.assertEqual(store.ingest_proof_events(self.codex_home, overview, now_ms=9), 1)
+        item = store.proof_feed(project_id="project:alpha")[0]
+        self.assertEqual(item["task_id"], "task-1")
+        self.assertEqual(item["disposition"], "PENDING")
+        event["evidence_id"] = "outside"
+        event["locator"] = "../outside.png"
+        (event_root / "outside.json").write_text(json.dumps(event), encoding="utf-8")
+        with mock.patch.object(console, "_media_metadata", wraps=console._media_metadata) as metadata:
+            self.assertEqual(store.ingest_proof_events(self.codex_home, overview, now_ms=10), 0)
+        metadata.assert_not_called()
+        self.assertEqual(len(store.proof_feed()), 1)
+
+    def test_clear_history_removes_proof_files_and_prevents_reimport(self) -> None:
+        swarm_root = self.codex_home / "swarm"
+        media_root = swarm_root / "proof-media"
+        event_root = swarm_root / "proof-events"
+        media_root.mkdir(parents=True)
+        event_root.mkdir(parents=True)
+        media = media_root / "proof.png"
+        media.write_bytes(b"\x89PNG\r\n\x1a\nproof")
+        digest = hashlib.sha256(media.read_bytes()).hexdigest()
+        (event_root / "event.json").write_text(json.dumps({
+            "schema_version": 1, "source": "CtrlEvidence", "evidence_id": "clear-proof",
+            "task_id": "task", "kind": "screenshot", "locator": "proof-media/proof.png",
+            "caption": "Task proof", "claim_limit": "Available for review.", "digest": digest,
+            "size_bytes": media.stat().st_size, "media_type": "image/png", "disposition": "PENDING",
+        }), encoding="utf-8")
+        app = console.App(self.codex_home, self.config, self.root / "console" / "clear.sqlite3")
+        overview = console.build_overview(self.codex_home, self.config)
+        self.assertEqual(app.store.ingest_proof_events(self.codex_home, overview, now_ms=1), 1)
+        self.assertGreater(app.storage()["proof_bytes"], 0)
+        result = app.clear_history()
+        self.assertEqual(result["proof"]["files_deleted"], 2)
+        self.assertEqual(app.storage()["proof_bytes"], 0)
+        self.assertEqual(app.store.proof_feed(), [])
+        self.assertEqual(app.store.ingest_proof_events(self.codex_home, overview, now_ms=2), 0)
+
+    def test_proof_event_can_resolve_project_level_task_from_host_metadata(self) -> None:
+        database = self.codex_home / "state_5.sqlite"
+        connection = sqlite3.connect(database)
+        try:
+            connection.execute(
+                "INSERT INTO threads(id, title, cwd, archived, git_origin_url) VALUES (?, ?, ?, ?, ?)",
+                ("project-task", "Project task", str(self.root / "flowwweb" / "swarm"), 0, ""),
+            )
+            connection.commit()
+        finally:
+            connection.close()
+        expected, _ = console._project_identity({"cwd": str(self.root / "flowwweb" / "swarm"), "git_origin_url": ""})
+        self.assertEqual(console.observed_task_project_id(self.codex_home, "project-task"), expected)
+        self.assertIsNone(console.observed_task_project_id(self.codex_home, "missing"))
 
     @staticmethod
     def _health_sample(*, cpu: float = 10.0, memory: float = 20.0, free_bytes: int = 20 * 1024**3) -> dict:
