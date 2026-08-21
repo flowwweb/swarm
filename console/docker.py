@@ -49,6 +49,8 @@ def main() -> int:
 
     environment = os.environ.copy()
     environment.setdefault("SWARM_CODEX_HOME",str(Path.home() / ".codex"))
+    proof_home = Path(environment["SWARM_CODEX_HOME"]).expanduser().resolve() / "swarm"
+    environment["SWARM_PROOF_HOME"] = str(proof_home)
     selected_config=_resolve_config_path()
     environment["SWARM_CONFIG_HOME"]=str(selected_config.parent)
     environment["SWARM_CONTAINER_CONFIG_PATH"]=f"/data/swarm/{selected_config.name}"
@@ -56,6 +58,7 @@ def main() -> int:
     if args.action == "up":
         config_home = selected_config.parent
         config_home.mkdir(parents=True, exist_ok=True)
+        proof_home.mkdir(parents=True, exist_ok=True)
         environment["SWARM_CONFIG_HOME"] = str(config_home)
 
     command = ["docker", "compose", "--project-name", COMPOSE_PROJECT, "-f", str(COMPOSE)]

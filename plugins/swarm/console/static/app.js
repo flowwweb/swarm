@@ -217,19 +217,20 @@ function renderTable(nodes) {
     const proof = node.proof_snapshot || {};
     const status = statusLabel(node);
     const etaLabel = eta.status === "complete" ? "Complete" : (eta.eta_end_ms ? formatEta(eta.eta_end_ms) : "Unforecast");
-    return '<tr data-task-id="' + escapeHTML(node.id) + '"><td><strong>' + escapeHTML(node.artifact || node.title || node.id) + '</strong><small>' + escapeHTML(node.project || "Task") + '</small></td><td>' + escapeHTML(node.worker || node.worker_role || node.role_label || "Unassigned") + '</td><td><span class="state-pill ' + status[1] + '">' + status[0] + '</span></td><td><strong>' + escapeHTML(etaLabel) + '</strong><small>' + escapeHTML(eta.status ? humanize(eta.status) : "No forecast") + '</small></td><td>' + (eta.confidence == null ? "—" : escapeHTML(eta.confidence) + "%") + '</td><td><span class="activity-dot ' + status[1] + '" aria-hidden="true"></span>' + escapeHTML(formatRelative(node.updated_at || node.generated_at)) + '</td><td><span class="proof-state ' + (proof.available ? "" : "is-muted") + '">' + escapeHTML(proof.available ? (proof.state || "Evidence") : "—") + "</span></td></tr>";
+    return '<tr data-task-id="' + escapeHTML(node.id) + '"><td><strong>' + escapeHTML(node.artifact || node.title || node.id) + '</strong><small>' + escapeHTML(node.project || "Task") + '</small></td><td>' + escapeHTML(node.worker || node.worker_role || node.role_label || "Unassigned") + '</td><td><span class="state-pill ' + status[1] + '">' + status[0] + '</span></td><td><strong>' + escapeHTML(etaLabel) + '</strong><small>' + escapeHTML(eta.status ? humanize(eta.status) : "No forecast") + '</small></td><td>' + (eta.confidence == null ? "—" : escapeHTML(eta.confidence) + "%") + '</td><td><span class="activity-dot ' + status[1] + '" aria-hidden="true"></span>' + escapeHTML(formatRelative(node.updated_at || node.generated_at)) + '</td><td><span class="proof-state ' + (proof.available ? "" : "is-muted") + '">' + (proof.available ? "Available" : "—") + "</span></td></tr>";
   }).join("");
 }
 
 function renderProof(nodes) {
-  const feed = state.proof.length ? state.proof : nodes.flatMap((node) => node.proof_snapshot?.available ? [{ task_id: node.id, caption: node.proof_snapshot.state || "Proof state", claim_limit: node.proof_snapshot.claim_limit }] : []);
+  const feed = state.proof.length ? state.proof : nodes.flatMap((node) => node.proof_snapshot?.available ? [{ task_id: node.id, caption: "Proof available", claim_limit: node.proof_snapshot.claim_limit }] : []);
   $("#proof-count").textContent = String(feed.length);
   $("#proof-feed").innerHTML = feed.length ? feed.slice(0, 5).map((item) => {
     const owner = nodes.find((node) => node.id === item.task_id);
     const media = item.evidence_id && item.digest && String(item.media_type || "").startsWith("image/")
       ? '<img class="proof-thumb" loading="lazy" decoding="async" src="/api/proof-media/' + encodeURIComponent(item.evidence_id) + '?digest=' + encodeURIComponent(item.digest) + '" alt="">'
       : '<span class="proof-icon" aria-hidden="true">▤</span>';
-    return '<article class="proof-item">' + media + '<div><strong>' + escapeHTML(item.caption || item.kind || "Proof item") + '</strong><small>' + escapeHTML(owner?.artifact || item.task_id || "Task") + (item.claim_limit ? " · " + escapeHTML(item.claim_limit) : "") + "</small></div></article>";
+    const boundary = item.claim_limit || "Acceptance is recorded separately.";
+    return '<article class="proof-item">' + media + '<div><span class="proof-availability">Available</span><span class="proof-boundary" role="img" aria-label="Scope: ' + escapeHTML(boundary) + '" title="Scope: ' + escapeHTML(boundary) + '">ⓘ</span><strong>' + escapeHTML(item.caption || item.kind || "Proof item") + '</strong><small>' + escapeHTML(owner?.artifact || item.task_id || "Task") + "</small></div></article>";
   }).join("") : '<p class="empty-state">No visual proof yet.</p>';
 }
 
@@ -341,6 +342,7 @@ function renderSettings() {
   const effective = setting?.effective || setting?.global_defaults || {};
   const reasoningOptions = ["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"];
   const retention = storage?.retention_days == null ? "" : " · retain " + storage.retention_days + " days";
+  const proofFiles = Number(storage?.proof_files) || 0;
   $("#settings-grid").innerHTML =
     '<section class="panel settings-card"><p class="eyebrow">Console</p><h3>' + escapeHTML(selectedCtrl ? "CTRL settings" : "Global defaults") + '</h3>' +
       '<label class="toggle-row"><input id="ctrl-customize" type="checkbox"' + (setting?.customized ? ' checked' : '') + (!selectedCtrl ? ' disabled' : '') + '><span>Customize this CTRL separately</span></label>' +
@@ -351,7 +353,7 @@ function renderSettings() {
       '<label class="toggle-row"><input id="spark-enabled" type="checkbox"' + (boost.spark_enabled ? ' checked' : '') + '><span>Use Spark for safe small tasks</span></label>' +
       '<small>Spark handles quick, low-risk work such as search, formatting, copy, documentation, and focused checks.</small>' +
       '<details><summary>Advanced routing</summary><div class="ctrl-fields"><label>Model<input id="spark-model" value="' + escapeHTML(boost.spark_model || 'gpt-5.3-codex-spark') + '" autocomplete="off"></label><label>Reasoning<select id="spark-reasoning">' + reasoningOptions.map((option) => '<option value="' + option + '"' + (option === (boost.spark_reasoning || 'xhigh') ? ' selected' : '') + '>' + option + '</option>').join('') + '</select></label></div><button class="quiet-button" data-setting-action="save-spark" type="button">Save routing</button></details></section>' +
-    '<section class="panel settings-card"><p class="eyebrow">Data</p><h3>' + escapeHTML(storage?.bytes == null ? 'Storage details unavailable' : formatBytes(storage.bytes) + ' saved history' + retention) + '</h3><p>Progress, ETAs, proof, and token history stay available between sessions.</p><div class="settings-actions-inline"><button class="quiet-button" data-setting-action="clear" type="button">Clear history</button><button class="quiet-button" data-setting-action="restore" type="button">Restore defaults</button></div><small>Clearing history leaves your tasks unchanged. Restoring defaults keeps your history.</small></section>';
+    '<section class="panel settings-card"><p class="eyebrow">Data</p><h3>' + escapeHTML(storage?.bytes == null ? 'Storage details unavailable' : formatBytes(storage.bytes) + ' saved history' + retention) + '</h3><p>Progress, ETAs, proof, and token history stay available between sessions' + (proofFiles ? ' · ' + proofFiles + ' proof file' + (proofFiles === 1 ? '' : 's') : '') + '.</p><div class="settings-actions-inline"><button class="quiet-button" data-setting-action="clear" type="button">Clear history</button><button class="quiet-button" data-setting-action="restore" type="button">Restore defaults</button></div><small>Clearing history leaves your tasks unchanged. Restoring defaults keeps your history.</small></section>';
 }
 
 function renderAllViews() { renderOverview(); renderHierarchy(); renderKanban(); renderDiagnostics(); renderOverviewDiagnostics(); renderSettings(); }

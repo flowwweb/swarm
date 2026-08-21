@@ -15,6 +15,7 @@ services:
       SWARM_CONSOLE_DOCKER_LOOPBACK: "1"
     volumes:
       - "${SWARM_CODEX_HOME:?Run python console/docker.py so the Codex home is explicit}:/data/codex:ro"
+      - "${SWARM_PROOF_HOME:?Run python console/docker.py so the proof store is explicit}:/data/codex/swarm:rw"
       - "${SWARM_CONFIG_HOME:?Run python console/docker.py so the SWARM config home is explicit}:/data/swarm:rw"
       - "swarm_console_state:/data/swarm-console"
     read_only: true

@@ -809,7 +809,7 @@ class ConsoleStore:
             )
             connection.execute(
                 "UPDATE proof_media SET disposition='PENDING', receipt='legacy:available', "
-                "surface_kind='available_media' WHERE disposition IN ('AVAILABLE', 'SURFACED')"
+                "surface_kind='available_media' WHERE disposition='SURFACED'"
             )
             connection.commit()
 

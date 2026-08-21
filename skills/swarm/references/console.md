@@ -30,9 +30,9 @@ python console/docker.py up
 Add `--detach` for background mode; run `python console/docker.py down` to stop.
 Direct Compose use must set `SWARM_CODEX_HOME` and `SWARM_CONFIG_HOME` explicitly.
 
-Compose publishes only `127.0.0.1:4788` and mounts both Codex metadata and the
-SWARM config directory read-only. Docker is therefore an inspection surface;
-use the native loopback launcher for validated settings writes. Do not expose
+Compose publishes only `127.0.0.1:4788`, mounts Codex task metadata read-only,
+and gives write access only to the bounded SWARM proof directory and validated
+settings directory. Console history stays in one named volume. Do not expose
 the container port to a LAN or public host.
 
 ## Authority and privacy
@@ -42,16 +42,20 @@ the container port to a LAN or public host.
 - It reads only the state database columns needed for hierarchy, timestamps,
   model, effort, project grouping, and cumulative thread-token counts. It does
   not read message bodies, previews, rollouts, credentials, or the logs database.
+- Visual-producing lanes write immutable, content-addressed receipts with
+  `skills/swarm/scripts/swarm_proof.py`. The console validates the task scope,
+  file boundary, digest, size, extension, and file signature before adding the
+  media to the project feed. This uses no model and does not imply acceptance.
 - Project IDs sent to the browser are one-way hashes of local authorities; raw
   working directories and repository origins remain server-side.
 - `Recent` means a task was updated within two configured heartbeat windows. It
   does not prove that a model is executing.
 - Token totals are host-reported cumulative thread tokens. They are not billing,
   rate-limit, quota, or remaining-usage telemetry.
-- Native-loopback config writes are same-origin, token-gated, allowlisted,
+- Config writes are same-origin, token-gated, allowlisted,
   atomically replaced, and accepted only after the existing SWARM validator
-  passes. One prior config backup is retained beside the live file. Docker is
-  explicitly read-only because container peers are not loopback authority.
+  passes. One prior config backup is retained beside the live file. Docker
+  accepts them only through its explicit loopback bridge.
 - Feedback destinations are redacted and cannot be edited in the console.
 
 ## Visual contract

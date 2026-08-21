@@ -141,7 +141,7 @@ Python 3.11 or newer is required. Docker is optional:
 python console/docker.py up
 ```
 
-The console shows what SWARM knows; it does not invent host activity or passing proof. Native loopback mode permits validated settings writes. Docker mode is read-only.
+The console shows what SWARM knows; it does not invent host activity or passing proof. Settings writes are validated and loopback-only in both native and Docker modes. Docker keeps Codex task metadata read-only, writes only the bounded SWARM proof directory, and stores console history in its named volume.
 
 ## Other hosts
 

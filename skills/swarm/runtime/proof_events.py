@@ -122,8 +122,11 @@ def register_proof_event(
             shutil.copyfile(source_path, temporary)
             if temporary.stat().st_size != size_bytes or _digest(temporary) != digest:
                 raise ProofEventError("proof media changed while it was copied")
-            os.replace(temporary, media_path)
-            temporary = None
+            try:
+                os.link(temporary, media_path)
+            except FileExistsError:
+                if not media_path.is_file() or media_path.stat().st_size != size_bytes or _digest(media_path) != digest:
+                    raise ProofEventError("stored proof media does not match its content address")
         finally:
             if temporary is not None:
                 temporary.unlink(missing_ok=True)

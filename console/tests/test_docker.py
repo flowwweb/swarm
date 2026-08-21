@@ -41,6 +41,7 @@ class SwarmDockerTests(unittest.TestCase):
 
         expected_environment = environment.copy()
         expected_environment.setdefault("SWARM_CODEX_HOME",str(TEST_HOME / ".codex"))
+        expected_environment["SWARM_PROOF_HOME"] = str(Path(expected_environment["SWARM_CODEX_HOME"]).expanduser().resolve() / "swarm")
         selected=Path(environment.get("SWARM_CONFIG_PATH",TEST_HOME / ".agents" / "swarm" / "config.toml")).expanduser().resolve()
         expected_environment["SWARM_CONFIG_HOME"]=str(selected.parent)
         expected_environment["SWARM_CONTAINER_CONFIG_PATH"]=f"/data/swarm/{selected.name}"
@@ -94,6 +95,8 @@ class SwarmDockerTests(unittest.TestCase):
         self.assertIn('user: "${SWARM_CONTAINER_USER:-swarm}"', compose)
         self.assertIn('"127.0.0.1:4788:4788"', compose)
         self.assertIn(':/data/codex:ro"', compose)
+        self.assertIn(':/data/codex/swarm:rw"', compose)
+        self.assertIn('SWARM_PROOF_HOME', compose)
         self.assertIn(':/data/swarm:rw"', compose)
         self.assertIn("SWARM_CONSOLE_DATA_DIR: /data/swarm-console", compose)
         self.assertIn("swarm_console_state:/data/swarm-console", compose)

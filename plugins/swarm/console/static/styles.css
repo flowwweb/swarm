@@ -139,6 +139,8 @@ tr:hover td { background: rgba(84, 131, 176, .055); }
 .proof-item strong, .proof-item small { display: block; }
 .proof-item strong { color: var(--ink); font-size: 10px; }
 .proof-item small { margin-top: 4px; color: var(--faint); font-size: 9px; line-height: 1.35; }
+.proof-availability { display: inline-block; margin-bottom: 5px; color: var(--cyan); font-size: 8px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; }
+.proof-boundary { display: inline-block; margin-left: 5px; color: var(--faint); cursor: help; font-size: 9px; }
 .burn-summary { display: flex; align-items: end; justify-content: space-between; gap: 12px; padding: 16px 17px 4px; }
 .burn-summary span { display: block; color: var(--faint); font-size: 9px; }
 .burn-summary strong { display: block; margin-top: 5px; color: var(--cyan); font-family: var(--mono); font-size: 19px; letter-spacing: -.06em; }
