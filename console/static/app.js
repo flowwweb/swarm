@@ -113,7 +113,7 @@ function ctrlLabel(ctrl) {
 function projectGroups() {
   const projects = new Map((state.overview?.projects || []).map((project) => [project.id, project.name]));
   const groups = new Map((state.overview?.projects || [])
-    .filter((project) => Number(project.active_threads ?? project.active) > 0)
+    .filter((project) => Number(project.active_threads ?? project.active) > 0 && !/^https?[-_:]/i.test(String(project.name || "")))
     .map((project) => [project.id, { id: project.id, label: project.name, controllers: [], standalone: false }]));
   activeControllers().forEach((ctrl) => {
     const id = ctrl.project_id || "ctrl:" + ctrl.id;

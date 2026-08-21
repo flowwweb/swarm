@@ -30,6 +30,7 @@ function scopedFixture() {
     { id: "standalone-task", role: "doer", role_label: "TASK", artifact: "Inspect export evidence", status: "active", updated_at: "2026-08-09T00:00:00Z", controller_ids: ["standalone-ctrl"] },
   );
   overview.projects.push({ id: "project:branch", name: "Flowwweb", nodes: 2, tokens: 0, active: 2 });
+  overview.projects.push({ id: "project:browser", name: "https-mail-google-com-mail-u", nodes: 0, tokens: 0, active: 1 });
   return overview;
 }
 
@@ -84,6 +85,7 @@ try {
   assert.equal(await page.locator('[role="tab"]').count(), 5);
   assert.equal(await page.getByRole("button", { name: "All projects" }).count(), 1);
   assert.equal(await page.getByRole("button", { name: "Flowwweb" }).count(), 1);
+  assert.equal(await page.getByRole("button", { name: /https-mail/i }).count(), 0);
   assert.equal(await page.getByText("Task activity").count(), 1);
   assert.equal(await page.locator("#burn-current").textContent(), "42 / min");
   assert.ok(requests.some((request) => request.includes("/api/config")));
