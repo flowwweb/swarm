@@ -1480,7 +1480,8 @@ class Swarm:
             reorientation=f"{task_id}:feed-reoriented:{t.ctrl_feed_drift_count}:{feed_correction.id}"
         else:
             self.ctrl_feed_consumed_events.update(message.event_receipt for message in pending); self.ctrl_feed_cursor=len(self.ctrl_feed_messages)
-        return reorientation or None
+        due=self.ctrl_feed_due(Role.CTRL,task_id=task_id)
+        return reorientation or (f"{task_id}:surface-proof:{','.join(due)}" if due else None)
     def context_decision(self, *, affinity:int|None=None, bloat:bool|None=None, stale:bool|None=None, stalls:int|None=None, worker_id:str|None=None, replacement:str|None=None) -> str:
         context=self.workers[worker_id].context if worker_id else {}; affinity=context.get("affinity",affinity or 0); bloat=context.get("bloat",bloat or False); stale=context.get("stale",stale or False); stalls=context.get("stalls",stalls or 0)
         result="retire" if bloat or stale or stalls>1 or affinity==0 else "reuse"; self._record("efficiency_ledger",{"kind":"context","decision":result,"reason":"bounded_spine"})

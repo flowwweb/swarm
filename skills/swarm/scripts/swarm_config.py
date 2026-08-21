@@ -182,7 +182,7 @@ DEFAULTS: dict[str, Any] = {
         "max_parallel_tasks": 3,
         "scale_when_queue_reaches": 2,
     },
-    "monitoring": {"heartbeat_minutes": 30, "default_review_horizon_minutes": 30, "max_review_horizon_minutes": 60, "small_task_review_horizon_minutes": 15},
+    "monitoring": {"heartbeat_minutes": 30, "default_review_horizon_minutes": 30, "max_review_horizon_minutes": 60, "small_task_review_horizon_minutes": 15, "auto_health_enabled": False},
     "recovery": {
         "max_attempts": 1,
         "stall_after_updates": 2,
@@ -621,6 +621,7 @@ def validate(raw: dict[str, Any]) -> None:
     _bounded_int(monitoring, "default_review_horizon_minutes", 1, 60, "monitoring")
     _bounded_int(monitoring, "max_review_horizon_minutes", 1, 60, "monitoring")
     _bounded_int(monitoring, "small_task_review_horizon_minutes", 1, 20, "monitoring")
+    _boolean(monitoring, "auto_health_enabled", "monitoring")
     small=monitoring.get("small_task_review_horizon_minutes",15); default=monitoring.get("default_review_horizon_minutes",30); maximum=monitoring.get("max_review_horizon_minutes",60)
     if not small<=default<=maximum: raise ConfigError("monitoring review horizons must satisfy small <= default <= maximum")
     if coordination.get("ctrl_direct_horizon_minutes",20)>maximum: raise ConfigError("coordination.ctrl_direct_horizon_minutes cannot exceed monitoring maximum review horizon")

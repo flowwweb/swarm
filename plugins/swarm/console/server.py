@@ -9,12 +9,14 @@ import hashlib
 import importlib.util
 import ipaddress
 import json
+import math
 import mimetypes
 import os
 import re
 import secrets
 import shutil
 import sqlite3
+import subprocess
 import sys
 import tempfile
 import threading
@@ -27,7 +29,7 @@ from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, unquote, urlparse
 
 
 PLUGIN_ROOT = Path(__file__).resolve().parents[1]
@@ -45,6 +47,24 @@ CONSOLE_STATE_DIR_ENV = "SWARM_CONSOLE_DATA_DIR"
 CONSOLE_STATE_FILENAME = "console-state.sqlite3"
 TOKEN_SAMPLE_SECONDS = 60
 TOKEN_RETENTION_DAYS = 30
+DIAGNOSTIC_RETENTION_DAYS = 7
+HEALTH_INCIDENT_RETENTION_DAYS = 90
+HEALTH_SUSTAIN_SECONDS = 300
+HEALTH_RECOVERY_SECONDS = 600
+HEALTH_COOLDOWN_SECONDS = 900
+CONSOLE_LOG_PATH_ENV = "SWARM_CONSOLE_LOG_PATH"
+HEALTH_STATES = frozenset({"HEALTHY", "DEGRADED", "PRESSURED", "CRITICAL", "UNKNOWN"})
+HEALTH_THRESHOLDS = {
+    "cpu_degraded": 85.0,
+    "cpu_critical": 95.0,
+    "cpu_recover": 75.0,
+    "memory_degraded": 80.0,
+    "memory_critical": 90.0,
+    "memory_recover": 70.0,
+    "disk_degraded_bytes": 10 * 1024**3,
+    "disk_critical_bytes": 5 * 1024**3,
+    "disk_recover_bytes": 8 * 1024**3,
+}
 MEDIA_MAX_HASH_BYTES = 64 * 1024 * 1024
 CTRL_OVERRIDE_FIELDS: dict[str, type] = {
     "model": str,
@@ -96,6 +116,7 @@ EDITABLE_SETTINGS: dict[str, type] = {
     "review.max_parallel_tasks": int,
     "review.scale_when_queue_reaches": int,
     "monitoring.heartbeat_minutes": int,
+    "monitoring.auto_health_enabled": bool,
     "recovery.stall_after_updates": int,
     "lifecycle.pin_created_tasks": bool,
     "lifecycle.archive_completed_tasks": bool,
@@ -317,6 +338,225 @@ def _media_metadata(locator: str, supplied_digest: str = "") -> dict[str, Any]:
     return result
 
 
+class DiagnosticsCollector:
+    """Collect cheap host telemetry without reading prompts or invoking models."""
+
+    def __init__(self, codex_home: Path, console_state_path: Path, now_fn: Any = time.time):
+        self.codex_home = codex_home.resolve()
+        self.console_state_path = console_state_path.resolve()
+        self.now_fn = now_fn
+
+    def _storage_sizes(self) -> dict[str, Any]:
+        paths = {
+            "db_bytes": self.console_state_path,
+            "wal_bytes": self.console_state_path.with_name(self.console_state_path.name + "-wal"),
+            "shm_bytes": self.console_state_path.with_name(self.console_state_path.name + "-shm"),
+        }
+        log_path = Path(os.environ.get(CONSOLE_LOG_PATH_ENV, "").strip() or self.console_state_path.parent / "console.log")
+        paths["log_bytes"] = log_path
+        result = {key: 0 for key in paths}
+        result["log_path"] = str(log_path)
+        for key, path in paths.items():
+            try:
+                result[key] = int(path.stat().st_size) if path.is_file() else 0
+            except OSError:
+                result[key] = 0
+        return result
+
+    @staticmethod
+    def _docker_status() -> dict[str, Any]:
+        base = {
+            "available": False,
+            "status": "unavailable",
+            "container_count": 0,
+            "footprint_bytes": None,
+            "footprint_status": "not_collected",
+            "source": "docker_cli_read_only",
+        }
+        try:
+            result = subprocess.run(
+                ["docker", "ps", "--filter", "name=swarm-console", "--format", "{{.Names}}"],
+                capture_output=True,
+                text=True,
+                timeout=2,
+                check=False,
+            )
+        except (OSError, subprocess.SubprocessError):
+            return base
+        if result.returncode != 0:
+            base["status"] = "error"
+            return base
+        names = [line.strip() for line in result.stdout.splitlines() if line.strip()]
+        base.update({"available": True, "status": "running" if names else "available", "container_count": len(names)})
+        return base
+
+    @staticmethod
+    def _windows_resources() -> tuple[dict[str, Any], dict[str, Any]] | None:
+        """Read CPU and memory through Win32 when optional psutil is absent."""
+        if os.name != "nt":
+            return None
+        try:
+            import ctypes
+            from ctypes import wintypes
+
+            class MemoryStatus(ctypes.Structure):
+                _fields_ = [
+                    ("length", wintypes.DWORD), ("memory_load", wintypes.DWORD),
+                    ("total_physical", ctypes.c_ulonglong), ("available_physical", ctypes.c_ulonglong),
+                    ("total_page_file", ctypes.c_ulonglong), ("available_page_file", ctypes.c_ulonglong),
+                    ("total_virtual", ctypes.c_ulonglong), ("available_virtual", ctypes.c_ulonglong),
+                    ("available_extended_virtual", ctypes.c_ulonglong),
+                ]
+
+            def system_times() -> tuple[int, int, int]:
+                idle, kernel, user = wintypes.FILETIME(), wintypes.FILETIME(), wintypes.FILETIME()
+                if not ctypes.windll.kernel32.GetSystemTimes(ctypes.byref(idle), ctypes.byref(kernel), ctypes.byref(user)):
+                    raise OSError("GetSystemTimes failed")
+                value = lambda item: (int(item.dwHighDateTime) << 32) | int(item.dwLowDateTime)
+                return value(idle), value(kernel), value(user)
+
+            before = system_times()
+            time.sleep(0.05)
+            after = system_times()
+            idle_delta = max(0, after[0] - before[0])
+            total_delta = max(0, (after[1] - before[1]) + (after[2] - before[2]))
+            cpu_percent = None if not total_delta else round(max(0.0, min(100.0, 100.0 * (total_delta - idle_delta) / total_delta)), 1)
+            status = MemoryStatus()
+            status.length = ctypes.sizeof(status)
+            if not ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(status)):
+                raise OSError("GlobalMemoryStatusEx failed")
+            return (
+                {"available": cpu_percent is not None, "percent": cpu_percent, "source": "win32"},
+                {
+                    "available": True,
+                    "percent": float(status.memory_load),
+                    "used_bytes": int(status.total_physical - status.available_physical),
+                    "total_bytes": int(status.total_physical),
+                    "source": "win32",
+                },
+            )
+        except (AttributeError, OSError, TypeError, ValueError):
+            return None
+
+    def collect(self) -> dict[str, Any]:
+        sampled_at_ms = int(self.now_fn() * 1000)
+        cpu: dict[str, Any] = {"available": False, "percent": None, "source": "unavailable"}
+        memory: dict[str, Any] = {
+            "available": False,
+            "percent": None,
+            "used_bytes": None,
+            "total_bytes": None,
+            "source": "unavailable",
+        }
+        network: dict[str, Any] = {
+            "available": False,
+            "rx_bytes": None,
+            "tx_bytes": None,
+            "errors": None,
+            "source": "unavailable",
+        }
+        try:
+            import psutil  # type: ignore
+
+            cpu["percent"] = psutil.cpu_percent(interval=None)
+            cpu["available"] = cpu["percent"] is not None
+            cpu["source"] = "psutil"
+            virtual_memory = psutil.virtual_memory()
+            memory.update({
+                "available": True,
+                "percent": float(virtual_memory.percent),
+                "used_bytes": int(virtual_memory.used),
+                "total_bytes": int(virtual_memory.total),
+                "source": "psutil",
+            })
+            counters = psutil.net_io_counters()
+            network.update({
+                "available": counters is not None,
+                "rx_bytes": None if counters is None else int(counters.bytes_recv),
+                "tx_bytes": None if counters is None else int(counters.bytes_sent),
+                "errors": None if counters is None else int(counters.errin + counters.errout),
+                "source": "psutil",
+            })
+        except (ImportError, OSError, AttributeError, ValueError):
+            fallback = self._windows_resources()
+            if fallback is not None:
+                cpu, memory = fallback
+        try:
+            disk = shutil.disk_usage(self.codex_home)
+            disks = [{
+                "mount": str(self.codex_home.anchor or self.codex_home),
+                "free_bytes": int(disk.free),
+                "total_bytes": int(disk.total),
+                "percent": round((disk.used / disk.total) * 100, 2) if disk.total else None,
+                "available": True,
+            }]
+        except OSError:
+            disks = [{"mount": str(self.codex_home.anchor or self.codex_home), "available": False}]
+        return {
+            "sampled_at_ms": sampled_at_ms,
+            "cpu": cpu,
+            "memory": memory,
+            "disks": disks,
+            "docker": self._docker_status(),
+            "network": network,
+            "console_storage": self._storage_sizes(),
+        }
+
+
+def assess_health(sample: dict[str, Any]) -> dict[str, Any]:
+    """Classify a sample; this function has no I/O and no host authority."""
+    reasons: list[dict[str, Any]] = []
+    known_metric = False
+
+    def add_reason(code: str, kind: str, scope: str, severity: str, recommendation: str, constraints: list[str]) -> None:
+        reasons.append({
+            "code": code,
+            "kind": kind,
+            "scope": scope,
+            "severity": severity,
+            "request_type": "cleanup_review" if kind == "disk" else "capacity_review" if kind in {"cpu", "memory"} else "diagnostics_review",
+            "recommendation": recommendation,
+            "constraints": constraints,
+        })
+
+    cpu_percent = sample.get("cpu", {}).get("percent")
+    if isinstance(cpu_percent, (int, float)):
+        known_metric = True
+        if cpu_percent >= HEALTH_THRESHOLDS["cpu_critical"]:
+            add_reason("cpu_critical", "cpu", "host", "CRITICAL", "Review sustained CPU pressure and reduce only new SWARM scheduling concurrency.", ["Do not kill processes or change power settings."])
+        elif cpu_percent >= HEALTH_THRESHOLDS["cpu_degraded"]:
+            add_reason("cpu_degraded", "cpu", "host", "DEGRADED", "Review sustained CPU pressure and capacity before scheduling more work.", ["Do not kill processes or change power settings."])
+
+    memory_percent = sample.get("memory", {}).get("percent")
+    if isinstance(memory_percent, (int, float)):
+        known_metric = True
+        if memory_percent >= HEALTH_THRESHOLDS["memory_critical"]:
+            add_reason("memory_critical", "memory", "host", "CRITICAL", "Review sustained memory pressure and reduce only new SWARM scheduling concurrency.", ["Do not kill processes or infer cleanup targets."])
+        elif memory_percent >= HEALTH_THRESHOLDS["memory_degraded"]:
+            add_reason("memory_degraded", "memory", "host", "DEGRADED", "Review sustained memory pressure before scheduling more work.", ["Do not kill processes or infer cleanup targets."])
+
+    for disk in sample.get("disks", []):
+        free_bytes = disk.get("free_bytes")
+        if not isinstance(free_bytes, (int, float)):
+            continue
+        known_metric = True
+        scope = str(disk.get("mount") or "host")[:128]
+        if free_bytes < HEALTH_THRESHOLDS["disk_critical_bytes"]:
+            add_reason("disk_critical", "disk", scope, "CRITICAL", "Request a guarded cleanup review for exact stale or rebuildable targets.", ["No broad Docker prune.", "No user documents, dirty/current worktrees, active logs, databases, or live-process references.", "Copy-verify-remove retained artifacts and prove free space before and after."])
+        elif free_bytes < HEALTH_THRESHOLDS["disk_degraded_bytes"]:
+            add_reason("disk_degraded", "disk", scope, "PRESSURED", "Request a guarded cleanup review for exact stale or rebuildable targets.", ["No broad Docker prune.", "No user documents, dirty/current worktrees, active logs, databases, or live-process references.", "Copy-verify-remove retained artifacts and prove free space before and after."])
+
+    severity_rank = {"CRITICAL": 3, "PRESSURED": 2, "DEGRADED": 1}
+    if reasons:
+        state = max((reason["severity"] for reason in reasons), key=severity_rank.__getitem__)
+    elif known_metric:
+        state = "HEALTHY"
+    else:
+        state = "UNKNOWN"
+    digest = hashlib.sha256(json.dumps(reasons, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
+    return {"state": state, "reasons": reasons, "evidence_digest": digest}
+
+
 class ConsoleStore:
     """Small console-owned persistence layer; host state remains read-only."""
 
@@ -404,6 +644,49 @@ class ConsoleStore:
                     key TEXT PRIMARY KEY,
                     value TEXT NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS diagnostic_samples (
+                    sampled_at_ms INTEGER PRIMARY KEY,
+                    health_state TEXT NOT NULL,
+                    reasons_json TEXT NOT NULL,
+                    payload_json TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS health_incidents (
+                    incident_key TEXT PRIMARY KEY,
+                    kind TEXT NOT NULL,
+                    scope TEXT NOT NULL,
+                    severity TEXT NOT NULL,
+                    state TEXT NOT NULL,
+                    first_seen_ms INTEGER NOT NULL,
+                    last_seen_ms INTEGER NOT NULL,
+                    healthy_since_ms INTEGER,
+                    cooldown_until_ms INTEGER,
+                    request_id TEXT,
+                    updated_at_ms INTEGER NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS health_requests (
+                    request_id TEXT PRIMARY KEY,
+                    incident_key TEXT NOT NULL,
+                    dedupe_key TEXT NOT NULL,
+                    request_type TEXT NOT NULL,
+                    severity TEXT NOT NULL,
+                    scope TEXT NOT NULL,
+                    evidence_digest TEXT NOT NULL,
+                    payload_json TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    created_at_ms INTEGER NOT NULL,
+                    claimed_at_ms INTEGER,
+                    resolved_at_ms INTEGER,
+                    resolution_receipt TEXT NOT NULL DEFAULT ''
+                );
+                CREATE UNIQUE INDEX IF NOT EXISTS health_requests_open_dedupe
+                    ON health_requests(dedupe_key)
+                    WHERE status IN ('OPEN', 'CLAIMED', 'IN_PROGRESS');
+                CREATE INDEX IF NOT EXISTS diagnostic_samples_time
+                    ON diagnostic_samples(sampled_at_ms DESC);
+                CREATE INDEX IF NOT EXISTS health_incidents_state
+                    ON health_incidents(state, updated_at_ms DESC);
+                CREATE INDEX IF NOT EXISTS health_requests_status
+                    ON health_requests(status, created_at_ms DESC);
                 """
             )
             connection.commit()
@@ -462,16 +745,40 @@ class ConsoleStore:
                     str(node_by_id.get(dependency, {}).get("status")) not in {"done", "archived"}
                     for dependency in dependency_ids
                 )
+                created_at = int(node.get("created_at") or updated_at or now_ms)
+                elapsed_ms = max(0, now_ms - created_at)
+                quiet_ms = max(0, now_ms - (updated_at or created_at))
+                token_signal = max(0, int(node.get("tokens") or 0))
+                heartbeat_ms = max(1, heartbeat_minutes) * 60 * 1000
+                proof = node.get("proof_snapshot") if isinstance(node.get("proof_snapshot"), dict) else {}
+                gates = proof.get("gates") if isinstance(proof.get("gates"), list) else []
+                verified_gates = sum(1 for gate in gates if str(gate.get("status", "")).upper() == "PASS")
+                proof_ratio = verified_gates / len(gates) if gates else 0.0
+                round_to = 15 * 60 * 1000
+
+                def rounded_duration(raw_ms: float, minimum_ms: int, maximum_ms: int) -> int:
+                    bounded = max(minimum_ms, min(maximum_ms, int(raw_ms)))
+                    return max(round_to, int(round(bounded / round_to)) * round_to)
+
                 if status in {"done", "archived"}:
                     forecast_status, confidence, duration_ms = "complete", 100, 0
                 elif blocked_dependency:
-                    forecast_status, confidence, duration_ms = "blocked", 35, 180 * 60 * 1000
+                    forecast_status = "blocked"
+                    confidence = max(20, min(45, 40 - int(quiet_ms / heartbeat_ms) * 5))
+                    duration_ms = rounded_duration(2 * 60 * 60 * 1000 + quiet_ms * 0.5, 2 * 60 * 60 * 1000, 24 * 60 * 60 * 1000)
                 elif status == "active":
-                    forecast_status, confidence, duration_ms = "on_track", 80, 60 * 60 * 1000
+                    forecast_status = "on_track" if quiet_ms <= heartbeat_ms * 2 else "at_risk"
+                    confidence = max(35, min(90, 55 + (20 if quiet_ms <= heartbeat_ms else 0) + round(proof_ratio * 15)))
+                    observed_work = min(elapsed_ms, 8 * 60 * 60 * 1000) * 0.25
+                    complexity = min(4 * 60 * 60 * 1000, math.log2(token_signal + 1) * 12 * 60 * 1000)
+                    remaining_factor = max(0.25, 1.0 - min(0.75, proof_ratio))
+                    duration_ms = rounded_duration((45 * 60 * 1000 + observed_work + complexity) * remaining_factor, 30 * 60 * 1000, 8 * 60 * 60 * 1000)
                 else:
-                    forecast_status, confidence, duration_ms = "at_risk", 50, 120 * 60 * 1000
+                    forecast_status = "at_risk"
+                    confidence = max(20, min(55, 50 - int(quiet_ms / heartbeat_ms) * 5 + round(proof_ratio * 10)))
+                    duration_ms = rounded_duration(90 * 60 * 1000 + quiet_ms * 0.5, 90 * 60 * 1000, 12 * 60 * 60 * 1000)
                 signature = json.dumps(
-                    (status, updated_at, tuple(sorted(dependency_ids)), forecast_status),
+                    ("observed-signals-v2", status, updated_at, tuple(sorted(dependency_ids)), forecast_status),
                     separators=(",", ":"),
                 )
                 latest = connection.execute(
@@ -492,7 +799,7 @@ class ConsoleStore:
                         if forecast_status == "at_risk" and trigger == "heartbeat"
                         else "Observed dependency is not complete; forecast is blocked."
                         if forecast_status == "blocked"
-                        else "Forecast derived from host task freshness and observed dependencies."
+                        else "Estimate uses observed task age, activity, token change, proof progress, and dependencies."
                     )
                     connection.execute(
                         """
@@ -568,7 +875,55 @@ class ConsoleStore:
                 "SELECT * FROM proof_media WHERE " + " AND ".join(conditions) + " ORDER BY updated_at_ms DESC",
                 tuple(args),
             ).fetchall()
-        return [dict(row) for row in rows]
+        public_fields = (
+            "evidence_id", "task_id", "project_id", "kind", "caption",
+            "claim_limit", "disposition", "surface_kind", "media_type",
+            "size_bytes", "digest", "registered_at_ms", "updated_at_ms",
+        )
+        return [{field: row[field] for field in public_fields} for row in rows]
+
+    def proof_sequence(self) -> int:
+        """Return a cheap local cursor for surfaced proof feed changes."""
+        with self._lock, closing(self._connect()) as connection:
+            row = connection.execute(
+                "SELECT COALESCE(MAX(updated_at_ms), 0) sequence FROM proof_media WHERE disposition='SURFACED'"
+            ).fetchone()
+        return int(row["sequence"] or 0)
+
+    def proof_media_item(self, evidence_id: str, digest: str) -> dict[str, Any]:
+        evidence_id = _safe_metadata_text(evidence_id, "evidence_id", maximum=256)
+        digest = _safe_metadata_text(digest, "digest", maximum=64).casefold()
+        if not re.fullmatch(r"[0-9a-f]{64}", digest):
+            raise ConsoleError("proof media digest must be a SHA-256 hex digest")
+        with self._lock, closing(self._connect()) as connection:
+            row = connection.execute(
+                "SELECT * FROM proof_media WHERE evidence_id=? AND disposition='SURFACED'",
+                (evidence_id,),
+            ).fetchone()
+        if row is None or row["media_type"] not in MEDIA_TYPES or not str(row["media_type"]).startswith(("image/", "video/")):
+            raise ConsoleError("registered surfaced proof media was not found")
+        if str(row["digest"] or "").casefold() != digest:
+            raise ConsoleError("proof media digest does not match the registered evidence")
+        path = Path(str(row["locator"])).expanduser()
+        try:
+            resolved = path.resolve(strict=True)
+            stat = resolved.stat()
+        except OSError as exc:
+            raise ConsoleError("registered proof media is unavailable") from exc
+        if not resolved.is_file() or stat.st_size > MEDIA_MAX_HASH_BYTES:
+            raise ConsoleError("registered proof media exceeds the delivery guard")
+        if row["size_bytes"] is not None and int(row["size_bytes"]) != stat.st_size:
+            raise ConsoleError("registered proof media changed since registration")
+        current = _media_metadata(str(resolved))
+        if current["digest"] != digest:
+            raise ConsoleError("registered proof media digest no longer matches the file")
+        return {
+            "path": resolved,
+            "media_type": str(row["media_type"]),
+            "size_bytes": int(stat.st_size),
+            "digest": digest,
+            "evidence_id": evidence_id,
+        }
 
     def proof_snapshot(self, task_id: str) -> dict[str, Any]:
         media = self.proof_feed(task_id=task_id)
@@ -662,6 +1017,262 @@ class ConsoleStore:
             ).fetchall()
         return [{"bucket_ms": int(row["bucket_ms"]), "delta_tokens": int(row["delta_tokens"]), "source": "host_reported_cumulative_delta"} for row in rows]
 
+    def latest_diagnostics(self) -> dict[str, Any] | None:
+        with self._lock, closing(self._connect()) as connection:
+            row = connection.execute(
+                "SELECT * FROM diagnostic_samples ORDER BY sampled_at_ms DESC LIMIT 1"
+            ).fetchone()
+        if row is None:
+            return None
+        return {
+            "sampled_at_ms": int(row["sampled_at_ms"]),
+            "health_state": row["health_state"],
+            "reasons": json.loads(row["reasons_json"]),
+            "payload": json.loads(row["payload_json"]),
+        }
+
+    def diagnostics_history(self, *, limit: int = 120) -> list[dict[str, Any]]:
+        limit = max(1, min(1000, int(limit)))
+        with self._lock, closing(self._connect()) as connection:
+            rows = connection.execute(
+                "SELECT * FROM diagnostic_samples ORDER BY sampled_at_ms DESC LIMIT ?", (limit,)
+            ).fetchall()
+        return [{
+            "sampled_at_ms": int(row["sampled_at_ms"]),
+            "health_state": row["health_state"],
+            "reasons": json.loads(row["reasons_json"]),
+            "payload": json.loads(row["payload_json"]),
+        } for row in rows]
+
+    def record_diagnostics(
+        self,
+        sample: dict[str, Any],
+        *,
+        now_ms: int,
+        auto_enabled: bool,
+        sustain_seconds: int = HEALTH_SUSTAIN_SECONDS,
+        recovery_seconds: int = HEALTH_RECOVERY_SECONDS,
+        cooldown_seconds: int = HEALTH_COOLDOWN_SECONDS,
+    ) -> dict[str, Any]:
+        assessment = assess_health(sample)
+        reasons = assessment["reasons"]
+        active_keys = {
+            f"{reason['kind']}:{reason['scope']}:{reason['code']}": reason for reason in reasons
+        }
+        payload_json = json.dumps(sample, sort_keys=True, separators=(",", ":"))
+        reasons_json = json.dumps(reasons, sort_keys=True, separators=(",", ":"))
+        now_ms = int(now_ms)
+        with self._lock, closing(self._connect()) as connection:
+            connection.execute(
+                "INSERT OR REPLACE INTO diagnostic_samples(sampled_at_ms, health_state, reasons_json, payload_json) VALUES (?, ?, ?, ?)",
+                (now_ms, assessment["state"], reasons_json, payload_json),
+            )
+            connection.execute(
+                "DELETE FROM diagnostic_samples WHERE sampled_at_ms < ?",
+                (now_ms - DIAGNOSTIC_RETENTION_DAYS * 24 * 60 * 60 * 1000,),
+            )
+            request_ids: list[str] = []
+            for incident_key, reason in active_keys.items():
+                row = connection.execute(
+                    "SELECT * FROM health_incidents WHERE incident_key = ?", (incident_key,)
+                ).fetchone()
+                if row is None:
+                    first_seen_ms = now_ms
+                    state = "OBSERVING"
+                    cooldown_until_ms = None
+                    healthy_since_ms = None
+                    request_id = None
+                    connection.execute(
+                        """
+                        INSERT INTO health_incidents(
+                            incident_key, kind, scope, severity, state, first_seen_ms,
+                            last_seen_ms, healthy_since_ms, cooldown_until_ms, request_id, updated_at_ms
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (incident_key, reason["kind"], reason["scope"], reason["severity"], state,
+                         first_seen_ms, now_ms, healthy_since_ms, cooldown_until_ms, request_id, now_ms),
+                    )
+                else:
+                    first_seen_ms = int(row["first_seen_ms"])
+                    state = str(row["state"])
+                    cooldown_until_ms = row["cooldown_until_ms"]
+                    healthy_since_ms = None
+                    request_id = row["request_id"]
+                    if state in {"RECOVERED", "COOLDOWN"}:
+                        if cooldown_until_ms and now_ms < int(cooldown_until_ms):
+                            state = "COOLDOWN"
+                        else:
+                            first_seen_ms = now_ms
+                            state = "OBSERVING"
+                            cooldown_until_ms = None
+                            request_id = None
+                    connection.execute(
+                        """
+                        UPDATE health_incidents SET kind=?, scope=?, severity=?, state=?,
+                            first_seen_ms=?, last_seen_ms=?, healthy_since_ms=?, cooldown_until_ms=?,
+                            request_id=?, updated_at_ms=? WHERE incident_key=?
+                        """,
+                        (reason["kind"], reason["scope"], reason["severity"], state, first_seen_ms,
+                         now_ms, healthy_since_ms, cooldown_until_ms, request_id, now_ms, incident_key),
+                    )
+                sustained = now_ms - first_seen_ms >= max(1, int(sustain_seconds)) * 1000
+                if state == "COOLDOWN":
+                    continue
+                if auto_enabled and sustained:
+                    state = "OPEN"
+                    connection.execute(
+                        "UPDATE health_incidents SET state=?, updated_at_ms=? WHERE incident_key=?",
+                        (state, now_ms, incident_key),
+                    )
+                    open_request = connection.execute(
+                        """
+                        SELECT request_id FROM health_requests
+                        WHERE incident_key=? AND status IN ('OPEN', 'CLAIMED', 'IN_PROGRESS')
+                        ORDER BY created_at_ms DESC LIMIT 1
+                        """,
+                        (incident_key,),
+                    ).fetchone()
+                    if open_request:
+                        request_ids.append(str(open_request["request_id"]))
+                    else:
+                        request_id = f"health:{incident_key}:{first_seen_ms}"
+                        request_payload = {
+                            "incident_id": incident_key,
+                            "request_id": request_id,
+                            "request_type": reason["request_type"],
+                            "severity": reason["severity"],
+                            "scope": reason["scope"],
+                            "evidence_digest": assessment["evidence_digest"],
+                            "recommended_action": reason["recommendation"],
+                            "constraints": reason["constraints"],
+                            "expires_at_ms": now_ms + 24 * 60 * 60 * 1000,
+                            "claim_limit": "Advisory only; active CTRL must use normal host task APIs.",
+                        }
+                        connection.execute(
+                            """
+                            INSERT INTO health_requests(
+                                request_id, incident_key, dedupe_key, request_type, severity, scope,
+                                evidence_digest, payload_json, status, created_at_ms
+                            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'OPEN', ?)
+                            """,
+                            (request_id, incident_key, incident_key, reason["request_type"], reason["severity"],
+                             reason["scope"], assessment["evidence_digest"],
+                             json.dumps(request_payload, sort_keys=True, separators=(",", ":")), now_ms),
+                        )
+                        connection.execute(
+                            "UPDATE health_incidents SET request_id=?, cooldown_until_ms=?, updated_at_ms=? WHERE incident_key=?",
+                            (request_id, now_ms + max(1, int(cooldown_seconds)) * 1000, now_ms, incident_key),
+                        )
+                        request_ids.append(request_id)
+
+            current_keys = set(active_keys)
+            incident_rows = connection.execute("SELECT * FROM health_incidents").fetchall()
+            for row in incident_rows:
+                incident_key = str(row["incident_key"])
+                if incident_key in current_keys or row["state"] in {"RECOVERED", "COOLDOWN"}:
+                    continue
+                healthy_since_ms = row["healthy_since_ms"] or now_ms
+                state = str(row["state"])
+                if now_ms - int(healthy_since_ms) >= max(1, int(recovery_seconds)) * 1000:
+                    state = "RECOVERED"
+                    connection.execute(
+                        """
+                        UPDATE health_requests SET status='RECOVERED', resolved_at_ms=?, resolution_receipt=?
+                        WHERE incident_key=? AND status IN ('OPEN', 'CLAIMED', 'IN_PROGRESS')
+                        """,
+                        (now_ms, "auto-health:healthy-window", incident_key),
+                    )
+                    cooldown_until_ms = now_ms + max(1, int(cooldown_seconds)) * 1000
+                else:
+                    state = "RECOVERING"
+                    cooldown_until_ms = row["cooldown_until_ms"]
+                connection.execute(
+                    """
+                    UPDATE health_incidents SET state=?, healthy_since_ms=?, cooldown_until_ms=?,
+                        updated_at_ms=? WHERE incident_key=?
+                    """,
+                    (state, int(healthy_since_ms), cooldown_until_ms, now_ms, incident_key),
+                )
+            connection.execute(
+                "DELETE FROM health_incidents WHERE updated_at_ms < ? AND state='RECOVERED'",
+                (now_ms - HEALTH_INCIDENT_RETENTION_DAYS * 24 * 60 * 60 * 1000,),
+            )
+            connection.execute(
+                "DELETE FROM health_requests WHERE created_at_ms < ? AND status IN ('RESOLVED', 'REJECTED', 'RECOVERED')",
+                (now_ms - HEALTH_INCIDENT_RETENTION_DAYS * 24 * 60 * 60 * 1000,),
+            )
+            connection.commit()
+        return {
+            "sampled_at_ms": now_ms,
+            "state": assessment["state"],
+            "reasons": reasons,
+            "evidence_digest": assessment["evidence_digest"],
+            "request_ids": sorted(set(request_ids)),
+            "auto_enabled": bool(auto_enabled),
+        }
+
+    def health_incidents(self, *, state: str | None = None) -> list[dict[str, Any]]:
+        allowed = {"OBSERVING", "OPEN", "CLAIMED", "IN_PROGRESS", "RECOVERING", "COOLDOWN", "RECOVERED"}
+        if state and state not in allowed:
+            raise ConsoleError("invalid health incident state")
+        query = "SELECT * FROM health_incidents"
+        args: tuple[Any, ...] = ()
+        if state:
+            query += " WHERE state = ?"
+            args = (state,)
+        query += " ORDER BY updated_at_ms DESC"
+        with self._lock, closing(self._connect()) as connection:
+            rows = connection.execute(query, args).fetchall()
+        return [dict(row) for row in rows]
+
+    def health_requests(self, *, status: str | None = None) -> list[dict[str, Any]]:
+        allowed = {"OPEN", "CLAIMED", "IN_PROGRESS", "RESOLVED", "REJECTED", "RECOVERED"}
+        if status and status not in allowed:
+            raise ConsoleError("invalid health request status")
+        query = "SELECT * FROM health_requests"
+        args: tuple[Any, ...] = ()
+        if status:
+            query += " WHERE status = ?"
+            args = (status,)
+        query += " ORDER BY created_at_ms DESC"
+        with self._lock, closing(self._connect()) as connection:
+            rows = connection.execute(query, args).fetchall()
+        return [{**dict(row), "payload": json.loads(row["payload_json"])} for row in rows]
+
+    def claim_health_request(self, request_id: str, *, now_ms: int) -> dict[str, Any]:
+        request_id = _safe_metadata_text(request_id, "request_id", maximum=512)
+        with self._lock, closing(self._connect()) as connection:
+            cursor = connection.execute(
+                "UPDATE health_requests SET status='CLAIMED', claimed_at_ms=? WHERE request_id=? AND status='OPEN'",
+                (int(now_ms), request_id),
+            )
+            row = connection.execute("SELECT * FROM health_requests WHERE request_id=?", (request_id,)).fetchone()
+            if row is None:
+                raise ConsoleError("health request not found")
+            if cursor.rowcount != 1:
+                raise ConsoleConflict(f"health request is already {row['status'].lower()}")
+            connection.commit()
+        return {**dict(row), "payload": json.loads(row["payload_json"])}
+
+    def resolve_health_request(self, request_id: str, *, outcome: str, receipt: str, now_ms: int) -> dict[str, Any]:
+        request_id = _safe_metadata_text(request_id, "request_id", maximum=512)
+        outcome = _safe_metadata_text(outcome, "outcome", maximum=16).upper()
+        if outcome not in {"RESOLVED", "REJECTED"}:
+            raise ConsoleError("health request outcome must be RESOLVED or REJECTED")
+        receipt = _safe_metadata_text(receipt or "console:manual-resolution", "receipt", maximum=512)
+        with self._lock, closing(self._connect()) as connection:
+            cursor = connection.execute(
+                "UPDATE health_requests SET status=?, resolved_at_ms=?, resolution_receipt=? WHERE request_id=? AND status IN ('OPEN', 'CLAIMED', 'IN_PROGRESS')",
+                (outcome, int(now_ms), receipt, request_id),
+            )
+            row = connection.execute("SELECT * FROM health_requests WHERE request_id=?", (request_id,)).fetchone()
+            if row is None:
+                raise ConsoleError("health request not found")
+            if cursor.rowcount != 1:
+                raise ConsoleConflict(f"health request is already {row['status'].lower()}")
+            connection.commit()
+        return {**dict(row), "payload": json.loads(row["payload_json"])}
+
     def get_ctrl_override(self, ctrl_id: str) -> dict[str, Any]:
         with self._lock, closing(self._connect()) as connection:
             row = connection.execute("SELECT * FROM ctrl_overrides WHERE ctrl_id = ?", (ctrl_id,)).fetchone()
@@ -709,7 +1320,10 @@ class ConsoleStore:
         with self._lock, closing(self._connect()) as connection:
             before = self.storage_stats()
             deleted = {}
-            for table in ("token_samples", "token_cursors", "eta_forecasts", "proof_media", "store_metadata"):
+            for table in (
+                "token_samples", "token_cursors", "eta_forecasts", "proof_media", "store_metadata",
+                "diagnostic_samples", "health_incidents", "health_requests",
+            ):
                 deleted[table] = int(connection.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0])
                 connection.execute(f"DELETE FROM {table}")
             connection.commit()
@@ -730,9 +1344,19 @@ class ConsoleStore:
         with self._lock, closing(self._connect()) as connection:
             counts = {
                 table: int(connection.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0])
-                for table in ("token_samples", "eta_forecasts", "proof_media", "ctrl_overrides")
+                for table in (
+                    "token_samples", "eta_forecasts", "proof_media", "ctrl_overrides",
+                    "diagnostic_samples", "health_incidents", "health_requests",
+                )
             }
-        return {"path": str(self.path), "bytes": size, "retention_days": TOKEN_RETENTION_DAYS, "counts": counts}
+        return {
+            "path": str(self.path),
+            "bytes": size,
+            "retention_days": TOKEN_RETENTION_DAYS,
+            "diagnostic_retention_days": DIAGNOSTIC_RETENTION_DAYS,
+            "health_incident_retention_days": HEALTH_INCIDENT_RETENTION_DAYS,
+            "counts": counts,
+        }
 
 
 class ConsoleConflict(ConsoleError):
@@ -742,6 +1366,10 @@ class ConsoleConflict(ConsoleError):
 def state_database(codex_home: Path) -> Path:
     candidates = (codex_home / "state_5.sqlite", codex_home / "sqlite" / "state_5.sqlite")
     return next((path for path in candidates if path.exists()), candidates[0])
+
+
+def goals_database(codex_home: Path) -> Path:
+    return codex_home / "goals_1.sqlite"
 
 
 def _readonly_connection(path: Path) -> sqlite3.Connection:
@@ -754,10 +1382,34 @@ def _readonly_connection(path: Path) -> sqlite3.Connection:
     return connection
 
 
+def active_goal_thread_ids(codex_home: Path, *, observed_after_ms: int) -> set[str]:
+    database = goals_database(codex_home)
+    if not database.is_file():
+        return set()
+    try:
+        with closing(_readonly_connection(database)) as connection:
+            return {
+                str(row["thread_id"])
+                for row in connection.execute(
+                    "SELECT thread_id FROM thread_goals WHERE status='active' AND updated_at_ms>=?",
+                    (observed_after_ms,),
+                ).fetchall()
+            }
+    except (sqlite3.Error, OSError, ConsoleError):
+        return set()
+
+
 def observation_fingerprint(codex_home: Path, config_path: Path) -> tuple[tuple[str, int, int], ...]:
     """Return only cheap local metadata needed to invalidate a console snapshot."""
     database = state_database(codex_home)
-    paths = (database, database.with_name(f"{database.name}-wal"), config_path)
+    goals = goals_database(codex_home)
+    paths = (
+        database,
+        database.with_name(f"{database.name}-wal"),
+        goals,
+        goals.with_name(f"{goals.name}-wal"),
+        config_path,
+    )
     fingerprint: list[tuple[str, int, int]] = []
     for path in paths:
         try:
@@ -903,10 +1555,10 @@ def _generic_agent_role(
     path_tokens = [token for token in path_tokens if not re.fullmatch(r"[0-9a-f]{6,}", token, re.I)]
     if len(path_tokens) > 2:
         path_tokens = [path_tokens[0], path_tokens[-1]]
-    artifact = " ".join(path_tokens) or "Task"
+    artifact = " ".join(path_tokens) or "Assigned task"
     artifact = re.sub(r"(?i)\bgate\s*(\d+)\b", r"Gate \1", artifact).strip().title()[:48]
     if controller:
-        artifact = "Current SWARM"
+        _, artifact = _project_identity(row)
     worker = re.sub(r"[^A-Za-z0-9 _-]", "", nickname).strip()[:48] if "\n" not in nickname else ""
     role = "ctrl" if controller else "doer"
     role_label = "CTRL" if controller else "AGENT"
@@ -945,12 +1597,15 @@ def build_overview(codex_home: Path, config_path: Path) -> dict[str, Any]:
         heartbeat * OBSERVATION_HEARTBEAT_WINDOWS * 60_000,
     )
     observed_after_ms = now_ms - observation_window_ms
+    active_goal_ids = active_goal_thread_ids(codex_home, observed_after_ms=observed_after_ms)
     with closing(_readonly_connection(database)) as connection:
         thread_columns = {
             str(row["name"])
             for row in connection.execute("PRAGMA table_info(threads)").fetchall()
         }
         agent_path_projection = "agent_path" if "agent_path" in thread_columns else "'' AS agent_path"
+        goal_placeholders = ",".join("?" for _ in active_goal_ids)
+        goal_clause = f" OR id IN ({goal_placeholders})" if active_goal_ids else ""
         rows = connection.execute(
             f"""
             SELECT id, title, cwd, created_at, updated_at, created_at_ms, updated_at_ms,
@@ -962,9 +1617,10 @@ def build_overview(codex_home: Path, config_path: Path) -> dict[str, Any]:
               AND (
                 updated_at_ms >= ?
                 OR (updated_at_ms IS NULL AND updated_at >= ?)
+                {goal_clause}
               )
             """,
-            (observed_after_ms, observed_after_ms // 1000),
+            (observed_after_ms, observed_after_ms // 1000, *sorted(active_goal_ids)),
         ).fetchall()
         edge_rows = connection.execute(
             """
@@ -985,6 +1641,24 @@ def build_overview(codex_home: Path, config_path: Path) -> dict[str, Any]:
     }
     parent_by_child = {edge["child_thread_id"]: edge["parent_thread_id"] for edge in edge_rows}
     edge_status = {edge["child_thread_id"]: edge["status"] for edge in edge_rows}
+    host_projects: dict[str, dict[str, Any]] = {}
+    for row in all_rows.values():
+        project_key, project_name = _project_identity(row)
+        project = host_projects.setdefault(
+            project_key,
+            {
+                "id": project_key,
+                "name": project_name,
+                "goal_label": project_name,
+                "label_source": "repository_origin" if str(row["git_origin_url"] or "").strip() else "working_directory",
+                "observed_threads": 0,
+                "active_threads": 0,
+                "updated_at": 0,
+            },
+        )
+        project["observed_threads"] += 1
+        project["active_threads"] += _status(row, edge_status.get(row["id"]), heartbeat, now_ms) == "active"
+        project["updated_at"] = max(project["updated_at"], _epoch_ms(row["updated_at_ms"], row["updated_at"]))
     raw_children: dict[str, list[str]] = {}
     for edge in edge_rows:
         raw_children.setdefault(edge["parent_thread_id"], []).append(edge["child_thread_id"])
@@ -1004,9 +1678,9 @@ def build_overview(codex_home: Path, config_path: Path) -> dict[str, Any]:
         for parent, child_ids in raw_children.items()
         if parent in all_rows
         and parent not in parent_by_child
+        and (parent not in parsed_titles or parsed_titles[parent]["role"] == "ctrl")
         and any(
             child in fresh_ids
-            and str(all_rows[child]["agent_path"] or "").replace("\\", "/").startswith("/root/")
             for child in child_ids
             if child in all_rows
         )
@@ -1016,7 +1690,7 @@ def build_overview(codex_home: Path, config_path: Path) -> dict[str, Any]:
         thread_id
         for thread_id in recent_parsed_ids
         if parsed_titles[thread_id]["role"] == "ctrl"
-    }.union(root_candidate_ids.intersection(recent_ids))
+    }.union(root_candidate_ids.intersection(recent_ids)).union(active_goal_ids.intersection(all_rows))
     descendant_ids: set[str] = set()
     traversed_ids: set[str] = set(controller_seed_ids)
     queue = list(controller_seed_ids)
@@ -1026,12 +1700,8 @@ def build_overview(codex_home: Path, config_path: Path) -> dict[str, Any]:
             if child in traversed_ids:
                 continue
             traversed_ids.add(child)
-            child_path = (
-                str(all_rows[child]["agent_path"] or "").replace("\\", "/")
-                if child in all_rows else ""
-            )
             if child in recent_ids and (
-                child in parsed_titles or (child in fresh_ids and child_path.startswith("/root/"))
+                child in parsed_titles or child in fresh_ids
             ):
                 descendant_ids.add(child)
             queue.append(child)
@@ -1077,14 +1747,18 @@ def build_overview(codex_home: Path, config_path: Path) -> dict[str, Any]:
                 connected_ids.add(child)
                 queue.append(child)
     included_ids.intersection_update(connected_ids)
-    parsed = {
-        thread_id: parsed_titles.get(thread_id) or _generic_agent_role(
-            all_rows[thread_id],
-            config["role_icons"],
-            controller=thread_id in root_candidate_ids,
+    parsed: dict[str, dict[str, str]] = {}
+    for thread_id in included_ids:
+        observed_role = parsed_titles.get(thread_id)
+        if thread_id in controller_seed_ids and (
+            observed_role is None or observed_role["role"] != "ctrl"
+        ):
+            observed_role = _generic_agent_role(
+                all_rows[thread_id], config["role_icons"], controller=True
+            )
+        parsed[thread_id] = observed_role or _generic_agent_role(
+            all_rows[thread_id], config["role_icons"], controller=False
         )
-        for thread_id in included_ids
-    }
 
     nodes: dict[str, dict[str, Any]] = {}
     projects: dict[str, dict[str, Any]] = {}
@@ -1103,8 +1777,18 @@ def build_overview(codex_home: Path, config_path: Path) -> dict[str, Any]:
         updated_ms = _epoch_ms(row["updated_at_ms"], row["updated_at"])
         project = projects.setdefault(
             project_key,
-            {"id": project_key, "name": project_name, "nodes": 0, "tokens": 0, "active": 0},
+            {
+                "id": project_key,
+                "name": project_name,
+                "goal_label": project_name,
+                "label_source": "repository_origin" if str(row["git_origin_url"] or "").strip() else "working_directory",
+                "nodes": 0,
+                "tokens": 0,
+                "active": 0,
+            },
         )
+        if role["role"] == "ctrl" and project["label_source"] == "working_directory":
+            project["goal_label"] = role["artifact"] or project["name"]
         status = _status(row, edge_status.get(thread_id), heartbeat, now_ms)
         node = {
             "id": thread_id,
@@ -1159,6 +1843,23 @@ def build_overview(codex_home: Path, config_path: Path) -> dict[str, Any]:
         project["active"] -= node["status"] == "active"
         if project["nodes"] == 0:
             projects.pop(node["project_id"])
+
+    for project_key, inventory in host_projects.items():
+        project = projects.setdefault(
+            project_key,
+            {
+                "id": inventory["id"],
+                "name": inventory["name"],
+                "goal_label": inventory["goal_label"],
+                "label_source": inventory["label_source"],
+                "nodes": 0,
+                "tokens": 0,
+                "active": 0,
+            },
+        )
+        project["observed_threads"] = inventory["observed_threads"]
+        project["active_threads"] = inventory["active_threads"]
+        project["updated_at"] = inventory["updated_at"]
 
     incoming = {link["target"] for link in links}
     roots = [node_id for node_id in nodes if node_id not in incoming]
@@ -1231,7 +1932,7 @@ def build_overview(codex_home: Path, config_path: Path) -> dict[str, Any]:
         "links": links,
         "roots": roots,
         "controllers": sorted(controllers, key=lambda item: (-item["updated_at"], -item["nodes"], item["artifact"])),
-        "projects": sorted(projects.values(), key=lambda item: (-item["active"], item["name"])),
+        "projects": sorted(projects.values(), key=lambda item: (-item["active_threads"], -item["updated_at"], item["name"])),
         "analytics": {
             "swarms": len(roots),
             "tasks": sum(1 for node in nodes.values() if not node["virtual"]),
@@ -1246,6 +1947,8 @@ def build_overview(codex_home: Path, config_path: Path) -> dict[str, Any]:
             "Controller scopes are observed host descendants, not the authoritative runtime workflow graph.",
             "Proof plans appear only from validated runtime snapshots; absent snapshots stay unavailable and never inherit host task status.",
             "Only unarchived host tasks updated within the current observation window are shown.",
+            "Recent active durable goals are read by thread ID only to identify CTRL scopes; objective text is never read or surfaced.",
+            "Project navigation includes active observed repositories even when no authoritative CTRL scope is available; those projects remain project-level only.",
             "Unformatted delegated lanes use the existing active-freshness boundary; older lanes are counted, not expanded.",
             "Older descendant lanes are omitted from the graph and counted on their CTRL scope.",
             "Visible-tab refreshes reuse the local snapshot until the host database, its WAL, or config changes.",
@@ -1279,6 +1982,7 @@ class App:
         self.codex_home = codex_home.resolve()
         self.config_path = config_path.resolve()
         self.store = ConsoleStore(state_path or console_state_path(self.codex_home, self.config_path))
+        self.diagnostics_collector = DiagnosticsCollector(self.codex_home, self.store.path)
         self.token = secrets.token_urlsafe(24)
         self.write_lock = threading.Lock()
         self.overview_lock = threading.RLock()
@@ -1305,8 +2009,7 @@ class App:
             self._overview = overview
             return overview
 
-    @staticmethod
-    def _project_view(overview: dict[str, Any], project_id: str | None) -> dict[str, Any]:
+    def _project_view(self, overview: dict[str, Any], project_id: str | None) -> dict[str, Any]:
         if not project_id or project_id.casefold() in {"all", "all-projects"}:
             return overview
         view = copy.deepcopy(overview)
@@ -1331,10 +2034,63 @@ class App:
             "tasks": sum(not node.get("virtual") for node in nodes),
             "tokens": sum(int(node.get("tokens") or 0) for node in nodes if not node.get("virtual")),
             "status": dict(Counter(node["status"] for node in nodes if not node.get("virtual"))),
-            "models": dict(Counter(node["model"] for node in nodes if not node.get("virtual") and node["model"] != "unknown")),
-            "roles": dict(Counter(node["role"] for node in nodes if not node.get("virtual"))),
+            "models": dict(Counter(
+                node.get("model")
+                for node in nodes
+                if not node.get("virtual") and node.get("model") not in {None, "", "unknown"}
+            )),
+            "roles": dict(Counter(
+                node.get("role", "unknown") for node in nodes if not node.get("virtual")
+            )),
         }
+        history = self.store.token_history(project_id=project_id)
+        view["token_history"] = history
+        view["analytics"]["burn_rate"] = {
+            "tokens_per_minute": history[-1]["delta_tokens"] if history else 0,
+            "history": history,
+            "source": "host_reported_cumulative_delta",
+            "label": "Host-reported tokens; not billing.",
+        }
+        view["navigation"] = App._navigation_payload(view)
         return view
+
+    @staticmethod
+    def _navigation_payload(view: dict[str, Any]) -> dict[str, Any]:
+        controllers = [
+            {
+                "id": controller["id"],
+                "project_id": controller.get("project_id", ""),
+                "title": controller.get("title", "CTRL"),
+                "status": controller.get("status", "unknown"),
+                "updated_at": controller.get("updated_at"),
+            }
+            for controller in view.get("controllers", [])
+        ]
+        active_controllers = [controller for controller in controllers if controller["status"] == "active"]
+        projects = []
+        for project in view.get("projects", []):
+            project_id = str(project.get("id", ""))
+            project_controllers = [controller for controller in controllers if controller["project_id"] == project_id]
+            active_ids = [controller["id"] for controller in project_controllers if controller["status"] == "active"]
+            projects.append({
+                "id": project_id,
+                "name": project.get("name", project_id),
+                "goal_label": project.get("goal_label", project.get("name", project_id)),
+                "label_source": project.get("label_source", "unknown"),
+                "active_ctrl_id": active_ids[0] if active_ids else None,
+                "ctrl_ids": [controller["id"] for controller in project_controllers],
+                "task_count": sum(
+                    1 for node in view.get("nodes", [])
+                    if node.get("project_id") == project_id and not node.get("virtual")
+                ),
+            })
+        return {
+            "active_ctrl_id": active_controllers[0]["id"] if active_controllers else None,
+            "active_ctrl_ids": [controller["id"] for controller in active_controllers],
+            "controllers": controllers,
+            "projects": projects,
+            "claim_limit": "Observed host CTRLs only; this is navigation, not runtime authority.",
+        }
 
     def _decorate_overview(self, base: dict[str, Any]) -> dict[str, Any]:
         view = copy.deepcopy(base)
@@ -1351,6 +2107,7 @@ class App:
             "source": "host_reported_cumulative_delta",
             "label": "Host-reported tokens; not billing.",
         }
+        view["navigation"] = self._navigation_payload(view)
         return view
 
     def overview(self, project_id: str | None = None) -> dict[str, Any]:
@@ -1376,6 +2133,16 @@ class App:
             trigger=trigger,
             heartbeat_minutes=heartbeat_minutes,
         )
+        try:
+            sample = self.diagnostics_collector.collect()
+            self.store.record_diagnostics(
+                sample,
+                now_ms=int(sample["sampled_at_ms"]),
+                auto_enabled=self._auto_health_enabled(),
+            )
+        except (ConsoleError, OSError, sqlite3.Error, ValueError, TypeError):
+            # Diagnostics are advisory and must never make host observation fail.
+            pass
         self._last_observed_fingerprint = observation_fingerprint(self.codex_home, self.config_path)
         with self.overview_lock:
             self._store_generation += 1
@@ -1415,6 +2182,12 @@ class App:
     def proof_feed(self, *, project_id: str | None = None, task_id: str | None = None) -> list[dict[str, Any]]:
         return self.store.proof_feed(project_id=project_id, task_id=task_id)
 
+    def proof_media_item(self, evidence_id: str, digest: str) -> dict[str, Any]:
+        return self.store.proof_media_item(evidence_id, digest)
+
+    def proof_sequence(self) -> int:
+        return self.store.proof_sequence()
+
     def register_proof(self, payload: dict[str, Any]) -> dict[str, Any]:
         result = self.store.record_proof_media(payload, now_ms=int(time.time() * 1000))
         try:
@@ -1435,6 +2208,7 @@ class App:
             config_valid = True
         except ConsoleError:
             config_valid = False
+        latest = self.store.latest_diagnostics()
         return {
             "ok": True,
             "service": "swarm-console",
@@ -1445,9 +2219,70 @@ class App:
                 "bytes": stats["bytes"],
                 "retention_days": stats["retention_days"],
             },
+            "latest": latest,
+            "health": {
+                "auto_enabled": self._auto_health_enabled(),
+                "incidents": self.store.health_incidents(),
+                "open_requests": self.store.health_requests(status="OPEN"),
+            },
             "usage_consumed": False,
             "usage_source": "Console diagnostics does not collect model usage.",
         }
+
+    def _auto_health_enabled(self) -> bool:
+        try:
+            _, effective, _ = load_config(self.config_path)
+            return bool(effective.get("monitoring", {}).get("auto_health_enabled", False))
+        except ConsoleError:
+            return False
+
+    def diagnostics_history(self, limit: int = 120) -> list[dict[str, Any]]:
+        return self.store.diagnostics_history(limit=limit)
+
+    def health_incidents(self, state: str | None = None) -> list[dict[str, Any]]:
+        return self.store.health_incidents(state=state)
+
+    def health_requests(self, status: str | None = None) -> list[dict[str, Any]]:
+        return self.store.health_requests(status=status)
+
+    def health_settings(self) -> dict[str, Any]:
+        return {
+            "enabled": self._auto_health_enabled(),
+            "default": False,
+            "thresholds": {
+                "cpu_degraded_percent": HEALTH_THRESHOLDS["cpu_degraded"],
+                "cpu_critical_percent": HEALTH_THRESHOLDS["cpu_critical"],
+                "memory_degraded_percent": HEALTH_THRESHOLDS["memory_degraded"],
+                "memory_critical_percent": HEALTH_THRESHOLDS["memory_critical"],
+                "disk_degraded_free_bytes": HEALTH_THRESHOLDS["disk_degraded_bytes"],
+                "disk_critical_free_bytes": HEALTH_THRESHOLDS["disk_critical_bytes"],
+                "sustain_seconds": HEALTH_SUSTAIN_SECONDS,
+                "recovery_seconds": HEALTH_RECOVERY_SECONDS,
+                "cooldown_seconds": HEALTH_COOLDOWN_SECONDS,
+            },
+            "claim_limit": "Auto Health creates advisory requests only; active CTRL owns task creation through host APIs.",
+        }
+
+    def update_health_settings(self, enabled: Any) -> dict[str, Any]:
+        if not isinstance(enabled, bool):
+            raise ConsoleError("enabled must be a boolean")
+        with self.write_lock:
+            result = update_config(self.config_path, {"monitoring.auto_health_enabled": enabled})
+        with self.overview_lock:
+            self._overview_fingerprint = None
+            self._view_fingerprint = None
+        return {"enabled": enabled, "config": result}
+
+    def claim_health_request(self, request_id: str) -> dict[str, Any]:
+        return self.store.claim_health_request(request_id, now_ms=int(time.time() * 1000))
+
+    def resolve_health_request(self, request_id: str, outcome: str, receipt: str) -> dict[str, Any]:
+        return self.store.resolve_health_request(
+            request_id,
+            outcome=outcome,
+            receipt=receipt,
+            now_ms=int(time.time() * 1000),
+        )
 
     def _ctrl_context(self, ctrl_id: str) -> tuple[Any, dict[str, Any], dict[str, Any]]:
         ctrl_id = _safe_metadata_text(ctrl_id, "ctrl_id", maximum=256)
@@ -1609,6 +2444,19 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def _registered_media(self, item: dict[str, Any]) -> None:
+        path = item["path"]
+        with path.open("rb") as stream:
+            self.send_response(HTTPStatus.OK)
+            self.send_header("Content-Type", item["media_type"])
+            self.send_header("Content-Length", str(item["size_bytes"]))
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("X-Content-Type-Options", "nosniff")
+            self.send_header("Content-Security-Policy", "default-src 'none'; frame-ancestors 'none'")
+            self.end_headers()
+            for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                self.wfile.write(chunk)
+
     def _error(self, status: int, message: str) -> None:
         self._json(status, {"ok": False, "error": message})
 
@@ -1690,17 +2538,49 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/api/proof-feed":
                 self._json(
                     HTTPStatus.OK,
-                    {"ok": True, "items": self.server.app.proof_feed(
+                    {"ok": True, "sequence": self.server.app.proof_sequence(), "items": self.server.app.proof_feed(
                         project_id=query.get("project_id"),
                         task_id=query.get("task_id"),
                     )},
                 )
+                return
+            if path.startswith("/api/proof-media/"):
+                if self.headers.get("Origin") and not self._same_origin():
+                    self._error(HTTPStatus.FORBIDDEN, "same-origin proof media request required")
+                    return
+                evidence_id = unquote(path[len("/api/proof-media/") :]).strip("/")
+                item = self.server.app.proof_media_item(evidence_id, query.get("digest", ""))
+                self._registered_media(item)
                 return
             if path == "/api/storage":
                 self._json(HTTPStatus.OK, {"ok": True, **self.server.app.storage()})
                 return
             if path == "/api/diagnostics":
                 self._json(HTTPStatus.OK, self.server.app.diagnostics())
+                return
+            if path == "/api/diagnostics/history":
+                self._json(HTTPStatus.OK, {
+                    "ok": True,
+                    "items": self.server.app.diagnostics_history(int(query.get("limit", "120"))),
+                    "usage_consumed": False,
+                })
+                return
+            if path == "/api/health/incidents":
+                self._json(HTTPStatus.OK, {
+                    "ok": True,
+                    "items": self.server.app.health_incidents(query.get("state")),
+                    "usage_consumed": False,
+                })
+                return
+            if path == "/api/health/requests":
+                self._json(HTTPStatus.OK, {
+                    "ok": True,
+                    "items": self.server.app.health_requests(query.get("status")),
+                    "usage_consumed": False,
+                })
+                return
+            if path == "/api/health/settings":
+                self._json(HTTPStatus.OK, {"ok": True, **self.server.app.health_settings()})
                 return
             if path == "/api/ctrl-settings":
                 ctrl_id = query.get("ctrl_id", "")
@@ -1767,7 +2647,7 @@ class Handler(BaseHTTPRequestHandler):
         path = urlparse(self.path).path
         if path == "/api/presence":
             self.server.app.mark_presence()
-            self._json(HTTPStatus.OK, {"ok": True})
+            self._json(HTTPStatus.OK, {"ok": True, "proof_sequence": self.server.app.proof_sequence()})
             return
         if path == "/api/launch-claim":
             self._json(HTTPStatus.OK, self.server.app.claim_portal_open())
@@ -1785,6 +2665,24 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/api/evidence":
                 result = self.server.app.register_proof(self._payload())
                 self._json(HTTPStatus.OK, {"ok": True, "proof": result})
+                return
+            if path == "/api/health/settings":
+                payload = self._payload()
+                self._json(HTTPStatus.OK, {"ok": True, **self.server.app.update_health_settings(payload.get("enabled"))})
+                return
+            if path.startswith("/api/health/requests/") and path.endswith("/claim"):
+                request_id = path[len("/api/health/requests/") : -len("/claim")].strip("/")
+                self._json(HTTPStatus.OK, {"ok": True, **self.server.app.claim_health_request(request_id)})
+                return
+            if path.startswith("/api/health/requests/") and path.endswith("/resolve"):
+                request_id = path[len("/api/health/requests/") : -len("/resolve")].strip("/")
+                payload = self._payload()
+                self._json(HTTPStatus.OK, {
+                    "ok": True,
+                    **self.server.app.resolve_health_request(
+                        request_id, payload.get("outcome", ""), payload.get("receipt", "")
+                    ),
+                })
                 return
             if path == "/api/ctrl-settings":
                 payload = self._payload()

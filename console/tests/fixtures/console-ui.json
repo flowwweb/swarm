@@ -9,7 +9,7 @@
   "config": {
     "exists": true,
     "path": "fixture/config.toml",
-    "editable": ["execution.usage_saver", "console.open_on_start", "role_icons.enabled", "role_icons.ctrl"],
+    "editable": ["execution.usage_saver", "console.open_on_start", "boost.spark_enabled", "boost.spark_model", "boost.spark_reasoning", "role_icons.enabled", "role_icons.ctrl"],
     "settings": {
       "portfolio": {
         "max_active_tasks": 4,
@@ -50,7 +50,10 @@
         "stall_after_updates": 2
       },
       "boost": {
-        "enabled": true
+        "enabled": true,
+        "spark_enabled": false,
+        "spark_model": "gpt-5.3-codex-spark",
+        "spark_reasoning": "xhigh"
       },
       "lifecycle": {
         "pin_created_tasks": false,
@@ -101,10 +104,17 @@
       "tokens": 1000,
       "status": {"active":3,"quiet":1,"done":1},
       "models": {"gpt-5.6-sol":1,"gpt-5.6-terra":1,"gpt-5.6-luna":3},
-      "roles": {"ctrl":1,"lead":1,"doer":3}
+      "roles": {"ctrl":1,"lead":1,"doer":3},
+      "burn_rate": {"tokens_per_minute":42,"history":[{"bucket_ms":1712550000000,"delta_tokens":28},{"bucket_ms":1712550060000,"delta_tokens":42}]}
     },
     "claim_limits": ["Fixture data only."],
     "performance": {"snapshot_ms":1.2,"data_bytes":2300,"refresh_seconds":30,"budget":{"snapshot_ms":50,"data_bytes":262144}},
     "source": "fixture"
-  }
+  },
+  "proofFeed": {"ok":true,"items":[{"task_id":"ctrl","caption":"Local browser proof","claim_limit":"Local browser proof only."}]},
+  "diagnostics": {"ok":true,"config_valid":true,"storage":{"bytes":4096},"latest":{"payload":{"health_state":"HEALTHY"}},"health":{"incidents":[],"open_requests":[]},"usage_consumed":false},
+  "diagnosticHistory": {"ok":true,"items":[],"usage_consumed":false},
+  "healthSettings": {"ok":true,"enabled":false,"default":false,"thresholds":{},"claim_limit":"Auto Health creates advisory requests only."},
+  "storage": {"ok":true,"bytes":4096,"retention_days":14},
+  "ctrlSettings": {"ok":true,"ctrl_id":"ctrl","revision":0,"customized":false,"effective":{"model":"gpt-5.6-sol","reasoning":"xhigh"}}
 }

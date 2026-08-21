@@ -276,6 +276,7 @@ scale_when_queue_reaches = 2
 # returns to the watched owner; an owner-integrity alert bypasses that owner. It
 # never decides, recovers, assigns, restructures, reviews, or accepts work.
 heartbeat_minutes = 30
+auto_health_enabled = false
 # Canonical goal review horizons. Small tasks should normally choose 10-20m.
 default_review_horizon_minutes = 30
 max_review_horizon_minutes = 60

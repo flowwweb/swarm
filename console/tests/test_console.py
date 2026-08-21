@@ -25,36 +25,24 @@ class SwarmConsoleTests(unittest.TestCase):
         index = (static / "index.html").read_text(encoding="utf-8")
         app = (static / "app.js").read_text(encoding="utf-8")
         self.assertIn('src="/assets/swarm-wordmark.png"', index)
-        self.assertIn('id="rail-toggle"', index)
-        self.assertIn('id="panel-collapse"', index)
-        self.assertIn('aria-controls="console-sidepanel"', index)
-        self.assertIn('aria-expanded="false"', index)
-        self.assertIn('viewBox="0 0 24 24"', index)
-        self.assertIn('class="lucide lucide-panel-left"', index)
-        self.assertIn('<path d="M9 3v18"></path>', index)
-        self.assertIn('width="18" height="18"', index)
-        self.assertNotIn('width="22" height="22"', index)
-        self.assertIn('.panel-collapse:hover .brand-wordmark', css := (static / "styles.css").read_text(encoding="utf-8"))
-        self.assertIn('.rail-preview .panel-collapse .brand-wordmark', css)
-        self.assertIn('border: 0', css)
-        self.assertNotIn("‹", index)
-        self.assertNotIn("›", index)
-        self.assertIn('id="controller-filter"', index)
-        self.assertIn('aria-label="Graph"', index)
-        self.assertNotIn('aria-label="Overview"', index)
-        self.assertNotIn('aria-label="Analytics"', index)
-        self.assertIn("SWARM runtime remains authoritative", index)
-        self.assertIn("Keep new SWARM owners visible", app)
-        self.assertIn('document.visibilityState === "visible"', app)
-        self.assertIn('swarm.console.rail-collapsed', app)
-        self.assertIn('addEventListener("pointerenter"', app)
-        self.assertIn('addEventListener("focus"', app)
-        self.assertIn('panelCollapse.addEventListener("click"', app)
-        self.assertIn('event.key !== "Escape"', app)
-        self.assertIn('class="node-model"', app)
+        for view in ("overview", "hierarchy", "kanban", "diagnostics", "settings"):
+            self.assertIn(f'id="tab-{view}"', index)
+            self.assertIn(f'id="view-{view}"', index)
+        self.assertIn('id="project-navigation"', index)
+        self.assertIn('id="scope-context"', index)
+        self.assertIn("function renderProjectNavigation()", app)
+        self.assertIn("function renderHierarchy()", app)
+        self.assertIn("function renderKanban()", app)
+        self.assertIn("function renderDiagnostics()", app)
+        self.assertIn("function renderSettings()", app)
+        self.assertIn("Health and capacity", index)
+        self.assertNotIn("localhost", index.casefold())
+        self.assertNotIn("hidden usage", index.casefold())
+        self.assertNotIn("do not consume task or model usage", index.casefold())
+        self.assertNotIn("Awaiting v3 direction", index)
+        self.assertNotIn('id="controller-filter"', index)
+        self.assertNotIn('aria-label="Graph"', index)
         self.assertEqual(index.count('id="view-title"'), 1)
-        self.assertNotIn('<h2>Settings</h2>', index)
-        self.assertNotIn('<h2>Graph</h2>', index)
 
     def test_wordmark_uses_exact_existing_asset_route(self) -> None:
         asset, content_type = console.STATIC_ASSETS["/assets/swarm-wordmark.png"]
@@ -75,13 +63,12 @@ class SwarmConsoleTests(unittest.TestCase):
     def test_console_uses_flowwweb_swarm_tokens_without_lime_controls(self) -> None:
         css = (console.STATIC_ROOT / "styles.css").read_text(encoding="utf-8").casefold()
         index = (console.STATIC_ROOT / "index.html").read_text(encoding="utf-8")
-        for token in ("#02071f", "#60daff", "#f15936"):
+        for token in ("#030712", "#46dfd0", "#ff7449"):
             self.assertIn(token, css)
         for stale in ("#a8ff4f", "168,255,79", "#8ef2c2"):
             self.assertNotIn(stale, css)
-        self.assertIn(".switch input:checked + span", css)
-        self.assertIn("background: var(--cyan)", css)
-        self.assertIn(".role-ctrl { --node-color: var(--coral); }", css)
+        self.assertIn(".toggle-row input", css)
+        self.assertIn("accent-color:var(--cyan)", css)
         for removed in ("One CTRL", "RAPID UNIFIED", "LIVE HIERARCHY", "Observed pulse"):
             self.assertNotIn(removed, index)
     def setUp(self) -> None:
@@ -212,7 +199,7 @@ class SwarmConsoleTests(unittest.TestCase):
         self.assertNotIn("private task instructions", json.dumps(overview))
         self.assertIn({"source": "root", "target": "generic-child", "relationship": "delegated"}, overview["links"])
 
-    def test_unformatted_agent_tree_becomes_private_current_swarm_with_older_count(self) -> None:
+    def test_unformatted_agent_tree_uses_project_name_without_exposing_private_titles(self) -> None:
         now = 2_000_000_000_000
         connection = sqlite3.connect(self.database)
         connection.execute("ALTER TABLE threads ADD COLUMN agent_path TEXT")
@@ -237,12 +224,35 @@ class SwarmConsoleTests(unittest.TestCase):
         root = next(node for node in overview["nodes"] if node["id"] == "plain-root")
         lead = next(node for node in overview["nodes"] if node["id"] == "plain-lead-replacement")
         controller = next(item for item in overview["controllers"] if item["id"] == "plain-root")
-        self.assertEqual((root["role_label"], root["artifact"]), ("CTRL", "Current SWARM"))
+        self.assertEqual((root["role_label"], root["artifact"]), ("CTRL", "current"))
         self.assertEqual((lead["role"], lead["role_label"], lead["worker_role"], lead["artifact"], lead["worker"]), ("lead", "TASK", "LEAD", "Portal", "Darwin"))
         self.assertNotIn("plain-lead", {node["id"] for node in overview["nodes"]})
         self.assertEqual(controller["older_lanes_omitted"], 1)
         self.assertNotIn("private lead prompt", json.dumps(overview))
         self.assertNotIn("old prompt", json.dumps(overview))
+
+    def test_unformatted_fresh_spawn_tree_is_an_observed_controller_without_agent_path(self) -> None:
+        now = 2_000_000_000_000
+        connection = sqlite3.connect(self.database)
+        connection.execute("ALTER TABLE threads ADD COLUMN agent_path TEXT")
+        columns = "id,title,cwd,created_at,updated_at,created_at_ms,updated_at_ms,model,reasoning_effort,tokens_used,archived,git_origin_url,git_branch,thread_source,agent_nickname,agent_role,is_pinned,agent_path"
+        connection.executemany(
+            f"INSERT INTO threads ({columns}) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            [
+                ("plain-project-root", "private user objective", "C:/work/nemo", now // 1000, now // 1000, now, now, "gpt-5.6-sol", "high", 10, 0, "https://github.com/flowwweb/nemo.git", "main", "", "", "", 0, ""),
+                ("plain-project-child", "<codex_delegation>private child prompt</codex_delegation>", "C:/work/nemo", now // 1000, now // 1000, now, now, "gpt-5.6-terra", "high", 5, 0, "https://github.com/flowwweb/nemo.git", "main", "subagent", "Turing", "", 0, ""),
+            ],
+        )
+        connection.execute("INSERT INTO thread_spawn_edges VALUES (?,?,?)", ("plain-project-root", "plain-project-child", "open"))
+        connection.commit()
+        connection.close()
+
+        overview = console.build_overview(self.codex_home, self.config)
+        by_id = {node["id"]: node for node in overview["nodes"]}
+        self.assertEqual((by_id["plain-project-root"]["role"], by_id["plain-project-root"]["artifact"]), ("ctrl", "nemo"))
+        self.assertEqual((by_id["plain-project-child"]["artifact"], by_id["plain-project-child"]["worker"]), ("Assigned Task", "Turing"))
+        self.assertNotIn("private user objective", json.dumps(overview))
+        self.assertNotIn("private child prompt", json.dumps(overview))
 
     def _handler(self, peer: str, host: str, *, origin: str = "", token: str = "secret"):
         handler = object.__new__(console.Handler)
@@ -294,14 +304,50 @@ class SwarmConsoleTests(unittest.TestCase):
         app = (console.STATIC_ROOT / "app.js").read_text(encoding="utf-8")
         self.assertIn('document.visibilityState === "hidden"', app)
         self.assertIn('api("/api/presence", { method: "POST" })', app)
+        self.assertIn("proof_sequence", app)
         self.assertIn("60_000", app)
-        self.assertLess(len(json.dumps({"ok": True}, separators=(",", ":")).encode()), 16)
+        self.assertLess(len(json.dumps({"ok": True, "proof_sequence": 0}, separators=(",", ":")).encode()), 48)
 
     def test_overview_cache_rebuilds_only_after_a_host_or_config_change(self) -> None:
         app = console.App(self.codex_home, self.config)
         first = app.overview()
         self.assertIs(first, app.overview())
         self.config.write_text(self.config.read_text(encoding="utf-8") + "\n# updated\n", encoding="utf-8")
+        self.assertIsNot(first, app.overview())
+
+    def test_recent_active_goal_identifies_ctrl_without_reading_objective_text(self) -> None:
+        goals = sqlite3.connect(self.codex_home / "goals_1.sqlite")
+        goals.execute(
+            "CREATE TABLE thread_goals (thread_id TEXT PRIMARY KEY, goal_id TEXT, objective TEXT, status TEXT, token_budget INTEGER, tokens_used INTEGER, time_used_seconds INTEGER, created_at_ms INTEGER, updated_at_ms INTEGER)"
+        )
+        goals.execute(
+            "INSERT INTO thread_goals VALUES (?,?,?,?,?,?,?,?,?)",
+            ("unsafe", "goal-1", "private objective must never render", "active", None, 0, 0, 2_000_000_000_000, 2_000_000_000_000),
+        )
+        goals.commit()
+        goals.close()
+
+        overview = console.build_overview(self.codex_home, self.config)
+        node = next(node for node in overview["nodes"] if node["id"] == "unsafe")
+        self.assertEqual((node["role"], node["artifact"]), ("ctrl", "path"))
+        self.assertNotIn("private objective", json.dumps(overview))
+
+    def test_goal_database_change_invalidates_cached_overview(self) -> None:
+        goals = sqlite3.connect(self.codex_home / "goals_1.sqlite")
+        goals.execute(
+            "CREATE TABLE thread_goals (thread_id TEXT PRIMARY KEY, goal_id TEXT, objective TEXT, status TEXT, token_budget INTEGER, tokens_used INTEGER, time_used_seconds INTEGER, created_at_ms INTEGER, updated_at_ms INTEGER)"
+        )
+        goals.commit()
+        goals.close()
+        app = console.App(self.codex_home, self.config)
+        first = app.overview()
+        goals = sqlite3.connect(self.codex_home / "goals_1.sqlite")
+        goals.execute(
+            "INSERT INTO thread_goals VALUES (?,?,?,?,?,?,?,?,?)",
+            ("unsafe", "goal-2", "private", "active", None, 0, 0, 2_000_000_000_000, 2_000_000_000_000),
+        )
+        goals.commit()
+        goals.close()
         self.assertIsNot(first, app.overview())
 
     def test_console_store_survives_restart_and_clamps_counter_resets(self) -> None:
@@ -346,6 +392,23 @@ class SwarmConsoleTests(unittest.TestCase):
         self.assertGreater(second["revision"], first["revision"])
         self.assertEqual(second["trigger"], "heartbeat")
 
+    def test_active_eta_uses_observed_work_signals_instead_of_one_fixed_duration(self) -> None:
+        store = console.ConsoleStore(self.root / "console" / "eta-signals.sqlite3")
+        now = int(time.time() * 1000)
+        store.observe_overview({
+            "heartbeat_minutes": 30,
+            "nodes": [
+                {"id": "new-task", "project_id": "project:alpha", "tokens": 20, "status": "active", "created_at": now - 20 * 60_000, "updated_at": now},
+                {"id": "deep-task", "project_id": "project:alpha", "tokens": 20_000, "status": "active", "created_at": now - 4 * 60 * 60_000, "updated_at": now},
+            ],
+            "links": [],
+        }, now_ms=now, trigger="startup", heartbeat_minutes=30)
+        forecasts = store.latest_forecasts()
+        new_duration = forecasts["new-task"]["eta_end_ms"] - forecasts["new-task"]["eta_start_ms"]
+        deep_duration = forecasts["deep-task"]["eta_end_ms"] - forecasts["deep-task"]["eta_start_ms"]
+        self.assertGreater(deep_duration, new_duration)
+        self.assertIn("observed task age", forecasts["new-task"]["reason"])
+
     def test_read_only_console_views_do_not_observe_or_record_usage(self) -> None:
         app = console.App(self.codex_home, self.config)
         with mock.patch.object(app, "observe_once", side_effect=AssertionError("write path")):
@@ -383,9 +446,122 @@ class SwarmConsoleTests(unittest.TestCase):
         self.assertEqual(store.proof_feed(), [])
         item = store.record_proof_media({**base, "disposition": "SURFACED"}, now_ms=2)
         self.assertEqual(item["evidence_id"], "evidence-1")
-        self.assertEqual(store.proof_feed(project_id="project:alpha")[0]["media_type"], "image/png")
+        feed_item = store.proof_feed(project_id="project:alpha")[0]
+        self.assertEqual(feed_item["media_type"], "image/png")
+        self.assertNotIn("locator", feed_item)
+        self.assertEqual(store.proof_sequence(), 2)
         with self.assertRaises(console.ConsoleError):
             store.record_proof_media({**base, "kind": "text", "disposition": "SURFACED"}, now_ms=3)
+
+    def test_project_view_scopes_burn_history_and_navigation(self) -> None:
+        app = console.App(self.codex_home, self.config)
+        overview = {
+            "nodes": [
+                {"id": "ctrl-a", "project_id": "project:a", "role": "ctrl", "status": "active", "virtual": False, "tokens": 10},
+                {"id": "task-a", "project_id": "project:a", "role": "doer", "status": "active", "virtual": False, "tokens": 20},
+                {"id": "ctrl-b", "project_id": "project:b", "role": "ctrl", "status": "active", "virtual": False, "tokens": 30},
+            ],
+            "links": [],
+            "roots": ["ctrl-a", "ctrl-b"],
+            "controllers": [
+                {"id": "ctrl-a", "project_id": "project:a", "title": "CTRL - Alpha", "status": "active", "updated_at": 2},
+                {"id": "ctrl-b", "project_id": "project:b", "title": "CTRL - Beta", "status": "active", "updated_at": 1},
+            ],
+            "projects": [
+                {"id": "project:a", "name": "Alpha", "goal_label": "Alpha goal", "label_source": "working_directory"},
+                {"id": "project:b", "name": "Beta", "goal_label": "Beta goal", "label_source": "working_directory"},
+            ],
+            "analytics": {"swarms": 2},
+        }
+        with mock.patch.object(app.store, "token_history", return_value=[{"bucket_ms": 1, "delta_tokens": 7, "source": "host_reported_cumulative_delta"}]) as history:
+            view = app._project_view(overview, "project:a")
+        history.assert_called_once_with(project_id="project:a")
+        self.assertEqual(view["token_history"][0]["delta_tokens"], 7)
+        self.assertEqual(view["analytics"]["burn_rate"]["history"][0]["delta_tokens"], 7)
+        self.assertEqual(view["navigation"]["active_ctrl_id"], "ctrl-a")
+        self.assertEqual(view["navigation"]["projects"][0]["goal_label"], "Alpha goal")
+        self.assertEqual(view["navigation"]["projects"][0]["task_count"], 2)
+
+    def test_proof_media_delivery_requires_registered_surface_and_current_digest(self) -> None:
+        media_path = self.root / "proof.png"
+        media_path.write_bytes(b"png-proof")
+        store = console.ConsoleStore(self.root / "console" / "delivery.sqlite3")
+        base = {
+            "source": "CtrlEvidence", "evidence_id": "evidence-delivery", "task_id": "task-1",
+            "project_id": "project:alpha", "kind": "screenshot", "locator": str(media_path),
+            "caption": "Screenshot proof", "claim_limit": "Local screenshot only.",
+            "receipt": "surface:evidence-delivery", "surface_kind": "inline_image", "disposition": "SURFACED",
+        }
+        registered = store.record_proof_media(base, now_ms=2)
+        item = store.proof_media_item("evidence-delivery", registered["digest"])
+        self.assertEqual(item["media_type"], "image/png")
+        self.assertEqual(item["size_bytes"], len(b"png-proof"))
+        with self.assertRaises(console.ConsoleError):
+            store.proof_media_item("evidence-delivery", "0" * 64)
+        media_path.write_bytes(b"changed")
+        with self.assertRaises(console.ConsoleError):
+            store.proof_media_item("evidence-delivery", registered["digest"])
+
+    @staticmethod
+    def _health_sample(*, cpu: float = 10.0, memory: float = 20.0, free_bytes: int = 20 * 1024**3) -> dict:
+        return {
+            "sampled_at_ms": 1,
+            "cpu": {"available": True, "percent": cpu, "source": "test"},
+            "memory": {"available": True, "percent": memory, "used_bytes": 1, "total_bytes": 2, "source": "test"},
+            "disks": [{"mount": "C:\\", "free_bytes": free_bytes, "total_bytes": 30 * 1024**3, "percent": 30, "available": True}],
+            "docker": {"available": False, "status": "unavailable"},
+            "network": {"available": False, "source": "test"},
+            "console_storage": {"db_bytes": 1, "wal_bytes": 0, "shm_bytes": 0, "log_bytes": 0},
+        }
+
+    def test_health_classification_persistence_sustain_dedupe_and_recovery(self) -> None:
+        self.assertEqual(console.assess_health({})["state"], "UNKNOWN")
+        self.assertEqual(console.assess_health(self._health_sample())["state"], "HEALTHY")
+        path = self.root / "console" / "health.sqlite3"
+        store = console.ConsoleStore(path)
+        pressured = self._health_sample(free_bytes=4 * 1024**3)
+        first = store.record_diagnostics(pressured, now_ms=1_000, auto_enabled=True, sustain_seconds=300, recovery_seconds=600)
+        self.assertEqual(first["request_ids"], [])
+        second = store.record_diagnostics(pressured, now_ms=301_000, auto_enabled=True, sustain_seconds=300, recovery_seconds=600)
+        self.assertEqual(len(second["request_ids"]), 1)
+        repeated = store.record_diagnostics(pressured, now_ms=302_000, auto_enabled=True, sustain_seconds=300, recovery_seconds=600)
+        self.assertEqual(repeated["request_ids"], second["request_ids"])
+        restarted = console.ConsoleStore(path)
+        self.assertEqual(len(restarted.health_requests(status="OPEN")), 1)
+        recovering = restarted.record_diagnostics(self._health_sample(), now_ms=303_000, auto_enabled=True, sustain_seconds=300, recovery_seconds=600)
+        self.assertEqual(recovering["request_ids"], [])
+        recovered = restarted.record_diagnostics(self._health_sample(), now_ms=904_000, auto_enabled=True, sustain_seconds=300, recovery_seconds=600)
+        self.assertEqual(recovered["request_ids"], [])
+        self.assertEqual(restarted.health_requests()[0]["status"], "RECOVERED")
+        self.assertEqual(restarted.health_incidents()[0]["state"], "RECOVERED")
+
+    def test_auto_health_off_has_no_request_and_claim_is_single_winner(self) -> None:
+        path = self.root / "console" / "health-off.sqlite3"
+        store = console.ConsoleStore(path)
+        sample = self._health_sample(free_bytes=4 * 1024**3)
+        store.record_diagnostics(sample, now_ms=1_000, auto_enabled=False, sustain_seconds=1)
+        store.record_diagnostics(sample, now_ms=3_000, auto_enabled=False, sustain_seconds=1)
+        self.assertEqual(store.health_requests(), [])
+        store.record_diagnostics(sample, now_ms=5_000, auto_enabled=True, sustain_seconds=1)
+        request_id = store.health_requests(status="OPEN")[0]["request_id"]
+        store.claim_health_request(request_id, now_ms=6_000)
+        with self.assertRaises(console.ConsoleConflict):
+            store.claim_health_request(request_id, now_ms=7_000)
+
+    def test_diagnostics_reads_are_pure_and_clear_preserves_ctrl_overlay(self) -> None:
+        app = console.App(self.codex_home, self.config)
+        with mock.patch.object(app, "observe_once", side_effect=AssertionError("usage path")):
+            result = app.diagnostics()
+            history = app.diagnostics_history()
+        self.assertFalse(result["usage_consumed"])
+        self.assertEqual(history, [])
+        store = console.ConsoleStore(self.root / "console" / "health-clear.sqlite3")
+        store.update_ctrl_override("ctrl-1", {"reasoning": "high"}, expected_revision=0, now_ms=1)
+        store.record_diagnostics(self._health_sample(), now_ms=1, auto_enabled=False)
+        store.clear_history()
+        self.assertEqual(store.diagnostics_history(), [])
+        self.assertEqual(store.health_incidents(), [])
+        self.assertEqual(store.get_ctrl_override("ctrl-1")["revision"], 1)
 
     def test_ctrl_overlay_requires_revision_and_can_reset_to_global(self) -> None:
         store = console.ConsoleStore(self.root / "console" / "overrides.sqlite3")
@@ -403,6 +579,14 @@ class SwarmConsoleTests(unittest.TestCase):
         result = console.update_config(self.config, {"monitoring.heartbeat_minutes": 45})
         self.assertEqual(result["settings"]["monitoring"]["heartbeat_minutes"], 45)
         self.assertTrue(self.config.with_suffix(".toml.swarm-console.bak").exists())
+
+    def test_auto_health_setting_defaults_off_and_uses_canonical_validator(self) -> None:
+        _, effective, _ = console.load_config(self.config)
+        self.assertFalse(effective["monitoring"]["auto_health_enabled"])
+        result = console.update_config(self.config, {"monitoring.auto_health_enabled": True})
+        self.assertTrue(result["settings"]["monitoring"]["auto_health_enabled"])
+        with self.assertRaises(console.ConsoleError):
+            console.update_config(self.config, {"monitoring.auto_health_enabled": "true"})
 
     def test_restore_defaults_is_canonical_and_keeps_a_backup(self) -> None:
         console.update_config(self.config, {"monitoring.heartbeat_minutes": 45})
@@ -473,9 +657,13 @@ class SwarmConsoleTests(unittest.TestCase):
         )
         self.assertEqual((mother["role"], mother["icon"], mother["title"]), ("specialist", "🗂️", "🗂️MOTHER - Historical route"))
 
-    def test_monitoring_copy_is_alert_only_without_a_watchdog_surface(self) -> None:
+    def test_health_copy_is_product_facing_without_a_watchdog_surface(self) -> None:
         app = (console.STATIC_ROOT / "app.js").read_text(encoding="utf-8")
-        self.assertIn("Optional alert-only sensor", app)
+        self.assertIn("Automatic care", app)
+        self.assertIn("Keep this device healthy", app)
+        self.assertIn("Starts with a review", app)
+        self.assertNotIn("never model work", app.casefold())
+        self.assertNotIn("passive monitoring", app.casefold())
         self.assertNotIn("watchdog", app.casefold())
         self.assertNotIn("watchdog", console.EDITABLE_SETTINGS)
 
@@ -533,21 +721,26 @@ class SwarmConsoleTests(unittest.TestCase):
             console.update_config(self.config, {"execution.usage_saver": "yes"})
         self.assertEqual(self.config.read_bytes(), before)
 
-    def test_usage_saver_has_one_settings_control(self) -> None:
+    def test_spark_has_one_bounded_settings_control(self) -> None:
         index = (console.STATIC_ROOT / "index.html").read_text(encoding="utf-8")
         app = (console.STATIC_ROOT / "app.js").read_text(encoding="utf-8")
         self.assertNotIn('id="usage-saver-toggle"', index)
-        self.assertEqual(app.count('["execution.usage_saver"'), 1)
+        self.assertEqual(app.count('id="spark-enabled"'), 1)
+        self.assertIn("Use Spark for safe small tasks", app)
+        self.assertIn("Spark handles quick, low-risk work", app)
+        self.assertNotIn("No browser, web lookup, ImageGen", app)
         self.assertNotIn("saveUsageSaver", app)
 
     def test_console_ui_fixture_is_structurally_valid(self) -> None:
         fixture_path = Path(__file__).parent / "fixtures" / "console-ui.json"
         fixture = json.loads(fixture_path.read_text(encoding="utf-8"))
-        self.assertEqual(set(fixture), {"bootstrap", "config", "overview"})
+        self.assertEqual(set(fixture), {"bootstrap", "config", "overview", "proofFeed", "diagnostics", "diagnosticHistory", "healthSettings", "storage", "ctrlSettings"})
         self.assertFalse(fixture["config"]["settings"]["execution"]["usage_saver"])
         self.assertIn("execution.usage_saver", fixture["config"]["editable"])
         self.assertTrue(fixture["config"]["settings"]["console"]["open_on_start"])
         self.assertIn("console.open_on_start", fixture["config"]["editable"])
+        self.assertIn("boost.spark_enabled", fixture["config"]["editable"])
+        self.assertEqual(fixture["config"]["settings"]["boost"]["spark_reasoning"], "xhigh")
 
     def test_hierarchy_omits_explanatory_metadata_surfaces(self) -> None:
         index = (console.STATIC_ROOT / "index.html").read_text(encoding="utf-8")

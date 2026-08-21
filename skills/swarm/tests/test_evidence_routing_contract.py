@@ -139,6 +139,14 @@ class EvidenceRoutingContractTests(unittest.TestCase):
     def test_live_feed_doctrine_requires_prompt_surface_and_receipts(self):
         self.assertRegex(self.skill, r"(?is)human review feed.*next safe boundary.*surfaced once.*blocks acceptance")
         self.assertRegex(self.skill, r"(?is)decision gallery.*every candidate.*complete inventory.*Links.*cannot accept")
+        self.assertRegex(self.skill, r"(?is)Every CTRL heartbeat.*material-evidence ledger.*Pending material evidence.*first reminder")
+
+    def test_heartbeat_reminds_ctrl_to_surface_pending_material_proof(self):
+        self.swarm.register_ctrl_evidence(Role.DOER,"covers","pending-shot","screenshot","pending.png")
+        self.assertEqual(
+            self.swarm.heartbeat(Role.CTRL,"covers",meaningful_progress=False,recent_ctrl_feed=()),
+            "covers:surface-proof:pending-shot",
+        )
 
     def test_visual_self_review_binds_to_exact_final_deliverable(self):
         self.assertRegex(self.skill, r"(?is)exact delivered artifact.*not previews or transformation receipts")

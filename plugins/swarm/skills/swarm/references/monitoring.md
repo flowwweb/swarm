@@ -97,3 +97,9 @@ remaining risk, and next material checkpoint order. Activity narration, task
 chatter, fabricated proof, or duplicate orchestration detail fails closed and
 requires one compliant correction. Unchanged snapshots remain silent. This feed
 check does not expand WATCHDOG beyond the three responsibilities above.
+
+At each CTRL heartbeat, inspect `ctrl_feed_due` before composing a progress
+message. If material evidence is pending, return the proof reminder first and
+surface or objectively withhold that evidence at the next safe message boundary.
+Do not let an ordinary heartbeat, unchanged status, or lane summary hide a new
+screenshot, generated image, mockup, comparison, or decisive proof receipt.
