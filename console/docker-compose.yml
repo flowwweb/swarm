@@ -12,6 +12,7 @@ services:
       CODEX_HOME: /data/codex
       SWARM_CONFIG_PATH: "${SWARM_CONTAINER_CONFIG_PATH:-/data/swarm/config.toml}"
       SWARM_CONSOLE_DATA_DIR: /data/swarm-console
+      SWARM_CONSOLE_DOCKER_LOOPBACK: "1"
     volumes:
       - "${SWARM_CODEX_HOME:?Run python console/docker.py so the Codex home is explicit}:/data/codex:ro"
       - "${SWARM_CONFIG_HOME:?Run python console/docker.py so the SWARM config home is explicit}:/data/swarm:rw"

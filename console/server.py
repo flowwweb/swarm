@@ -1986,11 +1986,13 @@ class App:
         self.token = secrets.token_urlsafe(24)
         self.write_lock = threading.Lock()
         self.overview_lock = threading.RLock()
+        self.overview_refresh_lock = threading.Lock()
         self.presence_lock = threading.Lock()
         self._overview_fingerprint: tuple[tuple[str, int, int], ...] | None = None
         self._overview: dict[str, Any] | None = None
         self._view: dict[str, Any] | None = None
-        self._view_fingerprint: tuple[tuple[str, int, int], ...] | None = None
+        self._overview_revision = 0
+        self._view_fingerprint: int | None = None
         self._view_store_generation = -1
         self._store_generation = 0
         self._last_presence_at: float | None = None
@@ -1999,15 +2001,22 @@ class App:
         self._observer_stop = threading.Event()
         self._observer_thread: threading.Thread | None = None
 
-    def _host_overview(self) -> dict[str, Any]:
-        fingerprint = observation_fingerprint(self.codex_home, self.config_path)
+    def _host_overview(self, *, refresh: bool = False) -> dict[str, Any]:
         with self.overview_lock:
-            if self._overview is not None and self._overview_fingerprint == fingerprint:
+            if self._overview is not None and not refresh:
                 return self._overview
+        with self.overview_refresh_lock:
+            fingerprint = observation_fingerprint(self.codex_home, self.config_path)
+            with self.overview_lock:
+                if self._overview is not None and self._overview_fingerprint == fingerprint:
+                    return self._overview
             overview = build_overview(self.codex_home, self.config_path)
-            self._overview_fingerprint = observation_fingerprint(self.codex_home, self.config_path)
-            self._overview = overview
-            return overview
+            fingerprint = observation_fingerprint(self.codex_home, self.config_path)
+            with self.overview_lock:
+                self._overview_fingerprint = fingerprint
+                self._overview = overview
+                self._overview_revision += 1
+                return overview
 
     def _project_view(self, overview: dict[str, Any], project_id: str | None) -> dict[str, Any]:
         if not project_id or project_id.casefold() in {"all", "all-projects"}:
@@ -2111,20 +2120,19 @@ class App:
         return view
 
     def overview(self, project_id: str | None = None) -> dict[str, Any]:
-        fingerprint = observation_fingerprint(self.codex_home, self.config_path)
         with self.overview_lock:
             if (
                 self._view is None
-                or self._view_fingerprint != fingerprint
+                or self._view_fingerprint != self._overview_revision
                 or self._view_store_generation != self._store_generation
             ):
                 self._view = self._decorate_overview(self._host_overview())
-                self._view_fingerprint = fingerprint
+                self._view_fingerprint = self._overview_revision
                 self._view_store_generation = self._store_generation
             return self._project_view(self._view, project_id)
 
     def observe_once(self, trigger: str = "heartbeat") -> None:
-        overview = self._host_overview()
+        overview = self._host_overview(refresh=trigger in {"startup", "state_change"})
         now_ms = int(time.time() * 1000)
         heartbeat_minutes = max(1, int(overview.get("heartbeat_minutes") or 30))
         self.store.observe_overview(
@@ -2433,6 +2441,17 @@ class Handler(BaseHTTPRequestHandler):
         except ValueError:
             return False
 
+    def _peer_is_trusted_local(self) -> bool:
+        if self._peer_is_loopback():
+            return True
+        if os.environ.get("SWARM_CONSOLE_DOCKER_LOOPBACK") != "1":
+            return False
+        peer = str(self.client_address[0]).split("%", 1)[0]
+        try:
+            return ipaddress.ip_address(peer).is_private
+        except ValueError:
+            return False
+
     def _json(self, status: int, payload: Any) -> None:
         body = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
         self.send_response(status)
@@ -2492,13 +2511,13 @@ class Handler(BaseHTTPRequestHandler):
 
     def _authorized_write(self) -> bool:
         return (
-            self._peer_is_loopback()
+            self._peer_is_trusted_local()
             and self._same_origin()
             and secrets.compare_digest(self.headers.get("X-Swarm-Token", ""), self.server.app.token)
         )
 
     def _bootstrap_payload(self) -> dict[str, Any]:
-        local = self._peer_is_loopback()
+        local = self._peer_is_trusted_local()
         return {
             "ok": True,
             "token": self.server.app.token if local else "",
@@ -2509,7 +2528,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def _config_payload(self) -> dict[str, Any]:
         payload = redacted_config_snapshot(self.server.app.config_path)
-        if not self._peer_is_loopback():
+        if not self._peer_is_trusted_local():
             payload["path"] = ""
             payload["read_only"] = True
         return payload
@@ -2635,7 +2654,7 @@ class Handler(BaseHTTPRequestHandler):
         if not self._host_allowed():
             self._error(HTTPStatus.FORBIDDEN, "invalid console host")
             return
-        if not self._peer_is_loopback():
+        if not self._peer_is_trusted_local():
             self._error(HTTPStatus.FORBIDDEN, "remote console access is read-only")
             return
         if not self._same_origin():

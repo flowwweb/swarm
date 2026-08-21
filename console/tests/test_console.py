@@ -286,6 +286,14 @@ class SwarmConsoleTests(unittest.TestCase):
         self.assertTrue(self._handler("127.0.0.1", "localhost:4788", origin="http://localhost:4788")._authorized_write())
         self.assertTrue(self._handler("127.0.0.1", "192.168.1.10")._host_allowed())
 
+    def test_docker_bridge_peer_is_local_only_when_explicitly_enabled(self) -> None:
+        handler = self._handler("172.18.0.1", "127.0.0.1:4788", origin="http://127.0.0.1:4788")
+        self.assertFalse(handler._peer_is_trusted_local())
+        with mock.patch.dict(console.os.environ, {"SWARM_CONSOLE_DOCKER_LOOPBACK": "1"}):
+            self.assertTrue(handler._peer_is_trusted_local())
+            self.assertTrue(handler._authorized_write())
+            self.assertFalse(handler._bootstrap_payload()["read_only"])
+
     def test_portal_open_claim_uses_visible_presence_and_bounded_ttl(self) -> None:
         app = console.App(self.codex_home, self.config)
         with mock.patch.object(console.time, "monotonic", return_value=10.0):
@@ -308,11 +316,12 @@ class SwarmConsoleTests(unittest.TestCase):
         self.assertIn("60_000", app)
         self.assertLess(len(json.dumps({"ok": True, "proof_sequence": 0}, separators=(",", ":")).encode()), 48)
 
-    def test_overview_cache_rebuilds_only_after_a_host_or_config_change(self) -> None:
+    def test_overview_cache_rebuilds_when_the_observer_reports_a_host_change(self) -> None:
         app = console.App(self.codex_home, self.config)
         first = app.overview()
         self.assertIs(first, app.overview())
         self.config.write_text(self.config.read_text(encoding="utf-8") + "\n# updated\n", encoding="utf-8")
+        app.observe_once("state_change")
         self.assertIsNot(first, app.overview())
 
     def test_recent_active_goal_identifies_ctrl_without_reading_objective_text(self) -> None:
@@ -348,6 +357,7 @@ class SwarmConsoleTests(unittest.TestCase):
         )
         goals.commit()
         goals.close()
+        app.observe_once("state_change")
         self.assertIsNot(first, app.overview())
 
     def test_console_store_survives_restart_and_clamps_counter_resets(self) -> None:
