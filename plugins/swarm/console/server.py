@@ -47,6 +47,8 @@ CONSOLE_STATE_DIR_ENV = "SWARM_CONSOLE_DATA_DIR"
 CONSOLE_STATE_FILENAME = "console-state.sqlite3"
 TOKEN_SAMPLE_SECONDS = 60
 TOKEN_RETENTION_DAYS = 30
+TOKEN_SOURCE_SQLITE = "host_reported_cumulative_delta"
+TOKEN_SOURCE_CODEX_JSONL = "codex_jsonl_token_count"
 DIAGNOSTIC_RETENTION_DAYS = 7
 HEALTH_INCIDENT_RETENTION_DAYS = 90
 HEALTH_SUSTAIN_SECONDS = 300
@@ -816,7 +818,7 @@ class ConsoleStore:
     def _retention_cutoff(self, now_ms: int) -> int:
         return now_ms - TOKEN_RETENTION_DAYS * 24 * 60 * 60 * 1000
 
-    def observe_overview(self, overview: dict[str, Any], *, now_ms: int, trigger: str, heartbeat_minutes: int) -> None:
+    def observe_overview(self, overview: dict[str, Any], *, now_ms: int, trigger: str, heartbeat_minutes: int, codex_home: Path | None = None) -> None:
         nodes = [node for node in overview.get("nodes", []) if not node.get("virtual")]
         node_by_id = {str(node["id"]): node for node in nodes}
         dependencies: dict[str, list[str]] = {}
@@ -827,7 +829,10 @@ class ConsoleStore:
             for node in nodes:
                 thread_id = _safe_metadata_text(str(node["id"]), "thread id", maximum=256)
                 project_id = _safe_metadata_text(str(node["project_id"]), "project id", maximum=256)
-                cumulative = max(0, int(node.get("tokens") or 0))
+                sqlite_cumulative = max(0, int(node.get("tokens") or 0))
+                jsonl_cumulative = None if codex_home is None else _codex_jsonl_token_count(codex_home, thread_id)
+                cumulative = max(sqlite_cumulative, jsonl_cumulative or 0)
+                source = TOKEN_SOURCE_CODEX_JSONL if jsonl_cumulative is not None and jsonl_cumulative >= sqlite_cumulative else TOKEN_SOURCE_SQLITE
                 prior = connection.execute(
                     "SELECT cumulative_tokens FROM token_cursors WHERE thread_id = ?",
                     (thread_id,),
@@ -851,14 +856,31 @@ class ConsoleStore:
                     INSERT INTO token_samples(
                         bucket_ms, sampled_at_ms, project_id, thread_id,
                         cumulative_tokens, delta_tokens, source
-                    ) VALUES (?, ?, ?, ?, ?, ?, 'host_reported_cumulative_delta')
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(bucket_ms, thread_id) DO UPDATE SET
                         sampled_at_ms=excluded.sampled_at_ms,
                         project_id=excluded.project_id,
                         cumulative_tokens=MAX(token_samples.cumulative_tokens, excluded.cumulative_tokens),
-                        delta_tokens=token_samples.delta_tokens + excluded.delta_tokens
+                        delta_tokens=token_samples.delta_tokens + excluded.delta_tokens,
+                        source=CASE
+                            WHEN token_samples.source = ? OR excluded.source = ?
+                            THEN ?
+                            ELSE ?
+                        END
                     """,
-                    (bucket_ms, now_ms, project_id, thread_id, high_water, delta),
+                    (
+                        bucket_ms,
+                        now_ms,
+                        project_id,
+                        thread_id,
+                        high_water,
+                        delta,
+                        source,
+                        TOKEN_SOURCE_CODEX_JSONL,
+                        TOKEN_SOURCE_CODEX_JSONL,
+                        TOKEN_SOURCE_CODEX_JSONL,
+                        TOKEN_SOURCE_SQLITE,
+                    ),
                 )
 
                 updated_at = int(node.get("updated_at") or 0) or None
@@ -1287,12 +1309,24 @@ class ConsoleStore:
             args.extend(safe_thread_ids)
         with self._lock, closing(self._connect()) as connection:
             rows = connection.execute(
-                "SELECT bucket_ms, SUM(delta_tokens) delta_tokens FROM token_samples WHERE "
+                "SELECT bucket_ms, SUM(delta_tokens) delta_tokens, "
+                "GROUP_CONCAT(DISTINCT source) sources FROM token_samples WHERE "
                 + " AND ".join(conditions)
                 + " GROUP BY bucket_ms ORDER BY bucket_ms",
                 tuple(args),
             ).fetchall()
-        return [{"bucket_ms": int(row["bucket_ms"]), "delta_tokens": int(row["delta_tokens"]), "source": "host_reported_cumulative_delta"} for row in rows]
+        return [
+            {
+                "bucket_ms": int(row["bucket_ms"]),
+                "delta_tokens": int(row["delta_tokens"]),
+                "source": (
+                    TOKEN_SOURCE_CODEX_JSONL
+                    if TOKEN_SOURCE_CODEX_JSONL in str(row["sources"] or "").split(",")
+                    else TOKEN_SOURCE_SQLITE
+                ),
+            }
+            for row in rows
+        ]
 
     def token_sample_thread_count(
         self,
@@ -1744,6 +1778,51 @@ def _epoch_ms(milliseconds: Any, seconds: Any) -> int:
         return 0
     value = int(seconds)
     return value if value > 10**12 else value * 1000
+
+
+def _codex_jsonl_token_count(codex_home: Path, thread_id: str) -> int | None:
+    """Read only local token-count events for one thread; never retain payloads."""
+    sessions = codex_home / "sessions"
+    if not sessions.is_dir():
+        return None
+    highest: int | None = None
+    try:
+        candidates = sorted(
+            path for path in sessions.rglob("*.jsonl")
+            if path.is_file() and thread_id in path.name
+        )
+    except OSError:
+        return None
+    for path in candidates:
+        try:
+            with path.open("r", encoding="utf-8") as stream:
+                for line in stream:
+                    if '"token_count"' not in line or '"total_token_usage"' not in line:
+                        continue
+                    try:
+                        record = json.loads(line)
+                    except (json.JSONDecodeError, TypeError):
+                        continue
+                    if record.get("type") != "event_msg":
+                        continue
+                    payload = record.get("payload")
+                    if not isinstance(payload, dict) or payload.get("type") != "token_count":
+                        continue
+                    info = payload.get("info")
+                    usage = info.get("total_token_usage") if isinstance(info, dict) else None
+                    if not isinstance(usage, dict):
+                        continue
+                    total = usage.get("total_tokens")
+                    if not isinstance(total, int) or total < 0:
+                        input_tokens = usage.get("input_tokens")
+                        output_tokens = usage.get("output_tokens")
+                        input_tokens = input_tokens if isinstance(input_tokens, int) and input_tokens >= 0 else 0
+                        output_tokens = output_tokens if isinstance(output_tokens, int) and output_tokens >= 0 else 0
+                        total = input_tokens + output_tokens
+                    highest = total if highest is None else max(highest, total)
+        except (OSError, UnicodeError):
+            continue
+    return highest
 
 
 def _project_identity(row: sqlite3.Row) -> tuple[str, str]:
@@ -2286,8 +2365,8 @@ def build_overview(codex_home: Path, config_path: Path) -> dict[str, Any]:
             "Visible-tab refreshes reuse the local snapshot until the host database, its WAL, or config changes.",
             f"Visible overview refreshes and a lightweight hidden-tab ping preserve portal presence; a closed tab expires after {PORTAL_PRESENCE_TTL_SECONDS} seconds.",
             "Active means recently updated within two heartbeat windows, not guaranteed CPU work.",
-            "Tokens are host-reported cumulative thread tokens, not billing or remaining quota.",
-            "Usage history is explicitly narrowed to the local state SQLite threads.tokens_used cumulative field; no Codex JSONL, prompts, responses, or tool logs are read.",
+            "Tokens are local cumulative thread tokens, not billing or remaining quota.",
+            "Usage history prefers local Codex JSONL token_count totals and falls back to the SQLite threads.tokens_used high-water aggregate; prompts, responses, tools, and credentials are not retained.",
             "Only title metadata needed to recognize SWARM naming is read; message bodies, previews, rollout content, credentials, and the logs database are not.",
         ],
         "source": database.name,
@@ -2446,9 +2525,9 @@ class App:
         view["analytics"]["burn_rate"] = {
             "tokens_per_minute": history[-1]["delta_tokens"] if history else 0,
             "history": history,
-            "source": "host_reported_cumulative_delta",
-            "token_field": "threads.tokens_used",
-            "label": "Host-reported tokens; not billing.",
+            "source": "codex_jsonl_token_count_or_sqlite_high_water",
+            "token_field": "Codex JSONL token_count total/input+output, SQLite threads.tokens_used fallback",
+            "label": "Local token-count aggregate; not billing.",
         }
         view["progress"] = self._progress_payload(view)
         view["navigation"] = App._navigation_payload(view)
@@ -2527,9 +2606,9 @@ class App:
                 "partial": "Some observed scope threads have no persisted sample in this time window.",
                 "ok": "Persisted samples cover every observed thread in this scope.",
             },
-            "source": "host_reported_cumulative_delta",
-            "token_field": "threads.tokens_used",
-            "label": "Host-reported tokens; not billing.",
+            "source": "codex_jsonl_token_count_or_sqlite_high_water",
+            "token_field": "Codex JSONL token_count total/input+output, SQLite threads.tokens_used fallback",
+            "label": "Local token-count aggregate; not billing.",
             "usage_consumed": False,
             "claim_limit": "Aggregated token deltas and time only; prompts, responses, tools, credentials, and billing are excluded.",
         }
@@ -2588,9 +2667,9 @@ class App:
         view["analytics"]["burn_rate"] = {
             "tokens_per_minute": latest_delta,
             "history": history,
-            "source": "host_reported_cumulative_delta",
-            "token_field": "threads.tokens_used",
-            "label": "Host-reported tokens; not billing.",
+            "source": "codex_jsonl_token_count_or_sqlite_high_water",
+            "token_field": "Codex JSONL token_count total/input+output, SQLite threads.tokens_used fallback",
+            "label": "Local token-count aggregate; not billing.",
         }
         view["progress"] = self._progress_payload(view)
         view["navigation"] = self._navigation_payload(view)
@@ -2617,6 +2696,7 @@ class App:
             now_ms=now_ms,
             trigger=trigger,
             heartbeat_minutes=heartbeat_minutes,
+            codex_home=self.codex_home,
         )
         with self.proof_lock:
             self.store.ingest_proof_events(self.codex_home, overview, now_ms=now_ms)

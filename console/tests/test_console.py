@@ -397,6 +397,54 @@ class SwarmConsoleTests(unittest.TestCase):
             connection.close()
         self.assertEqual(cursor[0], 130)
 
+    def test_codex_jsonl_token_counts_are_high_water_deduped(self) -> None:
+        session = self.codex_home / "sessions" / "2026" / "08" / "22" / "rollout-thread-1.jsonl"
+        session.parent.mkdir(parents=True)
+
+        def append_event(usage: dict[str, int]) -> None:
+            with session.open("a", encoding="utf-8") as stream:
+                stream.write(json.dumps({
+                    "type": "event_msg",
+                    "payload": {"type": "token_count", "info": {"total_token_usage": usage}},
+                }) + "\n")
+
+        append_event({"input_tokens": 8, "output_tokens": 4})
+        store = console.ConsoleStore(self.root / "console" / "console-state.sqlite3")
+        overview = {
+            "heartbeat_minutes": 30,
+            "nodes": [{
+                "id": "thread-1", "project_id": "project:alpha", "tokens": 0,
+                "status": "active", "updated_at": 2_000_000_000_000,
+            }],
+            "links": [],
+        }
+        store.observe_overview(
+            overview, now_ms=2_000_000_000_000, trigger="startup", heartbeat_minutes=30,
+            codex_home=self.codex_home,
+        )
+        append_event({"input_tokens": 10, "output_tokens": 8, "total_tokens": 18})
+        append_event({"input_tokens": 9, "output_tokens": 6, "total_tokens": 15})
+        store.observe_overview(
+            overview, now_ms=2_000_000_061_000, trigger="heartbeat", heartbeat_minutes=30,
+            codex_home=self.codex_home,
+        )
+        store.observe_overview(
+            overview, now_ms=2_000_000_122_000, trigger="heartbeat", heartbeat_minutes=30,
+            codex_home=self.codex_home,
+        )
+
+        history = store.token_history(hours=24)
+        self.assertEqual(sum(item["delta_tokens"] for item in history), 6)
+        self.assertEqual({item["source"] for item in history}, {"codex_jsonl_token_count"})
+        connection = sqlite3.connect(self.root / "console" / "console-state.sqlite3")
+        try:
+            cursor = connection.execute(
+                "SELECT cumulative_tokens FROM token_cursors WHERE thread_id='thread-1'"
+            ).fetchone()
+        finally:
+            connection.close()
+        self.assertEqual(cursor[0], 18)
+
     def test_active_standalone_task_remains_visible_without_ctrl_or_parent(self) -> None:
         now = 2_000_000_000_000
         connection = sqlite3.connect(self.database)
