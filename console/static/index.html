@@ -36,7 +36,7 @@
           <div><h1 id="view-title">Overview</h1><p id="view-subtitle">Project progress, risks, and proof at a glance.</p></div>
           <div class="top-actions">
             <p class="scope-context" id="scope-context" aria-live="polite"><span>Scope</span><strong>All projects</strong></p>
-            <section class="usage-strip" aria-labelledby="usage-heading"><span id="usage-heading">Tokens · 24h</span><strong id="usage-total">—</strong><svg id="usage-sparkline" viewBox="0 0 96 28" preserveAspectRatio="none" aria-label="Token history for the selected scope"></svg><small id="usage-note">No recent history</small></section>
+            <section class="usage-strip" aria-labelledby="usage-heading"><span id="usage-heading">Tokens · 24h</span><strong id="usage-total">—</strong><svg id="usage-sparkline" viewBox="0 0 96 28" preserveAspectRatio="none" aria-label="Token history for the selected scope"></svg><small id="usage-range">No historical range</small><small id="usage-note">No recent history</small></section>
             <p class="snapshot-status" role="status"><span class="status-dot is-live" aria-hidden="true"></span><span id="sync-time">Loading</span></p>
             <button class="icon-button" id="refresh" type="button" aria-label="Refresh overview" title="Refresh overview">↻</button>
           </div>
@@ -44,6 +44,7 @@
         <section class="view is-active" id="view-overview" data-view-panel="overview" role="tabpanel" aria-labelledby="tab-overview" tabindex="0">
           <div class="overview-loading" id="overview-loading" aria-live="polite"><span class="sr-only">Loading Overview</span><div class="metric-grid skeleton-grid" aria-hidden="true"><i></i><i></i><i></i><i></i></div><div class="overview-skeleton" aria-hidden="true"></div></div>
           <div class="overview-content" id="overview-content" hidden>
+            <section class="overview-health panel" aria-live="polite"><div><p class="eyebrow">Visible work health</p><strong id="overview-health-state">Waiting for work</strong></div><p id="overview-health-note">No visible lanes</p></section>
             <section class="overview-section" aria-labelledby="monitoring-heading"><header class="overview-section-head"><div><p class="eyebrow">Project monitoring</p><h2 id="monitoring-heading">Current work</h2></div><p id="overview-summary">No observed work yet</p></header><div class="monitoring-cards" id="monitoring-cards"></div></section>
             <section class="overview-section evidence-section panel" aria-labelledby="evidence-heading"><header class="overview-section-head"><div><p class="eyebrow">Visual evidence</p><h2 id="evidence-heading">Recent images</h2></div><p id="evidence-note">No images received</p></header><div class="evidence-gallery" id="evidence-gallery"></div></section>
           </div>

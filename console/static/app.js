@@ -420,9 +420,19 @@ function renderUsage() {
   const observed = Number(source.coverage?.observed_threads);
   const expected = Number(source.coverage?.expected_threads);
   const coverage = Number.isFinite(observed) && Number.isFinite(expected) ? String(observed) + ' of ' + String(expected) + ' observed' : '';
+  const values = series.map((item) => Number(item.delta_tokens ?? item.tokens ?? item.value) || 0);
   $("#usage-total").textContent = Number.isFinite(total) ? compactNumber(total) : "—";
+  $("#usage-range").textContent = values.length ? 'Range ' + compactNumber(Math.min(...values)) + '–' + compactNumber(Math.max(...values)) + ' per sample' : 'No historical range';
   $("#usage-note").textContent = source.status === 'no_data' ? 'No persisted usage in this scope' : source.status === 'partial' ? ('Partial coverage' + (coverage ? ' · ' + coverage : '')) : source.status === 'ok' ? ('Complete coverage' + (coverage ? ' · ' + coverage : '')) : (series.length ? 'Usage status unavailable' : 'No recent history');
-  drawLine($("#usage-sparkline"), series.map((item) => Number(item.delta_tokens ?? item.tokens ?? item.value) || 0), "#46dfd0");
+  drawLine($("#usage-sparkline"), values, "#ff9c3d");
+}
+
+function renderOverviewHealth(nodes) {
+  const lanes = nodes.filter((node) => !isSubagent(node));
+  const attention = lanes.filter((node) => ["blocked", "at_risk", "stalled", "critical"].includes(String(node.eta?.status || node.status).toLowerCase()));
+  $("#overview-health-state").textContent = attention.length ? 'Needs attention' : (lanes.length ? 'On track' : 'Waiting for work');
+  $("#overview-health-state").className = attention.length ? 'risk-text' : 'healthy-text';
+  $("#overview-health-note").textContent = attention.length ? String(attention.length) + ' visible lane' + (attention.length === 1 ? ' needs attention' : 's need attention') : (lanes.length ? String(lanes.length) + ' visible lanes without an attention signal' : 'No visible lanes');
 }
 
 function renderOverview() {
@@ -430,6 +440,7 @@ function renderOverview() {
   renderMonitoringCards(nodes);
   renderEvidenceGallery(nodes);
   renderUsage();
+  renderOverviewHealth(nodes);
   $("#sync-time").textContent = state.overview?.generated_at ? "Updated " + formatRelative(state.overview.generated_at) : "Ready";
 }
 
