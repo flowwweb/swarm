@@ -51,6 +51,7 @@ DEFAULTS: dict[str, Any] = {
         "max_reasoning": "ultra",
     },
     "console": {"open_on_start": True},
+    "skills": {"inheritance_enabled": True, "default_profile": "default"},
     "logging": {"task_event_limit": 64},
     "proof": {
         "policy_version": "lean-v1",
@@ -374,6 +375,13 @@ def validate(raw: dict[str, Any]) -> None:
     console = _expect_table(raw, "console")
     _expect_keys(console, set(DEFAULTS["console"]), "console")
     _boolean(console, "open_on_start", "console")
+    skills = _expect_table(raw, "skills")
+    _expect_keys(skills, set(DEFAULTS["skills"]), "skills")
+    _boolean(skills, "inheritance_enabled", "skills")
+    if skills.get("default_profile", DEFAULTS["skills"]["default_profile"]) not in {
+        "default", "discovery", "debug", "testing", "verification", "web_qa", "design"
+    }:
+        raise ConfigError("skills.default_profile is not allowlisted")
     logging = _expect_table(raw, "logging")
     _expect_keys(logging, set(DEFAULTS["logging"]), "logging")
     _bounded_int(logging, "task_event_limit", 8, 256, "logging")

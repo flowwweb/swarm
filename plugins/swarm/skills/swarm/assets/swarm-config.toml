@@ -43,6 +43,12 @@ usage_saver = false
 # SWARM starts. A browser launch failure never blocks work.
 open_on_start = true
 
+[skills]
+# Skill inheritance is deterministic and fail-closed. Missing skills remain
+# discoverable but are never installed implicitly.
+inheritance_enabled = true
+default_profile = "default"
+
 [logging]
 # Retain only compact runtime event metadata for recent task transitions. SWARM
 # never stores task prompts, responses, artifact bodies, or credentials here.

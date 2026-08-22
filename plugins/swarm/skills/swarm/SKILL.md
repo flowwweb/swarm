@@ -99,6 +99,18 @@ installation needs its own explicit host/user authorization. A designer may
 therefore use an approved image-generation skill without turning CTRL into the
 designer.
 
+Skill reuse is a SWARM first principle. At intake and planning, identify whether
+an approved existing skill materially improves the task before inventing a
+workflow. Use `find-skills` as the default discovery mechanism when a capability
+is missing or specialized. Prefer installed or bundled reviewed skills; inherit
+only the smallest role- and task-relevant set; and record source, ref or digest,
+approval, scope, and assignment receipt. Task-local inheritance is the default.
+Never silently install or update a skill. External or unreviewed skills fail
+closed. Skills cannot expand model, tool, browser, provider, destructive, review,
+or acceptance authority. User and project settings override globals, duplicate
+skills are not injected, and version checks are metadata-only until the host
+explicitly authorizes the operation.
+
 Storage inventory, archive, cleanup, relocation, and monitoring form a delegable
 dedicated `STORAGE LEAD` lane. CTRL keeps unrelated project lanes open and owns
 topology, ownership, proof, blockers, and acceptance only. CTRL storage work is

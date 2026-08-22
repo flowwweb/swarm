@@ -105,6 +105,8 @@ EDITABLE_SETTINGS: dict[str, type] = {
     "execution.min_reasoning": str,
     "execution.max_reasoning": str,
     "execution.usage_saver": bool,
+    "skills.inheritance_enabled": bool,
+    "skills.default_profile": str,
     "logging.task_event_limit": int,
     "console.open_on_start": bool,
     "boost.enabled": bool,
@@ -910,6 +912,41 @@ class ConsoleStore:
                     fields_json TEXT NOT NULL,
                     updated_at_ms INTEGER NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS skill_catalog (
+                    skill_id TEXT PRIMARY KEY,
+                    source_repo TEXT NOT NULL,
+                    source_path TEXT NOT NULL,
+                    source_ref TEXT NOT NULL,
+                    source_version TEXT NOT NULL,
+                    popularity_json TEXT NOT NULL,
+                    audit_json TEXT NOT NULL,
+                    review_status TEXT NOT NULL,
+                    installed INTEGER NOT NULL DEFAULT 0,
+                    builtin INTEGER NOT NULL DEFAULT 0,
+                    allowed_roles_json TEXT NOT NULL,
+                    allowed_task_kinds_json TEXT NOT NULL,
+                    last_checked_ms INTEGER NOT NULL DEFAULT 0,
+                    updated_at_ms INTEGER NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS skill_scope_overlays (
+                    scope_type TEXT NOT NULL,
+                    scope_id TEXT NOT NULL,
+                    revision INTEGER NOT NULL,
+                    inheritance_enabled INTEGER,
+                    profile TEXT NOT NULL,
+                    preferred_ids_json TEXT NOT NULL,
+                    updated_at_ms INTEGER NOT NULL,
+                    PRIMARY KEY(scope_type, scope_id)
+                );
+                CREATE TABLE IF NOT EXISTS task_heartbeats (
+                    task_id TEXT PRIMARY KEY,
+                    project_id TEXT NOT NULL,
+                    last_material_at_ms INTEGER,
+                    last_liveness_at_ms INTEGER NOT NULL,
+                    scheduled_wake_at_ms INTEGER,
+                    scheduled_wake_consumed INTEGER NOT NULL DEFAULT 0,
+                    updated_at_ms INTEGER NOT NULL
+                );
                 CREATE TABLE IF NOT EXISTS store_metadata (
                     key TEXT PRIMARY KEY,
                     value TEXT NOT NULL
@@ -959,6 +996,45 @@ class ConsoleStore:
                     ON health_requests(status, created_at_ms DESC);
                 """
             )
+            eta_columns = {
+                str(row[1])
+                for row in connection.execute("PRAGMA table_info(eta_forecasts)").fetchall()
+            }
+            for name, definition in {
+                "baseline_eta_start_ms": "INTEGER",
+                "baseline_eta_end_ms": "INTEGER",
+                "baseline_confidence": "INTEGER",
+                "delta_from_baseline_ms": "INTEGER",
+                "progress_basis_json": "TEXT",
+                "last_material_heartbeat_at_ms": "INTEGER",
+                "reason_code": "TEXT",
+                "short_reason": "TEXT",
+                "receipt_source": "TEXT",
+                "previous_forecast_json": "TEXT",
+                "current_forecast_json": "TEXT",
+            }.items():
+                if name not in eta_columns:
+                    connection.execute(f"ALTER TABLE eta_forecasts ADD COLUMN {name} {definition}")
+            from skills_catalog import seed_rows
+            for seed in seed_rows(int(time.time() * 1000)):
+                connection.execute(
+                    """
+                    INSERT OR IGNORE INTO skill_catalog(
+                        skill_id, source_repo, source_path, source_ref, source_version,
+                        popularity_json, audit_json, review_status, installed, builtin,
+                        allowed_roles_json, allowed_task_kinds_json, last_checked_ms, updated_at_ms
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        seed["skill_id"], seed["source_repo"], seed["source_path"], seed["source_ref"],
+                        seed["source_version"], json.dumps(seed["popularity"], separators=(",", ":")),
+                        json.dumps(seed["audit"], separators=(",", ":")), seed["review_status"],
+                        int(bool(seed["installed"])), int(bool(seed["builtin"])),
+                        json.dumps(seed["allowed_roles"], separators=(",", ":")),
+                        json.dumps(seed["allowed_task_kinds"], separators=(",", ":")),
+                        int(seed["last_checked_ms"]), int(seed["updated_at_ms"]),
+                    ),
+                )
             connection.execute(
                 "UPDATE proof_media SET disposition='PENDING', receipt='legacy:available', "
                 "surface_kind='available_media' WHERE disposition IN ('AVAILABLE', 'SURFACED')"
@@ -967,6 +1043,113 @@ class ConsoleStore:
 
     def _retention_cutoff(self, now_ms: int) -> int:
         return now_ms - TOKEN_RETENTION_DAYS * 24 * 60 * 60 * 1000
+
+    def _record_eta_receipt(
+        self,
+        connection: sqlite3.Connection,
+        payload: dict[str, Any],
+        *,
+        observed_task_id: str,
+        observed_project_id: str,
+        now_ms: int,
+    ) -> bool:
+        """Persist a bound task-owner report as planning input; never infer authority or ETA."""
+        if payload.get("receipt_type") != "swarm_task_owner_forecast":
+            return False
+        if "authority" in payload:
+            return False
+        source = _safe_metadata_text(payload.get("source"), "ETA receipt source", maximum=256)
+        receipt = _safe_metadata_text(payload.get("receipt"), "ETA receipt", maximum=512)
+        task_id = _safe_metadata_text(payload.get("task_id"), "ETA task id", maximum=256)
+        project_id = _safe_metadata_text(payload.get("project_id"), "ETA project id", maximum=256)
+        if task_id != observed_task_id or project_id != observed_project_id:
+            return False
+        baseline = payload.get("baseline")
+        current = payload.get("current")
+        if not isinstance(baseline, dict) or not isinstance(current, dict):
+            return False
+        for label, value in (("baseline", baseline), ("current", current)):
+            if not {"eta_start_ms", "eta_end_ms", "confidence"}.issubset(value):
+                return False
+            if any(value[key] is not None and (not isinstance(value[key], int) or isinstance(value[key], bool)) for key in ("eta_start_ms", "eta_end_ms")):
+                return False
+            if not isinstance(value["confidence"], int) or isinstance(value["confidence"], bool) or not 0 <= value["confidence"] <= 100:
+                return False
+        progress_basis = current.get("progress_basis")
+        if not isinstance(progress_basis, dict) or not any(
+            isinstance(progress_basis.get(key), list) and progress_basis.get(key)
+            for key in ("milestones", "checkpoints", "receipts")
+        ):
+            return False
+        reason_code = payload.get("reason_code")
+        if reason_code not in {
+            "scope_discovered", "dependency", "failed_proof", "environment",
+            "underestimated_complexity", "owner_capacity_change", "material_progress",
+            "state_change", "completion", "heartbeat_stale",
+        }:
+            return False
+        status = current.get("status")
+        if status not in {"planned", "in_progress", "blocked", "complete"}:
+            return False
+        short_reason = _safe_metadata_text(payload.get("short_reason"), "ETA reason", maximum=256)
+        current_public = {
+            "eta_start_ms": current["eta_start_ms"], "eta_end_ms": current["eta_end_ms"],
+            "confidence": current["confidence"], "status": status,
+            "progress_basis": progress_basis,
+        }
+        latest = connection.execute(
+            "SELECT * FROM eta_forecasts WHERE task_id = ? ORDER BY revision DESC LIMIT 1", (task_id,)
+        ).fetchone()
+        baseline_start = baseline["eta_start_ms"] if latest is None else latest["baseline_eta_start_ms"]
+        baseline_end = baseline["eta_end_ms"] if latest is None else latest["baseline_eta_end_ms"]
+        baseline_confidence = baseline["confidence"] if latest is None else latest["baseline_confidence"]
+        if latest is not None and (
+            baseline["eta_start_ms"] != baseline_start
+            or baseline["eta_end_ms"] != baseline_end
+            or baseline["confidence"] != baseline_confidence
+        ):
+            raise ConsoleError("ETA report baseline conflicts with the stored task baseline")
+        signature = json.dumps(
+            (
+                "swarm-task-owner-report-v1",
+                {"eta_start_ms": baseline_start, "eta_end_ms": baseline_end, "confidence": baseline_confidence},
+                current_public,
+                reason_code,
+            ),
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        if latest is not None and str(latest["signature"]) == signature:
+            return False
+        previous = None if latest is None else json.loads(latest["current_forecast_json"] or "{}")
+        delta = None if baseline_end is None or current["eta_end_ms"] is None else int(current["eta_end_ms"]) - int(baseline_end)
+        connection.execute(
+            """
+            INSERT INTO eta_forecasts(
+                task_id, project_id, revision, eta_start_ms, eta_end_ms,
+                confidence, status, reason, last_progress_at_ms,
+                last_calculated_at_ms, trigger, signature,
+                baseline_eta_start_ms, baseline_eta_end_ms, baseline_confidence,
+                delta_from_baseline_ms, progress_basis_json,
+                last_material_heartbeat_at_ms, reason_code, short_reason, receipt_source,
+                previous_forecast_json, current_forecast_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                task_id, project_id, 1 if latest is None else int(latest["revision"]) + 1,
+                current["eta_start_ms"], current["eta_end_ms"], current["confidence"], status,
+                short_reason, current.get("last_progress_at_ms"), now_ms, "task_owner_report", signature,
+                baseline_start, baseline_end, baseline_confidence, delta,
+                json.dumps(progress_basis, separators=(",", ":")), now_ms, reason_code, short_reason,
+                f"{source}:{receipt}", json.dumps(previous, separators=(",", ":")),
+                json.dumps(current_public, separators=(",", ":")),
+            ),
+        )
+        connection.execute(
+            "UPDATE task_heartbeats SET last_material_at_ms = ?, updated_at_ms = ? WHERE task_id = ?",
+            (now_ms, now_ms, task_id),
+        )
+        return True
 
     def observe_overview(self, overview: dict[str, Any], *, now_ms: int, trigger: str, heartbeat_minutes: int, codex_home: Path | None = None) -> None:
         nodes = [node for node in overview.get("nodes", []) if not node.get("virtual")]
@@ -1040,84 +1223,26 @@ class ConsoleStore:
                     str(node_by_id.get(dependency, {}).get("status")) not in {"done", "archived"}
                     for dependency in dependency_ids
                 )
-                created_at = int(node.get("created_at") or updated_at or now_ms)
-                elapsed_ms = max(0, now_ms - created_at)
-                quiet_ms = max(0, now_ms - (updated_at or created_at))
-                token_signal = max(0, int(node.get("tokens") or 0))
-                heartbeat_ms = max(1, heartbeat_minutes) * 60 * 1000
-                proof = node.get("proof_snapshot") if isinstance(node.get("proof_snapshot"), dict) else {}
-                gates = proof.get("gates") if isinstance(proof.get("gates"), list) else []
-                verified_gates = sum(1 for gate in gates if str(gate.get("status", "")).upper() == "PASS")
-                proof_ratio = verified_gates / len(gates) if gates else 0.0
-                round_to = 15 * 60 * 1000
-
-                def rounded_duration(raw_ms: float, minimum_ms: int, maximum_ms: int) -> int:
-                    bounded = max(minimum_ms, min(maximum_ms, int(raw_ms)))
-                    return max(round_to, int(round(bounded / round_to)) * round_to)
-
-                if status in {"done", "archived"}:
-                    forecast_status, confidence, duration_ms = "complete", 100, 0
-                elif blocked_dependency:
-                    forecast_status = "blocked"
-                    confidence = max(20, min(45, 40 - int(quiet_ms / heartbeat_ms) * 5))
-                    duration_ms = rounded_duration(2 * 60 * 60 * 1000 + quiet_ms * 0.5, 2 * 60 * 60 * 1000, 24 * 60 * 60 * 1000)
-                elif status == "active":
-                    forecast_status = "on_track" if quiet_ms <= heartbeat_ms * 2 else "at_risk"
-                    confidence = max(35, min(90, 55 + (20 if quiet_ms <= heartbeat_ms else 0) + round(proof_ratio * 15)))
-                    observed_work = min(elapsed_ms, 8 * 60 * 60 * 1000) * 0.25
-                    complexity = min(4 * 60 * 60 * 1000, math.log2(token_signal + 1) * 12 * 60 * 1000)
-                    remaining_factor = max(0.25, 1.0 - min(0.75, proof_ratio))
-                    duration_ms = rounded_duration((45 * 60 * 1000 + observed_work + complexity) * remaining_factor, 30 * 60 * 1000, 8 * 60 * 60 * 1000)
-                else:
-                    forecast_status = "at_risk"
-                    confidence = max(20, min(55, 50 - int(quiet_ms / heartbeat_ms) * 5 + round(proof_ratio * 10)))
-                    duration_ms = rounded_duration(90 * 60 * 1000 + quiet_ms * 0.5, 90 * 60 * 1000, 12 * 60 * 60 * 1000)
-                signature = json.dumps(
-                    ("observed-signals-v2", status, updated_at, tuple(sorted(dependency_ids)), forecast_status),
-                    separators=(",", ":"),
+                connection.execute(
+                    """
+                    INSERT INTO task_heartbeats(
+                        task_id, project_id, last_material_at_ms, last_liveness_at_ms,
+                        scheduled_wake_at_ms, scheduled_wake_consumed, updated_at_ms
+                    ) VALUES (?, ?, NULL, ?, NULL, 0, ?)
+                    ON CONFLICT(task_id) DO UPDATE SET
+                        project_id=excluded.project_id,
+                        last_liveness_at_ms=excluded.last_liveness_at_ms,
+                        updated_at_ms=excluded.updated_at_ms
+                    """,
+                    (thread_id, project_id, now_ms, now_ms),
                 )
-                latest = connection.execute(
-                    "SELECT * FROM eta_forecasts WHERE task_id = ? ORDER BY revision DESC LIMIT 1",
-                    (thread_id,),
-                ).fetchone()
-                should_append = latest is None or str(latest["signature"]) != signature
-                if trigger == "heartbeat" and forecast_status in {"at_risk", "blocked"}:
-                    should_append = should_append or latest is None or int(latest["last_calculated_at_ms"]) < now_ms - heartbeat_minutes * 60 * 1000
-                if should_append:
-                    revision = 1 if latest is None else int(latest["revision"]) + 1
-                    eta_start = None if forecast_status == "complete" else now_ms + (30 * 60 * 1000 if forecast_status == "blocked" else 0)
-                    eta_end = None if eta_start is None else eta_start + duration_ms
-                    reason = (
-                        "Completed host task."
-                        if forecast_status == "complete"
-                        else "Heartbeat found no recent host task update; forecast is at risk."
-                        if forecast_status == "at_risk" and trigger == "heartbeat"
-                        else "Observed dependency is not complete; forecast is blocked."
-                        if forecast_status == "blocked"
-                        else "Estimate uses observed task age, activity, token change, proof progress, and dependencies."
-                    )
-                    connection.execute(
-                        """
-                        INSERT INTO eta_forecasts(
-                            task_id, project_id, revision, eta_start_ms, eta_end_ms,
-                            confidence, status, reason, last_progress_at_ms,
-                            last_calculated_at_ms, trigger, signature
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                        """,
-                        (
-                            thread_id,
-                            project_id,
-                            revision,
-                            eta_start,
-                            eta_end,
-                            confidence,
-                            forecast_status,
-                            reason,
-                            updated_at,
-                            now_ms,
-                            trigger,
-                            signature,
-                        ),
+                if not node.get("is_subagent") and isinstance(node.get("eta_report"), dict):
+                    self._record_eta_receipt(
+                        connection,
+                        node["eta_report"],
+                        observed_task_id=thread_id,
+                        observed_project_id=project_id,
+                        now_ms=now_ms,
                     )
             connection.execute(
                 "DELETE FROM token_samples WHERE bucket_ms < ?",
@@ -1152,9 +1277,134 @@ class ConsoleStore:
                 "last_progress_at_ms": row["last_progress_at_ms"],
                 "last_calculated_at_ms": int(row["last_calculated_at_ms"]),
                 "trigger": row["trigger"],
+                "baseline_eta_start_ms": row["baseline_eta_start_ms"],
+                "baseline_eta_end_ms": row["baseline_eta_end_ms"],
+                "baseline_confidence": row["baseline_confidence"],
+                "delta_from_baseline_ms": row["delta_from_baseline_ms"],
+                "progress_basis": json.loads(row["progress_basis_json"] or "{}"),
+                "last_material_heartbeat_at_ms": row["last_material_heartbeat_at_ms"],
+                "reason_code": row["reason_code"] or "unknown",
+                "short_reason": row["short_reason"] or row["reason"],
+                "receipt_source": row["receipt_source"] or "host_overview",
+                "previous": json.loads(row["previous_forecast_json"] or "null"),
+                "current": json.loads(row["current_forecast_json"] or "null"),
+                "claim_limit": "Observed task-owner planning report only; it does not prove host/user authority, acceptance, or task progress.",
             }
             for row in rows
         }
+
+    def skill_catalog(self) -> list[dict[str, Any]]:
+        with self._lock, closing(self._connect()) as connection:
+            rows = connection.execute("SELECT * FROM skill_catalog ORDER BY skill_id").fetchall()
+        return [
+            {
+                "skill_id": row["skill_id"],
+                "source_repo": row["source_repo"],
+                "source_path": row["source_path"],
+                "source_ref": row["source_ref"],
+                "source_version": row["source_version"],
+                "popularity": json.loads(row["popularity_json"]),
+                "audit": json.loads(row["audit_json"]),
+                "review_status": row["review_status"],
+                "installed": bool(row["installed"]),
+                "builtin": bool(row["builtin"]),
+                "allowed_roles": json.loads(row["allowed_roles_json"]),
+                "allowed_task_kinds": json.loads(row["allowed_task_kinds_json"]),
+                "last_checked_ms": int(row["last_checked_ms"]),
+            }
+            for row in rows
+        ]
+
+    def skill_scope(self, scope_type: str, scope_id: str) -> dict[str, Any] | None:
+        from skills_catalog import validate_scope
+        validate_scope(scope_type, scope_id)
+        with self._lock, closing(self._connect()) as connection:
+            row = connection.execute(
+                "SELECT * FROM skill_scope_overlays WHERE scope_type = ? AND scope_id = ?",
+                (scope_type, scope_id),
+            ).fetchone()
+        if row is None:
+            return None
+        return {
+            "scope_type": row["scope_type"],
+            "scope_id": row["scope_id"],
+            "revision": int(row["revision"]),
+            "inheritance_enabled": None if row["inheritance_enabled"] is None else bool(row["inheritance_enabled"]),
+            "profile": row["profile"],
+            "preferred_ids": json.loads(row["preferred_ids_json"]),
+            "updated_at_ms": int(row["updated_at_ms"]),
+        }
+
+    def update_skill_scope(
+        self,
+        scope_type: str,
+        scope_id: str,
+        changes: dict[str, Any],
+        *,
+        expected_revision: int,
+        now_ms: int,
+    ) -> dict[str, Any]:
+        from skills_catalog import validate_preferred_ids, validate_profile, validate_scope
+        validate_scope(scope_type, scope_id)
+        if not isinstance(expected_revision, int) or expected_revision < 0:
+            raise ConsoleError("expected_revision must be a non-negative integer")
+        if not isinstance(changes, dict) or not changes or set(changes) - {"inheritance_enabled", "profile", "preferred_ids"}:
+            raise ConsoleError("skill scope changes are limited to inheritance_enabled, profile, and preferred_ids")
+        catalog = self.skill_catalog()
+        known_ids = {item["skill_id"] for item in catalog}
+        current = self.skill_scope(scope_type, scope_id)
+        revision = 0 if current is None else current["revision"]
+        if revision != expected_revision:
+            raise ConsoleConflict("skill scope changed; reload before saving")
+        candidate = {
+            "inheritance_enabled": None if current is None else current["inheritance_enabled"],
+            "profile": "default" if current is None else current["profile"],
+            "preferred_ids": [] if current is None else current["preferred_ids"],
+        }
+        if "inheritance_enabled" in changes and not isinstance(changes["inheritance_enabled"], bool):
+            raise ConsoleError("inheritance_enabled must be a boolean")
+        if "inheritance_enabled" in changes:
+            candidate["inheritance_enabled"] = changes["inheritance_enabled"]
+        if "profile" in changes:
+            candidate["profile"] = validate_profile(changes["profile"])
+        if "preferred_ids" in changes:
+            candidate["preferred_ids"] = validate_preferred_ids(changes["preferred_ids"], known_ids)
+        with self._lock, closing(self._connect()) as connection:
+            connection.execute(
+                """
+                INSERT INTO skill_scope_overlays(
+                    scope_type, scope_id, revision, inheritance_enabled, profile, preferred_ids_json, updated_at_ms
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(scope_type, scope_id) DO UPDATE SET
+                    revision=excluded.revision,
+                    inheritance_enabled=excluded.inheritance_enabled,
+                    profile=excluded.profile,
+                    preferred_ids_json=excluded.preferred_ids_json,
+                    updated_at_ms=excluded.updated_at_ms
+                """,
+                (
+                    scope_type, scope_id, revision + 1,
+                    None if candidate["inheritance_enabled"] is None else int(candidate["inheritance_enabled"]),
+                    candidate["profile"], json.dumps(candidate["preferred_ids"], separators=(",", ":")), now_ms,
+                ),
+            )
+            connection.commit()
+        return self.skill_scope(scope_type, scope_id) or {}
+
+    def reset_skill_scope(self, scope_type: str, scope_id: str, *, expected_revision: int) -> bool:
+        from skills_catalog import validate_scope
+        validate_scope(scope_type, scope_id)
+        current = self.skill_scope(scope_type, scope_id)
+        revision = 0 if current is None else current["revision"]
+        if revision != expected_revision:
+            raise ConsoleConflict("skill scope changed; reload before resetting")
+        with self._lock, closing(self._connect()) as connection:
+            deleted = connection.execute(
+                "DELETE FROM skill_scope_overlays WHERE scope_type = ? AND scope_id = ?",
+                (scope_type, scope_id),
+            ).rowcount
+            connection.commit()
+        return bool(deleted)
 
     @staticmethod
     def _public_proof_row(row: sqlite3.Row) -> dict[str, Any]:
@@ -2767,6 +3017,75 @@ class App:
         _, nodes, _, scope = self._observed_scope(project_id=project_id, ctrl_id=ctrl_id)
         return {"ok": True, **self._progress_for_nodes(nodes, scope)}
 
+    def skill_settings(
+        self,
+        *,
+        project_id: str | None = None,
+        ctrl_id: str | None = None,
+        role: str | None = None,
+        task_kind: str | None = None,
+    ) -> dict[str, Any]:
+        from skills_catalog import resolve
+        _, nodes, _, scope = self._observed_scope(project_id=project_id, ctrl_id=ctrl_id)
+        del nodes
+        _, effective, _ = load_config(self.config_path)
+        global_scope = self.store.skill_scope("global", "global")
+        project_scope = None
+        ctrl_scope = None
+        if scope["type"] == "project":
+            project_scope = self.store.skill_scope("project", scope["project_id"])
+        elif scope["type"] == "ctrl":
+            ctrl_scope = self.store.skill_scope("ctrl", scope["ctrl_id"])
+            if scope.get("project_id"):
+                project_scope = self.store.skill_scope("project", scope["project_id"])
+        skills_config = effective.get("skills", {})
+        result = resolve(
+            self.store.skill_catalog(), global_scope, project_scope, ctrl_scope,
+            role=role, task_kind=task_kind,
+            global_enabled=bool(skills_config.get("inheritance_enabled", True)),
+            global_profile=str(skills_config.get("default_profile", "default")),
+            global_preferred=(global_scope or {}).get("preferred_ids", []),
+        )
+        result.update({
+            "ok": True,
+            "scope": scope,
+            "overlays": {
+                "global": global_scope,
+                "project": project_scope,
+                "ctrl": ctrl_scope,
+            },
+            "installation": {"allowed": False, "claim_limit": "This console does not install skills."},
+        })
+        return result
+
+    def update_skill_settings(
+        self,
+        scope_type: str,
+        scope_id: str,
+        changes: dict[str, Any],
+        expected_revision: int,
+    ) -> dict[str, Any]:
+        from skills_catalog import validate_scope
+        validate_scope(scope_type, scope_id)
+        if scope_type == "project":
+            self._observed_scope(project_id=scope_id)
+        elif scope_type == "ctrl":
+            self._observed_scope(ctrl_id=scope_id)
+        return self.store.update_skill_scope(
+            scope_type, scope_id, changes,
+            expected_revision=expected_revision,
+            now_ms=int(time.time() * 1000),
+        )
+
+    def reset_skill_settings(self, scope_type: str, scope_id: str, expected_revision: int) -> bool:
+        from skills_catalog import validate_scope
+        validate_scope(scope_type, scope_id)
+        if scope_type == "project":
+            self._observed_scope(project_id=scope_id)
+        elif scope_type == "ctrl":
+            self._observed_scope(ctrl_id=scope_id)
+        return self.store.reset_skill_scope(scope_type, scope_id, expected_revision=expected_revision)
+
     @staticmethod
     def _navigation_payload(view: dict[str, Any]) -> dict[str, Any]:
         controllers = [
@@ -3328,6 +3647,17 @@ class Handler(BaseHTTPRequestHandler):
                     ),
                 )
                 return
+            if path == "/api/skills":
+                self._json(
+                    HTTPStatus.OK,
+                    self.server.app.skill_settings(
+                        project_id=query.get("project_id"),
+                        ctrl_id=query.get("ctrl_id"),
+                        role=query.get("role"),
+                        task_kind=query.get("task_kind"),
+                    ),
+                )
+                return
             if path == "/api/proof-feed":
                 self._json(
                     HTTPStatus.OK,
@@ -3454,6 +3784,21 @@ class Handler(BaseHTTPRequestHandler):
                 with self.server.app.write_lock:
                     result = update_config(self.server.app.config_path, changes)
                 self._json(HTTPStatus.OK, {"ok": True, **result})
+                return
+            if path == "/api/skills/inheritance":
+                payload = self._payload()
+                result = self.server.app.update_skill_settings(
+                    payload.get("scope_type"), payload.get("scope_id"),
+                    payload.get("changes"), payload.get("expected_revision"),
+                )
+                self._json(HTTPStatus.OK, {"ok": True, "overlay": result})
+                return
+            if path == "/api/skills/inheritance/reset":
+                payload = self._payload()
+                result = self.server.app.reset_skill_settings(
+                    payload.get("scope_type"), payload.get("scope_id"), payload.get("expected_revision"),
+                )
+                self._json(HTTPStatus.OK, {"ok": True, "reset": result})
                 return
             if path == "/api/evidence":
                 result = self.server.app.register_proof(self._payload())
