@@ -832,8 +832,9 @@ class ConsoleStore:
                     "SELECT cumulative_tokens FROM token_cursors WHERE thread_id = ?",
                     (thread_id,),
                 ).fetchone()
-                previous_cumulative = None if prior is None else int(prior["cumulative_tokens"])
-                delta = 0 if previous_cumulative is None else max(0, cumulative - previous_cumulative)
+                previous_high_water = 0 if prior is None else max(0, int(prior["cumulative_tokens"]))
+                delta = 0 if prior is None else max(0, cumulative - previous_high_water)
+                high_water = max(previous_high_water, cumulative)
                 connection.execute(
                     """
                     INSERT INTO token_cursors(thread_id, project_id, cumulative_tokens, sampled_at_ms)
@@ -843,7 +844,7 @@ class ConsoleStore:
                         cumulative_tokens=excluded.cumulative_tokens,
                         sampled_at_ms=excluded.sampled_at_ms
                     """,
-                    (thread_id, project_id, cumulative, now_ms),
+                    (thread_id, project_id, high_water, now_ms),
                 )
                 connection.execute(
                     """
@@ -854,10 +855,10 @@ class ConsoleStore:
                     ON CONFLICT(bucket_ms, thread_id) DO UPDATE SET
                         sampled_at_ms=excluded.sampled_at_ms,
                         project_id=excluded.project_id,
-                        cumulative_tokens=excluded.cumulative_tokens,
+                        cumulative_tokens=MAX(token_samples.cumulative_tokens, excluded.cumulative_tokens),
                         delta_tokens=token_samples.delta_tokens + excluded.delta_tokens
                     """,
-                    (bucket_ms, now_ms, project_id, thread_id, cumulative, delta),
+                    (bucket_ms, now_ms, project_id, thread_id, high_water, delta),
                 )
 
                 updated_at = int(node.get("updated_at") or 0) or None
@@ -2022,8 +2023,16 @@ def build_overview(codex_home: Path, config_path: Path) -> dict[str, Any]:
                 descendant_ids.add(child)
             queue.append(child)
     # A formatted title is classification evidence, not a spawn receipt. Admit
-    # only controllers and tasks reached through their observed host spawn tree.
-    included_ids = controller_seed_ids.union(descendant_ids)
+    # controllers and tasks reached through their observed host spawn tree, plus
+    # fresh, safely classified standalone tasks without a fabricated parent.
+    standalone_task_ids = {
+        thread_id
+        for thread_id in fresh_ids
+        if thread_id in parsed_titles
+        and thread_id not in parent_by_child
+        and parsed_titles[thread_id]["role"] in {"doer", "lead", "review", "architect"}
+    }
+    included_ids = controller_seed_ids.union(descendant_ids).union(standalone_task_ids)
     # Agent replacement preserves the task identity expressed by its lane path.
     # Keep the latest worker receipt instead of turning replacement into a new node.
     latest_by_task: dict[tuple[str, str], str] = {}
@@ -2054,7 +2063,7 @@ def build_overview(codex_home: Path, config_path: Path) -> dict[str, Any]:
         else:
             superseded_ids.add(thread_id)
     included_ids.difference_update(superseded_ids)
-    connected_ids = set(controller_seed_ids.intersection(included_ids))
+    connected_ids = set(controller_seed_ids.intersection(included_ids)).union(standalone_task_ids)
     queue = list(connected_ids)
     while queue:
         parent = queue.pop()
@@ -2149,7 +2158,7 @@ def build_overview(codex_home: Path, config_path: Path) -> dict[str, Any]:
         if parent in nodes:
             links.append({"source": parent, "target": thread_id, "relationship": "delegated"})
             continue
-        if node["role"] == "ctrl":
+        if node["role"] == "ctrl" or thread_id in standalone_task_ids:
             continue
         unattached_task_ids.append(thread_id)
 
@@ -2452,6 +2461,14 @@ class App:
         ctrl_id: str | None = None,
     ) -> tuple[dict[str, Any], list[dict[str, Any]], set[str] | None, dict[str, Any]]:
         overview = self._host_overview()
+        if project_id and project_id.casefold().startswith("ctrl:"):
+            alias_ctrl_id = project_id[5:]
+            if not alias_ctrl_id:
+                raise ConsoleError("project_id ctrl alias must name an observed host CTRL")
+            if ctrl_id and ctrl_id != alias_ctrl_id:
+                raise ConsoleError("project_id ctrl alias conflicts with ctrl_id")
+            ctrl_id = alias_ctrl_id
+            project_id = None
         project_id = None if not project_id or project_id.casefold() in {"all", "all-projects"} else project_id
         ctrl_id = ctrl_id or None
         nodes = [node for node in overview.get("nodes", []) if not node.get("virtual")]
@@ -2485,8 +2502,9 @@ class App:
         _, nodes, thread_ids, scope = self._observed_scope(project_id=project_id, ctrl_id=ctrl_id)
         project_filter = scope.get("project_id") if scope.get("type") == "project" else None
         history = self.store.token_history(project_id=project_filter, thread_ids=thread_ids, hours=hours)
+        coverage_thread_ids = {str(node["id"]) for node in nodes}
         observed_threads = self.store.token_sample_thread_count(
-            project_id=project_filter, thread_ids=thread_ids, hours=hours,
+            project_id=project_filter, thread_ids=coverage_thread_ids, hours=hours,
         )
         expected_threads = len(nodes)
         total_tokens = sum(int(item["delta_tokens"]) for item in history)

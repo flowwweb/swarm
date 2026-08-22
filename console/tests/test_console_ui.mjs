@@ -31,6 +31,8 @@ assert.match(app, /subagentDescendants\(card\.ctrlId, tree\)/);
 assert.match(app, /params\.set\("project_id", state\.projectId\)/);
 assert.doesNotMatch(app, /params\.set\("task_id", state\.ctrlId\)/);
 assert.match(app, /\["blocked", "at_risk", "stalled", "critical"\]/);
+assert.match(app, /const nodes = scopedNodes\(\)\.filter\(\(node\) => !isSubagent\(node\)\);/);
+assert.doesNotMatch(app, /Number\(project\.active_threads \?\? project\.active\) > 0/);
 for (const forbidden of ["localhost", "hidden usage", "developer instructions", "prompts", "tools", "credentials"]) {
   assert.equal((indexHtml + app).toLowerCase().includes(forbidden), false, `forbidden copy: ${forbidden}`);
 }
@@ -107,6 +109,7 @@ try {
   assert.equal(await page.locator('[role="tab"]').count(), 5);
   assert.equal(await page.getByRole("button", { name: "All projects" }).count(), 1);
   assert.equal(await page.getByRole("button", { name: "Flowwweb" }).count(), 1);
+  assert.equal(await page.getByRole("button", { name: "Unassigned planning" }).count(), 1);
   assert.match(await page.locator("#monitoring-cards").textContent(), /Unassigned planning/);
   assert.equal(await page.getByRole("button", { name: /https-mail/i }).count(), 0);
   assert.equal(await page.getByText("Current work").count(), 1);

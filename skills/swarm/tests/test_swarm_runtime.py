@@ -62,13 +62,16 @@ class RuntimeTests(unittest.TestCase):
   self.s.workers["D"].task_ids.discard("A")
   self.s.tasks["A"].review_value=ReviewValue.NONE
   self.s.stale(Role.LEAD,"A","superseded contract",now=0,superseded_by="B",promote=["race evidence"])
-  self.assertEqual(self.s.groom(Role.CTRL,5,{"no_review_archive_delay":0,"low_review_retention":2,"high_review_retention":3,"stale_task_archive_delay":1}),["A"])
-  self.assertEqual(self.s.tasks["A"].state,TaskState.ARCHIVED_STALE); self.assertEqual(self.s.tasks["A"].superseded_by,"B"); self.assertEqual(self.s.tasks["A"].promoted,["race evidence"])
+  with self.assertRaisesRegex(InvariantError,"no host-pinned trust root or IPC verifier"): self.s.groom(Role.CTRL,5,{"no_review_archive_delay":0,"low_review_retention":2,"high_review_retention":3,"stale_task_archive_delay":1})
+  self.assertEqual(self.s.tasks["A"].state,TaskState.STALE); self.assertEqual(self.s.tasks["A"].superseded_by,"B"); self.assertEqual(self.s.tasks["A"].promoted,["race evidence"])
   self.s.tasks["A"].review_value=ReviewValue.PINNED; self.assertEqual(self.s.groom(Role.CTRL,9,{"no_review_archive_delay":0,"low_review_retention":2,"high_review_retention":3,"stale_task_archive_delay":1}),[])
  def test_stale_dependency_and_archived_safety(self):
   self.s.assign(Role.LEAD,Task("B","D","author",1,{})); self.s.stale(Role.LEAD,"A","replaced",now=0); self.s.wait(Role.DOER,"B","A")
   self.assertEqual(self.s.groom(Role.CTRL,5,{"no_review_archive_delay":0,"low_review_retention":2,"high_review_retention":3,"stale_task_archive_delay":1}),[])
-  self.s.tasks["B"].state=TaskState.COMPLETE; self.s.workers["D"].task_ids.clear(); self.s.groom(Role.CTRL,5,{"no_review_archive_delay":0,"low_review_retention":2,"high_review_retention":3,"stale_task_archive_delay":1}); self.s.change_architecture(Role.ARCHITECT,{"a":2}); self.assertEqual(self.s.tasks["A"].state,TaskState.ARCHIVED_STALE)
+  self.s.tasks["B"].state=TaskState.COMPLETE; self.s.workers["D"].task_ids.clear()
+  with self.assertRaisesRegex(InvariantError,"no host-pinned trust root or IPC verifier"):
+   self.s.groom(Role.CTRL,5,{"no_review_archive_delay":0,"low_review_retention":2,"high_review_retention":3,"stale_task_archive_delay":1})
+  self.s.change_architecture(Role.ARCHITECT,{"a":2}); self.assertEqual(self.s.tasks["A"].state,TaskState.STALE)
  def test_review_is_candidate_before_acceptance(self):
   self.accept(); self.assertEqual(self.s.tasks["A"].state,TaskState.REVIEW)
   self.s.complete(Role.LEAD,"A",True,True,7,actor_id="L"); self.assertEqual(self.s.tasks["A"].completed_at,7)
@@ -82,7 +85,10 @@ class RuntimeTests(unittest.TestCase):
  def test_stale_clock_and_unresolved_completion(self):
   self.s.change_architecture(Role.ARCHITECT,{"x":2},now=90); self.s.groom(Role.CTRL,100,{"no_review_archive_delay":0,"low_review_retention":2,"high_review_retention":3,"stale_task_archive_delay":30}); self.assertEqual(self.s.tasks["A"].state,TaskState.STALE); self.assertFalse(self.s.project_complete(Role.CTRL,True,True))
  def test_archived_only_collapses_and_missing_replacement_blocks_complete(self):
-  self.s.stale(Role.LEAD,"A","gone",now=0,superseded_by="MISSING"); self.s.workers["D"].task_ids.discard("A"); self.s.groom(Role.CTRL,2,{"no_review_archive_delay":0,"low_review_retention":2,"high_review_retention":3,"stale_task_archive_delay":1}); self.assertFalse(self.s.project_complete(Role.CTRL,True,True)); self.assertEqual(self.s.collapse(Role.CTRL,"L"),Depth.ATOMIC)
+  self.s.stale(Role.LEAD,"A","gone",now=0,superseded_by="MISSING"); self.s.workers["D"].task_ids.discard("A")
+  with self.assertRaisesRegex(InvariantError,"no host-pinned trust root or IPC verifier"):
+   self.s.groom(Role.CTRL,2,{"no_review_archive_delay":0,"low_review_retention":2,"high_review_retention":3,"stale_task_archive_delay":1})
+  self.assertFalse(self.s.project_complete(Role.CTRL,True,True)); self.assertEqual(self.s.collapse(Role.CTRL,"L"),Depth.ATOMIC)
  def test_bounded_context_spine(self):
   with self.assertRaises(InvariantError): ContextPackage.build(goal="g",architecture={},dependencies=[],artifacts=[],acceptance=["a"],history=[str(i) for i in range(1000)],budget=1)
   package=ContextPackage.build(goal="g",architecture={"a":1},dependencies=["d"],artifacts=["x"],acceptance=[],history=[str(i) for i in range(1000)],budget=1); self.assertEqual(package.goal,"g"); self.assertEqual(package.history,())
@@ -92,12 +98,14 @@ class RuntimeTests(unittest.TestCase):
  def test_context_drops_obsolete_versions(self):
   p=ContextPackage.build(goal="g",architecture={"contract":2},dependencies=[VersionedReference("contract",1,"dependency"),VersionedReference("contract",2,"dependency")],artifacts=[],acceptance=[],history=[],budget=2); self.assertEqual(p.dependencies,("contract:v2",))
  def test_restore_and_keyed_archive_telemetry(self):
-  self.s.tasks["A"].state=TaskState.COMPLETE; self.s.tasks["A"].completed_at=0; self.s.workers["D"].task_ids.discard("A"); self.s.groom(Role.CTRL,31,{"no_review_archive_delay":0,"low_review_retention":2,"high_review_retention":3,"stale_task_archive_delay":1})
-  self.assertIsInstance(self.s.telemetry["archive_reasons"],dict); self.s.restore(Role.CTRL,"A","needed"); self.assertEqual(self.s.tasks["A"].state,TaskState.ACTIVE); self.assertEqual(self.s.telemetry["restores"],1)
+  self.s.tasks["A"].state=TaskState.COMPLETE; self.s.tasks["A"].completed_at=0; self.s.workers["D"].task_ids.discard("A")
+  with self.assertRaisesRegex(InvariantError,"no host-pinned trust root or IPC verifier"):
+   self.s.groom(Role.CTRL,31,{"no_review_archive_delay":0,"low_review_retention":2,"high_review_retention":3,"stale_task_archive_delay":1})
+  self.assertEqual(self.s.tasks["A"].state,TaskState.COMPLETE)
  def test_zero_completion_timestamp_has_real_archive_duration(self):
   self.s.tasks["A"].state=TaskState.COMPLETE; self.s.tasks["A"].completed_at=0; self.s.workers["D"].task_ids.discard("A")
-  self.s.groom(Role.CTRL,100,{"no_review_archive_delay":0,"low_review_retention":2,"high_review_retention":3,"stale_task_archive_delay":1})
-  self.assertEqual(self.s.telemetry["completion_to_archive"]["A"],100); self.assertEqual(self.s.telemetry["age_buckets"]["aged"],1)
+  with self.assertRaisesRegex(InvariantError,"no host-pinned trust root or IPC verifier"): self.s.groom(Role.CTRL,100,{"no_review_archive_delay":0,"low_review_retention":2,"high_review_retention":3,"stale_task_archive_delay":1})
+  self.assertEqual(self.s.tasks["A"].state,TaskState.COMPLETE)
  def test_modes_and_family_preserve_floors(self):
   tiers=[Swarm(mode=m).route(family="security",risk=1,uncertainty=1,blast_radius=1,architect_floor=2,historical_floor=1) for m in EfficiencyMode]
   self.assertTrue(all(t>=2 for t in tiers)); self.assertGreaterEqual(tiers[-1],tiers[0]); self.assertEqual(Swarm(mode=EfficiencyMode.MAX).review_depth(1),"standard")
@@ -145,7 +153,7 @@ class RuntimeTests(unittest.TestCase):
   package=ContextPackage.build(goal="g",architecture={"auth":2},dependencies=[],artifacts=[],acceptance=[],history=[],hive=hydrated,budget=2); self.assertEqual(package.hive,("current",))
  def test_hive_warm_retirement_and_provenance_cleanup(self):
   self.s.workers["D"].context["affinity"]=1; self.accept(); self.s.complete(Role.LEAD,"A",True,True,1,actor_id="L"); self.assertEqual(self.s.workers["D"].state,WorkerState.WARM)
-  self.s.groom(Role.CTRL,2,{"no_review_archive_delay":0,"low_review_retention":2,"high_review_retention":3,"stale_task_archive_delay":1}); self.assertEqual(self.s.tasks["A"].state,TaskState.ARCHIVED); self.assertEqual(self.s.workers["D"].state,WorkerState.WARM)
+  with self.assertRaisesRegex(InvariantError,"no host-pinned trust root or IPC verifier"): self.s.groom(Role.CTRL,2,{"no_review_archive_delay":0,"low_review_retention":2,"high_review_retention":3,"stale_task_archive_delay":1}); self.assertEqual(self.s.tasks["A"].state,TaskState.COMPLETE); self.assertEqual(self.s.workers["D"].state,WorkerState.WARM)
   self.s.add_worker(Role.LEAD,Worker("R","L",2)); self.s.assign(Role.LEAD,Task("B","D","author",1,{})); lesson=HiveRecord("handoff",content="use migration seam",source="worker",source_version="1",provenance={"task":"B"})
   self.s.retire(Role.LEAD,"D","R",lessons=[lesson],now=3); self.assertEqual(self.s.workers["D"].state,WorkerState.RETIRED); self.assertEqual(self.s.tasks["B"].owner,"R"); self.assertIn("handoff",self.s.hive)
   self.s.hive["handoff"].retention="expired"; self.s.groom_hive(Role.CTRL,4); self.s.groom_hive(Role.CTRL,5); self.s.groom_hive(Role.CTRL,6); self.assertEqual(self.s.hive["handoff"].status,HiveStatus.PURGED); self.assertEqual(self.s.hive["handoff"].provenance,{"task":"B"})
@@ -185,7 +193,9 @@ class RuntimeTests(unittest.TestCase):
   for state in (WorkerState.SPAWNED,WorkerState.ACTIVE,WorkerState.WARM,WorkerState.DRAINING):
    self.s.workers["D"].state=state; self.s.workers["D"].task_ids.add("A"); self.s.tasks["A"].state=TaskState.COMPLETE; self.s.tasks["A"].completed_at=0
    self.assertEqual(self.s.groom(Role.CTRL,1,{"no_review_archive_delay":0,"low_review_retention":2,"high_review_retention":3,"stale_task_archive_delay":1}),[])
-  self.s.workers["D"].task_ids.discard("A"); self.assertEqual(self.s.groom(Role.CTRL,1,{"no_review_archive_delay":0,"low_review_retention":2,"high_review_retention":3,"stale_task_archive_delay":1}),["A"])
+  self.s.workers["D"].task_ids.discard("A")
+  with self.assertRaisesRegex(InvariantError,"no host-pinned trust root or IPC verifier"):
+   self.s.groom(Role.CTRL,1,{"no_review_archive_delay":0,"low_review_retention":2,"high_review_retention":3,"stale_task_archive_delay":1})
  def test_context_cost_includes_full_canonical_package(self):
   p=ContextPackage.build(goal="g",architecture={"a":1,"b":2},dependencies=["d"],artifacts=[],acceptance=["accept"],history=[],budget=4)
   self.assertEqual(p.transfer_cost,5) # goal, acceptance, two architecture entries, admitted dependency

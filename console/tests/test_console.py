@@ -377,14 +377,43 @@ class SwarmConsoleTests(unittest.TestCase):
         }
         store = console.ConsoleStore(path)
         store.observe_overview(overview, now_ms=now, trigger="startup", heartbeat_minutes=30)
-        overview["nodes"][0]["tokens"] = 90
+        overview["nodes"][0]["tokens"] = 100
         store.observe_overview(overview, now_ms=now + 61_000, trigger="heartbeat", heartbeat_minutes=30)
+        overview["nodes"][0]["tokens"] = 90
+        store.observe_overview(overview, now_ms=now + 122_000, trigger="heartbeat", heartbeat_minutes=30)
+        store.observe_overview(overview, now_ms=now + 183_000, trigger="heartbeat", heartbeat_minutes=30)
         overview["nodes"][0]["tokens"] = 130
-        store.observe_overview(overview, now_ms=now + 122_000, trigger="state_change", heartbeat_minutes=30)
+        store.observe_overview(overview, now_ms=now + 244_000, trigger="state_change", heartbeat_minutes=30)
         restarted = console.ConsoleStore(path)
         history = restarted.token_history(hours=24)
-        self.assertEqual(sum(item["delta_tokens"] for item in history), 40)
-        self.assertEqual(restarted.storage_stats()["counts"]["token_samples"], 3)
+        self.assertEqual(sum(item["delta_tokens"] for item in history), 30)
+        self.assertEqual(restarted.storage_stats()["counts"]["token_samples"], 5)
+        connection = sqlite3.connect(path)
+        try:
+            cursor = connection.execute(
+                "SELECT cumulative_tokens FROM token_cursors WHERE thread_id='thread-1'"
+            ).fetchone()
+        finally:
+            connection.close()
+        self.assertEqual(cursor[0], 130)
+
+    def test_active_standalone_task_remains_visible_without_ctrl_or_parent(self) -> None:
+        now = 2_000_000_000_000
+        connection = sqlite3.connect(self.database)
+        connection.execute(
+            "INSERT INTO threads VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            ("standalone", "🔨DEV - Standalone task", "C:/work/standalone", now // 1000, now, now, now,
+             "gpt-5.6-luna", "high", 12, 0, "", "main", "", "", "", 0),
+        )
+        connection.commit()
+        connection.close()
+
+        overview = console.build_overview(self.codex_home, self.config)
+        standalone = next(node for node in overview["nodes"] if node["id"] == "standalone")
+        self.assertEqual(standalone["role_label"], "TASK")
+        self.assertIsNone(standalone["parent_id"])
+        self.assertEqual(standalone["controller_ids"], [])
+        self.assertEqual(next(project for project in overview["projects"] if project["id"] == standalone["project_id"])["nodes"], 1)
 
     def test_usage_history_validates_project_and_ctrl_scopes_without_observing(self) -> None:
         app = console.App(self.codex_home, self.config)
@@ -400,7 +429,7 @@ class SwarmConsoleTests(unittest.TestCase):
              mock.patch.object(app.store, "token_history", return_value=history) as token_history, \
              mock.patch.object(app.store, "token_sample_thread_count", return_value=1), \
              mock.patch.object(app, "observe_once", side_effect=AssertionError("usage observation")):
-            result = app.usage_history(project_id="project:a", ctrl_id="ctrl-a", hours=24)
+            result = app.usage_history(project_id="ctrl:ctrl-a", hours=24)
             all_projects = app.usage_history(hours=24)
         self.assertEqual(result["status"], "partial")
         self.assertEqual(result["coverage"], {"observed_threads": 1, "expected_threads": 2})
@@ -831,7 +860,7 @@ class SwarmConsoleTests(unittest.TestCase):
         self.assertFalse(any(node["virtual"] for node in overview["nodes"]))
         self.assertFalse(any(link["target"] in {"mother", "specialist"} for link in overview["links"]))
 
-    def test_standalone_formatted_task_without_spawn_edge_is_omitted(self) -> None:
+    def test_standalone_formatted_task_without_spawn_edge_is_visible_at_project_level(self) -> None:
         now = 2_000_000_000_000
         connection = sqlite3.connect(self.database)
         connection.execute(
@@ -839,13 +868,23 @@ class SwarmConsoleTests(unittest.TestCase):
             ("orphan-task", "💻DEV - Title-only task", "C:/work/beta", now // 1000, now, now, now,
              "gpt-5.6-terra", "high", 30, 0, "", "main", "", "", "", 0),
         )
+        connection.execute(
+            "INSERT INTO threads VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            ("unformatted", "Ordinary user conversation", "C:/work/beta", now // 1000, now, now, now,
+             "gpt-5.6-terra", "high", 30, 0, "", "main", "", "", "", 0),
+        )
         connection.commit()
         connection.close()
 
         overview = console.build_overview(self.codex_home, self.config)
-        self.assertNotIn("orphan-task", {node["id"] for node in overview["nodes"]})
+        orphan = next(node for node in overview["nodes"] if node["id"] == "orphan-task")
+        self.assertEqual(orphan["project"], "beta")
+        self.assertIsNone(orphan["parent_id"])
+        self.assertEqual(orphan["controller_ids"], [])
+        self.assertNotIn("unformatted", {node["id"] for node in overview["nodes"]})
         self.assertFalse(any("orphan-task" in (link["source"], link["target"]) for link in overview["links"]))
         self.assertFalse(any(node["virtual"] for node in overview["nodes"]))
+        self.assertEqual(next(project for project in overview["projects"] if project["id"] == orphan["project_id"])["nodes"], 1)
 
     def test_historical_mother_uses_its_configured_specialist_icon(self) -> None:
         self.config.write_text(

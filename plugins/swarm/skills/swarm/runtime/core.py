@@ -8,12 +8,10 @@ import json
 import os
 from pathlib import Path, PurePosixPath
 import platform
-import secrets
 import signal
 import subprocess
 import sys
 import time
-import weakref
 from .incidents import IncidentLedger, IncidentRecord
 from .request_ledger import RequestStore, RequestStoreError
 
@@ -69,6 +67,9 @@ class CachePolicy(StrEnum): NEVER="NEVER"; EXACT_INPUTS="EXACT_INPUTS"; EXTERNAL
 class FlakePolicy(StrEnum): NO_RETRY="NO_RETRY"; TYPED_TRANSIENT_ONCE="TYPED_TRANSIENT_ONCE"
 class ClaimStatus(StrEnum): REQUIRED="REQUIRED"; VERIFIED="VERIFIED"; UNVERIFIED="UNVERIFIED"
 class CtrlOperation(StrEnum): CREATE="CREATE"; FORK="FORK"; PROMOTE="PROMOTE"; REPLACE="REPLACE"; RENAME="RENAME"; SUCCESSOR="SUCCESSOR"; RECOVER_AS_NEW="RECOVER_AS_NEW"
+class CustodyMutation(StrEnum): ARCHIVE="ARCHIVE"; UNPIN="UNPIN"; RENAME="RENAME"; STATE="STATE"
+class StorageGuard(StrEnum): EXACT_ROOT="EXACT_ROOT"; ACTIVE_PROCESS="ACTIVE_PROCESS"; LIVE_LOG="LIVE_LOG"; DATABASE="DATABASE"; DIRTY_WORK="DIRTY_WORK"
+class StorageRecovery(StrEnum): RECOVERABLE_MOVE="RECOVERABLE_MOVE"; COPY_VERIFY_REMOVE="COPY_VERIFY_REMOVE"
 class LaneKind(StrEnum): CODE="CODE"; NON_CODE="NON_CODE"; OTHER="OTHER"
 class RequestState(StrEnum): OPEN="OPEN"; BLOCKED="BLOCKED"; COMPLETED="COMPLETED"; SUPERSEDED="SUPERSEDED"; CANCELLED="CANCELLED"
 class RequestOutcomeKind(StrEnum): ARTIFACT="ARTIFACT"; NON_ARTIFACT="NON_ARTIFACT"
@@ -337,8 +338,6 @@ def _require_digest(value:str, label:str) -> str:
 _HOST_AUTHORITY_PRIME=int("FFFFFFFFFFFFFFFFC90FDAA22168C234C4C6628B80DC1CD129024E088A67CC74020BBEA63B139B22514A08798E3404DDEF9519B3CD3A431B302B0A6DF25F14374FE1356D6D51C245E485B576625E7EC6F44C42E9A637ED6B0BFF5CB6F406B7EDEE386BFB5A899FA5AE9F24117C4B1FE649286651ECE45B3DC2007CB8A163BF0598DA48361C55D39A69163FA8FD24CF5F83655D23DCA3AD961C62F356208552BB9ED529077096966D670C354E4ABC9804F1746C08CA18217C32905E462E36CE3BE39E772C180E86039B2783A2EC07A28FB5C55DF06F4C52C9DE2BCBF6955817183995497CEA956AE515D2261898FA051015728E5A8AACAA68FFFFFFFFFFFFFFFF",16)
 _HOST_AUTHORITY_GENERATOR=2
 def _authority_message(kind:str, values:tuple[object,...]) -> bytes: return json.dumps((kind,values),separators=(",",":"),ensure_ascii=True).encode("utf-8")
-def _authority_sign(private_key:int, message:bytes) -> str:
-    nonce=secrets.randbelow(_HOST_AUTHORITY_PRIME-2)+1; commitment=pow(_HOST_AUTHORITY_GENERATOR,nonce,_HOST_AUTHORITY_PRIME); challenge=int.from_bytes(sha256(commitment.to_bytes((_HOST_AUTHORITY_PRIME.bit_length()+7)//8,"big")+message).digest(),"big"); response=(nonce+challenge*private_key)%(_HOST_AUTHORITY_PRIME-1); return f"{commitment:x}:{response:x}"
 def _authority_verify(public_key:int|None, message:bytes, signature:str) -> bool:
     if not isinstance(public_key,int) or public_key<=1 or public_key>=_HOST_AUTHORITY_PRIME or not isinstance(signature,str): return False
     try: commitment_text,response_text=signature.split(":",1); commitment=int(commitment_text,16); response=int(response_text,16)
@@ -346,6 +345,12 @@ def _authority_verify(public_key:int|None, message:bytes, signature:str) -> bool
     if not 1<=commitment<_HOST_AUTHORITY_PRIME or not 0<=response<_HOST_AUTHORITY_PRIME-1: return False
     challenge=int.from_bytes(sha256(commitment.to_bytes((_HOST_AUTHORITY_PRIME.bit_length()+7)//8,"big")+message).digest(),"big")
     return pow(_HOST_AUTHORITY_GENERATOR,response,_HOST_AUTHORITY_PRIME)==commitment*pow(public_key,challenge,_HOST_AUTHORITY_PRIME)%_HOST_AUTHORITY_PRIME
+
+def _host_user_event_message(event:"HostUserEvent") -> bytes:
+    return _authority_message("CTRL_USER_EVENT",(event.receipt,event.operation.value,event.source_ctrl_id,event.target_objective_digest,event.target_scope_digest,event.target_identity,event.issued_at,event.event_digest))
+
+def _custody_message(receipt:"HostCustodyReceipt") -> bytes:
+    return _authority_message("USER_CUSTODY_EVENT",(receipt.receipt,receipt.mutation.value,receipt.target_id,receipt.target_state_digest,receipt.issued_at))
 
 def _runtime_environment_fingerprint(environment:dict[str,str]|None=None) -> str:
     environment=dict(os.environ) if environment is None else environment
@@ -847,7 +852,7 @@ class Task:
     completed_at: int|None=None; stale_at: int|None=None; archived_at: int|None=None; stale_reason: str|None=None; superseded_by: str|None=None; promoted: list[str]=field(default_factory=list); extensions: int=0; review_passed: bool=False; risk:int=1; review_strategy:str="light"; architecture_review_floor:ReviewStrategy=ReviewStrategy.LIGHT; security_review_floor:ReviewStrategy=ReviewStrategy.LIGHT; artifacts:dict[ArtifactIdentity|str,str]=field(default_factory=dict); artifact_justifications:dict[str,ArtifactJustification]=field(default_factory=dict); artifact_provenance:dict[str,ArtifactProvenance]=field(default_factory=dict); archive:dict[str,object]=field(default_factory=dict); active_goal:bool=False; handoff_active:bool=False; correction_pending:bool=False; user_choice_pending:bool=False; ambiguous:bool=False; topology_receipt:tuple[str,...]=(); ctrl_event_receipt:tuple[str,str]|None=None; subagent_receipt:str=""; subagent_exception:SubagentException|None=None; subagent_exception_reason:str=""; goal_id:str=""; objective_version:int=1; milestone:str=""; review_horizon_minutes:int=30; milestone_started_at:int=0; milestone_history:list[tuple[int,str,str]]=field(default_factory=list); ctrl_feed_drift_count:int=0; superseded_ctrl_feed_ids:list[str]=field(default_factory=list); last_ctrl_feed_correction_id:str=""
 
     ctrl_mode:CtrlMode=CtrlMode.DELEGATED; work_kind:WorkKind=WorkKind.GENERAL; assigned_profession:str=""; milestone_proof_kind:str=""; architecture_goal_id:str=""; architecture_map_version:int=0; architecture_receipts:list[tuple[int,str,str]]=field(default_factory=list); specialist_professions:dict[str,str]=field(default_factory=dict); specialist_goal_ids:dict[str,str]=field(default_factory=dict); specialist_map_versions:dict[str,int]=field(default_factory=dict); specialist_receipts:dict[str,list[tuple[int,str,str]]]=field(default_factory=dict)
-    lane_kind:LaneKind=LaneKind.OTHER; owning_lead_id:str=""; acceptance_contract:AcceptanceContract|None=None; gate_receipts:dict[str,GateReceipt]=field(default_factory=dict); unverified_gate_receipts:dict[str,GateReceipt]=field(default_factory=dict); plan_review_receipt:ReviewEvidence|None=None; acceptance_review_receipt:ReviewEvidence|None=None; incident_consultation_receipt:str=""; watchdog_binding:WatchdogBinding|None=None; watchdog_receipts:list[WatchdogReceipt]=field(default_factory=list)
+    lane_kind:LaneKind=LaneKind.OTHER; owning_lead_id:str=""; acceptance_contract:AcceptanceContract|None=None; gate_receipts:dict[str,GateReceipt]=field(default_factory=dict); unverified_gate_receipts:dict[str,GateReceipt]=field(default_factory=dict); plan_review_receipt:ReviewEvidence|None=None; acceptance_review_receipt:ReviewEvidence|None=None; incident_consultation_receipt:str=""; watchdog_binding:WatchdogBinding|None=None; watchdog_receipts:list[WatchdogReceipt]=field(default_factory=list); user_custody_required:bool=False; user_renamed:bool=False; user_pinned:bool=False; user_state_changed:bool=False
 
 @dataclass(frozen=True)
 class HostUserEvent:
@@ -857,6 +862,39 @@ class HostUserEvent:
         _safe_receipt(self.receipt,"usr-"); _safe_token(self.source_ctrl_id); _safe_token(self.target_identity)
         object.__setattr__(self,"target_objective_digest",_require_digest(self.target_objective_digest,"CTRL target objective")); object.__setattr__(self,"target_scope_digest",_require_digest(self.target_scope_digest,"CTRL target scope")); object.__setattr__(self,"event_digest",_require_digest(self.event_digest,"host user event"))
         if not isinstance(self.operation,CtrlOperation) or not isinstance(self.issued_at,int) or self.issued_at<0: raise InvariantError("host user event requires a typed operation and nonnegative issuance time")
+
+@dataclass(frozen=True)
+class HostCustodyReceipt:
+    receipt:str; mutation:CustodyMutation; target_id:str; target_state_digest:str; issued_at:int
+    _signature:str=field(default="",init=False,repr=False,compare=False); _authority:object|None=field(default=None,init=False,repr=False,compare=False)
+    def __post_init__(self):
+        _safe_receipt(self.receipt,"usr-"); _safe_token(self.target_id); object.__setattr__(self,"target_state_digest",_require_digest(self.target_state_digest,"custody target state"))
+        if not isinstance(self.mutation,CustodyMutation) or not isinstance(self.issued_at,int) or self.issued_at<0: raise InvariantError("custody receipt requires a typed mutation and nonnegative issuance time")
+
+@dataclass(frozen=True)
+class StorageTarget:
+    target_id:str; exact_root:str
+    def __post_init__(self):
+        _safe_token(self.target_id)
+        if not isinstance(self.exact_root,str) or not self.exact_root.strip() or any(token in self.exact_root for token in ("*","?")): raise InvariantError("storage targets require an exact non-wildcard root")
+
+def _require_receipt_text(value:str,label:str) -> str:
+    if not isinstance(value,str) or not value.strip() or any(character.isspace() or ord(character)<32 for character in value): raise InvariantError(f"{label} requires a bounded receipt")
+    return value
+
+@dataclass(frozen=True)
+class StorageLaneContract:
+    lane_id:str; target_manifest:tuple[StorageTarget,...]; exact_roots:tuple[str,...]; guards:tuple[StorageGuard,...]; recovery:StorageRecovery; post_target_receipt:str; post_free_space_receipt:str; independent_review_receipt:str
+    def __post_init__(self):
+        _safe_token(self.lane_id)
+        if not self.target_manifest or len({target.target_id for target in self.target_manifest})!=len(self.target_manifest): raise InvariantError("storage contract requires a nonempty unique target manifest")
+        if not self.exact_roots or any(not isinstance(root,str) or not root.strip() or any(token in root for token in ("*","?")) for root in self.exact_roots): raise InvariantError("storage contract requires exact non-wildcard roots")
+        if any(target.exact_root not in self.exact_roots for target in self.target_manifest): raise InvariantError("storage targets must bind to an exact declared root")
+        required={StorageGuard.EXACT_ROOT,StorageGuard.ACTIVE_PROCESS,StorageGuard.LIVE_LOG,StorageGuard.DATABASE,StorageGuard.DIRTY_WORK}
+        if not isinstance(self.recovery,StorageRecovery) or not all(isinstance(guard,StorageGuard) for guard in self.guards) or len(self.guards)!=len(set(self.guards)) or not required.issubset(self.guards): raise InvariantError("storage contract requires typed exact-root, active-process, live-log, database, and dirty-work guards")
+        _require_receipt_text(self.post_target_receipt,"post-target receipt"); _require_receipt_text(self.post_free_space_receipt,"post-free-space receipt"); _require_receipt_text(self.independent_review_receipt,"independent review receipt")
+    @property
+    def pressure_alone_authorizes_mutation(self)->bool: return False
 
 @dataclass(frozen=True)
 class UserCtrlAuthorization:
@@ -882,22 +920,14 @@ class Worker:
 class Swarm:
     architecture_version: int=1; contract_versions: dict[str,int]=field(default_factory=dict); topology: set[str]=field(default_factory=set)
     workers: dict[str,Worker]=field(default_factory=dict); tasks: dict[str,Task]=field(default_factory=dict); leases: dict[str,str]=field(default_factory=dict); events: list[tuple[str,str]]=field(default_factory=list); task_event_limit:int=64; telemetry: dict[str,object]=field(default_factory=dict); telemetry_events:list[dict[str,object]]=field(default_factory=list); artifact_index:dict[str,str]=field(default_factory=dict); provenance_index:dict[str,str]=field(default_factory=dict); ctrl_evidence_ledger:dict[str,CtrlEvidence]=field(default_factory=dict); ctrl_decision_sets:dict[str,CtrlDecisionSet]=field(default_factory=dict); ctrl_phase:str="intake"; hive:dict[str,HiveRecord]=field(default_factory=dict); hive_enabled:bool=True; heartbeat_stall_after:int=2; correction_receipts:dict[str,None]=field(default_factory=dict); lane_width:int=3; wip_limit:int=3; efficiency_ledger:list[dict[str,str]]=field(default_factory=list); mode:EfficiencyMode=EfficiencyMode.BALANCED; default_review_horizon:int=30; max_review_horizon:int=60; direct_work_horizon:int=20
-    scheduled_wakeups:dict[str,int]=field(default_factory=dict); ctrl_feed_messages:list[CtrlFeedMessage]=field(default_factory=list); ctrl_feed_cursor:int=0; ctrl_feed_superseded_by:dict[str,str]=field(default_factory=dict); ctrl_feed_events:dict[str,CtrlFeedEvent]=field(default_factory=dict); ctrl_feed_consumed_events:set[str]=field(default_factory=set); ctrl_authorizations:dict[str,UserCtrlAuthorization]=field(default_factory=dict); ctrl_materialization_intents:dict[str,CtrlMaterializationIntent]=field(default_factory=dict); consumed_ctrl_authorizations:set[str]=field(default_factory=set); consumed_ctrl_intents:set[str]=field(default_factory=set); proof_policy_version:str="lean-v1"; proof_impacted_selection:bool=True; proof_receipt_reuse:bool=True; proof_gate_timeout_seconds:int=120; proof_browser_freshness_seconds:int=86400; proof_provider_freshness_seconds:int=3600; proof_transient_retry_limit:int=1; use_goals:bool=True; request_store:RequestStore|None=field(default=None,repr=False,compare=False); request_continuity_enabled:bool=False; request_feed_sequence_floor:int=0; _host_authority_public_key:int|None=field(default=None,repr=False,compare=False); _gate_capability:object=field(default_factory=object,init=False,repr=False,compare=False); _watchdog_capability:object=field(default_factory=object,init=False,repr=False,compare=False); _owner_context_capability:object=field(default_factory=object,init=False,repr=False,compare=False); _ctrl_authority_capability:object=field(default_factory=object,init=False,repr=False,compare=False)
+    scheduled_wakeups:dict[str,int]=field(default_factory=dict); ctrl_feed_messages:list[CtrlFeedMessage]=field(default_factory=list); ctrl_feed_cursor:int=0; ctrl_feed_superseded_by:dict[str,str]=field(default_factory=dict); ctrl_feed_events:dict[str,CtrlFeedEvent]=field(default_factory=dict); ctrl_feed_consumed_events:set[str]=field(default_factory=set); ctrl_authorizations:dict[str,UserCtrlAuthorization]=field(default_factory=dict); ctrl_materialization_intents:dict[str,CtrlMaterializationIntent]=field(default_factory=dict); consumed_ctrl_authorizations:set[str]=field(default_factory=set); consumed_ctrl_intents:set[str]=field(default_factory=set); proof_policy_version:str="lean-v1"; proof_impacted_selection:bool=True; proof_receipt_reuse:bool=True; proof_gate_timeout_seconds:int=120; proof_browser_freshness_seconds:int=86400; proof_provider_freshness_seconds:int=3600; proof_transient_retry_limit:int=1; use_goals:bool=True; request_store:RequestStore|None=field(default=None,repr=False,compare=False); request_continuity_enabled:bool=False; request_feed_sequence_floor:int=0; host_custody_receipts:dict[str,HostCustodyReceipt]=field(default_factory=dict); _gate_capability:object=field(default_factory=object,init=False,repr=False,compare=False); _watchdog_capability:object=field(default_factory=object,init=False,repr=False,compare=False); _owner_context_capability:object=field(default_factory=object,init=False,repr=False,compare=False); _ctrl_authority_capability:object=field(default_factory=object,init=False,repr=False,compare=False); _custody_capability:object=field(default_factory=object,init=False,repr=False,compare=False)
     def __setattr__(self, name:str, value:object) -> None:
-        if name=="_host_authority_public_key" and name in self.__dict__: raise InvariantError("host authority verifier is immutable after Swarm construction")
         object.__setattr__(self,name,value)
     @classmethod
-    def with_host_authority(cls, **kwargs:object) -> tuple["Swarm","_HostAuthorityBroker"]:
-        """Composition-root factory: lane state receives only a verifier; host retains signer."""
-        private_key=secrets.randbelow(_HOST_AUTHORITY_PRIME-3)+2; public_key=pow(_HOST_AUTHORITY_GENERATOR,private_key,_HOST_AUTHORITY_PRIME); swarm=cls(_host_authority_public_key=public_key,**kwargs); return swarm,_HostAuthorityBroker(swarm,private_key)
-    @classmethod
-    def from_config(cls, config: dict, *, _host_authority_public_key:int|None=None) -> "Swarm":
+    def from_config(cls, config: dict) -> "Swarm":
         monitoring=config["monitoring"]
         proof=config.get("proof",{})
-        return cls(lane_width=config["coordination"]["preferred_lane_width"], wip_limit=config["efficiency"]["doer_wip_limit"], mode=EfficiencyMode(config["efficiency"]["mode"]), hive_enabled=config.get("hive",{}).get("enabled",True), heartbeat_stall_after=config["recovery"]["stall_after_updates"], task_event_limit=config.get("logging",{}).get("task_event_limit",64), default_review_horizon=monitoring.get("default_review_horizon_minutes",monitoring.get("heartbeat_minutes",30)), max_review_horizon=monitoring.get("max_review_horizon_minutes",60), direct_work_horizon=config["coordination"].get("ctrl_direct_horizon_minutes",20), proof_policy_version=proof.get("policy_version","lean-v1"), proof_impacted_selection=proof.get("impacted_selection",True), proof_receipt_reuse=proof.get("receipt_reuse",True), proof_gate_timeout_seconds=proof.get("gate_timeout_seconds",120), proof_browser_freshness_seconds=proof.get("browser_freshness_seconds",86400), proof_provider_freshness_seconds=proof.get("provider_freshness_seconds",3600), proof_transient_retry_limit=proof.get("transient_retry_limit",1), use_goals=config.get("goals",{}).get("use_goals",True), _host_authority_public_key=_host_authority_public_key)
-    @classmethod
-    def from_config_with_host_authority(cls, config:dict) -> tuple["Swarm","_HostAuthorityBroker"]:
-        private_key=secrets.randbelow(_HOST_AUTHORITY_PRIME-3)+2; public_key=pow(_HOST_AUTHORITY_GENERATOR,private_key,_HOST_AUTHORITY_PRIME); swarm=cls.from_config(config,_host_authority_public_key=public_key); return swarm,_HostAuthorityBroker(swarm,private_key)
+        return cls(lane_width=config["coordination"]["preferred_lane_width"], wip_limit=config["efficiency"]["doer_wip_limit"], mode=EfficiencyMode(config["efficiency"]["mode"]), hive_enabled=config.get("hive",{}).get("enabled",True), heartbeat_stall_after=config["recovery"]["stall_after_updates"], task_event_limit=config.get("logging",{}).get("task_event_limit",64), default_review_horizon=monitoring.get("default_review_horizon_minutes",monitoring.get("heartbeat_minutes",30)), max_review_horizon=monitoring.get("max_review_horizon_minutes",60), direct_work_horizon=config["coordination"].get("ctrl_direct_horizon_minutes",20), proof_policy_version=proof.get("policy_version","lean-v1"), proof_impacted_selection=proof.get("impacted_selection",True), proof_receipt_reuse=proof.get("receipt_reuse",True), proof_gate_timeout_seconds=proof.get("gate_timeout_seconds",120), proof_browser_freshness_seconds=proof.get("browser_freshness_seconds",86400), proof_provider_freshness_seconds=proof.get("provider_freshness_seconds",3600), proof_transient_retry_limit=proof.get("transient_retry_limit",1), use_goals=config.get("goals",{}).get("use_goals",True))
 
     def plan_task_intake(self, *, goal:str, efficiency_strategy:str, domain:str="general", goal_id:str="", profile:GraphProfile|None=None)->IntakePlan:
         """Return the typed intake and graph plan under this runtime's goal policy."""
@@ -1229,10 +1259,13 @@ class Swarm:
     def record_user_ctrl_authorization(self, actor:Role, host_event:HostUserEvent|None) -> UserCtrlAuthorization:
         """Consume one opaque host-minted user event; CTRL feed receipts are insufficient."""
         self._role(actor,{Role.CTRL})
-        message=b"" if host_event is None else _authority_message("CTRL_USER_EVENT",(host_event.receipt,host_event.operation.value,host_event.source_ctrl_id,host_event.target_objective_digest,host_event.target_scope_digest,host_event.target_identity,host_event.issued_at,host_event.event_digest))
-        if host_event is None or not _authority_verify(self._host_authority_public_key,message,host_event._signature): raise InvariantError("HUMAN_AUTHORITY_BLOCKER: CTRL materialization requires host-validated user authorization")
-        if host_event.receipt in self.ctrl_authorizations or host_event.receipt in self.consumed_ctrl_authorizations: raise InvariantError("HUMAN_AUTHORITY_BLOCKER: CTRL authorization is single-use")
-        authorization=UserCtrlAuthorization(host_event.receipt,host_event.operation,host_event.source_ctrl_id,host_event.target_objective_digest,host_event.target_scope_digest,host_event.target_identity,host_event.issued_at,host_event.event_digest); object.__setattr__(authorization,"_authority",self._ctrl_authority_capability); self.ctrl_authorizations[host_event.receipt]=authorization; return authorization
+        raise InvariantError("HUMAN_AUTHORITY_BLOCKER: no host-pinned trust root or IPC verifier is configured; user authority remains UNVERIFIED")
+    def record_host_custody_receipt(self, actor:Role, receipt:HostCustodyReceipt|None) -> HostCustodyReceipt:
+        self._role(actor,{Role.CTRL})
+        raise InvariantError("HUMAN_AUTHORITY_BLOCKER: no host-pinned trust root or IPC verifier is configured; custody remains UNVERIFIED")
+    def require_host_custody(self, actor:Role, mutation:CustodyMutation, target_id:str, now:int, *, target_state_digest:str, receipt:HostCustodyReceipt|None=None) -> HostCustodyReceipt:
+        self._role(actor,{Role.CTRL}); _safe_token(target_id); _require_digest(target_state_digest,"custody target state")
+        raise InvariantError("HUMAN_AUTHORITY_BLOCKER: no host-pinned trust root or IPC verifier is configured; archive custody remains UNVERIFIED")
     def plan_ctrl_materialization(self, actor:Role, authorization:UserCtrlAuthorization|None, *, operation:CtrlOperation, source_ctrl_id:str, target_objective_digest:str, target_scope_digest:str, target_identity:str) -> CtrlMaterializationIntent:
         """Fail closed before any host create/fork/promote/replace/rename call."""
         self._role(actor,{Role.CTRL})
@@ -1829,16 +1862,21 @@ class Swarm:
         if not reason: raise InvariantError("stale tasks require reason provenance")
         def change(): t.__dict__.update(state=TaskState.STALE,stale_at=now,stale_reason=reason,superseded_by=superseded_by); t.promoted.extend(promote or [])
         self._request_guard(task_id=task_id,action=change)
+    def _task_custody_digest(self, task:Task) -> str:
+        return _sha256_text(json.dumps((task.id,task.state.value,task.completed_at,task.stale_at,task.user_custody_required,task.user_state_changed),separators=(",",":"),ensure_ascii=True))
     def groom(self, actor: Role, now: int, policy: dict[str,int]) -> list[str]:
         """Mechanical archive only; archive preserves task provenance and knowledge."""
         self._role(actor,{Role.CTRL}); archived=[]
         delays={ReviewValue.NONE:policy["no_review_archive_delay"],ReviewValue.LOW:policy["low_review_retention"],ReviewValue.HIGH:policy["high_review_retention"]}
         for t in self.tasks.values():
+            if t.user_renamed or t.user_pinned: raise InvariantError("HUMAN_AUTHORITY_BLOCKER: user-renamed or user-pinned state blocks automatic archive")
             if not self.archive_eligible(t): continue
             has_active_dependent=any(other.waiting_on==t.id and other.state in {TaskState.ACTIVE,TaskState.WAITING,TaskState.REVIEW} for other in self.tasks.values())
             if t.state==TaskState.STALE and not has_active_dependent and t.stale_at is not None and now-t.stale_at >= policy["stale_task_archive_delay"]:
+                self.require_host_custody(Role.CTRL,CustodyMutation.ARCHIVE,t.id,now,target_state_digest=self._task_custody_digest(t))
                 self._request_guard(task_id=t.id,action=lambda:(setattr(t,"state",TaskState.ARCHIVED_STALE),setattr(t,"archived_at",now))); archived.append(t.id)
             elif t.state==TaskState.COMPLETE and t.completed_at is not None and now-t.completed_at >= delays[t.review_value]:
+                self.require_host_custody(Role.CTRL,CustodyMutation.ARCHIVE,t.id,now,target_state_digest=self._task_custody_digest(t))
                 self._request_guard(task_id=t.id,action=lambda:(setattr(t,"state",TaskState.ARCHIVED),setattr(t,"archived_at",now))); archived.append(t.id)
         reasons={"completed":0,"stale":0}; ages={"fresh":0,"aged":0}
         for task_id in archived:
@@ -1846,7 +1884,7 @@ class Swarm:
         self.telemetry.update({"archived":self.telemetry.get("archived",0)+len(archived),"pins":sum(t.review_value==ReviewValue.PINNED for t in self.tasks.values()),"active":sum(t.state in {TaskState.ACTIVE,TaskState.WAITING,TaskState.REVIEW} for t in self.tasks.values()),"stale":sum(t.state==TaskState.STALE for t in self.tasks.values()),"restores":self.telemetry.get("restores",0),"extensions":sum(t.extensions for t in self.tasks.values()),"completion_to_archive":{task_id:now-(self.tasks[task_id].completed_at if self.tasks[task_id].completed_at is not None else self.tasks[task_id].stale_at if self.tasks[task_id].stale_at is not None else now) for task_id in archived},"archive_reasons":reasons,"age_buckets":ages}); return archived
     def archive_eligible(self, task:Task) -> bool:
         owner=self.workers.get(task.owner)
-        base=lambda: not self._open_ctrl_evidence(task.id) and not self._open_ctrl_decision_sets(task.id) and not self._uncovered_ctrl_decision_candidates(task.id) and task.review_value!=ReviewValue.PINNED and not any((task.active_goal,task.handoff_active,task.correction_pending,task.user_choice_pending,task.ambiguous,task.state==TaskState.REVIEW,owner is not None and owner.state!=WorkerState.RETIRED and task.id in owner.task_ids)) and not any(other.waiting_on==task.id and other.state in {TaskState.ACTIVE,TaskState.WAITING,TaskState.REVIEW} for other in self.tasks.values())
+        base=lambda: not self._open_ctrl_evidence(task.id) and not self._open_ctrl_decision_sets(task.id) and not self._uncovered_ctrl_decision_candidates(task.id) and task.review_value!=ReviewValue.PINNED and not task.user_renamed and not task.user_pinned and not any((task.active_goal,task.handoff_active,task.correction_pending,task.user_choice_pending,task.ambiguous,task.state==TaskState.REVIEW,owner is not None and owner.state!=WorkerState.RETIRED and task.id in owner.task_ids)) and not any(other.waiting_on==task.id and other.state in {TaskState.ACTIVE,TaskState.WAITING,TaskState.REVIEW} for other in self.tasks.values())
         try: return bool(self._request_guard(task_id=task.id,action=base))
         except InvariantError: return False
     def restore(self, actor:Role, task_id:str, reason:str) -> None:
@@ -1954,14 +1992,3 @@ def derive_workflow_graph(swarm:Swarm) -> WorkflowGraph:
             canonical=min(rotations); diagnostics.add(f"dependency-cycle:{'->'.join((*canonical,canonical[0]))}")
     graph_edges=tuple(WorkflowEdge(*edge) for edge in sorted(edges,key=lambda edge:(edge[0],edge[1],edge[2])))
     return WorkflowGraph(tuple(nodes[key] for key in sorted(nodes)),graph_edges,tuple(sorted(diagnostics)))
-
-class _HostAuthorityBroker:
-    """Host-owned signer; Swarm retains only the corresponding public verifier."""
-    def __init__(self, swarm:Swarm, private_key:int): self._swarm_ref=weakref.ref(swarm); self.__private_key=private_key
-    def _bound_swarm(self) -> Swarm|None: return self._swarm_ref()
-    def mint_user_event(self, *, receipt:str, operation:CtrlOperation, source_ctrl_id:str, target_objective_digest:str, target_scope_digest:str, target_identity:str, issued_at:int, host_event_digest:str) -> HostUserEvent:
-        event=HostUserEvent(receipt,operation,source_ctrl_id,target_objective_digest,target_scope_digest,target_identity,issued_at,host_event_digest); message=_authority_message("CTRL_USER_EVENT",(event.receipt,event.operation.value,event.source_ctrl_id,event.target_objective_digest,event.target_scope_digest,event.target_identity,event.issued_at,event.event_digest)); object.__setattr__(event,"_signature",_authority_sign(self.__private_key,message)); return event
-    def record_external_proof(self, actor:Role, task_id:str, gate:str, *, actor_id:str, evidence_digest:str, observed_at:int) -> GateReceipt:
-        swarm=self._bound_swarm()
-        if swarm is None: raise InvariantError("host authority broker is detached")
-        return swarm._record_host_external_proof(actor,task_id,gate,actor_id=actor_id,evidence_digest=evidence_digest,observed_at=observed_at,host_signature="")

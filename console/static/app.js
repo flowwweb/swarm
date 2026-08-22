@@ -113,7 +113,7 @@ function ctrlLabel(ctrl) {
 function projectGroups() {
   const projects = new Map((state.overview?.projects || []).map((project) => [project.id, project.name]));
   const groups = new Map((state.overview?.projects || [])
-    .filter((project) => Number(project.active_threads ?? project.active) > 0 && !/^https?[-_:]/i.test(String(project.name || "")))
+    .filter((project) => !/^https?[-_:]/i.test(String(project.name || "")))
     .map((project) => [project.id, { id: project.id, label: project.name, controllers: [], standalone: false }]));
   activeControllers().forEach((ctrl) => {
     const id = ctrl.project_id || "ctrl:" + ctrl.id;
@@ -427,7 +427,7 @@ function kanbanState(node) {
 
 function renderKanban() {
   const columns = ["Planned", "In progress", "Attention", "Completed"];
-  const nodes = scopedNodes();
+  const nodes = scopedNodes().filter((node) => !isSubagent(node));
   $("#kanban-summary").textContent = nodes.length ? String(nodes.length) + " task" + (nodes.length === 1 ? '' : 's') : 'No tasks';
   $("#kanban-board").innerHTML = columns.map((column) => {
     const tasks = nodes.filter((node) => kanbanState(node) === column);
