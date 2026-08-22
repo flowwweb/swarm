@@ -21,6 +21,10 @@ for (const label of ["Current work", "Recent images", "Tokens · 24h", "Complete
 }
 assert.match(app, /\/api\/usage-history\?/);
 assert.match(app, /hours: "24"/);
+assert.match(app, /source\.status === 'no_data'/);
+assert.match(app, /Partial coverage/);
+assert.match(app, /Complete coverage/);
+assert.match(app, /source\.coverage\?\.observed_threads/);
 assert.match(app, /project_id: state\.projectId/);
 assert.match(app, /ctrl_id: state\.ctrlId/);
 assert.match(app, /setInterval\(reportPresence, 60_000\)/);

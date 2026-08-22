@@ -417,8 +417,11 @@ function renderUsage() {
   const source = state.usageHistory || {};
   const series = usageSeries();
   const total = Number(source.total_tokens ?? source.tokens ?? source.total ?? source.analytics?.tokens);
+  const observed = Number(source.coverage?.observed_threads);
+  const expected = Number(source.coverage?.expected_threads);
+  const coverage = Number.isFinite(observed) && Number.isFinite(expected) ? String(observed) + ' of ' + String(expected) + ' observed' : '';
   $("#usage-total").textContent = Number.isFinite(total) ? compactNumber(total) : "—";
-  $("#usage-note").textContent = series.length ? "Selected scope" : "No recent history";
+  $("#usage-note").textContent = source.status === 'no_data' ? 'No persisted usage in this scope' : source.status === 'partial' ? ('Partial coverage' + (coverage ? ' · ' + coverage : '')) : source.status === 'ok' ? ('Complete coverage' + (coverage ? ' · ' + coverage : '')) : (series.length ? 'Usage status unavailable' : 'No recent history');
   drawLine($("#usage-sparkline"), series.map((item) => Number(item.delta_tokens ?? item.tokens ?? item.value) || 0), "#46dfd0");
 }
 
