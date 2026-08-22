@@ -106,16 +106,25 @@ function activeControllers() {
   return (state.overview?.nodes || []).filter((node) => String(node.role || "").toLowerCase() === "ctrl" && ["active", "in_progress"].includes(String(node.status || "").toLowerCase()));
 }
 
+function publicLabel(value, fallback = "Untitled") {
+  const label = String(value || "")
+    .replace(/\blocalhost\b/gi, "console")
+    .replace(/\bconsole(?:\s+console)+\b/gi, "console")
+    .replace(/\s+/g, " ")
+    .trim();
+  return label || fallback;
+}
+
 function ctrlLabel(ctrl) {
   const label = ctrl.artifact || ctrl.title || ctrl.id;
-  return String(label).replace(/^[^A-Za-z0-9]*CTRL\s*-\s*/i, "").trim() || "Untitled goal";
+  return publicLabel(String(label).replace(/^[^A-Za-z0-9]*CTRL\s*-\s*/i, ""), "Untitled goal");
 }
 
 function projectGroups() {
-  const projects = new Map((state.overview?.projects || []).map((project) => [project.id, project.name]));
+  const projects = new Map((state.overview?.projects || []).map((project) => [project.id, publicLabel(project.name, "Untitled project")]));
   const groups = new Map((state.overview?.projects || [])
     .filter((project) => !/^https?[-_:]/i.test(String(project.name || "")))
-    .map((project) => [project.id, { id: project.id, label: project.name, controllers: [], standalone: false }]));
+    .map((project) => [project.id, { id: project.id, label: publicLabel(project.name, "Untitled project"), controllers: [], standalone: false }]));
   activeControllers().forEach((ctrl) => {
     const id = ctrl.project_id || "ctrl:" + ctrl.id;
     const label = ctrl.project_id ? (projects.get(ctrl.project_id) || ctrl.project || "Untitled project") : ctrlLabel(ctrl);
@@ -539,9 +548,13 @@ function settingsScopeOptions() {
   const selected = scope.type + '|' + scope.id;
   const options = ['<option value="global|global"' + (selected === 'global|global' ? ' selected' : '') + '>Global defaults</option>'];
   groups.forEach((group) => {
-    const controllers = group.controllers || [];
+    const controllers = [...(group.controllers || [])].sort((a, b) => Number(b.updated_at || 0) - Number(a.updated_at || 0));
     options.push('<option value="project|' + escapeHTML(group.id) + '"' + (selected === 'project|' + group.id ? ' selected' : '') + '>' + escapeHTML(group.label) + ' / project</option>');
-    if (controllers.length) options.push('<optgroup label="' + escapeHTML(group.label) + '">' + controllers.map((ctrl) => '<option value="ctrl|' + escapeHTML(ctrl.id) + '"' + (selected === 'ctrl|' + ctrl.id ? ' selected' : '') + '>' + escapeHTML(group.label + ' / ' + ctrlLabel(ctrl)) + '</option>').join('') + '</optgroup>');
+    if (controllers.length) options.push('<optgroup label="' + escapeHTML(group.label) + '">' + controllers.map((ctrl, index) => {
+      const rawLabel = ctrlLabel(ctrl);
+      const label = rawLabel.localeCompare(group.label, undefined, { sensitivity: "base" }) === 0 ? "CTRL" + (controllers.length > 1 ? " " + String(index + 1) : "") : rawLabel;
+      return '<option value="ctrl|' + escapeHTML(ctrl.id) + '"' + (selected === 'ctrl|' + ctrl.id ? ' selected' : '') + '>' + escapeHTML(group.label + ' / ' + label) + '</option>';
+    }).join('') + '</optgroup>');
   });
   return options.join('');
 }
@@ -604,13 +617,13 @@ function renderSettings() {
   const retention = storage?.retention_days == null ? "" : " · retain " + storage.retention_days + " days";
   const proofFiles = Number(storage?.proof_files) || 0;
   $("#settings-grid").innerHTML =
-    '<section class="panel settings-card"><p class="eyebrow">Settings scope</p><h3>Where changes apply</h3><label class="setting-field">Scope<select id="settings-scope">' + settingsScopeOptions() + '</select></label><p class="scope-setting-status"><strong>' + escapeHTML(selectedCtrl ? (selectedCtrl.project || "Project") + " / " + ctrlLabel(selectedCtrl) : "Global defaults") + '</strong><span>' + escapeHTML(selectedCtrl ? (setting?.customized ? "Custom settings" : "Inherits global defaults") : "Applies to every CTRL unless it has custom settings") + '</span></p>' +
+    '<section class="panel settings-card"><p class="eyebrow">Settings scope</p><h3>Where changes apply</h3><label class="setting-field">Scope<select id="settings-scope">' + settingsScopeOptions() + '</select></label><p class="scope-setting-status"><strong>' + escapeHTML(selectedCtrl ? publicLabel(selectedCtrl.project, "Project") + " / " + ctrlLabel(selectedCtrl) : "Global defaults") + '</strong><span>' + escapeHTML(selectedCtrl ? (setting?.customized ? "Custom settings" : "Inherits global defaults") : "Applies to every CTRL unless it has custom settings") + '</span></p>' +
       (selectedCtrl ? '<div class="ctrl-assignment"><small>Current assignment</small><strong>' + escapeHTML((effective.model || "Model unavailable") + ' · ' + (effective.reasoning || "Reasoning unavailable") + (effective.service_tier ? ' · ' + effective.service_tier : '')) + '</strong></div><label class="toggle-row"><input id="ctrl-customize" type="checkbox"' + (setting?.customized ? ' checked' : '') + '><span>Customize this CTRL separately</span></label>' + (setting?.customized ? '<div class="ctrl-fields"><label>Model<input id="ctrl-model" value="' + escapeHTML(effective.model || '') + '" autocomplete="off"></label><label>Reasoning<select id="ctrl-reasoning">' + reasoningOptions.map((option) => '<option value="' + option + '"' + (option === effective.reasoning ? ' selected' : '') + '>' + option + '</option>').join('') + '</select></label><label>Service tier<input id="ctrl-service-tier" value="' + escapeHTML(effective.service_tier || '') + '" autocomplete="off"></label></div><button class="quiet-button" data-setting-action="save-ctrl" type="button">Save CTRL settings</button>' : '') + '<button class="quiet-button" data-setting-action="reset" type="button"' + (!setting?.customized ? ' disabled' : '') + '>Use global defaults</button>' : '<small>Select a Project / CTRL above to create a permitted per-CTRL override.</small>') + '</section>' +
     '<section class="panel settings-card"><p class="eyebrow">Work routing</p><h3>How work is handled</h3>' +
       settingSelect('execution.max_reasoning', execution.max_reasoning || 'medium', reasoningOptions, 'Default reasoning') +
       '<label class="setting-field">Service tier<input data-config-key="execution.service_tier" value="' + escapeHTML(execution.service_tier || '') + '" autocomplete="off"' + (!configEditable('execution.service_tier') ? ' disabled' : '') + '></label>' +
       settingToggle('execution.usage_saver', execution.usage_saver, 'Use less usage when possible') +
-      settingToggle('boost.spark_enabled', boost.spark_enabled, 'Use Spark for safe small tasks') +
+      settingToggle('boost.spark_enabled', boost.spark_enabled, 'Use Spark for safe small tasks') + '<small>Spark handles quick, low-risk work. Larger or external tasks stay with full agents.</small>' +
       settingSelect('boost.spark_reasoning', boost.spark_reasoning || 'xhigh', reasoningOptions, 'Spark default reasoning') +
       '<details class="settings-advanced" id="settings-advanced"><summary>Advanced settings</summary><div class="ctrl-fields"><label>Spark model<input id="spark-model" value="' + escapeHTML(boost.spark_model || '') + '" autocomplete="off"' + (!configEditable('boost.spark_model') ? ' disabled' : '') + '></label><label>Heartbeat minutes<input id="heartbeat-minutes" data-config-key="monitoring.heartbeat_minutes" type="number" min="1" value="' + escapeHTML(monitoring.heartbeat_minutes || '') + '"' + (!configEditable('monitoring.heartbeat_minutes') ? ' disabled' : '') + '></label></div><button class="quiet-button" data-setting-action="save-spark" type="button"' + (!configEditable('boost.spark_model') ? ' disabled' : '') + '>Save Spark model</button>' + skillsAdvanced(scope) + '</details></section>' +
     '<section class="panel settings-card"><p class="eyebrow">Console and data</p><h3>Keep the workspace predictable</h3>' +
