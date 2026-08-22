@@ -43,6 +43,24 @@ capacity state, or decision owner changes. Use `BLOCKER` only when no permitted
 task or subagent structure can progress. A usage limit alone is adaptation
 evidence for the next safe boundary, not an interruption or blocker.
 
+Storage inventory, archive, cleanup, relocation, and monitoring are a dedicated
+delegable `STORAGE LEAD` lane. Its bounded contract names an exact target manifest,
+exact roots, active-process/live-log/database/dirty-worktree guards, a recoverable
+move or copy-verify-remove, post-operation target and free-space receipts, and
+independent review. CTRL may reconcile storage read-only or make only an explicitly
+authorized narrow host-safety stop; pressure alone never authorizes deletion.
+
+Any substantive lane with a separate artifact or mutable surface, durable or
+resumable ownership, independent progress/review, worktree isolation, a cross-lane
+dependency, user-visible delivery, or a material heartbeat/stall obligation must be
+a visible senior Codex task/chat with its own cwd, owner, and heartbeat. Hidden
+subagents remain bounded sidecar inspection or independent review inside an existing
+lane; they cannot own, accept, hand off, maintain the heartbeat, or replace a visible
+task. The parent CTRL keeps unrelated lanes moving in parallel. The scheduler permits one bounded wake per lane,
+plus a material checkpoint or exact blocker at its due event—no repeated polling. A missing due receipt is stall evidence: reorient the existing owner first,
+then use only an explicitly user-authorized successor with custody/handoff, never a
+silent duplicate, replacement, rename, archive, pin/unpin, or state normalization.
+
 One evidence-backed readiness delay may reschedule once. Repeated misses increase
 severity and route the alert to the next accountable owner; they do not create
 another authority or authorize recovery. Clock and receipt maintenance is the only

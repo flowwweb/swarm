@@ -111,6 +111,36 @@ DOER, TASK, SUBTASK, ASSIST, ADVISOR, and REVIEW work does not automatically own
 a goal. Goal ownership never grants topology, mutation, review, or acceptance
 authority.
 
+## User-state custody and substantive lanes
+
+User-created, renamed, titled, pinned, unpinned, archived, and state-changed host
+tasks always win. SWARM, CTRL, and LEAD cannot undo, normalize, overwrite, revert,
+rebase, rename, pin, unpin, archive, or change that state by inference. A safe
+custody digest may be retained without raw user text, but only the host task API
+can independently consume an explicit-user receipt naming the exact mutation,
+target, and scope. Missing or conflicting custody means no mutation is permitted;
+it fails closed and waits.
+
+Product implementation, storage recovery, deploy preparation, provider integration,
+design-system work, test/review ownership, and any lane with a separate mutable
+surface or artifact, durable/resumable ownership, independent progress or review,
+worktree isolation, a cross-lane dependency, user-visible delivery, or multiple
+checkpoints/delegation are substantive: they require a visible senior Codex
+task/chat with its own cwd, owner, and heartbeat. Hidden or short-lived subagents
+are only bounded sidecar inspection or independent review; they cannot own, accept,
+hand off, or maintain a lane heartbeat. The parent CTRL keeps unrelated senior
+lanes moving in parallel and integrates only exact receipts. A missing due material
+checkpoint is stall evidence; reorient the existing owner first, and open a
+successor only when user-authorized topology permits it with explicit custody and
+handoff.
+
+Storage inventory, archive, cleanup, relocation, and monitoring are a dedicated
+delegable STORAGE LEAD lane. It owns a bounded exact target manifest, exact-root,
+active-process, live-log, database, and dirty/current-worktree guards, recoverable
+move or copy-verify-remove, post-operation target/free-space receipts, and
+independent review. CTRL retains topology, ownership, proof, blockers, and
+acceptance; storage pressure alone never authorizes destructive inference.
+
 ## Authority
 
 CTRL owns the durable accepted-request inventory and human route; a LEAD owns each delegated request's live task and evidence transitions. Stored history never restores authority after restart. WATCHDOG may alert an eligible bound owner about a valid request, while orphaned records return only to CTRL's completion audit and never manufacture a sensor identity or correction.

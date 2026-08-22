@@ -92,11 +92,11 @@ class RoutingEconomics:
 
 @dataclass(frozen=True)
 class WorkRoutingFacts:
-    size:WorkSize; bounded:bool; low_risk:bool; mutable_surface_count:int; independent_work:bool=False; independent_acceptance:bool=False; separate_handoff:bool=False; useful_durable_boundary:bool=False; interruption_safe_resumption:bool=False; worktree_isolation:bool=False; independent_review:bool=False; work_kind:WorkKind=WorkKind.GENERAL
+    size:WorkSize; bounded:bool; low_risk:bool; mutable_surface_count:int; independent_work:bool=False; independent_acceptance:bool=False; separate_handoff:bool=False; useful_durable_boundary:bool=False; interruption_safe_resumption:bool=False; worktree_isolation:bool=False; independent_review:bool=False; work_kind:WorkKind=WorkKind.GENERAL; user_visible_delivery:bool=False; cross_lane_dependency:bool=False; material_heartbeat_obligation:bool=False
     def __post_init__(self):
         if not isinstance(self.size,WorkSize) or not isinstance(self.mutable_surface_count,int) or self.mutable_surface_count<1 or not isinstance(self.work_kind,WorkKind): raise InvariantError("routing facts require typed size, work kind, and at least one mutable surface")
     def requires_designer(self)->bool: return self.work_kind in {WorkKind.DESIGN,WorkKind.IMAGEGEN,WorkKind.IMAGE_EDIT}
-    def requires_durable_lane(self)->bool: return self.size is WorkSize.LARGE or self.requires_designer() or any((self.independent_acceptance,self.separate_handoff,self.useful_durable_boundary,self.interruption_safe_resumption,self.worktree_isolation,self.independent_review))
+    def requires_durable_lane(self)->bool: return self.size is WorkSize.LARGE or self.requires_designer() or any((self.independent_acceptance,self.separate_handoff,self.useful_durable_boundary,self.interruption_safe_resumption,self.worktree_isolation,self.independent_review,self.user_visible_delivery,self.cross_lane_dependency,self.material_heartbeat_obligation))
 
 @dataclass(frozen=True)
 class HostCapacityEvidence:
@@ -114,19 +114,19 @@ class ExecutionRoutingDecision:
 def _route_candidate(*, facts:WorkRoutingFacts, economics:RoutingEconomics, capacity:HostCapacityEvidence, accountable_owner:str, lead_owner:str, immutable_checkpoint:str, resumption_marker:str, affected_gates:tuple[str,...]) -> ExecutionRoutingDecision:
     owner=accountable_owner.strip() if isinstance(accountable_owner,str) else ""; lead=lead_owner.strip() if isinstance(lead_owner,str) else ""
     if not owner: raise InvariantError("routing requires an explicit accountable owner")
-    required=facts.requires_durable_lane()
+    visible_task_required=facts.requires_durable_lane()
     economic_task=facts.independent_work and economics.critical_path_savings_ms>economics.task_overhead_ms
-    prefer_task=required or economic_task
+    prefer_task=visible_task_required or economic_task
     if prefer_task and capacity.task_status is HostTaskCapacity.AVAILABLE:
         if not lead or lead.upper()==Role.CTRL.value: raise InvariantError("delegated task routing requires CTRL -> LEAD -> DOER authority")
-        reason="required durable ownership boundary" if required else "parallel savings exceed measured task overhead"
+        reason="visible senior task/chat required by an explicit durable lane boundary" if visible_task_required else "parallel savings exceed measured task overhead"
         return ExecutionRoutingDecision(ExecutionRoute.NORMAL_TASK,lead,(Role.CTRL.value,Role.LEAD.value,Role.DOER.value),reason,capacity.receipt,economics)
     if prefer_task and capacity.subagents_available and not facts.requires_designer():
         if not all(isinstance(value,str) and value.strip() for value in (immutable_checkpoint,resumption_marker)) or not affected_gates: raise InvariantError("degraded subagent routing requires an immutable checkpoint, resumption marker, and unverified gates")
         exception={HostTaskCapacity.UNAVAILABLE:DegradedCapacityException.TASK_UNAVAILABLE,HostTaskCapacity.REJECTED:DegradedCapacityException.TASK_REJECTED,HostTaskCapacity.USAGE_LIMITED:DegradedCapacityException.TASK_USAGE_LIMITED}.get(capacity.task_status)
         if exception is None: raise InvariantError("degraded subagent routing requires an exact task-capacity failure")
         return ExecutionRoutingDecision(ExecutionRoute.DEGRADED_SUBAGENT,owner,(owner,"SUBAGENT"),"task lane required but host capacity forced bounded non-authoritative help",capacity.receipt,economics,exception,immutable_checkpoint,resumption_marker,affected_gates)
-    normal_subagent=facts.size is WorkSize.SMALL and facts.bounded and facts.low_risk and facts.mutable_surface_count==1 and not facts.requires_durable_lane() and economics.critical_path_savings_ms<=economics.task_overhead_ms
+    normal_subagent=facts.size is WorkSize.SMALL and facts.bounded and facts.low_risk and facts.mutable_surface_count==1 and not visible_task_required and economics.critical_path_savings_ms<=economics.task_overhead_ms
     if not prefer_task and normal_subagent and capacity.subagents_available:
         return ExecutionRoutingDecision(ExecutionRoute.NORMAL_SUBAGENT,owner,(owner,"SUBAGENT"),"bounded small-to-medium slice costs less inside the accountable owner",capacity.receipt,economics)
     if capacity.task_status is HostTaskCapacity.AVAILABLE:

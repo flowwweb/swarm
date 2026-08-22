@@ -1,4 +1,4 @@
-const state = { token: "", overview: null, proof: [], proofSequence: 0, diagnostics: null, diagnosticHistory: [], health: null, storage: null, config: null, ctrlSettings: null, view: "overview", projectId: "all", ctrlId: "" };
+const state = { token: "", overview: null, proof: [], proofSequence: 0, usageHistory: null, diagnostics: null, diagnosticHistory: [], health: null, storage: null, config: null, ctrlSettings: null, view: "overview", projectId: "all", ctrlId: "" };
 const $ = (selector, root = document) => root.querySelector(selector);
 const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
 
@@ -316,12 +316,78 @@ function renderBurnRate() {
   drawLine($("#burn-chart"), values, "#46dfd0");
 }
 
+function observedTasks(nodes) {
+  return nodes.filter((node) => !isSubagent(node) && String(node.role || "").toLowerCase() !== "ctrl");
+}
+
+function overviewCards(nodes) {
+  if (state.ctrlId) return [{ label: scopeLabel(), ctrlId: state.ctrlId, nodes }];
+  const projectName = (projectId, projectNodes) => (state.overview?.projects || []).find((project) => project.id === projectId)?.name || projectNodes[0]?.project || "Independent work";
+  const cardsForProject = (projectId, projectNodes) => {
+    const projectControllers = projectNodes.filter((node) => !isSubagent(node) && String(node.role || "").toLowerCase() === "ctrl");
+    if (projectControllers.length < 2) return [{ label: projectName(projectId, projectNodes), ctrlId: projectControllers[0]?.id || "", nodes: projectNodes }];
+    return projectControllers.map((ctrl) => ({ label: projectName(projectId, projectNodes) + " · " + ctrlLabel(ctrl), ctrlId: ctrl.id, nodes: projectNodes.filter((node) => node.id === ctrl.id || (node.controller_ids || []).includes(ctrl.id)) }));
+  };
+  if (state.projectId !== "all") return cardsForProject(state.projectId, nodes);
+  const projects = new Map((state.overview?.projects || []).filter((project) => !/^https?[-_:]/i.test(String(project.name || ""))).map((project) => [project.id, []]));
+  nodes.forEach((node) => {
+    const projectId = node.project_id || "independent";
+    const list = projects.get(projectId) || [];
+    list.push(node); projects.set(projectId, list);
+  });
+  return [...projects.entries()].flatMap(([projectId, projectNodes]) => cardsForProject(projectId, projectNodes));
+}
+
+function latestReceipt(nodes) {
+  const allowed = new Set(nodes.map((node) => node.id));
+  return state.proof.find((item) => allowed.has(item.task_id)) || null;
+}
+
+function renderMonitoringCards(nodes) {
+  const cards = overviewCards(nodes);
+  const tree = taskTree(nodes);
+  $("#overview-summary").textContent = cards.length ? String(cards.length) + " active scope" + (cards.length === 1 ? "" : "s") : "No observed work yet";
+  $("#monitoring-cards").innerHTML = cards.length ? cards.map((card) => {
+    const tasks = observedTasks(card.nodes);
+    const completed = tasks.filter((task) => ["done", "archived"].includes(String(task.status).toLowerCase())).length;
+    const total = tasks.length;
+    const percent = total ? Math.round((completed / total) * 100) : 0;
+    const blocker = tasks.find((task) => ["blocked", "at_risk", "stalled", "critical"].includes(String(task.eta?.status || task.status).toLowerCase()));
+    const receipt = latestReceipt(card.nodes);
+    const primary = card.nodes.find((node) => node.id === card.ctrlId) || tasks[0];
+    const stateLabel = primary ? statusLabel(primary)[0] : "No task state";
+    const subagents = card.ctrlId ? subagentDescendants(card.ctrlId, tree) : [];
+    const subagentDisclosure = subagents.length ? '<details class="monitoring-subagents" data-overview-subagents="' + escapeHTML(card.ctrlId) + '"><summary>' + subagents.length + ' supporting subagent' + (subagents.length === 1 ? '' : 's') + '</summary><ul>' + subagents.map((node) => '<li><strong>' + escapeHTML(node.artifact || node.title || node.id) + '</strong><span>' + escapeHTML(statusLabel(node)[0]) + '</span></li>').join('') + '</ul></details>' : '';
+    return '<article class="monitoring-card panel"><header><div><p class="eyebrow">' + escapeHTML(stateLabel) + '</p><h3>' + escapeHTML(card.label) + '</h3></div><span>' + completed + ' / ' + total + '</span></header><div class="meter" aria-label="' + completed + ' of ' + total + ' observed tasks completed"><i style="width:' + percent + '%"></i></div><p class="meter-label">Completed ' + completed + ' / ' + total + ' observed tasks</p><dl><div><dt>First blocker</dt><dd>' + escapeHTML(blocker?.artifact || "None observed") + '</dd></div><div><dt>Latest receipt</dt><dd>' + escapeHTML(receipt?.caption || receipt?.kind || "None received") + '</dd></div></dl>' + subagentDisclosure + '</article>';
+  }).join("") : '<p class="empty-state">No observed project or CTRL work in this scope.</p>';
+}
+
+function renderEvidenceGallery(nodes) {
+  const allowed = new Set(nodes.map((node) => node.id));
+  const images = state.proof.filter((item) => allowed.has(item.task_id) && item.evidence_id && item.digest && String(item.media_type || "").startsWith("image/"));
+  $("#evidence-note").textContent = images.length ? String(images.length) + " recent image" + (images.length === 1 ? "" : "s") : "No images received";
+  $("#evidence-gallery").innerHTML = images.length ? images.slice(0, 6).map((item) => '<figure><img loading="lazy" decoding="async" src="/api/proof-media/' + encodeURIComponent(item.evidence_id) + '?digest=' + encodeURIComponent(item.digest) + '" alt="' + escapeHTML(item.caption || "Evidence image") + '"><figcaption>' + escapeHTML(item.caption || "Image evidence") + '</figcaption></figure>').join("") : '<p class="empty-state">Images appear here when they are received.</p>';
+}
+
+function usageSeries() {
+  const source = state.usageHistory || {};
+  return source.history || source.items || [];
+}
+
+function renderUsage() {
+  const source = state.usageHistory || {};
+  const series = usageSeries();
+  const total = Number(source.total_tokens ?? source.tokens ?? source.total ?? source.analytics?.tokens);
+  $("#usage-total").textContent = Number.isFinite(total) ? compactNumber(total) : "—";
+  $("#usage-note").textContent = series.length ? "Selected scope" : "No recent history";
+  drawLine($("#usage-sparkline"), series.map((item) => Number(item.delta_tokens ?? item.tokens ?? item.value) || 0), "#46dfd0");
+}
+
 function renderOverview() {
   const nodes = scopedNodes();
-  renderMetrics(nodes);
-  renderTable(nodes);
-  renderProof(nodes);
-  renderBurnRate();
+  renderMonitoringCards(nodes);
+  renderEvidenceGallery(nodes);
+  renderUsage();
   $("#sync-time").textContent = state.overview?.generated_at ? "Updated " + formatRelative(state.overview.generated_at) : "Ready";
 }
 
@@ -431,17 +497,32 @@ function renderSettings() {
     '<section class="panel settings-card"><p class="eyebrow">Data</p><h3>' + escapeHTML(storage?.bytes == null ? 'Storage details unavailable' : formatBytes(storage.bytes) + ' saved history' + retention) + '</h3><p>Progress, ETAs, proof, and token history stay available between sessions' + (proofFiles ? ' · ' + proofFiles + ' proof file' + (proofFiles === 1 ? '' : 's') : '') + '.</p><div class="settings-actions-inline"><button class="quiet-button" data-setting-action="clear" type="button">Clear history</button><button class="quiet-button" data-setting-action="restore" type="button">Restore defaults</button></div><small>Clearing history leaves your tasks unchanged. Restoring defaults keeps your history.</small></section>';
 }
 
-function renderAllViews() { renderOverview(); renderHierarchy(); renderKanban(); renderDiagnostics(); renderOverviewDiagnostics(); renderSettings(); }
+function renderAllViews() { renderOverview(); renderHierarchy(); renderKanban(); renderDiagnostics(); renderSettings(); }
 
 async function refreshProof() {
   const params = new URLSearchParams();
   if (state.projectId !== "all" && !state.projectId.startsWith("ctrl:")) params.set("project_id", state.projectId);
-  if (state.ctrlId) params.set("task_id", state.ctrlId);
   try {
     const result = await api('/api/proof-feed' + (params.size ? '?' + params.toString() : ''));
     state.proof = result.items || [];
     state.proofSequence = Number(result.sequence) || 0;
   } catch { state.proof = []; }
+}
+
+async function refreshUsageHistory() {
+  const params = new URLSearchParams({ project_id: state.projectId, ctrl_id: state.ctrlId, hours: "24" });
+  try { state.usageHistory = await api('/api/usage-history?' + params.toString()); }
+  catch { state.usageHistory = null; }
+}
+
+async function refreshMonitoring(proofSequence) {
+  try {
+    state.overview = await api("/api/overview");
+    renderProjectNavigation();
+    await refreshUsageHistory();
+    if (Number(proofSequence) !== state.proofSequence) await refreshProof();
+    renderOverview();
+  } catch { /* The next manual refresh can recover the complete screen. */ }
 }
 
 async function refreshCtrlSettings() {
@@ -451,13 +532,13 @@ async function refreshCtrlSettings() {
   catch { state.ctrlSettings = null; }
 }
 
-async function refreshOverview() {
-  setLoading(true);
+async function refreshOverview(showLoading = true) {
+  if (showLoading) setLoading(true);
   clearError();
   try {
     state.overview = await api("/api/overview");
     renderProjectNavigation();
-    await refreshProof();
+    await Promise.all([refreshProof(), refreshUsageHistory()]);
     const selectedCtrl = state.ctrlId || activeControllers()[0]?.id || '';
     const results = await Promise.allSettled([api('/api/diagnostics'), api('/api/diagnostics/history?limit=24'), api('/api/health/settings'), api('/api/storage'), selectedCtrl ? api('/api/ctrl-settings?ctrl_id=' + encodeURIComponent(selectedCtrl)) : Promise.resolve(null), api('/api/config')]);
     [state.diagnostics, state.diagnosticHistory, state.health, state.storage, state.ctrlSettings, state.config] = results.map((result) => result.status === 'fulfilled' ? result.value : null);
@@ -466,7 +547,7 @@ async function refreshOverview() {
   } catch (error) {
     showError(error.message);
   } finally {
-    setLoading(false);
+    if (showLoading) setLoading(false);
   }
 }
 
@@ -488,10 +569,7 @@ async function reportPresence() {
   try {
     const receipt = await api("/api/presence", { method: "POST" });
     const sequence = Number(receipt.proof_sequence) || 0;
-    if (sequence !== state.proofSequence) {
-      await refreshProof();
-      renderOverview();
-    }
+    await refreshMonitoring(sequence);
   } catch { /* Presence is advisory. */ }
 }
 
@@ -527,7 +605,7 @@ $("#project-navigation").addEventListener("click", (event) => {
     state.ctrlId = "";
     renderProjectNavigation();
     renderAllViews();
-    Promise.all([refreshProof(), refreshCtrlSettings()]).then(renderAllViews);
+    Promise.all([refreshProof(), refreshCtrlSettings(), refreshUsageHistory()]).then(renderAllViews);
     return;
   }
   const scope = event.target.closest("[data-project-id]");
@@ -537,7 +615,7 @@ $("#project-navigation").addEventListener("click", (event) => {
   state.ctrlId = scope.dataset.ctrlId || "";
   renderProjectNavigation();
   renderAllViews();
-  Promise.all([refreshProof(), refreshCtrlSettings()]).then(renderAllViews);
+  Promise.all([refreshProof(), refreshCtrlSettings(), refreshUsageHistory()]).then(renderAllViews);
 });
 $("#refresh").addEventListener("click", refreshOverview);
 $("#retry").addEventListener("click", refreshOverview);

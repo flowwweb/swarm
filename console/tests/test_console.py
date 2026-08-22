@@ -386,6 +386,69 @@ class SwarmConsoleTests(unittest.TestCase):
         self.assertEqual(sum(item["delta_tokens"] for item in history), 40)
         self.assertEqual(restarted.storage_stats()["counts"]["token_samples"], 3)
 
+    def test_usage_history_validates_project_and_ctrl_scopes_without_observing(self) -> None:
+        app = console.App(self.codex_home, self.config)
+        overview = {
+            "nodes": [
+                {"id": "ctrl-a", "project_id": "project:a", "role": "ctrl", "virtual": False, "controller_ids": ["ctrl-a"]},
+                {"id": "task-a", "project_id": "project:a", "role": "doer", "virtual": False, "controller_ids": ["ctrl-a"]},
+                {"id": "ctrl-b", "project_id": "project:b", "role": "ctrl", "virtual": False, "controller_ids": ["ctrl-b"]},
+            ],
+        }
+        history = [{"bucket_ms": 1, "delta_tokens": 7, "source": "host_reported_cumulative_delta"}]
+        with mock.patch.object(app, "_host_overview", return_value=overview), \
+             mock.patch.object(app.store, "token_history", return_value=history) as token_history, \
+             mock.patch.object(app.store, "token_sample_thread_count", return_value=1), \
+             mock.patch.object(app, "observe_once", side_effect=AssertionError("usage observation")):
+            result = app.usage_history(project_id="project:a", ctrl_id="ctrl-a", hours=24)
+            all_projects = app.usage_history(hours=24)
+        self.assertEqual(result["status"], "partial")
+        self.assertEqual(result["coverage"], {"observed_threads": 1, "expected_threads": 2})
+        self.assertEqual(all_projects["status"], "partial")
+        self.assertEqual(all_projects["coverage"], {"observed_threads": 1, "expected_threads": 3})
+        self.assertEqual(result["total_tokens"], 7)
+        self.assertEqual(set(result["status_claim"]), {"no_data", "partial", "ok"})
+        token_history.assert_has_calls([
+            mock.call(project_id=None, thread_ids={"ctrl-a", "task-a"}, hours=24),
+            mock.call(project_id=None, thread_ids=None, hours=24),
+        ])
+        self.assertEqual(token_history.call_count, 2)
+        with mock.patch.object(app, "_host_overview", return_value=overview):
+            with self.assertRaises(console.ConsoleError):
+                app.usage_history(project_id="missing", hours=24)
+            with self.assertRaises(console.ConsoleError):
+                app.usage_history(project_id="project:a", ctrl_id="ctrl-b", hours=24)
+            with self.assertRaises(console.ConsoleError):
+                app.usage_history(hours=721)
+
+    def test_progress_summary_counts_observed_tasks_without_fabricating_percentages(self) -> None:
+        nodes = [
+            {"id": "done", "project_id": "project:a", "role": "doer", "status": "done", "virtual": False, "is_subagent": False, "controller_ids": ["ctrl-a"], "proof_snapshot": {"media": [{"evidence_id": "proof-1"}]}},
+            {"id": "blocked", "project_id": "project:a", "role": "doer", "status": "quiet", "virtual": False, "is_subagent": False, "controller_ids": ["ctrl-a"], "eta": {"status": "blocked", "reason": "Dependency is not complete."}, "proof_snapshot": {"media": []}},
+            {"id": "subagent", "project_id": "project:a", "role": "doer", "status": "done", "virtual": False, "is_subagent": True, "controller_ids": ["ctrl-a"]},
+        ]
+        summary = console.App._progress_for_nodes(nodes, {"type": "ctrl", "ctrl_id": "ctrl-a", "project_id": "project:a"})
+        self.assertEqual(summary["counts"], {"tasks": 2, "completed": 1, "blocked": 1})
+        self.assertEqual(summary["tasks"][0]["latest_proof_receipt"], "proof-1")
+        self.assertEqual(summary["tasks"][1]["blocker"], "Dependency is not complete.")
+        def mapping_keys(value: object):
+            if isinstance(value, dict):
+                for key, child in value.items():
+                    yield str(key).casefold()
+                    yield from mapping_keys(child)
+            elif isinstance(value, list):
+                for child in value:
+                    yield from mapping_keys(child)
+
+        self.assertFalse(any("percent" in key for key in mapping_keys(summary)))
+
+    def test_console_usage_route_is_read_only_and_has_no_host_mutation_authority(self) -> None:
+        source = SERVER.read_text(encoding="utf-8")
+        self.assertIn('if path == "/api/usage-history":', source)
+        self.assertIn('if path == "/api/progress":', source)
+        for rejected in ("USER_CUSTODY_OPERATIONS", "prepare_user_mutation", "user_custody_receipts"):
+            self.assertNotIn(rejected, source)
+
     def test_eta_heartbeat_appends_a_stale_progress_revision(self) -> None:
         path = self.root / "console" / "eta.sqlite3"
         now = int(time.time() * 1000)
@@ -874,7 +937,7 @@ class SwarmConsoleTests(unittest.TestCase):
     def test_console_ui_fixture_is_structurally_valid(self) -> None:
         fixture_path = Path(__file__).parent / "fixtures" / "console-ui.json"
         fixture = json.loads(fixture_path.read_text(encoding="utf-8"))
-        self.assertEqual(set(fixture), {"bootstrap", "config", "overview", "proofFeed", "diagnostics", "diagnosticHistory", "healthSettings", "storage", "ctrlSettings"})
+        self.assertEqual(set(fixture), {"bootstrap", "config", "overview", "proofFeed", "usageHistory", "diagnostics", "diagnosticHistory", "healthSettings", "storage", "ctrlSettings"})
         self.assertFalse(fixture["config"]["settings"]["execution"]["usage_saver"])
         self.assertIn("execution.usage_saver", fixture["config"]["editable"])
         self.assertTrue(fixture["config"]["settings"]["console"]["open_on_start"])

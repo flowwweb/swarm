@@ -7,11 +7,22 @@ description: Compact SWARM coordination doctrine for directing coordinated codin
 
 ## START
 
-**Step 0, never defer:** For an unassigned user-facing task explicitly told by the user to use SWARM, derive a concise specific objective, resolve `role_icons`, set the current task title to `🐙CTRL - <objective>` (or `CTRL - <objective>` only when `role_icons.enabled = false`), and pin it. Verify both receipts before durable-goal inspection, topology, research, any other tool work, or substantive commentary. If either host control is unavailable or fails, state the exact blocker and continue only with truthful internal CTRL identity; never claim the UI changed. A task assigned by an existing CTRL keeps its assigned role. A CTRL cannot create, fork, promote, replace, rename, recover-as-new, or link a successor CTRL unless the user explicitly requests that exact operation. The plugin may prepare a typed single-use request bound to source CTRL, target identity, objective, and scope, but code running in its interpreter cannot authorize the host action. The actual Codex task API must independently consume a host-owned user receipt; without that host enforcement the request is non-authoritative and no new CTRL may be created. Adjacent work stays inside the current CTRL or returns to the user.
+User action has custody precedence. User-created, renamed, titled, pinned, unpinned,
+archived, and state-changed host tasks always win; SWARM, CTRL, and LEAD never
+undo, normalize, overwrite, revert, rebase, rename, pin, unpin, archive, or
+change them by inference. The coordination/runtime request ledger may retain a
+safe custody digest and state receipt without raw user text, but the console has
+no host-task mutation authority. A rename, pin/archive, title, or state mutation
+requires the host task API to independently consume a current host-owned
+explicit-user receipt naming the exact operation, target, and scope. If that
+receipt or custody verification is absent or conflicts, no mutation is permitted:
+fail closed, surface the conflict, and wait.
 
-After those host receipts, invoke the sibling `scripts/swarm_console.py --start` once. It obeys `console.open_on_start`, reuses the local server and an already-open portal tab, and opens the portal in the default browser only when needed. A launcher or browser failure is advisory and never blocks SWARM work.
+**Step 0, never defer:** For an unassigned user-facing task explicitly told by the user to use SWARM, derive a concise specific objective and resolve `role_icons`. Before any title or pin request, obtain a fresh host-owned receipt proving SWARM custody and confirming that no user-created, renamed, titled, pinned, unpinned, archived, or state-changed task state is present. Only then may the host task API request the exact `🐙CTRL - <objective>` title (or `CTRL - <objective>` when `role_icons.enabled = false`) and pin; verify both receipts. Otherwise preserve the current user state and continue only with truthful internal CTRL identity. If either host control is unavailable or fails, state the exact blocker and never claim the UI changed. A task assigned by an existing CTRL keeps its assigned role. A CTRL cannot create, fork, promote, replace, rename, recover-as-new, or link a successor CTRL unless the user explicitly requests that exact operation. The plugin may prepare a typed single-use request bound to source CTRL, target identity, objective, and scope, but code running in its interpreter cannot authorize the host action. The actual Codex task API must independently consume a host-owned user receipt; without that host enforcement the request is non-authoritative and no new CTRL may be created. Adjacent work stays inside the current CTRL or returns to the user.
 
-After the Step 0 receipts, always ask and capture both intake answers before routing: **What is the goal for this task?** and **What is the most efficient safe way to complete it?** A one-shot user prompt may already contain the answers; CTRL must still restate the goal and proposed efficiency strategy so the two fields are inspectable before it proceeds. Then inspect or create exactly one matching durable goal when `goals.use_goals = true` (the default), and record its objective, canonical artifact/mutable surface, owners, dependencies, accepting route, proof, and claim limits. When `goals.use_goals = false`, retain the same intake and graph receipt but do not create or continue a durable goal; the setting is an explicit persistence choice, not permission to skip intake. Reuse only when objective, surface, and accepting route match; a pending creation receipt reserves that identity. Stop a disproved duplicate before mutation and archive it after resolution. For goal ownership, title rules, duplicate prevention, visible-lane economics, delegation exceptions, role selection, and topology, load [hierarchy.md](references/hierarchy.md).
+After the Step 0 custody check—whether it produced an eligible SWARM receipt or preserved existing user state—invoke the sibling `scripts/swarm_console.py --start` once. It obeys `console.open_on_start`, reuses the local server and an already-open portal tab, and opens the portal in the default browser only when needed. A launcher or browser failure is advisory and never blocks SWARM work.
+
+After the Step 0 custody check, always ask and capture both intake answers before routing: **What is the goal for this task?** and **What is the most efficient safe way to complete it?** A one-shot user prompt may already contain the answers; CTRL must still restate the goal and proposed efficiency strategy so the two fields are inspectable before it proceeds. Then inspect or create exactly one matching durable goal when `goals.use_goals = true` (the default), and record its objective, canonical artifact/mutable surface, owners, dependencies, accepting route, proof, and claim limits. When `goals.use_goals = false`, retain the same intake and graph receipt but do not create or continue a durable goal; the setting is an explicit persistence choice, not permission to skip intake. Reuse only when objective, surface, and accepting route match; a pending creation receipt reserves that identity. Stop a disproved duplicate before mutation and archive it after resolution. For goal ownership, title rules, duplicate prevention, visible-lane economics, delegation exceptions, role selection, and topology, load [hierarchy.md](references/hierarchy.md).
 
 Immediately after that receipt—and before topology or work—use `swarm_contract.py request` to `list` then `audit` the exact repository and reconcile every unresolved request. A missing store returns empty/unattached without writing; enable continuity only with an explicit absolute repo root before consequential request work. Intake stages non-runnable `REQUEST_PENDING`, publishes its reserved-ID `DECISION`, calls live `register`, verifies the digest, then activates. Serialized bridge calls are read-only. New input may reprioritize but never replace open work. Persist each typed event cursor and digest; after restart, a new current event must exceed its persisted feed-sequence floor without replaying old feed objects. Audit again before closeout/archive; any unresolved, orphaned, invalid, or provisional record blocks the claim. Missing/corrupt receipts are `UNVERIFIED`, never an empty ledger.
 
@@ -47,6 +58,22 @@ when the host returns the actual Spark model and a matching host receipt.
 
 ## CTRL OPERATOR BOUNDARY
 
+Any substantive lane—product implementation, storage recovery, deploy preparation,
+provider integration, design system, test/review ownership, or work with multiple
+checkpoints or delegation—must be a visible senior Codex task/chat with its own
+cwd, owner, and heartbeat. A hidden or short-lived subagent is only a bounded
+sidecar inspection or independent review; it cannot be the sole owner or bottleneck.
+The parent CTRL keeps unrelated senior lanes moving in parallel and integrates only
+exact receipts. Each senior lane owes a material checkpoint or exact blocker at its
+due event; a missing due receipt is stall evidence, so reorient the existing owner
+first. A successor is permitted only when the user-authorized topology allows it and
+must carry an explicit custody/handoff; never silently duplicate, replace, rename,
+archive, or alter the old lane or user state.
+
+Only genuinely small, single-surface, low-risk `GENERAL` inspection or review may
+remain eligible for a bounded sidecar subagent; that exception never grants lane
+ownership, handoff, heartbeat, acceptance, or host mutation authority.
+
 CTRL is the operator/orchestrator, not the producer. Keep the small-work
 exception: `CTRL_DIRECT` is valid for one low-risk, atomic `GENERAL` outcome
 when measured coordination overhead costs more than the work. That exception
@@ -71,6 +98,16 @@ acceptance authority. Task-local scope is the default, and persistent/global
 installation needs its own explicit host/user authorization. A designer may
 therefore use an approved image-generation skill without turning CTRL into the
 designer.
+
+Storage inventory, archive, cleanup, relocation, and monitoring form a delegable
+dedicated `STORAGE LEAD` lane. CTRL keeps unrelated project lanes open and owns
+topology, ownership, proof, blockers, and acceptance only. CTRL storage work is
+limited to read-only reconciliation or an explicitly authorized, narrowly bounded
+host-safety stop; long-running copy, move, or delete work is always delegated.
+The STORAGE LEAD uses an exact target manifest, exact-root and active-process,
+live-log, database, and dirty/current-worktree guards, then performs a recoverable
+move or copy-verify-remove and returns target and free-space receipts for independent
+review. Storage pressure alone never authorizes destructive inference.
 
 ## CORE
 
@@ -118,4 +155,4 @@ When material previews form one decision set, surface each promptly and also pro
 
 Emit only a material result, inspectable proof, steerable decision, exact blocker with recovery, acceptance verdict, release state, or direct answer to a topology question. Lead with the user outcome, then the smallest decisive inline proof, then remaining risk and next material checkpoint only when non-empty. Never lead with task activity, role inventory, commands, paths, or a tool run; never use fixed word/count/keyword caps. For visual/browser work, a fresh representative capture is required unless capture is exactly blocked; for nonvisual work, show a compact excerpt, table, or before/after proof.
 
-Before a finite portfolio, lane, review, migration, audit, or one-off task ends, its accepting owner inventories every visible task it created or superseded. Keep only work with a concrete active goal, dependency, correction, handoff, user choice, or continuation; otherwise release ownership/leases, make it terminal, unpin, archive through the host control, and verify the receipt. Archive failure is an exact CTRL blocker, never a silently completed task. Archive a finite CTRL after its final handoff.
+Before a finite portfolio, lane, review, migration, audit, or one-off task ends, its accepting owner inventories every visible task it created or superseded. Keep only work with a concrete active goal, dependency, correction, handoff, user choice, or continuation. For SWARM-created state whose current custody is independently verified, the host task API may release ownership/leases, make it terminal, unpin, or archive only with the matching receipt, and must verify that receipt. User-created, renamed, titled, pinned, unpinned, archived, or state-changed tasks remain untouched absent an exact host-owned explicit-user receipt naming that mutation. No unconditional unpin/archive is permitted. Archive failure is an exact CTRL blocker, never a silently completed task. Archive a finite CTRL after its final handoff only under the same custody guard.

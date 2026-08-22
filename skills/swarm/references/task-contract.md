@@ -11,11 +11,14 @@ CTRL root, explicit dependencies, independent parallel lanes, and visible
 medium/large task ownership.
 
 For every user-authorized new SWARM objective, the opening user-visible task completes mandatory
-Step 0 first: derive a concise specific objective, use the host task-title tool to set
-`🐙CTRL - <objective>` by default, pin the task, and verify both receipts. Only
-`role_icons.enabled = false` removes title emojis. If a tool is unavailable or a receipt fails, state the exact blocker
-and continue only with truthful internal CTRL identity. Only then create or
-continue exactly one matching durable goal before routing work. Its contract
+Step 0 first: derive a concise specific objective and resolve `role_icons`. Before any title or pin
+request, obtain a fresh host-owned receipt proving SWARM custody and confirming that no user-created,
+renamed, titled, pinned, unpinned, archived, or state-changed task state is present. Only then may the
+host task API request the exact `🐙CTRL - <objective>` title by default (or omit the emoji when
+`role_icons.enabled = false`), pin the task, and verify both receipts. Otherwise preserve the current
+user state. If a tool is unavailable or a receipt fails, state the exact blocker
+and continue only with truthful internal CTRL identity. After this Step 0 custody
+check, create or continue exactly one matching durable goal before routing work. Its contract
 records the chosen topology and which visible task owns each mutable artifact.
 Hidden subagents are execution capacity, not a replacement for required SWARM
 task ownership.
@@ -42,6 +45,30 @@ INCIDENTS: LEAD consultation receipt for matching unresolved `.codex/swarm/incid
 ```
 
 An objective amendment increments the version and records authority, reason, requirements delta, new baseline, and prior-miss relevance. A genuinely new project links a distinct successor goal; it never rewrites the prior history.
+
+User-state custody is a binding non-negotiable: user-created, renamed, titled,
+pinned, unpinned, archived, and state-changed host tasks remain the source of
+truth. The coordination ledger may record only a safe custody digest and receipt,
+never raw user text. The console/runtime cannot authorize host task mutation; the
+host task API must independently consume a current explicit-user receipt naming the
+exact operation, target, and scope. Missing or conflicting custody means no
+mutation is permitted: it is a fail-closed blocker, not permission to normalize or
+replace the user state.
+
+Any substantive lane uses a visible senior Codex task/chat with its own cwd, owner,
+and heartbeat. A hidden subagent is bounded sidecar inspection or independent review
+only. Each senior lane owes a material checkpoint or exact blocker at its due event;
+missing receipt is stall evidence, so reorient the existing owner before any
+successor. A permitted successor carries explicit custody/handoff and never silently
+duplicates, replaces, renames, or archives the old lane.
+
+Storage inventory, archive, cleanup, relocation, and monitoring use a dedicated
+delegable STORAGE LEAD lane. Its contract binds an exact target manifest,
+exact-root, active-process, live-log, database, and dirty/current-worktree guards,
+recoverable move or copy-verify-remove, post-operation target and free-space
+receipts, and independent review. CTRL may only reconcile read-only state or perform
+an explicitly authorized narrow host-safety stop; pressure alone is not destructive
+authority.
 
 ## Durable request ledger
 

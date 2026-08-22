@@ -12,8 +12,28 @@ const staticRoot = path.join(consoleRoot, "static");
 const fixture = JSON.parse(fs.readFileSync(path.join(testsRoot, "fixtures", "console-ui.json"), "utf8"));
 const css = fs.readFileSync(path.join(staticRoot, "styles.css"), "utf8");
 const app = fs.readFileSync(path.join(staticRoot, "app.js"), "utf8");
-const documentHtml = fs.readFileSync(path.join(staticRoot, "index.html"), "utf8")
+const indexHtml = fs.readFileSync(path.join(staticRoot, "index.html"), "utf8");
+const documentHtml = indexHtml
   .replace("<head>", '<head><base href="http://swarm.test/">');
+
+for (const label of ["Current work", "Recent images", "Tokens · 24h", "Completed"]) {
+  assert.match(indexHtml + app, new RegExp(label));
+}
+assert.match(app, /\/api\/usage-history\?/);
+assert.match(app, /hours: "24"/);
+assert.match(app, /project_id: state\.projectId/);
+assert.match(app, /ctrl_id: state\.ctrlId/);
+assert.match(app, /setInterval\(reportPresence, 60_000\)/);
+assert.match(app, /async function refreshMonitoring/);
+assert.doesNotMatch(app, /15_000/);
+assert.match(app, /data-overview-subagents/);
+assert.match(app, /subagentDescendants\(card\.ctrlId, tree\)/);
+assert.match(app, /params\.set\("project_id", state\.projectId\)/);
+assert.doesNotMatch(app, /params\.set\("task_id", state\.ctrlId\)/);
+assert.match(app, /\["blocked", "at_risk", "stalled", "critical"\]/);
+for (const forbidden of ["localhost", "hidden usage", "developer instructions", "prompts", "tools", "credentials"]) {
+  assert.equal((indexHtml + app).toLowerCase().includes(forbidden), false, `forbidden copy: ${forbidden}`);
+}
 
 function response(body) {
   return { status: 200, contentType: "application/json", body: JSON.stringify(body) };
@@ -30,6 +50,7 @@ function scopedFixture() {
     { id: "standalone-task", role: "doer", role_label: "TASK", artifact: "Inspect export evidence", status: "active", updated_at: "2026-08-09T00:00:00Z", controller_ids: ["standalone-ctrl"] },
   );
   overview.projects.push({ id: "project:branch", name: "Flowwweb", nodes: 2, tokens: 0, active: 2 });
+  overview.projects.push({ id: "project:waiting", name: "Unassigned planning", nodes: 0, tokens: 0, active: 0 });
   overview.projects.push({ id: "project:browser", name: "https-mail-google-com-mail-u", nodes: 0, tokens: 0, active: 1 });
   return overview;
 }
@@ -49,6 +70,7 @@ async function mount(page, overview) {
     if (url.pathname === "/api/bootstrap") return route.fulfill(response(fixture.bootstrap));
     if (url.pathname === "/api/overview") return route.fulfill(response(overview));
     if (url.pathname === "/api/proof-feed") return route.fulfill(response(fixture.proofFeed));
+    if (url.pathname === "/api/usage-history") return route.fulfill(response(fixture.usageHistory));
     if (url.pathname === "/api/presence") return route.fulfill(response({ ok: true, proof_sequence: fixture.proofFeed.sequence || 0 }));
     if (url.pathname === "/api/config") return route.fulfill(response(fixture.config));
     if (url.pathname === "/api/diagnostics") return route.fulfill(response(fixture.diagnostics));
@@ -85,15 +107,12 @@ try {
   assert.equal(await page.locator('[role="tab"]').count(), 5);
   assert.equal(await page.getByRole("button", { name: "All projects" }).count(), 1);
   assert.equal(await page.getByRole("button", { name: "Flowwweb" }).count(), 1);
+  assert.match(await page.locator("#monitoring-cards").textContent(), /Unassigned planning/);
   assert.equal(await page.getByRole("button", { name: /https-mail/i }).count(), 0);
-  assert.equal(await page.getByText("Task activity").count(), 1);
-  assert.equal(await page.locator("#burn-current").textContent(), "42 / min");
-  assert.equal(await page.locator('[data-subagent-parent="ctrl"]').count(), 1);
-  assert.equal(await page.locator('[data-subagent-parent="ctrl"]').isHidden(), true);
-  await page.locator('[data-subagent-toggle="ctrl"]').click();
-  assert.equal(await page.locator('[data-subagent-parent="ctrl"]').isVisible(), true);
-  await page.locator('[data-subagent-toggle="ctrl"]').click();
-  assert.equal(await page.locator('[data-subagent-parent="ctrl"]').isHidden(), true);
+  assert.equal(await page.getByText("Current work").count(), 1);
+  assert.equal(await page.locator("#usage-total").textContent(), "1K");
+  assert.equal(await page.locator('[data-overview-subagents="ctrl"]').count(), 1);
+  assert.equal(await page.locator('[data-overview-subagents="ctrl"]').evaluate((element) => element.hasAttribute("open")), false);
   await page.getByRole("tab", { name: "Hierarchy" }).click();
   assert.match(await page.locator("#hierarchy-list").textContent(), /1 subagent/);
   assert.ok(requests.some((request) => request.includes("/api/config")));
@@ -102,13 +121,11 @@ try {
   assert.equal(await page.locator('[data-ctrl-id="nested-ctrl"]').count(), 1);
   await page.locator('[data-ctrl-id="nested-ctrl"]').click();
   assert.equal(await page.locator("#scope-context strong").textContent(), "Evidence review");
-  assert.equal(await page.locator("#task-table tr").count(), 2);
-  assert.match(await page.locator("#task-table").textContent(), /Review screenshots/);
-  assert.doesNotMatch(await page.locator("#task-table").textContent(), /Confirm webhooks/);
+  assert.match(await page.locator("#monitoring-cards").textContent(), /Review screenshots|Evidence review/);
+  assert.ok(requests.some((request) => request.includes("/api/usage-history?project_id=project%3Afixture&ctrl_id=nested-ctrl&hours=24")));
 
   await page.getByRole("button", { name: "Flowwweb" }).click();
   assert.equal(await page.locator("#scope-context strong").textContent(), "Ship integrations");
-  assert.equal(await page.locator("#task-table tr").count(), 2);
   await page.getByRole("button", { name: "Resolve customer export" }).click();
   assert.equal(await page.locator("#scope-context strong").textContent(), "Resolve customer export");
 

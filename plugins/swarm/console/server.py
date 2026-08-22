@@ -1264,13 +1264,26 @@ class ConsoleStore:
                 continue
         return imported
 
-    def token_history(self, *, project_id: str | None = None, hours: int = 24) -> list[dict[str, Any]]:
-        cutoff = int(time.time() * 1000) - max(1, hours) * 60 * 60 * 1000
+    def token_history(
+        self,
+        *,
+        project_id: str | None = None,
+        thread_ids: set[str] | frozenset[str] | None = None,
+        hours: int = 24,
+    ) -> list[dict[str, Any]]:
+        cutoff = int(time.time() * 1000) - max(1, min(24 * 30, int(hours))) * 60 * 60 * 1000
         conditions = ["bucket_ms >= ?"]
         args: list[Any] = [cutoff]
         if project_id:
             conditions.append("project_id = ?")
             args.append(project_id)
+        if thread_ids is not None:
+            safe_thread_ids = tuple(sorted(set(thread_ids)))
+            if not safe_thread_ids:
+                return []
+            placeholders = ",".join("?" for _ in safe_thread_ids)
+            conditions.append(f"thread_id IN ({placeholders})")
+            args.extend(safe_thread_ids)
         with self._lock, closing(self._connect()) as connection:
             rows = connection.execute(
                 "SELECT bucket_ms, SUM(delta_tokens) delta_tokens FROM token_samples WHERE "
@@ -1279,6 +1292,33 @@ class ConsoleStore:
                 tuple(args),
             ).fetchall()
         return [{"bucket_ms": int(row["bucket_ms"]), "delta_tokens": int(row["delta_tokens"]), "source": "host_reported_cumulative_delta"} for row in rows]
+
+    def token_sample_thread_count(
+        self,
+        *,
+        project_id: str | None = None,
+        thread_ids: set[str] | frozenset[str] | None = None,
+        hours: int = 24,
+    ) -> int:
+        cutoff = int(time.time() * 1000) - max(1, min(24 * 30, int(hours))) * 60 * 60 * 1000
+        conditions = ["bucket_ms >= ?"]
+        args: list[Any] = [cutoff]
+        if project_id:
+            conditions.append("project_id = ?")
+            args.append(project_id)
+        if thread_ids is not None:
+            safe_thread_ids = tuple(sorted(set(thread_ids)))
+            if not safe_thread_ids:
+                return 0
+            placeholders = ",".join("?" for _ in safe_thread_ids)
+            conditions.append(f"thread_id IN ({placeholders})")
+            args.extend(safe_thread_ids)
+        with self._lock, closing(self._connect()) as connection:
+            row = connection.execute(
+                "SELECT COUNT(DISTINCT thread_id) FROM token_samples WHERE " + " AND ".join(conditions),
+                tuple(args),
+            ).fetchone()
+        return int(row[0])
 
     def latest_diagnostics(self) -> dict[str, Any] | None:
         with self._lock, closing(self._connect()) as connection:
@@ -2238,6 +2278,7 @@ def build_overview(codex_home: Path, config_path: Path) -> dict[str, Any]:
             f"Visible overview refreshes and a lightweight hidden-tab ping preserve portal presence; a closed tab expires after {PORTAL_PRESENCE_TTL_SECONDS} seconds.",
             "Active means recently updated within two heartbeat windows, not guaranteed CPU work.",
             "Tokens are host-reported cumulative thread tokens, not billing or remaining quota.",
+            "Usage history is explicitly narrowed to the local state SQLite threads.tokens_used cumulative field; no Codex JSONL, prompts, responses, or tool logs are read.",
             "Only title metadata needed to recognize SWARM naming is read; message bodies, previews, rollout content, credentials, and the logs database are not.",
         ],
         "source": database.name,
@@ -2302,6 +2343,61 @@ class App:
                 self._overview_revision += 1
                 return overview
 
+    @staticmethod
+    def _progress_for_nodes(nodes: list[dict[str, Any]], scope: dict[str, Any]) -> dict[str, Any]:
+        tasks = [
+            node for node in nodes
+            if not node.get("virtual") and not node.get("is_subagent") and node.get("role") != "ctrl"
+        ]
+        task_items: list[dict[str, Any]] = []
+        for node in tasks:
+            eta = node.get("eta") if isinstance(node.get("eta"), dict) else {}
+            proof = node.get("proof_snapshot") if isinstance(node.get("proof_snapshot"), dict) else {}
+            media = proof.get("media") if isinstance(proof.get("media"), list) else []
+            latest_proof = media[0] if media and isinstance(media[0], dict) else {}
+            blocked = node.get("status") == "blocked" or eta.get("status") == "blocked"
+            task_items.append({
+                "id": node["id"],
+                "project_id": node.get("project_id"),
+                "state": node.get("status", "unknown"),
+                "blocked": blocked,
+                "blocker": eta.get("reason") if blocked else None,
+                "latest_proof_receipt": latest_proof.get("evidence_id"),
+            })
+        completed = sum(item["state"] in {"done", "archived", "complete"} for item in task_items)
+        blocked = sum(bool(item["blocked"]) for item in task_items)
+        return {
+            "scope": scope,
+            "status": "no_tasks" if not task_items else "observed",
+            "counts": {"tasks": len(task_items), "completed": completed, "blocked": blocked},
+            "tasks": task_items,
+            "claim_limit": "Observed non-subagent host task states only; no completion percentage is inferred.",
+        }
+
+    @classmethod
+    def _progress_payload(cls, view: dict[str, Any]) -> dict[str, Any]:
+        nodes = list(view.get("nodes", []))
+        project_summaries = {
+            str(project["id"]): cls._progress_for_nodes(
+                [node for node in nodes if node.get("project_id") == project["id"]],
+                {"type": "project", "project_id": project["id"]},
+            )
+            for project in view.get("projects", [])
+        }
+        controller_summaries = {
+            str(controller["id"]): cls._progress_for_nodes(
+                [node for node in nodes if controller["id"] in node.get("controller_ids", [])],
+                {"type": "ctrl", "ctrl_id": controller["id"], "project_id": controller.get("project_id")},
+            )
+            for controller in view.get("controllers", [])
+        }
+        return {
+            "all_projects": cls._progress_for_nodes(nodes, {"type": "all-projects"}),
+            "projects": project_summaries,
+            "controllers": controller_summaries,
+            "claim_limit": "Progress is a read-only projection of observed host tasks; it is not runtime authority.",
+        }
+
     def _project_view(self, overview: dict[str, Any], project_id: str | None) -> dict[str, Any]:
         if not project_id or project_id.casefold() in {"all", "all-projects"}:
             return overview
@@ -2342,10 +2438,87 @@ class App:
             "tokens_per_minute": history[-1]["delta_tokens"] if history else 0,
             "history": history,
             "source": "host_reported_cumulative_delta",
+            "token_field": "threads.tokens_used",
             "label": "Host-reported tokens; not billing.",
         }
+        view["progress"] = self._progress_payload(view)
         view["navigation"] = App._navigation_payload(view)
         return view
+
+    def _observed_scope(
+        self,
+        *,
+        project_id: str | None = None,
+        ctrl_id: str | None = None,
+    ) -> tuple[dict[str, Any], list[dict[str, Any]], set[str] | None, dict[str, Any]]:
+        overview = self._host_overview()
+        project_id = None if not project_id or project_id.casefold() in {"all", "all-projects"} else project_id
+        ctrl_id = ctrl_id or None
+        nodes = [node for node in overview.get("nodes", []) if not node.get("virtual")]
+        project_ids = {str(node.get("project_id")) for node in nodes if node.get("project_id")}
+        if project_id is not None and project_id not in project_ids:
+            raise ConsoleError("project_id must name an observed project")
+        ctrl = None
+        if ctrl_id:
+            ctrl = next((node for node in nodes if node.get("id") == ctrl_id and node.get("role") == "ctrl"), None)
+            if ctrl is None:
+                raise ConsoleError("ctrl_id must name an observed host CTRL")
+            if project_id is not None and ctrl.get("project_id") != project_id:
+                raise ConsoleError("ctrl_id does not belong to project_id")
+            nodes = [node for node in nodes if ctrl_id in node.get("controller_ids", [])]
+            scope = {"type": "ctrl", "ctrl_id": ctrl_id, "project_id": ctrl.get("project_id")}
+            return overview, nodes, {str(node["id"]) for node in nodes}, scope
+        if project_id is not None:
+            nodes = [node for node in nodes if node.get("project_id") == project_id]
+            return overview, nodes, {str(node["id"]) for node in nodes}, {"type": "project", "project_id": project_id}
+        return overview, nodes, None, {"type": "all-projects"}
+
+    def usage_history(
+        self,
+        *,
+        project_id: str | None = None,
+        ctrl_id: str | None = None,
+        hours: int = 24,
+    ) -> dict[str, Any]:
+        if isinstance(hours, bool) or not isinstance(hours, int) or not 1 <= hours <= 24 * 30:
+            raise ConsoleError("hours must be an integer from 1 to 720")
+        _, nodes, thread_ids, scope = self._observed_scope(project_id=project_id, ctrl_id=ctrl_id)
+        project_filter = scope.get("project_id") if scope.get("type") == "project" else None
+        history = self.store.token_history(project_id=project_filter, thread_ids=thread_ids, hours=hours)
+        observed_threads = self.store.token_sample_thread_count(
+            project_id=project_filter, thread_ids=thread_ids, hours=hours,
+        )
+        expected_threads = len(nodes)
+        total_tokens = sum(int(item["delta_tokens"]) for item in history)
+        elapsed_ms = max(0, history[-1]["bucket_ms"] - history[0]["bucket_ms"]) if history else 0
+        status = "no_data" if not history else (
+            "partial" if expected_threads is not None and observed_threads < expected_threads else "ok"
+        )
+        return {
+            "ok": True,
+            "status": status,
+            "scope": scope,
+            "hours": hours,
+            "items": history,
+            "total_tokens": total_tokens,
+            "elapsed_ms": elapsed_ms,
+            "tokens_per_minute": round(total_tokens / (elapsed_ms / 60_000), 2) if elapsed_ms else total_tokens,
+            "coverage": {"observed_threads": observed_threads, "expected_threads": expected_threads},
+            "status_claim": {
+                "no_data": "No persisted host-reported samples were found in this scope and time window.",
+                "partial": "Some observed scope threads have no persisted sample in this time window.",
+                "ok": "Persisted samples cover every observed thread in this scope.",
+            },
+            "source": "host_reported_cumulative_delta",
+            "token_field": "threads.tokens_used",
+            "label": "Host-reported tokens; not billing.",
+            "usage_consumed": False,
+            "claim_limit": "Aggregated token deltas and time only; prompts, responses, tools, credentials, and billing are excluded.",
+        }
+
+    def progress_summary(self, *, project_id: str | None = None, ctrl_id: str | None = None) -> dict[str, Any]:
+        _, nodes, _, scope = self._observed_scope(project_id=project_id, ctrl_id=ctrl_id)
+        return {"ok": True, **self._progress_for_nodes(nodes, scope)}
 
     @staticmethod
     def _navigation_payload(view: dict[str, Any]) -> dict[str, Any]:
@@ -2398,8 +2571,10 @@ class App:
             "tokens_per_minute": latest_delta,
             "history": history,
             "source": "host_reported_cumulative_delta",
+            "token_field": "threads.tokens_used",
             "label": "Host-reported tokens; not billing.",
         }
+        view["progress"] = self._progress_payload(view)
         view["navigation"] = self._navigation_payload(view)
         return view
 
@@ -2857,7 +3032,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self) -> None:  # noqa: N802
         if not self._host_allowed():
-            self._error(HTTPStatus.FORBIDDEN, "SWARM Console accepts localhost requests only")
+            self._error(HTTPStatus.FORBIDDEN, "SWARM Console accepts requests from this device only")
             return
         parsed = urlparse(self.path)
         path = parsed.path
@@ -2874,6 +3049,29 @@ class Handler(BaseHTTPRequestHandler):
                 self._json(
                     HTTPStatus.OK,
                     self.server.app.overview(query.get("project_id")),
+                )
+                return
+            if path == "/api/usage-history":
+                try:
+                    hours = int(query.get("hours", "24"))
+                except ValueError as exc:
+                    raise ConsoleError("hours must be an integer from 1 to 720") from exc
+                self._json(
+                    HTTPStatus.OK,
+                    self.server.app.usage_history(
+                        project_id=query.get("project_id"),
+                        ctrl_id=query.get("ctrl_id"),
+                        hours=hours,
+                    ),
+                )
+                return
+            if path == "/api/progress":
+                self._json(
+                    HTTPStatus.OK,
+                    self.server.app.progress_summary(
+                        project_id=query.get("project_id"),
+                        ctrl_id=query.get("ctrl_id"),
+                    ),
                 )
                 return
             if path == "/api/proof-feed":

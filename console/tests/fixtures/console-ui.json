@@ -113,6 +113,7 @@
     "source": "fixture"
   },
   "proofFeed": {"ok":true,"items":[{"task_id":"ctrl","caption":"Local browser proof","claim_limit":"Local browser proof only."}]},
+  "usageHistory": {"ok":true,"total_tokens":1000,"history":[{"bucket_ms":1712550000000,"delta_tokens":28},{"bucket_ms":1712550060000,"delta_tokens":42}]},
   "diagnostics": {"ok":true,"config_valid":true,"storage":{"bytes":4096},"latest":{"payload":{"health_state":"HEALTHY"}},"health":{"incidents":[],"open_requests":[]},"usage_consumed":false},
   "diagnosticHistory": {"ok":true,"items":[],"usage_consumed":false},
   "healthSettings": {"ok":true,"enabled":false,"default":false,"thresholds":{},"claim_limit":"Auto Health creates advisory requests only."},
