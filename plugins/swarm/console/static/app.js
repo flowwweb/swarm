@@ -43,6 +43,18 @@ function statusLabel(node) {
   return ["Pending", "is-pending"];
 }
 
+const attentionStates = ["blocked", "at_risk", "stalled", "critical"];
+
+function attentionStatus(node) {
+  return [node?.status, node?.eta?.status]
+    .map((status) => String(status || "").toLowerCase())
+    .find((status) => attentionStates.includes(status)) || "";
+}
+
+function needsAttention(node) {
+  return Boolean(attentionStatus(node));
+}
+
 function humanize(value) {
   return String(value || "").replaceAll("_", " ").replace(/\b\w/g, (character) => character.toUpperCase());
 }
@@ -205,15 +217,15 @@ function renderMetrics(nodes) {
   $("#confidence-bar").style.width = String(confidence) + "%";
   $("#confidence-detail").textContent = forecast ? String(confidence) + "% confidence · updated " + formatRelative(forecast.last_calculated_at_ms) : "Confidence unavailable";
 
-  const risks = nodes.filter((node) => ["blocked", "at_risk"].includes(String(node.eta?.status || node.status).toLowerCase()));
+  const risks = nodes.filter(needsAttention);
   $("#drift-value").textContent = risks.length ? String(risks.length) + " at risk" : "On track";
   $("#drift-value").className = risks.length ? "risk-text" : "healthy-text";
   $("#drift-note").textContent = risks.length ? String(risks.length) + " need attention" : "No forecast drift detected";
   $("#drift-detail").textContent = total ? String(total - risks.length) + " without a risk signal" : "No drift signal yet";
 
-  const risk = risks[0] || nodes.find((node) => String(node.status).toLowerCase() === "blocked");
+  const risk = risks[0];
   $("#risk-value").textContent = risk?.artifact || "No active risk";
-  $("#risk-note").textContent = risk ? humanize(risk.eta?.status || risk.status) + " · active " + formatRelative(risk.updated_at) : "Everything looks clear";
+  $("#risk-note").textContent = risk ? humanize(attentionStatus(risk)) + " · active " + formatRelative(risk.updated_at) : "Everything looks clear";
   const action = $("#risk-action");
   action.hidden = !risk;
   action.dataset.taskId = risk?.id || "";
@@ -391,7 +403,7 @@ function renderMonitoringCards(nodes) {
     const completed = tasks.filter((task) => ["done", "archived"].includes(String(task.status).toLowerCase())).length;
     const total = tasks.length;
     const percent = total ? Math.round((completed / total) * 100) : 0;
-    const blocker = tasks.find((task) => ["blocked", "at_risk", "stalled", "critical"].includes(String(task.eta?.status || task.status).toLowerCase()));
+    const blocker = tasks.find(needsAttention);
     const receipt = latestReceipt(card.nodes);
     const primary = card.nodes.find((node) => node.id === card.ctrlId) || tasks[0];
     const stateLabel = primary ? statusLabel(primary)[0] : "No task state";
@@ -429,8 +441,7 @@ function renderUsage() {
 
 function renderOverviewHealth(nodes) {
   const lanes = nodes.filter((node) => !isSubagent(node));
-  const attentionStates = ["blocked", "at_risk", "stalled", "critical"];
-  const attention = lanes.filter((node) => attentionStates.includes(String(node.status).toLowerCase()) || attentionStates.includes(String(node.eta?.status).toLowerCase()));
+  const attention = lanes.filter(needsAttention);
   $("#overview-health-state").textContent = attention.length ? 'Needs attention' : (lanes.length ? 'On track' : 'Waiting for work');
   $("#overview-health-state").className = attention.length ? 'risk-text' : 'healthy-text';
   $("#overview-health-note").textContent = attention.length ? String(attention.length) + ' visible lane' + (attention.length === 1 ? ' needs attention' : 's need attention') : (lanes.length ? String(lanes.length) + ' visible lanes without an attention signal' : 'No visible lanes');
@@ -464,7 +475,7 @@ function renderHierarchy() {
   $("#hierarchy-list").innerHTML = groups.size ? [...groups.entries()].map(([owner, tasks]) => {
     const current = tasks.find((task) => !["done", "archived"].includes(String(task.status).toLowerCase())) || tasks[0];
     const extra = tasks.filter((task) => task.id !== current.id);
-    const stalled = ["blocked", "at_risk"].includes(String(current.eta?.status || current.status).toLowerCase());
+    const stalled = needsAttention(current);
     const status = statusLabel(current);
     const subagents = subagentDescendants(current.id, tree);
     const subagentMeta = subagents.length ? '<span class="subagent-count">' + subagents.length + ' subagent' + (subagents.length === 1 ? '' : 's') + '</span>' : '';

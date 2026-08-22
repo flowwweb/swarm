@@ -29,8 +29,10 @@ assert.match(indexHtml, /id="usage-range"/);
 assert.match(indexHtml, /id="overview-health-state"/);
 assert.match(app, /function renderOverviewHealth\(nodes\)/);
 assert.match(app, /Needs attention/);
-assert.match(app, /attentionStates\.includes\(String\(node\.status\)/);
-assert.match(app, /attentionStates\.includes\(String\(node\.eta\?\.status\)/);
+assert.match(app, /function attentionStatus\(node\)/);
+assert.match(app, /\[node\?\.status, node\?\.eta\?\.status\]/);
+assert.match(app, /tasks\.find\(needsAttention\)/);
+assert.match(app, /const stalled = needsAttention\(current\)/);
 assert.match(app, /project_id: state\.projectId/);
 assert.match(app, /ctrl_id: state\.ctrlId/);
 assert.match(app, /setInterval\(reportPresence, 60_000\)/);
@@ -145,10 +147,12 @@ try {
   assert.equal(await page.locator("#usage-total").textContent(), "1K");
   assert.equal(await page.locator("#overview-health-state").textContent(), "Needs attention");
   assert.match(await page.locator("#overview-health-note").textContent(), /1 visible lane needs attention/);
+  assert.match(await page.locator("#monitoring-cards").textContent(), /First blocker\s*Visual polish/);
   assert.equal(await page.locator('[data-overview-subagents="ctrl"]').count(), 1);
   assert.equal(await page.locator('[data-overview-subagents="ctrl"]').evaluate((element) => element.hasAttribute("open")), false);
   await page.getByRole("tab", { name: "Hierarchy" }).click();
   assert.match(await page.locator("#hierarchy-list").textContent(), /1 subagent/);
+  assert.match(await page.locator("#hierarchy-list").textContent(), /Paused attention/);
   assert.ok(requests.some((request) => request.includes("/api/config")));
 
   await page.getByRole("button", { name: /^swarm\b/i }).click();
