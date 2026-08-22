@@ -60,6 +60,31 @@ class RuntimeRoutingTests(unittest.TestCase):
         self.assertEqual(decision.route, ExecutionRoute.NORMAL_TASK)
         self.assertEqual(decision.authority_chain, ("CTRL", "LEAD", "DOER"))
 
+    def test_each_substantive_lane_fact_requires_a_visible_senior_task(self) -> None:
+        for durable_fact in ("user_visible_delivery", "cross_lane_dependency", "material_heartbeat_obligation"):
+            with self.subTest(durable_fact=durable_fact):
+                decision = route_execution(
+                    facts=facts(**{durable_fact: True}),
+                    economics=economics(savings=20, overhead=60),
+                    capacity=AVAILABLE,
+                    accountable_owner="lead-a",
+                    lead_owner="lead-a",
+                )
+                self.assertEqual(decision.route, ExecutionRoute.NORMAL_TASK)
+                self.assertEqual(decision.authority_chain, ("CTRL", "LEAD", "DOER"))
+                self.assertIn("visible senior task", decision.reason)
+
+    def test_small_bounded_low_risk_one_surface_without_durable_facts_stays_non_authoritative(self) -> None:
+        decision = route_execution(
+            facts=facts(WorkSize.SMALL),
+            economics=economics(savings=20, overhead=60),
+            capacity=AVAILABLE,
+            accountable_owner="lead-a",
+        )
+        self.assertEqual(decision.route, ExecutionRoute.NORMAL_SUBAGENT)
+        self.assertEqual(decision.authority_chain, ("lead-a", "SUBAGENT"))
+        self.assertFalse(decision.subagent_authoritative)
+
     def test_root_ctrl_small_general_work_can_use_a_subagent_but_medium_work_opens_a_task(self) -> None:
         decision = route_execution(
             facts=facts(),
