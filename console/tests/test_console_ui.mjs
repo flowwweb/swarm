@@ -33,6 +33,12 @@ assert.match(app, /function renderDashboard\(\)/);
 assert.match(app, /function routeView\(\)/);
 assert.match(app, /\["overview", "dashboard", "hierarchy", "kanban", "diagnostics", "settings"\]/);
 assert.match(app, /renderOverviewProjectCards\(nodes\)/);
+assert.match(app, /function hasCurrentOverviewWork\(card\)/);
+assert.match(app, /cards\.filter\(hasCurrentOverviewWork\)/);
+assert.match(app, /activeCards\.slice\(0, 5\)/);
+assert.match(app, /class="overview-more"/);
+assert.match(app, /No current work observed in/);
+assert.match(css, /\.overview-project-card/);
 assert.match(indexHtml, /id="task-table"/);
 assert.match(indexHtml, /id="proof-feed"/);
 assert.match(indexHtml, /id="burn-chart"/);
@@ -101,8 +107,14 @@ function scopedFixture() {
     { id: "branch-task", role: "doer", role_label: "TASK", artifact: "Confirm webhooks", project_id: "project:branch", project: "Flowwweb", status: "active", updated_at: "2026-08-09T00:00:00Z", controller_ids: ["branch-ctrl"] },
     { id: "standalone-ctrl", role: "ctrl", artifact: "Resolve customer export", status: "active", updated_at: "2026-08-09T00:00:00Z", controller_ids: ["standalone-ctrl"] },
     { id: "standalone-task", role: "doer", role_label: "TASK", artifact: "Inspect export evidence", status: "active", updated_at: "2026-08-09T00:00:00Z", controller_ids: ["standalone-ctrl"] },
+    { id: "arc-ctrl", role: "ctrl", artifact: "Review release notes", project_id: "project:arc", project: "Arc", status: "active", updated_at: "2026-08-09T00:00:00Z", controller_ids: ["arc-ctrl"] },
+    { id: "arc-task", role: "doer", role_label: "TASK", artifact: "Verify changelog", project_id: "project:arc", project: "Arc", status: "active", updated_at: "2026-08-09T00:00:00Z", controller_ids: ["arc-ctrl"] },
+    { id: "atlas-ctrl", role: "ctrl", artifact: "Prepare customer brief", project_id: "project:atlas", project: "Atlas", status: "active", updated_at: "2026-08-09T00:00:00Z", controller_ids: ["atlas-ctrl"] },
+    { id: "atlas-task", role: "doer", role_label: "TASK", artifact: "Summarize account status", project_id: "project:atlas", project: "Atlas", status: "active", updated_at: "2026-08-09T00:00:00Z", controller_ids: ["atlas-ctrl"] },
   );
   overview.projects.push({ id: "project:branch", name: "Flowwweb", nodes: 2, tokens: 0, active: 2 });
+  overview.projects.push({ id: "project:arc", name: "Arc", nodes: 2, tokens: 0, active: 2 });
+  overview.projects.push({ id: "project:atlas", name: "Atlas", nodes: 2, tokens: 0, active: 2 });
   overview.projects.push({ id: "project:waiting", name: "Unassigned planning", nodes: 0, tokens: 0, active: 0 });
   overview.projects.push({ id: "project:browser", name: "https-mail-google-com-mail-u", nodes: 0, tokens: 0, active: 1 });
   return overview;
@@ -162,7 +174,9 @@ try {
   assert.equal(await page.getByRole("button", { name: "All projects" }).count(), 1);
   assert.equal(await page.getByRole("button", { name: "Flowwweb" }).count(), 1);
   assert.equal(await page.getByRole("button", { name: "Unassigned planning" }).count(), 1);
-  assert.match(await page.locator("#overview-project-cards").textContent(), /Unassigned planning/);
+  assert.equal(await page.locator("#overview-project-cards > .overview-project-card").count(), 5);
+  assert.equal(await page.locator("#overview-project-cards > .overview-more").count(), 1);
+  assert.doesNotMatch(await page.locator("#overview-project-cards").textContent(), /Unassigned planning/);
   assert.equal(await page.getByRole("button", { name: /https-mail/i }).count(), 0);
   assert.equal(await page.getByText("Current work").count(), 1);
   assert.equal(await page.locator("#usage-total").textContent(), "1K");
@@ -172,6 +186,9 @@ try {
   assert.equal(await page.locator("#overview-evidence-gallery img").count(), 1);
   assert.equal(await page.locator('[data-overview-subagents="ctrl"]').count(), 1);
   assert.equal(await page.locator('[data-overview-subagents="ctrl"]').evaluate((element) => element.hasAttribute("open")), false);
+  await page.getByRole("button", { name: "Unassigned planning" }).click();
+  assert.equal(await page.locator("#scope-context strong").textContent(), "Unassigned planning");
+  assert.match(await page.locator("#overview-project-cards").textContent(), /No current work observed in Unassigned planning/);
   await page.getByRole("tab", { name: "Dashboard" }).click();
   assert.equal(await page.locator("#view-title").textContent(), "Dashboard");
   assert.match(page.url(), /#dashboard$/);

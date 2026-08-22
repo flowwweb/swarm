@@ -440,11 +440,18 @@ function renderOverviewHealth(nodes) {
   renderHealth(nodes, "#overview-monitoring-health-state", "#overview-monitoring-health-note");
 }
 
+function hasCurrentOverviewWork(card) {
+  return card.nodes.some((node) => !isSubagent(node) && !["done", "archived"].includes(String(node.status || "").toLowerCase()));
+}
+
 function renderOverviewProjectCards(nodes) {
   const cards = overviewCards(nodes);
   const tree = taskTree(nodes);
-  $("#overview-summary").textContent = cards.length ? String(cards.length) + " active scope" + (cards.length === 1 ? "" : "s") : "No observed work yet";
-  $("#overview-project-cards").innerHTML = cards.length ? cards.map((card) => {
+  const allProjects = state.projectId === "all" && !state.ctrlId;
+  const activeCards = allProjects ? cards.filter(hasCurrentOverviewWork) : cards;
+  const visibleCards = allProjects ? activeCards.slice(0, 5) : activeCards;
+  const moreCards = allProjects ? activeCards.slice(5) : [];
+  const renderCard = (card) => {
     const tasks = observedTasks(card.nodes);
     const completed = tasks.filter((task) => ["done", "archived"].includes(String(task.status).toLowerCase())).length;
     const total = tasks.length;
@@ -457,8 +464,17 @@ function renderOverviewProjectCards(nodes) {
     const ringClass = needsAttention(primary) ? "is-attention" : (statusLabel(primary || {})[1] || "is-pending");
     const subagents = card.ctrlId ? subagentDescendants(card.ctrlId, tree) : [];
     const subagentDisclosure = subagents.length ? '<details class="overview-subagents" data-overview-subagents="' + escapeHTML(card.ctrlId) + '"><summary>Subagents <span>' + subagents.length + '</span></summary><ul>' + subagents.map((node) => '<li><strong>' + escapeHTML(node.artifact || node.title || node.id) + '</strong><span>' + escapeHTML(statusLabel(node)[0]) + '</span></li>').join('') + '</ul></details>' : '<span class="overview-subagent-empty">No subagents</span>';
-    return '<article class="overview-project-card panel"><div class="overview-progress-ring ' + ringClass + '" aria-label="' + (percent == null ? 'Observed progress unavailable' : percent + '% observed task completion') + '"><strong>' + (percent == null ? '—' : percent + '%') + '</strong><span>' + completed + ' / ' + total + '</span></div><div class="overview-project-main"><p class="eyebrow">' + escapeHTML(stateLabel) + '</p><h3>' + escapeHTML(card.label) + '</h3><p>' + escapeHTML(current?.artifact || "No current task observed") + '</p></div><dl class="overview-project-facts"><div><dt>Current work</dt><dd>' + escapeHTML(current?.artifact || "None observed") + '</dd></div><div><dt>Latest receipt</dt><dd>' + escapeHTML(receipt?.caption || receipt?.kind || "None received") + '</dd></div><div><dt>Blocker</dt><dd class="' + (blocker ? 'risk-text' : '') + '">' + escapeHTML(blocker?.artifact || "None observed") + '</dd></div></dl><div class="overview-project-subagents">' + subagentDisclosure + '</div></article>';
-  }).join("") : '<p class="empty-state">No observed project or CTRL work in this scope.</p>';
+    return '<article class="overview-project-card panel"><div class="overview-progress-ring ' + ringClass + '" style="--progress:' + (percent == null ? 0 : percent) + '%" aria-label="' + (percent == null ? 'Observed progress unavailable' : percent + '% observed task completion') + '"><strong>' + (percent == null ? '—' : percent + '%') + '</strong><span>' + completed + ' / ' + total + '</span></div><div class="overview-project-main"><p class="eyebrow">' + escapeHTML(stateLabel) + '</p><h3>' + escapeHTML(card.label) + '</h3><p>' + escapeHTML(current?.artifact || "No current task observed") + '</p></div><dl class="overview-project-facts"><div><dt>Current work</dt><dd>' + escapeHTML(current?.artifact || "None observed") + '</dd></div><div><dt>Latest receipt</dt><dd>' + escapeHTML(receipt?.caption || receipt?.kind || "None received") + '</dd></div><div><dt>Blocker</dt><dd class="' + (blocker ? 'risk-text' : '') + '">' + escapeHTML(blocker?.artifact || "None observed") + '</dd></div></dl><div class="overview-project-subagents">' + subagentDisclosure + '</div></article>';
+  };
+  $("#overview-summary").textContent = allProjects
+    ? (activeCards.length ? String(activeCards.length) + " active scope" + (activeCards.length === 1 ? "" : "s") : "No active work")
+    : (activeCards.length ? "Current scope" : "No current work");
+  const empty = allProjects
+    ? '<p class="empty-state overview-empty">No current work across projects. Select a project to review its history.</p>'
+    : '<p class="empty-state overview-empty">No current work observed in ' + escapeHTML(scopeLabel()) + '. This scope remains available in navigation.</p>';
+  $("#overview-project-cards").innerHTML = visibleCards.length
+    ? visibleCards.map(renderCard).join("") + (moreCards.length ? '<details class="overview-more"><summary>' + String(moreCards.length) + ' more active scope' + (moreCards.length === 1 ? '' : 's') + '</summary><div>' + moreCards.map(renderCard).join("") + '</div></details>' : '')
+    : empty;
 }
 
 function renderOverview() {
