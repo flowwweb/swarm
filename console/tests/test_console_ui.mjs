@@ -5,7 +5,6 @@ import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 
 const require = createRequire(import.meta.url);
-const { chromium } = require("playwright");
 const testsRoot = path.dirname(fileURLToPath(import.meta.url));
 const consoleRoot = path.resolve(testsRoot, "..");
 const staticRoot = path.join(consoleRoot, "static");
@@ -16,7 +15,7 @@ const indexHtml = fs.readFileSync(path.join(staticRoot, "index.html"), "utf8");
 const documentHtml = indexHtml
   .replace("<head>", '<head><base href="http://swarm.test/">');
 
-for (const label of ["Current work", "Recent images", "Tokens · 24h", "Completed", "Where changes apply", "Manage skills", "Advanced settings"]) {
+for (const label of ["Current work", "Recent images", "Tokens · 24h", "Completed", "Dashboard", "Where changes apply", "Manage", "Advanced settings"]) {
   assert.match(indexHtml + app, new RegExp(label));
 }
 assert.match(app, /\/api\/usage-history\?/);
@@ -26,8 +25,20 @@ assert.match(app, /Partial coverage/);
 assert.match(app, /Complete coverage/);
 assert.match(app, /source\.coverage\?\.observed_threads/);
 assert.match(indexHtml, /id="usage-range"/);
-assert.match(indexHtml, /id="overview-health-state"/);
+assert.match(indexHtml, /id="overview-monitoring-health-state"/);
+assert.match(indexHtml, /id="view-dashboard"/);
+assert.match(indexHtml, /id="tab-dashboard"/);
 assert.match(app, /function renderOverviewHealth\(nodes\)/);
+assert.match(app, /function renderDashboard\(\)/);
+assert.match(app, /function routeView\(\)/);
+assert.match(app, /\["overview", "dashboard", "hierarchy", "kanban", "diagnostics", "settings"\]/);
+assert.match(app, /renderOverviewProjectCards\(nodes\)/);
+assert.match(indexHtml, /id="task-table"/);
+assert.match(indexHtml, /id="proof-feed"/);
+assert.match(indexHtml, /id="burn-chart"/);
+assert.match(indexHtml, /id="overview-diagnostics-heading"/);
+assert.match(app, /renderMetrics\(nodes\);\s*renderTable\(nodes\);\s*renderProof\(nodes\);\s*renderBurnRate\(\);\s*renderOverviewDiagnostics\(\);/);
+assert.doesNotMatch(app, /renderDashboardMonitoringCards/);
 assert.match(app, /Needs attention/);
 assert.match(app, /function attentionStatus\(node\)/);
 assert.match(app, /\[node\?\.status, node\?\.eta\?\.status\]/);
@@ -39,6 +50,7 @@ assert.match(app, /setInterval\(reportPresence, 60_000\)/);
 assert.match(app, /async function refreshMonitoring/);
 assert.doesNotMatch(app, /15_000/);
 assert.match(app, /data-overview-subagents/);
+assert.match(app, /#overview-evidence-gallery/);
 assert.match(app, /subagentDescendants\(card\.ctrlId, tree\)/);
 assert.match(app, /params\.set\("project_id", state\.projectId\)/);
 assert.doesNotMatch(app, /params\.set\("task_id", state\.ctrlId\)/);
@@ -64,9 +76,17 @@ assert.match(app, /latest\.freshness \|\| state\.diagnostics\?\.freshness/);
 assert.match(app, /availability\.unavailable/);
 assert.match(app, /No independent metrics available/);
 assert.doesNotMatch(app, /\["Health", humanize\(latest\.health_state/);
-for (const forbidden of ["localhost", "hidden usage", "developer instructions", "prompts", "tools", "credentials"]) {
+assert.match(app, /\.replace\(\/\\blocalhost\\b\/gi, "console"\)/);
+for (const forbidden of ["hidden usage", "developer instructions", "prompts", "tools", "credentials"]) {
   assert.equal((indexHtml + app).toLowerCase().includes(forbidden), false, `forbidden copy: ${forbidden}`);
 }
+
+if (process.argv.includes("--source-only")) {
+  console.log("SWARM console source UI contract passed");
+  process.exit(0);
+}
+
+const { chromium } = require("playwright");
 
 function response(body) {
   return { status: 200, contentType: "application/json", body: JSON.stringify(body) };
@@ -111,6 +131,7 @@ async function mount(page, overview) {
     if (url.pathname === "/api/health/settings") return route.fulfill(response(fixture.healthSettings));
     if (url.pathname === "/api/storage") return route.fulfill(response(fixture.storage));
     if (url.pathname === "/api/ctrl-settings") return route.fulfill(response(fixture.ctrlSettings));
+    if (url.pathname.startsWith("/api/proof-media/")) return route.fulfill({ status: 200, contentType: "image/svg+xml", body: '<svg xmlns="http://www.w3.org/2000/svg" width="160" height="100"><rect width="160" height="100" fill="#0f1726"/></svg>' });
     if (url.pathname === "/assets/swarm-wordmark.png") return route.fulfill({ status: 204 });
     if (url.pathname === "/swarm-favicon.svg") return route.fulfill({ status: 204 });
     return route.abort();
@@ -137,19 +158,31 @@ try {
   const { runtimeErrors, requests } = await mount(page, scopedFixture());
 
   assert.equal(await page.locator("#view-title").textContent(), "Overview");
-  assert.equal(await page.locator('[role="tab"]').count(), 5);
+  assert.equal(await page.locator('[role="tab"]').count(), 6);
   assert.equal(await page.getByRole("button", { name: "All projects" }).count(), 1);
   assert.equal(await page.getByRole("button", { name: "Flowwweb" }).count(), 1);
   assert.equal(await page.getByRole("button", { name: "Unassigned planning" }).count(), 1);
-  assert.match(await page.locator("#monitoring-cards").textContent(), /Unassigned planning/);
+  assert.match(await page.locator("#overview-project-cards").textContent(), /Unassigned planning/);
   assert.equal(await page.getByRole("button", { name: /https-mail/i }).count(), 0);
   assert.equal(await page.getByText("Current work").count(), 1);
   assert.equal(await page.locator("#usage-total").textContent(), "1K");
-  assert.equal(await page.locator("#overview-health-state").textContent(), "Needs attention");
-  assert.match(await page.locator("#overview-health-note").textContent(), /1 visible lane needs attention/);
-  assert.match(await page.locator("#monitoring-cards").textContent(), /First blocker\s*Visual polish/);
+  assert.equal(await page.locator("#overview-monitoring-health-state").textContent(), "Needs attention");
+  assert.match(await page.locator("#overview-monitoring-health-note").textContent(), /1 visible lane needs attention/);
+  assert.match(await page.locator("#overview-project-cards").textContent(), /Blocker\s*Visual polish/);
+  assert.equal(await page.locator("#overview-evidence-gallery img").count(), 1);
   assert.equal(await page.locator('[data-overview-subagents="ctrl"]').count(), 1);
   assert.equal(await page.locator('[data-overview-subagents="ctrl"]').evaluate((element) => element.hasAttribute("open")), false);
+  await page.getByRole("tab", { name: "Dashboard" }).click();
+  assert.equal(await page.locator("#view-title").textContent(), "Dashboard");
+  assert.match(page.url(), /#dashboard$/);
+  assert.match(await page.locator("#task-table").textContent(), /Unassigned planning/);
+  assert.equal(await page.locator("#task-table [data-subagent-parent]").count(), 1);
+  assert.equal(await page.locator("#proof-feed").count(), 1);
+  assert.equal(await page.locator("#overview-diagnostics-heading").textContent(), "Diagnostics");
+  await page.evaluate(() => { location.hash = "#graph"; });
+  await page.waitForTimeout(20);
+  assert.equal(await page.locator("#view-title").textContent(), "Overview");
+  assert.match(page.url(), /#overview$/);
   await page.getByRole("tab", { name: "Hierarchy" }).click();
   assert.match(await page.locator("#hierarchy-list").textContent(), /1 subagent/);
   assert.match(await page.locator("#hierarchy-list").textContent(), /Paused attention/);
@@ -159,7 +192,7 @@ try {
   assert.equal(await page.locator('[data-ctrl-id="nested-ctrl"]').count(), 1);
   await page.locator('[data-ctrl-id="nested-ctrl"]').click();
   assert.equal(await page.locator("#scope-context strong").textContent(), "Evidence review");
-  assert.match(await page.locator("#monitoring-cards").textContent(), /Review screenshots|Evidence review/);
+  assert.match(await page.locator("#overview-project-cards").textContent(), /Review screenshots|Evidence review/);
   assert.ok(requests.some((request) => request.includes("/api/usage-history?project_id=project%3Afixture&ctrl_id=nested-ctrl&hours=24")));
 
   await page.getByRole("button", { name: "Flowwweb" }).click();

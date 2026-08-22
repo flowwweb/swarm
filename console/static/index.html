@@ -20,6 +20,7 @@
         </a>
         <nav class="nav-list" aria-label="Console views" role="tablist" aria-orientation="vertical">
           <button class="nav-item is-active" data-view="overview" id="tab-overview" role="tab" aria-selected="true" aria-controls="view-overview" type="button"><span aria-hidden="true">⌂</span><b>Overview</b></button>
+          <button class="nav-item" data-view="dashboard" id="tab-dashboard" role="tab" aria-selected="false" aria-controls="view-dashboard" type="button"><span aria-hidden="true">▦</span><b>Dashboard</b></button>
           <button class="nav-item" data-view="hierarchy" id="tab-hierarchy" role="tab" aria-selected="false" aria-controls="view-hierarchy" type="button"><span aria-hidden="true">⌘</span><b>Hierarchy</b></button>
           <button class="nav-item" data-view="kanban" id="tab-kanban" role="tab" aria-selected="false" aria-controls="view-kanban" type="button"><span aria-hidden="true">▥</span><b>Kanban</b></button>
           <button class="nav-item" data-view="diagnostics" id="tab-diagnostics" role="tab" aria-selected="false" aria-controls="view-diagnostics" type="button"><span aria-hidden="true">⌁</span><b>Diagnostics</b></button>
@@ -44,9 +45,36 @@
         <section class="view is-active" id="view-overview" data-view-panel="overview" role="tabpanel" aria-labelledby="tab-overview" tabindex="0">
           <div class="overview-loading" id="overview-loading" aria-live="polite"><span class="sr-only">Loading Overview</span><div class="metric-grid skeleton-grid" aria-hidden="true"><i></i><i></i><i></i><i></i></div><div class="overview-skeleton" aria-hidden="true"></div></div>
           <div class="overview-content" id="overview-content" hidden>
-            <section class="overview-health panel" aria-live="polite"><div><p class="eyebrow">Visible work health</p><strong id="overview-health-state">Waiting for work</strong></div><p id="overview-health-note">No visible lanes</p></section>
-            <section class="overview-section" aria-labelledby="monitoring-heading"><header class="overview-section-head"><div><p class="eyebrow">Project monitoring</p><h2 id="monitoring-heading">Current work</h2></div><p id="overview-summary">No observed work yet</p></header><div class="monitoring-cards" id="monitoring-cards"></div></section>
-            <section class="overview-section evidence-section panel" aria-labelledby="evidence-heading"><header class="overview-section-head"><div><p class="eyebrow">Visual evidence</p><h2 id="evidence-heading">Recent images</h2></div><p id="evidence-note">No images received</p></header><div class="evidence-gallery" id="evidence-gallery"></div></section>
+            <section class="overview-health panel" aria-live="polite"><div><p class="eyebrow">Visible work health</p><strong id="overview-monitoring-health-state">Waiting for work</strong></div><p id="overview-monitoring-health-note">No visible lanes</p></section>
+            <section class="overview-section" aria-labelledby="overview-monitoring-heading"><header class="overview-section-head"><div><p class="eyebrow">Project monitoring</p><h2 id="overview-monitoring-heading">Current work</h2></div><p id="overview-summary">No observed work yet</p></header><div class="overview-project-list" id="overview-project-cards"></div></section>
+            <section class="overview-section evidence-section panel" aria-labelledby="overview-evidence-heading"><header class="overview-section-head"><div><p class="eyebrow">Visual evidence</p><h2 id="overview-evidence-heading">Recent images</h2></div><p id="overview-evidence-note">No images received</p></header><div class="evidence-gallery compact-evidence-gallery" id="overview-evidence-gallery"></div></section>
+          </div>
+        </section>
+        <section class="view" id="view-dashboard" data-view-panel="dashboard" role="tabpanel" aria-labelledby="tab-dashboard" tabindex="0" hidden>
+          <div class="overview-content dashboard-content">
+            <section class="metric-grid" aria-label="Project summary">
+              <article class="metric-card"><p>Project progress</p><strong id="progress-value">—</strong><span id="progress-note">Waiting for tasks</span><div class="progress-track"><i id="progress-bar"></i></div><small id="progress-detail">No tasks yet</small></article>
+              <article class="metric-card"><p>Forecast (ETA)</p><strong id="forecast-value">—</strong><span id="forecast-note">No active forecast</span><div class="confidence-row"><i id="confidence-bar"></i></div><small id="confidence-detail">Confidence unavailable</small></article>
+              <article class="metric-card"><p>Drift status</p><strong id="drift-value">—</strong><span id="drift-note">Comparing task forecasts</span><div class="drift-summary"><i aria-hidden="true"></i><small id="drift-detail">No drift signal yet</small></div></article>
+              <article class="metric-card risk-card"><p>Next risk</p><strong id="risk-value">No active risk</strong><span id="risk-note">Everything looks clear</span><button class="quiet-button" id="risk-action" type="button" hidden>View task</button></article>
+            </section>
+            <div class="overview-layout">
+              <section class="plan-panel panel" aria-labelledby="plan-heading"><header class="panel-head"><div><p>Plan overview</p><h2 id="plan-heading">Tasks</h2></div><span id="plan-count">0 tasks</span></header><div class="table-wrap"><table><thead><tr><th>Task</th><th>Owner / lane</th><th>State</th><th>ETA</th><th>Confidence</th><th>Last activity</th><th>Proof</th></tr></thead><tbody id="task-table"></tbody></table></div><p class="empty-state" id="task-empty" hidden>No tasks in this view.</p></section>
+              <aside class="sidebar-stack">
+                <section class="panel proof-panel" aria-labelledby="proof-heading"><header class="panel-head compact"><div><p>Proof highlights</p><h2 id="proof-heading">Latest evidence</h2></div><span id="proof-count">0</span></header><div class="proof-feed" id="proof-feed"></div></section>
+                <section class="panel burn-panel" aria-labelledby="burn-heading"><header class="panel-head compact"><div><p>Token burn rate</p><h2 id="burn-heading">Task activity</h2></div><span class="live-label"><i></i>Live</span></header><div class="burn-summary"><div><span>Current</span><strong id="burn-current">—</strong></div><p id="burn-note">Waiting for activity</p></div><svg class="burn-chart" id="burn-chart" viewBox="0 0 320 138" preserveAspectRatio="none" aria-label="Task token burn rate"></svg></section>
+              </aside>
+            </div>
+            <section class="overview-diagnostics panel" aria-labelledby="overview-diagnostics-heading">
+              <header><div><p>Device health</p><h2 id="overview-diagnostics-heading">Diagnostics</h2></div><strong id="overview-health-state">Loading</strong></header>
+              <div class="overview-diagnostic-values">
+                <p><span>CPU</span><strong id="overview-cpu">—</strong></p>
+                <p><span>Memory</span><strong id="overview-memory">—</strong></p>
+                <p><span>Disk</span><strong id="overview-disk">—</strong></p>
+                <p><span>Network</span><strong id="overview-network">—</strong></p>
+              </div>
+              <button class="quiet-button" data-view="diagnostics" type="button">View diagnostics</button>
+            </section>
           </div>
         </section>
         <section class="view" id="view-hierarchy" data-view-panel="hierarchy" role="tabpanel" aria-labelledby="tab-hierarchy" tabindex="0" hidden><header class="view-head"><div><p class="eyebrow">Ownership</p><h2>Who is carrying the work</h2></div><p>Subagents stay with their master. Counts keep the task view compact.</p></header><div class="hierarchy-list" id="hierarchy-list"></div></section>

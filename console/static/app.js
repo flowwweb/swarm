@@ -88,30 +88,38 @@ function setLoading(loading) {
   $("#overview-content").hidden = loading;
 }
 
-function setView(view, focus) {
-  state.view = view;
+function routeView() {
+  const view = location.hash.slice(1);
+  return ["overview", "dashboard", "hierarchy", "kanban", "diagnostics", "settings"].includes(view) ? view : "overview";
+}
+
+function setView(view, focus, syncRoute = true) {
+  const selectedView = view === 'dashboard' || view === 'hierarchy' || view === 'kanban' || view === 'diagnostics' || view === 'settings' ? view : 'overview';
+  state.view = selectedView;
   const titles = {
     overview: ["Overview", "Project progress, risks, and proof at a glance."],
+    dashboard: ["Dashboard", "Project progress, risks, and proof at a glance."],
     hierarchy: ["Hierarchy", "See who owns the work, what is active, and where attention is needed."],
     kanban: ["Kanban", "Task state for the selected project or CTRL."],
     diagnostics: ["Diagnostics", "Device health, capacity, and maintenance."],
     settings: ["Settings", "Defaults and optional per-CTRL overrides."],
   };
   $$(".nav-item").forEach((tab) => {
-    const selected = tab.dataset.view === view;
+    const selected = tab.dataset.view === selectedView;
     tab.classList.toggle("is-active", selected);
     tab.setAttribute("aria-selected", String(selected));
     tab.tabIndex = selected ? 0 : -1;
   });
   $$("[data-view-panel]").forEach((panel) => {
-    const selected = panel.dataset.viewPanel === view;
+    const selected = panel.dataset.viewPanel === selectedView;
     panel.classList.toggle("is-active", selected);
     panel.hidden = !selected;
   });
-  $("#view-title").textContent = titles[view][0];
-  $("#view-subtitle").textContent = titles[view][1];
-  if (view === 'settings' && (!state.skills || state.skillsError)) refreshSkills().then(renderSettings);
-  if (focus) $("#tab-" + view).focus({ preventScroll: true });
+  $("#view-title").textContent = titles[selectedView][0];
+  $("#view-subtitle").textContent = titles[selectedView][1];
+  if (selectedView === 'settings' && (!state.skills || state.skillsError)) refreshSkills().then(renderSettings);
+  if (syncRoute && location.hash !== '#' + selectedView) history.replaceState(null, '', '#' + selectedView);
+  if (focus) $("#tab-" + selectedView).focus({ preventScroll: true });
 }
 
 function activeControllers() {
@@ -394,30 +402,11 @@ function forecastSummary(node) {
   return '<div class="forecast-summary"><strong>' + escapeHTML(remaining) + (revised ? ' <span>Changed</span>' : '') + '</strong><small>' + escapeHTML(String(current.confidence ?? eta.confidence ?? '—') + '% confidence' + (current.eta_start_ms ? ' · range ' + formatEta(current.eta_start_ms) + '–' + formatEta(end) : '')) + (revised ? ' · ' + (drift > 0 ? '+' : '−') + formatDuration(Math.abs(drift)) + ' from original' : '') + '</small>' + details + '</div>';
 }
 
-function renderMonitoringCards(nodes) {
-  const cards = overviewCards(nodes);
-  const tree = taskTree(nodes);
-  $("#overview-summary").textContent = cards.length ? String(cards.length) + " active scope" + (cards.length === 1 ? "" : "s") : "No observed work yet";
-  $("#monitoring-cards").innerHTML = cards.length ? cards.map((card) => {
-    const tasks = observedTasks(card.nodes);
-    const completed = tasks.filter((task) => ["done", "archived"].includes(String(task.status).toLowerCase())).length;
-    const total = tasks.length;
-    const percent = total ? Math.round((completed / total) * 100) : 0;
-    const blocker = tasks.find(needsAttention);
-    const receipt = latestReceipt(card.nodes);
-    const primary = card.nodes.find((node) => node.id === card.ctrlId) || tasks[0];
-    const stateLabel = primary ? statusLabel(primary)[0] : "No task state";
-    const subagents = card.ctrlId ? subagentDescendants(card.ctrlId, tree) : [];
-    const subagentDisclosure = subagents.length ? '<details class="monitoring-subagents" data-overview-subagents="' + escapeHTML(card.ctrlId) + '"><summary>' + subagents.length + ' supporting subagent' + (subagents.length === 1 ? '' : 's') + '</summary><ul>' + subagents.map((node) => '<li><strong>' + escapeHTML(node.artifact || node.title || node.id) + '</strong><span>' + escapeHTML(statusLabel(node)[0]) + '</span></li>').join('') + '</ul></details>' : '';
-    return '<article class="monitoring-card panel"><header><div><p class="eyebrow">' + escapeHTML(stateLabel) + '</p><h3>' + escapeHTML(card.label) + '</h3></div><span>' + completed + ' / ' + total + '</span></header><div class="meter" aria-label="' + completed + ' of ' + total + ' observed tasks completed"><i style="width:' + percent + '%"></i></div><p class="meter-label">Completed ' + completed + ' / ' + total + ' observed tasks</p>' + forecastSummary(primary) + '<dl><div><dt>First blocker</dt><dd>' + escapeHTML(blocker?.artifact || "None observed") + '</dd></div><div><dt>Latest receipt</dt><dd>' + escapeHTML(receipt?.caption || receipt?.kind || "None received") + '</dd></div></dl>' + subagentDisclosure + '</article>';
-  }).join("") : '<p class="empty-state">No observed project or CTRL work in this scope.</p>';
-}
-
-function renderEvidenceGallery(nodes) {
+function renderEvidenceGallery(nodes, gallerySelector, noteSelector, limit = 6) {
   const allowed = new Set(nodes.map((node) => node.id));
   const images = state.proof.filter((item) => allowed.has(item.task_id) && item.evidence_id && item.digest && String(item.media_type || "").startsWith("image/"));
-  $("#evidence-note").textContent = images.length ? String(images.length) + " recent image" + (images.length === 1 ? "" : "s") : "No images received";
-  $("#evidence-gallery").innerHTML = images.length ? images.slice(0, 6).map((item) => '<figure><img loading="lazy" decoding="async" src="/api/proof-media/' + encodeURIComponent(item.evidence_id) + '?digest=' + encodeURIComponent(item.digest) + '" alt="' + escapeHTML(item.caption || "Evidence image") + '"><figcaption>' + escapeHTML(item.caption || "Image evidence") + '</figcaption></figure>').join("") : '<p class="empty-state">Images appear here when they are received.</p>';
+  $(noteSelector).textContent = images.length ? String(images.length) + " recent image" + (images.length === 1 ? "" : "s") : "No images received";
+  $(gallerySelector).innerHTML = images.length ? images.slice(0, limit).map((item) => '<figure><img loading="lazy" decoding="async" src="/api/proof-media/' + encodeURIComponent(item.evidence_id) + '?digest=' + encodeURIComponent(item.digest) + '" alt="' + escapeHTML(item.caption || "Evidence image") + '"><figcaption>' + escapeHTML(item.caption || "Image evidence") + '</figcaption></figure>').join("") : '<p class="empty-state">Images appear here when they are received.</p>';
 }
 
 function usageSeries() {
@@ -439,21 +428,55 @@ function renderUsage() {
   drawLine($("#usage-sparkline"), values, "#ff9c3d");
 }
 
-function renderOverviewHealth(nodes) {
+function renderHealth(nodes, stateSelector, noteSelector) {
   const lanes = nodes.filter((node) => !isSubagent(node));
   const attention = lanes.filter(needsAttention);
-  $("#overview-health-state").textContent = attention.length ? 'Needs attention' : (lanes.length ? 'On track' : 'Waiting for work');
-  $("#overview-health-state").className = attention.length ? 'risk-text' : 'healthy-text';
-  $("#overview-health-note").textContent = attention.length ? String(attention.length) + ' visible lane' + (attention.length === 1 ? ' needs attention' : 's need attention') : (lanes.length ? String(lanes.length) + ' visible lanes without an attention signal' : 'No visible lanes');
+  $(stateSelector).textContent = attention.length ? 'Needs attention' : (lanes.length ? 'On track' : 'Waiting for work');
+  $(stateSelector).className = attention.length ? 'risk-text' : 'healthy-text';
+  $(noteSelector).textContent = attention.length ? String(attention.length) + ' visible lane' + (attention.length === 1 ? ' needs attention' : 's need attention') : (lanes.length ? String(lanes.length) + ' visible lanes without an attention signal' : 'No visible lanes');
+}
+
+function renderOverviewHealth(nodes) {
+  renderHealth(nodes, "#overview-monitoring-health-state", "#overview-monitoring-health-note");
+}
+
+function renderOverviewProjectCards(nodes) {
+  const cards = overviewCards(nodes);
+  const tree = taskTree(nodes);
+  $("#overview-summary").textContent = cards.length ? String(cards.length) + " active scope" + (cards.length === 1 ? "" : "s") : "No observed work yet";
+  $("#overview-project-cards").innerHTML = cards.length ? cards.map((card) => {
+    const tasks = observedTasks(card.nodes);
+    const completed = tasks.filter((task) => ["done", "archived"].includes(String(task.status).toLowerCase())).length;
+    const total = tasks.length;
+    const percent = total ? Math.round((completed / total) * 100) : null;
+    const blocker = tasks.find(needsAttention);
+    const receipt = latestReceipt(card.nodes);
+    const primary = card.nodes.find((node) => node.id === card.ctrlId) || tasks[0];
+    const current = tasks.find((task) => !["done", "archived"].includes(String(task.status).toLowerCase())) || primary;
+    const stateLabel = primary ? statusLabel(primary)[0] : "No task state";
+    const ringClass = needsAttention(primary) ? "is-attention" : (statusLabel(primary || {})[1] || "is-pending");
+    const subagents = card.ctrlId ? subagentDescendants(card.ctrlId, tree) : [];
+    const subagentDisclosure = subagents.length ? '<details class="overview-subagents" data-overview-subagents="' + escapeHTML(card.ctrlId) + '"><summary>Subagents <span>' + subagents.length + '</span></summary><ul>' + subagents.map((node) => '<li><strong>' + escapeHTML(node.artifact || node.title || node.id) + '</strong><span>' + escapeHTML(statusLabel(node)[0]) + '</span></li>').join('') + '</ul></details>' : '<span class="overview-subagent-empty">No subagents</span>';
+    return '<article class="overview-project-card panel"><div class="overview-progress-ring ' + ringClass + '" aria-label="' + (percent == null ? 'Observed progress unavailable' : percent + '% observed task completion') + '"><strong>' + (percent == null ? '—' : percent + '%') + '</strong><span>' + completed + ' / ' + total + '</span></div><div class="overview-project-main"><p class="eyebrow">' + escapeHTML(stateLabel) + '</p><h3>' + escapeHTML(card.label) + '</h3><p>' + escapeHTML(current?.artifact || "No current task observed") + '</p></div><dl class="overview-project-facts"><div><dt>Current work</dt><dd>' + escapeHTML(current?.artifact || "None observed") + '</dd></div><div><dt>Latest receipt</dt><dd>' + escapeHTML(receipt?.caption || receipt?.kind || "None received") + '</dd></div><div><dt>Blocker</dt><dd class="' + (blocker ? 'risk-text' : '') + '">' + escapeHTML(blocker?.artifact || "None observed") + '</dd></div></dl><div class="overview-project-subagents">' + subagentDisclosure + '</div></article>';
+  }).join("") : '<p class="empty-state">No observed project or CTRL work in this scope.</p>';
 }
 
 function renderOverview() {
   const nodes = scopedNodes();
-  renderMonitoringCards(nodes);
-  renderEvidenceGallery(nodes);
+  renderOverviewProjectCards(nodes);
+  renderEvidenceGallery(nodes, "#overview-evidence-gallery", "#overview-evidence-note", 4);
   renderUsage();
   renderOverviewHealth(nodes);
   $("#sync-time").textContent = state.overview?.generated_at ? "Updated " + formatRelative(state.overview.generated_at) : "Ready";
+}
+
+function renderDashboard() {
+  const nodes = scopedNodes();
+  renderMetrics(nodes);
+  renderTable(nodes);
+  renderProof(nodes);
+  renderBurnRate();
+  renderOverviewDiagnostics();
 }
 
 function taskProgress(node) {
@@ -658,7 +681,7 @@ function renderSettings() {
       '<label class="toggle-row"><input id="auto-health" type="checkbox"' + (state.health?.enabled ? ' checked' : '') + '><span>Ask for maintenance review when health needs attention</span></label><small>Review requests do not run a model or change the device by themselves.</small><h4>Skills</h4>' + skillsSummary(scope) + '<h4>' + escapeHTML(storage?.bytes == null ? 'Saved history unavailable' : formatBytes(storage.bytes) + ' saved history' + retention) + '</h4><p>Progress, forecasts, proof, and token history stay available between sessions' + (proofFiles ? ' · ' + proofFiles + ' proof file' + (proofFiles === 1 ? '' : 's') : '') + '.</p><div class="settings-actions-inline"><button class="quiet-button" data-setting-action="clear" type="button">Clear history</button><button class="quiet-button" data-setting-action="restore" type="button">Restore defaults</button></div><small>Clearing history leaves tasks unchanged. Restoring defaults keeps history.</small></section>';
 }
 
-function renderAllViews() { renderOverview(); renderHierarchy(); renderKanban(); renderDiagnostics(); renderSettings(); }
+function renderAllViews() { renderOverview(); renderDashboard(); renderHierarchy(); renderKanban(); renderDiagnostics(); renderSettings(); }
 
 async function refreshProof() {
   const params = new URLSearchParams();
@@ -683,6 +706,7 @@ async function refreshMonitoring(proofSequence) {
     await refreshUsageHistory();
     if (Number(proofSequence) !== state.proofSequence) await refreshProof();
     renderOverview();
+    renderDashboard();
   } catch { /* The next manual refresh can recover the complete screen. */ }
 }
 
@@ -889,4 +913,6 @@ $(".nav-list").addEventListener("keydown", (event) => {
 document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible") reportPresence(); });
 window.addEventListener("pagehide", () => { if (presenceTimer) clearInterval(presenceTimer); });
 
+setView(routeView(), false, routeView() === 'overview' && location.hash !== '#overview');
+window.addEventListener('hashchange', () => setView(routeView(), false, routeView() === 'overview' && location.hash !== '#overview'));
 initialize().then(startPresence);
