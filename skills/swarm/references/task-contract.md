@@ -55,14 +55,14 @@ exact operation, target, and scope. Missing or conflicting custody means no
 mutation is permitted: it is a fail-closed blocker, not permission to normalize or
 replace the user state.
 
-Pin policy is role-scoped and placement-gated: `lifecycle.pin_created_tasks` enables
-top-level CTRL auto-pinning only when the host supplies a receipt proving placement
-above pinned folders. Otherwise creation is unpinned and surfaces the directive,
-created ID, `pinned: false`, and `placement: placement_unverified`.
+SWARM runtime never calls or authorizes pin/unpin. Every user-authorized CTRL creation
+surfaces the created ID, exact directive/title, `pinned: false`, and
+`placement: placement_unverified`. Only the host may consume an exact explicit-user
+pin request, and the current host may append the task below pinned folders.
 only for the top-level CTRL task. LEAD, DOER, REVIEW, WATCHDOG, storage,
-sidecar, and nested CTRL tasks default to unpinned. A non-CTRL task may request
-a pin only from a fresh host-owned explicit-user receipt or a concrete ready
-review-handoff receipt. Review-handoff pins are temporary and closeout may
+sidecar, and nested CTRL tasks default to unpinned. SWARM never authorizes a
+non-CTRL or review-handoff pin; only the host may consume an exact explicit-user
+request. Review-handoff pins are temporary and closeout may
 remove one only after independently verified SWARM custody; if the user kept
 or changed pin, folder, order, title, or state, preserve it. The runtime
 decision is non-authoritative intent; the host task API must independently
