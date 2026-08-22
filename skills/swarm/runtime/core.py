@@ -20,7 +20,7 @@ class Role(StrEnum):
     CTRL="CTRL"; SPECIALIST="SPECIALIST"; ARCHITECT="ARCHITECT"; LEAD="LEAD"; DOER="DOER"; EXPERT="EXPERT"; REVIEW="REVIEW"
 
 class PinDisposition(StrEnum):
-    AUTO_PIN="AUTO_PIN"; EXPLICIT_PIN="EXPLICIT_PIN"; TEMPORARY_REVIEW_PIN="TEMPORARY_REVIEW_PIN"; DEFAULT_UNPINNED="DEFAULT_UNPINNED"; PRESERVE_USER_STATE="PRESERVE_USER_STATE"
+    AUTO_PIN="AUTO_PIN"; EXPLICIT_PIN="EXPLICIT_PIN"; TEMPORARY_REVIEW_PIN="TEMPORARY_REVIEW_PIN"; DEFAULT_UNPINNED="DEFAULT_UNPINNED"; PRESERVE_USER_STATE="PRESERVE_USER_STATE"; PLACEMENT_UNVERIFIED="PLACEMENT_UNVERIFIED"
 
 @dataclass(frozen=True)
 class PinPolicyDecision:
@@ -45,6 +45,7 @@ def pin_policy(
     user_order_changed: bool = False,
     user_title_changed: bool = False,
     user_state_changed: bool = False,
+    placement_verified: bool = False,
 ) -> PinPolicyDecision:
     """Return a pin intent without mutating host task or folder state.
 
@@ -55,11 +56,13 @@ def pin_policy(
         return PinPolicyDecision(PinDisposition.PRESERVE_USER_STATE, "user task or folder custody is authoritative")
     role_name = role.value if isinstance(role, Role) else str(role).upper()
     if explicit_user_pin:
-        return PinPolicyDecision(PinDisposition.EXPLICIT_PIN, "explicit user pin request", False)
+        return PinPolicyDecision(PinDisposition.EXPLICIT_PIN, "explicit user pin request; host may append below pinned folders", False)
     if concrete_review_handoff:
         return PinPolicyDecision(PinDisposition.TEMPORARY_REVIEW_PIN, "concrete user review handoff", True)
     if role_name == Role.CTRL.value and top_level and pin_created_tasks:
-        return PinPolicyDecision(PinDisposition.AUTO_PIN, "top-level CTRL default", False)
+        if placement_verified:
+            return PinPolicyDecision(PinDisposition.AUTO_PIN, "top-level CTRL placement verified above pinned folders", False)
+        return PinPolicyDecision(PinDisposition.PLACEMENT_UNVERIFIED, "top-level CTRL created; pin not requested because placement is unverified", False)
     return PinPolicyDecision(PinDisposition.DEFAULT_UNPINNED, "non-CTRL or nested task default", False)
 
 

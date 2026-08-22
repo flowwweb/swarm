@@ -18,8 +18,12 @@ explicit-user receipt naming the exact operation, target, and scope. If that
 receipt or custody verification is absent or conflicts, no mutation is permitted:
 fail closed, surface the conflict, and wait.
 
-Pin policy is role-scoped. With `lifecycle.pin_created_tasks = true`, only the
-top-level CTRL task may be auto-pinned. LEAD, DOER, REVIEW, WATCHDOG, storage,
+Pin policy is role-scoped and placement-gated. With `lifecycle.pin_created_tasks = true`, only the
+top-level CTRL task may request auto-pinning, and only after a host-owned placement
+receipt proves it will appear in the visible CTRL section above pinned folders.
+Without that receipt, the CTRL is created unpinned and the created-task directive,
+`pinned: false`, and `placement: placement_unverified` must be surfaced immediately.
+LEAD, DOER, REVIEW, WATCHDOG, storage,
 sidecar, and nested CTRL tasks default to unpinned. A non-CTRL pin requires a
 fresh host-owned explicit-user receipt or a concrete ready-review handoff; a
 review-handoff pin is temporary and may be removed at close only after current

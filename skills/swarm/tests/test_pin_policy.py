@@ -8,10 +8,15 @@ class PinPolicyContractTests(unittest.TestCase):
     def test_config_default_enables_ctrl_auto_pin_policy(self):
         self.assertTrue(DEFAULTS["lifecycle"]["pin_created_tasks"])
 
-    def test_only_top_level_ctrl_auto_pins(self):
-        decision = pin_policy(Role.CTRL, top_level=True)
+    def test_only_top_level_ctrl_auto_pins_with_verified_placement(self):
+        decision = pin_policy(Role.CTRL, top_level=True, placement_verified=True)
         self.assertEqual(decision.disposition, PinDisposition.AUTO_PIN)
-        self.assertTrue(decision.requests_pin)
+
+    def test_top_level_ctrl_fails_closed_without_verified_placement(self):
+        decision = pin_policy(Role.CTRL, top_level=True)
+        self.assertEqual(decision.disposition, PinDisposition.PLACEMENT_UNVERIFIED)
+        self.assertFalse(decision.requests_pin)
+        self.assertIn("pin not requested", decision.reason)
         self.assertFalse(decision.remove_on_close)
 
         for role in (Role.LEAD, Role.DOER, Role.REVIEW, "WATCHDOG", "STORAGE", "SIDECAR"):

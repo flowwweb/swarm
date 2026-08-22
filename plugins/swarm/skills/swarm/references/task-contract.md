@@ -55,7 +55,10 @@ exact operation, target, and scope. Missing or conflicting custody means no
 mutation is permitted: it is a fail-closed blocker, not permission to normalize or
 replace the user state.
 
-Pin policy is role-scoped: `lifecycle.pin_created_tasks` enables auto-pinning
+Pin policy is role-scoped and placement-gated: `lifecycle.pin_created_tasks` enables
+top-level CTRL auto-pinning only when the host supplies a receipt proving placement
+above pinned folders. Otherwise creation is unpinned and surfaces the directive,
+created ID, `pinned: false`, and `placement: placement_unverified`.
 only for the top-level CTRL task. LEAD, DOER, REVIEW, WATCHDOG, storage,
 sidecar, and nested CTRL tasks default to unpinned. A non-CTRL task may request
 a pin only from a fresh host-owned explicit-user receipt or a concrete ready
