@@ -50,6 +50,7 @@ TOKEN_RETENTION_DAYS = 30
 TOKEN_SOURCE_SQLITE = "host_reported_cumulative_delta"
 TOKEN_SOURCE_CODEX_JSONL = "codex_jsonl_token_count"
 DIAGNOSTIC_RETENTION_DAYS = 7
+DIAGNOSTIC_FRESH_SECONDS = TOKEN_SAMPLE_SECONDS * 5
 HEALTH_INCIDENT_RETENTION_DAYS = 90
 HEALTH_SUSTAIN_SECONDS = 300
 HEALTH_RECOVERY_SECONDS = 600
@@ -484,6 +485,8 @@ class DiagnosticsCollector:
             "footprint_bytes": None,
             "footprint_status": "not_collected",
             "source": "docker_cli_read_only",
+            "unavailable_reason": "Docker CLI did not return a readable container list.",
+            "recommended_action": "Keep container metrics unavailable until the host Docker CLI is available.",
         }
         try:
             result = subprocess.run(
@@ -496,6 +499,7 @@ class DiagnosticsCollector:
         except (OSError, subprocess.SubprocessError):
             return base
         if result.returncode != 0:
+            base["unavailable_reason"] = "Docker CLI returned a non-zero status."
             base["status"] = "error"
             return base
         names = [line.strip() for line in result.stdout.splitlines() if line.strip()]
@@ -552,13 +556,21 @@ class DiagnosticsCollector:
 
     def collect(self) -> dict[str, Any]:
         sampled_at_ms = int(self.now_fn() * 1000)
-        cpu: dict[str, Any] = {"available": False, "percent": None, "source": "unavailable"}
+        cpu: dict[str, Any] = {
+            "available": False,
+            "percent": None,
+            "source": "unavailable",
+            "unavailable_reason": "No supported CPU sampler returned a value.",
+            "recommended_action": "Keep CPU load unavailable until a supported host sampler returns a value.",
+        }
         memory: dict[str, Any] = {
             "available": False,
             "percent": None,
             "used_bytes": None,
             "total_bytes": None,
             "source": "unavailable",
+            "unavailable_reason": "No supported memory sampler returned a value.",
+            "recommended_action": "Keep memory load unavailable until a supported host sampler returns a value.",
         }
         network: dict[str, Any] = {
             "available": False,
@@ -566,33 +578,56 @@ class DiagnosticsCollector:
             "tx_bytes": None,
             "errors": None,
             "source": "unavailable",
+            "unavailable_reason": "No readable network counters were returned.",
+            "recommended_action": "Keep network totals unavailable until readable host counters exist.",
         }
         try:
             import psutil  # type: ignore
-
-            cpu["percent"] = psutil.cpu_percent(interval=None)
-            cpu["available"] = cpu["percent"] is not None
-            cpu["source"] = "psutil"
-            virtual_memory = psutil.virtual_memory()
-            memory.update({
-                "available": True,
-                "percent": float(virtual_memory.percent),
-                "used_bytes": int(virtual_memory.used),
-                "total_bytes": int(virtual_memory.total),
-                "source": "psutil",
-            })
-            counters = psutil.net_io_counters()
-            network.update({
-                "available": counters is not None,
-                "rx_bytes": None if counters is None else int(counters.bytes_recv),
-                "tx_bytes": None if counters is None else int(counters.bytes_sent),
-                "errors": None if counters is None else int(counters.errin + counters.errout),
-                "source": "psutil",
-            })
-        except (ImportError, OSError, AttributeError, ValueError):
+        except (ImportError, OSError):
+            psutil = None
+        if psutil is not None:
+            try:
+                cpu_percent = psutil.cpu_percent(interval=None)
+                if cpu_percent is not None:
+                    cpu.update({"available": True, "percent": float(cpu_percent), "source": "psutil"})
+            except (OSError, AttributeError, ValueError, RuntimeError):
+                pass
+            try:
+                virtual_memory = psutil.virtual_memory()
+                memory.update({
+                    "available": True,
+                    "percent": float(virtual_memory.percent),
+                    "used_bytes": int(virtual_memory.used),
+                    "total_bytes": int(virtual_memory.total),
+                    "source": "psutil",
+                })
+            except (OSError, AttributeError, TypeError, ValueError, RuntimeError):
+                pass
+            try:
+                counters = psutil.net_io_counters()
+                if counters is not None:
+                    network.update({
+                        "available": True,
+                        "rx_bytes": int(counters.bytes_recv),
+                        "tx_bytes": int(counters.bytes_sent),
+                        "errors": int(counters.errin + counters.errout),
+                        "source": "psutil",
+                    })
+                else:
+                    network["unavailable_reason"] = "psutil returned no network counters."
+            except (OSError, AttributeError, TypeError, ValueError, RuntimeError):
+                pass
+        if not cpu["available"] or not memory["available"]:
             fallback = self._windows_resources()
             if fallback is not None:
-                cpu, memory = fallback
+                fallback_cpu, fallback_memory = fallback
+                if not cpu["available"]:
+                    cpu = fallback_cpu
+                if not memory["available"]:
+                    memory = fallback_memory
+        for metric in (cpu, memory, network):
+            if metric.get("available"):
+                metric["observed_at_ms"] = sampled_at_ms
         try:
             disk = shutil.disk_usage(self.codex_home)
             disks = [{
@@ -601,18 +636,133 @@ class DiagnosticsCollector:
                 "total_bytes": int(disk.total),
                 "percent": round((disk.used / disk.total) * 100, 2) if disk.total else None,
                 "available": True,
+                "source": "shutil.disk_usage",
+                "observed_at_ms": sampled_at_ms,
             }]
         except OSError:
-            disks = [{"mount": str(self.codex_home.anchor or self.codex_home), "available": False}]
+            disks = [{
+                "mount": str(self.codex_home.anchor or self.codex_home),
+                "available": False,
+                "source": "unavailable",
+                "unavailable_reason": "The diagnostics root disk could not be read.",
+                "recommended_action": "Keep disk capacity unavailable until the diagnostics root is readable.",
+            }]
+        console_storage = self._storage_sizes()
+        console_storage.update({"source": "console_state_files", "observed_at_ms": sampled_at_ms})
+        docker = self._docker_status()
+        if docker.get("available"):
+            docker["observed_at_ms"] = sampled_at_ms
         return {
             "sampled_at_ms": sampled_at_ms,
             "cpu": cpu,
             "memory": memory,
             "disks": disks,
-            "docker": self._docker_status(),
+            "docker": docker,
             "network": network,
-            "console_storage": self._storage_sizes(),
+            "console_storage": console_storage,
         }
+
+
+def _diagnostic_freshness(observed_at_ms: Any, now_ms: int) -> dict[str, Any]:
+    if not isinstance(observed_at_ms, int) or observed_at_ms <= 0:
+        return {"state": "no_data", "age_seconds": None, "sampled_at_ms": None}
+    age_seconds = max(0, (int(now_ms) - observed_at_ms) // 1000)
+    return {
+        "state": "fresh" if age_seconds <= DIAGNOSTIC_FRESH_SECONDS else "stale",
+        "age_seconds": age_seconds,
+        "sampled_at_ms": observed_at_ms,
+    }
+
+
+def _diagnostic_availability(payload: dict[str, Any]) -> dict[str, Any]:
+    groups: list[tuple[str, str, dict[str, Any] | None]] = [
+        ("cpu", "CPU", payload.get("cpu") if isinstance(payload.get("cpu"), dict) else None),
+        ("memory", "memory", payload.get("memory") if isinstance(payload.get("memory"), dict) else None),
+        ("containers", "containers", payload.get("docker") if isinstance(payload.get("docker"), dict) else None),
+        ("network", "network", payload.get("network") if isinstance(payload.get("network"), dict) else None),
+    ]
+    disks = payload.get("disks") if isinstance(payload.get("disks"), list) else []
+    disk = next((item for item in disks if isinstance(item, dict) and item.get("available")), None)
+    disk_reason = next((item for item in disks if isinstance(item, dict)), None)
+    groups.append(("disk", "disk", disk or disk_reason))
+    available: list[str] = []
+    unavailable: list[dict[str, Any]] = []
+    for group, label, metric in groups:
+        if metric and metric.get("available"):
+            available.append(group)
+            continue
+        metric = metric or {}
+        unavailable.append({
+            "group": group,
+            "label": label,
+            "reason": str(metric.get("unavailable_reason") or "No observed value was returned."),
+            "action": str(metric.get("recommended_action") or "Keep this source unavailable until it returns a readable value."),
+        })
+    if not available:
+        status = "no_data" if not payload.get("sampled_at_ms") else "unavailable"
+    elif unavailable:
+        status = "partial"
+    else:
+        status = "complete"
+    unavailable_labels = ", ".join(item["label"] for item in unavailable)
+    return {
+        "status": status,
+        "available_groups": available,
+        "unavailable_groups": unavailable,
+        "summary": "All configured sources observed." if not unavailable else f"Unavailable sources: {unavailable_labels}.",
+    }
+
+
+def _diagnostic_record_for_response(record: dict[str, Any], now_ms: int) -> dict[str, Any]:
+    response = copy.deepcopy(record)
+    sampled_at_ms = response.get("sampled_at_ms")
+    payload = response.get("payload") if isinstance(response.get("payload"), dict) else {}
+    response["source_timestamp_ms"] = sampled_at_ms if isinstance(sampled_at_ms, int) and sampled_at_ms > 0 else None
+    response["freshness"] = _diagnostic_freshness(sampled_at_ms, now_ms)
+    for key in ("cpu", "memory", "docker", "network"):
+        metric = payload.get(key)
+        if isinstance(metric, dict):
+            metric["freshness"] = _diagnostic_freshness(
+                metric.get("observed_at_ms") if metric.get("available") else None,
+                now_ms,
+            )
+    disks = payload.get("disks")
+    if isinstance(disks, list):
+        for disk in disks:
+            if isinstance(disk, dict):
+                disk["freshness"] = _diagnostic_freshness(
+                    disk.get("observed_at_ms") if disk.get("available") else None,
+                    now_ms,
+                )
+    payload["freshness"] = response["freshness"]
+    payload["availability"] = _diagnostic_availability(payload)
+    response["payload"] = payload
+    return response
+
+
+def _diagnostic_no_data(now_ms: int) -> dict[str, Any]:
+    return {
+        "sampled_at_ms": None,
+        "source_timestamp_ms": None,
+        "health_state": "UNKNOWN",
+        "reasons": [],
+        "freshness": _diagnostic_freshness(None, now_ms),
+        "payload": {
+            "sampled_at_ms": None,
+            "freshness": _diagnostic_freshness(None, now_ms),
+            "availability": {
+                "status": "no_data",
+                "available_groups": [],
+                "unavailable_groups": [{
+                    "group": "host",
+                    "label": "host diagnostics",
+                    "reason": "No diagnostics sample has been recorded yet.",
+                    "action": "Start or resume the local observer; no host value is inferred here.",
+                }],
+                "summary": "No diagnostics sample recorded.",
+            },
+        },
+    }
 
 
 def assess_health(sample: dict[str, Any]) -> dict[str, Any]:
@@ -2809,7 +2959,9 @@ class App:
             config_valid = True
         except ConsoleError:
             config_valid = False
-        latest = self.store.latest_diagnostics()
+        now_ms = int(time.time() * 1000)
+        stored_latest = self.store.latest_diagnostics()
+        latest = _diagnostic_no_data(now_ms) if stored_latest is None else _diagnostic_record_for_response(stored_latest, now_ms)
         return {
             "ok": True,
             "service": "swarm-console",
@@ -2838,7 +2990,11 @@ class App:
             return False
 
     def diagnostics_history(self, limit: int = 120) -> list[dict[str, Any]]:
-        return self.store.diagnostics_history(limit=limit)
+        now_ms = int(time.time() * 1000)
+        return [
+            _diagnostic_record_for_response(record, now_ms)
+            for record in self.store.diagnostics_history(limit=limit)
+        ]
 
     def health_incidents(self, state: str | None = None) -> list[dict[str, Any]]:
         return self.store.health_incidents(state=state)

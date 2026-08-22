@@ -4,6 +4,7 @@ import importlib.util
 import hashlib
 import json
 import sqlite3
+import sys
 import tempfile
 import time
 import unittest
@@ -793,6 +794,55 @@ class SwarmConsoleTests(unittest.TestCase):
             "network": {"available": False, "source": "test"},
             "console_storage": {"db_bytes": 1, "wal_bytes": 0, "shm_bytes": 0, "log_bytes": 0},
         }
+
+    def test_diagnostics_preserve_independent_sources_and_report_partial_freshness(self) -> None:
+        now_ms = 2_000_000_000_000
+        psutil_stub = SimpleNamespace(
+            cpu_percent=lambda interval=None: 37.5,
+            virtual_memory=lambda: SimpleNamespace(percent=62.0, used=620, total=1_000),
+            net_io_counters=lambda: (_ for _ in ()).throw(OSError("network counters unavailable")),
+        )
+        docker_unavailable = {
+            "available": False,
+            "status": "unavailable",
+            "container_count": 0,
+            "source": "docker_cli_read_only",
+            "unavailable_reason": "Docker CLI is not available.",
+            "recommended_action": "Keep container metrics unavailable.",
+        }
+        collector = console.DiagnosticsCollector(self.codex_home, self.root / "console" / "state.sqlite3", now_fn=lambda: now_ms / 1000)
+        with mock.patch.dict(sys.modules, {"psutil": psutil_stub}), mock.patch.object(
+            console.DiagnosticsCollector, "_docker_status", return_value=docker_unavailable,
+        ):
+            sample = collector.collect()
+
+        self.assertEqual(sample["cpu"]["percent"], 37.5)
+        self.assertEqual(sample["memory"]["percent"], 62.0)
+        self.assertFalse(sample["network"]["available"])
+        self.assertEqual(sample["cpu"]["source"], "psutil")
+        self.assertEqual(sample["cpu"]["observed_at_ms"], now_ms)
+        self.assertTrue(sample["disks"][0]["available"])
+        response = console._diagnostic_record_for_response(
+            {"sampled_at_ms": now_ms, "health_state": "HEALTHY", "reasons": [], "payload": sample},
+            now_ms + 60_000,
+        )
+        self.assertEqual(response["source_timestamp_ms"], now_ms)
+        self.assertEqual(response["freshness"]["state"], "fresh")
+        self.assertEqual(response["payload"]["availability"]["status"], "partial")
+        self.assertEqual(
+            {item["group"] for item in response["payload"]["availability"]["unavailable_groups"]},
+            {"containers", "network"},
+        )
+
+    def test_diagnostics_no_sample_is_grouped_and_explicitly_unverified(self) -> None:
+        app = console.App(self.codex_home, self.config)
+        result = app.diagnostics()
+        latest = result["latest"]
+        self.assertEqual(latest["health_state"], "UNKNOWN")
+        self.assertEqual(latest["freshness"]["state"], "no_data")
+        self.assertEqual(latest["payload"]["availability"]["status"], "no_data")
+        self.assertEqual(latest["payload"]["availability"]["unavailable_groups"][0]["group"], "host")
+        self.assertFalse(result["usage_consumed"])
 
     def test_health_classification_persistence_sustain_dedupe_and_recovery(self) -> None:
         self.assertEqual(console.assess_health({})["state"], "UNKNOWN")
