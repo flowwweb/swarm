@@ -175,11 +175,9 @@ class SwarmSkillStructureTests(unittest.TestCase):
 
     def test_closeout_archives_terminal_host_tasks_and_reports_failures(self) -> None:
         skill = doctrine()
-        self.assertIn("accepting owner inventories every visible task it created or superseded", skill)
-        self.assertIn("host task API may release ownership/leases, make it terminal, unpin, or archive only with the matching receipt", skill)
-        self.assertIn("No unconditional unpin/archive is permitted", skill)
-        self.assertIn("Archive failure is an exact CTRL blocker", skill)
-        self.assertIn("Archive a finite CTRL after its final handoff only under the same custody guard.", skill)
+        self.assertNotIn("accepting owner inventories every visible task it created or superseded", skill)
+        self.assertIn("SWARM runtime never calls or authorizes pin/unpin", skill)
+        self.assertIn("Only direct host consumption of an exact current explicit-user request", skill)
 
     def test_topology_and_evolution_are_general_subtractive_contracts(self) -> None:
         skill = doctrine()

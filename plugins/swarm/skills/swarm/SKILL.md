@@ -23,13 +23,10 @@ must surface the created task ID, exact directive/title, `pinned: false`, and
 `placement: placement_unverified` immediately. Only the host may consume an exact
 explicit-user pin request; the current host may append it below pinned folders.
 The required future host placement capability remains a host concern, not runtime authority.
-LEAD, DOER, REVIEW, WATCHDOG, storage,
-sidecar, and nested CTRL tasks default to unpinned. A non-CTRL pin is likewise a
-fresh host-owned explicit-user receipt or a concrete ready-review handoff; a
-review-handoff pin is host-owned only and may be removed at close only after current
-SWARM custody is independently verified and the user has not kept or changed
-the pin, folder, order, title, or state. This policy returns an intent only;
-the host task API performs any mutation and otherwise preserves user state.
+LEAD, DOER, REVIEW, WATCHDOG, storage, sidecar, and nested CTRL tasks default to
+unpinned. Only direct host consumption of an exact current explicit-user request
+may pin or unpin; the current host may append below pinned folders. Existing user
+state is always preserved, and SWARM never requests or authorizes pin/unpin.
 
 **Step 0, never defer:** For an unassigned user-facing task explicitly told by the user to use SWARM, derive a concise specific objective and resolve `role_icons`. Before any title request, obtain a fresh host-owned custody receipt. SWARM runtime never calls or authorizes pin or unpin; every created CTRL is surfaced with `pinned: false` and `placement: placement_unverified`. Only the host may consume an exact explicit-user pin request, and current placement may remain below pinned folders. Otherwise preserve the current user state and continue only with truthful internal CTRL identity. If either host control is unavailable or fails, state the exact blocker and never claim the UI changed. A task assigned by an existing CTRL keeps its assigned role. A CTRL cannot create, fork, promote, replace, rename, recover-as-new, or link a successor CTRL unless the user explicitly requests that exact operation. The plugin may prepare a typed single-use request bound to source CTRL, target identity, objective, and scope, but code running in its interpreter cannot authorize the host action. The actual Codex task API must independently consume a host-owned user receipt; without that host enforcement the request is non-authoritative and no new CTRL may be created. Adjacent work stays inside the current CTRL or returns to the user.
 
@@ -191,5 +188,3 @@ Render decisive proof inside the CTRL feed response itself. Use conversation-nat
 When material previews form one decision set, surface each promptly and also provide one consolidated decision gallery that embeds every candidate with a concise label and known defect. A representative subset is allowed only for a genuinely large set the user did not ask to see in full, with the complete inventory and exact omissions. Links or an inventory alone cannot accept a decision set. Load [review-contract.md](references/review-contract.md) for visual evidence and [monitoring.md](references/monitoring.md) for feed receipts and correction behavior.
 
 Emit only a material result, inspectable proof, steerable decision, exact blocker with recovery, acceptance verdict, release state, or direct answer to a topology question. Lead with the user outcome, then the smallest decisive inline proof, then remaining risk and next material checkpoint only when non-empty. Never lead with task activity, role inventory, commands, paths, or a tool run; never use fixed word/count/keyword caps. For visual/browser work, a fresh representative capture is required unless capture is exactly blocked; for nonvisual work, show a compact excerpt, table, or before/after proof.
-
-Before a finite portfolio, lane, review, migration, audit, or one-off task ends, its accepting owner inventories every visible task it created or superseded. Keep only work with a concrete active goal, dependency, correction, handoff, user choice, or continuation. For SWARM-created state whose current custody is independently verified, the host task API may release ownership/leases, make it terminal, unpin, or archive only with the matching receipt, and must verify that receipt. User-created, renamed, titled, pinned, unpinned, archived, or state-changed tasks remain untouched absent an exact host-owned explicit-user receipt naming that mutation. No unconditional unpin/archive is permitted. Archive failure is an exact CTRL blocker, never a silently completed task. Archive a finite CTRL after its final handoff only under the same custody guard.

@@ -11,13 +11,15 @@ CTRL root, explicit dependencies, independent parallel lanes, and visible
 medium/large task ownership.
 
 For every user-authorized new SWARM objective, the opening user-visible task completes mandatory
-Step 0 first: derive a concise specific objective and resolve `role_icons`. Before any title or pin
-request, obtain a fresh host-owned receipt proving SWARM custody and confirming that no user-created,
-renamed, titled, pinned, unpinned, archived, or state-changed task state is present. Only then may the
-host task API request the exact `🐙CTRL - <objective>` title by default (or omit the emoji when
-`role_icons.enabled = false`), pin the task, and verify both receipts. Otherwise preserve the current
-user state. If a tool is unavailable or a receipt fails, state the exact blocker
-and continue only with truthful internal CTRL identity. After this Step 0 custody
+Step 0 first: derive a concise specific objective and resolve `role_icons`. Before any title request,
+obtain a fresh host-owned custody receipt. The host task API may request the exact
+`🐙CTRL - <objective>` title by default (or omit the emoji when `role_icons.enabled = false`).
+SWARM never requests or authorizes automatic pinning; every created CTRL surfaces its ID,
+directive/title, `pinned: false`, and `placement: placement_unverified`. Only direct host
+consumption of an exact current explicit-user request may pin or unpin, and the current host
+may append below pinned folders. Otherwise preserve the current user state. If a tool is
+unavailable or a receipt fails, state the exact blocker and continue only with truthful internal
+CTRL identity. After this Step 0 custody
 check, create or continue exactly one matching durable goal before routing work. Its contract
 records the chosen topology and which visible task owns each mutable artifact.
 Hidden subagents are execution capacity, not a replacement for required SWARM
@@ -59,14 +61,9 @@ SWARM runtime never calls or authorizes pin/unpin. Every user-authorized CTRL cr
 surfaces the created ID, exact directive/title, `pinned: false`, and
 `placement: placement_unverified`. Only the host may consume an exact explicit-user
 pin request, and the current host may append the task below pinned folders.
-only for the top-level CTRL task. LEAD, DOER, REVIEW, WATCHDOG, storage,
-sidecar, and nested CTRL tasks default to unpinned. SWARM never authorizes a
-non-CTRL or review-handoff pin; SWARM never authorizes it, and only the host may consume an exact explicit-user
-request. Review-handoff pins are temporary and closeout may
-remove one only after independently verified SWARM custody; if the user kept
-or changed pin, folder, order, title, or state, preserve it. The runtime
-decision is non-authoritative intent; the host task API must independently
-authorize every mutation.
+Existing user state is always preserved. The host task API independently consumes
+the exact current user request for every pin or unpin mutation; SWARM does not
+authorize or request it.
 
 Any substantive lane uses a visible senior Codex task/chat with its own cwd, owner,
 and heartbeat. A hidden subagent is bounded sidecar inspection or independent review
