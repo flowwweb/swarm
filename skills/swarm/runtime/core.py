@@ -32,6 +32,36 @@ class PinPolicyDecision:
     def requests_pin(self) -> bool:
         return self.disposition in {PinDisposition.AUTO_PIN, PinDisposition.EXPLICIT_PIN, PinDisposition.TEMPORARY_REVIEW_PIN}
 
+@dataclass(frozen=True)
+class HostPlacementReceipt:
+    receipt: str
+    section: str
+    before: str
+    custody_verified: bool
+    order_preserved: bool
+
+    @property
+    def verified(self) -> bool:
+        return (
+            isinstance(self.receipt, str) and self.receipt.startswith("host:placement:")
+            and self.section == "visible_ctrls"
+            and self.before == "pinned_folders"
+            and self.custody_verified and self.order_preserved
+        )
+
+@dataclass(frozen=True)
+class HostExplicitPinReceipt:
+    receipt: str
+    operation: str
+    user_requested: bool
+
+    @property
+    def verified(self) -> bool:
+        return (
+            isinstance(self.receipt, str) and self.receipt.startswith("host:user-pin:")
+            and self.operation == "pin" and self.user_requested
+        )
+
 
 def pin_policy(
     role: Role | str,
@@ -39,13 +69,14 @@ def pin_policy(
     top_level: bool,
     pin_created_tasks: bool = True,
     explicit_user_pin: bool = False,
+    explicit_user_pin_receipt: HostExplicitPinReceipt | None = None,
     concrete_review_handoff: bool = False,
     user_pinned: bool = False,
     user_folder_pinned: bool = False,
     user_order_changed: bool = False,
     user_title_changed: bool = False,
     user_state_changed: bool = False,
-    placement_verified: bool = False,
+    placement_receipt: HostPlacementReceipt | None = None,
 ) -> PinPolicyDecision:
     """Return a pin intent without mutating host task or folder state.
 
@@ -55,12 +86,13 @@ def pin_policy(
     if any((user_pinned, user_folder_pinned, user_order_changed, user_title_changed, user_state_changed)):
         return PinPolicyDecision(PinDisposition.PRESERVE_USER_STATE, "user task or folder custody is authoritative")
     role_name = role.value if isinstance(role, Role) else str(role).upper()
-    if explicit_user_pin:
-        return PinPolicyDecision(PinDisposition.EXPLICIT_PIN, "explicit user pin request; host may append below pinned folders", False)
-    if concrete_review_handoff:
+    user_pin_verified = isinstance(explicit_user_pin_receipt, HostExplicitPinReceipt) and explicit_user_pin_receipt.verified
+    if user_pin_verified and concrete_review_handoff:
         return PinPolicyDecision(PinDisposition.TEMPORARY_REVIEW_PIN, "concrete user review handoff", True)
+    if user_pin_verified and explicit_user_pin:
+        return PinPolicyDecision(PinDisposition.EXPLICIT_PIN, "explicit user pin request; host may append below pinned folders", False)
     if role_name == Role.CTRL.value and top_level and pin_created_tasks:
-        if placement_verified:
+        if isinstance(placement_receipt, HostPlacementReceipt) and placement_receipt.verified:
             return PinPolicyDecision(PinDisposition.AUTO_PIN, "top-level CTRL placement verified above pinned folders", False)
         return PinPolicyDecision(PinDisposition.PLACEMENT_UNVERIFIED, "top-level CTRL created; pin not requested because placement is unverified", False)
     return PinPolicyDecision(PinDisposition.DEFAULT_UNPINNED, "non-CTRL or nested task default", False)
