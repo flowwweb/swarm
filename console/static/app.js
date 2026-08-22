@@ -429,7 +429,8 @@ function renderUsage() {
 
 function renderOverviewHealth(nodes) {
   const lanes = nodes.filter((node) => !isSubagent(node));
-  const attention = lanes.filter((node) => ["blocked", "at_risk", "stalled", "critical"].includes(String(node.eta?.status || node.status).toLowerCase()));
+  const attentionStates = ["blocked", "at_risk", "stalled", "critical"];
+  const attention = lanes.filter((node) => attentionStates.includes(String(node.status).toLowerCase()) || attentionStates.includes(String(node.eta?.status).toLowerCase()));
   $("#overview-health-state").textContent = attention.length ? 'Needs attention' : (lanes.length ? 'On track' : 'Waiting for work');
   $("#overview-health-state").className = attention.length ? 'risk-text' : 'healthy-text';
   $("#overview-health-note").textContent = attention.length ? String(attention.length) + ' visible lane' + (attention.length === 1 ? ' needs attention' : 's need attention') : (lanes.length ? String(lanes.length) + ' visible lanes without an attention signal' : 'No visible lanes');
