@@ -40,6 +40,7 @@ class SwarmConsoleTests(unittest.TestCase):
         self.assertIn("function publicLabel(value", app)
         self.assertIn(r'.replace(/\blocalhost\b/gi, "console")', app)
         self.assertIn('const label = rawLabel.localeCompare(group.label', app)
+        self.assertIn("if (!group.standalone) options.push", app)
         self.assertIn("Health and capacity", index)
         self.assertNotIn("localhost", index.casefold())
         self.assertNotIn("hidden usage", index.casefold())
