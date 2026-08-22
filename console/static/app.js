@@ -448,7 +448,7 @@ function renderOverviewProjectCards(nodes) {
   const cards = overviewCards(nodes);
   const tree = taskTree(nodes);
   const allProjects = state.projectId === "all" && !state.ctrlId;
-  const activeCards = allProjects ? cards.filter(hasCurrentOverviewWork) : cards;
+  const activeCards = allProjects ? cards.filter(hasCurrentOverviewWork) : cards.filter((card) => card.nodes.length);
   const visibleCards = allProjects ? activeCards.slice(0, 5) : activeCards;
   const moreCards = allProjects ? activeCards.slice(5) : [];
   const renderCard = (card) => {

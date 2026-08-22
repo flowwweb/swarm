@@ -35,6 +35,7 @@ assert.match(app, /\["overview", "dashboard", "hierarchy", "kanban", "diagnostic
 assert.match(app, /renderOverviewProjectCards\(nodes\)/);
 assert.match(app, /function hasCurrentOverviewWork\(card\)/);
 assert.match(app, /cards\.filter\(hasCurrentOverviewWork\)/);
+assert.match(app, /cards\.filter\(\(card\) => card\.nodes\.length\)/);
 assert.match(app, /activeCards\.slice\(0, 5\)/);
 assert.match(app, /class="overview-more"/);
 assert.match(app, /No current work observed in/);
@@ -188,7 +189,9 @@ try {
   assert.equal(await page.locator('[data-overview-subagents="ctrl"]').evaluate((element) => element.hasAttribute("open")), false);
   await page.getByRole("button", { name: "Unassigned planning" }).click();
   assert.equal(await page.locator("#scope-context strong").textContent(), "Unassigned planning");
+  assert.equal(await page.locator("#overview-project-cards > .overview-project-card").count(), 0);
   assert.match(await page.locator("#overview-project-cards").textContent(), /No current work observed in Unassigned planning/);
+  await page.getByRole("button", { name: "All projects" }).click();
   await page.getByRole("tab", { name: "Dashboard" }).click();
   assert.equal(await page.locator("#view-title").textContent(), "Dashboard");
   assert.match(page.url(), /#dashboard$/);
