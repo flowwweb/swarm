@@ -1,4 +1,4 @@
-const state = { token: "", overview: null, proof: [], proofSequence: 0, usageHistory: null, diagnostics: null, diagnosticHistory: [], health: null, storage: null, config: null, ctrlSettings: null, skills: null, view: "overview", projectId: "all", ctrlId: "", settingsCtrlId: "", settingsScopeType: "", settingsScopeId: "" };
+const state = { token: "", overview: null, proof: [], proofSequence: 0, usageHistory: null, diagnostics: null, diagnosticHistory: [], health: null, storage: null, config: null, ctrlSettings: null, skills: null, skillsError: "", view: "overview", projectId: "all", ctrlId: "", settingsCtrlId: "", settingsScopeType: "", settingsScopeId: "" };
 const $ = (selector, root = document) => root.querySelector(selector);
 const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
 
@@ -98,6 +98,7 @@ function setView(view, focus) {
   });
   $("#view-title").textContent = titles[view][0];
   $("#view-subtitle").textContent = titles[view][1];
+  if (view === 'settings' && (!state.skills || state.skillsError)) refreshSkills().then(renderSettings);
   if (focus) $("#tab-" + view).focus({ preventScroll: true });
 }
 
@@ -564,6 +565,7 @@ function skillOverlay(scope) {
 }
 
 function skillsSummary(scope) {
+  if (state.skillsError) return '<div class="skills-row"><div><strong>Skills</strong><small>Skills are unavailable right now. Try again to refresh this scope.</small></div><button class="quiet-button" data-setting-action="retry-skills" type="button">Try again</button></div>';
   if (!state.skills) return '<div class="skills-row"><div><strong>Skills</strong><small>Loading the approved skills for this scope.</small></div></div>';
   const skills = state.skills.skills || [];
   const inherited = skills.filter((skill) => skill.status === 'inherited').length;
@@ -576,7 +578,7 @@ function skillsSummary(scope) {
 
 function skillsAdvanced(scope) {
   if (!state.skills) return '<section class="skills-panel" id="skills-details"><p>Approved skill details are loading.</p></section>';
-  const shortlist = (state.skills.skills || []).filter((skill) => skill.relevant || skill.builtin || skill.preferred).slice(0, 6);
+  const shortlist = (state.skills.skills || []).filter((skill) => skill.relevant || skill.builtin || skill.preferred).sort((a, b) => Number(b.status === 'inherited') - Number(a.status === 'inherited') || Number(b.preferred) - Number(a.preferred) || Number(b.builtin) - Number(a.builtin));
   const entries = shortlist.length ? shortlist.map((skill) => {
     const metadata = [];
     if (skill.source?.repo) metadata.push(skill.source.repo + (skill.source.version ? ' · ' + skill.source.version : ''));
@@ -658,8 +660,8 @@ async function refreshSkills() {
   const params = new URLSearchParams();
   if (scope.type === 'project') params.set('project_id', scope.id);
   if (scope.type === 'ctrl') params.set('ctrl_id', scope.id);
-  try { state.skills = await api('/api/skills' + (params.size ? '?' + params.toString() : '')); }
-  catch { state.skills = null; }
+  try { state.skills = await api('/api/skills' + (params.size ? '?' + params.toString() : '')); state.skillsError = ''; }
+  catch (error) { state.skills = null; state.skillsError = error.message || 'Skills could not be loaded.'; }
 }
 
 async function refreshOverview(showLoading = true) {
@@ -739,7 +741,7 @@ $("#project-navigation").addEventListener("click", (event) => {
     state.settingsScopeId = state.projectId === 'all' ? 'global' : state.projectId;
     renderProjectNavigation();
     renderAllViews();
-    Promise.all([refreshProof(), refreshCtrlSettings(), refreshUsageHistory()]).then(renderAllViews);
+    Promise.all([refreshProof(), refreshCtrlSettings(), refreshUsageHistory(), refreshSkills()]).then(renderAllViews);
     return;
   }
   const scope = event.target.closest("[data-project-id]");
@@ -752,7 +754,7 @@ $("#project-navigation").addEventListener("click", (event) => {
   state.settingsScopeId = state.ctrlId || (state.projectId === 'all' ? 'global' : state.projectId);
   renderProjectNavigation();
   renderAllViews();
-  Promise.all([refreshProof(), refreshCtrlSettings(), refreshUsageHistory()]).then(renderAllViews);
+  Promise.all([refreshProof(), refreshCtrlSettings(), refreshUsageHistory(), refreshSkills()]).then(renderAllViews);
 });
 $("#refresh").addEventListener("click", refreshOverview);
 $("#retry").addEventListener("click", refreshOverview);
@@ -820,6 +822,7 @@ document.addEventListener('click', async (event) => {
       if (details) { details.open = true; details.scrollIntoView({ block: 'nearest' }); }
       return;
     }
+    if (action === 'retry-skills') { await refreshSkills(); renderSettings(); return; }
     if (action === 'reset-skills') {
       const scope = currentSettingsScope();
       const overlay = skillOverlay(scope);
