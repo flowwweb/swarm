@@ -16,7 +16,7 @@ const indexHtml = fs.readFileSync(path.join(staticRoot, "index.html"), "utf8");
 const documentHtml = indexHtml
   .replace("<head>", '<head><base href="http://swarm.test/">');
 
-for (const label of ["Current work", "Recent images", "Tokens · 24h", "Completed"]) {
+for (const label of ["Current work", "Recent images", "Tokens · 24h", "Completed", "Where changes apply", "Manage skills", "Advanced settings"]) {
   assert.match(indexHtml + app, new RegExp(label));
 }
 assert.match(app, /\/api\/usage-history\?/);
@@ -33,6 +33,21 @@ assert.doesNotMatch(app, /params\.set\("task_id", state\.ctrlId\)/);
 assert.match(app, /\["blocked", "at_risk", "stalled", "critical"\]/);
 assert.match(app, /const nodes = scopedNodes\(\)\.filter\(\(node\) => !isSubagent\(node\)\);/);
 assert.doesNotMatch(app, /Number\(project\.active_threads \?\? project\.active\) > 0/);
+assert.match(app, /function configEditable\(key\)/);
+assert.match(app, /id="settings-scope"/);
+assert.match(app, /Custom settings/);
+assert.match(app, /Inherits global defaults/);
+assert.match(app, /settingToggle\('execution\.usage_saver'/);
+assert.match(app, /settingToggle\('console\.open_on_start'/);
+assert.match(app, /settingToggle\('role_icons\.enabled'/);
+assert.match(app, /settingSelect\('boost\.spark_reasoning'/);
+assert.match(app, /function forecastSummary\(node\)/);
+assert.match(app, /eta\.materially_revised === true/);
+assert.match(app, /eta\.stale === true/);
+assert.match(app, /latest\.freshness \|\| state\.diagnostics\?\.freshness/);
+assert.match(app, /availability\.unavailable/);
+assert.match(app, /No independent metrics available/);
+assert.doesNotMatch(app, /\["Health", humanize\(latest\.health_state/);
 for (const forbidden of ["localhost", "hidden usage", "developer instructions", "prompts", "tools", "credentials"]) {
   assert.equal((indexHtml + app).toLowerCase().includes(forbidden), false, `forbidden copy: ${forbidden}`);
 }
@@ -148,6 +163,8 @@ try {
   assert.match(await page.locator(".kanban-column").nth(1).textContent(), /Inspect export evidence/);
   await page.getByRole("tab", { name: "Settings" }).click();
   assert.match(await page.locator("#settings-grid").textContent(), /Clear history/);
+  assert.equal(await page.locator("#settings-scope").inputValue(), "global");
+  assert.match(await page.locator("#settings-grid").textContent(), /Manage skills/);
 
   for (const viewport of [{ width: 390, height: 844 }, { width: 834, height: 1112 }, { width: 1440, height: 1000 }]) {
     await page.setViewportSize(viewport);

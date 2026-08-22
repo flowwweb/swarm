@@ -1,4 +1,4 @@
-const state = { token: "", overview: null, proof: [], proofSequence: 0, usageHistory: null, diagnostics: null, diagnosticHistory: [], health: null, storage: null, config: null, ctrlSettings: null, view: "overview", projectId: "all", ctrlId: "" };
+const state = { token: "", overview: null, proof: [], proofSequence: 0, usageHistory: null, diagnostics: null, diagnosticHistory: [], health: null, storage: null, config: null, ctrlSettings: null, view: "overview", projectId: "all", ctrlId: "", settingsCtrlId: "" };
 const $ = (selector, root = document) => root.querySelector(selector);
 const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
 
@@ -343,6 +343,33 @@ function latestReceipt(nodes) {
   return state.proof.find((item) => allowed.has(item.task_id)) || null;
 }
 
+function formatDuration(value) {
+  const minutes = Math.max(0, Math.round(Number(value) / 60000));
+  if (minutes < 60) return String(minutes) + "m";
+  const hours = Math.floor(minutes / 60);
+  const remainder = minutes % 60;
+  return String(hours) + "h" + (remainder ? " " + String(remainder) + "m" : "");
+}
+
+function forecastSummary(node) {
+  const eta = node?.eta || {};
+  const end = Number(eta.eta_end_ms);
+  if (!Number.isFinite(end) || !end) return '';
+  const remaining = eta.status === 'complete' ? 'Complete' : formatDuration(Math.max(0, end - Date.now())) + ' remaining';
+  const baseline = Number(eta.baseline?.eta_end_ms ?? eta.baseline_eta_end_ms);
+  const drift = Number.isFinite(baseline) && baseline && baseline !== end ? end - baseline : 0;
+  const revised = eta.materially_revised === true && drift !== 0;
+  const revisions = Array.isArray(eta.revisions) ? eta.revisions : [];
+  const details = baseline || revisions.length || eta.last_material_heartbeat_ms || eta.reason
+    ? '<details class="forecast-details"><summary>Forecast details</summary><dl>' +
+      (baseline ? '<div><dt>Original forecast</dt><dd>' + escapeHTML(formatEta(baseline)) + '</dd></div>' : '') +
+      (revisions.length ? '<div><dt>Revisions</dt><dd>' + escapeHTML(revisions.map((item) => formatEta(item.eta_end_ms)).join(' · ')) + '</dd></div>' : '') +
+      (eta.reason ? '<div><dt>Reason</dt><dd>' + escapeHTML(eta.reason) + '</dd></div>' : '') +
+      (eta.last_material_heartbeat_ms ? '<div><dt>Last material update</dt><dd>' + escapeHTML(formatRelative(eta.last_material_heartbeat_ms)) + '</dd></div>' : '') +
+      '</dl></details>' : '';
+  return '<div class="forecast-summary"' + (eta.stale === true ? ' data-forecast-stale="true"' : '') + '><strong>' + escapeHTML(remaining) + (revised ? ' <span>Changed</span>' : '') + '</strong><small>' + escapeHTML(String(eta.confidence ?? '—') + '% confidence' + (eta.eta_start_ms ? ' · range ' + formatEta(eta.eta_start_ms) + '–' + formatEta(end) : '')) + (revised ? ' · ' + (drift > 0 ? '+' : '−') + formatDuration(Math.abs(drift)) + ' from original' : '') + (eta.stale === true ? ' · awaiting material update' : '') + '</small>' + details + '</div>';
+}
+
 function renderMonitoringCards(nodes) {
   const cards = overviewCards(nodes);
   const tree = taskTree(nodes);
@@ -358,7 +385,7 @@ function renderMonitoringCards(nodes) {
     const stateLabel = primary ? statusLabel(primary)[0] : "No task state";
     const subagents = card.ctrlId ? subagentDescendants(card.ctrlId, tree) : [];
     const subagentDisclosure = subagents.length ? '<details class="monitoring-subagents" data-overview-subagents="' + escapeHTML(card.ctrlId) + '"><summary>' + subagents.length + ' supporting subagent' + (subagents.length === 1 ? '' : 's') + '</summary><ul>' + subagents.map((node) => '<li><strong>' + escapeHTML(node.artifact || node.title || node.id) + '</strong><span>' + escapeHTML(statusLabel(node)[0]) + '</span></li>').join('') + '</ul></details>' : '';
-    return '<article class="monitoring-card panel"><header><div><p class="eyebrow">' + escapeHTML(stateLabel) + '</p><h3>' + escapeHTML(card.label) + '</h3></div><span>' + completed + ' / ' + total + '</span></header><div class="meter" aria-label="' + completed + ' of ' + total + ' observed tasks completed"><i style="width:' + percent + '%"></i></div><p class="meter-label">Completed ' + completed + ' / ' + total + ' observed tasks</p><dl><div><dt>First blocker</dt><dd>' + escapeHTML(blocker?.artifact || "None observed") + '</dd></div><div><dt>Latest receipt</dt><dd>' + escapeHTML(receipt?.caption || receipt?.kind || "None received") + '</dd></div></dl>' + subagentDisclosure + '</article>';
+    return '<article class="monitoring-card panel"><header><div><p class="eyebrow">' + escapeHTML(stateLabel) + '</p><h3>' + escapeHTML(card.label) + '</h3></div><span>' + completed + ' / ' + total + '</span></header><div class="meter" aria-label="' + completed + ' of ' + total + ' observed tasks completed"><i style="width:' + percent + '%"></i></div><p class="meter-label">Completed ' + completed + ' / ' + total + ' observed tasks</p>' + forecastSummary(primary) + '<dl><div><dt>First blocker</dt><dd>' + escapeHTML(blocker?.artifact || "None observed") + '</dd></div><div><dt>Latest receipt</dt><dd>' + escapeHTML(receipt?.caption || receipt?.kind || "None received") + '</dd></div></dl>' + subagentDisclosure + '</article>';
   }).join("") : '<p class="empty-state">No observed project or CTRL work in this scope.</p>';
 }
 
@@ -442,18 +469,22 @@ function renderDiagnostics() {
   const latest = state.diagnostics?.latest || {};
   const payload = latest.payload || {};
   const health = state.diagnostics?.health || {};
-  const disk = (payload.disks || []).find((item) => item.available) || {};
-  const percent = (metric) => metric?.available && Number.isFinite(Number(metric.percent)) ? Math.round(Number(metric.percent)) + "%" : "Unavailable";
-  const cards = [
-    ["Health", humanize(latest.health_state || "Unknown"), "Current status"],
-    ["CPU", percent(payload.cpu), payload.cpu?.available ? "Current load" : "Not available"],
-    ["Memory", percent(payload.memory), payload.memory?.available ? formatBytes(payload.memory.used_bytes) + " in use" : "Not available"],
-    ["Disk", disk.available ? formatBytes(disk.free_bytes) + " free" : "Unavailable", disk.available ? Math.round(Number(disk.percent) || 0) + "% used · " + (disk.mount || "Device") : "No sample"],
-    ["Containers", payload.docker?.available ? String(payload.docker.container_count || 0) : "Unavailable", humanize(payload.docker?.status || "Not available")],
-    ["Network", payload.network?.available ? formatBytes((Number(payload.network.rx_bytes) || 0) + (Number(payload.network.tx_bytes) || 0)) : "Unavailable", payload.network?.available ? "Current total" : "Not available"],
-    ["SWARM data", state.diagnostics?.storage?.bytes == null ? "Unavailable" : formatBytes(state.diagnostics.storage.bytes), "Saved history"],
-  ];
-  $("#diagnostic-grid").innerHTML = cards.map(([label, value, note]) => '<article class="metric-card diagnostic-card"><p>' + escapeHTML(label) + '</p><strong>' + escapeHTML(value) + '</strong><span>' + escapeHTML(note) + '</span></article>').join('') + '<article class="panel auto-health"><p class="eyebrow">Automatic care</p><h3>Keep this device healthy</h3><label class="toggle-row"><input id="auto-health" type="checkbox"' + (state.health?.enabled ? ' checked' : '') + '><span>Create maintenance tasks automatically</span></label><small>Starts with a review. SWARM will not delete files or stop work on its own.</small></article>';
+  const disk = (payload.disks || []).find((item) => item?.available) || {};
+  const freshness = latest.freshness || state.diagnostics?.freshness || {};
+  const availability = latest.availability || state.diagnostics?.availability || {};
+  const unavailable = Array.isArray(availability.unavailable) ? availability.unavailable : [];
+  const freshnessLabel = freshness.state === 'fresh' ? 'Fresh' : freshness.state === 'stale' ? 'Stale' : 'No diagnostic sample';
+  const freshnessNote = Number.isFinite(Number(freshness.age_seconds)) ? formatDuration(Number(freshness.age_seconds) * 1000) + ' ago' : 'Waiting for a source sample';
+  const metricNote = (metric, fallback) => [metric?.source ? humanize(metric.source) : fallback, metric?.observed_at_ms ? formatRelative(metric.observed_at_ms) : ''].filter(Boolean).join(' · ');
+  const cards = [];
+  if (payload.cpu?.available) cards.push(['CPU', Math.round(Number(payload.cpu.percent) || 0) + '%', metricNote(payload.cpu, 'Current load')]);
+  if (payload.memory?.available) cards.push(['Memory', formatBytes(payload.memory.used_bytes) + ' in use', metricNote(payload.memory, 'Current memory')]);
+  if (disk.available) cards.push(['Disk', formatBytes(disk.free_bytes) + ' free', metricNote(disk, Math.round(Number(disk.percent) || 0) + '% used')]);
+  if (payload.docker?.available) cards.push(['Containers', String(payload.docker.container_count || 0), metricNote(payload.docker, humanize(payload.docker.status || 'Available'))]);
+  if (payload.network?.available) cards.push(['Network', formatBytes((Number(payload.network.rx_bytes) || 0) + (Number(payload.network.tx_bytes) || 0)), metricNote(payload.network, 'Observed total')]);
+  const unavailableState = unavailable.length ? '<article class="panel diagnostic-unavailable"><p class="eyebrow">Source availability</p><h3>' + escapeHTML(unavailable.map((item) => item.label || item.group).join(', ') + ' unavailable') + '</h3><p>' + escapeHTML(unavailable[0].reason || 'No observed value was returned.') + '</p><small>' + escapeHTML(unavailable[0].action || 'Keep this source unavailable until it returns a readable value.') + '</small></article>' : '';
+  const noMetrics = cards.length ? '' : '<article class="panel diagnostic-unavailable"><p class="eyebrow">Source availability</p><h3>No independent metrics available</h3><p>Diagnostics will show values when a source reports them.</p></article>';
+  $("#diagnostic-grid").innerHTML = '<article class="panel diagnostic-freshness"><p class="eyebrow">Diagnostics</p><h3>' + escapeHTML(freshnessLabel) + '</h3><small>' + escapeHTML(freshnessNote) + '</small></article>' + cards.map(([label, value, note]) => '<article class="metric-card diagnostic-card"><p>' + escapeHTML(label) + '</p><strong>' + escapeHTML(value) + '</strong><span>' + escapeHTML(note) + '</span></article>').join('') + unavailableState + noMetrics + '<article class="panel auto-health"><p class="eyebrow">Automatic care</p><h3>Keep this device healthy</h3><label class="toggle-row"><input id="auto-health" type="checkbox"' + (state.health?.enabled ? ' checked' : '') + '><span>Create maintenance tasks automatically</span></label><small>Starts with a review. SWARM will not delete files or stop work on its own.</small></article>';
   const incidents = health.incidents || [];
   $("#attention-count").textContent = String(incidents.length);
   $("#attention-list").innerHTML = incidents.length ? incidents.slice(0, 6).map((item) => {
@@ -475,26 +506,64 @@ function renderOverviewDiagnostics() {
   $("#overview-network").textContent = network.available ? compactNumber((Number(network.rx_bytes) || 0) + (Number(network.tx_bytes) || 0)) + "B" : "Unavailable";
 }
 
+function configEditable(key) {
+  return (state.config?.editable || []).includes(key);
+}
+
+function settingToggle(key, value, label) {
+  const editable = configEditable(key);
+  return '<label class="toggle-row"><input data-config-key="' + escapeHTML(key) + '" type="checkbox"' + (value ? ' checked' : '') + (!editable ? ' disabled' : '') + '><span>' + escapeHTML(label) + '</span></label>' + (!editable ? '<small>Managed by the current configuration.</small>' : '');
+}
+
+function settingSelect(key, value, options, label) {
+  const editable = configEditable(key);
+  return '<label class="setting-field">' + escapeHTML(label) + '<select data-config-key="' + escapeHTML(key) + '"' + (!editable ? ' disabled' : '') + '>' + options.map((option) => '<option value="' + escapeHTML(option) + '"' + (option === value ? ' selected' : '') + '>' + escapeHTML(option) + '</option>').join('') + '</select></label>' + (!editable ? '<small>Managed by the current configuration.</small>' : '');
+}
+
+function settingsScopeOptions() {
+  const groups = projectGroups();
+  const selected = state.settingsCtrlId || state.ctrlId;
+  const options = ['<option value="global"' + (!selected ? ' selected' : '') + '>Global defaults</option>'];
+  groups.forEach((group) => {
+    const controllers = group.controllers || [];
+    if (!controllers.length) return;
+    options.push('<optgroup label="' + escapeHTML(group.label) + '">' + controllers.map((ctrl) => '<option value="' + escapeHTML(ctrl.id) + '"' + (ctrl.id === selected ? ' selected' : '') + '>' + escapeHTML(group.label + ' / ' + ctrlLabel(ctrl)) + '</option>').join('') + '</optgroup>');
+  });
+  return options.join('');
+}
+
+function selectedSettingsCtrl() {
+  const selected = state.settingsCtrlId || state.ctrlId;
+  return activeControllers().find((ctrl) => ctrl.id === selected) || null;
+}
+
 function renderSettings() {
-  const selectedCtrl = state.ctrlId || activeControllers()[0]?.id || '';
+  const selectedCtrl = selectedSettingsCtrl();
   const setting = state.ctrlSettings;
   const storage = state.storage;
   const boost = state.config?.settings?.boost || {};
+  const execution = state.config?.settings?.execution || {};
+  const consoleSettings = state.config?.settings?.console || {};
+  const monitoring = state.config?.settings?.monitoring || {};
+  const roleIcons = state.config?.settings?.role_icons || {};
   const effective = setting?.effective || setting?.global_defaults || {};
   const reasoningOptions = ["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"];
   const retention = storage?.retention_days == null ? "" : " · retain " + storage.retention_days + " days";
   const proofFiles = Number(storage?.proof_files) || 0;
   $("#settings-grid").innerHTML =
-    '<section class="panel settings-card"><p class="eyebrow">Console</p><h3>' + escapeHTML(selectedCtrl ? "CTRL settings" : "Global defaults") + '</h3>' +
-      '<label class="toggle-row"><input id="ctrl-customize" type="checkbox"' + (setting?.customized ? ' checked' : '') + (!selectedCtrl ? ' disabled' : '') + '><span>Customize this CTRL separately</span></label>' +
-      '<small>' + escapeHTML(selectedCtrl ? (setting?.customized ? "Changes apply only to this CTRL." : "This CTRL follows global defaults.") : "Select an active CTRL to customize it.") + '</small>' +
-      (setting?.customized ? '<div class="ctrl-fields"><label>Model<input id="ctrl-model" value="' + escapeHTML(effective.model || '') + '" autocomplete="off"></label><label>Reasoning<select id="ctrl-reasoning">' + reasoningOptions.map((option) => '<option value="' + option + '"' + (option === effective.reasoning ? ' selected' : '') + '>' + option + '</option>').join('') + '</select></label></div><button class="quiet-button" data-setting-action="save-ctrl" type="button">Save CTRL settings</button>' : '') +
-      '<button class="quiet-button" data-setting-action="reset" type="button"' + (!selectedCtrl || !setting?.customized ? ' disabled' : '') + '>Use global defaults</button></section>' +
-    '<section class="panel settings-card"><p class="eyebrow">Work routing</p><h3>Safe small tasks</h3>' +
-      '<label class="toggle-row"><input id="spark-enabled" type="checkbox"' + (boost.spark_enabled ? ' checked' : '') + '><span>Use Spark for safe small tasks</span></label>' +
-      '<small>Spark handles quick, low-risk work such as search, formatting, copy, documentation, and focused checks.</small>' +
-      '<details><summary>Advanced routing</summary><div class="ctrl-fields"><label>Model<input id="spark-model" value="' + escapeHTML(boost.spark_model || 'gpt-5.3-codex-spark') + '" autocomplete="off"></label><label>Reasoning<select id="spark-reasoning">' + reasoningOptions.map((option) => '<option value="' + option + '"' + (option === (boost.spark_reasoning || 'xhigh') ? ' selected' : '') + '>' + option + '</option>').join('') + '</select></label></div><button class="quiet-button" data-setting-action="save-spark" type="button">Save routing</button></details></section>' +
-    '<section class="panel settings-card"><p class="eyebrow">Data</p><h3>' + escapeHTML(storage?.bytes == null ? 'Storage details unavailable' : formatBytes(storage.bytes) + ' saved history' + retention) + '</h3><p>Progress, ETAs, proof, and token history stay available between sessions' + (proofFiles ? ' · ' + proofFiles + ' proof file' + (proofFiles === 1 ? '' : 's') : '') + '.</p><div class="settings-actions-inline"><button class="quiet-button" data-setting-action="clear" type="button">Clear history</button><button class="quiet-button" data-setting-action="restore" type="button">Restore defaults</button></div><small>Clearing history leaves your tasks unchanged. Restoring defaults keeps your history.</small></section>';
+    '<section class="panel settings-card"><p class="eyebrow">Settings scope</p><h3>Where changes apply</h3><label class="setting-field">Scope<select id="settings-scope">' + settingsScopeOptions() + '</select></label><p class="scope-setting-status"><strong>' + escapeHTML(selectedCtrl ? (selectedCtrl.project || "Project") + " / " + ctrlLabel(selectedCtrl) : "Global defaults") + '</strong><span>' + escapeHTML(selectedCtrl ? (setting?.customized ? "Custom settings" : "Inherits global defaults") : "Applies to every CTRL unless it has custom settings") + '</span></p>' +
+      (selectedCtrl ? '<div class="ctrl-assignment"><small>Current assignment</small><strong>' + escapeHTML((effective.model || "Model unavailable") + ' · ' + (effective.reasoning || "Reasoning unavailable") + (effective.service_tier ? ' · ' + effective.service_tier : '')) + '</strong></div><label class="toggle-row"><input id="ctrl-customize" type="checkbox"' + (setting?.customized ? ' checked' : '') + '><span>Customize this CTRL separately</span></label>' + (setting?.customized ? '<div class="ctrl-fields"><label>Model<input id="ctrl-model" value="' + escapeHTML(effective.model || '') + '" autocomplete="off"></label><label>Reasoning<select id="ctrl-reasoning">' + reasoningOptions.map((option) => '<option value="' + option + '"' + (option === effective.reasoning ? ' selected' : '') + '>' + option + '</option>').join('') + '</select></label><label>Service tier<input id="ctrl-service-tier" value="' + escapeHTML(effective.service_tier || '') + '" autocomplete="off"></label></div><button class="quiet-button" data-setting-action="save-ctrl" type="button">Save CTRL settings</button>' : '') + '<button class="quiet-button" data-setting-action="reset" type="button"' + (!setting?.customized ? ' disabled' : '') + '>Use global defaults</button>' : '<small>Select a Project / CTRL above to create a permitted per-CTRL override.</small>') + '</section>' +
+    '<section class="panel settings-card"><p class="eyebrow">Work routing</p><h3>How work is handled</h3>' +
+      settingSelect('execution.max_reasoning', execution.max_reasoning || 'medium', reasoningOptions, 'Default reasoning') +
+      '<label class="setting-field">Service tier<input data-config-key="execution.service_tier" value="' + escapeHTML(execution.service_tier || '') + '" autocomplete="off"' + (!configEditable('execution.service_tier') ? ' disabled' : '') + '></label>' +
+      settingToggle('execution.usage_saver', execution.usage_saver, 'Use less usage when possible') +
+      settingToggle('boost.spark_enabled', boost.spark_enabled, 'Use Spark for safe small tasks') +
+      settingSelect('boost.spark_reasoning', boost.spark_reasoning || 'xhigh', reasoningOptions, 'Spark default reasoning') +
+      '<details class="settings-advanced" id="settings-advanced"><summary>Advanced settings</summary><div class="ctrl-fields"><label>Spark model<input id="spark-model" value="' + escapeHTML(boost.spark_model || '') + '" autocomplete="off"' + (!configEditable('boost.spark_model') ? ' disabled' : '') + '></label><label>Heartbeat minutes<input id="heartbeat-minutes" data-config-key="monitoring.heartbeat_minutes" type="number" min="1" value="' + escapeHTML(monitoring.heartbeat_minutes || '') + '"' + (!configEditable('monitoring.heartbeat_minutes') ? ' disabled' : '') + '></label></div><button class="quiet-button" data-setting-action="save-spark" type="button"' + (!configEditable('boost.spark_model') ? ' disabled' : '') + '>Save Spark model</button><section class="skills-panel" id="skills-details"><div><strong>Skills</strong><small>' + escapeHTML(selectedCtrl ? "Skill inheritance for this CTRL has not been supplied." : "Skill inheritance for global defaults has not been supplied.") + '</small></div><span class="skills-count">— installed · — preferred</span><p>Catalog, approval, and update status are unavailable from the current settings contract. Nothing is installed or enabled here.</p></section></details></section>' +
+    '<section class="panel settings-card"><p class="eyebrow">Console and data</p><h3>Keep the workspace predictable</h3>' +
+      settingToggle('console.open_on_start', consoleSettings.open_on_start, 'Open SWARM when Codex starts') +
+      settingToggle('role_icons.enabled', roleIcons.enabled, 'Show role icons') +
+      '<label class="toggle-row"><input id="auto-health" type="checkbox"' + (state.health?.enabled ? ' checked' : '') + '><span>Ask for maintenance review when health needs attention</span></label><small>Review requests do not run a model or change the device by themselves.</small><h4>Skills</h4><div class="skills-row"><div><strong>' + escapeHTML(selectedCtrl ? (setting?.customized ? "Custom scope" : "Inherited from global defaults") : "Global defaults") + '</strong><small>Skill catalog data is not available.</small></div><button class="quiet-button" data-setting-action="manage-skills" type="button" aria-controls="skills-details">Manage skills</button></div><h4>' + escapeHTML(storage?.bytes == null ? 'Saved history unavailable' : formatBytes(storage.bytes) + ' saved history' + retention) + '</h4><p>Progress, forecasts, proof, and token history stay available between sessions' + (proofFiles ? ' · ' + proofFiles + ' proof file' + (proofFiles === 1 ? '' : 's') : '') + '.</p><div class="settings-actions-inline"><button class="quiet-button" data-setting-action="clear" type="button">Clear history</button><button class="quiet-button" data-setting-action="restore" type="button">Restore defaults</button></div><small>Clearing history leaves tasks unchanged. Restoring defaults keeps history.</small></section>';
 }
 
 function renderAllViews() { renderOverview(); renderHierarchy(); renderKanban(); renderDiagnostics(); renderSettings(); }
@@ -526,7 +595,7 @@ async function refreshMonitoring(proofSequence) {
 }
 
 async function refreshCtrlSettings() {
-  const selectedCtrl = state.ctrlId || activeControllers()[0]?.id || '';
+  const selectedCtrl = state.settingsCtrlId || state.ctrlId || '';
   if (!selectedCtrl) { state.ctrlSettings = null; return; }
   try { state.ctrlSettings = await api('/api/ctrl-settings?ctrl_id=' + encodeURIComponent(selectedCtrl)); }
   catch { state.ctrlSettings = null; }
@@ -603,6 +672,7 @@ $("#project-navigation").addEventListener("click", (event) => {
     const groupId = toggle.dataset.projectToggle;
     state.projectId = state.projectId === groupId ? "all" : groupId;
     state.ctrlId = "";
+    state.settingsCtrlId = "";
     renderProjectNavigation();
     renderAllViews();
     Promise.all([refreshProof(), refreshCtrlSettings(), refreshUsageHistory()]).then(renderAllViews);
@@ -613,6 +683,7 @@ $("#project-navigation").addEventListener("click", (event) => {
   event.preventDefault();
   state.projectId = scope.dataset.projectId;
   state.ctrlId = scope.dataset.ctrlId || "";
+  state.settingsCtrlId = state.ctrlId;
   renderProjectNavigation();
   renderAllViews();
   Promise.all([refreshProof(), refreshCtrlSettings(), refreshUsageHistory()]).then(renderAllViews);
@@ -620,12 +691,28 @@ $("#project-navigation").addEventListener("click", (event) => {
 $("#refresh").addEventListener("click", refreshOverview);
 $("#retry").addEventListener("click", refreshOverview);
 document.addEventListener('change', async (event) => {
-  if (event.target.id === 'auto-health') {
-    try { state.health = await api('/api/health/settings', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ enabled: event.target.checked }) }); renderDiagnostics(); } catch (error) { showError(error.message); renderDiagnostics(); }
+  if (event.target.id === 'settings-scope') {
+    const ctrlId = event.target.value;
+    const ctrl = activeControllers().find((item) => item.id === ctrlId);
+    state.settingsCtrlId = ctrl ? ctrl.id : '';
+    state.ctrlId = ctrl ? ctrl.id : '';
+    state.projectId = ctrl ? (ctrl.project_id || 'ctrl:' + ctrl.id) : 'all';
+    renderProjectNavigation();
+    renderAllViews();
+    try {
+      await Promise.all([refreshProof(), refreshUsageHistory(), refreshCtrlSettings()]);
+    } finally { renderAllViews(); }
     return;
   }
-  if (event.target.id === 'spark-enabled') {
-    try { state.config = await api('/api/config', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ changes: { 'boost.spark_enabled': event.target.checked } }) }); renderSettings(); } catch (error) { showError(error.message); renderSettings(); }
+  if (event.target.id === 'auto-health') {
+    try { state.health = await api('/api/health/settings', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ enabled: event.target.checked }) }); renderDiagnostics(); renderSettings(); } catch (error) { showError(error.message); renderDiagnostics(); renderSettings(); }
+    return;
+  }
+  if (event.target.dataset.configKey) {
+    const key = event.target.dataset.configKey;
+    if (!configEditable(key)) return;
+    const value = event.target.type === 'checkbox' ? event.target.checked : event.target.type === 'number' ? Number(event.target.value) : event.target.value;
+    try { state.config = await api('/api/config', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ changes: { [key]: value } }) }); renderSettings(); } catch (error) { showError(error.message); renderSettings(); }
     return;
   }
   if (event.target.id === 'ctrl-customize') {
@@ -650,8 +737,13 @@ document.addEventListener('click', async (event) => {
     if (action === 'clear') await api('/api/storage/clear', { method: 'POST' });
     if (action === 'restore') await api('/api/settings/restore', { method: 'POST' });
     if (action === 'reset' && state.ctrlSettings) await api('/api/ctrl-settings/reset', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ctrl_id: state.ctrlSettings.ctrl_id, expected_revision: state.ctrlSettings.revision }) });
-    if (action === 'save-ctrl' && state.ctrlSettings) state.ctrlSettings = await api('/api/ctrl-settings', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ctrl_id: state.ctrlSettings.ctrl_id, expected_revision: state.ctrlSettings.revision, changes: { model: $('#ctrl-model').value.trim(), reasoning: $('#ctrl-reasoning').value } }) });
-    if (action === 'save-spark') state.config = await api('/api/config', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ changes: { 'boost.spark_model': $('#spark-model').value.trim(), 'boost.spark_reasoning': $('#spark-reasoning').value } }) });
+    if (action === 'manage-skills') {
+      const details = $('#settings-advanced');
+      if (details) { details.open = true; details.scrollIntoView({ block: 'nearest' }); }
+      return;
+    }
+    if (action === 'save-ctrl' && state.ctrlSettings) state.ctrlSettings = await api('/api/ctrl-settings', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ctrl_id: state.ctrlSettings.ctrl_id, expected_revision: state.ctrlSettings.revision, changes: { model: $('#ctrl-model').value.trim(), reasoning: $('#ctrl-reasoning').value, service_tier: $('#ctrl-service-tier').value.trim() } }) });
+    if (action === 'save-spark' && configEditable('boost.spark_model')) state.config = await api('/api/config', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ changes: { 'boost.spark_model': $('#spark-model').value.trim() } }) });
     await refreshOverview();
   } catch (error) { showError(error.message); }
 });
