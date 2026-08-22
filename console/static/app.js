@@ -1,4 +1,4 @@
-const state = { token: "", overview: null, proof: [], proofSequence: 0, usageHistory: null, diagnostics: null, diagnosticHistory: [], health: null, storage: null, config: null, ctrlSettings: null, view: "overview", projectId: "all", ctrlId: "", settingsCtrlId: "" };
+const state = { token: "", overview: null, proof: [], proofSequence: 0, usageHistory: null, diagnostics: null, diagnosticHistory: [], health: null, storage: null, config: null, ctrlSettings: null, skills: null, view: "overview", projectId: "all", ctrlId: "", settingsCtrlId: "", settingsScopeType: "", settingsScopeId: "" };
 const $ = (selector, root = document) => root.querySelector(selector);
 const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
 
@@ -353,21 +353,23 @@ function formatDuration(value) {
 
 function forecastSummary(node) {
   const eta = node?.eta || {};
-  const end = Number(eta.eta_end_ms);
+  const current = eta.current || eta;
+  const end = Number(current.eta_end_ms);
   if (!Number.isFinite(end) || !end) return '';
-  const remaining = eta.status === 'complete' ? 'Complete' : formatDuration(Math.max(0, end - Date.now())) + ' remaining';
-  const baseline = Number(eta.baseline?.eta_end_ms ?? eta.baseline_eta_end_ms);
-  const drift = Number.isFinite(baseline) && baseline && baseline !== end ? end - baseline : 0;
-  const revised = eta.materially_revised === true && drift !== 0;
-  const revisions = Array.isArray(eta.revisions) ? eta.revisions : [];
-  const details = baseline || revisions.length || eta.last_material_heartbeat_ms || eta.reason
+  const remaining = current.status === 'complete' ? 'Complete' : formatDuration(Math.max(0, end - Date.now())) + ' remaining';
+  const baseline = Number(eta.baseline_eta_end_ms);
+  const drift = Number(eta.delta_from_baseline_ms);
+  const revised = Number(eta.revision) > 1 && Number.isFinite(drift) && drift !== 0;
+  const previous = eta.previous && typeof eta.previous === 'object' ? eta.previous : null;
+  const details = baseline || previous || eta.last_material_heartbeat_at_ms || eta.short_reason || eta.claim_limit
     ? '<details class="forecast-details"><summary>Forecast details</summary><dl>' +
       (baseline ? '<div><dt>Original forecast</dt><dd>' + escapeHTML(formatEta(baseline)) + '</dd></div>' : '') +
-      (revisions.length ? '<div><dt>Revisions</dt><dd>' + escapeHTML(revisions.map((item) => formatEta(item.eta_end_ms)).join(' · ')) + '</dd></div>' : '') +
-      (eta.reason ? '<div><dt>Reason</dt><dd>' + escapeHTML(eta.reason) + '</dd></div>' : '') +
-      (eta.last_material_heartbeat_ms ? '<div><dt>Last material update</dt><dd>' + escapeHTML(formatRelative(eta.last_material_heartbeat_ms)) + '</dd></div>' : '') +
+      (previous?.eta_end_ms ? '<div><dt>Previous revision</dt><dd>' + escapeHTML(formatEta(previous.eta_end_ms)) + '</dd></div>' : '') +
+      (eta.short_reason ? '<div><dt>Reason</dt><dd>' + escapeHTML(eta.short_reason) + '</dd></div>' : '') +
+      (eta.last_material_heartbeat_at_ms ? '<div><dt>Last material update</dt><dd>' + escapeHTML(formatRelative(eta.last_material_heartbeat_at_ms)) + '</dd></div>' : '') +
+      (eta.claim_limit ? '<div><dt>Claim limit</dt><dd>' + escapeHTML(eta.claim_limit) + '</dd></div>' : '') +
       '</dl></details>' : '';
-  return '<div class="forecast-summary"' + (eta.stale === true ? ' data-forecast-stale="true"' : '') + '><strong>' + escapeHTML(remaining) + (revised ? ' <span>Changed</span>' : '') + '</strong><small>' + escapeHTML(String(eta.confidence ?? '—') + '% confidence' + (eta.eta_start_ms ? ' · range ' + formatEta(eta.eta_start_ms) + '–' + formatEta(end) : '')) + (revised ? ' · ' + (drift > 0 ? '+' : '−') + formatDuration(Math.abs(drift)) + ' from original' : '') + (eta.stale === true ? ' · awaiting material update' : '') + '</small>' + details + '</div>';
+  return '<div class="forecast-summary"><strong>' + escapeHTML(remaining) + (revised ? ' <span>Changed</span>' : '') + '</strong><small>' + escapeHTML(String(current.confidence ?? eta.confidence ?? '—') + '% confidence' + (current.eta_start_ms ? ' · range ' + formatEta(current.eta_start_ms) + '–' + formatEta(end) : '')) + (revised ? ' · ' + (drift > 0 ? '+' : '−') + formatDuration(Math.abs(drift)) + ' from original' : '') + '</small>' + details + '</div>';
 }
 
 function renderMonitoringCards(nodes) {
@@ -420,7 +422,9 @@ function renderOverview() {
 
 function taskProgress(node) {
   const eta = node.eta || {};
-  return Math.max(0, Math.min(100, Number(eta.progress_percent ?? eta.progress ?? (eta.status === "complete" ? 100 : 0)) || 0));
+  const declared = Number(eta.current?.progress_basis?.percent ?? eta.progress_basis?.percent ?? eta.progress_percent);
+  if (Number.isFinite(declared)) return Math.max(0, Math.min(100, declared));
+  return String(eta.current?.status || eta.status || '').toLowerCase() === 'complete' ? 100 : null;
 }
 
 function renderHierarchy() {
@@ -439,7 +443,8 @@ function renderHierarchy() {
     const status = statusLabel(current);
     const subagents = subagentDescendants(current.id, tree);
     const subagentMeta = subagents.length ? '<span class="subagent-count">' + subagents.length + ' subagent' + (subagents.length === 1 ? '' : 's') + '</span>' : '';
-    return '<article class="hierarchy-card"><div class="health-ring ' + status[1] + '"><i></i><span>' + taskProgress(current) + '%</span></div><div class="hierarchy-main"><div class="hierarchy-title"><strong>' + escapeHTML(current.artifact || current.title || owner) + '</strong><span>' + escapeHTML(current.role_label || current.role || "TASK") + subagentMeta + '</span></div><p><i class="activity-dot ' + status[1] + '" aria-hidden="true"></i>' + escapeHTML(formatRelative(current.updated_at)) + (stalled ? ' <b class="stalled-cue">Paused attention</b>' : '') + '</p><div class="task-progress"><i style="width:' + taskProgress(current) + '%"></i></div>' + (extra.length ? '<details><summary>' + extra.length + ' more task' + (extra.length === 1 ? '' : 's') + '</summary><ul>' + extra.map((task) => '<li>' + escapeHTML(task.artifact || task.title || task.id) + '</li>').join('') + '</ul></details>' : '') + '</div></article>';
+    const progress = taskProgress(current);
+    return '<article class="hierarchy-card"><div class="health-ring ' + status[1] + '"><i></i><span>' + (progress == null ? '—' : progress + '%') + '</span></div><div class="hierarchy-main"><div class="hierarchy-title"><strong>' + escapeHTML(current.artifact || current.title || owner) + '</strong><span>' + escapeHTML(current.role_label || current.role || "TASK") + subagentMeta + '</span></div><p><i class="activity-dot ' + status[1] + '" aria-hidden="true"></i>' + escapeHTML(formatRelative(current.updated_at)) + (stalled ? ' <b class="stalled-cue">Paused attention</b>' : '') + '</p><div class="task-progress"><i style="width:' + (progress == null ? 0 : progress) + '%"></i></div>' + (extra.length ? '<details><summary>' + extra.length + ' more task' + (extra.length === 1 ? '' : 's') + '</summary><ul>' + extra.map((task) => '<li>' + escapeHTML(task.artifact || task.title || task.id) + '</li>').join('') + '</ul></details>' : '') + '</div></article>';
   }).join('') : '<p class="empty-state">No owners in this view.</p>';
 }
 
@@ -520,24 +525,70 @@ function settingSelect(key, value, options, label) {
   return '<label class="setting-field">' + escapeHTML(label) + '<select data-config-key="' + escapeHTML(key) + '"' + (!editable ? ' disabled' : '') + '>' + options.map((option) => '<option value="' + escapeHTML(option) + '"' + (option === value ? ' selected' : '') + '>' + escapeHTML(option) + '</option>').join('') + '</select></label>' + (!editable ? '<small>Managed by the current configuration.</small>' : '');
 }
 
+function currentSettingsScope() {
+  if (state.settingsScopeType && state.settingsScopeId) return { type: state.settingsScopeType, id: state.settingsScopeId };
+  if (state.ctrlId) return { type: 'ctrl', id: state.ctrlId };
+  if (state.projectId !== 'all' && !state.projectId.startsWith('ctrl:')) return { type: 'project', id: state.projectId };
+  return { type: 'global', id: 'global' };
+}
+
 function settingsScopeOptions() {
   const groups = projectGroups();
-  const selected = state.settingsCtrlId || state.ctrlId;
-  const options = ['<option value="global"' + (!selected ? ' selected' : '') + '>Global defaults</option>'];
+  const scope = currentSettingsScope();
+  const selected = scope.type + '|' + scope.id;
+  const options = ['<option value="global|global"' + (selected === 'global|global' ? ' selected' : '') + '>Global defaults</option>'];
   groups.forEach((group) => {
     const controllers = group.controllers || [];
-    if (!controllers.length) return;
-    options.push('<optgroup label="' + escapeHTML(group.label) + '">' + controllers.map((ctrl) => '<option value="' + escapeHTML(ctrl.id) + '"' + (ctrl.id === selected ? ' selected' : '') + '>' + escapeHTML(group.label + ' / ' + ctrlLabel(ctrl)) + '</option>').join('') + '</optgroup>');
+    options.push('<option value="project|' + escapeHTML(group.id) + '"' + (selected === 'project|' + group.id ? ' selected' : '') + '>' + escapeHTML(group.label) + ' / project</option>');
+    if (controllers.length) options.push('<optgroup label="' + escapeHTML(group.label) + '">' + controllers.map((ctrl) => '<option value="ctrl|' + escapeHTML(ctrl.id) + '"' + (selected === 'ctrl|' + ctrl.id ? ' selected' : '') + '>' + escapeHTML(group.label + ' / ' + ctrlLabel(ctrl)) + '</option>').join('') + '</optgroup>');
   });
   return options.join('');
 }
 
 function selectedSettingsCtrl() {
-  const selected = state.settingsCtrlId || state.ctrlId;
-  return activeControllers().find((ctrl) => ctrl.id === selected) || null;
+  const scope = currentSettingsScope();
+  return scope.type === 'ctrl' ? activeControllers().find((ctrl) => ctrl.id === scope.id) || null : null;
+}
+
+function skillStatus(skill) {
+  if (skill.builtin) return 'Built in';
+  return ({ inherited: 'Inherited', available_to_install: 'Available', blocked_unreviewed: 'Needs review', blocked_authority: 'Blocked' })[skill.status] || (skill.relevant ? 'Available' : 'Not matched');
+}
+
+function skillPurpose(skill) {
+  return skill.task_purpose || skill.purpose || (skill.relevant ? 'Matches the selected role and task.' : 'Not matched for the selected role and task.');
+}
+
+function skillOverlay(scope) {
+  return state.skills?.overlays?.[scope.type] || null;
+}
+
+function skillsSummary(scope) {
+  if (!state.skills) return '<div class="skills-row"><div><strong>Skills</strong><small>Loading the approved skills for this scope.</small></div></div>';
+  const skills = state.skills.skills || [];
+  const inherited = skills.filter((skill) => skill.status === 'inherited').length;
+  const preferred = skills.filter((skill) => skill.preferred).length;
+  const available = skills.filter((skill) => skill.status === 'available_to_install').length;
+  const enabled = state.skills.settings?.inheritance_enabled === true;
+  const overlay = skillOverlay(scope);
+  return '<div class="skills-row"><div><strong>Skills</strong><small>' + escapeHTML(scope.type === 'global' ? 'Global defaults' : (enabled ? 'Inherited for this scope' : 'Inheritance off for this scope')) + '</small></div><button class="quiet-button" data-setting-action="manage-skills" type="button" aria-controls="skills-details">Manage</button></div><label class="toggle-row"><input id="skills-inheritance" type="checkbox"' + (enabled ? ' checked' : '') + '><span>Inherit approved skills</span></label><small>' + inherited + ' inherited · ' + preferred + ' preferred · ' + available + ' available</small>' + (overlay ? '<button class="quiet-button" data-setting-action="reset-skills" type="button">Use inherited settings</button>' : '');
+}
+
+function skillsAdvanced(scope) {
+  if (!state.skills) return '<section class="skills-panel" id="skills-details"><p>Approved skill details are loading.</p></section>';
+  const shortlist = (state.skills.skills || []).filter((skill) => skill.relevant || skill.builtin || skill.preferred).slice(0, 6);
+  const entries = shortlist.length ? shortlist.map((skill) => {
+    const metadata = [];
+    if (skill.source?.repo) metadata.push(skill.source.repo + (skill.source.version ? ' · ' + skill.source.version : ''));
+    if (skill.audit?.value && skill.audit.value !== 'unknown') metadata.push('Audit ' + skill.audit.value);
+    if (skill.popularity?.value && skill.popularity.value !== 'unknown') metadata.push('Popularity ' + skill.popularity.value);
+    return '<li><div><strong>' + escapeHTML(humanize(skill.skill_id)) + '</strong><small>' + escapeHTML(skillPurpose(skill)) + '</small></div><span class="skill-status">' + escapeHTML(skillStatus(skill)) + '</span>' + (metadata.length ? '<em>' + escapeHTML(metadata.join(' · ')) + '</em>' : '') + '</li>';
+  }).join('') : '<p>No approved skills match this scope yet.</p>';
+  return '<section class="skills-panel" id="skills-details"><div><strong>Approved skills</strong><small>Read-only catalog projection for ' + escapeHTML(scope.type === 'global' ? 'global defaults' : scope.type + ' scope') + '.</small></div><ul class="skills-list">' + entries + '</ul><p>This console cannot install or update skills.</p></section>';
 }
 
 function renderSettings() {
+  const scope = currentSettingsScope();
   const selectedCtrl = selectedSettingsCtrl();
   const setting = state.ctrlSettings;
   const storage = state.storage;
@@ -559,11 +610,11 @@ function renderSettings() {
       settingToggle('execution.usage_saver', execution.usage_saver, 'Use less usage when possible') +
       settingToggle('boost.spark_enabled', boost.spark_enabled, 'Use Spark for safe small tasks') +
       settingSelect('boost.spark_reasoning', boost.spark_reasoning || 'xhigh', reasoningOptions, 'Spark default reasoning') +
-      '<details class="settings-advanced" id="settings-advanced"><summary>Advanced settings</summary><div class="ctrl-fields"><label>Spark model<input id="spark-model" value="' + escapeHTML(boost.spark_model || '') + '" autocomplete="off"' + (!configEditable('boost.spark_model') ? ' disabled' : '') + '></label><label>Heartbeat minutes<input id="heartbeat-minutes" data-config-key="monitoring.heartbeat_minutes" type="number" min="1" value="' + escapeHTML(monitoring.heartbeat_minutes || '') + '"' + (!configEditable('monitoring.heartbeat_minutes') ? ' disabled' : '') + '></label></div><button class="quiet-button" data-setting-action="save-spark" type="button"' + (!configEditable('boost.spark_model') ? ' disabled' : '') + '>Save Spark model</button><section class="skills-panel" id="skills-details"><div><strong>Skills</strong><small>' + escapeHTML(selectedCtrl ? "Skill inheritance for this CTRL has not been supplied." : "Skill inheritance for global defaults has not been supplied.") + '</small></div><span class="skills-count">— installed · — preferred</span><p>Catalog, approval, and update status are unavailable from the current settings contract. Nothing is installed or enabled here.</p></section></details></section>' +
+      '<details class="settings-advanced" id="settings-advanced"><summary>Advanced settings</summary><div class="ctrl-fields"><label>Spark model<input id="spark-model" value="' + escapeHTML(boost.spark_model || '') + '" autocomplete="off"' + (!configEditable('boost.spark_model') ? ' disabled' : '') + '></label><label>Heartbeat minutes<input id="heartbeat-minutes" data-config-key="monitoring.heartbeat_minutes" type="number" min="1" value="' + escapeHTML(monitoring.heartbeat_minutes || '') + '"' + (!configEditable('monitoring.heartbeat_minutes') ? ' disabled' : '') + '></label></div><button class="quiet-button" data-setting-action="save-spark" type="button"' + (!configEditable('boost.spark_model') ? ' disabled' : '') + '>Save Spark model</button>' + skillsAdvanced(scope) + '</details></section>' +
     '<section class="panel settings-card"><p class="eyebrow">Console and data</p><h3>Keep the workspace predictable</h3>' +
       settingToggle('console.open_on_start', consoleSettings.open_on_start, 'Open SWARM when Codex starts') +
       settingToggle('role_icons.enabled', roleIcons.enabled, 'Show role icons') +
-      '<label class="toggle-row"><input id="auto-health" type="checkbox"' + (state.health?.enabled ? ' checked' : '') + '><span>Ask for maintenance review when health needs attention</span></label><small>Review requests do not run a model or change the device by themselves.</small><h4>Skills</h4><div class="skills-row"><div><strong>' + escapeHTML(selectedCtrl ? (setting?.customized ? "Custom scope" : "Inherited from global defaults") : "Global defaults") + '</strong><small>Skill catalog data is not available.</small></div><button class="quiet-button" data-setting-action="manage-skills" type="button" aria-controls="skills-details">Manage skills</button></div><h4>' + escapeHTML(storage?.bytes == null ? 'Saved history unavailable' : formatBytes(storage.bytes) + ' saved history' + retention) + '</h4><p>Progress, forecasts, proof, and token history stay available between sessions' + (proofFiles ? ' · ' + proofFiles + ' proof file' + (proofFiles === 1 ? '' : 's') : '') + '.</p><div class="settings-actions-inline"><button class="quiet-button" data-setting-action="clear" type="button">Clear history</button><button class="quiet-button" data-setting-action="restore" type="button">Restore defaults</button></div><small>Clearing history leaves tasks unchanged. Restoring defaults keeps history.</small></section>';
+      '<label class="toggle-row"><input id="auto-health" type="checkbox"' + (state.health?.enabled ? ' checked' : '') + '><span>Ask for maintenance review when health needs attention</span></label><small>Review requests do not run a model or change the device by themselves.</small><h4>Skills</h4>' + skillsSummary(scope) + '<h4>' + escapeHTML(storage?.bytes == null ? 'Saved history unavailable' : formatBytes(storage.bytes) + ' saved history' + retention) + '</h4><p>Progress, forecasts, proof, and token history stay available between sessions' + (proofFiles ? ' · ' + proofFiles + ' proof file' + (proofFiles === 1 ? '' : 's') : '') + '.</p><div class="settings-actions-inline"><button class="quiet-button" data-setting-action="clear" type="button">Clear history</button><button class="quiet-button" data-setting-action="restore" type="button">Restore defaults</button></div><small>Clearing history leaves tasks unchanged. Restoring defaults keeps history.</small></section>';
 }
 
 function renderAllViews() { renderOverview(); renderHierarchy(); renderKanban(); renderDiagnostics(); renderSettings(); }
@@ -595,10 +646,20 @@ async function refreshMonitoring(proofSequence) {
 }
 
 async function refreshCtrlSettings() {
-  const selectedCtrl = state.settingsCtrlId || state.ctrlId || '';
+  const scope = currentSettingsScope();
+  const selectedCtrl = scope.type === 'ctrl' ? scope.id : '';
   if (!selectedCtrl) { state.ctrlSettings = null; return; }
   try { state.ctrlSettings = await api('/api/ctrl-settings?ctrl_id=' + encodeURIComponent(selectedCtrl)); }
   catch { state.ctrlSettings = null; }
+}
+
+async function refreshSkills() {
+  const scope = currentSettingsScope();
+  const params = new URLSearchParams();
+  if (scope.type === 'project') params.set('project_id', scope.id);
+  if (scope.type === 'ctrl') params.set('ctrl_id', scope.id);
+  try { state.skills = await api('/api/skills' + (params.size ? '?' + params.toString() : '')); }
+  catch { state.skills = null; }
 }
 
 async function refreshOverview(showLoading = true) {
@@ -612,6 +673,7 @@ async function refreshOverview(showLoading = true) {
     const results = await Promise.allSettled([api('/api/diagnostics'), api('/api/diagnostics/history?limit=24'), api('/api/health/settings'), api('/api/storage'), selectedCtrl ? api('/api/ctrl-settings?ctrl_id=' + encodeURIComponent(selectedCtrl)) : Promise.resolve(null), api('/api/config')]);
     [state.diagnostics, state.diagnosticHistory, state.health, state.storage, state.ctrlSettings, state.config] = results.map((result) => result.status === 'fulfilled' ? result.value : null);
     state.diagnosticHistory = state.diagnosticHistory?.items || [];
+    await refreshSkills();
     renderAllViews();
   } catch (error) {
     showError(error.message);
@@ -673,6 +735,8 @@ $("#project-navigation").addEventListener("click", (event) => {
     state.projectId = state.projectId === groupId ? "all" : groupId;
     state.ctrlId = "";
     state.settingsCtrlId = "";
+    state.settingsScopeType = state.projectId === 'all' ? 'global' : 'project';
+    state.settingsScopeId = state.projectId === 'all' ? 'global' : state.projectId;
     renderProjectNavigation();
     renderAllViews();
     Promise.all([refreshProof(), refreshCtrlSettings(), refreshUsageHistory()]).then(renderAllViews);
@@ -684,6 +748,8 @@ $("#project-navigation").addEventListener("click", (event) => {
   state.projectId = scope.dataset.projectId;
   state.ctrlId = scope.dataset.ctrlId || "";
   state.settingsCtrlId = state.ctrlId;
+  state.settingsScopeType = state.ctrlId ? 'ctrl' : (state.projectId === 'all' ? 'global' : 'project');
+  state.settingsScopeId = state.ctrlId || (state.projectId === 'all' ? 'global' : state.projectId);
   renderProjectNavigation();
   renderAllViews();
   Promise.all([refreshProof(), refreshCtrlSettings(), refreshUsageHistory()]).then(renderAllViews);
@@ -692,20 +758,32 @@ $("#refresh").addEventListener("click", refreshOverview);
 $("#retry").addEventListener("click", refreshOverview);
 document.addEventListener('change', async (event) => {
   if (event.target.id === 'settings-scope') {
-    const ctrlId = event.target.value;
-    const ctrl = activeControllers().find((item) => item.id === ctrlId);
+    const [scopeType, scopeId] = event.target.value.split('|');
+    const ctrl = scopeType === 'ctrl' ? activeControllers().find((item) => item.id === scopeId) : null;
+    state.settingsScopeType = ['global', 'project', 'ctrl'].includes(scopeType) ? scopeType : 'global';
+    state.settingsScopeId = scopeId || 'global';
     state.settingsCtrlId = ctrl ? ctrl.id : '';
     state.ctrlId = ctrl ? ctrl.id : '';
-    state.projectId = ctrl ? (ctrl.project_id || 'ctrl:' + ctrl.id) : 'all';
+    state.projectId = scopeType === 'project' ? scopeId : ctrl ? (ctrl.project_id || 'ctrl:' + ctrl.id) : 'all';
     renderProjectNavigation();
     renderAllViews();
     try {
-      await Promise.all([refreshProof(), refreshUsageHistory(), refreshCtrlSettings()]);
+      await Promise.all([refreshProof(), refreshUsageHistory(), refreshCtrlSettings(), refreshSkills()]);
     } finally { renderAllViews(); }
     return;
   }
   if (event.target.id === 'auto-health') {
     try { state.health = await api('/api/health/settings', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ enabled: event.target.checked }) }); renderDiagnostics(); renderSettings(); } catch (error) { showError(error.message); renderDiagnostics(); renderSettings(); }
+    return;
+  }
+  if (event.target.id === 'skills-inheritance') {
+    const scope = currentSettingsScope();
+    const overlay = skillOverlay(scope);
+    try {
+      await api('/api/skills/inheritance', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ scope_type: scope.type, scope_id: scope.id, expected_revision: overlay?.revision || 0, changes: { inheritance_enabled: event.target.checked } }) });
+      await refreshSkills();
+      renderSettings();
+    } catch (error) { showError(error.message); await refreshSkills(); renderSettings(); }
     return;
   }
   if (event.target.dataset.configKey) {
@@ -731,7 +809,7 @@ document.addEventListener('change', async (event) => {
 document.addEventListener('click', async (event) => {
   const action = event.target.closest('[data-setting-action]')?.dataset.settingAction;
   if (!action) return;
-  const messages = { clear: 'Clear saved SWARM history? Your tasks will stay unchanged.', restore: 'Restore default settings? Your history will stay unchanged.', reset: 'Use global defaults for this CTRL?' };
+  const messages = { clear: 'Clear saved SWARM history? Your tasks will stay unchanged.', restore: 'Restore default settings? Your history will stay unchanged.', reset: 'Use global defaults for this CTRL?', 'reset-skills': 'Restore inherited skill settings for this scope?' };
   if (messages[action] && !confirm(messages[action])) return;
   try {
     if (action === 'clear') await api('/api/storage/clear', { method: 'POST' });
@@ -740,6 +818,15 @@ document.addEventListener('click', async (event) => {
     if (action === 'manage-skills') {
       const details = $('#settings-advanced');
       if (details) { details.open = true; details.scrollIntoView({ block: 'nearest' }); }
+      return;
+    }
+    if (action === 'reset-skills') {
+      const scope = currentSettingsScope();
+      const overlay = skillOverlay(scope);
+      if (!overlay) return;
+      await api('/api/skills/inheritance/reset', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ scope_type: scope.type, scope_id: scope.id, expected_revision: overlay.revision }) });
+      await refreshSkills();
+      renderSettings();
       return;
     }
     if (action === 'save-ctrl' && state.ctrlSettings) state.ctrlSettings = await api('/api/ctrl-settings', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ctrl_id: state.ctrlSettings.ctrl_id, expected_revision: state.ctrlSettings.revision, changes: { model: $('#ctrl-model').value.trim(), reasoning: $('#ctrl-reasoning').value, service_tier: $('#ctrl-service-tier').value.trim() } }) });
