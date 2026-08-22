@@ -74,6 +74,19 @@ class RuntimeRoutingTests(unittest.TestCase):
                 self.assertEqual(decision.authority_chain, ("CTRL", "LEAD", "DOER"))
                 self.assertIn("visible senior task", decision.reason)
 
+    def test_multi_surface_or_independent_review_requires_a_visible_lane(self) -> None:
+        for routing_fact in ({"mutable_surface_count": 2}, {"independent_review": True}):
+            with self.subTest(routing_fact=routing_fact):
+                decision = route_execution(
+                    facts=facts(**routing_fact),
+                    economics=economics(savings=20, overhead=60),
+                    capacity=AVAILABLE,
+                    accountable_owner="lead-a",
+                    lead_owner="lead-a",
+                )
+                self.assertEqual(decision.route, ExecutionRoute.NORMAL_TASK)
+                self.assertEqual(decision.authority_chain, ("CTRL", "LEAD", "DOER"))
+
     def test_small_bounded_low_risk_one_surface_without_durable_facts_stays_non_authoritative(self) -> None:
         decision = route_execution(
             facts=facts(WorkSize.SMALL),

@@ -37,16 +37,28 @@ Immediately after that receipt—and before topology or work—use `swarm_contra
 
 Before the first mutable handoff, select the smallest graph that satisfies the captured objective, efficiency strategy, ownership, dependencies, resumption, integration, and acceptance evidence. Follow [graph-engineering.md](references/graph-engineering.md): one CTRL root, explicit artifact-owning lanes, parallelize only independent work, serialize shared-surface gates, and keep every edge explainable by a dependency or acceptance reason. A game objective selects the registered `game_studio` graph: game-studio lead, design, engineering, art, audio, playtest/QA, and release agents with production dependencies; medium and large lanes are visible Codex tasks, while lane-local bounded work may use subagents. Do not flatten a domain graph into a single undifferentiated worker list.
 
-Use the shallowest structure that can finish the accepted objective. `CTRL_DIRECT` is only one low-risk atomic outcome on one mutable surface, no cross-lane dependency, and measurable completion inside the configured horizon; otherwise use `CTRL_DELEGATED` and a LEAD. Materialize a visible task lane whenever work needs durable ownership or resumable ownership, independent progress or review, a separate mutable surface/artifact, worktree isolation, interruption-safe resumption, or separate acceptance/handoff; economics never overrides that boundary. Use a subagent only as short bounded capacity inside an existing lane: small-to-medium one-surface work may use it when measured task overhead does not clearly repay itself. The subagent returns evidence to its accountable owner and never substitutes for a qualifying durable task. A capacity-forced degraded subagent records the exact host failure, owner, immutable checkpoint, resumption marker, and `UNVERIFIED` gates; it cannot own, hand off, review, or accept the lane. Non-atomic delegated authority is always `CTRL -> LEAD -> DOER`. Record only the typed exceptions in the hierarchy contract. Internal-helper or read-only-tool approval gates are failed capacity: cancel the attempt, record the host gate, and continue direct bounded owner work without asking the user. This never grants external, provider, destructive, or user-reserved authority.
+Use the shallowest structure that can finish the accepted objective. `CTRL_DIRECT`
+is limited to exactly one low-risk atomic `GENERAL` outcome on one mutable
+surface: read-only inspection, one focused check, or a bounded copy,
+documentation, or formatting edit with no external side effect, cross-file
+behavior, dependency, handoff, or separate acceptance receipt. Everything else
+is `CTRL_DELEGATED`. Multi-file or multi-surface work, runtime/API/auth/data,
+provider/deployment/device state, visual work, multiple proof gates, or
+independent review MUST open a visible senior Codex task/chat before CTRL does
+substantive work. That lane has its own cwd, owner, heartbeat, mutable surface,
+and accepting route; non-atomic authority is `CTRL -> LEAD -> DOER`. The LEAD
+decomposes disjoint DOER lanes, requests independent review, and keeps
+unrelated lanes moving; reorient the existing owner once on a blocker rather
+than silently replacing the lane.
 
-For the root CTRL, bounded `GENERAL` work may still use a `NORMAL_SUBAGENT`
-when it is genuinely small, one-surface, low-risk, and the measured economics
-favor it. Medium or large work must open a visible Codex task so it can gain
-lanes and its own subagent capacity. `DESIGN`, `IMAGEGEN`, and `IMAGE_EDIT`
-always open a visible `DESIGNER` task; do not label an internal subagent as a
-Designer to avoid that boundary. If the required task cannot be created,
-surface the exact blocker or an explicitly degraded unverified route—never
-silently generate the visual artifact in a subagent.
+Only genuinely small, single-surface, low-risk `GENERAL` work remains eligible
+for `NORMAL_SUBAGENT` when measured task economics favor it. The subagent stays
+inside its accountable owner and cannot own, hand off, review, or accept a
+durable lane. A capacity-forced degraded subagent records the exact host
+failure, immutable checkpoint, resumption marker, and `UNVERIFIED` gates. If a
+required visible task cannot be created, surface the exact blocker or a typed
+degraded route; never silently expand CTRL or subagent authority. `DESIGN`,
+`IMAGEGEN`, and `IMAGE_EDIT` always open a visible `DESIGNER` task.
 
 Preserve every explicit user-selected model, provider, service tier, and reasoning level exactly across CTRL and all assignments. SWARM may recommend a change but never applies one unless the user explicitly asks SWARM to choose or change it; if the host cannot honor the selection, report the exact blocker instead of substituting. Only when the user delegates that choice may SWARM resolve it from the active profile, route tier, and execution bounds. Treat fast-tier and turbo settings as host-dependent preferences, never proof or a safety exception. Load [model-providers.md](references/model-providers.md) when selecting or probing a model/provider.
 
