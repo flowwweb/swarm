@@ -67,7 +67,7 @@ class CachePolicy(StrEnum): NEVER="NEVER"; EXACT_INPUTS="EXACT_INPUTS"; EXTERNAL
 class FlakePolicy(StrEnum): NO_RETRY="NO_RETRY"; TYPED_TRANSIENT_ONCE="TYPED_TRANSIENT_ONCE"
 class ClaimStatus(StrEnum): REQUIRED="REQUIRED"; VERIFIED="VERIFIED"; UNVERIFIED="UNVERIFIED"
 class CtrlOperation(StrEnum): CREATE="CREATE"; FORK="FORK"; PROMOTE="PROMOTE"; REPLACE="REPLACE"; RENAME="RENAME"; SUCCESSOR="SUCCESSOR"; RECOVER_AS_NEW="RECOVER_AS_NEW"
-class CustodyMutation(StrEnum): ARCHIVE="ARCHIVE"; UNPIN="UNPIN"; RENAME="RENAME"; STATE="STATE"
+class CustodyMutation(StrEnum): ARCHIVE="ARCHIVE"; RESTORE="RESTORE"; UNPIN="UNPIN"; RENAME="RENAME"; STATE="STATE"
 class StorageGuard(StrEnum): EXACT_ROOT="EXACT_ROOT"; ACTIVE_PROCESS="ACTIVE_PROCESS"; LIVE_LOG="LIVE_LOG"; DATABASE="DATABASE"; DIRTY_WORK="DIRTY_WORK"
 class StorageRecovery(StrEnum): RECOVERABLE_MOVE="RECOVERABLE_MOVE"; COPY_VERIFY_REMOVE="COPY_VERIFY_REMOVE"
 class LaneKind(StrEnum): CODE="CODE"; NON_CODE="NON_CODE"; OTHER="OTHER"
@@ -1887,9 +1887,10 @@ class Swarm:
         base=lambda: not self._open_ctrl_evidence(task.id) and not self._open_ctrl_decision_sets(task.id) and not self._uncovered_ctrl_decision_candidates(task.id) and task.review_value!=ReviewValue.PINNED and not task.user_renamed and not task.user_pinned and not any((task.active_goal,task.handoff_active,task.correction_pending,task.user_choice_pending,task.ambiguous,task.state==TaskState.REVIEW,owner is not None and owner.state!=WorkerState.RETIRED and task.id in owner.task_ids)) and not any(other.waiting_on==task.id and other.state in {TaskState.ACTIVE,TaskState.WAITING,TaskState.REVIEW} for other in self.tasks.values())
         try: return bool(self._request_guard(task_id=task.id,action=base))
         except InvariantError: return False
-    def restore(self, actor:Role, task_id:str, reason:str) -> None:
+    def restore(self, actor:Role, task_id:str, reason:str, *, now:int) -> None:
         self._role(actor,{Role.CTRL,Role.LEAD}); t=self.tasks[task_id]
         if t.state not in {TaskState.ARCHIVED,TaskState.ARCHIVED_STALE} or not reason: raise InvariantError("restore requires archived task and provenance")
+        self.require_host_custody(Role.CTRL,CustodyMutation.RESTORE,t.id,now,target_state_digest=self._task_custody_digest(t))
         history=t.archive or {}; history.setdefault("archive_history",[]).append({"archived_at":t.archived_at,"reason":reason,"state":t.state.value}); t.archive=history; t.state=TaskState.ACTIVE; t.archived_at=None; t.findings.append(f"restored:{reason}"); self.telemetry["restores"]=self.telemetry.get("restores",0)+1
     def groom_hive(self, actor:Role, now:int, *, orphaned_sources:set[str]|None=None) -> None:
         """Mechanical compact-memory lifecycle; PURGED records retain provenance only."""

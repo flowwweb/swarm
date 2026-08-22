@@ -72,6 +72,13 @@ class CtrlAuthorityGuardTests(unittest.TestCase):
         with self.assertRaisesRegex(InvariantError,"user-renamed or user-pinned"):
             self.swarm.groom(Role.CTRL,5,{"no_review_archive_delay":0,"low_review_retention":2,"high_review_retention":3,"stale_task_archive_delay":1})
 
+    def test_restore_requires_exact_host_custody_and_fails_closed_without_trust_root(self) -> None:
+        task=self.swarm.tasks["ctrl-a"]; task.state=runtime_core.TaskState.ARCHIVED; task.archived_at=4
+        with self.assertRaisesRegex(InvariantError,"no host-pinned trust root or IPC verifier"):
+            self.swarm.restore(Role.CTRL,task.id,"user requested restore",now=5)
+        self.assertEqual(task.state,runtime_core.TaskState.ARCHIVED)
+        self.assertEqual(task.archived_at,4)
+
     def test_host_signature_cannot_be_replayed_for_a_changed_objective(self) -> None:
         changed=HostUserEvent("usr-signed-binding000",CtrlOperation.CREATE,"ctrl-a",_sha256_text("objective-c"),_sha256_text("ctrl-b"),"ctrl-b",1,_sha256_text("signed-binding"))
         with self.assertRaisesRegex(InvariantError,"no host-pinned trust root or IPC verifier"):
