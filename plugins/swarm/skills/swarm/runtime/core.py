@@ -20,7 +20,7 @@ class Role(StrEnum):
     CTRL="CTRL"; SPECIALIST="SPECIALIST"; ARCHITECT="ARCHITECT"; LEAD="LEAD"; DOER="DOER"; EXPERT="EXPERT"; REVIEW="REVIEW"
 
 class PinDisposition(StrEnum):
-    AUTO_PIN="AUTO_PIN"; EXPLICIT_PIN="EXPLICIT_PIN"; TEMPORARY_REVIEW_PIN="TEMPORARY_REVIEW_PIN"; DEFAULT_UNPINNED="DEFAULT_UNPINNED"; PRESERVE_USER_STATE="PRESERVE_USER_STATE"
+    DEFAULT_UNPINNED="DEFAULT_UNPINNED"; PRESERVE_USER_STATE="PRESERVE_USER_STATE"; PLACEMENT_UNVERIFIED="PLACEMENT_UNVERIFIED"
 
 @dataclass(frozen=True)
 class PinPolicyDecision:
@@ -30,7 +30,7 @@ class PinPolicyDecision:
 
     @property
     def requests_pin(self) -> bool:
-        return self.disposition in {PinDisposition.AUTO_PIN, PinDisposition.EXPLICIT_PIN, PinDisposition.TEMPORARY_REVIEW_PIN}
+        return False
 
 
 def pin_policy(
@@ -54,13 +54,9 @@ def pin_policy(
     if any((user_pinned, user_folder_pinned, user_order_changed, user_title_changed, user_state_changed)):
         return PinPolicyDecision(PinDisposition.PRESERVE_USER_STATE, "user task or folder custody is authoritative")
     role_name = role.value if isinstance(role, Role) else str(role).upper()
-    if explicit_user_pin:
-        return PinPolicyDecision(PinDisposition.EXPLICIT_PIN, "explicit user pin request", False)
-    if concrete_review_handoff:
-        return PinPolicyDecision(PinDisposition.TEMPORARY_REVIEW_PIN, "concrete user review handoff", True)
     if role_name == Role.CTRL.value and top_level and pin_created_tasks:
-        return PinPolicyDecision(PinDisposition.AUTO_PIN, "top-level CTRL default", False)
-    return PinPolicyDecision(PinDisposition.DEFAULT_UNPINNED, "non-CTRL or nested task default", False)
+        return PinPolicyDecision(PinDisposition.PLACEMENT_UNVERIFIED, "top-level CTRL created; SWARM never pins without host user action", False)
+    return PinPolicyDecision(PinDisposition.DEFAULT_UNPINNED, "SWARM runtime never authorizes pinning", False)
 
 
 def close_pin_policy(
@@ -77,8 +73,6 @@ def close_pin_policy(
     """Resolve temporary review pin closeout; never unpin user-owned state."""
     if any((user_kept, user_pinned, user_folder_pinned, user_order_changed, user_title_changed, user_state_changed)):
         return PinPolicyDecision(PinDisposition.PRESERVE_USER_STATE, "user kept or changed pin/task/folder state")
-    if decision.disposition is PinDisposition.TEMPORARY_REVIEW_PIN and custody_verified:
-        return PinPolicyDecision(PinDisposition.DEFAULT_UNPINNED, "temporary review handoff closed")
     return PinPolicyDecision(PinDisposition.PRESERVE_USER_STATE, "closeout mutation not independently authorized")
 
 BUILT_IN_SPECIALISTS = frozenset({"MOTHER", "ARCHITECT", "ENGINEER", "DEVELOPER", "DESIGNER", "RESEARCHER", "ANALYST", "STRATEGIST"})

@@ -61,7 +61,7 @@ surfaces the created ID, exact directive/title, `pinned: false`, and
 pin request, and the current host may append the task below pinned folders.
 only for the top-level CTRL task. LEAD, DOER, REVIEW, WATCHDOG, storage,
 sidecar, and nested CTRL tasks default to unpinned. SWARM never authorizes a
-non-CTRL or review-handoff pin; only the host may consume an exact explicit-user
+non-CTRL or review-handoff pin; SWARM never authorizes it, and only the host may consume an exact explicit-user
 request. Review-handoff pins are temporary and closeout may
 remove one only after independently verified SWARM custody; if the user kept
 or changed pin, folder, order, title, or state, preserve it. The runtime
