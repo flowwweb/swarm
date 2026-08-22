@@ -18,6 +18,15 @@ explicit-user receipt naming the exact operation, target, and scope. If that
 receipt or custody verification is absent or conflicts, no mutation is permitted:
 fail closed, surface the conflict, and wait.
 
+Pin policy is role-scoped. With `lifecycle.pin_created_tasks = true`, only the
+top-level CTRL task may be auto-pinned. LEAD, DOER, REVIEW, WATCHDOG, storage,
+sidecar, and nested CTRL tasks default to unpinned. A non-CTRL pin requires a
+fresh host-owned explicit-user receipt or a concrete ready-review handoff; a
+review-handoff pin is temporary and may be removed at close only after current
+SWARM custody is independently verified and the user has not kept or changed
+the pin, folder, order, title, or state. This policy returns an intent only;
+the host task API performs any mutation and otherwise preserves user state.
+
 **Step 0, never defer:** For an unassigned user-facing task explicitly told by the user to use SWARM, derive a concise specific objective and resolve `role_icons`. Before any title or pin request, obtain a fresh host-owned receipt proving SWARM custody and confirming that no user-created, renamed, titled, pinned, unpinned, archived, or state-changed task state is present. Only then may the host task API request the exact `🐙CTRL - <objective>` title (or `CTRL - <objective>` when `role_icons.enabled = false`) and pin; verify both receipts. Otherwise preserve the current user state and continue only with truthful internal CTRL identity. If either host control is unavailable or fails, state the exact blocker and never claim the UI changed. A task assigned by an existing CTRL keeps its assigned role. A CTRL cannot create, fork, promote, replace, rename, recover-as-new, or link a successor CTRL unless the user explicitly requests that exact operation. The plugin may prepare a typed single-use request bound to source CTRL, target identity, objective, and scope, but code running in its interpreter cannot authorize the host action. The actual Codex task API must independently consume a host-owned user receipt; without that host enforcement the request is non-authoritative and no new CTRL may be created. Adjacent work stays inside the current CTRL or returns to the user.
 
 After the Step 0 custody check—whether it produced an eligible SWARM receipt or preserved existing user state—invoke the sibling `scripts/swarm_console.py --start` once. It obeys `console.open_on_start`, reuses the local server and an already-open portal tab, and opens the portal in the default browser only when needed. A launcher or browser failure is advisory and never blocks SWARM work.

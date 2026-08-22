@@ -19,6 +19,68 @@ from .request_ledger import RequestStore, RequestStoreError
 class Role(StrEnum):
     CTRL="CTRL"; SPECIALIST="SPECIALIST"; ARCHITECT="ARCHITECT"; LEAD="LEAD"; DOER="DOER"; EXPERT="EXPERT"; REVIEW="REVIEW"
 
+class PinDisposition(StrEnum):
+    AUTO_PIN="AUTO_PIN"; EXPLICIT_PIN="EXPLICIT_PIN"; TEMPORARY_REVIEW_PIN="TEMPORARY_REVIEW_PIN"; DEFAULT_UNPINNED="DEFAULT_UNPINNED"; PRESERVE_USER_STATE="PRESERVE_USER_STATE"
+
+@dataclass(frozen=True)
+class PinPolicyDecision:
+    disposition: PinDisposition
+    reason: str
+    remove_on_close: bool = False
+
+    @property
+    def requests_pin(self) -> bool:
+        return self.disposition in {PinDisposition.AUTO_PIN, PinDisposition.EXPLICIT_PIN, PinDisposition.TEMPORARY_REVIEW_PIN}
+
+
+def pin_policy(
+    role: Role | str,
+    *,
+    top_level: bool,
+    pin_created_tasks: bool = True,
+    explicit_user_pin: bool = False,
+    concrete_review_handoff: bool = False,
+    user_pinned: bool = False,
+    user_folder_pinned: bool = False,
+    user_order_changed: bool = False,
+    user_title_changed: bool = False,
+    user_state_changed: bool = False,
+) -> PinPolicyDecision:
+    """Return a pin intent without mutating host task or folder state.
+
+    User custody wins before any role or lifecycle default.  The host task API
+    must independently authorize any returned mutation request.
+    """
+    if any((user_pinned, user_folder_pinned, user_order_changed, user_title_changed, user_state_changed)):
+        return PinPolicyDecision(PinDisposition.PRESERVE_USER_STATE, "user task or folder custody is authoritative")
+    role_name = role.value if isinstance(role, Role) else str(role).upper()
+    if explicit_user_pin:
+        return PinPolicyDecision(PinDisposition.EXPLICIT_PIN, "explicit user pin request", False)
+    if concrete_review_handoff:
+        return PinPolicyDecision(PinDisposition.TEMPORARY_REVIEW_PIN, "concrete user review handoff", True)
+    if role_name == Role.CTRL.value and top_level and pin_created_tasks:
+        return PinPolicyDecision(PinDisposition.AUTO_PIN, "top-level CTRL default", False)
+    return PinPolicyDecision(PinDisposition.DEFAULT_UNPINNED, "non-CTRL or nested task default", False)
+
+
+def close_pin_policy(
+    decision: PinPolicyDecision,
+    *,
+    custody_verified: bool,
+    user_kept: bool = False,
+    user_pinned: bool = False,
+    user_folder_pinned: bool = False,
+    user_order_changed: bool = False,
+    user_title_changed: bool = False,
+    user_state_changed: bool = False,
+) -> PinPolicyDecision:
+    """Resolve temporary review pin closeout; never unpin user-owned state."""
+    if any((user_kept, user_pinned, user_folder_pinned, user_order_changed, user_title_changed, user_state_changed)):
+        return PinPolicyDecision(PinDisposition.PRESERVE_USER_STATE, "user kept or changed pin/task/folder state")
+    if decision.disposition is PinDisposition.TEMPORARY_REVIEW_PIN and custody_verified:
+        return PinPolicyDecision(PinDisposition.DEFAULT_UNPINNED, "temporary review handoff closed")
+    return PinPolicyDecision(PinDisposition.PRESERVE_USER_STATE, "closeout mutation not independently authorized")
+
 BUILT_IN_SPECIALISTS = frozenset({"MOTHER", "ARCHITECT", "ENGINEER", "DEVELOPER", "DESIGNER", "RESEARCHER", "ANALYST", "STRATEGIST"})
 class TaskState(StrEnum):
     REQUEST_PENDING="REQUEST_PENDING"; ACTIVE="ACTIVE"; WAITING="WAITING"; REVIEW="REVIEW"; COMPLETE="COMPLETE"; STALE="STALE"; ARCHIVED="ARCHIVED"; ARCHIVED_STALE="ARCHIVED_STALE"; BACKLOG="BACKLOG"

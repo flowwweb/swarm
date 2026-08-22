@@ -295,8 +295,10 @@ max_attempts = 1
 stall_after_updates = 2
 
 [lifecycle]
-# Pin SWARM-created tasks when they are created.
-pin_created_tasks = false
+# Auto-pin only the top-level CTRL task when it is created. Child lane tasks
+# remain unpinned unless an explicit user request or concrete review handoff
+# provides a typed pin receipt.
+pin_created_tasks = true
 # Archive only after terminal acceptance when no concrete retention reason
 # remains. Pending review, correction, choice, continuation, goals, ownership,
 # handoffs, and ambiguity keep the task open.
