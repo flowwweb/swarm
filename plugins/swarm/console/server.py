@@ -3860,17 +3860,17 @@ class App:
         }
 
     def progress_summary(self, *, project_id: str | None = None, ctrl_id: str | None = None) -> dict[str, Any]:
-        overview, nodes, _, scope = self._observed_scope(project_id=project_id, ctrl_id=ctrl_id)
-        stale_after_ms = max(1, int(overview.get("heartbeat_minutes") or 30)) * PROGRESS_FRESHNESS_WINDOWS * 60_000
-        return {
-            "ok": True,
-            **self._progress_for_nodes(
-                nodes,
-                scope,
-                now_ms=int(time.time() * 1000),
-                stale_after_ms=stale_after_ms,
-            ),
-        }
+        _, _, _, scope = self._observed_scope(project_id=project_id, ctrl_id=ctrl_id)
+        progress = self.overview().get("progress", {})
+        if scope["type"] == "ctrl":
+            summary = progress.get("controllers", {}).get(scope["ctrl_id"])
+        elif scope["type"] == "project":
+            summary = progress.get("projects", {}).get(scope["project_id"])
+        else:
+            summary = progress.get("all_projects")
+        if not isinstance(summary, dict):
+            summary = self._progress_for_nodes([], scope, measure_nodes=[])
+        return {"ok": True, **copy.deepcopy(summary)}
 
     def skill_settings(
         self,

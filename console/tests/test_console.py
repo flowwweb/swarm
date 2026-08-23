@@ -862,6 +862,23 @@ class SwarmConsoleTests(unittest.TestCase):
         self.assertIsNone(missing["projects"]["project:a"]["progress"])
         self.assertIsNone(missing["all_projects"]["progress"])
 
+        app = console.App(self.codex_home, self.config)
+        ctrl_scope = {"type": "ctrl", "ctrl_id": "ctrl-a", "project_id": "project:a"}
+        with mock.patch.object(app, "_observed_scope", return_value=(view, view["nodes"], None, ctrl_scope)), \
+             mock.patch.object(app, "overview", return_value={"progress": missing}):
+            endpoint = app.progress_summary(ctrl_id="ctrl-a")
+        self.assertEqual(endpoint["progress"]["percent"], 25.0)
+        self.assertEqual(endpoint["measurement_authority"], "direct_ctrl_receipt")
+
+        view["nodes"][0]["eta"] = None
+        with mock.patch.object(console.time, "time", return_value=2):
+            no_direct = console.App._progress_payload(view)
+        with mock.patch.object(app, "_observed_scope", return_value=(view, view["nodes"], None, ctrl_scope)), \
+             mock.patch.object(app, "overview", return_value={"progress": no_direct}):
+            endpoint = app.progress_summary(ctrl_id="ctrl-a")
+        self.assertIsNone(endpoint["progress"])
+        self.assertEqual(endpoint["measurement_authority"], "direct_ctrl_receipt")
+
     def test_progress_summary_never_uses_unbound_measurement_or_task_status_as_percentage(self) -> None:
         nodes = [
             {"id": "done", "project_id": "project:a", "role": "doer", "status": "done", "virtual": False, "is_subagent": False, "controller_ids": ["ctrl-a"], "proof_snapshot": {"media": [{"evidence_id": "proof-1"}]}},
