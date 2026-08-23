@@ -342,6 +342,17 @@ class SwarmSkillStructureTests(unittest.TestCase):
         self.assertIn("DESIGNER", visual_eval["expected_output"])
         self.assertIn("CTRL_DIRECT", " ".join(visual_eval["assertions"]))
 
+    def test_owning_ctrl_emits_instruction_only_progress_pulse_when_host_transport_is_missing(self) -> None:
+        skill = SKILL.read_text(encoding="utf-8")
+        task_contract = (SKILL_ROOT / "references" / "task-contract.md").read_text(encoding="utf-8")
+        self.assertIn("Load [task-contract.md]", skill)
+        self.assertIn("the owning CTRL must write one", task_contract)
+        self.assertIn("at every scheduled heartbeat", task_contract)
+        self.assertIn("every task-state,\nblocker, dependency, ETA, or material-progress change", task_contract)
+        self.assertIn("An\nunchanged heartbeat omits progress and refreshes liveness only", task_contract)
+        self.assertIn("instruction-only", task_contract)
+        self.assertIn("not native host/user, progress, review, or acceptance authority", task_contract)
+
 
 if __name__ == "__main__":
     unittest.main()

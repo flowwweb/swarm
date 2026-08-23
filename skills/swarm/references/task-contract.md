@@ -75,14 +75,17 @@ filler, repeated plans, commentary, and unchanged heartbeats are not progress.
 Profession does not transfer ownership, and review does not become implementation
 or acceptance.
 
-When native host pulse transport is unavailable, an owning CTRL or LEAD may write
-one instruction-only local sidecar with `python skills/swarm/scripts/swarm_progress.py
+When native host pulse transport is unavailable, the owning CTRL must write one
+instruction-only local sidecar at every scheduled heartbeat and every task-state,
+blocker, dependency, ETA, or material-progress change with `python skills/swarm/scripts/swarm_progress.py
 --codex-home <absolute-codex-home>` and a JSON stdin envelope. The envelope names
 the exact observed `task_id` and `project_id`, a unique pulse receipt, state, and
 observation time. Optional ETA uses the existing `swarm_task_owner_forecast`
 shape. Optional material progress additionally requires a unique receipt plus
 `plan_id`, `unit_id`, `unit_kind`, declared total/completed units, basis,
-observation time, and source. An unchanged heartbeat omits progress. The writer
+observation time, and source. LEAD and DOER returns can supply bound material
+receipts, but they do not substitute for the owning CTRL project pulse. An
+unchanged heartbeat omits progress and refreshes liveness only. The writer
 atomically replaces one bounded latest-pulse file per task; the console accepts it
 only for that exact observed non-subagent target and persists bounded material
 receipt history with monotonic high-water checks. Duplicate receipts are

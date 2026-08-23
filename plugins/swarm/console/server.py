@@ -3490,6 +3490,7 @@ class App:
         nodes: list[dict[str, Any]],
         scope: dict[str, Any],
         *,
+        measure_nodes: list[dict[str, Any]] | None = None,
         now_ms: int | None = None,
         stale_after_ms: int = 60 * 60 * 1000,
     ) -> dict[str, Any]:
@@ -3517,11 +3518,19 @@ class App:
             })
         completed = sum(item["state"] in {"done", "archived", "complete"} for item in task_items)
         blocked = sum(bool(item["blocked"]) for item in task_items)
-        measured = [item["progress"] for item in task_items if item["progress"] is not None]
+        direct_ctrl_authority = measure_nodes is not None
+        progress_nodes = tasks if measure_nodes is None else [
+            node for node in measure_nodes
+            if not node.get("virtual") and not node.get("is_subagent")
+        ]
+        measured = [
+            progress for node in progress_nodes
+            if (progress := App._receipt_backed_progress(node)) is not None
+        ]
         aggregate = None
-        if not task_items:
-            unmeasured_reason = "no_tasks"
-        elif len(measured) != len(task_items):
+        if not progress_nodes:
+            unmeasured_reason = "missing_ctrl_measure" if direct_ctrl_authority else "no_tasks"
+        elif len(measured) != len(progress_nodes):
             unmeasured_reason = "missing_receipt_backed_units"
         elif (
             len({(item["plan_id"], item["unit_kind"]) for item in measured}) != 1
@@ -3550,8 +3559,13 @@ class App:
                     else "mixed_validated_task_owner_reports"
                 ),
                 "receipt_count": sum(item["receipt_count"] for item in measured),
+                "authority": "direct_ctrl_receipt" if direct_ctrl_authority else "task_receipts",
                 "claim_limit": (
-                    "Derived server-side only from compatible validated receipt-backed plan units; "
+                    "Derived server-side only from compatible validated direct CTRL plan units; "
+                    "subordinate task units are not included and this observed planning measure is "
+                    "not acceptance or host/user authority."
+                    if direct_ctrl_authority
+                    else "Derived server-side only from compatible validated receipt-backed plan units; "
                     "this observed planning measure is not acceptance or host/user authority."
                 ),
             }
@@ -3572,12 +3586,13 @@ class App:
         }
         return {
             "scope": scope,
-            "status": "no_tasks" if not task_items else "observed",
+            "status": "no_tasks" if not task_items and not progress_nodes else "observed",
             "counts": {"tasks": len(task_items), "completed": completed, "blocked": blocked},
             "tasks": task_items,
             "progress": aggregate,
             "progress_display": f"{aggregate['percent']:g}%" if aggregate else "Unmeasured",
             "measurement_status": "measured" if aggregate else "unmeasured",
+            "measurement_authority": "direct_ctrl_receipt" if direct_ctrl_authority else "task_receipts",
             "unmeasured_reason": unmeasured_reason,
             "freshness": freshness,
             "claim_limit": (
@@ -3589,12 +3604,32 @@ class App:
     @classmethod
     def _progress_payload(cls, view: dict[str, Any]) -> dict[str, Any]:
         nodes = list(view.get("nodes", []))
+        nodes_by_id = {str(node.get("id")): node for node in nodes if node.get("id")}
         now_ms = int(time.time() * 1000)
         stale_after_ms = max(1, int(view.get("heartbeat_minutes") or 30)) * PROGRESS_FRESHNESS_WINDOWS * 60_000
+        visible_controllers = [
+            controller for controller in view.get("controllers", [])
+            if controller.get("controller_classification") == "swarm_ctrl"
+            and controller.get("controller_classification_source") == "host_threads.agent_role"
+            and not controller.get("archived", False)
+            and (node := nodes_by_id.get(str(controller.get("id")))) is not None
+            and not node.get("virtual")
+            and not node.get("is_subagent")
+            and str(node.get("project_id")) == str(controller.get("project_id"))
+        ]
+        controller_nodes = {
+            str(controller["id"]): nodes_by_id[str(controller["id"])]
+            for controller in visible_controllers
+        }
         project_summaries = {
             str(project["id"]): cls._progress_for_nodes(
                 [node for node in nodes if node.get("project_id") == project["id"]],
                 {"type": "project", "project_id": project["id"]},
+                measure_nodes=[
+                    controller_nodes[str(controller["id"])]
+                    for controller in visible_controllers
+                    if str(controller.get("project_id")) == str(project["id"])
+                ],
                 now_ms=now_ms,
                 stale_after_ms=stale_after_ms,
             )
@@ -3602,8 +3637,13 @@ class App:
         }
         controller_summaries = {
             str(controller["id"]): cls._progress_for_nodes(
-                [node for node in nodes if controller["id"] in node.get("controller_ids", [])],
+                [
+                    node for node in nodes
+                    if node.get("id") == controller["id"]
+                    or controller["id"] in node.get("controller_ids", [])
+                ],
                 {"type": "ctrl", "ctrl_id": controller["id"], "project_id": controller.get("project_id")},
+                measure_nodes=[controller_nodes[str(controller["id"])]] if str(controller["id"]) in controller_nodes else [],
                 now_ms=now_ms,
                 stale_after_ms=stale_after_ms,
             )
@@ -3613,6 +3653,7 @@ class App:
             "all_projects": cls._progress_for_nodes(
                 nodes,
                 {"type": "all-projects"},
+                measure_nodes=list(controller_nodes.values()),
                 now_ms=now_ms,
                 stale_after_ms=stale_after_ms,
             ),

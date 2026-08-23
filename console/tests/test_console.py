@@ -768,8 +768,9 @@ class SwarmConsoleTests(unittest.TestCase):
             "projects": [{"id": "project:a"}],
             "controllers": [{"id": "ctrl-a", "project_id": "project:a"}],
         })
-        self.assertEqual(payload["projects"]["project:a"]["progress"]["percent"], 50.0)
-        self.assertEqual(payload["controllers"]["ctrl-a"]["progress"]["percent"], 50.0)
+        self.assertIsNone(payload["projects"]["project:a"]["progress"])
+        self.assertIsNone(payload["controllers"]["ctrl-a"]["progress"])
+        self.assertEqual(payload["controllers"]["ctrl-a"]["measurement_authority"], "direct_ctrl_receipt")
 
         missing = console.App._progress_for_nodes(
             [measured("one", 1), {**measured("two", 3), "eta": {}}],
@@ -793,6 +794,73 @@ class SwarmConsoleTests(unittest.TestCase):
         )
         self.assertIsNone(missing_identity["progress"])
         self.assertEqual(missing_identity["unmeasured_reason"], "missing_receipt_backed_units")
+
+    def test_progress_payload_isolates_direct_ctrl_measures_without_subordinate_double_count(self) -> None:
+        def ctrl_node(ctrl_id: str, completed: int | None, unit_id: str) -> dict[str, object]:
+            eta = None if completed is None else {
+                "trigger": "task_owner_report",
+                "receipt_source": f"instruction_only_local_sidecar:{ctrl_id}",
+                "progress_source": "instruction_only_local_sidecar",
+                "progress_basis": {
+                    "receipts": [f"receipt-{ctrl_id}"],
+                    "plan_units": {
+                        "plan_id": "shared-project-plan",
+                        "unit_id": unit_id,
+                        "unit_kind": "ctrl_scope",
+                        "total_units": 4,
+                        "completed_units": completed,
+                        "basis": "CTRL accepted milestones",
+                        "observed_at_ms": 1_000 + int(completed or 0),
+                    },
+                },
+            }
+            return {
+                "id": ctrl_id, "project_id": "project:a", "role": "ctrl", "status": "active",
+                "virtual": False, "is_subagent": False, "controller_ids": [ctrl_id],
+                "eta": eta, "proof_snapshot": {"media": []},
+            }
+
+        subordinate = {
+            "id": "task-a", "project_id": "project:a", "role": "doer", "status": "active",
+            "virtual": False, "is_subagent": False, "controller_ids": ["ctrl-a", "ctrl-b"],
+            "eta": {
+                "trigger": "task_owner_report", "receipt_source": "task:receipt",
+                "progress_basis": {
+                    "receipts": ["task-receipt"],
+                    "plan_units": {
+                        "plan_id": "shared-project-plan", "unit_id": "subordinate-overlap",
+                        "unit_kind": "ctrl_scope", "total_units": 100, "completed_units": 100,
+                        "basis": "Subordinate status", "observed_at_ms": 2_000,
+                    },
+                },
+            },
+            "proof_snapshot": {"media": []},
+        }
+        controllers = [
+            {"id": ctrl_id, "project_id": "project:a", "archived": False,
+             "controller_classification": "swarm_ctrl", "controller_classification_source": "host_threads.agent_role"}
+            for ctrl_id in ("ctrl-a", "ctrl-b")
+        ]
+        view = {
+            "nodes": [ctrl_node("ctrl-a", 1, "ctrl-unit-a"), ctrl_node("ctrl-b", 3, "ctrl-unit-b"), subordinate],
+            "projects": [{"id": "project:a"}], "controllers": controllers, "heartbeat_minutes": 30,
+        }
+        with mock.patch.object(console.time, "time", return_value=2):
+            payload = console.App._progress_payload(view)
+        self.assertEqual(payload["controllers"]["ctrl-a"]["progress"]["percent"], 25.0)
+        self.assertEqual(payload["controllers"]["ctrl-b"]["progress"]["percent"], 75.0)
+        self.assertEqual(payload["projects"]["project:a"]["progress"]["percent"], 50.0)
+        self.assertEqual(payload["projects"]["project:a"]["progress"]["total_units"], 8)
+        self.assertEqual(payload["all_projects"]["progress"]["total_units"], 8)
+        self.assertEqual(payload["projects"]["project:a"]["progress"]["authority"], "direct_ctrl_receipt")
+
+        view["nodes"][1]["eta"] = None
+        with mock.patch.object(console.time, "time", return_value=2):
+            missing = console.App._progress_payload(view)
+        self.assertEqual(missing["controllers"]["ctrl-a"]["progress"]["percent"], 25.0)
+        self.assertIsNone(missing["controllers"]["ctrl-b"]["progress"])
+        self.assertIsNone(missing["projects"]["project:a"]["progress"])
+        self.assertIsNone(missing["all_projects"]["progress"])
 
     def test_progress_summary_never_uses_unbound_measurement_or_task_status_as_percentage(self) -> None:
         nodes = [

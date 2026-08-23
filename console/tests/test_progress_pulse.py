@@ -86,6 +86,47 @@ class ConsoleProgressPulseTests(unittest.TestCase):
         self.assertEqual(heartbeat["heartbeats"], 1)
         self.assertEqual(self.store.latest_progress()["task-1"]["progress_basis"]["plan_units"]["completed_units"], 1)
 
+    def test_direct_ctrl_pulse_drives_controller_and_single_ctrl_project_summary(self) -> None:
+        ctrl_overview = {
+            "nodes": [
+                {"id": "ctrl-1", "project_id": "project:alpha", "role": "ctrl", "status": "active",
+                 "virtual": False, "is_subagent": False, "controller_ids": ["ctrl-1"], "tokens": 0},
+                {"id": "task-child", "project_id": "project:alpha", "role": "doer", "status": "active",
+                 "virtual": False, "is_subagent": False, "controller_ids": ["ctrl-1"], "tokens": 0},
+            ],
+            "links": [], "roots": ["ctrl-1"], "heartbeat_minutes": 1,
+            "controllers": [{
+                "id": "ctrl-1", "project_id": "project:alpha", "title": "CTRL Alpha", "status": "active",
+                "updated_at": 10, "archived": False, "controller_classification": "swarm_ctrl",
+                "controller_classification_source": "host_threads.agent_role",
+            }],
+            "projects": [{"id": "project:alpha", "name": "Alpha"}],
+            "analytics": {},
+        }
+        material = self.pulse(
+            observed_at_ms=10, pulse_receipt="ctrl-pulse-1", completed_units=2,
+            receipt_id="ctrl-material-1", task_id="ctrl-1",
+        )
+        write_progress_pulse(self.codex_home, material)
+        self.assertEqual(self.store.ingest_progress_pulses(self.codex_home, ctrl_overview, now_ms=10)["advanced"], 1)
+        app = console.App(self.codex_home, self.root / "config.toml", state_path=self.root / "console.sqlite3")
+        with mock.patch.object(console.time, "time", return_value=0.02):
+            decorated = app._decorate_overview(ctrl_overview)
+        self.assertEqual(decorated["progress"]["controllers"]["ctrl-1"]["progress"]["percent"], 50.0)
+        self.assertEqual(decorated["progress"]["projects"]["project:alpha"]["progress"]["percent"], 50.0)
+        self.assertEqual(decorated["progress"]["controllers"]["ctrl-1"]["counts"]["tasks"], 1)
+
+        heartbeat = self.pulse(observed_at_ms=20, pulse_receipt="ctrl-pulse-2", task_id="ctrl-1")
+        write_progress_pulse(self.codex_home, heartbeat)
+        self.assertEqual(self.store.ingest_progress_pulses(self.codex_home, ctrl_overview, now_ms=20)["heartbeats"], 1)
+        with mock.patch.object(console.time, "time", return_value=0.02):
+            refreshed = app._decorate_overview(ctrl_overview)
+        summary = refreshed["progress"]["controllers"]["ctrl-1"]
+        self.assertEqual(summary["progress"]["percent"], 50.0)
+        self.assertEqual(summary["freshness"]["observed_at_ms"], 10)
+        state = self.store.latest_progress()["ctrl-1"]
+        self.assertEqual((state["pulse_observed_at_ms"], state["progress_basis"]["plan_units"]["observed_at_ms"]), (20, 10))
+
     def test_duplicate_is_idempotent_and_conflict_or_regression_is_rejected(self) -> None:
         original = self.pulse(observed_at_ms=10, pulse_receipt="pulse-1", completed_units=2)
         self.assertEqual(self.ingest(original, now_ms=10)["advanced"], 1)
