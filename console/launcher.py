@@ -22,6 +22,7 @@ SPEC = importlib.util.spec_from_file_location("swarm_console_launcher_server", S
 assert SPEC and SPEC.loader
 console_server = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(console_server)
+PORT_SCAN_LIMIT = 10
 
 
 def _request_json(url: str, *, token: str = "", method: str = "GET") -> dict[str, Any]:
@@ -64,30 +65,62 @@ def ensure_portal(
     open_browser: Callable[..., bool] = webbrowser.open,
     sleep: Callable[[float], None] = time.sleep,
 ) -> dict[str, Any]:
-    """Reuse one server and open only when no visible tab has fresh presence."""
+    """Reuse only this console instance and open when no tab has fresh presence."""
     _, effective, _ = console_server.load_config(config_path)
     if not effective["console"]["open_on_start"]:
         return {"ok": True, "enabled": False, "opened": False, "reason": "disabled"}
 
-    url = f"http://127.0.0.1:{port}"
-    pid: int | None = None
-    try:
-        fetch_json(f"{url}/healthz")
-    except (OSError, ValueError, urllib.error.URLError):
+    selected_port: int | None = None
+    free_port: int | None = None
+    for candidate_port in range(port, min(65_536, port + PORT_SCAN_LIMIT)):
+        candidate_url = f"http://127.0.0.1:{candidate_port}"
         try:
-            pid = spawn_server(config_path, codex_home, port)
+            health = fetch_json(f"{candidate_url}/healthz")
+        except (ValueError, urllib.error.HTTPError):
+            continue
+        except (OSError, urllib.error.URLError):
+            if free_port is None:
+                free_port = candidate_port
+            continue
+        if health.get("ok") is True and health.get("instance_id") == console_server.INSTANCE_ID:
+            selected_port = candidate_port
+            break
+
+    pid: int | None = None
+    if selected_port is None:
+        if free_port is None:
+            return {
+                "ok": False,
+                "enabled": True,
+                "opened": False,
+                "reason": "server_port_unavailable",
+                "port": port,
+            }
+        selected_port = free_port
+        try:
+            pid = spawn_server(config_path, codex_home, selected_port)
         except OSError as exc:
             return {"ok": False, "enabled": True, "opened": False, "reason": "server_start_failed", "error": str(exc)}
+        ready_url = f"http://127.0.0.1:{selected_port}/healthz"
         for _ in range(12):
             sleep(0.15)
             try:
-                fetch_json(f"{url}/healthz")
-                break
+                health = fetch_json(ready_url)
             except (OSError, ValueError, urllib.error.URLError):
                 continue
+            if health.get("ok") is True and health.get("instance_id") == console_server.INSTANCE_ID:
+                break
         else:
-            return {"ok": False, "enabled": True, "opened": False, "reason": "server_not_ready", "pid": pid}
+            return {
+                "ok": False,
+                "enabled": True,
+                "opened": False,
+                "reason": "server_not_ready",
+                "pid": pid,
+                "port": selected_port,
+            }
 
+    url = f"http://127.0.0.1:{selected_port}"
     try:
         bootstrap = fetch_json(f"{url}/api/bootstrap")
         claim = fetch_json(f"{url}/api/launch-claim", token=bootstrap["token"], method="POST")

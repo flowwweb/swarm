@@ -22,6 +22,10 @@ SPEC.loader.exec_module(console)
 
 
 class SwarmConsoleTests(unittest.TestCase):
+    def test_health_identity_is_bound_to_the_console_root(self) -> None:
+        self.assertEqual(len(console.INSTANCE_ID), 16)
+        self.assertRegex(console.INSTANCE_ID, r"^[0-9a-f]+$")
+
     def test_new_console_copy_is_swarm_first(self) -> None:
         static = (Path(__file__).resolve().parents[1] / "static")
         index = (static / "index.html").read_text(encoding="utf-8")
