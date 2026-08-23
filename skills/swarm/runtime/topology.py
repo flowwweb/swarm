@@ -5,13 +5,14 @@ archive host tasks.
 """
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from enum import StrEnum
 from hashlib import sha256
 import json
 import re
 
-from .core import InvariantError, ProfessionAssignment, Role, SubordinateBoundaryFacts
+from .core import ArtifactIdentity, InvariantError, ProfessionAssignment, ProofState, Role, SubordinateBoundaryFacts
 
 
 _LANE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$")
@@ -197,6 +198,54 @@ class TopologyTransportOutcome(StrEnum):
 
 
 @dataclass(frozen=True)
+class TopologyArtifactFreezeReceipt:
+    """Runtime-issued binding from accepted proof state to one planned review lane."""
+
+    producer_lane_id: str
+    review_lane_id: str
+    topology_plan_digest: str
+    artifact: ArtifactIdentity
+    artifact_content_digest: str
+    proof_plan_digest: str
+    review_receipt_digest: str
+    gate_receipt_digests: tuple[str, ...]
+    state: ProofState
+    observed_at_ms: int
+    valid_until_ms: int
+    claim_limit: str
+    _authority: object | None = field(default=None, init=False, repr=False, compare=False)
+
+    def __post_init__(self) -> None:
+        for value, label in (
+            (self.producer_lane_id, "freeze producer lane"),
+            (self.review_lane_id, "freeze review lane"),
+        ):
+            if not _LANE_ID.fullmatch(value):
+                raise InvariantError(f"{label} requires a safe stable lane id")
+        for value, label in (
+            (self.topology_plan_digest, "freeze topology plan"),
+            (self.artifact_content_digest, "freeze artifact content"),
+            (self.proof_plan_digest, "freeze proof plan"),
+            (self.review_receipt_digest, "freeze review receipt"),
+        ):
+            if not isinstance(value, str) or not re.fullmatch(r"[0-9a-f]{64}", value):
+                raise InvariantError(f"{label} must be a SHA-256 digest")
+        if not isinstance(self.artifact, ArtifactIdentity) or not self.artifact.observables:
+            raise InvariantError("topology freeze requires an immutable content-observed ArtifactIdentity")
+        if self.artifact_content_digest != self.artifact.content_address():
+            raise InvariantError("topology freeze artifact digest must match the exact content-addressed identity")
+        if not self.gate_receipt_digests or any(not re.fullmatch(r"[0-9a-f]{64}", value) for value in self.gate_receipt_digests):
+            raise InvariantError("topology freeze requires exact gate receipt digests")
+        if len(set(self.gate_receipt_digests)) != len(self.gate_receipt_digests):
+            raise InvariantError("topology freeze gate receipt digests must be distinct")
+        if self.state is not ProofState.ACCEPTED:
+            raise InvariantError("topology freeze requires current ACCEPTED proof state")
+        if not isinstance(self.observed_at_ms, int) or not isinstance(self.valid_until_ms, int) or self.observed_at_ms < 0 or self.valid_until_ms <= self.observed_at_ms:
+            raise InvariantError("topology freeze requires a bounded freshness interval")
+        object.__setattr__(self, "claim_limit", _single_line(self.claim_limit, "topology freeze claim limit"))
+
+
+@dataclass(frozen=True)
 class TopologyDispatchPacket:
     """Current ready wave for a host adapter; never a host mutation itself."""
 
@@ -239,19 +288,48 @@ class TopologyLaneReservation:
     host_task_id: str = ""
 
 
+@dataclass(frozen=True)
+class TopologyConfirmedLane:
+    lane_id: str
+    host_task_id: str
+    confirmation_digest: str
+
+    def __post_init__(self) -> None:
+        if not _LANE_ID.fullmatch(self.lane_id):
+            raise InvariantError("confirmed topology lane requires a safe stable lane id")
+        object.__setattr__(self, "host_task_id", _single_line(self.host_task_id, "confirmed host task id"))
+        if not re.fullmatch(r"[0-9a-f]{64}", self.confirmation_digest):
+            raise InvariantError("confirmed topology lane requires an exact confirmation digest")
+
+
 class TopologyDispatchPreflight:
     """Deterministic ready-wave and retry guard; it never calls the host."""
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        *,
+        root_lane_id: str,
+        root_host_task_id: str,
+        freeze_authority: object,
+        freeze_validator: Callable[[TopologyArtifactFreezeReceipt], bool],
+    ) -> None:
+        if not _LANE_ID.fullmatch(root_lane_id) or not isinstance(root_host_task_id, str) or not root_host_task_id.strip() or freeze_authority is None or not callable(freeze_validator):
+            raise InvariantError("topology preflight requires one confirmed root and runtime freeze validator")
         self._pending: dict[str, TopologyLaneReservation] = {}
+        root_digest = sha256(f"root:{root_lane_id}:{root_host_task_id}".encode("utf-8")).hexdigest()
+        self._confirmed: dict[str, TopologyConfirmedLane] = {
+            root_lane_id: TopologyConfirmedLane(root_lane_id, root_host_task_id, root_digest)
+        }
+        self._root_lane_id = root_lane_id
+        self._freeze_authority = freeze_authority
+        self._freeze_validator = freeze_validator
 
     def prepare(
         self,
         plan: TopologyMaterializationPlan,
         *,
         ready_lane_ids: tuple[str, ...],
-        existing_lane_ids: tuple[str, ...] = (),
-        frozen_artifact_ids: tuple[str, ...] = (),
+        artifact_freeze_receipts: tuple[TopologyArtifactFreezeReceipt, ...] = (),
     ) -> TopologyDispatchPacket:
         if not isinstance(plan, TopologyMaterializationPlan):
             raise InvariantError("topology preflight requires a typed materialization plan")
@@ -260,19 +338,33 @@ class TopologyDispatchPreflight:
         by_id = {lane.lane_id: lane for lane in plan.lanes}
         roots = tuple(lane for lane in plan.lanes if lane.structural_role is Role.CTRL)
         root = roots[0]
-        existing = set(existing_lane_ids) | {root.lane_id}
-        frozen = set(frozen_artifact_ids)
+        if root.lane_id != self._root_lane_id or root.lane_id not in self._confirmed:
+            raise InvariantError("topology plan root must match the already host-confirmed CTRL")
+        if any(not isinstance(receipt, TopologyArtifactFreezeReceipt) for receipt in artifact_freeze_receipts):
+            raise InvariantError("review readiness requires typed runtime-issued artifact freeze receipts")
         lanes: list[LaneMaterialization] = []
         for lane_id in ready_lane_ids:
             lane = by_id.get(lane_id)
             if lane is None or lane.structural_role is Role.CTRL:
                 raise InvariantError("ready wave may contain only known non-root visible lanes")
-            if lane.parent_lane_id not in existing and lane.parent_lane_id not in ready_lane_ids:
-                raise InvariantError("ready lane parent must already exist or be in the same ready wave")
+            if lane.lane_id in self._confirmed:
+                raise InvariantError("already confirmed topology lane cannot be prepared again")
+            if lane.parent_lane_id not in self._confirmed:
+                raise InvariantError("ready lane parent must already be host-confirmed before child dispatch")
             if lane.review_target_id:
                 producer = by_id[lane.review_target_id]
-                if not producer.artifact_id or producer.artifact_id not in frozen:
-                    raise InvariantError("review lane cannot materialize before its exact producer artifact is frozen")
+                matches = tuple(
+                    receipt
+                    for receipt in artifact_freeze_receipts
+                    if receipt.producer_lane_id == producer.lane_id
+                    and receipt.review_lane_id == lane.lane_id
+                    and receipt.topology_plan_digest == plan.plan_digest
+                )
+                if len(matches) != 1:
+                    raise InvariantError("review lane requires one exact producer/plan/review artifact freeze receipt")
+                freeze = matches[0]
+                if freeze._authority is not self._freeze_authority or freeze.artifact.base != producer.artifact_id or not self._freeze_validator(freeze):
+                    raise InvariantError("review artifact freeze receipt is untrusted, stale, rejected, mutable, or bound to the wrong producer")
             lanes.append(lane)
         return TopologyDispatchPacket(
             plan.plan_digest,
@@ -285,7 +377,7 @@ class TopologyDispatchPreflight:
     def reserve(self, packet: TopologyDispatchPacket) -> tuple[TopologyLaneReservation, ...]:
         if not isinstance(packet, TopologyDispatchPacket):
             raise InvariantError("topology reservation requires an exact dispatch packet")
-        collisions = tuple(lane.lane_id for lane in packet.lanes if lane.lane_id in self._pending)
+        collisions = tuple(lane.lane_id for lane in packet.lanes if lane.lane_id in self._pending or lane.lane_id in self._confirmed)
         if collisions:
             raise InvariantError(f"pending topology reservation must resolve or be explicitly cancelled before retry: {collisions[0]}")
         reservations = tuple(
@@ -312,6 +404,12 @@ class TopologyDispatchPreflight:
         if outcome is TopologyTransportOutcome.CONFIRMED:
             host_id = _single_line(host_task_id, "confirmed host task id")
             self._pending.pop(reservation.lane_id)
+            confirmed = TopologyConfirmedLane(
+                reservation.lane_id,
+                host_id,
+                sha256(f"{reservation.reservation_digest}:{host_id}".encode("utf-8")).hexdigest(),
+            )
+            self._confirmed[reservation.lane_id] = confirmed
             return TopologyLaneReservation(reservation.lane_id, reservation.packet_digest, reservation.reservation_digest, outcome, host_id)
         if host_task_id:
             raise InvariantError("ambiguous or failed topology transport cannot claim a host task id")
@@ -327,3 +425,6 @@ class TopologyDispatchPreflight:
 
     def pending(self, lane_id: str) -> TopologyLaneReservation | None:
         return self._pending.get(_single_line(lane_id, "topology lane id"))
+
+    def confirmed(self, lane_id: str) -> TopologyConfirmedLane | None:
+        return self._confirmed.get(_single_line(lane_id, "topology lane id"))

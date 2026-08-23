@@ -23,9 +23,9 @@ from skills.swarm.runtime import (
     Role,
     RoutingEconomics,
     RoutingEvidenceBasis,
+    Swarm,
     WorkRoutingFacts,
     WorkSize,
-    TopologyDispatchPreflight,
     TopologyMaterializationPlan,
     route_execution,
 )
@@ -93,7 +93,7 @@ class ExecutionAdapterTests(unittest.TestCase):
                 direct_production=True,
             ),
         ))
-        packet = TopologyDispatchPreflight().prepare(plan, ready_lane_ids=("doer",))
+        packet = Swarm().topology_dispatch_preflight("ctrl", "thread-ctrl").prepare(plan, ready_lane_ids=("doer",))
         adapter_plan = CodexAppServerAdapter().plan_topology_dispatch(packet)
         self.assertEqual(adapter_plan.status, AdapterPlanStatus.BLOCKED)
         self.assertIn("instruction-only", adapter_plan.blocker)

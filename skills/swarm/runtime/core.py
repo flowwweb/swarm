@@ -18,6 +18,7 @@ from .request_ledger import RequestStore, RequestStoreError
 
 if TYPE_CHECKING:
     from .automation import ArchiveFacts, AutomationDecision, BoundPolicyReceipt, FetchReceipt, IndependentReviewReceipt, StableCheckpoint
+    from .topology import TopologyArtifactFreezeReceipt, TopologyDispatchPreflight
 
 
 class Role(StrEnum):
@@ -1393,7 +1394,7 @@ class Worker:
 class Swarm:
     architecture_version: int=1; contract_versions: dict[str,int]=field(default_factory=dict); topology: set[str]=field(default_factory=set)
     workers: dict[str,Worker]=field(default_factory=dict); tasks: dict[str,Task]=field(default_factory=dict); leases: dict[str,str]=field(default_factory=dict); events: list[tuple[str,str]]=field(default_factory=list); task_event_limit:int=64; telemetry: dict[str,object]=field(default_factory=dict); telemetry_events:list[dict[str,object]]=field(default_factory=list); artifact_index:dict[str,str]=field(default_factory=dict); provenance_index:dict[str,str]=field(default_factory=dict); ctrl_evidence_ledger:dict[str,CtrlEvidence]=field(default_factory=dict); ctrl_decision_sets:dict[str,CtrlDecisionSet]=field(default_factory=dict); ctrl_phase:str="intake"; hive:dict[str,HiveRecord]=field(default_factory=dict); hive_enabled:bool=True; heartbeat_stall_after:int=2; correction_receipts:dict[str,None]=field(default_factory=dict); lane_width:int=3; wip_limit:int=3; efficiency_ledger:list[dict[str,str]]=field(default_factory=list); mode:EfficiencyMode=EfficiencyMode.BALANCED; automation_mode:str="standard"; default_review_horizon:int=30; max_review_horizon:int=60; direct_work_horizon:int=20
-    scheduled_wakeups:dict[str,int]=field(default_factory=dict); ctrl_feed_messages:list[CtrlFeedMessage]=field(default_factory=list); ctrl_feed_cursor:int=0; ctrl_feed_superseded_by:dict[str,str]=field(default_factory=dict); ctrl_feed_events:dict[str,CtrlFeedEvent]=field(default_factory=dict); ctrl_feed_consumed_events:set[str]=field(default_factory=set); ctrl_authorizations:dict[str,UserCtrlAuthorization]=field(default_factory=dict); ctrl_materialization_intents:dict[str,CtrlMaterializationIntent]=field(default_factory=dict); consumed_ctrl_authorizations:set[str]=field(default_factory=set); consumed_ctrl_intents:set[str]=field(default_factory=set); proof_policy_version:str="lean-v1"; proof_impacted_selection:bool=True; proof_receipt_reuse:bool=True; proof_gate_timeout_seconds:int=120; proof_browser_freshness_seconds:int=86400; proof_provider_freshness_seconds:int=3600; proof_transient_retry_limit:int=1; use_goals:bool=True; request_store:RequestStore|None=field(default=None,repr=False,compare=False); request_continuity_enabled:bool=False; request_feed_sequence_floor:int=0; host_custody_receipts:dict[str,HostCustodyReceipt]=field(default_factory=dict); _gate_capability:object=field(default_factory=object,init=False,repr=False,compare=False); _watchdog_capability:object=field(default_factory=object,init=False,repr=False,compare=False); _owner_context_capability:object=field(default_factory=object,init=False,repr=False,compare=False); _ctrl_authority_capability:object=field(default_factory=object,init=False,repr=False,compare=False); _custody_capability:object=field(default_factory=object,init=False,repr=False,compare=False)
+    scheduled_wakeups:dict[str,int]=field(default_factory=dict); ctrl_feed_messages:list[CtrlFeedMessage]=field(default_factory=list); ctrl_feed_cursor:int=0; ctrl_feed_superseded_by:dict[str,str]=field(default_factory=dict); ctrl_feed_events:dict[str,CtrlFeedEvent]=field(default_factory=dict); ctrl_feed_consumed_events:set[str]=field(default_factory=set); ctrl_authorizations:dict[str,UserCtrlAuthorization]=field(default_factory=dict); ctrl_materialization_intents:dict[str,CtrlMaterializationIntent]=field(default_factory=dict); consumed_ctrl_authorizations:set[str]=field(default_factory=set); consumed_ctrl_intents:set[str]=field(default_factory=set); proof_policy_version:str="lean-v1"; proof_impacted_selection:bool=True; proof_receipt_reuse:bool=True; proof_gate_timeout_seconds:int=120; proof_browser_freshness_seconds:int=86400; proof_provider_freshness_seconds:int=3600; proof_transient_retry_limit:int=1; use_goals:bool=True; request_store:RequestStore|None=field(default=None,repr=False,compare=False); request_continuity_enabled:bool=False; request_feed_sequence_floor:int=0; host_custody_receipts:dict[str,HostCustodyReceipt]=field(default_factory=dict); _topology_preflights:dict[str,object]=field(default_factory=dict,init=False,repr=False,compare=False); _gate_capability:object=field(default_factory=object,init=False,repr=False,compare=False); _watchdog_capability:object=field(default_factory=object,init=False,repr=False,compare=False); _owner_context_capability:object=field(default_factory=object,init=False,repr=False,compare=False); _ctrl_authority_capability:object=field(default_factory=object,init=False,repr=False,compare=False); _custody_capability:object=field(default_factory=object,init=False,repr=False,compare=False)
     def __setattr__(self, name:str, value:object) -> None:
         object.__setattr__(self,name,value)
     @classmethod
@@ -1436,6 +1437,60 @@ class Swarm:
             flake=FlakePolicy.TYPED_TRANSIENT_ONCE if self.proof_transient_retry_limit else FlakePolicy.NO_RETRY
             gates.append(replace(gate,cache_policy=cache,freshness_seconds=freshness,flake_policy=flake,timeout_seconds=self.proof_gate_timeout_seconds))
         return ProofPlan(planned.schema_version,planned.planner_version,"",planned.tier,planned.artifact,tuple(gates),planned.reviews,planned.claim_matrix,planned.reasons,planned.early_stop,planned.legacy)
+
+    @staticmethod
+    def _topology_review_digest(review:ReviewEvidence) -> str:
+        payload=(review.strategy.value,review.reviewer,review.independent,None if review.artifact is None else review.artifact.content_address(),review.findings,review.receipt,review.scope.value,review.plan_digest)
+        return _sha256_text(json.dumps(payload,separators=(",",":"),ensure_ascii=True))
+
+    @staticmethod
+    def _topology_gate_digests(task:Task) -> tuple[str,...]:
+        values=[]
+        for gate,receipt in sorted(task.gate_receipts.items()):
+            payload=(gate,receipt.artifact.content_address(),receipt.outcome.value,receipt.plan_digest,receipt.gate_spec_digest,receipt.artifact_digest,receipt.input_closure_digest,receipt.environment_fingerprint,receipt.started_at,receipt.finished_at,tuple(item.value for item in receipt.attempts),receipt.stability.value,receipt.proof_class.value,receipt.authority_context_digest,receipt.evidence_digest,receipt._bound_task_id)
+            values.append(_sha256_text(json.dumps(payload,separators=(",",":"),ensure_ascii=True)))
+        return tuple(values)
+
+    def issue_topology_artifact_freeze(self, producer_lane_id:str, review_lane_id:str, topology_plan_digest:str, *, valid_for_ms:int=300000) -> "TopologyArtifactFreezeReceipt":
+        """Bind a current accepted exact artifact to one planned review lane."""
+        from .topology import TopologyArtifactFreezeReceipt
+        task=self.tasks.get(producer_lane_id)
+        if task is None or not isinstance(valid_for_ms,int) or isinstance(valid_for_ms,bool) or not 1<=valid_for_ms<=300000: raise InvariantError("topology freeze requires an observed producer task and freshness of at most five minutes")
+        contract=task.acceptance_contract; review=task.acceptance_review_receipt
+        if contract is None or contract.explicitly_empty or contract.artifact is None or contract.proof_plan is None or not contract.artifact.observables: raise InvariantError("topology freeze requires an immutable content-observed acceptance artifact")
+        if self.proof_state(producer_lane_id) is not ProofState.ACCEPTED or review is None or review.artifact!=contract.artifact or review.scope not in {ReviewScope.ACCEPTANCE,ReviewScope.COMPOSED}: raise InvariantError("topology freeze requires current exact-artifact independent acceptance")
+        if review.plan_digest not in {"",contract.proof_plan.plan_digest}: raise InvariantError("topology freeze review must bind the current proof plan")
+        if any(receipt._authority is not self._gate_capability or receipt._bound_task_id!=producer_lane_id for receipt in task.gate_receipts.values()): raise InvariantError("topology freeze requires runtime-authoritative gate receipts")
+        current=contract.artifact.reobserve(contract.observation_root)
+        if current!=contract.artifact: raise InvariantError("topology freeze artifact changed after proof")
+        observed_at_ms=int(time.time()*1000)
+        receipt=TopologyArtifactFreezeReceipt(producer_lane_id,review_lane_id,topology_plan_digest,contract.artifact,contract.artifact.content_address(),contract.proof_plan.plan_digest,self._topology_review_digest(review),self._topology_gate_digests(task),ProofState.ACCEPTED,observed_at_ms,observed_at_ms+valid_for_ms,"Runtime-local accepted artifact freeze; it does not prove provider, host, deployment, or user authority.")
+        object.__setattr__(receipt,"_authority",self._gate_capability)
+        return receipt
+
+    def _topology_freeze_current(self, receipt:"TopologyArtifactFreezeReceipt") -> bool:
+        from .topology import TopologyArtifactFreezeReceipt
+        now_ms=int(time.time()*1000)
+        if not isinstance(receipt,TopologyArtifactFreezeReceipt) or receipt._authority is not self._gate_capability or not receipt.observed_at_ms<=now_ms<=receipt.valid_until_ms: return False
+        task=self.tasks.get(receipt.producer_lane_id)
+        if task is None: return False
+        contract=task.acceptance_contract; review=task.acceptance_review_receipt
+        if contract is None or contract.artifact!=receipt.artifact or contract.proof_plan is None or contract.proof_plan.plan_digest!=receipt.proof_plan_digest or review is None: return False
+        try: current=contract.artifact.reobserve(contract.observation_root)
+        except InvariantError: return False
+        return bool(current==receipt.artifact and self.proof_state(receipt.producer_lane_id) is ProofState.ACCEPTED and self._topology_review_digest(review)==receipt.review_receipt_digest and self._topology_gate_digests(task)==receipt.gate_receipt_digests)
+
+    def topology_dispatch_preflight(self, root_lane_id:str, root_host_task_id:str) -> "TopologyDispatchPreflight":
+        """Return the retained local reservation/confirmation ledger for one CTRL root."""
+        from .topology import TopologyDispatchPreflight
+        existing=self._topology_preflights.get(root_lane_id)
+        if existing is not None:
+            confirmed=existing.confirmed(root_lane_id)
+            if confirmed is None or confirmed.host_task_id!=root_host_task_id: raise InvariantError("topology preflight root confirmation conflicts with retained state")
+            return existing
+        created=TopologyDispatchPreflight(root_lane_id=root_lane_id,root_host_task_id=root_host_task_id,freeze_authority=self._gate_capability,freeze_validator=self._topology_freeze_current)
+        self._topology_preflights[root_lane_id]=created
+        return created
 
     def proof_state(self, task_id:str) -> ProofState:
         task=self.tasks[task_id]; contract=task.acceptance_contract

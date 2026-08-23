@@ -322,8 +322,12 @@ Count only a host-confirmed task ID as a live owner. A pending creation receipt
 reserves its objective, artifact, mutable surface, and accepting route; do not
 create a replacement until it resolves. Compile only the current ready wave into
 a `TopologyDispatchPacket`, then reserve every lane identity before the first
-host call. Timeout, ambiguous failure, transport error, or schema rejection does
-not release the reservation; resolve it or explicitly cancel it before retrying.
+host call. A child waits for a later packet until its parent has a retained
+host-confirmed identity; inclusion in the same packet or a public existing-ID
+claim is insufficient. Confirmation remains in the preflight ledger and prevents
+that lane from being prepared or reserved again. Timeout, ambiguous failure,
+transport error, or schema rejection does not release the reservation; resolve
+it or explicitly cancel it before retrying a never-confirmed lane.
 The current Codex `create_thread` API cannot consume the packet, so the adapter
 reports instruction-only/unsupported and live enforcement remains `UNVERIFIED`.
 If a duplicate materializes, stop it before mutation, transfer unique evidence,
@@ -338,7 +342,10 @@ With role icons enabled, use `🐙CTRL - <objective>` for the root,
 `<role emoji><PROFESSION> LEAD - <responsibility>` for lane owners, and
 `<role emoji><PROFESSION> DOER - <artifact>` for bounded producers. A separate
 review task uses the same structural title with the selected assurance profession
-and enters a ready wave only after its exact producer artifact is frozen.
+and enters a ready wave only after the runtime issues a fresh
+`TopologyArtifactFreezeReceipt`. That receipt binds the producer lane, immutable
+content-observed `ArtifactIdentity`, current accepted gates and independent review,
+and exact topology plan; a public artifact ID or caller-created receipt fails closed.
 Bare structural titles and profession-only visible titles are invalid because
 they hide either authority or expertise. A title is a
 readability signal, never an authority token; unregistered historical titles

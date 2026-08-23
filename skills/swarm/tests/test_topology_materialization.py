@@ -1,22 +1,40 @@
 from __future__ import annotations
 
 from dataclasses import replace
+from pathlib import Path
+import sys
+import tempfile
 import unittest
 
 from skills.swarm.runtime import (
+    AcceptanceContract,
+    ArtifactIdentity,
+    CtrlMode,
+    IncidentLedger,
     InvariantError,
     LaneMaterialization,
+    LaneKind,
     ProfessionAssignment,
+    ReviewEvidence,
+    ReviewScope,
+    ReviewStrategy,
     Role,
     SubordinateBoundaryFacts,
+    Swarm,
+    Task,
+    TopologyArtifactFreezeReceipt,
     TopologyDispatchPreflight,
     TopologyHostCapability,
     TopologyMaterializationPlan,
     TopologyTransportOutcome,
+    Worker,
 )
 
 
 class TopologyMaterializationTests(unittest.TestCase):
+    def preflight(self, swarm: Swarm | None = None) -> TopologyDispatchPreflight:
+        return (swarm or Swarm()).topology_dispatch_preflight("ctrl", "thread-ctrl")
+
     def ctrl(self) -> LaneMaterialization:
         return LaneMaterialization("ctrl", Role.CTRL, "Ship the SWARM release", icon="🐙")
 
@@ -120,7 +138,7 @@ class TopologyMaterializationTests(unittest.TestCase):
             requested_title="📊Analyst LEAD - Data boundary",
         )
         plan = TopologyMaterializationPlan((self.ctrl(), nested))
-        packet = TopologyDispatchPreflight().prepare(plan, ready_lane_ids=("data",))
+        packet = self.preflight().prepare(plan, ready_lane_ids=("data",))
         self.assertEqual(packet.host_capability, TopologyHostCapability.INSTRUCTION_ONLY_UNSUPPORTED)
         self.assertEqual(tuple(lane.lane_id for lane in packet.lanes), ("data",))
 
@@ -138,20 +156,101 @@ class TopologyMaterializationTests(unittest.TestCase):
             direct_production=True,
         )
         plan = TopologyMaterializationPlan((self.ctrl(), producer, reviewer))
-        preflight = TopologyDispatchPreflight()
+        preflight = self.preflight()
         producer_wave = preflight.prepare(plan, ready_lane_ids=("adapter",))
         self.assertEqual(tuple(lane.lane_id for lane in producer_wave.lanes), ("adapter",))
-        with self.assertRaisesRegex(InvariantError, "before.*producer artifact is frozen"):
+        with self.assertRaisesRegex(InvariantError, "artifact freeze receipt"):
             preflight.prepare(plan, ready_lane_ids=("review",))
-        review_wave = preflight.prepare(plan, ready_lane_ids=("review",), frozen_artifact_ids=("codex-adapter",))
-        self.assertEqual(tuple(lane.lane_id for lane in review_wave.lanes), ("review",))
+
+    def test_runtime_accepted_content_addressed_freeze_enables_exact_review_lane(self) -> None:
+        producer = self.doer("adapter", parent="ctrl", artifact="codex-adapter")
+        reviewer = LaneMaterialization(
+            "review", Role.DOER, "Exact candidate", "ctrl", ProfessionAssignment("reviewer"), "🔎",
+            artifact_id="review-receipt", review_target_id="adapter", direct_production=True,
+        )
+        plan = TopologyMaterializationPlan((self.ctrl(), producer, reviewer))
+        with tempfile.TemporaryDirectory() as root:
+            path = Path(root) / "artifact.txt"
+            path.write_text("frozen", encoding="utf-8")
+            artifact = ArtifactIdentity.capture("codex-adapter", "rev-1", "candidate", root=root, paths=("artifact.txt",))
+            swarm = Swarm()
+            swarm.add_lead(Role.CTRL, "lead")
+            swarm.add_worker(Role.LEAD, Worker("builder", "lead", 1))
+            task = Task(
+                "adapter", "builder", "author", 1, {}, subagent_receipt="host:thread:adapter",
+                ctrl_mode=CtrlMode.DIRECT, lane_kind=LaneKind.CODE, owning_lead_id="lead",
+                acceptance_contract=AcceptanceContract(artifact, ("freeze-gate",), observation_root=root),
+            )
+            swarm.assign(Role.LEAD, task)
+            swarm.consult_incidents(Role.LEAD, "adapter", IncidentLedger(root), artifact="codex-adapter", scope="topology", actor_id="lead")
+            swarm.run_gate(Role.LEAD, "adapter", "freeze-gate", (sys.executable, "-c", "pass"), cwd=root, actor_id="lead")
+            review = ReviewEvidence(
+                ReviewStrategy.LIGHT, "review-owner", True, artifact,
+                receipt=(("acceptance", "review:adapter"),), scope=ReviewScope.ACCEPTANCE,
+                plan_digest=task.acceptance_contract.proof_plan.plan_digest,
+            )
+            swarm.review(Role.REVIEW, "adapter", review, True)
+            freeze = swarm.issue_topology_artifact_freeze("adapter", "review", plan.plan_digest)
+            preflight = self.preflight(swarm)
+            packet = preflight.prepare(plan, ready_lane_ids=("review",), artifact_freeze_receipts=(freeze,))
+            self.assertEqual(tuple(lane.lane_id for lane in packet.lanes), ("review",))
+            with self.assertRaisesRegex(InvariantError, "typed runtime-issued"):
+                preflight.prepare(plan, ready_lane_ids=("review",), artifact_freeze_receipts=("codex-adapter",))
+            forged = replace(freeze)
+            with self.assertRaisesRegex(InvariantError, "untrusted"):
+                preflight.prepare(plan, ready_lane_ids=("review",), artifact_freeze_receipts=(forged,))
+            with self.assertRaisesRegex(InvariantError, "artifact content"):
+                replace(freeze, artifact_content_digest="")
+            with self.assertRaisesRegex(InvariantError, "content-observed"):
+                TopologyArtifactFreezeReceipt("adapter", "review", plan.plan_digest, ArtifactIdentity("codex-adapter", "mutable", "candidate"), "0" * 64, freeze.proof_plan_digest, freeze.review_receipt_digest, freeze.gate_receipt_digests, freeze.state, 1000, 1001, freeze.claim_limit)
+            with self.assertRaisesRegex(InvariantError, "producer/plan/review"):
+                wrong_plan = swarm.issue_topology_artifact_freeze("adapter", "review", "0" * 64)
+                preflight.prepare(plan, ready_lane_ids=("review",), artifact_freeze_receipts=(wrong_plan,))
+            with self.assertRaisesRegex(InvariantError, "producer/plan/review"):
+                wrong_review = swarm.issue_topology_artifact_freeze("adapter", "other-review", plan.plan_digest)
+                preflight.prepare(plan, ready_lane_ids=("review",), artifact_freeze_receipts=(wrong_review,))
+            other = self.doer("other", parent="ctrl", artifact="other-artifact")
+            other_review = replace(reviewer, review_target_id="other")
+            other_plan = TopologyMaterializationPlan((self.ctrl(), other, other_review))
+            wrong_producer = swarm.issue_topology_artifact_freeze("adapter", "review", other_plan.plan_digest)
+            with self.assertRaisesRegex(InvariantError, "producer/plan/review"):
+                preflight.prepare(other_plan, ready_lane_ids=("review",), artifact_freeze_receipts=(wrong_producer,))
+            valid_until = freeze.valid_until_ms
+            object.__setattr__(freeze, "valid_until_ms", freeze.observed_at_ms - 1)
+            with self.assertRaisesRegex(InvariantError, "untrusted, stale, rejected"):
+                preflight.prepare(plan, ready_lane_ids=("review",), artifact_freeze_receipts=(freeze,))
+            object.__setattr__(freeze, "valid_until_ms", valid_until)
+            task.acceptance_review_receipt = None
+            task.review_passed = False
+            with self.assertRaisesRegex(InvariantError, "untrusted, stale, rejected"):
+                preflight.prepare(plan, ready_lane_ids=("review",), artifact_freeze_receipts=(freeze,))
+
+    def test_child_dispatch_requires_previously_confirmed_parent_and_confirmation_is_retained(self) -> None:
+        lead = self.lead("runtime", parent="ctrl")
+        child = self.doer("adapter", parent="runtime")
+        plan = TopologyMaterializationPlan((self.ctrl(), lead, child))
+        preflight = self.preflight()
+        with self.assertRaisesRegex(InvariantError, "parent must already be host-confirmed"):
+            preflight.prepare(plan, ready_lane_ids=("runtime", "adapter"))
+        lead_packet = preflight.prepare(plan, ready_lane_ids=("runtime",))
+        lead_reservation = preflight.reserve(lead_packet)[0]
+        preflight.record_transport(lead_reservation, TopologyTransportOutcome.CONFIRMED, host_task_id="thread-runtime")
+        self.assertEqual(preflight.confirmed("runtime").host_task_id, "thread-runtime")
+        child_packet = preflight.prepare(plan, ready_lane_ids=("adapter",))
+        self.assertEqual(tuple(lane.lane_id for lane in child_packet.lanes), ("adapter",))
+        with self.assertRaisesRegex(InvariantError, "already confirmed"):
+            preflight.prepare(plan, ready_lane_ids=("runtime",))
+        with self.assertRaisesRegex(InvariantError, "must resolve or be explicitly cancelled"):
+            preflight.reserve(lead_packet)
+        with self.assertRaisesRegex(InvariantError, "exact pending reservation"):
+            preflight.cancel(lead_reservation)
 
     def test_pending_lane_reservation_blocks_schema_retry_until_resolution_or_cancel(self) -> None:
         plan = TopologyMaterializationPlan((self.ctrl(), self.doer(parent="ctrl")))
-        packet = TopologyDispatchPreflight().prepare(plan, ready_lane_ids=("adapter",))
+        packet = self.preflight().prepare(plan, ready_lane_ids=("adapter",))
         for outcome in (TopologyTransportOutcome.FAILED, TopologyTransportOutcome.AMBIGUOUS):
             with self.subTest(outcome=outcome):
-                preflight = TopologyDispatchPreflight()
+                preflight = self.preflight()
                 reservation = preflight.reserve(packet)[0]
                 unresolved = preflight.record_transport(reservation, outcome)
                 self.assertEqual(preflight.pending("adapter"), unresolved)
