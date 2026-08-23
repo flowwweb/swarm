@@ -45,6 +45,7 @@ class ConsoleProgressPulseTests(unittest.TestCase):
         plan_id: str = "plan-alpha",
         previous_plan_id: str | None = None,
         total_units: int = 4,
+        progress_observed_at_ms: int | None = None,
     ) -> dict:
         progress = None
         if completed_units is not None:
@@ -57,7 +58,7 @@ class ConsoleProgressPulseTests(unittest.TestCase):
                 "total_units": total_units,
                 "completed_units": completed_units,
                 "basis": "Accepted milestones",
-                "observed_at_ms": observed_at_ms,
+                "observed_at_ms": observed_at_ms if progress_observed_at_ms is None else progress_observed_at_ms,
                 "source": "task_owner:local",
             }
         return {
@@ -106,6 +107,54 @@ class ConsoleProgressPulseTests(unittest.TestCase):
         wrong = self.pulse(observed_at_ms=40, pulse_receipt="pulse-4", task_id="other-task")
         self.assertEqual(self.ingest(wrong, now_ms=40)["rejected"], 1)
         self.assertEqual(self.store.latest_progress()["task-1"]["progress_basis"]["plan_units"]["plan_id"], "plan-beta")
+
+    def test_plan_revision_rejects_reused_identity_and_regressed_observation(self) -> None:
+        receipt_limit = mock.patch.object(console, "PROGRESS_RECEIPTS_PER_TASK", 1)
+        receipt_limit.start()
+        self.addCleanup(receipt_limit.stop)
+        initial = self.pulse(
+            observed_at_ms=10,
+            pulse_receipt="pulse-1",
+            completed_units=2,
+            receipt_id="material-1",
+            plan_id="plan-alpha",
+        )
+        self.assertEqual(self.ingest(initial, now_ms=10)["advanced"], 1)
+        stale_revision = self.pulse(
+            observed_at_ms=20,
+            progress_observed_at_ms=9,
+            pulse_receipt="pulse-2",
+            completed_units=1,
+            receipt_id="material-2",
+            plan_id="plan-beta",
+            previous_plan_id="plan-alpha",
+        )
+        self.assertEqual(self.ingest(stale_revision, now_ms=20)["rejected"], 1)
+        valid_revision = self.pulse(
+            observed_at_ms=30,
+            pulse_receipt="pulse-3",
+            completed_units=1,
+            receipt_id="material-3",
+            plan_id="plan-beta",
+            previous_plan_id="plan-alpha",
+        )
+        self.assertEqual(self.ingest(valid_revision, now_ms=30)["advanced"], 1)
+        with closing(sqlite3.connect(self.root / "console.sqlite3")) as connection:
+            self.assertEqual(
+                connection.execute("SELECT receipt_id FROM task_progress_receipts").fetchall(),
+                [("material-3",)],
+            )
+        reused_plan = self.pulse(
+            observed_at_ms=40,
+            pulse_receipt="pulse-4",
+            completed_units=3,
+            receipt_id="material-4",
+            plan_id="plan-alpha",
+            previous_plan_id="plan-beta",
+        )
+        self.assertEqual(self.ingest(reused_plan, now_ms=40)["rejected"], 1)
+        latest = self.store.latest_progress()["task-1"]["progress_basis"]["plan_units"]
+        self.assertEqual((latest["plan_id"], latest["observed_at_ms"]), ("plan-beta", 30))
 
     def test_material_receipt_history_is_bounded_while_latest_state_advances(self) -> None:
         with mock.patch.object(console, "PROGRESS_RECEIPTS_PER_TASK", 2):

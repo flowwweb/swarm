@@ -1042,6 +1042,12 @@ class ConsoleStore:
                 );
                 CREATE INDEX IF NOT EXISTS task_progress_receipts_task_time
                     ON task_progress_receipts(task_id, observed_at_ms DESC);
+                CREATE TABLE IF NOT EXISTS task_progress_plans (
+                    task_id TEXT NOT NULL,
+                    plan_id TEXT NOT NULL,
+                    first_observed_at_ms INTEGER NOT NULL,
+                    PRIMARY KEY(task_id, plan_id)
+                );
                 CREATE TABLE IF NOT EXISTS task_progress_pulse_files (
                     event_name TEXT PRIMARY KEY,
                     task_id TEXT NOT NULL,
@@ -1387,10 +1393,20 @@ class ConsoleStore:
         if latest is None:
             if progress.previous_plan_id is not None:
                 raise ConsoleError("initial progress plan cannot claim a previous plan")
+            prior_plan = connection.execute(
+                "SELECT 1 FROM task_progress_plans WHERE task_id = ? AND plan_id = ?",
+                (event.task_id, progress.plan_id),
+            ).fetchone()
+            if prior_plan is not None:
+                raise ConsoleError("progress plan identity was already used for this task")
         else:
             if str(latest["project_id"]) != event.project_id:
                 raise ConsoleError("progress pulse project conflicts with the stored task target")
             current_plan = str(latest["plan_id"])
+            connection.execute(
+                "INSERT OR IGNORE INTO task_progress_plans(task_id, plan_id, first_observed_at_ms) VALUES (?, ?, ?)",
+                (event.task_id, current_plan, int(latest["observed_at_ms"])),
+            )
             if progress.plan_id == current_plan:
                 if progress.previous_plan_id is not None:
                     raise ConsoleError("same-plan progress cannot declare a plan revision")
@@ -1407,6 +1423,18 @@ class ConsoleStore:
             else:
                 if progress.previous_plan_id != current_plan:
                     raise ConsoleError("a new progress plan requires an explicit previous_plan_id revision")
+                if progress.observed_at_ms <= int(latest["observed_at_ms"]):
+                    raise ConsoleError("a progress plan revision must advance the task observation high-water")
+                prior_plan = connection.execute(
+                    "SELECT 1 FROM task_progress_plans WHERE task_id = ? AND plan_id = ?",
+                    (event.task_id, progress.plan_id),
+                ).fetchone()
+                if prior_plan is not None:
+                    raise ConsoleError("progress plan identity was already used for this task")
+        connection.execute(
+            "INSERT OR IGNORE INTO task_progress_plans(task_id, plan_id, first_observed_at_ms) VALUES (?, ?, ?)",
+            (event.task_id, progress.plan_id, progress.observed_at_ms),
+        )
         connection.execute(
             """
             INSERT INTO task_progress_receipts(
@@ -2530,7 +2558,7 @@ class ConsoleStore:
             deleted = {}
             for table in (
                 "token_samples", "token_cursors", "eta_forecasts", "task_progress_state",
-                "task_progress_receipts", "task_progress_pulse_files", "proof_media", "proof_event_receipts", "store_metadata",
+                "task_progress_receipts", "task_progress_plans", "task_progress_pulse_files", "proof_media", "proof_event_receipts", "store_metadata",
                 "diagnostic_samples", "health_incidents", "health_requests",
             ):
                 deleted[table] = int(connection.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0])
@@ -2554,7 +2582,7 @@ class ConsoleStore:
             counts = {
                 table: int(connection.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0])
                 for table in (
-                    "token_samples", "eta_forecasts", "task_progress_state", "task_progress_receipts",
+                    "token_samples", "eta_forecasts", "task_progress_state", "task_progress_receipts", "task_progress_plans",
                     "task_progress_pulse_files", "proof_media", "proof_event_receipts", "ctrl_overrides",
                     "diagnostic_samples", "health_incidents", "health_requests",
                 )
