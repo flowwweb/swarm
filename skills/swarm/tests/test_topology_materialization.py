@@ -8,7 +8,11 @@ from skills.swarm.runtime import (
     LaneMaterialization,
     ProfessionAssignment,
     Role,
+    SubordinateBoundaryFacts,
+    TopologyDispatchPreflight,
+    TopologyHostCapability,
     TopologyMaterializationPlan,
+    TopologyTransportOutcome,
 )
 
 
@@ -27,6 +31,7 @@ class TopologyMaterializationTests(unittest.TestCase):
             "skills/swarm/runtime",
             "runtime-policy" if direct else "",
             direct_production=direct,
+            durable_boundary=None if direct else SubordinateBoundaryFacts(integration_review_surface=True),
         )
 
     def doer(self, lane_id="adapter", parent="runtime", artifact="codex-adapter", profession="developer") -> LaneMaterialization:
@@ -64,8 +69,98 @@ class TopologyMaterializationTests(unittest.TestCase):
     def test_lead_may_produce_directly_but_empty_leaf_lead_is_rejected(self) -> None:
         direct = TopologyMaterializationPlan((self.ctrl(), self.lead(direct=True)))
         self.assertTrue(direct.lanes[1].direct_production)
-        with self.assertRaisesRegex(InvariantError, "leaf LEAD"):
-            TopologyMaterializationPlan((self.ctrl(), self.lead()))
+        with self.assertRaisesRegex(InvariantError, "durable-boundary evidence"):
+            LaneMaterialization(
+                "empty-lead",
+                Role.LEAD,
+                "Unjustified lane",
+                "ctrl",
+                ProfessionAssignment("manager"),
+                "🧭",
+                "empty-boundary",
+            )
+
+    def test_helm_style_bare_or_profession_only_titles_and_lead_roster_fail_closed(self) -> None:
+        for title in ("LEAD - product", "DESIGNER", "REVIEW"):
+            with self.subTest(title=title), self.assertRaisesRegex(InvariantError, "generated icon, profession"):
+                LaneMaterialization(
+                    "product",
+                    Role.DOER,
+                    "Product brief",
+                    "ctrl",
+                    ProfessionAssignment("manager"),
+                    "🧭",
+                    artifact_id="product-brief",
+                    direct_production=True,
+                    requested_title=title,
+                )
+        with self.assertRaisesRegex(InvariantError, "durable-boundary evidence"):
+            LaneMaterialization(
+                "data",
+                Role.LEAD,
+                "Data artifact",
+                "ctrl",
+                ProfessionAssignment("analyst"),
+                "📊",
+                "data.py",
+            )
+        bounded = self.doer("data", parent="ctrl", artifact="data.py", profession="analyst")
+        self.assertEqual((bounded.structural_role, bounded.title), (Role.DOER, "💻Analyst DOER - Codex adapter"))
+
+    def test_typed_durable_nested_lead_is_valid_in_the_current_ready_wave(self) -> None:
+        nested = LaneMaterialization(
+            "data",
+            Role.LEAD,
+            "Data boundary",
+            "ctrl",
+            ProfessionAssignment("analyst"),
+            "📊",
+            "src/data",
+            durable_boundary=SubordinateBoundaryFacts(heartbeat_obligation=True, worktree_isolation=True),
+            requested_title="📊Analyst LEAD - Data boundary",
+        )
+        plan = TopologyMaterializationPlan((self.ctrl(), nested))
+        packet = TopologyDispatchPreflight().prepare(plan, ready_lane_ids=("data",))
+        self.assertEqual(packet.host_capability, TopologyHostCapability.INSTRUCTION_ONLY_UNSUPPORTED)
+        self.assertEqual(tuple(lane.lane_id for lane in packet.lanes), ("data",))
+
+    def test_current_ready_wave_defers_review_until_the_producer_artifact_is_frozen(self) -> None:
+        producer = self.doer("adapter", parent="ctrl", artifact="codex-adapter")
+        reviewer = LaneMaterialization(
+            "review",
+            Role.DOER,
+            "Exact candidate",
+            "ctrl",
+            ProfessionAssignment("reviewer"),
+            "🔎",
+            artifact_id="review-receipt",
+            review_target_id="adapter",
+            direct_production=True,
+        )
+        plan = TopologyMaterializationPlan((self.ctrl(), producer, reviewer))
+        preflight = TopologyDispatchPreflight()
+        producer_wave = preflight.prepare(plan, ready_lane_ids=("adapter",))
+        self.assertEqual(tuple(lane.lane_id for lane in producer_wave.lanes), ("adapter",))
+        with self.assertRaisesRegex(InvariantError, "before.*producer artifact is frozen"):
+            preflight.prepare(plan, ready_lane_ids=("review",))
+        review_wave = preflight.prepare(plan, ready_lane_ids=("review",), frozen_artifact_ids=("codex-adapter",))
+        self.assertEqual(tuple(lane.lane_id for lane in review_wave.lanes), ("review",))
+
+    def test_pending_lane_reservation_blocks_schema_retry_until_resolution_or_cancel(self) -> None:
+        plan = TopologyMaterializationPlan((self.ctrl(), self.doer(parent="ctrl")))
+        packet = TopologyDispatchPreflight().prepare(plan, ready_lane_ids=("adapter",))
+        for outcome in (TopologyTransportOutcome.FAILED, TopologyTransportOutcome.AMBIGUOUS):
+            with self.subTest(outcome=outcome):
+                preflight = TopologyDispatchPreflight()
+                reservation = preflight.reserve(packet)[0]
+                unresolved = preflight.record_transport(reservation, outcome)
+                self.assertEqual(preflight.pending("adapter"), unresolved)
+                with self.assertRaisesRegex(InvariantError, "must resolve or be explicitly cancelled"):
+                    preflight.reserve(packet)
+                preflight.cancel(unresolved)
+                retry = preflight.reserve(packet)[0]
+                confirmed = preflight.record_transport(retry, TopologyTransportOutcome.CONFIRMED, host_task_id="thread-1")
+                self.assertEqual((confirmed.host_task_id, preflight.pending("adapter")), ("thread-1", None))
 
     def test_bounded_artifact_defaults_to_doer_and_doer_cannot_recruit_visible_lane(self) -> None:
         flat = TopologyMaterializationPlan((self.ctrl(), self.doer(parent="ctrl")))

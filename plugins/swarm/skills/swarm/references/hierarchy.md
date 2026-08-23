@@ -305,9 +305,10 @@ Before any visible task creation, compile a typed `TopologyMaterializationPlan`.
 It must contain exactly one dependency-free CTRL administrator. Every LEAD and
 DOER has one parent, typed profession, bounded responsibility, generated title,
 and exact boundary or artifact. A DOER may use leaf subagents but cannot own a
-visible child; recursive durable work uses a nested LEAD. A LEAD may produce its
-own declared artifact directly, but a leaf LEAD without a direct artifact is a
-shape defect and becomes a DOER. More direct CTRL children than
+visible child; recursive durable work uses a nested LEAD backed by typed durable
+ownership, heartbeat, integration/review, worktree, cross-lane, or team evidence.
+A LEAD may instead produce one declared artifact directly; an unexplained LEAD
+is a shape defect, and a bounded delegated artifact uses a DOER. More direct CTRL children than
 `preferred_lane_width` require a concrete span exception receipt; the setting
 remains a soft preference, not a hard team-size ceiling. This catches accidental
 LEAD crowds without preventing justified independent boundaries.
@@ -319,8 +320,14 @@ tree, and never treat an internal subagent as a durable owner.
 
 Count only a host-confirmed task ID as a live owner. A pending creation receipt
 reserves its objective, artifact, mutable surface, and accepting route; do not
-create a replacement until it resolves. If a duplicate materializes, stop it
-before mutation, transfer unique evidence, and archive it.
+create a replacement until it resolves. Compile only the current ready wave into
+a `TopologyDispatchPacket`, then reserve every lane identity before the first
+host call. Timeout, ambiguous failure, transport error, or schema rejection does
+not release the reservation; resolve it or explicitly cancel it before retrying.
+The current Codex `create_thread` API cannot consume the packet, so the adapter
+reports instruction-only/unsupported and live enforcement remains `UNVERIFIED`.
+If a duplicate materializes, stop it before mutation, transfer unique evidence,
+and archive it.
 
 Never overlap mutable ownership. The old owner releases, the task-tree receipt
 records the transfer, and the new owner acknowledges before mutation. Peer
@@ -330,7 +337,8 @@ surface or bypass REVIEW.
 With role icons enabled, use `🐙CTRL - <objective>` for the root,
 `<role emoji><PROFESSION> LEAD - <responsibility>` for lane owners, and
 `<role emoji><PROFESSION> DOER - <artifact>` for bounded producers. A separate
-review task uses the same structural title with the selected assurance profession.
+review task uses the same structural title with the selected assurance profession
+and enters a ready wave only after its exact producer artifact is frozen.
 Bare structural titles and profession-only visible titles are invalid because
 they hide either authority or expertise. A title is a
 readability signal, never an authority token; unregistered historical titles

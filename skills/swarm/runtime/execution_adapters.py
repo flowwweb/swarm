@@ -14,6 +14,7 @@ from pathlib import PurePosixPath, PureWindowsPath
 from typing import Mapping
 
 from .core import ArtifactIdentity, ExecutionRoute, ExecutionRoutingDecision, InvariantError
+from .topology import TopologyDispatchPacket
 
 
 _DIGEST_CHARS = frozenset("0123456789abcdef")
@@ -268,6 +269,7 @@ class CodexAppServerAdapter(ExecutionAdapter):
                 AdapterCapability("event.stream", AdapterCapabilityState.NATIVE, docs, "Streams Codex lifecycle events; raw bodies are not retained by this adapter."),
                 AdapterCapability("approval.request", AdapterCapabilityState.NATIVE, docs, "Codex may request approval; SWARM cannot forge a user decision."),
                 AdapterCapability("swarm.routing", AdapterCapabilityState.ENFORCED, "ExecutionAdapterRequest", "The request must carry a non-blocked SWARM routing decision for the same owner."),
+                AdapterCapability("swarm.topology_dispatch", AdapterCapabilityState.INSTRUCTION_ONLY, "TopologyDispatchPacket", "The current Codex host thread creation API cannot consume or enforce the typed ready-wave packet."),
                 AdapterCapability("model.instructions", AdapterCapabilityState.INSTRUCTION_ONLY, "model input", "Instructions guide behavior but do not enforce ownership, proof, or policy."),
                 AdapterCapability("review.acceptance", AdapterCapabilityState.UNSUPPORTED, "SWARM review contract", "Adapter output cannot independently review or accept its own artifact."),
                 AdapterCapability("host.task_mutation", AdapterCapabilityState.UNSUPPORTED, "SWARM user-custody contract", "No title, pin, folder, order, archive, or other host task mutation is exposed."),
@@ -285,6 +287,19 @@ class CodexAppServerAdapter(ExecutionAdapter):
     @staticmethod
     def initialized_notification() -> dict[str, object]:
         return {"method": "initialized", "params": {}}
+
+    def plan_topology_dispatch(self, packet: TopologyDispatchPacket) -> AdapterExecutionPlan:
+        """Expose the exact host boundary without emitting a create-thread call."""
+        if not isinstance(packet, TopologyDispatchPacket):
+            raise InvariantError("Codex topology dispatch requires a typed ready-wave packet")
+        return AdapterExecutionPlan(
+            AdapterPlanStatus.BLOCKED,
+            self.matrix.adapter_id,
+            packet.packet_digest,
+            self.matrix.digest(),
+            blocker="required capability is instruction-only: swarm.topology_dispatch",
+            claim_limit=packet.claim_limit,
+        )
 
     def thread_request(self, plan: AdapterExecutionPlan, request: ExecutionAdapterRequest, *, request_id: int = 1, thread_id: str = "") -> dict[str, object]:
         self._require_ready(plan, request)

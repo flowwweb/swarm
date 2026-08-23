@@ -18,10 +18,15 @@ from skills.swarm.runtime import (
     HostCapacityEvidence,
     HostTaskCapacity,
     InvariantError,
+    LaneMaterialization,
+    ProfessionAssignment,
+    Role,
     RoutingEconomics,
     RoutingEvidenceBasis,
     WorkRoutingFacts,
     WorkSize,
+    TopologyDispatchPreflight,
+    TopologyMaterializationPlan,
     route_execution,
 )
 
@@ -68,10 +73,31 @@ class ExecutionAdapterTests(unittest.TestCase):
         matrix = CodexAppServerAdapter().matrix
         self.assertEqual(matrix.state_for("thread.start"), AdapterCapabilityState.NATIVE)
         self.assertEqual(matrix.state_for("swarm.routing"), AdapterCapabilityState.ENFORCED)
+        self.assertEqual(matrix.state_for("swarm.topology_dispatch"), AdapterCapabilityState.INSTRUCTION_ONLY)
         self.assertEqual(matrix.state_for("model.instructions"), AdapterCapabilityState.INSTRUCTION_ONLY)
         self.assertEqual(matrix.state_for("review.acceptance"), AdapterCapabilityState.UNSUPPORTED)
         self.assertEqual(matrix.state_for("host.task_mutation"), AdapterCapabilityState.UNSUPPORTED)
         self.assertEqual(matrix.state_for("not-declared"), AdapterCapabilityState.UNSUPPORTED)
+
+    def test_codex_adapter_consumes_topology_packet_as_instruction_only_and_never_emits_host_call(self) -> None:
+        plan = TopologyMaterializationPlan((
+            LaneMaterialization("ctrl", Role.CTRL, "Ship", icon="🐙"),
+            LaneMaterialization(
+                "doer",
+                Role.DOER,
+                "Adapter",
+                "ctrl",
+                ProfessionAssignment("developer"),
+                "💻",
+                artifact_id="adapter",
+                direct_production=True,
+            ),
+        ))
+        packet = TopologyDispatchPreflight().prepare(plan, ready_lane_ids=("doer",))
+        adapter_plan = CodexAppServerAdapter().plan_topology_dispatch(packet)
+        self.assertEqual(adapter_plan.status, AdapterPlanStatus.BLOCKED)
+        self.assertIn("instruction-only", adapter_plan.blocker)
+        self.assertIn("UNVERIFIED", adapter_plan.claim_limit)
 
     def test_adapter_is_optional_and_missing_or_disabled_never_falls_back(self) -> None:
         request = self.request()
