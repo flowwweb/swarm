@@ -156,6 +156,65 @@ class ConsoleProgressPulseTests(unittest.TestCase):
         latest = self.store.latest_progress()["task-1"]["progress_basis"]["plan_units"]
         self.assertEqual((latest["plan_id"], latest["observed_at_ms"]), ("plan-beta", 30))
 
+    def test_pre_ledger_database_backfills_plan_history_idempotently(self) -> None:
+        database = self.root / "pre-ledger.sqlite3"
+        with closing(sqlite3.connect(database)) as connection:
+            connection.executescript(
+                """
+                CREATE TABLE task_progress_state (
+                    task_id TEXT PRIMARY KEY, project_id TEXT NOT NULL, plan_id TEXT NOT NULL,
+                    unit_id TEXT NOT NULL, unit_kind TEXT NOT NULL, total_units INTEGER NOT NULL,
+                    completed_units INTEGER NOT NULL, basis TEXT NOT NULL, observed_at_ms INTEGER NOT NULL,
+                    source TEXT NOT NULL, receipt_id TEXT NOT NULL, pulse_receipt TEXT NOT NULL,
+                    pulse_observed_at_ms INTEGER NOT NULL, pulse_state TEXT NOT NULL, updated_at_ms INTEGER NOT NULL
+                );
+                CREATE TABLE task_progress_receipts (
+                    receipt_id TEXT PRIMARY KEY, task_id TEXT NOT NULL, project_id TEXT NOT NULL,
+                    plan_id TEXT NOT NULL, previous_plan_id TEXT, unit_id TEXT NOT NULL,
+                    unit_kind TEXT NOT NULL, total_units INTEGER NOT NULL, completed_units INTEGER NOT NULL,
+                    observed_at_ms INTEGER NOT NULL, source TEXT NOT NULL, payload_digest TEXT NOT NULL,
+                    accepted_at_ms INTEGER NOT NULL
+                );
+                INSERT INTO task_progress_receipts VALUES
+                    ('legacy-a', 'task-1', 'project:alpha', 'plan-alpha', NULL, 'unit-build',
+                     'milestone', 4, 2, 10, 'task_owner:local', 'digest-a', 11),
+                    ('legacy-b', 'task-1', 'project:alpha', 'plan-beta', 'plan-alpha', 'unit-build',
+                     'milestone', 4, 1, 20, 'task_owner:local', 'digest-b', 21);
+                INSERT INTO task_progress_state VALUES
+                    ('task-1', 'project:alpha', 'plan-beta', 'unit-build', 'milestone', 4, 1,
+                     'Accepted milestones', 20, 'task_owner:local', 'legacy-b', 'pulse-b', 20,
+                     'in_progress', 21);
+                """
+            )
+            connection.commit()
+
+        upgraded = console.ConsoleStore(database)
+        console.ConsoleStore(database)  # Re-initialization must not rewrite or duplicate the ledger.
+        with closing(sqlite3.connect(database)) as connection:
+            plans = connection.execute(
+                "SELECT task_id, project_id, plan_id, first_observed_at_ms FROM task_progress_plans ORDER BY plan_id"
+            ).fetchall()
+        self.assertEqual(
+            plans,
+            [
+                ("task-1", "project:alpha", "plan-alpha", 10),
+                ("task-1", "project:alpha", "plan-beta", 20),
+            ],
+        )
+
+        reuse = self.pulse(
+            observed_at_ms=30,
+            pulse_receipt="pulse-reuse",
+            completed_units=3,
+            receipt_id="material-reuse",
+            plan_id="plan-alpha",
+            previous_plan_id="plan-beta",
+        )
+        write_progress_pulse(self.codex_home, reuse)
+        result = upgraded.ingest_progress_pulses(self.codex_home, self.overview, now_ms=30)
+        self.assertEqual(result["rejected"], 1)
+        self.assertEqual(upgraded.latest_progress()["task-1"]["progress_basis"]["plan_units"]["plan_id"], "plan-beta")
+
     def test_material_receipt_history_is_bounded_while_latest_state_advances(self) -> None:
         with mock.patch.object(console, "PROGRESS_RECEIPTS_PER_TASK", 2):
             for completed in (1, 2, 3):

@@ -1044,6 +1044,7 @@ class ConsoleStore:
                     ON task_progress_receipts(task_id, observed_at_ms DESC);
                 CREATE TABLE IF NOT EXISTS task_progress_plans (
                     task_id TEXT NOT NULL,
+                    project_id TEXT NOT NULL,
                     plan_id TEXT NOT NULL,
                     first_observed_at_ms INTEGER NOT NULL,
                     PRIMARY KEY(task_id, plan_id)
@@ -1127,6 +1128,70 @@ class ConsoleStore:
             }.items():
                 if name not in eta_columns:
                     connection.execute(f"ALTER TABLE eta_forecasts ADD COLUMN {name} {definition}")
+            progress_plan_columns = {
+                str(row[1])
+                for row in connection.execute("PRAGMA table_info(task_progress_plans)").fetchall()
+            }
+            if "project_id" not in progress_plan_columns:
+                connection.execute("ALTER TABLE task_progress_plans ADD COLUMN project_id TEXT")
+            if not connection.in_transaction:
+                connection.execute("BEGIN IMMEDIATE")
+            conflicting_plan_binding = connection.execute(
+                """
+                WITH plan_bindings(task_id, project_id, plan_id) AS (
+                    SELECT task_id, project_id, plan_id FROM task_progress_receipts
+                    UNION ALL
+                    SELECT task_id, project_id, plan_id FROM task_progress_state
+                    UNION ALL
+                    SELECT task_id, project_id, plan_id FROM task_progress_plans
+                    WHERE project_id IS NOT NULL AND project_id != ''
+                )
+                SELECT task_id, plan_id
+                FROM plan_bindings
+                GROUP BY task_id, plan_id
+                HAVING COUNT(DISTINCT project_id) > 1
+                LIMIT 1
+                """
+            ).fetchone()
+            if conflicting_plan_binding is not None:
+                raise ConsoleError(
+                    "progress plan history has conflicting project identity for "
+                    f"task {conflicting_plan_binding['task_id']} plan {conflicting_plan_binding['plan_id']}"
+                )
+            historical_plans = connection.execute(
+                """
+                WITH plan_history(task_id, project_id, plan_id, first_seen_at_ms) AS (
+                    SELECT task_id, project_id, plan_id,
+                           MIN(observed_at_ms, accepted_at_ms)
+                    FROM task_progress_receipts
+                    UNION ALL
+                    SELECT task_id, project_id, plan_id, observed_at_ms
+                    FROM task_progress_state
+                )
+                SELECT task_id, project_id, plan_id, MIN(first_seen_at_ms) AS first_seen_at_ms
+                FROM plan_history
+                GROUP BY task_id, project_id, plan_id
+                ORDER BY task_id, plan_id
+                """
+            ).fetchall()
+            for plan in historical_plans:
+                existing_plan = connection.execute(
+                    "SELECT project_id, first_observed_at_ms FROM task_progress_plans WHERE task_id = ? AND plan_id = ?",
+                    (plan["task_id"], plan["plan_id"]),
+                ).fetchone()
+                if existing_plan is None:
+                    connection.execute(
+                        "INSERT INTO task_progress_plans(task_id, project_id, plan_id, first_observed_at_ms) VALUES (?, ?, ?, ?)",
+                        (plan["task_id"], plan["project_id"], plan["plan_id"], int(plan["first_seen_at_ms"])),
+                    )
+                else:
+                    existing_project = existing_plan["project_id"]
+                    if existing_project not in (None, "", plan["project_id"]):
+                        raise ConsoleError("progress plan history conflicts with its existing project binding")
+                    connection.execute(
+                        "UPDATE task_progress_plans SET project_id = ?, first_observed_at_ms = MIN(first_observed_at_ms, ?) WHERE task_id = ? AND plan_id = ?",
+                        (plan["project_id"], int(plan["first_seen_at_ms"]), plan["task_id"], plan["plan_id"]),
+                    )
             from skills_catalog import seed_rows
             for seed in seed_rows(int(time.time() * 1000)):
                 connection.execute(
@@ -1394,7 +1459,7 @@ class ConsoleStore:
             if progress.previous_plan_id is not None:
                 raise ConsoleError("initial progress plan cannot claim a previous plan")
             prior_plan = connection.execute(
-                "SELECT 1 FROM task_progress_plans WHERE task_id = ? AND plan_id = ?",
+                "SELECT project_id FROM task_progress_plans WHERE task_id = ? AND plan_id = ?",
                 (event.task_id, progress.plan_id),
             ).fetchone()
             if prior_plan is not None:
@@ -1404,8 +1469,12 @@ class ConsoleStore:
                 raise ConsoleError("progress pulse project conflicts with the stored task target")
             current_plan = str(latest["plan_id"])
             connection.execute(
-                "INSERT OR IGNORE INTO task_progress_plans(task_id, plan_id, first_observed_at_ms) VALUES (?, ?, ?)",
-                (event.task_id, current_plan, int(latest["observed_at_ms"])),
+                "INSERT OR IGNORE INTO task_progress_plans(task_id, project_id, plan_id, first_observed_at_ms) VALUES (?, ?, ?, ?)",
+                (event.task_id, event.project_id, current_plan, int(latest["observed_at_ms"])),
+            )
+            connection.execute(
+                "UPDATE task_progress_plans SET project_id = ? WHERE task_id = ? AND plan_id = ? AND (project_id IS NULL OR project_id = '')",
+                (event.project_id, event.task_id, current_plan),
             )
             if progress.plan_id == current_plan:
                 if progress.previous_plan_id is not None:
@@ -1426,14 +1495,14 @@ class ConsoleStore:
                 if progress.observed_at_ms <= int(latest["observed_at_ms"]):
                     raise ConsoleError("a progress plan revision must advance the task observation high-water")
                 prior_plan = connection.execute(
-                    "SELECT 1 FROM task_progress_plans WHERE task_id = ? AND plan_id = ?",
+                    "SELECT project_id FROM task_progress_plans WHERE task_id = ? AND plan_id = ?",
                     (event.task_id, progress.plan_id),
                 ).fetchone()
                 if prior_plan is not None:
                     raise ConsoleError("progress plan identity was already used for this task")
         connection.execute(
-            "INSERT OR IGNORE INTO task_progress_plans(task_id, plan_id, first_observed_at_ms) VALUES (?, ?, ?)",
-            (event.task_id, progress.plan_id, progress.observed_at_ms),
+            "INSERT OR IGNORE INTO task_progress_plans(task_id, project_id, plan_id, first_observed_at_ms) VALUES (?, ?, ?, ?)",
+            (event.task_id, event.project_id, progress.plan_id, progress.observed_at_ms),
         )
         connection.execute(
             """
