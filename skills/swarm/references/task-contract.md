@@ -60,6 +60,16 @@ review when every required proof and parity item is present. `REJECT` names the
 first in-scope correction and stays active; `BLOCKED` names the first concrete
 blocker and stays unresolved. Neither can advance acceptance.
 
+Every bounded return rechecks the original objective, assigned profession and
+structural authority, exact deliverable, non-goals, dirty custody, and next
+acceptance gate. A CTRL project pulse contains one state, receipt-backed declared
+unit total and completed or accepted units with server-derived percentage or
+explicit `Unmeasured`, latest material proof, first blocker, and next action/ETA.
+Tool output and exact receipts remain available beneath the pulse; raw logs,
+filler, repeated plans, commentary, and unchanged heartbeats are not progress.
+Profession does not transfer ownership, and review does not become implementation
+or acceptance.
+
 The parity manifest is an owner return claim, not host or user authority. It
 must match the declared paths, count, byte total, and file digests and remain
 inside exact dirty custody; missing or ambiguous ownership or parity fails

@@ -85,6 +85,11 @@ parity debt, or a blank, fallback, mocked, placeholder, failed, or missing
 substrate fails closed. A folder, filename, inventory, or worker commentary is
 provenance only and cannot satisfy this visual gate.
 
+Use the relevant desktop and narrow states and check obvious clipping, overflow,
+contrast, loading, empty, fallback, and error behavior. Surface the highest-signal
+screenshot inline first and keep the remaining requested evidence in a compact
+gallery or lightbox. A source diff, path, or filename is not visual proof.
+
 For taste-led generation, a clear user direction permits generation while a
 reserved choice requires candidates and a wait. Classify each supplied reference
 as loose inspiration or binding. For a binding reference, make a fidelity
@@ -245,12 +250,13 @@ For every non-design finding, state the concrete consequence of leaving it and
 the observable improvement expected from changing it. Prefer a metric; when a
 direct metric is impractical, name specific evidence and a falsifiable outcome.
 The expected benefit must justify the combined investigation, implementation,
-review, regression, and coordination cost. Reject as nitpicks stylistic
-preference, theoretical purity, speculative future-proofing, cosmetic
-consistency outside design, marginal refactoring, and technically true defects
-with no credible consequence. Do not record them as P3, backlog, optional
-follow-up, or “while here” work. The act of reviewing is not evidence that a
-change is valuable.
+review, regression, and coordination cost. Block only material user impact,
+correctness, safety, regression, maintainability, reference fidelity, or an
+explicit acceptance failure. Treat stylistic preference, theoretical purity,
+speculative future-proofing, marginal refactoring, and technically true defects
+with no credible consequence as optional notes, never another correction loop
+unless the user requested that polish. The act of reviewing is not evidence that
+a change is valuable.
 
 When the agreed outcome and proof pass with no material unresolved finding,
 return `APPROVE` and stop. Do not order another pass merely because deeper
@@ -267,8 +273,12 @@ before applying the exception.
 
 Rank findings `P0` destructive/security/data loss, `P1` blocked core outcome,
 `P2` confusing or fragile behavior/maintainability, and `P3` bounded polish.
-P0-P2 block approval. A correction must use the narrowest established primitive
-and add user-observable regression evidence. REVIEW is read-only by default. If
+P0-P2 block approval. A correction must preserve the accepted direction and
+distinctive product edge, use the narrowest established primitive, and add
+evidence for the adjacent behavior it could regress. Reuse, delete, or consolidate
+before adding an abstraction, role, process, test, or dependency; a hypothetical
+concern does not justify sanding away useful capability, design, copy, or effects.
+REVIEW is read-only by default. If
 CTRL or the owning LEAD transfers one narrow correction after the prior owner releases it,
 REVIEW returns CORRECT and a different independent reviewer or context validates
 the edit. REVIEW APPROVE is evidence for acceptance, not portfolio acceptance:

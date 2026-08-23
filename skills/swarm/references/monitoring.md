@@ -95,7 +95,9 @@ direct-user keep-out; unaffected lanes and read-only observation continue.
 At the delegated due event, surface the full evidence-debt list and its first
 concrete blocker. Creation, dispatch, commentary, timeout, silence, unreadable
 output, and in-progress state do not satisfy that debt. Reorient the same owner
-at most once. If debt remains, route the already-existing independent review
+at most once with temporary higher reasoning inside the accepted model authority
+and one root-cause question; do not
+repeat the same method without a new material receipt. If debt remains, route the already-existing independent review
 owner when one is bound; otherwise hold the lane open. Never create a duplicate
 CTRL or LEAD, and never relabel unfinished in-scope work as an external blocker.
 
@@ -153,6 +155,15 @@ remaining risk, and next material checkpoint order. Activity narration, task
 chatter, fabricated proof, or duplicate orchestration detail fails closed and
 requires one compliant correction. Unchanged snapshots remain silent. This feed
 check does not expand WATCHDOG beyond the three responsibilities above.
+
+The default user-facing pulse is one compact human-readable card or paragraph per
+project: project/CTRL, current state, receipt-backed progress percentage and basis
+or `Unmeasured`, latest material proof, first blocker, and next action/ETA. Exact
+tool and machine receipts remain available as an audit layer, not dumped into the
+main feed. For visual work, place the highest-signal image or screenshot inline
+first and keep the rest in a compact gallery with omissions and claim limits.
+Only a changed artifact, proof, decision, blocker, or bounded due event is a
+material heartbeat; unchanged work stays quiet.
 
 At each CTRL heartbeat, inspect `ctrl_feed_due` before composing a progress
 message. If material evidence is pending, return the proof reminder first and

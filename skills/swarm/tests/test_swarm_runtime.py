@@ -262,7 +262,7 @@ class RuntimeTests(unittest.TestCase):
   self.assertFalse(migration.same_ownership_route(landing))
   self.assertTrue(migration.same_ownership_route(topology(objective="migrate plugin",artifacts=(ArtifactIdentity("plugin/swarm","v1","migration"),),surfaces=("plugin/swarm",),route="plugin CTRL")))
  def test_correction_cost_preserves_progress_and_reopens_only_material_authority(self):
-  self.assertEqual(correction_decision(material=False,expected_future_cost=2,correction_cost=1),CorrectionDecision.FIX_FORWARD)
+  self.assertEqual(correction_decision(material=False,expected_future_cost=2,correction_cost=1),CorrectionDecision.CONTINUE)
   self.assertEqual(correction_decision(material=False,expected_future_cost=1,correction_cost=2),CorrectionDecision.CONTINUE)
   self.assertEqual(correction_decision(material=True,ownership_failure=True,expected_future_cost=5,correction_cost=1),CorrectionDecision.REOPEN_TOPOLOGY)
   self.assertEqual(correction_decision(material=True,ownership_failure=True,expected_future_cost=0,correction_cost=100),CorrectionDecision.REOPEN_TOPOLOGY)
@@ -270,9 +270,9 @@ class RuntimeTests(unittest.TestCase):
   self.assertEqual(correction_decision(material=True,expected_future_cost=5,correction_cost=1),CorrectionDecision.FIX_FORWARD)
  def test_correction_incident_consumes_one_fix_forward_without_retry_loop(self):
   facts={"material":False,"expected_future_cost":5,"correction_cost":1}
-  self.assertEqual(self.s.correction("wording-1",**facts),CorrectionDecision.FIX_FORWARD)
   self.assertEqual(self.s.correction("wording-1",**facts),CorrectionDecision.CONTINUE)
-  self.assertEqual(self.s.correction("wording-2",**facts),CorrectionDecision.FIX_FORWARD)
+  self.assertEqual(self.s.correction("wording-1",**facts),CorrectionDecision.CONTINUE)
+  self.assertEqual(self.s.correction("wording-2",**facts),CorrectionDecision.CONTINUE)
   material={"material":True,"expected_future_cost":5,"correction_cost":1}
   self.assertEqual(self.s.correction("risk-1",**material),CorrectionDecision.FIX_FORWARD)
   self.assertEqual(self.s.correction("risk-1",**material),CorrectionDecision.ESCALATE)

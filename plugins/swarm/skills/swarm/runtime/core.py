@@ -126,6 +126,7 @@ class CtrlFeedPart(StrEnum):
     OUTCOME="outcome"; PROOF="proof"; RISK="risk"; CHECKPOINT="checkpoint"; ORCHESTRATION="orchestration"; TASK_CHATTER="task_chatter"; ACTIVITY="activity"
 class CtrlFeedEventKind(StrEnum):
     RESULT="result"; DECISION="decision"; BLOCKER="blocker"; ACCEPTANCE="acceptance"; RELEASE="release"; HANDOFF="handoff"
+class CtrlPulseReason(StrEnum): MATERIAL_CHANGE="material_change"; BOUNDED_DUE="bounded_due"
 class SubagentException(StrEnum):
     CAPACITY="capacity"; HOST_GATE="host_gate"; COLLISION="collision"; SAFETY="safety"; WHOLE_TASK_COST="whole_task_cost"
 class HostTaskCapacity(StrEnum): AVAILABLE="available"; UNAVAILABLE="unavailable"; REJECTED="rejected"; USAGE_LIMITED="usage_limited"
@@ -859,6 +860,102 @@ class DelegationDueStatus:
         if any(not isinstance(item,str) or not item.strip() for item in debt) or len(set(debt))!=len(debt): raise InvariantError("delegation evidence debt must be distinct readable items")
         if debt and (not isinstance(self.first_blocker,str) or not self.first_blocker.strip()): raise InvariantError("delegation evidence debt requires the first concrete blocker")
         object.__setattr__(self,"evidence_debt",debt)
+
+def _human_line(value:str, label:str, limit:int) -> str:
+    if not isinstance(value,str) or not value.strip() or len(value.strip())>limit or any(character in "\r\n\t" or ord(character)<32 for character in value):
+        raise InvariantError(f"{label} must be one bounded human-readable line")
+    return value.strip()
+
+def _pulse_receipts(values:object, label:str, *, required:bool=False) -> tuple[str,...]:
+    try: receipts=tuple(values)  # type: ignore[arg-type]
+    except TypeError as error: raise InvariantError(f"{label} must be exact receipt identities") from error
+    if required and not receipts: raise InvariantError(f"{label} cannot be empty")
+    if any(not isinstance(value,str) or not value.strip() or any(character.isspace() or ord(character)<32 for character in value) for value in receipts) or len(set(receipts))!=len(receipts):
+        raise InvariantError(f"{label} must be distinct exact receipt identities")
+    return receipts
+
+@dataclass(frozen=True)
+class CtrlProgressMeasure:
+    completed_units:int|None=None; total_units:int|None=None; basis:str=""; receipt_ids:tuple[str,...]=(); observed_at:int=0
+    def __post_init__(self):
+        measured=self.completed_units is not None or self.total_units is not None
+        if measured:
+            if not isinstance(self.completed_units,int) or isinstance(self.completed_units,bool) or not isinstance(self.total_units,int) or isinstance(self.total_units,bool) or self.total_units<=0 or not 0<=self.completed_units<=self.total_units:
+                raise InvariantError("measured CTRL progress requires completed units within a positive declared total")
+            object.__setattr__(self,"basis",_human_line(self.basis,"CTRL progress basis",240))
+            object.__setattr__(self,"receipt_ids",_pulse_receipts(self.receipt_ids,"CTRL progress receipts",required=True))
+            if not isinstance(self.observed_at,int) or isinstance(self.observed_at,bool) or self.observed_at<=0: raise InvariantError("measured CTRL progress requires a positive observation time")
+        else:
+            if self.basis.strip() or self.receipt_ids or self.observed_at: raise InvariantError("unmeasured CTRL progress cannot carry guessed basis, receipts, or time")
+    @property
+    def percent(self)->int|None: return None if self.total_units is None else self.completed_units*100//self.total_units
+    @property
+    def label(self)->str: return "Unmeasured" if self.percent is None else f"{self.percent}%"
+
+@dataclass(frozen=True)
+class CtrlPulseProof:
+    receipt_id:str; proof_class:ProofClass; summary:str; claim_limit:str; surface_kind:CtrlSurfaceKind=CtrlSurfaceKind.INLINE_RECEIPT
+    def __post_init__(self):
+        object.__setattr__(self,"receipt_id",_pulse_receipts((self.receipt_id,),"CTRL pulse proof",required=True)[0])
+        if not isinstance(self.proof_class,ProofClass) or not isinstance(self.surface_kind,CtrlSurfaceKind): raise InvariantError("CTRL pulse proof requires typed proof and surface classes")
+        object.__setattr__(self,"summary",_human_line(self.summary,"CTRL pulse proof summary",240))
+        object.__setattr__(self,"claim_limit",_human_line(self.claim_limit,"CTRL pulse claim limit",240))
+    @property
+    def visual(self)->bool: return self.surface_kind in {CtrlSurfaceKind.INLINE_IMAGE,CtrlSurfaceKind.INLINE_RECORDING,CtrlSurfaceKind.INLINE_COMPARISON}
+
+@dataclass(frozen=True)
+class CtrlProjectPulse:
+    project_id:str; ctrl_id:str; state:TaskState; reason:CtrlPulseReason; progress:CtrlProgressMeasure; latest_material:str; update_receipt:str; next_action:str
+    proofs:tuple[CtrlPulseProof,...]=(); first_blocker:str=""; eta_at:int|None=None; work_kind:WorkKind=WorkKind.GENERAL; primary_visual_receipt:str=""; gallery_visual_receipts:tuple[str,...]=(); omissions:tuple[str,...]=()
+    def __post_init__(self):
+        object.__setattr__(self,"project_id",_human_line(self.project_id,"CTRL pulse project",128)); object.__setattr__(self,"ctrl_id",_human_line(self.ctrl_id,"CTRL pulse identity",128))
+        if not isinstance(self.state,TaskState) or not isinstance(self.reason,CtrlPulseReason) or not isinstance(self.progress,CtrlProgressMeasure) or not isinstance(self.work_kind,WorkKind): raise InvariantError("CTRL pulse requires typed state, reason, progress, and work kind")
+        object.__setattr__(self,"latest_material",_human_line(self.latest_material,"CTRL pulse material outcome",240)); object.__setattr__(self,"next_action",_human_line(self.next_action,"CTRL pulse next action",240)); object.__setattr__(self,"update_receipt",_pulse_receipts((self.update_receipt,),"CTRL pulse update",required=True)[0])
+        proofs=tuple(self.proofs)
+        if any(not isinstance(proof,CtrlPulseProof) for proof in proofs) or len({proof.receipt_id for proof in proofs})!=len(proofs): raise InvariantError("CTRL pulse proofs must be distinct typed receipts")
+        object.__setattr__(self,"proofs",proofs)
+        blocker=self.first_blocker.strip()
+        if blocker: object.__setattr__(self,"first_blocker",_human_line(blocker,"CTRL pulse first blocker",240))
+        if self.state in {TaskState.WAITING,TaskState.STALE} and not blocker: raise InvariantError("waiting or stale CTRL pulse requires the first concrete blocker")
+        if self.eta_at is not None and (not isinstance(self.eta_at,int) or isinstance(self.eta_at,bool) or self.eta_at<0): raise InvariantError("CTRL pulse ETA must be a nonnegative timestamp or unavailable")
+        omissions=tuple(_human_line(value,"CTRL pulse omission",240) for value in self.omissions)
+        if len(set(omissions))!=len(omissions): raise InvariantError("CTRL pulse omissions must be distinct")
+        object.__setattr__(self,"omissions",omissions)
+        visuals=tuple(proof.receipt_id for proof in proofs if proof.visual)
+        gallery=_pulse_receipts(self.gallery_visual_receipts,"CTRL pulse visual gallery")
+        visual_work=self.work_kind in {WorkKind.DESIGN,WorkKind.IMAGEGEN,WorkKind.IMAGE_EDIT}
+        if visual_work and not visuals: raise InvariantError("visual CTRL pulse requires directly surfaced inline visual proof")
+        if visuals:
+            primary=_pulse_receipts((self.primary_visual_receipt,),"CTRL pulse primary visual",required=True)[0]
+            if proofs[0].receipt_id!=primary or visuals!=(primary,*gallery): raise InvariantError("visual CTRL pulse must surface the highest-signal visual first and gallery every remaining visual")
+            object.__setattr__(self,"primary_visual_receipt",primary); object.__setattr__(self,"gallery_visual_receipts",gallery)
+        elif self.primary_visual_receipt.strip() or gallery: raise InvariantError("nonvisual CTRL pulse cannot claim visual presentation")
+    @property
+    def proof_classes(self)->tuple[ProofClass,...]: return tuple(dict.fromkeys(proof.proof_class for proof in self.proofs))
+    @property
+    def audit_receipts(self)->tuple[str,...]: return tuple(dict.fromkeys((self.update_receipt,*self.progress.receipt_ids,*(proof.receipt_id for proof in self.proofs))))
+    @property
+    def semantic_key(self)->tuple[object,...]:
+        return (self.state,self.progress.completed_units,self.progress.total_units,self.progress.basis,self.progress.receipt_ids,self.latest_material,tuple((proof.receipt_id,proof.proof_class,proof.summary,proof.claim_limit,proof.surface_kind) for proof in self.proofs),self.first_blocker,self.next_action,self.eta_at,self.work_kind,self.primary_visual_receipt,self.gallery_visual_receipts,self.omissions)
+    def human_view(self)->dict[str,object]:
+        return {"project":self.project_id,"ctrl":self.ctrl_id,"state":self.state.value,"progress":{"label":self.progress.label,"percent":self.progress.percent,"basis":self.progress.basis or None},"latest_material":self.latest_material,"latest_proof":self.proofs[0].summary if self.proofs else "No proof yet","first_blocker":self.first_blocker or None,"next_action":self.next_action,"eta_at":self.eta_at,"primary_visual":self.primary_visual_receipt or None,"gallery_count":len(self.gallery_visual_receipts),"omissions":self.omissions,"claim_limits":tuple(proof.claim_limit for proof in self.proofs)}
+
+@dataclass(frozen=True)
+class CtrlPulseAudit:
+    violations:tuple[str,...]=()
+    @property
+    def compliant(self)->bool: return not self.violations
+
+def audit_ctrl_project_pulses(pulses:tuple[CtrlProjectPulse,...], *, previous:tuple[CtrlProjectPulse,...]=()) -> CtrlPulseAudit:
+    """Validate one compact human pulse per project without consuming audit receipts."""
+    if any(not isinstance(pulse,CtrlProjectPulse) for pulse in (*pulses,*previous)): raise InvariantError("CTRL project pulse audit requires typed pulses")
+    violations=[]; project_ids=[pulse.project_id for pulse in pulses]
+    if len(set(project_ids))!=len(project_ids): violations.append("duplicate-project-pulse")
+    prior={pulse.project_id:pulse for pulse in previous}
+    for pulse in pulses:
+        old=prior.get(pulse.project_id)
+        if old is not None and pulse.semantic_key==old.semantic_key: violations.append(f"{pulse.project_id}:unchanged-heartbeat")
+    return CtrlPulseAudit(tuple(violations))
 @dataclass(frozen=True)
 class WatchdogBinding:
     """Optional alert route for one explicitly owned durable goal."""
@@ -1098,11 +1195,12 @@ def choose_depth(facts:TopologyFacts) -> Depth:
     return Depth.PROJECT if facts.architecture_gate else Depth.WORKSTREAM
 
 def correction_decision(*, material:bool, authority_failure:bool=False, ownership_failure:bool=False, acceptance_failure:bool=False, expected_future_cost:int=0, correction_cost:int=0, fix_forward_consumed:bool=False) -> CorrectionDecision:
-    """Pay coordination cost only when it lowers expected future cost, delay, or risk."""
+    """Ignore nits, fix one material finding locally, then escalate a repeat."""
     if material and any((authority_failure,ownership_failure,acceptance_failure)): return CorrectionDecision.REOPEN_TOPOLOGY
     if min(expected_future_cost,correction_cost)<0: raise InvariantError("correction costs must be nonnegative")
+    if not material: return CorrectionDecision.CONTINUE
     if expected_future_cost<=correction_cost: return CorrectionDecision.CONTINUE
-    if fix_forward_consumed: return CorrectionDecision.ESCALATE if material else CorrectionDecision.CONTINUE
+    if fix_forward_consumed: return CorrectionDecision.ESCALATE
     return CorrectionDecision.FIX_FORWARD
 
 @dataclass
