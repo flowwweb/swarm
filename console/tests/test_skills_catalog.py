@@ -84,7 +84,16 @@ class SkillsAndEtaContractTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             store = console.ConsoleStore(Path(directory) / "console.sqlite3")
             now = 1_000_000
-            basis = {"milestones": [{"id": "build", "state": "in_progress"}]}
+            basis = {
+                "milestones": [{"id": "build", "state": "in_progress"}],
+                "receipts": ["receipt:build"],
+                "plan_units": {
+                    "total_units": 4,
+                    "completed_units": 1,
+                    "basis": "accepted milestones",
+                    "observed_at_ms": now,
+                },
+            }
             first_receipt = {
                 "receipt_type": "swarm_task_owner_forecast", "source": "owner:task-1", "receipt": "r1",
                 "task_id": "task-1", "project_id": "project:alpha", "reason_code": "scope_discovered",
@@ -104,6 +113,7 @@ class SkillsAndEtaContractTests(unittest.TestCase):
             self.assertEqual(current["reason_code"], "dependency")
             self.assertEqual(current["previous"]["eta_end_ms"], first["current"]["eta_end_ms"])
             self.assertEqual(current["current"]["status"], "blocked")
+            self.assertEqual(current["progress_basis"]["plan_units"]["completed_units"], 1)
 
     def test_subagent_eta_receipt_rolls_into_master_without_double_counting(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -133,7 +143,23 @@ class SkillsAndEtaContractTests(unittest.TestCase):
             }
             caller_claim = {**base, "authority": "task_owner"}
             unknown = {**base, "task_id": "other"}
-            for report in (caller_claim, unknown):
+            invalid_units = {
+                **base,
+                "current": {
+                    **base["current"],
+                    "progress_basis": {
+                        "milestones": [{"id": "one"}],
+                        "receipts": ["receipt:one"],
+                        "plan_units": {
+                            "total_units": 2,
+                            "completed_units": 3,
+                            "basis": "milestones",
+                            "observed_at_ms": 1,
+                        },
+                    },
+                },
+            }
+            for report in (caller_claim, unknown, invalid_units):
                 store.observe_overview({"nodes": [{"id": "task", "project_id": "project:alpha", "eta_report": report}], "links": []}, now_ms=1, trigger="startup", heartbeat_minutes=30)
             self.assertEqual(store.latest_forecasts(), {})
             store.observe_overview({"nodes": [{"id": "task", "project_id": "project:alpha", "eta_report": base}], "links": []}, now_ms=2, trigger="startup", heartbeat_minutes=30)

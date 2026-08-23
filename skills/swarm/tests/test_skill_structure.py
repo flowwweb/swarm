@@ -187,6 +187,17 @@ class SwarmSkillStructureTests(unittest.TestCase):
         self.assertRegex(hierarchy, r"(?s)Artifact\s+count.*never\s+justify a lane")
         self.assertIn("consolidate rather than add incident clauses", skill)
 
+    def test_recursive_accountable_topology_and_local_staffing_contract(self) -> None:
+        hierarchy = (SKILL_ROOT / "references" / "hierarchy.md").read_text(encoding="utf-8")
+        self.assertIn("Each LEAD owns one durable boundary", hierarchy)
+        self.assertIn("each DOER owns one bounded artifact", hierarchy)
+        self.assertIn("Every role may use subagents", hierarchy)
+        self.assertIn("Promote a subagent immediately when it gains", hierarchy)
+        self.assertIn("without a per-change\nCTRL approval event", hierarchy)
+        self.assertIn("authority expansion, shared-surface", hierarchy)
+        self.assertIn("shrink\nidle scaffolding", hierarchy)
+        self.assertIn("never a fixed roster or numeric role ceiling", hierarchy)
+
     def test_product_review_subtracts_chrome_without_erasing_state_or_accessibility(self) -> None:
         review = (SKILL_ROOT / "references" / "review-contract.md").read_text(encoding="utf-8")
 

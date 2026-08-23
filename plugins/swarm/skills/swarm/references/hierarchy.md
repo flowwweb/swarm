@@ -64,8 +64,11 @@ unrelated lanes. A local correction never implies the opposite blanket rule.
 
 CTRL is the sole root and final composed authority. Use `CTRL_DIRECT` only for
 one low-risk atomic outcome on one mutable surface with no cross-lane dependency
-and measurable completion inside the direct-work horizon. Otherwise CTRL hires
-a LEAD. A LEAD may hire DOERs for separable work that shortens accepted proof.
+and measurable completion inside the direct-work horizon. Otherwise CTRL leads
+the project through accountable LEADs. Each LEAD owns one durable boundary and
+leads its DOERs; each DOER owns one bounded artifact and may lead bounded
+subagents. Every role may use subagents for sidecar inspection, review, or
+analysis inside its own accountable boundary.
 
 ### CTRL is an operator, not a producer
 
@@ -106,15 +109,13 @@ blocker and no host action. Same-identity
 restore is not CTRL creation; Researcher, Architect, LEAD, DOER, and REVIEW are
 ordinary subordinate roles and do not consume CTRL authorization.
 
-Create a visible task lane when any durable boundary matters: independent or
-resumable ownership, a separate mutable surface or artifact, worktree isolation,
-independent review or acceptance, separate handoff, or interruption-safe resumption.
-Economics never overrides this boundary. Large work also uses a task
-lane. Otherwise bounded small-to-medium work may use an in-task subagent when it
-stays on one mutable surface and task startup, worktree, coordination, handoff,
-integration, and review overhead do not clearly repay themselves. A subagent
-never owns durable work and never replaces a qualifying visible lane merely
-because it is easier to spawn.
+Create or promote a visible accountable child whenever independent or resumable
+ownership, a separate mutable surface or artifact, worktree isolation,
+independent heartbeat, review, or handoff, a cross-lane dependency, user-visible
+delivery, or interruption-safe resumption matters. CTRL materializes a LEAD for
+the project boundary; a LEAD materializes a DOER for its durable artifact; a
+DOER may keep bounded sidecars. A subagent never replaces a warranted LEAD or
+DOER merely because it is easier to spawn.
 
 For root CTRL, small bounded `GENERAL` work may use an internal subagent when
 it has one surface, low risk, no durable boundary, and measured economics that
@@ -131,8 +132,13 @@ Use this routing order:
 
 1. Keep one atomic outcome with the current owner when coordination costs more.
 2. Open a visible task lane when a durable boundary above applies.
-3. Add a subagent only for bounded small `GENERAL` capacity within the current
-   owner or an already-open lane; never for visual artifact production.
+3. Add a subagent only for bounded small `GENERAL` capacity within its current
+   accountable owner or an already-open lane; never for visual artifact production.
+
+Promote a subagent immediately when it gains a separate mutable surface,
+resumable ownership, an independent heartbeat, review, or handoff, a cross-lane
+dependency, or user-visible delivery. The promoted child owns its boundary and
+receives its own durable receipt; the parent retains integration accountability.
 
 If the host cannot create a required visible task, record the exact capability
 blocker. A degraded subagent remains under the current accountable owner and
@@ -269,9 +275,15 @@ Explicit dependencies wait on their named stage; overlapping mutation is
 serialized by CTRL through an explicit shared-surface receipt. A failure pauses
 only its affected surface while safe independent lanes continue.
 
-Configured task counts, lane widths, and review capacity are ceilings, never
-creation targets. Ready immutable handoffs free execution capacity while the
-original owner retains correction accountability until acceptance or transfer.
+Configured task counts, lane widths, and review capacity are resource limits,
+never a fixed roster or numeric role ceiling. Within the accepted objective,
+authority and custody envelope, concurrency limits, and disjoint surfaces, CTRL
+may grow, shrink, split, merge, or reorient LEAD lanes; LEAD may do the same
+with DOERs; and DOER may create or retire bounded subagents without a per-change
+CTRL approval event. Escalate only new intent, authority expansion, shared-surface
+or cross-lane conflict, consequential external or destructive action, material
+budget change, or acceptance. After an immutable handoff or integration, shrink
+idle scaffolding cleanly while preserving durable receipts and archived logs.
 
 ## Ownership, transfer, and materialization
 
