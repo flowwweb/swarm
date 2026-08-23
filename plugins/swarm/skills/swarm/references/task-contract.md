@@ -126,6 +126,11 @@ the recorded custody boundary. Mixed or ambiguous dirty work fails closed. The
 immutable candidate then routes to a separate visible independent review owner;
 creation, commentary, activity, timeout, silence, `BLOCKED`, and in-progress
 state never authorize integration. `manual` emits no Git or lifecycle request.
+Runtime entry points normalize raw config mode and route commit, review,
+integration/push, release, and archive planning through the same fail-closed
+decisions. Every policy or gate receipt is typed and bound to repository root,
+branch/remote, candidate SHA/tree, operation, authority, and freshness; a string
+claim or mismatched receipt cannot authorize an action.
 
 Storage inventory, archive, cleanup, relocation, and monitoring use a dedicated
 delegable STORAGE LEAD lane. Its contract binds an exact target manifest,

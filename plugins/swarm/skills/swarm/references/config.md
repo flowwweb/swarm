@@ -161,6 +161,13 @@ integration or push, and uses only history-preserving fast-forward or reviewed
 compatible merge. It never emits force-push, rebase, reset, broad staging, or
 cleanup. Package, install, and deployment remain gated by the
 repository-defined release path, source/package proof, and rollback receipt.
+The production `Swarm` runtime adapter normalizes `standard|manual` before every
+decision. Git and release receipts are typed and bound to the exact repository
+identity and absolute root, branch/remote, candidate SHA/tree, operation,
+authority, and validity window; remote compatibility additionally binds the
+fetched remote head. A mismatched, stale, caller-only, or missing receipt keeps
+the action unavailable. The adapter emits an eligible method or typed request;
+it does not run Git, package tools, or host task mutations itself.
 
 For a terminal accepted task, standard mode may emit a typed host archive
 request only when no goal, request, handoff, review, correction, user choice, or
@@ -168,7 +175,8 @@ dependent remains; process, handle, and log state is quiescent; exact checkpoint
 and target-state custody references exist; and the task is not user-renamed,
 pinned, or directly controlled. The plugin never archives or claims host
 authority. Only the host may independently consume the persisted preference and
-current custody receipt. Until confirmation, report `archive_unverified` and
+current typed host custody receipt, bound to the task and exact target-state
+digest with bounded freshness. Until confirmation, report `archive_unverified` and
 keep the task visible. Active, stalled, blocked, or merely old tasks never close.
 
 The default title hierarchy is `🐙CTRL - <objective>`, an optional advisory

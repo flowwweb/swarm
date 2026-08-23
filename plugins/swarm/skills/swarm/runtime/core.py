@@ -12,8 +12,12 @@ import signal
 import subprocess
 import sys
 import time
+from typing import TYPE_CHECKING
 from .incidents import IncidentLedger, IncidentRecord
 from .request_ledger import RequestStore, RequestStoreError
+
+if TYPE_CHECKING:
+    from .automation import ArchiveFacts, AutomationDecision, BoundPolicyReceipt, FetchReceipt, IndependentReviewReceipt, StableCheckpoint
 
 
 class Role(StrEnum):
@@ -1363,7 +1367,7 @@ class Worker:
 @dataclass
 class Swarm:
     architecture_version: int=1; contract_versions: dict[str,int]=field(default_factory=dict); topology: set[str]=field(default_factory=set)
-    workers: dict[str,Worker]=field(default_factory=dict); tasks: dict[str,Task]=field(default_factory=dict); leases: dict[str,str]=field(default_factory=dict); events: list[tuple[str,str]]=field(default_factory=list); task_event_limit:int=64; telemetry: dict[str,object]=field(default_factory=dict); telemetry_events:list[dict[str,object]]=field(default_factory=list); artifact_index:dict[str,str]=field(default_factory=dict); provenance_index:dict[str,str]=field(default_factory=dict); ctrl_evidence_ledger:dict[str,CtrlEvidence]=field(default_factory=dict); ctrl_decision_sets:dict[str,CtrlDecisionSet]=field(default_factory=dict); ctrl_phase:str="intake"; hive:dict[str,HiveRecord]=field(default_factory=dict); hive_enabled:bool=True; heartbeat_stall_after:int=2; correction_receipts:dict[str,None]=field(default_factory=dict); lane_width:int=3; wip_limit:int=3; efficiency_ledger:list[dict[str,str]]=field(default_factory=list); mode:EfficiencyMode=EfficiencyMode.BALANCED; default_review_horizon:int=30; max_review_horizon:int=60; direct_work_horizon:int=20
+    workers: dict[str,Worker]=field(default_factory=dict); tasks: dict[str,Task]=field(default_factory=dict); leases: dict[str,str]=field(default_factory=dict); events: list[tuple[str,str]]=field(default_factory=list); task_event_limit:int=64; telemetry: dict[str,object]=field(default_factory=dict); telemetry_events:list[dict[str,object]]=field(default_factory=list); artifact_index:dict[str,str]=field(default_factory=dict); provenance_index:dict[str,str]=field(default_factory=dict); ctrl_evidence_ledger:dict[str,CtrlEvidence]=field(default_factory=dict); ctrl_decision_sets:dict[str,CtrlDecisionSet]=field(default_factory=dict); ctrl_phase:str="intake"; hive:dict[str,HiveRecord]=field(default_factory=dict); hive_enabled:bool=True; heartbeat_stall_after:int=2; correction_receipts:dict[str,None]=field(default_factory=dict); lane_width:int=3; wip_limit:int=3; efficiency_ledger:list[dict[str,str]]=field(default_factory=list); mode:EfficiencyMode=EfficiencyMode.BALANCED; automation_mode:str="standard"; default_review_horizon:int=30; max_review_horizon:int=60; direct_work_horizon:int=20
     scheduled_wakeups:dict[str,int]=field(default_factory=dict); ctrl_feed_messages:list[CtrlFeedMessage]=field(default_factory=list); ctrl_feed_cursor:int=0; ctrl_feed_superseded_by:dict[str,str]=field(default_factory=dict); ctrl_feed_events:dict[str,CtrlFeedEvent]=field(default_factory=dict); ctrl_feed_consumed_events:set[str]=field(default_factory=set); ctrl_authorizations:dict[str,UserCtrlAuthorization]=field(default_factory=dict); ctrl_materialization_intents:dict[str,CtrlMaterializationIntent]=field(default_factory=dict); consumed_ctrl_authorizations:set[str]=field(default_factory=set); consumed_ctrl_intents:set[str]=field(default_factory=set); proof_policy_version:str="lean-v1"; proof_impacted_selection:bool=True; proof_receipt_reuse:bool=True; proof_gate_timeout_seconds:int=120; proof_browser_freshness_seconds:int=86400; proof_provider_freshness_seconds:int=3600; proof_transient_retry_limit:int=1; use_goals:bool=True; request_store:RequestStore|None=field(default=None,repr=False,compare=False); request_continuity_enabled:bool=False; request_feed_sequence_floor:int=0; host_custody_receipts:dict[str,HostCustodyReceipt]=field(default_factory=dict); _gate_capability:object=field(default_factory=object,init=False,repr=False,compare=False); _watchdog_capability:object=field(default_factory=object,init=False,repr=False,compare=False); _owner_context_capability:object=field(default_factory=object,init=False,repr=False,compare=False); _ctrl_authority_capability:object=field(default_factory=object,init=False,repr=False,compare=False); _custody_capability:object=field(default_factory=object,init=False,repr=False,compare=False)
     def __setattr__(self, name:str, value:object) -> None:
         object.__setattr__(self,name,value)
@@ -1371,7 +1375,27 @@ class Swarm:
     def from_config(cls, config: dict) -> "Swarm":
         monitoring=config["monitoring"]
         proof=config.get("proof",{})
-        return cls(lane_width=config["coordination"]["preferred_lane_width"], wip_limit=config["efficiency"]["doer_wip_limit"], mode=EfficiencyMode(config["efficiency"]["mode"]), hive_enabled=config.get("hive",{}).get("enabled",True), heartbeat_stall_after=config["recovery"]["stall_after_updates"], task_event_limit=config.get("logging",{}).get("task_event_limit",64), default_review_horizon=monitoring.get("default_review_horizon_minutes",monitoring.get("heartbeat_minutes",30)), max_review_horizon=monitoring.get("max_review_horizon_minutes",60), direct_work_horizon=config["coordination"].get("ctrl_direct_horizon_minutes",20), proof_policy_version=proof.get("policy_version","lean-v1"), proof_impacted_selection=proof.get("impacted_selection",True), proof_receipt_reuse=proof.get("receipt_reuse",True), proof_gate_timeout_seconds=proof.get("gate_timeout_seconds",120), proof_browser_freshness_seconds=proof.get("browser_freshness_seconds",86400), proof_provider_freshness_seconds=proof.get("provider_freshness_seconds",3600), proof_transient_retry_limit=proof.get("transient_retry_limit",1), use_goals=config.get("goals",{}).get("use_goals",True))
+        return cls(lane_width=config["coordination"]["preferred_lane_width"], wip_limit=config["efficiency"]["doer_wip_limit"], mode=EfficiencyMode(config["efficiency"]["mode"]), automation_mode=config.get("automation",{}).get("mode","standard"), hive_enabled=config.get("hive",{}).get("enabled",True), heartbeat_stall_after=config["recovery"]["stall_after_updates"], task_event_limit=config.get("logging",{}).get("task_event_limit",64), default_review_horizon=monitoring.get("default_review_horizon_minutes",monitoring.get("heartbeat_minutes",30)), max_review_horizon=monitoring.get("max_review_horizon_minutes",60), direct_work_horizon=config["coordination"].get("ctrl_direct_horizon_minutes",20), proof_policy_version=proof.get("policy_version","lean-v1"), proof_impacted_selection=proof.get("impacted_selection",True), proof_receipt_reuse=proof.get("receipt_reuse",True), proof_gate_timeout_seconds=proof.get("gate_timeout_seconds",120), proof_browser_freshness_seconds=proof.get("browser_freshness_seconds",86400), proof_provider_freshness_seconds=proof.get("provider_freshness_seconds",3600), proof_transient_retry_limit=proof.get("transient_retry_limit",1), use_goals=config.get("goals",{}).get("use_goals",True))
+
+    def automation_commit(self, checkpoint:"StableCheckpoint", *, attributable_paths:tuple[str,...]) -> "AutomationDecision":
+        from .automation import commit_decision
+        return commit_decision(self.automation_mode, checkpoint, attributable_paths=attributable_paths)
+
+    def automation_review(self, checkpoint:"StableCheckpoint", receipt:"IndependentReviewReceipt|None") -> "AutomationDecision":
+        from .automation import review_decision
+        return review_decision(self.automation_mode, checkpoint, receipt)
+
+    def automation_git_advance(self, checkpoint:"StableCheckpoint", review:"IndependentReviewReceipt|None", fetch:"FetchReceipt|None", *, now_ms:int, remote_compatibility_receipt:"BoundPolicyReceipt|None"=None, push_policy_receipt:"BoundPolicyReceipt|None"=None) -> "AutomationDecision":
+        from .automation import git_advance_decision
+        return git_advance_decision(self.automation_mode, checkpoint, review, fetch, now_ms=now_ms, remote_compatibility_receipt=remote_compatibility_receipt, push_policy_receipt=push_policy_receipt)
+
+    def automation_release(self, checkpoint:"StableCheckpoint", *, now_ms:int, release_policy:"BoundPolicyReceipt|None", source_gate:"BoundPolicyReceipt|None", package_gate:"BoundPolicyReceipt|None", rollback_receipt:"BoundPolicyReceipt|None") -> "AutomationDecision":
+        from .automation import release_decision
+        return release_decision(self.automation_mode, checkpoint, now_ms=now_ms, release_policy=release_policy, source_gate=source_gate, package_gate=package_gate, rollback_receipt=rollback_receipt)
+
+    def automation_archive_request(self, checkpoint:"StableCheckpoint", facts:"ArchiveFacts", *, now_ms:int) -> "AutomationDecision":
+        from .automation import archive_request_decision
+        return archive_request_decision(self.automation_mode, checkpoint, facts, now_ms=now_ms)
 
     def plan_task_intake(self, *, goal:str, efficiency_strategy:str, domain:str="general", goal_id:str="", profile:GraphProfile|None=None)->IntakePlan:
         """Return the typed intake and graph plan under this runtime's goal policy."""

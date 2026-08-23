@@ -74,7 +74,8 @@ of folder date.
 
 In standard automation mode, these observations may produce only a typed
 `archive_request`. The request binds the immutable checkpoint, exact target
-state digest, and current host custody receipt reference. Plugin runtime cannot
+state digest, and a current typed host custody receipt for that exact task and
+state with bounded freshness. Plugin runtime cannot
 mint or validate host authority, so the task remains visible with
 `archive_unverified` until the host independently consumes the persisted
 preference and exact custody receipt and confirms the action. Manual mode emits

@@ -22,6 +22,10 @@ remote history requires a separate compatibility receipt before merge. SWARM
 never emits force-push, rebase, or reset. Package/install/deploy requests use
 only the repository-defined release path after source/package gates and a
 rollback receipt. Local installation is not provider or production deployment.
+These receipts are typed and exact-artifact bound: repository identity/root,
+branch/remote, candidate SHA/tree, operation, authority, and validity window;
+remote compatibility also binds the fetched remote head. Free-text policy or
+release claims, stale receipts, and repository/artifact mismatches fail closed.
 
 Unknown dependency reach or missing impact evidence broadens the plan. After a
 correction, rerun the failed proof and every dependent gate, not unrelated
