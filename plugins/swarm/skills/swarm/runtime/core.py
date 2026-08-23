@@ -1274,6 +1274,17 @@ class ReviewEvidence:
     strategy:ReviewStrategy; reviewer:str; independent:bool; artifact:ArtifactIdentity|None; findings:tuple[str,...]=(); receipt:tuple[tuple[str,str],...]=(); scope:ReviewScope=ReviewScope.SOURCE_SEMANTICS; plan_digest:str=""
     def __post_init__(self):
         if self.plan_digest: object.__setattr__(self,"plan_digest",_require_digest(self.plan_digest,"review proof plan"))
+
+@dataclass(frozen=True)
+class _RuntimeAcceptanceRecord:
+    """Private exact-artifact acceptance minted only by ``Swarm.review``."""
+    task_id:str; artifact:ArtifactIdentity; artifact_content_digest:str; proof_plan_digest:str; reviewer:str; scope:ReviewScope; verdict:str; review_receipt_digest:str; gate_receipt_digests:tuple[str,...]; issued_at_ms:int
+    _authority:object|None=field(default=None,init=False,repr=False,compare=False)
+    def __post_init__(self):
+        if not self.task_id.strip() or not isinstance(self.artifact,ArtifactIdentity): raise InvariantError("runtime acceptance requires an exact task artifact")
+        _require_digest(self.artifact_content_digest,"runtime acceptance artifact content"); _require_digest(self.proof_plan_digest,"runtime acceptance proof plan"); _require_digest(self.review_receipt_digest,"runtime acceptance review receipt")
+        if self.artifact_content_digest!=self.artifact.content_address() or not self.reviewer.strip() or self.scope not in {ReviewScope.ACCEPTANCE,ReviewScope.COMPOSED} or self.verdict!="ACCEPT": raise InvariantError("runtime acceptance requires an exact independent ACCEPT verdict")
+        if any(_require_digest(value,"runtime acceptance gate receipt")!=value for value in self.gate_receipt_digests) or not isinstance(self.issued_at_ms,int) or isinstance(self.issued_at_ms,bool) or self.issued_at_ms<0: raise InvariantError("runtime acceptance requires current bound gate receipts and issuance time")
 @dataclass
 class HiveRecord:
     id:str; content:str=""; reference:str=""; source:str=""; source_version:str=""; applicability:dict[str,int]=field(default_factory=dict); created_at:int=0; last_used_at:int|None=None; value:str="useful"; retention:str="adaptive"; status:HiveStatus=HiveStatus.ACTIVE; provenance:dict[str,str]=field(default_factory=dict)
@@ -1394,7 +1405,7 @@ class Worker:
 class Swarm:
     architecture_version: int=1; contract_versions: dict[str,int]=field(default_factory=dict); topology: set[str]=field(default_factory=set)
     workers: dict[str,Worker]=field(default_factory=dict); tasks: dict[str,Task]=field(default_factory=dict); leases: dict[str,str]=field(default_factory=dict); events: list[tuple[str,str]]=field(default_factory=list); task_event_limit:int=64; telemetry: dict[str,object]=field(default_factory=dict); telemetry_events:list[dict[str,object]]=field(default_factory=list); artifact_index:dict[str,str]=field(default_factory=dict); provenance_index:dict[str,str]=field(default_factory=dict); ctrl_evidence_ledger:dict[str,CtrlEvidence]=field(default_factory=dict); ctrl_decision_sets:dict[str,CtrlDecisionSet]=field(default_factory=dict); ctrl_phase:str="intake"; hive:dict[str,HiveRecord]=field(default_factory=dict); hive_enabled:bool=True; heartbeat_stall_after:int=2; correction_receipts:dict[str,None]=field(default_factory=dict); lane_width:int=3; wip_limit:int=3; efficiency_ledger:list[dict[str,str]]=field(default_factory=list); mode:EfficiencyMode=EfficiencyMode.BALANCED; automation_mode:str="standard"; default_review_horizon:int=30; max_review_horizon:int=60; direct_work_horizon:int=20
-    scheduled_wakeups:dict[str,int]=field(default_factory=dict); ctrl_feed_messages:list[CtrlFeedMessage]=field(default_factory=list); ctrl_feed_cursor:int=0; ctrl_feed_superseded_by:dict[str,str]=field(default_factory=dict); ctrl_feed_events:dict[str,CtrlFeedEvent]=field(default_factory=dict); ctrl_feed_consumed_events:set[str]=field(default_factory=set); ctrl_authorizations:dict[str,UserCtrlAuthorization]=field(default_factory=dict); ctrl_materialization_intents:dict[str,CtrlMaterializationIntent]=field(default_factory=dict); consumed_ctrl_authorizations:set[str]=field(default_factory=set); consumed_ctrl_intents:set[str]=field(default_factory=set); proof_policy_version:str="lean-v1"; proof_impacted_selection:bool=True; proof_receipt_reuse:bool=True; proof_gate_timeout_seconds:int=120; proof_browser_freshness_seconds:int=86400; proof_provider_freshness_seconds:int=3600; proof_transient_retry_limit:int=1; use_goals:bool=True; request_store:RequestStore|None=field(default=None,repr=False,compare=False); request_continuity_enabled:bool=False; request_feed_sequence_floor:int=0; host_custody_receipts:dict[str,HostCustodyReceipt]=field(default_factory=dict); _topology_preflights:dict[str,object]=field(default_factory=dict,init=False,repr=False,compare=False); _gate_capability:object=field(default_factory=object,init=False,repr=False,compare=False); _watchdog_capability:object=field(default_factory=object,init=False,repr=False,compare=False); _owner_context_capability:object=field(default_factory=object,init=False,repr=False,compare=False); _ctrl_authority_capability:object=field(default_factory=object,init=False,repr=False,compare=False); _custody_capability:object=field(default_factory=object,init=False,repr=False,compare=False)
+    scheduled_wakeups:dict[str,int]=field(default_factory=dict); ctrl_feed_messages:list[CtrlFeedMessage]=field(default_factory=list); ctrl_feed_cursor:int=0; ctrl_feed_superseded_by:dict[str,str]=field(default_factory=dict); ctrl_feed_events:dict[str,CtrlFeedEvent]=field(default_factory=dict); ctrl_feed_consumed_events:set[str]=field(default_factory=set); ctrl_authorizations:dict[str,UserCtrlAuthorization]=field(default_factory=dict); ctrl_materialization_intents:dict[str,CtrlMaterializationIntent]=field(default_factory=dict); consumed_ctrl_authorizations:set[str]=field(default_factory=set); consumed_ctrl_intents:set[str]=field(default_factory=set); proof_policy_version:str="lean-v1"; proof_impacted_selection:bool=True; proof_receipt_reuse:bool=True; proof_gate_timeout_seconds:int=120; proof_browser_freshness_seconds:int=86400; proof_provider_freshness_seconds:int=3600; proof_transient_retry_limit:int=1; use_goals:bool=True; request_store:RequestStore|None=field(default=None,repr=False,compare=False); request_continuity_enabled:bool=False; request_feed_sequence_floor:int=0; host_custody_receipts:dict[str,HostCustodyReceipt]=field(default_factory=dict); _topology_preflights:dict[str,object]=field(default_factory=dict,init=False,repr=False,compare=False); _runtime_acceptances:dict[str,_RuntimeAcceptanceRecord]=field(default_factory=dict,init=False,repr=False,compare=False); _gate_capability:object=field(default_factory=object,init=False,repr=False,compare=False); _review_capability:object=field(default_factory=object,init=False,repr=False,compare=False); _watchdog_capability:object=field(default_factory=object,init=False,repr=False,compare=False); _owner_context_capability:object=field(default_factory=object,init=False,repr=False,compare=False); _ctrl_authority_capability:object=field(default_factory=object,init=False,repr=False,compare=False); _custody_capability:object=field(default_factory=object,init=False,repr=False,compare=False)
     def __setattr__(self, name:str, value:object) -> None:
         object.__setattr__(self,name,value)
     @classmethod
@@ -1451,20 +1462,35 @@ class Swarm:
             values.append(_sha256_text(json.dumps(payload,separators=(",",":"),ensure_ascii=True)))
         return tuple(values)
 
+    def _runtime_acceptance_current(self, task:Task) -> _RuntimeAcceptanceRecord|None:
+        """Return only the still-current final acceptance minted by this runtime."""
+        record=self._runtime_acceptances.get(task.id); contract=task.acceptance_contract; review=task.acceptance_review_receipt
+        if record is None or record._authority is not self._review_capability or contract is None or contract.explicitly_empty or contract.artifact is None or contract.proof_plan is None or review is None: return None
+        if not task.review_passed or task.reviewer!=record.reviewer or review.reviewer!=record.reviewer or not review.independent or review.reviewer in {task.creator,task.owner}: return None
+        if record.task_id!=task.id or record.artifact!=contract.artifact or record.artifact_content_digest!=contract.artifact.content_address() or record.proof_plan_digest!=contract.proof_plan.plan_digest: return None
+        if record.scope is not review.scope or record.verdict!="ACCEPT" or record.review_receipt_digest!=self._topology_review_digest(review) or record.gate_receipt_digests!=self._topology_gate_digests(task): return None
+        if review.artifact!=contract.artifact or review.scope not in {ReviewScope.ACCEPTANCE,ReviewScope.COMPOSED} or review.plan_digest not in {"",contract.proof_plan.plan_digest}: return None
+        receipt_key="composed" if review.scope is ReviewScope.COMPOSED else "acceptance"
+        if not dict(review.receipt).get(receipt_key) or record.issued_at_ms>int(time.time()*1000): return None
+        if contract.observation_root and contract.artifact.observed_paths:
+            try: current=contract.artifact.reobserve(contract.observation_root)
+            except InvariantError: return None
+            if current!=contract.artifact: return None
+        return record
+
     def issue_topology_artifact_freeze(self, producer_lane_id:str, review_lane_id:str, topology_plan_digest:str, *, valid_for_ms:int=300000) -> "TopologyArtifactFreezeReceipt":
         """Bind a current accepted exact artifact to one planned review lane."""
         from .topology import TopologyArtifactFreezeReceipt
         task=self.tasks.get(producer_lane_id)
         if task is None or not isinstance(valid_for_ms,int) or isinstance(valid_for_ms,bool) or not 1<=valid_for_ms<=300000: raise InvariantError("topology freeze requires an observed producer task and freshness of at most five minutes")
-        contract=task.acceptance_contract; review=task.acceptance_review_receipt
+        contract=task.acceptance_contract; acceptance=self._runtime_acceptance_current(task)
         if contract is None or contract.explicitly_empty or contract.artifact is None or contract.proof_plan is None or not contract.artifact.observables: raise InvariantError("topology freeze requires an immutable content-observed acceptance artifact")
-        if self.proof_state(producer_lane_id) is not ProofState.ACCEPTED or review is None or review.artifact!=contract.artifact or review.scope not in {ReviewScope.ACCEPTANCE,ReviewScope.COMPOSED}: raise InvariantError("topology freeze requires current exact-artifact independent acceptance")
-        if review.plan_digest not in {"",contract.proof_plan.plan_digest}: raise InvariantError("topology freeze review must bind the current proof plan")
+        if self.proof_state(producer_lane_id) is not ProofState.ACCEPTED or acceptance is None: raise InvariantError("topology freeze requires current runtime-issued exact-artifact independent acceptance")
         if any(receipt._authority is not self._gate_capability or receipt._bound_task_id!=producer_lane_id for receipt in task.gate_receipts.values()): raise InvariantError("topology freeze requires runtime-authoritative gate receipts")
         current=contract.artifact.reobserve(contract.observation_root)
         if current!=contract.artifact: raise InvariantError("topology freeze artifact changed after proof")
         observed_at_ms=int(time.time()*1000)
-        receipt=TopologyArtifactFreezeReceipt(producer_lane_id,review_lane_id,topology_plan_digest,contract.artifact,contract.artifact.content_address(),contract.proof_plan.plan_digest,self._topology_review_digest(review),self._topology_gate_digests(task),ProofState.ACCEPTED,observed_at_ms,observed_at_ms+valid_for_ms,"Runtime-local accepted artifact freeze; it does not prove provider, host, deployment, or user authority.")
+        receipt=TopologyArtifactFreezeReceipt(producer_lane_id,review_lane_id,topology_plan_digest,contract.artifact,contract.artifact.content_address(),contract.proof_plan.plan_digest,acceptance.review_receipt_digest,acceptance.gate_receipt_digests,ProofState.ACCEPTED,observed_at_ms,observed_at_ms+valid_for_ms,"Runtime-local accepted artifact freeze; it does not prove provider, host, deployment, or user authority.")
         object.__setattr__(receipt,"_authority",self._gate_capability)
         return receipt
 
@@ -1474,11 +1500,11 @@ class Swarm:
         if not isinstance(receipt,TopologyArtifactFreezeReceipt) or receipt._authority is not self._gate_capability or not receipt.observed_at_ms<=now_ms<=receipt.valid_until_ms: return False
         task=self.tasks.get(receipt.producer_lane_id)
         if task is None: return False
-        contract=task.acceptance_contract; review=task.acceptance_review_receipt
-        if contract is None or contract.artifact!=receipt.artifact or contract.proof_plan is None or contract.proof_plan.plan_digest!=receipt.proof_plan_digest or review is None: return False
+        contract=task.acceptance_contract; acceptance=self._runtime_acceptance_current(task)
+        if contract is None or contract.artifact!=receipt.artifact or contract.proof_plan is None or contract.proof_plan.plan_digest!=receipt.proof_plan_digest or acceptance is None: return False
         try: current=contract.artifact.reobserve(contract.observation_root)
         except InvariantError: return False
-        return bool(current==receipt.artifact and self.proof_state(receipt.producer_lane_id) is ProofState.ACCEPTED and self._topology_review_digest(review)==receipt.review_receipt_digest and self._topology_gate_digests(task)==receipt.gate_receipt_digests)
+        return bool(current==receipt.artifact and self.proof_state(receipt.producer_lane_id) is ProofState.ACCEPTED and acceptance.review_receipt_digest==receipt.review_receipt_digest and acceptance.gate_receipt_digests==receipt.gate_receipt_digests)
 
     def topology_dispatch_preflight(self, root_lane_id:str, root_host_task_id:str) -> "TopologyDispatchPreflight":
         """Return the retained local reservation/confirmation ledger for one CTRL root."""
@@ -1502,7 +1528,8 @@ class Swarm:
         if any(receipt.outcome is not ProofOutcome.PASS or receipt.stability is not ProofStability.STABLE for receipt in receipts): return ProofState.ESCALATE
         if self.open_gates(task_id) or self.open_claims(task_id): return ProofState.RUNNING if receipts else ProofState.READY
         final_scopes={requirement.scope for requirement in plan.reviews if requirement.scope in {ReviewScope.ACCEPTANCE,ReviewScope.COMPOSED}}
-        if final_scopes and (task.acceptance_review_receipt is None or task.acceptance_review_receipt.scope not in final_scopes): return ProofState.ACCEPTANCE_REVIEW
+        acceptance=self._runtime_acceptance_current(task)
+        if final_scopes and (acceptance is None or acceptance.scope not in final_scopes): return ProofState.ACCEPTANCE_REVIEW
         return ProofState.ACCEPTED
 
     def proof_snapshot(self, task_id:str) -> dict[str,object]:
@@ -1575,7 +1602,7 @@ class Swarm:
             object.__setattr__(refreshed,"_authority",self._gate_capability); object.__setattr__(refreshed,"_bound_task_id",task_id)
             adopted[new_spec.id]=refreshed
         task.acceptance_contract=AcceptanceContract(contract.artifact,observation_root=contract.observation_root,proof_plan=new_plan)
-        task.gate_receipts=adopted; task.unverified_gate_receipts={}; task.plan_review_receipt=None; task.acceptance_review_receipt=None; task.review_passed=False; task.reviewer=None; task.state=TaskState.ACTIVE
+        task.gate_receipts=adopted; task.unverified_gate_receipts={}; task.plan_review_receipt=None; task.acceptance_review_receipt=None; self._runtime_acceptances.pop(task.id,None); task.review_passed=False; task.reviewer=None; task.state=TaskState.ACTIVE
         return new_plan
 
     def attach_request_store(self, repo_root:Path|str) -> RequestAudit:
@@ -1940,7 +1967,7 @@ class Swarm:
         if receipt.verdict is DelegatedReceiptVerdict.ACCEPT and debt: raise InvariantError(f"delegated ACCEPT remains unverified: {','.join(debt)}")
         task.delegated_return_receipts.append(receipt)
         if len(task.delegated_return_receipts)>16: del task.delegated_return_receipts[:-16]
-        task.review_passed=False; task.acceptance_review_receipt=None
+        task.review_passed=False; task.acceptance_review_receipt=None; self._runtime_acceptances.pop(task.id,None)
         if receipt.verdict is DelegatedReceiptVerdict.ACCEPT: task.state=TaskState.REVIEW; task.handoff_active=True
         elif receipt.verdict is DelegatedReceiptVerdict.BLOCKED: task.state=TaskState.WAITING; task.findings.append(receipt.first_blocker)
         else: task.state=TaskState.ACTIVE; task.findings.append(receipt.first_blocker)
@@ -2302,7 +2329,7 @@ class Swarm:
         if receipt.artifact!=contract.artifact: raise InvariantError("gate receipt artifact does not match acceptance contract")
         if receipt._authority is not None: raise InvariantError("runtime gate receipts cannot re-enter through the UNVERIFIED path")
         t.unverified_gate_receipts[receipt.gate]=receipt; t.gate_receipts.pop(receipt.gate,None)
-        t.review_passed=False; t.acceptance_review_receipt=None; t.state=TaskState.ACTIVE
+        t.review_passed=False; t.acceptance_review_receipt=None; self._runtime_acceptances.pop(t.id,None); t.state=TaskState.ACTIVE
     def _gate_spec(self, contract:AcceptanceContract, gate:str) -> GateSpec:
         if contract.proof_plan is None: raise InvariantError("gate execution requires a proof plan")
         spec=next((item for item in contract.proof_plan.gates if item.id==gate),None)
@@ -2351,7 +2378,7 @@ class Swarm:
         receipt=GateReceipt(gate,contract.artifact,outcome,command,before.observables,after.observables,returncode,plan.plan_digest,gate_spec_digest,_sha256_text(contract.artifact.key()),spec.input_closure_digest,spec.environment_fingerprint,started,int(time.time()),tuple(attempts),ProofStability.UNSTABLE if len(set(attempts))>1 else ProofStability.STABLE,spec.proof_class,_sha256_text(f"{task_id}:{actor_id}:{plan.plan_digest}"))
         object.__setattr__(receipt,"_authority",self._gate_capability); object.__setattr__(receipt,"_bound_task_id",task_id); t.gate_receipts[gate]=receipt; t.unverified_gate_receipts.pop(gate,None)
         if outcome is not ProofOutcome.PASS:
-            t.review_passed=False; t.acceptance_review_receipt=None; t.state=TaskState.ACTIVE
+            t.review_passed=False; t.acceptance_review_receipt=None; self._runtime_acceptances.pop(t.id,None); t.state=TaskState.ACTIVE
         return receipt
     def _record_host_external_proof(self, actor:Role, task_id:str, gate:str, *, actor_id:str, evidence_digest:str, observed_at:int, host_signature:str) -> GateReceipt:
         """Host-adapter seam for auth, provider, payment, deployed, device, and human observations."""
@@ -2402,7 +2429,8 @@ class Swarm:
         if contract.explicitly_empty: return bool(task.review_passed and task.reviewer and evidence and evidence.scope is ReviewScope.ACCEPTANCE and evidence.reviewer==task.reviewer and evidence.artifact is None)
         if contract.proof_plan is None: return False
         final_scopes={requirement.scope for requirement in contract.proof_plan.reviews if requirement.scope in {ReviewScope.ACCEPTANCE,ReviewScope.COMPOSED}}
-        review_ok=not final_scopes or bool(task.review_passed and task.reviewer and evidence and evidence.scope in final_scopes and evidence.reviewer==task.reviewer and evidence.artifact==contract.artifact and evidence.plan_digest in {"",contract.proof_plan.plan_digest})
+        acceptance=self._runtime_acceptance_current(task)
+        review_ok=not final_scopes or bool(acceptance and acceptance.scope in final_scopes)
         plan_required=any(requirement.scope is ReviewScope.PLAN for requirement in contract.proof_plan.reviews)
         plan_ok=not plan_required or bool(task.plan_review_receipt and task.plan_review_receipt.artifact==contract.artifact and dict(task.plan_review_receipt.receipt).get("plan")==contract.proof_plan.plan_digest)
         return bool(review_ok and plan_ok and not self.open_gates(task.id) and not self.open_claims(task.id))
@@ -2424,14 +2452,14 @@ class Swarm:
             self._validate_task_acceptance(t); contract=t.acceptance_contract
             if contract is None or contract.proof_plan is None or not any(requirement.scope is ReviewScope.PLAN for requirement in contract.proof_plan.reviews): raise InvariantError("plan review is not required by the current proof plan")
             if evidence.artifact!=contract.artifact or dict(evidence.receipt).get("plan")!=contract.proof_plan.plan_digest or evidence.plan_digest not in {"",contract.proof_plan.plan_digest}: raise InvariantError("PLAN PASS must bind the exact artifact and proof-plan digest")
-            t.plan_review_receipt=evidence; t.review_passed=False; t.state=TaskState.ACTIVE
+            t.plan_review_receipt=evidence; t.review_passed=False; t.acceptance_review_receipt=None; self._runtime_acceptances.pop(t.id,None); t.state=TaskState.ACTIVE
         elif passed and evidence.scope in {ReviewScope.ACCEPTANCE,ReviewScope.COMPOSED}:
             self._validate_task_acceptance(t)
             if t.ctrl_mode is CtrlMode.DELEGATED and not self._delegated_return_ready(t): raise InvariantError("final review requires a readable exact-artifact delegated ACCEPT receipt; activity and in-progress state are not evidence")
             if t.acceptance_contract is None: raise InvariantError("acceptance review requires an explicit acceptance contract")
             if t.acceptance_contract.explicitly_empty:
                 if evidence.scope is not ReviewScope.ACCEPTANCE or evidence.artifact is not None or not dict(evidence.receipt).get("acceptance"): raise InvariantError("empty NON_CODE acceptance requires an independent acceptance receipt without an artifact")
-                t.review_passed=True; t.acceptance_review_receipt=evidence; t.state=TaskState.REVIEW
+                t.review_passed=True; t.acceptance_review_receipt=evidence; self._runtime_acceptances.pop(t.id,None); t.state=TaskState.REVIEW
                 return
             plan=t.acceptance_contract.proof_plan
             if plan is None: raise InvariantError("acceptance review requires a proof plan")
@@ -2446,10 +2474,12 @@ class Swarm:
             receipt_key="composed" if evidence.scope is ReviewScope.COMPOSED else "acceptance"
             if not dict(evidence.receipt).get(receipt_key): raise InvariantError("final review requires an independent exact-scope receipt")
             if evidence.plan_digest not in {"",plan.plan_digest}: raise InvariantError("final review proof-plan digest mismatch")
-            t.review_passed=True; t.acceptance_review_receipt=evidence; t.state=TaskState.REVIEW
+            t.review_passed=True; t.acceptance_review_receipt=evidence
+            accepted=_RuntimeAcceptanceRecord(t.id,t.acceptance_contract.artifact,t.acceptance_contract.artifact.content_address(),plan.plan_digest,evidence.reviewer,evidence.scope,"ACCEPT",self._topology_review_digest(evidence),self._topology_gate_digests(t),int(time.time()*1000))
+            object.__setattr__(accepted,"_authority",self._review_capability); self._runtime_acceptances[t.id]=accepted; t.state=TaskState.REVIEW
         elif passed:
-            t.review_passed=False; t.acceptance_review_receipt=None; t.state=TaskState.ACTIVE
-        else: t.review_passed=False; t.acceptance_review_receipt=None; t.state=TaskState.ACTIVE; t.findings.extend(evidence.findings or ("review failed",))
+            t.review_passed=False; t.acceptance_review_receipt=None; self._runtime_acceptances.pop(t.id,None); t.state=TaskState.ACTIVE
+        else: t.review_passed=False; t.acceptance_review_receipt=None; self._runtime_acceptances.pop(t.id,None); t.state=TaskState.ACTIVE; t.findings.extend(evidence.findings or ("review failed",))
     def lease(self, actor: Role, surface: str, holder: str) -> None:
         self._role(actor,{Role.CTRL})
         if surface in self.leases and self.leases[surface]!=holder: raise InvariantError("surface already leased")

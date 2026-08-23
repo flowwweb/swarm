@@ -15,6 +15,7 @@ from skills.swarm.runtime import (
     LaneMaterialization,
     LaneKind,
     ProfessionAssignment,
+    ProofState,
     ReviewEvidence,
     ReviewScope,
     ReviewStrategy,
@@ -189,7 +190,34 @@ class TopologyMaterializationTests(unittest.TestCase):
                 receipt=(("acceptance", "review:adapter"),), scope=ReviewScope.ACCEPTANCE,
                 plan_digest=task.acceptance_contract.proof_plan.plan_digest,
             )
+            task.review_passed = True
+            task.reviewer = review.reviewer
+            task.acceptance_review_receipt = review
+            self.assertEqual(swarm.proof_state("adapter"), ProofState.ACCEPTANCE_REVIEW)
+            with self.assertRaisesRegex(InvariantError, "runtime-issued exact-artifact independent acceptance"):
+                swarm.issue_topology_artifact_freeze("adapter", "review", plan.plan_digest)
+            task.review_passed = False
+            task.reviewer = None
+            task.acceptance_review_receipt = None
+
+            rejected_reviews = (
+                replace(review, independent=False),
+                replace(review, reviewer="builder"),
+                replace(review, artifact=ArtifactIdentity("wrong", "rev-1", "candidate")),
+                replace(review, plan_digest="0" * 64),
+            )
+            for rejected in rejected_reviews:
+                with self.subTest(rejected=rejected), self.assertRaises(InvariantError):
+                    swarm.review(Role.REVIEW, "adapter", rejected, True)
             swarm.review(Role.REVIEW, "adapter", review, True)
+            self.assertEqual(swarm.proof_state("adapter"), ProofState.ACCEPTED)
+            issued_acceptance = swarm._runtime_acceptances.get("adapter")
+            self.assertIsNotNone(issued_acceptance)
+            swarm._runtime_acceptances["adapter"] = replace(issued_acceptance)
+            self.assertEqual(swarm.proof_state("adapter"), ProofState.ACCEPTANCE_REVIEW)
+            with self.assertRaisesRegex(InvariantError, "runtime-issued exact-artifact independent acceptance"):
+                swarm.issue_topology_artifact_freeze("adapter", "review", plan.plan_digest)
+            swarm._runtime_acceptances["adapter"] = issued_acceptance
             freeze = swarm.issue_topology_artifact_freeze("adapter", "review", plan.plan_digest)
             preflight = self.preflight(swarm)
             packet = preflight.prepare(plan, ready_lane_ids=("review",), artifact_freeze_receipts=(freeze,))
@@ -220,10 +248,32 @@ class TopologyMaterializationTests(unittest.TestCase):
             with self.assertRaisesRegex(InvariantError, "untrusted, stale, rejected"):
                 preflight.prepare(plan, ready_lane_ids=("review",), artifact_freeze_receipts=(freeze,))
             object.__setattr__(freeze, "valid_until_ms", valid_until)
-            task.acceptance_review_receipt = None
-            task.review_passed = False
-            with self.assertRaisesRegex(InvariantError, "untrusted, stale, rejected"):
-                preflight.prepare(plan, ready_lane_ids=("review",), artifact_freeze_receipts=(freeze,))
+            for changed_review in (
+                replace(review, independent=False),
+                replace(review, reviewer="builder"),
+                replace(review, artifact=ArtifactIdentity("wrong", "rev-1", "candidate")),
+                replace(review, plan_digest="0" * 64),
+            ):
+                with self.subTest(changed_review=changed_review):
+                    task.acceptance_review_receipt = changed_review
+                    task.reviewer = changed_review.reviewer
+                    self.assertEqual(swarm.proof_state("adapter"), ProofState.ACCEPTANCE_REVIEW)
+                    with self.assertRaisesRegex(InvariantError, "runtime-issued exact-artifact independent acceptance"):
+                        swarm.issue_topology_artifact_freeze("adapter", "review", plan.plan_digest)
+            task.acceptance_review_receipt = review
+            task.reviewer = review.reviewer
+            original_owner = task.owner
+            task.owner = review.reviewer
+            self.assertEqual(swarm.proof_state("adapter"), ProofState.ACCEPTANCE_REVIEW)
+            task.owner = original_owner
+            original_contract = task.acceptance_contract
+            task.acceptance_contract = AcceptanceContract(artifact, ("changed-plan",), observation_root=root)
+            self.assertNotEqual(swarm.proof_state("adapter"), ProofState.ACCEPTED)
+            task.acceptance_contract = original_contract
+            path.write_text("changed", encoding="utf-8")
+            self.assertNotEqual(swarm.proof_state("adapter"), ProofState.ACCEPTED)
+            path.write_text("frozen", encoding="utf-8")
+            self.assertEqual(swarm.proof_state("adapter"), ProofState.ACCEPTED)
 
     def test_child_dispatch_requires_previously_confirmed_parent_and_confirmation_is_retained(self) -> None:
         lead = self.lead("runtime", parent="ctrl")
