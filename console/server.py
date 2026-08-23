@@ -35,6 +35,19 @@ from urllib.parse import parse_qs, unquote, urlparse
 PLUGIN_ROOT = Path(__file__).resolve().parents[1]
 STATIC_ROOT = Path(__file__).resolve().parent / "static"
 CONSOLE_ROOT = Path(__file__).resolve().parent
+SWARM_SKILL_ROOT = PLUGIN_ROOT / "skills" / "swarm"
+if str(SWARM_SKILL_ROOT) not in sys.path:
+    sys.path.insert(0, str(SWARM_SKILL_ROOT))
+
+from runtime.progress_events import (  # noqa: E402
+    MAX_PULSE_BYTES,
+    MAX_PULSE_FILES,
+    PULSE_ROOT,
+    ProgressEventError,
+    ProgressPulseEvent,
+    validate_progress_pulse,
+)
+
 INSTANCE_ID = hashlib.sha256(str(CONSOLE_ROOT.resolve()).casefold().encode("utf-8")).hexdigest()[:16]
 CONFIG_SCRIPT = PLUGIN_ROOT / "skills" / "swarm" / "scripts" / "swarm_config.py"
 DEFAULT_CODEX_HOME = Path(os.environ.get("CODEX_HOME", Path.home() / ".codex"))
@@ -53,6 +66,7 @@ TOKEN_SOURCE_SQLITE = "host_reported_cumulative_delta"
 TOKEN_SOURCE_CODEX_JSONL = "codex_jsonl_token_count"
 TOKEN_JSONL_SCAN_FILE_LIMIT = 4096
 PROGRESS_FRESHNESS_WINDOWS = 2
+PROGRESS_RECEIPTS_PER_TASK = 128
 DIAGNOSTIC_RETENTION_DAYS = 7
 DIAGNOSTIC_FRESH_SECONDS = TOKEN_SAMPLE_SECONDS * 5
 HEALTH_INCIDENT_RETENTION_DAYS = 90
@@ -994,6 +1008,51 @@ class ConsoleStore:
                     scheduled_wake_consumed INTEGER NOT NULL DEFAULT 0,
                     updated_at_ms INTEGER NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS task_progress_state (
+                    task_id TEXT PRIMARY KEY,
+                    project_id TEXT NOT NULL,
+                    plan_id TEXT NOT NULL,
+                    unit_id TEXT NOT NULL,
+                    unit_kind TEXT NOT NULL,
+                    total_units INTEGER NOT NULL,
+                    completed_units INTEGER NOT NULL,
+                    basis TEXT NOT NULL,
+                    observed_at_ms INTEGER NOT NULL,
+                    source TEXT NOT NULL,
+                    receipt_id TEXT NOT NULL,
+                    pulse_receipt TEXT NOT NULL,
+                    pulse_observed_at_ms INTEGER NOT NULL,
+                    pulse_state TEXT NOT NULL,
+                    updated_at_ms INTEGER NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS task_progress_receipts (
+                    receipt_id TEXT PRIMARY KEY,
+                    task_id TEXT NOT NULL,
+                    project_id TEXT NOT NULL,
+                    plan_id TEXT NOT NULL,
+                    previous_plan_id TEXT,
+                    unit_id TEXT NOT NULL,
+                    unit_kind TEXT NOT NULL,
+                    total_units INTEGER NOT NULL,
+                    completed_units INTEGER NOT NULL,
+                    observed_at_ms INTEGER NOT NULL,
+                    source TEXT NOT NULL,
+                    payload_digest TEXT NOT NULL,
+                    accepted_at_ms INTEGER NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS task_progress_receipts_task_time
+                    ON task_progress_receipts(task_id, observed_at_ms DESC);
+                CREATE TABLE IF NOT EXISTS task_progress_pulse_files (
+                    event_name TEXT PRIMARY KEY,
+                    task_id TEXT NOT NULL,
+                    project_id TEXT NOT NULL,
+                    pulse_receipt TEXT NOT NULL,
+                    payload_digest TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    pulse_state TEXT NOT NULL,
+                    observed_at_ms INTEGER NOT NULL,
+                    updated_at_ms INTEGER NOT NULL
+                );
                 CREATE TABLE IF NOT EXISTS store_metadata (
                     key TEXT PRIMARY KEY,
                     value TEXT NOT NULL
@@ -1254,6 +1313,289 @@ class ConsoleStore:
             (now_ms, now_ms, task_id),
         )
         return True
+
+    def _record_progress_pulse(
+        self,
+        connection: sqlite3.Connection,
+        event: ProgressPulseEvent,
+        *,
+        now_ms: int,
+    ) -> str:
+        """Apply one validated local pulse without granting it host authority."""
+        if event.observed_at_ms > now_ms:
+            raise ConsoleError("progress pulse observation time is in the future")
+        connection.execute(
+            """
+            INSERT INTO task_heartbeats(
+                task_id, project_id, last_material_at_ms, last_liveness_at_ms,
+                scheduled_wake_at_ms, scheduled_wake_consumed, updated_at_ms
+            ) VALUES (?, ?, NULL, ?, NULL, 0, ?)
+            ON CONFLICT(task_id) DO UPDATE SET
+                project_id=excluded.project_id,
+                last_liveness_at_ms=MAX(task_heartbeats.last_liveness_at_ms, excluded.last_liveness_at_ms),
+                updated_at_ms=MAX(task_heartbeats.updated_at_ms, excluded.updated_at_ms)
+            """,
+            (event.task_id, event.project_id, event.observed_at_ms, now_ms),
+        )
+        progress = event.progress
+        if progress is None:
+            return "heartbeat"
+        progress_digest = hashlib.sha256(json.dumps(
+            {
+                "task_id": event.task_id,
+                "project_id": event.project_id,
+                "receipt_id": progress.receipt_id,
+                "plan_id": progress.plan_id,
+                "previous_plan_id": progress.previous_plan_id,
+                "unit_id": progress.unit_id,
+                "unit_kind": progress.unit_kind,
+                "total_units": progress.total_units,
+                "completed_units": progress.completed_units,
+                "basis": progress.basis,
+                "observed_at_ms": progress.observed_at_ms,
+                "source": progress.source,
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")).hexdigest()
+        existing_receipt = connection.execute(
+            "SELECT * FROM task_progress_receipts WHERE receipt_id = ?",
+            (progress.receipt_id,),
+        ).fetchone()
+        if existing_receipt is not None:
+            if str(existing_receipt["payload_digest"]) != progress_digest:
+                raise ConsoleError("progress receipt conflicts with a previously accepted receipt")
+            return "duplicate"
+        latest = connection.execute(
+            "SELECT * FROM task_progress_state WHERE task_id = ?",
+            (event.task_id,),
+        ).fetchone()
+        if latest is None:
+            if progress.previous_plan_id is not None:
+                raise ConsoleError("initial progress plan cannot claim a previous plan")
+        else:
+            if str(latest["project_id"]) != event.project_id:
+                raise ConsoleError("progress pulse project conflicts with the stored task target")
+            current_plan = str(latest["plan_id"])
+            if progress.plan_id == current_plan:
+                if progress.previous_plan_id is not None:
+                    raise ConsoleError("same-plan progress cannot declare a plan revision")
+                if (
+                    progress.unit_id != str(latest["unit_id"])
+                    or progress.unit_kind != str(latest["unit_kind"])
+                    or progress.total_units != int(latest["total_units"])
+                ):
+                    raise ConsoleError("progress unit identity or declared total conflicts with the stored plan")
+                if progress.completed_units <= int(latest["completed_units"]):
+                    raise ConsoleError("a unique material receipt must advance completed units monotonically")
+                if progress.observed_at_ms < int(latest["observed_at_ms"]):
+                    raise ConsoleError("progress observation cannot regress its high-water")
+            else:
+                if progress.previous_plan_id != current_plan:
+                    raise ConsoleError("a new progress plan requires an explicit previous_plan_id revision")
+        connection.execute(
+            """
+            INSERT INTO task_progress_receipts(
+                receipt_id, task_id, project_id, plan_id, previous_plan_id,
+                unit_id, unit_kind, total_units, completed_units, observed_at_ms,
+                source, payload_digest, accepted_at_ms
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                progress.receipt_id, event.task_id, event.project_id, progress.plan_id,
+                progress.previous_plan_id, progress.unit_id, progress.unit_kind,
+                progress.total_units, progress.completed_units, progress.observed_at_ms,
+                progress.source, progress_digest, now_ms,
+            ),
+        )
+        connection.execute(
+            """
+            INSERT INTO task_progress_state(
+                task_id, project_id, plan_id, unit_id, unit_kind, total_units,
+                completed_units, basis, observed_at_ms, source, receipt_id,
+                pulse_receipt, pulse_observed_at_ms, pulse_state, updated_at_ms
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(task_id) DO UPDATE SET
+                project_id=excluded.project_id,
+                plan_id=excluded.plan_id,
+                unit_id=excluded.unit_id,
+                unit_kind=excluded.unit_kind,
+                total_units=excluded.total_units,
+                completed_units=excluded.completed_units,
+                basis=excluded.basis,
+                observed_at_ms=excluded.observed_at_ms,
+                source=excluded.source,
+                receipt_id=excluded.receipt_id,
+                pulse_receipt=excluded.pulse_receipt,
+                pulse_observed_at_ms=excluded.pulse_observed_at_ms,
+                pulse_state=excluded.pulse_state,
+                updated_at_ms=excluded.updated_at_ms
+            """,
+            (
+                event.task_id, event.project_id, progress.plan_id, progress.unit_id,
+                progress.unit_kind, progress.total_units, progress.completed_units,
+                progress.basis, progress.observed_at_ms, progress.source,
+                progress.receipt_id, event.pulse_receipt, event.observed_at_ms,
+                event.state, now_ms,
+            ),
+        )
+        connection.execute(
+            """
+            DELETE FROM task_progress_receipts
+            WHERE rowid IN (
+                SELECT rowid FROM task_progress_receipts
+                WHERE task_id = ?
+                ORDER BY observed_at_ms DESC, accepted_at_ms DESC
+                LIMIT -1 OFFSET ?
+            )
+            """,
+            (event.task_id, PROGRESS_RECEIPTS_PER_TASK),
+        )
+        connection.execute(
+            "UPDATE task_heartbeats SET last_material_at_ms = MAX(COALESCE(last_material_at_ms, 0), ?), updated_at_ms = MAX(updated_at_ms, ?) WHERE task_id = ?",
+            (progress.observed_at_ms, now_ms, event.task_id),
+        )
+        return "advanced"
+
+    @staticmethod
+    def _record_progress_pulse_file(
+        connection: sqlite3.Connection,
+        event_name: str,
+        event: ProgressPulseEvent | None,
+        *,
+        digest: str,
+        status: str,
+        now_ms: int,
+    ) -> None:
+        connection.execute(
+            """
+            INSERT INTO task_progress_pulse_files(
+                event_name, task_id, project_id, pulse_receipt, payload_digest,
+                status, pulse_state, observed_at_ms, updated_at_ms
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(event_name) DO UPDATE SET
+                task_id=excluded.task_id,
+                project_id=excluded.project_id,
+                pulse_receipt=excluded.pulse_receipt,
+                payload_digest=excluded.payload_digest,
+                status=excluded.status,
+                pulse_state=excluded.pulse_state,
+                observed_at_ms=excluded.observed_at_ms,
+                updated_at_ms=excluded.updated_at_ms
+            """,
+            (
+                event_name,
+                "" if event is None else event.task_id,
+                "" if event is None else event.project_id,
+                "" if event is None else event.pulse_receipt,
+                digest,
+                status,
+                "" if event is None else event.state,
+                0 if event is None else event.observed_at_ms,
+                now_ms,
+            ),
+        )
+
+    def ingest_progress_pulses(self, codex_home: Path, overview: dict[str, Any], *, now_ms: int) -> dict[str, Any]:
+        """Ingest bounded local sidecars for exact observed non-subagent tasks."""
+        expected_swarm_root = codex_home.resolve() / "swarm"
+        expected_pulse_root = codex_home.resolve() / PULSE_ROOT
+        swarm_root = expected_swarm_root.resolve()
+        pulse_root = expected_pulse_root.resolve()
+        result: dict[str, Any] = {"advanced": 0, "heartbeats": 0, "duplicates": 0, "rejected": 0, "eta_reports": {}}
+        if swarm_root != expected_swarm_root or pulse_root != expected_pulse_root or not pulse_root.is_dir():
+            return result
+        nodes = {
+            str(node.get("id")): node
+            for node in overview.get("nodes", [])
+            if not node.get("virtual") and not node.get("is_subagent") and node.get("id") and node.get("project_id")
+        }
+        scanned = 0
+        for event_path in pulse_root.iterdir():
+            if scanned >= MAX_PULSE_FILES:
+                break
+            if event_path.suffix.casefold() != ".json":
+                continue
+            scanned += 1
+            event: ProgressPulseEvent | None = None
+            digest = ""
+            try:
+                resolved = event_path.resolve(strict=True)
+                stat = resolved.stat()
+                if not resolved.is_file() or resolved.parent != pulse_root or stat.st_size <= 0 or stat.st_size > MAX_PULSE_BYTES:
+                    raise ConsoleError("progress pulse file violates the path or size guard")
+                encoded = resolved.read_bytes()
+                digest = hashlib.sha256(encoded.rstrip(b"\r\n")).hexdigest()
+                event = validate_progress_pulse(json.loads(encoded.decode("utf-8")))
+                expected_name = hashlib.sha256(event.task_id.encode("utf-8")).hexdigest() + ".json"
+                node = nodes.get(event.task_id)
+                if resolved.name != expected_name or node is None or str(node.get("project_id")) != event.project_id:
+                    raise ConsoleError("progress pulse target is not an exact observed non-subagent task/project")
+                with self._lock, closing(self._connect()) as connection:
+                    prior = connection.execute(
+                        "SELECT payload_digest, status, observed_at_ms FROM task_progress_pulse_files WHERE event_name = ?",
+                        (resolved.name,),
+                    ).fetchone()
+                    if prior is not None and str(prior["payload_digest"]) == event.digest and str(prior["status"]) == "IMPORTED":
+                        outcome = "duplicate"
+                    else:
+                        if prior is not None and event.observed_at_ms < int(prior["observed_at_ms"]):
+                            raise ConsoleError("progress pulse file cannot regress its observed high-water")
+                        outcome = self._record_progress_pulse(connection, event, now_ms=now_ms)
+                        if event.eta_report is not None:
+                            self._record_eta_receipt(
+                                connection,
+                                event.eta_report,
+                                observed_task_id=event.task_id,
+                                observed_project_id=event.project_id,
+                                now_ms=now_ms,
+                            )
+                    self._record_progress_pulse_file(connection, resolved.name, event, digest=event.digest, status="IMPORTED", now_ms=now_ms)
+                    connection.commit()
+                if event.eta_report is not None:
+                    result["eta_reports"][event.task_id] = event.eta_report
+                if outcome == "advanced":
+                    result["advanced"] += 1
+                elif outcome == "heartbeat":
+                    result["heartbeats"] += 1
+                else:
+                    result["duplicates"] += 1
+            except (ConsoleError, ProgressEventError, OSError, UnicodeError, json.JSONDecodeError, ValueError, TypeError, sqlite3.Error):
+                result["rejected"] += 1
+                try:
+                    with self._lock, closing(self._connect()) as connection:
+                        self._record_progress_pulse_file(connection, event_path.name, event, digest=digest, status="REJECTED", now_ms=now_ms)
+                        connection.commit()
+                except (OSError, sqlite3.Error):
+                    pass
+        return result
+
+    def latest_progress(self) -> dict[str, dict[str, Any]]:
+        with self._lock, closing(self._connect()) as connection:
+            rows = connection.execute("SELECT * FROM task_progress_state ORDER BY task_id").fetchall()
+        return {
+            str(row["task_id"]): {
+                "project_id": row["project_id"],
+                "progress_basis": {
+                    "receipts": [row["receipt_id"]],
+                    "plan_units": {
+                        "plan_id": row["plan_id"],
+                        "unit_id": row["unit_id"],
+                        "unit_kind": row["unit_kind"],
+                        "total_units": int(row["total_units"]),
+                        "completed_units": int(row["completed_units"]),
+                        "basis": row["basis"],
+                        "observed_at_ms": int(row["observed_at_ms"]),
+                    },
+                },
+                "receipt_source": f"instruction_only_local_sidecar:{row['source']}",
+                "pulse_receipt": row["pulse_receipt"],
+                "pulse_observed_at_ms": int(row["pulse_observed_at_ms"]),
+                "pulse_state": row["pulse_state"],
+                "claim_limit": "Validated local task-owner instruction sidecar only; not native host, user, progress, review, or acceptance authority.",
+            }
+            for row in rows
+        }
 
     def observe_overview(self, overview: dict[str, Any], *, now_ms: int, trigger: str, heartbeat_minutes: int, codex_home: Path | None = None) -> None:
         nodes = [node for node in overview.get("nodes", []) if not node.get("virtual")]
@@ -2173,7 +2515,8 @@ class ConsoleStore:
             before = self.storage_stats()
             deleted = {}
             for table in (
-                "token_samples", "token_cursors", "eta_forecasts", "proof_media", "proof_event_receipts", "store_metadata",
+                "token_samples", "token_cursors", "eta_forecasts", "task_progress_state",
+                "task_progress_receipts", "task_progress_pulse_files", "proof_media", "proof_event_receipts", "store_metadata",
                 "diagnostic_samples", "health_incidents", "health_requests",
             ):
                 deleted[table] = int(connection.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0])
@@ -2197,7 +2540,8 @@ class ConsoleStore:
             counts = {
                 table: int(connection.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0])
                 for table in (
-                    "token_samples", "eta_forecasts", "proof_media", "proof_event_receipts", "ctrl_overrides",
+                    "token_samples", "eta_forecasts", "task_progress_state", "task_progress_receipts",
+                    "task_progress_pulse_files", "proof_media", "proof_event_receipts", "ctrl_overrides",
                     "diagnostic_samples", "health_incidents", "health_requests",
                 )
             }
@@ -3017,12 +3361,16 @@ class App:
             "unit_id": unit_id.strip(),
             "unit_kind": unit_kind.strip(),
             "observed_at_ms": observed_at_ms,
-            "source": "task_owner_report",
+            "source": (
+                eta.get("progress_source")
+                if isinstance(eta.get("progress_source"), str) and eta.get("progress_source").strip()
+                else "task_owner_report"
+            ),
             "receipt_count": len(receipts),
             "claim_limit": (
-                "Derived server-side from validated receipt-backed plan units in an observed "
-                "task-owner planning report; this does not prove host/user authority, acceptance, "
-                "or task progress."
+                "Derived server-side from validated receipt-backed plan units bound to an observed "
+                "task-owner planning report or local instruction sidecar; this does not prove native "
+                "host/user authority, acceptance, or task progress."
             ),
         }
 
@@ -3084,8 +3432,12 @@ class App:
                 "plan_id": measured[0]["plan_id"],
                 "unit_kind": measured[0]["unit_kind"],
                 "unit_ids": sorted(item["unit_id"] for item in measured),
-                "observed_at_ms": max(item["observed_at_ms"] for item in measured),
-                "source": "task_owner_report",
+                "observed_at_ms": min(item["observed_at_ms"] for item in measured),
+                "source": (
+                    measured[0]["source"]
+                    if len({item["source"] for item in measured}) == 1
+                    else "mixed_validated_task_owner_reports"
+                ),
                 "receipt_count": sum(item["receipt_count"] for item in measured),
                 "claim_limit": (
                     "Derived server-side only from compatible validated receipt-backed plan units; "
@@ -3517,10 +3869,25 @@ class App:
     def _decorate_overview(self, base: dict[str, Any]) -> dict[str, Any]:
         view = copy.deepcopy(base)
         forecasts = self.store.latest_forecasts()
+        progress_states = self.store.latest_progress()
         for node in view["nodes"]:
             node["eta"] = forecasts.get(node["id"])
+            progress_state = progress_states.get(node["id"])
+            if progress_state is not None and progress_state.get("project_id") == node.get("project_id") and not node.get("is_subagent"):
+                if node["eta"] is None:
+                    node["eta"] = {}
+                node["eta"].update({
+                    "trigger": "task_owner_report",
+                    "progress_basis": progress_state["progress_basis"],
+                    "receipt_source": progress_state["receipt_source"],
+                    "progress_source": "instruction_only_local_sidecar",
+                    "last_material_heartbeat_at_ms": progress_state["progress_basis"]["plan_units"]["observed_at_ms"],
+                    "pulse_observed_at_ms": progress_state["pulse_observed_at_ms"],
+                    "pulse_state": progress_state["pulse_state"],
+                    "claim_limit": progress_state["claim_limit"],
+                })
             if node["eta"] is not None:
-                node["eta"]["eta_source"] = "task_owner_report"
+                node["eta"]["eta_source"] = "task_owner_report" if node["id"] in forecasts else None
                 node["eta"]["eta_observed_at_ms"] = node["eta"].get("last_calculated_at_ms")
                 node["eta"]["heartbeat_at_ms"] = node["eta"].get("last_material_heartbeat_at_ms")
             node["proof_snapshot"] = self.store.proof_snapshot(node["id"])
@@ -3557,15 +3924,22 @@ class App:
         overview = self._host_overview(refresh=trigger in {"startup", "state_change"})
         now_ms = int(time.time() * 1000)
         heartbeat_minutes = max(1, int(overview.get("heartbeat_minutes") or 30))
+        observed = copy.deepcopy(overview)
+        pulse_result = self.store.ingest_progress_pulses(self.codex_home, observed, now_ms=now_ms)
+        eta_reports = pulse_result.get("eta_reports", {})
+        for node in observed.get("nodes", []):
+            report = eta_reports.get(str(node.get("id")))
+            if report is not None and not node.get("virtual") and not node.get("is_subagent"):
+                node["eta_report"] = report
         self.store.observe_overview(
-            overview,
+            observed,
             now_ms=now_ms,
             trigger=trigger,
             heartbeat_minutes=heartbeat_minutes,
             codex_home=self.codex_home,
         )
         with self.proof_lock:
-            self.store.ingest_proof_events(self.codex_home, overview, now_ms=now_ms)
+            self.store.ingest_proof_events(self.codex_home, observed, now_ms=now_ms)
         try:
             sample = self.diagnostics_collector.collect()
             self.store.record_diagnostics(

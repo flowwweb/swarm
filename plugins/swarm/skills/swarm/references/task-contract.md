@@ -75,6 +75,22 @@ filler, repeated plans, commentary, and unchanged heartbeats are not progress.
 Profession does not transfer ownership, and review does not become implementation
 or acceptance.
 
+When native host pulse transport is unavailable, an owning CTRL or LEAD may write
+one instruction-only local sidecar with `python skills/swarm/scripts/swarm_progress.py
+--codex-home <absolute-codex-home>` and a JSON stdin envelope. The envelope names
+the exact observed `task_id` and `project_id`, a unique pulse receipt, state, and
+observation time. Optional ETA uses the existing `swarm_task_owner_forecast`
+shape. Optional material progress additionally requires a unique receipt plus
+`plan_id`, `unit_id`, `unit_kind`, declared total/completed units, basis,
+observation time, and source. An unchanged heartbeat omits progress. The writer
+atomically replaces one bounded latest-pulse file per task; the console accepts it
+only for that exact observed non-subagent target and persists bounded material
+receipt history with monotonic high-water checks. Duplicate receipts are
+idempotent; regressions, conflicts, unknown/privacy fields, changed totals or unit
+identity, and implicit plan changes fail closed. A new plan requires a new
+`plan_id` and exact `previous_plan_id`. This adapter is local instruction evidence,
+not native host/user, progress, review, or acceptance authority.
+
 The parity manifest is an owner return claim, not host or user authority. It
 must match the declared paths, count, byte total, and file digests and remain
 inside exact dirty custody; missing or ambiguous ownership or parity fails

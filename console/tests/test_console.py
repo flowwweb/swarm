@@ -753,7 +753,8 @@ class SwarmConsoleTests(unittest.TestCase):
         self.assertEqual(summary["tasks"][0]["progress"]["source"], "task_owner_report")
         self.assertIn("does not prove", summary["tasks"][0]["progress"]["claim_limit"])
         self.assertEqual(summary["freshness"]["state"], "fresh")
-        self.assertEqual(summary["freshness"]["observed_at_ms"], 1_003)
+        # Aggregate freshness is coverage-aware: the oldest included unit is authoritative.
+        self.assertEqual(summary["freshness"]["observed_at_ms"], 1_001)
         stale = console.App._progress_for_nodes(
             [measured("one", 1), measured("two", 3, basis="reviewed checkpoints")],
             {"type": "ctrl", "ctrl_id": "ctrl-a", "project_id": "project:a"},
@@ -761,7 +762,7 @@ class SwarmConsoleTests(unittest.TestCase):
             stale_after_ms=1_000,
         )
         self.assertEqual(stale["freshness"]["state"], "stale")
-        self.assertEqual(stale["freshness"]["age_ms"], 8_997)
+        self.assertEqual(stale["freshness"]["age_ms"], 8_999)
         payload = console.App._progress_payload({
             "nodes": [measured("one", 1), measured("two", 3, basis="reviewed checkpoints")],
             "projects": [{"id": "project:a"}],
