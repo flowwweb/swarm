@@ -18,11 +18,19 @@ proof boundary.
 - Medium and large work becomes visible Codex task lanes. Subagents are
   short-lived capacity inside an existing lane and never replace durable
   ownership, handoff, review, or acceptance.
-- Use the smallest graph that can preserve the outcome through interruption,
-  integration, and review. More agents are not evidence of a better graph.
+- Use the most efficient and smallest graph that can complete the objective
+  durably, reliably, and confidently. More agents are not evidence of a better
+  graph.
 - Recompute only when objective, ownership, dependency, integration, or
   acceptance facts materially change. User direction remains the highest
   constraint.
+
+The runtime also projects a tiny dependency/artifact graph from the same
+records. It contains only TASK and content-addressed ARTIFACT nodes plus
+`waits_for` and `accepts_artifact` edges. It is not a second scheduler, role
+roster, or persistence system. Use its deterministic digest in the immutable
+review packet so a real dependency or artifact change invalidates proof while
+unrelated hierarchy metadata does not.
 
 ## Registered profiles
 
@@ -39,19 +47,20 @@ flow is:
 
 ```text
 CTRL
-  -> GAME_STUDIO_LEAD
-       -> DESIGNER   ┐
-       -> DEV        ├─ independent production lanes
-       -> ARTIST     │
-       -> AUDIO      ┘
-            -> QA / playtest
-                 -> RELEASE
+  -> MANAGER LEAD
+       -> DESIGNER DOER   ┐
+       -> DEV DOER        ├─ independent production lanes
+       -> ARTIST DOER     │
+       -> PRODUCER DOER   ┘
+            -> TESTER DOER / playtest
+                 -> OPERATOR DOER
 ```
 
 The game-studio lead owns the integrated plan. Design owns the player contract
 and rules; engineering owns deterministic runtime and integration; art owns
-visual production; audio owns sound and music; QA/playtest verifies the
-integrated player contract; release owns packaging and publication checks.
+visual production; the Producer owns sound and music; the independent Tester
+verifies the integrated player contract; the Operator owns packaging and
+publication checks.
 These are conventional production dependencies encoded as a SWARM profile,
 not a claim that every project needs every lane. A smaller game task can
 choose a narrower explicit scope; a one-shot game-project prompt uses the full

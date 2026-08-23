@@ -4,6 +4,7 @@ import importlib.util
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 
 LAUNCHER = Path(__file__).resolve().parents[1] / "launcher.py"
@@ -37,6 +38,19 @@ class LauncherTests(unittest.TestCase):
             open_browser=lambda *_args, **_kwargs: self.fail("disabled launcher opened browser"),
         )
         self.assertEqual(result["reason"], "disabled")
+
+    def test_enabled_launcher_fails_closed_before_server_or_browser_when_assets_are_missing(self) -> None:
+        self._write_setting(True)
+        with mock.patch.object(launcher, "CONSOLE_ROOT", self.root / "missing-console"):
+            result = launcher.ensure_portal(
+                config_path=self.config,
+                codex_home=self.codex_home,
+                fetch_json=lambda *_args, **_kwargs: self.fail("asset preflight probed server"),
+                spawn_server=lambda *_args: self.fail("asset preflight started server"),
+                open_browser=lambda *_args, **_kwargs: self.fail("asset preflight opened browser"),
+            )
+        self.assertEqual(result["reason"], "console_assets_missing")
+        self.assertEqual(result["missing"], ("index.html", "app.js", "styles.css"))
 
     def test_live_server_and_fresh_presence_skip_open(self) -> None:
         self._write_setting(True)

@@ -17,6 +17,14 @@ minimum independent review that matches consequence and evidence:
 
 Automated Git advancement is downstream of this contract. It requires a
 readable exact-candidate independent `ACCEPT`, then a fresh fetch receipt.
+The reviewer receives one deterministic immutable review packet. Its digest
+binds repository identity, producer and separate review task, candidate
+SHA/tree/parent, content-addressed artifact, exact path manifest, dependency
+graph, proof plan, proof manifest, and claim limits. A tree, content, path,
+dependency, proof-plan, reviewer, or claim change creates a different packet;
+the old verdict cannot advance it. Dirty or blocked checkpoints cannot emit a
+packet. This is proof invalidation, not a review-loop trigger: unchanged packet
+digests are reviewed once and reused only within their validity window.
 Unchanged or fast-forward history may advance non-destructively; divergent
 remote history requires a separate compatibility receipt before merge. SWARM
 never emits force-push, rebase, or reset. Package/install/deploy requests use

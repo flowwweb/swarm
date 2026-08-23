@@ -5,8 +5,10 @@ host tasks, packages a plugin, or claims that a host consumed a request.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import StrEnum
+from hashlib import sha256
+import json
 from pathlib import PurePosixPath, PureWindowsPath
 import re
 
@@ -94,6 +96,18 @@ def _paths(values: tuple[str, ...], label: str, *, allow_empty: bool = False) ->
     return tuple(normalized)
 
 
+def path_manifest_digest(paths: tuple[str, ...]) -> str:
+    """Return the canonical digest used to bind proof and review to exact paths."""
+    normalized = _paths(paths, "path manifest")
+    payload = json.dumps(normalized, separators=(",", ":"), ensure_ascii=True)
+    return sha256(payload.encode("utf-8")).hexdigest()
+
+
+def _canonical_digest(payload: object) -> str:
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+    return sha256(encoded.encode("utf-8")).hexdigest()
+
+
 def normalize_automation_mode(mode: AutomationMode | str) -> AutomationMode:
     """Normalize config/runtime input before any identity comparison."""
     if isinstance(mode, AutomationMode):
@@ -112,6 +126,7 @@ class RepositoryIdentity:
     root: str
     branch: str
     remote: str
+    release_methods: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         _token(self.repository_id, "repository id")
@@ -120,6 +135,10 @@ class RepositoryIdentity:
             raise InvariantError("repository root must be absolute")
         _token(self.branch, "repository branch")
         _token(self.remote, "repository remote")
+        if not isinstance(self.release_methods, tuple) or not all(isinstance(item, str) and item.strip() for item in self.release_methods):
+            raise InvariantError("repository release methods must be a tuple of exact non-empty methods")
+        if len(self.release_methods) != len(set(self.release_methods)):
+            raise InvariantError("repository release methods cannot contain duplicates")
 
 
 @dataclass(frozen=True)
@@ -131,6 +150,10 @@ class StableCheckpoint:
     source_tree: str
     source_parent: str
     artifact_digest: str
+    path_manifest_digest: str
+    dependency_graph_digest: str
+    proof_plan_digest: str
+    review_task_id: str
     owned_paths: tuple[str, ...]
     dirty_paths: tuple[str, ...]
     proof_manifest: tuple[str, ...]
@@ -147,8 +170,14 @@ class StableCheckpoint:
         _git_object(self.source_tree, "checkpoint source tree")
         _git_object(self.source_parent, "checkpoint source parent")
         _digest(self.artifact_digest, "checkpoint artifact digest")
+        _digest(self.path_manifest_digest, "checkpoint path manifest digest")
+        _digest(self.dependency_graph_digest, "checkpoint dependency graph digest")
+        _digest(self.proof_plan_digest, "checkpoint proof plan digest")
+        _token(self.review_task_id, "checkpoint review task id")
         object.__setattr__(self, "owned_paths", _paths(self.owned_paths, "checkpoint owned paths"))
         object.__setattr__(self, "dirty_paths", _paths(self.dirty_paths, "checkpoint dirty paths", allow_empty=True))
+        if self.path_manifest_digest != path_manifest_digest(self.owned_paths):
+            raise InvariantError("checkpoint path manifest digest must match the exact owned paths")
         if not self.proof_manifest or not all(isinstance(value, str) and value.strip() for value in self.proof_manifest):
             raise InvariantError("checkpoint requires a readable proof manifest")
         if not self.claim_limits or not all(isinstance(value, str) and value.strip() for value in self.claim_limits):
@@ -156,6 +185,116 @@ class StableCheckpoint:
         if not isinstance(self.blocker, str):
             raise InvariantError("checkpoint blocker must be text, including empty when clear")
         _token(self.next_action, "checkpoint next action")
+
+    def content_address(self) -> str:
+        """Bind the candidate to its exact Git tree, content, and path manifest."""
+        return _canonical_digest(
+            {
+                "repository": self.repository.repository_id,
+                "tree": self.source_tree,
+                "artifact": self.artifact_digest,
+                "paths": self.path_manifest_digest,
+            }
+        )
+
+    def review_packet(self) -> "ImmutableReviewPacket":
+        return ImmutableReviewPacket.from_checkpoint(self)
+
+
+@dataclass(frozen=True)
+class ImmutableReviewPacket:
+    """One deterministic, portable packet for an exact independent review."""
+
+    repository: RepositoryIdentity
+    producer_task_id: str
+    reviewer_task_id: str
+    candidate_sha: str
+    candidate_tree: str
+    candidate_parent: str
+    content_address: str
+    artifact_digest: str
+    path_manifest_digest: str
+    dependency_graph_digest: str
+    proof_plan_digest: str
+    owned_paths: tuple[str, ...]
+    proof_manifest: tuple[str, ...]
+    claim_limits: tuple[str, ...]
+    schema_version: int = 1
+    packet_digest: str = field(init=False)
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.repository, RepositoryIdentity):
+            raise InvariantError("review packet requires a typed repository identity")
+        if self.schema_version != 1:
+            raise InvariantError("review packet schema version must be 1")
+        _token(self.producer_task_id, "review packet producer task id")
+        _token(self.reviewer_task_id, "review packet reviewer task id")
+        for value, label in (
+            (self.candidate_sha, "review packet candidate SHA"),
+            (self.candidate_tree, "review packet candidate tree"),
+            (self.candidate_parent, "review packet candidate parent"),
+        ):
+            _git_object(value, label)
+        for value, label in (
+            (self.content_address, "review packet content address"),
+            (self.artifact_digest, "review packet artifact digest"),
+            (self.path_manifest_digest, "review packet path manifest digest"),
+            (self.dependency_graph_digest, "review packet dependency graph digest"),
+            (self.proof_plan_digest, "review packet proof plan digest"),
+        ):
+            _digest(value, label)
+        object.__setattr__(self, "owned_paths", _paths(self.owned_paths, "review packet owned paths"))
+        if self.path_manifest_digest != path_manifest_digest(self.owned_paths):
+            raise InvariantError("review packet path manifest digest must match the exact owned paths")
+        if not self.proof_manifest or not all(isinstance(value, str) and value.strip() for value in self.proof_manifest):
+            raise InvariantError("review packet requires a readable proof manifest")
+        if not self.claim_limits or not all(isinstance(value, str) and value.strip() for value in self.claim_limits):
+            raise InvariantError("review packet requires explicit claim limits")
+        payload = {
+            "schema": self.schema_version,
+            "repository": (
+                self.repository.repository_id,
+                self.repository.root,
+                self.repository.branch,
+                self.repository.remote,
+                self.repository.release_methods,
+            ),
+            "producer": self.producer_task_id,
+            "reviewer": self.reviewer_task_id,
+            "candidate": (self.candidate_sha, self.candidate_tree, self.candidate_parent),
+            "content_address": self.content_address,
+            "artifact": self.artifact_digest,
+            "path_manifest": self.path_manifest_digest,
+            "dependency_graph": self.dependency_graph_digest,
+            "proof_plan": self.proof_plan_digest,
+            "owned_paths": self.owned_paths,
+            "proof_manifest": self.proof_manifest,
+            "claim_limits": self.claim_limits,
+        }
+        object.__setattr__(self, "packet_digest", _canonical_digest(payload))
+
+    @classmethod
+    def from_checkpoint(cls, checkpoint: StableCheckpoint) -> "ImmutableReviewPacket":
+        if not isinstance(checkpoint, StableCheckpoint):
+            raise InvariantError("review packet requires a typed stable checkpoint")
+        if checkpoint.dirty_paths or checkpoint.blocker:
+            raise InvariantError("review packet requires a clean unblocked immutable checkpoint")
+        return cls(
+            repository=checkpoint.repository,
+            producer_task_id=checkpoint.task_id,
+            reviewer_task_id=checkpoint.review_task_id,
+            candidate_sha=checkpoint.source_sha,
+            candidate_tree=checkpoint.source_tree,
+            candidate_parent=checkpoint.source_parent,
+            content_address=checkpoint.content_address(),
+            artifact_digest=checkpoint.artifact_digest,
+            path_manifest_digest=checkpoint.path_manifest_digest,
+            dependency_graph_digest=checkpoint.dependency_graph_digest,
+            proof_plan_digest=checkpoint.proof_plan_digest,
+            owned_paths=checkpoint.owned_paths,
+            proof_manifest=checkpoint.proof_manifest,
+            claim_limits=checkpoint.claim_limits,
+        )
 
 
 @dataclass(frozen=True)
@@ -167,8 +306,12 @@ class IndependentReviewReceipt:
     candidate_sha: str
     candidate_tree: str
     artifact_digest: str
+    path_manifest_digest: str
+    review_packet_digest: str
     verdict: DelegatedReceiptVerdict
     readable_receipt: str
+    observed_at_ms: int
+    expires_at_ms: int
 
     def __post_init__(self) -> None:
         if not isinstance(self.repository, RepositoryIdentity):
@@ -185,14 +328,26 @@ class IndependentReviewReceipt:
         _git_object(self.candidate_sha, "review candidate SHA")
         _git_object(self.candidate_tree, "review candidate tree")
         _digest(self.artifact_digest, "review artifact digest")
+        _digest(self.path_manifest_digest, "review path manifest digest")
+        _digest(self.review_packet_digest, "review packet digest")
         if not isinstance(self.verdict, DelegatedReceiptVerdict):
             raise InvariantError("review verdict must be ACCEPT, REJECT, or BLOCKED")
+        if not isinstance(self.observed_at_ms, int) or self.observed_at_ms < 0:
+            raise InvariantError("review observation time must be non-negative")
+        if not isinstance(self.expires_at_ms, int) or self.expires_at_ms < self.observed_at_ms:
+            raise InvariantError("review receipt expiry must not precede observation")
+
+    def current_at(self, now_ms: int) -> bool:
+        return isinstance(now_ms, int) and self.observed_at_ms <= now_ms <= self.expires_at_ms
 
 
 @dataclass(frozen=True)
 class FetchReceipt:
     repository: RepositoryIdentity
     local_head: str
+    candidate_tree: str
+    artifact_digest: str
+    path_manifest_digest: str
     remote_head: str
     relationship: GitRelationship
     fetched_at_ms: int
@@ -202,6 +357,9 @@ class FetchReceipt:
         if not isinstance(self.repository, RepositoryIdentity):
             raise InvariantError("fetch receipt requires a typed repository identity")
         _git_object(self.local_head, "fetch local head")
+        _git_object(self.candidate_tree, "fetch candidate tree")
+        _digest(self.artifact_digest, "fetch artifact digest")
+        _digest(self.path_manifest_digest, "fetch path manifest digest")
         _git_object(self.remote_head, "fetch remote head")
         if not isinstance(self.relationship, GitRelationship):
             raise InvariantError("fetch relationship must be typed")
@@ -225,9 +383,12 @@ class BoundPolicyReceipt:
     receipt_ref: str
     observed_at_ms: int
     expires_at_ms: int
+    artifact_digest: str
+    path_manifest_digest: str
     method: str = ""
     remote_head: str = ""
-    artifact_digest: str = ""
+    subject_artifact_digest: str = ""
+    subject_path: str = ""
 
     def __post_init__(self) -> None:
         if not isinstance(self.repository, RepositoryIdentity):
@@ -247,8 +408,12 @@ class BoundPolicyReceipt:
             _token(self.method, "policy method")
         if self.remote_head:
             _git_object(self.remote_head, "policy remote head")
-        if self.artifact_digest:
-            _digest(self.artifact_digest, "policy artifact digest")
+        _digest(self.artifact_digest, "policy candidate artifact digest")
+        _digest(self.path_manifest_digest, "policy path manifest digest")
+        if self.subject_artifact_digest:
+            _digest(self.subject_artifact_digest, "policy subject artifact digest")
+        if self.subject_path:
+            _token(self.subject_path, "policy subject path")
 
     def current_at(self, now_ms: int) -> bool:
         return isinstance(now_ms, int) and self.observed_at_ms <= now_ms <= self.expires_at_ms
@@ -256,7 +421,12 @@ class BoundPolicyReceipt:
 
 @dataclass(frozen=True)
 class HostArchiveCustodyReceipt:
+    repository: RepositoryIdentity
     task_id: str
+    candidate_sha: str
+    candidate_tree: str
+    artifact_digest: str
+    path_manifest_digest: str
     target_state_digest: str
     receipt_ref: str
     authority: ReceiptAuthority
@@ -264,7 +434,13 @@ class HostArchiveCustodyReceipt:
     expires_at_ms: int
 
     def __post_init__(self) -> None:
+        if not isinstance(self.repository, RepositoryIdentity):
+            raise InvariantError("archive custody receipt requires a typed repository identity")
         _token(self.task_id, "host archive task id")
+        _git_object(self.candidate_sha, "host archive candidate SHA")
+        _git_object(self.candidate_tree, "host archive candidate tree")
+        _digest(self.artifact_digest, "host archive artifact digest")
+        _digest(self.path_manifest_digest, "host archive path manifest digest")
         _digest(self.target_state_digest, "host archive target state")
         _token(self.receipt_ref, "host archive receipt reference")
         if self.authority is not ReceiptAuthority.HOST:
@@ -348,8 +524,7 @@ def _policy_receipt_blocker(
     now_ms: int,
     remote_head: str = "",
     require_method: bool = False,
-    require_artifact: bool = False,
-    expected_artifact_digest: str = "",
+    require_subject: bool = False,
 ) -> str:
     if receipt is None:
         return f"{purpose.value} receipt required"
@@ -357,6 +532,8 @@ def _policy_receipt_blocker(
         return f"{purpose.value} receipt targets a different repository, root, branch, or remote"
     if (receipt.candidate_sha, receipt.candidate_tree) != (checkpoint.source_sha, checkpoint.source_tree):
         return f"{purpose.value} receipt targets a different candidate"
+    if (receipt.artifact_digest, receipt.path_manifest_digest) != (checkpoint.artifact_digest, checkpoint.path_manifest_digest):
+        return f"{purpose.value} receipt targets a different artifact or path manifest"
     if receipt.purpose is not purpose or receipt.operation is not operation:
         return f"{purpose.value} receipt has the wrong purpose or operation"
     if receipt.authority not in authorities:
@@ -365,12 +542,10 @@ def _policy_receipt_blocker(
         return f"{purpose.value} receipt is stale or not yet valid"
     if remote_head and receipt.remote_head != remote_head:
         return f"{purpose.value} receipt targets a different remote head"
-    if require_method and not receipt.method:
-        return f"{purpose.value} receipt lacks the repository-defined method"
-    if require_artifact and not receipt.artifact_digest:
-        return f"{purpose.value} receipt lacks an artifact digest"
-    if expected_artifact_digest and receipt.artifact_digest != expected_artifact_digest:
-        return f"{purpose.value} receipt targets a different artifact digest"
+    if require_method and (not receipt.method or receipt.method not in checkpoint.repository.release_methods):
+        return f"{purpose.value} receipt lacks a repository-declared release method"
+    if require_subject and (not receipt.subject_artifact_digest or not receipt.subject_path):
+        return f"{purpose.value} receipt lacks exact subject artifact/path binding"
     return ""
 
 
@@ -405,6 +580,8 @@ def review_decision(
     mode: AutomationMode | str,
     checkpoint: StableCheckpoint,
     receipt: IndependentReviewReceipt | None,
+    *,
+    now_ms: int,
 ) -> AutomationDecision:
     """Require one readable exact-candidate independent verdict before integration."""
     mode = normalize_automation_mode(mode)
@@ -412,10 +589,22 @@ def review_decision(
         return _manual()
     if receipt is None:
         return AutomationDecision(AutomationAction.REVIEW, AutomationStatus.BLOCKED, blocker="independent review receipt required")
+    try:
+        packet = checkpoint.review_packet()
+    except InvariantError as error:
+        return AutomationDecision(AutomationAction.REVIEW, AutomationStatus.BLOCKED, blocker=str(error))
+    if receipt.visible_task_id != checkpoint.review_task_id:
+        return AutomationDecision(AutomationAction.REVIEW, AutomationStatus.BLOCKED, blocker="review receipt targets a different visible review task")
+    if receipt.producer_id != checkpoint.task_id:
+        return AutomationDecision(AutomationAction.REVIEW, AutomationStatus.BLOCKED, blocker="review receipt targets a different producer task")
     if receipt.repository != checkpoint.repository:
         return AutomationDecision(AutomationAction.REVIEW, AutomationStatus.BLOCKED, blocker="review receipt targets a different repository, root, branch, or remote")
-    if (receipt.candidate_sha, receipt.candidate_tree, receipt.artifact_digest) != (checkpoint.source_sha, checkpoint.source_tree, checkpoint.artifact_digest):
+    if (receipt.candidate_sha, receipt.candidate_tree, receipt.artifact_digest, receipt.path_manifest_digest) != (checkpoint.source_sha, checkpoint.source_tree, checkpoint.artifact_digest, checkpoint.path_manifest_digest):
         return AutomationDecision(AutomationAction.REVIEW, AutomationStatus.BLOCKED, blocker="review receipt targets a different candidate")
+    if receipt.review_packet_digest != packet.packet_digest:
+        return AutomationDecision(AutomationAction.REVIEW, AutomationStatus.BLOCKED, blocker="review receipt targets a different immutable review packet")
+    if not receipt.current_at(now_ms):
+        return AutomationDecision(AutomationAction.REVIEW, AutomationStatus.BLOCKED, blocker="review receipt is stale or not yet valid")
     if receipt.verdict is not DelegatedReceiptVerdict.ACCEPT:
         return AutomationDecision(
             AutomationAction.REVIEW,
@@ -437,14 +626,19 @@ def git_advance_decision(
     push_policy_receipt: BoundPolicyReceipt | None = None,
 ) -> AutomationDecision:
     """Plan a history-preserving integrate/push action after review and fetch."""
-    accepted = review_decision(mode, checkpoint, review)
+    accepted = review_decision(mode, checkpoint, review, now_ms=now_ms)
     if accepted.status is not AutomationStatus.READY:
         return accepted
     if fetch is None:
         return AutomationDecision(AutomationAction.INTEGRATE, AutomationStatus.BLOCKED, blocker="fresh fetch receipt required before integration or push")
     if fetch.repository != checkpoint.repository:
         return AutomationDecision(AutomationAction.INTEGRATE, AutomationStatus.BLOCKED, blocker="fetch receipt targets a different repository, root, branch, or remote")
-    if fetch.local_head != checkpoint.source_sha:
+    if (fetch.local_head, fetch.candidate_tree, fetch.artifact_digest, fetch.path_manifest_digest) != (
+        checkpoint.source_sha,
+        checkpoint.source_tree,
+        checkpoint.artifact_digest,
+        checkpoint.path_manifest_digest,
+    ):
         return AutomationDecision(AutomationAction.INTEGRATE, AutomationStatus.BLOCKED, blocker="fetch receipt is not bound to the accepted local candidate")
     if not fetch.current_at(now_ms):
         return AutomationDecision(AutomationAction.INTEGRATE, AutomationStatus.BLOCKED, blocker="fetch receipt is stale or not yet valid")
@@ -502,12 +696,12 @@ def release_decision(
     if mode is AutomationMode.MANUAL:
         return _manual()
     checks = (
-        (release_policy, ReceiptPurpose.RELEASE_POLICY, frozenset({ReceiptAuthority.HOST, ReceiptAuthority.REPOSITORY_POLICY}), True, False, ""),
-        (source_gate, ReceiptPurpose.SOURCE_GATE, frozenset({ReceiptAuthority.INDEPENDENT_REVIEW}), False, True, checkpoint.artifact_digest),
-        (package_gate, ReceiptPurpose.PACKAGE_GATE, frozenset({ReceiptAuthority.INDEPENDENT_REVIEW, ReceiptAuthority.REPOSITORY_POLICY}), False, True, ""),
-        (rollback_receipt, ReceiptPurpose.ROLLBACK, frozenset({ReceiptAuthority.HOST, ReceiptAuthority.REPOSITORY_POLICY}), False, True, ""),
+        (release_policy, ReceiptPurpose.RELEASE_POLICY, frozenset({ReceiptAuthority.HOST, ReceiptAuthority.REPOSITORY_POLICY}), True, False),
+        (source_gate, ReceiptPurpose.SOURCE_GATE, frozenset({ReceiptAuthority.INDEPENDENT_REVIEW}), False, True),
+        (package_gate, ReceiptPurpose.PACKAGE_GATE, frozenset({ReceiptAuthority.INDEPENDENT_REVIEW, ReceiptAuthority.REPOSITORY_POLICY}), False, True),
+        (rollback_receipt, ReceiptPurpose.ROLLBACK, frozenset({ReceiptAuthority.HOST, ReceiptAuthority.REPOSITORY_POLICY}), False, True),
     )
-    for receipt, purpose, authorities, require_method, require_artifact, expected_artifact_digest in checks:
+    for receipt, purpose, authorities, require_method, require_subject in checks:
         blocker = _policy_receipt_blocker(
             receipt,
             checkpoint,
@@ -516,8 +710,7 @@ def release_decision(
             authorities=authorities,
             now_ms=now_ms,
             require_method=require_method,
-            require_artifact=require_artifact,
-            expected_artifact_digest=expected_artifact_digest,
+            require_subject=require_subject,
         )
         if blocker:
             return AutomationDecision(AutomationAction.RELEASE, AutomationStatus.BLOCKED, blocker=blocker)
@@ -563,7 +756,12 @@ def archive_request_decision(
             claim_limit="archive_unverified: plugin runtime cannot mint host authority.",
         )
     if (
-        custody.task_id != facts.task_id
+        custody.repository != checkpoint.repository
+        or custody.candidate_sha != checkpoint.source_sha
+        or custody.candidate_tree != checkpoint.source_tree
+        or custody.artifact_digest != checkpoint.artifact_digest
+        or custody.path_manifest_digest != checkpoint.path_manifest_digest
+        or custody.task_id != facts.task_id
         or custody.target_state_digest != facts.target_state_digest
         or not custody.current_at(now_ms)
     ):

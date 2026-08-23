@@ -93,6 +93,14 @@ the path. Being selectable in Codex does not prove those tools work. Run a
 bounded read-only probe before consequential routing and update the SWARM catalog
 with the observed result.
 
+Execution transport is a separate optional layer. Load
+[execution-adapters.md](execution-adapters.md) before enabling one. Every adapter
+publishes a capability matrix using only `native`, `enforced`,
+`instruction_only`, or `unsupported`; selection is explicit and a missing or
+disabled adapter never triggers provider fallback. Adapter events and success
+do not grant SWARM ownership, review, acceptance, host-task mutation, or provider
+authority.
+
 The packaged catalog keeps `gpt-5.3-codex-spark` on simple shell-only work and
 keeps computer-use work on the configured GPT-5.6 models, including Luna. Spark
 is text-only during its research preview and is not a large-goal fallback. Its

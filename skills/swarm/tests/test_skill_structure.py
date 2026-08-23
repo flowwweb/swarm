@@ -114,9 +114,13 @@ class SwarmSkillStructureTests(unittest.TestCase):
             encoding="utf-8"
         )
 
-        self.assertIn("name DOERs by their real job", skill)
-        self.assertIn("<domain emoji>LEAD - <responsibility>", skill)
-        self.assertIn("<role emoji><PROFESSION> - <truth surface>", skill)
+        self.assertIn("Name DOERs by their real job", skill)
+        self.assertIn("<role emoji><PROFESSION> LEAD - <responsibility>", skill)
+        self.assertIn("<role emoji><PROFESSION> DOER - <artifact>", skill)
+        self.assertIn("Never create a flat crowd of bare LEADs", skill)
+        self.assertIn("Do not pre-create a profession roster", skill)
+        self.assertIn("LEAD is an ownership function, not a prestige default", skill)
+        self.assertIn("TopologyMaterializationPlan", skill)
         self.assertIn("exactly one configured role icon", skill)
         self.assertRegex(hierarchy,r"A title is a\s+readability signal, never an authority token")
 
@@ -172,6 +176,30 @@ class SwarmSkillStructureTests(unittest.TestCase):
         self.assertIn("game_studio", skill)
         self.assertIn("One `CTRL` root", graph)
         self.assertIn("independent production lanes", graph)
+
+    def test_adapter_review_graph_and_shortlist_contracts_are_compact_and_public(self) -> None:
+        adapters = (SKILL_ROOT / "references" / "execution-adapters.md").read_text(encoding="utf-8")
+        catalog = (SKILL_ROOT / "references" / "skills-catalog.md").read_text(encoding="utf-8")
+        graph = (SKILL_ROOT / "references" / "graph-engineering.md").read_text(encoding="utf-8")
+        review = (SKILL_ROOT / "references" / "review-contract.md").read_text(encoding="utf-8")
+        for state in ("native", "enforced", "instruction_only", "unsupported"):
+            self.assertIn(f"`{state}`", adapters)
+        self.assertIn("disabled unless explicitly selected", adapters)
+        self.assertIn("never silently fall back", adapters)
+        self.assertIn("content-addressed", graph)
+        self.assertIn("immutable review packet", review)
+        for skill_name in (
+            "handoff",
+            "research",
+            "grill-with-docs",
+            "improve-codebase-architecture",
+            "prototype",
+            "tdd",
+            "frontend-design",
+            "copywriting",
+            "conducting-interviews",
+        ):
+            self.assertIn(f"| {skill_name} |", catalog)
 
     def test_closeout_archives_terminal_host_tasks_and_reports_failures(self) -> None:
         skill = doctrine()

@@ -42,7 +42,7 @@ usage_saver = false
 [console]
 # Reuse a recently visible portal tab; otherwise open the local portal when
 # SWARM starts. A browser launch failure never blocks work.
-open_on_start = true
+open_on_start = false
 
 [automation]
 # Standard emits evidence-gated Git, release, and host lifecycle requests.

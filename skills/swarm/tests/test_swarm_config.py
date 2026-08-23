@@ -22,6 +22,8 @@ class SwarmConfigTests(unittest.TestCase):
         from skills.swarm.runtime.core import BUILT_IN_PROFESSIONS, PROFESSION_GROUPS
         self.assertEqual(config.PROFESSION_GROUPS,PROFESSION_GROUPS)
         self.assertEqual(config.BUILT_IN_PROFESSIONS,BUILT_IN_PROFESSIONS)
+        self.assertEqual(len(BUILT_IN_PROFESSIONS), 24)
+        self.assertNotIn("mother", BUILT_IN_PROFESSIONS)
 
     def test_profession_specialist_and_structural_specialist_use_separate_namespaces(self) -> None:
         effective,_=config.load(config.TEMPLATE_PATH)
@@ -44,6 +46,12 @@ class SwarmConfigTests(unittest.TestCase):
         effective, exists = config.load(config.TEMPLATE_PATH)
         self.assertTrue(exists)
         self.assertFalse(effective["execution"]["usage_saver"])
+
+    def test_console_is_opt_in_and_does_not_open_localhost_by_default(self) -> None:
+        self.assertFalse(config.DEFAULTS["console"]["open_on_start"])
+        effective, exists = config.load(config.TEMPLATE_PATH)
+        self.assertTrue(exists)
+        self.assertFalse(effective["console"]["open_on_start"])
 
     def test_doer_wip_limit_is_the_bounded_direct_owner_capacity_signal(self) -> None:
         effective, _ = config.load(config.TEMPLATE_PATH)

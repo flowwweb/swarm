@@ -10,54 +10,75 @@ from skills.swarm.runtime import (
     HostArchiveCustodyReceipt, IndependentReviewReceipt, ReceiptAuthority,
     ReceiptPurpose, RepositoryIdentity, StableCheckpoint, Swarm,
     archive_request_decision, commit_decision, git_advance_decision,
-    release_decision, review_decision,
+    path_manifest_digest, release_decision, review_decision,
 )
 from skills.swarm.scripts.swarm_config import DEFAULTS
 
 
 class AutomationContractTests(unittest.TestCase):
     now = 20
+    owned_paths = ("src/app.py", "tests/test_app.py")
+    release_method = "scripts/build_package.py -> codex plugin add swarm@flowwweb"
 
     def repository(self, *, root="C:/work/swarm", branch="main", remote="origin") -> RepositoryIdentity:
-        return RepositoryIdentity("flowwweb/swarm", root, branch, remote)
+        return RepositoryIdentity("flowwweb/swarm", root, branch, remote, (self.release_method,))
 
     def checkpoint(self, *, dirty=("src/app.py",), blocker="", repository=None) -> StableCheckpoint:
         return StableCheckpoint(
             repository=repository or self.repository(), task_id="task-1", task_state="complete",
             source_sha="a" * 40, source_tree="b" * 40, source_parent="c" * 40,
-            artifact_digest="0" * 64, owned_paths=("src/app.py", "tests/test_app.py"),
+            artifact_digest="0" * 64, path_manifest_digest=path_manifest_digest(self.owned_paths),
+            dependency_graph_digest="1" * 64, proof_plan_digest="2" * 64,
+            review_task_id="review-task-1", owned_paths=self.owned_paths,
             dirty_paths=dirty, proof_manifest=("python -B -m unittest tests.test_app:PASS",),
             claim_limits=("source only",), blocker=blocker, next_action="route independent review",
         )
 
-    def review(self, verdict=DelegatedReceiptVerdict.ACCEPT, *, repository=None) -> IndependentReviewReceipt:
+    def review(self, verdict=DelegatedReceiptVerdict.ACCEPT, *, checkpoint=None, repository=None) -> IndependentReviewReceipt:
+        checkpoint = checkpoint or self.checkpoint(dirty=())
         return IndependentReviewReceipt(
             repository=repository or self.repository(), visible_task_id="review-task-1",
-            reviewer_id="review-owner", producer_id="implementation-owner",
-            candidate_sha="a" * 40, candidate_tree="b" * 40, artifact_digest="0" * 64,
+            reviewer_id="review-owner", producer_id=checkpoint.task_id,
+            candidate_sha=checkpoint.source_sha, candidate_tree=checkpoint.source_tree,
+            artifact_digest=checkpoint.artifact_digest,
+            path_manifest_digest=checkpoint.path_manifest_digest,
+            review_packet_digest=checkpoint.review_packet().packet_digest,
             verdict=verdict, readable_receipt=f"{verdict.value}: exact candidate reviewed",
+            observed_at_ms=10, expires_at_ms=30,
         )
 
-    def fetch(self, relationship=GitRelationship.FAST_FORWARD, *, repository=None) -> FetchReceipt:
+    def fetch(self, relationship=GitRelationship.FAST_FORWARD, *, checkpoint=None, repository=None) -> FetchReceipt:
+        checkpoint = checkpoint or self.checkpoint(dirty=())
         return FetchReceipt(
-            repository=repository or self.repository(), local_head="a" * 40,
+            repository=repository or self.repository(), local_head=checkpoint.source_sha,
+            candidate_tree=checkpoint.source_tree, artifact_digest=checkpoint.artifact_digest,
+            path_manifest_digest=checkpoint.path_manifest_digest,
             remote_head="e" * 40, relationship=relationship, fetched_at_ms=10,
             expires_at_ms=30,
         )
 
     def policy(self, purpose, operation, *, authority=ReceiptAuthority.REPOSITORY_POLICY,
-               repository=None, remote_head="", method="", artifact_digest="", expires_at_ms=30):
+               checkpoint=None, repository=None, remote_head="", method="",
+               subject_artifact_digest="", subject_path="", expires_at_ms=30):
+        checkpoint = checkpoint or self.checkpoint(dirty=())
         return BoundPolicyReceipt(
             repository=repository or self.repository(), purpose=purpose, operation=operation,
-            candidate_sha="a" * 40, candidate_tree="b" * 40, authority=authority,
+            candidate_sha=checkpoint.source_sha, candidate_tree=checkpoint.source_tree, authority=authority,
             receipt_ref=f"receipt:{purpose.value}", observed_at_ms=10,
             expires_at_ms=expires_at_ms, method=method, remote_head=remote_head,
-            artifact_digest=artifact_digest,
+            artifact_digest=checkpoint.artifact_digest,
+            path_manifest_digest=checkpoint.path_manifest_digest,
+            subject_artifact_digest=subject_artifact_digest, subject_path=subject_path,
         )
 
-    def archive_facts(self, **changes) -> ArchiveFacts:
+    def archive_facts(self, *, checkpoint=None, **changes) -> ArchiveFacts:
+        checkpoint = checkpoint or self.checkpoint(dirty=())
         custody = HostArchiveCustodyReceipt(
-            task_id="task-1", target_state_digest="f" * 64,
+            repository=checkpoint.repository, task_id="task-1",
+            candidate_sha=checkpoint.source_sha, candidate_tree=checkpoint.source_tree,
+            artifact_digest=checkpoint.artifact_digest,
+            path_manifest_digest=checkpoint.path_manifest_digest,
+            target_state_digest="f" * 64,
             receipt_ref="host-custody-current-1", authority=ReceiptAuthority.HOST,
             observed_at_ms=10, expires_at_ms=30,
         )
@@ -73,17 +94,20 @@ class AutomationContractTests(unittest.TestCase):
         return dict(
             release_policy=self.policy(
                 ReceiptPurpose.RELEASE_POLICY, AutomationAction.RELEASE,
-                method="scripts/build_package.py -> codex plugin add swarm@flowwweb",
+                method=self.release_method,
             ),
             source_gate=self.policy(
                 ReceiptPurpose.SOURCE_GATE, AutomationAction.RELEASE,
-                authority=ReceiptAuthority.INDEPENDENT_REVIEW, artifact_digest="0" * 64,
+                authority=ReceiptAuthority.INDEPENDENT_REVIEW,
+                subject_artifact_digest="0" * 64, subject_path="source.zip",
             ),
             package_gate=self.policy(
-                ReceiptPurpose.PACKAGE_GATE, AutomationAction.RELEASE, artifact_digest="2" * 64,
+                ReceiptPurpose.PACKAGE_GATE, AutomationAction.RELEASE,
+                subject_artifact_digest="3" * 64, subject_path="dist/swarm.zip",
             ),
             rollback_receipt=self.policy(
-                ReceiptPurpose.ROLLBACK, AutomationAction.RELEASE, artifact_digest="3" * 64,
+                ReceiptPurpose.ROLLBACK, AutomationAction.RELEASE,
+                subject_artifact_digest="4" * 64, subject_path="dist/swarm-previous.zip",
             ),
         )
 
@@ -91,7 +115,7 @@ class AutomationContractTests(unittest.TestCase):
         checkpoint = self.checkpoint(dirty=())
         decisions = (
             commit_decision("manual", self.checkpoint(), attributable_paths=("src/app.py",)),
-            review_decision("manual", checkpoint, self.review()),
+            review_decision("manual", checkpoint, self.review(checkpoint=checkpoint), now_ms=self.now),
             git_advance_decision("manual", checkpoint, self.review(), self.fetch(), now_ms=self.now),
             release_decision("manual", checkpoint, now_ms=self.now, **self.release_receipts()),
             archive_request_decision("manual", checkpoint, self.archive_facts(), now_ms=self.now),
@@ -109,17 +133,37 @@ class AutomationContractTests(unittest.TestCase):
         self.assertIn("mixed", mixed.blocker)
 
     def test_readable_exact_repository_review_is_required(self) -> None:
-        checkpoint = self.checkpoint()
-        self.assertEqual(review_decision("standard", checkpoint, None).status, AutomationStatus.BLOCKED)
+        checkpoint = self.checkpoint(dirty=())
+        self.assertEqual(review_decision("standard", checkpoint, None, now_ms=self.now).status, AutomationStatus.BLOCKED)
         for verdict in (DelegatedReceiptVerdict.REJECT, DelegatedReceiptVerdict.BLOCKED):
             with self.subTest(verdict=verdict):
-                self.assertEqual(review_decision("standard", checkpoint, self.review(verdict)).status, AutomationStatus.BLOCKED)
-        wrong_repo = self.review(repository=self.repository(root="D:/other/swarm"))
-        self.assertIn("different repository", review_decision("standard", checkpoint, wrong_repo).blocker)
-        self.assertEqual(review_decision("standard", checkpoint, self.review()).status, AutomationStatus.READY)
+                self.assertEqual(review_decision("standard", checkpoint, self.review(verdict, checkpoint=checkpoint), now_ms=self.now).status, AutomationStatus.BLOCKED)
+        wrong_repo = self.review(checkpoint=checkpoint, repository=self.repository(root="D:/other/swarm"))
+        self.assertIn("different repository", review_decision("standard", checkpoint, wrong_repo, now_ms=self.now).blocker)
+        self.assertEqual(review_decision("standard", checkpoint, self.review(checkpoint=checkpoint), now_ms=self.now).status, AutomationStatus.READY)
+
+    def test_review_packet_invalidates_on_tree_content_paths_graph_or_proof_plan_change(self) -> None:
+        checkpoint = self.checkpoint(dirty=())
+        receipt = self.review(checkpoint=checkpoint)
+        changed_paths = ("src/app.py", "tests/test_app.py", "tests/test_review.py")
+        variants = (
+            replace(checkpoint, source_tree="d" * 40),
+            replace(checkpoint, artifact_digest="3" * 64),
+            replace(checkpoint, owned_paths=changed_paths, path_manifest_digest=path_manifest_digest(changed_paths)),
+            replace(checkpoint, dependency_graph_digest="4" * 64),
+            replace(checkpoint, proof_plan_digest="5" * 64),
+        )
+        for changed in variants:
+            with self.subTest(content_address=changed.content_address(), packet=changed.review_packet().packet_digest):
+                decision = review_decision("standard", changed, receipt, now_ms=self.now)
+                self.assertEqual(decision.status, AutomationStatus.BLOCKED)
+        wrong_producer = replace(receipt, producer_id="other-task")
+        self.assertIn("different producer", review_decision("standard", checkpoint, wrong_producer, now_ms=self.now).blocker)
 
     def test_fetch_divergence_and_push_require_bound_current_receipts(self) -> None:
-        checkpoint, review, fetch = self.checkpoint(), self.review(), self.fetch(GitRelationship.DIVERGED)
+        checkpoint = self.checkpoint(dirty=())
+        review = self.review(checkpoint=checkpoint)
+        fetch = self.fetch(GitRelationship.DIVERGED, checkpoint=checkpoint)
         self.assertEqual(git_advance_decision("standard", checkpoint, review, fetch, now_ms=self.now).status, AutomationStatus.BLOCKED)
         compatible = self.policy(
             ReceiptPurpose.REMOTE_COMPATIBILITY, AutomationAction.INTEGRATE,
@@ -189,12 +233,12 @@ class AutomationContractTests(unittest.TestCase):
         checkpoint = self.checkpoint(dirty=())
         manual = Swarm(automation_mode="manual")
         self.assertEqual(manual.automation_commit(self.checkpoint(), attributable_paths=("src/app.py",)).status, AutomationStatus.MANUAL)
-        self.assertEqual(manual.automation_review(checkpoint, self.review()).status, AutomationStatus.MANUAL)
-        self.assertEqual(manual.automation_git_advance(checkpoint, self.review(), self.fetch(), now_ms=self.now).status, AutomationStatus.MANUAL)
+        self.assertEqual(manual.automation_review(checkpoint, self.review(checkpoint=checkpoint), now_ms=self.now).status, AutomationStatus.MANUAL)
+        self.assertEqual(manual.automation_git_advance(checkpoint, self.review(checkpoint=checkpoint), self.fetch(checkpoint=checkpoint), now_ms=self.now).status, AutomationStatus.MANUAL)
         self.assertEqual(manual.automation_release(checkpoint, now_ms=self.now, **self.release_receipts()).status, AutomationStatus.MANUAL)
         self.assertEqual(manual.automation_archive_request(checkpoint, self.archive_facts(), now_ms=self.now).status, AutomationStatus.MANUAL)
         standard = Swarm(automation_mode="standard")
-        self.assertEqual(standard.automation_review(checkpoint, self.review()).status, AutomationStatus.READY)
+        self.assertEqual(standard.automation_review(checkpoint, self.review(checkpoint=checkpoint), now_ms=self.now).status, AutomationStatus.READY)
         self.assertEqual(standard.automation_archive_request(checkpoint, self.archive_facts(), now_ms=self.now).status, AutomationStatus.REQUESTED_UNVERIFIED)
 
     def test_swarm_from_config_preserves_manual_runtime_mode(self) -> None:

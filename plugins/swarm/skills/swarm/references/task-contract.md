@@ -47,7 +47,7 @@ MODE: CTRL_DIRECT or CTRL_DELEGATED, with the direct-work predicate receipt and 
 GOAL: stable goal ID, objective version, measurable milestone, and locally chosen review horizon; optional WATCHDOG binding is separate and names the watched owner plus validated alert route. New-task persistence follows `goals.use_goals`, which defaults true; when it is false the intake and graph remain recorded but the root task does not create or continue a durable goal. LEAD and persistent SPECIALIST ownership goals remain fixed role invariants.
 ACCEPTANCE: typed lane kind, exact ArtifactIdentity, deterministic ProofPlan, bound owning LEAD identity, and accepting REVIEW route; CODE has at least one gate and only NON_CODE non-artifact work may use an explicit empty contract.
 DELEGATION: exact deliverable, owner ID, portable custody roots, immutable artifact and artifact paths, required proof classes, bounded due event, and maximum readable return size.
-TOPOLOGY: structural authority is exactly CTRL, LEAD, or DOER; record direct LEAD production, bounded DOER delegation, or the durable-boundary facts that justify a nested LEAD. No fixed depth or mandatory pass-through.
+TOPOLOGY: structural authority is exactly CTRL, LEAD, or DOER. Freeze one `TopologyMaterializationPlan` before task creation: one CTRL administrator; profession-labelled LEAD/DOER titles; one parent and boundary/artifact per lane; direct LEAD production, bounded DOER delegation, or durable-boundary facts for a nested LEAD; and a span exception receipt when CTRL fanout exceeds the soft preferred width. No fixed depth, arbitrary ratio, or mandatory pass-through.
 SUBAGENT RETURN: COMPLETE for the bounded leaf result, or PROMOTE_TO_VISIBLE_TASK with remaining deliverable, custody boundary, proof, and accountable parent. A subagent never recruits or accepts.
 RETURN: one bounded readable artifact-bound ACCEPT, REJECT, or BLOCKED receipt with owner-reported evidence, dirty custody, and path/count/byte/hash manifest; final acceptance remains independent.
 SKILLS: any agent may request a role skill with exact source/version or digest, purpose, destination scope, and host audit/rollback receipt; installation never transfers authority and defaults task-local.
@@ -114,7 +114,12 @@ duplicates, replaces, renames, or archives the old lane.
 
 A meaningful stable checkpoint for long-lived CTRL or LEAD work records the
 exact task identity and state, source SHA/tree/parent, exact dirty custody, proof
-manifest and claim limits, blocker, and next bounded action. Commit only coherent
+manifest and claim limits, exact owned-path manifest digest, dependency-graph
+digest, proof-plan digest, blocker, and next bounded action. A clean unblocked
+checkpoint produces one deterministic immutable review packet bound to repository,
+producer, reviewer task, candidate SHA/tree/parent, content digest, path manifest,
+dependency graph, proof plan, proofs, and claim limits. Any changed bound field
+invalidates the packet and every receipt derived from it. Commit only coherent
 attributable work after proportionate proof. Never automatically stage, reset,
 clean, normalize, commit, or absorb unrelated dirty work. Before a successor may
 own the lane, it acknowledges the exact immutable checkpoint; this handoff does

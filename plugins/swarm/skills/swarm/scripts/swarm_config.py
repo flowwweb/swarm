@@ -50,7 +50,7 @@ DEFAULTS: dict[str, Any] = {
         "min_reasoning": "none",
         "max_reasoning": "ultra",
     },
-    "console": {"open_on_start": True},
+    "console": {"open_on_start": False},
     "automation": {"mode": "standard"},
     "skills": {"inheritance_enabled": True, "default_profile": "default"},
     "logging": {"task_event_limit": 64},

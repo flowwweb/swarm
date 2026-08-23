@@ -525,6 +525,21 @@ class ArtifactIdentity:
         payload={"observables":self.observables,"paths":self.observed_paths}
         encoded=json.dumps(payload,separators=(",",":"),ensure_ascii=True).encode("utf-8").hex()
         return f"{legacy}#obs={encoded}"
+    def content_address(self)->str:
+        """Return the stable SHA-256 address for this exact recorded artifact."""
+        return _sha256_text(self.key())
+    @classmethod
+    def exact_tree(cls, base:str, source_tree:str, purpose:str, *, artifact_digest:str, path_manifest_digest:str) -> "ArtifactIdentity":
+        """Bind proof to an exact Git tree, content digest, and path manifest."""
+        tree=source_tree.strip().lower() if isinstance(source_tree,str) else ""
+        if len(tree)!=40 or any(character not in "0123456789abcdef" for character in tree): raise InvariantError("artifact source tree must be a full lowercase Git object id")
+        artifact=_require_digest(artifact_digest,"artifact content")
+        paths=_require_digest(path_manifest_digest,"artifact path manifest")
+        return cls(base,tree,purpose,(("artifact_sha256",artifact),("path_manifest_sha256",paths),("source_tree",tree)))
+    def matches_exact_tree(self, source_tree:str, *, artifact_digest:str, path_manifest_digest:str) -> bool:
+        try: expected=ArtifactIdentity.exact_tree(self.base,source_tree,self.purpose,artifact_digest=artifact_digest,path_manifest_digest=path_manifest_digest)
+        except InvariantError: return False
+        return self==expected
     @classmethod
     def capture(cls, base:str, revision:str, purpose:str, *, root:str, paths:tuple[str,...]) -> "ArtifactIdentity":
         probe=cls(base,revision,purpose,(),paths)
@@ -1135,7 +1150,7 @@ INTAKE_QUESTIONS:tuple[str,...]=(
     "What is the goal for this task?",
     "What is the most efficient safe way to complete it?",
 )
-_GRAPH_AGENT_TYPES=frozenset({"CTRL","LEAD","DOER","SPECIALIST","REVIEW"})
+_GRAPH_AGENT_TYPES=frozenset({"CTRL","LEAD","DOER"})
 
 @dataclass(frozen=True)
 class TaskIntake:
@@ -1158,6 +1173,14 @@ class GraphNodeSpec:
             raise InvariantError("graph nodes require safe identity, role, agent type, and purpose")
         if self.agent_type not in _GRAPH_AGENT_TYPES or any(not isinstance(value,str) or not value.strip() for value in self.depends_on) or self.id in self.depends_on:
             raise InvariantError("graph nodes require a supported agent type and valid dependencies")
+        if self.agent_type=="CTRL":
+            if self.role!="CTRL": raise InvariantError("the graph root profession must be CTRL")
+        else:
+            try: resolve_profession_id(self.role)
+            except ValueError as error: raise InvariantError("every LEAD and DOER graph node requires a built-in profession") from error
+    @property
+    def title(self)->str:
+        return "CTRL" if self.agent_type=="CTRL" else f"{BUILT_IN_PROFESSIONS[resolve_profession_id(self.role)]} {self.agent_type}"
 
 @dataclass(frozen=True)
 class GraphSelection:
@@ -1168,6 +1191,8 @@ class GraphSelection:
         by_id={node.id:node for node in self.nodes}
         if len(by_id)!=len(self.nodes) or "ctrl" not in by_id or by_id["ctrl"].agent_type!="CTRL" or by_id["ctrl"].depends_on:
             raise InvariantError("graph selection requires one dependency-free CTRL root")
+        if any(node.id!="ctrl" and not node.depends_on for node in self.nodes):
+            raise InvariantError("every non-root graph node requires an explicit dependency")
         if any(node.agent_type=="CTRL" and node.id!="ctrl" for node in self.nodes) or any(dependency not in by_id for node in self.nodes for dependency in node.depends_on):
             raise InvariantError("graph selection cannot contain another CTRL or an unknown dependency")
         visiting:set[str]=set(); visited:set[str]=set()
@@ -1184,7 +1209,7 @@ class GraphSelection:
         counts:dict[str,int]={}
         for node in self.nodes:
             for dependency in node.depends_on: counts[dependency]=counts.get(dependency,0)+1
-        return tuple(sorted(node.id for node in self.nodes if node.id!="ctrl" and counts.get(node.depends_on[0],0)>1 and len(node.depends_on)==1))
+        return tuple(sorted(node.id for node in self.nodes if node.id!="ctrl" and len(node.depends_on)==1 and counts.get(node.depends_on[0],0)>1))
     def canonical_bytes(self)->bytes:
         payload={"profile":self.profile.value,"objective":self.objective,"efficiency_strategy":self.efficiency_strategy,"rationale":self.rationale,"nodes":[{"id":node.id,"role":node.role,"agent_type":node.agent_type,"purpose":node.purpose,"depends_on":sorted(node.depends_on)} for node in sorted(self.nodes,key=lambda item:item.id)]}
         return json.dumps(payload,sort_keys=True,separators=(",",":"),ensure_ascii=True).encode("utf-8")
@@ -1207,19 +1232,19 @@ def select_graph(intake:TaskIntake, *, profile:GraphProfile|None=None)->GraphSel
     if selected is GraphProfile.GAME_STUDIO:
         nodes=(
             GraphNodeSpec("ctrl","CTRL","CTRL","Capture the objective, goal policy, graph, and final acceptance."),
-            GraphNodeSpec("studio_lead","GAME_STUDIO_LEAD","LEAD","Own the integrated game plan and handoffs.",("ctrl",)),
-            GraphNodeSpec("game_design","DESIGNER","SPECIALIST","Define the player contract, rules, UX, and content scope.",("studio_lead",)),
-            GraphNodeSpec("game_engineering","DEV","SPECIALIST","Build deterministic runtime, platform, and integration surfaces.",("studio_lead",)),
-            GraphNodeSpec("game_art","ARTIST","SPECIALIST","Produce the visual direction and production assets.",("studio_lead",)),
-            GraphNodeSpec("game_audio","AUDIO","SPECIALIST","Produce the sound and music direction and assets.",("studio_lead",)),
-            GraphNodeSpec("playtest_qa","QA","REVIEW","Exercise the integrated build and verify the player contract.",("game_design","game_engineering","game_art","game_audio")),
-            GraphNodeSpec("release","RELEASE","LEAD","Package, publish, and verify the accepted release surface.",("playtest_qa",)),
+            GraphNodeSpec("studio_lead","MANAGER","LEAD","Own the integrated game plan and handoffs.",("ctrl",)),
+            GraphNodeSpec("game_design","DESIGNER","DOER","Define the player contract, rules, UX, and content scope.",("studio_lead",)),
+            GraphNodeSpec("game_engineering","DEV","DOER","Build deterministic runtime, platform, and integration surfaces.",("studio_lead",)),
+            GraphNodeSpec("game_art","ARTIST","DOER","Produce the visual direction and production assets.",("studio_lead",)),
+            GraphNodeSpec("game_audio","PRODUCER","DOER","Produce the sound and music direction and assets.",("studio_lead",)),
+            GraphNodeSpec("playtest_qa","TESTER","DOER","Independently exercise the integrated build and verify the player contract.",("game_design","game_engineering","game_art","game_audio")),
+            GraphNodeSpec("release","OPERATOR","DOER","Package, publish, and verify the accepted release surface.",("playtest_qa",)),
         )
         rationale="Use the game-studio production graph: contract and plan first, independent design/engineering/art/audio lanes in parallel, then playtest/QA and release gates."
     else:
         nodes=(
             GraphNodeSpec("ctrl","CTRL","CTRL","Capture the objective, goal policy, graph, and final acceptance."),
-            GraphNodeSpec("doer","DOER","DOER","Complete the bounded artifact or inspection inside the accountable lane.",("ctrl",)),
+            GraphNodeSpec("doer","SPECIALIST","DOER","Complete the bounded artifact or inspection inside the accountable lane.",("ctrl",)),
         )
         rationale="Use the shallowest general graph that satisfies the objective; expand to a visible LEAD lane only when ownership, dependency, resumption, or acceptance evidence requires it."
     return GraphSelection(selected,intake.goal,intake.efficiency_strategy,nodes,rationale)
@@ -1381,9 +1406,9 @@ class Swarm:
         from .automation import commit_decision
         return commit_decision(self.automation_mode, checkpoint, attributable_paths=attributable_paths)
 
-    def automation_review(self, checkpoint:"StableCheckpoint", receipt:"IndependentReviewReceipt|None") -> "AutomationDecision":
+    def automation_review(self, checkpoint:"StableCheckpoint", receipt:"IndependentReviewReceipt|None", *, now_ms:int) -> "AutomationDecision":
         from .automation import review_decision
-        return review_decision(self.automation_mode, checkpoint, receipt)
+        return review_decision(self.automation_mode, checkpoint, receipt, now_ms=now_ms)
 
     def automation_git_advance(self, checkpoint:"StableCheckpoint", review:"IndependentReviewReceipt|None", fetch:"FetchReceipt|None", *, now_ms:int, remote_compatibility_receipt:"BoundPolicyReceipt|None"=None, push_policy_receipt:"BoundPolicyReceipt|None"=None) -> "AutomationDecision":
         from .automation import git_advance_decision
@@ -2433,11 +2458,9 @@ class Swarm:
             if not self.archive_eligible(t): continue
             has_active_dependent=any(other.waiting_on==t.id and other.state in {TaskState.ACTIVE,TaskState.WAITING,TaskState.REVIEW} for other in self.tasks.values())
             if t.state==TaskState.STALE and not has_active_dependent and t.stale_at is not None and now-t.stale_at >= policy["stale_task_archive_delay"]:
-                self.require_host_custody(Role.CTRL,CustodyMutation.ARCHIVE,t.id,now,target_state_digest=self._task_custody_digest(t))
-                self._request_guard(task_id=t.id,action=lambda:(setattr(t,"state",TaskState.ARCHIVED_STALE),setattr(t,"archived_at",now))); archived.append(t.id)
+                raise InvariantError("HUMAN_AUTHORITY_BLOCKER: no host-pinned trust root or IPC verifier; runtime archive mutation is prohibited, use archive_request_decision")
             elif t.state==TaskState.COMPLETE and t.completed_at is not None and now-t.completed_at >= delays[t.review_value]:
-                self.require_host_custody(Role.CTRL,CustodyMutation.ARCHIVE,t.id,now,target_state_digest=self._task_custody_digest(t))
-                self._request_guard(task_id=t.id,action=lambda:(setattr(t,"state",TaskState.ARCHIVED),setattr(t,"archived_at",now))); archived.append(t.id)
+                raise InvariantError("HUMAN_AUTHORITY_BLOCKER: no host-pinned trust root or IPC verifier; runtime archive mutation is prohibited, use archive_request_decision")
         reasons={"completed":0,"stale":0}; ages={"fresh":0,"aged":0}
         for task_id in archived:
             t=self.tasks[task_id]; started=t.completed_at if t.completed_at is not None else t.stale_at if t.stale_at is not None else now; reasons["stale" if t.state==TaskState.ARCHIVED_STALE else "completed"]+=1; ages["fresh" if now-started<30 else "aged"]+=1
@@ -2521,8 +2544,7 @@ def derive_workflow_graph(swarm:Swarm) -> WorkflowGraph:
             else: edges.add((node_id,target,"waits_for"))
         contract=task.acceptance_contract
         if contract is not None and contract.artifact is not None:
-            logical_identity=json.dumps((contract.artifact.base,contract.artifact.revision,contract.artifact.purpose),separators=(",",":"),ensure_ascii=True).encode("utf-8")
-            artifact_node=f"artifact:{sha256(logical_identity).hexdigest()}"; nodes.setdefault(artifact_node,WorkflowNode(artifact_node,"ARTIFACT",contract.artifact.purpose,acceptance="UNVERIFIED")); edges.add((node_id,artifact_node,"accepts_artifact"))
+            artifact_node=f"artifact:{contract.artifact.content_address()}"; nodes.setdefault(artifact_node,WorkflowNode(artifact_node,"ARTIFACT",contract.artifact.purpose,acceptance="UNVERIFIED")); edges.add((node_id,artifact_node,"accepts_artifact"))
         if contract is not None and contract.proof_plan is not None:
             plan=contract.proof_plan; plan_node=f"proof-plan:{task_id}:{plan.plan_digest}"; nodes[plan_node]=WorkflowNode(plan_node,"PROOF_PLAN",plan.tier.value,task.owning_lead_id,"UNVERIFIED"); edges.add((node_id,plan_node,"uses_plan"))
             for coverage in plan.claim_matrix:
@@ -2553,3 +2575,13 @@ def derive_workflow_graph(swarm:Swarm) -> WorkflowGraph:
             canonical=min(rotations); diagnostics.add(f"dependency-cycle:{'->'.join((*canonical,canonical[0]))}")
     graph_edges=tuple(WorkflowEdge(*edge) for edge in sorted(edges,key=lambda edge:(edge[0],edge[1],edge[2])))
     return WorkflowGraph(tuple(nodes[key] for key in sorted(nodes)),graph_edges,tuple(sorted(diagnostics)))
+
+
+def derive_artifact_graph(swarm:Swarm) -> WorkflowGraph:
+    """Project only task dependencies and content-addressed artifacts."""
+    full=derive_workflow_graph(swarm)
+    keep={node.id for node in full.nodes if node.kind in {"TASK","ARTIFACT"}}
+    nodes=tuple(node for node in full.nodes if node.id in keep)
+    edges=tuple(edge for edge in full.edges if edge.source in keep and edge.target in keep and edge.kind in {"waits_for","accepts_artifact"})
+    diagnostics=tuple(item for item in full.diagnostics if item.startswith(("dependency-","missing-dependency:")))
+    return WorkflowGraph(nodes,edges,diagnostics)

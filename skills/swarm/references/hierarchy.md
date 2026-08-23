@@ -301,6 +301,17 @@ idle scaffolding cleanly while preserving durable receipts and archived logs.
 
 ## Ownership, transfer, and materialization
 
+Before any visible task creation, compile a typed `TopologyMaterializationPlan`.
+It must contain exactly one dependency-free CTRL administrator. Every LEAD and
+DOER has one parent, typed profession, bounded responsibility, generated title,
+and exact boundary or artifact. A DOER may use leaf subagents but cannot own a
+visible child; recursive durable work uses a nested LEAD. A LEAD may produce its
+own declared artifact directly, but a leaf LEAD without a direct artifact is a
+shape defect and becomes a DOER. More direct CTRL children than
+`preferred_lane_width` require a concrete span exception receipt; the setting
+remains a soft preference, not a hard team-size ceiling. This catches accidental
+LEAD crowds without preventing justified independent boundaries.
+
 Materialize each justified LEAD, persistent SPECIALIST, DOER, TASK, SUBTASK, and
 independent REVIEW as a host task when the host supports it. Materialize ASSIST
 and ADVISOR only for their bounded assignment. Never create a role to fill a
@@ -317,7 +328,16 @@ coordination can exchange immutable handoffs but cannot mutate another owner's
 surface or bypass REVIEW.
 
 With role icons enabled, use `🐙CTRL - <objective>` for the root,
-`<domain emoji>LEAD - <responsibility>` for lane owners, and
-`<role emoji><PROFESSION> - <truth surface>` for specialists. A title is a
+`<role emoji><PROFESSION> LEAD - <responsibility>` for lane owners, and
+`<role emoji><PROFESSION> DOER - <artifact>` for bounded producers. A separate
+review task uses the same structural title with the selected assurance profession.
+Bare structural titles and profession-only visible titles are invalid because
+they hide either authority or expertise. A title is a
 readability signal, never an authority token; unregistered historical titles
 remain user-owned text and are never normalized into a profession.
+
+Do not materialize the whole profession registry as a team. Start from the
+current dependency graph. A visible LEAD exists only for a named durable mutable
+boundary that needs ownership, integration, resumption, or recursive staffing;
+a bounded ready artifact belongs to a DOER. A list dominated by leaf LEADs is a
+topology defect, not an ambitious swarm.
