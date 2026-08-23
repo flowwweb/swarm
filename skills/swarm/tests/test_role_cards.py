@@ -9,7 +9,16 @@ from pathlib import Path
 SKILL_ROOT = Path(__file__).resolve().parents[1]
 REPOSITORY_ROOT = SKILL_ROOT.parents[1]
 ROLE_ROOT = SKILL_ROOT / "roles"
-REQUIRED_DEFAULTS = frozenset({"designer.md", "developer.md", "architect.md", "reviewer.md", "mother.md"})
+EXPECTED_CARDS = {
+    "manager": "Manager", "strategist": "Strategist", "researcher": "Researcher",
+    "analyst": "Analyst", "specialist": "Specialist", "inventor": "Inventor",
+    "architect": "Architect", "designer": "Designer", "artist": "Artist",
+    "writer": "Writer", "developer": "Dev", "producer": "Producer",
+    "tester": "Tester", "critic": "Critic", "security": "Security",
+    "auditor": "Auditor", "legal": "Legal", "reviewer": "Reviewer",
+    "operator": "Operator", "marketer": "Marketer", "support": "Support",
+    "accountant": "Accountant", "recruiter": "Recruiter", "educator": "Educator",
+}
 
 sys.path.insert(0, str(REPOSITORY_ROOT / "scripts"))
 from build_package import source_file_hashes
@@ -18,13 +27,13 @@ from build_package import source_file_hashes
 class RoleCardTests(unittest.TestCase):
     def test_role_cards_are_a_dynamic_filename_registry_and_shipped(self) -> None:
         cards = sorted(ROLE_ROOT.glob("*.md"))
-        self.assertTrue(REQUIRED_DEFAULTS.issubset({card.name for card in cards}))
+        self.assertEqual({card.stem for card in cards}, set(EXPECTED_CARDS))
 
         packaged_files = source_file_hashes(REPOSITORY_ROOT)
         for card in cards:
             with self.subTest(card=card.name):
                 lines = card.read_text(encoding="utf-8").splitlines()
-                self.assertRegex(lines[0], r"^# .+")
+                self.assertEqual(lines[0], f"# {EXPECTED_CARDS[card.stem]}")
                 content = [line for line in lines[1:] if line.strip()]
                 self.assertEqual(len(content), 12)
                 self.assertTrue(all(re.fullmatch(r"\d+\. .+[.!?]", line) for line in content))
@@ -37,13 +46,10 @@ class RoleCardTests(unittest.TestCase):
                 )
                 self.assertIn(f"skills/swarm/roles/{card.name}", packaged_files)
 
-    def test_mother_is_advisory_and_watchdog_is_not_a_role_card(self) -> None:
-        mother = (ROLE_ROOT / "mother.md").read_text(encoding="utf-8")
-        self.assertEqual(len([line for line in mother.splitlines()[1:] if line.strip()]), 12)
-        self.assertIn("manager-style SPECIALIST", mother)
-        self.assertIn("Never create, reparent, assign, lease, integrate, deploy, review, accept", mother)
-        self.assertIn("Return advice or an exact blocker to CTRL", mother)
+    def test_retired_or_structural_labels_are_not_role_cards(self) -> None:
+        self.assertFalse((ROLE_ROOT / "mother.md").exists())
         self.assertFalse((ROLE_ROOT / "watchdog.md").exists())
+        self.assertFalse((ROLE_ROOT / "ctrl.md").exists())
 
 
 if __name__ == "__main__":

@@ -64,7 +64,6 @@
         "prompt_on_close": false
       },
       "labels": {
-        "mother": "MOTHER",
         "lead": "LEAD",
         "task": "TASK",
         "review": "REVIEW"
@@ -72,7 +71,6 @@
       "role_icons": {
         "enabled": true,
         "ctrl": "🐙",
-        "mother": "🐝",
         "lead": "🧭",
         "review": "🔎",
         "fallback": "📋"

@@ -25,7 +25,6 @@ class SwarmContractTests(unittest.TestCase):
     def test_forward_goal_cases(self) -> None:
         cases = contract.forward_cases()
         self.assertEqual(cases["ctrl_startup_no_goal"]["action"], "create")
-        self.assertEqual(cases["mother_specialist_startup"]["action"], "create")
         self.assertEqual(cases["lead_resume_matching_goal"]["action"], "continue")
         self.assertEqual(cases["lead_mixed_case_matching_goal"]["action"], "continue")
         self.assertEqual(cases["architect_startup"]["action"], "create")
@@ -47,12 +46,7 @@ class SwarmContractTests(unittest.TestCase):
             contract.goal_decision("ARCHITECT", matching, "system").action,
             "continue",
         )
-        self.assertEqual(
-            contract.goal_decision(
-                "mOtHeR", None, "portfolio", goal_controls_available=False
-            ).action,
-            "blocked",
-        )
+        self.assertEqual(contract.goal_decision("legacy-coordinator",None,"portfolio",goal_controls_available=False).action,"not_required")
 
     def test_forward_watchdog_cases_are_alert_only(self) -> None:
         cases = contract.forward_cases()

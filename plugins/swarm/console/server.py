@@ -2243,7 +2243,7 @@ def _role_from_title(
     title: str,
     labels: dict[str, str],
     role_icons: dict[str, Any],
-    roles: dict[str, Any] | None = None,
+    professions: dict[str, Any] | None = None,
 ) -> dict[str, str] | None:
     if not title or len(title) > 180 or "\n" in title or "\r" in title:
         return None
@@ -2274,8 +2274,6 @@ def _role_from_title(
         upper = role_label.upper()
         if upper == "CTRL":
             role_kind = "ctrl"
-        elif upper == "MOTHER":
-            role_kind = "specialist"
         elif upper == "LEAD":
             role_kind = "lead"
         elif upper == "DOER":
@@ -2286,19 +2284,10 @@ def _role_from_title(
     if role_icons["enabled"]:
         if role_kind in {"ctrl", "lead", "review"}:
             icon = str(role_icons[role_kind])
-        elif role_kind == "specialist" and role_label.casefold() == "mother":
-            mother = next(
-                (
-                    value
-                    for name, value in (roles or {}).items()
-                    if name.casefold() == "mother" and isinstance(value, dict)
-                ),
-                {},
-            )
-            icon = str(mother.get("icon", "🐝"))
         else:
             upper = role_label.upper()
-            preferred = next(
+            profession_override=next((value for name,value in (professions or {}).items() if name.casefold()==role_label.casefold() and isinstance(value,dict)),{})
+            preferred = str(profession_override.get("icon","")) or next(
                 (
                     value
                     for marker, value in (
@@ -2431,7 +2420,7 @@ def build_overview(codex_home: Path, config_path: Path) -> dict[str, Any]:
         for thread_id, row in all_rows.items()
         if (
             role := _role_from_title(
-                row["title"], labels, config["role_icons"], config["roles"]
+                row["title"], labels, config["role_icons"], config["professions"]
             )
         )
     }

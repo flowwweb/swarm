@@ -155,7 +155,8 @@ DEFAULTS: dict[str, Any] = {
             "reasoning": ["low", "medium", "high", "xhigh"],
         },
     },
-    "roles": {"MOTHER": {"icon": "🐝"}},
+    "roles": {},
+    "professions": {},
     "labels": {
         "lead": "LEAD",
         "doer": "DOER",
@@ -215,6 +216,34 @@ USAGE_PROFILES = {"high", "medium", "low"}
 REASONING_EFFORTS = {"none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"}
 REASONING_SCALE = ("none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra")
 ROLE_OVERRIDE_KEYS = {"icon", "model", "reasoning"}
+STRUCTURAL_CONFIG_ROLES = frozenset({"ctrl", "lead", "doer", "task", "subtask", "assist", "review", "advisor", "specialist", "architect"})
+PROFESSION_GROUPS = (
+    ("Direction", (("manager", "Manager"), ("strategist", "Strategist"))),
+    ("Discovery", (("researcher", "Researcher"), ("analyst", "Analyst"), ("specialist", "Specialist"), ("inventor", "Inventor"))),
+    ("Creation", (("architect", "Architect"), ("designer", "Designer"), ("artist", "Artist"), ("writer", "Writer"), ("developer", "Dev"), ("producer", "Producer"))),
+    ("Assurance", (("tester", "Tester"), ("critic", "Critic"), ("security", "Security"), ("auditor", "Auditor"), ("legal", "Legal"), ("reviewer", "Reviewer"))),
+    ("Delivery", (("operator", "Operator"), ("marketer", "Marketer"), ("support", "Support"))),
+    ("Foundation", (("accountant", "Accountant"), ("recruiter", "Recruiter"), ("educator", "Educator"))),
+)
+BUILT_IN_PROFESSIONS = {
+    profession_id: label
+    for _, professions in PROFESSION_GROUPS
+    for profession_id, label in professions
+}
+PROFESSION_ALIASES = {
+    "product_manager": "manager", "project_manager": "manager", "planner": "manager",
+    "data_analyst": "analyst", "financial_analyst": "analyst",
+    "content_strategist": "strategist", "social_strategist": "strategist", "sales_strategist": "strategist",
+    "brand_strategist": "strategist", "security_engineer": "security", "support_specialist": "support",
+    "dev": "developer",
+}
+
+def resolve_profession_id(value: str) -> str:
+    key = str(value).strip().casefold().replace(" ", "_")
+    resolved = PROFESSION_ALIASES.get(key, key)
+    if resolved not in BUILT_IN_PROFESSIONS:
+        raise ConfigError(f"unknown profession: {key}")
+    return resolved
 LEGACY_PORTFOLIO_KEYS = {"title_prefix"}
 
 
@@ -573,18 +602,27 @@ def validate(raw: dict[str, Any]) -> None:
         if folded in folded_roles:
             raise ConfigError("roles cannot contain case-insensitive duplicates")
         folded_roles.add(folded)
+        normalized_role=folded.replace(" ","_")
+        if normalized_role not in STRUCTURAL_CONFIG_ROLES:
+            raise ConfigError(f"roles.{role} is not a structural authority role; use professions.{role}")
         if not isinstance(values, dict) or not values:
             raise ConfigError(f"roles.{role} must be a non-empty TOML table")
         _expect_keys(values, ROLE_OVERRIDE_KEYS, f"roles.{role}")
         _short_text(values, "icon", f"roles.{role}")
         _model_name(values, "model", f"roles.{role}")
         _reasoning_effort(values, "reasoning", f"roles.{role}")
-        if role.casefold() == "mother":
-            if set(values) != {"icon"}:
-                raise ConfigError(
-                    "roles.MOTHER is an optional specialist profession with icon only"
-                )
 
+    professions=_expect_table(raw,"professions")
+    folded_professions:set[str]=set()
+    for profession,values in professions.items():
+        if not isinstance(profession,str) or profession!=profession.strip() or not profession or len(profession)>32 or any(character in profession for character in "\r\n\t"):
+            raise ConfigError("professions keys must be trimmed single-line names up to 32 characters")
+        profession_id=resolve_profession_id(profession)
+        if profession_id in folded_professions: raise ConfigError("professions cannot contain aliases for the same profession")
+        folded_professions.add(profession_id)
+        if not isinstance(values,dict) or not values: raise ConfigError(f"professions.{profession} must be a non-empty TOML table")
+        _expect_keys(values,ROLE_OVERRIDE_KEYS,f"professions.{profession}")
+        _short_text(values,"icon",f"professions.{profession}"); _model_name(values,"model",f"professions.{profession}"); _reasoning_effort(values,"reasoning",f"professions.{profession}")
     labels = _expect_table(raw, "labels")
     _expect_keys(labels, set(DEFAULTS["labels"]), "labels")
     for key in DEFAULTS["labels"]:
@@ -684,20 +722,17 @@ def merge(raw: dict[str, Any]) -> dict[str, Any]:
 
 
 def normalize_legacy_task_role(raw: dict[str, Any]) -> dict[str, Any]:
-    """Migrate pre-v3 task and MOTHER authority settings to current roles."""
+    """Migrate legacy structural task settings without creating professions."""
     normalized = deepcopy(raw)
     schema_version = normalized.get("schema_version", 1)
     legacy = schema_version == 1
     role_icons = normalized.get("role_icons", {})
-    if legacy and isinstance(role_icons, dict):
-        role_icons.pop("step_mother", None)
     if isinstance(role_icons, dict) and "task_choices" in role_icons:
         role_icons.setdefault("doer_choices", role_icons.pop("task_choices"))
     boost = normalized.get("boost", {})
     if legacy and isinstance(boost, dict) and isinstance(boost.get("goal_levels"), list):
         levels = ["doer" if level == "task" else level for level in boost["goal_levels"]]
-        # Legacy STEP MOTHER was a coordinator, never durable ASSIST ownership.
-        levels = [level for level in levels if level not in {"step_mother", "assist"}]
+        levels = [level for level in levels if level != "assist"]
         boost["goal_levels"] = list(dict.fromkeys(levels)) or deepcopy(DEFAULTS["boost"]["goal_levels"])
     for profile in normalized.get("models", {}).values():
         if legacy and isinstance(profile, dict):
@@ -705,39 +740,21 @@ def normalize_legacy_task_role(raw: dict[str, Any]) -> dict[str, Any]:
                 legacy = f"task_{suffix}"
                 profile.setdefault(f"doer_{suffix}", profile.pop(legacy, None)) if legacy in profile else None
     labels = normalized.get("labels", {})
-    if legacy and isinstance(labels, dict) and "step_mother" in labels:
-        legacy_step = labels.pop("step_mother")
-        if legacy_step != "STEP MOTHER":
-            labels.setdefault("assist", legacy_step)
     if legacy and isinstance(labels, dict) and "task" in labels:
         legacy_label = labels.pop("task")
         if legacy_label != "TASK":
             labels.setdefault("doer", legacy_label)
 
-    if schema_version <= 2:
-        roles = normalized.setdefault("roles", {})
-        role_icons = normalized.get("role_icons", {})
-        mother_icon = "🐝"
-        if isinstance(role_icons, dict):
-            mother_icon = role_icons.pop("mother", mother_icon)
-        if isinstance(roles, dict):
-            mother = roles.get("MOTHER")
-            if not isinstance(mother, dict):
-                roles["MOTHER"] = {"icon": mother_icon}
-            else:
-                mother.clear()
-                mother["icon"] = mother_icon
-        for profile in normalized.get("models", {}).values():
-            if isinstance(profile, dict):
-                profile.pop("mother_model", None)
-                profile.pop("mother_reasoning", None)
-        if isinstance(labels, dict):
-            labels.pop("mother", None)
-        if isinstance(boost, dict) and isinstance(boost.get("goal_levels"), list):
-            levels = [level for level in boost["goal_levels"] if level != "mother"]
-            boost["goal_levels"] = list(dict.fromkeys(levels)) or deepcopy(
-                DEFAULTS["boost"]["goal_levels"]
-            )
+    roles=normalized.get("roles",{})
+    professions=normalized.setdefault("professions",{})
+    if isinstance(roles,dict) and isinstance(professions,dict):
+        for role in tuple(roles):
+            normalized_role=str(role).strip().casefold().replace(" ","_")
+            if normalized_role in STRUCTURAL_CONFIG_ROLES: continue
+            try: profession_id=resolve_profession_id(str(role))
+            except ConfigError: continue
+            professions.setdefault(profession_id,roles.pop(role))
+
     normalized["schema_version"] = 4
     return normalized
 
@@ -766,6 +783,18 @@ def apply_turbo(effective: dict[str, Any]) -> dict[str, Any]:
     return effective
 
 
+def resolve_profession_assignment(
+    effective:dict[str,Any], profession:str, *, domain:str="", truth_surface:str="",
+) -> dict[str,str]:
+    """Resolve perspective metadata without granting structural authority."""
+    profession_id=resolve_profession_id(profession)
+    domain=domain.strip(); truth_surface=truth_surface.strip()
+    if profession_id=="specialist" and (not domain or not truth_surface):
+        raise ConfigError("Specialist profession requires a named domain and truth surface")
+    override=next((value for name,value in effective["professions"].items() if resolve_profession_id(name)==profession_id),{})
+    return {"profession_id":profession_id,"label":BUILT_IN_PROFESSIONS[profession_id],"domain":domain,"truth_surface":truth_surface,"icon":str(override.get("icon","")),"authority":"none"}
+
+
 def resolve_role_assignment(
     effective: dict[str, Any], role: str, *, route_tier: int = 2,
     explicit_model: str | None = None, explicit_reasoning: str | None = None,
@@ -775,18 +804,23 @@ def resolve_role_assignment(
         raise ConfigError("role must be a non-empty string")
     if not _is_int(route_tier) or not 1 <= route_tier <= 3:
         raise ConfigError("route_tier must be 1, 2, or 3")
-    role_key = "specialist" if role.strip().casefold() == "mother" else role.strip().lower()
+    normalized_role=role.strip().casefold().replace(" ","_")
+    profession_id=""
+    if normalized_role in STRUCTURAL_CONFIG_ROLES:
+        role_key=normalized_role
+    else:
+        profession_id=resolve_profession_id(role)
+        role_key="doer"
     profile_name = effective["execution"]["usage_profile"]
     profile = effective["models"][profile_name]
     model_key, reasoning_key = f"{role_key}_model", f"{role_key}_reasoning"
-    custom_override = next(
-        (
-            override
-            for custom_role, override in effective["roles"].items()
-            if custom_role.casefold() == role.casefold()
-        ),
-        None,
-    )
+    def matches(custom_role:str)->bool:
+        if custom_role.casefold()==role.casefold(): return True
+        if not profession_id: return False
+        try: return resolve_profession_id(custom_role)==profession_id
+        except ConfigError: return False
+    override_table=effective["roles"] if not profession_id else effective["professions"]
+    custom_override=next((override for custom_role,override in override_table.items() if matches(custom_role)),None)
     if model_key not in profile or reasoning_key not in profile:
         if custom_override is None:
             raise ConfigError(f"role has no configured model pair: {role}")
@@ -853,7 +887,12 @@ def resolve_model_assignment(
     if host_actual_model is not None:
         if not isinstance(host_receipt,str) or not host_receipt.strip(): raise ConfigError("host model receipt must be exact and non-empty")
         if host_actual_model != assignment["model"]: raise ConfigError(f"host selected {host_actual_model}, requested {assignment['model']}")
-    custom=next((value for name,value in effective["roles"].items() if name.casefold()==role.casefold()), {})
+    normalized_role=role.strip().casefold().replace(" ","_")
+    if normalized_role in STRUCTURAL_CONFIG_ROLES:
+        custom=next((value for name,value in effective["roles"].items() if name.casefold()==role.casefold()),{})
+    else:
+        profession_id=resolve_profession_id(role)
+        custom=next((value for name,value in effective["professions"].items() if resolve_profession_id(name)==profession_id),{})
     explicit=any(value is not None for value in (explicit_model, explicit_reasoning, explicit_provider, explicit_service_tier)) or any(key in custom for key in ("model","reasoning"))
     return {
         "surface":surface,"model":assignment["model"],"provider":provider,"reasoning_effort":assignment["reasoning"],

@@ -48,7 +48,7 @@ Configuration cannot make an unsafe or hidden coordination path valid:
   the root task creates or continues its durable goal. When false, intake and
   graph receipts remain required but root-task persistence is explicitly off.
   Goal controls are required: CTRL, every LEAD, and every persistent
-  SPECIALIST—including a materialized MOTHER—still require their role-owned
+  SPECIALIST and any assigned profession still require their role-owned
   durable goals before scheduling or substantive work; goal creation never
   expands authority.
 - A LEAD or persistent SPECIALIST may explicitly bind a WATCHDOG to its durable
@@ -106,13 +106,14 @@ Configuration cannot make an unsafe or hidden coordination path valid:
 | `boost.spark_model` | Reserve model for simple targeted work | model name; default gpt-5.3-codex-spark |
 | `boost.spark_reasoning` | Reasoning used by the bounded Spark lane | supported reasoning value; default xhigh |
 | `boost.spark_enabled` | Opt into the bounded Spark lane | boolean; default false |
-| `models.<profile>.<role>_model` | Model for CTRL, LEAD, DOER, TASK, SUBTASK, ASSIST, ADVISOR, SPECIALIST, legacy ARCHITECT, or REVIEW in a profile | trimmed model name up to 64 chars; defaults request Sol for CTRL, Terra for LEAD, Luna for DOER/TASK/SUBTASK; MOTHER uses SPECIALIST policy |
+| `models.<profile>.<role>_model` | Model for CTRL, LEAD, DOER, TASK, SUBTASK, ASSIST, ADVISOR, SPECIALIST, legacy ARCHITECT, or REVIEW in a profile | trimmed model name up to 64 chars; defaults request Sol for CTRL, Terra for LEAD, and Luna for DOER/TASK/SUBTASK |
 | `models.<profile>.<role>_reasoning` | Reasoning for that role and profile | none, minimal, low, medium, high, xhigh, max, ultra; host/model dependent |
 | `model_capabilities.<MODEL>.provider` | Codex provider ID for a model | trimmed name up to 64 chars |
 | `model_capabilities.<MODEL>.workloads` | Work classes an assigning CTRL or LEAD may route | non-empty unique list of simple, general, large_goal, review |
 | `model_capabilities.<MODEL>.tools` | Verified host tools the model may use | up to 32 unique tool names; may be empty |
 | `model_capabilities.<MODEL>.reasoning` | Ordered reasoning levels verified for the model on the intended host | optional non-empty unique subset of supported reasoning values |
-| `roles.<ROLE>.icon` | Optional icon for a specialist or contextual role; `roles.MOTHER.icon` defaults to 🐝 | trimmed single line, 1-24 chars |
+| `roles.<ROLE>.*` | Optional model, reasoning, or icon override for a structural authority role | registered structural role only; profession perspective is not stored here |
+| `professions.<id>.*` | Optional icon, model, or reasoning override for one registered profession perspective | registered profession or proven compatibility alias; never grants structural authority |
 | `roles.<ROLE>.model` | Optional model override for a contextual leaf role | trimmed model name up to 64 chars |
 | `roles.<ROLE>.reasoning` | Optional reasoning override for a contextual leaf role | supported reasoning value |
 | `labels.lead` | Coordinator label | trimmed single line, 1-24 chars |
@@ -157,7 +158,7 @@ safe; then use the host archive control. The setting creates no queue, daemon,
 ledger, polling loop, or telemetry.
 
 The default title hierarchy is `🐙CTRL - <objective>`, an optional advisory
-specialist such as `🐝MOTHER - release coordination`, a lane owner such as `🔐LEAD - payments`, a
+specialist such as `🛡️Security - access controls`, a lane owner such as `🔐LEAD - payments`, a
 contextual owner such as `💻DEVELOPER - webhook`, and `🔎REVIEW - webhook`.
 Generic DOER is an authority type, not a required task name: use the concrete
 job. Keep the lane marker `LEAD` stable, put its domain or responsibility after
@@ -377,12 +378,13 @@ three is the normal shape.
 The direct-work horizon is an economics clause, not a producer-role override.
 One low-risk atomic `GENERAL` outcome may remain with CTRL when measured
 coordination overhead is greater than the work. `DESIGN`, `IMAGEGEN`, mockups,
-and image edits require a DESIGNER lane even when they are small; never make a
+and image edits require a visible Designer or Artist lane, selected by typed
+product-experience versus expressive-art ownership, even when they are small; never make a
 visual task direct merely to avoid startup cost.
 Small bounded `GENERAL` work may use a subagent under CTRL or a LEAD when its
 measured economics favor that route. Medium and large work opens a visible
 Codex task; its LEAD/DOER lanes may then use their own subagents. Visual work
-always remains a visible DESIGNER task.
+always remains a visible assigned visual-profession task.
 
 Any agent may request a skill for its assigned role. Bind the exact skill
 source and version/digest, the reason it improves the lane, the destination

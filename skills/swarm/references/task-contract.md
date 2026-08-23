@@ -39,7 +39,7 @@ PURPOSE: objective and acceptance/non-negotiables.
 OWNERSHIP: owner, exact mutable surface, canonical artifact/version.
 BOUNDARIES: dependencies, proof/claim limits, no hidden scope change.
 ESCALATION: accepting route or exact blocker.
-MODE: CTRL_DIRECT or CTRL_DELEGATED, with the direct-work predicate receipt and typed work kind (`GENERAL`, `DESIGN`, `IMAGEGEN`, or `IMAGE_EDIT`). Only `GENERAL` can pass the CTRL_DIRECT predicate; visual work binds a DESIGNER assignment.
+MODE: CTRL_DIRECT or CTRL_DELEGATED, with the direct-work predicate receipt and typed work kind (`GENERAL`, `DESIGN`, `IMAGEGEN`, or `IMAGE_EDIT`). Only `GENERAL` can pass the CTRL_DIRECT predicate; visual work records `product_experience` or `expressive_art` ownership and binds Designer or Artist respectively.
 GOAL: stable goal ID, objective version, measurable milestone, and locally chosen review horizon; optional WATCHDOG binding is separate and names the watched owner plus validated alert route. New-task persistence follows `goals.use_goals`, which defaults true; when it is false the intake and graph remain recorded but the root task does not create or continue a durable goal. LEAD and persistent SPECIALIST ownership goals remain fixed role invariants.
 ACCEPTANCE: typed lane kind, exact ArtifactIdentity, deterministic ProofPlan, bound owning LEAD identity, and accepting REVIEW route; CODE has at least one gate and only NON_CODE non-artifact work may use an explicit empty contract.
 SKILLS: any agent may request a role skill with exact source/version or digest, purpose, destination scope, and host audit/rollback receipt; installation never transfers authority and defaults task-local.
@@ -109,7 +109,7 @@ explicit reasoned rejection. The private Git-ignored ledger uses structured safe
 evidence references and serialized cross-process updates, never a repo command,
 person-specific rule, or credential value.
 
-A SPECIALIST interface is only a current decision/dependency reference. The specialist persists one exact cross-cutting truth surface; it does not acquire a lane. Record both the short profession and a stable instance identity so multiple specialists—including multiple ARCHITECTs, MOTHERs, or DEVELOPERs—can coexist without overlapping ownership. MOTHER is advisory only. A DOER may use a temporary wildcard ASSIST for a bounded independent subtask, but never for acceptance or authority transfer. Detailed role and recovery rationale is lazy-loaded from the matching reference.
+A SPECIALIST interface is only a current decision/dependency reference. The specialist persists one exact cross-cutting truth surface; it does not acquire a lane. Record the structural role and typed profession namespace separately so profession `specialist` cannot collide with structural SPECIALIST authority. Unknown historical titles remain inert user-owned text and never become profession or authority records. A DOER may use a temporary wildcard ASSIST for a bounded independent subtask, but never for acceptance or authority transfer. Detailed role and recovery rationale is lazy-loaded from the matching reference.
 
 WATCHDOG is not a role or task-contract owner. When explicitly bound, its receipt
 records only the goal, watched owner, due evidence digest, one of `CLEAR`,

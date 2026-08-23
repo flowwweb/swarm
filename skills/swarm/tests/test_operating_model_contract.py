@@ -4,7 +4,7 @@ import unittest
 from pathlib import Path
 
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
-from runtime import AcceptanceContract, ArtifactIdentity, CtrlMode, Depth, InvariantError, LaneKind, Role, SubagentException, Swarm, Task, WatchdogBinding, WatchdogEvidence, WatchdogRouteRole, WatchdogScope, WatchdogSignal, Worker, WorkKind, ctrl_mode
+from runtime import AcceptanceContract, ArtifactIdentity, CtrlMode, Depth, InvariantError, LaneKind, ProfessionAssignment, Role, SubagentException, Swarm, Task, VisualOwnership, WatchdogBinding, WatchdogEvidence, WatchdogRouteRole, WatchdogScope, WatchdogSignal, Worker, WorkKind, ctrl_mode
 
 
 def digest(value:str)->str: return hashlib.sha256(value.encode()).hexdigest()
@@ -136,10 +136,40 @@ class OperatingModelTests(unittest.TestCase):
         swarm.amend_objective(Role.CTRL,"T",version=2,authority="user",reason="new requirement",requirements_delta="add export",new_baseline="v2 brief",prior_miss_relevance="all remain relevant")
         with self.assertRaises(InvariantError): swarm.amend_objective(Role.SPECIALIST,"T",version=3,authority="manager",reason="override",requirements_delta="none",new_baseline="v3",prior_miss_relevance="none")
 
-    def test_mother_is_a_specialist_profession_and_watchdog_is_not_a_role(self):
-        from runtime.core import BUILT_IN_SPECIALISTS
-        self.assertIn("MOTHER",BUILT_IN_SPECIALISTS); self.assertNotIn("WATCHDOG",BUILT_IN_SPECIALISTS)
+    def test_retired_profession_is_not_registered_and_watchdog_is_not_a_role(self):
+        from runtime.core import BUILT_IN_PROFESSION_TOKENS
+        self.assertNotIn("MOTHER",BUILT_IN_PROFESSION_TOKENS); self.assertNotIn("WATCHDOG",BUILT_IN_PROFESSION_TOKENS)
         self.assertFalse(hasattr(Role,"MOTHER")); self.assertFalse(hasattr(Role,"WATCHDOG"))
+
+    def test_locked_profession_registry_is_orthogonal_to_structural_authority(self):
+        from runtime.core import BUILT_IN_PROFESSIONS, PROFESSION_GROUPS, resolve_profession_id
+        self.assertEqual(tuple(group for group,_ in PROFESSION_GROUPS),("Direction","Discovery","Creation","Assurance","Delivery","Foundation"))
+        self.assertEqual(tuple(BUILT_IN_PROFESSIONS),("manager","strategist","researcher","analyst","specialist","inventor","architect","designer","artist","writer","developer","producer","tester","critic","security","auditor","legal","reviewer","operator","marketer","support","accountant","recruiter","educator"))
+        self.assertEqual(len(BUILT_IN_PROFESSIONS), 24)
+        self.assertEqual(BUILT_IN_PROFESSIONS["support"], "Support")
+        self.assertEqual(resolve_profession_id("Support Specialist"), "support")
+        self.assertEqual(resolve_profession_id("Security Engineer"), "security")
+        self.assertEqual(resolve_profession_id("Project Manager"), "manager")
+        for excluded in ("Innovator", "Negotiator", "Seller", "MOTHER", "Red Teamer"):
+            with self.assertRaises(ValueError): resolve_profession_id(excluded)
+        self.assertNotIn("CTRL", BUILT_IN_PROFESSIONS)
+        self.assertNotIn("LEAD", BUILT_IN_PROFESSIONS)
+        self.assertNotIn("DOER", BUILT_IN_PROFESSIONS)
+
+    def test_profession_specialist_is_typed_separately_from_structural_specialist(self):
+        with self.assertRaisesRegex(InvariantError,"named domain and truth surface"):
+            ProfessionAssignment("specialist")
+        assignment=ProfessionAssignment("specialist",domain="maritime",truth_surface="COLREG interpretation")
+        self.assertEqual((assignment.profession_id,assignment.label),("specialist","Specialist"))
+        swarm=Swarm(); swarm.tasks["T"]=Task("T","worker","creator",1,{})
+        swarm.specialist_event(Role.SPECIALIST,"T",specialist_id="maritime-a",profession="specialist",domain="maritime",truth_surface="COLREG interpretation",goal_id="safe route",accepted_change="constraint",invalidates_map=False,receipt="source")
+        self.assertEqual(swarm.tasks["T"].specialist_profession_assignments["maritime-a"],assignment)
+
+    def test_task_visual_ownership_distinguishes_designer_and_artist(self):
+        designer=Task("ui","worker","creator",1,{},work_kind=WorkKind.IMAGEGEN,visual_ownership=VisualOwnership.PRODUCT_EXPERIENCE,profession_assignment=ProfessionAssignment("designer"))
+        artist=Task("art","worker","creator",1,{},work_kind=WorkKind.IMAGEGEN,visual_ownership=VisualOwnership.EXPRESSIVE_ART,profession_assignment=ProfessionAssignment("artist"))
+        self.assertEqual(designer.profession_assignment.profession_id,"designer")
+        self.assertEqual(artist.profession_assignment.profession_id,"artist")
 
 
 if __name__ == "__main__": unittest.main()

@@ -21,8 +21,6 @@ def _canonical_role(role: str) -> str:
     if not isinstance(role, str) or not role.strip():
         raise ValueError("role must be a non-empty string")
     canonical = role.strip().casefold()
-    if canonical == "mother":
-        return "specialist"
     return "specialist" if canonical.startswith("specialist:") else canonical
 
 
@@ -98,7 +96,6 @@ def forward_cases() -> dict[str, dict[str, str]]:
     )
     cases = {
         "ctrl_startup_no_goal": goal_decision("ctrl", None, "portfolio"),
-        "mother_specialist_startup": goal_decision("specialist:mother", None, "coordination-truth"),
         "lead_resume_matching_goal": goal_decision("lead", matching, "lane-a"),
         "lead_mixed_case_matching_goal": goal_decision("LeAd", matching, "lane-a"),
         "architect_startup": goal_decision("architect", None, "system"),

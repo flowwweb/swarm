@@ -18,6 +18,7 @@ from skills.swarm.runtime import (
     WatchdogRouteRole,
     Swarm,
     Task,
+    VisualOwnership,
     WorkRoutingFacts,
     WorkKind,
     WorkSize,
@@ -126,9 +127,9 @@ class RuntimeRoutingTests(unittest.TestCase):
         self.assertEqual(no_visible_task.route, ExecutionRoute.HARD_BLOCKED)
         self.assertIn("no permitted task", no_visible_task.reason)
 
-    def test_design_and_image_generation_require_a_designer_lane(self) -> None:
+    def test_product_design_and_image_generation_require_a_designer_lane(self) -> None:
         for work_kind in (WorkKind.DESIGN, WorkKind.IMAGEGEN):
-            with self.subTest(work_kind=work_kind), self.assertRaisesRegex(InvariantError, "DESIGNER assignment"):
+            with self.subTest(work_kind=work_kind), self.assertRaisesRegex(InvariantError, "Designer profession"):
                 route_execution(facts=facts(work_kind=work_kind), economics=economics(), capacity=AVAILABLE, accountable_owner="lead-a", lead_owner="lead-a")
             decision = route_execution(
                 facts=facts(work_kind=work_kind),
@@ -140,6 +141,13 @@ class RuntimeRoutingTests(unittest.TestCase):
             )
             self.assertEqual(decision.route, ExecutionRoute.NORMAL_TASK)
             self.assertIn("durable", decision.reason)
+
+    def test_expressive_image_generation_requires_artist_not_designer(self) -> None:
+        expressive=facts(work_kind=WorkKind.IMAGEGEN,visual_ownership=VisualOwnership.EXPRESSIVE_ART)
+        with self.assertRaisesRegex(InvariantError,"Artist profession"):
+            route_execution(facts=expressive,economics=economics(),capacity=AVAILABLE,accountable_owner="lead-a",lead_owner="lead-a",assigned_profession="DESIGNER")
+        decision=route_execution(facts=expressive,economics=economics(),capacity=AVAILABLE,accountable_owner="lead-a",lead_owner="lead-a",assigned_profession="ARTIST")
+        self.assertEqual(decision.route,ExecutionRoute.NORMAL_TASK)
 
     def test_visual_work_never_falls_back_to_a_subagent_when_task_creation_is_unavailable(self) -> None:
         blocked = HostCapacityEvidence(HostTaskCapacity.REJECTED, True, "host:error:task rejected")

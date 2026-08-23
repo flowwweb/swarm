@@ -42,10 +42,10 @@ class WorkflowGraphTests(unittest.TestCase):
         missing=derive_workflow_graph(swarm)
         self.assertEqual(missing.diagnostics,("missing-dependency:B:missing",))
 
-    def test_recorded_mother_is_only_a_specialist_and_watchdog_is_never_a_node(self):
-        swarm=self.two_lanes(); swarm.specialist_event(Role.SPECIALIST,"A",specialist_id="manager",profession="MOTHER",goal_id="coordinate",accepted_change="lane brief",invalidates_map=False,receipt="receipt")
+    def test_recorded_manager_profession_is_separate_from_authority_and_watchdog_is_never_a_node(self):
+        swarm=self.two_lanes(); swarm.specialist_event(Role.SPECIALIST,"A",specialist_id="manager",profession="MANAGER",goal_id="coordinate",accepted_change="lane brief",invalidates_map=False,receipt="receipt")
         graph=derive_workflow_graph(swarm); kinds={node.id:node.kind for node in graph.nodes}
-        self.assertEqual(kinds["specialist:manager"],"MOTHER")
+        self.assertEqual(kinds["specialist:manager"],"MANAGER")
         self.assertNotIn("WATCHDOG",kinds.values()); self.assertFalse(any(node.id.startswith("watchdog:") for node in graph.nodes))
 
     def test_graph_never_reobserves_artifact_after_recorded_pass(self):

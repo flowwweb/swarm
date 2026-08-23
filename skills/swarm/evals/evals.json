@@ -40,15 +40,15 @@
     },
     {
       "id": 4,
-      "prompt": "Use SWARM to organize a redesign. Call MOTHER Captain and LEAD Director, and create separate visual design and frontend implementation tasks with the default role emoji system.",
+      "prompt": "Use SWARM to organize a redesign. Call CTRL Captain and LEAD Director, and create separate product-design, expressive-art, and frontend implementation tasks with the default role emoji system.",
       "expected_output": "A user-visible hierarchy with custom hierarchy labels and distinct logical role emojis, while leaf tasks use contextual roles such as VISUAL and DEV rather than a forced literal TASK label.",
       "files": [],
       "assertions": [
         "Every SWARM task title begins with exactly one role emoji",
-        "MOTHER uses the configured bee emoji while other roles use their configured or inferred emoji",
+        "CTRL uses its configured emoji while profession tasks use configured or inferred role emojis",
         "The root uses Captain and the coordinator uses Director",
         "Leaf titles use contextual work roles such as VISUAL and DEV",
-        "The authority hierarchy remains CTRL to LEAD to TASK despite customized display labels; MOTHER is only a display label for an advisory specialist"
+        "The authority hierarchy remains CTRL to LEAD to DOER despite customized display labels; profession labels do not grant authority"
       ]
     },
     {
@@ -60,16 +60,16 @@
         "Legacy title_prefix does not appear in effective settings",
         "role_icons.enabled remains false in effective settings",
         "Every new title omits its role emoji",
-        "CTRL, LEAD, and contextual task-role authority remain unchanged; the historical MOTHER display label carries no authority"
+        "CTRL, LEAD, and contextual task-role authority remain unchanged; historical custom titles carry no authority"
       ]
     },
     {
       "id": 6,
-      "prompt": "Use SWARM's default role emoji system. Keep the bee for MOTHER, use distinct hierarchy emojis, and let implementation and visual design tasks choose fitting emojis from the configured palette.",
-      "expected_output": "A user-visible hierarchy whose role coding is visually distinct, with CTRL and LEAD authority explicit and MOTHER retained only as an advisory specialist label.",
+      "prompt": "Use SWARM's default role emoji system. Keep structural authority distinct, and let implementation, product design, and expressive art tasks choose fitting emojis from the configured palette.",
+      "expected_output": "A user-visible hierarchy whose authority and profession coding are visually distinct, with CTRL and LEAD explicit and Designer separated from Artist.",
       "files": [],
       "assertions": [
-        "MOTHER uses roles.MOTHER.icon and remains a specialist profession",
+        "Designer owns product interaction while Artist owns expressive media",
         "LEAD and REVIEW use their dedicated configured emojis",
         "Each finite task chooses one configured emoji appropriate to its contextual role",
         "The same contextual role uses the same emoji throughout the portfolio",
@@ -82,7 +82,7 @@
       "expected_output": "New tasks use the configured role-specific model and reasoning pairs, while service-tier application is claimed only when the host task primitive supports it.",
       "files": [],
       "assertions": [
-        "A MOTHER-labeled advisory specialist resolves to gpt-5.6-sol with high reasoning without receiving authority",
+        "A profession assignment does not change CTRL, LEAD, DOER, or REVIEW authority",
         "LEAD resolves to gpt-5.6-terra with medium reasoning",
         "TASK resolves to gpt-5.6-luna with xhigh reasoning",
         "REVIEW resolves to gpt-5.6-sol with high reasoning",
@@ -624,11 +624,11 @@
     },
     {
       "id": 50,
-      "prompt": "Organize a SWARM portfolio that justifies MOTHER, LEAD, BUILD, DEV, one unusual contextual task, and REVIEW using untouched default emoji settings.",
+      "prompt": "Organize a SWARM portfolio that justifies Manager, LEAD, BUILD, DEV, one unusual contextual task, and REVIEW using untouched default emoji settings.",
       "expected_output": "Every title starts with exactly one role-derived emoji: hierarchy roles use their configured defaults, BUILD and DEV use logical classic choices, and only the unusual task uses the generic fallback.",
       "files": [],
       "assertions": [
-        "MOTHER uses roles.MOTHER.icon while LEAD and REVIEW use their dedicated role_icons settings",
+        "Manager is a profession without structural authority while LEAD and REVIEW use their dedicated role_icons settings",
         "BUILD uses a hammer and DEV uses a computer",
         "The unusual task uses role_icons.fallback only after no logical configured choice fits",
         "No global prefix or enabled toggle participates in title generation",
@@ -962,7 +962,7 @@
     {
       "id": 75,
       "prompt": "Use SWARM for a multi-repo release with three dependent owners, integration sequencing, and one portfolio acceptance decision that CTRL cannot cheaply own.",
-      "expected_output": "CTRL remains the sole root, creates the justified LEAD lanes, and owns cross-lane integration plus portfolio acceptance; an optional MOTHER-labeled manager specialist may advise only when its truth-surface benefit exceeds coordination cost, and architecture is added only if system-coherence facts require it.",
+      "expected_output": "CTRL remains the sole root, creates the justified LEAD lanes, and owns cross-lane integration plus portfolio acceptance; an optional Manager profession may advise only when its bounded assignment adds value, and architecture is added only if system-coherence facts require it.",
       "files": [],
       "assertions": [
         "LEAD lanes are justified by the complete portfolio predicate while CTRL remains sole root",
@@ -1187,7 +1187,7 @@
     {
       "id": 91,
       "prompt": "Begin a one-shot request to build a complete game. The user wants persistence, the most efficient route, and a graph that follows proven game-production dependencies. The configured goals.use_goals setting is omitted, then a second run explicitly sets it false. Decide the intake, goal policy, graph, lane materialization, and subagent boundaries.",
-      "expected_output": "CTRL asks or confirms the goal and the most efficient safe completion strategy before routing, even when the prompt is one-shot; it restates both answers in a typed intake receipt. With goals.use_goals omitted, it creates or continues one durable goal by default. It selects the registered game_studio graph with one CTRL root, a game-studio lead, independent DESIGNER, ENGINEER, ARTIST, and AUDIO lanes, then downstream playtest/QA and RELEASE gates. Medium and large lanes are visible Codex tasks and may use their own bounded subagents; subagents never replace lane ownership, handoff, review, or acceptance. With goals.use_goals=false, it preserves the same intake and graph but skips root-task durable-goal creation; role-owned LEAD and persistent SPECIALIST goals remain fixed invariants.",
+      "expected_output": "CTRL asks or confirms the goal and the most efficient safe completion strategy before routing, even when the prompt is one-shot; it restates both answers in a typed intake receipt. With goals.use_goals omitted, it creates or continues one durable goal by default. It selects the registered game_studio graph with one CTRL root, a game-studio lead, independent DESIGNER, DEV, ARTIST, and AUDIO lanes, then downstream playtest/QA and RELEASE gates. Medium and large lanes are visible Codex tasks and may use their own bounded subagents; subagents never replace lane ownership, handoff, review, or acceptance. With goals.use_goals=false, it preserves the same intake and graph but skips root-task durable-goal creation; role-owned LEAD and persistent SPECIALIST goals remain fixed invariants.",
       "files": [],
       "assertions": [
         "The goal and most efficient safe completion strategy are both asked or confirmed before routing",

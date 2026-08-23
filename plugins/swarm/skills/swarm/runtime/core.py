@@ -19,6 +19,35 @@ from .request_ledger import RequestStore, RequestStoreError
 class Role(StrEnum):
     CTRL="CTRL"; SPECIALIST="SPECIALIST"; ARCHITECT="ARCHITECT"; LEAD="LEAD"; DOER="DOER"; EXPERT="EXPERT"; REVIEW="REVIEW"
 
+PROFESSION_GROUPS = (
+    ("Direction", (("manager", "Manager"), ("strategist", "Strategist"))),
+    ("Discovery", (("researcher", "Researcher"), ("analyst", "Analyst"), ("specialist", "Specialist"), ("inventor", "Inventor"))),
+    ("Creation", (("architect", "Architect"), ("designer", "Designer"), ("artist", "Artist"), ("writer", "Writer"), ("developer", "Dev"), ("producer", "Producer"))),
+    ("Assurance", (("tester", "Tester"), ("critic", "Critic"), ("security", "Security"), ("auditor", "Auditor"), ("legal", "Legal"), ("reviewer", "Reviewer"))),
+    ("Delivery", (("operator", "Operator"), ("marketer", "Marketer"), ("support", "Support"))),
+    ("Foundation", (("accountant", "Accountant"), ("recruiter", "Recruiter"), ("educator", "Educator"))),
+)
+BUILT_IN_PROFESSIONS = {
+    profession_id: label
+    for _, professions in PROFESSION_GROUPS
+    for profession_id, label in professions
+}
+PROFESSION_ALIASES = {
+    "product_manager": "manager", "project_manager": "manager", "planner": "manager",
+    "data_analyst": "analyst", "financial_analyst": "analyst",
+    "content_strategist": "strategist", "social_strategist": "strategist", "sales_strategist": "strategist",
+    "brand_strategist": "strategist", "security_engineer": "security", "support_specialist": "support",
+    "dev": "developer",
+}
+
+def resolve_profession_id(value: str) -> str:
+    """Resolve legacy profession labels without changing user-owned titles."""
+    key = str(value).strip().casefold().replace(" ", "_")
+    resolved = PROFESSION_ALIASES.get(key, key)
+    if resolved not in BUILT_IN_PROFESSIONS:
+        raise ValueError(f"unknown profession: {key}")
+    return resolved
+
 class PinDisposition(StrEnum):
     DEFAULT_UNPINNED="DEFAULT_UNPINNED"; PRESERVE_USER_STATE="PRESERVE_USER_STATE"; PLACEMENT_UNVERIFIED="PLACEMENT_UNVERIFIED"
 
@@ -75,7 +104,11 @@ def close_pin_policy(
         return PinPolicyDecision(PinDisposition.PRESERVE_USER_STATE, "user kept or changed pin/task/folder state")
     return PinPolicyDecision(PinDisposition.PRESERVE_USER_STATE, "closeout mutation not independently authorized")
 
-BUILT_IN_SPECIALISTS = frozenset({"MOTHER", "ARCHITECT", "ENGINEER", "DEVELOPER", "DESIGNER", "RESEARCHER", "ANALYST", "STRATEGIST"})
+BUILT_IN_PROFESSION_TOKENS = frozenset(
+    {profession_id.upper() for profession_id in BUILT_IN_PROFESSIONS}
+    | {label.upper() for label in BUILT_IN_PROFESSIONS.values()}
+)
+RETIRED_PROFESSION_TOKENS = frozenset({"MOTHER"})
 class TaskState(StrEnum):
     REQUEST_PENDING="REQUEST_PENDING"; ACTIVE="ACTIVE"; WAITING="WAITING"; REVIEW="REVIEW"; COMPLETE="COMPLETE"; STALE="STALE"; ARCHIVED="ARCHIVED"; ARCHIVED_STALE="ARCHIVED_STALE"; BACKLOG="BACKLOG"
 class ReviewValue(StrEnum): NONE="NONE"; LOW="LOW"; HIGH="HIGH"; PINNED="PINNED"
@@ -90,7 +123,7 @@ class WithholdBasis(StrEnum): OBJECTIVE_DEFECT="objective-defect"; DUPLICATE="du
 class CtrlSurfaceKind(StrEnum):
     INLINE_IMAGE="inline_image"; INLINE_RECORDING="inline_recording"; INLINE_COMPARISON="inline_comparison"; INLINE_TABLE="inline_table"; INLINE_EXCERPT="inline_excerpt"; INLINE_RECEIPT="inline_receipt"; EXACT_BLOCKER="exact_blocker"
 class CtrlFeedPart(StrEnum):
-    OUTCOME="outcome"; PROOF="proof"; RISK="risk"; CHECKPOINT="checkpoint"; ORCHESTRATION="orchestration"; TASK_CHATTER="task_chatter"; ACTIVITY="activity"; MOTHER_DETAIL="mother_detail"
+    OUTCOME="outcome"; PROOF="proof"; RISK="risk"; CHECKPOINT="checkpoint"; ORCHESTRATION="orchestration"; TASK_CHATTER="task_chatter"; ACTIVITY="activity"
 class CtrlFeedEventKind(StrEnum):
     RESULT="result"; DECISION="decision"; BLOCKER="blocker"; ACCEPTANCE="acceptance"; RELEASE="release"; HANDOFF="handoff"
 class SubagentException(StrEnum):
@@ -101,6 +134,7 @@ class DegradedCapacityException(StrEnum): TASK_UNAVAILABLE="task_unavailable"; T
 class RoutingEvidenceBasis(StrEnum): OBSERVED="observed"; CONSERVATIVE_ASSUMPTION="conservative_assumption"
 class WorkSize(StrEnum): SMALL="small"; MEDIUM="medium"; LARGE="large"
 class WorkKind(StrEnum): GENERAL="general"; DESIGN="design"; IMAGEGEN="imagegen"; IMAGE_EDIT="image_edit"
+class VisualOwnership(StrEnum): PRODUCT_EXPERIENCE="product_experience"; EXPRESSIVE_ART="expressive_art"
 class GraphProfile(StrEnum): GENERAL="general"; GAME_STUDIO="game_studio"
 class HandsOffEventKind(StrEnum):
     USER_DIRECTION="user_direction"; MATERIAL_HANDOFF_REVIEW="material_handoff_review"; STOPPING_CONDITION="stopping_condition"; HUMAN_AUTHORITY_BLOCKER="human_authority_blocker"; USAGE_SIGNAL="usage_signal"; MODEL_MESSAGE="model_message"; TASK_MESSAGE="task_message"; ROUTINE_STATUS="routine_status"
@@ -134,6 +168,25 @@ class RequestStageState(StrEnum): PROVISIONAL="PROVISIONAL"; ACCEPTED="ACCEPTED"
 class InvariantError(ValueError): pass
 
 @dataclass(frozen=True)
+class ProfessionAssignment:
+    """Typed profession perspective, separate from structural authority."""
+    profession_id:str; domain:str=""; truth_surface:str=""
+    def __post_init__(self):
+        try:
+            profession_id=resolve_profession_id(self.profession_id)
+        except ValueError as error:
+            raise InvariantError(str(error)) from error
+        domain=self.domain.strip(); truth_surface=self.truth_surface.strip()
+        if profession_id=="specialist" and (not domain or not truth_surface):
+            raise InvariantError("Specialist profession requires a named domain and truth surface")
+        if any(character in value for value in (domain,truth_surface) for character in "\r\n\t"):
+            raise InvariantError("profession domain and truth surface must be single-line text")
+        object.__setattr__(self,"profession_id",profession_id); object.__setattr__(self,"domain",domain); object.__setattr__(self,"truth_surface",truth_surface)
+
+    @property
+    def label(self)->str: return BUILT_IN_PROFESSIONS[self.profession_id]
+
+@dataclass(frozen=True)
 class RoutingEconomics:
     critical_path_savings_ms:int; task_start_ms:int; worktree_ms:int; coordination_ms:int; handoff_ms:int; integration_ms:int; review_ms:int
     basis:RoutingEvidenceBasis; receipts:tuple[str,...]=(); assumptions:tuple[str,...]=()
@@ -149,11 +202,15 @@ class RoutingEconomics:
 
 @dataclass(frozen=True)
 class WorkRoutingFacts:
-    size:WorkSize; bounded:bool; low_risk:bool; mutable_surface_count:int; independent_work:bool=False; independent_acceptance:bool=False; separate_handoff:bool=False; useful_durable_boundary:bool=False; interruption_safe_resumption:bool=False; worktree_isolation:bool=False; independent_review:bool=False; work_kind:WorkKind=WorkKind.GENERAL; user_visible_delivery:bool=False; cross_lane_dependency:bool=False; material_heartbeat_obligation:bool=False
+    size:WorkSize; bounded:bool; low_risk:bool; mutable_surface_count:int; independent_work:bool=False; independent_acceptance:bool=False; separate_handoff:bool=False; useful_durable_boundary:bool=False; interruption_safe_resumption:bool=False; worktree_isolation:bool=False; independent_review:bool=False; work_kind:WorkKind=WorkKind.GENERAL; visual_ownership:VisualOwnership=VisualOwnership.PRODUCT_EXPERIENCE; user_visible_delivery:bool=False; cross_lane_dependency:bool=False; material_heartbeat_obligation:bool=False
     def __post_init__(self):
-        if not isinstance(self.size,WorkSize) or not isinstance(self.mutable_surface_count,int) or self.mutable_surface_count<1 or not isinstance(self.work_kind,WorkKind): raise InvariantError("routing facts require typed size, work kind, and at least one mutable surface")
-    def requires_designer(self)->bool: return self.work_kind in {WorkKind.DESIGN,WorkKind.IMAGEGEN,WorkKind.IMAGE_EDIT}
-    def requires_durable_lane(self)->bool: return self.size is WorkSize.LARGE or self.requires_designer() or any((self.independent_acceptance,self.separate_handoff,self.useful_durable_boundary,self.interruption_safe_resumption,self.worktree_isolation,self.independent_review,self.user_visible_delivery,self.cross_lane_dependency,self.material_heartbeat_obligation))
+        if not isinstance(self.size,WorkSize) or not isinstance(self.mutable_surface_count,int) or self.mutable_surface_count<1 or not isinstance(self.work_kind,WorkKind) or not isinstance(self.visual_ownership,VisualOwnership): raise InvariantError("routing facts require typed size, work kind, visual ownership, and at least one mutable surface")
+    def required_visual_profession(self)->str:
+        if self.work_kind is WorkKind.DESIGN: return "designer"
+        if self.work_kind in {WorkKind.IMAGEGEN,WorkKind.IMAGE_EDIT}: return "artist" if self.visual_ownership is VisualOwnership.EXPRESSIVE_ART else "designer"
+        return ""
+    def requires_visual_profession(self)->bool: return bool(self.required_visual_profession())
+    def requires_durable_lane(self)->bool: return self.size is WorkSize.LARGE or self.requires_visual_profession() or any((self.independent_acceptance,self.separate_handoff,self.useful_durable_boundary,self.interruption_safe_resumption,self.worktree_isolation,self.independent_review,self.user_visible_delivery,self.cross_lane_dependency,self.material_heartbeat_obligation))
 
 @dataclass(frozen=True)
 class HostCapacityEvidence:
@@ -178,7 +235,7 @@ def _route_candidate(*, facts:WorkRoutingFacts, economics:RoutingEconomics, capa
         if not lead or lead.upper()==Role.CTRL.value: raise InvariantError("delegated task routing requires CTRL -> LEAD -> DOER authority")
         reason="visible senior task/chat required by an explicit durable lane boundary" if visible_task_required else "parallel savings exceed measured task overhead"
         return ExecutionRoutingDecision(ExecutionRoute.NORMAL_TASK,lead,(Role.CTRL.value,Role.LEAD.value,Role.DOER.value),reason,capacity.receipt,economics)
-    if prefer_task and capacity.subagents_available and not facts.requires_designer():
+    if prefer_task and capacity.subagents_available and not facts.requires_visual_profession():
         if not all(isinstance(value,str) and value.strip() for value in (immutable_checkpoint,resumption_marker)) or not affected_gates: raise InvariantError("degraded subagent routing requires an immutable checkpoint, resumption marker, and unverified gates")
         exception={HostTaskCapacity.UNAVAILABLE:DegradedCapacityException.TASK_UNAVAILABLE,HostTaskCapacity.REJECTED:DegradedCapacityException.TASK_REJECTED,HostTaskCapacity.USAGE_LIMITED:DegradedCapacityException.TASK_USAGE_LIMITED}.get(capacity.task_status)
         if exception is None: raise InvariantError("degraded subagent routing requires an exact task-capacity failure")
@@ -189,12 +246,16 @@ def _route_candidate(*, facts:WorkRoutingFacts, economics:RoutingEconomics, capa
     if capacity.task_status is HostTaskCapacity.AVAILABLE:
         if not lead or lead.upper()==Role.CTRL.value: raise InvariantError("delegated task routing requires CTRL -> LEAD -> DOER authority")
         return ExecutionRoutingDecision(ExecutionRoute.NORMAL_TASK,lead,(Role.CTRL.value,Role.LEAD.value,Role.DOER.value),"task lane is the only viable permitted structure",capacity.receipt,economics)
-    reason="visual work requires a visible DESIGNER task; subagent fallback is prohibited" if facts.requires_designer() else "no permitted task or subagent structure can progress"
+    reason="visual work requires the visible assigned visual profession; subagent fallback is prohibited" if facts.requires_visual_profession() else "no permitted task or subagent structure can progress"
     return ExecutionRoutingDecision(ExecutionRoute.HARD_BLOCKED,owner,(owner,),reason,capacity.receipt,economics)
 
 def route_execution(*, facts:WorkRoutingFacts, economics:RoutingEconomics, capacity:HostCapacityEvidence, accountable_owner:str, lead_owner:str="", assigned_profession:str="", immutable_checkpoint:str="", resumption_marker:str="", affected_gates:tuple[str,...]=(), current:ExecutionRoutingDecision|None=None, safe_boundary:bool=True) -> ExecutionRoutingDecision:
-    if facts.requires_designer() and assigned_profession.strip().upper()!="DESIGNER":
-        raise InvariantError("design and image generation require a DESIGNER assignment")
+    required=facts.required_visual_profession()
+    if required:
+        if not assigned_profession.strip(): raise InvariantError(f"{facts.visual_ownership.value} {facts.work_kind.value} work requires the {BUILT_IN_PROFESSIONS[required]} profession")
+        try: actual=resolve_profession_id(assigned_profession)
+        except ValueError as error: raise InvariantError(str(error)) from error
+        if actual!=required: raise InvariantError(f"{facts.visual_ownership.value} {facts.work_kind.value} work requires the {BUILT_IN_PROFESSIONS[required]} profession")
     candidate=_route_candidate(facts=facts,economics=economics,capacity=capacity,accountable_owner=accountable_owner,lead_owner=lead_owner,immutable_checkpoint=immutable_checkpoint,resumption_marker=resumption_marker,affected_gates=affected_gates)
     if current is not None and candidate.route is not current.route and not safe_boundary:
         return replace(current,reason="topology change deferred until the next safe boundary",pending_route=candidate.route)
@@ -318,7 +379,7 @@ def audit_ctrl_feed(messages:tuple[CtrlFeedMessage,...]) -> CtrlFeedAudit:
     """Enforce feed semantics and proof binding without arbitrary content caps."""
     violations=[]
     expected=(CtrlFeedPart.OUTCOME,CtrlFeedPart.PROOF,CtrlFeedPart.RISK,CtrlFeedPart.CHECKPOINT)
-    forbidden={CtrlFeedPart.ORCHESTRATION,CtrlFeedPart.TASK_CHATTER,CtrlFeedPart.ACTIVITY,CtrlFeedPart.MOTHER_DETAIL}
+    forbidden={CtrlFeedPart.ORCHESTRATION,CtrlFeedPart.TASK_CHATTER,CtrlFeedPart.ACTIVITY}
     for message in messages:
         kinds=tuple(kind for kind,_ in message.parts)
         bad=tuple(kind.value for kind in kinds if kind in forbidden)
@@ -818,7 +879,7 @@ def select_graph(intake:TaskIntake, *, profile:GraphProfile|None=None)->GraphSel
             GraphNodeSpec("ctrl","CTRL","CTRL","Capture the objective, goal policy, graph, and final acceptance."),
             GraphNodeSpec("studio_lead","GAME_STUDIO_LEAD","LEAD","Own the integrated game plan and handoffs.",("ctrl",)),
             GraphNodeSpec("game_design","DESIGNER","SPECIALIST","Define the player contract, rules, UX, and content scope.",("studio_lead",)),
-            GraphNodeSpec("game_engineering","ENGINEER","SPECIALIST","Build deterministic runtime, platform, and integration surfaces.",("studio_lead",)),
+            GraphNodeSpec("game_engineering","DEV","SPECIALIST","Build deterministic runtime, platform, and integration surfaces.",("studio_lead",)),
             GraphNodeSpec("game_art","ARTIST","SPECIALIST","Produce the visual direction and production assets.",("studio_lead",)),
             GraphNodeSpec("game_audio","AUDIO","SPECIALIST","Produce the sound and music direction and assets.",("studio_lead",)),
             GraphNodeSpec("playtest_qa","QA","REVIEW","Exercise the integrated build and verify the player contract.",("game_design","game_engineering","game_art","game_audio")),
@@ -907,7 +968,7 @@ class Task:
     evidence: list[str]=field(default_factory=list); recovery_dimensions: set[str]=field(default_factory=set); recovery_attempts:int=0; review_value: ReviewValue=ReviewValue.NONE
     completed_at: int|None=None; stale_at: int|None=None; archived_at: int|None=None; stale_reason: str|None=None; superseded_by: str|None=None; promoted: list[str]=field(default_factory=list); extensions: int=0; review_passed: bool=False; risk:int=1; review_strategy:str="light"; architecture_review_floor:ReviewStrategy=ReviewStrategy.LIGHT; security_review_floor:ReviewStrategy=ReviewStrategy.LIGHT; artifacts:dict[ArtifactIdentity|str,str]=field(default_factory=dict); artifact_justifications:dict[str,ArtifactJustification]=field(default_factory=dict); artifact_provenance:dict[str,ArtifactProvenance]=field(default_factory=dict); archive:dict[str,object]=field(default_factory=dict); active_goal:bool=False; handoff_active:bool=False; correction_pending:bool=False; user_choice_pending:bool=False; ambiguous:bool=False; topology_receipt:tuple[str,...]=(); ctrl_event_receipt:tuple[str,str]|None=None; subagent_receipt:str=""; subagent_exception:SubagentException|None=None; subagent_exception_reason:str=""; goal_id:str=""; objective_version:int=1; milestone:str=""; review_horizon_minutes:int=30; milestone_started_at:int=0; milestone_history:list[tuple[int,str,str]]=field(default_factory=list); ctrl_feed_drift_count:int=0; superseded_ctrl_feed_ids:list[str]=field(default_factory=list); last_ctrl_feed_correction_id:str=""
 
-    ctrl_mode:CtrlMode=CtrlMode.DELEGATED; work_kind:WorkKind=WorkKind.GENERAL; assigned_profession:str=""; milestone_proof_kind:str=""; architecture_goal_id:str=""; architecture_map_version:int=0; architecture_receipts:list[tuple[int,str,str]]=field(default_factory=list); specialist_professions:dict[str,str]=field(default_factory=dict); specialist_goal_ids:dict[str,str]=field(default_factory=dict); specialist_map_versions:dict[str,int]=field(default_factory=dict); specialist_receipts:dict[str,list[tuple[int,str,str]]]=field(default_factory=dict)
+    ctrl_mode:CtrlMode=CtrlMode.DELEGATED; work_kind:WorkKind=WorkKind.GENERAL; visual_ownership:VisualOwnership=VisualOwnership.PRODUCT_EXPERIENCE; assigned_profession:str=""; profession_assignment:ProfessionAssignment|None=None; milestone_proof_kind:str=""; architecture_goal_id:str=""; architecture_map_version:int=0; architecture_receipts:list[tuple[int,str,str]]=field(default_factory=list); specialist_professions:dict[str,str]=field(default_factory=dict); specialist_profession_assignments:dict[str,ProfessionAssignment]=field(default_factory=dict); specialist_goal_ids:dict[str,str]=field(default_factory=dict); specialist_map_versions:dict[str,int]=field(default_factory=dict); specialist_receipts:dict[str,list[tuple[int,str,str]]]=field(default_factory=dict)
     lane_kind:LaneKind=LaneKind.OTHER; owning_lead_id:str=""; acceptance_contract:AcceptanceContract|None=None; gate_receipts:dict[str,GateReceipt]=field(default_factory=dict); unverified_gate_receipts:dict[str,GateReceipt]=field(default_factory=dict); plan_review_receipt:ReviewEvidence|None=None; acceptance_review_receipt:ReviewEvidence|None=None; incident_consultation_receipt:str=""; watchdog_binding:WatchdogBinding|None=None; watchdog_receipts:list[WatchdogReceipt]=field(default_factory=list); user_custody_required:bool=False; user_renamed:bool=False; user_pinned:bool=False; user_state_changed:bool=False
 
 @dataclass(frozen=True)
@@ -1282,7 +1343,7 @@ class Swarm:
     def _worker_identity(self, worker_id:str) -> None:
         if not isinstance(worker_id,str) or not worker_id.strip(): raise InvariantError("mutable worker identity is required")
         if worker_id.strip().upper()=="WATCHDOG": raise InvariantError("WATCHDOG is a reserved sensor identity, not a mutable worker")
-        if worker_id.strip().upper() in ({role.value for role in Role}|BUILT_IN_SPECIALISTS): raise InvariantError("authority or specialist role identity cannot own mutable worker execution")
+        if worker_id.strip().upper() in ({role.value for role in Role}|BUILT_IN_PROFESSION_TOKENS|RETIRED_PROFESSION_TOKENS): raise InvariantError("authority, profession, or retired role identity cannot own mutable worker execution")
     def _known_watchdog_identity(self, task:Task, role:WatchdogRouteRole, identity:str) -> bool:
         if role is WatchdogRouteRole.CTRL: return identity=="CTRL"
         if role is WatchdogRouteRole.REVIEW: return identity=="INDEPENDENT_REVIEW"
@@ -1392,8 +1453,16 @@ class Swarm:
             return
         if not isinstance(exception,SubagentException) or not reason: raise InvariantError("every SWARM task requires a host subagent receipt or typed exact exception")
     def _validate_task_acceptance(self, task:Task) -> None:
-        if not isinstance(task.work_kind,WorkKind): raise InvariantError("task requires a typed work kind")
-        if task.work_kind in {WorkKind.DESIGN,WorkKind.IMAGEGEN,WorkKind.IMAGE_EDIT} and task.assigned_profession.strip().upper()!="DESIGNER": raise InvariantError("design and image work require a DESIGNER assignment")
+        if not isinstance(task.work_kind,WorkKind) or not isinstance(task.visual_ownership,VisualOwnership): raise InvariantError("task requires typed work kind and visual ownership")
+        facts=WorkRoutingFacts(WorkSize.SMALL,True,True,1,work_kind=task.work_kind,visual_ownership=task.visual_ownership)
+        required=facts.required_visual_profession()
+        if task.profession_assignment is not None and not isinstance(task.profession_assignment,ProfessionAssignment): raise InvariantError("task profession assignment must use the typed profession namespace")
+        supplied=task.profession_assignment.profession_id if task.profession_assignment is not None else task.assigned_profession
+        if required:
+            if not supplied.strip(): raise InvariantError(f"{task.visual_ownership.value} {task.work_kind.value} work requires the {BUILT_IN_PROFESSIONS[required]} profession")
+            try: actual=resolve_profession_id(supplied)
+            except ValueError as error: raise InvariantError(str(error)) from error
+            if actual!=required: raise InvariantError(f"{task.visual_ownership.value} {task.work_kind.value} work requires the {BUILT_IN_PROFESSIONS[required]} profession")
         if task.ctrl_mode is CtrlMode.DIRECT and task.work_kind is not WorkKind.GENERAL: raise InvariantError("CTRL_DIRECT tasks must use the GENERAL work kind")
         if not isinstance(task.lane_kind,LaneKind): raise InvariantError("task requires a typed lane kind")
         empty=task.acceptance_contract is not None and task.acceptance_contract.explicitly_empty
@@ -1584,16 +1653,17 @@ class Swarm:
         self._role(actor,{Role.ARCHITECT})
         self.specialist_event(Role.SPECIALIST,task_id,specialist_id="architect",profession="ARCHITECT",goal_id=goal_id,accepted_change=accepted_change,invalidates_map=invalidates_map,receipt=receipt,decision_or_blocker=decision_or_blocker)
         t=self.tasks[task_id]; t.architecture_goal_id=t.specialist_goal_ids["architect"]; t.architecture_map_version=t.specialist_map_versions["architect"]; t.architecture_receipts=t.specialist_receipts["architect"]
-    def specialist_event(self, actor:Role, task_id:str, *, specialist_id:str, profession:str, goal_id:str, accepted_change:str, invalidates_map:bool, receipt:str, decision_or_blocker:str="") -> None:
-        self._role(actor,{Role.SPECIALIST}); t=self.tasks[task_id]; identity=specialist_id.strip(); name=profession.strip().upper()
-        if not identity or any(character in identity for character in "\r\n\t") or not name or any(character in name for character in "\r\n\t"): raise InvariantError("specialist requires a stable instance identity and concrete profession")
-        if name=="MOTHER" and invalidates_map: raise InvariantError("MOTHER manager specialist is advisory and cannot invalidate architecture")
+    def specialist_event(self, actor:Role, task_id:str, *, specialist_id:str, profession:str, goal_id:str, accepted_change:str, invalidates_map:bool, receipt:str, decision_or_blocker:str="", domain:str="", truth_surface:str="") -> None:
+        self._role(actor,{Role.SPECIALIST}); t=self.tasks[task_id]; identity=specialist_id.strip()
+        if not identity or any(character in identity for character in "\r\n\t"): raise InvariantError("specialist requires a stable instance identity")
+        assignment=ProfessionAssignment(profession,domain,truth_surface)
+        name=assignment.label.upper()
         if not all(item.strip() for item in (goal_id,accepted_change,receipt)) or (invalidates_map and not decision_or_blocker.strip()): raise InvariantError("specialist event requires durable goal, accepted change, receipt, and consequential decision when invalidated")
-        existing_profession=t.specialist_professions.get(identity)
-        if existing_profession and existing_profession!=name: raise InvariantError("specialist instance profession cannot change")
+        existing_assignment=t.specialist_profession_assignments.get(identity)
+        if existing_assignment and existing_assignment!=assignment: raise InvariantError("specialist instance profession cannot change")
         existing=t.specialist_goal_ids.get(identity)
         if existing and existing!=goal_id: raise InvariantError("specialist durable goal cannot be replaced")
-        t.specialist_professions[identity]=name; t.specialist_goal_ids[identity]=goal_id; version=t.specialist_map_versions.get(identity,0)+(1 if invalidates_map else 0); t.specialist_map_versions[identity]=version
+        t.specialist_profession_assignments[identity]=assignment; t.specialist_professions[identity]=name; t.specialist_goal_ids[identity]=goal_id; version=t.specialist_map_versions.get(identity,0)+(1 if invalidates_map else 0); t.specialist_map_versions[identity]=version
         t.specialist_receipts.setdefault(identity,[]).append((version,"UPDATE" if invalidates_map else "NO_IMPACT",decision_or_blocker or receipt))
     def wait(self, actor: Role, task_id: str, dependency: str) -> None:
         self._role(actor,{Role.DOER}); t=self.tasks[task_id]
