@@ -1,15 +1,28 @@
 from __future__ import annotations
 import sys
 import unittest
+from hashlib import sha256
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from runtime import AcceptanceContract, ArtifactIdentity, ArtifactJustification, ArtifactProvenance, ContextPackage, CorrectionDecision, CtrlSurfaceKind, DedupDecision, Depth, EfficiencyMode, HiveRecord, HiveStatus, InvariantError, LaneKind, ReviewEvidence, ReviewScope, ReviewStrategy, ReviewValue, Role, SubagentException, Swarm, Task as RuntimeTask, TaskState, TopologyFacts, VersionedReference, Worker, WorkerState, choose_depth, correction_decision, initial_tier
+from runtime import AcceptanceContract, ArtifactFileEvidence, ArtifactIdentity, ArtifactJustification, ArtifactParityReceipt, ArtifactProvenance, ContextPackage, CorrectionDecision, CtrlSurfaceKind, DedupDecision, DelegatedEvidence, DelegatedReceiptVerdict, DelegatedReturnReceipt, DelegationContract, Depth, EfficiencyMode, HiveRecord, HiveStatus, InvariantError, LaneKind, ProofClass, ReviewEvidence, ReviewScope, ReviewStrategy, ReviewValue, Role, SubagentException, Swarm, Task as RuntimeTask, TaskState, TopologyFacts, VersionedReference, VisualReviewContract, Worker, WorkerState, WorkKind, choose_depth, correction_decision, initial_tier
 
 def Task(*args, **kwargs):
  kwargs.setdefault("subagent_receipt",f"host:thread:{args[0]}")
  kwargs.setdefault("lane_kind",LaneKind.OTHER); kwargs.setdefault("owning_lead_id","L")
  kwargs.setdefault("acceptance_contract",AcceptanceContract(ArtifactIdentity(f"task-{args[0]}","v1","acceptance"),()))
+ acceptance=kwargs["acceptance_contract"]; artifact=acceptance.artifact if acceptance and acceptance.artifact is not None else ArtifactIdentity(f"task-{args[0]}","v1","non-artifact")
+ path=f"artifacts/{args[0]}.receipt"; work_kind=kwargs.get("work_kind",WorkKind.GENERAL)
+ visual=VisualReviewContract(("test-surface",)) if work_kind in {WorkKind.DESIGN,WorkKind.IMAGEGEN,WorkKind.IMAGE_EDIT} else None
+ if args[1].strip()==args[1]: kwargs.setdefault("delegation_contract",DelegationContract(args[0],f"Return the exact {args[0]} test deliverable.",args[1],(path,),artifact,(path,),(ProofClass.SOURCE,),60,visual_review=visual))
  return RuntimeTask(*args,**kwargs)
+
+def record_accept(swarm, task_id):
+ task=swarm.tasks[task_id]; contract=task.delegation_contract
+ if contract is None or task.delegated_return_receipts: return
+ file=ArtifactFileEvidence(contract.artifact_paths[0],1,sha256(task_id.encode()).hexdigest()); parity=ArtifactParityReceipt.from_files(contract.artifact,(file,))
+ evidence=DelegatedEvidence(f"evidence-{task_id}",ProofClass.SOURCE,contract.artifact.key(),sha256(f"proof-{task_id}".encode()).hexdigest(),"Source contract test only.")
+ receipt=DelegatedReturnReceipt(f"return-{task_id}",task_id,contract.owner_id,DelegatedReceiptVerdict.ACCEPT,contract.artifact,"Test owner returned an exact readable artifact receipt.",(evidence,),parity,(),1)
+ swarm.record_delegated_return(Role.DOER,task_id,receipt,actor_id=contract.owner_id)
 
 def topology(*, objective="ship artifact", artifacts=(ArtifactIdentity("artifact","v1","work"),), surfaces=("artifact",), route="CTRL", lanes=("owner",), edges=(), integration=False, portfolio=False, architecture=False):
  return TopologyFacts(objective,artifacts,surfaces,route,lanes,edges,integration,portfolio,architecture)
@@ -18,6 +31,7 @@ class RuntimeTests(unittest.TestCase):
  def setUp(self):
   self.s=Swarm(); self.s.add_lead(Role.CTRL,"L"); self.s.add_worker(Role.LEAD,Worker("D","L",1)); self.s.assign(Role.LEAD,Task("A","D","author",1,{},subagent_receipt="host:thread:A"))
  def accept(self, task_id="A", reviewer="independent"):
+  record_accept(self.s,task_id)
   evidence=ReviewEvidence(ReviewStrategy.LIGHT,reviewer,True,self.s.tasks[task_id].acceptance_contract.artifact,receipt=(("acceptance",f"review:{task_id}"),),scope=ReviewScope.ACCEPTANCE)
   self.s.review(Role.REVIEW,task_id,evidence,True)
  def test_authority_lanes_and_lifecycle(self):

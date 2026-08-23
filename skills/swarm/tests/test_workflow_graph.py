@@ -1,15 +1,28 @@
 from pathlib import Path
+from hashlib import sha256
 import sys
 import tempfile
 import unittest
 
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
-from runtime import AcceptanceContract, ArtifactIdentity, IncidentLedger, LaneKind, ReviewEvidence, ReviewScope, ReviewStrategy, Role, Swarm, Task, Worker, derive_workflow_graph
+from runtime import AcceptanceContract, ArtifactFileEvidence, ArtifactIdentity, ArtifactParityReceipt, DelegatedEvidence, DelegatedReceiptVerdict, DelegatedReturnReceipt, DelegationContract, IncidentLedger, LaneKind, ProofClass, ReviewEvidence, ReviewScope, ReviewStrategy, Role, Swarm, Task, Worker, derive_workflow_graph
+
+
+def delegation(task_id:str, owner:str, artifact:ArtifactIdentity, path:str) -> DelegationContract:
+    return DelegationContract(task_id,f"Return the exact {task_id} workflow artifact.",owner,(path,),artifact,(path,),(ProofClass.SOURCE,),60)
+
+
+def delegated_accept(swarm:Swarm, task_id:str) -> None:
+    task=swarm.tasks[task_id]; contract=task.delegation_contract
+    file=ArtifactFileEvidence(contract.artifact_paths[0],1,sha256(task_id.encode()).hexdigest()); parity=ArtifactParityReceipt.from_files(contract.artifact,(file,))
+    evidence=DelegatedEvidence(f"evidence-{task_id}",ProofClass.SOURCE,contract.artifact.key(),sha256(f"proof-{task_id}".encode()).hexdigest(),"Source contract test only.")
+    swarm.record_delegated_return(Role.DOER,task_id,DelegatedReturnReceipt(f"return-{task_id}",task_id,contract.owner_id,DelegatedReceiptVerdict.ACCEPT,contract.artifact,"Exact workflow test return.",(evidence,),parity,(),1),actor_id=contract.owner_id)
 
 
 class WorkflowGraphTests(unittest.TestCase):
     def task(self, task_id:str, owner:str, lead:str)->Task:
-        return Task(task_id,owner,"author",1,{},subagent_receipt=f"host:thread:{task_id}",lane_kind=LaneKind.NON_CODE,owning_lead_id=lead,acceptance_contract=AcceptanceContract.empty())
+        artifact=ArtifactIdentity(f"workflow-{task_id}","v1","non-artifact"); path=f"artifacts/{task_id}.receipt"
+        return Task(task_id,owner,"author",1,{},subagent_receipt=f"host:thread:{task_id}",lane_kind=LaneKind.NON_CODE,owning_lead_id=lead,acceptance_contract=AcceptanceContract.empty(),delegation_contract=delegation(task_id,owner,artifact,path))
 
     def two_lanes(self, reverse:bool=False)->Swarm:
         swarm=Swarm()
@@ -53,11 +66,12 @@ class WorkflowGraphTests(unittest.TestCase):
             artifact_path=Path(root)/"artifact.txt"; artifact_path.write_text("version-1",encoding="utf-8")
             artifact=ArtifactIdentity.capture("route","sha-1","release",root=root,paths=("artifact.txt",))
             swarm=Swarm(); swarm.add_lead(Role.CTRL,"lead"); swarm.add_worker(Role.LEAD,Worker("builder","lead",1))
-            task=Task("route","builder","author",1,{},subagent_receipt="host:thread:route",lane_kind=LaneKind.CODE,owning_lead_id="lead",acceptance_contract=AcceptanceContract(artifact,("test",),observation_root=root))
+            task=Task("route","builder","author",1,{},subagent_receipt="host:thread:route",lane_kind=LaneKind.CODE,owning_lead_id="lead",acceptance_contract=AcceptanceContract(artifact,("test",),observation_root=root),delegation_contract=delegation("route","builder",artifact,"artifact.txt"))
             swarm.assign(Role.LEAD,task); swarm.consult_incidents(Role.LEAD,"route",IncidentLedger(root),artifact="route",scope="routing",actor_id="lead")
             before=derive_workflow_graph(swarm); self.assertEqual(next(node for node in before.nodes if node.kind=="GATE").state,"UNVERIFIED"); self.assertEqual(swarm.open_gates("route"),("test",))
             swarm.run_gate(Role.LEAD,"route","test",(sys.executable,"-c","pass"),cwd=root,actor_id="lead")
             review=ReviewEvidence(ReviewStrategy.LIGHT,"independent",True,artifact,receipt=(("acceptance","review:route"),),scope=ReviewScope.ACCEPTANCE)
+            delegated_accept(swarm,"route")
             swarm.review(Role.REVIEW,"route",review,True)
             passed=derive_workflow_graph(swarm)
             artifact_path.write_text("version-2",encoding="utf-8")

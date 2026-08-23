@@ -52,11 +52,11 @@ Immediately after that receipt—and before topology or work—use `swarm_contra
 Before the first mutable handoff, select the smallest graph that satisfies the captured objective, efficiency strategy, ownership, dependencies, resumption, integration, and acceptance evidence. Follow [graph-engineering.md](references/graph-engineering.md): one CTRL root, explicit artifact-owning lanes, parallelize only independent work, serialize shared-surface gates, and keep every edge explainable by a dependency or acceptance reason. A game objective selects the registered `game_studio` graph: game-studio lead, design, engineering, art, audio, playtest/QA, and release agents with production dependencies; medium and large lanes are visible Codex tasks, while lane-local bounded work may use subagents. Do not flatten a domain graph into a single undifferentiated worker list.
 
 Use the shallowest structure that can finish the accepted objective. `CTRL_DIRECT`
-is limited to exactly one low-risk atomic `GENERAL` outcome on one mutable
+is limited to exactly one low-risk atomic outcome using `GENERAL` work on one mutable
 surface: read-only inspection, one focused check, or a bounded copy,
 documentation, or formatting edit with no external side effect, cross-file
-behavior, dependency, handoff, or separate acceptance receipt. Everything else
-is `CTRL_DELEGATED`. Multi-file or multi-surface work, runtime/API/auth/data,
+behavior, dependency, handoff, or separate acceptance receipt. Otherwise use
+`CTRL_DELEGATED`. Multi-file or multi-surface work, runtime/API/auth/data,
 provider/deployment/device state, visual work, multiple proof gates, or
 independent review MUST open a visible senior Codex task/chat before CTRL does
 substantive work. That lane has its own cwd, owner, heartbeat, mutable surface,
@@ -108,9 +108,11 @@ first. A successor is permitted only when the user-authorized topology allows it
 must carry an explicit custody/handoff; never silently duplicate, replace, rename,
 archive, or alter the old lane or user state.
 
-Only genuinely small, single-surface, low-risk `GENERAL` inspection or review may
-remain eligible for a bounded sidecar subagent; that exception never grants lane
-ownership, handoff, heartbeat, acceptance, or host mutation authority.
+Materialize a visible task lane whenever durable ownership or interruption-safe
+resumption is required. Use a subagent only as short bounded capacity inside an existing lane: it remains eligible only for genuinely small, single-surface,
+low-risk `GENERAL` inspection or review and never substitutes for a qualifying durable task. It never gains lane ownership, handoff, heartbeat, acceptance, or
+host mutation authority. Internal-helper or read-only-tool approval gates are failed capacity: cancel the attempt, record the host gate, and continue inside
+the same accountable boundary without asking the user. That fallback never grants external, provider, destructive, or user-reserved authority.
 
 CTRL is the operator/orchestrator, not the producer. Keep the small-work
 exception: `CTRL_DIRECT` is valid for one low-risk, atomic `GENERAL` outcome
@@ -188,6 +190,16 @@ file-count, byte-count, and hash parity with a recoverable manifest. Creation ag
 alone is never stale evidence; active or growing logs remain protected.
 
 Every durable CTRL, LEAD, and persistent SPECIALIST has one goal with objective, stopping condition, authority boundary, and proof. Profession is a separate typed perspective selected from the 24-card registry; unknown historical titles remain inert user-owned text and never become routable authority. `UNVERIFIED` is an open acceptance failure. Every artifact-producing lane declares its typed lane kind, immutable `ArtifactIdentity`, bound LEAD identity, deterministic `ProofPlan`, and independent `ACCEPTANCE` route. The planner selects the minimum proof from changed surfaces, claims, authority, dependency reach, incident matches, runtime signals, and repository capabilities; unknown input broadens proof. T0 atomic work uses focused contracts, T1 ordinary code adds impacted proof, T2 adds browser proof only for affected or claimed browser/visual surfaces, T3 provider/security/data work adds plan review and authority proof, and T4 release work replaces impacted proof with broad package/parity proof and composed acceptance. Only non-artifact `NON_CODE` work may use an explicit empty contract. Stable exact-input gate receipts may be re-observed and adopted as execution evidence only when plan, command, gate spec, environment, freshness, proof class, claim, and artifact still match; they never carry acceptance authority. Provider, deployed, device, and human claims remain `UNVERIFIED` unless an isolated host verifier records a typed observation with exact plan/spec/artifact/environment bindings, evidence digest, and bounded freshness; in-process commands, signatures, and caller-created receipts cannot close them. T0 independence cannot be disabled by caller assertion. The bound LEAD integrates and records exact-artifact gate results as `PASS`, `FAIL`, or `TIMEOUT`; a timeout never passes and permits at most one typed transient retry. Missing, failed, timed-out, wrong-artifact, uncovered-claim, or source-only receipts stay open; CTRL may surface but never manufacture acceptance. Load [task-contract.md](references/task-contract.md) to record the contract and [review-contract.md](references/review-contract.md) for all acceptance, incident, proof, review, and claim-limit rules.
+
+Every delegated task also declares its exact deliverable, accountable owner,
+portable custody boundary, immutable artifact and path manifest, required proof
+classes, due event, and maximum readable return size. Creation, dispatch,
+commentary, timeout, silence, unreadable or empty output, and `IN_PROGRESS` are
+activity only. They cannot advance review or completion. The owner returns one
+typed, artifact-bound `ACCEPT`, `REJECT`, or `BLOCKED` receipt; only a complete
+`ACCEPT` may enter independent review, and `BLOCKED` remains open. Source,
+static, local, browser, authenticated, provider, payment, deployed, device, and
+human claims stay separate and never promote one another.
 
 Classify proof by the authority and transport actually exercised. Mocks, interception, fixtures, or an in-memory substitute prove only that substitute; name it and leave each unexercised boundary `UNVERIFIED`. For a visual claim, inspect the exact final frame: real primary substrate and relevant user context must be visible. A correct overlay cannot rescue a blank, fallback, mocked, placeholder, or failed substrate; relevant console/page/network failures remain findings. Load the review contract before accepting visual, browser, provider, deployed, device, security, consequential, or release work.
 

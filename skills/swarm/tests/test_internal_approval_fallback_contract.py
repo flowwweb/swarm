@@ -3,7 +3,7 @@ from __future__ import annotations
 import unittest
 from pathlib import Path
 
-from skills.swarm.runtime.core import Role, SubagentException, Swarm, Task
+from skills.swarm.runtime.core import ArtifactIdentity, DelegationContract, ProofClass, Role, SubagentException, Swarm, Task
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -32,6 +32,16 @@ class InternalApprovalFallbackContractTests(unittest.TestCase):
                 {},
                 subagent_exception=SubagentException.HOST_GATE,
                 subagent_exception_reason="read-only helper required host approval",
+                delegation_contract=DelegationContract(
+                    "owner",
+                    "Return the bounded internal-helper inspection.",
+                    "direct-owner",
+                    ("receipts/owner.txt",),
+                    ArtifactIdentity("owner","v1","non-artifact"),
+                    ("receipts/owner.txt",),
+                    (ProofClass.SOURCE,),
+                    60,
+                ),
             ),
         )
         self.assertEqual(owner.tasks["owner"].owner, "direct-owner")

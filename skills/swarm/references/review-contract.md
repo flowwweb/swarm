@@ -47,6 +47,21 @@ evidence digest, observation time, proof class, plan, gate spec, artifact,
 environment, and authority context. Missing, forged, mismatched, replayed,
 expired, or plugin-runtime-only observations remain open.
 
+## Delegated handoff is not acceptance
+
+A delegated artifact reaches REVIEW only through a bounded readable owner
+`ACCEPT` receipt bound to the exact task, owner, artifact, custody, proof
+classes, and path/count/byte/hash manifest. Creation, dispatch, commentary,
+timeout, silence, empty or unreadable output, and `IN_PROGRESS` do not advance a
+gate. `REJECT` and `BLOCKED` are readable outcomes but never acceptance; both
+keep the task open and name the first concrete correction or blocker.
+Independent REVIEW remains required because the delegated receipt and manifest
+are owner reports, not host, user, or acceptance authority.
+
+Source, static, local, browser, authenticated, provider, payment, deployed,
+device, and human claims are disjoint. Evidence closes only the exact declared
+class; no lower or adjacent class promotes another.
+
 ## Classify proof and final visual artifacts honestly
 
 Classify runtime proof by the authority and transport actually exercised, not
@@ -61,6 +76,14 @@ user context must be visibly real; a correct overlay cannot upgrade a blank,
 fallback, mocked, placeholder, or failed substrate. Relevant console warnings,
 page errors, and failed requests block a clean claim until explained by a
 narrower claim.
+
+Visual self-review covers every requested viewport, route, state, and artifact
+surface; compares every binding reference token and asset against the exact
+final deliverable; embeds directly reviewable evidence; and enumerates every
+omission. Missing evidence, an uninspected surface, reference drift, artifact
+parity debt, or a blank, fallback, mocked, placeholder, failed, or missing
+substrate fails closed. A folder, filename, inventory, or worker commentary is
+provenance only and cannot satisfy this visual gate.
 
 For taste-led generation, a clear user direction permits generation while a
 reserved choice requires candidates and a wait. Classify each supplied reference

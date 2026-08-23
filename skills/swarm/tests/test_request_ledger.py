@@ -1,16 +1,27 @@
 from __future__ import annotations
 import importlib.util
 import json
+from hashlib import sha256
 import tempfile
 import unittest
 from pathlib import Path
 import sys
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
-from runtime import AcceptanceContract, CtrlFeedEventKind, CtrlFeedMessage, CtrlFeedPart, CtrlMode, CtrlSurfaceKind, LaneKind, RequestDue, RequestState, ReviewEvidence, ReviewScope, ReviewStrategy, Role, Swarm, Task, TaskState, WatchdogBinding, WatchdogRouteRole, Worker, derive_workflow_graph
+from runtime import AcceptanceContract, ArtifactFileEvidence, ArtifactIdentity, ArtifactParityReceipt, CtrlFeedEventKind, CtrlFeedMessage, CtrlFeedPart, CtrlMode, CtrlSurfaceKind, DelegatedEvidence, DelegatedReceiptVerdict, DelegatedReturnReceipt, DelegationContract, LaneKind, ProofClass, RequestDue, RequestState, ReviewEvidence, ReviewScope, ReviewStrategy, Role, Swarm, Task, TaskState, WatchdogBinding, WatchdogRouteRole, Worker, derive_workflow_graph
 from runtime.request_ledger import RequestStore
 
 SCRIPT=Path(__file__).resolve().parents[1]/"scripts"/"swarm_contract.py"; SPEC=importlib.util.spec_from_file_location("ledger_contract",SCRIPT); bridge=importlib.util.module_from_spec(SPEC); sys.modules[SPEC.name]=bridge; SPEC.loader.exec_module(bridge)
-def task(identity="T"): return Task(identity,"D","creator",1,{},subagent_receipt=f"host:thread:{identity}",lane_kind=LaneKind.NON_CODE,acceptance_contract=AcceptanceContract.empty(),owning_lead_id="L",goal_id=f"goal-{identity}")
+def task(identity="T"):
+    artifact=ArtifactIdentity(f"request-{identity}","v1","non-artifact"); path=f"requests/{identity}.receipt"
+    contract=DelegationContract(identity,f"Return the exact {identity} request outcome.","D",(path,),artifact,(path,),(ProofClass.SOURCE,),2)
+    return Task(identity,"D","creator",1,{},subagent_receipt=f"host:thread:{identity}",lane_kind=LaneKind.NON_CODE,acceptance_contract=AcceptanceContract.empty(),delegation_contract=contract,owning_lead_id="L",goal_id=f"goal-{identity}")
+def delegated_accept(value, identity="T"):
+    current=value.tasks[identity]; contract=current.delegation_contract
+    if current.delegated_return_receipts: return
+    file=ArtifactFileEvidence(contract.artifact_paths[0],1,sha256(identity.encode()).hexdigest()); parity=ArtifactParityReceipt.from_files(contract.artifact,(file,))
+    evidence=DelegatedEvidence(f"evidence-{identity}",ProofClass.SOURCE,contract.artifact.key(),sha256(f"proof-{identity}".encode()).hexdigest(),"Source request-ledger contract test only.")
+    receipt=DelegatedReturnReceipt(f"return-{identity}",identity,contract.owner_id,DelegatedReceiptVerdict.ACCEPT,contract.artifact,"Exact request-ledger owner return.",(evidence,),parity,(),1)
+    value.record_delegated_return(Role.DOER,identity,receipt,actor_id=contract.owner_id)
 def swarm(root):
     value=Swarm(); value.add_lead(Role.CTRL,"L"); value.add_worker(Role.LEAD,Worker("D","L",1)); value.attach_request_store(root); return value
 def event(value,task_id,request_ids,suffix,kind,proof_prefix="evd",proof_override=""):
@@ -31,7 +42,7 @@ class RequestLedgerTests(unittest.TestCase):
             root=Path(temp); first=swarm(root); view=accepted(first); blocker,_=event(first,"T",(view.record.id,),"beforestop",CtrlFeedEventKind.BLOCKER); blocked=first.block_request(Role.LEAD,view.record.id,blocker,RequestDue("due-stop",3)); floor=blocked.record.transitions[-1].cursor.feed_sequence
             fresh=swarm(root); fresh.tasks["T"]=task(); fresh.workers["D"].task_ids.add("T"); self.assertEqual(fresh.request_feed_sequence_floor,floor); self.assertFalse(fresh.ctrl_feed_messages)
             resume,_=event(fresh,"T",(view.record.id,),"afterstart",CtrlFeedEventKind.DECISION,"usr"); opened=fresh.resume_request(Role.CTRL,view.record.id,resume,RequestDue("due-restart",4)); self.assertGreater(opened.record.transitions[-1].cursor.feed_sequence,floor); self.assertNotIn(blocker,{item.event_receipt for item in fresh.ctrl_feed_messages})
-            review_receipt="rev-proof_restartproof000"; review=ReviewEvidence(ReviewStrategy.LIGHT,"independent",True,None,receipt=(("acceptance",review_receipt),),scope=ReviewScope.ACCEPTANCE); fresh.review(Role.REVIEW,"T",review,True)
+            review_receipt="rev-proof_restartproof000"; review=ReviewEvidence(ReviewStrategy.LIGHT,"independent",True,None,receipt=(("acceptance",review_receipt),),scope=ReviewScope.ACCEPTANCE); delegated_accept(fresh); fresh.review(Role.REVIEW,"T",review,True)
             progress,_=event(fresh,"T",(view.record.id,),"restartproof",CtrlFeedEventKind.RESULT,"rev"); fresh.advance_request(Role.LEAD,view.record.id,progress,RequestDue("due-final",5)); fresh.complete(Role.LEAD,"T",True,True,6,actor_id="L"); acceptance,_=event(fresh,"T",(view.record.id,),"restartdone",CtrlFeedEventKind.ACCEPTANCE,proof_override=review_receipt); fresh.complete_request(Role.LEAD,view.record.id,acceptance,review_receipt); self.assertFalse(fresh.request_audit(7).unresolved_ids)
     def test_provisional_is_reserved_nonrunnable_and_rollback_needs_live_blocker(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -82,7 +93,7 @@ class RequestLedgerTests(unittest.TestCase):
             blocker,_=event(value,"T",(a.record.id,b.record.id),"jointblock",CtrlFeedEventKind.BLOCKER); value.block_request(Role.LEAD,a.record.id,blocker,RequestDue("due-a-block",5)); self.assertEqual(value.request_audit(0).records[1].state,RequestState.OPEN); value.block_request(Role.LEAD,b.record.id,blocker,RequestDue("due-b-block",5))
             for record,suffix in ((a,"aresume"),(b,"bresume")):
                 resume,_=event(value,"T",(record.record.id,),suffix,CtrlFeedEventKind.DECISION,"usr"); value.resume_request(Role.CTRL,record.record.id,resume,RequestDue(f"due-{suffix}",6))
-            review_receipt="rev-proof_joint000"; review=ReviewEvidence(ReviewStrategy.LIGHT,"independent",True,None,receipt=(("acceptance",review_receipt),),scope=ReviewScope.ACCEPTANCE); value.review(Role.REVIEW,"T",review,True); progress,_=event(value,"T",(a.record.id,b.record.id),"joint",CtrlFeedEventKind.RESULT,"rev")
+            review_receipt="rev-proof_joint000"; review=ReviewEvidence(ReviewStrategy.LIGHT,"independent",True,None,receipt=(("acceptance",review_receipt),),scope=ReviewScope.ACCEPTANCE); delegated_accept(value); value.review(Role.REVIEW,"T",review,True); progress,_=event(value,"T",(a.record.id,b.record.id),"joint",CtrlFeedEventKind.RESULT,"rev")
             value.advance_request(Role.LEAD,a.record.id,progress,RequestDue("due-a-final",7)); value.advance_request(Role.LEAD,b.record.id,progress,RequestDue("due-b-final",7)); value.complete(Role.LEAD,"T",True,True,8,actor_id="L"); acceptance,_=event(value,"T",(a.record.id,b.record.id),"jointdone",CtrlFeedEventKind.ACCEPTANCE,proof_override=review_receipt)
             value.complete_request(Role.LEAD,a.record.id,acceptance,review_receipt); self.assertEqual(value.request_audit(0).records[1].state,RequestState.OPEN); value.complete_request(Role.LEAD,b.record.id,acceptance,review_receipt); self.assertFalse(value.request_audit(0).unresolved_ids)
     def test_block_refresh_resume_preserves_history_and_rejects_reuse(self):
@@ -133,7 +144,7 @@ class RequestLedgerTests(unittest.TestCase):
             with self.assertRaises(Exception): value.request_audit(0)
     def test_fabricated_typed_completion_without_live_acceptance_fails_closed(self):
         with tempfile.TemporaryDirectory() as temp:
-            root=Path(temp); value=swarm(root); view=accepted(value); review_receipt="rev-proof_forged000"; review=ReviewEvidence(ReviewStrategy.LIGHT,"independent",True,None,receipt=(("acceptance",review_receipt),),scope=ReviewScope.ACCEPTANCE); value.review(Role.REVIEW,"T",review,True)
+            root=Path(temp); value=swarm(root); view=accepted(value); review_receipt="rev-proof_forged000"; review=ReviewEvidence(ReviewStrategy.LIGHT,"independent",True,None,receipt=(("acceptance",review_receipt),),scope=ReviewScope.ACCEPTANCE); delegated_accept(value); value.review(Role.REVIEW,"T",review,True)
             progress,_=event(value,"T",(view.record.id,),"forged",CtrlFeedEventKind.RESULT,"rev"); value.advance_request(Role.LEAD,view.record.id,progress,RequestDue("due-forged",5)); value.complete(Role.LEAD,"T",True,True,6,actor_id="L")
             path=root/".codex"/"swarm"/"requests.json"; payload=json.loads(path.read_text(encoding="utf-8")); record=next(iter(payload["requests"].values())); sequence=record["transitions"][-1]["cursor"]["feed_sequence"]+1
             record["transitions"].append({"state":"COMPLETED","kind":"acceptance","cursor":{"event_receipt":"evt-event_forgedterminal000","message_id":"msg-event_forgedterminal000","surface_receipt":"srf-event_forgedterminal000","feed_sequence":sequence}}); path.write_text(json.dumps(payload,separators=(",",":"),sort_keys=True),encoding="utf-8"); tampered=path.read_bytes()
@@ -161,23 +172,23 @@ class RequestLedgerTests(unittest.TestCase):
             self.assertEqual(enabled.tasks["T"].state,TaskState.ACTIVE)
     def test_enabled_unattached_completion_preserves_task_and_worker_ownership(self):
         enabled=Swarm(request_continuity_enabled=True); enabled.add_lead(Role.CTRL,"L"); enabled.add_worker(Role.LEAD,Worker("D","L",1)); enabled.assign(Role.LEAD,task())
-        review_receipt="rev-proof_unattached000"; enabled.review(Role.REVIEW,"T",ReviewEvidence(ReviewStrategy.LIGHT,"independent",True,None,receipt=(("acceptance",review_receipt),),scope=ReviewScope.ACCEPTANCE),True); before=(enabled.tasks["T"].state,enabled.tasks["T"].completed_at,set(enabled.workers["D"].task_ids),enabled.workers["D"].state)
+        review_receipt="rev-proof_unattached000"; delegated_accept(enabled); enabled.review(Role.REVIEW,"T",ReviewEvidence(ReviewStrategy.LIGHT,"independent",True,None,receipt=(("acceptance",review_receipt),),scope=ReviewScope.ACCEPTANCE),True); before=(enabled.tasks["T"].state,enabled.tasks["T"].completed_at,set(enabled.workers["D"].task_ids),enabled.workers["D"].state)
         with self.assertRaisesRegex(Exception,"enabled but unattached"): enabled.complete(Role.LEAD,"T",True,True,6,actor_id="L")
         self.assertEqual((enabled.tasks["T"].state,enabled.tasks["T"].completed_at,enabled.workers["D"].task_ids,enabled.workers["D"].state),before)
     def test_attached_completion_rejects_missing_or_provisional_request(self):
         with tempfile.TemporaryDirectory() as temp:
-            value=swarm(Path(temp)); value.assign(Role.LEAD,task()); review=ReviewEvidence(ReviewStrategy.LIGHT,"independent",True,None,receipt=(("acceptance","rev-proof_missing000"),),scope=ReviewScope.ACCEPTANCE); value.review(Role.REVIEW,"T",review,True)
+            value=swarm(Path(temp)); value.assign(Role.LEAD,task()); review=ReviewEvidence(ReviewStrategy.LIGHT,"independent",True,None,receipt=(("acceptance","rev-proof_missing000"),),scope=ReviewScope.ACCEPTANCE); delegated_accept(value); value.review(Role.REVIEW,"T",review,True)
             with self.assertRaisesRegex(Exception,"current accepted unresolved"): value.complete(Role.LEAD,"T",True,True,6,actor_id="L")
             value.stage_request_task(Role.CTRL,value.tasks["T"]); value.review(Role.REVIEW,"T",review,True)
             with self.assertRaisesRegex(Exception,"provisional"): value.complete(Role.LEAD,"T",True,True,7,actor_id="L")
             self.assertEqual(value.tasks["T"].state,TaskState.REVIEW); self.assertIsNone(value.tasks["T"].completed_at)
     def test_completion_requires_live_review_task_and_request_bound_acceptance(self):
         with tempfile.TemporaryDirectory() as temp:
-            value=swarm(Path(temp)); view=accepted(value); review_receipt="rev-proof_review000"; review=ReviewEvidence(ReviewStrategy.LIGHT,"independent",True,None,receipt=(("acceptance",review_receipt),),scope=ReviewScope.ACCEPTANCE); value.review(Role.REVIEW,"T",review,True)
+            value=swarm(Path(temp)); view=accepted(value); review_receipt="rev-proof_review000"; review=ReviewEvidence(ReviewStrategy.LIGHT,"independent",True,None,receipt=(("acceptance",review_receipt),),scope=ReviewScope.ACCEPTANCE); delegated_accept(value); value.review(Role.REVIEW,"T",review,True)
             proof_event,_=event(value,"T",(view.record.id,),"review",CtrlFeedEventKind.RESULT,"rev"); value.advance_request(Role.LEAD,view.record.id,proof_event,RequestDue("due-review",5)); value.complete(Role.LEAD,"T",True,True,6,actor_id="L"); self.assertEqual(value.tasks["T"].state,TaskState.COMPLETE); self.assertNotIn("T",value.workers["D"].task_ids); acceptance,_=event(value,"T",(view.record.id,),"acceptance",CtrlFeedEventKind.ACCEPTANCE,proof_override=review_receipt); done=value.complete_request(Role.LEAD,view.record.id,acceptance,review_receipt); self.assertEqual(done.record.state,RequestState.COMPLETED); self.assertFalse(value.request_audit(7).unresolved_ids)
     def test_completed_record_goal_outcome_route_and_stage_drift_fail_live_audit(self):
         with tempfile.TemporaryDirectory() as temp:
-            root=Path(temp); value=swarm(root); view=accepted(value); review_receipt="rev-proof_drift000"; review=ReviewEvidence(ReviewStrategy.LIGHT,"independent",True,None,receipt=(("acceptance",review_receipt),),scope=ReviewScope.ACCEPTANCE); value.review(Role.REVIEW,"T",review,True); progress,_=event(value,"T",(view.record.id,),"drift",CtrlFeedEventKind.RESULT,"rev"); value.advance_request(Role.LEAD,view.record.id,progress,RequestDue("due-drift",5)); value.complete(Role.LEAD,"T",True,True,6,actor_id="L"); acceptance,_=event(value,"T",(view.record.id,),"driftdone",CtrlFeedEventKind.ACCEPTANCE,proof_override=review_receipt); value.complete_request(Role.LEAD,view.record.id,acceptance,review_receipt)
+            root=Path(temp); value=swarm(root); view=accepted(value); review_receipt="rev-proof_drift000"; review=ReviewEvidence(ReviewStrategy.LIGHT,"independent",True,None,receipt=(("acceptance",review_receipt),),scope=ReviewScope.ACCEPTANCE); delegated_accept(value); value.review(Role.REVIEW,"T",review,True); progress,_=event(value,"T",(view.record.id,),"drift",CtrlFeedEventKind.RESULT,"rev"); value.advance_request(Role.LEAD,view.record.id,progress,RequestDue("due-drift",5)); value.complete(Role.LEAD,"T",True,True,6,actor_id="L"); acceptance,_=event(value,"T",(view.record.id,),"driftdone",CtrlFeedEventKind.ACCEPTANCE,proof_override=review_receipt); value.complete_request(Role.LEAD,view.record.id,acceptance,review_receipt)
             path=root/".codex"/"swarm"/"requests.json"; canonical=path.read_bytes(); self.assertTrue(value.project_complete(Role.CTRL,True,True))
             for name,change in (
                 ("goal",lambda record,stage:record.update(goal_id="goal-drifted")),
@@ -195,12 +206,12 @@ class RequestLedgerTests(unittest.TestCase):
     def test_completed_request_is_preserved_when_archive_authority_is_unavailable(self):
         policy={"no_review_archive_delay":0,"low_review_retention":0,"high_review_retention":0,"stale_task_archive_delay":0}
         with tempfile.TemporaryDirectory() as temp:
-            value=swarm(Path(temp)); view=accepted(value); review_receipt="rev-proof_archive000"; review=ReviewEvidence(ReviewStrategy.LIGHT,"independent",True,None,receipt=(("acceptance",review_receipt),),scope=ReviewScope.ACCEPTANCE); value.review(Role.REVIEW,"T",review,True); progress,_=event(value,"T",(view.record.id,),"archive",CtrlFeedEventKind.RESULT,"rev"); value.advance_request(Role.LEAD,view.record.id,progress,RequestDue("due-archive",5)); value.complete(Role.LEAD,"T",True,True,6,actor_id="L"); acceptance,_=event(value,"T",(view.record.id,),"archivedone",CtrlFeedEventKind.ACCEPTANCE,proof_override=review_receipt); value.complete_request(Role.LEAD,view.record.id,acceptance,review_receipt)
+            value=swarm(Path(temp)); view=accepted(value); review_receipt="rev-proof_archive000"; review=ReviewEvidence(ReviewStrategy.LIGHT,"independent",True,None,receipt=(("acceptance",review_receipt),),scope=ReviewScope.ACCEPTANCE); delegated_accept(value); value.review(Role.REVIEW,"T",review,True); progress,_=event(value,"T",(view.record.id,),"archive",CtrlFeedEventKind.RESULT,"rev"); value.advance_request(Role.LEAD,view.record.id,progress,RequestDue("due-archive",5)); value.complete(Role.LEAD,"T",True,True,6,actor_id="L"); acceptance,_=event(value,"T",(view.record.id,),"archivedone",CtrlFeedEventKind.ACCEPTANCE,proof_override=review_receipt); value.complete_request(Role.LEAD,view.record.id,acceptance,review_receipt)
             with self.assertRaisesRegex(Exception,"no host-pinned trust root or IPC verifier"): value.groom(Role.CTRL,7,policy)
             self.assertEqual(value.tasks["T"].state,TaskState.COMPLETE); self.assertEqual(value.request_audit(7).orphaned_ids,()); self.assertTrue(value.project_complete(Role.CTRL,True,True))
             value.tasks["T"].state=TaskState.ARCHIVED_STALE; self.assertEqual(value.request_audit(7).orphaned_ids,(view.record.id,)); self.assertFalse(value.project_complete(Role.CTRL,True,True))
         with tempfile.TemporaryDirectory() as temp:
-            value=swarm(Path(temp)); view=accepted(value); review_receipt="rev-proof_openarchive000"; review=ReviewEvidence(ReviewStrategy.LIGHT,"independent",True,None,receipt=(("acceptance",review_receipt),),scope=ReviewScope.ACCEPTANCE); value.review(Role.REVIEW,"T",review,True); progress,_=event(value,"T",(view.record.id,),"openarchive",CtrlFeedEventKind.RESULT,"rev"); value.advance_request(Role.LEAD,view.record.id,progress,RequestDue("due-openarchive",5)); value.complete(Role.LEAD,"T",True,True,6,actor_id="L")
+            value=swarm(Path(temp)); view=accepted(value); review_receipt="rev-proof_openarchive000"; review=ReviewEvidence(ReviewStrategy.LIGHT,"independent",True,None,receipt=(("acceptance",review_receipt),),scope=ReviewScope.ACCEPTANCE); delegated_accept(value); value.review(Role.REVIEW,"T",review,True); progress,_=event(value,"T",(view.record.id,),"openarchive",CtrlFeedEventKind.RESULT,"rev"); value.advance_request(Role.LEAD,view.record.id,progress,RequestDue("due-openarchive",5)); value.complete(Role.LEAD,"T",True,True,6,actor_id="L")
             self.assertEqual(value.groom(Role.CTRL,7,policy),[]); value.tasks["T"].state=TaskState.ARCHIVED; value.tasks["T"].archived_at=7; self.assertEqual(value.request_audit(7).orphaned_ids,(view.record.id,)); self.assertFalse(value.project_complete(Role.CTRL,True,True))
     def test_corrupt_state_and_serialized_mutation_fail_closed(self):
         with tempfile.TemporaryDirectory() as temp:

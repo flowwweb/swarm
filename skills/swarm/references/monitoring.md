@@ -92,6 +92,13 @@ silent duplicate, replacement, rename, archive, pin/unpin, or state normalizatio
 The bounded wake cannot target a CTRL or subordinate owner protected by an active
 direct-user keep-out; unaffected lanes and read-only observation continue.
 
+At the delegated due event, surface the full evidence-debt list and its first
+concrete blocker. Creation, dispatch, commentary, timeout, silence, unreadable
+output, and in-progress state do not satisfy that debt. Reorient the same owner
+at most once. If debt remains, route the already-existing independent review
+owner when one is bound; otherwise hold the lane open. Never create a duplicate
+CTRL or LEAD, and never relabel unfinished in-scope work as an external blocker.
+
 One evidence-backed readiness delay may reschedule once. Repeated misses increase
 severity and route the alert to the next accountable owner; they do not create
 another authority or authorize recovery. Clock and receipt maintenance is the only

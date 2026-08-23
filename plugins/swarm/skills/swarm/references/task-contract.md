@@ -43,9 +43,29 @@ CHANGE: ADDITIVE, CORRECTIVE, or REVERSAL; explicitly named scope and accepted b
 MODE: CTRL_DIRECT or CTRL_DELEGATED, with the direct-work predicate receipt and typed work kind (`GENERAL`, `DESIGN`, `IMAGEGEN`, or `IMAGE_EDIT`). Only `GENERAL` can pass the CTRL_DIRECT predicate; visual work records `product_experience` or `expressive_art` ownership and binds Designer or Artist respectively.
 GOAL: stable goal ID, objective version, measurable milestone, and locally chosen review horizon; optional WATCHDOG binding is separate and names the watched owner plus validated alert route. New-task persistence follows `goals.use_goals`, which defaults true; when it is false the intake and graph remain recorded but the root task does not create or continue a durable goal. LEAD and persistent SPECIALIST ownership goals remain fixed role invariants.
 ACCEPTANCE: typed lane kind, exact ArtifactIdentity, deterministic ProofPlan, bound owning LEAD identity, and accepting REVIEW route; CODE has at least one gate and only NON_CODE non-artifact work may use an explicit empty contract.
+DELEGATION: exact deliverable, owner ID, portable custody roots, immutable artifact and artifact paths, required proof classes, bounded due event, and maximum readable return size.
+RETURN: one bounded readable artifact-bound ACCEPT, REJECT, or BLOCKED receipt with owner-reported evidence, dirty custody, and path/count/byte/hash manifest; final acceptance remains independent.
 SKILLS: any agent may request a role skill with exact source/version or digest, purpose, destination scope, and host audit/rollback receipt; installation never transfers authority and defaults task-local.
 INCIDENTS: LEAD consultation receipt for matching unresolved `.codex/swarm/incidents.jsonl` records.
 ```
+
+## Delegated return gate
+
+Task creation, dispatch success, commentary, timeout, silence, empty or
+unreadable output, and an in-progress state are activity signals, never return
+evidence. Advancement requires one explicit readable `ACCEPT`, `REJECT`, or
+`BLOCKED` owner receipt bound to the exact task, owner, artifact, paths, and
+declared proof classes. `ACCEPT` may move the artifact only into independent
+review when every required proof and parity item is present. `REJECT` names the
+first in-scope correction and stays active; `BLOCKED` names the first concrete
+blocker and stays unresolved. Neither can advance acceptance.
+
+The parity manifest is an owner return claim, not host or user authority. It
+must match the declared paths, count, byte total, and file digests and remain
+inside exact dirty custody; missing or ambiguous ownership or parity fails
+closed. Independent REVIEW still verifies the immutable artifact. Proof classes
+are nonpromoting: source, static, local, browser, authenticated, provider,
+payment, deployed, device, and human evidence close only their exact class.
 
 An objective amendment increments the version and records authority, reason, requirements delta, new baseline, and prior-miss relevance. A genuinely new project links a distinct successor goal; it never rewrites the prior history.
 
