@@ -1365,6 +1365,20 @@ class ConsoleStore:
         if existing_receipt is not None:
             if str(existing_receipt["payload_digest"]) != progress_digest:
                 raise ConsoleError("progress receipt conflicts with a previously accepted receipt")
+            latest_material = connection.execute(
+                "SELECT receipt_id, pulse_observed_at_ms FROM task_progress_state WHERE task_id = ?",
+                (event.task_id,),
+            ).fetchone()
+            if (
+                latest_material is not None
+                and str(latest_material["receipt_id"]) == progress.receipt_id
+                and event.observed_at_ms > int(latest_material["pulse_observed_at_ms"])
+            ):
+                connection.execute(
+                    "UPDATE task_progress_state SET pulse_receipt = ?, pulse_observed_at_ms = ?, pulse_state = ?, updated_at_ms = MAX(updated_at_ms, ?) WHERE task_id = ?",
+                    (event.pulse_receipt, event.observed_at_ms, event.state, now_ms, event.task_id),
+                )
+                return "heartbeat"
             return "duplicate"
         latest = connection.execute(
             "SELECT * FROM task_progress_state WHERE task_id = ?",

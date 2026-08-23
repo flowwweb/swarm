@@ -88,8 +88,7 @@ class ConsoleProgressPulseTests(unittest.TestCase):
     def test_duplicate_is_idempotent_and_conflict_or_regression_is_rejected(self) -> None:
         original = self.pulse(observed_at_ms=10, pulse_receipt="pulse-1", completed_units=2)
         self.assertEqual(self.ingest(original, now_ms=10)["advanced"], 1)
-        duplicate = {**original, "observed_at_ms": 20, "pulse_receipt": "pulse-2"}
-        self.assertEqual(self.ingest(duplicate, now_ms=20)["duplicates"], 1)
+        self.assertEqual(self.ingest(original, now_ms=20)["duplicates"], 1)
         regression = self.pulse(observed_at_ms=30, pulse_receipt="pulse-3", completed_units=1, receipt_id="material-2")
         self.assertEqual(self.ingest(regression, now_ms=30)["rejected"], 1)
         conflict = self.pulse(observed_at_ms=40, pulse_receipt="pulse-4", completed_units=3, receipt_id="material-3", total_units=5)

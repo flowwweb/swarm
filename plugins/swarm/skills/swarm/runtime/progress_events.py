@@ -220,6 +220,7 @@ def validate_progress_pulse(payload: Any) -> ProgressPulseEvent:
 def write_progress_pulse(codex_home: Path, payload: Any) -> dict[str, Any]:
     """Atomically replace one task's latest bounded pulse after strict validation."""
     event = validate_progress_pulse(payload)
+    effective_payload = payload
     codex_home = Path(codex_home).expanduser().resolve()
     swarm_root = codex_home / "swarm"
     pulse_root = codex_home / PULSE_ROOT
@@ -237,11 +238,32 @@ def write_progress_pulse(codex_home: Path, payload: Any) -> dict[str, Any]:
             raise ProgressEventError("stored progress pulse target conflicts")
         if existing.observed_at_ms > event.observed_at_ms:
             raise ProgressEventError("progress pulse cannot regress its observed high-water")
+        # A liveness-only heartbeat must not erase a material measure that the
+        # asynchronous console observer has not consumed yet. Carry the latest
+        # validated measure forward; its receipt remains idempotent in SQLite.
+        if event.progress is None and existing.progress is not None:
+            progress = existing.progress
+            effective_payload = {
+                **payload,
+                "progress": {
+                    "receipt_id": progress.receipt_id,
+                    "plan_id": progress.plan_id,
+                    "previous_plan_id": progress.previous_plan_id,
+                    "unit_id": progress.unit_id,
+                    "unit_kind": progress.unit_kind,
+                    "total_units": progress.total_units,
+                    "completed_units": progress.completed_units,
+                    "basis": progress.basis,
+                    "observed_at_ms": progress.observed_at_ms,
+                    "source": progress.source,
+                },
+            }
+            event = validate_progress_pulse(effective_payload)
         if existing.observed_at_ms == event.observed_at_ms:
             if existing.digest != event.digest:
                 raise ProgressEventError("progress pulse conflicts at the observed high-water")
             return {"status": "unchanged", "task_id": event.task_id, "observed_at_ms": event.observed_at_ms, "digest": event.digest}
-    encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")) + "\n"
+    encoded = json.dumps(effective_payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")) + "\n"
     temporary: Path | None = None
     try:
         with tempfile.NamedTemporaryFile("w", dir=pulse_root, prefix=".pulse-", suffix=".json", encoding="utf-8", delete=False) as handle:

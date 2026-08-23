@@ -53,8 +53,11 @@ class ProgressEventTests(unittest.TestCase):
             self.assertEqual((stored.observed_at_ms, stored.progress.completed_units), (20, 1))
             unchanged = write_progress_pulse(codex_home, self.pulse(observed_at_ms=20, completed_units=1))
             self.assertEqual(unchanged["status"], "unchanged")
+            heartbeat = write_progress_pulse(codex_home, self.pulse(observed_at_ms=30))
+            stored = validate_progress_pulse(json.loads(files[0].read_text(encoding="utf-8")))
+            self.assertEqual((heartbeat["status"], stored.observed_at_ms, stored.progress.completed_units), ("written", 30, 1))
             with self.assertRaisesRegex(ProgressEventError, "observed high-water"):
-                write_progress_pulse(codex_home, self.pulse(observed_at_ms=19))
+                write_progress_pulse(codex_home, self.pulse(observed_at_ms=29))
 
     def test_unknown_or_privacy_fields_fail_closed(self) -> None:
         for field in ("prompt", "response", "tool_calls", "credentials"):
