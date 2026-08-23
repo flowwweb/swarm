@@ -135,7 +135,7 @@ Configuration cannot make an unsafe or hidden coordination path valid:
 | `coordination.ctrl_direct_horizon_minutes` | Maximum measurable CTRL_DIRECT window | 1-60; default 20 |
 | `recovery.max_attempts` | Legacy owner recovery budget; WATCHDOG never consumes it | exactly 1; non-disableable |
 | `recovery.stall_after_updates` | Unchanged owner work updates before a lane stalls; heartbeat observations excluded | 1-5 |
-| `lifecycle.pin_created_tasks` | Retained compatibility setting; SWARM runtime never authorizes pinning. All created tasks remain unpinned unless the host independently consumes an exact explicit-user pin request | boolean; default true |
+| `lifecycle.pin_created_tasks` | Retained compatibility signal only; it never authorizes automatic pinning. New tasks remain `pinned: false` with `placement: placement_unverified`; only the host may consume an exact explicit-user pin request, and any claimed placement requires a disclosed host-owned placement receipt | boolean; default true |
 | `lifecycle.archive_completed_tasks` | Archive terminally accepted finite tasks only when no concrete retention reason remains | boolean; default true |
 | `feedback.enabled` | Make the on-demand SWARM feedback workflow available | boolean; default true |
 | `feedback.include_diagnostics` | Include the privacy-safe SWARM diagnostic snapshot | boolean; default true |

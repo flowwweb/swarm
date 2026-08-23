@@ -325,9 +325,10 @@ max_attempts = 1
 stall_after_updates = 2
 
 [lifecycle]
-# Auto-pin only the top-level CTRL task when it is created. Child lane tasks
-# remain unpinned unless an explicit user request or concrete review handoff
-# provides a typed pin receipt.
+# Compatibility signal only; this never authorizes automatic pinning. New tasks
+# remain pinned=false with placement_unverified. Only the host may consume an
+# exact explicit-user pin request, and any claimed placement must be disclosed
+# from a host-owned placement receipt.
 pin_created_tasks = true
 # Archive only after terminal acceptance when no concrete retention reason
 # remains. Pending review, correction, choice, continuation, goals, ownership,
