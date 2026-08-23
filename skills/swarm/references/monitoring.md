@@ -47,8 +47,37 @@ Storage inventory, archive, cleanup, relocation, and monitoring are a dedicated
 delegable `STORAGE LEAD` lane. Its bounded contract names an exact target manifest,
 exact roots, active-process/live-log/database/dirty-worktree guards, a recoverable
 move or copy-verify-remove, post-operation target and free-space receipts, and
-independent review. CTRL may reconcile storage read-only or make only an explicitly
+independent review. It reclaims only exact stale or rebuildable residue in bounded
+increments and verifies the resulting free space. It never touches active or
+growing logs, current sessions, databases, dirty product work, or paths referenced
+by a live process. CTRL may reconcile storage read-only or make only an explicitly
 authorized narrow host-safety stop; pressure alone never authorizes deletion.
+
+Resource pressure is command-scoped, not a lane-wide freeze. Above the exact
+user- or host-declared critical safety floor, keep source and review work moving
+through small durable checkpoints. Serialize only predictably large build,
+export, browser, Docker, install, device, or provider jobs. After verifying the
+exact `O:\` root, prefer it for large sequential artifacts, immutable evidence,
+archives, installers, and release bundles; keep active worktrees, databases,
+dependency trees, and random-I/O-heavy caches local. A recovery target such as
+10 GiB is not itself a project freeze gate unless the user explicitly declares
+it critical. Slow or stop only the specific command that is unsafe or would
+approach the exact critical floor.
+
+Creation age alone is never stale or quiescent evidence. Archive or relocation
+requires explicit idle, completed, or handed-off state; proof that the rollout is
+not under direct user control; no active process, file handle, or lock; and size
+stability across bounded observations. The STORAGE LEAD verifies exact destination
+file count, byte count, and hash parity, retains a recoverable manifest, and only
+then permits copy-verify-remove. Active or growing logs remain protected regardless
+of folder date.
+
+A fresh host-observed direct-user turn creates a scoped keep-out for the named CTRL
+and its subordinate owners. Master may continue read-only portfolio heartbeat and
+unaffected lanes, but it must not send conflicting or duplicate directives, enqueue
+follow-ups, wake those owners, or interrupt them. Completion of the user-directed
+turn or explicit user handback releases the keep-out. Silence, stale status, age,
+or inferred activity cannot create or indefinitely extend it.
 
 Any substantive lane with a separate artifact or mutable surface, durable or
 resumable ownership, independent progress/review, worktree isolation, a cross-lane
@@ -60,6 +89,8 @@ task. The parent CTRL keeps unrelated lanes moving in parallel. The scheduler pe
 plus a material checkpoint or exact blocker at its due event—no repeated polling. A missing due receipt is stall evidence: reorient the existing owner first,
 then use only an explicitly user-authorized successor with custody/handoff, never a
 silent duplicate, replacement, rename, archive, pin/unpin, or state normalization.
+The bounded wake cannot target a CTRL or subordinate owner protected by an active
+direct-user keep-out; unaffected lanes and read-only observation continue.
 
 One evidence-backed readiness delay may reschedule once. Repeated misses increase
 severity and route the alert to the next accountable owner; they do not create

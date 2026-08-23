@@ -34,6 +34,19 @@ After the Step 0 custody check—whether it produced an eligible SWARM receipt o
 
 After the Step 0 custody check, always ask and capture both intake answers before routing: **What is the goal for this task?** and **What is the most efficient safe way to complete it?** A one-shot user prompt may already contain the answers; CTRL must still restate the goal and proposed efficiency strategy so the two fields are inspectable before it proceeds. Then inspect or create exactly one matching durable goal when `goals.use_goals = true` (the default), and record its objective, canonical artifact/mutable surface, owners, dependencies, accepting route, proof, and claim limits. When `goals.use_goals = false`, retain the same intake and graph receipt but do not create or continue a durable goal; the setting is an explicit persistence choice, not permission to skip intake. Reuse only when objective, surface, and accepting route match; a pending creation receipt reserves that identity. Stop a disproved duplicate before mutation and archive it after resolution. For goal ownership, title rules, duplicate prevention, visible-lane economics, delegation exceptions, role selection, and topology, load [hierarchy.md](references/hierarchy.md).
 
+Steer, do not overcorrect: classify each fresh instruction as `ADDITIVE`,
+`CORRECTIVE`, or `REVERSAL`, bind
+it to the explicitly named scope, and record which accepted behavior remains.
+Extend compatible behavior, correct only the finding, or reverse only what the
+user explicitly reversed; preserve unaffected topology, dirty custody, proof
+boundaries, accepted artifacts, and lanes. Never turn a local correction into a
+blanket opposite rule. A fresh host-observed direct-user turn for a specific CTRL
+also creates a scoped keep-out: Master must not send conflicting or duplicate
+directives, enqueue follow-ups, wake that CTRL's subordinate owners, or interrupt
+the turn. Unaffected lanes and read-only portfolio heartbeat continue. Release
+the keep-out only when the turn completes or the user explicitly hands coordination
+back; silence, age, stale state, or inference cannot extend it indefinitely.
+
 Immediately after that receipt—and before topology or work—use `swarm_contract.py request` to `list` then `audit` the exact repository and reconcile every unresolved request. A missing store returns empty/unattached without writing; enable continuity only with an explicit absolute repo root before consequential request work. Intake stages non-runnable `REQUEST_PENDING`, publishes its reserved-ID `DECISION`, calls live `register`, verifies the digest, then activates. Serialized bridge calls are read-only. New input may reprioritize but never replace open work. Persist each typed event cursor and digest; after restart, a new current event must exceed its persisted feed-sequence floor without replaying old feed objects. Audit again before closeout/archive; any unresolved, orphaned, invalid, or provisional record blocks the claim. Missing/corrupt receipts are `UNVERIFIED`, never an empty ledger.
 
 Before the first mutable handoff, select the smallest graph that satisfies the captured objective, efficiency strategy, ownership, dependencies, resumption, integration, and acceptance evidence. Follow [graph-engineering.md](references/graph-engineering.md): one CTRL root, explicit artifact-owning lanes, parallelize only independent work, serialize shared-surface gates, and keep every edge explainable by a dependency or acceptance reason. A game objective selects the registered `game_studio` graph: game-studio lead, design, engineering, art, audio, playtest/QA, and release agents with production dependencies; medium and large lanes are visible Codex tasks, while lane-local bounded work may use subagents. Do not flatten a domain graph into a single undifferentiated worker list.
@@ -146,13 +159,33 @@ host-safety stop; long-running copy, move, or delete work is always delegated.
 The STORAGE LEAD uses an exact target manifest, exact-root and active-process,
 live-log, database, and dirty/current-worktree guards, then performs a recoverable
 move or copy-verify-remove and returns target and free-space receipts for independent
-review. Storage pressure alone never authorizes destructive inference.
+review. It reclaims only exact stale or rebuildable residue incrementally and never
+touches active or growing logs, current sessions, databases, dirty product work, or
+live-process-referenced paths. Resource pressure is command-scoped, not a project
+freeze: above the exact critical safety floor, keep source/review moving through
+small durable checkpoints and serialize only predictably large build, export,
+browser, Docker, install, device, or provider jobs. Verify `O:\` before using it
+for large sequential artifacts, immutable evidence, archives, installers, or
+release bundles; keep active worktrees, databases, dependency trees, and
+random-I/O-heavy caches local. A recovery target such as 10 GiB is not itself a
+freeze gate. Load [monitoring.md](references/monitoring.md) for the full resource,
+archive, and copy-verification gates.
 
 ## CORE
 
 Keep the runtime—not prompts—as the canonical state, ownership, artifact identity, and acceptance authority. Before mutation, establish an evidence-backed execution brief: user outcome and context, canonical state, binding invariants/non-goals, dependencies/risks, approach, and proof. Preserve project conventions unless bounded inspection proves greenfield; escalate material ambiguity, conflict, inaccessible authority, or missing evidence. Explicit user direction outranks SWARM defaults. Make reversible, evidence-backed choices inside the owner’s authority; ask only the smallest decision that changes intent, canonical truth, scope, cost, risk, or the reserved approval boundary.
 
 Treat failed, timed-out, or non-atomic writes as untrusted. Verify the exact target and intended diff scope, preserve pre-existing work, recover only the damaged target from a verified baseline/backup, reapply smaller patches, and revalidate—never broadly roll back a shared surface.
+
+At every meaningful stable boundary, long-lived CTRL and LEAD work records exact
+task identity/state, source SHA/tree/parent, dirty custody, proof manifest and
+claim limits, blocker, and next bounded action. Commit only coherent attributable
+work after proportionate proof; never automatically stage, reset, clean, normalize,
+commit, or absorb unrelated dirty work. A successor must acknowledge that exact
+immutable checkpoint before handoff. Archive or relocation additionally requires
+quiescent, process-free, handle/lock-free, size-stable state and exact destination
+file-count, byte-count, and hash parity with a recoverable manifest. Creation age
+alone is never stale evidence; active or growing logs remain protected.
 
 Every durable CTRL, LEAD, and persistent SPECIALIST has one goal with objective, stopping condition, authority boundary, and proof. Profession is a separate typed perspective selected from the 24-card registry; unknown historical titles remain inert user-owned text and never become routable authority. `UNVERIFIED` is an open acceptance failure. Every artifact-producing lane declares its typed lane kind, immutable `ArtifactIdentity`, bound LEAD identity, deterministic `ProofPlan`, and independent `ACCEPTANCE` route. The planner selects the minimum proof from changed surfaces, claims, authority, dependency reach, incident matches, runtime signals, and repository capabilities; unknown input broadens proof. T0 atomic work uses focused contracts, T1 ordinary code adds impacted proof, T2 adds browser proof only for affected or claimed browser/visual surfaces, T3 provider/security/data work adds plan review and authority proof, and T4 release work replaces impacted proof with broad package/parity proof and composed acceptance. Only non-artifact `NON_CODE` work may use an explicit empty contract. Stable exact-input gate receipts may be re-observed and adopted as execution evidence only when plan, command, gate spec, environment, freshness, proof class, claim, and artifact still match; they never carry acceptance authority. Provider, deployed, device, and human claims remain `UNVERIFIED` unless an isolated host verifier records a typed observation with exact plan/spec/artifact/environment bindings, evidence digest, and bounded freshness; in-process commands, signatures, and caller-created receipts cannot close them. T0 independence cannot be disabled by caller assertion. The bound LEAD integrates and records exact-artifact gate results as `PASS`, `FAIL`, or `TIMEOUT`; a timeout never passes and permits at most one typed transient retry. Missing, failed, timed-out, wrong-artifact, uncovered-claim, or source-only receipts stay open; CTRL may surface but never manufacture acceptance. Load [task-contract.md](references/task-contract.md) to record the contract and [review-contract.md](references/review-contract.md) for all acceptance, incident, proof, review, and claim-limit rules.
 

@@ -51,6 +51,15 @@ dependencies, resumption, integration, acceptance, and the strategy—not from
 an arbitrary number of agents. Load [graph-engineering.md](graph-engineering.md)
 for the graph invariants and registered domain profiles.
 
+Steer, do not overcorrect: classify every new instruction as `ADDITIVE`,
+`CORRECTIVE`, or `REVERSAL` and
+bind it to the explicitly named scope. The receipt also names the compatible
+accepted behavior that remains preserved. `ADDITIVE` extends that behavior;
+`CORRECTIVE` makes the smallest coherent adjustment that closes the finding;
+`REVERSAL` replaces only the explicitly reversed behavior. Every class preserves
+unaffected topology, dirty custody, proof boundaries, accepted artifacts, and
+unrelated lanes. A local correction never implies the opposite blanket rule.
+
 ## One root, the shallowest useful shape
 
 CTRL is the sole root and final composed authority. Use `CTRL_DIRECT` only for
@@ -162,6 +171,15 @@ can independently consume an explicit-user receipt naming the exact mutation,
 target, and scope. Missing or conflicting custody means no mutation is permitted;
 it fails closed and waits.
 
+A fresh host-observed direct-user turn for one specific CTRL opens a scoped
+user-activity keep-out for that CTRL and its subordinate owners. During the
+window the Master or portfolio CTRL must not send conflicting or duplicate
+directives, enqueue follow-ups, wake those owners, or interrupt their work.
+Read-only portfolio observation and unaffected CTRL lanes continue. The keep-out
+ends when that user-directed turn completes or the user explicitly hands
+coordination back. Silence, age, stale presence, or inferred activity cannot
+open or indefinitely extend it; user actions always win.
+
 Product implementation, storage recovery, deploy preparation, provider integration,
 design-system work, test/review ownership, and any lane with a separate mutable
 surface or artifact, durable/resumable ownership, independent progress or review,
@@ -174,6 +192,15 @@ lanes moving in parallel and integrates only exact receipts. A missing due mater
 checkpoint is stall evidence; reorient the existing owner first, and open a
 successor only when user-authorized topology permits it with explicit custody and
 handoff.
+
+At each meaningful stable boundary, long-lived CTRL and LEAD work emits an
+immutable checkpoint with exact task identity and state, source SHA/tree/parent,
+dirty custody, proof manifest and claim limits, blocker, and next bounded action.
+Only coherent attributable work may be committed after proportionate proof;
+never automatically stage, reset, clean, commit, normalize, or absorb unrelated
+dirty work. A handoff is effective only after the successor acknowledges that
+exact checkpoint. Shrink or archive the old rollout only through the guarded
+lifecycle in [monitoring.md](monitoring.md).
 
 Storage inventory, archive, cleanup, relocation, and monitoring are a dedicated
 delegable STORAGE LEAD lane. It owns a bounded exact target manifest, exact-root,

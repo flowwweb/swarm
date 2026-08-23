@@ -39,6 +39,7 @@ PURPOSE: objective and acceptance/non-negotiables.
 OWNERSHIP: owner, exact mutable surface, canonical artifact/version.
 BOUNDARIES: dependencies, proof/claim limits, no hidden scope change.
 ESCALATION: accepting route or exact blocker.
+CHANGE: ADDITIVE, CORRECTIVE, or REVERSAL; explicitly named scope and accepted behavior preserved.
 MODE: CTRL_DIRECT or CTRL_DELEGATED, with the direct-work predicate receipt and typed work kind (`GENERAL`, `DESIGN`, `IMAGEGEN`, or `IMAGE_EDIT`). Only `GENERAL` can pass the CTRL_DIRECT predicate; visual work records `product_experience` or `expressive_art` ownership and binds Designer or Artist respectively.
 GOAL: stable goal ID, objective version, measurable milestone, and locally chosen review horizon; optional WATCHDOG binding is separate and names the watched owner plus validated alert route. New-task persistence follows `goals.use_goals`, which defaults true; when it is false the intake and graph remain recorded but the root task does not create or continue a durable goal. LEAD and persistent SPECIALIST ownership goals remain fixed role invariants.
 ACCEPTANCE: typed lane kind, exact ArtifactIdentity, deterministic ProofPlan, bound owning LEAD identity, and accepting REVIEW route; CODE has at least one gate and only NON_CODE non-artifact work may use an explicit empty contract.
@@ -72,6 +73,14 @@ missing receipt is stall evidence, so reorient the existing owner before any
 successor. A permitted successor carries explicit custody/handoff and never silently
 duplicates, replaces, renames, or archives the old lane.
 
+A meaningful stable checkpoint for long-lived CTRL or LEAD work records the
+exact task identity and state, source SHA/tree/parent, exact dirty custody, proof
+manifest and claim limits, blocker, and next bounded action. Commit only coherent
+attributable work after proportionate proof. Never automatically stage, reset,
+clean, normalize, commit, or absorb unrelated dirty work. Before a successor may
+own the lane, it acknowledges the exact immutable checkpoint; this handoff does
+not authorize renaming, pinning, archiving, or any other host-task mutation.
+
 Storage inventory, archive, cleanup, relocation, and monitoring use a dedicated
 delegable STORAGE LEAD lane. Its contract binds an exact target manifest,
 exact-root, active-process, live-log, database, and dirty/current-worktree guards,
@@ -79,6 +88,13 @@ recoverable move or copy-verify-remove, post-operation target and free-space
 receipts, and independent review. CTRL may only reconcile read-only state or perform
 an explicitly authorized narrow host-safety stop; pressure alone is not destructive
 authority.
+
+Archive or relocation requires explicit idle, completed, or handed-off state;
+proof that the rollout is not under direct user control; no active process, file
+handle, or lock; and size stability across bounded observations. Verify the exact
+destination by file count, byte count, and hash parity, retain a recoverable
+manifest, and only then permit copy-verify-remove. Creation age alone is never
+stale or quiescent evidence, and active or growing logs remain protected.
 
 ## Durable request ledger
 
