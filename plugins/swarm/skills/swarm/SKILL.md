@@ -74,10 +74,13 @@ behavior, dependency, handoff, or separate acceptance receipt. Otherwise use
 provider/deployment/device state, visual work, multiple proof gates, or
 independent review MUST open a visible senior Codex task/chat before CTRL does
 substantive work. That lane has its own cwd, owner, heartbeat, mutable surface,
-and accepting route; non-atomic authority is `CTRL -> LEAD -> DOER`. The LEAD
-decomposes disjoint DOER lanes, requests independent review, and keeps
-unrelated lanes moving; reorient the existing owner once on a blocker rather
-than silently replacing the lane.
+and accepting route. Structural authority is exactly `CTRL`, `LEAD`, and
+`DOER`, but it is not fixed depth: a LEAD may produce directly, recruit a DOER
+for a bounded artifact, or recruit a nested LEAD when a subordinate boundary
+needs independent durable ownership, heartbeat, integration/review surface,
+worktree isolation, cross-lane dependency, or its own team. No pass-through,
+headcount, depth, or approval ceremony is mandatory. Independent review uses a
+separate visible owner from the producer and never becomes a structural tier.
 
 Only genuinely small, single-surface, low-risk `GENERAL` work remains eligible
 for `NORMAL_SUBAGENT` when measured task economics favor it. The subagent stays
@@ -125,7 +128,11 @@ archive, or alter the old lane or user state.
 Materialize a visible task lane whenever durable ownership or interruption-safe
 resumption is required. Use a subagent only as short bounded capacity inside an existing lane: it remains eligible only for genuinely small, single-surface,
 low-risk `GENERAL` inspection or review and never substitutes for a qualifying durable task. It never gains lane ownership, handoff, heartbeat, acceptance, or
-host mutation authority. Internal-helper or read-only-tool approval gates are failed capacity: cancel the attempt, record the host gate, and continue inside
+host mutation authority. Hidden subagents are non-recursive leaves: routing facts
+that may need recruitment or recursive delegation require a visible owner. If a
+leaf discovers that need, it stops and returns `PROMOTE_TO_VISIBLE_TASK` with the
+remaining deliverable, custody boundary, and required proof; the parent reuses
+or creates the visible owner. Internal-helper or read-only-tool approval gates are failed capacity: cancel the attempt, record the host gate, and continue inside
 the same accountable boundary without asking the user. That fallback never grants external, provider, destructive, or user-reserved authority.
 
 CTRL is the operator/orchestrator, not the producer. Keep the small-work

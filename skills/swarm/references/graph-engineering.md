@@ -26,9 +26,12 @@ proof boundary.
 
 ## Registered profiles
 
-`general` is the default shallow profile: `CTRL -> DOER` for a bounded atomic
-outcome. The runtime may expand it to `CTRL -> LEAD -> DOER` and an independent
-review route when the task's evidence requires a visible lane.
+`general` is the default shallow profile. CTRL appoints a LEAD for a durable
+boundary; that LEAD may produce directly, recruit a DOER for a bounded artifact,
+or recruit another LEAD when the subordinate boundary needs independent durable
+ownership, heartbeat, integration/review surface, worktree isolation, cross-lane
+dependency, or its own team. Hidden subagents remain non-recursive leaves. There
+is no fixed depth, roster, or mandatory pass-through.
 
 `game_studio` is selected when the objective or declared domain is a game,
 gameplay, engine, Unity, Unreal, Godot, or playtest project. Its production

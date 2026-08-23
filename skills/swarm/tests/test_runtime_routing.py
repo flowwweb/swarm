@@ -8,6 +8,8 @@ from skills.swarm.runtime import (
     HostCapacityEvidence,
     HostTaskCapacity,
     InvariantError,
+    LeadBottleneckReason,
+    LeadCapacityEvidence,
     Role,
     RoutingEconomics,
     RoutingEvidenceBasis,
@@ -17,13 +19,20 @@ from skills.swarm.runtime import (
     WatchdogBinding,
     WatchdogRouteRole,
     Swarm,
+    StructuralAssignmentKind,
+    StructuralAuthority,
+    SubagentOutcome,
+    SubordinateBoundaryFacts,
     Task,
     VisualOwnership,
     WorkRoutingFacts,
     WorkKind,
     WorkSize,
+    decide_doer_recruitment,
     hands_off_interrupt,
     route_execution,
+    select_structural_assignment,
+    subagent_leaf_return,
     usage_watchdog_evidence,
 )
 
@@ -46,6 +55,20 @@ AVAILABLE = HostCapacityEvidence(HostTaskCapacity.AVAILABLE, True, "host:capacit
 
 
 class RuntimeRoutingTests(unittest.TestCase):
+    def test_structural_authority_is_exact_and_lead_depth_is_evidence_driven(self) -> None:
+        self.assertEqual(tuple(item.value for item in StructuralAuthority), ("CTRL", "LEAD", "DOER"))
+        self.assertNotIn("REVIEW", StructuralAuthority.__members__)
+        self.assertNotIn("WATCHDOG", StructuralAuthority.__members__)
+        nested = select_structural_assignment(
+            parent=StructuralAuthority.LEAD,
+            boundary=SubordinateBoundaryFacts(heartbeat_obligation=True),
+        )
+        self.assertEqual((nested.kind, nested.child), (StructuralAssignmentKind.NESTED_LEAD, StructuralAuthority.LEAD))
+        direct = select_structural_assignment(parent=StructuralAuthority.LEAD, boundary=SubordinateBoundaryFacts())
+        self.assertEqual((direct.kind, direct.child), (StructuralAssignmentKind.LEAD_DIRECT, None))
+        doer = select_structural_assignment(parent=StructuralAuthority.LEAD, boundary=SubordinateBoundaryFacts(), delegate_artifact=True)
+        self.assertEqual((doer.kind, doer.child), (StructuralAssignmentKind.DOER, StructuralAuthority.DOER))
+
     def test_small_bounded_work_can_use_a_normal_subagent_when_task_economics_do_not_win(self) -> None:
         decision = route_execution(facts=facts(WorkSize.SMALL), economics=economics(savings=20, overhead=60), capacity=AVAILABLE, accountable_owner="lead-a")
         self.assertEqual(decision.route, ExecutionRoute.NORMAL_SUBAGENT)
@@ -98,6 +121,61 @@ class RuntimeRoutingTests(unittest.TestCase):
         self.assertEqual(decision.route, ExecutionRoute.NORMAL_SUBAGENT)
         self.assertEqual(decision.authority_chain, ("lead-a", "SUBAGENT"))
         self.assertFalse(decision.subagent_authoritative)
+
+    def test_recursive_or_recruiting_work_never_routes_to_a_hidden_subagent(self) -> None:
+        for flag in ("may_need_recruitment", "requires_recursive_delegation"):
+            with self.subTest(flag=flag):
+                decision = route_execution(
+                    facts=facts(**{flag: True}),
+                    economics=economics(savings=0, overhead=100),
+                    capacity=AVAILABLE,
+                    accountable_owner="lead-a",
+                    lead_owner="lead-a",
+                )
+                self.assertEqual(decision.route, ExecutionRoute.NORMAL_TASK)
+                blocked = route_execution(
+                    facts=facts(**{flag: True}),
+                    economics=economics(savings=0, overhead=100),
+                    capacity=HostCapacityEvidence(HostTaskCapacity.REJECTED, True, "host:error:task rejected"),
+                    accountable_owner="lead-a",
+                    immutable_checkpoint="sha256:abc",
+                    resumption_marker="resume:visible-owner",
+                    affected_gates=("acceptance",),
+                )
+                self.assertEqual(blocked.route, ExecutionRoute.HARD_BLOCKED)
+                self.assertIn("hidden subagent fallback is prohibited", blocked.reason)
+
+    def test_subagent_is_a_leaf_and_returns_typed_visible_task_promotion(self) -> None:
+        complete = subagent_leaf_return(accountable_parent="lead-a")
+        self.assertEqual(complete.outcome, SubagentOutcome.COMPLETE)
+        self.assertFalse(complete.may_delegate)
+        self.assertFalse(complete.may_handoff)
+        self.assertFalse(complete.may_own_heartbeat)
+        self.assertFalse(complete.may_accept)
+        promoted = subagent_leaf_return(
+            accountable_parent="lead-a",
+            needs_decomposition=True,
+            remaining_deliverable="Implement the remaining API and tests.",
+            custody_boundary=("src/api.py", "tests/test_api.py"),
+            required_proof=("LOCAL_UNIT", "SOURCE_STATIC"),
+            reason="The work now needs an independently resumable owner.",
+        )
+        self.assertEqual(promoted.outcome, SubagentOutcome.PROMOTE_TO_VISIBLE_TASK)
+        self.assertEqual(promoted.accountable_parent, "lead-a")
+        with self.assertRaisesRegex(InvariantError, "exact remaining deliverable"):
+            subagent_leaf_return(accountable_parent="lead-a", may_need_recruitment=True)
+
+    def test_doer_recruitment_uses_direct_wip_ready_queue_or_typed_critical_path_debt(self) -> None:
+        saturated = decide_doer_recruitment(LeadCapacityEvidence(3, 7, 1, 0, 3, 1000, "capacity:lead-a"))
+        self.assertTrue(saturated.recruit_doer)
+        self.assertEqual(saturated.reason, LeadBottleneckReason.WIP_SATURATED_READY_QUEUE)
+        delegated_is_excluded = decide_doer_recruitment(LeadCapacityEvidence(2, 99, 1, 0, 3, 1000, "capacity:lead-a"))
+        self.assertFalse(delegated_is_excluded.recruit_doer)
+        blocked_only = decide_doer_recruitment(LeadCapacityEvidence(3, 0, 0, 4, 3, 1000, "capacity:lead-a"))
+        self.assertFalse(blocked_only.recruit_doer)
+        critical = decide_doer_recruitment(LeadCapacityEvidence(1, 0, 1, 0, 3, 1000, "capacity:lead-a", forecast_slippage_ms=120, critical_path_receipt="forecast:lead-a:rev-2"))
+        self.assertTrue(critical.recruit_doer)
+        self.assertEqual(critical.reason, LeadBottleneckReason.RECEIPT_CRITICAL_PATH)
 
     def test_root_ctrl_small_general_work_can_use_a_subagent_but_medium_work_opens_a_task(self) -> None:
         decision = route_execution(

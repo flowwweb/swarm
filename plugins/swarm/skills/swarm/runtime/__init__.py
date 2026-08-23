@@ -2,5 +2,6 @@ from .core import AcceptanceContract, ArtifactFileEvidence, ArtifactIdentity, Ar
 from .incidents import EvidenceKind, EvidenceReference, FoldCandidate, FoldResult, IncidentDisposition, IncidentError, IncidentLedger, IncidentRecord, utc_timestamp
 from .core import GraphNodeSpec, GraphProfile, GraphSelection, INTAKE_QUESTIONS, IntakePlan, TaskIntake, prepare_task_intake, select_graph
 from .health import HealthRecoveryRequest, RecoveryRequestState, RecoveryRequestType
+from .core import LeadBottleneckReason, LeadCapacityEvidence, LeadRecruitmentDecision, StructuralAssignmentDecision, StructuralAssignmentKind, StructuralAuthority, SubagentOutcome, SubagentReturn, SubordinateBoundaryFacts, decide_doer_recruitment, select_structural_assignment, subagent_leaf_return
 
 __all__ = [name for name in globals() if not name.startswith("_")]

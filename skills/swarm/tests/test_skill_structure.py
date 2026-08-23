@@ -190,9 +190,10 @@ class SwarmSkillStructureTests(unittest.TestCase):
     def test_recursive_accountable_topology_and_local_staffing_contract(self) -> None:
         hierarchy = (SKILL_ROOT / "references" / "hierarchy.md").read_text(encoding="utf-8")
         self.assertIn("Each LEAD owns one durable boundary", hierarchy)
-        self.assertIn("each DOER owns one bounded artifact", hierarchy)
-        self.assertIn("Every role may use subagents", hierarchy)
-        self.assertIn("Promote a subagent immediately when it gains", hierarchy)
+        self.assertRegex(hierarchy, r"[Ee]ach DOER owns one bounded artifact")
+        self.assertRegex(hierarchy, r"Every role may use non-recursive leaf\s+subagents")
+        self.assertIn("PROMOTE_TO_VISIBLE_TASK", hierarchy)
+        self.assertRegex(hierarchy, r"subagent cannot expand, recruit recursively, hand off, own a lane\s+heartbeat, review, or accept")
         self.assertIn("without a per-change\nCTRL approval event", hierarchy)
         self.assertIn("authority expansion, shared-surface", hierarchy)
         self.assertIn("shrink\nidle scaffolding", hierarchy)

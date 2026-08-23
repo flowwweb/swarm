@@ -16,12 +16,13 @@ The built-in profession registry is exactly, in lifecycle display order:
   (`educator`).
 
 Profession and authority are orthogonal. A profession selects perspective and
-skills; only assignment as CTRL, LEAD, DOER, independent REVIEW, or ADVISOR
-grants the corresponding authority. Architect, Dev, Security, Specialist, and
-any other profession may be assigned LEAD or DOER. Profession labels never grant
-recruitment, mutation, review, or acceptance authority. WATCHDOG remains a
-sensor. Specialist requires a named domain and truth surface; it is not the
-structural SPECIALIST role field.
+skills; only assignment as CTRL, LEAD, or DOER grants structural authority.
+Independent review is a function with separate owner/custody, while ADVISOR and
+persistent SPECIALIST are scoped functions rather than structural tiers.
+Architect, Dev, Security, Specialist, and any other profession may be assigned
+LEAD or DOER. Profession labels never grant recruitment, mutation, review, or
+acceptance authority. WATCHDOG remains a sensor. Specialist requires a named
+domain and truth surface; it is not the structural SPECIALIST role field.
 
 Only proven persisted aliases resolve compatibly, without renaming user-owned
 task titles: product, project, and planning management to Manager; data and
@@ -66,9 +67,10 @@ CTRL is the sole root and final composed authority. Use `CTRL_DIRECT` only for
 one low-risk atomic outcome on one mutable surface with no cross-lane dependency
 and measurable completion inside the direct-work horizon. Otherwise CTRL leads
 the project through accountable LEADs. Each LEAD owns one durable boundary and
-leads its DOERs; each DOER owns one bounded artifact and may lead bounded
-subagents. Every role may use subagents for sidecar inspection, review, or
-analysis inside its own accountable boundary.
+may produce directly, recruit a DOER for a bounded artifact, or recruit a nested
+LEAD for a durable subordinate boundary. Each DOER owns one bounded artifact.
+Every role may use non-recursive leaf subagents for sidecar inspection, review,
+or analysis inside its own accountable boundary.
 
 ### CTRL is an operator, not a producer
 
@@ -120,7 +122,9 @@ DOER merely because it is easier to spawn.
 For root CTRL, small bounded `GENERAL` work may use an internal subagent when
 it has one surface, low risk, no durable boundary, and measured economics that
 favor the shortcut. Medium or large work opens a visible Codex task with
-`CTRL -> LEAD -> DOER` so the lane can own its own subagents. `DESIGN`,
+the smallest required `CTRL`, `LEAD`, and `DOER` authority shape so the lane can
+own its own leaf subagents. LEAD depth is evidence-driven rather than fixed.
+`DESIGN`,
 `IMAGEGEN`, mockups, and image edits always open a visible Designer or Artist
 task according to the typed visual ownership; `CTRL -> SUBAGENT` is not a
 substitute for that visual lane, even when a role label names the profession.
@@ -135,10 +139,15 @@ Use this routing order:
 3. Add a subagent only for bounded small `GENERAL` capacity within its current
    accountable owner or an already-open lane; never for visual artifact production.
 
-Promote a subagent immediately when it gains a separate mutable surface,
-resumable ownership, an independent heartbeat, review, or handoff, a cross-lane
-dependency, or user-visible delivery. The promoted child owns its boundary and
-receives its own durable receipt; the parent retains integration accountability.
+Hidden subagents are non-recursive leaf sidecars. Route work with
+`may_need_recruitment` or `requires_recursive_delegation` to a visible durable
+owner before dispatch. If a bounded subagent discovers further decomposition,
+recruitment, separate mutable surface, resumable ownership, heartbeat, review,
+handoff, cross-lane dependency, or user-visible delivery, it stops and returns
+the typed `PROMOTE_TO_VISIBLE_TASK` outcome with the exact remaining deliverable,
+custody boundary, and required proof. The parent reuses or creates the visible
+owner; the subagent cannot expand, recruit recursively, hand off, own a lane
+heartbeat, review, or accept.
 
 If the host cannot create a required visible task, record the exact capability
 blocker. A degraded subagent remains under the current accountable owner and
@@ -192,8 +201,8 @@ surface or artifact, durable/resumable ownership, independent progress or review
 worktree isolation, a cross-lane dependency, user-visible delivery, or multiple
 checkpoints/delegation are substantive: they require a visible senior Codex
 task/chat with its own cwd, owner, and heartbeat. Hidden or short-lived subagents
-are only bounded sidecar inspection or independent review; they cannot own, accept,
-hand off, or maintain a lane heartbeat. The parent CTRL keeps unrelated senior
+are only bounded sidecar inspection or non-authoritative review assistance; they
+cannot own, accept, hand off, or maintain a lane heartbeat. The parent CTRL keeps unrelated senior
 lanes moving in parallel and integrates only exact receipts. A missing due material
 checkpoint is stall evidence; reorient the existing owner first, and open a
 successor only when user-authorized topology permits it with explicit custody and
@@ -254,10 +263,15 @@ Use ADVISOR or EXPERT for one bounded uncertainty delaying accepted proof, never
 Use ASSIST as temporary surge capacity for one bounded result. None of them
 receives authority merely because it found an issue.
 
-When a DOER has two or more independent subtasks and child capacity, delegate
-worthwhile slices promptly. Do not force delegation when startup, collision,
-safety, privacy, or whole-task cost would erase the benefit. The current owner
-retains integration and accountability.
+A LEAD recruits a DOER only from defensible bottleneck evidence: directly owned
+active slices have reached `efficiency.doer_wip_limit` while at least one
+independently ownable slice is ready, or a typed material-receipt/forecast
+receipt identifies the LEAD as the critical-path bottleneck. Delegated active
+work is counted separately and never fills the LEAD's direct WIP. Blocked work
+without disjoint ready work does not justify recruitment. A LEAD may still
+produce directly, and startup, collision, safety, privacy, or whole-task cost
+may make delegation net-negative. The current owner retains integration and
+accountability.
 
 ## Capacity and dependencies
 

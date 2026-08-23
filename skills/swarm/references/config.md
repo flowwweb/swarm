@@ -87,7 +87,7 @@ Configuration cannot make an unsafe or hidden coordination path valid:
 | `proof.transient_retry_limit` | Same-state retry budget for typed transient infrastructure failure | 0-1; default 1 |
 | `turbo.enabled` | Opt into the high usage profile, fast service-tier preference, MAX progress policy, and the highest declared model-supported reasoning within the global bounds | boolean; default false |
 | `efficiency.mode` | Resource strategy for useful depth, concurrency, routing, and review; never weakens safety floors | CONSERVE, BALANCED, FAST, MAX; default BALANCED |
-| `efficiency.doer_wip_limit` | Maximum active assignments owned by one DOER | 1-8; default 3 |
+| `efficiency.doer_wip_limit` | Direct active-slice limit used for a producing LEAD or DOER; delegated work is excluded, and recruitment also requires a ready independent slice or typed critical-path receipt | 1-8; default 3 |
 | `goals.use_goals` | Persist a new task's captured objective as a durable goal and resume/continue a matching goal | boolean; default true |
 | `hive.enabled` | Enable compact SWARM institutional-memory records | boolean; default true |
 | `hive.cleanup_strategy` | Mechanical lifecycle cleanup | adaptive; default adaptive |

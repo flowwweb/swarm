@@ -131,6 +131,10 @@ class SubagentException(StrEnum):
     CAPACITY="capacity"; HOST_GATE="host_gate"; COLLISION="collision"; SAFETY="safety"; WHOLE_TASK_COST="whole_task_cost"
 class HostTaskCapacity(StrEnum): AVAILABLE="available"; UNAVAILABLE="unavailable"; REJECTED="rejected"; USAGE_LIMITED="usage_limited"
 class ExecutionRoute(StrEnum): NORMAL_SUBAGENT="normal_subagent"; NORMAL_TASK="normal_task"; DEGRADED_SUBAGENT="degraded_subagent"; HARD_BLOCKED="hard_blocked"
+class StructuralAuthority(StrEnum): CTRL="CTRL"; LEAD="LEAD"; DOER="DOER"
+class StructuralAssignmentKind(StrEnum): LEAD_DIRECT="lead_direct"; NESTED_LEAD="nested_lead"; DOER="doer"
+class SubagentOutcome(StrEnum): COMPLETE="COMPLETE"; PROMOTE_TO_VISIBLE_TASK="PROMOTE_TO_VISIBLE_TASK"
+class LeadBottleneckReason(StrEnum): WIP_SATURATED_READY_QUEUE="wip_saturated_ready_queue"; RECEIPT_CRITICAL_PATH="receipt_critical_path"
 class DegradedCapacityException(StrEnum): TASK_UNAVAILABLE="task_unavailable"; TASK_REJECTED="task_rejected"; TASK_USAGE_LIMITED="task_usage_limited"
 class RoutingEvidenceBasis(StrEnum): OBSERVED="observed"; CONSERVATIVE_ASSUMPTION="conservative_assumption"
 class WorkSize(StrEnum): SMALL="small"; MEDIUM="medium"; LARGE="large"
@@ -209,7 +213,7 @@ class RoutingEconomics:
 
 @dataclass(frozen=True)
 class WorkRoutingFacts:
-    size:WorkSize; bounded:bool; low_risk:bool; mutable_surface_count:int; independent_work:bool=False; independent_acceptance:bool=False; separate_handoff:bool=False; useful_durable_boundary:bool=False; interruption_safe_resumption:bool=False; worktree_isolation:bool=False; independent_review:bool=False; work_kind:WorkKind=WorkKind.GENERAL; visual_ownership:VisualOwnership=VisualOwnership.PRODUCT_EXPERIENCE; user_visible_delivery:bool=False; cross_lane_dependency:bool=False; material_heartbeat_obligation:bool=False
+    size:WorkSize; bounded:bool; low_risk:bool; mutable_surface_count:int; independent_work:bool=False; independent_acceptance:bool=False; separate_handoff:bool=False; useful_durable_boundary:bool=False; interruption_safe_resumption:bool=False; worktree_isolation:bool=False; independent_review:bool=False; work_kind:WorkKind=WorkKind.GENERAL; visual_ownership:VisualOwnership=VisualOwnership.PRODUCT_EXPERIENCE; user_visible_delivery:bool=False; cross_lane_dependency:bool=False; material_heartbeat_obligation:bool=False; may_need_recruitment:bool=False; requires_recursive_delegation:bool=False
     def __post_init__(self):
         if not isinstance(self.size,WorkSize) or not isinstance(self.mutable_surface_count,int) or self.mutable_surface_count<1 or not isinstance(self.work_kind,WorkKind) or not isinstance(self.visual_ownership,VisualOwnership): raise InvariantError("routing facts require typed size, work kind, visual ownership, and at least one mutable surface")
     def required_visual_profession(self)->str:
@@ -217,7 +221,88 @@ class WorkRoutingFacts:
         if self.work_kind in {WorkKind.IMAGEGEN,WorkKind.IMAGE_EDIT}: return "artist" if self.visual_ownership is VisualOwnership.EXPRESSIVE_ART else "designer"
         return ""
     def requires_visual_profession(self)->bool: return bool(self.required_visual_profession())
-    def requires_durable_lane(self)->bool: return self.size is WorkSize.LARGE or self.requires_visual_profession() or any((self.independent_acceptance,self.separate_handoff,self.useful_durable_boundary,self.interruption_safe_resumption,self.worktree_isolation,self.independent_review,self.user_visible_delivery,self.cross_lane_dependency,self.material_heartbeat_obligation))
+    def requires_durable_lane(self)->bool: return self.size is WorkSize.LARGE or self.requires_visual_profession() or any((self.independent_acceptance,self.separate_handoff,self.useful_durable_boundary,self.interruption_safe_resumption,self.worktree_isolation,self.independent_review,self.user_visible_delivery,self.cross_lane_dependency,self.material_heartbeat_obligation,self.may_need_recruitment,self.requires_recursive_delegation))
+
+    def requires_visible_recursive_owner(self)->bool:
+        return self.may_need_recruitment or self.requires_recursive_delegation
+
+@dataclass(frozen=True)
+class SubordinateBoundaryFacts:
+    independent_durable_ownership:bool=False; heartbeat_obligation:bool=False; integration_review_surface:bool=False; worktree_isolation:bool=False; cross_lane_dependency:bool=False; own_team:bool=False
+    def __post_init__(self):
+        if any(not isinstance(value,bool) for value in (self.independent_durable_ownership,self.heartbeat_obligation,self.integration_review_surface,self.worktree_isolation,self.cross_lane_dependency,self.own_team)): raise InvariantError("subordinate boundary facts must be boolean")
+    def requires_nested_lead(self)->bool:
+        return any((self.independent_durable_ownership,self.heartbeat_obligation,self.integration_review_surface,self.worktree_isolation,self.cross_lane_dependency,self.own_team))
+
+@dataclass(frozen=True)
+class StructuralAssignmentDecision:
+    parent:StructuralAuthority; kind:StructuralAssignmentKind; child:StructuralAuthority|None; reason:str
+    def __post_init__(self):
+        if not isinstance(self.parent,StructuralAuthority) or not isinstance(self.kind,StructuralAssignmentKind) or self.child is not None and not isinstance(self.child,StructuralAuthority) or not isinstance(self.reason,str) or not self.reason.strip(): raise InvariantError("structural assignment requires typed authority and a reason")
+
+def select_structural_assignment(*, parent:StructuralAuthority, boundary:SubordinateBoundaryFacts, delegate_artifact:bool=False) -> StructuralAssignmentDecision:
+    """Choose the smallest valid child without imposing fixed topology depth."""
+    if not isinstance(parent,StructuralAuthority) or not isinstance(boundary,SubordinateBoundaryFacts) or not isinstance(delegate_artifact,bool): raise InvariantError("structural assignment requires typed parent, boundary, and delegation choice")
+    if parent is StructuralAuthority.CTRL:
+        return StructuralAssignmentDecision(parent,StructuralAssignmentKind.NESTED_LEAD,StructuralAuthority.LEAD,"CTRL delegates a durable project boundary to a LEAD")
+    if parent is StructuralAuthority.LEAD and boundary.requires_nested_lead():
+        return StructuralAssignmentDecision(parent,StructuralAssignmentKind.NESTED_LEAD,StructuralAuthority.LEAD,"subordinate boundary requires independent durable LEAD ownership")
+    if parent is StructuralAuthority.LEAD and delegate_artifact:
+        return StructuralAssignmentDecision(parent,StructuralAssignmentKind.DOER,StructuralAuthority.DOER,"bounded artifact delegation uses a DOER")
+    if parent is StructuralAuthority.LEAD:
+        return StructuralAssignmentDecision(parent,StructuralAssignmentKind.LEAD_DIRECT,None,"LEAD may produce directly inside its owned boundary")
+    if boundary.requires_nested_lead() or delegate_artifact: raise InvariantError("DOER cannot recruit a durable child; return promotion to the parent LEAD")
+    return StructuralAssignmentDecision(parent,StructuralAssignmentKind.LEAD_DIRECT,None,"DOER produces its owned artifact directly")
+
+@dataclass(frozen=True)
+class SubagentReturn:
+    outcome:SubagentOutcome; accountable_parent:str; remaining_deliverable:str=""; custody_boundary:tuple[str,...]=(); required_proof:tuple[str,...]=(); reason:str=""
+    def __post_init__(self):
+        parent=self.accountable_parent.strip() if isinstance(self.accountable_parent,str) else ""
+        if not isinstance(self.outcome,SubagentOutcome) or not parent: raise InvariantError("subagent return requires a typed outcome and accountable parent")
+        object.__setattr__(self,"accountable_parent",parent)
+        if self.outcome is SubagentOutcome.PROMOTE_TO_VISIBLE_TASK:
+            if not all(isinstance(value,str) and value.strip() for value in (self.remaining_deliverable,self.reason)) or not self.custody_boundary or not self.required_proof or any(not isinstance(value,str) or not value.strip() for value in (*self.custody_boundary,*self.required_proof)): raise InvariantError("PROMOTE_TO_VISIBLE_TASK requires exact remaining deliverable, custody, proof, and reason")
+        elif self.remaining_deliverable or self.custody_boundary or self.required_proof or self.reason: raise InvariantError("completed subagent return cannot retain promotion scope")
+    @property
+    def may_delegate(self)->bool: return False
+    @property
+    def may_handoff(self)->bool: return False
+    @property
+    def may_own_heartbeat(self)->bool: return False
+    @property
+    def may_accept(self)->bool: return False
+
+def subagent_leaf_return(*, accountable_parent:str, needs_decomposition:bool=False, may_need_recruitment:bool=False, remaining_deliverable:str="", custody_boundary:tuple[str,...]=(), required_proof:tuple[str,...]=(), reason:str="") -> SubagentReturn:
+    if any(not isinstance(value,bool) for value in (needs_decomposition,may_need_recruitment)): raise InvariantError("subagent discovery flags must be boolean")
+    if needs_decomposition or may_need_recruitment:
+        return SubagentReturn(SubagentOutcome.PROMOTE_TO_VISIBLE_TASK,accountable_parent,remaining_deliverable,custody_boundary,required_proof,reason)
+    return SubagentReturn(SubagentOutcome.COMPLETE,accountable_parent)
+
+@dataclass(frozen=True)
+class LeadCapacityEvidence:
+    direct_active_slices:int; delegated_active_count:int; ready_independent_slices:int; blocked_slices:int; doer_wip_limit:int; observed_at_ms:int; source_receipt:str; last_material_receipt_at_ms:int|None=None; material_receipt_due_at_ms:int|None=None; forecast_slippage_ms:int=0; critical_path_receipt:str=""
+    def __post_init__(self):
+        counts=(self.direct_active_slices,self.delegated_active_count,self.ready_independent_slices,self.blocked_slices,self.forecast_slippage_ms,self.observed_at_ms)
+        if any(not isinstance(value,int) or isinstance(value,bool) or value<0 for value in counts) or not isinstance(self.doer_wip_limit,int) or isinstance(self.doer_wip_limit,bool) or not 1<=self.doer_wip_limit<=8: raise InvariantError("LEAD capacity evidence requires nonnegative counts and configured WIP limit")
+        if any(value is not None and (not isinstance(value,int) or isinstance(value,bool) or value<0) for value in (self.last_material_receipt_at_ms,self.material_receipt_due_at_ms)): raise InvariantError("LEAD receipt timestamps must be nonnegative integers or null")
+        if not isinstance(self.source_receipt,str) or not self.source_receipt.strip() or not isinstance(self.critical_path_receipt,str): raise InvariantError("LEAD capacity evidence requires a readable source receipt")
+        if (self.forecast_slippage_ms>0 or self.material_receipt_due_at_ms is not None and self.material_receipt_due_at_ms<=self.observed_at_ms and (self.last_material_receipt_at_ms is None or self.last_material_receipt_at_ms<self.material_receipt_due_at_ms)) and not self.critical_path_receipt.strip(): raise InvariantError("critical-path debt requires a typed receipt")
+
+@dataclass(frozen=True)
+class LeadRecruitmentDecision:
+    recruit_doer:bool; bottleneck:bool; reason:LeadBottleneckReason|None; source_receipt:str
+
+def decide_doer_recruitment(evidence:LeadCapacityEvidence) -> LeadRecruitmentDecision:
+    """Recruit only for an independently ownable ready slice and measured debt."""
+    if not isinstance(evidence,LeadCapacityEvidence): raise InvariantError("DOER recruitment requires typed LEAD capacity evidence")
+    if evidence.ready_independent_slices<1: return LeadRecruitmentDecision(False,False,None,evidence.source_receipt)
+    if evidence.direct_active_slices>=evidence.doer_wip_limit:
+        return LeadRecruitmentDecision(True,True,LeadBottleneckReason.WIP_SATURATED_READY_QUEUE,evidence.source_receipt)
+    stale=evidence.material_receipt_due_at_ms is not None and evidence.material_receipt_due_at_ms<=evidence.observed_at_ms and (evidence.last_material_receipt_at_ms is None or evidence.last_material_receipt_at_ms<evidence.material_receipt_due_at_ms)
+    if evidence.critical_path_receipt.strip() and (stale or evidence.forecast_slippage_ms>0):
+        return LeadRecruitmentDecision(True,True,LeadBottleneckReason.RECEIPT_CRITICAL_PATH,evidence.critical_path_receipt)
+    return LeadRecruitmentDecision(False,False,None,evidence.source_receipt)
 
 @dataclass(frozen=True)
 class HostCapacityEvidence:
@@ -242,7 +327,7 @@ def _route_candidate(*, facts:WorkRoutingFacts, economics:RoutingEconomics, capa
         if not lead or lead.upper()==Role.CTRL.value: raise InvariantError("delegated task routing requires CTRL -> LEAD -> DOER authority")
         reason="visible senior task/chat required by an explicit durable lane boundary" if visible_task_required else "parallel savings exceed measured task overhead"
         return ExecutionRoutingDecision(ExecutionRoute.NORMAL_TASK,lead,(Role.CTRL.value,Role.LEAD.value,Role.DOER.value),reason,capacity.receipt,economics)
-    if prefer_task and capacity.subagents_available and not facts.requires_visual_profession():
+    if prefer_task and capacity.subagents_available and not facts.requires_visual_profession() and not facts.requires_visible_recursive_owner():
         if not all(isinstance(value,str) and value.strip() for value in (immutable_checkpoint,resumption_marker)) or not affected_gates: raise InvariantError("degraded subagent routing requires an immutable checkpoint, resumption marker, and unverified gates")
         exception={HostTaskCapacity.UNAVAILABLE:DegradedCapacityException.TASK_UNAVAILABLE,HostTaskCapacity.REJECTED:DegradedCapacityException.TASK_REJECTED,HostTaskCapacity.USAGE_LIMITED:DegradedCapacityException.TASK_USAGE_LIMITED}.get(capacity.task_status)
         if exception is None: raise InvariantError("degraded subagent routing requires an exact task-capacity failure")
@@ -253,7 +338,7 @@ def _route_candidate(*, facts:WorkRoutingFacts, economics:RoutingEconomics, capa
     if capacity.task_status is HostTaskCapacity.AVAILABLE:
         if not lead or lead.upper()==Role.CTRL.value: raise InvariantError("delegated task routing requires CTRL -> LEAD -> DOER authority")
         return ExecutionRoutingDecision(ExecutionRoute.NORMAL_TASK,lead,(Role.CTRL.value,Role.LEAD.value,Role.DOER.value),"task lane is the only viable permitted structure",capacity.receipt,economics)
-    reason="visual work requires the visible assigned visual profession; subagent fallback is prohibited" if facts.requires_visual_profession() else "no permitted task or subagent structure can progress"
+    reason="visual work requires the visible assigned visual profession; subagent fallback is prohibited" if facts.requires_visual_profession() else "recursive delegation or recruitment requires a visible owner; hidden subagent fallback is prohibited" if facts.requires_visible_recursive_owner() else "no permitted task or subagent structure can progress"
     return ExecutionRoutingDecision(ExecutionRoute.HARD_BLOCKED,owner,(owner,),reason,capacity.receipt,economics)
 
 def route_execution(*, facts:WorkRoutingFacts, economics:RoutingEconomics, capacity:HostCapacityEvidence, accountable_owner:str, lead_owner:str="", assigned_profession:str="", immutable_checkpoint:str="", resumption_marker:str="", affected_gates:tuple[str,...]=(), current:ExecutionRoutingDecision|None=None, safe_boundary:bool=True) -> ExecutionRoutingDecision:

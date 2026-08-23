@@ -45,6 +45,15 @@ class SwarmConfigTests(unittest.TestCase):
         self.assertTrue(exists)
         self.assertFalse(effective["execution"]["usage_saver"])
 
+    def test_doer_wip_limit_is_the_bounded_direct_owner_capacity_signal(self) -> None:
+        effective, _ = config.load(config.TEMPLATE_PATH)
+        self.assertEqual(effective["efficiency"]["doer_wip_limit"], 3)
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "invalid.toml"
+            path.write_text("[efficiency]\ndoer_wip_limit = 9\n", encoding="utf-8")
+            with self.assertRaisesRegex(config.ConfigError, "doer_wip_limit"):
+                config.load(path)
+
     def test_spark_is_fail_closed_by_default_and_uses_xhigh(self) -> None:
         self.assertFalse(config.DEFAULTS["boost"]["spark_enabled"])
         self.assertEqual(config.DEFAULTS["boost"]["spark_reasoning"], "xhigh")

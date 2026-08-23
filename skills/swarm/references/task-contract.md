@@ -22,8 +22,11 @@ unavailable or a receipt fails, state the exact blocker and continue only with t
 CTRL identity. After this Step 0 custody
 check, create or continue exactly one matching durable goal before routing work. Its contract
 records the chosen topology and which visible task owns each mutable artifact.
-Hidden subagents are execution capacity, not a replacement for required SWARM
-task ownership.
+Hidden subagents are non-recursive leaf capacity, not a replacement for required
+SWARM task ownership. A task that may need recruitment or recursive delegation
+routes to a visible owner. A subagent that discovers the need stops and returns
+`PROMOTE_TO_VISIBLE_TASK` with the exact remaining deliverable, custody boundary,
+and required proof for its parent to route.
 
 If a CTRL is already active, a new CTRL or successor is never an inferred
 topology step. Require the actual host task API to consume a current single-use
@@ -44,6 +47,8 @@ MODE: CTRL_DIRECT or CTRL_DELEGATED, with the direct-work predicate receipt and 
 GOAL: stable goal ID, objective version, measurable milestone, and locally chosen review horizon; optional WATCHDOG binding is separate and names the watched owner plus validated alert route. New-task persistence follows `goals.use_goals`, which defaults true; when it is false the intake and graph remain recorded but the root task does not create or continue a durable goal. LEAD and persistent SPECIALIST ownership goals remain fixed role invariants.
 ACCEPTANCE: typed lane kind, exact ArtifactIdentity, deterministic ProofPlan, bound owning LEAD identity, and accepting REVIEW route; CODE has at least one gate and only NON_CODE non-artifact work may use an explicit empty contract.
 DELEGATION: exact deliverable, owner ID, portable custody roots, immutable artifact and artifact paths, required proof classes, bounded due event, and maximum readable return size.
+TOPOLOGY: structural authority is exactly CTRL, LEAD, or DOER; record direct LEAD production, bounded DOER delegation, or the durable-boundary facts that justify a nested LEAD. No fixed depth or mandatory pass-through.
+SUBAGENT RETURN: COMPLETE for the bounded leaf result, or PROMOTE_TO_VISIBLE_TASK with remaining deliverable, custody boundary, proof, and accountable parent. A subagent never recruits or accepts.
 RETURN: one bounded readable artifact-bound ACCEPT, REJECT, or BLOCKED receipt with owner-reported evidence, dirty custody, and path/count/byte/hash manifest; final acceptance remains independent.
 SKILLS: any agent may request a role skill with exact source/version or digest, purpose, destination scope, and host audit/rollback receipt; installation never transfers authority and defaults task-local.
 INCIDENTS: LEAD consultation receipt for matching unresolved `.codex/swarm/incidents.jsonl` records.
@@ -97,8 +102,12 @@ the exact current user request for every pin or unpin mutation; SWARM does not
 authorize or request it.
 
 Any substantive lane uses a visible senior Codex task/chat with its own cwd, owner,
-and heartbeat. A hidden subagent is bounded sidecar inspection or independent review
-only. Each senior lane owes a material checkpoint or exact blocker at its due event;
+and heartbeat. A hidden subagent is bounded sidecar inspection or non-authoritative
+review assistance only and cannot recursively delegate. Independent review is
+performed by a separate visible owner from the producer, normally a DOER-level task
+or a LEAD for a durable review program; it is a function/profession, not a fourth
+structural authority.
+Each senior lane owes a material checkpoint or exact blocker at its due event;
 missing receipt is stall evidence, so reorient the existing owner before any
 successor. A permitted successor carries explicit custody/handoff and never silently
 duplicates, replaces, renames, or archives the old lane.

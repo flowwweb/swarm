@@ -79,6 +79,7 @@ enabled = false
 
 [efficiency]
 mode = "BALANCED"
+# Direct owner WIP signal; delegated work is counted separately.
 doer_wip_limit = 3
 
 [goals]
