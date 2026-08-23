@@ -38,7 +38,7 @@ flow is:
 CTRL
   -> GAME_STUDIO_LEAD
        -> DESIGNER   ┐
-       -> ENGINEER   ├─ independent production lanes
+       -> DEV        ├─ independent production lanes
        -> ARTIST     │
        -> AUDIO      ┘
             -> QA / playtest

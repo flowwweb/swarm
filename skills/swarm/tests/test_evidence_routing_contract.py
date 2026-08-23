@@ -1,9 +1,25 @@
 from pathlib import Path
+from hashlib import sha256
 import sys
 import unittest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from runtime import AcceptanceContract, CtrlFeedEventKind, CtrlFeedMessage, CtrlFeedPart, CtrlSurfaceKind, EvidenceDisposition, InvariantError, LaneKind, ReviewEvidence, ReviewScope, ReviewStrategy, Role, Swarm, Task, TaskState, WithholdBasis, WorkerState, audit_ctrl_feed
+from runtime import AcceptanceContract, ArtifactFileEvidence, ArtifactIdentity, ArtifactParityReceipt, CtrlFeedEventKind, CtrlFeedMessage, CtrlFeedPart, CtrlSurfaceKind, DelegatedEvidence, DelegatedReceiptVerdict, DelegatedReturnReceipt, DelegationContract, EvidenceDisposition, InvariantError, LaneKind, ProofClass, ReviewEvidence, ReviewScope, ReviewStrategy, Role, Swarm, Task, TaskState, WithholdBasis, WorkerState, audit_ctrl_feed
+
+
+def delegated_task(task_id, owner):
+    artifact=ArtifactIdentity(f"evidence-{task_id}","v1","non-artifact"); path=f"receipts/{task_id}.txt"
+    contract=DelegationContract(task_id,f"Return the exact {task_id} evidence surface.",owner,(path,),artifact,(path,),(ProofClass.SOURCE,),60)
+    return Task(task_id,owner,"CTRL",1,{},subagent_receipt=f"host:thread:{owner}",lane_kind=LaneKind.NON_CODE,acceptance_contract=AcceptanceContract.empty(),delegation_contract=contract)
+
+
+def delegated_accept(swarm, task_id):
+    task=swarm.tasks[task_id]; contract=task.delegation_contract
+    if task.delegated_return_receipts: return
+    file=ArtifactFileEvidence(contract.artifact_paths[0],1,sha256(task_id.encode()).hexdigest()); parity=ArtifactParityReceipt.from_files(contract.artifact,(file,))
+    evidence=DelegatedEvidence(f"delegated-{task_id}",ProofClass.SOURCE,contract.artifact.key(),sha256(f"proof-{task_id}".encode()).hexdigest(),"Source contract test only.")
+    receipt=DelegatedReturnReceipt(f"return-{task_id}",task_id,contract.owner_id,DelegatedReceiptVerdict.ACCEPT,contract.artifact,"Exact evidence-routing test return.",(evidence,),parity,(),1)
+    swarm.record_delegated_return(Role.DOER,task_id,receipt,actor_id=contract.owner_id)
 
 
 class EvidenceRoutingContractTests(unittest.TestCase):
@@ -14,13 +30,14 @@ class EvidenceRoutingContractTests(unittest.TestCase):
 
     def setUp(self):
         self.swarm = Swarm()
-        self.swarm.start_atomic(Role.CTRL, Task("covers", "artist", "CTRL", 1, {}, subagent_receipt="host:thread:artist",lane_kind=LaneKind.NON_CODE,acceptance_contract=AcceptanceContract.empty()))
+        self.swarm.start_atomic(Role.CTRL, delegated_task("covers","artist-worker"))
 
     def accept(self):
         self.acceptance_review_only()
         self.swarm.complete(Role.CTRL, "covers", True, True, 1,actor_id="CTRL")
 
     def acceptance_review_only(self):
+        delegated_accept(self.swarm,"covers")
         evidence=ReviewEvidence(ReviewStrategy.LIGHT,"independent",True,None,receipt=(("acceptance","review:covers"),),scope=ReviewScope.ACCEPTANCE)
         self.swarm.review(Role.REVIEW, "covers", evidence, True)
 
@@ -48,8 +65,8 @@ class EvidenceRoutingContractTests(unittest.TestCase):
         self.assertEqual(len(self.swarm.ctrl_feed_due(Role.CTRL)), 10)
         self.swarm.tasks["covers"].state = TaskState.COMPLETE
         self.swarm.tasks["covers"].completed_at = 1
-        self.swarm.workers["artist"].state = WorkerState.RETIRED
-        self.swarm.workers["artist"].task_ids.clear()
+        self.swarm.workers["artist-worker"].state = WorkerState.RETIRED
+        self.swarm.workers["artist-worker"].task_ids.clear()
         self.assertFalse(self.swarm.archive_eligible(self.swarm.tasks["covers"]))
 
     def test_ctrl_embeds_each_material_candidate_once_as_generated_is_accepted(self):
@@ -128,7 +145,7 @@ class EvidenceRoutingContractTests(unittest.TestCase):
             self.swarm.surface_ctrl_evidence(Role.CTRL, "browser-shot", surface_kind=CtrlSurfaceKind.INLINE_RECEIPT, caption="Route map.", claim_limit="Local browser only.", surface_receipt="chat:receipt:not-image")
 
     def test_one_candidate_in_each_unrelated_task_does_not_create_a_false_gallery(self):
-        other=Task("other","other-owner","CTRL",1,{},subagent_receipt="host:thread:other",lane_kind=LaneKind.NON_CODE,acceptance_contract=AcceptanceContract.empty())
+        other=delegated_task("other","other-owner")
         self.swarm.start_atomic(Role.CTRL,other)
         for task_id,evidence_id in (("covers","cover-only"),("other","other-only")):
             self.swarm.register_ctrl_evidence(Role.DOER,task_id,evidence_id,"ImageGen",f"{evidence_id}.png")
@@ -259,7 +276,7 @@ class EvidenceRoutingContractTests(unittest.TestCase):
         self.assertNotIn("covers",self.swarm.scheduled_wakeups)
 
     def test_portfolio_feed_binds_each_message_to_its_own_task_proof(self):
-        self.swarm.start_atomic(Role.CTRL,Task("second","writer","CTRL",1,{},subagent_receipt="host:thread:writer",lane_kind=LaneKind.NON_CODE,acceptance_contract=AcceptanceContract.empty()))
+        self.swarm.start_atomic(Role.CTRL,delegated_task("second","writer-worker"))
         messages=[]
         for task_id in ("covers","second"):
             evidence_id=f"{task_id}-proof"; surface=f"chat:{task_id}:proof"

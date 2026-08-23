@@ -20,6 +20,13 @@ class UserIntentFeedContractTests(unittest.TestCase):
             self.assertIn("reconcile all unseen user", text)
             self.assertIn("Never require the user to repeat a message", text)
 
+    def test_explicit_scoped_reversal_supersedes_only_matching_open_work(self):
+        for text in (self.skill, self.plugin_skill):
+            self.assertIn("New input accumulates or reprioritizes by default", text)
+            self.assertIn("only an explicit scoped cancellation or replacement supersedes matching open work", text)
+            self.assertIn("unrelated open work remains preserved", text)
+            self.assertNotIn("New input may reprioritize but never replace open work", text)
+
     def test_active_owner_is_not_an_execution_gate(self):
         for text in (self.skill, self.plugin_skill):
             self.assertIn("active-owner and no-duplicate guards protect user custody", text)

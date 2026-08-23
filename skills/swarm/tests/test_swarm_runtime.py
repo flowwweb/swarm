@@ -1,15 +1,28 @@
 from __future__ import annotations
 import sys
 import unittest
+from hashlib import sha256
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from runtime import AcceptanceContract, ArtifactIdentity, ArtifactJustification, ArtifactProvenance, ContextPackage, CorrectionDecision, CtrlSurfaceKind, DedupDecision, Depth, EfficiencyMode, HiveRecord, HiveStatus, InvariantError, LaneKind, ReviewEvidence, ReviewScope, ReviewStrategy, ReviewValue, Role, SubagentException, Swarm, Task as RuntimeTask, TaskState, TopologyFacts, VersionedReference, Worker, WorkerState, choose_depth, correction_decision, initial_tier
+from runtime import AcceptanceContract, ArtifactFileEvidence, ArtifactIdentity, ArtifactJustification, ArtifactParityReceipt, ArtifactProvenance, ContextPackage, CorrectionDecision, CtrlSurfaceKind, DedupDecision, DelegatedEvidence, DelegatedReceiptVerdict, DelegatedReturnReceipt, DelegationContract, Depth, EfficiencyMode, HiveRecord, HiveStatus, InvariantError, LaneKind, ProofClass, ReviewEvidence, ReviewScope, ReviewStrategy, ReviewValue, Role, SubagentException, Swarm, Task as RuntimeTask, TaskState, TopologyFacts, VersionedReference, VisualReviewContract, Worker, WorkerState, WorkKind, choose_depth, correction_decision, initial_tier
 
 def Task(*args, **kwargs):
  kwargs.setdefault("subagent_receipt",f"host:thread:{args[0]}")
  kwargs.setdefault("lane_kind",LaneKind.OTHER); kwargs.setdefault("owning_lead_id","L")
  kwargs.setdefault("acceptance_contract",AcceptanceContract(ArtifactIdentity(f"task-{args[0]}","v1","acceptance"),()))
+ acceptance=kwargs["acceptance_contract"]; artifact=acceptance.artifact if acceptance and acceptance.artifact is not None else ArtifactIdentity(f"task-{args[0]}","v1","non-artifact")
+ path=f"artifacts/{args[0]}.receipt"; work_kind=kwargs.get("work_kind",WorkKind.GENERAL)
+ visual=VisualReviewContract(("test-surface",)) if work_kind in {WorkKind.DESIGN,WorkKind.IMAGEGEN,WorkKind.IMAGE_EDIT} else None
+ if args[1].strip()==args[1]: kwargs.setdefault("delegation_contract",DelegationContract(args[0],f"Return the exact {args[0]} test deliverable.",args[1],(path,),artifact,(path,),(ProofClass.SOURCE,),60,visual_review=visual))
  return RuntimeTask(*args,**kwargs)
+
+def record_accept(swarm, task_id):
+ task=swarm.tasks[task_id]; contract=task.delegation_contract
+ if contract is None or task.delegated_return_receipts: return
+ file=ArtifactFileEvidence(contract.artifact_paths[0],1,sha256(task_id.encode()).hexdigest()); parity=ArtifactParityReceipt.from_files(contract.artifact,(file,))
+ evidence=DelegatedEvidence(f"evidence-{task_id}",ProofClass.SOURCE,contract.artifact.key(),sha256(f"proof-{task_id}".encode()).hexdigest(),"Source contract test only.")
+ receipt=DelegatedReturnReceipt(f"return-{task_id}",task_id,contract.owner_id,DelegatedReceiptVerdict.ACCEPT,contract.artifact,"Test owner returned an exact readable artifact receipt.",(evidence,),parity,(),1)
+ swarm.record_delegated_return(Role.DOER,task_id,receipt,actor_id=contract.owner_id)
 
 def topology(*, objective="ship artifact", artifacts=(ArtifactIdentity("artifact","v1","work"),), surfaces=("artifact",), route="CTRL", lanes=("owner",), edges=(), integration=False, portfolio=False, architecture=False):
  return TopologyFacts(objective,artifacts,surfaces,route,lanes,edges,integration,portfolio,architecture)
@@ -18,6 +31,7 @@ class RuntimeTests(unittest.TestCase):
  def setUp(self):
   self.s=Swarm(); self.s.add_lead(Role.CTRL,"L"); self.s.add_worker(Role.LEAD,Worker("D","L",1)); self.s.assign(Role.LEAD,Task("A","D","author",1,{},subagent_receipt="host:thread:A"))
  def accept(self, task_id="A", reviewer="independent"):
+  record_accept(self.s,task_id)
   evidence=ReviewEvidence(ReviewStrategy.LIGHT,reviewer,True,self.s.tasks[task_id].acceptance_contract.artifact,receipt=(("acceptance",f"review:{task_id}"),),scope=ReviewScope.ACCEPTANCE)
   self.s.review(Role.REVIEW,task_id,evidence,True)
  def test_authority_lanes_and_lifecycle(self):
@@ -25,8 +39,8 @@ class RuntimeTests(unittest.TestCase):
   with self.assertRaises(InvariantError): self.s.change_architecture(Role.LEAD,{})
   with self.assertRaises(InvariantError): self.s.change_architecture(Role.SPECIALIST,{"unauthorized":2})
   with self.assertRaises(InvariantError): self.s.architecture_event(Role.SPECIALIST,"A",goal_id="architecture",accepted_change="change",invalidates_map=True,receipt="receipt",decision_or_blocker="decision")
-  self.s.specialist_event(Role.SPECIALIST,"A",specialist_id="manager",profession="MOTHER",goal_id="coordinate",accepted_change="advice",invalidates_map=False,receipt="advice-receipt")
-  with self.assertRaisesRegex(InvariantError,"advisory"): self.s.specialist_event(Role.SPECIALIST,"A",specialist_id="manager",profession="MOTHER",goal_id="coordinate",accepted_change="proposal",invalidates_map=True,receipt="receipt",decision_or_blocker="change")
+  self.s.specialist_event(Role.SPECIALIST,"A",specialist_id="manager",profession="MANAGER",goal_id="coordinate",accepted_change="advice",invalidates_map=False,receipt="advice-receipt")
+  with self.assertRaises(InvariantError): self.s.specialist_event(Role.LEAD,"A",specialist_id="manager-2",profession="MANAGER",goal_id="coordinate",accepted_change="proposal",invalidates_map=True,receipt="receipt",decision_or_blocker="change")
   with self.assertRaises(InvariantError): self.s.stale(Role.SPECIALIST,"A","manager decision")
   self.assertEqual(self.s.architecture_version,1); self.assertEqual(self.s.tasks["A"].state,TaskState.ACTIVE)
   self.s.add_worker(Role.LEAD,Worker("D2","L",2)); self.s.add_worker(Role.LEAD,Worker("R","L",3))
@@ -171,12 +185,12 @@ class RuntimeTests(unittest.TestCase):
   with self.assertRaisesRegex(InvariantError,"subagent receipt"): atomic.start_atomic(Role.CTRL,RuntimeTask("missing","M","creator",1,{}))
   with self.assertRaisesRegex(InvariantError,"caller-declared host thread"): atomic.start_atomic(Role.CTRL,RuntimeTask("fake","F","creator",1,{},subagent_receipt="unverified:any-string"))
   atomic.start_atomic(Role.CTRL,Task("T","D","creator",1,{},subagent_receipt="host:thread:T")); self.assertEqual(set(atomic.workers),{"D"}); self.assertEqual(atomic.tasks["T"].owner,"D")
-  with self.assertRaisesRegex(InvariantError,"authority or specialist role identity"): atomic.start_atomic(Role.CTRL,Task("drift","CTRL","creator",1,{},subagent_receipt="host:thread:drift"))
-  with self.assertRaisesRegex(InvariantError,"authority or specialist role identity"): atomic.start_atomic(Role.CTRL,Task("normalized-drift"," ctrl ","creator",1,{},subagent_receipt="host:thread:normalized-drift"))
+  with self.assertRaisesRegex(InvariantError,"authority, profession, or retired role identity"): atomic.start_atomic(Role.CTRL,Task("drift","CTRL","creator",1,{},subagent_receipt="host:thread:drift"))
+  with self.assertRaisesRegex(InvariantError,"authority, profession, or retired role identity"): atomic.start_atomic(Role.CTRL,Task("normalized-drift"," ctrl ","creator",1,{},subagent_receipt="host:thread:normalized-drift"))
   self.assertFalse(hasattr(Role,"MOTHER"))
-  with self.assertRaisesRegex(InvariantError,"specialist role identity"): atomic.start_atomic(Role.CTRL,Task("drift-mother","MOTHER","creator",1,{},subagent_receipt="host:thread:drift-mother"))
+  with self.assertRaisesRegex(InvariantError,"retired role identity"): atomic.start_atomic(Role.CTRL,Task("drift-mother","MOTHER","creator",1,{},subagent_receipt="host:thread:drift-mother"))
   with self.assertRaisesRegex(InvariantError,"reserved sensor identity"): atomic.start_atomic(Role.CTRL,Task("drift-watchdog","WATCHDOG","creator",1,{},subagent_receipt="host:thread:drift-watchdog"))
-  with self.assertRaisesRegex(InvariantError,"authority or specialist role identity"): self.s.add_worker(Role.LEAD,Worker("LEAD","L",2))
+  with self.assertRaisesRegex(InvariantError,"authority, profession, or retired role identity"): self.s.add_worker(Role.LEAD,Worker("LEAD","L",2))
   self.s.workers["D"].state=WorkerState.WARM; self.s.workers["D"].context={"affinity":2,"architecture":{"auth":2}}; reused=self.s.reuse_warm(Role.LEAD,Task("R","new","creator",1,{},subagent_receipt="host:thread:R"),architecture={"auth":2},affinity=2); self.assertEqual(reused,"D")
   self.assertIsNone(self.s.reuse_warm(Role.LEAD,Task("N","new","creator",1,{},subagent_receipt="host:thread:N"),architecture={"auth":3},affinity=2))
  def test_only_doer_mutates_artifacts(self):
@@ -248,7 +262,7 @@ class RuntimeTests(unittest.TestCase):
   self.assertFalse(migration.same_ownership_route(landing))
   self.assertTrue(migration.same_ownership_route(topology(objective="migrate plugin",artifacts=(ArtifactIdentity("plugin/swarm","v1","migration"),),surfaces=("plugin/swarm",),route="plugin CTRL")))
  def test_correction_cost_preserves_progress_and_reopens_only_material_authority(self):
-  self.assertEqual(correction_decision(material=False,expected_future_cost=2,correction_cost=1),CorrectionDecision.FIX_FORWARD)
+  self.assertEqual(correction_decision(material=False,expected_future_cost=2,correction_cost=1),CorrectionDecision.CONTINUE)
   self.assertEqual(correction_decision(material=False,expected_future_cost=1,correction_cost=2),CorrectionDecision.CONTINUE)
   self.assertEqual(correction_decision(material=True,ownership_failure=True,expected_future_cost=5,correction_cost=1),CorrectionDecision.REOPEN_TOPOLOGY)
   self.assertEqual(correction_decision(material=True,ownership_failure=True,expected_future_cost=0,correction_cost=100),CorrectionDecision.REOPEN_TOPOLOGY)
@@ -256,9 +270,9 @@ class RuntimeTests(unittest.TestCase):
   self.assertEqual(correction_decision(material=True,expected_future_cost=5,correction_cost=1),CorrectionDecision.FIX_FORWARD)
  def test_correction_incident_consumes_one_fix_forward_without_retry_loop(self):
   facts={"material":False,"expected_future_cost":5,"correction_cost":1}
-  self.assertEqual(self.s.correction("wording-1",**facts),CorrectionDecision.FIX_FORWARD)
   self.assertEqual(self.s.correction("wording-1",**facts),CorrectionDecision.CONTINUE)
-  self.assertEqual(self.s.correction("wording-2",**facts),CorrectionDecision.FIX_FORWARD)
+  self.assertEqual(self.s.correction("wording-1",**facts),CorrectionDecision.CONTINUE)
+  self.assertEqual(self.s.correction("wording-2",**facts),CorrectionDecision.CONTINUE)
   material={"material":True,"expected_future_cost":5,"correction_cost":1}
   self.assertEqual(self.s.correction("risk-1",**material),CorrectionDecision.FIX_FORWARD)
   self.assertEqual(self.s.correction("risk-1",**material),CorrectionDecision.ESCALATE)

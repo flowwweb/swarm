@@ -20,6 +20,16 @@
       "id": "no-ceremony-for-obvious-fit",
       "prompt": "A repository already has the exact tested formatter required for a low-risk edit.",
       "expected": "Use the existing formatter directly; do not create a tool survey, a new wrapper, or a mandatory reuse log."
+    },
+    {
+      "id": "library-preferred-over-bespoke",
+      "prompt": "A compatible library already present in the target repo meets the accessibility and visual requirements for a UI interaction; a bespoke replacement would duplicate it.",
+      "expected": "Reuse the existing compatible library; do not build a bespoke replacement."
+    },
+    {
+      "id": "custom-on-no-fit",
+      "prompt": "No existing library fits the framework and accessibility constraints, and adding one would add more bundle/runtime and maintenance cost than the small feature warrants.",
+      "expected": "Keep the dependency-free custom path and record why adoption fails the fit checks."
     }
   ]
 }

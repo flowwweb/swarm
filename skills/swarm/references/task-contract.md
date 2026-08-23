@@ -39,12 +39,43 @@ PURPOSE: objective and acceptance/non-negotiables.
 OWNERSHIP: owner, exact mutable surface, canonical artifact/version.
 BOUNDARIES: dependencies, proof/claim limits, no hidden scope change.
 ESCALATION: accepting route or exact blocker.
-MODE: CTRL_DIRECT or CTRL_DELEGATED, with the direct-work predicate receipt and typed work kind (`GENERAL`, `DESIGN`, `IMAGEGEN`, or `IMAGE_EDIT`). Only `GENERAL` can pass the CTRL_DIRECT predicate; visual work binds a DESIGNER assignment.
+CHANGE: ADDITIVE, CORRECTIVE, or REVERSAL; explicitly named scope and accepted behavior preserved.
+MODE: CTRL_DIRECT or CTRL_DELEGATED, with the direct-work predicate receipt and typed work kind (`GENERAL`, `DESIGN`, `IMAGEGEN`, or `IMAGE_EDIT`). Only `GENERAL` can pass the CTRL_DIRECT predicate; visual work records `product_experience` or `expressive_art` ownership and binds Designer or Artist respectively.
 GOAL: stable goal ID, objective version, measurable milestone, and locally chosen review horizon; optional WATCHDOG binding is separate and names the watched owner plus validated alert route. New-task persistence follows `goals.use_goals`, which defaults true; when it is false the intake and graph remain recorded but the root task does not create or continue a durable goal. LEAD and persistent SPECIALIST ownership goals remain fixed role invariants.
 ACCEPTANCE: typed lane kind, exact ArtifactIdentity, deterministic ProofPlan, bound owning LEAD identity, and accepting REVIEW route; CODE has at least one gate and only NON_CODE non-artifact work may use an explicit empty contract.
+DELEGATION: exact deliverable, owner ID, portable custody roots, immutable artifact and artifact paths, required proof classes, bounded due event, and maximum readable return size.
+RETURN: one bounded readable artifact-bound ACCEPT, REJECT, or BLOCKED receipt with owner-reported evidence, dirty custody, and path/count/byte/hash manifest; final acceptance remains independent.
 SKILLS: any agent may request a role skill with exact source/version or digest, purpose, destination scope, and host audit/rollback receipt; installation never transfers authority and defaults task-local.
 INCIDENTS: LEAD consultation receipt for matching unresolved `.codex/swarm/incidents.jsonl` records.
 ```
+
+## Delegated return gate
+
+Task creation, dispatch success, commentary, timeout, silence, empty or
+unreadable output, and an in-progress state are activity signals, never return
+evidence. Advancement requires one explicit readable `ACCEPT`, `REJECT`, or
+`BLOCKED` owner receipt bound to the exact task, owner, artifact, paths, and
+declared proof classes. `ACCEPT` may move the artifact only into independent
+review when every required proof and parity item is present. `REJECT` names the
+first in-scope correction and stays active; `BLOCKED` names the first concrete
+blocker and stays unresolved. Neither can advance acceptance.
+
+Every bounded return rechecks the original objective, assigned profession and
+structural authority, exact deliverable, non-goals, dirty custody, and next
+acceptance gate. A CTRL project pulse contains one state, receipt-backed declared
+unit total and completed or accepted units with server-derived percentage or
+explicit `Unmeasured`, latest material proof, first blocker, and next action/ETA.
+Tool output and exact receipts remain available beneath the pulse; raw logs,
+filler, repeated plans, commentary, and unchanged heartbeats are not progress.
+Profession does not transfer ownership, and review does not become implementation
+or acceptance.
+
+The parity manifest is an owner return claim, not host or user authority. It
+must match the declared paths, count, byte total, and file digests and remain
+inside exact dirty custody; missing or ambiguous ownership or parity fails
+closed. Independent REVIEW still verifies the immutable artifact. Proof classes
+are nonpromoting: source, static, local, browser, authenticated, provider,
+payment, deployed, device, and human evidence close only their exact class.
 
 An objective amendment increments the version and records authority, reason, requirements delta, new baseline, and prior-miss relevance. A genuinely new project links a distinct successor goal; it never rewrites the prior history.
 
@@ -72,6 +103,14 @@ missing receipt is stall evidence, so reorient the existing owner before any
 successor. A permitted successor carries explicit custody/handoff and never silently
 duplicates, replaces, renames, or archives the old lane.
 
+A meaningful stable checkpoint for long-lived CTRL or LEAD work records the
+exact task identity and state, source SHA/tree/parent, exact dirty custody, proof
+manifest and claim limits, blocker, and next bounded action. Commit only coherent
+attributable work after proportionate proof. Never automatically stage, reset,
+clean, normalize, commit, or absorb unrelated dirty work. Before a successor may
+own the lane, it acknowledges the exact immutable checkpoint; this handoff does
+not authorize renaming, pinning, archiving, or any other host-task mutation.
+
 Storage inventory, archive, cleanup, relocation, and monitoring use a dedicated
 delegable STORAGE LEAD lane. Its contract binds an exact target manifest,
 exact-root, active-process, live-log, database, and dirty/current-worktree guards,
@@ -79,6 +118,13 @@ recoverable move or copy-verify-remove, post-operation target and free-space
 receipts, and independent review. CTRL may only reconcile read-only state or perform
 an explicitly authorized narrow host-safety stop; pressure alone is not destructive
 authority.
+
+Archive or relocation requires explicit idle, completed, or handed-off state;
+proof that the rollout is not under direct user control; no active process, file
+handle, or lock; and size stability across bounded observations. Verify the exact
+destination by file count, byte count, and hash parity, retain a recoverable
+manifest, and only then permit copy-verify-remove. Creation age alone is never
+stale or quiescent evidence, and active or growing logs remain protected.
 
 ## Durable request ledger
 
@@ -109,7 +155,7 @@ explicit reasoned rejection. The private Git-ignored ledger uses structured safe
 evidence references and serialized cross-process updates, never a repo command,
 person-specific rule, or credential value.
 
-A SPECIALIST interface is only a current decision/dependency reference. The specialist persists one exact cross-cutting truth surface; it does not acquire a lane. Record both the short profession and a stable instance identity so multiple specialists—including multiple ARCHITECTs, MOTHERs, or DEVELOPERs—can coexist without overlapping ownership. MOTHER is advisory only. A DOER may use a temporary wildcard ASSIST for a bounded independent subtask, but never for acceptance or authority transfer. Detailed role and recovery rationale is lazy-loaded from the matching reference.
+A SPECIALIST interface is only a current decision/dependency reference. The specialist persists one exact cross-cutting truth surface; it does not acquire a lane. Record the structural role and typed profession namespace separately so profession `specialist` cannot collide with structural SPECIALIST authority. Unknown historical titles remain inert user-owned text and never become profession or authority records. A DOER may use a temporary wildcard ASSIST for a bounded independent subtask, but never for acceptance or authority transfer. Detailed role and recovery rationale is lazy-loaded from the matching reference.
 
 WATCHDOG is not a role or task-contract owner. When explicitly bound, its receipt
 records only the goal, watched owner, due evidence digest, one of `CLEAR`,

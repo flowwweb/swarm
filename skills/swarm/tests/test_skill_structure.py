@@ -102,7 +102,7 @@ class SwarmSkillStructureTests(unittest.TestCase):
         self.assertIn("independent `ACCEPTANCE` route", skill)
         self.assertIn("SPECIALIST interface", task_contract)
         self.assertIn("temporary wildcard", task_contract)
-        self.assertIn("multiple ARCHITECTs, MOTHERs, or DEVELOPERs", task_contract)
+        self.assertIn("typed profession namespace separately", task_contract)
         self.assertIn("Integration-ready", task_contract)
         self.assertIn("composed render comparison", task_contract)
         self.assertIn("composed rendered product", review_contract)
@@ -118,7 +118,7 @@ class SwarmSkillStructureTests(unittest.TestCase):
         self.assertIn("<domain emoji>LEAD - <responsibility>", skill)
         self.assertIn("<role emoji><PROFESSION> - <truth surface>", skill)
         self.assertIn("exactly one configured role icon", skill)
-        self.assertIn("A title is a readability signal, never an\nauthority token", hierarchy)
+        self.assertRegex(hierarchy,r"A title is a\s+readability signal, never an authority token")
 
     def test_octopus_is_default_configurable_ctrl_title_prefix(self) -> None:
         skill = doctrine()
@@ -187,6 +187,17 @@ class SwarmSkillStructureTests(unittest.TestCase):
         self.assertRegex(hierarchy, r"(?s)Artifact\s+count.*never\s+justify a lane")
         self.assertIn("consolidate rather than add incident clauses", skill)
 
+    def test_recursive_accountable_topology_and_local_staffing_contract(self) -> None:
+        hierarchy = (SKILL_ROOT / "references" / "hierarchy.md").read_text(encoding="utf-8")
+        self.assertIn("Each LEAD owns one durable boundary", hierarchy)
+        self.assertIn("each DOER owns one bounded artifact", hierarchy)
+        self.assertIn("Every role may use subagents", hierarchy)
+        self.assertIn("Promote a subagent immediately when it gains", hierarchy)
+        self.assertIn("without a per-change\nCTRL approval event", hierarchy)
+        self.assertIn("authority expansion, shared-surface", hierarchy)
+        self.assertIn("shrink\nidle scaffolding", hierarchy)
+        self.assertIn("never a fixed roster or numeric role ceiling", hierarchy)
+
     def test_product_review_subtracts_chrome_without_erasing_state_or_accessibility(self) -> None:
         review = (SKILL_ROOT / "references" / "review-contract.md").read_text(encoding="utf-8")
 
@@ -217,8 +228,8 @@ class SwarmSkillStructureTests(unittest.TestCase):
         self.assertIn("observable improvement that outweighs the work", skill)
         self.assertIn("Design may refine granular craft", skill)
         self.assertIn("Apply a significance gate outside design", review)
-        self.assertIn("Do not record them as P3, backlog, optional\nfollow-up", review)
-        self.assertIn("The act of reviewing is not evidence that a\nchange is valuable", review)
+        self.assertIn("optional notes, never another correction loop", review)
+        self.assertRegex(review,r"The act of reviewing is not evidence that\s+a change is valuable")
         self.assertIn("Design review is the explicit exception", review)
         self.assertIn("In mixed reviews, classify each finding\nbefore applying the exception", review)
         self.assertIn("[design-guide.md]", skill)
@@ -289,13 +300,14 @@ class SwarmSkillStructureTests(unittest.TestCase):
         self.assertIn("IMAGEGEN", hierarchy)
         for text in (skill, hierarchy):
             self.assertIn("small", text.casefold())
-            self.assertIn("DESIGNER", text)
+            self.assertIn("Designer", text)
+            self.assertIn("Artist", text)
             self.assertIn("stop", text.casefold())
         self.assertIn("Only `GENERAL` can pass the CTRL_DIRECT predicate", task_contract)
         self.assertIn("Every agent may request a role skill", skill)
         self.assertIn("`NORMAL_SUBAGENT`", skill)
         self.assertIn("medium and large lanes are visible Codex tasks", skill)
-        self.assertIn("`CTRL -> SUBAGENT` is not a substitute", hierarchy)
+        self.assertRegex(hierarchy,r"`CTRL -> SUBAGENT` is not a\s+substitute")
         visual_eval = next(item for item in evals["evals"] if item["id"] == 90)
         self.assertIn("mockup", visual_eval["prompt"].casefold())
         self.assertIn("DESIGNER", visual_eval["expected_output"])

@@ -48,16 +48,29 @@ After the Step 0 custody check—whether it produced an eligible SWARM receipt o
 
 After the Step 0 custody check, always ask and capture both intake answers before routing: **What is the goal for this task?** and **What is the most efficient safe way to complete it?** A one-shot user prompt may already contain the answers; CTRL must still restate the goal and proposed efficiency strategy so the two fields are inspectable before it proceeds. Then inspect or create exactly one matching durable goal when `goals.use_goals = true` (the default), and record its objective, canonical artifact/mutable surface, owners, dependencies, accepting route, proof, and claim limits. When `goals.use_goals = false`, retain the same intake and graph receipt but do not create or continue a durable goal; the setting is an explicit persistence choice, not permission to skip intake. Reuse only when objective, surface, and accepting route match; a pending creation receipt reserves that identity. Stop a disproved duplicate before mutation and archive it after resolution. For goal ownership, title rules, duplicate prevention, visible-lane economics, delegation exceptions, role selection, and topology, load [hierarchy.md](references/hierarchy.md).
 
-Immediately after that receipt—and before topology or work—use `swarm_contract.py request` to `list` then `audit` the exact repository and reconcile every unresolved request. A missing store returns empty/unattached without writing; enable continuity only with an explicit absolute repo root before consequential request work. Intake stages non-runnable `REQUEST_PENDING`, publishes its reserved-ID `DECISION`, calls live `register`, verifies the digest, then activates. Serialized bridge calls are read-only. New input may reprioritize but never replace open work. Persist each typed event cursor and digest; after restart, a new current event must exceed its persisted feed-sequence floor without replaying old feed objects. Audit again before closeout/archive; any unresolved, orphaned, invalid, or provisional record blocks the claim. Missing/corrupt receipts are `UNVERIFIED`, never an empty ledger.
+Steer, do not overcorrect: classify each fresh instruction as `ADDITIVE`,
+`CORRECTIVE`, or `REVERSAL`, bind
+it to the explicitly named scope, and record which accepted behavior remains.
+Extend compatible behavior, correct only the finding, or reverse only what the
+user explicitly reversed; preserve unaffected topology, dirty custody, proof
+boundaries, accepted artifacts, and lanes. Never turn a local correction into a
+blanket opposite rule. A fresh host-observed direct-user turn for a specific CTRL
+also creates a scoped keep-out: Master must not send conflicting or duplicate
+directives, enqueue follow-ups, wake that CTRL's subordinate owners, or interrupt
+the turn. Unaffected lanes and read-only portfolio heartbeat continue. Release
+the keep-out only when the turn completes or the user explicitly hands coordination
+back; silence, age, stale state, or inference cannot extend it indefinitely.
+
+Immediately after that receipt—and before topology or work—use `swarm_contract.py request` to `list` then `audit` the exact repository and reconcile every unresolved request. A missing store returns empty/unattached without writing; enable continuity only with an explicit absolute repo root before consequential request work. Intake stages non-runnable `REQUEST_PENDING`, publishes its reserved-ID `DECISION`, calls live `register`, verifies the digest, then activates. Serialized bridge calls are read-only. New input accumulates or reprioritizes by default; only an explicit scoped cancellation or replacement supersedes matching open work, and unrelated open work remains preserved. Persist each typed event cursor and digest; after restart, a new current event must exceed its persisted feed-sequence floor without replaying old feed objects. Audit again before closeout/archive; any unresolved, orphaned, invalid, or provisional record blocks the claim. Missing/corrupt receipts are `UNVERIFIED`, never an empty ledger.
 
 Before the first mutable handoff, select the smallest graph that satisfies the captured objective, efficiency strategy, ownership, dependencies, resumption, integration, and acceptance evidence. Follow [graph-engineering.md](references/graph-engineering.md): one CTRL root, explicit artifact-owning lanes, parallelize only independent work, serialize shared-surface gates, and keep every edge explainable by a dependency or acceptance reason. A game objective selects the registered `game_studio` graph: game-studio lead, design, engineering, art, audio, playtest/QA, and release agents with production dependencies; medium and large lanes are visible Codex tasks, while lane-local bounded work may use subagents. Do not flatten a domain graph into a single undifferentiated worker list.
 
 Use the shallowest structure that can finish the accepted objective. `CTRL_DIRECT`
-is limited to exactly one low-risk atomic `GENERAL` outcome on one mutable
+is limited to exactly one low-risk atomic outcome using `GENERAL` work on one mutable
 surface: read-only inspection, one focused check, or a bounded copy,
 documentation, or formatting edit with no external side effect, cross-file
-behavior, dependency, handoff, or separate acceptance receipt. Everything else
-is `CTRL_DELEGATED`. Multi-file or multi-surface work, runtime/API/auth/data,
+behavior, dependency, handoff, or separate acceptance receipt. Otherwise use
+`CTRL_DELEGATED`. Multi-file or multi-surface work, runtime/API/auth/data,
 provider/deployment/device state, visual work, multiple proof gates, or
 independent review MUST open a visible senior Codex task/chat before CTRL does
 substantive work. That lane has its own cwd, owner, heartbeat, mutable surface,
@@ -73,7 +86,10 @@ durable lane. A capacity-forced degraded subagent records the exact host
 failure, immutable checkpoint, resumption marker, and `UNVERIFIED` gates. If a
 required visible task cannot be created, surface the exact blocker or a typed
 degraded route; never silently expand CTRL or subagent authority. `DESIGN`,
-`IMAGEGEN`, and `IMAGE_EDIT` always open a visible `DESIGNER` task.
+`IMAGEGEN`, and `IMAGE_EDIT` always open a visible visual task. Product/UI
+experience, interaction, mockup, and design-system work binds Designer;
+expressive illustration, concept art, media, motion, 3D, photography, or sound
+binds Artist. Profession changes perspective and craft, never authority.
 
 Preserve every explicit user-selected model, provider, service tier, and reasoning level exactly across CTRL and all assignments. SWARM may recommend a change but never applies one unless the user explicitly asks SWARM to choose or change it; if the host cannot honor the selection, report the exact blocker instead of substituting. Only when the user delegates that choice may SWARM resolve it from the active profile, route tier, and execution bounds. Treat fast-tier and turbo settings as host-dependent preferences, never proof or a safety exception. Load [model-providers.md](references/model-providers.md) when selecting or probing a model/provider.
 
@@ -106,9 +122,11 @@ first. A successor is permitted only when the user-authorized topology allows it
 must carry an explicit custody/handoff; never silently duplicate, replace, rename,
 archive, or alter the old lane or user state.
 
-Only genuinely small, single-surface, low-risk `GENERAL` inspection or review may
-remain eligible for a bounded sidecar subagent; that exception never grants lane
-ownership, handoff, heartbeat, acceptance, or host mutation authority.
+Materialize a visible task lane whenever durable ownership or interruption-safe
+resumption is required. Use a subagent only as short bounded capacity inside an existing lane: it remains eligible only for genuinely small, single-surface,
+low-risk `GENERAL` inspection or review and never substitutes for a qualifying durable task. It never gains lane ownership, handoff, heartbeat, acceptance, or
+host mutation authority. Internal-helper or read-only-tool approval gates are failed capacity: cancel the attempt, record the host gate, and continue inside
+the same accountable boundary without asking the user. That fallback never grants external, provider, destructive, or user-reserved authority.
 
 CTRL is the operator/orchestrator, not the producer. Keep the small-work
 exception: `CTRL_DIRECT` is valid for one low-risk, atomic `GENERAL` outcome
@@ -130,10 +148,12 @@ reorient the existing owner within the same lane immediately; create a successor
 or duplicate only when the user-authorized topology explicitly permits it.
 
 Design, mockup, image-generation, and image-editing work defaults to
-`CTRL_DELEGATED` and a `DESIGNER` assignment, even when the request is small.
-The designer owns the candidate artifact and visual proof; CTRL routes the
-work, surfaces the decision set, waits at the user's approval boundary, and
-composes the accepted result. If the required designer lane cannot be
+`CTRL_DELEGATED` and a typed visual ownership assignment, even when the request
+is small. Designer owns product experience, interaction, hierarchy, and design
+systems; Artist owns expressive media and craft. The assigned visual profession
+owns the candidate artifact and visual proof; CTRL routes the work, surfaces
+the decision set, waits at the user's approval boundary, and composes the
+accepted result. If the required visual lane cannot be
 materialized, keep the work blocked or explicitly degraded with open gates;
 never fall back to CTRL production work.
 
@@ -166,7 +186,17 @@ host-safety stop; long-running copy, move, or delete work is always delegated.
 The STORAGE LEAD uses an exact target manifest, exact-root and active-process,
 live-log, database, and dirty/current-worktree guards, then performs a recoverable
 move or copy-verify-remove and returns target and free-space receipts for independent
-review. Storage pressure alone never authorizes destructive inference.
+review. It reclaims only exact stale or rebuildable residue incrementally and never
+touches active or growing logs, current sessions, databases, dirty product work, or
+live-process-referenced paths. Resource pressure is command-scoped, not a project
+freeze: above the exact critical safety floor, keep source/review moving through
+small durable checkpoints and serialize only predictably large build, export,
+browser, Docker, install, device, or provider jobs. Verify `O:\` before using it
+for large sequential artifacts, immutable evidence, archives, installers, or
+release bundles; keep active worktrees, databases, dependency trees, and
+random-I/O-heavy caches local. A recovery target such as 10 GiB is not itself a
+freeze gate. Load [monitoring.md](references/monitoring.md) for the full resource,
+archive, and copy-verification gates.
 
 ## CORE
 
@@ -174,13 +204,33 @@ Keep the runtime—not prompts—as the canonical state, ownership, artifact ide
 
 Treat failed, timed-out, or non-atomic writes as untrusted. Verify the exact target and intended diff scope, preserve pre-existing work, recover only the damaged target from a verified baseline/backup, reapply smaller patches, and revalidate—never broadly roll back a shared surface.
 
-Every durable CTRL, LEAD, and persistent SPECIALIST has one goal with objective, stopping condition, authority boundary, and proof. MOTHER is available only as an optional manager-style SPECIALIST with an advisory truth surface; it never becomes a second root or authority. `UNVERIFIED` is an open acceptance failure. Every artifact-producing lane declares its typed lane kind, immutable `ArtifactIdentity`, bound LEAD identity, deterministic `ProofPlan`, and independent `ACCEPTANCE` route. The planner selects the minimum proof from changed surfaces, claims, authority, dependency reach, incident matches, runtime signals, and repository capabilities; unknown input broadens proof. T0 atomic work uses focused contracts, T1 ordinary code adds impacted proof, T2 adds browser proof only for affected or claimed browser/visual surfaces, T3 provider/security/data work adds plan review and authority proof, and T4 release work replaces impacted proof with broad package/parity proof and composed acceptance. Only non-artifact `NON_CODE` work may use an explicit empty contract. Stable exact-input gate receipts may be re-observed and adopted as execution evidence only when plan, command, gate spec, environment, freshness, proof class, claim, and artifact still match; they never carry acceptance authority. Provider, deployed, device, and human claims remain `UNVERIFIED` unless an isolated host verifier records a typed observation with exact plan/spec/artifact/environment bindings, evidence digest, and bounded freshness; in-process commands, signatures, and caller-created receipts cannot close them. T0 independence cannot be disabled by caller assertion. The bound LEAD integrates and records exact-artifact gate results as `PASS`, `FAIL`, or `TIMEOUT`; a timeout never passes and permits at most one typed transient retry. Missing, failed, timed-out, wrong-artifact, uncovered-claim, or source-only receipts stay open; CTRL may surface but never manufacture acceptance. Load [task-contract.md](references/task-contract.md) to record the contract and [review-contract.md](references/review-contract.md) for all acceptance, incident, proof, review, and claim-limit rules.
+At every meaningful stable boundary, long-lived CTRL and LEAD work records exact
+task identity/state, source SHA/tree/parent, dirty custody, proof manifest and
+claim limits, blocker, and next bounded action. Commit only coherent attributable
+work after proportionate proof; never automatically stage, reset, clean, normalize,
+commit, or absorb unrelated dirty work. A successor must acknowledge that exact
+immutable checkpoint before handoff. Archive or relocation additionally requires
+quiescent, process-free, handle/lock-free, size-stable state and exact destination
+file-count, byte-count, and hash parity with a recoverable manifest. Creation age
+alone is never stale evidence; active or growing logs remain protected.
+
+Every durable CTRL, LEAD, and persistent SPECIALIST has one goal with objective, stopping condition, authority boundary, and proof. Profession is a separate typed perspective selected from the 24-card registry; unknown historical titles remain inert user-owned text and never become routable authority. `UNVERIFIED` is an open acceptance failure. Every artifact-producing lane declares its typed lane kind, immutable `ArtifactIdentity`, bound LEAD identity, deterministic `ProofPlan`, and independent `ACCEPTANCE` route. The planner selects the minimum proof from changed surfaces, claims, authority, dependency reach, incident matches, runtime signals, and repository capabilities; unknown input broadens proof. T0 atomic work uses focused contracts, T1 ordinary code adds impacted proof, T2 adds browser proof only for affected or claimed browser/visual surfaces, T3 provider/security/data work adds plan review and authority proof, and T4 release work replaces impacted proof with broad package/parity proof and composed acceptance. Only non-artifact `NON_CODE` work may use an explicit empty contract. Stable exact-input gate receipts may be re-observed and adopted as execution evidence only when plan, command, gate spec, environment, freshness, proof class, claim, and artifact still match; they never carry acceptance authority. Provider, deployed, device, and human claims remain `UNVERIFIED` unless an isolated host verifier records a typed observation with exact plan/spec/artifact/environment bindings, evidence digest, and bounded freshness; in-process commands, signatures, and caller-created receipts cannot close them. T0 independence cannot be disabled by caller assertion. The bound LEAD integrates and records exact-artifact gate results as `PASS`, `FAIL`, or `TIMEOUT`; a timeout never passes and permits at most one typed transient retry. Missing, failed, timed-out, wrong-artifact, uncovered-claim, or source-only receipts stay open; CTRL may surface but never manufacture acceptance. Load [task-contract.md](references/task-contract.md) to record the contract and [review-contract.md](references/review-contract.md) for all acceptance, incident, proof, review, and claim-limit rules.
+
+Every delegated task also declares its exact deliverable, accountable owner,
+portable custody boundary, immutable artifact and path manifest, required proof
+classes, due event, and maximum readable return size. Creation, dispatch,
+commentary, timeout, silence, unreadable or empty output, and `IN_PROGRESS` are
+activity only. They cannot advance review or completion. The owner returns one
+typed, artifact-bound `ACCEPT`, `REJECT`, or `BLOCKED` receipt; only a complete
+`ACCEPT` may enter independent review, and `BLOCKED` remains open. Source,
+static, local, browser, authenticated, provider, payment, deployed, device, and
+human claims stay separate and never promote one another.
 
 Classify proof by the authority and transport actually exercised. Mocks, interception, fixtures, or an in-memory substitute prove only that substitute; name it and leave each unexercised boundary `UNVERIFIED`. For a visual claim, inspect the exact final frame: real primary substrate and relevant user context must be visible. A correct overlay cannot rescue a blank, fallback, mocked, placeholder, or failed substrate; relevant console/page/network failures remain findings. Load the review contract before accepting visual, browser, provider, deployed, device, security, consequential, or release work.
 
 For design or taste-led generation, honor the user’s approval boundary: a clear direction authorizes generation; a reserved choice requires candidates and a wait. Classify supplied references as loose inspiration or binding. Bind self-review to the exact delivered artifact, not previews or transformation receipts. Use [design-guide.md](references/design-guide.md) and the review contract for binding-reference fidelity, real-content rendering, accessibility, and design review. Do not promote a reviewer’s preference, a candidate, silence, or “best available” judgment into approval.
 
-Review and correction must be materially worthwhile. Outside design, require a concrete consequence and observable improvement that outweighs the work; do not turn preference or theoretical purity into backlog. Stop once outcome, proof, and risk threshold pass. Design may refine granular craft within the accepted direction, never unrelated scope. Correct doctrine at its lowest existing governing layer, consolidate rather than add incident clauses, and regression-test contrasting outcomes. Load the review contract for the full significance, escaped-defect, and independent-review procedure.
+Review and correction must be materially worthwhile. Outside design, require a concrete consequence and observable improvement that outweighs the work. Block only material user impact, correctness, safety, regression, maintainability, reference fidelity, or an explicit acceptance failure; cosmetic preference is an optional note and never another loop unless the user requested that polish. Choose the smallest durable solution: reuse, delete, or consolidate before adding abstractions, roles, process, tests, or dependencies. Classify each instruction or failure in its named scope, fix it locally, preserve accepted product character and useful capability, and regression-check the adjacent behavior at risk instead of inferring an opposite blanket rule. Design may refine granular craft within the accepted direction, never unrelated scope; use [design-guide.md](references/design-guide.md). If the same material finding repeats without a new receipt, stop the method, reorient the same owner once with temporary higher reasoning inside the accepted model authority and a root-cause question, then use the existing accountable parent or an independent reviewer if it still fails—never a new CTRL. Correct doctrine at its lowest existing governing layer and consolidate rather than add incident clauses. Confidence never permits fabricated proof, weakened security, or custody bypass. Load the review contract for the full significance, visual-proof, escaped-defect, and independent-review procedure.
 
 For a material capability choice, load [proven-solutions.md](references/proven-solutions.md): prefer an existing fitting, authorized primitive or workflow when its outcome benefit exceeds total cost; otherwise build the smallest native path. Never make discovery, installation, or external contact a prerequisite without authority.
 
@@ -190,7 +240,7 @@ In hands-off mode, an active durable goal continues without routine prompting or
 
 ## ROLE
 
-Every role contract states only PURPOSE, OWNERSHIP, BOUNDARIES, and ESCALATION. CTRL is the sole root and owns intake, durable objective ledger, topology, shared-surface coordination, final composed acceptance, and the human route. LEAD owns one mutable lane, integration, gates, and lane completion. DOER owns one bounded artifact. A persistent SPECIALIST owns one named cross-cutting truth surface and gate; MOTHER is one optional advisory SPECIALIST profession. EXPERT is bounded advice without artifact ownership; independent REVIEW verifies the frozen plan and the frozen completed artifact. WATCHDOG is a scoped sensor, not a role. No prompt transfers authority between roles.
+Every role contract states only PURPOSE, OWNERSHIP, BOUNDARIES, and ESCALATION. CTRL is the sole root and owns intake, durable objective ledger, topology, shared-surface coordination, final composed acceptance, and the human route. LEAD owns one mutable lane, integration, gates, and lane completion. DOER owns one bounded artifact. A persistent SPECIALIST owns one named cross-cutting truth surface and gate; the profession `specialist` is stored separately from the structural SPECIALIST role. EXPERT is bounded advice without artifact ownership; independent REVIEW verifies the frozen plan and the frozen completed artifact. WATCHDOG is a scoped sensor, not a role. No prompt transfers authority between roles.
 
 `roles/` filenames are the default profession registry; an assigned named profession loads its matching lowercase card when present. The card refines perspective only and never transfers role authority; explicit user direction still wins.
 
@@ -212,4 +262,4 @@ Render decisive proof inside the CTRL feed response itself. Use conversation-nat
 
 When material previews form one decision set, surface each promptly and also provide one consolidated decision gallery that embeds every candidate with a concise label and known defect. A representative subset is allowed only for a genuinely large set the user did not ask to see in full, with the complete inventory and exact omissions. Links or an inventory alone cannot accept a decision set. Load [review-contract.md](references/review-contract.md) for visual evidence and [monitoring.md](references/monitoring.md) for feed receipts and correction behavior.
 
-Emit only a material result, inspectable proof, steerable decision, exact blocker with recovery, acceptance verdict, release state, or direct answer to a topology question. Lead with the user outcome, then the smallest decisive inline proof, then remaining risk and next material checkpoint only when non-empty. Never lead with task activity, role inventory, commands, paths, or a tool run; never use fixed word/count/keyword caps. For visual/browser work, a fresh representative capture is required unless capture is exactly blocked; for nonvisual work, show a compact excerpt, table, or before/after proof.
+Emit only a material result, defensible progress change, inspectable proof, steerable decision, exact blocker with recovery, acceptance verdict, release state, or direct answer to a topology question. Lead with the user outcome, then the smallest decisive inline proof, then remaining risk and next material checkpoint only when non-empty. Never lead with task activity, role inventory, commands, paths, or a tool run, and never impose fixed word, count, or keyword caps. The default pulse is one compact human-readable card or paragraph per project: project/CTRL, state, receipt-backed progress percentage and basis or `Unmeasured`, latest material proof, first blocker, and next action/ETA. Keep exact machine receipts underneath for audit; do not dump raw logs, tool chatter, repeated plans, self-narration, or unchanged heartbeats into the human feed. For visual work, surface the highest-signal screenshot or artifact inline first and a compact gallery for every remaining requested surface, with explicit omissions and claim limits; links, filenames, source diffs, and prose are not visual proof. A fresh representative capture is required unless capture is exactly blocked; for nonvisual work, show a compact excerpt, table, or before/after proof. Prefer one readable `ACCEPT`, `REJECT`, or `BLOCKED` receipt over conversational back-and-forth. In progress is not done; source/static/local is not browser/deployed/human; `BLOCKED` is not accepted. Every return remains bound to the original objective, current profession and authority, owned deliverable, non-goals, and next acceptance gate.

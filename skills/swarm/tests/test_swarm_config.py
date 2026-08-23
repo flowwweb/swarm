@@ -18,6 +18,21 @@ SPEC.loader.exec_module(config)
 
 
 class SwarmConfigTests(unittest.TestCase):
+    def test_profession_registry_matches_runtime_order_and_labels(self) -> None:
+        from skills.swarm.runtime.core import BUILT_IN_PROFESSIONS, PROFESSION_GROUPS
+        self.assertEqual(config.PROFESSION_GROUPS,PROFESSION_GROUPS)
+        self.assertEqual(config.BUILT_IN_PROFESSIONS,BUILT_IN_PROFESSIONS)
+
+    def test_profession_specialist_and_structural_specialist_use_separate_namespaces(self) -> None:
+        effective,_=config.load(config.TEMPLATE_PATH)
+        structural=config.resolve_role_assignment(effective,"specialist")
+        profession=config.resolve_profession_assignment(effective,"specialist",domain="maritime",truth_surface="COLREG interpretation")
+        self.assertEqual(profession["profession_id"],"specialist")
+        self.assertEqual(profession["authority"],"none")
+        self.assertTrue(structural["model"])
+        with self.assertRaisesRegex(config.ConfigError,"named domain and truth surface"):
+            config.resolve_profession_assignment(effective,"specialist")
+
     def test_canonical_path_and_explicit_override(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root=Path(directory); canonical=root / "swarm.toml"; override=root / "custom.toml"
@@ -58,14 +73,14 @@ class SwarmConfigTests(unittest.TestCase):
             },
         )
 
-    def test_role_icons_default_to_enabled_octopus_ctrl_without_mother_authority_icon(self) -> None:
+    def test_role_icons_default_to_enabled_octopus_ctrl_without_profession_authority_icons(self) -> None:
         self.assertTrue(config.DEFAULTS["role_icons"]["enabled"])
         self.assertEqual(config.DEFAULTS["role_icons"]["ctrl"], "🐙")
-        self.assertNotIn("mother", config.DEFAULTS["role_icons"])
         effective, _ = config.load(config.TEMPLATE_PATH)
         self.assertTrue(effective["role_icons"]["enabled"])
         self.assertEqual(effective["role_icons"]["ctrl"], "🐙")
-        self.assertEqual(effective["roles"]["MOTHER"], {"icon": "🐝"})
+        self.assertEqual(set(effective["professions"]),set(config.BUILT_IN_PROFESSIONS))
+        self.assertEqual(effective["roles"],{})
 
     def test_role_icons_accept_custom_ctrl_and_disabled_contrast(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -116,7 +131,7 @@ class SwarmConfigTests(unittest.TestCase):
                     encoding="utf-8",
                 )
                 effective, _ = config.load(path)
-                self.assertEqual(effective["roles"]["DESIGNER"]["reasoning"], effort)
+                self.assertEqual(effective["professions"]["designer"]["reasoning"], effort)
 
     def test_usage_saver_accepts_only_a_boolean(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -171,38 +186,13 @@ class SwarmConfigTests(unittest.TestCase):
         self.assertEqual(legacy["monitoring"]["heartbeat_minutes"], 45)
         self.assertEqual(legacy["monitoring"]["default_review_horizon_minutes"], 30)
 
-    def test_v2_mother_authority_settings_migrate_once_to_specialist_mother(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory) / "v2.toml"
-            path.write_text(
-                "schema_version = 2\n"
-                "[role_icons]\nmother = \"🗂️\"\n"
-                "[models.medium]\nmother_model = \"legacy-model\"\n"
-                "mother_reasoning = \"ultra\"\n"
-                "[labels]\nmother = \"MOTHER\"\n"
-                "[boost]\ngoal_levels = [\"mother\", \"lead\"]\n",
-                encoding="utf-8",
-            )
-            effective, _ = config.load(path)
-        self.assertEqual(effective["schema_version"], 4)
-        self.assertEqual(effective["proof"]["policy_version"], "lean-v1")
-        self.assertEqual(effective["roles"]["MOTHER"], {"icon": "🗂️"})
-        self.assertEqual(effective["boost"]["goal_levels"], ["lead"])
-        self.assertNotIn("mother", effective["role_icons"])
-        self.assertNotIn("mother", effective["labels"])
-        self.assertNotIn("mother_model", effective["models"]["medium"])
-        self.assertEqual(
-            config.resolve_role_assignment(effective, "MOTHER"),
-            config.resolve_role_assignment(effective, "specialist"),
-        )
-
-    def test_schema_v3_rejects_mother_model_or_authority_icon_keys(self) -> None:
+    def test_retired_profession_config_is_not_migrated_registered_or_routable(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             invalid = {
-                "icon": '[role_icons]\nmother = "🐝"\n',
-                "model": '[models.medium]\nmother_model = "gpt-5.6-sol"\n',
-                "role": '[roles.MOTHER]\nicon = "🐝"\nmodel = "gpt-5.6-sol"\n',
+                "icon": '[role_icons]\nretired = "x"\n',
+                "model": '[models.medium]\nretired_model = "gpt-5.6-sol"\n',
+                "role": '[roles.LegacyCoordinator]\nicon = "x"\nmodel = "gpt-5.6-sol"\n',
                 "watchdog": "[watchdog]\nenabled = true\n",
             }
             for name, contents in invalid.items():
@@ -211,20 +201,10 @@ class SwarmConfigTests(unittest.TestCase):
                     path.write_text("schema_version = 3\n" + contents, encoding="utf-8")
                     with self.assertRaises(config.ConfigError):
                         config.load(path)
-
-    def test_schema_v3_allows_a_custom_mother_specialist_icon_only(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory) / "mother.toml"
-            path.write_text(
-                'schema_version = 3\n[roles.MOTHER]\nicon = "🗂️"\n',
-                encoding="utf-8",
-            )
-            effective, _ = config.load(path)
-        self.assertEqual(effective["roles"]["MOTHER"], {"icon": "🗂️"})
-        self.assertEqual(
-            config.resolve_role_assignment(effective, "MOTHER"),
-            config.resolve_role_assignment(effective, "specialist"),
-        )
+        with self.assertRaises(config.ConfigError):
+            config.resolve_profession_id("MOTHER")
+        with self.assertRaises(config.ConfigError):
+            config.resolve_role_assignment(config.DEFAULTS, "MOTHER")
 
     def test_v4_proof_policy_defaults_are_lean_and_bounded(self) -> None:
         effective, _ = config.load(config.TEMPLATE_PATH)
@@ -278,14 +258,14 @@ class SwarmConfigTests(unittest.TestCase):
         self.assertIn("doer_choices", effective["role_icons"])
         self.assertEqual(effective["labels"]["task"], "TASK")
 
-    def test_legacy_step_mother_normalizes_to_assist_and_cli_loads(self) -> None:
+    def test_unknown_legacy_step_role_fails_closed(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "config.toml"
             path.write_text(
                 "schema_version = 1\n"
-                "[role_icons]\nstep_mother = \"🗂️\"\n"
-                "[boost]\ngoal_levels = [\"step_mother\"]\n"
-                "[labels]\nstep_mother = \"SURGE\"\n",
+                "[role_icons]\nstep_coordinator = \"x\"\n"
+                "[boost]\ngoal_levels = [\"step_coordinator\"]\n"
+                "[labels]\nstep_coordinator = \"SURGE\"\n",
                 encoding="utf-8",
             )
             completed = subprocess.run(
@@ -294,11 +274,8 @@ class SwarmConfigTests(unittest.TestCase):
                 check=False,
                 text=True,
             )
-        self.assertEqual(completed.returncode, 0, completed.stderr)
-        effective = json.loads(completed.stdout)["settings"]
-        self.assertEqual(effective["boost"]["goal_levels"], ["lead", "doer", "review"])
-        self.assertEqual(effective["labels"]["assist"], "SURGE")
-        self.assertNotIn("step_mother", effective["labels"])
+        self.assertNotEqual(completed.returncode, 0)
+        self.assertIn("unknown setting", completed.stderr)
 
     def test_assist_is_not_a_durable_boost_goal_level(self) -> None:
         self.assertNotIn("assist", config.BOOST_LEVELS)
@@ -358,7 +335,7 @@ class SwarmConfigTests(unittest.TestCase):
             )
             effective, _ = config.load(path)
         self.assertEqual(
-            config.resolve_role_assignment(effective, "MOTHER", route_tier=1)["reasoning"],
+            config.resolve_role_assignment(effective, "Manager", route_tier=1)["reasoning"],
             "high",
         )
         self.assertEqual(

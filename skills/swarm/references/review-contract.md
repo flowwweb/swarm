@@ -47,6 +47,21 @@ evidence digest, observation time, proof class, plan, gate spec, artifact,
 environment, and authority context. Missing, forged, mismatched, replayed,
 expired, or plugin-runtime-only observations remain open.
 
+## Delegated handoff is not acceptance
+
+A delegated artifact reaches REVIEW only through a bounded readable owner
+`ACCEPT` receipt bound to the exact task, owner, artifact, custody, proof
+classes, and path/count/byte/hash manifest. Creation, dispatch, commentary,
+timeout, silence, empty or unreadable output, and `IN_PROGRESS` do not advance a
+gate. `REJECT` and `BLOCKED` are readable outcomes but never acceptance; both
+keep the task open and name the first concrete correction or blocker.
+Independent REVIEW remains required because the delegated receipt and manifest
+are owner reports, not host, user, or acceptance authority.
+
+Source, static, local, browser, authenticated, provider, payment, deployed,
+device, and human claims are disjoint. Evidence closes only the exact declared
+class; no lower or adjacent class promotes another.
+
 ## Classify proof and final visual artifacts honestly
 
 Classify runtime proof by the authority and transport actually exercised, not
@@ -61,6 +76,19 @@ user context must be visibly real; a correct overlay cannot upgrade a blank,
 fallback, mocked, placeholder, or failed substrate. Relevant console warnings,
 page errors, and failed requests block a clean claim until explained by a
 narrower claim.
+
+Visual self-review covers every requested viewport, route, state, and artifact
+surface; compares every binding reference token and asset against the exact
+final deliverable; embeds directly reviewable evidence; and enumerates every
+omission. Missing evidence, an uninspected surface, reference drift, artifact
+parity debt, or a blank, fallback, mocked, placeholder, failed, or missing
+substrate fails closed. A folder, filename, inventory, or worker commentary is
+provenance only and cannot satisfy this visual gate.
+
+Use the relevant desktop and narrow states and check obvious clipping, overflow,
+contrast, loading, empty, fallback, and error behavior. Surface the highest-signal
+screenshot inline first and keep the remaining requested evidence in a compact
+gallery or lightbox. A source diff, path, or filename is not visual proof.
 
 For taste-led generation, a clear user direction permits generation while a
 reserved choice requires candidates and a wait. Classify each supplied reference
@@ -222,12 +250,13 @@ For every non-design finding, state the concrete consequence of leaving it and
 the observable improvement expected from changing it. Prefer a metric; when a
 direct metric is impractical, name specific evidence and a falsifiable outcome.
 The expected benefit must justify the combined investigation, implementation,
-review, regression, and coordination cost. Reject as nitpicks stylistic
-preference, theoretical purity, speculative future-proofing, cosmetic
-consistency outside design, marginal refactoring, and technically true defects
-with no credible consequence. Do not record them as P3, backlog, optional
-follow-up, or “while here” work. The act of reviewing is not evidence that a
-change is valuable.
+review, regression, and coordination cost. Block only material user impact,
+correctness, safety, regression, maintainability, reference fidelity, or an
+explicit acceptance failure. Treat stylistic preference, theoretical purity,
+speculative future-proofing, marginal refactoring, and technically true defects
+with no credible consequence as optional notes, never another correction loop
+unless the user requested that polish. The act of reviewing is not evidence that
+a change is valuable.
 
 When the agreed outcome and proof pass with no material unresolved finding,
 return `APPROVE` and stop. Do not order another pass merely because deeper
@@ -244,8 +273,12 @@ before applying the exception.
 
 Rank findings `P0` destructive/security/data loss, `P1` blocked core outcome,
 `P2` confusing or fragile behavior/maintainability, and `P3` bounded polish.
-P0-P2 block approval. A correction must use the narrowest established primitive
-and add user-observable regression evidence. REVIEW is read-only by default. If
+P0-P2 block approval. A correction must preserve the accepted direction and
+distinctive product edge, use the narrowest established primitive, and add
+evidence for the adjacent behavior it could regress. Reuse, delete, or consolidate
+before adding an abstraction, role, process, test, or dependency; a hypothetical
+concern does not justify sanding away useful capability, design, copy, or effects.
+REVIEW is read-only by default. If
 CTRL or the owning LEAD transfers one narrow correction after the prior owner releases it,
 REVIEW returns CORRECT and a different independent reviewer or context validates
 the edit. REVIEW APPROVE is evidence for acceptance, not portfolio acceptance:

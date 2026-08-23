@@ -6,7 +6,7 @@ from enum import StrEnum
 from hashlib import sha256
 import json
 import os
-from pathlib import Path, PurePosixPath
+from pathlib import Path, PurePosixPath, PureWindowsPath
 import platform
 import signal
 import subprocess
@@ -18,6 +18,35 @@ from .request_ledger import RequestStore, RequestStoreError
 
 class Role(StrEnum):
     CTRL="CTRL"; SPECIALIST="SPECIALIST"; ARCHITECT="ARCHITECT"; LEAD="LEAD"; DOER="DOER"; EXPERT="EXPERT"; REVIEW="REVIEW"
+
+PROFESSION_GROUPS = (
+    ("Direction", (("manager", "Manager"), ("strategist", "Strategist"))),
+    ("Discovery", (("researcher", "Researcher"), ("analyst", "Analyst"), ("specialist", "Specialist"), ("inventor", "Inventor"))),
+    ("Creation", (("architect", "Architect"), ("designer", "Designer"), ("artist", "Artist"), ("writer", "Writer"), ("developer", "Dev"), ("producer", "Producer"))),
+    ("Assurance", (("tester", "Tester"), ("critic", "Critic"), ("security", "Security"), ("auditor", "Auditor"), ("legal", "Legal"), ("reviewer", "Reviewer"))),
+    ("Delivery", (("operator", "Operator"), ("marketer", "Marketer"), ("support", "Support"))),
+    ("Foundation", (("accountant", "Accountant"), ("recruiter", "Recruiter"), ("educator", "Educator"))),
+)
+BUILT_IN_PROFESSIONS = {
+    profession_id: label
+    for _, professions in PROFESSION_GROUPS
+    for profession_id, label in professions
+}
+PROFESSION_ALIASES = {
+    "product_manager": "manager", "project_manager": "manager", "planner": "manager",
+    "data_analyst": "analyst", "financial_analyst": "analyst",
+    "content_strategist": "strategist", "social_strategist": "strategist", "sales_strategist": "strategist",
+    "brand_strategist": "strategist", "security_engineer": "security", "support_specialist": "support",
+    "dev": "developer",
+}
+
+def resolve_profession_id(value: str) -> str:
+    """Resolve legacy profession labels without changing user-owned titles."""
+    key = str(value).strip().casefold().replace(" ", "_")
+    resolved = PROFESSION_ALIASES.get(key, key)
+    if resolved not in BUILT_IN_PROFESSIONS:
+        raise ValueError(f"unknown profession: {key}")
+    return resolved
 
 class PinDisposition(StrEnum):
     DEFAULT_UNPINNED="DEFAULT_UNPINNED"; PRESERVE_USER_STATE="PRESERVE_USER_STATE"; PLACEMENT_UNVERIFIED="PLACEMENT_UNVERIFIED"
@@ -75,7 +104,11 @@ def close_pin_policy(
         return PinPolicyDecision(PinDisposition.PRESERVE_USER_STATE, "user kept or changed pin/task/folder state")
     return PinPolicyDecision(PinDisposition.PRESERVE_USER_STATE, "closeout mutation not independently authorized")
 
-BUILT_IN_SPECIALISTS = frozenset({"MOTHER", "ARCHITECT", "ENGINEER", "DEVELOPER", "DESIGNER", "RESEARCHER", "ANALYST", "STRATEGIST"})
+BUILT_IN_PROFESSION_TOKENS = frozenset(
+    {profession_id.upper() for profession_id in BUILT_IN_PROFESSIONS}
+    | {label.upper() for label in BUILT_IN_PROFESSIONS.values()}
+)
+RETIRED_PROFESSION_TOKENS = frozenset({"MOTHER"})
 class TaskState(StrEnum):
     REQUEST_PENDING="REQUEST_PENDING"; ACTIVE="ACTIVE"; WAITING="WAITING"; REVIEW="REVIEW"; COMPLETE="COMPLETE"; STALE="STALE"; ARCHIVED="ARCHIVED"; ARCHIVED_STALE="ARCHIVED_STALE"; BACKLOG="BACKLOG"
 class ReviewValue(StrEnum): NONE="NONE"; LOW="LOW"; HIGH="HIGH"; PINNED="PINNED"
@@ -90,9 +123,10 @@ class WithholdBasis(StrEnum): OBJECTIVE_DEFECT="objective-defect"; DUPLICATE="du
 class CtrlSurfaceKind(StrEnum):
     INLINE_IMAGE="inline_image"; INLINE_RECORDING="inline_recording"; INLINE_COMPARISON="inline_comparison"; INLINE_TABLE="inline_table"; INLINE_EXCERPT="inline_excerpt"; INLINE_RECEIPT="inline_receipt"; EXACT_BLOCKER="exact_blocker"
 class CtrlFeedPart(StrEnum):
-    OUTCOME="outcome"; PROOF="proof"; RISK="risk"; CHECKPOINT="checkpoint"; ORCHESTRATION="orchestration"; TASK_CHATTER="task_chatter"; ACTIVITY="activity"; MOTHER_DETAIL="mother_detail"
+    OUTCOME="outcome"; PROOF="proof"; RISK="risk"; CHECKPOINT="checkpoint"; ORCHESTRATION="orchestration"; TASK_CHATTER="task_chatter"; ACTIVITY="activity"
 class CtrlFeedEventKind(StrEnum):
     RESULT="result"; DECISION="decision"; BLOCKER="blocker"; ACCEPTANCE="acceptance"; RELEASE="release"; HANDOFF="handoff"
+class CtrlPulseReason(StrEnum): MATERIAL_CHANGE="material_change"; BOUNDED_DUE="bounded_due"
 class SubagentException(StrEnum):
     CAPACITY="capacity"; HOST_GATE="host_gate"; COLLISION="collision"; SAFETY="safety"; WHOLE_TASK_COST="whole_task_cost"
 class HostTaskCapacity(StrEnum): AVAILABLE="available"; UNAVAILABLE="unavailable"; REJECTED="rejected"; USAGE_LIMITED="usage_limited"
@@ -101,6 +135,7 @@ class DegradedCapacityException(StrEnum): TASK_UNAVAILABLE="task_unavailable"; T
 class RoutingEvidenceBasis(StrEnum): OBSERVED="observed"; CONSERVATIVE_ASSUMPTION="conservative_assumption"
 class WorkSize(StrEnum): SMALL="small"; MEDIUM="medium"; LARGE="large"
 class WorkKind(StrEnum): GENERAL="general"; DESIGN="design"; IMAGEGEN="imagegen"; IMAGE_EDIT="image_edit"
+class VisualOwnership(StrEnum): PRODUCT_EXPERIENCE="product_experience"; EXPRESSIVE_ART="expressive_art"
 class GraphProfile(StrEnum): GENERAL="general"; GAME_STUDIO="game_studio"
 class HandsOffEventKind(StrEnum):
     USER_DIRECTION="user_direction"; MATERIAL_HANDOFF_REVIEW="material_handoff_review"; STOPPING_CONDITION="stopping_condition"; HUMAN_AUTHORITY_BLOCKER="human_authority_blocker"; USAGE_SIGNAL="usage_signal"; MODEL_MESSAGE="model_message"; TASK_MESSAGE="task_message"; ROUTINE_STATUS="routine_status"
@@ -117,7 +152,8 @@ class ProofStability(StrEnum): STABLE="STABLE"; UNSTABLE="UNSTABLE"
 class ProofState(StrEnum): UNPLANNED="UNPLANNED"; PLAN_REVIEW="PLAN_REVIEW"; READY="READY"; RUNNING="RUNNING"; ESCALATE="ESCALATE"; PROOF_READY="PROOF_READY"; ACCEPTANCE_REVIEW="ACCEPTANCE_REVIEW"; ACCEPTED="ACCEPTED"; BLOCKED="BLOCKED"
 class ConsequenceTier(StrEnum): T0="T0"; T1="T1"; T2="T2"; T3="T3"; T4="T4"
 class ChangedSurfaceKind(StrEnum): DOCS="DOCS"; RUNTIME="RUNTIME"; CONTRACT="CONTRACT"; CONFIG="CONFIG"; VISUAL="VISUAL"; BROWSER="BROWSER"; AUTH="AUTH"; DATA="DATA"; PROVIDER="PROVIDER"; SECURITY="SECURITY"; PACKAGING="PACKAGING"; RELEASE="RELEASE"
-class ProofClass(StrEnum): SOURCE_STATIC="SOURCE_STATIC"; LOCAL_UNIT="LOCAL_UNIT"; LOCAL_INTEGRATION="LOCAL_INTEGRATION"; EMULATOR="EMULATOR"; BROWSER_LOCAL="BROWSER_LOCAL"; BROWSER_AUTHENTICATED="BROWSER_AUTHENTICATED"; PROVIDER="PROVIDER"; DEPLOYED="DEPLOYED"; DEVICE="DEVICE"; HUMAN="HUMAN"; PACKAGE="PACKAGE"
+class ProofClass(StrEnum):
+    SOURCE="SOURCE"; STATIC="STATIC"; SOURCE_STATIC="SOURCE_STATIC"; LOCAL_UNIT="LOCAL_UNIT"; LOCAL_INTEGRATION="LOCAL_INTEGRATION"; EMULATOR="EMULATOR"; BROWSER_LOCAL="BROWSER_LOCAL"; BROWSER_AUTHENTICATED="BROWSER_AUTHENTICATED"; AUTH="AUTH"; PROVIDER="PROVIDER"; PAYMENT="PAYMENT"; DEPLOYED="DEPLOYED"; DEVICE="DEVICE"; HUMAN="HUMAN"; PACKAGE="PACKAGE"
 class GateExecutor(StrEnum): COMMAND="COMMAND"; BROWSER="BROWSER"; PROVIDER="PROVIDER"; HUMAN="HUMAN"
 class CachePolicy(StrEnum): NEVER="NEVER"; EXACT_INPUTS="EXACT_INPUTS"; EXTERNAL_FRESH="EXTERNAL_FRESH"
 class FlakePolicy(StrEnum): NO_RETRY="NO_RETRY"; TYPED_TRANSIENT_ONCE="TYPED_TRANSIENT_ONCE"
@@ -130,8 +166,32 @@ class LaneKind(StrEnum): CODE="CODE"; NON_CODE="NON_CODE"; OTHER="OTHER"
 class RequestState(StrEnum): OPEN="OPEN"; BLOCKED="BLOCKED"; COMPLETED="COMPLETED"; SUPERSEDED="SUPERSEDED"; CANCELLED="CANCELLED"
 class RequestOutcomeKind(StrEnum): ARTIFACT="ARTIFACT"; NON_ARTIFACT="NON_ARTIFACT"
 class RequestStageState(StrEnum): PROVISIONAL="PROVISIONAL"; ACCEPTED="ACCEPTED"; ROLLED_BACK="ROLLED_BACK"
+class DelegatedReceiptVerdict(StrEnum): ACCEPT="ACCEPT"; REJECT="REJECT"; BLOCKED="BLOCKED"
+class DelegatedSignal(StrEnum): CREATED="CREATED"; DISPATCHED="DISPATCHED"; COMMENTARY="COMMENTARY"; TIMEOUT="TIMEOUT"; SILENCE="SILENCE"; UNREADABLE="UNREADABLE"; IN_PROGRESS="IN_PROGRESS"
+class DelegationRecoveryAction(StrEnum): NONE="NONE"; REORIENT_OWNER="REORIENT_OWNER"; ROUTE_EXISTING_REVIEW="ROUTE_EXISTING_REVIEW"; HOLD="HOLD"
+class DelegationBlockerKind(StrEnum): IN_SCOPE_WORK="IN_SCOPE_WORK"; DEPENDENCY="DEPENDENCY"; AUTHORITY="AUTHORITY"; ENVIRONMENT="ENVIRONMENT"; EXTERNAL_STATE="EXTERNAL_STATE"
+class VisualSubstrateState(StrEnum): REAL="REAL"; MISSING="MISSING"; BLANK="BLANK"; FALLBACK="FALLBACK"; PLACEHOLDER="PLACEHOLDER"; FAILED="FAILED"
 
 class InvariantError(ValueError): pass
+
+@dataclass(frozen=True)
+class ProfessionAssignment:
+    """Typed profession perspective, separate from structural authority."""
+    profession_id:str; domain:str=""; truth_surface:str=""
+    def __post_init__(self):
+        try:
+            profession_id=resolve_profession_id(self.profession_id)
+        except ValueError as error:
+            raise InvariantError(str(error)) from error
+        domain=self.domain.strip(); truth_surface=self.truth_surface.strip()
+        if profession_id=="specialist" and (not domain or not truth_surface):
+            raise InvariantError("Specialist profession requires a named domain and truth surface")
+        if any(character in value for value in (domain,truth_surface) for character in "\r\n\t"):
+            raise InvariantError("profession domain and truth surface must be single-line text")
+        object.__setattr__(self,"profession_id",profession_id); object.__setattr__(self,"domain",domain); object.__setattr__(self,"truth_surface",truth_surface)
+
+    @property
+    def label(self)->str: return BUILT_IN_PROFESSIONS[self.profession_id]
 
 @dataclass(frozen=True)
 class RoutingEconomics:
@@ -149,11 +209,15 @@ class RoutingEconomics:
 
 @dataclass(frozen=True)
 class WorkRoutingFacts:
-    size:WorkSize; bounded:bool; low_risk:bool; mutable_surface_count:int; independent_work:bool=False; independent_acceptance:bool=False; separate_handoff:bool=False; useful_durable_boundary:bool=False; interruption_safe_resumption:bool=False; worktree_isolation:bool=False; independent_review:bool=False; work_kind:WorkKind=WorkKind.GENERAL; user_visible_delivery:bool=False; cross_lane_dependency:bool=False; material_heartbeat_obligation:bool=False
+    size:WorkSize; bounded:bool; low_risk:bool; mutable_surface_count:int; independent_work:bool=False; independent_acceptance:bool=False; separate_handoff:bool=False; useful_durable_boundary:bool=False; interruption_safe_resumption:bool=False; worktree_isolation:bool=False; independent_review:bool=False; work_kind:WorkKind=WorkKind.GENERAL; visual_ownership:VisualOwnership=VisualOwnership.PRODUCT_EXPERIENCE; user_visible_delivery:bool=False; cross_lane_dependency:bool=False; material_heartbeat_obligation:bool=False
     def __post_init__(self):
-        if not isinstance(self.size,WorkSize) or not isinstance(self.mutable_surface_count,int) or self.mutable_surface_count<1 or not isinstance(self.work_kind,WorkKind): raise InvariantError("routing facts require typed size, work kind, and at least one mutable surface")
-    def requires_designer(self)->bool: return self.work_kind in {WorkKind.DESIGN,WorkKind.IMAGEGEN,WorkKind.IMAGE_EDIT}
-    def requires_durable_lane(self)->bool: return self.size is WorkSize.LARGE or self.requires_designer() or any((self.independent_acceptance,self.separate_handoff,self.useful_durable_boundary,self.interruption_safe_resumption,self.worktree_isolation,self.independent_review,self.user_visible_delivery,self.cross_lane_dependency,self.material_heartbeat_obligation))
+        if not isinstance(self.size,WorkSize) or not isinstance(self.mutable_surface_count,int) or self.mutable_surface_count<1 or not isinstance(self.work_kind,WorkKind) or not isinstance(self.visual_ownership,VisualOwnership): raise InvariantError("routing facts require typed size, work kind, visual ownership, and at least one mutable surface")
+    def required_visual_profession(self)->str:
+        if self.work_kind is WorkKind.DESIGN: return "designer"
+        if self.work_kind in {WorkKind.IMAGEGEN,WorkKind.IMAGE_EDIT}: return "artist" if self.visual_ownership is VisualOwnership.EXPRESSIVE_ART else "designer"
+        return ""
+    def requires_visual_profession(self)->bool: return bool(self.required_visual_profession())
+    def requires_durable_lane(self)->bool: return self.size is WorkSize.LARGE or self.requires_visual_profession() or any((self.independent_acceptance,self.separate_handoff,self.useful_durable_boundary,self.interruption_safe_resumption,self.worktree_isolation,self.independent_review,self.user_visible_delivery,self.cross_lane_dependency,self.material_heartbeat_obligation))
 
 @dataclass(frozen=True)
 class HostCapacityEvidence:
@@ -178,7 +242,7 @@ def _route_candidate(*, facts:WorkRoutingFacts, economics:RoutingEconomics, capa
         if not lead or lead.upper()==Role.CTRL.value: raise InvariantError("delegated task routing requires CTRL -> LEAD -> DOER authority")
         reason="visible senior task/chat required by an explicit durable lane boundary" if visible_task_required else "parallel savings exceed measured task overhead"
         return ExecutionRoutingDecision(ExecutionRoute.NORMAL_TASK,lead,(Role.CTRL.value,Role.LEAD.value,Role.DOER.value),reason,capacity.receipt,economics)
-    if prefer_task and capacity.subagents_available and not facts.requires_designer():
+    if prefer_task and capacity.subagents_available and not facts.requires_visual_profession():
         if not all(isinstance(value,str) and value.strip() for value in (immutable_checkpoint,resumption_marker)) or not affected_gates: raise InvariantError("degraded subagent routing requires an immutable checkpoint, resumption marker, and unverified gates")
         exception={HostTaskCapacity.UNAVAILABLE:DegradedCapacityException.TASK_UNAVAILABLE,HostTaskCapacity.REJECTED:DegradedCapacityException.TASK_REJECTED,HostTaskCapacity.USAGE_LIMITED:DegradedCapacityException.TASK_USAGE_LIMITED}.get(capacity.task_status)
         if exception is None: raise InvariantError("degraded subagent routing requires an exact task-capacity failure")
@@ -189,12 +253,16 @@ def _route_candidate(*, facts:WorkRoutingFacts, economics:RoutingEconomics, capa
     if capacity.task_status is HostTaskCapacity.AVAILABLE:
         if not lead or lead.upper()==Role.CTRL.value: raise InvariantError("delegated task routing requires CTRL -> LEAD -> DOER authority")
         return ExecutionRoutingDecision(ExecutionRoute.NORMAL_TASK,lead,(Role.CTRL.value,Role.LEAD.value,Role.DOER.value),"task lane is the only viable permitted structure",capacity.receipt,economics)
-    reason="visual work requires a visible DESIGNER task; subagent fallback is prohibited" if facts.requires_designer() else "no permitted task or subagent structure can progress"
+    reason="visual work requires the visible assigned visual profession; subagent fallback is prohibited" if facts.requires_visual_profession() else "no permitted task or subagent structure can progress"
     return ExecutionRoutingDecision(ExecutionRoute.HARD_BLOCKED,owner,(owner,),reason,capacity.receipt,economics)
 
 def route_execution(*, facts:WorkRoutingFacts, economics:RoutingEconomics, capacity:HostCapacityEvidence, accountable_owner:str, lead_owner:str="", assigned_profession:str="", immutable_checkpoint:str="", resumption_marker:str="", affected_gates:tuple[str,...]=(), current:ExecutionRoutingDecision|None=None, safe_boundary:bool=True) -> ExecutionRoutingDecision:
-    if facts.requires_designer() and assigned_profession.strip().upper()!="DESIGNER":
-        raise InvariantError("design and image generation require a DESIGNER assignment")
+    required=facts.required_visual_profession()
+    if required:
+        if not assigned_profession.strip(): raise InvariantError(f"{facts.visual_ownership.value} {facts.work_kind.value} work requires the {BUILT_IN_PROFESSIONS[required]} profession")
+        try: actual=resolve_profession_id(assigned_profession)
+        except ValueError as error: raise InvariantError(str(error)) from error
+        if actual!=required: raise InvariantError(f"{facts.visual_ownership.value} {facts.work_kind.value} work requires the {BUILT_IN_PROFESSIONS[required]} profession")
     candidate=_route_candidate(facts=facts,economics=economics,capacity=capacity,accountable_owner=accountable_owner,lead_owner=lead_owner,immutable_checkpoint=immutable_checkpoint,resumption_marker=resumption_marker,affected_gates=affected_gates)
     if current is not None and candidate.route is not current.route and not safe_boundary:
         return replace(current,reason="topology change deferred until the next safe boundary",pending_route=candidate.route)
@@ -318,7 +386,7 @@ def audit_ctrl_feed(messages:tuple[CtrlFeedMessage,...]) -> CtrlFeedAudit:
     """Enforce feed semantics and proof binding without arbitrary content caps."""
     violations=[]
     expected=(CtrlFeedPart.OUTCOME,CtrlFeedPart.PROOF,CtrlFeedPart.RISK,CtrlFeedPart.CHECKPOINT)
-    forbidden={CtrlFeedPart.ORCHESTRATION,CtrlFeedPart.TASK_CHATTER,CtrlFeedPart.ACTIVITY,CtrlFeedPart.MOTHER_DETAIL}
+    forbidden={CtrlFeedPart.ORCHESTRATION,CtrlFeedPart.TASK_CHATTER,CtrlFeedPart.ACTIVITY}
     for message in messages:
         kinds=tuple(kind for kind,_ in message.parts)
         bad=tuple(kind.value for kind in kinds if kind in forbidden)
@@ -555,7 +623,7 @@ def plan_proof(inputs:ProofInputs) -> ProofPlan:
         if surface.public and _TIER_ORDER[floor]<_TIER_ORDER[ConsequenceTier.T1]: floor=ConsequenceTier.T1
         floor=_tier_max(floor,ConsequenceTier(f"T{surface.consequence}"))
         tier=_tier_max(tier,floor); reasons.append(PlanReason(surface.kind.value,f"changed surface sets a {floor.value} consequence floor"))
-    claim_floor={ProofClass.BROWSER_LOCAL:ConsequenceTier.T2,ProofClass.BROWSER_AUTHENTICATED:ConsequenceTier.T2,ProofClass.PROVIDER:ConsequenceTier.T3,ProofClass.DEPLOYED:ConsequenceTier.T4,ProofClass.DEVICE:ConsequenceTier.T4,ProofClass.HUMAN:ConsequenceTier.T4,ProofClass.PACKAGE:ConsequenceTier.T4}
+    claim_floor={ProofClass.BROWSER_LOCAL:ConsequenceTier.T2,ProofClass.BROWSER_AUTHENTICATED:ConsequenceTier.T2,ProofClass.AUTH:ConsequenceTier.T3,ProofClass.PROVIDER:ConsequenceTier.T3,ProofClass.PAYMENT:ConsequenceTier.T3,ProofClass.DEPLOYED:ConsequenceTier.T4,ProofClass.DEVICE:ConsequenceTier.T4,ProofClass.HUMAN:ConsequenceTier.T4,ProofClass.PACKAGE:ConsequenceTier.T4}
     for claim in inputs.declared_claims:
         if claim.proof_class in claim_floor:
             floor=claim_floor[claim.proof_class]; tier=_tier_max(tier,floor); reasons.append(PlanReason(claim.name,f"declared {claim.proof_class.value} claim requires {floor.value}"))
@@ -574,20 +642,20 @@ def plan_proof(inputs:ProofInputs) -> ProofPlan:
         add(caps.broad_gate if broad else caps.impacted_gate,ProofClass.LOCAL_INTEGRATION if broad else ProofClass.LOCAL_UNIT)
     browser_required=any(surface.kind in {ChangedSurfaceKind.VISUAL,ChangedSurfaceKind.BROWSER} for surface in inputs.changed_surfaces) or any(claim.proof_class in {ProofClass.BROWSER_LOCAL,ProofClass.BROWSER_AUTHENTICATED} for claim in inputs.declared_claims)
     if browser_required: add(caps.browser_gate,ProofClass.BROWSER_LOCAL,CachePolicy.EXTERNAL_FRESH,86400)
-    if _TIER_ORDER[tier]>=3 and (inputs.authority_boundaries or any(claim.proof_class in {ProofClass.PROVIDER,ProofClass.BROWSER_AUTHENTICATED} for claim in inputs.declared_claims)): add(caps.provider_gate,ProofClass.PROVIDER,CachePolicy.EXTERNAL_FRESH,3600)
+    if _TIER_ORDER[tier]>=3 and (inputs.authority_boundaries or any(claim.proof_class in {ProofClass.AUTH,ProofClass.PROVIDER,ProofClass.PAYMENT,ProofClass.BROWSER_AUTHENTICATED} for claim in inputs.declared_claims)): add(caps.provider_gate,ProofClass.PROVIDER,CachePolicy.EXTERNAL_FRESH,3600)
     if tier is ConsequenceTier.T4:
         add(caps.broad_gate,ProofClass.LOCAL_INTEGRATION); add(caps.package_gate,ProofClass.PACKAGE,CachePolicy.EXACT_INPUTS); add(caps.release_gate,ProofClass.PACKAGE,CachePolicy.NEVER)
     for incident in inputs.incident_matches: add(incident.detector_gate,ProofClass.LOCAL_INTEGRATION)
     for index,claim in enumerate(inputs.declared_claims):
-        if claim.proof_class not in {proof_class for _,proof_class,_,_ in gate_ids}: add(f"claim-{index+1}-{claim.proof_class.value.lower()}",claim.proof_class,CachePolicy.EXTERNAL_FRESH if claim.proof_class in {ProofClass.BROWSER_LOCAL,ProofClass.BROWSER_AUTHENTICATED,ProofClass.PROVIDER,ProofClass.DEPLOYED,ProofClass.DEVICE,ProofClass.HUMAN} else CachePolicy.EXACT_INPUTS,3600 if claim.proof_class in {ProofClass.PROVIDER,ProofClass.DEPLOYED,ProofClass.DEVICE,ProofClass.HUMAN} else 86400 if claim.proof_class in {ProofClass.BROWSER_LOCAL,ProofClass.BROWSER_AUTHENTICATED} else None)
-    executor_for=lambda proof_class: GateExecutor.BROWSER if proof_class in {ProofClass.BROWSER_LOCAL,ProofClass.BROWSER_AUTHENTICATED} else GateExecutor.PROVIDER if proof_class in {ProofClass.PROVIDER,ProofClass.DEPLOYED,ProofClass.DEVICE} else GateExecutor.HUMAN if proof_class is ProofClass.HUMAN else GateExecutor.COMMAND
+        if claim.proof_class not in {proof_class for _,proof_class,_,_ in gate_ids}: add(f"claim-{index+1}-{claim.proof_class.value.lower()}",claim.proof_class,CachePolicy.EXTERNAL_FRESH if claim.proof_class in {ProofClass.BROWSER_LOCAL,ProofClass.BROWSER_AUTHENTICATED,ProofClass.AUTH,ProofClass.PROVIDER,ProofClass.PAYMENT,ProofClass.DEPLOYED,ProofClass.DEVICE,ProofClass.HUMAN} else CachePolicy.EXACT_INPUTS,3600 if claim.proof_class in {ProofClass.AUTH,ProofClass.PROVIDER,ProofClass.PAYMENT,ProofClass.DEPLOYED,ProofClass.DEVICE,ProofClass.HUMAN} else 86400 if claim.proof_class in {ProofClass.BROWSER_LOCAL,ProofClass.BROWSER_AUTHENTICATED} else None)
+    executor_for=lambda proof_class: GateExecutor.BROWSER if proof_class in {ProofClass.BROWSER_LOCAL,ProofClass.BROWSER_AUTHENTICATED} else GateExecutor.PROVIDER if proof_class in {ProofClass.AUTH,ProofClass.PROVIDER,ProofClass.PAYMENT,ProofClass.DEPLOYED,ProofClass.DEVICE} else GateExecutor.HUMAN if proof_class is ProofClass.HUMAN else GateExecutor.COMMAND
     local_gate=next((identity for identity,proof_class,_,_ in reversed(gate_ids) if proof_class in {ProofClass.LOCAL_UNIT,ProofClass.LOCAL_INTEGRATION}),caps.fast_contract_gate)
     def dependencies_for(identity:str, proof_class:ProofClass) -> tuple[str,...]:
         if identity==caps.fast_contract_gate: return ()
         if identity in {caps.impacted_gate,caps.broad_gate}: return (caps.fast_contract_gate,)
         if identity==caps.package_gate: return (caps.broad_gate if caps.broad_gate in {item[0] for item in gate_ids} else local_gate,)
         if identity==caps.release_gate: return (caps.package_gate,)
-        if proof_class in {ProofClass.BROWSER_LOCAL,ProofClass.BROWSER_AUTHENTICATED,ProofClass.PROVIDER,ProofClass.DEPLOYED,ProofClass.DEVICE,ProofClass.HUMAN}: return (local_gate,)
+        if proof_class in {ProofClass.BROWSER_LOCAL,ProofClass.BROWSER_AUTHENTICATED,ProofClass.AUTH,ProofClass.PROVIDER,ProofClass.PAYMENT,ProofClass.DEPLOYED,ProofClass.DEVICE,ProofClass.HUMAN}: return (local_gate,)
         return (caps.fast_contract_gate,)
     gates=tuple(GateSpec(identity,proof_class,executor=executor_for(proof_class),argv=caps.command_for(identity),input_closure_digest=_sha256_text(f"{artifact_digest}:{path_digest}:{identity}"),environment_fingerprint=caps.environment_fingerprint,dependencies=dependencies_for(identity,proof_class),cache_policy=policy,freshness_seconds=freshness) for identity,proof_class,policy,freshness in gate_ids)
     if tier is ConsequenceTier.T0:
@@ -654,6 +722,240 @@ class GateReceipt:
         external_evidence=plan.legacy or bool(spec.argv) or bool(self.evidence_digest)
         environment_matches=plan.legacy or spec.environment_fingerprint==_runtime_environment_fingerprint()
         return self._authority is authority and self._bound_task_id==task_id and self.gate==gate==spec.id and self.artifact==artifact==current and self.outcome is ProofOutcome.PASS and self.stability is ProofStability.STABLE and self.before==artifact.observables==self.after and self.plan_digest==plan.plan_digest and self.gate_spec_digest==_gate_spec_digest(spec) and self.artifact_digest==_sha256_text(artifact.key()) and self.input_closure_digest==spec.input_closure_digest and self.environment_fingerprint==spec.environment_fingerprint and environment_matches and self.proof_class is spec.proof_class and bool(self.authority_context_digest) and command_matches and external_evidence and fresh
+
+def _portable_paths(values:object, label:str, *, required:bool=True) -> tuple[str,...]:
+    try: raw=tuple(values)  # type: ignore[arg-type]
+    except TypeError as error: raise InvariantError(f"{label} must be a tuple of portable paths") from error
+    normalized=[]
+    for value in raw:
+        if not isinstance(value,str) or not value.strip(): raise InvariantError(f"{label} must contain nonempty portable paths")
+        path=PurePosixPath(value.replace("\\","/")); windows=PureWindowsPath(value)
+        if any(ord(character)<32 for character in value) or ":" in value or path.is_absolute() or Path(value).is_absolute() or windows.drive or windows.root or ".." in path.parts or any(part in {"","."} for part in path.parts): raise InvariantError(f"{label} must stay inside a declared relative boundary")
+        normalized.append(path.as_posix())
+    result=tuple(sorted(normalized))
+    if required and not result: raise InvariantError(f"{label} cannot be empty")
+    if len(set(result))!=len(result): raise InvariantError(f"{label} must be distinct")
+    return result
+
+def _path_in_boundary(path:str, boundary:str) -> bool:
+    path_parts=PurePosixPath(path).parts; boundary_parts=PurePosixPath(boundary).parts
+    return len(boundary_parts)<=len(path_parts) and path_parts[:len(boundary_parts)]==boundary_parts
+
+def _bounded_readable(value:str, label:str, limit:int) -> str:
+    if not isinstance(value,str) or not value.strip() or len(value)>limit or any(ord(character)<32 and character not in "\n\t" for character in value): raise InvariantError(f"{label} must be nonempty readable text within {limit} characters")
+    return value.strip()
+
+@dataclass(frozen=True)
+class DelegatedEvidence:
+    id:str; proof_class:ProofClass; artifact_key:str; digest:str; claim_limit:str
+    def __post_init__(self):
+        _require_receipt_text(self.id,"delegated evidence identity")
+        if not isinstance(self.proof_class,ProofClass) or not isinstance(self.artifact_key,str) or not self.artifact_key.strip(): raise InvariantError("delegated evidence requires a typed proof class and exact artifact identity")
+        object.__setattr__(self,"digest",_require_digest(self.digest,"delegated evidence")); object.__setattr__(self,"claim_limit",_bounded_readable(self.claim_limit,"delegated evidence claim limit",512))
+
+@dataclass(frozen=True)
+class ArtifactFileEvidence:
+    path:str; byte_count:int; digest:str
+    def __post_init__(self):
+        path=_portable_paths((self.path,),"artifact file evidence")[0]
+        if not isinstance(self.byte_count,int) or isinstance(self.byte_count,bool) or self.byte_count<0: raise InvariantError("artifact file evidence requires a nonnegative byte count")
+        object.__setattr__(self,"path",path); object.__setattr__(self,"digest",_require_digest(self.digest,"artifact file evidence"))
+
+@dataclass(frozen=True)
+class ArtifactParityReceipt:
+    artifact_key:str; files:tuple[ArtifactFileEvidence,...]; file_count:int; byte_count:int; manifest_digest:str
+    def __post_init__(self):
+        if not isinstance(self.artifact_key,str) or not self.artifact_key.strip() or not self.files or any(not isinstance(item,ArtifactFileEvidence) for item in self.files): raise InvariantError("artifact parity requires an exact artifact and file manifest")
+        files=tuple(sorted(self.files,key=lambda item:item.path))
+        if len({item.path for item in files})!=len(files): raise InvariantError("artifact parity paths must be distinct")
+        expected_count=len(files); expected_bytes=sum(item.byte_count for item in files)
+        expected_digest=_sha256_text(json.dumps(tuple((item.path,item.byte_count,item.digest) for item in files),separators=(",",":"),ensure_ascii=True))
+        if self.file_count!=expected_count or self.byte_count!=expected_bytes: raise InvariantError("artifact parity count or byte total does not match its manifest")
+        if _require_digest(self.manifest_digest,"artifact parity manifest")!=expected_digest: raise InvariantError("artifact parity digest does not match its manifest")
+        object.__setattr__(self,"files",files); object.__setattr__(self,"manifest_digest",expected_digest)
+    @classmethod
+    def from_files(cls, artifact:ArtifactIdentity, files:tuple[ArtifactFileEvidence,...]) -> "ArtifactParityReceipt":
+        ordered=tuple(sorted(files,key=lambda item:item.path)); manifest=_sha256_text(json.dumps(tuple((item.path,item.byte_count,item.digest) for item in ordered),separators=(",",":"),ensure_ascii=True))
+        return cls(artifact.key(),ordered,len(ordered),sum(item.byte_count for item in ordered),manifest)
+    def matches(self, artifact:ArtifactIdentity, paths:tuple[str,...]) -> bool:
+        return self.artifact_key==artifact.key() and tuple(item.path for item in self.files)==tuple(paths)
+
+@dataclass(frozen=True)
+class VisualReviewContract:
+    requested_surfaces:tuple[str,...]; reference_tokens:tuple[str,...]=(); reference_assets:tuple[str,...]=()
+    def __post_init__(self):
+        surfaces=tuple(sorted(value.strip() for value in self.requested_surfaces if isinstance(value,str) and value.strip()))
+        tokens=tuple(sorted(value.strip() for value in self.reference_tokens if isinstance(value,str) and value.strip()))
+        assets=_portable_paths(self.reference_assets,"visual reference assets",required=False)
+        if not surfaces or len(surfaces)!=len(self.requested_surfaces) or len(set(surfaces))!=len(surfaces): raise InvariantError("visual contract requires distinct requested surfaces")
+        if len(tokens)!=len(self.reference_tokens) or len(set(tokens))!=len(tokens): raise InvariantError("visual reference tokens must be distinct nonempty strings")
+        object.__setattr__(self,"requested_surfaces",surfaces); object.__setattr__(self,"reference_tokens",tokens); object.__setattr__(self,"reference_assets",assets)
+
+@dataclass(frozen=True)
+class VisualReviewReceipt:
+    inspected_surfaces:tuple[str,...]; compared_reference_tokens:tuple[str,...]; compared_reference_assets:tuple[str,...]; surface_evidence:tuple[tuple[str,str],...]; omissions:tuple[tuple[str,str],...]; substrate:VisualSubstrateState
+    def __post_init__(self):
+        surfaces=tuple(sorted(value.strip() for value in self.inspected_surfaces if isinstance(value,str) and value.strip()))
+        tokens=tuple(sorted(value.strip() for value in self.compared_reference_tokens if isinstance(value,str) and value.strip()))
+        assets=_portable_paths(self.compared_reference_assets,"compared visual reference assets",required=False)
+        if len(surfaces)!=len(self.inspected_surfaces) or len(set(surfaces))!=len(surfaces): raise InvariantError("visual review surfaces must be distinct nonempty strings")
+        if len(tokens)!=len(self.compared_reference_tokens) or len(set(tokens))!=len(tokens): raise InvariantError("compared visual tokens must be distinct nonempty strings")
+        evidence=_observable_pairs(self.surface_evidence,label="visual surface evidence")
+        if not evidence or any(not value.strip() for _,value in evidence): raise InvariantError("visual review requires directly reviewable evidence for each surface")
+        omissions=_observable_pairs(self.omissions,label="visual review omissions")
+        if not isinstance(self.substrate,VisualSubstrateState): raise InvariantError("visual review requires a typed substrate state")
+        object.__setattr__(self,"inspected_surfaces",surfaces); object.__setattr__(self,"compared_reference_tokens",tokens); object.__setattr__(self,"compared_reference_assets",assets); object.__setattr__(self,"surface_evidence",evidence); object.__setattr__(self,"omissions",omissions)
+    @property
+    def evidence_ids(self) -> tuple[str,...]: return tuple(dict.fromkeys(value for _,value in self.surface_evidence))
+    def complete_for(self, contract:VisualReviewContract) -> bool:
+        covered=tuple(surface for surface,_ in self.surface_evidence)
+        return isinstance(contract,VisualReviewContract) and self.inspected_surfaces==contract.requested_surfaces==covered and self.compared_reference_tokens==contract.reference_tokens and self.compared_reference_assets==contract.reference_assets and not self.omissions and self.substrate is VisualSubstrateState.REAL
+
+@dataclass(frozen=True)
+class DelegationContract:
+    task_id:str; deliverable:str; owner_id:str; custody_boundary:tuple[str,...]; artifact:ArtifactIdentity; artifact_paths:tuple[str,...]; required_proof_classes:tuple[ProofClass,...]; due_at:int; return_receipt_max_chars:int=2048; visual_review:VisualReviewContract|None=None
+    def __post_init__(self):
+        _safe_token(self.task_id); _safe_token(self.owner_id)
+        object.__setattr__(self,"deliverable",_bounded_readable(self.deliverable,"delegated deliverable",1024))
+        boundaries=_portable_paths(self.custody_boundary,"delegated custody boundary"); paths=_portable_paths(self.artifact_paths,"delegated artifact paths")
+        if any(not any(_path_in_boundary(path,boundary) for boundary in boundaries) for path in paths): raise InvariantError("every delegated artifact path must stay inside the exact custody boundary")
+        if not isinstance(self.artifact,ArtifactIdentity): raise InvariantError("delegated contract requires an exact artifact identity")
+        try: proof_classes=tuple(self.required_proof_classes)
+        except TypeError as error: raise InvariantError("delegated contract requires distinct typed proof classes") from error
+        if not proof_classes or any(not isinstance(item,ProofClass) for item in proof_classes) or len(set(proof_classes))!=len(proof_classes): raise InvariantError("delegated contract requires distinct typed proof classes")
+        if not isinstance(self.due_at,int) or isinstance(self.due_at,bool) or self.due_at<0: raise InvariantError("delegated contract requires a nonnegative due time")
+        if not isinstance(self.return_receipt_max_chars,int) or isinstance(self.return_receipt_max_chars,bool) or not 128<=self.return_receipt_max_chars<=4096: raise InvariantError("delegated return bound must be from 128 to 4096 characters")
+        if self.visual_review is not None and not isinstance(self.visual_review,VisualReviewContract): raise InvariantError("delegated visual review contract must be typed")
+        object.__setattr__(self,"custody_boundary",boundaries); object.__setattr__(self,"artifact_paths",paths); object.__setattr__(self,"required_proof_classes",proof_classes)
+
+@dataclass(frozen=True)
+class DelegatedReturnReceipt:
+    receipt_id:str; task_id:str; owner_id:str; verdict:DelegatedReceiptVerdict; artifact:ArtifactIdentity; summary:str; evidence:tuple[DelegatedEvidence,...]=(); parity:ArtifactParityReceipt|None=None; dirty_paths:tuple[str,...]=(); observed_at:int=0; blocker_kind:DelegationBlockerKind|None=None; first_blocker:str=""; remaining_in_scope:bool=False; visual_review:VisualReviewReceipt|None=None
+    def __post_init__(self):
+        _require_receipt_text(self.receipt_id,"delegated return receipt"); _safe_token(self.task_id); _safe_token(self.owner_id)
+        if not isinstance(self.verdict,DelegatedReceiptVerdict) or not isinstance(self.artifact,ArtifactIdentity): raise InvariantError("delegated return requires a typed verdict and exact artifact")
+        object.__setattr__(self,"summary",_bounded_readable(self.summary,"delegated return summary",4096))
+        try: evidence=tuple(self.evidence)
+        except TypeError as error: raise InvariantError("delegated return evidence must be distinct typed receipts") from error
+        if any(not isinstance(item,DelegatedEvidence) for item in evidence) or len({item.id for item in evidence})!=len(evidence): raise InvariantError("delegated return evidence must be distinct typed receipts")
+        if self.parity is not None and not isinstance(self.parity,ArtifactParityReceipt): raise InvariantError("delegated artifact parity must be typed")
+        object.__setattr__(self,"evidence",evidence); object.__setattr__(self,"dirty_paths",_portable_paths(self.dirty_paths,"delegated dirty paths",required=False))
+        if not isinstance(self.observed_at,int) or isinstance(self.observed_at,bool) or self.observed_at<0 or not isinstance(self.remaining_in_scope,bool): raise InvariantError("delegated return requires a nonnegative observation time and typed scope state")
+        if self.visual_review is not None and not isinstance(self.visual_review,VisualReviewReceipt): raise InvariantError("delegated visual review receipt must be typed")
+        if self.verdict is DelegatedReceiptVerdict.ACCEPT:
+            if self.blocker_kind is not None or not isinstance(self.first_blocker,str) or self.first_blocker.strip() or self.remaining_in_scope: raise InvariantError("delegated ACCEPT cannot carry blocker state")
+        else:
+            if not isinstance(self.blocker_kind,DelegationBlockerKind): raise InvariantError("delegated REJECT/BLOCKED requires a typed blocker kind")
+            object.__setattr__(self,"first_blocker",_bounded_readable(self.first_blocker,"delegated first blocker",1024))
+            if self.verdict is DelegatedReceiptVerdict.REJECT and self.blocker_kind is not DelegationBlockerKind.IN_SCOPE_WORK: raise InvariantError("delegated REJECT is an in-scope correction, not an external blocker")
+            if self.remaining_in_scope and self.blocker_kind in {DelegationBlockerKind.AUTHORITY,DelegationBlockerKind.ENVIRONMENT,DelegationBlockerKind.EXTERNAL_STATE}: raise InvariantError("remaining in-scope work cannot be classified as an external blocker")
+
+@dataclass(frozen=True)
+class DelegationDueStatus:
+    task_id:str; owner_id:str; due_at:int; evidence_debt:tuple[str,...]; first_blocker:str; action:DelegationRecoveryAction; review_owner:str=""
+    def __post_init__(self):
+        if not all(isinstance(value,str) and value.strip() for value in (self.task_id,self.owner_id)) or not isinstance(self.due_at,int) or self.due_at<0 or not isinstance(self.action,DelegationRecoveryAction): raise InvariantError("delegation due status requires task, owner, due time, and typed action")
+        try: debt=tuple(self.evidence_debt)
+        except TypeError as error: raise InvariantError("delegation evidence debt must be distinct readable items") from error
+        if any(not isinstance(item,str) or not item.strip() for item in debt) or len(set(debt))!=len(debt): raise InvariantError("delegation evidence debt must be distinct readable items")
+        if debt and (not isinstance(self.first_blocker,str) or not self.first_blocker.strip()): raise InvariantError("delegation evidence debt requires the first concrete blocker")
+        object.__setattr__(self,"evidence_debt",debt)
+
+def _human_line(value:str, label:str, limit:int) -> str:
+    if not isinstance(value,str) or not value.strip() or len(value.strip())>limit or any(character in "\r\n\t" or ord(character)<32 for character in value):
+        raise InvariantError(f"{label} must be one bounded human-readable line")
+    return value.strip()
+
+def _pulse_receipts(values:object, label:str, *, required:bool=False) -> tuple[str,...]:
+    try: receipts=tuple(values)  # type: ignore[arg-type]
+    except TypeError as error: raise InvariantError(f"{label} must be exact receipt identities") from error
+    if required and not receipts: raise InvariantError(f"{label} cannot be empty")
+    if any(not isinstance(value,str) or not value.strip() or any(character.isspace() or ord(character)<32 for character in value) for value in receipts) or len(set(receipts))!=len(receipts):
+        raise InvariantError(f"{label} must be distinct exact receipt identities")
+    return receipts
+
+@dataclass(frozen=True)
+class CtrlProgressMeasure:
+    completed_units:int|None=None; total_units:int|None=None; basis:str=""; receipt_ids:tuple[str,...]=(); observed_at:int=0
+    def __post_init__(self):
+        measured=self.completed_units is not None or self.total_units is not None
+        if measured:
+            if not isinstance(self.completed_units,int) or isinstance(self.completed_units,bool) or not isinstance(self.total_units,int) or isinstance(self.total_units,bool) or self.total_units<=0 or not 0<=self.completed_units<=self.total_units:
+                raise InvariantError("measured CTRL progress requires completed units within a positive declared total")
+            object.__setattr__(self,"basis",_human_line(self.basis,"CTRL progress basis",240))
+            object.__setattr__(self,"receipt_ids",_pulse_receipts(self.receipt_ids,"CTRL progress receipts",required=True))
+            if not isinstance(self.observed_at,int) or isinstance(self.observed_at,bool) or self.observed_at<=0: raise InvariantError("measured CTRL progress requires a positive observation time")
+        else:
+            if self.basis.strip() or self.receipt_ids or self.observed_at: raise InvariantError("unmeasured CTRL progress cannot carry guessed basis, receipts, or time")
+    @property
+    def percent(self)->int|None: return None if self.total_units is None else self.completed_units*100//self.total_units
+    @property
+    def label(self)->str: return "Unmeasured" if self.percent is None else f"{self.percent}%"
+
+@dataclass(frozen=True)
+class CtrlPulseProof:
+    receipt_id:str; proof_class:ProofClass; summary:str; claim_limit:str; surface_kind:CtrlSurfaceKind=CtrlSurfaceKind.INLINE_RECEIPT
+    def __post_init__(self):
+        object.__setattr__(self,"receipt_id",_pulse_receipts((self.receipt_id,),"CTRL pulse proof",required=True)[0])
+        if not isinstance(self.proof_class,ProofClass) or not isinstance(self.surface_kind,CtrlSurfaceKind): raise InvariantError("CTRL pulse proof requires typed proof and surface classes")
+        object.__setattr__(self,"summary",_human_line(self.summary,"CTRL pulse proof summary",240))
+        object.__setattr__(self,"claim_limit",_human_line(self.claim_limit,"CTRL pulse claim limit",240))
+    @property
+    def visual(self)->bool: return self.surface_kind in {CtrlSurfaceKind.INLINE_IMAGE,CtrlSurfaceKind.INLINE_RECORDING,CtrlSurfaceKind.INLINE_COMPARISON}
+
+@dataclass(frozen=True)
+class CtrlProjectPulse:
+    project_id:str; ctrl_id:str; state:TaskState; reason:CtrlPulseReason; progress:CtrlProgressMeasure; latest_material:str; update_receipt:str; next_action:str
+    proofs:tuple[CtrlPulseProof,...]=(); first_blocker:str=""; eta_at:int|None=None; work_kind:WorkKind=WorkKind.GENERAL; primary_visual_receipt:str=""; gallery_visual_receipts:tuple[str,...]=(); omissions:tuple[str,...]=()
+    def __post_init__(self):
+        object.__setattr__(self,"project_id",_human_line(self.project_id,"CTRL pulse project",128)); object.__setattr__(self,"ctrl_id",_human_line(self.ctrl_id,"CTRL pulse identity",128))
+        if not isinstance(self.state,TaskState) or not isinstance(self.reason,CtrlPulseReason) or not isinstance(self.progress,CtrlProgressMeasure) or not isinstance(self.work_kind,WorkKind): raise InvariantError("CTRL pulse requires typed state, reason, progress, and work kind")
+        object.__setattr__(self,"latest_material",_human_line(self.latest_material,"CTRL pulse material outcome",240)); object.__setattr__(self,"next_action",_human_line(self.next_action,"CTRL pulse next action",240)); object.__setattr__(self,"update_receipt",_pulse_receipts((self.update_receipt,),"CTRL pulse update",required=True)[0])
+        proofs=tuple(self.proofs)
+        if any(not isinstance(proof,CtrlPulseProof) for proof in proofs) or len({proof.receipt_id for proof in proofs})!=len(proofs): raise InvariantError("CTRL pulse proofs must be distinct typed receipts")
+        object.__setattr__(self,"proofs",proofs)
+        blocker=self.first_blocker.strip()
+        if blocker: object.__setattr__(self,"first_blocker",_human_line(blocker,"CTRL pulse first blocker",240))
+        if self.state in {TaskState.WAITING,TaskState.STALE} and not blocker: raise InvariantError("waiting or stale CTRL pulse requires the first concrete blocker")
+        if self.eta_at is not None and (not isinstance(self.eta_at,int) or isinstance(self.eta_at,bool) or self.eta_at<0): raise InvariantError("CTRL pulse ETA must be a nonnegative timestamp or unavailable")
+        omissions=tuple(_human_line(value,"CTRL pulse omission",240) for value in self.omissions)
+        if len(set(omissions))!=len(omissions): raise InvariantError("CTRL pulse omissions must be distinct")
+        object.__setattr__(self,"omissions",omissions)
+        visuals=tuple(proof.receipt_id for proof in proofs if proof.visual)
+        gallery=_pulse_receipts(self.gallery_visual_receipts,"CTRL pulse visual gallery")
+        visual_work=self.work_kind in {WorkKind.DESIGN,WorkKind.IMAGEGEN,WorkKind.IMAGE_EDIT}
+        if visual_work and not visuals: raise InvariantError("visual CTRL pulse requires directly surfaced inline visual proof")
+        if visuals:
+            primary=_pulse_receipts((self.primary_visual_receipt,),"CTRL pulse primary visual",required=True)[0]
+            if proofs[0].receipt_id!=primary or visuals!=(primary,*gallery): raise InvariantError("visual CTRL pulse must surface the highest-signal visual first and gallery every remaining visual")
+            object.__setattr__(self,"primary_visual_receipt",primary); object.__setattr__(self,"gallery_visual_receipts",gallery)
+        elif self.primary_visual_receipt.strip() or gallery: raise InvariantError("nonvisual CTRL pulse cannot claim visual presentation")
+    @property
+    def proof_classes(self)->tuple[ProofClass,...]: return tuple(dict.fromkeys(proof.proof_class for proof in self.proofs))
+    @property
+    def audit_receipts(self)->tuple[str,...]: return tuple(dict.fromkeys((self.update_receipt,*self.progress.receipt_ids,*(proof.receipt_id for proof in self.proofs))))
+    @property
+    def semantic_key(self)->tuple[object,...]:
+        return (self.state,self.progress.completed_units,self.progress.total_units,self.progress.basis,self.progress.receipt_ids,self.latest_material,tuple((proof.receipt_id,proof.proof_class,proof.summary,proof.claim_limit,proof.surface_kind) for proof in self.proofs),self.first_blocker,self.next_action,self.eta_at,self.work_kind,self.primary_visual_receipt,self.gallery_visual_receipts,self.omissions)
+    def human_view(self)->dict[str,object]:
+        return {"project":self.project_id,"ctrl":self.ctrl_id,"state":self.state.value,"progress":{"label":self.progress.label,"percent":self.progress.percent,"basis":self.progress.basis or None},"latest_material":self.latest_material,"latest_proof":self.proofs[0].summary if self.proofs else "No proof yet","first_blocker":self.first_blocker or None,"next_action":self.next_action,"eta_at":self.eta_at,"primary_visual":self.primary_visual_receipt or None,"gallery_count":len(self.gallery_visual_receipts),"omissions":self.omissions,"claim_limits":tuple(proof.claim_limit for proof in self.proofs)}
+
+@dataclass(frozen=True)
+class CtrlPulseAudit:
+    violations:tuple[str,...]=()
+    @property
+    def compliant(self)->bool: return not self.violations
+
+def audit_ctrl_project_pulses(pulses:tuple[CtrlProjectPulse,...], *, previous:tuple[CtrlProjectPulse,...]=()) -> CtrlPulseAudit:
+    """Validate one compact human pulse per project without consuming audit receipts."""
+    if any(not isinstance(pulse,CtrlProjectPulse) for pulse in (*pulses,*previous)): raise InvariantError("CTRL project pulse audit requires typed pulses")
+    violations=[]; project_ids=[pulse.project_id for pulse in pulses]
+    if len(set(project_ids))!=len(project_ids): violations.append("duplicate-project-pulse")
+    prior={pulse.project_id:pulse for pulse in previous}
+    for pulse in pulses:
+        old=prior.get(pulse.project_id)
+        if old is not None and pulse.semantic_key==old.semantic_key: violations.append(f"{pulse.project_id}:unchanged-heartbeat")
+    return CtrlPulseAudit(tuple(violations))
 @dataclass(frozen=True)
 class WatchdogBinding:
     """Optional alert route for one explicitly owned durable goal."""
@@ -818,7 +1120,7 @@ def select_graph(intake:TaskIntake, *, profile:GraphProfile|None=None)->GraphSel
             GraphNodeSpec("ctrl","CTRL","CTRL","Capture the objective, goal policy, graph, and final acceptance."),
             GraphNodeSpec("studio_lead","GAME_STUDIO_LEAD","LEAD","Own the integrated game plan and handoffs.",("ctrl",)),
             GraphNodeSpec("game_design","DESIGNER","SPECIALIST","Define the player contract, rules, UX, and content scope.",("studio_lead",)),
-            GraphNodeSpec("game_engineering","ENGINEER","SPECIALIST","Build deterministic runtime, platform, and integration surfaces.",("studio_lead",)),
+            GraphNodeSpec("game_engineering","DEV","SPECIALIST","Build deterministic runtime, platform, and integration surfaces.",("studio_lead",)),
             GraphNodeSpec("game_art","ARTIST","SPECIALIST","Produce the visual direction and production assets.",("studio_lead",)),
             GraphNodeSpec("game_audio","AUDIO","SPECIALIST","Produce the sound and music direction and assets.",("studio_lead",)),
             GraphNodeSpec("playtest_qa","QA","REVIEW","Exercise the integrated build and verify the player contract.",("game_design","game_engineering","game_art","game_audio")),
@@ -893,11 +1195,12 @@ def choose_depth(facts:TopologyFacts) -> Depth:
     return Depth.PROJECT if facts.architecture_gate else Depth.WORKSTREAM
 
 def correction_decision(*, material:bool, authority_failure:bool=False, ownership_failure:bool=False, acceptance_failure:bool=False, expected_future_cost:int=0, correction_cost:int=0, fix_forward_consumed:bool=False) -> CorrectionDecision:
-    """Pay coordination cost only when it lowers expected future cost, delay, or risk."""
+    """Ignore nits, fix one material finding locally, then escalate a repeat."""
     if material and any((authority_failure,ownership_failure,acceptance_failure)): return CorrectionDecision.REOPEN_TOPOLOGY
     if min(expected_future_cost,correction_cost)<0: raise InvariantError("correction costs must be nonnegative")
+    if not material: return CorrectionDecision.CONTINUE
     if expected_future_cost<=correction_cost: return CorrectionDecision.CONTINUE
-    if fix_forward_consumed: return CorrectionDecision.ESCALATE if material else CorrectionDecision.CONTINUE
+    if fix_forward_consumed: return CorrectionDecision.ESCALATE
     return CorrectionDecision.FIX_FORWARD
 
 @dataclass
@@ -907,8 +1210,8 @@ class Task:
     evidence: list[str]=field(default_factory=list); recovery_dimensions: set[str]=field(default_factory=set); recovery_attempts:int=0; review_value: ReviewValue=ReviewValue.NONE
     completed_at: int|None=None; stale_at: int|None=None; archived_at: int|None=None; stale_reason: str|None=None; superseded_by: str|None=None; promoted: list[str]=field(default_factory=list); extensions: int=0; review_passed: bool=False; risk:int=1; review_strategy:str="light"; architecture_review_floor:ReviewStrategy=ReviewStrategy.LIGHT; security_review_floor:ReviewStrategy=ReviewStrategy.LIGHT; artifacts:dict[ArtifactIdentity|str,str]=field(default_factory=dict); artifact_justifications:dict[str,ArtifactJustification]=field(default_factory=dict); artifact_provenance:dict[str,ArtifactProvenance]=field(default_factory=dict); archive:dict[str,object]=field(default_factory=dict); active_goal:bool=False; handoff_active:bool=False; correction_pending:bool=False; user_choice_pending:bool=False; ambiguous:bool=False; topology_receipt:tuple[str,...]=(); ctrl_event_receipt:tuple[str,str]|None=None; subagent_receipt:str=""; subagent_exception:SubagentException|None=None; subagent_exception_reason:str=""; goal_id:str=""; objective_version:int=1; milestone:str=""; review_horizon_minutes:int=30; milestone_started_at:int=0; milestone_history:list[tuple[int,str,str]]=field(default_factory=list); ctrl_feed_drift_count:int=0; superseded_ctrl_feed_ids:list[str]=field(default_factory=list); last_ctrl_feed_correction_id:str=""
 
-    ctrl_mode:CtrlMode=CtrlMode.DELEGATED; work_kind:WorkKind=WorkKind.GENERAL; assigned_profession:str=""; milestone_proof_kind:str=""; architecture_goal_id:str=""; architecture_map_version:int=0; architecture_receipts:list[tuple[int,str,str]]=field(default_factory=list); specialist_professions:dict[str,str]=field(default_factory=dict); specialist_goal_ids:dict[str,str]=field(default_factory=dict); specialist_map_versions:dict[str,int]=field(default_factory=dict); specialist_receipts:dict[str,list[tuple[int,str,str]]]=field(default_factory=dict)
-    lane_kind:LaneKind=LaneKind.OTHER; owning_lead_id:str=""; acceptance_contract:AcceptanceContract|None=None; gate_receipts:dict[str,GateReceipt]=field(default_factory=dict); unverified_gate_receipts:dict[str,GateReceipt]=field(default_factory=dict); plan_review_receipt:ReviewEvidence|None=None; acceptance_review_receipt:ReviewEvidence|None=None; incident_consultation_receipt:str=""; watchdog_binding:WatchdogBinding|None=None; watchdog_receipts:list[WatchdogReceipt]=field(default_factory=list); user_custody_required:bool=False; user_renamed:bool=False; user_pinned:bool=False; user_state_changed:bool=False
+    ctrl_mode:CtrlMode=CtrlMode.DELEGATED; work_kind:WorkKind=WorkKind.GENERAL; visual_ownership:VisualOwnership=VisualOwnership.PRODUCT_EXPERIENCE; assigned_profession:str=""; profession_assignment:ProfessionAssignment|None=None; milestone_proof_kind:str=""; architecture_goal_id:str=""; architecture_map_version:int=0; architecture_receipts:list[tuple[int,str,str]]=field(default_factory=list); specialist_professions:dict[str,str]=field(default_factory=dict); specialist_profession_assignments:dict[str,ProfessionAssignment]=field(default_factory=dict); specialist_goal_ids:dict[str,str]=field(default_factory=dict); specialist_map_versions:dict[str,int]=field(default_factory=dict); specialist_receipts:dict[str,list[tuple[int,str,str]]]=field(default_factory=dict)
+    lane_kind:LaneKind=LaneKind.OTHER; owning_lead_id:str=""; acceptance_contract:AcceptanceContract|None=None; delegation_contract:DelegationContract|None=None; delegated_return_receipts:list[DelegatedReturnReceipt]=field(default_factory=list); delegation_reorientations:int=0; gate_receipts:dict[str,GateReceipt]=field(default_factory=dict); unverified_gate_receipts:dict[str,GateReceipt]=field(default_factory=dict); plan_review_receipt:ReviewEvidence|None=None; acceptance_review_receipt:ReviewEvidence|None=None; incident_consultation_receipt:str=""; watchdog_binding:WatchdogBinding|None=None; watchdog_receipts:list[WatchdogReceipt]=field(default_factory=list); user_custody_required:bool=False; user_renamed:bool=False; user_pinned:bool=False; user_state_changed:bool=False
 
 @dataclass(frozen=True)
 class HostUserEvent:
@@ -994,7 +1297,7 @@ class Swarm:
         planned=plan_proof(replace(inputs,dependency_reach=reach,policy_version=self.proof_policy_version))
         gates=[]
         for gate in planned.gates:
-            freshness=self.proof_browser_freshness_seconds if gate.proof_class in {ProofClass.BROWSER_LOCAL,ProofClass.BROWSER_AUTHENTICATED} else self.proof_provider_freshness_seconds if gate.proof_class is ProofClass.PROVIDER else gate.freshness_seconds
+            freshness=self.proof_browser_freshness_seconds if gate.proof_class in {ProofClass.BROWSER_LOCAL,ProofClass.BROWSER_AUTHENTICATED} else self.proof_provider_freshness_seconds if gate.proof_class in {ProofClass.AUTH,ProofClass.PROVIDER,ProofClass.PAYMENT} else gate.freshness_seconds
             cache=gate.cache_policy if self.proof_receipt_reuse else CachePolicy.NEVER
             flake=FlakePolicy.TYPED_TRANSIENT_ONCE if self.proof_transient_retry_limit else FlakePolicy.NO_RETRY
             gates.append(replace(gate,cache_policy=cache,freshness_seconds=freshness,flake_policy=flake,timeout_seconds=self.proof_gate_timeout_seconds))
@@ -1056,7 +1359,7 @@ class Swarm:
                 "open":len(open_gates),"retries":sum(max(0,len(receipt.attempts)-1) for receipt in receipts),
                 "productive_gate_ms":sum(max(0,receipt.finished_at-receipt.started_at)*1000 for receipt in receipts),
             },
-            "claim_limit":"Runtime proof projection only; provider, deployed, device, and human claims remain open without isolated host receipts.",
+            "claim_limit":"Runtime proof projection only; authenticated, provider, payment, deployed, device, and human claims remain open without isolated host receipts.",
         }
 
     def revise_proof_plan(self, actor:Role, task_id:str, inputs:ProofInputs, *, actor_id:str) -> ProofPlan:
@@ -1282,7 +1585,7 @@ class Swarm:
     def _worker_identity(self, worker_id:str) -> None:
         if not isinstance(worker_id,str) or not worker_id.strip(): raise InvariantError("mutable worker identity is required")
         if worker_id.strip().upper()=="WATCHDOG": raise InvariantError("WATCHDOG is a reserved sensor identity, not a mutable worker")
-        if worker_id.strip().upper() in ({role.value for role in Role}|BUILT_IN_SPECIALISTS): raise InvariantError("authority or specialist role identity cannot own mutable worker execution")
+        if worker_id.strip().upper() in ({role.value for role in Role}|BUILT_IN_PROFESSION_TOKENS|RETIRED_PROFESSION_TOKENS): raise InvariantError("authority, profession, or retired role identity cannot own mutable worker execution")
     def _known_watchdog_identity(self, task:Task, role:WatchdogRouteRole, identity:str) -> bool:
         if role is WatchdogRouteRole.CTRL: return identity=="CTRL"
         if role is WatchdogRouteRole.REVIEW: return identity=="INDEPENDENT_REVIEW"
@@ -1391,15 +1694,102 @@ class Swarm:
             if not receipt.startswith("host:thread:") or len(receipt)==len("host:thread:"): raise InvariantError("subagent receipt must record the caller-declared host thread identity")
             return
         if not isinstance(exception,SubagentException) or not reason: raise InvariantError("every SWARM task requires a host subagent receipt or typed exact exception")
+    def _validate_delegation_contract(self, task:Task) -> None:
+        if task.ctrl_mode is CtrlMode.DIRECT: return
+        contract=task.delegation_contract
+        if not isinstance(contract,DelegationContract): raise InvariantError("delegated tasks require an exact deliverable, owner, custody, proof, due event, and readable return contract")
+        if contract.task_id!=task.id or contract.owner_id!=task.owner: raise InvariantError("delegation contract task and owner must match the assigned lane")
+        acceptance=task.acceptance_contract
+        if acceptance is not None and acceptance.artifact is not None and contract.artifact!=acceptance.artifact: raise InvariantError("delegation contract artifact must match the acceptance artifact")
+        visual=task.work_kind in {WorkKind.DESIGN,WorkKind.IMAGEGEN,WorkKind.IMAGE_EDIT}
+        if visual and contract.visual_review is None: raise InvariantError("visual delegation requires an exact surface/reference/evidence self-review contract")
+    def _delegation_debt(self, task:Task, receipt:DelegatedReturnReceipt|None) -> tuple[str,...]:
+        contract=task.delegation_contract
+        if not isinstance(contract,DelegationContract): return ("delegation_contract",)
+        if receipt is None:
+            debt=["readable_return_receipt","artifact_parity",*(f"proof:{item.value}" for item in contract.required_proof_classes)]
+            if contract.visual_review is not None: debt.append("visual_self_review")
+            return tuple(debt)
+        debt=[]
+        if receipt.verdict is not DelegatedReceiptVerdict.ACCEPT: debt.append("accepted_return_receipt")
+        if receipt.parity is None or not receipt.parity.matches(contract.artifact,contract.artifact_paths): debt.append("artifact_parity")
+        provided={item.proof_class for item in receipt.evidence if item.artifact_key==contract.artifact.key()}
+        debt.extend(f"proof:{item.value}" for item in contract.required_proof_classes if item not in provided)
+        if any(not any(_path_in_boundary(path,boundary) for boundary in contract.custody_boundary) for path in receipt.dirty_paths): debt.append("dirty_custody")
+        if contract.visual_review is not None:
+            visual=receipt.visual_review
+            if visual is None: debt.append("visual_self_review")
+            else:
+                if visual.inspected_surfaces!=contract.visual_review.requested_surfaces: debt.append("visual_surfaces")
+                if tuple(surface for surface,_ in visual.surface_evidence)!=contract.visual_review.requested_surfaces: debt.append("visual_evidence_coverage")
+                if visual.compared_reference_tokens!=contract.visual_review.reference_tokens or visual.compared_reference_assets!=contract.visual_review.reference_assets: debt.append("visual_reference_parity")
+                if visual.substrate is not VisualSubstrateState.REAL: debt.append(f"visual_substrate:{visual.substrate.value.lower()}")
+                if visual.omissions: debt.append("visual_omissions")
+                reviewable=True
+                for evidence_id in visual.evidence_ids:
+                    item=self.ctrl_evidence_ledger.get(evidence_id)
+                    if item is None or item.task_id!=task.id or item.disposition is not EvidenceDisposition.SURFACED or item.surface_kind not in {CtrlSurfaceKind.INLINE_IMAGE,CtrlSurfaceKind.INLINE_RECORDING,CtrlSurfaceKind.INLINE_COMPARISON}: reviewable=False; break
+                if not reviewable: debt.append("visual_direct_evidence")
+        return tuple(dict.fromkeys(debt))
+    def _delegated_return_ready(self, task:Task) -> bool:
+        receipt=task.delegated_return_receipts[-1] if task.delegated_return_receipts else None
+        return bool(receipt is not None and receipt.verdict is DelegatedReceiptVerdict.ACCEPT and not self._delegation_debt(task,receipt))
+    def record_delegated_return(self, actor:Role, task_id:str, receipt:DelegatedReturnReceipt|DelegatedSignal|None, *, actor_id:str) -> DelegatedReturnReceipt:
+        """Record one bounded owner return; activity signals never become handoff proof."""
+        self._role(actor,{Role.LEAD,Role.DOER}); task=self.tasks[task_id]; self._validate_delegation_contract(task)
+        if not isinstance(receipt,DelegatedReturnReceipt): raise InvariantError("task creation, dispatch, commentary, timeout, silence, unreadable output, and in-progress state are not delegated return receipts")
+        contract=task.delegation_contract
+        if contract is None: raise InvariantError("delegated task has no return contract")
+        if actor_id.strip()!=contract.owner_id or receipt.owner_id!=contract.owner_id or receipt.task_id!=task.id or receipt.artifact!=contract.artifact: raise InvariantError("delegated return must bind the exact task, owner, and artifact")
+        if len(receipt.summary)>contract.return_receipt_max_chars: raise InvariantError("delegated return exceeds its bounded readable contract")
+        if task.state in {TaskState.COMPLETE,TaskState.STALE,TaskState.ARCHIVED,TaskState.ARCHIVED_STALE}: raise InvariantError("delegated return cannot rewrite terminal task state")
+        if any(item.artifact_key!=contract.artifact.key() for item in receipt.evidence): raise InvariantError("delegated evidence must bind the exact contract artifact")
+        if receipt.parity is not None and not receipt.parity.matches(contract.artifact,contract.artifact_paths): raise InvariantError("delegated artifact path/count/hash parity does not match the contract")
+        if any(not any(_path_in_boundary(path,boundary) for boundary in contract.custody_boundary) for path in receipt.dirty_paths): raise InvariantError("delegated dirty custody escapes the assigned boundary")
+        if any(item.receipt_id==receipt.receipt_id for item in task.delegated_return_receipts): raise InvariantError("delegated return receipt identity must be unique")
+        debt=self._delegation_debt(task,receipt)
+        if receipt.verdict is DelegatedReceiptVerdict.ACCEPT and debt: raise InvariantError(f"delegated ACCEPT remains unverified: {','.join(debt)}")
+        task.delegated_return_receipts.append(receipt)
+        if len(task.delegated_return_receipts)>16: del task.delegated_return_receipts[:-16]
+        task.review_passed=False; task.acceptance_review_receipt=None
+        if receipt.verdict is DelegatedReceiptVerdict.ACCEPT: task.state=TaskState.REVIEW; task.handoff_active=True
+        elif receipt.verdict is DelegatedReceiptVerdict.BLOCKED: task.state=TaskState.WAITING; task.findings.append(receipt.first_blocker)
+        else: task.state=TaskState.ACTIVE; task.findings.append(receipt.first_blocker)
+        return receipt
+    def delegation_due(self, task_id:str, *, now:int, existing_review_owner:str="") -> DelegationDueStatus:
+        """Surface evidence debt at one due event without creating replacement owners."""
+        task=self.tasks[task_id]; self._validate_delegation_contract(task); contract=task.delegation_contract
+        if contract is None: raise InvariantError("delegated task has no due contract")
+        receipt=task.delegated_return_receipts[-1] if task.delegated_return_receipts else None; debt=self._delegation_debt(task,receipt)
+        labels={"delegation_contract":"delegation contract is missing","readable_return_receipt":"readable delegated return receipt is missing","accepted_return_receipt":"delegated work has not returned ACCEPT","artifact_parity":"artifact path/count/hash parity is missing","dirty_custody":"dirty custody is outside the assigned boundary","visual_self_review":"visual self-review receipt is missing","visual_surfaces":"one or more requested visual surfaces were not inspected","visual_evidence_coverage":"one or more requested visual surfaces lack direct evidence","visual_reference_parity":"reference tokens or assets were not compared exactly","visual_omissions":"visual omissions remain","visual_direct_evidence":"visual evidence is not directly reviewable"}
+        first=receipt.first_blocker if receipt is not None and receipt.verdict is not DelegatedReceiptVerdict.ACCEPT else labels.get(debt[0],debt[0]) if debt else ""
+        action=DelegationRecoveryAction.NONE; review_owner=""
+        if now>=contract.due_at and debt:
+            if task.delegation_reorientations<1: task.delegation_reorientations+=1; action=DelegationRecoveryAction.REORIENT_OWNER
+            elif existing_review_owner.strip():
+                review_owner=existing_review_owner.strip()
+                if not task.reviewer or review_owner!=task.reviewer or review_owner in {task.owner,task.creator}: raise InvariantError("due routing requires an existing independent review owner")
+                action=DelegationRecoveryAction.ROUTE_EXISTING_REVIEW
+            else: action=DelegationRecoveryAction.HOLD
+        return DelegationDueStatus(task.id,contract.owner_id,contract.due_at,debt,first,action,review_owner)
     def _validate_task_acceptance(self, task:Task) -> None:
-        if not isinstance(task.work_kind,WorkKind): raise InvariantError("task requires a typed work kind")
-        if task.work_kind in {WorkKind.DESIGN,WorkKind.IMAGEGEN,WorkKind.IMAGE_EDIT} and task.assigned_profession.strip().upper()!="DESIGNER": raise InvariantError("design and image work require a DESIGNER assignment")
+        if not isinstance(task.work_kind,WorkKind) or not isinstance(task.visual_ownership,VisualOwnership): raise InvariantError("task requires typed work kind and visual ownership")
+        facts=WorkRoutingFacts(WorkSize.SMALL,True,True,1,work_kind=task.work_kind,visual_ownership=task.visual_ownership)
+        required=facts.required_visual_profession()
+        if task.profession_assignment is not None and not isinstance(task.profession_assignment,ProfessionAssignment): raise InvariantError("task profession assignment must use the typed profession namespace")
+        supplied=task.profession_assignment.profession_id if task.profession_assignment is not None else task.assigned_profession
+        if required:
+            if not supplied.strip(): raise InvariantError(f"{task.visual_ownership.value} {task.work_kind.value} work requires the {BUILT_IN_PROFESSIONS[required]} profession")
+            try: actual=resolve_profession_id(supplied)
+            except ValueError as error: raise InvariantError(str(error)) from error
+            if actual!=required: raise InvariantError(f"{task.visual_ownership.value} {task.work_kind.value} work requires the {BUILT_IN_PROFESSIONS[required]} profession")
         if task.ctrl_mode is CtrlMode.DIRECT and task.work_kind is not WorkKind.GENERAL: raise InvariantError("CTRL_DIRECT tasks must use the GENERAL work kind")
         if not isinstance(task.lane_kind,LaneKind): raise InvariantError("task requires a typed lane kind")
         empty=task.acceptance_contract is not None and task.acceptance_contract.explicitly_empty
         if empty and task.lane_kind is not LaneKind.NON_CODE: raise InvariantError("empty acceptance contracts are allowed only for NON_CODE lanes")
         if task.lane_kind is LaneKind.CODE and (task.acceptance_contract is None or empty or not task.acceptance_contract.required_gates): raise InvariantError("CODE lanes require an exact acceptance contract with at least one named gate")
         if task.artifacts and (task.acceptance_contract is None or empty): raise InvariantError("artifact-producing lanes cannot use an empty acceptance contract")
+        self._validate_delegation_contract(task)
     def _bind_task_lead(self, task:Task, worker:Worker) -> None:
         if task.owning_lead_id and task.owning_lead_id!=worker.lead: raise InvariantError("task owning LEAD identity must match the assigned worker lead")
         task.owning_lead_id=worker.lead
@@ -1422,15 +1812,17 @@ class Swarm:
         self.workers[worker.id]=worker
     def start_atomic(self, actor:Role, task:Task) -> None:
         """CTRL may create exactly one direct DOER ownership path for atomic work."""
-        self._role(actor,{Role.CTRL}); self._require_subagent_contract(task); self._validate_task_acceptance(task); self._worker_identity(task.owner)
+        self._role(actor,{Role.CTRL}); self._require_subagent_contract(task)
         if task.work_kind is not WorkKind.GENERAL: raise InvariantError("CTRL atomic ownership is limited to GENERAL work")
+        self._worker_identity(task.owner); self._validate_task_acceptance(task)
         if task.owner in self.workers or task.id in self.tasks: raise InvariantError("atomic ownership already exists")
         task.topology_receipt=("CTRL","DOER","atomic:isolated"); self.workers[task.owner]=Worker(task.owner,"CTRL",1,WorkerState.ACTIVE,{task.id}); self.tasks[task.id]=task
     def start_ctrl_direct(self, actor:Role, task:Task, *, outcomes:int, mutable_surfaces:int, cross_lane_dependency:bool, measurable_minutes:int) -> None:
-        self._role(actor,{Role.CTRL}); self._require_subagent_contract(task); self._validate_task_acceptance(task)
+        self._role(actor,{Role.CTRL}); self._require_subagent_contract(task)
         if ctrl_mode(outcomes=outcomes,mutable_surfaces=mutable_surfaces,cross_lane_dependency=cross_lane_dependency,risk=task.risk,measurable_minutes=measurable_minutes,direct_horizon_minutes=self.direct_work_horizon,work_kind=task.work_kind) is not CtrlMode.DIRECT: raise InvariantError("CTRL_DIRECT predicate failed; hire a LEAD")
+        task.ctrl_mode=CtrlMode.DIRECT; self._validate_task_acceptance(task)
         if task.owner.strip().upper()!=Role.CTRL.value or task.id in self.tasks: raise InvariantError("CTRL_DIRECT requires the sole CTRL owner and a new atomic task")
-        task.ctrl_mode=CtrlMode.DIRECT; task.topology_receipt=("CTRL_DIRECT","atomic:one-surface"); self.tasks[task.id]=task
+        task.topology_receipt=("CTRL_DIRECT","atomic:one-surface"); self.tasks[task.id]=task
     def reuse_warm(self, actor:Role, task:Task, *, architecture:dict[str,int], affinity:int) -> str|None:
         self._role(actor,{Role.LEAD,Role.CTRL}); self._require_subagent_contract(task); self._validate_task_acceptance(task)
         for worker in self.workers.values():
@@ -1584,16 +1976,17 @@ class Swarm:
         self._role(actor,{Role.ARCHITECT})
         self.specialist_event(Role.SPECIALIST,task_id,specialist_id="architect",profession="ARCHITECT",goal_id=goal_id,accepted_change=accepted_change,invalidates_map=invalidates_map,receipt=receipt,decision_or_blocker=decision_or_blocker)
         t=self.tasks[task_id]; t.architecture_goal_id=t.specialist_goal_ids["architect"]; t.architecture_map_version=t.specialist_map_versions["architect"]; t.architecture_receipts=t.specialist_receipts["architect"]
-    def specialist_event(self, actor:Role, task_id:str, *, specialist_id:str, profession:str, goal_id:str, accepted_change:str, invalidates_map:bool, receipt:str, decision_or_blocker:str="") -> None:
-        self._role(actor,{Role.SPECIALIST}); t=self.tasks[task_id]; identity=specialist_id.strip(); name=profession.strip().upper()
-        if not identity or any(character in identity for character in "\r\n\t") or not name or any(character in name for character in "\r\n\t"): raise InvariantError("specialist requires a stable instance identity and concrete profession")
-        if name=="MOTHER" and invalidates_map: raise InvariantError("MOTHER manager specialist is advisory and cannot invalidate architecture")
+    def specialist_event(self, actor:Role, task_id:str, *, specialist_id:str, profession:str, goal_id:str, accepted_change:str, invalidates_map:bool, receipt:str, decision_or_blocker:str="", domain:str="", truth_surface:str="") -> None:
+        self._role(actor,{Role.SPECIALIST}); t=self.tasks[task_id]; identity=specialist_id.strip()
+        if not identity or any(character in identity for character in "\r\n\t"): raise InvariantError("specialist requires a stable instance identity")
+        assignment=ProfessionAssignment(profession,domain,truth_surface)
+        name=assignment.label.upper()
         if not all(item.strip() for item in (goal_id,accepted_change,receipt)) or (invalidates_map and not decision_or_blocker.strip()): raise InvariantError("specialist event requires durable goal, accepted change, receipt, and consequential decision when invalidated")
-        existing_profession=t.specialist_professions.get(identity)
-        if existing_profession and existing_profession!=name: raise InvariantError("specialist instance profession cannot change")
+        existing_assignment=t.specialist_profession_assignments.get(identity)
+        if existing_assignment and existing_assignment!=assignment: raise InvariantError("specialist instance profession cannot change")
         existing=t.specialist_goal_ids.get(identity)
         if existing and existing!=goal_id: raise InvariantError("specialist durable goal cannot be replaced")
-        t.specialist_professions[identity]=name; t.specialist_goal_ids[identity]=goal_id; version=t.specialist_map_versions.get(identity,0)+(1 if invalidates_map else 0); t.specialist_map_versions[identity]=version
+        t.specialist_profession_assignments[identity]=assignment; t.specialist_professions[identity]=name; t.specialist_goal_ids[identity]=goal_id; version=t.specialist_map_versions.get(identity,0)+(1 if invalidates_map else 0); t.specialist_map_versions[identity]=version
         t.specialist_receipts.setdefault(identity,[]).append((version,"UPDATE" if invalidates_map else "NO_IMPACT",decision_or_blocker or receipt))
     def wait(self, actor: Role, task_id: str, dependency: str) -> None:
         self._role(actor,{Role.DOER}); t=self.tasks[task_id]
@@ -1772,7 +2165,7 @@ class Swarm:
             t.review_passed=False; t.acceptance_review_receipt=None; t.state=TaskState.ACTIVE
         return receipt
     def _record_host_external_proof(self, actor:Role, task_id:str, gate:str, *, actor_id:str, evidence_digest:str, observed_at:int, host_signature:str) -> GateReceipt:
-        """Host-adapter seam for provider, deployed, device, and human observations."""
+        """Host-adapter seam for auth, provider, payment, deployed, device, and human observations."""
         raise InvariantError("HOST_AUTHORITY_REQUIRED: external proof stays UNVERIFIED until an isolated host verifier records it")
     def adopt_gate_receipt(self, actor:Role, target_task_id:str, source_task_id:str, gate:str, *, actor_id:str) -> GateReceipt:
         """Adopt only a current runtime-authoritative receipt with the same exact proof key."""
@@ -1815,6 +2208,7 @@ class Swarm:
         evidence=task.acceptance_review_receipt; contract=task.acceptance_contract
         try: self._validate_task_acceptance(task)
         except InvariantError: return False
+        if task.ctrl_mode is CtrlMode.DELEGATED and not self._delegated_return_ready(task): return False
         if contract is None: return False
         if contract.explicitly_empty: return bool(task.review_passed and task.reviewer and evidence and evidence.scope is ReviewScope.ACCEPTANCE and evidence.reviewer==task.reviewer and evidence.artifact is None)
         if contract.proof_plan is None: return False
@@ -1844,6 +2238,7 @@ class Swarm:
             t.plan_review_receipt=evidence; t.review_passed=False; t.state=TaskState.ACTIVE
         elif passed and evidence.scope in {ReviewScope.ACCEPTANCE,ReviewScope.COMPOSED}:
             self._validate_task_acceptance(t)
+            if t.ctrl_mode is CtrlMode.DELEGATED and not self._delegated_return_ready(t): raise InvariantError("final review requires a readable exact-artifact delegated ACCEPT receipt; activity and in-progress state are not evidence")
             if t.acceptance_contract is None: raise InvariantError("acceptance review requires an explicit acceptance contract")
             if t.acceptance_contract.explicitly_empty:
                 if evidence.scope is not ReviewScope.ACCEPTANCE or evidence.artifact is not None or not dict(evidence.receipt).get("acceptance"): raise InvariantError("empty NON_CODE acceptance requires an independent acceptance receipt without an artifact")
@@ -1906,7 +2301,7 @@ class Swarm:
         if uncovered: raise InvariantError(f"material CTRL decision candidates require one surfaced final gallery: {','.join(uncovered)}")
         if not self._acceptance_ready(t) or not integration_ok or not architecture_ok: raise InvariantError("completion requires exact-artifact acceptance review and integration/architecture gates")
         def finish():
-            t.state=TaskState.COMPLETE; t.completed_at=now
+            t.state=TaskState.COMPLETE; t.completed_at=now; t.handoff_active=False
             for waiter in self.tasks.values():
                 if waiter.state==TaskState.WAITING and waiter.waiting_on==task_id: waiter.state=TaskState.ACTIVE; waiter.waiting_on=None
             worker=self.workers.get(t.owner)

@@ -210,27 +210,57 @@ workloads = ["simple"]
 tools = ["shell"]
 reasoning = ["low", "medium", "high", "xhigh"]
 
-[roles]
-# SPECIALIST is a free role: add any short concrete profession needed. These
-# examples are defaults, not an allowlist, and each may be used repeatedly.
-# MOTHER is a historical manager-style specialist profession only. It is never
-# a root, decision-maker, or final acceptor and uses the specialist policy.
-[roles.MOTHER]
-icon = "🐝"
-[roles.ARCHITECT]
-icon = "🏗️"
-[roles.ENGINEER]
-icon = "⚙️"
-[roles.DEVELOPER]
-icon = "💻"
-[roles.DESIGNER]
-icon = "🎨"
-[roles.RESEARCHER]
-icon = "🔬"
-[roles.ANALYST]
-icon = "📊"
-[roles.STRATEGIST]
+[professions]
+# Profession overrides select perspective presentation only; CTRL, LEAD, DOER,
+# REVIEW, ADVISOR, and structural SPECIALIST remain separate authority fields.
+[professions.manager]
+icon = "🗂️"
+[professions.strategist]
 icon = "🧭"
+[professions.researcher]
+icon = "🔬"
+[professions.analyst]
+icon = "📊"
+[professions.specialist]
+icon = "🧩"
+[professions.inventor]
+icon = "💡"
+[professions.architect]
+icon = "🏗️"
+[professions.designer]
+icon = "✏️"
+[professions.artist]
+icon = "🎨"
+[professions.writer]
+icon = "✍️"
+[professions.developer]
+icon = "💻"
+[professions.producer]
+icon = "🎬"
+[professions.tester]
+icon = "🧪"
+[professions.critic]
+icon = "🔍"
+[professions.security]
+icon = "🛡️"
+[professions.auditor]
+icon = "📋"
+[professions.legal]
+icon = "⚖️"
+[professions.reviewer]
+icon = "🔎"
+[professions.operator]
+icon = "⚙️"
+[professions.marketer]
+icon = "📣"
+[professions.support]
+icon = "🎧"
+[professions.accountant]
+icon = "🧾"
+[professions.recruiter]
+icon = "🤝"
+[professions.educator]
+icon = "🎓"
 
 [labels]
 # Domain coordinator; emoji from role_icons.lead.
@@ -252,7 +282,7 @@ review = "REVIEW"
 allow_coordinators = true
 # A justified LEAD must own at least this many child tasks.
 coordinator_min_children = 2
-# Soft span preference for every justified owner split. Three guides MOTHER,
+# Soft span preference for every justified owner split. Three guides Manager,
 # LEAD, DOER, REVIEW, and consequential planning work; it is never a quota,
 # trigger, or hard cutoff.
 preferred_lane_width = 3
@@ -270,7 +300,7 @@ allowed_for = ["exploration", "implementation", "testing", "review"]
 
 [review]
 # Create a dedicated REVIEW task when SWARM's review rules call for one. Turning
-# this off keeps QC mandatory but performs it inside an owning or MOTHER task.
+# this off keeps QC mandatory but performs it inside an owning task.
 task_enabled = true
 # Maximum user-visible REVIEW tasks active at once.
 max_parallel_tasks = 3
@@ -295,9 +325,10 @@ max_attempts = 1
 stall_after_updates = 2
 
 [lifecycle]
-# Auto-pin only the top-level CTRL task when it is created. Child lane tasks
-# remain unpinned unless an explicit user request or concrete review handoff
-# provides a typed pin receipt.
+# Compatibility signal only; this never authorizes automatic pinning. New tasks
+# remain pinned=false with placement_unverified. Only the host may consume an
+# exact explicit-user pin request, and any claimed placement must be disclosed
+# from a host-owned placement receipt.
 pin_created_tasks = true
 # Archive only after terminal acceptance when no concrete retention reason
 # remains. Pending review, correction, choice, continuation, goals, ownership,

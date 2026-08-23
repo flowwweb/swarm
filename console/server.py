@@ -1081,6 +1081,63 @@ class ConsoleStore:
             for key in ("milestones", "checkpoints", "receipts")
         ):
             return False
+        plan_units = progress_basis.get("plan_units")
+        if plan_units is not None:
+            receipts = progress_basis.get("receipts")
+            if (
+                not isinstance(plan_units, dict)
+                or not isinstance(receipts, list)
+                or not receipts
+                or any(not isinstance(item, str) or not item.strip() for item in receipts)
+            ):
+                return False
+            total_units = plan_units.get("total_units")
+            completed_units = plan_units.get("completed_units")
+            observed_at_ms = plan_units.get("observed_at_ms")
+            raw_basis = plan_units.get("basis")
+            plan_id = plan_units.get("plan_id")
+            unit_id = plan_units.get("unit_id")
+            unit_kind = plan_units.get("unit_kind")
+            if (
+                not isinstance(total_units, int)
+                or isinstance(total_units, bool)
+                or total_units <= 0
+                or not isinstance(completed_units, int)
+                or isinstance(completed_units, bool)
+                or not 0 <= completed_units <= total_units
+                or not isinstance(observed_at_ms, int)
+                or isinstance(observed_at_ms, bool)
+                or not 0 < observed_at_ms <= now_ms
+                or not isinstance(raw_basis, str)
+                or not raw_basis.strip()
+                or len(raw_basis.strip()) > 128
+                or any(character in raw_basis for character in "\r\n\t")
+                or not isinstance(plan_id, str)
+                or not plan_id.strip()
+                or len(plan_id.strip()) > 128
+                or any(character in plan_id for character in "\r\n\t")
+                or not isinstance(unit_id, str)
+                or not unit_id.strip()
+                or len(unit_id.strip()) > 128
+                or any(character in unit_id for character in "\r\n\t")
+                or not isinstance(unit_kind, str)
+                or not unit_kind.strip()
+                or len(unit_kind.strip()) > 64
+                or any(character in unit_kind for character in "\r\n\t")
+            ):
+                return False
+            progress_basis = {
+                **progress_basis,
+                "plan_units": {
+                    "total_units": total_units,
+                    "completed_units": completed_units,
+                    "basis": raw_basis.strip(),
+                    "observed_at_ms": observed_at_ms,
+                    "plan_id": plan_id.strip(),
+                    "unit_id": unit_id.strip(),
+                    "unit_kind": unit_kind.strip(),
+                },
+            }
         reason_code = payload.get("reason_code")
         if reason_code not in {
             "scope_discovered", "dependency", "failed_proof", "environment",
@@ -2239,11 +2296,24 @@ def _project_identity(row: sqlite3.Row) -> tuple[str, str]:
     return f"project:{hashlib.sha256(authority.encode()).hexdigest()[:16]}", name or "Local"
 
 
+def _controller_classification(row: sqlite3.Row) -> dict[str, str | None]:
+    """Read the persisted host role field; titles and graph position are not authority."""
+    if str(row["agent_role"] or "").strip().casefold() == "ctrl":
+        return {
+            "controller_classification": "swarm_ctrl",
+            "controller_classification_source": "host_threads.agent_role",
+        }
+    return {
+        "controller_classification": "unavailable",
+        "controller_classification_source": None,
+    }
+
+
 def _role_from_title(
     title: str,
     labels: dict[str, str],
     role_icons: dict[str, Any],
-    roles: dict[str, Any] | None = None,
+    professions: dict[str, Any] | None = None,
 ) -> dict[str, str] | None:
     if not title or len(title) > 180 or "\n" in title or "\r" in title:
         return None
@@ -2274,8 +2344,6 @@ def _role_from_title(
         upper = role_label.upper()
         if upper == "CTRL":
             role_kind = "ctrl"
-        elif upper == "MOTHER":
-            role_kind = "specialist"
         elif upper == "LEAD":
             role_kind = "lead"
         elif upper == "DOER":
@@ -2286,19 +2354,10 @@ def _role_from_title(
     if role_icons["enabled"]:
         if role_kind in {"ctrl", "lead", "review"}:
             icon = str(role_icons[role_kind])
-        elif role_kind == "specialist" and role_label.casefold() == "mother":
-            mother = next(
-                (
-                    value
-                    for name, value in (roles or {}).items()
-                    if name.casefold() == "mother" and isinstance(value, dict)
-                ),
-                {},
-            )
-            icon = str(mother.get("icon", "🐝"))
         else:
             upper = role_label.upper()
-            preferred = next(
+            profession_override=next((value for name,value in (professions or {}).items() if name.casefold()==role_label.casefold() and isinstance(value,dict)),{})
+            preferred = str(profession_override.get("icon","")) or next(
                 (
                     value
                     for marker, value in (
@@ -2409,8 +2468,7 @@ def build_overview(codex_home: Path, config_path: Path) -> dict[str, Any]:
                    git_branch, thread_source, agent_nickname, agent_role, is_pinned,
                    {agent_path_projection}
             FROM threads
-            WHERE archived = 0
-              AND (
+            WHERE (
                 updated_at_ms >= ?
                 OR (updated_at_ms IS NULL AND updated_at >= ?)
                 {goal_clause}
@@ -2431,7 +2489,7 @@ def build_overview(codex_home: Path, config_path: Path) -> dict[str, Any]:
         for thread_id, row in all_rows.items()
         if (
             role := _role_from_title(
-                row["title"], labels, config["role_icons"], config["roles"]
+                row["title"], labels, config["role_icons"], config["professions"]
             )
         )
     }
@@ -2613,6 +2671,7 @@ def build_overview(codex_home: Path, config_path: Path) -> dict[str, Any]:
             "quiet_ms": max(0, now_ms - updated_ms) if updated_ms else None,
             "branch": row["git_branch"] or "",
             "pinned": bool(row["is_pinned"]),
+            "archived": bool(row["archived"]),
             "surface": str(row["thread_source"] or "task").strip().casefold() or "task",
             "is_subagent": str(row["thread_source"] or "").strip().casefold() in {"subagent", "internal_subagent"},
             "virtual": False,
@@ -2710,6 +2769,9 @@ def build_overview(codex_home: Path, config_path: Path) -> dict[str, Any]:
                 "project_id": controller["project_id"],
                 "project": controller["project"],
                 "status": controller["status"],
+                "archived": bool(controller.get("archived", False)),
+                "archive_source": "host_threads.archived",
+                **_controller_classification(all_rows[controller_id]),
                 "virtual": controller["virtual"],
                 "nodes": len(descendants),
                 "active": sum(nodes[node_id]["status"] == "active" for node_id in descendants),
@@ -2832,6 +2894,71 @@ class App:
                 return overview
 
     @staticmethod
+    def _receipt_backed_progress(node: dict[str, Any]) -> dict[str, Any] | None:
+        eta = node.get("eta")
+        if not isinstance(eta, dict) or eta.get("trigger") != "task_owner_report":
+            return None
+        progress_basis = eta.get("progress_basis")
+        if not isinstance(progress_basis, dict):
+            return None
+        plan_units = progress_basis.get("plan_units")
+        receipts = progress_basis.get("receipts")
+        receipt_source = eta.get("receipt_source")
+        if (
+            not isinstance(plan_units, dict)
+            or not isinstance(receipts, list)
+            or not receipts
+            or any(not isinstance(item, str) or not item.strip() for item in receipts)
+            or not isinstance(receipt_source, str)
+            or not receipt_source.strip()
+        ):
+            return None
+        total_units = plan_units.get("total_units")
+        completed_units = plan_units.get("completed_units")
+        observed_at_ms = plan_units.get("observed_at_ms")
+        basis = plan_units.get("basis")
+        plan_id = plan_units.get("plan_id")
+        unit_id = plan_units.get("unit_id")
+        unit_kind = plan_units.get("unit_kind")
+        if (
+            not isinstance(total_units, int)
+            or isinstance(total_units, bool)
+            or total_units <= 0
+            or not isinstance(completed_units, int)
+            or isinstance(completed_units, bool)
+            or not 0 <= completed_units <= total_units
+            or not isinstance(observed_at_ms, int)
+            or isinstance(observed_at_ms, bool)
+            or observed_at_ms <= 0
+            or not isinstance(basis, str)
+            or not basis.strip()
+            or not isinstance(plan_id, str)
+            or not plan_id.strip()
+            or not isinstance(unit_id, str)
+            or not unit_id.strip()
+            or not isinstance(unit_kind, str)
+            or not unit_kind.strip()
+        ):
+            return None
+        return {
+            "percent": round(completed_units * 100 / total_units, 2),
+            "total_units": total_units,
+            "completed_units": completed_units,
+            "basis": basis.strip(),
+            "plan_id": plan_id.strip(),
+            "unit_id": unit_id.strip(),
+            "unit_kind": unit_kind.strip(),
+            "observed_at_ms": observed_at_ms,
+            "source": "task_owner_report",
+            "receipt_count": len(receipts),
+            "claim_limit": (
+                "Derived server-side from validated receipt-backed plan units in an observed "
+                "task-owner planning report; this does not prove host/user authority, acceptance, "
+                "or task progress."
+            ),
+        }
+
+    @staticmethod
     def _progress_for_nodes(nodes: list[dict[str, Any]], scope: dict[str, Any]) -> dict[str, Any]:
         tasks = [
             node for node in nodes
@@ -2844,6 +2971,7 @@ class App:
             media = proof.get("media") if isinstance(proof.get("media"), list) else []
             latest_proof = media[0] if media and isinstance(media[0], dict) else {}
             blocked = node.get("status") == "blocked" or eta.get("status") == "blocked"
+            progress = App._receipt_backed_progress(node)
             task_items.append({
                 "id": node["id"],
                 "project_id": node.get("project_id"),
@@ -2851,15 +2979,59 @@ class App:
                 "blocked": blocked,
                 "blocker": eta.get("reason") if blocked else None,
                 "latest_proof_receipt": latest_proof.get("evidence_id"),
+                "progress": progress,
+                "progress_display": f"{progress['percent']:g}%" if progress else "Unmeasured",
             })
         completed = sum(item["state"] in {"done", "archived", "complete"} for item in task_items)
         blocked = sum(bool(item["blocked"]) for item in task_items)
+        measured = [item["progress"] for item in task_items if item["progress"] is not None]
+        aggregate = None
+        if not task_items:
+            unmeasured_reason = "no_tasks"
+        elif len(measured) != len(task_items):
+            unmeasured_reason = "missing_receipt_backed_units"
+        elif (
+            len({(item["plan_id"], item["unit_kind"]) for item in measured}) != 1
+            or len({item["unit_id"] for item in measured}) != len(measured)
+        ):
+            unmeasured_reason = "heterogeneous_plan_units"
+        else:
+            total_units = sum(item["total_units"] for item in measured)
+            completed_units = sum(item["completed_units"] for item in measured)
+            aggregate = {
+                "percent": round(completed_units * 100 / total_units, 2),
+                "total_units": total_units,
+                "completed_units": completed_units,
+                "basis": (
+                    measured[0]["basis"]
+                    if len({item["basis"] for item in measured}) == 1
+                    else "Receipt-backed plan units"
+                ),
+                "plan_id": measured[0]["plan_id"],
+                "unit_kind": measured[0]["unit_kind"],
+                "unit_ids": sorted(item["unit_id"] for item in measured),
+                "observed_at_ms": max(item["observed_at_ms"] for item in measured),
+                "source": "task_owner_report",
+                "receipt_count": sum(item["receipt_count"] for item in measured),
+                "claim_limit": (
+                    "Derived server-side only from compatible validated receipt-backed plan units; "
+                    "this observed planning measure is not acceptance or host/user authority."
+                ),
+            }
+            unmeasured_reason = None
         return {
             "scope": scope,
             "status": "no_tasks" if not task_items else "observed",
             "counts": {"tasks": len(task_items), "completed": completed, "blocked": blocked},
             "tasks": task_items,
-            "claim_limit": "Observed non-subagent host task states only; no completion percentage is inferred.",
+            "progress": aggregate,
+            "progress_display": f"{aggregate['percent']:g}%" if aggregate else "Unmeasured",
+            "measurement_status": "measured" if aggregate else "unmeasured",
+            "unmeasured_reason": unmeasured_reason,
+            "claim_limit": (
+                "Observed non-subagent task counts plus compatible receipt-backed plan units only; "
+                "status, token volume, elapsed time, and proof counts never fabricate percentage."
+            ),
         }
 
     @classmethod
@@ -2975,9 +3147,23 @@ class App:
         project_id: str | None = None,
         ctrl_id: str | None = None,
         hours: int = 24,
+        target_reset_at_ms: int | None = None,
+        remaining_token_budget: int | None = None,
     ) -> dict[str, Any]:
-        if isinstance(hours, bool) or not isinstance(hours, int) or not 1 <= hours <= 24 * 30:
-            raise ConsoleError("hours must be an integer from 1 to 720")
+        if isinstance(hours, bool) or hours not in {1, 12, 24}:
+            raise ConsoleError("hours must be one of 1, 12, or 24")
+        if target_reset_at_ms is not None and (
+            isinstance(target_reset_at_ms, bool)
+            or not isinstance(target_reset_at_ms, int)
+            or target_reset_at_ms <= 0
+        ):
+            raise ConsoleError("target_reset_at_ms must be a positive integer")
+        if remaining_token_budget is not None and (
+            isinstance(remaining_token_budget, bool)
+            or not isinstance(remaining_token_budget, int)
+            or remaining_token_budget < 0
+        ):
+            raise ConsoleError("remaining_token_budget must be a non-negative integer")
         _, nodes, thread_ids, scope = self._observed_scope(project_id=project_id, ctrl_id=ctrl_id)
         project_filter = scope.get("project_id") if scope.get("type") == "project" else None
         history = self.store.token_history(project_id=project_filter, thread_ids=thread_ids, hours=hours)
@@ -2988,6 +3174,60 @@ class App:
         expected_threads = len(nodes)
         total_tokens = sum(int(item["delta_tokens"]) for item in history)
         elapsed_ms = max(0, history[-1]["bucket_ms"] - history[0]["bucket_ms"]) if history else 0
+        rate = round(total_tokens / (elapsed_ms / 60_000), 2) if elapsed_ms > 0 else None
+        sampled_at_ms = int(history[-1]["bucket_ms"]) if history else None
+        now_ms = int(time.time() * 1000)
+        usage_now = {
+            "status": "observed" if history else "no_data",
+            "tokens": total_tokens if history else None,
+            "rate_tokens_per_minute": rate,
+            "window_hours": hours,
+            "sampled_at_ms": sampled_at_ms,
+            "source": "persisted_local_token_deltas" if history else None,
+        }
+        missing_inputs = []
+        if remaining_token_budget is None:
+            missing_inputs.append("remaining_token_budget")
+        if target_reset_at_ms is None:
+            missing_inputs.append("target_reset_at_ms")
+        if not history:
+            missing_inputs.append("usage_history")
+        if rate is None or rate <= 0:
+            missing_inputs.append("positive_observed_rate")
+        if target_reset_at_ms is not None and target_reset_at_ms <= now_ms:
+            missing_inputs.append("future_target_reset")
+        forecast = {
+            "status": "no_data",
+            "estimated": False,
+            "remaining_token_budget": remaining_token_budget,
+            "target_reset_at_ms": target_reset_at_ms,
+            "observed_tokens": total_tokens if history else None,
+            "observed_rate_tokens_per_minute": rate,
+            "remaining_tokens": None,
+            "exhaustion_at_ms": None,
+            "exhausts_before_reset": None,
+            "missing_inputs": sorted(set(missing_inputs)),
+            "source": "observed_local_token_rate" if history else None,
+            "claim_limit": (
+                "Estimate uses persisted local token deltas in the selected window plus an explicit "
+                "remaining token budget and reset target; it is not provider billing, quota, or a discovered limit."
+            ),
+        }
+        if not missing_inputs:
+            remaining_tokens = int(remaining_token_budget)
+            exhaustion_at_ms = (
+                now_ms
+                if remaining_tokens == 0
+                else now_ms + int((remaining_tokens / float(rate)) * 60_000)
+            )
+            forecast.update({
+                "status": "estimated",
+                "estimated": True,
+                "remaining_tokens": remaining_tokens,
+                "exhaustion_at_ms": exhaustion_at_ms,
+                "exhausts_before_reset": exhaustion_at_ms <= int(target_reset_at_ms),
+                "missing_inputs": [],
+            })
         status = "no_data" if not history else (
             "partial" if expected_threads is not None and observed_threads < expected_threads else "ok"
         )
@@ -2999,7 +3239,9 @@ class App:
             "items": history,
             "total_tokens": total_tokens,
             "elapsed_ms": elapsed_ms,
-            "tokens_per_minute": round(total_tokens / (elapsed_ms / 60_000), 2) if elapsed_ms else total_tokens,
+            "tokens_per_minute": rate,
+            "usage_now": usage_now,
+            "forecast": forecast,
             "coverage": {"observed_threads": observed_threads, "expected_threads": expected_threads},
             "status_claim": {
                 "no_data": "No persisted host-reported samples were found in this scope and time window.",
@@ -3094,23 +3336,58 @@ class App:
                 "project_id": controller.get("project_id", ""),
                 "title": controller.get("title", "CTRL"),
                 "status": controller.get("status", "unknown"),
+                "archived": bool(controller.get("archived", False)),
+                "archive_source": controller.get("archive_source"),
+                "controller_classification": controller.get("controller_classification", "unavailable"),
+                "controller_classification_source": controller.get("controller_classification_source"),
+                "visibility": (
+                    "hidden"
+                    if controller.get("archived", False)
+                    or controller.get("controller_classification") != "swarm_ctrl"
+                    else "visible"
+                ),
                 "updated_at": controller.get("updated_at"),
             }
             for controller in view.get("controllers", [])
         ]
-        active_controllers = [controller for controller in controllers if controller["status"] == "active"]
+        authoritative_controllers = [
+            controller for controller in controllers
+            if controller["controller_classification"] == "swarm_ctrl"
+            and controller["controller_classification_source"] == "host_threads.agent_role"
+        ]
+        visible_controllers = [controller for controller in authoritative_controllers if not controller["archived"]]
+        active_controllers = [controller for controller in visible_controllers if controller["status"] == "active"]
         projects = []
         for project in view.get("projects", []):
             project_id = str(project.get("id", ""))
-            project_controllers = [controller for controller in controllers if controller["project_id"] == project_id]
+            all_project_controllers = [
+                controller for controller in authoritative_controllers
+                if controller["project_id"] == project_id
+            ]
+            project_controllers = [controller for controller in all_project_controllers if not controller["archived"]]
+            ctrl_ids = [controller["id"] for controller in project_controllers]
             active_ids = [controller["id"] for controller in project_controllers if controller["status"] == "active"]
+            project_archived = bool(all_project_controllers) and not bool(project_controllers)
             projects.append({
                 "id": project_id,
                 "name": project.get("name", project_id),
                 "goal_label": project.get("goal_label", project.get("name", project_id)),
                 "label_source": project.get("label_source", "unknown"),
                 "active_ctrl_id": active_ids[0] if active_ids else None,
-                "ctrl_ids": [controller["id"] for controller in project_controllers],
+                "ctrl_ids": ctrl_ids,
+                "project_eligibility": "swarm_ctrl" if ctrl_ids else "no_ctrl",
+                "eligibility_source": (
+                    "host_threads.agent_role"
+                    if all_project_controllers
+                    else "unavailable"
+                ),
+                "archived": project_archived,
+                "archive_source": (
+                    "host_threads.archived"
+                    if all_project_controllers
+                    else "unavailable"
+                ),
+                "visibility": "hidden" if project_archived else "visible",
                 "task_count": sum(
                     1 for node in view.get("nodes", [])
                     if node.get("project_id") == project_id and not node.get("virtual")
@@ -3121,7 +3398,11 @@ class App:
             "active_ctrl_ids": [controller["id"] for controller in active_controllers],
             "controllers": controllers,
             "projects": projects,
-            "claim_limit": "Observed host CTRLs only; this is navigation, not runtime authority.",
+            "claim_limit": (
+                "Current Work eligibility requires persisted host agent_role=ctrl classification and a non-archived "
+                "host thread; titles, root position, and runtime status never establish CTRL identity. Legacy rows "
+                "without classification fail closed as no_ctrl, and this remains read-only observation."
+            ),
         }
 
     def _decorate_overview(self, base: dict[str, Any]) -> dict[str, Any]:
@@ -3129,6 +3410,10 @@ class App:
         forecasts = self.store.latest_forecasts()
         for node in view["nodes"]:
             node["eta"] = forecasts.get(node["id"])
+            if node["eta"] is not None:
+                node["eta"]["eta_source"] = "task_owner_report"
+                node["eta"]["eta_observed_at_ms"] = node["eta"].get("last_calculated_at_ms")
+                node["eta"]["heartbeat_at_ms"] = node["eta"].get("last_material_heartbeat_at_ms")
             node["proof_snapshot"] = self.store.proof_snapshot(node["id"])
         history = self.store.token_history()
         view["token_history"] = history
@@ -3628,13 +3913,30 @@ class Handler(BaseHTTPRequestHandler):
                 try:
                     hours = int(query.get("hours", "24"))
                 except ValueError as exc:
-                    raise ConsoleError("hours must be an integer from 1 to 720") from exc
+                    raise ConsoleError("hours must be one of 1, 12, or 24") from exc
+                try:
+                    target_reset_at_ms = (
+                        int(query["target_reset_at_ms"])
+                        if "target_reset_at_ms" in query
+                        else None
+                    )
+                    remaining_token_budget = (
+                        int(query["remaining_token_budget"])
+                        if "remaining_token_budget" in query
+                        else None
+                    )
+                except ValueError as exc:
+                    raise ConsoleError(
+                        "target_reset_at_ms and remaining_token_budget must be integers"
+                    ) from exc
                 self._json(
                     HTTPStatus.OK,
                     self.server.app.usage_history(
                         project_id=query.get("project_id"),
                         ctrl_id=query.get("ctrl_id"),
                         hours=hours,
+                        target_reset_at_ms=target_reset_at_ms,
+                        remaining_token_budget=remaining_token_budget,
                     ),
                 )
                 return

@@ -501,37 +501,196 @@ class SwarmConsoleTests(unittest.TestCase):
             with self.assertRaises(console.ConsoleError):
                 app.usage_history(project_id="project:a", ctrl_id="ctrl-b", hours=24)
             with self.assertRaises(console.ConsoleError):
-                app.usage_history(hours=721)
+                app.usage_history(hours=2)
 
-    def test_progress_summary_counts_observed_tasks_without_fabricating_percentages(self) -> None:
+    def test_usage_forecast_requires_explicit_inputs_and_observed_rate(self) -> None:
+        app = console.App(self.codex_home, self.config)
+        overview = {
+            "nodes": [
+                {"id": "ctrl-a", "project_id": "project:a", "role": "ctrl", "virtual": False, "controller_ids": ["ctrl-a"]},
+            ],
+        }
+        one_hour_history = [
+            {"bucket_ms": 1_000_000, "delta_tokens": 200, "source": "codex_jsonl_token_count"},
+            {"bucket_ms": 1_060_000, "delta_tokens": 100, "source": "codex_jsonl_token_count"},
+        ]
+        twelve_hour_history = [
+            {"bucket_ms": 800_000, "delta_tokens": 100, "source": "codex_jsonl_token_count"},
+            {"bucket_ms": 1_100_000, "delta_tokens": 100, "source": "codex_jsonl_token_count"},
+        ]
+        with mock.patch.object(app, "_host_overview", return_value=overview), \
+             mock.patch.object(
+                 app.store,
+                 "token_history",
+                 side_effect=[one_hour_history, one_hour_history, twelve_hour_history],
+             ), \
+             mock.patch.object(app.store, "token_sample_thread_count", return_value=1), \
+             mock.patch.object(console.time, "time", return_value=1_100):
+            missing = app.usage_history(hours=1)
+            one_hour = app.usage_history(
+                hours=1,
+                target_reset_at_ms=2_000_000,
+                remaining_token_budget=600,
+            )
+            twelve_hours = app.usage_history(
+                hours=12,
+                target_reset_at_ms=2_000_000,
+                remaining_token_budget=600,
+            )
+        self.assertEqual(missing["forecast"]["status"], "no_data")
+        self.assertEqual(missing["forecast"]["exhaustion_at_ms"], None)
+        self.assertEqual(
+            missing["forecast"]["missing_inputs"],
+            ["remaining_token_budget", "target_reset_at_ms"],
+        )
+        self.assertEqual(one_hour["usage_now"]["tokens"], 300)
+        self.assertEqual(one_hour["usage_now"]["sampled_at_ms"], 1_060_000)
+        self.assertEqual(one_hour["forecast"]["status"], "estimated")
+        self.assertEqual(one_hour["forecast"]["remaining_token_budget"], 600)
+        self.assertEqual(one_hour["forecast"]["remaining_tokens"], 600)
+        self.assertEqual(one_hour["forecast"]["exhaustion_at_ms"], 1_220_000)
+        self.assertTrue(one_hour["forecast"]["exhausts_before_reset"])
+        self.assertEqual(twelve_hours["forecast"]["remaining_token_budget"], 600)
+        self.assertEqual(twelve_hours["forecast"]["remaining_tokens"], 600)
+        self.assertNotEqual(one_hour["tokens_per_minute"], twelve_hours["tokens_per_minute"])
+        self.assertNotEqual(
+            one_hour["forecast"]["exhaustion_at_ms"],
+            twelve_hours["forecast"]["exhaustion_at_ms"],
+        )
+        self.assertIn("not provider billing", one_hour["forecast"]["claim_limit"])
+
+    def test_usage_forecast_stays_no_data_without_history_or_positive_rate(self) -> None:
+        app = console.App(self.codex_home, self.config)
+        overview = {"nodes": []}
+        with mock.patch.object(app, "_host_overview", return_value=overview), \
+             mock.patch.object(app.store, "token_history", return_value=[]), \
+             mock.patch.object(app.store, "token_sample_thread_count", return_value=0), \
+             mock.patch.object(console.time, "time", return_value=1_000):
+            result = app.usage_history(
+                hours=24,
+                target_reset_at_ms=2_000_000,
+                remaining_token_budget=600,
+            )
+        self.assertEqual(result["usage_now"]["status"], "no_data")
+        self.assertIsNone(result["usage_now"]["tokens"])
+        self.assertEqual(result["forecast"]["status"], "no_data")
+        self.assertIn("usage_history", result["forecast"]["missing_inputs"])
+        self.assertIn("positive_observed_rate", result["forecast"]["missing_inputs"])
+        with self.assertRaises(console.ConsoleError):
+            app.usage_history(hours=24, remaining_token_budget=-1)
+
+    def test_progress_summary_aggregates_only_compatible_receipt_backed_units(self) -> None:
+        def measured(
+            task_id: str,
+            completed: int,
+            basis: str = "accepted milestones",
+            *,
+            plan_id: str = "plan-alpha",
+            unit_kind: str = "milestone",
+            include_identity: bool = True,
+        ) -> dict[str, object]:
+            plan_units: dict[str, object] = {
+                "total_units": 4,
+                "completed_units": completed,
+                "basis": basis,
+                "observed_at_ms": 1_000 + completed,
+            }
+            if include_identity:
+                plan_units.update({
+                    "plan_id": plan_id,
+                    "unit_id": f"unit-{task_id}",
+                    "unit_kind": unit_kind,
+                })
+            return {
+                "id": task_id,
+                "project_id": "project:a",
+                "role": "doer",
+                "status": "active",
+                "virtual": False,
+                "is_subagent": False,
+                "controller_ids": ["ctrl-a"],
+                "eta": {
+                    "trigger": "task_owner_report",
+                    "receipt_source": f"owner:{task_id}:receipt-{task_id}",
+                    "progress_basis": {
+                        "receipts": [f"receipt-{task_id}"],
+                        "plan_units": plan_units,
+                    },
+                },
+                "proof_snapshot": {"media": []},
+            }
+
+        summary = console.App._progress_for_nodes(
+            [measured("one", 1), measured("two", 3, basis="reviewed checkpoints")],
+            {"type": "ctrl", "ctrl_id": "ctrl-a", "project_id": "project:a"},
+        )
+        self.assertEqual(summary["progress"]["percent"], 50.0)
+        self.assertEqual(summary["progress"]["completed_units"], 4)
+        self.assertEqual(summary["progress"]["total_units"], 8)
+        self.assertEqual(summary["measurement_status"], "measured")
+        self.assertEqual(summary["progress"]["plan_id"], "plan-alpha")
+        self.assertEqual(summary["progress"]["unit_kind"], "milestone")
+        self.assertEqual(summary["progress"]["unit_ids"], ["unit-one", "unit-two"])
+        self.assertEqual(summary["progress"]["basis"], "Receipt-backed plan units")
+        self.assertEqual(summary["tasks"][0]["progress"]["source"], "task_owner_report")
+        self.assertIn("does not prove", summary["tasks"][0]["progress"]["claim_limit"])
+        payload = console.App._progress_payload({
+            "nodes": [measured("one", 1), measured("two", 3, basis="reviewed checkpoints")],
+            "projects": [{"id": "project:a"}],
+            "controllers": [{"id": "ctrl-a", "project_id": "project:a"}],
+        })
+        self.assertEqual(payload["projects"]["project:a"]["progress"]["percent"], 50.0)
+        self.assertEqual(payload["controllers"]["ctrl-a"]["progress"]["percent"], 50.0)
+
+        missing = console.App._progress_for_nodes(
+            [measured("one", 1), {**measured("two", 3), "eta": {}}],
+            {"type": "project", "project_id": "project:a"},
+        )
+        self.assertIsNone(missing["progress"])
+        self.assertEqual(missing["progress_display"], "Unmeasured")
+        self.assertEqual(missing["unmeasured_reason"], "missing_receipt_backed_units")
+
+        heterogeneous = console.App._progress_for_nodes(
+            [measured("one", 1), measured("two", 3, plan_id="plan-beta")],
+            {"type": "project", "project_id": "project:a"},
+        )
+        self.assertIsNone(heterogeneous["progress"])
+        self.assertEqual(heterogeneous["unmeasured_reason"], "heterogeneous_plan_units")
+
+        missing_identity = console.App._progress_for_nodes(
+            [measured("one", 1), measured("two", 3, include_identity=False)],
+            {"type": "project", "project_id": "project:a"},
+        )
+        self.assertIsNone(missing_identity["progress"])
+        self.assertEqual(missing_identity["unmeasured_reason"], "missing_receipt_backed_units")
+
+    def test_progress_summary_never_uses_unbound_measurement_or_task_status_as_percentage(self) -> None:
         nodes = [
             {"id": "done", "project_id": "project:a", "role": "doer", "status": "done", "virtual": False, "is_subagent": False, "controller_ids": ["ctrl-a"], "proof_snapshot": {"media": [{"evidence_id": "proof-1"}]}},
             {"id": "blocked", "project_id": "project:a", "role": "doer", "status": "quiet", "virtual": False, "is_subagent": False, "controller_ids": ["ctrl-a"], "eta": {"status": "blocked", "reason": "Dependency is not complete."}, "proof_snapshot": {"media": []}},
+            {"id": "forged", "project_id": "project:a", "role": "doer", "status": "active", "virtual": False, "is_subagent": False, "controller_ids": ["ctrl-a"], "progress_measurement": {"total_units": 4, "completed_units": 4, "basis": "caller", "observed_at_ms": 1}},
             {"id": "subagent", "project_id": "project:a", "role": "doer", "status": "done", "virtual": False, "is_subagent": True, "controller_ids": ["ctrl-a"]},
         ]
         summary = console.App._progress_for_nodes(nodes, {"type": "ctrl", "ctrl_id": "ctrl-a", "project_id": "project:a"})
-        self.assertEqual(summary["counts"], {"tasks": 2, "completed": 1, "blocked": 1})
+        self.assertEqual(summary["counts"], {"tasks": 3, "completed": 1, "blocked": 1})
         self.assertEqual(summary["tasks"][0]["latest_proof_receipt"], "proof-1")
         self.assertEqual(summary["tasks"][1]["blocker"], "Dependency is not complete.")
-        def mapping_keys(value: object):
-            if isinstance(value, dict):
-                for key, child in value.items():
-                    yield str(key).casefold()
-                    yield from mapping_keys(child)
-            elif isinstance(value, list):
-                for child in value:
-                    yield from mapping_keys(child)
-
-        self.assertFalse(any("percent" in key for key in mapping_keys(summary)))
+        self.assertIsNone(summary["tasks"][2]["progress"])
+        self.assertIsNone(summary["progress"])
+        self.assertEqual(summary["progress_display"], "Unmeasured")
+        self.assertIn("status, token volume, elapsed time", summary["claim_limit"])
 
     def test_console_usage_route_is_read_only_and_has_no_host_mutation_authority(self) -> None:
         source = SERVER.read_text(encoding="utf-8")
         self.assertIn('if path == "/api/usage-history":', source)
+        self.assertIn('query["target_reset_at_ms"]', source)
+        self.assertIn('query["remaining_token_budget"]', source)
+        self.assertNotIn('query["token_limit"]', source)
         self.assertIn('if path == "/api/progress":', source)
         for rejected in ("USER_CUSTODY_OPERATIONS", "prepare_user_mutation", "user_custody_receipts"):
             self.assertNotIn(rejected, source)
 
-    def test_eta_heartbeat_appends_a_stale_progress_revision(self) -> None:
+    def test_eta_heartbeat_without_task_owner_report_never_creates_forecast(self) -> None:
         path = self.root / "console" / "eta.sqlite3"
         now = int(time.time() * 1000)
         overview = {
@@ -544,14 +703,10 @@ class SwarmConsoleTests(unittest.TestCase):
         }
         store = console.ConsoleStore(path)
         store.observe_overview(overview, now_ms=now, trigger="startup", heartbeat_minutes=1)
-        first = store.latest_forecasts()["quiet-task"]
         store.observe_overview(overview, now_ms=now + 61_000, trigger="heartbeat", heartbeat_minutes=1)
-        second = store.latest_forecasts()["quiet-task"]
-        self.assertEqual(first["status"], "at_risk")
-        self.assertGreater(second["revision"], first["revision"])
-        self.assertEqual(second["trigger"], "heartbeat")
+        self.assertEqual(store.latest_forecasts(), {})
 
-    def test_active_eta_uses_observed_work_signals_instead_of_one_fixed_duration(self) -> None:
+    def test_elapsed_time_and_token_volume_never_create_eta(self) -> None:
         store = console.ConsoleStore(self.root / "console" / "eta-signals.sqlite3")
         now = int(time.time() * 1000)
         store.observe_overview({
@@ -562,11 +717,7 @@ class SwarmConsoleTests(unittest.TestCase):
             ],
             "links": [],
         }, now_ms=now, trigger="startup", heartbeat_minutes=30)
-        forecasts = store.latest_forecasts()
-        new_duration = forecasts["new-task"]["eta_end_ms"] - forecasts["new-task"]["eta_start_ms"]
-        deep_duration = forecasts["deep-task"]["eta_end_ms"] - forecasts["deep-task"]["eta_start_ms"]
-        self.assertGreater(deep_duration, new_duration)
-        self.assertIn("observed task age", forecasts["new-task"]["reason"])
+        self.assertEqual(store.latest_forecasts(), {})
 
     def test_read_only_console_views_do_not_observe_or_record_usage(self) -> None:
         app = console.App(self.codex_home, self.config)
@@ -667,8 +818,8 @@ class SwarmConsoleTests(unittest.TestCase):
             "links": [],
             "roots": ["ctrl-a", "ctrl-b"],
             "controllers": [
-                {"id": "ctrl-a", "project_id": "project:a", "title": "CTRL - Alpha", "status": "active", "updated_at": 2},
-                {"id": "ctrl-b", "project_id": "project:b", "title": "CTRL - Beta", "status": "active", "updated_at": 1},
+                {"id": "ctrl-a", "project_id": "project:a", "title": "CTRL - Alpha", "status": "active", "updated_at": 2, "archived": False, "archive_source": "host_threads.archived", "controller_classification": "swarm_ctrl", "controller_classification_source": "host_threads.agent_role"},
+                {"id": "ctrl-b", "project_id": "project:b", "title": "CTRL - Beta", "status": "active", "updated_at": 1, "archived": False, "archive_source": "host_threads.archived", "controller_classification": "swarm_ctrl", "controller_classification_source": "host_threads.agent_role"},
             ],
             "projects": [
                 {"id": "project:a", "name": "Alpha", "goal_label": "Alpha goal", "label_source": "working_directory"},
@@ -684,6 +835,60 @@ class SwarmConsoleTests(unittest.TestCase):
         self.assertEqual(view["navigation"]["active_ctrl_id"], "ctrl-a")
         self.assertEqual(view["navigation"]["projects"][0]["goal_label"], "Alpha goal")
         self.assertEqual(view["navigation"]["projects"][0]["task_count"], 2)
+
+    def test_navigation_eligibility_uses_persisted_ctrl_and_archive_authority(self) -> None:
+        now = int(time.time() * 1000)
+        quiet = now - 2 * 60 * 60 * 1000
+        connection = sqlite3.connect(self.database)
+        connection.execute("UPDATE threads SET agent_role='ctrl' WHERE id='root'")
+        rows = [
+            ("ctrl-idle", "🐙CTRL - Idle", "C:/work/idle", quiet, quiet, 0, "ctrl"),
+            ("ctrl-stalled", "🐙CTRL - Stalled", "C:/work/stalled", quiet, quiet, 0, "ctrl"),
+            ("ctrl-archived", "🐙CTRL - Archived", "C:/work/archived", now, now, 1, "ctrl"),
+            ("legacy-title", "🐙CTRL - Legacy", "C:/work/legacy", now, now, 0, ""),
+            ("no-ctrl", "🔨DEV - Standalone", "C:/work/noctrl", now, now, 0, "doer"),
+        ]
+        for thread_id, title, cwd, created, updated, archived, agent_role in rows:
+            connection.execute(
+                "INSERT INTO threads VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (thread_id, title, cwd, created // 1000, updated // 1000, created, updated,
+                 "gpt-5.6-luna", "high", 0, archived, "", "main", "", "", agent_role, 0),
+            )
+        connection.commit()
+        connection.close()
+
+        production = console.build_overview(self.codex_home, self.config)
+        stalled_controller = next(
+            item for item in production["controllers"] if item["id"] == "ctrl-stalled"
+        )
+        stalled_controller["status"] = "blocked"
+        navigation = console.App._navigation_payload(production)
+        project_ids = {project["name"]: project["id"] for project in production["projects"]}
+        by_project = {item["id"]: item for item in navigation["projects"]}
+        by_controller = {item["id"]: item for item in navigation["controllers"]}
+        idle = by_project[project_ids["idle"]]
+        stalled = by_project[project_ids["stalled"]]
+        archived = by_project[project_ids["archived"]]
+        legacy = by_project[project_ids["legacy"]]
+        no_ctrl = by_project[project_ids["noctrl"]]
+        self.assertEqual(idle["project_eligibility"], "swarm_ctrl")
+        self.assertEqual(idle["ctrl_ids"], ["ctrl-idle"])
+        self.assertEqual(stalled["project_eligibility"], "swarm_ctrl")
+        self.assertEqual(stalled["ctrl_ids"], ["ctrl-stalled"])
+        self.assertEqual(no_ctrl["project_eligibility"], "no_ctrl")
+        self.assertFalse(no_ctrl["archived"])
+        self.assertEqual(archived["visibility"], "hidden")
+        self.assertTrue(archived["archived"])
+        self.assertEqual(archived["project_eligibility"], "no_ctrl")
+        self.assertEqual(legacy["project_eligibility"], "no_ctrl")
+        self.assertEqual(legacy["eligibility_source"], "unavailable")
+        self.assertEqual(legacy["ctrl_ids"], [])
+        self.assertEqual(by_controller["ctrl-idle"]["controller_classification"], "swarm_ctrl")
+        self.assertEqual(by_controller["ctrl-idle"]["visibility"], "visible")
+        self.assertEqual(by_controller["ctrl-archived"]["visibility"], "hidden")
+        self.assertEqual(by_controller["legacy-title"]["controller_classification"], "unavailable")
+        self.assertEqual(by_controller["legacy-title"]["visibility"], "hidden")
+        self.assertNotIn("ctrl-archived", navigation["active_ctrl_ids"])
 
     def test_proof_media_delivery_requires_registered_surface_and_current_digest(self) -> None:
         media_path = self.root / "proof.png"
@@ -945,22 +1150,22 @@ class SwarmConsoleTests(unittest.TestCase):
         connection.executemany(
             "INSERT INTO threads VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             [
-                ("mother", "🐝MOTHER - Historical route", "C:/work/beta", now // 1000, now, now, now,
+                ("specialist-parent", "🧩SPECIALIST - Historical route", "C:/work/beta", now // 1000, now, now, now,
                  "gpt-5.6-sol", "high", 20, 0, "", "main", "", "", "", 0),
                 ("specialist", "💻DEV - Historical implementation", "C:/work/beta", now // 1000, now, now, now,
                  "gpt-5.6-luna", "high", 30, 0, "", "main", "", "", "", 0),
             ],
         )
-        connection.execute("INSERT INTO thread_spawn_edges VALUES (?,?,?)", ("mother", "specialist", "open"))
+        connection.execute("INSERT INTO thread_spawn_edges VALUES (?,?,?)", ("specialist-parent", "specialist", "open"))
         connection.commit()
         connection.close()
 
         overview = console.build_overview(self.codex_home, self.config)
         ids = {node["id"] for node in overview["nodes"]}
-        self.assertNotIn("mother", ids)
+        self.assertNotIn("specialist-parent", ids)
         self.assertNotIn("specialist", ids)
         self.assertFalse(any(node["virtual"] for node in overview["nodes"]))
-        self.assertFalse(any(link["target"] in {"mother", "specialist"} for link in overview["links"]))
+        self.assertFalse(any(link["target"] in {"specialist-parent", "specialist"} for link in overview["links"]))
 
     def test_standalone_formatted_task_without_spawn_edge_is_visible_at_project_level(self) -> None:
         now = 2_000_000_000_000
@@ -988,19 +1193,6 @@ class SwarmConsoleTests(unittest.TestCase):
         self.assertFalse(any(node["virtual"] for node in overview["nodes"]))
         self.assertEqual(next(project for project in overview["projects"] if project["id"] == orphan["project_id"])["nodes"], 1)
 
-    def test_historical_mother_uses_its_configured_specialist_icon(self) -> None:
-        self.config.write_text(
-            'schema_version = 3\n[roles.MOTHER]\nicon = "🗂️"\n', encoding="utf-8"
-        )
-        _, effective, _ = console.load_config(self.config)
-        mother = console._role_from_title(
-            "🐝MOTHER - Historical route",
-            effective["labels"],
-            effective["role_icons"],
-            effective["roles"],
-        )
-        self.assertEqual((mother["role"], mother["icon"], mother["title"]), ("specialist", "🗂️", "🗂️MOTHER - Historical route"))
-
     def test_health_copy_is_product_facing_without_a_watchdog_surface(self) -> None:
         app = (console.STATIC_ROOT / "app.js").read_text(encoding="utf-8")
         self.assertIn("Automatic care", app)
@@ -1019,12 +1211,12 @@ class SwarmConsoleTests(unittest.TestCase):
         wrong = console._role_from_title("🔥CTRL - Ship console", enabled["labels"], enabled["role_icons"])
         repeated = console._role_from_title("🐙🐙CTRL - Ship console", enabled["labels"], enabled["role_icons"])
         developer = console._role_from_title("🔥DEV - Renderer", enabled["labels"], enabled["role_icons"])
-        mother = console._role_from_title("🐝MOTHER - Historical route", enabled["labels"], enabled["role_icons"], enabled["roles"])
+        legacy_title = console._role_from_title("🐝MOTHER - Historical route", enabled["labels"], enabled["role_icons"], enabled["professions"])
         self.assertEqual(duplicate["title"], "🧭LEAD - Console")
         self.assertEqual(wrong["title"], "🐙CTRL - Ship console")
         self.assertEqual(repeated["title"], "🐙CTRL - Ship console")
         self.assertEqual(developer["title"], "💻DEV - Renderer")
-        self.assertEqual((mother["role"], mother["title"]), ("specialist", "🐝MOTHER - Historical route"))
+        self.assertEqual((legacy_title["role"], legacy_title["title"]), ("doer", "📋MOTHER - Historical route"))
         console.update_config(self.config, {"role_icons.enabled": False})
         _, disabled, _ = console.load_config(self.config)
         ctrl = console._role_from_title("🐙CTRL - Ship console", disabled["labels"], disabled["role_icons"])
