@@ -1266,12 +1266,12 @@ class ContextPackage:
 
 class Depth(StrEnum):
     ATOMIC="CTRL_DOER"; WORKSTREAM="CTRL_LEAD_DOER"; PROJECT="CTRL_SPECIALIST_LEADS_DOERS"
-class EfficiencyMode(StrEnum): CONSERVE="CONSERVE"; BALANCED="BALANCED"; FAST="FAST"; MAX="MAX"
-MODE_POLICY={EfficiencyMode.CONSERVE:{"parallel":1,"depth_bias":1,"review_floor":ReviewStrategy.LIGHT},EfficiencyMode.BALANCED:{"parallel":2,"depth_bias":2,"review_floor":ReviewStrategy.LIGHT},EfficiencyMode.FAST:{"parallel":3,"depth_bias":3,"review_floor":ReviewStrategy.STANDARD},EfficiencyMode.MAX:{"parallel":4,"depth_bias":4,"review_floor":ReviewStrategy.STANDARD}}
+class EfficiencyMode(StrEnum): CONSERVE="CONSERVE"; BALANCED="BALANCED"; MAX="MAX"
+MODE_POLICY={EfficiencyMode.CONSERVE:{"parallel":1,"depth_bias":1,"review_floor":ReviewStrategy.LIGHT},EfficiencyMode.BALANCED:{"parallel":2,"depth_bias":2,"review_floor":ReviewStrategy.LIGHT},EfficiencyMode.MAX:{"parallel":4,"depth_bias":4,"review_floor":ReviewStrategy.STANDARD}}
 
 def initial_tier(*, risk:int, uncertainty:int, blast_radius:int, family:str="general", mode:EfficiencyMode=EfficiencyMode.BALANCED) -> int:
     weight=risk+uncertainty+blast_radius+({"security":2,"architecture":1}.get(family,0))
-    bias={EfficiencyMode.CONSERVE:0,EfficiencyMode.BALANCED:1,EfficiencyMode.FAST:2,EfficiencyMode.MAX:3}[mode]
+    bias={EfficiencyMode.CONSERVE:0,EfficiencyMode.BALANCED:1,EfficiencyMode.MAX:3}[mode]
     return min(3, max(1, 1 + int(weight>=3) + int(weight+bias>=6)))
 
 def choose_depth(facts:TopologyFacts) -> Depth:

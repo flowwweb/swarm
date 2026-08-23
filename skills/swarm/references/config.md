@@ -73,7 +73,6 @@ Configuration cannot make an unsafe or hidden coordination path valid:
 | `role_icons.doer_choices` | Emojis DOERs may choose by actual work | 1-12 unique trimmed single-line strings |
 | `execution.usage_profile` | Active relative model/effort policy | high, medium, low; default medium |
 | `execution.fast_mode` | Request Fast service for every newly resolved CTRL, LEAD, DOER, profession-backed task, and eligible subagent assignment without changing its model | boolean; default false |
-| `execution.service_tier` | Compatibility preference for new assignments when Fast mode and a direct user task choice do not override it | empty for host default, or advertised tier string; default empty |
 | `execution.min_reasoning` | Global reasoning floor applied after every profile, role override, and route adjustment | none, minimal, low, medium, high, xhigh, max, ultra; compatibility-neutral default none |
 | `execution.max_reasoning` | Global reasoning ceiling applied after every profile, role override, and route adjustment | none, minimal, low, medium, high, xhigh, max, ultra; compatibility-neutral default ultra; must be at least min |
 | `execution.usage_saver` | Prefer lower-churn coordination for new work without weakening delivery | boolean; default false |
@@ -85,8 +84,8 @@ Configuration cannot make an unsafe or hidden coordination path valid:
 | `proof.browser_freshness_seconds` | Maximum reusable browser-proof age | 0-604800; default 86400 |
 | `proof.provider_freshness_seconds` | Maximum reusable provider-proof age | 0-86400; default 3600 |
 | `proof.transient_retry_limit` | Same-state retry budget for typed transient infrastructure failure | 0-1; default 1 |
-| `turbo.enabled` | Opt into the high usage profile, fast service-tier preference, MAX progress policy, and the highest declared model-supported reasoning within the global bounds | boolean; default false |
-| `efficiency.mode` | Resource strategy for useful depth, concurrency, routing, and review; never weakens safety floors | CONSERVE, BALANCED, FAST, MAX; default BALANCED |
+| `turbo.enabled` | Opt into the high usage profile, MAX progress policy, and the highest declared model-supported reasoning within the global bounds; never enables Fast mode | boolean; default false |
+| `efficiency.mode` | Resource strategy for useful depth, concurrency, routing, and review; never controls request speed or weakens safety floors | CONSERVE, BALANCED, MAX; default BALANCED |
 | `efficiency.doer_wip_limit` | Direct active-slice limit used for a producing LEAD or DOER; delegated work is excluded, and recruitment also requires a ready independent slice or typed critical-path receipt | 1-8; default 3 |
 | `goals.use_goals` | Persist a new task's captured objective as a durable goal and resume/continue a matching goal | boolean; default true |
 | `hive.enabled` | Enable compact SWARM institutional-memory records | boolean; default true |
@@ -191,8 +190,8 @@ leaf role; an unlisted custom role requires an explicit override.
 SWARM passes model and reasoning when the host task API supports them and permits
 saved-config selection. Fast mode is a request service tier, never a faster-model
 substitution. Tier precedence is: an explicit direct-user task tier; then
-`execution.fast_mode = true`, which requests `fast`; then the compatible
-`execution.service_tier` setting or host default. The assignment receipt keeps
+`execution.fast_mode = true`, which requests `fast`; otherwise the host default.
+The assignment receipt keeps
 `requested_fast_mode` and `requested_service_tier` separate from nullable
 `actual_service_tier`. Only an exact host response receipt reporting `fast` or
 `priority` makes `fast_mode_status = "ACTIVE"`; otherwise the request remains
@@ -213,20 +212,18 @@ evidence without self-review or self-acceptance.
 
 ## Turbo mode
 
-Turbo is a disabled-by-default composite over the three controls SWARM can
+Turbo is a disabled-by-default composite over the controls SWARM can
 confidently use:
 
 1. **Reasoning envelope:** select the high usage profile and resolve every new
    assignment at the highest declared model-supported level up to
    `execution.max_reasoning` and not below `execution.min_reasoning`.
-2. **Fast transport preference:** enable the same Fast mode resolver; existing
-   `execution.service_tier` compatibility and direct-user precedence remain intact.
-3. **Fast progress policy:** resolve `efficiency.mode` to `MAX`, enabling the
+2. **Progress policy:** resolve `efficiency.mode` to `MAX`, enabling the
    runtime's highest critical-path parallelism and routing bias while retaining
    its standard review floor.
 
 Set `[turbo] enabled = true` to activate it for new scheduling decisions. Turbo
-does not rewrite the user's underlying low/medium/high, tier, or efficiency
+does not rewrite the user's underlying low/medium/high, Fast, or efficiency
 values, so disabling it restores those values on the next load. Direct user
 instructions still win.
 

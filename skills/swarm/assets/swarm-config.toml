@@ -32,10 +32,6 @@ doer_choices = ["🔨", "💻", "✏️", "🎨", "📚", "📊", "🔌", "🧪"
 # before SWARM may report it active.
 usage_profile = "medium"
 fast_mode = false
-# Compatibility preference for an advertised service tier. Leave empty for the
-# host default; fast_mode=true takes precedence unless the user chooses a tier
-# explicitly for the task.
-service_tier = ""
 # Global clamps applied after profile, role, and route-complexity selection.
 min_reasoning = "none"
 max_reasoning = "ultra"
@@ -72,9 +68,8 @@ provider_freshness_seconds = 3600
 transient_retry_limit = 1
 
 [turbo]
-# Opt-in composite: use the high profile, request the fast service tier, select
-# MAX progress policy, and use the highest declared model-supported reasoning
-# level within the global bounds.
+# Opt-in composite for high usage, MAX progress policy, and the highest declared
+# model-supported reasoning within the global bounds. Turbo never enables Fast.
 enabled = false
 
 [efficiency]

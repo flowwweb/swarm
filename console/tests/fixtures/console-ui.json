@@ -9,7 +9,7 @@
   "config": {
     "exists": true,
     "path": "fixture/config.toml",
-    "editable": ["execution.usage_saver", "console.open_on_start", "boost.spark_enabled", "boost.spark_model", "boost.spark_reasoning", "role_icons.enabled", "role_icons.ctrl"],
+    "editable": ["execution.fast_mode", "execution.usage_saver", "console.open_on_start", "boost.spark_enabled", "boost.spark_model", "boost.spark_reasoning", "role_icons.enabled", "role_icons.ctrl"],
     "settings": {
       "portfolio": {
         "max_active_tasks": 4,
@@ -18,7 +18,7 @@
       },
       "execution": {
         "usage_profile": "medium",
-        "service_tier": "",
+        "fast_mode": false,
         "min_reasoning": "none",
         "max_reasoning": "ultra",
         "usage_saver": false

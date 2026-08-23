@@ -78,7 +78,7 @@
     },
     {
       "id": 7,
-      "prompt": "Run SWARM with the default medium usage profile and fast tier preference. Create a LEAD, an implementation task, and an independent REVIEW task.",
+      "prompt": "Run SWARM with the default medium usage profile and execution.fast_mode enabled. Create a LEAD, an implementation task, and an independent REVIEW task.",
       "expected_output": "New tasks use the configured role-specific model and reasoning pairs, while service-tier application is claimed only when the host task primitive supports it.",
       "files": [],
       "assertions": [
@@ -261,7 +261,7 @@
     },
     {
       "id": 21,
-      "prompt": "Start a new SWARM portfolio from default settings. execution.service_tier is empty.",
+      "prompt": "Start a new SWARM portfolio from default settings. execution.fast_mode is false.",
       "expected_output": "SWARM keeps the host's normal service behavior and does not request or claim Fast mode.",
       "files": [],
       "assertions": [
@@ -273,7 +273,7 @@
     },
     {
       "id": 22,
-      "prompt": "My SWARM settings explicitly set execution.service_tier = \"fast\". The host exposes that tier for new tasks.",
+      "prompt": "My SWARM settings explicitly set execution.fast_mode = true. The host exposes Fast service for new tasks.",
       "expected_output": "SWARM requests Fast for new tasks while leaving existing tasks unchanged and reports only what the host confirms.",
       "files": [],
       "assertions": [

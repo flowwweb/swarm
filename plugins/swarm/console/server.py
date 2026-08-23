@@ -74,7 +74,6 @@ PROOF_MEDIA_ROOT = Path("swarm") / "proof-media"
 CTRL_OVERRIDE_FIELDS: dict[str, type] = {
     "model": str,
     "reasoning": str,
-    "service_tier": str,
 }
 MEDIA_KINDS = frozenset({"imagegen", "image", "mockup", "preview", "screenshot", "browser", "recording"})
 MEDIA_EXTENSIONS = frozenset({".png", ".jpg", ".jpeg", ".webp", ".gif", ".mp4", ".webm"})
@@ -101,7 +100,7 @@ EDITABLE_SETTINGS: dict[str, type] = {
     "portfolio.default_parallel_tasks": int,
     "portfolio.reuse_existing_tasks": bool,
     "execution.usage_profile": str,
-    "execution.service_tier": str,
+    "execution.fast_mode": bool,
     "execution.min_reasoning": str,
     "execution.max_reasoning": str,
     "execution.usage_saver": bool,
@@ -222,6 +221,39 @@ def _replace_toml_setting(text: str, dotted_key: str, value: Any) -> str:
     return "\n".join(lines) + "\n"
 
 
+def _remove_toml_setting(text: str, dotted_key: str) -> str:
+    """Remove one legacy persisted key without changing other config text."""
+    section, key = dotted_key.split(".", 1)
+    lines = text.splitlines()
+    section_re = re.compile(rf"^\s*\[{re.escape(section)}\]\s*(?:#.*)?$")
+    any_section_re = re.compile(r"^\s*\[[^]]+\]\s*(?:#.*)?$")
+    key_re = re.compile(rf"^\s*{re.escape(key)}\s*=.*$")
+    start = next((i for i, line in enumerate(lines) if section_re.match(line)), None)
+    if start is None:
+        return text
+    end = next((i for i in range(start + 1, len(lines)) if any_section_re.match(lines[i])), len(lines))
+    lines = [line for index, line in enumerate(lines) if not (start < index < end and key_re.match(line))]
+    return "\n".join(lines) + "\n"
+
+
+def _toml_setting_value(text: str, dotted_key: str) -> str | None:
+    """Read one simple scalar setting for bounded legacy migration decisions."""
+    section, key = dotted_key.split(".", 1)
+    lines = text.splitlines()
+    section_re = re.compile(rf"^\s*\[{re.escape(section)}\]\s*(?:#.*)?$")
+    any_section_re = re.compile(r"^\s*\[[^]]+\]\s*(?:#.*)?$")
+    key_re = re.compile(rf"^\s*{re.escape(key)}\s*=\s*(.*?)\s*(?:#.*)?$")
+    start = next((i for i, line in enumerate(lines) if section_re.match(line)), None)
+    if start is None:
+        return None
+    end = next((i for i in range(start + 1, len(lines)) if any_section_re.match(lines[i])), len(lines))
+    for line in lines[start + 1 : end]:
+        match = key_re.match(line)
+        if match:
+            return match.group(1)
+    return None
+
+
 def update_config(config_path: Path, changes: dict[str, Any]) -> dict[str, Any]:
     if not changes:
         raise ConsoleError("no settings changed")
@@ -239,13 +271,20 @@ def update_config(config_path: Path, changes: dict[str, Any]) -> dict[str, Any]:
         if expected is str and not isinstance(value, str):
             raise ConsoleError(f"{dotted_key} must be text")
 
-    module, _, exists = load_config(config_path)
+    module, effective, exists = load_config(config_path)
     if exists:
         text = config_path.read_text(encoding="utf-8")
     else:
         text = (PLUGIN_ROOT / "skills" / "swarm" / "assets" / "swarm-config.toml").read_text(
             encoding="utf-8"
         )
+    had_fast_mode = _toml_setting_value(text, "execution.fast_mode") is not None
+    legacy_efficiency = _toml_setting_value(text, "efficiency.mode")
+    text = _remove_toml_setting(text, "execution.service_tier")
+    if legacy_efficiency in {'"FAST"', "'FAST'"}:
+        text = _replace_toml_setting(text, "efficiency.mode", "BALANCED")
+    if not had_fast_mode:
+        text = _replace_toml_setting(text, "execution.fast_mode", bool(effective["execution"]["fast_mode"]))
     for dotted_key, value in changes.items():
         text = _replace_toml_setting(text, dotted_key, value)
 
@@ -2071,17 +2110,18 @@ class ConsoleStore:
     def get_ctrl_override(self, ctrl_id: str) -> dict[str, Any]:
         with self._lock, closing(self._connect()) as connection:
             row = connection.execute("SELECT * FROM ctrl_overrides WHERE ctrl_id = ?", (ctrl_id,)).fetchone()
+        fields = {} if row is None else json.loads(row["fields_json"])
         return {
             "ctrl_id": ctrl_id,
             "revision": 0 if row is None else int(row["revision"]),
-            "override": {} if row is None else json.loads(row["fields_json"]),
+            "override": {key: value for key, value in fields.items() if key in CTRL_OVERRIDE_FIELDS},
         }
 
     def update_ctrl_override(self, ctrl_id: str, fields: dict[str, Any], *, expected_revision: int, now_ms: int) -> dict[str, Any]:
         if not isinstance(expected_revision, int) or isinstance(expected_revision, bool) or expected_revision < 0:
             raise ConsoleError("expected_revision must be a nonnegative integer")
         if not fields or set(fields) - set(CTRL_OVERRIDE_FIELDS):
-            raise ConsoleError("override fields must use the canonical model, reasoning, and service_tier keys")
+            raise ConsoleError("override fields must use the canonical model and reasoning keys")
         for key, value in fields.items():
             if not isinstance(value, CTRL_OVERRIDE_FIELDS[key]) or "\n" in value or len(value) > 128:
                 raise ConsoleError(f"override {key} is invalid")
@@ -2090,7 +2130,8 @@ class ConsoleStore:
             current_revision = 0 if row is None else int(row["revision"])
             if current_revision != expected_revision:
                 raise ConsoleConflict(f"CTRL override revision conflict; expected {expected_revision}, current {current_revision}")
-            current = {} if row is None else json.loads(row["fields_json"])
+            current_fields = {} if row is None else json.loads(row["fields_json"])
+            current = {key: value for key, value in current_fields.items() if key in CTRL_OVERRIDE_FIELDS}
             current.update(fields)
             revision = current_revision + 1
             connection.execute(
@@ -3676,13 +3717,11 @@ class App:
             "global_defaults": {
                 "model": global_assignment["model"],
                 "reasoning": global_assignment["reasoning"],
-                "service_tier": effective["execution"]["service_tier"],
             },
             "override": override,
             "effective": {
                 "model": assignment["model"],
                 "reasoning": assignment["reasoning"],
-                "service_tier": override.get("service_tier", effective["execution"]["service_tier"]),
             },
             "editable_fields": sorted(CTRL_OVERRIDE_FIELDS),
             "reset_semantics": "Delete the per-CTRL overlay to inherit global defaults.",
@@ -4168,10 +4207,22 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+def static_bundle_advisory(static_root: Path = STATIC_ROOT) -> str | None:
+    required = {filename for filename, _ in STATIC_FILES.values()}
+    missing = sorted(filename for filename in required if not (static_root / filename).is_file())
+    if not missing:
+        return None
+    return "SWARM Console cache is stale or incomplete; reinstall the current SWARM plugin or start from its active cache."
+
+
 def main() -> int:
     args = parse_args()
     if args.host not in {"127.0.0.1", "localhost", "::1", "0.0.0.0"}:
         print("SWARM Console only supports loopback or Docker's 0.0.0.0 bind", file=sys.stderr)
+        return 2
+    advisory = static_bundle_advisory()
+    if advisory:
+        print(advisory, file=sys.stderr)
         return 2
     app = App(args.codex_home, resolve_config_path(args.config))
     server = SwarmHTTPServer((args.host, args.port), Handler, app)

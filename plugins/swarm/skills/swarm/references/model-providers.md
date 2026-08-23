@@ -82,7 +82,7 @@ provides one. Fast mode changes only the request service tier: request `fast` or
 response receipt separately. A request receipt proves only what SWARM asked the host to run.
 Actual model execution remains `UNVERIFIED` unless host metadata identifies it;
 never infer Luna execution from the configured default or successful helper
-completion. Likewise, never report Fast mode active from config, Turbo, task
+completion. Likewise, never report Fast mode active from config, task
 creation, latency, or success alone. The current visible-task host API exposes no
 service-tier request or confirmation field, so those assignments stay schedulable
 with Fast mode `UNAVAILABLE` until that host capability and receipt exist.

@@ -46,7 +46,6 @@ DEFAULTS: dict[str, Any] = {
     "execution": {
         "usage_profile": "medium",
         "fast_mode": False,
-        "service_tier": "",
         "usage_saver": False,
         "min_reasoning": "none",
         "max_reasoning": "ultra",
@@ -396,7 +395,6 @@ def validate(raw: dict[str, Any]) -> None:
     if "usage_profile" in execution and execution["usage_profile"] not in USAGE_PROFILES:
         raise ConfigError("execution.usage_profile must be high, medium, or low")
     _boolean(execution, "fast_mode", "execution")
-    _short_text(execution, "service_tier", "execution", allow_empty=True)
     _boolean(execution, "usage_saver", "execution")
     _reasoning_effort(execution, "min_reasoning", "execution")
     _reasoning_effort(execution, "max_reasoning", "execution")
@@ -431,7 +429,7 @@ def validate(raw: dict[str, Any]) -> None:
     _boolean(turbo, "enabled", "turbo")
     efficiency = _expect_table(raw, "efficiency")
     _expect_keys(efficiency, set(DEFAULTS["efficiency"]), "efficiency")
-    if "mode" in efficiency and efficiency["mode"] not in {"CONSERVE","BALANCED","FAST","MAX"}: raise ConfigError("efficiency.mode must be CONSERVE, BALANCED, FAST, or MAX")
+    if "mode" in efficiency and efficiency["mode"] not in {"CONSERVE","BALANCED","MAX"}: raise ConfigError("efficiency.mode must be CONSERVE, BALANCED, or MAX")
     _bounded_int(efficiency, "doer_wip_limit", 1, 8, "efficiency")
 
     goals = _expect_table(raw, "goals")
@@ -758,6 +756,20 @@ def normalize_legacy_task_role(raw: dict[str, Any]) -> dict[str, Any]:
             except ConfigError: continue
             professions.setdefault(profession_id,roles.pop(role))
 
+    execution=normalized.setdefault("execution",{})
+    legacy_fast_mode=False
+    if isinstance(execution,dict) and "service_tier" in execution:
+        legacy_service_tier=execution.pop("service_tier")
+        if not isinstance(legacy_service_tier,str):
+            raise ConfigError("legacy execution.service_tier must be text")
+        legacy_fast_mode=legacy_service_tier in FAST_SERVICE_TIERS
+    efficiency=normalized.get("efficiency",{})
+    if isinstance(efficiency,dict) and efficiency.get("mode")=="FAST":
+        efficiency["mode"]="BALANCED"
+        legacy_fast_mode=True
+    if isinstance(execution,dict) and "fast_mode" not in execution and legacy_fast_mode:
+        execution["fast_mode"]=True
+
     normalized["schema_version"] = 4
     return normalized
 
@@ -778,11 +790,9 @@ def load(path: Path) -> tuple[dict[str, Any], bool]:
 
 
 def apply_turbo(effective: dict[str, Any]) -> dict[str, Any]:
-    """Resolve Turbo's three supported controls without weakening user bounds."""
+    """Resolve Turbo usage/efficiency controls without changing Fast mode."""
     if effective["turbo"]["enabled"]:
         effective["execution"]["usage_profile"] = "high"
-        effective["execution"]["fast_mode"] = True
-        effective["execution"]["service_tier"] = "fast"
         effective["efficiency"]["mode"] = "MAX"
     return effective
 
@@ -909,8 +919,8 @@ def resolve_model_assignment(
         requested_service_tier="fast"
         service_tier_source="fast_mode"
     else:
-        requested_service_tier=effective["execution"]["service_tier"]
-        service_tier_source="configured_default" if requested_service_tier else "host_default"
+        requested_service_tier=""
+        service_tier_source="host_default"
     requested_fast_mode=requested_service_tier in FAST_SERVICE_TIERS
     if host_actual_service_tier is not None:
         _short_text({"service_tier":host_actual_service_tier},"service_tier","host response")
@@ -929,7 +939,6 @@ def resolve_model_assignment(
         fast_mode_status="UNAVAILABLE" if requested_fast_mode else "OFF"
     return {
         "surface":surface,"model":assignment["model"],"provider":provider,"reasoning_effort":assignment["reasoning"],
-        "service_tier":requested_service_tier,
         "requested_fast_mode":requested_fast_mode,"requested_service_tier":requested_service_tier or None,
         "service_tier_selection_source":service_tier_source,
         "actual_service_tier":host_actual_service_tier,"actual_service_tier_verification":actual_service_tier_verification,
@@ -1002,7 +1011,6 @@ def feedback_diagnostics(effective: dict[str, Any], exists: bool) -> dict[str, A
         "config_exists": exists,
         "usage_profile": effective["execution"]["usage_profile"],
         "fast_mode": effective["execution"]["fast_mode"],
-        "service_tier": effective["execution"]["service_tier"],
         "min_reasoning": effective["execution"]["min_reasoning"],
         "max_reasoning": effective["execution"]["max_reasoning"],
         "turbo_enabled": effective["turbo"]["enabled"],

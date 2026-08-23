@@ -1231,6 +1231,50 @@ class SwarmConsoleTests(unittest.TestCase):
         result = console.update_config(self.config, {"execution.usage_saver": True})
         self.assertTrue(result["settings"]["execution"]["usage_saver"])
 
+    def test_fast_mode_is_the_only_persisted_fast_control(self) -> None:
+        before = console.redacted_config_snapshot(self.config)
+        self.assertFalse(before["settings"]["execution"]["fast_mode"])
+        self.assertIn("execution.fast_mode", before["editable"])
+        self.assertNotIn("execution.service_tier", before["editable"])
+        self.assertNotIn("service_tier", before["settings"]["execution"])
+
+        result = console.update_config(self.config, {"execution.fast_mode": True})
+        self.assertTrue(result["settings"]["execution"]["fast_mode"])
+        self.assertNotIn("service_tier", result["settings"]["execution"])
+        with self.assertRaisesRegex(console.ConsoleError, "must be a boolean"):
+            console.update_config(self.config, {"execution.fast_mode": "yes"})
+
+    def test_console_write_migrates_legacy_fast_alias_without_losing_effective_choice(self) -> None:
+        text = self.config.read_text(encoding="utf-8")
+        text = text.replace("fast_mode = false", 'service_tier = "fast"')
+        self.config.write_text(text, encoding="utf-8")
+        before = console.redacted_config_snapshot(self.config)
+        self.assertTrue(before["settings"]["execution"]["fast_mode"])
+
+        result = console.update_config(self.config, {"console.open_on_start": False})
+        persisted = self.config.read_text(encoding="utf-8")
+        self.assertTrue(result["settings"]["execution"]["fast_mode"])
+        self.assertNotIn("service_tier", persisted)
+        self.assertIn("fast_mode = true", persisted)
+
+    def test_per_ctrl_settings_cannot_create_a_second_fast_control(self) -> None:
+        self.assertEqual(set(console.CTRL_OVERRIDE_FIELDS), {"model", "reasoning"})
+        app = (console.STATIC_ROOT / "app.js").read_text(encoding="utf-8")
+        self.assertNotIn("ctrl-service-tier", app)
+        self.assertNotIn("execution.service_tier", app)
+        self.assertEqual(app.count("settingToggle('execution.fast_mode'"), 1)
+
+    def test_stale_console_cache_fails_with_a_concise_advisory(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            advisory = console.static_bundle_advisory(root)
+            self.assertIn("cache is stale or incomplete", advisory)
+            self.assertNotIn("index.html", advisory)
+            self.assertNotIn(str(root), advisory)
+            for filename, _ in set(console.STATIC_FILES.values()):
+                (root / filename).write_text("fixture", encoding="utf-8")
+            self.assertIsNone(console.static_bundle_advisory(root))
+
     def test_spark_small_work_lane_is_off_by_default_and_configurable(self) -> None:
         before = console.redacted_config_snapshot(self.config)
         self.assertFalse(before["settings"]["boost"]["spark_enabled"])
@@ -1273,6 +1317,10 @@ class SwarmConsoleTests(unittest.TestCase):
         self.assertEqual(set(fixture), {"bootstrap", "config", "overview", "proofFeed", "usageHistory", "diagnostics", "diagnosticHistory", "healthSettings", "storage", "ctrlSettings"})
         self.assertFalse(fixture["config"]["settings"]["execution"]["usage_saver"])
         self.assertIn("execution.usage_saver", fixture["config"]["editable"])
+        self.assertFalse(fixture["config"]["settings"]["execution"]["fast_mode"])
+        self.assertIn("execution.fast_mode", fixture["config"]["editable"])
+        self.assertNotIn("execution.service_tier", fixture["config"]["editable"])
+        self.assertNotIn("service_tier", fixture["config"]["settings"]["execution"])
         self.assertTrue(fixture["config"]["settings"]["console"]["open_on_start"])
         self.assertIn("console.open_on_start", fixture["config"]["editable"])
         self.assertIn("boost.spark_enabled", fixture["config"]["editable"])

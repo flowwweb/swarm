@@ -364,25 +364,25 @@ class SwarmConfigTests(unittest.TestCase):
             root = Path(directory)
             enabled = root / "enabled.toml"
             enabled.write_text(
-                '[execution]\nusage_profile = "low"\nservice_tier = ""\nmax_reasoning = "xhigh"\n'
+                '[execution]\nusage_profile = "low"\nmax_reasoning = "xhigh"\n'
                 '[turbo]\nenabled = true\n[efficiency]\nmode = "CONSERVE"\n',
                 encoding="utf-8",
             )
             turbo, _ = config.load(enabled)
             disabled = root / "disabled.toml"
             disabled.write_text(
-                '[execution]\nusage_profile = "low"\nservice_tier = ""\n'
+                '[execution]\nusage_profile = "low"\n'
                 '[turbo]\nenabled = false\n[efficiency]\nmode = "CONSERVE"\n',
                 encoding="utf-8",
             )
             normal, _ = config.load(disabled)
         self.assertEqual(turbo["execution"]["usage_profile"], "high")
-        self.assertTrue(turbo["execution"]["fast_mode"])
-        self.assertEqual(turbo["execution"]["service_tier"], "fast")
+        self.assertFalse(turbo["execution"]["fast_mode"])
+        self.assertNotIn("service_tier", turbo["execution"])
         self.assertEqual(turbo["efficiency"]["mode"], "MAX")
         turbo_receipt=config.resolve_model_assignment(turbo,"ctrl",surface="codex_task")
-        self.assertTrue(turbo_receipt["requested_fast_mode"])
-        self.assertEqual(turbo_receipt["requested_service_tier"],"fast")
+        self.assertFalse(turbo_receipt["requested_fast_mode"])
+        self.assertIsNone(turbo_receipt["requested_service_tier"])
         self.assertEqual(
             config.resolve_role_assignment(turbo, "lead", route_tier=1)["reasoning"],
             "xhigh",
@@ -393,7 +393,7 @@ class SwarmConfigTests(unittest.TestCase):
         )
         self.assertEqual(normal["execution"]["usage_profile"], "low")
         self.assertFalse(normal["execution"]["fast_mode"])
-        self.assertEqual(normal["execution"]["service_tier"], "")
+        self.assertNotIn("service_tier", normal["execution"])
         self.assertEqual(normal["efficiency"]["mode"], "CONSERVE")
 
     def test_turbo_enabled_must_be_boolean(self) -> None:
@@ -407,6 +407,7 @@ class SwarmConfigTests(unittest.TestCase):
         effective, _ = config.load(config.TEMPLATE_PATH)
         receipt = config.resolve_model_assignment(effective,"ctrl",surface="codex_task")
         self.assertFalse(effective["execution"]["fast_mode"])
+        self.assertNotIn("service_tier", effective["execution"])
         self.assertFalse(receipt["requested_fast_mode"])
         self.assertIsNone(receipt["requested_service_tier"])
         self.assertEqual(receipt["fast_mode_status"],"OFF")
@@ -438,7 +439,7 @@ class SwarmConfigTests(unittest.TestCase):
     def test_direct_user_tier_overrides_fast_mode_without_changing_model(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path=Path(directory)/"fast.toml"
-            path.write_text('[execution]\nfast_mode = true\nservice_tier = "flex"\n',encoding="utf-8")
+            path.write_text('[execution]\nfast_mode = true\n',encoding="utf-8")
             effective,_=config.load(path)
         baseline=config.resolve_model_assignment(effective,"lead",surface="codex_task")
         explicit=config.resolve_model_assignment(effective,"lead",surface="codex_task",explicit_service_tier="default")
@@ -449,15 +450,45 @@ class SwarmConfigTests(unittest.TestCase):
         self.assertEqual(explicit["model"],baseline["model"])
         self.assertEqual(explicit["reasoning_effort"],baseline["reasoning_effort"])
 
-    def test_service_tier_setting_remains_compatible_when_fast_mode_is_off(self) -> None:
+    def test_legacy_fast_aliases_migrate_to_one_boolean_without_retaining_authority(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
-            path=Path(directory)/"tier.toml"
-            path.write_text('[execution]\nservice_tier = "flex"\n',encoding="utf-8")
-            effective,_=config.load(path)
-        receipt=config.resolve_model_assignment(effective,"doer",surface="subagent")
-        self.assertFalse(receipt["requested_fast_mode"])
-        self.assertEqual(receipt["requested_service_tier"],"flex")
-        self.assertEqual(receipt["service_tier_selection_source"],"configured_default")
+            root=Path(directory)
+            service=root/"service.toml"
+            service.write_text('[execution]\nservice_tier = "fast"\n',encoding="utf-8")
+            migrated_service,_=config.load(service)
+            efficiency=root/"efficiency.toml"
+            efficiency.write_text('[efficiency]\nmode = "FAST"\n',encoding="utf-8")
+            migrated_efficiency,_=config.load(efficiency)
+            explicit=root/"explicit.toml"
+            explicit.write_text(
+                '[execution]\nfast_mode = false\nservice_tier = "priority"\n'
+                '[efficiency]\nmode = "FAST"\n',encoding="utf-8",
+            )
+            explicit_effective,_=config.load(explicit)
+            neutral=root/"neutral.toml"
+            neutral.write_text('[execution]\nservice_tier = "flex"\n',encoding="utf-8")
+            neutral_effective,_=config.load(neutral)
+        self.assertTrue(migrated_service["execution"]["fast_mode"])
+        self.assertTrue(migrated_efficiency["execution"]["fast_mode"])
+        self.assertEqual(migrated_efficiency["efficiency"]["mode"],"BALANCED")
+        self.assertFalse(explicit_effective["execution"]["fast_mode"])
+        self.assertEqual(explicit_effective["efficiency"]["mode"],"BALANCED")
+        self.assertFalse(neutral_effective["execution"]["fast_mode"])
+        for effective in (migrated_service,migrated_efficiency,explicit_effective,neutral_effective):
+            self.assertNotIn("service_tier",effective["execution"])
+
+    def test_legacy_service_tier_must_be_text(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path=Path(directory)/"invalid.toml"
+            path.write_text('[execution]\nservice_tier = true\n',encoding="utf-8")
+            with self.assertRaisesRegex(config.ConfigError,"legacy execution.service_tier must be text"):
+                config.load(path)
+
+    def test_template_exposes_exactly_one_fast_control(self) -> None:
+        text=config.TEMPLATE_PATH.read_text(encoding="utf-8")
+        self.assertEqual(text.count("fast_mode = false"),1)
+        self.assertNotIn("service_tier",text)
+        self.assertNotIn('mode = "FAST"',text)
 
     def test_exact_host_response_receipt_confirms_fast_or_priority(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -540,7 +571,11 @@ class SwarmConfigTests(unittest.TestCase):
             effective,"doer",surface="codex_task",explicit_model="gpt-5.6-terra",explicit_provider="openai",
             explicit_reasoning="max",explicit_service_tier="priority",host_actual_model="gpt-5.6-terra",host_receipt="host:model:gpt-5.6-terra",
         )
-        self.assertEqual((receipt["model"],receipt["provider"],receipt["reasoning_effort"],receipt["service_tier"]),("gpt-5.6-terra","openai","max","priority"))
+        self.assertEqual(
+            (receipt["model"],receipt["provider"],receipt["reasoning_effort"],receipt["requested_service_tier"]),
+            ("gpt-5.6-terra","openai","max","priority"),
+        )
+        self.assertNotIn("service_tier",receipt)
         self.assertEqual(receipt["selection_source"],"explicit_user")
         self.assertEqual(receipt["actual_model_verification"],"verified")
 
