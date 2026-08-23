@@ -1278,10 +1278,10 @@ class ReviewEvidence:
 @dataclass(frozen=True)
 class _RuntimeAcceptanceRecord:
     """Private exact-artifact acceptance minted only by ``Swarm.review``."""
-    task_id:str; artifact:ArtifactIdentity; artifact_content_digest:str; proof_plan_digest:str; reviewer:str; scope:ReviewScope; verdict:str; review_receipt_digest:str; gate_receipt_digests:tuple[str,...]; issued_at_ms:int
+    task_id:str; accepted_owner:str; artifact:ArtifactIdentity; artifact_content_digest:str; proof_plan_digest:str; reviewer:str; scope:ReviewScope; verdict:str; review_receipt_digest:str; gate_receipt_digests:tuple[str,...]; issued_at_ms:int
     _authority:object|None=field(default=None,init=False,repr=False,compare=False)
     def __post_init__(self):
-        if not self.task_id.strip() or not isinstance(self.artifact,ArtifactIdentity): raise InvariantError("runtime acceptance requires an exact task artifact")
+        if not self.task_id.strip() or not self.accepted_owner.strip() or not isinstance(self.artifact,ArtifactIdentity): raise InvariantError("runtime acceptance requires an exact task owner and artifact")
         _require_digest(self.artifact_content_digest,"runtime acceptance artifact content"); _require_digest(self.proof_plan_digest,"runtime acceptance proof plan"); _require_digest(self.review_receipt_digest,"runtime acceptance review receipt")
         if self.artifact_content_digest!=self.artifact.content_address() or not self.reviewer.strip() or self.scope not in {ReviewScope.ACCEPTANCE,ReviewScope.COMPOSED} or self.verdict!="ACCEPT": raise InvariantError("runtime acceptance requires an exact independent ACCEPT verdict")
         if any(_require_digest(value,"runtime acceptance gate receipt")!=value for value in self.gate_receipt_digests) or not isinstance(self.issued_at_ms,int) or isinstance(self.issued_at_ms,bool) or self.issued_at_ms<0: raise InvariantError("runtime acceptance requires current bound gate receipts and issuance time")
@@ -1467,7 +1467,7 @@ class Swarm:
         record=self._runtime_acceptances.get(task.id); contract=task.acceptance_contract; review=task.acceptance_review_receipt
         if record is None or record._authority is not self._review_capability or contract is None or contract.explicitly_empty or contract.artifact is None or contract.proof_plan is None or review is None: return None
         if not task.review_passed or task.reviewer!=record.reviewer or review.reviewer!=record.reviewer or not review.independent or review.reviewer in {task.creator,task.owner}: return None
-        if record.task_id!=task.id or record.artifact!=contract.artifact or record.artifact_content_digest!=contract.artifact.content_address() or record.proof_plan_digest!=contract.proof_plan.plan_digest: return None
+        if record.task_id!=task.id or record.accepted_owner!=task.owner or record.artifact!=contract.artifact or record.artifact_content_digest!=contract.artifact.content_address() or record.proof_plan_digest!=contract.proof_plan.plan_digest: return None
         if record.scope is not review.scope or record.verdict!="ACCEPT" or record.review_receipt_digest!=self._topology_review_digest(review) or record.gate_receipt_digests!=self._topology_gate_digests(task): return None
         if review.artifact!=contract.artifact or review.scope not in {ReviewScope.ACCEPTANCE,ReviewScope.COMPOSED} or review.plan_digest not in {"",contract.proof_plan.plan_digest}: return None
         receipt_key="composed" if review.scope is ReviewScope.COMPOSED else "acceptance"
@@ -2475,7 +2475,7 @@ class Swarm:
             if not dict(evidence.receipt).get(receipt_key): raise InvariantError("final review requires an independent exact-scope receipt")
             if evidence.plan_digest not in {"",plan.plan_digest}: raise InvariantError("final review proof-plan digest mismatch")
             t.review_passed=True; t.acceptance_review_receipt=evidence
-            accepted=_RuntimeAcceptanceRecord(t.id,t.acceptance_contract.artifact,t.acceptance_contract.artifact.content_address(),plan.plan_digest,evidence.reviewer,evidence.scope,"ACCEPT",self._topology_review_digest(evidence),self._topology_gate_digests(t),int(time.time()*1000))
+            accepted=_RuntimeAcceptanceRecord(t.id,t.owner,t.acceptance_contract.artifact,t.acceptance_contract.artifact.content_address(),plan.plan_digest,evidence.reviewer,evidence.scope,"ACCEPT",self._topology_review_digest(evidence),self._topology_gate_digests(t),int(time.time()*1000))
             object.__setattr__(accepted,"_authority",self._review_capability); self._runtime_acceptances[t.id]=accepted; t.state=TaskState.REVIEW
         elif passed:
             t.review_passed=False; t.acceptance_review_receipt=None; self._runtime_acceptances.pop(t.id,None); t.state=TaskState.ACTIVE
@@ -2494,7 +2494,7 @@ class Swarm:
         if replacement:
             target=self.workers[replacement]
             if len(target.task_ids)+len(w.task_ids)>self.wip_limit: raise InvariantError("replacement WIP limit")
-            for task_id in w.task_ids: self.tasks[task_id].owner=replacement; target.task_ids.add(task_id)
+            for task_id in w.task_ids: self.tasks[task_id].owner=replacement; self._runtime_acceptances.pop(task_id,None); target.task_ids.add(task_id)
         w.state=WorkerState.RETIRED; w.archive={"tasks":sorted(w.task_ids),"lane":w.lane,"hive_flush":[item.id for item in flushed]}; w.task_ids.clear()
         if self.hive_enabled: self.telemetry["hive_retirement_flushes"]=self.telemetry.get("hive_retirement_flushes",0)+len(flushed)
     def collapse(self, actor: Role, lead: str, *, watchdog_review:WatchdogChangeReview|None=None) -> Depth:

@@ -263,8 +263,10 @@ class TopologyMaterializationTests(unittest.TestCase):
             task.acceptance_review_receipt = review
             task.reviewer = review.reviewer
             original_owner = task.owner
-            task.owner = review.reviewer
+            task.owner = "replacement-builder"
             self.assertEqual(swarm.proof_state("adapter"), ProofState.ACCEPTANCE_REVIEW)
+            with self.assertRaisesRegex(InvariantError, "runtime-issued exact-artifact independent acceptance"):
+                swarm.issue_topology_artifact_freeze("adapter", "review", plan.plan_digest)
             task.owner = original_owner
             original_contract = task.acceptance_contract
             task.acceptance_contract = AcceptanceContract(artifact, ("changed-plan",), observation_root=root)
@@ -274,6 +276,12 @@ class TopologyMaterializationTests(unittest.TestCase):
             self.assertNotEqual(swarm.proof_state("adapter"), ProofState.ACCEPTED)
             path.write_text("frozen", encoding="utf-8")
             self.assertEqual(swarm.proof_state("adapter"), ProofState.ACCEPTED)
+            swarm.add_worker(Role.LEAD, Worker("builder-b", "lead", 2))
+            swarm.retire(Role.LEAD, "builder", "builder-b")
+            self.assertEqual(task.owner, "builder-b")
+            self.assertEqual(swarm.proof_state("adapter"), ProofState.ACCEPTANCE_REVIEW)
+            with self.assertRaisesRegex(InvariantError, "runtime-issued exact-artifact independent acceptance"):
+                swarm.issue_topology_artifact_freeze("adapter", "review", plan.plan_digest)
 
     def test_child_dispatch_requires_previously_confirmed_parent_and_confirmation_is_retained(self) -> None:
         lead = self.lead("runtime", parent="ctrl")
