@@ -1095,6 +1095,9 @@ class ConsoleStore:
             completed_units = plan_units.get("completed_units")
             observed_at_ms = plan_units.get("observed_at_ms")
             raw_basis = plan_units.get("basis")
+            plan_id = plan_units.get("plan_id")
+            unit_id = plan_units.get("unit_id")
+            unit_kind = plan_units.get("unit_kind")
             if (
                 not isinstance(total_units, int)
                 or isinstance(total_units, bool)
@@ -1109,6 +1112,18 @@ class ConsoleStore:
                 or not raw_basis.strip()
                 or len(raw_basis.strip()) > 128
                 or any(character in raw_basis for character in "\r\n\t")
+                or not isinstance(plan_id, str)
+                or not plan_id.strip()
+                or len(plan_id.strip()) > 128
+                or any(character in plan_id for character in "\r\n\t")
+                or not isinstance(unit_id, str)
+                or not unit_id.strip()
+                or len(unit_id.strip()) > 128
+                or any(character in unit_id for character in "\r\n\t")
+                or not isinstance(unit_kind, str)
+                or not unit_kind.strip()
+                or len(unit_kind.strip()) > 64
+                or any(character in unit_kind for character in "\r\n\t")
             ):
                 return False
             progress_basis = {
@@ -1118,6 +1133,9 @@ class ConsoleStore:
                     "completed_units": completed_units,
                     "basis": raw_basis.strip(),
                     "observed_at_ms": observed_at_ms,
+                    "plan_id": plan_id.strip(),
+                    "unit_id": unit_id.strip(),
+                    "unit_kind": unit_kind.strip(),
                 },
             }
         reason_code = payload.get("reason_code")
@@ -2278,6 +2296,19 @@ def _project_identity(row: sqlite3.Row) -> tuple[str, str]:
     return f"project:{hashlib.sha256(authority.encode()).hexdigest()[:16]}", name or "Local"
 
 
+def _controller_classification(row: sqlite3.Row) -> dict[str, str | None]:
+    """Read the persisted host role field; titles and graph position are not authority."""
+    if str(row["agent_role"] or "").strip().casefold() == "ctrl":
+        return {
+            "controller_classification": "swarm_ctrl",
+            "controller_classification_source": "host_threads.agent_role",
+        }
+    return {
+        "controller_classification": "unavailable",
+        "controller_classification_source": None,
+    }
+
+
 def _role_from_title(
     title: str,
     labels: dict[str, str],
@@ -2437,8 +2468,7 @@ def build_overview(codex_home: Path, config_path: Path) -> dict[str, Any]:
                    git_branch, thread_source, agent_nickname, agent_role, is_pinned,
                    {agent_path_projection}
             FROM threads
-            WHERE archived = 0
-              AND (
+            WHERE (
                 updated_at_ms >= ?
                 OR (updated_at_ms IS NULL AND updated_at >= ?)
                 {goal_clause}
@@ -2740,6 +2770,8 @@ def build_overview(codex_home: Path, config_path: Path) -> dict[str, Any]:
                 "project": controller["project"],
                 "status": controller["status"],
                 "archived": bool(controller.get("archived", False)),
+                "archive_source": "host_threads.archived",
+                **_controller_classification(all_rows[controller_id]),
                 "virtual": controller["virtual"],
                 "nodes": len(descendants),
                 "active": sum(nodes[node_id]["status"] == "active" for node_id in descendants),
@@ -2885,6 +2917,9 @@ class App:
         completed_units = plan_units.get("completed_units")
         observed_at_ms = plan_units.get("observed_at_ms")
         basis = plan_units.get("basis")
+        plan_id = plan_units.get("plan_id")
+        unit_id = plan_units.get("unit_id")
+        unit_kind = plan_units.get("unit_kind")
         if (
             not isinstance(total_units, int)
             or isinstance(total_units, bool)
@@ -2897,6 +2932,12 @@ class App:
             or observed_at_ms <= 0
             or not isinstance(basis, str)
             or not basis.strip()
+            or not isinstance(plan_id, str)
+            or not plan_id.strip()
+            or not isinstance(unit_id, str)
+            or not unit_id.strip()
+            or not isinstance(unit_kind, str)
+            or not unit_kind.strip()
         ):
             return None
         return {
@@ -2904,6 +2945,9 @@ class App:
             "total_units": total_units,
             "completed_units": completed_units,
             "basis": basis.strip(),
+            "plan_id": plan_id.strip(),
+            "unit_id": unit_id.strip(),
+            "unit_kind": unit_kind.strip(),
             "observed_at_ms": observed_at_ms,
             "source": "task_owner_report",
             "receipt_count": len(receipts),
@@ -2946,7 +2990,10 @@ class App:
             unmeasured_reason = "no_tasks"
         elif len(measured) != len(task_items):
             unmeasured_reason = "missing_receipt_backed_units"
-        elif len({item["basis"].casefold() for item in measured}) != 1:
+        elif (
+            len({(item["plan_id"], item["unit_kind"]) for item in measured}) != 1
+            or len({item["unit_id"] for item in measured}) != len(measured)
+        ):
             unmeasured_reason = "heterogeneous_plan_units"
         else:
             total_units = sum(item["total_units"] for item in measured)
@@ -2955,7 +3002,14 @@ class App:
                 "percent": round(completed_units * 100 / total_units, 2),
                 "total_units": total_units,
                 "completed_units": completed_units,
-                "basis": measured[0]["basis"],
+                "basis": (
+                    measured[0]["basis"]
+                    if len({item["basis"] for item in measured}) == 1
+                    else "Receipt-backed plan units"
+                ),
+                "plan_id": measured[0]["plan_id"],
+                "unit_kind": measured[0]["unit_kind"],
+                "unit_ids": sorted(item["unit_id"] for item in measured),
                 "observed_at_ms": max(item["observed_at_ms"] for item in measured),
                 "source": "task_owner_report",
                 "receipt_count": sum(item["receipt_count"] for item in measured),
@@ -3094,7 +3148,7 @@ class App:
         ctrl_id: str | None = None,
         hours: int = 24,
         target_reset_at_ms: int | None = None,
-        token_limit: int | None = None,
+        remaining_token_budget: int | None = None,
     ) -> dict[str, Any]:
         if isinstance(hours, bool) or hours not in {1, 12, 24}:
             raise ConsoleError("hours must be one of 1, 12, or 24")
@@ -3104,12 +3158,12 @@ class App:
             or target_reset_at_ms <= 0
         ):
             raise ConsoleError("target_reset_at_ms must be a positive integer")
-        if token_limit is not None and (
-            isinstance(token_limit, bool)
-            or not isinstance(token_limit, int)
-            or token_limit <= 0
+        if remaining_token_budget is not None and (
+            isinstance(remaining_token_budget, bool)
+            or not isinstance(remaining_token_budget, int)
+            or remaining_token_budget < 0
         ):
-            raise ConsoleError("token_limit must be a positive integer")
+            raise ConsoleError("remaining_token_budget must be a non-negative integer")
         _, nodes, thread_ids, scope = self._observed_scope(project_id=project_id, ctrl_id=ctrl_id)
         project_filter = scope.get("project_id") if scope.get("type") == "project" else None
         history = self.store.token_history(project_id=project_filter, thread_ids=thread_ids, hours=hours)
@@ -3132,8 +3186,8 @@ class App:
             "source": "persisted_local_token_deltas" if history else None,
         }
         missing_inputs = []
-        if token_limit is None:
-            missing_inputs.append("token_limit")
+        if remaining_token_budget is None:
+            missing_inputs.append("remaining_token_budget")
         if target_reset_at_ms is None:
             missing_inputs.append("target_reset_at_ms")
         if not history:
@@ -3145,7 +3199,7 @@ class App:
         forecast = {
             "status": "no_data",
             "estimated": False,
-            "token_limit": token_limit,
+            "remaining_token_budget": remaining_token_budget,
             "target_reset_at_ms": target_reset_at_ms,
             "observed_tokens": total_tokens if history else None,
             "observed_rate_tokens_per_minute": rate,
@@ -3156,11 +3210,11 @@ class App:
             "source": "observed_local_token_rate" if history else None,
             "claim_limit": (
                 "Estimate uses persisted local token deltas in the selected window plus an explicit "
-                "token limit and reset target; it is not provider billing, quota, or a discovered limit."
+                "remaining token budget and reset target; it is not provider billing, quota, or a discovered limit."
             ),
         }
         if not missing_inputs:
-            remaining_tokens = max(0, int(token_limit) - total_tokens)
+            remaining_tokens = int(remaining_token_budget)
             exhaustion_at_ms = (
                 now_ms
                 if remaining_tokens == 0
@@ -3283,17 +3337,33 @@ class App:
                 "title": controller.get("title", "CTRL"),
                 "status": controller.get("status", "unknown"),
                 "archived": bool(controller.get("archived", False)),
-                "visibility": "hidden" if controller.get("archived", False) else "visible",
+                "archive_source": controller.get("archive_source"),
+                "controller_classification": controller.get("controller_classification", "unavailable"),
+                "controller_classification_source": controller.get("controller_classification_source"),
+                "visibility": (
+                    "hidden"
+                    if controller.get("archived", False)
+                    or controller.get("controller_classification") != "swarm_ctrl"
+                    else "visible"
+                ),
                 "updated_at": controller.get("updated_at"),
             }
             for controller in view.get("controllers", [])
         ]
-        visible_controllers = [controller for controller in controllers if not controller["archived"]]
+        authoritative_controllers = [
+            controller for controller in controllers
+            if controller["controller_classification"] == "swarm_ctrl"
+            and controller["controller_classification_source"] == "host_threads.agent_role"
+        ]
+        visible_controllers = [controller for controller in authoritative_controllers if not controller["archived"]]
         active_controllers = [controller for controller in visible_controllers if controller["status"] == "active"]
         projects = []
         for project in view.get("projects", []):
             project_id = str(project.get("id", ""))
-            all_project_controllers = [controller for controller in controllers if controller["project_id"] == project_id]
+            all_project_controllers = [
+                controller for controller in authoritative_controllers
+                if controller["project_id"] == project_id
+            ]
             project_controllers = [controller for controller in all_project_controllers if not controller["archived"]]
             ctrl_ids = [controller["id"] for controller in project_controllers]
             active_ids = [controller["id"] for controller in project_controllers if controller["status"] == "active"]
@@ -3306,7 +3376,17 @@ class App:
                 "active_ctrl_id": active_ids[0] if active_ids else None,
                 "ctrl_ids": ctrl_ids,
                 "project_eligibility": "swarm_ctrl" if ctrl_ids else "no_ctrl",
+                "eligibility_source": (
+                    "host_threads.agent_role"
+                    if all_project_controllers
+                    else "unavailable"
+                ),
                 "archived": project_archived,
+                "archive_source": (
+                    "host_threads.archived"
+                    if all_project_controllers
+                    else "unavailable"
+                ),
                 "visibility": "hidden" if project_archived else "visible",
                 "task_count": sum(
                     1 for node in view.get("nodes", [])
@@ -3319,8 +3399,9 @@ class App:
             "controllers": controllers,
             "projects": projects,
             "claim_limit": (
-                "CTRL identity and visibility derive only from observed host thread identity and archived state; "
-                "idle, quiet, and stalled visible CTRLs remain eligible, and this is not runtime authority."
+                "Current Work eligibility requires persisted host agent_role=ctrl classification and a non-archived "
+                "host thread; titles, root position, and runtime status never establish CTRL identity. Legacy rows "
+                "without classification fail closed as no_ctrl, and this remains read-only observation."
             ),
         }
 
@@ -3839,9 +3920,15 @@ class Handler(BaseHTTPRequestHandler):
                         if "target_reset_at_ms" in query
                         else None
                     )
-                    token_limit = int(query["token_limit"]) if "token_limit" in query else None
+                    remaining_token_budget = (
+                        int(query["remaining_token_budget"])
+                        if "remaining_token_budget" in query
+                        else None
+                    )
                 except ValueError as exc:
-                    raise ConsoleError("target_reset_at_ms and token_limit must be integers") from exc
+                    raise ConsoleError(
+                        "target_reset_at_ms and remaining_token_budget must be integers"
+                    ) from exc
                 self._json(
                     HTTPStatus.OK,
                     self.server.app.usage_history(
@@ -3849,7 +3936,7 @@ class Handler(BaseHTTPRequestHandler):
                         ctrl_id=query.get("ctrl_id"),
                         hours=hours,
                         target_reset_at_ms=target_reset_at_ms,
-                        token_limit=token_limit,
+                        remaining_token_budget=remaining_token_budget,
                     ),
                 )
                 return

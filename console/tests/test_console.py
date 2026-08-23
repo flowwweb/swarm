@@ -510,30 +510,54 @@ class SwarmConsoleTests(unittest.TestCase):
                 {"id": "ctrl-a", "project_id": "project:a", "role": "ctrl", "virtual": False, "controller_ids": ["ctrl-a"]},
             ],
         }
-        history = [
+        one_hour_history = [
             {"bucket_ms": 1_000_000, "delta_tokens": 200, "source": "codex_jsonl_token_count"},
             {"bucket_ms": 1_060_000, "delta_tokens": 100, "source": "codex_jsonl_token_count"},
         ]
+        twelve_hour_history = [
+            {"bucket_ms": 800_000, "delta_tokens": 100, "source": "codex_jsonl_token_count"},
+            {"bucket_ms": 1_100_000, "delta_tokens": 100, "source": "codex_jsonl_token_count"},
+        ]
         with mock.patch.object(app, "_host_overview", return_value=overview), \
-             mock.patch.object(app.store, "token_history", return_value=history), \
+             mock.patch.object(
+                 app.store,
+                 "token_history",
+                 side_effect=[one_hour_history, one_hour_history, twelve_hour_history],
+             ), \
              mock.patch.object(app.store, "token_sample_thread_count", return_value=1), \
              mock.patch.object(console.time, "time", return_value=1_100):
             missing = app.usage_history(hours=1)
-            forecast = app.usage_history(
+            one_hour = app.usage_history(
+                hours=1,
+                target_reset_at_ms=2_000_000,
+                remaining_token_budget=600,
+            )
+            twelve_hours = app.usage_history(
                 hours=12,
                 target_reset_at_ms=2_000_000,
-                token_limit=900,
+                remaining_token_budget=600,
             )
         self.assertEqual(missing["forecast"]["status"], "no_data")
         self.assertEqual(missing["forecast"]["exhaustion_at_ms"], None)
-        self.assertEqual(missing["forecast"]["missing_inputs"], ["target_reset_at_ms", "token_limit"])
-        self.assertEqual(forecast["usage_now"]["tokens"], 300)
-        self.assertEqual(forecast["usage_now"]["sampled_at_ms"], 1_060_000)
-        self.assertEqual(forecast["forecast"]["status"], "estimated")
-        self.assertEqual(forecast["forecast"]["remaining_tokens"], 600)
-        self.assertEqual(forecast["forecast"]["exhaustion_at_ms"], 1_220_000)
-        self.assertTrue(forecast["forecast"]["exhausts_before_reset"])
-        self.assertIn("not provider billing", forecast["forecast"]["claim_limit"])
+        self.assertEqual(
+            missing["forecast"]["missing_inputs"],
+            ["remaining_token_budget", "target_reset_at_ms"],
+        )
+        self.assertEqual(one_hour["usage_now"]["tokens"], 300)
+        self.assertEqual(one_hour["usage_now"]["sampled_at_ms"], 1_060_000)
+        self.assertEqual(one_hour["forecast"]["status"], "estimated")
+        self.assertEqual(one_hour["forecast"]["remaining_token_budget"], 600)
+        self.assertEqual(one_hour["forecast"]["remaining_tokens"], 600)
+        self.assertEqual(one_hour["forecast"]["exhaustion_at_ms"], 1_220_000)
+        self.assertTrue(one_hour["forecast"]["exhausts_before_reset"])
+        self.assertEqual(twelve_hours["forecast"]["remaining_token_budget"], 600)
+        self.assertEqual(twelve_hours["forecast"]["remaining_tokens"], 600)
+        self.assertNotEqual(one_hour["tokens_per_minute"], twelve_hours["tokens_per_minute"])
+        self.assertNotEqual(
+            one_hour["forecast"]["exhaustion_at_ms"],
+            twelve_hours["forecast"]["exhaustion_at_ms"],
+        )
+        self.assertIn("not provider billing", one_hour["forecast"]["claim_limit"])
 
     def test_usage_forecast_stays_no_data_without_history_or_positive_rate(self) -> None:
         app = console.App(self.codex_home, self.config)
@@ -545,16 +569,38 @@ class SwarmConsoleTests(unittest.TestCase):
             result = app.usage_history(
                 hours=24,
                 target_reset_at_ms=2_000_000,
-                token_limit=900,
+                remaining_token_budget=600,
             )
         self.assertEqual(result["usage_now"]["status"], "no_data")
         self.assertIsNone(result["usage_now"]["tokens"])
         self.assertEqual(result["forecast"]["status"], "no_data")
         self.assertIn("usage_history", result["forecast"]["missing_inputs"])
         self.assertIn("positive_observed_rate", result["forecast"]["missing_inputs"])
+        with self.assertRaises(console.ConsoleError):
+            app.usage_history(hours=24, remaining_token_budget=-1)
 
     def test_progress_summary_aggregates_only_compatible_receipt_backed_units(self) -> None:
-        def measured(task_id: str, completed: int, basis: str = "accepted milestones") -> dict[str, object]:
+        def measured(
+            task_id: str,
+            completed: int,
+            basis: str = "accepted milestones",
+            *,
+            plan_id: str = "plan-alpha",
+            unit_kind: str = "milestone",
+            include_identity: bool = True,
+        ) -> dict[str, object]:
+            plan_units: dict[str, object] = {
+                "total_units": 4,
+                "completed_units": completed,
+                "basis": basis,
+                "observed_at_ms": 1_000 + completed,
+            }
+            if include_identity:
+                plan_units.update({
+                    "plan_id": plan_id,
+                    "unit_id": f"unit-{task_id}",
+                    "unit_kind": unit_kind,
+                })
             return {
                 "id": task_id,
                 "project_id": "project:a",
@@ -568,29 +614,28 @@ class SwarmConsoleTests(unittest.TestCase):
                     "receipt_source": f"owner:{task_id}:receipt-{task_id}",
                     "progress_basis": {
                         "receipts": [f"receipt-{task_id}"],
-                        "plan_units": {
-                            "total_units": 4,
-                            "completed_units": completed,
-                            "basis": basis,
-                            "observed_at_ms": 1_000 + completed,
-                        },
+                        "plan_units": plan_units,
                     },
                 },
                 "proof_snapshot": {"media": []},
             }
 
         summary = console.App._progress_for_nodes(
-            [measured("one", 1), measured("two", 3)],
+            [measured("one", 1), measured("two", 3, basis="reviewed checkpoints")],
             {"type": "ctrl", "ctrl_id": "ctrl-a", "project_id": "project:a"},
         )
         self.assertEqual(summary["progress"]["percent"], 50.0)
         self.assertEqual(summary["progress"]["completed_units"], 4)
         self.assertEqual(summary["progress"]["total_units"], 8)
         self.assertEqual(summary["measurement_status"], "measured")
+        self.assertEqual(summary["progress"]["plan_id"], "plan-alpha")
+        self.assertEqual(summary["progress"]["unit_kind"], "milestone")
+        self.assertEqual(summary["progress"]["unit_ids"], ["unit-one", "unit-two"])
+        self.assertEqual(summary["progress"]["basis"], "Receipt-backed plan units")
         self.assertEqual(summary["tasks"][0]["progress"]["source"], "task_owner_report")
         self.assertIn("does not prove", summary["tasks"][0]["progress"]["claim_limit"])
         payload = console.App._progress_payload({
-            "nodes": [measured("one", 1), measured("two", 3)],
+            "nodes": [measured("one", 1), measured("two", 3, basis="reviewed checkpoints")],
             "projects": [{"id": "project:a"}],
             "controllers": [{"id": "ctrl-a", "project_id": "project:a"}],
         })
@@ -606,11 +651,18 @@ class SwarmConsoleTests(unittest.TestCase):
         self.assertEqual(missing["unmeasured_reason"], "missing_receipt_backed_units")
 
         heterogeneous = console.App._progress_for_nodes(
-            [measured("one", 1), measured("two", 3, basis="review gates")],
+            [measured("one", 1), measured("two", 3, plan_id="plan-beta")],
             {"type": "project", "project_id": "project:a"},
         )
         self.assertIsNone(heterogeneous["progress"])
         self.assertEqual(heterogeneous["unmeasured_reason"], "heterogeneous_plan_units")
+
+        missing_identity = console.App._progress_for_nodes(
+            [measured("one", 1), measured("two", 3, include_identity=False)],
+            {"type": "project", "project_id": "project:a"},
+        )
+        self.assertIsNone(missing_identity["progress"])
+        self.assertEqual(missing_identity["unmeasured_reason"], "missing_receipt_backed_units")
 
     def test_progress_summary_never_uses_unbound_measurement_or_task_status_as_percentage(self) -> None:
         nodes = [
@@ -632,7 +684,8 @@ class SwarmConsoleTests(unittest.TestCase):
         source = SERVER.read_text(encoding="utf-8")
         self.assertIn('if path == "/api/usage-history":', source)
         self.assertIn('query["target_reset_at_ms"]', source)
-        self.assertIn('query["token_limit"]', source)
+        self.assertIn('query["remaining_token_budget"]', source)
+        self.assertNotIn('query["token_limit"]', source)
         self.assertIn('if path == "/api/progress":', source)
         for rejected in ("USER_CUSTODY_OPERATIONS", "prepare_user_mutation", "user_custody_receipts"):
             self.assertNotIn(rejected, source)
@@ -765,8 +818,8 @@ class SwarmConsoleTests(unittest.TestCase):
             "links": [],
             "roots": ["ctrl-a", "ctrl-b"],
             "controllers": [
-                {"id": "ctrl-a", "project_id": "project:a", "title": "CTRL - Alpha", "status": "active", "updated_at": 2},
-                {"id": "ctrl-b", "project_id": "project:b", "title": "CTRL - Beta", "status": "active", "updated_at": 1},
+                {"id": "ctrl-a", "project_id": "project:a", "title": "CTRL - Alpha", "status": "active", "updated_at": 2, "archived": False, "archive_source": "host_threads.archived", "controller_classification": "swarm_ctrl", "controller_classification_source": "host_threads.agent_role"},
+                {"id": "ctrl-b", "project_id": "project:b", "title": "CTRL - Beta", "status": "active", "updated_at": 1, "archived": False, "archive_source": "host_threads.archived", "controller_classification": "swarm_ctrl", "controller_classification_source": "host_threads.agent_role"},
             ],
             "projects": [
                 {"id": "project:a", "name": "Alpha", "goal_label": "Alpha goal", "label_source": "working_directory"},
@@ -783,33 +836,58 @@ class SwarmConsoleTests(unittest.TestCase):
         self.assertEqual(view["navigation"]["projects"][0]["goal_label"], "Alpha goal")
         self.assertEqual(view["navigation"]["projects"][0]["task_count"], 2)
 
-    def test_navigation_eligibility_uses_ctrl_archived_authority_not_runtime_status(self) -> None:
-        view = {
-            "controllers": [
-                {"id": "ctrl-idle", "project_id": "idle", "status": "quiet", "archived": False, "updated_at": 10},
-                {"id": "ctrl-stalled", "project_id": "stalled", "status": "blocked", "archived": False, "updated_at": 11},
-                {"id": "ctrl-archived", "project_id": "archived", "status": "active", "archived": True, "updated_at": 12},
-            ],
-            "projects": [
-                {"id": "idle", "name": "Idle"},
-                {"id": "stalled", "name": "Stalled"},
-                {"id": "none", "name": "No CTRL"},
-                {"id": "archived", "name": "Archived"},
-            ],
-            "nodes": [],
-        }
-        navigation = console.App._navigation_payload(view)
+    def test_navigation_eligibility_uses_persisted_ctrl_and_archive_authority(self) -> None:
+        now = int(time.time() * 1000)
+        quiet = now - 2 * 60 * 60 * 1000
+        connection = sqlite3.connect(self.database)
+        connection.execute("UPDATE threads SET agent_role='ctrl' WHERE id='root'")
+        rows = [
+            ("ctrl-idle", "🐙CTRL - Idle", "C:/work/idle", quiet, quiet, 0, "ctrl"),
+            ("ctrl-stalled", "🐙CTRL - Stalled", "C:/work/stalled", quiet, quiet, 0, "ctrl"),
+            ("ctrl-archived", "🐙CTRL - Archived", "C:/work/archived", now, now, 1, "ctrl"),
+            ("legacy-title", "🐙CTRL - Legacy", "C:/work/legacy", now, now, 0, ""),
+            ("no-ctrl", "🔨DEV - Standalone", "C:/work/noctrl", now, now, 0, "doer"),
+        ]
+        for thread_id, title, cwd, created, updated, archived, agent_role in rows:
+            connection.execute(
+                "INSERT INTO threads VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (thread_id, title, cwd, created // 1000, updated // 1000, created, updated,
+                 "gpt-5.6-luna", "high", 0, archived, "", "main", "", "", agent_role, 0),
+            )
+        connection.commit()
+        connection.close()
+
+        production = console.build_overview(self.codex_home, self.config)
+        stalled_controller = next(
+            item for item in production["controllers"] if item["id"] == "ctrl-stalled"
+        )
+        stalled_controller["status"] = "blocked"
+        navigation = console.App._navigation_payload(production)
+        project_ids = {project["name"]: project["id"] for project in production["projects"]}
         by_project = {item["id"]: item for item in navigation["projects"]}
         by_controller = {item["id"]: item for item in navigation["controllers"]}
-        self.assertEqual(by_project["idle"]["project_eligibility"], "swarm_ctrl")
-        self.assertEqual(by_project["idle"]["ctrl_ids"], ["ctrl-idle"])
-        self.assertEqual(by_project["stalled"]["project_eligibility"], "swarm_ctrl")
-        self.assertEqual(by_project["none"]["project_eligibility"], "no_ctrl")
-        self.assertFalse(by_project["none"]["archived"])
-        self.assertEqual(by_project["archived"]["visibility"], "hidden")
-        self.assertTrue(by_project["archived"]["archived"])
-        self.assertEqual(by_project["archived"]["project_eligibility"], "no_ctrl")
+        idle = by_project[project_ids["idle"]]
+        stalled = by_project[project_ids["stalled"]]
+        archived = by_project[project_ids["archived"]]
+        legacy = by_project[project_ids["legacy"]]
+        no_ctrl = by_project[project_ids["noctrl"]]
+        self.assertEqual(idle["project_eligibility"], "swarm_ctrl")
+        self.assertEqual(idle["ctrl_ids"], ["ctrl-idle"])
+        self.assertEqual(stalled["project_eligibility"], "swarm_ctrl")
+        self.assertEqual(stalled["ctrl_ids"], ["ctrl-stalled"])
+        self.assertEqual(no_ctrl["project_eligibility"], "no_ctrl")
+        self.assertFalse(no_ctrl["archived"])
+        self.assertEqual(archived["visibility"], "hidden")
+        self.assertTrue(archived["archived"])
+        self.assertEqual(archived["project_eligibility"], "no_ctrl")
+        self.assertEqual(legacy["project_eligibility"], "no_ctrl")
+        self.assertEqual(legacy["eligibility_source"], "unavailable")
+        self.assertEqual(legacy["ctrl_ids"], [])
+        self.assertEqual(by_controller["ctrl-idle"]["controller_classification"], "swarm_ctrl")
+        self.assertEqual(by_controller["ctrl-idle"]["visibility"], "visible")
         self.assertEqual(by_controller["ctrl-archived"]["visibility"], "hidden")
+        self.assertEqual(by_controller["legacy-title"]["controller_classification"], "unavailable")
+        self.assertEqual(by_controller["legacy-title"]["visibility"], "hidden")
         self.assertNotIn("ctrl-archived", navigation["active_ctrl_ids"])
 
     def test_proof_media_delivery_requires_registered_surface_and_current_digest(self) -> None:

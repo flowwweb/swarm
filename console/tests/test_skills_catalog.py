@@ -92,6 +92,9 @@ class SkillsAndEtaContractTests(unittest.TestCase):
                     "completed_units": 1,
                     "basis": "accepted milestones",
                     "observed_at_ms": now,
+                    "plan_id": "plan-alpha",
+                    "unit_id": "unit-build",
+                    "unit_kind": "milestone",
                 },
             }
             first_receipt = {
@@ -155,11 +158,30 @@ class SkillsAndEtaContractTests(unittest.TestCase):
                             "completed_units": 3,
                             "basis": "milestones",
                             "observed_at_ms": 1,
+                            "plan_id": "plan-alpha",
+                            "unit_id": "unit-one",
+                            "unit_kind": "milestone",
                         },
                     },
                 },
             }
-            for report in (caller_claim, unknown, invalid_units):
+            missing_unit_identity = {
+                **base,
+                "current": {
+                    **base["current"],
+                    "progress_basis": {
+                        "milestones": [{"id": "one"}],
+                        "receipts": ["receipt:one"],
+                        "plan_units": {
+                            "total_units": 2,
+                            "completed_units": 1,
+                            "basis": "milestones",
+                            "observed_at_ms": 1,
+                        },
+                    },
+                },
+            }
+            for report in (caller_claim, unknown, invalid_units, missing_unit_identity):
                 store.observe_overview({"nodes": [{"id": "task", "project_id": "project:alpha", "eta_report": report}], "links": []}, now_ms=1, trigger="startup", heartbeat_minutes=30)
             self.assertEqual(store.latest_forecasts(), {})
             store.observe_overview({"nodes": [{"id": "task", "project_id": "project:alpha", "eta_report": base}], "links": []}, now_ms=2, trigger="startup", heartbeat_minutes=30)
