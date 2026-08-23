@@ -51,6 +51,8 @@ TOKEN_SAMPLE_SECONDS = 60
 TOKEN_RETENTION_DAYS = 30
 TOKEN_SOURCE_SQLITE = "host_reported_cumulative_delta"
 TOKEN_SOURCE_CODEX_JSONL = "codex_jsonl_token_count"
+TOKEN_JSONL_SCAN_FILE_LIMIT = 4096
+PROGRESS_FRESHNESS_WINDOWS = 2
 DIAGNOSTIC_RETENTION_DAYS = 7
 DIAGNOSTIC_FRESH_SECONDS = TOKEN_SAMPLE_SECONDS * 5
 HEALTH_INCIDENT_RETENTION_DAYS = 90
@@ -1256,6 +1258,14 @@ class ConsoleStore:
     def observe_overview(self, overview: dict[str, Any], *, now_ms: int, trigger: str, heartbeat_minutes: int, codex_home: Path | None = None) -> None:
         nodes = [node for node in overview.get("nodes", []) if not node.get("virtual")]
         node_by_id = {str(node["id"]): node for node in nodes}
+        # Filesystem discovery and JSONL parsing can be slow on a large sessions
+        # tree. Complete one bounded shared scan before taking the SQLite lock so
+        # passive readers remain responsive.
+        jsonl_counts = (
+            {}
+            if codex_home is None
+            else _codex_jsonl_token_counts(codex_home, set(node_by_id))
+        )
         dependencies: dict[str, list[str]] = {}
         for link in overview.get("links", []):
             dependencies.setdefault(str(link["target"]), []).append(str(link["source"]))
@@ -1265,7 +1275,7 @@ class ConsoleStore:
                 thread_id = _safe_metadata_text(str(node["id"]), "thread id", maximum=256)
                 project_id = _safe_metadata_text(str(node["project_id"]), "project id", maximum=256)
                 sqlite_cumulative = max(0, int(node.get("tokens") or 0))
-                jsonl_cumulative = None if codex_home is None else _codex_jsonl_token_count(codex_home, thread_id)
+                jsonl_cumulative = jsonl_counts.get(thread_id)
                 cumulative = max(sqlite_cumulative, jsonl_cumulative or 0)
                 source = TOKEN_SOURCE_CODEX_JSONL if jsonl_cumulative is not None and jsonl_cumulative >= sqlite_cumulative else TOKEN_SOURCE_SQLITE
                 prior = connection.execute(
@@ -2284,20 +2294,26 @@ def _epoch_ms(milliseconds: Any, seconds: Any) -> int:
     return value if value > 10**12 else value * 1000
 
 
-def _codex_jsonl_token_count(codex_home: Path, thread_id: str) -> int | None:
-    """Read only local token-count events for one thread; never retain payloads."""
+def _codex_jsonl_token_counts(codex_home: Path, thread_ids: set[str]) -> dict[str, int]:
+    """Bound one shared sessions walk to requested threads; retain counts only."""
     sessions = codex_home / "sessions"
-    if not sessions.is_dir():
-        return None
-    highest: int | None = None
+    requested = {thread_id for thread_id in thread_ids if thread_id}
+    if not sessions.is_dir() or not requested:
+        return {}
+    highest: dict[str, int] = {}
+    candidates: list[tuple[str, Path]] = []
     try:
-        candidates = sorted(
-            path for path in sessions.rglob("*.jsonl")
-            if path.is_file() and thread_id in path.name
-        )
+        for visited, path in enumerate(sessions.rglob("*.jsonl"), start=1):
+            if visited > TOKEN_JSONL_SCAN_FILE_LIMIT:
+                break
+            if not path.is_file():
+                continue
+            thread_id = next((item for item in requested if item in path.name), None)
+            if thread_id is not None:
+                candidates.append((thread_id, path))
     except OSError:
-        return None
-    for path in candidates:
+        return {}
+    for thread_id, path in candidates:
         try:
             with path.open("r", encoding="utf-8") as stream:
                 for line in stream:
@@ -2323,10 +2339,15 @@ def _codex_jsonl_token_count(codex_home: Path, thread_id: str) -> int | None:
                         input_tokens = input_tokens if isinstance(input_tokens, int) and input_tokens >= 0 else 0
                         output_tokens = output_tokens if isinstance(output_tokens, int) and output_tokens >= 0 else 0
                         total = input_tokens + output_tokens
-                    highest = total if highest is None else max(highest, total)
+                    highest[thread_id] = max(highest.get(thread_id, 0), total)
         except (OSError, UnicodeError):
             continue
     return highest
+
+
+def _codex_jsonl_token_count(codex_home: Path, thread_id: str) -> int | None:
+    """Compatibility wrapper for focused callers; observation uses the shared scan."""
+    return _codex_jsonl_token_counts(codex_home, {thread_id}).get(thread_id)
 
 
 def _project_identity(row: sqlite3.Row) -> tuple[str, str]:
@@ -3006,7 +3027,13 @@ class App:
         }
 
     @staticmethod
-    def _progress_for_nodes(nodes: list[dict[str, Any]], scope: dict[str, Any]) -> dict[str, Any]:
+    def _progress_for_nodes(
+        nodes: list[dict[str, Any]],
+        scope: dict[str, Any],
+        *,
+        now_ms: int | None = None,
+        stale_after_ms: int = 60 * 60 * 1000,
+    ) -> dict[str, Any]:
         tasks = [
             node for node in nodes
             if not node.get("virtual") and not node.get("is_subagent") and node.get("role") != "ctrl"
@@ -3066,6 +3093,20 @@ class App:
                 ),
             }
             unmeasured_reason = None
+        observed_at_ms = aggregate["observed_at_ms"] if aggregate else None
+        freshness_now = observed_at_ms if now_ms is None else now_ms
+        age_ms = None if observed_at_ms is None else max(0, int(freshness_now) - int(observed_at_ms))
+        freshness = {
+            "state": (
+                "unavailable"
+                if observed_at_ms is None
+                else "stale" if age_ms is not None and age_ms > stale_after_ms else "fresh"
+            ),
+            "observed_at_ms": observed_at_ms,
+            "age_ms": age_ms,
+            "stale_after_ms": stale_after_ms,
+            "source": aggregate["source"] if aggregate else None,
+        }
         return {
             "scope": scope,
             "status": "no_tasks" if not task_items else "observed",
@@ -3075,6 +3116,7 @@ class App:
             "progress_display": f"{aggregate['percent']:g}%" if aggregate else "Unmeasured",
             "measurement_status": "measured" if aggregate else "unmeasured",
             "unmeasured_reason": unmeasured_reason,
+            "freshness": freshness,
             "claim_limit": (
                 "Observed non-subagent task counts plus compatible receipt-backed plan units only; "
                 "status, token volume, elapsed time, and proof counts never fabricate percentage."
@@ -3084,10 +3126,14 @@ class App:
     @classmethod
     def _progress_payload(cls, view: dict[str, Any]) -> dict[str, Any]:
         nodes = list(view.get("nodes", []))
+        now_ms = int(time.time() * 1000)
+        stale_after_ms = max(1, int(view.get("heartbeat_minutes") or 30)) * PROGRESS_FRESHNESS_WINDOWS * 60_000
         project_summaries = {
             str(project["id"]): cls._progress_for_nodes(
                 [node for node in nodes if node.get("project_id") == project["id"]],
                 {"type": "project", "project_id": project["id"]},
+                now_ms=now_ms,
+                stale_after_ms=stale_after_ms,
             )
             for project in view.get("projects", [])
         }
@@ -3095,11 +3141,18 @@ class App:
             str(controller["id"]): cls._progress_for_nodes(
                 [node for node in nodes if controller["id"] in node.get("controller_ids", [])],
                 {"type": "ctrl", "ctrl_id": controller["id"], "project_id": controller.get("project_id")},
+                now_ms=now_ms,
+                stale_after_ms=stale_after_ms,
             )
             for controller in view.get("controllers", [])
         }
         return {
-            "all_projects": cls._progress_for_nodes(nodes, {"type": "all-projects"}),
+            "all_projects": cls._progress_for_nodes(
+                nodes,
+                {"type": "all-projects"},
+                now_ms=now_ms,
+                stale_after_ms=stale_after_ms,
+            ),
             "projects": project_summaries,
             "controllers": controller_summaries,
             "claim_limit": "Progress is a read-only projection of observed host tasks; it is not runtime authority.",
@@ -3303,8 +3356,17 @@ class App:
         }
 
     def progress_summary(self, *, project_id: str | None = None, ctrl_id: str | None = None) -> dict[str, Any]:
-        _, nodes, _, scope = self._observed_scope(project_id=project_id, ctrl_id=ctrl_id)
-        return {"ok": True, **self._progress_for_nodes(nodes, scope)}
+        overview, nodes, _, scope = self._observed_scope(project_id=project_id, ctrl_id=ctrl_id)
+        stale_after_ms = max(1, int(overview.get("heartbeat_minutes") or 30)) * PROGRESS_FRESHNESS_WINDOWS * 60_000
+        return {
+            "ok": True,
+            **self._progress_for_nodes(
+                nodes,
+                scope,
+                now_ms=int(time.time() * 1000),
+                stale_after_ms=stale_after_ms,
+            ),
+        }
 
     def skill_settings(
         self,
@@ -3477,13 +3539,16 @@ class App:
         return view
 
     def overview(self, project_id: str | None = None) -> dict[str, Any]:
+        # Never call _host_overview while holding overview_lock. The refresh
+        # path owns overview_refresh_lock before publishing under overview_lock.
+        self._host_overview()
         with self.overview_lock:
             if (
                 self._view is None
                 or self._view_fingerprint != self._overview_revision
                 or self._view_store_generation != self._store_generation
             ):
-                self._view = self._decorate_overview(self._host_overview())
+                self._view = self._decorate_overview(self._overview or {})
                 self._view_fingerprint = self._overview_revision
                 self._view_store_generation = self._store_generation
             return self._project_view(self._view, project_id)

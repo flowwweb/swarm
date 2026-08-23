@@ -69,10 +69,41 @@ function clearError() {
 }
 
 async function api(path, options = {}) {
-  const response = await fetch(path, { ...options, headers: { ...(state.token ? { "X-Swarm-Token": state.token } : {}), ...(options.headers || {}) } });
-  const data = await response.json();
-  if (!response.ok) throw new Error(data.error || "Request failed (" + response.status + ")");
-  return data;
+  const { timeoutMs = 0, ...fetchOptions } = options;
+  const controller = timeoutMs > 0 ? new AbortController() : null;
+  const timeout = controller ? window.setTimeout(() => controller.abort(), timeoutMs) : null;
+  try {
+    const response = await fetch(path, { ...fetchOptions, ...(controller ? { signal: controller.signal } : {}), headers: { ...(state.token ? { "X-Swarm-Token": state.token } : {}), ...(fetchOptions.headers || {}) } });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || "Request failed (" + response.status + ")");
+    return data;
+  } catch (error) {
+    if (error?.name === "AbortError") throw new Error("Project data request timed out");
+    throw error;
+  } finally {
+    if (timeout) window.clearTimeout(timeout);
+  }
+}
+
+function setDataStatus(status, observedAt = null) {
+  const title = $("#data-status-title");
+  const note = $("#data-status-note");
+  const dot = $("#data-status-dot");
+  if (!title || !note || !dot) return;
+  dot.classList.toggle("is-live", status === "current");
+  if (status === "current") {
+    title.textContent = "Current";
+    note.textContent = observedAt ? "Updated " + formatRelative(observedAt) : "Snapshot received";
+  } else if (status === "stale") {
+    title.textContent = "Stale";
+    note.textContent = observedAt ? "Last update " + formatRelative(observedAt) : "Refresh failed";
+  } else if (status === "unavailable") {
+    title.textContent = "Data unavailable";
+    note.textContent = "Waiting for a project snapshot";
+  } else {
+    title.textContent = "Connecting";
+    note.textContent = "Waiting for data";
+  }
 }
 
 function scopedNodes() {
@@ -408,13 +439,34 @@ function observedTasks(nodes) {
   return nodes.filter((node) => !isSubagent(node) && String(node.role || "").toLowerCase() !== "ctrl");
 }
 
+function authoritativeProgress(projectId, ctrlId = "") {
+  const summaries = state.overview?.progress || {};
+  if (ctrlId && summaries.controllers?.[ctrlId]) return summaries.controllers[ctrlId];
+  if (projectId && summaries.projects?.[projectId]) return summaries.projects[projectId];
+  return null;
+}
+
+function progressPresentation(summary) {
+  const measured = summary?.progress;
+  const percent = typeof measured?.percent === "number" ? measured.percent : Number.NaN;
+  const validPercent = Number.isFinite(percent) ? Math.max(0, Math.min(100, percent)) : null;
+  const freshness = summary?.freshness || {};
+  const freshnessLabel = freshness.state === "fresh" ? "Fresh" : freshness.state === "stale" ? "Stale" : "Unmeasured";
+  const observed = freshness.observed_at_ms ? formatRelative(freshness.observed_at_ms) : "No receipt time";
+  return {
+    percent: validPercent,
+    display: validPercent == null ? "Unmeasured" : String(validPercent) + "%",
+    freshness: freshnessLabel + (freshness.observed_at_ms ? " · " + observed : ""),
+  };
+}
+
 function overviewCards(nodes) {
-  if (state.ctrlId) return [{ label: scopeLabel(), ctrlId: state.ctrlId, nodes }];
+  if (state.ctrlId) return [{ label: scopeLabel(), projectId: nodes[0]?.project_id || "", ctrlId: state.ctrlId, nodes }];
   const projectName = (projectId, projectNodes) => (state.overview?.projects || []).find((project) => project.id === projectId)?.name || projectNodes[0]?.project || "Independent work";
   const cardsForProject = (projectId, projectNodes) => {
     const projectControllers = projectNodes.filter((node) => !isSubagent(node) && String(node.role || "").toLowerCase() === "ctrl");
-    if (projectControllers.length < 2) return [{ label: projectName(projectId, projectNodes), ctrlId: projectControllers[0]?.id || "", nodes: projectNodes }];
-    return projectControllers.map((ctrl) => ({ label: projectName(projectId, projectNodes) + " · " + ctrlLabel(ctrl), ctrlId: ctrl.id, nodes: projectNodes.filter((node) => node.id === ctrl.id || (node.controller_ids || []).includes(ctrl.id)) }));
+    if (projectControllers.length < 2) return [{ label: projectName(projectId, projectNodes), projectId, ctrlId: projectControllers[0]?.id || "", nodes: projectNodes }];
+    return projectControllers.map((ctrl) => ({ label: projectName(projectId, projectNodes) + " · " + ctrlLabel(ctrl), projectId, ctrlId: ctrl.id, nodes: projectNodes.filter((node) => node.id === ctrl.id || (node.controller_ids || []).includes(ctrl.id)) }));
   };
   if (state.projectId !== "all") return cardsForProject(state.projectId, nodes);
   const projects = new Map((state.overview?.projects || []).filter((project) => !/^https?[-_:]/i.test(String(project.name || ""))).map((project) => [project.id, []]));
@@ -525,9 +577,7 @@ function renderOverviewProjectCards(nodes) {
   const moreCards = allProjects ? activeCards.slice(5) : [];
   const renderCard = (card) => {
     const tasks = observedTasks(card.nodes);
-    const completed = tasks.filter((task) => ["done", "archived"].includes(String(task.status).toLowerCase())).length;
-    const total = tasks.length;
-    const percent = total ? Math.round((completed / total) * 100) : null;
+    const progress = progressPresentation(authoritativeProgress(card.projectId, card.ctrlId));
     const blocker = tasks.find(needsAttention);
     const receipt = latestReceipt(card.nodes);
     const primary = card.nodes.find((node) => node.id === card.ctrlId) || tasks[0];
@@ -536,7 +586,7 @@ function renderOverviewProjectCards(nodes) {
     const ringClass = needsAttention(primary) ? "is-attention" : (statusLabel(primary || {})[1] || "is-pending");
     const subagents = card.ctrlId ? subagentDescendants(card.ctrlId, tree) : [];
     const subagentDisclosure = subagents.length ? '<details class="overview-subagents" data-overview-subagents="' + escapeHTML(card.ctrlId) + '"><summary>Subagents <span>' + subagents.length + '</span></summary><ul>' + subagents.map((node) => '<li><strong>' + escapeHTML(node.artifact || node.title || node.id) + '</strong><span>' + escapeHTML(statusLabel(node)[0]) + '</span></li>').join('') + '</ul></details>' : '<span class="overview-subagent-empty">No subagents</span>';
-    return '<article class="overview-project-card panel"><div class="overview-progress-ring ' + ringClass + '" style="--progress:' + (percent == null ? 0 : percent) + '%" aria-label="' + (percent == null ? 'Observed progress unavailable' : percent + '% observed task completion') + '"><strong>' + (percent == null ? '—' : percent + '%') + '</strong><span>' + completed + ' / ' + total + '</span></div><div class="overview-project-main"><p class="eyebrow">' + escapeHTML(stateLabel) + '</p><h3>' + escapeHTML(card.label) + '</h3><p>' + escapeHTML(current?.artifact || "No current task observed") + '</p></div><dl class="overview-project-facts"><div><dt>Current work</dt><dd>' + escapeHTML(current?.artifact || "None observed") + '</dd></div><div><dt>Latest receipt</dt><dd>' + escapeHTML(receipt?.caption || receipt?.kind || "None received") + '</dd></div><div><dt>Blocker</dt><dd class="' + (blocker ? 'risk-text' : '') + '">' + escapeHTML(blocker?.artifact || "None observed") + '</dd></div></dl><div class="overview-project-subagents">' + subagentDisclosure + '</div></article>';
+    return '<article class="overview-project-card panel"><div class="overview-progress-ring ' + ringClass + '" style="--progress:' + (progress.percent == null ? 0 : progress.percent) + '%" aria-label="' + escapeHTML(progress.display + ' receipt-backed progress · ' + progress.freshness) + '"><strong>' + escapeHTML(progress.display) + '</strong><span>' + escapeHTML(progress.freshness) + '</span></div><div class="overview-project-main"><p class="eyebrow">' + escapeHTML(stateLabel) + '</p><h3>' + escapeHTML(card.label) + '</h3><p>' + escapeHTML(current?.artifact || "No current task observed") + '</p></div><dl class="overview-project-facts"><div><dt>Current work</dt><dd>' + escapeHTML(current?.artifact || "None observed") + '</dd></div><div><dt>Latest receipt</dt><dd>' + escapeHTML(receipt?.caption || receipt?.kind || "None received") + '</dd></div><div><dt>Blocker</dt><dd class="' + (blocker ? 'risk-text' : '') + '">' + escapeHTML(blocker?.artifact || "None observed") + '</dd></div></dl><div class="overview-project-subagents">' + subagentDisclosure + '</div></article>';
   };
   $("#overview-summary").textContent = allProjects
     ? (activeCards.length ? String(activeCards.length) + " active scope" + (activeCards.length === 1 ? "" : "s") : "No active work")
@@ -567,13 +617,6 @@ function renderDashboard() {
   renderOverviewDiagnostics();
 }
 
-function taskProgress(node) {
-  const eta = node.eta || {};
-  const declared = Number(eta.current?.progress_basis?.percent ?? eta.progress_basis?.percent ?? eta.progress_percent);
-  if (Number.isFinite(declared)) return Math.max(0, Math.min(100, declared));
-  return String(eta.current?.status || eta.status || '').toLowerCase() === 'complete' ? 100 : null;
-}
-
 function renderHierarchy() {
   const nodes = scopedNodes();
   const tree = taskTree(nodes);
@@ -590,8 +633,8 @@ function renderHierarchy() {
     const status = statusLabel(current);
     const subagents = subagentDescendants(current.id, tree);
     const subagentMeta = subagents.length ? '<span class="subagent-count">' + subagents.length + ' subagent' + (subagents.length === 1 ? '' : 's') + '</span>' : '';
-    const progress = taskProgress(current);
-    return '<article class="hierarchy-card"><div class="health-ring ' + status[1] + '"><i></i><span>' + (progress == null ? '—' : progress + '%') + '</span></div><div class="hierarchy-main"><div class="hierarchy-title"><strong>' + escapeHTML(current.artifact || current.title || owner) + '</strong><span>' + escapeHTML(current.role_label || current.role || "TASK") + subagentMeta + '</span></div><p><i class="activity-dot ' + status[1] + '" aria-hidden="true"></i>' + escapeHTML(formatRelative(current.updated_at)) + (stalled ? ' <b class="stalled-cue">Paused attention</b>' : '') + '</p><div class="task-progress"><i style="width:' + (progress == null ? 0 : progress) + '%"></i></div>' + (extra.length ? '<details><summary>' + extra.length + ' more task' + (extra.length === 1 ? '' : 's') + '</summary><ul>' + extra.map((task) => '<li>' + escapeHTML(task.artifact || task.title || task.id) + '</li>').join('') + '</ul></details>' : '') + '</div></article>';
+    const progress = progressPresentation(authoritativeProgress(current.project_id, state.overview?.progress?.controllers?.[owner] ? owner : ""));
+    return '<article class="hierarchy-card"><div class="health-ring ' + status[1] + '"><i></i><span>' + escapeHTML(progress.display) + '</span></div><div class="hierarchy-main"><div class="hierarchy-title"><strong>' + escapeHTML(current.artifact || current.title || owner) + '</strong><span>' + escapeHTML(current.role_label || current.role || "TASK") + subagentMeta + '</span></div><p><i class="activity-dot ' + status[1] + '" aria-hidden="true"></i>' + escapeHTML(progress.freshness) + (stalled ? ' <b class="stalled-cue">Paused attention</b>' : '') + '</p><div class="task-progress"><i style="width:' + (progress.percent == null ? 0 : progress.percent) + '%"></i></div>' + (extra.length ? '<details><summary>' + extra.length + ' more task' + (extra.length === 1 ? '' : 's') + '</summary><ul>' + extra.map((task) => '<li>' + escapeHTML(task.artifact || task.title || task.id) + '</li>').join('') + '</ul></details>' : '') + '</div></article>';
   }).join('') : '<p class="empty-state">No owners in this view.</p>';
 }
 
@@ -789,13 +832,18 @@ async function refreshUsageHistory() {
 
 async function refreshMonitoring(proofSequence) {
   try {
-    state.overview = await api("/api/overview");
+    state.overview = await api("/api/overview", { timeoutMs: 15_000 });
+    setDataStatus("current", state.overview?.generated_at);
     renderProjectNavigation();
     await refreshUsageHistory();
     if (Number(proofSequence) !== state.proofSequence) await refreshProof();
     renderOverview();
     renderDashboard();
-  } catch { /* The next manual refresh can recover the complete screen. */ }
+    renderHierarchy();
+  } catch {
+    setDataStatus(state.overview ? "stale" : "unavailable", state.overview?.generated_at);
+    /* The next manual refresh can recover the complete screen. */
+  }
 }
 
 async function refreshCtrlSettings() {
@@ -819,7 +867,8 @@ async function refreshOverview(showLoading = true) {
   if (showLoading) setLoading(true);
   clearError();
   try {
-    state.overview = await api("/api/overview");
+    state.overview = await api("/api/overview", { timeoutMs: 15_000 });
+    setDataStatus("current", state.overview?.generated_at);
     renderProjectNavigation();
     await Promise.all([refreshProof(), refreshUsageHistory()]);
     const selectedCtrl = state.ctrlId || activeControllers()[0]?.id || '';
@@ -829,6 +878,7 @@ async function refreshOverview(showLoading = true) {
     await refreshSkills();
     renderAllViews();
   } catch (error) {
+    setDataStatus(state.overview ? "stale" : "unavailable", state.overview?.generated_at);
     showError(error.message);
   } finally {
     if (showLoading) setLoading(false);

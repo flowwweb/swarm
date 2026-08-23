@@ -6,6 +6,7 @@ import json
 import sqlite3
 import sys
 import tempfile
+import threading
 import time
 import unittest
 from email.message import Message
@@ -41,6 +42,16 @@ class SwarmConsoleTests(unittest.TestCase):
         self.assertIn("function renderKanban()", app)
         self.assertIn("function renderDiagnostics()", app)
         self.assertIn("function renderSettings()", app)
+        self.assertIn("function authoritativeProgress(projectId, ctrlId", app)
+        self.assertIn('validPercent == null ? "Unmeasured"', app)
+        self.assertNotIn("completed / total", app)
+        self.assertNotIn("progress_basis?.percent", app)
+        self.assertIn('id="data-status-title">Connecting</strong>', index)
+        self.assertIn('id="data-status-note">Waiting for data</small>', index)
+        self.assertNotIn("Projects are up to date", index)
+        self.assertIn('setDataStatus("current", state.overview?.generated_at)', app)
+        self.assertIn('setDataStatus(state.overview ? "stale" : "unavailable"', app)
+        self.assertIn('api("/api/overview", { timeoutMs: 15_000 })', app)
         self.assertIn("function publicLabel(value", app)
         self.assertIn(r'.replace(/\blocalhost\b/gi, "console")', app)
         self.assertIn('const label = rawLabel.localeCompare(group.label', app)
@@ -336,6 +347,109 @@ class SwarmConsoleTests(unittest.TestCase):
         self.config.write_text(self.config.read_text(encoding="utf-8") + "\n# updated\n", encoding="utf-8")
         app.observe_once("state_change")
         self.assertIsNot(first, app.overview())
+
+    def test_overview_refresh_and_reader_do_not_invert_locks(self) -> None:
+        app = console.App(self.codex_home, self.config)
+        refresh_entered = threading.Event()
+        release_refresh = threading.Event()
+        original_fingerprint = console.observation_fingerprint
+        original_build = console.build_overview
+        calls = 0
+        errors: list[BaseException] = []
+        results: list[dict[str, object]] = []
+
+        def delayed_fingerprint(*args: object, **kwargs: object) -> tuple[tuple[str, int, int], ...]:
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                refresh_entered.set()
+                release_refresh.wait(2)
+            return (("state", 1, 1),)
+
+        def invoke_refresh() -> None:
+            try:
+                app._host_overview(refresh=True)
+            except BaseException as error:  # pragma: no cover - reported by the assertion
+                errors.append(error)
+
+        def invoke_reader() -> None:
+            try:
+                results.append(app.overview())
+            except BaseException as error:  # pragma: no cover - reported by the assertion
+                errors.append(error)
+
+        console.observation_fingerprint = delayed_fingerprint
+        console.build_overview = lambda *_args, **_kwargs: {
+            "generated_at": "2026-08-24T00:00:00+00:00",
+            "heartbeat_minutes": 30,
+            "nodes": [],
+            "links": [],
+            "projects": [],
+            "controllers": [],
+            "analytics": {},
+        }
+        try:
+            refresh = threading.Thread(target=invoke_refresh, daemon=True)
+            refresh.start()
+            self.assertTrue(refresh_entered.wait(1), "refresh did not reach the lock boundary")
+            reader = threading.Thread(target=invoke_reader, daemon=True)
+            reader.start()
+            release_refresh.set()
+            refresh.join(2)
+            reader.join(2)
+            self.assertFalse(refresh.is_alive(), "overview refresh remained deadlocked")
+            self.assertFalse(reader.is_alive(), "overview reader remained deadlocked")
+            self.assertEqual(errors, [])
+            self.assertEqual(len(results), 1)
+        finally:
+            release_refresh.set()
+            console.observation_fingerprint = original_fingerprint
+            console.build_overview = original_build
+
+    def test_jsonl_scan_is_shared_and_does_not_hold_console_store_lock(self) -> None:
+        store = console.ConsoleStore(self.root / "console" / "console-state.sqlite3")
+        scan_entered = threading.Event()
+        release_scan = threading.Event()
+        original_scan = console._codex_jsonl_token_counts
+        errors: list[BaseException] = []
+        scanned_ids: list[set[str]] = []
+        overview = {
+            "heartbeat_minutes": 30,
+            "nodes": [
+                {"id": "thread-1", "project_id": "project:alpha", "tokens": 10, "status": "active", "updated_at": 1_000},
+                {"id": "thread-2", "project_id": "project:alpha", "tokens": 20, "status": "active", "updated_at": 1_000},
+            ],
+            "links": [],
+        }
+
+        def delayed_scan(_codex_home: Path, thread_ids: set[str]) -> dict[str, int]:
+            scanned_ids.append(set(thread_ids))
+            scan_entered.set()
+            release_scan.wait(2)
+            return {}
+
+        def observe() -> None:
+            try:
+                store.observe_overview(overview, codex_home=self.codex_home, now_ms=1_000, trigger="heartbeat", heartbeat_minutes=30)
+            except BaseException as error:  # pragma: no cover - reported by the assertion
+                errors.append(error)
+
+        console._codex_jsonl_token_counts = delayed_scan
+        try:
+            worker = threading.Thread(target=observe, daemon=True)
+            worker.start()
+            self.assertTrue(scan_entered.wait(1), "observer did not reach the JSONL scan")
+            started = time.monotonic()
+            self.assertEqual(store.token_history(hours=24), [])
+            self.assertLess(time.monotonic() - started, 0.5)
+            release_scan.set()
+            worker.join(2)
+            self.assertFalse(worker.is_alive(), "observer did not complete after scan release")
+            self.assertEqual(errors, [])
+            self.assertEqual(scanned_ids, [{"thread-1", "thread-2"}])
+        finally:
+            release_scan.set()
+            console._codex_jsonl_token_counts = original_scan
 
     def test_recent_active_goal_identifies_ctrl_without_reading_objective_text(self) -> None:
         goals = sqlite3.connect(self.codex_home / "goals_1.sqlite")
@@ -638,6 +752,16 @@ class SwarmConsoleTests(unittest.TestCase):
         self.assertEqual(summary["progress"]["basis"], "Receipt-backed plan units")
         self.assertEqual(summary["tasks"][0]["progress"]["source"], "task_owner_report")
         self.assertIn("does not prove", summary["tasks"][0]["progress"]["claim_limit"])
+        self.assertEqual(summary["freshness"]["state"], "fresh")
+        self.assertEqual(summary["freshness"]["observed_at_ms"], 1_003)
+        stale = console.App._progress_for_nodes(
+            [measured("one", 1), measured("two", 3, basis="reviewed checkpoints")],
+            {"type": "ctrl", "ctrl_id": "ctrl-a", "project_id": "project:a"},
+            now_ms=10_000,
+            stale_after_ms=1_000,
+        )
+        self.assertEqual(stale["freshness"]["state"], "stale")
+        self.assertEqual(stale["freshness"]["age_ms"], 8_997)
         payload = console.App._progress_payload({
             "nodes": [measured("one", 1), measured("two", 3, basis="reviewed checkpoints")],
             "projects": [{"id": "project:a"}],
@@ -653,6 +777,7 @@ class SwarmConsoleTests(unittest.TestCase):
         self.assertIsNone(missing["progress"])
         self.assertEqual(missing["progress_display"], "Unmeasured")
         self.assertEqual(missing["unmeasured_reason"], "missing_receipt_backed_units")
+        self.assertEqual(missing["freshness"]["state"], "unavailable")
 
         heterogeneous = console.App._progress_for_nodes(
             [measured("one", 1), measured("two", 3, plan_id="plan-beta")],
