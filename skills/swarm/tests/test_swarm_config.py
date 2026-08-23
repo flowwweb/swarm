@@ -158,19 +158,40 @@ class SwarmConfigTests(unittest.TestCase):
             ):
                 config.load(invalid)
 
-    def test_archive_completed_tasks_defaults_on_and_can_opt_out(self) -> None:
-        self.assertTrue(config.DEFAULTS["lifecycle"]["archive_completed_tasks"])
+    def test_automation_mode_defaults_standard_and_migrates_legacy_archive_toggle(self) -> None:
+        self.assertEqual(config.DEFAULTS["automation"]["mode"], "standard")
         effective, _ = config.load(config.TEMPLATE_PATH)
-        self.assertTrue(effective["lifecycle"]["archive_completed_tasks"])
+        self.assertEqual(effective["automation"]["mode"], "standard")
+        self.assertNotIn("archive_completed_tasks", effective["lifecycle"])
 
         with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory) / "config.toml"
-            path.write_text(
+            legacy = Path(directory) / "legacy.toml"
+            legacy.write_text(
                 "[lifecycle]\narchive_completed_tasks = false\n",
                 encoding="utf-8",
             )
-            effective, _ = config.load(path)
-        self.assertFalse(effective["lifecycle"]["archive_completed_tasks"])
+            migrated, _ = config.load(legacy)
+            explicit = Path(directory) / "explicit.toml"
+            explicit.write_text(
+                '[automation]\nmode = "standard"\n[lifecycle]\narchive_completed_tasks = false\n',
+                encoding="utf-8",
+            )
+            preferred, _ = config.load(explicit)
+        self.assertEqual(migrated["automation"]["mode"], "manual")
+        self.assertEqual(preferred["automation"]["mode"], "standard")
+        self.assertNotIn("archive_completed_tasks", migrated["lifecycle"])
+
+    def test_automation_mode_rejects_unknown_values_and_bad_legacy_types(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            invalid = root / "invalid.toml"
+            invalid.write_text('[automation]\nmode = "sometimes"\n', encoding="utf-8")
+            with self.assertRaisesRegex(config.ConfigError, "automation.mode must be standard or manual"):
+                config.load(invalid)
+            legacy = root / "legacy.toml"
+            legacy.write_text('[lifecycle]\narchive_completed_tasks = "yes"\n', encoding="utf-8")
+            with self.assertRaisesRegex(config.ConfigError, "legacy lifecycle.archive_completed_tasks must be true or false"):
+                config.load(legacy)
 
     def test_recovery_requires_exactly_one_attempt(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

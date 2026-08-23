@@ -769,15 +769,16 @@
     },
     {
       "id": 61,
-      "prompt": "lifecycle.archive_completed_tasks is true. One finite task has terminal acceptance and no retention reason; other completed-looking tasks still have pending correction, an image-generation choice, an active goal or handoff, or ambiguous ownership.",
-      "expected_output": "SWARM archives only the terminally accepted task through the host archive control, keeps every task with pending continuation or ambiguous state open, and leaves ambiguity for a later bounded stale audit.",
+      "prompt": "automation.mode is standard. One finite task has terminal acceptance, an exact immutable checkpoint, quiescent process/handle/log evidence, and a current host custody receipt reference; other completed-looking tasks still have pending correction, an image-generation choice, an active goal or handoff, direct user control, or ambiguous ownership.",
+      "expected_output": "SWARM emits only a typed archive request for the eligible accepted task, reports archive_unverified until the host independently consumes current custody, and keeps every active, open-gate, user-controlled, or ambiguous task visible.",
       "files": [],
       "assertions": [
-        "Automatic archive requires terminal acceptance and no concrete retention reason",
+        "Standard mode emits a host-consumed request rather than archiving directly",
+        "The request requires terminal acceptance, an immutable checkpoint, quiescence, and current target/custody references",
         "Pending review, correction, user choice, continuation, goals, ownership, or handoffs keep a task open",
         "Image-generation review sets remain visible while user choice is expected",
-        "Ambiguous tasks remain open until a later bounded stale audit proves archival safe",
-        "Archival uses host controls without a queue, daemon, ledger, polling loop, or telemetry"
+        "Ambiguous and direct-user-controlled tasks remain visible",
+        "Missing host confirmation remains archive_unverified and never becomes fake completion"
       ]
     },
     {

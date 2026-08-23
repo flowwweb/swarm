@@ -221,6 +221,15 @@ quiescent, process-free, handle/lock-free, size-stable state and exact destinati
 file-count, byte-count, and hash parity with a recoverable manifest. Creation age
 alone is never stale evidence; active or growing logs remain protected.
 
+`automation.mode = "standard"` may turn that evidence into bounded requests:
+exact owned commit, separate visible independent review, history-preserving
+integration after fetch and readable `ACCEPT`, repository-defined release with
+rollback, and a host-consumed archive request. Mixed dirty work, silence,
+in-progress state, `BLOCKED`, unreviewed divergence, open task gates, user
+custody, or missing host custody blocks advancement. The runtime never emits
+force-push, rebase, reset, or host archive authority; `archive_unverified` stays
+visible until the host confirms it. `manual` emits none of these requests.
+
 Every durable CTRL, LEAD, and persistent SPECIALIST has one goal with objective, stopping condition, authority boundary, and proof. Profession is a separate typed perspective selected from the 24-card registry; unknown historical titles remain inert user-owned text and never become routable authority. `UNVERIFIED` is an open acceptance failure. Every artifact-producing lane declares its typed lane kind, immutable `ArtifactIdentity`, bound LEAD identity, deterministic `ProofPlan`, and independent `ACCEPTANCE` route. The planner selects the minimum proof from changed surfaces, claims, authority, dependency reach, incident matches, runtime signals, and repository capabilities; unknown input broadens proof. T0 atomic work uses focused contracts, T1 ordinary code adds impacted proof, T2 adds browser proof only for affected or claimed browser/visual surfaces, T3 provider/security/data work adds plan review and authority proof, and T4 release work replaces impacted proof with broad package/parity proof and composed acceptance. Only non-artifact `NON_CODE` work may use an explicit empty contract. Stable exact-input gate receipts may be re-observed and adopted as execution evidence only when plan, command, gate spec, environment, freshness, proof class, claim, and artifact still match; they never carry acceptance authority. Provider, deployed, device, and human claims remain `UNVERIFIED` unless an isolated host verifier records a typed observation with exact plan/spec/artifact/environment bindings, evidence digest, and bounded freshness; in-process commands, signatures, and caller-created receipts cannot close them. T0 independence cannot be disabled by caller assertion. The bound LEAD integrates and records exact-artifact gate results as `PASS`, `FAIL`, or `TIMEOUT`; a timeout never passes and permits at most one typed transient retry. Missing, failed, timed-out, wrong-artifact, uncovered-claim, or source-only receipts stay open; CTRL may surface but never manufacture acceptance. Load [task-contract.md](references/task-contract.md) to record the contract and [review-contract.md](references/review-contract.md) for all acceptance, incident, proof, review, and claim-limit rules.
 
 Every delegated task also declares its exact deliverable, accountable owner,

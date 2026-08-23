@@ -120,6 +120,13 @@ clean, normalize, commit, or absorb unrelated dirty work. Before a successor may
 own the lane, it acknowledges the exact immutable checkpoint; this handoff does
 not authorize renaming, pinning, archiving, or any other host-task mutation.
 
+With `automation.mode = "standard"`, the checkpoint may produce an exact-path
+commit request only when the complete dirty set equals attributable paths inside
+the recorded custody boundary. Mixed or ambiguous dirty work fails closed. The
+immutable candidate then routes to a separate visible independent review owner;
+creation, commentary, activity, timeout, silence, `BLOCKED`, and in-progress
+state never authorize integration. `manual` emits no Git or lifecycle request.
+
 Storage inventory, archive, cleanup, relocation, and monitoring use a dedicated
 delegable STORAGE LEAD lane. Its contract binds an exact target manifest,
 exact-root, active-process, live-log, database, and dirty/current-worktree guards,

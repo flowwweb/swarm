@@ -110,6 +110,7 @@ EDITABLE_SETTINGS: dict[str, type] = {
     "skills.default_profile": str,
     "logging.task_event_limit": int,
     "console.open_on_start": bool,
+    "automation.mode": str,
     "boost.enabled": bool,
     "boost.spark_enabled": bool,
     "boost.spark_model": str,
@@ -126,7 +127,6 @@ EDITABLE_SETTINGS: dict[str, type] = {
     "monitoring.auto_health_enabled": bool,
     "recovery.stall_after_updates": int,
     "lifecycle.pin_created_tasks": bool,
-    "lifecycle.archive_completed_tasks": bool,
     "feedback.enabled": bool,
     "feedback.include_diagnostics": bool,
     "feedback.prompt_on_close": bool,
@@ -281,12 +281,16 @@ def update_config(config_path: Path, changes: dict[str, Any]) -> dict[str, Any]:
             encoding="utf-8"
         )
     had_fast_mode = _toml_setting_value(text, "execution.fast_mode") is not None
+    had_automation_mode = _toml_setting_value(text, "automation.mode") is not None
     legacy_efficiency = _toml_setting_value(text, "efficiency.mode")
     text = _remove_toml_setting(text, "execution.service_tier")
+    text = _remove_toml_setting(text, "lifecycle.archive_completed_tasks")
     if legacy_efficiency in {'"FAST"', "'FAST'"}:
         text = _replace_toml_setting(text, "efficiency.mode", "BALANCED")
     if not had_fast_mode:
         text = _replace_toml_setting(text, "execution.fast_mode", bool(effective["execution"]["fast_mode"]))
+    if not had_automation_mode:
+        text = _replace_toml_setting(text, "automation.mode", effective["automation"]["mode"])
     for dotted_key, value in changes.items():
         text = _replace_toml_setting(text, dotted_key, value)
 

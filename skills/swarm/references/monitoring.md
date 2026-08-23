@@ -72,6 +72,15 @@ file count, byte count, and hash parity, retains a recoverable manifest, and onl
 then permits copy-verify-remove. Active or growing logs remain protected regardless
 of folder date.
 
+In standard automation mode, these observations may produce only a typed
+`archive_request`. The request binds the immutable checkpoint, exact target
+state digest, and current host custody receipt reference. Plugin runtime cannot
+mint or validate host authority, so the task remains visible with
+`archive_unverified` until the host independently consumes the persisted
+preference and exact custody receipt and confirms the action. Manual mode emits
+no request. Active, stalled, blocked, user-renamed, user-pinned, directly
+controlled, or open-gate tasks remain visible; age alone never changes that.
+
 A fresh host-observed direct-user turn creates a scoped keep-out for the named CTRL
 and its subordinate owners. Master may continue read-only portfolio heartbeat and
 unaffected lanes, but it must not send conflicting or duplicate directives, enqueue

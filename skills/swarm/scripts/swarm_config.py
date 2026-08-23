@@ -51,6 +51,7 @@ DEFAULTS: dict[str, Any] = {
         "max_reasoning": "ultra",
     },
     "console": {"open_on_start": True},
+    "automation": {"mode": "standard"},
     "skills": {"inheritance_enabled": True, "default_profile": "default"},
     "logging": {"task_event_limit": 64},
     "proof": {
@@ -191,7 +192,6 @@ DEFAULTS: dict[str, Any] = {
     },
     "lifecycle": {
         "pin_created_tasks": True,
-        "archive_completed_tasks": True,
     },
     "hygiene": {"no_review_archive_delay": 0, "low_review_retention": 7, "high_review_retention": 30, "stale_task_archive_delay": 1, "completed_task_retention": 30, "pinned_item_policy": "manual"},
     "feedback": {
@@ -405,6 +405,10 @@ def validate(raw: dict[str, Any]) -> None:
     console = _expect_table(raw, "console")
     _expect_keys(console, set(DEFAULTS["console"]), "console")
     _boolean(console, "open_on_start", "console")
+    automation = _expect_table(raw, "automation")
+    _expect_keys(automation, set(DEFAULTS["automation"]), "automation")
+    if automation.get("mode", DEFAULTS["automation"]["mode"]) not in {"standard", "manual"}:
+        raise ConfigError("automation.mode must be standard or manual")
     skills = _expect_table(raw, "skills")
     _expect_keys(skills, set(DEFAULTS["skills"]), "skills")
     _boolean(skills, "inheritance_enabled", "skills")
@@ -682,7 +686,6 @@ def validate(raw: dict[str, Any]) -> None:
     lifecycle = _expect_table(raw, "lifecycle")
     _expect_keys(lifecycle, set(DEFAULTS["lifecycle"]), "lifecycle")
     _boolean(lifecycle, "pin_created_tasks", "lifecycle")
-    _boolean(lifecycle, "archive_completed_tasks", "lifecycle")
 
     hygiene = _expect_table(raw, "hygiene")
     _expect_keys(hygiene, set(DEFAULTS["hygiene"]), "hygiene")
@@ -769,6 +772,18 @@ def normalize_legacy_task_role(raw: dict[str, Any]) -> dict[str, Any]:
         legacy_fast_mode=True
     if isinstance(execution,dict) and "fast_mode" not in execution and legacy_fast_mode:
         execution["fast_mode"]=True
+
+    lifecycle=normalized.get("lifecycle",{})
+    automation=normalized.get("automation")
+    if automation is None:
+        automation={}
+        normalized["automation"]=automation
+    if isinstance(lifecycle,dict) and "archive_completed_tasks" in lifecycle:
+        legacy_archive=lifecycle.pop("archive_completed_tasks")
+        if not isinstance(legacy_archive,bool):
+            raise ConfigError("legacy lifecycle.archive_completed_tasks must be true or false")
+        if isinstance(automation,dict) and "mode" not in automation:
+            automation["mode"]="standard" if legacy_archive else "manual"
 
     normalized["schema_version"] = 4
     return normalized
@@ -1011,6 +1026,7 @@ def feedback_diagnostics(effective: dict[str, Any], exists: bool) -> dict[str, A
         "config_exists": exists,
         "usage_profile": effective["execution"]["usage_profile"],
         "fast_mode": effective["execution"]["fast_mode"],
+        "automation_mode": effective["automation"]["mode"],
         "min_reasoning": effective["execution"]["min_reasoning"],
         "max_reasoning": effective["execution"]["max_reasoning"],
         "turbo_enabled": effective["turbo"]["enabled"],

@@ -9,7 +9,7 @@
   "config": {
     "exists": true,
     "path": "fixture/config.toml",
-    "editable": ["execution.fast_mode", "execution.usage_saver", "console.open_on_start", "boost.spark_enabled", "boost.spark_model", "boost.spark_reasoning", "role_icons.enabled", "role_icons.ctrl"],
+    "editable": ["execution.fast_mode", "execution.usage_saver", "console.open_on_start", "automation.mode", "boost.spark_enabled", "boost.spark_model", "boost.spark_reasoning", "role_icons.enabled", "role_icons.ctrl"],
     "settings": {
       "portfolio": {
         "max_active_tasks": 4,
@@ -55,9 +55,11 @@
         "spark_model": "gpt-5.3-codex-spark",
         "spark_reasoning": "xhigh"
       },
+      "automation": {
+        "mode": "standard"
+      },
       "lifecycle": {
-        "pin_created_tasks": false,
-        "archive_completed_tasks": true
+        "pin_created_tasks": false
       },
       "feedback": {
         "enabled": true,

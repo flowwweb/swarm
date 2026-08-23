@@ -15,6 +15,14 @@ minimum independent review that matches consequence and evidence:
 | T3 provider/security/data | Plan review before mutation, authority/failure proof, then final acceptance |
 | T4 release | Reuse unchanged accepted lanes, verify one immutable package across environments, then one composed release review |
 
+Automated Git advancement is downstream of this contract. It requires a
+readable exact-candidate independent `ACCEPT`, then a fresh fetch receipt.
+Unchanged or fast-forward history may advance non-destructively; divergent
+remote history requires a separate compatibility receipt before merge. SWARM
+never emits force-push, rebase, or reset. Package/install/deploy requests use
+only the repository-defined release path after source/package gates and a
+rollback receipt. Local installation is not provider or production deployment.
+
 Unknown dependency reach or missing impact evidence broadens the plan. After a
 correction, rerun the failed proof and every dependent gate, not unrelated
 accepted work. A failed or timed-out prerequisite stops its dependent gates

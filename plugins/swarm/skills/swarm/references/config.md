@@ -76,6 +76,7 @@ Configuration cannot make an unsafe or hidden coordination path valid:
 | `execution.min_reasoning` | Global reasoning floor applied after every profile, role override, and route adjustment | none, minimal, low, medium, high, xhigh, max, ultra; compatibility-neutral default none |
 | `execution.max_reasoning` | Global reasoning ceiling applied after every profile, role override, and route adjustment | none, minimal, low, medium, high, xhigh, max, ultra; compatibility-neutral default ultra; must be at least min |
 | `execution.usage_saver` | Prefer lower-churn coordination for new work without weakening delivery | boolean; default false |
+| `automation.mode` | Evidence-gated checkpoint, Git, review, release, and host lifecycle requests; `manual` keeps those actions explicit | `standard` or `manual`; default `standard` |
 | `logging.task_event_limit` | Bounded recent task-transition metadata retained in memory; never prompts, responses, artifact bodies, or credentials | 8-256; default 64 |
 | `proof.policy_version` | Deterministic proof-planner policy | trimmed identifier; default lean-v1 |
 | `proof.impacted_selection` | Select focused impacted gates when dependency reach is known | boolean; default true |
@@ -136,7 +137,6 @@ Configuration cannot make an unsafe or hidden coordination path valid:
 | `recovery.max_attempts` | Legacy owner recovery budget; WATCHDOG never consumes it | exactly 1; non-disableable |
 | `recovery.stall_after_updates` | Unchanged owner work updates before a lane stalls; heartbeat observations excluded | 1-5 |
 | `lifecycle.pin_created_tasks` | Retained compatibility signal only; it never authorizes automatic pinning. New tasks remain `pinned: false` with `placement: placement_unverified`; only the host may consume an exact explicit-user pin request, and any claimed placement requires a disclosed host-owned placement receipt | boolean; default true |
-| `lifecycle.archive_completed_tasks` | Archive terminally accepted finite tasks only when no concrete retention reason remains | boolean; default true |
 | `feedback.enabled` | Make the on-demand SWARM feedback workflow available | boolean; default true |
 | `feedback.include_diagnostics` | Include the privacy-safe SWARM diagnostic snapshot | boolean; default true |
 | `feedback.prompt_on_close` | Offer one optional feedback prompt after an accepted portfolio | boolean; default false |
@@ -146,16 +146,30 @@ Unknown tables or keys are errors. If the file is invalid, stop creating new
 portfolio tasks, show the exact validation error, and let already-owned work
 continue safely. If the file is missing, use built-in defaults.
 
-## Accepted-task archive
+## Lifecycle automation
 
-When `lifecycle.archive_completed_tasks` is true, archive a finite task only
-after terminal acceptance and only when no concrete reason remains to retain its
-user-visible surface. Never archive while review or correction is pending, a
-user choice or continuation is expected (including an image-generation review
-set), a goal, ownership, or handoff remains active, or the state is ambiguous.
-Ambiguous tasks remain open until a later bounded stale audit proves archival is
-safe; then use the host archive control. The setting creates no queue, daemon,
-ledger, polling loop, or telemetry.
+`automation.mode = "standard"` is the only lifecycle automation control;
+`manual` opts out without changing task state. A legacy
+`lifecycle.archive_completed_tasks = true|false` is removed during loading and
+maps to `standard|manual` only when the new setting is absent. The explicit new
+setting wins.
+
+Standard mode records meaningful stable checkpoints, permits only an exact
+owned dirty set to become a coherent commit after proportionate proof, requires
+a readable independent `ACCEPT` on the immutable candidate, fetches before any
+integration or push, and uses only history-preserving fast-forward or reviewed
+compatible merge. It never emits force-push, rebase, reset, broad staging, or
+cleanup. Package, install, and deployment remain gated by the
+repository-defined release path, source/package proof, and rollback receipt.
+
+For a terminal accepted task, standard mode may emit a typed host archive
+request only when no goal, request, handoff, review, correction, user choice, or
+dependent remains; process, handle, and log state is quiescent; exact checkpoint
+and target-state custody references exist; and the task is not user-renamed,
+pinned, or directly controlled. The plugin never archives or claims host
+authority. Only the host may independently consume the persisted preference and
+current custody receipt. Until confirmation, report `archive_unverified` and
+keep the task visible. Active, stalled, blocked, or merely old tasks never close.
 
 The default title hierarchy is `🐙CTRL - <objective>`, an optional advisory
 specialist such as `🛡️Security - access controls`, a lane owner such as `🔐LEAD - payments`, a

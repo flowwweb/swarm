@@ -1131,6 +1131,18 @@ class SwarmConsoleTests(unittest.TestCase):
         with self.assertRaises(console.ConsoleError):
             console.update_config(self.config, {"monitoring.auto_health_enabled": "true"})
 
+    def test_console_exposes_only_the_canonical_automation_mode(self) -> None:
+        snapshot = console.redacted_config_snapshot(self.config)
+        self.assertEqual(snapshot["settings"]["automation"]["mode"], "standard")
+        self.assertIn("automation.mode", snapshot["editable"])
+        self.assertNotIn("lifecycle.archive_completed_tasks", snapshot["editable"])
+        result = console.update_config(self.config, {"automation.mode": "manual"})
+        self.assertEqual(result["settings"]["automation"]["mode"], "manual")
+        persisted = self.config.read_text(encoding="utf-8")
+        self.assertNotIn("archive_completed_tasks", persisted)
+        with self.assertRaises(console.ConsoleError):
+            console.update_config(self.config, {"automation.mode": "sometimes"})
+
     def test_restore_defaults_is_canonical_and_keeps_a_backup(self) -> None:
         console.update_config(self.config, {"monitoring.heartbeat_minutes": 45})
         result = console.restore_config_defaults(self.config)
@@ -1327,6 +1339,9 @@ class SwarmConsoleTests(unittest.TestCase):
         self.assertNotIn("service_tier", fixture["config"]["settings"]["execution"])
         self.assertTrue(fixture["config"]["settings"]["console"]["open_on_start"])
         self.assertIn("console.open_on_start", fixture["config"]["editable"])
+        self.assertEqual(fixture["config"]["settings"]["automation"]["mode"], "standard")
+        self.assertIn("automation.mode", fixture["config"]["editable"])
+        self.assertNotIn("archive_completed_tasks", fixture["config"]["settings"]["lifecycle"])
         self.assertIn("boost.spark_enabled", fixture["config"]["editable"])
         self.assertEqual(fixture["config"]["settings"]["boost"]["spark_reasoning"], "xhigh")
 

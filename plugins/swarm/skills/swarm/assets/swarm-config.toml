@@ -44,6 +44,11 @@ usage_saver = false
 # SWARM starts. A browser launch failure never blocks work.
 open_on_start = true
 
+[automation]
+# Standard emits evidence-gated Git, release, and host lifecycle requests.
+# Manual keeps every lifecycle action explicit.
+mode = "standard"
+
 [skills]
 # Skill inheritance is deterministic and fail-closed. Missing skills remain
 # discoverable but are never installed implicitly.
@@ -331,10 +336,6 @@ stall_after_updates = 2
 # exact explicit-user pin request, and any claimed placement must be disclosed
 # from a host-owned placement receipt.
 pin_created_tasks = true
-# Archive only after terminal acceptance when no concrete retention reason
-# remains. Pending review, correction, choice, continuation, goals, ownership,
-# handoffs, and ambiguity keep the task open.
-archive_completed_tasks = true
 
 [hygiene]
 # Archive preserves searchable provenance; it never deletes a task. Values are days.

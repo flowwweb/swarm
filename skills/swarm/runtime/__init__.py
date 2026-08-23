@@ -3,5 +3,6 @@ from .incidents import EvidenceKind, EvidenceReference, FoldCandidate, FoldResul
 from .core import GraphNodeSpec, GraphProfile, GraphSelection, INTAKE_QUESTIONS, IntakePlan, TaskIntake, prepare_task_intake, select_graph
 from .health import HealthRecoveryRequest, RecoveryRequestState, RecoveryRequestType
 from .core import LeadBottleneckReason, LeadCapacityEvidence, LeadRecruitmentDecision, StructuralAssignmentDecision, StructuralAssignmentKind, StructuralAuthority, SubagentOutcome, SubagentReturn, SubordinateBoundaryFacts, decide_doer_recruitment, select_structural_assignment, subagent_leaf_return
+from .automation import ArchiveFacts, AutomationAction, AutomationDecision, AutomationMode, AutomationStatus, FetchReceipt, GitRelationship, IndependentReviewReceipt, StableCheckpoint, archive_request_decision, commit_decision, git_advance_decision, release_decision, review_decision
 
 __all__ = [name for name in globals() if not name.startswith("_")]
