@@ -58,6 +58,23 @@ assert.match(app, /async function refreshMonitoring/);
 assert.doesNotMatch(app, /15_000/);
 assert.match(app, /data-overview-subagents/);
 assert.match(app, /#overview-evidence-gallery/);
+assert.match(indexHtml, /id="evidence-lightbox"/);
+assert.match(indexHtml, /id="evidence-lightbox-thumbnails"/);
+assert.match(indexHtml, /Close evidence gallery/);
+assert.match(indexHtml, /This image could not be loaded/);
+assert.match(app, /function renderEvidenceLightbox\(\)/);
+assert.match(app, /function openEvidenceLightbox\(index, trigger\)/);
+assert.match(app, /data-evidence-open/);
+assert.match(app, /data-evidence-thumbnail/);
+assert.match(app, /data-evidence-more/);
+assert.match(app, /dialog\.showModal\(\)/);
+assert.match(app, /ArrowLeft/);
+assert.match(app, /ArrowRight/);
+assert.match(app, /const previews = images\.slice\(0, limit\)/);
+assert.match(app, /const remaining = Math\.max\(0, images\.length - previews\.length\)/);
+assert.doesNotMatch(app, /figcaption/);
+assert.match(css, /\.evidence-lightbox/);
+assert.match(css, /\.proof-tile/);
 assert.match(app, /subagentDescendants\(card\.ctrlId, tree\)/);
 assert.match(app, /params\.set\("project_id", state\.projectId\)/);
 assert.doesNotMatch(app, /params\.set\("task_id", state\.ctrlId\)/);
@@ -121,9 +138,23 @@ function scopedFixture() {
   return overview;
 }
 
-async function mount(page, overview) {
+function imageProofFixture(count) {
+  return {
+    ok: true,
+    items: Array.from({ length: count }, (_, index) => ({
+      task_id: "ctrl",
+      evidence_id: "fixture-image-" + String(index + 1),
+      digest: String(index + 1).padStart(64, "0"),
+      media_type: "image/png",
+      caption: "Evidence image " + String(index + 1),
+    })),
+  };
+}
+
+async function mount(page, overview, overrides = {}) {
   const runtimeErrors = [];
   const requests = [];
+  const proofFeed = overrides.proofFeed || fixture.proofFeed;
   page.on("console", (message) => { if (message.type() === "error") runtimeErrors.push(message.text()); });
   page.on("pageerror", (error) => runtimeErrors.push(error.message));
   await page.route("http://swarm.test/**", async (route) => {
@@ -135,9 +166,9 @@ async function mount(page, overview) {
     if (url.pathname === "/app.js") return route.fulfill({ status: 200, contentType: "text/javascript", body: app });
     if (url.pathname === "/api/bootstrap") return route.fulfill(response(fixture.bootstrap));
     if (url.pathname === "/api/overview") return route.fulfill(response(overview));
-    if (url.pathname === "/api/proof-feed") return route.fulfill(response(fixture.proofFeed));
+    if (url.pathname === "/api/proof-feed") return route.fulfill(response(proofFeed));
     if (url.pathname === "/api/usage-history") return route.fulfill(response(fixture.usageHistory));
-    if (url.pathname === "/api/presence") return route.fulfill(response({ ok: true, proof_sequence: fixture.proofFeed.sequence || 0 }));
+    if (url.pathname === "/api/presence") return route.fulfill(response({ ok: true, proof_sequence: proofFeed.sequence || 0 }));
     if (url.pathname === "/api/config") return route.fulfill(response(fixture.config));
     if (url.pathname === "/api/diagnostics") return route.fulfill(response(fixture.diagnostics));
     if (url.pathname === "/api/diagnostics/history") return route.fulfill(response(fixture.diagnosticHistory));
@@ -238,6 +269,51 @@ try {
   assert.match(await page.locator("#settings-grid").textContent(), /Clear history/);
   assert.equal(await page.locator("#settings-scope").inputValue(), "global");
   assert.match(await page.locator("#settings-grid").textContent(), /Manage skills/);
+
+  const manyPage = await browser.newPage({ viewport: { width: 1024, height: 760 } });
+  const many = await mount(manyPage, fixture.overview, { proofFeed: imageProofFixture(12) });
+  assert.equal(await manyPage.locator("#overview-evidence-gallery .evidence-gallery-item").count(), 4);
+  assert.equal(await manyPage.locator('[data-evidence-more="8"]').count(), 1);
+  assert.equal(await manyPage.locator('[data-evidence-more="8"]').textContent(), "+8 more");
+  await manyPage.getByRole("button", { name: /Open 8 more images; 12 images/ }).click();
+  assert.equal(await manyPage.locator("#evidence-lightbox[open]").count(), 1);
+  assert.equal(await manyPage.locator("#evidence-lightbox-thumbnails button").count(), 12);
+  await manyPage.keyboard.press("ArrowRight");
+  assert.equal(await manyPage.locator('[data-evidence-thumbnail="5"]').getAttribute("aria-current"), "true");
+  await manyPage.locator('[data-evidence-thumbnail="11"]').click();
+  assert.equal(await manyPage.locator('[data-evidence-thumbnail="11"]').getAttribute("aria-current"), "true");
+  await manyPage.getByRole("button", { name: "Close evidence gallery" }).click();
+  assert.equal(await manyPage.locator("#evidence-lightbox[open]").count(), 0);
+  await manyPage.getByRole("tab", { name: "Dashboard" }).click();
+  await manyPage.locator("#proof-feed .proof-tile").first().click();
+  assert.equal(await manyPage.locator("#evidence-lightbox-thumbnails button").count(), 12);
+  await manyPage.getByRole("button", { name: "Close evidence gallery" }).click();
+  assert.deepEqual(many.runtimeErrors, []);
+  await manyPage.close();
+
+  const onePage = await browser.newPage({ viewport: { width: 1024, height: 760 } });
+  const one = await mount(onePage, fixture.overview, { proofFeed: imageProofFixture(1) });
+  assert.equal(await onePage.locator("#overview-evidence-gallery .evidence-gallery-item").count(), 1);
+  assert.equal(await onePage.locator("[data-evidence-more]").count(), 0);
+  await onePage.locator("#overview-evidence-gallery .evidence-gallery-item").click();
+  assert.equal(await onePage.locator("#evidence-lightbox-thumbnails button").count(), 1);
+  assert.equal(await onePage.locator("#evidence-lightbox-previous").isDisabled(), true);
+  assert.equal(await onePage.locator("#evidence-lightbox-next").isDisabled(), true);
+  await onePage.locator("#evidence-lightbox-image").dispatchEvent("error");
+  assert.equal(await onePage.locator("#evidence-lightbox-failed").isVisible(), true);
+  await onePage.keyboard.press("Escape");
+  assert.equal(await onePage.locator("#evidence-lightbox[open]").count(), 0);
+  assert.deepEqual(one.runtimeErrors, []);
+  await onePage.close();
+
+  const emptyPage = await browser.newPage({ viewport: { width: 1024, height: 760 } });
+  const empty = await mount(emptyPage, fixture.overview, { proofFeed: imageProofFixture(0) });
+  assert.equal(await emptyPage.locator("#overview-evidence-gallery .evidence-gallery-item").count(), 0);
+  assert.equal(await emptyPage.locator("[data-evidence-more]").count(), 0);
+  assert.match(await emptyPage.locator("#overview-evidence-gallery").textContent(), /Images appear here when they are received/);
+  assert.match(await emptyPage.locator("#proof-feed").textContent(), /No image proof yet/);
+  assert.deepEqual(empty.runtimeErrors, []);
+  await emptyPage.close();
 
   for (const viewport of [{ width: 390, height: 844 }, { width: 834, height: 1112 }, { width: 1440, height: 1000 }]) {
     await page.setViewportSize(viewport);

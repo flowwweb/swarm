@@ -84,6 +84,25 @@
         <section class="error-surface" id="error-surface" hidden role="alert"><span aria-hidden="true">!</span><div><strong>Console unavailable</strong><p id="error-message"></p><button id="retry" type="button">Try again</button></div></section>
       </main>
     </div>
+    <dialog class="evidence-lightbox" id="evidence-lightbox" aria-labelledby="evidence-lightbox-title">
+      <div class="evidence-lightbox-shell">
+        <header class="evidence-lightbox-head">
+          <div><p class="eyebrow">Visual evidence</p><h2 id="evidence-lightbox-title">Image preview</h2></div>
+          <button class="icon-button" id="evidence-lightbox-close" type="button" aria-label="Close evidence gallery">×</button>
+        </header>
+        <div class="evidence-lightbox-stage">
+          <img id="evidence-lightbox-image" alt="">
+          <p class="empty-state" id="evidence-lightbox-empty" hidden>No image evidence is available in this scope.</p>
+          <p class="evidence-lightbox-failed" id="evidence-lightbox-failed" role="status" hidden>This image could not be loaded. Choose another thumbnail or close the gallery.</p>
+        </div>
+        <footer class="evidence-lightbox-controls">
+          <button class="quiet-button" id="evidence-lightbox-previous" type="button">Previous</button>
+          <p id="evidence-lightbox-caption" aria-live="polite"></p>
+          <button class="quiet-button" id="evidence-lightbox-next" type="button">Next</button>
+        </footer>
+        <div class="evidence-lightbox-thumbnails" id="evidence-lightbox-thumbnails" role="list" aria-label="Evidence thumbnails"></div>
+      </div>
+    </dialog>
     <script src="/app.js" defer></script>
   </body>
 </html>

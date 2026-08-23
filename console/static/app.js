@@ -1,4 +1,4 @@
-const state = { token: "", overview: null, proof: [], proofSequence: 0, usageHistory: null, diagnostics: null, diagnosticHistory: [], health: null, storage: null, config: null, ctrlSettings: null, skills: null, skillsError: "", view: "overview", projectId: "all", ctrlId: "", settingsCtrlId: "", settingsScopeType: "", settingsScopeId: "" };
+const state = { token: "", overview: null, proof: [], proofSequence: 0, usageHistory: null, diagnostics: null, diagnosticHistory: [], health: null, storage: null, config: null, ctrlSettings: null, skills: null, skillsError: "", view: "overview", projectId: "all", ctrlId: "", settingsCtrlId: "", settingsScopeType: "", settingsScopeId: "", evidenceImages: [], evidenceIndex: 0, evidenceTrigger: null };
 const $ = (selector, root = document) => root.querySelector(selector);
 const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
 
@@ -322,17 +322,75 @@ function setSubagentVisibility(parentId, visible, visited = new Set()) {
   });
 }
 
+function proofMediaURL(item) {
+  return "/api/proof-media/" + encodeURIComponent(item.evidence_id) + "?digest=" + encodeURIComponent(item.digest);
+}
+
+function evidenceImagesFor(nodes) {
+  const allowed = new Set(nodes.map((node) => node.id));
+  return state.proof.filter((item) => allowed.has(item.task_id) && item.evidence_id && item.digest && String(item.media_type || "").startsWith("image/"));
+}
+
+function renderEvidenceLightbox() {
+  const items = state.evidenceImages;
+  const image = $("#evidence-lightbox-image");
+  const empty = $("#evidence-lightbox-empty");
+  const failed = $("#evidence-lightbox-failed");
+  const previous = $("#evidence-lightbox-previous");
+  const next = $("#evidence-lightbox-next");
+  if (!items.length) {
+    image.hidden = true;
+    empty.hidden = false;
+    failed.hidden = true;
+    $("#evidence-lightbox-caption").textContent = "No image selected";
+    $("#evidence-lightbox-thumbnails").innerHTML = "";
+    previous.disabled = true;
+    next.disabled = true;
+    return;
+  }
+  state.evidenceIndex = Math.min(Math.max(0, state.evidenceIndex), items.length - 1);
+  const item = items[state.evidenceIndex];
+  image.hidden = false;
+  empty.hidden = true;
+  failed.hidden = true;
+  image.src = proofMediaURL(item);
+  image.alt = item.caption || "Evidence image";
+  $("#evidence-lightbox-caption").textContent = String(state.evidenceIndex + 1) + " of " + String(items.length);
+  previous.disabled = state.evidenceIndex === 0;
+  next.disabled = state.evidenceIndex === items.length - 1;
+  $("#evidence-lightbox-thumbnails").innerHTML = items.map((entry, index) =>
+    '<button class="evidence-lightbox-thumbnail' + (index === state.evidenceIndex ? " is-selected" : "") +
+    '" type="button" data-evidence-thumbnail="' + String(index) + '" data-evidence-id="' + escapeHTML(entry.evidence_id) +
+    '" data-evidence-digest="' + escapeHTML(entry.digest) + '" aria-current="' + String(index === state.evidenceIndex) +
+    '" aria-label="Show image ' + String(index + 1) + ': ' + escapeHTML(entry.caption || "Evidence image") +
+    '"><img loading="lazy" decoding="async" src="' + proofMediaURL(entry) + '" alt=""></button>'
+  ).join("");
+  const dialog = $("#evidence-lightbox");
+  if (!dialog.open) dialog.showModal();
+}
+
+function openEvidenceLightbox(index, trigger) {
+  state.evidenceIndex = Number.isFinite(index) ? index : 0;
+  state.evidenceTrigger = trigger || null;
+  renderEvidenceLightbox();
+}
+
+function closeEvidenceLightbox() {
+  const dialog = $("#evidence-lightbox");
+  if (dialog.open) dialog.close();
+}
+
 function renderProof(nodes) {
-  const feed = state.proof.length ? state.proof : nodes.flatMap((node) => node.proof_snapshot?.available ? [{ task_id: node.id, caption: "Proof available", claim_limit: node.proof_snapshot.claim_limit }] : []);
-  $("#proof-count").textContent = String(feed.length);
-  $("#proof-feed").innerHTML = feed.length ? feed.slice(0, 5).map((item) => {
-    const owner = nodes.find((node) => node.id === item.task_id);
-    const media = item.evidence_id && item.digest && String(item.media_type || "").startsWith("image/")
-      ? '<img class="proof-thumb" loading="lazy" decoding="async" src="/api/proof-media/' + encodeURIComponent(item.evidence_id) + '?digest=' + encodeURIComponent(item.digest) + '" alt="">'
-      : '<span class="proof-icon" aria-hidden="true">▤</span>';
-    const boundary = item.claim_limit || "Acceptance is recorded separately.";
-    return '<article class="proof-item">' + media + '<div><span class="proof-availability">Available</span><span class="proof-boundary" role="img" aria-label="Scope: ' + escapeHTML(boundary) + '" title="Scope: ' + escapeHTML(boundary) + '">ⓘ</span><strong>' + escapeHTML(item.caption || item.kind || "Proof item") + '</strong><small>' + escapeHTML(owner?.artifact || item.task_id || "Task") + "</small></div></article>";
-  }).join("") : '<p class="empty-state">No visual proof yet.</p>';
+  const images = evidenceImagesFor(nodes);
+  state.evidenceImages = images;
+  if ($("#evidence-lightbox").open) renderEvidenceLightbox();
+  $("#proof-count").textContent = String(images.length);
+  $("#proof-feed").innerHTML = images.length ? images.map((item, index) =>
+    '<button class="proof-tile" type="button" data-evidence-open="' + String(index) +
+    '" data-evidence-id="' + escapeHTML(item.evidence_id) + '" data-evidence-digest="' + escapeHTML(item.digest) +
+    '" aria-label="Open evidence image: ' + escapeHTML(item.caption || "Image evidence") +
+    '"><img loading="lazy" decoding="async" src="' + proofMediaURL(item) + '" alt=""></button>'
+  ).join("") : '<p class="empty-state">No image proof yet.</p>';
 }
 
 function renderBurnRate() {
@@ -403,10 +461,24 @@ function forecastSummary(node) {
 }
 
 function renderEvidenceGallery(nodes, gallerySelector, noteSelector, limit = 6) {
-  const allowed = new Set(nodes.map((node) => node.id));
-  const images = state.proof.filter((item) => allowed.has(item.task_id) && item.evidence_id && item.digest && String(item.media_type || "").startsWith("image/"));
+  const images = evidenceImagesFor(nodes);
+  state.evidenceImages = images;
+  if ($("#evidence-lightbox").open) renderEvidenceLightbox();
   $(noteSelector).textContent = images.length ? String(images.length) + " recent image" + (images.length === 1 ? "" : "s") : "No images received";
-  $(gallerySelector).innerHTML = images.length ? images.slice(0, limit).map((item) => '<figure><img loading="lazy" decoding="async" src="/api/proof-media/' + encodeURIComponent(item.evidence_id) + '?digest=' + encodeURIComponent(item.digest) + '" alt="' + escapeHTML(item.caption || "Evidence image") + '"><figcaption>' + escapeHTML(item.caption || "Image evidence") + '</figcaption></figure>').join("") : '<p class="empty-state">Images appear here when they are received.</p>';
+  const previews = images.slice(0, limit);
+  const remaining = Math.max(0, images.length - previews.length);
+  const previewTiles = previews.map((item, index) =>
+    '<button class="evidence-gallery-item" type="button" data-evidence-open="' + String(index) +
+    '" data-evidence-id="' + escapeHTML(item.evidence_id) + '" data-evidence-digest="' + escapeHTML(item.digest) +
+    '" aria-label="Open evidence image: ' + escapeHTML(item.caption || "Image evidence") +
+    '"><img loading="lazy" decoding="async" src="' + proofMediaURL(item) + '" alt=""></button>'
+  ).join("");
+  const moreTile = remaining
+    ? '<button class="evidence-gallery-more" type="button" data-evidence-open="' + String(previews.length) +
+      '" data-evidence-more="' + String(remaining) + '" aria-label="Open ' + String(remaining) + ' more images; ' + String(images.length) +
+      ' images in this gallery">+' + String(remaining) + " more</button>"
+    : "";
+  $(gallerySelector).innerHTML = images.length ? previewTiles + moreTile : '<p class="empty-state">Images appear here when they are received.</p>';
 }
 
 function usageSeries() {
@@ -792,6 +864,32 @@ function startPresence() {
 }
 
 document.addEventListener("click", (event) => {
+  const evidenceOpen = event.target.closest("[data-evidence-open]");
+  if (evidenceOpen) {
+    event.preventDefault();
+    openEvidenceLightbox(Number(evidenceOpen.dataset.evidenceOpen), evidenceOpen);
+    return;
+  }
+  const evidenceThumbnail = event.target.closest("[data-evidence-thumbnail]");
+  if (evidenceThumbnail) {
+    state.evidenceIndex = Number(evidenceThumbnail.dataset.evidenceThumbnail);
+    renderEvidenceLightbox();
+    return;
+  }
+  if (event.target.closest("#evidence-lightbox-close")) {
+    closeEvidenceLightbox();
+    return;
+  }
+  if (event.target.closest("#evidence-lightbox-previous")) {
+    state.evidenceIndex -= 1;
+    renderEvidenceLightbox();
+    return;
+  }
+  if (event.target.closest("#evidence-lightbox-next")) {
+    state.evidenceIndex += 1;
+    renderEvidenceLightbox();
+    return;
+  }
   const subagentToggleButton = event.target.closest("[data-subagent-toggle]");
   if (subagentToggleButton) {
     const expanded = subagentToggleButton.getAttribute("aria-expanded") === "true";
@@ -807,6 +905,23 @@ document.addEventListener("click", (event) => {
   if (tab) setView(tab.dataset.view);
   const risk = event.target.closest("#risk-action");
   if (risk?.dataset.taskId) document.querySelector("tr[data-task-id='" + CSS.escape(risk.dataset.taskId) + "']")?.scrollIntoView({ block: "center", behavior: "smooth" });
+});
+
+$("#evidence-lightbox").addEventListener("close", () => {
+  state.evidenceTrigger?.focus();
+  state.evidenceTrigger = null;
+});
+$("#evidence-lightbox-image").addEventListener("error", () => {
+  $("#evidence-lightbox-image").hidden = true;
+  $("#evidence-lightbox-failed").hidden = false;
+});
+document.addEventListener("keydown", (event) => {
+  if (!$("#evidence-lightbox").open || !["ArrowLeft", "ArrowRight"].includes(event.key)) return;
+  const nextIndex = state.evidenceIndex + (event.key === "ArrowLeft" ? -1 : 1);
+  if (nextIndex < 0 || nextIndex >= state.evidenceImages.length) return;
+  event.preventDefault();
+  state.evidenceIndex = nextIndex;
+  renderEvidenceLightbox();
 });
 
 $("#project-navigation").addEventListener("click", (event) => {
