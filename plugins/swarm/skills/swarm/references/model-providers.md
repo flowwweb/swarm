@@ -75,10 +75,17 @@ fit a cheaper model.
 
 For every task and subagent, record the requested model, provider, reasoning,
 service tier, selection source, and exact host model receipt when the host
-provides one. A request receipt proves only what SWARM asked the host to run.
+provides one. Fast mode changes only the request service tier: request `fast` or
+`priority`, and treat the response's `service_tier` as the served-tier evidence
+(`fast` may be reported as `priority`). Record `requested_fast_mode`,
+`requested_service_tier`, nullable `actual_service_tier`, and the bound host
+response receipt separately. A request receipt proves only what SWARM asked the host to run.
 Actual model execution remains `UNVERIFIED` unless host metadata identifies it;
 never infer Luna execution from the configured default or successful helper
-completion.
+completion. Likewise, never report Fast mode active from config, Turbo, task
+creation, latency, or success alone. The current visible-task host API exposes no
+service-tier request or confirmation field, so those assignments stay schedulable
+with Fast mode `UNAVAILABLE` until that host capability and receipt exist.
 
 Third-party models can use shell, web, MCP, apps, or computer use only when the
 provider protocol, model tool calling, modalities, and Codex host all support

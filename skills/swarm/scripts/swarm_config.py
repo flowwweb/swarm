@@ -45,6 +45,7 @@ DEFAULTS: dict[str, Any] = {
     },
     "execution": {
         "usage_profile": "medium",
+        "fast_mode": False,
         "service_tier": "",
         "usage_saver": False,
         "min_reasoning": "none",
@@ -217,6 +218,7 @@ REASONING_EFFORTS = {"none", "minimal", "low", "medium", "high", "xhigh", "max",
 REASONING_SCALE = ("none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra")
 ROLE_OVERRIDE_KEYS = {"icon", "model", "reasoning"}
 STRUCTURAL_CONFIG_ROLES = frozenset({"ctrl", "lead", "doer", "task", "subtask", "assist", "review", "advisor", "specialist", "architect"})
+FAST_SERVICE_TIERS = frozenset({"fast", "priority"})
 PROFESSION_GROUPS = (
     ("Direction", (("manager", "Manager"), ("strategist", "Strategist"))),
     ("Discovery", (("researcher", "Researcher"), ("analyst", "Analyst"), ("specialist", "Specialist"), ("inventor", "Inventor"))),
@@ -393,6 +395,7 @@ def validate(raw: dict[str, Any]) -> None:
     _expect_keys(execution, set(DEFAULTS["execution"]), "execution")
     if "usage_profile" in execution and execution["usage_profile"] not in USAGE_PROFILES:
         raise ConfigError("execution.usage_profile must be high, medium, or low")
+    _boolean(execution, "fast_mode", "execution")
     _short_text(execution, "service_tier", "execution", allow_empty=True)
     _boolean(execution, "usage_saver", "execution")
     _reasoning_effort(execution, "min_reasoning", "execution")
@@ -778,6 +781,7 @@ def apply_turbo(effective: dict[str, Any]) -> dict[str, Any]:
     """Resolve Turbo's three supported controls without weakening user bounds."""
     if effective["turbo"]["enabled"]:
         effective["execution"]["usage_profile"] = "high"
+        effective["execution"]["fast_mode"] = True
         effective["execution"]["service_tier"] = "fast"
         effective["efficiency"]["mode"] = "MAX"
     return effective
@@ -871,12 +875,15 @@ def resolve_model_assignment(
     explicit_model: str | None = None, explicit_reasoning: str | None = None,
     explicit_provider: str | None = None, explicit_service_tier: str | None = None,
     host_actual_model: str | None = None, host_receipt: str | None = None,
+    host_actual_service_tier: str | None = None,
+    host_service_tier_receipt: str | None = None,
 ) -> dict[str, Any]:
     """Resolve requested controls without claiming unreported host execution."""
     if surface not in {"codex_task", "subagent"}: raise ConfigError("surface must be codex_task or subagent")
     if workload not in MODEL_WORKLOADS: raise ConfigError(f"unknown workload: {workload}")
     if not isinstance(required_tools, tuple) or any(not isinstance(tool, str) or not tool.strip() for tool in required_tools): raise ConfigError("required_tools must be a tuple of non-empty strings")
     if (host_actual_model is None) != (host_receipt is None): raise ConfigError("actual model verification requires both host model and receipt")
+    if (host_actual_service_tier is None) != (host_service_tier_receipt is None): raise ConfigError("actual service-tier verification requires both host tier and response receipt")
     assignment=resolve_role_assignment(effective, role, route_tier=route_tier, explicit_model=explicit_model, explicit_reasoning=explicit_reasoning)
     capability=effective["model_capabilities"][assignment["model"]]
     provider=capability["provider"]
@@ -894,9 +901,40 @@ def resolve_model_assignment(
         profession_id=resolve_profession_id(role)
         custom=next((value for name,value in effective["professions"].items() if resolve_profession_id(name)==profession_id),{})
     explicit=any(value is not None for value in (explicit_model, explicit_reasoning, explicit_provider, explicit_service_tier)) or any(key in custom for key in ("model","reasoning"))
+    if explicit_service_tier is not None:
+        _short_text({"service_tier":explicit_service_tier},"service_tier","explicit assignment",allow_empty=True)
+        requested_service_tier=explicit_service_tier
+        service_tier_source="explicit_user"
+    elif effective["execution"]["fast_mode"]:
+        requested_service_tier="fast"
+        service_tier_source="fast_mode"
+    else:
+        requested_service_tier=effective["execution"]["service_tier"]
+        service_tier_source="configured_default" if requested_service_tier else "host_default"
+    requested_fast_mode=requested_service_tier in FAST_SERVICE_TIERS
+    if host_actual_service_tier is not None:
+        _short_text({"service_tier":host_actual_service_tier},"service_tier","host response")
+        if not isinstance(host_service_tier_receipt,str) or not host_service_tier_receipt.strip():
+            raise ConfigError("host service-tier response receipt must be exact and non-empty")
+        prefix="host:response:"; marker=":service_tier:"
+        if not host_service_tier_receipt.startswith(prefix) or marker not in host_service_tier_receipt[len(prefix):]:
+            raise ConfigError("host service-tier receipt must bind response id and actual service tier")
+        response_id,receipt_tier=host_service_tier_receipt[len(prefix):].rsplit(marker,1)
+        if not response_id.strip() or receipt_tier!=host_actual_service_tier:
+            raise ConfigError("host service-tier receipt does not match the actual service tier")
+        actual_service_tier_verification="verified"
+        fast_mode_status="ACTIVE" if host_actual_service_tier in FAST_SERVICE_TIERS else ("UNAVAILABLE" if requested_fast_mode else "OFF")
+    else:
+        actual_service_tier_verification="UNVERIFIED"
+        fast_mode_status="UNAVAILABLE" if requested_fast_mode else "OFF"
     return {
         "surface":surface,"model":assignment["model"],"provider":provider,"reasoning_effort":assignment["reasoning"],
-        "service_tier":explicit_service_tier if explicit_service_tier is not None else effective["execution"]["service_tier"],
+        "service_tier":requested_service_tier,
+        "requested_fast_mode":requested_fast_mode,"requested_service_tier":requested_service_tier or None,
+        "service_tier_selection_source":service_tier_source,
+        "actual_service_tier":host_actual_service_tier,"actual_service_tier_verification":actual_service_tier_verification,
+        "host_service_tier_receipt":host_service_tier_receipt,"fast_mode_status":fast_mode_status,
+        "service_tier_claim_limit":"Request preference only; Fast mode is active only when an exact host response receipt reports fast or priority.",
         "selection_source":"explicit_user" if explicit else "configured_default",
         "actual_model":host_actual_model or "","actual_model_verification":"verified" if host_actual_model is not None else "UNVERIFIED",
         "host_model_receipt":host_receipt or "",
@@ -963,6 +1001,7 @@ def feedback_diagnostics(effective: dict[str, Any], exists: bool) -> dict[str, A
         "config_schema_version": effective["schema_version"],
         "config_exists": exists,
         "usage_profile": effective["execution"]["usage_profile"],
+        "fast_mode": effective["execution"]["fast_mode"],
         "service_tier": effective["execution"]["service_tier"],
         "min_reasoning": effective["execution"]["min_reasoning"],
         "max_reasoning": effective["execution"]["max_reasoning"],

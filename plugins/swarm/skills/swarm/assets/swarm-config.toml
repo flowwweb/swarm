@@ -27,9 +27,14 @@ fallback = "📋"
 doer_choices = ["🔨", "💻", "✏️", "🎨", "📚", "📊", "🔌", "🧪", "✅", "📝", "🔀", "🚀"]
 
 [execution]
-# Select high, medium, or low. Leave service_tier empty to keep the host default.
-# Set it to "fast" only when the host exposes and supports that tier.
+# Select high, medium, or low. Fast mode requests faster service without changing
+# the selected model, provider, or reasoning. Host response metadata is required
+# before SWARM may report it active.
 usage_profile = "medium"
+fast_mode = false
+# Compatibility preference for an advertised service tier. Leave empty for the
+# host default; fast_mode=true takes precedence unless the user chooses a tier
+# explicitly for the task.
 service_tier = ""
 # Global clamps applied after profile, role, and route-complexity selection.
 min_reasoning = "none"

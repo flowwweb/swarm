@@ -72,7 +72,8 @@ Configuration cannot make an unsafe or hidden coordination path valid:
 | `role_icons.fallback` | Generic finite-task emoji when no logical contextual choice exists | trimmed single line, 1-24 chars |
 | `role_icons.doer_choices` | Emojis DOERs may choose by actual work | 1-12 unique trimmed single-line strings |
 | `execution.usage_profile` | Active relative model/effort policy | high, medium, low; default medium |
-| `execution.service_tier` | Optional preferred tier for new tasks when the host exposes it | empty for host default, or advertised tier string; default empty |
+| `execution.fast_mode` | Request Fast service for every newly resolved CTRL, LEAD, DOER, profession-backed task, and eligible subagent assignment without changing its model | boolean; default false |
+| `execution.service_tier` | Compatibility preference for new assignments when Fast mode and a direct user task choice do not override it | empty for host default, or advertised tier string; default empty |
 | `execution.min_reasoning` | Global reasoning floor applied after every profile, role override, and route adjustment | none, minimal, low, medium, high, xhigh, max, ultra; compatibility-neutral default none |
 | `execution.max_reasoning` | Global reasoning ceiling applied after every profile, role override, and route adjustment | none, minimal, low, medium, high, xhigh, max, ultra; compatibility-neutral default ultra; must be at least min |
 | `execution.usage_saver` | Prefer lower-churn coordination for new work without weakening delivery | boolean; default false |
@@ -188,12 +189,27 @@ hard caps. Users may edit every pair and add a `roles.<ROLE>` table for a custom
 leaf role; an unlisted custom role requires an explicit override.
 
 SWARM passes model and reasoning when the host task API supports them and permits
-saved-config selection. If the host requires a direct request, the resolved
-profile remains a preference until the user requests that model in the current
-task. The default empty `service_tier` keeps the host's normal behavior. Set it
-to `"fast"` as an opt-in preference only when the host exposes and permits that
-tier. A host without per-task tier selection keeps its own tier. Existing tasks
-are never rewritten by a settings change.
+saved-config selection. Fast mode is a request service tier, never a faster-model
+substitution. Tier precedence is: an explicit direct-user task tier; then
+`execution.fast_mode = true`, which requests `fast`; then the compatible
+`execution.service_tier` setting or host default. The assignment receipt keeps
+`requested_fast_mode` and `requested_service_tier` separate from nullable
+`actual_service_tier`. Only an exact host response receipt reporting `fast` or
+`priority` makes `fast_mode_status = "ACTIVE"`; otherwise the request remains
+`UNVERIFIED` or `UNAVAILABLE`. Current visible-task coordination APIs do not carry
+or confirm a service tier, so work remains schedulable but Fast activation cannot
+be claimed there. WATCHDOG remains an automation, not a model role; any task it
+initiates or reorients receives Fast mode through that task's actual resolved
+CTRL, LEAD, DOER, profession, or subagent assignment. Existing tasks are
+never rewritten by a settings change.
+
+Fast mode does not change topology or review authority. CTRL, LEAD, and DOER are
+available ownership levels, not a mandatory pass-through: a LEAD may produce
+inside its own boundary and recruits DOERs only when the task warrants it. An
+independent review uses a separate visible owner from the artifact producer;
+Reviewer is a profession/function on the appropriate assignment, cannot mutate
+the frozen candidate, and returns readable `ACCEPT`, `REJECT`, or `BLOCKED`
+evidence without self-review or self-acceptance.
 
 ## Turbo mode
 
@@ -203,7 +219,8 @@ confidently use:
 1. **Reasoning envelope:** select the high usage profile and resolve every new
    assignment at the highest declared model-supported level up to
    `execution.max_reasoning` and not below `execution.min_reasoning`.
-2. **Fast transport preference:** resolve `execution.service_tier` to `fast`.
+2. **Fast transport preference:** enable the same Fast mode resolver; existing
+   `execution.service_tier` compatibility and direct-user precedence remain intact.
 3. **Fast progress policy:** resolve `efficiency.mode` to `MAX`, enabling the
    runtime's highest critical-path parallelism and routing bias while retaining
    its standard review floor.

@@ -368,8 +368,12 @@ class SwarmConfigTests(unittest.TestCase):
             )
             normal, _ = config.load(disabled)
         self.assertEqual(turbo["execution"]["usage_profile"], "high")
+        self.assertTrue(turbo["execution"]["fast_mode"])
         self.assertEqual(turbo["execution"]["service_tier"], "fast")
         self.assertEqual(turbo["efficiency"]["mode"], "MAX")
+        turbo_receipt=config.resolve_model_assignment(turbo,"ctrl",surface="codex_task")
+        self.assertTrue(turbo_receipt["requested_fast_mode"])
+        self.assertEqual(turbo_receipt["requested_service_tier"],"fast")
         self.assertEqual(
             config.resolve_role_assignment(turbo, "lead", route_tier=1)["reasoning"],
             "xhigh",
@@ -379,6 +383,7 @@ class SwarmConfigTests(unittest.TestCase):
             "xhigh",
         )
         self.assertEqual(normal["execution"]["usage_profile"], "low")
+        self.assertFalse(normal["execution"]["fast_mode"])
         self.assertEqual(normal["execution"]["service_tier"], "")
         self.assertEqual(normal["efficiency"]["mode"], "CONSERVE")
 
@@ -388,6 +393,97 @@ class SwarmConfigTests(unittest.TestCase):
             path.write_text('[turbo]\nenabled = "yes"\n', encoding="utf-8")
             with self.assertRaisesRegex(config.ConfigError, "turbo.enabled must be true or false"):
                 config.load(path)
+
+    def test_fast_mode_defaults_off_and_must_be_boolean(self) -> None:
+        effective, _ = config.load(config.TEMPLATE_PATH)
+        receipt = config.resolve_model_assignment(effective,"ctrl",surface="codex_task")
+        self.assertFalse(effective["execution"]["fast_mode"])
+        self.assertFalse(receipt["requested_fast_mode"])
+        self.assertIsNone(receipt["requested_service_tier"])
+        self.assertEqual(receipt["fast_mode_status"],"OFF")
+        with tempfile.TemporaryDirectory() as directory:
+            path=Path(directory)/"invalid.toml"
+            path.write_text('[execution]\nfast_mode = "yes"\n',encoding="utf-8")
+            with self.assertRaisesRegex(config.ConfigError,"execution.fast_mode must be true or false"):
+                config.load(path)
+
+    def test_fast_mode_propagates_to_authority_levels_professions_and_subagent(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path=Path(directory)/"fast.toml"
+            path.write_text("[execution]\nfast_mode = true\n",encoding="utf-8")
+            effective,_=config.load(path)
+        cases=[(role,"codex_task") for role in ("ctrl","lead","doer")]
+        cases.extend((profession,"codex_task") for profession in config.BUILT_IN_PROFESSIONS)
+        cases.append(("doer","subagent"))
+        for role,surface in cases:
+            with self.subTest(role=role,surface=surface):
+                receipt=config.resolve_model_assignment(effective,role,surface=surface)
+                self.assertTrue(receipt["requested_fast_mode"])
+                self.assertEqual(receipt["requested_service_tier"],"fast")
+                self.assertEqual(receipt["service_tier_selection_source"],"fast_mode")
+                self.assertEqual(receipt["fast_mode_status"],"UNAVAILABLE")
+        reviewer=config.resolve_model_assignment(effective,"reviewer",surface="codex_task")
+        doer=config.resolve_model_assignment(effective,"doer",surface="codex_task")
+        self.assertEqual(reviewer["model"],doer["model"])
+
+    def test_direct_user_tier_overrides_fast_mode_without_changing_model(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path=Path(directory)/"fast.toml"
+            path.write_text('[execution]\nfast_mode = true\nservice_tier = "flex"\n',encoding="utf-8")
+            effective,_=config.load(path)
+        baseline=config.resolve_model_assignment(effective,"lead",surface="codex_task")
+        explicit=config.resolve_model_assignment(effective,"lead",surface="codex_task",explicit_service_tier="default")
+        self.assertEqual(baseline["requested_service_tier"],"fast")
+        self.assertEqual(explicit["requested_service_tier"],"default")
+        self.assertFalse(explicit["requested_fast_mode"])
+        self.assertEqual(explicit["service_tier_selection_source"],"explicit_user")
+        self.assertEqual(explicit["model"],baseline["model"])
+        self.assertEqual(explicit["reasoning_effort"],baseline["reasoning_effort"])
+
+    def test_service_tier_setting_remains_compatible_when_fast_mode_is_off(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path=Path(directory)/"tier.toml"
+            path.write_text('[execution]\nservice_tier = "flex"\n',encoding="utf-8")
+            effective,_=config.load(path)
+        receipt=config.resolve_model_assignment(effective,"doer",surface="subagent")
+        self.assertFalse(receipt["requested_fast_mode"])
+        self.assertEqual(receipt["requested_service_tier"],"flex")
+        self.assertEqual(receipt["service_tier_selection_source"],"configured_default")
+
+    def test_exact_host_response_receipt_confirms_fast_or_priority(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path=Path(directory)/"fast.toml"
+            path.write_text("[execution]\nfast_mode = true\n",encoding="utf-8")
+            effective,_=config.load(path)
+        for tier in ("fast","priority"):
+            with self.subTest(tier=tier):
+                receipt=config.resolve_model_assignment(
+                    effective,"reviewer",surface="codex_task",host_actual_service_tier=tier,
+                    host_service_tier_receipt=f"host:response:resp_test:service_tier:{tier}",
+                )
+                self.assertEqual(receipt["actual_service_tier"],tier)
+                self.assertEqual(receipt["actual_service_tier_verification"],"verified")
+                self.assertEqual(receipt["fast_mode_status"],"ACTIVE")
+
+    def test_absent_or_conflicting_host_tier_never_claims_fast_active(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path=Path(directory)/"fast.toml"
+            path.write_text("[execution]\nfast_mode = true\n",encoding="utf-8")
+            effective,_=config.load(path)
+        missing=config.resolve_model_assignment(effective,"lead",surface="codex_task")
+        conflicting=config.resolve_model_assignment(
+            effective,"lead",surface="codex_task",host_actual_service_tier="default",
+            host_service_tier_receipt="host:response:resp_default:service_tier:default",
+        )
+        self.assertEqual(missing["fast_mode_status"],"UNAVAILABLE")
+        self.assertIsNone(missing["actual_service_tier"])
+        self.assertEqual(conflicting["fast_mode_status"],"UNAVAILABLE")
+        self.assertEqual(conflicting["model"],missing["model"])
+        with self.assertRaisesRegex(config.ConfigError,"does not match"):
+            config.resolve_model_assignment(
+                effective,"lead",surface="codex_task",host_actual_service_tier="priority",
+                host_service_tier_receipt="host:response:resp_bad:service_tier:default",
+            )
 
     def test_cli_resolve_exposes_the_effective_host_pair(self) -> None:
         completed = subprocess.run(
