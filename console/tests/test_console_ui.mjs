@@ -15,6 +15,12 @@ const indexHtml = fs.readFileSync(path.join(staticRoot, "index.html"), "utf8");
 const documentHtml = indexHtml
   .replace("<head>", '<head><base href="http://swarm.test/">');
 
+assert.match(indexHtml, /id="tab-hierarchy"[^>]*><span aria-hidden="true">⑂<\/span><b>Hierarchy<\/b>/);
+assert.match(indexHtml, /id="tab-kanban"[^>]*><span aria-hidden="true">▥<\/span><b>Kanban<\/b>/);
+assert.match(indexHtml, /id="tab-diagnostics"[^>]*><span aria-hidden="true">⊙<\/span><b>Diagnostics<\/b>/);
+assert.doesNotMatch(indexHtml, /id="tab-hierarchy"[^>]*>[^<]*<span aria-hidden="true">⌘<\/span>/);
+assert.doesNotMatch(indexHtml, /id="tab-diagnostics"[^>]*>[^<]*<span aria-hidden="true">⌁<\/span>/);
+
 for (const label of ["Current work", "Recent images", "Tokens · 24h", "Completed", "Dashboard", "Where changes apply", "Manage", "Advanced settings"]) {
   assert.match(indexHtml + app, new RegExp(label));
 }
@@ -280,6 +286,9 @@ try {
 
   assert.equal(await page.locator("#view-title").textContent(), "Overview");
   assert.equal(await page.locator('[role="tab"]').count(), 6);
+  assert.equal(await page.locator("#tab-hierarchy span").textContent(), "⑂");
+  assert.equal(await page.locator("#tab-kanban span").textContent(), "▥");
+  assert.equal(await page.locator("#tab-diagnostics span").textContent(), "⊙");
   assert.equal(await page.getByRole("button", { name: "All projects" }).count(), 1);
   assert.equal(await page.getByRole("button", { name: "Flowwweb" }).count(), 1);
   assert.equal(await page.getByRole("button", { name: "Idle project" }).count(), 1);
