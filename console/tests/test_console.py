@@ -630,6 +630,73 @@ class SwarmConsoleTests(unittest.TestCase):
         retained = store.load_execution_ledger().reservation("reservation-cas")
         self.assertEqual((retained.state, retained.host_completed, retained.material_receipt_id), (ExecutionDispatchState.COMPLETE, True, "receipt-cas"))
 
+    def test_execution_completion_requires_retained_independent_review(self) -> None:
+        path = self.root / "console" / "execution-review-cas.sqlite3"
+        store = console.ConsoleStore(path)
+        ledger = console.ExecutionDispatchLedger()
+        ledger.observe_generation(console.ExecutionConfigGeneration("generation-fast", True, "gpt-5.6", "high", 10, "host:config:fast"))
+        ledger.reserve("reservation-review", "task-review", "owner-review", ArtifactIdentity("artifact", "rev-review", "queue"), observed_at_ms=11)
+        active = ledger.dispatch("reservation-review", "f" * 64, 700, observed_at_ms=12)
+        event = CodexAppServerAdapter().translate_event({
+            "method": "turn/completed",
+            "params": {"threadId": "thread-review", "turnId": "turn-review", "status": "completed"},
+        })
+        ledger.observe_event("reservation-review", event, observed_at_ms=13)
+        active_snapshot = copy.deepcopy(active.snapshot())
+        store.persist_execution_ledger(ledger, now_ms=13)
+
+        def snapshot_ledger(snapshot: dict[str, object]) -> object:
+            return console.ExecutionDispatchLedger(
+                generations=ledger.generations,
+                reservations=(console.ExecutionReservation.from_snapshot(snapshot),),
+            )
+
+        direct_complete = copy.deepcopy(active_snapshot)
+        direct_complete.update(state=ExecutionDispatchState.COMPLETE.value, material_receipt_id="receipt-review", updated_at_ms=14)
+        with self.assertRaisesRegex(console.ConsoleError, "requires retained independent review"):
+            store.persist_execution_ledger(snapshot_ledger(direct_complete), now_ms=14)
+
+        checkpointed = copy.deepcopy(active_snapshot)
+        checkpointed.update(state=ExecutionDispatchState.CHECKPOINTED.value, updated_at_ms=14)
+        store.persist_execution_ledger(snapshot_ledger(checkpointed), now_ms=14)
+        checkpoint_complete = copy.deepcopy(direct_complete)
+        checkpoint_complete["updated_at_ms"] = 15
+        with self.assertRaisesRegex(console.ConsoleError, "requires retained independent review"):
+            store.persist_execution_ledger(snapshot_ledger(checkpoint_complete), now_ms=15)
+
+        rejected_review = copy.deepcopy(active_snapshot)
+        rejected_review.update(state=ExecutionDispatchState.UNVERIFIED.value, updated_at_ms=15)
+        store.persist_execution_ledger(snapshot_ledger(rejected_review), now_ms=15)
+        rejected_complete = copy.deepcopy(direct_complete)
+        rejected_complete["updated_at_ms"] = 16
+        with self.assertRaisesRegex(console.ConsoleError, "requires retained independent review"):
+            store.persist_execution_ledger(snapshot_ledger(rejected_complete), now_ms=16)
+
+        material = copy.deepcopy(active_snapshot)
+        material.update(state=ExecutionDispatchState.MATERIAL_RECEIPT.value, material_receipt_id="receipt-review", updated_at_ms=16)
+        store.persist_execution_ledger(snapshot_ledger(material), now_ms=16)
+        mismatched_review = copy.deepcopy(material)
+        mismatched_review["state"] = ExecutionDispatchState.INDEPENDENT_REVIEW.value
+        mismatched_review["artifact"] = dict(mismatched_review["artifact"], revision="wrong-revision")
+        mismatched_review["updated_at_ms"] = 17
+        with self.assertRaisesRegex(console.ConsoleError, "conflicts with retained identity"):
+            store.persist_execution_ledger(snapshot_ledger(mismatched_review), now_ms=17)
+        stale_review = copy.deepcopy(material)
+        stale_review.update(state=ExecutionDispatchState.INDEPENDENT_REVIEW.value, updated_at_ms=15)
+        with self.assertRaisesRegex(console.ConsoleError, "stale execution reservation"):
+            store.persist_execution_ledger(snapshot_ledger(stale_review), now_ms=17)
+
+        accepted_review = copy.deepcopy(material)
+        accepted_review.update(state=ExecutionDispatchState.INDEPENDENT_REVIEW.value, updated_at_ms=17)
+        store.persist_execution_ledger(snapshot_ledger(accepted_review), now_ms=17)
+        accepted_complete = copy.deepcopy(accepted_review)
+        accepted_complete.update(state=ExecutionDispatchState.COMPLETE.value, updated_at_ms=18)
+        complete_ledger = snapshot_ledger(accepted_complete)
+        store.persist_execution_ledger(complete_ledger, now_ms=18)
+        store.persist_execution_ledger(complete_ledger, now_ms=18)
+        retained = store.load_execution_ledger().reservation("reservation-review")
+        self.assertEqual((retained.state, retained.host_completed, retained.material_receipt_id), (ExecutionDispatchState.COMPLETE, True, "receipt-review"))
+
     def test_execution_reservation_checkpoint_and_smaller_retry_converge(self) -> None:
         path = self.root / "console" / "execution-retry-cas.sqlite3"
         store = console.ConsoleStore(path)

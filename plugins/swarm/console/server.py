@@ -1333,17 +1333,19 @@ class ConsoleStore:
         if retained_receipt and str(incoming.get("material_receipt_id") or "") != retained_receipt:
             raise ConsoleError("execution reservation cannot replace retained material receipt")
         allowed_states = {
-            "queued": {"queued", "deferred", "active", "unverified", "material_receipt", "independent_review", "complete"},
-            "deferred": {"deferred", "active", "unverified", "material_receipt", "independent_review", "complete"},
-            "active": {"active", "checkpointed", "material_receipt", "independent_review", "complete", "unverified"},
-            "checkpointed": {"checkpointed", "active", "material_receipt", "independent_review", "complete", "unverified"},
-            "unverified": {"unverified", "active", "checkpointed", "material_receipt", "independent_review", "complete"},
-            "material_receipt": {"material_receipt", "independent_review", "complete"},
+            "queued": {"queued", "deferred", "active", "unverified", "material_receipt", "independent_review"},
+            "deferred": {"deferred", "active", "unverified", "material_receipt", "independent_review"},
+            "active": {"active", "checkpointed", "material_receipt", "independent_review", "unverified"},
+            "checkpointed": {"checkpointed", "active", "material_receipt", "independent_review", "unverified"},
+            "unverified": {"unverified", "active", "checkpointed", "material_receipt", "independent_review"},
+            "material_receipt": {"material_receipt", "independent_review"},
             "independent_review": {"independent_review", "complete"},
             "complete": {"complete"},
         }
         retained_state = str(retained.get("state") or "")
         incoming_state = str(incoming.get("state") or "")
+        if incoming_state == "complete" and retained_state not in {"independent_review", "complete"}:
+            raise ConsoleError("completed execution reservation requires retained independent review")
         if incoming_state not in allowed_states.get(retained_state, set()):
             raise ConsoleError("execution reservation state cannot move backward or skip a gate")
         if incoming_state in {"material_receipt", "independent_review", "complete"} and not str(incoming.get("material_receipt_id") or ""):
