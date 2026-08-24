@@ -3461,9 +3461,11 @@ class App:
                 )
             except (OSError, sqlite3.Error):
                 result = {"advanced": 0, "heartbeats": 0, "duplicates": 0, "rejected": 1, "eta_reports": {}}
-            # Retain the pre-import fingerprint. A replacement that races this
-            # import is therefore observed by the next read instead of hidden.
-            self._progress_pulse_fingerprint = fingerprint
+            # Only a rejection-free bounded pass is safe to suppress. A late
+            # host observation or transient store failure must retry the same
+            # unchanged sidecar on the next read.
+            if not result["rejected"]:
+                self._progress_pulse_fingerprint = fingerprint
             if result["advanced"] or result["heartbeats"] or result["eta_reports"]:
                 with self.overview_lock:
                     self._store_generation += 1

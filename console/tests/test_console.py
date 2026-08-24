@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import importlib.util
 import hashlib
 import json
@@ -972,6 +973,66 @@ class SwarmConsoleTests(unittest.TestCase):
         self.assertEqual(heartbeat_node["eta"]["pulse_observed_at_ms"], heartbeat_at_ms)
         with closing(sqlite3.connect(app.store.path)) as connection:
             self.assertEqual(connection.execute("SELECT COUNT(*) FROM task_progress_receipts").fetchone()[0], receipt_count)
+
+    def test_progress_read_retries_unchanged_pulse_after_late_host_observation(self) -> None:
+        with closing(sqlite3.connect(self.database)) as connection:
+            connection.execute("UPDATE threads SET agent_role='ctrl' WHERE id='root'")
+            connection.commit()
+        observed = console.build_overview(self.codex_home, self.config)
+        ctrl_node = next(node for node in observed["nodes"] if node["id"] == "root")
+        project_id = ctrl_node["project_id"]
+        missing_task = copy.deepcopy(observed)
+        missing_task["nodes"] = [node for node in missing_task["nodes"] if node["id"] != "root"]
+        missing_task["controllers"] = [controller for controller in missing_task["controllers"] if controller["id"] != "root"]
+        missing_task["roots"] = [node_id for node_id in missing_task["roots"] if node_id != "root"]
+        app = console.App(self.codex_home, self.config, state_path=self.root / "console-late-host.sqlite3")
+        with app.overview_lock:
+            app._overview = missing_task
+            app._overview_revision = 1
+        write_progress_pulse(
+            self.codex_home,
+            self._ctrl_progress_pulse(
+                "root", project_id,
+                observed_at_ms=1_000_000,
+                pulse_receipt="pulse-before-host",
+                completed_units=4,
+            ),
+        )
+
+        first = app.overview()
+        self.assertNotIn("root", first["progress"]["controllers"])
+        self.assertEqual(app.store.latest_progress(), {})
+        self.assertNotEqual(app._progress_pulse_fingerprint, console.progress_pulse_fingerprint(self.codex_home))
+        with app.overview_lock:
+            app._overview = observed
+            app._overview_revision += 1
+        retried = app.overview()
+        self.assertEqual(retried["progress"]["controllers"]["root"]["progress"]["percent"], 80.0)
+
+    def test_progress_read_retries_unchanged_pulse_after_transient_import_failure(self) -> None:
+        with closing(sqlite3.connect(self.database)) as connection:
+            connection.execute("UPDATE threads SET agent_role='ctrl' WHERE id='root'")
+            connection.commit()
+        app = console.App(self.codex_home, self.config, state_path=self.root / "console-transient.sqlite3")
+        initial = app.overview()
+        ctrl_node = next(node for node in initial["nodes"] if node["id"] == "root")
+        project_id = ctrl_node["project_id"]
+        write_progress_pulse(
+            self.codex_home,
+            self._ctrl_progress_pulse(
+                "root", project_id,
+                observed_at_ms=1_000_000,
+                pulse_receipt="pulse-transient",
+                completed_units=4,
+            ),
+        )
+
+        with mock.patch.object(app.store, "ingest_progress_pulses", side_effect=sqlite3.OperationalError("busy")):
+            failed = app.overview()
+        self.assertIsNone(failed["progress"]["controllers"]["root"]["progress"])
+        self.assertNotEqual(app._progress_pulse_fingerprint, console.progress_pulse_fingerprint(self.codex_home))
+        retried = app.overview()
+        self.assertEqual(retried["progress"]["controllers"]["root"]["progress"]["percent"], 80.0)
 
     def test_valid_ctrl_pulse_without_host_role_is_explicitly_unclassified(self) -> None:
         app = console.App(self.codex_home, self.config, state_path=self.root / "console-unclassified.sqlite3")
