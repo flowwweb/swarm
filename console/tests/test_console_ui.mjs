@@ -304,7 +304,7 @@ try {
   assert.match(await page.locator("#overview-project-cards").textContent(), /80%/);
   assert.match(await page.locator("#overview-project-cards").textContent(), /Fresh/);
   assert.equal(await page.getByRole("button", { name: /https-mail/i }).count(), 0);
-  assert.equal(await page.getByText("Current work").count(), 1);
+  assert.equal(await page.locator("#overview-monitoring-heading").textContent(), "Current work");
   assert.equal(await page.locator("#usage-total").textContent(), "1K");
   assert.equal(await page.locator("#overview-monitoring-health-state").textContent(), "Needs attention");
   assert.match(await page.locator("#overview-monitoring-health-note").textContent(), /1 visible lane needs attention/);
