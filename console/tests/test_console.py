@@ -23,7 +23,15 @@ assert SPEC and SPEC.loader
 console = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(console)
 from runtime.progress_events import write_progress_pulse  # noqa: E402
-from runtime import ArtifactIdentity, CodexAppServerAdapter, ExecutionDispatchState, InvariantError  # noqa: E402
+from runtime import (  # noqa: E402
+    ArtifactIdentity,
+    CodexAppServerAdapter,
+    ContinuationSnapshot,
+    ExecutionConfigGeneration,
+    ExecutionDispatchState,
+    ExecutionFailureKind,
+    InvariantError,
+)
 
 
 class SwarmConsoleTests(unittest.TestCase):
@@ -576,6 +584,44 @@ class SwarmConsoleTests(unittest.TestCase):
         ledger = store.load_execution_ledger()
         self.assertTrue(ledger.latest_generation.fast_mode)
         self.assertEqual(ledger.latest_generation.requested_service_tier, "fast")
+        legacy_generation_digest = ledger.latest_generation.digest
+        ledger.reserve(
+            "reservation-legacy", "task-legacy", "owner-legacy",
+            ArtifactIdentity("artifact", "rev-legacy", "legacy queue"), observed_at_ms=11,
+        )
+        active = ledger.dispatch("reservation-legacy", "a" * 64, 900, observed_at_ms=12)
+        self.assertEqual((active.generation_id, active.requested_service_tier), ("legacy-fast", "fast"))
+        store.persist_execution_ledger(ledger, now_ms=13)
+        with closing(sqlite3.connect(path)) as connection:
+            retained_json, retained_digest = connection.execute(
+                "SELECT payload_json,payload_digest FROM execution_config_generations WHERE generation_id='legacy-fast'"
+            ).fetchone()
+        retained = json.loads(retained_json)
+        self.assertEqual(retained["fast_mode"], True)
+        self.assertNotIn("service_tier", retained)
+        self.assertEqual(store._execution_payload(retained)[1], retained_digest)
+
+        restarted = console.ConsoleStore(path).load_execution_ledger()
+        self.assertEqual((len(restarted.generations), restarted.latest_generation.digest), (1, legacy_generation_digest))
+        restarted.observe_generation(ExecutionConfigGeneration(
+            "generation-standard", False, "gpt-5.6", "high", 20, "host:config:standard",
+        ))
+        restarted.checkpoint("reservation-legacy", observed_at_ms=21)
+        resumed = restarted.dispatch("reservation-legacy", "b" * 64, 800, observed_at_ms=22)
+        restarted.fail_transport(
+            "reservation-legacy", ExecutionFailureKind.BAD_REQUEST,
+            observed_at_ms=23, http_status=400, detail="Bad Request",
+        )
+        store.persist_execution_ledger(restarted, now_ms=24)
+        retry_ledger = console.ConsoleStore(path).load_execution_ledger()
+        retried = retry_ledger.retry_smaller(
+            "reservation-legacy", ContinuationSnapshot("c" * 64, 800, 600, 25),
+            "d" * 64, 550, observed_at_ms=26,
+        )
+        self.assertEqual((retried.generation_id, retried.requested_service_tier), ("generation-standard", "default"))
+        store.persist_execution_ledger(retry_ledger, now_ms=27)
+        final = console.ConsoleStore(path).load_execution_ledger()
+        self.assertEqual([item.generation_id for item in final.generations], ["legacy-fast", "generation-standard"])
 
     def test_codex_jsonl_token_counts_are_high_water_deduped(self) -> None:
         session = self.codex_home / "sessions" / "2026" / "08" / "22" / "rollout-thread-1.jsonl"

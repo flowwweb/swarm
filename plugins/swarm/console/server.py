@@ -1296,6 +1296,19 @@ class ConsoleStore:
         encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
         return encoded, hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
+    @staticmethod
+    def _canonical_execution_generation_payload(payload: dict[str, Any]) -> dict[str, Any]:
+        """Normalize one intact legacy mode field without changing generation identity."""
+        normalized = dict(payload)
+        if "fast_mode" in normalized and "service_tier" in normalized:
+            raise ConsoleError("execution config generation has competing mode authorities")
+        if "fast_mode" not in normalized:
+            legacy_tier = normalized.pop("service_tier", None)
+            if legacy_tier not in {"default", "flex", "fast", "priority"}:
+                raise ConsoleError("legacy execution config service tier is invalid")
+            normalized["fast_mode"] = legacy_tier in {"fast", "priority"}
+        return normalized
+
     def persist_execution_ledger(self, ledger: ExecutionDispatchLedger, *, now_ms: int) -> None:
         """Persist only typed queue identities/digests; raw request or tool content is never accepted."""
         if not isinstance(ledger, ExecutionDispatchLedger) or not isinstance(now_ms, int) or isinstance(now_ms, bool) or now_ms < 0:
@@ -1313,15 +1326,31 @@ class ConsoleStore:
                 }
                 encoded, digest = self._execution_payload(payload)
                 existing = connection.execute(
-                    "SELECT payload_digest FROM execution_config_generations WHERE generation_id = ?",
+                    "SELECT payload_json, payload_digest FROM execution_config_generations WHERE generation_id = ?",
                     (generation.generation_id,),
                 ).fetchone()
                 if existing is not None and str(existing["payload_digest"]) != digest:
-                    raise ConsoleError("execution config generation conflicts with retained identity")
-                connection.execute(
-                    "INSERT OR IGNORE INTO execution_config_generations(generation_id, payload_json, payload_digest, changed_at_ms) VALUES (?, ?, ?, ?)",
-                    (generation.generation_id, encoded, digest, generation.changed_at_ms),
-                )
+                    retained = json.loads(str(existing["payload_json"]))
+                    _, retained_digest = self._execution_payload(retained)
+                    if retained_digest != str(existing["payload_digest"]):
+                        raise ConsoleError("execution config generation digest mismatch")
+                    if self._canonical_execution_generation_payload(retained) != payload:
+                        raise ConsoleError("execution config generation conflicts with retained identity")
+                    updated = connection.execute(
+                        """
+                        UPDATE execution_config_generations
+                        SET payload_json = ?, payload_digest = ?, changed_at_ms = ?
+                        WHERE generation_id = ? AND payload_digest = ?
+                        """,
+                        (encoded, digest, generation.changed_at_ms, generation.generation_id, retained_digest),
+                    )
+                    if updated.rowcount != 1:
+                        raise ConsoleError("execution config generation normalization lost retained custody")
+                elif existing is None:
+                    connection.execute(
+                        "INSERT INTO execution_config_generations(generation_id, payload_json, payload_digest, changed_at_ms) VALUES (?, ?, ?, ?)",
+                        (generation.generation_id, encoded, digest, generation.changed_at_ms),
+                    )
             for reservation in ledger.reservations:
                 encoded, digest = self._execution_payload(reservation.snapshot())
                 connection.execute(
@@ -1362,13 +1391,7 @@ class ConsoleStore:
                 _, digest = self._execution_payload(payload)
                 if digest != str(row["payload_digest"]):
                     raise ConsoleError("execution config generation digest mismatch")
-                if "fast_mode" in payload and "service_tier" in payload:
-                    raise ConsoleError("execution config generation has competing mode authorities")
-                if "fast_mode" not in payload:
-                    legacy_tier = payload.pop("service_tier", None)
-                    if legacy_tier not in {"default", "flex", "fast", "priority"}:
-                        raise ConsoleError("legacy execution config service tier is invalid")
-                    payload["fast_mode"] = legacy_tier in {"fast", "priority"}
+                payload = self._canonical_execution_generation_payload(payload)
                 generations.append(ExecutionConfigGeneration(**payload))
             reservations = []
             for row in reservation_rows:
