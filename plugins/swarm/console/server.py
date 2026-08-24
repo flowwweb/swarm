@@ -6,7 +6,6 @@ from __future__ import annotations
 import argparse
 import copy
 import hashlib
-import heapq
 import importlib.util
 import ipaddress
 import json
@@ -94,7 +93,8 @@ HEALTH_THRESHOLDS = {
 }
 MEDIA_MAX_HASH_BYTES = 64 * 1024 * 1024
 MAX_PROOF_EVENT_FILES = 1024
-PROOF_EVENT_CURSOR_KEY = "proof_event_cursor_v1"
+PROOF_EVENT_SCAN_STATE_KEY = "proof_event_scan_state_v2"
+PROOF_EVENT_PREFIX_ALPHABET = "abcdefghijklmnopqrstuvwxyz0123456789-._"
 PROOF_EVENT_PRIVATE_FIELDS = frozenset({
     "prompt", "prompts", "response", "responses", "message", "messages",
     "tool_call", "tool_calls", "tool_output", "tool_outputs",
@@ -2313,15 +2313,31 @@ class ConsoleStore:
             for row in rows
         }
 
-    def _proof_event_cursor(self) -> str:
+    def _proof_event_scan_queue(self) -> list[str]:
         with self._lock, closing(self._connect()) as connection:
             row = connection.execute(
                 "SELECT value FROM store_metadata WHERE key=?",
-                (PROOF_EVENT_CURSOR_KEY,),
+                (PROOF_EVENT_SCAN_STATE_KEY,),
             ).fetchone()
-        return str(row["value"]) if row is not None else ""
+        if row is None:
+            return ["P:"]
+        try:
+            value = json.loads(str(row["value"]))
+        except (TypeError, ValueError, json.JSONDecodeError):
+            return ["P:"]
+        if not isinstance(value, list) or len(value) > 16384:
+            return ["P:"]
+        queue = [str(token) for token in value]
+        if any(
+            not token.startswith(("P:", "E:"))
+            or any(character not in PROOF_EVENT_PREFIX_ALPHABET for character in token[2:])
+            for token in queue
+        ):
+            return ["P:"]
+        return queue or ["P:"]
 
-    def _set_proof_event_cursor(self, event_name: str) -> None:
+    def _set_proof_event_scan_queue(self, queue: list[str]) -> None:
+        value = json.dumps(queue, separators=(",", ":"))
         with self._lock, closing(self._connect()) as connection:
             connection.execute(
                 """
@@ -2329,27 +2345,91 @@ class ConsoleStore:
                 ON CONFLICT(key) DO UPDATE SET value=excluded.value
                 WHERE store_metadata.value != excluded.value
                 """,
-                (PROOF_EVENT_CURSOR_KEY, event_name),
+                (PROOF_EVENT_SCAN_STATE_KEY, value),
             )
             connection.commit()
 
     @staticmethod
-    def _bounded_proof_event_paths(event_root: Path, cursor: str) -> tuple[list[Path], bool]:
-        def eligible(path: Path, *, after: bool) -> bool:
-            return path.suffix.casefold() == ".json" and (not after or path.name > cursor)
+    def _proof_event_prefix_matches(event_root: Path, prefix: str, limit: int) -> list[Path]:
+        """Return at most limit native-filtered matches without walking the directory."""
+        if os.name != "nt":
+            raise OSError("bounded native proof-event traversal is unavailable on this host")
+        import ctypes
+        from ctypes import wintypes
 
-        after_cursor = heapq.nsmallest(
-            MAX_PROOF_EVENT_FILES + 1,
-            (path for path in event_root.iterdir() if eligible(path, after=True)),
-            key=lambda path: path.name,
-        )
-        if not after_cursor and cursor:
-            after_cursor = heapq.nsmallest(
+        class FindData(ctypes.Structure):
+            _fields_ = [
+                ("attributes", wintypes.DWORD),
+                ("creation_time", wintypes.FILETIME),
+                ("last_access_time", wintypes.FILETIME),
+                ("last_write_time", wintypes.FILETIME),
+                ("file_size_high", wintypes.DWORD),
+                ("file_size_low", wintypes.DWORD),
+                ("reserved0", wintypes.DWORD),
+                ("reserved1", wintypes.DWORD),
+                ("file_name", wintypes.WCHAR * 260),
+                ("alternate_file_name", wintypes.WCHAR * 14),
+            ]
+
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        find_first = kernel32.FindFirstFileExW
+        find_first.argtypes = [
+            wintypes.LPCWSTR, ctypes.c_int, ctypes.c_void_p,
+            ctypes.c_int, ctypes.c_void_p, wintypes.DWORD,
+        ]
+        find_first.restype = wintypes.HANDLE
+        find_next = kernel32.FindNextFileW
+        find_next.argtypes = [wintypes.HANDLE, ctypes.POINTER(FindData)]
+        find_next.restype = wintypes.BOOL
+        find_close = kernel32.FindClose
+        find_close.argtypes = [wintypes.HANDLE]
+        find_close.restype = wintypes.BOOL
+        data = FindData()
+        pattern = str(event_root / f"{prefix}*.json")
+        handle = find_first(pattern, 1, ctypes.byref(data), 0, None, 2)
+        invalid_handle = ctypes.c_void_p(-1).value
+        if handle == invalid_handle:
+            error = ctypes.get_last_error()
+            if error in (2, 18):
+                return []
+            raise OSError(error, "native proof-event enumeration failed", pattern)
+        matches: list[Path] = []
+        try:
+            while len(matches) < limit:
+                name = str(data.file_name)
+                if name not in (".", ".."):
+                    matches.append(event_root / name)
+                if len(matches) >= limit or not find_next(handle, ctypes.byref(data)):
+                    break
+        finally:
+            find_close(handle)
+        return sorted(matches, key=lambda path: path.name.casefold())
+
+    def _bounded_proof_event_paths(self, event_root: Path) -> tuple[list[Path], bool, int, list[str]]:
+        queue = self._proof_event_scan_queue()
+        checked_tokens = 0
+        while queue and checked_tokens < len(PROOF_EVENT_PREFIX_ALPHABET) + 2:
+            token = queue.pop(0)
+            checked_tokens += 1
+            kind, prefix = token[:1], token[2:]
+            if kind == "E":
+                path = event_root / f"{prefix}.json"
+                return ([path] if path.is_file() else []), bool(queue), int(path.is_file()), queue
+            matches = self._proof_event_prefix_matches(
+                event_root,
+                prefix,
                 MAX_PROOF_EVENT_FILES + 1,
-                (path for path in event_root.iterdir() if eligible(path, after=False)),
-                key=lambda path: path.name,
             )
-        return after_cursor[:MAX_PROOF_EVENT_FILES], len(after_cursor) > MAX_PROOF_EVENT_FILES
+            if len(matches) > MAX_PROOF_EVENT_FILES:
+                if len(prefix) >= 255:
+                    raise OSError("proof-event prefix cannot be partitioned safely")
+                children = ([f"E:{prefix}"] if prefix else []) + [
+                    f"P:{prefix}{character}" for character in PROOF_EVENT_PREFIX_ALPHABET
+                ]
+                return [], True, len(matches), children + queue
+            if matches:
+                return matches, bool(queue), len(matches), queue
+        return [], bool(queue), 0, queue
 
     def _bind_legacy_proof_event_receipt(
         self,
@@ -2447,9 +2527,9 @@ class ConsoleStore:
         event_root = expected_event_root.resolve()
         media_root = expected_media_root.resolve()
         if swarm_root != expected_swarm_root or event_root != expected_event_root or media_root != expected_media_root:
-            return {"imported": 0, "duplicates": 0, "rejected": 0, "retryable": 1, "capped": 0}
+            return {"imported": 0, "duplicates": 0, "rejected": 0, "retryable": 1, "capped": 0, "enumerated": 0}
         if not event_root.is_dir() or not media_root.is_dir():
-            return {"imported": 0, "duplicates": 0, "rejected": 0, "retryable": 0, "capped": 0}
+            return {"imported": 0, "duplicates": 0, "rejected": 0, "retryable": 0, "capped": 0, "enumerated": 0}
         nodes = {
             str(node.get("id")): node
             for node in overview.get("nodes", [])
@@ -2460,11 +2540,13 @@ class ConsoleStore:
         duplicates = 0
         rejected = 0
         retryable = 0
-        cursor = self._proof_event_cursor()
         try:
-            event_paths, capped_pass = self._bounded_proof_event_paths(event_root, cursor)
+            event_paths, capped_pass, enumerated, next_scan_queue = self._bounded_proof_event_paths(event_root)
         except OSError:
-            return {"imported": 0, "duplicates": 0, "rejected": 0, "retryable": 1, "capped": 0}
+            return {
+                "imported": 0, "duplicates": 0, "rejected": 0,
+                "retryable": 1, "capped": 0, "enumerated": 0,
+            }
         capped = int(capped_pass)
         for event_path in event_paths:
             event_stat: os.stat_result | None = None
@@ -2541,7 +2623,12 @@ class ConsoleStore:
                         if bound != current:
                             raise ConsoleError("proof event receipt identity changed")
                     else:
-                        if not receipt["media_present"] or any(bound) and bound != current:
+                        if (
+                            receipt["evidence_id"] != evidence_id
+                            or (receipt["task_id"] and receipt["task_id"] != task_id)
+                            or (receipt["project_id"] and receipt["project_id"] != project_id)
+                            or (receipt["media_digest"] and receipt["media_digest"] != media_digest)
+                        ):
                             raise ConsoleError("legacy proof event receipt cannot be bound safely")
                         self._bind_legacy_proof_event_receipt(
                             resolved_event.name,
@@ -2596,17 +2683,17 @@ class ConsoleStore:
                     except sqlite3.Error:
                         retryable += 1
                 continue
-        if event_paths:
-            try:
-                self._set_proof_event_cursor(event_paths[-1].name)
-            except sqlite3.Error:
-                retryable += 1
+        try:
+            self._set_proof_event_scan_queue(next_scan_queue)
+        except sqlite3.Error:
+            retryable += 1
         return {
             "imported": imported,
             "duplicates": duplicates,
             "rejected": rejected,
             "retryable": retryable,
             "capped": capped,
+            "enumerated": enumerated,
         }
 
     def ingest_proof_events(self, codex_home: Path, overview: dict[str, Any], *, now_ms: int) -> int:
@@ -3836,7 +3923,10 @@ class App:
 
     def _ingest_proof_events_if_changed(self, overview: dict[str, Any] | None = None) -> dict[str, int]:
         """Advance one durable bounded proof-event reconciliation pass."""
-        empty = {"imported": 0, "duplicates": 0, "rejected": 0, "retryable": 0, "capped": 0}
+        empty = {
+            "imported": 0, "duplicates": 0, "rejected": 0,
+            "retryable": 0, "capped": 0, "enumerated": 0,
+        }
         if overview is None:
             try:
                 overview = self._host_overview()

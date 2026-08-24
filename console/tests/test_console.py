@@ -1462,7 +1462,7 @@ class SwarmConsoleTests(unittest.TestCase):
         with mock.patch.object(restarted, "_host_overview", return_value=overview):
             self.assertEqual([item["evidence_id"] for item in restarted.proof_feed()], ["rehydrate-proof"])
 
-    def test_proof_event_legacy_receipt_is_bound_once_without_reimport_churn(self) -> None:
+    def test_proof_event_legacy_receipt_rehydrates_missing_row_and_binds_once(self) -> None:
         self._write_proof_event("legacy-proof", "legacy-task")
         state_path = self.root / "console" / "legacy.sqlite3"
         overview = {"nodes": [{"id": "legacy-task", "project_id": "project:legacy", "virtual": False}]}
@@ -1472,12 +1472,14 @@ class SwarmConsoleTests(unittest.TestCase):
             connection.execute(
                 "UPDATE proof_event_receipts SET event_digest=NULL, task_id=NULL, project_id=NULL, media_digest=NULL"
             )
+            connection.execute("DELETE FROM proof_media WHERE evidence_id='legacy-proof'")
             connection.commit()
 
         migrated = console.ConsoleStore(state_path)
         first = migrated.reconcile_proof_events(self.codex_home, overview, now_ms=2)
         second = migrated.reconcile_proof_events(self.codex_home, overview, now_ms=3)
-        self.assertEqual((first["duplicates"], second["duplicates"]), (1, 1))
+        self.assertEqual((first["imported"], second["duplicates"]), (1, 1))
+        self.assertEqual([item["evidence_id"] for item in migrated.proof_feed()], ["legacy-proof"])
         with closing(sqlite3.connect(state_path)) as connection:
             row = connection.execute(
                 "SELECT event_digest, task_id, project_id, media_digest, observed_at_ms "
@@ -1600,7 +1602,7 @@ class SwarmConsoleTests(unittest.TestCase):
             self.assertEqual(connection.execute("SELECT COUNT(*) FROM proof_media").fetchone()[0], 0)
 
     def test_proof_event_scan_is_bounded_fair_and_restart_safe(self) -> None:
-        for index in range(3):
+        for index in range(5):
             self._write_proof_event(f"bounded-{index}", "bounded-task")
         overview = {"nodes": [{"id": "bounded-task", "project_id": "project:bounded", "virtual": False}]}
         state_path = self.root / "console" / "bounded.sqlite3"
@@ -1608,28 +1610,47 @@ class SwarmConsoleTests(unittest.TestCase):
         with mock.patch.object(console, "MAX_PROOF_EVENT_FILES", 2), mock.patch.object(app, "_host_overview", return_value=overview):
             first = app._ingest_proof_events_if_changed()
         self.assertEqual(first["capped"], 1)
-        self.assertEqual(len(app.store.proof_feed()), 2)
+        self.assertEqual(first["enumerated"], 3)
+        self.assertEqual(len(app.store.proof_feed()), 0)
 
         restarted = console.App(self.codex_home, self.config, state_path)
         with mock.patch.object(console, "MAX_PROOF_EVENT_FILES", 2), mock.patch.object(
             restarted, "_host_overview", return_value=overview
         ):
-            second = restarted._ingest_proof_events_if_changed()
-            third = restarted._ingest_proof_events_if_changed()
-        self.assertEqual(second["imported"], 1)
-        self.assertEqual(second["capped"], 0)
-        self.assertEqual(third["imported"], 0)
-        self.assertEqual(len(restarted.store.proof_feed()), 3)
+            passes = [restarted._ingest_proof_events_if_changed() for _ in range(64)]
+        self.assertTrue(all(result["enumerated"] <= 3 for result in passes))
+        self.assertEqual(len(restarted.store.proof_feed()), 5)
+        self.assertEqual(restarted._ingest_proof_events_if_changed()["imported"], 0)
 
         event_root = self.codex_home / "swarm" / "proof-events"
-        for index in range(3, 1025):
+        for index in range(5, 1025):
             (event_root / f"bounded-{index:04d}.json").write_text("{}", encoding="utf-8")
-        paths, capped = console.ConsoleStore._bounded_proof_event_paths(event_root, "")
-        self.assertEqual(len(paths), 1024)
+        measured = console.ConsoleStore(self.root / "console" / "measured.sqlite3")
+        with mock.patch.object(console, "MAX_PROOF_EVENT_FILES", 1024), mock.patch.object(
+            Path, "iterdir", side_effect=AssertionError("full directory traversal is forbidden")
+        ):
+            paths, capped, enumerated, _ = measured._bounded_proof_event_paths(event_root)
+        self.assertEqual(paths, [])
         self.assertTrue(capped)
-        later, _ = console.ConsoleStore._bounded_proof_event_paths(event_root, paths[-1].name)
-        self.assertGreater(len(later), 0)
-        self.assertGreater(later[0].name, paths[-1].name)
+        self.assertEqual(enumerated, 1025)
+
+        target = "bounded-1024.json"
+        seen_target = False
+        enumeration_counts: list[int] = []
+        for pass_index in range(128):
+            if pass_index == 12:
+                measured = console.ConsoleStore(measured.path)
+            with mock.patch.object(console, "MAX_PROOF_EVENT_FILES", 1024), mock.patch.object(
+                Path, "iterdir", side_effect=AssertionError("full directory traversal is forbidden")
+            ):
+                paths, _, enumerated, queue = measured._bounded_proof_event_paths(event_root)
+            enumeration_counts.append(enumerated)
+            measured._set_proof_event_scan_queue(queue)
+            if target in {path.name for path in paths}:
+                seen_target = True
+                break
+        self.assertTrue(seen_target)
+        self.assertTrue(all(count <= 1025 for count in enumeration_counts))
 
     def test_proof_event_deleted_or_renamed_source_does_not_rebind_receipt(self) -> None:
         event_path = self._write_proof_event("rename-proof", "rename-task")
