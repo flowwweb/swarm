@@ -1439,7 +1439,7 @@ class SwarmConsoleTests(unittest.TestCase):
             second = restarted_app.proof_feed(project_id="project:restart")
             third = restarted_app.proof_feed(project_id="project:restart")
         self.assertEqual(second, third)
-        self.assertEqual(reconcile.call_count, 1)
+        self.assertEqual(reconcile.call_count, 2)
         with closing(sqlite3.connect(state_path)) as connection:
             after = connection.execute(
                 "SELECT registered_at_ms, updated_at_ms, observed_at_ms FROM proof_media "
@@ -1461,6 +1461,30 @@ class SwarmConsoleTests(unittest.TestCase):
         restarted = console.App(self.codex_home, self.config, state_path)
         with mock.patch.object(restarted, "_host_overview", return_value=overview):
             self.assertEqual([item["evidence_id"] for item in restarted.proof_feed()], ["rehydrate-proof"])
+
+    def test_proof_event_legacy_receipt_is_bound_once_without_reimport_churn(self) -> None:
+        self._write_proof_event("legacy-proof", "legacy-task")
+        state_path = self.root / "console" / "legacy.sqlite3"
+        overview = {"nodes": [{"id": "legacy-task", "project_id": "project:legacy", "virtual": False}]}
+        store = console.ConsoleStore(state_path)
+        self.assertEqual(store.reconcile_proof_events(self.codex_home, overview, now_ms=1)["imported"], 1)
+        with closing(sqlite3.connect(state_path)) as connection:
+            connection.execute(
+                "UPDATE proof_event_receipts SET event_digest=NULL, task_id=NULL, project_id=NULL, media_digest=NULL"
+            )
+            connection.commit()
+
+        migrated = console.ConsoleStore(state_path)
+        first = migrated.reconcile_proof_events(self.codex_home, overview, now_ms=2)
+        second = migrated.reconcile_proof_events(self.codex_home, overview, now_ms=3)
+        self.assertEqual((first["duplicates"], second["duplicates"]), (1, 1))
+        with closing(sqlite3.connect(state_path)) as connection:
+            row = connection.execute(
+                "SELECT event_digest, task_id, project_id, media_digest, observed_at_ms "
+                "FROM proof_event_receipts WHERE event_name='legacy-proof.json'"
+            ).fetchone()
+        self.assertTrue(all(row[index] for index in range(4)))
+        self.assertEqual(row[4], 1)
 
     def test_proof_feed_retries_late_host_observation_without_event_rewrite(self) -> None:
         event_path = self._write_proof_event("late-proof", "late-task")
@@ -1514,6 +1538,37 @@ class SwarmConsoleTests(unittest.TestCase):
         self.assertGreaterEqual(conflict["rejected"], 1)
         self.assertEqual(len(store.proof_feed()), 1)
 
+    def test_proof_event_filename_binding_rejects_content_or_identity_change(self) -> None:
+        event_path = self._write_proof_event("immutable-proof", "task-a")
+        store = console.ConsoleStore(self.root / "console" / "immutable.sqlite3")
+        overview = {"nodes": [
+            {"id": "task-a", "project_id": "project:a", "virtual": False},
+            {"id": "task-b", "project_id": "project:b", "virtual": False},
+        ]}
+        self.assertEqual(store.reconcile_proof_events(self.codex_home, overview, now_ms=10)["imported"], 1)
+        with closing(sqlite3.connect(store.path)) as connection:
+            before = connection.execute(
+                "SELECT * FROM proof_event_receipts WHERE event_name='immutable-proof.json'"
+            ).fetchone()
+
+        event = json.loads(event_path.read_text(encoding="utf-8"))
+        event["caption"] = "Proof immutable-proog"
+        event_path.write_text(json.dumps(event), encoding="utf-8")
+        changed_content = store.reconcile_proof_events(self.codex_home, overview, now_ms=11)
+        self.assertEqual(changed_content["rejected"], 1)
+
+        event["task_id"] = "task-b"
+        event["evidence_id"] = "rebound-proof"
+        event_path.write_text(json.dumps(event), encoding="utf-8")
+        changed_identity = store.reconcile_proof_events(self.codex_home, overview, now_ms=12)
+        self.assertEqual(changed_identity["rejected"], 1)
+        with closing(sqlite3.connect(store.path)) as connection:
+            after = connection.execute(
+                "SELECT * FROM proof_event_receipts WHERE event_name='immutable-proof.json'"
+            ).fetchone()
+        self.assertEqual(before, after)
+        self.assertEqual([item["evidence_id"] for item in store.proof_feed()], ["immutable-proof"])
+
     def test_proof_reconciliation_retries_missing_media_and_preserves_project_privacy(self) -> None:
         missing = self._write_proof_event("missing-proof", "task-a")
         missing_payload = json.loads(missing.read_text(encoding="utf-8"))
@@ -1544,17 +1599,55 @@ class SwarmConsoleTests(unittest.TestCase):
         with closing(sqlite3.connect(store.path)) as connection:
             self.assertEqual(connection.execute("SELECT COUNT(*) FROM proof_media").fetchone()[0], 0)
 
-    def test_proof_event_scan_is_bounded_and_not_cached_when_capped(self) -> None:
+    def test_proof_event_scan_is_bounded_fair_and_restart_safe(self) -> None:
         for index in range(3):
             self._write_proof_event(f"bounded-{index}", "bounded-task")
         overview = {"nodes": [{"id": "bounded-task", "project_id": "project:bounded", "virtual": False}]}
-        app = console.App(self.codex_home, self.config, self.root / "console" / "bounded.sqlite3")
+        state_path = self.root / "console" / "bounded.sqlite3"
+        app = console.App(self.codex_home, self.config, state_path)
         with mock.patch.object(console, "MAX_PROOF_EVENT_FILES", 2), mock.patch.object(app, "_host_overview", return_value=overview):
             first = app._ingest_proof_events_if_changed()
-            second = app._ingest_proof_events_if_changed()
         self.assertEqual(first["capped"], 1)
-        self.assertEqual(second["capped"], 1)
-        self.assertLessEqual(len(app.store.proof_feed()), 2)
+        self.assertEqual(len(app.store.proof_feed()), 2)
+
+        restarted = console.App(self.codex_home, self.config, state_path)
+        with mock.patch.object(console, "MAX_PROOF_EVENT_FILES", 2), mock.patch.object(
+            restarted, "_host_overview", return_value=overview
+        ):
+            second = restarted._ingest_proof_events_if_changed()
+            third = restarted._ingest_proof_events_if_changed()
+        self.assertEqual(second["imported"], 1)
+        self.assertEqual(second["capped"], 0)
+        self.assertEqual(third["imported"], 0)
+        self.assertEqual(len(restarted.store.proof_feed()), 3)
+
+        event_root = self.codex_home / "swarm" / "proof-events"
+        for index in range(3, 1025):
+            (event_root / f"bounded-{index:04d}.json").write_text("{}", encoding="utf-8")
+        paths, capped = console.ConsoleStore._bounded_proof_event_paths(event_root, "")
+        self.assertEqual(len(paths), 1024)
+        self.assertTrue(capped)
+        later, _ = console.ConsoleStore._bounded_proof_event_paths(event_root, paths[-1].name)
+        self.assertGreater(len(later), 0)
+        self.assertGreater(later[0].name, paths[-1].name)
+
+    def test_proof_event_deleted_or_renamed_source_does_not_rebind_receipt(self) -> None:
+        event_path = self._write_proof_event("rename-proof", "rename-task")
+        store = console.ConsoleStore(self.root / "console" / "rename.sqlite3")
+        overview = {"nodes": [{"id": "rename-task", "project_id": "project:rename", "virtual": False}]}
+        self.assertEqual(store.reconcile_proof_events(self.codex_home, overview, now_ms=20)["imported"], 1)
+        renamed = event_path.with_name("renamed.json")
+        event_path.rename(renamed)
+        result = store.reconcile_proof_events(self.codex_home, overview, now_ms=21)
+        self.assertEqual(result["rejected"], 1)
+        renamed.unlink()
+        store.reconcile_proof_events(self.codex_home, overview, now_ms=22)
+        self.assertEqual([item["evidence_id"] for item in store.proof_feed()], ["rename-proof"])
+        with closing(sqlite3.connect(store.path)) as connection:
+            rows = connection.execute(
+                "SELECT event_name, status FROM proof_event_receipts ORDER BY event_name"
+            ).fetchall()
+        self.assertEqual(rows, [("rename-proof.json", "IMPORTED"), ("renamed.json", "REJECTED")])
 
     def test_clear_history_removes_proof_files_and_prevents_reimport(self) -> None:
         swarm_root = self.codex_home / "swarm"

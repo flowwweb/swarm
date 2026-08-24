@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import copy
 import hashlib
+import heapq
 import importlib.util
 import ipaddress
 import json
@@ -93,6 +94,7 @@ HEALTH_THRESHOLDS = {
 }
 MEDIA_MAX_HASH_BYTES = 64 * 1024 * 1024
 MAX_PROOF_EVENT_FILES = 1024
+PROOF_EVENT_CURSOR_KEY = "proof_event_cursor_v1"
 PROOF_EVENT_PRIVATE_FIELDS = frozenset({
     "prompt", "prompts", "response", "responses", "message", "messages",
     "tool_call", "tool_calls", "tool_output", "tool_outputs",
@@ -975,8 +977,12 @@ class ConsoleStore:
                     event_name TEXT PRIMARY KEY,
                     event_mtime_ns INTEGER NOT NULL,
                     event_size INTEGER NOT NULL,
+                    event_digest TEXT,
                     status TEXT NOT NULL,
                     evidence_id TEXT NOT NULL,
+                    task_id TEXT,
+                    project_id TEXT,
+                    media_digest TEXT,
                     observed_at_ms INTEGER NOT NULL
                 );
                 CREATE TABLE IF NOT EXISTS ctrl_overrides (
@@ -1157,6 +1163,31 @@ class ConsoleStore:
             }.items():
                 if name not in eta_columns:
                     connection.execute(f"ALTER TABLE eta_forecasts ADD COLUMN {name} {definition}")
+            proof_receipt_columns = {
+                str(row[1])
+                for row in connection.execute("PRAGMA table_info(proof_event_receipts)").fetchall()
+            }
+            for name in ("event_digest", "task_id", "project_id", "media_digest"):
+                if name not in proof_receipt_columns:
+                    connection.execute(f"ALTER TABLE proof_event_receipts ADD COLUMN {name} TEXT")
+            connection.execute(
+                """
+                UPDATE proof_event_receipts
+                   SET task_id = COALESCE(task_id, (
+                           SELECT media.task_id FROM proof_media media
+                           WHERE media.evidence_id = proof_event_receipts.evidence_id
+                       )),
+                       project_id = COALESCE(project_id, (
+                           SELECT media.project_id FROM proof_media media
+                           WHERE media.evidence_id = proof_event_receipts.evidence_id
+                       )),
+                       media_digest = COALESCE(media_digest, (
+                           SELECT media.digest FROM proof_media media
+                           WHERE media.evidence_id = proof_event_receipts.evidence_id
+                       ))
+                 WHERE status = 'IMPORTED'
+                """
+            )
             progress_plan_columns = {
                 str(row[1])
                 for row in connection.execute("PRAGMA table_info(task_progress_plans)").fetchall()
@@ -2254,27 +2285,111 @@ class ConsoleStore:
             row = connection.execute("SELECT * FROM proof_media WHERE evidence_id=?", (evidence_id,)).fetchone()
         return self._public_proof_row(row)
 
-    def _proof_event_receipts(self) -> dict[str, tuple[int, int, str, str, bool]]:
+    def _proof_event_receipts(self) -> dict[str, dict[str, Any]]:
         with self._lock, closing(self._connect()) as connection:
             rows = connection.execute(
                 """
                 SELECT receipts.event_name, receipts.event_mtime_ns,
-                       receipts.event_size, receipts.status, receipts.evidence_id,
+                       receipts.event_size, receipts.event_digest, receipts.status,
+                       receipts.evidence_id, receipts.task_id, receipts.project_id,
+                       receipts.media_digest,
                        media.evidence_id IS NOT NULL AS media_present
                   FROM proof_event_receipts receipts
              LEFT JOIN proof_media media ON media.evidence_id = receipts.evidence_id
                 """
             ).fetchall()
         return {
-            str(row["event_name"]): (
-                int(row["event_mtime_ns"]),
-                int(row["event_size"]),
-                str(row["status"]),
-                str(row["evidence_id"]),
-                bool(row["media_present"]),
-            )
+            str(row["event_name"]): {
+                "mtime_ns": int(row["event_mtime_ns"]),
+                "size": int(row["event_size"]),
+                "event_digest": str(row["event_digest"] or ""),
+                "status": str(row["status"]),
+                "evidence_id": str(row["evidence_id"]),
+                "task_id": str(row["task_id"] or ""),
+                "project_id": str(row["project_id"] or ""),
+                "media_digest": str(row["media_digest"] or ""),
+                "media_present": bool(row["media_present"]),
+            }
             for row in rows
         }
+
+    def _proof_event_cursor(self) -> str:
+        with self._lock, closing(self._connect()) as connection:
+            row = connection.execute(
+                "SELECT value FROM store_metadata WHERE key=?",
+                (PROOF_EVENT_CURSOR_KEY,),
+            ).fetchone()
+        return str(row["value"]) if row is not None else ""
+
+    def _set_proof_event_cursor(self, event_name: str) -> None:
+        with self._lock, closing(self._connect()) as connection:
+            connection.execute(
+                """
+                INSERT INTO store_metadata(key, value) VALUES (?, ?)
+                ON CONFLICT(key) DO UPDATE SET value=excluded.value
+                WHERE store_metadata.value != excluded.value
+                """,
+                (PROOF_EVENT_CURSOR_KEY, event_name),
+            )
+            connection.commit()
+
+    @staticmethod
+    def _bounded_proof_event_paths(event_root: Path, cursor: str) -> tuple[list[Path], bool]:
+        def eligible(path: Path, *, after: bool) -> bool:
+            return path.suffix.casefold() == ".json" and (not after or path.name > cursor)
+
+        after_cursor = heapq.nsmallest(
+            MAX_PROOF_EVENT_FILES + 1,
+            (path for path in event_root.iterdir() if eligible(path, after=True)),
+            key=lambda path: path.name,
+        )
+        if not after_cursor and cursor:
+            after_cursor = heapq.nsmallest(
+                MAX_PROOF_EVENT_FILES + 1,
+                (path for path in event_root.iterdir() if eligible(path, after=False)),
+                key=lambda path: path.name,
+            )
+        return after_cursor[:MAX_PROOF_EVENT_FILES], len(after_cursor) > MAX_PROOF_EVENT_FILES
+
+    def _bind_legacy_proof_event_receipt(
+        self,
+        event_name: str,
+        *,
+        event_digest: str,
+        task_id: str,
+        project_id: str,
+        media_digest: str,
+    ) -> None:
+        """Bind nullable pre-contract fields once; never alter an existing binding."""
+        with self._lock, closing(self._connect()) as connection:
+            connection.execute(
+                """
+                UPDATE proof_event_receipts
+                   SET event_digest=COALESCE(NULLIF(event_digest, ''), ?),
+                       task_id=COALESCE(NULLIF(task_id, ''), ?),
+                       project_id=COALESCE(NULLIF(project_id, ''), ?),
+                       media_digest=COALESCE(NULLIF(media_digest, ''), ?)
+                 WHERE event_name=? AND status='IMPORTED'
+                   AND (event_digest IS NULL OR event_digest='' OR event_digest=?)
+                   AND (task_id IS NULL OR task_id='' OR task_id=?)
+                   AND (project_id IS NULL OR project_id='' OR project_id=?)
+                   AND (media_digest IS NULL OR media_digest='' OR media_digest=?)
+                """,
+                (
+                    event_digest, task_id, project_id, media_digest, event_name,
+                    event_digest, task_id, project_id, media_digest,
+                ),
+            )
+            row = connection.execute(
+                "SELECT event_digest, task_id, project_id, media_digest FROM proof_event_receipts WHERE event_name=?",
+                (event_name,),
+            ).fetchone()
+            if row is None or tuple(str(value or "") for value in row) != (
+                event_digest, task_id, project_id, media_digest,
+            ):
+                connection.rollback()
+                raise ConsoleError("legacy proof event receipt conflicts with immutable evidence")
+            connection.commit()
 
     def _record_proof_event_receipt(
         self,
@@ -2284,23 +2399,43 @@ class ConsoleStore:
         size: int,
         status: str,
         evidence_id: str,
+        event_digest: str,
+        task_id: str,
+        project_id: str,
+        media_digest: str,
         now_ms: int,
     ) -> None:
         with self._lock, closing(self._connect()) as connection:
             connection.execute(
                 """
                 INSERT INTO proof_event_receipts(
-                    event_name, event_mtime_ns, event_size, status, evidence_id, observed_at_ms
-                ) VALUES (?, ?, ?, ?, ?, ?)
-                ON CONFLICT(event_name) DO UPDATE SET
-                    event_mtime_ns=excluded.event_mtime_ns,
-                    event_size=excluded.event_size,
-                    status=excluded.status,
-                    evidence_id=excluded.evidence_id,
-                    observed_at_ms=excluded.observed_at_ms
+                    event_name, event_mtime_ns, event_size, event_digest, status,
+                    evidence_id, task_id, project_id, media_digest, observed_at_ms
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(event_name) DO NOTHING
                 """,
-                (event_name, mtime_ns, size, status, evidence_id, now_ms),
+                (
+                    event_name, mtime_ns, size, event_digest, status,
+                    evidence_id, task_id, project_id, media_digest, now_ms,
+                ),
             )
+            row = connection.execute(
+                "SELECT * FROM proof_event_receipts WHERE event_name=?",
+                (event_name,),
+            ).fetchone()
+            expected = (
+                mtime_ns, size, event_digest, status, evidence_id,
+                task_id, project_id, media_digest,
+            )
+            actual = (
+                int(row["event_mtime_ns"]), int(row["event_size"]),
+                str(row["event_digest"] or ""), str(row["status"]),
+                str(row["evidence_id"]), str(row["task_id"] or ""),
+                str(row["project_id"] or ""), str(row["media_digest"] or ""),
+            )
+            if actual != expected:
+                connection.rollback()
+                raise ConsoleError("proof event filename is permanently bound to different evidence")
             connection.commit()
 
     def reconcile_proof_events(self, codex_home: Path, overview: dict[str, Any], *, now_ms: int) -> dict[str, int]:
@@ -2325,34 +2460,44 @@ class ConsoleStore:
         duplicates = 0
         rejected = 0
         retryable = 0
-        capped = 0
-        event_paths: list[Path] = []
+        cursor = self._proof_event_cursor()
         try:
-            for index, event_path in enumerate(event_root.iterdir()):
-                if index >= MAX_PROOF_EVENT_FILES:
-                    capped = 1
-                    break
-                if event_path.suffix.casefold() == ".json":
-                    event_paths.append(event_path)
+            event_paths, capped_pass = self._bounded_proof_event_paths(event_root, cursor)
         except OSError:
             return {"imported": 0, "duplicates": 0, "rejected": 0, "retryable": 1, "capped": 0}
-        for event_path in sorted(event_paths):
+        capped = int(capped_pass)
+        for event_path in event_paths:
             event_stat: os.stat_result | None = None
             evidence_id = ""
+            task_id = ""
+            project_id = ""
+            event_digest = ""
+            media_digest = ""
             try:
                 resolved_event = event_path.resolve(strict=True)
                 event_stat = resolved_event.stat()
                 if not resolved_event.is_file() or not resolved_event.is_relative_to(event_root) or event_stat.st_size > 16 * 1024:
                     continue
+                event_bytes = resolved_event.read_bytes()
+                if len(event_bytes) != event_stat.st_size:
+                    raise OSError("proof event changed while being read")
+                event_digest = hashlib.sha256(event_bytes).hexdigest()
                 receipt = receipts.get(resolved_event.name)
-                if receipt is not None and receipt[:2] == (event_stat.st_mtime_ns, event_stat.st_size):
-                    if receipt[2] == "REJECTED":
+                if receipt is not None:
+                    if (
+                        receipt["mtime_ns"] != event_stat.st_mtime_ns
+                        or receipt["size"] != event_stat.st_size
+                        or (receipt["event_digest"] and receipt["event_digest"] != event_digest)
+                    ):
                         rejected += 1
                         continue
-                    if receipt[2] == "IMPORTED" and receipt[4]:
+                    if receipt["status"] == "REJECTED":
+                        rejected += 1
+                        continue
+                    if receipt["status"] == "IMPORTED" and receipt["event_digest"] and receipt["media_present"]:
                         duplicates += 1
                         continue
-                event = json.loads(resolved_event.read_text(encoding="utf-8"))
+                event = json.loads(event_bytes.decode("utf-8"))
                 if not isinstance(event, dict) or event.get("schema_version") != 1 or event.get("source") != "CtrlEvidence":
                     raise ConsoleError("proof event envelope is invalid")
                 if PROOF_EVENT_PRIVATE_FIELDS.intersection(key.casefold() for key in event):
@@ -2360,10 +2505,11 @@ class ConsoleStore:
                 evidence_id = _safe_metadata_text(event.get("evidence_id"), "evidence_id", maximum=256)
                 task_id = _safe_metadata_text(event.get("task_id"), "task_id", maximum=256)
                 node = nodes.get(task_id)
-                project_id = str(node["project_id"]) if node is not None else observed_task_project_id(codex_home, task_id)
-                if project_id is None:
+                observed_project_id = str(node["project_id"]) if node is not None else observed_task_project_id(codex_home, task_id)
+                if observed_project_id is None:
                     retryable += 1
                     continue
+                project_id = observed_project_id
                 relative = Path(_safe_metadata_text(event.get("locator"), "locator", maximum=512))
                 if relative.is_absolute() or ".." in relative.parts:
                     raise ConsoleError("proof event locator escapes the evidence store")
@@ -2377,16 +2523,52 @@ class ConsoleStore:
                     "receipt": f"proof-event:{resolved_event.stem}",
                     "surface_kind": "available_media",
                 }
-                self.record_proof_media(payload, now_ms=now_ms, allowed_root=media_root)
-                self._record_proof_event_receipt(
-                    resolved_event.name,
-                    mtime_ns=event_stat.st_mtime_ns,
-                    size=event_stat.st_size,
-                    status="IMPORTED",
-                    evidence_id=evidence_id,
-                    now_ms=now_ms,
+                metadata = _media_metadata(
+                    str(locator),
+                    str(event.get("digest", "")),
+                    allowed_root=media_root,
+                    supplied_size=event.get("size_bytes"),
+                    supplied_media_type=str(event.get("media_type", "")),
                 )
-                imported += 1
+                media_digest = str(metadata["digest"])
+                if receipt is not None:
+                    bound = (
+                        receipt["evidence_id"], receipt["task_id"],
+                        receipt["project_id"], receipt["media_digest"],
+                    )
+                    current = (evidence_id, task_id, project_id, media_digest)
+                    if receipt["event_digest"]:
+                        if bound != current:
+                            raise ConsoleError("proof event receipt identity changed")
+                    else:
+                        if not receipt["media_present"] or any(bound) and bound != current:
+                            raise ConsoleError("legacy proof event receipt cannot be bound safely")
+                        self._bind_legacy_proof_event_receipt(
+                            resolved_event.name,
+                            event_digest=event_digest,
+                            task_id=task_id,
+                            project_id=project_id,
+                            media_digest=media_digest,
+                        )
+                self.record_proof_media(payload, now_ms=now_ms, allowed_root=media_root)
+                if receipt is None:
+                    self._record_proof_event_receipt(
+                        resolved_event.name,
+                        mtime_ns=event_stat.st_mtime_ns,
+                        size=event_stat.st_size,
+                        status="IMPORTED",
+                        evidence_id=evidence_id,
+                        event_digest=event_digest,
+                        task_id=task_id,
+                        project_id=project_id,
+                        media_digest=media_digest,
+                        now_ms=now_ms,
+                    )
+                    imported += 1
+                elif receipt["media_present"]:
+                    duplicates += 1
+                else:
+                    imported += 1
             except (OSError, sqlite3.Error):
                 retryable += 1
                 continue
@@ -2402,12 +2584,23 @@ class ConsoleStore:
                             size=event_stat.st_size,
                             status="REJECTED",
                             evidence_id=evidence_id,
+                            event_digest=event_digest,
+                            task_id=task_id,
+                            project_id=project_id,
+                            media_digest=media_digest,
                             now_ms=now_ms,
                         )
+                        rejected += 1
+                    except ConsoleError:
                         rejected += 1
                     except sqlite3.Error:
                         retryable += 1
                 continue
+        if event_paths:
+            try:
+                self._set_proof_event_cursor(event_paths[-1].name)
+            except sqlite3.Error:
+                retryable += 1
         return {
             "imported": imported,
             "duplicates": duplicates,
@@ -2937,39 +3130,6 @@ def progress_pulse_fingerprint(codex_home: Path) -> tuple[tuple[str, int, int], 
     except OSError:
         return (("unavailable", 0, 0),)
     return ((pulse_root.name, root_stat.st_mtime_ns, root_stat.st_size), *sorted(entries))
-
-
-def proof_event_fingerprint(codex_home: Path) -> tuple[tuple[str, int, int], ...]:
-    """Return bounded metadata for immutable local proof-event receipts."""
-    expected_root = codex_home.resolve() / PROOF_EVENT_ROOT
-    try:
-        event_root = expected_root.resolve(strict=True)
-        if event_root != expected_root or not event_root.is_dir():
-            return (("untrusted", 0, 0),)
-        root_stat = event_root.stat()
-    except (FileNotFoundError, OSError):
-        return (("missing", 0, 0),)
-
-    entries: list[tuple[str, int, int]] = []
-    try:
-        for index, path in enumerate(event_root.iterdir()):
-            if index >= MAX_PROOF_EVENT_FILES:
-                entries.append(("limit-reached", MAX_PROOF_EVENT_FILES, 0))
-                break
-            if path.suffix.casefold() != ".json":
-                continue
-            try:
-                resolved = path.resolve(strict=True)
-                stat = resolved.stat()
-                if resolved.parent != event_root or not resolved.is_file():
-                    entries.append((path.name, -1, -1))
-                else:
-                    entries.append((resolved.name, stat.st_mtime_ns, stat.st_size))
-            except OSError:
-                entries.append((path.name, -1, -1))
-    except OSError:
-        return (("unavailable", 0, 0),)
-    return ((event_root.name, root_stat.st_mtime_ns, root_stat.st_size), *sorted(entries))
 
 
 def _epoch_ms(milliseconds: Any, seconds: Any) -> int:
@@ -3630,7 +3790,6 @@ class App:
         self._last_open_claim_at: float | None = None
         self._last_observed_fingerprint: tuple[tuple[str, int, int], ...] | None = None
         self._progress_pulse_fingerprint: tuple[tuple[str, int, int], ...] | None = None
-        self._proof_event_fingerprint: tuple[tuple[str, int, int], ...] | None = None
         self._observer_stop = threading.Event()
         self._observer_thread: threading.Thread | None = None
 
@@ -3676,20 +3835,14 @@ class App:
             return result
 
     def _ingest_proof_events_if_changed(self, overview: dict[str, Any] | None = None) -> dict[str, int]:
-        """Reconcile changed bounded proof events without running full observation."""
-        fingerprint = proof_event_fingerprint(self.codex_home)
+        """Advance one durable bounded proof-event reconciliation pass."""
         empty = {"imported": 0, "duplicates": 0, "rejected": 0, "retryable": 0, "capped": 0}
-        with self.proof_lock:
-            if fingerprint == self._proof_event_fingerprint:
-                return empty
         if overview is None:
             try:
                 overview = self._host_overview()
             except (ConsoleError, OSError, sqlite3.Error):
                 return {**empty, "retryable": 1}
         with self.proof_lock:
-            if fingerprint == self._proof_event_fingerprint:
-                return empty
             try:
                 result = self.store.reconcile_proof_events(
                     self.codex_home,
@@ -3698,8 +3851,6 @@ class App:
                 )
             except (OSError, sqlite3.Error):
                 result = {**empty, "retryable": 1}
-            if not result["retryable"] and not result["capped"]:
-                self._proof_event_fingerprint = fingerprint
             return result
 
     @staticmethod
