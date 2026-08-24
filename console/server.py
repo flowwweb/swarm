@@ -92,6 +92,13 @@ HEALTH_THRESHOLDS = {
     "disk_recover_bytes": 8 * 1024**3,
 }
 MEDIA_MAX_HASH_BYTES = 64 * 1024 * 1024
+MAX_PROOF_EVENT_FILES = 1024
+PROOF_EVENT_PRIVATE_FIELDS = frozenset({
+    "prompt", "prompts", "response", "responses", "message", "messages",
+    "tool_call", "tool_calls", "tool_output", "tool_outputs",
+    "credential", "credentials", "cookie", "cookies",
+    "provider_cookie", "provider_cookies", "provider_data", "provider_payload",
+})
 PROOF_EVENT_ROOT = Path("swarm") / "proof-events"
 PROOF_MEDIA_ROOT = Path("swarm") / "proof-media"
 CTRL_OVERRIDE_FIELDS: dict[str, type] = {
@@ -2247,13 +2254,25 @@ class ConsoleStore:
             row = connection.execute("SELECT * FROM proof_media WHERE evidence_id=?", (evidence_id,)).fetchone()
         return self._public_proof_row(row)
 
-    def _proof_event_receipts(self) -> dict[str, tuple[int, int, str]]:
+    def _proof_event_receipts(self) -> dict[str, tuple[int, int, str, str, bool]]:
         with self._lock, closing(self._connect()) as connection:
             rows = connection.execute(
-                "SELECT event_name, event_mtime_ns, event_size, status FROM proof_event_receipts"
+                """
+                SELECT receipts.event_name, receipts.event_mtime_ns,
+                       receipts.event_size, receipts.status, receipts.evidence_id,
+                       media.evidence_id IS NOT NULL AS media_present
+                  FROM proof_event_receipts receipts
+             LEFT JOIN proof_media media ON media.evidence_id = receipts.evidence_id
+                """
             ).fetchall()
         return {
-            str(row["event_name"]): (int(row["event_mtime_ns"]), int(row["event_size"]), str(row["status"]))
+            str(row["event_name"]): (
+                int(row["event_mtime_ns"]),
+                int(row["event_size"]),
+                str(row["status"]),
+                str(row["evidence_id"]),
+                bool(row["media_present"]),
+            )
             for row in rows
         }
 
@@ -2284,8 +2303,8 @@ class ConsoleStore:
             )
             connection.commit()
 
-    def ingest_proof_events(self, codex_home: Path, overview: dict[str, Any], *, now_ms: int) -> int:
-        """Import immutable, content-addressed receipts without reading task messages."""
+    def reconcile_proof_events(self, codex_home: Path, overview: dict[str, Any], *, now_ms: int) -> dict[str, int]:
+        """Reconcile one bounded immutable proof-event pass without reading task messages."""
         expected_swarm_root = codex_home.resolve() / "swarm"
         expected_event_root = codex_home.resolve() / PROOF_EVENT_ROOT
         expected_media_root = codex_home.resolve() / PROOF_MEDIA_ROOT
@@ -2293,9 +2312,9 @@ class ConsoleStore:
         event_root = expected_event_root.resolve()
         media_root = expected_media_root.resolve()
         if swarm_root != expected_swarm_root or event_root != expected_event_root or media_root != expected_media_root:
-            return 0
+            return {"imported": 0, "duplicates": 0, "rejected": 0, "retryable": 1, "capped": 0}
         if not event_root.is_dir() or not media_root.is_dir():
-            return 0
+            return {"imported": 0, "duplicates": 0, "rejected": 0, "retryable": 0, "capped": 0}
         nodes = {
             str(node.get("id")): node
             for node in overview.get("nodes", [])
@@ -2303,7 +2322,21 @@ class ConsoleStore:
         }
         receipts = self._proof_event_receipts()
         imported = 0
-        for event_path in sorted(event_root.glob("*.json")):
+        duplicates = 0
+        rejected = 0
+        retryable = 0
+        capped = 0
+        event_paths: list[Path] = []
+        try:
+            for index, event_path in enumerate(event_root.iterdir()):
+                if index >= MAX_PROOF_EVENT_FILES:
+                    capped = 1
+                    break
+                if event_path.suffix.casefold() == ".json":
+                    event_paths.append(event_path)
+        except OSError:
+            return {"imported": 0, "duplicates": 0, "rejected": 0, "retryable": 1, "capped": 0}
+        for event_path in sorted(event_paths):
             event_stat: os.stat_result | None = None
             evidence_id = ""
             try:
@@ -2312,16 +2345,24 @@ class ConsoleStore:
                 if not resolved_event.is_file() or not resolved_event.is_relative_to(event_root) or event_stat.st_size > 16 * 1024:
                     continue
                 receipt = receipts.get(resolved_event.name)
-                if receipt == (event_stat.st_mtime_ns, event_stat.st_size, "IMPORTED") or receipt == (event_stat.st_mtime_ns, event_stat.st_size, "REJECTED"):
-                    continue
+                if receipt is not None and receipt[:2] == (event_stat.st_mtime_ns, event_stat.st_size):
+                    if receipt[2] == "REJECTED":
+                        rejected += 1
+                        continue
+                    if receipt[2] == "IMPORTED" and receipt[4]:
+                        duplicates += 1
+                        continue
                 event = json.loads(resolved_event.read_text(encoding="utf-8"))
                 if not isinstance(event, dict) or event.get("schema_version") != 1 or event.get("source") != "CtrlEvidence":
                     raise ConsoleError("proof event envelope is invalid")
+                if PROOF_EVENT_PRIVATE_FIELDS.intersection(key.casefold() for key in event):
+                    raise ConsoleError("proof event includes prohibited private content")
                 evidence_id = _safe_metadata_text(event.get("evidence_id"), "evidence_id", maximum=256)
                 task_id = _safe_metadata_text(event.get("task_id"), "task_id", maximum=256)
                 node = nodes.get(task_id)
                 project_id = str(node["project_id"]) if node is not None else observed_task_project_id(codex_home, task_id)
                 if project_id is None:
+                    retryable += 1
                     continue
                 relative = Path(_safe_metadata_text(event.get("locator"), "locator", maximum=512))
                 if relative.is_absolute() or ".." in relative.parts:
@@ -2346,18 +2387,38 @@ class ConsoleStore:
                     now_ms=now_ms,
                 )
                 imported += 1
-            except (ConsoleError, OSError, ValueError, TypeError, json.JSONDecodeError):
-                if event_stat is not None:
-                    self._record_proof_event_receipt(
-                        event_path.name,
-                        mtime_ns=event_stat.st_mtime_ns,
-                        size=event_stat.st_size,
-                        status="REJECTED",
-                        evidence_id=evidence_id,
-                        now_ms=now_ms,
-                    )
+            except (OSError, sqlite3.Error):
+                retryable += 1
                 continue
-        return imported
+            except (ConsoleError, ValueError, TypeError, json.JSONDecodeError) as exc:
+                if isinstance(exc.__cause__, OSError):
+                    retryable += 1
+                    continue
+                if event_stat is not None:
+                    try:
+                        self._record_proof_event_receipt(
+                            event_path.name,
+                            mtime_ns=event_stat.st_mtime_ns,
+                            size=event_stat.st_size,
+                            status="REJECTED",
+                            evidence_id=evidence_id,
+                            now_ms=now_ms,
+                        )
+                        rejected += 1
+                    except sqlite3.Error:
+                        retryable += 1
+                continue
+        return {
+            "imported": imported,
+            "duplicates": duplicates,
+            "rejected": rejected,
+            "retryable": retryable,
+            "capped": capped,
+        }
+
+    def ingest_proof_events(self, codex_home: Path, overview: dict[str, Any], *, now_ms: int) -> int:
+        """Compatibility wrapper returning only newly imported proof events."""
+        return self.reconcile_proof_events(codex_home, overview, now_ms=now_ms)["imported"]
 
     def token_history(
         self,
@@ -2876,6 +2937,39 @@ def progress_pulse_fingerprint(codex_home: Path) -> tuple[tuple[str, int, int], 
     except OSError:
         return (("unavailable", 0, 0),)
     return ((pulse_root.name, root_stat.st_mtime_ns, root_stat.st_size), *sorted(entries))
+
+
+def proof_event_fingerprint(codex_home: Path) -> tuple[tuple[str, int, int], ...]:
+    """Return bounded metadata for immutable local proof-event receipts."""
+    expected_root = codex_home.resolve() / PROOF_EVENT_ROOT
+    try:
+        event_root = expected_root.resolve(strict=True)
+        if event_root != expected_root or not event_root.is_dir():
+            return (("untrusted", 0, 0),)
+        root_stat = event_root.stat()
+    except (FileNotFoundError, OSError):
+        return (("missing", 0, 0),)
+
+    entries: list[tuple[str, int, int]] = []
+    try:
+        for index, path in enumerate(event_root.iterdir()):
+            if index >= MAX_PROOF_EVENT_FILES:
+                entries.append(("limit-reached", MAX_PROOF_EVENT_FILES, 0))
+                break
+            if path.suffix.casefold() != ".json":
+                continue
+            try:
+                resolved = path.resolve(strict=True)
+                stat = resolved.stat()
+                if resolved.parent != event_root or not resolved.is_file():
+                    entries.append((path.name, -1, -1))
+                else:
+                    entries.append((resolved.name, stat.st_mtime_ns, stat.st_size))
+            except OSError:
+                entries.append((path.name, -1, -1))
+    except OSError:
+        return (("unavailable", 0, 0),)
+    return ((event_root.name, root_stat.st_mtime_ns, root_stat.st_size), *sorted(entries))
 
 
 def _epoch_ms(milliseconds: Any, seconds: Any) -> int:
@@ -3536,6 +3630,7 @@ class App:
         self._last_open_claim_at: float | None = None
         self._last_observed_fingerprint: tuple[tuple[str, int, int], ...] | None = None
         self._progress_pulse_fingerprint: tuple[tuple[str, int, int], ...] | None = None
+        self._proof_event_fingerprint: tuple[tuple[str, int, int], ...] | None = None
         self._observer_stop = threading.Event()
         self._observer_thread: threading.Thread | None = None
 
@@ -3578,6 +3673,33 @@ class App:
             if result["advanced"] or result["heartbeats"] or result["eta_reports"]:
                 with self.overview_lock:
                     self._store_generation += 1
+            return result
+
+    def _ingest_proof_events_if_changed(self, overview: dict[str, Any] | None = None) -> dict[str, int]:
+        """Reconcile changed bounded proof events without running full observation."""
+        fingerprint = proof_event_fingerprint(self.codex_home)
+        empty = {"imported": 0, "duplicates": 0, "rejected": 0, "retryable": 0, "capped": 0}
+        with self.proof_lock:
+            if fingerprint == self._proof_event_fingerprint:
+                return empty
+        if overview is None:
+            try:
+                overview = self._host_overview()
+            except (ConsoleError, OSError, sqlite3.Error):
+                return {**empty, "retryable": 1}
+        with self.proof_lock:
+            if fingerprint == self._proof_event_fingerprint:
+                return empty
+            try:
+                result = self.store.reconcile_proof_events(
+                    self.codex_home,
+                    overview,
+                    now_ms=int(time.time() * 1000),
+                )
+            except (OSError, sqlite3.Error):
+                result = {**empty, "retryable": 1}
+            if not result["retryable"] and not result["capped"]:
+                self._proof_event_fingerprint = fingerprint
             return result
 
     @staticmethod
@@ -4265,8 +4387,7 @@ class App:
             heartbeat_minutes=heartbeat_minutes,
             codex_home=self.codex_home,
         )
-        with self.proof_lock:
-            self.store.ingest_proof_events(self.codex_home, observed, now_ms=now_ms)
+        self._ingest_proof_events_if_changed(observed)
         try:
             sample = self.diagnostics_collector.collect()
             self.store.record_diagnostics(
@@ -4314,6 +4435,7 @@ class App:
             self._observer_thread.join(timeout=2)
 
     def proof_feed(self, *, project_id: str | None = None, task_id: str | None = None) -> list[dict[str, Any]]:
+        self._ingest_proof_events_if_changed()
         return self.store.proof_feed(project_id=project_id, task_id=task_id)
 
     def proof_media_item(self, evidence_id: str, digest: str) -> dict[str, Any]:

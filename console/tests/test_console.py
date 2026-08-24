@@ -1381,6 +1381,181 @@ class SwarmConsoleTests(unittest.TestCase):
         metadata.assert_not_called()
         self.assertEqual(len(store.proof_feed()), 1)
 
+    def _write_proof_event(
+        self,
+        evidence_id: str,
+        task_id: str,
+        *,
+        payload: bytes = b"\x89PNG\r\n\x1a\nproof",
+        locator_name: str | None = None,
+        digest: str | None = None,
+    ) -> Path:
+        swarm_root = self.codex_home / "swarm"
+        media_root = swarm_root / "proof-media"
+        event_root = swarm_root / "proof-events"
+        media_root.mkdir(parents=True, exist_ok=True)
+        event_root.mkdir(parents=True, exist_ok=True)
+        media_name = locator_name or f"{evidence_id}.png"
+        media = media_root / media_name
+        media.write_bytes(payload)
+        event = {
+            "schema_version": 1,
+            "source": "CtrlEvidence",
+            "evidence_id": evidence_id,
+            "task_id": task_id,
+            "kind": "screenshot",
+            "locator": f"proof-media/{media_name}",
+            "caption": f"Proof {evidence_id}",
+            "claim_limit": "Available for review; acceptance is recorded separately.",
+            "digest": digest or hashlib.sha256(payload).hexdigest(),
+            "size_bytes": len(payload),
+            "media_type": "image/png",
+            "disposition": "PENDING",
+        }
+        event_path = event_root / f"{evidence_id}.json"
+        event_path.write_text(json.dumps(event), encoding="utf-8")
+        return event_path
+
+    def test_proof_feed_reconciles_fresh_and_same_state_restart_without_churn(self) -> None:
+        self._write_proof_event("restart-proof", "restart-task")
+        state_path = self.root / "console" / "restart.sqlite3"
+        overview = {"nodes": [{"id": "restart-task", "project_id": "project:restart", "virtual": False}]}
+        first_app = console.App(self.codex_home, self.config, state_path)
+        with mock.patch.object(first_app, "_host_overview", return_value=overview):
+            first = first_app.proof_feed(project_id="project:restart")
+        self.assertEqual([item["evidence_id"] for item in first], ["restart-proof"])
+        with closing(sqlite3.connect(state_path)) as connection:
+            before = connection.execute(
+                "SELECT registered_at_ms, updated_at_ms, observed_at_ms FROM proof_media "
+                "JOIN proof_event_receipts USING(evidence_id) WHERE evidence_id='restart-proof'"
+            ).fetchone()
+
+        restarted_app = console.App(self.codex_home, self.config, state_path)
+        with mock.patch.object(restarted_app, "_host_overview", return_value=overview), mock.patch.object(
+            restarted_app.store,
+            "reconcile_proof_events",
+            wraps=restarted_app.store.reconcile_proof_events,
+        ) as reconcile:
+            second = restarted_app.proof_feed(project_id="project:restart")
+            third = restarted_app.proof_feed(project_id="project:restart")
+        self.assertEqual(second, third)
+        self.assertEqual(reconcile.call_count, 1)
+        with closing(sqlite3.connect(state_path)) as connection:
+            after = connection.execute(
+                "SELECT registered_at_ms, updated_at_ms, observed_at_ms FROM proof_media "
+                "JOIN proof_event_receipts USING(evidence_id) WHERE evidence_id='restart-proof'"
+            ).fetchone()
+        self.assertEqual(before, after)
+
+    def test_proof_feed_rehydrates_missing_row_despite_imported_receipt(self) -> None:
+        self._write_proof_event("rehydrate-proof", "rehydrate-task")
+        state_path = self.root / "console" / "rehydrate.sqlite3"
+        overview = {"nodes": [{"id": "rehydrate-task", "project_id": "project:rehydrate", "virtual": False}]}
+        app = console.App(self.codex_home, self.config, state_path)
+        with mock.patch.object(app, "_host_overview", return_value=overview):
+            self.assertEqual(len(app.proof_feed()), 1)
+        with closing(sqlite3.connect(state_path)) as connection:
+            connection.execute("DELETE FROM proof_media WHERE evidence_id='rehydrate-proof'")
+            connection.commit()
+
+        restarted = console.App(self.codex_home, self.config, state_path)
+        with mock.patch.object(restarted, "_host_overview", return_value=overview):
+            self.assertEqual([item["evidence_id"] for item in restarted.proof_feed()], ["rehydrate-proof"])
+
+    def test_proof_feed_retries_late_host_observation_without_event_rewrite(self) -> None:
+        event_path = self._write_proof_event("late-proof", "late-task")
+        original_stat = event_path.stat()
+        app = console.App(self.codex_home, self.config, self.root / "console" / "late.sqlite3")
+        empty = {"nodes": []}
+        observed = {"nodes": [{"id": "late-task", "project_id": "project:late", "virtual": False}]}
+        with mock.patch.object(app, "_host_overview", side_effect=[empty, observed]):
+            self.assertEqual(app.proof_feed(), [])
+            self.assertEqual([item["evidence_id"] for item in app.proof_feed()], ["late-proof"])
+        current_stat = event_path.stat()
+        self.assertEqual((current_stat.st_mtime_ns, current_stat.st_size), (original_stat.st_mtime_ns, original_stat.st_size))
+
+    def test_proof_feed_retries_transient_store_failure_without_event_rewrite(self) -> None:
+        event_path = self._write_proof_event("retry-proof", "retry-task")
+        original_stat = event_path.stat()
+        app = console.App(self.codex_home, self.config, self.root / "console" / "retry.sqlite3")
+        overview = {"nodes": [{"id": "retry-task", "project_id": "project:retry", "virtual": False}]}
+        reconcile = app.store.reconcile_proof_events
+        calls = 0
+
+        def flaky_reconcile(*args, **kwargs):
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                raise sqlite3.OperationalError("transient lock")
+            return reconcile(*args, **kwargs)
+
+        with mock.patch.object(app, "_host_overview", return_value=overview), mock.patch.object(
+            app.store, "reconcile_proof_events", side_effect=flaky_reconcile
+        ):
+            self.assertEqual(app.proof_feed(), [])
+            self.assertEqual([item["evidence_id"] for item in app.proof_feed()], ["retry-proof"])
+        current_stat = event_path.stat()
+        self.assertEqual(calls, 2)
+        self.assertEqual((current_stat.st_mtime_ns, current_stat.st_size), (original_stat.st_mtime_ns, original_stat.st_size))
+
+    def test_proof_reconciliation_dedupes_and_rejects_conflicting_or_changed_media(self) -> None:
+        original = self._write_proof_event("shared-proof", "task-a")
+        self._write_proof_event("changed-proof", "task-a", digest="0" * 64)
+        store = console.ConsoleStore(self.root / "console" / "dedupe.sqlite3")
+        overview = {"nodes": [{"id": "task-a", "project_id": "project:a", "virtual": False}]}
+        result = store.reconcile_proof_events(self.codex_home, overview, now_ms=10)
+        self.assertEqual([item["evidence_id"] for item in store.proof_feed()], ["shared-proof"])
+        self.assertEqual(result["rejected"], 1)
+        with closing(sqlite3.connect(store.path)) as connection:
+            connection.execute("UPDATE proof_media SET project_id='project:other' WHERE evidence_id='shared-proof'")
+            connection.commit()
+        original.touch()
+        conflict = store.reconcile_proof_events(self.codex_home, overview, now_ms=11)
+        self.assertGreaterEqual(conflict["rejected"], 1)
+        self.assertEqual(len(store.proof_feed()), 1)
+
+    def test_proof_reconciliation_retries_missing_media_and_preserves_project_privacy(self) -> None:
+        missing = self._write_proof_event("missing-proof", "task-a")
+        missing_payload = json.loads(missing.read_text(encoding="utf-8"))
+        (self.codex_home / "swarm" / missing_payload["locator"]).unlink()
+        self._write_proof_event("alpha-proof", "task-a")
+        self._write_proof_event("beta-proof", "task-b")
+        store = console.ConsoleStore(self.root / "console" / "privacy.sqlite3")
+        overview = {"nodes": [
+            {"id": "task-a", "project_id": "project:alpha", "virtual": False},
+            {"id": "task-b", "project_id": "project:beta", "virtual": False},
+        ]}
+        result = store.reconcile_proof_events(self.codex_home, overview, now_ms=12)
+        self.assertGreaterEqual(result["retryable"], 1)
+        self.assertEqual([item["evidence_id"] for item in store.proof_feed(project_id="project:alpha")], ["alpha-proof"])
+        self.assertEqual([item["evidence_id"] for item in store.proof_feed(task_id="task-b")], ["beta-proof"])
+        self.assertNotIn("missing-proof", {item["evidence_id"] for item in store.proof_feed()})
+
+    def test_proof_reconciliation_rejects_private_payload_fields(self) -> None:
+        event_path = self._write_proof_event("private-proof", "private-task")
+        event = json.loads(event_path.read_text(encoding="utf-8"))
+        event["prompt"] = "must not be stored"
+        event_path.write_text(json.dumps(event), encoding="utf-8")
+        store = console.ConsoleStore(self.root / "console" / "private.sqlite3")
+        overview = {"nodes": [{"id": "private-task", "project_id": "project:private", "virtual": False}]}
+        result = store.reconcile_proof_events(self.codex_home, overview, now_ms=13)
+        self.assertEqual(result["rejected"], 1)
+        self.assertEqual(store.proof_feed(), [])
+        with closing(sqlite3.connect(store.path)) as connection:
+            self.assertEqual(connection.execute("SELECT COUNT(*) FROM proof_media").fetchone()[0], 0)
+
+    def test_proof_event_scan_is_bounded_and_not_cached_when_capped(self) -> None:
+        for index in range(3):
+            self._write_proof_event(f"bounded-{index}", "bounded-task")
+        overview = {"nodes": [{"id": "bounded-task", "project_id": "project:bounded", "virtual": False}]}
+        app = console.App(self.codex_home, self.config, self.root / "console" / "bounded.sqlite3")
+        with mock.patch.object(console, "MAX_PROOF_EVENT_FILES", 2), mock.patch.object(app, "_host_overview", return_value=overview):
+            first = app._ingest_proof_events_if_changed()
+            second = app._ingest_proof_events_if_changed()
+        self.assertEqual(first["capped"], 1)
+        self.assertEqual(second["capped"], 1)
+        self.assertLessEqual(len(app.store.proof_feed()), 2)
+
     def test_clear_history_removes_proof_files_and_prevents_reimport(self) -> None:
         swarm_root = self.codex_home / "swarm"
         media_root = swarm_root / "proof-media"
