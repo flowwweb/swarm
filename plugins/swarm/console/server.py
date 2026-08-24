@@ -43,6 +43,7 @@ from runtime.progress_events import (  # noqa: E402
     MAX_PULSE_BYTES,
     MAX_PULSE_FILES,
     PULSE_ROOT,
+    ProgressLedger,
     ProgressEventError,
     ProgressPulseEvent,
     validate_progress_pulse,
@@ -140,6 +141,8 @@ EDITABLE_SETTINGS: dict[str, type] = {
     "skills.default_profile": str,
     "logging.task_event_limit": int,
     "console.open_on_start": bool,
+    "console.project_progress_feed_enabled": bool,
+    "console.project_progress_feed_lines": int,
     "automation.mode": str,
     "boost.enabled": bool,
     "boost.spark_enabled": bool,
@@ -312,6 +315,8 @@ def update_config(config_path: Path, changes: dict[str, Any]) -> dict[str, Any]:
             raise ConsoleError(f"{dotted_key} must be a boolean")
         if expected is str and not isinstance(value, str):
             raise ConsoleError(f"{dotted_key} must be text")
+        if dotted_key == "console.project_progress_feed_lines" and not 1 <= value <= 10:
+            raise ConsoleError("console.project_progress_feed_lines must be between 1 and 10")
 
     module, effective, exists = load_config(config_path)
     if exists:
@@ -355,7 +360,17 @@ def update_config(config_path: Path, changes: dict[str, Any]) -> dict[str, Any]:
     finally:
         if temporary and temporary.exists():
             temporary.unlink(missing_ok=True)
-    return redacted_config_snapshot(config_path)
+    result = redacted_config_snapshot(config_path)
+    config_digest = hashlib.sha256(config_path.read_bytes()).hexdigest()
+    result["mutation_receipt"] = {
+        "accepted": True,
+        "changed_keys": sorted(changes),
+        "config_digest": config_digest,
+        "revision": config_digest,
+        "source": "swarm_console_atomic_config_write",
+        "claim_limit": "This receipt confirms only the canonical local SWARM config write; it does not prove browser rendering or host execution behavior.",
+    }
+    return result
 
 
 def restore_config_defaults(config_path: Path) -> dict[str, Any]:
@@ -3980,6 +3995,7 @@ class App:
         self.codex_home = codex_home.resolve()
         self.config_path = config_path.resolve()
         self.store = ConsoleStore(state_path or console_state_path(self.codex_home, self.config_path))
+        self.progress_ledger = ProgressLedger(self.codex_home)
         self.diagnostics_collector = DiagnosticsCollector(self.codex_home, self.store.path)
         self.token = secrets.token_urlsafe(24)
         self.write_lock = threading.Lock()
@@ -4801,6 +4817,44 @@ class App:
         self._ingest_proof_events_if_changed()
         return self.store.proof_feed(project_id=project_id, task_id=task_id)
 
+    def project_progress_feed(self, project_id: str, *, after_cursor: int = 0) -> dict[str, Any]:
+        """Build one lazy project feed snapshot from canonical material events."""
+        if not isinstance(project_id, str) or not project_id.strip():
+            raise ConsoleError("project_id is required")
+        try:
+            _, config, _ = load_config(self.config_path)
+            enabled = bool(config["console"]["project_progress_feed_enabled"])
+            limit = int(config["console"]["project_progress_feed_lines"])
+            if not enabled:
+                return {
+                    "ok": True,
+                    "enabled": False,
+                    "limit": limit,
+                    "project_id": project_id.strip(),
+                    "cursor": {"event_seq": after_cursor, "event_id": None, "event_digest": None},
+                    "items": [],
+                    "stale_cursor": False,
+                    "transport": {"snapshot": "disabled", "incremental": "disabled", "http_stream": "UNVERIFIED"},
+                    "producer": {"status": "typed_runtime_transition_only", "native_host_transport": "UNVERIFIED"},
+                    "claim_limit": "Feed delivery is disabled; canonical progress audit history and execution liveness are retained independently.",
+                }
+            return {
+                "ok": True,
+                "enabled": True,
+                **self.progress_ledger.feed_snapshot(project_id.strip(), limit=limit, after_cursor=after_cursor),
+            }
+        except (KeyError, TypeError, ValueError, ProgressEventError) as error:
+            raise ConsoleError(str(error)) from error
+
+    def measurable_progress(self, project_id: str) -> dict[str, Any]:
+        """Return the rebuildable proof-weight projection for one exact project."""
+        if not isinstance(project_id, str) or not project_id.strip():
+            raise ConsoleError("project_id is required")
+        try:
+            return {"ok": True, **self.progress_ledger.project(project_id.strip())}
+        except ProgressEventError as error:
+            raise ConsoleError(str(error)) from error
+
     def proof_media_item(self, evidence_id: str, digest: str) -> dict[str, Any]:
         return self.store.proof_media_item(
             evidence_id,
@@ -5249,6 +5303,27 @@ class Handler(BaseHTTPRequestHandler):
                         project_id=query.get("project_id"),
                         ctrl_id=query.get("ctrl_id"),
                     ),
+                )
+                return
+            if path == "/api/project-progress-feed":
+                try:
+                    after_cursor = int(query.get("after_cursor", "0"))
+                except ValueError as exc:
+                    raise ConsoleError("after_cursor must be a nonnegative integer") from exc
+                if after_cursor < 0:
+                    raise ConsoleError("after_cursor must be a nonnegative integer")
+                self._json(
+                    HTTPStatus.OK,
+                    self.server.app.project_progress_feed(
+                        query.get("project_id", ""),
+                        after_cursor=after_cursor,
+                    ),
+                )
+                return
+            if path == "/api/project-progress":
+                self._json(
+                    HTTPStatus.OK,
+                    self.server.app.measurable_progress(query.get("project_id", "")),
                 )
                 return
             if path == "/api/skills":

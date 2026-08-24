@@ -53,6 +53,23 @@ class SwarmConfigTests(unittest.TestCase):
         effective, exists = config.load(config.TEMPLATE_PATH)
         self.assertTrue(exists)
         self.assertFalse(effective["console"]["open_on_start"])
+        self.assertTrue(effective["console"]["project_progress_feed_enabled"])
+        self.assertEqual(effective["console"]["project_progress_feed_lines"], 4)
+
+    def test_project_progress_feed_limit_is_bounded_and_legacy_invalid_values_fall_back(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for value in (0, 11, True, "many"):
+                path = root / f"legacy-{str(value).casefold()}.toml"
+                rendered = json.dumps(value).casefold() if not isinstance(value, str) else json.dumps(value)
+                path.write_text(f"[console]\nproject_progress_feed_lines = {rendered}\n", encoding="utf-8")
+                effective, _ = config.load(path)
+                self.assertEqual(effective["console"]["project_progress_feed_lines"], 4)
+            valid = root / "valid.toml"
+            valid.write_text("[console]\nproject_progress_feed_enabled = false\nproject_progress_feed_lines = 10\n", encoding="utf-8")
+            effective, _ = config.load(valid)
+            self.assertFalse(effective["console"]["project_progress_feed_enabled"])
+            self.assertEqual(effective["console"]["project_progress_feed_lines"], 10)
 
     def test_doer_wip_limit_is_the_bounded_direct_owner_capacity_signal(self) -> None:
         effective, _ = config.load(config.TEMPLATE_PATH)

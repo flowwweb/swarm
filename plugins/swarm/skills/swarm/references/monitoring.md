@@ -172,8 +172,12 @@ or `Unmeasured`, latest material proof, first blocker, and next action/ETA. Exac
 tool and machine receipts remain available as an audit layer, not dumped into the
 main feed. For visual work, place the highest-signal image or screenshot inline
 first and keep the rest in a compact gallery with omissions and claim limits.
-Only a changed artifact, proof, decision, blocker, or bounded due event is a
-material heartbeat; unchanged work stays quiet.
+Only a changed artifact, proof, decision, blocker, ETA/confidence, scope,
+current action, rework, or accepted steering decision is a material progress
+event. Unchanged work stays quiet: no scheduled model call, feed event,
+persistence write, or delivery. Existing execution lease/checkpoint renewal is
+token-free liveness and remains outside progress; only stale/recovery/retry or
+takeover transitions become material.
 
 At each CTRL heartbeat, inspect `ctrl_feed_due` before composing a progress
 message. If material evidence is pending, return the proof reminder first and

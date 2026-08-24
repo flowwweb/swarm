@@ -50,7 +50,11 @@ DEFAULTS: dict[str, Any] = {
         "min_reasoning": "none",
         "max_reasoning": "ultra",
     },
-    "console": {"open_on_start": False},
+    "console": {
+        "open_on_start": False,
+        "project_progress_feed_enabled": True,
+        "project_progress_feed_lines": 4,
+    },
     "automation": {"mode": "standard"},
     "skills": {"inheritance_enabled": True, "default_profile": "default"},
     "logging": {"task_event_limit": 64},
@@ -405,6 +409,8 @@ def validate(raw: dict[str, Any]) -> None:
     console = _expect_table(raw, "console")
     _expect_keys(console, set(DEFAULTS["console"]), "console")
     _boolean(console, "open_on_start", "console")
+    _boolean(console, "project_progress_feed_enabled", "console")
+    _bounded_int(console, "project_progress_feed_lines", 1, 10, "console")
     automation = _expect_table(raw, "automation")
     _expect_keys(automation, set(DEFAULTS["automation"]), "automation")
     if automation.get("mode", DEFAULTS["automation"]["mode"]) not in {"standard", "manual"}:
@@ -793,6 +799,15 @@ def normalize_legacy_task_role(raw: dict[str, Any]) -> dict[str, Any]:
         if len(values)!=1:
             raise ConfigError("legacy Fast controls conflict; set execution.fast_mode explicitly")
         execution["fast_mode"]=values.pop()
+
+    console=normalized.setdefault("console",{})
+    if isinstance(console,dict):
+        feed_lines=console.get("project_progress_feed_lines",4)
+        if not _is_int(feed_lines) or not 1<=feed_lines<=10:
+            # Historical or hand-authored display limits never create a second
+            # authority. Loading falls back deterministically; explicit
+            # console mutations are validated before their atomic write.
+            console["project_progress_feed_lines"]=4
 
     lifecycle=normalized.get("lifecycle",{})
     automation=normalized.get("automation")

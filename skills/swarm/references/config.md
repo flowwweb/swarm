@@ -130,6 +130,8 @@ Configuration cannot make an unsafe or hidden coordination path valid:
 | `review.max_parallel_tasks` | Concurrent REVIEW tasks | 1-8 |
 | `review.scale_when_queue_reaches` | Ready-artifact queue that adds review capacity | 2-8 |
 | `monitoring.heartbeat_minutes` | Fallback cadence for an explicitly bound optional WATCHDOG | 1-120; default 30 |
+| `console.project_progress_feed_enabled` | Deliver the on-demand Project progress feed while its Project screen is open; canonical audit history and execution liveness remain independent | boolean; default true |
+| `console.project_progress_feed_lines` | Material feed lines visible on one Project screen; no filler or reporting-frequency change | 1-10; default/fallback 4 |
 | `monitoring.default_review_horizon_minutes` | Default event-driven goal review horizon | 1-60; default 30 |
 | `monitoring.max_review_horizon_minutes` | Hard ceiling for a locally selected review horizon | 1-60; default 60 |
 | `monitoring.small_task_review_horizon_minutes` | Preferred small-task horizon | 1-20; default 15 |

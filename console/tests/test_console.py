@@ -2087,6 +2087,57 @@ class SwarmConsoleTests(unittest.TestCase):
         result = console.update_config(self.config, {"monitoring.heartbeat_minutes": 45})
         self.assertEqual(result["settings"]["monitoring"]["heartbeat_minutes"], 45)
         self.assertTrue(self.config.with_suffix(".toml.swarm-console.bak").exists())
+        self.assertEqual(result["mutation_receipt"]["changed_keys"], ["monitoring.heartbeat_minutes"])
+
+    def test_project_progress_feed_settings_are_server_owned_and_bounded(self) -> None:
+        before = console.redacted_config_snapshot(self.config)
+        self.assertTrue(before["settings"]["console"]["project_progress_feed_enabled"])
+        self.assertEqual(before["settings"]["console"]["project_progress_feed_lines"], 4)
+        self.assertIn("console.project_progress_feed_enabled", before["editable"])
+        self.assertIn("console.project_progress_feed_lines", before["editable"])
+        result = console.update_config(
+            self.config,
+            {
+                "console.project_progress_feed_enabled": False,
+                "console.project_progress_feed_lines": 10,
+            },
+        )
+        self.assertFalse(result["settings"]["console"]["project_progress_feed_enabled"])
+        self.assertEqual(result["settings"]["console"]["project_progress_feed_lines"], 10)
+        self.assertTrue(result["mutation_receipt"]["accepted"])
+        self.assertEqual(result["mutation_receipt"]["revision"], result["mutation_receipt"]["config_digest"])
+        with self.assertRaisesRegex(console.ConsoleError, "between 1 and 10"):
+            console.update_config(self.config, {"console.project_progress_feed_lines": 11})
+
+    def test_project_progress_feed_is_lazy_and_disabled_delivery_does_not_read_ledger(self) -> None:
+        app = object.__new__(console.App)
+        app.config_path = self.config
+        app.progress_ledger = SimpleNamespace()
+        snapshot = {
+            "project_id": "project-alpha",
+            "limit": 4,
+            "cursor": {"event_seq": 3, "event_id": "event-3", "event_digest": "a" * 64},
+            "items": [],
+            "stale_cursor": False,
+            "scan_truncated": False,
+            "transport": {"snapshot": "available", "incremental": "in_process_event_notification", "http_stream": "UNVERIFIED"},
+            "producer": {"status": "typed_runtime_transition_only", "native_host_transport": "UNVERIFIED"},
+            "claim_limit": "source only",
+        }
+        app.progress_ledger.feed_snapshot = mock.Mock(return_value=snapshot)
+        feed = app.progress_ledger.feed_snapshot
+        with mock.patch.object(app.progress_ledger, "feed_snapshot", feed):
+            result = app.project_progress_feed("project-alpha")
+        self.assertTrue(result["enabled"])
+        self.assertEqual(result["cursor"]["event_seq"], 3)
+        self.assertEqual(result["producer"]["native_host_transport"], "UNVERIFIED")
+        feed.assert_called_once_with("project-alpha", limit=4, after_cursor=0)
+
+        console.update_config(self.config, {"console.project_progress_feed_enabled": False})
+        with mock.patch.object(app.progress_ledger, "feed_snapshot", side_effect=AssertionError("disabled feed read"), create=True):
+            disabled = app.project_progress_feed("project-alpha", after_cursor=3)
+        self.assertFalse(disabled["enabled"])
+        self.assertEqual(disabled["items"], [])
 
     def test_auto_health_setting_defaults_off_and_uses_canonical_validator(self) -> None:
         _, effective, _ = console.load_config(self.config)

@@ -43,6 +43,11 @@ usage_saver = false
 # Reuse a recently visible portal tab; otherwise open the local portal when
 # SWARM starts. A browser launch failure never blocks work.
 open_on_start = false
+# Project progress feed delivery is lazy and event-driven. Disabling it never
+# deletes canonical progress history or disables execution safety monitoring.
+project_progress_feed_enabled = true
+# Visible material updates on one Project screen. This affects projection only.
+project_progress_feed_lines = 4
 
 [automation]
 # Standard emits evidence-gated Git, release, and host lifecycle requests.

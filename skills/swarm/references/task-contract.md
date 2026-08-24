@@ -75,24 +75,26 @@ filler, repeated plans, commentary, and unchanged heartbeats are not progress.
 Profession does not transfer ownership, and review does not become implementation
 or acceptance.
 
-When native host pulse transport is unavailable, the owning CTRL must write one
-instruction-only local sidecar at every scheduled heartbeat and every task-state,
-blocker, dependency, ETA, or material-progress change with `python skills/swarm/scripts/swarm_progress.py
---codex-home <absolute-codex-home>` and a JSON stdin envelope. The envelope names
-the exact observed `task_id` and `project_id`, a unique pulse receipt, state, and
-observation time. Optional ETA uses the existing `swarm_task_owner_forecast`
-shape. Optional material progress additionally requires a unique receipt plus
-`plan_id`, `unit_id`, `unit_kind`, declared total/completed units, basis,
-observation time, and source. LEAD and DOER returns can supply bound material
-receipts, but they do not substitute for the owning CTRL project pulse. An
-unchanged heartbeat omits progress and refreshes liveness only. The writer
-atomically replaces one bounded latest-pulse file per task; the console accepts it
-only for that exact observed non-subagent target and persists bounded material
-receipt history with monotonic high-water checks. Duplicate receipts are
-idempotent; regressions, conflicts, unknown/privacy fields, changed totals or unit
-identity, and implicit plan changes fail closed. A new plan requires a new
-`plan_id` and exact `previous_plan_id`. This adapter is local instruction evidence,
-not native host/user, progress, review, or acceptance authority.
+At an existing typed owner result, proof, state, blocker/wait, ETA/confidence,
+scope, current-action, rework, or accepted-steering boundary, the owning runtime
+adapter may append one canonical material event. There is no general feed-write
+command or browser write authority. Reuse the concise human sentence already
+produced at that boundary; never call a model or schedule a report solely for the
+Project progress feed. Exact duplicate content/state/proof, empty or interrupted
+output, tool chatter, token activity, and unchanged narration are no-ops and cannot
+replace the last-good material update. The canonical event retains stable
+portfolio/project/CTRL/milestone/block/task/owner/scope identities,
+lineage/dependencies, custody, proof classes/receipts, claim limit, measured weight,
+ETA/confidence, rework, steering, provenance, and timestamp. Same event identity
+plus digest is idempotent; conflicting identity/digest or stale scope fails closed.
+
+Execution liveness stays separate. Existing host reservation, lease, checkpoint,
+and last-seen observations may renew token-free at their configured cadence, but a
+healthy renewal never appends progress, changes percentage/ETA, or enters the
+human feed. Only a typed transition such as stale, recovery, retry, or takeover is
+material. The legacy latest-pulse sidecar remains a bounded compatibility adapter
+for receipt-backed units and liveness, with its existing monotonic and privacy
+guards; it is not a reporting schedule or acceptance authority.
 
 The parity manifest is an owner return claim, not host or user authority. It
 must match the declared paths, count, byte total, and file digests and remain
