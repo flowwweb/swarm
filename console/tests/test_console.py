@@ -567,6 +567,105 @@ class SwarmConsoleTests(unittest.TestCase):
         final = console.ConsoleStore(path).load_execution_ledger().reservation("reservation-1")
         self.assertEqual((final.generation_id, final.requested_service_tier, final.service_tier_truth.value), ("generation-standard", "default", "unverified"))
 
+    def test_execution_reservation_persistence_rejects_stale_and_conflicting_snapshots(self) -> None:
+        path = self.root / "console" / "execution-cas.sqlite3"
+        store = console.ConsoleStore(path)
+        ledger = console.ExecutionDispatchLedger()
+        ledger.observe_generation(console.ExecutionConfigGeneration("generation-fast", True, "gpt-5.6", "high", 10, "host:config:fast"))
+        ledger.reserve("reservation-cas", "task-cas", "owner-cas", ArtifactIdentity("artifact", "rev-cas", "queue"), observed_at_ms=11)
+        active = ledger.dispatch("reservation-cas", "a" * 64, 900, observed_at_ms=12)
+        stale_before_completion = copy.deepcopy(active.snapshot())
+        store.persist_execution_ledger(ledger, now_ms=12)
+        store.persist_execution_ledger(ledger, now_ms=12)  # exact digest replay is idempotent
+
+        event = CodexAppServerAdapter().translate_event({
+            "method": "turn/completed",
+            "params": {"threadId": "thread-cas", "turnId": "turn-cas", "status": "completed"},
+        })
+        self.assertTrue(ledger.observe_event("reservation-cas", event, observed_at_ms=13))
+        completed_snapshot = copy.deepcopy(active.snapshot())
+        store.persist_execution_ledger(ledger, now_ms=13)
+
+        stale_ledger = console.ExecutionDispatchLedger(
+            generations=ledger.generations,
+            reservations=(console.ExecutionReservation.from_snapshot(stale_before_completion),),
+        )
+        with self.assertRaisesRegex(console.ConsoleError, "stale execution reservation"):
+            store.persist_execution_ledger(stale_ledger, now_ms=14)
+
+        equal_time_conflict = copy.deepcopy(completed_snapshot)
+        equal_time_conflict["host_turn_id"] = "turn-conflict"
+        conflicting_ledger = console.ExecutionDispatchLedger(
+            generations=ledger.generations,
+            reservations=(console.ExecutionReservation.from_snapshot(equal_time_conflict),),
+        )
+        with self.assertRaisesRegex(console.ConsoleError, "equal-time execution reservation"):
+            store.persist_execution_ledger(conflicting_ledger, now_ms=14)
+
+        forward_snapshots = []
+        for state, observed_at_ms in (
+            (ExecutionDispatchState.MATERIAL_RECEIPT, 14),
+            (ExecutionDispatchState.INDEPENDENT_REVIEW, 15),
+            (ExecutionDispatchState.COMPLETE, 16),
+        ):
+            snapshot = copy.deepcopy(completed_snapshot)
+            snapshot["state"] = state.value
+            snapshot["material_receipt_id"] = "receipt-cas"
+            snapshot["updated_at_ms"] = observed_at_ms
+            forward_snapshots.append(snapshot)
+            store.persist_execution_ledger(
+                console.ExecutionDispatchLedger(
+                    generations=ledger.generations,
+                    reservations=(console.ExecutionReservation.from_snapshot(snapshot),),
+                ),
+                now_ms=observed_at_ms,
+            )
+
+        stale_after_completion = console.ExecutionDispatchLedger(
+            generations=ledger.generations,
+            reservations=(console.ExecutionReservation.from_snapshot(forward_snapshots[0]),),
+        )
+        with self.assertRaisesRegex(console.ConsoleError, "stale execution reservation"):
+            store.persist_execution_ledger(stale_after_completion, now_ms=17)
+        retained = store.load_execution_ledger().reservation("reservation-cas")
+        self.assertEqual((retained.state, retained.host_completed, retained.material_receipt_id), (ExecutionDispatchState.COMPLETE, True, "receipt-cas"))
+
+    def test_execution_reservation_checkpoint_and_smaller_retry_converge(self) -> None:
+        path = self.root / "console" / "execution-retry-cas.sqlite3"
+        store = console.ConsoleStore(path)
+        ledger = console.ExecutionDispatchLedger()
+        ledger.observe_generation(console.ExecutionConfigGeneration("generation-fast", True, "gpt-5.6", "high", 10, "host:config:fast"))
+        ledger.reserve("reservation-retry", "task-retry", "owner-retry", ArtifactIdentity("artifact", "rev-retry", "queue"), observed_at_ms=11)
+        ledger.dispatch("reservation-retry", "b" * 64, 900, observed_at_ms=12)
+        store.persist_execution_ledger(ledger, now_ms=12)
+
+        ledger.observe_generation(console.ExecutionConfigGeneration("generation-standard", False, "gpt-5.6", "high", 13, "host:config:standard"))
+        ledger.checkpoint("reservation-retry", observed_at_ms=14)
+        store.persist_execution_ledger(ledger, now_ms=14)
+        restarted = store.load_execution_ledger()
+        restarted.dispatch("reservation-retry", "c" * 64, 800, observed_at_ms=15)
+        restarted.fail_transport(
+            "reservation-retry", ExecutionFailureKind.BAD_REQUEST,
+            observed_at_ms=16, http_status=400, detail="Bad Request",
+        )
+        store.persist_execution_ledger(restarted, now_ms=16)
+        failed = store.load_execution_ledger().reservation("reservation-retry")
+        self.assertEqual((failed.state, failed.failure_kind, failed.retry_count), (ExecutionDispatchState.UNVERIFIED, ExecutionFailureKind.BAD_REQUEST, 0))
+
+        retry_ledger = store.load_execution_ledger()
+        retried = retry_ledger.retry_smaller(
+            "reservation-retry", ContinuationSnapshot("d" * 64, 800, 600, 17),
+            "e" * 64, 550, observed_at_ms=18,
+        )
+        store.persist_execution_ledger(retry_ledger, now_ms=18)
+        store.persist_execution_ledger(retry_ledger, now_ms=18)
+        converged = store.load_execution_ledger().reservation("reservation-retry")
+        self.assertEqual(
+            (converged.state, converged.retry_count, converged.generation_id, converged.requested_service_tier, converged.actual_service_tier),
+            (ExecutionDispatchState.ACTIVE, 1, "generation-standard", "default", ""),
+        )
+        self.assertEqual((retried.requested_fast_mode, retried.service_tier_truth.value), (False, "unverified"))
+
     def test_execution_generation_legacy_tier_migrates_once_to_boolean_authority(self) -> None:
         path = self.root / "console" / "legacy-execution.sqlite3"
         store = console.ConsoleStore(path)

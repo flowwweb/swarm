@@ -1309,6 +1309,48 @@ class ConsoleStore:
             normalized["fast_mode"] = legacy_tier in {"fast", "priority"}
         return normalized
 
+    @staticmethod
+    def _validate_execution_reservation_advance(retained: dict[str, Any], incoming: dict[str, Any]) -> None:
+        """Reject stale or regressive reservation snapshots before the retained CAS write."""
+        for field in ("reservation_id", "task_id", "owner_id"):
+            if retained.get(field) != incoming.get(field):
+                raise ConsoleError("execution reservation conflicts with retained identity")
+        retained_artifact = json.dumps(retained.get("artifact"), sort_keys=True, separators=(",", ":"))
+        incoming_artifact = json.dumps(incoming.get("artifact"), sort_keys=True, separators=(",", ":"))
+        if retained_artifact != incoming_artifact:
+            raise ConsoleError("execution reservation conflicts with retained identity")
+        if bool(retained.get("host_completed")) and not bool(incoming.get("host_completed")):
+            next_turn = (
+                str(incoming.get("state") or "") == "active"
+                and str(incoming.get("generation_id") or "") != str(retained.get("generation_id") or "")
+                and str(incoming.get("request_digest") or "") != str(retained.get("request_digest") or "")
+            )
+            if not next_turn:
+                raise ConsoleError("execution reservation cannot regress host completion")
+        if int(incoming.get("retry_count") or 0) < int(retained.get("retry_count") or 0):
+            raise ConsoleError("execution reservation cannot regress retry count")
+        retained_receipt = str(retained.get("material_receipt_id") or "")
+        if retained_receipt and str(incoming.get("material_receipt_id") or "") != retained_receipt:
+            raise ConsoleError("execution reservation cannot replace retained material receipt")
+        allowed_states = {
+            "queued": {"queued", "deferred", "active", "unverified", "material_receipt", "independent_review", "complete"},
+            "deferred": {"deferred", "active", "unverified", "material_receipt", "independent_review", "complete"},
+            "active": {"active", "checkpointed", "material_receipt", "independent_review", "complete", "unverified"},
+            "checkpointed": {"checkpointed", "active", "material_receipt", "independent_review", "complete", "unverified"},
+            "unverified": {"unverified", "active", "checkpointed", "material_receipt", "independent_review", "complete"},
+            "material_receipt": {"material_receipt", "independent_review", "complete"},
+            "independent_review": {"independent_review", "complete"},
+            "complete": {"complete"},
+        }
+        retained_state = str(retained.get("state") or "")
+        incoming_state = str(incoming.get("state") or "")
+        if incoming_state not in allowed_states.get(retained_state, set()):
+            raise ConsoleError("execution reservation state cannot move backward or skip a gate")
+        if incoming_state in {"material_receipt", "independent_review", "complete"} and not str(incoming.get("material_receipt_id") or ""):
+            raise ConsoleError("execution reservation acceptance state requires a retained material receipt")
+        if incoming_state == "complete" and not bool(incoming.get("host_completed")):
+            raise ConsoleError("completed execution reservation requires consumed host completion")
+
     def persist_execution_ledger(self, ledger: ExecutionDispatchLedger, *, now_ms: int) -> None:
         """Persist only typed queue identities/digests; raw request or tool content is never accepted."""
         if not isinstance(ledger, ExecutionDispatchLedger) or not isinstance(now_ms, int) or isinstance(now_ms, bool) or now_ms < 0:
@@ -1352,19 +1394,45 @@ class ConsoleStore:
                         (generation.generation_id, encoded, digest, generation.changed_at_ms),
                     )
             for reservation in ledger.reservations:
-                encoded, digest = self._execution_payload(reservation.snapshot())
-                connection.execute(
+                snapshot = reservation.snapshot()
+                encoded, digest = self._execution_payload(snapshot)
+                existing = connection.execute(
+                    "SELECT task_id, snapshot_json, snapshot_digest, updated_at_ms "
+                    "FROM execution_dispatch_state WHERE reservation_id = ?",
+                    (reservation.reservation_id,),
+                ).fetchone()
+                if existing is None:
+                    connection.execute(
+                        "INSERT INTO execution_dispatch_state(reservation_id, task_id, snapshot_json, snapshot_digest, updated_at_ms) "
+                        "VALUES (?, ?, ?, ?, ?)",
+                        (reservation.reservation_id, reservation.task_id, encoded, digest, reservation.updated_at_ms),
+                    )
+                    continue
+                retained = json.loads(str(existing["snapshot_json"]))
+                _, retained_digest = self._execution_payload(retained)
+                if retained_digest != str(existing["snapshot_digest"]):
+                    raise ConsoleError("execution reservation snapshot digest mismatch")
+                retained_at_ms = int(existing["updated_at_ms"])
+                if reservation.updated_at_ms < retained_at_ms:
+                    raise ConsoleError("stale execution reservation snapshot cannot replace retained state")
+                if reservation.updated_at_ms == retained_at_ms:
+                    if digest == retained_digest:
+                        continue
+                    raise ConsoleError("equal-time execution reservation snapshot conflicts with retained digest")
+                self._validate_execution_reservation_advance(retained, snapshot)
+                updated = connection.execute(
                     """
-                    INSERT INTO execution_dispatch_state(reservation_id, task_id, snapshot_json, snapshot_digest, updated_at_ms)
-                    VALUES (?, ?, ?, ?, ?)
-                    ON CONFLICT(reservation_id) DO UPDATE SET
-                        task_id=excluded.task_id,
-                        snapshot_json=excluded.snapshot_json,
-                        snapshot_digest=excluded.snapshot_digest,
-                        updated_at_ms=excluded.updated_at_ms
+                    UPDATE execution_dispatch_state
+                    SET task_id = ?, snapshot_json = ?, snapshot_digest = ?, updated_at_ms = ?
+                    WHERE reservation_id = ? AND task_id = ? AND snapshot_digest = ? AND updated_at_ms = ?
                     """,
-                    (reservation.reservation_id, reservation.task_id, encoded, digest, reservation.updated_at_ms),
+                    (
+                        reservation.task_id, encoded, digest, reservation.updated_at_ms,
+                        reservation.reservation_id, str(existing["task_id"]), retained_digest, retained_at_ms,
+                    ),
                 )
+                if updated.rowcount != 1:
+                    raise ConsoleError("execution reservation persistence lost retained custody")
             for event_digest in ledger.event_digests:
                 connection.execute(
                     "INSERT OR IGNORE INTO execution_event_receipts(event_digest, retained_at_ms) VALUES (?, ?)",
