@@ -1333,17 +1333,26 @@ class ConsoleStore:
         if retained_receipt and str(incoming.get("material_receipt_id") or "") != retained_receipt:
             raise ConsoleError("execution reservation cannot replace retained material receipt")
         allowed_states = {
-            "queued": {"queued", "deferred", "active", "unverified", "material_receipt", "independent_review"},
-            "deferred": {"deferred", "active", "unverified", "material_receipt", "independent_review"},
-            "active": {"active", "checkpointed", "material_receipt", "independent_review", "unverified"},
-            "checkpointed": {"checkpointed", "active", "material_receipt", "independent_review", "unverified"},
-            "unverified": {"unverified", "active", "checkpointed", "material_receipt", "independent_review"},
+            "queued": {"queued", "deferred", "active", "unverified", "material_receipt"},
+            "deferred": {"deferred", "active", "unverified", "material_receipt"},
+            "active": {"active", "checkpointed", "material_receipt", "unverified"},
+            "checkpointed": {"checkpointed", "active", "material_receipt", "unverified"},
+            "unverified": {"unverified", "active", "checkpointed", "material_receipt"},
             "material_receipt": {"material_receipt", "independent_review"},
             "independent_review": {"independent_review", "complete"},
             "complete": {"complete"},
         }
         retained_state = str(retained.get("state") or "")
         incoming_state = str(incoming.get("state") or "")
+        if incoming_state == "independent_review":
+            retained_material = str(retained.get("material_receipt_id") or "")
+            if retained_state != "material_receipt" or not retained_material:
+                raise ConsoleError("independent review requires a retained exact material receipt")
+            if (
+                str(incoming.get("material_receipt_id") or "") != retained_material
+                or str(incoming.get("generation_id") or "") != str(retained.get("generation_id") or "")
+            ):
+                raise ConsoleError("independent review conflicts with retained material receipt binding")
         if incoming_state == "complete" and retained_state not in {"independent_review", "complete"}:
             raise ConsoleError("completed execution reservation requires retained independent review")
         if incoming_state not in allowed_states.get(retained_state, set()):

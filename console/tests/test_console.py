@@ -651,6 +651,11 @@ class SwarmConsoleTests(unittest.TestCase):
                 reservations=(console.ExecutionReservation.from_snapshot(snapshot),),
             )
 
+        fabricated_review = copy.deepcopy(active_snapshot)
+        fabricated_review.update(state=ExecutionDispatchState.INDEPENDENT_REVIEW.value, material_receipt_id="fabricated-review", updated_at_ms=14)
+        with self.assertRaisesRegex(console.ConsoleError, "requires a retained exact material receipt"):
+            store.persist_execution_ledger(snapshot_ledger(fabricated_review), now_ms=14)
+
         direct_complete = copy.deepcopy(active_snapshot)
         direct_complete.update(state=ExecutionDispatchState.COMPLETE.value, material_receipt_id="receipt-review", updated_at_ms=14)
         with self.assertRaisesRegex(console.ConsoleError, "requires retained independent review"):
@@ -659,6 +664,10 @@ class SwarmConsoleTests(unittest.TestCase):
         checkpointed = copy.deepcopy(active_snapshot)
         checkpointed.update(state=ExecutionDispatchState.CHECKPOINTED.value, updated_at_ms=14)
         store.persist_execution_ledger(snapshot_ledger(checkpointed), now_ms=14)
+        checkpoint_review = copy.deepcopy(fabricated_review)
+        checkpoint_review["updated_at_ms"] = 15
+        with self.assertRaisesRegex(console.ConsoleError, "requires a retained exact material receipt"):
+            store.persist_execution_ledger(snapshot_ledger(checkpoint_review), now_ms=15)
         checkpoint_complete = copy.deepcopy(direct_complete)
         checkpoint_complete["updated_at_ms"] = 15
         with self.assertRaisesRegex(console.ConsoleError, "requires retained independent review"):
@@ -667,6 +676,10 @@ class SwarmConsoleTests(unittest.TestCase):
         rejected_review = copy.deepcopy(active_snapshot)
         rejected_review.update(state=ExecutionDispatchState.UNVERIFIED.value, updated_at_ms=15)
         store.persist_execution_ledger(snapshot_ledger(rejected_review), now_ms=15)
+        unverified_review = copy.deepcopy(fabricated_review)
+        unverified_review["updated_at_ms"] = 16
+        with self.assertRaisesRegex(console.ConsoleError, "requires a retained exact material receipt"):
+            store.persist_execution_ledger(snapshot_ledger(unverified_review), now_ms=16)
         rejected_complete = copy.deepcopy(direct_complete)
         rejected_complete["updated_at_ms"] = 16
         with self.assertRaisesRegex(console.ConsoleError, "requires retained independent review"):
@@ -675,6 +688,14 @@ class SwarmConsoleTests(unittest.TestCase):
         material = copy.deepcopy(active_snapshot)
         material.update(state=ExecutionDispatchState.MATERIAL_RECEIPT.value, material_receipt_id="receipt-review", updated_at_ms=16)
         store.persist_execution_ledger(snapshot_ledger(material), now_ms=16)
+        mismatched_receipt = copy.deepcopy(material)
+        mismatched_receipt.update(state=ExecutionDispatchState.INDEPENDENT_REVIEW.value, material_receipt_id="other-receipt", updated_at_ms=17)
+        with self.assertRaisesRegex(console.ConsoleError, "cannot replace retained material receipt"):
+            store.persist_execution_ledger(snapshot_ledger(mismatched_receipt), now_ms=17)
+        mismatched_generation = copy.deepcopy(material)
+        mismatched_generation.update(state=ExecutionDispatchState.INDEPENDENT_REVIEW.value, generation_id="other-generation", updated_at_ms=17)
+        with self.assertRaisesRegex(console.ConsoleError, "conflicts with retained material receipt binding"):
+            store.persist_execution_ledger(snapshot_ledger(mismatched_generation), now_ms=17)
         mismatched_review = copy.deepcopy(material)
         mismatched_review["state"] = ExecutionDispatchState.INDEPENDENT_REVIEW.value
         mismatched_review["artifact"] = dict(mismatched_review["artifact"], revision="wrong-revision")
