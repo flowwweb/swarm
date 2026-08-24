@@ -3371,7 +3371,7 @@ def build_overview(codex_home: Path, config_path: Path) -> dict[str, Any]:
             "Spawn edges are shown as delegated relationships; waits-for and review dependencies are not inferred without runtime receipts.",
             "Controller scopes are observed host descendants, not the authoritative runtime workflow graph.",
             "Proof plans appear only from validated runtime snapshots; absent snapshots stay unavailable and never inherit host task status.",
-            "Only unarchived host tasks updated within the current observation window are shown.",
+            "Host task observation includes recently updated archived rows so authoritative navigation visibility can preserve archive state.",
             "Recent active durable goals are read by thread ID only to identify CTRL scopes; objective text is never read or surfaced.",
             "Project navigation includes active observed repositories even when no authoritative CTRL scope is available; those projects remain project-level only.",
             "Unformatted delegated lanes use the existing active-freshness boundary; older lanes are counted, not expanded.",
