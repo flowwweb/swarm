@@ -9,6 +9,7 @@ import tempfile
 import threading
 import time
 import unittest
+from contextlib import closing
 from email.message import Message
 from pathlib import Path
 from types import SimpleNamespace
@@ -20,6 +21,7 @@ SPEC = importlib.util.spec_from_file_location("swarm_console_tested", SERVER)
 assert SPEC and SPEC.loader
 console = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(console)
+from runtime.progress_events import write_progress_pulse  # noqa: E402
 
 
 class SwarmConsoleTests(unittest.TestCase):
@@ -878,6 +880,121 @@ class SwarmConsoleTests(unittest.TestCase):
             endpoint = app.progress_summary(ctrl_id="ctrl-a")
         self.assertIsNone(endpoint["progress"])
         self.assertEqual(endpoint["measurement_authority"], "direct_ctrl_receipt")
+
+    @staticmethod
+    def _ctrl_progress_pulse(
+        task_id: str,
+        project_id: str,
+        *,
+        observed_at_ms: int,
+        pulse_receipt: str,
+        completed_units: int | None,
+    ) -> dict[str, object]:
+        progress = None if completed_units is None else {
+            "receipt_id": "material-4-of-5",
+            "plan_id": "plan-five-steps",
+            "previous_plan_id": None,
+            "unit_id": "ctrl-project-plan",
+            "unit_kind": "accepted_step",
+            "total_units": 5,
+            "completed_units": completed_units,
+            "basis": "Accepted and frozen plan steps",
+            "observed_at_ms": observed_at_ms,
+            "source": "task_owner:local",
+        }
+        return {
+            "schema_version": 1,
+            "source": "swarm_local_progress_sidecar",
+            "receipt_type": "swarm_ctrl_project_pulse",
+            "task_id": task_id,
+            "project_id": project_id,
+            "pulse_receipt": pulse_receipt,
+            "observed_at_ms": observed_at_ms,
+            "state": "in_progress",
+            "progress": progress,
+            "eta_report": None,
+        }
+
+    def test_progress_read_ingests_new_ctrl_pulse_once_and_preserves_liveness_only_update(self) -> None:
+        with closing(sqlite3.connect(self.database)) as connection:
+            connection.execute("UPDATE threads SET agent_role='ctrl' WHERE id='root'")
+            connection.commit()
+        app = console.App(self.codex_home, self.config, state_path=self.root / "console-state.sqlite3")
+        initial = app.overview()
+        ctrl_node = next(node for node in initial["nodes"] if node["id"] == "root")
+        project_id = ctrl_node["project_id"]
+        observed_at_ms = 1_000_000
+        write_progress_pulse(
+            self.codex_home,
+            self._ctrl_progress_pulse(
+                "root", project_id,
+                observed_at_ms=observed_at_ms,
+                pulse_receipt="pulse-material",
+                completed_units=4,
+            ),
+        )
+
+        progress_endpoint = app.progress_summary(ctrl_id="root")
+        self.assertEqual(progress_endpoint["progress"]["percent"], 80.0)
+        material = app.overview()
+        ctrl_summary = material["progress"]["controllers"]["root"]
+        project_summary = material["progress"]["projects"][project_id]
+        self.assertEqual(ctrl_summary["progress"]["percent"], 80.0)
+        self.assertEqual(project_summary["progress"]["percent"], 80.0)
+        with closing(sqlite3.connect(app.store.path)) as connection:
+            receipt_count = connection.execute("SELECT COUNT(*) FROM task_progress_receipts").fetchone()[0]
+            pulse_row = connection.execute(
+                "SELECT payload_digest, updated_at_ms FROM task_progress_pulse_files"
+            ).fetchone()
+        app.overview()
+        with closing(sqlite3.connect(app.store.path)) as connection:
+            self.assertEqual(connection.execute("SELECT COUNT(*) FROM task_progress_receipts").fetchone()[0], receipt_count)
+            self.assertEqual(
+                connection.execute("SELECT payload_digest, updated_at_ms FROM task_progress_pulse_files").fetchone(),
+                pulse_row,
+            )
+
+        heartbeat_at_ms = observed_at_ms + 100
+        write_progress_pulse(
+            self.codex_home,
+            self._ctrl_progress_pulse(
+                "root", project_id,
+                observed_at_ms=heartbeat_at_ms,
+                pulse_receipt="pulse-heartbeat",
+                completed_units=None,
+            ),
+        )
+        heartbeat = app.overview()
+        heartbeat_ctrl = heartbeat["progress"]["controllers"]["root"]
+        heartbeat_node = next(node for node in heartbeat["nodes"] if node["id"] == "root")
+        self.assertEqual(heartbeat_ctrl["progress"]["percent"], 80.0)
+        self.assertEqual(heartbeat_ctrl["progress"]["observed_at_ms"], observed_at_ms)
+        self.assertEqual(heartbeat_node["eta"]["pulse_observed_at_ms"], heartbeat_at_ms)
+        with closing(sqlite3.connect(app.store.path)) as connection:
+            self.assertEqual(connection.execute("SELECT COUNT(*) FROM task_progress_receipts").fetchone()[0], receipt_count)
+
+    def test_valid_ctrl_pulse_without_host_role_is_explicitly_unclassified(self) -> None:
+        app = console.App(self.codex_home, self.config, state_path=self.root / "console-unclassified.sqlite3")
+        initial = app.overview()
+        ctrl_node = next(node for node in initial["nodes"] if node["id"] == "root")
+        project_id = ctrl_node["project_id"]
+        write_progress_pulse(
+            self.codex_home,
+            self._ctrl_progress_pulse(
+                "root", project_id,
+                observed_at_ms=1_000_000,
+                pulse_receipt="pulse-unclassified",
+                completed_units=4,
+            ),
+        )
+        result = app.overview()["progress"]["controllers"]["root"]
+        self.assertIsNone(result["progress"])
+        self.assertEqual(result["progress_display"], "Unmeasured")
+        self.assertEqual(result["unmeasured_reason"], "unclassified_ctrl")
+        self.assertEqual(result["measurement_authority"], "direct_ctrl_receipt")
+        endpoint = app.progress_summary(ctrl_id="root")
+        self.assertIsNone(endpoint["progress"])
+        self.assertEqual(endpoint["unmeasured_reason"], "unclassified_ctrl")
 
     def test_progress_summary_never_uses_unbound_measurement_or_task_status_as_percentage(self) -> None:
         nodes = [

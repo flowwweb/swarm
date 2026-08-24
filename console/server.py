@@ -1621,13 +1621,11 @@ class ConsoleStore:
             for node in overview.get("nodes", [])
             if not node.get("virtual") and not node.get("is_subagent") and node.get("id") and node.get("project_id")
         }
-        scanned = 0
-        for event_path in pulse_root.iterdir():
-            if scanned >= MAX_PULSE_FILES:
+        for index, event_path in enumerate(pulse_root.iterdir()):
+            if index >= MAX_PULSE_FILES:
                 break
             if event_path.suffix.casefold() != ".json":
                 continue
-            scanned += 1
             event: ProgressPulseEvent | None = None
             digest = ""
             try:
@@ -2740,6 +2738,37 @@ def observation_fingerprint(codex_home: Path, config_path: Path) -> tuple[tuple[
     return tuple(fingerprint)
 
 
+def progress_pulse_fingerprint(codex_home: Path) -> tuple[tuple[str, int, int], ...]:
+    """Return bounded metadata for the latest local progress sidecars."""
+    expected_root = codex_home.resolve() / PULSE_ROOT
+    try:
+        pulse_root = expected_root.resolve(strict=True)
+        if pulse_root != expected_root or not pulse_root.is_dir():
+            return (("untrusted", 0, 0),)
+        root_stat = pulse_root.stat()
+    except (FileNotFoundError, OSError):
+        return (("missing", 0, 0),)
+
+    entries: list[tuple[str, int, int]] = []
+    try:
+        for index, path in enumerate(pulse_root.iterdir()):
+            if index >= MAX_PULSE_FILES:
+                entries.append(("limit-reached", MAX_PULSE_FILES, 0))
+                break
+            try:
+                resolved = path.resolve(strict=True)
+                stat = resolved.stat()
+                if resolved.parent != pulse_root or not resolved.is_file():
+                    entries.append((path.name, -1, -1))
+                else:
+                    entries.append((resolved.name, stat.st_mtime_ns, stat.st_size))
+            except OSError:
+                entries.append((path.name, -1, -1))
+    except OSError:
+        return (("unavailable", 0, 0),)
+    return ((pulse_root.name, root_stat.st_mtime_ns, root_stat.st_size), *sorted(entries))
+
+
 def _epoch_ms(milliseconds: Any, seconds: Any) -> int:
     if milliseconds:
         return int(milliseconds)
@@ -3384,6 +3413,7 @@ class App:
         self.write_lock = threading.Lock()
         self.overview_lock = threading.RLock()
         self.overview_refresh_lock = threading.Lock()
+        self.progress_pulse_lock = threading.Lock()
         self.presence_lock = threading.Lock()
         self.proof_lock = threading.Lock()
         self._overview_fingerprint: tuple[tuple[str, int, int], ...] | None = None
@@ -3396,6 +3426,7 @@ class App:
         self._last_presence_at: float | None = None
         self._last_open_claim_at: float | None = None
         self._last_observed_fingerprint: tuple[tuple[str, int, int], ...] | None = None
+        self._progress_pulse_fingerprint: tuple[tuple[str, int, int], ...] | None = None
         self._observer_stop = threading.Event()
         self._observer_thread: threading.Thread | None = None
 
@@ -3415,6 +3446,28 @@ class App:
                 self._overview = overview
                 self._overview_revision += 1
                 return overview
+
+    def _ingest_progress_pulses_if_changed(self, overview: dict[str, Any]) -> dict[str, Any]:
+        """Import changed bounded sidecars without running token or diagnostic observation."""
+        fingerprint = progress_pulse_fingerprint(self.codex_home)
+        with self.progress_pulse_lock:
+            if fingerprint == self._progress_pulse_fingerprint:
+                return {"advanced": 0, "heartbeats": 0, "duplicates": 0, "rejected": 0, "eta_reports": {}}
+            try:
+                result = self.store.ingest_progress_pulses(
+                    self.codex_home,
+                    overview,
+                    now_ms=int(time.time() * 1000),
+                )
+            except (OSError, sqlite3.Error):
+                result = {"advanced": 0, "heartbeats": 0, "duplicates": 0, "rejected": 1, "eta_reports": {}}
+            # Retain the pre-import fingerprint. A replacement that races this
+            # import is therefore observed by the next read instead of hidden.
+            self._progress_pulse_fingerprint = fingerprint
+            if result["advanced"] or result["heartbeats"] or result["eta_reports"]:
+                with self.overview_lock:
+                    self._store_generation += 1
+            return result
 
     @staticmethod
     def _receipt_backed_progress(node: dict[str, Any]) -> dict[str, Any] | None:
@@ -3493,6 +3546,7 @@ class App:
         measure_nodes: list[dict[str, Any]] | None = None,
         now_ms: int | None = None,
         stale_after_ms: int = 60 * 60 * 1000,
+        empty_measure_reason: str | None = None,
     ) -> dict[str, Any]:
         tasks = [
             node for node in nodes
@@ -3529,7 +3583,7 @@ class App:
         ]
         aggregate = None
         if not progress_nodes:
-            unmeasured_reason = "missing_ctrl_measure" if direct_ctrl_authority else "no_tasks"
+            unmeasured_reason = empty_measure_reason or ("missing_ctrl_measure" if direct_ctrl_authority else "no_tasks")
         elif len(measured) != len(progress_nodes):
             unmeasured_reason = "missing_receipt_backed_units"
         elif (
@@ -3635,20 +3689,29 @@ class App:
             )
             for project in view.get("projects", [])
         }
-        controller_summaries = {
-            str(controller["id"]): cls._progress_for_nodes(
+        controller_summaries = {}
+        for controller in view.get("controllers", []):
+            controller_id = str(controller["id"])
+            controller_node = nodes_by_id.get(controller_id)
+            classified_node = controller_nodes.get(controller_id)
+            controller_summaries[controller_id] = cls._progress_for_nodes(
                 [
                     node for node in nodes
                     if node.get("id") == controller["id"]
                     or controller["id"] in node.get("controller_ids", [])
                 ],
                 {"type": "ctrl", "ctrl_id": controller["id"], "project_id": controller.get("project_id")},
-                measure_nodes=[controller_nodes[str(controller["id"])]] if str(controller["id"]) in controller_nodes else [],
+                measure_nodes=[classified_node] if classified_node is not None else [],
                 now_ms=now_ms,
                 stale_after_ms=stale_after_ms,
+                empty_measure_reason=(
+                    "unclassified_ctrl"
+                    if classified_node is None
+                    and controller_node is not None
+                    and cls._receipt_backed_progress(controller_node) is not None
+                    else None
+                ),
             )
-            for controller in view.get("controllers", [])
-        }
         return {
             "all_projects": cls._progress_for_nodes(
                 nodes,
@@ -4060,7 +4123,8 @@ class App:
     def overview(self, project_id: str | None = None) -> dict[str, Any]:
         # Never call _host_overview while holding overview_lock. The refresh
         # path owns overview_refresh_lock before publishing under overview_lock.
-        self._host_overview()
+        overview = self._host_overview()
+        self._ingest_progress_pulses_if_changed(overview)
         with self.overview_lock:
             if (
                 self._view is None
@@ -4077,7 +4141,7 @@ class App:
         now_ms = int(time.time() * 1000)
         heartbeat_minutes = max(1, int(overview.get("heartbeat_minutes") or 30))
         observed = copy.deepcopy(overview)
-        pulse_result = self.store.ingest_progress_pulses(self.codex_home, observed, now_ms=now_ms)
+        pulse_result = self._ingest_progress_pulses_if_changed(observed)
         eta_reports = pulse_result.get("eta_reports", {})
         for node in observed.get("nodes", []):
             report = eta_reports.get(str(node.get("id")))
