@@ -268,6 +268,16 @@ def _remove_toml_setting(text: str, dotted_key: str) -> str:
     return "\n".join(lines) + "\n"
 
 
+def _remove_toml_root_setting(text: str, key: str) -> str:
+    """Remove one legacy root scalar without touching identically named table keys."""
+    lines = text.splitlines()
+    any_section_re = re.compile(r"^\s*\[[^]]+\]\s*(?:#.*)?$")
+    key_re = re.compile(rf"^\s*{re.escape(key)}\s*=.*$")
+    first_section = next((index for index, line in enumerate(lines) if any_section_re.match(line)), len(lines))
+    lines = [line for index, line in enumerate(lines) if not (index < first_section and key_re.match(line))]
+    return "\n".join(lines) + "\n"
+
+
 def _toml_setting_value(text: str, dotted_key: str) -> str | None:
     """Read one simple scalar setting for bounded legacy migration decisions."""
     section, key = dotted_key.split(".", 1)
@@ -314,6 +324,9 @@ def update_config(config_path: Path, changes: dict[str, Any]) -> dict[str, Any]:
     had_automation_mode = _toml_setting_value(text, "automation.mode") is not None
     legacy_efficiency = _toml_setting_value(text, "efficiency.mode")
     text = _remove_toml_setting(text, "execution.service_tier")
+    text = _remove_toml_setting(text, "execution.current_mode")
+    text = _remove_toml_root_setting(text, "fast_mode")
+    text = _remove_toml_root_setting(text, "current_mode")
     text = _remove_toml_setting(text, "lifecycle.archive_completed_tasks")
     if legacy_efficiency in {'"FAST"', "'FAST'"}:
         text = _replace_toml_setting(text, "efficiency.mode", "BALANCED")
@@ -1292,7 +1305,7 @@ class ConsoleStore:
             for generation in ledger.generations:
                 payload = {
                     "generation_id": generation.generation_id,
-                    "service_tier": generation.service_tier,
+                    "fast_mode": generation.fast_mode,
                     "model": generation.model,
                     "effort": generation.effort,
                     "changed_at_ms": generation.changed_at_ms,
@@ -1349,6 +1362,13 @@ class ConsoleStore:
                 _, digest = self._execution_payload(payload)
                 if digest != str(row["payload_digest"]):
                     raise ConsoleError("execution config generation digest mismatch")
+                if "fast_mode" in payload and "service_tier" in payload:
+                    raise ConsoleError("execution config generation has competing mode authorities")
+                if "fast_mode" not in payload:
+                    legacy_tier = payload.pop("service_tier", None)
+                    if legacy_tier not in {"default", "flex", "fast", "priority"}:
+                        raise ConsoleError("legacy execution config service tier is invalid")
+                    payload["fast_mode"] = legacy_tier in {"fast", "priority"}
                 generations.append(ExecutionConfigGeneration(**payload))
             reservations = []
             for row in reservation_rows:

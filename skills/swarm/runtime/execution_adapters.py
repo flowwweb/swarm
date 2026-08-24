@@ -249,7 +249,7 @@ class ExecutionConfigGeneration:
     """Host-observed dispatch preference; it is not a served-tier receipt."""
 
     generation_id: str
-    service_tier: str
+    fast_mode: bool
     model: str
     effort: str
     changed_at_ms: int
@@ -257,8 +257,8 @@ class ExecutionConfigGeneration:
 
     def __post_init__(self) -> None:
         _text(self.generation_id, "execution config generation id")
-        if self.service_tier not in {"default", "fast", "priority"}:
-            raise InvariantError("execution config generation requires default, fast, or priority service tier")
+        if not isinstance(self.fast_mode, bool):
+            raise InvariantError("execution config generation requires boolean fast_mode")
         for value, label in ((self.model, "execution config model"), (self.effort, "execution config effort")):
             if value:
                 _text(value, label)
@@ -268,7 +268,16 @@ class ExecutionConfigGeneration:
 
     @property
     def digest(self) -> str:
-        return _canonical_digest((self.generation_id, self.service_tier, self.model, self.effort, self.changed_at_ms, self.host_receipt_id))
+        return _canonical_digest((self.generation_id, self.fast_mode, self.model, self.effort, self.changed_at_ms, self.host_receipt_id))
+
+    @property
+    def requested_service_tier(self) -> str:
+        """Translate the sole SWARM mode authority into one host request value."""
+        return "fast" if self.fast_mode else "default"
+
+    @property
+    def host_features(self) -> dict[str, bool]:
+        return {"fast_mode": self.fast_mode}
 
 
 @dataclass(frozen=True)
@@ -315,6 +324,7 @@ class ExecutionReservation:
     request_digest: str = ""
     request_bytes: int = 0
     generation_id: str = ""
+    requested_fast_mode: bool = False
     requested_service_tier: str = ""
     requested_model: str = ""
     requested_effort: str = ""
@@ -328,7 +338,6 @@ class ExecutionReservation:
     failure_kind: ExecutionFailureKind | None = None
     retry_count: int = 0
     snapshot_digest: str = ""
-    user_tier_receipt_id: str = ""
     updated_at_ms: int = 0
 
     def __post_init__(self) -> None:
@@ -342,6 +351,8 @@ class ExecutionReservation:
             raise InvariantError("execution reservation request size must be nonnegative")
         if self.requested_service_tier and self.requested_service_tier not in {"default", "fast", "priority"}:
             raise InvariantError("retained requested service tier is invalid")
+        if not isinstance(self.requested_fast_mode, bool) or self.requested_fast_mode != (self.requested_service_tier in {"fast", "priority"}):
+            raise InvariantError("retained requested Fast flag must be derived from requested service tier")
         if self.actual_service_tier and self.actual_service_tier not in {"default", "fast", "priority"}:
             raise InvariantError("retained actual service tier is invalid")
         if not isinstance(self.service_tier_truth, ServiceTierTruth) or self.service_tier_truth is ServiceTierTruth.CONFIRMED and not self.actual_service_tier:
@@ -354,8 +365,6 @@ class ExecutionReservation:
             raise InvariantError("execution reservation permits at most one retry")
         if self.snapshot_digest:
             self.snapshot_digest = _digest(self.snapshot_digest, "retained continuation snapshot")
-        if self.user_tier_receipt_id:
-            _text(self.user_tier_receipt_id, "retained direct-user tier receipt")
         if not isinstance(self.updated_at_ms, int) or isinstance(self.updated_at_ms, bool) or self.updated_at_ms < 0:
             raise InvariantError("execution reservation requires a nonnegative update time")
 
@@ -375,6 +384,7 @@ class ExecutionReservation:
             "request_digest": self.request_digest,
             "request_bytes": self.request_bytes,
             "generation_id": self.generation_id,
+            "requested_fast_mode": self.requested_fast_mode,
             "requested_service_tier": self.requested_service_tier,
             "requested_model": self.requested_model,
             "requested_effort": self.requested_effort,
@@ -388,7 +398,6 @@ class ExecutionReservation:
             "failure_kind": None if self.failure_kind is None else self.failure_kind.value,
             "retry_count": self.retry_count,
             "snapshot_digest": self.snapshot_digest,
-            "user_tier_receipt_id": self.user_tier_receipt_id,
             "updated_at_ms": self.updated_at_ms,
         }
 
@@ -405,6 +414,10 @@ class ExecutionReservation:
             tuple(str(item) for item in artifact_payload.get("observed_paths", ())),  # type: ignore[arg-type]
         )
         failure = payload.get("failure_kind")
+        requested_service_tier = str(payload.get("requested_service_tier") or "")
+        requested_fast_mode = payload.get("requested_fast_mode")
+        if requested_fast_mode is None:
+            requested_fast_mode = requested_service_tier in {"fast", "priority"}
         return cls(
             reservation_id=str(payload.get("reservation_id") or ""),
             task_id=str(payload.get("task_id") or ""),
@@ -414,7 +427,8 @@ class ExecutionReservation:
             request_digest=str(payload.get("request_digest") or ""),
             request_bytes=int(payload.get("request_bytes") or 0),
             generation_id=str(payload.get("generation_id") or ""),
-            requested_service_tier=str(payload.get("requested_service_tier") or ""),
+            requested_fast_mode=requested_fast_mode,  # type: ignore[arg-type]
+            requested_service_tier=requested_service_tier,
             requested_model=str(payload.get("requested_model") or ""),
             requested_effort=str(payload.get("requested_effort") or ""),
             actual_service_tier=str(payload.get("actual_service_tier") or ""),
@@ -427,7 +441,6 @@ class ExecutionReservation:
             failure_kind=None if failure in (None, "") else ExecutionFailureKind(str(failure)),
             retry_count=int(payload.get("retry_count") or 0),
             snapshot_digest=str(payload.get("snapshot_digest") or ""),
-            user_tier_receipt_id=str(payload.get("user_tier_receipt_id") or ""),
             updated_at_ms=int(payload.get("updated_at_ms") or 0),
         )
 
@@ -505,7 +518,7 @@ class ExecutionDispatchLedger:
         reservation.updated_at_ms = observed_at_ms
         return reservation
 
-    def dispatch(self, reservation_id: str, request_digest: str, request_bytes: int, *, observed_at_ms: int, user_service_tier: str = "", user_override_receipt_id: str = "", direct_user_keep_out: bool = False, retry: bool = False) -> ExecutionReservation:
+    def dispatch(self, reservation_id: str, request_digest: str, request_bytes: int, *, observed_at_ms: int, direct_user_keep_out: bool = False, retry: bool = False) -> ExecutionReservation:
         reservation = self.reservation(reservation_id)
         if direct_user_keep_out:
             raise InvariantError("direct-user CTRL keep-out blocks delegated dispatch")
@@ -523,17 +536,11 @@ class ExecutionDispatchLedger:
         digest = _digest(request_digest, "execution request")
         if not isinstance(request_bytes, int) or isinstance(request_bytes, bool) or request_bytes <= 0:
             raise InvariantError("execution request requires a positive bounded byte count")
-        if bool(user_service_tier) != bool(user_override_receipt_id):
-            raise InvariantError("direct user service-tier action requires an exact scoped receipt")
-        if user_service_tier and user_service_tier not in {"default", "fast", "priority"}:
-            raise InvariantError("direct user service tier must be default, fast, or priority")
-        if user_override_receipt_id:
-            _text(user_override_receipt_id, "direct user service-tier receipt")
         reservation.request_digest = digest
         reservation.request_bytes = request_bytes
         reservation.generation_id = generation.generation_id
-        reservation.requested_service_tier = user_service_tier or generation.service_tier
-        reservation.user_tier_receipt_id = user_override_receipt_id
+        reservation.requested_service_tier = generation.requested_service_tier
+        reservation.requested_fast_mode = reservation.requested_service_tier in {"fast", "priority"}
         reservation.requested_model = generation.model
         reservation.requested_effort = generation.effort
         reservation.actual_service_tier = ""
@@ -552,6 +559,13 @@ class ExecutionDispatchLedger:
         if reservation.state is not ExecutionDispatchState.ACTIVE or not reservation.next_generation_id:
             raise InvariantError("only running work with a fresher host generation can checkpoint")
         reservation.state = ExecutionDispatchState.CHECKPOINTED
+        reservation.generation_id = ""
+        reservation.requested_fast_mode = False
+        reservation.requested_service_tier = ""
+        reservation.requested_model = ""
+        reservation.requested_effort = ""
+        reservation.actual_service_tier = ""
+        reservation.service_tier_truth = ServiceTierTruth.UNVERIFIED
         reservation.updated_at_ms = observed_at_ms
         return reservation
 
@@ -601,15 +615,11 @@ class ExecutionDispatchLedger:
         if request_digest == reservation.request_digest:
             raise InvariantError("Bad Request retry must be freshly generated")
         reservation.snapshot_digest = snapshot.digest
-        override_tier = reservation.requested_service_tier if reservation.user_tier_receipt_id else ""
-        override_receipt = reservation.user_tier_receipt_id
         return self.dispatch(
             reservation_id,
             request_digest,
             request_bytes,
             observed_at_ms=observed_at_ms,
-            user_service_tier=override_tier,
-            user_override_receipt_id=override_receipt,
             retry=True,
         )
 

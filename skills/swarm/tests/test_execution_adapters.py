@@ -24,6 +24,7 @@ from skills.swarm.runtime import (
     ExecutionDispatchLedger,
     ExecutionDispatchState,
     ExecutionFailureKind,
+    ExecutionReservation,
     ExecutionRoute,
     HostCapacityEvidence,
     HostTaskCapacity,
@@ -193,7 +194,7 @@ class ExecutionDispatchLedgerTests(unittest.TestCase):
 
     @staticmethod
     def generation(identity: str, tier: str, changed_at: int) -> ExecutionConfigGeneration:
-        return ExecutionConfigGeneration(identity, tier, "gpt-5.6", "high", changed_at, f"host:config:{identity}")
+        return ExecutionConfigGeneration(identity, tier in {"fast", "priority"}, "gpt-5.6", "high", changed_at, f"host:config:{identity}")
 
     def ledger(self, tier: str = "default") -> ExecutionDispatchLedger:
         ledger = ExecutionDispatchLedger()
@@ -244,6 +245,7 @@ class ExecutionDispatchLedgerTests(unittest.TestCase):
         ledger = self.ledger("fast")
         active = ledger.dispatch("reservation-1", "a" * 64, 1000, observed_at_ms=12)
         self.assertEqual((active.requested_service_tier, active.requested_model), ("fast", "gpt-5.6"))
+        self.assertEqual((ledger.latest_generation.fast_mode, ledger.latest_generation.host_features), (True, {"fast_mode": True}))
         ledger.observe_generation(self.generation("generation-standard", "default", 20))
         self.assertEqual(active.requested_service_tier, "fast")
         self.assertEqual(active.next_generation_id, "generation-standard")
@@ -252,20 +254,35 @@ class ExecutionDispatchLedgerTests(unittest.TestCase):
         self.assertEqual((resumed.requested_service_tier, resumed.generation_id), ("default", "generation-standard"))
         self.assertEqual(resumed.service_tier_truth, ServiceTierTruth.UNVERIFIED)
 
-    def test_standard_to_fast_and_explicit_user_tier_resolve_at_dispatch_without_model_change(self) -> None:
+    def test_standard_to_fast_resolves_at_dispatch_without_model_change(self) -> None:
         ledger = self.ledger("default")
         ledger.defer("reservation-1", observed_at_ms=11)
         ledger.observe_generation(self.generation("generation-fast", "fast", 20))
         active = ledger.dispatch("reservation-1", "c" * 64, 800, observed_at_ms=21)
         self.assertEqual((active.requested_service_tier, active.requested_model, active.requested_effort), ("fast", "gpt-5.6", "high"))
-        ledger.reserve("reservation-2", "queue-task-2", "worker-2", self.artifact, observed_at_ms=22)
-        with self.assertRaisesRegex(InvariantError, "exact scoped receipt"):
-            ledger.dispatch("reservation-2", "d" * 64, 700, observed_at_ms=23, user_service_tier="default")
-        overridden = ledger.dispatch(
-            "reservation-2", "d" * 64, 700, observed_at_ms=23,
-            user_service_tier="default", user_override_receipt_id="host:user-tier:task-2",
+        self.assertTrue(active.requested_fast_mode)
+
+    def test_checkpoint_invalidates_stale_request_metadata_and_restart_retry_uses_latest_generation(self) -> None:
+        ledger = self.ledger("fast")
+        record = ledger.dispatch("reservation-1", "d" * 64, 900, observed_at_ms=12)
+        ledger.observe_generation(self.generation("generation-standard", "default", 13))
+        ledger.checkpoint("reservation-1", observed_at_ms=14)
+        self.assertEqual((record.generation_id, record.requested_service_tier, record.requested_model), ("", "", ""))
+        resumed = ledger.dispatch("reservation-1", "e" * 64, 800, observed_at_ms=15)
+        self.assertEqual((resumed.generation_id, resumed.requested_service_tier), ("generation-standard", "default"))
+        ledger.fail_transport("reservation-1", ExecutionFailureKind.BAD_REQUEST, observed_at_ms=16, http_status=400, detail="Bad Request")
+        restored = ExecutionDispatchLedger(generations=ledger.generations, reservations=(ExecutionReservation.from_snapshot(resumed.snapshot()),))
+        retried = restored.retry_smaller(
+            "reservation-1", ContinuationSnapshot("f" * 64, 800, 600, 17), "a" * 64, 550, observed_at_ms=18,
         )
-        self.assertEqual(overridden.requested_service_tier, "default")
+        self.assertEqual((retried.requested_service_tier, retried.requested_fast_mode), ("default", False))
+
+    def test_execution_config_generations_are_strictly_monotonic_and_identity_bound(self) -> None:
+        ledger = self.ledger("default")
+        with self.assertRaisesRegex(InvariantError, "stale or ambiguously ordered"):
+            ledger.observe_generation(self.generation("generation-stale", "fast", 10))
+        with self.assertRaisesRegex(InvariantError, "identity conflicts"):
+            ledger.observe_generation(self.generation("generation-default", "fast", 10))
 
     def test_unavailable_or_conflicting_served_tier_stays_unverified(self) -> None:
         ledger = self.ledger("fast")

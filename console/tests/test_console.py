@@ -527,7 +527,7 @@ class SwarmConsoleTests(unittest.TestCase):
     def test_execution_queue_persists_reservation_generation_and_event_dedupe_across_restart(self) -> None:
         path = self.root / "console" / "execution-state.sqlite3"
         ledger = console.ExecutionDispatchLedger()
-        ledger.observe_generation(console.ExecutionConfigGeneration("generation-fast", "fast", "gpt-5.6", "high", 10, "host:config:fast"))
+        ledger.observe_generation(console.ExecutionConfigGeneration("generation-fast", True, "gpt-5.6", "high", 10, "host:config:fast"))
         ledger.reserve("reservation-1", "task-1", "owner-1", ArtifactIdentity("artifact", "rev-1", "queue"), observed_at_ms=11)
         record = ledger.dispatch("reservation-1", "a" * 64, 900, observed_at_ms=12)
         event = CodexAppServerAdapter().translate_event({
@@ -551,13 +551,31 @@ class SwarmConsoleTests(unittest.TestCase):
         with self.assertRaisesRegex(InvariantError, "duplicate dispatch"):
             restarted.dispatch("reservation-1", "c" * 64, 800, observed_at_ms=16)
 
-        restarted.observe_generation(console.ExecutionConfigGeneration("generation-standard", "default", "gpt-5.6", "high", 20, "host:config:standard"))
+        restarted.observe_generation(console.ExecutionConfigGeneration("generation-standard", False, "gpt-5.6", "high", 20, "host:config:standard"))
         restarted.checkpoint("reservation-1", observed_at_ms=21)
         resumed = restarted.dispatch("reservation-1", "d" * 64, 700, observed_at_ms=22)
         self.assertEqual((resumed.generation_id, resumed.requested_service_tier), ("generation-standard", "default"))
         store.persist_execution_ledger(restarted, now_ms=23)
         final = console.ConsoleStore(path).load_execution_ledger().reservation("reservation-1")
         self.assertEqual((final.generation_id, final.requested_service_tier, final.service_tier_truth.value), ("generation-standard", "default", "unverified"))
+
+    def test_execution_generation_legacy_tier_migrates_once_to_boolean_authority(self) -> None:
+        path = self.root / "console" / "legacy-execution.sqlite3"
+        store = console.ConsoleStore(path)
+        payload = {
+            "generation_id": "legacy-fast", "service_tier": "priority", "model": "gpt-5.6",
+            "effort": "high", "changed_at_ms": 10, "host_receipt_id": "host:config:legacy-fast",
+        }
+        encoded, digest = store._execution_payload(payload)
+        with closing(sqlite3.connect(path)) as connection:
+            connection.execute(
+                "INSERT INTO execution_config_generations(generation_id,payload_json,payload_digest,changed_at_ms) VALUES(?,?,?,?)",
+                ("legacy-fast", encoded, digest, 10),
+            )
+            connection.commit()
+        ledger = store.load_execution_ledger()
+        self.assertTrue(ledger.latest_generation.fast_mode)
+        self.assertEqual(ledger.latest_generation.requested_service_tier, "fast")
 
     def test_codex_jsonl_token_counts_are_high_water_deduped(self) -> None:
         session = self.codex_home / "sessions" / "2026" / "08" / "22" / "rollout-thread-1.jsonl"
@@ -1971,8 +1989,17 @@ class SwarmConsoleTests(unittest.TestCase):
         result = console.update_config(self.config, {"execution.fast_mode": True})
         self.assertTrue(result["settings"]["execution"]["fast_mode"])
         self.assertNotIn("service_tier", result["settings"]["execution"])
+        result = console.update_config(self.config, {"execution.fast_mode": False})
+        self.assertFalse(result["settings"]["execution"]["fast_mode"])
         with self.assertRaisesRegex(console.ConsoleError, "must be a boolean"):
             console.update_config(self.config, {"execution.fast_mode": "yes"})
+
+    def test_fast_mode_atomic_update_failure_preserves_original(self) -> None:
+        before = self.config.read_bytes()
+        with mock.patch.object(console.os, "replace", side_effect=OSError("replace blocked")):
+            with self.assertRaisesRegex(console.ConsoleError, "replace blocked"):
+                console.update_config(self.config, {"execution.fast_mode": True})
+        self.assertEqual(self.config.read_bytes(), before)
 
     def test_console_write_migrates_legacy_fast_alias_without_losing_effective_choice(self) -> None:
         text = self.config.read_text(encoding="utf-8")

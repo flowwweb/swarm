@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from copy import deepcopy
 import importlib.util
 import json
 import subprocess
@@ -465,19 +466,19 @@ class SwarmConfigTests(unittest.TestCase):
         doer=config.resolve_model_assignment(effective,"doer",surface="codex_task")
         self.assertEqual(reviewer["model"],doer["model"])
 
-    def test_direct_user_tier_overrides_fast_mode_without_changing_model(self) -> None:
+    def test_fast_mode_changes_only_host_request_not_model_or_reasoning(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path=Path(directory)/"fast.toml"
             path.write_text('[execution]\nfast_mode = true\n',encoding="utf-8")
             effective,_=config.load(path)
         baseline=config.resolve_model_assignment(effective,"lead",surface="codex_task")
-        explicit=config.resolve_model_assignment(effective,"lead",surface="codex_task",explicit_service_tier="default")
         self.assertEqual(baseline["requested_service_tier"],"fast")
-        self.assertEqual(explicit["requested_service_tier"],"default")
-        self.assertFalse(explicit["requested_fast_mode"])
-        self.assertEqual(explicit["service_tier_selection_source"],"explicit_user")
-        self.assertEqual(explicit["model"],baseline["model"])
-        self.assertEqual(explicit["reasoning_effort"],baseline["reasoning_effort"])
+        self.assertTrue(baseline["requested_fast_mode"])
+        control=deepcopy(effective)
+        control["execution"]["fast_mode"]=False
+        standard=config.resolve_model_assignment(control,"lead",surface="codex_task")
+        self.assertIsNone(standard["requested_service_tier"])
+        self.assertEqual((baseline["model"],baseline["reasoning_effort"]),(standard["model"],standard["reasoning_effort"]))
 
     def test_legacy_fast_aliases_migrate_to_one_boolean_without_retaining_authority(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -497,14 +498,34 @@ class SwarmConfigTests(unittest.TestCase):
             neutral=root/"neutral.toml"
             neutral.write_text('[execution]\nservice_tier = "flex"\n',encoding="utf-8")
             neutral_effective,_=config.load(neutral)
+            current=root/"current.toml"
+            current.write_text('[execution]\ncurrent_mode = "FAST"\n',encoding="utf-8")
+            migrated_current,_=config.load(current)
+            root_alias=root/"root-alias.toml"
+            root_alias.write_text('fast_mode = true\ncurrent_mode = "FAST"\n',encoding="utf-8")
+            migrated_root,_=config.load(root_alias)
         self.assertTrue(migrated_service["execution"]["fast_mode"])
         self.assertTrue(migrated_efficiency["execution"]["fast_mode"])
         self.assertEqual(migrated_efficiency["efficiency"]["mode"],"BALANCED")
         self.assertFalse(explicit_effective["execution"]["fast_mode"])
         self.assertEqual(explicit_effective["efficiency"]["mode"],"BALANCED")
         self.assertFalse(neutral_effective["execution"]["fast_mode"])
-        for effective in (migrated_service,migrated_efficiency,explicit_effective,neutral_effective):
+        self.assertTrue(migrated_current["execution"]["fast_mode"])
+        self.assertTrue(migrated_root["execution"]["fast_mode"])
+        for effective in (migrated_service,migrated_efficiency,explicit_effective,neutral_effective,migrated_current,migrated_root):
             self.assertNotIn("service_tier",effective["execution"])
+
+    def test_legacy_fast_conflict_and_unknown_mode_fail_visibly(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory)
+            conflict=root/"conflict.toml"
+            conflict.write_text('[execution]\nservice_tier = "fast"\ncurrent_mode = "STANDARD"\n',encoding="utf-8")
+            with self.assertRaisesRegex(config.ConfigError,"legacy Fast controls conflict"):
+                config.load(conflict)
+            unknown=root/"unknown.toml"
+            unknown.write_text('[execution]\ncurrent_mode = "QUICK"\n',encoding="utf-8")
+            with self.assertRaisesRegex(config.ConfigError,"FAST, STANDARD, or DEFAULT"):
+                config.load(unknown)
 
     def test_legacy_service_tier_must_be_text(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -594,15 +615,15 @@ class SwarmConfigTests(unittest.TestCase):
         self.assertEqual(receipt["actual_model_verification"],"UNVERIFIED")
         self.assertEqual(receipt["actual_model"],"")
 
-    def test_explicit_model_provider_reasoning_and_tier_are_preserved(self) -> None:
+    def test_explicit_model_provider_and_reasoning_are_preserved_without_tier_authority(self) -> None:
         effective, _ = config.load(config.TEMPLATE_PATH)
         receipt=config.resolve_model_assignment(
             effective,"doer",surface="codex_task",explicit_model="gpt-5.6-terra",explicit_provider="openai",
-            explicit_reasoning="max",explicit_service_tier="priority",host_actual_model="gpt-5.6-terra",host_receipt="host:model:gpt-5.6-terra",
+            explicit_reasoning="max",host_actual_model="gpt-5.6-terra",host_receipt="host:model:gpt-5.6-terra",
         )
         self.assertEqual(
             (receipt["model"],receipt["provider"],receipt["reasoning_effort"],receipt["requested_service_tier"]),
-            ("gpt-5.6-terra","openai","max","priority"),
+            ("gpt-5.6-terra","openai","max",None),
         )
         self.assertNotIn("service_tier",receipt)
         self.assertEqual(receipt["selection_source"],"explicit_user")

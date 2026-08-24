@@ -760,18 +760,39 @@ def normalize_legacy_task_role(raw: dict[str, Any]) -> dict[str, Any]:
             professions.setdefault(profession_id,roles.pop(role))
 
     execution=normalized.setdefault("execution",{})
-    legacy_fast_mode=False
+    legacy_fast_signals=[]
+    canonical_fast_mode=isinstance(execution,dict) and "fast_mode" in execution
+    root_fast_mode=normalized.pop("fast_mode",None)
+    if root_fast_mode is not None:
+        if not isinstance(root_fast_mode,bool):
+            raise ConfigError("legacy root fast_mode must be true or false")
+        legacy_fast_signals.append(("root.fast_mode",root_fast_mode))
+    root_current_mode=normalized.pop("current_mode",None)
+    if root_current_mode is not None:
+        if not isinstance(root_current_mode,str) or root_current_mode.upper() not in {"FAST","STANDARD","DEFAULT"}:
+            raise ConfigError("legacy root current_mode must be FAST, STANDARD, or DEFAULT")
+        legacy_fast_signals.append(("root.current_mode",root_current_mode.upper()=="FAST"))
+    if isinstance(execution,dict) and "current_mode" in execution:
+        legacy_current_mode=execution.pop("current_mode")
+        if not isinstance(legacy_current_mode,str) or legacy_current_mode.upper() not in {"FAST","STANDARD","DEFAULT"}:
+            raise ConfigError("legacy execution.current_mode must be FAST, STANDARD, or DEFAULT")
+        legacy_fast_signals.append(("execution.current_mode",legacy_current_mode.upper()=="FAST"))
     if isinstance(execution,dict) and "service_tier" in execution:
         legacy_service_tier=execution.pop("service_tier")
         if not isinstance(legacy_service_tier,str):
             raise ConfigError("legacy execution.service_tier must be text")
-        legacy_fast_mode=legacy_service_tier in FAST_SERVICE_TIERS
+        if legacy_service_tier not in FAST_SERVICE_TIERS | {"default","flex"}:
+            raise ConfigError("legacy execution.service_tier must be default, flex, fast, or priority")
+        legacy_fast_signals.append(("execution.service_tier",legacy_service_tier in FAST_SERVICE_TIERS))
     efficiency=normalized.get("efficiency",{})
     if isinstance(efficiency,dict) and efficiency.get("mode")=="FAST":
         efficiency["mode"]="BALANCED"
-        legacy_fast_mode=True
-    if isinstance(execution,dict) and "fast_mode" not in execution and legacy_fast_mode:
-        execution["fast_mode"]=True
+        legacy_fast_signals.append(("efficiency.mode",True))
+    if isinstance(execution,dict) and not canonical_fast_mode and legacy_fast_signals:
+        values={value for _,value in legacy_fast_signals}
+        if len(values)!=1:
+            raise ConfigError("legacy Fast controls conflict; set execution.fast_mode explicitly")
+        execution["fast_mode"]=values.pop()
 
     lifecycle=normalized.get("lifecycle",{})
     automation=normalized.get("automation")
@@ -898,7 +919,7 @@ def resolve_model_assignment(
     effective: dict[str, Any], role: str, *, surface: str, route_tier: int = 2,
     workload: str = "general", required_tools: tuple[str, ...] = (),
     explicit_model: str | None = None, explicit_reasoning: str | None = None,
-    explicit_provider: str | None = None, explicit_service_tier: str | None = None,
+    explicit_provider: str | None = None,
     host_actual_model: str | None = None, host_receipt: str | None = None,
     host_actual_service_tier: str | None = None,
     host_service_tier_receipt: str | None = None,
@@ -925,12 +946,8 @@ def resolve_model_assignment(
     else:
         profession_id=resolve_profession_id(role)
         custom=next((value for name,value in effective["professions"].items() if resolve_profession_id(name)==profession_id),{})
-    explicit=any(value is not None for value in (explicit_model, explicit_reasoning, explicit_provider, explicit_service_tier)) or any(key in custom for key in ("model","reasoning"))
-    if explicit_service_tier is not None:
-        _short_text({"service_tier":explicit_service_tier},"service_tier","explicit assignment",allow_empty=True)
-        requested_service_tier=explicit_service_tier
-        service_tier_source="explicit_user"
-    elif effective["execution"]["fast_mode"]:
+    explicit=any(value is not None for value in (explicit_model, explicit_reasoning, explicit_provider)) or any(key in custom for key in ("model","reasoning"))
+    if effective["execution"]["fast_mode"]:
         requested_service_tier="fast"
         service_tier_source="fast_mode"
     else:
@@ -1077,7 +1094,6 @@ def parse_args() -> argparse.Namespace:
     assign.add_argument("--explicit-model")
     assign.add_argument("--explicit-reasoning", choices=tuple(REASONING_SCALE))
     assign.add_argument("--explicit-provider")
-    assign.add_argument("--explicit-service-tier")
     assign.add_argument("--host-actual-model")
     assign.add_argument("--host-receipt")
     spark = subparsers.add_parser("spark", help="emit a bounded Spark model-assignment receipt")
@@ -1139,7 +1155,7 @@ def main() -> int:
             print(json.dumps(resolve_model_assignment(
                 effective,args.role,surface=args.surface,route_tier=args.route_tier,workload=args.workload,
                 required_tools=tuple(args.required_tool),explicit_model=args.explicit_model,explicit_reasoning=args.explicit_reasoning,
-                explicit_provider=args.explicit_provider,explicit_service_tier=args.explicit_service_tier,
+                explicit_provider=args.explicit_provider,
                 host_actual_model=args.host_actual_model,host_receipt=args.host_receipt,
             ),indent=2))
             return 0
