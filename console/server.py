@@ -47,6 +47,11 @@ from runtime.progress_events import (  # noqa: E402
     ProgressPulseEvent,
     validate_progress_pulse,
 )
+from runtime.execution_adapters import (  # noqa: E402
+    ExecutionConfigGeneration,
+    ExecutionDispatchLedger,
+    ExecutionReservation,
+)
 
 INSTANCE_ID = hashlib.sha256(str(CONSOLE_ROOT.resolve()).casefold().encode("utf-8")).hexdigest()[:16]
 CONFIG_SCRIPT = PLUGIN_ROOT / "skills" / "swarm" / "scripts" / "swarm_config.py"
@@ -1098,6 +1103,23 @@ class ConsoleStore:
                     resolved_at_ms INTEGER,
                     resolution_receipt TEXT NOT NULL DEFAULT ''
                 );
+                CREATE TABLE IF NOT EXISTS execution_config_generations (
+                    generation_id TEXT PRIMARY KEY,
+                    payload_json TEXT NOT NULL,
+                    payload_digest TEXT NOT NULL,
+                    changed_at_ms INTEGER NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS execution_dispatch_state (
+                    reservation_id TEXT PRIMARY KEY,
+                    task_id TEXT NOT NULL UNIQUE,
+                    snapshot_json TEXT NOT NULL,
+                    snapshot_digest TEXT NOT NULL,
+                    updated_at_ms INTEGER NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS execution_event_receipts (
+                    event_digest TEXT PRIMARY KEY,
+                    retained_at_ms INTEGER NOT NULL
+                );
                 CREATE UNIQUE INDEX IF NOT EXISTS health_requests_open_dedupe
                     ON health_requests(dedupe_key)
                     WHERE status IN ('OPEN', 'CLAIMED', 'IN_PROGRESS');
@@ -1217,6 +1239,93 @@ class ConsoleStore:
                 "surface_kind='available_media' WHERE disposition IN ('AVAILABLE', 'SURFACED')"
             )
             connection.commit()
+
+    @staticmethod
+    def _execution_payload(payload: dict[str, Any]) -> tuple[str, str]:
+        encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+        return encoded, hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+    def persist_execution_ledger(self, ledger: ExecutionDispatchLedger, *, now_ms: int) -> None:
+        """Persist only typed queue identities/digests; raw request or tool content is never accepted."""
+        if not isinstance(ledger, ExecutionDispatchLedger) or not isinstance(now_ms, int) or isinstance(now_ms, bool) or now_ms < 0:
+            raise ConsoleError("execution ledger persistence requires typed state and nonnegative time")
+        with self._lock, closing(self._connect()) as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            for generation in ledger.generations:
+                payload = {
+                    "generation_id": generation.generation_id,
+                    "service_tier": generation.service_tier,
+                    "model": generation.model,
+                    "effort": generation.effort,
+                    "changed_at_ms": generation.changed_at_ms,
+                    "host_receipt_id": generation.host_receipt_id,
+                }
+                encoded, digest = self._execution_payload(payload)
+                existing = connection.execute(
+                    "SELECT payload_digest FROM execution_config_generations WHERE generation_id = ?",
+                    (generation.generation_id,),
+                ).fetchone()
+                if existing is not None and str(existing["payload_digest"]) != digest:
+                    raise ConsoleError("execution config generation conflicts with retained identity")
+                connection.execute(
+                    "INSERT OR IGNORE INTO execution_config_generations(generation_id, payload_json, payload_digest, changed_at_ms) VALUES (?, ?, ?, ?)",
+                    (generation.generation_id, encoded, digest, generation.changed_at_ms),
+                )
+            for reservation in ledger.reservations:
+                encoded, digest = self._execution_payload(reservation.snapshot())
+                connection.execute(
+                    """
+                    INSERT INTO execution_dispatch_state(reservation_id, task_id, snapshot_json, snapshot_digest, updated_at_ms)
+                    VALUES (?, ?, ?, ?, ?)
+                    ON CONFLICT(reservation_id) DO UPDATE SET
+                        task_id=excluded.task_id,
+                        snapshot_json=excluded.snapshot_json,
+                        snapshot_digest=excluded.snapshot_digest,
+                        updated_at_ms=excluded.updated_at_ms
+                    """,
+                    (reservation.reservation_id, reservation.task_id, encoded, digest, reservation.updated_at_ms),
+                )
+            for event_digest in ledger.event_digests:
+                connection.execute(
+                    "INSERT OR IGNORE INTO execution_event_receipts(event_digest, retained_at_ms) VALUES (?, ?)",
+                    (event_digest, now_ms),
+                )
+            connection.commit()
+
+    def load_execution_ledger(self) -> ExecutionDispatchLedger:
+        """Restore retained reservations and dedupe receipts without replaying host work."""
+        with self._lock, closing(self._connect()) as connection:
+            generation_rows = connection.execute(
+                "SELECT payload_json, payload_digest FROM execution_config_generations ORDER BY changed_at_ms, generation_id"
+            ).fetchall()
+            reservation_rows = connection.execute(
+                "SELECT snapshot_json, snapshot_digest FROM execution_dispatch_state ORDER BY reservation_id"
+            ).fetchall()
+            event_rows = connection.execute(
+                "SELECT event_digest FROM execution_event_receipts ORDER BY event_digest"
+            ).fetchall()
+        try:
+            generations = []
+            for row in generation_rows:
+                payload = json.loads(str(row["payload_json"]))
+                _, digest = self._execution_payload(payload)
+                if digest != str(row["payload_digest"]):
+                    raise ConsoleError("execution config generation digest mismatch")
+                generations.append(ExecutionConfigGeneration(**payload))
+            reservations = []
+            for row in reservation_rows:
+                payload = json.loads(str(row["snapshot_json"]))
+                _, digest = self._execution_payload(payload)
+                if digest != str(row["snapshot_digest"]):
+                    raise ConsoleError("execution reservation snapshot digest mismatch")
+                reservations.append(ExecutionReservation.from_snapshot(payload))
+            return ExecutionDispatchLedger(
+                generations=tuple(generations),
+                reservations=tuple(reservations),
+                event_digests=tuple(str(row["event_digest"]) for row in event_rows),
+            )
+        except (TypeError, ValueError, KeyError, json.JSONDecodeError) as error:
+            raise ConsoleError(f"execution ledger restore failed closed: {error}") from error
 
     def _retention_cutoff(self, now_ms: int) -> int:
         return now_ms - TOKEN_RETENTION_DAYS * 24 * 60 * 60 * 1000

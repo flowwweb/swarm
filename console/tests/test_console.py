@@ -23,6 +23,7 @@ assert SPEC and SPEC.loader
 console = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(console)
 from runtime.progress_events import write_progress_pulse  # noqa: E402
+from runtime import ArtifactIdentity, CodexAppServerAdapter, ExecutionDispatchState, InvariantError  # noqa: E402
 
 
 class SwarmConsoleTests(unittest.TestCase):
@@ -522,6 +523,41 @@ class SwarmConsoleTests(unittest.TestCase):
         finally:
             connection.close()
         self.assertEqual(cursor[0], 130)
+
+    def test_execution_queue_persists_reservation_generation_and_event_dedupe_across_restart(self) -> None:
+        path = self.root / "console" / "execution-state.sqlite3"
+        ledger = console.ExecutionDispatchLedger()
+        ledger.observe_generation(console.ExecutionConfigGeneration("generation-fast", "fast", "gpt-5.6", "high", 10, "host:config:fast"))
+        ledger.reserve("reservation-1", "task-1", "owner-1", ArtifactIdentity("artifact", "rev-1", "queue"), observed_at_ms=11)
+        record = ledger.dispatch("reservation-1", "a" * 64, 900, observed_at_ms=12)
+        event = CodexAppServerAdapter().translate_event({
+            "method": "turn/completed",
+            "params": {"threadId": "thread-1", "turnId": "turn-1", "status": "completed"},
+        })
+        self.assertTrue(ledger.observe_event("reservation-1", event, observed_at_ms=13))
+        store = console.ConsoleStore(path)
+        store.persist_execution_ledger(ledger, now_ms=14)
+        with self.assertRaisesRegex(console.ConsoleError, "typed state"):
+            store.persist_execution_ledger({"prompt": "private"}, now_ms=14)
+        with closing(sqlite3.connect(path)) as connection:
+            retained = connection.execute("SELECT snapshot_json FROM execution_dispatch_state").fetchone()[0]
+        self.assertNotIn("prompt", retained.casefold())
+        self.assertNotIn("private", retained.casefold())
+
+        restarted = console.ConsoleStore(path).load_execution_ledger()
+        restored = restarted.reservation("reservation-1")
+        self.assertEqual((restored.state, restored.host_completed, restored.requested_service_tier), (ExecutionDispatchState.ACTIVE, True, "fast"))
+        self.assertFalse(restarted.observe_event("reservation-1", event, observed_at_ms=15))
+        with self.assertRaisesRegex(InvariantError, "duplicate dispatch"):
+            restarted.dispatch("reservation-1", "c" * 64, 800, observed_at_ms=16)
+
+        restarted.observe_generation(console.ExecutionConfigGeneration("generation-standard", "default", "gpt-5.6", "high", 20, "host:config:standard"))
+        restarted.checkpoint("reservation-1", observed_at_ms=21)
+        resumed = restarted.dispatch("reservation-1", "d" * 64, 700, observed_at_ms=22)
+        self.assertEqual((resumed.generation_id, resumed.requested_service_tier), ("generation-standard", "default"))
+        store.persist_execution_ledger(restarted, now_ms=23)
+        final = console.ConsoleStore(path).load_execution_ledger().reservation("reservation-1")
+        self.assertEqual((final.generation_id, final.requested_service_tier, final.service_tier_truth.value), ("generation-standard", "default", "unverified"))
 
     def test_codex_jsonl_token_counts_are_high_water_deduped(self) -> None:
         session = self.codex_home / "sessions" / "2026" / "08" / "22" / "rollout-thread-1.jsonl"

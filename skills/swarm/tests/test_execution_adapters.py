@@ -5,27 +5,46 @@ from hashlib import sha256
 import unittest
 
 from skills.swarm.runtime import (
+    AcceptanceContract,
     AdapterCapability,
     AdapterCapabilityMatrix,
     AdapterCapabilityState,
+    AdapterEvent,
     AdapterPlanStatus,
     AdapterRegistry,
     ArtifactIdentity,
     CodexAppServerAdapter,
+    ContinuationSnapshot,
+    CtrlMode,
+    DelegatedReceiptVerdict,
+    DelegatedReturnReceipt,
     ExecutionAdapter,
     ExecutionAdapterRequest,
+    ExecutionConfigGeneration,
+    ExecutionDispatchLedger,
+    ExecutionDispatchState,
+    ExecutionFailureKind,
     ExecutionRoute,
     HostCapacityEvidence,
     HostTaskCapacity,
     InvariantError,
+    LaneKind,
     LaneMaterialization,
     ProfessionAssignment,
+    ReviewEvidence,
+    ReviewScope,
+    ReviewStrategy,
     Role,
     RoutingEconomics,
     RoutingEvidenceBasis,
     Swarm,
+    Task,
+    TaskState,
     WorkRoutingFacts,
     WorkSize,
+    Worker,
+    HostServiceTierReceipt,
+    ServiceTierTruth,
     TopologyMaterializationPlan,
     route_execution,
 )
@@ -166,6 +185,180 @@ class ExecutionAdapterTests(unittest.TestCase):
         request = self.request(adapter_id="local-runner", required=("execute", "swarm.routing"))
         plan = AdapterRegistry((adapter,)).plan(request)
         self.assertEqual((plan.status, plan.entrypoint, plan.protocol), (AdapterPlanStatus.READY, ("local-runner", "serve"), "jsonl"))
+
+
+class ExecutionDispatchLedgerTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.artifact = ArtifactIdentity("queue-artifact", "rev-1", "exact queue result")
+
+    @staticmethod
+    def generation(identity: str, tier: str, changed_at: int) -> ExecutionConfigGeneration:
+        return ExecutionConfigGeneration(identity, tier, "gpt-5.6", "high", changed_at, f"host:config:{identity}")
+
+    def ledger(self, tier: str = "default") -> ExecutionDispatchLedger:
+        ledger = ExecutionDispatchLedger()
+        ledger.observe_generation(self.generation(f"generation-{tier}", tier, 10))
+        ledger.reserve("reservation-1", "queue-task", "worker", self.artifact, observed_at_ms=11)
+        return ledger
+
+    def accepted_runtime(self) -> Swarm:
+        runtime = Swarm()
+        runtime.add_lead(Role.CTRL, "lead")
+        runtime.add_worker(Role.LEAD, Worker("worker", "lead", 1))
+        task = Task(
+            "queue-task", "worker", "creator", 1, {},
+            subagent_receipt="host:thread:queue-task", ctrl_mode=CtrlMode.DIRECT,
+            lane_kind=LaneKind.OTHER, owning_lead_id="lead",
+            acceptance_contract=AcceptanceContract(self.artifact, ()),
+        )
+        runtime.assign(Role.LEAD, task)
+        plan = task.acceptance_contract.proof_plan
+        self.assertIsNotNone(plan)
+        runtime.review(
+            Role.REVIEW,
+            task.id,
+            ReviewEvidence(
+                ReviewStrategy.LIGHT, "reviewer", True, self.artifact,
+                receipt=(("acceptance", "review:queue-task"),),
+                scope=ReviewScope.ACCEPTANCE,
+                plan_digest=plan.plan_digest,
+            ),
+            True,
+        )
+        return runtime
+
+    def material_receipt(self) -> DelegatedReturnReceipt:
+        return DelegatedReturnReceipt(
+            "receipt-queue-task", "queue-task", "worker", DelegatedReceiptVerdict.ACCEPT,
+            self.artifact, "Exact bounded material result.", observed_at=20,
+        )
+
+    @staticmethod
+    def host_event(status: str, *, thread_id: str = "thread", turn_id: str = "turn", marker: str = "event") -> AdapterEvent:
+        return CodexAppServerAdapter().translate_event({
+            "method": f"turn/{status}",
+            "params": {"threadId": thread_id, "turnId": turn_id, "status": status, "marker": marker},
+        })
+
+    def test_fast_to_standard_checkpoints_running_work_and_next_turn_resolves_fresh_generation(self) -> None:
+        ledger = self.ledger("fast")
+        active = ledger.dispatch("reservation-1", "a" * 64, 1000, observed_at_ms=12)
+        self.assertEqual((active.requested_service_tier, active.requested_model), ("fast", "gpt-5.6"))
+        ledger.observe_generation(self.generation("generation-standard", "default", 20))
+        self.assertEqual(active.requested_service_tier, "fast")
+        self.assertEqual(active.next_generation_id, "generation-standard")
+        ledger.checkpoint("reservation-1", observed_at_ms=21)
+        resumed = ledger.dispatch("reservation-1", "b" * 64, 900, observed_at_ms=22)
+        self.assertEqual((resumed.requested_service_tier, resumed.generation_id), ("default", "generation-standard"))
+        self.assertEqual(resumed.service_tier_truth, ServiceTierTruth.UNVERIFIED)
+
+    def test_standard_to_fast_and_explicit_user_tier_resolve_at_dispatch_without_model_change(self) -> None:
+        ledger = self.ledger("default")
+        ledger.defer("reservation-1", observed_at_ms=11)
+        ledger.observe_generation(self.generation("generation-fast", "fast", 20))
+        active = ledger.dispatch("reservation-1", "c" * 64, 800, observed_at_ms=21)
+        self.assertEqual((active.requested_service_tier, active.requested_model, active.requested_effort), ("fast", "gpt-5.6", "high"))
+        ledger.reserve("reservation-2", "queue-task-2", "worker-2", self.artifact, observed_at_ms=22)
+        with self.assertRaisesRegex(InvariantError, "exact scoped receipt"):
+            ledger.dispatch("reservation-2", "d" * 64, 700, observed_at_ms=23, user_service_tier="default")
+        overridden = ledger.dispatch(
+            "reservation-2", "d" * 64, 700, observed_at_ms=23,
+            user_service_tier="default", user_override_receipt_id="host:user-tier:task-2",
+        )
+        self.assertEqual(overridden.requested_service_tier, "default")
+
+    def test_unavailable_or_conflicting_served_tier_stays_unverified(self) -> None:
+        ledger = self.ledger("fast")
+        active = ledger.dispatch("reservation-1", "e" * 64, 600, observed_at_ms=12)
+        event = self.host_event("completed", marker="unverified")
+        ledger.observe_event("reservation-1", event, observed_at_ms=13)
+        self.assertEqual((active.actual_service_tier, active.service_tier_truth), ("", ServiceTierTruth.UNVERIFIED))
+        other = self.ledger("fast")
+        request = other.dispatch("reservation-1", "1" * 64, 600, observed_at_ms=12)
+        other.observe_event(
+            "reservation-1",
+            self.host_event("completed", marker="conflicting"),
+            observed_at_ms=13,
+            served_tier=HostServiceTierReceipt(request.request_digest, "default", "host:response:tier", 13),
+        )
+        self.assertEqual(request.service_tier_truth, ServiceTierTruth.UNVERIFIED)
+        confirmed = self.ledger("fast")
+        confirmed_request = confirmed.dispatch("reservation-1", "3" * 64, 600, observed_at_ms=12)
+        confirmed.observe_event(
+            "reservation-1",
+            self.host_event("completed", marker="confirmed"),
+            observed_at_ms=13,
+            served_tier=CodexAppServerAdapter.translate_service_tier_receipt(
+                {"id": 7, "result": {"service_tier": "priority"}},
+                request_digest=confirmed_request.request_digest,
+                observed_at_ms=13,
+            ),
+        )
+        self.assertEqual((confirmed_request.actual_service_tier, confirmed_request.service_tier_truth), ("priority", ServiceTierTruth.CONFIRMED))
+
+    def test_host_completion_material_receipt_independent_review_and_complete_are_distinct(self) -> None:
+        ledger = self.ledger()
+        record = ledger.dispatch("reservation-1", "3" * 64, 500, observed_at_ms=12)
+        with self.assertRaisesRegex(InvariantError, "host observation"):
+            ledger.observe_event(
+                "reservation-1",
+                AdapterEvent("turn/completed", "thread", "turn", status="completed", evidence_digest="4" * 64),
+                observed_at_ms=12,
+            )
+        event = self.host_event("completed", marker="pipeline")
+        self.assertTrue(ledger.observe_event("reservation-1", event, observed_at_ms=13))
+        self.assertFalse(ledger.observe_event("reservation-1", event, observed_at_ms=14))
+        self.assertEqual(record.state, ExecutionDispatchState.ACTIVE)
+        material = self.material_receipt()
+        ledger.record_material_receipt("reservation-1", material, observed_at_ms=20)
+        self.assertIs(ledger.record_material_receipt("reservation-1", material, observed_at_ms=20), record)
+        self.assertFalse(ledger.observe_event("reservation-1", event, observed_at_ms=20))
+        runtime = self.accepted_runtime()
+        ledger.record_independent_review("reservation-1", runtime, observed_at_ms=21)
+        self.assertEqual(record.state, ExecutionDispatchState.INDEPENDENT_REVIEW)
+        runtime.complete(Role.LEAD, "queue-task", True, True, 22, actor_id="lead")
+        ledger.record_complete("reservation-1", runtime, observed_at_ms=22)
+        self.assertEqual((record.state, runtime.tasks["queue-task"].state), (ExecutionDispatchState.COMPLETE, TaskState.COMPLETE))
+
+    def test_silence_empty_unreadable_timeout_and_bad_request_never_complete(self) -> None:
+        for index, kind in enumerate((ExecutionFailureKind.SILENCE, ExecutionFailureKind.EMPTY, ExecutionFailureKind.UNREADABLE, ExecutionFailureKind.TIMEOUT, ExecutionFailureKind.BAD_REQUEST)):
+            with self.subTest(kind=kind):
+                ledger = self.ledger()
+                record = ledger.dispatch("reservation-1", f"{index + 5:x}" * 64, 500, observed_at_ms=12)
+                kwargs = {"http_status": 400, "detail": "Bad Request"} if kind is ExecutionFailureKind.BAD_REQUEST else {}
+                ledger.fail_transport("reservation-1", kind, observed_at_ms=13, **kwargs)
+                self.assertEqual(record.state, ExecutionDispatchState.UNVERIFIED)
+                self.assertEqual(record.reservation_id, "reservation-1")
+
+    def test_known_bad_request_turns_remain_unverified_without_retaining_payload_content(self) -> None:
+        for index, turn_id in enumerate(("01a03196-367f-7940-8ed7-c803d591409d", "01a0320d-a579-7570-96c0-ed7f60bb2a0e")):
+            with self.subTest(turn_id=turn_id):
+                ledger = self.ledger()
+                record = ledger.dispatch("reservation-1", f"{index + 6:x}" * 64, 1000, observed_at_ms=12)
+                event = self.host_event("error", turn_id=turn_id, marker=f"failure-{index}")
+                ledger.observe_event("reservation-1", event, observed_at_ms=13)
+                self.assertEqual((record.state, record.failure_kind, record.host_turn_id), (ExecutionDispatchState.UNVERIFIED, ExecutionFailureKind.HOST_FAILED, turn_id))
+                self.assertNotIn("detail", repr(record))
+
+    def test_bad_request_retains_reservation_and_allows_only_one_fresh_smaller_retry(self) -> None:
+        ledger = self.ledger()
+        record = ledger.dispatch("reservation-1", "a" * 64, 1200, observed_at_ms=12)
+        ledger.fail_transport("reservation-1", ExecutionFailureKind.BAD_REQUEST, observed_at_ms=13, http_status=400, detail="Bad Request")
+        snapshot = ContinuationSnapshot("b" * 64, 1200, 700, 14)
+        retried = ledger.retry_smaller("reservation-1", snapshot, "c" * 64, 650, observed_at_ms=15)
+        self.assertIs(retried, record)
+        self.assertEqual((retried.retry_count, retried.request_bytes, retried.snapshot_digest), (1, 650, "b" * 64))
+        ledger.fail_transport("reservation-1", ExecutionFailureKind.BAD_REQUEST, observed_at_ms=16, http_status=400, detail="Bad Request")
+        with self.assertRaisesRegex(InvariantError, "only one"):
+            ledger.retry_smaller("reservation-1", ContinuationSnapshot("d" * 64, 650, 400, 17), "e" * 64, 350, observed_at_ms=18)
+
+    def test_duplicate_dispatch_and_direct_user_keep_out_fail_closed(self) -> None:
+        ledger = self.ledger()
+        with self.assertRaisesRegex(InvariantError, "keep-out"):
+            ledger.dispatch("reservation-1", "f" * 64, 500, observed_at_ms=12, direct_user_keep_out=True)
+        ledger.dispatch("reservation-1", "f" * 64, 500, observed_at_ms=13)
+        with self.assertRaisesRegex(InvariantError, "duplicate dispatch"):
+            ledger.dispatch("reservation-1", "1" * 64, 400, observed_at_ms=14)
 
 
 if __name__ == "__main__":
