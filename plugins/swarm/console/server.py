@@ -2451,27 +2451,36 @@ class ConsoleStore:
         }
 
     def _proof_event_scan_queue(self) -> list[str]:
+        start_token = "P:" if os.name == "nt" else "D:0"
         with self._lock, closing(self._connect()) as connection:
             row = connection.execute(
                 "SELECT value FROM store_metadata WHERE key=?",
                 (PROOF_EVENT_SCAN_STATE_KEY,),
             ).fetchone()
         if row is None:
-            return ["P:"]
+            return [start_token]
         try:
             value = json.loads(str(row["value"]))
         except (TypeError, ValueError, json.JSONDecodeError):
-            return ["P:"]
+            return [start_token]
         if not isinstance(value, list) or len(value) > 16384:
-            return ["P:"]
+            return [start_token]
         queue = [str(token) for token in value]
         if any(
-            not token.startswith(("P:", "E:"))
-            or any(character not in PROOF_EVENT_PREFIX_ALPHABET for character in token[2:])
+            (
+                token.startswith(("P:", "E:"))
+                and any(character not in PROOF_EVENT_PREFIX_ALPHABET for character in token[2:])
+            )
+            or (token.startswith("D:") and not token[2:].isdigit())
+            or not token.startswith(("P:", "E:", "D:"))
             for token in queue
         ):
-            return ["P:"]
-        return queue or ["P:"]
+            return [start_token]
+        if (os.name == "nt" and any(token.startswith("D:") for token in queue)) or (
+            os.name != "nt" and any(token.startswith("P:") for token in queue)
+        ):
+            return [start_token]
+        return queue or [start_token]
 
     def _set_proof_event_scan_queue(self, queue: list[str]) -> None:
         value = json.dumps(queue, separators=(",", ":"))
@@ -2542,7 +2551,120 @@ class ConsoleStore:
             find_close(handle)
         return sorted(matches, key=lambda path: path.name.casefold())
 
+    @staticmethod
+    def _proof_event_linux_batch(
+        event_root: Path,
+        offset: int,
+        limit: int,
+    ) -> tuple[list[Path], int, bool, int]:
+        """Read a bounded Linux directory batch and retain its native cursor."""
+        if not sys.platform.startswith("linux"):
+            raise OSError("bounded native proof-event traversal is unavailable on this host")
+        import ctypes
+
+        class Dirent(ctypes.Structure):
+            _fields_ = [
+                ("d_ino", ctypes.c_ulong),
+                ("d_off", ctypes.c_long),
+                ("d_reclen", ctypes.c_ushort),
+                ("d_type", ctypes.c_ubyte),
+                ("d_name", ctypes.c_char * 256),
+            ]
+
+        libc = ctypes.CDLL(None, use_errno=True)
+        opendir = libc.opendir
+        opendir.argtypes = [ctypes.c_char_p]
+        opendir.restype = ctypes.c_void_p
+        readdir = libc.readdir
+        readdir.argtypes = [ctypes.c_void_p]
+        readdir.restype = ctypes.POINTER(Dirent)
+        seekdir = libc.seekdir
+        seekdir.argtypes = [ctypes.c_void_p, ctypes.c_long]
+        seekdir.restype = None
+        telldir = libc.telldir
+        telldir.argtypes = [ctypes.c_void_p]
+        telldir.restype = ctypes.c_long
+        closedir = libc.closedir
+        closedir.argtypes = [ctypes.c_void_p]
+        closedir.restype = ctypes.c_int
+
+        directory = opendir(os.fsencode(event_root))
+        if not directory:
+            error = ctypes.get_errno()
+            raise OSError(error, "native proof-event directory open failed", str(event_root))
+        matches: list[Path] = []
+        enumerated = 0
+        exhausted = False
+        try:
+            if offset:
+                seekdir(directory, offset)
+            while enumerated < limit:
+                ctypes.set_errno(0)
+                entry = readdir(directory)
+                if not entry:
+                    error = ctypes.get_errno()
+                    if error:
+                        raise OSError(error, "native proof-event enumeration failed", str(event_root))
+                    exhausted = True
+                    break
+                name = os.fsdecode(bytes(entry.contents.d_name))
+                if name in (".", ".."):
+                    continue
+                enumerated += 1
+                if name.endswith(".json"):
+                    matches.append(event_root / name)
+            next_offset = int(telldir(directory))
+            if next_offset < 0:
+                error = ctypes.get_errno()
+                raise OSError(error, "native proof-event cursor read failed", str(event_root))
+        finally:
+            closedir(directory)
+        return sorted(matches, key=lambda path: path.name.casefold()), next_offset, exhausted, enumerated
+
+    def _bounded_linux_proof_event_paths(
+        self,
+        event_root: Path,
+    ) -> tuple[list[Path], bool, int, list[str]]:
+        queue = self._proof_event_scan_queue()
+        checked_tokens = 0
+        while queue and checked_tokens < MAX_PROOF_EVENT_FILES + 2:
+            token = queue.pop(0)
+            checked_tokens += 1
+            kind, value = token[:1], token[2:]
+            if kind == "E":
+                exact_values = [value]
+                while (
+                    queue
+                    and queue[0].startswith("E:")
+                    and len(exact_values) < MAX_PROOF_EVENT_FILES
+                ):
+                    exact_values.append(queue.pop(0)[2:])
+                paths = [
+                    event_root / f"{exact_value}.json"
+                    for exact_value in exact_values
+                    if (event_root / f"{exact_value}.json").is_file()
+                ]
+                return paths, bool(queue), len(exact_values), queue
+            if kind != "D":
+                continue
+            matches, next_offset, exhausted, enumerated = self._proof_event_linux_batch(
+                event_root,
+                int(value),
+                MAX_PROOF_EVENT_FILES + 1,
+            )
+            continuation = queue + ([] if exhausted else [f"D:{next_offset}"])
+            if len(matches) > MAX_PROOF_EVENT_FILES:
+                exact = [f"E:{path.stem}" for path in matches]
+                return [], True, enumerated, exact + continuation
+            if matches:
+                return matches, bool(continuation), enumerated, continuation
+            if not exhausted:
+                return [], True, enumerated, continuation
+        return [], bool(queue), 0, queue
+
     def _bounded_proof_event_paths(self, event_root: Path) -> tuple[list[Path], bool, int, list[str]]:
+        if os.name != "nt":
+            return self._bounded_linux_proof_event_paths(event_root)
         queue = self._proof_event_scan_queue()
         checked_tokens = 0
         while queue and checked_tokens < len(PROOF_EVENT_PREFIX_ALPHABET) + 2:
