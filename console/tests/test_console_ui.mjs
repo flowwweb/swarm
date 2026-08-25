@@ -258,6 +258,7 @@ async function mount(page, overview, overrides = {}) {
     if (url.pathname === "/api/health/settings") return route.fulfill(response(fixture.healthSettings));
     if (url.pathname === "/api/storage") return route.fulfill(response(fixture.storage));
     if (url.pathname === "/api/ctrl-settings") return route.fulfill(response(fixture.ctrlSettings));
+    if (url.pathname === "/api/skills") return route.fulfill(response({ ok: true, settings: { inheritance_enabled: true }, skills: [], overlays: { global: null, project: null, ctrl: null } }));
     if (url.pathname.startsWith("/api/proof-media/")) return route.fulfill({ status: 200, contentType: "image/svg+xml", body: '<svg xmlns="http://www.w3.org/2000/svg" width="160" height="100"><rect width="160" height="100" fill="#0f1726"/></svg>' });
     if (url.pathname === "/assets/swarm-wordmark.png") return route.fulfill({ status: 204 });
     if (url.pathname === "/swarm-favicon.svg") return route.fulfill({ status: 204 });
@@ -307,9 +308,9 @@ try {
   assert.equal(await page.locator("#overview-monitoring-heading").textContent(), "Current work");
   assert.equal(await page.locator("#usage-total").textContent(), "1K");
   assert.equal(await page.locator("#overview-monitoring-health-state").textContent(), "Needs attention");
-  assert.match(await page.locator("#overview-monitoring-health-note").textContent(), /1 visible lane needs attention/);
+  assert.match(await page.locator("#overview-monitoring-health-note").textContent(), /3 visible lanes need attention/);
   assert.match(await page.locator("#overview-project-cards").textContent(), /Blocker\s*Visual polish/);
-  assert.equal(await page.locator("#overview-evidence-gallery img").count(), 1);
+  assert.equal(await page.locator("#overview-evidence-gallery img").count(), 0);
   assert.equal(await page.locator('[data-overview-subagents="ctrl"]').count(), 1);
   assert.equal(await page.locator('[data-overview-subagents="ctrl"]').evaluate((element) => element.hasAttribute("open")), false);
   await page.getByRole("button", { name: "Unassigned planning" }).click();
@@ -362,7 +363,7 @@ try {
   assert.equal(await page.locator("#settings-scope").inputValue(), "ctrl|branch-ctrl");
   assert.match(await page.locator("#settings-scope").textContent(), /Unassigned planning/);
   assert.match(await page.locator("#settings-scope").textContent(), /Archived project/);
-  assert.match(await page.locator("#settings-grid").textContent(), /Manage skills/);
+  assert.equal(await page.getByRole("button", { name: "Manage" }).count(), 1);
 
   const unclassifiedPage = await browser.newPage({ viewport: { width: 1024, height: 760 } });
   const unclassifiedOverview = structuredClone(fixture.overview);

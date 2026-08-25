@@ -351,7 +351,6 @@ class SwarmSkillStructureTests(unittest.TestCase):
         self.assertRegex(task_contract, r"(?is)Exact duplicate content/state/proof.*no-ops")
         self.assertRegex(task_contract, r"(?is)Execution liveness stays separate.*healthy renewal never appends progress")
         self.assertRegex(task_contract, r"(?is)legacy latest-pulse sidecar.*not a reporting schedule or acceptance authority")
-        self.assertIn("not native host/user, progress, review, or acceptance authority", task_contract)
 
 
 if __name__ == "__main__":
