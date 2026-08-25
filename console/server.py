@@ -2607,7 +2607,8 @@ class ConsoleStore:
                         raise OSError(error, "native proof-event enumeration failed", str(event_root))
                     exhausted = True
                     break
-                name = os.fsdecode(bytes(entry.contents.d_name))
+                name_bytes = bytes(entry.contents.d_name).split(b"\0", 1)[0]
+                name = os.fsdecode(name_bytes)
                 if name in (".", ".."):
                     continue
                 enumerated += 1
