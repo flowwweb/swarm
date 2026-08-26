@@ -1375,6 +1375,7 @@ class RetryTopologyLedger:
     last_good_checkpoint:MaterialStateReceipt|None=None
     cost_receipts:dict[str,AttemptCostReceipt]=field(default_factory=dict)
     _attempts:dict[str,int]=field(default_factory=dict); _signatures:dict[str,tuple[str,str,RetryOutcome,str]]=field(default_factory=dict); _pending:RootCauseTopologyReassessment|None=None; _reassessment_used:bool=False
+    _host_authority:object=field(default_factory=object,init=False,repr=False,compare=False)
 
     def _retain_cost(self, receipt:AttemptCostReceipt|None) -> tuple[int|None,int|None]:
         if receipt is None: return None,None
@@ -1411,12 +1412,19 @@ class RetryTopologyLedger:
             return RetryTopologyDecision(RetryTopologyAction.REASSESS_ROOT_CAUSE,digest,2,progressed,tokens,latency,self._pending)
         return RetryTopologyDecision(RetryTopologyAction.STOP_REPEATED_TACTIC,digest,attempts,progressed,tokens,latency,self._pending)
 
-    def choose_reassessment(self, choice:ReassessmentChoice, *, host_receipt_current:bool=False) -> ReassessmentChoice:
+    @staticmethod
+    def host_binding_digest(pending:RootCauseTopologyReassessment, choice:ReassessmentChoice) -> str:
+        return _sha256_text(json.dumps(("retry-reassessment",pending.failed_signature_digest,choice.action,choice.target),separators=(",",":")))
+
+    def _choose_reassessment(self, choice:ReassessmentChoice, *, host_authority:object|None=None) -> ReassessmentChoice:
         pending=self._pending
         if pending is None or self._reassessment_used: raise InvariantError("root-cause/topology reassessment is not pending or was already consumed")
         if choice.route is ReassessmentRoute.DIFFERENT_BOUNDED_ROUTE and choice.action==pending.failed_action and choice.target==pending.failed_target: raise InvariantError("reassessment must choose a materially different bounded route")
         if choice.route is ReassessmentRoute.CONSOLIDATE and (self.last_good_checkpoint is None or choice.basis_receipt.content_address!=self.last_good_checkpoint.content_address): raise InvariantError("consolidation reassessment must bind the retained last-good checkpoint")
-        if choice.route is ReassessmentRoute.HUMAN_EXTERNAL_STATE_CHANGE and not host_receipt_current: raise InvariantError("human/external reassessment requires current host authority")
+        if choice.route is ReassessmentRoute.HUMAN_EXTERNAL_STATE_CHANGE:
+            receipt=choice.host_custody_receipt
+            expected=self.host_binding_digest(pending,choice)
+            if host_authority is not self._host_authority or receipt.mutation is not CustodyMutation.STATE or receipt.target_id!=choice.target or choice.target!=pending.failed_target or receipt.target_state_digest!=expected: raise InvariantError("human/external reassessment requires current host authority bound to the pending action and target")
         self._pending=None; self._reassessment_used=True
         return choice
 
@@ -2684,7 +2692,8 @@ class Swarm:
     def choose_retry_reassessment(self, choice:ReassessmentChoice) -> ReassessmentChoice:
         receipt=choice.host_custody_receipt
         current=receipt is not None and receipt._authority is self._custody_capability and self.host_custody_receipts.get(receipt.receipt) is receipt
-        return self.retry_topology_ledger.choose_reassessment(choice,host_receipt_current=current)
+        authority=self.retry_topology_ledger._host_authority if current else None
+        return self.retry_topology_ledger._choose_reassessment(choice,host_authority=authority)
     def ctrl_event(self, event: str, task_id: str, material_revision:str|int=0, *, outcome:str="", evidence_id:str="", next_checkpoint:str="") -> str|None:
         category={"RESULT":"result","DECISION":"decision","DEADLOCK":"blocker","REVIEW_FAIL":"blocker","SCOPE_ESCALATION":"blocker","RELEASE":"release","HANDOFF":"handoff","ACCEPTANCE":"acceptance"}.get(event)
         if not category:

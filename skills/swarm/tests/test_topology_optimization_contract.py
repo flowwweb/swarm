@@ -5,6 +5,8 @@ import unittest
 
 from skills.swarm.runtime.core import (
     AttemptCostReceipt,
+    CustodyMutation,
+    HostCustodyReceipt,
     InvariantError,
     MaterialStateKind,
     MaterialStateReceipt,
@@ -156,6 +158,31 @@ class TopologyOptimizationContractTests(unittest.TestCase):
             swarm.choose_retry_reassessment(ReassessmentChoice(ReassessmentRoute.CONSOLIDATE, "consolidate", "thread-42", fabricated))
         with self.assertRaisesRegex(InvariantError, "host custody receipt"):
             ReassessmentChoice(ReassessmentRoute.HUMAN_EXTERNAL_STATE_CHANGE, "wait-human", "thread-42")
+
+    def test_human_external_receipt_must_bind_pending_target_and_cannot_bypass_ledger_throat(self) -> None:
+        swarm = Swarm()
+        self.observe(swarm)
+        pending = self.observe(swarm).reassessment
+        unrelated = HostCustodyReceipt("usr-other-0001", CustodyMutation.STATE, "other-target", digest("other"), 1)
+        object.__setattr__(unrelated, "_authority", swarm._custody_capability)
+        swarm.host_custody_receipts[unrelated.receipt] = unrelated
+        choice = ReassessmentChoice(ReassessmentRoute.HUMAN_EXTERNAL_STATE_CHANGE, "wait-human", "other-target", host_custody_receipt=unrelated)
+        with self.assertRaisesRegex(InvariantError, "pending action and target"):
+            swarm.choose_retry_reassessment(choice)
+
+        expected = swarm.retry_topology_ledger.host_binding_digest(
+            pending,
+            ReassessmentChoice(
+                ReassessmentRoute.HUMAN_EXTERNAL_STATE_CHANGE,
+                "wait-human",
+                "thread-42",
+                host_custody_receipt=HostCustodyReceipt("usr-placeholder-0001", CustodyMutation.STATE, "thread-42", digest("placeholder"), 1),
+            ),
+        )
+        fabricated = HostCustodyReceipt("usr-fabricated-0001", CustodyMutation.STATE, "thread-42", expected, 1)
+        fabricated_choice = ReassessmentChoice(ReassessmentRoute.HUMAN_EXTERNAL_STATE_CHANGE, "wait-human", "thread-42", host_custody_receipt=fabricated)
+        with self.assertRaisesRegex(InvariantError, "current host authority"):
+            swarm.retry_topology_ledger._choose_reassessment(fabricated_choice, host_authority=True)
 
     def test_stale_material_receipt_cannot_replace_last_good_checkpoint(self) -> None:
         swarm = Swarm()
