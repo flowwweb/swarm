@@ -1,5 +1,9 @@
 # SWARM hierarchy and specialist roles
 
+SWARM is a Codex-native plugin/workflow. Codex is the only agent host whose
+execution behavior this hierarchy routes; external-provider wording is retained
+only for real service proof boundaries.
+
 ## Profession registry and authority boundary
 
 The built-in profession registry is exactly, in lifecycle display order:

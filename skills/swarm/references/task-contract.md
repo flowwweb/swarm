@@ -1,6 +1,6 @@
 # Compact task contract
 
-Use CORE + role + these fields. Atomic/simple tasks omit every inapplicable field. A durable task keeps only its exact current decision and proof boundary.
+Use CORE + role + these fields. Atomic/simple tasks omit every inapplicable field. A durable task keeps only its exact current decision and proof boundary. SWARM is Codex-native: Codex is the only agent host this contract routes; provider proof terms name real external services, not alternate execution hosts.
 
 For every user-authorized new SWARM objective, CTRL asks or confirms the goal
 and the most efficient safe completion strategy before routing. The typed
@@ -20,7 +20,7 @@ consumption of an exact current explicit-user request may pin or unpin, and the 
 may append below pinned folders. Otherwise preserve the current user state. If a tool is
 unavailable or a receipt fails, state the exact blocker and continue only with truthful internal
 CTRL identity. After this Step 0 custody
-check, create or continue exactly one matching durable goal before routing work. Its contract
+check, resolve and validate exactly one root `SWARM.md` project brief, bind its digest to the intake and topology plan, and keep dispatch `UNREADY` until that binding exists. An incompatible schema fails visibly and does not fall back to README or raw prompt content. Then create or continue exactly one matching durable goal before routing work. Its contract
 records the chosen topology and which visible task owns each mutable artifact.
 Hidden subagents are non-recursive leaf capacity, not a replacement for required
 SWARM task ownership. A task that may need recruitment or recursive delegation
@@ -157,6 +157,21 @@ integration/push, release, and archive planning through the same fail-closed
 decisions. Every policy or gate receipt is typed and bound to repository root,
 branch/remote, candidate SHA/tree, operation, authority, and freshness; a string
 claim or mismatched receipt cannot authorize an action.
+
+## Canonical project brief and design decisions
+
+`SWARM.md` is the single root project brief and context/provenance source before
+dispatch and at meaningful material boundaries. It is not an acceptance record.
+The exact schema, deterministic migration, digest binding, and no-secret rules
+are in [project-brief.md](project-brief.md).
+
+A user-facing design set is one bounded metadata event in the normal handoff.
+Once the user selects, exactly one candidate is `SELECTED` and every other
+candidate in the complete inventory is `REJECTED`. The selected artifact must
+first have durable hash-bound preservation. Only then may Storage consider
+rejected binaries by exact path and digest; no glob, broad purge, current or
+undecided asset, worker, process, or service is permitted. See
+[decision-set.md](decision-set.md).
 
 Storage inventory, archive, cleanup, relocation, and monitoring use a dedicated
 delegable STORAGE LEAD lane. Its contract binds an exact target manifest,
