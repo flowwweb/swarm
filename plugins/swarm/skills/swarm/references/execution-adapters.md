@@ -1,9 +1,9 @@
-# Optional execution adapters
+# Codex host execution adapters
 
-An execution adapter translates an already-authorized SWARM request into one
-provider or host protocol. It never chooses the owner, stores prompt or response
+An execution adapter translates an already-authorized SWARM request into the
+Codex host protocol. It never chooses the owner, stores prompt or response
 bodies, reviews its own work, accepts an artifact, mutates a host task, or grants
-provider authority.
+external-provider authority.
 
 ## Capability matrix
 
@@ -16,10 +16,9 @@ Every adapter declares each capability as exactly one of:
 
 A required `instruction_only` or `unsupported` capability blocks execution.
 Every adapter is disabled unless explicitly selected. Missing and disabled
-adapters stay disabled and never silently fall back; there is no implicit
-provider, model, or transport fallback. Registry selection is explicit, so other provider
-adapters can implement the same request contract without changing SWARM
-authority.
+adapters stay disabled and never silently fall back; there is no implicit model
+or transport fallback. Registry selection is explicit, and the Codex host remains
+the only supported execution authority.
 
 ## Native Codex adapter
 
