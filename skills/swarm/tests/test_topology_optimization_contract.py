@@ -200,7 +200,11 @@ class TopologyOptimizationContractTests(unittest.TestCase):
         second = self.observe(swarm, material_receipt=liveness_only)
         self.assertFalse(second.material_progress)
         self.assertEqual(second.action, RetryTopologyAction.REASSESS_ROOT_CAUSE)
-        self.assertEqual(swarm.retry_topology_ledger.last_good_checkpoint, first)
+        self.assertEqual(swarm.retry_topology_ledger.last_good_checkpoint, liveness_only)
+        changed_but_older = MaterialStateReceipt(MaterialStateKind.PROOF, "proof-set", digest("changed"), 15)
+        with self.assertRaisesRegex(InvariantError, "high-water"):
+            self.observe(swarm, material_receipt=changed_but_older)
+        self.assertEqual(swarm.retry_topology_ledger.last_good_checkpoint, liveness_only)
 
 
 if __name__ == "__main__":

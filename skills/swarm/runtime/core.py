@@ -1398,6 +1398,8 @@ class RetryTopologyLedger:
             if current is None or current.content_address!=material_receipt.content_address:
                 if current is not None and material_receipt.observed_at_ms<=current.observed_at_ms: raise InvariantError("material state receipt must advance the observed high-water")
                 self.last_good_checkpoint=material_receipt; self._attempts.clear(); self._signatures.clear(); self._pending=None; self._reassessment_used=False; progressed=True
+            elif material_receipt.observed_at_ms>current.observed_at_ms:
+                self.last_good_checkpoint=material_receipt
         signature=(action,target,outcome,blocker_code)
         digest=_sha256_text(json.dumps((action,target,outcome.value,blocker_code),separators=(",",":")))
         if user_paused or user_controlled:
