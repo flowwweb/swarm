@@ -1358,10 +1358,12 @@ class RootCauseTopologyReassessment:
 
 @dataclass(frozen=True)
 class ReassessmentChoice:
-    route:ReassessmentRoute; action:str; target:str; change_receipt_digest:str
+    route:ReassessmentRoute; action:str; target:str; basis_receipt:MaterialStateReceipt|None=None; host_custody_receipt:"HostCustodyReceipt|None"=None
     def __post_init__(self):
         if not isinstance(self.route,ReassessmentRoute): raise InvariantError("reassessment requires a typed route")
-        _safe_token(self.action); _safe_token(self.target); _require_digest(self.change_receipt_digest,"reassessment change receipt")
+        _safe_token(self.action); _safe_token(self.target)
+        if self.route is ReassessmentRoute.CONSOLIDATE and not isinstance(self.basis_receipt,MaterialStateReceipt): raise InvariantError("consolidation reassessment requires a typed immutable material-state receipt")
+        if self.route is ReassessmentRoute.HUMAN_EXTERNAL_STATE_CHANGE and self.host_custody_receipt is None: raise InvariantError("human/external reassessment requires a host custody receipt")
 
 @dataclass(frozen=True)
 class RetryTopologyDecision:
@@ -1372,7 +1374,7 @@ class RetryTopologyLedger:
     """One runtime throat that stops equivalent tactics after two non-progress outcomes."""
     last_good_checkpoint:MaterialStateReceipt|None=None
     cost_receipts:dict[str,AttemptCostReceipt]=field(default_factory=dict)
-    _signature_digest:str=""; _signature:tuple[str,str,RetryOutcome,str]|None=None; _equivalent_attempts:int=0; _pending:RootCauseTopologyReassessment|None=None; _reassessment_used:bool=False
+    _attempts:dict[str,int]=field(default_factory=dict); _signatures:dict[str,tuple[str,str,RetryOutcome,str]]=field(default_factory=dict); _pending:RootCauseTopologyReassessment|None=None; _reassessment_used:bool=False
 
     def _retain_cost(self, receipt:AttemptCostReceipt|None) -> tuple[int|None,int|None]:
         if receipt is None: return None,None
@@ -1394,27 +1396,28 @@ class RetryTopologyLedger:
             current=self.last_good_checkpoint
             if current is None or current.content_address!=material_receipt.content_address:
                 if current is not None and material_receipt.observed_at_ms<=current.observed_at_ms: raise InvariantError("material state receipt must advance the observed high-water")
-                self.last_good_checkpoint=material_receipt; self._signature_digest=""; self._signature=None; self._equivalent_attempts=0; self._pending=None; self._reassessment_used=False; progressed=True
-        if user_paused or user_controlled:
-            return RetryTopologyDecision(RetryTopologyAction.USER_CONTROLLED,self._signature_digest,self._equivalent_attempts,progressed,tokens,latency)
+                self.last_good_checkpoint=material_receipt; self._attempts.clear(); self._signatures.clear(); self._pending=None; self._reassessment_used=False; progressed=True
         signature=(action,target,outcome,blocker_code)
         digest=_sha256_text(json.dumps((action,target,outcome.value,blocker_code),separators=(",",":")))
+        if user_paused or user_controlled:
+            return RetryTopologyDecision(RetryTopologyAction.USER_CONTROLLED,digest,self._attempts.get(digest,0),progressed,tokens,latency)
+        self._signatures[digest]=signature
+        attempts=self._attempts.get(digest,0)+1; self._attempts[digest]=attempts
         if self._pending is not None:
-            return RetryTopologyDecision(RetryTopologyAction.STOP_REPEATED_TACTIC,self._pending.failed_signature_digest,self._equivalent_attempts,progressed,tokens,latency,self._pending)
-        if signature!=self._signature:
-            self._signature=signature; self._signature_digest=digest; self._equivalent_attempts=1
-            return RetryTopologyDecision(RetryTopologyAction.CONTINUE,digest,1,progressed,tokens,latency)
-        self._equivalent_attempts+=1
-        if self._equivalent_attempts==2 and not self._reassessment_used:
+            return RetryTopologyDecision(RetryTopologyAction.STOP_REPEATED_TACTIC,digest,attempts,progressed,tokens,latency,self._pending)
+        if attempts==1: return RetryTopologyDecision(RetryTopologyAction.CONTINUE,digest,1,progressed,tokens,latency)
+        if attempts==2 and not self._reassessment_used:
             self._pending=RootCauseTopologyReassessment(digest,action,target,outcome,blocker_code)
             return RetryTopologyDecision(RetryTopologyAction.REASSESS_ROOT_CAUSE,digest,2,progressed,tokens,latency,self._pending)
-        return RetryTopologyDecision(RetryTopologyAction.STOP_REPEATED_TACTIC,digest,self._equivalent_attempts,progressed,tokens,latency,self._pending)
+        return RetryTopologyDecision(RetryTopologyAction.STOP_REPEATED_TACTIC,digest,attempts,progressed,tokens,latency,self._pending)
 
-    def choose_reassessment(self, choice:ReassessmentChoice) -> ReassessmentChoice:
+    def choose_reassessment(self, choice:ReassessmentChoice, *, host_receipt_current:bool=False) -> ReassessmentChoice:
         pending=self._pending
         if pending is None or self._reassessment_used: raise InvariantError("root-cause/topology reassessment is not pending or was already consumed")
         if choice.route is ReassessmentRoute.DIFFERENT_BOUNDED_ROUTE and choice.action==pending.failed_action and choice.target==pending.failed_target: raise InvariantError("reassessment must choose a materially different bounded route")
-        self._pending=None; self._reassessment_used=True; self._signature=None; self._signature_digest=""; self._equivalent_attempts=0
+        if choice.route is ReassessmentRoute.CONSOLIDATE and (self.last_good_checkpoint is None or choice.basis_receipt.content_address!=self.last_good_checkpoint.content_address): raise InvariantError("consolidation reassessment must bind the retained last-good checkpoint")
+        if choice.route is ReassessmentRoute.HUMAN_EXTERNAL_STATE_CHANGE and not host_receipt_current: raise InvariantError("human/external reassessment requires current host authority")
+        self._pending=None; self._reassessment_used=True
         return choice
 
 @dataclass
@@ -2302,10 +2305,15 @@ class Swarm:
         while current and current not in seen:
             seen.add(current); current=self.tasks[current].waiting_on if current in self.tasks else None
         return current==start
-    def recover(self, actor: Role, task_id: str, dimension: str) -> None:
+    def recover(self, actor: Role, task_id: str, dimension: str, *, outcome:RetryOutcome=RetryOutcome.FAILED, blocker_code:str="", material_receipt:MaterialStateReceipt|None=None, cost_receipt:AttemptCostReceipt|None=None, user_paused:bool=False, user_controlled:bool=False) -> None:
         self._role(actor,{Role.LEAD,Role.CTRL}); t=self.tasks[task_id]
-        if not dimension or t.recovery_attempts>=1: raise InvariantError("recovery budget exhausted; release blocker")
-        t.recovery_dimensions.add(dimension); t.recovery_attempts=1; self._record("events",("RECOVERY",task_id))
+        if not dimension: raise InvariantError("recovery requires a typed dimension")
+        decision=self.retry_topology_ledger.observe(action="recover",target=task_id,outcome=outcome,blocker_code=blocker_code or _sha256_text(dimension)[:16],material_receipt=material_receipt,cost_receipt=cost_receipt,user_paused=user_paused,user_controlled=user_controlled)
+        if decision.action is RetryTopologyAction.USER_CONTROLLED: return
+        if decision.action is not RetryTopologyAction.CONTINUE:
+            if decision.action is RetryTopologyAction.REASSESS_ROOT_CAUSE: self._record("events",("REASSESS_ROOT_CAUSE",task_id))
+            raise InvariantError(f"recovery tactic stopped: {decision.action.value}")
+        t.recovery_dimensions.add(dimension); t.recovery_attempts+=1; self._record("events",("RECOVERY",task_id))
     def scope_finding(self, actor:Role, task_id:str, evidence:str, *, material:bool) -> bool:
         """Preserve a direct invariant violation; unrelated opportunity changes nothing."""
         self._role(actor,{Role.DOER,Role.LEAD,Role.SPECIALIST,Role.ARCHITECT}); t=self.tasks[task_id]
@@ -2663,6 +2671,10 @@ class Swarm:
         """Consume at most one fix-forward receipt for a stable correction incident."""
         if not incident_id.strip(): raise InvariantError("correction incident identity is required")
         decision=correction_decision(**facts,fix_forward_consumed=incident_id in self.correction_receipts)
+        if decision in {CorrectionDecision.FIX_FORWARD,CorrectionDecision.ESCALATE}:
+            retry=self.retry_topology_ledger.observe(action="fix-forward",target=incident_id,outcome=RetryOutcome.FAILED,blocker_code="material-correction")
+            if retry.action is RetryTopologyAction.REASSESS_ROOT_CAUSE: self._record("telemetry_events",{"kind":"retry_topology_reassessment","incident_id":incident_id,"signature":retry.signature_digest})
+            elif retry.action is RetryTopologyAction.STOP_REPEATED_TACTIC: raise InvariantError("repeated correction tactic stopped pending new material state")
         if decision==CorrectionDecision.FIX_FORWARD:
             if len(self.correction_receipts)>=64: return CorrectionDecision.ESCALATE if bool(facts.get("material")) else CorrectionDecision.CONTINUE
             self.correction_receipts[incident_id]=None
@@ -2670,7 +2682,9 @@ class Swarm:
     def retry_topology_decision(self, **facts:object) -> RetryTopologyDecision:
         return self.retry_topology_ledger.observe(**facts)
     def choose_retry_reassessment(self, choice:ReassessmentChoice) -> ReassessmentChoice:
-        return self.retry_topology_ledger.choose_reassessment(choice)
+        receipt=choice.host_custody_receipt
+        current=receipt is not None and receipt._authority is self._custody_capability and self.host_custody_receipts.get(receipt.receipt) is receipt
+        return self.retry_topology_ledger.choose_reassessment(choice,host_receipt_current=current)
     def ctrl_event(self, event: str, task_id: str, material_revision:str|int=0, *, outcome:str="", evidence_id:str="", next_checkpoint:str="") -> str|None:
         category={"RESULT":"result","DECISION":"decision","DEADLOCK":"blocker","REVIEW_FAIL":"blocker","SCOPE_ESCALATION":"blocker","RELEASE":"release","HANDOFF":"handoff","ACCEPTANCE":"acceptance"}.get(event)
         if not category:

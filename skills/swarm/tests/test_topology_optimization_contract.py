@@ -10,9 +10,11 @@ from skills.swarm.runtime.core import (
     MaterialStateReceipt,
     ReassessmentChoice,
     ReassessmentRoute,
+    Role,
     RetryOutcome,
     RetryTopologyAction,
     Swarm,
+    Task,
 )
 
 
@@ -95,10 +97,10 @@ class TopologyOptimizationContractTests(unittest.TestCase):
         swarm = Swarm()
         self.observe(swarm)
         pending = self.observe(swarm)
-        same = ReassessmentChoice(ReassessmentRoute.DIFFERENT_BOUNDED_ROUTE, "retry-read", "thread-42", digest("same"))
+        same = ReassessmentChoice(ReassessmentRoute.DIFFERENT_BOUNDED_ROUTE, "retry-read", "thread-42")
         with self.assertRaisesRegex(InvariantError, "materially different"):
             swarm.choose_retry_reassessment(same)
-        chosen = ReassessmentChoice(ReassessmentRoute.DIFFERENT_BOUNDED_ROUTE, "read-inventory", "thread-42", digest("route"))
+        chosen = ReassessmentChoice(ReassessmentRoute.DIFFERENT_BOUNDED_ROUTE, "read-inventory", "thread-42")
         self.assertEqual(swarm.choose_retry_reassessment(chosen), chosen)
         with self.assertRaisesRegex(InvariantError, "already consumed"):
             swarm.choose_retry_reassessment(chosen)
@@ -108,15 +110,52 @@ class TopologyOptimizationContractTests(unittest.TestCase):
 
     def test_repeated_reassessment_is_rejected_until_new_material_state(self) -> None:
         swarm = Swarm()
+        checkpoint = self.receipt(MaterialStateKind.STATE, 1)
+        self.observe(swarm, material_receipt=checkpoint)
         self.observe(swarm)
-        self.observe(swarm)
-        swarm.choose_retry_reassessment(ReassessmentChoice(ReassessmentRoute.CONSOLIDATE, "consolidate-read", "thread-42", digest("consolidate")))
-        self.observe(swarm)
+        swarm.choose_retry_reassessment(ReassessmentChoice(ReassessmentRoute.CONSOLIDATE, "consolidate-read", "thread-42", checkpoint))
         stopped = self.observe(swarm)
         self.assertEqual(stopped.action, RetryTopologyAction.STOP_REPEATED_TACTIC)
         reset = self.observe(swarm, material_receipt=self.receipt(MaterialStateKind.PROOF, 3))
         self.assertEqual(reset.action, RetryTopologyAction.CONTINUE)
         self.assertTrue(reset.material_progress)
+
+    def test_interleaved_equivalent_tactics_cannot_evade_the_threshold(self) -> None:
+        swarm = Swarm()
+        a1 = self.observe(swarm, action="route-a")
+        b1 = self.observe(swarm, action="route-b")
+        a2 = self.observe(swarm, action="route-a")
+        b2 = self.observe(swarm, action="route-b")
+        self.assertEqual((a1.action, b1.action), (RetryTopologyAction.CONTINUE, RetryTopologyAction.CONTINUE))
+        self.assertEqual(a2.action, RetryTopologyAction.REASSESS_ROOT_CAUSE)
+        self.assertEqual(b2.action, RetryTopologyAction.STOP_REPEATED_TACTIC)
+
+    def test_recover_and_correction_paths_automatically_use_the_single_ledger(self) -> None:
+        recovery = Swarm(tasks={"task-a": Task("task-a", "lead", "ctrl", 1, {})})
+        recovery.recover(Role.CTRL, "task-a", "same transport")
+        with self.assertRaisesRegex(InvariantError, "REASSESS_ROOT_CAUSE"):
+            recovery.recover(Role.CTRL, "task-a", "same transport")
+        self.assertEqual(recovery.events.count(("RECOVERY", "task-a")), 1)
+        self.assertIn(("REASSESS_ROOT_CAUSE", "task-a"), recovery.events)
+
+        correction = Swarm()
+        facts = {"material": True, "expected_future_cost": 9, "correction_cost": 1}
+        self.assertEqual(correction.correction("same-incident", **facts).value, "FIX_FORWARD")
+        self.assertEqual(correction.correction("same-incident", **facts).value, "ESCALATE")
+        self.assertEqual(correction.telemetry_events[-1]["kind"], "retry_topology_reassessment")
+        with self.assertRaisesRegex(InvariantError, "repeated correction tactic stopped"):
+            correction.correction("same-incident", **facts)
+
+    def test_consolidation_and_human_external_routes_fail_closed_without_bound_receipts(self) -> None:
+        swarm = Swarm()
+        checkpoint = self.receipt(MaterialStateKind.PROOF, 1)
+        self.observe(swarm, material_receipt=checkpoint)
+        self.observe(swarm)
+        fabricated = self.receipt(MaterialStateKind.PROOF, 2)
+        with self.assertRaisesRegex(InvariantError, "last-good checkpoint"):
+            swarm.choose_retry_reassessment(ReassessmentChoice(ReassessmentRoute.CONSOLIDATE, "consolidate", "thread-42", fabricated))
+        with self.assertRaisesRegex(InvariantError, "host custody receipt"):
+            ReassessmentChoice(ReassessmentRoute.HUMAN_EXTERNAL_STATE_CHANGE, "wait-human", "thread-42")
 
     def test_stale_material_receipt_cannot_replace_last_good_checkpoint(self) -> None:
         swarm = Swarm()
