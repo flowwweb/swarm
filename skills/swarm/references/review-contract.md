@@ -335,3 +335,21 @@ failure classes or demonstrably generalizable controls with contrasting regressi
 proof. Ineligible candidates remain pending; only an explicit reasoned API rejects. Keep
 repo-specific commands, person blame, local policy, secrets, and one-off incident
 wording out of global SWARM doctrine.
+
+## Codex project brief and design selection
+
+Before dispatch, review the exact root `SWARM.md` schema and its digest binding
+to intake and topology. Missing, incompatible, migrated-but-unbound, or
+secret-bearing content is `UNREADY`; a README, raw prompt, worker final, or
+silence cannot substitute for the brief. The brief is context/provenance only
+and never acceptance authority.
+
+For a user-facing design set, the acceptance packet must show a complete
+candidate inventory and one atomic selection event: exactly one `SELECTED` and
+all remaining candidates `REJECTED`. The selected artifact needs durable,
+hash-bound preservation before any rejected local binary is eligible for a
+separate Storage cleanup review. Cleanup is exact-path and digest-bound, never a
+glob or broad purge, and must exclude undecided, current, selected, sole, or
+user-controlled evidence. This lifecycle adds no worker, process, or service;
+selection metadata remains part of the normal handoff and does not bypass
+independent review or declared proof.
