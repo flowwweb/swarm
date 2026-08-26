@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { createRequire } from "node:module";
@@ -7,13 +8,33 @@ import { fileURLToPath } from "node:url";
 const require = createRequire(import.meta.url);
 const testsRoot = path.dirname(fileURLToPath(import.meta.url));
 const consoleRoot = path.resolve(testsRoot, "..");
+const repositoryRoot = path.resolve(consoleRoot, "..");
 const staticRoot = path.join(consoleRoot, "static");
+const pluginConsoleRoot = path.join(repositoryRoot, "plugins", "swarm", "console");
+const pluginStaticRoot = path.join(pluginConsoleRoot, "static");
 const fixture = JSON.parse(fs.readFileSync(path.join(testsRoot, "fixtures", "console-ui.json"), "utf8"));
 const css = fs.readFileSync(path.join(staticRoot, "styles.css"), "utf8");
 const app = fs.readFileSync(path.join(staticRoot, "app.js"), "utf8");
 const indexHtml = fs.readFileSync(path.join(staticRoot, "index.html"), "utf8");
+const server = fs.readFileSync(path.join(consoleRoot, "server.py"), "utf8");
+const pluginServer = fs.readFileSync(path.join(pluginConsoleRoot, "server.py"), "utf8");
+const offlineAsset = fs.readFileSync(path.join(staticRoot, "swarm-offline-disconnected.png"));
+const pluginOfflineAsset = fs.readFileSync(path.join(pluginStaticRoot, "swarm-offline-disconnected.png"));
 const documentHtml = indexHtml
   .replace("<head>", '<head><base href="http://swarm.test/">');
+
+const offlineAssetDigest = crypto.createHash("sha256").update(offlineAsset).digest("hex");
+assert.equal(offlineAssetDigest, "4677c1da5af8c79a2db5dfbaf7dd87a060dbd9dca888a8c3f6d800d990aab4fe");
+assert.deepEqual(pluginOfflineAsset, offlineAsset);
+assert.equal(pluginServer, server);
+assert.match(server, /"\/assets\/swarm-offline-disconnected\.png": \("swarm-offline-disconnected\.png", "image\/png"\)/);
+assert.match(indexHtml, /id="connection-state" hidden role="alert" aria-labelledby="connection-state-title"/);
+assert.match(indexHtml, /src="\/assets\/swarm-offline-disconnected\.png" width="1536" height="1024"/);
+assert.match(indexHtml, /id="connection-retry"[^>]*>Retry connection<\/button>/);
+assert.match(app, /if \(error instanceof TypeError\) throw connectionFailure/);
+assert.match(app, /if \(error\.connectionFailure && !state\.overview\) showConnectionState\(\)/);
+assert.match(app, /\$\("#connection-retry"\)\.addEventListener\("click", initialize\)/);
+assert.match(css, /\.workspace\.is-disconnected \.view \{ display:none; \}/);
 
 assert.match(indexHtml, /id="tab-hierarchy"[^>]*><span aria-hidden="true">⑂<\/span><b>Hierarchy<\/b>/);
 assert.match(indexHtml, /id="tab-kanban"[^>]*><span aria-hidden="true">▥<\/span><b>Kanban<\/b>/);
@@ -247,6 +268,8 @@ async function mount(page, overview, overrides = {}) {
     if (url.pathname === "/") return route.fulfill({ status: 200, contentType: "text/html", body: documentHtml });
     if (url.pathname === "/styles.css") return route.fulfill({ status: 200, contentType: "text/css", body: css });
     if (url.pathname === "/app.js") return route.fulfill({ status: 200, contentType: "text/javascript", body: app });
+    if (url.pathname === "/assets/swarm-offline-disconnected.png") return route.fulfill({ status: 200, contentType: "image/png", body: offlineAsset });
+    if (overrides.connection?.offline && url.pathname.startsWith("/api/")) return route.abort();
     if (url.pathname === "/api/bootstrap") return route.fulfill(response(fixture.bootstrap));
     if (url.pathname === "/api/overview") return route.fulfill(response(overview));
     if (url.pathname === "/api/proof-feed") return route.fulfill(response(proofFeed));
@@ -265,6 +288,10 @@ async function mount(page, overview, overrides = {}) {
     return route.abort();
   });
   await page.goto("http://swarm.test/", { waitUntil: "domcontentloaded" });
+  if (overrides.waitForConnectionState) {
+    await page.locator("#connection-state").waitFor({ state: "visible" });
+    return { runtimeErrors, requests };
+  }
   try {
     await page.locator("#overview-content").waitFor({ state: "visible" });
   } catch (error) {
@@ -282,6 +309,22 @@ const browserCandidates = [
 const executablePath = browserCandidates.find((candidate) => fs.existsSync(candidate));
 const browser = await chromium.launch({ headless: true, ...(executablePath ? { executablePath } : {}) });
 try {
+  const offlinePage = await browser.newPage({ viewport: { width: 1024, height: 760 } });
+  const connection = { offline: true };
+  const offline = await mount(offlinePage, scopedFixture(), { connection, waitForConnectionState: true });
+  assert.equal(await offlinePage.getByRole("heading", { name: "Local console unavailable" }).count(), 1);
+  assert.equal(await offlinePage.getByRole("button", { name: "Retry connection" }).count(), 1);
+  assert.equal(await offlinePage.locator('#connection-state img[alt="SWARM octopus holding disconnected cable ends"]').count(), 1);
+  assert.equal(await offlinePage.locator("#error-surface").isVisible(), false);
+  assert.equal(await offlinePage.locator("#view-overview").isVisible(), false);
+  assert.equal(await offlinePage.getByRole("tab", { name: "Diagnostics" }).isVisible(), true);
+  connection.offline = false;
+  await offlinePage.getByRole("button", { name: "Retry connection" }).click();
+  await offlinePage.locator("#overview-content").waitFor({ state: "visible" });
+  assert.equal(await offlinePage.locator("#connection-state").isVisible(), false);
+  assert.ok(offline.requests.filter((request) => request === "/api/bootstrap").length >= 2);
+  await offlinePage.close();
+
   const page = await browser.newPage({ viewport: { width: 1440, height: 1000 } });
   const { runtimeErrors, requests } = await mount(page, scopedFixture());
 
