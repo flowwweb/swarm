@@ -28,23 +28,21 @@ BUILDER_SPEC.loader.exec_module(builder)
 
 
 class HostContractTests(unittest.TestCase):
-    def test_host_manifests_share_one_canonical_skill_and_version(self) -> None:
+    def test_codex_manifest_is_the_only_agent_host_manifest(self) -> None:
         codex = json.loads((REPOSITORY_ROOT / ".codex-plugin" / "plugin.json").read_text(encoding="utf-8"))
-        claude = json.loads((REPOSITORY_ROOT / ".claude-plugin" / "plugin.json").read_text(encoding="utf-8"))
-        gemini = json.loads((REPOSITORY_ROOT / "gemini-extension.json").read_text(encoding="utf-8"))
         codex_marketplace = json.loads((REPOSITORY_ROOT / ".agents" / "plugins" / "marketplace.json").read_text(encoding="utf-8"))
-        marketplace = json.loads((REPOSITORY_ROOT / ".claude-plugin" / "marketplace.json").read_text(encoding="utf-8"))
 
-        for manifest in (codex, claude, gemini):
-            self.assertEqual(manifest["name"], "swarm")
-            self.assertEqual(manifest["version"], codex["version"])
-            self.assertTrue(manifest["description"])
+        self.assertEqual(codex["name"], "swarm")
+        self.assertTrue(codex["version"])
+        self.assertTrue(codex["description"])
         self.assertEqual(codex["skills"], "./skills/")
-        self.assertEqual(claude["skills"], "./skills/")
-        self.assertEqual(marketplace["name"], "flowwweb")
-        self.assertEqual(marketplace["owner"], {"name": "Flowwweb"})
-        self.assertEqual(marketplace["plugins"], [{"name": "swarm", "source": "./"}])
         self.assertEqual(codex_marketplace["plugins"][0]["source"], {"source": "local", "path": "./plugins/swarm"})
+        for relative in (
+            Path(".claude-plugin") / "plugin.json",
+            Path(".claude-plugin") / "marketplace.json",
+            Path("gemini-extension.json"),
+        ):
+            self.assertFalse((REPOSITORY_ROOT / relative).exists(), relative.as_posix())
 
     def test_codex_marketplace_mirror_matches_the_complete_product_surface(self) -> None:
         mirror = REPOSITORY_ROOT / "plugins" / "swarm"
@@ -117,11 +115,12 @@ class HostContractTests(unittest.TestCase):
                     self.assertFalse(destination.exists())
 
     def test_readme_labels_host_contracts_without_runtime_or_release_claims(self) -> None:
-        readme = (REPOSITORY_ROOT / "README.md").read_text(encoding="utf-8")
-        self.assertIn("Manifest and marketplace structure only", readme)
-        self.assertIn("Manifest and skill-layout structure only", readme)
-        self.assertIn("Copy and file-hash parity when the command succeeds", readme)
-        self.assertIn("do not prove a host installation, activation, prompt loading, agent behavior, marketplace availability, or an external release", readme)
+        readme = re.sub(r"\s+", " ", (REPOSITORY_ROOT / "README.md").read_text(encoding="utf-8"))
+        self.assertIn("Codex-native scope", readme)
+        self.assertIn("Codex is the only agent host", readme)
+        self.assertIn("external service boundary", readme)
+        self.assertNotIn("claude plugin marketplace", readme.lower())
+        self.assertNotIn("gemini extensions install", readme.lower())
         self.assertNotIn("cross-host certified", readme.lower())
 
     def test_readme_keeps_one_clear_three_lane_hierarchy(self) -> None:

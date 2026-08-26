@@ -60,7 +60,9 @@ The icons match SWARM task titles. Every visible task says both what expertise i
 - **LEADs** own distinct outcomes. They coordinate their DOERs, integrate the work, and bring back evidence instead of activity reports.
 - **DOERs** complete bounded assignments. They can be developers, researchers, designers, testers, writers, or any other specialist the objective needs.
 
-The model labels are role defaults for this example, not proof of execution. Your explicit model, provider, service-tier, and reasoning choices win. SWARM reports the host-observed model and reasoning level when that metadata is available.
+The model labels are role defaults for this example, not proof of execution. The
+Codex host owns model, service-tier, and reasoning selection; SWARM reports the
+host-observed values when that metadata is available.
 
 ## Small work stays small
 
@@ -176,23 +178,19 @@ python console/docker.py up
 
 The console shows what SWARM knows; it does not invent host activity or passing proof. Settings writes are validated and loopback-only in both native and Docker modes. Docker keeps Codex task metadata read-only, writes only the bounded SWARM proof directory, and stores console history in its named volume.
 
-## Other hosts
+## Codex-native scope
 
-The canonical skill lives in [`skills/swarm`](skills/swarm). Codex installs the generated [`plugins/swarm`](plugins/swarm) mirror; CI rejects drift between them.
+SWARM is a Codex plugin and workflow: Codex is the only agent host whose task,
+tool, model, and execution behavior this repository describes or routes. The
+`plugins/swarm` tree is the generated Codex marketplace mirror of the canonical
+`skills/swarm` source. SWARM does not ship, install, or claim compatibility with
+Claude Code, Anthropic, Gemini, Copilot, Cursor, OpenCode, or another agent host.
 
-| Host | Install or discovery route | Proof supplied by this repository |
-| --- | --- | --- |
-| Claude Code | `claude plugin marketplace add flowwweb/swarm`, then `claude plugin install swarm@flowwweb` | Manifest and marketplace structure only |
-| Gemini CLI | `gemini extensions install https://github.com/flowwweb/swarm.git` | Manifest and skill-layout structure only |
-| GitHub Copilot, Cursor, OpenCode | Copy `skills/swarm` to the project's `.agents/skills/swarm` | Copy and file-hash parity when the command succeeds |
-
-Use the verified copy command for the shared Agent Skills location:
-
-```text
-python <swarm-repository>/skills/swarm/scripts/verify_plugin_install.py --install-agent-skill <target-project-root>
-```
-
-These checks do not prove a host installation, activation, prompt loading, agent behavior, marketplace availability, or an external release. Verify each host in its own environment before making those claims.
+The word `provider` may still appear in proof contracts for a real external
+service boundary such as authentication, payments, deployment, or browser
+evidence. That proof category is not a model-host adapter and does not create a
+second execution authority. Host installation, activation, task behavior, and
+served-tier claims require their own direct receipts.
 
 ## Reference
 

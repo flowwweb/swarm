@@ -1,5 +1,10 @@
 # Global SWARM settings
 
+SWARM configuration describes work routed through the Codex host only. Model
+capability `provider` labels are descriptive host metadata, not a second
+execution authority or a supported alternate agent host. Provider proof keys
+remain available for real external-service evidence and safety gates.
+
 SWARM reads `~/.agents/swarm/config.toml` before scheduling or managing a
 portfolio. Run `python scripts/swarm_config.py show --json` from the skill
 directory to resolve built-in defaults plus the user's file.
@@ -109,7 +114,7 @@ Configuration cannot make an unsafe or hidden coordination path valid:
 | `boost.spark_enabled` | Opt into the bounded Spark lane | boolean; default false |
 | `models.<profile>.<role>_model` | Model for CTRL, LEAD, DOER, TASK, SUBTASK, ASSIST, ADVISOR, SPECIALIST, legacy ARCHITECT, or REVIEW in a profile | trimmed model name up to 64 chars; defaults request Sol for CTRL, Terra for LEAD, and Luna for DOER/TASK/SUBTASK |
 | `models.<profile>.<role>_reasoning` | Reasoning for that role and profile | none, minimal, low, medium, high, xhigh, max, ultra; host/model dependent |
-| `model_capabilities.<MODEL>.provider` | Codex provider ID for a model | trimmed name up to 64 chars |
+| `model_capabilities.<MODEL>.provider` | Descriptive provider label supplied for a Codex-host model capability receipt | trimmed name up to 64 chars; it cannot select another agent host |
 | `model_capabilities.<MODEL>.workloads` | Work classes an assigning CTRL or LEAD may route | non-empty unique list of simple, general, large_goal, review |
 | `model_capabilities.<MODEL>.tools` | Verified host tools the model may use | up to 32 unique tool names; may be empty |
 | `model_capabilities.<MODEL>.reasoning` | Ordered reasoning levels verified for the model on the intended host | optional non-empty unique subset of supported reasoning values |
@@ -275,14 +280,13 @@ lane test and configured recovery budget still decide when work should split or
 stop. Turning the setting on affects new scheduling and management actions, not
 already-dispatched contracts.
 
-The assigning CTRL or LEAD routes by capability before model preference: the provider/model must be
-available, its workload must fit, and every required tool must be exposed by the
-host and declared for that model. An unlisted model is unverified. The packaged
-catalog keeps `gpt-5.3-codex-spark` on simple shell-only work and declares
-computer use for the GPT-5.6 models, including Luna. Read
-[model-providers.md](model-providers.md) to connect Kimi, Qwen, or another
-Responses-compatible Codex provider and add a capability entry without storing
-credentials in SWARM.
+The assigning CTRL or LEAD routes by capability before model preference: the
+Codex-host model must be available, its workload must fit, and every required
+tool must be exposed by the host and declared for that model. An unlisted model
+is unverified. The packaged catalog keeps `gpt-5.3-codex-spark` on simple
+shell-only work and declares computer use for the GPT-5.6 models, including
+Luna. Read [model-providers.md](model-providers.md) for the Codex host
+boundary; SWARM does not configure or claim execution on another agent host.
 
 ## Spark small-work policy
 
