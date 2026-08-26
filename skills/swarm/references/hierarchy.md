@@ -301,6 +301,18 @@ idle scaffolding cleanly while preserving durable receipts and archived logs.
 
 ## Ownership, transfer, and materialization
 
+Before any visible task creation, compile a typed `TopologyMaterializationPlan`.
+It must contain exactly one dependency-free CTRL administrator. Every LEAD and
+DOER has one parent, typed profession, bounded responsibility, generated title,
+and exact boundary or artifact. A DOER may use leaf subagents but cannot own a
+visible child; recursive durable work uses a nested LEAD backed by typed durable
+ownership, heartbeat, integration/review, worktree, cross-lane, or team evidence.
+A LEAD may instead produce one declared artifact directly; an unexplained LEAD
+is a shape defect, and a bounded delegated artifact uses a DOER. More direct CTRL children than
+`preferred_lane_width` require a concrete span exception receipt; the setting
+remains a soft preference, not a hard team-size ceiling. This catches accidental
+LEAD crowds without preventing justified independent boundaries.
+
 Materialize each justified LEAD, persistent SPECIALIST, DOER, TASK, SUBTASK, and
 independent REVIEW as a host task when the host supports it. Materialize ASSIST
 and ADVISOR only for their bounded assignment. Never create a role to fill a
@@ -308,8 +320,18 @@ tree, and never treat an internal subagent as a durable owner.
 
 Count only a host-confirmed task ID as a live owner. A pending creation receipt
 reserves its objective, artifact, mutable surface, and accepting route; do not
-create a replacement until it resolves. If a duplicate materializes, stop it
-before mutation, transfer unique evidence, and archive it.
+create a replacement until it resolves. Compile only the current ready wave into
+a `TopologyDispatchPacket`, then reserve every lane identity before the first
+host call. A child waits for a later packet until its parent has a retained
+host-confirmed identity; inclusion in the same packet or a public existing-ID
+claim is insufficient. Confirmation remains in the preflight ledger and prevents
+that lane from being prepared or reserved again. Timeout, ambiguous failure,
+transport error, or schema rejection does not release the reservation; resolve
+it or explicitly cancel it before retrying a never-confirmed lane.
+The current Codex `create_thread` API cannot consume the packet, so the adapter
+reports instruction-only/unsupported and live enforcement remains `UNVERIFIED`.
+If a duplicate materializes, stop it before mutation, transfer unique evidence,
+and archive it.
 
 Never overlap mutable ownership. The old owner releases, the task-tree receipt
 records the transfer, and the new owner acknowledges before mutation. Peer
@@ -317,7 +339,20 @@ coordination can exchange immutable handoffs but cannot mutate another owner's
 surface or bypass REVIEW.
 
 With role icons enabled, use `🐙CTRL - <objective>` for the root,
-`<domain emoji>LEAD - <responsibility>` for lane owners, and
-`<role emoji><PROFESSION> - <truth surface>` for specialists. A title is a
+`<role emoji><PROFESSION> LEAD - <responsibility>` for lane owners, and
+`<role emoji><PROFESSION> DOER - <artifact>` for bounded producers. A separate
+review task uses the same structural title with the selected assurance profession
+and enters a ready wave only after the runtime issues a fresh
+`TopologyArtifactFreezeReceipt`. That receipt binds the producer lane, immutable
+content-observed `ArtifactIdentity`, current accepted gates and independent review,
+and exact topology plan; a public artifact ID or caller-created receipt fails closed.
+Bare structural titles and profession-only visible titles are invalid because
+they hide either authority or expertise. A title is a
 readability signal, never an authority token; unregistered historical titles
 remain user-owned text and are never normalized into a profession.
+
+Do not materialize the whole profession registry as a team. Start from the
+current dependency graph. A visible LEAD exists only for a named durable mutable
+boundary that needs ownership, integration, resumption, or recursive staffing;
+a bounded ready artifact belongs to a DOER. A list dominated by leaf LEADs is a
+topology defect, not an ambitious swarm.

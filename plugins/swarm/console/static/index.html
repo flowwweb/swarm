@@ -21,23 +21,23 @@
         <nav class="nav-list" aria-label="Console views" role="tablist" aria-orientation="vertical">
           <button class="nav-item is-active" data-view="overview" id="tab-overview" role="tab" aria-selected="true" aria-controls="view-overview" type="button"><span aria-hidden="true">⌂</span><b>Overview</b></button>
           <button class="nav-item" data-view="dashboard" id="tab-dashboard" role="tab" aria-selected="false" aria-controls="view-dashboard" type="button"><span aria-hidden="true">▦</span><b>Dashboard</b></button>
-          <button class="nav-item" data-view="hierarchy" id="tab-hierarchy" role="tab" aria-selected="false" aria-controls="view-hierarchy" type="button"><span aria-hidden="true">⌘</span><b>Hierarchy</b></button>
+          <button class="nav-item" data-view="hierarchy" id="tab-hierarchy" role="tab" aria-selected="false" aria-controls="view-hierarchy" type="button"><span aria-hidden="true">⑂</span><b>Hierarchy</b></button>
           <button class="nav-item" data-view="kanban" id="tab-kanban" role="tab" aria-selected="false" aria-controls="view-kanban" type="button"><span aria-hidden="true">▥</span><b>Kanban</b></button>
-          <button class="nav-item" data-view="diagnostics" id="tab-diagnostics" role="tab" aria-selected="false" aria-controls="view-diagnostics" type="button"><span aria-hidden="true">⌁</span><b>Diagnostics</b></button>
+          <button class="nav-item" data-view="diagnostics" id="tab-diagnostics" role="tab" aria-selected="false" aria-controls="view-diagnostics" type="button"><span aria-hidden="true">⊙</span><b>Diagnostics</b></button>
           <button class="nav-item" data-view="settings" id="tab-settings" role="tab" aria-selected="false" aria-controls="view-settings" type="button"><span aria-hidden="true">⚙</span><b>Settings</b></button>
         </nav>
         <section class="project-navigation" aria-labelledby="project-navigation-heading">
           <p id="project-navigation-heading">Projects</p>
           <div id="project-navigation" aria-live="polite"></div>
         </section>
-        <div class="drawer-status"><span class="status-dot is-live" aria-hidden="true"></span><div><strong>Connected</strong><small>Projects are up to date</small></div></div>
+        <div class="drawer-status"><span class="status-dot" id="data-status-dot" aria-hidden="true"></span><div><strong id="data-status-title">Connecting</strong><small id="data-status-note">Waiting for data</small></div></div>
       </aside>
       <main class="workspace">
         <header class="topbar">
           <div><h1 id="view-title">Overview</h1><p id="view-subtitle">Project progress, risks, and proof at a glance.</p></div>
           <div class="top-actions">
             <p class="scope-context" id="scope-context" aria-live="polite"><span>Scope</span><strong>All projects</strong></p>
-            <section class="usage-strip" aria-labelledby="usage-heading"><span id="usage-heading">Tokens · 24h</span><strong id="usage-total">—</strong><svg id="usage-sparkline" viewBox="0 0 96 28" preserveAspectRatio="none" aria-label="Token history for the selected scope"></svg><small id="usage-range">No historical range</small><small id="usage-note">No recent history</small></section>
+            <section class="usage-strip" aria-labelledby="usage-heading"><span id="usage-heading">Tokens · 24h</span><strong id="usage-total">—</strong><svg id="usage-sparkline" viewBox="0 0 240 52" preserveAspectRatio="none" aria-label="Token history for the selected scope"></svg><small id="usage-range">No historical range</small><small id="usage-note">No recent history</small></section>
             <p class="snapshot-status" role="status"><span class="status-dot is-live" aria-hidden="true"></span><span id="sync-time">Loading</span></p>
             <button class="icon-button" id="refresh" type="button" aria-label="Refresh overview" title="Refresh overview">↻</button>
           </div>

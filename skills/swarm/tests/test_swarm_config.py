@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from copy import deepcopy
 import importlib.util
 import json
 import subprocess
@@ -22,6 +23,8 @@ class SwarmConfigTests(unittest.TestCase):
         from skills.swarm.runtime.core import BUILT_IN_PROFESSIONS, PROFESSION_GROUPS
         self.assertEqual(config.PROFESSION_GROUPS,PROFESSION_GROUPS)
         self.assertEqual(config.BUILT_IN_PROFESSIONS,BUILT_IN_PROFESSIONS)
+        self.assertEqual(len(BUILT_IN_PROFESSIONS), 24)
+        self.assertNotIn("mother", BUILT_IN_PROFESSIONS)
 
     def test_profession_specialist_and_structural_specialist_use_separate_namespaces(self) -> None:
         effective,_=config.load(config.TEMPLATE_PATH)
@@ -44,6 +47,29 @@ class SwarmConfigTests(unittest.TestCase):
         effective, exists = config.load(config.TEMPLATE_PATH)
         self.assertTrue(exists)
         self.assertFalse(effective["execution"]["usage_saver"])
+
+    def test_console_is_opt_in_and_does_not_open_localhost_by_default(self) -> None:
+        self.assertFalse(config.DEFAULTS["console"]["open_on_start"])
+        effective, exists = config.load(config.TEMPLATE_PATH)
+        self.assertTrue(exists)
+        self.assertFalse(effective["console"]["open_on_start"])
+        self.assertTrue(effective["console"]["project_progress_feed_enabled"])
+        self.assertEqual(effective["console"]["project_progress_feed_lines"], 4)
+
+    def test_project_progress_feed_limit_is_bounded_and_legacy_invalid_values_fall_back(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for value in (0, 11, True, "many"):
+                path = root / f"legacy-{str(value).casefold()}.toml"
+                rendered = json.dumps(value).casefold() if not isinstance(value, str) else json.dumps(value)
+                path.write_text(f"[console]\nproject_progress_feed_lines = {rendered}\n", encoding="utf-8")
+                effective, _ = config.load(path)
+                self.assertEqual(effective["console"]["project_progress_feed_lines"], 4)
+            valid = root / "valid.toml"
+            valid.write_text("[console]\nproject_progress_feed_enabled = false\nproject_progress_feed_lines = 10\n", encoding="utf-8")
+            effective, _ = config.load(valid)
+            self.assertFalse(effective["console"]["project_progress_feed_enabled"])
+            self.assertEqual(effective["console"]["project_progress_feed_lines"], 10)
 
     def test_doer_wip_limit_is_the_bounded_direct_owner_capacity_signal(self) -> None:
         effective, _ = config.load(config.TEMPLATE_PATH)
@@ -158,19 +184,40 @@ class SwarmConfigTests(unittest.TestCase):
             ):
                 config.load(invalid)
 
-    def test_archive_completed_tasks_defaults_on_and_can_opt_out(self) -> None:
-        self.assertTrue(config.DEFAULTS["lifecycle"]["archive_completed_tasks"])
+    def test_automation_mode_defaults_standard_and_migrates_legacy_archive_toggle(self) -> None:
+        self.assertEqual(config.DEFAULTS["automation"]["mode"], "standard")
         effective, _ = config.load(config.TEMPLATE_PATH)
-        self.assertTrue(effective["lifecycle"]["archive_completed_tasks"])
+        self.assertEqual(effective["automation"]["mode"], "standard")
+        self.assertNotIn("archive_completed_tasks", effective["lifecycle"])
 
         with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory) / "config.toml"
-            path.write_text(
+            legacy = Path(directory) / "legacy.toml"
+            legacy.write_text(
                 "[lifecycle]\narchive_completed_tasks = false\n",
                 encoding="utf-8",
             )
-            effective, _ = config.load(path)
-        self.assertFalse(effective["lifecycle"]["archive_completed_tasks"])
+            migrated, _ = config.load(legacy)
+            explicit = Path(directory) / "explicit.toml"
+            explicit.write_text(
+                '[automation]\nmode = "standard"\n[lifecycle]\narchive_completed_tasks = false\n',
+                encoding="utf-8",
+            )
+            preferred, _ = config.load(explicit)
+        self.assertEqual(migrated["automation"]["mode"], "manual")
+        self.assertEqual(preferred["automation"]["mode"], "standard")
+        self.assertNotIn("archive_completed_tasks", migrated["lifecycle"])
+
+    def test_automation_mode_rejects_unknown_values_and_bad_legacy_types(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            invalid = root / "invalid.toml"
+            invalid.write_text('[automation]\nmode = "sometimes"\n', encoding="utf-8")
+            with self.assertRaisesRegex(config.ConfigError, "automation.mode must be standard or manual"):
+                config.load(invalid)
+            legacy = root / "legacy.toml"
+            legacy.write_text('[lifecycle]\narchive_completed_tasks = "yes"\n', encoding="utf-8")
+            with self.assertRaisesRegex(config.ConfigError, "legacy lifecycle.archive_completed_tasks must be true or false"):
+                config.load(legacy)
 
     def test_recovery_requires_exactly_one_attempt(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -436,19 +483,19 @@ class SwarmConfigTests(unittest.TestCase):
         doer=config.resolve_model_assignment(effective,"doer",surface="codex_task")
         self.assertEqual(reviewer["model"],doer["model"])
 
-    def test_direct_user_tier_overrides_fast_mode_without_changing_model(self) -> None:
+    def test_fast_mode_changes_only_host_request_not_model_or_reasoning(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path=Path(directory)/"fast.toml"
             path.write_text('[execution]\nfast_mode = true\n',encoding="utf-8")
             effective,_=config.load(path)
         baseline=config.resolve_model_assignment(effective,"lead",surface="codex_task")
-        explicit=config.resolve_model_assignment(effective,"lead",surface="codex_task",explicit_service_tier="default")
         self.assertEqual(baseline["requested_service_tier"],"fast")
-        self.assertEqual(explicit["requested_service_tier"],"default")
-        self.assertFalse(explicit["requested_fast_mode"])
-        self.assertEqual(explicit["service_tier_selection_source"],"explicit_user")
-        self.assertEqual(explicit["model"],baseline["model"])
-        self.assertEqual(explicit["reasoning_effort"],baseline["reasoning_effort"])
+        self.assertTrue(baseline["requested_fast_mode"])
+        control=deepcopy(effective)
+        control["execution"]["fast_mode"]=False
+        standard=config.resolve_model_assignment(control,"lead",surface="codex_task")
+        self.assertIsNone(standard["requested_service_tier"])
+        self.assertEqual((baseline["model"],baseline["reasoning_effort"]),(standard["model"],standard["reasoning_effort"]))
 
     def test_legacy_fast_aliases_migrate_to_one_boolean_without_retaining_authority(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -468,14 +515,34 @@ class SwarmConfigTests(unittest.TestCase):
             neutral=root/"neutral.toml"
             neutral.write_text('[execution]\nservice_tier = "flex"\n',encoding="utf-8")
             neutral_effective,_=config.load(neutral)
+            current=root/"current.toml"
+            current.write_text('[execution]\ncurrent_mode = "FAST"\n',encoding="utf-8")
+            migrated_current,_=config.load(current)
+            root_alias=root/"root-alias.toml"
+            root_alias.write_text('fast_mode = true\ncurrent_mode = "FAST"\n',encoding="utf-8")
+            migrated_root,_=config.load(root_alias)
         self.assertTrue(migrated_service["execution"]["fast_mode"])
         self.assertTrue(migrated_efficiency["execution"]["fast_mode"])
         self.assertEqual(migrated_efficiency["efficiency"]["mode"],"BALANCED")
         self.assertFalse(explicit_effective["execution"]["fast_mode"])
         self.assertEqual(explicit_effective["efficiency"]["mode"],"BALANCED")
         self.assertFalse(neutral_effective["execution"]["fast_mode"])
-        for effective in (migrated_service,migrated_efficiency,explicit_effective,neutral_effective):
+        self.assertTrue(migrated_current["execution"]["fast_mode"])
+        self.assertTrue(migrated_root["execution"]["fast_mode"])
+        for effective in (migrated_service,migrated_efficiency,explicit_effective,neutral_effective,migrated_current,migrated_root):
             self.assertNotIn("service_tier",effective["execution"])
+
+    def test_legacy_fast_conflict_and_unknown_mode_fail_visibly(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory)
+            conflict=root/"conflict.toml"
+            conflict.write_text('[execution]\nservice_tier = "fast"\ncurrent_mode = "STANDARD"\n',encoding="utf-8")
+            with self.assertRaisesRegex(config.ConfigError,"legacy Fast controls conflict"):
+                config.load(conflict)
+            unknown=root/"unknown.toml"
+            unknown.write_text('[execution]\ncurrent_mode = "QUICK"\n',encoding="utf-8")
+            with self.assertRaisesRegex(config.ConfigError,"FAST, STANDARD, or DEFAULT"):
+                config.load(unknown)
 
     def test_legacy_service_tier_must_be_text(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -565,15 +632,15 @@ class SwarmConfigTests(unittest.TestCase):
         self.assertEqual(receipt["actual_model_verification"],"UNVERIFIED")
         self.assertEqual(receipt["actual_model"],"")
 
-    def test_explicit_model_provider_reasoning_and_tier_are_preserved(self) -> None:
+    def test_explicit_model_provider_and_reasoning_are_preserved_without_tier_authority(self) -> None:
         effective, _ = config.load(config.TEMPLATE_PATH)
         receipt=config.resolve_model_assignment(
             effective,"doer",surface="codex_task",explicit_model="gpt-5.6-terra",explicit_provider="openai",
-            explicit_reasoning="max",explicit_service_tier="priority",host_actual_model="gpt-5.6-terra",host_receipt="host:model:gpt-5.6-terra",
+            explicit_reasoning="max",host_actual_model="gpt-5.6-terra",host_receipt="host:model:gpt-5.6-terra",
         )
         self.assertEqual(
             (receipt["model"],receipt["provider"],receipt["reasoning_effort"],receipt["requested_service_tier"]),
-            ("gpt-5.6-terra","openai","max","priority"),
+            ("gpt-5.6-terra","openai","max",None),
         )
         self.assertNotIn("service_tier",receipt)
         self.assertEqual(receipt["selection_source"],"explicit_user")

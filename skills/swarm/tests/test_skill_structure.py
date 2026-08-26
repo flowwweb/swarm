@@ -114,9 +114,13 @@ class SwarmSkillStructureTests(unittest.TestCase):
             encoding="utf-8"
         )
 
-        self.assertIn("name DOERs by their real job", skill)
-        self.assertIn("<domain emoji>LEAD - <responsibility>", skill)
-        self.assertIn("<role emoji><PROFESSION> - <truth surface>", skill)
+        self.assertIn("Name DOERs by their real job", skill)
+        self.assertIn("<role emoji><PROFESSION> LEAD - <responsibility>", skill)
+        self.assertIn("<role emoji><PROFESSION> DOER - <artifact>", skill)
+        self.assertIn("Never create a flat crowd of bare LEADs", skill)
+        self.assertIn("Do not pre-create a profession roster", skill)
+        self.assertIn("LEAD is an ownership function, not a prestige default", skill)
+        self.assertIn("TopologyMaterializationPlan", skill)
         self.assertIn("exactly one configured role icon", skill)
         self.assertRegex(hierarchy,r"A title is a\s+readability signal, never an authority token")
 
@@ -172,6 +176,30 @@ class SwarmSkillStructureTests(unittest.TestCase):
         self.assertIn("game_studio", skill)
         self.assertIn("One `CTRL` root", graph)
         self.assertIn("independent production lanes", graph)
+
+    def test_adapter_review_graph_and_shortlist_contracts_are_compact_and_public(self) -> None:
+        adapters = (SKILL_ROOT / "references" / "execution-adapters.md").read_text(encoding="utf-8")
+        catalog = (SKILL_ROOT / "references" / "skills-catalog.md").read_text(encoding="utf-8")
+        graph = (SKILL_ROOT / "references" / "graph-engineering.md").read_text(encoding="utf-8")
+        review = (SKILL_ROOT / "references" / "review-contract.md").read_text(encoding="utf-8")
+        for state in ("native", "enforced", "instruction_only", "unsupported"):
+            self.assertIn(f"`{state}`", adapters)
+        self.assertIn("disabled unless explicitly selected", adapters)
+        self.assertIn("never silently fall back", adapters)
+        self.assertIn("content-addressed", graph)
+        self.assertIn("immutable review packet", review)
+        for skill_name in (
+            "handoff",
+            "research",
+            "grill-with-docs",
+            "improve-codebase-architecture",
+            "prototype",
+            "tdd",
+            "frontend-design",
+            "copywriting",
+            "conducting-interviews",
+        ):
+            self.assertIn(f"| {skill_name} |", catalog)
 
     def test_closeout_archives_terminal_host_tasks_and_reports_failures(self) -> None:
         skill = doctrine()
@@ -313,6 +341,16 @@ class SwarmSkillStructureTests(unittest.TestCase):
         self.assertIn("mockup", visual_eval["prompt"].casefold())
         self.assertIn("DESIGNER", visual_eval["expected_output"])
         self.assertIn("CTRL_DIRECT", " ".join(visual_eval["assertions"]))
+
+    def test_progress_is_material_event_driven_and_liveness_is_separate(self) -> None:
+        skill = SKILL.read_text(encoding="utf-8")
+        task_contract = (SKILL_ROOT / "references" / "task-contract.md").read_text(encoding="utf-8")
+        self.assertIn("Load [task-contract.md]", skill)
+        self.assertRegex(task_contract, r"(?is)existing typed owner result.*append one canonical material event")
+        self.assertRegex(task_contract, r"(?is)never call a model or schedule a report solely for the.*Project progress feed")
+        self.assertRegex(task_contract, r"(?is)Exact duplicate content/state/proof.*no-ops")
+        self.assertRegex(task_contract, r"(?is)Execution liveness stays separate.*healthy renewal never appends progress")
+        self.assertRegex(task_contract, r"(?is)legacy latest-pulse sidecar.*not a reporting schedule or acceptance authority")
 
 
 if __name__ == "__main__":

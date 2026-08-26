@@ -5,7 +5,7 @@ import tempfile
 import unittest
 
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
-from runtime import AcceptanceContract, ArtifactFileEvidence, ArtifactIdentity, ArtifactParityReceipt, DelegatedEvidence, DelegatedReceiptVerdict, DelegatedReturnReceipt, DelegationContract, IncidentLedger, LaneKind, ProofClass, ReviewEvidence, ReviewScope, ReviewStrategy, Role, Swarm, Task, Worker, derive_workflow_graph
+from runtime import AcceptanceContract, ArtifactFileEvidence, ArtifactIdentity, ArtifactParityReceipt, DelegatedEvidence, DelegatedReceiptVerdict, DelegatedReturnReceipt, DelegationContract, IncidentLedger, LaneKind, ProofClass, ReviewEvidence, ReviewScope, ReviewStrategy, Role, Swarm, Task, Worker, derive_artifact_graph, derive_workflow_graph
 
 
 def delegation(task_id:str, owner:str, artifact:ArtifactIdentity, path:str) -> DelegationContract:
@@ -60,6 +60,31 @@ class WorkflowGraphTests(unittest.TestCase):
         graph=derive_workflow_graph(swarm); kinds={node.id:node.kind for node in graph.nodes}
         self.assertEqual(kinds["specialist:manager"],"MANAGER")
         self.assertNotIn("WATCHDOG",kinds.values()); self.assertFalse(any(node.id.startswith("watchdog:") for node in graph.nodes))
+
+    def test_tiny_artifact_graph_contains_only_tasks_artifacts_and_real_dependencies(self):
+        swarm=self.two_lanes(); swarm.tasks["A"].waiting_on="B"
+        artifact_a=ArtifactIdentity.exact_tree("workflow-A","a"*40,"source",artifact_digest="1"*64,path_manifest_digest="2"*64)
+        artifact_b=ArtifactIdentity.exact_tree("workflow-B","b"*40,"source",artifact_digest="3"*64,path_manifest_digest="4"*64)
+        swarm.tasks["A"].acceptance_contract=AcceptanceContract(artifact_a)
+        swarm.tasks["B"].acceptance_contract=AcceptanceContract(artifact_b)
+        graph=derive_artifact_graph(swarm)
+        self.assertEqual({node.kind for node in graph.nodes},{"TASK","ARTIFACT"})
+        self.assertEqual({edge.kind for edge in graph.edges},{"waits_for","accepts_artifact"})
+        self.assertEqual(len([node for node in graph.nodes if node.kind=="ARTIFACT"]),2)
+        self.assertEqual(len(graph.digest()),64)
+        self.assertNotIn("WORKER",repr(graph)); self.assertNotIn("LEAD",repr(graph))
+
+    def test_exact_tree_content_address_invalidates_on_tree_content_or_path_manifest_change(self):
+        original=ArtifactIdentity.exact_tree("candidate","a"*40,"source",artifact_digest="b"*64,path_manifest_digest="c"*64)
+        variants=(
+            ArtifactIdentity.exact_tree("candidate","d"*40,"source",artifact_digest="b"*64,path_manifest_digest="c"*64),
+            ArtifactIdentity.exact_tree("candidate","a"*40,"source",artifact_digest="e"*64,path_manifest_digest="c"*64),
+            ArtifactIdentity.exact_tree("candidate","a"*40,"source",artifact_digest="b"*64,path_manifest_digest="f"*64),
+        )
+        self.assertTrue(original.matches_exact_tree("a"*40,artifact_digest="b"*64,path_manifest_digest="c"*64))
+        self.assertEqual(len(original.content_address()),64)
+        self.assertEqual(len({original.content_address(),*(item.content_address() for item in variants)}),4)
+        self.assertTrue(all(not original.matches_exact_tree(item.revision,artifact_digest=dict(item.observables)["artifact_sha256"],path_manifest_digest=dict(item.observables)["path_manifest_sha256"]) for item in variants))
 
     def test_graph_never_reobserves_artifact_after_recorded_pass(self):
         with tempfile.TemporaryDirectory() as root:

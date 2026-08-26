@@ -136,6 +136,25 @@ class HostContractTests(unittest.TestCase):
         self.assertIsNotNone(spacing)
         self.assertGreaterEqual(int(spacing.group(1)), 120)
         self.assertNotIn("MOTHER", readme)
+        for title in (
+            "MANAGER LEAD",
+            "ARCHITECT LEAD",
+            "REVIEWER LEAD",
+            "RESEARCHER DOER",
+            "DEV DOER",
+            "TESTER DOER",
+        ):
+            self.assertIn(title, readme)
+
+    def test_readme_has_one_simple_global_config_path_and_fast_switch(self) -> None:
+        readme = (REPOSITORY_ROOT / "README.md").read_text(encoding="utf-8")
+        self.assertIn("`~/.agents/swarm/config.toml`", readme)
+        self.assertIn("swarm_config.py init", readme)
+        self.assertIn("swarm_config.py validate", readme)
+        self.assertIn("swarm_config.py show", readme)
+        self.assertIn("fast_mode = true       # the only Fast-mode switch", readme)
+        self.assertIn('mode = "standard"      # or "manual"', readme)
+        self.assertIn("open_on_start = false", readme)
 
 
 if __name__ == "__main__":

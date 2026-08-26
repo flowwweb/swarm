@@ -29,21 +29,21 @@ This example shows a full three-lane swarm. The professions change with the obje
 flowchart TB
   C("🐙<br/>CTRL<br/>gpt-5.6-sol · high<br/>Owns the objective")
 
-  C --> P("🧭<br/>PRODUCT LEAD<br/>gpt-5.6-terra<br/>Direction")
-  C --> E("🧭<br/>ENGINEERING LEAD<br/>gpt-5.6-terra<br/>Build")
-  C --> Q("🧭<br/>QUALITY LEAD<br/>gpt-5.6-terra<br/>Proof")
+  C --> P("🧭<br/>MANAGER LEAD<br/>gpt-5.6-terra<br/>Direction")
+  C --> E("🧭<br/>ARCHITECT LEAD<br/>gpt-5.6-terra<br/>Build")
+  C --> Q("🧭<br/>REVIEWER LEAD<br/>gpt-5.6-terra<br/>Proof")
 
-  P --> P1("📚<br/>RESEARCHER<br/>gpt-5.6-luna")
-  P --> P2("🎨<br/>PRODUCT DESIGNER<br/>gpt-5.6-luna")
-  P --> P3("✏️<br/>UX WRITER<br/>gpt-5.6-luna")
+  P --> P1("📚<br/>RESEARCHER DOER<br/>gpt-5.6-luna")
+  P --> P2("🧠<br/>STRATEGIST DOER<br/>gpt-5.6-luna")
+  P --> P3("✏️<br/>WRITER DOER<br/>gpt-5.6-luna")
 
-  E --> E1("💻<br/>FRONTEND DEVELOPER<br/>gpt-5.6-luna")
-  E --> E2("🔨<br/>BACKEND DEVELOPER<br/>gpt-5.6-luna")
-  E --> E3("🔌<br/>INTEGRATION ENGINEER<br/>gpt-5.6-luna")
+  E --> E1("💻<br/>DEV DOER<br/>gpt-5.6-luna")
+  E --> E2("🎨<br/>DESIGNER DOER<br/>gpt-5.6-luna")
+  E --> E3("🚀<br/>OPERATOR DOER<br/>gpt-5.6-luna")
 
-  Q --> Q1("🧪<br/>TEST ENGINEER<br/>gpt-5.6-luna")
-  Q --> Q2("✅<br/>ACCESSIBILITY TESTER<br/>gpt-5.6-luna")
-  Q --> Q3("🚀<br/>RELEASE VERIFIER<br/>gpt-5.6-luna")
+  Q --> Q1("🧪<br/>TESTER DOER<br/>gpt-5.6-luna")
+  Q --> Q2("🛡️<br/>SECURITY DOER<br/>gpt-5.6-luna")
+  Q --> Q3("✅<br/>AUDITOR DOER<br/>gpt-5.6-luna")
 
   classDef ctrl fill:#fff1ed,stroke:#ff5b45,color:#172033,stroke-width:3px;
   classDef lead fill:#e9fbff,stroke:#0ea5c6,color:#172033,stroke-width:2px;
@@ -54,7 +54,7 @@ flowchart TB
   linkStyle default stroke:#36aeca,stroke-width:1.5px;
 ```
 
-The icons match SWARM task titles: one role icon makes the CTRL, LEAD, and profession of each task recognizable before you read the full name.
+The icons match SWARM task titles. Every visible task says both what expertise it brings and whether it is a LEAD or DOER; bare structural titles are rejected before creation.
 
 - **CTRL** is the sole control point. It understands your objective, chooses the lanes, resolves cross-lane decisions, and returns the combined result.
 - **LEADs** own distinct outcomes. They coordinate their DOERs, integrate the work, and bring back evidence instead of activity reports.
@@ -81,7 +81,8 @@ most efficient safe way to reach it. Durable goal persistence is on by default
 and can be disabled with `goals.use_goals = false`; disabling persistence does
 not disable intake, graph selection, ownership, or proof.
 
-CTRL then selects the smallest graph that fits the objective. Game projects use
+CTRL then selects the most efficient and smallest graph that can complete the
+objective durably, reliably, and confidently. Game projects use
 the registered game-studio flow: design, engineering, art, and audio can run
 as independent production lanes, followed by integrated playtest/QA and
 release gates. The graph is an ownership and dependency contract, not a flat
@@ -126,6 +127,38 @@ codex plugin add swarm@flowwweb
 ```
 
 Start a new task after reinstalling.
+
+## Configure SWARM
+
+SWARM uses one global TOML file: `~/.agents/swarm/config.toml`. Initialize it
+from the maintained template, edit only the settings you need, then validate
+the result:
+
+```text
+python skills/swarm/scripts/swarm_config.py init
+python skills/swarm/scripts/swarm_config.py validate
+python skills/swarm/scripts/swarm_config.py show
+```
+
+The common controls are deliberately small:
+
+```toml
+[execution]
+fast_mode = true       # the only Fast-mode switch
+
+[automation]
+mode = "standard"      # or "manual"
+
+[console]
+open_on_start = false
+```
+
+Changes apply at the next safe scheduling boundary; start a new task after a
+plugin update. Fast mode requests the host's faster service tier but is reported
+active only when host response metadata confirms it. Config never overrides an
+explicit user choice or grants task, Git, release, provider, or user-state
+authority. See the [configuration reference](skills/swarm/references/config.md)
+for every supported key and its claim limits.
 
 ## Local console
 

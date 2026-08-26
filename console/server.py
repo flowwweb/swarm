@@ -35,6 +35,25 @@ from urllib.parse import parse_qs, unquote, urlparse
 PLUGIN_ROOT = Path(__file__).resolve().parents[1]
 STATIC_ROOT = Path(__file__).resolve().parent / "static"
 CONSOLE_ROOT = Path(__file__).resolve().parent
+SWARM_SKILL_ROOT = PLUGIN_ROOT / "skills" / "swarm"
+if str(SWARM_SKILL_ROOT) not in sys.path:
+    sys.path.insert(0, str(SWARM_SKILL_ROOT))
+
+from runtime.progress_events import (  # noqa: E402
+    MAX_PULSE_BYTES,
+    MAX_PULSE_FILES,
+    PULSE_ROOT,
+    ProgressLedger,
+    ProgressEventError,
+    ProgressPulseEvent,
+    validate_progress_pulse,
+)
+from runtime.execution_adapters import (  # noqa: E402
+    ExecutionConfigGeneration,
+    ExecutionDispatchLedger,
+    ExecutionReservation,
+)
+
 INSTANCE_ID = hashlib.sha256(str(CONSOLE_ROOT.resolve()).casefold().encode("utf-8")).hexdigest()[:16]
 CONFIG_SCRIPT = PLUGIN_ROOT / "skills" / "swarm" / "scripts" / "swarm_config.py"
 DEFAULT_CODEX_HOME = Path(os.environ.get("CODEX_HOME", Path.home() / ".codex"))
@@ -51,6 +70,9 @@ TOKEN_SAMPLE_SECONDS = 60
 TOKEN_RETENTION_DAYS = 30
 TOKEN_SOURCE_SQLITE = "host_reported_cumulative_delta"
 TOKEN_SOURCE_CODEX_JSONL = "codex_jsonl_token_count"
+TOKEN_JSONL_SCAN_FILE_LIMIT = 4096
+PROGRESS_FRESHNESS_WINDOWS = 2
+PROGRESS_RECEIPTS_PER_TASK = 128
 DIAGNOSTIC_RETENTION_DAYS = 7
 DIAGNOSTIC_FRESH_SECONDS = TOKEN_SAMPLE_SECONDS * 5
 HEALTH_INCIDENT_RETENTION_DAYS = 90
@@ -71,6 +93,15 @@ HEALTH_THRESHOLDS = {
     "disk_recover_bytes": 8 * 1024**3,
 }
 MEDIA_MAX_HASH_BYTES = 64 * 1024 * 1024
+MAX_PROOF_EVENT_FILES = 1024
+PROOF_EVENT_SCAN_STATE_KEY = "proof_event_scan_state_v2"
+PROOF_EVENT_PREFIX_ALPHABET = "abcdefghijklmnopqrstuvwxyz0123456789-._"
+PROOF_EVENT_PRIVATE_FIELDS = frozenset({
+    "prompt", "prompts", "response", "responses", "message", "messages",
+    "tool_call", "tool_calls", "tool_output", "tool_outputs",
+    "credential", "credentials", "cookie", "cookies",
+    "provider_cookie", "provider_cookies", "provider_data", "provider_payload",
+})
 PROOF_EVENT_ROOT = Path("swarm") / "proof-events"
 PROOF_MEDIA_ROOT = Path("swarm") / "proof-media"
 CTRL_OVERRIDE_FIELDS: dict[str, type] = {
@@ -110,6 +141,9 @@ EDITABLE_SETTINGS: dict[str, type] = {
     "skills.default_profile": str,
     "logging.task_event_limit": int,
     "console.open_on_start": bool,
+    "console.project_progress_feed_enabled": bool,
+    "console.project_progress_feed_lines": int,
+    "automation.mode": str,
     "boost.enabled": bool,
     "boost.spark_enabled": bool,
     "boost.spark_model": str,
@@ -126,7 +160,6 @@ EDITABLE_SETTINGS: dict[str, type] = {
     "monitoring.auto_health_enabled": bool,
     "recovery.stall_after_updates": int,
     "lifecycle.pin_created_tasks": bool,
-    "lifecycle.archive_completed_tasks": bool,
     "feedback.enabled": bool,
     "feedback.include_diagnostics": bool,
     "feedback.prompt_on_close": bool,
@@ -238,6 +271,16 @@ def _remove_toml_setting(text: str, dotted_key: str) -> str:
     return "\n".join(lines) + "\n"
 
 
+def _remove_toml_root_setting(text: str, key: str) -> str:
+    """Remove one legacy root scalar without touching identically named table keys."""
+    lines = text.splitlines()
+    any_section_re = re.compile(r"^\s*\[[^]]+\]\s*(?:#.*)?$")
+    key_re = re.compile(rf"^\s*{re.escape(key)}\s*=.*$")
+    first_section = next((index for index, line in enumerate(lines) if any_section_re.match(line)), len(lines))
+    lines = [line for index, line in enumerate(lines) if not (index < first_section and key_re.match(line))]
+    return "\n".join(lines) + "\n"
+
+
 def _toml_setting_value(text: str, dotted_key: str) -> str | None:
     """Read one simple scalar setting for bounded legacy migration decisions."""
     section, key = dotted_key.split(".", 1)
@@ -272,6 +315,8 @@ def update_config(config_path: Path, changes: dict[str, Any]) -> dict[str, Any]:
             raise ConsoleError(f"{dotted_key} must be a boolean")
         if expected is str and not isinstance(value, str):
             raise ConsoleError(f"{dotted_key} must be text")
+        if dotted_key == "console.project_progress_feed_lines" and not 1 <= value <= 10:
+            raise ConsoleError("console.project_progress_feed_lines must be between 1 and 10")
 
     module, effective, exists = load_config(config_path)
     if exists:
@@ -281,12 +326,19 @@ def update_config(config_path: Path, changes: dict[str, Any]) -> dict[str, Any]:
             encoding="utf-8"
         )
     had_fast_mode = _toml_setting_value(text, "execution.fast_mode") is not None
+    had_automation_mode = _toml_setting_value(text, "automation.mode") is not None
     legacy_efficiency = _toml_setting_value(text, "efficiency.mode")
     text = _remove_toml_setting(text, "execution.service_tier")
+    text = _remove_toml_setting(text, "execution.current_mode")
+    text = _remove_toml_root_setting(text, "fast_mode")
+    text = _remove_toml_root_setting(text, "current_mode")
+    text = _remove_toml_setting(text, "lifecycle.archive_completed_tasks")
     if legacy_efficiency in {'"FAST"', "'FAST'"}:
         text = _replace_toml_setting(text, "efficiency.mode", "BALANCED")
     if not had_fast_mode:
         text = _replace_toml_setting(text, "execution.fast_mode", bool(effective["execution"]["fast_mode"]))
+    if not had_automation_mode:
+        text = _replace_toml_setting(text, "automation.mode", effective["automation"]["mode"])
     for dotted_key, value in changes.items():
         text = _replace_toml_setting(text, dotted_key, value)
 
@@ -308,7 +360,17 @@ def update_config(config_path: Path, changes: dict[str, Any]) -> dict[str, Any]:
     finally:
         if temporary and temporary.exists():
             temporary.unlink(missing_ok=True)
-    return redacted_config_snapshot(config_path)
+    result = redacted_config_snapshot(config_path)
+    config_digest = hashlib.sha256(config_path.read_bytes()).hexdigest()
+    result["mutation_receipt"] = {
+        "accepted": True,
+        "changed_keys": sorted(changes),
+        "config_digest": config_digest,
+        "revision": config_digest,
+        "source": "swarm_console_atomic_config_write",
+        "claim_limit": "This receipt confirms only the canonical local SWARM config write; it does not prove browser rendering or host execution behavior.",
+    }
+    return result
 
 
 def restore_config_defaults(config_path: Path) -> dict[str, Any]:
@@ -943,8 +1005,12 @@ class ConsoleStore:
                     event_name TEXT PRIMARY KEY,
                     event_mtime_ns INTEGER NOT NULL,
                     event_size INTEGER NOT NULL,
+                    event_digest TEXT,
                     status TEXT NOT NULL,
                     evidence_id TEXT NOT NULL,
+                    task_id TEXT,
+                    project_id TEXT,
+                    media_digest TEXT,
                     observed_at_ms INTEGER NOT NULL
                 );
                 CREATE TABLE IF NOT EXISTS ctrl_overrides (
@@ -988,6 +1054,58 @@ class ConsoleStore:
                     scheduled_wake_consumed INTEGER NOT NULL DEFAULT 0,
                     updated_at_ms INTEGER NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS task_progress_state (
+                    task_id TEXT PRIMARY KEY,
+                    project_id TEXT NOT NULL,
+                    plan_id TEXT NOT NULL,
+                    unit_id TEXT NOT NULL,
+                    unit_kind TEXT NOT NULL,
+                    total_units INTEGER NOT NULL,
+                    completed_units INTEGER NOT NULL,
+                    basis TEXT NOT NULL,
+                    observed_at_ms INTEGER NOT NULL,
+                    source TEXT NOT NULL,
+                    receipt_id TEXT NOT NULL,
+                    pulse_receipt TEXT NOT NULL,
+                    pulse_observed_at_ms INTEGER NOT NULL,
+                    pulse_state TEXT NOT NULL,
+                    updated_at_ms INTEGER NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS task_progress_receipts (
+                    receipt_id TEXT PRIMARY KEY,
+                    task_id TEXT NOT NULL,
+                    project_id TEXT NOT NULL,
+                    plan_id TEXT NOT NULL,
+                    previous_plan_id TEXT,
+                    unit_id TEXT NOT NULL,
+                    unit_kind TEXT NOT NULL,
+                    total_units INTEGER NOT NULL,
+                    completed_units INTEGER NOT NULL,
+                    observed_at_ms INTEGER NOT NULL,
+                    source TEXT NOT NULL,
+                    payload_digest TEXT NOT NULL,
+                    accepted_at_ms INTEGER NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS task_progress_receipts_task_time
+                    ON task_progress_receipts(task_id, observed_at_ms DESC);
+                CREATE TABLE IF NOT EXISTS task_progress_plans (
+                    task_id TEXT NOT NULL,
+                    project_id TEXT NOT NULL,
+                    plan_id TEXT NOT NULL,
+                    first_observed_at_ms INTEGER NOT NULL,
+                    PRIMARY KEY(task_id, plan_id)
+                );
+                CREATE TABLE IF NOT EXISTS task_progress_pulse_files (
+                    event_name TEXT PRIMARY KEY,
+                    task_id TEXT NOT NULL,
+                    project_id TEXT NOT NULL,
+                    pulse_receipt TEXT NOT NULL,
+                    payload_digest TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    pulse_state TEXT NOT NULL,
+                    observed_at_ms INTEGER NOT NULL,
+                    updated_at_ms INTEGER NOT NULL
+                );
                 CREATE TABLE IF NOT EXISTS store_metadata (
                     key TEXT PRIMARY KEY,
                     value TEXT NOT NULL
@@ -1026,6 +1144,23 @@ class ConsoleStore:
                     resolved_at_ms INTEGER,
                     resolution_receipt TEXT NOT NULL DEFAULT ''
                 );
+                CREATE TABLE IF NOT EXISTS execution_config_generations (
+                    generation_id TEXT PRIMARY KEY,
+                    payload_json TEXT NOT NULL,
+                    payload_digest TEXT NOT NULL,
+                    changed_at_ms INTEGER NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS execution_dispatch_state (
+                    reservation_id TEXT PRIMARY KEY,
+                    task_id TEXT NOT NULL UNIQUE,
+                    snapshot_json TEXT NOT NULL,
+                    snapshot_digest TEXT NOT NULL,
+                    updated_at_ms INTEGER NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS execution_event_receipts (
+                    event_digest TEXT PRIMARY KEY,
+                    retained_at_ms INTEGER NOT NULL
+                );
                 CREATE UNIQUE INDEX IF NOT EXISTS health_requests_open_dedupe
                     ON health_requests(dedupe_key)
                     WHERE status IN ('OPEN', 'CLAIMED', 'IN_PROGRESS');
@@ -1056,6 +1191,95 @@ class ConsoleStore:
             }.items():
                 if name not in eta_columns:
                     connection.execute(f"ALTER TABLE eta_forecasts ADD COLUMN {name} {definition}")
+            proof_receipt_columns = {
+                str(row[1])
+                for row in connection.execute("PRAGMA table_info(proof_event_receipts)").fetchall()
+            }
+            for name in ("event_digest", "task_id", "project_id", "media_digest"):
+                if name not in proof_receipt_columns:
+                    connection.execute(f"ALTER TABLE proof_event_receipts ADD COLUMN {name} TEXT")
+            connection.execute(
+                """
+                UPDATE proof_event_receipts
+                   SET task_id = COALESCE(task_id, (
+                           SELECT media.task_id FROM proof_media media
+                           WHERE media.evidence_id = proof_event_receipts.evidence_id
+                       )),
+                       project_id = COALESCE(project_id, (
+                           SELECT media.project_id FROM proof_media media
+                           WHERE media.evidence_id = proof_event_receipts.evidence_id
+                       )),
+                       media_digest = COALESCE(media_digest, (
+                           SELECT media.digest FROM proof_media media
+                           WHERE media.evidence_id = proof_event_receipts.evidence_id
+                       ))
+                 WHERE status = 'IMPORTED'
+                """
+            )
+            progress_plan_columns = {
+                str(row[1])
+                for row in connection.execute("PRAGMA table_info(task_progress_plans)").fetchall()
+            }
+            if "project_id" not in progress_plan_columns:
+                connection.execute("ALTER TABLE task_progress_plans ADD COLUMN project_id TEXT")
+            if not connection.in_transaction:
+                connection.execute("BEGIN IMMEDIATE")
+            conflicting_plan_binding = connection.execute(
+                """
+                WITH plan_bindings(task_id, project_id, plan_id) AS (
+                    SELECT task_id, project_id, plan_id FROM task_progress_receipts
+                    UNION ALL
+                    SELECT task_id, project_id, plan_id FROM task_progress_state
+                    UNION ALL
+                    SELECT task_id, project_id, plan_id FROM task_progress_plans
+                    WHERE project_id IS NOT NULL AND project_id != ''
+                )
+                SELECT task_id, plan_id
+                FROM plan_bindings
+                GROUP BY task_id, plan_id
+                HAVING COUNT(DISTINCT project_id) > 1
+                LIMIT 1
+                """
+            ).fetchone()
+            if conflicting_plan_binding is not None:
+                raise ConsoleError(
+                    "progress plan history has conflicting project identity for "
+                    f"task {conflicting_plan_binding['task_id']} plan {conflicting_plan_binding['plan_id']}"
+                )
+            historical_plans = connection.execute(
+                """
+                WITH plan_history(task_id, project_id, plan_id, first_seen_at_ms) AS (
+                    SELECT task_id, project_id, plan_id,
+                           MIN(observed_at_ms, accepted_at_ms)
+                    FROM task_progress_receipts
+                    UNION ALL
+                    SELECT task_id, project_id, plan_id, observed_at_ms
+                    FROM task_progress_state
+                )
+                SELECT task_id, project_id, plan_id, MIN(first_seen_at_ms) AS first_seen_at_ms
+                FROM plan_history
+                GROUP BY task_id, project_id, plan_id
+                ORDER BY task_id, plan_id
+                """
+            ).fetchall()
+            for plan in historical_plans:
+                existing_plan = connection.execute(
+                    "SELECT project_id, first_observed_at_ms FROM task_progress_plans WHERE task_id = ? AND plan_id = ?",
+                    (plan["task_id"], plan["plan_id"]),
+                ).fetchone()
+                if existing_plan is None:
+                    connection.execute(
+                        "INSERT INTO task_progress_plans(task_id, project_id, plan_id, first_observed_at_ms) VALUES (?, ?, ?, ?)",
+                        (plan["task_id"], plan["project_id"], plan["plan_id"], int(plan["first_seen_at_ms"])),
+                    )
+                else:
+                    existing_project = existing_plan["project_id"]
+                    if existing_project not in (None, "", plan["project_id"]):
+                        raise ConsoleError("progress plan history conflicts with its existing project binding")
+                    connection.execute(
+                        "UPDATE task_progress_plans SET project_id = ?, first_observed_at_ms = MIN(first_observed_at_ms, ?) WHERE task_id = ? AND plan_id = ?",
+                        (plan["project_id"], int(plan["first_seen_at_ms"]), plan["task_id"], plan["plan_id"]),
+                    )
             from skills_catalog import seed_rows
             for seed in seed_rows(int(time.time() * 1000)):
                 connection.execute(
@@ -1081,6 +1305,202 @@ class ConsoleStore:
                 "surface_kind='available_media' WHERE disposition IN ('AVAILABLE', 'SURFACED')"
             )
             connection.commit()
+
+    @staticmethod
+    def _execution_payload(payload: dict[str, Any]) -> tuple[str, str]:
+        encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+        return encoded, hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+    @staticmethod
+    def _canonical_execution_generation_payload(payload: dict[str, Any]) -> dict[str, Any]:
+        """Normalize one intact legacy mode field without changing generation identity."""
+        normalized = dict(payload)
+        if "fast_mode" in normalized and "service_tier" in normalized:
+            raise ConsoleError("execution config generation has competing mode authorities")
+        if "fast_mode" not in normalized:
+            legacy_tier = normalized.pop("service_tier", None)
+            if legacy_tier not in {"default", "flex", "fast", "priority"}:
+                raise ConsoleError("legacy execution config service tier is invalid")
+            normalized["fast_mode"] = legacy_tier in {"fast", "priority"}
+        return normalized
+
+    @staticmethod
+    def _validate_execution_reservation_advance(retained: dict[str, Any], incoming: dict[str, Any]) -> None:
+        """Reject stale or regressive reservation snapshots before the retained CAS write."""
+        for field in ("reservation_id", "task_id", "owner_id"):
+            if retained.get(field) != incoming.get(field):
+                raise ConsoleError("execution reservation conflicts with retained identity")
+        retained_artifact = json.dumps(retained.get("artifact"), sort_keys=True, separators=(",", ":"))
+        incoming_artifact = json.dumps(incoming.get("artifact"), sort_keys=True, separators=(",", ":"))
+        if retained_artifact != incoming_artifact:
+            raise ConsoleError("execution reservation conflicts with retained identity")
+        if bool(retained.get("host_completed")) and not bool(incoming.get("host_completed")):
+            next_turn = (
+                str(incoming.get("state") or "") == "active"
+                and str(incoming.get("generation_id") or "") != str(retained.get("generation_id") or "")
+                and str(incoming.get("request_digest") or "") != str(retained.get("request_digest") or "")
+            )
+            if not next_turn:
+                raise ConsoleError("execution reservation cannot regress host completion")
+        if int(incoming.get("retry_count") or 0) < int(retained.get("retry_count") or 0):
+            raise ConsoleError("execution reservation cannot regress retry count")
+        retained_receipt = str(retained.get("material_receipt_id") or "")
+        if retained_receipt and str(incoming.get("material_receipt_id") or "") != retained_receipt:
+            raise ConsoleError("execution reservation cannot replace retained material receipt")
+        allowed_states = {
+            "queued": {"queued", "deferred", "active", "unverified", "material_receipt"},
+            "deferred": {"deferred", "active", "unverified", "material_receipt"},
+            "active": {"active", "checkpointed", "material_receipt", "unverified"},
+            "checkpointed": {"checkpointed", "active", "material_receipt", "unverified"},
+            "unverified": {"unverified", "active", "checkpointed", "material_receipt"},
+            "material_receipt": {"material_receipt", "independent_review"},
+            "independent_review": {"independent_review", "complete"},
+            "complete": {"complete"},
+        }
+        retained_state = str(retained.get("state") or "")
+        incoming_state = str(incoming.get("state") or "")
+        if incoming_state == "independent_review":
+            retained_material = str(retained.get("material_receipt_id") or "")
+            if retained_state != "material_receipt" or not retained_material:
+                raise ConsoleError("independent review requires a retained exact material receipt")
+            if (
+                str(incoming.get("material_receipt_id") or "") != retained_material
+                or str(incoming.get("generation_id") or "") != str(retained.get("generation_id") or "")
+            ):
+                raise ConsoleError("independent review conflicts with retained material receipt binding")
+        if incoming_state == "complete" and retained_state not in {"independent_review", "complete"}:
+            raise ConsoleError("completed execution reservation requires retained independent review")
+        if incoming_state not in allowed_states.get(retained_state, set()):
+            raise ConsoleError("execution reservation state cannot move backward or skip a gate")
+        if incoming_state in {"material_receipt", "independent_review", "complete"} and not str(incoming.get("material_receipt_id") or ""):
+            raise ConsoleError("execution reservation acceptance state requires a retained material receipt")
+        if incoming_state == "complete" and not bool(incoming.get("host_completed")):
+            raise ConsoleError("completed execution reservation requires consumed host completion")
+
+    def persist_execution_ledger(self, ledger: ExecutionDispatchLedger, *, now_ms: int) -> None:
+        """Persist only typed queue identities/digests; raw request or tool content is never accepted."""
+        if not isinstance(ledger, ExecutionDispatchLedger) or not isinstance(now_ms, int) or isinstance(now_ms, bool) or now_ms < 0:
+            raise ConsoleError("execution ledger persistence requires typed state and nonnegative time")
+        with self._lock, closing(self._connect()) as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            for generation in ledger.generations:
+                payload = {
+                    "generation_id": generation.generation_id,
+                    "fast_mode": generation.fast_mode,
+                    "model": generation.model,
+                    "effort": generation.effort,
+                    "changed_at_ms": generation.changed_at_ms,
+                    "host_receipt_id": generation.host_receipt_id,
+                }
+                encoded, digest = self._execution_payload(payload)
+                existing = connection.execute(
+                    "SELECT payload_json, payload_digest FROM execution_config_generations WHERE generation_id = ?",
+                    (generation.generation_id,),
+                ).fetchone()
+                if existing is not None and str(existing["payload_digest"]) != digest:
+                    retained = json.loads(str(existing["payload_json"]))
+                    _, retained_digest = self._execution_payload(retained)
+                    if retained_digest != str(existing["payload_digest"]):
+                        raise ConsoleError("execution config generation digest mismatch")
+                    if self._canonical_execution_generation_payload(retained) != payload:
+                        raise ConsoleError("execution config generation conflicts with retained identity")
+                    updated = connection.execute(
+                        """
+                        UPDATE execution_config_generations
+                        SET payload_json = ?, payload_digest = ?, changed_at_ms = ?
+                        WHERE generation_id = ? AND payload_digest = ?
+                        """,
+                        (encoded, digest, generation.changed_at_ms, generation.generation_id, retained_digest),
+                    )
+                    if updated.rowcount != 1:
+                        raise ConsoleError("execution config generation normalization lost retained custody")
+                elif existing is None:
+                    connection.execute(
+                        "INSERT INTO execution_config_generations(generation_id, payload_json, payload_digest, changed_at_ms) VALUES (?, ?, ?, ?)",
+                        (generation.generation_id, encoded, digest, generation.changed_at_ms),
+                    )
+            for reservation in ledger.reservations:
+                snapshot = reservation.snapshot()
+                encoded, digest = self._execution_payload(snapshot)
+                existing = connection.execute(
+                    "SELECT task_id, snapshot_json, snapshot_digest, updated_at_ms "
+                    "FROM execution_dispatch_state WHERE reservation_id = ?",
+                    (reservation.reservation_id,),
+                ).fetchone()
+                if existing is None:
+                    connection.execute(
+                        "INSERT INTO execution_dispatch_state(reservation_id, task_id, snapshot_json, snapshot_digest, updated_at_ms) "
+                        "VALUES (?, ?, ?, ?, ?)",
+                        (reservation.reservation_id, reservation.task_id, encoded, digest, reservation.updated_at_ms),
+                    )
+                    continue
+                retained = json.loads(str(existing["snapshot_json"]))
+                _, retained_digest = self._execution_payload(retained)
+                if retained_digest != str(existing["snapshot_digest"]):
+                    raise ConsoleError("execution reservation snapshot digest mismatch")
+                retained_at_ms = int(existing["updated_at_ms"])
+                if reservation.updated_at_ms < retained_at_ms:
+                    raise ConsoleError("stale execution reservation snapshot cannot replace retained state")
+                if reservation.updated_at_ms == retained_at_ms:
+                    if digest == retained_digest:
+                        continue
+                    raise ConsoleError("equal-time execution reservation snapshot conflicts with retained digest")
+                self._validate_execution_reservation_advance(retained, snapshot)
+                updated = connection.execute(
+                    """
+                    UPDATE execution_dispatch_state
+                    SET task_id = ?, snapshot_json = ?, snapshot_digest = ?, updated_at_ms = ?
+                    WHERE reservation_id = ? AND task_id = ? AND snapshot_digest = ? AND updated_at_ms = ?
+                    """,
+                    (
+                        reservation.task_id, encoded, digest, reservation.updated_at_ms,
+                        reservation.reservation_id, str(existing["task_id"]), retained_digest, retained_at_ms,
+                    ),
+                )
+                if updated.rowcount != 1:
+                    raise ConsoleError("execution reservation persistence lost retained custody")
+            for event_digest in ledger.event_digests:
+                connection.execute(
+                    "INSERT OR IGNORE INTO execution_event_receipts(event_digest, retained_at_ms) VALUES (?, ?)",
+                    (event_digest, now_ms),
+                )
+            connection.commit()
+
+    def load_execution_ledger(self) -> ExecutionDispatchLedger:
+        """Restore retained reservations and dedupe receipts without replaying host work."""
+        with self._lock, closing(self._connect()) as connection:
+            generation_rows = connection.execute(
+                "SELECT payload_json, payload_digest FROM execution_config_generations ORDER BY changed_at_ms, generation_id"
+            ).fetchall()
+            reservation_rows = connection.execute(
+                "SELECT snapshot_json, snapshot_digest FROM execution_dispatch_state ORDER BY reservation_id"
+            ).fetchall()
+            event_rows = connection.execute(
+                "SELECT event_digest FROM execution_event_receipts ORDER BY event_digest"
+            ).fetchall()
+        try:
+            generations = []
+            for row in generation_rows:
+                payload = json.loads(str(row["payload_json"]))
+                _, digest = self._execution_payload(payload)
+                if digest != str(row["payload_digest"]):
+                    raise ConsoleError("execution config generation digest mismatch")
+                payload = self._canonical_execution_generation_payload(payload)
+                generations.append(ExecutionConfigGeneration(**payload))
+            reservations = []
+            for row in reservation_rows:
+                payload = json.loads(str(row["snapshot_json"]))
+                _, digest = self._execution_payload(payload)
+                if digest != str(row["snapshot_digest"]):
+                    raise ConsoleError("execution reservation snapshot digest mismatch")
+                reservations.append(ExecutionReservation.from_snapshot(payload))
+            return ExecutionDispatchLedger(
+                generations=tuple(generations),
+                reservations=tuple(reservations),
+                event_digests=tuple(str(row["event_digest"]) for row in event_rows),
+            )
+        except (TypeError, ValueError, KeyError, json.JSONDecodeError) as error:
+            raise ConsoleError(f"execution ledger restore failed closed: {error}") from error
 
     def _retention_cutoff(self, now_ms: int) -> int:
         return now_ms - TOKEN_RETENTION_DAYS * 24 * 60 * 60 * 1000
@@ -1249,9 +1669,338 @@ class ConsoleStore:
         )
         return True
 
+    def _record_progress_pulse(
+        self,
+        connection: sqlite3.Connection,
+        event: ProgressPulseEvent,
+        *,
+        now_ms: int,
+    ) -> str:
+        """Apply one validated local pulse without granting it host authority."""
+        if event.observed_at_ms > now_ms:
+            raise ConsoleError("progress pulse observation time is in the future")
+        connection.execute(
+            """
+            INSERT INTO task_heartbeats(
+                task_id, project_id, last_material_at_ms, last_liveness_at_ms,
+                scheduled_wake_at_ms, scheduled_wake_consumed, updated_at_ms
+            ) VALUES (?, ?, NULL, ?, NULL, 0, ?)
+            ON CONFLICT(task_id) DO UPDATE SET
+                project_id=excluded.project_id,
+                last_liveness_at_ms=MAX(task_heartbeats.last_liveness_at_ms, excluded.last_liveness_at_ms),
+                updated_at_ms=MAX(task_heartbeats.updated_at_ms, excluded.updated_at_ms)
+            """,
+            (event.task_id, event.project_id, event.observed_at_ms, now_ms),
+        )
+        progress = event.progress
+        if progress is None:
+            return "heartbeat"
+        progress_digest = hashlib.sha256(json.dumps(
+            {
+                "task_id": event.task_id,
+                "project_id": event.project_id,
+                "receipt_id": progress.receipt_id,
+                "plan_id": progress.plan_id,
+                "previous_plan_id": progress.previous_plan_id,
+                "unit_id": progress.unit_id,
+                "unit_kind": progress.unit_kind,
+                "total_units": progress.total_units,
+                "completed_units": progress.completed_units,
+                "basis": progress.basis,
+                "observed_at_ms": progress.observed_at_ms,
+                "source": progress.source,
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")).hexdigest()
+        existing_receipt = connection.execute(
+            "SELECT * FROM task_progress_receipts WHERE receipt_id = ?",
+            (progress.receipt_id,),
+        ).fetchone()
+        if existing_receipt is not None:
+            if str(existing_receipt["payload_digest"]) != progress_digest:
+                raise ConsoleError("progress receipt conflicts with a previously accepted receipt")
+            latest_material = connection.execute(
+                "SELECT receipt_id, pulse_observed_at_ms FROM task_progress_state WHERE task_id = ?",
+                (event.task_id,),
+            ).fetchone()
+            if (
+                latest_material is not None
+                and str(latest_material["receipt_id"]) == progress.receipt_id
+                and event.observed_at_ms > int(latest_material["pulse_observed_at_ms"])
+            ):
+                connection.execute(
+                    "UPDATE task_progress_state SET pulse_receipt = ?, pulse_observed_at_ms = ?, pulse_state = ?, updated_at_ms = MAX(updated_at_ms, ?) WHERE task_id = ?",
+                    (event.pulse_receipt, event.observed_at_ms, event.state, now_ms, event.task_id),
+                )
+                return "heartbeat"
+            return "duplicate"
+        latest = connection.execute(
+            "SELECT * FROM task_progress_state WHERE task_id = ?",
+            (event.task_id,),
+        ).fetchone()
+        if latest is None:
+            if progress.previous_plan_id is not None:
+                raise ConsoleError("initial progress plan cannot claim a previous plan")
+            prior_plan = connection.execute(
+                "SELECT project_id FROM task_progress_plans WHERE task_id = ? AND plan_id = ?",
+                (event.task_id, progress.plan_id),
+            ).fetchone()
+            if prior_plan is not None:
+                raise ConsoleError("progress plan identity was already used for this task")
+        else:
+            if str(latest["project_id"]) != event.project_id:
+                raise ConsoleError("progress pulse project conflicts with the stored task target")
+            current_plan = str(latest["plan_id"])
+            connection.execute(
+                "INSERT OR IGNORE INTO task_progress_plans(task_id, project_id, plan_id, first_observed_at_ms) VALUES (?, ?, ?, ?)",
+                (event.task_id, event.project_id, current_plan, int(latest["observed_at_ms"])),
+            )
+            connection.execute(
+                "UPDATE task_progress_plans SET project_id = ? WHERE task_id = ? AND plan_id = ? AND (project_id IS NULL OR project_id = '')",
+                (event.project_id, event.task_id, current_plan),
+            )
+            if progress.plan_id == current_plan:
+                if progress.previous_plan_id is not None:
+                    raise ConsoleError("same-plan progress cannot declare a plan revision")
+                if (
+                    progress.unit_id != str(latest["unit_id"])
+                    or progress.unit_kind != str(latest["unit_kind"])
+                    or progress.total_units != int(latest["total_units"])
+                ):
+                    raise ConsoleError("progress unit identity or declared total conflicts with the stored plan")
+                if progress.completed_units <= int(latest["completed_units"]):
+                    raise ConsoleError("a unique material receipt must advance completed units monotonically")
+                if progress.observed_at_ms < int(latest["observed_at_ms"]):
+                    raise ConsoleError("progress observation cannot regress its high-water")
+            else:
+                if progress.previous_plan_id != current_plan:
+                    raise ConsoleError("a new progress plan requires an explicit previous_plan_id revision")
+                if progress.observed_at_ms <= int(latest["observed_at_ms"]):
+                    raise ConsoleError("a progress plan revision must advance the task observation high-water")
+                prior_plan = connection.execute(
+                    "SELECT project_id FROM task_progress_plans WHERE task_id = ? AND plan_id = ?",
+                    (event.task_id, progress.plan_id),
+                ).fetchone()
+                if prior_plan is not None:
+                    raise ConsoleError("progress plan identity was already used for this task")
+        connection.execute(
+            "INSERT OR IGNORE INTO task_progress_plans(task_id, project_id, plan_id, first_observed_at_ms) VALUES (?, ?, ?, ?)",
+            (event.task_id, event.project_id, progress.plan_id, progress.observed_at_ms),
+        )
+        connection.execute(
+            """
+            INSERT INTO task_progress_receipts(
+                receipt_id, task_id, project_id, plan_id, previous_plan_id,
+                unit_id, unit_kind, total_units, completed_units, observed_at_ms,
+                source, payload_digest, accepted_at_ms
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                progress.receipt_id, event.task_id, event.project_id, progress.plan_id,
+                progress.previous_plan_id, progress.unit_id, progress.unit_kind,
+                progress.total_units, progress.completed_units, progress.observed_at_ms,
+                progress.source, progress_digest, now_ms,
+            ),
+        )
+        connection.execute(
+            """
+            INSERT INTO task_progress_state(
+                task_id, project_id, plan_id, unit_id, unit_kind, total_units,
+                completed_units, basis, observed_at_ms, source, receipt_id,
+                pulse_receipt, pulse_observed_at_ms, pulse_state, updated_at_ms
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(task_id) DO UPDATE SET
+                project_id=excluded.project_id,
+                plan_id=excluded.plan_id,
+                unit_id=excluded.unit_id,
+                unit_kind=excluded.unit_kind,
+                total_units=excluded.total_units,
+                completed_units=excluded.completed_units,
+                basis=excluded.basis,
+                observed_at_ms=excluded.observed_at_ms,
+                source=excluded.source,
+                receipt_id=excluded.receipt_id,
+                pulse_receipt=excluded.pulse_receipt,
+                pulse_observed_at_ms=excluded.pulse_observed_at_ms,
+                pulse_state=excluded.pulse_state,
+                updated_at_ms=excluded.updated_at_ms
+            """,
+            (
+                event.task_id, event.project_id, progress.plan_id, progress.unit_id,
+                progress.unit_kind, progress.total_units, progress.completed_units,
+                progress.basis, progress.observed_at_ms, progress.source,
+                progress.receipt_id, event.pulse_receipt, event.observed_at_ms,
+                event.state, now_ms,
+            ),
+        )
+        connection.execute(
+            """
+            DELETE FROM task_progress_receipts
+            WHERE rowid IN (
+                SELECT rowid FROM task_progress_receipts
+                WHERE task_id = ?
+                ORDER BY observed_at_ms DESC, accepted_at_ms DESC
+                LIMIT -1 OFFSET ?
+            )
+            """,
+            (event.task_id, PROGRESS_RECEIPTS_PER_TASK),
+        )
+        connection.execute(
+            "UPDATE task_heartbeats SET last_material_at_ms = MAX(COALESCE(last_material_at_ms, 0), ?), updated_at_ms = MAX(updated_at_ms, ?) WHERE task_id = ?",
+            (progress.observed_at_ms, now_ms, event.task_id),
+        )
+        return "advanced"
+
+    @staticmethod
+    def _record_progress_pulse_file(
+        connection: sqlite3.Connection,
+        event_name: str,
+        event: ProgressPulseEvent | None,
+        *,
+        digest: str,
+        status: str,
+        now_ms: int,
+    ) -> None:
+        connection.execute(
+            """
+            INSERT INTO task_progress_pulse_files(
+                event_name, task_id, project_id, pulse_receipt, payload_digest,
+                status, pulse_state, observed_at_ms, updated_at_ms
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(event_name) DO UPDATE SET
+                task_id=excluded.task_id,
+                project_id=excluded.project_id,
+                pulse_receipt=excluded.pulse_receipt,
+                payload_digest=excluded.payload_digest,
+                status=excluded.status,
+                pulse_state=excluded.pulse_state,
+                observed_at_ms=excluded.observed_at_ms,
+                updated_at_ms=excluded.updated_at_ms
+            """,
+            (
+                event_name,
+                "" if event is None else event.task_id,
+                "" if event is None else event.project_id,
+                "" if event is None else event.pulse_receipt,
+                digest,
+                status,
+                "" if event is None else event.state,
+                0 if event is None else event.observed_at_ms,
+                now_ms,
+            ),
+        )
+
+    def ingest_progress_pulses(self, codex_home: Path, overview: dict[str, Any], *, now_ms: int) -> dict[str, Any]:
+        """Ingest bounded local sidecars for exact observed non-subagent tasks."""
+        expected_swarm_root = codex_home.resolve() / "swarm"
+        expected_pulse_root = codex_home.resolve() / PULSE_ROOT
+        swarm_root = expected_swarm_root.resolve()
+        pulse_root = expected_pulse_root.resolve()
+        result: dict[str, Any] = {"advanced": 0, "heartbeats": 0, "duplicates": 0, "rejected": 0, "eta_reports": {}}
+        if swarm_root != expected_swarm_root or pulse_root != expected_pulse_root or not pulse_root.is_dir():
+            return result
+        nodes = {
+            str(node.get("id")): node
+            for node in overview.get("nodes", [])
+            if not node.get("virtual") and not node.get("is_subagent") and node.get("id") and node.get("project_id")
+        }
+        for index, event_path in enumerate(pulse_root.iterdir()):
+            if index >= MAX_PULSE_FILES:
+                break
+            if event_path.suffix.casefold() != ".json":
+                continue
+            event: ProgressPulseEvent | None = None
+            digest = ""
+            try:
+                resolved = event_path.resolve(strict=True)
+                stat = resolved.stat()
+                if not resolved.is_file() or resolved.parent != pulse_root or stat.st_size <= 0 or stat.st_size > MAX_PULSE_BYTES:
+                    raise ConsoleError("progress pulse file violates the path or size guard")
+                encoded = resolved.read_bytes()
+                digest = hashlib.sha256(encoded.rstrip(b"\r\n")).hexdigest()
+                event = validate_progress_pulse(json.loads(encoded.decode("utf-8")))
+                expected_name = hashlib.sha256(event.task_id.encode("utf-8")).hexdigest() + ".json"
+                node = nodes.get(event.task_id)
+                if resolved.name != expected_name or node is None or str(node.get("project_id")) != event.project_id:
+                    raise ConsoleError("progress pulse target is not an exact observed non-subagent task/project")
+                with self._lock, closing(self._connect()) as connection:
+                    prior = connection.execute(
+                        "SELECT payload_digest, status, observed_at_ms FROM task_progress_pulse_files WHERE event_name = ?",
+                        (resolved.name,),
+                    ).fetchone()
+                    if prior is not None and str(prior["payload_digest"]) == event.digest and str(prior["status"]) == "IMPORTED":
+                        outcome = "duplicate"
+                    else:
+                        if prior is not None and event.observed_at_ms < int(prior["observed_at_ms"]):
+                            raise ConsoleError("progress pulse file cannot regress its observed high-water")
+                        outcome = self._record_progress_pulse(connection, event, now_ms=now_ms)
+                        if event.eta_report is not None:
+                            self._record_eta_receipt(
+                                connection,
+                                event.eta_report,
+                                observed_task_id=event.task_id,
+                                observed_project_id=event.project_id,
+                                now_ms=now_ms,
+                            )
+                    self._record_progress_pulse_file(connection, resolved.name, event, digest=event.digest, status="IMPORTED", now_ms=now_ms)
+                    connection.commit()
+                if event.eta_report is not None:
+                    result["eta_reports"][event.task_id] = event.eta_report
+                if outcome == "advanced":
+                    result["advanced"] += 1
+                elif outcome == "heartbeat":
+                    result["heartbeats"] += 1
+                else:
+                    result["duplicates"] += 1
+            except (ConsoleError, ProgressEventError, OSError, UnicodeError, json.JSONDecodeError, ValueError, TypeError, sqlite3.Error):
+                result["rejected"] += 1
+                try:
+                    with self._lock, closing(self._connect()) as connection:
+                        self._record_progress_pulse_file(connection, event_path.name, event, digest=digest, status="REJECTED", now_ms=now_ms)
+                        connection.commit()
+                except (OSError, sqlite3.Error):
+                    pass
+        return result
+
+    def latest_progress(self) -> dict[str, dict[str, Any]]:
+        with self._lock, closing(self._connect()) as connection:
+            rows = connection.execute("SELECT * FROM task_progress_state ORDER BY task_id").fetchall()
+        return {
+            str(row["task_id"]): {
+                "project_id": row["project_id"],
+                "progress_basis": {
+                    "receipts": [row["receipt_id"]],
+                    "plan_units": {
+                        "plan_id": row["plan_id"],
+                        "unit_id": row["unit_id"],
+                        "unit_kind": row["unit_kind"],
+                        "total_units": int(row["total_units"]),
+                        "completed_units": int(row["completed_units"]),
+                        "basis": row["basis"],
+                        "observed_at_ms": int(row["observed_at_ms"]),
+                    },
+                },
+                "receipt_source": f"instruction_only_local_sidecar:{row['source']}",
+                "pulse_receipt": row["pulse_receipt"],
+                "pulse_observed_at_ms": int(row["pulse_observed_at_ms"]),
+                "pulse_state": row["pulse_state"],
+                "claim_limit": "Validated local task-owner instruction sidecar only; not native host, user, progress, review, or acceptance authority.",
+            }
+            for row in rows
+        }
+
     def observe_overview(self, overview: dict[str, Any], *, now_ms: int, trigger: str, heartbeat_minutes: int, codex_home: Path | None = None) -> None:
         nodes = [node for node in overview.get("nodes", []) if not node.get("virtual")]
         node_by_id = {str(node["id"]): node for node in nodes}
+        # Filesystem discovery and JSONL parsing can be slow on a large sessions
+        # tree. Complete one bounded shared scan before taking the SQLite lock so
+        # passive readers remain responsive.
+        jsonl_counts = (
+            {}
+            if codex_home is None
+            else _codex_jsonl_token_counts(codex_home, set(node_by_id))
+        )
         dependencies: dict[str, list[str]] = {}
         for link in overview.get("links", []):
             dependencies.setdefault(str(link["target"]), []).append(str(link["source"]))
@@ -1261,7 +2010,7 @@ class ConsoleStore:
                 thread_id = _safe_metadata_text(str(node["id"]), "thread id", maximum=256)
                 project_id = _safe_metadata_text(str(node["project_id"]), "project id", maximum=256)
                 sqlite_cumulative = max(0, int(node.get("tokens") or 0))
-                jsonl_cumulative = None if codex_home is None else _codex_jsonl_token_count(codex_home, thread_id)
+                jsonl_cumulative = jsonl_counts.get(thread_id)
                 cumulative = max(sqlite_cumulative, jsonl_cumulative or 0)
                 source = TOKEN_SOURCE_CODEX_JSONL if jsonl_cumulative is not None and jsonl_cumulative >= sqlite_cumulative else TOKEN_SOURCE_SQLITE
                 prior = connection.execute(
@@ -1673,15 +2422,314 @@ class ConsoleStore:
             row = connection.execute("SELECT * FROM proof_media WHERE evidence_id=?", (evidence_id,)).fetchone()
         return self._public_proof_row(row)
 
-    def _proof_event_receipts(self) -> dict[str, tuple[int, int, str]]:
+    def _proof_event_receipts(self) -> dict[str, dict[str, Any]]:
         with self._lock, closing(self._connect()) as connection:
             rows = connection.execute(
-                "SELECT event_name, event_mtime_ns, event_size, status FROM proof_event_receipts"
+                """
+                SELECT receipts.event_name, receipts.event_mtime_ns,
+                       receipts.event_size, receipts.event_digest, receipts.status,
+                       receipts.evidence_id, receipts.task_id, receipts.project_id,
+                       receipts.media_digest,
+                       media.evidence_id IS NOT NULL AS media_present
+                  FROM proof_event_receipts receipts
+             LEFT JOIN proof_media media ON media.evidence_id = receipts.evidence_id
+                """
             ).fetchall()
         return {
-            str(row["event_name"]): (int(row["event_mtime_ns"]), int(row["event_size"]), str(row["status"]))
+            str(row["event_name"]): {
+                "mtime_ns": int(row["event_mtime_ns"]),
+                "size": int(row["event_size"]),
+                "event_digest": str(row["event_digest"] or ""),
+                "status": str(row["status"]),
+                "evidence_id": str(row["evidence_id"]),
+                "task_id": str(row["task_id"] or ""),
+                "project_id": str(row["project_id"] or ""),
+                "media_digest": str(row["media_digest"] or ""),
+                "media_present": bool(row["media_present"]),
+            }
             for row in rows
         }
+
+    def _proof_event_scan_queue(self) -> list[str]:
+        start_token = "P:" if os.name == "nt" else "D:0"
+        with self._lock, closing(self._connect()) as connection:
+            row = connection.execute(
+                "SELECT value FROM store_metadata WHERE key=?",
+                (PROOF_EVENT_SCAN_STATE_KEY,),
+            ).fetchone()
+        if row is None:
+            return [start_token]
+        try:
+            value = json.loads(str(row["value"]))
+        except (TypeError, ValueError, json.JSONDecodeError):
+            return [start_token]
+        if not isinstance(value, list) or len(value) > 16384:
+            return [start_token]
+        queue = [str(token) for token in value]
+        if any(
+            (
+                token.startswith(("P:", "E:"))
+                and any(character not in PROOF_EVENT_PREFIX_ALPHABET for character in token[2:])
+            )
+            or (token.startswith("D:") and not token[2:].isdigit())
+            or not token.startswith(("P:", "E:", "D:"))
+            for token in queue
+        ):
+            return [start_token]
+        if (os.name == "nt" and any(token.startswith("D:") for token in queue)) or (
+            os.name != "nt" and any(token.startswith("P:") for token in queue)
+        ):
+            return [start_token]
+        return queue or [start_token]
+
+    def _set_proof_event_scan_queue(self, queue: list[str]) -> None:
+        value = json.dumps(queue, separators=(",", ":"))
+        with self._lock, closing(self._connect()) as connection:
+            connection.execute(
+                """
+                INSERT INTO store_metadata(key, value) VALUES (?, ?)
+                ON CONFLICT(key) DO UPDATE SET value=excluded.value
+                WHERE store_metadata.value != excluded.value
+                """,
+                (PROOF_EVENT_SCAN_STATE_KEY, value),
+            )
+            connection.commit()
+
+    @staticmethod
+    def _proof_event_prefix_matches(event_root: Path, prefix: str, limit: int) -> list[Path]:
+        """Return at most limit native-filtered matches without walking the directory."""
+        if os.name != "nt":
+            raise OSError("bounded native proof-event traversal is unavailable on this host")
+        import ctypes
+        from ctypes import wintypes
+
+        class FindData(ctypes.Structure):
+            _fields_ = [
+                ("attributes", wintypes.DWORD),
+                ("creation_time", wintypes.FILETIME),
+                ("last_access_time", wintypes.FILETIME),
+                ("last_write_time", wintypes.FILETIME),
+                ("file_size_high", wintypes.DWORD),
+                ("file_size_low", wintypes.DWORD),
+                ("reserved0", wintypes.DWORD),
+                ("reserved1", wintypes.DWORD),
+                ("file_name", wintypes.WCHAR * 260),
+                ("alternate_file_name", wintypes.WCHAR * 14),
+            ]
+
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        find_first = kernel32.FindFirstFileExW
+        find_first.argtypes = [
+            wintypes.LPCWSTR, ctypes.c_int, ctypes.c_void_p,
+            ctypes.c_int, ctypes.c_void_p, wintypes.DWORD,
+        ]
+        find_first.restype = wintypes.HANDLE
+        find_next = kernel32.FindNextFileW
+        find_next.argtypes = [wintypes.HANDLE, ctypes.POINTER(FindData)]
+        find_next.restype = wintypes.BOOL
+        find_close = kernel32.FindClose
+        find_close.argtypes = [wintypes.HANDLE]
+        find_close.restype = wintypes.BOOL
+        data = FindData()
+        pattern = str(event_root / f"{prefix}*.json")
+        handle = find_first(pattern, 1, ctypes.byref(data), 0, None, 2)
+        invalid_handle = ctypes.c_void_p(-1).value
+        if handle == invalid_handle:
+            error = ctypes.get_last_error()
+            if error in (2, 18):
+                return []
+            raise OSError(error, "native proof-event enumeration failed", pattern)
+        matches: list[Path] = []
+        try:
+            while len(matches) < limit:
+                name = str(data.file_name)
+                if name not in (".", ".."):
+                    matches.append(event_root / name)
+                if len(matches) >= limit or not find_next(handle, ctypes.byref(data)):
+                    break
+        finally:
+            find_close(handle)
+        return sorted(matches, key=lambda path: path.name.casefold())
+
+    @staticmethod
+    def _proof_event_linux_batch(
+        event_root: Path,
+        offset: int,
+        limit: int,
+    ) -> tuple[list[Path], int, bool, int]:
+        """Read a bounded Linux directory batch and retain its native cursor."""
+        if not sys.platform.startswith("linux"):
+            raise OSError("bounded native proof-event traversal is unavailable on this host")
+        import ctypes
+
+        class Dirent(ctypes.Structure):
+            _fields_ = [
+                ("d_ino", ctypes.c_ulong),
+                ("d_off", ctypes.c_long),
+                ("d_reclen", ctypes.c_ushort),
+                ("d_type", ctypes.c_ubyte),
+                ("d_name", ctypes.c_char * 256),
+            ]
+
+        libc = ctypes.CDLL(None, use_errno=True)
+        opendir = libc.opendir
+        opendir.argtypes = [ctypes.c_char_p]
+        opendir.restype = ctypes.c_void_p
+        readdir = libc.readdir
+        readdir.argtypes = [ctypes.c_void_p]
+        readdir.restype = ctypes.POINTER(Dirent)
+        seekdir = libc.seekdir
+        seekdir.argtypes = [ctypes.c_void_p, ctypes.c_long]
+        seekdir.restype = None
+        telldir = libc.telldir
+        telldir.argtypes = [ctypes.c_void_p]
+        telldir.restype = ctypes.c_long
+        closedir = libc.closedir
+        closedir.argtypes = [ctypes.c_void_p]
+        closedir.restype = ctypes.c_int
+
+        directory = opendir(os.fsencode(event_root))
+        if not directory:
+            error = ctypes.get_errno()
+            raise OSError(error, "native proof-event directory open failed", str(event_root))
+        matches: list[Path] = []
+        enumerated = 0
+        exhausted = False
+        try:
+            if offset:
+                seekdir(directory, offset)
+            while enumerated < limit:
+                ctypes.set_errno(0)
+                entry = readdir(directory)
+                if not entry:
+                    error = ctypes.get_errno()
+                    if error:
+                        raise OSError(error, "native proof-event enumeration failed", str(event_root))
+                    exhausted = True
+                    break
+                name_bytes = bytes(entry.contents.d_name).split(b"\0", 1)[0]
+                name = os.fsdecode(name_bytes)
+                if name in (".", ".."):
+                    continue
+                enumerated += 1
+                if name.endswith(".json"):
+                    matches.append(event_root / name)
+            next_offset = int(telldir(directory))
+            if next_offset < 0:
+                error = ctypes.get_errno()
+                raise OSError(error, "native proof-event cursor read failed", str(event_root))
+        finally:
+            closedir(directory)
+        return sorted(matches, key=lambda path: path.name.casefold()), next_offset, exhausted, enumerated
+
+    def _bounded_linux_proof_event_paths(
+        self,
+        event_root: Path,
+    ) -> tuple[list[Path], bool, int, list[str]]:
+        queue = self._proof_event_scan_queue()
+        checked_tokens = 0
+        while queue and checked_tokens < MAX_PROOF_EVENT_FILES + 2:
+            token = queue.pop(0)
+            checked_tokens += 1
+            kind, value = token[:1], token[2:]
+            if kind == "E":
+                exact_values = [value]
+                while (
+                    queue
+                    and queue[0].startswith("E:")
+                    and len(exact_values) < MAX_PROOF_EVENT_FILES
+                ):
+                    exact_values.append(queue.pop(0)[2:])
+                paths = [
+                    event_root / f"{exact_value}.json"
+                    for exact_value in exact_values
+                    if (event_root / f"{exact_value}.json").is_file()
+                ]
+                return paths, bool(queue), len(exact_values), queue
+            if kind != "D":
+                continue
+            matches, next_offset, exhausted, enumerated = self._proof_event_linux_batch(
+                event_root,
+                int(value),
+                MAX_PROOF_EVENT_FILES + 1,
+            )
+            continuation = queue + ([] if exhausted else [f"D:{next_offset}"])
+            if len(matches) > MAX_PROOF_EVENT_FILES:
+                exact = [f"E:{path.stem}" for path in matches]
+                return [], True, enumerated, exact + continuation
+            if matches:
+                return matches, bool(continuation), enumerated, continuation
+            if not exhausted:
+                return [], True, enumerated, continuation
+        return [], bool(queue), 0, queue
+
+    def _bounded_proof_event_paths(self, event_root: Path) -> tuple[list[Path], bool, int, list[str]]:
+        if os.name != "nt":
+            return self._bounded_linux_proof_event_paths(event_root)
+        queue = self._proof_event_scan_queue()
+        checked_tokens = 0
+        while queue and checked_tokens < len(PROOF_EVENT_PREFIX_ALPHABET) + 2:
+            token = queue.pop(0)
+            checked_tokens += 1
+            kind, prefix = token[:1], token[2:]
+            if kind == "E":
+                path = event_root / f"{prefix}.json"
+                return ([path] if path.is_file() else []), bool(queue), int(path.is_file()), queue
+            matches = self._proof_event_prefix_matches(
+                event_root,
+                prefix,
+                MAX_PROOF_EVENT_FILES + 1,
+            )
+            if len(matches) > MAX_PROOF_EVENT_FILES:
+                if len(prefix) >= 255:
+                    raise OSError("proof-event prefix cannot be partitioned safely")
+                children = ([f"E:{prefix}"] if prefix else []) + [
+                    f"P:{prefix}{character}" for character in PROOF_EVENT_PREFIX_ALPHABET
+                ]
+                return [], True, len(matches), children + queue
+            if matches:
+                return matches, bool(queue), len(matches), queue
+        return [], bool(queue), 0, queue
+
+    def _bind_legacy_proof_event_receipt(
+        self,
+        event_name: str,
+        *,
+        event_digest: str,
+        task_id: str,
+        project_id: str,
+        media_digest: str,
+    ) -> None:
+        """Bind nullable pre-contract fields once; never alter an existing binding."""
+        with self._lock, closing(self._connect()) as connection:
+            connection.execute(
+                """
+                UPDATE proof_event_receipts
+                   SET event_digest=COALESCE(NULLIF(event_digest, ''), ?),
+                       task_id=COALESCE(NULLIF(task_id, ''), ?),
+                       project_id=COALESCE(NULLIF(project_id, ''), ?),
+                       media_digest=COALESCE(NULLIF(media_digest, ''), ?)
+                 WHERE event_name=? AND status='IMPORTED'
+                   AND (event_digest IS NULL OR event_digest='' OR event_digest=?)
+                   AND (task_id IS NULL OR task_id='' OR task_id=?)
+                   AND (project_id IS NULL OR project_id='' OR project_id=?)
+                   AND (media_digest IS NULL OR media_digest='' OR media_digest=?)
+                """,
+                (
+                    event_digest, task_id, project_id, media_digest, event_name,
+                    event_digest, task_id, project_id, media_digest,
+                ),
+            )
+            row = connection.execute(
+                "SELECT event_digest, task_id, project_id, media_digest FROM proof_event_receipts WHERE event_name=?",
+                (event_name,),
+            ).fetchone()
+            if row is None or tuple(str(value or "") for value in row) != (
+                event_digest, task_id, project_id, media_digest,
+            ):
+                connection.rollback()
+                raise ConsoleError("legacy proof event receipt conflicts with immutable evidence")
+            connection.commit()
 
     def _record_proof_event_receipt(
         self,
@@ -1691,27 +2739,47 @@ class ConsoleStore:
         size: int,
         status: str,
         evidence_id: str,
+        event_digest: str,
+        task_id: str,
+        project_id: str,
+        media_digest: str,
         now_ms: int,
     ) -> None:
         with self._lock, closing(self._connect()) as connection:
             connection.execute(
                 """
                 INSERT INTO proof_event_receipts(
-                    event_name, event_mtime_ns, event_size, status, evidence_id, observed_at_ms
-                ) VALUES (?, ?, ?, ?, ?, ?)
-                ON CONFLICT(event_name) DO UPDATE SET
-                    event_mtime_ns=excluded.event_mtime_ns,
-                    event_size=excluded.event_size,
-                    status=excluded.status,
-                    evidence_id=excluded.evidence_id,
-                    observed_at_ms=excluded.observed_at_ms
+                    event_name, event_mtime_ns, event_size, event_digest, status,
+                    evidence_id, task_id, project_id, media_digest, observed_at_ms
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(event_name) DO NOTHING
                 """,
-                (event_name, mtime_ns, size, status, evidence_id, now_ms),
+                (
+                    event_name, mtime_ns, size, event_digest, status,
+                    evidence_id, task_id, project_id, media_digest, now_ms,
+                ),
             )
+            row = connection.execute(
+                "SELECT * FROM proof_event_receipts WHERE event_name=?",
+                (event_name,),
+            ).fetchone()
+            expected = (
+                mtime_ns, size, event_digest, status, evidence_id,
+                task_id, project_id, media_digest,
+            )
+            actual = (
+                int(row["event_mtime_ns"]), int(row["event_size"]),
+                str(row["event_digest"] or ""), str(row["status"]),
+                str(row["evidence_id"]), str(row["task_id"] or ""),
+                str(row["project_id"] or ""), str(row["media_digest"] or ""),
+            )
+            if actual != expected:
+                connection.rollback()
+                raise ConsoleError("proof event filename is permanently bound to different evidence")
             connection.commit()
 
-    def ingest_proof_events(self, codex_home: Path, overview: dict[str, Any], *, now_ms: int) -> int:
-        """Import immutable, content-addressed receipts without reading task messages."""
+    def reconcile_proof_events(self, codex_home: Path, overview: dict[str, Any], *, now_ms: int) -> dict[str, int]:
+        """Reconcile one bounded immutable proof-event pass without reading task messages."""
         expected_swarm_root = codex_home.resolve() / "swarm"
         expected_event_root = codex_home.resolve() / PROOF_EVENT_ROOT
         expected_media_root = codex_home.resolve() / PROOF_MEDIA_ROOT
@@ -1719,9 +2787,9 @@ class ConsoleStore:
         event_root = expected_event_root.resolve()
         media_root = expected_media_root.resolve()
         if swarm_root != expected_swarm_root or event_root != expected_event_root or media_root != expected_media_root:
-            return 0
+            return {"imported": 0, "duplicates": 0, "rejected": 0, "retryable": 1, "capped": 0, "enumerated": 0}
         if not event_root.is_dir() or not media_root.is_dir():
-            return 0
+            return {"imported": 0, "duplicates": 0, "rejected": 0, "retryable": 0, "capped": 0, "enumerated": 0}
         nodes = {
             str(node.get("id")): node
             for node in overview.get("nodes", [])
@@ -1729,26 +2797,61 @@ class ConsoleStore:
         }
         receipts = self._proof_event_receipts()
         imported = 0
-        for event_path in sorted(event_root.glob("*.json")):
+        duplicates = 0
+        rejected = 0
+        retryable = 0
+        try:
+            event_paths, capped_pass, enumerated, next_scan_queue = self._bounded_proof_event_paths(event_root)
+        except OSError:
+            return {
+                "imported": 0, "duplicates": 0, "rejected": 0,
+                "retryable": 1, "capped": 0, "enumerated": 0,
+            }
+        capped = int(capped_pass)
+        for event_path in event_paths:
             event_stat: os.stat_result | None = None
             evidence_id = ""
+            task_id = ""
+            project_id = ""
+            event_digest = ""
+            media_digest = ""
             try:
                 resolved_event = event_path.resolve(strict=True)
                 event_stat = resolved_event.stat()
                 if not resolved_event.is_file() or not resolved_event.is_relative_to(event_root) or event_stat.st_size > 16 * 1024:
                     continue
+                event_bytes = resolved_event.read_bytes()
+                if len(event_bytes) != event_stat.st_size:
+                    raise OSError("proof event changed while being read")
+                event_digest = hashlib.sha256(event_bytes).hexdigest()
                 receipt = receipts.get(resolved_event.name)
-                if receipt == (event_stat.st_mtime_ns, event_stat.st_size, "IMPORTED") or receipt == (event_stat.st_mtime_ns, event_stat.st_size, "REJECTED"):
-                    continue
-                event = json.loads(resolved_event.read_text(encoding="utf-8"))
+                if receipt is not None:
+                    if (
+                        receipt["mtime_ns"] != event_stat.st_mtime_ns
+                        or receipt["size"] != event_stat.st_size
+                        or (receipt["event_digest"] and receipt["event_digest"] != event_digest)
+                    ):
+                        rejected += 1
+                        continue
+                    if receipt["status"] == "REJECTED":
+                        rejected += 1
+                        continue
+                    if receipt["status"] == "IMPORTED" and receipt["event_digest"] and receipt["media_present"]:
+                        duplicates += 1
+                        continue
+                event = json.loads(event_bytes.decode("utf-8"))
                 if not isinstance(event, dict) or event.get("schema_version") != 1 or event.get("source") != "CtrlEvidence":
                     raise ConsoleError("proof event envelope is invalid")
+                if PROOF_EVENT_PRIVATE_FIELDS.intersection(key.casefold() for key in event):
+                    raise ConsoleError("proof event includes prohibited private content")
                 evidence_id = _safe_metadata_text(event.get("evidence_id"), "evidence_id", maximum=256)
                 task_id = _safe_metadata_text(event.get("task_id"), "task_id", maximum=256)
                 node = nodes.get(task_id)
-                project_id = str(node["project_id"]) if node is not None else observed_task_project_id(codex_home, task_id)
-                if project_id is None:
+                observed_project_id = str(node["project_id"]) if node is not None else observed_task_project_id(codex_home, task_id)
+                if observed_project_id is None:
+                    retryable += 1
                     continue
+                project_id = observed_project_id
                 relative = Path(_safe_metadata_text(event.get("locator"), "locator", maximum=512))
                 if relative.is_absolute() or ".." in relative.parts:
                     raise ConsoleError("proof event locator escapes the evidence store")
@@ -1762,28 +2865,100 @@ class ConsoleStore:
                     "receipt": f"proof-event:{resolved_event.stem}",
                     "surface_kind": "available_media",
                 }
-                self.record_proof_media(payload, now_ms=now_ms, allowed_root=media_root)
-                self._record_proof_event_receipt(
-                    resolved_event.name,
-                    mtime_ns=event_stat.st_mtime_ns,
-                    size=event_stat.st_size,
-                    status="IMPORTED",
-                    evidence_id=evidence_id,
-                    now_ms=now_ms,
+                metadata = _media_metadata(
+                    str(locator),
+                    str(event.get("digest", "")),
+                    allowed_root=media_root,
+                    supplied_size=event.get("size_bytes"),
+                    supplied_media_type=str(event.get("media_type", "")),
                 )
-                imported += 1
-            except (ConsoleError, OSError, ValueError, TypeError, json.JSONDecodeError):
-                if event_stat is not None:
+                media_digest = str(metadata["digest"])
+                if receipt is not None:
+                    bound = (
+                        receipt["evidence_id"], receipt["task_id"],
+                        receipt["project_id"], receipt["media_digest"],
+                    )
+                    current = (evidence_id, task_id, project_id, media_digest)
+                    if receipt["event_digest"]:
+                        if bound != current:
+                            raise ConsoleError("proof event receipt identity changed")
+                    else:
+                        if (
+                            receipt["evidence_id"] != evidence_id
+                            or (receipt["task_id"] and receipt["task_id"] != task_id)
+                            or (receipt["project_id"] and receipt["project_id"] != project_id)
+                            or (receipt["media_digest"] and receipt["media_digest"] != media_digest)
+                        ):
+                            raise ConsoleError("legacy proof event receipt cannot be bound safely")
+                        self._bind_legacy_proof_event_receipt(
+                            resolved_event.name,
+                            event_digest=event_digest,
+                            task_id=task_id,
+                            project_id=project_id,
+                            media_digest=media_digest,
+                        )
+                self.record_proof_media(payload, now_ms=now_ms, allowed_root=media_root)
+                if receipt is None:
                     self._record_proof_event_receipt(
-                        event_path.name,
+                        resolved_event.name,
                         mtime_ns=event_stat.st_mtime_ns,
                         size=event_stat.st_size,
-                        status="REJECTED",
+                        status="IMPORTED",
                         evidence_id=evidence_id,
+                        event_digest=event_digest,
+                        task_id=task_id,
+                        project_id=project_id,
+                        media_digest=media_digest,
                         now_ms=now_ms,
                     )
+                    imported += 1
+                elif receipt["media_present"]:
+                    duplicates += 1
+                else:
+                    imported += 1
+            except (OSError, sqlite3.Error):
+                retryable += 1
                 continue
-        return imported
+            except (ConsoleError, ValueError, TypeError, json.JSONDecodeError) as exc:
+                if isinstance(exc.__cause__, OSError):
+                    retryable += 1
+                    continue
+                if event_stat is not None:
+                    try:
+                        self._record_proof_event_receipt(
+                            event_path.name,
+                            mtime_ns=event_stat.st_mtime_ns,
+                            size=event_stat.st_size,
+                            status="REJECTED",
+                            evidence_id=evidence_id,
+                            event_digest=event_digest,
+                            task_id=task_id,
+                            project_id=project_id,
+                            media_digest=media_digest,
+                            now_ms=now_ms,
+                        )
+                        rejected += 1
+                    except ConsoleError:
+                        rejected += 1
+                    except sqlite3.Error:
+                        retryable += 1
+                continue
+        try:
+            self._set_proof_event_scan_queue(next_scan_queue)
+        except sqlite3.Error:
+            retryable += 1
+        return {
+            "imported": imported,
+            "duplicates": duplicates,
+            "rejected": rejected,
+            "retryable": retryable,
+            "capped": capped,
+            "enumerated": enumerated,
+        }
+
+    def ingest_proof_events(self, codex_home: Path, overview: dict[str, Any], *, now_ms: int) -> int:
+        """Compatibility wrapper returning only newly imported proof events."""
+        return self.reconcile_proof_events(codex_home, overview, now_ms=now_ms)["imported"]
 
     def token_history(
         self,
@@ -2159,7 +3334,8 @@ class ConsoleStore:
             before = self.storage_stats()
             deleted = {}
             for table in (
-                "token_samples", "token_cursors", "eta_forecasts", "proof_media", "proof_event_receipts", "store_metadata",
+                "token_samples", "token_cursors", "eta_forecasts", "task_progress_state",
+                "task_progress_receipts", "task_progress_plans", "task_progress_pulse_files", "proof_media", "proof_event_receipts", "store_metadata",
                 "diagnostic_samples", "health_incidents", "health_requests",
             ):
                 deleted[table] = int(connection.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0])
@@ -2183,7 +3359,8 @@ class ConsoleStore:
             counts = {
                 table: int(connection.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0])
                 for table in (
-                    "token_samples", "eta_forecasts", "proof_media", "proof_event_receipts", "ctrl_overrides",
+                    "token_samples", "eta_forecasts", "task_progress_state", "task_progress_receipts", "task_progress_plans",
+                    "task_progress_pulse_files", "proof_media", "proof_event_receipts", "ctrl_overrides",
                     "diagnostic_samples", "health_incidents", "health_requests",
                 )
             }
@@ -2271,6 +3448,37 @@ def observation_fingerprint(codex_home: Path, config_path: Path) -> tuple[tuple[
     return tuple(fingerprint)
 
 
+def progress_pulse_fingerprint(codex_home: Path) -> tuple[tuple[str, int, int], ...]:
+    """Return bounded metadata for the latest local progress sidecars."""
+    expected_root = codex_home.resolve() / PULSE_ROOT
+    try:
+        pulse_root = expected_root.resolve(strict=True)
+        if pulse_root != expected_root or not pulse_root.is_dir():
+            return (("untrusted", 0, 0),)
+        root_stat = pulse_root.stat()
+    except (FileNotFoundError, OSError):
+        return (("missing", 0, 0),)
+
+    entries: list[tuple[str, int, int]] = []
+    try:
+        for index, path in enumerate(pulse_root.iterdir()):
+            if index >= MAX_PULSE_FILES:
+                entries.append(("limit-reached", MAX_PULSE_FILES, 0))
+                break
+            try:
+                resolved = path.resolve(strict=True)
+                stat = resolved.stat()
+                if resolved.parent != pulse_root or not resolved.is_file():
+                    entries.append((path.name, -1, -1))
+                else:
+                    entries.append((resolved.name, stat.st_mtime_ns, stat.st_size))
+            except OSError:
+                entries.append((path.name, -1, -1))
+    except OSError:
+        return (("unavailable", 0, 0),)
+    return ((pulse_root.name, root_stat.st_mtime_ns, root_stat.st_size), *sorted(entries))
+
+
 def _epoch_ms(milliseconds: Any, seconds: Any) -> int:
     if milliseconds:
         return int(milliseconds)
@@ -2280,20 +3488,26 @@ def _epoch_ms(milliseconds: Any, seconds: Any) -> int:
     return value if value > 10**12 else value * 1000
 
 
-def _codex_jsonl_token_count(codex_home: Path, thread_id: str) -> int | None:
-    """Read only local token-count events for one thread; never retain payloads."""
+def _codex_jsonl_token_counts(codex_home: Path, thread_ids: set[str]) -> dict[str, int]:
+    """Bound one shared sessions walk to requested threads; retain counts only."""
     sessions = codex_home / "sessions"
-    if not sessions.is_dir():
-        return None
-    highest: int | None = None
+    requested = {thread_id for thread_id in thread_ids if thread_id}
+    if not sessions.is_dir() or not requested:
+        return {}
+    highest: dict[str, int] = {}
+    candidates: list[tuple[str, Path]] = []
     try:
-        candidates = sorted(
-            path for path in sessions.rglob("*.jsonl")
-            if path.is_file() and thread_id in path.name
-        )
+        for visited, path in enumerate(sessions.rglob("*.jsonl"), start=1):
+            if visited > TOKEN_JSONL_SCAN_FILE_LIMIT:
+                break
+            if not path.is_file():
+                continue
+            thread_id = next((item for item in requested if item in path.name), None)
+            if thread_id is not None:
+                candidates.append((thread_id, path))
     except OSError:
-        return None
-    for path in candidates:
+        return {}
+    for thread_id, path in candidates:
         try:
             with path.open("r", encoding="utf-8") as stream:
                 for line in stream:
@@ -2319,10 +3533,15 @@ def _codex_jsonl_token_count(codex_home: Path, thread_id: str) -> int | None:
                         input_tokens = input_tokens if isinstance(input_tokens, int) and input_tokens >= 0 else 0
                         output_tokens = output_tokens if isinstance(output_tokens, int) and output_tokens >= 0 else 0
                         total = input_tokens + output_tokens
-                    highest = total if highest is None else max(highest, total)
+                    highest[thread_id] = max(highest.get(thread_id, 0), total)
         except (OSError, UnicodeError):
             continue
     return highest
+
+
+def _codex_jsonl_token_count(codex_home: Path, thread_id: str) -> int | None:
+    """Compatibility wrapper for focused callers; observation uses the shared scan."""
+    return _codex_jsonl_token_counts(codex_home, {thread_id}).get(thread_id)
 
 
 def _project_identity(row: sqlite3.Row) -> tuple[str, str]:
@@ -2862,7 +4081,7 @@ def build_overview(codex_home: Path, config_path: Path) -> dict[str, Any]:
             "Spawn edges are shown as delegated relationships; waits-for and review dependencies are not inferred without runtime receipts.",
             "Controller scopes are observed host descendants, not the authoritative runtime workflow graph.",
             "Proof plans appear only from validated runtime snapshots; absent snapshots stay unavailable and never inherit host task status.",
-            "Only unarchived host tasks updated within the current observation window are shown.",
+            "Host task observation includes recently updated archived rows so authoritative navigation visibility can preserve archive state.",
             "Recent active durable goals are read by thread ID only to identify CTRL scopes; objective text is never read or surfaced.",
             "Project navigation includes active observed repositories even when no authoritative CTRL scope is available; those projects remain project-level only.",
             "Unformatted delegated lanes use the existing active-freshness boundary; older lanes are counted, not expanded.",
@@ -2899,11 +4118,13 @@ class App:
         self.codex_home = codex_home.resolve()
         self.config_path = config_path.resolve()
         self.store = ConsoleStore(state_path or console_state_path(self.codex_home, self.config_path))
+        self.progress_ledger = ProgressLedger(self.codex_home)
         self.diagnostics_collector = DiagnosticsCollector(self.codex_home, self.store.path)
         self.token = secrets.token_urlsafe(24)
         self.write_lock = threading.Lock()
         self.overview_lock = threading.RLock()
         self.overview_refresh_lock = threading.Lock()
+        self.progress_pulse_lock = threading.Lock()
         self.presence_lock = threading.Lock()
         self.proof_lock = threading.Lock()
         self._overview_fingerprint: tuple[tuple[str, int, int], ...] | None = None
@@ -2916,6 +4137,7 @@ class App:
         self._last_presence_at: float | None = None
         self._last_open_claim_at: float | None = None
         self._last_observed_fingerprint: tuple[tuple[str, int, int], ...] | None = None
+        self._progress_pulse_fingerprint: tuple[tuple[str, int, int], ...] | None = None
         self._observer_stop = threading.Event()
         self._observer_thread: threading.Thread | None = None
 
@@ -2935,6 +4157,52 @@ class App:
                 self._overview = overview
                 self._overview_revision += 1
                 return overview
+
+    def _ingest_progress_pulses_if_changed(self, overview: dict[str, Any]) -> dict[str, Any]:
+        """Import changed bounded sidecars without running token or diagnostic observation."""
+        fingerprint = progress_pulse_fingerprint(self.codex_home)
+        with self.progress_pulse_lock:
+            if fingerprint == self._progress_pulse_fingerprint:
+                return {"advanced": 0, "heartbeats": 0, "duplicates": 0, "rejected": 0, "eta_reports": {}}
+            try:
+                result = self.store.ingest_progress_pulses(
+                    self.codex_home,
+                    overview,
+                    now_ms=int(time.time() * 1000),
+                )
+            except (OSError, sqlite3.Error):
+                result = {"advanced": 0, "heartbeats": 0, "duplicates": 0, "rejected": 1, "eta_reports": {}}
+            # Only a rejection-free bounded pass is safe to suppress. A late
+            # host observation or transient store failure must retry the same
+            # unchanged sidecar on the next read.
+            if not result["rejected"]:
+                self._progress_pulse_fingerprint = fingerprint
+            if result["advanced"] or result["heartbeats"] or result["eta_reports"]:
+                with self.overview_lock:
+                    self._store_generation += 1
+            return result
+
+    def _ingest_proof_events_if_changed(self, overview: dict[str, Any] | None = None) -> dict[str, int]:
+        """Advance one durable bounded proof-event reconciliation pass."""
+        empty = {
+            "imported": 0, "duplicates": 0, "rejected": 0,
+            "retryable": 0, "capped": 0, "enumerated": 0,
+        }
+        if overview is None:
+            try:
+                overview = self._host_overview()
+            except (ConsoleError, OSError, sqlite3.Error):
+                return {**empty, "retryable": 1}
+        with self.proof_lock:
+            try:
+                result = self.store.reconcile_proof_events(
+                    self.codex_home,
+                    overview,
+                    now_ms=int(time.time() * 1000),
+                )
+            except (OSError, sqlite3.Error):
+                result = {**empty, "retryable": 1}
+            return result
 
     @staticmethod
     def _receipt_backed_progress(node: dict[str, Any]) -> dict[str, Any] | None:
@@ -2992,17 +4260,29 @@ class App:
             "unit_id": unit_id.strip(),
             "unit_kind": unit_kind.strip(),
             "observed_at_ms": observed_at_ms,
-            "source": "task_owner_report",
+            "source": (
+                eta.get("progress_source")
+                if isinstance(eta.get("progress_source"), str) and eta.get("progress_source").strip()
+                else "task_owner_report"
+            ),
             "receipt_count": len(receipts),
             "claim_limit": (
-                "Derived server-side from validated receipt-backed plan units in an observed "
-                "task-owner planning report; this does not prove host/user authority, acceptance, "
-                "or task progress."
+                "Derived server-side from validated receipt-backed plan units bound to an observed "
+                "task-owner planning report or local instruction sidecar; this does not prove native "
+                "host/user authority, acceptance, or task progress."
             ),
         }
 
     @staticmethod
-    def _progress_for_nodes(nodes: list[dict[str, Any]], scope: dict[str, Any]) -> dict[str, Any]:
+    def _progress_for_nodes(
+        nodes: list[dict[str, Any]],
+        scope: dict[str, Any],
+        *,
+        measure_nodes: list[dict[str, Any]] | None = None,
+        now_ms: int | None = None,
+        stale_after_ms: int = 60 * 60 * 1000,
+        empty_measure_reason: str | None = None,
+    ) -> dict[str, Any]:
         tasks = [
             node for node in nodes
             if not node.get("virtual") and not node.get("is_subagent") and node.get("role") != "ctrl"
@@ -3027,11 +4307,19 @@ class App:
             })
         completed = sum(item["state"] in {"done", "archived", "complete"} for item in task_items)
         blocked = sum(bool(item["blocked"]) for item in task_items)
-        measured = [item["progress"] for item in task_items if item["progress"] is not None]
+        direct_ctrl_authority = measure_nodes is not None
+        progress_nodes = tasks if measure_nodes is None else [
+            node for node in measure_nodes
+            if not node.get("virtual") and not node.get("is_subagent")
+        ]
+        measured = [
+            progress for node in progress_nodes
+            if (progress := App._receipt_backed_progress(node)) is not None
+        ]
         aggregate = None
-        if not task_items:
-            unmeasured_reason = "no_tasks"
-        elif len(measured) != len(task_items):
+        if not progress_nodes:
+            unmeasured_reason = empty_measure_reason or ("missing_ctrl_measure" if direct_ctrl_authority else "no_tasks")
+        elif len(measured) != len(progress_nodes):
             unmeasured_reason = "missing_receipt_backed_units"
         elif (
             len({(item["plan_id"], item["unit_kind"]) for item in measured}) != 1
@@ -3053,24 +4341,49 @@ class App:
                 "plan_id": measured[0]["plan_id"],
                 "unit_kind": measured[0]["unit_kind"],
                 "unit_ids": sorted(item["unit_id"] for item in measured),
-                "observed_at_ms": max(item["observed_at_ms"] for item in measured),
-                "source": "task_owner_report",
+                "observed_at_ms": min(item["observed_at_ms"] for item in measured),
+                "source": (
+                    measured[0]["source"]
+                    if len({item["source"] for item in measured}) == 1
+                    else "mixed_validated_task_owner_reports"
+                ),
                 "receipt_count": sum(item["receipt_count"] for item in measured),
+                "authority": "direct_ctrl_receipt" if direct_ctrl_authority else "task_receipts",
                 "claim_limit": (
-                    "Derived server-side only from compatible validated receipt-backed plan units; "
+                    "Derived server-side only from compatible validated direct CTRL plan units; "
+                    "subordinate task units are not included and this observed planning measure is "
+                    "not acceptance or host/user authority."
+                    if direct_ctrl_authority
+                    else "Derived server-side only from compatible validated receipt-backed plan units; "
                     "this observed planning measure is not acceptance or host/user authority."
                 ),
             }
             unmeasured_reason = None
+        observed_at_ms = aggregate["observed_at_ms"] if aggregate else None
+        freshness_now = observed_at_ms if now_ms is None else now_ms
+        age_ms = None if observed_at_ms is None else max(0, int(freshness_now) - int(observed_at_ms))
+        freshness = {
+            "state": (
+                "unavailable"
+                if observed_at_ms is None
+                else "stale" if age_ms is not None and age_ms > stale_after_ms else "fresh"
+            ),
+            "observed_at_ms": observed_at_ms,
+            "age_ms": age_ms,
+            "stale_after_ms": stale_after_ms,
+            "source": aggregate["source"] if aggregate else None,
+        }
         return {
             "scope": scope,
-            "status": "no_tasks" if not task_items else "observed",
+            "status": "no_tasks" if not task_items and not progress_nodes else "observed",
             "counts": {"tasks": len(task_items), "completed": completed, "blocked": blocked},
             "tasks": task_items,
             "progress": aggregate,
             "progress_display": f"{aggregate['percent']:g}%" if aggregate else "Unmeasured",
             "measurement_status": "measured" if aggregate else "unmeasured",
+            "measurement_authority": "direct_ctrl_receipt" if direct_ctrl_authority else "task_receipts",
             "unmeasured_reason": unmeasured_reason,
+            "freshness": freshness,
             "claim_limit": (
                 "Observed non-subagent task counts plus compatible receipt-backed plan units only; "
                 "status, token volume, elapsed time, and proof counts never fabricate percentage."
@@ -3080,22 +4393,68 @@ class App:
     @classmethod
     def _progress_payload(cls, view: dict[str, Any]) -> dict[str, Any]:
         nodes = list(view.get("nodes", []))
+        nodes_by_id = {str(node.get("id")): node for node in nodes if node.get("id")}
+        now_ms = int(time.time() * 1000)
+        stale_after_ms = max(1, int(view.get("heartbeat_minutes") or 30)) * PROGRESS_FRESHNESS_WINDOWS * 60_000
+        visible_controllers = [
+            controller for controller in view.get("controllers", [])
+            if controller.get("controller_classification") == "swarm_ctrl"
+            and controller.get("controller_classification_source") == "host_threads.agent_role"
+            and not controller.get("archived", False)
+            and (node := nodes_by_id.get(str(controller.get("id")))) is not None
+            and not node.get("virtual")
+            and not node.get("is_subagent")
+            and str(node.get("project_id")) == str(controller.get("project_id"))
+        ]
+        controller_nodes = {
+            str(controller["id"]): nodes_by_id[str(controller["id"])]
+            for controller in visible_controllers
+        }
         project_summaries = {
             str(project["id"]): cls._progress_for_nodes(
                 [node for node in nodes if node.get("project_id") == project["id"]],
                 {"type": "project", "project_id": project["id"]},
+                measure_nodes=[
+                    controller_nodes[str(controller["id"])]
+                    for controller in visible_controllers
+                    if str(controller.get("project_id")) == str(project["id"])
+                ],
+                now_ms=now_ms,
+                stale_after_ms=stale_after_ms,
             )
             for project in view.get("projects", [])
         }
-        controller_summaries = {
-            str(controller["id"]): cls._progress_for_nodes(
-                [node for node in nodes if controller["id"] in node.get("controller_ids", [])],
+        controller_summaries = {}
+        for controller in view.get("controllers", []):
+            controller_id = str(controller["id"])
+            controller_node = nodes_by_id.get(controller_id)
+            classified_node = controller_nodes.get(controller_id)
+            controller_summaries[controller_id] = cls._progress_for_nodes(
+                [
+                    node for node in nodes
+                    if node.get("id") == controller["id"]
+                    or controller["id"] in node.get("controller_ids", [])
+                ],
                 {"type": "ctrl", "ctrl_id": controller["id"], "project_id": controller.get("project_id")},
+                measure_nodes=[classified_node] if classified_node is not None else [],
+                now_ms=now_ms,
+                stale_after_ms=stale_after_ms,
+                empty_measure_reason=(
+                    "unclassified_ctrl"
+                    if classified_node is None
+                    and controller_node is not None
+                    and cls._receipt_backed_progress(controller_node) is not None
+                    else None
+                ),
             )
-            for controller in view.get("controllers", [])
-        }
         return {
-            "all_projects": cls._progress_for_nodes(nodes, {"type": "all-projects"}),
+            "all_projects": cls._progress_for_nodes(
+                nodes,
+                {"type": "all-projects"},
+                measure_nodes=list(controller_nodes.values()),
+                now_ms=now_ms,
+                stale_after_ms=stale_after_ms,
+            ),
             "projects": project_summaries,
             "controllers": controller_summaries,
             "claim_limit": "Progress is a read-only projection of observed host tasks; it is not runtime authority.",
@@ -3299,8 +4658,17 @@ class App:
         }
 
     def progress_summary(self, *, project_id: str | None = None, ctrl_id: str | None = None) -> dict[str, Any]:
-        _, nodes, _, scope = self._observed_scope(project_id=project_id, ctrl_id=ctrl_id)
-        return {"ok": True, **self._progress_for_nodes(nodes, scope)}
+        _, _, _, scope = self._observed_scope(project_id=project_id, ctrl_id=ctrl_id)
+        progress = self.overview().get("progress", {})
+        if scope["type"] == "ctrl":
+            summary = progress.get("controllers", {}).get(scope["ctrl_id"])
+        elif scope["type"] == "project":
+            summary = progress.get("projects", {}).get(scope["project_id"])
+        else:
+            summary = progress.get("all_projects")
+        if not isinstance(summary, dict):
+            summary = self._progress_for_nodes([], scope, measure_nodes=[])
+        return {"ok": True, **copy.deepcopy(summary)}
 
     def skill_settings(
         self,
@@ -3451,10 +4819,25 @@ class App:
     def _decorate_overview(self, base: dict[str, Any]) -> dict[str, Any]:
         view = copy.deepcopy(base)
         forecasts = self.store.latest_forecasts()
+        progress_states = self.store.latest_progress()
         for node in view["nodes"]:
             node["eta"] = forecasts.get(node["id"])
+            progress_state = progress_states.get(node["id"])
+            if progress_state is not None and progress_state.get("project_id") == node.get("project_id") and not node.get("is_subagent"):
+                if node["eta"] is None:
+                    node["eta"] = {}
+                node["eta"].update({
+                    "trigger": "task_owner_report",
+                    "progress_basis": progress_state["progress_basis"],
+                    "receipt_source": progress_state["receipt_source"],
+                    "progress_source": "instruction_only_local_sidecar",
+                    "last_material_heartbeat_at_ms": progress_state["progress_basis"]["plan_units"]["observed_at_ms"],
+                    "pulse_observed_at_ms": progress_state["pulse_observed_at_ms"],
+                    "pulse_state": progress_state["pulse_state"],
+                    "claim_limit": progress_state["claim_limit"],
+                })
             if node["eta"] is not None:
-                node["eta"]["eta_source"] = "task_owner_report"
+                node["eta"]["eta_source"] = "task_owner_report" if node["id"] in forecasts else None
                 node["eta"]["eta_observed_at_ms"] = node["eta"].get("last_calculated_at_ms")
                 node["eta"]["heartbeat_at_ms"] = node["eta"].get("last_material_heartbeat_at_ms")
             node["proof_snapshot"] = self.store.proof_snapshot(node["id"])
@@ -3473,13 +4856,17 @@ class App:
         return view
 
     def overview(self, project_id: str | None = None) -> dict[str, Any]:
+        # Never call _host_overview while holding overview_lock. The refresh
+        # path owns overview_refresh_lock before publishing under overview_lock.
+        overview = self._host_overview()
+        self._ingest_progress_pulses_if_changed(overview)
         with self.overview_lock:
             if (
                 self._view is None
                 or self._view_fingerprint != self._overview_revision
                 or self._view_store_generation != self._store_generation
             ):
-                self._view = self._decorate_overview(self._host_overview())
+                self._view = self._decorate_overview(self._overview or {})
                 self._view_fingerprint = self._overview_revision
                 self._view_store_generation = self._store_generation
             return self._project_view(self._view, project_id)
@@ -3488,15 +4875,21 @@ class App:
         overview = self._host_overview(refresh=trigger in {"startup", "state_change"})
         now_ms = int(time.time() * 1000)
         heartbeat_minutes = max(1, int(overview.get("heartbeat_minutes") or 30))
+        observed = copy.deepcopy(overview)
+        pulse_result = self._ingest_progress_pulses_if_changed(observed)
+        eta_reports = pulse_result.get("eta_reports", {})
+        for node in observed.get("nodes", []):
+            report = eta_reports.get(str(node.get("id")))
+            if report is not None and not node.get("virtual") and not node.get("is_subagent"):
+                node["eta_report"] = report
         self.store.observe_overview(
-            overview,
+            observed,
             now_ms=now_ms,
             trigger=trigger,
             heartbeat_minutes=heartbeat_minutes,
             codex_home=self.codex_home,
         )
-        with self.proof_lock:
-            self.store.ingest_proof_events(self.codex_home, overview, now_ms=now_ms)
+        self._ingest_proof_events_if_changed(observed)
         try:
             sample = self.diagnostics_collector.collect()
             self.store.record_diagnostics(
@@ -3544,7 +4937,46 @@ class App:
             self._observer_thread.join(timeout=2)
 
     def proof_feed(self, *, project_id: str | None = None, task_id: str | None = None) -> list[dict[str, Any]]:
+        self._ingest_proof_events_if_changed()
         return self.store.proof_feed(project_id=project_id, task_id=task_id)
+
+    def project_progress_feed(self, project_id: str, *, after_cursor: int = 0) -> dict[str, Any]:
+        """Build one lazy project feed snapshot from canonical material events."""
+        if not isinstance(project_id, str) or not project_id.strip():
+            raise ConsoleError("project_id is required")
+        try:
+            _, config, _ = load_config(self.config_path)
+            enabled = bool(config["console"]["project_progress_feed_enabled"])
+            limit = int(config["console"]["project_progress_feed_lines"])
+            if not enabled:
+                return {
+                    "ok": True,
+                    "enabled": False,
+                    "limit": limit,
+                    "project_id": project_id.strip(),
+                    "cursor": {"event_seq": after_cursor, "event_id": None, "event_digest": None},
+                    "items": [],
+                    "stale_cursor": False,
+                    "transport": {"snapshot": "disabled", "incremental": "disabled", "http_stream": "UNVERIFIED"},
+                    "producer": {"status": "typed_runtime_transition_only", "native_host_transport": "UNVERIFIED"},
+                    "claim_limit": "Feed delivery is disabled; canonical progress audit history and execution liveness are retained independently.",
+                }
+            return {
+                "ok": True,
+                "enabled": True,
+                **self.progress_ledger.feed_snapshot(project_id.strip(), limit=limit, after_cursor=after_cursor),
+            }
+        except (KeyError, TypeError, ValueError, ProgressEventError) as error:
+            raise ConsoleError(str(error)) from error
+
+    def measurable_progress(self, project_id: str) -> dict[str, Any]:
+        """Return the rebuildable proof-weight projection for one exact project."""
+        if not isinstance(project_id, str) or not project_id.strip():
+            raise ConsoleError("project_id is required")
+        try:
+            return {"ok": True, **self.progress_ledger.project(project_id.strip())}
+        except ProgressEventError as error:
+            raise ConsoleError(str(error)) from error
 
     def proof_media_item(self, evidence_id: str, digest: str) -> dict[str, Any]:
         return self.store.proof_media_item(
@@ -3994,6 +5426,27 @@ class Handler(BaseHTTPRequestHandler):
                         project_id=query.get("project_id"),
                         ctrl_id=query.get("ctrl_id"),
                     ),
+                )
+                return
+            if path == "/api/project-progress-feed":
+                try:
+                    after_cursor = int(query.get("after_cursor", "0"))
+                except ValueError as exc:
+                    raise ConsoleError("after_cursor must be a nonnegative integer") from exc
+                if after_cursor < 0:
+                    raise ConsoleError("after_cursor must be a nonnegative integer")
+                self._json(
+                    HTTPStatus.OK,
+                    self.server.app.project_progress_feed(
+                        query.get("project_id", ""),
+                        after_cursor=after_cursor,
+                    ),
+                )
+                return
+            if path == "/api/project-progress":
+                self._json(
+                    HTTPStatus.OK,
+                    self.server.app.measurable_progress(query.get("project_id", "")),
                 )
                 return
             if path == "/api/skills":

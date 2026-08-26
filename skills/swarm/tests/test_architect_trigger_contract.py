@@ -9,7 +9,7 @@ class SpecialistTriggerContractTests(unittest.TestCase):
         hierarchy = (root / "references" / "hierarchy.md").read_text(encoding="utf-8")
         self.assertIn("Load the hierarchy reference for specialist trigger", core)
         self.assertRegex(hierarchy, r"(?is)initial topology.*first mutable handoff")
-        self.assertRegex(hierarchy, r"(?is)examples, not an allowlist.*Profession is not singleton")
+        self.assertRegex(hierarchy, r"(?is)24 registered profession cards.*allowlisted perspectives.*profession\s+is not singleton")
         self.assertRegex(hierarchy, r"(?is)Task size.*alone do not justify.*stop the next affected mutation")
         self.assertRegex(hierarchy, r"(?is)EXPERT.*bounded uncertainty.*never artifact ownership")
 

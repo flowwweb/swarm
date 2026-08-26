@@ -69,10 +69,41 @@ function clearError() {
 }
 
 async function api(path, options = {}) {
-  const response = await fetch(path, { ...options, headers: { ...(state.token ? { "X-Swarm-Token": state.token } : {}), ...(options.headers || {}) } });
-  const data = await response.json();
-  if (!response.ok) throw new Error(data.error || "Request failed (" + response.status + ")");
-  return data;
+  const { timeoutMs = 0, ...fetchOptions } = options;
+  const controller = timeoutMs > 0 ? new AbortController() : null;
+  const timeout = controller ? window.setTimeout(() => controller.abort(), timeoutMs) : null;
+  try {
+    const response = await fetch(path, { ...fetchOptions, ...(controller ? { signal: controller.signal } : {}), headers: { ...(state.token ? { "X-Swarm-Token": state.token } : {}), ...(fetchOptions.headers || {}) } });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || "Request failed (" + response.status + ")");
+    return data;
+  } catch (error) {
+    if (error?.name === "AbortError") throw new Error("Project data request timed out");
+    throw error;
+  } finally {
+    if (timeout) window.clearTimeout(timeout);
+  }
+}
+
+function setDataStatus(status, observedAt = null) {
+  const title = $("#data-status-title");
+  const note = $("#data-status-note");
+  const dot = $("#data-status-dot");
+  if (!title || !note || !dot) return;
+  dot.classList.toggle("is-live", status === "current");
+  if (status === "current") {
+    title.textContent = "Current";
+    note.textContent = observedAt ? "Updated " + formatRelative(observedAt) : "Snapshot received";
+  } else if (status === "stale") {
+    title.textContent = "Stale";
+    note.textContent = observedAt ? "Last update " + formatRelative(observedAt) : "Refresh failed";
+  } else if (status === "unavailable") {
+    title.textContent = "Data unavailable";
+    note.textContent = "Waiting for a project snapshot";
+  } else {
+    title.textContent = "Connecting";
+    note.textContent = "Waiting for data";
+  }
 }
 
 function scopedNodes() {
@@ -122,8 +153,35 @@ function setView(view, focus, syncRoute = true) {
   if (focus) $("#tab-" + selectedView).focus({ preventScroll: true });
 }
 
-function activeControllers() {
-  return (state.overview?.nodes || []).filter((node) => String(node.role || "").toLowerCase() === "ctrl" && ["active", "in_progress"].includes(String(node.status || "").toLowerCase()));
+function hasCurrentWorkScopeContract() {
+  const navigation = state.overview?.navigation;
+  if (!Array.isArray(navigation?.projects) || !Array.isArray(navigation?.controllers)) return false;
+  return navigation.projects.every((project) => typeof project.id === "string" && typeof project.archived === "boolean" && typeof project.visibility === "string" && typeof project.project_eligibility === "string" && Array.isArray(project.ctrl_ids))
+    && navigation.controllers.every((controller) => typeof controller.id === "string" && typeof controller.project_id === "string" && typeof controller.archived === "boolean" && typeof controller.visibility === "string");
+}
+
+function currentWorkProjects() {
+  const navigation = state.overview?.navigation;
+  if (!hasCurrentWorkScopeContract()) return [];
+  return navigation.projects.filter((project) => project.visibility === "visible" && project.archived === false && project.project_eligibility === "swarm_ctrl" && Array.isArray(project.ctrl_ids) && project.ctrl_ids.length);
+}
+
+function currentWorkControllers() {
+  const navigation = state.overview?.navigation;
+  if (!hasCurrentWorkScopeContract()) return [];
+  const allowedControllerProjects = new Map(currentWorkProjects().flatMap((project) => project.ctrl_ids.map((ctrlId) => [ctrlId, project.id])));
+  const nodeById = new Map((state.overview?.nodes || []).map((node) => [node.id, node]));
+  return navigation.controllers
+    .filter((controller) => controller.visibility === "visible" && controller.archived === false && allowedControllerProjects.get(controller.id) === controller.project_id)
+    .map((controller) => nodeById.get(controller.id))
+    .filter(Boolean);
+}
+
+function currentWorkScopeUnavailable() {
+  if (!hasCurrentWorkScopeContract()) return true;
+  const expectedControllerIds = currentWorkProjects().flatMap((project) => project.ctrl_ids);
+  const resolvedControllerIds = new Set(currentWorkControllers().map((controller) => controller.id));
+  return new Set(expectedControllerIds).size !== expectedControllerIds.length || expectedControllerIds.some((ctrlId) => !resolvedControllerIds.has(ctrlId));
 }
 
 function publicLabel(value, fallback = "Untitled") {
@@ -140,15 +198,26 @@ function ctrlLabel(ctrl) {
   return publicLabel(String(label).replace(/^[^A-Za-z0-9]*CTRL\s*-\s*/i, ""), "Untitled goal");
 }
 
+function historicalProjects() {
+  const summaries = new Map((state.overview?.projects || []).map((project) => [project.id, project]));
+  const source = Array.isArray(state.overview?.navigation?.projects) ? state.overview.navigation.projects : (state.overview?.projects || []);
+  return source.map((project) => ({ ...(summaries.get(project.id) || {}), ...project }));
+}
+
+function historicalControllers() {
+  const summaries = new Map((state.overview?.controllers || []).map((controller) => [controller.id, controller]));
+  const nodes = new Map((state.overview?.nodes || []).map((node) => [node.id, node]));
+  const source = Array.isArray(state.overview?.navigation?.controllers) ? state.overview.navigation.controllers : (state.overview?.controllers || []);
+  return source.map((controller) => ({ ...(summaries.get(controller.id) || {}), ...(nodes.get(controller.id) || {}), ...controller }));
+}
+
 function projectGroups() {
-  const projects = new Map((state.overview?.projects || []).map((project) => [project.id, publicLabel(project.name, "Untitled project")]));
-  const groups = new Map((state.overview?.projects || [])
-    .filter((project) => !/^https?[-_:]/i.test(String(project.name || "")))
-    .map((project) => [project.id, { id: project.id, label: publicLabel(project.name, "Untitled project"), controllers: [], standalone: false }]));
-  activeControllers().forEach((ctrl) => {
+  const projects = historicalProjects().filter((project) => !/^https?[-_:]/i.test(String(project.name || "")));
+  const labels = new Map(projects.map((project) => [project.id, publicLabel(project.goal_label || project.name, "Untitled project")]));
+  const groups = new Map(projects.map((project) => [project.id, { id: project.id, label: labels.get(project.id), controllers: [], standalone: false }]));
+  historicalControllers().forEach((ctrl) => {
     const id = ctrl.project_id || "ctrl:" + ctrl.id;
-    const label = ctrl.project_id ? (projects.get(ctrl.project_id) || ctrl.project || "Untitled project") : ctrlLabel(ctrl);
-    const group = groups.get(id) || { id, label, controllers: [], standalone: !ctrl.project_id };
+    const group = groups.get(id) || { id, label: ctrl.project_id ? (labels.get(ctrl.project_id) || publicLabel(ctrl.project, "Untitled project")) : ctrlLabel(ctrl), controllers: [], standalone: !ctrl.project_id };
     group.controllers.push(ctrl);
     groups.set(id, group);
   });
@@ -158,7 +227,7 @@ function projectGroups() {
 function scopeLabel() {
   if (state.projectId === "all") return "All projects";
   const group = projectGroups().find((item) => item.id === state.projectId);
-  const ctrl = activeControllers().find((item) => item.id === state.ctrlId);
+  const ctrl = historicalControllers().find((item) => item.id === state.ctrlId);
   return ctrl && state.ctrlId ? ctrlLabel(ctrl) : (group?.label || "All projects");
 }
 
@@ -408,22 +477,51 @@ function observedTasks(nodes) {
   return nodes.filter((node) => !isSubagent(node) && String(node.role || "").toLowerCase() !== "ctrl");
 }
 
-function overviewCards(nodes) {
-  if (state.ctrlId) return [{ label: scopeLabel(), ctrlId: state.ctrlId, nodes }];
-  const projectName = (projectId, projectNodes) => (state.overview?.projects || []).find((project) => project.id === projectId)?.name || projectNodes[0]?.project || "Independent work";
-  const cardsForProject = (projectId, projectNodes) => {
-    const projectControllers = projectNodes.filter((node) => !isSubagent(node) && String(node.role || "").toLowerCase() === "ctrl");
-    if (projectControllers.length < 2) return [{ label: projectName(projectId, projectNodes), ctrlId: projectControllers[0]?.id || "", nodes: projectNodes }];
-    return projectControllers.map((ctrl) => ({ label: projectName(projectId, projectNodes) + " · " + ctrlLabel(ctrl), ctrlId: ctrl.id, nodes: projectNodes.filter((node) => node.id === ctrl.id || (node.controller_ids || []).includes(ctrl.id)) }));
+function authoritativeProgress(projectId, ctrlId = "") {
+  const summaries = state.overview?.progress || {};
+  if (ctrlId) return summaries.controllers?.[ctrlId] ?? null;
+  if (projectId) return summaries.projects?.[projectId] ?? null;
+  return null;
+}
+
+function progressPresentation(summary) {
+  const measured = summary?.progress;
+  const percent = typeof measured?.percent === "number" ? measured.percent : Number.NaN;
+  const validPercent = Number.isFinite(percent) ? Math.max(0, Math.min(100, percent)) : null;
+  const freshness = summary?.freshness || {};
+  const freshnessLabel = freshness.state === "fresh" ? "Fresh" : freshness.state === "stale" ? "Stale" : "Unmeasured";
+  const observed = freshness.observed_at_ms ? formatRelative(freshness.observed_at_ms) : "No receipt time";
+  return {
+    percent: validPercent,
+    display: validPercent == null ? "Unmeasured" : String(validPercent) + "%",
+    freshness: freshnessLabel + (freshness.observed_at_ms ? " · " + observed : ""),
   };
-  if (state.projectId !== "all") return cardsForProject(state.projectId, nodes);
-  const projects = new Map((state.overview?.projects || []).filter((project) => !/^https?[-_:]/i.test(String(project.name || ""))).map((project) => [project.id, []]));
-  nodes.forEach((node) => {
-    const projectId = node.project_id || "independent";
-    const list = projects.get(projectId) || [];
-    list.push(node); projects.set(projectId, list);
+}
+
+function overviewCards(nodes) {
+  if (currentWorkScopeUnavailable()) return [];
+  const projects = currentWorkProjects();
+  const controllers = currentWorkControllers();
+  const cardForController = (project, ctrl, multiple) => ({
+    label: publicLabel(project.goal_label || project.name, "Untitled project") + (multiple ? " · " + ctrlLabel(ctrl) : ""),
+    projectId: project.id,
+    ctrlId: ctrl.id,
+    nodes: nodes.filter((node) => node.id === ctrl.id || (node.controller_ids || []).includes(ctrl.id)),
   });
-  return [...projects.entries()].flatMap(([projectId, projectNodes]) => cardsForProject(projectId, projectNodes));
+  const cardsForProject = (project) => {
+    const projectControllers = controllers.filter((ctrl) => project.ctrl_ids.includes(ctrl.id));
+    return projectControllers.map((ctrl) => cardForController(project, ctrl, projectControllers.length > 1));
+  };
+  if (state.ctrlId) {
+    const project = projects.find((item) => item.id === state.projectId && item.ctrl_ids.includes(state.ctrlId));
+    const ctrl = controllers.find((item) => item.id === state.ctrlId);
+    return project && ctrl ? [cardForController(project, ctrl, false)] : [];
+  }
+  if (state.projectId !== "all") {
+    const project = projects.find((item) => item.id === state.projectId);
+    return project ? cardsForProject(project) : [];
+  }
+  return projects.flatMap(cardsForProject);
 }
 
 function latestReceipt(nodes) {
@@ -512,22 +610,17 @@ function renderOverviewHealth(nodes) {
   renderHealth(nodes, "#overview-monitoring-health-state", "#overview-monitoring-health-note");
 }
 
-function hasCurrentOverviewWork(card) {
-  return card.nodes.some((node) => !isSubagent(node) && !["done", "archived"].includes(String(node.status || "").toLowerCase()));
-}
-
 function renderOverviewProjectCards(nodes) {
+  const scopeAvailable = !currentWorkScopeUnavailable();
   const cards = overviewCards(nodes);
   const tree = taskTree(nodes);
   const allProjects = state.projectId === "all" && !state.ctrlId;
-  const activeCards = allProjects ? cards.filter(hasCurrentOverviewWork) : cards.filter((card) => card.nodes.length);
-  const visibleCards = allProjects ? activeCards.slice(0, 5) : activeCards;
-  const moreCards = allProjects ? activeCards.slice(5) : [];
+  const scopedCards = cards.filter((card) => card.nodes.length);
+  const visibleCards = allProjects ? scopedCards.slice(0, 5) : scopedCards;
+  const moreCards = allProjects ? scopedCards.slice(5) : [];
   const renderCard = (card) => {
     const tasks = observedTasks(card.nodes);
-    const completed = tasks.filter((task) => ["done", "archived"].includes(String(task.status).toLowerCase())).length;
-    const total = tasks.length;
-    const percent = total ? Math.round((completed / total) * 100) : null;
+    const progress = progressPresentation(authoritativeProgress(card.projectId, card.ctrlId));
     const blocker = tasks.find(needsAttention);
     const receipt = latestReceipt(card.nodes);
     const primary = card.nodes.find((node) => node.id === card.ctrlId) || tasks[0];
@@ -536,16 +629,18 @@ function renderOverviewProjectCards(nodes) {
     const ringClass = needsAttention(primary) ? "is-attention" : (statusLabel(primary || {})[1] || "is-pending");
     const subagents = card.ctrlId ? subagentDescendants(card.ctrlId, tree) : [];
     const subagentDisclosure = subagents.length ? '<details class="overview-subagents" data-overview-subagents="' + escapeHTML(card.ctrlId) + '"><summary>Subagents <span>' + subagents.length + '</span></summary><ul>' + subagents.map((node) => '<li><strong>' + escapeHTML(node.artifact || node.title || node.id) + '</strong><span>' + escapeHTML(statusLabel(node)[0]) + '</span></li>').join('') + '</ul></details>' : '<span class="overview-subagent-empty">No subagents</span>';
-    return '<article class="overview-project-card panel"><div class="overview-progress-ring ' + ringClass + '" style="--progress:' + (percent == null ? 0 : percent) + '%" aria-label="' + (percent == null ? 'Observed progress unavailable' : percent + '% observed task completion') + '"><strong>' + (percent == null ? '—' : percent + '%') + '</strong><span>' + completed + ' / ' + total + '</span></div><div class="overview-project-main"><p class="eyebrow">' + escapeHTML(stateLabel) + '</p><h3>' + escapeHTML(card.label) + '</h3><p>' + escapeHTML(current?.artifact || "No current task observed") + '</p></div><dl class="overview-project-facts"><div><dt>Current work</dt><dd>' + escapeHTML(current?.artifact || "None observed") + '</dd></div><div><dt>Latest receipt</dt><dd>' + escapeHTML(receipt?.caption || receipt?.kind || "None received") + '</dd></div><div><dt>Blocker</dt><dd class="' + (blocker ? 'risk-text' : '') + '">' + escapeHTML(blocker?.artifact || "None observed") + '</dd></div></dl><div class="overview-project-subagents">' + subagentDisclosure + '</div></article>';
+    return '<article class="overview-project-card panel"><div class="overview-progress-ring ' + ringClass + '" style="--progress:' + (progress.percent == null ? 0 : progress.percent) + '%" aria-label="' + escapeHTML(progress.display + ' receipt-backed progress · ' + progress.freshness) + '"><strong>' + escapeHTML(progress.display) + '</strong><span>' + escapeHTML(progress.freshness) + '</span></div><div class="overview-project-main"><p class="eyebrow">' + escapeHTML(stateLabel) + '</p><h3>' + escapeHTML(card.label) + '</h3><p>' + escapeHTML(current?.artifact || "No current task observed") + '</p></div><dl class="overview-project-facts"><div><dt>Current work</dt><dd>' + escapeHTML(current?.artifact || "None observed") + '</dd></div><div><dt>Latest receipt</dt><dd>' + escapeHTML(receipt?.caption || receipt?.kind || "None received") + '</dd></div><div><dt>Blocker</dt><dd class="' + (blocker ? 'risk-text' : '') + '">' + escapeHTML(blocker?.artifact || "None observed") + '</dd></div></dl><div class="overview-project-subagents">' + subagentDisclosure + '</div></article>';
   };
   $("#overview-summary").textContent = allProjects
-    ? (activeCards.length ? String(activeCards.length) + " active scope" + (activeCards.length === 1 ? "" : "s") : "No active work")
-    : (activeCards.length ? "Current scope" : "No current work");
-  const empty = allProjects
-    ? '<p class="empty-state overview-empty">No current work across projects. Select a project to review its history.</p>'
-    : '<p class="empty-state overview-empty">No current work observed in ' + escapeHTML(scopeLabel()) + '. This scope remains available in navigation.</p>';
+    ? (scopedCards.length ? String(scopedCards.length) + " project scope" + (scopedCards.length === 1 ? "" : "s") : "No classified Current Work")
+    : (scopedCards.length ? "Current scope" : "No classified Current Work");
+  const empty = !scopeAvailable
+    ? '<p class="empty-state overview-empty">Current Work needs host-reported CTRL classification. Dashboard still shows task history.</p>'
+    : allProjects
+      ? '<p class="empty-state overview-empty">No classified Current Work is available.</p>'
+      : '<p class="empty-state overview-empty">No classified Current Work is available in ' + escapeHTML(scopeLabel()) + '.</p>';
   $("#overview-project-cards").innerHTML = visibleCards.length
-    ? visibleCards.map(renderCard).join("") + (moreCards.length ? '<details class="overview-more"><summary>' + String(moreCards.length) + ' more active scope' + (moreCards.length === 1 ? '' : 's') + '</summary><div>' + moreCards.map(renderCard).join("") + '</div></details>' : '')
+    ? visibleCards.map(renderCard).join("") + (moreCards.length ? '<details class="overview-more"><summary>' + String(moreCards.length) + ' more project scope' + (moreCards.length === 1 ? '' : 's') + '</summary><div>' + moreCards.map(renderCard).join("") + '</div></details>' : '')
     : empty;
 }
 
@@ -567,13 +662,6 @@ function renderDashboard() {
   renderOverviewDiagnostics();
 }
 
-function taskProgress(node) {
-  const eta = node.eta || {};
-  const declared = Number(eta.current?.progress_basis?.percent ?? eta.progress_basis?.percent ?? eta.progress_percent);
-  if (Number.isFinite(declared)) return Math.max(0, Math.min(100, declared));
-  return String(eta.current?.status || eta.status || '').toLowerCase() === 'complete' ? 100 : null;
-}
-
 function renderHierarchy() {
   const nodes = scopedNodes();
   const tree = taskTree(nodes);
@@ -590,8 +678,8 @@ function renderHierarchy() {
     const status = statusLabel(current);
     const subagents = subagentDescendants(current.id, tree);
     const subagentMeta = subagents.length ? '<span class="subagent-count">' + subagents.length + ' subagent' + (subagents.length === 1 ? '' : 's') + '</span>' : '';
-    const progress = taskProgress(current);
-    return '<article class="hierarchy-card"><div class="health-ring ' + status[1] + '"><i></i><span>' + (progress == null ? '—' : progress + '%') + '</span></div><div class="hierarchy-main"><div class="hierarchy-title"><strong>' + escapeHTML(current.artifact || current.title || owner) + '</strong><span>' + escapeHTML(current.role_label || current.role || "TASK") + subagentMeta + '</span></div><p><i class="activity-dot ' + status[1] + '" aria-hidden="true"></i>' + escapeHTML(formatRelative(current.updated_at)) + (stalled ? ' <b class="stalled-cue">Paused attention</b>' : '') + '</p><div class="task-progress"><i style="width:' + (progress == null ? 0 : progress) + '%"></i></div>' + (extra.length ? '<details><summary>' + extra.length + ' more task' + (extra.length === 1 ? '' : 's') + '</summary><ul>' + extra.map((task) => '<li>' + escapeHTML(task.artifact || task.title || task.id) + '</li>').join('') + '</ul></details>' : '') + '</div></article>';
+    const progress = progressPresentation(authoritativeProgress(current.project_id, state.overview?.progress?.controllers?.[owner] ? owner : ""));
+    return '<article class="hierarchy-card"><div class="health-ring ' + status[1] + '"><i></i><span>' + escapeHTML(progress.display) + '</span></div><div class="hierarchy-main"><div class="hierarchy-title"><strong>' + escapeHTML(current.artifact || current.title || owner) + '</strong><span>' + escapeHTML(current.role_label || current.role || "TASK") + subagentMeta + '</span></div><p><i class="activity-dot ' + status[1] + '" aria-hidden="true"></i>' + escapeHTML(progress.freshness) + (stalled ? ' <b class="stalled-cue">Paused attention</b>' : '') + '</p><div class="task-progress"><i style="width:' + (progress.percent == null ? 0 : progress.percent) + '%"></i></div>' + (extra.length ? '<details><summary>' + extra.length + ' more task' + (extra.length === 1 ? '' : 's') + '</summary><ul>' + extra.map((task) => '<li>' + escapeHTML(task.artifact || task.title || task.id) + '</li>').join('') + '</ul></details>' : '') + '</div></article>';
   }).join('') : '<p class="empty-state">No owners in this view.</p>';
 }
 
@@ -698,7 +786,7 @@ function settingsScopeOptions() {
 
 function selectedSettingsCtrl() {
   const scope = currentSettingsScope();
-  return scope.type === 'ctrl' ? activeControllers().find((ctrl) => ctrl.id === scope.id) || null : null;
+  return scope.type === 'ctrl' ? historicalControllers().find((ctrl) => ctrl.id === scope.id) || null : null;
 }
 
 function skillStatus(skill) {
@@ -789,13 +877,18 @@ async function refreshUsageHistory() {
 
 async function refreshMonitoring(proofSequence) {
   try {
-    state.overview = await api("/api/overview");
+    state.overview = await api("/api/overview", { timeoutMs: 15_000 });
+    setDataStatus("current", state.overview?.generated_at);
     renderProjectNavigation();
     await refreshUsageHistory();
     if (Number(proofSequence) !== state.proofSequence) await refreshProof();
     renderOverview();
     renderDashboard();
-  } catch { /* The next manual refresh can recover the complete screen. */ }
+    renderHierarchy();
+  } catch {
+    setDataStatus(state.overview ? "stale" : "unavailable", state.overview?.generated_at);
+    /* The next manual refresh can recover the complete screen. */
+  }
 }
 
 async function refreshCtrlSettings() {
@@ -819,16 +912,18 @@ async function refreshOverview(showLoading = true) {
   if (showLoading) setLoading(true);
   clearError();
   try {
-    state.overview = await api("/api/overview");
+    state.overview = await api("/api/overview", { timeoutMs: 15_000 });
+    setDataStatus("current", state.overview?.generated_at);
     renderProjectNavigation();
     await Promise.all([refreshProof(), refreshUsageHistory()]);
-    const selectedCtrl = state.ctrlId || activeControllers()[0]?.id || '';
+    const selectedCtrl = state.ctrlId || historicalControllers()[0]?.id || '';
     const results = await Promise.allSettled([api('/api/diagnostics'), api('/api/diagnostics/history?limit=24'), api('/api/health/settings'), api('/api/storage'), selectedCtrl ? api('/api/ctrl-settings?ctrl_id=' + encodeURIComponent(selectedCtrl)) : Promise.resolve(null), api('/api/config')]);
     [state.diagnostics, state.diagnosticHistory, state.health, state.storage, state.ctrlSettings, state.config] = results.map((result) => result.status === 'fulfilled' ? result.value : null);
     state.diagnosticHistory = state.diagnosticHistory?.items || [];
     await refreshSkills();
     renderAllViews();
   } catch (error) {
+    setDataStatus(state.overview ? "stale" : "unavailable", state.overview?.generated_at);
     showError(error.message);
   } finally {
     if (showLoading) setLoading(false);
@@ -955,7 +1050,7 @@ $("#retry").addEventListener("click", refreshOverview);
 document.addEventListener('change', async (event) => {
   if (event.target.id === 'settings-scope') {
     const [scopeType, scopeId] = event.target.value.split('|');
-    const ctrl = scopeType === 'ctrl' ? activeControllers().find((item) => item.id === scopeId) : null;
+    const ctrl = scopeType === 'ctrl' ? historicalControllers().find((item) => item.id === scopeId) : null;
     state.settingsScopeType = ['global', 'project', 'ctrl'].includes(scopeType) ? scopeType : 'global';
     state.settingsScopeId = scopeId || 'global';
     state.settingsCtrlId = ctrl ? ctrl.id : '';

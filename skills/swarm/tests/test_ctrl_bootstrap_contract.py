@@ -17,8 +17,8 @@ class CtrlBootstrapContractTests(unittest.TestCase):
         self.assertIn("**Step 0, never defer:**", skill)
         self.assertIn(NEW_TITLE, skill)
         self.assertRegex(skill, r"(?is)Step 0.*title.*pin.*Verif")
-        self.assertRegex(skill, r"(?is)Verify both receipts before durable-goal inspection")
-        self.assertIn("any other tool work", skill)
+        self.assertIn("After the Step 0 custody check, always ask and capture both intake answers before routing", skill)
+        self.assertLess(skill.index("After the Step 0 custody check, always ask and capture both intake answers before routing"), skill.index("Then inspect or create exactly one matching durable goal"))
         self.assertIn("truthful internal CTRL identity", skill)
         self.assertLess(skill.index("**Step 0, never defer:**"), skill.index("Then inspect or create exactly one matching durable goal"))
 

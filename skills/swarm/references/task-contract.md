@@ -47,7 +47,7 @@ MODE: CTRL_DIRECT or CTRL_DELEGATED, with the direct-work predicate receipt and 
 GOAL: stable goal ID, objective version, measurable milestone, and locally chosen review horizon; optional WATCHDOG binding is separate and names the watched owner plus validated alert route. New-task persistence follows `goals.use_goals`, which defaults true; when it is false the intake and graph remain recorded but the root task does not create or continue a durable goal. LEAD and persistent SPECIALIST ownership goals remain fixed role invariants.
 ACCEPTANCE: typed lane kind, exact ArtifactIdentity, deterministic ProofPlan, bound owning LEAD identity, and accepting REVIEW route; CODE has at least one gate and only NON_CODE non-artifact work may use an explicit empty contract.
 DELEGATION: exact deliverable, owner ID, portable custody roots, immutable artifact and artifact paths, required proof classes, bounded due event, and maximum readable return size.
-TOPOLOGY: structural authority is exactly CTRL, LEAD, or DOER; record direct LEAD production, bounded DOER delegation, or the durable-boundary facts that justify a nested LEAD. No fixed depth or mandatory pass-through.
+TOPOLOGY: structural authority is exactly CTRL, LEAD, or DOER. Freeze one `TopologyMaterializationPlan` before task creation: one CTRL administrator; generated `<icon><Profession> LEAD|DOER - <responsibility>` titles; one parent and boundary/artifact per lane; direct LEAD production, bounded DOER delegation, or typed durable-boundary facts for a nested LEAD; and a span exception receipt when CTRL fanout exceeds the soft preferred width. Dispatch only the current ready wave. A child enters a later packet only after its parent has a retained host-confirmed identity; a same-packet parent, public existing ID, or previously confirmed lane fails closed. Review requires a fresh runtime-issued `TopologyArtifactFreezeReceipt` bound to the producer lane, immutable content-addressed artifact, current accepted proof/review, and exact topology plan; caller labels and plain artifact IDs do not qualify. Reserve each lane identity before a host create attempt; timeout, ambiguous failure, or schema error keeps the reservation pending until exact resolution or explicit cancellation, while confirmation permanently prevents redispatch. Bare roles, profession-only titles, raw prompt titles, future review before its producer freezes, and duplicate retries fail closed. The current Codex host cannot consume the typed packet, so this is instruction-only and live enforcement remains `UNVERIFIED`. No fixed depth, arbitrary ratio, or mandatory pass-through.
 SUBAGENT RETURN: COMPLETE for the bounded leaf result, or PROMOTE_TO_VISIBLE_TASK with remaining deliverable, custody boundary, proof, and accountable parent. A subagent never recruits or accepts.
 RETURN: one bounded readable artifact-bound ACCEPT, REJECT, or BLOCKED receipt with owner-reported evidence, dirty custody, and path/count/byte/hash manifest; final acceptance remains independent.
 SKILLS: any agent may request a role skill with exact source/version or digest, purpose, destination scope, and host audit/rollback receipt; installation never transfers authority and defaults task-local.
@@ -74,6 +74,27 @@ Tool output and exact receipts remain available beneath the pulse; raw logs,
 filler, repeated plans, commentary, and unchanged heartbeats are not progress.
 Profession does not transfer ownership, and review does not become implementation
 or acceptance.
+
+At an existing typed owner result, proof, state, blocker/wait, ETA/confidence,
+scope, current-action, rework, or accepted-steering boundary, the owning runtime
+adapter may append one canonical material event. There is no general feed-write
+command or browser write authority. Reuse the concise human sentence already
+produced at that boundary; never call a model or schedule a report solely for the
+Project progress feed. Exact duplicate content/state/proof, empty or interrupted
+output, tool chatter, token activity, and unchanged narration are no-ops and cannot
+replace the last-good material update. The canonical event retains stable
+portfolio/project/CTRL/milestone/block/task/owner/scope identities,
+lineage/dependencies, custody, proof classes/receipts, claim limit, measured weight,
+ETA/confidence, rework, steering, provenance, and timestamp. Same event identity
+plus digest is idempotent; conflicting identity/digest or stale scope fails closed.
+
+Execution liveness stays separate. Existing host reservation, lease, checkpoint,
+and last-seen observations may renew token-free at their configured cadence, but a
+healthy renewal never appends progress, changes percentage/ETA, or enters the
+human feed. Only a typed transition such as stale, recovery, retry, or takeover is
+material. The legacy latest-pulse sidecar remains a bounded compatibility adapter
+for receipt-backed units and liveness, with its existing monotonic and privacy
+guards; it is not a reporting schedule or acceptance authority.
 
 The parity manifest is an owner return claim, not host or user authority. It
 must match the declared paths, count, byte total, and file digests and remain
@@ -114,11 +135,28 @@ duplicates, replaces, renames, or archives the old lane.
 
 A meaningful stable checkpoint for long-lived CTRL or LEAD work records the
 exact task identity and state, source SHA/tree/parent, exact dirty custody, proof
-manifest and claim limits, blocker, and next bounded action. Commit only coherent
+manifest and claim limits, exact owned-path manifest digest, dependency-graph
+digest, proof-plan digest, blocker, and next bounded action. A clean unblocked
+checkpoint produces one deterministic immutable review packet bound to repository,
+producer, reviewer task, candidate SHA/tree/parent, content digest, path manifest,
+dependency graph, proof plan, proofs, and claim limits. Any changed bound field
+invalidates the packet and every receipt derived from it. Commit only coherent
 attributable work after proportionate proof. Never automatically stage, reset,
 clean, normalize, commit, or absorb unrelated dirty work. Before a successor may
 own the lane, it acknowledges the exact immutable checkpoint; this handoff does
 not authorize renaming, pinning, archiving, or any other host-task mutation.
+
+With `automation.mode = "standard"`, the checkpoint may produce an exact-path
+commit request only when the complete dirty set equals attributable paths inside
+the recorded custody boundary. Mixed or ambiguous dirty work fails closed. The
+immutable candidate then routes to a separate visible independent review owner;
+creation, commentary, activity, timeout, silence, `BLOCKED`, and in-progress
+state never authorize integration. `manual` emits no Git or lifecycle request.
+Runtime entry points normalize raw config mode and route commit, review,
+integration/push, release, and archive planning through the same fail-closed
+decisions. Every policy or gate receipt is typed and bound to repository root,
+branch/remote, candidate SHA/tree, operation, authority, and freshness; a string
+claim or mismatched receipt cannot authorize an action.
 
 Storage inventory, archive, cleanup, relocation, and monitoring use a dedicated
 delegable STORAGE LEAD lane. Its contract binds an exact target manifest,

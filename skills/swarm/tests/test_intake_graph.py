@@ -54,9 +54,18 @@ class IntakeGraphTests(unittest.TestCase):
         self.assertEqual(ids, {"ctrl", "studio_lead", "game_design", "game_engineering", "game_art", "game_audio", "playtest_qa", "release"})
         production = {node.id: node for node in plan.graph.nodes if node.id.startswith("game_")}
         self.assertTrue(all(node.depends_on == ("studio_lead",) for node in production.values()))
+        self.assertEqual({node.agent_type for node in plan.graph.nodes}, {"CTRL", "LEAD", "DOER"})
+        self.assertEqual([node.title for node in plan.graph.nodes if node.agent_type == "LEAD"], ["Manager LEAD"])
+        self.assertEqual(
+            {node.title for node in production.values()},
+            {"Designer DOER", "Dev DOER", "Artist DOER", "Producer DOER"},
+        )
         qa = next(node for node in plan.graph.nodes if node.id == "playtest_qa")
+        self.assertEqual(qa.title, "Tester DOER")
         self.assertEqual(set(qa.depends_on), set(production))
-        self.assertEqual(next(node for node in plan.graph.nodes if node.id == "release").depends_on, ("playtest_qa",))
+        release = next(node for node in plan.graph.nodes if node.id == "release")
+        self.assertEqual(release.title, "Operator DOER")
+        self.assertEqual(release.depends_on, ("playtest_qa",))
         self.assertEqual(set(plan.graph.parallel_lanes), set(production))
         self.assertEqual(len(plan.graph.digest()), 64)
 
@@ -95,8 +104,25 @@ class IntakeGraphTests(unittest.TestCase):
                 "strategy",
                 (
                     GraphNodeSpec("ctrl", "CTRL", "CTRL", "root"),
-                    GraphNodeSpec("a", "DOER", "DOER", "a", ("b",)),
-                    GraphNodeSpec("b", "DOER", "DOER", "b", ("a",)),
+                    GraphNodeSpec("a", "DEV", "DOER", "a", ("b",)),
+                    GraphNodeSpec("b", "TESTER", "DOER", "b", ("a",)),
+                ),
+                "bad",
+            )
+        with self.assertRaisesRegex(InvariantError, "built-in profession"):
+            from runtime import GraphNodeSpec
+
+            GraphNodeSpec("lead", "LEAD", "LEAD", "ambiguous bare lane", ("ctrl",))
+        with self.assertRaisesRegex(InvariantError, "explicit dependency"):
+            from runtime import GraphSelection
+
+            GraphSelection(
+                GraphProfile.GENERAL,
+                "goal",
+                "strategy",
+                (
+                    GraphNodeSpec("ctrl", "CTRL", "CTRL", "root"),
+                    GraphNodeSpec("orphan", "DEV", "DOER", "orphan"),
                 ),
                 "bad",
             )

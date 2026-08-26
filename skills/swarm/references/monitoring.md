@@ -72,6 +72,16 @@ file count, byte count, and hash parity, retains a recoverable manifest, and onl
 then permits copy-verify-remove. Active or growing logs remain protected regardless
 of folder date.
 
+In standard automation mode, these observations may produce only a typed
+`archive_request`. The request binds the immutable checkpoint, exact target
+state digest, and a current typed host custody receipt for that exact task and
+state with bounded freshness. Plugin runtime cannot
+mint or validate host authority, so the task remains visible with
+`archive_unverified` until the host independently consumes the persisted
+preference and exact custody receipt and confirms the action. Manual mode emits
+no request. Active, stalled, blocked, user-renamed, user-pinned, directly
+controlled, or open-gate tasks remain visible; age alone never changes that.
+
 A fresh host-observed direct-user turn creates a scoped keep-out for the named CTRL
 and its subordinate owners. Master may continue read-only portfolio heartbeat and
 unaffected lanes, but it must not send conflicting or duplicate directives, enqueue
@@ -162,8 +172,12 @@ or `Unmeasured`, latest material proof, first blocker, and next action/ETA. Exac
 tool and machine receipts remain available as an audit layer, not dumped into the
 main feed. For visual work, place the highest-signal image or screenshot inline
 first and keep the rest in a compact gallery with omissions and claim limits.
-Only a changed artifact, proof, decision, blocker, or bounded due event is a
-material heartbeat; unchanged work stays quiet.
+Only a changed artifact, proof, decision, blocker, ETA/confidence, scope,
+current action, rework, or accepted steering decision is a material progress
+event. Unchanged work stays quiet: no scheduled model call, feed event,
+persistence write, or delivery. Existing execution lease/checkpoint renewal is
+token-free liveness and remains outside progress; only stale/recovery/retry or
+takeover transitions become material.
 
 At each CTRL heartbeat, inspect `ctrl_feed_due` before composing a progress
 message. If material evidence is pending, return the proof reminder first and

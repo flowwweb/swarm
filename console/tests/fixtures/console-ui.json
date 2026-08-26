@@ -9,7 +9,7 @@
   "config": {
     "exists": true,
     "path": "fixture/config.toml",
-    "editable": ["execution.fast_mode", "execution.usage_saver", "console.open_on_start", "boost.spark_enabled", "boost.spark_model", "boost.spark_reasoning", "role_icons.enabled", "role_icons.ctrl"],
+    "editable": ["execution.fast_mode", "execution.usage_saver", "console.open_on_start", "automation.mode", "boost.spark_enabled", "boost.spark_model", "boost.spark_reasoning", "role_icons.enabled", "role_icons.ctrl"],
     "settings": {
       "portfolio": {
         "max_active_tasks": 4,
@@ -55,9 +55,11 @@
         "spark_model": "gpt-5.3-codex-spark",
         "spark_reasoning": "xhigh"
       },
+      "automation": {
+        "mode": "standard"
+      },
       "lifecycle": {
-        "pin_created_tasks": false,
-        "archive_completed_tasks": true
+        "pin_created_tasks": false
       },
       "feedback": {
         "enabled": true,
@@ -97,6 +99,18 @@
     "roots": ["ctrl"],
     "controllers": [{"id":"ctrl","title":"🐙CTRL - Ship console","artifact":"Ship console","project_id":"project:fixture","project":"swarm","status":"active","virtual":false,"nodes":5,"active":3}],
     "projects": [{"id":"project:fixture","name":"swarm","nodes":5,"tokens":1000,"active":3}],
+    "navigation": {
+      "projects": [{"id":"project:fixture","name":"swarm","archived":false,"visibility":"visible","project_eligibility":"swarm_ctrl","ctrl_ids":["ctrl"],"active_ctrl_id":"ctrl","active_ctrl":true}],
+      "controllers": [{"id":"ctrl","project_id":"project:fixture","status":"active","archived":false,"visibility":"visible"}]
+    },
+    "progress": {
+      "controllers": {
+        "ctrl": {"progress":{"completed":4,"total":5,"percent":80,"source":"material_receipts"},"freshness":{"state":"fresh","observed_at_ms":1712550060000}}
+      },
+      "projects": {
+        "project:fixture": {"progress":{"completed":4,"total":5,"percent":80,"source":"material_receipts"},"freshness":{"state":"fresh","observed_at_ms":1712550060000}}
+      }
+    },
     "analytics": {
       "swarms": 1,
       "tasks": 5,

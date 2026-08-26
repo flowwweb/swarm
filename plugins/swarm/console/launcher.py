@@ -69,6 +69,16 @@ def ensure_portal(
     _, effective, _ = console_server.load_config(config_path)
     if not effective["console"]["open_on_start"]:
         return {"ok": True, "enabled": False, "opened": False, "reason": "disabled"}
+    required_assets = tuple(CONSOLE_ROOT / "static" / name for name in ("index.html", "app.js", "styles.css"))
+    missing_assets = tuple(path.name for path in required_assets if not path.is_file())
+    if missing_assets:
+        return {
+            "ok": False,
+            "enabled": True,
+            "opened": False,
+            "reason": "console_assets_missing",
+            "missing": missing_assets,
+        }
 
     selected_port: int | None = None
     free_port: int | None = None

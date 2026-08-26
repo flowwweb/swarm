@@ -1,13 +1,16 @@
 from __future__ import annotations
 
+import copy
 import importlib.util
 import hashlib
 import json
 import sqlite3
 import sys
 import tempfile
+import threading
 import time
 import unittest
+from contextlib import closing
 from email.message import Message
 from pathlib import Path
 from types import SimpleNamespace
@@ -19,6 +22,16 @@ SPEC = importlib.util.spec_from_file_location("swarm_console_tested", SERVER)
 assert SPEC and SPEC.loader
 console = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(console)
+from runtime.progress_events import write_progress_pulse  # noqa: E402
+from runtime import (  # noqa: E402
+    ArtifactIdentity,
+    CodexAppServerAdapter,
+    ContinuationSnapshot,
+    ExecutionConfigGeneration,
+    ExecutionDispatchState,
+    ExecutionFailureKind,
+    InvariantError,
+)
 
 
 class SwarmConsoleTests(unittest.TestCase):
@@ -41,6 +54,16 @@ class SwarmConsoleTests(unittest.TestCase):
         self.assertIn("function renderKanban()", app)
         self.assertIn("function renderDiagnostics()", app)
         self.assertIn("function renderSettings()", app)
+        self.assertIn("function authoritativeProgress(projectId, ctrlId", app)
+        self.assertIn('validPercent == null ? "Unmeasured"', app)
+        self.assertNotIn("completed / total", app)
+        self.assertNotIn("progress_basis?.percent", app)
+        self.assertIn('id="data-status-title">Connecting</strong>', index)
+        self.assertIn('id="data-status-note">Waiting for data</small>', index)
+        self.assertNotIn("Projects are up to date", index)
+        self.assertIn('setDataStatus("current", state.overview?.generated_at)', app)
+        self.assertIn('setDataStatus(state.overview ? "stale" : "unavailable"', app)
+        self.assertIn('api("/api/overview", { timeoutMs: 15_000 })', app)
         self.assertIn("function publicLabel(value", app)
         self.assertIn(r'.replace(/\blocalhost\b/gi, "console")', app)
         self.assertIn('const label = rawLabel.localeCompare(group.label', app)
@@ -337,6 +360,109 @@ class SwarmConsoleTests(unittest.TestCase):
         app.observe_once("state_change")
         self.assertIsNot(first, app.overview())
 
+    def test_overview_refresh_and_reader_do_not_invert_locks(self) -> None:
+        app = console.App(self.codex_home, self.config)
+        refresh_entered = threading.Event()
+        release_refresh = threading.Event()
+        original_fingerprint = console.observation_fingerprint
+        original_build = console.build_overview
+        calls = 0
+        errors: list[BaseException] = []
+        results: list[dict[str, object]] = []
+
+        def delayed_fingerprint(*args: object, **kwargs: object) -> tuple[tuple[str, int, int], ...]:
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                refresh_entered.set()
+                release_refresh.wait(2)
+            return (("state", 1, 1),)
+
+        def invoke_refresh() -> None:
+            try:
+                app._host_overview(refresh=True)
+            except BaseException as error:  # pragma: no cover - reported by the assertion
+                errors.append(error)
+
+        def invoke_reader() -> None:
+            try:
+                results.append(app.overview())
+            except BaseException as error:  # pragma: no cover - reported by the assertion
+                errors.append(error)
+
+        console.observation_fingerprint = delayed_fingerprint
+        console.build_overview = lambda *_args, **_kwargs: {
+            "generated_at": "2026-08-24T00:00:00+00:00",
+            "heartbeat_minutes": 30,
+            "nodes": [],
+            "links": [],
+            "projects": [],
+            "controllers": [],
+            "analytics": {},
+        }
+        try:
+            refresh = threading.Thread(target=invoke_refresh, daemon=True)
+            refresh.start()
+            self.assertTrue(refresh_entered.wait(1), "refresh did not reach the lock boundary")
+            reader = threading.Thread(target=invoke_reader, daemon=True)
+            reader.start()
+            release_refresh.set()
+            refresh.join(2)
+            reader.join(2)
+            self.assertFalse(refresh.is_alive(), "overview refresh remained deadlocked")
+            self.assertFalse(reader.is_alive(), "overview reader remained deadlocked")
+            self.assertEqual(errors, [])
+            self.assertEqual(len(results), 1)
+        finally:
+            release_refresh.set()
+            console.observation_fingerprint = original_fingerprint
+            console.build_overview = original_build
+
+    def test_jsonl_scan_is_shared_and_does_not_hold_console_store_lock(self) -> None:
+        store = console.ConsoleStore(self.root / "console" / "console-state.sqlite3")
+        scan_entered = threading.Event()
+        release_scan = threading.Event()
+        original_scan = console._codex_jsonl_token_counts
+        errors: list[BaseException] = []
+        scanned_ids: list[set[str]] = []
+        overview = {
+            "heartbeat_minutes": 30,
+            "nodes": [
+                {"id": "thread-1", "project_id": "project:alpha", "tokens": 10, "status": "active", "updated_at": 1_000},
+                {"id": "thread-2", "project_id": "project:alpha", "tokens": 20, "status": "active", "updated_at": 1_000},
+            ],
+            "links": [],
+        }
+
+        def delayed_scan(_codex_home: Path, thread_ids: set[str]) -> dict[str, int]:
+            scanned_ids.append(set(thread_ids))
+            scan_entered.set()
+            release_scan.wait(2)
+            return {}
+
+        def observe() -> None:
+            try:
+                store.observe_overview(overview, codex_home=self.codex_home, now_ms=1_000, trigger="heartbeat", heartbeat_minutes=30)
+            except BaseException as error:  # pragma: no cover - reported by the assertion
+                errors.append(error)
+
+        console._codex_jsonl_token_counts = delayed_scan
+        try:
+            worker = threading.Thread(target=observe, daemon=True)
+            worker.start()
+            self.assertTrue(scan_entered.wait(1), "observer did not reach the JSONL scan")
+            started = time.monotonic()
+            self.assertEqual(store.token_history(hours=24), [])
+            self.assertLess(time.monotonic() - started, 0.5)
+            release_scan.set()
+            worker.join(2)
+            self.assertFalse(worker.is_alive(), "observer did not complete after scan release")
+            self.assertEqual(errors, [])
+            self.assertEqual(scanned_ids, [{"thread-1", "thread-2"}])
+        finally:
+            release_scan.set()
+            console._codex_jsonl_token_counts = original_scan
+
     def test_recent_active_goal_identifies_ctrl_without_reading_objective_text(self) -> None:
         goals = sqlite3.connect(self.codex_home / "goals_1.sqlite")
         goals.execute(
@@ -405,6 +531,284 @@ class SwarmConsoleTests(unittest.TestCase):
         finally:
             connection.close()
         self.assertEqual(cursor[0], 130)
+
+    def test_execution_queue_persists_reservation_generation_and_event_dedupe_across_restart(self) -> None:
+        path = self.root / "console" / "execution-state.sqlite3"
+        ledger = console.ExecutionDispatchLedger()
+        ledger.observe_generation(console.ExecutionConfigGeneration("generation-fast", True, "gpt-5.6", "high", 10, "host:config:fast"))
+        ledger.reserve("reservation-1", "task-1", "owner-1", ArtifactIdentity("artifact", "rev-1", "queue"), observed_at_ms=11)
+        record = ledger.dispatch("reservation-1", "a" * 64, 900, observed_at_ms=12)
+        event = CodexAppServerAdapter().translate_event({
+            "method": "turn/completed",
+            "params": {"threadId": "thread-1", "turnId": "turn-1", "status": "completed"},
+        })
+        self.assertTrue(ledger.observe_event("reservation-1", event, observed_at_ms=13))
+        store = console.ConsoleStore(path)
+        store.persist_execution_ledger(ledger, now_ms=14)
+        with self.assertRaisesRegex(console.ConsoleError, "typed state"):
+            store.persist_execution_ledger({"prompt": "private"}, now_ms=14)
+        with closing(sqlite3.connect(path)) as connection:
+            retained = connection.execute("SELECT snapshot_json FROM execution_dispatch_state").fetchone()[0]
+        self.assertNotIn("prompt", retained.casefold())
+        self.assertNotIn("private", retained.casefold())
+
+        restarted = console.ConsoleStore(path).load_execution_ledger()
+        restored = restarted.reservation("reservation-1")
+        self.assertEqual((restored.state, restored.host_completed, restored.requested_service_tier), (ExecutionDispatchState.ACTIVE, True, "fast"))
+        self.assertFalse(restarted.observe_event("reservation-1", event, observed_at_ms=15))
+        with self.assertRaisesRegex(InvariantError, "duplicate dispatch"):
+            restarted.dispatch("reservation-1", "c" * 64, 800, observed_at_ms=16)
+
+        restarted.observe_generation(console.ExecutionConfigGeneration("generation-standard", False, "gpt-5.6", "high", 20, "host:config:standard"))
+        restarted.checkpoint("reservation-1", observed_at_ms=21)
+        resumed = restarted.dispatch("reservation-1", "d" * 64, 700, observed_at_ms=22)
+        self.assertEqual((resumed.generation_id, resumed.requested_service_tier), ("generation-standard", "default"))
+        store.persist_execution_ledger(restarted, now_ms=23)
+        final = console.ConsoleStore(path).load_execution_ledger().reservation("reservation-1")
+        self.assertEqual((final.generation_id, final.requested_service_tier, final.service_tier_truth.value), ("generation-standard", "default", "unverified"))
+
+    def test_execution_reservation_persistence_rejects_stale_and_conflicting_snapshots(self) -> None:
+        path = self.root / "console" / "execution-cas.sqlite3"
+        store = console.ConsoleStore(path)
+        ledger = console.ExecutionDispatchLedger()
+        ledger.observe_generation(console.ExecutionConfigGeneration("generation-fast", True, "gpt-5.6", "high", 10, "host:config:fast"))
+        ledger.reserve("reservation-cas", "task-cas", "owner-cas", ArtifactIdentity("artifact", "rev-cas", "queue"), observed_at_ms=11)
+        active = ledger.dispatch("reservation-cas", "a" * 64, 900, observed_at_ms=12)
+        stale_before_completion = copy.deepcopy(active.snapshot())
+        store.persist_execution_ledger(ledger, now_ms=12)
+        store.persist_execution_ledger(ledger, now_ms=12)  # exact digest replay is idempotent
+
+        event = CodexAppServerAdapter().translate_event({
+            "method": "turn/completed",
+            "params": {"threadId": "thread-cas", "turnId": "turn-cas", "status": "completed"},
+        })
+        self.assertTrue(ledger.observe_event("reservation-cas", event, observed_at_ms=13))
+        completed_snapshot = copy.deepcopy(active.snapshot())
+        store.persist_execution_ledger(ledger, now_ms=13)
+
+        stale_ledger = console.ExecutionDispatchLedger(
+            generations=ledger.generations,
+            reservations=(console.ExecutionReservation.from_snapshot(stale_before_completion),),
+        )
+        with self.assertRaisesRegex(console.ConsoleError, "stale execution reservation"):
+            store.persist_execution_ledger(stale_ledger, now_ms=14)
+
+        equal_time_conflict = copy.deepcopy(completed_snapshot)
+        equal_time_conflict["host_turn_id"] = "turn-conflict"
+        conflicting_ledger = console.ExecutionDispatchLedger(
+            generations=ledger.generations,
+            reservations=(console.ExecutionReservation.from_snapshot(equal_time_conflict),),
+        )
+        with self.assertRaisesRegex(console.ConsoleError, "equal-time execution reservation"):
+            store.persist_execution_ledger(conflicting_ledger, now_ms=14)
+
+        forward_snapshots = []
+        for state, observed_at_ms in (
+            (ExecutionDispatchState.MATERIAL_RECEIPT, 14),
+            (ExecutionDispatchState.INDEPENDENT_REVIEW, 15),
+            (ExecutionDispatchState.COMPLETE, 16),
+        ):
+            snapshot = copy.deepcopy(completed_snapshot)
+            snapshot["state"] = state.value
+            snapshot["material_receipt_id"] = "receipt-cas"
+            snapshot["updated_at_ms"] = observed_at_ms
+            forward_snapshots.append(snapshot)
+            store.persist_execution_ledger(
+                console.ExecutionDispatchLedger(
+                    generations=ledger.generations,
+                    reservations=(console.ExecutionReservation.from_snapshot(snapshot),),
+                ),
+                now_ms=observed_at_ms,
+            )
+
+        stale_after_completion = console.ExecutionDispatchLedger(
+            generations=ledger.generations,
+            reservations=(console.ExecutionReservation.from_snapshot(forward_snapshots[0]),),
+        )
+        with self.assertRaisesRegex(console.ConsoleError, "stale execution reservation"):
+            store.persist_execution_ledger(stale_after_completion, now_ms=17)
+        retained = store.load_execution_ledger().reservation("reservation-cas")
+        self.assertEqual((retained.state, retained.host_completed, retained.material_receipt_id), (ExecutionDispatchState.COMPLETE, True, "receipt-cas"))
+
+    def test_execution_completion_requires_retained_independent_review(self) -> None:
+        path = self.root / "console" / "execution-review-cas.sqlite3"
+        store = console.ConsoleStore(path)
+        ledger = console.ExecutionDispatchLedger()
+        ledger.observe_generation(console.ExecutionConfigGeneration("generation-fast", True, "gpt-5.6", "high", 10, "host:config:fast"))
+        ledger.reserve("reservation-review", "task-review", "owner-review", ArtifactIdentity("artifact", "rev-review", "queue"), observed_at_ms=11)
+        active = ledger.dispatch("reservation-review", "f" * 64, 700, observed_at_ms=12)
+        event = CodexAppServerAdapter().translate_event({
+            "method": "turn/completed",
+            "params": {"threadId": "thread-review", "turnId": "turn-review", "status": "completed"},
+        })
+        ledger.observe_event("reservation-review", event, observed_at_ms=13)
+        active_snapshot = copy.deepcopy(active.snapshot())
+        store.persist_execution_ledger(ledger, now_ms=13)
+
+        def snapshot_ledger(snapshot: dict[str, object]) -> object:
+            return console.ExecutionDispatchLedger(
+                generations=ledger.generations,
+                reservations=(console.ExecutionReservation.from_snapshot(snapshot),),
+            )
+
+        fabricated_review = copy.deepcopy(active_snapshot)
+        fabricated_review.update(state=ExecutionDispatchState.INDEPENDENT_REVIEW.value, material_receipt_id="fabricated-review", updated_at_ms=14)
+        with self.assertRaisesRegex(console.ConsoleError, "requires a retained exact material receipt"):
+            store.persist_execution_ledger(snapshot_ledger(fabricated_review), now_ms=14)
+
+        direct_complete = copy.deepcopy(active_snapshot)
+        direct_complete.update(state=ExecutionDispatchState.COMPLETE.value, material_receipt_id="receipt-review", updated_at_ms=14)
+        with self.assertRaisesRegex(console.ConsoleError, "requires retained independent review"):
+            store.persist_execution_ledger(snapshot_ledger(direct_complete), now_ms=14)
+
+        checkpointed = copy.deepcopy(active_snapshot)
+        checkpointed.update(state=ExecutionDispatchState.CHECKPOINTED.value, updated_at_ms=14)
+        store.persist_execution_ledger(snapshot_ledger(checkpointed), now_ms=14)
+        checkpoint_review = copy.deepcopy(fabricated_review)
+        checkpoint_review["updated_at_ms"] = 15
+        with self.assertRaisesRegex(console.ConsoleError, "requires a retained exact material receipt"):
+            store.persist_execution_ledger(snapshot_ledger(checkpoint_review), now_ms=15)
+        checkpoint_complete = copy.deepcopy(direct_complete)
+        checkpoint_complete["updated_at_ms"] = 15
+        with self.assertRaisesRegex(console.ConsoleError, "requires retained independent review"):
+            store.persist_execution_ledger(snapshot_ledger(checkpoint_complete), now_ms=15)
+
+        rejected_review = copy.deepcopy(active_snapshot)
+        rejected_review.update(state=ExecutionDispatchState.UNVERIFIED.value, updated_at_ms=15)
+        store.persist_execution_ledger(snapshot_ledger(rejected_review), now_ms=15)
+        unverified_review = copy.deepcopy(fabricated_review)
+        unverified_review["updated_at_ms"] = 16
+        with self.assertRaisesRegex(console.ConsoleError, "requires a retained exact material receipt"):
+            store.persist_execution_ledger(snapshot_ledger(unverified_review), now_ms=16)
+        rejected_complete = copy.deepcopy(direct_complete)
+        rejected_complete["updated_at_ms"] = 16
+        with self.assertRaisesRegex(console.ConsoleError, "requires retained independent review"):
+            store.persist_execution_ledger(snapshot_ledger(rejected_complete), now_ms=16)
+
+        material = copy.deepcopy(active_snapshot)
+        material.update(state=ExecutionDispatchState.MATERIAL_RECEIPT.value, material_receipt_id="receipt-review", updated_at_ms=16)
+        store.persist_execution_ledger(snapshot_ledger(material), now_ms=16)
+        mismatched_receipt = copy.deepcopy(material)
+        mismatched_receipt.update(state=ExecutionDispatchState.INDEPENDENT_REVIEW.value, material_receipt_id="other-receipt", updated_at_ms=17)
+        with self.assertRaisesRegex(console.ConsoleError, "cannot replace retained material receipt"):
+            store.persist_execution_ledger(snapshot_ledger(mismatched_receipt), now_ms=17)
+        mismatched_generation = copy.deepcopy(material)
+        mismatched_generation.update(state=ExecutionDispatchState.INDEPENDENT_REVIEW.value, generation_id="other-generation", updated_at_ms=17)
+        with self.assertRaisesRegex(console.ConsoleError, "conflicts with retained material receipt binding"):
+            store.persist_execution_ledger(snapshot_ledger(mismatched_generation), now_ms=17)
+        mismatched_review = copy.deepcopy(material)
+        mismatched_review["state"] = ExecutionDispatchState.INDEPENDENT_REVIEW.value
+        mismatched_review["artifact"] = dict(mismatched_review["artifact"], revision="wrong-revision")
+        mismatched_review["updated_at_ms"] = 17
+        with self.assertRaisesRegex(console.ConsoleError, "conflicts with retained identity"):
+            store.persist_execution_ledger(snapshot_ledger(mismatched_review), now_ms=17)
+        stale_review = copy.deepcopy(material)
+        stale_review.update(state=ExecutionDispatchState.INDEPENDENT_REVIEW.value, updated_at_ms=15)
+        with self.assertRaisesRegex(console.ConsoleError, "stale execution reservation"):
+            store.persist_execution_ledger(snapshot_ledger(stale_review), now_ms=17)
+
+        accepted_review = copy.deepcopy(material)
+        accepted_review.update(state=ExecutionDispatchState.INDEPENDENT_REVIEW.value, updated_at_ms=17)
+        store.persist_execution_ledger(snapshot_ledger(accepted_review), now_ms=17)
+        accepted_complete = copy.deepcopy(accepted_review)
+        accepted_complete.update(state=ExecutionDispatchState.COMPLETE.value, updated_at_ms=18)
+        complete_ledger = snapshot_ledger(accepted_complete)
+        store.persist_execution_ledger(complete_ledger, now_ms=18)
+        store.persist_execution_ledger(complete_ledger, now_ms=18)
+        retained = store.load_execution_ledger().reservation("reservation-review")
+        self.assertEqual((retained.state, retained.host_completed, retained.material_receipt_id), (ExecutionDispatchState.COMPLETE, True, "receipt-review"))
+
+    def test_execution_reservation_checkpoint_and_smaller_retry_converge(self) -> None:
+        path = self.root / "console" / "execution-retry-cas.sqlite3"
+        store = console.ConsoleStore(path)
+        ledger = console.ExecutionDispatchLedger()
+        ledger.observe_generation(console.ExecutionConfigGeneration("generation-fast", True, "gpt-5.6", "high", 10, "host:config:fast"))
+        ledger.reserve("reservation-retry", "task-retry", "owner-retry", ArtifactIdentity("artifact", "rev-retry", "queue"), observed_at_ms=11)
+        ledger.dispatch("reservation-retry", "b" * 64, 900, observed_at_ms=12)
+        store.persist_execution_ledger(ledger, now_ms=12)
+
+        ledger.observe_generation(console.ExecutionConfigGeneration("generation-standard", False, "gpt-5.6", "high", 13, "host:config:standard"))
+        ledger.checkpoint("reservation-retry", observed_at_ms=14)
+        store.persist_execution_ledger(ledger, now_ms=14)
+        restarted = store.load_execution_ledger()
+        restarted.dispatch("reservation-retry", "c" * 64, 800, observed_at_ms=15)
+        restarted.fail_transport(
+            "reservation-retry", ExecutionFailureKind.BAD_REQUEST,
+            observed_at_ms=16, http_status=400, detail="Bad Request",
+        )
+        store.persist_execution_ledger(restarted, now_ms=16)
+        failed = store.load_execution_ledger().reservation("reservation-retry")
+        self.assertEqual((failed.state, failed.failure_kind, failed.retry_count), (ExecutionDispatchState.UNVERIFIED, ExecutionFailureKind.BAD_REQUEST, 0))
+
+        retry_ledger = store.load_execution_ledger()
+        retried = retry_ledger.retry_smaller(
+            "reservation-retry", ContinuationSnapshot("d" * 64, 800, 600, 17),
+            "e" * 64, 550, observed_at_ms=18,
+        )
+        store.persist_execution_ledger(retry_ledger, now_ms=18)
+        store.persist_execution_ledger(retry_ledger, now_ms=18)
+        converged = store.load_execution_ledger().reservation("reservation-retry")
+        self.assertEqual(
+            (converged.state, converged.retry_count, converged.generation_id, converged.requested_service_tier, converged.actual_service_tier),
+            (ExecutionDispatchState.ACTIVE, 1, "generation-standard", "default", ""),
+        )
+        self.assertEqual((retried.requested_fast_mode, retried.service_tier_truth.value), (False, "unverified"))
+
+    def test_execution_generation_legacy_tier_migrates_once_to_boolean_authority(self) -> None:
+        path = self.root / "console" / "legacy-execution.sqlite3"
+        store = console.ConsoleStore(path)
+        payload = {
+            "generation_id": "legacy-fast", "service_tier": "priority", "model": "gpt-5.6",
+            "effort": "high", "changed_at_ms": 10, "host_receipt_id": "host:config:legacy-fast",
+        }
+        encoded, digest = store._execution_payload(payload)
+        with closing(sqlite3.connect(path)) as connection:
+            connection.execute(
+                "INSERT INTO execution_config_generations(generation_id,payload_json,payload_digest,changed_at_ms) VALUES(?,?,?,?)",
+                ("legacy-fast", encoded, digest, 10),
+            )
+            connection.commit()
+        ledger = store.load_execution_ledger()
+        self.assertTrue(ledger.latest_generation.fast_mode)
+        self.assertEqual(ledger.latest_generation.requested_service_tier, "fast")
+        legacy_generation_digest = ledger.latest_generation.digest
+        ledger.reserve(
+            "reservation-legacy", "task-legacy", "owner-legacy",
+            ArtifactIdentity("artifact", "rev-legacy", "legacy queue"), observed_at_ms=11,
+        )
+        active = ledger.dispatch("reservation-legacy", "a" * 64, 900, observed_at_ms=12)
+        self.assertEqual((active.generation_id, active.requested_service_tier), ("legacy-fast", "fast"))
+        store.persist_execution_ledger(ledger, now_ms=13)
+        with closing(sqlite3.connect(path)) as connection:
+            retained_json, retained_digest = connection.execute(
+                "SELECT payload_json,payload_digest FROM execution_config_generations WHERE generation_id='legacy-fast'"
+            ).fetchone()
+        retained = json.loads(retained_json)
+        self.assertEqual(retained["fast_mode"], True)
+        self.assertNotIn("service_tier", retained)
+        self.assertEqual(store._execution_payload(retained)[1], retained_digest)
+
+        restarted = console.ConsoleStore(path).load_execution_ledger()
+        self.assertEqual((len(restarted.generations), restarted.latest_generation.digest), (1, legacy_generation_digest))
+        restarted.observe_generation(ExecutionConfigGeneration(
+            "generation-standard", False, "gpt-5.6", "high", 20, "host:config:standard",
+        ))
+        restarted.checkpoint("reservation-legacy", observed_at_ms=21)
+        resumed = restarted.dispatch("reservation-legacy", "b" * 64, 800, observed_at_ms=22)
+        restarted.fail_transport(
+            "reservation-legacy", ExecutionFailureKind.BAD_REQUEST,
+            observed_at_ms=23, http_status=400, detail="Bad Request",
+        )
+        store.persist_execution_ledger(restarted, now_ms=24)
+        retry_ledger = console.ConsoleStore(path).load_execution_ledger()
+        retried = retry_ledger.retry_smaller(
+            "reservation-legacy", ContinuationSnapshot("c" * 64, 800, 600, 25),
+            "d" * 64, 550, observed_at_ms=26,
+        )
+        self.assertEqual((retried.generation_id, retried.requested_service_tier), ("generation-standard", "default"))
+        store.persist_execution_ledger(retry_ledger, now_ms=27)
+        final = console.ConsoleStore(path).load_execution_ledger()
+        self.assertEqual([item.generation_id for item in final.generations], ["legacy-fast", "generation-standard"])
 
     def test_codex_jsonl_token_counts_are_high_water_deduped(self) -> None:
         session = self.codex_home / "sessions" / "2026" / "08" / "22" / "rollout-thread-1.jsonl"
@@ -638,13 +1042,25 @@ class SwarmConsoleTests(unittest.TestCase):
         self.assertEqual(summary["progress"]["basis"], "Receipt-backed plan units")
         self.assertEqual(summary["tasks"][0]["progress"]["source"], "task_owner_report")
         self.assertIn("does not prove", summary["tasks"][0]["progress"]["claim_limit"])
+        self.assertEqual(summary["freshness"]["state"], "fresh")
+        # Aggregate freshness is coverage-aware: the oldest included unit is authoritative.
+        self.assertEqual(summary["freshness"]["observed_at_ms"], 1_001)
+        stale = console.App._progress_for_nodes(
+            [measured("one", 1), measured("two", 3, basis="reviewed checkpoints")],
+            {"type": "ctrl", "ctrl_id": "ctrl-a", "project_id": "project:a"},
+            now_ms=10_000,
+            stale_after_ms=1_000,
+        )
+        self.assertEqual(stale["freshness"]["state"], "stale")
+        self.assertEqual(stale["freshness"]["age_ms"], 8_999)
         payload = console.App._progress_payload({
             "nodes": [measured("one", 1), measured("two", 3, basis="reviewed checkpoints")],
             "projects": [{"id": "project:a"}],
             "controllers": [{"id": "ctrl-a", "project_id": "project:a"}],
         })
-        self.assertEqual(payload["projects"]["project:a"]["progress"]["percent"], 50.0)
-        self.assertEqual(payload["controllers"]["ctrl-a"]["progress"]["percent"], 50.0)
+        self.assertIsNone(payload["projects"]["project:a"]["progress"])
+        self.assertIsNone(payload["controllers"]["ctrl-a"]["progress"])
+        self.assertEqual(payload["controllers"]["ctrl-a"]["measurement_authority"], "direct_ctrl_receipt")
 
         missing = console.App._progress_for_nodes(
             [measured("one", 1), {**measured("two", 3), "eta": {}}],
@@ -653,6 +1069,7 @@ class SwarmConsoleTests(unittest.TestCase):
         self.assertIsNone(missing["progress"])
         self.assertEqual(missing["progress_display"], "Unmeasured")
         self.assertEqual(missing["unmeasured_reason"], "missing_receipt_backed_units")
+        self.assertEqual(missing["freshness"]["state"], "unavailable")
 
         heterogeneous = console.App._progress_for_nodes(
             [measured("one", 1), measured("two", 3, plan_id="plan-beta")],
@@ -667,6 +1084,265 @@ class SwarmConsoleTests(unittest.TestCase):
         )
         self.assertIsNone(missing_identity["progress"])
         self.assertEqual(missing_identity["unmeasured_reason"], "missing_receipt_backed_units")
+
+    def test_progress_payload_isolates_direct_ctrl_measures_without_subordinate_double_count(self) -> None:
+        def ctrl_node(ctrl_id: str, completed: int | None, unit_id: str) -> dict[str, object]:
+            eta = None if completed is None else {
+                "trigger": "task_owner_report",
+                "receipt_source": f"instruction_only_local_sidecar:{ctrl_id}",
+                "progress_source": "instruction_only_local_sidecar",
+                "progress_basis": {
+                    "receipts": [f"receipt-{ctrl_id}"],
+                    "plan_units": {
+                        "plan_id": "shared-project-plan",
+                        "unit_id": unit_id,
+                        "unit_kind": "ctrl_scope",
+                        "total_units": 4,
+                        "completed_units": completed,
+                        "basis": "CTRL accepted milestones",
+                        "observed_at_ms": 1_000 + int(completed or 0),
+                    },
+                },
+            }
+            return {
+                "id": ctrl_id, "project_id": "project:a", "role": "ctrl", "status": "active",
+                "virtual": False, "is_subagent": False, "controller_ids": [ctrl_id],
+                "eta": eta, "proof_snapshot": {"media": []},
+            }
+
+        subordinate = {
+            "id": "task-a", "project_id": "project:a", "role": "doer", "status": "active",
+            "virtual": False, "is_subagent": False, "controller_ids": ["ctrl-a", "ctrl-b"],
+            "eta": {
+                "trigger": "task_owner_report", "receipt_source": "task:receipt",
+                "progress_basis": {
+                    "receipts": ["task-receipt"],
+                    "plan_units": {
+                        "plan_id": "shared-project-plan", "unit_id": "subordinate-overlap",
+                        "unit_kind": "ctrl_scope", "total_units": 100, "completed_units": 100,
+                        "basis": "Subordinate status", "observed_at_ms": 2_000,
+                    },
+                },
+            },
+            "proof_snapshot": {"media": []},
+        }
+        controllers = [
+            {"id": ctrl_id, "project_id": "project:a", "archived": False,
+             "controller_classification": "swarm_ctrl", "controller_classification_source": "host_threads.agent_role"}
+            for ctrl_id in ("ctrl-a", "ctrl-b")
+        ]
+        view = {
+            "nodes": [ctrl_node("ctrl-a", 1, "ctrl-unit-a"), ctrl_node("ctrl-b", 3, "ctrl-unit-b"), subordinate],
+            "projects": [{"id": "project:a"}], "controllers": controllers, "heartbeat_minutes": 30,
+        }
+        with mock.patch.object(console.time, "time", return_value=2):
+            payload = console.App._progress_payload(view)
+        self.assertEqual(payload["controllers"]["ctrl-a"]["progress"]["percent"], 25.0)
+        self.assertEqual(payload["controllers"]["ctrl-b"]["progress"]["percent"], 75.0)
+        self.assertEqual(payload["projects"]["project:a"]["progress"]["percent"], 50.0)
+        self.assertEqual(payload["projects"]["project:a"]["progress"]["total_units"], 8)
+        self.assertEqual(payload["all_projects"]["progress"]["total_units"], 8)
+        self.assertEqual(payload["projects"]["project:a"]["progress"]["authority"], "direct_ctrl_receipt")
+
+        view["nodes"][1]["eta"] = None
+        with mock.patch.object(console.time, "time", return_value=2):
+            missing = console.App._progress_payload(view)
+        self.assertEqual(missing["controllers"]["ctrl-a"]["progress"]["percent"], 25.0)
+        self.assertIsNone(missing["controllers"]["ctrl-b"]["progress"])
+        self.assertIsNone(missing["projects"]["project:a"]["progress"])
+        self.assertIsNone(missing["all_projects"]["progress"])
+
+        app = console.App(self.codex_home, self.config)
+        ctrl_scope = {"type": "ctrl", "ctrl_id": "ctrl-a", "project_id": "project:a"}
+        with mock.patch.object(app, "_observed_scope", return_value=(view, view["nodes"], None, ctrl_scope)), \
+             mock.patch.object(app, "overview", return_value={"progress": missing}):
+            endpoint = app.progress_summary(ctrl_id="ctrl-a")
+        self.assertEqual(endpoint["progress"]["percent"], 25.0)
+        self.assertEqual(endpoint["measurement_authority"], "direct_ctrl_receipt")
+
+        view["nodes"][0]["eta"] = None
+        with mock.patch.object(console.time, "time", return_value=2):
+            no_direct = console.App._progress_payload(view)
+        with mock.patch.object(app, "_observed_scope", return_value=(view, view["nodes"], None, ctrl_scope)), \
+             mock.patch.object(app, "overview", return_value={"progress": no_direct}):
+            endpoint = app.progress_summary(ctrl_id="ctrl-a")
+        self.assertIsNone(endpoint["progress"])
+        self.assertEqual(endpoint["measurement_authority"], "direct_ctrl_receipt")
+
+    @staticmethod
+    def _ctrl_progress_pulse(
+        task_id: str,
+        project_id: str,
+        *,
+        observed_at_ms: int,
+        pulse_receipt: str,
+        completed_units: int | None,
+    ) -> dict[str, object]:
+        progress = None if completed_units is None else {
+            "receipt_id": "material-4-of-5",
+            "plan_id": "plan-five-steps",
+            "previous_plan_id": None,
+            "unit_id": "ctrl-project-plan",
+            "unit_kind": "accepted_step",
+            "total_units": 5,
+            "completed_units": completed_units,
+            "basis": "Accepted and frozen plan steps",
+            "observed_at_ms": observed_at_ms,
+            "source": "task_owner:local",
+        }
+        return {
+            "schema_version": 1,
+            "source": "swarm_local_progress_sidecar",
+            "receipt_type": "swarm_ctrl_project_pulse",
+            "task_id": task_id,
+            "project_id": project_id,
+            "pulse_receipt": pulse_receipt,
+            "observed_at_ms": observed_at_ms,
+            "state": "in_progress",
+            "progress": progress,
+            "eta_report": None,
+        }
+
+    def test_progress_read_ingests_new_ctrl_pulse_once_and_preserves_liveness_only_update(self) -> None:
+        with closing(sqlite3.connect(self.database)) as connection:
+            connection.execute("UPDATE threads SET agent_role='ctrl' WHERE id='root'")
+            connection.commit()
+        app = console.App(self.codex_home, self.config, state_path=self.root / "console-state.sqlite3")
+        initial = app.overview()
+        ctrl_node = next(node for node in initial["nodes"] if node["id"] == "root")
+        project_id = ctrl_node["project_id"]
+        observed_at_ms = 1_000_000
+        write_progress_pulse(
+            self.codex_home,
+            self._ctrl_progress_pulse(
+                "root", project_id,
+                observed_at_ms=observed_at_ms,
+                pulse_receipt="pulse-material",
+                completed_units=4,
+            ),
+        )
+
+        progress_endpoint = app.progress_summary(ctrl_id="root")
+        self.assertEqual(progress_endpoint["progress"]["percent"], 80.0)
+        material = app.overview()
+        ctrl_summary = material["progress"]["controllers"]["root"]
+        project_summary = material["progress"]["projects"][project_id]
+        self.assertEqual(ctrl_summary["progress"]["percent"], 80.0)
+        self.assertEqual(project_summary["progress"]["percent"], 80.0)
+        with closing(sqlite3.connect(app.store.path)) as connection:
+            receipt_count = connection.execute("SELECT COUNT(*) FROM task_progress_receipts").fetchone()[0]
+            pulse_row = connection.execute(
+                "SELECT payload_digest, updated_at_ms FROM task_progress_pulse_files"
+            ).fetchone()
+        app.overview()
+        with closing(sqlite3.connect(app.store.path)) as connection:
+            self.assertEqual(connection.execute("SELECT COUNT(*) FROM task_progress_receipts").fetchone()[0], receipt_count)
+            self.assertEqual(
+                connection.execute("SELECT payload_digest, updated_at_ms FROM task_progress_pulse_files").fetchone(),
+                pulse_row,
+            )
+
+        heartbeat_at_ms = observed_at_ms + 100
+        write_progress_pulse(
+            self.codex_home,
+            self._ctrl_progress_pulse(
+                "root", project_id,
+                observed_at_ms=heartbeat_at_ms,
+                pulse_receipt="pulse-heartbeat",
+                completed_units=None,
+            ),
+        )
+        heartbeat = app.overview()
+        heartbeat_ctrl = heartbeat["progress"]["controllers"]["root"]
+        heartbeat_node = next(node for node in heartbeat["nodes"] if node["id"] == "root")
+        self.assertEqual(heartbeat_ctrl["progress"]["percent"], 80.0)
+        self.assertEqual(heartbeat_ctrl["progress"]["observed_at_ms"], observed_at_ms)
+        self.assertEqual(heartbeat_node["eta"]["pulse_observed_at_ms"], heartbeat_at_ms)
+        with closing(sqlite3.connect(app.store.path)) as connection:
+            self.assertEqual(connection.execute("SELECT COUNT(*) FROM task_progress_receipts").fetchone()[0], receipt_count)
+
+    def test_progress_read_retries_unchanged_pulse_after_late_host_observation(self) -> None:
+        with closing(sqlite3.connect(self.database)) as connection:
+            connection.execute("UPDATE threads SET agent_role='ctrl' WHERE id='root'")
+            connection.commit()
+        observed = console.build_overview(self.codex_home, self.config)
+        ctrl_node = next(node for node in observed["nodes"] if node["id"] == "root")
+        project_id = ctrl_node["project_id"]
+        missing_task = copy.deepcopy(observed)
+        missing_task["nodes"] = [node for node in missing_task["nodes"] if node["id"] != "root"]
+        missing_task["controllers"] = [controller for controller in missing_task["controllers"] if controller["id"] != "root"]
+        missing_task["roots"] = [node_id for node_id in missing_task["roots"] if node_id != "root"]
+        app = console.App(self.codex_home, self.config, state_path=self.root / "console-late-host.sqlite3")
+        with app.overview_lock:
+            app._overview = missing_task
+            app._overview_revision = 1
+        write_progress_pulse(
+            self.codex_home,
+            self._ctrl_progress_pulse(
+                "root", project_id,
+                observed_at_ms=1_000_000,
+                pulse_receipt="pulse-before-host",
+                completed_units=4,
+            ),
+        )
+
+        first = app.overview()
+        self.assertNotIn("root", first["progress"]["controllers"])
+        self.assertEqual(app.store.latest_progress(), {})
+        self.assertNotEqual(app._progress_pulse_fingerprint, console.progress_pulse_fingerprint(self.codex_home))
+        with app.overview_lock:
+            app._overview = observed
+            app._overview_revision += 1
+        retried = app.overview()
+        self.assertEqual(retried["progress"]["controllers"]["root"]["progress"]["percent"], 80.0)
+
+    def test_progress_read_retries_unchanged_pulse_after_transient_import_failure(self) -> None:
+        with closing(sqlite3.connect(self.database)) as connection:
+            connection.execute("UPDATE threads SET agent_role='ctrl' WHERE id='root'")
+            connection.commit()
+        app = console.App(self.codex_home, self.config, state_path=self.root / "console-transient.sqlite3")
+        initial = app.overview()
+        ctrl_node = next(node for node in initial["nodes"] if node["id"] == "root")
+        project_id = ctrl_node["project_id"]
+        write_progress_pulse(
+            self.codex_home,
+            self._ctrl_progress_pulse(
+                "root", project_id,
+                observed_at_ms=1_000_000,
+                pulse_receipt="pulse-transient",
+                completed_units=4,
+            ),
+        )
+
+        with mock.patch.object(app.store, "ingest_progress_pulses", side_effect=sqlite3.OperationalError("busy")):
+            failed = app.overview()
+        self.assertIsNone(failed["progress"]["controllers"]["root"]["progress"])
+        self.assertNotEqual(app._progress_pulse_fingerprint, console.progress_pulse_fingerprint(self.codex_home))
+        retried = app.overview()
+        self.assertEqual(retried["progress"]["controllers"]["root"]["progress"]["percent"], 80.0)
+
+    def test_valid_ctrl_pulse_without_host_role_is_explicitly_unclassified(self) -> None:
+        app = console.App(self.codex_home, self.config, state_path=self.root / "console-unclassified.sqlite3")
+        initial = app.overview()
+        ctrl_node = next(node for node in initial["nodes"] if node["id"] == "root")
+        project_id = ctrl_node["project_id"]
+        write_progress_pulse(
+            self.codex_home,
+            self._ctrl_progress_pulse(
+                "root", project_id,
+                observed_at_ms=1_000_000,
+                pulse_receipt="pulse-unclassified",
+                completed_units=4,
+            ),
+        )
+        result = app.overview()["progress"]["controllers"]["root"]
+        self.assertIsNone(result["progress"])
+        self.assertEqual(result["progress_display"], "Unmeasured")
+        self.assertEqual(result["unmeasured_reason"], "unclassified_ctrl")
+        self.assertEqual(result["measurement_authority"], "direct_ctrl_receipt")
+        endpoint = app.progress_summary(ctrl_id="root")
+        self.assertIsNone(endpoint["progress"])
+        self.assertEqual(endpoint["unmeasured_reason"], "unclassified_ctrl")
 
     def test_progress_summary_never_uses_unbound_measurement_or_task_status_as_percentage(self) -> None:
         nodes = [
@@ -956,6 +1632,295 @@ class SwarmConsoleTests(unittest.TestCase):
         metadata.assert_not_called()
         self.assertEqual(len(store.proof_feed()), 1)
 
+    def _write_proof_event(
+        self,
+        evidence_id: str,
+        task_id: str,
+        *,
+        payload: bytes = b"\x89PNG\r\n\x1a\nproof",
+        locator_name: str | None = None,
+        digest: str | None = None,
+    ) -> Path:
+        swarm_root = self.codex_home / "swarm"
+        media_root = swarm_root / "proof-media"
+        event_root = swarm_root / "proof-events"
+        media_root.mkdir(parents=True, exist_ok=True)
+        event_root.mkdir(parents=True, exist_ok=True)
+        media_name = locator_name or f"{evidence_id}.png"
+        media = media_root / media_name
+        media.write_bytes(payload)
+        event = {
+            "schema_version": 1,
+            "source": "CtrlEvidence",
+            "evidence_id": evidence_id,
+            "task_id": task_id,
+            "kind": "screenshot",
+            "locator": f"proof-media/{media_name}",
+            "caption": f"Proof {evidence_id}",
+            "claim_limit": "Available for review; acceptance is recorded separately.",
+            "digest": digest or hashlib.sha256(payload).hexdigest(),
+            "size_bytes": len(payload),
+            "media_type": "image/png",
+            "disposition": "PENDING",
+        }
+        event_path = event_root / f"{evidence_id}.json"
+        event_path.write_text(json.dumps(event), encoding="utf-8")
+        return event_path
+
+    def test_proof_feed_reconciles_fresh_and_same_state_restart_without_churn(self) -> None:
+        self._write_proof_event("restart-proof", "restart-task")
+        state_path = self.root / "console" / "restart.sqlite3"
+        overview = {"nodes": [{"id": "restart-task", "project_id": "project:restart", "virtual": False}]}
+        first_app = console.App(self.codex_home, self.config, state_path)
+        with mock.patch.object(first_app, "_host_overview", return_value=overview):
+            first = first_app.proof_feed(project_id="project:restart")
+        self.assertEqual([item["evidence_id"] for item in first], ["restart-proof"])
+        with closing(sqlite3.connect(state_path)) as connection:
+            before = connection.execute(
+                "SELECT registered_at_ms, updated_at_ms, observed_at_ms FROM proof_media "
+                "JOIN proof_event_receipts USING(evidence_id) WHERE evidence_id='restart-proof'"
+            ).fetchone()
+
+        restarted_app = console.App(self.codex_home, self.config, state_path)
+        with mock.patch.object(restarted_app, "_host_overview", return_value=overview), mock.patch.object(
+            restarted_app.store,
+            "reconcile_proof_events",
+            wraps=restarted_app.store.reconcile_proof_events,
+        ) as reconcile:
+            second = restarted_app.proof_feed(project_id="project:restart")
+            third = restarted_app.proof_feed(project_id="project:restart")
+        self.assertEqual(second, third)
+        self.assertEqual(reconcile.call_count, 2)
+        with closing(sqlite3.connect(state_path)) as connection:
+            after = connection.execute(
+                "SELECT registered_at_ms, updated_at_ms, observed_at_ms FROM proof_media "
+                "JOIN proof_event_receipts USING(evidence_id) WHERE evidence_id='restart-proof'"
+            ).fetchone()
+        self.assertEqual(before, after)
+
+    def test_proof_feed_rehydrates_missing_row_despite_imported_receipt(self) -> None:
+        self._write_proof_event("rehydrate-proof", "rehydrate-task")
+        state_path = self.root / "console" / "rehydrate.sqlite3"
+        overview = {"nodes": [{"id": "rehydrate-task", "project_id": "project:rehydrate", "virtual": False}]}
+        app = console.App(self.codex_home, self.config, state_path)
+        with mock.patch.object(app, "_host_overview", return_value=overview):
+            self.assertEqual(len(app.proof_feed()), 1)
+        with closing(sqlite3.connect(state_path)) as connection:
+            connection.execute("DELETE FROM proof_media WHERE evidence_id='rehydrate-proof'")
+            connection.commit()
+
+        restarted = console.App(self.codex_home, self.config, state_path)
+        with mock.patch.object(restarted, "_host_overview", return_value=overview):
+            self.assertEqual([item["evidence_id"] for item in restarted.proof_feed()], ["rehydrate-proof"])
+
+    def test_proof_event_legacy_receipt_rehydrates_missing_row_and_binds_once(self) -> None:
+        self._write_proof_event("legacy-proof", "legacy-task")
+        state_path = self.root / "console" / "legacy.sqlite3"
+        overview = {"nodes": [{"id": "legacy-task", "project_id": "project:legacy", "virtual": False}]}
+        store = console.ConsoleStore(state_path)
+        self.assertEqual(store.reconcile_proof_events(self.codex_home, overview, now_ms=1)["imported"], 1)
+        with closing(sqlite3.connect(state_path)) as connection:
+            connection.execute(
+                "UPDATE proof_event_receipts SET event_digest=NULL, task_id=NULL, project_id=NULL, media_digest=NULL"
+            )
+            connection.execute("DELETE FROM proof_media WHERE evidence_id='legacy-proof'")
+            connection.commit()
+
+        migrated = console.ConsoleStore(state_path)
+        first = migrated.reconcile_proof_events(self.codex_home, overview, now_ms=2)
+        second = migrated.reconcile_proof_events(self.codex_home, overview, now_ms=3)
+        self.assertEqual((first["imported"], second["duplicates"]), (1, 1))
+        self.assertEqual([item["evidence_id"] for item in migrated.proof_feed()], ["legacy-proof"])
+        with closing(sqlite3.connect(state_path)) as connection:
+            row = connection.execute(
+                "SELECT event_digest, task_id, project_id, media_digest, observed_at_ms "
+                "FROM proof_event_receipts WHERE event_name='legacy-proof.json'"
+            ).fetchone()
+        self.assertTrue(all(row[index] for index in range(4)))
+        self.assertEqual(row[4], 1)
+
+    def test_proof_feed_retries_late_host_observation_without_event_rewrite(self) -> None:
+        event_path = self._write_proof_event("late-proof", "late-task")
+        original_stat = event_path.stat()
+        app = console.App(self.codex_home, self.config, self.root / "console" / "late.sqlite3")
+        empty = {"nodes": []}
+        observed = {"nodes": [{"id": "late-task", "project_id": "project:late", "virtual": False}]}
+        with mock.patch.object(app, "_host_overview", side_effect=[empty, observed]):
+            self.assertEqual(app.proof_feed(), [])
+            self.assertEqual([item["evidence_id"] for item in app.proof_feed()], ["late-proof"])
+        current_stat = event_path.stat()
+        self.assertEqual((current_stat.st_mtime_ns, current_stat.st_size), (original_stat.st_mtime_ns, original_stat.st_size))
+
+    def test_proof_feed_retries_transient_store_failure_without_event_rewrite(self) -> None:
+        event_path = self._write_proof_event("retry-proof", "retry-task")
+        original_stat = event_path.stat()
+        app = console.App(self.codex_home, self.config, self.root / "console" / "retry.sqlite3")
+        overview = {"nodes": [{"id": "retry-task", "project_id": "project:retry", "virtual": False}]}
+        reconcile = app.store.reconcile_proof_events
+        calls = 0
+
+        def flaky_reconcile(*args, **kwargs):
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                raise sqlite3.OperationalError("transient lock")
+            return reconcile(*args, **kwargs)
+
+        with mock.patch.object(app, "_host_overview", return_value=overview), mock.patch.object(
+            app.store, "reconcile_proof_events", side_effect=flaky_reconcile
+        ):
+            self.assertEqual(app.proof_feed(), [])
+            self.assertEqual([item["evidence_id"] for item in app.proof_feed()], ["retry-proof"])
+        current_stat = event_path.stat()
+        self.assertEqual(calls, 2)
+        self.assertEqual((current_stat.st_mtime_ns, current_stat.st_size), (original_stat.st_mtime_ns, original_stat.st_size))
+
+    def test_proof_reconciliation_dedupes_and_rejects_conflicting_or_changed_media(self) -> None:
+        original = self._write_proof_event("shared-proof", "task-a")
+        self._write_proof_event("changed-proof", "task-a", digest="0" * 64)
+        store = console.ConsoleStore(self.root / "console" / "dedupe.sqlite3")
+        overview = {"nodes": [{"id": "task-a", "project_id": "project:a", "virtual": False}]}
+        result = store.reconcile_proof_events(self.codex_home, overview, now_ms=10)
+        self.assertEqual([item["evidence_id"] for item in store.proof_feed()], ["shared-proof"])
+        self.assertEqual(result["rejected"], 1)
+        with closing(sqlite3.connect(store.path)) as connection:
+            connection.execute("UPDATE proof_media SET project_id='project:other' WHERE evidence_id='shared-proof'")
+            connection.commit()
+        original.touch()
+        conflict = store.reconcile_proof_events(self.codex_home, overview, now_ms=11)
+        self.assertGreaterEqual(conflict["rejected"], 1)
+        self.assertEqual(len(store.proof_feed()), 1)
+
+    def test_proof_event_filename_binding_rejects_content_or_identity_change(self) -> None:
+        event_path = self._write_proof_event("immutable-proof", "task-a")
+        store = console.ConsoleStore(self.root / "console" / "immutable.sqlite3")
+        overview = {"nodes": [
+            {"id": "task-a", "project_id": "project:a", "virtual": False},
+            {"id": "task-b", "project_id": "project:b", "virtual": False},
+        ]}
+        self.assertEqual(store.reconcile_proof_events(self.codex_home, overview, now_ms=10)["imported"], 1)
+        with closing(sqlite3.connect(store.path)) as connection:
+            before = connection.execute(
+                "SELECT * FROM proof_event_receipts WHERE event_name='immutable-proof.json'"
+            ).fetchone()
+
+        event = json.loads(event_path.read_text(encoding="utf-8"))
+        event["caption"] = "Proof immutable-proog"
+        event_path.write_text(json.dumps(event), encoding="utf-8")
+        changed_content = store.reconcile_proof_events(self.codex_home, overview, now_ms=11)
+        self.assertEqual(changed_content["rejected"], 1)
+
+        event["task_id"] = "task-b"
+        event["evidence_id"] = "rebound-proof"
+        event_path.write_text(json.dumps(event), encoding="utf-8")
+        changed_identity = store.reconcile_proof_events(self.codex_home, overview, now_ms=12)
+        self.assertEqual(changed_identity["rejected"], 1)
+        with closing(sqlite3.connect(store.path)) as connection:
+            after = connection.execute(
+                "SELECT * FROM proof_event_receipts WHERE event_name='immutable-proof.json'"
+            ).fetchone()
+        self.assertEqual(before, after)
+        self.assertEqual([item["evidence_id"] for item in store.proof_feed()], ["immutable-proof"])
+
+    def test_proof_reconciliation_retries_missing_media_and_preserves_project_privacy(self) -> None:
+        missing = self._write_proof_event("missing-proof", "task-a")
+        missing_payload = json.loads(missing.read_text(encoding="utf-8"))
+        (self.codex_home / "swarm" / missing_payload["locator"]).unlink()
+        self._write_proof_event("alpha-proof", "task-a")
+        self._write_proof_event("beta-proof", "task-b")
+        store = console.ConsoleStore(self.root / "console" / "privacy.sqlite3")
+        overview = {"nodes": [
+            {"id": "task-a", "project_id": "project:alpha", "virtual": False},
+            {"id": "task-b", "project_id": "project:beta", "virtual": False},
+        ]}
+        result = store.reconcile_proof_events(self.codex_home, overview, now_ms=12)
+        self.assertGreaterEqual(result["retryable"], 1)
+        self.assertEqual([item["evidence_id"] for item in store.proof_feed(project_id="project:alpha")], ["alpha-proof"])
+        self.assertEqual([item["evidence_id"] for item in store.proof_feed(task_id="task-b")], ["beta-proof"])
+        self.assertNotIn("missing-proof", {item["evidence_id"] for item in store.proof_feed()})
+
+    def test_proof_reconciliation_rejects_private_payload_fields(self) -> None:
+        event_path = self._write_proof_event("private-proof", "private-task")
+        event = json.loads(event_path.read_text(encoding="utf-8"))
+        event["prompt"] = "must not be stored"
+        event_path.write_text(json.dumps(event), encoding="utf-8")
+        store = console.ConsoleStore(self.root / "console" / "private.sqlite3")
+        overview = {"nodes": [{"id": "private-task", "project_id": "project:private", "virtual": False}]}
+        result = store.reconcile_proof_events(self.codex_home, overview, now_ms=13)
+        self.assertEqual(result["rejected"], 1)
+        self.assertEqual(store.proof_feed(), [])
+        with closing(sqlite3.connect(store.path)) as connection:
+            self.assertEqual(connection.execute("SELECT COUNT(*) FROM proof_media").fetchone()[0], 0)
+
+    def test_proof_event_scan_is_bounded_fair_and_restart_safe(self) -> None:
+        for index in range(5):
+            self._write_proof_event(f"bounded-{index}", "bounded-task")
+        overview = {"nodes": [{"id": "bounded-task", "project_id": "project:bounded", "virtual": False}]}
+        state_path = self.root / "console" / "bounded.sqlite3"
+        app = console.App(self.codex_home, self.config, state_path)
+        with mock.patch.object(console, "MAX_PROOF_EVENT_FILES", 2), mock.patch.object(app, "_host_overview", return_value=overview):
+            first = app._ingest_proof_events_if_changed()
+        self.assertEqual(first["capped"], 1)
+        self.assertEqual(first["enumerated"], 3)
+        self.assertEqual(len(app.store.proof_feed()), 0)
+
+        restarted = console.App(self.codex_home, self.config, state_path)
+        with mock.patch.object(console, "MAX_PROOF_EVENT_FILES", 2), mock.patch.object(
+            restarted, "_host_overview", return_value=overview
+        ):
+            passes = [restarted._ingest_proof_events_if_changed() for _ in range(64)]
+        self.assertTrue(all(result["enumerated"] <= 3 for result in passes))
+        self.assertEqual(len(restarted.store.proof_feed()), 5)
+        self.assertEqual(restarted._ingest_proof_events_if_changed()["imported"], 0)
+
+        event_root = self.codex_home / "swarm" / "proof-events"
+        for index in range(5, 1025):
+            (event_root / f"bounded-{index:04d}.json").write_text("{}", encoding="utf-8")
+        measured = console.ConsoleStore(self.root / "console" / "measured.sqlite3")
+        with mock.patch.object(console, "MAX_PROOF_EVENT_FILES", 1024), mock.patch.object(
+            Path, "iterdir", side_effect=AssertionError("full directory traversal is forbidden")
+        ):
+            paths, capped, enumerated, _ = measured._bounded_proof_event_paths(event_root)
+        self.assertEqual(paths, [])
+        self.assertTrue(capped)
+        self.assertEqual(enumerated, 1025)
+
+        target = "bounded-1024.json"
+        seen_target = False
+        enumeration_counts: list[int] = []
+        for pass_index in range(128):
+            if pass_index == 12:
+                measured = console.ConsoleStore(measured.path)
+            with mock.patch.object(console, "MAX_PROOF_EVENT_FILES", 1024), mock.patch.object(
+                Path, "iterdir", side_effect=AssertionError("full directory traversal is forbidden")
+            ):
+                paths, _, enumerated, queue = measured._bounded_proof_event_paths(event_root)
+            enumeration_counts.append(enumerated)
+            measured._set_proof_event_scan_queue(queue)
+            if target in {path.name for path in paths}:
+                seen_target = True
+                break
+        self.assertTrue(seen_target)
+        self.assertTrue(all(count <= 1025 for count in enumeration_counts))
+
+    def test_proof_event_deleted_or_renamed_source_does_not_rebind_receipt(self) -> None:
+        event_path = self._write_proof_event("rename-proof", "rename-task")
+        store = console.ConsoleStore(self.root / "console" / "rename.sqlite3")
+        overview = {"nodes": [{"id": "rename-task", "project_id": "project:rename", "virtual": False}]}
+        self.assertEqual(store.reconcile_proof_events(self.codex_home, overview, now_ms=20)["imported"], 1)
+        renamed = event_path.with_name("renamed.json")
+        event_path.rename(renamed)
+        result = store.reconcile_proof_events(self.codex_home, overview, now_ms=21)
+        self.assertEqual(result["rejected"], 1)
+        renamed.unlink()
+        store.reconcile_proof_events(self.codex_home, overview, now_ms=22)
+        self.assertEqual([item["evidence_id"] for item in store.proof_feed()], ["rename-proof"])
+        with closing(sqlite3.connect(store.path)) as connection:
+            rows = connection.execute(
+                "SELECT event_name, status FROM proof_event_receipts ORDER BY event_name"
+            ).fetchall()
+        self.assertEqual(rows, [("rename-proof.json", "IMPORTED"), ("renamed.json", "REJECTED")])
+
     def test_clear_history_removes_proof_files_and_prevents_reimport(self) -> None:
         swarm_root = self.codex_home / "swarm"
         media_root = swarm_root / "proof-media"
@@ -1122,6 +2087,57 @@ class SwarmConsoleTests(unittest.TestCase):
         result = console.update_config(self.config, {"monitoring.heartbeat_minutes": 45})
         self.assertEqual(result["settings"]["monitoring"]["heartbeat_minutes"], 45)
         self.assertTrue(self.config.with_suffix(".toml.swarm-console.bak").exists())
+        self.assertEqual(result["mutation_receipt"]["changed_keys"], ["monitoring.heartbeat_minutes"])
+
+    def test_project_progress_feed_settings_are_server_owned_and_bounded(self) -> None:
+        before = console.redacted_config_snapshot(self.config)
+        self.assertTrue(before["settings"]["console"]["project_progress_feed_enabled"])
+        self.assertEqual(before["settings"]["console"]["project_progress_feed_lines"], 4)
+        self.assertIn("console.project_progress_feed_enabled", before["editable"])
+        self.assertIn("console.project_progress_feed_lines", before["editable"])
+        result = console.update_config(
+            self.config,
+            {
+                "console.project_progress_feed_enabled": False,
+                "console.project_progress_feed_lines": 10,
+            },
+        )
+        self.assertFalse(result["settings"]["console"]["project_progress_feed_enabled"])
+        self.assertEqual(result["settings"]["console"]["project_progress_feed_lines"], 10)
+        self.assertTrue(result["mutation_receipt"]["accepted"])
+        self.assertEqual(result["mutation_receipt"]["revision"], result["mutation_receipt"]["config_digest"])
+        with self.assertRaisesRegex(console.ConsoleError, "between 1 and 10"):
+            console.update_config(self.config, {"console.project_progress_feed_lines": 11})
+
+    def test_project_progress_feed_is_lazy_and_disabled_delivery_does_not_read_ledger(self) -> None:
+        app = object.__new__(console.App)
+        app.config_path = self.config
+        app.progress_ledger = SimpleNamespace()
+        snapshot = {
+            "project_id": "project-alpha",
+            "limit": 4,
+            "cursor": {"event_seq": 3, "event_id": "event-3", "event_digest": "a" * 64},
+            "items": [],
+            "stale_cursor": False,
+            "scan_truncated": False,
+            "transport": {"snapshot": "available", "incremental": "in_process_event_notification", "http_stream": "UNVERIFIED"},
+            "producer": {"status": "typed_runtime_transition_only", "native_host_transport": "UNVERIFIED"},
+            "claim_limit": "source only",
+        }
+        app.progress_ledger.feed_snapshot = mock.Mock(return_value=snapshot)
+        feed = app.progress_ledger.feed_snapshot
+        with mock.patch.object(app.progress_ledger, "feed_snapshot", feed):
+            result = app.project_progress_feed("project-alpha")
+        self.assertTrue(result["enabled"])
+        self.assertEqual(result["cursor"]["event_seq"], 3)
+        self.assertEqual(result["producer"]["native_host_transport"], "UNVERIFIED")
+        feed.assert_called_once_with("project-alpha", limit=4, after_cursor=0)
+
+        console.update_config(self.config, {"console.project_progress_feed_enabled": False})
+        with mock.patch.object(app.progress_ledger, "feed_snapshot", side_effect=AssertionError("disabled feed read"), create=True):
+            disabled = app.project_progress_feed("project-alpha", after_cursor=3)
+        self.assertFalse(disabled["enabled"])
+        self.assertEqual(disabled["items"], [])
 
     def test_auto_health_setting_defaults_off_and_uses_canonical_validator(self) -> None:
         _, effective, _ = console.load_config(self.config)
@@ -1130,6 +2146,18 @@ class SwarmConsoleTests(unittest.TestCase):
         self.assertTrue(result["settings"]["monitoring"]["auto_health_enabled"])
         with self.assertRaises(console.ConsoleError):
             console.update_config(self.config, {"monitoring.auto_health_enabled": "true"})
+
+    def test_console_exposes_only_the_canonical_automation_mode(self) -> None:
+        snapshot = console.redacted_config_snapshot(self.config)
+        self.assertEqual(snapshot["settings"]["automation"]["mode"], "standard")
+        self.assertIn("automation.mode", snapshot["editable"])
+        self.assertNotIn("lifecycle.archive_completed_tasks", snapshot["editable"])
+        result = console.update_config(self.config, {"automation.mode": "manual"})
+        self.assertEqual(result["settings"]["automation"]["mode"], "manual")
+        persisted = self.config.read_text(encoding="utf-8")
+        self.assertNotIn("archive_completed_tasks", persisted)
+        with self.assertRaises(console.ConsoleError):
+            console.update_config(self.config, {"automation.mode": "sometimes"})
 
     def test_restore_defaults_is_canonical_and_keeps_a_backup(self) -> None:
         console.update_config(self.config, {"monitoring.heartbeat_minutes": 45})
@@ -1245,8 +2273,17 @@ class SwarmConsoleTests(unittest.TestCase):
         result = console.update_config(self.config, {"execution.fast_mode": True})
         self.assertTrue(result["settings"]["execution"]["fast_mode"])
         self.assertNotIn("service_tier", result["settings"]["execution"])
+        result = console.update_config(self.config, {"execution.fast_mode": False})
+        self.assertFalse(result["settings"]["execution"]["fast_mode"])
         with self.assertRaisesRegex(console.ConsoleError, "must be a boolean"):
             console.update_config(self.config, {"execution.fast_mode": "yes"})
+
+    def test_fast_mode_atomic_update_failure_preserves_original(self) -> None:
+        before = self.config.read_bytes()
+        with mock.patch.object(console.os, "replace", side_effect=OSError("replace blocked")):
+            with self.assertRaisesRegex(console.ConsoleError, "replace blocked"):
+                console.update_config(self.config, {"execution.fast_mode": True})
+        self.assertEqual(self.config.read_bytes(), before)
 
     def test_console_write_migrates_legacy_fast_alias_without_losing_effective_choice(self) -> None:
         text = self.config.read_text(encoding="utf-8")
@@ -1292,12 +2329,12 @@ class SwarmConsoleTests(unittest.TestCase):
         self.assertTrue(result["settings"]["boost"]["spark_enabled"])
         self.assertEqual(result["settings"]["boost"]["spark_reasoning"], "medium")
 
-    def test_portal_start_setting_defaults_on_and_can_be_disabled(self) -> None:
+    def test_portal_start_setting_defaults_off_and_can_be_enabled(self) -> None:
         before = console.redacted_config_snapshot(self.config)
-        self.assertTrue(before["settings"]["console"]["open_on_start"])
+        self.assertFalse(before["settings"]["console"]["open_on_start"])
         self.assertIn("console.open_on_start", before["editable"])
-        result = console.update_config(self.config, {"console.open_on_start": False})
-        self.assertFalse(result["settings"]["console"]["open_on_start"])
+        result = console.update_config(self.config, {"console.open_on_start": True})
+        self.assertTrue(result["settings"]["console"]["open_on_start"])
 
     def test_usage_saver_rejects_non_boolean_without_writing(self) -> None:
         before = self.config.read_bytes()
@@ -1327,6 +2364,9 @@ class SwarmConsoleTests(unittest.TestCase):
         self.assertNotIn("service_tier", fixture["config"]["settings"]["execution"])
         self.assertTrue(fixture["config"]["settings"]["console"]["open_on_start"])
         self.assertIn("console.open_on_start", fixture["config"]["editable"])
+        self.assertEqual(fixture["config"]["settings"]["automation"]["mode"], "standard")
+        self.assertIn("automation.mode", fixture["config"]["editable"])
+        self.assertNotIn("archive_completed_tasks", fixture["config"]["settings"]["lifecycle"])
         self.assertIn("boost.spark_enabled", fixture["config"]["editable"])
         self.assertEqual(fixture["config"]["settings"]["boost"]["spark_reasoning"], "xhigh")
 

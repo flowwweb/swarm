@@ -15,6 +15,26 @@ minimum independent review that matches consequence and evidence:
 | T3 provider/security/data | Plan review before mutation, authority/failure proof, then final acceptance |
 | T4 release | Reuse unchanged accepted lanes, verify one immutable package across environments, then one composed release review |
 
+Automated Git advancement is downstream of this contract. It requires a
+readable exact-candidate independent `ACCEPT`, then a fresh fetch receipt.
+The reviewer receives one deterministic immutable review packet. Its digest
+binds repository identity, producer and separate review task, candidate
+SHA/tree/parent, content-addressed artifact, exact path manifest, dependency
+graph, proof plan, proof manifest, and claim limits. A tree, content, path,
+dependency, proof-plan, reviewer, or claim change creates a different packet;
+the old verdict cannot advance it. Dirty or blocked checkpoints cannot emit a
+packet. This is proof invalidation, not a review-loop trigger: unchanged packet
+digests are reviewed once and reused only within their validity window.
+Unchanged or fast-forward history may advance non-destructively; divergent
+remote history requires a separate compatibility receipt before merge. SWARM
+never emits force-push, rebase, or reset. Package/install/deploy requests use
+only the repository-defined release path after source/package gates and a
+rollback receipt. Local installation is not provider or production deployment.
+These receipts are typed and exact-artifact bound: repository identity/root,
+branch/remote, candidate SHA/tree, operation, authority, and validity window;
+remote compatibility also binds the fetched remote head. Free-text policy or
+release claims, stale receipts, and repository/artifact mismatches fail closed.
+
 Unknown dependency reach or missing impact evidence broadens the plan. After a
 correction, rerun the failed proof and every dependent gate, not unrelated
 accepted work. A failed or timed-out prerequisite stops its dependent gates
