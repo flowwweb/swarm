@@ -27,8 +27,8 @@ fallback = "📋"
 doer_choices = ["🔨", "💻", "✏️", "🎨", "📚", "📊", "🔌", "🧪", "✅", "📝", "🔀", "🚀"]
 
 [execution]
-# Select high, medium, or low. Fast mode requests faster service without changing
-# the selected model, provider, or reasoning. Host response metadata is required
+# Select high, medium, or low. Fast mode requests faster Codex service without changing
+# the selected model or reasoning. Host response metadata is required
 # before SWARM may report it active.
 usage_profile = "medium"
 fast_mode = false
@@ -195,8 +195,8 @@ architect_reasoning = "low"
 review_model = "gpt-5.6-sol"
 review_reasoning = "low"
 
-# SWARM routes only work and tools declared for the selected model. Add Kimi,
-# Qwen, or another Codex provider model here after configuring that provider.
+# SWARM routes only work and tools declared for a model served by the Codex host.
+# `provider` below is descriptive capability metadata, not a second host authority.
 [model_capabilities."gpt-5.6-sol"]
 provider = "openai"
 workloads = ["general", "large_goal", "review"]
