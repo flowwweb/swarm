@@ -123,6 +123,10 @@ class HiveStatus(StrEnum): ACTIVE="ACTIVE"; ARCHIVED="ARCHIVED"; PURGEABLE="PURG
 class DedupDecision(StrEnum): REUSE="REUSE"; EXECUTE="EXECUTE"
 class ArtifactJustification(StrEnum): VERIFICATION="verification"; UNCERTAINTY="uncertainty"
 class CorrectionDecision(StrEnum): CONTINUE="CONTINUE"; FIX_FORWARD="FIX_FORWARD"; ESCALATE="ESCALATE"; REOPEN_TOPOLOGY="REOPEN_TOPOLOGY"
+class RetryTopologyAction(StrEnum): CONTINUE="CONTINUE"; REASSESS_ROOT_CAUSE="REASSESS_ROOT_CAUSE"; STOP_REPEATED_TACTIC="STOP_REPEATED_TACTIC"; USER_CONTROLLED="USER_CONTROLLED"
+class RetryOutcome(StrEnum): SUCCEEDED="SUCCEEDED"; FAILED="FAILED"; BLOCKED="BLOCKED"; EMPTY="EMPTY"; TIMEOUT="TIMEOUT"; HTTP_400="HTTP_400"; MISSING_THREAD="MISSING_THREAD"
+class MaterialStateKind(StrEnum): ARTIFACT="ARTIFACT"; DEPENDENCY="DEPENDENCY"; PROOF="PROOF"; STATE="STATE"
+class ReassessmentRoute(StrEnum): DIFFERENT_BOUNDED_ROUTE="DIFFERENT_BOUNDED_ROUTE"; CONSOLIDATE="CONSOLIDATE"; HUMAN_EXTERNAL_STATE_CHANGE="HUMAN_EXTERNAL_STATE_CHANGE"
 class EvidenceDisposition(StrEnum): PENDING="PENDING"; SURFACED="SURFACED"; WITHHELD="WITHHELD"
 class WithholdBasis(StrEnum): OBJECTIVE_DEFECT="objective-defect"; DUPLICATE="duplicate"; AUTHORITY="authority"
 class CtrlSurfaceKind(StrEnum):
@@ -1329,6 +1333,90 @@ def correction_decision(*, material:bool, authority_failure:bool=False, ownershi
     if fix_forward_consumed: return CorrectionDecision.ESCALATE
     return CorrectionDecision.FIX_FORWARD
 
+@dataclass(frozen=True)
+class MaterialStateReceipt:
+    kind:MaterialStateKind; identity:str; digest:str; observed_at_ms:int
+    def __post_init__(self):
+        if not isinstance(self.kind,MaterialStateKind): raise InvariantError("material state requires a typed kind")
+        _safe_token(self.identity); _require_digest(self.digest,"material state")
+        if not isinstance(self.observed_at_ms,int) or isinstance(self.observed_at_ms,bool) or self.observed_at_ms<0: raise InvariantError("material state observation time must be a nonnegative integer")
+    @property
+    def content_address(self) -> str: return _sha256_text(json.dumps((self.kind.value,self.identity,self.digest),separators=(",",":")))
+
+@dataclass(frozen=True)
+class AttemptCostReceipt:
+    receipt_id:str; token_count:int|None=None; latency_ms:int|None=None
+    def __post_init__(self):
+        _safe_token(self.receipt_id)
+        for label,value in (("token",self.token_count),("latency",self.latency_ms)):
+            if value is not None and (not isinstance(value,int) or isinstance(value,bool) or value<0): raise InvariantError(f"{label} receipt must be a nonnegative integer or unknown")
+
+@dataclass(frozen=True)
+class RootCauseTopologyReassessment:
+    failed_signature_digest:str; failed_action:str; failed_target:str; failed_outcome:RetryOutcome; blocker_code:str
+    reasoning_kind:str="higher_root_cause_topology"; model_call_required:bool=False; may_change_model_provider_tier:bool=False
+
+@dataclass(frozen=True)
+class ReassessmentChoice:
+    route:ReassessmentRoute; action:str; target:str; change_receipt_digest:str
+    def __post_init__(self):
+        if not isinstance(self.route,ReassessmentRoute): raise InvariantError("reassessment requires a typed route")
+        _safe_token(self.action); _safe_token(self.target); _require_digest(self.change_receipt_digest,"reassessment change receipt")
+
+@dataclass(frozen=True)
+class RetryTopologyDecision:
+    action:RetryTopologyAction; signature_digest:str; equivalent_attempts:int; material_progress:bool; token_count:int|None; latency_ms:int|None; reassessment:RootCauseTopologyReassessment|None=None
+
+@dataclass
+class RetryTopologyLedger:
+    """One runtime throat that stops equivalent tactics after two non-progress outcomes."""
+    last_good_checkpoint:MaterialStateReceipt|None=None
+    cost_receipts:dict[str,AttemptCostReceipt]=field(default_factory=dict)
+    _signature_digest:str=""; _signature:tuple[str,str,RetryOutcome,str]|None=None; _equivalent_attempts:int=0; _pending:RootCauseTopologyReassessment|None=None; _reassessment_used:bool=False
+
+    def _retain_cost(self, receipt:AttemptCostReceipt|None) -> tuple[int|None,int|None]:
+        if receipt is None: return None,None
+        retained=self.cost_receipts.get(receipt.receipt_id)
+        if retained is not None and retained!=receipt: raise InvariantError("cost receipt identity conflicts with retained observation")
+        self.cost_receipts[receipt.receipt_id]=receipt
+        return receipt.token_count,receipt.latency_ms
+
+    def observe(self, *, action:str, target:str, outcome:RetryOutcome, blocker_code:str="", narration:str="", material_receipt:MaterialStateReceipt|None=None, cost_receipt:AttemptCostReceipt|None=None, user_paused:bool=False, user_controlled:bool=False) -> RetryTopologyDecision:
+        _safe_token(action); _safe_token(target)
+        if not isinstance(outcome,RetryOutcome): raise InvariantError("retry outcome must be typed")
+        if blocker_code: _safe_token(blocker_code)
+        if outcome is RetryOutcome.SUCCEEDED and blocker_code: raise InvariantError("successful outcomes cannot retain a blocker")
+        if outcome is not RetryOutcome.SUCCEEDED and not blocker_code: raise InvariantError("non-success outcomes require a stable blocker code")
+        if not isinstance(narration,str): raise InvariantError("retry narration must be text")
+        tokens,latency=self._retain_cost(cost_receipt)
+        progressed=False
+        if material_receipt is not None:
+            current=self.last_good_checkpoint
+            if current is None or current.content_address!=material_receipt.content_address:
+                if current is not None and material_receipt.observed_at_ms<=current.observed_at_ms: raise InvariantError("material state receipt must advance the observed high-water")
+                self.last_good_checkpoint=material_receipt; self._signature_digest=""; self._signature=None; self._equivalent_attempts=0; self._pending=None; self._reassessment_used=False; progressed=True
+        if user_paused or user_controlled:
+            return RetryTopologyDecision(RetryTopologyAction.USER_CONTROLLED,self._signature_digest,self._equivalent_attempts,progressed,tokens,latency)
+        signature=(action,target,outcome,blocker_code)
+        digest=_sha256_text(json.dumps((action,target,outcome.value,blocker_code),separators=(",",":")))
+        if self._pending is not None:
+            return RetryTopologyDecision(RetryTopologyAction.STOP_REPEATED_TACTIC,self._pending.failed_signature_digest,self._equivalent_attempts,progressed,tokens,latency,self._pending)
+        if signature!=self._signature:
+            self._signature=signature; self._signature_digest=digest; self._equivalent_attempts=1
+            return RetryTopologyDecision(RetryTopologyAction.CONTINUE,digest,1,progressed,tokens,latency)
+        self._equivalent_attempts+=1
+        if self._equivalent_attempts==2 and not self._reassessment_used:
+            self._pending=RootCauseTopologyReassessment(digest,action,target,outcome,blocker_code)
+            return RetryTopologyDecision(RetryTopologyAction.REASSESS_ROOT_CAUSE,digest,2,progressed,tokens,latency,self._pending)
+        return RetryTopologyDecision(RetryTopologyAction.STOP_REPEATED_TACTIC,digest,self._equivalent_attempts,progressed,tokens,latency,self._pending)
+
+    def choose_reassessment(self, choice:ReassessmentChoice) -> ReassessmentChoice:
+        pending=self._pending
+        if pending is None or self._reassessment_used: raise InvariantError("root-cause/topology reassessment is not pending or was already consumed")
+        if choice.route is ReassessmentRoute.DIFFERENT_BOUNDED_ROUTE and choice.action==pending.failed_action and choice.target==pending.failed_target: raise InvariantError("reassessment must choose a materially different bounded route")
+        self._pending=None; self._reassessment_used=True; self._signature=None; self._signature_digest=""; self._equivalent_attempts=0
+        return choice
+
 @dataclass
 class Task:
     id: str; owner: str; creator: str; architecture_version: int; contracts: dict[str,int]
@@ -1404,7 +1492,7 @@ class Worker:
 @dataclass
 class Swarm:
     architecture_version: int=1; contract_versions: dict[str,int]=field(default_factory=dict); topology: set[str]=field(default_factory=set)
-    workers: dict[str,Worker]=field(default_factory=dict); tasks: dict[str,Task]=field(default_factory=dict); leases: dict[str,str]=field(default_factory=dict); events: list[tuple[str,str]]=field(default_factory=list); task_event_limit:int=64; telemetry: dict[str,object]=field(default_factory=dict); telemetry_events:list[dict[str,object]]=field(default_factory=list); artifact_index:dict[str,str]=field(default_factory=dict); provenance_index:dict[str,str]=field(default_factory=dict); ctrl_evidence_ledger:dict[str,CtrlEvidence]=field(default_factory=dict); ctrl_decision_sets:dict[str,CtrlDecisionSet]=field(default_factory=dict); ctrl_phase:str="intake"; hive:dict[str,HiveRecord]=field(default_factory=dict); hive_enabled:bool=True; heartbeat_stall_after:int=2; correction_receipts:dict[str,None]=field(default_factory=dict); lane_width:int=3; wip_limit:int=3; efficiency_ledger:list[dict[str,str]]=field(default_factory=list); mode:EfficiencyMode=EfficiencyMode.BALANCED; automation_mode:str="standard"; default_review_horizon:int=30; max_review_horizon:int=60; direct_work_horizon:int=20
+    workers: dict[str,Worker]=field(default_factory=dict); tasks: dict[str,Task]=field(default_factory=dict); leases: dict[str,str]=field(default_factory=dict); events: list[tuple[str,str]]=field(default_factory=list); task_event_limit:int=64; telemetry: dict[str,object]=field(default_factory=dict); telemetry_events:list[dict[str,object]]=field(default_factory=list); artifact_index:dict[str,str]=field(default_factory=dict); provenance_index:dict[str,str]=field(default_factory=dict); ctrl_evidence_ledger:dict[str,CtrlEvidence]=field(default_factory=dict); ctrl_decision_sets:dict[str,CtrlDecisionSet]=field(default_factory=dict); ctrl_phase:str="intake"; hive:dict[str,HiveRecord]=field(default_factory=dict); hive_enabled:bool=True; heartbeat_stall_after:int=2; correction_receipts:dict[str,None]=field(default_factory=dict); retry_topology_ledger:RetryTopologyLedger=field(default_factory=RetryTopologyLedger); lane_width:int=3; wip_limit:int=3; efficiency_ledger:list[dict[str,str]]=field(default_factory=list); mode:EfficiencyMode=EfficiencyMode.BALANCED; automation_mode:str="standard"; default_review_horizon:int=30; max_review_horizon:int=60; direct_work_horizon:int=20
     scheduled_wakeups:dict[str,int]=field(default_factory=dict); ctrl_feed_messages:list[CtrlFeedMessage]=field(default_factory=list); ctrl_feed_cursor:int=0; ctrl_feed_superseded_by:dict[str,str]=field(default_factory=dict); ctrl_feed_events:dict[str,CtrlFeedEvent]=field(default_factory=dict); ctrl_feed_consumed_events:set[str]=field(default_factory=set); ctrl_authorizations:dict[str,UserCtrlAuthorization]=field(default_factory=dict); ctrl_materialization_intents:dict[str,CtrlMaterializationIntent]=field(default_factory=dict); consumed_ctrl_authorizations:set[str]=field(default_factory=set); consumed_ctrl_intents:set[str]=field(default_factory=set); proof_policy_version:str="lean-v1"; proof_impacted_selection:bool=True; proof_receipt_reuse:bool=True; proof_gate_timeout_seconds:int=120; proof_browser_freshness_seconds:int=86400; proof_provider_freshness_seconds:int=3600; proof_transient_retry_limit:int=1; use_goals:bool=True; request_store:RequestStore|None=field(default=None,repr=False,compare=False); request_continuity_enabled:bool=False; request_feed_sequence_floor:int=0; host_custody_receipts:dict[str,HostCustodyReceipt]=field(default_factory=dict); _topology_preflights:dict[str,object]=field(default_factory=dict,init=False,repr=False,compare=False); _runtime_acceptances:dict[str,_RuntimeAcceptanceRecord]=field(default_factory=dict,init=False,repr=False,compare=False); _gate_capability:object=field(default_factory=object,init=False,repr=False,compare=False); _review_capability:object=field(default_factory=object,init=False,repr=False,compare=False); _watchdog_capability:object=field(default_factory=object,init=False,repr=False,compare=False); _owner_context_capability:object=field(default_factory=object,init=False,repr=False,compare=False); _ctrl_authority_capability:object=field(default_factory=object,init=False,repr=False,compare=False); _custody_capability:object=field(default_factory=object,init=False,repr=False,compare=False)
     def __setattr__(self, name:str, value:object) -> None:
         object.__setattr__(self,name,value)
@@ -2579,6 +2667,10 @@ class Swarm:
             if len(self.correction_receipts)>=64: return CorrectionDecision.ESCALATE if bool(facts.get("material")) else CorrectionDecision.CONTINUE
             self.correction_receipts[incident_id]=None
         return decision
+    def retry_topology_decision(self, **facts:object) -> RetryTopologyDecision:
+        return self.retry_topology_ledger.observe(**facts)
+    def choose_retry_reassessment(self, choice:ReassessmentChoice) -> ReassessmentChoice:
+        return self.retry_topology_ledger.choose_reassessment(choice)
     def ctrl_event(self, event: str, task_id: str, material_revision:str|int=0, *, outcome:str="", evidence_id:str="", next_checkpoint:str="") -> str|None:
         category={"RESULT":"result","DECISION":"decision","DEADLOCK":"blocker","REVIEW_FAIL":"blocker","SCOPE_ESCALATION":"blocker","RELEASE":"release","HANDOFF":"handoff","ACCEPTANCE":"acceptance"}.get(event)
         if not category:
