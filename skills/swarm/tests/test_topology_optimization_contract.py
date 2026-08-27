@@ -368,11 +368,34 @@ class TopologyOptimizationContractTests(unittest.TestCase):
         controlled = swarm.resolve_control_path_failure(Role.CTRL, failure, same_owner_route="alternate-route", safely_resumable=True)
         self.assertEqual((controlled.action, controlled.equivalent_failures), (ControlPathRecoveryAction.USER_KEEP_OUT, 1))
         self.assertFalse(controlled.replayed)
+        self.assertEqual(swarm.events.count(("CONTROL_PATH_FAILURE", "task-a")), 1)
         replay = swarm.resolve_control_path_failure(Role.CTRL, failure, same_owner_route="ignored-route", safely_resumable=True)
         self.assertEqual(replay.action, ControlPathRecoveryAction.USER_KEEP_OUT)
         self.assertTrue(replay.replayed)
+        self.assertEqual(swarm.events.count(("CONTROL_PATH_FAILURE", "task-a")), 1)
         snapshot = swarm.retry_topology_ledger.control_path_snapshot()
         self.assertEqual(RetryTopologyLedger.from_control_path_snapshot(snapshot).control_path_snapshot(), snapshot)
+
+    def test_v2_restored_recovery_applies_new_keep_out_without_duplicate_failure_event(self) -> None:
+        swarm, artifact = self.delegated_swarm()
+        failure = self.control_failure(artifact)
+        swarm.resolve_control_path_failure(Role.CTRL, failure, same_owner_route="read-inventory", safely_resumable=True)
+        snapshot = swarm.retry_topology_ledger.control_path_snapshot()
+        legacy = dict(snapshot)
+        legacy["version"] = 2
+        legacy.pop("replay_identities")
+        legacy["decisions"] = tuple(
+            (identity, {key: value for key, value in payload.items() if key != "custody_generation_digest"})
+            for identity, payload in snapshot["decisions"]
+        )
+        swarm.retry_topology_ledger = RetryTopologyLedger.from_control_path_snapshot(legacy)
+        swarm.tasks["task-a"].user_pinned = True
+        controlled = swarm.resolve_control_path_failure(Role.CTRL, failure, same_owner_route="alternate-route", safely_resumable=True)
+        self.assertEqual((controlled.action, controlled.equivalent_failures), (ControlPathRecoveryAction.USER_KEEP_OUT, 1))
+        self.assertFalse(controlled.replayed)
+        self.assertEqual(swarm.events.count(("CONTROL_PATH_FAILURE", "task-a")), 1)
+        current = swarm.retry_topology_ledger.control_path_snapshot()
+        self.assertEqual(RetryTopologyLedger.from_control_path_snapshot(current).control_path_snapshot(), current)
 
     def test_materially_different_control_route_is_not_blocked_by_retry_anti_loop(self) -> None:
         swarm, artifact = self.delegated_swarm()
