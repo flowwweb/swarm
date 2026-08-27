@@ -141,17 +141,24 @@ function setLoading(loading) {
 
 const mobileDrawerQuery = window.matchMedia("(max-width: 620px)");
 
+function mobileDrawerFocusable() {
+  return Array.from($("#console-drawer").querySelectorAll('a[href], button:not([disabled]), [tabindex]:not([tabindex="-1"])'))
+    .filter((element) => !element.hidden && !element.closest("[hidden]") && !element.inert && element.getClientRects().length);
+}
+
 function setMobileDrawer(open, restoreFocus = false) {
   const shell = $(".app-shell");
   const drawer = $("#console-drawer");
   const trigger = $("#mobile-menu-button");
   const backdrop = $("#drawer-backdrop");
+  const workspace = $(".workspace");
   const expanded = Boolean(open && mobileDrawerQuery.matches);
   shell.classList.toggle("is-drawer-open", expanded);
   trigger.setAttribute("aria-expanded", String(expanded));
   trigger.setAttribute("aria-label", expanded ? "Close navigation" : "Open navigation");
   backdrop.hidden = !expanded;
   document.body.classList.toggle("drawer-open", expanded);
+  workspace.inert = expanded;
   if (mobileDrawerQuery.matches) {
     drawer.setAttribute("aria-hidden", String(!expanded));
     drawer.inert = !expanded;
@@ -159,7 +166,7 @@ function setMobileDrawer(open, restoreFocus = false) {
     drawer.setAttribute("aria-hidden", "false");
     drawer.inert = false;
   }
-  if (expanded) requestAnimationFrame(() => ($(".nav-item.is-active") || $(".nav-item"))?.focus());
+  if (expanded) requestAnimationFrame(() => ($(".nav-item.is-active") || mobileDrawerFocusable()[0])?.focus());
   else if (restoreFocus && mobileDrawerQuery.matches) trigger.focus({ preventScroll: true });
 }
 
@@ -1278,6 +1285,24 @@ document.addEventListener("keydown", (event) => {
   if (event.key === "Escape" && $(".app-shell").classList.contains("is-drawer-open")) {
     event.preventDefault();
     setMobileDrawer(false, true);
+    return;
+  }
+  if (event.key === "Tab" && $(".app-shell").classList.contains("is-drawer-open")) {
+    const drawer = $("#console-drawer");
+    const focusable = mobileDrawerFocusable();
+    const first = focusable[0];
+    const last = focusable.at(-1);
+    if (!first) {
+      event.preventDefault();
+      return;
+    }
+    if (event.shiftKey && (document.activeElement === first || !drawer.contains(document.activeElement))) {
+      event.preventDefault();
+      last.focus();
+    } else if (!event.shiftKey && (document.activeElement === last || !drawer.contains(document.activeElement))) {
+      event.preventDefault();
+      first.focus();
+    }
     return;
   }
   if (!$("#evidence-lightbox").open || !["ArrowLeft", "ArrowRight"].includes(event.key)) return;

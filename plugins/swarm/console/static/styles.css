@@ -303,6 +303,8 @@ tr:hover td { background: rgba(84, 131, 176, .055); }
   .brand { display:none; }
   .drawer-status { display:flex; }
   .project-navigation { display:block; min-height:0; overflow-y:auto; }
+  .project-scope-button,.ctrl-scope-button,.project-expand { min-height:44px; }
+  .project-group-row { grid-template-columns:minmax(0,1fr) 44px; }
   .nav-list { grid-template-columns:1fr; height:auto; gap:5px; }
   .nav-item { min-height:48px; justify-content:flex-start; flex-direction:row; gap:12px; padding:0 12px; border-radius:7px; }
   .nav-item b { display:block; font-size:13px; }
