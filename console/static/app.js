@@ -727,7 +727,10 @@ function progressFeedFlag(item) {
 function renderProjectProgressFeed() {
   const section = $("#project-progress-section");
   const projectId = selectedProgressProjectId();
-  if (!projectId || state.projectProgressProjectId !== projectId || state.projectProgressFeed?.enabled === false) {
+  const hasCurrentFeed = state.projectProgressFeed?.ok === true
+    && state.projectProgressFeed?.project_id === projectId
+    && Array.isArray(state.projectProgressFeed?.items);
+  if (!projectId || state.projectProgressProjectId !== projectId || !hasCurrentFeed || state.projectProgressFeed.enabled === false) {
     section.hidden = true;
     return;
   }

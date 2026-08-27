@@ -412,6 +412,7 @@ try {
   assert.equal(await page.locator("#scope-context strong").textContent(), "swarm");
   assert.match(await page.locator("#overview-project-cards").textContent(), /Review screenshots|Evidence review/);
   assert.ok(requests.some((request) => request.includes("/api/usage-history?project_id=project%3Afixture&ctrl_id=&hours=24")));
+  await page.getByRole("tab", { name: "Overview" }).click();
   assert.equal(await page.locator("#project-progress-section").isVisible(), true);
   assert.equal(await page.locator("#project-progress-feed > li").count(), 2);
   assert.match(await page.locator("#project-progress-feed").textContent(), /evidence gallery now preserves every registered image/i);
