@@ -187,6 +187,9 @@ assert.match(app, /EVIDENCE_THUMBNAIL_PAGE_SIZE = 24/);
 assert.match(app, /proofCollections: new Map\(\)/);
 assert.match(app, /state\.proof = state\.proofCollections\.get\(collectionKey\) \|\| \[\]/);
 assert.match(app, /return images\.filter\(\(item\) => !item\.project_id \|\| item\.project_id === state\.projectId\)/);
+const evidenceScopeSource = app.slice(app.indexOf("function evidenceImagesFor"), app.indexOf("function renderEvidenceLightbox"));
+assert.ok(evidenceScopeSource.indexOf("if (state.ctrlId)") < evidenceScopeSource.indexOf('if (state.projectId !== "all"'));
+assert.match(app, /function selectedProgressProjectId\(\) \{\s*if \(state\.ctrlId\) return "";/);
 assert.doesNotMatch(app, /catch \{ state\.proof = \[\]; \}/);
 assert.match(app, /const previews = images\.slice\(0, 4\)/);
 assert.doesNotMatch(app, /figcaption/);
@@ -298,6 +301,17 @@ function imageProofFixture(count) {
       media_type: "image/png",
       caption: "Evidence image " + String(index + 1),
     })),
+  };
+}
+
+function sameProjectCtrlProofFixture() {
+  return {
+    ok: true,
+    sequence: 2,
+    items: [
+      { task_id: "ctrl", project_id: "project:fixture", evidence_id: "ctrl-image", digest: "a".repeat(64), media_type: "image/png", caption: "CTRL evidence" },
+      { task_id: "nested-ctrl", project_id: "project:fixture", evidence_id: "nested-ctrl-image", digest: "b".repeat(64), media_type: "image/png", caption: "Other CTRL evidence" },
+    ],
   };
 }
 
@@ -474,6 +488,21 @@ try {
   assert.equal(await page.getByText("Progress feed", { exact: true }).count(), 1);
   assert.equal(await page.locator('[data-config-key="console.project_progress_feed_lines"]').inputValue(), "4");
   assert.equal(await page.getByRole("button", { name: "Manage" }).count(), 1);
+
+  const ctrlScopePage = await browser.newPage({ viewport: { width: 1024, height: 760 } });
+  const ctrlScope = await mount(ctrlScopePage, scopedFixture(), { proofFeed: sameProjectCtrlProofFixture() });
+  await ctrlScopePage.getByRole("button", { name: /^swarm\b/i }).click();
+  await ctrlScopePage.locator("#project-progress-section").waitFor({ state: "visible" });
+  assert.equal(await ctrlScopePage.locator("#overview-evidence-gallery img").count(), 2);
+  await ctrlScopePage.getByRole("tab", { name: "Settings" }).click();
+  await ctrlScopePage.locator("#settings-scope").selectOption("ctrl|ctrl");
+  await ctrlScopePage.getByRole("tab", { name: "Overview" }).click();
+  await ctrlScopePage.locator('[data-evidence-id="ctrl-image"]').waitFor({ state: "visible" });
+  assert.equal(await ctrlScopePage.locator('[data-evidence-id="ctrl-image"]').count(), 1);
+  assert.equal(await ctrlScopePage.locator('[data-evidence-id="nested-ctrl-image"]').count(), 0);
+  assert.equal(await ctrlScopePage.locator("#project-progress-section").isVisible(), false);
+  assert.deepEqual(ctrlScope.runtimeErrors, []);
+  await ctrlScopePage.close();
 
   const unclassifiedPage = await browser.newPage({ viewport: { width: 1024, height: 760 } });
   const unclassifiedOverview = structuredClone(fixture.overview);

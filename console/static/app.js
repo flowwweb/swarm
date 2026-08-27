@@ -466,12 +466,12 @@ function currentProofStatus() {
 
 function evidenceImagesFor(nodes) {
   const images = dedupeProofItems(currentProofItems()).filter((item) => String(item.media_type || "").startsWith("image/"));
-  if (state.projectId !== "all" && !state.projectId.startsWith("ctrl:")) {
-    return images.filter((item) => !item.project_id || item.project_id === state.projectId);
-  }
   if (state.ctrlId) {
     const allowed = new Set(nodes.map((node) => node.id));
     return images.filter((item) => allowed.has(item.task_id));
+  }
+  if (state.projectId !== "all" && !state.projectId.startsWith("ctrl:")) {
+    return images.filter((item) => !item.project_id || item.project_id === state.projectId);
   }
   return images;
 }
@@ -731,6 +731,7 @@ function renderUsage() {
 }
 
 function selectedProgressProjectId() {
+  if (state.ctrlId) return "";
   return state.projectId !== "all" && !state.projectId.startsWith("ctrl:") ? state.projectId : "";
 }
 
