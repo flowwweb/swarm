@@ -54,6 +54,16 @@ class TopologyOptimizationContractTests(unittest.TestCase):
     def receipt(self, kind: MaterialStateKind, revision: int) -> MaterialStateReceipt:
         return MaterialStateReceipt(kind, "owned-surface", digest(f"revision-{revision}"), revision)
 
+    def control_receipt(self, kind: MaterialStateKind, revision: int, failure: ControlPathFailure, **bindings: str) -> MaterialStateReceipt:
+        expected = {
+            "failure_identity": failure.signature_digest,
+            "task_id": failure.task_id,
+            "dispatch_receipt_id": failure.dispatch_receipt_id,
+            "candidate": failure.artifact.content_address(),
+        }
+        expected.update(bindings)
+        return MaterialStateReceipt(kind, "owned-surface", digest(f"control-revision-{revision}"), revision, **expected)
+
     def delegated_swarm(self) -> tuple[Swarm, ArtifactIdentity]:
         artifact = ArtifactIdentity("control-candidate", "candidate-1", "source")
         contract = DelegationContract(
@@ -349,6 +359,21 @@ class TopologyOptimizationContractTests(unittest.TestCase):
         with self.assertRaisesRegex(InvariantError, "derived from durable task custody"):
             swarm.resolve_control_path_failure(Role.CTRL, replace(self.control_failure(artifact), completion_receipt_id="host:turn:empty-2"), user_keep_out=False)
 
+    def test_new_durable_keep_out_supersedes_retained_recovery_without_recounting_failure(self) -> None:
+        swarm, artifact = self.delegated_swarm()
+        failure = self.control_failure(artifact)
+        first = swarm.resolve_control_path_failure(Role.CTRL, failure, same_owner_route="read-inventory", safely_resumable=True)
+        self.assertEqual((first.action, first.equivalent_failures), (ControlPathRecoveryAction.SAME_OWNER_DIFFERENT_ROUTE, 1))
+        swarm.tasks["task-a"].user_pinned = True
+        controlled = swarm.resolve_control_path_failure(Role.CTRL, failure, same_owner_route="alternate-route", safely_resumable=True)
+        self.assertEqual((controlled.action, controlled.equivalent_failures), (ControlPathRecoveryAction.USER_KEEP_OUT, 1))
+        self.assertFalse(controlled.replayed)
+        replay = swarm.resolve_control_path_failure(Role.CTRL, failure, same_owner_route="ignored-route", safely_resumable=True)
+        self.assertEqual(replay.action, ControlPathRecoveryAction.USER_KEEP_OUT)
+        self.assertTrue(replay.replayed)
+        snapshot = swarm.retry_topology_ledger.control_path_snapshot()
+        self.assertEqual(RetryTopologyLedger.from_control_path_snapshot(snapshot).control_path_snapshot(), snapshot)
+
     def test_materially_different_control_route_is_not_blocked_by_retry_anti_loop(self) -> None:
         swarm, artifact = self.delegated_swarm()
         self.observe(swarm)
@@ -365,7 +390,7 @@ class TopologyOptimizationContractTests(unittest.TestCase):
         swarm, artifact = self.delegated_swarm()
         first_failure = self.control_failure(artifact)
         first = swarm.resolve_control_path_failure(Role.CTRL, first_failure, successor_prohibited=True, replacement_prohibited=True, responsible_authority="host-user")
-        material = self.receipt(MaterialStateKind.PROOF, 1)
+        material = self.control_receipt(MaterialStateKind.PROOF, 1, first_failure)
         reentered = swarm.resolve_control_path_failure(
             Role.CTRL,
             first_failure,
@@ -384,7 +409,7 @@ class TopologyOptimizationContractTests(unittest.TestCase):
                 successor_prohibited=True,
                 replacement_prohibited=True,
                 responsible_authority="host-user",
-                material_receipt=self.receipt(MaterialStateKind.PROOF, 2),
+                material_receipt=self.control_receipt(MaterialStateKind.PROOF, 2, replace(first_failure, worktree="work/other-source")),
             )
         self.assertEqual(swarm.retry_topology_ledger.last_good_checkpoint, material)
         newer_host = swarm.resolve_control_path_failure(
@@ -403,6 +428,33 @@ class TopologyOptimizationContractTests(unittest.TestCase):
                 replacement_prohibited=True,
                 responsible_authority="host-user",
             )
+
+    def test_control_material_reentry_requires_exact_failure_task_dispatch_and_candidate(self) -> None:
+        swarm, artifact = self.delegated_swarm()
+        failure = self.control_failure(artifact)
+        swarm.resolve_control_path_failure(Role.CTRL, failure, same_owner_route="read-inventory", safely_resumable=True)
+        before = swarm.retry_topology_ledger.control_path_snapshot(), tuple(swarm.events)
+        for binding in (
+            {"failure_identity": digest("other-failure")},
+            {"task_id": "task-elsewhere"},
+            {"dispatch_receipt_id": "host:thread:elsewhere"},
+            {"candidate": digest("other-candidate")},
+        ):
+            with self.subTest(binding=binding):
+                unrelated = self.control_receipt(MaterialStateKind.PROOF, 9, failure, **binding)
+                with self.assertRaisesRegex(InvariantError, "exact failure, task, dispatch, and candidate"):
+                    swarm.resolve_control_path_failure(
+                        Role.CTRL,
+                        failure,
+                        material_receipt=unrelated,
+                        same_owner_route="alternate-route",
+                        safely_resumable=True,
+                    )
+                self.assertEqual((swarm.retry_topology_ledger.control_path_snapshot(), tuple(swarm.events)), before)
+        matching = self.control_receipt(MaterialStateKind.PROOF, 10, failure)
+        resumed = swarm.resolve_control_path_failure(Role.CTRL, failure, material_receipt=matching, same_owner_route="alternate-route", safely_resumable=True)
+        self.assertTrue(resumed.material_reentry)
+        self.assertEqual(swarm.retry_topology_ledger.last_good_checkpoint, matching)
 
     def test_review_transport_failure_preserves_producer_green_billing_lock_and_global_readiness(self) -> None:
         routed, artifact = self.delegated_swarm()
@@ -513,10 +565,11 @@ class TopologyOptimizationContractTests(unittest.TestCase):
         swarm.resolve_control_path_failure(Role.CTRL, first, successor_prohibited=True, replacement_prohibited=True, responsible_authority="host-user")
         stalled = swarm.resolve_control_path_failure(Role.CTRL, replace(first, completion_receipt_id="host:turn:empty-2", observed_at_ms=20))
         self.assertEqual((stalled.state, stalled.action, stalled.root_cause_reassessment), (ControlPathState.STALLED, ControlPathRecoveryAction.ROOT_CAUSE_REASSESSMENT, True))
-        changed = self.receipt(MaterialStateKind.STATE, 1)
+        changed_failure = replace(first, completion_receipt_id="host:turn:empty-3", observed_at_ms=30)
+        changed = self.control_receipt(MaterialStateKind.STATE, 1, changed_failure)
         recovering = swarm.resolve_control_path_failure(
             Role.CTRL,
-            replace(first, completion_receipt_id="host:turn:empty-3", observed_at_ms=30),
+            changed_failure,
             same_owner_route="alternate-readable-receipt",
             safely_resumable=True,
             material_receipt=changed,
@@ -563,7 +616,7 @@ class TopologyOptimizationContractTests(unittest.TestCase):
     def test_rejected_material_and_cost_conflict_is_a_strict_ledger_noop(self) -> None:
         swarm, artifact = self.delegated_swarm()
         first = self.control_failure(artifact)
-        retained = self.receipt(MaterialStateKind.PROOF, 1)
+        retained = self.control_receipt(MaterialStateKind.PROOF, 1, first)
         swarm.resolve_control_path_failure(Role.CTRL, first, same_owner_route="read-inventory", safely_resumable=True, material_receipt=retained)
         swarm.retry_topology_ledger._retain_cost(AttemptCostReceipt("conflict-cost", token_count=1))
         before = (
@@ -579,7 +632,7 @@ class TopologyOptimizationContractTests(unittest.TestCase):
             (AttemptCostReceipt("conflict-cost", token_count=9, failure_identity=failure.signature_digest, operation=failure.failed_route, attempt=1), "identity conflicts"),
         ):
             with self.subTest(receipt=receipt.receipt_id), self.assertRaisesRegex(InvariantError, message):
-                swarm.resolve_control_path_failure(Role.CTRL, failure, same_owner_route="alternate-readable-receipt", safely_resumable=True, material_receipt=self.receipt(MaterialStateKind.STATE, 2), cost_receipt=receipt)
+                swarm.resolve_control_path_failure(Role.CTRL, failure, same_owner_route="alternate-readable-receipt", safely_resumable=True, material_receipt=self.control_receipt(MaterialStateKind.STATE, 2, failure), cost_receipt=receipt)
             after = (
                 swarm.retry_topology_ledger.last_good_checkpoint,
                 swarm.retry_topology_ledger.control_path_snapshot(),
@@ -617,7 +670,7 @@ class TopologyOptimizationContractTests(unittest.TestCase):
     def test_control_path_snapshot_restores_exact_decision_cost_checkpoint_and_replay_conflicts(self) -> None:
         swarm, artifact = self.delegated_swarm()
         failure = self.control_failure(artifact)
-        material = self.receipt(MaterialStateKind.PROOF, 1)
+        material = self.control_receipt(MaterialStateKind.PROOF, 1, failure)
         cost = AttemptCostReceipt("cost-snapshot", token_count=13, latency_ms=21, failure_identity=failure.signature_digest, operation=failure.failed_route, attempt=1)
         first = swarm.resolve_control_path_failure(Role.CTRL, failure, same_owner_route="read-inventory", safely_resumable=True, material_receipt=material, cost_receipt=cost)
         snapshot = swarm.retry_topology_ledger.control_path_snapshot()
@@ -639,8 +692,8 @@ class TopologyOptimizationContractTests(unittest.TestCase):
         swarm, artifact = self.delegated_swarm()
         first_failure = self.control_failure(artifact)
         first = swarm.resolve_control_path_failure(Role.CTRL, first_failure, same_owner_route="read-inventory", safely_resumable=True)
-        material = self.receipt(MaterialStateKind.PROOF, 1)
         reentry_failure = replace(first_failure, completion_receipt_id="host:turn:empty-2", failed_route="read-inventory", observed_at_ms=20)
+        material = self.control_receipt(MaterialStateKind.PROOF, 1, reentry_failure)
         reentered = swarm.resolve_control_path_failure(Role.CTRL, reentry_failure, authorized_handoff_owner="review-a", material_receipt=material)
         self.assertTrue(reentered.material_reentry)
         self.assertEqual(reentered.equivalent_failures, 1)
