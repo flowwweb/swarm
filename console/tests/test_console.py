@@ -323,8 +323,13 @@ class SwarmConsoleTests(unittest.TestCase):
     def test_projects_require_canonical_host_identity_and_preserve_unbound_tasks(self) -> None:
         now = 2_000_000_000_000
         self._add_host_project("project:real-hyphen", "real-project-with-hyphens", "C:/saved/real-project")
+        self._add_host_project("project:competing", "competing-project", "C:/ambiguous")
         connection = sqlite3.connect(self.database)
         connection.execute("ALTER TABLE threads ADD COLUMN project_id TEXT")
+        connection.execute(
+            "INSERT INTO project_roots VALUES (?,?,?)",
+            ("project:real-hyphen", 1, "C:/ambiguous"),
+        )
         columns = (
             "id,title,cwd,created_at,updated_at,created_at_ms,updated_at_ms,model,"
             "reasoning_effort,tokens_used,archived,git_origin_url,git_branch,thread_source,"
@@ -338,6 +343,7 @@ class SwarmConsoleTests(unittest.TestCase):
             ("architecture-lead", "🧭LEAD - helm-ai-v1-architecture-lead", "C:/work/helm-ai-v1-architecture-lead", None, "", "subagent"),
             ("ctrl-label", "🐙CTRL - helm-ai-v1-ctrl-2026-08-26", "C:/work/helm-ai-v1-ctrl-2026-08-26", None, "ctrl", ""),
             ("stale-project", "🐙CTRL - Stale binding", "C:/saved/real-project", "project:missing", "ctrl", ""),
+            ("ambiguous-child", "🔨DEV - Ambiguous binding", "C:/ambiguous/task", None, "", "subagent"),
         ]
         connection.executemany(
             f"INSERT INTO threads ({columns}) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
@@ -349,7 +355,11 @@ class SwarmConsoleTests(unittest.TestCase):
         )
         connection.executemany(
             "INSERT INTO thread_spawn_edges VALUES (?,?,?)",
-            [("real-ctrl", "real-task", "open"), ("delegation-label", "architecture-lead", "open")],
+            [
+                ("real-ctrl", "real-task", "open"),
+                ("real-ctrl", "ambiguous-child", "open"),
+                ("delegation-label", "architecture-lead", "open"),
+            ],
         )
         connection.commit()
         connection.close()
@@ -360,11 +370,12 @@ class SwarmConsoleTests(unittest.TestCase):
         navigation_names = {project["name"] for project in navigation["projects"]}
         nodes = {node["id"]: node for node in overview["nodes"]}
 
-        self.assertEqual(project_names, {"alpha", "real-project-with-hyphens"})
+        self.assertEqual(project_names, {"alpha", "competing-project", "real-project-with-hyphens"})
         self.assertEqual(navigation_names, project_names)
         self.assertEqual(nodes["real-ctrl"]["project_id"], "project:real-hyphen")
         self.assertEqual(nodes["real-task"]["project_id"], "project:real-hyphen")
         self.assertEqual(nodes["stale-project"]["project_id"], "")
+        self.assertEqual(nodes["ambiguous-child"]["project_id"], "")
         for thread_id in ("delegation-label", "runtime-cleanup", "architecture-lead", "ctrl-label"):
             self.assertIn(thread_id, nodes)
             self.assertEqual(nodes[thread_id]["project_id"], "")
@@ -379,6 +390,7 @@ class SwarmConsoleTests(unittest.TestCase):
             self.assertNotIn(label, serialized_projects)
         self.assertEqual(console.observed_task_project_id(self.codex_home, "real-task"), "project:real-hyphen")
         self.assertIsNone(console.observed_task_project_id(self.codex_home, "stale-project"))
+        self.assertIsNone(console.observed_task_project_id(self.codex_home, "ambiguous-child"))
 
     def _handler(self, peer: str, host: str, *, origin: str = "", token: str = "secret"):
         handler = object.__new__(console.Handler)

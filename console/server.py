@@ -3440,7 +3440,7 @@ def observed_task_project_id(codex_home: Path, task_id: str) -> str | None:
                 project, state = _canonical_project_binding(row, projects, project_roots)
                 if project is not None:
                     return str(project["id"])
-                if state == "stale":
+                if state in {"stale", "conflicted"}:
                     return None
                 parent = connection.execute(
                     "SELECT parent_thread_id FROM thread_spawn_edges WHERE child_thread_id=?",
