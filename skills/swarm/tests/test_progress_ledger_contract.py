@@ -91,6 +91,38 @@ class ProgressLedgerContractTests(unittest.TestCase):
             "parent_event_id": None,
         }
 
+    @staticmethod
+    def topology_event(
+        event_id: str,
+        block_id: str,
+        *,
+        node_kind: str = "BLOCK",
+        parent_block_id: str | None = None,
+        parent_event_id: str | None = None,
+        owner_id: str | None = None,
+        input_receipts: list[str] | None = None,
+        dispatch_receipt: str | None = None,
+        completion_receipt: str | None = None,
+        cost_receipts: list[str] | None = None,
+        release_receipts: list[str] | None = None,
+        **kwargs: object,
+    ) -> dict:
+        payload = ProgressLedgerContractTests.event(event_id, block_id, **kwargs)
+        payload["schema_version"] = 2
+        payload["parent_block_id"] = parent_block_id
+        payload["parent_event_id"] = parent_event_id
+        if owner_id is not None:
+            payload["owner_id"] = owner_id
+        payload["topology"] = {
+            "node_kind": node_kind,
+            "input_receipt_ids": input_receipts or [],
+            "dispatch_receipt_id": dispatch_receipt,
+            "completion_receipt_id": completion_receipt,
+            "cost_receipt_ids": cost_receipts or [],
+            "release_receipt_ids": release_receipts or [],
+        }
+        return payload
+
     def test_append_replay_idempotency_conflict_and_crash_recovery(self) -> None:
         first = self.event("event-a", "block-a", sentence="The ledger contract is now frozen.")
         appended = self.ledger.append(first)
@@ -229,6 +261,130 @@ class ProgressLedgerContractTests(unittest.TestCase):
         long_sentence = self.event("event-long", "a", sentence="x" * 241)
         with self.assertRaisesRegex(ProgressEventError, "bounded line"):
             self.ledger.append(long_sentence)
+
+    def test_project_topology_replay_is_byte_identical(self) -> None:
+        self.ledger.append(self.topology_event("lead-create", "lead", node_kind="LEAD", lifecycle="ACTIVE"))
+        self.ledger.append(self.topology_event(
+            "task-create", "task", node_kind="SUBAGENT", parent_block_id="lead",
+            parent_event_id="lead-create", lifecycle="READY", observed_at_ms=2,
+        ))
+        first = self.ledger.project_topology("project-alpha", "ctrl-alpha")
+        second = ProgressLedger(self.root).project_topology("project-alpha", "ctrl-alpha")
+        self.assertEqual(
+            json.dumps(first, sort_keys=True, separators=(",", ":")),
+            json.dumps(second, sort_keys=True, separators=(",", ":")),
+        )
+
+    def test_projection_separates_effective_time_from_knowledge_cursor(self) -> None:
+        self.ledger.append(self.topology_event("late-known-first", "late", observed_at_ms=20))
+        self.ledger.append(self.topology_event("early-known-later", "early", observed_at_ms=10))
+        knowledge_one = self.ledger.project_topology("project-alpha", "ctrl-alpha", through_cursor=1)
+        effective_ten = self.ledger.project_topology("project-alpha", "ctrl-alpha", effective_at_ms=10)
+        self.assertEqual(knowledge_one["source_event_ids"], ["late-known-first"])
+        self.assertEqual(effective_ten["source_event_ids"], ["early-known-later"])
+        self.assertEqual((knowledge_one["through_cursor"], effective_ten["through_cursor"]), (1, 2))
+
+    def test_duplicate_receipt_is_noop_and_conflicting_id_is_surfaced(self) -> None:
+        event = self.topology_event("event-one", "one", lifecycle="ACTIVE")
+        self.assertEqual(self.ledger.append(event)["status"], "appended")
+        self.assertEqual(self.ledger.append(event)["status"], "unchanged")
+        conflict = {**event, "owner_id": "owner-conflict"}
+        self.assertEqual(self.ledger.append(conflict)["status"], "conflicted")
+        projection = self.ledger.project_topology("project-alpha", "ctrl-alpha")
+        self.assertEqual(projection["conflicts"][0]["kind"], "EVENT_ID")
+        self.assertEqual(projection["nodes"], [{
+            "node_id": "ctrl-alpha", "node_kind": "CTRL", "project_id": "project-alpha",
+            "ctrl_id": "ctrl-alpha", "lifecycle_state": "OBSERVED", "source_event_ids": [],
+        }])
+
+    def test_out_of_order_parent_is_unknown_then_resolves_without_history_rewrite(self) -> None:
+        child = self.topology_event(
+            "child-event", "child", node_kind="SUBAGENT", parent_block_id="parent",
+            parent_event_id="parent-event", observed_at_ms=20,
+        )
+        self.ledger.append(child)
+        before = self.ledger.project_topology("project-alpha", "ctrl-alpha", through_cursor=1)
+        self.ledger.append(self.topology_event(
+            "parent-event", "parent", node_kind="LEAD", observed_at_ms=10,
+        ))
+        historical = self.ledger.project_topology("project-alpha", "ctrl-alpha", through_cursor=1)
+        current = self.ledger.project_topology("project-alpha", "ctrl-alpha")
+        self.assertEqual(before, historical)
+        self.assertIn("parent-event", before["unknown_receipt_ids"])
+        self.assertNotIn("parent-event", current["unknown_receipt_ids"])
+
+    def test_visible_lead_parent_and_subagent_edges_share_one_ctrl_graph(self) -> None:
+        self.ledger.append(self.topology_event("lead", "lead", node_kind="LEAD"))
+        self.ledger.append(self.topology_event(
+            "subagent", "subagent", node_kind="SUBAGENT", parent_block_id="lead",
+            parent_event_id="lead", observed_at_ms=2,
+        ))
+        projection = self.ledger.project_topology("project-alpha", "ctrl-alpha")
+        kinds = {(node["node_id"], node["node_kind"]) for node in projection["nodes"]}
+        edges = {(edge["edge_kind"], edge["from_node_id"], edge["to_node_id"]) for edge in projection["edges"]}
+        self.assertTrue({("ctrl-alpha", "CTRL"), ("lead", "LEAD"), ("subagent", "SUBAGENT")} <= kinds)
+        self.assertIn(("PARENT", "lead", "subagent"), edges)
+
+    def test_ready_wave_and_partial_critical_path_are_deterministic(self) -> None:
+        self.ledger.append(self.topology_event("a", "a", lifecycle="ACCEPTED"))
+        self.ledger.append(self.topology_event("b", "b", lifecycle="READY", dependencies=["a"], observed_at_ms=2))
+        self.ledger.append(self.topology_event("c", "c", lifecycle="PLANNED", dependencies=["b"], observed_at_ms=3))
+        projection = self.ledger.project_topology("project-alpha", "ctrl-alpha")
+        self.assertEqual(projection["ready_waves"], [["b"], ["c"]])
+        self.assertEqual(projection["critical_path"]["node_ids"], ["a", "b", "c"])
+        self.assertFalse(projection["critical_path"]["partial"])
+
+    def test_empty_retry_handoff_proof_acceptance_timeline(self) -> None:
+        events = [
+            self.topology_event("create", "work", lifecycle="ACTIVE", dispatch_receipt="dispatch-1"),
+            self.topology_event("empty", "work", kind="STATE_CHANGED", lifecycle="RETRYING", parent_event_id="create", observed_at_ms=2, flags=["unverified"]),
+            self.topology_event("retry", "work", kind="RETRY_STARTED", lifecycle="RETRYING", parent_event_id="empty", observed_at_ms=3),
+            self.topology_event("handoff", "work", kind="TAKEOVER_STARTED", lifecycle="ACTIVE", parent_event_id="retry", owner_id="owner-next", observed_at_ms=4),
+            self.topology_event("proof", "work", kind="PROOF_ADMITTED", lifecycle="VERIFIED", parent_event_id="handoff", proof_receipts=["proof-1"], observed_at_ms=5),
+            self.topology_event("accepted", "work", kind="ACCEPTED", lifecycle="ACCEPTED", parent_event_id="proof", completion_receipt="complete-1", release_receipts=["accept-1"], owner_id="owner-next", observed_at_ms=6),
+        ]
+        for event in events:
+            self.ledger.append(event)
+        node = next(node for node in self.ledger.project_topology("project-alpha", "ctrl-alpha")["nodes"] if node["node_id"] == "work")
+        self.assertEqual(node["lifecycle_state"], "ACCEPTED")
+        self.assertEqual(node["source_event_ids"], [event["event_id"] for event in events])
+
+    def test_model_prose_private_keys_and_oversize_payloads_fail_closed(self) -> None:
+        first_root = self.root / "first"
+        second_root = self.root / "second"
+        first = self.topology_event("event", "block", sentence="Model prose A.")
+        second = self.topology_event("event", "block", sentence="Different model prose B.")
+        ProgressLedger(first_root).append(first)
+        ProgressLedger(second_root).append(second)
+        self.assertEqual(
+            ProgressLedger(first_root).project_topology("project-alpha", "ctrl-alpha"),
+            ProgressLedger(second_root).project_topology("project-alpha", "ctrl-alpha"),
+        )
+        private = self.topology_event("private", "private")
+        private["prompt"] = "secret"
+        with self.assertRaisesRegex(ProgressEventError, "unsupported field"):
+            self.ledger.append(private)
+        oversized = self.topology_event("large", "large", input_receipts=[f"receipt-{index}-" + "x" * 180 for index in range(100)])
+        with self.assertRaisesRegex(ProgressEventError, "size guard"):
+            self.ledger.append(oversized)
+
+    def test_projection_recovers_after_append_before_projection_replace(self) -> None:
+        event = self.topology_event("crash", "crash", lifecycle="ACTIVE")
+        with mock.patch.object(self.ledger, "_write_projection_unlocked", side_effect=OSError("projection replace failed")):
+            with self.assertRaisesRegex(OSError, "projection replace failed"):
+                self.ledger.append(event)
+        projection = ProgressLedger(self.root).project_topology("project-alpha", "ctrl-alpha")
+        self.assertIn("crash", projection["source_event_ids"])
+
+    def test_source_and_plugin_mirrors_are_exact(self) -> None:
+        repository = Path(__file__).resolve().parents[3]
+        pairs = (
+            (repository / "skills/swarm/runtime/progress_events.py", repository / "plugins/swarm/skills/swarm/runtime/progress_events.py"),
+            (repository / "skills/swarm/references/task-contract.md", repository / "plugins/swarm/skills/swarm/references/task-contract.md"),
+        )
+        for canonical, mirror in pairs:
+            with self.subTest(path=canonical.name):
+                self.assertEqual(canonical.read_bytes(), mirror.read_bytes())
 
 
 if __name__ == "__main__":
