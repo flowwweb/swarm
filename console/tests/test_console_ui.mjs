@@ -16,16 +16,23 @@ const fixture = JSON.parse(fs.readFileSync(path.join(testsRoot, "fixtures", "con
 const css = fs.readFileSync(path.join(staticRoot, "styles.css"), "utf8");
 const app = fs.readFileSync(path.join(staticRoot, "app.js"), "utf8");
 const indexHtml = fs.readFileSync(path.join(staticRoot, "index.html"), "utf8");
+const pluginCss = fs.readFileSync(path.join(pluginStaticRoot, "styles.css"), "utf8");
+const pluginApp = fs.readFileSync(path.join(pluginStaticRoot, "app.js"), "utf8");
+const pluginIndexHtml = fs.readFileSync(path.join(pluginStaticRoot, "index.html"), "utf8");
 const server = fs.readFileSync(path.join(consoleRoot, "server.py"), "utf8");
 const pluginServer = fs.readFileSync(path.join(pluginConsoleRoot, "server.py"), "utf8");
 const offlineAsset = fs.readFileSync(path.join(staticRoot, "swarm-offline-disconnected.png"));
 const pluginOfflineAsset = fs.readFileSync(path.join(pluginStaticRoot, "swarm-offline-disconnected.png"));
+const wordmarkAsset = fs.readFileSync(path.join(repositoryRoot, "skills", "swarm", "assets", "swarm-wordmark.png"));
 const documentHtml = indexHtml
   .replace("<head>", '<head><base href="http://swarm.test/">');
 
 const offlineAssetDigest = crypto.createHash("sha256").update(offlineAsset).digest("hex");
 assert.equal(offlineAssetDigest, "4677c1da5af8c79a2db5dfbaf7dd87a060dbd9dca888a8c3f6d800d990aab4fe");
 assert.deepEqual(pluginOfflineAsset, offlineAsset);
+assert.equal(pluginCss, css);
+assert.equal(pluginApp, app);
+assert.equal(pluginIndexHtml, indexHtml);
 assert.equal(pluginServer, server);
 assert.match(server, /"\/assets\/swarm-offline-disconnected\.png": \("swarm-offline-disconnected\.png", "image\/png"\)/);
 assert.match(indexHtml, /id="connection-state" hidden role="alert" aria-labelledby="connection-state-title"/);
@@ -36,11 +43,25 @@ assert.match(app, /if \(error\.connectionFailure && !state\.overview\) showConne
 assert.match(app, /\$\("#connection-retry"\)\.addEventListener\("click", initialize\)/);
 assert.match(css, /\.workspace\.is-disconnected \.view \{ display:none; \}/);
 
-assert.match(indexHtml, /id="tab-hierarchy"[^>]*><span aria-hidden="true">⑂<\/span><b>Hierarchy<\/b>/);
-assert.match(indexHtml, /id="tab-kanban"[^>]*><span aria-hidden="true">▥<\/span><b>Kanban<\/b>/);
-assert.match(indexHtml, /id="tab-diagnostics"[^>]*><span aria-hidden="true">⊙<\/span><b>Diagnostics<\/b>/);
-assert.doesNotMatch(indexHtml, /id="tab-hierarchy"[^>]*>[^<]*<span aria-hidden="true">⌘<\/span>/);
-assert.doesNotMatch(indexHtml, /id="tab-diagnostics"[^>]*>[^<]*<span aria-hidden="true">⌁<\/span>/);
+for (const [tab, icon] of [["overview", "house"], ["dashboard", "layout-dashboard"], ["hierarchy", "network"], ["kanban", "columns-3"], ["diagnostics", "activity"], ["settings", "settings"]]) {
+  assert.match(indexHtml, new RegExp(`id="tab-${tab}"[\\s\\S]*?<use href="#lucide-${icon}"></use>`));
+  assert.match(indexHtml, new RegExp(`id="lucide-${icon}" viewBox="0 0 24 24"`));
+}
+assert.doesNotMatch(indexHtml, /[⌂▦⑂▥⊙⚙]/);
+assert.match(indexHtml, /id="mobile-menu-button"[^>]*aria-label="Open navigation"[^>]*aria-expanded="false"[^>]*aria-controls="console-drawer"/);
+assert.match(indexHtml, /class="mobile-app-bar"[\s\S]*?<img src="\/assets\/swarm-wordmark\.png" alt="SWARM"/);
+assert.equal((indexHtml.match(/class="nav-list"/g) || []).length, 1);
+assert.match(css, /--base: #091321;/);
+assert.match(css, /--surface: rgba\(16, 29, 47, \.9\);/);
+assert.match(css, /--muted: #c2cedd;/);
+assert.match(css, /--shell-top: clamp\(20px, 2\.5vw, 32px\)/);
+assert.match(css, /padding: max\(var\(--shell-top\), env\(safe-area-inset-top\)\)/);
+assert.match(css, /body\.drawer-open \{ overflow: hidden; \}/);
+assert.match(css, /@media \(max-width: 620px\)[\s\S]*\.mobile-app-bar \{ position:sticky;/);
+assert.match(css, /\.app-shell\.is-drawer-open \.drawer \{ transform:translateX\(0\); \}/);
+assert.match(app, /function setMobileDrawer\(open, restoreFocus = false\)/);
+assert.match(app, /drawer\.inert = !expanded/);
+assert.match(app, /event\.key === "Escape" && \$\("\.app-shell"\)\.classList\.contains\("is-drawer-open"\)/);
 
 for (const label of ["Current work", "Latest updates", "Recent images", "Tokens · 1d", "Completed", "Dashboard", "Where changes apply", "Manage", "Advanced settings"]) {
   assert.match(indexHtml + app, new RegExp(label));
@@ -311,7 +332,7 @@ async function mount(page, overview, overrides = {}) {
     if (url.pathname === "/api/ctrl-settings") return route.fulfill(response(fixture.ctrlSettings));
     if (url.pathname === "/api/skills") return route.fulfill(response({ ok: true, settings: { inheritance_enabled: true }, skills: [], overlays: { global: null, project: null, ctrl: null } }));
     if (url.pathname.startsWith("/api/proof-media/")) return route.fulfill({ status: 200, contentType: "image/svg+xml", body: '<svg xmlns="http://www.w3.org/2000/svg" width="160" height="100"><rect width="160" height="100" fill="#0f1726"/></svg>' });
-    if (url.pathname === "/assets/swarm-wordmark.png") return route.fulfill({ status: 204 });
+    if (url.pathname === "/assets/swarm-wordmark.png") return route.fulfill({ status: 200, contentType: "image/png", body: wordmarkAsset });
     if (url.pathname === "/swarm-favicon.svg") return route.fulfill({ status: 204 });
     return route.abort();
   });
@@ -358,9 +379,10 @@ try {
 
   assert.equal(await page.locator("#view-title").textContent(), "Overview");
   assert.equal(await page.locator('[role="tab"]').count(), 6);
-  assert.equal(await page.locator("#tab-hierarchy span").textContent(), "⑂");
-  assert.equal(await page.locator("#tab-kanban span").textContent(), "▥");
-  assert.equal(await page.locator("#tab-diagnostics span").textContent(), "⊙");
+  assert.equal(await page.locator("#tab-overview use").getAttribute("href"), "#lucide-house");
+  assert.equal(await page.locator("#tab-hierarchy use").getAttribute("href"), "#lucide-network");
+  assert.equal(await page.locator("#tab-kanban use").getAttribute("href"), "#lucide-columns-3");
+  assert.equal(await page.locator("#tab-diagnostics use").getAttribute("href"), "#lucide-activity");
   assert.equal(await page.getByRole("button", { name: "All projects" }).count(), 1);
   assert.equal(await page.getByRole("button", { name: "Flowwweb" }).count(), 1);
   assert.equal(await page.getByRole("button", { name: "Idle project" }).count(), 1);
@@ -528,11 +550,59 @@ try {
   assert.deepEqual(empty.runtimeErrors, []);
   await emptyPage.close();
 
+  const mobilePage = await browser.newPage({ viewport: { width: 390, height: 844 } });
+  const mobile = await mount(mobilePage, scopedFixture());
+  const mobileBar = mobilePage.locator(".mobile-app-bar");
+  const menuButton = mobilePage.locator("#mobile-menu-button");
+  assert.equal(await mobileBar.isVisible(), true);
+  assert.equal(await menuButton.getAttribute("aria-label"), "Open navigation");
+  assert.equal(await mobilePage.locator(".nav-list").count(), 1);
+  assert.equal(await mobilePage.locator("#console-drawer").getAttribute("aria-hidden"), "true");
+  const menuBox = await menuButton.boundingBox();
+  const logoBox = await mobilePage.locator(".mobile-app-bar img").boundingBox();
+  assert.ok(menuBox && menuBox.width >= 44 && menuBox.height >= 44);
+  assert.ok(logoBox && menuBox.x < logoBox.x);
+  await menuButton.click();
+  await mobilePage.locator("#console-drawer[aria-hidden='false']").waitFor();
+  await mobilePage.waitForFunction(() => document.querySelector("#console-drawer")?.getBoundingClientRect().left >= -1);
+  assert.equal(await menuButton.getAttribute("aria-expanded"), "true");
+  assert.equal(await mobilePage.locator("body").evaluate((element) => getComputedStyle(element).overflow), "hidden");
+  assert.equal(await mobilePage.locator("#tab-overview").evaluate((element) => element === document.activeElement), true);
+  const drawerBox = await mobilePage.locator("#console-drawer").boundingBox();
+  const navBox = await mobilePage.locator("#tab-overview").boundingBox();
+  assert.ok(drawerBox && drawerBox.x >= -1 && drawerBox.x + drawerBox.width <= 391);
+  assert.ok(navBox && navBox.height >= 44);
+  await mobilePage.keyboard.press("Escape");
+  assert.equal(await mobilePage.locator("#console-drawer").getAttribute("aria-hidden"), "true");
+  assert.equal(await menuButton.evaluate((element) => element === document.activeElement), true);
+  await menuButton.click();
+  await mobilePage.locator("#drawer-backdrop").click({ position: { x: 380, y: 400 } });
+  assert.equal(await menuButton.getAttribute("aria-expanded"), "false");
+  for (const [label, panel] of [["Overview", "#view-overview"], ["Dashboard", "#view-dashboard"], ["Hierarchy", "#view-hierarchy"], ["Kanban", "#view-kanban"], ["Settings", "#view-settings"]]) {
+    await menuButton.click();
+    await mobilePage.getByRole("tab", { name: label }).click();
+    assert.equal(await mobilePage.locator(panel).isVisible(), true);
+    assert.equal(await menuButton.getAttribute("aria-expanded"), "false");
+    const bar = await mobileBar.boundingBox();
+    const top = await mobilePage.locator(".topbar").boundingBox();
+    const active = await mobilePage.locator(`${panel}.is-active`).boundingBox();
+    assert.ok(bar && top && top.y >= bar.y + bar.height - 1, `${label} topbar collides with mobile app bar`);
+    assert.ok(top && active && active.y >= top.y + top.height - 1, `${label} content collides with topbar`);
+    assert.equal(await mobilePage.locator("[data-qc-scope]").evaluate((element) => element.scrollWidth > element.clientWidth + 1), false);
+  }
+  assert.deepEqual(mobile.runtimeErrors, []);
+  await mobilePage.close();
+
   for (const viewport of [{ width: 390, height: 844 }, { width: 834, height: 1112 }, { width: 1440, height: 1000 }]) {
     await page.setViewportSize(viewport);
     await page.locator("#tab-overview").evaluate((element) => element.click());
     const overflow = await page.locator("[data-qc-scope]").evaluate((element) => element.scrollWidth > element.clientWidth + 1);
     assert.equal(overflow, false, `horizontal overflow at ${viewport.width}px`);
+    const topbarBox = await page.locator(".topbar").boundingBox();
+    const activePanelBox = await page.locator("#view-overview.is-active").boundingBox();
+    assert.ok(topbarBox && topbarBox.y >= (viewport.width <= 620 ? 64 : 18), `missing shell top inset at ${viewport.width}px`);
+    assert.ok(topbarBox && activePanelBox && activePanelBox.y >= topbarBox.y + topbarBox.height - 1, `overview content collides with header at ${viewport.width}px`);
+    assert.equal(await page.locator(".mobile-app-bar").isVisible(), viewport.width <= 620);
   }
   assert.deepEqual(runtimeErrors, []);
   console.log("SWARM console Overview UI tests passed");
