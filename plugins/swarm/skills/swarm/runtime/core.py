@@ -2380,10 +2380,11 @@ class Swarm:
         for task_id in disjoint_ready_task_ids:
             candidate=self.tasks.get(task_id)
             if candidate is None or candidate.waiting_on or candidate.state not in {TaskState.ACTIVE,TaskState.BACKLOG}: raise InvariantError("disjoint continuation requires an existing ready task")
+        failure_already_recorded=failure.completion_receipt_id in self.retry_topology_ledger._control_path_receipts
         custody=self.retry_topology_ledger._issue_custody_proof(task.id,self._task_custody_digest(task),self._control_path_user_keep_out(task))
         decision=self.retry_topology_ledger.control_path_failure(failure,same_owner_route=same_owner_route,safely_resumable=safely_resumable,authorized_handoff_owner=handoff,successor_prohibited=successor_prohibited,replacement_prohibited=replacement_prohibited,disjoint_ready_task_ids=disjoint_ready_task_ids,custody_proof=custody,release_condition=release_condition,responsible_authority=responsible_authority,release_receipt_id=release_receipt_id,eta_range_ms=eta_range_ms,eta_receipt_id=eta_receipt_id,material_receipt=material_receipt,cost_receipt=cost_receipt)
+        if not failure_already_recorded: self._record("events",("CONTROL_PATH_FAILURE",task.id))
         if not decision.replayed:
-            self._record("events",("CONTROL_PATH_FAILURE",task.id))
             if decision.action is ControlPathRecoveryAction.NEEDS_AUTHORITY: self._record("events",("NEEDS_AUTHORITY",task.id))
             elif decision.action is ControlPathRecoveryAction.TERMINAL_BLOCKED: self._record("events",("BLOCKED",task.id))
         return decision
