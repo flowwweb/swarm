@@ -577,7 +577,7 @@ try {
   assert.ok(drawerBox && drawerBox.x >= -1 && drawerBox.x + drawerBox.width <= 391);
   assert.ok(navBox && navBox.height >= 44);
   assert.equal(await mobilePage.locator("#project-navigation button").evaluateAll((elements) => elements.every((element) => element.getBoundingClientRect().height >= 44)), true);
-  const drawerFocusable = mobilePage.locator('#console-drawer a[href]:visible, #console-drawer button:not([disabled]):visible, #console-drawer [tabindex]:not([tabindex="-1"]):visible');
+  const drawerFocusable = mobilePage.locator('#console-drawer a[href]:visible, #console-drawer button:not([disabled]):not([tabindex="-1"]):visible, #console-drawer [tabindex]:not([tabindex="-1"]):visible');
   const firstDrawerFocusable = drawerFocusable.first();
   const lastDrawerFocusable = drawerFocusable.last();
   await lastDrawerFocusable.focus();
@@ -604,6 +604,16 @@ try {
     assert.ok(top && active && active.y >= top.y + top.height - 1, `${label} content collides with topbar`);
     assert.equal(await mobilePage.locator("[data-qc-scope]").evaluate((element) => element.scrollWidth > element.clientWidth + 1), false);
   }
+  await menuButton.click();
+  await mobilePage.locator("#console-drawer[aria-hidden='false']").waitFor();
+  await mobilePage.waitForFunction(() => document.querySelector("#console-drawer")?.getBoundingClientRect().left >= -1);
+  assert.equal(await mobilePage.locator("#tab-settings").evaluate((element) => element === document.activeElement), true);
+  const settingsDrawerFocusable = mobilePage.locator('#console-drawer a[href]:visible, #console-drawer button:not([disabled]):not([tabindex="-1"]):visible, #console-drawer [tabindex]:not([tabindex="-1"]):visible');
+  await mobilePage.keyboard.press("Shift+Tab");
+  assert.equal(await settingsDrawerFocusable.last().evaluate((element) => element === document.activeElement), true);
+  await mobilePage.keyboard.press("Tab");
+  assert.equal(await mobilePage.locator("#tab-settings").evaluate((element) => element === document.activeElement), true);
+  await mobilePage.keyboard.press("Escape");
   assert.deepEqual(mobile.runtimeErrors, []);
   await mobilePage.close();
 

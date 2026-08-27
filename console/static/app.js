@@ -142,7 +142,7 @@ function setLoading(loading) {
 const mobileDrawerQuery = window.matchMedia("(max-width: 620px)");
 
 function mobileDrawerFocusable() {
-  return Array.from($("#console-drawer").querySelectorAll('a[href], button:not([disabled]), [tabindex]:not([tabindex="-1"])'))
+  return Array.from($("#console-drawer").querySelectorAll('a[href], button:not([disabled]):not([tabindex="-1"]), [tabindex]:not([tabindex="-1"])'))
     .filter((element) => !element.hidden && !element.closest("[hidden]") && !element.inert && element.getClientRects().length);
 }
 
