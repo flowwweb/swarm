@@ -295,7 +295,7 @@ async function mount(page, overview, overrides = {}) {
     if (overrides.connection?.offline && url.pathname.startsWith("/api/")) return route.abort();
     if (url.pathname === "/api/bootstrap") return route.fulfill(response(fixture.bootstrap));
     if (url.pathname === "/api/overview") return route.fulfill(response(overview));
-    if (url.pathname === "/api/proof-feed") return proofControl.fail ? route.abort() : route.fulfill(response(proofControl.feed || proofFeed));
+    if (url.pathname === "/api/proof-feed") return proofControl.fail ? route.fulfill({ status: 200, contentType: "application/json", body: "{" }) : route.fulfill(response(proofControl.feed || proofFeed));
     if (url.pathname === "/api/usage-history") {
       const hours = url.searchParams.get("hours");
       if (!["1", "12", "24"].includes(hours)) return route.fulfill({ status: 400, contentType: "application/json", body: JSON.stringify({ ok: false, error: "unsupported usage window" }) });
