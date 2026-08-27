@@ -1,4 +1,6 @@
-const state = { token: "", overview: null, proof: [], proofSequence: 0, usageHistory: null, diagnostics: null, diagnosticHistory: [], health: null, storage: null, config: null, ctrlSettings: null, skills: null, skillsError: "", view: "overview", projectId: "all", ctrlId: "", settingsCtrlId: "", settingsScopeType: "", settingsScopeId: "", evidenceImages: [], evidenceIndex: 0, evidenceTrigger: null };
+const state = { token: "", overview: null, proof: [], proofCollections: new Map(), proofStatuses: new Map(), proofStatus: "idle", proofSequence: 0, usageHistory: null, usageWindowHours: 24, usageScopeKey: "", usageStatus: "idle", usageError: "", projectProgressFeed: null, projectProgressProjectId: "", projectProgressStatus: "idle", projectProgressError: "", diagnostics: null, diagnosticHistory: [], health: null, storage: null, config: null, ctrlSettings: null, skills: null, skillsError: "", view: "overview", projectId: "all", ctrlId: "", settingsCtrlId: "", settingsScopeType: "", settingsScopeId: "", evidenceImages: [], evidenceIndex: 0, evidenceTrigger: null };
+const EVIDENCE_THUMBNAIL_PAGE_SIZE = 24;
+const USAGE_WINDOW_LABELS = { 1: "1h", 24: "1d" };
 const $ = (selector, root = document) => root.querySelector(selector);
 const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
 
@@ -250,29 +252,15 @@ function scopeLabel() {
 }
 
 function renderProjectNavigation() {
-  const groups = projectGroups();
+  const groups = projectGroups().filter((group) => !group.standalone);
   if (state.projectId !== "all" && !groups.some((group) => group.id === state.projectId)) {
     state.projectId = "all";
     state.ctrlId = "";
   }
   const entries = ['<button class="project-scope-button ' + (state.projectId === "all" ? "is-selected" : "") + '" data-project-id="all" type="button" aria-pressed="' + (state.projectId === "all") + '"><span aria-hidden="true">◇</span>All projects</button>'];
   groups.forEach((group) => {
-    const current = state.projectId === group.id;
-    if (group.controllers.length === 0) {
-      entries.push('<button class="project-scope-button ' + (current && !state.ctrlId ? "is-selected" : "") + '" data-project-id="' + escapeHTML(group.id) + '" type="button" aria-pressed="' + (current && !state.ctrlId) + '"><span class="scope-dot is-live" aria-hidden="true"></span>' + escapeHTML(group.label) + '</button>');
-      return;
-    }
-    if (group.controllers.length === 1) {
-      const ctrl = group.controllers[0];
-      entries.push('<button class="project-scope-button ' + (current && state.ctrlId === ctrl.id ? "is-selected" : "") + '" data-project-id="' + escapeHTML(group.id) + '" data-ctrl-id="' + escapeHTML(ctrl.id) + '" type="button" aria-pressed="' + (current && state.ctrlId === ctrl.id) + '"><span class="scope-dot is-live" aria-hidden="true"></span>' + escapeHTML(group.label) + '</button>');
-      return;
-    }
-    const controllers = [...group.controllers].sort((a, b) => Number(b.updated_at || 0) - Number(a.updated_at || 0));
-    entries.push('<section class="project-group"><div class="project-group-row"><button class="project-scope-button ' + (current && !state.ctrlId ? "is-selected" : "") + '" data-project-id="' + escapeHTML(group.id) + '" type="button" aria-pressed="' + (current && !state.ctrlId) + '"><span class="scope-dot is-live" aria-hidden="true"></span>' + escapeHTML(group.label) + '<small>' + group.controllers.length + ' CTRLs</small></button><button class="project-expand" data-project-toggle="' + escapeHTML(group.id) + '" type="button" aria-expanded="' + current + '" aria-controls="ctrl-subpages-' + escapeHTML(group.id) + '" aria-label="Show controllers for ' + escapeHTML(group.label) + '">⌄</button></div><div class="ctrl-subpages" id="ctrl-subpages-' + escapeHTML(group.id) + '"' + (current ? "" : " hidden") + '>' + controllers.map((ctrl, index) => {
-      const rawLabel = ctrlLabel(ctrl);
-      const label = rawLabel.localeCompare(group.label, undefined, { sensitivity: "base" }) === 0 ? "CTRL " + String(index + 1) : rawLabel;
-      return '<button class="ctrl-scope-button ' + (current && state.ctrlId === ctrl.id ? "is-selected" : "") + '" data-project-id="' + escapeHTML(group.id) + '" data-ctrl-id="' + escapeHTML(ctrl.id) + '" type="button" aria-label="' + escapeHTML(group.label + " " + label) + '" aria-pressed="' + (current && state.ctrlId === ctrl.id) + '"><span>' + escapeHTML(formatRelative(ctrl.updated_at)) + '</span>' + escapeHTML(label) + '</button>';
-    }).join("") + "</div></section>");
+    const current = state.projectId === group.id && !state.ctrlId;
+    entries.push('<button class="project-scope-button ' + (current ? "is-selected" : "") + '" data-project-id="' + escapeHTML(group.id) + '" type="button" aria-pressed="' + current + '"><span class="scope-dot is-live" aria-hidden="true"></span>' + escapeHTML(group.label) + '</button>');
   });
   $("#project-navigation").innerHTML = entries.join("");
   $("#scope-context strong").textContent = scopeLabel();
@@ -413,9 +401,44 @@ function proofMediaURL(item) {
   return "/api/proof-media/" + encodeURIComponent(item.evidence_id) + "?digest=" + encodeURIComponent(item.digest);
 }
 
+function proofIdentity(item) {
+  const evidenceId = String(item?.evidence_id || "").trim();
+  const digest = String(item?.digest || "").trim().toLowerCase();
+  return evidenceId && digest ? evidenceId + "|" + digest : "";
+}
+
+function dedupeProofItems(items) {
+  const seen = new Set();
+  return (Array.isArray(items) ? items : []).filter((item) => {
+    const identity = proofIdentity(item);
+    if (!identity || seen.has(identity)) return false;
+    seen.add(identity);
+    return true;
+  });
+}
+
+function proofCollectionKey(projectId = state.projectId) {
+  return projectId !== "all" && !projectId.startsWith("ctrl:") ? projectId : "all";
+}
+
+function currentProofItems() {
+  return state.proofCollections.get(proofCollectionKey()) || [];
+}
+
+function currentProofStatus() {
+  return state.proofStatuses.get(proofCollectionKey()) || "idle";
+}
+
 function evidenceImagesFor(nodes) {
-  const allowed = new Set(nodes.map((node) => node.id));
-  return state.proof.filter((item) => allowed.has(item.task_id) && item.evidence_id && item.digest && String(item.media_type || "").startsWith("image/"));
+  const images = dedupeProofItems(currentProofItems()).filter((item) => String(item.media_type || "").startsWith("image/"));
+  if (state.projectId !== "all" && !state.projectId.startsWith("ctrl:")) {
+    return images.filter((item) => !item.project_id || item.project_id === state.projectId);
+  }
+  if (state.ctrlId) {
+    const allowed = new Set(nodes.map((node) => node.id));
+    return images.filter((item) => allowed.has(item.task_id));
+  }
+  return images;
 }
 
 function renderEvidenceLightbox() {
@@ -425,14 +448,20 @@ function renderEvidenceLightbox() {
   const failed = $("#evidence-lightbox-failed");
   const previous = $("#evidence-lightbox-previous");
   const next = $("#evidence-lightbox-next");
+  const pagePrevious = $("#evidence-page-previous");
+  const pageNext = $("#evidence-page-next");
+  const pageStatus = $("#evidence-page-status");
   if (!items.length) {
     image.hidden = true;
     empty.hidden = false;
     failed.hidden = true;
     $("#evidence-lightbox-caption").textContent = "No image selected";
     $("#evidence-lightbox-thumbnails").innerHTML = "";
+    pageStatus.textContent = "No thumbnails";
     previous.disabled = true;
     next.disabled = true;
+    pagePrevious.disabled = true;
+    pageNext.disabled = true;
     return;
   }
   state.evidenceIndex = Math.min(Math.max(0, state.evidenceIndex), items.length - 1);
@@ -445,13 +474,22 @@ function renderEvidenceLightbox() {
   $("#evidence-lightbox-caption").textContent = String(state.evidenceIndex + 1) + " of " + String(items.length);
   previous.disabled = state.evidenceIndex === 0;
   next.disabled = state.evidenceIndex === items.length - 1;
-  $("#evidence-lightbox-thumbnails").innerHTML = items.map((entry, index) =>
+  const page = Math.floor(state.evidenceIndex / EVIDENCE_THUMBNAIL_PAGE_SIZE);
+  const start = page * EVIDENCE_THUMBNAIL_PAGE_SIZE;
+  const end = Math.min(items.length, start + EVIDENCE_THUMBNAIL_PAGE_SIZE);
+  $("#evidence-lightbox-thumbnails").innerHTML = items.slice(start, end).map((entry, offset) => {
+    const index = start + offset;
+    return (
     '<button class="evidence-lightbox-thumbnail' + (index === state.evidenceIndex ? " is-selected" : "") +
     '" type="button" data-evidence-thumbnail="' + String(index) + '" data-evidence-id="' + escapeHTML(entry.evidence_id) +
     '" data-evidence-digest="' + escapeHTML(entry.digest) + '" aria-current="' + String(index === state.evidenceIndex) +
     '" aria-label="Show image ' + String(index + 1) + ': ' + escapeHTML(entry.caption || "Evidence image") +
     '"><img loading="lazy" decoding="async" src="' + proofMediaURL(entry) + '" alt=""></button>'
-  ).join("");
+    );
+  }).join("");
+  pageStatus.textContent = "Images " + String(start + 1) + "–" + String(end) + " of " + String(items.length);
+  pagePrevious.disabled = start === 0;
+  pageNext.disabled = end >= items.length;
   const dialog = $("#evidence-lightbox");
   if (!dialog.open) dialog.showModal();
 }
@@ -472,12 +510,17 @@ function renderProof(nodes) {
   state.evidenceImages = images;
   if ($("#evidence-lightbox").open) renderEvidenceLightbox();
   $("#proof-count").textContent = String(images.length);
-  $("#proof-feed").innerHTML = images.length ? images.map((item, index) =>
+  $("#proof-count").title = currentProofStatus() === "stale" ? "Showing the last received evidence" : "";
+  const previews = images.slice(0, 4);
+  const remaining = Math.max(0, images.length - previews.length);
+  const tiles = previews.map((item, index) =>
     '<button class="proof-tile" type="button" data-evidence-open="' + String(index) +
     '" data-evidence-id="' + escapeHTML(item.evidence_id) + '" data-evidence-digest="' + escapeHTML(item.digest) +
     '" aria-label="Open evidence image: ' + escapeHTML(item.caption || "Image evidence") +
     '"><img loading="lazy" decoding="async" src="' + proofMediaURL(item) + '" alt=""></button>'
-  ).join("") : '<p class="empty-state">No image proof yet.</p>';
+  ).join("");
+  const more = remaining ? '<button class="proof-tile proof-more" type="button" data-evidence-open="4" aria-label="Open ' + String(remaining) + ' more images; ' + String(images.length) + ' images in this gallery">+' + String(remaining) + '</button>' : '';
+  $("#proof-feed").innerHTML = images.length ? tiles + more : '<p class="empty-state">No image proof yet.</p>';
 }
 
 function renderBurnRate() {
@@ -544,7 +587,7 @@ function overviewCards(nodes) {
 
 function latestReceipt(nodes) {
   const allowed = new Set(nodes.map((node) => node.id));
-  return state.proof.find((item) => allowed.has(item.task_id)) || null;
+  return currentProofItems().find((item) => allowed.has(item.task_id)) || null;
 }
 
 function formatDuration(value) {
@@ -580,7 +623,9 @@ function renderEvidenceGallery(nodes, gallerySelector, noteSelector, limit = 6) 
   const images = evidenceImagesFor(nodes);
   state.evidenceImages = images;
   if ($("#evidence-lightbox").open) renderEvidenceLightbox();
-  $(noteSelector).textContent = images.length ? String(images.length) + " recent image" + (images.length === 1 ? "" : "s") : "No images received";
+  const proofStatus = currentProofStatus();
+  const retained = proofStatus === "stale" ? " · last received" : "";
+  $(noteSelector).textContent = images.length ? String(images.length) + " recent image" + (images.length === 1 ? "" : "s") + retained : (proofStatus === "unavailable" ? "Evidence unavailable" : "No images received");
   const previews = images.slice(0, limit);
   const remaining = Math.max(0, images.length - previews.length);
   const previewTiles = previews.map((item, index) =>
@@ -597,23 +642,104 @@ function renderEvidenceGallery(nodes, gallerySelector, noteSelector, limit = 6) 
   $(gallerySelector).innerHTML = images.length ? previewTiles + moreTile : '<p class="empty-state">Images appear here when they are received.</p>';
 }
 
-function usageSeries() {
-  const source = state.usageHistory || {};
+function usageRequestKey(projectId = state.projectId, ctrlId = state.ctrlId, hours = state.usageWindowHours) {
+  return projectId + "|" + ctrlId + "|" + String(hours);
+}
+
+function usageSeries(source = state.usageHistory || {}) {
   return source.history || source.items || [];
 }
 
+function downsampleSeries(values, maximum = 96) {
+  if (values.length <= maximum) return values;
+  const step = (values.length - 1) / (maximum - 1);
+  return Array.from({ length: maximum }, (_, index) => values[Math.round(index * step)]);
+}
+
+function usageRateSeries(series) {
+  const rates = [];
+  for (let index = 1; index < series.length; index += 1) {
+    const previousAt = Number(series[index - 1]?.bucket_ms ?? series[index - 1]?.observed_at_ms);
+    const currentAt = Number(series[index]?.bucket_ms ?? series[index]?.observed_at_ms);
+    const elapsedMinutes = (currentAt - previousAt) / 60000;
+    const tokens = Number(series[index]?.delta_tokens ?? series[index]?.tokens ?? series[index]?.value);
+    if (Number.isFinite(elapsedMinutes) && elapsedMinutes > 0 && Number.isFinite(tokens)) rates.push(Math.max(0, tokens / elapsedMinutes));
+  }
+  return rates;
+}
+
 function renderUsage() {
-  const source = state.usageHistory || {};
-  const series = usageSeries();
+  const scopeMatches = state.usageScopeKey === usageRequestKey();
+  const source = scopeMatches ? (state.usageHistory || {}) : {};
+  const series = usageSeries(source);
   const total = Number(source.total_tokens ?? source.tokens ?? source.total ?? source.analytics?.tokens);
   const observed = Number(source.coverage?.observed_threads);
   const expected = Number(source.coverage?.expected_threads);
   const coverage = Number.isFinite(observed) && Number.isFinite(expected) ? String(observed) + ' of ' + String(expected) + ' observed' : '';
   const values = series.map((item) => Number(item.delta_tokens ?? item.tokens ?? item.value) || 0);
+  const rates = usageRateSeries(series);
+  const reportedRate = Number(source.tokens_per_minute ?? source.usage_now?.tokens_per_minute ?? source.usage_now?.rate);
+  const currentRate = Number.isFinite(reportedRate) ? Math.max(0, reportedRate) : rates.at(-1);
+  const windowLabel = USAGE_WINDOW_LABELS[state.usageWindowHours] || String(state.usageWindowHours) + "h";
+  $("#usage-heading").textContent = "Tokens · " + windowLabel;
   $("#usage-total").textContent = Number.isFinite(total) ? compactNumber(total) : "—";
+  $("#usage-rate").textContent = Number.isFinite(currentRate) ? compactNumber(currentRate) + " / min" : "—";
   $("#usage-range").textContent = values.length ? 'Range ' + compactNumber(Math.min(...values)) + '–' + compactNumber(Math.max(...values)) + ' per sample' : 'No historical range';
-  $("#usage-note").textContent = source.status === 'no_data' ? 'No persisted usage in this scope' : source.status === 'partial' ? ('Partial coverage' + (coverage ? ' · ' + coverage : '')) : source.status === 'ok' ? ('Complete coverage' + (coverage ? ' · ' + coverage : '')) : (series.length ? 'Usage status unavailable' : 'No recent history');
-  drawLine($("#usage-sparkline"), values, "#ff9c3d");
+  $("#usage-note").textContent = !scopeMatches || state.usageStatus === "loading" ? "Loading usage history" : state.usageStatus === "error" ? (state.usageError || "Usage history unavailable") : source.status === 'no_data' ? 'No persisted usage in this scope' : source.status === 'partial' ? ('Partial coverage' + (coverage ? ' · ' + coverage : '')) : source.status === 'ok' ? ('Complete coverage' + (coverage ? ' · ' + coverage : '')) : (series.length ? 'Usage status unavailable' : 'No recent history');
+  $$('[data-usage-hours]').forEach((button) => {
+    const selected = Number(button.dataset.usageHours) === state.usageWindowHours;
+    button.classList.toggle('is-selected', selected);
+    button.setAttribute('aria-pressed', String(selected));
+  });
+  drawLine($("#usage-sparkline"), downsampleSeries(values), "#ff9c3d");
+  drawLine($("#usage-rate-sparkline"), downsampleSeries(rates), "#46dfd0");
+}
+
+function selectedProgressProjectId() {
+  return state.projectId !== "all" && !state.projectId.startsWith("ctrl:") ? state.projectId : "";
+}
+
+function progressEventIdentity(item) {
+  const eventId = String(item?.event_id || "").trim();
+  const digest = String(item?.event_digest || item?.digest || "").trim();
+  return eventId && digest ? eventId + "|" + digest : eventId || (String(item?.event_seq || "") + "|" + String(item?.observed_at_ms || ""));
+}
+
+function progressFeedItems() {
+  const seen = new Set();
+  return (state.projectProgressFeed?.items || []).filter((item) => {
+    const identity = progressEventIdentity(item);
+    const sentence = String(item?.material_update_sentence || "").trim();
+    if (!identity || !sentence || seen.has(identity)) return false;
+    seen.add(identity);
+    return true;
+  }).sort((a, b) => Number(b.event_seq || b.observed_at_ms || 0) - Number(a.event_seq || a.observed_at_ms || 0));
+}
+
+function progressFeedFlag(item) {
+  const flags = Array.isArray(item?.flags) ? item.flags.map((flag) => String(flag).toLowerCase()) : [];
+  if (flags.some((flag) => flag.includes("scope"))) return ["△", "Scope changed"];
+  if (flags.some((flag) => flag.includes("eta") || flag.includes("stale"))) return ["!", "ETA or freshness needs attention"];
+  if (flags.some((flag) => flag.includes("token"))) return ["↑", "Token use needs attention"];
+  return ["", ""];
+}
+
+function renderProjectProgressFeed() {
+  const section = $("#project-progress-section");
+  const projectId = selectedProgressProjectId();
+  if (!projectId || state.projectProgressProjectId !== projectId || state.projectProgressFeed?.enabled === false) {
+    section.hidden = true;
+    return;
+  }
+  section.hidden = false;
+  const items = progressFeedItems();
+  const status = $("#project-progress-status");
+  status.textContent = state.projectProgressStatus === "stale" ? "Last received · reconnect to refresh" : state.projectProgressStatus === "unavailable" ? "Updates unavailable" : items.length ? String(items.length) + " latest update" + (items.length === 1 ? "" : "s") : "No material updates yet";
+  $("#project-progress-feed").innerHTML = items.length ? items.map((item) => {
+    const [icon, label] = progressFeedFlag(item);
+    const owner = item.owner_id || item.task_id || item.block_id || "Project";
+    return '<li data-progress-event-id="' + escapeHTML(item.event_id || progressEventIdentity(item)) + '"><time datetime="' + escapeHTML(new Date(Number(item.observed_at_ms) || 0).toISOString()) + '">' + escapeHTML(formatRelative(item.observed_at_ms)) + '</time><strong>' + escapeHTML(owner) + '</strong><span>' + escapeHTML(item.material_update_sentence) + '</span>' + (icon ? '<i role="img" aria-label="' + escapeHTML(label) + '" title="' + escapeHTML(label) + '">' + escapeHTML(icon) + '</i>' : '') + '</li>';
+  }).join("") : '<li class="empty-state">No material project updates yet.</li>';
 }
 
 function renderHealth(nodes, stateSelector, noteSelector) {
@@ -667,6 +793,7 @@ function renderOverview() {
   renderOverviewProjectCards(nodes);
   renderEvidenceGallery(nodes, "#overview-evidence-gallery", "#overview-evidence-note", 4);
   renderUsage();
+  renderProjectProgressFeed();
   renderOverviewHealth(nodes);
   $("#sync-time").textContent = state.overview?.generated_at ? "Updated " + formatRelative(state.overview.generated_at) : "Ready";
 }
@@ -870,6 +997,8 @@ function renderSettings() {
       settingSelect('boost.spark_reasoning', boost.spark_reasoning || 'xhigh', reasoningOptions, 'Spark default reasoning') +
       '<details class="settings-advanced" id="settings-advanced"><summary>Advanced settings</summary><div class="ctrl-fields"><label>Spark model<input id="spark-model" value="' + escapeHTML(boost.spark_model || '') + '" autocomplete="off"' + (!configEditable('boost.spark_model') ? ' disabled' : '') + '></label><label>Heartbeat minutes<input id="heartbeat-minutes" data-config-key="monitoring.heartbeat_minutes" type="number" min="1" value="' + escapeHTML(monitoring.heartbeat_minutes || '') + '"' + (!configEditable('monitoring.heartbeat_minutes') ? ' disabled' : '') + '></label></div><button class="quiet-button" data-setting-action="save-spark" type="button"' + (!configEditable('boost.spark_model') ? ' disabled' : '') + '>Save Spark model</button>' + skillsAdvanced(scope) + '</details></section>' +
     '<section class="panel settings-card"><p class="eyebrow">Console and data</p><h3>Keep the workspace predictable</h3>' +
+      settingToggle('console.project_progress_feed_enabled', consoleSettings.project_progress_feed_enabled, 'Progress feed') +
+      '<label class="setting-field">Updates shown<input data-config-key="console.project_progress_feed_lines" type="number" min="1" max="10" value="' + escapeHTML(consoleSettings.project_progress_feed_lines ?? 4) + '"' + (!configEditable('console.project_progress_feed_lines') ? ' disabled' : '') + '></label>' +
       settingToggle('console.open_on_start', consoleSettings.open_on_start, 'Open SWARM when Codex starts') +
       settingToggle('role_icons.enabled', roleIcons.enabled, 'Show role icons') +
       '<label class="toggle-row"><input id="auto-health" type="checkbox"' + (state.health?.enabled ? ' checked' : '') + '><span>Ask for maintenance review when health needs attention</span></label><small>Review requests do not run a model or change the device by themselves.</small><h4>Skills</h4>' + skillsSummary(scope) + '<h4>' + escapeHTML(storage?.bytes == null ? 'Saved history unavailable' : formatBytes(storage.bytes) + ' saved history' + retention) + '</h4><p>Progress, forecasts, proof, and token history stay available between sessions' + (proofFiles ? ' · ' + proofFiles + ' proof file' + (proofFiles === 1 ? '' : 's') : '') + '.</p><div class="settings-actions-inline"><button class="quiet-button" data-setting-action="clear" type="button">Clear history</button><button class="quiet-button" data-setting-action="restore" type="button">Restore defaults</button></div><small>Clearing history leaves tasks unchanged. Restoring defaults keeps history.</small></section>';
@@ -878,19 +1007,77 @@ function renderSettings() {
 function renderAllViews() { renderOverview(); renderDashboard(); renderHierarchy(); renderKanban(); renderDiagnostics(); renderSettings(); }
 
 async function refreshProof() {
+  const projectId = state.projectId;
+  const collectionKey = proofCollectionKey(projectId);
   const params = new URLSearchParams();
-  if (state.projectId !== "all" && !state.projectId.startsWith("ctrl:")) params.set("project_id", state.projectId);
+  if (projectId !== "all" && !projectId.startsWith("ctrl:")) params.set("project_id", projectId);
   try {
     const result = await api('/api/proof-feed' + (params.size ? '?' + params.toString() : ''));
-    state.proof = result.items || [];
+    if (collectionKey !== proofCollectionKey()) return;
+    state.proof = dedupeProofItems(result.items);
+    state.proofCollections.set(collectionKey, state.proof);
+    state.proofStatus = "current";
+    state.proofStatuses.set(collectionKey, "current");
     state.proofSequence = Number(result.sequence) || 0;
-  } catch { state.proof = []; }
+  } catch {
+    if (collectionKey !== proofCollectionKey()) return;
+    state.proof = state.proofCollections.get(collectionKey) || [];
+    state.proofStatus = state.proof.length ? "stale" : "unavailable";
+    state.proofStatuses.set(collectionKey, state.proofStatus);
+  }
 }
 
 async function refreshUsageHistory() {
-  const params = new URLSearchParams({ project_id: state.projectId, ctrl_id: state.ctrlId, hours: "24" });
-  try { state.usageHistory = await api('/api/usage-history?' + params.toString()); }
-  catch { state.usageHistory = null; }
+  const request = { projectId: state.projectId, ctrlId: state.ctrlId, hours: state.usageWindowHours };
+  const requestKey = usageRequestKey(request.projectId, request.ctrlId, request.hours);
+  const params = new URLSearchParams({ project_id: request.projectId, ctrl_id: request.ctrlId, hours: String(request.hours) });
+  state.usageStatus = "loading";
+  try {
+    const result = await api('/api/usage-history?' + params.toString());
+    if (request.projectId !== state.projectId || request.ctrlId !== state.ctrlId || request.hours !== state.usageWindowHours) return;
+    state.usageHistory = result;
+    state.usageScopeKey = requestKey;
+    state.usageStatus = "current";
+    state.usageError = "";
+  } catch (error) {
+    if (request.projectId !== state.projectId || request.ctrlId !== state.ctrlId || request.hours !== state.usageWindowHours) return;
+    state.usageHistory = null;
+    state.usageScopeKey = requestKey;
+    state.usageStatus = "error";
+    state.usageError = error.message || "Usage history unavailable";
+  }
+}
+
+async function refreshProjectProgressFeed() {
+  const projectId = selectedProgressProjectId();
+  if (!projectId) {
+    state.projectProgressFeed = null;
+    state.projectProgressProjectId = "";
+    state.projectProgressStatus = "idle";
+    state.projectProgressError = "";
+    return;
+  }
+  const hasLastGood = state.projectProgressProjectId === projectId && Array.isArray(state.projectProgressFeed?.items);
+  if (!hasLastGood) {
+    state.projectProgressFeed = null;
+    state.projectProgressProjectId = projectId;
+  }
+  state.projectProgressStatus = hasLastGood ? "refreshing" : "loading";
+  try {
+    const params = new URLSearchParams({ project_id: projectId, after_cursor: "0" });
+    const result = await api('/api/project-progress-feed?' + params.toString());
+    if (projectId !== selectedProgressProjectId()) return;
+    state.projectProgressFeed = result;
+    state.projectProgressProjectId = projectId;
+    state.projectProgressStatus = "current";
+    state.projectProgressError = "";
+  } catch (error) {
+    if (projectId !== selectedProgressProjectId()) return;
+    if (!hasLastGood) state.projectProgressFeed = null;
+    state.projectProgressProjectId = projectId;
+    state.projectProgressStatus = hasLastGood ? "stale" : "unavailable";
+    state.projectProgressError = error.message || "Project updates unavailable";
+  }
 }
 
 async function refreshMonitoring(proofSequence) {
@@ -935,7 +1122,7 @@ async function refreshOverview(showLoading = true) {
     clearConnectionState();
     setDataStatus("current", state.overview?.generated_at);
     renderProjectNavigation();
-    await Promise.all([refreshProof(), refreshUsageHistory()]);
+    await Promise.all([refreshProof(), refreshUsageHistory(), refreshProjectProgressFeed()]);
     const selectedCtrl = state.ctrlId || historicalControllers()[0]?.id || '';
     const results = await Promise.allSettled([api('/api/diagnostics'), api('/api/diagnostics/history?limit=24'), api('/api/health/settings'), api('/api/storage'), selectedCtrl ? api('/api/ctrl-settings?ctrl_id=' + encodeURIComponent(selectedCtrl)) : Promise.resolve(null), api('/api/config')]);
     [state.diagnostics, state.diagnosticHistory, state.health, state.storage, state.ctrlSettings, state.config] = results.map((result) => result.status === 'fulfilled' ? result.value : null);
@@ -1007,6 +1194,27 @@ document.addEventListener("click", (event) => {
     renderEvidenceLightbox();
     return;
   }
+  if (event.target.closest("#evidence-page-previous")) {
+    const page = Math.floor(state.evidenceIndex / EVIDENCE_THUMBNAIL_PAGE_SIZE);
+    state.evidenceIndex = Math.max(0, (page - 1) * EVIDENCE_THUMBNAIL_PAGE_SIZE);
+    renderEvidenceLightbox();
+    return;
+  }
+  if (event.target.closest("#evidence-page-next")) {
+    const page = Math.floor(state.evidenceIndex / EVIDENCE_THUMBNAIL_PAGE_SIZE);
+    state.evidenceIndex = Math.min(state.evidenceImages.length - 1, (page + 1) * EVIDENCE_THUMBNAIL_PAGE_SIZE);
+    renderEvidenceLightbox();
+    return;
+  }
+  const usageWindow = event.target.closest("[data-usage-hours]");
+  if (usageWindow) {
+    const hours = Number(usageWindow.dataset.usageHours);
+    if (!Object.hasOwn(USAGE_WINDOW_LABELS, hours) || hours === state.usageWindowHours) return;
+    state.usageWindowHours = hours;
+    renderUsage();
+    refreshUsageHistory().then(renderUsage);
+    return;
+  }
   const subagentToggleButton = event.target.closest("[data-subagent-toggle]");
   if (subagentToggleButton) {
     const expanded = subagentToggleButton.getAttribute("aria-expanded") === "true";
@@ -1042,19 +1250,6 @@ document.addEventListener("keydown", (event) => {
 });
 
 $("#project-navigation").addEventListener("click", (event) => {
-  const toggle = event.target.closest("[data-project-toggle]");
-  if (toggle) {
-    const groupId = toggle.dataset.projectToggle;
-    state.projectId = state.projectId === groupId ? "all" : groupId;
-    state.ctrlId = "";
-    state.settingsCtrlId = "";
-    state.settingsScopeType = state.projectId === 'all' ? 'global' : 'project';
-    state.settingsScopeId = state.projectId === 'all' ? 'global' : state.projectId;
-    renderProjectNavigation();
-    renderAllViews();
-    Promise.all([refreshProof(), refreshCtrlSettings(), refreshUsageHistory(), refreshSkills()]).then(renderAllViews);
-    return;
-  }
   const scope = event.target.closest("[data-project-id]");
   if (!scope) return;
   event.preventDefault();
@@ -1065,7 +1260,7 @@ $("#project-navigation").addEventListener("click", (event) => {
   state.settingsScopeId = state.ctrlId || (state.projectId === 'all' ? 'global' : state.projectId);
   renderProjectNavigation();
   renderAllViews();
-  Promise.all([refreshProof(), refreshCtrlSettings(), refreshUsageHistory(), refreshSkills()]).then(renderAllViews);
+  Promise.all([refreshProof(), refreshCtrlSettings(), refreshUsageHistory(), refreshProjectProgressFeed(), refreshSkills()]).then(renderAllViews);
 });
 $("#refresh").addEventListener("click", refreshOverview);
 $("#retry").addEventListener("click", refreshOverview);
@@ -1082,7 +1277,7 @@ document.addEventListener('change', async (event) => {
     renderProjectNavigation();
     renderAllViews();
     try {
-      await Promise.all([refreshProof(), refreshUsageHistory(), refreshCtrlSettings(), refreshSkills()]);
+      await Promise.all([refreshProof(), refreshUsageHistory(), refreshProjectProgressFeed(), refreshCtrlSettings(), refreshSkills()]);
     } finally { renderAllViews(); }
     return;
   }
@@ -1104,7 +1299,11 @@ document.addEventListener('change', async (event) => {
     const key = event.target.dataset.configKey;
     if (!configEditable(key)) return;
     const value = event.target.type === 'checkbox' ? event.target.checked : event.target.type === 'number' ? Number(event.target.value) : event.target.value;
-    try { state.config = await api('/api/config', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ changes: { [key]: value } }) }); renderSettings(); } catch (error) { showError(error.message); renderSettings(); }
+    try {
+      state.config = await api('/api/config', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ changes: { [key]: value } }) });
+      if (key === 'console.project_progress_feed_enabled' || key === 'console.project_progress_feed_lines') await refreshProjectProgressFeed();
+      renderAllViews();
+    } catch (error) { showError(error.message); renderSettings(); }
     return;
   }
   if (event.target.id === 'ctrl-customize') {

@@ -42,20 +42,32 @@ assert.match(indexHtml, /id="tab-diagnostics"[^>]*><span aria-hidden="true">⊙<
 assert.doesNotMatch(indexHtml, /id="tab-hierarchy"[^>]*>[^<]*<span aria-hidden="true">⌘<\/span>/);
 assert.doesNotMatch(indexHtml, /id="tab-diagnostics"[^>]*>[^<]*<span aria-hidden="true">⌁<\/span>/);
 
-for (const label of ["Current work", "Recent images", "Tokens · 24h", "Completed", "Dashboard", "Where changes apply", "Manage", "Advanced settings"]) {
+for (const label of ["Current work", "Latest updates", "Recent images", "Tokens · 1d", "Completed", "Dashboard", "Where changes apply", "Manage", "Advanced settings"]) {
   assert.match(indexHtml + app, new RegExp(label));
 }
 assert.match(app, /\/api\/usage-history\?/);
-assert.match(app, /hours: "24"/);
+assert.match(app, /usageWindowHours: 24/);
+assert.match(indexHtml, /data-usage-hours="1"/);
+assert.match(indexHtml, /data-usage-hours="24"/);
+assert.doesNotMatch(indexHtml, /data-usage-hours="168"/);
+assert.doesNotMatch(indexHtml, />1w<\/button>/);
+assert.match(indexHtml, /id="usage-rate-sparkline"/);
+assert.match(app, /function usageRateSeries\(series\)/);
+assert.match(app, /function downsampleSeries\(values, maximum = 96\)/);
 assert.match(app, /source\.status === 'no_data'/);
 assert.match(app, /Partial coverage/);
 assert.match(app, /Complete coverage/);
 assert.match(app, /source\.coverage\?\.observed_threads/);
 assert.match(indexHtml, /id="usage-range"/);
 assert.match(indexHtml, /id="usage-sparkline" viewBox="0 0 240 52"/);
-assert.match(css, /grid-template-columns:auto auto minmax\(220px,280px\)/);
-assert.match(css, /\.usage-strip svg \{ width:clamp\(220px,18vw,280px\); height:52px;/);
-assert.match(css, /@media \(max-width: 620px\)[\s\S]*\.usage-strip svg \{ display:none; \}/);
+assert.match(css, /\.usage-chart-pair \{ grid-column:2;/);
+assert.match(css, /@media \(max-width: 620px\)[\s\S]*\.usage-chart-pair \{ display:none; \}/);
+assert.match(indexHtml, /id="project-progress-section"/);
+assert.match(app, /\/api\/project-progress-feed\?/);
+assert.match(app, /function renderProjectProgressFeed\(\)/);
+assert.match(app, /settingToggle\('console\.project_progress_feed_enabled'/);
+assert.match(app, /data-config-key="console\.project_progress_feed_lines"/);
+assert.doesNotMatch(app, /setInterval\([^)]*projectProgress|setInterval\([^)]*progressFeed/);
 assert.match(indexHtml, /id="overview-monitoring-health-state"/);
 assert.match(indexHtml, /id="view-dashboard"/);
 assert.match(indexHtml, /id="tab-dashboard"/);
@@ -94,11 +106,14 @@ assert.match(app, /No classified Current Work is available/);
 const currentWorkProjectsSource = app.slice(app.indexOf("function currentWorkProjects"), app.indexOf("function currentWorkControllers"));
 const currentWorkControllersSource = app.slice(app.indexOf("function currentWorkControllers"), app.indexOf("function publicLabel"));
 const projectGroupsSource = app.slice(app.indexOf("function projectGroups"), app.indexOf("function scopeLabel"));
+const projectNavigationSource = app.slice(app.indexOf("function renderProjectNavigation"), app.indexOf("function drawLine"));
 const overviewCardsSource = app.slice(app.indexOf("function overviewCards"), app.indexOf("function latestReceipt"));
 assert.doesNotMatch(currentWorkProjectsSource, /project\.status|active_ctrl/);
 assert.doesNotMatch(currentWorkControllersSource, /controller\.status/);
 assert.match(projectGroupsSource, /historicalProjects\(\)|historicalControllers\(\)/);
 assert.doesNotMatch(projectGroupsSource, /currentWorkProjects\(\)|currentWorkControllers\(\)/);
+assert.match(projectNavigationSource, /filter\(\(group\) => !group\.standalone\)/);
+assert.doesNotMatch(projectNavigationSource, /data-ctrl-id|data-project-toggle|ctrl-subpages/);
 assert.doesNotMatch(overviewCardsSource, /node\.role|node\.title/);
 assert.equal(fixture.overview.progress.controllers.ctrl.progress.percent, 80);
 assert.equal(fixture.overview.progress.controllers.ctrl.progress.source, "material_receipts");
@@ -115,8 +130,8 @@ assert.match(app, /function attentionStatus\(node\)/);
 assert.match(app, /\[node\?\.status, node\?\.eta\?\.status\]/);
 assert.match(app, /tasks\.find\(needsAttention\)/);
 assert.match(app, /const stalled = needsAttention\(current\)/);
-assert.match(app, /project_id: state\.projectId/);
-assert.match(app, /ctrl_id: state\.ctrlId/);
+assert.match(app, /project_id: request\.projectId/);
+assert.match(app, /ctrl_id: request\.ctrlId/);
 assert.match(app, /setInterval\(reportPresence, 60_000\)/);
 assert.match(app, /async function refreshMonitoring/);
 assert.match(app, /renderDashboard\(\);\s*renderHierarchy\(\);/);
@@ -131,6 +146,7 @@ assert.match(app, /data-overview-subagents/);
 assert.match(app, /#overview-evidence-gallery/);
 assert.match(indexHtml, /id="evidence-lightbox"/);
 assert.match(indexHtml, /id="evidence-lightbox-thumbnails"/);
+assert.match(indexHtml, /id="evidence-page-next"/);
 assert.match(indexHtml, /Close evidence gallery/);
 assert.match(indexHtml, /This image could not be loaded/);
 assert.match(app, /function renderEvidenceLightbox\(\)/);
@@ -143,11 +159,17 @@ assert.match(app, /ArrowLeft/);
 assert.match(app, /ArrowRight/);
 assert.match(app, /const previews = images\.slice\(0, limit\)/);
 assert.match(app, /const remaining = Math\.max\(0, images\.length - previews\.length\)/);
+assert.match(app, /EVIDENCE_THUMBNAIL_PAGE_SIZE = 24/);
+assert.match(app, /proofCollections: new Map\(\)/);
+assert.match(app, /state\.proof = state\.proofCollections\.get\(collectionKey\) \|\| \[\]/);
+assert.match(app, /return images\.filter\(\(item\) => !item\.project_id \|\| item\.project_id === state\.projectId\)/);
+assert.doesNotMatch(app, /catch \{ state\.proof = \[\]; \}/);
+assert.match(app, /const previews = images\.slice\(0, 4\)/);
 assert.doesNotMatch(app, /figcaption/);
 assert.match(css, /\.evidence-lightbox/);
 assert.match(css, /\.proof-tile/);
 assert.match(app, /subagentDescendants\(card\.ctrlId, tree\)/);
-assert.match(app, /params\.set\("project_id", state\.projectId\)/);
+assert.match(app, /params\.set\("project_id", projectId\)/);
 assert.doesNotMatch(app, /params\.set\("task_id", state\.ctrlId\)/);
 assert.match(app, /\["blocked", "at_risk", "stalled", "critical"\]/);
 assert.match(app, /const nodes = scopedNodes\(\)\.filter\(\(node\) => !isSubagent\(node\)\);/);
@@ -259,6 +281,7 @@ async function mount(page, overview, overrides = {}) {
   const runtimeErrors = [];
   const requests = [];
   const proofFeed = overrides.proofFeed || fixture.proofFeed;
+  const proofControl = overrides.proofControl || { fail: false, feed: proofFeed };
   page.on("console", (message) => { if (message.type() === "error") runtimeErrors.push(message.text()); });
   page.on("pageerror", (error) => runtimeErrors.push(error.message));
   await page.route("http://swarm.test/**", async (route) => {
@@ -272,8 +295,13 @@ async function mount(page, overview, overrides = {}) {
     if (overrides.connection?.offline && url.pathname.startsWith("/api/")) return route.abort();
     if (url.pathname === "/api/bootstrap") return route.fulfill(response(fixture.bootstrap));
     if (url.pathname === "/api/overview") return route.fulfill(response(overview));
-    if (url.pathname === "/api/proof-feed") return route.fulfill(response(proofFeed));
-    if (url.pathname === "/api/usage-history") return route.fulfill(response(fixture.usageHistory));
+    if (url.pathname === "/api/proof-feed") return proofControl.fail ? route.abort() : route.fulfill(response(proofControl.feed || proofFeed));
+    if (url.pathname === "/api/usage-history") {
+      const hours = url.searchParams.get("hours");
+      if (!["1", "12", "24"].includes(hours)) return route.fulfill({ status: 400, contentType: "application/json", body: JSON.stringify({ ok: false, error: "unsupported usage window" }) });
+      return route.fulfill(response(overrides.usageByHours?.[hours] || fixture.usageHistory));
+    }
+    if (url.pathname === "/api/project-progress-feed") return route.fulfill(response(overrides.projectProgressFeed || fixture.projectProgressFeed));
     if (url.pathname === "/api/presence") return route.fulfill(response({ ok: true, proof_sequence: proofFeed.sequence || 0 }));
     if (url.pathname === "/api/config") return route.fulfill(response(fixture.config));
     if (url.pathname === "/api/diagnostics") return route.fulfill(response(fixture.diagnostics));
@@ -350,6 +378,8 @@ try {
   assert.equal(await page.getByRole("button", { name: /https-mail/i }).count(), 0);
   assert.equal(await page.locator("#overview-monitoring-heading").textContent(), "Current work");
   assert.equal(await page.locator("#usage-total").textContent(), "1K");
+  assert.equal(await page.locator("#usage-rate").textContent(), "42 / min");
+  assert.equal(await page.locator("#project-progress-section").isVisible(), false);
   assert.equal(await page.locator("#overview-monitoring-health-state").textContent(), "Needs attention");
   assert.match(await page.locator("#overview-monitoring-health-note").textContent(), /3 visible lanes need attention/);
   assert.match(await page.locator("#overview-project-cards").textContent(), /Blocker\s*Visual polish/);
@@ -378,14 +408,23 @@ try {
   assert.ok(requests.some((request) => request.includes("/api/config")));
 
   await page.getByRole("button", { name: /^swarm\b/i }).click();
-  assert.equal(await page.locator('[data-ctrl-id="nested-ctrl"]').count(), 1);
-  await page.locator('[data-ctrl-id="nested-ctrl"]').click();
-  assert.equal(await page.locator("#scope-context strong").textContent(), "Evidence review");
+  assert.equal(await page.locator("#project-navigation [data-ctrl-id]").count(), 0);
+  assert.equal(await page.locator("#scope-context strong").textContent(), "swarm");
   assert.match(await page.locator("#overview-project-cards").textContent(), /Review screenshots|Evidence review/);
-  assert.ok(requests.some((request) => request.includes("/api/usage-history?project_id=project%3Afixture&ctrl_id=nested-ctrl&hours=24")));
+  assert.ok(requests.some((request) => request.includes("/api/usage-history?project_id=project%3Afixture&ctrl_id=&hours=24")));
+  assert.equal(await page.locator("#project-progress-section").isVisible(), true);
+  assert.equal(await page.locator("#project-progress-feed > li").count(), 2);
+  assert.match(await page.locator("#project-progress-feed").textContent(), /evidence gallery now preserves every registered image/i);
+  assert.ok(requests.some((request) => request.includes("/api/project-progress-feed?project_id=project%3Afixture&after_cursor=0")));
+  await page.getByRole("button", { name: "1h", exact: true }).click();
+  await page.waitForFunction(() => document.querySelector("#usage-heading")?.textContent === "Tokens · 1h");
+  assert.ok(requests.some((request) => request.includes("hours=1")));
+  await page.getByRole("button", { name: "1d", exact: true }).click();
+  await page.waitForFunction(() => document.querySelector("#usage-heading")?.textContent === "Tokens · 1d");
+  assert.ok(requests.some((request) => request.includes("hours=24")));
 
   await page.getByRole("button", { name: "Flowwweb" }).click();
-  assert.equal(await page.locator("#scope-context strong").textContent(), "Ship integrations");
+  assert.equal(await page.locator("#scope-context strong").textContent(), "Flowwweb");
 
   await page.locator("#tab-diagnostics").focus();
   await page.keyboard.press("ArrowUp");
@@ -395,7 +434,7 @@ try {
   assert.equal(await page.locator("#view-title").textContent(), "Settings");
   await page.getByRole("tab", { name: "Diagnostics" }).click();
   assert.match(await page.locator("#view-diagnostics").textContent(), /Keep this device healthy/);
-  assert.equal(await page.locator("#scope-context strong").textContent(), "Ship integrations");
+  assert.equal(await page.locator("#scope-context strong").textContent(), "Flowwweb");
   await page.getByRole("tab", { name: "Hierarchy" }).click();
   assert.match(await page.locator("#hierarchy-list").textContent(), /Confirm webhooks/);
   await page.getByRole("tab", { name: "Kanban" }).click();
@@ -403,9 +442,11 @@ try {
   assert.match(await page.locator(".kanban-column").nth(1).textContent(), /Confirm webhooks/);
   await page.getByRole("tab", { name: "Settings" }).click();
   assert.match(await page.locator("#settings-grid").textContent(), /Clear history/);
-  assert.equal(await page.locator("#settings-scope").inputValue(), "ctrl|branch-ctrl");
+  assert.equal(await page.locator("#settings-scope").inputValue(), "project|project:branch");
   assert.match(await page.locator("#settings-scope").textContent(), /Unassigned planning/);
   assert.match(await page.locator("#settings-scope").textContent(), /Archived project/);
+  assert.equal(await page.getByText("Progress feed", { exact: true }).count(), 1);
+  assert.equal(await page.locator('[data-config-key="console.project_progress_feed_lines"]').inputValue(), "4");
   assert.equal(await page.getByRole("button", { name: "Manage" }).count(), 1);
 
   const unclassifiedPage = await browser.newPage({ viewport: { width: 1024, height: 760 } });
@@ -438,6 +479,29 @@ try {
   await manyPage.getByRole("button", { name: "Close evidence gallery" }).click();
   assert.deepEqual(many.runtimeErrors, []);
   await manyPage.close();
+
+  const inventoryPage = await browser.newPage({ viewport: { width: 1024, height: 760 } });
+  const proofControl = { fail: false, feed: imageProofFixture(125) };
+  const inventory = await mount(inventoryPage, fixture.overview, { proofControl });
+  assert.equal(await inventoryPage.locator("#overview-evidence-gallery .evidence-gallery-item").count(), 4);
+  assert.equal(await inventoryPage.locator('[data-evidence-more="121"]').count(), 1);
+  await inventoryPage.getByRole("button", { name: /Open 121 more images; 125 images/ }).click();
+  const reachableEvidence = new Set();
+  while (true) {
+    for (const identity of await inventoryPage.locator("#evidence-lightbox-thumbnails [data-evidence-id]").evaluateAll((elements) => elements.map((element) => element.dataset.evidenceId))) reachableEvidence.add(identity);
+    if (await inventoryPage.locator("#evidence-page-next").isDisabled()) break;
+    await inventoryPage.locator("#evidence-page-next").click();
+  }
+  assert.equal(reachableEvidence.size, 125);
+  assert.equal(await inventoryPage.locator("#evidence-lightbox-thumbnails button").count(), 5);
+  assert.equal(await inventoryPage.locator("#evidence-page-status").textContent(), "Images 121–125 of 125");
+  await inventoryPage.getByRole("button", { name: "Close evidence gallery" }).click();
+  proofControl.fail = true;
+  await inventoryPage.locator("#refresh").click();
+  await inventoryPage.waitForFunction(() => document.querySelector("#overview-evidence-note")?.textContent?.includes("last received"));
+  assert.equal(await inventoryPage.locator('[data-evidence-more="121"]').count(), 1);
+  assert.deepEqual(inventory.runtimeErrors, []);
+  await inventoryPage.close();
 
   const onePage = await browser.newPage({ viewport: { width: 1024, height: 760 } });
   const one = await mount(onePage, fixture.overview, { proofFeed: imageProofFixture(1) });

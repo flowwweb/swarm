@@ -9,7 +9,7 @@
   "config": {
     "exists": true,
     "path": "fixture/config.toml",
-    "editable": ["execution.fast_mode", "execution.usage_saver", "console.open_on_start", "automation.mode", "boost.spark_enabled", "boost.spark_model", "boost.spark_reasoning", "role_icons.enabled", "role_icons.ctrl"],
+    "editable": ["execution.fast_mode", "execution.usage_saver", "console.open_on_start", "console.project_progress_feed_enabled", "console.project_progress_feed_lines", "automation.mode", "boost.spark_enabled", "boost.spark_model", "boost.spark_reasoning", "role_icons.enabled", "role_icons.ctrl"],
     "settings": {
       "portfolio": {
         "max_active_tasks": 4,
@@ -27,7 +27,9 @@
         "task_event_limit": 64
       },
       "console": {
-        "open_on_start": true
+        "open_on_start": true,
+        "project_progress_feed_enabled": true,
+        "project_progress_feed_lines": 4
       },
       "coordination": {
         "allow_coordinators": true,
@@ -125,7 +127,8 @@
     "source": "fixture"
   },
   "proofFeed": {"ok":true,"items":[{"task_id":"ctrl","caption":"Local browser proof","claim_limit":"Local browser proof only."}]},
-  "usageHistory": {"ok":true,"total_tokens":1000,"history":[{"bucket_ms":1712550000000,"delta_tokens":28},{"bucket_ms":1712550060000,"delta_tokens":42}]},
+  "usageHistory": {"ok":true,"status":"ok","total_tokens":1000,"tokens_per_minute":42,"history":[{"bucket_ms":1712550000000,"delta_tokens":28},{"bucket_ms":1712550060000,"delta_tokens":42}]},
+  "projectProgressFeed": {"ok":true,"enabled":true,"limit":4,"project_id":"project:fixture","cursor":{"event_seq":2,"event_id":"progress-2","event_digest":"digest-2"},"items":[{"event_id":"progress-2","event_digest":"digest-2","event_seq":2,"project_id":"project:fixture","task_id":"nested-task","owner_id":"Designer","material_update_sentence":"The evidence gallery now preserves every registered image.","observed_at_ms":1712550120000,"flags":[]},{"event_id":"progress-1","event_digest":"digest-1","event_seq":1,"project_id":"project:fixture","task_id":"ctrl","owner_id":"CTRL","material_update_sentence":"The project progress contract is ready for review.","observed_at_ms":1712550060000,"flags":["eta_risk"]}]},
   "diagnostics": {"ok":true,"config_valid":true,"storage":{"bytes":4096},"latest":{"payload":{"health_state":"HEALTHY"}},"health":{"incidents":[],"open_requests":[]},"usage_consumed":false},
   "diagnosticHistory": {"ok":true,"items":[],"usage_consumed":false},
   "healthSettings": {"ok":true,"enabled":false,"default":false,"thresholds":{},"claim_limit":"Auto Health creates advisory requests only."},

@@ -37,7 +37,12 @@
           <div><h1 id="view-title">Overview</h1><p id="view-subtitle">Project progress, risks, and proof at a glance.</p></div>
           <div class="top-actions">
             <p class="scope-context" id="scope-context" aria-live="polite"><span>Scope</span><strong>All projects</strong></p>
-            <section class="usage-strip" aria-labelledby="usage-heading"><span id="usage-heading">Tokens · 24h</span><strong id="usage-total">—</strong><svg id="usage-sparkline" viewBox="0 0 240 52" preserveAspectRatio="none" aria-label="Token history for the selected scope"></svg><small id="usage-range">No historical range</small><small id="usage-note">No recent history</small></section>
+            <section class="usage-strip" aria-labelledby="usage-heading">
+              <div class="usage-summary"><span id="usage-heading">Tokens · 1d</span><strong id="usage-total">—</strong><small id="usage-rate">—</small></div>
+              <div class="usage-windows" role="group" aria-label="Usage history range"><button type="button" data-usage-hours="1" aria-pressed="false">1h</button><button class="is-selected" type="button" data-usage-hours="24" aria-pressed="true">1d</button></div>
+              <div class="usage-chart-pair"><div><span>Tokens</span><svg id="usage-sparkline" viewBox="0 0 240 52" preserveAspectRatio="none" aria-label="Token volume history for the selected scope"></svg></div><div><span>Estimated / min</span><svg id="usage-rate-sparkline" viewBox="0 0 240 52" preserveAspectRatio="none" aria-label="Estimated tokens per minute for the selected scope"></svg></div></div>
+              <small id="usage-range">No historical range</small><small id="usage-note">No recent history</small>
+            </section>
             <p class="snapshot-status" role="status"><span class="status-dot is-live" aria-hidden="true"></span><span id="sync-time">Loading</span></p>
             <button class="icon-button" id="refresh" type="button" aria-label="Refresh overview" title="Refresh overview">↻</button>
           </div>
@@ -47,6 +52,7 @@
           <div class="overview-content" id="overview-content" hidden>
             <section class="overview-health panel" aria-live="polite"><div><p class="eyebrow">Visible work health</p><strong id="overview-monitoring-health-state">Waiting for work</strong></div><p id="overview-monitoring-health-note">No visible lanes</p></section>
             <section class="overview-section" aria-labelledby="overview-monitoring-heading"><header class="overview-section-head"><div><p class="eyebrow">Project monitoring</p><h2 id="overview-monitoring-heading">Current work</h2></div><p id="overview-summary">No observed work yet</p></header><div class="overview-project-list" id="overview-project-cards"></div></section>
+            <section class="overview-section project-progress-section panel" id="project-progress-section" aria-labelledby="project-progress-heading" hidden><header class="overview-section-head"><div><p class="eyebrow">Material progress</p><h2 id="project-progress-heading">Latest updates</h2></div><p id="project-progress-status" aria-live="polite">No material updates yet</p></header><ol class="project-progress-feed" id="project-progress-feed"></ol></section>
             <section class="overview-section evidence-section panel" aria-labelledby="overview-evidence-heading"><header class="overview-section-head"><div><p class="eyebrow">Visual evidence</p><h2 id="overview-evidence-heading">Recent images</h2></div><p id="overview-evidence-note">No images received</p></header><div class="evidence-gallery compact-evidence-gallery" id="overview-evidence-gallery"></div></section>
           </div>
         </section>
@@ -105,6 +111,7 @@
           <button class="quiet-button" id="evidence-lightbox-next" type="button">Next</button>
         </footer>
         <div class="evidence-lightbox-thumbnails" id="evidence-lightbox-thumbnails" role="list" aria-label="Evidence thumbnails"></div>
+        <div class="evidence-thumbnail-pager" aria-label="Evidence thumbnail pages"><button class="quiet-button" id="evidence-page-previous" type="button">Previous thumbnails</button><span id="evidence-page-status" aria-live="polite">No thumbnails</span><button class="quiet-button" id="evidence-page-next" type="button">Next thumbnails</button></div>
       </div>
     </dialog>
     <script src="/app.js" defer></script>
