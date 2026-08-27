@@ -68,6 +68,23 @@ function clearError() {
   $("#error-surface").hidden = true;
 }
 
+function showConnectionState() {
+  clearError();
+  $(".workspace").classList.add("is-disconnected");
+  $("#connection-state").hidden = false;
+}
+
+function clearConnectionState() {
+  $(".workspace").classList.remove("is-disconnected");
+  $("#connection-state").hidden = true;
+}
+
+function connectionFailure(message) {
+  const error = new Error(message);
+  error.connectionFailure = true;
+  return error;
+}
+
 async function api(path, options = {}) {
   const { timeoutMs = 0, ...fetchOptions } = options;
   const controller = timeoutMs > 0 ? new AbortController() : null;
@@ -78,7 +95,8 @@ async function api(path, options = {}) {
     if (!response.ok) throw new Error(data.error || "Request failed (" + response.status + ")");
     return data;
   } catch (error) {
-    if (error?.name === "AbortError") throw new Error("Project data request timed out");
+    if (error?.name === "AbortError") throw connectionFailure("Project data request timed out");
+    if (error instanceof TypeError) throw connectionFailure("SWARM cannot reach its local console");
     throw error;
   } finally {
     if (timeout) window.clearTimeout(timeout);
@@ -878,6 +896,7 @@ async function refreshUsageHistory() {
 async function refreshMonitoring(proofSequence) {
   try {
     state.overview = await api("/api/overview", { timeoutMs: 15_000 });
+    clearConnectionState();
     setDataStatus("current", state.overview?.generated_at);
     renderProjectNavigation();
     await refreshUsageHistory();
@@ -913,6 +932,7 @@ async function refreshOverview(showLoading = true) {
   clearError();
   try {
     state.overview = await api("/api/overview", { timeoutMs: 15_000 });
+    clearConnectionState();
     setDataStatus("current", state.overview?.generated_at);
     renderProjectNavigation();
     await Promise.all([refreshProof(), refreshUsageHistory()]);
@@ -924,7 +944,8 @@ async function refreshOverview(showLoading = true) {
     renderAllViews();
   } catch (error) {
     setDataStatus(state.overview ? "stale" : "unavailable", state.overview?.generated_at);
-    showError(error.message);
+    if (error.connectionFailure && !state.overview) showConnectionState();
+    else showError(error.message);
   } finally {
     if (showLoading) setLoading(false);
   }
@@ -935,7 +956,8 @@ async function initialize() {
     const bootstrap = await api("/api/bootstrap");
     state.token = bootstrap.token || "";
   } catch (error) {
-    showError(error.message);
+    if (error.connectionFailure) showConnectionState();
+    else showError(error.message);
     setLoading(false);
     return;
   }
@@ -1047,6 +1069,7 @@ $("#project-navigation").addEventListener("click", (event) => {
 });
 $("#refresh").addEventListener("click", refreshOverview);
 $("#retry").addEventListener("click", refreshOverview);
+$("#connection-retry").addEventListener("click", initialize);
 document.addEventListener('change', async (event) => {
   if (event.target.id === 'settings-scope') {
     const [scopeType, scopeId] = event.target.value.split('|');
