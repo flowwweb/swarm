@@ -127,7 +127,22 @@ class SwarmConsoleTests(unittest.TestCase):
             CREATE TABLE thread_spawn_edges (
               parent_thread_id TEXT, child_thread_id TEXT, status TEXT
             );
+            CREATE TABLE projects (
+              id TEXT PRIMARY KEY, name TEXT, metadata TEXT, position INTEGER,
+              created_at_ms INTEGER, updated_at_ms INTEGER
+            );
+            CREATE TABLE project_roots (
+              project_id TEXT, position INTEGER, path TEXT
+            );
             """
+        )
+        self.connection.execute(
+            "INSERT INTO projects VALUES (?,?,?,?,?,?)",
+            ("project:alpha", "alpha", "{}", 0, 0, 0),
+        )
+        self.connection.execute(
+            "INSERT INTO project_roots VALUES (?,?,?)",
+            ("project:alpha", 0, "C:/work/alpha"),
         )
         now = 2_000_000_000_000
         rows = [
@@ -152,6 +167,19 @@ class SwarmConsoleTests(unittest.TestCase):
 
     def tearDown(self) -> None:
         self.temp.cleanup()
+
+    def _add_host_project(self, project_id: str, name: str, root: str) -> None:
+        connection = sqlite3.connect(self.database)
+        connection.execute(
+            "INSERT INTO projects VALUES (?,?,?,?,?,?)",
+            (project_id, name, "{}", 0, 0, 0),
+        )
+        connection.execute(
+            "INSERT INTO project_roots VALUES (?,?,?)",
+            (project_id, 0, root),
+        )
+        connection.commit()
+        connection.close()
 
     def test_overview_is_safe_and_hierarchical(self) -> None:
         overview = console.build_overview(self.codex_home, self.config)
@@ -237,6 +265,7 @@ class SwarmConsoleTests(unittest.TestCase):
 
     def test_unformatted_agent_tree_uses_project_name_without_exposing_private_titles(self) -> None:
         now = 2_000_000_000_000
+        self._add_host_project("project:current", "current", "C:/work/current")
         connection = sqlite3.connect(self.database)
         connection.execute("ALTER TABLE threads ADD COLUMN agent_path TEXT")
         columns = "id,title,cwd,created_at,updated_at,created_at_ms,updated_at_ms,model,reasoning_effort,tokens_used,archived,git_origin_url,git_branch,thread_source,agent_nickname,agent_role,is_pinned,agent_path"
@@ -269,6 +298,7 @@ class SwarmConsoleTests(unittest.TestCase):
 
     def test_unformatted_fresh_spawn_tree_is_an_observed_controller_without_agent_path(self) -> None:
         now = 2_000_000_000_000
+        self._add_host_project("project:nemo", "nemo", "C:/work/nemo")
         connection = sqlite3.connect(self.database)
         connection.execute("ALTER TABLE threads ADD COLUMN agent_path TEXT")
         columns = "id,title,cwd,created_at,updated_at,created_at_ms,updated_at_ms,model,reasoning_effort,tokens_used,archived,git_origin_url,git_branch,thread_source,agent_nickname,agent_role,is_pinned,agent_path"
@@ -289,6 +319,66 @@ class SwarmConsoleTests(unittest.TestCase):
         self.assertEqual((by_id["plain-project-child"]["artifact"], by_id["plain-project-child"]["worker"]), ("Assigned Task", "Turing"))
         self.assertNotIn("private user objective", json.dumps(overview))
         self.assertNotIn("private child prompt", json.dumps(overview))
+
+    def test_projects_require_canonical_host_identity_and_preserve_unbound_tasks(self) -> None:
+        now = 2_000_000_000_000
+        self._add_host_project("project:real-hyphen", "real-project-with-hyphens", "C:/saved/real-project")
+        connection = sqlite3.connect(self.database)
+        connection.execute("ALTER TABLE threads ADD COLUMN project_id TEXT")
+        columns = (
+            "id,title,cwd,created_at,updated_at,created_at_ms,updated_at_ms,model,"
+            "reasoning_effort,tokens_used,archived,git_origin_url,git_branch,thread_source,"
+            "agent_nickname,agent_role,is_pinned,project_id"
+        )
+        rows = [
+            ("real-ctrl", "🐙CTRL - Real delivery", "C:/unrelated/worktree", "project:real-hyphen", "ctrl", ""),
+            ("real-task", "🔨DEV - Bound implementation", "C:/unrelated/task", None, "", "subagent"),
+            ("delegation-label", "🐙CTRL - codex-delegation-source-thread-id-123", "C:/work/codex-delegation-source-thread-id-123", None, "ctrl", ""),
+            ("runtime-cleanup", "🐙CTRL - helm-682-runtime-cache-cleanup", "C:/work/helm-682-runtime-cache-cleanup", None, "ctrl", ""),
+            ("architecture-lead", "🧭LEAD - helm-ai-v1-architecture-lead", "C:/work/helm-ai-v1-architecture-lead", None, "", "subagent"),
+            ("ctrl-label", "🐙CTRL - helm-ai-v1-ctrl-2026-08-26", "C:/work/helm-ai-v1-ctrl-2026-08-26", None, "ctrl", ""),
+            ("stale-project", "🐙CTRL - Stale binding", "C:/saved/real-project", "project:missing", "ctrl", ""),
+        ]
+        connection.executemany(
+            f"INSERT INTO threads ({columns}) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            [
+                (thread_id, title, cwd, now // 1000, now // 1000, now, now, "gpt-5.6-sol", "high", 1, 0,
+                 "https://github.com/flowwweb/fake-label.git", "main", thread_source, "", agent_role, 0, project_id)
+                for thread_id, title, cwd, project_id, agent_role, thread_source in rows
+            ],
+        )
+        connection.executemany(
+            "INSERT INTO thread_spawn_edges VALUES (?,?,?)",
+            [("real-ctrl", "real-task", "open"), ("delegation-label", "architecture-lead", "open")],
+        )
+        connection.commit()
+        connection.close()
+
+        overview = console.build_overview(self.codex_home, self.config)
+        navigation = console.App._navigation_payload(overview)
+        project_names = {project["name"] for project in overview["projects"]}
+        navigation_names = {project["name"] for project in navigation["projects"]}
+        nodes = {node["id"]: node for node in overview["nodes"]}
+
+        self.assertEqual(project_names, {"alpha", "real-project-with-hyphens"})
+        self.assertEqual(navigation_names, project_names)
+        self.assertEqual(nodes["real-ctrl"]["project_id"], "project:real-hyphen")
+        self.assertEqual(nodes["real-task"]["project_id"], "project:real-hyphen")
+        self.assertEqual(nodes["stale-project"]["project_id"], "")
+        for thread_id in ("delegation-label", "runtime-cleanup", "architecture-lead", "ctrl-label"):
+            self.assertIn(thread_id, nodes)
+            self.assertEqual(nodes[thread_id]["project_id"], "")
+        serialized_projects = json.dumps(overview["projects"])
+        for label in (
+            "codex-delegation-source-thread-id",
+            "helm-682-runtime-cache-cleanup",
+            "helm-ai-v1-architecture-lead",
+            "helm-ai-v1-ctrl-2026-08-26",
+            "fake-label",
+        ):
+            self.assertNotIn(label, serialized_projects)
+        self.assertEqual(console.observed_task_project_id(self.codex_home, "real-task"), "project:real-hyphen")
+        self.assertIsNone(console.observed_task_project_id(self.codex_home, "stale-project"))
 
     def _handler(self, peer: str, host: str, *, origin: str = "", token: str = "secret"):
         handler = object.__new__(console.Handler)
@@ -555,7 +645,7 @@ class SwarmConsoleTests(unittest.TestCase):
 
         overview = console.build_overview(self.codex_home, self.config)
         node = next(node for node in overview["nodes"] if node["id"] == "unsafe")
-        self.assertEqual((node["role"], node["artifact"]), ("ctrl", "path"))
+        self.assertEqual((node["role"], node["artifact"], node["project_id"]), ("ctrl", "Unbound work", ""))
         self.assertNotIn("private objective", json.dumps(overview))
 
     def test_goal_database_change_invalidates_cached_overview(self) -> None:
@@ -952,7 +1042,8 @@ class SwarmConsoleTests(unittest.TestCase):
         self.assertEqual(standalone["role_label"], "TASK")
         self.assertIsNone(standalone["parent_id"])
         self.assertEqual(standalone["controller_ids"], [])
-        self.assertEqual(next(project for project in overview["projects"] if project["id"] == standalone["project_id"])["nodes"], 1)
+        self.assertEqual(standalone["project_id"], "")
+        self.assertFalse(any(project["name"] == "standalone" for project in overview["projects"]))
 
     def test_usage_history_validates_project_and_ctrl_scopes_without_observing(self) -> None:
         app = console.App(self.codex_home, self.config)
@@ -1597,6 +1688,8 @@ class SwarmConsoleTests(unittest.TestCase):
     def test_navigation_eligibility_uses_persisted_ctrl_and_archive_authority(self) -> None:
         now = int(time.time() * 1000)
         quiet = now - 2 * 60 * 60 * 1000
+        for name in ("idle", "stalled", "archived", "legacy", "noctrl"):
+            self._add_host_project(f"project:{name}", name, f"C:/work/{name}")
         connection = sqlite3.connect(self.database)
         connection.execute("UPDATE threads SET agent_role='ctrl' WHERE id='root'")
         rows = [
@@ -2026,17 +2119,18 @@ class SwarmConsoleTests(unittest.TestCase):
 
     def test_proof_event_can_resolve_project_level_task_from_host_metadata(self) -> None:
         database = self.codex_home / "state_5.sqlite"
+        project_root = str(self.root / "flowwweb" / "swarm")
+        self._add_host_project("project:host-swarm", "swarm", project_root)
         connection = sqlite3.connect(database)
         try:
             connection.execute(
                 "INSERT INTO threads(id, title, cwd, archived, git_origin_url) VALUES (?, ?, ?, ?, ?)",
-                ("project-task", "Project task", str(self.root / "flowwweb" / "swarm"), 0, ""),
+                ("project-task", "Project task", project_root, 0, ""),
             )
             connection.commit()
         finally:
             connection.close()
-        expected, _ = console._project_identity({"cwd": str(self.root / "flowwweb" / "swarm"), "git_origin_url": ""})
-        self.assertEqual(console.observed_task_project_id(self.codex_home, "project-task"), expected)
+        self.assertEqual(console.observed_task_project_id(self.codex_home, "project-task"), "project:host-swarm")
         self.assertIsNone(console.observed_task_project_id(self.codex_home, "missing"))
 
     @staticmethod
@@ -2279,6 +2373,7 @@ class SwarmConsoleTests(unittest.TestCase):
 
     def test_standalone_formatted_task_without_spawn_edge_is_visible_at_project_level(self) -> None:
         now = 2_000_000_000_000
+        self._add_host_project("project:beta", "beta", "C:/work/beta")
         connection = sqlite3.connect(self.database)
         connection.execute(
             "INSERT INTO threads VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",

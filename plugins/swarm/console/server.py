@@ -2009,7 +2009,9 @@ class ConsoleStore:
             bucket_ms = now_ms - (now_ms % (TOKEN_SAMPLE_SECONDS * 1000))
             for node in nodes:
                 thread_id = _safe_metadata_text(str(node["id"]), "thread id", maximum=256)
-                project_id = _safe_metadata_text(str(node["project_id"]), "project id", maximum=256)
+                project_id = str(node.get("project_id") or "").strip()
+                if project_id:
+                    project_id = _safe_metadata_text(project_id, "project id", maximum=256)
                 sqlite_cumulative = max(0, int(node.get("tokens") or 0))
                 jsonl_cumulative = jsonl_counts.get(thread_id)
                 cumulative = max(sqlite_cumulative, jsonl_cumulative or 0)
@@ -2084,7 +2086,7 @@ class ConsoleStore:
                     """,
                     (thread_id, project_id, now_ms, now_ms),
                 )
-                if not node.get("is_subagent") and isinstance(node.get("eta_report"), dict):
+                if project_id and not node.get("is_subagent") and isinstance(node.get("eta_report"), dict):
                     self._record_eta_receipt(
                         connection,
                         node["eta_report"],
@@ -3419,13 +3421,35 @@ def observed_task_project_id(codex_home: Path, task_id: str) -> str | None:
     """Resolve one exact unarchived task to its observed project without reading messages."""
     try:
         with closing(_readonly_connection(state_database(codex_home))) as connection:
-            row = connection.execute(
-                "SELECT cwd, git_origin_url FROM threads WHERE id=? AND archived=0",
-                (task_id,),
-            ).fetchone()
+            thread_columns = {
+                str(row["name"])
+                for row in connection.execute("PRAGMA table_info(threads)").fetchall()
+            }
+            project_id_projection = "project_id" if "project_id" in thread_columns else "'' AS project_id"
+            projects, project_roots = _host_project_catalog(connection)
+            seen: set[str] = set()
+            current_id: str | None = task_id
+            while current_id and current_id not in seen:
+                seen.add(current_id)
+                row = connection.execute(
+                    f"SELECT cwd, {project_id_projection} FROM threads WHERE id=? AND archived=0",
+                    (current_id,),
+                ).fetchone()
+                if row is None:
+                    return None
+                project, state = _canonical_project_binding(row, projects, project_roots)
+                if project is not None:
+                    return str(project["id"])
+                if state == "stale":
+                    return None
+                parent = connection.execute(
+                    "SELECT parent_thread_id FROM thread_spawn_edges WHERE child_thread_id=?",
+                    (current_id,),
+                ).fetchone()
+                current_id = str(parent["parent_thread_id"]) if parent is not None else None
     except (sqlite3.Error, OSError, ConsoleError):
         return None
-    return None if row is None else _project_identity(row)[0]
+    return None
 
 
 def observation_fingerprint(codex_home: Path, config_path: Path) -> tuple[tuple[str, int, int], ...]:
@@ -3545,18 +3569,95 @@ def _codex_jsonl_token_count(codex_home: Path, thread_id: str) -> int | None:
     return _codex_jsonl_token_counts(codex_home, {thread_id}).get(thread_id)
 
 
-def _project_identity(row: sqlite3.Row) -> tuple[str, str]:
-    origin = (row["git_origin_url"] or "").rstrip("/")
-    if origin:
-        slug = origin.rsplit("/", 1)[-1]
-        if slug.endswith(".git"):
-            slug = slug[:-4]
-        authority = f"origin:{origin.casefold()}"
-        return f"project:{hashlib.sha256(authority.encode()).hexdigest()[:16]}", slug or "Repository"
-    cwd = (row["cwd"] or "").replace("\\?\\", "").rstrip("\\/")
-    name = re.split(r"[\\/]", cwd)[-1] if cwd else "Local"
-    authority = f"cwd:{cwd.casefold()}"
-    return f"project:{hashlib.sha256(authority.encode()).hexdigest()[:16]}", name or "Local"
+def _normalized_project_path(value: Any) -> str:
+    path = str(value or "").replace("\\?\\", "").replace("\\", "/").strip().rstrip("/")
+    return re.sub(r"/+", "/", path).casefold()
+
+
+def _host_project_catalog(
+    connection: sqlite3.Connection,
+) -> tuple[dict[str, dict[str, str]], tuple[tuple[str, str], ...]]:
+    """Read canonical host projects without inventing identity from task metadata."""
+    tables = {
+        str(row["name"])
+        for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
+    }
+    if "projects" not in tables:
+        return {}, ()
+    projects = {
+        str(row["id"]): {
+            "id": str(row["id"]),
+            "name": str(row["name"]).strip(),
+        }
+        for row in connection.execute("SELECT id, name FROM projects").fetchall()
+        if str(row["id"] or "").strip() and str(row["name"] or "").strip()
+    }
+    if "project_roots" not in tables:
+        return projects, ()
+    roots = tuple(
+        sorted(
+            (
+                (_normalized_project_path(row["path"]), str(row["project_id"]))
+                for row in connection.execute("SELECT project_id, path FROM project_roots").fetchall()
+                if str(row["project_id"] or "") in projects and _normalized_project_path(row["path"])
+            ),
+            key=lambda item: (-len(item[0]), item[0], item[1]),
+        )
+    )
+    return projects, roots
+
+
+def _canonical_project_binding(
+    row: sqlite3.Row,
+    projects: dict[str, dict[str, str]],
+    project_roots: tuple[tuple[str, str], ...],
+) -> tuple[dict[str, str] | None, str]:
+    project_id = str(row["project_id"] or "").strip()
+    if project_id:
+        return (projects.get(project_id), "direct" if project_id in projects else "stale")
+    cwd = _normalized_project_path(row["cwd"])
+    matches = [
+        (root, bound_project_id)
+        for root, bound_project_id in project_roots
+        if cwd == root or cwd.startswith(f"{root}/")
+    ]
+    if not matches:
+        return None, "unbound"
+    longest = len(matches[0][0])
+    project_ids = {project_id for root, project_id in matches if len(root) == longest}
+    if len(project_ids) != 1:
+        return None, "conflicted"
+    return projects[next(iter(project_ids))], "root"
+
+
+def _thread_project_bindings(
+    rows: dict[str, sqlite3.Row],
+    parent_by_child: dict[str, str],
+    projects: dict[str, dict[str, str]],
+    project_roots: tuple[tuple[str, str], ...],
+) -> dict[str, dict[str, str]]:
+    bindings: dict[str, dict[str, str]] = {}
+    blocked: set[str] = set()
+    for thread_id, row in rows.items():
+        project, state = _canonical_project_binding(row, projects, project_roots)
+        if project is not None:
+            bindings[thread_id] = project
+        elif state in {"stale", "conflicted"}:
+            blocked.add(thread_id)
+    for thread_id in rows:
+        if thread_id in bindings or thread_id in blocked:
+            continue
+        seen = {thread_id}
+        parent = parent_by_child.get(thread_id)
+        while parent and parent not in seen:
+            seen.add(parent)
+            if parent in blocked:
+                break
+            if parent in bindings:
+                bindings[thread_id] = bindings[parent]
+                break
+            parent = parent_by_child.get(parent)
+    return bindings
 
 
 def _controller_classification(row: sqlite3.Row) -> dict[str, str | None]:
@@ -3661,6 +3762,7 @@ def _generic_agent_role(
     role_icons: dict[str, Any],
     *,
     controller: bool = False,
+    project_name: str = "",
 ) -> dict[str, str]:
     """Represent an observed child without exposing its prompt-like host title."""
     nickname = str(row["agent_nickname"] or "").strip()
@@ -3676,7 +3778,7 @@ def _generic_agent_role(
     artifact = " ".join(path_tokens) or "Assigned task"
     artifact = re.sub(r"(?i)\bgate\s*(\d+)\b", r"Gate \1", artifact).strip().title()[:48]
     if controller:
-        _, artifact = _project_identity(row)
+        artifact = project_name or "Unbound work"
     worker = re.sub(r"[^A-Za-z0-9 _-]", "", nickname).strip()[:48] if "\n" not in nickname else ""
     role = "ctrl" if controller else "doer"
     role_label = "CTRL" if controller else "AGENT"
@@ -3722,6 +3824,8 @@ def build_overview(codex_home: Path, config_path: Path) -> dict[str, Any]:
             for row in connection.execute("PRAGMA table_info(threads)").fetchall()
         }
         agent_path_projection = "agent_path" if "agent_path" in thread_columns else "'' AS agent_path"
+        project_id_projection = "project_id" if "project_id" in thread_columns else "'' AS project_id"
+        host_project_catalog, project_roots = _host_project_catalog(connection)
         goal_placeholders = ",".join("?" for _ in active_goal_ids)
         goal_clause = f" OR id IN ({goal_placeholders})" if active_goal_ids else ""
         rows = connection.execute(
@@ -3729,7 +3833,7 @@ def build_overview(codex_home: Path, config_path: Path) -> dict[str, Any]:
             SELECT id, title, cwd, created_at, updated_at, created_at_ms, updated_at_ms,
                    model, reasoning_effort, tokens_used, archived, git_origin_url,
                    git_branch, thread_source, agent_nickname, agent_role, is_pinned,
-                   {agent_path_projection}
+                   {agent_path_projection}, {project_id_projection}
             FROM threads
             WHERE (
                 updated_at_ms >= ?
@@ -3758,27 +3862,32 @@ def build_overview(codex_home: Path, config_path: Path) -> dict[str, Any]:
     }
     parent_by_child = {edge["child_thread_id"]: edge["parent_thread_id"] for edge in edge_rows}
     edge_status = {edge["child_thread_id"]: edge["status"] for edge in edge_rows}
-    host_projects: dict[str, dict[str, Any]] = {}
-    for row in all_rows.values():
-        project_key, project_name = _project_identity(row)
-        project = host_projects.setdefault(
-            project_key,
-            {
-                "id": project_key,
-                "name": project_name,
-                "goal_label": project_name,
-                "label_source": "repository_origin" if str(row["git_origin_url"] or "").strip() else "working_directory",
-                "observed_threads": 0,
-                "active_threads": 0,
-                "updated_at": 0,
-            },
-        )
-        project["observed_threads"] += 1
-        project["active_threads"] += _status(row, edge_status.get(row["id"]), heartbeat, now_ms) == "active"
-        project["updated_at"] = max(project["updated_at"], _epoch_ms(row["updated_at_ms"], row["updated_at"]))
     raw_children: dict[str, list[str]] = {}
     for edge in edge_rows:
         raw_children.setdefault(edge["parent_thread_id"], []).append(edge["child_thread_id"])
+    project_bindings = _thread_project_bindings(
+        all_rows, parent_by_child, host_project_catalog, project_roots
+    )
+    host_projects: dict[str, dict[str, Any]] = {
+        project_id: {
+            "id": project_id,
+            "name": project["name"],
+            "goal_label": project["name"],
+            "label_source": "host_projects.name",
+            "observed_threads": 0,
+            "active_threads": 0,
+            "updated_at": 0,
+        }
+        for project_id, project in host_project_catalog.items()
+    }
+    for thread_id, project in project_bindings.items():
+        row = all_rows[thread_id]
+        inventory = host_projects[project["id"]]
+        inventory["observed_threads"] += 1
+        inventory["active_threads"] += _status(row, edge_status.get(thread_id), heartbeat, now_ms) == "active"
+        inventory["updated_at"] = max(
+            inventory["updated_at"], _epoch_ms(row["updated_at_ms"], row["updated_at"])
+        )
     recent_ids = {
         thread_id
         for thread_id, row in all_rows.items()
@@ -3878,8 +3987,10 @@ def build_overview(codex_home: Path, config_path: Path) -> dict[str, Any]:
         if thread_id in controller_seed_ids and (
             observed_role is None or observed_role["role"] != "ctrl"
         ):
+            project = project_bindings.get(thread_id)
             observed_role = _generic_agent_role(
-                all_rows[thread_id], config["role_icons"], controller=True
+                all_rows[thread_id], config["role_icons"], controller=True,
+                project_name=project["name"] if project is not None else "",
             )
         parsed[thread_id] = observed_role or _generic_agent_role(
             all_rows[thread_id], config["role_icons"], controller=False
@@ -3897,23 +4008,25 @@ def build_overview(codex_home: Path, config_path: Path) -> dict[str, Any]:
             if delegated_task and config["role_icons"]["enabled"]
             else role["icon"]
         )
-        project_key, project_name = _project_identity(row)
+        project_binding = project_bindings.get(thread_id)
+        project_key = project_binding["id"] if project_binding is not None else ""
+        project_name = project_binding["name"] if project_binding is not None else ""
         created_ms = _epoch_ms(row["created_at_ms"], row["created_at"])
         updated_ms = _epoch_ms(row["updated_at_ms"], row["updated_at"])
-        project = projects.setdefault(
-            project_key,
-            {
-                "id": project_key,
-                "name": project_name,
-                "goal_label": project_name,
-                "label_source": "repository_origin" if str(row["git_origin_url"] or "").strip() else "working_directory",
-                "nodes": 0,
-                "tokens": 0,
-                "active": 0,
-            },
-        )
-        if role["role"] == "ctrl" and project["label_source"] == "working_directory":
-            project["goal_label"] = role["artifact"] or project["name"]
+        project = None
+        if project_binding is not None:
+            project = projects.setdefault(
+                project_key,
+                {
+                    "id": project_key,
+                    "name": project_name,
+                    "goal_label": project_name,
+                    "label_source": "host_projects.name",
+                    "nodes": 0,
+                    "tokens": 0,
+                    "active": 0,
+                },
+            )
         status = _status(row, edge_status.get(thread_id), heartbeat, now_ms)
         node = {
             "id": thread_id,
@@ -3948,9 +4061,10 @@ def build_overview(codex_home: Path, config_path: Path) -> dict[str, Any]:
             },
         }
         nodes[thread_id] = node
-        project["nodes"] += 1
-        project["tokens"] += node["tokens"]
-        project["active"] += status == "active"
+        if project is not None:
+            project["nodes"] += 1
+            project["tokens"] += node["tokens"]
+            project["active"] += status == "active"
 
     links: list[dict[str, str]] = []
     unattached_task_ids: list[str] = []
@@ -3965,12 +4079,11 @@ def build_overview(codex_home: Path, config_path: Path) -> dict[str, Any]:
 
     for thread_id in unattached_task_ids:
         node = nodes.pop(thread_id)
-        project = projects[node["project_id"]]
-        project["nodes"] -= 1
-        project["tokens"] -= node["tokens"]
-        project["active"] -= node["status"] == "active"
-        if project["nodes"] == 0:
-            projects.pop(node["project_id"])
+        if node["project_id"]:
+            project = projects[node["project_id"]]
+            project["nodes"] -= 1
+            project["tokens"] -= node["tokens"]
+            project["active"] -= node["status"] == "active"
 
     for thread_id, node in nodes.items():
         parent = parent_by_child.get(thread_id)
@@ -4084,7 +4197,8 @@ def build_overview(codex_home: Path, config_path: Path) -> dict[str, Any]:
             "Proof plans appear only from validated runtime snapshots; absent snapshots stay unavailable and never inherit host task status.",
             "Host task observation includes recently updated archived rows so authoritative navigation visibility can preserve archive state.",
             "Recent active durable goals are read by thread ID only to identify CTRL scopes; objective text is never read or surfaced.",
-            "Project navigation includes active observed repositories even when no authoritative CTRL scope is available; those projects remain project-level only.",
+            "Project navigation includes only canonical host project records and their exact root or thread bindings; task titles, repository labels, cwd leaves, worktree names, and lane labels never create projects.",
+            "Unbound tasks remain visible in all-task and hierarchy views without acquiring a project scope.",
             "Unformatted delegated lanes use the existing active-freshness boundary; older lanes are counted, not expanded.",
             "Older descendant lanes are omitted from the graph and counted on their CTRL scope.",
             "Visible-tab refreshes reuse the local snapshot until the host database, its WAL, or config changes.",
