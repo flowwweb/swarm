@@ -1344,12 +1344,21 @@ def correction_decision(*, material:bool, authority_failure:bool=False, ownershi
 @dataclass(frozen=True)
 class MaterialStateReceipt:
     kind:MaterialStateKind; identity:str; digest:str; observed_at_ms:int
+    failure_identity:str=""; task_id:str=""; dispatch_receipt_id:str=""; candidate:str=""
     def __post_init__(self):
         if not isinstance(self.kind,MaterialStateKind): raise InvariantError("material state requires a typed kind")
         _safe_token(self.identity); _require_digest(self.digest,"material state")
         if not isinstance(self.observed_at_ms,int) or isinstance(self.observed_at_ms,bool) or self.observed_at_ms<0: raise InvariantError("material state observation time must be a nonnegative integer")
+        bindings=(bool(self.failure_identity),bool(self.task_id),bool(self.dispatch_receipt_id),bool(self.candidate))
+        if any(bindings) and not all(bindings): raise InvariantError("material state control-path binding requires failure identity, task, dispatch, and candidate")
+        if self.failure_identity:
+            object.__setattr__(self,"failure_identity",_require_digest(self.failure_identity,"material state failure identity")); _safe_token(self.task_id); _require_receipt_text(self.dispatch_receipt_id,"material state dispatch receipt")
+            object.__setattr__(self,"candidate",_require_digest(self.candidate,"material state candidate"))
     @property
-    def content_address(self) -> str: return _sha256_text(json.dumps((self.kind.value,self.identity,self.digest),separators=(",",":")))
+    def content_address(self) -> str:
+        payload=(self.kind.value,self.identity,self.digest)
+        if self.failure_identity: payload+=(self.failure_identity,self.task_id,self.dispatch_receipt_id,self.candidate)
+        return _sha256_text(json.dumps(payload,separators=(",",":")))
 
 @dataclass(frozen=True)
 class AttemptCostReceipt:
@@ -1410,7 +1419,7 @@ class ControlPathRecoveryDecision:
     failure:ControlPathFailure; action:ControlPathRecoveryAction; recovery_route:str; handoff_owner:str; disjoint_ready_task_ids:tuple[str,...]; token_count:int|None; latency_ms:int|None; replayed:bool=False; material_reentry:bool=False
     equivalent_failures:int=1; route_rank:int=0; signal:WatchdogSignal=WatchdogSignal.ATTENTION; release_condition:str=""; responsible_authority:str=""; root_cause_reassessment:bool=False
     permitted_routes:tuple[str,...]=(); route_score_basis:tuple[str,...]=("expected_progress","authority","risk","latency","tokens","coordination")
-    state:ControlPathState=ControlPathState.RECOVERING; failure_state:ControlPathState=ControlPathState.CONTROL_PATH_FAILURE; truth:ControlPathTruth=ControlPathTruth.UNVERIFIED; last_good_checkpoint:MaterialStateReceipt|None=None; next_check_or_release:str=""; eta_range_ms:tuple[int,int]|None=None; eta_receipt_id:str=""; release_receipt_id:str=""
+    state:ControlPathState=ControlPathState.RECOVERING; failure_state:ControlPathState=ControlPathState.CONTROL_PATH_FAILURE; truth:ControlPathTruth=ControlPathTruth.UNVERIFIED; last_good_checkpoint:MaterialStateReceipt|None=None; next_check_or_release:str=""; eta_range_ms:tuple[int,int]|None=None; eta_receipt_id:str=""; release_receipt_id:str=""; custody_generation_digest:str=""
     def __post_init__(self):
         if self.failure_state is not ControlPathState.CONTROL_PATH_FAILURE or not isinstance(self.state,ControlPathState) or self.state is ControlPathState.CONTROL_PATH_FAILURE: raise InvariantError("recovery decision requires a typed post-failure state")
         if (self.state is ControlPathState.BLOCKED)!=(self.action is ControlPathRecoveryAction.TERMINAL_BLOCKED) or (self.state is ControlPathState.BLOCKED)!=(self.signal is WatchdogSignal.BLOCKER): raise InvariantError("only exhausted terminal recovery may be BLOCKED")
@@ -1426,6 +1435,7 @@ class ControlPathRecoveryDecision:
             if not all(isinstance(value,int) and not isinstance(value,bool) and value>=0 for value in (start,end)) or end<start or not self.eta_receipt_id: raise InvariantError("recovery ETA range requires ordered nonnegative bounds and a receipt")
             _safe_token(self.eta_receipt_id)
         elif self.eta_receipt_id: raise InvariantError("recovery ETA receipt cannot exist without a range")
+        if self.custody_generation_digest: object.__setattr__(self,"custody_generation_digest",_require_digest(self.custody_generation_digest,"control-path custody generation"))
     @property
     def needs_authority(self) -> bool: return self.action is ControlPathRecoveryAction.NEEDS_AUTHORITY
     @property
@@ -1445,7 +1455,7 @@ class RetryTopologyLedger:
     last_good_checkpoint:MaterialStateReceipt|None=None
     cost_receipts:dict[str,AttemptCostReceipt]=field(default_factory=dict)
     _attempts:dict[str,int]=field(default_factory=dict); _signatures:dict[str,tuple[str,str,RetryOutcome,str]]=field(default_factory=dict); _pending:RootCauseTopologyReassessment|None=None; _reassessment_used:bool=False
-    _control_path_decisions:dict[str,ControlPathRecoveryDecision]=field(default_factory=dict); _control_path_receipts:dict[str,str]=field(default_factory=dict); _control_path_attempts:dict[str,int]=field(default_factory=dict)
+    _control_path_decisions:dict[str,ControlPathRecoveryDecision]=field(default_factory=dict); _control_path_receipts:dict[str,str]=field(default_factory=dict); _control_path_replay_identities:dict[str,str]=field(default_factory=dict); _control_path_attempts:dict[str,int]=field(default_factory=dict)
     _control_path_failed_routes:dict[str,set[str]]=field(default_factory=dict); _control_path_permitted_routes:dict[str,set[str]]=field(default_factory=dict); _control_path_attempt_receipts:dict[str,set[str]]=field(default_factory=dict); _control_path_last_observed_ms:dict[str,int]=field(default_factory=dict)
     _host_authority:object=field(default_factory=object,init=False,repr=False,compare=False)
 
@@ -1454,14 +1464,15 @@ class RetryTopologyLedger:
 
     @staticmethod
     def _material_snapshot(receipt:MaterialStateReceipt|None) -> object:
-        return None if receipt is None else (receipt.kind.value,receipt.identity,receipt.digest,receipt.observed_at_ms)
+        return None if receipt is None else (receipt.kind.value,receipt.identity,receipt.digest,receipt.observed_at_ms,receipt.failure_identity,receipt.task_id,receipt.dispatch_receipt_id,receipt.candidate)
 
     @staticmethod
     def _material_from_snapshot(payload:object) -> MaterialStateReceipt|None:
         if payload is None: return None
-        try: kind,identity,digest_value,observed_at_ms=payload  # type: ignore[misc]
+        try: values=tuple(payload)  # type: ignore[arg-type]
         except (TypeError,ValueError) as error: raise InvariantError("control-path material snapshot is malformed") from error
-        try: return MaterialStateReceipt(MaterialStateKind(kind),identity,digest_value,observed_at_ms)
+        if len(values) not in {4,8}: raise InvariantError("control-path material snapshot is malformed")
+        try: return MaterialStateReceipt(MaterialStateKind(values[0]),*values[1:])
         except (TypeError,ValueError) as error: raise InvariantError("control-path material snapshot is malformed") from error
 
     @staticmethod
@@ -1490,27 +1501,29 @@ class RetryTopologyLedger:
 
     @classmethod
     def _decision_snapshot(cls, decision:ControlPathRecoveryDecision) -> dict[str,object]:
-        return {"failure":cls._failure_snapshot(decision.failure),"action":decision.action.value,"recovery_route":decision.recovery_route,"handoff_owner":decision.handoff_owner,"disjoint_ready_task_ids":decision.disjoint_ready_task_ids,"token_count":decision.token_count,"latency_ms":decision.latency_ms,"replayed":decision.replayed,"material_reentry":decision.material_reentry,"equivalent_failures":decision.equivalent_failures,"route_rank":decision.route_rank,"signal":decision.signal.value,"release_condition":decision.release_condition,"responsible_authority":decision.responsible_authority,"root_cause_reassessment":decision.root_cause_reassessment,"permitted_routes":decision.permitted_routes,"route_score_basis":decision.route_score_basis,"state":decision.state.value,"failure_state":decision.failure_state.value,"truth":decision.truth.value,"last_good_checkpoint":cls._material_snapshot(decision.last_good_checkpoint),"next_check_or_release":decision.next_check_or_release,"eta_range_ms":decision.eta_range_ms,"eta_receipt_id":decision.eta_receipt_id,"release_receipt_id":decision.release_receipt_id}
+        return {"failure":cls._failure_snapshot(decision.failure),"action":decision.action.value,"recovery_route":decision.recovery_route,"handoff_owner":decision.handoff_owner,"disjoint_ready_task_ids":decision.disjoint_ready_task_ids,"token_count":decision.token_count,"latency_ms":decision.latency_ms,"replayed":decision.replayed,"material_reentry":decision.material_reentry,"equivalent_failures":decision.equivalent_failures,"route_rank":decision.route_rank,"signal":decision.signal.value,"release_condition":decision.release_condition,"responsible_authority":decision.responsible_authority,"root_cause_reassessment":decision.root_cause_reassessment,"permitted_routes":decision.permitted_routes,"route_score_basis":decision.route_score_basis,"state":decision.state.value,"failure_state":decision.failure_state.value,"truth":decision.truth.value,"last_good_checkpoint":cls._material_snapshot(decision.last_good_checkpoint),"next_check_or_release":decision.next_check_or_release,"eta_range_ms":decision.eta_range_ms,"eta_receipt_id":decision.eta_receipt_id,"release_receipt_id":decision.release_receipt_id,"custody_generation_digest":decision.custody_generation_digest}
 
     @classmethod
     def _decision_from_snapshot(cls, payload:object) -> ControlPathRecoveryDecision:
-        keys={"failure","action","recovery_route","handoff_owner","disjoint_ready_task_ids","token_count","latency_ms","replayed","material_reentry","equivalent_failures","route_rank","signal","release_condition","responsible_authority","root_cause_reassessment","permitted_routes","route_score_basis","state","failure_state","truth","last_good_checkpoint","next_check_or_release","eta_range_ms","eta_receipt_id","release_receipt_id"}
-        if not isinstance(payload,dict) or set(payload)!=keys: raise InvariantError("control-path decision snapshot has an invalid schema")
+        legacy_keys={"failure","action","recovery_route","handoff_owner","disjoint_ready_task_ids","token_count","latency_ms","replayed","material_reentry","equivalent_failures","route_rank","signal","release_condition","responsible_authority","root_cause_reassessment","permitted_routes","route_score_basis","state","failure_state","truth","last_good_checkpoint","next_check_or_release","eta_range_ms","eta_receipt_id","release_receipt_id"}
+        keys=legacy_keys|{"custody_generation_digest"}
+        if not isinstance(payload,dict) or frozenset(payload) not in {frozenset(legacy_keys),frozenset(keys)}: raise InvariantError("control-path decision snapshot has an invalid schema")
         try:
             eta=None if payload["eta_range_ms"] is None else tuple(payload["eta_range_ms"])
-            return ControlPathRecoveryDecision(cls._failure_from_snapshot(payload["failure"]),ControlPathRecoveryAction(payload["action"]),payload["recovery_route"],payload["handoff_owner"],tuple(payload["disjoint_ready_task_ids"]),payload["token_count"],payload["latency_ms"],payload["replayed"],payload["material_reentry"],payload["equivalent_failures"],payload["route_rank"],WatchdogSignal(payload["signal"]),payload["release_condition"],payload["responsible_authority"],payload["root_cause_reassessment"],tuple(payload["permitted_routes"]),tuple(payload["route_score_basis"]),ControlPathState(payload["state"]),ControlPathState(payload["failure_state"]),ControlPathTruth(payload["truth"]),cls._material_from_snapshot(payload["last_good_checkpoint"]),payload["next_check_or_release"],eta,payload["eta_receipt_id"],payload["release_receipt_id"])  # type: ignore[arg-type]
+            return ControlPathRecoveryDecision(cls._failure_from_snapshot(payload["failure"]),ControlPathRecoveryAction(payload["action"]),payload["recovery_route"],payload["handoff_owner"],tuple(payload["disjoint_ready_task_ids"]),payload["token_count"],payload["latency_ms"],payload["replayed"],payload["material_reentry"],payload["equivalent_failures"],payload["route_rank"],WatchdogSignal(payload["signal"]),payload["release_condition"],payload["responsible_authority"],payload["root_cause_reassessment"],tuple(payload["permitted_routes"]),tuple(payload["route_score_basis"]),ControlPathState(payload["state"]),ControlPathState(payload["failure_state"]),ControlPathTruth(payload["truth"]),cls._material_from_snapshot(payload["last_good_checkpoint"]),payload["next_check_or_release"],eta,payload["eta_receipt_id"],payload["release_receipt_id"],payload.get("custody_generation_digest",""))  # type: ignore[arg-type]
         except (TypeError,ValueError) as error: raise InvariantError("control-path decision snapshot is malformed") from error
 
     def control_path_snapshot(self) -> dict[str,object]:
         """Persist bounded exact recovery identities so restart cannot reopen or rebind them."""
         return {
-            "version":2,
+            "version":3,
             "attempts":tuple(sorted(self._control_path_attempts.items())),
             "failed_routes":tuple((identity,tuple(sorted(routes))) for identity,routes in sorted(self._control_path_failed_routes.items())),
             "permitted_routes":tuple((identity,tuple(sorted(routes))) for identity,routes in sorted(self._control_path_permitted_routes.items())),
             "attempt_receipts":tuple((identity,tuple(sorted(receipts))) for identity,receipts in sorted(self._control_path_attempt_receipts.items())),
             "last_observed_ms":tuple(sorted(self._control_path_last_observed_ms.items())),
             "completion_receipts":tuple(sorted(self._control_path_receipts.items())),
+            "replay_identities":tuple(sorted(self._control_path_replay_identities.items())),
             "decisions":tuple((identity,self._decision_snapshot(decision)) for identity,decision in sorted(self._control_path_decisions.items())),
             "cost_receipts":tuple((identity,self._cost_snapshot(receipt)) for identity,receipt in sorted(self.cost_receipts.items())),
             "last_good_checkpoint":self._material_snapshot(self.last_good_checkpoint),
@@ -1518,8 +1531,9 @@ class RetryTopologyLedger:
 
     @classmethod
     def from_control_path_snapshot(cls, payload:dict[str,object]) -> "RetryTopologyLedger":
-        keys={"version","attempts","failed_routes","permitted_routes","attempt_receipts","last_observed_ms","completion_receipts","decisions","cost_receipts","last_good_checkpoint"}
-        if not isinstance(payload,dict) or set(payload)!=keys or payload.get("version")!=2: raise InvariantError("control-path snapshot has an invalid schema")
+        legacy_keys={"version","attempts","failed_routes","permitted_routes","attempt_receipts","last_observed_ms","completion_receipts","decisions","cost_receipts","last_good_checkpoint"}
+        keys=legacy_keys|{"replay_identities"}; version=payload.get("version") if isinstance(payload,dict) else None
+        if not isinstance(payload,dict) or version not in {2,3} or set(payload)!=(legacy_keys if version==2 else keys): raise InvariantError("control-path snapshot has an invalid schema")
         ledger=cls()
         try:
             attempts={_require_digest(identity,"control-path attempt identity"):count for identity,count in payload["attempts"]}  # type: ignore[union-attr]
@@ -1529,13 +1543,15 @@ class RetryTopologyLedger:
             observed={_require_digest(identity,"control-path observation identity"):value for identity,value in payload["last_observed_ms"]}  # type: ignore[union-attr]
             completion={_require_receipt_text(receipt,"control-path completion receipt"):_require_digest(identity,"control-path completion identity") for receipt,identity in payload["completion_receipts"]}  # type: ignore[union-attr]
             decisions={_require_digest(identity,"control-path decision identity"):cls._decision_from_snapshot(raw) for identity,raw in payload["decisions"]}  # type: ignore[union-attr]
+            replay={identity:identity for identity in decisions} if version==2 else {_require_digest(identity,"control-path replay failure identity"):_require_digest(replay_identity,"control-path replay identity") for identity,replay_identity in payload["replay_identities"]}  # type: ignore[union-attr]
             costs={_safe_token(identity):cls._cost_from_snapshot(raw) for identity,raw in payload["cost_receipts"]}  # type: ignore[union-attr]
             last_good=cls._material_from_snapshot(payload["last_good_checkpoint"])
         except (TypeError,ValueError) as error: raise InvariantError("control-path snapshot is malformed") from error
         if any(not isinstance(count,int) or isinstance(count,bool) or not 1<=count<=64 for count in attempts.values()) or set(failed)-set(attempts) or set(permitted)-set(attempts) or set(receipts)-set(attempts) or set(observed)!=set(attempts) or any(len(receipts.get(identity,set()))!=count for identity,count in attempts.items()) or any(not isinstance(value,int) or isinstance(value,bool) or value<0 for value in observed.values()): raise InvariantError("control-path snapshot contains invalid bounded attempt evidence")
-        if any(len(mapping)!=len(payload[key]) for mapping,key in ((attempts,"attempts"),(failed,"failed_routes"),(permitted,"permitted_routes"),(receipts,"attempt_receipts"),(observed,"last_observed_ms"),(completion,"completion_receipts"),(decisions,"decisions"),(costs,"cost_receipts"))): raise InvariantError("control-path snapshot contains duplicate retained identities")  # type: ignore[arg-type]
-        if set(decisions)!=set(completion.values()) or any(identity!=decision.failure.signature_digest for identity,decision in decisions.items()) or any(decisions[identity].failure.completion_receipt_id!=receipt for receipt,identity in completion.items()) or any(identity!=receipt.receipt_id for identity,receipt in costs.items()): raise InvariantError("control-path snapshot contains conflicting immutable bindings")
-        ledger._control_path_attempts=attempts; ledger._control_path_failed_routes=failed; ledger._control_path_permitted_routes=permitted; ledger._control_path_attempt_receipts=receipts; ledger._control_path_last_observed_ms=observed; ledger._control_path_receipts=completion; ledger._control_path_decisions=decisions; ledger.cost_receipts=costs; ledger.last_good_checkpoint=last_good
+        duplicate_mappings=((attempts,"attempts"),(failed,"failed_routes"),(permitted,"permitted_routes"),(receipts,"attempt_receipts"),(observed,"last_observed_ms"),(completion,"completion_receipts"),(decisions,"decisions"),(costs,"cost_receipts"))
+        if any(len(mapping)!=len(payload[key]) for mapping,key in duplicate_mappings) or (version==3 and len(replay)!=len(payload["replay_identities"])): raise InvariantError("control-path snapshot contains duplicate retained identities")  # type: ignore[arg-type]
+        if set(decisions)!=set(completion.values()) or set(replay)!=set(decisions) or any(identity!=decision.failure.signature_digest for identity,decision in decisions.items()) or any(decisions[identity].failure.completion_receipt_id!=receipt for receipt,identity in completion.items()) or any(replay[identity]!=(identity if not decision.custody_generation_digest else cls._control_replay_identity(decision.failure,decision.custody_generation_digest)) for identity,decision in decisions.items()) or any(identity!=receipt.receipt_id for identity,receipt in costs.items()): raise InvariantError("control-path snapshot contains conflicting immutable bindings")
+        ledger._control_path_attempts=attempts; ledger._control_path_failed_routes=failed; ledger._control_path_permitted_routes=permitted; ledger._control_path_attempt_receipts=receipts; ledger._control_path_last_observed_ms=observed; ledger._control_path_receipts=completion; ledger._control_path_decisions=decisions; ledger._control_path_replay_identities=replay; ledger.cost_receipts=costs; ledger.last_good_checkpoint=last_good
         return ledger
 
     def _retain_cost(self, receipt:AttemptCostReceipt|None) -> tuple[int|None,int|None]:
@@ -1564,6 +1580,14 @@ class RetryTopologyLedger:
             if current is not None and receipt.observed_at_ms<=current.observed_at_ms: raise InvariantError("material state receipt must advance the observed high-water")
             return True,receipt
         return False,receipt if receipt.observed_at_ms>current.observed_at_ms else current
+
+    def _prospective_control_material(self, receipt:MaterialStateReceipt|None, failure:ControlPathFailure) -> tuple[bool,MaterialStateReceipt|None]:
+        if receipt is not None and (receipt.failure_identity,receipt.task_id,receipt.dispatch_receipt_id,receipt.candidate)!=(failure.signature_digest,failure.task_id,failure.dispatch_receipt_id,failure.artifact.content_address()): raise InvariantError("control-path material receipt must bind the exact failure, task, dispatch, and candidate")
+        return self._prospective_material(receipt)
+
+    @staticmethod
+    def _control_replay_identity(failure:ControlPathFailure, custody_generation_digest:str) -> str:
+        return _sha256_text(json.dumps(("control-path-replay",failure.signature_digest,_require_digest(custody_generation_digest,"control-path custody generation")),separators=(",",":")))
 
     def _retain_material(self, receipt:MaterialStateReceipt|None) -> bool:
         if receipt is None: return False
@@ -1604,15 +1628,19 @@ class RetryTopologyLedger:
         signature=failure.signature_digest
         bound=self._control_path_receipts.get(failure.completion_receipt_id)
         if bound is not None and bound!=signature: raise InvariantError("control-path completion receipt conflicts with its retained exact binding")
-        material_reentry,prospective_checkpoint=self._prospective_material(material_receipt)
-        prior=None if material_reentry else self._control_path_decisions.get(signature)
+        material_reentry,prospective_checkpoint=self._prospective_control_material(material_receipt,failure)
+        replay_identity=self._control_replay_identity(failure,custody_proof.generation_digest)
+        retained=self._control_path_decisions.get(signature)
+        prior=None if material_reentry or self._control_path_replay_identities.get(signature)!=replay_identity else retained
+        if prior is not None and custody_proof.active!=(prior.action is ControlPathRecoveryAction.USER_KEEP_OUT): prior=None
+        custody_transition=not material_reentry and prior is None and retained is not None
         tactic_digest=_sha256_text(json.dumps((failure.task_id,failure.owner_id,failure.artifact.key(),failure.cause.value,failure.affected_edges),separators=(",",":"),ensure_ascii=True))
         previous_failures=0 if material_reentry else self._control_path_attempts.get(tactic_digest,0)
         attempt_receipts=set() if material_reentry else set(self._control_path_attempt_receipts.get(tactic_digest,set()))
-        if prior is None and failure.completion_receipt_id in attempt_receipts: raise InvariantError("control-path goal-turn receipt is already counted in retained attempt evidence")
+        if prior is None and not custody_transition and failure.completion_receipt_id in attempt_receipts: raise InvariantError("control-path goal-turn receipt is already counted in retained attempt evidence")
         last_observed=-1 if material_reentry else self._control_path_last_observed_ms.get(tactic_digest,-1)
-        if prior is None and previous_failures and failure.observed_at_ms<=last_observed: raise InvariantError("control-path goal-turn evidence must advance the retained observation high-water")
-        expected_attempt=prior.equivalent_failures if prior is not None else previous_failures+1
+        if prior is None and not custody_transition and previous_failures and failure.observed_at_ms<=last_observed: raise InvariantError("control-path goal-turn evidence must advance the retained observation high-water")
+        expected_attempt=prior.equivalent_failures if prior is not None else retained.equivalent_failures if custody_transition else previous_failures+1
         tokens,latency=self._validate_control_cost(cost_receipt,failure,expected_attempt)
         if prior is not None:
             replay=replace(prior,replayed=True,token_count=tokens if cost_receipt is not None else prior.token_count,latency_ms=latency if cost_receipt is not None else prior.latency_ms)
@@ -1627,6 +1655,7 @@ class RetryTopologyLedger:
         unexhausted_routes=known_routes-failed_routes
         ready=tuple(disjoint_ready_task_ids)
         if any(not isinstance(task_id,str) or _safe_token(task_id)!=task_id for task_id in ready) or len(set(ready))!=len(ready) or failure.task_id in ready: raise InvariantError("disjoint continuation requires distinct exact task identities")
+        failures=previous_failures if custody_transition else previous_failures+1
         if custody_proof.active:
             action=ControlPathRecoveryAction.USER_KEEP_OUT; route=""; handoff=""; route_rank=3; signal=WatchdogSignal.ATTENTION; state=ControlPathState.WAITING; next_check=release_condition.strip() or "user-control-release"
         elif safely_resumable and route:
@@ -1638,7 +1667,7 @@ class RetryTopologyLedger:
         elif failure.cause in {RecoveryCause.DEPENDENCY,RecoveryCause.ENVIRONMENT_RESOURCE,RecoveryCause.EXTERNAL_SERVICE}:
             release=_bounded_readable(release_condition,"waiting recovery release condition",1024)
             action=ControlPathRecoveryAction.WAIT_FOR_RELEASE; route=""; handoff=""; route_rank=2; signal=WatchdogSignal.ATTENTION; state=ControlPathState.WAITING; next_check=release; authority=""
-        elif previous_failures+1>=3 and known_routes and len(failed_routes)>=3 and not unexhausted_routes and release_condition.strip() and responsible_authority.strip() and release_receipt_id.strip():
+        elif failures>=3 and known_routes and len(failed_routes)>=3 and not unexhausted_routes and release_condition.strip() and responsible_authority.strip() and release_receipt_id.strip():
             release=_bounded_readable(release_condition,"terminal recovery release condition",1024); authority=_safe_token(responsible_authority); release_receipt=_require_receipt_text(release_receipt_id,"terminal recovery release receipt")
             action=ControlPathRecoveryAction.TERMINAL_BLOCKED; route=""; handoff=""; route_rank=5; signal=WatchdogSignal.BLOCKER; state=ControlPathState.BLOCKED; next_check=release
         elif previous_failures>=1:
@@ -1650,14 +1679,14 @@ class RetryTopologyLedger:
         if action not in {ControlPathRecoveryAction.TERMINAL_BLOCKED,ControlPathRecoveryAction.NEEDS_AUTHORITY}: authority=""
         if action is not ControlPathRecoveryAction.TERMINAL_BLOCKED: release_receipt=""
         if eta_range_ms is not None and (cost_receipt is None or eta_receipt_id!=cost_receipt.receipt_id): raise InvariantError("recovery ETA must bind the supplied cost/latency receipt")
-        failures=previous_failures+1; attempt_receipts.add(failure.completion_receipt_id)
-        decision=ControlPathRecoveryDecision(failure,action,route,handoff,ready,tokens,latency,material_reentry=material_reentry,equivalent_failures=failures,route_rank=route_rank,signal=signal,release_condition=release,responsible_authority=authority,root_cause_reassessment=failures>1,permitted_routes=tuple(sorted(known_routes)),state=state,last_good_checkpoint=prospective_checkpoint,next_check_or_release=next_check,eta_range_ms=eta_range_ms,eta_receipt_id=eta_receipt_id,release_receipt_id=release_receipt)
+        if not custody_transition: attempt_receipts.add(failure.completion_receipt_id)
+        decision=ControlPathRecoveryDecision(failure,action,route,handoff,ready,tokens,latency,material_reentry=material_reentry,equivalent_failures=failures,route_rank=route_rank,signal=signal,release_condition=release,responsible_authority=authority,root_cause_reassessment=failures>1,permitted_routes=tuple(sorted(known_routes)),state=state,last_good_checkpoint=prospective_checkpoint,next_check_or_release=next_check,eta_range_ms=eta_range_ms,eta_receipt_id=eta_receipt_id,release_receipt_id=release_receipt,custody_generation_digest=custody_proof.generation_digest)
         if material_receipt is not None: self._retain_material(material_receipt)
         if cost_receipt is not None: self._retain_control_cost(cost_receipt,failure,expected_attempt)
-        self._control_path_attempts[tactic_digest]=failures; self._control_path_failed_routes[tactic_digest]=failed_routes; self._control_path_permitted_routes[tactic_digest]=known_routes; self._control_path_attempt_receipts[tactic_digest]=attempt_receipts; self._control_path_last_observed_ms[tactic_digest]=failure.observed_at_ms
+        if not custody_transition: self._control_path_attempts[tactic_digest]=failures; self._control_path_failed_routes[tactic_digest]=failed_routes; self._control_path_permitted_routes[tactic_digest]=known_routes; self._control_path_attempt_receipts[tactic_digest]=attempt_receipts; self._control_path_last_observed_ms[tactic_digest]=failure.observed_at_ms
         if failure.completion_receipt_id not in self._control_path_receipts and len(self._control_path_receipts)>=64:
-            oldest_receipt=next(iter(self._control_path_receipts)); oldest_signature=self._control_path_receipts.pop(oldest_receipt); self._control_path_decisions.pop(oldest_signature,None)
-        self._control_path_decisions[signature]=decision; self._control_path_receipts[failure.completion_receipt_id]=signature
+            oldest_receipt=next(iter(self._control_path_receipts)); oldest_signature=self._control_path_receipts.pop(oldest_receipt); self._control_path_decisions.pop(oldest_signature,None); self._control_path_replay_identities.pop(oldest_signature,None)
+        self._control_path_decisions[signature]=decision; self._control_path_receipts[failure.completion_receipt_id]=signature; self._control_path_replay_identities[signature]=replay_identity
         return decision
 
     @staticmethod
@@ -2351,10 +2380,11 @@ class Swarm:
         for task_id in disjoint_ready_task_ids:
             candidate=self.tasks.get(task_id)
             if candidate is None or candidate.waiting_on or candidate.state not in {TaskState.ACTIVE,TaskState.BACKLOG}: raise InvariantError("disjoint continuation requires an existing ready task")
+        failure_already_recorded=failure.completion_receipt_id in self.retry_topology_ledger._control_path_receipts
         custody=self.retry_topology_ledger._issue_custody_proof(task.id,self._task_custody_digest(task),self._control_path_user_keep_out(task))
         decision=self.retry_topology_ledger.control_path_failure(failure,same_owner_route=same_owner_route,safely_resumable=safely_resumable,authorized_handoff_owner=handoff,successor_prohibited=successor_prohibited,replacement_prohibited=replacement_prohibited,disjoint_ready_task_ids=disjoint_ready_task_ids,custody_proof=custody,release_condition=release_condition,responsible_authority=responsible_authority,release_receipt_id=release_receipt_id,eta_range_ms=eta_range_ms,eta_receipt_id=eta_receipt_id,material_receipt=material_receipt,cost_receipt=cost_receipt)
+        if not failure_already_recorded: self._record("events",("CONTROL_PATH_FAILURE",task.id))
         if not decision.replayed:
-            self._record("events",("CONTROL_PATH_FAILURE",task.id))
             if decision.action is ControlPathRecoveryAction.NEEDS_AUTHORITY: self._record("events",("NEEDS_AUTHORITY",task.id))
             elif decision.action is ControlPathRecoveryAction.TERMINAL_BLOCKED: self._record("events",("BLOCKED",task.id))
         return decision
@@ -2908,13 +2938,14 @@ class Swarm:
         def change(): t.__dict__.update(state=TaskState.STALE,stale_at=now,stale_reason=reason,superseded_by=superseded_by); t.promoted.extend(promote or [])
         self._request_guard(task_id=task_id,action=change)
     def _task_custody_digest(self, task:Task) -> str:
-        return _sha256_text(json.dumps((task.id,task.owner,task.architecture_version,task.objective_version,task.state.value,task.completed_at,task.stale_at,task.user_custody_required,task.user_state_changed),separators=(",",":"),ensure_ascii=True))
+        return _sha256_text(json.dumps((task.id,task.owner,task.architecture_version,task.objective_version,task.state.value,task.completed_at,task.stale_at,task.user_custody_required,task.user_state_changed,task.user_renamed,task.user_pinned,task.user_choice_pending),separators=(",",":"),ensure_ascii=True))
     def _control_path_user_keep_out(self, task:Task) -> bool:
-        if not task.user_custody_required: return False
+        active=any((task.user_custody_required,task.user_state_changed,task.user_renamed,task.user_pinned,task.user_choice_pending))
+        if not active: return False
         expected=self._task_custody_digest(task)
         current=any(receipt._authority is self._custody_capability and self.host_custody_receipts.get(receipt.receipt) is receipt and receipt.mutation is CustodyMutation.STATE and receipt.target_id==task.id and receipt.target_state_digest==expected for receipt in self.host_custody_receipts.values())
         if current: return True
-        return task.user_custody_required  # unavailable or stale host custody evidence cannot downgrade keep-out
+        return active  # unavailable or stale host custody evidence cannot downgrade keep-out
     def groom(self, actor: Role, now: int, policy: dict[str,int]) -> list[str]:
         """Mechanical archive only; archive preserves task provenance and knowledge."""
         self._role(actor,{Role.CTRL}); archived=[]
