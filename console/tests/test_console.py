@@ -2355,7 +2355,19 @@ class SwarmConsoleTests(unittest.TestCase):
     def test_console_ui_fixture_is_structurally_valid(self) -> None:
         fixture_path = Path(__file__).parent / "fixtures" / "console-ui.json"
         fixture = json.loads(fixture_path.read_text(encoding="utf-8"))
-        self.assertEqual(set(fixture), {"bootstrap", "config", "overview", "proofFeed", "usageHistory", "diagnostics", "diagnosticHistory", "healthSettings", "storage", "ctrlSettings"})
+        self.assertEqual(set(fixture), {"bootstrap", "config", "overview", "proofFeed", "usageHistory", "projectProgressFeed", "diagnostics", "diagnosticHistory", "healthSettings", "storage", "ctrlSettings"})
+        progress_feed = fixture["projectProgressFeed"]
+        self.assertEqual(set(progress_feed), {"ok", "enabled", "limit", "project_id", "cursor", "items"})
+        self.assertTrue(progress_feed["ok"])
+        self.assertTrue(progress_feed["enabled"])
+        self.assertEqual(progress_feed["limit"], 4)
+        self.assertEqual(progress_feed["project_id"], "project:fixture")
+        self.assertEqual(set(progress_feed["cursor"]), {"event_seq", "event_id", "event_digest"})
+        self.assertEqual(len(progress_feed["items"]), 2)
+        for item in progress_feed["items"]:
+            self.assertEqual(set(item), {"event_id", "event_digest", "event_seq", "project_id", "task_id", "owner_id", "material_update_sentence", "observed_at_ms", "flags"})
+            self.assertEqual(item["project_id"], "project:fixture")
+            self.assertTrue(item["material_update_sentence"])
         self.assertFalse(fixture["config"]["settings"]["execution"]["usage_saver"])
         self.assertIn("execution.usage_saver", fixture["config"]["editable"])
         self.assertFalse(fixture["config"]["settings"]["execution"]["fast_mode"])
@@ -2364,6 +2376,10 @@ class SwarmConsoleTests(unittest.TestCase):
         self.assertNotIn("service_tier", fixture["config"]["settings"]["execution"])
         self.assertTrue(fixture["config"]["settings"]["console"]["open_on_start"])
         self.assertIn("console.open_on_start", fixture["config"]["editable"])
+        self.assertTrue(fixture["config"]["settings"]["console"]["project_progress_feed_enabled"])
+        self.assertEqual(fixture["config"]["settings"]["console"]["project_progress_feed_lines"], 4)
+        self.assertIn("console.project_progress_feed_enabled", fixture["config"]["editable"])
+        self.assertIn("console.project_progress_feed_lines", fixture["config"]["editable"])
         self.assertEqual(fixture["config"]["settings"]["automation"]["mode"], "standard")
         self.assertIn("automation.mode", fixture["config"]["editable"])
         self.assertNotIn("archive_completed_tasks", fixture["config"]["settings"]["lifecycle"])
