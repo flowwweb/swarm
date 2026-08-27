@@ -5248,6 +5248,26 @@ class App:
 
 class Handler(BaseHTTPRequestHandler):
     server: SwarmHTTPServer
+    _response_committed = False
+
+    def send_response(self, code: int, message: str | None = None) -> None:
+        self._response_committed = False
+        super().send_response(code, message)
+
+    def end_headers(self) -> None:
+        # Once header flushing begins, a second HTTP response is never valid.
+        self._response_committed = True
+        super().end_headers()
+
+    @staticmethod
+    def _client_disconnected(error: OSError) -> bool:
+        return (
+            isinstance(error, (BrokenPipeError, ConnectionResetError, ConnectionAbortedError))
+            or getattr(error, "winerror", None) in {10053, 10054}
+        )
+
+    def _post_commit_disconnect(self, error: OSError) -> bool:
+        return self._response_committed and self._client_disconnected(error)
     protocol_version = "HTTP/1.1"
 
     def log_message(self, fmt: str, *args: Any) -> None:
@@ -5283,14 +5303,19 @@ class Handler(BaseHTTPRequestHandler):
 
     def _json(self, status: int, payload: Any) -> None:
         body = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
-        self.send_response(status)
-        self.send_header("Content-Type", "application/json; charset=utf-8")
-        self.send_header("Content-Length", str(len(body)))
-        self.send_header("Cache-Control", "no-store")
-        self.send_header("X-Content-Type-Options", "nosniff")
-        self.send_header("Content-Security-Policy", "default-src 'none'; frame-ancestors 'none'")
-        self.end_headers()
-        self.wfile.write(body)
+        try:
+            self.send_response(status)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("X-Content-Type-Options", "nosniff")
+            self.send_header("Content-Security-Policy", "default-src 'none'; frame-ancestors 'none'")
+            self.end_headers()
+            self.wfile.write(body)
+        except OSError as error:
+            if self._post_commit_disconnect(error):
+                return
+            raise
 
     def _registered_media(self, item: dict[str, Any]) -> None:
         path = item["path"]
@@ -5363,6 +5388,7 @@ class Handler(BaseHTTPRequestHandler):
         return payload
 
     def do_GET(self) -> None:  # noqa: N802
+        self._response_committed = False
         if not self._host_allowed():
             self._error(HTTPStatus.FORBIDDEN, "SWARM Console accepts requests from this device only")
             return
@@ -5555,9 +5581,14 @@ class Handler(BaseHTTPRequestHandler):
         except ConsoleError as exc:
             self._error(HTTPStatus.SERVICE_UNAVAILABLE, str(exc))
         except (OSError, sqlite3.Error) as exc:
+            if self._response_committed:
+                if isinstance(exc, OSError) and self._client_disconnected(exc):
+                    return
+                raise
             self._error(HTTPStatus.INTERNAL_SERVER_ERROR, str(exc))
 
     def do_POST(self) -> None:  # noqa: N802
+        self._response_committed = False
         if not self._host_allowed():
             self._error(HTTPStatus.FORBIDDEN, "invalid console host")
             return
@@ -5656,6 +5687,10 @@ class Handler(BaseHTTPRequestHandler):
         except ConsoleError as exc:
             self._error(HTTPStatus.BAD_REQUEST, str(exc))
         except (OSError, sqlite3.Error) as exc:
+            if self._response_committed:
+                if isinstance(exc, OSError) and self._client_disconnected(exc):
+                    return
+                raise
             self._error(HTTPStatus.INTERNAL_SERVER_ERROR, str(exc))
 
 

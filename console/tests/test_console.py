@@ -302,6 +302,84 @@ class SwarmConsoleTests(unittest.TestCase):
         handler.server = SimpleNamespace(app=SimpleNamespace(token="secret", config_path=self.config))
         return handler
 
+    def _storage_handler(self, *, result: dict | None = None, error: Exception | None = None):
+        handler = self._handler("127.0.0.1", "127.0.0.1:4788")
+        handler.path = "/api/storage"
+        handler.server.app.storage = mock.Mock(return_value={} if result is None else result, side_effect=error)
+        handler.send_response = mock.Mock(side_effect=lambda *_args, **_kwargs: setattr(handler, "_response_committed", False))
+        handler.send_header = mock.Mock()
+        handler.end_headers = mock.Mock(side_effect=lambda: setattr(handler, "_response_committed", True))
+        handler.wfile = SimpleNamespace(write=mock.Mock())
+        return handler
+
+    def test_precommit_storage_failures_emit_one_structured_500(self) -> None:
+        for error in (OSError("storage unavailable"), sqlite3.OperationalError("database busy")):
+            with self.subTest(error=type(error).__name__):
+                handler = self._storage_handler(error=error)
+                handler._response_committed = True
+                handler._json = mock.Mock()
+
+                handler.do_GET()
+
+                handler._json.assert_called_once_with(
+                    console.HTTPStatus.INTERNAL_SERVER_ERROR,
+                    {"ok": False, "error": str(error)},
+                )
+
+    def test_postcommit_client_disconnects_do_not_emit_second_response(self) -> None:
+        errors: list[OSError] = [
+            BrokenPipeError("client closed"),
+            ConnectionResetError("client reset"),
+            ConnectionAbortedError("client aborted"),
+        ]
+        for winerror in (10053, 10054):
+            error = OSError("windows client disconnected")
+            error.winerror = winerror
+            errors.append(error)
+
+        for error in errors:
+            for phase in ("headers", "body"):
+                with self.subTest(error=type(error).__name__, winerror=getattr(error, "winerror", None), phase=phase):
+                    handler = self._storage_handler()
+                    if phase == "headers":
+                        def disconnect_during_headers() -> None:
+                            handler._response_committed = True
+                            raise error
+
+                        handler.end_headers.side_effect = disconnect_during_headers
+                    else:
+                        handler.wfile.write.side_effect = error
+
+                    handler.do_GET()
+
+                    self.assertEqual(handler.send_response.call_count, 1)
+                    self.assertEqual(handler.wfile.write.call_count, int(phase == "body"))
+
+    def test_response_boundary_tracks_each_request_commit(self) -> None:
+        handler = self._handler("127.0.0.1", "127.0.0.1:4788")
+        with mock.patch.object(console.BaseHTTPRequestHandler, "send_response") as send_response:
+            handler._response_committed = True
+            handler.send_response(console.HTTPStatus.OK)
+            self.assertFalse(handler._response_committed)
+            send_response.assert_called_once_with(console.HTTPStatus.OK, None)
+        with mock.patch.object(console.BaseHTTPRequestHandler, "end_headers") as end_headers:
+            handler.end_headers()
+            self.assertTrue(handler._response_committed)
+            end_headers.assert_called_once_with()
+
+    def test_unknown_postcommit_io_failure_never_attempts_second_response(self) -> None:
+        handler = self._storage_handler()
+        handler.wfile.write.side_effect = OSError("unexpected response write failure")
+
+        with self.assertRaisesRegex(OSError, "unexpected response write failure"):
+            handler.do_GET()
+
+        self.assertEqual(handler.send_response.call_count, 1)
+
+    def test_console_server_handler_has_exact_plugin_mirror(self) -> None:
+        plugin_server = SERVER.parents[1] / "plugins" / "swarm" / "console" / "server.py"
+        self.assertEqual(SERVER.read_bytes(), plugin_server.read_bytes())
+
     def test_remote_peer_cannot_acquire_token_or_write_through_localhost_host(self) -> None:
         handler = self._handler("192.0.2.44", "localhost", token="secret")
         self.assertTrue(handler._host_allowed())
