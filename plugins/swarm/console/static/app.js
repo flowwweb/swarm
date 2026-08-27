@@ -1,6 +1,10 @@
 const state = { token: "", overview: null, proof: [], proofCollections: new Map(), proofStatuses: new Map(), proofStatus: "idle", proofSequence: 0, usageHistory: null, usageWindowHours: 24, usageScopeKey: "", usageStatus: "idle", usageError: "", projectProgressFeed: null, projectProgressProjectId: "", projectProgressStatus: "idle", projectProgressError: "", diagnostics: null, diagnosticHistory: [], health: null, storage: null, config: null, ctrlSettings: null, skills: null, skillsError: "", view: "overview", projectId: "all", ctrlId: "", settingsCtrlId: "", settingsScopeType: "", settingsScopeId: "", evidenceImages: [], evidenceIndex: 0, evidenceTrigger: null };
 const EVIDENCE_THUMBNAIL_PAGE_SIZE = 24;
 const USAGE_WINDOW_LABELS = { 1: "1h", 24: "1d" };
+const CONNECTION_RETRY_DELAYS_MS = [1_000, 3_000, 10_000, 30_000];
+let connectionRetryTimer = null;
+let connectionRetryAttempt = 0;
+let connectionRetryInFlight = false;
 const $ = (selector, root = document) => root.querySelector(selector);
 const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
 
@@ -72,13 +76,51 @@ function clearError() {
 
 function showConnectionState() {
   clearError();
-  $(".workspace").classList.add("is-disconnected");
+  const shell = $(".app-shell");
+  if ($("#evidence-lightbox")?.open) {
+    state.evidenceTrigger = null;
+    $("#evidence-lightbox").close();
+  }
+  if (shell.classList.contains("is-drawer-open")) setMobileDrawer(false, false);
+  shell.hidden = true;
+  shell.inert = true;
+  shell.setAttribute("aria-hidden", "true");
+  document.body.classList.add("is-disconnected");
   $("#connection-state").hidden = false;
+  scheduleConnectionRetry();
 }
 
 function clearConnectionState() {
-  $(".workspace").classList.remove("is-disconnected");
+  if (connectionRetryTimer) window.clearTimeout(connectionRetryTimer);
+  connectionRetryTimer = null;
+  connectionRetryAttempt = 0;
   $("#connection-state").hidden = true;
+  const shell = $(".app-shell");
+  shell.hidden = false;
+  shell.inert = false;
+  shell.removeAttribute("aria-hidden");
+  document.body.classList.remove("is-disconnected");
+}
+
+function scheduleConnectionRetry() {
+  if (connectionRetryTimer || connectionRetryInFlight || document.visibilityState === "hidden") return;
+  const delay = CONNECTION_RETRY_DELAYS_MS[Math.min(connectionRetryAttempt, CONNECTION_RETRY_DELAYS_MS.length - 1)];
+  connectionRetryTimer = window.setTimeout(async () => {
+    connectionRetryTimer = null;
+    if (document.visibilityState === "hidden") return;
+    connectionRetryInFlight = true;
+    let recovered = false;
+    try {
+      recovered = await initialize();
+    } finally {
+      connectionRetryInFlight = false;
+    }
+    if (recovered) connectionRetryAttempt = 0;
+    else {
+      connectionRetryAttempt += 1;
+      scheduleConnectionRetry();
+    }
+  }, delay);
 }
 
 function connectionFailure(message) {
@@ -1129,8 +1171,9 @@ async function refreshMonitoring(proofSequence) {
     renderOverview();
     renderDashboard();
     renderHierarchy();
-  } catch {
+  } catch (error) {
     setDataStatus(state.overview ? "stale" : "unavailable", state.overview?.generated_at);
+    if (error.connectionFailure) showConnectionState();
     /* The next manual refresh can recover the complete screen. */
   }
 }
@@ -1167,10 +1210,15 @@ async function refreshOverview(showLoading = true) {
     state.diagnosticHistory = state.diagnosticHistory?.items || [];
     await refreshSkills();
     renderAllViews();
+    return true;
   } catch (error) {
     setDataStatus(state.overview ? "stale" : "unavailable", state.overview?.generated_at);
-    if (error.connectionFailure && !state.overview) showConnectionState();
-    else showError(error.message);
+    if (error.connectionFailure) showConnectionState();
+    else {
+      clearConnectionState();
+      showError(error.message);
+    }
+    return false;
   } finally {
     if (showLoading) setLoading(false);
   }
@@ -1182,11 +1230,14 @@ async function initialize() {
     state.token = bootstrap.token || "";
   } catch (error) {
     if (error.connectionFailure) showConnectionState();
-    else showError(error.message);
+    else {
+      clearConnectionState();
+      showError(error.message);
+    }
     setLoading(false);
-    return;
+    return false;
   }
-  await refreshOverview();
+  return refreshOverview();
 }
 
 let presenceTimer = null;
@@ -1196,12 +1247,15 @@ async function reportPresence() {
     const receipt = await api("/api/presence", { method: "POST" });
     const sequence = Number(receipt.proof_sequence) || 0;
     await refreshMonitoring(sequence);
-  } catch { /* Presence is advisory. */ }
+  } catch (error) {
+    if (error.connectionFailure) showConnectionState();
+    /* Presence remains advisory for application errors. */
+  }
 }
 
 function startPresence() {
   if (presenceTimer) clearInterval(presenceTimer);
-  reportPresence();
+  if (!document.body.classList.contains("is-disconnected")) reportPresence();
   presenceTimer = setInterval(reportPresence, 60_000);
 }
 
@@ -1328,7 +1382,6 @@ $("#project-navigation").addEventListener("click", (event) => {
 });
 $("#refresh").addEventListener("click", refreshOverview);
 $("#retry").addEventListener("click", refreshOverview);
-$("#connection-retry").addEventListener("click", initialize);
 $("#mobile-menu-button").addEventListener("click", () => setMobileDrawer(!$(".app-shell").classList.contains("is-drawer-open"), true));
 $("#drawer-backdrop").addEventListener("click", () => setMobileDrawer(false, true));
 mobileDrawerQuery.addEventListener("change", syncMobileDrawer);
@@ -1425,8 +1478,15 @@ $(".nav-list").addEventListener("keydown", (event) => {
   setView(tabs[next].dataset.view, true);
 });
 
-document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible") reportPresence(); });
-window.addEventListener("pagehide", () => { if (presenceTimer) clearInterval(presenceTimer); });
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState !== "visible") return;
+  if (document.body.classList.contains("is-disconnected")) scheduleConnectionRetry();
+  else reportPresence();
+});
+window.addEventListener("pagehide", () => {
+  if (presenceTimer) clearInterval(presenceTimer);
+  if (connectionRetryTimer) window.clearTimeout(connectionRetryTimer);
+});
 
 syncMobileDrawer();
 setView(routeView(), false, routeView() === 'overview' && location.hash !== '#overview');
