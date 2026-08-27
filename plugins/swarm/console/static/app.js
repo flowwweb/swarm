@@ -139,6 +139,41 @@ function setLoading(loading) {
   $("#overview-content").hidden = loading;
 }
 
+const mobileDrawerQuery = window.matchMedia("(max-width: 620px)");
+
+function mobileDrawerFocusable() {
+  return Array.from($("#console-drawer").querySelectorAll('a[href], button:not([disabled]):not([tabindex="-1"]), [tabindex]:not([tabindex="-1"])'))
+    .filter((element) => !element.hidden && !element.closest("[hidden]") && !element.inert && element.getClientRects().length);
+}
+
+function setMobileDrawer(open, restoreFocus = false) {
+  const shell = $(".app-shell");
+  const drawer = $("#console-drawer");
+  const trigger = $("#mobile-menu-button");
+  const backdrop = $("#drawer-backdrop");
+  const workspace = $(".workspace");
+  const expanded = Boolean(open && mobileDrawerQuery.matches);
+  shell.classList.toggle("is-drawer-open", expanded);
+  trigger.setAttribute("aria-expanded", String(expanded));
+  trigger.setAttribute("aria-label", expanded ? "Close navigation" : "Open navigation");
+  backdrop.hidden = !expanded;
+  document.body.classList.toggle("drawer-open", expanded);
+  workspace.inert = expanded;
+  if (mobileDrawerQuery.matches) {
+    drawer.setAttribute("aria-hidden", String(!expanded));
+    drawer.inert = !expanded;
+  } else {
+    drawer.setAttribute("aria-hidden", "false");
+    drawer.inert = false;
+  }
+  if (expanded) requestAnimationFrame(() => ($(".nav-item.is-active") || mobileDrawerFocusable()[0])?.focus());
+  else if (restoreFocus && mobileDrawerQuery.matches) trigger.focus({ preventScroll: true });
+}
+
+function syncMobileDrawer() {
+  setMobileDrawer(false);
+}
+
 function routeView() {
   const view = location.hash.slice(1);
   return ["overview", "dashboard", "hierarchy", "kanban", "diagnostics", "settings"].includes(view) ? view : "overview";
@@ -1230,7 +1265,10 @@ document.addEventListener("click", (event) => {
     return;
   }
   const tab = event.target.closest("[data-view]");
-  if (tab) setView(tab.dataset.view);
+  if (tab) {
+    setView(tab.dataset.view);
+    if (mobileDrawerQuery.matches) setMobileDrawer(false, true);
+  }
   const risk = event.target.closest("#risk-action");
   if (risk?.dataset.taskId) document.querySelector("tr[data-task-id='" + CSS.escape(risk.dataset.taskId) + "']")?.scrollIntoView({ block: "center", behavior: "smooth" });
 });
@@ -1244,6 +1282,29 @@ $("#evidence-lightbox-image").addEventListener("error", () => {
   $("#evidence-lightbox-failed").hidden = false;
 });
 document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape" && $(".app-shell").classList.contains("is-drawer-open")) {
+    event.preventDefault();
+    setMobileDrawer(false, true);
+    return;
+  }
+  if (event.key === "Tab" && $(".app-shell").classList.contains("is-drawer-open")) {
+    const drawer = $("#console-drawer");
+    const focusable = mobileDrawerFocusable();
+    const first = focusable[0];
+    const last = focusable.at(-1);
+    if (!first) {
+      event.preventDefault();
+      return;
+    }
+    if (event.shiftKey && (document.activeElement === first || !drawer.contains(document.activeElement))) {
+      event.preventDefault();
+      last.focus();
+    } else if (!event.shiftKey && (document.activeElement === last || !drawer.contains(document.activeElement))) {
+      event.preventDefault();
+      first.focus();
+    }
+    return;
+  }
   if (!$("#evidence-lightbox").open || !["ArrowLeft", "ArrowRight"].includes(event.key)) return;
   const nextIndex = state.evidenceIndex + (event.key === "ArrowLeft" ? -1 : 1);
   if (nextIndex < 0 || nextIndex >= state.evidenceImages.length) return;
@@ -1268,6 +1329,9 @@ $("#project-navigation").addEventListener("click", (event) => {
 $("#refresh").addEventListener("click", refreshOverview);
 $("#retry").addEventListener("click", refreshOverview);
 $("#connection-retry").addEventListener("click", initialize);
+$("#mobile-menu-button").addEventListener("click", () => setMobileDrawer(!$(".app-shell").classList.contains("is-drawer-open"), true));
+$("#drawer-backdrop").addEventListener("click", () => setMobileDrawer(false, true));
+mobileDrawerQuery.addEventListener("change", syncMobileDrawer);
 document.addEventListener('change', async (event) => {
   if (event.target.id === 'settings-scope') {
     const [scopeType, scopeId] = event.target.value.split('|');
@@ -1364,6 +1428,7 @@ $(".nav-list").addEventListener("keydown", (event) => {
 document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible") reportPresence(); });
 window.addEventListener("pagehide", () => { if (presenceTimer) clearInterval(presenceTimer); });
 
+syncMobileDrawer();
 setView(routeView(), false, routeView() === 'overview' && location.hash !== '#overview');
 window.addEventListener('hashchange', () => setView(routeView(), false, routeView() === 'overview' && location.hash !== '#overview'));
 initialize().then(startPresence);
