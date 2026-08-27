@@ -96,7 +96,7 @@ class SwarmConsoleTests(unittest.TestCase):
     def test_console_uses_flowwweb_swarm_tokens_without_lime_controls(self) -> None:
         css = (console.STATIC_ROOT / "styles.css").read_text(encoding="utf-8").casefold()
         index = (console.STATIC_ROOT / "index.html").read_text(encoding="utf-8")
-        for token in ("#030712", "#46dfd0", "#ff7449"):
+        for token in ("#091321", "#46dfd0", "#ff7449"):
             self.assertIn(token, css)
         for stale in ("#a8ff4f", "168,255,79", "#8ef2c2"):
             self.assertNotIn(stale, css)
