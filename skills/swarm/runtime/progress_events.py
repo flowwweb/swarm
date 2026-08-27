@@ -57,7 +57,7 @@ MATERIAL_EVENT_FIELDS = frozenset({
     "event_kind", "lifecycle_state", "measurement", "proof", "eta",
     "rework", "custody", "steering_receipt_ids", "material_update_sentence",
     "flags", "provenance", "source", "observed_at_ms", "causation_id",
-    "parent_event_id",
+    "parent_event_id", "topology",
 })
 LINEAGE_FIELDS = frozenset({"predecessor_block_ids", "split_from", "merged_from"})
 MEASUREMENT_FIELDS = frozenset({"state", "committed_weight", "admitted_proof_weight", "basis_receipt_ids"})
@@ -65,6 +65,11 @@ PROOF_FIELDS = frozenset({"required_classes", "receipt_ids", "claim_limit"})
 ETA_EVENT_FIELDS = frozenset({"start_ms", "end_ms", "confidence", "basis_receipt_ids"})
 REWORK_FIELDS = frozenset({"attempt", "count", "invalidated_receipt_ids"})
 CUSTODY_FIELDS = frozenset({"surface", "receipt_id"})
+TOPOLOGY_FIELDS = frozenset({
+    "node_kind", "input_receipt_ids", "dispatch_receipt_id",
+    "completion_receipt_id", "cost_receipt_ids", "release_receipt_ids",
+})
+TOPOLOGY_NODE_KINDS = frozenset({"CTRL", "LEAD", "SUBAGENT", "TASK", "BLOCK"})
 
 
 class ProgressLifecycle(StrEnum):
@@ -170,6 +175,7 @@ def _optional_id(value: Any, label: str) -> str | None:
 
 @dataclass(frozen=True)
 class ProgressMaterialEvent:
+    schema_version: int
     event_id: str
     dedupe_key: str
     portfolio_id: str
@@ -211,12 +217,18 @@ class ProgressMaterialEvent:
     observed_at_ms: int
     causation_id: str | None
     parent_event_id: str | None
+    topology_node_kind: str
+    input_receipt_ids: tuple[str, ...]
+    dispatch_receipt_id: str | None
+    completion_receipt_id: str | None
+    cost_receipt_ids: tuple[str, ...]
+    release_receipt_ids: tuple[str, ...]
     digest: str
     semantic_digest: str
 
     def canonical_payload(self) -> dict[str, Any]:
-        return {
-            "schema_version": 1,
+        payload = {
+            "schema_version": self.schema_version,
             "event_id": self.event_id,
             "dedupe_key": self.dedupe_key,
             "portfolio_id": self.portfolio_id,
@@ -268,6 +280,16 @@ class ProgressMaterialEvent:
             "causation_id": self.causation_id,
             "parent_event_id": self.parent_event_id,
         }
+        if self.schema_version == 2:
+            payload["topology"] = {
+                "node_kind": self.topology_node_kind,
+                "input_receipt_ids": list(self.input_receipt_ids),
+                "dispatch_receipt_id": self.dispatch_receipt_id,
+                "completion_receipt_id": self.completion_receipt_id,
+                "cost_receipt_ids": list(self.cost_receipt_ids),
+                "release_receipt_ids": list(self.release_receipt_ids),
+            }
+        return payload
 
 
 def validate_progress_material_event(payload: Any) -> ProgressMaterialEvent:
@@ -275,8 +297,9 @@ def validate_progress_material_event(payload: Any) -> ProgressMaterialEvent:
     if not isinstance(payload, dict):
         raise ProgressEventError("progress material event must be a JSON object")
     _exact_fields(payload, MATERIAL_EVENT_FIELDS, "progress material event")
-    if payload.get("schema_version") != 1:
-        raise ProgressEventError("progress material event schema_version must be 1")
+    schema_version = payload.get("schema_version")
+    if schema_version not in {1, 2}:
+        raise ProgressEventError("progress material event schema_version must be 1 or 2")
     event_id = _safe_id(payload.get("event_id"), "event_id")
     dedupe_key = _safe_id(payload.get("dedupe_key"), "dedupe_key")
     portfolio_id = _safe_id(payload.get("portfolio_id"), "portfolio_id")
@@ -379,6 +402,28 @@ def validate_progress_material_event(payload: Any) -> ProgressMaterialEvent:
     observed_at_ms = _positive_int(payload.get("observed_at_ms"), "observed_at_ms")
     causation_id = _optional_id(payload.get("causation_id"), "causation_id")
     parent_event_id = _optional_id(payload.get("parent_event_id"), "parent_event_id")
+    topology = payload.get("topology")
+    if schema_version == 2:
+        if not isinstance(topology, dict):
+            raise ProgressEventError("schema-v2 topology must be an object")
+        _exact_fields(topology, TOPOLOGY_FIELDS, "topology")
+        topology_node_kind = _safe_id(topology.get("node_kind"), "topology node_kind")
+        if topology_node_kind not in TOPOLOGY_NODE_KINDS:
+            raise ProgressEventError("topology node_kind is invalid")
+        input_receipt_ids = _safe_ids(topology.get("input_receipt_ids"), "topology input_receipt_ids")
+        dispatch_receipt_id = _optional_id(topology.get("dispatch_receipt_id"), "topology dispatch_receipt_id")
+        completion_receipt_id = _optional_id(topology.get("completion_receipt_id"), "topology completion_receipt_id")
+        cost_receipt_ids = _safe_ids(topology.get("cost_receipt_ids"), "topology cost_receipt_ids")
+        release_receipt_ids = _safe_ids(topology.get("release_receipt_ids"), "topology release_receipt_ids")
+    else:
+        if topology is not None:
+            raise ProgressEventError("schema-v1 progress events cannot carry topology")
+        topology_node_kind = "BLOCK"
+        input_receipt_ids = ()
+        dispatch_receipt_id = None
+        completion_receipt_id = None
+        cost_receipt_ids = ()
+        release_receipt_ids = ()
     if event_kind is ProgressEventKind.USER_STEERING_ACCEPTED and not steering_receipt_ids:
         raise ProgressEventError("accepted steering requires an exact steering receipt")
 
@@ -391,17 +436,36 @@ def validate_progress_material_event(payload: Any) -> ProgressMaterialEvent:
     semantic.pop("observed_at_ms", None)
     semantic_digest = hashlib.sha256(json.dumps(semantic, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
     return ProgressMaterialEvent(
-        event_id, dedupe_key, portfolio_id, project_id, ctrl_id, milestone_id,
-        block_id, task_id, owner_id, scope_version, parent_block_id,
-        dependency_ids, predecessor_block_ids, split_from, merged_from,
-        event_kind, lifecycle_state, measurement_state, committed_weight,
-        admitted_proof_weight, weight_basis_receipt_ids, proof_required_classes,
-        proof_receipt_ids, claim_limit, eta_start_ms, eta_end_ms,
-        eta_confidence, eta_receipt_ids, attempt, rework_count,
-        invalidated_receipt_ids, custody_surface, custody_receipt_id,
-        steering_receipt_ids, material_update_sentence, flags, provenance,
-        source, observed_at_ms, causation_id, parent_event_id,
-        hashlib.sha256(encoded).hexdigest(), semantic_digest,
+        schema_version=schema_version, event_id=event_id, dedupe_key=dedupe_key,
+        portfolio_id=portfolio_id, project_id=project_id, ctrl_id=ctrl_id,
+        milestone_id=milestone_id, block_id=block_id, task_id=task_id,
+        owner_id=owner_id, scope_version=scope_version,
+        parent_block_id=parent_block_id, dependency_ids=dependency_ids,
+        predecessor_block_ids=predecessor_block_ids, split_from=split_from,
+        merged_from=merged_from, event_kind=event_kind,
+        lifecycle_state=lifecycle_state, measurement_state=measurement_state,
+        committed_weight=committed_weight,
+        admitted_proof_weight=admitted_proof_weight,
+        weight_basis_receipt_ids=weight_basis_receipt_ids,
+        proof_required_classes=proof_required_classes,
+        proof_receipt_ids=proof_receipt_ids, claim_limit=claim_limit,
+        eta_start_ms=eta_start_ms, eta_end_ms=eta_end_ms,
+        eta_confidence=eta_confidence, eta_receipt_ids=eta_receipt_ids,
+        attempt=attempt, rework_count=rework_count,
+        invalidated_receipt_ids=invalidated_receipt_ids,
+        custody_surface=custody_surface, custody_receipt_id=custody_receipt_id,
+        steering_receipt_ids=steering_receipt_ids,
+        material_update_sentence=material_update_sentence, flags=flags,
+        provenance=provenance, source=source, observed_at_ms=observed_at_ms,
+        causation_id=causation_id, parent_event_id=parent_event_id,
+        topology_node_kind=topology_node_kind,
+        input_receipt_ids=input_receipt_ids,
+        dispatch_receipt_id=dispatch_receipt_id,
+        completion_receipt_id=completion_receipt_id,
+        cost_receipt_ids=cost_receipt_ids,
+        release_receipt_ids=release_receipt_ids,
+        digest=hashlib.sha256(encoded).hexdigest(),
+        semantic_digest=semantic_digest,
     )
 
 
@@ -414,8 +478,8 @@ def _empty_progress_projection() -> dict[str, Any]:
         "scopes": {},
         "blocks": {},
         "latest_material_signatures": {},
+        "topology_conflicts": [],
     }
-
 
 _LIFECYCLE_TRANSITIONS: dict[ProgressLifecycle, frozenset[ProgressLifecycle]] = {
     ProgressLifecycle.PLANNED: frozenset({ProgressLifecycle.PLANNED, ProgressLifecycle.READY, ProgressLifecycle.USER_PAUSED, ProgressLifecycle.TOMBSTONED}),
@@ -509,7 +573,48 @@ class ProgressLedger:
         return hashlib.sha256(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
 
     @staticmethod
+    def _apply_topology_record(projection: dict[str, Any], event: ProgressMaterialEvent, event_seq: int) -> None:
+        events = projection["events"]
+        dedupe = projection["dedupe"]
+        conflict: dict[str, Any] | None = None
+        if event.event_id in events:
+            if events[event.event_id] == event.digest:
+                return
+            conflict = {
+                "kind": "EVENT_ID",
+                "identity": event.event_id,
+                "retained_digest": events[event.event_id],
+                "conflicting_digest": event.digest,
+                "event_seq": event_seq,
+            }
+        elif event.dedupe_key in dedupe:
+            if dedupe[event.dedupe_key] == event.semantic_digest:
+                return
+            conflict = {
+                "kind": "DEDUPE_KEY",
+                "identity": event.dedupe_key,
+                "retained_digest": dedupe[event.dedupe_key],
+                "conflicting_digest": event.semantic_digest,
+                "event_seq": event_seq,
+            }
+        else:
+            events[event.event_id] = event.digest
+            dedupe[event.dedupe_key] = event.semantic_digest
+        if conflict is not None:
+            projection["topology_conflicts"].append(conflict)
+        elif event.material_update_sentence is not None:
+            projection["latest_material_signatures"][ProgressLedger._material_key(event)] = ProgressLedger._material_signature(event)
+        projection["cursor"] = {
+            "event_seq": event_seq,
+            "event_id": event.event_id,
+            "event_digest": event.digest,
+        }
+
+    @staticmethod
     def _apply(projection: dict[str, Any], event: ProgressMaterialEvent, event_seq: int) -> None:
+        if event.schema_version == 2:
+            ProgressLedger._apply_topology_record(projection, event, event_seq)
+            return
         events = projection["events"]
         dedupe = projection["dedupe"]
         if event.event_id in events:
@@ -653,17 +758,24 @@ class ProgressLedger:
         event = validate_progress_material_event(dict(payload))
         with self._state.locked():
             projection, records = self._replay_unlocked()
+            conflicted = False
             retained_digest = projection["events"].get(event.event_id)
             if retained_digest is not None:
                 if retained_digest != event.digest:
-                    raise ProgressEventError("progress event identity conflicts with retained digest")
-                return {"status": "unchanged", "cursor": projection["cursor"], "event_digest": event.digest}
+                    if event.schema_version == 1:
+                        raise ProgressEventError("progress event identity conflicts with retained digest")
+                    conflicted = True
+                else:
+                    return {"status": "unchanged", "cursor": projection["cursor"], "event_digest": event.digest}
             retained_semantic = projection["dedupe"].get(event.dedupe_key)
             if retained_semantic is not None:
                 if retained_semantic != event.semantic_digest:
-                    raise ProgressEventError("progress event dedupe identity conflicts with retained content")
-                return {"status": "unchanged", "cursor": projection["cursor"], "event_digest": event.digest}
-            if event.material_update_sentence is not None:
+                    if event.schema_version == 1:
+                        raise ProgressEventError("progress event dedupe identity conflicts with retained content")
+                    conflicted = True
+                elif not conflicted:
+                    return {"status": "unchanged", "cursor": projection["cursor"], "event_digest": event.digest}
+            if not conflicted and event.material_update_sentence is not None:
                 signature = self._material_signature(event)
                 if projection["latest_material_signatures"].get(self._material_key(event)) == signature:
                     return {"status": "unchanged", "cursor": projection["cursor"], "event_digest": event.digest}
@@ -679,7 +791,12 @@ class ProgressLedger:
             self._write_projection_unlocked(projection)
         with self._condition:
             self._condition.notify_all()
-        return {"status": "appended", "cursor": projection["cursor"], "event_digest": event.digest, "bytes": len(line)}
+        return {
+            "status": "conflicted" if conflicted else "appended",
+            "cursor": projection["cursor"],
+            "event_digest": event.digest,
+            "bytes": len(line),
+        }
 
     def replay(self) -> dict[str, Any]:
         with self._state.locked():
@@ -719,6 +836,246 @@ class ProgressLedger:
             "cursor": projection["cursor"],
             "claim_limit": "Completion is admitted proof-weight over committed measured weight for one scope version; unmeasured work, narration, activity, tokens, and healthy liveness renewals contribute no percentage.",
         }
+
+    def project_topology(
+        self,
+        project_id: str,
+        ctrl_id: str,
+        *,
+        through_cursor: int | None = None,
+        effective_at_ms: int | None = None,
+    ) -> dict[str, object]:
+        """Pure schema-v2 one-CTRL graph replay over the canonical material stream."""
+        project_id = _safe_id(project_id, "project_id")
+        ctrl_id = _safe_id(ctrl_id, "ctrl_id")
+        with self._state.locked():
+            _, records = self._replay_unlocked()
+        maximum_cursor = len(records)
+        cursor = maximum_cursor if through_cursor is None else _positive_int(
+            through_cursor, "through_cursor", allow_zero=True
+        )
+        if cursor > maximum_cursor:
+            raise ProgressEventError("through_cursor exceeds retained knowledge")
+
+        known: list[tuple[int, ProgressMaterialEvent]] = []
+        for record in records[:cursor]:
+            event = validate_progress_material_event(record["event"])
+            if event.project_id == project_id and event.ctrl_id == ctrl_id:
+                known.append((int(record["event_seq"]), event))
+        if effective_at_ms is None:
+            effective = max((event.observed_at_ms for _, event in known), default=None)
+        else:
+            effective = _positive_int(effective_at_ms, "effective_at_ms", allow_zero=True)
+        eligible = [item for item in known if effective is None or item[1].observed_at_ms <= effective]
+
+        def authority_digest(event: ProgressMaterialEvent, *, semantic: bool = False) -> str:
+            payload = event.canonical_payload()
+            payload.pop("material_update_sentence", None)
+            if semantic:
+                payload.pop("event_id", None)
+                payload.pop("observed_at_ms", None)
+            return hashlib.sha256(
+                json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+            ).hexdigest()
+
+        conflicts: list[dict[str, Any]] = []
+        excluded_event_ids: set[str] = set()
+        by_event_id: dict[str, list[tuple[int, ProgressMaterialEvent]]] = {}
+        for item in eligible:
+            by_event_id.setdefault(item[1].event_id, []).append(item)
+        for identity, items in sorted(by_event_id.items()):
+            digests = sorted({authority_digest(event) for _, event in items})
+            if len(digests) > 1:
+                excluded_event_ids.add(identity)
+                conflicts.append({"kind": "EVENT_ID", "identity": identity, "digests": digests})
+
+        first_receipts: list[tuple[int, ProgressMaterialEvent]] = []
+        for identity, items in by_event_id.items():
+            if identity not in excluded_event_ids:
+                first_receipts.append(min(items, key=lambda item: item[0]))
+        by_dedupe: dict[str, list[tuple[int, ProgressMaterialEvent]]] = {}
+        for item in first_receipts:
+            by_dedupe.setdefault(item[1].dedupe_key, []).append(item)
+        excluded_dedupe: set[str] = set()
+        for identity, items in sorted(by_dedupe.items()):
+            digests = sorted({authority_digest(event, semantic=True) for _, event in items})
+            if len(digests) > 1:
+                excluded_dedupe.add(identity)
+                conflicts.append({"kind": "DEDUPE_KEY", "identity": identity, "digests": digests})
+        factual = sorted(
+            (item for item in first_receipts if item[1].dedupe_key not in excluded_dedupe),
+            key=lambda item: (item[1].observed_at_ms, item[0], item[1].event_id),
+        )
+
+        event_ids = {event.event_id for _, event in factual}
+        block_ids = {event.block_id for _, event in factual}
+        retained_receipts: set[str] = set(event_ids)
+        for _, event in factual:
+            retained_receipts.update(event.weight_basis_receipt_ids)
+            retained_receipts.update(event.proof_receipt_ids)
+            retained_receipts.update(event.eta_receipt_ids)
+            retained_receipts.update(event.invalidated_receipt_ids)
+            retained_receipts.update(event.steering_receipt_ids)
+            retained_receipts.update(event.cost_receipt_ids)
+            retained_receipts.update(event.release_receipt_ids)
+            retained_receipts.add(event.custody_receipt_id)
+            if event.dispatch_receipt_id:
+                retained_receipts.add(event.dispatch_receipt_id)
+            if event.completion_receipt_id:
+                retained_receipts.add(event.completion_receipt_id)
+
+        unknown: set[str] = set()
+        block_events: dict[str, list[tuple[int, ProgressMaterialEvent]]] = {}
+        for item in factual:
+            event = item[1]
+            block_events.setdefault(event.block_id, []).append(item)
+            if event.parent_event_id and event.parent_event_id not in event_ids:
+                unknown.add(event.parent_event_id)
+            unknown.update(receipt for receipt in event.input_receipt_ids if receipt not in retained_receipts)
+            references = tuple(filter(None, (
+                event.parent_block_id, event.split_from, *event.dependency_ids,
+                *event.predecessor_block_ids, *event.merged_from,
+            )))
+            unknown.update(reference for reference in references if reference not in block_ids)
+
+        latest_by_block = {
+            block_id: max(items, key=lambda item: (item[1].observed_at_ms, item[0], item[1].event_id))
+            for block_id, items in block_events.items()
+        }
+        nodes: list[dict[str, Any]] = [{
+            "node_id": ctrl_id,
+            "node_kind": "CTRL",
+            "project_id": project_id,
+            "ctrl_id": ctrl_id,
+            "lifecycle_state": "OBSERVED",
+            "source_event_ids": [],
+        }]
+        for block_id, (_, event) in sorted(latest_by_block.items()):
+            references = tuple(filter(None, (
+                event.parent_block_id, *event.dependency_ids, *event.predecessor_block_ids,
+            )))
+            node_unknown = sorted(reference for reference in references if reference not in block_ids)
+            node_unknown.extend(sorted(receipt for receipt in event.input_receipt_ids if receipt not in retained_receipts))
+            nodes.append({
+                "node_id": block_id,
+                "node_kind": event.topology_node_kind,
+                "project_id": project_id,
+                "ctrl_id": ctrl_id,
+                "milestone_id": event.milestone_id,
+                "task_id": event.task_id,
+                "owner_id": event.owner_id,
+                "scope_version": event.scope_version,
+                "lifecycle_state": event.lifecycle_state.value,
+                "attempt": event.attempt,
+                "parent_block_id": event.parent_block_id,
+                "dependency_ids": sorted(event.dependency_ids),
+                "proof_receipt_ids": sorted(event.proof_receipt_ids),
+                "dispatch_receipt_id": event.dispatch_receipt_id,
+                "completion_receipt_id": event.completion_receipt_id,
+                "cost_receipt_ids": sorted(event.cost_receipt_ids),
+                "release_receipt_ids": sorted(event.release_receipt_ids),
+                "unknown_receipt_ids": sorted(set(node_unknown)),
+                "latest_event_id": event.event_id,
+                "latest_event_digest": authority_digest(event),
+                "effective_at_ms": event.observed_at_ms,
+                "source_event_ids": [item[1].event_id for item in block_events[block_id]],
+            })
+
+        edge_keys: set[tuple[str, str, str]] = set()
+        for block_id, (_, event) in latest_by_block.items():
+            if event.parent_block_id:
+                edge_keys.add(("PARENT", event.parent_block_id, block_id))
+            else:
+                edge_keys.add(("CTRL", ctrl_id, block_id))
+            for dependency in event.dependency_ids:
+                edge_keys.add(("DEPENDENCY", dependency, block_id))
+            for predecessor in event.predecessor_block_ids:
+                edge_keys.add(("PREDECESSOR", predecessor, block_id))
+            if event.split_from:
+                edge_keys.add(("SPLIT_FROM", event.split_from, block_id))
+            for merged in event.merged_from:
+                edge_keys.add(("MERGED_FROM", merged, block_id))
+        edges = [
+            {"edge_kind": kind, "from_node_id": source, "to_node_id": target}
+            for kind, source, target in sorted(edge_keys)
+        ]
+
+        terminal = {ProgressLifecycle.VERIFIED.value, ProgressLifecycle.ACCEPTED.value, ProgressLifecycle.TOMBSTONED.value}
+        remaining = {
+            block_id for block_id, (_, event) in latest_by_block.items()
+            if event.lifecycle_state.value not in terminal
+        }
+        satisfied = {
+            block_id for block_id, (_, event) in latest_by_block.items()
+            if event.lifecycle_state.value in terminal
+        }
+        ready_waves: list[list[str]] = []
+        while remaining:
+            wave = sorted(
+                block_id for block_id in remaining
+                if set(latest_by_block[block_id][1].dependency_ids).issubset(satisfied)
+                and not set(latest_by_block[block_id][1].dependency_ids) - block_ids
+            )
+            if not wave:
+                break
+            ready_waves.append(wave)
+            remaining.difference_update(wave)
+            satisfied.update(wave)
+
+        dependency_map = {
+            block_id: tuple(sorted(dep for dep in event.dependency_ids if dep in block_ids))
+            for block_id, (_, event) in latest_by_block.items()
+        }
+        memo: dict[str, tuple[str, ...]] = {}
+        visiting: set[str] = set()
+
+        def longest_path(node_id: str) -> tuple[str, ...]:
+            if node_id in memo:
+                return memo[node_id]
+            if node_id in visiting:
+                return ()
+            visiting.add(node_id)
+            candidates = [longest_path(parent) for parent in dependency_map.get(node_id, ())]
+            prefix = max(candidates, key=lambda path: (len(path), path), default=())
+            visiting.remove(node_id)
+            memo[node_id] = (*prefix, node_id)
+            return memo[node_id]
+
+        critical_nodes = max(
+            (longest_path(block_id) for block_id in sorted(block_ids)),
+            key=lambda path: (len(path), path),
+            default=(),
+        )
+        source_event_ids = [
+            event_id for _, event_id in sorted(
+                {(seq, event.event_id) for seq, event in eligible},
+                key=lambda item: (item[0], item[1]),
+            )
+        ]
+        result: dict[str, object] = {
+            "schema_version": 2,
+            "project_id": project_id,
+            "ctrl_id": ctrl_id,
+            "through_cursor": cursor,
+            "effective_at_ms": effective,
+            "projection_digest": "",
+            "nodes": sorted(nodes, key=lambda item: (item["node_kind"], item["node_id"])),
+            "edges": edges,
+            "ready_waves": ready_waves,
+            "critical_path": {
+                "node_ids": list(critical_nodes),
+                "partial": bool(unknown or remaining),
+            },
+            "unknown_receipt_ids": sorted(unknown),
+            "conflicts": sorted(conflicts, key=lambda item: (item["kind"], item["identity"])),
+            "source_event_ids": source_event_ids,
+        }
+        digest_payload = dict(result)
+        digest_payload.pop("projection_digest")
+        result["projection_digest"] = hashlib.sha256(
+            json.dumps(digest_payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        ).hexdigest()
+        return result
 
     def _bounded_tail_records(self) -> tuple[list[dict[str, Any]], bool]:
         if not self._state.path.exists():

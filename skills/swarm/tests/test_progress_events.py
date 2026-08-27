@@ -9,7 +9,13 @@ import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from runtime.progress_events import ProgressEventError, validate_progress_pulse, write_progress_pulse
+from runtime.progress_events import (
+    MATERIAL_EVENT_FIELDS,
+    TOPOLOGY_FIELDS,
+    ProgressEventError,
+    validate_progress_pulse,
+    write_progress_pulse,
+)
 
 
 class ProgressEventTests(unittest.TestCase):
@@ -82,6 +88,17 @@ class ProgressEventTests(unittest.TestCase):
         payload["eta_report"]["current"]["progress_basis"]["plan_units"] = {"completed_units": 4}
         with self.assertRaisesRegex(ProgressEventError, "receipt identities only"):
             validate_progress_pulse(payload)
+
+    def test_schema_v2_topology_fields_are_factual_and_private_content_is_absent(self) -> None:
+        self.assertEqual(
+            TOPOLOGY_FIELDS,
+            {
+                "node_kind", "input_receipt_ids", "dispatch_receipt_id",
+                "completion_receipt_id", "cost_receipt_ids", "release_receipt_ids",
+            },
+        )
+        self.assertIn("topology", MATERIAL_EVENT_FIELDS)
+        self.assertTrue({"prompt", "response", "tool_calls", "credentials"}.isdisjoint(MATERIAL_EVENT_FIELDS | TOPOLOGY_FIELDS))
 
 
 if __name__ == "__main__":

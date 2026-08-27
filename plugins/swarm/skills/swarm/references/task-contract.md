@@ -88,6 +88,22 @@ lineage/dependencies, custody, proof classes/receipts, claim limit, measured wei
 ETA/confidence, rework, steering, provenance, and timestamp. Same event identity
 plus digest is idempotent; conflicting identity/digest or stale scope fails closed.
 
+Schema-v2 material events remain in that same append-only ledger and add only
+factual topology identities: node kind plus exact input, dispatch, completion,
+cost, and release receipt IDs. `ProgressLedger.project_topology(project_id,
+ctrl_id, through_cursor=..., effective_at_ms=...)` is a pure deterministic
+replay, not a scheduler or second authority. It projects one CTRL graph with
+stable sorted nodes and edges, ready waves, a partial critical path, explicit
+unknown receipts and conflicts, and a SHA-256 digest over canonical UTF-8 JSON.
+The knowledge cursor and effective event time are independent: a later import
+may resolve previously unknown basis without rewriting an earlier cursor view.
+Identical receipts are no-ops; conflicting IDs remain visible and fail closed.
+Out-of-order factual imports are retained. Human material-update prose is a
+compatibility annotation and never changes topology authority. Private keys,
+oversize events, prompts, raw outputs, secrets, and credentials fail validation.
+Projection rebuild performs no model or network call and creates no persistence
+beyond the existing append/fsync and disposable atomic current projection.
+
 Execution liveness stays separate. Existing host reservation, lease, checkpoint,
 and last-seen observations may renew token-free at their configured cadence, but a
 healthy renewal never appends progress, changes percentage/ETA, or enters the
