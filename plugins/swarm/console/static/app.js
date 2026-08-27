@@ -932,6 +932,7 @@ async function refreshOverview(showLoading = true) {
   clearError();
   try {
     state.overview = await api("/api/overview", { timeoutMs: 15_000 });
+    clearConnectionState();
     setDataStatus("current", state.overview?.generated_at);
     renderProjectNavigation();
     await Promise.all([refreshProof(), refreshUsageHistory()]);
