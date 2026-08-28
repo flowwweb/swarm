@@ -1353,8 +1353,8 @@ function autoRequestId(command) {
 function autoPresentation(auto) {
   const attention = auto?.attention;
   if (attention?.kind === "WAIT_USER") return ["Waiting for user", attention.reason || "A user decision is required before Auto can continue."];
-  if (attention) return ["Attention", attention.reason || "Auto needs review before it can continue."];
   if (auto?.in_flight === true) return ["Active", "One accepted continuation is in flight."];
+  if (attention) return ["Attention", attention.reason || "Auto needs review before it can continue."];
   if (auto?.enabled === true) return ["Enabled", "Eligible work may continue when the server admits it."];
   return ["Off", "Auto continuation is off for this CTRL."];
 }

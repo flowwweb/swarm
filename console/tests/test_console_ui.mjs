@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
+import vm from "node:vm";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 
@@ -357,7 +358,15 @@ assert.match(app, /body: JSON\.stringify\(\{ command, ctrl_id: binding\.ctrlId, 
 assert.doesNotMatch(app, /RELEASE_UNREACHABLE/);
 assert.match(app, /aria-label="Continue eligible work automatically" aria-describedby="auto-continuation-status"/);
 assert.match(app, /id="auto-continuation-status" aria-live="polite"/);
-for (const status of ["Active", "Attention", "Waiting for user"]) assert.match(app, new RegExp(`\\["${status}"`));
+const autoPresentationStart = app.indexOf("function autoPresentation");
+const autoPresentationEnd = app.indexOf("\n}\n\nfunction autoSettingsMarkup", autoPresentationStart) + 2;
+assert.ok(autoPresentationStart >= 0 && autoPresentationEnd > autoPresentationStart, "autoPresentation source is extractable");
+const evaluateAutoPresentation = vm.runInNewContext("(" + app.slice(autoPresentationStart, autoPresentationEnd) + ")");
+assert.equal(evaluateAutoPresentation({ enabled: true, in_flight: true, attention: { kind: "IN_FLIGHT_OUTCOME_UNVERIFIED", reason: "reconcile retained turn" } })[0], "Active");
+assert.equal(evaluateAutoPresentation({ enabled: true, in_flight: false, attention: { kind: "WAIT_USER", reason: "user decision required" } })[0], "Waiting for user");
+assert.equal(evaluateAutoPresentation({ enabled: true, in_flight: false, attention: { kind: "TERMINAL_BLOCKED", reason: "release required" } })[0], "Attention");
+assert.equal(evaluateAutoPresentation({ enabled: false, in_flight: false, attention: null })[0], "Off");
+assert.equal(evaluateAutoPresentation({ enabled: true, in_flight: false, attention: null })[0], "Enabled");
 assert.match(app, /state\.autoStatus === "stale"[\s\S]*?last known value is shown read-only/);
 assert.match(app, /!current \|\| state\.autoSaving \? ' disabled' : ''/);
 assert.match(primarySettingsSource, /autoSettingsMarkup\(\)/);
