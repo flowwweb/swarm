@@ -3,7 +3,7 @@ const EVIDENCE_THUMBNAIL_PAGE_SIZE = 24;
 const USAGE_WINDOW_LABELS = { 1: "1h", 24: "1d" };
 const ROLE_PROFESSIONS = [
   ["accountant", "Accountant"], ["analyst", "Analyst"], ["architect", "Architect"], ["artist", "Artist"],
-  ["auditor", "Auditor"], ["critic", "Critic"], ["designer", "Designer"], ["developer", "Developer"],
+  ["auditor", "Auditor"], ["assistant", "Assistant"], ["designer", "Designer"], ["developer", "Developer"],
   ["educator", "Educator"], ["inventor", "Inventor"], ["legal", "Legal"], ["manager", "Manager"],
   ["marketer", "Marketer"], ["operator", "Operator"], ["producer", "Producer"], ["recruiter", "Recruiter"],
   ["researcher", "Researcher"], ["reviewer", "Reviewer"], ["security", "Security"], ["specialist", "Specialist"],
