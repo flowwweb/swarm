@@ -825,6 +825,15 @@ class SwarmConsoleTests(unittest.TestCase):
         restarted = console.ConsoleStore(path)
         history = restarted.token_history(hours=24)
         self.assertEqual(sum(item["delta_tokens"] for item in history), 30)
+        samples = restarted.token_sample_series(
+            project_id="project:alpha", thread_ids={"thread-1"}, hours=24,
+        )
+        self.assertEqual(sum(item["tokens"] for item in samples), 30)
+        self.assertEqual({item["task_id"] for item in samples}, {"thread-1"})
+        self.assertEqual(
+            restarted.token_sample_series(project_id="project:alpha", thread_ids=set(), hours=24),
+            [],
+        )
         self.assertEqual(restarted.storage_stats()["counts"]["token_samples"], 5)
         connection = sqlite3.connect(path)
         try:
@@ -1290,6 +1299,67 @@ class SwarmConsoleTests(unittest.TestCase):
         self.assertIn("positive_observed_rate", result["forecast"]["missing_inputs"])
         with self.assertRaises(console.ConsoleError):
             app.usage_history(hours=24, remaining_token_budget=-1)
+
+    def test_usage_history_projects_verified_yield_without_changing_completion(self) -> None:
+        app = console.App(self.codex_home, self.config)
+        app.progress_ledger.append({
+            "schema_version": 1,
+            "event_id": "yield-proof",
+            "dedupe_key": "yield-proof-dedupe",
+            "portfolio_id": "portfolio-main",
+            "project_id": "project:alpha",
+            "ctrl_id": "root",
+            "milestone_id": "milestone-one",
+            "block_id": "block-one",
+            "task_id": "root",
+            "owner_id": "owner-root",
+            "scope_version": 1,
+            "parent_block_id": None,
+            "dependency_ids": [],
+            "lineage": {"predecessor_block_ids": [], "split_from": None, "merged_from": []},
+            "event_kind": "BLOCK_CREATED",
+            "lifecycle_state": "VERIFIED",
+            "measurement": {
+                "state": "MEASURED", "committed_weight": 10,
+                "admitted_proof_weight": 5, "basis_receipt_ids": ["scope-weight"],
+            },
+            "proof": {
+                "required_classes": ["SOURCE"], "receipt_ids": ["accepted-proof"],
+                "claim_limit": "Source proof only.",
+            },
+            "eta": {"start_ms": None, "end_ms": None, "confidence": None, "basis_receipt_ids": []},
+            "rework": {"attempt": 1, "count": 0, "invalidated_receipt_ids": []},
+            "custody": {"surface": "surface:block-one", "receipt_id": "custody-one"},
+            "steering_receipt_ids": [],
+            "material_update_sentence": "The accepted proof is admitted.",
+            "flags": ["proof"],
+            "provenance": "typed owner material boundary",
+            "source": "swarm_runtime",
+            "observed_at_ms": 1_050_000,
+            "causation_id": None,
+            "parent_event_id": None,
+        })
+        overview = {
+            "nodes": [
+                {"id": "root", "project_id": "project:alpha", "role": "ctrl", "virtual": False, "controller_ids": ["root"]},
+            ],
+        }
+        history = [{"bucket_ms": 1_060_000, "delta_tokens": 1_000, "source": "codex_jsonl_token_count"}]
+        samples = [{"task_id": "root", "observed_at_ms": 1_060_000, "tokens": 1_000}]
+        with mock.patch.object(app, "_host_overview", return_value=overview), \
+             mock.patch.object(app.store, "token_history", return_value=history), \
+             mock.patch.object(app.store, "token_sample_thread_count", return_value=1), \
+             mock.patch.object(app.store, "token_sample_series", return_value=samples), \
+             mock.patch.object(console.time, "time", return_value=1_100):
+            result = app.usage_history(project_id="project:alpha", hours=1)
+
+        verified = result["verified_yield"]
+        self.assertEqual(verified["projects"][0]["net_scope_points"], 50.0)
+        self.assertEqual(verified["projects"][0]["yield_per_100k"], 5_000.0)
+        self.assertEqual(verified["portfolio"]["yield_per_100k"], 5_000.0)
+        self.assertEqual(verified["tasks"][0]["scope"]["id"], "root")
+        self.assertNotIn("percent", verified["projects"][0])
+        self.assertFalse(result["usage_consumed"])
 
     def test_progress_summary_aggregates_only_compatible_receipt_backed_units(self) -> None:
         def measured(

@@ -27,6 +27,8 @@ PROGRESS_PROJECTION_PATH = Path("swarm") / "progress-current.json"
 MAX_PROGRESS_EVENT_BYTES = 16 * 1024
 MAX_FEED_SCAN_BYTES = 1024 * 1024
 MAX_MATERIAL_SENTENCE = 240
+MAX_YIELD_SERIES = 96
+YIELD_TOKEN_SCALE = 100_000
 SAFE_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,255}\Z")
 PULSE_STATES = frozenset({"planned", "in_progress", "blocked", "complete", "stale"})
 ETA_REASON_CODES = frozenset({
@@ -1116,6 +1118,281 @@ class ProgressLedger:
             "blocks": sorted(blocks, key=lambda item: (item["milestone_id"], item["block_id"])),
             "cursor": projection["cursor"],
             "claim_limit": "Completion is admitted proof-weight over committed measured weight for one scope version; unmeasured work, narration, activity, tokens, and healthy liveness renewals contribute no percentage.",
+        }
+
+    def project_verified_yield(
+        self,
+        project_id: str,
+        token_samples: list[Mapping[str, Any]],
+        *,
+        observed_after_ms: int,
+        observed_before_ms: int,
+        series_limit: int = MAX_YIELD_SERIES,
+    ) -> dict[str, Any]:
+        """Join current-scope proof deltas to bounded observed token receipts."""
+        project_id = _safe_id(project_id, "project_id")
+        observed_after_ms = _positive_int(observed_after_ms, "observed_after_ms", allow_zero=True)
+        observed_before_ms = _positive_int(observed_before_ms, "observed_before_ms", allow_zero=True)
+        if observed_before_ms < observed_after_ms:
+            raise ProgressEventError("verified yield window is inverted")
+        if not isinstance(series_limit, int) or isinstance(series_limit, bool) or not 1 <= series_limit <= MAX_YIELD_SERIES:
+            raise ProgressEventError(f"verified yield series_limit must be between 1 and {MAX_YIELD_SERIES}")
+
+        with self._state.locked():
+            projection, records = self._replay_unlocked()
+        scope_version = int(projection["scopes"].get(project_id, 0))
+        blocks = {
+            block_id: block
+            for block_id, block in projection["blocks"].items()
+            if block["project_id"] == project_id
+            and int(block["scope_version"]) == scope_version
+            and block["lifecycle_state"] != ProgressLifecycle.TOMBSTONED.value
+        }
+        block_ids = {str(block["block_id"]) for block in blocks.values()}
+        events: list[tuple[int, ProgressMaterialEvent]] = []
+        conflicts = 0
+        for record in records:
+            event = validate_progress_material_event(record["event"])
+            if event.project_id != project_id or event.scope_version != scope_version or event.block_id not in block_ids:
+                continue
+            canonical = (
+                projection["events"].get(event.event_id) == event.digest
+                and projection["dedupe"].get(event.dedupe_key) == event.semantic_digest
+            )
+            if not canonical:
+                conflicts += 1
+                continue
+            events.append((int(record["event_seq"]), event))
+
+        scope_started_at_ms = min((event.observed_at_ms for _, event in events), default=None)
+        previous_admitted: dict[str, int] = {}
+        proof_rows: list[dict[str, Any]] = []
+        ownership: dict[str, list[tuple[int, str]]] = {}
+        latest_by_task: dict[str, tuple[int, ProgressMaterialEvent]] = {}
+        for event_seq, event in events:
+            ownership.setdefault(event.task_id, []).append((event.observed_at_ms, event.owner_id))
+            latest_by_task[event.task_id] = (event_seq, event)
+            prior = previous_admitted.get(event.block_id, 0)
+            delta = event.admitted_proof_weight - prior
+            previous_admitted[event.block_id] = event.admitted_proof_weight
+            if not observed_after_ms <= event.observed_at_ms <= observed_before_ms:
+                continue
+            scope_boundary = event.observed_at_ms == scope_started_at_ms
+            if not delta and not scope_boundary:
+                continue
+            proof_rows.append({
+                "observed_at_ms": event.observed_at_ms,
+                "event_seq": event_seq,
+                "event_id": event.event_id,
+                "event_digest": event.digest,
+                "task_id": event.task_id,
+                "owner_id": event.owner_id,
+                "gross_admitted_delta": max(0, delta),
+                "invalidated_delta": max(0, -delta),
+                "scope_start": scope_boundary,
+            })
+
+        retained_samples: dict[tuple[int, str], dict[str, Any]] = {}
+        for raw in token_samples:
+            if not isinstance(raw, Mapping):
+                raise ProgressEventError("token sample must be an object")
+            task_id = _safe_id(raw.get("task_id"), "token sample task_id")
+            observed_at_ms = _positive_int(raw.get("observed_at_ms"), "token sample observed_at_ms", allow_zero=True)
+            tokens = _positive_int(raw.get("tokens"), "token sample tokens", allow_zero=True)
+            if not observed_after_ms <= observed_at_ms <= observed_before_ms:
+                continue
+            key = (observed_at_ms, task_id)
+            retained = retained_samples.get(key)
+            sample = {"observed_at_ms": observed_at_ms, "task_id": task_id, "tokens": tokens}
+            if retained is not None and retained != sample:
+                raise ProgressEventError("token sample identity conflicts with retained value")
+            retained_samples[key] = sample
+        samples = sorted(retained_samples.values(), key=lambda item: (item["observed_at_ms"], item["task_id"]))
+
+        def committed_for(block_group: list[dict[str, Any]]) -> int | None:
+            if not block_group or any(block["committed_weight"] is None for block in block_group):
+                return None
+            total = sum(int(block["committed_weight"]) for block in block_group)
+            return total if total > 0 else None
+
+        def owner_at(task_id: str, observed_at_ms: int) -> str | None:
+            assignments = ownership.get(task_id, [])
+            eligible = [item for item in assignments if item[0] <= observed_at_ms]
+            if eligible:
+                return max(eligible, key=lambda item: item[0])[1]
+            return assignments[0][1] if assignments else None
+
+        def yield_item(
+            scope_type: str,
+            scope_id: str,
+            item_blocks: list[dict[str, Any]],
+            item_proof: list[dict[str, Any]],
+            item_samples: list[dict[str, Any]],
+        ) -> dict[str, Any]:
+            committed = committed_for(item_blocks)
+            gross = sum(int(row["gross_admitted_delta"]) for row in item_proof)
+            invalidated = sum(int(row["invalidated_delta"]) for row in item_proof)
+            tokens = sum(int(row["tokens"]) for row in item_samples)
+            expected_tasks = {str(block["task_id"]) for block in item_blocks}
+            observed_tasks = {str(row["task_id"]) for row in item_samples}
+            waiting = bool(item_blocks) and all(str(block["lifecycle_state"]).startswith("WAITING_") for block in item_blocks)
+            complete_coverage = bool(expected_tasks) and expected_tasks <= observed_tasks
+            if committed is None:
+                state = "UNMEASURED"
+            elif not item_samples and waiting and not gross and not invalidated:
+                state = "NO_TOKEN_ACTIVITY"
+            elif not item_samples or not complete_coverage or (tokens == 0 and (gross or invalidated)):
+                state = "UNMEASURED"
+            elif tokens == 0:
+                state = "NO_TOKEN_ACTIVITY"
+            else:
+                state = "MEASURED"
+            net_points = None if committed is None else round((gross - invalidated) * 100 / committed, 4)
+            rework_drag = None if committed is None else round(invalidated * 100 / committed, 4)
+            measured_yield = (
+                round(net_points * YIELD_TOKEN_SCALE / tokens, 4)
+                if state == "MEASURED" and net_points is not None and tokens > 0
+                else None
+            )
+            confidence = "HIGH" if state == "MEASURED" and conflicts == 0 else (
+                "PARTIAL" if item_samples or item_proof else "UNKNOWN"
+            )
+            points_by_time: dict[int, dict[str, Any]] = {}
+            for row in item_proof:
+                point = points_by_time.setdefault(row["observed_at_ms"], {
+                    "observed_at_ms": row["observed_at_ms"], "scope_version": scope_version,
+                    "scope_start": False, "gross_admitted_delta": 0, "invalidated_delta": 0,
+                    "observed_tokens": 0, "material_sequence": None, "material_digest": None,
+                })
+                point["gross_admitted_delta"] += row["gross_admitted_delta"]
+                point["invalidated_delta"] += row["invalidated_delta"]
+                point["scope_start"] = point["scope_start"] or row["scope_start"]
+                point["material_sequence"] = row["event_seq"]
+                point["material_digest"] = row["event_digest"]
+            for row in item_samples:
+                point = points_by_time.setdefault(row["observed_at_ms"], {
+                    "observed_at_ms": row["observed_at_ms"], "scope_version": scope_version,
+                    "scope_start": False, "gross_admitted_delta": 0, "invalidated_delta": 0,
+                    "observed_tokens": 0, "material_sequence": None, "material_digest": None,
+                })
+                point["observed_tokens"] += row["tokens"]
+            cumulative_gross = cumulative_invalidated = cumulative_tokens = 0
+            series = []
+            for point in sorted(points_by_time.values(), key=lambda item: item["observed_at_ms"]):
+                cumulative_gross += int(point["gross_admitted_delta"])
+                cumulative_invalidated += int(point["invalidated_delta"])
+                cumulative_tokens += int(point["observed_tokens"])
+                cumulative_points = None if committed is None else round((cumulative_gross - cumulative_invalidated) * 100 / committed, 4)
+                series.append({
+                    **point,
+                    "net_scope_points": cumulative_points,
+                    "yield_per_100k": (
+                        round(cumulative_points * YIELD_TOKEN_SCALE / cumulative_tokens, 4)
+                        if cumulative_points is not None and cumulative_tokens > 0 else None
+                    ),
+                })
+            latest_event = max((row["observed_at_ms"] for row in item_proof), default=None)
+            latest_token = max((row["observed_at_ms"] for row in item_samples), default=None)
+            return {
+                "scope": {"type": scope_type, "id": scope_id, "project_id": project_id},
+                "scope_version": scope_version or None,
+                "committed_scope_weight": committed,
+                "gross_admitted_delta": gross,
+                "invalidated_delta": invalidated,
+                "net_scope_points": net_points,
+                "observed_tokens": tokens,
+                "yield_per_100k": measured_yield,
+                "measurement_state": state,
+                "confidence": confidence,
+                "freshness": {
+                    "through_event_seq": projection["cursor"]["event_seq"],
+                    "event_digest": projection["cursor"]["event_digest"],
+                    "event_observed_at_ms": latest_event,
+                    "token_sampled_at_ms": latest_token,
+                },
+                "rework_drag": rework_drag,
+                "scope_started_at_ms": scope_started_at_ms,
+                "series": series[-series_limit:],
+                "series_truncated": len(series) > series_limit,
+            }
+
+        project_blocks = list(blocks.values())
+        project_item = yield_item("project", project_id, project_blocks, proof_rows, samples)
+        task_items = []
+        for task_id in sorted({str(block["task_id"]) for block in project_blocks}):
+            task_blocks = [block for block in project_blocks if block["task_id"] == task_id]
+            task_items.append(yield_item(
+                "task", task_id, task_blocks,
+                [row for row in proof_rows if row["task_id"] == task_id],
+                [row for row in samples if row["task_id"] == task_id],
+            ))
+        owner_ids = sorted({
+            str(owner_id)
+            for assignments in ownership.values()
+            for _, owner_id in assignments
+        })
+        owner_items = []
+        for owner_id in owner_ids:
+            owner_tasks = {
+                task_id for task_id, assignments in ownership.items()
+                if any(assigned_owner == owner_id for _, assigned_owner in assignments)
+            }
+            owner_blocks = [block for block in project_blocks if str(block["task_id"]) in owner_tasks]
+            owner_items.append(yield_item(
+                "owner", owner_id, owner_blocks,
+                [row for row in proof_rows if row["owner_id"] == owner_id],
+                [row for row in samples if row["task_id"] in owner_tasks and owner_at(row["task_id"], row["observed_at_ms"]) == owner_id],
+            ))
+
+        attention = []
+        for event_seq, event in latest_by_task.values():
+            kind = None
+            severity = "warning"
+            if event.event_kind in {ProgressEventKind.PROOF_INVALIDATED, ProgressEventKind.REWORK_REQUESTED}:
+                kind = "PROOF_INVALIDATED"
+            elif event.event_kind is ProgressEventKind.LIVENESS_STALE:
+                kind = "STALLED"
+            elif event.event_kind is ProgressEventKind.RETRY_STARTED or event.lifecycle_state is ProgressLifecycle.RETRYING:
+                kind = "RETRYING"
+            elif event.lifecycle_state is ProgressLifecycle.WAITING_EXTERNAL and "blocked" in event.flags:
+                kind, severity = "BLOCKER", "critical"
+            elif event.eta_end_ms is not None and event.eta_end_ms < observed_before_ms and event.lifecycle_state not in {ProgressLifecycle.ACCEPTED, ProgressLifecycle.VERIFIED}:
+                kind = "ETA_DRIFT"
+            if kind is None:
+                continue
+            identity = {
+                "kind": kind, "project_id": project_id, "task_id": event.task_id,
+                "owner_id": event.owner_id, "event_seq": event_seq, "event_digest": event.digest,
+            }
+            attention.append({
+                "id": hashlib.sha256(json.dumps(identity, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest(),
+                "kind": kind,
+                "project_id": project_id,
+                "task_id": event.task_id,
+                "owner_id": event.owner_id,
+                "material_sequence": event_seq,
+                "material_digest": event.digest,
+                "observed_at_ms": event.observed_at_ms,
+                "severity": severity,
+                "sentence": {
+                    "BLOCKER": "This task is waiting on an exact external release.",
+                    "STALLED": "This task has no fresh material receipt.",
+                    "RETRYING": "This task is executing a bounded retry.",
+                    "PROOF_INVALIDATED": "This task has proof returned for correction.",
+                    "ETA_DRIFT": "This task is past its receipt-backed ETA range.",
+                }[kind],
+                "action_target": {
+                    "view": "projects", "project_id": project_id, "task_id": event.task_id,
+                },
+            })
+        return {
+            "schema_version": 1,
+            "project": project_item,
+            "tasks": task_items,
+            "owners": owner_items,
+            "attention_items": sorted(attention, key=lambda item: (item["material_sequence"], item["id"]), reverse=True),
+            "conflict_count": conflicts,
+            "claim_limit": "Verified yield is current-scope admitted proof delta per observed local token count; it is not completion percentage, billing, quality, productivity ranking, or provider usage.",
         }
 
     def project_topology(

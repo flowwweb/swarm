@@ -275,6 +275,135 @@ class ProgressLedgerContractTests(unittest.TestCase):
         with self.assertRaisesRegex(ProgressEventError, "stale progress scope_version"):
             self.ledger.append(stale)
 
+    def test_verified_yield_replays_proof_invalidation_and_duplicate_receipts_once(self) -> None:
+        created = self.event(
+            "yield-created", "yield", task_id="task-yield", committed=10,
+            lifecycle="ACTIVE", observed_at_ms=10,
+        )
+        admitted = self.event(
+            "yield-admitted", "yield", task_id="task-yield", kind="PROOF_ADMITTED",
+            committed=10, admitted=4, lifecycle="REVIEW", observed_at_ms=20,
+        )
+        invalidated = self.event(
+            "yield-invalidated", "yield", task_id="task-yield", kind="PROOF_INVALIDATED",
+            committed=10, admitted=2, lifecycle="INVALIDATED_REWORK", observed_at_ms=30,
+            flags=["rework"], sentence="Two proof points were invalidated.",
+        )
+        for event in (created, admitted, invalidated):
+            self.ledger.append(event)
+        self.assertEqual(self.ledger.append(admitted)["status"], "unchanged")
+
+        projection = self.ledger.project_verified_yield(
+            "project-alpha",
+            [
+                {"task_id": "task-yield", "observed_at_ms": 20, "tokens": 1_000},
+                {"task_id": "task-yield", "observed_at_ms": 30, "tokens": 1_000},
+            ],
+            observed_after_ms=0,
+            observed_before_ms=40,
+        )
+
+        self.assertEqual(projection["project"]["gross_admitted_delta"], 4)
+        self.assertEqual(projection["project"]["invalidated_delta"], 2)
+        self.assertEqual(projection["project"]["net_scope_points"], 20.0)
+        self.assertEqual(projection["project"]["yield_per_100k"], 1_000.0)
+        self.assertEqual(projection["project"]["measurement_state"], "MEASURED")
+        self.assertEqual(projection["project"]["rework_drag"], 20.0)
+        self.assertEqual([item["kind"] for item in projection["attention_items"]], ["PROOF_INVALIDATED"])
+        self.assertEqual(len(projection["project"]["series"]), 3)
+        self.assertTrue(projection["project"]["series"][0]["scope_start"])
+
+    def test_verified_yield_distinguishes_unmeasured_zero_and_no_token_waiting(self) -> None:
+        self.ledger.append(self.event(
+            "yield-ready", "ready", task_id="task-ready", committed=5,
+            lifecycle="READY", observed_at_ms=10,
+        ))
+        unmeasured = self.ledger.project_verified_yield(
+            "project-alpha", [], observed_after_ms=0, observed_before_ms=20,
+        )
+        self.assertEqual(unmeasured["project"]["measurement_state"], "UNMEASURED")
+        self.assertIsNone(unmeasured["project"]["yield_per_100k"])
+
+        zero = self.ledger.project_verified_yield(
+            "project-alpha",
+            [{"task_id": "task-ready", "observed_at_ms": 15, "tokens": 400}],
+            observed_after_ms=0,
+            observed_before_ms=20,
+        )
+        self.assertEqual(zero["project"]["measurement_state"], "MEASURED")
+        self.assertEqual(zero["project"]["yield_per_100k"], 0.0)
+
+        waiting_root = self.root / "waiting"
+        waiting_ledger = ProgressLedger(waiting_root)
+        waiting_ledger.append(self.event(
+            "yield-waiting", "wait", task_id="task-wait", committed=5,
+            lifecycle="WAITING_EXTERNAL", observed_at_ms=10,
+        ))
+        waiting = waiting_ledger.project_verified_yield(
+            "project-alpha", [], observed_after_ms=0, observed_before_ms=20,
+        )
+        self.assertEqual(waiting["project"]["measurement_state"], "NO_TOKEN_ACTIVITY")
+        self.assertIsNone(waiting["project"]["yield_per_100k"])
+
+    def test_verified_yield_starts_a_new_scope_segment_and_retains_handoff_cost(self) -> None:
+        initial = self.event(
+            "scope-one-yield", "yield", task_id="task-yield",
+            committed=10, lifecycle="READY", observed_at_ms=5,
+        )
+        initial["owner_id"] = "owner-before"
+        revised = self.event(
+            "scope-two-yield", "yield", task_id="task-yield", kind="SCOPE_REVISED",
+            scope_version=2, committed=10, lifecycle="ACTIVE", observed_at_ms=10,
+        )
+        revised["owner_id"] = "owner-before"
+        takeover = self.event(
+            "scope-two-takeover", "yield", task_id="task-yield", kind="TAKEOVER_STARTED",
+            scope_version=2, committed=10, lifecycle="ACTIVE", observed_at_ms=20,
+        )
+        takeover["owner_id"] = "owner-after"
+        admitted = self.event(
+            "scope-two-proof", "yield", task_id="task-yield", kind="PROOF_ADMITTED",
+            scope_version=2, committed=10, admitted=5, lifecycle="REVIEW", observed_at_ms=25,
+        )
+        admitted["owner_id"] = "owner-after"
+        self.ledger.append(initial)
+        self.ledger.append(revised)
+        self.ledger.append(takeover)
+        self.ledger.append(admitted)
+        projection = self.ledger.project_verified_yield(
+            "project-alpha",
+            [
+                {"task_id": "task-yield", "observed_at_ms": 15, "tokens": 250},
+                {"task_id": "task-yield", "observed_at_ms": 30, "tokens": 250},
+            ],
+            observed_after_ms=0,
+            observed_before_ms=30,
+        )
+        self.assertEqual(projection["project"]["scope_version"], 2)
+        self.assertTrue(projection["project"]["series"][0]["scope_start"])
+        owners = {item["scope"]["id"]: item for item in projection["owners"]}
+        self.assertEqual(set(owners), {"owner-before", "owner-after"})
+        self.assertEqual(owners["owner-before"]["observed_tokens"], 250)
+        self.assertEqual(owners["owner-after"]["observed_tokens"], 250)
+
+    def test_verified_yield_rejects_conflicting_token_identity_without_ledger_mutation(self) -> None:
+        self.ledger.append(self.event(
+            "yield-created", "yield", task_id="task-yield", committed=10,
+            lifecycle="ACTIVE", observed_at_ms=10,
+        ))
+        before = self.ledger.replay()
+        with self.assertRaisesRegex(ProgressEventError, "token sample identity conflicts"):
+            self.ledger.project_verified_yield(
+                "project-alpha",
+                [
+                    {"task_id": "task-yield", "observed_at_ms": 15, "tokens": 100},
+                    {"task_id": "task-yield", "observed_at_ms": 15, "tokens": 101},
+                ],
+                observed_after_ms=0,
+                observed_before_ms=20,
+            )
+        self.assertEqual(self.ledger.replay(), before)
+
     def test_feed_is_newest_first_project_scoped_and_dedupes_unchanged_material(self) -> None:
         for index in range(1, 6):
             self.ledger.append(self.event(

@@ -3022,6 +3022,37 @@ class ConsoleStore:
             for row in rows
         ]
 
+    def token_sample_series(
+        self,
+        *,
+        project_id: str,
+        thread_ids: set[str] | frozenset[str] | None = None,
+        hours: int = 24,
+    ) -> list[dict[str, Any]]:
+        """Return bounded task-bound token deltas for ledger projections."""
+        cutoff = int(time.time() * 1000) - max(1, min(24 * 30, int(hours))) * 60 * 60 * 1000
+        conditions = ["bucket_ms >= ?", "project_id = ?"]
+        args: list[Any] = [cutoff, project_id]
+        if thread_ids is not None:
+            safe_thread_ids = tuple(sorted(set(thread_ids)))
+            if not safe_thread_ids:
+                return []
+            placeholders = ",".join("?" for _ in safe_thread_ids)
+            conditions.append(f"thread_id IN ({placeholders})")
+            args.extend(safe_thread_ids)
+        with self._lock, closing(self._connect()) as connection:
+            rows = connection.execute(
+                "SELECT bucket_ms, thread_id, delta_tokens FROM token_samples WHERE "
+                + " AND ".join(conditions)
+                + " ORDER BY bucket_ms, thread_id",
+                tuple(args),
+            ).fetchall()
+        return [{
+            "observed_at_ms": int(row["bucket_ms"]),
+            "task_id": str(row["thread_id"]),
+            "tokens": int(row["delta_tokens"]),
+        } for row in rows]
+
     def token_sample_thread_count(
         self,
         *,
@@ -4679,6 +4710,150 @@ class App:
             return overview, nodes, {str(node["id"]) for node in nodes}, {"type": "project", "project_id": project_id}
         return overview, nodes, None, {"type": "all-projects"}
 
+    @staticmethod
+    def _portfolio_yield(projects: list[dict[str, Any]], *, series_limit: int = 96) -> dict[str, Any]:
+        committed_values = [item.get("committed_scope_weight") for item in projects]
+        committed = (
+            sum(int(value) for value in committed_values)
+            if projects and all(value is not None for value in committed_values)
+            else None
+        )
+        gross = sum(int(item["gross_admitted_delta"]) for item in projects)
+        invalidated = sum(int(item["invalidated_delta"]) for item in projects)
+        tokens = sum(int(item["observed_tokens"]) for item in projects)
+        net_points = (
+            round((gross - invalidated) * 100 / committed, 4)
+            if committed is not None and committed > 0 else None
+        )
+        measured = bool(projects) and all(item["measurement_state"] == "MEASURED" for item in projects)
+        no_activity = bool(projects) and all(item["measurement_state"] == "NO_TOKEN_ACTIVITY" for item in projects)
+        state = "MEASURED" if measured else ("NO_TOKEN_ACTIVITY" if no_activity else "UNMEASURED")
+        points: dict[int, dict[str, Any]] = {}
+        for project in projects:
+            for source in project["series"]:
+                point = points.setdefault(int(source["observed_at_ms"]), {
+                    "observed_at_ms": int(source["observed_at_ms"]),
+                    "scope_versions": [],
+                    "scope_start": False,
+                    "gross_admitted_delta": 0,
+                    "invalidated_delta": 0,
+                    "observed_tokens": 0,
+                    "material_sequences": [],
+                    "material_digests": [],
+                })
+                point["scope_versions"].append({
+                    "project_id": project["scope"]["project_id"],
+                    "scope_version": source["scope_version"],
+                })
+                point["scope_start"] = point["scope_start"] or bool(source["scope_start"])
+                point["gross_admitted_delta"] += int(source["gross_admitted_delta"])
+                point["invalidated_delta"] += int(source["invalidated_delta"])
+                point["observed_tokens"] += int(source["observed_tokens"])
+                if source["material_sequence"] is not None:
+                    point["material_sequences"].append(source["material_sequence"])
+                    point["material_digests"].append(source["material_digest"])
+        cumulative_gross = cumulative_invalidated = cumulative_tokens = 0
+        series = []
+        for point in sorted(points.values(), key=lambda item: item["observed_at_ms"]):
+            cumulative_gross += point["gross_admitted_delta"]
+            cumulative_invalidated += point["invalidated_delta"]
+            cumulative_tokens += point["observed_tokens"]
+            cumulative_points = (
+                round((cumulative_gross - cumulative_invalidated) * 100 / committed, 4)
+                if committed is not None and committed > 0 else None
+            )
+            series.append({
+                **point,
+                "scope_versions": sorted(point["scope_versions"], key=lambda item: item["project_id"]),
+                "material_sequences": sorted(point["material_sequences"]),
+                "material_digests": sorted(set(point["material_digests"])),
+                "net_scope_points": cumulative_points,
+                "yield_per_100k": (
+                    round(cumulative_points * 100_000 / cumulative_tokens, 4)
+                    if cumulative_points is not None and cumulative_tokens > 0 else None
+                ),
+            })
+        latest_event = max(
+            (int(item["freshness"]["event_observed_at_ms"]) for item in projects if item["freshness"]["event_observed_at_ms"] is not None),
+            default=None,
+        )
+        latest_token = max(
+            (int(item["freshness"]["token_sampled_at_ms"]) for item in projects if item["freshness"]["token_sampled_at_ms"] is not None),
+            default=None,
+        )
+        return {
+            "scope": {"type": "portfolio", "id": "portfolio"},
+            "scope_version": None,
+            "committed_scope_weight": committed,
+            "gross_admitted_delta": gross,
+            "invalidated_delta": invalidated,
+            "net_scope_points": net_points,
+            "observed_tokens": tokens,
+            "yield_per_100k": (
+                round(net_points * 100_000 / tokens, 4)
+                if state == "MEASURED" and net_points is not None and tokens > 0 else None
+            ),
+            "measurement_state": state,
+            "confidence": (
+                "HIGH" if measured and all(item["confidence"] == "HIGH" for item in projects)
+                else ("PARTIAL" if projects else "UNKNOWN")
+            ),
+            "freshness": {"event_observed_at_ms": latest_event, "token_sampled_at_ms": latest_token},
+            "rework_drag": (
+                round(invalidated * 100 / committed, 4)
+                if committed is not None and committed > 0 else None
+            ),
+            "series": series[-series_limit:],
+            "series_truncated": len(series) > series_limit,
+        }
+
+    def _verified_yield(
+        self,
+        *,
+        nodes: list[dict[str, Any]],
+        scope: dict[str, Any],
+        hours: int,
+        now_ms: int,
+    ) -> dict[str, Any]:
+        if scope["type"] == "ctrl":
+            return {
+                "schema_version": 1,
+                "measurement_state": "UNMEASURED",
+                "reason": "CTRL-scoped proof weighting is not a canonical ProgressLedger denominator.",
+                "portfolio": None, "projects": [], "tasks": [], "owners": [], "attention_items": [],
+                "claim_limit": "Select a project or portfolio scope; CTRL token filtering is not used to invent proof weight.",
+            }
+        project_ids = sorted({str(node["project_id"]) for node in nodes if node.get("project_id")})
+        after_ms = max(0, now_ms - hours * 60 * 60 * 1000)
+        projections = []
+        for observed_project_id in project_ids:
+            task_ids = {str(node["id"]) for node in nodes if node.get("project_id") == observed_project_id}
+            samples = self.store.token_sample_series(
+                project_id=observed_project_id, thread_ids=task_ids, hours=hours,
+            )
+            projections.append(self.progress_ledger.project_verified_yield(
+                observed_project_id, samples,
+                observed_after_ms=after_ms, observed_before_ms=now_ms,
+            ))
+        projects = [projection["project"] for projection in projections]
+        return {
+            "schema_version": 1,
+            "formula": "net admitted current-scope points per 100,000 observed local tokens",
+            "window": {"after_ms": after_ms, "before_ms": now_ms, "hours": hours},
+            "portfolio": self._portfolio_yield(projects),
+            "projects": projects,
+            "tasks": [item for projection in projections for item in projection["tasks"]],
+            "owners": [item for projection in projections for item in projection["owners"]],
+            "attention_items": sorted(
+                [item for projection in projections for item in projection["attention_items"]],
+                key=lambda item: (item["material_sequence"], item["id"]), reverse=True,
+            ),
+            "claim_limit": (
+                "Derived from the canonical material ledger and persisted local token deltas. It is not completion, "
+                "billing, quality, agent ranking, or proof acceptance; unread state remains client display state."
+            ),
+        }
+
     def usage_history(
         self,
         *,
@@ -4769,6 +4944,7 @@ class App:
         status = "no_data" if not history else (
             "partial" if expected_threads is not None and observed_threads < expected_threads else "ok"
         )
+        verified_yield = self._verified_yield(nodes=nodes, scope=scope, hours=hours, now_ms=now_ms)
         return {
             "ok": True,
             "status": status,
@@ -4790,6 +4966,7 @@ class App:
             "token_field": "Codex JSONL token_count total/input+output, SQLite threads.tokens_used fallback",
             "label": "Local token-count aggregate; not billing.",
             "usage_consumed": False,
+            "verified_yield": verified_yield,
             "claim_limit": "Aggregated token deltas and time only; prompts, responses, tools, credentials, and billing are excluded.",
         }
 
