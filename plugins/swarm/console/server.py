@@ -305,14 +305,14 @@ class CodexStdioBridge:
                 if thread_message.get("error") is not None: return AutoBridgeResult(False, failure_kind="THREAD_UNAVAILABLE", transient=True)
                 resolved_thread = thread_id or self._result_id(thread_message, "thread")
                 if not resolved_thread: return AutoBridgeResult(False, failure_kind="MISSING_THREAD")
-                if retain_ids is not None: retain_ids(resolved_thread, "")
-                send({"method": "turn/start", "id": 2, "params": {"threadId": resolved_thread, "input": [{"type": "text", "text": instruction}], "cwd": str(cwd)}})
+                if retain_ids is not None: retain_ids(resolved_thread, "", True)
                 turn_requested = True
+                send({"method": "turn/start", "id": 2, "params": {"threadId": resolved_thread, "input": [{"type": "text", "text": instruction}], "cwd": str(cwd)}})
                 turn_message = receive(lambda item: item.get("id") == 2)
                 if turn_message.get("error") is not None: return AutoBridgeResult(False, resolved_thread, failure_kind="TURN_START_FAILED", transient=True)
                 resolved_turn = self._result_id(turn_message, "turn")
                 if not resolved_turn: return AutoBridgeResult(False, resolved_thread, failure_kind="MISSING_TURN", turn_started=True)
-                if retain_ids is not None: retain_ids(resolved_thread, resolved_turn)
+                if retain_ids is not None: retain_ids(resolved_thread, resolved_turn, True)
                 terminal = receive(lambda item: item.get("method") == "turn/completed")
                 event = self.adapter.translate_event(terminal)
                 status = event.status.casefold()
@@ -326,7 +326,7 @@ class CodexStdioBridge:
     def reconcile(self, *, cwd: Path, thread_id: str, turn_id: str) -> AutoBridgeResult:
         """Read one retained App Server turn; never starts or resumes work."""
         thread_id = _auto_id(thread_id, "thread_id")
-        turn_id = _auto_id(turn_id, "turn_id")
+        turn_id = "" if not turn_id else _auto_id(turn_id, "turn_id")
         try:
             def transact(send: Any, receive: Any) -> AutoBridgeResult:
                 send({"method": "thread/read", "id": 1, "params": {"threadId": thread_id, "includeTurns": True}})
@@ -335,14 +335,24 @@ class CodexStdioBridge:
                 result = message.get("result") if isinstance(message.get("result"), dict) else {}
                 thread = result.get("thread") if isinstance(result.get("thread"), dict) else result
                 turns = thread.get("turns") if isinstance(thread, dict) else []
-                retained = next((item for item in turns if isinstance(item, dict) and str(item.get("id") or "") == turn_id), None)
-                if retained is None: return AutoBridgeResult(False, thread_id, turn_id, failure_kind="TURN_UNREACHABLE", transient=True, turn_started=True, reachable=True)
+                resolved_turn = turn_id
+                if not resolved_turn:
+                    candidates = [item for item in turns if isinstance(item, dict) and str(item.get("id") or "")]
+                    if not candidates:
+                        return AutoBridgeResult(False, thread_id, failure_kind="TURN_NOT_FOUND", transient=True, turn_started=True, reachable=True)
+                    if len(candidates) != 1:
+                        return AutoBridgeResult(False, thread_id, failure_kind="TURN_ID_AMBIGUOUS", transient=True, turn_started=True, reachable=True)
+                    retained = candidates[0]
+                else:
+                    retained = next((item for item in turns if isinstance(item, dict) and str(item.get("id") or "") == resolved_turn), None)
+                if retained is None: return AutoBridgeResult(False, thread_id, resolved_turn, failure_kind="TURN_UNREACHABLE", transient=True, turn_started=True, reachable=True)
+                resolved_turn = str(retained.get("id") or resolved_turn)
                 status = str(retained.get("status") or "").casefold()
-                digest = _auto_digest({"thread_id": thread_id, "turn_id": turn_id, "status": status})
+                digest = _auto_digest({"thread_id": thread_id, "turn_id": resolved_turn, "status": status})
                 if status in {"completed", "complete", "interrupted", "failed"}:
                     ok = status in {"completed", "complete"}
-                    return AutoBridgeResult(ok, thread_id, turn_id, digest, "" if ok else "TURN_FAILED", False, True, True, True)
-                return AutoBridgeResult(False, thread_id, turn_id, digest, "TURN_ACTIVE", True, True, False, True)
+                    return AutoBridgeResult(ok, thread_id, resolved_turn, digest, "" if ok else "TURN_FAILED", False, True, True, True)
+                return AutoBridgeResult(False, thread_id, resolved_turn, digest, "TURN_ACTIVE", True, True, False, True)
 
             return self._session(cwd, transact)
         except (OSError, TimeoutError, queue.Empty, subprocess.SubprocessError):
@@ -1898,10 +1908,14 @@ class ConsoleStore:
                 connection.commit()
         return {"claimed": True, "reservation_id": reservation_id, "idempotency_key": identity}
 
-    def retain_auto_host_ids(self, reservation_id: str, thread_id: str, turn_id: str, *, now_ms: int) -> None:
+    def retain_auto_host_ids(
+        self, reservation_id: str, thread_id: str, turn_id: str, submission_started: bool = False, *, now_ms: int,
+    ) -> None:
         reservation_id = _auto_id(reservation_id, "reservation_id")
         thread_id = _auto_id(thread_id, "thread_id")
         turn_id = "" if not turn_id else _auto_id(turn_id, "turn_id")
+        if not isinstance(submission_started, bool):
+            raise ConsoleError("Auto host receipt requires a boolean submission state")
         with self._lock:
             ledger = self.load_execution_ledger()
             reservation = ledger.reservation(reservation_id)
@@ -1916,9 +1930,10 @@ class ConsoleStore:
             reservation.updated_at_ms = now_ms
             self.persist_execution_ledger(ledger, now_ms=now_ms)
             binding = self._auto_binding(reservation) or {}
-            payload = {"ctrl_id": binding.get("ctrl_id"), "project_id": binding.get("project_id"), "reservation_id": reservation_id, "thread_id": thread_id, "turn_id": turn_id}
+            payload = {"ctrl_id": binding.get("ctrl_id"), "project_id": binding.get("project_id"), "reservation_id": reservation_id, "thread_id": thread_id, "turn_id": turn_id, "submission_started": submission_started}
             with closing(self._connect()) as connection:
-                self._retain_auto_event(connection, event_kind="AUTO_HOST_IDS", identity=f"{reservation_id}:{'turn' if turn_id else 'thread'}", payload=payload, now_ms=now_ms)
+                phase = "turn" if turn_id else "submission" if submission_started else "thread"
+                self._retain_auto_event(connection, event_kind="AUTO_HOST_IDS", identity=f"{reservation_id}:{phase}", payload=payload, now_ms=now_ms)
                 connection.commit()
 
     def retain_auto_control(self, event_kind: str, identity: str, payload: dict[str, Any], *, now_ms: int) -> bool:
@@ -2005,12 +2020,10 @@ class ConsoleStore:
                 None,
             )
             bridge = latest_host_read.get("bridge") if isinstance(latest_host_read, dict) and isinstance(latest_host_read.get("bridge"), dict) else {}
-            unreachable = bool(
-                latest_host_read
-                and (latest_host_read.get("reachable") is False or bridge.get("reachable") is False)
-                and (latest_host_read.get("turn_started") is True or bridge.get("turn_started") is True)
-            )
-            if not unreachable:
+            failure_kind = str(latest_host_read.get("failure_kind") or bridge.get("failure_kind") or "") if latest_host_read else ""
+            if failure_kind not in {"TURN_NOT_FOUND", "TURN_UNREACHABLE"} or not (
+                latest_host_read.get("turn_started") is True or bridge.get("turn_started") is True
+            ):
                 raise ConsoleConflict("Auto release requires a retained unreachable-turn reconciliation receipt")
             ledger.fail_transport(reservation_id, ExecutionFailureKind.TIMEOUT, observed_at_ms=now_ms)
             self.persist_execution_ledger(ledger, now_ms=now_ms)
@@ -4945,15 +4958,17 @@ class App:
                 continue
             if result.get("status") != "ATTENTION" and cursor < int(receipt.get("due_generation") or 0):
                 continue
-            related = []
-            for event in lifecycle_events:
-                record = event.get("record") if isinstance(event.get("record"), dict) else {}
-                if event.get("request_id") == receipt_id or (
-                    record.get("goal_id") == receipt.get("goal_id") and record.get("task_id") == receipt.get("task_id")
-                ):
-                    related.append(event)
-            if not related:
+            observed_event_id = str(result.get("event_id") or "")
+            observed_lifecycle = next(
+                (event for event in lifecycle_events if event.get("event_id") == observed_event_id), None,
+            )
+            if observed_lifecycle is None:
                 continue
+            request_identity = (observed_lifecycle.get("request_id"), observed_lifecycle.get("stage_id"))
+            related = [
+                event for event in lifecycle_events
+                if (event.get("request_id"), event.get("stage_id")) == request_identity
+            ]
             lifecycle = max(related, key=lambda item: int(item["event_seq"]))
             if lifecycle_truncated and lifecycle.get("lifecycle_state") in {"STALLED", "BLOCKED"}:
                 continue
@@ -5058,12 +5073,17 @@ class App:
         for state in states:
             self._auto_scope(state["ctrl_id"], state["project_id"])
             if state["in_flight"]:
-                if not state["thread_id"] or not state["turn_id"]:
+                if not state["thread_id"]:
                     return {"dispatched": False, "reason": "UNREACHABLE_IN_FLIGHT", "state": state}
                 result = self.auto_bridge.reconcile(
                     cwd=self._auto_project_root(state["project_id"]),
                     thread_id=state["thread_id"], turn_id=state["turn_id"],
                 )
+                if result.turn_id and not state["turn_id"]:
+                    self.store.retain_auto_host_ids(
+                        state["reservation_id"], result.thread_id, result.turn_id, True,
+                        now_ms=int(time.time() * 1000),
+                    )
                 if not result.terminal:
                     payload = {
                         "ctrl_id": state["ctrl_id"], "project_id": state["project_id"],
@@ -5076,7 +5096,8 @@ class App:
                         "AUTO_RECONCILE", f"{state['reservation_id']}:{_auto_digest(payload)}",
                         payload, now_ms=int(time.time() * 1000),
                     )
-                    return {"dispatched": False, "reason": "IN_FLIGHT" if result.reachable else "UNREACHABLE_IN_FLIGHT", "state": self.store.auto_status(state["ctrl_id"], state["project_id"])}
+                    reason = "IN_FLIGHT" if result.failure_kind == "TURN_ACTIVE" else "UNREACHABLE_IN_FLIGHT"
+                    return {"dispatched": False, "reason": reason, "state": self.store.auto_status(state["ctrl_id"], state["project_id"])}
                 disposition = None if result.ok else {
                     "disposition": "WAIT_USER", "next_operation": "ADMIT_TERMINAL_FAILURE_BEFORE_RETRY",
                     "next_owner": state["ctrl_id"], "next_route": "",
@@ -5122,8 +5143,9 @@ class App:
                     result = self.auto_bridge.run(
                         cwd=project_root, instruction=candidate["instruction"],
                         thread_id=retained_thread_id,
-                        retain_ids=lambda thread_id, turn_id: self.store.retain_auto_host_ids(
-                            claim["reservation_id"], thread_id, turn_id, now_ms=int(time.time() * 1000),
+                        retain_ids=lambda thread_id, turn_id, submission_started: self.store.retain_auto_host_ids(
+                            claim["reservation_id"], thread_id, turn_id, submission_started,
+                            now_ms=int(time.time() * 1000),
                         ),
                     )
                 except (ConsoleError, OSError, RuntimeError):

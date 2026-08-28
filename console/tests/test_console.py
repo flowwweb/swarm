@@ -2541,7 +2541,9 @@ class SwarmConsoleTests(unittest.TestCase):
         return ExecutionConfigGeneration("auto-generation", False, "", "", 1, "host:config:auto")
 
     @staticmethod
-    def _auto_projection(*, retry_action: str = "CONTINUE", reason: str = "EMPTY_OUTPUT") -> dict[str, object]:
+    def _auto_projection(
+        *, retry_action: str = "CONTINUE", reason: str = "EMPTY_OUTPUT", event_id: str = "lifecycle-3",
+    ) -> dict[str, object]:
         receipt = {
             "receipt_id": "expected-auto", "goal_id": "goal-auto", "task_id": "task",
             "owner_id": "task", "lease_version": 1, "target_id": "artifact-auto",
@@ -2554,7 +2556,7 @@ class SwarmConsoleTests(unittest.TestCase):
             "expected_receipts": {"expected-auto": {
                 "receipt": receipt, "event_seq": 1,
                 "result": {
-                    "status": "ATTENTION", "reason": reason, "event_id": "turn-observed",
+                    "status": "ATTENTION", "reason": reason, "event_id": event_id,
                     "event_digest": "f" * 64, "route_digest": "b" * 64,
                     "retry_action": retry_action,
                 },
@@ -2566,15 +2568,16 @@ class SwarmConsoleTests(unittest.TestCase):
         state: str = "STALLED", *, routes: tuple[str, ...] = ("route-a",),
         permitted: tuple[str, ...] = ("route-a", "route-b"), turns: tuple[str, ...] = ("turn-a",),
         sequence: int = 3, release_authority: str | None = None,
-        release_receipt_id: str | None = None,
+        release_receipt_id: str | None = None, request_id: str = "expected-auto",
+        stage_id: str = "stage-auto",
     ) -> dict[str, object]:
         event = {
             "schema_version": 1, "record_type": "REQUEST_LIFECYCLE",
             "event_id": f"lifecycle-{sequence}", "dedupe_key": f"lifecycle-dedupe-{sequence}",
-            "request_id": "expected-auto", "stage_id": "stage-auto", "parent_event_id": None,
+            "request_id": request_id, "stage_id": stage_id, "parent_event_id": None,
             "envelope_digest": "1" * 64, "lifecycle_state": state,
             "record": {
-                "id": "expected-auto", "goal_id": "goal-auto", "task_id": "task",
+                "id": request_id, "goal_id": "goal-auto", "task_id": "task",
                 "next_due_event": "provider or user release",
             },
             "route_receipt_ids": list(routes), "permitted_route_ids": list(permitted),
@@ -2695,6 +2698,25 @@ class SwarmConsoleTests(unittest.TestCase):
         self.assertEqual(terminal["disposition"]["disposition"], "TERMINAL_BLOCKED")
         self.assertEqual(terminal["disposition"]["responsible_authority"], "provider-owner")
 
+        foreign = self._auto_lifecycle(
+            "BLOCKED", routes=("foreign-a", "foreign-b", "foreign-c"),
+            permitted=("foreign-a", "foreign-b", "foreign-c"),
+            turns=("foreign-turn-a", "foreign-turn-b", "foreign-turn-c"), sequence=20,
+            release_authority="foreign-owner", release_receipt_id="d" * 64,
+            request_id="expected-foreign", stage_id="stage-foreign",
+        )
+        app.progress_ledger = self._auto_ledger(
+            projection,
+            self._auto_lifecycle(permitted=("route-a", "route-b")),
+            foreign,
+        )
+        isolated = app._auto_candidate(state, overview, projection)
+        self.assertEqual(
+            (isolated["disposition"]["disposition"], isolated["disposition"]["next_route"]),
+            ("TRY_ALTERNATE", "route-b"),
+        )
+        self.assertNotIn("foreign", json.dumps(isolated, sort_keys=True))
+
     def test_auto_bridge_uses_fixed_argv_jsonl_handshake_and_terminal_event(self) -> None:
         written: list[dict[str, object]] = []
         calls: list[tuple[list[str], dict[str, object]]] = []
@@ -2741,7 +2763,7 @@ class SwarmConsoleTests(unittest.TestCase):
 
     def test_auto_post_start_disconnect_retains_ids_and_never_starts_a_duplicate_turn(self) -> None:
         written: list[dict[str, object]] = []
-        retained: list[tuple[str, str]] = []
+        retained: list[tuple[str, str, bool]] = []
 
         class Input:
             def write(self, value: str) -> None:
@@ -2762,20 +2784,38 @@ class SwarmConsoleTests(unittest.TestCase):
             def kill(self): return None
 
         result = console.CodexStdioBridge(lambda *_args, **_kwargs: Process()).run(
-            cwd=self.root, instruction="bounded", retain_ids=lambda thread, turn: retained.append((thread, turn)),
+            cwd=self.root, instruction="bounded", retain_ids=lambda thread, turn, submitted: retained.append((thread, turn, submitted)),
         )
         self.assertFalse(result.ok)
         self.assertEqual((result.thread_id, result.turn_id, result.turn_started), ("thread-known", "turn-known", True))
-        self.assertEqual(retained, [("thread-known", ""), ("thread-known", "turn-known")])
+        self.assertEqual(retained, [("thread-known", "", True), ("thread-known", "turn-known", True)])
         self.assertEqual([item["method"] for item in written].count("turn/start"), 1)
 
-        def refuse_after_start(thread: str, turn: str) -> None:
+        def refuse_after_start(thread: str, turn: str, submitted: bool) -> None:
             if turn:
                 raise console.ConsoleError("journal unavailable")
         failed_retention = console.CodexStdioBridge(lambda *_args, **_kwargs: Process()).run(
             cwd=self.root, instruction="bounded", retain_ids=refuse_after_start,
         )
         self.assertEqual((failed_retention.thread_id, failed_retention.turn_id, failed_retention.turn_started), ("thread-known", "turn-known", True))
+
+        class AmbiguousInput(Input):
+            def write(self, value: str) -> None:
+                super().write(value)
+                if json.loads(value).get("method") == "turn/start":
+                    raise OSError("delivered write lost its acknowledgement")
+
+        class AmbiguousProcess(Process):
+            stdin = AmbiguousInput()
+
+        ambiguous_retained: list[tuple[str, str, bool]] = []
+        ambiguous = console.CodexStdioBridge(lambda *_args, **_kwargs: AmbiguousProcess()).run(
+            cwd=self.root, instruction="bounded",
+            retain_ids=lambda thread, turn, submitted: ambiguous_retained.append((thread, turn, submitted)),
+        )
+        self.assertEqual((ambiguous.thread_id, ambiguous.turn_id, ambiguous.turn_started), ("thread-known", "", True))
+        self.assertEqual(ambiguous_retained, [("thread-known", "", True)])
+        self.assertEqual([item["method"] for item in written].count("turn/start"), 3)
 
     def test_auto_bridge_reconciliation_is_read_only_and_classifies_terminal_status(self) -> None:
         written: list[dict[str, object]] = []
@@ -2797,6 +2837,16 @@ class SwarmConsoleTests(unittest.TestCase):
         )
         self.assertTrue(result.ok)
         self.assertTrue(result.terminal)
+        self.assertEqual([message["method"] for message in written], ["initialize", "initialized", "thread/read"])
+        written.clear()
+        Process.stdout = io.StringIO("".join(json.dumps(item) + "\n" for item in (
+            {"id": 0, "result": {}},
+            {"id": 1, "result": {"thread": {"id": "thread-read", "turns": [{"id": "turn-read", "status": "completed"}]}}},
+        )))
+        inferred = console.CodexStdioBridge(lambda *_args, **_kwargs: Process()).reconcile(
+            cwd=self.root, thread_id="thread-read", turn_id="",
+        )
+        self.assertEqual((inferred.ok, inferred.turn_id, inferred.terminal), (True, "turn-read", True))
         self.assertEqual([message["method"] for message in written], ["initialize", "initialized", "thread/read"])
 
     def test_auto_closed_due_check_is_pure_and_http_status_requires_full_local_auth(self) -> None:
@@ -2870,7 +2920,7 @@ class SwarmConsoleTests(unittest.TestCase):
     def test_auto_restart_reconciles_active_turn_and_authorized_release_recovers_global_lease(self) -> None:
         self._confirm_root_ctrl()
         def uncertain(*, retain_ids, **_kwargs):
-            retain_ids("thread-retained", "turn-retained")
+            retain_ids("thread-retained", "turn-retained", True)
             return console.AutoBridgeResult(False, "thread-retained", "turn-retained", failure_kind="TRANSPORT_UNAVAILABLE", transient=True, turn_started=True)
         bridge = SimpleNamespace(
             run=mock.Mock(side_effect=uncertain),
@@ -2923,7 +2973,7 @@ class SwarmConsoleTests(unittest.TestCase):
     def test_auto_restart_terminal_read_releases_lease_without_second_turn_start(self) -> None:
         self._confirm_root_ctrl()
         def uncertain(*, retain_ids, **_kwargs):
-            retain_ids("thread-terminal", "turn-terminal")
+            retain_ids("thread-terminal", "turn-terminal", True)
             return console.AutoBridgeResult(False, "thread-terminal", "turn-terminal", failure_kind="TRANSPORT_UNAVAILABLE", transient=True, turn_started=True)
         first_bridge = SimpleNamespace(run=mock.Mock(side_effect=uncertain))
         app = console.App(self.codex_home, self.config, auto_bridge=first_bridge)
@@ -2942,6 +2992,45 @@ class SwarmConsoleTests(unittest.TestCase):
         self.assertEqual(result["reason"], "RECONCILED")
         self.assertFalse(result["state"]["in_flight"])
         read.assert_called_once()
+        self.assertEqual(first_bridge.run.call_count, 1)
+
+    def test_auto_restart_with_submitted_thread_and_no_turn_id_reconciles_or_releases_once(self) -> None:
+        self._confirm_root_ctrl()
+        def uncertain(*, retain_ids, **_kwargs):
+            retain_ids("thread-submitted", "", True)
+            return console.AutoBridgeResult(
+                False, "thread-submitted", failure_kind="TRANSPORT_UNAVAILABLE",
+                transient=True, turn_started=True,
+            )
+        first_bridge = SimpleNamespace(run=mock.Mock(side_effect=uncertain))
+        app = console.App(self.codex_home, self.config, auto_bridge=first_bridge)
+        app.auto_command({"command": "ENABLE", "ctrl_id": "root", "project_id": "project:alpha", "request_id": "enable-submitted"})
+        projection = self._auto_projection()
+        app.progress_ledger = self._auto_ledger(projection, self._auto_lifecycle())
+        first = app.evaluate_auto_once(app._host_overview())
+        self.assertTrue(first["state"]["in_flight"])
+        self.assertEqual((first["state"]["thread_id"], first["state"]["turn_id"]), ("thread-submitted", ""))
+
+        read = mock.Mock(return_value=console.AutoBridgeResult(
+            False, "thread-submitted", failure_kind="TURN_NOT_FOUND",
+            transient=True, turn_started=True, reachable=True,
+        ))
+        restarted = console.App(self.codex_home, self.config, auto_bridge=SimpleNamespace(reconcile=read))
+        restarted.progress_ledger = app.progress_ledger
+        pending = restarted.evaluate_auto_once(restarted._host_overview())
+        self.assertEqual(pending["reason"], "UNREACHABLE_IN_FLIGHT")
+        read.assert_called_once()
+        self.assertEqual(
+            (read.call_args.kwargs["thread_id"], read.call_args.kwargs["turn_id"]),
+            ("thread-submitted", ""),
+        )
+        reservation_id = pending["state"]["reservation_id"]
+        released = restarted.auto_command({
+            "command": "RELEASE_UNREACHABLE", "ctrl_id": "root", "project_id": "project:alpha",
+            "request_id": "release-submitted", "reservation_id": reservation_id,
+            "recovery_authority": "root", "release_condition": "thread read retained no created turn",
+        })
+        self.assertFalse(released["in_flight"])
         self.assertEqual(first_bridge.run.call_count, 1)
 
     def test_auto_health_setting_defaults_off_and_uses_canonical_validator(self) -> None:
