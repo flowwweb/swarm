@@ -2527,13 +2527,70 @@ class SwarmConsoleTests(unittest.TestCase):
         self.assertEqual(disabled["items"], [])
 
     @staticmethod
-    def _auto_decision(ctrl_id: str = "root", project_id: str = "project:alpha") -> dict[str, str]:
+    def _auto_decision(ctrl_id: str = "root", project_id: str = "project:alpha") -> dict[str, object]:
         return {
             "ctrl_id": ctrl_id, "project_id": project_id, "goal_id": "goal-auto",
             "task_id": "task", "owner_id": ctrl_id, "request_id": "expected-auto",
             "observed_turn_id": "turn-observed", "decision_digest": "a" * 64,
             "route_digest": "b" * 64, "instruction_digest": "c" * 64,
+            "next_operation": "CORRECT-EMPTY-OUTPUT-AND-RETRY-ONCE", "request_bytes": 128,
         }
+
+    @staticmethod
+    def _auto_generation() -> ExecutionConfigGeneration:
+        return ExecutionConfigGeneration("auto-generation", False, "", "", 1, "host:config:auto")
+
+    @staticmethod
+    def _auto_projection(*, retry_action: str = "CONTINUE", reason: str = "EMPTY_OUTPUT") -> dict[str, object]:
+        receipt = {
+            "receipt_id": "expected-auto", "goal_id": "goal-auto", "task_id": "task",
+            "owner_id": "task", "lease_version": 1, "target_id": "artifact-auto",
+            "artifact_digest": "e" * 64, "expected_event_kind": "RESULT_PENDING",
+            "due_event": "TURN_COMPLETION", "due_generation": 1, "source_cursor": 0,
+            "attempted_route_digests": ["b" * 64], "observed_at_ms": 1,
+        }
+        return {
+            "cursor": {"event_seq": 2},
+            "expected_receipts": {"expected-auto": {
+                "receipt": receipt, "event_seq": 1,
+                "result": {
+                    "status": "ATTENTION", "reason": reason, "event_id": "turn-observed",
+                    "event_digest": "f" * 64, "route_digest": "b" * 64,
+                    "retry_action": retry_action,
+                },
+            }},
+        }
+
+    @staticmethod
+    def _auto_lifecycle(
+        state: str = "STALLED", *, routes: tuple[str, ...] = ("route-a",),
+        permitted: tuple[str, ...] = ("route-a", "route-b"), turns: tuple[str, ...] = ("turn-a",),
+        sequence: int = 3, release_authority: str | None = None,
+        release_receipt_id: str | None = None,
+    ) -> dict[str, object]:
+        event = {
+            "schema_version": 1, "record_type": "REQUEST_LIFECYCLE",
+            "event_id": f"lifecycle-{sequence}", "dedupe_key": f"lifecycle-dedupe-{sequence}",
+            "request_id": "expected-auto", "stage_id": "stage-auto", "parent_event_id": None,
+            "envelope_digest": "1" * 64, "lifecycle_state": state,
+            "record": {
+                "id": "expected-auto", "goal_id": "goal-auto", "task_id": "task",
+                "next_due_event": "provider or user release",
+            },
+            "route_receipt_ids": list(routes), "permitted_route_ids": list(permitted),
+            "failed_goal_turn_receipt_ids": list(turns), "release_authority": release_authority,
+            "release_receipt_id": release_receipt_id, "release_issued_at_ms": sequence if release_receipt_id else None,
+        }
+        return {
+            "event_seq": sequence, "event_digest": hashlib.sha256(str(sequence).encode()).hexdigest(),
+            "event": event, "_record_type": "REQUEST_LIFECYCLE", "_event": None,
+        }
+
+    def _auto_ledger(self, projection: dict[str, object], *records: dict[str, object]):
+        return SimpleNamespace(
+            replay=mock.Mock(return_value=projection),
+            _bounded_tail_records=mock.Mock(return_value=(list(records), False)),
+        )
 
     def test_auto_defaults_off_and_command_replay_restart_and_safe_disable_are_durable(self) -> None:
         path = self.root / "console" / "auto-state.sqlite3"
@@ -2549,140 +2606,94 @@ class SwarmConsoleTests(unittest.TestCase):
         with self.assertRaises(console.ConsoleConflict):
             store.set_auto("root", "project:alpha", enabled=False, request_id="enable-1", now_ms=3)
 
-        claim = store.claim_auto_dispatch(self._auto_decision(), now_ms=4)
+        claim = store.claim_auto_dispatch(self._auto_decision(), self._auto_generation(), now_ms=4)
         self.assertTrue(claim["claimed"])
         stopping = store.set_auto("root", "project:alpha", enabled=False, request_id="disable-1", now_ms=5)
         self.assertTrue(stopping["in_flight"])
         self.assertTrue(stopping["stop_after_turn"])
         self.assertEqual(stopping["phase"], "STOPPING")
         completed = store.finish_auto_dispatch(
-            "root", "project:alpha",
-            result=console.AutoBridgeResult(True, "thread-1", "turn-1", "d" * 64),
-            failure=None, now_ms=6,
+            claim["reservation_id"],
+            result=console.AutoBridgeResult(True, "thread-1", "turn-1", "d" * 64, terminal=True, turn_started=True, reachable=True),
+            disposition=None, now_ms=6,
         )
         self.assertFalse(completed["enabled"])
         self.assertFalse(completed["in_flight"])
         restarted = console.ConsoleStore(path).auto_status("root", "project:alpha")
         self.assertEqual((restarted["phase"], restarted["revision"]), ("OFF", 2))
 
+        store.set_auto("root", "project:alpha", enabled=True, request_id="enable-2", now_ms=7)
+        revision = store.get_ctrl_override("root")["revision"]
+        store.update_ctrl_override("root", {"reasoning": "high"}, expected_revision=revision, now_ms=8)
+        self.assertTrue(store.auto_status("root", "project:alpha")["enabled"])
+        store.reset_ctrl_override("root", expected_revision=revision + 1)
+        self.assertTrue(store.auto_status("root", "project:alpha")["enabled"])
+
     def test_auto_dispatch_is_single_flight_and_idempotent(self) -> None:
         store = console.ConsoleStore(self.root / "console" / "auto-flight.sqlite3")
         store.set_auto("root", "project:alpha", enabled=True, request_id="enable-root", now_ms=1)
         store.set_auto("ctrl-2", "project:alpha", enabled=True, request_id="enable-two", now_ms=2)
-        first = store.claim_auto_dispatch(self._auto_decision(), now_ms=3)
+        first = store.claim_auto_dispatch(self._auto_decision(), self._auto_generation(), now_ms=3)
         self.assertTrue(first["claimed"])
         second_decision = self._auto_decision("ctrl-2")
         second_decision["decision_digest"] = "d" * 64
-        self.assertEqual(store.claim_auto_dispatch(second_decision, now_ms=4)["reason"], "IN_FLIGHT")
-        self.assertEqual(store.claim_auto_dispatch(self._auto_decision(), now_ms=5)["reason"], "REPLAY")
+        self.assertEqual(store.claim_auto_dispatch(second_decision, self._auto_generation(), now_ms=4)["reason"], "IN_FLIGHT")
+        self.assertEqual(store.claim_auto_dispatch(self._auto_decision(), self._auto_generation(), now_ms=5)["reason"], "IN_FLIGHT")
         conflicting = self._auto_decision()
         conflicting["owner_id"] = "other-owner"
-        with self.assertRaises(console.ConsoleConflict):
-            store.claim_auto_dispatch(conflicting, now_ms=6)
+        self.assertEqual(store.claim_auto_dispatch(conflicting, self._auto_generation(), now_ms=6)["reason"], "IN_FLIGHT")
         self.assertTrue(console.ConsoleStore(store.path).auto_status("root", "project:alpha")["in_flight"])
+        with closing(sqlite3.connect(store.path)) as connection:
+            self.assertIsNone(connection.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='auto_ctrl_state'").fetchone())
 
-    def test_auto_failure_dispositions_are_exclusive_and_terminal_requires_exhaustion(self) -> None:
-        def failure(route: str, *, permitted: list[str], human: bool = False) -> dict[str, object]:
-            return {
-                "ctrl_id": "root", "project_id": "project:alpha", "goal_id": "goal-auto",
-                "task_id": "task", "owner_id": "root", "route_digest": route,
-                "failure_kind": "HOST_FAILED", "permitted_routes": permitted,
-                "human_gate": human,
-                "release_condition": "user approves a new route" if human else "",
-                "responsible_authority": "root" if human else "",
-                "retry_action": "CONTINUE", "ledger_state": "ATTENTION",
-            }
-
-        route_a, route_b, route_c = "a" * 64, "b" * 64, "c" * 64
-        retry = console.ConsoleStore._derive_auto_disposition([], failure(route_a, permitted=[route_a]))
-        self.assertEqual(retry["disposition"], "RETRY_SAME")
-        alternate = console.ConsoleStore._derive_auto_disposition(
-            [failure(route_a, permitted=[route_a, route_b])],
-            {**failure(route_a, permitted=[route_a, route_b]), "retry_action": "REASSESS_ROOT_CAUSE"},
-        )
-        self.assertEqual((alternate["disposition"], alternate["next_route"]), ("TRY_ALTERNATE", route_b))
-        waiting = console.ConsoleStore._derive_auto_disposition([], failure(route_a, permitted=[route_a], human=True))
-        self.assertEqual(waiting["disposition"], "WAIT_USER")
-
-        not_terminal = console.ConsoleStore._derive_auto_disposition(
-            [failure(route_a, permitted=[route_a, route_b, route_c])],
-            failure(route_b, permitted=[route_a, route_b, route_c]),
-        )
-        self.assertNotEqual(not_terminal["disposition"], "TERMINAL_BLOCKED")
-        last = failure(route_c, permitted=[route_a, route_b, route_c])
-        last.update(
-            release_condition="provider recovers", responsible_authority="provider-owner",
-        )
-        retained = [failure(route_a, permitted=[route_a, route_b, route_c]), failure(route_b, permitted=[route_a, route_b, route_c])]
-        self.assertNotEqual(
-            console.ConsoleStore._derive_auto_disposition(retained, last)["disposition"],
-            "TERMINAL_BLOCKED",
-        )
-        last["ledger_state"] = "BLOCKED"
-        terminal = console.ConsoleStore._derive_auto_disposition(
-            retained, last,
-        )
-        self.assertEqual(terminal["disposition"], "TERMINAL_BLOCKED")
-        self.assertEqual(terminal["responsible_authority"], "provider-owner")
-
-    def test_auto_failure_and_disposition_are_one_atomic_receipt_and_missing_pair_is_attention(self) -> None:
-        path = self.root / "console" / "auto-failure.sqlite3"
-        store = console.ConsoleStore(path)
-        store.set_auto("root", "project:alpha", enabled=True, request_id="enable-failure", now_ms=1)
-        store.claim_auto_dispatch(self._auto_decision(), now_ms=2)
-        failure = {
-            "ctrl_id": "root", "project_id": "project:alpha", "goal_id": "goal-auto",
-            "task_id": "task", "owner_id": "root", "route_digest": "b" * 64,
-            "failure_kind": "TRANSPORT_UNAVAILABLE", "permitted_routes": ["b" * 64],
-            "human_gate": False, "release_condition": "", "responsible_authority": "",
-            "retry_action": "CONTINUE", "ledger_state": "ATTENTION",
-        }
-        result = store.finish_auto_dispatch(
-            "root", "project:alpha",
-            result=console.AutoBridgeResult(False, failure_kind="TRANSPORT_UNAVAILABLE", transient=True),
-            failure=failure, now_ms=3,
-        )
-        self.assertEqual(result["last_disposition"], "RETRY_SAME")
-        with closing(sqlite3.connect(path)) as connection:
-            kinds = [row[0] for row in connection.execute(
-                "SELECT event_kind FROM execution_event_receipts WHERE event_kind LIKE 'AUTO_%' ORDER BY event_kind"
-            )]
-            reservation_id = "auto-orphan"
-            connection.execute(
-                "UPDATE auto_ctrl_state SET reservation_id = ? WHERE ctrl_id = 'root'", (reservation_id,),
-            )
-            connection.execute(
-                "INSERT INTO execution_event_receipts(event_digest, retained_at_ms, event_kind, identity, payload_json, payload_digest) "
-                "VALUES (?, 4, 'AUTO_FAILURE', ?, '{}', ?)", ("e" * 64, reservation_id, "e" * 64),
-            )
-            connection.commit()
-        self.assertIn("AUTO_FAILURE_DISPOSITION", kinds)
-        self.assertEqual(store.auto_status("root", "project:alpha")["attention"]["kind"], "BROKEN_HANDOFF")
-
-    def test_auto_failure_binding_conflict_is_strict_noop(self) -> None:
-        path = self.root / "console" / "auto-binding.sqlite3"
-        store = console.ConsoleStore(path)
-        store.set_auto("root", "project:alpha", enabled=True, request_id="enable-binding", now_ms=1)
-        store.claim_auto_dispatch(self._auto_decision(), now_ms=2)
-        failure = {
-            "ctrl_id": "root", "project_id": "project:alpha", "goal_id": "goal-auto",
-            "task_id": "wrong-task", "owner_id": "root", "route_digest": "b" * 64,
-            "failure_kind": "HOST_FAILED", "permitted_routes": ["b" * 64],
-            "human_gate": False, "release_condition": "", "responsible_authority": "",
-            "retry_action": "CONTINUE", "ledger_state": "ATTENTION",
-        }
-        before = store.auto_status("root", "project:alpha")
-        with self.assertRaises(console.ConsoleConflict):
+    def test_auto_failure_without_one_disposition_is_strict_noop(self) -> None:
+        store = console.ConsoleStore(self.root / "console" / "auto-no-disposition.sqlite3")
+        store.set_auto("root", "project:alpha", enabled=True, request_id="enable", now_ms=1)
+        claim = store.claim_auto_dispatch(self._auto_decision(), self._auto_generation(), now_ms=2)
+        before = store.load_execution_ledger().reservation(claim["reservation_id"]).snapshot()
+        with self.assertRaises(console.ConsoleError):
             store.finish_auto_dispatch(
-                "root", "project:alpha", result=console.AutoBridgeResult(False, failure_kind="HOST_FAILED"),
-                failure=failure, now_ms=3,
+                claim["reservation_id"],
+                result=console.AutoBridgeResult(False, failure_kind="TRANSPORT_UNAVAILABLE", transient=True),
+                disposition=None, now_ms=3,
             )
-        after = store.auto_status("root", "project:alpha")
-        self.assertEqual(before, after)
-        with closing(sqlite3.connect(path)) as connection:
-            self.assertEqual(connection.execute(
-                "SELECT COUNT(*) FROM execution_event_receipts WHERE event_kind = 'AUTO_FAILURE_DISPOSITION'"
-            ).fetchone()[0], 0)
+        self.assertEqual(store.load_execution_ledger().reservation(claim["reservation_id"]).snapshot(), before)
+
+    def test_auto_candidate_consumes_lifecycle_routes_gates_and_deterministic_rubric(self) -> None:
+        app = console.App(self.codex_home, self.config)
+        state = {"ctrl_id": "root", "project_id": "project:alpha"}
+        overview = console.build_overview(self.codex_home, self.config)
+        projection = self._auto_projection(retry_action="REASSESS_ROOT_CAUSE")
+        app.progress_ledger = self._auto_ledger(projection, self._auto_lifecycle())
+        first = app._auto_candidate(state, overview, projection)
+        second = app._auto_candidate(state, overview, projection)
+        self.assertEqual(first, second)
+        self.assertEqual((first["disposition"]["disposition"], first["disposition"]["next_route"]), ("TRY_ALTERNATE", "route-b"))
+        self.assertEqual((first["rubric"]["risk"], first["rubric"]["confidence"]), ("UNKNOWN", "LOW"))
+        self.assertEqual(first["rubric"]["proof_strength"], 0)
+        retry_projection = self._auto_projection(retry_action="CONTINUE")
+        retry = app._auto_candidate(state, overview, retry_projection)
+        self.assertEqual(retry["disposition"]["disposition"], "RETRY_SAME")
+        self.assertNotEqual(retry["decision_digest"], first["decision_digest"])
+
+        app.progress_ledger = self._auto_ledger(projection, self._auto_lifecycle("KEEP_OUT", routes=(), permitted=(), turns=()))
+        waiting = app._auto_candidate(state, overview, projection)
+        self.assertEqual(waiting["disposition"]["disposition"], "WAIT_USER")
+        self.assertTrue(waiting["rubric"]["user_keep_out"])
+
+        stalled = [
+            self._auto_lifecycle(routes=(route,), permitted=("route-a", "route-b", "route-c"), turns=(f"turn-{index}",), sequence=index + 2)
+            for index, route in enumerate(("route-a", "route-b", "route-c"), 1)
+        ]
+        blocked = self._auto_lifecycle(
+            "BLOCKED", routes=("route-a", "route-b", "route-c"),
+            permitted=("route-a", "route-b", "route-c"), turns=("turn-1", "turn-2", "turn-3"),
+            sequence=10, release_authority="provider-owner", release_receipt_id="c" * 64,
+        )
+        app.progress_ledger = self._auto_ledger(projection, *stalled, blocked)
+        terminal = app._auto_candidate(state, overview, projection)
+        self.assertEqual(terminal["disposition"]["disposition"], "TERMINAL_BLOCKED")
+        self.assertEqual(terminal["disposition"]["responsible_authority"], "provider-owner")
 
     def test_auto_bridge_uses_fixed_argv_jsonl_handshake_and_terminal_event(self) -> None:
         written: list[dict[str, object]] = []
@@ -2722,10 +2733,71 @@ class SwarmConsoleTests(unittest.TestCase):
 
         result = console.CodexStdioBridge(factory).run(cwd=self.root, instruction="one bounded action")
         self.assertTrue(result.ok)
+        self.assertTrue(result.terminal)
         self.assertEqual([item["method"] for item in written], ["initialize", "initialized", "thread/start", "turn/start"])
         self.assertEqual(calls[0][0], ["codex", "app-server", "--listen", "stdio://"])
         self.assertFalse(calls[0][1]["shell"])
         self.assertEqual(written[-1]["params"]["input"], [{"type": "text", "text": "one bounded action"}])
+
+    def test_auto_post_start_disconnect_retains_ids_and_never_starts_a_duplicate_turn(self) -> None:
+        written: list[dict[str, object]] = []
+        retained: list[tuple[str, str]] = []
+
+        class Input:
+            def write(self, value: str) -> None:
+                written.append(json.loads(value))
+            def flush(self) -> None: return None
+
+        class Process:
+            stdin = Input()
+            def __init__(self):
+                self.stdout = io.StringIO("".join(json.dumps(item) + "\n" for item in (
+                    {"id": 0, "result": {}},
+                    {"id": 1, "result": {"thread": {"id": "thread-known"}}},
+                    {"id": 2, "result": {"turn": {"id": "turn-known"}}},
+                )))
+            def poll(self): return None
+            def terminate(self): return None
+            def wait(self, timeout=None): return 0
+            def kill(self): return None
+
+        result = console.CodexStdioBridge(lambda *_args, **_kwargs: Process()).run(
+            cwd=self.root, instruction="bounded", retain_ids=lambda thread, turn: retained.append((thread, turn)),
+        )
+        self.assertFalse(result.ok)
+        self.assertEqual((result.thread_id, result.turn_id, result.turn_started), ("thread-known", "turn-known", True))
+        self.assertEqual(retained, [("thread-known", ""), ("thread-known", "turn-known")])
+        self.assertEqual([item["method"] for item in written].count("turn/start"), 1)
+
+        def refuse_after_start(thread: str, turn: str) -> None:
+            if turn:
+                raise console.ConsoleError("journal unavailable")
+        failed_retention = console.CodexStdioBridge(lambda *_args, **_kwargs: Process()).run(
+            cwd=self.root, instruction="bounded", retain_ids=refuse_after_start,
+        )
+        self.assertEqual((failed_retention.thread_id, failed_retention.turn_id, failed_retention.turn_started), ("thread-known", "turn-known", True))
+
+    def test_auto_bridge_reconciliation_is_read_only_and_classifies_terminal_status(self) -> None:
+        written: list[dict[str, object]] = []
+        class Input:
+            def write(self, value: str) -> None: written.append(json.loads(value))
+            def flush(self) -> None: return None
+        class Process:
+            stdin = Input()
+            stdout = io.StringIO("".join(json.dumps(item) + "\n" for item in (
+                {"id": 0, "result": {}},
+                {"id": 1, "result": {"thread": {"id": "thread-read", "turns": [{"id": "turn-read", "status": "completed"}]}}},
+            )))
+            def poll(self): return None
+            def terminate(self): return None
+            def wait(self, timeout=None): return 0
+            def kill(self): return None
+        result = console.CodexStdioBridge(lambda *_args, **_kwargs: Process()).reconcile(
+            cwd=self.root, thread_id="thread-read", turn_id="turn-read",
+        )
+        self.assertTrue(result.ok)
+        self.assertTrue(result.terminal)
+        self.assertEqual([message["method"] for message in written], ["initialize", "initialized", "thread/read"])
 
     def test_auto_closed_due_check_is_pure_and_http_status_requires_full_local_auth(self) -> None:
         app = console.App(self.codex_home, self.config)
@@ -2754,51 +2826,56 @@ class SwarmConsoleTests(unittest.TestCase):
     def test_auto_due_event_dispatches_once_and_host_completion_is_zero_progress(self) -> None:
         self._confirm_root_ctrl()
         bridge = SimpleNamespace(run=mock.Mock(return_value=console.AutoBridgeResult(
-            True, "thread-auto", "turn-auto", "d" * 64,
+            True, "thread-auto", "turn-auto", "d" * 64, turn_started=True, terminal=True, reachable=True,
         )))
         app = console.App(self.codex_home, self.config, auto_bridge=bridge)
         app.auto_command({
             "command": "ENABLE", "ctrl_id": "root", "project_id": "project:alpha",
             "request_id": "enable-auto",
         })
-        receipt = {
-            "receipt_id": "expected-auto", "goal_id": "goal-auto", "task_id": "task",
-            "owner_id": "task", "lease_version": 1, "target_id": "artifact-auto",
-            "artifact_digest": "e" * 64, "expected_event_kind": "RESULT_PENDING",
-            "due_event": "TURN_COMPLETION", "due_generation": 1, "source_cursor": 0,
-            "attempted_route_digests": ["b" * 64], "observed_at_ms": 1,
-        }
-        projection = {
-            "cursor": {"event_seq": 2},
-            "expected_receipts": {"expected-auto": {
-                "receipt": receipt, "event_seq": 1,
-                "result": {"status": "ATTENTION", "reason": "EMPTY_OUTPUT", "event_id": "turn-observed", "route_digest": "b" * 64},
-            }},
-        }
-        app.progress_ledger = SimpleNamespace(replay=mock.Mock(return_value=projection))
+        projection = self._auto_projection()
+        app.progress_ledger = self._auto_ledger(projection, self._auto_lifecycle())
         overview = app._host_overview()
         first = app.evaluate_auto_once(overview)
         self.assertTrue(first["dispatched"])
         self.assertTrue(first["bridge_ok"])
         self.assertEqual(bridge.run.call_count, 1)
         status = app.store.auto_status("root", "project:alpha")
-        self.assertEqual((status["phase"], status["last_disposition"]), ("IDLE", ""))
+        self.assertEqual(status["phase"], "IDLE")
         with closing(sqlite3.connect(app.store.path)) as connection:
             payload = json.loads(connection.execute(
-                "SELECT payload_json FROM execution_event_receipts WHERE event_kind = 'AUTO_HOST_COMPLETION'"
+                "SELECT payload_json FROM execution_event_receipts WHERE event_kind = 'AUTO_OUTCOME'"
             ).fetchone()[0])
         self.assertFalse(payload["material_progress"])
         self.assertEqual(app.evaluate_auto_once(overview)["reason"], "REPLAY")
         self.assertEqual(bridge.run.call_count, 1)
 
-    def test_auto_transport_recovery_is_bounded_and_wrong_ctrl_project_fails_before_mutation(self) -> None:
+    def test_auto_prestart_transport_retry_reuses_thread_and_is_bounded(self) -> None:
         self._confirm_root_ctrl()
-        results = [
-            console.AutoBridgeResult(False, failure_kind="TRANSPORT_UNAVAILABLE", transient=True),
-            console.AutoBridgeResult(False, failure_kind="TRANSPORT_UNAVAILABLE", transient=True),
-            console.AutoBridgeResult(False, failure_kind="TRANSPORT_UNAVAILABLE", transient=True),
-        ]
-        bridge = SimpleNamespace(run=mock.Mock(side_effect=results))
+        bridge = SimpleNamespace(run=mock.Mock(side_effect=[
+            console.AutoBridgeResult(False, "thread-reuse", failure_kind="TURN_START_FAILED", transient=True),
+            console.AutoBridgeResult(True, "thread-reuse", "turn-reuse", "d" * 64, turn_started=True, terminal=True, reachable=True),
+        ]))
+        app = console.App(self.codex_home, self.config, auto_bridge=bridge)
+        app.auto_command({"command": "ENABLE", "ctrl_id": "root", "project_id": "project:alpha", "request_id": "enable-retry"})
+        projection = self._auto_projection()
+        app.progress_ledger = self._auto_ledger(projection, self._auto_lifecycle())
+        with mock.patch.object(console.time, "sleep") as sleep:
+            result = app.evaluate_auto_once(app._host_overview())
+        self.assertTrue(result["bridge_ok"])
+        self.assertEqual(bridge.run.call_count, 2)
+        self.assertEqual(bridge.run.call_args_list[1].kwargs["thread_id"], "thread-reuse")
+        sleep.assert_called_once()
+
+    def test_auto_restart_reconciles_active_turn_and_authorized_release_recovers_global_lease(self) -> None:
+        self._confirm_root_ctrl()
+        def uncertain(*, retain_ids, **_kwargs):
+            retain_ids("thread-retained", "turn-retained")
+            return console.AutoBridgeResult(False, "thread-retained", "turn-retained", failure_kind="TRANSPORT_UNAVAILABLE", transient=True, turn_started=True)
+        bridge = SimpleNamespace(
+            run=mock.Mock(side_effect=uncertain),
+            reconcile=mock.Mock(return_value=console.AutoBridgeResult(False, "thread-retained", "turn-retained", failure_kind="TURN_ACTIVE", transient=True, turn_started=True, reachable=True)),
+        )
         app = console.App(self.codex_home, self.config, auto_bridge=bridge)
         with self.assertRaises(console.ConsoleError):
             app.auto_command({
@@ -2811,25 +2888,61 @@ class SwarmConsoleTests(unittest.TestCase):
             "command": "ENABLE", "ctrl_id": "root", "project_id": "project:alpha",
             "request_id": "enable-transient",
         })
-        receipt = {
-            "receipt_id": "expected-transient", "goal_id": "goal-auto", "task_id": "task",
-            "owner_id": "task", "lease_version": 1, "target_id": "artifact-auto",
-            "artifact_digest": "e" * 64, "expected_event_kind": "RESULT_PENDING",
-            "due_event": "TURN_COMPLETION", "due_generation": 1, "source_cursor": 0,
-            "attempted_route_digests": ["b" * 64], "observed_at_ms": 1,
-        }
-        app.progress_ledger = SimpleNamespace(replay=mock.Mock(return_value={
-            "cursor": {"event_seq": 2}, "expected_receipts": {"expected-transient": {
-                "receipt": receipt, "event_seq": 1,
-                "result": {"status": "ATTENTION", "reason": "TIMEOUT", "event_id": "turn-observed", "route_digest": "b" * 64},
-            }},
-        }))
-        with mock.patch.object(console.time, "sleep") as sleep:
-            result = app.evaluate_auto_once(app._host_overview())
-        self.assertEqual(bridge.run.call_count, 3)
-        self.assertEqual(sleep.call_count, 2)
-        self.assertEqual(result["state"]["last_disposition"], "RETRY_SAME")
+        projection = self._auto_projection()
+        app.progress_ledger = self._auto_ledger(projection, self._auto_lifecycle())
+        first = app.evaluate_auto_once(app._host_overview())
+        self.assertTrue(first["state"]["in_flight"])
+        restarted = console.App(self.codex_home, self.config, auto_bridge=bridge)
+        restarted.progress_ledger = app.progress_ledger
+        second = restarted.evaluate_auto_once(restarted._host_overview())
+        self.assertEqual(second["reason"], "IN_FLIGHT")
+        self.assertEqual((bridge.run.call_count, bridge.reconcile.call_count), (1, 1))
+        reservation_id = second["state"]["reservation_id"]
+        with self.assertRaises(console.ConsoleConflict):
+            restarted.auto_command({
+                "command": "RELEASE_UNREACHABLE", "ctrl_id": "root", "project_id": "project:alpha",
+                "request_id": "release-while-active", "reservation_id": reservation_id,
+                "recovery_authority": "root", "release_condition": "caller assertion is insufficient",
+            })
+        bridge.reconcile.return_value = console.AutoBridgeResult(
+            False, "thread-retained", "turn-retained", failure_kind="TURN_UNREACHABLE",
+            transient=True, turn_started=True, reachable=False,
+        )
+        unreachable = restarted.evaluate_auto_once(restarted._host_overview())
+        self.assertEqual(unreachable["reason"], "UNREACHABLE_IN_FLIGHT")
+        released = restarted.auto_command({
+            "command": "RELEASE_UNREACHABLE", "ctrl_id": "root", "project_id": "project:alpha",
+            "request_id": "release-unreachable", "reservation_id": reservation_id,
+            "recovery_authority": "root", "release_condition": "host turn is unreachable after retained status read",
+        })
+        self.assertFalse(released["in_flight"])
+        other = self._auto_decision("ctrl-2")
+        restarted.store.set_auto("ctrl-2", "project:alpha", enabled=True, request_id="enable-two", now_ms=20)
+        self.assertTrue(restarted.store.claim_auto_dispatch(other, self._auto_generation(), now_ms=21)["claimed"])
+
+    def test_auto_restart_terminal_read_releases_lease_without_second_turn_start(self) -> None:
+        self._confirm_root_ctrl()
+        def uncertain(*, retain_ids, **_kwargs):
+            retain_ids("thread-terminal", "turn-terminal")
+            return console.AutoBridgeResult(False, "thread-terminal", "turn-terminal", failure_kind="TRANSPORT_UNAVAILABLE", transient=True, turn_started=True)
+        first_bridge = SimpleNamespace(run=mock.Mock(side_effect=uncertain))
+        app = console.App(self.codex_home, self.config, auto_bridge=first_bridge)
+        app.auto_command({"command": "ENABLE", "ctrl_id": "root", "project_id": "project:alpha", "request_id": "enable-terminal"})
+        projection = self._auto_projection()
+        app.progress_ledger = self._auto_ledger(projection, self._auto_lifecycle())
+        self.assertTrue(app.evaluate_auto_once(app._host_overview())["state"]["in_flight"])
+
+        read = mock.Mock(return_value=console.AutoBridgeResult(
+            True, "thread-terminal", "turn-terminal", "d" * 64,
+            turn_started=True, terminal=True, reachable=True,
+        ))
+        restarted = console.App(self.codex_home, self.config, auto_bridge=SimpleNamespace(reconcile=read))
+        restarted.progress_ledger = app.progress_ledger
+        result = restarted.evaluate_auto_once(restarted._host_overview())
+        self.assertEqual(result["reason"], "RECONCILED")
         self.assertFalse(result["state"]["in_flight"])
+        read.assert_called_once()
+        self.assertEqual(first_bridge.run.call_count, 1)
 
     def test_auto_health_setting_defaults_off_and_uses_canonical_validator(self) -> None:
         _, effective, _ = console.load_config(self.config)
