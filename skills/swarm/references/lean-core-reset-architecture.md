@@ -14,7 +14,7 @@ Observed source seams, read-only:
 
 | Existing authority or primitive | Current path and symbol | Observation | Corrected contract |
 | --- | --- | --- | --- |
-| Material lifecycle ledger | skills/swarm/runtime/progress_events.py, ProgressLedger.append/replay/project/project_topology | Append-only material events, replay, topology projection, dedupe/conflict handling, and canonical projection digests already exist. The current implementation also writes a disposable projection during append/replay. | Keep one append-only ProgressLedger. Accepted lifecycle transitions are ledger events. Replay and projections are derived views; a later implementation slice must not introduce another mutable transition authority. |
+| Material lifecycle ledger | skills/swarm/runtime/progress_events.py, current compatibility class `ProgressLedger` (`append`, `replay`, `project`, `project_topology`) | Append-only material events, replay, topology projection, dedupe/conflict handling, and canonical projection digests already exist. The current implementation also writes a disposable projection during append/replay. | Keep one append-only Ledger. Rename or alias the compatibility class during migration without creating another public authority. Accepted lifecycle transitions are ledger events. Replay and projections are derived views; a later implementation slice must not introduce another mutable transition authority. |
 | Request transport/state | skills/swarm/runtime/request_ledger.py, RequestStore.read/peek/_mutate_validated/with_current | The request file is locked and CAS-checked, but it is still a mutable request-state surface. core.py also translates request records and can write request transitions. | Retain RequestStore as an inbox and acknowledgement journal only. It may persist envelope receipt, dedupe identity, and append acknowledgement; it may not assert accepted lifecycle state. |
 | Recovery and control path | skills/swarm/runtime/core.py, RetryTopologyLedger, resolve_control_path_failure, recover, heartbeat | Typed retry, recovery, user-control, custody, and blocking primitives exist, including terminal release fields. | Consolidate one state decision at this throat. USER_PAUSED and KEEP_OUT preserve open custody; BLOCKED requires retained exhaustion evidence, not a caller flag or one failed route. |
 | Configuration | skills/swarm/scripts/swarm_config.py and skills/swarm/assets/swarm-config.toml | The loader already has one canonical Fast-mode boolean and derived host-tier receipts, but no settled single lifetime setting is present in the inspected asset. | Add only continuity.task_lifetime_hours in its own later config slice; remove competing lifetime thresholds during migration. |
@@ -29,7 +29,7 @@ The supplied prior payload is treated as an input binding, not as a locally reco
 | --- | --- | --- |
 | One CTRL | KEEP | One visible accountable control task owns objective, custody, routing, and acceptance coordination. |
 | 24 professions and skills | KEEP, lazy | The library remains available; only a selected role card is injected when a ready artifact requires it. |
-| ProgressLedger | KEEP and make canonical | It is the only authority that accepts lifecycle/material transitions and proof-bearing outcome facts. |
+| Ledger | KEEP and make canonical | It is the only authority that accepts lifecycle/material transitions and proof-bearing outcome facts. |
 | Offered -> acknowledged -> admitted handoff | KEEP | Each handoff is one immutable lineage-bound transaction; duplicate replay returns the original receipt. |
 | Outcome and proof acceptance | KEEP | Commentary, activity, task presence, or a plan cannot raise accepted progress or complete a task. |
 | Watchdog | KEEP, alert-only | It derives attention from ledger/request evidence and due events; it cannot assign, mutate, recover, or invent completion. |
@@ -75,13 +75,13 @@ A failed observation is UNVERIFIED/RETRYING first. Unknown attribution remains U
 
 ## Canonical ledger versus request inbox
 
-ProgressLedger is the only accepted lifecycle authority. Its input event is validated for immutable project, CTRL, task, owner, artifact, scope, causal parent, proof, and custody identity before any append. Event identity and semantic dedupe identity are retained. Exact duplicate replay is a no-op returning the original cursor/digest. A conflicting event ID or dedupe key is retained as visible conflict or rejected according to the existing event class; it never overwrites accepted history.
+Ledger is the only accepted lifecycle authority. Its input event is validated for immutable project, CTRL, task, owner, artifact, scope, causal parent, proof, and custody identity before any append. Event identity and semantic dedupe identity are retained. Exact duplicate replay is a no-op returning the original cursor/digest. A conflicting event ID or dedupe key is retained as visible conflict or rejected according to the existing event class; it never overwrites accepted history.
 
 RequestStore is transport inbox only:
 
 1. Receive one bounded envelope with request identity, source, target, payload digest, and transport receipt.
 2. Persist the envelope and inbox sequence under its existing lock/CAS.
-3. Ask ProgressLedger to validate and append the corresponding typed event.
+3. Ask Ledger to validate and append the corresponding typed event.
 4. Persist one acknowledgement containing request identity, event identity, event digest, and ledger cursor only after the append result is durable.
 5. Return the original acknowledgement for an exact replay. A different payload under the same request identity fails closed.
 6. The request state never changes lifecycle state directly; the ledger projection is the only accepted current state.
@@ -100,7 +100,7 @@ Crash-order contracts:
 
 Acceptance tests to implement in the later source slice:
 
-- progress ledger is the sole transition writer;
+- ledger is the sole transition writer;
 - request inbox cannot set COMPLETE or BLOCKED;
 - append-before-ack replay is exactly once;
 - crash-before-append remains open and retryable;
@@ -146,7 +146,7 @@ These are testable acceptance budgets for the plugin/in-context harness. They do
 | Material event | UTF-8 byte length of one canonical JSONL ProgressMaterialEvent after canonical serialization | At most 16,384 bytes, with a target median below 2,048 bytes and p95 below 4,096 bytes for the bounded fixture. Reject before append; never truncate. |
 | Schema shape | Schema version, exact field allowlist, and count of serialized keys in each hot event/envelope | No unversioned event; no unknown keys; maximum 40 top-level event keys and 16 nested handoff fields. Fail closed before mutation. |
 | Runtime state vocabulary | Count of the named hot-path lifecycle states in the state enum; custody guards are counted, not hidden | At most 14 states. New states require a replacement/deletion decision and contract update, not incidental growth. |
-| Writable authorities | Count of surfaces that can write accepted lifecycle state | Exactly one: ProgressLedger. RequestStore may write inbox/ack transport facts; config may write settings; neither can accept lifecycle state. |
+| Writable authorities | Count of surfaces that can write accepted lifecycle state | Exactly one: Ledger. RequestStore may write inbox/ack transport facts; config may write settings; neither can accept lifecycle state. |
 | Lifetime settings | Count of writable keys under continuity | Exactly one: task_lifetime_hours. Legacy keys are migration inputs only and are removed from effective config. |
 | Model calls | Calls attributable to one admitted attempt, and calls with reason progress/replay/ack | At most one task-execution call per admitted attempt; zero calls solely for progress, replay, acknowledgement, watchdog, or narration. |
 | Polling | Timer wake frequency in the plugin/runtime path | Zero high-frequency polling. Use append notifications and bounded due-event wakes. |
@@ -170,7 +170,7 @@ Contrasting acceptance contracts:
 ## Smallest migration and deletion slices
 
 1. Documentation candidate (this artifact only). Freeze the boundary and acceptance contracts. No runtime behavior changes.
-2. Ledger throat. Add the lifecycle transition validator and append/ack receipts at ProgressLedger; make replay/project pure derived reconstruction. Preserve old event bytes and read compatibility.
+2. Ledger throat. Add the lifecycle transition validator and append/ack receipts at Ledger; make replay/project pure derived reconstruction. Preserve old event bytes and read compatibility.
 3. Request bridge. Convert RequestStore writes to envelope and acknowledgement facts; remove direct lifecycle writes from request helpers after a migration receipt proves equivalent replay.
 4. Lifetime config. Add task_lifetime_hours with the precedence above, migrate and remove legacy timer writers, and persist active interval/high-water receipts.
 5. Recovery consolidation. Route all retry, control-path failure, and heartbeat decisions through the one retained retry/continuity snapshot. Delete repeated unchanged retry paths and caller-supplied BLOCKED/keep-out/exhaustion assertions.
