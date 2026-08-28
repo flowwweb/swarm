@@ -491,19 +491,17 @@ class TopologyOptimizationContractTests(unittest.TestCase):
         self.assertTrue(replay.replayed)
         with self.assertRaisesRegex(InvariantError, "conflicts"):
             swarm.resolve_control_path_failure(Role.CTRL, replace(first, completion_receipt_id="host:turn:empty-2", failed_route="other-route", observed_at_ms=20))
-        blocked = swarm.resolve_control_path_failure(
-            Role.CTRL,
-            replace(first, completion_receipt_id="host:turn:empty-3", failed_route="handoff-review-a", observed_at_ms=30),
-            release_condition="billing-owner-approves",
-            responsible_authority="billing-owner",
-            release_receipt_id="host:release:billing-1",
-            disjoint_ready_task_ids=("task-b",),
-        )
-        self.assertTrue(blocked.terminal_blocked)
-        self.assertEqual((blocked.state, blocked.signal, blocked.equivalent_failures), (ControlPathState.BLOCKED, WatchdogSignal.BLOCKER, 3))
-        self.assertEqual((blocked.release_condition, blocked.responsible_authority), ("billing-owner-approves", "billing-owner"))
-        self.assertEqual(blocked.release_receipt_id, "host:release:billing-1")
-        self.assertEqual(blocked.permitted_routes, ("handoff-review-a", "read-inventory"))
+        before_terminal = swarm.retry_topology_ledger.control_path_snapshot()
+        with self.assertRaisesRegex(InvariantError, "caller-authored release receipt strings"):
+            swarm.resolve_control_path_failure(
+                Role.CTRL,
+                replace(first, completion_receipt_id="host:turn:empty-3", failed_route="handoff-review-a", observed_at_ms=30),
+                release_condition="billing-owner-approves",
+                responsible_authority="billing-owner",
+                release_receipt_id="host:release:billing-1",
+                disjoint_ready_task_ids=("task-b",),
+            )
+        self.assertEqual(swarm.retry_topology_ledger.control_path_snapshot(), before_terminal)
         self.assertEqual(swarm.tasks["task-b"].state, TaskState.ACTIVE)
         self.assertEqual(swarm.tasks["task-a"].state, TaskState.ACTIVE)
 

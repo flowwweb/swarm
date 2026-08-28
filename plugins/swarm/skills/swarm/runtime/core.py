@@ -1433,11 +1433,12 @@ class ControlPathRecoveryDecision:
 
 @dataclass(frozen=True)
 class _ControlPathCustodyProof:
-    task_id:str; generation_digest:str; active:bool
+    task_id:str; generation_digest:str; active:bool; release_receipt_id:str=""
     _authority:object|None=field(default=None,init=False,repr=False,compare=False)
     def __post_init__(self):
         _safe_token(self.task_id); object.__setattr__(self,"generation_digest",_require_digest(self.generation_digest,"control-path custody generation"))
         if not isinstance(self.active,bool): raise InvariantError("control-path custody proof requires boolean derived state")
+        if self.release_receipt_id: _require_receipt_text(self.release_receipt_id,"control-path release receipt")
 
 @dataclass
 class RetryTopologyLedger:
@@ -1449,8 +1450,19 @@ class RetryTopologyLedger:
     _control_path_failed_routes:dict[str,set[str]]=field(default_factory=dict); _control_path_permitted_routes:dict[str,set[str]]=field(default_factory=dict); _control_path_attempt_receipts:dict[str,set[str]]=field(default_factory=dict); _control_path_last_observed_ms:dict[str,int]=field(default_factory=dict)
     _host_authority:object=field(default_factory=object,init=False,repr=False,compare=False)
 
-    def _issue_custody_proof(self, task_id:str, generation_digest:str, active:bool) -> _ControlPathCustodyProof:
-        proof=_ControlPathCustodyProof(task_id,generation_digest,active); object.__setattr__(proof,"_authority",self._host_authority); return proof
+    def _issue_custody_proof(self, task_id:str, generation_digest:str, active:bool, release_receipt_id:str="") -> _ControlPathCustodyProof:
+        proof=_ControlPathCustodyProof(task_id,generation_digest,active,release_receipt_id); object.__setattr__(proof,"_authority",self._host_authority); return proof
+
+    def control_path_release_binding(self, failure:ControlPathFailure, *, same_owner_route:str="", safely_resumable:bool=False, authorized_handoff_owner:str="", release_condition:str, responsible_authority:str) -> str:
+        """Bind a host release receipt to the exact retained and prospective exhaustion facts."""
+        if not isinstance(failure,ControlPathFailure): raise InvariantError("terminal recovery release requires a typed failure")
+        tactic_digest=_sha256_text(json.dumps((failure.task_id,failure.owner_id,failure.artifact.key(),failure.cause.value,failure.affected_edges),separators=(",",":"),ensure_ascii=True))
+        route=same_owner_route.strip(); handoff=authorized_handoff_owner.strip()
+        permitted=tuple(candidate for candidate in (route if safely_resumable and route and route!=failure.failed_route else "",f"handoff-{handoff}" if handoff else "") if candidate)
+        failed_routes=set(self._control_path_failed_routes.get(tactic_digest,set())); failed_routes.add(failure.failed_route)
+        known_routes=set(self._control_path_permitted_routes.get(tactic_digest,set())); known_routes.update(permitted)
+        turn_receipts=set(self._control_path_attempt_receipts.get(tactic_digest,set())); turn_receipts.add(failure.completion_receipt_id)
+        return _sha256_text(json.dumps(("control-path-terminal-release",failure.task_id,tactic_digest,tuple(sorted(known_routes)),tuple(sorted(failed_routes)),tuple(sorted(turn_receipts)),_bounded_readable(release_condition,"terminal recovery release condition",1024),_safe_token(responsible_authority)),separators=(",",":"),ensure_ascii=True))
 
     @staticmethod
     def _material_snapshot(receipt:MaterialStateReceipt|None) -> object:
@@ -1597,10 +1609,13 @@ class RetryTopologyLedger:
             return RetryTopologyDecision(RetryTopologyAction.REASSESS_ROOT_CAUSE,digest,2,progressed,tokens,latency,self._pending)
         return RetryTopologyDecision(RetryTopologyAction.STOP_REPEATED_TACTIC,digest,attempts,progressed,tokens,latency,self._pending)
 
-    def control_path_failure(self, failure:ControlPathFailure, *, same_owner_route:str="", safely_resumable:bool=False, authorized_handoff_owner:str="", successor_prohibited:bool=False, replacement_prohibited:bool=False, disjoint_ready_task_ids:tuple[str,...]=(), custody_proof:object|None=None, release_condition:str="", responsible_authority:str="", release_receipt_id:str="", eta_range_ms:tuple[int,int]|None=None, eta_receipt_id:str="", material_receipt:MaterialStateReceipt|None=None, cost_receipt:AttemptCostReceipt|None=None) -> ControlPathRecoveryDecision:
+    def control_path_failure(self, failure:ControlPathFailure, *, same_owner_route:str="", safely_resumable:bool=False, authorized_handoff_owner:str="", successor_prohibited:bool=False, replacement_prohibited:bool=False, disjoint_ready_task_ids:tuple[str,...]=(), custody_proof:object|None=None, release_condition:str="", responsible_authority:str="", release_receipt:HostCustodyReceipt|None=None, release_receipt_id:str="", eta_range_ms:tuple[int,int]|None=None, eta_receipt_id:str="", material_receipt:MaterialStateReceipt|None=None, cost_receipt:AttemptCostReceipt|None=None) -> ControlPathRecoveryDecision:
         """Classify one receipt-less completion and choose one bounded recovery without polling."""
         if not isinstance(failure,ControlPathFailure): raise InvariantError("control-path recovery requires a typed failure")
         if not isinstance(custody_proof,_ControlPathCustodyProof) or custody_proof._authority is not self._host_authority or custody_proof.task_id!=failure.task_id: raise InvariantError("control-path recovery requires an internal typed task-custody proof")
+        if release_receipt is not None:
+            expected_release=self.control_path_release_binding(failure,same_owner_route=same_owner_route,safely_resumable=safely_resumable,authorized_handoff_owner=authorized_handoff_owner,release_condition=release_condition,responsible_authority=responsible_authority)
+            if not isinstance(release_receipt,HostCustodyReceipt) or custody_proof.release_receipt_id!=release_receipt.receipt or release_receipt.mutation is not CustodyMutation.STATE or release_receipt.target_id!=failure.task_id or release_receipt.target_state_digest!=expected_release or release_receipt.issued_at<failure.observed_at_ms: raise InvariantError("terminal recovery requires a retained host-verified release receipt bound to exhausted routes and goal turns")
         signature=failure.signature_digest
         bound=self._control_path_receipts.get(failure.completion_receipt_id)
         if bound is not None and bound!=signature: raise InvariantError("control-path completion receipt conflicts with its retained exact binding")
@@ -1612,6 +1627,7 @@ class RetryTopologyLedger:
         if prior is None and failure.completion_receipt_id in attempt_receipts: raise InvariantError("control-path goal-turn receipt is already counted in retained attempt evidence")
         last_observed=-1 if material_reentry else self._control_path_last_observed_ms.get(tactic_digest,-1)
         if prior is None and previous_failures and failure.observed_at_ms<=last_observed: raise InvariantError("control-path goal-turn evidence must advance the retained observation high-water")
+        if release_receipt_id: raise InvariantError("terminal recovery rejects caller-authored release receipt strings")
         expected_attempt=prior.equivalent_failures if prior is not None else previous_failures+1
         tokens,latency=self._validate_control_cost(cost_receipt,failure,expected_attempt)
         if prior is not None:
@@ -1638,8 +1654,8 @@ class RetryTopologyLedger:
         elif failure.cause in {RecoveryCause.DEPENDENCY,RecoveryCause.ENVIRONMENT_RESOURCE,RecoveryCause.EXTERNAL_SERVICE}:
             release=_bounded_readable(release_condition,"waiting recovery release condition",1024)
             action=ControlPathRecoveryAction.WAIT_FOR_RELEASE; route=""; handoff=""; route_rank=2; signal=WatchdogSignal.ATTENTION; state=ControlPathState.WAITING; next_check=release; authority=""
-        elif previous_failures+1>=3 and known_routes and len(failed_routes)>=3 and not unexhausted_routes and release_condition.strip() and responsible_authority.strip() and release_receipt_id.strip():
-            release=_bounded_readable(release_condition,"terminal recovery release condition",1024); authority=_safe_token(responsible_authority); release_receipt=_require_receipt_text(release_receipt_id,"terminal recovery release receipt")
+        elif previous_failures+1>=3 and known_routes and len(failed_routes)>=3 and not unexhausted_routes and release_condition.strip() and responsible_authority.strip() and release_receipt is not None:
+            release=_bounded_readable(release_condition,"terminal recovery release condition",1024); authority=_safe_token(responsible_authority); release_receipt_id=_require_receipt_text(release_receipt.receipt,"terminal recovery release receipt")
             action=ControlPathRecoveryAction.TERMINAL_BLOCKED; route=""; handoff=""; route_rank=5; signal=WatchdogSignal.BLOCKER; state=ControlPathState.BLOCKED; next_check=release
         elif previous_failures>=1:
             action=ControlPathRecoveryAction.ROOT_CAUSE_REASSESSMENT; route="root-cause-reassessment"; handoff=""; route_rank=2; signal=WatchdogSignal.ATTENTION; state=ControlPathState.STALLED; next_check=release_condition.strip() or "verify:materially-different-route"
@@ -1648,10 +1664,10 @@ class RetryTopologyLedger:
             authority=_safe_token(responsible_authority); action=ControlPathRecoveryAction.NEEDS_AUTHORITY; route=""; handoff=""; route_rank=4; signal=WatchdogSignal.ATTENTION; state=ControlPathState.NEEDS_AUTHORITY; next_check=release_condition.strip() or f"authority:{authority}"
         if action not in {ControlPathRecoveryAction.TERMINAL_BLOCKED,ControlPathRecoveryAction.WAIT_FOR_RELEASE}: release=""
         if action not in {ControlPathRecoveryAction.TERMINAL_BLOCKED,ControlPathRecoveryAction.NEEDS_AUTHORITY}: authority=""
-        if action is not ControlPathRecoveryAction.TERMINAL_BLOCKED: release_receipt=""
+        if action is not ControlPathRecoveryAction.TERMINAL_BLOCKED: release_receipt_id=""
         if eta_range_ms is not None and (cost_receipt is None or eta_receipt_id!=cost_receipt.receipt_id): raise InvariantError("recovery ETA must bind the supplied cost/latency receipt")
         failures=previous_failures+1; attempt_receipts.add(failure.completion_receipt_id)
-        decision=ControlPathRecoveryDecision(failure,action,route,handoff,ready,tokens,latency,material_reentry=material_reentry,equivalent_failures=failures,route_rank=route_rank,signal=signal,release_condition=release,responsible_authority=authority,root_cause_reassessment=failures>1,permitted_routes=tuple(sorted(known_routes)),state=state,last_good_checkpoint=prospective_checkpoint,next_check_or_release=next_check,eta_range_ms=eta_range_ms,eta_receipt_id=eta_receipt_id,release_receipt_id=release_receipt)
+        decision=ControlPathRecoveryDecision(failure,action,route,handoff,ready,tokens,latency,material_reentry=material_reentry,equivalent_failures=failures,route_rank=route_rank,signal=signal,release_condition=release,responsible_authority=authority,root_cause_reassessment=failures>1,permitted_routes=tuple(sorted(known_routes)),state=state,last_good_checkpoint=prospective_checkpoint,next_check_or_release=next_check,eta_range_ms=eta_range_ms,eta_receipt_id=eta_receipt_id,release_receipt_id=release_receipt_id)
         if material_receipt is not None: self._retain_material(material_receipt)
         if cost_receipt is not None: self._retain_control_cost(cost_receipt,failure,expected_attempt)
         self._control_path_attempts[tactic_digest]=failures; self._control_path_failed_routes[tactic_digest]=failed_routes; self._control_path_permitted_routes[tactic_digest]=known_routes; self._control_path_attempt_receipts[tactic_digest]=attempt_receipts; self._control_path_last_observed_ms[tactic_digest]=failure.observed_at_ms
@@ -1684,7 +1700,7 @@ class Task:
     completed_at: int|None=None; stale_at: int|None=None; archived_at: int|None=None; stale_reason: str|None=None; superseded_by: str|None=None; promoted: list[str]=field(default_factory=list); extensions: int=0; review_passed: bool=False; risk:int=1; review_strategy:str="light"; architecture_review_floor:ReviewStrategy=ReviewStrategy.LIGHT; security_review_floor:ReviewStrategy=ReviewStrategy.LIGHT; artifacts:dict[ArtifactIdentity|str,str]=field(default_factory=dict); artifact_justifications:dict[str,ArtifactJustification]=field(default_factory=dict); artifact_provenance:dict[str,ArtifactProvenance]=field(default_factory=dict); archive:dict[str,object]=field(default_factory=dict); active_goal:bool=False; handoff_active:bool=False; correction_pending:bool=False; user_choice_pending:bool=False; ambiguous:bool=False; topology_receipt:tuple[str,...]=(); ctrl_event_receipt:tuple[str,str]|None=None; subagent_receipt:str=""; subagent_exception:SubagentException|None=None; subagent_exception_reason:str=""; goal_id:str=""; objective_version:int=1; milestone:str=""; review_horizon_minutes:int=30; milestone_started_at:int=0; milestone_history:list[tuple[int,str,str]]=field(default_factory=list); ctrl_feed_drift_count:int=0; superseded_ctrl_feed_ids:list[str]=field(default_factory=list); last_ctrl_feed_correction_id:str=""
 
     ctrl_mode:CtrlMode=CtrlMode.DELEGATED; work_kind:WorkKind=WorkKind.GENERAL; visual_ownership:VisualOwnership=VisualOwnership.PRODUCT_EXPERIENCE; assigned_profession:str=""; profession_assignment:ProfessionAssignment|None=None; milestone_proof_kind:str=""; architecture_goal_id:str=""; architecture_map_version:int=0; architecture_receipts:list[tuple[int,str,str]]=field(default_factory=list); specialist_professions:dict[str,str]=field(default_factory=dict); specialist_profession_assignments:dict[str,ProfessionAssignment]=field(default_factory=dict); specialist_goal_ids:dict[str,str]=field(default_factory=dict); specialist_map_versions:dict[str,int]=field(default_factory=dict); specialist_receipts:dict[str,list[tuple[int,str,str]]]=field(default_factory=dict)
-    lane_kind:LaneKind=LaneKind.OTHER; owning_lead_id:str=""; acceptance_contract:AcceptanceContract|None=None; delegation_contract:DelegationContract|None=None; delegated_return_receipts:list[DelegatedReturnReceipt]=field(default_factory=list); delegation_reorientations:int=0; gate_receipts:dict[str,GateReceipt]=field(default_factory=dict); unverified_gate_receipts:dict[str,GateReceipt]=field(default_factory=dict); plan_review_receipt:ReviewEvidence|None=None; acceptance_review_receipt:ReviewEvidence|None=None; incident_consultation_receipt:str=""; watchdog_binding:WatchdogBinding|None=None; watchdog_receipts:list[WatchdogReceipt]=field(default_factory=list); user_custody_required:bool=False; user_renamed:bool=False; user_pinned:bool=False; user_state_changed:bool=False
+    lane_kind:LaneKind=LaneKind.OTHER; owning_lead_id:str=""; acceptance_contract:AcceptanceContract|None=None; delegation_contract:DelegationContract|None=None; delegated_return_receipts:list[DelegatedReturnReceipt]=field(default_factory=list); delegation_reorientations:int=0; gate_receipts:dict[str,GateReceipt]=field(default_factory=dict); unverified_gate_receipts:dict[str,GateReceipt]=field(default_factory=dict); plan_review_receipt:ReviewEvidence|None=None; acceptance_review_receipt:ReviewEvidence|None=None; incident_consultation_receipt:str=""; watchdog_binding:WatchdogBinding|None=None; watchdog_receipts:list[WatchdogReceipt]=field(default_factory=list); user_custody_required:bool=False; user_renamed:bool=False; user_pinned:bool=False; user_state_changed:bool=False; current_lease_version:int=1
 
 @dataclass(frozen=True)
 class HostUserEvent:
@@ -1705,9 +1721,10 @@ class HostCustodyReceipt:
 
 @dataclass(frozen=True)
 class TaskStartReceipt:
-    receipt_id:str; goal_id:str; task_id:str; owner_id:str; started_at_ms:int; scope_version:int=1; lease_version:int=1
+    host_receipt:HostCustodyReceipt; goal_id:str; task_id:str; owner_id:str; started_at_ms:int; scope_version:int=1; lease_version:int=1
     def __post_init__(self):
-        for value in (self.receipt_id,self.goal_id,self.task_id,self.owner_id): _safe_token(value)
+        if not isinstance(self.host_receipt,HostCustodyReceipt): raise InvariantError("task start requires a typed host custody receipt")
+        for value in (self.goal_id,self.task_id,self.owner_id): _safe_token(value)
         if not isinstance(self.started_at_ms,int) or self.started_at_ms<0: raise InvariantError("task start receipt requires a nonnegative monotonic timestamp")
         if not isinstance(self.scope_version,int) or isinstance(self.scope_version,bool) or self.scope_version<1: raise InvariantError("task start receipt requires a positive scope version")
         if not isinstance(self.lease_version,int) or isinstance(self.lease_version,bool) or self.lease_version<1: raise InvariantError("task start receipt requires a positive lease version")
@@ -1761,9 +1778,18 @@ class Worker:
 class Swarm:
     architecture_version: int=1; contract_versions: dict[str,int]=field(default_factory=dict); topology: set[str]=field(default_factory=set)
     workers: dict[str,Worker]=field(default_factory=dict); tasks: dict[str,Task]=field(default_factory=dict); leases: dict[str,str]=field(default_factory=dict); events: list[tuple[str,str]]=field(default_factory=list); task_event_limit:int=64; telemetry: dict[str,object]=field(default_factory=dict); telemetry_events:list[dict[str,object]]=field(default_factory=list); artifact_index:dict[str,str]=field(default_factory=dict); provenance_index:dict[str,str]=field(default_factory=dict); ctrl_evidence_ledger:dict[str,CtrlEvidence]=field(default_factory=dict); ctrl_decision_sets:dict[str,CtrlDecisionSet]=field(default_factory=dict); ctrl_phase:str="intake"; hive:dict[str,HiveRecord]=field(default_factory=dict); hive_enabled:bool=True; heartbeat_stall_after:int=2; correction_receipts:dict[str,None]=field(default_factory=dict); retry_topology_ledger:RetryTopologyLedger=field(default_factory=RetryTopologyLedger); lane_width:int=3; wip_limit:int=3; efficiency_ledger:list[dict[str,str]]=field(default_factory=list); mode:EfficiencyMode=EfficiencyMode.BALANCED; automation_mode:str="standard"; default_review_horizon:int=30; max_review_horizon:int=60; direct_work_horizon:int=20
-    scheduled_wakeups:dict[str,int]=field(default_factory=dict); ctrl_feed_messages:list[CtrlFeedMessage]=field(default_factory=list); ctrl_feed_cursor:int=0; ctrl_feed_superseded_by:dict[str,str]=field(default_factory=dict); ctrl_feed_events:dict[str,CtrlFeedEvent]=field(default_factory=dict); ctrl_feed_consumed_events:set[str]=field(default_factory=set); ctrl_authorizations:dict[str,UserCtrlAuthorization]=field(default_factory=dict); ctrl_materialization_intents:dict[str,CtrlMaterializationIntent]=field(default_factory=dict); consumed_ctrl_authorizations:set[str]=field(default_factory=set); consumed_ctrl_intents:set[str]=field(default_factory=set); proof_policy_version:str="lean-v1"; proof_impacted_selection:bool=True; proof_receipt_reuse:bool=True; proof_gate_timeout_seconds:int=120; proof_browser_freshness_seconds:int=86400; proof_provider_freshness_seconds:int=3600; proof_transient_retry_limit:int=1; use_goals:bool=True; task_lifetime_hours:int=4; request_store:RequestStore|None=field(default=None,repr=False,compare=False); request_lifecycle_ledger:object|None=field(default=None,repr=False,compare=False); request_continuity_enabled:bool=False; request_feed_sequence_floor:int=0; host_custody_receipts:dict[str,HostCustodyReceipt]=field(default_factory=dict); _topology_preflights:dict[str,object]=field(default_factory=dict,init=False,repr=False,compare=False); _runtime_acceptances:dict[str,_RuntimeAcceptanceRecord]=field(default_factory=dict,init=False,repr=False,compare=False); _gate_capability:object=field(default_factory=object,init=False,repr=False,compare=False); _review_capability:object=field(default_factory=object,init=False,repr=False,compare=False); _watchdog_capability:object=field(default_factory=object,init=False,repr=False,compare=False); _owner_context_capability:object=field(default_factory=object,init=False,repr=False,compare=False); _ctrl_authority_capability:object=field(default_factory=object,init=False,repr=False,compare=False); _custody_capability:object=field(default_factory=object,init=False,repr=False,compare=False)
+    scheduled_wakeups:dict[str,int]=field(default_factory=dict); ctrl_feed_messages:list[CtrlFeedMessage]=field(default_factory=list); ctrl_feed_cursor:int=0; ctrl_feed_superseded_by:dict[str,str]=field(default_factory=dict); ctrl_feed_events:dict[str,CtrlFeedEvent]=field(default_factory=dict); ctrl_feed_consumed_events:set[str]=field(default_factory=set); ctrl_authorizations:dict[str,UserCtrlAuthorization]=field(default_factory=dict); ctrl_materialization_intents:dict[str,CtrlMaterializationIntent]=field(default_factory=dict); consumed_ctrl_authorizations:set[str]=field(default_factory=set); consumed_ctrl_intents:set[str]=field(default_factory=set); proof_policy_version:str="lean-v1"; proof_impacted_selection:bool=True; proof_receipt_reuse:bool=True; proof_gate_timeout_seconds:int=120; proof_browser_freshness_seconds:int=86400; proof_provider_freshness_seconds:int=3600; proof_transient_retry_limit:int=1; use_goals:bool=True; task_lifetime_hours:int=4; request_store:RequestStore|None=field(default=None,repr=False,compare=False); request_lifecycle_ledger:object|None=field(default=None,repr=False,compare=False); request_continuity_enabled:bool=False; request_feed_sequence_floor:int=0; _topology_preflights:dict[str,object]=field(default_factory=dict,init=False,repr=False,compare=False); _runtime_acceptances:dict[str,_RuntimeAcceptanceRecord]=field(default_factory=dict,init=False,repr=False,compare=False); _gate_capability:object=field(default_factory=object,init=False,repr=False,compare=False); _review_capability:object=field(default_factory=object,init=False,repr=False,compare=False); _watchdog_capability:object=field(default_factory=object,init=False,repr=False,compare=False); _owner_context_capability:object=field(default_factory=object,init=False,repr=False,compare=False); _ctrl_authority_capability:object=field(default_factory=object,init=False,repr=False,compare=False)
     def __setattr__(self, name:str, value:object) -> None:
+        if name=="request_lifecycle_ledger" and name in self.__dict__ and self.__dict__[name] is not value: raise InvariantError("request_lifecycle_ledger is fixed by the authoritative runtime at construction")
         object.__setattr__(self,name,value)
+    @property
+    def _custody_capability(self) -> object:
+        """Compatibility-only value; custody authority is owned by the Ledger verifier."""
+        return object()
+    @property
+    def host_custody_receipts(self) -> dict[str,HostCustodyReceipt]:
+        """Compatibility-only empty view; retained custody receipts are never caller-visible."""
+        return {}
     @classmethod
     def from_config(cls, config: dict) -> "Swarm":
         monitoring=config["monitoring"]
@@ -1772,58 +1798,68 @@ class Swarm:
 
     def _task_handoff_ledger(self):
         ledger=self.request_lifecycle_ledger
-        if ledger is None or not all(hasattr(ledger,name) for name in ("append_task_handoff","project_task_handoffs")): raise InvariantError("task continuity requires the existing Ledger authority")
+        if ledger is None or not all(hasattr(ledger,name) for name in ("append_task_handoff","project_task_handoffs","retain_host_custody_receipt","require_host_custody_receipt")): raise InvariantError("task continuity requires the existing Ledger authority and host custody verifier")
         return ledger
     @staticmethod
     def _handoff_id(start:TaskStartReceipt) -> str:
-        digest=sha256(json.dumps((start.goal_id,start.task_id,start.owner_id,start.scope_version,start.lease_version,start.receipt_id),separators=(",",":")).encode()).hexdigest(); return f"handoff-{digest}"
-    def _handoff_event(self, current:dict|None, kind:str, *, handoff_id:str, goal_id:str, task_id:str, old_owner:str, new_owner:str|None, checkpoint_digest:str|None, scope_version:int, lease_version:int, receipt_id:str, observed_at_ms:int) -> dict:
+        digest=sha256(json.dumps((start.goal_id,start.task_id,start.owner_id,start.scope_version,start.lease_version,start.host_receipt.receipt),separators=(",",":")).encode()).hexdigest(); return f"handoff-{digest}"
+    def _handoff_event(self, current:dict|None, kind:str, *, handoff_id:str, goal_id:str, task_id:str, old_owner:str, new_owner:str|None, checkpoint_digest:str|None, scope_version:int, lease_version:int, receipt_id:str, observed_at_ms:int, host_issued_at_ms:int|None=None) -> dict:
         event_id=f"handoff-event-{sha256(f'{handoff_id}:{kind}'.encode()).hexdigest()}"
-        return {"schema_version":1,"record_type":"TASK_HANDOFF","event_id":event_id,"dedupe_key":f"handoff-dedupe-{sha256(f'{handoff_id}:{kind}'.encode()).hexdigest()}","handoff_id":handoff_id,"parent_event_id":None if current is None else current["event_id"],"event_kind":kind,"goal_id":goal_id,"task_id":task_id,"old_owner":old_owner,"new_owner":new_owner,"checkpoint_digest":checkpoint_digest,"scope_version":scope_version,"lease_version":lease_version,"receipt_id":receipt_id,"observed_at_ms":observed_at_ms}
+        return {"schema_version":1,"record_type":"TASK_HANDOFF","event_id":event_id,"dedupe_key":f"handoff-dedupe-{sha256(f'{handoff_id}:{kind}'.encode()).hexdigest()}","handoff_id":handoff_id,"parent_event_id":None if current is None else current["event_id"],"event_kind":kind,"goal_id":goal_id,"task_id":task_id,"old_owner":old_owner,"new_owner":new_owner,"checkpoint_digest":checkpoint_digest,"scope_version":scope_version,"lease_version":lease_version,"receipt_id":receipt_id,"host_issued_at_ms":host_issued_at_ms,"observed_at_ms":observed_at_ms}
+    def _require_handoff_host_receipt(self, receipt:HostCustodyReceipt, payload:dict) -> None:
+        from .progress_events import task_handoff_host_binding
+        self._task_handoff_ledger().require_host_custody_receipt(receipt,target_id=payload["task_id"],binding=task_handoff_host_binding(payload),issued_at=payload["host_issued_at_ms"])
     def task_handoff_due(self, actor:Role, task_id:str, start:TaskStartReceipt, *, now_ms:int) -> dict:
         self._role(actor,{Role.CTRL,Role.LEAD}); task=self.tasks[task_id]
-        if (start.goal_id,start.task_id,start.owner_id,start.scope_version)!=(task.goal_id,task.id,task.owner,task.objective_version): raise InvariantError("task lifetime requires a bound current task start receipt")
+        if (start.goal_id,start.task_id,start.owner_id,start.scope_version,start.lease_version)!=(task.goal_id,task.id,task.owner,task.objective_version,task.current_lease_version): raise InvariantError("task lifetime requires a bound current task start receipt")
         if not isinstance(now_ms,int) or now_ms<start.started_at_ms: raise InvariantError("task lifetime cannot infer elapsed age without monotonic time")
         deadline=start.started_at_ms+self.task_lifetime_hours*3_600_000
+        handoff_id=self._handoff_id(start); start_event=self._handoff_event(None,"HANDOFF_DUE",handoff_id=handoff_id,goal_id=task.goal_id,task_id=task.id,old_owner=task.owner,new_owner=None,checkpoint_digest=None,scope_version=task.objective_version,lease_version=start.lease_version,receipt_id=start.host_receipt.receipt,host_issued_at_ms=start.started_at_ms,observed_at_ms=deadline); self._require_handoff_host_receipt(start.host_receipt,start_event)
         if now_ms<deadline: return {"state":"RUNNING","due_at_ms":deadline,"handoff_id":None}
-        ledger=self._task_handoff_ledger(); handoff_id=self._handoff_id(start); current=next((item for item in ledger.project_task_handoffs()["records"] if item["handoff_id"]==handoff_id),None)
+        ledger=self._task_handoff_ledger(); current=next((item for item in ledger.project_task_handoffs()["records"] if item["handoff_id"]==handoff_id),None)
         if current is None:
-            ledger.append_task_handoff(self._handoff_event(None,"HANDOFF_DUE",handoff_id=handoff_id,goal_id=task.goal_id,task_id=task.id,old_owner=task.owner,new_owner=None,checkpoint_digest=None,scope_version=task.objective_version,lease_version=start.lease_version,receipt_id=start.receipt_id,observed_at_ms=deadline)); current=next(item for item in ledger.project_task_handoffs()["records"] if item["handoff_id"]==handoff_id)
+            ledger.append_task_handoff(start_event,custody_receipt=start.host_receipt); current=next(item for item in ledger.project_task_handoffs()["records"] if item["handoff_id"]==handoff_id)
         task.handoff_active=current["event_kind"]!="CUSTODY_TRANSFERRED"; state="KEEP_OUT" if self._control_path_user_keep_out(task) else "NEEDS_AUTHORITY" if task.owner==Role.CTRL.value or task.ctrl_mode is CtrlMode.DIRECT else current["event_kind"]
         return {"state":state,"due_at_ms":deadline,"handoff_id":handoff_id,"event_id":current["event_id"],"owner":task.owner}
     def offer_task_handoff(self, actor:Role, handoff_id:str, *, new_owner:str, checkpoint_digest:str, observed_at_ms:int) -> dict:
         self._role(actor,{Role.CTRL,Role.LEAD}); ledger=self._task_handoff_ledger(); current=next((item for item in ledger.project_task_handoffs()["records"] if item["handoff_id"]==handoff_id),None)
         if current is None or current["event_kind"]!="HANDOFF_DUE": raise InvariantError("handoff offer requires one current due event")
         task=self.tasks.get(current["task_id"]); worker=self.workers.get(new_owner)
-        if task is None or task.owner!=current["old_owner"] or task.objective_version!=current["scope_version"]: raise InvariantError("handoff offer conflicts with current task custody")
+        if task is None or task.owner!=current["old_owner"] or task.objective_version!=current["scope_version"] or task.current_lease_version!=current["lease_version"]: raise InvariantError("handoff offer conflicts with current task custody")
         if self._control_path_user_keep_out(task): raise InvariantError("KEEP_OUT: user custody keeps the due handoff open")
         if task.owner==Role.CTRL.value or task.ctrl_mode is CtrlMode.DIRECT: raise InvariantError("NEEDS_AUTHORITY: plugin runtime cannot create or authorize a successor CTRL")
         if worker is None or worker.state is WorkerState.RETIRED or new_owner==task.owner: raise InvariantError("handoff target must be a distinct existing available owner")
         checkpoint=_require_digest(checkpoint_digest,"handoff checkpoint"); payload=self._handoff_event(current,"HANDOFF_OFFERED",handoff_id=handoff_id,goal_id=task.goal_id,task_id=task.id,old_owner=task.owner,new_owner=new_owner,checkpoint_digest=checkpoint,scope_version=task.objective_version,lease_version=current["lease_version"],receipt_id=f"checkpoint-{checkpoint}",observed_at_ms=observed_at_ms); return ledger.append_task_handoff(payload)
-    def acknowledge_task_handoff(self, actor:Role, handoff_id:str, *, new_owner:str, checkpoint_digest:str, host_task_receipt:str, observed_at_ms:int) -> dict:
-        self._role(actor,{Role.DOER,Role.LEAD}); ledger=self._task_handoff_ledger(); current=next((item for item in ledger.project_task_handoffs()["records"] if item["handoff_id"]==handoff_id),None)
+    def acknowledge_task_handoff(self, actor:Role, handoff_id:str, *, new_owner:str, checkpoint_digest:str, host_task_receipt:HostCustodyReceipt, observed_at_ms:int) -> dict:
+        self._role(actor,{Role.DOER,Role.LEAD})
+        if not isinstance(host_task_receipt,HostCustodyReceipt): raise InvariantError("handoff acknowledgement requires a typed host-minted custody receipt")
+        ledger=self._task_handoff_ledger(); current=next((item for item in ledger.project_task_handoffs()["records"] if item["handoff_id"]==handoff_id),None)
         if current is None or current["event_kind"] not in {"HANDOFF_OFFERED","HANDOFF_ACKNOWLEDGED"}: raise InvariantError("handoff acknowledgement requires one current offer")
         if current["event_kind"]=="HANDOFF_ACKNOWLEDGED":
-            expected=(current["new_owner"],current["checkpoint_digest"],current["receipt_id"],current["observed_at_ms"])
-            if expected!=(new_owner,checkpoint_digest,host_task_receipt,observed_at_ms): raise InvariantError("handoff acknowledgement replay conflicts with retained identity")
+            expected=(current["new_owner"],current["checkpoint_digest"],current["receipt_id"],current["host_issued_at_ms"],current["observed_at_ms"])
+            actual=(new_owner,checkpoint_digest,getattr(host_task_receipt,"receipt",None),getattr(host_task_receipt,"issued_at",None),observed_at_ms)
+            if expected!=actual: raise InvariantError("handoff acknowledgement replay conflicts with retained identity")
+            self._require_handoff_host_receipt(host_task_receipt,current)
             return {"status":"unchanged","cursor":{"event_seq":current["event_seq"],"event_id":current["event_id"],"event_digest":current["event_digest"]},"event_digest":current["event_digest"]}
         task=self.tasks.get(current["task_id"]); worker=self.workers.get(new_owner)
-        if task is None or task.owner!=current["old_owner"] or worker is None or worker.state is WorkerState.RETIRED or current["new_owner"]!=new_owner or current["checkpoint_digest"]!=checkpoint_digest: raise InvariantError("handoff acknowledgement conflicts with task, owner, or checkpoint")
-        payload=self._handoff_event(current,"HANDOFF_ACKNOWLEDGED",handoff_id=handoff_id,goal_id=current["goal_id"],task_id=current["task_id"],old_owner=current["old_owner"],new_owner=new_owner,checkpoint_digest=checkpoint_digest,scope_version=current["scope_version"],lease_version=current["lease_version"],receipt_id=host_task_receipt,observed_at_ms=observed_at_ms); return ledger.append_task_handoff(payload)
+        if task is None or task.owner!=current["old_owner"] or task.current_lease_version!=current["lease_version"] or worker is None or worker.state is WorkerState.RETIRED or current["new_owner"]!=new_owner or current["checkpoint_digest"]!=checkpoint_digest: raise InvariantError("handoff acknowledgement conflicts with task, owner, lease, or checkpoint")
+        payload=self._handoff_event(current,"HANDOFF_ACKNOWLEDGED",handoff_id=handoff_id,goal_id=current["goal_id"],task_id=current["task_id"],old_owner=current["old_owner"],new_owner=new_owner,checkpoint_digest=checkpoint_digest,scope_version=current["scope_version"],lease_version=current["lease_version"],receipt_id=host_task_receipt.receipt,host_issued_at_ms=host_task_receipt.issued_at,observed_at_ms=observed_at_ms); self._require_handoff_host_receipt(host_task_receipt,payload); return ledger.append_task_handoff(payload,custody_receipt=host_task_receipt)
     def transfer_task_custody(self, actor:Role, handoff_id:str, *, observed_at_ms:int) -> dict:
         self._role(actor,{Role.CTRL,Role.LEAD}); ledger=self._task_handoff_ledger(); current=next((item for item in ledger.project_task_handoffs()["records"] if item["handoff_id"]==handoff_id),None)
         if current is None or current["event_kind"] not in {"HANDOFF_ACKNOWLEDGED","CUSTODY_TRANSFERRED"}: raise InvariantError("custody transfer requires a current acknowledged handoff")
-        task=self.tasks.get(current["task_id"])
+        task=self.tasks.get(current["task_id"]); old=self.workers.get(current["old_owner"]); new=self.workers.get(current["new_owner"])
         if task is None: raise InvariantError("custody transfer task is unavailable")
+        if new is None or new.id!=current["new_owner"] or new.state is WorkerState.RETIRED: raise InvariantError("custody transfer target is unavailable or mismatched")
+        if old is not None and old.id!=current["old_owner"]: raise InvariantError("custody transfer source is mismatched")
+        expected_lease=current["lease_version"] if task.owner==current["old_owner"] else current["lease_version"]+1
+        if task.goal_id!=current["goal_id"] or task.objective_version!=current["scope_version"] or task.current_lease_version!=expected_lease or task.owner not in {current["old_owner"],current["new_owner"]}: raise InvariantError("custody transfer conflicts with prospective task state")
         if current["event_kind"]=="HANDOFF_ACKNOWLEDGED":
             if task.owner!=current["old_owner"]: raise InvariantError("custody changed before retained acknowledgement")
             payload=self._handoff_event(current,"CUSTODY_TRANSFERRED",handoff_id=handoff_id,goal_id=current["goal_id"],task_id=current["task_id"],old_owner=current["old_owner"],new_owner=current["new_owner"],checkpoint_digest=current["checkpoint_digest"],scope_version=current["scope_version"],lease_version=current["lease_version"],receipt_id=current["receipt_id"],observed_at_ms=observed_at_ms); result=ledger.append_task_handoff(payload); current=next(item for item in ledger.project_task_handoffs()["records"] if item["handoff_id"]==handoff_id)
         else: result={"status":"unchanged","event_digest":current["event_digest"]}
-        old=self.workers.get(current["old_owner"]); new=self.workers.get(current["new_owner"])
-        if new is None or new.state is WorkerState.RETIRED: raise InvariantError("retained custody transfer target is no longer available")
         if task.owner==current["old_owner"]:
             if old: old.task_ids.discard(task.id)
-            new.task_ids.add(task.id); task.owner=current["new_owner"]
+            new.task_ids.add(task.id); task.owner=current["new_owner"]; task.current_lease_version=current["lease_version"]+1
         elif task.owner!=current["new_owner"]: raise InvariantError("retained custody transfer conflicts with live task owner")
         task.handoff_active=False; return {**result,"owner":task.owner,"lease_version":current["lease_version"]+1}
     def reconcile_task_handoffs(self) -> tuple[str,...]:
@@ -1831,13 +1867,18 @@ class Swarm:
         for current in ledger.project_task_handoffs()["records"]:
             task=self.tasks.get(current["task_id"])
             if task is None: continue
-            task.handoff_active=current["event_kind"]!="CUSTODY_TRANSFERRED"
-            if current["event_kind"]=="CUSTODY_TRANSFERRED" and task.owner==current["old_owner"]:
-                new=self.workers.get(current["new_owner"])
-                if new is None or new.state is WorkerState.RETIRED: raise InvariantError("restart cannot restore transferred custody without its retained owner")
-                old=self.workers.get(current["old_owner"])
-                if old: old.task_ids.discard(task.id)
-                new.task_ids.add(task.id); task.owner=current["new_owner"]; task.handoff_active=False; reconciled.append(task.id)
+            old=self.workers.get(current["old_owner"]); new=self.workers.get(current["new_owner"]) if current["new_owner"] else None
+            bindings_match=task.goal_id==current["goal_id"] and task.objective_version==current["scope_version"] and isinstance(current["lease_version"],int) and current["lease_version"]>=1 and old is not None and old.id==current["old_owner"]
+            if current["event_kind"]=="CUSTODY_TRANSFERRED":
+                target_valid=new is not None and new.id==current["new_owner"] and new.state is not WorkerState.RETIRED
+                old_state=task.owner==current["old_owner"] and task.current_lease_version==current["lease_version"] and task.id in old.task_ids and (new is None or task.id not in new.task_ids)
+                new_state=target_valid and task.owner==current["new_owner"] and task.current_lease_version==current["lease_version"]+1 and task.id in new.task_ids and task.id not in old.task_ids
+                if not bindings_match or not target_valid or not (old_state or new_state): continue
+                if old_state:
+                    old.task_ids.discard(task.id); new.task_ids.add(task.id); task.owner=current["new_owner"]; task.current_lease_version=current["lease_version"]+1; reconciled.append(task.id)
+                task.handoff_active=False
+            elif bindings_match and task.owner==current["old_owner"] and task.current_lease_version==current["lease_version"] and task.id in old.task_ids and (current["new_owner"] is None or new is not None and new.id==current["new_owner"] and new.state is not WorkerState.RETIRED):
+                task.handoff_active=True
         return tuple(reconciled)
 
     def automation_commit(self, checkpoint:"StableCheckpoint", *, attributable_paths:tuple[str,...]) -> "AutomationDecision":
@@ -2132,7 +2173,7 @@ class Swarm:
         if event_id in projection["events"]:
             if current is None or current["event_id"]!=event_id or current["lifecycle_state"]!=lifecycle_state or current["record"]!=(None if record is None else self._record_to_raw(record)): raise InvariantError("request lifecycle replay conflicts with retained Ledger identity")
             return None if record is None else RequestView(state["sequence"],digest,record)
-        payload={"schema_version":1,"record_type":"REQUEST_LIFECYCLE","event_id":event_id,"dedupe_key":dedupe_key,"request_id":request_id,"stage_id":inbox["stage_id"],"parent_event_id":None if current is None else current["event_id"],"envelope_digest":inbox["contract_digest"],"lifecycle_state":lifecycle_state,"record":None if record is None else self._record_to_raw(record),"route_receipt_ids":[],"release_authority":None}
+        payload={"schema_version":1,"record_type":"REQUEST_LIFECYCLE","event_id":event_id,"dedupe_key":dedupe_key,"request_id":request_id,"stage_id":inbox["stage_id"],"parent_event_id":None if current is None else current["event_id"],"envelope_digest":inbox["contract_digest"],"lifecycle_state":lifecycle_state,"record":None if record is None else self._record_to_raw(record),"route_receipt_ids":[],"permitted_route_ids":[],"failed_goal_turn_receipt_ids":[],"release_authority":None,"release_receipt_id":None,"release_issued_at_ms":None}
         try: appended=self._request_ledger().append_request_lifecycle(payload)
         except Exception as error: raise InvariantError(str(error)) from error
         cursor=appended["cursor"]
@@ -2334,10 +2375,14 @@ class Swarm:
         raise InvariantError("HUMAN_AUTHORITY_BLOCKER: no host-pinned trust root or IPC verifier is configured; user authority remains UNVERIFIED")
     def record_host_custody_receipt(self, actor:Role, receipt:HostCustodyReceipt|None) -> HostCustodyReceipt:
         self._role(actor,{Role.CTRL})
-        raise InvariantError("HUMAN_AUTHORITY_BLOCKER: no host-pinned trust root or IPC verifier is configured; custody remains UNVERIFIED")
+        ledger=self.request_lifecycle_ledger
+        if ledger is None or not hasattr(ledger,"retain_host_custody_receipt") or not isinstance(receipt,HostCustodyReceipt): raise InvariantError("HUMAN_AUTHORITY_BLOCKER: no host-pinned trust root or IPC verifier is configured; custody remains UNVERIFIED")
+        return ledger.retain_host_custody_receipt(receipt)
     def require_host_custody(self, actor:Role, mutation:CustodyMutation, target_id:str, now:int, *, target_state_digest:str, receipt:HostCustodyReceipt|None=None) -> HostCustodyReceipt:
         self._role(actor,{Role.CTRL}); _safe_token(target_id); _require_digest(target_state_digest,"custody target state")
-        raise InvariantError("HUMAN_AUTHORITY_BLOCKER: no host-pinned trust root or IPC verifier is configured; archive custody remains UNVERIFIED")
+        ledger=self.request_lifecycle_ledger
+        if ledger is None or not hasattr(ledger,"require_host_custody_receipt"): raise InvariantError("HUMAN_AUTHORITY_BLOCKER: no host-pinned trust root or IPC verifier is configured; archive custody remains UNVERIFIED")
+        return ledger.require_host_custody_receipt(receipt,target_id=target_id,binding=target_state_digest,issued_at=now)
     def plan_ctrl_materialization(self, actor:Role, authorization:UserCtrlAuthorization|None, *, operation:CtrlOperation, source_ctrl_id:str, target_objective_digest:str, target_scope_digest:str, target_identity:str) -> CtrlMaterializationIntent:
         """Fail closed before any host create/fork/promote/replace/rename call."""
         self._role(actor,{Role.CTRL})
@@ -2485,7 +2530,7 @@ class Swarm:
                 action=DelegationRecoveryAction.ROUTE_EXISTING_REVIEW
             else: action=DelegationRecoveryAction.HOLD
         return DelegationDueStatus(task.id,contract.owner_id,contract.due_at,debt,first,action,review_owner)
-    def resolve_control_path_failure(self, actor:Role, failure:ControlPathFailure, *, same_owner_route:str="", safely_resumable:bool=False, authorized_handoff_owner:str="", successor_prohibited:bool=False, replacement_prohibited:bool=False, disjoint_ready_task_ids:tuple[str,...]=(), user_keep_out:bool|None=None, recovery_exhausted:bool|None=None, release_condition:str="", responsible_authority:str="", release_receipt_id:str="", eta_range_ms:tuple[int,int]|None=None, eta_receipt_id:str="", material_receipt:MaterialStateReceipt|None=None, cost_receipt:AttemptCostReceipt|None=None) -> ControlPathRecoveryDecision:
+    def resolve_control_path_failure(self, actor:Role, failure:ControlPathFailure, *, same_owner_route:str="", safely_resumable:bool=False, authorized_handoff_owner:str="", successor_prohibited:bool=False, replacement_prohibited:bool=False, disjoint_ready_task_ids:tuple[str,...]=(), user_keep_out:bool|None=None, recovery_exhausted:bool|None=None, release_condition:str="", responsible_authority:str="", release_receipt:HostCustodyReceipt|None=None, release_receipt_id:str="", eta_range_ms:tuple[int,int]|None=None, eta_receipt_id:str="", material_receipt:MaterialStateReceipt|None=None, cost_receipt:AttemptCostReceipt|None=None) -> ControlPathRecoveryDecision:
         """Preserve delegated custody and choose one receipt route after an empty host completion."""
         self._role(actor,{Role.CTRL,Role.LEAD})
         if not isinstance(failure,ControlPathFailure) or failure.task_id not in self.tasks: raise InvariantError("control-path recovery requires an existing exact delegated task")
@@ -2501,8 +2546,12 @@ class Swarm:
         for task_id in disjoint_ready_task_ids:
             candidate=self.tasks.get(task_id)
             if candidate is None or candidate.waiting_on or candidate.state not in {TaskState.ACTIVE,TaskState.BACKLOG}: raise InvariantError("disjoint continuation requires an existing ready task")
-        custody=self.retry_topology_ledger._issue_custody_proof(task.id,self._task_custody_digest(task),self._control_path_user_keep_out(task))
-        decision=self.retry_topology_ledger.control_path_failure(failure,same_owner_route=same_owner_route,safely_resumable=safely_resumable,authorized_handoff_owner=handoff,successor_prohibited=successor_prohibited,replacement_prohibited=replacement_prohibited,disjoint_ready_task_ids=disjoint_ready_task_ids,custody_proof=custody,release_condition=release_condition,responsible_authority=responsible_authority,release_receipt_id=release_receipt_id,eta_range_ms=eta_range_ms,eta_receipt_id=eta_receipt_id,material_receipt=material_receipt,cost_receipt=cost_receipt)
+        release_id=""
+        if release_receipt is not None:
+            ledger=self._task_handoff_ledger(); binding=self.retry_topology_ledger.control_path_release_binding(failure,same_owner_route=same_owner_route,safely_resumable=safely_resumable,authorized_handoff_owner=handoff,release_condition=release_condition,responsible_authority=responsible_authority)
+            ledger.require_host_custody_receipt(release_receipt,target_id=failure.task_id,binding=binding,not_before=failure.observed_at_ms); release_id=release_receipt.receipt
+        custody=self.retry_topology_ledger._issue_custody_proof(task.id,self._task_custody_digest(task),self._control_path_user_keep_out(task),release_id)
+        decision=self.retry_topology_ledger.control_path_failure(failure,same_owner_route=same_owner_route,safely_resumable=safely_resumable,authorized_handoff_owner=handoff,successor_prohibited=successor_prohibited,replacement_prohibited=replacement_prohibited,disjoint_ready_task_ids=disjoint_ready_task_ids,custody_proof=custody,release_condition=release_condition,responsible_authority=responsible_authority,release_receipt=release_receipt,release_receipt_id=release_receipt_id,eta_range_ms=eta_range_ms,eta_receipt_id=eta_receipt_id,material_receipt=material_receipt,cost_receipt=cost_receipt)
         if not decision.replayed:
             self._record("events",("CONTROL_PATH_FAILURE",task.id))
             if decision.action is ControlPathRecoveryAction.NEEDS_AUTHORITY: self._record("events",("NEEDS_AUTHORITY",task.id))
@@ -3060,10 +3109,6 @@ class Swarm:
     def _task_custody_digest(self, task:Task) -> str:
         return _sha256_text(json.dumps((task.id,task.owner,task.architecture_version,task.objective_version,task.state.value,task.completed_at,task.stale_at,task.user_custody_required,task.user_state_changed),separators=(",",":"),ensure_ascii=True))
     def _control_path_user_keep_out(self, task:Task) -> bool:
-        if not task.user_custody_required: return False
-        expected=self._task_custody_digest(task)
-        current=any(receipt._authority is self._custody_capability and self.host_custody_receipts.get(receipt.receipt) is receipt and receipt.mutation is CustodyMutation.STATE and receipt.target_id==task.id and receipt.target_state_digest==expected for receipt in self.host_custody_receipts.values())
-        if current: return True
         return task.user_custody_required  # unavailable or stale host custody evidence cannot downgrade keep-out
     def groom(self, actor: Role, now: int, policy: dict[str,int]) -> list[str]:
         """Mechanical archive only; archive preserves task provenance and knowledge."""
@@ -3118,7 +3163,13 @@ class Swarm:
         return self.retry_topology_ledger.observe(**facts)
     def choose_retry_reassessment(self, choice:ReassessmentChoice) -> ReassessmentChoice:
         receipt=choice.host_custody_receipt
-        current=receipt is not None and receipt._authority is self._custody_capability and self.host_custody_receipts.get(receipt.receipt) is receipt
+        current=False
+        if receipt is not None and self.request_lifecycle_ledger is not None and hasattr(self.request_lifecycle_ledger,"require_host_custody_receipt"):
+            try:
+                pending=self.retry_topology_ledger._pending
+                if pending is not None: self.request_lifecycle_ledger.require_host_custody_receipt(receipt,target_id=choice.target,binding=self.retry_topology_ledger.host_binding_digest(pending,choice)); current=True
+            except Exception:
+                current=False
         authority=self.retry_topology_ledger._host_authority if current else None
         return self.retry_topology_ledger._choose_reassessment(choice,host_authority=authority)
     def ctrl_event(self, event: str, task_id: str, material_revision:str|int=0, *, outcome:str="", evidence_id:str="", next_checkpoint:str="") -> str|None:

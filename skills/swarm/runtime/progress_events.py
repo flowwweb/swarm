@@ -12,8 +12,9 @@ from enum import StrEnum
 from pathlib import Path
 from threading import Condition
 from typing import Any, Mapping
+from weakref import WeakKeyDictionary
 
-from .core import BUILT_IN_PROFESSIONS, CtrlProgressMeasure, InvariantError
+from .core import BUILT_IN_PROFESSIONS, CtrlProgressMeasure, CustodyMutation, HostCustodyReceipt, InvariantError, _authority_verify, _custody_message
 from .private_state import LockedPrivateState
 
 
@@ -74,15 +75,42 @@ TOPOLOGY_FIELDS = frozenset({
 TOPOLOGY_NODE_KINDS = frozenset({"CTRL", "LEAD", "SUBAGENT", "TASK", "BLOCK"})
 ROLE_MANIFEST_FIELDS = frozenset({
     "id", "name", "purpose", "owns", "instructions", "boundaries",
-    "default_skills", "avatar_asset_digest", "accent", "version", "source", "provenance",
+    "default_skills", "specializations", "avatar_asset_digest", "accent", "version", "source", "provenance",
 })
 ROLE_PAYLOAD_FIELDS = frozenset({"role_id", "expected_active_version", "assignment_task_id", "manifest"})
 ROLE_SOURCES = frozenset({"builtin", "custom", "user_override"})
 ROLE_ACCENTS = ("#0ea5e9", "#8b5cf6", "#ec4899", "#f97316", "#22c55e", "#eab308")
+BUILT_IN_ROLE_SPECIALIZATIONS = {
+    "manager": ("Product Manager", "Project Manager", "Program Manager", "Operations Manager"),
+    "strategist": ("Product Strategist", "Brand Strategist", "Growth Strategist", "Go-to-Market Strategist"),
+    "researcher": ("User Researcher", "Market Researcher", "Technical Researcher", "Competitive Researcher"),
+    "analyst": ("Data Analyst", "Business Analyst", "Financial Analyst", "Product Analyst"),
+    "specialist": ("Domain Specialist", "Integration Specialist", "Compliance Specialist", "Localization Specialist"),
+    "inventor": ("Product Inventor", "Systems Inventor", "Interaction Inventor", "Process Inventor"),
+    "architect": ("Software Architect", "Systems Architect", "Solution Architect", "Data Architect"),
+    "designer": ("Product Designer", "UX Designer", "UI Designer", "Game Design"),
+    "artist": ("Brand Artist", "Concept Artist", "3D Artist", "Motion Artist"),
+    "writer": ("Technical Writer", "UX Writer", "Copywriter", "Documentation Writer"),
+    "developer": ("Frontend Developer", "Backend Developer", "Full-stack Developer", "Game Development"),
+    "producer": ("Creative Producer", "Technical Producer", "Content Producer", "Release Producer"),
+    "tester": ("QA Tester", "Automation Tester", "Performance Tester", "Accessibility Tester"),
+    "assistant": ("Executive Assistant", "Project Assistant", "Research Assistant", "Administrative Assistant"),
+    "security": ("Application Security", "Cloud Security", "Infrastructure Security", "Security Operations"),
+    "auditor": ("Compliance Auditor", "Security Auditor", "Financial Auditor", "Quality Auditor"),
+    "legal": ("Product Counsel", "Privacy Counsel", "Commercial Counsel", "Regulatory Counsel"),
+    "reviewer": ("Code Reviewer", "Product Reviewer", "Design Reviewer", "Release Reviewer"),
+    "operator": ("Release Operator", "Platform Operator", "Data Operator", "Incident Operator"),
+    "marketer": ("Product Marketer", "Growth Marketer", "Content Marketer", "Lifecycle Marketer"),
+    "support": ("Customer Support", "Technical Support", "Developer Support", "Community Support"),
+    "accountant": ("Financial Accountant", "Management Accountant", "Tax Accountant", "Cost Accountant"),
+    "recruiter": ("Technical Recruiter", "Design Recruiter", "Executive Recruiter", "Operations Recruiter"),
+    "educator": ("Technical Educator", "Product Educator", "Curriculum Designer", "Enablement Specialist"),
+}
 REQUEST_LIFECYCLE_EVENT_FIELDS = frozenset({
     "schema_version", "record_type", "event_id", "dedupe_key", "request_id",
     "stage_id", "parent_event_id", "envelope_digest", "lifecycle_state",
-    "record", "route_receipt_ids", "release_authority",
+    "record", "route_receipt_ids", "permitted_route_ids", "failed_goal_turn_receipt_ids",
+    "release_authority", "release_receipt_id", "release_issued_at_ms",
 })
 REQUEST_RECORD_FIELDS = frozenset({
     "id", "goal_id", "task_id", "accepted_owner", "outcome_kind",
@@ -95,7 +123,7 @@ TASK_HANDOFF_EVENT_FIELDS = frozenset({
     "schema_version", "record_type", "event_id", "dedupe_key", "handoff_id",
     "parent_event_id", "event_kind", "goal_id", "task_id", "old_owner",
     "new_owner", "checkpoint_digest", "scope_version", "lease_version",
-    "receipt_id", "observed_at_ms",
+    "receipt_id", "host_issued_at_ms", "observed_at_ms",
 })
 
 
@@ -185,6 +213,35 @@ class ProgressEventError(ValueError):
     pass
 
 
+def _ledger_custody_authority():
+    states: WeakKeyDictionary[object, tuple[int | None, dict[str, HostCustodyReceipt]]] = WeakKeyDictionary()
+
+    def install(owner: object, public_key: int | None) -> None:
+        if owner in states:
+            raise ProgressEventError("host custody verifier is already fixed for this ledger")
+        states[owner] = (public_key, {})
+
+    def retain(owner: object, receipt: HostCustodyReceipt) -> HostCustodyReceipt:
+        public_key, receipts = states[owner]
+        if not _authority_verify(public_key, _custody_message(receipt), receipt._signature):
+            raise ProgressEventError("custody receipt requires the ledger's host-pinned signature verifier")
+        existing = receipts.get(receipt.receipt)
+        if existing is not None and existing != receipt:
+            raise ProgressEventError("host custody receipt identity conflicts with retained content")
+        if existing is None:
+            receipts[receipt.receipt] = receipt
+        return existing or receipt
+
+    def current(owner: object, receipt: HostCustodyReceipt) -> bool:
+        public_key, receipts = states[owner]
+        return receipts.get(receipt.receipt) is receipt and _authority_verify(public_key, _custody_message(receipt), receipt._signature)
+
+    return install, retain, current
+
+
+_install_ledger_custody_authority, _retain_ledger_custody_receipt, _ledger_custody_receipt_is_current = _ledger_custody_authority()
+
+
 def _safe_id(value: Any, label: str, *, maximum: int = 256) -> str:
     text = str(value or "").strip()
     if len(text) > maximum or not SAFE_ID.fullmatch(text):
@@ -242,6 +299,35 @@ def _task_handoff_digest(payload: Mapping[str, Any], *, semantic: bool = False) 
     return hashlib.sha256(json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
 
 
+def task_handoff_host_binding(payload: Mapping[str, Any]) -> str:
+    """Bind one opaque host receipt to the exact task-start or acknowledgement fact."""
+    event = validate_task_handoff_event({key: payload.get(key) for key in TASK_HANDOFF_EVENT_FIELDS})
+    kind = TaskHandoffEventKind(event["event_kind"])
+    if kind not in {TaskHandoffEventKind.HANDOFF_DUE, TaskHandoffEventKind.HANDOFF_ACKNOWLEDGED}:
+        raise ProgressEventError("host custody binds only task start or handoff acknowledgement")
+    values = (
+        "task-start" if kind is TaskHandoffEventKind.HANDOFF_DUE else "task-handoff-ack",
+        event["handoff_id"], event["goal_id"], event["task_id"], event["old_owner"],
+        event["new_owner"], event["checkpoint_digest"], event["scope_version"],
+        event["lease_version"], event["host_issued_at_ms"],
+    )
+    return hashlib.sha256(json.dumps(values, ensure_ascii=True, separators=(",", ":")).encode("utf-8")).hexdigest()
+
+
+def request_blocked_release_binding(payload: Mapping[str, Any]) -> str:
+    """Bind terminal release authority to the retained exhausted-route evidence."""
+    event = validate_request_lifecycle_event(dict(payload))
+    if event["lifecycle_state"] != LedgerLifecycleState.BLOCKED.value:
+        raise ProgressEventError("release custody binds only terminal BLOCKED")
+    values = (
+        "request-blocked-release", event["request_id"], event["stage_id"],
+        event["parent_event_id"], event["envelope_digest"], event["permitted_route_ids"],
+        event["route_receipt_ids"], event["failed_goal_turn_receipt_ids"],
+        event["release_authority"], event["release_issued_at_ms"],
+    )
+    return hashlib.sha256(json.dumps(values, ensure_ascii=True, separators=(",", ":")).encode("utf-8")).hexdigest()
+
+
 def validate_task_handoff_event(payload: Any) -> dict[str, Any]:
     if not isinstance(payload, dict):
         raise ProgressEventError("task handoff event must be an object")
@@ -261,21 +347,27 @@ def validate_task_handoff_event(payload: Any) -> dict[str, Any]:
         raise ProgressEventError("task handoff checkpoint_digest must be SHA-256")
     _positive_int(payload.get("scope_version"), "scope_version")
     _positive_int(payload.get("lease_version"), "lease_version")
+    host_issued_at_ms = payload.get("host_issued_at_ms")
+    if host_issued_at_ms is not None:
+        _positive_int(host_issued_at_ms, "host_issued_at_ms", allow_zero=True)
     _positive_int(payload.get("observed_at_ms"), "observed_at_ms", allow_zero=True)
     try:
         event_kind = TaskHandoffEventKind(str(payload.get("event_kind") or ""))
     except ValueError as error:
         raise ProgressEventError("task handoff event kind is invalid") from error
     if event_kind is TaskHandoffEventKind.HANDOFF_DUE:
-        if parent_event_id is not None or new_owner is not None or checkpoint_digest is not None:
+        if parent_event_id is not None or new_owner is not None or checkpoint_digest is not None or host_issued_at_ms is None:
             raise ProgressEventError("HANDOFF_DUE cannot claim a target owner or checkpoint")
     elif parent_event_id is None or new_owner is None or checkpoint_digest is None:
         raise ProgressEventError("handoff transition requires its parent, target owner, and checkpoint")
+    elif event_kind is TaskHandoffEventKind.HANDOFF_ACKNOWLEDGED and host_issued_at_ms is None:
+        raise ProgressEventError("handoff acknowledgement requires host issuance time")
+    elif event_kind is not TaskHandoffEventKind.HANDOFF_ACKNOWLEDGED and host_issued_at_ms is not None:
+        raise ProgressEventError("host issuance time is reserved for task start and acknowledgement")
     if new_owner == payload["old_owner"]:
         raise ProgressEventError("task handoff requires a distinct target owner")
-    expected_ack = f"host:thread:{new_owner}:{payload['task_id']}:{payload['lease_version']}"
-    if event_kind is TaskHandoffEventKind.HANDOFF_ACKNOWLEDGED and payload["receipt_id"] != expected_ack:
-        raise ProgressEventError("handoff acknowledgement must bind the host target owner, task, and lease")
+    if event_kind in {TaskHandoffEventKind.HANDOFF_DUE, TaskHandoffEventKind.HANDOFF_ACKNOWLEDGED} and not re.fullmatch(r"[0-9a-f]{64}", payload["receipt_id"]):
+        raise ProgressEventError("task start and acknowledgement require an opaque host receipt")
     return dict(payload)
 
 
@@ -296,7 +388,13 @@ def validate_request_lifecycle_event(payload: Any) -> dict[str, Any]:
     except ValueError as error:
         raise ProgressEventError("request lifecycle state is invalid") from error
     route_receipts = _safe_ids(payload.get("route_receipt_ids"), "route_receipt_ids")
+    permitted_routes = _safe_ids(payload.get("permitted_route_ids"), "permitted_route_ids")
+    failed_goal_turns = _safe_ids(payload.get("failed_goal_turn_receipt_ids"), "failed_goal_turn_receipt_ids")
     release_authority = _optional_id(payload.get("release_authority"), "release_authority")
+    release_receipt_id = _optional_id(payload.get("release_receipt_id"), "release_receipt_id")
+    release_issued_at_ms = payload.get("release_issued_at_ms")
+    if release_issued_at_ms is not None:
+        _positive_int(release_issued_at_ms, "release_issued_at_ms", allow_zero=True)
     record = payload.get("record")
     if lifecycle_state is LedgerLifecycleState.OFFERED:
         if record is not None or parent_event_id is not None:
@@ -341,9 +439,21 @@ def validate_request_lifecycle_event(payload: Any) -> dict[str, Any]:
         if feed_sequences != sorted(set(feed_sequences)):
             raise ProgressEventError("request lifecycle transition cursors must advance exactly once")
     if lifecycle_state is LedgerLifecycleState.BLOCKED:
-        if len(route_receipts) < 3 or release_authority is None:
-            raise ProgressEventError("terminal BLOCKED requires distinct exhausted routes and exact release authority")
-    elif route_receipts or release_authority is not None:
+        if (
+            len(permitted_routes) < 3
+            or len(route_receipts) < 3
+            or len(failed_goal_turns) < 3
+            or set(permitted_routes) != set(route_receipts)
+            or release_authority is None
+            or release_receipt_id is None
+            or not re.fullmatch(r"[0-9a-f]{64}", release_receipt_id)
+            or release_issued_at_ms is None
+        ):
+            raise ProgressEventError("terminal BLOCKED requires distinct retained failed goal turns, complete permitted-route exhaustion, and trusted release authority")
+    elif lifecycle_state is LedgerLifecycleState.STALLED:
+        if len(route_receipts) != 1 or not permitted_routes or route_receipts[0] not in permitted_routes or len(failed_goal_turns) != 1 or release_authority is not None or release_receipt_id is not None or release_issued_at_ms is not None:
+            raise ProgressEventError("STALLED must retain one failed route and goal turn against a nonempty permitted-route inventory")
+    elif route_receipts or permitted_routes or failed_goal_turns or release_authority is not None or release_receipt_id is not None or release_issued_at_ms is not None:
         raise ProgressEventError("route exhaustion evidence is reserved for terminal BLOCKED")
     encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
     if len(encoded) > MAX_PROGRESS_EVENT_BYTES:
@@ -479,11 +589,23 @@ def _role_texts(value: Any, label: str, *, allow_empty: bool = False) -> list[st
     return [_safe_text(item, label, maximum=512) for item in value]
 
 
+def _role_specializations(value: Any, source: str) -> list[str]:
+    if not isinstance(value, list) or len(value) > 4:
+        raise ProgressEventError("role specializations must contain zero to four labels")
+    labels = [_safe_text(item, "role specialization", maximum=80) for item in value]
+    if len({label.casefold() for label in labels}) != len(labels):
+        raise ProgressEventError("role specializations must be ordered unique labels")
+    if source == "builtin" and len(labels) != 4:
+        raise ProgressEventError("built-in role manifests require exactly four specializations")
+    return labels
+
+
 def validate_role_manifest(payload: Any) -> dict[str, Any]:
     if not isinstance(payload, dict):
         raise ProgressEventError("role manifest must be an object")
     _exact_fields(payload, ROLE_MANIFEST_FIELDS, "role manifest")
     source = str(payload.get("source") or "")
+    legacy_specializations = "specializations" not in payload and payload.get("version") not in (None, "")
     digest = str(payload.get("avatar_asset_digest") or "").casefold()
     accent = str(payload.get("accent") or "").casefold()
     if source not in ROLE_SOURCES or not re.fullmatch(r"[0-9a-f]{64}", digest):
@@ -503,6 +625,8 @@ def validate_role_manifest(payload: Any) -> dict[str, Any]:
         "source": source,
         "provenance": _role_texts(payload.get("provenance"), "role provenance"),
     }
+    if not legacy_specializations:
+        normalized["specializations"] = _role_specializations(payload.get("specializations", []), source)
     expected = f"{source}:{hashlib.sha256(json.dumps(normalized, sort_keys=True, separators=(',', ':')).encode()).hexdigest()}"
     version = expected if payload.get("version") in (None, "") else _safe_id(payload.get("version"), "role version")
     if version != expected:
@@ -515,12 +639,14 @@ def build_role_manifest(role_id: str, draft: Mapping[str, Any], source: str, pro
     if not isinstance(draft, dict):
         raise ProgressEventError("role manifest draft must be an object")
     _exact_fields(draft, allowed, "role manifest draft")
-    return validate_role_manifest({"id": role_id, **draft, "source": source, "provenance": provenance})
+    normalized_draft = {**draft}
+    normalized_draft.setdefault("specializations", [])
+    return validate_role_manifest({"id": role_id, **normalized_draft, "source": source, "provenance": provenance})
 
 
 def load_builtin_role_manifests(roles_root: Path, avatar_path: Path) -> tuple[dict[str, Any], ...]:
     cards = {path.stem: path for path in Path(roles_root).glob("*.md") if path.is_file()}
-    if set(cards) != set(BUILT_IN_PROFESSIONS) or not Path(avatar_path).is_file():
+    if set(cards) != set(BUILT_IN_PROFESSIONS) or set(BUILT_IN_ROLE_SPECIALIZATIONS) != set(BUILT_IN_PROFESSIONS) or not Path(avatar_path).is_file():
         raise ProgressEventError("built-in role inventory must remain exactly 24 roles with one avatar asset")
     avatar_digest = hashlib.sha256(Path(avatar_path).read_bytes()).hexdigest()
     manifests = []
@@ -537,6 +663,7 @@ def load_builtin_role_manifests(roles_root: Path, avatar_path: Path) -> tuple[di
                 "User direction, custody, proof, and acceptance remain authoritative.",
             ],
             "default_skills": [],
+            "specializations": list(BUILT_IN_ROLE_SPECIALIZATIONS[role_id]),
             "avatar_asset_digest": avatar_digest,
             "accent": ROLE_ACCENTS[index % len(ROLE_ACCENTS)],
         }, "builtin", [f"role-card:{role_id}:{hashlib.sha256(text.encode()).hexdigest()}"]))
@@ -862,7 +989,7 @@ _REQUEST_LIFECYCLE_TRANSITIONS: dict[LedgerLifecycleState, frozenset[LedgerLifec
     LedgerLifecycleState.USER_PAUSED: frozenset({LedgerLifecycleState.USER_PAUSED, LedgerLifecycleState.RUNNING, LedgerLifecycleState.WAITING, LedgerLifecycleState.COMPLETE}),
     LedgerLifecycleState.KEEP_OUT: frozenset({LedgerLifecycleState.KEEP_OUT, LedgerLifecycleState.RUNNING, LedgerLifecycleState.WAITING, LedgerLifecycleState.COMPLETE}),
     LedgerLifecycleState.NEEDS_AUTHORITY: frozenset({LedgerLifecycleState.NEEDS_AUTHORITY, LedgerLifecycleState.RUNNING, LedgerLifecycleState.WAITING, LedgerLifecycleState.COMPLETE, LedgerLifecycleState.BLOCKED}),
-    LedgerLifecycleState.STALLED: frozenset({LedgerLifecycleState.RUNNING, LedgerLifecycleState.RETRYING, LedgerLifecycleState.WAITING, LedgerLifecycleState.COMPLETE, LedgerLifecycleState.NEEDS_AUTHORITY, LedgerLifecycleState.BLOCKED}),
+    LedgerLifecycleState.STALLED: frozenset({LedgerLifecycleState.STALLED, LedgerLifecycleState.RUNNING, LedgerLifecycleState.RETRYING, LedgerLifecycleState.WAITING, LedgerLifecycleState.COMPLETE, LedgerLifecycleState.NEEDS_AUTHORITY, LedgerLifecycleState.BLOCKED}),
     LedgerLifecycleState.BLOCKED: frozenset({LedgerLifecycleState.BLOCKED}),
     LedgerLifecycleState.COMPLETE: frozenset({LedgerLifecycleState.COMPLETE}),
 }
@@ -908,11 +1035,37 @@ class ProgressFeedSubscription:
 class ProgressLedger:
     """Append-only material-event authority with a disposable compact projection."""
 
-    def __init__(self, root: Path | str):
+    def __init__(self, root: Path | str, *, host_custody_public_key: int | None = None):
         self.root = Path(root).expanduser().resolve()
         self._state = LockedPrivateState(self.root, PROGRESS_LEDGER_PATH)
         self.projection_path = self.root / PROGRESS_PROJECTION_PATH
         self._condition = Condition()
+        if host_custody_public_key is not None and (not isinstance(host_custody_public_key, int) or isinstance(host_custody_public_key, bool) or host_custody_public_key <= 1):
+            raise ProgressEventError("host custody verifier requires a valid pinned public key")
+        _install_ledger_custody_authority(self, host_custody_public_key)
+
+    def retain_host_custody_receipt(self, receipt: HostCustodyReceipt) -> HostCustodyReceipt:
+        """Retain one externally signed receipt without exposing mint or registry authority."""
+        if not isinstance(receipt, HostCustodyReceipt):
+            raise ProgressEventError("custody receipt requires the ledger's host-pinned signature verifier")
+        return _retain_ledger_custody_receipt(self, receipt)
+
+    def require_host_custody_receipt(
+        self, receipt: HostCustodyReceipt | None, *, target_id: str, binding: str,
+        issued_at: int | None = None, not_before: int | None = None,
+    ) -> HostCustodyReceipt:
+        if not isinstance(receipt, HostCustodyReceipt):
+            raise ProgressEventError("event requires a retained host-verified custody receipt")
+        if (
+            not _ledger_custody_receipt_is_current(self, receipt)
+            or receipt.mutation is not CustodyMutation.STATE
+            or receipt.target_id != target_id
+            or receipt.target_state_digest != binding
+            or issued_at is not None and receipt.issued_at != issued_at
+            or not_before is not None and receipt.issued_at < not_before
+        ):
+            raise ProgressEventError("event requires a retained host-verified custody receipt")
+        return receipt
 
     @staticmethod
     def _record(event: ProgressMaterialEvent, event_seq: int) -> dict[str, Any]:
@@ -1328,12 +1481,21 @@ class ProgressLedger:
             "bytes": len(line),
         }
 
-    def append_request_lifecycle(self, payload: Mapping[str, Any]) -> dict[str, Any]:
+    def append_request_lifecycle(self, payload: Mapping[str, Any], *, custody_receipt: HostCustodyReceipt | None = None) -> dict[str, Any]:
         event = validate_request_lifecycle_event(dict(payload))
+        if event["lifecycle_state"] == LedgerLifecycleState.BLOCKED.value:
+            self.require_host_custody_receipt(custody_receipt, target_id=event["request_id"], binding=request_blocked_release_binding(event), issued_at=event["release_issued_at_ms"])
         event_digest = _request_lifecycle_digest(event)
         semantic_digest = _request_lifecycle_digest(event, semantic=True)
         with self._state.locked():
             projection, records = self._replay_unlocked()
+            if event["lifecycle_state"] == LedgerLifecycleState.BLOCKED.value:
+                retained = [item["event"] for item in records if isinstance(item.get("event"), dict) and item["event"].get("record_type") == "REQUEST_LIFECYCLE" and item["event"].get("request_id") == event["request_id"] and item["event"].get("lifecycle_state") == LedgerLifecycleState.STALLED.value]
+                retained_routes = {route for item in retained for route in item["route_receipt_ids"]}
+                retained_permitted = {route for item in retained for route in item["permitted_route_ids"]}
+                retained_turns = {receipt for item in retained for receipt in item["failed_goal_turn_receipt_ids"]}
+                if len(retained_routes) < 3 or len(retained_turns) < 3 or retained_routes != retained_permitted or retained_routes != set(event["route_receipt_ids"]) or retained_permitted != set(event["permitted_route_ids"]) or retained_turns != set(event["failed_goal_turn_receipt_ids"]):
+                    raise ProgressEventError("terminal BLOCKED requires matching retained distinct failed goal turns and complete permitted-route exhaustion")
             retained_event = projection["request_event_digests"].get(event["event_id"])
             if retained_event is not None:
                 if retained_event != event_digest:
@@ -1360,8 +1522,10 @@ class ProgressLedger:
             self._condition.notify_all()
         return {"status": "appended", "cursor": {"event_seq": event_seq, "event_id": event["event_id"], "event_digest": event_digest}, "event_digest": event_digest, "bytes": len(line)}
 
-    def append_task_handoff(self, payload: Mapping[str, Any]) -> dict[str, Any]:
+    def append_task_handoff(self, payload: Mapping[str, Any], *, custody_receipt: HostCustodyReceipt | None = None) -> dict[str, Any]:
         event = validate_task_handoff_event(dict(payload))
+        if event["event_kind"] in {TaskHandoffEventKind.HANDOFF_DUE.value, TaskHandoffEventKind.HANDOFF_ACKNOWLEDGED.value}:
+            self.require_host_custody_receipt(custody_receipt, target_id=event["task_id"], binding=task_handoff_host_binding(event), issued_at=event["host_issued_at_ms"])
         event_digest = _task_handoff_digest(event)
         semantic_digest = _task_handoff_digest(event, semantic=True)
         with self._state.locked():
@@ -1440,13 +1604,14 @@ class ProgressLedger:
             active = role["versions"].get(role["active_version"])
             if active is None:
                 raise ProgressEventError("role projection has no active version")
+            projected_active = {**active, "specializations": list(active.get("specializations", []))}
             result.append({
-                **active,
+                **projected_active,
                 "built_in": role_id in builtin_by_id,
                 "active_version": role["active_version"],
                 "canonical_version": role["canonical_version"],
                 "override_active": active["source"] == "user_override",
-                "versions": [{**role["versions"][version], "active": version == role["active_version"]} for version in sorted(role["versions"])],
+                "versions": [{**role["versions"][version], "specializations": list(role["versions"][version].get("specializations", [])), "active": version == role["active_version"]} for version in sorted(role["versions"])],
                 "source_event_ids": role["events"],
             })
         return {
@@ -1462,6 +1627,12 @@ class ProgressLedger:
                 "endpoint": "/api/role-manifests/commands",
                 "commands": ["ROLE_MANIFEST_CREATE", "ROLE_MANIFEST_REVISE", "ROLE_MANIFEST_RESET"],
                 "optimistic_concurrency_field": "expected_active_version",
+                "avatar": {
+                    "selection_field": "avatar_asset_digest",
+                    "selection_commands": ["ROLE_MANIFEST_CREATE", "ROLE_MANIFEST_REVISE"],
+                    "requires_retained_immutable_asset": True,
+                    "generation_command": None,
+                },
             },
             "claim_limit": "The browser projects server-owned ledger state; role metadata never transfers task authority or proves acceptance.",
         }

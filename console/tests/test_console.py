@@ -49,7 +49,7 @@ class SwarmConsoleTests(unittest.TestCase):
         manager = next(role for role in projection["roles"] if role["id"] == "manager")
         draft = {key: manager[key] for key in (
             "name", "purpose", "owns", "instructions", "boundaries",
-            "default_skills", "avatar_asset_digest", "accent",
+            "default_skills", "specializations", "avatar_asset_digest", "accent",
         )}
         request = {
             "command": "ROLE_MANIFEST_REVISE",
@@ -129,7 +129,7 @@ class SwarmConsoleTests(unittest.TestCase):
         manager = next(role for role in app.role_manifest_projection()["roles"] if role["id"] == "manager")
         draft = {key: manager[key] for key in (
             "name", "purpose", "owns", "instructions", "boundaries",
-            "default_skills", "avatar_asset_digest", "accent",
+            "default_skills", "specializations", "avatar_asset_digest", "accent",
         )}
         create = {
             "command": "ROLE_MANIFEST_CREATE",

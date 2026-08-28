@@ -16,17 +16,22 @@ from skills.swarm.runtime.progress_events import (
     ProgressLedger,
     build_role_manifest,
     load_builtin_role_manifests,
+    request_blocked_release_binding,
     role_material_event,
+    task_handoff_host_binding,
     validate_progress_material_event,
+    validate_role_manifest,
 )
-from skills.swarm.runtime.core import InvariantError, Role, Swarm, Task, TaskStartReceipt, Worker
+from skills.swarm.runtime.core import ArtifactIdentity, ControlPathFailure, ControlPathFailureKind, ControlPathRecoveryAction, CustodyMutation, DelegationContract, HostCustodyReceipt, InvariantError, ProofClass, RecoveryCause, Role, Swarm, Task, TaskStartReceipt, Worker, WorkerState, _HOST_AUTHORITY_GENERATOR, _HOST_AUTHORITY_PRIME, _custody_message
 
 
 class ProgressLedgerContractTests(unittest.TestCase):
+    HOST_PRIVATE_KEY = 0x5A17
+
     def setUp(self) -> None:
         self.temporary = tempfile.TemporaryDirectory()
         self.root = Path(self.temporary.name)
-        self.ledger = ProgressLedger(self.root)
+        self.ledger = self.host_ledger(self.root)
 
     def tearDown(self) -> None:
         self.temporary.cleanup()
@@ -43,10 +48,66 @@ class ProgressLedgerContractTests(unittest.TestCase):
     def role_draft(role: dict, **changes: object) -> dict:
         draft = {key: role[key] for key in (
             "name", "purpose", "owns", "instructions", "boundaries",
-            "default_skills", "avatar_asset_digest", "accent",
+            "default_skills", "specializations", "avatar_asset_digest", "accent",
         )}
         draft.update(changes)
         return draft
+
+    @classmethod
+    def host_ledger(cls, root: Path | str) -> ProgressLedger:
+        return ProgressLedger(root, host_custody_public_key=pow(_HOST_AUTHORITY_GENERATOR, cls.HOST_PRIVATE_KEY, _HOST_AUTHORITY_PRIME))
+
+    @classmethod
+    def sign_host_receipt(cls, receipt: HostCustodyReceipt, *, private_key: int | None = None) -> HostCustodyReceipt:
+        secret = cls.HOST_PRIVATE_KEY if private_key is None else private_key
+        message = _custody_message(receipt)
+        nonce = int.from_bytes(hashlib.sha256(secret.to_bytes(32, "big") + message).digest(), "big") % (_HOST_AUTHORITY_PRIME - 2) + 1
+        commitment = pow(_HOST_AUTHORITY_GENERATOR, nonce, _HOST_AUTHORITY_PRIME)
+        width = (_HOST_AUTHORITY_PRIME.bit_length() + 7) // 8
+        challenge = int.from_bytes(hashlib.sha256(commitment.to_bytes(width, "big") + message).digest(), "big")
+        response = (nonce + secret * challenge) % (_HOST_AUTHORITY_PRIME - 1)
+        object.__setattr__(receipt, "_signature", f"{commitment:x}:{response:x}")
+        return receipt
+
+    @classmethod
+    def host_receipt(cls, swarm: Swarm, receipt_id: str, target_id: str, binding: str, issued_at_ms: int) -> HostCustodyReceipt:
+        receipt = HostCustodyReceipt(receipt_id, CustodyMutation.STATE, target_id, binding, issued_at_ms)
+        cls.sign_host_receipt(receipt)
+        return swarm.record_host_custody_receipt(Role.CTRL, receipt)
+
+    def test_control_path_terminal_blocked_requires_retained_host_release_receipt(self) -> None:
+        artifact = ArtifactIdentity("candidate", "revision", "source")
+        contract = DelegationContract("task-recovery", "Return the bounded receipt.", "owner-old", ("skills/swarm/runtime",), artifact, ("skills/swarm/runtime/core.py",), (ProofClass.SOURCE,), 100)
+        task = Task("task-recovery", "owner-old", "creator", 1, {}, reviewer="owner-new", delegation_contract=contract, subagent_receipt="dispatch-receipt")
+        swarm = Swarm(tasks={task.id: task}, request_lifecycle_ledger=self.ledger)
+
+        def failure(turn: int, route: str) -> ControlPathFailure:
+            return ControlPathFailure(task.id, task.owner, task.subagent_receipt, f"completion-{turn}", ControlPathFailureKind.EMPTY_COMPLETION, "work/swarm-source", artifact, contract.artifact_paths, route, turn * 10, cause=RecoveryCause.CONTROL_TRANSPORT)
+
+        swarm.resolve_control_path_failure(Role.CTRL, failure(1, "route-failed"), same_owner_route="route-a", safely_resumable=True)
+        swarm.resolve_control_path_failure(Role.CTRL, failure(2, "route-a"), same_owner_route="route-b", safely_resumable=True)
+        swarm.resolve_control_path_failure(Role.CTRL, failure(3, "route-b"), authorized_handoff_owner="owner-new")
+        terminal_failure = failure(4, "handoff-owner-new")
+        before = swarm.retry_topology_ledger.control_path_snapshot()
+        with self.assertRaisesRegex(InvariantError, "caller-authored release receipt strings"):
+            swarm.resolve_control_path_failure(Role.CTRL, terminal_failure, release_condition="user supplies provider authority", responsible_authority="host-user", release_receipt_id="caller-release")
+        self.assertEqual(swarm.retry_topology_ledger.control_path_snapshot(), before)
+        binding = swarm.retry_topology_ledger.control_path_release_binding(terminal_failure, release_condition="user supplies provider authority", responsible_authority="host-user")
+        forged = self.sign_host_receipt(HostCustodyReceipt("e" * 64, CustodyMutation.STATE, task.id, binding, terminal_failure.observed_at_ms), private_key=self.HOST_PRIVATE_KEY + 1)
+        object.__setattr__(forged, "_authority", swarm._custody_capability)
+        swarm.host_custody_receipts[forged.receipt] = forged
+        object.__setattr__(self.ledger, "_ProgressLedger__host_custody_public_key", pow(_HOST_AUTHORITY_GENERATOR, self.HOST_PRIVATE_KEY + 1, _HOST_AUTHORITY_PRIME))
+        attacker_ledger = ProgressLedger(self.root / "attacker", host_custody_public_key=pow(_HOST_AUTHORITY_GENERATOR, self.HOST_PRIVATE_KEY + 1, _HOST_AUTHORITY_PRIME))
+        with self.assertRaisesRegex(InvariantError, "fixed by the authoritative runtime"):
+            swarm.request_lifecycle_ledger = attacker_ledger
+        before = (swarm.retry_topology_ledger.control_path_snapshot(), tuple(swarm.events))
+        with self.assertRaisesRegex(ProgressEventError, "host-verified"):
+            swarm.resolve_control_path_failure(Role.CTRL, terminal_failure, release_condition="user supplies provider authority", responsible_authority="host-user", release_receipt=forged)
+        self.assertEqual((swarm.retry_topology_ledger.control_path_snapshot(), tuple(swarm.events)), before)
+        release = self.host_receipt(swarm, "d" * 64, task.id, binding, terminal_failure.observed_at_ms)
+        blocked = swarm.resolve_control_path_failure(Role.CTRL, terminal_failure, release_condition="user supplies provider authority", responsible_authority="host-user", release_receipt=release)
+        self.assertEqual(blocked.action, ControlPathRecoveryAction.TERMINAL_BLOCKED)
+        self.assertEqual(blocked.release_receipt_id, release.receipt)
 
     @staticmethod
     def event(
@@ -235,6 +296,51 @@ class ProgressLedgerContractTests(unittest.TestCase):
                 role_id="manager", manifest=malformed, expected_active_version=manager["version"],
                 assignment_task_id=None, provenance="receipt:malformed", observed_at_ms=4,
             )
+
+    def test_role_specializations_are_bounded_metadata_and_version_bound(self) -> None:
+        builtins = self.role_manifests()
+        self.assertEqual(len(builtins), 24)
+        self.assertTrue(all(len(role["specializations"]) == 4 for role in builtins))
+        by_id = {role["id"]: role for role in builtins}
+        self.assertIn("Game Development", by_id["developer"]["specializations"])
+        self.assertIn("Game Design", by_id["designer"]["specializations"])
+        self.assertNotIn("Friendly", by_id["reviewer"]["specializations"])
+        self.assertNotIn("Hostile", by_id["reviewer"]["specializations"])
+        self.assertNotIn("critic", by_id)
+        self.assertIn("assistant", by_id)
+        self.assertTrue(any("structural ASSIST" in item for item in by_id["assistant"]["instructions"]))
+        self.assertTrue(any("Friendly or Hostile" in item for item in by_id["reviewer"]["instructions"]))
+
+        manager = by_id["manager"]
+        custom = build_role_manifest("custom-guide", self.role_draft(manager, specializations=[]), "custom", ["user-command:custom"])
+        self.assertEqual(custom["specializations"], [])
+        changed = build_role_manifest("manager", self.role_draft(manager, specializations=["Portfolio Manager"]), "user_override", ["user-command:specialization"])
+        self.assertNotEqual(changed["version"], manager["version"])
+        for invalid in ([""], ["One", "one"], ["One", "Two", "Three", "Four", "Five"]):
+            with self.subTest(invalid=invalid), self.assertRaisesRegex(ProgressEventError, "specialization"):
+                build_role_manifest("custom-guide", self.role_draft(manager, specializations=invalid), "custom", ["user-command:invalid"])
+
+        projection = self.ledger.project_role_manifests(builtins)
+        avatar = projection["command_contract"]["avatar"]
+        self.assertEqual(avatar["selection_field"], "avatar_asset_digest")
+        self.assertTrue(avatar["requires_retained_immutable_asset"])
+        self.assertIsNone(avatar["generation_command"])
+
+        legacy_content = {key: value for key, value in manager.items() if key not in {"specializations", "version"}}
+        legacy_content.update({"id": "legacy-guide", "source": "custom", "provenance": ["legacy-role-replay"]})
+        legacy_version = f"custom:{hashlib.sha256(json.dumps(legacy_content, sort_keys=True, separators=(',', ':')).encode()).hexdigest()}"
+        legacy = validate_role_manifest({**legacy_content, "version": legacy_version})
+        self.assertEqual(legacy["version"], legacy_version)
+        self.assertNotIn("specializations", legacy)
+        self.ledger.append(role_material_event(
+            "ROLE_MANIFEST_CREATE", event_id="legacy-role", dedupe_key="legacy-role-dedupe",
+            role_id="legacy-guide", manifest=legacy,
+            expected_active_version=None, assignment_task_id=None,
+            provenance="legacy-role-replay", observed_at_ms=20,
+        ))
+        replayed = ProgressLedger(self.root).project_role_manifests(builtins)
+        legacy_role = next(role for role in replayed["roles"] if role["id"] == "legacy-guide")
+        self.assertEqual(legacy_role["specializations"], [])
 
     def test_normative_lifecycle_is_exact(self) -> None:
         self.assertEqual(
@@ -608,7 +714,8 @@ class ProgressLedgerContractTests(unittest.TestCase):
             "event_id": "request-offer-1", "dedupe_key": "request-offer-dedupe-1",
             "request_id": "request-1", "stage_id": "stage-1", "parent_event_id": None,
             "envelope_digest": envelope, "lifecycle_state": "OFFERED", "record": None,
-            "route_receipt_ids": [], "release_authority": None,
+            "route_receipt_ids": [], "permitted_route_ids": [], "failed_goal_turn_receipt_ids": [],
+            "release_authority": None, "release_receipt_id": None, "release_issued_at_ms": None,
         }
         first = self.ledger.append_request_lifecycle(offer)
         replay = self.ledger.append_request_lifecycle(offer)
@@ -632,20 +739,57 @@ class ProgressLedgerContractTests(unittest.TestCase):
         self.assertEqual(self.ledger.project_request_lifecycles()["records"][0]["lifecycle_state"], "USER_PAUSED")
         blocked = dict(paused, event_id="request-blocked-1", dedupe_key="request-blocked-dedupe-1", parent_event_id=paused["event_id"], lifecycle_state="BLOCKED")
         before = self.ledger.project_request_lifecycles()["event_count"]
-        with self.assertRaisesRegex(ProgressEventError, "distinct exhausted routes"):
+        with self.assertRaisesRegex(ProgressEventError, "retained failed goal turns"):
             self.ledger.append_request_lifecycle(blocked)
         self.assertEqual(self.ledger.project_request_lifecycles()["event_count"], before)
 
-    def _continuity_swarm(self, *, user_keep_out: bool = False, owner: str = "owner-old") -> tuple[Swarm, Task, TaskStartReceipt]:
+        resumed = dict(paused, event_id="request-resumed-1", dedupe_key="request-resumed-dedupe-1", parent_event_id=paused["event_id"], lifecycle_state="RUNNING")
+        self.ledger.append_request_lifecycle(resumed)
+        stalled = resumed
+        permitted = ["route-a", "route-b", "route-c"]
+        for index, route in enumerate(permitted, start=1):
+            stalled = dict(stalled, event_id=f"request-stalled-{index}", dedupe_key=f"request-stalled-dedupe-{index}", parent_event_id=stalled["event_id"], lifecycle_state="STALLED", route_receipt_ids=[route], permitted_route_ids=permitted, failed_goal_turn_receipt_ids=[f"turn-{index}"])
+            self.ledger.append_request_lifecycle(stalled)
+        blocked = dict(stalled, event_id="request-blocked-2", dedupe_key="request-blocked-dedupe-2", parent_event_id=stalled["event_id"], lifecycle_state="BLOCKED")
+        repeated = dict(blocked, route_receipt_ids=["route-a", "route-a", "route-a"], permitted_route_ids=["route-a"], failed_goal_turn_receipt_ids=["turn-1", "turn-2", "turn-3"], release_authority="user", release_receipt_id="c" * 64, release_issued_at_ms=4)
+        with self.assertRaisesRegex(ProgressEventError, "duplicates"):
+            self.ledger.append_request_lifecycle(repeated)
+        terminal = dict(blocked, route_receipt_ids=["route-a", "route-b", "route-c"], permitted_route_ids=["route-a", "route-b", "route-c"], failed_goal_turn_receipt_ids=["turn-1", "turn-2", "turn-3"], release_authority="user", release_receipt_id="c" * 64, release_issued_at_ms=4)
+        binding = request_blocked_release_binding(terminal)
+        custody = Swarm(request_lifecycle_ledger=self.ledger)
+        plugin_minted = HostCustodyReceipt("c" * 64, CustodyMutation.STATE, "request-1", binding, 4)
+        object.__setattr__(plugin_minted, "_authority", custody._custody_capability)
+        custody.host_custody_receipts[plugin_minted.receipt] = plugin_minted
+        before_terminal = (self.root / PROGRESS_LEDGER_PATH).read_bytes()
+        with self.assertRaisesRegex(ProgressEventError, "host-verified"):
+            self.ledger.append_request_lifecycle(terminal, custody_receipt=plugin_minted)
+        self.assertEqual((self.root / PROGRESS_LEDGER_PATH).read_bytes(), before_terminal)
+        release = self.host_receipt(custody, "c" * 64, "request-1", binding, 4)
+        result = self.ledger.append_request_lifecycle(terminal, custody_receipt=release)
+        self.assertEqual(result["status"], "appended")
+        self.assertEqual(self.ledger.project_request_lifecycles()["records"][0]["lifecycle_state"], "BLOCKED")
+
+    def _continuity_swarm(self, *, user_keep_out: bool = False, owner: str = "owner-old", ledger: ProgressLedger | None = None) -> tuple[Swarm, Task, TaskStartReceipt]:
         task = Task("task-life", owner, "creator", 1, {}, goal_id="goal-life", user_custody_required=user_keep_out)
         swarm = Swarm(
             workers={"owner-old": Worker("owner-old", "lead-1", 1), "owner-new": Worker("owner-new", "lead-1", 2)},
             tasks={task.id: task},
-            request_lifecycle_ledger=self.ledger,
+            request_lifecycle_ledger=ledger or self.ledger,
             task_lifetime_hours=4,
         )
         swarm.workers[owner].task_ids.add(task.id)
-        return swarm, task, TaskStartReceipt("start-receipt-1", task.goal_id, task.id, owner, 1_000, 1, 1)
+        receipt_id = "a" * 64
+        placeholder = HostCustodyReceipt(receipt_id, CustodyMutation.STATE, task.id, "0" * 64, 1_000)
+        provisional = TaskStartReceipt(placeholder, task.goal_id, task.id, owner, 1_000, 1, 1)
+        handoff_id = swarm._handoff_id(provisional)
+        event = swarm._handoff_event(None, "HANDOFF_DUE", handoff_id=handoff_id, goal_id=task.goal_id, task_id=task.id, old_owner=owner, new_owner=None, checkpoint_digest=None, scope_version=1, lease_version=1, receipt_id=receipt_id, host_issued_at_ms=1_000, observed_at_ms=14_401_000)
+        receipt = self.host_receipt(swarm, receipt_id, task.id, task_handoff_host_binding(event), 1_000)
+        return swarm, task, TaskStartReceipt(receipt, task.goal_id, task.id, owner, 1_000, 1, 1)
+
+    def _ack_receipt(self, swarm: Swarm, handoff_id: str, checkpoint: str, observed_at_ms: int, *, receipt_id: str = "b" * 64) -> HostCustodyReceipt:
+        current = next(item for item in swarm._task_handoff_ledger().project_task_handoffs()["records"] if item["handoff_id"] == handoff_id)
+        event = swarm._handoff_event(current, "HANDOFF_ACKNOWLEDGED", handoff_id=handoff_id, goal_id=current["goal_id"], task_id=current["task_id"], old_owner=current["old_owner"], new_owner=current["new_owner"], checkpoint_digest=checkpoint, scope_version=current["scope_version"], lease_version=current["lease_version"], receipt_id=receipt_id, host_issued_at_ms=observed_at_ms, observed_at_ms=observed_at_ms)
+        return self.host_receipt(swarm, receipt_id, current["task_id"], task_handoff_host_binding(event), observed_at_ms)
 
     def test_task_lifetime_due_once_requires_checkpoint_ack_and_exact_replay(self) -> None:
         swarm, task, start = self._continuity_swarm()
@@ -661,37 +805,45 @@ class ProgressLedgerContractTests(unittest.TestCase):
         swarm.offer_task_handoff(Role.LEAD, due["handoff_id"], new_owner="owner-new", checkpoint_digest=checkpoint, observed_at_ms=14_401_002)
         self.assertEqual(task.owner, "owner-old")
         before_ack = (self.root / PROGRESS_LEDGER_PATH).read_bytes()
-        with self.assertRaisesRegex(ProgressEventError, "host target owner"):
-            swarm.acknowledge_task_handoff(Role.DOER, due["handoff_id"], new_owner="owner-new", checkpoint_digest=checkpoint, host_task_receipt="host:thread:wrong-owner:task-life:1", observed_at_ms=14_401_003)
+        with self.assertRaisesRegex(InvariantError, "typed host-minted"):
+            swarm.acknowledge_task_handoff(Role.DOER, due["handoff_id"], new_owner="owner-new", checkpoint_digest=checkpoint, host_task_receipt="host:thread:owner-new:task-life:1", observed_at_ms=14_401_003)  # type: ignore[arg-type]
+        forged = HostCustodyReceipt("b" * 64, CustodyMutation.STATE, task.id, "0" * 64, 14_401_003)
+        with self.assertRaisesRegex((InvariantError, ProgressEventError), "host-verified"):
+            swarm.acknowledge_task_handoff(Role.DOER, due["handoff_id"], new_owner="owner-new", checkpoint_digest=checkpoint, host_task_receipt=forged, observed_at_ms=14_401_003)
         self.assertEqual((self.root / PROGRESS_LEDGER_PATH).read_bytes(), before_ack)
-        acknowledgement = swarm.acknowledge_task_handoff(Role.DOER, due["handoff_id"], new_owner="owner-new", checkpoint_digest=checkpoint, host_task_receipt="host:thread:owner-new:task-life:1", observed_at_ms=14_401_003)
+        host_ack = self._ack_receipt(swarm, due["handoff_id"], checkpoint, 14_401_003)
+        acknowledgement = swarm.acknowledge_task_handoff(Role.DOER, due["handoff_id"], new_owner="owner-new", checkpoint_digest=checkpoint, host_task_receipt=host_ack, observed_at_ms=14_401_003)
         self.assertEqual(task.owner, "owner-old")
-        replay_ack = swarm.acknowledge_task_handoff(Role.DOER, due["handoff_id"], new_owner="owner-new", checkpoint_digest=checkpoint, host_task_receipt="host:thread:owner-new:task-life:1", observed_at_ms=14_401_003)
+        replay_ack = swarm.acknowledge_task_handoff(Role.DOER, due["handoff_id"], new_owner="owner-new", checkpoint_digest=checkpoint, host_task_receipt=host_ack, observed_at_ms=14_401_003)
         self.assertEqual(replay_ack["cursor"], acknowledgement["cursor"])
         before = (self.root / PROGRESS_LEDGER_PATH).read_bytes()
         with self.assertRaisesRegex(InvariantError, "conflicts"):
-            swarm.acknowledge_task_handoff(Role.DOER, due["handoff_id"], new_owner="owner-new", checkpoint_digest="b" * 64, host_task_receipt="host:thread:owner-new:task-life:1", observed_at_ms=14_401_004)
+            swarm.acknowledge_task_handoff(Role.DOER, due["handoff_id"], new_owner="owner-new", checkpoint_digest="b" * 64, host_task_receipt=host_ack, observed_at_ms=14_401_004)
         self.assertEqual((self.root / PROGRESS_LEDGER_PATH).read_bytes(), before)
         result = swarm.transfer_task_custody(Role.LEAD, due["handoff_id"], observed_at_ms=14_401_005)
         self.assertEqual((result["owner"], task.owner, result["lease_version"]), ("owner-new", "owner-new", 2))
+        self.assertEqual(task.current_lease_version, 2)
 
     def test_task_handoff_restart_keep_out_and_ctrl_authority_boundaries(self) -> None:
         swarm, task, start = self._continuity_swarm()
         due = swarm.task_handoff_due(Role.LEAD, task.id, start, now_ms=14_401_000)
         checkpoint = "c" * 64
         swarm.offer_task_handoff(Role.LEAD, due["handoff_id"], new_owner="owner-new", checkpoint_digest=checkpoint, observed_at_ms=14_401_001)
-        swarm.acknowledge_task_handoff(Role.DOER, due["handoff_id"], new_owner="owner-new", checkpoint_digest=checkpoint, host_task_receipt="host:thread:owner-new:task-life:1", observed_at_ms=14_401_002)
+        host_ack = self._ack_receipt(swarm, due["handoff_id"], checkpoint, 14_401_002)
+        swarm.acknowledge_task_handoff(Role.DOER, due["handoff_id"], new_owner="owner-new", checkpoint_digest=checkpoint, host_task_receipt=host_ack, observed_at_ms=14_401_002)
         swarm.transfer_task_custody(Role.LEAD, due["handoff_id"], observed_at_ms=14_401_003)
         restarted_task = Task(task.id, "owner-old", "creator", 1, {}, goal_id=task.goal_id)
-        restarted = Swarm(workers={"owner-old": Worker("owner-old", "lead-1", 1), "owner-new": Worker("owner-new", "lead-1", 2)}, tasks={task.id: restarted_task}, request_lifecycle_ledger=ProgressLedger(self.root))
+        old_worker = Worker("owner-old", "lead-1", 1); old_worker.task_ids.add(task.id)
+        restarted = Swarm(workers={"owner-old": old_worker, "owner-new": Worker("owner-new", "lead-1", 2)}, tasks={task.id: restarted_task}, request_lifecycle_ledger=ProgressLedger(self.root))
         self.assertEqual(restarted.reconcile_task_handoffs(), (task.id,))
         self.assertEqual(restarted_task.owner, "owner-new")
+        self.assertEqual(restarted_task.current_lease_version, 2)
+        self.assertEqual(restarted.reconcile_task_handoffs(), ())
         self.assertEqual(restarted.scheduled_wakeups, {})
 
         with tempfile.TemporaryDirectory() as directory:
-            keep_ledger = ProgressLedger(directory)
-            keep, keep_task, keep_start = self._continuity_swarm(user_keep_out=True)
-            keep.request_lifecycle_ledger = keep_ledger
+            keep_ledger = self.host_ledger(directory)
+            keep, keep_task, keep_start = self._continuity_swarm(user_keep_out=True, ledger=keep_ledger)
             kept = keep.task_handoff_due(Role.LEAD, keep_task.id, keep_start, now_ms=14_401_000)
             self.assertEqual(kept["state"], "KEEP_OUT")
             with self.assertRaisesRegex(InvariantError, "KEEP_OUT"):
@@ -699,18 +851,79 @@ class ProgressLedgerContractTests(unittest.TestCase):
             self.assertNotIn("BLOCKED", {item["event_kind"] for item in keep_ledger.project_task_handoffs()["records"]})
 
         with tempfile.TemporaryDirectory() as directory:
-            ctrl_ledger = ProgressLedger(directory)
+            ctrl_ledger = self.host_ledger(directory)
             ctrl_task = Task("task-ctrl", "CTRL", "creator", 1, {}, goal_id="goal-ctrl")
             ctrl = Swarm(tasks={ctrl_task.id: ctrl_task}, request_lifecycle_ledger=ctrl_ledger)
-            ctrl_start = TaskStartReceipt("start-receipt-ctrl", ctrl_task.goal_id, ctrl_task.id, "CTRL", 1_000)
+            receipt_id = "d" * 64
+            placeholder = HostCustodyReceipt(receipt_id, CustodyMutation.STATE, ctrl_task.id, "0" * 64, 1_000)
+            provisional = TaskStartReceipt(placeholder, ctrl_task.goal_id, ctrl_task.id, "CTRL", 1_000)
+            handoff_id = ctrl._handoff_id(provisional)
+            event = ctrl._handoff_event(None, "HANDOFF_DUE", handoff_id=handoff_id, goal_id=ctrl_task.goal_id, task_id=ctrl_task.id, old_owner="CTRL", new_owner=None, checkpoint_digest=None, scope_version=1, lease_version=1, receipt_id=receipt_id, host_issued_at_ms=1_000, observed_at_ms=14_401_000)
+            ctrl_receipt = self.host_receipt(ctrl, receipt_id, ctrl_task.id, task_handoff_host_binding(event), 1_000)
+            ctrl_start = TaskStartReceipt(ctrl_receipt, ctrl_task.goal_id, ctrl_task.id, "CTRL", 1_000)
             ctrl_due = ctrl.task_handoff_due(Role.CTRL, ctrl_task.id, ctrl_start, now_ms=14_401_000)
             self.assertEqual(ctrl_due["state"], "NEEDS_AUTHORITY")
             with self.assertRaisesRegex(InvariantError, "successor CTRL"):
                 ctrl.offer_task_handoff(Role.CTRL, ctrl_due["handoff_id"], new_owner="owner-new", checkpoint_digest="e" * 64, observed_at_ms=14_401_001)
 
+    def test_handoff_host_receipts_and_transfer_validate_before_mutation(self) -> None:
+        swarm, task, start = self._continuity_swarm()
+        forged_start = TaskStartReceipt(HostCustodyReceipt("e" * 64, CustodyMutation.STATE, task.id, "0" * 64, 1_000), task.goal_id, task.id, task.owner, 1_000)
+        ledger_path = self.root / PROGRESS_LEDGER_PATH
+        before = ledger_path.read_bytes() if ledger_path.exists() else b""
+        with self.assertRaisesRegex((InvariantError, ProgressEventError), "host-verified"):
+            swarm.task_handoff_due(Role.LEAD, task.id, forged_start, now_ms=14_401_000)
+        self.assertEqual(ledger_path.read_bytes() if ledger_path.exists() else b"", before)
+
+        due = swarm.task_handoff_due(Role.LEAD, task.id, start, now_ms=14_401_000)
+        checkpoint = "f" * 64
+        swarm.offer_task_handoff(Role.LEAD, due["handoff_id"], new_owner="owner-new", checkpoint_digest=checkpoint, observed_at_ms=14_401_001)
+        acknowledgement = self._ack_receipt(swarm, due["handoff_id"], checkpoint, 14_401_002)
+        swarm.acknowledge_task_handoff(Role.DOER, due["handoff_id"], new_owner="owner-new", checkpoint_digest=checkpoint, host_task_receipt=acknowledgement, observed_at_ms=14_401_002)
+        expected_worker = swarm.workers["owner-new"]
+        for label, replacement in (
+            ("missing", None),
+            ("retired", Worker("owner-new", "lead-1", 2, WorkerState.RETIRED)),
+            ("mismatched", Worker("different-owner", "lead-1", 2)),
+        ):
+            with self.subTest(target=label):
+                before_transfer = ledger_path.read_bytes()
+                if replacement is None:
+                    swarm.workers.pop("owner-new")
+                else:
+                    swarm.workers["owner-new"] = replacement
+                with self.assertRaisesRegex(InvariantError, "target is unavailable"):
+                    swarm.transfer_task_custody(Role.LEAD, due["handoff_id"], observed_at_ms=14_401_003)
+                self.assertEqual(ledger_path.read_bytes(), before_transfer)
+                self.assertEqual(task.owner, "owner-old")
+                swarm.workers["owner-new"] = expected_worker
+        restarted_task = Task(task.id, "owner-old", "creator", 1, {}, goal_id=task.goal_id)
+        restart_old = Worker("owner-old", "lead-1", 1); restart_old.task_ids.add(task.id)
+        restarted = Swarm(workers={"owner-old": restart_old, "owner-new": Worker("owner-new", "lead-1", 2, WorkerState.RETIRED)}, tasks={task.id: restarted_task}, request_lifecycle_ledger=ProgressLedger(self.root))
+        self.assertEqual(restarted.reconcile_task_handoffs(), ())
+        self.assertEqual(restarted_task.owner, "owner-old")
+
+        mismatch_factories = (
+            ("goal", lambda: (Task(task.id, "owner-old", "creator", 1, {}, goal_id="other-goal"), Worker("owner-old", "lead-1", 1), Worker("owner-new", "lead-1", 2))),
+            ("scope", lambda: (Task(task.id, "owner-old", "creator", 1, {}, goal_id=task.goal_id, objective_version=2), Worker("owner-old", "lead-1", 1), Worker("owner-new", "lead-1", 2))),
+            ("lease", lambda: (Task(task.id, "owner-old", "creator", 1, {}, goal_id=task.goal_id, current_lease_version=2), Worker("owner-old", "lead-1", 1), Worker("owner-new", "lead-1", 2))),
+            ("old-owner", lambda: (Task(task.id, "owner-old", "creator", 1, {}, goal_id=task.goal_id), Worker("different-old", "lead-1", 1), Worker("owner-new", "lead-1", 2))),
+            ("new-owner", lambda: (Task(task.id, "owner-old", "creator", 1, {}, goal_id=task.goal_id), Worker("owner-old", "lead-1", 1), Worker("different-new", "lead-1", 2))),
+            ("target-state", lambda: (Task(task.id, "owner-old", "creator", 1, {}, goal_id=task.goal_id), Worker("owner-old", "lead-1", 1), Worker("owner-new", "lead-1", 2, WorkerState.RETIRED))),
+        )
+        for label, factory in mismatch_factories:
+            with self.subTest(restart_binding=label):
+                candidate_task, candidate_old, candidate_new = factory()
+                candidate_old.task_ids.add(task.id)
+                candidate = Swarm(workers={"owner-old": candidate_old, "owner-new": candidate_new}, tasks={task.id: candidate_task}, request_lifecycle_ledger=ProgressLedger(self.root))
+                before_state = (candidate_task.owner, candidate_task.current_lease_version, candidate_task.handoff_active, frozenset(candidate_old.task_ids), frozenset(candidate_new.task_ids))
+                self.assertEqual(candidate.reconcile_task_handoffs(), ())
+                self.assertEqual((candidate_task.owner, candidate_task.current_lease_version, candidate_task.handoff_active, frozenset(candidate_old.task_ids), frozenset(candidate_new.task_ids)), before_state)
+
     def test_source_and_plugin_mirrors_are_exact(self) -> None:
         repository = Path(__file__).resolve().parents[3]
         pairs = (
+            (repository / "skills/swarm/runtime/core.py", repository / "plugins/swarm/skills/swarm/runtime/core.py"),
             (repository / "skills/swarm/runtime/progress_events.py", repository / "plugins/swarm/skills/swarm/runtime/progress_events.py"),
             (repository / "skills/swarm/references/task-contract.md", repository / "plugins/swarm/skills/swarm/references/task-contract.md"),
         )
