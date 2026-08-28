@@ -1,4 +1,4 @@
-const state = { token: "", overview: null, proof: [], proofCollections: new Map(), proofStatuses: new Map(), proofStatus: "idle", proofSequence: 0, usageHistory: null, usageWindowHours: 24, usageScopeKey: "", usageStatus: "idle", usageError: "", projectProgress: null, projectProgressProjectId: "", projectProgressStatus: "idle", projectProgressError: "", projectProgressFeed: null, projectProgressFeedProjectId: "", projectProgressFeedStatus: "idle", projectProgressFeedError: "", projectTab: "overview", diagnostics: null, health: null, storage: null, config: null, ctrlSettings: null, skills: null, skillsError: "", roleManifests: null, roleManifestStatus: "unavailable", roleManifestError: "", agentsTab: "active", selectedRoleId: "accountant", roleEditorTrigger: null, selectedAssetIdentity: "", notificationLastSeen: 0, notificationTrigger: null, view: "overview", projectId: "all", ctrlId: "", settingsCtrlId: "", settingsScopeType: "", settingsScopeId: "", evidenceImages: [], evidenceIndex: 0, evidenceTrigger: null };
+const state = { token: "", overview: null, proof: [], proofCollections: new Map(), proofStatuses: new Map(), proofStatus: "idle", proofSequence: 0, usageHistory: null, usageWindowHours: 24, usageScopeKey: "", usageStatus: "idle", usageError: "", projectProgress: null, projectProgressProjectId: "", projectProgressStatus: "idle", projectProgressError: "", projectProgressFeed: null, projectProgressFeedProjectId: "", projectProgressFeedStatus: "idle", projectProgressFeedError: "", projectTab: "overview", diagnostics: null, health: null, storage: null, config: null, ctrlSettings: null, skills: null, skillsError: "", roleManifests: null, roleManifestStatus: "unavailable", roleManifestError: "", agentsTab: "active", selectedRoleId: "accountant", roleEditorTrigger: null, assetView: "grid", selectedAssetIdentity: "", onboardingStep: 0, onboardingShown: false, onboardingTrigger: null, notificationLastSeen: 0, notificationTrigger: null, view: "overview", projectId: "all", ctrlId: "", settingsCtrlId: "", settingsScopeType: "", settingsScopeId: "", evidenceImages: [], evidenceIndex: 0, evidenceTrigger: null };
 const EVIDENCE_THUMBNAIL_PAGE_SIZE = 24;
 const USAGE_WINDOW_LABELS = { 1: "1h", 24: "1d" };
 const ROLE_PROFESSIONS = [
@@ -9,6 +9,11 @@ const ROLE_PROFESSIONS = [
   ["researcher", "Researcher"], ["reviewer", "Reviewer"], ["security", "Security"], ["specialist", "Specialist"],
   ["strategist", "Strategist"], ["support", "Support"], ["tester", "Tester"], ["writer", "Writer"],
 ].map(([id, name]) => ({ id, name }));
+const ONBOARDING_STEPS = [
+  { name: "Welcome", primary: "Start guided tour" },
+  { name: "How SWARM works", primary: "Continue" },
+  { name: "Ready", primary: "Open Projects" },
+];
 const $ = (selector, root = document) => root.querySelector(selector);
 const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
 
@@ -87,6 +92,51 @@ function showConnectionState() {
 function clearConnectionState() {
   $(".workspace").classList.remove("is-disconnected");
   $("#connection-state").hidden = true;
+}
+
+function renderOnboarding() {
+  const step = Math.min(Math.max(0, state.onboardingStep), ONBOARDING_STEPS.length - 1);
+  state.onboardingStep = step;
+  $$('[data-onboarding-step]').forEach((dot, index) => {
+    const selected = index === step;
+    dot.classList.toggle("is-current", selected);
+    dot.setAttribute("aria-selected", String(selected));
+    dot.toggleAttribute("aria-current", selected);
+    if (selected) dot.setAttribute("aria-current", "step");
+    dot.tabIndex = selected ? 0 : -1;
+  });
+  $$('[data-onboarding-panel]').forEach((panel, index) => {
+    const selected = index === step;
+    panel.hidden = !selected;
+    panel.classList.toggle("is-active", selected);
+  });
+  const current = ONBOARDING_STEPS[step];
+  $("#onboarding-step-status").textContent = current.name + ". Step " + String(step + 1) + " of " + String(ONBOARDING_STEPS.length) + ".";
+  $("#onboarding-back").hidden = step === 0;
+  $("#onboarding-primary").textContent = current.primary;
+}
+
+function openOnboarding() {
+  if (state.onboardingShown || !state.overview || $(".workspace").classList.contains("is-disconnected")) return;
+  state.onboardingShown = true;
+  state.onboardingStep = 0;
+  state.onboardingTrigger = document.activeElement instanceof HTMLElement && document.activeElement !== document.body ? document.activeElement : $("#tab-overview");
+  renderOnboarding();
+  const dialog = $("#onboarding-dialog");
+  if (!dialog.open) dialog.showModal();
+  requestAnimationFrame(() => $("#onboarding-primary").focus({ preventScroll: true }));
+}
+
+function closeOnboarding(openProjects = false) {
+  const dialog = $("#onboarding-dialog");
+  if (dialog.open) dialog.close();
+  if (openProjects) setView("overview", false);
+}
+
+function setOnboardingStep(step, focusDot = false) {
+  state.onboardingStep = Math.min(Math.max(0, Number(step) || 0), ONBOARDING_STEPS.length - 1);
+  renderOnboarding();
+  if (focusDot) $('[data-onboarding-step="' + state.onboardingStep + '"]')?.focus({ preventScroll: true });
 }
 
 function connectionFailure(message) {
@@ -895,17 +945,39 @@ function openProofIdentity(identity, trigger) {
   openEvidenceLightbox(index, trigger);
 }
 
+function assetImageMarkup(item, detail = false) {
+  return '<span class="asset-image-frame' + (detail ? ' is-detail' : '') + '"><img data-asset-image loading="lazy" src="' + proofMediaURL(item) + '" alt=""><span class="asset-image-failed"' + (detail ? ' role="status"' : '') + ' hidden>Preview unavailable</span></span>';
+}
+
+function assetGridMarkup(item) {
+  const identity = proofIdentity(item);
+  const label = item.caption || item.kind || "Asset";
+  const selected = identity === state.selectedAssetIdentity;
+  return '<article class="asset-tile' + (selected ? ' is-selected' : '') + '" data-asset-card="' + escapeHTML(identity) + '"><button class="asset-image-button" type="button" data-asset-detail="' + escapeHTML(identity) + '" aria-label="Open asset details for ' + escapeHTML(label) + '" aria-current="' + String(selected) + '">' + assetImageMarkup(item) + '</button><div class="asset-quick-actions" aria-label="Quick actions for ' + escapeHTML(label) + '"><button class="icon-button" type="button" data-review-open="' + escapeHTML(identity) + '" aria-label="Open proof for ' + escapeHTML(label) + '" title="Open proof"><svg class="lucide" aria-hidden="true"><use href="#lucide-image"></use></svg></button><button class="icon-button" type="button" disabled aria-label="New revision unavailable for ' + escapeHTML(label) + '" title="Asset revision command is not available"><svg class="lucide" aria-hidden="true"><use href="#lucide-pencil"></use></svg></button><button class="icon-button" type="button" disabled aria-label="Approve digest unavailable for ' + escapeHTML(label) + '" title="Asset approval command is not available"><svg class="lucide" aria-hidden="true"><use href="#lucide-check"></use></svg></button></div></article>';
+}
+
+function assetListMarkup(item) {
+  const identity = proofIdentity(item);
+  const label = item.caption || item.kind || "Asset";
+  const selected = identity === state.selectedAssetIdentity;
+  return '<article class="asset-list-row' + (selected ? ' is-selected' : '') + '"><button class="asset-list-main" type="button" data-asset-detail="' + escapeHTML(identity) + '" aria-label="Open asset details for ' + escapeHTML(label) + '" aria-current="' + String(selected) + '">' + assetImageMarkup(item) + '<span class="asset-list-copy"><strong>' + escapeHTML(label) + '</strong><small>' + escapeHTML([item.project_id || "Unscoped", proofReviewState(item)].join(" · ")) + '</small><code>' + escapeHTML(String(item.digest || "—").slice(0, 16)) + '</code></span></button><div class="asset-list-actions"><button class="quiet-button" type="button" data-review-open="' + escapeHTML(identity) + '">Open proof</button><button class="quiet-button" type="button" disabled title="Asset revision command is not available">New revision</button><button class="quiet-button" type="button" disabled title="Asset approval command is not available">Approve digest</button></div></article>';
+}
+
 function renderAssets() {
   const items = assetItems();
   if (!items.some((item) => proofIdentity(item) === state.selectedAssetIdentity)) state.selectedAssetIdentity = proofIdentity(items[0]);
   const selected = items.find((item) => proofIdentity(item) === state.selectedAssetIdentity) || null;
   $("#assets-status").textContent = currentProofStatus() === "stale" ? "Showing the last received asset inventory" : items.length ? items.length + " digest-bound asset" + (items.length === 1 ? "" : "s") : "No retained assets";
-  $("#asset-gallery").innerHTML = items.length ? items.map((item) => '<button class="asset-tile ' + (proofIdentity(item) === state.selectedAssetIdentity ? "is-selected" : "") + '" type="button" data-asset-identity="' + escapeHTML(proofIdentity(item)) + '" aria-pressed="' + String(proofIdentity(item) === state.selectedAssetIdentity) + '"><img loading="lazy" src="' + proofMediaURL(item) + '" alt=""><span>' + escapeHTML(item.caption || item.kind || "Asset") + '</span><small>' + escapeHTML(proofReviewState(item)) + '</small></button>').join("") : '<p class="empty-state">Assets appear after digest-bound proof is retained.</p>';
+  $$('[data-asset-view]').forEach((button) => { const selectedView = button.dataset.assetView === state.assetView; button.classList.toggle("is-selected", selectedView); button.setAttribute("aria-pressed", String(selectedView)); });
+  const gallery = $("#asset-gallery");
+  gallery.classList.toggle("is-list", state.assetView === "list");
+  gallery.setAttribute("aria-label", state.assetView === "grid" ? "Asset image grid" : "Asset list");
+  gallery.innerHTML = items.length ? items.map(state.assetView === "grid" ? assetGridMarkup : assetListMarkup).join("") : '<p class="empty-state">Assets appear after digest-bound proof is retained.</p>';
   if (!selected) { $("#asset-detail").innerHTML = '<p class="empty-state">Select an asset to inspect its immutable revision.</p>'; return; }
   const revisions = items.filter((item) => item.evidence_id === selected.evidence_id);
   const provenance = selected.source || selected.provenance?.source || selected.provenance?.kind || "Unknown";
   const revisionMarkup = revisions.map((revision) => '<li><code>' + escapeHTML(String(revision.digest || "—").slice(0, 12)) + '</code><span>' + escapeHTML(proofReviewState(revision)) + '</span><time>' + escapeHTML(formatRelative(revision.observed_at_ms || revision.updated_at)) + '</time></li>').join("");
-  $("#asset-detail").innerHTML = '<img src="' + proofMediaURL(selected) + '" alt=""><p class="eyebrow">' + escapeHTML(proofReviewState(selected)) + '</p><h2>' + escapeHTML(selected.caption || selected.kind || "Asset") + '</h2><dl><div><dt>Digest</dt><dd>' + escapeHTML(selected.digest || "—") + '</dd></div><div><dt>Revision history</dt><dd>' + revisions.length + '</dd></div><div><dt>Provenance</dt><dd>' + escapeHTML(provenance) + '</dd></div></dl><ol class="asset-revisions" aria-label="Retained asset revisions">' + revisionMarkup + '</ol><div class="asset-actions"><button class="quiet-button" type="button" data-review-open="' + escapeHTML(proofIdentity(selected)) + '">Open proof</button><button class="quiet-button" type="button" disabled title="Asset revision command is not available">New revision</button><button class="quiet-button" type="button" disabled title="Asset approval command is not available">Approve digest</button></div><small>Revision and approval actions remain unavailable until their server commands are accepted.</small>';
+  $("#asset-detail").innerHTML = assetImageMarkup(selected, true) + '<p class="eyebrow">' + escapeHTML(proofReviewState(selected)) + '</p><h2>' + escapeHTML(selected.caption || selected.kind || "Asset") + '</h2><dl><div><dt>Digest</dt><dd>' + escapeHTML(selected.digest || "—") + '</dd></div><div><dt>Revision history</dt><dd>' + revisions.length + '</dd></div><div><dt>Provenance</dt><dd>' + escapeHTML(provenance) + '</dd></div></dl><ol class="asset-revisions" aria-label="Retained asset revisions">' + revisionMarkup + '</ol><div class="asset-actions"><button class="quiet-button" type="button" data-review-open="' + escapeHTML(proofIdentity(selected)) + '">Open proof</button><button class="quiet-button" type="button" disabled title="Asset revision command is not available">New revision</button><button class="quiet-button" type="button" disabled title="Asset approval command is not available">Approve digest</button></div><small>Revision and approval actions remain unavailable until their server commands are accepted.</small>';
 }
 
 function selectedProgressProjectId() {
@@ -1462,6 +1534,7 @@ async function initialize() {
     return;
   }
   await refreshOverview();
+  openOnboarding();
 }
 
 let presenceTimer = null;
@@ -1481,6 +1554,18 @@ function startPresence() {
 }
 
 document.addEventListener("click", (event) => {
+  const onboardingDot = event.target.closest("[data-onboarding-step]");
+  if (onboardingDot) {
+    setOnboardingStep(onboardingDot.dataset.onboardingStep, true);
+    return;
+  }
+  const assetView = event.target.closest("[data-asset-view]");
+  if (assetView) {
+    state.assetView = assetView.dataset.assetView === "list" ? "list" : "grid";
+    renderAssets();
+    $('[data-asset-view="' + state.assetView + '"]')?.focus({ preventScroll: true });
+    return;
+  }
   const projectTab = event.target.closest("[data-project-tab]");
   if (projectTab) {
     state.projectTab = projectTab.dataset.projectTab;
@@ -1505,11 +1590,11 @@ document.addEventListener("click", (event) => {
     openProofIdentity(reviewOpen.dataset.reviewOpen, reviewOpen);
     return;
   }
-  const asset = event.target.closest("[data-asset-identity]");
+  const asset = event.target.closest("[data-asset-detail]");
   if (asset) {
-    state.selectedAssetIdentity = asset.dataset.assetIdentity;
+    state.selectedAssetIdentity = asset.dataset.assetDetail;
     renderAssets();
-    asset.focus({ preventScroll: true });
+    $("#asset-detail")?.focus({ preventScroll: true });
     return;
   }
   const agentsTab = event.target.closest("[data-agents-tab]");
@@ -1586,6 +1671,24 @@ document.addEventListener("click", (event) => {
   }
 });
 
+$("#onboarding-close").addEventListener("click", () => closeOnboarding());
+$("#onboarding-skip").addEventListener("click", () => closeOnboarding());
+$("#onboarding-back").addEventListener("click", () => setOnboardingStep(state.onboardingStep - 1));
+$("#onboarding-primary").addEventListener("click", () => {
+  if (state.onboardingStep === ONBOARDING_STEPS.length - 1) closeOnboarding(true);
+  else setOnboardingStep(state.onboardingStep + 1);
+});
+$(".onboarding-progress").addEventListener("keydown", (event) => {
+  if (!["ArrowRight", "ArrowLeft", "Home", "End"].includes(event.key)) return;
+  const next = event.key === "Home" ? 0 : event.key === "End" ? ONBOARDING_STEPS.length - 1 : (state.onboardingStep + (event.key === "ArrowRight" ? 1 : -1) + ONBOARDING_STEPS.length) % ONBOARDING_STEPS.length;
+  event.preventDefault();
+  setOnboardingStep(next, true);
+});
+$("#onboarding-dialog").addEventListener("close", () => {
+  state.onboardingTrigger?.focus({ preventScroll: true });
+  state.onboardingTrigger = null;
+});
+
 $("#evidence-lightbox").addEventListener("close", () => {
   state.evidenceTrigger?.focus();
   state.evidenceTrigger = null;
@@ -1594,6 +1697,13 @@ $("#evidence-lightbox-image").addEventListener("error", () => {
   $("#evidence-lightbox-image").hidden = true;
   $("#evidence-lightbox-failed").hidden = false;
 });
+document.addEventListener("error", (event) => {
+  const image = event.target.closest?.("[data-asset-image]");
+  if (!image) return;
+  image.hidden = true;
+  const failed = image.parentElement?.querySelector(".asset-image-failed");
+  if (failed) failed.hidden = false;
+}, true);
 document.addEventListener("keydown", (event) => {
   if (event.key === "Escape" && !$("#notifications-panel").hidden) {
     event.preventDefault();

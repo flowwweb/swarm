@@ -33,6 +33,8 @@
       <symbol id="lucide-git-branch" viewBox="0 0 24 24"><line x1="6" x2="6" y1="3" y2="15"/><circle cx="18" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M18 9a9 9 0 0 1-9 9"/></symbol>
       <symbol id="lucide-list-tree" viewBox="0 0 24 24"><path d="M21 12h-8M21 6H8M21 18h-8M3 6h.01M3 12h.01M3 18h.01M8 6v12"/></symbol>
       <symbol id="lucide-file-clock" viewBox="0 0 24 24"><path d="M14 2v6h6M13 22H6a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h8l6 6v3"/><circle cx="17" cy="17" r="4"/><path d="M17 15v2l1 1"/></symbol>
+      <symbol id="lucide-grid-2x2" viewBox="0 0 24 24"><rect width="7" height="7" x="3" y="3" rx="1"/><rect width="7" height="7" x="14" y="3" rx="1"/><rect width="7" height="7" x="3" y="14" rx="1"/><rect width="7" height="7" x="14" y="14" rx="1"/></symbol>
+      <symbol id="lucide-list" viewBox="0 0 24 24"><path d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01"/></symbol>
     </svg>
     <div class="ambient ambient-one" aria-hidden="true"></div>
     <div class="ambient ambient-two" aria-hidden="true"></div>
@@ -102,7 +104,7 @@
           <section id="agents-panel-library" data-agents-panel="library" role="tabpanel" aria-labelledby="agents-tab-library" hidden><header class="role-library-head"><div><p class="eyebrow">Built-in professions</p><h2>Role library</h2></div><p id="role-library-status" role="status">Loading server-owned role manifests</p></header><div class="role-library-layout"><div class="role-library-grid" id="role-library-grid" aria-live="polite"></div><aside class="role-detail panel" id="role-detail" aria-live="polite"></aside></div></section>
         </section>
         <section class="view review-view" id="view-review" data-view-panel="review" role="tabpanel" aria-labelledby="tab-review" tabindex="0" hidden><header class="view-head"><div><p class="eyebrow">Review</p><h2>Proof and decisions</h2></div><p id="review-status" aria-live="polite">Loading proof</p></header><div class="review-list" id="review-list"></div></section>
-        <section class="view assets-view" id="view-assets" data-view-panel="assets" role="tabpanel" aria-labelledby="tab-assets" tabindex="0" hidden><header class="view-head"><div><p class="eyebrow">Assets</p><h2>Project assets</h2></div><p id="assets-status" aria-live="polite">Loading digest-bound media</p></header><div class="assets-layout"><div class="asset-gallery" id="asset-gallery"></div><aside class="asset-detail panel" id="asset-detail" aria-live="polite"></aside></div></section>
+        <section class="view assets-view" id="view-assets" data-view-panel="assets" role="tabpanel" aria-labelledby="tab-assets" tabindex="0" hidden><header class="view-head assets-view-head"><div><p class="eyebrow">Assets</p><h2>Project assets</h2></div><div class="assets-head-actions"><p id="assets-status" aria-live="polite">Loading digest-bound media</p><div class="asset-view-toggle" role="group" aria-label="Asset view"><button class="is-selected" type="button" data-asset-view="grid" aria-pressed="true"><svg class="lucide" aria-hidden="true"><use href="#lucide-grid-2x2"></use></svg>Grid</button><button type="button" data-asset-view="list" aria-pressed="false"><svg class="lucide" aria-hidden="true"><use href="#lucide-list"></use></svg>List</button></div></div></header><div class="assets-layout"><div class="asset-gallery" id="asset-gallery"></div><aside class="asset-detail panel" id="asset-detail" aria-live="polite" tabindex="-1"></aside></div></section>
         <section class="view" id="view-settings" data-view-panel="settings" role="tabpanel" aria-labelledby="tab-settings" tabindex="0" hidden><header class="view-head"><div><p class="eyebrow">Preferences</p><h2>Settings</h2></div><p>Choose defaults for SWARM and each CTRL.</p></header><div class="settings-grid" id="settings-grid"></div></section>
         <section class="connection-state" id="connection-state" hidden role="alert" aria-labelledby="connection-state-title">
           <div class="connection-state-visual"><img src="/assets/swarm-offline-disconnected.png" width="1536" height="1024" loading="eager" decoding="async" alt="SWARM octopus holding disconnected cable ends"></div>
@@ -151,6 +153,54 @@
         <p class="role-editor-status" id="role-editor-status" role="status">Role changes are unavailable until the server accepts the role-manifest command contract.</p>
         <footer class="role-editor-actions"><button class="quiet-button" id="role-reset" data-role-action="reset" type="button" disabled><svg class="lucide" aria-hidden="true"><use href="#lucide-rotate-ccw"></use></svg>Reset built-in</button><span></span><button class="quiet-button" id="role-editor-cancel" type="button">Cancel</button><button class="primary-action" id="role-save" type="submit" disabled>Save new version</button></footer>
       </form>
+    </dialog>
+    <dialog class="onboarding-dialog" id="onboarding-dialog" aria-labelledby="onboarding-dialog-title" aria-describedby="onboarding-step-status">
+      <div class="onboarding-shell">
+        <h2 class="sr-only" id="onboarding-dialog-title">Welcome to SWARM</h2>
+        <header class="onboarding-header">
+          <img src="/assets/swarm-wordmark.png" alt="SWARM" />
+          <div class="onboarding-progress" role="tablist" aria-label="Onboarding progress">
+            <button type="button" role="tab" id="onboarding-dot-1" data-onboarding-step="0" aria-label="Show welcome" aria-controls="onboarding-panel-1" aria-selected="true" aria-current="step"><span aria-hidden="true"></span></button>
+            <button type="button" role="tab" id="onboarding-dot-2" data-onboarding-step="1" aria-label="Show how SWARM works" aria-controls="onboarding-panel-2" aria-selected="false" tabindex="-1"><span aria-hidden="true"></span></button>
+            <button type="button" role="tab" id="onboarding-dot-3" data-onboarding-step="2" aria-label="Show ready summary" aria-controls="onboarding-panel-3" aria-selected="false" tabindex="-1"><span aria-hidden="true"></span></button>
+          </div>
+          <button class="icon-button onboarding-close" id="onboarding-close" type="button" aria-label="Close onboarding"><svg class="lucide" aria-hidden="true"><use href="#lucide-x"></use></svg></button>
+        </header>
+        <p class="sr-only" id="onboarding-step-status" aria-live="polite">Welcome. Step 1 of 3.</p>
+        <div class="onboarding-panels">
+          <section class="onboarding-panel is-active" id="onboarding-panel-1" data-onboarding-panel="0" role="tabpanel" aria-labelledby="onboarding-dot-1">
+            <div class="onboarding-mascot" aria-hidden="true"><i></i><span></span><span></span><span></span><span></span></div>
+            <h2>Hello. I’m SWARM.</h2>
+            <p>Focused agents, clear ownership, and proof you can review.</p>
+          </section>
+          <section class="onboarding-panel" id="onboarding-panel-2" data-onboarding-panel="1" role="tabpanel" aria-labelledby="onboarding-dot-2" hidden>
+            <div class="onboarding-mascot is-small" aria-hidden="true"><i></i><span></span><span></span><span></span><span></span></div>
+            <h2>From outcome to proof.</h2>
+            <div class="onboarding-flow" aria-label="SWARM workflow">
+              <article><svg class="lucide" aria-hidden="true"><use href="#lucide-folder"></use></svg><strong>Name the outcome</strong></article>
+              <svg class="lucide onboarding-arrow" aria-hidden="true"><use href="#lucide-chevron-right"></use></svg>
+              <article><svg class="lucide" aria-hidden="true"><use href="#lucide-users"></use></svg><strong>Bring in the smallest useful crew</strong></article>
+              <svg class="lucide onboarding-arrow" aria-hidden="true"><use href="#lucide-chevron-right"></use></svg>
+              <article><svg class="lucide" aria-hidden="true"><use href="#lucide-shield-check"></use></svg><strong>Move forward with proof</strong></article>
+            </div>
+          </section>
+          <section class="onboarding-panel" id="onboarding-panel-3" data-onboarding-panel="2" role="tabpanel" aria-labelledby="onboarding-dot-3" hidden>
+            <div class="onboarding-ready-mark" aria-hidden="true"><svg class="lucide"><use href="#lucide-check"></use></svg></div>
+            <h2>Your console is ready.</h2>
+            <p>Start with a project. SWARM keeps ownership, proof, and decisions in view.</p>
+            <div class="onboarding-ready-list">
+              <span><svg class="lucide" aria-hidden="true"><use href="#lucide-folder"></use></svg>Projects hold the work</span>
+              <span><svg class="lucide" aria-hidden="true"><use href="#lucide-shield-check"></use></svg>Proof confirms progress</span>
+              <span><svg class="lucide" aria-hidden="true"><use href="#lucide-settings"></use></svg>Settings stay under your control</span>
+            </div>
+          </section>
+        </div>
+        <footer class="onboarding-actions">
+          <button class="quiet-button" id="onboarding-back" type="button" hidden>Back</button>
+          <button class="quiet-button onboarding-skip" id="onboarding-skip" type="button">Skip for now</button>
+          <button class="primary-action" id="onboarding-primary" type="button">Start guided tour</button>
+        </footer>
+      </div>
     </dialog>
     <script src="/app.js" defer></script>
   </body>
