@@ -207,14 +207,18 @@ class SwarmConsoleTests(unittest.TestCase):
         self.assertTrue(asset.is_file())
         self.assertGreater(asset.stat().st_size, 100_000)
 
-    def test_console_uses_compact_swarm_favicon_not_wordmark(self) -> None:
+    def test_console_uses_selected_compact_swarm_icon_not_wordmark(self) -> None:
         index = (console.STATIC_ROOT / "index.html").read_text(encoding="utf-8")
-        favicon = (console.STATIC_ROOT / "swarm-favicon.svg").read_text(encoding="utf-8")
-        self.assertIn('<link rel="icon" type="image/svg+xml" href="/swarm-favicon.svg" />', index)
+        icon = (console.STATIC_ROOT / "swarm-icon-64.png").read_bytes()
+        mascot = (console.STATIC_ROOT / "swarm-mascot-512.png").read_bytes()
+        self.assertIn('<link rel="icon" type="image/png" sizes="64x64" href="/swarm-icon-64.png" />', index)
         self.assertNotIn('rel="icon" href="/assets/swarm-wordmark.png"', index)
-        self.assertEqual(console.STATIC_FILES["/swarm-favicon.svg"], ("swarm-favicon.svg", "image/svg+xml"))
-        self.assertIn('viewBox="0 0 128 128"', favicon)
-        self.assertIn('linearGradient id="coral"', favicon)
+        self.assertEqual(console.STATIC_FILES["/swarm-icon-64.png"], ("swarm-icon-64.png", "image/png"))
+        self.assertEqual(console.STATIC_FILES["/assets/swarm-mascot-512.png"], ("swarm-mascot-512.png", "image/png"))
+        self.assertEqual(icon[:8], b"\x89PNG\r\n\x1a\n")
+        self.assertEqual((int.from_bytes(icon[16:20], "big"), int.from_bytes(icon[20:24], "big")), (64, 64))
+        self.assertEqual(mascot[:8], b"\x89PNG\r\n\x1a\n")
+        self.assertEqual((int.from_bytes(mascot[16:20], "big"), int.from_bytes(mascot[20:24], "big")), (512, 512))
 
     def test_console_uses_flowwweb_swarm_tokens_without_lime_controls(self) -> None:
         css = (console.STATIC_ROOT / "styles.css").read_text(encoding="utf-8").casefold()

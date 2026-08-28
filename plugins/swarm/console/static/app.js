@@ -11,8 +11,8 @@ const ROLE_PROFESSIONS = [
 ].map(([id, name]) => ({ id, name }));
 const ONBOARDING_STEPS = [
   { name: "Welcome", primary: "Start guided tour" },
-  { name: "How SWARM works", primary: "Continue" },
-  { name: "Ready", primary: "Open Projects" },
+  { name: "Owned lanes", primary: "Continue" },
+  { name: "Proof gates", primary: "Open Projects" },
 ];
 const $ = (selector, root = document) => root.querySelector(selector);
 const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];

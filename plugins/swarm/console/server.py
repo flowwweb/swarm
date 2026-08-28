@@ -127,7 +127,8 @@ STATIC_FILES = {
     "/index.html": ("index.html", "text/html; charset=utf-8"),
     "/app.js": ("app.js", "text/javascript; charset=utf-8"),
     "/styles.css": ("styles.css", "text/css; charset=utf-8"),
-    "/swarm-favicon.svg": ("swarm-favicon.svg", "image/svg+xml"),
+    "/swarm-icon-64.png": ("swarm-icon-64.png", "image/png"),
+    "/assets/swarm-mascot-512.png": ("swarm-mascot-512.png", "image/png"),
     "/assets/swarm-offline-disconnected.png": ("swarm-offline-disconnected.png", "image/png"),
 }
 STATIC_ASSETS = {

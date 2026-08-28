@@ -6,7 +6,7 @@
     <meta name="color-scheme" content="dark" />
     <meta name="description" content="SWARM project progress, agents, review, assets, and settings" />
     <title>SWARM Console</title>
-    <link rel="icon" type="image/svg+xml" href="/swarm-favicon.svg" />
+    <link rel="icon" type="image/png" sizes="64x64" href="/swarm-icon-64.png" />
     <link rel="stylesheet" href="/styles.css" />
   </head>
   <body>
@@ -161,38 +161,46 @@
           <img src="/assets/swarm-wordmark.png" alt="SWARM" />
           <div class="onboarding-progress" role="tablist" aria-label="Onboarding progress">
             <button type="button" role="tab" id="onboarding-dot-1" data-onboarding-step="0" aria-label="Show welcome" aria-controls="onboarding-panel-1" aria-selected="true" aria-current="step"><span aria-hidden="true"></span></button>
-            <button type="button" role="tab" id="onboarding-dot-2" data-onboarding-step="1" aria-label="Show how SWARM works" aria-controls="onboarding-panel-2" aria-selected="false" tabindex="-1"><span aria-hidden="true"></span></button>
-            <button type="button" role="tab" id="onboarding-dot-3" data-onboarding-step="2" aria-label="Show ready summary" aria-controls="onboarding-panel-3" aria-selected="false" tabindex="-1"><span aria-hidden="true"></span></button>
+            <button type="button" role="tab" id="onboarding-dot-2" data-onboarding-step="1" aria-label="Show owned lanes" aria-controls="onboarding-panel-2" aria-selected="false" tabindex="-1"><span aria-hidden="true"></span></button>
+            <button type="button" role="tab" id="onboarding-dot-3" data-onboarding-step="2" aria-label="Show proof gates" aria-controls="onboarding-panel-3" aria-selected="false" tabindex="-1"><span aria-hidden="true"></span></button>
           </div>
           <button class="icon-button onboarding-close" id="onboarding-close" type="button" aria-label="Close onboarding"><svg class="lucide" aria-hidden="true"><use href="#lucide-x"></use></svg></button>
         </header>
         <p class="sr-only" id="onboarding-step-status" aria-live="polite">Welcome. Step 1 of 3.</p>
         <div class="onboarding-panels">
           <section class="onboarding-panel is-active" id="onboarding-panel-1" data-onboarding-panel="0" role="tabpanel" aria-labelledby="onboarding-dot-1">
-            <div class="onboarding-mascot" aria-hidden="true"><i></i><span></span><span></span><span></span><span></span></div>
+            <img class="onboarding-mascot" src="/assets/swarm-mascot-512.png" width="512" height="512" alt="" aria-hidden="true" decoding="async" />
             <h2>Hello. I’m SWARM.</h2>
             <p>Focused agents, clear ownership, and proof you can review.</p>
           </section>
           <section class="onboarding-panel" id="onboarding-panel-2" data-onboarding-panel="1" role="tabpanel" aria-labelledby="onboarding-dot-2" hidden>
-            <div class="onboarding-mascot is-small" aria-hidden="true"><i></i><span></span><span></span><span></span><span></span></div>
-            <h2>From outcome to proof.</h2>
-            <div class="onboarding-flow" aria-label="SWARM workflow">
-              <article><svg class="lucide" aria-hidden="true"><use href="#lucide-folder"></use></svg><strong>Name the outcome</strong></article>
-              <svg class="lucide onboarding-arrow" aria-hidden="true"><use href="#lucide-chevron-right"></use></svg>
-              <article><svg class="lucide" aria-hidden="true"><use href="#lucide-users"></use></svg><strong>Bring in the smallest useful crew</strong></article>
-              <svg class="lucide onboarding-arrow" aria-hidden="true"><use href="#lucide-chevron-right"></use></svg>
-              <article><svg class="lucide" aria-hidden="true"><use href="#lucide-shield-check"></use></svg><strong>Move forward with proof</strong></article>
+            <h2>One outcome. The right tentacles.</h2>
+            <p>CTRL turns your request into owned lanes. LEADs coordinate; DOERs change one bounded surface. Roles wake only when needed, so independent work runs together while shared work waits its turn.</p>
+            <div class="onboarding-topology" aria-hidden="true">
+              <div class="topology-node is-ctrl"><strong>CTRL</strong><small>owns outcome</small></div>
+              <div class="topology-split"><span></span><span></span></div>
+              <div class="topology-lanes">
+                <div class="topology-lane"><span class="topology-node"><strong>LEAD</strong><small>owns lane</small></span><svg class="lucide"><use href="#lucide-chevron-right"></use></svg><span class="topology-node"><strong>DOER</strong><small>changes one surface</small></span></div>
+                <div class="topology-lane"><span class="topology-node"><strong>LEAD</strong><small>owns lane</small></span><svg class="lucide"><use href="#lucide-chevron-right"></use></svg><span class="topology-node"><strong>DOER</strong><small>changes one surface</small></span></div>
+              </div>
+              <div class="topology-merge"><svg class="lucide"><use href="#lucide-git-branch"></use></svg><span>Shared work merges in turn</span></div>
             </div>
+            <p class="sr-only">CTRL owns the outcome and branches into two independent LEAD lanes. Each LEAD directs one DOER on one bounded surface. Independent lanes run in parallel; shared work waits for the merge.</p>
           </section>
           <section class="onboarding-panel" id="onboarding-panel-3" data-onboarding-panel="2" role="tabpanel" aria-labelledby="onboarding-dot-3" hidden>
-            <div class="onboarding-ready-mark" aria-hidden="true"><svg class="lucide"><use href="#lucide-check"></use></svg></div>
-            <h2>Your console is ready.</h2>
-            <p>Start with a project. SWARM keeps ownership, proof, and decisions in view.</p>
-            <div class="onboarding-ready-list">
-              <span><svg class="lucide" aria-hidden="true"><use href="#lucide-folder"></use></svg>Projects hold the work</span>
-              <span><svg class="lucide" aria-hidden="true"><use href="#lucide-shield-check"></use></svg>Proof confirms progress</span>
-              <span><svg class="lucide" aria-hidden="true"><use href="#lucide-settings"></use></svg>Settings stay under your control</span>
+            <h2>Progress means proof.</h2>
+            <p>Every lane carries its owner, authority, artifact, and proof plan. Source, tests, browser, package, and live state are separate gates—missing proof stays Unverified. SWARM accepts only the exact reviewed object, with your approval and rollback intact.</p>
+            <div class="onboarding-evidence" aria-hidden="true">
+              <div class="evidence-gates">
+                <span class="is-checked"><i><svg class="lucide"><use href="#lucide-check"></use></svg></i><b>Source</b></span>
+                <span class="is-checked"><i><svg class="lucide"><use href="#lucide-check"></use></svg></i><b>Tests</b></span>
+                <span class="is-current"><i></i><b>Review</b></span>
+                <span><i></i><b>Package</b></span>
+                <span><i></i><b>Live</b></span>
+              </div>
+              <div class="evidence-anchor"><svg class="lucide"><use href="#lucide-file-clock"></use></svg><span>Ledger binds every gate to one exact object</span></div>
             </div>
+            <p class="sr-only">Source, tests, review, package, and live state are separate evidence gates. A checked earlier gate does not imply a later gate. The ledger binds each gate to the exact reviewed object.</p>
           </section>
         </div>
         <footer class="onboarding-actions">
