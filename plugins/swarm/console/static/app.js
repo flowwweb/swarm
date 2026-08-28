@@ -981,7 +981,9 @@ function renderProjectDetail() {
   const measured = progress?.status === "MEASURED" && Number.isFinite(Number(progress.percent));
   const nextGate = (progress?.blocks || []).find((block) => ["REVIEW", "WAITING_DEPENDENCY", "WAITING_EXTERNAL", "USER_PAUSED"].includes(block.lifecycle_state));
   $("#project-detail-summary").innerHTML = '<p><span>Progress</span><strong>' + escapeHTML(measured ? progress.percent + "%" : "—") + '</strong></p><p><span>Live ETA</span><strong><svg class="lucide" aria-hidden="true"><use href="#lucide-clock"></use></svg>' + escapeHTML(projectEta(nodes)) + '</strong></p><p><span>Next gate</span><strong>' + escapeHTML(nextGate ? humanize(nextGate.lifecycle_state) : "—") + '</strong></p>';
+  const selectedTabId = "project-tab-" + state.projectTab;
   $$('[data-project-tab]').forEach((button) => { const selected = button.dataset.projectTab === state.projectTab; button.classList.toggle("is-active", selected); button.setAttribute("aria-selected", String(selected)); button.tabIndex = selected ? 0 : -1; });
+  $("#project-tab-panel").setAttribute("aria-labelledby", selectedTabId);
   $("#project-tab-panel").innerHTML = projectTabMarkup(state.projectTab, progress, nodes);
 }
 

@@ -100,11 +100,14 @@ assert.match(app, /settingToggle\('console\.project_progress_feed_enabled'/);
 assert.match(app, /data-config-key="console\.project_progress_feed_lines"/);
 assert.doesNotMatch(app, /setInterval\([^)]*projectProgress|setInterval\([^)]*progressFeed/);
 for (const tab of ["overview", "roadmap", "lanes", "hierarchy", "proof", "ledger", "logs"]) {
-  assert.match(indexHtml, new RegExp(`data-project-tab="${tab}"`));
+  assert.match(indexHtml, new RegExp(`id="project-tab-${tab}"[^>]*data-project-tab="${tab}"[^>]*role="tab"[^>]*aria-controls="project-tab-panel"`));
 }
 assert.equal((indexHtml.match(/data-project-tab=/g) || []).length, 7);
 assert.match(indexHtml, /id="project-detail" hidden aria-labelledby="project-detail-title"/);
+assert.match(indexHtml, /id="project-tab-panel" role="tabpanel" aria-labelledby="project-tab-overview"/);
 assert.match(app, /function renderProjectDetail\(\)/);
+assert.match(app, /const selectedTabId = "project-tab-" \+ state\.projectTab/);
+assert.match(app, /\$\("#project-tab-panel"\)\.setAttribute\("aria-labelledby", selectedTabId\)/);
 assert.match(app, /function projectTabMarkup\(tab, progress, nodes\)/);
 assert.match(app, /function yieldChartMarkup\(item\)/);
 assert.match(app, /Observed tokens/);
@@ -520,8 +523,10 @@ if (!process.argv.includes("--legacy-browser")) {
     assert.equal(await page.locator(".project-yield-chart").count(), 1);
     assert.equal(await page.locator(".project-detail-feed > li").count(), 2);
     await page.getByRole("tab", { name: "Roadmap", exact: true }).click();
+    assert.equal(await page.locator("#project-tab-panel").getAttribute("aria-labelledby"), "project-tab-roadmap");
     assert.match(await page.locator("#project-tab-panel").textContent(), /Foundation/);
     await page.getByRole("tab", { name: "Lanes", exact: true }).click();
+    assert.equal(await page.locator("#project-tab-panel").getAttribute("aria-labelledby"), "project-tab-lanes");
     assert.match(await page.locator("#project-tab-panel").textContent(), /Console surfaces/);
     await page.getByRole("tab", { name: "Agents", exact: true }).click();
     assert.match(await page.locator("#agent-hierarchy").textContent(), /CTRL/);
