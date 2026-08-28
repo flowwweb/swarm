@@ -350,6 +350,33 @@ function projectGroups() {
   return [...groups.values()].sort((a, b) => a.label.localeCompare(b.label));
 }
 
+const PROJECT_NAVIGATION_STATUS_RANK = { active: 0, stalled: 1, inactive: 2 };
+
+function projectNavigationStatus(project) {
+  const projectStatus = String(project.status || "").toLowerCase();
+  const controllerStatuses = (state.overview?.navigation?.controllers || [])
+    .filter((controller) => controller.visibility === "visible" && controller.archived === false && controller.project_id === project.id && project.ctrl_ids.includes(controller.id))
+    .map((controller) => String(controller.status || "").toLowerCase());
+  if (project.active_ctrl === true) return "active";
+  if (projectStatus === "stalled" || controllerStatuses.includes("stalled")) return "stalled";
+  if (project.active_ctrl === false) return "inactive";
+  return [projectStatus, ...controllerStatuses].some((status) => ["active", "running", "in_progress"].includes(status)) ? "active" : "inactive";
+}
+
+function projectNavigationEntries() {
+  const summaries = new Map((state.overview?.projects || []).map((project) => [project.id, project]));
+  return currentWorkProjects()
+    .map((project) => {
+      const summary = summaries.get(project.id) || {};
+      return {
+        id: project.id,
+        label: publicLabel(project.goal_label || project.name || summary.goal_label || summary.name, "Untitled project"),
+        status: projectNavigationStatus(project),
+      };
+    })
+    .sort((a, b) => PROJECT_NAVIGATION_STATUS_RANK[a.status] - PROJECT_NAVIGATION_STATUS_RANK[b.status] || a.label.localeCompare(b.label) || a.id.localeCompare(b.id));
+}
+
 function scopeLabel() {
   if (state.projectId === "all") return "All projects";
   const group = projectGroups().find((item) => item.id === state.projectId);
@@ -358,21 +385,22 @@ function scopeLabel() {
 }
 
 function renderProjectNavigation() {
-  const groups = projectGroups().filter((group) => !group.standalone);
-  if (state.projectId !== "all" && !groups.some((group) => group.id === state.projectId)) {
+  const projects = projectNavigationEntries();
+  if (state.projectId !== "all" && !projects.some((project) => project.id === state.projectId)) {
     state.projectId = "all";
     state.ctrlId = "";
   }
   const entries = ['<button class="project-scope-button ' + (state.projectId === "all" ? "is-selected" : "") + '" data-project-id="all" type="button" aria-pressed="' + (state.projectId === "all") + '"><span aria-hidden="true">◇</span>All projects</button>'];
-  groups.forEach((group) => {
-    const current = state.projectId === group.id && !state.ctrlId;
-    entries.push('<button class="project-scope-button ' + (current ? "is-selected" : "") + '" data-project-id="' + escapeHTML(group.id) + '" type="button" aria-pressed="' + current + '"><span class="scope-dot is-live" aria-hidden="true"></span>' + escapeHTML(group.label) + '</button>');
+  projects.forEach((project) => {
+    const current = state.projectId === project.id && !state.ctrlId;
+    const statusLabel = project.status[0].toUpperCase() + project.status.slice(1);
+    entries.push('<button class="project-scope-button ' + (current ? "is-selected" : "") + '" data-project-id="' + escapeHTML(project.id) + '" type="button" aria-label="' + escapeHTML(project.label + ", " + statusLabel) + '" aria-pressed="' + current + '"><span class="scope-dot is-' + project.status + '" aria-hidden="true"></span><span class="project-scope-label" title="' + escapeHTML(project.label) + '">' + escapeHTML(project.label) + '</span></button>');
   });
   $("#project-navigation").innerHTML = entries.join("");
   const selector = $("#project-scope-filter");
   if (selector) {
-    selector.innerHTML = ['<option value="all">All projects</option>'].concat(groups.map((group) => '<option value="' + escapeHTML(group.id) + '">' + escapeHTML(group.label) + '</option>')).join("");
-    selector.value = state.projectId === "all" || groups.some((group) => group.id === state.projectId) ? state.projectId : "all";
+    selector.innerHTML = ['<option value="all">All projects</option>'].concat(projects.map((project) => '<option value="' + escapeHTML(project.id) + '">' + escapeHTML(project.label) + '</option>')).join("");
+    selector.value = state.projectId === "all" || projects.some((project) => project.id === state.projectId) ? state.projectId : "all";
   }
 }
 

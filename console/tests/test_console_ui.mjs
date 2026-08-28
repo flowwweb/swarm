@@ -231,6 +231,8 @@ assert.match(app, /function currentWorkControllers\(\)/);
 assert.match(app, /function currentWorkScopeUnavailable\(\)/);
 assert.match(app, /function historicalProjects\(\)/);
 assert.match(app, /function historicalControllers\(\)/);
+assert.match(app, /function projectNavigationStatus\(project\)/);
+assert.match(app, /function projectNavigationEntries\(\)/);
 assert.match(app, /project\.visibility === "visible" && project\.archived === false && project\.project_eligibility === "swarm_ctrl"/);
 assert.match(app, /controller\.visibility === "visible" && controller\.archived === false && allowedControllerProjects\.get\(controller\.id\) === controller\.project_id/);
 assert.match(app, /project\.ctrl_ids\.includes\(ctrl\.id\)/);
@@ -246,20 +248,31 @@ assert.match(app, /class="overview-more"/);
 assert.match(app, /No classified Current Work is available/);
 const currentWorkProjectsSource = app.slice(app.indexOf("function currentWorkProjects"), app.indexOf("function currentWorkControllers"));
 const currentWorkControllersSource = app.slice(app.indexOf("function currentWorkControllers"), app.indexOf("function publicLabel"));
-const projectGroupsSource = app.slice(app.indexOf("function projectGroups"), app.indexOf("function scopeLabel"));
+const projectGroupsSource = app.slice(app.indexOf("function projectGroups"), app.indexOf("const PROJECT_NAVIGATION_STATUS_RANK"));
+const projectNavigationEntriesSource = app.slice(app.indexOf("function projectNavigationEntries"), app.indexOf("function scopeLabel"));
 const projectNavigationSource = app.slice(app.indexOf("function renderProjectNavigation"), app.indexOf("function drawLine"));
 const overviewCardsSource = app.slice(app.indexOf("function overviewCards"), app.indexOf("function latestReceipt"));
 assert.doesNotMatch(currentWorkProjectsSource, /project\.status|active_ctrl/);
 assert.doesNotMatch(currentWorkControllersSource, /controller\.status/);
 assert.match(projectGroupsSource, /historicalProjects\(\)|historicalControllers\(\)/);
 assert.doesNotMatch(projectGroupsSource, /currentWorkProjects\(\)|currentWorkControllers\(\)/);
-assert.match(projectNavigationSource, /filter\(\(group\) => !group\.standalone\)/);
+assert.match(projectNavigationEntriesSource, /return currentWorkProjects\(\)/);
+assert.doesNotMatch(projectNavigationEntriesSource, /historicalProjects\(\)|historicalControllers\(\)|projectGroups\(\)/);
+assert.match(projectNavigationEntriesSource, /PROJECT_NAVIGATION_STATUS_RANK\[a\.status\] - PROJECT_NAVIGATION_STATUS_RANK\[b\.status\]/);
+assert.match(projectNavigationSource, /const projects = projectNavigationEntries\(\)/);
+assert.match(projectNavigationSource, /scope-dot is-' \+ project\.status/);
+assert.doesNotMatch(projectNavigationSource, /scope-dot is-live|projectGroups\(\)/);
 assert.doesNotMatch(projectNavigationSource, /data-ctrl-id|data-project-toggle|ctrl-subpages/);
 assert.doesNotMatch(overviewCardsSource, /node\.role|node\.title/);
 assert.equal(fixture.overview.progress.controllers.ctrl.progress.percent, 80);
 assert.equal(fixture.overview.progress.controllers.ctrl.progress.source, "material_receipts");
 assert.equal(fixture.overview.navigation.projects[0].project_eligibility, "swarm_ctrl");
 assert.match(css, /\.overview-project-card/);
+assert.match(css, /\.project-navigation \{ display:flex; min-height:0; flex:1; flex-direction:column;[^}]*overflow:hidden; \}/);
+assert.match(css, /#project-navigation \{[^}]*min-height:0;[^}]*overflow-y:auto;[^}]*overscroll-behavior:contain;/);
+assert.match(css, /\.nav-footer \{[^}]*flex:0 0 auto;[^}]*margin-top:auto;/);
+assert.match(css, /\.project-scope-button \{[^}]*min-height: 44px;/);
+for (const status of ["active", "stalled", "inactive"]) assert.match(css, new RegExp(`\\.scope-dot\\.is-${status}`));
 assert.doesNotMatch(indexHtml, /id="(?:task-table|proof-feed|burn-chart|overview-diagnostics-heading)"/);
 assert.match(app, /Needs attention/);
 assert.match(app, /function attentionStatus\(node\)/);
@@ -625,6 +638,19 @@ const proofFeed = imageProofFixture(6);
     for (const label of ["Projects", "Agents", "Review", "Assets", "Settings"]) assert.equal(await page.getByRole("tab", { name: label, exact: true }).count(), 1);
     for (const retired of ["Dashboard", "Hierarchy", "Kanban", "Diagnostics"]) assert.equal(await page.getByRole("tab", { name: retired, exact: true }).count(), 0);
     assert.equal(await page.locator("#project-scope-filter").isVisible(), true);
+    assert.deepEqual(await page.locator("#project-navigation button").evaluateAll((elements) => elements.map((element) => element.getAttribute("aria-label") || element.textContent.trim())), [
+      "All projects",
+      "Arc, Active",
+      "Atlas, Active",
+      "Flowwweb, Active",
+      "swarm, Active",
+      "Stalled project, Stalled",
+      "Idle project, Inactive",
+    ]);
+    assert.deepEqual(await page.locator("#project-navigation .scope-dot").evaluateAll((elements) => elements.map((element) => [...element.classList].find((name) => name.startsWith("is-")))), [
+      "is-active", "is-active", "is-active", "is-active", "is-stalled", "is-inactive",
+    ]);
+    assert.doesNotMatch(await page.locator("#project-navigation").textContent(), /Archived project|Unassigned planning|Resolve customer export/);
     assert.equal(await page.locator("#profile").isDisabled(), true);
     assert.equal(await page.locator("#verified-yield-heading").textContent(), "2.5");
     assert.equal(await page.locator("#notification-unread").textContent(), "1");
@@ -690,6 +716,9 @@ const proofFeed = imageProofFixture(6);
     assert.equal(await mobilePage.locator("#console-drawer").getAttribute("aria-hidden"), "false");
     assert.equal(await mobilePage.locator(".workspace").evaluate((element) => element.inert), true);
     assert.equal(await mobilePage.locator("#project-navigation button").evaluateAll((elements) => elements.every((element) => element.getBoundingClientRect().height >= 44)), true);
+    assert.equal(await mobilePage.locator("#project-navigation").evaluate((element) => getComputedStyle(element).overflowY), "auto");
+    assert.equal(await mobilePage.locator(".project-navigation").evaluate((element) => getComputedStyle(element).overflowY), "hidden");
+    assert.equal(await mobilePage.locator(".nav-footer").evaluate((element) => element.getBoundingClientRect().bottom <= document.querySelector("#console-drawer").getBoundingClientRect().bottom), true);
     await mobilePage.keyboard.press("Escape");
     assert.equal(await menuButton.evaluate((element) => element === document.activeElement), true);
     assert.equal(await mobilePage.locator("[data-qc-scope]").evaluate((element) => element.scrollWidth > element.clientWidth + 1), false);

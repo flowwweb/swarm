@@ -43,24 +43,27 @@ button:focus-visible, select:focus-visible { outline: 2px solid #fff; outline-of
 .brand-wordmark { display: block; width: 181px; max-width: 100%; height: auto; }
 .brand span { font-size: 10px; font-weight: 700; letter-spacing: .1em; }
 .drawer-navigation { display:flex; min-height:0; flex:1; flex-direction:column; }
-.nav-list { display: grid; gap: 7px; }
-.nav-footer { display:grid; gap:7px; margin-top:auto; padding-top:16px; border-top:1px solid rgba(176,202,231,.12); }
+.nav-list { display: grid; flex: 0 0 auto; gap: 7px; }
+.nav-footer { display:grid; flex:0 0 auto; gap:7px; margin-top:auto; padding-top:16px; border-top:1px solid rgba(176,202,231,.12); }
 .nav-item { min-height: 43px; display: flex; align-items: center; gap: 12px; padding: 0 11px; border: 1px solid transparent; border-radius: 7px; background: transparent; color: var(--muted); text-align: left; }
 .nav-item .nav-icon { display: grid; width: 20px; place-items: center; color: var(--faint); line-height: 1; }
 .nav-item b { font-size: 13px; font-weight: 620; }
 .nav-item:hover { color: var(--ink); background: rgba(255, 255, 255, .035); }
 .nav-item.is-active { border-color: rgba(94, 160, 218, .12); background: linear-gradient(100deg, rgba(62, 94, 136, .27), rgba(23, 36, 60, .5)); color: #ff784c; }
 .nav-item.is-active .nav-icon { color: #ff784c; }
-.project-navigation { margin-top: 22px; }
+.project-navigation { display:flex; min-height:0; flex:1; flex-direction:column; margin-top:22px; overflow:hidden; }
 .project-navigation > p { margin: 0 0 8px 10px; color: var(--faint); font-family: var(--mono); font-size: 9px; letter-spacing: .09em; text-transform: uppercase; }
-#project-navigation { display: grid; gap: 3px; }
+#project-navigation { display:grid; min-height:0; align-content:start; gap:3px; overflow-y:auto; overscroll-behavior:contain; padding-right:2px; }
 .project-scope-button, .ctrl-scope-button, .project-expand { border: 1px solid transparent; background: transparent; color: var(--muted); text-align: left; }
-.project-scope-button { display: grid; grid-template-columns: 10px minmax(0, 1fr) auto; align-items: center; width: 100%; min-height: 34px; gap: 7px; padding: 0 8px; border-radius: 6px; font-size: 11px; }
+.project-scope-button { display: grid; grid-template-columns: 10px minmax(0, 1fr) auto; align-items: center; width: 100%; min-height: 44px; gap: 7px; padding: 0 8px; border-radius: 6px; font-size: 11px; }
 .project-scope-button:hover, .ctrl-scope-button:hover, .project-scope-button.is-selected, .ctrl-scope-button.is-selected { color: var(--ink); background: rgba(77, 168, 255, .11); }
 .project-scope-button.is-selected, .ctrl-scope-button.is-selected { border-color: rgba(77, 168, 255, .21); }
 .project-scope-button small { color: var(--faint); font-family: var(--mono); font-size: 8px; white-space: nowrap; }
+.project-scope-label { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .scope-dot { display: block; width: 7px; height: 7px; border-radius: 50%; background: var(--faint); }
-.scope-dot.is-live { background: var(--green); box-shadow: 0 0 8px rgba(76, 218, 133, .42); }
+.scope-dot.is-active { background:var(--green); box-shadow:0 0 8px rgba(76,218,133,.42); }
+.scope-dot.is-stalled { background:var(--amber); box-shadow:0 0 8px rgba(255,172,75,.32); }
+.scope-dot.is-inactive { background:var(--faint); box-shadow:none; }
 .project-group { display: grid; gap: 2px; }
 .project-group-row { display: grid; grid-template-columns: minmax(0, 1fr) 28px; }
 .project-group-row .project-scope-button { border-radius: 6px 0 0 6px; }
@@ -395,7 +398,7 @@ button:focus-visible, select:focus-visible { outline: 2px solid #fff; outline-of
   .app-shell.is-drawer-open .drawer { transform:translateX(0); }
   .brand { display:none; }
   .drawer-status { display:flex; }
-  .project-navigation { display:block; min-height:0; overflow-y:auto; }
+  .project-navigation { display:flex; min-height:0; overflow:hidden; }
   .project-scope-button,.ctrl-scope-button,.project-expand { min-height:44px; }
   .project-group-row { grid-template-columns:minmax(0,1fr) 44px; }
   .nav-list { grid-template-columns:1fr; height:auto; gap:5px; }
