@@ -161,6 +161,7 @@ EDITABLE_SETTINGS: dict[str, type] = {
     "console.open_on_start": bool,
     "console.project_progress_feed_enabled": bool,
     "console.project_progress_feed_lines": int,
+    "chat_relay.enabled": bool,
     "automation.mode": str,
     "boost.enabled": bool,
     "boost.spark_enabled": bool,

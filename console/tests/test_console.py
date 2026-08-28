@@ -3158,6 +3158,82 @@ class SwarmConsoleTests(unittest.TestCase):
         result = console.update_config(self.config, {"execution.usage_saver": True})
         self.assertTrue(result["settings"]["execution"]["usage_saver"])
 
+    def test_chat_relay_toggle_uses_only_the_canonical_validated_config_path(self) -> None:
+        before = console.redacted_config_snapshot(self.config)
+        self.assertFalse(before["settings"]["chat_relay"]["enabled"])
+        self.assertIn("chat_relay.enabled", before["editable"])
+        expected = copy.deepcopy(before["settings"])
+        expected["chat_relay"]["enabled"] = True
+
+        with (
+            mock.patch.object(console.subprocess, "Popen", side_effect=AssertionError("relay process invoked")),
+            mock.patch.object(console, "CodexAppServerAdapter", side_effect=AssertionError("relay adapter invoked")),
+        ):
+            enabled = console.update_config(self.config, {"chat_relay.enabled": True})
+            observed = console.redacted_config_snapshot(self.config)
+
+        self.assertEqual(enabled["settings"], expected)
+        self.assertEqual(observed["settings"], expected)
+        self.assertEqual(enabled["mutation_receipt"]["changed_keys"], ["chat_relay.enabled"])
+        self.assertTrue(self.config.with_suffix(".toml.swarm-console.bak").exists())
+
+        disabled = console.update_config(self.config, {"chat_relay.enabled": False})
+        self.assertFalse(disabled["settings"]["chat_relay"]["enabled"])
+        before_invalid = self.config.read_bytes()
+        with self.assertRaisesRegex(console.ConsoleError, "chat_relay.enabled must be a boolean"):
+            console.update_config(self.config, {"chat_relay.enabled": "yes"})
+        self.assertEqual(self.config.read_bytes(), before_invalid)
+
+    def test_chat_relay_missing_and_invalid_config_reads_fail_without_repair(self) -> None:
+        missing = self.root / "missing" / "config.toml"
+        snapshot = console.redacted_config_snapshot(missing)
+        self.assertFalse(snapshot["exists"])
+        self.assertFalse(snapshot["settings"]["chat_relay"]["enabled"])
+        self.assertFalse(missing.exists())
+
+        invalid = self.root / "invalid" / "config.toml"
+        invalid.parent.mkdir()
+        invalid.write_text("[chat_relay]\nenabled = \"yes\"\n", encoding="utf-8")
+        retained = invalid.read_bytes()
+        with self.assertRaisesRegex(console.ConsoleError, "chat_relay.enabled must be true or false"):
+            console.redacted_config_snapshot(invalid)
+        with self.assertRaisesRegex(console.ConsoleError, "chat_relay.enabled must be true or false"):
+            console.update_config(invalid, {"chat_relay.enabled": True})
+        self.assertEqual(invalid.read_bytes(), retained)
+
+    def test_chat_relay_config_post_retains_existing_write_authority_and_shape(self) -> None:
+        def config_handler(peer: str = "127.0.0.1", *, origin: str = "", token: str = "secret", changes: object = None):
+            handler = self._handler(peer, "localhost:4788", origin=origin, token=token)
+            handler.path = "/api/config"
+            handler.server.app.write_lock = threading.Lock()
+            handler._payload = mock.Mock(return_value={"changes": {"chat_relay.enabled": True} if changes is None else changes})
+            handler._json = mock.Mock()
+            handler._error = mock.Mock()
+            return handler
+
+        with mock.patch.object(console, "update_config") as update:
+            for handler in (
+                config_handler("192.0.2.44"),
+                config_handler(origin="http://evil.example"),
+                config_handler(token="wrong"),
+            ):
+                handler.do_POST()
+                handler._error.assert_called_once()
+            update.assert_not_called()
+
+        malformed = config_handler(changes=[])
+        with mock.patch.object(console, "update_config") as update:
+            malformed.do_POST()
+            update.assert_not_called()
+        malformed._error.assert_called_once_with(console.HTTPStatus.BAD_REQUEST, "changes must be an object")
+
+        authorized = config_handler()
+        result = console.redacted_config_snapshot(self.config)
+        with mock.patch.object(console, "update_config", return_value=result) as update:
+            authorized.do_POST()
+            update.assert_called_once_with(self.config, {"chat_relay.enabled": True})
+        authorized._json.assert_called_once()
+
     def test_fast_mode_is_the_only_persisted_fast_control(self) -> None:
         before = console.redacted_config_snapshot(self.config)
         self.assertFalse(before["settings"]["execution"]["fast_mode"])
