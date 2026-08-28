@@ -23,7 +23,7 @@ from skills.swarm.runtime.progress_events import (
     validate_progress_material_event,
     validate_role_manifest,
 )
-from skills.swarm.runtime.core import ArtifactIdentity, ControlPathFailure, ControlPathFailureKind, ControlPathRecoveryAction, CustodyMutation, DelegationContract, HostCustodyReceipt, InvariantError, ProofClass, RecoveryCause, Role, Swarm, Task, TaskStartReceipt, Worker, WorkerState, _HOST_AUTHORITY_GENERATOR, _HOST_AUTHORITY_PRIME, _custody_message
+from skills.swarm.runtime.core import AcceptanceContract, ArtifactIdentity, ControlPathFailure, ControlPathFailureKind, ControlPathRecoveryAction, CustodyMutation, DelegationContract, HostCustodyReceipt, InvariantError, OperationClass, ProofClass, ProfessionAssignment, RecoveryCause, Role, RoleGateDecision, Swarm, Task, TaskStartReceipt, Worker, WorkerState, WorkKind, _HOST_AUTHORITY_GENERATOR, _HOST_AUTHORITY_PRIME, _custody_message, role_gate
 
 
 class ProgressLedgerContractTests(unittest.TestCase):
@@ -1262,6 +1262,50 @@ class ProgressLedgerContractTests(unittest.TestCase):
         for canonical, mirror in pairs:
             with self.subTest(path=canonical.name):
                 self.assertEqual(canonical.read_bytes(), mirror.read_bytes())
+
+    def test_role_gate_preserves_structural_authority_and_exact_custody(self) -> None:
+        task = Task("task-gate", "owner-gate", "shaper", 1, {}, owning_lead_id="lead-gate", assigned_profession="designer")
+        self.assertEqual(role_gate(Role.CTRL, task, OperationClass.GENERATE, actor_id="CTRL", lease_version=1), RoleGateDecision.DELEGATE)
+        self.assertEqual(role_gate(Role.LEAD, task, OperationClass.GENERATE, actor_id="lead-gate", lease_version=1), RoleGateDecision.ALLOW)
+        self.assertEqual(role_gate(Role.DOER, task, OperationClass.GENERATE, actor_id="owner-gate", lease_version=1), RoleGateDecision.ALLOW)
+        self.assertEqual(role_gate(Role.DOER, task, OperationClass.GENERATE, actor_id="owner-gate", lease_version=2), RoleGateDecision.DENY)
+        self.assertEqual(role_gate(Role.DOER, task, "generate", actor_id="owner-gate", lease_version=1), RoleGateDecision.DENY)  # type: ignore[arg-type]
+        task.user_custody_required = True
+        self.assertEqual(role_gate(Role.LEAD, task, OperationClass.GENERATE, actor_id="lead-gate", lease_version=1), RoleGateDecision.DENY)
+        self.assertEqual(role_gate(Role.LEAD, task, OperationClass.INSPECT, actor_id="lead-gate", lease_version=1), RoleGateDecision.ALLOW)
+
+    def test_role_gate_profession_collisions_and_independent_acceptance(self) -> None:
+        assistant = Task("task-assistant", "assistant-owner", "creator", 1, {}, owning_lead_id="lead-a", profession_assignment=ProfessionAssignment("assistant"))
+        self.assertEqual(role_gate(Role.DOER, assistant, OperationClass.EXECUTE, actor_id="assistant-owner", lease_version=1), RoleGateDecision.ALLOW)
+        self.assertEqual(role_gate(Role.DOER, assistant, OperationClass.MUTATE, actor_id="assistant-owner", lease_version=1), RoleGateDecision.DENY)
+        reviewer_lane = Task("task-reviewer", "reviewer-owner", "creator", 1, {}, owning_lead_id="lead-r", assigned_profession="reviewer")
+        self.assertEqual(role_gate(Role.LEAD, reviewer_lane, OperationClass.ACCEPT, actor_id="lead-r", lease_version=1), RoleGateDecision.DENY)
+        artifact = ArtifactIdentity("artifact", "frozen", "review")
+        frozen = Task("task-frozen", "producer", "creator", 1, {}, owning_lead_id="lead-p", assigned_profession="reviewer", acceptance_contract=AcceptanceContract(artifact, ("source",)), artifacts={artifact.key(): "producer"})
+        self.assertEqual(role_gate(Role.REVIEW, frozen, OperationClass.ACCEPT, actor_id="independent-review", lease_version=1), RoleGateDecision.ALLOW)
+        self.assertEqual(role_gate(Role.REVIEW, frozen, OperationClass.ACCEPT, actor_id="producer", lease_version=1), RoleGateDecision.DENY)
+
+    def test_dispatch_and_ledger_admission_fail_before_mutation(self) -> None:
+        swarm = Swarm(topology={"lead-gate"}, workers={"owner-gate": Worker("owner-gate", "lead-gate", 1)})
+        dispatch_artifact = ArtifactIdentity("dispatch", "role-gate", "source")
+        dispatch_contract = DelegationContract("task-denied", "Return one bounded result.", "owner-gate", ("skills/swarm/runtime",), dispatch_artifact, ("skills/swarm/runtime/core.py",), (ProofClass.SOURCE,), 100)
+        denied = Task("task-denied", "owner-gate", "creator", 1, {}, subagent_receipt="host:thread:task-denied", user_custody_required=True, delegation_contract=dispatch_contract)
+        before = (dict(swarm.tasks), set(swarm.workers["owner-gate"].task_ids))
+        with self.assertRaisesRegex(InvariantError, "role gate denied"):
+            swarm.assign(Role.LEAD, denied)
+        self.assertEqual((swarm.tasks, swarm.workers["owner-gate"].task_ids), before)
+
+        task = Task("task-gate", "owner-task-gate", "creator", 1, {}, owning_lead_id="lead-gate", assigned_profession="designer")
+        payload = self.event("role-gate-event", "gate", task_id=task.id)
+        ledger_path = self.root / PROGRESS_LEDGER_PATH
+        with self.assertRaisesRegex(ProgressEventError, "role gate denied"):
+            self.ledger.append_admitted(payload, task=task, actor=Role.DOER, operation=OperationClass.GENERATE, actor_id=task.owner, lease_version=2)
+        self.assertFalse(ledger_path.exists())
+        result = self.ledger.append_admitted(payload, task=task, actor=Role.DOER, operation=OperationClass.GENERATE, actor_id=task.owner, lease_version=1)
+        self.assertEqual(result["status"], "appended")
+        restarted = ProgressLedger(self.root)
+        self.assertEqual(restarted.append_admitted(payload, task=task, actor=Role.DOER, operation=OperationClass.GENERATE, actor_id=task.owner, lease_version=1)["status"], "unchanged")
+        self.assertIs(Ledger, ProgressLedger)
 
 
 if __name__ == "__main__":

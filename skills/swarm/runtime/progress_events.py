@@ -14,7 +14,7 @@ from threading import Condition
 from typing import Any, Mapping
 from weakref import WeakKeyDictionary
 
-from .core import BUILT_IN_PROFESSIONS, CtrlProgressMeasure, CustodyMutation, HostCustodyReceipt, InvariantError, RetryOutcome, RetryTopologyAction, RetryTopologyLedger, _authority_verify, _custody_message
+from .core import BUILT_IN_PROFESSIONS, CtrlProgressMeasure, CustodyMutation, HostCustodyReceipt, InvariantError, OperationClass, Role, RoleGateDecision, RetryOutcome, RetryTopologyAction, RetryTopologyLedger, Task, _authority_verify, _custody_message, role_gate
 from .private_state import LockedPrivateState
 
 
@@ -1853,6 +1853,15 @@ class Ledger:
         if expected_check is not None:
             result["expected_check"] = expected_check
         return result
+
+    def append_admitted(self, payload: Mapping[str, Any], *, task: Task, actor: Role, operation: OperationClass, actor_id: str, lease_version: int) -> dict[str, Any]:
+        """Append through the role gate; validation and authorization precede every write."""
+        event = validate_progress_material_event(dict(payload))
+        if event.task_id != task.id or event.owner_id != task.owner:
+            raise ProgressEventError("role-gated Ledger admission conflicts with task or owner custody")
+        if role_gate(actor, task, operation, actor_id=actor_id, lease_version=lease_version) is not RoleGateDecision.ALLOW:
+            raise ProgressEventError("role gate denied Ledger admission")
+        return self.append(payload)
 
     def append_request_lifecycle(self, payload: Mapping[str, Any], *, custody_receipt: HostCustodyReceipt | None = None) -> dict[str, Any]:
         event = validate_request_lifecycle_event(dict(payload))

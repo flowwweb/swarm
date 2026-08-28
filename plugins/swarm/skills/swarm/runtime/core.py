@@ -24,6 +24,12 @@ if TYPE_CHECKING:
 class Role(StrEnum):
     CTRL="CTRL"; SPECIALIST="SPECIALIST"; ARCHITECT="ARCHITECT"; LEAD="LEAD"; DOER="DOER"; EXPERT="EXPERT"; REVIEW="REVIEW"
 
+class OperationClass(StrEnum):
+    INSPECT="inspect"; COORDINATE="coordinate"; MUTATE="mutate"; EXECUTE="execute"; GENERATE="generate"; REVIEW="review"; ACCEPT="accept"; DEPLOY="deploy"
+
+class RoleGateDecision(StrEnum):
+    ALLOW="ALLOW"; DELEGATE="DELEGATE"; DENY="DENY"
+
 PROFESSION_GROUPS = (
     ("Direction", (("manager", "Manager"), ("strategist", "Strategist"))),
     ("Discovery", (("researcher", "Researcher"), ("analyst", "Analyst"), ("specialist", "Specialist"), ("inventor", "Inventor"))),
@@ -1702,6 +1708,36 @@ class Task:
     ctrl_mode:CtrlMode=CtrlMode.DELEGATED; work_kind:WorkKind=WorkKind.GENERAL; visual_ownership:VisualOwnership=VisualOwnership.PRODUCT_EXPERIENCE; assigned_profession:str=""; profession_assignment:ProfessionAssignment|None=None; milestone_proof_kind:str=""; architecture_goal_id:str=""; architecture_map_version:int=0; architecture_receipts:list[tuple[int,str,str]]=field(default_factory=list); specialist_professions:dict[str,str]=field(default_factory=dict); specialist_profession_assignments:dict[str,ProfessionAssignment]=field(default_factory=dict); specialist_goal_ids:dict[str,str]=field(default_factory=dict); specialist_map_versions:dict[str,int]=field(default_factory=dict); specialist_receipts:dict[str,list[tuple[int,str,str]]]=field(default_factory=dict)
     lane_kind:LaneKind=LaneKind.OTHER; owning_lead_id:str=""; acceptance_contract:AcceptanceContract|None=None; delegation_contract:DelegationContract|None=None; delegated_return_receipts:list[DelegatedReturnReceipt]=field(default_factory=list); delegation_reorientations:int=0; gate_receipts:dict[str,GateReceipt]=field(default_factory=dict); unverified_gate_receipts:dict[str,GateReceipt]=field(default_factory=dict); plan_review_receipt:ReviewEvidence|None=None; acceptance_review_receipt:ReviewEvidence|None=None; incident_consultation_receipt:str=""; watchdog_binding:WatchdogBinding|None=None; watchdog_receipts:list[WatchdogReceipt]=field(default_factory=list); user_custody_required:bool=False; user_renamed:bool=False; user_pinned:bool=False; user_state_changed:bool=False; current_lease_version:int=1
 
+def role_gate(actor:Role, task:Task, operation:OperationClass, *, actor_id:str, lease_version:int) -> RoleGateDecision:
+    """Pure structural authorization; profession may narrow but never widen it."""
+    if not isinstance(actor,Role) or not isinstance(operation,OperationClass): return RoleGateDecision.DENY
+    if not isinstance(lease_version,int) or isinstance(lease_version,bool) or lease_version!=task.current_lease_version: return RoleGateDecision.DENY
+    if task.user_custody_required and operation is not OperationClass.INSPECT: return RoleGateDecision.DENY
+    identity=actor_id.strip() if isinstance(actor_id,str) else ""
+    if actor is Role.CTRL and identity!=Role.CTRL.value: return RoleGateDecision.DENY
+    if actor is Role.LEAD and (not task.owning_lead_id or identity!=task.owning_lead_id): return RoleGateDecision.DENY
+    if actor is Role.DOER and (not task.owning_lead_id or identity!=task.owner): return RoleGateDecision.DENY
+    if actor is Role.REVIEW and (not identity or identity in {task.creator,task.owner,task.owning_lead_id}): return RoleGateDecision.DENY
+    allowed={
+        Role.CTRL:{OperationClass.INSPECT,OperationClass.COORDINATE},
+        Role.LEAD:{OperationClass.INSPECT,OperationClass.COORDINATE,OperationClass.MUTATE,OperationClass.EXECUTE,OperationClass.GENERATE,OperationClass.DEPLOY},
+        Role.DOER:{OperationClass.INSPECT,OperationClass.MUTATE,OperationClass.EXECUTE,OperationClass.GENERATE,OperationClass.DEPLOY},
+        Role.REVIEW:{OperationClass.INSPECT,OperationClass.REVIEW,OperationClass.ACCEPT},
+    }
+    decision=RoleGateDecision.DELEGATE if actor is Role.CTRL and operation not in allowed[Role.CTRL] else RoleGateDecision.ALLOW if operation in allowed.get(actor,{OperationClass.INSPECT}) else RoleGateDecision.DENY
+    supplied=task.profession_assignment.profession_id if task.profession_assignment is not None else task.assigned_profession
+    try: profession=resolve_profession_id(supplied) if supplied.strip() else ""
+    except (AttributeError,ValueError): return RoleGateDecision.DENY
+    if profession=="assistant" and (operation in {OperationClass.MUTATE,OperationClass.ACCEPT} or decision is RoleGateDecision.DELEGATE): return RoleGateDecision.DENY
+    if operation is OperationClass.GENERATE and profession not in {"designer","artist"}: return RoleGateDecision.DENY
+    if operation is OperationClass.DEPLOY and profession!="operator": return RoleGateDecision.DENY
+    if operation in {OperationClass.REVIEW,OperationClass.ACCEPT}:
+        contract=task.acceptance_contract
+        frozen=contract is not None and not contract.explicitly_empty and any((key.key() if isinstance(key,ArtifactIdentity) else key)==contract.artifact.key() for key in task.artifacts)
+        if actor is not Role.REVIEW or not frozen: return RoleGateDecision.DENY
+    if operation not in {OperationClass.INSPECT,OperationClass.COORDINATE,OperationClass.REVIEW,OperationClass.ACCEPT} and task.state not in {TaskState.ACTIVE,TaskState.WAITING}: return RoleGateDecision.DENY
+    return decision
+
 @dataclass(frozen=True)
 class HostUserEvent:
     receipt:str; operation:CtrlOperation; source_ctrl_id:str; target_objective_digest:str; target_scope_digest:str; target_identity:str; issued_at:int; event_digest:str
@@ -2675,6 +2711,8 @@ class Swarm:
     def assign(self, actor: Role, task: Task) -> None:
         self._role(actor,{Role.LEAD}); self._require_subagent_contract(task); self._validate_task_acceptance(task); self._worker_identity(task.owner); w=self.workers.get(task.owner)
         if not w or w.state==WorkerState.RETIRED or len(w.task_ids)>=self.wip_limit: raise InvariantError("owner unavailable or at WIP limit")
+        operation={WorkKind.GENERAL:OperationClass.EXECUTE,WorkKind.DESIGN:OperationClass.MUTATE,WorkKind.IMAGEGEN:OperationClass.GENERATE,WorkKind.IMAGE_EDIT:OperationClass.GENERATE}[task.work_kind]
+        if role_gate(actor,replace(task,owning_lead_id=w.lead),operation,actor_id=w.lead,lease_version=task.current_lease_version) is not RoleGateDecision.ALLOW: raise InvariantError("role gate denied task dispatch")
         self._bind_task_lead(task,w)
         staged=[]; pending=set(); pending_provenance=set()
         for artifact,source in task.artifacts.items():
