@@ -314,6 +314,199 @@ class SwarmConsoleTests(unittest.TestCase):
             connection.execute("UPDATE threads SET agent_role = 'ctrl' WHERE id = 'root'")
             connection.commit()
 
+    @staticmethod
+    def _notification_event(
+        event_id: str, block_id: str, event_kind: str, lifecycle_state: str,
+        observed_at_ms: int, *, parent_event_id: str | None = None,
+        admitted_proof_weight: int = 0, proof_receipt_ids: list[str] | None = None,
+        flags: list[str] | None = None,
+    ) -> dict[str, object]:
+        proof_receipt_ids = proof_receipt_ids or []
+        return {
+            "schema_version": 1,
+            "event_id": event_id,
+            "dedupe_key": f"{event_id}-dedupe",
+            "portfolio_id": "portfolio-main",
+            "project_id": "project:alpha",
+            "ctrl_id": "root",
+            "milestone_id": "milestone-one",
+            "block_id": block_id,
+            "task_id": "task",
+            "owner_id": "owner-task",
+            "scope_version": 1,
+            "parent_block_id": None,
+            "dependency_ids": [],
+            "lineage": {"predecessor_block_ids": [], "split_from": None, "merged_from": []},
+            "event_kind": event_kind,
+            "lifecycle_state": lifecycle_state,
+            "measurement": {
+                "state": "MEASURED", "committed_weight": 1,
+                "admitted_proof_weight": admitted_proof_weight,
+                "basis_receipt_ids": [f"weight-{block_id}"],
+            },
+            "proof": {
+                "required_classes": ["SOURCE"], "receipt_ids": proof_receipt_ids,
+                "claim_limit": "Source proof only.",
+            },
+            "eta": {"start_ms": None, "end_ms": None, "confidence": None, "basis_receipt_ids": []},
+            "rework": {"attempt": 1, "count": 0, "invalidated_receipt_ids": []},
+            "custody": {"surface": f"surface:{block_id}", "receipt_id": f"custody-{block_id}"},
+            "steering_receipt_ids": [],
+            "material_update_sentence": None,
+            "flags": flags or [],
+            "provenance": "typed owner material boundary",
+            "source": "swarm_runtime",
+            "observed_at_ms": observed_at_ms,
+            "causation_id": None,
+            "parent_event_id": parent_event_id,
+        }
+
+    def _append_notification_fixture(self, app: console.App) -> None:
+        events = [
+            self._notification_event(
+                "blocker-created", "blocked-block", "BLOCK_CREATED", "WAITING_EXTERNAL", 10,
+                flags=["blocked", "waiting_external"],
+            ),
+            self._notification_event("review-created", "review-block", "BLOCK_CREATED", "ACTIVE", 20),
+            self._notification_event(
+                "review-requested", "review-block", "STATE_CHANGED", "REVIEW", 21,
+                parent_event_id="review-created",
+            ),
+            self._notification_event(
+                "review-completed", "review-block", "PROOF_ADMITTED", "VERIFIED", 22,
+                parent_event_id="review-requested", admitted_proof_weight=1,
+                proof_receipt_ids=["independent-review-proof"],
+            ),
+            self._notification_event(
+                "milestone-completed", "review-block", "ACCEPTED", "ACCEPTED", 23,
+                parent_event_id="review-completed", admitted_proof_weight=1,
+                proof_receipt_ids=["independent-review-proof", "acceptance-proof"],
+            ),
+            self._notification_event("ordinary-progress", "ordinary-block", "BLOCK_CREATED", "ACTIVE", 30),
+        ]
+        for event in events:
+            self.assertEqual(app.progress_ledger.append(event)["status"], "appended")
+
+    def test_notification_feed_is_pure_filtered_and_ledger_bound(self) -> None:
+        self._confirm_root_ctrl()
+        app = console.App(self.codex_home, self.config)
+        self._append_notification_fixture(app)
+        with closing(sqlite3.connect(app.store.path)) as connection:
+            before = connection.execute("SELECT COUNT(*) FROM store_metadata").fetchone()[0]
+        with mock.patch.object(app.auto_bridge, "run", side_effect=AssertionError("read must not invoke a model")), \
+             mock.patch.object(app.auto_bridge, "reconcile", side_effect=AssertionError("read must not invoke a model")):
+            first = app.notification_feed("root", "project:alpha")
+            second = app.notification_feed("root", "project:alpha")
+        self.assertEqual(first, second)
+        self.assertEqual(
+            [item["kind"] for item in first["unread"]],
+            ["MILESTONE_COMPLETED", "REVIEW_COMPLETED", "REVIEW_REQUESTED", "BLOCKER"],
+        )
+        self.assertNotIn("ordinary-progress", {item["source_event_id"] for item in first["unread"]})
+        self.assertTrue(all(item["source_event_digest"] in item["evidence_refs"] for item in first["unread"]))
+        self.assertTrue(all(item["action_target"]["project_id"] == "project:alpha" for item in first["unread"]))
+        self.assertEqual(first["recent_seen"], [])
+        with closing(sqlite3.connect(app.store.path)) as connection:
+            self.assertEqual(connection.execute("SELECT COUNT(*) FROM store_metadata").fetchone()[0], before)
+        self.assertEqual(
+            app.progress_ledger.append(self._notification_event(
+                "ordinary-progress", "ordinary-block", "BLOCK_CREATED", "ACTIVE", 30,
+            ))["status"],
+            "unchanged",
+        )
+        self.assertEqual(app.notification_feed("root", "project:alpha"), first)
+
+    def test_notification_seen_receipt_is_idempotent_restart_safe_and_revision_specific(self) -> None:
+        self._confirm_root_ctrl()
+        state_path = self.root / "console" / "notifications.sqlite3"
+        app = console.App(self.codex_home, self.config, state_path)
+        self._append_notification_fixture(app)
+        original = app.notification_feed("root", "project:alpha")
+        seen_id = next(
+            item["id"] for item in original["unread"] if item["source_event_id"] == "blocker-created"
+        )
+        payload = {"ctrl_id": "root", "project_id": "project:alpha", "notification_ids": [seen_id]}
+        with mock.patch.object(console.time, "time", return_value=1):
+            first = app.mark_notifications_seen(payload)
+            replay = app.mark_notifications_seen(payload)
+        self.assertEqual((first["newly_seen"], replay["newly_seen"]), (1, 0))
+        self.assertNotIn(seen_id, {item["id"] for item in replay["feed"]["unread"]})
+        self.assertEqual([item["id"] for item in replay["feed"]["recent_seen"]], [seen_id])
+
+        restarted = console.App(self.codex_home, self.config, state_path)
+        retained = restarted.notification_feed("root", "project:alpha")
+        self.assertNotIn(seen_id, {item["id"] for item in retained["unread"]})
+        self.assertEqual([item["id"] for item in retained["recent_seen"]], [seen_id])
+
+        restarted.progress_ledger.append(self._notification_event(
+            "blocker-revised", "blocked-block", "WAIT_CHANGED", "WAITING_EXTERNAL", 40,
+            parent_event_id="blocker-created", flags=["blocked", "waiting_external"],
+        ))
+        updated = restarted.notification_feed("root", "project:alpha")
+        self.assertEqual(updated["unread"][0]["source_event_id"], "blocker-revised")
+        self.assertEqual(updated["unread"][0]["subject_id"], "blocked-block")
+        self.assertNotEqual(updated["unread"][0]["id"], seen_id)
+
+    def test_notification_ack_rejects_unknown_cross_scope_and_corrupt_state_without_mutation(self) -> None:
+        self._confirm_root_ctrl()
+        state_path = self.root / "console" / "notification-guards.sqlite3"
+        app = console.App(self.codex_home, self.config, state_path)
+        self._append_notification_fixture(app)
+        known = app.notification_feed("root", "project:alpha")["unread"][0]["id"]
+        with self.assertRaisesRegex(console.ConsoleError, "1-64 unique"):
+            app.mark_notifications_seen({"ctrl_id": "root", "project_id": "project:alpha", "notification_ids": []})
+        with self.assertRaisesRegex(console.ConsoleError, "not current"):
+            app.mark_notifications_seen({"ctrl_id": "root", "project_id": "project:alpha", "notification_ids": ["0" * 64]})
+        with self.assertRaisesRegex(console.ConsoleError, "observed project|does not belong"):
+            app.mark_notifications_seen({"ctrl_id": "root", "project_id": "project:other", "notification_ids": [known]})
+        with closing(sqlite3.connect(state_path)) as connection:
+            self.assertEqual(connection.execute("SELECT COUNT(*) FROM store_metadata").fetchone()[0], 0)
+            key = app.store._notification_seen_key(app._notification_principal(), "root", "project:alpha")
+            connection.execute("INSERT INTO store_metadata(key, value) VALUES (?, ?)", (key, "{invalid"))
+            connection.commit()
+            before = connection.execute("SELECT value FROM store_metadata WHERE key = ?", (key,)).fetchone()[0]
+        with self.assertRaisesRegex(console.ConsoleError, "notification seen state is invalid"):
+            app.mark_notifications_seen({"ctrl_id": "root", "project_id": "project:alpha", "notification_ids": [known]})
+        with closing(sqlite3.connect(state_path)) as connection:
+            self.assertEqual(connection.execute("SELECT value FROM store_metadata WHERE key = ?", (key,)).fetchone()[0], before)
+
+    def test_notification_routes_require_exact_local_authorization_and_do_not_execute_actions(self) -> None:
+        self._confirm_root_ctrl()
+        app = console.App(self.codex_home, self.config)
+        app.notification_feed = mock.Mock(return_value={"ok": True, "unread": [], "recent_seen": []})
+        app.mark_notifications_seen = mock.Mock(return_value={"ok": True})
+
+        rejected = self._handler("127.0.0.1", "127.0.0.1:4788", origin="http://evil.example", token=app.token)
+        rejected.server = SimpleNamespace(app=app)
+        rejected.path = "/api/notifications?ctrl_id=root&project_id=project%3Aalpha"
+        rejected._error = mock.Mock()
+        rejected._json = mock.Mock()
+        rejected.do_GET()
+        rejected._error.assert_called_once_with(
+            console.HTTPStatus.FORBIDDEN, "notification feed requires local same-origin authorization",
+        )
+        app.notification_feed.assert_not_called()
+
+        allowed = self._handler(
+            "127.0.0.1", "127.0.0.1:4788", origin="http://127.0.0.1:4788", token=app.token,
+        )
+        allowed.server = SimpleNamespace(app=app)
+        allowed.path = "/api/notifications?ctrl_id=root&project_id=project%3Aalpha"
+        allowed._json = mock.Mock()
+        allowed.do_GET()
+        app.notification_feed.assert_called_once_with("root", "project:alpha")
+
+        write_rejected = self._handler(
+            "127.0.0.1", "127.0.0.1:4788", origin="http://127.0.0.1:4788", token="wrong",
+        )
+        write_rejected.server = SimpleNamespace(app=app)
+        write_rejected.path = "/api/notifications/seen"
+        write_rejected._error = mock.Mock()
+        write_rejected._payload = mock.Mock(side_effect=AssertionError("auth must precede payload parsing"))
+        write_rejected.do_POST()
+        write_rejected._error.assert_called_once_with(console.HTTPStatus.FORBIDDEN, "invalid console write token")
+        app.mark_notifications_seen.assert_not_called()
+
     def test_overview_is_safe_and_hierarchical(self) -> None:
         overview = console.build_overview(self.codex_home, self.config)
         ids = {node["id"] for node in overview["nodes"]}
