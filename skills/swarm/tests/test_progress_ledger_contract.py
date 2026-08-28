@@ -23,7 +23,7 @@ from skills.swarm.runtime.progress_events import (
     validate_progress_material_event,
     validate_role_manifest,
 )
-from skills.swarm.runtime.core import ArtifactIdentity, ControlPathFailure, ControlPathFailureKind, ControlPathRecoveryAction, CustodyMutation, DelegationContract, HostCustodyReceipt, InvariantError, ProofClass, RecoveryCause, RetryOutcome, RetryTopologyAction, RetryTopologyLedger, Role, Swarm, Task, TaskStartReceipt, Worker, WorkerState, _HOST_AUTHORITY_GENERATOR, _HOST_AUTHORITY_PRIME, _custody_message
+from skills.swarm.runtime.core import ArtifactIdentity, ControlPathFailure, ControlPathFailureKind, ControlPathRecoveryAction, CustodyMutation, DelegationContract, HostCustodyReceipt, InvariantError, ProofClass, RecoveryCause, Role, Swarm, Task, TaskStartReceipt, Worker, WorkerState, _HOST_AUTHORITY_GENERATOR, _HOST_AUTHORITY_PRIME, _custody_message
 
 
 class ProgressLedgerContractTests(unittest.TestCase):
@@ -310,26 +310,53 @@ class ProgressLedgerContractTests(unittest.TestCase):
         route = hashlib.sha256(b"route-initial").hexdigest()
         expected = self.expected_receipt("expected-retry", attempted_route_digests=[route])
         self.ledger.append_expected_receipt(expected)
-        retry = RetryTopologyLedger()
         actions = []
         for index in (1, 2):
             event = self.event(f"timeout-{index}", "block-a", kind="STATE_CHANGED", committed=1, observed_at_ms=index + 1)
             event["expected_observation"] = self.observation(expected, route="route-initial", source_cursor=10 + index, outcome="TIMEOUT", evidence=[])
             check = self.ledger.append(event)["expected_check"]
-            decision = retry.observe(
-                action=check["route_digest"], target=expected["target_id"],
-                outcome=RetryOutcome.TIMEOUT, blocker_code=check["reason"].casefold().replace("_", "-"),
-            )
-            actions.append(decision.action)
-        self.assertEqual(actions, [RetryTopologyAction.CONTINUE, RetryTopologyAction.REASSESS_ROOT_CAUSE])
+            actions.append(check["retry_action"])
+        self.assertEqual(actions, ["CONTINUE", "REASSESS_ROOT_CAUSE"])
+        self.assertEqual(check["equivalent_attempts"], 2)
         self.assertTrue(check["different_route_required"])
-        different = self.event("timeout-different", "block-a", kind="STATE_CHANGED", committed=1, observed_at_ms=4)
-        different["expected_observation"] = self.observation(expected, route="route-different", source_cursor=13, outcome="TIMEOUT", evidence=[])
-        check = self.ledger.append(different)["expected_check"]
         projected = self.ledger.replay()["expected_receipts"]["expected-retry"]
         self.assertEqual(projected["receipt"]["attempted_route_digests"], [route])
-        self.assertEqual(len(projected["attempted_route_digests"]), 2)
-        self.assertFalse(check["different_route_required"])
+        self.assertNotIn("attempted_route_digests", projected)
+
+    def test_matched_expected_result_is_monotonic_across_later_events_and_restart(self) -> None:
+        self.ledger.append(self.event("base", "block-a", committed=1))
+        expected = self.expected_receipt("expected-terminal")
+        self.ledger.append_expected_receipt(expected)
+        matched = self.event("matched", "block-a", kind="PROOF_ADMITTED", committed=1, admitted=1, proof_receipts=["proof-exact"], observed_at_ms=2)
+        matched["expected_observation"] = self.observation(expected)
+        self.assertEqual(self.ledger.append(matched)["expected_check"]["status"], "MATCHED")
+        later = self.event("later", "block-a", kind="STATE_CHANGED", committed=1, observed_at_ms=3)
+        later["expected_observation"] = self.observation(expected, route="route-later", source_cursor=12, outcome="TIMEOUT", evidence=[])
+        check = self.ledger.append(later)["expected_check"]
+        self.assertEqual((check["status"], check["progress_advanced"]), ("MATCHED", False))
+        self.assertNotIn("retry_action", check)
+        self.ledger.append(self.event("base-b", "block-b", committed=1, observed_at_ms=4))
+        followup = self.expected_receipt(
+            "expected-followup", goal_id="goal-beta", task_id="task-block-b",
+            owner_id="owner-block-b", source_cursor=20,
+        )
+        self.ledger.append_expected_receipt(followup)
+        failed = self.event("failed-b", "block-b", kind="STATE_CHANGED", committed=1, observed_at_ms=5)
+        failed["expected_observation"] = self.observation(
+            followup, route="route-later", source_cursor=21, outcome="TIMEOUT", evidence=[],
+        )
+        self.assertEqual(self.ledger.append(failed)["expected_check"]["retry_action"], "CONTINUE")
+        retained = Ledger(self.root).replay()["expected_receipts"][expected["receipt_id"]]["result"]
+        self.assertEqual((retained["status"], retained["event_id"]), ("MATCHED", "matched"))
+
+    def test_expected_receipt_is_explicitly_non_material_in_feed_and_projections(self) -> None:
+        expected = self.expected_receipt("expected-projection")
+        self.ledger.append_expected_receipt(expected)
+        feed = Ledger(self.root).feed_snapshot("project-alpha")
+        self.assertEqual((feed["cursor"]["event_seq"], feed["cursor"]["event_id"], feed["items"]), (1, "expected-projection", []))
+        self.assertEqual(Ledger(self.root).project_topology("project-alpha", "ctrl-alpha")["source_event_ids"], [])
+        measured = Ledger(self.root).project_verified_yield("project-alpha", [], observed_after_ms=0, observed_before_ms=1)
+        self.assertEqual((measured["tasks"], measured["conflict_count"]), ([], 0))
 
     def test_expected_checks_run_only_on_admitted_turn_lease_and_user_steer_events(self) -> None:
         request_root = self.root / "turn"
@@ -764,7 +791,7 @@ class ProgressLedgerContractTests(unittest.TestCase):
         event = validate_progress_material_event(
             self.event("event-late", "a", sentence="Latest retained material update.", observed_at_ms=10)
         )
-        record = {**self.ledger._record(event, 10), "_event": event}
+        record = {**self.ledger._record(event, 10), "_event": event, "_record_id": event.event_id}
         with mock.patch.object(self.ledger, "_bounded_tail_records", return_value=([record], True)):
             snapshot = self.ledger.feed_snapshot("project-alpha", limit=4, after_cursor=2)
         self.assertTrue(snapshot["stale_cursor"])

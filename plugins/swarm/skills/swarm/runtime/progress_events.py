@@ -14,7 +14,7 @@ from threading import Condition
 from typing import Any, Mapping
 from weakref import WeakKeyDictionary
 
-from .core import BUILT_IN_PROFESSIONS, CtrlProgressMeasure, CustodyMutation, HostCustodyReceipt, InvariantError, _authority_verify, _custody_message
+from .core import BUILT_IN_PROFESSIONS, CtrlProgressMeasure, CustodyMutation, HostCustodyReceipt, InvariantError, RetryOutcome, RetryTopologyAction, RetryTopologyLedger, _authority_verify, _custody_message
 from .private_state import LockedPrivateState
 
 
@@ -141,6 +141,7 @@ EXPECTED_OBSERVATION_FIELDS = frozenset({
     "artifact_digest", "source_cursor", "route_digest", "outcome", "evidence_receipt_ids",
 })
 EXPECTED_DUE_EVENTS = frozenset({"MATERIAL_EVENT", "TURN_COMPLETION", "LEASE_EXPIRY", "USER_STEER"})
+NON_MATERIAL_RECORD_TYPES = frozenset({"EXPECTED_RECEIPT", "REQUEST_LIFECYCLE", "TASK_HANDOFF"})
 
 
 class ProgressLifecycle(StrEnum):
@@ -1198,6 +1199,7 @@ class Ledger:
         self._state = LockedPrivateState(self.root, PROGRESS_LEDGER_PATH)
         self.projection_path = self.root / PROGRESS_PROJECTION_PATH
         self._condition = Condition()
+        self._retry_topology = RetryTopologyLedger()
         if host_custody_public_key is not None and (not isinstance(host_custody_public_key, int) or isinstance(host_custody_public_key, bool) or host_custody_public_key <= 1):
             raise ProgressEventError("host custody verifier requires a valid pinned public key")
         _install_ledger_custody_authority(self, host_custody_public_key)
@@ -1470,16 +1472,14 @@ class Ledger:
             "event_seq": event_seq,
             "event_digest": event_digest,
             "last_source_cursor": payload["source_cursor"],
-            "attempted_route_digests": list(payload["attempted_route_digests"]),
             "result": {"status": "PENDING", "reason": None, "progress_advanced": False},
         }
         projection["cursor"] = {
             "event_seq": event_seq, "event_id": receipt_id, "event_digest": event_digest,
         }
 
-    @staticmethod
     def _apply_expected_observation(
-        projection: dict[str, Any], observation: Mapping[str, Any], *, event_seq: int,
+        self, projection: dict[str, Any], observation: Mapping[str, Any], *, event_seq: int,
         event_id: str, event_digest: str, event_kind: str, due_event: str,
         due_generation: int, task_id: str, goal_id: str, owner_id: str,
         lease_version: int, evidence_receipt_ids: tuple[str, ...],
@@ -1492,12 +1492,16 @@ class Ledger:
                 "event_seq": event_seq, "progress_advanced": False,
             }
         expected = retained["receipt"]
+        if retained["result"]["status"] == "MATCHED":
+            return {
+                "expected_receipt_id": expected["receipt_id"], "status": "MATCHED",
+                "reason": None, "event_id": event_id, "event_seq": event_seq,
+                "progress_advanced": False, "matched_event_id": retained["result"]["event_id"],
+            }
         reason = {
             "EMPTY": "EMPTY_OUTPUT", "TIMEOUT": "TIMEOUT", "HTTP_400": "HTTP_400",
             "MISSING_THREAD": "MISSING_THREAD", "REPLAY": "REPLAY",
         }.get(observation["outcome"])
-        if retained["result"]["status"] == "MATCHED":
-            reason = reason or "REPLAY"
         if observation["source_cursor"] <= retained["last_source_cursor"]:
             reason = reason or "STALE_CURSOR"
         for actual, wanted, mismatch in (
@@ -1519,30 +1523,41 @@ class Ledger:
         if not tuple(dict.fromkeys((*evidence_receipt_ids, *observation["evidence_receipt_ids"]))):
             reason = reason or "MISSING_EVIDENCE"
         route_digest = observation["route_digest"]
-        repeated = route_digest in retained["attempted_route_digests"]
-        if not repeated:
-            retained["attempted_route_digests"].append(route_digest)
         retained["last_source_cursor"] = max(retained["last_source_cursor"], observation["source_cursor"])
         result = {
             "expected_receipt_id": expected["receipt_id"],
             "status": "ATTENTION" if reason else "MATCHED",
             "reason": reason, "event_id": event_id, "event_seq": event_seq,
             "progress_advanced": reason is None, "route_digest": route_digest,
-            "different_route_required": bool(reason and repeated),
         }
+        if reason:
+            try:
+                outcome = RetryOutcome(observation["outcome"])
+            except ValueError:
+                outcome = RetryOutcome.FAILED
+            decision = self._retry_topology.observe(
+                action=route_digest, target=expected["target_id"], outcome=outcome,
+                blocker_code=reason.casefold().replace("_", "-"),
+            )
+            result.update({
+                "retry_action": decision.action.value,
+                "equivalent_attempts": decision.equivalent_attempts,
+                "different_route_required": decision.action in {
+                    RetryTopologyAction.REASSESS_ROOT_CAUSE, RetryTopologyAction.STOP_REPEATED_TACTIC,
+                },
+            })
         retained["result"] = {**result, "event_digest": event_digest}
         return result
 
-    @staticmethod
     def _apply_request_expected(
-        projection: dict[str, Any], payload: Mapping[str, Any], event_seq: int, event_digest: str,
+        self, projection: dict[str, Any], payload: Mapping[str, Any], event_seq: int, event_digest: str,
     ) -> dict[str, Any] | None:
         observation = payload.get("expected_observation")
         if observation is None:
             return None
         record = payload["record"]
         generation = record["transitions"][-1]["cursor"]["feed_sequence"]
-        return Ledger._apply_expected_observation(
+        return self._apply_expected_observation(
             projection, observation, event_seq=event_seq, event_id=payload["event_id"],
             event_digest=event_digest, event_kind=payload["lifecycle_state"],
             due_event="TURN_COMPLETION", due_generation=generation,
@@ -1551,14 +1566,13 @@ class Ledger:
             evidence_receipt_ids=tuple(record["evidence_receipts"]),
         )
 
-    @staticmethod
     def _apply_handoff_expected(
-        projection: dict[str, Any], payload: Mapping[str, Any], event_seq: int, event_digest: str,
+        self, projection: dict[str, Any], payload: Mapping[str, Any], event_seq: int, event_digest: str,
     ) -> dict[str, Any] | None:
         observation = payload.get("expected_observation")
         if observation is None:
             return None
-        return Ledger._apply_expected_observation(
+        return self._apply_expected_observation(
             projection, observation, event_seq=event_seq, event_id=payload["event_id"],
             event_digest=event_digest, event_kind=payload["event_kind"],
             due_event="LEASE_EXPIRY", due_generation=payload["lease_version"],
@@ -1573,11 +1587,10 @@ class Ledger:
         projection["dedupe"][event.dedupe_key] = event.semantic_digest
         projection["cursor"] = {"event_seq": event_seq, "event_id": event.event_id, "event_digest": event.digest}
 
-    @staticmethod
-    def _apply(projection: dict[str, Any], event: ProgressMaterialEvent, event_seq: int) -> dict[str, Any] | None:
+    def _apply(self, projection: dict[str, Any], event: ProgressMaterialEvent, event_seq: int) -> dict[str, Any] | None:
         check = None
         if event.expected_observation is not None:
-            check = Ledger._apply_expected_observation(
+            check = self._apply_expected_observation(
                 projection,
                 event.expected_observation,
                 event_seq=event_seq,
@@ -1702,6 +1715,7 @@ class Ledger:
 
     def _replay_unlocked(self) -> tuple[dict[str, Any], list[dict[str, Any]]]:
         projection = _empty_progress_projection()
+        self._retry_topology = RetryTopologyLedger()
         records: list[dict[str, Any]] = []
         payload = self._state.read_bytes_unlocked()
         for expected_seq, raw_line in enumerate(payload.splitlines(), 1):
@@ -2071,7 +2085,7 @@ class Ledger:
         events: list[tuple[int, ProgressMaterialEvent]] = []
         conflicts = 0
         for record in records:
-            if isinstance(record["event"], dict) and record["event"].get("record_type") in {"REQUEST_LIFECYCLE", "TASK_HANDOFF"}:
+            if isinstance(record["event"], dict) and record["event"].get("record_type") in NON_MATERIAL_RECORD_TYPES:
                 continue
             event = validate_progress_material_event(record["event"])
             if event.project_id != project_id or event.scope_version != scope_version or event.block_id not in block_ids:
@@ -2338,7 +2352,7 @@ class Ledger:
 
         known: list[tuple[int, ProgressMaterialEvent]] = []
         for record in records[:cursor]:
-            if isinstance(record["event"], dict) and record["event"].get("record_type") in {"REQUEST_LIFECYCLE", "TASK_HANDOFF"}:
+            if isinstance(record["event"], dict) and record["event"].get("record_type") in NON_MATERIAL_RECORD_TYPES:
                 continue
             event = validate_progress_material_event(record["event"])
             if event.project_id == project_id and event.ctrl_id == ctrl_id:
@@ -2573,11 +2587,27 @@ class Ledger:
         for line in lines:
             try:
                 record = json.loads(line)
-                event = validate_progress_material_event(record["event"])
+                raw_event = record["event"]
+                record_type = raw_event.get("record_type") if isinstance(raw_event, dict) else None
+                if record_type in NON_MATERIAL_RECORD_TYPES:
+                    if record_type == "EXPECTED_RECEIPT":
+                        event_digest = _expected_receipt_digest(_validate_expected_receipt(raw_event))
+                        record_id = raw_event["receipt_id"]
+                    elif record_type == "REQUEST_LIFECYCLE":
+                        _validate_retained_request_lifecycle_event(raw_event, record["event_digest"])
+                        event_digest = record["event_digest"]
+                        record_id = raw_event["event_id"]
+                    else:
+                        event_digest = _task_handoff_digest(validate_task_handoff_event(raw_event))
+                        record_id = raw_event["event_id"]
+                    if record.get("event_digest") == event_digest:
+                        records.append({**record, "_event": None, "_record_id": record_id, "_record_type": record_type})
+                    continue
+                event = validate_progress_material_event(raw_event)
             except (json.JSONDecodeError, KeyError, TypeError, ProgressEventError):
                 continue
             if record.get("event_digest") == event.digest:
-                records.append({**record, "_event": event})
+                records.append({**record, "_event": event, "_record_id": event.event_id, "_record_type": None})
         return records, start > 0
 
     def feed_snapshot(self, project_id: str, *, limit: int = 4, after_cursor: int = 0) -> dict[str, Any]:
@@ -2586,7 +2616,7 @@ class Ledger:
             raise ProgressEventError("feed limit must be between 1 and 10")
         after_cursor = _positive_int(after_cursor, "feed cursor", allow_zero=True)
         records, truncated = self._bounded_tail_records()
-        project_records = [record for record in records if record["_event"].project_id == project_id and record["_event"].material_update_sentence is not None]
+        project_records = [record for record in records if record["_event"] is not None and record["_event"].project_id == project_id and record["_event"].material_update_sentence is not None]
         oldest_seq = min((int(record["event_seq"]) for record in records), default=0)
         stale_cursor = bool(after_cursor and truncated and after_cursor < oldest_seq)
         eligible = project_records if stale_cursor or not after_cursor else [record for record in project_records if int(record["event_seq"]) > after_cursor]
@@ -2620,8 +2650,8 @@ class Ledger:
             "limit": limit,
             "cursor": {
                 "event_seq": newest,
-                "event_id": None if cursor_record is None else cursor_record["_event"].event_id,
-                "event_digest": None if cursor_record is None else cursor_record["_event"].digest,
+                "event_id": None if cursor_record is None else cursor_record["_record_id"],
+                "event_digest": None if cursor_record is None else cursor_record["event_digest"],
             },
             "items": items,
             "stale_cursor": stale_cursor,
