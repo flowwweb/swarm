@@ -13,7 +13,7 @@ The built-in profession registry is exactly, in lifecycle display order:
   (`specialist`), Inventor (`inventor`).
 - Creation: Architect (`architect`), Designer (`designer`), Artist (`artist`),
   Writer (`writer`), Dev (`developer`), Producer (`producer`).
-- Assurance: Tester (`tester`), Critic (`critic`), Security (`security`),
+- Assurance: Tester (`tester`), Assistant (`assistant`), Security (`security`),
   Auditor (`auditor`), Legal (`legal`), Reviewer (`reviewer`).
 - Delivery: Operator (`operator`), Marketer (`marketer`), Support (`support`).
 - Foundation: Accountant (`accountant`), Recruiter (`recruiter`), Educator
@@ -266,6 +266,18 @@ then resume only the affected work.
 Use ADVISOR or EXPERT for one bounded uncertainty delaying accepted proof, never artifact ownership.
 Use ASSIST as temporary surge capacity for one bounded result. None of them
 receives authority merely because it found an issue.
+
+Assistant is a profession for routine personal-assistant or secretary preparation:
+clarify and organize intake, summarize, draft, schedule, follow up, collect
+status, and prepare bounded handoffs. It cannot own intake, delegate, mutate
+authority, review, or accept. Profession Assistant is distinct from structural
+ASSIST and never inherits ASSIST custody or topology.
+
+Reviewer exposes exactly two stances. Friendly identifies strengths, gaps, and
+the clearest repair while preserving evidence. Hostile first steelmans and then
+tries to disprove the artifact with counterexamples, hidden assumptions, failure
+modes, and adversarial tests; hostility targets artifacts, never people. A stance
+changes perspective only, never review authority or independence.
 
 A LEAD recruits a DOER only from defensible bottleneck evidence: directly owned
 active slices have reached `efficiency.doer_wip_limit` while at least one

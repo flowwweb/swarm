@@ -250,8 +250,8 @@ icon = "💻"
 icon = "🎬"
 [professions.tester]
 icon = "🧪"
-[professions.critic]
-icon = "🔍"
+[professions.assistant]
+icon = "🗒️"
 [professions.security]
 icon = "🛡️"
 [professions.auditor]

@@ -42,6 +42,8 @@ class SwarmConfigTests(unittest.TestCase):
         self.assertEqual(config.PROFESSION_GROUPS,PROFESSION_GROUPS)
         self.assertEqual(config.BUILT_IN_PROFESSIONS,BUILT_IN_PROFESSIONS)
         self.assertEqual(len(BUILT_IN_PROFESSIONS), 24)
+        self.assertIn("assistant", BUILT_IN_PROFESSIONS)
+        self.assertNotIn("critic", BUILT_IN_PROFESSIONS)
         self.assertNotIn("mother", BUILT_IN_PROFESSIONS)
 
     def test_profession_specialist_and_structural_specialist_use_separate_namespaces(self) -> None:
@@ -134,6 +136,13 @@ class SwarmConfigTests(unittest.TestCase):
         self.assertEqual(effective["role_icons"]["ctrl"], "🐙")
         self.assertEqual(set(effective["professions"]),set(config.BUILT_IN_PROFESSIONS))
         self.assertEqual(effective["roles"],{})
+
+    def test_assistant_is_non_authoritative_and_critic_is_not_configurable(self) -> None:
+        effective,_=config.load(config.TEMPLATE_PATH)
+        assistant=config.resolve_profession_assignment(effective,"Assistant")
+        self.assertEqual((assistant["profession_id"],assistant["authority"]),("assistant","none"))
+        with self.assertRaisesRegex(config.ConfigError,"unknown profession: critic"):
+            config.resolve_profession_assignment(effective,"Critic")
 
     def test_role_icons_accept_custom_ctrl_and_disabled_contrast(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

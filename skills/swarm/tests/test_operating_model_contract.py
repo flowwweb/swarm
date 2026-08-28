@@ -1,5 +1,6 @@
 import hashlib
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -144,17 +145,38 @@ class OperatingModelTests(unittest.TestCase):
     def test_locked_profession_registry_is_orthogonal_to_structural_authority(self):
         from runtime.core import BUILT_IN_PROFESSIONS, PROFESSION_GROUPS, resolve_profession_id
         self.assertEqual(tuple(group for group,_ in PROFESSION_GROUPS),("Direction","Discovery","Creation","Assurance","Delivery","Foundation"))
-        self.assertEqual(tuple(BUILT_IN_PROFESSIONS),("manager","strategist","researcher","analyst","specialist","inventor","architect","designer","artist","writer","developer","producer","tester","critic","security","auditor","legal","reviewer","operator","marketer","support","accountant","recruiter","educator"))
+        self.assertEqual(tuple(BUILT_IN_PROFESSIONS),("manager","strategist","researcher","analyst","specialist","inventor","architect","designer","artist","writer","developer","producer","tester","assistant","security","auditor","legal","reviewer","operator","marketer","support","accountant","recruiter","educator"))
         self.assertEqual(len(BUILT_IN_PROFESSIONS), 24)
         self.assertEqual(BUILT_IN_PROFESSIONS["support"], "Support")
         self.assertEqual(resolve_profession_id("Support Specialist"), "support")
         self.assertEqual(resolve_profession_id("Security Engineer"), "security")
         self.assertEqual(resolve_profession_id("Project Manager"), "manager")
-        for excluded in ("Innovator", "Negotiator", "Seller", "MOTHER", "Red Teamer"):
+        self.assertEqual(resolve_profession_id("Assistant"), "assistant")
+        self.assertEqual(ProfessionAssignment("Assistant").label, "Assistant")
+        for excluded in ("Critic", "ASSIST", "Innovator", "Negotiator", "Seller", "MOTHER", "Red Teamer"):
             with self.assertRaises(ValueError): resolve_profession_id(excluded)
         self.assertNotIn("CTRL", BUILT_IN_PROFESSIONS)
         self.assertNotIn("LEAD", BUILT_IN_PROFESSIONS)
         self.assertNotIn("DOER", BUILT_IN_PROFESSIONS)
+
+    def test_retired_critic_manifest_history_remains_readable_without_builtin_authority(self):
+        from runtime.progress_events import ProgressLedger, build_role_manifest, load_builtin_role_manifests, role_material_event
+        repository=Path(__file__).resolve().parents[3]
+        builtins=load_builtin_role_manifests(repository/"skills"/"swarm"/"roles",repository/"console"/"static"/"swarm-offline-disconnected.png")
+        digest_value=hashlib.sha256(b"historical-critic-avatar").hexdigest()
+        historical=build_role_manifest("critic",{
+            "name":"Critic","purpose":"Decode one retained historical role revision.",
+            "owns":["Historical metadata only."],"instructions":["Remain non-authoritative."],
+            "boundaries":["No current routing or review authority."],"default_skills":[],
+            "avatar_asset_digest":digest_value,"accent":"#123456",
+        },"custom",["history:critic:v1"])
+        with tempfile.TemporaryDirectory() as root:
+            ledger=ProgressLedger(Path(root))
+            ledger.append(role_material_event("ROLE_MANIFEST_CREATE",event_id="historical-critic",dedupe_key="historical-critic",role_id="critic",manifest=historical,expected_active_version=None,assignment_task_id=None,provenance="history:critic:v1",observed_at_ms=1))
+            projected=next(role for role in ledger.project_role_manifests(builtins)["roles"] if role["id"]=="critic")
+        self.assertFalse(projected["built_in"])
+        self.assertEqual(projected["source"],"custom")
+        self.assertIn("No current routing or review authority.",projected["boundaries"])
 
     def test_profession_specialist_is_typed_separately_from_structural_specialist(self):
         with self.assertRaisesRegex(InvariantError,"named domain and truth surface"):

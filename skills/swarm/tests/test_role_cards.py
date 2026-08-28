@@ -14,7 +14,7 @@ EXPECTED_CARDS = {
     "analyst": "Analyst", "specialist": "Specialist", "inventor": "Inventor",
     "architect": "Architect", "designer": "Designer", "artist": "Artist",
     "writer": "Writer", "developer": "Dev", "producer": "Producer",
-    "tester": "Tester", "critic": "Critic", "security": "Security",
+    "tester": "Tester", "assistant": "Assistant", "security": "Security",
     "auditor": "Auditor", "legal": "Legal", "reviewer": "Reviewer",
     "operator": "Operator", "marketer": "Marketer", "support": "Support",
     "accountant": "Accountant", "recruiter": "Recruiter", "educator": "Educator",
@@ -50,6 +50,18 @@ class RoleCardTests(unittest.TestCase):
         self.assertFalse((ROLE_ROOT / "mother.md").exists())
         self.assertFalse((ROLE_ROOT / "watchdog.md").exists())
         self.assertFalse((ROLE_ROOT / "ctrl.md").exists())
+        self.assertFalse((ROLE_ROOT / "critic.md").exists())
+
+    def test_assistant_and_reviewer_cards_preserve_authority_boundaries(self) -> None:
+        assistant = (ROLE_ROOT / "assistant.md").read_text(encoding="utf-8")
+        reviewer = (ROLE_ROOT / "reviewer.md").read_text(encoding="utf-8")
+        self.assertIn("profession Assistant as distinct from structural ASSIST", assistant)
+        for forbidden in ("delegate", "own intake", "mutate authority", "review", "accept"):
+            self.assertIn(forbidden, assistant)
+        self.assertIn("exactly one review stance, Friendly or Hostile", reviewer)
+        self.assertIn("stance changes perspective only, never authority or independence", reviewer)
+        self.assertIn("steelmans", reviewer)
+        self.assertIn("hostility targets artifacts, never people", reviewer)
 
 
 if __name__ == "__main__":

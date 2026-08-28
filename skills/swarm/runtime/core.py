@@ -28,7 +28,7 @@ PROFESSION_GROUPS = (
     ("Direction", (("manager", "Manager"), ("strategist", "Strategist"))),
     ("Discovery", (("researcher", "Researcher"), ("analyst", "Analyst"), ("specialist", "Specialist"), ("inventor", "Inventor"))),
     ("Creation", (("architect", "Architect"), ("designer", "Designer"), ("artist", "Artist"), ("writer", "Writer"), ("developer", "Dev"), ("producer", "Producer"))),
-    ("Assurance", (("tester", "Tester"), ("critic", "Critic"), ("security", "Security"), ("auditor", "Auditor"), ("legal", "Legal"), ("reviewer", "Reviewer"))),
+    ("Assurance", (("tester", "Tester"), ("assistant", "Assistant"), ("security", "Security"), ("auditor", "Auditor"), ("legal", "Legal"), ("reviewer", "Reviewer"))),
     ("Delivery", (("operator", "Operator"), ("marketer", "Marketer"), ("support", "Support"))),
     ("Foundation", (("accountant", "Accountant"), ("recruiter", "Recruiter"), ("educator", "Educator"))),
 )
