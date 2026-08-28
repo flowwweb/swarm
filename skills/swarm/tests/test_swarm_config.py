@@ -19,6 +19,24 @@ SPEC.loader.exec_module(config)
 
 
 class SwarmConfigTests(unittest.TestCase):
+    def test_task_lifetime_is_one_bounded_lifecycle_authority(self) -> None:
+        effective, exists = config.load(config.TEMPLATE_PATH)
+        self.assertTrue(exists)
+        self.assertEqual(config.DEFAULTS["lifecycle"]["task_lifetime_hours"], 4)
+        self.assertEqual(effective["lifecycle"]["task_lifetime_hours"], 4)
+        self.assertTrue(effective["lifecycle"]["pin_created_tasks"])
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            custom = root / "custom.toml"
+            custom.write_text("[lifecycle]\ntask_lifetime_hours = 8\n", encoding="utf-8")
+            self.assertEqual(config.load(custom)[0]["lifecycle"]["task_lifetime_hours"], 8)
+            for index, value in enumerate((0, 721, True, "four")):
+                invalid = root / f"invalid-{index}.toml"
+                rendered = json.dumps(value).casefold() if not isinstance(value, str) else json.dumps(value)
+                invalid.write_text(f"[lifecycle]\ntask_lifetime_hours = {rendered}\n", encoding="utf-8")
+                with self.subTest(value=value), self.assertRaisesRegex(config.ConfigError, "task_lifetime_hours"):
+                    config.load(invalid)
+
     def test_profession_registry_matches_runtime_order_and_labels(self) -> None:
         from skills.swarm.runtime.core import BUILT_IN_PROFESSIONS, PROFESSION_GROUPS
         self.assertEqual(config.PROFESSION_GROUPS,PROFESSION_GROUPS)

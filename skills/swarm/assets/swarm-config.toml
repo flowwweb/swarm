@@ -341,6 +341,9 @@ stall_after_updates = 2
 # exact explicit-user pin request, and any claimed placement must be disclosed
 # from a host-owned placement receipt.
 pin_created_tasks = true
+# One global continuity horizon. Expiry records a due handoff at the next safe
+# immutable checkpoint; it never grants successor-CTRL authority.
+task_lifetime_hours = 4
 
 [hygiene]
 # Archive preserves searchable provenance; it never deletes a task. Values are days.

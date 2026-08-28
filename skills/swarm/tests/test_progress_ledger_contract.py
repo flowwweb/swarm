@@ -19,6 +19,7 @@ from skills.swarm.runtime.progress_events import (
     role_material_event,
     validate_progress_material_event,
 )
+from skills.swarm.runtime.core import InvariantError, Role, Swarm, Task, TaskStartReceipt, Worker
 
 
 class ProgressLedgerContractTests(unittest.TestCase):
@@ -634,6 +635,78 @@ class ProgressLedgerContractTests(unittest.TestCase):
         with self.assertRaisesRegex(ProgressEventError, "distinct exhausted routes"):
             self.ledger.append_request_lifecycle(blocked)
         self.assertEqual(self.ledger.project_request_lifecycles()["event_count"], before)
+
+    def _continuity_swarm(self, *, user_keep_out: bool = False, owner: str = "owner-old") -> tuple[Swarm, Task, TaskStartReceipt]:
+        task = Task("task-life", owner, "creator", 1, {}, goal_id="goal-life", user_custody_required=user_keep_out)
+        swarm = Swarm(
+            workers={"owner-old": Worker("owner-old", "lead-1", 1), "owner-new": Worker("owner-new", "lead-1", 2)},
+            tasks={task.id: task},
+            request_lifecycle_ledger=self.ledger,
+            task_lifetime_hours=4,
+        )
+        swarm.workers[owner].task_ids.add(task.id)
+        return swarm, task, TaskStartReceipt("start-receipt-1", task.goal_id, task.id, owner, 1_000, 1, 1)
+
+    def test_task_lifetime_due_once_requires_checkpoint_ack_and_exact_replay(self) -> None:
+        swarm, task, start = self._continuity_swarm()
+        self.assertEqual(swarm.task_handoff_due(Role.LEAD, task.id, start, now_ms=14_400_999)["state"], "RUNNING")
+        due = swarm.task_handoff_due(Role.LEAD, task.id, start, now_ms=14_401_000)
+        replay = swarm.task_handoff_due(Role.LEAD, task.id, start, now_ms=20_000_000)
+        self.assertEqual((due["state"], replay["handoff_id"]), ("HANDOFF_DUE", due["handoff_id"]))
+        self.assertEqual(self.ledger.project_task_handoffs()["event_count"], 1)
+        self.assertEqual(task.owner, "owner-old")
+        with self.assertRaisesRegex((InvariantError, ProgressEventError), "checkpoint"):
+            swarm.offer_task_handoff(Role.LEAD, due["handoff_id"], new_owner="owner-new", checkpoint_digest="bad", observed_at_ms=14_401_001)
+        checkpoint = "a" * 64
+        swarm.offer_task_handoff(Role.LEAD, due["handoff_id"], new_owner="owner-new", checkpoint_digest=checkpoint, observed_at_ms=14_401_002)
+        self.assertEqual(task.owner, "owner-old")
+        before_ack = (self.root / PROGRESS_LEDGER_PATH).read_bytes()
+        with self.assertRaisesRegex(ProgressEventError, "host target owner"):
+            swarm.acknowledge_task_handoff(Role.DOER, due["handoff_id"], new_owner="owner-new", checkpoint_digest=checkpoint, host_task_receipt="host:thread:wrong-owner:task-life:1", observed_at_ms=14_401_003)
+        self.assertEqual((self.root / PROGRESS_LEDGER_PATH).read_bytes(), before_ack)
+        acknowledgement = swarm.acknowledge_task_handoff(Role.DOER, due["handoff_id"], new_owner="owner-new", checkpoint_digest=checkpoint, host_task_receipt="host:thread:owner-new:task-life:1", observed_at_ms=14_401_003)
+        self.assertEqual(task.owner, "owner-old")
+        replay_ack = swarm.acknowledge_task_handoff(Role.DOER, due["handoff_id"], new_owner="owner-new", checkpoint_digest=checkpoint, host_task_receipt="host:thread:owner-new:task-life:1", observed_at_ms=14_401_003)
+        self.assertEqual(replay_ack["cursor"], acknowledgement["cursor"])
+        before = (self.root / PROGRESS_LEDGER_PATH).read_bytes()
+        with self.assertRaisesRegex(InvariantError, "conflicts"):
+            swarm.acknowledge_task_handoff(Role.DOER, due["handoff_id"], new_owner="owner-new", checkpoint_digest="b" * 64, host_task_receipt="host:thread:owner-new:task-life:1", observed_at_ms=14_401_004)
+        self.assertEqual((self.root / PROGRESS_LEDGER_PATH).read_bytes(), before)
+        result = swarm.transfer_task_custody(Role.LEAD, due["handoff_id"], observed_at_ms=14_401_005)
+        self.assertEqual((result["owner"], task.owner, result["lease_version"]), ("owner-new", "owner-new", 2))
+
+    def test_task_handoff_restart_keep_out_and_ctrl_authority_boundaries(self) -> None:
+        swarm, task, start = self._continuity_swarm()
+        due = swarm.task_handoff_due(Role.LEAD, task.id, start, now_ms=14_401_000)
+        checkpoint = "c" * 64
+        swarm.offer_task_handoff(Role.LEAD, due["handoff_id"], new_owner="owner-new", checkpoint_digest=checkpoint, observed_at_ms=14_401_001)
+        swarm.acknowledge_task_handoff(Role.DOER, due["handoff_id"], new_owner="owner-new", checkpoint_digest=checkpoint, host_task_receipt="host:thread:owner-new:task-life:1", observed_at_ms=14_401_002)
+        swarm.transfer_task_custody(Role.LEAD, due["handoff_id"], observed_at_ms=14_401_003)
+        restarted_task = Task(task.id, "owner-old", "creator", 1, {}, goal_id=task.goal_id)
+        restarted = Swarm(workers={"owner-old": Worker("owner-old", "lead-1", 1), "owner-new": Worker("owner-new", "lead-1", 2)}, tasks={task.id: restarted_task}, request_lifecycle_ledger=ProgressLedger(self.root))
+        self.assertEqual(restarted.reconcile_task_handoffs(), (task.id,))
+        self.assertEqual(restarted_task.owner, "owner-new")
+        self.assertEqual(restarted.scheduled_wakeups, {})
+
+        with tempfile.TemporaryDirectory() as directory:
+            keep_ledger = ProgressLedger(directory)
+            keep, keep_task, keep_start = self._continuity_swarm(user_keep_out=True)
+            keep.request_lifecycle_ledger = keep_ledger
+            kept = keep.task_handoff_due(Role.LEAD, keep_task.id, keep_start, now_ms=14_401_000)
+            self.assertEqual(kept["state"], "KEEP_OUT")
+            with self.assertRaisesRegex(InvariantError, "KEEP_OUT"):
+                keep.offer_task_handoff(Role.LEAD, kept["handoff_id"], new_owner="owner-new", checkpoint_digest="d" * 64, observed_at_ms=14_401_001)
+            self.assertNotIn("BLOCKED", {item["event_kind"] for item in keep_ledger.project_task_handoffs()["records"]})
+
+        with tempfile.TemporaryDirectory() as directory:
+            ctrl_ledger = ProgressLedger(directory)
+            ctrl_task = Task("task-ctrl", "CTRL", "creator", 1, {}, goal_id="goal-ctrl")
+            ctrl = Swarm(tasks={ctrl_task.id: ctrl_task}, request_lifecycle_ledger=ctrl_ledger)
+            ctrl_start = TaskStartReceipt("start-receipt-ctrl", ctrl_task.goal_id, ctrl_task.id, "CTRL", 1_000)
+            ctrl_due = ctrl.task_handoff_due(Role.CTRL, ctrl_task.id, ctrl_start, now_ms=14_401_000)
+            self.assertEqual(ctrl_due["state"], "NEEDS_AUTHORITY")
+            with self.assertRaisesRegex(InvariantError, "successor CTRL"):
+                ctrl.offer_task_handoff(Role.CTRL, ctrl_due["handoff_id"], new_owner="owner-new", checkpoint_digest="e" * 64, observed_at_ms=14_401_001)
 
     def test_source_and_plugin_mirrors_are_exact(self) -> None:
         repository = Path(__file__).resolve().parents[3]

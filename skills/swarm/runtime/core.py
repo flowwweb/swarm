@@ -1704,6 +1704,15 @@ class HostCustodyReceipt:
         if not isinstance(self.mutation,CustodyMutation) or not isinstance(self.issued_at,int) or self.issued_at<0: raise InvariantError("custody receipt requires a typed mutation and nonnegative issuance time")
 
 @dataclass(frozen=True)
+class TaskStartReceipt:
+    receipt_id:str; goal_id:str; task_id:str; owner_id:str; started_at_ms:int; scope_version:int=1; lease_version:int=1
+    def __post_init__(self):
+        for value in (self.receipt_id,self.goal_id,self.task_id,self.owner_id): _safe_token(value)
+        if not isinstance(self.started_at_ms,int) or self.started_at_ms<0: raise InvariantError("task start receipt requires a nonnegative monotonic timestamp")
+        if not isinstance(self.scope_version,int) or isinstance(self.scope_version,bool) or self.scope_version<1: raise InvariantError("task start receipt requires a positive scope version")
+        if not isinstance(self.lease_version,int) or isinstance(self.lease_version,bool) or self.lease_version<1: raise InvariantError("task start receipt requires a positive lease version")
+
+@dataclass(frozen=True)
 class StorageTarget:
     target_id:str; exact_root:str
     def __post_init__(self):
@@ -1752,14 +1761,84 @@ class Worker:
 class Swarm:
     architecture_version: int=1; contract_versions: dict[str,int]=field(default_factory=dict); topology: set[str]=field(default_factory=set)
     workers: dict[str,Worker]=field(default_factory=dict); tasks: dict[str,Task]=field(default_factory=dict); leases: dict[str,str]=field(default_factory=dict); events: list[tuple[str,str]]=field(default_factory=list); task_event_limit:int=64; telemetry: dict[str,object]=field(default_factory=dict); telemetry_events:list[dict[str,object]]=field(default_factory=list); artifact_index:dict[str,str]=field(default_factory=dict); provenance_index:dict[str,str]=field(default_factory=dict); ctrl_evidence_ledger:dict[str,CtrlEvidence]=field(default_factory=dict); ctrl_decision_sets:dict[str,CtrlDecisionSet]=field(default_factory=dict); ctrl_phase:str="intake"; hive:dict[str,HiveRecord]=field(default_factory=dict); hive_enabled:bool=True; heartbeat_stall_after:int=2; correction_receipts:dict[str,None]=field(default_factory=dict); retry_topology_ledger:RetryTopologyLedger=field(default_factory=RetryTopologyLedger); lane_width:int=3; wip_limit:int=3; efficiency_ledger:list[dict[str,str]]=field(default_factory=list); mode:EfficiencyMode=EfficiencyMode.BALANCED; automation_mode:str="standard"; default_review_horizon:int=30; max_review_horizon:int=60; direct_work_horizon:int=20
-    scheduled_wakeups:dict[str,int]=field(default_factory=dict); ctrl_feed_messages:list[CtrlFeedMessage]=field(default_factory=list); ctrl_feed_cursor:int=0; ctrl_feed_superseded_by:dict[str,str]=field(default_factory=dict); ctrl_feed_events:dict[str,CtrlFeedEvent]=field(default_factory=dict); ctrl_feed_consumed_events:set[str]=field(default_factory=set); ctrl_authorizations:dict[str,UserCtrlAuthorization]=field(default_factory=dict); ctrl_materialization_intents:dict[str,CtrlMaterializationIntent]=field(default_factory=dict); consumed_ctrl_authorizations:set[str]=field(default_factory=set); consumed_ctrl_intents:set[str]=field(default_factory=set); proof_policy_version:str="lean-v1"; proof_impacted_selection:bool=True; proof_receipt_reuse:bool=True; proof_gate_timeout_seconds:int=120; proof_browser_freshness_seconds:int=86400; proof_provider_freshness_seconds:int=3600; proof_transient_retry_limit:int=1; use_goals:bool=True; request_store:RequestStore|None=field(default=None,repr=False,compare=False); request_lifecycle_ledger:object|None=field(default=None,repr=False,compare=False); request_continuity_enabled:bool=False; request_feed_sequence_floor:int=0; host_custody_receipts:dict[str,HostCustodyReceipt]=field(default_factory=dict); _topology_preflights:dict[str,object]=field(default_factory=dict,init=False,repr=False,compare=False); _runtime_acceptances:dict[str,_RuntimeAcceptanceRecord]=field(default_factory=dict,init=False,repr=False,compare=False); _gate_capability:object=field(default_factory=object,init=False,repr=False,compare=False); _review_capability:object=field(default_factory=object,init=False,repr=False,compare=False); _watchdog_capability:object=field(default_factory=object,init=False,repr=False,compare=False); _owner_context_capability:object=field(default_factory=object,init=False,repr=False,compare=False); _ctrl_authority_capability:object=field(default_factory=object,init=False,repr=False,compare=False); _custody_capability:object=field(default_factory=object,init=False,repr=False,compare=False)
+    scheduled_wakeups:dict[str,int]=field(default_factory=dict); ctrl_feed_messages:list[CtrlFeedMessage]=field(default_factory=list); ctrl_feed_cursor:int=0; ctrl_feed_superseded_by:dict[str,str]=field(default_factory=dict); ctrl_feed_events:dict[str,CtrlFeedEvent]=field(default_factory=dict); ctrl_feed_consumed_events:set[str]=field(default_factory=set); ctrl_authorizations:dict[str,UserCtrlAuthorization]=field(default_factory=dict); ctrl_materialization_intents:dict[str,CtrlMaterializationIntent]=field(default_factory=dict); consumed_ctrl_authorizations:set[str]=field(default_factory=set); consumed_ctrl_intents:set[str]=field(default_factory=set); proof_policy_version:str="lean-v1"; proof_impacted_selection:bool=True; proof_receipt_reuse:bool=True; proof_gate_timeout_seconds:int=120; proof_browser_freshness_seconds:int=86400; proof_provider_freshness_seconds:int=3600; proof_transient_retry_limit:int=1; use_goals:bool=True; task_lifetime_hours:int=4; request_store:RequestStore|None=field(default=None,repr=False,compare=False); request_lifecycle_ledger:object|None=field(default=None,repr=False,compare=False); request_continuity_enabled:bool=False; request_feed_sequence_floor:int=0; host_custody_receipts:dict[str,HostCustodyReceipt]=field(default_factory=dict); _topology_preflights:dict[str,object]=field(default_factory=dict,init=False,repr=False,compare=False); _runtime_acceptances:dict[str,_RuntimeAcceptanceRecord]=field(default_factory=dict,init=False,repr=False,compare=False); _gate_capability:object=field(default_factory=object,init=False,repr=False,compare=False); _review_capability:object=field(default_factory=object,init=False,repr=False,compare=False); _watchdog_capability:object=field(default_factory=object,init=False,repr=False,compare=False); _owner_context_capability:object=field(default_factory=object,init=False,repr=False,compare=False); _ctrl_authority_capability:object=field(default_factory=object,init=False,repr=False,compare=False); _custody_capability:object=field(default_factory=object,init=False,repr=False,compare=False)
     def __setattr__(self, name:str, value:object) -> None:
         object.__setattr__(self,name,value)
     @classmethod
     def from_config(cls, config: dict) -> "Swarm":
         monitoring=config["monitoring"]
         proof=config.get("proof",{})
-        return cls(lane_width=config["coordination"]["preferred_lane_width"], wip_limit=config["efficiency"]["doer_wip_limit"], mode=EfficiencyMode(config["efficiency"]["mode"]), automation_mode=config.get("automation",{}).get("mode","standard"), hive_enabled=config.get("hive",{}).get("enabled",True), heartbeat_stall_after=config["recovery"]["stall_after_updates"], task_event_limit=config.get("logging",{}).get("task_event_limit",64), default_review_horizon=monitoring.get("default_review_horizon_minutes",monitoring.get("heartbeat_minutes",30)), max_review_horizon=monitoring.get("max_review_horizon_minutes",60), direct_work_horizon=config["coordination"].get("ctrl_direct_horizon_minutes",20), proof_policy_version=proof.get("policy_version","lean-v1"), proof_impacted_selection=proof.get("impacted_selection",True), proof_receipt_reuse=proof.get("receipt_reuse",True), proof_gate_timeout_seconds=proof.get("gate_timeout_seconds",120), proof_browser_freshness_seconds=proof.get("browser_freshness_seconds",86400), proof_provider_freshness_seconds=proof.get("provider_freshness_seconds",3600), proof_transient_retry_limit=proof.get("transient_retry_limit",1), use_goals=config.get("goals",{}).get("use_goals",True))
+        return cls(lane_width=config["coordination"]["preferred_lane_width"], wip_limit=config["efficiency"]["doer_wip_limit"], mode=EfficiencyMode(config["efficiency"]["mode"]), automation_mode=config.get("automation",{}).get("mode","standard"), hive_enabled=config.get("hive",{}).get("enabled",True), heartbeat_stall_after=config["recovery"]["stall_after_updates"], task_event_limit=config.get("logging",{}).get("task_event_limit",64), default_review_horizon=monitoring.get("default_review_horizon_minutes",monitoring.get("heartbeat_minutes",30)), max_review_horizon=monitoring.get("max_review_horizon_minutes",60), direct_work_horizon=config["coordination"].get("ctrl_direct_horizon_minutes",20), proof_policy_version=proof.get("policy_version","lean-v1"), proof_impacted_selection=proof.get("impacted_selection",True), proof_receipt_reuse=proof.get("receipt_reuse",True), proof_gate_timeout_seconds=proof.get("gate_timeout_seconds",120), proof_browser_freshness_seconds=proof.get("browser_freshness_seconds",86400), proof_provider_freshness_seconds=proof.get("provider_freshness_seconds",3600), proof_transient_retry_limit=proof.get("transient_retry_limit",1), use_goals=config.get("goals",{}).get("use_goals",True), task_lifetime_hours=config.get("lifecycle",{}).get("task_lifetime_hours",4))
+
+    def _task_handoff_ledger(self):
+        ledger=self.request_lifecycle_ledger
+        if ledger is None or not all(hasattr(ledger,name) for name in ("append_task_handoff","project_task_handoffs")): raise InvariantError("task continuity requires the existing Ledger authority")
+        return ledger
+    @staticmethod
+    def _handoff_id(start:TaskStartReceipt) -> str:
+        digest=sha256(json.dumps((start.goal_id,start.task_id,start.owner_id,start.scope_version,start.lease_version,start.receipt_id),separators=(",",":")).encode()).hexdigest(); return f"handoff-{digest}"
+    def _handoff_event(self, current:dict|None, kind:str, *, handoff_id:str, goal_id:str, task_id:str, old_owner:str, new_owner:str|None, checkpoint_digest:str|None, scope_version:int, lease_version:int, receipt_id:str, observed_at_ms:int) -> dict:
+        event_id=f"handoff-event-{sha256(f'{handoff_id}:{kind}'.encode()).hexdigest()}"
+        return {"schema_version":1,"record_type":"TASK_HANDOFF","event_id":event_id,"dedupe_key":f"handoff-dedupe-{sha256(f'{handoff_id}:{kind}'.encode()).hexdigest()}","handoff_id":handoff_id,"parent_event_id":None if current is None else current["event_id"],"event_kind":kind,"goal_id":goal_id,"task_id":task_id,"old_owner":old_owner,"new_owner":new_owner,"checkpoint_digest":checkpoint_digest,"scope_version":scope_version,"lease_version":lease_version,"receipt_id":receipt_id,"observed_at_ms":observed_at_ms}
+    def task_handoff_due(self, actor:Role, task_id:str, start:TaskStartReceipt, *, now_ms:int) -> dict:
+        self._role(actor,{Role.CTRL,Role.LEAD}); task=self.tasks[task_id]
+        if (start.goal_id,start.task_id,start.owner_id,start.scope_version)!=(task.goal_id,task.id,task.owner,task.objective_version): raise InvariantError("task lifetime requires a bound current task start receipt")
+        if not isinstance(now_ms,int) or now_ms<start.started_at_ms: raise InvariantError("task lifetime cannot infer elapsed age without monotonic time")
+        deadline=start.started_at_ms+self.task_lifetime_hours*3_600_000
+        if now_ms<deadline: return {"state":"RUNNING","due_at_ms":deadline,"handoff_id":None}
+        ledger=self._task_handoff_ledger(); handoff_id=self._handoff_id(start); current=next((item for item in ledger.project_task_handoffs()["records"] if item["handoff_id"]==handoff_id),None)
+        if current is None:
+            ledger.append_task_handoff(self._handoff_event(None,"HANDOFF_DUE",handoff_id=handoff_id,goal_id=task.goal_id,task_id=task.id,old_owner=task.owner,new_owner=None,checkpoint_digest=None,scope_version=task.objective_version,lease_version=start.lease_version,receipt_id=start.receipt_id,observed_at_ms=deadline)); current=next(item for item in ledger.project_task_handoffs()["records"] if item["handoff_id"]==handoff_id)
+        task.handoff_active=current["event_kind"]!="CUSTODY_TRANSFERRED"; state="KEEP_OUT" if self._control_path_user_keep_out(task) else "NEEDS_AUTHORITY" if task.owner==Role.CTRL.value or task.ctrl_mode is CtrlMode.DIRECT else current["event_kind"]
+        return {"state":state,"due_at_ms":deadline,"handoff_id":handoff_id,"event_id":current["event_id"],"owner":task.owner}
+    def offer_task_handoff(self, actor:Role, handoff_id:str, *, new_owner:str, checkpoint_digest:str, observed_at_ms:int) -> dict:
+        self._role(actor,{Role.CTRL,Role.LEAD}); ledger=self._task_handoff_ledger(); current=next((item for item in ledger.project_task_handoffs()["records"] if item["handoff_id"]==handoff_id),None)
+        if current is None or current["event_kind"]!="HANDOFF_DUE": raise InvariantError("handoff offer requires one current due event")
+        task=self.tasks.get(current["task_id"]); worker=self.workers.get(new_owner)
+        if task is None or task.owner!=current["old_owner"] or task.objective_version!=current["scope_version"]: raise InvariantError("handoff offer conflicts with current task custody")
+        if self._control_path_user_keep_out(task): raise InvariantError("KEEP_OUT: user custody keeps the due handoff open")
+        if task.owner==Role.CTRL.value or task.ctrl_mode is CtrlMode.DIRECT: raise InvariantError("NEEDS_AUTHORITY: plugin runtime cannot create or authorize a successor CTRL")
+        if worker is None or worker.state is WorkerState.RETIRED or new_owner==task.owner: raise InvariantError("handoff target must be a distinct existing available owner")
+        checkpoint=_require_digest(checkpoint_digest,"handoff checkpoint"); payload=self._handoff_event(current,"HANDOFF_OFFERED",handoff_id=handoff_id,goal_id=task.goal_id,task_id=task.id,old_owner=task.owner,new_owner=new_owner,checkpoint_digest=checkpoint,scope_version=task.objective_version,lease_version=current["lease_version"],receipt_id=f"checkpoint-{checkpoint}",observed_at_ms=observed_at_ms); return ledger.append_task_handoff(payload)
+    def acknowledge_task_handoff(self, actor:Role, handoff_id:str, *, new_owner:str, checkpoint_digest:str, host_task_receipt:str, observed_at_ms:int) -> dict:
+        self._role(actor,{Role.DOER,Role.LEAD}); ledger=self._task_handoff_ledger(); current=next((item for item in ledger.project_task_handoffs()["records"] if item["handoff_id"]==handoff_id),None)
+        if current is None or current["event_kind"] not in {"HANDOFF_OFFERED","HANDOFF_ACKNOWLEDGED"}: raise InvariantError("handoff acknowledgement requires one current offer")
+        if current["event_kind"]=="HANDOFF_ACKNOWLEDGED":
+            expected=(current["new_owner"],current["checkpoint_digest"],current["receipt_id"],current["observed_at_ms"])
+            if expected!=(new_owner,checkpoint_digest,host_task_receipt,observed_at_ms): raise InvariantError("handoff acknowledgement replay conflicts with retained identity")
+            return {"status":"unchanged","cursor":{"event_seq":current["event_seq"],"event_id":current["event_id"],"event_digest":current["event_digest"]},"event_digest":current["event_digest"]}
+        task=self.tasks.get(current["task_id"]); worker=self.workers.get(new_owner)
+        if task is None or task.owner!=current["old_owner"] or worker is None or worker.state is WorkerState.RETIRED or current["new_owner"]!=new_owner or current["checkpoint_digest"]!=checkpoint_digest: raise InvariantError("handoff acknowledgement conflicts with task, owner, or checkpoint")
+        payload=self._handoff_event(current,"HANDOFF_ACKNOWLEDGED",handoff_id=handoff_id,goal_id=current["goal_id"],task_id=current["task_id"],old_owner=current["old_owner"],new_owner=new_owner,checkpoint_digest=checkpoint_digest,scope_version=current["scope_version"],lease_version=current["lease_version"],receipt_id=host_task_receipt,observed_at_ms=observed_at_ms); return ledger.append_task_handoff(payload)
+    def transfer_task_custody(self, actor:Role, handoff_id:str, *, observed_at_ms:int) -> dict:
+        self._role(actor,{Role.CTRL,Role.LEAD}); ledger=self._task_handoff_ledger(); current=next((item for item in ledger.project_task_handoffs()["records"] if item["handoff_id"]==handoff_id),None)
+        if current is None or current["event_kind"] not in {"HANDOFF_ACKNOWLEDGED","CUSTODY_TRANSFERRED"}: raise InvariantError("custody transfer requires a current acknowledged handoff")
+        task=self.tasks.get(current["task_id"])
+        if task is None: raise InvariantError("custody transfer task is unavailable")
+        if current["event_kind"]=="HANDOFF_ACKNOWLEDGED":
+            if task.owner!=current["old_owner"]: raise InvariantError("custody changed before retained acknowledgement")
+            payload=self._handoff_event(current,"CUSTODY_TRANSFERRED",handoff_id=handoff_id,goal_id=current["goal_id"],task_id=current["task_id"],old_owner=current["old_owner"],new_owner=current["new_owner"],checkpoint_digest=current["checkpoint_digest"],scope_version=current["scope_version"],lease_version=current["lease_version"],receipt_id=current["receipt_id"],observed_at_ms=observed_at_ms); result=ledger.append_task_handoff(payload); current=next(item for item in ledger.project_task_handoffs()["records"] if item["handoff_id"]==handoff_id)
+        else: result={"status":"unchanged","event_digest":current["event_digest"]}
+        old=self.workers.get(current["old_owner"]); new=self.workers.get(current["new_owner"])
+        if new is None or new.state is WorkerState.RETIRED: raise InvariantError("retained custody transfer target is no longer available")
+        if task.owner==current["old_owner"]:
+            if old: old.task_ids.discard(task.id)
+            new.task_ids.add(task.id); task.owner=current["new_owner"]
+        elif task.owner!=current["new_owner"]: raise InvariantError("retained custody transfer conflicts with live task owner")
+        task.handoff_active=False; return {**result,"owner":task.owner,"lease_version":current["lease_version"]+1}
+    def reconcile_task_handoffs(self) -> tuple[str,...]:
+        ledger=self._task_handoff_ledger(); reconciled=[]
+        for current in ledger.project_task_handoffs()["records"]:
+            task=self.tasks.get(current["task_id"])
+            if task is None: continue
+            task.handoff_active=current["event_kind"]!="CUSTODY_TRANSFERRED"
+            if current["event_kind"]=="CUSTODY_TRANSFERRED" and task.owner==current["old_owner"]:
+                new=self.workers.get(current["new_owner"])
+                if new is None or new.state is WorkerState.RETIRED: raise InvariantError("restart cannot restore transferred custody without its retained owner")
+                old=self.workers.get(current["old_owner"])
+                if old: old.task_ids.discard(task.id)
+                new.task_ids.add(task.id); task.owner=current["new_owner"]; task.handoff_active=False; reconciled.append(task.id)
+        return tuple(reconciled)
 
     def automation_commit(self, checkpoint:"StableCheckpoint", *, attributable_paths:tuple[str,...]) -> "AutomationDecision":
         from .automation import commit_decision

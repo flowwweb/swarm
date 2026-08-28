@@ -144,6 +144,7 @@ Configuration cannot make an unsafe or hidden coordination path valid:
 | `recovery.max_attempts` | Legacy owner recovery budget; WATCHDOG never consumes it | exactly 1; non-disableable |
 | `recovery.stall_after_updates` | Unchanged owner work updates before a lane stalls; heartbeat observations excluded | 1-5 |
 | `lifecycle.pin_created_tasks` | Retained compatibility signal only; it never authorizes automatic pinning. New tasks remain `pinned: false` with `placement: placement_unverified`; only the host may consume an exact explicit-user pin request, and any claimed placement requires a disclosed host-owned placement receipt | boolean; default true |
+| `lifecycle.task_lifetime_hours` | Single writable task-continuity horizon. Expiry makes a handoff due at a safe immutable checkpoint; it does not transfer custody or authorize a successor CTRL | integer 1-720; default 4 |
 | `feedback.enabled` | Make the on-demand SWARM feedback workflow available | boolean; default true |
 | `feedback.include_diagnostics` | Include the privacy-safe SWARM diagnostic snapshot | boolean; default true |
 | `feedback.prompt_on_close` | Offer one optional feedback prompt after an accepted portfolio | boolean; default false |

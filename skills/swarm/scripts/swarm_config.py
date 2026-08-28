@@ -196,6 +196,7 @@ DEFAULTS: dict[str, Any] = {
     },
     "lifecycle": {
         "pin_created_tasks": True,
+        "task_lifetime_hours": 4,
     },
     "hygiene": {"no_review_archive_delay": 0, "low_review_retention": 7, "high_review_retention": 30, "stale_task_archive_delay": 1, "completed_task_retention": 30, "pinned_item_policy": "manual"},
     "feedback": {
@@ -692,6 +693,7 @@ def validate(raw: dict[str, Any]) -> None:
     lifecycle = _expect_table(raw, "lifecycle")
     _expect_keys(lifecycle, set(DEFAULTS["lifecycle"]), "lifecycle")
     _boolean(lifecycle, "pin_created_tasks", "lifecycle")
+    _bounded_int(lifecycle, "task_lifetime_hours", 1, 720, "lifecycle")
 
     hygiene = _expect_table(raw, "hygiene")
     _expect_keys(hygiene, set(DEFAULTS["hygiene"]), "hygiene")

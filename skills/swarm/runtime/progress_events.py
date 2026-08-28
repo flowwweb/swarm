@@ -91,6 +91,12 @@ REQUEST_RECORD_FIELDS = frozenset({
 })
 REQUEST_TRANSITION_FIELDS = frozenset({"state", "kind", "cursor"})
 REQUEST_CURSOR_FIELDS = frozenset({"event_receipt", "message_id", "surface_receipt", "feed_sequence"})
+TASK_HANDOFF_EVENT_FIELDS = frozenset({
+    "schema_version", "record_type", "event_id", "dedupe_key", "handoff_id",
+    "parent_event_id", "event_kind", "goal_id", "task_id", "old_owner",
+    "new_owner", "checkpoint_digest", "scope_version", "lease_version",
+    "receipt_id", "observed_at_ms",
+})
 
 
 class ProgressLifecycle(StrEnum):
@@ -158,6 +164,13 @@ class ProgressEventKind(StrEnum):
     ROLE_ASSIGNMENT_BOUND = "ROLE_ASSIGNMENT_BOUND"
 
 
+class TaskHandoffEventKind(StrEnum):
+    HANDOFF_DUE = "HANDOFF_DUE"
+    HANDOFF_OFFERED = "HANDOFF_OFFERED"
+    HANDOFF_ACKNOWLEDGED = "HANDOFF_ACKNOWLEDGED"
+    CUSTODY_TRANSFERRED = "CUSTODY_TRANSFERRED"
+
+
 PROGRESS_FLAGS = frozenset({
     "warning", "blocked", "waiting_external", "stale", "conflicted",
     "rework", "unverified", "proof", "eta_changed",
@@ -220,6 +233,50 @@ def _request_lifecycle_digest(payload: Mapping[str, Any], *, semantic: bool = Fa
     if semantic:
         value.pop("event_id", None)
     return hashlib.sha256(json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
+
+
+def _task_handoff_digest(payload: Mapping[str, Any], *, semantic: bool = False) -> str:
+    value = dict(payload)
+    if semantic:
+        value.pop("event_id", None)
+    return hashlib.sha256(json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
+
+
+def validate_task_handoff_event(payload: Any) -> dict[str, Any]:
+    if not isinstance(payload, dict):
+        raise ProgressEventError("task handoff event must be an object")
+    _exact_fields(payload, TASK_HANDOFF_EVENT_FIELDS, "task handoff event")
+    if payload.get("schema_version") != 1 or payload.get("record_type") != "TASK_HANDOFF":
+        raise ProgressEventError("task handoff event requires schema v1 and typed record")
+    for key in ("event_id", "dedupe_key", "handoff_id", "goal_id", "task_id", "old_owner", "receipt_id"):
+        _safe_id(payload.get(key), key)
+    parent_event_id = _optional_id(payload.get("parent_event_id"), "parent_event_id")
+    new_owner = _optional_id(payload.get("new_owner"), "new_owner")
+    checkpoint_digest = payload.get("checkpoint_digest")
+    if checkpoint_digest is not None and (
+        not isinstance(checkpoint_digest, str)
+        or len(checkpoint_digest) != 64
+        or any(character not in "0123456789abcdef" for character in checkpoint_digest)
+    ):
+        raise ProgressEventError("task handoff checkpoint_digest must be SHA-256")
+    _positive_int(payload.get("scope_version"), "scope_version")
+    _positive_int(payload.get("lease_version"), "lease_version")
+    _positive_int(payload.get("observed_at_ms"), "observed_at_ms", allow_zero=True)
+    try:
+        event_kind = TaskHandoffEventKind(str(payload.get("event_kind") or ""))
+    except ValueError as error:
+        raise ProgressEventError("task handoff event kind is invalid") from error
+    if event_kind is TaskHandoffEventKind.HANDOFF_DUE:
+        if parent_event_id is not None or new_owner is not None or checkpoint_digest is not None:
+            raise ProgressEventError("HANDOFF_DUE cannot claim a target owner or checkpoint")
+    elif parent_event_id is None or new_owner is None or checkpoint_digest is None:
+        raise ProgressEventError("handoff transition requires its parent, target owner, and checkpoint")
+    if new_owner == payload["old_owner"]:
+        raise ProgressEventError("task handoff requires a distinct target owner")
+    expected_ack = f"host:thread:{new_owner}:{payload['task_id']}:{payload['lease_version']}"
+    if event_kind is TaskHandoffEventKind.HANDOFF_ACKNOWLEDGED and payload["receipt_id"] != expected_ack:
+        raise ProgressEventError("handoff acknowledgement must bind the host target owner, task, and lease")
+    return dict(payload)
 
 
 def validate_request_lifecycle_event(payload: Any) -> dict[str, Any]:
@@ -772,6 +829,10 @@ def _empty_progress_projection() -> dict[str, Any]:
         "request_event_digests": {},
         "request_dedupe_digests": {},
         "request_lifecycles": {},
+        "handoff_event_digests": {},
+        "handoff_dedupe_digests": {},
+        "task_handoffs": {},
+        "task_handoff_leases": {},
     }
 
 _LIFECYCLE_TRANSITIONS: dict[ProgressLifecycle, frozenset[ProgressLifecycle]] = {
@@ -804,6 +865,12 @@ _REQUEST_LIFECYCLE_TRANSITIONS: dict[LedgerLifecycleState, frozenset[LedgerLifec
     LedgerLifecycleState.STALLED: frozenset({LedgerLifecycleState.RUNNING, LedgerLifecycleState.RETRYING, LedgerLifecycleState.WAITING, LedgerLifecycleState.COMPLETE, LedgerLifecycleState.NEEDS_AUTHORITY, LedgerLifecycleState.BLOCKED}),
     LedgerLifecycleState.BLOCKED: frozenset({LedgerLifecycleState.BLOCKED}),
     LedgerLifecycleState.COMPLETE: frozenset({LedgerLifecycleState.COMPLETE}),
+}
+
+_TASK_HANDOFF_TRANSITIONS: dict[TaskHandoffEventKind, TaskHandoffEventKind] = {
+    TaskHandoffEventKind.HANDOFF_DUE: TaskHandoffEventKind.HANDOFF_OFFERED,
+    TaskHandoffEventKind.HANDOFF_OFFERED: TaskHandoffEventKind.HANDOFF_ACKNOWLEDGED,
+    TaskHandoffEventKind.HANDOFF_ACKNOWLEDGED: TaskHandoffEventKind.CUSTODY_TRANSFERRED,
 }
 
 
@@ -1010,6 +1077,56 @@ class ProgressLedger:
         }
 
     @staticmethod
+    def _apply_task_handoff(projection: dict[str, Any], payload: dict[str, Any], event_seq: int) -> None:
+        event_digest = _task_handoff_digest(payload)
+        semantic_digest = _task_handoff_digest(payload, semantic=True)
+        event_id, dedupe_key = payload["event_id"], payload["dedupe_key"]
+        retained_event = projection["handoff_event_digests"].get(event_id)
+        retained_dedupe = projection["handoff_dedupe_digests"].get(dedupe_key)
+        if retained_event is not None:
+            if retained_event != event_digest:
+                raise ProgressEventError("task handoff event identity conflicts with retained digest")
+            return
+        if retained_dedupe is not None:
+            if retained_dedupe != semantic_digest:
+                raise ProgressEventError("task handoff dedupe identity conflicts with retained content")
+            return
+        handoff_id = payload["handoff_id"]
+        event_kind = TaskHandoffEventKind(payload["event_kind"])
+        current = projection["task_handoffs"].get(handoff_id)
+        lease_key = f"{payload['task_id']}:{payload['lease_version']}"
+        if current is None:
+            if event_kind is not TaskHandoffEventKind.HANDOFF_DUE:
+                raise ProgressEventError("task handoff must begin with HANDOFF_DUE")
+            retained_handoff = projection["task_handoff_leases"].get(lease_key)
+            if retained_handoff is not None and retained_handoff != handoff_id:
+                raise ProgressEventError("task lease already binds a different handoff")
+        else:
+            if payload["parent_event_id"] != current["event_id"]:
+                raise ProgressEventError("task handoff parent must bind the current retained event")
+            expected = _TASK_HANDOFF_TRANSITIONS.get(TaskHandoffEventKind(current["event_kind"]))
+            if event_kind is not expected:
+                raise ProgressEventError("task handoff transition is invalid")
+            immutable = ("goal_id", "task_id", "old_owner", "scope_version", "lease_version")
+            if any(payload[key] != current[key] for key in immutable):
+                raise ProgressEventError("task handoff immutable binding conflicts")
+            if current["new_owner"] is not None and payload["new_owner"] != current["new_owner"]:
+                raise ProgressEventError("task handoff target owner conflicts")
+            if current["checkpoint_digest"] is not None and payload["checkpoint_digest"] != current["checkpoint_digest"]:
+                raise ProgressEventError("task handoff checkpoint conflicts")
+            if payload["observed_at_ms"] < current["observed_at_ms"]:
+                raise ProgressEventError("task handoff observation cannot regress")
+        projection["handoff_event_digests"][event_id] = event_digest
+        projection["handoff_dedupe_digests"][dedupe_key] = semantic_digest
+        projection["task_handoff_leases"][lease_key] = handoff_id
+        projection["task_handoffs"][handoff_id] = {
+            **payload,
+            "event_digest": event_digest,
+            "event_seq": event_seq,
+        }
+        projection["cursor"] = {"event_seq": event_seq, "event_id": event_id, "event_digest": event_digest}
+
+    @staticmethod
     def _apply(projection: dict[str, Any], event: ProgressMaterialEvent, event_seq: int) -> None:
         if event.schema_version == 2:
             ProgressLedger._apply_topology_record(projection, event, event_seq)
@@ -1137,6 +1254,12 @@ class ProgressLedger:
                 if record["event_digest"] != event_digest:
                     raise ProgressEventError("request lifecycle ledger event digest mismatch")
                 self._apply_request_lifecycle(projection, event, expected_seq)
+            elif isinstance(raw_event, dict) and raw_event.get("record_type") == "TASK_HANDOFF":
+                event = validate_task_handoff_event(raw_event)
+                event_digest = _task_handoff_digest(event)
+                if record["event_digest"] != event_digest:
+                    raise ProgressEventError("task handoff ledger event digest mismatch")
+                self._apply_task_handoff(projection, event, expected_seq)
             else:
                 event = validate_progress_material_event(raw_event)
                 if record["event_digest"] != event.digest:
@@ -1236,6 +1359,42 @@ class ProgressLedger:
         with self._condition:
             self._condition.notify_all()
         return {"status": "appended", "cursor": {"event_seq": event_seq, "event_id": event["event_id"], "event_digest": event_digest}, "event_digest": event_digest, "bytes": len(line)}
+
+    def append_task_handoff(self, payload: Mapping[str, Any]) -> dict[str, Any]:
+        event = validate_task_handoff_event(dict(payload))
+        event_digest = _task_handoff_digest(event)
+        semantic_digest = _task_handoff_digest(event, semantic=True)
+        with self._state.locked():
+            projection, records = self._replay_unlocked()
+            retained_event = projection["handoff_event_digests"].get(event["event_id"])
+            if retained_event is not None:
+                if retained_event != event_digest:
+                    raise ProgressEventError("task handoff event identity conflicts with retained digest")
+                retained = next(item for item in records if item["event_digest"] == event_digest)
+                return {"status": "unchanged", "cursor": {"event_seq": retained["event_seq"], "event_id": event["event_id"], "event_digest": event_digest}, "event_digest": event_digest}
+            retained_dedupe = projection["handoff_dedupe_digests"].get(event["dedupe_key"])
+            if retained_dedupe is not None:
+                if retained_dedupe != semantic_digest:
+                    raise ProgressEventError("task handoff dedupe identity conflicts with retained content")
+                retained = next(item for item in records if isinstance(item["event"], dict) and item["event"].get("dedupe_key") == event["dedupe_key"])
+                return {"status": "unchanged", "cursor": {"event_seq": retained["event_seq"], "event_id": retained["event"]["event_id"], "event_digest": retained["event_digest"]}, "event_digest": retained["event_digest"]}
+            event_seq = len(records) + 1
+            self._apply_task_handoff(projection, event, event_seq)
+            record = {"event_seq": event_seq, "event_digest": event_digest, "event": event}
+            line = json.dumps(record, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8") + b"\n"
+            self._state.path.parent.mkdir(parents=True, exist_ok=True)
+            with self._state.path.open("ab") as handle:
+                handle.write(line); handle.flush(); os.fsync(handle.fileno())
+            self._write_projection_unlocked(projection)
+        with self._condition:
+            self._condition.notify_all()
+        return {"status": "appended", "cursor": {"event_seq": event_seq, "event_id": event["event_id"], "event_digest": event_digest}, "event_digest": event_digest, "bytes": len(line)}
+
+    def project_task_handoffs(self) -> dict[str, Any]:
+        with self._state.locked():
+            projection, _ = self._replay_unlocked()
+        rows = sorted(projection["task_handoffs"].values(), key=lambda item: int(item["event_seq"]))
+        return {"records": json.loads(json.dumps(rows, sort_keys=True)), "event_count": len(projection["handoff_event_digests"]), "cursor": projection["cursor"]}
 
     def project_request_lifecycles(self) -> dict[str, Any]:
         with self._state.locked():
@@ -1378,7 +1537,7 @@ class ProgressLedger:
         events: list[tuple[int, ProgressMaterialEvent]] = []
         conflicts = 0
         for record in records:
-            if isinstance(record["event"], dict) and record["event"].get("record_type") == "REQUEST_LIFECYCLE":
+            if isinstance(record["event"], dict) and record["event"].get("record_type") in {"REQUEST_LIFECYCLE", "TASK_HANDOFF"}:
                 continue
             event = validate_progress_material_event(record["event"])
             if event.project_id != project_id or event.scope_version != scope_version or event.block_id not in block_ids:
@@ -1645,7 +1804,7 @@ class ProgressLedger:
 
         known: list[tuple[int, ProgressMaterialEvent]] = []
         for record in records[:cursor]:
-            if isinstance(record["event"], dict) and record["event"].get("record_type") == "REQUEST_LIFECYCLE":
+            if isinstance(record["event"], dict) and record["event"].get("record_type") in {"REQUEST_LIFECYCLE", "TASK_HANDOFF"}:
                 continue
             event = validate_progress_material_event(record["event"])
             if event.project_id == project_id and event.ctrl_id == ctrl_id:
