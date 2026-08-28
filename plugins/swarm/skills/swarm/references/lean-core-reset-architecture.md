@@ -28,6 +28,7 @@ The supplied prior payload is treated as an input binding, not as a locally reco
 | Area | Decision | Preserved value and deletion boundary |
 | --- | --- | --- |
 | One CTRL | KEEP | One visible accountable control task owns objective, custody, routing, and acceptance coordination. |
+| Bounded LEAD/DOER topology | KEEP, bounded | One LEAD owns one mutable lane, integration, gates, and completion. A DOER is optional bounded capacity inside that LEAD for one named artifact, and is admitted only when a measured bottleneck or ready critical-path surface warrants it. Admission binds a named owner, mutable surface, artifact and proof plan, dependency readiness, shared-surface check, and accepting route. Missing admission evidence fails closed. Do not recruit for headcount or flatten work into a crowd; independent REVIEW remains separate from production and integration custody. |
 | 24 professions and skills | KEEP, lazy | The library remains available; only a selected role card is injected when a ready artifact requires it. |
 | Ledger | KEEP and make canonical | It is the only authority that accepts lifecycle/material transitions and proof-bearing outcome facts. |
 | Offered -> acknowledged -> admitted handoff | KEEP | Each handoff is one immutable lineage-bound transaction; duplicate replay returns the original receipt. |
@@ -46,18 +47,15 @@ The supplied prior payload is treated as an input binding, not as a locally reco
 
 ## Corrected lifecycle and custody state machine
 
-The hot-path lifecycle states are:
+INTAKE and INBOX_RECEIVED are transport events, not durable lifecycle states. The seven durable lifecycle states are:
 
-INTAKE -> OFFERED -> ACKNOWLEDGED -> ADMITTED -> RUNNING -> RESULT_PENDING -> REVIEW_PENDING -> COMPLETE
+OFFERED -> ACKNOWLEDGED -> ADMITTED -> RUNNING -> RESULT_PENDING -> REVIEW_PENDING -> COMPLETE
 
-Recovery and custody guards are nonterminal branches from any open state:
+The six recovery and custody guards are nonterminal branches from any open state:
 
-RUNNING or RESULT_PENDING -> RETRYING
-RUNNING or RESULT_PENDING -> WAITING
-RUNNING or RESULT_PENDING -> USER_PAUSED
-RUNNING or RESULT_PENDING -> KEEP_OUT
-RUNNING or RESULT_PENDING -> NEEDS_AUTHORITY
-RUNNING or RESULT_PENDING -> STALLED
+RETRYING, WAITING, USER_PAUSED, KEEP_OUT, NEEDS_AUTHORITY, STALLED
+
+BLOCKED is the sole terminal guard. The durable vocabulary is therefore exactly 14 states: seven lifecycle states, six nonterminal guards, and BLOCKED. Transport receipt names do not consume or extend this budget.
 
 A valid outcome/proof receipt returns an open task to RESULT_PENDING or REVIEW_PENDING; only an independent accepted proof transition permits COMPLETE. An invalid, empty, timeout, 400, missing-thread, stale-cursor, or transport result is evidence of failure or uncertainty, never progress.
 
@@ -145,7 +143,7 @@ These are testable acceptance budgets for the plugin/in-context harness. They do
 | Token accounting | Host receipt fields input_tokens and output_tokens for the same dispatch generation; tokenizer name/version is recorded when present | No token estimate is accepted. Missing fields are UNKNOWN. A token budget warning is visible but cannot raise progress or alter model/provider/tier automatically. |
 | Material event | UTF-8 byte length of one canonical JSONL ProgressMaterialEvent after canonical serialization | At most 16,384 bytes, with a target median below 2,048 bytes and p95 below 4,096 bytes for the bounded fixture. Reject before append; never truncate. |
 | Schema shape | Schema version, exact field allowlist, and count of serialized keys in each hot event/envelope | No unversioned event; no unknown keys; maximum 40 top-level event keys and 16 nested handoff fields. Fail closed before mutation. |
-| Runtime state vocabulary | Count of the named hot-path lifecycle states in the state enum; custody guards are counted, not hidden | At most 14 states. New states require a replacement/deletion decision and contract update, not incidental growth. |
+| Runtime state vocabulary | Count of named durable lifecycle states and custody/recovery guards; transport events are excluded | Exactly 14: seven lifecycle states, six nonterminal guards, and terminal BLOCKED. INTAKE and INBOX_RECEIVED remain transport events. A new state must replace an existing state through a reviewed contract change. |
 | Writable authorities | Count of surfaces that can write accepted lifecycle state | Exactly one: Ledger. RequestStore may write inbox/ack transport facts; config may write settings; neither can accept lifecycle state. |
 | Lifetime settings | Count of writable keys under continuity | Exactly one: task_lifetime_hours. Legacy keys are migration inputs only and are removed from effective config. |
 | Model calls | Calls attributable to one admitted attempt, and calls with reason progress/replay/ack | At most one task-execution call per admitted attempt; zero calls solely for progress, replay, acknowledgement, watchdog, or narration. |
@@ -162,6 +160,10 @@ Contrasting acceptance contracts:
 - 16,384-byte event accepted and 16,385-byte event rejected before append;
 - unknown schema key rejected before mutation;
 - one duplicate replay does not add a model call or event;
+- INTAKE and INBOX_RECEIVED never appear as durable lifecycle state;
+- the durable vocabulary contains exactly seven lifecycle states, six nonterminal guards, and terminal BLOCKED;
+- a DOER admission without every named admission binding fails before custody or mutable-surface allocation;
+- independent REVIEW cannot be admitted as producer capacity inside the LEAD lane;
 - a progress heartbeat with no material event records no progress;
 - high-frequency polling configuration is rejected or moved to localhost;
 - a new role card is loaded on demand without materializing all 24 roles;
