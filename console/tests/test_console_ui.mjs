@@ -72,7 +72,7 @@ assert.match(app, /event\.key === "Tab" && \$\("\.app-shell"\)\.classList\.conta
 assert.match(app, /drawer\.inert = !expanded/);
 assert.match(app, /event\.key === "Escape" && \$\("\.app-shell"\)\.classList\.contains\("is-drawer-open"\)/);
 
-for (const label of ["Current work", "Latest updates", "Recent images", "Tokens · 1d", "Completed", "Dashboard", "Where changes apply", "Manage", "Advanced settings"]) {
+for (const label of ["Current work", "Latest updates", "Recent images", "Tokens · 1d", "Where changes apply", "Manage", "Advanced settings"]) {
   assert.match(indexHtml + app, new RegExp(label));
 }
 assert.match(app, /\/api\/usage-history\?/);
@@ -134,12 +134,16 @@ assert.match(app, /All tentacles moving\./);
 assert.match(app, /notificationLastSeen/);
 assert.doesNotMatch(app, /notification.*(?:POST|PUT|PATCH)/i);
 assert.match(indexHtml, /id="overview-monitoring-health-state"/);
-assert.match(indexHtml, /id="view-dashboard"/);
 assert.match(app, /function renderOverviewHealth\(nodes\)/);
-assert.match(app, /function renderDashboard\(\)/);
 assert.match(app, /function routeView\(\)/);
 assert.match(app, /\["overview", "agents", "review", "assets", "settings"\]/);
 assert.doesNotMatch(app.slice(app.indexOf("function routeView"), app.indexOf("function setView")), /dashboard|hierarchy|kanban|diagnostics/);
+for (const retiredView of ["dashboard", "hierarchy", "kanban", "diagnostics"]) {
+  assert.doesNotMatch(indexHtml, new RegExp(`id="view-${retiredView}"`));
+}
+for (const retiredRenderer of ["renderDashboard", "renderHierarchy", "renderKanban", "renderDiagnostics", "renderMetrics", "renderTable", "renderProof", "renderBurnRate", "renderOverviewDiagnostics"]) {
+  assert.doesNotMatch(app, new RegExp(`function ${retiredRenderer}\\(`));
+}
 assert.match(app, /renderOverviewProjectCards\(nodes\)/);
 assert.match(app, /function authoritativeProgress\(projectId, ctrlId = ""\)/);
 assert.match(app, /function progressPresentation\(summary\)/);
@@ -184,22 +188,17 @@ assert.equal(fixture.overview.progress.controllers.ctrl.progress.percent, 80);
 assert.equal(fixture.overview.progress.controllers.ctrl.progress.source, "material_receipts");
 assert.equal(fixture.overview.navigation.projects[0].project_eligibility, "swarm_ctrl");
 assert.match(css, /\.overview-project-card/);
-assert.match(indexHtml, /id="task-table"/);
-assert.match(indexHtml, /id="proof-feed"/);
-assert.match(indexHtml, /id="burn-chart"/);
-assert.match(indexHtml, /id="overview-diagnostics-heading"/);
-assert.match(app, /renderMetrics\(nodes\);\s*renderTable\(nodes\);\s*renderProof\(nodes\);\s*renderBurnRate\(\);\s*renderOverviewDiagnostics\(\);/);
-assert.doesNotMatch(app, /renderDashboardMonitoringCards/);
+assert.doesNotMatch(indexHtml, /id="(?:task-table|proof-feed|burn-chart|overview-diagnostics-heading)"/);
 assert.match(app, /Needs attention/);
 assert.match(app, /function attentionStatus\(node\)/);
 assert.match(app, /\[node\?\.status, node\?\.eta\?\.status\]/);
 assert.match(app, /tasks\.find\(needsAttention\)/);
-assert.match(app, /const stalled = needsAttention\(current\)/);
 assert.match(app, /project_id: request\.projectId/);
 assert.match(app, /ctrl_id: request\.ctrlId/);
 assert.match(app, /setInterval\(reportPresence, 60_000\)/);
 assert.match(app, /async function refreshMonitoring/);
-assert.match(app, /renderDashboard\(\);\s*renderHierarchy\(\);/);
+assert.match(app, /function renderAllViews\(\) \{ renderOverview\(\); renderAgents\(\); renderReview\(\); renderAssets\(\); renderSettings\(\); \}/);
+assert.doesNotMatch(app, /\/api\/diagnostics\/history/);
 assert.match(app, /api\("\/api\/overview", \{ timeoutMs: 15_000 \}\)/);
 assert.match(indexHtml, /id="data-status-title">Connecting</);
 assert.match(indexHtml, /id="data-status-note">Waiting for data</);
@@ -232,15 +231,15 @@ const evidenceScopeSource = app.slice(app.indexOf("function scopedProofItems"), 
 assert.ok(evidenceScopeSource.indexOf("if (state.ctrlId)") < evidenceScopeSource.indexOf('if (state.projectId !== "all"'));
 assert.match(app, /function selectedProgressProjectId\(\) \{\s*if \(state\.ctrlId\) return "";/);
 assert.doesNotMatch(app, /catch \{ state\.proof = \[\]; \}/);
-assert.match(app, /const previews = images\.slice\(0, 4\)/);
+assert.match(app, /renderEvidenceGallery\(nodes, "#overview-evidence-gallery", "#overview-evidence-note", 4\)/);
 assert.doesNotMatch(app, /figcaption/);
 assert.match(css, /\.evidence-lightbox/);
-assert.match(css, /\.proof-tile/);
+assert.match(css, /\.evidence-gallery-item/);
 assert.match(app, /subagentDescendants\(card\.ctrlId, tree\)/);
 assert.match(app, /params\.set\("project_id", projectId\)/);
 assert.doesNotMatch(app, /params\.set\("task_id", state\.ctrlId\)/);
 assert.match(app, /\["blocked", "at_risk", "stalled", "critical"\]/);
-assert.match(app, /const nodes = scopedNodes\(\)\.filter\(\(node\) => !isSubagent\(node\)\);/);
+assert.match(app, /const lanes = nodes\.filter\(\(node\) => !isSubagent\(node\)\);/);
 assert.doesNotMatch(app, /Number\(project\.active_threads \?\? project\.active\) > 0/);
 assert.match(app, /function configEditable\(key\)/);
 assert.match(app, /id="settings-scope"/);
@@ -270,10 +269,7 @@ assert.match(app, /last_material_heartbeat_at_ms/);
 assert.match(app, /skillsError/);
 assert.match(app, /Try again to refresh this scope/);
 assert.match(app, /refreshSkills\(\)\]\)\.then\(renderAllViews\)/);
-assert.match(app, /latest\.freshness \|\| state\.diagnostics\?\.freshness/);
-assert.match(app, /availability\.unavailable/);
-assert.match(app, /No independent metrics available/);
-assert.doesNotMatch(app, /\["Health", humanize\(latest\.health_state/);
+assert.match(app, /Raw host logs are not projected into project scope/);
 assert.match(app, /\.replace\(\/\\blocalhost\\b\/gi, "console"\)/);
 assert.match(indexHtml, /id="view-agents"[\s\S]*?Active swarm[\s\S]*?Role library/);
 assert.match(indexHtml, /id="agents-panel-active"[\s\S]*?id="agents-panel-library"/);
@@ -306,6 +302,13 @@ assert.doesNotMatch(app, /ROLE_MANIFEST_CREATE|ROLE_MANIFEST_REVISE|ROLE_MANIFES
 assert.match(css, /\.role-avatar/);
 assert.match(css, /\.role-library-grid/);
 assert.match(css, /\.role-editor::backdrop/);
+assert.match(app, /<span class="role-avatar"[\s\S]*?<use href="#lucide-circle-user-round"><\/use><\/svg>/);
+assert.doesNotMatch(css, /\.role-avatar i::before|\.role-avatar i::after/);
+assert.match(app, /aria-label="Inspect ' \+ escapeHTML\(role\.name\)/);
+assert.match(app, /Read-only until the server accepts the role-manifest command contract/);
+assert.match(app, /const items = state\.overview\?\.attention_items \|\| \[\]/);
+assert.doesNotMatch(app, /verifiedYieldProjection\(\)\?\.attention_items/);
+assert.doesNotMatch(indexHtml + app + css, /--legacy-browser|mockup|prototype reference/i);
 assert.match(css, /@media \(max-width: 620px\)[\s\S]*\.agents-tabs button \{ min-height:44px; \}/);
 assert.match(css, /@media \(max-width: 620px\)[\s\S]*\.project-tabs button \{ min-height:44px; \}/);
 assert.match(css, /@media \(max-width: 620px\)[\s\S]*\.review-actions \.icon-button,\.review-actions summary \{ width:44px; height:44px; \}/);
@@ -435,7 +438,6 @@ async function mount(page, overview, overrides = {}) {
     if (url.pathname === "/api/presence") return route.fulfill(response({ ok: true, proof_sequence: proofFeed.sequence || 0 }));
     if (url.pathname === "/api/config") return route.fulfill(response(fixture.config));
     if (url.pathname === "/api/diagnostics") return route.fulfill(response(fixture.diagnostics));
-    if (url.pathname === "/api/diagnostics/history") return route.fulfill(response(fixture.diagnosticHistory));
     if (url.pathname === "/api/health/settings") return route.fulfill(response(fixture.healthSettings));
     if (url.pathname === "/api/storage") return route.fulfill(response(fixture.storage));
     if (url.pathname === "/api/ctrl-settings") return route.fulfill(response(fixture.ctrlSettings));
@@ -466,8 +468,7 @@ const browserCandidates = [
 ].filter(Boolean);
 const executablePath = browserCandidates.find((candidate) => fs.existsSync(candidate));
 const browser = await chromium.launch({ headless: true, ...(executablePath ? { executablePath } : {}) });
-if (!process.argv.includes("--legacy-browser")) {
-  const proofFeed = imageProofFixture(6);
+const proofFeed = imageProofFixture(6);
   const usageHistory = structuredClone(fixture.usageHistory);
   usageHistory.verified_yield = {
     schema_version: 1,
@@ -476,8 +477,9 @@ if (!process.argv.includes("--legacy-browser")) {
     projects: [{ scope: { type: "project", id: "project:fixture" }, measurement_state: "MEASURED", confidence: "HIGH", observed_tokens: 80000, yield_per_100k: 3.1, rework_drag: 0, series: [{ observed_tokens: 30000, net_scope_points: 1, scope_version: 1 }, { observed_tokens: 50000, net_scope_points: 1.5, scope_version: 2 }] }],
     tasks: [{ scope: { type: "task", id: "ctrl", project_id: "project:fixture" }, measurement_state: "MEASURED", confidence: "HIGH", observed_tokens: 50000, yield_per_100k: 2, rework_drag: 0, series: [{ observed_tokens: 50000, net_scope_points: 1, scope_version: 1 }] }],
     owners: [{ scope: { type: "owner", id: "CTRL", project_id: "project:fixture" }, measurement_state: "MEASURED", confidence: "PARTIAL", observed_tokens: 50000, yield_per_100k: 2, rework_drag: 0, series: [{ observed_tokens: 50000, net_scope_points: 1, scope_version: 1 }] }],
-    attention_items: [{ id: "attention-1", kind: "ETA_DRIFT", project_id: "project:fixture", task_id: "ctrl", owner_id: "CTRL", material_sequence: 3, material_digest: "attention-digest", observed_at_ms: 1712550180000, severity: "warning", sentence: "Forecast range widened after a dependency changed." }],
   };
+  const overview = scopedFixture();
+  overview.attention_items = [{ id: "attention-1", kind: "ETA_DRIFT", project_id: "project:fixture", task_id: "ctrl", owner_id: "CTRL", material_sequence: 3, material_digest: "attention-digest", observed_at_ms: 1712550180000, severity: "warning", sentence: "Forecast range widened after a dependency changed." }];
   const projectProgress = {
     ok: true,
     project_id: "project:fixture",
@@ -505,7 +507,7 @@ if (!process.argv.includes("--legacy-browser")) {
     await offlinePage.close();
 
     const page = await browser.newPage({ viewport: { width: 1440, height: 1000 } });
-    const desktop = await mount(page, scopedFixture(), overrides);
+    const desktop = await mount(page, overview, overrides);
     for (const label of ["Projects", "Agents", "Review", "Assets", "Settings"]) assert.equal(await page.getByRole("tab", { name: label, exact: true }).count(), 1);
     for (const retired of ["Dashboard", "Hierarchy", "Kanban", "Diagnostics"]) assert.equal(await page.getByRole("tab", { name: retired, exact: true }).count(), 0);
     assert.equal(await page.locator("#project-scope-filter").isVisible(), true);
@@ -564,293 +566,3 @@ if (!process.argv.includes("--legacy-browser")) {
   } finally {
     await browser.close();
   }
-  process.exit(0);
-}
-try {
-  const offlinePage = await browser.newPage({ viewport: { width: 1024, height: 760 } });
-  const connection = { offline: true };
-  const offline = await mount(offlinePage, scopedFixture(), { connection, waitForConnectionState: true });
-  assert.equal(await offlinePage.getByRole("heading", { name: "Local console unavailable" }).count(), 1);
-  assert.equal(await offlinePage.getByRole("button", { name: "Retry connection" }).count(), 1);
-  assert.equal(await offlinePage.locator('#connection-state img[alt="SWARM octopus holding disconnected cable ends"]').count(), 1);
-  assert.equal(await offlinePage.locator("#error-surface").isVisible(), false);
-  assert.equal(await offlinePage.locator("#view-overview").isVisible(), false);
-  assert.equal(await offlinePage.getByRole("tab", { name: "Diagnostics" }).isVisible(), true);
-  connection.offline = false;
-  await offlinePage.getByRole("button", { name: "Retry connection" }).click();
-  await offlinePage.locator("#overview-content").waitFor({ state: "visible" });
-  assert.equal(await offlinePage.locator("#connection-state").isVisible(), false);
-  assert.ok(offline.requests.filter((request) => request === "/api/bootstrap").length >= 2);
-  await offlinePage.close();
-
-  const page = await browser.newPage({ viewport: { width: 1440, height: 1000 } });
-  const { runtimeErrors, requests } = await mount(page, scopedFixture());
-
-  assert.equal(await page.locator("#view-title").textContent(), "Overview");
-  assert.equal(await page.locator('[role="tab"]').count(), 6);
-  assert.equal(await page.locator("#tab-overview use").getAttribute("href"), "#lucide-house");
-  assert.equal(await page.locator("#tab-hierarchy use").getAttribute("href"), "#lucide-network");
-  assert.equal(await page.locator("#tab-kanban use").getAttribute("href"), "#lucide-columns-3");
-  assert.equal(await page.locator("#tab-diagnostics use").getAttribute("href"), "#lucide-activity");
-  assert.equal(await page.getByRole("button", { name: "All projects" }).count(), 1);
-  assert.equal(await page.getByRole("button", { name: "Flowwweb" }).count(), 1);
-  assert.equal(await page.getByRole("button", { name: "Idle project" }).count(), 1);
-  assert.equal(await page.getByRole("button", { name: "Stalled project" }).count(), 1);
-  assert.equal(await page.getByRole("button", { name: "Unassigned planning" }).count(), 1);
-  assert.equal(await page.getByRole("button", { name: "Archived project" }).count(), 1);
-  assert.equal(await page.locator("#overview-project-cards > .overview-project-card").count(), 5);
-  assert.equal(await page.locator("#overview-project-cards > .overview-more").count(), 1);
-  assert.doesNotMatch(await page.locator("#overview-project-cards").textContent(), /Unassigned planning/);
-  assert.doesNotMatch(await page.locator("#overview-project-cards").textContent(), /Archived project/);
-  assert.match(await page.locator("#overview-project-cards").textContent(), /Idle project/);
-  assert.match(await page.locator("#overview-project-cards").textContent(), /Stalled project/);
-  assert.match(await page.locator("#overview-project-cards").textContent(), /80%/);
-  assert.match(await page.locator("#overview-project-cards").textContent(), /Fresh/);
-  assert.equal(await page.getByRole("button", { name: /https-mail/i }).count(), 0);
-  assert.equal(await page.locator("#overview-monitoring-heading").textContent(), "Current work");
-  assert.equal(await page.locator("#usage-total").textContent(), "1K");
-  assert.equal(await page.locator("#usage-rate").textContent(), "42 / min");
-  assert.equal(await page.locator("#project-progress-section").isVisible(), false);
-  assert.equal(await page.locator("#overview-monitoring-health-state").textContent(), "Needs attention");
-  assert.match(await page.locator("#overview-monitoring-health-note").textContent(), /3 visible lanes need attention/);
-  assert.match(await page.locator("#overview-project-cards").textContent(), /Blocker\s*Visual polish/);
-  assert.equal(await page.locator("#overview-evidence-gallery img").count(), 0);
-  assert.equal(await page.locator('[data-overview-subagents="ctrl"]').count(), 1);
-  assert.equal(await page.locator('[data-overview-subagents="ctrl"]').evaluate((element) => element.hasAttribute("open")), false);
-  await page.getByRole("button", { name: "Unassigned planning" }).click();
-  assert.equal(await page.locator("#scope-context strong").textContent(), "Unassigned planning");
-  assert.equal(await page.locator("#overview-project-cards > .overview-project-card").count(), 0);
-  assert.match(await page.locator("#overview-project-cards").textContent(), /No classified Current Work is available/);
-  await page.getByRole("button", { name: "All projects" }).click();
-  await page.getByRole("tab", { name: "Dashboard" }).click();
-  assert.equal(await page.locator("#view-title").textContent(), "Dashboard");
-  assert.match(page.url(), /#dashboard$/);
-  assert.match(await page.locator("#task-table").textContent(), /Resolve customer export/);
-  assert.equal(await page.locator("#task-table [data-subagent-parent]").count(), 1);
-  assert.equal(await page.locator("#proof-feed").count(), 1);
-  assert.equal(await page.locator("#overview-diagnostics-heading").textContent(), "Diagnostics");
-  await page.evaluate(() => { location.hash = "#graph"; });
-  await page.waitForTimeout(20);
-  assert.equal(await page.locator("#view-title").textContent(), "Overview");
-  assert.match(page.url(), /#overview$/);
-  await page.getByRole("tab", { name: "Hierarchy" }).click();
-  assert.match(await page.locator("#hierarchy-list").textContent(), /1 subagent/);
-  assert.match(await page.locator("#hierarchy-list").textContent(), /Paused attention/);
-  assert.ok(requests.some((request) => request.includes("/api/config")));
-
-  await page.getByRole("button", { name: /^swarm\b/i }).click();
-  assert.equal(await page.locator("#project-navigation [data-ctrl-id]").count(), 0);
-  assert.equal(await page.locator("#scope-context strong").textContent(), "swarm");
-  assert.match(await page.locator("#overview-project-cards").textContent(), /Review screenshots|Evidence review/);
-  assert.ok(requests.some((request) => request.includes("/api/usage-history?project_id=project%3Afixture&ctrl_id=&hours=24")));
-  await page.getByRole("tab", { name: "Overview" }).click();
-  assert.equal(await page.locator("#project-progress-section").isVisible(), true);
-  assert.equal(await page.locator("#project-progress-feed > li").count(), 2);
-  assert.match(await page.locator("#project-progress-feed").textContent(), /evidence gallery now preserves every registered image/i);
-  assert.ok(requests.some((request) => request.includes("/api/project-progress-feed?project_id=project%3Afixture&after_cursor=0")));
-  await page.getByRole("button", { name: "1h", exact: true }).click();
-  await page.waitForFunction(() => document.querySelector("#usage-heading")?.textContent === "Tokens · 1h");
-  assert.ok(requests.some((request) => request.includes("hours=1")));
-  await page.getByRole("button", { name: "1d", exact: true }).click();
-  await page.waitForFunction(() => document.querySelector("#usage-heading")?.textContent === "Tokens · 1d");
-  assert.ok(requests.some((request) => request.includes("hours=24")));
-
-  await page.getByRole("button", { name: "Flowwweb" }).click();
-  assert.equal(await page.locator("#scope-context strong").textContent(), "Flowwweb");
-
-  await page.locator("#tab-diagnostics").focus();
-  await page.keyboard.press("ArrowUp");
-  assert.equal(await page.locator(":focus").getAttribute("id"), "tab-kanban");
-  await page.keyboard.press("End");
-  assert.equal(await page.locator(":focus").getAttribute("id"), "tab-settings");
-  assert.equal(await page.locator("#view-title").textContent(), "Settings");
-  await page.getByRole("tab", { name: "Diagnostics" }).click();
-  assert.match(await page.locator("#view-diagnostics").textContent(), /Keep this device healthy/);
-  assert.equal(await page.locator("#scope-context strong").textContent(), "Flowwweb");
-  await page.getByRole("tab", { name: "Hierarchy" }).click();
-  assert.match(await page.locator("#hierarchy-list").textContent(), /Confirm webhooks/);
-  await page.getByRole("tab", { name: "Kanban" }).click();
-  assert.match(await page.locator("#kanban-board").textContent(), /In progress/);
-  assert.match(await page.locator(".kanban-column").nth(1).textContent(), /Confirm webhooks/);
-  await page.getByRole("tab", { name: "Settings" }).click();
-  assert.match(await page.locator("#settings-grid").textContent(), /Clear history/);
-  assert.equal(await page.locator("#settings-scope").inputValue(), "project|project:branch");
-  assert.match(await page.locator("#settings-scope").textContent(), /Unassigned planning/);
-  assert.match(await page.locator("#settings-scope").textContent(), /Archived project/);
-  assert.equal(await page.getByText("Progress feed", { exact: true }).count(), 1);
-  assert.equal(await page.locator('[data-config-key="console.project_progress_feed_lines"]').inputValue(), "4");
-  assert.equal(await page.getByRole("button", { name: "Manage" }).count(), 1);
-
-  const ctrlScopePage = await browser.newPage({ viewport: { width: 1024, height: 760 } });
-  const ctrlScope = await mount(ctrlScopePage, scopedFixture(), { proofFeed: sameProjectCtrlProofFixture() });
-  await ctrlScopePage.getByRole("button", { name: /^swarm\b/i }).click();
-  await ctrlScopePage.locator("#project-progress-section").waitFor({ state: "visible" });
-  assert.equal(await ctrlScopePage.locator("#overview-evidence-gallery img").count(), 2);
-  await ctrlScopePage.getByRole("tab", { name: "Settings" }).click();
-  await ctrlScopePage.locator("#settings-scope").selectOption("ctrl|ctrl");
-  await ctrlScopePage.getByRole("tab", { name: "Overview" }).click();
-  await ctrlScopePage.locator('[data-evidence-id="ctrl-image"]').waitFor({ state: "visible" });
-  assert.equal(await ctrlScopePage.locator('[data-evidence-id="ctrl-image"]').count(), 1);
-  assert.equal(await ctrlScopePage.locator('[data-evidence-id="nested-ctrl-image"]').count(), 0);
-  assert.equal(await ctrlScopePage.locator("#project-progress-section").isVisible(), false);
-  assert.deepEqual(ctrlScope.runtimeErrors, []);
-  await ctrlScopePage.close();
-
-  const unclassifiedPage = await browser.newPage({ viewport: { width: 1024, height: 760 } });
-  const unclassifiedOverview = structuredClone(fixture.overview);
-  unclassifiedOverview.navigation.controllers = [];
-  const unclassified = await mount(unclassifiedPage, unclassifiedOverview);
-  assert.equal(await unclassifiedPage.locator("#overview-project-cards > .overview-project-card").count(), 0);
-  assert.match(await unclassifiedPage.locator("#overview-project-cards").textContent(), /needs host-reported CTRL classification/);
-  assert.doesNotMatch(await unclassifiedPage.locator("#overview-project-cards").textContent(), /0%/);
-  assert.deepEqual(unclassified.runtimeErrors, []);
-  await unclassifiedPage.close();
-
-  const manyPage = await browser.newPage({ viewport: { width: 1024, height: 760 } });
-  const many = await mount(manyPage, fixture.overview, { proofFeed: imageProofFixture(12) });
-  assert.equal(await manyPage.locator("#overview-evidence-gallery .evidence-gallery-item").count(), 4);
-  assert.equal(await manyPage.locator('[data-evidence-more="8"]').count(), 1);
-  assert.equal(await manyPage.locator('[data-evidence-more="8"]').textContent(), "+8 more");
-  await manyPage.getByRole("button", { name: /Open 8 more images; 12 images/ }).click();
-  assert.equal(await manyPage.locator("#evidence-lightbox[open]").count(), 1);
-  assert.equal(await manyPage.locator("#evidence-lightbox-thumbnails button").count(), 12);
-  await manyPage.keyboard.press("ArrowRight");
-  assert.equal(await manyPage.locator('[data-evidence-thumbnail="5"]').getAttribute("aria-current"), "true");
-  await manyPage.locator('[data-evidence-thumbnail="11"]').click();
-  assert.equal(await manyPage.locator('[data-evidence-thumbnail="11"]').getAttribute("aria-current"), "true");
-  await manyPage.getByRole("button", { name: "Close evidence gallery" }).click();
-  assert.equal(await manyPage.locator("#evidence-lightbox[open]").count(), 0);
-  await manyPage.getByRole("tab", { name: "Dashboard" }).click();
-  await manyPage.locator("#proof-feed .proof-tile").first().click();
-  assert.equal(await manyPage.locator("#evidence-lightbox-thumbnails button").count(), 12);
-  await manyPage.getByRole("button", { name: "Close evidence gallery" }).click();
-  assert.deepEqual(many.runtimeErrors, []);
-  await manyPage.close();
-
-  const inventoryPage = await browser.newPage({ viewport: { width: 1024, height: 760 } });
-  const proofControl = { fail: false, feed: imageProofFixture(125) };
-  const inventory = await mount(inventoryPage, fixture.overview, { proofControl });
-  assert.equal(await inventoryPage.locator("#overview-evidence-gallery .evidence-gallery-item").count(), 4);
-  assert.equal(await inventoryPage.locator('[data-evidence-more="121"]').count(), 1);
-  await inventoryPage.getByRole("button", { name: /Open 121 more images; 125 images/ }).click();
-  const reachableEvidence = new Set();
-  while (true) {
-    for (const identity of await inventoryPage.locator("#evidence-lightbox-thumbnails [data-evidence-id]").evaluateAll((elements) => elements.map((element) => element.dataset.evidenceId))) reachableEvidence.add(identity);
-    if (await inventoryPage.locator("#evidence-page-next").isDisabled()) break;
-    await inventoryPage.locator("#evidence-page-next").click();
-  }
-  assert.equal(reachableEvidence.size, 125);
-  assert.equal(await inventoryPage.locator("#evidence-lightbox-thumbnails button").count(), 5);
-  assert.equal(await inventoryPage.locator("#evidence-page-status").textContent(), "Images 121–125 of 125");
-  await inventoryPage.getByRole("button", { name: "Close evidence gallery" }).click();
-  proofControl.fail = true;
-  await inventoryPage.locator("#refresh").click();
-  await inventoryPage.waitForFunction(() => document.querySelector("#overview-evidence-note")?.textContent?.includes("last received"));
-  assert.equal(await inventoryPage.locator('[data-evidence-more="121"]').count(), 1);
-  assert.deepEqual(inventory.runtimeErrors, []);
-  await inventoryPage.close();
-
-  const onePage = await browser.newPage({ viewport: { width: 1024, height: 760 } });
-  const one = await mount(onePage, fixture.overview, { proofFeed: imageProofFixture(1) });
-  assert.equal(await onePage.locator("#overview-evidence-gallery .evidence-gallery-item").count(), 1);
-  assert.equal(await onePage.locator("[data-evidence-more]").count(), 0);
-  await onePage.locator("#overview-evidence-gallery .evidence-gallery-item").click();
-  assert.equal(await onePage.locator("#evidence-lightbox-thumbnails button").count(), 1);
-  assert.equal(await onePage.locator("#evidence-lightbox-previous").isDisabled(), true);
-  assert.equal(await onePage.locator("#evidence-lightbox-next").isDisabled(), true);
-  await onePage.locator("#evidence-lightbox-image").dispatchEvent("error");
-  assert.equal(await onePage.locator("#evidence-lightbox-failed").isVisible(), true);
-  await onePage.keyboard.press("Escape");
-  assert.equal(await onePage.locator("#evidence-lightbox[open]").count(), 0);
-  assert.deepEqual(one.runtimeErrors, []);
-  await onePage.close();
-
-  const emptyPage = await browser.newPage({ viewport: { width: 1024, height: 760 } });
-  const empty = await mount(emptyPage, fixture.overview, { proofFeed: imageProofFixture(0) });
-  assert.equal(await emptyPage.locator("#overview-evidence-gallery .evidence-gallery-item").count(), 0);
-  assert.equal(await emptyPage.locator("[data-evidence-more]").count(), 0);
-  assert.match(await emptyPage.locator("#overview-evidence-gallery").textContent(), /Images appear here when they are received/);
-  assert.match(await emptyPage.locator("#proof-feed").textContent(), /No image proof yet/);
-  assert.deepEqual(empty.runtimeErrors, []);
-  await emptyPage.close();
-
-  const mobilePage = await browser.newPage({ viewport: { width: 390, height: 844 } });
-  const mobile = await mount(mobilePage, scopedFixture());
-  const mobileBar = mobilePage.locator(".mobile-app-bar");
-  const menuButton = mobilePage.locator("#mobile-menu-button");
-  assert.equal(await mobileBar.isVisible(), true);
-  assert.equal(await menuButton.getAttribute("aria-label"), "Open navigation");
-  assert.equal(await mobilePage.locator(".nav-list").count(), 1);
-  assert.equal(await mobilePage.locator("#console-drawer").getAttribute("aria-hidden"), "true");
-  const menuBox = await menuButton.boundingBox();
-  const logoBox = await mobilePage.locator(".mobile-app-bar img").boundingBox();
-  assert.ok(menuBox && menuBox.width >= 44 && menuBox.height >= 44);
-  assert.ok(logoBox && menuBox.x < logoBox.x);
-  await menuButton.click();
-  await mobilePage.locator("#console-drawer[aria-hidden='false']").waitFor();
-  await mobilePage.waitForFunction(() => document.querySelector("#console-drawer")?.getBoundingClientRect().left >= -1);
-  assert.equal(await menuButton.getAttribute("aria-expanded"), "true");
-  assert.equal(await mobilePage.locator("body").evaluate((element) => getComputedStyle(element).overflow), "hidden");
-  assert.equal(await mobilePage.locator(".workspace").evaluate((element) => element.inert), true);
-  assert.equal(await mobilePage.locator("#tab-overview").evaluate((element) => element === document.activeElement), true);
-  const drawerBox = await mobilePage.locator("#console-drawer").boundingBox();
-  const navBox = await mobilePage.locator("#tab-overview").boundingBox();
-  assert.ok(drawerBox && drawerBox.x >= -1 && drawerBox.x + drawerBox.width <= 391);
-  assert.ok(navBox && navBox.height >= 44);
-  assert.equal(await mobilePage.locator("#project-navigation button").evaluateAll((elements) => elements.every((element) => element.getBoundingClientRect().height >= 44)), true);
-  const drawerFocusable = mobilePage.locator('#console-drawer a[href]:visible, #console-drawer button:not([disabled]):not([tabindex="-1"]):visible, #console-drawer [tabindex]:not([tabindex="-1"]):visible');
-  const firstDrawerFocusable = drawerFocusable.first();
-  const lastDrawerFocusable = drawerFocusable.last();
-  await lastDrawerFocusable.focus();
-  await mobilePage.keyboard.press("Tab");
-  assert.equal(await firstDrawerFocusable.evaluate((element) => element === document.activeElement), true);
-  await mobilePage.keyboard.press("Shift+Tab");
-  assert.equal(await lastDrawerFocusable.evaluate((element) => element === document.activeElement), true);
-  await mobilePage.keyboard.press("Escape");
-  assert.equal(await mobilePage.locator("#console-drawer").getAttribute("aria-hidden"), "true");
-  assert.equal(await mobilePage.locator(".workspace").evaluate((element) => element.inert), false);
-  assert.equal(await menuButton.evaluate((element) => element === document.activeElement), true);
-  await menuButton.click();
-  await mobilePage.locator("#drawer-backdrop").click({ position: { x: 380, y: 400 } });
-  assert.equal(await menuButton.getAttribute("aria-expanded"), "false");
-  for (const [label, panel] of [["Overview", "#view-overview"], ["Dashboard", "#view-dashboard"], ["Hierarchy", "#view-hierarchy"], ["Kanban", "#view-kanban"], ["Settings", "#view-settings"]]) {
-    await menuButton.click();
-    await mobilePage.getByRole("tab", { name: label }).click();
-    assert.equal(await mobilePage.locator(panel).isVisible(), true);
-    assert.equal(await menuButton.getAttribute("aria-expanded"), "false");
-    const bar = await mobileBar.boundingBox();
-    const top = await mobilePage.locator(".topbar").boundingBox();
-    const active = await mobilePage.locator(`${panel}.is-active`).boundingBox();
-    assert.ok(bar && top && top.y >= bar.y + bar.height - 1, `${label} topbar collides with mobile app bar`);
-    assert.ok(top && active && active.y >= top.y + top.height - 1, `${label} content collides with topbar`);
-    assert.equal(await mobilePage.locator("[data-qc-scope]").evaluate((element) => element.scrollWidth > element.clientWidth + 1), false);
-  }
-  await menuButton.click();
-  await mobilePage.locator("#console-drawer[aria-hidden='false']").waitFor();
-  await mobilePage.waitForFunction(() => document.querySelector("#console-drawer")?.getBoundingClientRect().left >= -1);
-  assert.equal(await mobilePage.locator("#tab-settings").evaluate((element) => element === document.activeElement), true);
-  const settingsDrawerFocusable = mobilePage.locator('#console-drawer a[href]:visible, #console-drawer button:not([disabled]):not([tabindex="-1"]):visible, #console-drawer [tabindex]:not([tabindex="-1"]):visible');
-  await mobilePage.keyboard.press("Shift+Tab");
-  assert.equal(await settingsDrawerFocusable.last().evaluate((element) => element === document.activeElement), true);
-  await mobilePage.keyboard.press("Tab");
-  assert.equal(await mobilePage.locator("#tab-settings").evaluate((element) => element === document.activeElement), true);
-  await mobilePage.keyboard.press("Escape");
-  assert.deepEqual(mobile.runtimeErrors, []);
-  await mobilePage.close();
-
-  for (const viewport of [{ width: 390, height: 844 }, { width: 834, height: 1112 }, { width: 1440, height: 1000 }]) {
-    await page.setViewportSize(viewport);
-    await page.locator("#tab-overview").evaluate((element) => element.click());
-    const overflow = await page.locator("[data-qc-scope]").evaluate((element) => element.scrollWidth > element.clientWidth + 1);
-    assert.equal(overflow, false, `horizontal overflow at ${viewport.width}px`);
-    const topbarBox = await page.locator(".topbar").boundingBox();
-    const activePanelBox = await page.locator("#view-overview.is-active").boundingBox();
-    assert.ok(topbarBox && topbarBox.y >= (viewport.width <= 620 ? 64 : 18), `missing shell top inset at ${viewport.width}px`);
-    assert.ok(topbarBox && activePanelBox && activePanelBox.y >= topbarBox.y + topbarBox.height - 1, `overview content collides with header at ${viewport.width}px`);
-    assert.equal(await page.locator(".mobile-app-bar").isVisible(), viewport.width <= 620);
-  }
-  assert.deepEqual(runtimeErrors, []);
-  console.log("SWARM console Overview UI tests passed");
-} finally {
-  await browser.close();
-}

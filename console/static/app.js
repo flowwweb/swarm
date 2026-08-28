@@ -1,14 +1,14 @@
-const state = { token: "", overview: null, proof: [], proofCollections: new Map(), proofStatuses: new Map(), proofStatus: "idle", proofSequence: 0, usageHistory: null, usageWindowHours: 24, usageScopeKey: "", usageStatus: "idle", usageError: "", projectProgress: null, projectProgressProjectId: "", projectProgressStatus: "idle", projectProgressError: "", projectProgressFeed: null, projectProgressFeedProjectId: "", projectProgressFeedStatus: "idle", projectProgressFeedError: "", projectTab: "overview", diagnostics: null, diagnosticHistory: [], health: null, storage: null, config: null, ctrlSettings: null, skills: null, skillsError: "", roleManifests: null, roleManifestStatus: "unavailable", roleManifestError: "", agentsTab: "active", selectedRoleId: "accountant", roleEditorTrigger: null, selectedAssetIdentity: "", notificationLastSeen: 0, notificationTrigger: null, view: "overview", projectId: "all", ctrlId: "", settingsCtrlId: "", settingsScopeType: "", settingsScopeId: "", evidenceImages: [], evidenceIndex: 0, evidenceTrigger: null };
+const state = { token: "", overview: null, proof: [], proofCollections: new Map(), proofStatuses: new Map(), proofStatus: "idle", proofSequence: 0, usageHistory: null, usageWindowHours: 24, usageScopeKey: "", usageStatus: "idle", usageError: "", projectProgress: null, projectProgressProjectId: "", projectProgressStatus: "idle", projectProgressError: "", projectProgressFeed: null, projectProgressFeedProjectId: "", projectProgressFeedStatus: "idle", projectProgressFeedError: "", projectTab: "overview", diagnostics: null, health: null, storage: null, config: null, ctrlSettings: null, skills: null, skillsError: "", roleManifests: null, roleManifestStatus: "unavailable", roleManifestError: "", agentsTab: "active", selectedRoleId: "accountant", roleEditorTrigger: null, selectedAssetIdentity: "", notificationLastSeen: 0, notificationTrigger: null, view: "overview", projectId: "all", ctrlId: "", settingsCtrlId: "", settingsScopeType: "", settingsScopeId: "", evidenceImages: [], evidenceIndex: 0, evidenceTrigger: null };
 const EVIDENCE_THUMBNAIL_PAGE_SIZE = 24;
 const USAGE_WINDOW_LABELS = { 1: "1h", 24: "1d" };
 const ROLE_PROFESSIONS = [
-  ["accountant", "Accountant", "$", "#ff9f43"], ["analyst", "Analyst", "Σ", "#4da8ff"], ["architect", "Architect", "⌂", "#46dfd0"], ["artist", "Artist", "✦", "#f472b6"],
-  ["auditor", "Auditor", "✓", "#a78bfa"], ["critic", "Critic", "!", "#fb7185"], ["designer", "Designer", "◇", "#f97316"], ["developer", "Developer", "</>", "#38bdf8"],
-  ["educator", "Educator", "✎", "#facc15"], ["inventor", "Inventor", "⌁", "#22d3ee"], ["legal", "Legal", "§", "#c084fc"], ["manager", "Manager", "◆", "#60a5fa"],
-  ["marketer", "Marketer", "↗", "#fb7185"], ["operator", "Operator", "⌘", "#34d399"], ["producer", "Producer", "▶", "#f59e0b"], ["recruiter", "Recruiter", "+", "#e879f9"],
-  ["researcher", "Researcher", "◎", "#2dd4bf"], ["reviewer", "Reviewer", "✓", "#818cf8"], ["security", "Security", "◈", "#f87171"], ["specialist", "Specialist", "*", "#94a3b8"],
-  ["strategist", "Strategist", "♟", "#a78bfa"], ["support", "Support", "?", "#4ade80"], ["tester", "Tester", "⌁", "#22c55e"], ["writer", "Writer", "¶", "#fbbf24"],
-].map(([id, name, prop, accent]) => ({ id, name, prop, accent }));
+  ["accountant", "Accountant"], ["analyst", "Analyst"], ["architect", "Architect"], ["artist", "Artist"],
+  ["auditor", "Auditor"], ["critic", "Critic"], ["designer", "Designer"], ["developer", "Developer"],
+  ["educator", "Educator"], ["inventor", "Inventor"], ["legal", "Legal"], ["manager", "Manager"],
+  ["marketer", "Marketer"], ["operator", "Operator"], ["producer", "Producer"], ["recruiter", "Recruiter"],
+  ["researcher", "Researcher"], ["reviewer", "Reviewer"], ["security", "Security"], ["specialist", "Specialist"],
+  ["strategist", "Strategist"], ["support", "Support"], ["tester", "Tester"], ["writer", "Writer"],
+].map(([id, name]) => ({ id, name }));
 const $ = (selector, root = document) => root.querySelector(selector);
 const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
 
@@ -196,10 +196,6 @@ function setView(view, focus, syncRoute = true) {
     agents: ["Agents", "Active ownership and the role library."],
     review: ["Review", "Proof, decisions, and handoff acknowledgements."],
     assets: ["Assets", "Approved project and role assets."],
-    dashboard: ["Dashboard", "Project progress, risks, and proof at a glance."],
-    hierarchy: ["Hierarchy", "See who owns the work, what is active, and where attention is needed."],
-    kanban: ["Kanban", "Task state for the selected project or CTRL."],
-    diagnostics: ["Diagnostics", "Device health, capacity, and maintenance."],
     settings: ["Settings", "Defaults and optional per-CTRL overrides."],
   };
   $(".app-shell").dataset.currentView = selectedView;
@@ -336,37 +332,6 @@ function drawLine(svg, values, color) {
   svg.innerHTML = '<path class="chart-grid" d="M0 ' + bottom + 'H' + width + ' M0 ' + middle + 'H' + width + ' M0 ' + top + 'H' + width + '"/><polyline class="chart-area" points="0,' + height + ' ' + points + ' ' + width + ',' + height + '"/><polyline class="chart-line" stroke="' + color + '" points="' + points + '"/>';
 }
 
-function renderMetrics(nodes) {
-  const total = nodes.length;
-  const complete = nodes.filter((node) => ["done", "archived"].includes(String(node.status).toLowerCase())).length;
-  const percent = total ? Math.round((complete / total) * 100) : 0;
-  $("#progress-value").textContent = total ? String(percent) + "%" : "—";
-  $("#progress-note").textContent = total ? String(complete) + " of " + String(total) + " tasks complete" : "Waiting for tasks";
-  $("#progress-detail").textContent = total ? String(Math.max(0, total - complete)) + " remaining" : "No tasks yet";
-  $("#progress-bar").style.width = String(percent) + "%";
-
-  const activeForecasts = nodes.map((node) => node.eta || {}).filter((eta) => eta.status !== "complete" && eta.eta_end_ms);
-  const forecast = activeForecasts.sort((a, b) => Number(a.eta_end_ms) - Number(b.eta_end_ms))[0];
-  const confidence = Math.max(0, Math.min(100, Number(forecast?.confidence) || 0));
-  $("#forecast-value").textContent = forecast ? formatEta(forecast.eta_end_ms) : "—";
-  $("#forecast-note").textContent = forecast?.status ? humanize(forecast.status) : "No active forecast";
-  $("#confidence-bar").style.width = String(confidence) + "%";
-  $("#confidence-detail").textContent = forecast ? String(confidence) + "% confidence · updated " + formatRelative(forecast.last_calculated_at_ms) : "Confidence unavailable";
-
-  const risks = nodes.filter(needsAttention);
-  $("#drift-value").textContent = risks.length ? String(risks.length) + " at risk" : "On track";
-  $("#drift-value").className = risks.length ? "risk-text" : "healthy-text";
-  $("#drift-note").textContent = risks.length ? String(risks.length) + " need attention" : "No forecast drift detected";
-  $("#drift-detail").textContent = total ? String(total - risks.length) + " without a risk signal" : "No drift signal yet";
-
-  const risk = risks[0];
-  $("#risk-value").textContent = risk?.artifact || "No active risk";
-  $("#risk-note").textContent = risk ? humanize(attentionStatus(risk)) + " · active " + formatRelative(risk.updated_at) : "Everything looks clear";
-  const action = $("#risk-action");
-  action.hidden = !risk;
-  action.dataset.taskId = risk?.id || "";
-}
-
 function isSubagent(node) {
   if (node?.is_subagent === true) return true;
   const surface = String(node?.surface ?? node?.thread_source ?? "").trim().toLowerCase();
@@ -398,56 +363,6 @@ function subagentDescendants(nodeId, tree) {
     pending.unshift(...(tree.children.get(node.id) || []));
   }
   return descendants;
-}
-
-function subagentToggle(node, count) {
-  if (!count) return "";
-  const label = count + " subagent" + (count === 1 ? "" : "s");
-  return '<button class="subagent-toggle" data-subagent-toggle="' + escapeHTML(node.id) + '" type="button" aria-expanded="false">＋ <span>Show ' + label + '</span></button>';
-}
-
-function renderTaskRow(node, tree, { subagent = false, depth = 0, hidden = false } = {}) {
-  const eta = node.eta || {};
-  const proof = node.proof_snapshot || {};
-  const status = statusLabel(node);
-  const etaLabel = eta.status === "complete" ? "Complete" : (eta.eta_end_ms ? formatEta(eta.eta_end_ms) : "Unforecast");
-  const descendants = subagentDescendants(node.id, tree);
-  const rowClass = subagent ? "task-row subagent-row" : "task-row";
-  const parentAttribute = subagent && tree.parent.has(node.id) ? ' data-subagent-parent="' + escapeHTML(tree.parent.get(node.id)) + '"' : "";
-  const indent = subagent ? '<span class="subagent-indent" aria-hidden="true" style="--subagent-depth:' + depth + '">↳</span>' : "";
-  const label = escapeHTML(node.artifact || node.title || node.id);
-  const worker = escapeHTML(node.worker || node.worker_role || node.role_label || "Unassigned");
-  const rowId = subagent ? ' id="subagents-' + escapeHTML(node.id) + '"' : "";
-  return '<tr class="' + rowClass + '" data-task-id="' + escapeHTML(node.id) + '" data-subagent-depth="' + depth + '"' + parentAttribute + rowId + (hidden ? " hidden" : "") + '><td>' + indent + '<strong>' + label + '</strong><small>' + (subagent ? "Subagent · " : "") + escapeHTML(node.project || "Task") + '</small>' + subagentToggle(node, descendants.length) + '</td><td>' + worker + '</td><td><span class="state-pill ' + status[1] + '">' + status[0] + '</span></td><td><strong>' + escapeHTML(etaLabel) + '</strong><small>' + escapeHTML(eta.status ? humanize(eta.status) : "No forecast") + '</small></td><td>' + (eta.confidence == null ? "—" : escapeHTML(eta.confidence) + "%") + '</td><td><span class="activity-dot ' + status[1] + '" aria-hidden="true"></span>' + escapeHTML(formatRelative(node.updated_at || node.generated_at)) + '</td><td><span class="proof-state ' + (proof.available ? "" : "is-muted") + '">' + (proof.available ? "Available" : "—") + "</span></td></tr>";
-}
-
-function renderSubagentRows(node, tree, depth = 1) {
-  return (tree.children.get(node.id) || []).filter(isSubagent).map((child) => renderTaskRow(child, tree, { subagent: true, depth, hidden: true }) + renderSubagentRows(child, tree, depth + 1)).join("");
-}
-
-function renderTable(nodes) {
-  $("#plan-count").textContent = String(nodes.length) + " task" + (nodes.length === 1 ? "" : "s");
-  $("#task-empty").hidden = nodes.length > 0;
-  const tree = taskTree(nodes);
-  const roots = nodes.filter((node) => !isSubagent(node) || !tree.parent.has(node.id));
-  $("#task-table").innerHTML = roots.map((node) => renderTaskRow(node, tree) + (isSubagent(node) ? "" : renderSubagentRows(node, tree))).join("");
-}
-
-function setSubagentVisibility(parentId, visible, visited = new Set()) {
-  if (visited.has(parentId)) return;
-  visited.add(parentId);
-  const rows = $$('[data-subagent-parent="' + CSS.escape(parentId) + '"]', $("#task-table"));
-  rows.forEach((row) => {
-    row.hidden = !visible;
-    if (!visible) {
-      row.querySelectorAll("[data-subagent-toggle]").forEach((button) => {
-        button.setAttribute("aria-expanded", "false");
-        const text = button.querySelector("span");
-        if (text) text.textContent = text.textContent.replace(/^Hide /, "Show ");
-      });
-      setSubagentVisibility(row.dataset.taskId, false, visited);
-    }
-  });
 }
 
 function proofMediaURL(item) {
@@ -560,35 +475,6 @@ function openEvidenceLightbox(index, trigger) {
 function closeEvidenceLightbox() {
   const dialog = $("#evidence-lightbox");
   if (dialog.open) dialog.close();
-}
-
-function renderProof(nodes) {
-  const images = evidenceImagesFor(nodes);
-  state.evidenceImages = images;
-  if ($("#evidence-lightbox").open) renderEvidenceLightbox();
-  $("#proof-count").textContent = String(images.length);
-  $("#proof-count").title = currentProofStatus() === "stale" ? "Showing the last received evidence" : "";
-  const previews = images.slice(0, 4);
-  const remaining = Math.max(0, images.length - previews.length);
-  const tiles = previews.map((item, index) =>
-    '<button class="proof-tile" type="button" data-evidence-open="' + String(index) +
-    '" data-evidence-id="' + escapeHTML(item.evidence_id) + '" data-evidence-digest="' + escapeHTML(item.digest) +
-    '" aria-label="Open evidence image: ' + escapeHTML(item.caption || "Image evidence") +
-    '"><img loading="lazy" decoding="async" src="' + proofMediaURL(item) + '" alt=""></button>'
-  ).join("");
-  const more = remaining ? '<button class="proof-tile proof-more" type="button" data-evidence-open="4" aria-label="Open ' + String(remaining) + ' more images; ' + String(images.length) + ' images in this gallery">+' + String(remaining) + '</button>' : '';
-  $("#proof-feed").innerHTML = images.length ? tiles + more : '<p class="empty-state">No image proof yet.</p>';
-}
-
-function renderBurnRate() {
-  const burn = state.overview?.analytics?.burn_rate || {};
-  const history = burn.history || state.overview?.token_history || [];
-  const values = history.map((item) => Number(item.delta_tokens) || 0);
-  const current = Number(burn.tokens_per_minute ?? values.at(-1) ?? 0);
-  const allProjects = state.projectId === "all" && !state.ctrlId;
-  $("#burn-current").textContent = allProjects && history.length ? compactNumber(current) + " / min" : "—";
-  $("#burn-note").textContent = allProjects ? (history.length ? "Live across all projects" : "Waiting for activity") : "Select all projects to see the live rate";
-  drawLine($("#burn-chart"), values, "#46dfd0");
 }
 
 function observedTasks(nodes) {
@@ -855,7 +741,7 @@ function yieldChartMarkup(item) {
 const NOTIFICATION_KINDS = new Set(["BLOCKER", "STALLED", "RETRYING", "ETA_DRIFT", "PROOF_INVALIDATED", "TOKEN_OVERRUN"]);
 
 function attentionItems() {
-  const items = verifiedYieldProjection()?.attention_items || [];
+  const items = state.overview?.attention_items || [];
   const seen = new Set();
   return items.filter((item) => {
     const identity = String(item?.id || item?.material_digest || "");
@@ -988,13 +874,13 @@ function renderProjectDetail() {
 }
 
 function proofReviewState(item) {
-  return humanize(item.review_status || item.disposition || item.status || "Available for review");
+  return humanize(item.review_status || item.disposition || item.status || "Status unavailable");
 }
 
 function renderReview() {
   const items = scopedProofItems();
-  $("#review-status").textContent = currentProofStatus() === "stale" ? "Showing the last received review queue" : items.length ? items.length + " reviewable item" + (items.length === 1 ? "" : "s") : "No proof awaiting review";
-  $("#review-list").innerHTML = items.length ? items.map((item) => { const image = String(item.media_type || "").startsWith("image/"); return '<article class="review-row"><div class="review-kind"><svg class="lucide" aria-hidden="true"><use href="#lucide-shield-check"></use></svg></div><div><strong>' + escapeHTML(item.caption || item.kind || item.evidence_id) + '</strong><p>' + escapeHTML([item.project_id, item.task_id, item.owner_id].filter(Boolean).join(" · ") || "Unscoped proof") + '</p><small>' + escapeHTML(proofReviewState(item) + " · " + formatRelative(item.observed_at_ms || item.updated_at)) + '</small></div><div class="review-actions"><button class="icon-button" type="button" data-review-open="' + escapeHTML(proofIdentity(item)) + '" aria-label="Open proof"' + (image ? '' : ' disabled title="No visual preview is available"') + '><svg class="lucide" aria-hidden="true"><use href="#lucide-image"></use></svg></button><button class="icon-button" type="button" aria-label="Send feedback unavailable" disabled title="Review feedback command is not available"><svg class="lucide" aria-hidden="true"><use href="#lucide-message-square"></use></svg></button><button class="icon-button" type="button" aria-label="Admit proof unavailable" disabled title="Proof admission command is not available"><svg class="lucide" aria-hidden="true"><use href="#lucide-check"></use></svg></button><details><summary aria-label="More proof details"><svg class="lucide" aria-hidden="true"><use href="#lucide-ellipsis"></use></svg></summary><p>Digest ' + escapeHTML(String(item.digest || "—").slice(0, 16)) + ' · ' + escapeHTML(item.claim_limit || "Acceptance is recorded separately.") + '</p></details></div></article>'; }).join("") : '<p class="empty-state review-empty">No proof is waiting for review in this scope.</p>';
+  $("#review-status").textContent = currentProofStatus() === "stale" ? "Showing the last received proof" : items.length ? items.length + " proof item" + (items.length === 1 ? "" : "s") : "No proof in this scope";
+  $("#review-list").innerHTML = items.length ? items.map((item) => { const image = String(item.media_type || "").startsWith("image/"); return '<article class="review-row"><div class="review-kind"><svg class="lucide" aria-hidden="true"><use href="#lucide-shield-check"></use></svg></div><div><strong>' + escapeHTML(item.caption || item.kind || item.evidence_id) + '</strong><p>' + escapeHTML([item.project_id, item.task_id, item.owner_id].filter(Boolean).join(" · ") || "Unscoped proof") + '</p><small>' + escapeHTML(proofReviewState(item) + " · " + formatRelative(item.observed_at_ms || item.updated_at)) + '</small></div><div class="review-actions"><button class="icon-button" type="button" data-review-open="' + escapeHTML(proofIdentity(item)) + '" aria-label="Open proof"' + (image ? '' : ' disabled title="No visual preview is available"') + '><svg class="lucide" aria-hidden="true"><use href="#lucide-image"></use></svg></button><button class="icon-button" type="button" aria-label="Send feedback unavailable" disabled title="Review feedback command is not available"><svg class="lucide" aria-hidden="true"><use href="#lucide-message-square"></use></svg></button><button class="icon-button" type="button" aria-label="Admit proof unavailable" disabled title="Proof admission command is not available"><svg class="lucide" aria-hidden="true"><use href="#lucide-check"></use></svg></button><details><summary aria-label="More proof details"><svg class="lucide" aria-hidden="true"><use href="#lucide-ellipsis"></use></svg></summary><p>Digest ' + escapeHTML(String(item.digest || "—").slice(0, 16)) + ' · ' + escapeHTML(item.claim_limit || "Acceptance is recorded separately.") + '</p></details></div></article>'; }).join("") : '<p class="empty-state review-empty">No proof is available in this scope.</p>';
 }
 
 function assetItems() {
@@ -1111,7 +997,7 @@ function renderOverviewProjectCards(nodes) {
     ? (scopedCards.length ? String(scopedCards.length) + " project scope" + (scopedCards.length === 1 ? "" : "s") : "No classified Current Work")
     : (scopedCards.length ? "Current scope" : "No classified Current Work");
   const empty = !scopeAvailable
-    ? '<p class="empty-state overview-empty">Current Work needs host-reported CTRL classification. Dashboard still shows task history.</p>'
+    ? '<p class="empty-state overview-empty">Current Work needs host-reported CTRL classification. Task history remains available in project views.</p>'
     : allProjects
       ? '<p class="empty-state overview-empty">No classified Current Work is available.</p>'
       : '<p class="empty-state overview-empty">No classified Current Work is available in ' + escapeHTML(scopeLabel()) + '.</p>';
@@ -1132,36 +1018,6 @@ function renderOverview() {
   renderProjectDetail();
   renderNotifications();
   $("#sync-time").textContent = state.overview?.generated_at ? "Updated " + formatRelative(state.overview.generated_at) : "Ready";
-}
-
-function renderDashboard() {
-  const nodes = scopedNodes();
-  renderMetrics(nodes);
-  renderTable(nodes);
-  renderProof(nodes);
-  renderBurnRate();
-  renderOverviewDiagnostics();
-}
-
-function renderHierarchy() {
-  const nodes = scopedNodes();
-  const tree = taskTree(nodes);
-  const groups = new Map();
-  nodes.filter((node) => !isSubagent(node)).forEach((node) => {
-    const owner = node.controller_ids?.[0] || node.worker || node.worker_role || node.role_label || "Unassigned";
-    const list = groups.get(owner) || [];
-    list.push(node); groups.set(owner, list);
-  });
-  $("#hierarchy-list").innerHTML = groups.size ? [...groups.entries()].map(([owner, tasks]) => {
-    const current = tasks.find((task) => !["done", "archived"].includes(String(task.status).toLowerCase())) || tasks[0];
-    const extra = tasks.filter((task) => task.id !== current.id);
-    const stalled = needsAttention(current);
-    const status = statusLabel(current);
-    const subagents = subagentDescendants(current.id, tree);
-    const subagentMeta = subagents.length ? '<span class="subagent-count">' + subagents.length + ' subagent' + (subagents.length === 1 ? '' : 's') + '</span>' : '';
-    const progress = progressPresentation(authoritativeProgress(current.project_id, state.overview?.progress?.controllers?.[owner] ? owner : ""));
-    return '<article class="hierarchy-card"><div class="health-ring ' + status[1] + '"><i></i><span>' + escapeHTML(progress.display) + '</span></div><div class="hierarchy-main"><div class="hierarchy-title"><strong>' + escapeHTML(current.artifact || current.title || owner) + '</strong><span>' + escapeHTML(current.role_label || current.role || "TASK") + subagentMeta + '</span></div><p><i class="activity-dot ' + status[1] + '" aria-hidden="true"></i>' + escapeHTML(progress.freshness) + (stalled ? ' <b class="stalled-cue">Paused attention</b>' : '') + '</p><div class="task-progress"><i style="width:' + (progress.percent == null ? 0 : progress.percent) + '%"></i></div>' + (extra.length ? '<details><summary>' + extra.length + ' more task' + (extra.length === 1 ? '' : 's') + '</summary><ul>' + extra.map((task) => '<li>' + escapeHTML(task.artifact || task.title || task.id) + '</li>').join('') + '</ul></details>' : '') + '</div></article>';
-  }).join('') : '<p class="empty-state">No owners in this view.</p>';
 }
 
 function observedAgentRole(node) {
@@ -1230,7 +1086,7 @@ function rolePresentation(roleId) {
 
 function roleAvatar(role) {
   const accent = /^#[0-9a-f]{6}$/i.test(role.accent || "") ? role.accent : "#8f9db0";
-  return '<span class="role-avatar" style="--role-accent:' + escapeHTML(accent) + '" aria-hidden="true"><i></i><b>' + escapeHTML(role.prop || role.name?.slice(0, 1) || "?") + '</b></span>';
+  return '<span class="role-avatar" style="--role-accent:' + escapeHTML(accent) + '" aria-hidden="true"><svg class="lucide"><use href="#lucide-circle-user-round"></use></svg><b>' + escapeHTML(role.name?.slice(0, 1) || "?") + '</b></span>';
 }
 
 function roleSourceLabel(role) {
@@ -1242,7 +1098,7 @@ function renderRoleDetail() {
   const role = rolePresentation(state.selectedRoleId);
   const owns = Array.isArray(role.owns) && role.owns.length ? role.owns : ["Unknown"];
   const skills = Array.isArray(role.default_skills) && role.default_skills.length ? role.default_skills : ["Unknown"];
-  $("#role-detail").innerHTML = '<div class="role-detail-head">' + roleAvatar(role) + '<div><p class="eyebrow">' + escapeHTML(roleSourceLabel(role)) + '</p><h2>' + escapeHTML(role.name) + '</h2></div><button class="icon-button" data-role-action="edit" data-role-id="' + escapeHTML(role.id) + '" type="button" aria-label="Edit ' + escapeHTML(role.name) + '"><svg class="lucide" aria-hidden="true"><use href="#lucide-pencil"></use></svg></button></div><p class="role-purpose">' + escapeHTML(role.purpose || "Unknown") + '</p><section><h3>Owns</h3><ul>' + owns.map((item) => '<li>' + escapeHTML(item) + '</li>').join("") + '</ul></section><section><h3>Default skills</h3><div class="role-skill-list">' + skills.map((item) => '<span>' + escapeHTML(item) + '</span>').join("") + '</div></section><dl class="role-detail-meta"><div><dt>Version</dt><dd>' + escapeHTML(role.version || "Unknown") + '</dd></div><div><dt>Avatar asset</dt><dd>' + escapeHTML(role.avatar_asset_digest || "Unknown") + '</dd></div></dl><p class="role-retention-note">Tasks already in progress keep the role version they started with.</p>';
+  $("#role-detail").innerHTML = '<div class="role-detail-head">' + roleAvatar(role) + '<div><p class="eyebrow">' + escapeHTML(roleSourceLabel(role)) + '</p><h2>' + escapeHTML(role.name) + '</h2></div><button class="icon-button" data-role-action="edit" data-role-id="' + escapeHTML(role.id) + '" type="button" aria-label="Inspect ' + escapeHTML(role.name) + '"><svg class="lucide" aria-hidden="true"><use href="#lucide-pencil"></use></svg></button></div><p class="role-purpose">' + escapeHTML(role.purpose || "Unknown") + '</p><section><h3>Owns</h3><ul>' + owns.map((item) => '<li>' + escapeHTML(item) + '</li>').join("") + '</ul></section><section><h3>Default skills</h3><div class="role-skill-list">' + skills.map((item) => '<span>' + escapeHTML(item) + '</span>').join("") + '</div></section><dl class="role-detail-meta"><div><dt>Version</dt><dd>' + escapeHTML(role.version || "Unknown") + '</dd></div><div><dt>Avatar asset</dt><dd>' + escapeHTML(role.avatar_asset_digest || "Unknown") + '</dd></div></dl><p class="role-retention-note">Tasks already in progress keep the role version they started with.</p>';
 }
 
 function renderRoleLibrary() {
@@ -1283,7 +1139,7 @@ function openRoleEditor(roleId = "", trigger = null) {
   const editing = Boolean(roleId);
   const role = editing ? rolePresentation(roleId) : { id: "", name: "", purpose: "", owns: [], instructions: [], boundaries: [], default_skills: [], avatar_asset_digest: "", accent: "#4da8ff", version: "Unknown", source: "custom", manifestAvailable: false };
   state.roleEditorTrigger = trigger;
-  $("#role-editor-title").textContent = editing ? "Edit " + role.name : "Create role";
+  $("#role-editor-title").textContent = editing ? role.name + " manifest" : "Create role";
   roleFieldValue("#role-field-id", role.id);
   roleFieldValue("#role-field-name", role.name);
   roleFieldValue("#role-field-purpose", role.purpose);
@@ -1293,81 +1149,19 @@ function openRoleEditor(roleId = "", trigger = null) {
   roleFieldValue("#role-field-skills", (role.default_skills || []).join("\n"));
   roleFieldValue("#role-field-avatar", role.avatar_asset_digest);
   roleFieldValue("#role-field-accent", role.accent || "#4da8ff");
-  $("#role-field-id").readOnly = editing;
+  $$("#role-editor input, #role-editor textarea").forEach((field) => { field.readOnly = true; });
+  $("#role-field-accent").disabled = true;
   $("#role-field-version").textContent = role.version || "Unknown";
   $("#role-field-source").textContent = roleSourceLabel(role);
   $("#role-reset").disabled = true;
   $("#role-save").disabled = true;
-  $("#role-editor-status").textContent = "Role changes are unavailable until the server accepts the role-manifest command contract.";
+  $("#role-editor-status").textContent = "Read-only until the server accepts the role-manifest command contract.";
   $("#role-editor").showModal();
   requestAnimationFrame(() => (editing ? $("#role-field-name") : $("#role-field-id")).focus());
 }
 
 function closeRoleEditor() {
   if ($("#role-editor").open) $("#role-editor").close();
-}
-
-function kanbanState(node) {
-  const taskStatus = String(node.status || "pending").toLowerCase();
-  const forecastStatus = String(node.eta?.status || "").toLowerCase();
-  if (["done", "complete", "archived"].includes(taskStatus)) return "Completed";
-  if (["blocked", "at_risk"].includes(taskStatus) || ["blocked", "at_risk"].includes(forecastStatus)) return "Attention";
-  if (["active", "in_progress"].includes(taskStatus)) return "In progress";
-  return "Planned";
-}
-
-function renderKanban() {
-  const columns = ["Planned", "In progress", "Attention", "Completed"];
-  const nodes = scopedNodes().filter((node) => !isSubagent(node));
-  $("#kanban-summary").textContent = nodes.length ? String(nodes.length) + " task" + (nodes.length === 1 ? '' : 's') : 'No tasks';
-  $("#kanban-board").innerHTML = columns.map((column) => {
-    const tasks = nodes.filter((node) => kanbanState(node) === column);
-    return '<section class="kanban-column"><header><strong>' + column + '</strong><span>' + tasks.length + '</span></header><div>' + (tasks.length ? tasks.map((task) => {
-      const label = column === "Attention" ? ["At risk", "is-blocked"] : statusLabel(task);
-      return '<article class="kanban-card"><strong>' + escapeHTML(task.artifact || task.title || task.id) + '</strong><small>' + escapeHTML(task.eta?.eta_end_ms ? 'Forecast ' + formatEta(task.eta.eta_end_ms) : 'No forecast') + '</small><span class="state-pill ' + label[1] + '">' + escapeHTML(label[0]) + '</span></article>';
-    }).join('') : '<p>None observed</p>') + '</div></section>';
-  }).join('');
-}
-
-function renderDiagnostics() {
-  const latest = state.diagnostics?.latest || {};
-  const payload = latest.payload || {};
-  const health = state.diagnostics?.health || {};
-  const disk = (payload.disks || []).find((item) => item?.available) || {};
-  const freshness = latest.freshness || state.diagnostics?.freshness || {};
-  const availability = latest.availability || state.diagnostics?.availability || {};
-  const unavailable = Array.isArray(availability.unavailable) ? availability.unavailable : [];
-  const freshnessLabel = freshness.state === 'fresh' ? 'Fresh' : freshness.state === 'stale' ? 'Stale' : 'No diagnostic sample';
-  const freshnessNote = Number.isFinite(Number(freshness.age_seconds)) ? formatDuration(Number(freshness.age_seconds) * 1000) + ' ago' : 'Waiting for a source sample';
-  const metricNote = (metric, fallback) => [metric?.source ? humanize(metric.source) : fallback, metric?.observed_at_ms ? formatRelative(metric.observed_at_ms) : ''].filter(Boolean).join(' · ');
-  const cards = [];
-  if (payload.cpu?.available) cards.push(['CPU', Math.round(Number(payload.cpu.percent) || 0) + '%', metricNote(payload.cpu, 'Current load')]);
-  if (payload.memory?.available) cards.push(['Memory', formatBytes(payload.memory.used_bytes) + ' in use', metricNote(payload.memory, 'Current memory')]);
-  if (disk.available) cards.push(['Disk', formatBytes(disk.free_bytes) + ' free', metricNote(disk, Math.round(Number(disk.percent) || 0) + '% used')]);
-  if (payload.docker?.available) cards.push(['Containers', String(payload.docker.container_count || 0), metricNote(payload.docker, humanize(payload.docker.status || 'Available'))]);
-  if (payload.network?.available) cards.push(['Network', formatBytes((Number(payload.network.rx_bytes) || 0) + (Number(payload.network.tx_bytes) || 0)), metricNote(payload.network, 'Observed total')]);
-  const unavailableState = unavailable.length ? '<article class="panel diagnostic-unavailable"><p class="eyebrow">Source availability</p><h3>' + escapeHTML(unavailable.map((item) => item.label || item.group).join(', ') + ' unavailable') + '</h3><p>' + escapeHTML(unavailable[0].reason || 'No observed value was returned.') + '</p><small>' + escapeHTML(unavailable[0].action || 'Keep this source unavailable until it returns a readable value.') + '</small></article>' : '';
-  const noMetrics = cards.length ? '' : '<article class="panel diagnostic-unavailable"><p class="eyebrow">Source availability</p><h3>No independent metrics available</h3><p>Diagnostics will show values when a source reports them.</p></article>';
-  $("#diagnostic-grid").innerHTML = '<article class="panel diagnostic-freshness"><p class="eyebrow">Diagnostics</p><h3>' + escapeHTML(freshnessLabel) + '</h3><small>' + escapeHTML(freshnessNote) + '</small></article>' + cards.map(([label, value, note]) => '<article class="metric-card diagnostic-card"><p>' + escapeHTML(label) + '</p><strong>' + escapeHTML(value) + '</strong><span>' + escapeHTML(note) + '</span></article>').join('') + unavailableState + noMetrics + '<article class="panel auto-health"><p class="eyebrow">Automatic care</p><h3>Keep this device healthy</h3><label class="toggle-row"><input id="auto-health" type="checkbox"' + (state.health?.enabled ? ' checked' : '') + '><span>Create maintenance tasks automatically</span></label><small>Starts with a review. SWARM will not delete files or stop work on its own.</small></article>';
-  const incidents = health.incidents || [];
-  $("#attention-count").textContent = String(incidents.length);
-  $("#attention-list").innerHTML = incidents.length ? incidents.slice(0, 6).map((item) => {
-    const guidance = { disk: "Storage is running low.", cpu: "CPU load has stayed high.", memory: "Memory use has stayed high." };
-    return '<article class="attention-item"><strong>' + escapeHTML((item.scope || "Device") + " " + (item.kind || "health")) + '</strong><small>' + escapeHTML(humanize(item.severity || item.state || 'Active') + " · " + (guidance[item.kind] || "Needs attention.")) + '</small></article>';
-  }).join('') : '<p class="empty-state">No current health attention.</p>';
-}
-
-function renderOverviewDiagnostics() {
-  const latest = state.diagnostics?.latest || {};
-  const payload = latest.payload || {};
-  const disk = (payload.disks || []).find((item) => item.available) || {};
-  const network = payload.network || {};
-  const value = (available, amount, suffix = "%") => available && Number.isFinite(Number(amount)) ? Math.round(Number(amount)) + suffix : "Unavailable";
-  $("#overview-health-state").textContent = humanize(latest.health_state || "Unavailable");
-  $("#overview-cpu").textContent = value(payload.cpu?.available, payload.cpu?.percent);
-  $("#overview-memory").textContent = value(payload.memory?.available, payload.memory?.percent);
-  $("#overview-disk").textContent = value(disk.available, disk.percent);
-  $("#overview-network").textContent = network.available ? compactNumber((Number(network.rx_bytes) || 0) + (Number(network.tx_bytes) || 0)) + "B" : "Unavailable";
 }
 
 function configEditable(key) {
@@ -1481,7 +1275,7 @@ function renderSettings() {
     '<details class="panel settings-advanced settings-wide" id="settings-advanced"><summary>Advanced settings</summary><div class="settings-advanced-grid">' + ctrlAdvanced + '<section class="advanced-setting-group"><h4>Spark and monitoring</h4>' + settingSelect('boost.spark_reasoning', boost.spark_reasoning || 'xhigh', reasoningOptions, 'Spark reasoning') + '<label class="setting-field">Spark model<input id="spark-model" value="' + escapeHTML(boost.spark_model || '') + '" autocomplete="off"' + (!configEditable('boost.spark_model') ? ' disabled' : '') + '></label><label class="setting-field">Heartbeat minutes<input id="heartbeat-minutes" data-config-key="monitoring.heartbeat_minutes" type="number" min="1" value="' + escapeHTML(monitoring.heartbeat_minutes || '') + '"' + (!configEditable('monitoring.heartbeat_minutes') ? ' disabled' : '') + '></label><button class="quiet-button" data-setting-action="save-spark" type="button"' + (!configEditable('boost.spark_model') ? ' disabled' : '') + '>Save Spark model</button>' + settingToggle('role_icons.enabled', roleIcons.enabled, 'Show role icons') + '</section><section class="advanced-setting-group"><h4>' + escapeHTML(storage?.bytes == null ? 'Saved history unavailable' : formatBytes(storage.bytes) + ' saved history' + retention) + '</h4><p>Progress, forecasts, proof, and token history stay available between sessions' + (proofFiles ? ' · ' + proofFiles + ' proof file' + (proofFiles === 1 ? '' : 's') : '') + '.</p><div class="settings-actions-inline"><button class="quiet-button" data-setting-action="clear" type="button">Clear history</button><button class="quiet-button" data-setting-action="restore" type="button">Restore defaults</button></div><small>Clearing history leaves tasks unchanged. Restoring defaults keeps history.</small>' + skillsAdvanced(scope) + '</section></div></details>';
 }
 
-function renderAllViews() { renderOverview(); renderAgents(); renderReview(); renderAssets(); renderDashboard(); renderHierarchy(); renderKanban(); renderDiagnostics(); renderSettings(); }
+function renderAllViews() { renderOverview(); renderAgents(); renderReview(); renderAssets(); renderSettings(); }
 
 async function refreshProof() {
   const projectId = state.projectId;
@@ -1597,8 +1391,6 @@ async function refreshMonitoring(proofSequence) {
     renderAgents();
     renderReview();
     renderAssets();
-    renderDashboard();
-    renderHierarchy();
   } catch {
     setDataStatus(state.overview ? "stale" : "unavailable", state.overview?.generated_at);
     /* The next manual refresh can recover the complete screen. */
@@ -1646,9 +1438,8 @@ async function refreshOverview(showLoading = true) {
     renderProjectNavigation();
     await Promise.all([refreshProof(), refreshUsageHistory(), refreshProjectProgress(), refreshProjectProgressFeed(), refreshRoleManifests()]);
     const selectedCtrl = state.ctrlId || historicalControllers()[0]?.id || '';
-    const results = await Promise.allSettled([api('/api/diagnostics'), api('/api/diagnostics/history?limit=24'), api('/api/health/settings'), api('/api/storage'), selectedCtrl ? api('/api/ctrl-settings?ctrl_id=' + encodeURIComponent(selectedCtrl)) : Promise.resolve(null), api('/api/config')]);
-    [state.diagnostics, state.diagnosticHistory, state.health, state.storage, state.ctrlSettings, state.config] = results.map((result) => result.status === 'fulfilled' ? result.value : null);
-    state.diagnosticHistory = state.diagnosticHistory?.items || [];
+    const results = await Promise.allSettled([api('/api/diagnostics'), api('/api/health/settings'), api('/api/storage'), selectedCtrl ? api('/api/ctrl-settings?ctrl_id=' + encodeURIComponent(selectedCtrl)) : Promise.resolve(null), api('/api/config')]);
+    [state.diagnostics, state.health, state.storage, state.ctrlSettings, state.config] = results.map((result) => result.status === 'fulfilled' ? result.value : null);
     await refreshSkills();
     renderAllViews();
   } catch (error) {
@@ -1788,24 +1579,11 @@ document.addEventListener("click", (event) => {
     refreshUsageHistory().then(renderAllViews);
     return;
   }
-  const subagentToggleButton = event.target.closest("[data-subagent-toggle]");
-  if (subagentToggleButton) {
-    const expanded = subagentToggleButton.getAttribute("aria-expanded") === "true";
-    const parentId = subagentToggleButton.dataset.subagentToggle;
-    setSubagentVisibility(parentId, !expanded);
-    subagentToggleButton.setAttribute("aria-expanded", String(!expanded));
-    const text = subagentToggleButton.querySelector("span");
-    if (text) text.textContent = text.textContent.replace(expanded ? /^Show / : /^Hide /, expanded ? "Show " : "Hide ");
-    event.stopPropagation();
-    return;
-  }
   const tab = event.target.closest("[data-view]");
   if (tab) {
     setView(tab.dataset.view);
     if (mobileDrawerQuery.matches) setMobileDrawer(false, true);
   }
-  const risk = event.target.closest("#risk-action");
-  if (risk?.dataset.taskId) document.querySelector("tr[data-task-id='" + CSS.escape(risk.dataset.taskId) + "']")?.scrollIntoView({ block: "center", behavior: "smooth" });
 });
 
 $("#evidence-lightbox").addEventListener("close", () => {
@@ -1910,7 +1688,7 @@ document.addEventListener('change', async (event) => {
     return;
   }
   if (event.target.id === 'auto-health') {
-    try { state.health = await api('/api/health/settings', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ enabled: event.target.checked }) }); renderDiagnostics(); renderSettings(); } catch (error) { showError(error.message); renderDiagnostics(); renderSettings(); }
+    try { state.health = await api('/api/health/settings', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ enabled: event.target.checked }) }); renderSettings(); } catch (error) { showError(error.message); renderSettings(); }
     return;
   }
   if (event.target.id === 'skills-inheritance') {
