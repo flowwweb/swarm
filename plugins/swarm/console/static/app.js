@@ -1,4 +1,4 @@
-const state = { token: "", overview: null, proof: [], proofCollections: new Map(), proofStatuses: new Map(), proofStatus: "idle", proofSequence: 0, usageHistory: null, usageWindowHours: 24, usageScopeKey: "", usageStatus: "idle", usageError: "", projectProgress: null, projectProgressProjectId: "", projectProgressStatus: "idle", projectProgressError: "", projectProgressFeed: null, projectProgressFeedProjectId: "", projectProgressFeedStatus: "idle", projectProgressFeedError: "", projectTab: "overview", diagnostics: null, health: null, storage: null, config: null, ctrlSettings: null, auto: null, autoBindingKey: "", autoStatus: "idle", autoError: "", autoSaving: false, skills: null, skillsError: "", roleManifests: null, roleManifestStatus: "unavailable", roleManifestError: "", agentsTab: "active", selectedRoleId: "accountant", roleEditorTrigger: null, assetView: "grid", selectedAssetIdentity: "", onboardingStep: 0, onboardingShown: false, onboardingTrigger: null, notificationLastSeen: 0, notificationTrigger: null, connectionStatus: "reconnecting", view: "overview", projectId: "all", ctrlId: "", settingsCtrlId: "", settingsScopeType: "", settingsScopeId: "", evidenceImages: [], evidenceIndex: 0, evidenceTrigger: null };
+const state = { token: "", overview: null, proof: [], proofCollections: new Map(), proofStatuses: new Map(), proofStatus: "idle", proofSequence: 0, usageHistory: null, usageWindowHours: 24, usageScopeKey: "", usageStatus: "idle", usageError: "", projectProgress: null, projectProgressProjectId: "", projectProgressStatus: "idle", projectProgressError: "", projectProgressFeed: null, projectProgressFeedProjectId: "", projectProgressFeedStatus: "idle", projectProgressFeedError: "", projectTab: "overview", diagnostics: null, health: null, storage: null, config: null, configStatus: "idle", configError: "", chatRelaySaving: false, ctrlSettings: null, auto: null, autoBindingKey: "", autoStatus: "idle", autoError: "", autoSaving: false, skills: null, skillsError: "", roleManifests: null, roleManifestStatus: "unavailable", roleManifestError: "", agentsTab: "active", selectedRoleId: "accountant", roleEditorTrigger: null, assetView: "grid", selectedAssetIdentity: "", onboardingStep: 0, onboardingShown: false, onboardingTrigger: null, notificationLastSeen: 0, notificationTrigger: null, connectionStatus: "reconnecting", view: "overview", projectId: "all", ctrlId: "", settingsCtrlId: "", settingsScopeType: "", settingsScopeId: "", evidenceImages: [], evidenceIndex: 0, evidenceTrigger: null };
 const EVIDENCE_THUMBNAIL_PAGE_SIZE = 24;
 const USAGE_WINDOW_LABELS = { 1: "1h", 24: "1d" };
 const ROLE_PROFESSIONS = [
@@ -1375,6 +1375,43 @@ function autoSettingsMarkup() {
   return '<h4>Auto</h4><label class="toggle-row"><input id="auto-continuation" type="checkbox" aria-label="Continue eligible work automatically" aria-describedby="auto-continuation-status"' + (matches && state.auto.enabled === true ? ' checked' : '') + (!current || state.autoSaving ? ' disabled' : '') + '><span>Continue eligible work automatically</span></label><p class="scope-setting-status" id="auto-continuation-status" aria-live="polite"><strong>' + escapeHTML(matches ? presentation[0] : state.autoStatus === "loading" ? "Loading" : "Unavailable") + '</strong><span>' + escapeHTML(note) + '</span></p>';
 }
 
+function chatRelayPresentation(config, configStatus, saving, error) {
+  const serverValue = config?.settings?.chat_relay?.enabled;
+  const editable = Array.isArray(config?.editable) && config.editable.includes("chat_relay.enabled");
+  const hasServerValue = typeof serverValue === "boolean";
+  const current = configStatus === "current" && hasServerValue;
+  let title = current ? (serverValue ? "Enabled" : "Off") : "Unavailable";
+  let note = current
+    ? "Eligible work can be offloaded while SWARM still verifies results."
+    : hasServerValue
+      ? "The current server value could not be reloaded. The last known value is shown read-only."
+      : "Chat relay is unavailable from the current server configuration.";
+  if (saving) {
+    title = "Saving";
+    note = "Saving the explicit Chat relay setting.";
+  }
+  if (error) note += " " + error;
+  return { checked: serverValue === true, disabled: !current || !editable || saving, title, note };
+}
+
+function chatRelayMutation(enabled) {
+  return { changes: { "chat_relay.enabled": enabled === true } };
+}
+
+function chatRelayFailureState(previousConfig, reloadedConfig, saveError) {
+  const reloaded = Boolean(reloadedConfig);
+  return {
+    config: reloaded ? reloadedConfig : previousConfig,
+    configStatus: reloaded ? "current" : previousConfig ? "stale" : "unavailable",
+    configError: saveError + (reloaded ? " The current server value was reloaded." : " The current server value could not be reloaded."),
+  };
+}
+
+function chatRelaySettingsMarkup() {
+  const presentation = chatRelayPresentation(state.config, state.configStatus, state.chatRelaySaving, state.configError);
+  return '<section class="advanced-setting-group"><h4>Chat relay</h4><label class="toggle-row"><input id="chat-relay-enabled" type="checkbox" aria-label="Use ChatGPT for eligible work" aria-describedby="chat-relay-status"' + (presentation.checked ? ' checked' : '') + (presentation.disabled ? ' disabled' : '') + '><span>Use ChatGPT for eligible work</span></label><p class="scope-setting-status" id="chat-relay-status" aria-live="polite"><strong>' + escapeHTML(presentation.title) + '</strong><span>' + escapeHTML(presentation.note) + '</span></p></section>';
+}
+
 function skillStatus(skill) {
   if (skill.builtin) return 'Built in';
   return ({ inherited: 'Inherited', available_to_install: 'Available', blocked_unreviewed: 'Needs review', blocked_authority: 'Blocked' })[skill.status] || (skill.relevant ? 'Available' : 'Not matched');
@@ -1440,7 +1477,7 @@ function renderSettings() {
       '<label class="setting-field">Updates shown<input data-config-key="console.project_progress_feed_lines" type="number" min="1" max="10" value="' + escapeHTML(consoleSettings.project_progress_feed_lines ?? 4) + '"' + (!configEditable('console.project_progress_feed_lines') ? ' disabled' : '') + '></label>' +
       settingToggle('console.open_on_start', consoleSettings.open_on_start, 'Open SWARM when Codex starts') +
       '<label class="toggle-row"><input id="auto-health" type="checkbox"' + (state.health?.enabled ? ' checked' : '') + '><span>Request health review when needed</span></label><small>Passive monitoring does not run models.</small></section>' +
-    '<details class="panel settings-advanced settings-wide" id="settings-advanced"><summary>Advanced settings</summary><div class="settings-advanced-grid">' + ctrlAdvanced + '<section class="advanced-setting-group"><h4>Spark and monitoring</h4>' + settingSelect('boost.spark_reasoning', boost.spark_reasoning || 'xhigh', reasoningOptions, 'Spark reasoning') + '<label class="setting-field">Spark model<input id="spark-model" value="' + escapeHTML(boost.spark_model || '') + '" autocomplete="off"' + (!configEditable('boost.spark_model') ? ' disabled' : '') + '></label><label class="setting-field">Heartbeat minutes<input id="heartbeat-minutes" data-config-key="monitoring.heartbeat_minutes" type="number" min="1" value="' + escapeHTML(monitoring.heartbeat_minutes || '') + '"' + (!configEditable('monitoring.heartbeat_minutes') ? ' disabled' : '') + '></label><button class="quiet-button" data-setting-action="save-spark" type="button"' + (!configEditable('boost.spark_model') ? ' disabled' : '') + '>Save Spark model</button>' + settingToggle('role_icons.enabled', roleIcons.enabled, 'Show role icons') + '</section><section class="advanced-setting-group"><h4>' + escapeHTML(storage?.bytes == null ? 'Saved history unavailable' : formatBytes(storage.bytes) + ' saved history' + retention) + '</h4><p>Progress, forecasts, proof, and token history stay available between sessions' + (proofFiles ? ' · ' + proofFiles + ' proof file' + (proofFiles === 1 ? '' : 's') : '') + '.</p><div class="settings-actions-inline"><button class="quiet-button" data-setting-action="clear" type="button">Clear history</button><button class="quiet-button" data-setting-action="restore" type="button">Restore defaults</button></div><small>Clearing history leaves tasks unchanged. Restoring defaults keeps history.</small>' + skillsAdvanced(scope) + '</section></div></details>';
+    '<details class="panel settings-advanced settings-wide" id="settings-advanced"><summary>Advanced settings</summary><div class="settings-advanced-grid">' + ctrlAdvanced + chatRelaySettingsMarkup() + '<section class="advanced-setting-group"><h4>Spark and monitoring</h4>' + settingSelect('boost.spark_reasoning', boost.spark_reasoning || 'xhigh', reasoningOptions, 'Spark reasoning') + '<label class="setting-field">Spark model<input id="spark-model" value="' + escapeHTML(boost.spark_model || '') + '" autocomplete="off"' + (!configEditable('boost.spark_model') ? ' disabled' : '') + '></label><label class="setting-field">Heartbeat minutes<input id="heartbeat-minutes" data-config-key="monitoring.heartbeat_minutes" type="number" min="1" value="' + escapeHTML(monitoring.heartbeat_minutes || '') + '"' + (!configEditable('monitoring.heartbeat_minutes') ? ' disabled' : '') + '></label><button class="quiet-button" data-setting-action="save-spark" type="button"' + (!configEditable('boost.spark_model') ? ' disabled' : '') + '>Save Spark model</button>' + settingToggle('role_icons.enabled', roleIcons.enabled, 'Show role icons') + '</section><section class="advanced-setting-group"><h4>' + escapeHTML(storage?.bytes == null ? 'Saved history unavailable' : formatBytes(storage.bytes) + ' saved history' + retention) + '</h4><p>Progress, forecasts, proof, and token history stay available between sessions' + (proofFiles ? ' · ' + proofFiles + ' proof file' + (proofFiles === 1 ? '' : 's') : '') + '.</p><div class="settings-actions-inline"><button class="quiet-button" data-setting-action="clear" type="button">Clear history</button><button class="quiet-button" data-setting-action="restore" type="button">Restore defaults</button></div><small>Clearing history leaves tasks unchanged. Restoring defaults keeps history.</small>' + skillsAdvanced(scope) + '</section></div></details>';
 }
 
 function renderAllViews() { renderOverview(); renderAgents(); renderReview(); renderAssets(); renderSettings(); }
@@ -1636,8 +1673,17 @@ async function refreshOverview(showLoading = true) {
     renderProjectNavigation();
     await Promise.all([refreshProof(), refreshUsageHistory(), refreshProjectProgress(), refreshProjectProgressFeed(), refreshRoleManifests()]);
     const selectedCtrl = state.ctrlId || historicalControllers()[0]?.id || '';
+    const previousConfig = state.config;
     const results = await Promise.allSettled([api('/api/diagnostics'), api('/api/health/settings'), api('/api/storage'), selectedCtrl ? api('/api/ctrl-settings?ctrl_id=' + encodeURIComponent(selectedCtrl)) : Promise.resolve(null), api('/api/config')]);
     [state.diagnostics, state.health, state.storage, state.ctrlSettings, state.config] = results.map((result) => result.status === 'fulfilled' ? result.value : null);
+    if (results[4].status === 'fulfilled') {
+      state.configStatus = "current";
+      state.configError = "";
+    } else {
+      state.config = previousConfig;
+      state.configStatus = previousConfig ? "stale" : "unavailable";
+      state.configError = results[4].reason?.message || "Settings could not be loaded.";
+    }
     await Promise.all([refreshSkills(), refreshAutoStatus()]);
     renderAllViews();
   } catch (error) {
@@ -1945,6 +1991,29 @@ document.addEventListener('change', async (event) => {
       if (state.autoStatus === "current") state.autoError = error.message || "Auto setting could not be saved.";
     } finally {
       state.autoSaving = false;
+      renderSettings();
+    }
+    return;
+  }
+  if (event.target.id === 'chat-relay-enabled') {
+    if (state.configStatus !== "current" || !configEditable("chat_relay.enabled") || state.chatRelaySaving) { renderSettings(); return; }
+    const requestedValue = event.target.checked;
+    const previousConfig = state.config;
+    state.chatRelaySaving = true;
+    state.configError = "";
+    renderSettings();
+    try {
+      state.config = await api('/api/config', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(chatRelayMutation(requestedValue)) });
+      state.configStatus = "current";
+    } catch (error) {
+      const saveError = error.message || "Chat relay setting could not be saved.";
+      try {
+        Object.assign(state, chatRelayFailureState(previousConfig, await api('/api/config'), saveError));
+      } catch (reloadError) {
+        Object.assign(state, chatRelayFailureState(previousConfig, null, saveError));
+      }
+    } finally {
+      state.chatRelaySaving = false;
       renderSettings();
     }
     return;

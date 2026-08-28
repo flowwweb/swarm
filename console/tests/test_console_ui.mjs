@@ -370,7 +370,52 @@ assert.equal(evaluateAutoPresentation({ enabled: true, in_flight: false, attenti
 assert.match(app, /state\.autoStatus === "stale"[\s\S]*?last known value is shown read-only/);
 assert.match(app, /!current \|\| state\.autoSaving \? ' disabled' : ''/);
 assert.match(primarySettingsSource, /autoSettingsMarkup\(\)/);
-assert.doesNotMatch(indexHtml + app, /chat_relay|Use ChatGPT for eligible work/i);
+assert.doesNotMatch(primarySettingsSource, /chatRelaySettingsMarkup\(\)/);
+assert.match(settingsSource, /chatRelaySettingsMarkup\(\)/);
+assert.match(app, /aria-label="Use ChatGPT for eligible work" aria-describedby="chat-relay-status"/);
+assert.match(app, /id="chat-relay-status" aria-live="polite"/);
+const chatRelayPresentationStart = app.indexOf("function chatRelayPresentation");
+const chatRelayPresentationEnd = app.indexOf("\n}\n\nfunction chatRelayMutation", chatRelayPresentationStart) + 2;
+assert.ok(chatRelayPresentationStart >= 0 && chatRelayPresentationEnd > chatRelayPresentationStart, "chatRelayPresentation source is extractable");
+const evaluateChatRelayPresentation = vm.runInNewContext("(" + app.slice(chatRelayPresentationStart, chatRelayPresentationEnd) + ")");
+const relayOff = { editable: ["chat_relay.enabled"], settings: { chat_relay: { enabled: false } } };
+const relayOn = { editable: ["chat_relay.enabled"], settings: { chat_relay: { enabled: true } } };
+assert.deepEqual(
+  [evaluateChatRelayPresentation(relayOff, "current", false, "").checked, evaluateChatRelayPresentation(relayOff, "current", false, "").disabled, evaluateChatRelayPresentation(relayOff, "current", false, "").title],
+  [false, false, "Off"],
+);
+assert.deepEqual(
+  [evaluateChatRelayPresentation(relayOn, "current", false, "").checked, evaluateChatRelayPresentation(relayOn, "current", false, "").disabled, evaluateChatRelayPresentation(relayOn, "current", false, "").title],
+  [true, false, "Enabled"],
+);
+const relayMissing = evaluateChatRelayPresentation({ editable: ["chat_relay.enabled"], settings: {} }, "current", false, "");
+assert.deepEqual([relayMissing.checked, relayMissing.disabled, relayMissing.title], [false, true, "Unavailable"]);
+const relayManaged = evaluateChatRelayPresentation({ editable: [], settings: { chat_relay: { enabled: false } } }, "current", false, "");
+assert.deepEqual([relayManaged.checked, relayManaged.disabled, relayManaged.title], [false, true, "Off"]);
+const relayStale = evaluateChatRelayPresentation(relayOn, "stale", false, "Settings could not be loaded.");
+assert.deepEqual([relayStale.checked, relayStale.disabled, relayStale.title], [true, true, "Unavailable"]);
+assert.match(relayStale.note, /last known value is shown read-only[.] Settings could not be loaded[.]/);
+const relaySaving = evaluateChatRelayPresentation(relayOff, "current", true, "");
+assert.deepEqual([relaySaving.checked, relaySaving.disabled, relaySaving.title], [false, true, "Saving"]);
+const chatRelayMutationStart = app.indexOf("function chatRelayMutation");
+const chatRelayMutationEnd = app.indexOf("\n}\n\nfunction chatRelayFailureState", chatRelayMutationStart) + 2;
+const evaluateChatRelayMutation = vm.runInNewContext("(" + app.slice(chatRelayMutationStart, chatRelayMutationEnd) + ")");
+assert.equal(JSON.stringify(evaluateChatRelayMutation(true)), '{"changes":{"chat_relay.enabled":true}}');
+assert.equal(JSON.stringify(evaluateChatRelayMutation(false)), '{"changes":{"chat_relay.enabled":false}}');
+const chatRelayFailureStart = app.indexOf("function chatRelayFailureState");
+const chatRelayFailureEnd = app.indexOf("\n}\n\nfunction chatRelaySettingsMarkup", chatRelayFailureStart) + 2;
+const evaluateChatRelayFailure = vm.runInNewContext("(" + app.slice(chatRelayFailureStart, chatRelayFailureEnd) + ")");
+const relayReloaded = evaluateChatRelayFailure(relayOff, relayOn, "Save failed.");
+assert.deepEqual([relayReloaded.config.settings.chat_relay.enabled, relayReloaded.configStatus], [true, "current"]);
+assert.match(relayReloaded.configError, /Save failed[.] The current server value was reloaded[.]/);
+const relayReadbackFailed = evaluateChatRelayFailure(relayOn, null, "Save failed.");
+assert.deepEqual([relayReadbackFailed.config.settings.chat_relay.enabled, relayReadbackFailed.configStatus], [true, "stale"]);
+assert.match(relayReadbackFailed.configError, /current server value could not be reloaded/);
+assert.equal(evaluateChatRelayFailure(null, null, "Save failed.").configStatus, "unavailable");
+assert.match(app, /JSON\.stringify\(chatRelayMutation\(requestedValue\)\)/);
+assert.match(app, /Object\.assign\(state, chatRelayFailureState\(previousConfig, await api\('\/api\/config'\), saveError\)\)/);
+assert.doesNotMatch(settingsSource, /api\('\/api\/config'/);
+assert.doesNotMatch(app, /\/api\/(?:chat-relay|relay)|CodexAppServerAdapter|chat_relay\.(?:provider|surface|mode)/);
 assert.match(app, /function forecastSummary\(node\)/);
 assert.match(app, /baseline_eta_end_ms/);
 assert.match(app, /delta_from_baseline_ms/);
