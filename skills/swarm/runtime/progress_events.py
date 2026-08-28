@@ -112,6 +112,11 @@ REQUEST_LIFECYCLE_EVENT_FIELDS = frozenset({
     "record", "route_receipt_ids", "permitted_route_ids", "failed_goal_turn_receipt_ids",
     "release_authority", "release_receipt_id", "release_issued_at_ms",
 })
+LEGACY_REQUEST_LIFECYCLE_EVENT_FIELDS = frozenset({
+    "schema_version", "record_type", "event_id", "dedupe_key", "request_id",
+    "stage_id", "parent_event_id", "envelope_digest", "lifecycle_state",
+    "record", "route_receipt_ids", "release_authority",
+})
 REQUEST_RECORD_FIELDS = frozenset({
     "id", "goal_id", "task_id", "accepted_owner", "outcome_kind",
     "outcome_digest", "accepting_route", "accepted_at", "next_due_event",
@@ -207,6 +212,7 @@ PROGRESS_EVENT_SOURCES = frozenset({
     "swarm_runtime", "swarm_task_owner", "swarm_proof_registry",
     "swarm_request_ledger", "swarm_execution_adapter",
 })
+ROLE_SPECIALIZATIONS_INTRODUCED_AT_MS = 1_787_935_000_000
 
 
 class ProgressEventError(ValueError):
@@ -461,6 +467,40 @@ def validate_request_lifecycle_event(payload: Any) -> dict[str, Any]:
     return json.loads(encoded.decode("utf-8"))
 
 
+def _validate_retained_request_lifecycle_event(payload: Any, event_digest: str) -> dict[str, Any]:
+    """Decode the exact pre-exhaustion schema only after retained-line verification."""
+    if not isinstance(payload, dict) or _request_lifecycle_digest(payload) != event_digest:
+        raise ProgressEventError("retained request lifecycle digest does not bind its event")
+    if set(payload) == REQUEST_LIFECYCLE_EVENT_FIELDS:
+        return validate_request_lifecycle_event(payload)
+    if set(payload) != LEGACY_REQUEST_LIFECYCLE_EVENT_FIELDS:
+        raise ProgressEventError("retained request lifecycle schema is unsupported")
+    migrated = {
+        **payload,
+        "permitted_route_ids": [],
+        "failed_goal_turn_receipt_ids": [],
+        "release_receipt_id": None,
+        "release_issued_at_ms": None,
+    }
+    state = LedgerLifecycleState(str(payload.get("lifecycle_state") or ""))
+    routes = _safe_ids(payload.get("route_receipt_ids"), "route_receipt_ids")
+    authority = _optional_id(payload.get("release_authority"), "release_authority")
+    if state is LedgerLifecycleState.BLOCKED:
+        if len(routes) < 3 or authority is None:
+            raise ProgressEventError("legacy terminal BLOCKED requires its retained route exhaustion and release authority")
+    elif routes or authority is not None:
+        raise ProgressEventError("legacy route exhaustion evidence is reserved for terminal BLOCKED")
+    validation_copy = dict(migrated)
+    if state in {LedgerLifecycleState.STALLED, LedgerLifecycleState.BLOCKED}:
+        validation_copy.update({
+            "lifecycle_state": LedgerLifecycleState.WAITING.value,
+            "route_receipt_ids": [],
+            "release_authority": None,
+        })
+    validate_request_lifecycle_event(validation_copy)
+    return json.loads(json.dumps(migrated, ensure_ascii=False, sort_keys=True, separators=(",", ":")))
+
+
 @dataclass(frozen=True)
 class ProgressMaterialEvent:
     schema_version: int
@@ -600,12 +640,14 @@ def _role_specializations(value: Any, source: str) -> list[str]:
     return labels
 
 
-def validate_role_manifest(payload: Any) -> dict[str, Any]:
+def _validate_role_manifest(payload: Any, *, retained_pre_specializations: bool = False) -> dict[str, Any]:
     if not isinstance(payload, dict):
         raise ProgressEventError("role manifest must be an object")
     _exact_fields(payload, ROLE_MANIFEST_FIELDS, "role manifest")
     source = str(payload.get("source") or "")
-    legacy_specializations = "specializations" not in payload and payload.get("version") not in (None, "")
+    legacy_specializations = retained_pre_specializations and set(payload) == ROLE_MANIFEST_FIELDS - {"specializations"} and payload.get("version") not in (None, "")
+    if retained_pre_specializations and not legacy_specializations:
+        raise ProgressEventError("retained pre-specialization role manifest provenance is invalid")
     digest = str(payload.get("avatar_asset_digest") or "").casefold()
     accent = str(payload.get("accent") or "").casefold()
     if source not in ROLE_SOURCES or not re.fullmatch(r"[0-9a-f]{64}", digest):
@@ -632,6 +674,10 @@ def validate_role_manifest(payload: Any) -> dict[str, Any]:
     if version != expected:
         raise ProgressEventError("role manifest version does not match canonical content")
     return {**normalized, "version": version}
+
+
+def validate_role_manifest(payload: Any) -> dict[str, Any]:
+    return _validate_role_manifest(payload)
 
 
 def build_role_manifest(role_id: str, draft: Mapping[str, Any], source: str, provenance: list[str]) -> dict[str, Any]:
@@ -670,10 +716,19 @@ def load_builtin_role_manifests(roles_root: Path, avatar_path: Path) -> tuple[di
     return tuple(manifests)
 
 
-def validate_progress_material_event(payload: Any) -> ProgressMaterialEvent:
+def _validate_progress_material_event(
+    payload: Any,
+    *,
+    retained_event: tuple[int, str] | None = None,
+) -> ProgressMaterialEvent:
     """Validate one compact material event without accepting chat or tool content."""
     if not isinstance(payload, dict):
         raise ProgressEventError("progress material event must be a JSON object")
+    raw_digest = hashlib.sha256(json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
+    if retained_event is not None:
+        retained_seq, retained_digest = retained_event
+        if not isinstance(retained_seq, int) or retained_seq < 1 or retained_digest != raw_digest:
+            raise ProgressEventError("retained progress event provenance does not bind its sequence and digest")
     _exact_fields(payload, MATERIAL_EVENT_FIELDS, "progress material event")
     schema_version = payload.get("schema_version")
     if schema_version not in {1, 2}:
@@ -817,7 +872,14 @@ def validate_progress_material_event(payload: Any) -> ProgressMaterialEvent:
         role_id = _safe_id(role_payload.get("role_id"), "role payload role_id")
         expected_version = _optional_id(role_payload.get("expected_active_version"), "role expected_active_version")
         assignment_task = _optional_id(role_payload.get("assignment_task_id"), "role assignment_task_id")
-        manifest = validate_role_manifest(role_payload.get("manifest"))
+        raw_manifest = role_payload.get("manifest")
+        retained_legacy_manifest = (
+            retained_event is not None
+            and isinstance(raw_manifest, dict)
+            and "specializations" not in raw_manifest
+            and observed_at_ms < ROLE_SPECIALIZATIONS_INTRODUCED_AT_MS
+        )
+        manifest = _validate_role_manifest(raw_manifest, retained_pre_specializations=retained_legacy_manifest)
         if role_id != manifest["id"] or project_id != "swarm-role-manifests" or block_id != role_id:
             raise ProgressEventError("role manifest event identity is not server-bound")
         if source != "swarm_runtime" or custody_surface != "server:role-manifests":
@@ -888,6 +950,10 @@ def validate_progress_material_event(payload: Any) -> ProgressMaterialEvent:
         digest=hashlib.sha256(encoded).hexdigest(),
         semantic_digest=semantic_digest,
     )
+
+
+def validate_progress_material_event(payload: Any) -> ProgressMaterialEvent:
+    return _validate_progress_material_event(payload)
 
 
 def role_material_event(
@@ -1188,9 +1254,16 @@ class ProgressLedger:
         }
 
     @staticmethod
-    def _apply_request_lifecycle(projection: dict[str, Any], payload: dict[str, Any], event_seq: int) -> None:
-        event_digest = _request_lifecycle_digest(payload)
-        semantic_digest = _request_lifecycle_digest(payload, semantic=True)
+    def _apply_request_lifecycle(
+        projection: dict[str, Any],
+        payload: dict[str, Any],
+        event_seq: int,
+        *,
+        event_digest: str | None = None,
+        semantic_digest: str | None = None,
+    ) -> None:
+        event_digest = event_digest or _request_lifecycle_digest(payload)
+        semantic_digest = semantic_digest or _request_lifecycle_digest(payload, semantic=True)
         event_id = payload["event_id"]
         dedupe_key = payload["dedupe_key"]
         retained_event = projection["request_event_digests"].get(event_id)
@@ -1402,11 +1475,14 @@ class ProgressLedger:
                 raise ProgressEventError("progress ledger sequence is not contiguous")
             raw_event = record["event"]
             if isinstance(raw_event, dict) and raw_event.get("record_type") == "REQUEST_LIFECYCLE":
-                event = validate_request_lifecycle_event(raw_event)
-                event_digest = _request_lifecycle_digest(event)
-                if record["event_digest"] != event_digest:
-                    raise ProgressEventError("request lifecycle ledger event digest mismatch")
-                self._apply_request_lifecycle(projection, event, expected_seq)
+                event = _validate_retained_request_lifecycle_event(raw_event, record["event_digest"])
+                self._apply_request_lifecycle(
+                    projection,
+                    event,
+                    expected_seq,
+                    event_digest=record["event_digest"],
+                    semantic_digest=_request_lifecycle_digest(raw_event, semantic=True),
+                )
             elif isinstance(raw_event, dict) and raw_event.get("record_type") == "TASK_HANDOFF":
                 event = validate_task_handoff_event(raw_event)
                 event_digest = _task_handoff_digest(event)
@@ -1414,9 +1490,10 @@ class ProgressLedger:
                     raise ProgressEventError("task handoff ledger event digest mismatch")
                 self._apply_task_handoff(projection, event, expected_seq)
             else:
-                event = validate_progress_material_event(raw_event)
-                if record["event_digest"] != event.digest:
-                    raise ProgressEventError("progress ledger event digest mismatch")
+                event = _validate_progress_material_event(
+                    raw_event,
+                    retained_event=(expected_seq, record["event_digest"]),
+                )
                 self._apply(projection, event, expected_seq)
             records.append(record)
         return projection, records

@@ -327,20 +327,43 @@ class ProgressLedgerContractTests(unittest.TestCase):
         self.assertIsNone(avatar["generation_command"])
 
         legacy_content = {key: value for key, value in manager.items() if key not in {"specializations", "version"}}
-        legacy_content.update({"id": "legacy-guide", "source": "custom", "provenance": ["legacy-role-replay"]})
-        legacy_version = f"custom:{hashlib.sha256(json.dumps(legacy_content, sort_keys=True, separators=(',', ':')).encode()).hexdigest()}"
-        legacy = validate_role_manifest({**legacy_content, "version": legacy_version})
-        self.assertEqual(legacy["version"], legacy_version)
-        self.assertNotIn("specializations", legacy)
-        self.ledger.append(role_material_event(
-            "ROLE_MANIFEST_CREATE", event_id="legacy-role", dedupe_key="legacy-role-dedupe",
-            role_id="legacy-guide", manifest=legacy,
-            expected_active_version=None, assignment_task_id=None,
+        legacy_version = f"builtin:{hashlib.sha256(json.dumps(legacy_content, sort_keys=True, separators=(',', ':')).encode()).hexdigest()}"
+        legacy_manifest = {**legacy_content, "version": legacy_version}
+        legacy_event = role_material_event(
+            "ROLE_MANIFEST_RESET", event_id="legacy-role", dedupe_key="legacy-role-dedupe",
+            role_id="manager", manifest=manager,
+            expected_active_version=legacy_version, assignment_task_id=None,
             provenance="legacy-role-replay", observed_at_ms=20,
-        ))
+        )
+        legacy_event["topology"]["role_manifest"]["manifest"] = legacy_manifest
+        ledger_path = self.root / PROGRESS_LEDGER_PATH
+        before = ledger_path.read_bytes() if ledger_path.exists() else b""
+        with self.assertRaisesRegex(ProgressEventError, "four specializations"):
+            self.ledger.append(legacy_event)
+        self.assertEqual(ledger_path.read_bytes() if ledger_path.exists() else b"", before)
+
+        legacy_digest = hashlib.sha256(json.dumps(legacy_event, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+        record = {"event_seq": 1, "event_digest": legacy_digest, "event": legacy_event}
+        ledger_path.parent.mkdir(parents=True, exist_ok=True)
+        ledger_path.write_bytes(json.dumps(record, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode() + b"\n")
+        retained_bytes = ledger_path.read_bytes()
         replayed = ProgressLedger(self.root).project_role_manifests(builtins)
-        legacy_role = next(role for role in replayed["roles"] if role["id"] == "legacy-guide")
-        self.assertEqual(legacy_role["specializations"], [])
+        replayed_manager = next(role for role in replayed["roles"] if role["id"] == "manager")
+        retained_legacy = next(version for version in replayed_manager["versions"] if version["version"] == legacy_version)
+        self.assertEqual(retained_legacy["specializations"], [])
+        self.assertEqual(ledger_path.read_bytes(), retained_bytes)
+
+        late_root = self.root / "late-injection"
+        late_event = json.loads(json.dumps(legacy_event))
+        late_event.update({"event_id": "late-role", "dedupe_key": "late-role-dedupe", "observed_at_ms": 1_787_935_000_000})
+        late_digest = hashlib.sha256(json.dumps(late_event, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+        late_path = late_root / PROGRESS_LEDGER_PATH
+        late_path.parent.mkdir(parents=True, exist_ok=True)
+        late_path.write_bytes(json.dumps({"event_seq": 1, "event_digest": late_digest, "event": late_event}, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode() + b"\n")
+        late_bytes = late_path.read_bytes()
+        with self.assertRaisesRegex(ProgressEventError, "four specializations"):
+            ProgressLedger(late_root).replay()
+        self.assertEqual(late_path.read_bytes(), late_bytes)
 
     def test_normative_lifecycle_is_exact(self) -> None:
         self.assertEqual(
@@ -768,6 +791,58 @@ class ProgressLedgerContractTests(unittest.TestCase):
         result = self.ledger.append_request_lifecycle(terminal, custody_receipt=release)
         self.assertEqual(result["status"], "appended")
         self.assertEqual(self.ledger.project_request_lifecycles()["records"][0]["lifecycle_state"], "BLOCKED")
+
+    def test_retained_schema_v1_request_lifecycle_replays_without_rewriting(self) -> None:
+        offer = {
+            "schema_version": 1, "record_type": "REQUEST_LIFECYCLE",
+            "event_id": "legacy-offer", "dedupe_key": "legacy-offer-dedupe",
+            "request_id": "legacy-request", "stage_id": "legacy-stage",
+            "parent_event_id": None, "envelope_digest": "1" * 64,
+            "lifecycle_state": "OFFERED", "record": None,
+            "route_receipt_ids": [], "release_authority": None,
+        }
+        cursor = {"event_receipt": "legacy-event", "message_id": "legacy-message", "surface_receipt": "legacy-surface", "feed_sequence": 1}
+        request_record = {
+            "id": "legacy-request", "goal_id": "legacy-goal", "task_id": "legacy-task",
+            "accepted_owner": "legacy-owner", "outcome_kind": "ARTIFACT",
+            "outcome_digest": "2" * 64, "accepting_route": ["legacy-owner", "CTRL"],
+            "accepted_at": 1, "next_due_event": "legacy-due", "next_due_at": 2,
+            "evidence_receipts": ["legacy-proof"],
+            "transitions": [{"state": "OPEN", "kind": "decision", "cursor": cursor}],
+            "successor_id": "",
+        }
+        acknowledged = {
+            **offer,
+            "event_id": "legacy-ack", "dedupe_key": "legacy-ack-dedupe",
+            "parent_event_id": offer["event_id"], "lifecycle_state": "ACKNOWLEDGED",
+            "record": request_record,
+        }
+        ledger_path = self.root / PROGRESS_LEDGER_PATH
+        before = ledger_path.read_bytes() if ledger_path.exists() else b""
+        with self.assertRaisesRegex(ProgressEventError, "must be an array"):
+            self.ledger.append_request_lifecycle(offer)
+        self.assertEqual(ledger_path.read_bytes() if ledger_path.exists() else b"", before)
+
+        records = []
+        for sequence, event in enumerate((offer, acknowledged), 1):
+            digest = hashlib.sha256(json.dumps(event, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+            records.append({"event_seq": sequence, "event_digest": digest, "event": event})
+        ledger_path.parent.mkdir(parents=True, exist_ok=True)
+        ledger_path.write_bytes(b"".join(json.dumps(record, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode() + b"\n" for record in records))
+        retained_bytes = ledger_path.read_bytes()
+        projection = ProgressLedger(self.root).project_request_lifecycles()
+        self.assertEqual((projection["event_count"], projection["records"][0]["lifecycle_state"]), (2, "ACKNOWLEDGED"))
+        self.assertEqual(ledger_path.read_bytes(), retained_bytes)
+
+        admitted = {
+            **acknowledged,
+            "event_id": "current-admitted", "dedupe_key": "current-admitted-dedupe",
+            "parent_event_id": acknowledged["event_id"], "lifecycle_state": "ADMITTED",
+            "permitted_route_ids": [], "failed_goal_turn_receipt_ids": [],
+            "release_receipt_id": None, "release_issued_at_ms": None,
+        }
+        self.assertEqual(self.ledger.append_request_lifecycle(admitted)["status"], "appended")
+        self.assertEqual(self.ledger.project_request_lifecycles()["records"][0]["lifecycle_state"], "ADMITTED")
 
     def _continuity_swarm(self, *, user_keep_out: bool = False, owner: str = "owner-old", ledger: ProgressLedger | None = None) -> tuple[Swarm, Task, TaskStartReceipt]:
         task = Task("task-life", owner, "creator", 1, {}, goal_id="goal-life", user_custody_required=user_keep_out)
