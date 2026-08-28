@@ -168,7 +168,7 @@ class OperatingModelTests(unittest.TestCase):
             "name":"Critic","purpose":"Decode one retained historical role revision.",
             "owns":["Historical metadata only."],"instructions":["Remain non-authoritative."],
             "boundaries":["No current routing or review authority."],"default_skills":[],
-            "avatar_asset_digest":digest_value,"accent":"#123456",
+            "specializations":[],"avatar_asset_digest":digest_value,"accent":"#123456",
         },"custom",["history:critic:v1"])
         with tempfile.TemporaryDirectory() as root:
             ledger=ProgressLedger(Path(root))

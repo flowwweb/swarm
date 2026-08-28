@@ -212,7 +212,6 @@ PROGRESS_EVENT_SOURCES = frozenset({
     "swarm_runtime", "swarm_task_owner", "swarm_proof_registry",
     "swarm_request_ledger", "swarm_execution_adapter",
 })
-ROLE_SPECIALIZATIONS_INTRODUCED_AT_MS = 1_787_935_000_000
 
 
 class ProgressEventError(ValueError):
@@ -640,14 +639,13 @@ def _role_specializations(value: Any, source: str) -> list[str]:
     return labels
 
 
-def _validate_role_manifest(payload: Any, *, retained_pre_specializations: bool = False) -> dict[str, Any]:
+def _validate_role_manifest(payload: Any) -> dict[str, Any]:
     if not isinstance(payload, dict):
         raise ProgressEventError("role manifest must be an object")
     _exact_fields(payload, ROLE_MANIFEST_FIELDS, "role manifest")
     source = str(payload.get("source") or "")
-    legacy_specializations = retained_pre_specializations and set(payload) == ROLE_MANIFEST_FIELDS - {"specializations"} and payload.get("version") not in (None, "")
-    if retained_pre_specializations and not legacy_specializations:
-        raise ProgressEventError("retained pre-specialization role manifest provenance is invalid")
+    if "specializations" not in payload:
+        raise ProgressEventError("current role manifests must explicitly provide specializations")
     digest = str(payload.get("avatar_asset_digest") or "").casefold()
     accent = str(payload.get("accent") or "").casefold()
     if source not in ROLE_SOURCES or not re.fullmatch(r"[0-9a-f]{64}", digest):
@@ -667,8 +665,7 @@ def _validate_role_manifest(payload: Any, *, retained_pre_specializations: bool 
         "source": source,
         "provenance": _role_texts(payload.get("provenance"), "role provenance"),
     }
-    if not legacy_specializations:
-        normalized["specializations"] = _role_specializations(payload.get("specializations", []), source)
+    normalized["specializations"] = _role_specializations(payload["specializations"], source)
     expected = f"{source}:{hashlib.sha256(json.dumps(normalized, sort_keys=True, separators=(',', ':')).encode()).hexdigest()}"
     version = expected if payload.get("version") in (None, "") else _safe_id(payload.get("version"), "role version")
     if version != expected:
@@ -685,9 +682,7 @@ def build_role_manifest(role_id: str, draft: Mapping[str, Any], source: str, pro
     if not isinstance(draft, dict):
         raise ProgressEventError("role manifest draft must be an object")
     _exact_fields(draft, allowed, "role manifest draft")
-    normalized_draft = {**draft}
-    normalized_draft.setdefault("specializations", [])
-    return validate_role_manifest({"id": role_id, **normalized_draft, "source": source, "provenance": provenance})
+    return validate_role_manifest({"id": role_id, **draft, "source": source, "provenance": provenance})
 
 
 def load_builtin_role_manifests(roles_root: Path, avatar_path: Path) -> tuple[dict[str, Any], ...]:
@@ -873,13 +868,7 @@ def _validate_progress_material_event(
         expected_version = _optional_id(role_payload.get("expected_active_version"), "role expected_active_version")
         assignment_task = _optional_id(role_payload.get("assignment_task_id"), "role assignment_task_id")
         raw_manifest = role_payload.get("manifest")
-        retained_legacy_manifest = (
-            retained_event is not None
-            and isinstance(raw_manifest, dict)
-            and "specializations" not in raw_manifest
-            and observed_at_ms < ROLE_SPECIALIZATIONS_INTRODUCED_AT_MS
-        )
-        manifest = _validate_role_manifest(raw_manifest, retained_pre_specializations=retained_legacy_manifest)
+        manifest = _validate_role_manifest(raw_manifest)
         if role_id != manifest["id"] or project_id != "swarm-role-manifests" or block_id != role_id:
             raise ProgressEventError("role manifest event identity is not server-bound")
         if source != "swarm_runtime" or custody_surface != "server:role-manifests":
@@ -1474,6 +1463,7 @@ class ProgressLedger:
             if record["event_seq"] != expected_seq:
                 raise ProgressEventError("progress ledger sequence is not contiguous")
             raw_event = record["event"]
+            replayed_record = record
             if isinstance(raw_event, dict) and raw_event.get("record_type") == "REQUEST_LIFECYCLE":
                 event = _validate_retained_request_lifecycle_event(raw_event, record["event_digest"])
                 self._apply_request_lifecycle(
@@ -1483,6 +1473,7 @@ class ProgressLedger:
                     event_digest=record["event_digest"],
                     semantic_digest=_request_lifecycle_digest(raw_event, semantic=True),
                 )
+                replayed_record = {**record, "event": event}
             elif isinstance(raw_event, dict) and raw_event.get("record_type") == "TASK_HANDOFF":
                 event = validate_task_handoff_event(raw_event)
                 event_digest = _task_handoff_digest(event)
@@ -1495,7 +1486,7 @@ class ProgressLedger:
                     retained_event=(expected_seq, record["event_digest"]),
                 )
                 self._apply(projection, event, expected_seq)
-            records.append(record)
+            records.append(replayed_record)
         return projection, records
 
     def _write_projection_unlocked(self, projection: dict[str, Any]) -> None:
