@@ -1,4 +1,4 @@
-const state = { token: "", overview: null, proof: [], proofCollections: new Map(), proofStatuses: new Map(), proofStatus: "idle", proofSequence: 0, usageHistory: null, usageWindowHours: 24, usageScopeKey: "", usageStatus: "idle", usageError: "", projectProgress: null, projectProgressProjectId: "", projectProgressStatus: "idle", projectProgressError: "", projectProgressFeed: null, projectProgressFeedProjectId: "", projectProgressFeedStatus: "idle", projectProgressFeedError: "", projectTab: "overview", diagnostics: null, health: null, storage: null, config: null, ctrlSettings: null, skills: null, skillsError: "", roleManifests: null, roleManifestStatus: "unavailable", roleManifestError: "", agentsTab: "active", selectedRoleId: "accountant", roleEditorTrigger: null, assetView: "grid", selectedAssetIdentity: "", onboardingStep: 0, onboardingShown: false, onboardingTrigger: null, notificationLastSeen: 0, notificationTrigger: null, connectionStatus: "reconnecting", view: "overview", projectId: "all", ctrlId: "", settingsCtrlId: "", settingsScopeType: "", settingsScopeId: "", evidenceImages: [], evidenceIndex: 0, evidenceTrigger: null };
+const state = { token: "", overview: null, proof: [], proofCollections: new Map(), proofStatuses: new Map(), proofStatus: "idle", proofSequence: 0, usageHistory: null, usageWindowHours: 24, usageScopeKey: "", usageStatus: "idle", usageError: "", projectProgress: null, projectProgressProjectId: "", projectProgressStatus: "idle", projectProgressError: "", projectProgressFeed: null, projectProgressFeedProjectId: "", projectProgressFeedStatus: "idle", projectProgressFeedError: "", projectTab: "overview", diagnostics: null, health: null, storage: null, config: null, ctrlSettings: null, auto: null, autoBindingKey: "", autoStatus: "idle", autoError: "", autoSaving: false, skills: null, skillsError: "", roleManifests: null, roleManifestStatus: "unavailable", roleManifestError: "", agentsTab: "active", selectedRoleId: "accountant", roleEditorTrigger: null, assetView: "grid", selectedAssetIdentity: "", onboardingStep: 0, onboardingShown: false, onboardingTrigger: null, notificationLastSeen: 0, notificationTrigger: null, connectionStatus: "reconnecting", view: "overview", projectId: "all", ctrlId: "", settingsCtrlId: "", settingsScopeType: "", settingsScopeId: "", evidenceImages: [], evidenceIndex: 0, evidenceTrigger: null };
 const EVIDENCE_THUMBNAIL_PAGE_SIZE = 24;
 const USAGE_WINDOW_LABELS = { 1: "1h", 24: "1d" };
 const ROLE_PROFESSIONS = [
@@ -275,6 +275,7 @@ function setView(view, focus, syncRoute = true) {
   $("#view-title").textContent = selectedView === "overview" && project ? project.label : titles[selectedView][0];
   $("#view-subtitle").textContent = selectedView === "overview" && project ? "Project progress, proof, ownership, and ledger." : titles[selectedView][1];
   if (selectedView === 'settings' && (!state.skills || state.skillsError)) refreshSkills().then(renderSettings);
+  if (selectedView === 'settings' && state.token) refreshAutoStatus().then(renderSettings);
   if (syncRoute && location.hash !== '#' + selectedView) history.replaceState(null, '', '#' + selectedView);
   if (focus) $("#tab-" + selectedView)?.focus({ preventScroll: true });
 }
@@ -1333,6 +1334,47 @@ function selectedSettingsCtrl() {
   return scope.type === 'ctrl' ? historicalControllers().find((ctrl) => ctrl.id === scope.id) || null : null;
 }
 
+function autoBinding() {
+  const ctrl = selectedSettingsCtrl();
+  if (!ctrl?.id || !ctrl?.project_id) return null;
+  return { ctrlId: String(ctrl.id), projectId: String(ctrl.project_id) };
+}
+
+function autoBindingKey(binding) {
+  return binding ? binding.projectId + "|" + binding.ctrlId : "";
+}
+
+function autoRequestId(command) {
+  const values = new Uint32Array(4);
+  window.crypto.getRandomValues(values);
+  return "console-auto-" + command.toLowerCase() + "-" + [...values].map((value) => value.toString(16).padStart(8, "0")).join("");
+}
+
+function autoPresentation(auto) {
+  const attention = auto?.attention;
+  if (attention?.kind === "WAIT_USER") return ["Waiting for user", attention.reason || "A user decision is required before Auto can continue."];
+  if (attention) return ["Attention", attention.reason || "Auto needs review before it can continue."];
+  if (auto?.in_flight === true) return ["Active", "One accepted continuation is in flight."];
+  if (auto?.enabled === true) return ["Enabled", "Eligible work may continue when the server admits it."];
+  return ["Off", "Auto continuation is off for this CTRL."];
+}
+
+function autoSettingsMarkup() {
+  const binding = autoBinding();
+  if (!binding) return "";
+  const matches = state.auto && state.autoBindingKey === autoBindingKey(binding);
+  const current = matches && state.autoStatus === "current";
+  const presentation = matches ? autoPresentation(state.auto) : ["Unavailable", "Auto status has not been loaded for this CTRL."];
+  let note = presentation[1];
+  if (state.autoStatus === "loading") note = "Loading the server-owned Auto status.";
+  if (state.autoStatus === "refreshing") note = "Refreshing the server-owned Auto status.";
+  if (state.autoStatus === "stale") note = "Auto status could not be refreshed. The last known value is shown read-only.";
+  if (state.autoStatus === "unavailable") note = "Auto status is unavailable for this CTRL.";
+  if (state.autoSaving) note = "Saving the explicit Auto setting.";
+  if (state.autoError) note += " " + state.autoError;
+  return '<h4>Auto</h4><label class="toggle-row"><input id="auto-continuation" type="checkbox" aria-label="Continue eligible work automatically" aria-describedby="auto-continuation-status"' + (matches && state.auto.enabled === true ? ' checked' : '') + (!current || state.autoSaving ? ' disabled' : '') + '><span>Continue eligible work automatically</span></label><p class="scope-setting-status" id="auto-continuation-status" aria-live="polite"><strong>' + escapeHTML(matches ? presentation[0] : state.autoStatus === "loading" ? "Loading" : "Unavailable") + '</strong><span>' + escapeHTML(note) + '</span></p>';
+}
+
 function skillStatus(skill) {
   if (skill.builtin) return 'Built in';
   return ({ inherited: 'Inherited', available_to_install: 'Available', blocked_unreviewed: 'Needs review', blocked_authority: 'Blocked' })[skill.status] || (skill.relevant ? 'Available' : 'Not matched');
@@ -1392,7 +1434,7 @@ function renderSettings() {
       settingSelect('execution.max_reasoning', execution.max_reasoning || 'medium', reasoningOptions, 'Default reasoning') +
       settingToggle('execution.fast_mode', execution.fast_mode, 'Fast mode') + '<small>Requests faster service for new assignments. SWARM reports it active only from a host receipt.</small>' +
       settingToggle('execution.usage_saver', execution.usage_saver, 'Use less usage when possible') +
-      settingToggle('boost.spark_enabled', boost.spark_enabled, 'Use Spark for safe small tasks') + '<small>Spark stays bounded to quick, low-risk work.</small><h4>Skills</h4>' + skillsSummary(scope) + '</section>' +
+      settingToggle('boost.spark_enabled', boost.spark_enabled, 'Use Spark for safe small tasks') + '<small>Spark stays bounded to quick, low-risk work.</small>' + autoSettingsMarkup() + '<h4>Skills</h4>' + skillsSummary(scope) + '</section>' +
     '<section class="panel settings-card"><p class="eyebrow">Console and data</p><h3>Keep the workspace predictable</h3>' +
       settingToggle('console.project_progress_feed_enabled', consoleSettings.project_progress_feed_enabled, 'Progress feed') +
       '<label class="setting-field">Updates shown<input data-config-key="console.project_progress_feed_lines" type="number" min="1" max="10" value="' + escapeHTML(consoleSettings.project_progress_feed_lines ?? 4) + '"' + (!configEditable('console.project_progress_feed_lines') ? ' disabled' : '') + '></label>' +
@@ -1540,6 +1582,35 @@ async function refreshSkills() {
   catch (error) { state.skills = null; state.skillsError = error.message || 'Skills could not be loaded.'; }
 }
 
+async function refreshAutoStatus() {
+  const binding = autoBinding();
+  if (!binding) {
+    state.auto = null;
+    state.autoBindingKey = "";
+    state.autoStatus = "idle";
+    state.autoError = "";
+    return;
+  }
+  const bindingKey = autoBindingKey(binding);
+  const hasLastGood = state.auto && state.autoBindingKey === bindingKey;
+  state.autoStatus = hasLastGood ? "refreshing" : "loading";
+  state.autoError = "";
+  try {
+    const params = new URLSearchParams({ ctrl_id: binding.ctrlId, project_id: binding.projectId });
+    const result = await api('/api/auto?' + params.toString());
+    if (autoBindingKey(autoBinding()) !== bindingKey) return;
+    state.auto = result;
+    state.autoBindingKey = bindingKey;
+    state.autoStatus = "current";
+  } catch (error) {
+    if (autoBindingKey(autoBinding()) !== bindingKey) return;
+    if (!hasLastGood) state.auto = null;
+    state.autoBindingKey = bindingKey;
+    state.autoStatus = hasLastGood ? "stale" : "unavailable";
+    state.autoError = error.message || "Auto status could not be loaded.";
+  }
+}
+
 async function refreshRoleManifests() {
   const hasLastGood = Array.isArray(state.roleManifests?.roles);
   state.roleManifestStatus = hasLastGood ? "refreshing" : "loading";
@@ -1567,7 +1638,7 @@ async function refreshOverview(showLoading = true) {
     const selectedCtrl = state.ctrlId || historicalControllers()[0]?.id || '';
     const results = await Promise.allSettled([api('/api/diagnostics'), api('/api/health/settings'), api('/api/storage'), selectedCtrl ? api('/api/ctrl-settings?ctrl_id=' + encodeURIComponent(selectedCtrl)) : Promise.resolve(null), api('/api/config')]);
     [state.diagnostics, state.health, state.storage, state.ctrlSettings, state.config] = results.map((result) => result.status === 'fulfilled' ? result.value : null);
-    await refreshSkills();
+    await Promise.all([refreshSkills(), refreshAutoStatus()]);
     renderAllViews();
   } catch (error) {
     setDataStatus(state.overview ? "stale" : "unavailable", state.overview?.generated_at);
@@ -1834,7 +1905,10 @@ document.addEventListener('change', async (event) => {
     state.settingsScopeId = state.projectId === 'all' ? 'global' : state.projectId;
     renderProjectNavigation();
     renderAllViews();
-    try { await Promise.all([refreshProof(), refreshUsageHistory(), refreshProjectProgress(), refreshProjectProgressFeed(), refreshCtrlSettings(), refreshSkills()]); }
+    try {
+      await Promise.all([refreshProof(), refreshUsageHistory(), refreshProjectProgress(), refreshProjectProgressFeed(), refreshCtrlSettings(), refreshSkills()]);
+      await refreshAutoStatus();
+    }
     finally { renderAllViews(); }
     return;
   }
@@ -1850,7 +1924,29 @@ document.addEventListener('change', async (event) => {
     renderAllViews();
     try {
       await Promise.all([refreshProof(), refreshUsageHistory(), refreshProjectProgress(), refreshProjectProgressFeed(), refreshCtrlSettings(), refreshSkills()]);
+      await refreshAutoStatus();
     } finally { renderAllViews(); }
+    return;
+  }
+  if (event.target.id === 'auto-continuation') {
+    const binding = autoBinding();
+    if (!binding || state.autoStatus !== "current" || state.autoSaving) { renderSettings(); return; }
+    const command = event.target.checked ? "ENABLE" : "DISABLE";
+    state.autoSaving = true;
+    state.autoError = "";
+    renderSettings();
+    try {
+      state.auto = await api('/api/auto', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ command, ctrl_id: binding.ctrlId, project_id: binding.projectId, request_id: autoRequestId(command) }) });
+      state.autoBindingKey = autoBindingKey(binding);
+      state.autoStatus = "current";
+    } catch (error) {
+      state.autoError = error.message || "Auto setting could not be saved.";
+      await refreshAutoStatus();
+      if (state.autoStatus === "current") state.autoError = error.message || "Auto setting could not be saved.";
+    } finally {
+      state.autoSaving = false;
+      renderSettings();
+    }
     return;
   }
   if (event.target.id === 'auto-health') {

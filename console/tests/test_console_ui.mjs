@@ -342,11 +342,26 @@ const settingsMarkupSource = settingsSource.slice(settingsSource.indexOf('$("#se
 const primarySettingsSource = settingsMarkupSource.slice(0, settingsMarkupSource.indexOf('<details class="panel settings-advanced'));
 const primaryControlCount = (primarySettingsSource.match(/settingToggle\(/g) || []).length
   + (primarySettingsSource.match(/settingSelect\(/g) || []).length
+  + (primarySettingsSource.match(/autoSettingsMarkup\(\)/g) || []).length
   + (primarySettingsSource.match(/<input /g) || []).length
   + (primarySettingsSource.match(/<select /g) || []).length
   + 1; // Skills Manage action.
 assert.ok(primaryControlCount <= 12, `primary settings controls: ${primaryControlCount}`);
 assert.match(settingsSource, /<details class="panel settings-advanced settings-wide"/);
+const autoReadSource = app.slice(app.indexOf("async function refreshAutoStatus"), app.indexOf("async function refreshRoleManifests"));
+assert.match(autoReadSource, /await api\('\/api\/auto\?' \+ params\.toString\(\)\)/);
+assert.doesNotMatch(autoReadSource, /method:|'POST'|"POST"/);
+assert.doesNotMatch(settingsSource, /api\('\/api\/auto/);
+assert.match(app, /const command = event\.target\.checked \? "ENABLE" : "DISABLE"/);
+assert.match(app, /body: JSON\.stringify\(\{ command, ctrl_id: binding\.ctrlId, project_id: binding\.projectId, request_id: autoRequestId\(command\) \}\)/);
+assert.doesNotMatch(app, /RELEASE_UNREACHABLE/);
+assert.match(app, /aria-label="Continue eligible work automatically" aria-describedby="auto-continuation-status"/);
+assert.match(app, /id="auto-continuation-status" aria-live="polite"/);
+for (const status of ["Active", "Attention", "Waiting for user"]) assert.match(app, new RegExp(`\\["${status}"`));
+assert.match(app, /state\.autoStatus === "stale"[\s\S]*?last known value is shown read-only/);
+assert.match(app, /!current \|\| state\.autoSaving \? ' disabled' : ''/);
+assert.match(primarySettingsSource, /autoSettingsMarkup\(\)/);
+assert.doesNotMatch(indexHtml + app, /chat_relay|Use ChatGPT for eligible work/i);
 assert.match(app, /function forecastSummary\(node\)/);
 assert.match(app, /baseline_eta_end_ms/);
 assert.match(app, /delta_from_baseline_ms/);
