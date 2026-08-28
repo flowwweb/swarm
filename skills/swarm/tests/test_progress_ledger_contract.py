@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import tempfile
 import time
 import unittest
@@ -13,6 +14,9 @@ from skills.swarm.runtime.progress_events import (
     ProgressEventError,
     ProgressLifecycle,
     ProgressLedger,
+    build_role_manifest,
+    load_builtin_role_manifests,
+    role_material_event,
     validate_progress_material_event,
 )
 
@@ -25,6 +29,23 @@ class ProgressLedgerContractTests(unittest.TestCase):
 
     def tearDown(self) -> None:
         self.temporary.cleanup()
+
+    @staticmethod
+    def role_manifests() -> tuple[dict, ...]:
+        repository = Path(__file__).resolve().parents[3]
+        return load_builtin_role_manifests(
+            repository / "skills" / "swarm" / "roles",
+            repository / "console" / "static" / "swarm-offline-disconnected.png",
+        )
+
+    @staticmethod
+    def role_draft(role: dict, **changes: object) -> dict:
+        draft = {key: role[key] for key in (
+            "name", "purpose", "owns", "instructions", "boundaries",
+            "default_skills", "avatar_asset_digest", "accent",
+        )}
+        draft.update(changes)
+        return draft
 
     @staticmethod
     def event(
@@ -139,6 +160,80 @@ class ProgressLedgerContractTests(unittest.TestCase):
         projection = ProgressLedger(self.root).replay()
         self.assertEqual(projection["cursor"]["event_seq"], 2)
         self.assertEqual(len(projection["events"]), 2)
+
+    def test_role_manifest_revision_is_idempotent_and_reset_retains_history(self) -> None:
+        builtins = self.role_manifests()
+        initial = self.ledger.project_role_manifests(builtins)
+        self.assertEqual((initial["built_in_count"], len(initial["roles"])), (24, 24))
+        manager = next(role for role in initial["roles"] if role["id"] == "manager")
+        revised = build_role_manifest(
+            "manager",
+            self.role_draft(manager, instructions=[*manager["instructions"], "Keep one bounded decision explicit."]),
+            "user_override",
+            ["user-command:manager-revision"],
+        )
+        event = role_material_event(
+            "ROLE_MANIFEST_REVISE", event_id="manager-revision", dedupe_key="manager-revision-dedupe",
+            role_id="manager", manifest=revised, expected_active_version=manager["active_version"],
+            assignment_task_id=None, provenance="user-command:manager-revision", observed_at_ms=10,
+        )
+        self.assertEqual(self.ledger.append(event)["status"], "appended")
+        self.assertEqual(self.ledger.append(event)["status"], "unchanged")
+        overridden = next(role for role in self.ledger.project_role_manifests(builtins)["roles"] if role["id"] == "manager")
+        self.assertTrue(overridden["override_active"])
+        self.assertEqual(len(overridden["versions"]), 2)
+
+        builtin = next(role for role in builtins if role["id"] == "manager")
+        reset = role_material_event(
+            "ROLE_MANIFEST_RESET", event_id="manager-reset", dedupe_key="manager-reset-dedupe",
+            role_id="manager", manifest=builtin, expected_active_version=overridden["active_version"],
+            assignment_task_id=None, provenance="user-command:manager-reset", observed_at_ms=11,
+        )
+        self.assertEqual(self.ledger.append(reset)["status"], "appended")
+        restored = next(role for role in self.ledger.project_role_manifests(builtins)["roles"] if role["id"] == "manager")
+        self.assertEqual(restored["active_version"], restored["canonical_version"])
+        self.assertFalse(restored["override_active"])
+        self.assertEqual(len(restored["versions"]), 2)
+
+    def test_role_assignments_retain_version_and_new_tasks_use_current(self) -> None:
+        builtins = self.role_manifests()
+        manager = next(role for role in self.ledger.project_role_manifests(builtins)["roles"] if role["id"] == "manager")
+        builtin_manager = next(role for role in builtins if role["id"] == "manager")
+        before = role_material_event(
+            "ROLE_ASSIGNMENT_BOUND", event_id="bind-before", dedupe_key="bind-before-dedupe",
+            role_id="manager", manifest=builtin_manager, expected_active_version=manager["active_version"],
+            assignment_task_id="task-before", provenance="dispatch:task-before", observed_at_ms=1,
+        )
+        self.assertEqual(self.ledger.append(before)["status"], "appended")
+        revised = build_role_manifest("manager", self.role_draft(manager, accent="#123456"), "user_override", ["user-command:accent"])
+        self.ledger.append(role_material_event(
+            "ROLE_MANIFEST_REVISE", event_id="revise-between", dedupe_key="revise-between-dedupe",
+            role_id="manager", manifest=revised, expected_active_version=manager["active_version"],
+            assignment_task_id=None, provenance="user-command:accent", observed_at_ms=2,
+        ))
+        self.assertEqual(self.ledger.append(before)["status"], "unchanged")
+        self.ledger.append(role_material_event(
+            "ROLE_ASSIGNMENT_BOUND", event_id="bind-after", dedupe_key="bind-after-dedupe",
+            role_id="manager", manifest=revised, expected_active_version=revised["version"],
+            assignment_task_id="task-after", provenance="dispatch:task-after", observed_at_ms=3,
+        ))
+        assignments = {item["task_id"]: item for item in self.ledger.project_role_manifests(builtins)["assignments"]}
+        self.assertEqual(assignments["task-before"]["manifest_version"], manager["active_version"])
+        self.assertEqual(assignments["task-after"]["manifest_version"], revised["version"])
+        self.assertNotEqual(assignments["task-before"]["manifest_version"], assignments["task-after"]["manifest_version"])
+
+    def test_role_avatar_digest_and_version_are_content_bound(self) -> None:
+        builtins = self.role_manifests()
+        manager = next(role for role in builtins if role["id"] == "manager")
+        changed = build_role_manifest("manager", self.role_draft(manager, accent="#abcdef"), "user_override", ["receipt:accent"])
+        self.assertNotEqual(changed["version"], manager["version"])
+        malformed = {**changed, "avatar_asset_digest": hashlib.sha256(b"other").hexdigest()}
+        with self.assertRaisesRegex(ProgressEventError, "version does not match"):
+            role_material_event(
+                "ROLE_MANIFEST_REVISE", event_id="malformed", dedupe_key="malformed-dedupe",
+                role_id="manager", manifest=malformed, expected_active_version=manager["version"],
+                assignment_task_id=None, provenance="receipt:malformed", observed_at_ms=4,
+            )
 
     def test_normative_lifecycle_is_exact(self) -> None:
         self.assertEqual(

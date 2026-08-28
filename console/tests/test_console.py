@@ -39,6 +39,50 @@ class SwarmConsoleTests(unittest.TestCase):
         self.assertEqual(len(console.INSTANCE_ID), 16)
         self.assertRegex(console.INSTANCE_ID, r"^[0-9a-f]+$")
 
+    def test_role_manifest_http_contract_is_server_owned_and_asset_bound(self) -> None:
+        app = console.App(self.codex_home, self.config)
+        projection = app.role_manifest_projection()
+        self.assertTrue(projection["ok"])
+        self.assertEqual((projection["built_in_count"], len(projection["roles"])), (24, 24))
+        self.assertEqual(projection["command_contract"]["endpoint"], "/api/role-manifests/commands")
+        self.assertEqual(projection["hierarchy_binding"]["levels"], ["PROJECT", "CTRL", "LEAD", "DOER"])
+        manager = next(role for role in projection["roles"] if role["id"] == "manager")
+        draft = {key: manager[key] for key in (
+            "name", "purpose", "owns", "instructions", "boundaries",
+            "default_skills", "avatar_asset_digest", "accent",
+        )}
+        request = {
+            "command": "ROLE_MANIFEST_REVISE",
+            "role_id": "manager",
+            "event_id": "manager-http-revision",
+            "dedupe_key": "manager-http-revision-dedupe",
+            "expected_active_version": manager["active_version"],
+            "manifest": {**draft, "accent": "#123456"},
+            "provenance": "localhost-command:manager-http-revision",
+            "observed_at_ms": 10,
+        }
+        first = app.role_manifest_command(request)
+        self.assertEqual(first["receipt"]["status"], "appended")
+        self.assertRegex(first["receipt"]["event_digest"], r"^[0-9a-f]{64}$")
+        self.assertEqual(app.role_manifest_command(request)["receipt"]["status"], "unchanged")
+        revised = next(role for role in first["projection"]["roles"] if role["id"] == "manager")
+        self.assertTrue(revised["override_active"])
+
+        with self.assertRaisesRegex(console.ConsoleError, "immutable Assets storage"):
+            app.role_manifest_command({
+                "command": "ROLE_MANIFEST_CREATE",
+                "role_id": "custom-release-guide",
+                "event_id": "custom-release-guide-create",
+                "dedupe_key": "custom-release-guide-create-dedupe",
+                "expected_active_version": None,
+                "manifest": {**draft, "name": "Release Guide", "avatar_asset_digest": "0" * 64},
+                "provenance": "localhost-command:custom-release-guide",
+                "observed_at_ms": 11,
+            })
+        source = SERVER.read_text(encoding="utf-8")
+        self.assertIn('if path == "/api/role-manifests":', source)
+        self.assertIn('if path == "/api/role-manifests/commands":', source)
+
     def test_new_console_copy_is_swarm_first(self) -> None:
         static = (Path(__file__).resolve().parents[1] / "static")
         index = (static / "index.html").read_text(encoding="utf-8")

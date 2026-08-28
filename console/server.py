@@ -46,6 +46,9 @@ from runtime.progress_events import (  # noqa: E402
     ProgressLedger,
     ProgressEventError,
     ProgressPulseEvent,
+    build_role_manifest,
+    load_builtin_role_manifests,
+    role_material_event,
     validate_progress_pulse,
 )
 from runtime.execution_adapters import (  # noqa: E402
@@ -104,6 +107,10 @@ PROOF_EVENT_PRIVATE_FIELDS = frozenset({
 })
 PROOF_EVENT_ROOT = Path("swarm") / "proof-events"
 PROOF_MEDIA_ROOT = Path("swarm") / "proof-media"
+ROLE_COMMAND_FIELDS = frozenset({
+    "command", "role_id", "event_id", "dedupe_key", "expected_active_version",
+    "manifest", "provenance", "observed_at_ms",
+})
 CTRL_OVERRIDE_FIELDS: dict[str, type] = {
     "model": str,
     "reasoning": str,
@@ -4234,6 +4241,9 @@ class App:
         self.config_path = config_path.resolve()
         self.store = ConsoleStore(state_path or console_state_path(self.codex_home, self.config_path))
         self.progress_ledger = ProgressLedger(self.codex_home)
+        self.builtin_role_manifests = load_builtin_role_manifests(
+            SWARM_SKILL_ROOT / "roles", STATIC_ROOT / "swarm-offline-disconnected.png"
+        )
         self.diagnostics_collector = DiagnosticsCollector(self.codex_home, self.store.path)
         self.token = secrets.token_urlsafe(24)
         self.write_lock = threading.Lock()
@@ -5093,6 +5103,92 @@ class App:
         except ProgressEventError as error:
             raise ConsoleError(str(error)) from error
 
+    def role_manifest_projection(self) -> dict[str, Any]:
+        try:
+            return {"ok": True, **self.progress_ledger.project_role_manifests(self.builtin_role_manifests)}
+        except ProgressEventError as error:
+            raise ConsoleError(str(error)) from error
+
+    def _require_role_avatar(self, digest: str) -> None:
+        if digest in {item["avatar_asset_digest"] for item in self.builtin_role_manifests}:
+            return
+        root = self.codex_home / PROOF_MEDIA_ROOT
+        candidates = sorted(root.glob(f"{digest}.*")) if root.is_dir() and not root.is_symlink() else []
+        if len(candidates) != 1:
+            raise ConsoleError("role avatar digest is not retained in immutable Assets storage")
+        try:
+            _media_metadata(str(candidates[0]), digest, allowed_root=root)
+        except ConsoleError as error:
+            raise ConsoleError("role avatar digest is not retained in immutable Assets storage") from error
+
+    def role_manifest_command(self, payload: dict[str, Any]) -> dict[str, Any]:
+        unknown = set(payload) - ROLE_COMMAND_FIELDS
+        if unknown:
+            raise ConsoleError(f"role manifest command contains unsupported field(s): {', '.join(sorted(unknown))}")
+        command, role_id = str(payload.get("command") or ""), str(payload.get("role_id") or "")
+        if command not in {"ROLE_MANIFEST_CREATE", "ROLE_MANIFEST_REVISE", "ROLE_MANIFEST_RESET"}:
+            raise ConsoleError("role manifest command is invalid")
+        try:
+            projection = self.progress_ledger.project_role_manifests(self.builtin_role_manifests)
+            current = next((item for item in projection["roles"] if item["id"] == role_id), None)
+            builtins = {item["id"]: item for item in self.builtin_role_manifests}
+            provenance = _safe_metadata_text(payload.get("provenance"), "provenance", maximum=256)
+            if command == "ROLE_MANIFEST_RESET":
+                if role_id not in builtins:
+                    raise ProgressEventError("only a built-in role can be reset")
+                manifest = builtins[role_id]
+            else:
+                source = "user_override" if role_id in builtins else "custom"
+                manifest = build_role_manifest(role_id, payload.get("manifest"), source, [provenance])
+            event = role_material_event(
+                command, event_id=payload.get("event_id"), dedupe_key=payload.get("dedupe_key"),
+                role_id=role_id, manifest=manifest,
+                expected_active_version=payload.get("expected_active_version"), assignment_task_id=None,
+                provenance=provenance, observed_at_ms=payload.get("observed_at_ms"),
+            )
+            if current and event["event_id"] in current["source_event_ids"]:
+                result = self.progress_ledger.append(event)
+            else:
+                expected = payload.get("expected_active_version")
+                if command == "ROLE_MANIFEST_CREATE" and current is not None:
+                    raise ProgressEventError("role manifest create cannot replace an existing role")
+                if command != "ROLE_MANIFEST_CREATE" and (current is None or expected != current["active_version"]):
+                    raise ProgressEventError("role manifest expected active version is stale")
+                self._require_role_avatar(manifest["avatar_asset_digest"])
+                result = self.progress_ledger.append(event)
+            receipt = {
+                **result, "command": command, "role_id": role_id,
+                "active_version": manifest["version"], "event_id": event["event_id"],
+            }
+            return {"ok": True, "receipt": receipt, "projection": self.progress_ledger.project_role_manifests(self.builtin_role_manifests)}
+        except ProgressEventError as error:
+            if any(word in str(error) for word in ("stale", "conflicts", "already bound")):
+                raise ConsoleConflict(str(error)) from error
+            raise ConsoleError(str(error)) from error
+
+    def bind_role_assignment(
+        self, task_id: str, role_id: str, event_id: str, dedupe_key: str,
+        provenance: str, observed_at_ms: int,
+    ) -> dict[str, Any]:
+        try:
+            projection = self.progress_ledger.project_role_manifests(self.builtin_role_manifests)
+            role = next((item for item in projection["roles"] if item["id"] == role_id), None)
+            if role is None:
+                raise ProgressEventError("role assignment references an unknown role")
+            existing = next((item for item in projection["assignments"] if item["task_id"] == task_id), None)
+            if existing:
+                if (existing["role_id"], existing["manifest_version"]) == (role_id, role["active_version"]):
+                    return {"status": "unchanged", **existing}
+                raise ProgressEventError("task role assignment is already bound")
+            manifest = {key: value for key, value in next(item for item in role["versions"] if item["active"]).items() if key != "active"}
+            return self.progress_ledger.append(role_material_event(
+                "ROLE_ASSIGNMENT_BOUND", event_id=event_id, dedupe_key=dedupe_key,
+                role_id=role_id, manifest=manifest, expected_active_version=role["active_version"],
+                assignment_task_id=task_id, provenance=provenance, observed_at_ms=observed_at_ms,
+            ))
+        except ProgressEventError as error:
+            raise ConsoleError(str(error)) from error
+
     def proof_media_item(self, evidence_id: str, digest: str) -> dict[str, Any]:
         return self.store.proof_media_item(
             evidence_id,
@@ -5590,6 +5686,9 @@ class Handler(BaseHTTPRequestHandler):
                     self.server.app.measurable_progress(query.get("project_id", "")),
                 )
                 return
+            if path == "/api/role-manifests":
+                self._json(HTTPStatus.OK, self.server.app.role_manifest_projection())
+                return
             if path == "/api/skills":
                 self._json(
                     HTTPStatus.OK,
@@ -5732,6 +5831,11 @@ class Handler(BaseHTTPRequestHandler):
                 with self.server.app.write_lock:
                     result = update_config(self.server.app.config_path, changes)
                 self._json(HTTPStatus.OK, {"ok": True, **result})
+                return
+            if path == "/api/role-manifests/commands":
+                with self.server.app.write_lock:
+                    result = self.server.app.role_manifest_command(self._payload())
+                self._json(HTTPStatus.OK, result)
                 return
             if path == "/api/skills/inheritance":
                 payload = self._payload()
