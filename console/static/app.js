@@ -86,11 +86,13 @@ function clearError() {
 function showConnectionState() {
   clearError();
   setDataStatus("unavailable", state.overview?.generated_at);
+  $(".app-shell").classList.add("is-disconnected");
   $(".workspace").classList.add("is-disconnected");
   $("#connection-state").hidden = false;
 }
 
 function clearConnectionState() {
+  $(".app-shell").classList.remove("is-disconnected");
   $(".workspace").classList.remove("is-disconnected");
   $("#connection-state").hidden = true;
 }

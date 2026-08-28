@@ -323,7 +323,12 @@ button:focus-visible, select:focus-visible { outline: 2px solid #fff; outline-of
 .error-surface strong { font-size: 12px; }
 .error-surface p { margin: 4px 0 10px; color: #d7abb3; font-size: 11px; }
 .error-surface button { min-height: 31px; padding: 0 10px; border: 1px solid rgba(255,255,255,.2); border-radius: 5px; background: transparent; font-size: 10px; }
-.workspace.is-disconnected .view { display:none; }
+.app-shell.is-disconnected { grid-template-columns:1fr; min-height:100dvh; }
+.app-shell.is-disconnected > .mobile-app-bar,
+.app-shell.is-disconnected > .drawer,
+.app-shell.is-disconnected > .drawer-backdrop { display:none; }
+.app-shell.is-disconnected .workspace { display:grid; min-height:100dvh; padding:max(24px,env(safe-area-inset-top)) max(20px,env(safe-area-inset-right)) max(24px,env(safe-area-inset-bottom)) max(20px,env(safe-area-inset-left)); place-items:center; }
+.app-shell.is-disconnected .workspace > :not(#connection-state) { display:none; }
 .connection-state { display:grid; grid-template-columns:minmax(0,1.55fr) minmax(230px,.65fr); align-items:center; gap:clamp(28px,4vw,56px); width:min(1040px,calc(100% - 48px)); margin:auto; padding:clamp(24px,4vw,52px); }
 .connection-state[hidden] { display:none; }
 .connection-state-visual { min-width:0; }

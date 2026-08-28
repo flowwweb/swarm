@@ -53,7 +53,10 @@ assert.match(indexHtml, /id="connection-retry"[^>]*>Retry connection<\/button>/)
 assert.match(app, /if \(error instanceof TypeError\) throw connectionFailure/);
 assert.match(app, /if \(error\.connectionFailure && !state\.overview\) showConnectionState\(\)/);
 assert.match(app, /\$\("#connection-retry"\)\.addEventListener\("click", initialize\)/);
-assert.match(css, /\.workspace\.is-disconnected \.view \{ display:none; \}/);
+assert.match(app, /\$\("\.app-shell"\)\.classList\.add\("is-disconnected"\)/);
+assert.match(app, /\$\("\.app-shell"\)\.classList\.remove\("is-disconnected"\)/);
+assert.match(css, /\.app-shell\.is-disconnected > \.mobile-app-bar,[\s\S]*?\.app-shell\.is-disconnected > \.drawer,[\s\S]*?\.app-shell\.is-disconnected > \.drawer-backdrop \{ display:none; \}/);
+assert.match(css, /\.app-shell\.is-disconnected \.workspace > :not\(#connection-state\) \{ display:none; \}/);
 assert.match(indexHtml, /id="snapshot-status-dot"[^>]*class="status-dot is-reconnecting"|class="status-dot is-reconnecting" id="snapshot-status-dot"/);
 for (const status of ["Live", "Reconnecting", "Offline"]) assert.match(app, new RegExp(`(?:title|snapshot)\\.textContent = "${status}`));
 assert.match(css, /\.status-dot\.is-reconnecting/);
