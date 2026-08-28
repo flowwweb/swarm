@@ -23,7 +23,7 @@ SPEC = importlib.util.spec_from_file_location("swarm_console_tested", SERVER)
 assert SPEC and SPEC.loader
 console = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(console)
-from runtime.progress_events import write_progress_pulse  # noqa: E402
+from runtime.progress_events import validate_progress_material_event, write_progress_pulse  # noqa: E402
 from runtime import (  # noqa: E402
     ArtifactIdentity,
     CodexAppServerAdapter,
@@ -362,6 +362,25 @@ class SwarmConsoleTests(unittest.TestCase):
             "parent_event_id": parent_event_id,
         }
 
+    @classmethod
+    def _compact_blocker_event(cls, index: int) -> dict[str, object]:
+        suffix = format(index, "x")
+        event = cls._notification_event(
+            suffix, "b", "BLOCK_CREATED", "WAITING_EXTERNAL", 1,
+            flags=["blocked"], milestone_id="m",
+        )
+        event.update(
+            portfolio_id="p", project_id="p", ctrl_id="c", task_id="t",
+            owner_id="o", provenance="p", dedupe_key=suffix,
+        )
+        event["measurement"] = {
+            "state": "UNMEASURED", "committed_weight": None,
+            "admitted_proof_weight": 0, "basis_receipt_ids": [],
+        }
+        event["proof"] = {"required_classes": [], "receipt_ids": [], "claim_limit": "x"}
+        event["custody"] = {"surface": "s", "receipt_id": "c"}
+        return event
+
     def _append_notification_fixture(self, app: console.App) -> None:
         events = [
             self._notification_event(
@@ -489,8 +508,63 @@ class SwarmConsoleTests(unittest.TestCase):
         self.assertNotEqual(updated["unread"][0]["id"], seen_id)
 
         (self.codex_home / "swarm" / "progress-ledger.jsonl").unlink()
-        evicted = console.App(self.codex_home, self.config, state_path).notification_feed("root", "project:alpha")
+        restarted.progress_ledger.projection_path.unlink(missing_ok=True)
+        evicted_app = console.App(self.codex_home, self.config, state_path)
+        evicted = evicted_app.notification_feed("root", "project:alpha")
         self.assertEqual((evicted["unread"], evicted["recent_seen"]), ([], []))
+        self.assertEqual(evicted_app.progress_ledger.append(self._notification_event(
+            "fresh-blocker", "fresh-block", "BLOCK_CREATED", "WAITING_EXTERNAL", 2000,
+            flags=["blocked", "waiting_external"],
+        ))["status"], "appended")
+        fresh = evicted_app.notification_feed("root", "project:alpha")["unread"][0]
+        with mock.patch.object(console.time, "time", return_value=2):
+            pruned = evicted_app.mark_notifications_seen({
+                "ctrl_id": "root", "project_id": "project:alpha", "notification_ids": [fresh["id"]],
+            })
+        self.assertEqual(pruned["pruned"], 1)
+        with closing(sqlite3.connect(state_path)) as connection:
+            retained_state = json.loads(connection.execute(
+                "SELECT value FROM store_metadata WHERE key LIKE 'notification_seen_v1:%'",
+            ).fetchone()[0])
+        self.assertEqual([receipt["notification_id"] for receipt in retained_state["receipts"]], [fresh["id"]])
+
+    def test_notification_seen_retention_tracks_all_current_ledger_identities(self) -> None:
+        self._confirm_root_ctrl()
+        state_path = self.root / "console" / "notification-retention.sqlite3"
+        app = console.App(self.codex_home, self.config, state_path)
+        records = []
+        for index in range(1025):
+            event = validate_progress_material_event(self._compact_blocker_event(index))
+            record = app.progress_ledger._record(event, index + 1)
+            records.append(json.dumps(record, sort_keys=True, separators=(",", ":")).encode() + b"\n")
+        with app.progress_ledger._state.locked():
+            app.progress_ledger._state.replace_bytes_unlocked(b"".join(records))
+        observed_scope = ({}, [{"id": "t"}], {"t"}, {})
+        with mock.patch.object(app, "_observed_scope", return_value=observed_scope):
+            items, truncated = app._notification_items("c", "p")
+        self.assertFalse(truncated)
+        self.assertEqual(len(items), 1025)
+        current = {item["id"]: item for item in items}
+        oldest = min(items, key=lambda item: item["material_sequence"])["id"]
+        result = app.store.mark_notifications_seen(
+            principal_id=app._notification_principal(), ctrl_id="c", project_id="p",
+            items=current, notification_ids=list(current), now_ms=1,
+        )
+        self.assertEqual((result["newly_seen"], result["pruned"]), (1025, 0))
+
+        restarted = console.App(self.codex_home, self.config, state_path)
+        with mock.patch.object(restarted, "_observed_scope", return_value=observed_scope):
+            retained_items, retained_truncated = restarted._notification_items("c", "p")
+        retained_current = {item["id"]: item for item in retained_items}
+        retained_seen = restarted.store.notification_seen(
+            principal_id=restarted._notification_principal(), ctrl_id="c", project_id="p",
+            items=retained_current,
+        )
+        self.assertFalse(retained_truncated)
+        self.assertEqual(len(retained_seen), 1025)
+        self.assertIn(oldest, {receipt["notification_id"] for receipt in retained_seen})
+        with mock.patch.object(restarted, "_observed_scope", return_value=observed_scope):
+            self.assertEqual(restarted.notification_feed("c", "p")["unread"], [])
 
     def test_notification_ack_rejects_unknown_cross_scope_and_corrupt_state_without_mutation(self) -> None:
         self._confirm_root_ctrl()

@@ -80,7 +80,6 @@ AUTO_BRIDGE_TIMEOUT_SECONDS = 60
 AUTO_CTRL_OVERRIDE_KEY = "_auto"
 AUTO_PURPOSE = "swarm-auto-continuation"
 NOTIFICATION_SEEN_KEY_PREFIX = "notification_seen_v1"
-NOTIFICATION_SEEN_LIMIT = 1024
 NOTIFICATION_UNREAD_LIMIT = 128
 NOTIFICATION_RECENT_SEEN_LIMIT = 64
 TOKEN_RETENTION_DAYS = 30
@@ -3946,7 +3945,6 @@ class ConsoleStore:
         if (
             not isinstance(state, dict) or set(state) != {"schema_version", "receipts"}
             or state.get("schema_version") != 1 or not isinstance(state.get("receipts"), list)
-            or len(state["receipts"]) > NOTIFICATION_SEEN_LIMIT
         ):
             raise ConsoleError("notification seen state is invalid")
         identities: set[str] = set()
@@ -3969,8 +3967,21 @@ class ConsoleStore:
             identities.add(notification_id)
         return state
 
+    @staticmethod
+    def _current_notification_seen(
+        receipts: list[dict[str, Any]], items: dict[str, dict[str, Any]],
+    ) -> dict[str, dict[str, Any]]:
+        current = {receipt["notification_id"]: receipt for receipt in receipts if receipt["notification_id"] in items}
+        if any(
+            receipt["source_event_id"] != items[identity]["source_event_id"]
+            or receipt["source_event_digest"] != items[identity]["source_event_digest"]
+            for identity, receipt in current.items()
+        ):
+            raise ConsoleError("notification seen receipt conflicts with retained source evidence")
+        return current
+
     def notification_seen(
-        self, *, principal_id: str, ctrl_id: str, project_id: str,
+        self, *, principal_id: str, ctrl_id: str, project_id: str, items: dict[str, dict[str, Any]],
     ) -> list[dict[str, Any]]:
         key = self._notification_seen_key(principal_id, ctrl_id, project_id)
         with self._lock, closing(self._connect()) as connection:
@@ -3978,7 +3989,7 @@ class ConsoleStore:
             state = self._notification_seen_state(
                 row, principal_id=principal_id, ctrl_id=ctrl_id, project_id=project_id,
             )
-        return list(state["receipts"])
+        return list(self._current_notification_seen(state["receipts"], items).values())
 
     def mark_notifications_seen(
         self, *, principal_id: str, ctrl_id: str, project_id: str,
@@ -3992,7 +4003,8 @@ class ConsoleStore:
             state = self._notification_seen_state(
                 row, principal_id=principal_id, ctrl_id=ctrl_id, project_id=project_id,
             )
-            receipts = {receipt["notification_id"]: receipt for receipt in state["receipts"]}
+            receipts = self._current_notification_seen(state["receipts"], items)
+            pruned = len(state["receipts"]) - len(receipts)
             unknown = [identity for identity in notification_ids if identity not in items]
             if unknown:
                 connection.rollback()
@@ -4002,12 +4014,6 @@ class ConsoleStore:
                 item = items[identity]
                 retained = receipts.get(identity)
                 if retained is not None:
-                    if (
-                        retained["source_event_id"] != item["source_event_id"]
-                        or retained["source_event_digest"] != item["source_event_digest"]
-                    ):
-                        connection.rollback()
-                        raise ConsoleError("notification seen receipt conflicts with retained source evidence")
                     continue
                 receipts[identity] = {
                     "notification_id": identity, "scope_digest": scope_digest,
@@ -4017,16 +4023,16 @@ class ConsoleStore:
                 added += 1
             ordered = sorted(
                 receipts.values(), key=lambda receipt: (receipt["seen_at_ms"], receipt["notification_id"]), reverse=True,
-            )[:NOTIFICATION_SEEN_LIMIT]
+            )
             next_state = {**state, "receipts": ordered}
-            if added:
+            if added or pruned:
                 connection.execute(
                     "INSERT INTO store_metadata(key, value) VALUES (?, ?) "
                     "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
                     (key, json.dumps(next_state, ensure_ascii=True, sort_keys=True, separators=(",", ":"))),
                 )
             connection.commit()
-        return {"acknowledged": len(notification_ids), "newly_seen": added}
+        return {"acknowledged": len(notification_ids), "newly_seen": added, "pruned": pruned}
 
     def clear_history(self) -> dict[str, Any]:
         with self._lock, closing(self._connect()) as connection:
@@ -6373,10 +6379,10 @@ class App:
         project_id = _auto_id(project_id, "project_id")
         items, source_truncated = self._notification_items(ctrl_id, project_id)
         principal_id = self._notification_principal()
-        seen = self.store.notification_seen(
-            principal_id=principal_id, ctrl_id=ctrl_id, project_id=project_id,
-        )
         current = {item["id"]: item for item in items}
+        seen = self.store.notification_seen(
+            principal_id=principal_id, ctrl_id=ctrl_id, project_id=project_id, items=current,
+        )
         seen_ids = {receipt["notification_id"] for receipt in seen}
         unread = [item for item in items if item["id"] not in seen_ids]
         recent_seen = []
@@ -6399,7 +6405,8 @@ class App:
             "ctrl_id": ctrl_id, "project_id": project_id,
             "unread": unread[:NOTIFICATION_UNREAD_LIMIT], "recent_seen": recent_seen,
             "retention": {
-                "seen_limit": NOTIFICATION_SEEN_LIMIT,
+                "seen_basis": "current_eligible_ledger_projection",
+                "seen_count": len(seen),
                 "unread_limit": NOTIFICATION_UNREAD_LIMIT,
                 "recent_seen_limit": NOTIFICATION_RECENT_SEEN_LIMIT,
                 "unread_truncated": len(unread) > NOTIFICATION_UNREAD_LIMIT,
