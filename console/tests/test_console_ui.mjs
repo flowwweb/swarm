@@ -35,8 +35,8 @@ const documentHtml = indexHtml
 const offlineAssetDigest = crypto.createHash("sha256").update(offlineAsset).digest("hex");
 assert.equal(offlineAssetDigest, "4677c1da5af8c79a2db5dfbaf7dd87a060dbd9dca888a8c3f6d800d990aab4fe");
 assert.deepEqual(pluginOfflineAsset, offlineAsset);
-assert.equal(crypto.createHash("sha256").update(mascotAsset).digest("hex"), "8bb17a323076c0dbf07cd4e586fa567efc9955efc932d786d5222d244b28d5bc");
-assert.equal(crypto.createHash("sha256").update(iconAsset).digest("hex"), "c6c9e8074e6a31e7330a263aa74a6f7e4240faddd4fe0093a08cd0592a47cd0d");
+assert.equal(crypto.createHash("sha256").update(mascotAsset).digest("hex"), "afb7e94cb63e994a929211dd8a81d816d2dd5b19d819ec72d81f121474ae8b07");
+assert.equal(crypto.createHash("sha256").update(iconAsset).digest("hex"), "fbc528b1b7233105a5ddb5a32b1dfed9dbfe1a0db26e0bdb45a4c2d54f3c0bf4");
 assert.deepEqual(pluginMascotAsset, mascotAsset);
 assert.deepEqual(pluginIconAsset, iconAsset);
 assert.equal(pluginCss, css);
