@@ -3,6 +3,7 @@ from __future__ import annotations
 import copy
 import importlib.util
 import hashlib
+import io
 import json
 import sqlite3
 import sys
@@ -307,6 +308,11 @@ class SwarmConsoleTests(unittest.TestCase):
         )
         connection.commit()
         connection.close()
+
+    def _confirm_root_ctrl(self) -> None:
+        with closing(sqlite3.connect(self.database)) as connection:
+            connection.execute("UPDATE threads SET agent_role = 'ctrl' WHERE id = 'root'")
+            connection.commit()
 
     def test_overview_is_safe_and_hierarchical(self) -> None:
         overview = console.build_overview(self.codex_home, self.config)
@@ -2519,6 +2525,311 @@ class SwarmConsoleTests(unittest.TestCase):
             disabled = app.project_progress_feed("project-alpha", after_cursor=3)
         self.assertFalse(disabled["enabled"])
         self.assertEqual(disabled["items"], [])
+
+    @staticmethod
+    def _auto_decision(ctrl_id: str = "root", project_id: str = "project:alpha") -> dict[str, str]:
+        return {
+            "ctrl_id": ctrl_id, "project_id": project_id, "goal_id": "goal-auto",
+            "task_id": "task", "owner_id": ctrl_id, "request_id": "expected-auto",
+            "observed_turn_id": "turn-observed", "decision_digest": "a" * 64,
+            "route_digest": "b" * 64, "instruction_digest": "c" * 64,
+        }
+
+    def test_auto_defaults_off_and_command_replay_restart_and_safe_disable_are_durable(self) -> None:
+        path = self.root / "console" / "auto-state.sqlite3"
+        store = console.ConsoleStore(path)
+        self.assertFalse(store.auto_status("root", "project:alpha")["enabled"])
+        self.assertEqual(store.enabled_auto_states(), [])
+
+        enabled = store.set_auto("root", "project:alpha", enabled=True, request_id="enable-1", now_ms=1)
+        self.assertTrue(enabled["enabled"])
+        replay = store.set_auto("root", "project:alpha", enabled=True, request_id="enable-1", now_ms=2)
+        self.assertTrue(replay["replayed"])
+        self.assertEqual(replay["revision"], 1)
+        with self.assertRaises(console.ConsoleConflict):
+            store.set_auto("root", "project:alpha", enabled=False, request_id="enable-1", now_ms=3)
+
+        claim = store.claim_auto_dispatch(self._auto_decision(), now_ms=4)
+        self.assertTrue(claim["claimed"])
+        stopping = store.set_auto("root", "project:alpha", enabled=False, request_id="disable-1", now_ms=5)
+        self.assertTrue(stopping["in_flight"])
+        self.assertTrue(stopping["stop_after_turn"])
+        self.assertEqual(stopping["phase"], "STOPPING")
+        completed = store.finish_auto_dispatch(
+            "root", "project:alpha",
+            result=console.AutoBridgeResult(True, "thread-1", "turn-1", "d" * 64),
+            failure=None, now_ms=6,
+        )
+        self.assertFalse(completed["enabled"])
+        self.assertFalse(completed["in_flight"])
+        restarted = console.ConsoleStore(path).auto_status("root", "project:alpha")
+        self.assertEqual((restarted["phase"], restarted["revision"]), ("OFF", 2))
+
+    def test_auto_dispatch_is_single_flight_and_idempotent(self) -> None:
+        store = console.ConsoleStore(self.root / "console" / "auto-flight.sqlite3")
+        store.set_auto("root", "project:alpha", enabled=True, request_id="enable-root", now_ms=1)
+        store.set_auto("ctrl-2", "project:alpha", enabled=True, request_id="enable-two", now_ms=2)
+        first = store.claim_auto_dispatch(self._auto_decision(), now_ms=3)
+        self.assertTrue(first["claimed"])
+        second_decision = self._auto_decision("ctrl-2")
+        second_decision["decision_digest"] = "d" * 64
+        self.assertEqual(store.claim_auto_dispatch(second_decision, now_ms=4)["reason"], "IN_FLIGHT")
+        self.assertEqual(store.claim_auto_dispatch(self._auto_decision(), now_ms=5)["reason"], "REPLAY")
+        conflicting = self._auto_decision()
+        conflicting["owner_id"] = "other-owner"
+        with self.assertRaises(console.ConsoleConflict):
+            store.claim_auto_dispatch(conflicting, now_ms=6)
+        self.assertTrue(console.ConsoleStore(store.path).auto_status("root", "project:alpha")["in_flight"])
+
+    def test_auto_failure_dispositions_are_exclusive_and_terminal_requires_exhaustion(self) -> None:
+        def failure(route: str, *, permitted: list[str], human: bool = False) -> dict[str, object]:
+            return {
+                "ctrl_id": "root", "project_id": "project:alpha", "goal_id": "goal-auto",
+                "task_id": "task", "owner_id": "root", "route_digest": route,
+                "failure_kind": "HOST_FAILED", "permitted_routes": permitted,
+                "human_gate": human,
+                "release_condition": "user approves a new route" if human else "",
+                "responsible_authority": "root" if human else "",
+                "retry_action": "CONTINUE", "ledger_state": "ATTENTION",
+            }
+
+        route_a, route_b, route_c = "a" * 64, "b" * 64, "c" * 64
+        retry = console.ConsoleStore._derive_auto_disposition([], failure(route_a, permitted=[route_a]))
+        self.assertEqual(retry["disposition"], "RETRY_SAME")
+        alternate = console.ConsoleStore._derive_auto_disposition(
+            [failure(route_a, permitted=[route_a, route_b])],
+            {**failure(route_a, permitted=[route_a, route_b]), "retry_action": "REASSESS_ROOT_CAUSE"},
+        )
+        self.assertEqual((alternate["disposition"], alternate["next_route"]), ("TRY_ALTERNATE", route_b))
+        waiting = console.ConsoleStore._derive_auto_disposition([], failure(route_a, permitted=[route_a], human=True))
+        self.assertEqual(waiting["disposition"], "WAIT_USER")
+
+        not_terminal = console.ConsoleStore._derive_auto_disposition(
+            [failure(route_a, permitted=[route_a, route_b, route_c])],
+            failure(route_b, permitted=[route_a, route_b, route_c]),
+        )
+        self.assertNotEqual(not_terminal["disposition"], "TERMINAL_BLOCKED")
+        last = failure(route_c, permitted=[route_a, route_b, route_c])
+        last.update(
+            release_condition="provider recovers", responsible_authority="provider-owner",
+        )
+        retained = [failure(route_a, permitted=[route_a, route_b, route_c]), failure(route_b, permitted=[route_a, route_b, route_c])]
+        self.assertNotEqual(
+            console.ConsoleStore._derive_auto_disposition(retained, last)["disposition"],
+            "TERMINAL_BLOCKED",
+        )
+        last["ledger_state"] = "BLOCKED"
+        terminal = console.ConsoleStore._derive_auto_disposition(
+            retained, last,
+        )
+        self.assertEqual(terminal["disposition"], "TERMINAL_BLOCKED")
+        self.assertEqual(terminal["responsible_authority"], "provider-owner")
+
+    def test_auto_failure_and_disposition_are_one_atomic_receipt_and_missing_pair_is_attention(self) -> None:
+        path = self.root / "console" / "auto-failure.sqlite3"
+        store = console.ConsoleStore(path)
+        store.set_auto("root", "project:alpha", enabled=True, request_id="enable-failure", now_ms=1)
+        store.claim_auto_dispatch(self._auto_decision(), now_ms=2)
+        failure = {
+            "ctrl_id": "root", "project_id": "project:alpha", "goal_id": "goal-auto",
+            "task_id": "task", "owner_id": "root", "route_digest": "b" * 64,
+            "failure_kind": "TRANSPORT_UNAVAILABLE", "permitted_routes": ["b" * 64],
+            "human_gate": False, "release_condition": "", "responsible_authority": "",
+            "retry_action": "CONTINUE", "ledger_state": "ATTENTION",
+        }
+        result = store.finish_auto_dispatch(
+            "root", "project:alpha",
+            result=console.AutoBridgeResult(False, failure_kind="TRANSPORT_UNAVAILABLE", transient=True),
+            failure=failure, now_ms=3,
+        )
+        self.assertEqual(result["last_disposition"], "RETRY_SAME")
+        with closing(sqlite3.connect(path)) as connection:
+            kinds = [row[0] for row in connection.execute(
+                "SELECT event_kind FROM execution_event_receipts WHERE event_kind LIKE 'AUTO_%' ORDER BY event_kind"
+            )]
+            reservation_id = "auto-orphan"
+            connection.execute(
+                "UPDATE auto_ctrl_state SET reservation_id = ? WHERE ctrl_id = 'root'", (reservation_id,),
+            )
+            connection.execute(
+                "INSERT INTO execution_event_receipts(event_digest, retained_at_ms, event_kind, identity, payload_json, payload_digest) "
+                "VALUES (?, 4, 'AUTO_FAILURE', ?, '{}', ?)", ("e" * 64, reservation_id, "e" * 64),
+            )
+            connection.commit()
+        self.assertIn("AUTO_FAILURE_DISPOSITION", kinds)
+        self.assertEqual(store.auto_status("root", "project:alpha")["attention"]["kind"], "BROKEN_HANDOFF")
+
+    def test_auto_failure_binding_conflict_is_strict_noop(self) -> None:
+        path = self.root / "console" / "auto-binding.sqlite3"
+        store = console.ConsoleStore(path)
+        store.set_auto("root", "project:alpha", enabled=True, request_id="enable-binding", now_ms=1)
+        store.claim_auto_dispatch(self._auto_decision(), now_ms=2)
+        failure = {
+            "ctrl_id": "root", "project_id": "project:alpha", "goal_id": "goal-auto",
+            "task_id": "wrong-task", "owner_id": "root", "route_digest": "b" * 64,
+            "failure_kind": "HOST_FAILED", "permitted_routes": ["b" * 64],
+            "human_gate": False, "release_condition": "", "responsible_authority": "",
+            "retry_action": "CONTINUE", "ledger_state": "ATTENTION",
+        }
+        before = store.auto_status("root", "project:alpha")
+        with self.assertRaises(console.ConsoleConflict):
+            store.finish_auto_dispatch(
+                "root", "project:alpha", result=console.AutoBridgeResult(False, failure_kind="HOST_FAILED"),
+                failure=failure, now_ms=3,
+            )
+        after = store.auto_status("root", "project:alpha")
+        self.assertEqual(before, after)
+        with closing(sqlite3.connect(path)) as connection:
+            self.assertEqual(connection.execute(
+                "SELECT COUNT(*) FROM execution_event_receipts WHERE event_kind = 'AUTO_FAILURE_DISPOSITION'"
+            ).fetchone()[0], 0)
+
+    def test_auto_bridge_uses_fixed_argv_jsonl_handshake_and_terminal_event(self) -> None:
+        written: list[dict[str, object]] = []
+        calls: list[tuple[list[str], dict[str, object]]] = []
+
+        class Input:
+            def write(self, value: str) -> None:
+                written.append(json.loads(value))
+
+            def flush(self) -> None:
+                return None
+
+        class Process:
+            stdin = Input()
+            stdout = io.StringIO("".join(json.dumps(item) + "\n" for item in (
+                {"id": 0, "result": {}},
+                {"id": 1, "result": {"thread": {"id": "thread-auto"}}},
+                {"method": "turn/completed", "params": {"threadId": "thread-auto", "turnId": "turn-auto", "status": "completed"}},
+                {"id": 2, "result": {"turn": {"id": "turn-auto"}}},
+            )))
+
+            def poll(self):
+                return None
+
+            def terminate(self):
+                return None
+
+            def wait(self, timeout=None):
+                return 0
+
+            def kill(self):
+                return None
+
+        def factory(argv, **kwargs):
+            calls.append((argv, kwargs))
+            return Process()
+
+        result = console.CodexStdioBridge(factory).run(cwd=self.root, instruction="one bounded action")
+        self.assertTrue(result.ok)
+        self.assertEqual([item["method"] for item in written], ["initialize", "initialized", "thread/start", "turn/start"])
+        self.assertEqual(calls[0][0], ["codex", "app-server", "--listen", "stdio://"])
+        self.assertFalse(calls[0][1]["shell"])
+        self.assertEqual(written[-1]["params"]["input"], [{"type": "text", "text": "one bounded action"}])
+
+    def test_auto_closed_due_check_is_pure_and_http_status_requires_full_local_auth(self) -> None:
+        app = console.App(self.codex_home, self.config)
+        app.progress_ledger = SimpleNamespace(replay=mock.Mock(side_effect=AssertionError("closed Auto read Ledger")))
+        app.auto_bridge = SimpleNamespace(run=mock.Mock(side_effect=AssertionError("closed Auto launched model")))
+        self.assertEqual(app.evaluate_auto_once()["reason"], "AUTO_CLOSED")
+
+        handler = self._handler("127.0.0.1", "127.0.0.1:4788", token="wrong")
+        handler.path = "/api/auto?ctrl_id=root&project_id=project%3Aalpha"
+        handler._error = mock.Mock()
+        handler.do_GET()
+        handler._error.assert_called_once_with(
+            console.HTTPStatus.FORBIDDEN, "Auto status requires local same-origin authorization",
+        )
+        docker = self._handler(
+            "172.18.0.1", "127.0.0.1:4788", origin="http://127.0.0.1:4788",
+        )
+        docker.path = "/api/auto"
+        docker._error = mock.Mock()
+        with mock.patch.dict(console.os.environ, {"SWARM_CONSOLE_DOCKER_LOOPBACK": "1"}):
+            docker.do_POST()
+        docker._error.assert_called_once_with(
+            console.HTTPStatus.FORBIDDEN, "Auto command requires strict loopback authorization",
+        )
+
+    def test_auto_due_event_dispatches_once_and_host_completion_is_zero_progress(self) -> None:
+        self._confirm_root_ctrl()
+        bridge = SimpleNamespace(run=mock.Mock(return_value=console.AutoBridgeResult(
+            True, "thread-auto", "turn-auto", "d" * 64,
+        )))
+        app = console.App(self.codex_home, self.config, auto_bridge=bridge)
+        app.auto_command({
+            "command": "ENABLE", "ctrl_id": "root", "project_id": "project:alpha",
+            "request_id": "enable-auto",
+        })
+        receipt = {
+            "receipt_id": "expected-auto", "goal_id": "goal-auto", "task_id": "task",
+            "owner_id": "task", "lease_version": 1, "target_id": "artifact-auto",
+            "artifact_digest": "e" * 64, "expected_event_kind": "RESULT_PENDING",
+            "due_event": "TURN_COMPLETION", "due_generation": 1, "source_cursor": 0,
+            "attempted_route_digests": ["b" * 64], "observed_at_ms": 1,
+        }
+        projection = {
+            "cursor": {"event_seq": 2},
+            "expected_receipts": {"expected-auto": {
+                "receipt": receipt, "event_seq": 1,
+                "result": {"status": "ATTENTION", "reason": "EMPTY_OUTPUT", "event_id": "turn-observed", "route_digest": "b" * 64},
+            }},
+        }
+        app.progress_ledger = SimpleNamespace(replay=mock.Mock(return_value=projection))
+        overview = app._host_overview()
+        first = app.evaluate_auto_once(overview)
+        self.assertTrue(first["dispatched"])
+        self.assertTrue(first["bridge_ok"])
+        self.assertEqual(bridge.run.call_count, 1)
+        status = app.store.auto_status("root", "project:alpha")
+        self.assertEqual((status["phase"], status["last_disposition"]), ("IDLE", ""))
+        with closing(sqlite3.connect(app.store.path)) as connection:
+            payload = json.loads(connection.execute(
+                "SELECT payload_json FROM execution_event_receipts WHERE event_kind = 'AUTO_HOST_COMPLETION'"
+            ).fetchone()[0])
+        self.assertFalse(payload["material_progress"])
+        self.assertEqual(app.evaluate_auto_once(overview)["reason"], "REPLAY")
+        self.assertEqual(bridge.run.call_count, 1)
+
+    def test_auto_transport_recovery_is_bounded_and_wrong_ctrl_project_fails_before_mutation(self) -> None:
+        self._confirm_root_ctrl()
+        results = [
+            console.AutoBridgeResult(False, failure_kind="TRANSPORT_UNAVAILABLE", transient=True),
+            console.AutoBridgeResult(False, failure_kind="TRANSPORT_UNAVAILABLE", transient=True),
+            console.AutoBridgeResult(False, failure_kind="TRANSPORT_UNAVAILABLE", transient=True),
+        ]
+        bridge = SimpleNamespace(run=mock.Mock(side_effect=results))
+        app = console.App(self.codex_home, self.config, auto_bridge=bridge)
+        with self.assertRaises(console.ConsoleError):
+            app.auto_command({
+                "command": "ENABLE", "ctrl_id": "root", "project_id": "project:missing",
+                "request_id": "wrong-project",
+            })
+        self.assertEqual(app.store.enabled_auto_states(), [])
+
+        app.auto_command({
+            "command": "ENABLE", "ctrl_id": "root", "project_id": "project:alpha",
+            "request_id": "enable-transient",
+        })
+        receipt = {
+            "receipt_id": "expected-transient", "goal_id": "goal-auto", "task_id": "task",
+            "owner_id": "task", "lease_version": 1, "target_id": "artifact-auto",
+            "artifact_digest": "e" * 64, "expected_event_kind": "RESULT_PENDING",
+            "due_event": "TURN_COMPLETION", "due_generation": 1, "source_cursor": 0,
+            "attempted_route_digests": ["b" * 64], "observed_at_ms": 1,
+        }
+        app.progress_ledger = SimpleNamespace(replay=mock.Mock(return_value={
+            "cursor": {"event_seq": 2}, "expected_receipts": {"expected-transient": {
+                "receipt": receipt, "event_seq": 1,
+                "result": {"status": "ATTENTION", "reason": "TIMEOUT", "event_id": "turn-observed", "route_digest": "b" * 64},
+            }},
+        }))
+        with mock.patch.object(console.time, "sleep") as sleep:
+            result = app.evaluate_auto_once(app._host_overview())
+        self.assertEqual(bridge.run.call_count, 3)
+        self.assertEqual(sleep.call_count, 2)
+        self.assertEqual(result["state"]["last_disposition"], "RETRY_SAME")
+        self.assertFalse(result["state"]["in_flight"])
 
     def test_auto_health_setting_defaults_off_and_uses_canonical_validator(self) -> None:
         _, effective, _ = console.load_config(self.config)

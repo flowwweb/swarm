@@ -12,6 +12,7 @@ import json
 import math
 import mimetypes
 import os
+import queue
 import re
 import secrets
 import shutil
@@ -26,10 +27,11 @@ import webbrowser
 from collections import Counter
 from contextlib import closing
 from datetime import UTC, datetime
+from enum import StrEnum
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
 from urllib.parse import parse_qs, unquote, urlparse
 
 
@@ -53,6 +55,7 @@ from runtime.progress_events import (  # noqa: E402
     validate_progress_pulse,
 )
 from runtime.execution_adapters import (  # noqa: E402
+    CodexAppServerAdapter,
     ExecutionConfigGeneration,
     ExecutionDispatchLedger,
     ExecutionReservation,
@@ -71,6 +74,7 @@ CONSOLE_STATE_PATH_ENV = "SWARM_CONSOLE_STATE_PATH"
 CONSOLE_STATE_DIR_ENV = "SWARM_CONSOLE_DATA_DIR"
 CONSOLE_STATE_FILENAME = "console-state.sqlite3"
 TOKEN_SAMPLE_SECONDS = 60
+AUTO_BRIDGE_TIMEOUT_SECONDS = 60
 TOKEN_RETENTION_DAYS = 30
 TOKEN_SOURCE_SQLITE = "host_reported_cumulative_delta"
 TOKEN_SOURCE_CODEX_JSONL = "codex_jsonl_token_count"
@@ -186,6 +190,155 @@ EDITABLE_SETTINGS: dict[str, type] = {
 
 class ConsoleError(RuntimeError):
     """Expected, user-visible console failure."""
+
+
+class AutoDisposition(StrEnum):
+    RETRY_SAME = "RETRY_SAME"
+    TRY_ALTERNATE = "TRY_ALTERNATE"
+    WAIT_USER = "WAIT_USER"
+    TERMINAL_BLOCKED = "TERMINAL_BLOCKED"
+
+
+class AutoBridgeResult(NamedTuple):
+    ok: bool
+    thread_id: str = ""
+    turn_id: str = ""
+    event_digest: str = ""
+    failure_kind: str = ""
+    transient: bool = False
+    turn_started: bool = False
+
+
+def _auto_id(value: Any, label: str) -> str:
+    if not isinstance(value, str):
+        raise ConsoleError(f"{label} must be a safe identifier")
+    text = value.strip()
+    if not text or len(text) > 256 or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:@+-]*", text):
+        raise ConsoleError(f"{label} must be a safe identifier")
+    return text
+
+
+def _auto_digest(payload: Any) -> str:
+    encoded = json.dumps(payload, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
+class CodexStdioBridge:
+    """One bounded private Codex App Server JSONL session; no result prose is retained."""
+
+    def __init__(self, process_factory: Any = subprocess.Popen):
+        self._process_factory = process_factory
+        self.adapter = CodexAppServerAdapter()
+
+    @staticmethod
+    def _thread_id(message: dict[str, Any]) -> str:
+        result = message.get("result")
+        result = result if isinstance(result, dict) else {}
+        thread = result.get("thread")
+        thread = thread if isinstance(thread, dict) else {}
+        return str(result.get("threadId") or thread.get("id") or "")
+
+    @staticmethod
+    def _turn_id(message: dict[str, Any]) -> str:
+        result = message.get("result")
+        result = result if isinstance(result, dict) else {}
+        turn = result.get("turn")
+        turn = turn if isinstance(turn, dict) else {}
+        return str(result.get("turnId") or turn.get("id") or "")
+
+    def run(self, *, cwd: Path, instruction: str, thread_id: str = "") -> AutoBridgeResult:
+        process = None
+        inbox: queue.Queue[object] = queue.Queue()
+        try:
+            process = self._process_factory(
+                list(self.adapter.entrypoint),
+                cwd=str(cwd), stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL, text=True, encoding="utf-8",
+                shell=False, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            )
+            if process.stdin is None or process.stdout is None:
+                raise OSError("Codex App Server stdio is unavailable")
+
+            def read_messages() -> None:
+                try:
+                    for line in process.stdout:
+                        try:
+                            message = json.loads(line)
+                        except (json.JSONDecodeError, UnicodeDecodeError):
+                            continue
+                        if isinstance(message, dict):
+                            inbox.put(message)
+                finally:
+                    inbox.put(None)
+
+            threading.Thread(target=read_messages, name="swarm-auto-app-server-jsonl", daemon=True).start()
+            deadline = time.monotonic() + AUTO_BRIDGE_TIMEOUT_SECONDS
+            pending: list[dict[str, Any]] = []
+
+            def send(message: dict[str, object]) -> None:
+                process.stdin.write(json.dumps(message, ensure_ascii=True, separators=(",", ":")) + "\n")
+                process.stdin.flush()
+
+            def receive(predicate: Any) -> dict[str, Any]:
+                while True:
+                    for index, retained in enumerate(pending):
+                        if predicate(retained):
+                            return pending.pop(index)
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        raise TimeoutError("Codex App Server did not reach a terminal event")
+                    message = inbox.get(timeout=remaining)
+                    if message is None:
+                        raise OSError("Codex App Server closed its JSONL stream")
+                    if predicate(message):
+                        return message
+                    if message.get("method") == "turn/completed" or "id" in message:
+                        if len(pending) >= 64:
+                            raise OSError("Codex App Server exceeded the bounded control-event buffer")
+                        pending.append(message)
+
+            send(self.adapter.initialize_request("swarm-console-auto", request_id=0))
+            initialized = receive(lambda item: item.get("id") == 0)
+            if initialized.get("error") is not None:
+                return AutoBridgeResult(False, failure_kind="INITIALIZE_FAILED", transient=True)
+            send(self.adapter.initialized_notification())
+            send({
+                "method": "thread/resume" if thread_id else "thread/start", "id": 1,
+                "params": {"threadId": thread_id} if thread_id else {"cwd": str(cwd)},
+            })
+            thread_message = receive(lambda item: item.get("id") == 1)
+            if thread_message.get("error") is not None:
+                return AutoBridgeResult(False, failure_kind="THREAD_UNAVAILABLE", transient=True)
+            resolved_thread = thread_id or self._thread_id(thread_message)
+            if not resolved_thread:
+                return AutoBridgeResult(False, failure_kind="MISSING_THREAD", transient=False)
+            send({
+                "method": "turn/start", "id": 2,
+                "params": {"threadId": resolved_thread, "input": [{"type": "text", "text": instruction}], "cwd": str(cwd)},
+            })
+            turn_message = receive(lambda item: item.get("id") == 2)
+            if turn_message.get("error") is not None:
+                return AutoBridgeResult(False, thread_id=resolved_thread, failure_kind="TURN_START_FAILED", transient=True)
+            resolved_turn = self._turn_id(turn_message)
+            terminal = receive(lambda item: item.get("method") == "turn/completed")
+            event = self.adapter.translate_event(terminal)
+            status = event.status.casefold()
+            return AutoBridgeResult(
+                status in {"completed", "complete"}, event.thread_id or resolved_thread,
+                event.turn_id or resolved_turn, event.evidence_digest,
+                "" if status in {"completed", "complete"} else "TURN_FAILED",
+                False, True,
+            )
+        except (OSError, TimeoutError, queue.Empty, subprocess.SubprocessError):
+            return AutoBridgeResult(False, failure_kind="TRANSPORT_UNAVAILABLE", transient=True)
+        finally:
+            if process is not None and process.poll() is None:
+                process.terminate()
+                try:
+                    process.wait(timeout=2)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    process.wait(timeout=2)
 
 
 def load_config_module() -> Any:
@@ -1181,6 +1334,30 @@ class ConsoleStore:
                     event_digest TEXT PRIMARY KEY,
                     retained_at_ms INTEGER NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS auto_ctrl_state (
+                    ctrl_id TEXT PRIMARY KEY,
+                    project_id TEXT NOT NULL,
+                    enabled INTEGER NOT NULL DEFAULT 0,
+                    stop_after_turn INTEGER NOT NULL DEFAULT 0,
+                    in_flight INTEGER NOT NULL DEFAULT 0,
+                    revision INTEGER NOT NULL DEFAULT 0,
+                    goal_id TEXT NOT NULL DEFAULT '',
+                    request_id TEXT NOT NULL DEFAULT '',
+                    observed_turn_id TEXT NOT NULL DEFAULT '',
+                    decision_digest TEXT NOT NULL DEFAULT '',
+                    reservation_id TEXT NOT NULL DEFAULT '',
+                    thread_id TEXT NOT NULL DEFAULT '',
+                    turn_id TEXT NOT NULL DEFAULT '',
+                    last_disposition TEXT NOT NULL DEFAULT '',
+                    next_operation TEXT NOT NULL DEFAULT '',
+                    next_owner TEXT NOT NULL DEFAULT '',
+                    next_route TEXT NOT NULL DEFAULT '',
+                    release_condition TEXT NOT NULL DEFAULT '',
+                    responsible_authority TEXT NOT NULL DEFAULT '',
+                    updated_at_ms INTEGER NOT NULL
+                );
+                CREATE UNIQUE INDEX IF NOT EXISTS auto_one_in_flight
+                    ON auto_ctrl_state(in_flight) WHERE in_flight = 1;
                 CREATE UNIQUE INDEX IF NOT EXISTS health_requests_open_dedupe
                     ON health_requests(dedupe_key)
                     WHERE status IN ('OPEN', 'CLAIMED', 'IN_PROGRESS');
@@ -1191,6 +1368,22 @@ class ConsoleStore:
                 CREATE INDEX IF NOT EXISTS health_requests_status
                     ON health_requests(status, created_at_ms DESC);
                 """
+            )
+            execution_receipt_columns = {
+                str(row[1])
+                for row in connection.execute("PRAGMA table_info(execution_event_receipts)").fetchall()
+            }
+            for name, definition in {
+                "event_kind": "TEXT NOT NULL DEFAULT 'EXECUTION_EVENT'",
+                "identity": "TEXT NOT NULL DEFAULT ''",
+                "payload_json": "TEXT NOT NULL DEFAULT '{}'",
+                "payload_digest": "TEXT NOT NULL DEFAULT ''",
+            }.items():
+                if name not in execution_receipt_columns:
+                    connection.execute(f"ALTER TABLE execution_event_receipts ADD COLUMN {name} {definition}")
+            connection.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS execution_event_identity "
+                "ON execution_event_receipts(event_kind, identity) WHERE identity != ''"
             )
             eta_columns = {
                 str(row[1])
@@ -1521,6 +1714,344 @@ class ConsoleStore:
             )
         except (TypeError, ValueError, KeyError, json.JSONDecodeError) as error:
             raise ConsoleError(f"execution ledger restore failed closed: {error}") from error
+
+    @staticmethod
+    def _auto_payload(payload: dict[str, Any]) -> tuple[str, str]:
+        encoded = json.dumps(payload, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
+        return encoded, hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+    @staticmethod
+    def _auto_row(row: sqlite3.Row | None, *, ctrl_id: str, project_id: str) -> dict[str, Any]:
+        if row is None:
+            return {
+                "ctrl_id": ctrl_id, "project_id": project_id, "enabled": False,
+                "stop_after_turn": False, "in_flight": False, "revision": 0,
+                "goal_id": "", "request_id": "", "observed_turn_id": "",
+                "decision_digest": "", "reservation_id": "", "thread_id": "",
+                "turn_id": "", "last_disposition": "", "next_operation": "",
+                "next_owner": "", "next_route": "", "release_condition": "",
+                "responsible_authority": "", "updated_at_ms": 0,
+                "phase": "OFF", "attention": None,
+            }
+        result = dict(row)
+        for key in ("enabled", "stop_after_turn", "in_flight"):
+            result[key] = bool(result[key])
+        result["phase"] = (
+            "STOPPING" if result["stop_after_turn"] else
+            "RUNNING" if result["in_flight"] else
+            "IDLE" if result["enabled"] else "OFF"
+        )
+        result["attention"] = None
+        return result
+
+    @classmethod
+    def _retain_auto_event(
+        cls, connection: sqlite3.Connection, *, event_kind: str, identity: str,
+        payload: dict[str, Any], now_ms: int,
+    ) -> bool:
+        encoded, digest = cls._auto_payload(payload)
+        retained = connection.execute(
+            "SELECT payload_digest FROM execution_event_receipts WHERE event_kind = ? AND identity = ?",
+            (event_kind, identity),
+        ).fetchone()
+        if retained is not None:
+            if str(retained["payload_digest"]) != digest:
+                raise ConsoleConflict("Auto receipt identity conflicts with retained content")
+            return False
+        connection.execute(
+            "INSERT INTO execution_event_receipts(event_digest, retained_at_ms, event_kind, identity, payload_json, payload_digest) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (digest, now_ms, event_kind, identity, encoded, digest),
+        )
+        return True
+
+    def auto_status(self, ctrl_id: str, project_id: str) -> dict[str, Any]:
+        ctrl_id = _auto_id(ctrl_id, "ctrl_id")
+        project_id = _auto_id(project_id, "project_id")
+        with self._lock, closing(self._connect()) as connection:
+            row = connection.execute("SELECT * FROM auto_ctrl_state WHERE ctrl_id = ?", (ctrl_id,)).fetchone()
+            broken = None if row is None else connection.execute(
+                "SELECT 1 FROM execution_event_receipts failure "
+                "WHERE failure.event_kind = 'AUTO_FAILURE' AND failure.identity = ? AND NOT EXISTS ("
+                "SELECT 1 FROM execution_event_receipts disposition "
+                "WHERE disposition.event_kind = 'AUTO_FAILURE_DISPOSITION' "
+                "AND disposition.identity = failure.identity) LIMIT 1",
+                (str(row["reservation_id"]),),
+            ).fetchone()
+        result = self._auto_row(row, ctrl_id=ctrl_id, project_id=project_id)
+        if row is not None and result["project_id"] != project_id:
+            raise ConsoleConflict("CTRL Auto state is bound to a different project")
+        if result["in_flight"]:
+            result["attention"] = {
+                "kind": "IN_FLIGHT_OUTCOME_UNVERIFIED",
+                "reason": "confirm the retained host turn before any replay",
+            }
+        if broken is not None:
+            result["attention"] = {
+                "kind": "BROKEN_HANDOFF",
+                "reason": "material failure has no durable next disposition",
+            }
+        result["claim_limit"] = "Auto host completion is not material progress, proof, review, or acceptance."
+        return result
+
+    def enabled_auto_states(self) -> list[dict[str, Any]]:
+        with self._lock, closing(self._connect()) as connection:
+            rows = connection.execute(
+                "SELECT * FROM auto_ctrl_state WHERE enabled = 1 OR in_flight = 1 ORDER BY ctrl_id"
+            ).fetchall()
+        return [self._auto_row(row, ctrl_id=str(row["ctrl_id"]), project_id=str(row["project_id"])) for row in rows]
+
+    def set_auto(
+        self, ctrl_id: str, project_id: str, *, enabled: bool, request_id: str, now_ms: int,
+    ) -> dict[str, Any]:
+        ctrl_id = _auto_id(ctrl_id, "ctrl_id")
+        project_id = _auto_id(project_id, "project_id")
+        request_id = _auto_id(request_id, "request_id")
+        if not isinstance(enabled, bool) or not isinstance(now_ms, int) or isinstance(now_ms, bool) or now_ms < 0:
+            raise ConsoleError("Auto command requires boolean enabled and nonnegative time")
+        payload = {"ctrl_id": ctrl_id, "project_id": project_id, "enabled": enabled, "request_id": request_id}
+        with self._lock, closing(self._connect()) as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute("SELECT * FROM auto_ctrl_state WHERE ctrl_id = ?", (ctrl_id,)).fetchone()
+            if row is not None and str(row["project_id"]) != project_id:
+                raise ConsoleConflict("CTRL Auto state is bound to a different project")
+            fresh = self._retain_auto_event(
+                connection, event_kind="AUTO_COMMAND", identity=request_id, payload=payload, now_ms=now_ms,
+            )
+            if fresh:
+                current = self._auto_row(row, ctrl_id=ctrl_id, project_id=project_id)
+                revision = int(current["revision"]) + 1
+                stop_after_turn = bool(current["in_flight"] and not enabled)
+                connection.execute(
+                    """
+                    INSERT INTO auto_ctrl_state(ctrl_id, project_id, enabled, stop_after_turn, in_flight, revision, updated_at_ms)
+                    VALUES (?, ?, ?, ?, 0, ?, ?)
+                    ON CONFLICT(ctrl_id) DO UPDATE SET
+                        enabled = excluded.enabled,
+                        stop_after_turn = excluded.stop_after_turn,
+                        revision = excluded.revision,
+                        updated_at_ms = excluded.updated_at_ms
+                    """,
+                    (ctrl_id, project_id, int(enabled), int(stop_after_turn), revision, now_ms),
+                )
+            connection.commit()
+        return {**self.auto_status(ctrl_id, project_id), "replayed": not fresh}
+
+    def claim_auto_dispatch(self, decision: dict[str, Any], *, now_ms: int) -> dict[str, Any]:
+        required = {
+            "ctrl_id", "project_id", "goal_id", "task_id", "owner_id", "request_id",
+            "observed_turn_id", "decision_digest", "route_digest", "instruction_digest",
+        }
+        if set(decision) != required:
+            raise ConsoleError("Auto decision has an invalid exact schema")
+        values = {key: _auto_id(value, key) for key, value in decision.items() if not key.endswith("digest")}
+        digests = {
+            key: str(decision[key]).casefold()
+            for key in ("decision_digest", "route_digest", "instruction_digest")
+        }
+        if any(not re.fullmatch(r"[0-9a-f]{64}", value) for value in digests.values()):
+            raise ConsoleError("Auto decision digests must be SHA-256")
+        identity = _auto_digest((values["goal_id"], values["request_id"], values["observed_turn_id"], digests["decision_digest"]))
+        payload = {**values, **digests, "idempotency_key": identity}
+        reservation_id = f"auto-{identity}"
+        with self._lock, closing(self._connect()) as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute("SELECT * FROM auto_ctrl_state WHERE ctrl_id = ?", (values["ctrl_id"],)).fetchone()
+            state = self._auto_row(row, ctrl_id=values["ctrl_id"], project_id=values["project_id"])
+            if row is None or state["project_id"] != values["project_id"] or not state["enabled"]:
+                connection.rollback()
+                return {"claimed": False, "reason": "AUTO_OFF", "idempotency_key": identity}
+            retained = connection.execute(
+                "SELECT payload_digest FROM execution_event_receipts WHERE event_kind = 'AUTO_DISPATCH' AND identity = ?",
+                (identity,),
+            ).fetchone()
+            if retained is not None:
+                if str(retained["payload_digest"]) != self._auto_payload(payload)[1]:
+                    raise ConsoleConflict("Auto dispatch identity conflicts with retained content")
+                connection.rollback()
+                return {"claimed": False, "reason": "REPLAY", "idempotency_key": identity}
+            if state["in_flight"] or connection.execute(
+                "SELECT 1 FROM auto_ctrl_state WHERE in_flight = 1 LIMIT 1"
+            ).fetchone() is not None:
+                connection.rollback()
+                return {"claimed": False, "reason": "IN_FLIGHT", "idempotency_key": identity}
+            self._retain_auto_event(
+                connection, event_kind="AUTO_DISPATCH", identity=identity, payload=payload, now_ms=now_ms,
+            )
+            connection.execute(
+                """
+                UPDATE auto_ctrl_state SET in_flight = 1, goal_id = ?, request_id = ?,
+                    observed_turn_id = ?, decision_digest = ?, reservation_id = ?,
+                    next_operation = 'CONTINUE_ONE_MATERIAL_SLICE', next_owner = ?, next_route = ?,
+                    updated_at_ms = ? WHERE ctrl_id = ? AND project_id = ? AND enabled = 1 AND in_flight = 0
+                """,
+                (
+                    values["goal_id"], values["request_id"], values["observed_turn_id"],
+                    digests["decision_digest"], reservation_id, values["owner_id"],
+                    digests["route_digest"], now_ms, values["ctrl_id"], values["project_id"],
+                ),
+            )
+            connection.commit()
+        return {"claimed": True, "reservation_id": reservation_id, "idempotency_key": identity}
+
+    @staticmethod
+    def _derive_auto_disposition(failures: list[dict[str, Any]], current: dict[str, Any]) -> dict[str, str]:
+        failed_routes = {item["route_digest"] for item in [*failures, current]}
+        permitted_routes = {
+            route for item in [*failures, current] for route in item.get("permitted_routes", [])
+        }
+        if current.get("human_gate"):
+            return {
+                "disposition": AutoDisposition.WAIT_USER.value, "next_operation": "WAIT_FOR_USER_DECISION",
+                "next_owner": current["responsible_authority"], "next_route": "",
+                "release_condition": current["release_condition"],
+                "responsible_authority": current["responsible_authority"],
+            }
+        if (
+            current.get("ledger_state") == "BLOCKED"
+            and len(failures) + 1 >= 3 and len(failed_routes) >= 3 and permitted_routes
+            and permitted_routes <= failed_routes and current.get("release_condition")
+            and current.get("responsible_authority")
+        ):
+            return {
+                "disposition": AutoDisposition.TERMINAL_BLOCKED.value, "next_operation": "WAIT_FOR_RELEASE",
+                "next_owner": current["responsible_authority"], "next_route": "",
+                "release_condition": current["release_condition"],
+                "responsible_authority": current["responsible_authority"],
+            }
+        alternate = sorted(permitted_routes - failed_routes)
+        if alternate and current.get("retry_action") in {"REASSESS_ROOT_CAUSE", "STOP_REPEATED_TACTIC"}:
+            return {
+                "disposition": AutoDisposition.TRY_ALTERNATE.value, "next_operation": "CONTINUE_ONE_MATERIAL_SLICE",
+                "next_owner": current["owner_id"], "next_route": alternate[0],
+                "release_condition": "", "responsible_authority": "",
+            }
+        if current.get("retry_action") == "CONTINUE":
+            return {
+                "disposition": AutoDisposition.RETRY_SAME.value, "next_operation": "CORRECT_AND_RETRY_ONCE",
+                "next_owner": current["owner_id"], "next_route": current["route_digest"],
+                "release_condition": "", "responsible_authority": "",
+            }
+        return {
+            "disposition": AutoDisposition.WAIT_USER.value, "next_operation": "AUTHORIZE_DISTINCT_ROUTE",
+            "next_owner": current.get("responsible_authority") or current["ctrl_id"], "next_route": "",
+            "release_condition": current.get("release_condition") or "authorize a materially distinct safe route",
+            "responsible_authority": current.get("responsible_authority") or current["ctrl_id"],
+        }
+
+    def finish_auto_dispatch(
+        self, ctrl_id: str, project_id: str, *, result: AutoBridgeResult,
+        failure: dict[str, Any] | None, now_ms: int,
+    ) -> dict[str, Any]:
+        ctrl_id = _auto_id(ctrl_id, "ctrl_id")
+        project_id = _auto_id(project_id, "project_id")
+        if not isinstance(result, AutoBridgeResult):
+            raise ConsoleError("Auto completion requires a typed bridge result")
+        with self._lock, closing(self._connect()) as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute("SELECT * FROM auto_ctrl_state WHERE ctrl_id = ?", (ctrl_id,)).fetchone()
+            state = self._auto_row(row, ctrl_id=ctrl_id, project_id=project_id)
+            if row is None or state["project_id"] != project_id or not state["in_flight"]:
+                raise ConsoleConflict("Auto completion does not match a retained in-flight lease")
+            identity = str(state["reservation_id"])
+            if result.ok:
+                payload = {
+                    "ctrl_id": ctrl_id, "project_id": project_id, "reservation_id": identity,
+                    "thread_id": result.thread_id, "turn_id": result.turn_id,
+                    "event_digest": result.event_digest, "material_progress": False,
+                }
+                self._retain_auto_event(
+                    connection, event_kind="AUTO_HOST_COMPLETION", identity=identity,
+                    payload=payload, now_ms=now_ms,
+                )
+                connection.execute(
+                    "UPDATE auto_ctrl_state SET in_flight = 0, stop_after_turn = 0, enabled = CASE WHEN stop_after_turn = 1 THEN 0 ELSE enabled END, "
+                    "thread_id = ?, turn_id = ?, last_disposition = '', next_operation = '', next_owner = '', next_route = '', "
+                    "release_condition = '', responsible_authority = '', updated_at_ms = ? WHERE ctrl_id = ?",
+                    (result.thread_id, result.turn_id, now_ms, ctrl_id),
+                )
+                disposition = None
+            else:
+                if not isinstance(failure, dict):
+                    raise ConsoleError("material Auto failure requires a typed disposition input")
+                exact = {
+                    "ctrl_id", "project_id", "goal_id", "task_id", "owner_id", "route_digest",
+                    "failure_kind", "permitted_routes", "human_gate", "release_condition", "responsible_authority",
+                    "retry_action", "ledger_state",
+                }
+                if set(failure) != exact:
+                    raise ConsoleError("Auto failure has an invalid exact schema")
+                current = dict(failure)
+                for key in ("ctrl_id", "project_id", "goal_id", "task_id", "owner_id", "failure_kind"):
+                    current[key] = _auto_id(current[key], key)
+                current["route_digest"] = str(current["route_digest"]).casefold()
+                routes = [str(route).casefold() for route in current["permitted_routes"]]
+                dispatch_identity = identity.removeprefix("auto-")
+                dispatch_row = connection.execute(
+                    "SELECT payload_json FROM execution_event_receipts WHERE event_kind = 'AUTO_DISPATCH' AND identity = ?",
+                    (dispatch_identity,),
+                ).fetchone()
+                dispatch = json.loads(str(dispatch_row["payload_json"])) if dispatch_row is not None else {}
+                release_condition = str(current["release_condition"] or "").strip()
+                responsible_authority = str(current["responsible_authority"] or "").strip()
+                if (
+                    current["ctrl_id"] != ctrl_id or current["project_id"] != project_id
+                    or current["goal_id"] != state["goal_id"]
+                    or dispatch.get("ctrl_id") != ctrl_id or dispatch.get("project_id") != project_id
+                    or dispatch.get("goal_id") != current["goal_id"]
+                    or dispatch.get("task_id") != current["task_id"]
+                    or dispatch.get("owner_id") != current["owner_id"]
+                    or dispatch.get("route_digest") != current["route_digest"]
+                    or not re.fullmatch(r"[0-9a-f]{64}", current["route_digest"])
+                    or any(not re.fullmatch(r"[0-9a-f]{64}", route) for route in routes)
+                    or len(routes) != len(set(routes)) or not isinstance(current["human_gate"], bool)
+                    or current["retry_action"] not in {"CONTINUE", "REASSESS_ROOT_CAUSE", "STOP_REPEATED_TACTIC"}
+                    or current["ledger_state"] not in {"ATTENTION", "STALLED", "BLOCKED"}
+                    or len(release_condition) > 256 or any(character in release_condition for character in "\r\n\x00")
+                    or (responsible_authority and _auto_id(responsible_authority, "responsible_authority") != responsible_authority)
+                    or (current["human_gate"] and (not release_condition or not responsible_authority))
+                ):
+                    raise ConsoleConflict("Auto failure conflicts with its retained dispatch binding")
+                current["permitted_routes"] = routes
+                if result.turn_started and result.transient:
+                    current.update(
+                        human_gate=True,
+                        release_condition="confirm the interrupted host turn outcome before retry",
+                        responsible_authority=ctrl_id,
+                    )
+                rows = connection.execute(
+                    "SELECT payload_json FROM execution_event_receipts WHERE event_kind = 'AUTO_FAILURE_DISPOSITION' ORDER BY retained_at_ms, identity"
+                ).fetchall()
+                prior = []
+                for retained in rows:
+                    payload = json.loads(str(retained["payload_json"]))
+                    item = payload.get("failure")
+                    if isinstance(item, dict) and item.get("ctrl_id") == ctrl_id and item.get("goal_id") == state["goal_id"] and item.get("task_id") == current["task_id"]:
+                        prior.append(item)
+                disposition = self._derive_auto_disposition(prior, current)
+                payload = {
+                    "ctrl_id": ctrl_id, "project_id": project_id, "reservation_id": identity,
+                    "failure": current, "disposition": disposition,
+                    "bridge": {"failure_kind": result.failure_kind, "transient": result.transient, "turn_started": result.turn_started},
+                    "material_progress": False,
+                }
+                self._retain_auto_event(
+                    connection, event_kind="AUTO_FAILURE_DISPOSITION", identity=identity,
+                    payload=payload, now_ms=now_ms,
+                )
+                connection.execute(
+                    "UPDATE auto_ctrl_state SET in_flight = 0, stop_after_turn = 0, enabled = CASE WHEN stop_after_turn = 1 THEN 0 ELSE enabled END, "
+                    "thread_id = ?, turn_id = ?, last_disposition = ?, next_operation = ?, next_owner = ?, next_route = ?, "
+                    "release_condition = ?, responsible_authority = ?, updated_at_ms = ? WHERE ctrl_id = ?",
+                    (
+                        result.thread_id or state["thread_id"], result.turn_id or state["turn_id"],
+                        disposition["disposition"], disposition["next_operation"], disposition["next_owner"],
+                        disposition["next_route"], disposition["release_condition"],
+                        disposition["responsible_authority"], now_ms, ctrl_id,
+                    ),
+                )
+            connection.commit()
+        return {**self.auto_status(ctrl_id, project_id), "disposition_receipt": disposition}
 
     def _retention_cutoff(self, now_ms: int) -> int:
         return now_ms - TOKEN_RETENTION_DAYS * 24 * 60 * 60 * 1000
@@ -4279,11 +4810,15 @@ class SwarmHTTPServer(ThreadingHTTPServer):
 
 
 class App:
-    def __init__(self, codex_home: Path, config_path: Path, state_path: Path | None = None):
+    def __init__(
+        self, codex_home: Path, config_path: Path, state_path: Path | None = None,
+        *, auto_bridge: Any | None = None,
+    ):
         self.codex_home = codex_home.resolve()
         self.config_path = config_path.resolve()
         self.store = ConsoleStore(state_path or console_state_path(self.codex_home, self.config_path))
         self.progress_ledger = ProgressLedger(self.codex_home)
+        self.auto_bridge = auto_bridge or CodexStdioBridge()
         self.builtin_role_manifests = load_builtin_role_manifests(
             SWARM_SKILL_ROOT / "roles", STATIC_ROOT / "swarm-offline-disconnected.png"
         )
@@ -4308,6 +4843,162 @@ class App:
         self._progress_pulse_fingerprint: tuple[tuple[str, int, int], ...] | None = None
         self._observer_stop = threading.Event()
         self._observer_thread: threading.Thread | None = None
+
+    def _auto_project_root(self, project_id: str) -> Path:
+        database = state_database(self.codex_home)
+        with closing(sqlite3.connect(database)) as connection:
+            row = connection.execute(
+                "SELECT path FROM project_roots WHERE project_id = ? ORDER BY position LIMIT 1",
+                (project_id,),
+            ).fetchone()
+        if row is None:
+            raise ConsoleError("Auto requires a canonical host project root")
+        root = Path(str(row[0]))
+        if not root.is_absolute():
+            raise ConsoleError("Auto project root must be an absolute host path")
+        return root
+
+    def _auto_scope(self, ctrl_id: str, project_id: str) -> dict[str, Any]:
+        overview = self._host_overview()
+        navigation = self._navigation_payload(overview)
+        ctrl = next((item for item in navigation["controllers"] if item["id"] == ctrl_id), None)
+        project = next((item for item in navigation["projects"] if item["id"] == project_id), None)
+        if (
+            ctrl is None or ctrl.get("project_id") != project_id
+            or ctrl.get("controller_classification") != "swarm_ctrl"
+            or ctrl.get("controller_classification_source") != "host_threads.agent_role"
+            or ctrl.get("visibility") != "visible"
+            or project is None or ctrl_id not in project.get("ctrl_ids", [])
+        ):
+            raise ConsoleError("Auto requires a current host-confirmed CTRL/project binding")
+        return overview
+
+    def auto_status(self, ctrl_id: str, project_id: str) -> dict[str, Any]:
+        self._auto_scope(ctrl_id, project_id)
+        return {"ok": True, **self.store.auto_status(ctrl_id, project_id)}
+
+    def auto_command(self, payload: dict[str, Any]) -> dict[str, Any]:
+        if not isinstance(payload, dict) or set(payload) != {"command", "ctrl_id", "project_id", "request_id"}:
+            raise ConsoleError("Auto command requires command, ctrl_id, project_id, and request_id")
+        command = str(payload.get("command") or "").strip().upper()
+        if command not in {"ENABLE", "DISABLE"}:
+            raise ConsoleError("Auto command must be ENABLE or DISABLE")
+        ctrl_id = _auto_id(payload.get("ctrl_id"), "ctrl_id")
+        project_id = _auto_id(payload.get("project_id"), "project_id")
+        self._auto_scope(ctrl_id, project_id)
+        result = self.store.set_auto(
+            ctrl_id, project_id, enabled=command == "ENABLE",
+            request_id=_auto_id(payload.get("request_id"), "request_id"),
+            now_ms=int(time.time() * 1000),
+        )
+        return {"ok": True, **result}
+
+    @staticmethod
+    def _auto_instruction(candidate: dict[str, Any]) -> str:
+        return (
+            "SWARM Auto continuation. Inspect the durable objective and admitted evidence for "
+            f"goal {candidate['goal_id']} and task {candidate['task_id']}. Advance exactly one "
+            "highest-priority safe in-scope material slice through the retained owner and custody. "
+            "If the retained route failed, use one materially distinct permitted recovery route before "
+            "requesting a blocker. Preserve user keep-out and authority gates. Return only a material "
+            "receipt or one exact safety, authority, or external release condition."
+        )
+
+    def _auto_candidate(
+        self, state: dict[str, Any], overview: dict[str, Any], projection: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        ctrl_id = state["ctrl_id"]
+        project_id = state["project_id"]
+        task_ids = {
+            str(node["id"])
+            for node in overview.get("nodes", [])
+            if node.get("project_id") == project_id and ctrl_id in node.get("controller_ids", [])
+        }
+        candidates: list[tuple[int, str, dict[str, Any]]] = []
+        cursor = int(projection.get("cursor", {}).get("event_seq") or 0)
+        for receipt_id, retained in projection.get("expected_receipts", {}).items():
+            if not isinstance(retained, dict):
+                continue
+            receipt = retained.get("receipt")
+            result = retained.get("result")
+            if not isinstance(receipt, dict) or not isinstance(result, dict) or receipt.get("task_id") not in task_ids:
+                continue
+            if result.get("status") == "MATCHED":
+                continue
+            if result.get("status") != "ATTENTION" and cursor < int(receipt.get("due_generation") or 0):
+                continue
+            observed_turn_id = str(result.get("event_id") or f"cursor-{cursor}")
+            route_digest = str(result.get("route_digest") or receipt.get("attempted_route_digests", [""])[-1])
+            decision_digest = _auto_digest({
+                "receipt_id": receipt_id, "result": result, "cursor": cursor,
+                "ctrl_id": ctrl_id, "project_id": project_id,
+            })
+            candidate = {
+                "ctrl_id": ctrl_id, "project_id": project_id,
+                "goal_id": receipt["goal_id"], "task_id": receipt["task_id"],
+                "owner_id": ctrl_id, "request_id": receipt["receipt_id"],
+                "observed_turn_id": observed_turn_id, "decision_digest": decision_digest,
+                "route_digest": route_digest,
+                "permitted_routes": list(receipt.get("attempted_route_digests", [])),
+                "retry_action": str(result.get("retry_action") or "CONTINUE"),
+                "ledger_state": str(result.get("state") or "ATTENTION"),
+            }
+            instruction = self._auto_instruction(candidate)
+            candidate["instruction"] = instruction
+            candidate["instruction_digest"] = hashlib.sha256(instruction.encode("utf-8")).hexdigest()
+            candidates.append((int(retained.get("event_seq") or 0), str(receipt_id), candidate))
+        return min(candidates, default=(0, "", None), key=lambda item: (item[0], item[1]))[2]
+
+    def evaluate_auto_once(self, overview: dict[str, Any] | None = None) -> dict[str, Any]:
+        states = self.store.enabled_auto_states()
+        if not states:
+            return {"dispatched": False, "reason": "AUTO_CLOSED"}
+        overview = overview or self._host_overview()
+        projection = self.progress_ledger.replay()
+        for state in states:
+            if not state["enabled"] or state["in_flight"] or state["stop_after_turn"]:
+                continue
+            self._auto_scope(state["ctrl_id"], state["project_id"])
+            candidate = self._auto_candidate(state, overview, projection)
+            if candidate is None:
+                continue
+            project_root = self._auto_project_root(state["project_id"])
+            decision = {key: candidate[key] for key in (
+                "ctrl_id", "project_id", "goal_id", "task_id", "owner_id", "request_id",
+                "observed_turn_id", "decision_digest", "route_digest", "instruction_digest",
+            )}
+            claim = self.store.claim_auto_dispatch(decision, now_ms=int(time.time() * 1000))
+            if not claim["claimed"]:
+                return {"dispatched": False, **claim}
+            result = AutoBridgeResult(False, failure_kind="TRANSPORT_UNAVAILABLE", transient=True)
+            for attempt in range(3):
+                try:
+                    result = self.auto_bridge.run(
+                        cwd=project_root, instruction=candidate["instruction"],
+                        thread_id=state["thread_id"],
+                    )
+                except (ConsoleError, OSError, RuntimeError):
+                    result = AutoBridgeResult(False, failure_kind="TRANSPORT_UNAVAILABLE", transient=True)
+                if result.ok or result.turn_started or not result.transient:
+                    break
+                if attempt < 2:
+                    jitter = int(candidate["decision_digest"][:4], 16) % 100 / 1000
+                    time.sleep(0.25 * (2**attempt) + jitter)
+            failure = None if result.ok else {
+                "ctrl_id": state["ctrl_id"], "project_id": state["project_id"],
+                "goal_id": candidate["goal_id"], "task_id": candidate["task_id"],
+                "owner_id": state["ctrl_id"], "route_digest": candidate["route_digest"],
+                "failure_kind": result.failure_kind or "HOST_FAILED",
+                "permitted_routes": candidate["permitted_routes"], "human_gate": False,
+                "release_condition": "", "responsible_authority": "",
+                "retry_action": candidate["retry_action"], "ledger_state": candidate["ledger_state"],
+            }
+            completed = self.store.finish_auto_dispatch(
+                state["ctrl_id"], state["project_id"], result=result,
+                failure=failure, now_ms=int(time.time() * 1000),
+            )
+            return {"dispatched": True, "bridge_ok": result.ok, "state": completed}
+        return {"dispatched": False, "reason": "NO_DUE_DECISION"}
 
     def _host_overview(self, *, refresh: bool = False) -> dict[str, Any]:
         with self.overview_lock:
@@ -5205,6 +5896,11 @@ class App:
         )
         self._ingest_proof_events_if_changed(observed)
         try:
+            self.evaluate_auto_once(observed)
+        except (ConsoleError, OSError, sqlite3.Error, ValueError, TypeError):
+            # Auto is opt-in and fail-closed; host observation must stay available.
+            pass
+        try:
             sample = self.diagnostics_collector.collect()
             self.store.record_diagnostics(
                 sample,
@@ -5783,6 +6479,13 @@ class Handler(BaseHTTPRequestHandler):
             and secrets.compare_digest(self.headers.get("X-Swarm-Token", ""), self.server.app.token)
         )
 
+    def _authorized_auto(self) -> bool:
+        return (
+            self._peer_is_loopback()
+            and self._same_origin()
+            and secrets.compare_digest(self.headers.get("X-Swarm-Token", ""), self.server.app.token)
+        )
+
     def _bootstrap_payload(self) -> dict[str, Any]:
         local = self._peer_is_trusted_local()
         return {
@@ -5820,6 +6523,15 @@ class Handler(BaseHTTPRequestHandler):
                 return
             if path == "/api/bootstrap":
                 self._json(HTTPStatus.OK, self._bootstrap_payload())
+                return
+            if path == "/api/auto":
+                if not self._authorized_auto():
+                    self._error(HTTPStatus.FORBIDDEN, "Auto status requires local same-origin authorization")
+                    return
+                self._json(
+                    HTTPStatus.OK,
+                    self.server.app.auto_status(query.get("ctrl_id", ""), query.get("project_id", "")),
+                )
                 return
             if path == "/api/overview":
                 self.server.app.mark_presence()
@@ -6034,6 +6746,14 @@ class Handler(BaseHTTPRequestHandler):
                 with self.server.app.write_lock:
                     result = update_config(self.server.app.config_path, changes)
                 self._json(HTTPStatus.OK, {"ok": True, **result})
+                return
+            if path == "/api/auto":
+                if not self._authorized_auto():
+                    self._error(HTTPStatus.FORBIDDEN, "Auto command requires strict loopback authorization")
+                    return
+                with self.server.app.write_lock:
+                    result = self.server.app.auto_command(self._payload())
+                self._json(HTTPStatus.OK, result)
                 return
             if path == "/api/role-manifests/commands":
                 with self.server.app.write_lock:
