@@ -20,6 +20,30 @@ class VisualApprovalContractTests(unittest.TestCase):
 
         self.assertRegex(skill, r"(?is)taste-led generation.*clear user direction permits generation.*reserved choice requires candidates")
 
+    def test_mockup_requests_require_separate_imagegen_bitmaps_unless_user_requests_composite(self) -> None:
+        skill = SKILL.read_text(encoding="utf-8")
+
+        self.assertRegex(
+            skill,
+            r"(?is)mockup, UI mockup, screen option, or design option.*built-in ImageGen bitmap.*"
+            r"Designer generates.*separate full-frame bitmap.*CTRL only.*routes.*surfaces",
+        )
+        for substitute in (
+            "composite", "collage", "contact sheet", "stitched screenshot",
+            "HTML/CSS/canvas", "code-native substitute",
+        ):
+            self.assertIn(substitute, skill)
+        self.assertRegex(
+            skill,
+            r"(?is)permitted only when the user explicitly asks.*or explicitly approves an exception",
+        )
+        self.assertRegex(
+            skill,
+            r"(?is)Surface every requested mockup.*as its own full-frame inline artifact.*"
+            r"composite.*supplement.*never substitutes",
+        )
+        self.assertNotIn("also provide one consolidated decision gallery", skill)
+
     def test_loose_inspiration_and_binding_reference_have_contrasting_fidelity_gates(self) -> None:
         skill = "\n".join((path.read_text(encoding="utf-8") for path in (SKILL, REVIEW_CONTRACT)))
         review = REVIEW_CONTRACT.read_text(encoding="utf-8")
