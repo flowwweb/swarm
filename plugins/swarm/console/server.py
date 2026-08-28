@@ -203,16 +203,10 @@ class ConsoleError(RuntimeError):
 
 NOTIFICATION_RULES: dict[str, tuple[str, bool, str, str]] = {
     "BLOCKER": ("critical", True, "projects", "This task is waiting on an exact user, safety, or external release."),
-    "MILESTONE_COMPLETED": ("info", False, "projects", "A milestone has an admitted acceptance receipt."),
-    "REVIEW_REQUESTED": ("warning", True, "review", "An artifact is ready for independent review."),
-    "REVIEW_COMPLETED": ("info", False, "review", "Independent review proof has been admitted."),
+    "MILESTONE_COMPLETED": ("info", False, "projects", "A whole-milestone acceptance receipt has been admitted."),
+    "REVIEW_REQUESTED": ("warning", True, "review", "Independent review is required for this artifact."),
+    "REVIEW_COMPLETED": ("info", False, "review", "An independent-review receipt has been admitted."),
 }
-NOTIFICATION_ITEM_FIELDS = frozenset({
-    "id", "kind", "severity", "requires_action", "project_id", "ctrl_id",
-    "task_id", "subject_id", "owner_id", "revision", "source_event_id",
-    "source_event_digest", "material_sequence", "observed_at_ms", "sentence",
-    "action_target", "evidence_refs",
-})
 
 
 def _notification_identity(principal_id: str, item: dict[str, Any]) -> str:
@@ -225,49 +219,6 @@ def _notification_identity(principal_id: str, item: dict[str, Any]) -> str:
         "kind": item["kind"],
         "revision": item["revision"],
     })
-
-
-def _validate_notification_item(
-    value: Any, *, principal_id: str, ctrl_id: str, project_id: str,
-) -> dict[str, Any]:
-    if not isinstance(value, dict) or set(value) != NOTIFICATION_ITEM_FIELDS:
-        raise ConsoleError("retained notification receipt has invalid fields")
-    item = dict(value)
-    for key in ("id", "project_id", "ctrl_id", "task_id", "subject_id", "owner_id", "source_event_id"):
-        item[key] = _auto_id(item.get(key), key)
-    if item["project_id"] != project_id or item["ctrl_id"] != ctrl_id:
-        raise ConsoleError("retained notification receipt conflicts with its CTRL/project scope")
-    digest = str(item.get("source_event_digest") or "")
-    if not re.fullmatch(r"[0-9a-f]{64}", digest):
-        raise ConsoleError("retained notification source digest is invalid")
-    item["source_event_digest"] = digest
-    rule = NOTIFICATION_RULES.get(str(item.get("kind") or ""))
-    if rule is None or (item.get("severity"), item.get("requires_action"), item.get("sentence")) != (rule[0], rule[1], rule[3]):
-        raise ConsoleError("retained notification kind or product copy is invalid")
-    if not isinstance(item.get("revision"), int) or isinstance(item["revision"], bool) or item["revision"] < 1:
-        raise ConsoleError("retained notification revision is invalid")
-    if not isinstance(item.get("material_sequence"), int) or isinstance(item["material_sequence"], bool) or item["material_sequence"] < 1:
-        raise ConsoleError("retained notification material_sequence is invalid")
-    if not isinstance(item.get("observed_at_ms"), int) or isinstance(item["observed_at_ms"], bool) or item["observed_at_ms"] < 0:
-        raise ConsoleError("retained notification observed_at_ms is invalid")
-    target = item.get("action_target")
-    if not isinstance(target, dict) or set(target) != {"view", "project_id", "ctrl_id", "task_id", "subject_id"}:
-        raise ConsoleError("retained notification action target is invalid")
-    if target != {
-        "view": rule[2], "project_id": project_id, "ctrl_id": ctrl_id,
-        "task_id": item["task_id"], "subject_id": item["subject_id"],
-    }:
-        raise ConsoleError("retained notification action target conflicts with its source")
-    evidence_refs = item.get("evidence_refs")
-    if not isinstance(evidence_refs, list) or not 1 <= len(evidence_refs) <= 10:
-        raise ConsoleError("retained notification evidence references are invalid")
-    item["evidence_refs"] = list(dict.fromkeys(_auto_id(ref, "evidence_ref") for ref in evidence_refs))
-    if len(item["evidence_refs"]) != len(evidence_refs):
-        raise ConsoleError("retained notification evidence references contain duplicates")
-    expected_id = _notification_identity(principal_id, item)
-    if item["id"] != expected_id:
-        raise ConsoleError("retained notification identity conflicts with its source")
-    return item
 
 
 class AutoBridgeResult(NamedTuple):
@@ -3985,41 +3936,38 @@ class ConsoleStore:
     def _notification_seen_state(
         row: sqlite3.Row | None, *, principal_id: str, ctrl_id: str, project_id: str,
     ) -> dict[str, Any]:
+        scope_digest = _auto_digest([principal_id, ctrl_id, project_id])
         if row is None:
-            return {
-                "schema_version": 1, "principal_id": principal_id,
-                "ctrl_id": ctrl_id, "project_id": project_id, "receipts": [],
-            }
+            return {"schema_version": 1, "receipts": []}
         try:
             state = json.loads(str(row["value"]))
         except (TypeError, ValueError, json.JSONDecodeError) as error:
             raise ConsoleError("notification seen state is invalid") from error
-        if not isinstance(state, dict) or set(state) != {"schema_version", "principal_id", "ctrl_id", "project_id", "receipts"}:
-            raise ConsoleError("notification seen state is invalid")
         if (
-            state.get("schema_version") != 1 or state.get("principal_id") != principal_id
-            or state.get("ctrl_id") != ctrl_id or state.get("project_id") != project_id
-            or not isinstance(state.get("receipts"), list)
+            not isinstance(state, dict) or set(state) != {"schema_version", "receipts"}
+            or state.get("schema_version") != 1 or not isinstance(state.get("receipts"), list)
             or len(state["receipts"]) > NOTIFICATION_SEEN_LIMIT
         ):
-            raise ConsoleError("notification seen state conflicts with its scope")
-        receipts = []
+            raise ConsoleError("notification seen state is invalid")
         identities: set[str] = set()
         for receipt in state["receipts"]:
-            if not isinstance(receipt, dict) or set(receipt) != {"notification_id", "seen_at_ms", "item"}:
+            if not isinstance(receipt, dict) or set(receipt) != {
+                "notification_id", "scope_digest", "source_event_id", "source_event_digest", "seen_at_ms",
+            }:
                 raise ConsoleError("notification seen receipt is invalid")
-            notification_id = str(receipt.get("notification_id") or "")
-            seen_at_ms = receipt.get("seen_at_ms")
-            item = _validate_notification_item(
-                receipt.get("item"), principal_id=principal_id, ctrl_id=ctrl_id, project_id=project_id,
-            )
-            if notification_id != item["id"] or notification_id in identities:
+            notification_id, source_event_digest = receipt["notification_id"], receipt["source_event_digest"]
+            if (
+                receipt["scope_digest"] != scope_digest
+                or not isinstance(notification_id, str) or not re.fullmatch(r"[0-9a-f]{64}", notification_id)
+                or not isinstance(source_event_digest, str) or not re.fullmatch(r"[0-9a-f]{64}", source_event_digest)
+                or receipt["source_event_id"] != _auto_id(receipt["source_event_id"], "notification source event")
+                or notification_id in identities
+                or not isinstance(receipt["seen_at_ms"], int) or isinstance(receipt["seen_at_ms"], bool)
+                or receipt["seen_at_ms"] < 1
+            ):
                 raise ConsoleError("notification seen receipt identity is invalid")
-            if not isinstance(seen_at_ms, int) or isinstance(seen_at_ms, bool) or seen_at_ms < 1:
-                raise ConsoleError("notification seen receipt timestamp is invalid")
             identities.add(notification_id)
-            receipts.append({"notification_id": notification_id, "seen_at_ms": seen_at_ms, "item": item})
-        return {**state, "receipts": receipts}
+        return state
 
     def notification_seen(
         self, *, principal_id: str, ctrl_id: str, project_id: str,
@@ -4037,6 +3985,7 @@ class ConsoleStore:
         items: dict[str, dict[str, Any]], notification_ids: list[str], now_ms: int,
     ) -> dict[str, Any]:
         key = self._notification_seen_key(principal_id, ctrl_id, project_id)
+        scope_digest = key.rsplit(":", 1)[-1]
         with self._lock, closing(self._connect()) as connection:
             connection.execute("BEGIN IMMEDIATE")
             row = connection.execute("SELECT value FROM store_metadata WHERE key = ?", (key,)).fetchone()
@@ -4050,16 +3999,21 @@ class ConsoleStore:
                 raise ConsoleError("notification id is not current in the requested CTRL/project scope")
             added = 0
             for identity in notification_ids:
-                item = _validate_notification_item(
-                    items[identity], principal_id=principal_id, ctrl_id=ctrl_id, project_id=project_id,
-                )
+                item = items[identity]
                 retained = receipts.get(identity)
                 if retained is not None:
-                    if retained["item"] != item:
+                    if (
+                        retained["source_event_id"] != item["source_event_id"]
+                        or retained["source_event_digest"] != item["source_event_digest"]
+                    ):
                         connection.rollback()
                         raise ConsoleError("notification seen receipt conflicts with retained source evidence")
                     continue
-                receipts[identity] = {"notification_id": identity, "seen_at_ms": now_ms, "item": item}
+                receipts[identity] = {
+                    "notification_id": identity, "scope_digest": scope_digest,
+                    "source_event_id": item["source_event_id"],
+                    "source_event_digest": item["source_event_digest"], "seen_at_ms": now_ms,
+                }
                 added += 1
             ordered = sorted(
                 receipts.values(), key=lambda receipt: (receipt["seen_at_ms"], receipt["notification_id"]), reverse=True,
@@ -6364,11 +6318,26 @@ class App:
             kind = None
             if event.lifecycle_state.value == "WAITING_EXTERNAL" and "blocked" in event.flags:
                 kind = "BLOCKER"
-            elif event.event_kind.value == "ACCEPTED" and event.lifecycle_state.value == "ACCEPTED":
+            elif (
+                event.event_kind.value == "ACCEPTED" and event.lifecycle_state.value == "ACCEPTED"
+                and event.block_id == event.milestone_id and event.parent_block_id is None
+                and "MILESTONE_ACCEPTANCE" in event.proof_required_classes
+                and event.committed_weight is not None
+                and event.admitted_proof_weight == event.committed_weight
+                and event.proof_receipt_ids
+            ):
                 kind = "MILESTONE_COMPLETED"
-            elif event.event_kind.value == "STATE_CHANGED" and event.lifecycle_state.value == "REVIEW":
+            elif (
+                event.event_kind.value == "STATE_CHANGED" and event.lifecycle_state.value == "REVIEW"
+                and "INDEPENDENT_REVIEW" in event.proof_required_classes
+            ):
                 kind = "REVIEW_REQUESTED"
-            elif event.event_kind.value == "PROOF_ADMITTED" and event.lifecycle_state.value in {"VERIFIED", "ACCEPTED"}:
+            elif (
+                event.event_kind.value == "PROOF_ADMITTED"
+                and event.lifecycle_state.value in {"VERIFIED", "ACCEPTED"}
+                and "INDEPENDENT_REVIEW" in event.proof_required_classes
+                and event.admitted_proof_weight > 0 and event.proof_receipt_ids
+            ):
                 kind = "REVIEW_COMPLETED"
             if kind is None:
                 continue
@@ -6390,9 +6359,7 @@ class App:
                 "evidence_refs": evidence_refs,
             }
             item["id"] = _notification_identity(principal_id, item)
-            candidates.append(_validate_notification_item(
-                item, principal_id=principal_id, ctrl_id=ctrl_id, project_id=project_id,
-            ))
+            candidates.append(item)
         conflicted = {event_id for event_id, digests in event_digests.items() if len(digests) > 1}
         items = {
             item["id"]: item for item in candidates if item["source_event_id"] not in conflicted
@@ -6409,14 +6376,24 @@ class App:
         seen = self.store.notification_seen(
             principal_id=principal_id, ctrl_id=ctrl_id, project_id=project_id,
         )
+        current = {item["id"]: item for item in items}
         seen_ids = {receipt["notification_id"] for receipt in seen}
         unread = [item for item in items if item["id"] not in seen_ids]
-        recent_seen = [
-            {**receipt["item"], "seen_at_ms": receipt["seen_at_ms"]}
-            for receipt in sorted(
-                seen, key=lambda receipt: (receipt["seen_at_ms"], receipt["notification_id"]), reverse=True,
-            )[:NOTIFICATION_RECENT_SEEN_LIMIT]
-        ]
+        recent_seen = []
+        for receipt in sorted(
+            seen, key=lambda value: (value["seen_at_ms"], value["notification_id"]), reverse=True,
+        ):
+            item = current.get(receipt["notification_id"])
+            if item is None:
+                continue
+            if (
+                receipt["source_event_id"] != item["source_event_id"]
+                or receipt["source_event_digest"] != item["source_event_digest"]
+            ):
+                raise ConsoleError("notification seen receipt conflicts with retained source evidence")
+            recent_seen.append({**item, "seen_at_ms": receipt["seen_at_ms"]})
+            if len(recent_seen) == NOTIFICATION_RECENT_SEEN_LIMIT:
+                break
         return {
             "ok": True, "schema_version": 1, "principal_id": principal_id,
             "ctrl_id": ctrl_id, "project_id": project_id,

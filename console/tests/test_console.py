@@ -319,7 +319,8 @@ class SwarmConsoleTests(unittest.TestCase):
         event_id: str, block_id: str, event_kind: str, lifecycle_state: str,
         observed_at_ms: int, *, parent_event_id: str | None = None,
         admitted_proof_weight: int = 0, proof_receipt_ids: list[str] | None = None,
-        flags: list[str] | None = None,
+        proof_required_classes: list[str] | None = None, flags: list[str] | None = None,
+        milestone_id: str = "milestone-one", committed_weight: int = 1,
     ) -> dict[str, object]:
         proof_receipt_ids = proof_receipt_ids or []
         return {
@@ -329,7 +330,7 @@ class SwarmConsoleTests(unittest.TestCase):
             "portfolio_id": "portfolio-main",
             "project_id": "project:alpha",
             "ctrl_id": "root",
-            "milestone_id": "milestone-one",
+            "milestone_id": milestone_id,
             "block_id": block_id,
             "task_id": "task",
             "owner_id": "owner-task",
@@ -340,12 +341,12 @@ class SwarmConsoleTests(unittest.TestCase):
             "event_kind": event_kind,
             "lifecycle_state": lifecycle_state,
             "measurement": {
-                "state": "MEASURED", "committed_weight": 1,
+                "state": "MEASURED", "committed_weight": committed_weight,
                 "admitted_proof_weight": admitted_proof_weight,
                 "basis_receipt_ids": [f"weight-{block_id}"],
             },
             "proof": {
-                "required_classes": ["SOURCE"], "receipt_ids": proof_receipt_ids,
+                "required_classes": proof_required_classes or ["SOURCE"], "receipt_ids": proof_receipt_ids,
                 "claim_limit": "Source proof only.",
             },
             "eta": {"start_ms": None, "end_ms": None, "confidence": None, "basis_receipt_ids": []},
@@ -370,17 +371,42 @@ class SwarmConsoleTests(unittest.TestCase):
             self._notification_event("review-created", "review-block", "BLOCK_CREATED", "ACTIVE", 20),
             self._notification_event(
                 "review-requested", "review-block", "STATE_CHANGED", "REVIEW", 21,
-                parent_event_id="review-created",
+                parent_event_id="review-created", proof_required_classes=["INDEPENDENT_REVIEW"],
             ),
             self._notification_event(
-                "review-completed", "review-block", "PROOF_ADMITTED", "VERIFIED", 22,
+                "generic-source-proof", "review-block", "PROOF_ADMITTED", "VERIFIED", 22,
+                parent_event_id="review-requested", admitted_proof_weight=1,
+                proof_receipt_ids=["source-proof"],
+            ),
+            self._notification_event(
+                "review-completed", "review-block", "PROOF_ADMITTED", "VERIFIED", 23,
                 parent_event_id="review-requested", admitted_proof_weight=1,
                 proof_receipt_ids=["independent-review-proof"],
+                proof_required_classes=["INDEPENDENT_REVIEW"],
             ),
             self._notification_event(
-                "milestone-completed", "review-block", "ACCEPTED", "ACCEPTED", 23,
+                "accepted-block", "review-block", "ACCEPTED", "ACCEPTED", 24,
                 parent_event_id="review-completed", admitted_proof_weight=1,
                 proof_receipt_ids=["independent-review-proof", "acceptance-proof"],
+            ),
+            self._notification_event(
+                "milestone-created", "milestone-one", "BLOCK_CREATED", "ACTIVE", 24,
+            ),
+            self._notification_event(
+                "milestone-review", "milestone-one", "STATE_CHANGED", "REVIEW", 25,
+                parent_event_id="milestone-created",
+            ),
+            self._notification_event(
+                "milestone-proof", "milestone-one", "PROOF_ADMITTED", "VERIFIED", 26,
+                parent_event_id="milestone-review", admitted_proof_weight=1,
+                proof_receipt_ids=["milestone-acceptance-proof"],
+                proof_required_classes=["MILESTONE_ACCEPTANCE"],
+            ),
+            self._notification_event(
+                "milestone-completed", "milestone-one", "ACCEPTED", "ACCEPTED", 27,
+                parent_event_id="milestone-proof",
+                admitted_proof_weight=1, proof_receipt_ids=["milestone-acceptance-proof"],
+                proof_required_classes=["MILESTONE_ACCEPTANCE"],
             ),
             self._notification_event("ordinary-progress", "ordinary-block", "BLOCK_CREATED", "ACTIVE", 30),
         ]
@@ -403,6 +429,12 @@ class SwarmConsoleTests(unittest.TestCase):
             ["MILESTONE_COMPLETED", "REVIEW_COMPLETED", "REVIEW_REQUESTED", "BLOCKER"],
         )
         self.assertNotIn("ordinary-progress", {item["source_event_id"] for item in first["unread"]})
+        self.assertNotIn("generic-source-proof", {item["source_event_id"] for item in first["unread"]})
+        self.assertNotIn("accepted-block", {item["source_event_id"] for item in first["unread"]})
+        self.assertEqual(
+            next(item for item in first["unread"] if item["kind"] == "REVIEW_COMPLETED")["sentence"],
+            "An independent-review receipt has been admitted.",
+        )
         self.assertTrue(all(item["source_event_digest"] in item["evidence_refs"] for item in first["unread"]))
         self.assertTrue(all(item["action_target"]["project_id"] == "project:alpha" for item in first["unread"]))
         self.assertEqual(first["recent_seen"], [])
@@ -432,6 +464,15 @@ class SwarmConsoleTests(unittest.TestCase):
         self.assertEqual((first["newly_seen"], replay["newly_seen"]), (1, 0))
         self.assertNotIn(seen_id, {item["id"] for item in replay["feed"]["unread"]})
         self.assertEqual([item["id"] for item in replay["feed"]["recent_seen"]], [seen_id])
+        with closing(sqlite3.connect(state_path)) as connection:
+            retained_state = json.loads(connection.execute(
+                "SELECT value FROM store_metadata WHERE key LIKE 'notification_seen_v1:%'",
+            ).fetchone()[0])
+        self.assertEqual(
+            set(retained_state["receipts"][0]),
+            {"notification_id", "scope_digest", "source_event_id", "source_event_digest", "seen_at_ms"},
+        )
+        self.assertNotIn("item", retained_state["receipts"][0])
 
         restarted = console.App(self.codex_home, self.config, state_path)
         retained = restarted.notification_feed("root", "project:alpha")
@@ -446,6 +487,10 @@ class SwarmConsoleTests(unittest.TestCase):
         self.assertEqual(updated["unread"][0]["source_event_id"], "blocker-revised")
         self.assertEqual(updated["unread"][0]["subject_id"], "blocked-block")
         self.assertNotEqual(updated["unread"][0]["id"], seen_id)
+
+        (self.codex_home / "swarm" / "progress-ledger.jsonl").unlink()
+        evicted = console.App(self.codex_home, self.config, state_path).notification_feed("root", "project:alpha")
+        self.assertEqual((evicted["unread"], evicted["recent_seen"]), ([], []))
 
     def test_notification_ack_rejects_unknown_cross_scope_and_corrupt_state_without_mutation(self) -> None:
         self._confirm_root_ctrl()
