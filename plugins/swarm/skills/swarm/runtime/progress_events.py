@@ -60,7 +60,7 @@ MATERIAL_EVENT_FIELDS = frozenset({
     "event_kind", "lifecycle_state", "measurement", "proof", "eta",
     "rework", "custody", "steering_receipt_ids", "material_update_sentence",
     "flags", "provenance", "source", "observed_at_ms", "causation_id",
-    "parent_event_id", "topology",
+    "parent_event_id", "topology", "expected_observation",
 })
 LINEAGE_FIELDS = frozenset({"predecessor_block_ids", "split_from", "merged_from"})
 MEASUREMENT_FIELDS = frozenset({"state", "committed_weight", "admitted_proof_weight", "basis_receipt_ids"})
@@ -110,7 +110,7 @@ REQUEST_LIFECYCLE_EVENT_FIELDS = frozenset({
     "schema_version", "record_type", "event_id", "dedupe_key", "request_id",
     "stage_id", "parent_event_id", "envelope_digest", "lifecycle_state",
     "record", "route_receipt_ids", "permitted_route_ids", "failed_goal_turn_receipt_ids",
-    "release_authority", "release_receipt_id", "release_issued_at_ms",
+    "release_authority", "release_receipt_id", "release_issued_at_ms", "expected_observation",
 })
 LEGACY_REQUEST_LIFECYCLE_EVENT_FIELDS = frozenset({
     "schema_version", "record_type", "event_id", "dedupe_key", "request_id",
@@ -128,8 +128,19 @@ TASK_HANDOFF_EVENT_FIELDS = frozenset({
     "schema_version", "record_type", "event_id", "dedupe_key", "handoff_id",
     "parent_event_id", "event_kind", "goal_id", "task_id", "old_owner",
     "new_owner", "checkpoint_digest", "scope_version", "lease_version",
-    "receipt_id", "host_issued_at_ms", "observed_at_ms",
+    "receipt_id", "host_issued_at_ms", "observed_at_ms", "expected_observation",
 })
+EXPECTED_RECEIPT_FIELDS = frozenset({
+    "schema_version", "record_type", "receipt_id", "goal_id",
+    "task_id", "owner_id", "lease_version", "target_id", "artifact_digest",
+    "expected_event_kind", "due_event", "due_generation", "source_cursor",
+    "attempted_route_digests", "observed_at_ms",
+})
+EXPECTED_OBSERVATION_FIELDS = frozenset({
+    "expected_receipt_id", "goal_id", "owner_id", "lease_version", "target_id",
+    "artifact_digest", "source_cursor", "route_digest", "outcome", "evidence_receipt_ids",
+})
+EXPECTED_DUE_EVENTS = frozenset({"MATERIAL_EVENT", "TURN_COMPLETION", "LEASE_EXPIRY", "USER_STEER"})
 
 
 class ProgressLifecycle(StrEnum):
@@ -304,6 +315,82 @@ def _task_handoff_digest(payload: Mapping[str, Any], *, semantic: bool = False) 
     return hashlib.sha256(json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
 
 
+def _expected_receipt_digest(payload: Mapping[str, Any]) -> str:
+    return hashlib.sha256(json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
+
+
+def _sha256(value: Any, label: str) -> str:
+    text = str(value or "").casefold()
+    if not re.fullmatch(r"[0-9a-f]{64}", text):
+        raise ProgressEventError(f"{label} must be SHA-256")
+    return text
+
+
+def _expected_event_kinds() -> frozenset[str]:
+    return frozenset(kind.value for kind in ProgressEventKind) | frozenset({
+        LedgerLifecycleState.RESULT_PENDING.value,
+        TaskHandoffEventKind.HANDOFF_DUE.value,
+    })
+
+
+def _validate_expected_receipt(payload: Any) -> dict[str, Any]:
+    if not isinstance(payload, dict):
+        raise ProgressEventError("expected receipt must be an object")
+    _exact_fields(payload, EXPECTED_RECEIPT_FIELDS, "expected receipt")
+    if payload.get("schema_version") != 1 or payload.get("record_type") != "EXPECTED_RECEIPT":
+        raise ProgressEventError("expected receipt requires schema v1 and typed record")
+    expected_event_kind = _safe_id(payload.get("expected_event_kind"), "expected event kind")
+    due_event = _safe_id(payload.get("due_event"), "expected due event")
+    if expected_event_kind not in _expected_event_kinds() or due_event not in EXPECTED_DUE_EVENTS:
+        raise ProgressEventError("expected receipt event kind or due event is unsupported")
+    routes = _safe_ids(payload.get("attempted_route_digests"), "attempted route digests")
+    if not routes:
+        raise ProgressEventError("expected receipt requires at least one attempted route digest")
+    routes = tuple(_sha256(route, "attempted route digest") for route in routes)
+    receipt = {
+        "schema_version": 1, "record_type": "EXPECTED_RECEIPT",
+        "receipt_id": _safe_id(payload.get("receipt_id"), "expected receipt id"),
+        "goal_id": _safe_id(payload.get("goal_id"), "expected goal id"),
+        "task_id": _safe_id(payload.get("task_id"), "expected task id"),
+        "owner_id": _safe_id(payload.get("owner_id"), "expected owner id"),
+        "lease_version": _positive_int(payload.get("lease_version"), "expected lease version"),
+        "target_id": _safe_id(payload.get("target_id"), "expected target id"),
+        "artifact_digest": _sha256(payload.get("artifact_digest"), "expected artifact digest"),
+        "expected_event_kind": expected_event_kind, "due_event": due_event,
+        "due_generation": _positive_int(payload.get("due_generation"), "expected due generation"),
+        "source_cursor": _positive_int(payload.get("source_cursor"), "expected source cursor", allow_zero=True),
+        "attempted_route_digests": list(routes),
+        "observed_at_ms": _positive_int(payload.get("observed_at_ms"), "expected observed_at_ms", allow_zero=True),
+    }
+    encoded = json.dumps(receipt, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    if len(encoded) > MAX_PROGRESS_EVENT_BYTES:
+        raise ProgressEventError("expected receipt exceeds the material event byte limit")
+    return receipt
+
+
+def _validate_expected_observation(payload: Any) -> dict[str, Any] | None:
+    if payload is None:
+        return None
+    if not isinstance(payload, dict):
+        raise ProgressEventError("expected observation must be an object")
+    _exact_fields(payload, EXPECTED_OBSERVATION_FIELDS, "expected observation")
+    outcome = str(payload.get("outcome") or "")
+    if outcome not in {"MATERIAL", "EMPTY", "TIMEOUT", "HTTP_400", "MISSING_THREAD", "REPLAY"}:
+        raise ProgressEventError("expected observation outcome is invalid")
+    return {
+        "expected_receipt_id": _safe_id(payload.get("expected_receipt_id"), "expected receipt id"),
+        "goal_id": _safe_id(payload.get("goal_id"), "observed goal id"),
+        "owner_id": _safe_id(payload.get("owner_id"), "observed owner id"),
+        "lease_version": _positive_int(payload.get("lease_version"), "observed lease version"),
+        "target_id": _safe_id(payload.get("target_id"), "observed target id"),
+        "artifact_digest": _sha256(payload.get("artifact_digest"), "observed artifact digest"),
+        "source_cursor": _positive_int(payload.get("source_cursor"), "observed source cursor", allow_zero=True),
+        "route_digest": _sha256(payload.get("route_digest"), "observed route digest"),
+        "outcome": outcome,
+        "evidence_receipt_ids": list(_safe_ids(payload.get("evidence_receipt_ids"), "observed evidence receipt ids")),
+    }
+
+
 def task_handoff_host_binding(payload: Mapping[str, Any]) -> str:
     """Bind one opaque host receipt to the exact task-start or acknowledgement fact."""
     event = validate_task_handoff_event({key: payload.get(key) for key in TASK_HANDOFF_EVENT_FIELDS})
@@ -373,7 +460,10 @@ def validate_task_handoff_event(payload: Any) -> dict[str, Any]:
         raise ProgressEventError("task handoff requires a distinct target owner")
     if event_kind in {TaskHandoffEventKind.HANDOFF_DUE, TaskHandoffEventKind.HANDOFF_ACKNOWLEDGED} and not re.fullmatch(r"[0-9a-f]{64}", payload["receipt_id"]):
         raise ProgressEventError("task start and acknowledgement require an opaque host receipt")
-    return dict(payload)
+    observation = _validate_expected_observation(payload.get("expected_observation"))
+    if observation is not None and event_kind is not TaskHandoffEventKind.HANDOFF_DUE:
+        raise ProgressEventError("only an admitted lease-expiry event may evaluate an expected receipt")
+    return {**payload, "expected_observation": observation} if "expected_observation" in payload else dict(payload)
 
 
 def validate_request_lifecycle_event(payload: Any) -> dict[str, Any]:
@@ -460,6 +550,11 @@ def validate_request_lifecycle_event(payload: Any) -> dict[str, Any]:
             raise ProgressEventError("STALLED must retain one failed route and goal turn against a nonempty permitted-route inventory")
     elif route_receipts or permitted_routes or failed_goal_turns or release_authority is not None or release_receipt_id is not None or release_issued_at_ms is not None:
         raise ProgressEventError("route exhaustion evidence is reserved for terminal BLOCKED")
+    observation = _validate_expected_observation(payload.get("expected_observation"))
+    if observation is not None and lifecycle_state is not LedgerLifecycleState.RESULT_PENDING:
+        raise ProgressEventError("only an admitted turn-completion event may evaluate an expected receipt")
+    if observation is not None:
+        payload = {**payload, "expected_observation": observation}
     encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
     if len(encoded) > MAX_PROGRESS_EVENT_BYTES:
         raise ProgressEventError("request lifecycle event exceeds the material event byte limit")
@@ -470,7 +565,7 @@ def _validate_retained_request_lifecycle_event(payload: Any, event_digest: str) 
     """Decode the exact pre-exhaustion schema only after retained-line verification."""
     if not isinstance(payload, dict) or _request_lifecycle_digest(payload) != event_digest:
         raise ProgressEventError("retained request lifecycle digest does not bind its event")
-    if set(payload) == REQUEST_LIFECYCLE_EVENT_FIELDS:
+    if set(payload) in {REQUEST_LIFECYCLE_EVENT_FIELDS, REQUEST_LIFECYCLE_EVENT_FIELDS - {"expected_observation"}}:
         return validate_request_lifecycle_event(payload)
     if set(payload) != LEGACY_REQUEST_LIFECYCLE_EVENT_FIELDS:
         raise ProgressEventError("retained request lifecycle schema is unsupported")
@@ -551,6 +646,7 @@ class ProgressMaterialEvent:
     cost_receipt_ids: tuple[str, ...]
     release_receipt_ids: tuple[str, ...]
     role_manifest: dict[str, Any] | None
+    expected_observation: dict[str, Any] | None
     digest: str
     semantic_digest: str
 
@@ -619,6 +715,8 @@ class ProgressMaterialEvent:
             }
             if self.role_manifest is not None:
                 payload["topology"]["role_manifest"] = self.role_manifest
+        if self.expected_observation is not None:
+            payload["expected_observation"] = self.expected_observation
         return payload
 
 
@@ -895,10 +993,13 @@ def _validate_progress_material_event(
         role_manifest = None
     if event_kind is ProgressEventKind.USER_STEERING_ACCEPTED and not steering_receipt_ids:
         raise ProgressEventError("accepted steering requires an exact steering receipt")
+    expected_observation = _validate_expected_observation(payload.get("expected_observation"))
 
     canonical = dict(payload)
     if role_manifest is not None:
         canonical["topology"] = {**topology, "role_manifest": role_manifest}
+    if expected_observation is not None:
+        canonical["expected_observation"] = expected_observation
     encoded = json.dumps(canonical, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
     if len(encoded) > MAX_PROGRESS_EVENT_BYTES:
         raise ProgressEventError("progress material event exceeds the size guard")
@@ -936,6 +1037,7 @@ def _validate_progress_material_event(
         cost_receipt_ids=cost_receipt_ids,
         release_receipt_ids=release_receipt_ids,
         role_manifest=role_manifest,
+        expected_observation=expected_observation,
         digest=hashlib.sha256(encoded).hexdigest(),
         semantic_digest=semantic_digest,
     )
@@ -1015,6 +1117,7 @@ def _empty_progress_projection() -> dict[str, Any]:
         "handoff_dedupe_digests": {},
         "task_handoffs": {},
         "task_handoff_leases": {},
+        "expected_receipts": {},
     }
 
 _LIFECYCLE_TRANSITIONS: dict[ProgressLifecycle, frozenset[ProgressLifecycle]] = {
@@ -1059,7 +1162,7 @@ _TASK_HANDOFF_TRANSITIONS: dict[TaskHandoffEventKind, TaskHandoffEventKind] = {
 class ProgressFeedSubscription:
     """In-process event notification; HTTP/browser transport remains a separate gate."""
 
-    def __init__(self, ledger: "ProgressLedger", project_id: str, cursor: int, limit: int):
+    def __init__(self, ledger: "Ledger", project_id: str, cursor: int, limit: int):
         self._ledger = ledger
         self.project_id = _safe_id(project_id, "project_id")
         self.cursor = _positive_int(cursor, "feed cursor", allow_zero=True)
@@ -1087,7 +1190,7 @@ class ProgressFeedSubscription:
         return snapshot
 
 
-class ProgressLedger:
+class Ledger:
     """Append-only material-event authority with a disposable compact projection."""
 
     def __init__(self, root: Path | str, *, host_custody_public_key: int | None = None):
@@ -1233,9 +1336,9 @@ class ProgressLedger:
         if conflict is not None:
             projection["topology_conflicts"].append(conflict)
         else:
-            ProgressLedger._apply_role_payload(projection, event, event_seq)
+            Ledger._apply_role_payload(projection, event, event_seq)
             if event.material_update_sentence is not None:
-                projection["latest_material_signatures"][ProgressLedger._material_key(event)] = ProgressLedger._material_signature(event)
+                projection["latest_material_signatures"][Ledger._material_key(event)] = Ledger._material_signature(event)
         projection["cursor"] = {
             "event_seq": event_seq,
             "event_id": event.event_id,
@@ -1342,10 +1445,159 @@ class ProgressLedger:
         projection["cursor"] = {"event_seq": event_seq, "event_id": event_id, "event_digest": event_digest}
 
     @staticmethod
-    def _apply(projection: dict[str, Any], event: ProgressMaterialEvent, event_seq: int) -> None:
-        if event.schema_version == 2:
-            ProgressLedger._apply_topology_record(projection, event, event_seq)
+    def _apply_expected_receipt(
+        projection: dict[str, Any], receipt: Mapping[str, Any], event_seq: int, event_digest: str,
+    ) -> None:
+        payload = dict(receipt)
+        receipt_id = payload["receipt_id"]
+        retained = projection["expected_receipts"].get(receipt_id)
+        if retained is not None:
+            if retained["event_digest"] != event_digest:
+                raise ProgressEventError("expected receipt identity conflicts with retained digest")
             return
+        binding = tuple(payload[key] for key in (
+            "goal_id", "task_id", "owner_id", "lease_version", "target_id", "artifact_digest",
+        ))
+        if any(
+            tuple(item["receipt"][key] for key in (
+                "goal_id", "task_id", "owner_id", "lease_version", "target_id", "artifact_digest",
+            )) == binding
+            for item in projection["expected_receipts"].values()
+        ):
+            raise ProgressEventError("owned outcome already has an immutable expected receipt")
+        projection["expected_receipts"][receipt_id] = {
+            "receipt": payload,
+            "event_seq": event_seq,
+            "event_digest": event_digest,
+            "last_source_cursor": payload["source_cursor"],
+            "attempted_route_digests": list(payload["attempted_route_digests"]),
+            "result": {"status": "PENDING", "reason": None, "progress_advanced": False},
+        }
+        projection["cursor"] = {
+            "event_seq": event_seq, "event_id": receipt_id, "event_digest": event_digest,
+        }
+
+    @staticmethod
+    def _apply_expected_observation(
+        projection: dict[str, Any], observation: Mapping[str, Any], *, event_seq: int,
+        event_id: str, event_digest: str, event_kind: str, due_event: str,
+        due_generation: int, task_id: str, goal_id: str, owner_id: str,
+        lease_version: int, evidence_receipt_ids: tuple[str, ...],
+    ) -> dict[str, Any]:
+        retained = projection["expected_receipts"].get(observation["expected_receipt_id"])
+        if retained is None:
+            return {
+                "expected_receipt_id": observation["expected_receipt_id"], "status": "ATTENTION",
+                "reason": "MISSING_EXPECTED_RECEIPT", "event_id": event_id,
+                "event_seq": event_seq, "progress_advanced": False,
+            }
+        expected = retained["receipt"]
+        reason = {
+            "EMPTY": "EMPTY_OUTPUT", "TIMEOUT": "TIMEOUT", "HTTP_400": "HTTP_400",
+            "MISSING_THREAD": "MISSING_THREAD", "REPLAY": "REPLAY",
+        }.get(observation["outcome"])
+        if retained["result"]["status"] == "MATCHED":
+            reason = reason or "REPLAY"
+        if observation["source_cursor"] <= retained["last_source_cursor"]:
+            reason = reason or "STALE_CURSOR"
+        for actual, wanted, mismatch in (
+            (event_kind, expected["expected_event_kind"], "WRONG_EVENT_KIND"),
+            (due_event, expected["due_event"], "WRONG_DUE_EVENT"),
+            (due_generation, expected["due_generation"], "WRONG_DUE_GENERATION"),
+            (task_id, expected["task_id"], "WRONG_TASK"),
+            (goal_id, expected["goal_id"], "WRONG_GOAL"),
+            (owner_id, expected["owner_id"], "WRONG_OWNER"),
+            (observation["owner_id"], expected["owner_id"], "WRONG_OWNER"),
+            (lease_version, expected["lease_version"], "WRONG_LEASE"),
+            (observation["lease_version"], expected["lease_version"], "WRONG_LEASE"),
+            (observation["target_id"], expected["target_id"], "WRONG_TARGET"),
+            (observation["artifact_digest"], expected["artifact_digest"], "WRONG_ARTIFACT"),
+        ):
+            if actual != wanted:
+                reason = reason or mismatch
+                break
+        if not tuple(dict.fromkeys((*evidence_receipt_ids, *observation["evidence_receipt_ids"]))):
+            reason = reason or "MISSING_EVIDENCE"
+        route_digest = observation["route_digest"]
+        repeated = route_digest in retained["attempted_route_digests"]
+        if not repeated:
+            retained["attempted_route_digests"].append(route_digest)
+        retained["last_source_cursor"] = max(retained["last_source_cursor"], observation["source_cursor"])
+        result = {
+            "expected_receipt_id": expected["receipt_id"],
+            "status": "ATTENTION" if reason else "MATCHED",
+            "reason": reason, "event_id": event_id, "event_seq": event_seq,
+            "progress_advanced": reason is None, "route_digest": route_digest,
+            "different_route_required": bool(reason and repeated),
+        }
+        retained["result"] = {**result, "event_digest": event_digest}
+        return result
+
+    @staticmethod
+    def _apply_request_expected(
+        projection: dict[str, Any], payload: Mapping[str, Any], event_seq: int, event_digest: str,
+    ) -> dict[str, Any] | None:
+        observation = payload.get("expected_observation")
+        if observation is None:
+            return None
+        record = payload["record"]
+        generation = record["transitions"][-1]["cursor"]["feed_sequence"]
+        return Ledger._apply_expected_observation(
+            projection, observation, event_seq=event_seq, event_id=payload["event_id"],
+            event_digest=event_digest, event_kind=payload["lifecycle_state"],
+            due_event="TURN_COMPLETION", due_generation=generation,
+            task_id=record["task_id"], goal_id=record["goal_id"],
+            owner_id=record["accepted_owner"], lease_version=observation["lease_version"],
+            evidence_receipt_ids=tuple(record["evidence_receipts"]),
+        )
+
+    @staticmethod
+    def _apply_handoff_expected(
+        projection: dict[str, Any], payload: Mapping[str, Any], event_seq: int, event_digest: str,
+    ) -> dict[str, Any] | None:
+        observation = payload.get("expected_observation")
+        if observation is None:
+            return None
+        return Ledger._apply_expected_observation(
+            projection, observation, event_seq=event_seq, event_id=payload["event_id"],
+            event_digest=event_digest, event_kind=payload["event_kind"],
+            due_event="LEASE_EXPIRY", due_generation=payload["lease_version"],
+            task_id=payload["task_id"], goal_id=payload["goal_id"],
+            owner_id=payload["old_owner"], lease_version=payload["lease_version"],
+            evidence_receipt_ids=(payload["receipt_id"],),
+        )
+
+    @staticmethod
+    def _retain_event_identity_only(projection: dict[str, Any], event: ProgressMaterialEvent, event_seq: int) -> None:
+        projection["events"][event.event_id] = event.digest
+        projection["dedupe"][event.dedupe_key] = event.semantic_digest
+        projection["cursor"] = {"event_seq": event_seq, "event_id": event.event_id, "event_digest": event.digest}
+
+    @staticmethod
+    def _apply(projection: dict[str, Any], event: ProgressMaterialEvent, event_seq: int) -> dict[str, Any] | None:
+        check = None
+        if event.expected_observation is not None:
+            check = Ledger._apply_expected_observation(
+                projection,
+                event.expected_observation,
+                event_seq=event_seq,
+                event_id=event.event_id,
+                event_digest=event.digest,
+                event_kind=event.event_kind.value,
+                due_event="USER_STEER" if event.event_kind is ProgressEventKind.USER_STEERING_ACCEPTED else "MATERIAL_EVENT",
+                due_generation=event.scope_version,
+                task_id=event.task_id,
+                goal_id=event.expected_observation["goal_id"],
+                owner_id=event.owner_id,
+                lease_version=event.expected_observation["lease_version"],
+                evidence_receipt_ids=event.proof_receipt_ids,
+            )
+            if not check["progress_advanced"]:
+                Ledger._retain_event_identity_only(projection, event, event_seq)
+                return check
+        if event.schema_version == 2:
+            Ledger._apply_topology_record(projection, event, event_seq)
+            return check
         events = projection["events"]
         dedupe = projection["dedupe"]
         if event.event_id in events:
@@ -1370,7 +1622,7 @@ class ProgressLedger:
                 raise ProgressEventError("scope revision must advance exactly one version")
             scopes[event.project_id] = event.scope_version
 
-        block_key = ProgressLedger._block_key(event)
+        block_key = Ledger._block_key(event)
         blocks = projection["blocks"]
         previous = blocks.get(block_key)
         known_blocks = {
@@ -1444,8 +1696,9 @@ class ProgressLedger:
         events[event.event_id] = event.digest
         dedupe[event.dedupe_key] = event.semantic_digest
         if event.material_update_sentence is not None:
-            projection["latest_material_signatures"][ProgressLedger._material_key(event)] = ProgressLedger._material_signature(event)
+            projection["latest_material_signatures"][Ledger._material_key(event)] = Ledger._material_signature(event)
         projection["cursor"] = {"event_seq": event_seq, "event_id": event.event_id, "event_digest": event.digest}
+        return check
 
     def _replay_unlocked(self) -> tuple[dict[str, Any], list[dict[str, Any]]]:
         projection = _empty_progress_projection()
@@ -1464,7 +1717,13 @@ class ProgressLedger:
                 raise ProgressEventError("progress ledger sequence is not contiguous")
             raw_event = record["event"]
             replayed_record = record
-            if isinstance(raw_event, dict) and raw_event.get("record_type") == "REQUEST_LIFECYCLE":
+            if isinstance(raw_event, dict) and raw_event.get("record_type") == "EXPECTED_RECEIPT":
+                receipt = _validate_expected_receipt(raw_event)
+                event_digest = _expected_receipt_digest(receipt)
+                if record["event_digest"] != event_digest:
+                    raise ProgressEventError("expected receipt ledger digest mismatch")
+                self._apply_expected_receipt(projection, receipt, expected_seq, event_digest)
+            elif isinstance(raw_event, dict) and raw_event.get("record_type") == "REQUEST_LIFECYCLE":
                 event = _validate_retained_request_lifecycle_event(raw_event, record["event_digest"])
                 self._apply_request_lifecycle(
                     projection,
@@ -1473,6 +1732,7 @@ class ProgressLedger:
                     event_digest=record["event_digest"],
                     semantic_digest=_request_lifecycle_digest(raw_event, semantic=True),
                 )
+                self._apply_request_expected(projection, event, expected_seq, record["event_digest"])
                 replayed_record = {**record, "event": event}
             elif isinstance(raw_event, dict) and raw_event.get("record_type") == "TASK_HANDOFF":
                 event = validate_task_handoff_event(raw_event)
@@ -1480,6 +1740,7 @@ class ProgressLedger:
                 if record["event_digest"] != event_digest:
                     raise ProgressEventError("task handoff ledger event digest mismatch")
                 self._apply_task_handoff(projection, event, expected_seq)
+                self._apply_handoff_expected(projection, event, expected_seq, event_digest)
             else:
                 event = _validate_progress_material_event(
                     raw_event,
@@ -1504,6 +1765,29 @@ class ProgressLedger:
         finally:
             if temporary is not None:
                 temporary.unlink(missing_ok=True)
+
+    def append_expected_receipt(self, payload: Mapping[str, Any]) -> dict[str, Any]:
+        receipt = _validate_expected_receipt(dict(payload))
+        canonical = receipt
+        event_digest = _expected_receipt_digest(canonical)
+        with self._state.locked():
+            projection, records = self._replay_unlocked()
+            retained = projection["expected_receipts"].get(receipt["receipt_id"])
+            if retained is not None:
+                if retained["event_digest"] != event_digest:
+                    raise ProgressEventError("expected receipt identity conflicts with retained digest")
+                return {"status": "unchanged", "cursor": {"event_seq": retained["event_seq"], "event_id": receipt["receipt_id"], "event_digest": event_digest}, "event_digest": event_digest}
+            event_seq = len(records) + 1
+            self._apply_expected_receipt(projection, receipt, event_seq, event_digest)
+            record = {"event_seq": event_seq, "event_digest": event_digest, "event": canonical}
+            line = json.dumps(record, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8") + b"\n"
+            self._state.path.parent.mkdir(parents=True, exist_ok=True)
+            with self._state.path.open("ab") as handle:
+                handle.write(line); handle.flush(); os.fsync(handle.fileno())
+            self._write_projection_unlocked(projection)
+        with self._condition:
+            self._condition.notify_all()
+        return {"status": "appended", "cursor": projection["cursor"], "event_digest": event_digest, "bytes": len(line)}
 
     def append(self, payload: Mapping[str, Any]) -> dict[str, Any]:
         event = validate_progress_material_event(dict(payload))
@@ -1533,7 +1817,7 @@ class ProgressLedger:
             event_seq = len(records) + 1
             record = self._record(event, event_seq)
             line = json.dumps(record, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8") + b"\n"
-            self._apply(projection, event, event_seq)
+            expected_check = self._apply(projection, event, event_seq)
             self._state.path.parent.mkdir(parents=True, exist_ok=True)
             with self._state.path.open("ab") as handle:
                 handle.write(line)
@@ -1542,12 +1826,15 @@ class ProgressLedger:
             self._write_projection_unlocked(projection)
         with self._condition:
             self._condition.notify_all()
-        return {
+        result = {
             "status": "conflicted" if conflicted else "appended",
             "cursor": projection["cursor"],
             "event_digest": event.digest,
             "bytes": len(line),
         }
+        if expected_check is not None:
+            result["expected_check"] = expected_check
+        return result
 
     def append_request_lifecycle(self, payload: Mapping[str, Any], *, custody_receipt: HostCustodyReceipt | None = None) -> dict[str, Any]:
         event = validate_request_lifecycle_event(dict(payload))
@@ -1578,6 +1865,7 @@ class ProgressLedger:
                 return {"status": "unchanged", "cursor": {"event_seq": retained["event_seq"], "event_id": retained["event"]["event_id"], "event_digest": retained["event_digest"]}, "event_digest": retained["event_digest"]}
             event_seq = len(records) + 1
             self._apply_request_lifecycle(projection, event, event_seq)
+            expected_check = self._apply_request_expected(projection, event, event_seq, event_digest)
             record = {"event_seq": event_seq, "event_digest": event_digest, "event": event}
             line = json.dumps(record, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8") + b"\n"
             self._state.path.parent.mkdir(parents=True, exist_ok=True)
@@ -1588,7 +1876,10 @@ class ProgressLedger:
             self._write_projection_unlocked(projection)
         with self._condition:
             self._condition.notify_all()
-        return {"status": "appended", "cursor": {"event_seq": event_seq, "event_id": event["event_id"], "event_digest": event_digest}, "event_digest": event_digest, "bytes": len(line)}
+        result = {"status": "appended", "cursor": {"event_seq": event_seq, "event_id": event["event_id"], "event_digest": event_digest}, "event_digest": event_digest, "bytes": len(line)}
+        if expected_check is not None:
+            result["expected_check"] = expected_check
+        return result
 
     def append_task_handoff(self, payload: Mapping[str, Any], *, custody_receipt: HostCustodyReceipt | None = None) -> dict[str, Any]:
         event = validate_task_handoff_event(dict(payload))
@@ -1612,6 +1903,7 @@ class ProgressLedger:
                 return {"status": "unchanged", "cursor": {"event_seq": retained["event_seq"], "event_id": retained["event"]["event_id"], "event_digest": retained["event_digest"]}, "event_digest": retained["event_digest"]}
             event_seq = len(records) + 1
             self._apply_task_handoff(projection, event, event_seq)
+            expected_check = self._apply_handoff_expected(projection, event, event_seq, event_digest)
             record = {"event_seq": event_seq, "event_digest": event_digest, "event": event}
             line = json.dumps(record, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8") + b"\n"
             self._state.path.parent.mkdir(parents=True, exist_ok=True)
@@ -1620,7 +1912,10 @@ class ProgressLedger:
             self._write_projection_unlocked(projection)
         with self._condition:
             self._condition.notify_all()
-        return {"status": "appended", "cursor": {"event_seq": event_seq, "event_id": event["event_id"], "event_digest": event_digest}, "event_digest": event_digest, "bytes": len(line)}
+        result = {"status": "appended", "cursor": {"event_seq": event_seq, "event_id": event["event_id"], "event_digest": event_digest}, "event_digest": event_digest, "bytes": len(line)}
+        if expected_check is not None:
+            result["expected_check"] = expected_check
+        return result
 
     def project_task_handoffs(self) -> dict[str, Any]:
         with self._state.locked():
@@ -2385,6 +2680,10 @@ class ProgressPulseEvent:
     progress: MaterialProgressReceipt | None
     eta_report: dict[str, Any] | None
     digest: str
+
+
+# Compatibility import only: both names construct the exact same Ledger authority.
+ProgressLedger = Ledger
 
 
 def _validate_eta_report(value: Any, task_id: str, project_id: str) -> dict[str, Any] | None:

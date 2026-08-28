@@ -2075,8 +2075,8 @@ class Swarm:
     def attach_request_store(self, repo_root:Path|str) -> RequestAudit:
         root=Path(repo_root)
         if not root.is_absolute(): raise InvariantError("request continuity requires an explicit absolute repo root")
-        from .progress_events import ProgressLedger
-        resolved=root.resolve(); self.request_continuity_enabled=True; self.request_store=RequestStore(resolved); self.request_lifecycle_ledger=ProgressLedger(resolved); audit=self.request_audit(0); self.request_feed_sequence_floor=max((record.transitions[-1].cursor.feed_sequence for record in audit.records),default=0); return audit
+        from .progress_events import Ledger
+        resolved=root.resolve(); self.request_continuity_enabled=True; self.request_store=RequestStore(resolved); self.request_lifecycle_ledger=Ledger(resolved); audit=self.request_audit(0); self.request_feed_sequence_floor=max((record.transitions[-1].cursor.feed_sequence for record in audit.records),default=0); return audit
     enable_request_continuity=attach_request_store
     def _request_store(self) -> RequestStore:
         if self.request_store is None: raise InvariantError("durable request store is not attached")
@@ -2101,8 +2101,8 @@ class Swarm:
             root=getattr(state,"repo_root",None)
             if not (state["order"] or state["inbox"] or state["acknowledgements"] or state["stages"]): return ()
             if root is not None:
-                from .progress_events import ProgressLedger
-                projection=ProgressLedger(root).project_request_lifecycles()
+                from .progress_events import Ledger
+                projection=Ledger(root).project_request_lifecycles()
             else: raise InvariantError("nonempty request transport requires the canonical Ledger")
         projection=projection or self._request_ledger().project_request_lifecycles()
         current={item["request_id"]:item for item in projection["records"]}
