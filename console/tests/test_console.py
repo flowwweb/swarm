@@ -83,6 +83,85 @@ class SwarmConsoleTests(unittest.TestCase):
         self.assertIn('if path == "/api/role-manifests":', source)
         self.assertIn('if path == "/api/role-manifests/commands":', source)
 
+    def test_role_avatar_reparse_paths_fail_closed(self) -> None:
+        app = console.App(self.codex_home, self.config)
+        root = self.codex_home / console.PROOF_MEDIA_ROOT
+        root.mkdir(parents=True)
+        digest = "a" * 64
+        candidate = root / f"{digest}.png"
+        candidate.write_bytes(b"not-read-after-reparse-rejection")
+
+        with mock.patch.object(
+            Path, "lstat", return_value=SimpleNamespace(st_file_attributes=0x400)
+        ), mock.patch.object(Path, "is_symlink", return_value=False):
+            self.assertTrue(console._is_reparse_point(root))
+
+        with self.subTest(path="root"), mock.patch.object(
+            console, "_is_reparse_point", side_effect=lambda path: path == root
+        ):
+            with self.assertRaisesRegex(console.ConsoleError, "immutable Assets storage"):
+                app._require_role_avatar(digest)
+
+        with self.subTest(path="candidate-before-containment"), mock.patch.object(
+            console, "_is_reparse_point", side_effect=lambda path: path == candidate
+        ):
+            with self.assertRaisesRegex(console.ConsoleError, "immutable Assets storage"):
+                app._require_role_avatar(digest)
+
+        candidate_checks = 0
+
+        def reparse_after_containment(path: Path) -> bool:
+            nonlocal candidate_checks
+            if path == candidate:
+                candidate_checks += 1
+                return candidate_checks == 2
+            return False
+
+        with self.subTest(path="candidate-after-containment"), mock.patch.object(
+            console, "_is_reparse_point", side_effect=reparse_after_containment
+        ):
+            with self.assertRaisesRegex(console.ConsoleError, "immutable Assets storage"):
+                app._require_role_avatar(digest)
+        self.assertEqual(candidate_checks, 2)
+
+    def test_duplicate_role_create_is_http_conflict(self) -> None:
+        app = console.App(self.codex_home, self.config)
+        manager = next(role for role in app.role_manifest_projection()["roles"] if role["id"] == "manager")
+        draft = {key: manager[key] for key in (
+            "name", "purpose", "owns", "instructions", "boundaries",
+            "default_skills", "avatar_asset_digest", "accent",
+        )}
+        create = {
+            "command": "ROLE_MANIFEST_CREATE",
+            "role_id": "custom-release-guide",
+            "event_id": "custom-release-guide-create",
+            "dedupe_key": "custom-release-guide-create-dedupe",
+            "expected_active_version": None,
+            "manifest": {**draft, "name": "Release Guide"},
+            "provenance": "localhost-command:custom-release-guide",
+            "observed_at_ms": 11,
+        }
+        self.assertEqual(app.role_manifest_command(create)["receipt"]["status"], "appended")
+        duplicate = {
+            **create,
+            "event_id": "custom-release-guide-create-again",
+            "dedupe_key": "custom-release-guide-create-again-dedupe",
+            "observed_at_ms": 12,
+        }
+        with self.assertRaisesRegex(console.ConsoleConflict, "cannot replace an existing role"):
+            app.role_manifest_command(duplicate)
+
+        handler = self._handler("127.0.0.1", "127.0.0.1:4788", token=app.token)
+        handler.server = SimpleNamespace(app=app)
+        handler.path = "/api/role-manifests/commands"
+        handler._payload = mock.Mock(return_value=duplicate)
+        handler._json = mock.Mock()
+        handler.do_POST()
+        handler._json.assert_called_once_with(
+            console.HTTPStatus.CONFLICT,
+            {"ok": False, "error": "role manifest create cannot replace an existing role"},
+        )
+
     def test_new_console_copy_is_swarm_first(self) -> None:
         static = (Path(__file__).resolve().parents[1] / "static")
         index = (static / "index.html").read_text(encoding="utf-8")

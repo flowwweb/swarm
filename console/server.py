@@ -16,6 +16,7 @@ import re
 import secrets
 import shutil
 import sqlite3
+import stat as stat_module
 import subprocess
 import sys
 import tempfile
@@ -562,6 +563,16 @@ def _media_metadata(
         "digest": current_digest,
         "media_type": media_type,
     }
+
+
+def _is_reparse_point(path: Path) -> bool:
+    """Fail closed for symlinks and Windows reparse points such as junctions."""
+    try:
+        metadata = path.lstat()
+    except OSError:
+        return True
+    reparse_flag = getattr(stat_module, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+    return path.is_symlink() or bool(getattr(metadata, "st_file_attributes", 0) & reparse_flag)
 
 
 class DiagnosticsCollector:
@@ -5113,12 +5124,26 @@ class App:
         if digest in {item["avatar_asset_digest"] for item in self.builtin_role_manifests}:
             return
         root = self.codex_home / PROOF_MEDIA_ROOT
-        candidates = sorted(root.glob(f"{digest}.*")) if root.is_dir() and not root.is_symlink() else []
-        if len(candidates) != 1:
+        if _is_reparse_point(root) or not root.is_dir():
             raise ConsoleError("role avatar digest is not retained in immutable Assets storage")
         try:
-            _media_metadata(str(candidates[0]), digest, allowed_root=root)
-        except ConsoleError as error:
+            resolved_root = root.resolve(strict=True)
+        except OSError as error:
+            raise ConsoleError("role avatar digest is not retained in immutable Assets storage") from error
+        if _is_reparse_point(resolved_root):
+            raise ConsoleError("role avatar digest is not retained in immutable Assets storage")
+        candidates = sorted(root.glob(f"{digest}.*"))
+        if len(candidates) != 1:
+            raise ConsoleError("role avatar digest is not retained in immutable Assets storage")
+        candidate = candidates[0]
+        if _is_reparse_point(candidate):
+            raise ConsoleError("role avatar digest is not retained in immutable Assets storage")
+        try:
+            resolved_candidate = candidate.resolve(strict=True)
+            if not resolved_candidate.is_relative_to(resolved_root) or _is_reparse_point(resolved_candidate):
+                raise ConsoleError("role avatar digest is not retained in immutable Assets storage")
+            _media_metadata(str(resolved_candidate), digest, allowed_root=resolved_root)
+        except (ConsoleError, OSError) as error:
             raise ConsoleError("role avatar digest is not retained in immutable Assets storage") from error
 
     def role_manifest_command(self, payload: dict[str, Any]) -> dict[str, Any]:
@@ -5151,7 +5176,7 @@ class App:
             else:
                 expected = payload.get("expected_active_version")
                 if command == "ROLE_MANIFEST_CREATE" and current is not None:
-                    raise ProgressEventError("role manifest create cannot replace an existing role")
+                    raise ConsoleConflict("role manifest create cannot replace an existing role")
                 if command != "ROLE_MANIFEST_CREATE" and (current is None or expected != current["active_version"]):
                     raise ProgressEventError("role manifest expected active version is stale")
                 self._require_role_avatar(manifest["avatar_asset_digest"])
