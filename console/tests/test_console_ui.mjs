@@ -33,7 +33,7 @@ const documentHtml = indexHtml
   .replace("<head>", '<head><base href="http://swarm.test/">');
 
 const offlineAssetDigest = crypto.createHash("sha256").update(offlineAsset).digest("hex");
-assert.equal(offlineAssetDigest, "4677c1da5af8c79a2db5dfbaf7dd87a060dbd9dca888a8c3f6d800d990aab4fe");
+assert.equal(offlineAssetDigest, "6f58eb1dc3c77634c0bb476591843a4226ccd73932589c70aae4a25cf02f8650");
 assert.deepEqual(pluginOfflineAsset, offlineAsset);
 assert.equal(crypto.createHash("sha256").update(mascotAsset).digest("hex"), "afb7e94cb63e994a929211dd8a81d816d2dd5b19d819ec72d81f121474ae8b07");
 assert.equal(crypto.createHash("sha256").update(iconAsset).digest("hex"), "fbc528b1b7233105a5ddb5a32b1dfed9dbfe1a0db26e0bdb45a4c2d54f3c0bf4");
