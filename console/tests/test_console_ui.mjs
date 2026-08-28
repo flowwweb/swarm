@@ -48,17 +48,23 @@ assert.match(server, /"\/assets\/swarm-mascot-512\.png": \("swarm-mascot-512\.pn
 assert.match(server, /"\/swarm-icon-64\.png": \("swarm-icon-64\.png", "image\/png"\)/);
 assert.match(indexHtml, /id="connection-state" hidden role="alert" aria-labelledby="connection-state-title"/);
 assert.match(indexHtml, /src="\/assets\/swarm-offline-disconnected\.png" width="1536" height="1024"/);
+assert.match(indexHtml, /id="connection-state-title">Connection lost<\/h2><p>Your work is safe\. SWARM will reconnect when the console is available\.<\/p>/);
 assert.match(indexHtml, /id="connection-retry"[^>]*>Retry connection<\/button>/);
 assert.match(app, /if \(error instanceof TypeError\) throw connectionFailure/);
 assert.match(app, /if \(error\.connectionFailure && !state\.overview\) showConnectionState\(\)/);
 assert.match(app, /\$\("#connection-retry"\)\.addEventListener\("click", initialize\)/);
 assert.match(css, /\.workspace\.is-disconnected \.view \{ display:none; \}/);
+assert.match(indexHtml, /id="snapshot-status-dot"[^>]*class="status-dot is-reconnecting"|class="status-dot is-reconnecting" id="snapshot-status-dot"/);
+for (const status of ["Live", "Reconnecting", "Offline"]) assert.match(app, new RegExp(`(?:title|snapshot)\\.textContent = "${status}`));
+assert.match(css, /\.status-dot\.is-reconnecting/);
+assert.match(css, /\.status-dot\.is-offline/);
 
 for (const [tab, icon] of [["overview", "folder"], ["agents", "users"], ["review", "shield-check"], ["assets", "image"], ["settings", "settings"]]) {
   assert.match(indexHtml, new RegExp(`id="tab-${tab}"[\\s\\S]*?<use href="#lucide-${icon}"></use>`));
   assert.match(indexHtml, new RegExp(`id="lucide-${icon}" viewBox="0 0 24 24"`));
 }
 for (const retiredTab of ["dashboard", "hierarchy", "kanban", "diagnostics"]) assert.doesNotMatch(indexHtml, new RegExp(`id="tab-${retiredTab}"`));
+assert.doesNotMatch(indexHtml, />Graph<\/b>|data-view="graph"/);
 assert.doesNotMatch(indexHtml, /[⌂▦⑂▥⊙⚙]/);
 assert.match(indexHtml, /id="mobile-menu-button"[^>]*aria-label="Open navigation"[^>]*aria-expanded="false"[^>]*aria-controls="console-drawer"/);
 assert.match(indexHtml, /class="mobile-app-bar"[\s\S]*?<img src="\/assets\/swarm-wordmark\.png" alt="SWARM"/);
@@ -353,10 +359,15 @@ assert.match(app, /function roleManifestProjection\(\)/);
 assert.match(app, /state\.roleManifests && Array\.isArray\(state\.roleManifests\.roles\)/);
 assert.doesNotMatch(app, /localStorage|sessionStorage/);
 assert.match(indexHtml, /id="role-editor" aria-labelledby="role-editor-title"/);
-for (const field of ["role-field-id", "role-field-name", "role-field-purpose", "role-field-owns", "role-field-instructions", "role-field-boundaries", "role-field-skills", "role-field-avatar", "role-field-accent", "role-field-version", "role-field-source"]) assert.match(indexHtml, new RegExp(`id="${field}"`));
+for (const field of ["role-field-id", "role-field-name", "role-field-purpose", "role-field-owns", "role-field-instructions", "role-field-boundaries", "role-field-skills", "role-field-avatar", "role-field-accent", "role-field-specializations", "role-field-version", "role-field-source"]) assert.match(indexHtml, new RegExp(`id="${field}"`));
 assert.match(indexHtml, /Tasks already in progress keep the version they started with/);
 assert.match(indexHtml, /Choose or upload an approved avatar through Assets/);
 assert.match(indexHtml, /data-role-action="choose-avatar" type="button" disabled>Choose in Assets/);
+assert.match(indexHtml, /data-role-action="generate-avatar" type="button" disabled aria-label="Generate avatar" title="Generate avatar"/);
+assert.match(app, /function roleSpecializations\(role\)/);
+assert.match(app, /role\.specializations\.slice\(0, 4\)/);
+assert.match(app, /Specializations<\/h3>' \+ roleSpecializationsMarkup\(role\)/);
+assert.doesNotMatch(indexHtml + app, /Game Development|Game Design/);
 assert.match(indexHtml, /id="role-save" type="submit" disabled/);
 assert.match(indexHtml, /id="role-reset" data-role-action="reset" type="button" disabled/);
 assert.match(app, /state\.roleEditorTrigger\?\.focus/);
@@ -377,6 +388,8 @@ assert.match(css, /@media \(max-width: 620px\)[\s\S]*\.agents-tabs button \{ min
 assert.match(css, /@media \(max-width: 620px\)[\s\S]*\.project-tabs button \{ min-height:44px; \}/);
 assert.match(css, /@media \(max-width: 620px\)[\s\S]*\.review-actions \.icon-button,\.review-actions summary \{ width:44px; height:44px; \}/);
 assert.match(css, /@media \(max-width: 620px\)[\s\S]*\.settings-card input,\.settings-card select,\.settings-card \.quiet-button \{ min-height:44px; \}/);
+assert.match(css, /@media \(max-width: 620px\)[\s\S]*\.error-surface \{ top:calc\(64px \+ env\(safe-area-inset-top\) \+ 8px\);/);
+assert.match(css, /@media \(max-width: 620px\)[\s\S]*\.error-surface button \{ min-height:44px; \}/);
 assert.match(css, /\.assets-layout/);
 assert.match(css, /\.project-overview-grid/);
 assert.match(css, /\.notifications-panel/);
@@ -559,7 +572,20 @@ const proofFeed = imageProofFixture(6);
       { milestone_id: "Interface", block_id: "Console surfaces", task_id: "nested-task", owner_id: "Designer", lifecycle_state: "ACTIVE", measurement_state: "MEASURED", committed_weight: 5, admitted_proof_weight: 1, eta: { end_ms: Date.now() + 3600000 }, proof_receipt_ids: [] },
     ],
   };
-  const overrides = { proofFeed, usageByHours: { 1: usageHistory, 24: usageHistory }, projectProgress, projectProgressFeed: fixture.projectProgressFeed };
+  const overrides = {
+    proofFeed,
+    usageByHours: { 1: usageHistory, 24: usageHistory },
+    projectProgress,
+    projectProgressFeed: fixture.projectProgressFeed,
+    roleManifests: {
+      ok: true,
+      schema_version: 1,
+      built_in_count: 24,
+      roles: [{ id: "developer", name: "Developer", source: "builtin", version: "developer-v1", specializations: ["Web applications", "Native applications", "Developer tooling", "Runtime systems"] }],
+      assignments: [],
+      cursor: { event_seq: 1 },
+    },
+  };
   try {
     const onboardingPage = await browser.newPage({ viewport: { width: 1024, height: 760 } });
     const onboarding = await mount(onboardingPage, scopedFixture(), { ...overrides, keepOnboarding: true });
@@ -580,12 +606,14 @@ const proofFeed = imageProofFixture(6);
     const offlinePage = await browser.newPage({ viewport: { width: 1024, height: 760 } });
     const connection = { offline: true };
     const offline = await mount(offlinePage, scopedFixture(), { connection, waitForConnectionState: true });
-    assert.equal(await offlinePage.getByRole("heading", { name: "Local console unavailable" }).count(), 1);
+    assert.equal(await offlinePage.getByRole("heading", { name: "Connection lost" }).count(), 1);
+    assert.equal(await offlinePage.locator("#sync-time").textContent(), "Offline");
     assert.equal(await offlinePage.locator('#connection-state img[alt="SWARM octopus holding disconnected cable ends"]').count(), 1);
     connection.offline = false;
     await offlinePage.getByRole("button", { name: "Retry connection" }).click();
     await offlinePage.locator("#overview-content").waitFor({ state: "visible" });
     assert.equal(await offlinePage.locator("#connection-state").isVisible(), false);
+    assert.match(await offlinePage.locator("#sync-time").textContent(), /^Live/);
     assert.ok(offline.requests.filter((request) => request === "/api/bootstrap").length >= 2);
     await offlinePage.close();
 
@@ -618,6 +646,12 @@ const proofFeed = imageProofFixture(6);
     await page.getByRole("tab", { name: "Role library", exact: true }).click();
     assert.equal(await page.locator(".role-card").count(), 24);
     assert.match(await page.locator("#role-library-status").textContent(), /server-owned|unavailable|No role manifests/i);
+    await page.locator('.role-card[data-role-id="developer"]').click();
+    assert.equal(await page.locator("#role-detail .role-specializations li").count(), 4);
+    await page.getByRole("button", { name: "Inspect Developer" }).click();
+    assert.equal(await page.getByRole("button", { name: "Generate avatar" }).isDisabled(), true);
+    assert.equal(await page.locator("#role-field-specializations input").count(), 4);
+    await page.getByRole("button", { name: "Close role editor" }).click();
     await page.getByRole("tab", { name: "Review", exact: true }).click();
     assert.equal(await page.locator(".review-row").count(), 6);
     assert.equal(await page.getByRole("button", { name: "Send feedback unavailable" }).first().isDisabled(), true);
@@ -645,6 +679,10 @@ const proofFeed = imageProofFixture(6);
     const menuButton = mobilePage.locator("#mobile-menu-button");
     const menuBox = await menuButton.boundingBox();
     assert.ok(menuBox && menuBox.width >= 44 && menuBox.height >= 44);
+    await mobilePage.evaluate(() => showError("Project refresh failed"));
+    const errorBox = await mobilePage.locator("#error-surface").boundingBox();
+    assert.ok(errorBox && menuBox && errorBox.y >= menuBox.y + menuBox.height);
+    assert.ok((await mobilePage.getByRole("button", { name: "Try again" }).boundingBox())?.height >= 44);
     await menuButton.click();
     assert.equal(await mobilePage.locator("#console-drawer").getAttribute("aria-hidden"), "false");
     assert.equal(await mobilePage.locator(".workspace").evaluate((element) => element.inert), true);

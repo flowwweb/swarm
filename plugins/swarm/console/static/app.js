@@ -1,4 +1,4 @@
-const state = { token: "", overview: null, proof: [], proofCollections: new Map(), proofStatuses: new Map(), proofStatus: "idle", proofSequence: 0, usageHistory: null, usageWindowHours: 24, usageScopeKey: "", usageStatus: "idle", usageError: "", projectProgress: null, projectProgressProjectId: "", projectProgressStatus: "idle", projectProgressError: "", projectProgressFeed: null, projectProgressFeedProjectId: "", projectProgressFeedStatus: "idle", projectProgressFeedError: "", projectTab: "overview", diagnostics: null, health: null, storage: null, config: null, ctrlSettings: null, skills: null, skillsError: "", roleManifests: null, roleManifestStatus: "unavailable", roleManifestError: "", agentsTab: "active", selectedRoleId: "accountant", roleEditorTrigger: null, assetView: "grid", selectedAssetIdentity: "", onboardingStep: 0, onboardingShown: false, onboardingTrigger: null, notificationLastSeen: 0, notificationTrigger: null, view: "overview", projectId: "all", ctrlId: "", settingsCtrlId: "", settingsScopeType: "", settingsScopeId: "", evidenceImages: [], evidenceIndex: 0, evidenceTrigger: null };
+const state = { token: "", overview: null, proof: [], proofCollections: new Map(), proofStatuses: new Map(), proofStatus: "idle", proofSequence: 0, usageHistory: null, usageWindowHours: 24, usageScopeKey: "", usageStatus: "idle", usageError: "", projectProgress: null, projectProgressProjectId: "", projectProgressStatus: "idle", projectProgressError: "", projectProgressFeed: null, projectProgressFeedProjectId: "", projectProgressFeedStatus: "idle", projectProgressFeedError: "", projectTab: "overview", diagnostics: null, health: null, storage: null, config: null, ctrlSettings: null, skills: null, skillsError: "", roleManifests: null, roleManifestStatus: "unavailable", roleManifestError: "", agentsTab: "active", selectedRoleId: "accountant", roleEditorTrigger: null, assetView: "grid", selectedAssetIdentity: "", onboardingStep: 0, onboardingShown: false, onboardingTrigger: null, notificationLastSeen: 0, notificationTrigger: null, connectionStatus: "reconnecting", view: "overview", projectId: "all", ctrlId: "", settingsCtrlId: "", settingsScopeType: "", settingsScopeId: "", evidenceImages: [], evidenceIndex: 0, evidenceTrigger: null };
 const EVIDENCE_THUMBNAIL_PAGE_SIZE = 24;
 const USAGE_WINDOW_LABELS = { 1: "1h", 24: "1d" };
 const ROLE_PROFESSIONS = [
@@ -85,6 +85,7 @@ function clearError() {
 
 function showConnectionState() {
   clearError();
+  setDataStatus("unavailable", state.overview?.generated_at);
   $(".workspace").classList.add("is-disconnected");
   $("#connection-state").hidden = false;
 }
@@ -167,20 +168,28 @@ function setDataStatus(status, observedAt = null) {
   const title = $("#data-status-title");
   const note = $("#data-status-note");
   const dot = $("#data-status-dot");
-  if (!title || !note || !dot) return;
-  dot.classList.toggle("is-live", status === "current");
-  if (status === "current") {
-    title.textContent = "Current";
+  const snapshotDot = $("#snapshot-status-dot");
+  const snapshot = $("#sync-time");
+  if (!title || !note || !dot || !snapshotDot || !snapshot) return;
+  const connection = status === "current" ? "live" : status === "unavailable" ? "offline" : "reconnecting";
+  state.connectionStatus = connection;
+  [dot, snapshotDot].forEach((item) => {
+    item.classList.toggle("is-live", connection === "live");
+    item.classList.toggle("is-reconnecting", connection === "reconnecting");
+    item.classList.toggle("is-offline", connection === "offline");
+  });
+  if (connection === "live") {
+    title.textContent = "Live";
     note.textContent = observedAt ? "Updated " + formatRelative(observedAt) : "Snapshot received";
-  } else if (status === "stale") {
-    title.textContent = "Stale";
-    note.textContent = observedAt ? "Last update " + formatRelative(observedAt) : "Refresh failed";
-  } else if (status === "unavailable") {
-    title.textContent = "Data unavailable";
-    note.textContent = "Waiting for a project snapshot";
+    snapshot.textContent = observedAt ? "Live · " + formatRelative(observedAt) : "Live";
+  } else if (connection === "reconnecting") {
+    title.textContent = "Reconnecting";
+    note.textContent = observedAt ? "Last update " + formatRelative(observedAt) : "Waiting for data";
+    snapshot.textContent = "Reconnecting";
   } else {
-    title.textContent = "Connecting";
-    note.textContent = "Waiting for data";
+    title.textContent = "Offline";
+    note.textContent = observedAt ? "Last update " + formatRelative(observedAt) : "Console unavailable";
+    snapshot.textContent = "Offline";
   }
 }
 
@@ -1089,7 +1098,7 @@ function renderOverview() {
   renderOverviewHealth(nodes);
   renderProjectDetail();
   renderNotifications();
-  $("#sync-time").textContent = state.overview?.generated_at ? "Updated " + formatRelative(state.overview.generated_at) : "Ready";
+  if (state.connectionStatus === "live") $("#sync-time").textContent = state.overview?.generated_at ? "Live · " + formatRelative(state.overview.generated_at) : "Live";
 }
 
 function observedAgentRole(node) {
@@ -1166,11 +1175,25 @@ function roleSourceLabel(role) {
   return role.source === "builtin" ? "Built in" : role.source === "user_override" ? "Custom version" : humanize(role.source || "Unknown");
 }
 
+function roleSpecializations(role) {
+  if (!Array.isArray(role?.specializations)) return [];
+  return role.specializations.slice(0, 4).map((item) => {
+    if (typeof item === "string") return { id: item, name: item };
+    return { id: String(item?.id || item?.name || ""), name: String(item?.name || item?.label || item?.id || "") };
+  }).filter((item) => item.id && item.name);
+}
+
+function roleSpecializationsMarkup(role, editable = false) {
+  const items = roleSpecializations(role);
+  if (!items.length) return '<p class="role-specializations-empty">Not provided by the server.</p>';
+  return '<ul class="role-specializations">' + items.map((item) => '<li>' + (editable ? '<label><input type="checkbox" disabled> ' : '') + escapeHTML(item.name) + (editable ? '</label>' : '') + '</li>').join("") + '</ul>';
+}
+
 function renderRoleDetail() {
   const role = rolePresentation(state.selectedRoleId);
   const owns = Array.isArray(role.owns) && role.owns.length ? role.owns : ["Unknown"];
   const skills = Array.isArray(role.default_skills) && role.default_skills.length ? role.default_skills : ["Unknown"];
-  $("#role-detail").innerHTML = '<div class="role-detail-head">' + roleAvatar(role) + '<div><p class="eyebrow">' + escapeHTML(roleSourceLabel(role)) + '</p><h2>' + escapeHTML(role.name) + '</h2></div><button class="icon-button" data-role-action="edit" data-role-id="' + escapeHTML(role.id) + '" type="button" aria-label="Inspect ' + escapeHTML(role.name) + '"><svg class="lucide" aria-hidden="true"><use href="#lucide-pencil"></use></svg></button></div><p class="role-purpose">' + escapeHTML(role.purpose || "Unknown") + '</p><section><h3>Owns</h3><ul>' + owns.map((item) => '<li>' + escapeHTML(item) + '</li>').join("") + '</ul></section><section><h3>Default skills</h3><div class="role-skill-list">' + skills.map((item) => '<span>' + escapeHTML(item) + '</span>').join("") + '</div></section><dl class="role-detail-meta"><div><dt>Version</dt><dd>' + escapeHTML(role.version || "Unknown") + '</dd></div><div><dt>Avatar asset</dt><dd>' + escapeHTML(role.avatar_asset_digest || "Unknown") + '</dd></div></dl><p class="role-retention-note">Tasks already in progress keep the role version they started with.</p>';
+  $("#role-detail").innerHTML = '<div class="role-detail-head">' + roleAvatar(role) + '<div><p class="eyebrow">' + escapeHTML(roleSourceLabel(role)) + '</p><h2>' + escapeHTML(role.name) + '</h2></div><button class="icon-button" data-role-action="edit" data-role-id="' + escapeHTML(role.id) + '" type="button" aria-label="Inspect ' + escapeHTML(role.name) + '"><svg class="lucide" aria-hidden="true"><use href="#lucide-pencil"></use></svg></button></div><p class="role-purpose">' + escapeHTML(role.purpose || "Unknown") + '</p><section><h3>Owns</h3><ul>' + owns.map((item) => '<li>' + escapeHTML(item) + '</li>').join("") + '</ul></section><section><h3>Default skills</h3><div class="role-skill-list">' + skills.map((item) => '<span>' + escapeHTML(item) + '</span>').join("") + '</div></section><section><h3>Specializations</h3>' + roleSpecializationsMarkup(role) + '<small>Manifest metadata only · authority is unchanged.</small></section><dl class="role-detail-meta"><div><dt>Version</dt><dd>' + escapeHTML(role.version || "Unknown") + '</dd></div><div><dt>Avatar asset</dt><dd>' + escapeHTML(role.avatar_asset_digest || "Unknown") + '</dd></div></dl><p class="role-retention-note">Tasks already in progress keep the role version they started with.</p>';
 }
 
 function renderRoleLibrary() {
@@ -1221,6 +1244,7 @@ function openRoleEditor(roleId = "", trigger = null) {
   roleFieldValue("#role-field-skills", (role.default_skills || []).join("\n"));
   roleFieldValue("#role-field-avatar", role.avatar_asset_digest);
   roleFieldValue("#role-field-accent", role.accent || "#4da8ff");
+  $("#role-field-specializations").innerHTML = roleSpecializationsMarkup(role, true);
   $$("#role-editor input, #role-editor textarea").forEach((field) => { field.readOnly = true; });
   $("#role-field-accent").disabled = true;
   $("#role-field-version").textContent = role.version || "Unknown";
@@ -1503,6 +1527,7 @@ async function refreshRoleManifests() {
 async function refreshOverview(showLoading = true) {
   if (showLoading) setLoading(true);
   clearError();
+  setDataStatus("connecting", state.overview?.generated_at);
   try {
     state.overview = await api("/api/overview", { timeoutMs: 15_000 });
     clearConnectionState();
@@ -1524,6 +1549,7 @@ async function refreshOverview(showLoading = true) {
 }
 
 async function initialize() {
+  setDataStatus("connecting", state.overview?.generated_at);
   try {
     const bootstrap = await api("/api/bootstrap");
     state.token = bootstrap.token || "";
