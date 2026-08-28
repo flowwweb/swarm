@@ -1,6 +1,14 @@
-const state = { token: "", overview: null, proof: [], proofCollections: new Map(), proofStatuses: new Map(), proofStatus: "idle", proofSequence: 0, usageHistory: null, usageWindowHours: 24, usageScopeKey: "", usageStatus: "idle", usageError: "", projectProgressFeed: null, projectProgressProjectId: "", projectProgressStatus: "idle", projectProgressError: "", diagnostics: null, diagnosticHistory: [], health: null, storage: null, config: null, ctrlSettings: null, skills: null, skillsError: "", view: "overview", projectId: "all", ctrlId: "", settingsCtrlId: "", settingsScopeType: "", settingsScopeId: "", evidenceImages: [], evidenceIndex: 0, evidenceTrigger: null };
+const state = { token: "", overview: null, proof: [], proofCollections: new Map(), proofStatuses: new Map(), proofStatus: "idle", proofSequence: 0, usageHistory: null, usageWindowHours: 24, usageScopeKey: "", usageStatus: "idle", usageError: "", projectProgress: null, projectProgressProjectId: "", projectProgressStatus: "idle", projectProgressError: "", projectProgressFeed: null, projectProgressFeedProjectId: "", projectProgressFeedStatus: "idle", projectProgressFeedError: "", projectTab: "overview", diagnostics: null, diagnosticHistory: [], health: null, storage: null, config: null, ctrlSettings: null, skills: null, skillsError: "", roleManifests: null, roleManifestStatus: "unavailable", roleManifestError: "", agentsTab: "active", selectedRoleId: "accountant", roleEditorTrigger: null, selectedAssetIdentity: "", notificationLastSeen: 0, notificationTrigger: null, view: "overview", projectId: "all", ctrlId: "", settingsCtrlId: "", settingsScopeType: "", settingsScopeId: "", evidenceImages: [], evidenceIndex: 0, evidenceTrigger: null };
 const EVIDENCE_THUMBNAIL_PAGE_SIZE = 24;
 const USAGE_WINDOW_LABELS = { 1: "1h", 24: "1d" };
+const ROLE_PROFESSIONS = [
+  ["accountant", "Accountant", "$", "#ff9f43"], ["analyst", "Analyst", "Σ", "#4da8ff"], ["architect", "Architect", "⌂", "#46dfd0"], ["artist", "Artist", "✦", "#f472b6"],
+  ["auditor", "Auditor", "✓", "#a78bfa"], ["critic", "Critic", "!", "#fb7185"], ["designer", "Designer", "◇", "#f97316"], ["developer", "Developer", "</>", "#38bdf8"],
+  ["educator", "Educator", "✎", "#facc15"], ["inventor", "Inventor", "⌁", "#22d3ee"], ["legal", "Legal", "§", "#c084fc"], ["manager", "Manager", "◆", "#60a5fa"],
+  ["marketer", "Marketer", "↗", "#fb7185"], ["operator", "Operator", "⌘", "#34d399"], ["producer", "Producer", "▶", "#f59e0b"], ["recruiter", "Recruiter", "+", "#e879f9"],
+  ["researcher", "Researcher", "◎", "#2dd4bf"], ["reviewer", "Reviewer", "✓", "#818cf8"], ["security", "Security", "◈", "#f87171"], ["specialist", "Specialist", "*", "#94a3b8"],
+  ["strategist", "Strategist", "♟", "#a78bfa"], ["support", "Support", "?", "#4ade80"], ["tester", "Tester", "⌁", "#22c55e"], ["writer", "Writer", "¶", "#fbbf24"],
+].map(([id, name, prop, accent]) => ({ id, name, prop, accent }));
 const $ = (selector, root = document) => root.querySelector(selector);
 const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
 
@@ -176,20 +184,25 @@ function syncMobileDrawer() {
 
 function routeView() {
   const view = location.hash.slice(1);
-  return ["overview", "dashboard", "hierarchy", "kanban", "diagnostics", "settings"].includes(view) ? view : "overview";
+  return ["overview", "agents", "review", "assets", "settings"].includes(view) ? view : "overview";
 }
 
 function setView(view, focus, syncRoute = true) {
-  const selectedView = view === 'dashboard' || view === 'hierarchy' || view === 'kanban' || view === 'diagnostics' || view === 'settings' ? view : 'overview';
+  const allowed = ["overview", "agents", "review", "assets", "settings"];
+  const selectedView = allowed.includes(view) ? view : "overview";
   state.view = selectedView;
   const titles = {
-    overview: ["Overview", "Project progress, risks, and proof at a glance."],
+    overview: ["Projects", "Portfolio progress and project scope."],
+    agents: ["Agents", "Active ownership and the role library."],
+    review: ["Review", "Proof, decisions, and handoff acknowledgements."],
+    assets: ["Assets", "Approved project and role assets."],
     dashboard: ["Dashboard", "Project progress, risks, and proof at a glance."],
     hierarchy: ["Hierarchy", "See who owns the work, what is active, and where attention is needed."],
     kanban: ["Kanban", "Task state for the selected project or CTRL."],
     diagnostics: ["Diagnostics", "Device health, capacity, and maintenance."],
     settings: ["Settings", "Defaults and optional per-CTRL overrides."],
   };
+  $(".app-shell").dataset.currentView = selectedView;
   $$(".nav-item").forEach((tab) => {
     const selected = tab.dataset.view === selectedView;
     tab.classList.toggle("is-active", selected);
@@ -201,11 +214,12 @@ function setView(view, focus, syncRoute = true) {
     panel.classList.toggle("is-active", selected);
     panel.hidden = !selected;
   });
-  $("#view-title").textContent = titles[selectedView][0];
-  $("#view-subtitle").textContent = titles[selectedView][1];
+  const project = state.projectId !== "all" && !state.ctrlId ? projectGroups().find((item) => item.id === state.projectId) : null;
+  $("#view-title").textContent = selectedView === "overview" && project ? project.label : titles[selectedView][0];
+  $("#view-subtitle").textContent = selectedView === "overview" && project ? "Project progress, proof, ownership, and ledger." : titles[selectedView][1];
   if (selectedView === 'settings' && (!state.skills || state.skillsError)) refreshSkills().then(renderSettings);
   if (syncRoute && location.hash !== '#' + selectedView) history.replaceState(null, '', '#' + selectedView);
-  if (focus) $("#tab-" + selectedView).focus({ preventScroll: true });
+  if (focus) $("#tab-" + selectedView)?.focus({ preventScroll: true });
 }
 
 function hasCurrentWorkScopeContract() {
@@ -298,7 +312,11 @@ function renderProjectNavigation() {
     entries.push('<button class="project-scope-button ' + (current ? "is-selected" : "") + '" data-project-id="' + escapeHTML(group.id) + '" type="button" aria-pressed="' + current + '"><span class="scope-dot is-live" aria-hidden="true"></span>' + escapeHTML(group.label) + '</button>');
   });
   $("#project-navigation").innerHTML = entries.join("");
-  $("#scope-context strong").textContent = scopeLabel();
+  const selector = $("#project-scope-filter");
+  if (selector) {
+    selector.innerHTML = ['<option value="all">All projects</option>'].concat(groups.map((group) => '<option value="' + escapeHTML(group.id) + '">' + escapeHTML(group.label) + '</option>')).join("");
+    selector.value = state.projectId === "all" || groups.some((group) => group.id === state.projectId) ? state.projectId : "all";
+  }
 }
 
 function drawLine(svg, values, color) {
@@ -464,16 +482,20 @@ function currentProofStatus() {
   return state.proofStatuses.get(proofCollectionKey()) || "idle";
 }
 
-function evidenceImagesFor(nodes) {
-  const images = dedupeProofItems(currentProofItems()).filter((item) => String(item.media_type || "").startsWith("image/"));
+function scopedProofItems(nodes = scopedNodes()) {
+  const items = dedupeProofItems(currentProofItems());
   if (state.ctrlId) {
     const allowed = new Set(nodes.map((node) => node.id));
-    return images.filter((item) => allowed.has(item.task_id));
+    return items.filter((item) => allowed.has(item.task_id));
   }
   if (state.projectId !== "all" && !state.projectId.startsWith("ctrl:")) {
-    return images.filter((item) => !item.project_id || item.project_id === state.projectId);
+    return items.filter((item) => !item.project_id || item.project_id === state.projectId);
   }
-  return images;
+  return items;
+}
+
+function evidenceImagesFor(nodes) {
+  return scopedProofItems(nodes).filter((item) => String(item.media_type || "").startsWith("image/"));
 }
 
 function renderEvidenceLightbox() {
@@ -720,7 +742,7 @@ function renderUsage() {
   $("#usage-total").textContent = Number.isFinite(total) ? compactNumber(total) : "—";
   $("#usage-rate").textContent = Number.isFinite(currentRate) ? compactNumber(currentRate) + " / min" : "—";
   $("#usage-range").textContent = values.length ? 'Range ' + compactNumber(Math.min(...values)) + '–' + compactNumber(Math.max(...values)) + ' per sample' : 'No historical range';
-  $("#usage-note").textContent = !scopeMatches || state.usageStatus === "loading" ? "Loading usage history" : state.usageStatus === "error" ? (state.usageError || "Usage history unavailable") : source.status === 'no_data' ? 'No persisted usage in this scope' : source.status === 'partial' ? ('Partial coverage' + (coverage ? ' · ' + coverage : '')) : source.status === 'ok' ? ('Complete coverage' + (coverage ? ' · ' + coverage : '')) : (series.length ? 'Usage status unavailable' : 'No recent history');
+  $("#usage-note").textContent = !scopeMatches || state.usageStatus === "loading" ? "Loading usage history" : state.usageStatus === "stale" ? "Last received usage · refresh failed" : state.usageStatus === "error" ? (state.usageError || "Usage history unavailable") : source.status === 'no_data' ? 'No persisted usage in this scope' : source.status === 'partial' ? ('Partial coverage' + (coverage ? ' · ' + coverage : '')) : source.status === 'ok' ? ('Complete coverage' + (coverage ? ' · ' + coverage : '')) : (series.length ? 'Usage status unavailable' : 'No recent history');
   $$('[data-usage-hours]').forEach((button) => {
     const selected = Number(button.dataset.usageHours) === state.usageWindowHours;
     button.classList.toggle('is-selected', selected);
@@ -728,6 +750,274 @@ function renderUsage() {
   });
   drawLine($("#usage-sparkline"), downsampleSeries(values), "#ff9c3d");
   drawLine($("#usage-rate-sparkline"), downsampleSeries(rates), "#46dfd0");
+}
+
+function verifiedYieldProjection() {
+  return state.usageHistory?.verified_yield && state.usageScopeKey === usageRequestKey()
+    ? state.usageHistory.verified_yield
+    : null;
+}
+
+function verifiedYieldItem(type, id = "") {
+  const projection = verifiedYieldProjection();
+  if (!projection) return null;
+  if (type === "portfolio") return projection.portfolio || null;
+  const collection = type === "project" ? projection.projects : type === "task" ? projection.tasks : projection.owners;
+  return (collection || []).find((item) => item.scope?.id === id) || null;
+}
+
+function yieldValue(item) {
+  const value = Number(item?.yield_per_100k);
+  return item?.measurement_state === "MEASURED" && Number.isFinite(value)
+    ? new Intl.NumberFormat(undefined, { maximumFractionDigits: 2 }).format(value)
+    : "—";
+}
+
+function yieldSeries(item) {
+  return (item?.series || []).map((sample) => Number(sample.yield_per_100k)).filter(Number.isFinite);
+}
+
+function miniSparkline(values, label) {
+  const series = values.length ? values : [0, 0];
+  const high = Math.max(1, ...series);
+  const points = series.map((value, index) => ((index / Math.max(1, series.length - 1)) * 88).toFixed(1) + "," + (24 - (value / high) * 20).toFixed(1)).join(" ");
+  return '<svg class="mini-sparkline" viewBox="0 0 88 28" preserveAspectRatio="none" role="img" aria-label="' + escapeHTML(label) + '"><polyline points="' + points + '"></polyline></svg>';
+}
+
+function yieldHealth(item) {
+  if (!item || item.measurement_state !== "MEASURED") return "Unmeasured";
+  const confidence = item.confidence === "HIGH" ? "Complete receipts" : item.confidence === "PARTIAL" ? "Partial receipts" : "Confidence unknown";
+  const rework = Number(item.rework_drag);
+  return confidence + (Number.isFinite(rework) && rework > 0 ? " · rework " + rework.toFixed(1) + "%" : "");
+}
+
+function yieldWarnings(item) {
+  const warnings = [];
+  if (item?.confidence === "PARTIAL") warnings.push('<span class="yield-warning" title="Partial token or ledger coverage" aria-label="Partial measurement coverage">◐</span>');
+  if (Number(item?.rework_drag) > 0) warnings.push('<span class="yield-warning" title="Receipt-backed rework drag" aria-label="Rework drag observed">↶</span>');
+  if (item?.measurement_state === "MEASURED" && Number(item?.observed_tokens) > 0 && Number(item?.net_scope_points) === 0) warnings.push('<span class="yield-warning" title="Tokens observed without admitted scope" aria-label="Token burn without admitted scope">↑</span>');
+  return warnings.join("");
+}
+
+function renderVerifiedYieldSummary() {
+  const type = state.projectId === "all" ? "portfolio" : "project";
+  const item = verifiedYieldItem(type, state.projectId);
+  $("#verified-yield-heading").textContent = yieldValue(item);
+  $("#verified-yield-health").textContent = yieldHealth(item);
+  $("#verified-yield-note").textContent = item?.measurement_state === "MEASURED"
+    ? "Net admitted scope points per 100k observed tokens"
+    : "Admitted scope or token coverage is incomplete";
+  drawLine($("#verified-yield-chart"), yieldSeries(item), "#ff9c3d");
+}
+
+function verifiedYieldScopeLabel(item) {
+  const id = item?.scope?.id || "Unknown";
+  if (item?.scope?.type === "project") return projectGroups().find((project) => project.id === id)?.label || id;
+  if (item?.scope?.type === "task") {
+    const node = (state.overview?.nodes || []).find((candidate) => candidate.id === id);
+    return node?.artifact || node?.title || id;
+  }
+  return id;
+}
+
+function renderVerifiedYieldRows() {
+  const container = $("#verified-yield-rows");
+  const projection = verifiedYieldProjection();
+  const items = [...(projection?.projects || []), ...(projection?.tasks || [])];
+  container.hidden = state.projectId !== "all" || state.ctrlId !== "";
+  if (container.hidden) return;
+  container.innerHTML = items.length ? '<header><div><p class="eyebrow">Receipt-backed efficiency</p><h2>Projects and tasks</h2></div><span>' + items.length + ' scope row' + (items.length === 1 ? '' : 's') + '</span></header><div class="verified-yield-table">' + items.map((item) => '<article><span class="yield-scope-kind">' + escapeHTML(humanize(item.scope?.type || "scope")) + '</span><strong>' + escapeHTML(verifiedYieldScopeLabel(item)) + '</strong>' + miniSparkline(yieldSeries(item), "Verified yield trend for " + verifiedYieldScopeLabel(item)) + '<b>' + escapeHTML(yieldValue(item)) + '</b><small>' + escapeHTML(yieldHealth(item)) + yieldWarnings(item) + '</small></article>').join("") + '</div>' : '<p class="empty-state">Verified yield appears after admitted scope and matching token receipts are observed.</p>';
+}
+
+function yieldChartMarkup(item) {
+  const samples = item?.series || [];
+  if (!samples.length) return '<div class="project-yield-empty"><strong>—</strong><span>Verified yield is unmeasured</span></div>';
+  let cumulativeTokens = 0;
+  let cumulativeScope = 0;
+  const points = samples.map((sample) => {
+    cumulativeTokens += Math.max(0, Number(sample.observed_tokens) || 0);
+    cumulativeScope += Number(sample.net_scope_points) || 0;
+    return { tokens: cumulativeTokens, scope: cumulativeScope, scopeVersion: sample.scope_version };
+  });
+  const maximumTokens = Math.max(1, ...points.map((point) => point.tokens));
+  const scopes = points.map((point) => point.scope);
+  const minimumScope = Math.min(0, ...scopes);
+  const maximumScope = Math.max(1, ...scopes);
+  const scopeRange = Math.max(1, maximumScope - minimumScope);
+  const mapX = (tokens) => 34 + (tokens / maximumTokens) * 562;
+  const mapY = (scope) => 154 - ((scope - minimumScope) / scopeRange) * 128;
+  const line = points.map((point) => mapX(point.tokens).toFixed(1) + "," + mapY(point.scope).toFixed(1)).join(" ");
+  const dividers = points.slice(1).filter((point, index) => point.scopeVersion !== points[index].scopeVersion).map((point) => '<line class="yield-scope-divider" x1="' + mapX(point.tokens).toFixed(1) + '" x2="' + mapX(point.tokens).toFixed(1) + '" y1="18" y2="158"><title>Scope version changed</title></line>').join("");
+  const observedTokens = Number(item?.observed_tokens);
+  return '<div class="project-yield-chart"><header><div><p class="eyebrow">Verified yield</p><h2>' + escapeHTML(yieldValue(item)) + '</h2></div><span>' + escapeHTML(yieldHealth(item)) + '</span></header><svg viewBox="0 0 620 186" role="img" aria-label="Observed tokens against cumulative admitted scope"><path class="yield-axis" d="M34 18v140h562"></path><text x="315" y="181">Observed tokens</text><text class="yield-y-label" x="8" y="91">Admitted scope</text>' + dividers + '<polyline class="yield-primary-line" points="' + line + '"></polyline></svg><footer><span>Token burn ' + (Number.isFinite(observedTokens) ? compactNumber(observedTokens) : '—') + '</span><span>Rework ' + (Number.isFinite(Number(item.rework_drag)) ? Number(item.rework_drag).toFixed(1) + '%' : '—') + '</span><span>' + escapeHTML(item.confidence === "HIGH" ? "High confidence" : item.confidence === "PARTIAL" ? "Partial confidence" : "Confidence unknown") + '</span></footer></div>';
+}
+
+const NOTIFICATION_KINDS = new Set(["BLOCKER", "STALLED", "RETRYING", "ETA_DRIFT", "PROOF_INVALIDATED", "TOKEN_OVERRUN"]);
+
+function attentionItems() {
+  const items = verifiedYieldProjection()?.attention_items || [];
+  const seen = new Set();
+  return items.filter((item) => {
+    const identity = String(item?.id || item?.material_digest || "");
+    if (!identity || seen.has(identity) || !NOTIFICATION_KINDS.has(item.kind)) return false;
+    seen.add(identity);
+    return true;
+  }).sort((a, b) => Number(b.material_sequence || b.observed_at_ms || 0) - Number(a.material_sequence || a.observed_at_ms || 0));
+}
+
+function renderNotifications() {
+  const items = attentionItems();
+  const unread = items.filter((item) => Number(item.material_sequence) > state.notificationLastSeen).length;
+  const badge = $("#notification-unread");
+  badge.hidden = unread === 0;
+  badge.textContent = unread > 9 ? "9+" : String(unread);
+  $("#notifications-list").innerHTML = items.length ? items.slice(0, 8).map((item) => {
+    const label = [item.project_id, item.task_id, item.owner_id].filter(Boolean).join(" · ") || "Project";
+    return '<button class="notification-item ' + (item.severity === "critical" ? "is-critical" : "") + '" type="button" data-notification-project="' + escapeHTML(item.project_id || "") + '" data-notification-task="' + escapeHTML(item.task_id || "") + '"><svg class="lucide" aria-hidden="true"><use href="#lucide-triangle-alert"></use></svg><span><strong>' + escapeHTML(label) + '</strong><small>' + escapeHTML(item.sentence || humanize(item.kind)) + '</small></span><time>' + escapeHTML(formatRelative(item.observed_at_ms)) + '</time></button>';
+  }).join("") : '<p class="notifications-empty">All tentacles moving.</p>';
+}
+
+function setNotificationsOpen(open, returnFocus = false) {
+  const panel = $("#notifications-panel");
+  const trigger = $("#notifications");
+  panel.hidden = !open;
+  trigger.setAttribute("aria-expanded", String(open));
+  if (open) {
+    state.notificationTrigger = trigger;
+    state.notificationLastSeen = Math.max(state.notificationLastSeen, ...attentionItems().map((item) => Number(item.material_sequence) || 0));
+    renderNotifications();
+    panel.focus({ preventScroll: true });
+  } else if (returnFocus) {
+    state.notificationTrigger?.focus({ preventScroll: true });
+  }
+}
+
+function selectedProjectProgress() {
+  return state.projectProgressProjectId === selectedProgressProjectId() && state.projectProgress?.ok === true ? state.projectProgress : null;
+}
+
+function blockProgress(block) {
+  const committed = Number(block?.committed_weight);
+  const admitted = Number(block?.admitted_proof_weight);
+  if (!Number.isFinite(committed) || committed <= 0 || !Number.isFinite(admitted)) return { percent: null, display: "Unmeasured" };
+  const percent = Math.max(0, Math.min(100, admitted * 100 / committed));
+  return { percent, display: new Intl.NumberFormat(undefined, { maximumFractionDigits: 1 }).format(percent) + "%" };
+}
+
+function projectFeedMarkup(limit = 4) {
+  const items = progressFeedItems().slice(0, limit);
+  return '<ol class="project-progress-feed project-detail-feed">' + (items.length ? items.map((item) => {
+    const [icon, label] = progressFeedFlag(item);
+    return '<li><time>' + escapeHTML(formatRelative(item.observed_at_ms)) + '</time><strong>' + escapeHTML(item.owner_id || item.task_id || "Project") + '</strong><span>' + escapeHTML(item.material_update_sentence) + '</span>' + (icon ? '<i role="img" aria-label="' + escapeHTML(label) + '">' + escapeHTML(icon) + '</i>' : '') + '</li>';
+  }).join("") : '<li class="empty-state">No material updates yet.</li>') + '</ol>';
+}
+
+function projectMilestones(blocks) {
+  const groups = new Map();
+  blocks.forEach((block) => {
+    const id = block.milestone_id || "Unassigned milestone";
+    const list = groups.get(id) || [];
+    list.push(block);
+    groups.set(id, list);
+  });
+  return [...groups.entries()];
+}
+
+function milestoneSummary(blocks) {
+  if (!blocks.length || blocks.some((block) => !Number.isFinite(Number(block.committed_weight)))) return { percent: null, admitted: "—", committed: "—" };
+  const committed = blocks.reduce((sum, block) => sum + Number(block.committed_weight), 0);
+  const admitted = blocks.reduce((sum, block) => sum + Number(block.admitted_proof_weight || 0), 0);
+  return { percent: committed > 0 ? Math.max(0, Math.min(100, admitted * 100 / committed)) : null, admitted, committed };
+}
+
+function projectEta(nodes) {
+  const active = nodes.map((node) => node.eta?.current || node.eta || {}).filter((eta) => eta.status !== "complete" && Number(eta.eta_end_ms));
+  if (!active.length) return "—";
+  const starts = active.map((eta) => Number(eta.eta_start_ms)).filter(Number.isFinite);
+  const ends = active.map((eta) => Number(eta.eta_end_ms)).filter(Number.isFinite);
+  const start = starts.length ? Math.max(0, Math.min(...starts) - Date.now()) : Math.max(0, Math.min(...ends) - Date.now());
+  const end = Math.max(0, Math.max(...ends) - Date.now());
+  return formatDuration(start) + "–" + formatDuration(end);
+}
+
+function projectBlockRow(block) {
+  const progress = blockProgress(block);
+  const report = progressFeedItems().find((item) => item.task_id === block.task_id)?.material_update_sentence || "No material update yet.";
+  const complete = progress.percent === 100 && ["VERIFIED", "ACCEPTED"].includes(block.lifecycle_state);
+  return '<article class="project-block"><div class="project-block-state ' + (complete ? "is-complete" : "") + '">' + (complete ? '<svg class="lucide" aria-label="Proof admitted"><use href="#lucide-check"></use></svg>' : '<span aria-hidden="true"></span>') + '</div><div><header><strong>' + escapeHTML(block.block_id) + '</strong><span>' + escapeHTML(block.owner_id || "Unassigned") + '</span></header><p>' + escapeHTML(report) + '</p><div class="project-block-meter"><i style="width:' + (progress.percent == null ? 0 : progress.percent) + '%"></i></div><small>' + escapeHTML(progress.display + " · " + humanize(block.lifecycle_state || "Unknown") + " · ETA " + (block.eta?.end_ms ? formatDuration(Math.max(0, Number(block.eta.end_ms) - Date.now())) : "—")) + '</small></div></article>';
+}
+
+function projectTabMarkup(tab, progress, nodes) {
+  const blocks = progress?.blocks || [];
+  const milestones = projectMilestones(blocks);
+  if (tab === "overview") {
+    const efficiency = verifiedYieldItem("project", selectedProgressProjectId());
+    return '<section class="project-overview-grid"><div class="milestone-rings">' + (milestones.length ? milestones.slice(0, 4).map(([id, items]) => { const summary = milestoneSummary(items); return '<article><div class="milestone-ring ' + (summary.percent === 100 ? "is-complete" : "") + '" style="--progress:' + (summary.percent ?? 0) + '%"><strong>' + escapeHTML(summary.percent == null ? "—" : Math.round(summary.percent) + "%") + '</strong></div><h3>' + escapeHTML(id) + '</h3><small>' + escapeHTML(summary.admitted + " / " + summary.committed + " admitted") + '</small></article>'; }).join("") : '<p class="empty-state">No measured milestones yet.</p>') + '</div>' + yieldChartMarkup(efficiency) + '<section class="panel project-updates"><header class="overview-section-head"><div><p class="eyebrow">Material events</p><h2>Latest updates</h2></div><p>Newest first</p></header>' + projectFeedMarkup(4) + '</section></section>';
+  }
+  if (tab === "roadmap") return '<section class="project-roadmap">' + (milestones.length ? milestones.map(([id, items], index) => '<article><span>' + String(index + 1) + '</span><div><h3>' + escapeHTML(id) + '</h3><p>' + escapeHTML(items.length + " block" + (items.length === 1 ? "" : "s") + " · " + milestoneSummary(items).admitted + " admitted") + '</p></div></article>').join("") : '<p class="empty-state">No roadmap receipts yet.</p>') + '</section>';
+  if (tab === "lanes") { const owners = new Map(); blocks.forEach((block) => { const id = block.owner_id || "Unassigned"; owners.set(id, [...(owners.get(id) || []), block]); }); return '<section class="project-lanes">' + ([...owners.entries()].map(([owner, items]) => '<section class="panel"><header><h3>' + escapeHTML(owner) + '</h3><span>' + items.length + '</span></header>' + items.map(projectBlockRow).join("") + '</section>').join("") || '<p class="empty-state">No owner lanes yet.</p>') + '</section>'; }
+  if (tab === "hierarchy") return '<section class="project-hierarchy">' + (nodes.length ? nodes.filter((node) => !isSubagent(node)).map((node) => '<article><svg class="lucide" aria-hidden="true"><use href="#lucide-git-branch"></use></svg><div><strong>' + escapeHTML(node.worker || node.owner || node.role_label || "Unassigned") + '</strong><span>' + escapeHTML(node.artifact || node.title || node.id) + '</span></div><small>' + escapeHTML(observedAgentRole(node) || "TASK") + '</small></article>').join("") : '<p class="empty-state">No hierarchy is observed for this project.</p>') + '</section>';
+  if (tab === "proof") { const images = evidenceImagesFor(nodes); state.evidenceImages = images; return '<section class="project-proof-grid">' + (images.length ? images.map((item, index) => '<button class="asset-tile" type="button" data-evidence-open="' + index + '" aria-label="Open proof image"><img loading="lazy" src="' + proofMediaURL(item) + '" alt=""><span>' + escapeHTML(item.caption || item.kind || "Proof") + '</span></button>').join("") : '<p class="empty-state">No image proof is available for this project.</p>') + '</section>'; }
+  if (tab === "ledger") return '<section class="panel project-ledger"><header class="overview-section-head"><div><p class="eyebrow">Canonical events</p><h2>Ledger</h2></div><p>' + escapeHTML(progress?.cursor?.event_seq == null ? "No cursor" : "Through " + progress.cursor.event_seq) + '</p></header>' + projectFeedMarkup(10) + '</section>';
+  const latest = state.diagnostics?.latest || {};
+  return '<section class="panel project-logs"><p class="eyebrow">Contextual status</p><h2>' + escapeHTML(humanize(latest.health_state || "Unavailable")) + '</h2><p>Raw host logs are not projected into project scope. Diagnostics remain read-only and do not run models.</p><small>' + escapeHTML(latest.observed_at_ms ? "Observed " + formatRelative(latest.observed_at_ms) : "No diagnostic timestamp") + '</small></section>';
+}
+
+function renderProjectDetail() {
+  const projectId = selectedProgressProjectId();
+  const active = Boolean(projectId);
+  $("#projects-portfolio").hidden = active;
+  $("#project-detail").hidden = !active;
+  const group = projectGroups().find((item) => item.id === projectId);
+  if (state.view === "overview") {
+    $("#view-title").textContent = active ? (group?.label || "Project") : "Projects";
+    $("#view-subtitle").textContent = active ? "Project progress, proof, ownership, and ledger." : "Portfolio progress and project scope.";
+  }
+  if (!active) return;
+  const progress = selectedProjectProgress();
+  const nodes = scopedNodes();
+  $("#project-detail-title").textContent = group?.label || "Project";
+  $("#project-detail-status").textContent = state.projectProgressStatus === "stale" ? "Last received project ledger" : state.projectProgressStatus === "unavailable" ? "Project ledger unavailable" : progress ? "Scope version " + (progress.scope_version ?? "—") : "Loading project ledger";
+  const measured = progress?.status === "MEASURED" && Number.isFinite(Number(progress.percent));
+  const nextGate = (progress?.blocks || []).find((block) => ["REVIEW", "WAITING_DEPENDENCY", "WAITING_EXTERNAL", "USER_PAUSED"].includes(block.lifecycle_state));
+  $("#project-detail-summary").innerHTML = '<p><span>Progress</span><strong>' + escapeHTML(measured ? progress.percent + "%" : "—") + '</strong></p><p><span>Live ETA</span><strong><svg class="lucide" aria-hidden="true"><use href="#lucide-clock"></use></svg>' + escapeHTML(projectEta(nodes)) + '</strong></p><p><span>Next gate</span><strong>' + escapeHTML(nextGate ? humanize(nextGate.lifecycle_state) : "—") + '</strong></p>';
+  $$('[data-project-tab]').forEach((button) => { const selected = button.dataset.projectTab === state.projectTab; button.classList.toggle("is-active", selected); button.setAttribute("aria-selected", String(selected)); button.tabIndex = selected ? 0 : -1; });
+  $("#project-tab-panel").innerHTML = projectTabMarkup(state.projectTab, progress, nodes);
+}
+
+function proofReviewState(item) {
+  return humanize(item.review_status || item.disposition || item.status || "Available for review");
+}
+
+function renderReview() {
+  const items = scopedProofItems();
+  $("#review-status").textContent = currentProofStatus() === "stale" ? "Showing the last received review queue" : items.length ? items.length + " reviewable item" + (items.length === 1 ? "" : "s") : "No proof awaiting review";
+  $("#review-list").innerHTML = items.length ? items.map((item) => { const image = String(item.media_type || "").startsWith("image/"); return '<article class="review-row"><div class="review-kind"><svg class="lucide" aria-hidden="true"><use href="#lucide-shield-check"></use></svg></div><div><strong>' + escapeHTML(item.caption || item.kind || item.evidence_id) + '</strong><p>' + escapeHTML([item.project_id, item.task_id, item.owner_id].filter(Boolean).join(" · ") || "Unscoped proof") + '</p><small>' + escapeHTML(proofReviewState(item) + " · " + formatRelative(item.observed_at_ms || item.updated_at)) + '</small></div><div class="review-actions"><button class="icon-button" type="button" data-review-open="' + escapeHTML(proofIdentity(item)) + '" aria-label="Open proof"' + (image ? '' : ' disabled title="No visual preview is available"') + '><svg class="lucide" aria-hidden="true"><use href="#lucide-image"></use></svg></button><button class="icon-button" type="button" aria-label="Send feedback unavailable" disabled title="Review feedback command is not available"><svg class="lucide" aria-hidden="true"><use href="#lucide-message-square"></use></svg></button><button class="icon-button" type="button" aria-label="Admit proof unavailable" disabled title="Proof admission command is not available"><svg class="lucide" aria-hidden="true"><use href="#lucide-check"></use></svg></button><details><summary aria-label="More proof details"><svg class="lucide" aria-hidden="true"><use href="#lucide-ellipsis"></use></svg></summary><p>Digest ' + escapeHTML(String(item.digest || "—").slice(0, 16)) + ' · ' + escapeHTML(item.claim_limit || "Acceptance is recorded separately.") + '</p></details></div></article>'; }).join("") : '<p class="empty-state review-empty">No proof is waiting for review in this scope.</p>';
+}
+
+function assetItems() {
+  return scopedProofItems().filter((item) => String(item.media_type || "").startsWith("image/"));
+}
+
+function openProofIdentity(identity, trigger) {
+  const images = assetItems();
+  const index = images.findIndex((item) => proofIdentity(item) === identity);
+  if (index < 0) return;
+  state.evidenceImages = images;
+  openEvidenceLightbox(index, trigger);
+}
+
+function renderAssets() {
+  const items = assetItems();
+  if (!items.some((item) => proofIdentity(item) === state.selectedAssetIdentity)) state.selectedAssetIdentity = proofIdentity(items[0]);
+  const selected = items.find((item) => proofIdentity(item) === state.selectedAssetIdentity) || null;
+  $("#assets-status").textContent = currentProofStatus() === "stale" ? "Showing the last received asset inventory" : items.length ? items.length + " digest-bound asset" + (items.length === 1 ? "" : "s") : "No retained assets";
+  $("#asset-gallery").innerHTML = items.length ? items.map((item) => '<button class="asset-tile ' + (proofIdentity(item) === state.selectedAssetIdentity ? "is-selected" : "") + '" type="button" data-asset-identity="' + escapeHTML(proofIdentity(item)) + '" aria-pressed="' + String(proofIdentity(item) === state.selectedAssetIdentity) + '"><img loading="lazy" src="' + proofMediaURL(item) + '" alt=""><span>' + escapeHTML(item.caption || item.kind || "Asset") + '</span><small>' + escapeHTML(proofReviewState(item)) + '</small></button>').join("") : '<p class="empty-state">Assets appear after digest-bound proof is retained.</p>';
+  if (!selected) { $("#asset-detail").innerHTML = '<p class="empty-state">Select an asset to inspect its immutable revision.</p>'; return; }
+  const revisions = items.filter((item) => item.evidence_id === selected.evidence_id);
+  const provenance = selected.source || selected.provenance?.source || selected.provenance?.kind || "Unknown";
+  const revisionMarkup = revisions.map((revision) => '<li><code>' + escapeHTML(String(revision.digest || "—").slice(0, 12)) + '</code><span>' + escapeHTML(proofReviewState(revision)) + '</span><time>' + escapeHTML(formatRelative(revision.observed_at_ms || revision.updated_at)) + '</time></li>').join("");
+  $("#asset-detail").innerHTML = '<img src="' + proofMediaURL(selected) + '" alt=""><p class="eyebrow">' + escapeHTML(proofReviewState(selected)) + '</p><h2>' + escapeHTML(selected.caption || selected.kind || "Asset") + '</h2><dl><div><dt>Digest</dt><dd>' + escapeHTML(selected.digest || "—") + '</dd></div><div><dt>Revision history</dt><dd>' + revisions.length + '</dd></div><div><dt>Provenance</dt><dd>' + escapeHTML(provenance) + '</dd></div></dl><ol class="asset-revisions" aria-label="Retained asset revisions">' + revisionMarkup + '</ol><div class="asset-actions"><button class="quiet-button" type="button" data-review-open="' + escapeHTML(proofIdentity(selected)) + '">Open proof</button><button class="quiet-button" type="button" disabled title="Asset revision command is not available">New revision</button><button class="quiet-button" type="button" disabled title="Asset approval command is not available">Approve digest</button></div><small>Revision and approval actions remain unavailable until their server commands are accepted.</small>';
 }
 
 function selectedProgressProjectId() {
@@ -766,14 +1056,14 @@ function renderProjectProgressFeed() {
   const hasCurrentFeed = state.projectProgressFeed?.ok === true
     && state.projectProgressFeed?.project_id === projectId
     && Array.isArray(state.projectProgressFeed?.items);
-  if (!projectId || state.projectProgressProjectId !== projectId || !hasCurrentFeed || state.projectProgressFeed.enabled === false) {
+  if (!projectId || state.projectProgressFeedProjectId !== projectId || !hasCurrentFeed || state.projectProgressFeed.enabled === false) {
     section.hidden = true;
     return;
   }
   section.hidden = false;
   const items = progressFeedItems();
   const status = $("#project-progress-status");
-  status.textContent = state.projectProgressStatus === "stale" ? "Last received · reconnect to refresh" : state.projectProgressStatus === "unavailable" ? "Updates unavailable" : items.length ? String(items.length) + " latest update" + (items.length === 1 ? "" : "s") : "No material updates yet";
+  status.textContent = state.projectProgressFeedStatus === "stale" ? "Last received · reconnect to refresh" : state.projectProgressFeedStatus === "unavailable" ? "Updates unavailable" : items.length ? String(items.length) + " latest update" + (items.length === 1 ? "" : "s") : "No material updates yet";
   $("#project-progress-feed").innerHTML = items.length ? items.map((item) => {
     const [icon, label] = progressFeedFlag(item);
     const owner = item.owner_id || item.task_id || item.block_id || "Project";
@@ -808,11 +1098,12 @@ function renderOverviewProjectCards(nodes) {
     const receipt = latestReceipt(card.nodes);
     const primary = card.nodes.find((node) => node.id === card.ctrlId) || tasks[0];
     const current = tasks.find((task) => !["done", "archived"].includes(String(task.status).toLowerCase())) || primary;
+    const efficiency = verifiedYieldItem(current?.id ? "task" : "project", current?.id || card.projectId) || verifiedYieldItem("project", card.projectId);
     const stateLabel = primary ? statusLabel(primary)[0] : "No task state";
     const ringClass = needsAttention(primary) ? "is-attention" : (statusLabel(primary || {})[1] || "is-pending");
     const subagents = card.ctrlId ? subagentDescendants(card.ctrlId, tree) : [];
     const subagentDisclosure = subagents.length ? '<details class="overview-subagents" data-overview-subagents="' + escapeHTML(card.ctrlId) + '"><summary>Subagents <span>' + subagents.length + '</span></summary><ul>' + subagents.map((node) => '<li><strong>' + escapeHTML(node.artifact || node.title || node.id) + '</strong><span>' + escapeHTML(statusLabel(node)[0]) + '</span></li>').join('') + '</ul></details>' : '<span class="overview-subagent-empty">No subagents</span>';
-    return '<article class="overview-project-card panel"><div class="overview-progress-ring ' + ringClass + '" style="--progress:' + (progress.percent == null ? 0 : progress.percent) + '%" aria-label="' + escapeHTML(progress.display + ' receipt-backed progress · ' + progress.freshness) + '"><strong>' + escapeHTML(progress.display) + '</strong><span>' + escapeHTML(progress.freshness) + '</span></div><div class="overview-project-main"><p class="eyebrow">' + escapeHTML(stateLabel) + '</p><h3>' + escapeHTML(card.label) + '</h3><p>' + escapeHTML(current?.artifact || "No current task observed") + '</p></div><dl class="overview-project-facts"><div><dt>Current work</dt><dd>' + escapeHTML(current?.artifact || "None observed") + '</dd></div><div><dt>Latest receipt</dt><dd>' + escapeHTML(receipt?.caption || receipt?.kind || "None received") + '</dd></div><div><dt>Blocker</dt><dd class="' + (blocker ? 'risk-text' : '') + '">' + escapeHTML(blocker?.artifact || "None observed") + '</dd></div></dl><div class="overview-project-subagents">' + subagentDisclosure + '</div></article>';
+    return '<article class="overview-project-card panel"><div class="overview-progress-ring ' + ringClass + '" style="--progress:' + (progress.percent == null ? 0 : progress.percent) + '%" aria-label="' + escapeHTML(progress.display + ' receipt-backed progress · ' + progress.freshness) + '"><strong>' + escapeHTML(progress.display) + '</strong><span>' + escapeHTML(progress.freshness) + '</span></div><div class="overview-project-main"><p class="eyebrow">' + escapeHTML(stateLabel) + '</p><h3>' + escapeHTML(card.label) + '</h3><p>' + escapeHTML(current?.artifact || "No current task observed") + '</p></div><dl class="overview-project-facts"><div><dt>Current work</dt><dd>' + escapeHTML(current?.artifact || "None observed") + '</dd></div><div><dt>Latest receipt</dt><dd>' + escapeHTML(receipt?.caption || receipt?.kind || "None received") + '</dd></div><div><dt>Blocker</dt><dd class="' + (blocker ? 'risk-text' : '') + '">' + escapeHTML(blocker?.artifact || "None observed") + '</dd></div></dl><div class="overview-yield"><span>Verified yield ' + yieldWarnings(efficiency) + '</span><strong>' + escapeHTML(yieldValue(efficiency)) + '</strong>' + miniSparkline(yieldSeries(efficiency), "Verified yield trend for " + card.label) + '<small>' + escapeHTML(yieldHealth(efficiency)) + '</small></div><div class="overview-project-subagents">' + subagentDisclosure + '</div></article>';
   };
   $("#overview-summary").textContent = allProjects
     ? (scopedCards.length ? String(scopedCards.length) + " project scope" + (scopedCards.length === 1 ? "" : "s") : "No classified Current Work")
@@ -829,11 +1120,15 @@ function renderOverviewProjectCards(nodes) {
 
 function renderOverview() {
   const nodes = scopedNodes();
+  renderVerifiedYieldSummary();
+  renderVerifiedYieldRows();
   renderOverviewProjectCards(nodes);
   renderEvidenceGallery(nodes, "#overview-evidence-gallery", "#overview-evidence-note", 4);
   renderUsage();
   renderProjectProgressFeed();
   renderOverviewHealth(nodes);
+  renderProjectDetail();
+  renderNotifications();
   $("#sync-time").textContent = state.overview?.generated_at ? "Updated " + formatRelative(state.overview.generated_at) : "Ready";
 }
 
@@ -865,6 +1160,149 @@ function renderHierarchy() {
     const progress = progressPresentation(authoritativeProgress(current.project_id, state.overview?.progress?.controllers?.[owner] ? owner : ""));
     return '<article class="hierarchy-card"><div class="health-ring ' + status[1] + '"><i></i><span>' + escapeHTML(progress.display) + '</span></div><div class="hierarchy-main"><div class="hierarchy-title"><strong>' + escapeHTML(current.artifact || current.title || owner) + '</strong><span>' + escapeHTML(current.role_label || current.role || "TASK") + subagentMeta + '</span></div><p><i class="activity-dot ' + status[1] + '" aria-hidden="true"></i>' + escapeHTML(progress.freshness) + (stalled ? ' <b class="stalled-cue">Paused attention</b>' : '') + '</p><div class="task-progress"><i style="width:' + (progress.percent == null ? 0 : progress.percent) + '%"></i></div>' + (extra.length ? '<details><summary>' + extra.length + ' more task' + (extra.length === 1 ? '' : 's') + '</summary><ul>' + extra.map((task) => '<li>' + escapeHTML(task.artifact || task.title || task.id) + '</li>').join('') + '</ul></details>' : '') + '</div></article>';
   }).join('') : '<p class="empty-state">No owners in this view.</p>';
+}
+
+function observedAgentRole(node) {
+  const role = String(node?.role || node?.worker_role || "").trim().toUpperCase();
+  return ["CTRL", "LEAD", "DOER"].includes(role) ? role : "";
+}
+
+function agentRow(node, role) {
+  const status = statusLabel(node || {});
+  const title = node?.artifact || node?.title || "Unknown task";
+  const owner = node?.worker || node?.owner || node?.id || "Unknown";
+  const updated = node?.updated_at || node?.generated_at;
+  const efficiency = verifiedYieldItem("owner", node?.owner_id || node?.worker || node?.owner || node?.id || "");
+  return '<div class="agent-row" data-agent-role="' + escapeHTML(role) + '"><span class="agent-role-mark" aria-hidden="true">' + escapeHTML(role.slice(0, 1)) + '</span><div><strong>' + escapeHTML(owner) + '</strong><small>' + escapeHTML(title) + '</small></div><div class="agent-yield"><strong>' + escapeHTML(yieldValue(efficiency)) + '</strong>' + miniSparkline(yieldSeries(efficiency), "Verified yield trend for " + owner) + '<small>Verified yield</small></div><span class="state-pill ' + status[1] + '">' + escapeHTML(status[0] || "Unknown") + '</span><time datetime="' + escapeHTML(updated || "") + '">' + escapeHTML(formatRelative(updated)) + '</time></div>';
+}
+
+function agentBranch(node, role, children = []) {
+  const label = node?.artifact || node?.title || node?.id || "Unknown task";
+  const body = agentRow(node, role) + children.join("");
+  return '<details class="agent-branch agent-level-' + role.toLowerCase() + '" open><summary><svg class="lucide" aria-hidden="true"><use href="#lucide-chevron-right"></use></svg><span>' + escapeHTML(label) + '</span><small>' + escapeHTML(role) + '</small></summary><div class="agent-branch-body">' + body + '</div></details>';
+}
+
+function activeSwarmProjects() {
+  const projects = historicalProjects().filter((project) => project.visibility !== "archived" && project.archived !== true);
+  const selected = state.projectId === "all" ? projects : projects.filter((project) => project.id === state.projectId);
+  const nodes = state.overview?.nodes || [];
+  return selected.map((project) => ({ project, nodes: nodes.filter((node) => node.project_id === project.id && observedAgentRole(node)) })).filter((entry) => entry.nodes.length);
+}
+
+function renderAgentHierarchy() {
+  const projects = activeSwarmProjects();
+  const observed = projects.flatMap((entry) => entry.nodes);
+  const roleCounts = ["CTRL", "LEAD", "DOER"].map((role) => [role, observed.filter((node) => observedAgentRole(node) === role).length]);
+  $("#agents-summary").innerHTML = roleCounts.map(([role, count]) => '<p><strong>' + escapeHTML(count) + '</strong><span>' + escapeHTML(role) + '</span></p>').join("") + '<p><strong>' + escapeHTML(projects.length) + '</strong><span>Projects</span></p>';
+  $("#agent-hierarchy").innerHTML = projects.length ? projects.map(({ project, nodes }) => {
+    const ctrlIds = new Set((state.overview?.navigation?.controllers || []).filter((ctrl) => ctrl.project_id === project.id && ctrl.archived !== true && ctrl.visibility !== "archived").map((ctrl) => ctrl.id));
+    const ctrls = nodes.filter((node) => observedAgentRole(node) === "CTRL" && (!ctrlIds.size || ctrlIds.has(node.id)));
+    const orphanLeads = nodes.filter((node) => observedAgentRole(node) === "LEAD" && !(node.controller_ids || []).some((id) => ctrls.some((ctrl) => ctrl.id === id)));
+    const orphanDoers = nodes.filter((node) => observedAgentRole(node) === "DOER" && !(node.controller_ids || []).some((id) => ctrls.some((ctrl) => ctrl.id === id)));
+    const ctrlBranches = ctrls.map((ctrl) => {
+      const ctrlNodes = nodes.filter((node) => node.id !== ctrl.id && (node.controller_ids || []).includes(ctrl.id));
+      const leads = ctrlNodes.filter((node) => observedAgentRole(node) === "LEAD");
+      const leadIds = new Set(leads.map((lead) => lead.id));
+      const leadBranches = leads.map((lead) => agentBranch(lead, "LEAD", ctrlNodes.filter((node) => observedAgentRole(node) === "DOER" && node.parent_id === lead.id).map((node) => agentRow(node, "DOER"))));
+      const directDoers = ctrlNodes.filter((node) => observedAgentRole(node) === "DOER" && !leadIds.has(node.parent_id));
+      return agentBranch(ctrl, "CTRL", leadBranches.concat(directDoers.map((node) => agentRow(node, "DOER"))));
+    });
+    const unresolved = orphanLeads.map((node) => agentBranch(node, "LEAD")).concat(orphanDoers.map((node) => agentRow(node, "DOER")));
+    return '<details class="agent-project" open><summary><svg class="lucide" aria-hidden="true"><use href="#lucide-chevron-right"></use></svg><span>' + escapeHTML(publicLabel(project.goal_label || project.name, "Untitled project")) + '</span><small>' + escapeHTML(nodes.length) + ' observed</small></summary><div class="agent-project-body">' + (ctrlBranches.length || unresolved.length ? ctrlBranches.concat(unresolved).join("") : '<p class="empty-state">No CTRL, LEAD, or DOER authority was observed.</p>') + '</div></details>';
+  }).join("") : '<p class="empty-state agents-empty">No CTRL, LEAD, or DOER authority is available in this project scope.</p>';
+}
+
+function roleManifestProjection() {
+  return state.roleManifests && Array.isArray(state.roleManifests.roles) ? state.roleManifests : null;
+}
+
+function roleRecord(roleId) {
+  return roleManifestProjection()?.roles.find((role) => role.id === roleId) || null;
+}
+
+function rolePresentation(roleId) {
+  const builtIn = ROLE_PROFESSIONS.find((role) => role.id === roleId);
+  const record = roleRecord(roleId);
+  return { ...builtIn, ...(record || {}), manifestAvailable: Boolean(record) };
+}
+
+function roleAvatar(role) {
+  const accent = /^#[0-9a-f]{6}$/i.test(role.accent || "") ? role.accent : "#8f9db0";
+  return '<span class="role-avatar" style="--role-accent:' + escapeHTML(accent) + '" aria-hidden="true"><i></i><b>' + escapeHTML(role.prop || role.name?.slice(0, 1) || "?") + '</b></span>';
+}
+
+function roleSourceLabel(role) {
+  if (!role.manifestAvailable) return "Unknown";
+  return role.source === "builtin" ? "Built in" : role.source === "user_override" ? "Custom version" : humanize(role.source || "Unknown");
+}
+
+function renderRoleDetail() {
+  const role = rolePresentation(state.selectedRoleId);
+  const owns = Array.isArray(role.owns) && role.owns.length ? role.owns : ["Unknown"];
+  const skills = Array.isArray(role.default_skills) && role.default_skills.length ? role.default_skills : ["Unknown"];
+  $("#role-detail").innerHTML = '<div class="role-detail-head">' + roleAvatar(role) + '<div><p class="eyebrow">' + escapeHTML(roleSourceLabel(role)) + '</p><h2>' + escapeHTML(role.name) + '</h2></div><button class="icon-button" data-role-action="edit" data-role-id="' + escapeHTML(role.id) + '" type="button" aria-label="Edit ' + escapeHTML(role.name) + '"><svg class="lucide" aria-hidden="true"><use href="#lucide-pencil"></use></svg></button></div><p class="role-purpose">' + escapeHTML(role.purpose || "Unknown") + '</p><section><h3>Owns</h3><ul>' + owns.map((item) => '<li>' + escapeHTML(item) + '</li>').join("") + '</ul></section><section><h3>Default skills</h3><div class="role-skill-list">' + skills.map((item) => '<span>' + escapeHTML(item) + '</span>').join("") + '</div></section><dl class="role-detail-meta"><div><dt>Version</dt><dd>' + escapeHTML(role.version || "Unknown") + '</dd></div><div><dt>Avatar asset</dt><dd>' + escapeHTML(role.avatar_asset_digest || "Unknown") + '</dd></div></dl><p class="role-retention-note">Tasks already in progress keep the role version they started with.</p>';
+}
+
+function renderRoleLibrary() {
+  const manifestCount = roleManifestProjection()?.roles.length || 0;
+  const roleStatus = state.roleManifestStatus === "current" && manifestCount
+    ? manifestCount + " role manifest" + (manifestCount === 1 ? "" : "s") + " · server-owned versions"
+    : state.roleManifestStatus === "current"
+      ? "No role manifests returned · built-in names only"
+    : state.roleManifestStatus === "stale"
+      ? "Last received role manifests · refresh failed"
+      : state.roleManifestStatus === "loading"
+        ? "Loading server-owned role manifests"
+        : (state.roleManifestError || "Role manifests unavailable · built-in names only");
+  $("#role-library-status").textContent = roleStatus;
+  $("#role-library-grid").innerHTML = ROLE_PROFESSIONS.map(({ id }) => {
+    const role = rolePresentation(id);
+    const selected = state.selectedRoleId === id;
+    return '<button class="role-card ' + (selected ? 'is-selected' : '') + '" data-role-id="' + escapeHTML(id) + '" type="button" aria-pressed="' + String(selected) + '">' + roleAvatar(role) + '<span><strong>' + escapeHTML(role.name) + '</strong><small>' + escapeHTML(roleSourceLabel(role)) + '</small></span></button>';
+  }).join("");
+  renderRoleDetail();
+}
+
+function renderAgents() {
+  const active = state.agentsTab === "active";
+  $$('[data-agents-tab]').forEach((tab) => { const selected = tab.dataset.agentsTab === state.agentsTab; tab.classList.toggle("is-active", selected); tab.setAttribute("aria-selected", String(selected)); tab.tabIndex = selected ? 0 : -1; });
+  $$('[data-agents-panel]').forEach((panel) => { panel.hidden = panel.dataset.agentsPanel !== state.agentsTab; });
+  $("#role-create").hidden = active;
+  renderAgentHierarchy();
+  renderRoleLibrary();
+}
+
+function roleFieldValue(id, value) {
+  const field = $(id);
+  if (field) field.value = value == null ? "" : String(value);
+}
+
+function openRoleEditor(roleId = "", trigger = null) {
+  const editing = Boolean(roleId);
+  const role = editing ? rolePresentation(roleId) : { id: "", name: "", purpose: "", owns: [], instructions: [], boundaries: [], default_skills: [], avatar_asset_digest: "", accent: "#4da8ff", version: "Unknown", source: "custom", manifestAvailable: false };
+  state.roleEditorTrigger = trigger;
+  $("#role-editor-title").textContent = editing ? "Edit " + role.name : "Create role";
+  roleFieldValue("#role-field-id", role.id);
+  roleFieldValue("#role-field-name", role.name);
+  roleFieldValue("#role-field-purpose", role.purpose);
+  roleFieldValue("#role-field-owns", (role.owns || []).join("\n"));
+  roleFieldValue("#role-field-instructions", (role.instructions || []).join("\n"));
+  roleFieldValue("#role-field-boundaries", (role.boundaries || []).join("\n"));
+  roleFieldValue("#role-field-skills", (role.default_skills || []).join("\n"));
+  roleFieldValue("#role-field-avatar", role.avatar_asset_digest);
+  roleFieldValue("#role-field-accent", role.accent || "#4da8ff");
+  $("#role-field-id").readOnly = editing;
+  $("#role-field-version").textContent = role.version || "Unknown";
+  $("#role-field-source").textContent = roleSourceLabel(role);
+  $("#role-reset").disabled = true;
+  $("#role-save").disabled = true;
+  $("#role-editor-status").textContent = "Role changes are unavailable until the server accepts the role-manifest command contract.";
+  $("#role-editor").showModal();
+  requestAnimationFrame(() => (editing ? $("#role-field-name") : $("#role-field-id")).focus());
+}
+
+function closeRoleEditor() {
+  if ($("#role-editor").open) $("#role-editor").close();
 }
 
 function kanbanState(node) {
@@ -1025,25 +1463,23 @@ function renderSettings() {
   const reasoningOptions = ["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"];
   const retention = storage?.retention_days == null ? "" : " · retain " + storage.retention_days + " days";
   const proofFiles = Number(storage?.proof_files) || 0;
+  const ctrlAdvanced = selectedCtrl ? '<section class="advanced-setting-group"><h4>CTRL override</h4><p><strong>' + escapeHTML(publicLabel(selectedCtrl.project, "Project") + " / " + ctrlLabel(selectedCtrl)) + '</strong><br><span>' + escapeHTML(setting?.customized ? "Custom settings" : "Inherits global defaults") + '</span></p><label class="toggle-row"><input id="ctrl-customize" type="checkbox"' + (setting?.customized ? ' checked' : '') + '><span>Customize this CTRL separately</span></label>' + (setting?.customized ? '<div class="ctrl-fields"><label>Model<input id="ctrl-model" value="' + escapeHTML(effective.model || '') + '" autocomplete="off"></label><label>Reasoning<select id="ctrl-reasoning">' + reasoningOptions.map((option) => '<option value="' + option + '"' + (option === effective.reasoning ? ' selected' : '') + '>' + option + '</option>').join('') + '</select></label></div><button class="quiet-button" data-setting-action="save-ctrl" type="button">Save CTRL settings</button>' : '') + '<button class="quiet-button" data-setting-action="reset" type="button"' + (!setting?.customized ? ' disabled' : '') + '>Use global defaults</button></section>' : '';
   $("#settings-grid").innerHTML =
-    '<section class="panel settings-card"><p class="eyebrow">Settings scope</p><h3>Where changes apply</h3><label class="setting-field">Scope<select id="settings-scope">' + settingsScopeOptions() + '</select></label><p class="scope-setting-status"><strong>' + escapeHTML(selectedCtrl ? publicLabel(selectedCtrl.project, "Project") + " / " + ctrlLabel(selectedCtrl) : "Global defaults") + '</strong><span>' + escapeHTML(selectedCtrl ? (setting?.customized ? "Custom settings" : "Inherits global defaults") : "Applies to every CTRL unless it has custom settings") + '</span></p>' +
-      (selectedCtrl ? '<div class="ctrl-assignment"><small>Current assignment</small><strong>' + escapeHTML((effective.model || "Model unavailable") + ' · ' + (effective.reasoning || "Reasoning unavailable")) + '</strong></div><label class="toggle-row"><input id="ctrl-customize" type="checkbox"' + (setting?.customized ? ' checked' : '') + '><span>Customize this CTRL separately</span></label>' + (setting?.customized ? '<div class="ctrl-fields"><label>Model<input id="ctrl-model" value="' + escapeHTML(effective.model || '') + '" autocomplete="off"></label><label>Reasoning<select id="ctrl-reasoning">' + reasoningOptions.map((option) => '<option value="' + option + '"' + (option === effective.reasoning ? ' selected' : '') + '>' + option + '</option>').join('') + '</select></label></div><button class="quiet-button" data-setting-action="save-ctrl" type="button">Save CTRL settings</button>' : '') + '<button class="quiet-button" data-setting-action="reset" type="button"' + (!setting?.customized ? ' disabled' : '') + '>Use global defaults</button>' : '<small>Select a Project / CTRL above to create a permitted per-CTRL override.</small>') + '</section>' +
+    '<section class="panel settings-card"><p class="eyebrow">Settings scope</p><h3>Where changes apply</h3><label class="setting-field">Scope<select id="settings-scope">' + settingsScopeOptions() + '</select></label><p class="scope-setting-status"><strong>' + escapeHTML(selectedCtrl ? publicLabel(selectedCtrl.project, "Project") + " / " + ctrlLabel(selectedCtrl) : scope.type === "project" ? scopeLabel() : "Global defaults") + '</strong><span>' + escapeHTML(selectedCtrl ? (setting?.customized ? "Custom settings" : "Inherits global defaults") : "Uses the current server-owned settings") + '</span></p><small>Per-CTRL overrides are in Advanced settings.</small></section>' +
     '<section class="panel settings-card"><p class="eyebrow">Work routing</p><h3>How work is handled</h3>' +
       settingSelect('execution.max_reasoning', execution.max_reasoning || 'medium', reasoningOptions, 'Default reasoning') +
       settingToggle('execution.fast_mode', execution.fast_mode, 'Fast mode') + '<small>Requests faster service for new assignments. SWARM reports it active only from a host receipt.</small>' +
       settingToggle('execution.usage_saver', execution.usage_saver, 'Use less usage when possible') +
-      settingToggle('boost.spark_enabled', boost.spark_enabled, 'Use Spark for safe small tasks') + '<small>Spark handles quick, low-risk work. Larger or external tasks stay with full agents.</small>' +
-      settingSelect('boost.spark_reasoning', boost.spark_reasoning || 'xhigh', reasoningOptions, 'Spark default reasoning') +
-      '<details class="settings-advanced" id="settings-advanced"><summary>Advanced settings</summary><div class="ctrl-fields"><label>Spark model<input id="spark-model" value="' + escapeHTML(boost.spark_model || '') + '" autocomplete="off"' + (!configEditable('boost.spark_model') ? ' disabled' : '') + '></label><label>Heartbeat minutes<input id="heartbeat-minutes" data-config-key="monitoring.heartbeat_minutes" type="number" min="1" value="' + escapeHTML(monitoring.heartbeat_minutes || '') + '"' + (!configEditable('monitoring.heartbeat_minutes') ? ' disabled' : '') + '></label></div><button class="quiet-button" data-setting-action="save-spark" type="button"' + (!configEditable('boost.spark_model') ? ' disabled' : '') + '>Save Spark model</button>' + skillsAdvanced(scope) + '</details></section>' +
+      settingToggle('boost.spark_enabled', boost.spark_enabled, 'Use Spark for safe small tasks') + '<small>Spark stays bounded to quick, low-risk work.</small><h4>Skills</h4>' + skillsSummary(scope) + '</section>' +
     '<section class="panel settings-card"><p class="eyebrow">Console and data</p><h3>Keep the workspace predictable</h3>' +
       settingToggle('console.project_progress_feed_enabled', consoleSettings.project_progress_feed_enabled, 'Progress feed') +
       '<label class="setting-field">Updates shown<input data-config-key="console.project_progress_feed_lines" type="number" min="1" max="10" value="' + escapeHTML(consoleSettings.project_progress_feed_lines ?? 4) + '"' + (!configEditable('console.project_progress_feed_lines') ? ' disabled' : '') + '></label>' +
       settingToggle('console.open_on_start', consoleSettings.open_on_start, 'Open SWARM when Codex starts') +
-      settingToggle('role_icons.enabled', roleIcons.enabled, 'Show role icons') +
-      '<label class="toggle-row"><input id="auto-health" type="checkbox"' + (state.health?.enabled ? ' checked' : '') + '><span>Ask for maintenance review when health needs attention</span></label><small>Review requests do not run a model or change the device by themselves.</small><h4>Skills</h4>' + skillsSummary(scope) + '<h4>' + escapeHTML(storage?.bytes == null ? 'Saved history unavailable' : formatBytes(storage.bytes) + ' saved history' + retention) + '</h4><p>Progress, forecasts, proof, and token history stay available between sessions' + (proofFiles ? ' · ' + proofFiles + ' proof file' + (proofFiles === 1 ? '' : 's') : '') + '.</p><div class="settings-actions-inline"><button class="quiet-button" data-setting-action="clear" type="button">Clear history</button><button class="quiet-button" data-setting-action="restore" type="button">Restore defaults</button></div><small>Clearing history leaves tasks unchanged. Restoring defaults keeps history.</small></section>';
+      '<label class="toggle-row"><input id="auto-health" type="checkbox"' + (state.health?.enabled ? ' checked' : '') + '><span>Request health review when needed</span></label><small>Passive monitoring does not run models.</small></section>' +
+    '<details class="panel settings-advanced settings-wide" id="settings-advanced"><summary>Advanced settings</summary><div class="settings-advanced-grid">' + ctrlAdvanced + '<section class="advanced-setting-group"><h4>Spark and monitoring</h4>' + settingSelect('boost.spark_reasoning', boost.spark_reasoning || 'xhigh', reasoningOptions, 'Spark reasoning') + '<label class="setting-field">Spark model<input id="spark-model" value="' + escapeHTML(boost.spark_model || '') + '" autocomplete="off"' + (!configEditable('boost.spark_model') ? ' disabled' : '') + '></label><label class="setting-field">Heartbeat minutes<input id="heartbeat-minutes" data-config-key="monitoring.heartbeat_minutes" type="number" min="1" value="' + escapeHTML(monitoring.heartbeat_minutes || '') + '"' + (!configEditable('monitoring.heartbeat_minutes') ? ' disabled' : '') + '></label><button class="quiet-button" data-setting-action="save-spark" type="button"' + (!configEditable('boost.spark_model') ? ' disabled' : '') + '>Save Spark model</button>' + settingToggle('role_icons.enabled', roleIcons.enabled, 'Show role icons') + '</section><section class="advanced-setting-group"><h4>' + escapeHTML(storage?.bytes == null ? 'Saved history unavailable' : formatBytes(storage.bytes) + ' saved history' + retention) + '</h4><p>Progress, forecasts, proof, and token history stay available between sessions' + (proofFiles ? ' · ' + proofFiles + ' proof file' + (proofFiles === 1 ? '' : 's') : '') + '.</p><div class="settings-actions-inline"><button class="quiet-button" data-setting-action="clear" type="button">Clear history</button><button class="quiet-button" data-setting-action="restore" type="button">Restore defaults</button></div><small>Clearing history leaves tasks unchanged. Restoring defaults keeps history.</small>' + skillsAdvanced(scope) + '</section></div></details>';
 }
 
-function renderAllViews() { renderOverview(); renderDashboard(); renderHierarchy(); renderKanban(); renderDiagnostics(); renderSettings(); }
+function renderAllViews() { renderOverview(); renderAgents(); renderReview(); renderAssets(); renderDashboard(); renderHierarchy(); renderKanban(); renderDiagnostics(); renderSettings(); }
 
 async function refreshProof() {
   const projectId = state.projectId;
@@ -1070,7 +1506,8 @@ async function refreshUsageHistory() {
   const request = { projectId: state.projectId, ctrlId: state.ctrlId, hours: state.usageWindowHours };
   const requestKey = usageRequestKey(request.projectId, request.ctrlId, request.hours);
   const params = new URLSearchParams({ project_id: request.projectId, ctrl_id: request.ctrlId, hours: String(request.hours) });
-  state.usageStatus = "loading";
+  const hasLastGood = state.usageScopeKey === requestKey && state.usageHistory?.ok === true;
+  state.usageStatus = hasLastGood ? "refreshing" : "loading";
   try {
     const result = await api('/api/usage-history?' + params.toString());
     if (request.projectId !== state.projectId || request.ctrlId !== state.ctrlId || request.hours !== state.usageWindowHours) return;
@@ -1080,10 +1517,37 @@ async function refreshUsageHistory() {
     state.usageError = "";
   } catch (error) {
     if (request.projectId !== state.projectId || request.ctrlId !== state.ctrlId || request.hours !== state.usageWindowHours) return;
-    state.usageHistory = null;
+    if (!hasLastGood) state.usageHistory = null;
     state.usageScopeKey = requestKey;
-    state.usageStatus = "error";
+    state.usageStatus = hasLastGood ? "stale" : "error";
     state.usageError = error.message || "Usage history unavailable";
+  }
+}
+
+async function refreshProjectProgress() {
+  const projectId = selectedProgressProjectId();
+  if (!projectId) {
+    state.projectProgress = null;
+    state.projectProgressProjectId = "";
+    state.projectProgressStatus = "idle";
+    state.projectProgressError = "";
+    return;
+  }
+  const hasLastGood = state.projectProgressProjectId === projectId && state.projectProgress?.ok === true;
+  if (!hasLastGood) state.projectProgress = null;
+  state.projectProgressProjectId = projectId;
+  state.projectProgressStatus = hasLastGood ? "refreshing" : "loading";
+  try {
+    const result = await api('/api/project-progress?project_id=' + encodeURIComponent(projectId));
+    if (projectId !== selectedProgressProjectId()) return;
+    state.projectProgress = result;
+    state.projectProgressStatus = "current";
+    state.projectProgressError = "";
+  } catch (error) {
+    if (projectId !== selectedProgressProjectId()) return;
+    if (!hasLastGood) state.projectProgress = null;
+    state.projectProgressStatus = hasLastGood ? "stale" : "unavailable";
+    state.projectProgressError = error.message || "Project ledger unavailable";
   }
 }
 
@@ -1091,31 +1555,31 @@ async function refreshProjectProgressFeed() {
   const projectId = selectedProgressProjectId();
   if (!projectId) {
     state.projectProgressFeed = null;
-    state.projectProgressProjectId = "";
-    state.projectProgressStatus = "idle";
-    state.projectProgressError = "";
+    state.projectProgressFeedProjectId = "";
+    state.projectProgressFeedStatus = "idle";
+    state.projectProgressFeedError = "";
     return;
   }
-  const hasLastGood = state.projectProgressProjectId === projectId && Array.isArray(state.projectProgressFeed?.items);
+  const hasLastGood = state.projectProgressFeedProjectId === projectId && Array.isArray(state.projectProgressFeed?.items);
   if (!hasLastGood) {
     state.projectProgressFeed = null;
-    state.projectProgressProjectId = projectId;
+    state.projectProgressFeedProjectId = projectId;
   }
-  state.projectProgressStatus = hasLastGood ? "refreshing" : "loading";
+  state.projectProgressFeedStatus = hasLastGood ? "refreshing" : "loading";
   try {
     const params = new URLSearchParams({ project_id: projectId, after_cursor: "0" });
     const result = await api('/api/project-progress-feed?' + params.toString());
     if (projectId !== selectedProgressProjectId()) return;
     state.projectProgressFeed = result;
-    state.projectProgressProjectId = projectId;
-    state.projectProgressStatus = "current";
-    state.projectProgressError = "";
+    state.projectProgressFeedProjectId = projectId;
+    state.projectProgressFeedStatus = "current";
+    state.projectProgressFeedError = "";
   } catch (error) {
     if (projectId !== selectedProgressProjectId()) return;
     if (!hasLastGood) state.projectProgressFeed = null;
-    state.projectProgressProjectId = projectId;
-    state.projectProgressStatus = hasLastGood ? "stale" : "unavailable";
-    state.projectProgressError = error.message || "Project updates unavailable";
+    state.projectProgressFeedProjectId = projectId;
+    state.projectProgressFeedStatus = hasLastGood ? "stale" : "unavailable";
+    state.projectProgressFeedError = error.message || "Project updates unavailable";
   }
 }
 
@@ -1128,6 +1592,9 @@ async function refreshMonitoring(proofSequence) {
     await refreshUsageHistory();
     if (Number(proofSequence) !== state.proofSequence) await refreshProof();
     renderOverview();
+    renderAgents();
+    renderReview();
+    renderAssets();
     renderDashboard();
     renderHierarchy();
   } catch {
@@ -1153,6 +1620,20 @@ async function refreshSkills() {
   catch (error) { state.skills = null; state.skillsError = error.message || 'Skills could not be loaded.'; }
 }
 
+async function refreshRoleManifests() {
+  const hasLastGood = Array.isArray(state.roleManifests?.roles);
+  state.roleManifestStatus = hasLastGood ? "refreshing" : "loading";
+  try {
+    state.roleManifests = await api('/api/role-manifests');
+    state.roleManifestStatus = "current";
+    state.roleManifestError = "";
+  } catch (error) {
+    if (!hasLastGood) state.roleManifests = null;
+    state.roleManifestStatus = hasLastGood ? "stale" : "unavailable";
+    state.roleManifestError = error.message || "Role library unavailable";
+  }
+}
+
 async function refreshOverview(showLoading = true) {
   if (showLoading) setLoading(true);
   clearError();
@@ -1161,7 +1642,7 @@ async function refreshOverview(showLoading = true) {
     clearConnectionState();
     setDataStatus("current", state.overview?.generated_at);
     renderProjectNavigation();
-    await Promise.all([refreshProof(), refreshUsageHistory(), refreshProjectProgressFeed()]);
+    await Promise.all([refreshProof(), refreshUsageHistory(), refreshProjectProgress(), refreshProjectProgressFeed(), refreshRoleManifests()]);
     const selectedCtrl = state.ctrlId || historicalControllers()[0]?.id || '';
     const results = await Promise.allSettled([api('/api/diagnostics'), api('/api/diagnostics/history?limit=24'), api('/api/health/settings'), api('/api/storage'), selectedCtrl ? api('/api/ctrl-settings?ctrl_id=' + encodeURIComponent(selectedCtrl)) : Promise.resolve(null), api('/api/config')]);
     [state.diagnostics, state.diagnosticHistory, state.health, state.storage, state.ctrlSettings, state.config] = results.map((result) => result.status === 'fulfilled' ? result.value : null);
@@ -1207,6 +1688,57 @@ function startPresence() {
 }
 
 document.addEventListener("click", (event) => {
+  const projectTab = event.target.closest("[data-project-tab]");
+  if (projectTab) {
+    state.projectTab = projectTab.dataset.projectTab;
+    renderProjectDetail();
+    projectTab.focus({ preventScroll: true });
+    return;
+  }
+  const notificationTarget = event.target.closest("[data-notification-project]");
+  if (notificationTarget) {
+    state.projectId = notificationTarget.dataset.notificationProject || "all";
+    state.ctrlId = "";
+    state.projectTab = "overview";
+    setNotificationsOpen(false);
+    renderProjectNavigation();
+    setView("overview", false);
+    renderAllViews();
+    Promise.all([refreshProof(), refreshUsageHistory(), refreshProjectProgress(), refreshProjectProgressFeed()]).then(renderAllViews);
+    return;
+  }
+  const reviewOpen = event.target.closest("[data-review-open]");
+  if (reviewOpen && !reviewOpen.disabled) {
+    openProofIdentity(reviewOpen.dataset.reviewOpen, reviewOpen);
+    return;
+  }
+  const asset = event.target.closest("[data-asset-identity]");
+  if (asset) {
+    state.selectedAssetIdentity = asset.dataset.assetIdentity;
+    renderAssets();
+    asset.focus({ preventScroll: true });
+    return;
+  }
+  const agentsTab = event.target.closest("[data-agents-tab]");
+  if (agentsTab) {
+    state.agentsTab = agentsTab.dataset.agentsTab === "library" ? "library" : "active";
+    renderAgents();
+    $("#agents-tab-" + state.agentsTab)?.focus({ preventScroll: true });
+    return;
+  }
+  const roleCard = event.target.closest(".role-card[data-role-id]");
+  if (roleCard) {
+    state.selectedRoleId = roleCard.dataset.roleId;
+    renderRoleLibrary();
+    $(".role-card[data-role-id='" + CSS.escape(state.selectedRoleId) + "']")?.focus({ preventScroll: true });
+    return;
+  }
+  const roleAction = event.target.closest("[data-role-action]");
+  if (roleAction) {
+    if (roleAction.dataset.roleAction === "edit") openRoleEditor(roleAction.dataset.roleId, roleAction);
+    if (roleAction.dataset.roleAction === "create" && !roleAction.disabled) openRoleEditor("", roleAction);
+    return;
+  }
   const evidenceOpen = event.target.closest("[data-evidence-open]");
   if (evidenceOpen) {
     event.preventDefault();
@@ -1250,8 +1782,8 @@ document.addEventListener("click", (event) => {
     const hours = Number(usageWindow.dataset.usageHours);
     if (!Object.hasOwn(USAGE_WINDOW_LABELS, hours) || hours === state.usageWindowHours) return;
     state.usageWindowHours = hours;
-    renderUsage();
-    refreshUsageHistory().then(renderUsage);
+    renderAllViews();
+    refreshUsageHistory().then(renderAllViews);
     return;
   }
   const subagentToggleButton = event.target.closest("[data-subagent-toggle]");
@@ -1283,6 +1815,11 @@ $("#evidence-lightbox-image").addEventListener("error", () => {
   $("#evidence-lightbox-failed").hidden = false;
 });
 document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape" && !$("#notifications-panel").hidden) {
+    event.preventDefault();
+    setNotificationsOpen(false, true);
+    return;
+  }
   if (event.key === "Escape" && $(".app-shell").classList.contains("is-drawer-open")) {
     event.preventDefault();
     setMobileDrawer(false, true);
@@ -1323,17 +1860,38 @@ $("#project-navigation").addEventListener("click", (event) => {
   state.settingsCtrlId = state.ctrlId;
   state.settingsScopeType = state.ctrlId ? 'ctrl' : (state.projectId === 'all' ? 'global' : 'project');
   state.settingsScopeId = state.ctrlId || (state.projectId === 'all' ? 'global' : state.projectId);
+  state.projectTab = "overview";
   renderProjectNavigation();
+  setView("overview", false);
   renderAllViews();
-  Promise.all([refreshProof(), refreshCtrlSettings(), refreshUsageHistory(), refreshProjectProgressFeed(), refreshSkills()]).then(renderAllViews);
+  Promise.all([refreshProof(), refreshCtrlSettings(), refreshUsageHistory(), refreshProjectProgress(), refreshProjectProgressFeed(), refreshSkills()]).then(renderAllViews);
 });
 $("#refresh").addEventListener("click", refreshOverview);
 $("#retry").addEventListener("click", refreshOverview);
 $("#connection-retry").addEventListener("click", initialize);
+$("#notifications").addEventListener("click", () => setNotificationsOpen($("#notifications-panel").hidden));
+$("#notifications-close").addEventListener("click", () => setNotificationsOpen(false, true));
+$("#role-editor-close").addEventListener("click", closeRoleEditor);
+$("#role-editor-cancel").addEventListener("click", closeRoleEditor);
+$("#role-editor").addEventListener("close", () => { state.roleEditorTrigger?.focus({ preventScroll: true }); state.roleEditorTrigger = null; });
+$("#role-editor-form").addEventListener("submit", (event) => { event.preventDefault(); $("#role-editor-status").textContent = "Role changes are unavailable until the server accepts the role-manifest command contract."; });
 $("#mobile-menu-button").addEventListener("click", () => setMobileDrawer(!$(".app-shell").classList.contains("is-drawer-open"), true));
 $("#drawer-backdrop").addEventListener("click", () => setMobileDrawer(false, true));
 mobileDrawerQuery.addEventListener("change", syncMobileDrawer);
 document.addEventListener('change', async (event) => {
+  if (event.target.id === 'project-scope-filter') {
+    state.projectId = event.target.value || 'all';
+    state.ctrlId = '';
+    state.projectTab = 'overview';
+    state.settingsCtrlId = '';
+    state.settingsScopeType = state.projectId === 'all' ? 'global' : 'project';
+    state.settingsScopeId = state.projectId === 'all' ? 'global' : state.projectId;
+    renderProjectNavigation();
+    renderAllViews();
+    try { await Promise.all([refreshProof(), refreshUsageHistory(), refreshProjectProgress(), refreshProjectProgressFeed(), refreshCtrlSettings(), refreshSkills()]); }
+    finally { renderAllViews(); }
+    return;
+  }
   if (event.target.id === 'settings-scope') {
     const [scopeType, scopeId] = event.target.value.split('|');
     const ctrl = scopeType === 'ctrl' ? historicalControllers().find((item) => item.id === scopeId) : null;
@@ -1345,7 +1903,7 @@ document.addEventListener('change', async (event) => {
     renderProjectNavigation();
     renderAllViews();
     try {
-      await Promise.all([refreshProof(), refreshUsageHistory(), refreshProjectProgressFeed(), refreshCtrlSettings(), refreshSkills()]);
+      await Promise.all([refreshProof(), refreshUsageHistory(), refreshProjectProgress(), refreshProjectProgressFeed(), refreshCtrlSettings(), refreshSkills()]);
     } finally { renderAllViews(); }
     return;
   }
@@ -1416,7 +1974,7 @@ document.addEventListener('click', async (event) => {
     await refreshOverview();
   } catch (error) { showError(error.message); }
 });
-$(".nav-list").addEventListener("keydown", (event) => {
+$(".drawer-navigation").addEventListener("keydown", (event) => {
   if (!["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)) return;
   const tabs = $$(".nav-item");
   const index = tabs.indexOf(document.activeElement);
@@ -1424,6 +1982,28 @@ $(".nav-list").addEventListener("keydown", (event) => {
   event.preventDefault();
   tabs[next].focus();
   setView(tabs[next].dataset.view, true);
+});
+
+$(".agents-tabs").addEventListener("keydown", (event) => {
+  if (!["ArrowRight", "ArrowLeft", "Home", "End"].includes(event.key)) return;
+  const tabs = $$('[data-agents-tab]');
+  const index = tabs.indexOf(document.activeElement);
+  const next = event.key === "Home" ? 0 : event.key === "End" ? tabs.length - 1 : (index + (event.key === "ArrowRight" ? 1 : -1) + tabs.length) % tabs.length;
+  event.preventDefault();
+  state.agentsTab = tabs[next].dataset.agentsTab;
+  renderAgents();
+  tabs[next].focus();
+});
+
+$(".project-tabs").addEventListener("keydown", (event) => {
+  if (!["ArrowRight", "ArrowLeft", "Home", "End"].includes(event.key)) return;
+  const tabs = $$('[data-project-tab]');
+  const index = tabs.indexOf(document.activeElement);
+  const next = event.key === "Home" ? 0 : event.key === "End" ? tabs.length - 1 : (index + (event.key === "ArrowRight" ? 1 : -1) + tabs.length) % tabs.length;
+  event.preventDefault();
+  state.projectTab = tabs[next].dataset.projectTab;
+  renderProjectDetail();
+  tabs[next].focus();
 });
 
 document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible") reportPresence(); });
