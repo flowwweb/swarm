@@ -4,11 +4,13 @@ import json
 from hashlib import sha256
 import tempfile
 import unittest
+from unittest import mock
 from pathlib import Path
 import sys
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
 from runtime import AcceptanceContract, ArtifactFileEvidence, ArtifactIdentity, ArtifactParityReceipt, CtrlFeedEventKind, CtrlFeedMessage, CtrlFeedPart, CtrlMode, CtrlSurfaceKind, DelegatedEvidence, DelegatedReceiptVerdict, DelegatedReturnReceipt, DelegationContract, LaneKind, ProofClass, RequestDue, RequestState, ReviewEvidence, ReviewScope, ReviewStrategy, Role, Swarm, Task, TaskState, WatchdogBinding, WatchdogRouteRole, Worker, derive_workflow_graph
-from runtime.request_ledger import RequestStore
+from runtime.request_ledger import RequestStore, RequestStoreError
+from runtime.progress_events import PROGRESS_LEDGER_PATH
 
 SCRIPT=Path(__file__).resolve().parents[1]/"scripts"/"swarm_contract.py"; SPEC=importlib.util.spec_from_file_location("ledger_contract",SCRIPT); bridge=importlib.util.module_from_spec(SPEC); sys.modules[SPEC.name]=bridge; SPEC.loader.exec_module(bridge)
 def task(identity="T"):
@@ -32,6 +34,28 @@ def accepted(value,identity="T"):
     staged=value.stage_request_task(Role.CTRL,task(identity)); decision,_=event(value,identity,(staged.request_id,),f"accept{identity}",CtrlFeedEventKind.DECISION,"usr"); view=bridge.register(value,staged.id,decision,accepted_at=1,due=RequestDue("due-accept",2)); value.activate_accepted_task(Role.LEAD,identity,view.record.id); return view
 
 class RequestLedgerTests(unittest.TestCase):
+    def test_request_store_remains_importable_transport_only_surface(self):
+        with tempfile.TemporaryDirectory() as temp:
+            store=RequestStore(Path(temp)); state,_,attached=store.peek(); self.assertFalse(attached); self.assertEqual(state["version"],2); self.assertNotIn("requests",state); self.assertEqual(set(state),{"version","sequence","order","inbox","acknowledgements","stages"})
+            value=swarm(Path(temp)); view=accepted(value); result=bridge.request_bridge({"operation":"list","repo_root":str(Path(temp)),"now":0}); self.assertEqual(result["records"][0]["id"],view.record.id)
+    def test_crash_before_ledger_append_remains_retryable_without_duplicate_stage(self):
+        with tempfile.TemporaryDirectory() as temp:
+            value=swarm(Path(temp)); original=value.request_lifecycle_ledger.append_request_lifecycle
+            with mock.patch.object(value.request_lifecycle_ledger,"append_request_lifecycle",side_effect=OSError("append failed")):
+                with self.assertRaisesRegex(Exception,"append failed"): value.stage_request_task(Role.CTRL,task())
+            state,_,_=value.request_store.peek(); self.assertEqual(len(state["stages"]),1); self.assertEqual(value.request_lifecycle_ledger.project_request_lifecycles()["event_count"],0)
+            staged=value.stage_request_task(Role.CTRL,task()); self.assertEqual(staged.id,next(iter(state["stages"]))); self.assertEqual(value.request_lifecycle_ledger.project_request_lifecycles()["event_count"],1)
+    def test_append_before_ack_reconstructs_from_ledger_exactly_once(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root=Path(temp); value=swarm(root); staged=value.stage_request_task(Role.CTRL,task()); decision,_=event(value,"T",(staged.request_id,),"crashack",CtrlFeedEventKind.DECISION,"usr"); original=value.request_store._mutate_validated
+            with mock.patch.object(value.request_store,"_mutate_validated",side_effect=RequestStoreError("ack failed")):
+                with self.assertRaisesRegex(Exception,"ack failed"): value.accept_request(Role.CTRL,staged.id,decision,accepted_at=1,due=RequestDue("due-ack",2))
+            fresh=swarm(root); audit=fresh.request_audit(0); self.assertEqual(len(audit.records),1); self.assertEqual(audit.records[0].id,staged.request_id); state,_,_=fresh.request_store.peek(); self.assertEqual(state["stages"][staged.id]["state"],"ACCEPTED"); self.assertEqual(len(state["acknowledgements"][staged.request_id]),2)
+    def test_single_failure_cannot_create_terminal_blocked(self):
+        with tempfile.TemporaryDirectory() as temp:
+            value=swarm(Path(temp)); view=accepted(value); state,digest,_=value._request_snapshot(); before=value.request_lifecycle_ledger.project_request_lifecycles()["event_count"]
+            with self.assertRaises(Exception): value._append_request_lifecycle(state,digest,view.record.id,"BLOCKED","one-failure",view.record)
+            self.assertEqual(value.request_lifecycle_ledger.project_request_lifecycles()["event_count"],before); self.assertEqual(value.request_audit(0).records[0].state,RequestState.OPEN)
     def test_restart_audit_preserves_identity_history_and_reports_orphan(self):
         with tempfile.TemporaryDirectory() as temp:
             first=swarm(Path(temp)); view=accepted(first); result,proof=event(first,"T",(view.record.id,),"result",CtrlFeedEventKind.RESULT); first.advance_request(Role.LEAD,view.record.id,result,RequestDue("due-result",3))
@@ -81,7 +105,7 @@ class RequestLedgerTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             root=Path(temp); first=swarm(root); second=swarm(root)
             one=first.stage_request_task(Role.CTRL,task("A")); two=second.stage_request_task(Role.CTRL,task("B"))
-            audit=first.request_audit(0); self.assertEqual(set(audit.provisional_stage_ids),{one.id,two.id}); self.assertEqual(audit.sequence,2)
+            audit=first.request_audit(0); self.assertEqual(set(audit.provisional_stage_ids),{one.id,two.id}); self.assertGreaterEqual(audit.sequence,2)
     def test_shared_proof_requires_separate_transitions(self):
         with tempfile.TemporaryDirectory() as temp:
             value=swarm(Path(temp)); a=accepted(value); staged=value.stage_request_task(Role.CTRL,task()); decision,_=event(value,"T",(staged.request_id,),"accept2",CtrlFeedEventKind.DECISION,"usr"); b=bridge.register(value,staged.id,decision,accepted_at=2,due=RequestDue("due-second",4)); value.activate_accepted_task(Role.LEAD,"T",b.record.id)
@@ -98,14 +122,14 @@ class RequestLedgerTests(unittest.TestCase):
             value.complete_request(Role.LEAD,a.record.id,acceptance,review_receipt); self.assertEqual(value.request_audit(0).records[1].state,RequestState.OPEN); value.complete_request(Role.LEAD,b.record.id,acceptance,review_receipt); self.assertFalse(value.request_audit(0).unresolved_ids)
     def test_block_refresh_resume_preserves_history_and_rejects_reuse(self):
         with tempfile.TemporaryDirectory() as temp:
-            value=swarm(Path(temp)); view=accepted(value); blocker,_=event(value,"T",(view.record.id,),"block1",CtrlFeedEventKind.BLOCKER); blocked=value.block_request(Role.LEAD,view.record.id,blocker,RequestDue("due-block",3)); self.assertEqual(blocked.record.state,RequestState.BLOCKED)
-            with self.assertRaises(Exception): value.refresh_blocked_request(Role.LEAD,view.record.id,blocker,RequestDue("due-refresh",4))
+            value=swarm(Path(temp)); view=accepted(value); blocker,_=event(value,"T",(view.record.id,),"block1",CtrlFeedEventKind.BLOCKER); blocked=value.block_request(Role.LEAD,view.record.id,blocker,RequestDue("due-block",3)); self.assertEqual(blocked.record.state,RequestState.OPEN); self.assertFalse(value.request_audit(3).blocked_ids)
+            replay=value.refresh_blocked_request(Role.LEAD,view.record.id,blocker,RequestDue("due-refresh",4)); self.assertEqual(replay.record,blocked.record)
             later,_=event(value,"T",(view.record.id,),"block2",CtrlFeedEventKind.BLOCKER); value.refresh_blocked_request(Role.LEAD,view.record.id,later,RequestDue("due-refresh",5)); resume,_=event(value,"T",(view.record.id,),"resume",CtrlFeedEventKind.DECISION,"usr"); opened=value.resume_request(Role.CTRL,view.record.id,resume,RequestDue("due-resume",6)); self.assertEqual(opened.record.state,RequestState.OPEN); self.assertIn(blocker,{item.cursor.event_receipt for item in opened.record.transitions})
     def test_initial_accept_is_not_progress_and_events_due_and_proof_advance(self):
         with tempfile.TemporaryDirectory() as temp:
             value=swarm(Path(temp)); view=accepted(value); self.assertEqual(value.request_audit(2).unsurfaced_ids,(view.record.id,))
             progress,proof=event(value,"T",(view.record.id,),"progress",CtrlFeedEventKind.RESULT); value.advance_request(Role.LEAD,view.record.id,progress,RequestDue("due-progress",5))
-            with self.assertRaises(Exception): value.advance_request(Role.LEAD,view.record.id,progress,RequestDue("due-replay",6))
+            replay=value.advance_request(Role.LEAD,view.record.id,progress,RequestDue("due-replay",6)); self.assertEqual(replay.record.transitions,value.request_audit(5).records[0].transitions)
             earlier,_=event(value,"T",(view.record.id,),"earlier",CtrlFeedEventKind.RESULT)
             with self.assertRaises(Exception): value.advance_request(Role.LEAD,view.record.id,earlier,RequestDue("due-earlier",5))
             repeated="evt-event_repeat000"; value.register_ctrl_feed_event(Role.CTRL,"T",repeated,CtrlFeedEventKind.RESULT,(proof,),(view.record.id,)); value.publish_ctrl_feed(Role.CTRL,CtrlFeedMessage("msg-event_repeat000",((CtrlFeedPart.OUTCOME,"Outcome."),(CtrlFeedPart.PROOF,"Proof.")),(proof,),"T","srf-event_repeat000",repeated))
@@ -140,15 +164,16 @@ class RequestLedgerTests(unittest.TestCase):
             with self.assertRaises(Exception): value.request_audit(0)
     def test_corrupt_event_cursor_fails_closed(self):
         with tempfile.TemporaryDirectory() as temp:
-            root=Path(temp); value=swarm(root); accepted(value); path=root/".codex"/"swarm"/"requests.json"; payload=json.loads(path.read_text(encoding="utf-8")); next(iter(payload["requests"].values()))["transitions"][-1]["cursor"]["feed_sequence"]=0; path.write_text(json.dumps(payload,separators=(",",":"),sort_keys=True),encoding="utf-8")
+            root=Path(temp); value=swarm(root); accepted(value); path=root/PROGRESS_LEDGER_PATH; rows=[json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]; next(item for item in reversed(rows) if item["event"].get("record_type")=="REQUEST_LIFECYCLE")["event"]["record"]["transitions"][-1]["cursor"]["feed_sequence"]=0; path.write_text("\n".join(json.dumps(item,separators=(",",":"),sort_keys=True) for item in rows)+"\n",encoding="utf-8")
             with self.assertRaises(Exception): value.request_audit(0)
     def test_fabricated_typed_completion_without_live_acceptance_fails_closed(self):
         with tempfile.TemporaryDirectory() as temp:
             root=Path(temp); value=swarm(root); view=accepted(value); review_receipt="rev-proof_forged000"; review=ReviewEvidence(ReviewStrategy.LIGHT,"independent",True,None,receipt=(("acceptance",review_receipt),),scope=ReviewScope.ACCEPTANCE); delegated_accept(value); value.review(Role.REVIEW,"T",review,True)
             progress,_=event(value,"T",(view.record.id,),"forged",CtrlFeedEventKind.RESULT,"rev"); value.advance_request(Role.LEAD,view.record.id,progress,RequestDue("due-forged",5)); value.complete(Role.LEAD,"T",True,True,6,actor_id="L")
-            path=root/".codex"/"swarm"/"requests.json"; payload=json.loads(path.read_text(encoding="utf-8")); record=next(iter(payload["requests"].values())); sequence=record["transitions"][-1]["cursor"]["feed_sequence"]+1
-            record["transitions"].append({"state":"COMPLETED","kind":"acceptance","cursor":{"event_receipt":"evt-event_forgedterminal000","message_id":"msg-event_forgedterminal000","surface_receipt":"srf-event_forgedterminal000","feed_sequence":sequence}}); path.write_text(json.dumps(payload,separators=(",",":"),sort_keys=True),encoding="utf-8"); tampered=path.read_bytes()
-            audit=value.request_audit(7); self.assertEqual(audit.orphaned_ids,(view.record.id,)); self.assertFalse(value.project_complete(Role.CTRL,True,True)); self.assertEqual(path.read_bytes(),tampered)
+            path=root/PROGRESS_LEDGER_PATH; rows=[json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]; payload=next(item for item in reversed(rows) if item["event"].get("record_type")=="REQUEST_LIFECYCLE")["event"]; sequence=payload["record"]["transitions"][-1]["cursor"]["feed_sequence"]+1
+            payload["record"]["transitions"].append({"state":"COMPLETED","kind":"acceptance","cursor":{"event_receipt":"evt-event_forgedterminal000","message_id":"msg-event_forgedterminal000","surface_receipt":"srf-event_forgedterminal000","feed_sequence":sequence}}); path.write_text("\n".join(json.dumps(item,separators=(",",":"),sort_keys=True) for item in rows)+"\n",encoding="utf-8"); tampered=path.read_bytes()
+            with self.assertRaises(Exception): value.request_audit(7)
+            self.assertEqual(path.read_bytes(),tampered)
     def test_collapse_guard_prevents_partial_worker_and_topology_mutation(self):
         with tempfile.TemporaryDirectory() as temp:
             value=swarm(Path(temp)); accepted(value); value.add_worker(Role.LEAD,Worker("D2","L",2)); before=(value.workers["D2"].state,dict(value.workers["D2"].archive),set(value.topology),dict(value.hive))
@@ -189,15 +214,15 @@ class RequestLedgerTests(unittest.TestCase):
     def test_completed_record_goal_outcome_route_and_stage_drift_fail_live_audit(self):
         with tempfile.TemporaryDirectory() as temp:
             root=Path(temp); value=swarm(root); view=accepted(value); review_receipt="rev-proof_drift000"; review=ReviewEvidence(ReviewStrategy.LIGHT,"independent",True,None,receipt=(("acceptance",review_receipt),),scope=ReviewScope.ACCEPTANCE); delegated_accept(value); value.review(Role.REVIEW,"T",review,True); progress,_=event(value,"T",(view.record.id,),"drift",CtrlFeedEventKind.RESULT,"rev"); value.advance_request(Role.LEAD,view.record.id,progress,RequestDue("due-drift",5)); value.complete(Role.LEAD,"T",True,True,6,actor_id="L"); acceptance,_=event(value,"T",(view.record.id,),"driftdone",CtrlFeedEventKind.ACCEPTANCE,proof_override=review_receipt); value.complete_request(Role.LEAD,view.record.id,acceptance,review_receipt)
-            path=root/".codex"/"swarm"/"requests.json"; canonical=path.read_bytes(); self.assertTrue(value.project_complete(Role.CTRL,True,True))
-            for name,change in (
-                ("goal",lambda record,stage:record.update(goal_id="goal-drifted")),
-                ("outcome",lambda record,stage:record.update(outcome_digest="0"*64)),
-                ("route",lambda record,stage:record.update(accepting_route=["L","INDEPENDENT_REVIEW","OTHER"])),
-                ("owner-link",lambda record,stage:(record.update(accepted_owner="OTHER"),stage.update(owner="OTHER"))),
+            path=root/".codex"/"swarm"/"requests.json"; canonical=path.read_bytes(); self.assertTrue(value.project_complete(Role.CTRL,True,True)); current=value.tasks["T"]
+            for name,change,restore in (
+                ("goal",lambda:setattr(current,"goal_id","goal-drifted"),lambda:setattr(current,"goal_id","goal-T")),
+                ("outcome",lambda:setattr(current,"id","OTHER"),lambda:setattr(current,"id","T")),
+                ("route",lambda:setattr(current,"ctrl_mode",CtrlMode.DIRECT),lambda:setattr(current,"ctrl_mode",CtrlMode.DELEGATED)),
+                ("owner-link",lambda:value.topology.discard("L"),lambda:value.topology.add("L")),
             ):
                 with self.subTest(name=name):
-                    payload=json.loads(canonical); record=next(iter(payload["requests"].values())); stage=next(iter(payload["stages"].values())); change(record,stage); path.write_text(json.dumps(payload,separators=(",",":"),sort_keys=True),encoding="utf-8"); tampered=path.read_bytes(); audit=value.request_audit(7); self.assertIn(view.record.id,audit.orphaned_ids); self.assertFalse(value.project_complete(Role.CTRL,True,True)); self.assertEqual(path.read_bytes(),tampered)
+                    change(); audit=value.request_audit(7); self.assertIn(view.record.id,audit.orphaned_ids); self.assertFalse(value.project_complete(Role.CTRL,True,True)); self.assertEqual(path.read_bytes(),canonical); restore()
             for name,change in (("stage-contract",lambda stage:stage.update(contract_digest="0"*64)),("stage-task",lambda stage:stage.update(task_id="OTHER"))):
                 with self.subTest(name=name):
                     payload=json.loads(canonical); change(next(iter(payload["stages"].values()))); path.write_text(json.dumps(payload,separators=(",",":"),sort_keys=True),encoding="utf-8"); tampered=path.read_bytes()

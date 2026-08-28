@@ -412,7 +412,7 @@ class RequestEventCursor:
 @dataclass(frozen=True)
 class RequestTransition:
     state:RequestState; kind:CtrlFeedEventKind; cursor:RequestEventCursor
-_REQUEST_EDGES=frozenset({(RequestState.OPEN,CtrlFeedEventKind.RESULT,RequestState.OPEN),(RequestState.OPEN,CtrlFeedEventKind.HANDOFF,RequestState.OPEN),(RequestState.OPEN,CtrlFeedEventKind.BLOCKER,RequestState.BLOCKED),(RequestState.BLOCKED,CtrlFeedEventKind.BLOCKER,RequestState.BLOCKED),(RequestState.BLOCKED,CtrlFeedEventKind.DECISION,RequestState.OPEN),(RequestState.OPEN,CtrlFeedEventKind.DECISION,RequestState.CANCELLED),(RequestState.BLOCKED,CtrlFeedEventKind.DECISION,RequestState.CANCELLED),(RequestState.OPEN,CtrlFeedEventKind.DECISION,RequestState.SUPERSEDED),(RequestState.BLOCKED,CtrlFeedEventKind.DECISION,RequestState.SUPERSEDED),(RequestState.OPEN,CtrlFeedEventKind.ACCEPTANCE,RequestState.COMPLETED)})
+_REQUEST_EDGES=frozenset({(RequestState.OPEN,CtrlFeedEventKind.RESULT,RequestState.OPEN),(RequestState.OPEN,CtrlFeedEventKind.HANDOFF,RequestState.OPEN),(RequestState.OPEN,CtrlFeedEventKind.BLOCKER,RequestState.OPEN),(RequestState.OPEN,CtrlFeedEventKind.DECISION,RequestState.OPEN),(RequestState.OPEN,CtrlFeedEventKind.BLOCKER,RequestState.BLOCKED),(RequestState.BLOCKED,CtrlFeedEventKind.BLOCKER,RequestState.BLOCKED),(RequestState.BLOCKED,CtrlFeedEventKind.DECISION,RequestState.OPEN),(RequestState.OPEN,CtrlFeedEventKind.DECISION,RequestState.CANCELLED),(RequestState.BLOCKED,CtrlFeedEventKind.DECISION,RequestState.CANCELLED),(RequestState.OPEN,CtrlFeedEventKind.DECISION,RequestState.SUPERSEDED),(RequestState.BLOCKED,CtrlFeedEventKind.DECISION,RequestState.SUPERSEDED),(RequestState.OPEN,CtrlFeedEventKind.ACCEPTANCE,RequestState.COMPLETED)})
 @dataclass(frozen=True)
 class RequestRecord:
     id:str; goal_id:str; task_id:str; accepted_owner:str; outcome_identity:RequestOutcomeIdentity; accepting_route:tuple[str,...]; accepted_at:int; next_due_event:str; next_due_at:int; evidence_receipts:tuple[str,...]=field(repr=False); transitions:tuple[RequestTransition,...]=field(repr=False); successor_id:str=""; state:RequestState=field(init=False)
@@ -1752,7 +1752,7 @@ class Worker:
 class Swarm:
     architecture_version: int=1; contract_versions: dict[str,int]=field(default_factory=dict); topology: set[str]=field(default_factory=set)
     workers: dict[str,Worker]=field(default_factory=dict); tasks: dict[str,Task]=field(default_factory=dict); leases: dict[str,str]=field(default_factory=dict); events: list[tuple[str,str]]=field(default_factory=list); task_event_limit:int=64; telemetry: dict[str,object]=field(default_factory=dict); telemetry_events:list[dict[str,object]]=field(default_factory=list); artifact_index:dict[str,str]=field(default_factory=dict); provenance_index:dict[str,str]=field(default_factory=dict); ctrl_evidence_ledger:dict[str,CtrlEvidence]=field(default_factory=dict); ctrl_decision_sets:dict[str,CtrlDecisionSet]=field(default_factory=dict); ctrl_phase:str="intake"; hive:dict[str,HiveRecord]=field(default_factory=dict); hive_enabled:bool=True; heartbeat_stall_after:int=2; correction_receipts:dict[str,None]=field(default_factory=dict); retry_topology_ledger:RetryTopologyLedger=field(default_factory=RetryTopologyLedger); lane_width:int=3; wip_limit:int=3; efficiency_ledger:list[dict[str,str]]=field(default_factory=list); mode:EfficiencyMode=EfficiencyMode.BALANCED; automation_mode:str="standard"; default_review_horizon:int=30; max_review_horizon:int=60; direct_work_horizon:int=20
-    scheduled_wakeups:dict[str,int]=field(default_factory=dict); ctrl_feed_messages:list[CtrlFeedMessage]=field(default_factory=list); ctrl_feed_cursor:int=0; ctrl_feed_superseded_by:dict[str,str]=field(default_factory=dict); ctrl_feed_events:dict[str,CtrlFeedEvent]=field(default_factory=dict); ctrl_feed_consumed_events:set[str]=field(default_factory=set); ctrl_authorizations:dict[str,UserCtrlAuthorization]=field(default_factory=dict); ctrl_materialization_intents:dict[str,CtrlMaterializationIntent]=field(default_factory=dict); consumed_ctrl_authorizations:set[str]=field(default_factory=set); consumed_ctrl_intents:set[str]=field(default_factory=set); proof_policy_version:str="lean-v1"; proof_impacted_selection:bool=True; proof_receipt_reuse:bool=True; proof_gate_timeout_seconds:int=120; proof_browser_freshness_seconds:int=86400; proof_provider_freshness_seconds:int=3600; proof_transient_retry_limit:int=1; use_goals:bool=True; request_store:RequestStore|None=field(default=None,repr=False,compare=False); request_continuity_enabled:bool=False; request_feed_sequence_floor:int=0; host_custody_receipts:dict[str,HostCustodyReceipt]=field(default_factory=dict); _topology_preflights:dict[str,object]=field(default_factory=dict,init=False,repr=False,compare=False); _runtime_acceptances:dict[str,_RuntimeAcceptanceRecord]=field(default_factory=dict,init=False,repr=False,compare=False); _gate_capability:object=field(default_factory=object,init=False,repr=False,compare=False); _review_capability:object=field(default_factory=object,init=False,repr=False,compare=False); _watchdog_capability:object=field(default_factory=object,init=False,repr=False,compare=False); _owner_context_capability:object=field(default_factory=object,init=False,repr=False,compare=False); _ctrl_authority_capability:object=field(default_factory=object,init=False,repr=False,compare=False); _custody_capability:object=field(default_factory=object,init=False,repr=False,compare=False)
+    scheduled_wakeups:dict[str,int]=field(default_factory=dict); ctrl_feed_messages:list[CtrlFeedMessage]=field(default_factory=list); ctrl_feed_cursor:int=0; ctrl_feed_superseded_by:dict[str,str]=field(default_factory=dict); ctrl_feed_events:dict[str,CtrlFeedEvent]=field(default_factory=dict); ctrl_feed_consumed_events:set[str]=field(default_factory=set); ctrl_authorizations:dict[str,UserCtrlAuthorization]=field(default_factory=dict); ctrl_materialization_intents:dict[str,CtrlMaterializationIntent]=field(default_factory=dict); consumed_ctrl_authorizations:set[str]=field(default_factory=set); consumed_ctrl_intents:set[str]=field(default_factory=set); proof_policy_version:str="lean-v1"; proof_impacted_selection:bool=True; proof_receipt_reuse:bool=True; proof_gate_timeout_seconds:int=120; proof_browser_freshness_seconds:int=86400; proof_provider_freshness_seconds:int=3600; proof_transient_retry_limit:int=1; use_goals:bool=True; request_store:RequestStore|None=field(default=None,repr=False,compare=False); request_lifecycle_ledger:object|None=field(default=None,repr=False,compare=False); request_continuity_enabled:bool=False; request_feed_sequence_floor:int=0; host_custody_receipts:dict[str,HostCustodyReceipt]=field(default_factory=dict); _topology_preflights:dict[str,object]=field(default_factory=dict,init=False,repr=False,compare=False); _runtime_acceptances:dict[str,_RuntimeAcceptanceRecord]=field(default_factory=dict,init=False,repr=False,compare=False); _gate_capability:object=field(default_factory=object,init=False,repr=False,compare=False); _review_capability:object=field(default_factory=object,init=False,repr=False,compare=False); _watchdog_capability:object=field(default_factory=object,init=False,repr=False,compare=False); _owner_context_capability:object=field(default_factory=object,init=False,repr=False,compare=False); _ctrl_authority_capability:object=field(default_factory=object,init=False,repr=False,compare=False); _custody_capability:object=field(default_factory=object,init=False,repr=False,compare=False)
     def __setattr__(self, name:str, value:object) -> None:
         object.__setattr__(self,name,value)
     @classmethod
@@ -1955,11 +1955,15 @@ class Swarm:
     def attach_request_store(self, repo_root:Path|str) -> RequestAudit:
         root=Path(repo_root)
         if not root.is_absolute(): raise InvariantError("request continuity requires an explicit absolute repo root")
-        self.request_continuity_enabled=True; self.request_store=RequestStore(root.resolve()); audit=self.request_audit(0); self.request_feed_sequence_floor=max((record.transitions[-1].cursor.feed_sequence for record in audit.records),default=0); return audit
+        from .progress_events import ProgressLedger
+        resolved=root.resolve(); self.request_continuity_enabled=True; self.request_store=RequestStore(resolved); self.request_lifecycle_ledger=ProgressLedger(resolved); audit=self.request_audit(0); self.request_feed_sequence_floor=max((record.transitions[-1].cursor.feed_sequence for record in audit.records),default=0); return audit
     enable_request_continuity=attach_request_store
     def _request_store(self) -> RequestStore:
         if self.request_store is None: raise InvariantError("durable request store is not attached")
         return self.request_store
+    def _request_ledger(self):
+        if self.request_lifecycle_ledger is None: raise InvariantError("canonical Ledger is not attached")
+        return self.request_lifecycle_ledger
     @staticmethod
     def _record_to_raw(record:RequestRecord) -> dict:
         return {"id":record.id,"goal_id":record.goal_id,"task_id":record.task_id,"accepted_owner":record.accepted_owner,"outcome_kind":record.outcome_identity.kind.value,"outcome_digest":record.outcome_identity.digest,"accepting_route":list(record.accepting_route),"accepted_at":record.accepted_at,"next_due_event":record.next_due_event,"next_due_at":record.next_due_at,"evidence_receipts":list(record.evidence_receipts),"transitions":[{"state":item.state.value,"kind":item.kind.value,"cursor":{"event_receipt":item.cursor.event_receipt,"message_id":item.cursor.message_id,"surface_receipt":item.cursor.surface_receipt,"feed_sequence":item.cursor.feed_sequence}} for item in record.transitions],"successor_id":record.successor_id}
@@ -1972,14 +1976,44 @@ class Swarm:
     def _raw_to_stage(identity:str, raw:dict) -> RequestStage:
         if set(raw)!={"task_id","owner","contract_digest","state","request_id","history"}: raise InvariantError("request stage has invalid schema")
         return RequestStage(identity,raw["task_id"],raw["owner"],raw["contract_digest"],RequestStageState(raw["state"]),raw["request_id"],tuple(tuple(item) for item in raw["history"]))
-    def _validate_request_state(self, state:dict) -> tuple[RequestRecord,...]:
-        records=tuple(self._raw_to_record(state["requests"][identity]) for identity in state["order"])
+    def _validate_request_state(self, state:dict, projection:dict|None=None) -> tuple[RequestRecord,...]:
+        if projection is None and self.request_lifecycle_ledger is None:
+            root=getattr(state,"repo_root",None)
+            if not (state["order"] or state["inbox"] or state["acknowledgements"] or state["stages"]): return ()
+            if root is not None:
+                from .progress_events import ProgressLedger
+                projection=ProgressLedger(root).project_request_lifecycles()
+            else: raise InvariantError("nonempty request transport requires the canonical Ledger")
+        projection=projection or self._request_ledger().project_request_lifecycles()
+        current={item["request_id"]:item for item in projection["records"]}
+        records=tuple(self._raw_to_record(current[identity]["record"]) for identity in state["order"] if identity in current and current[identity]["record"] is not None)
         stages=tuple(self._raw_to_stage(identity,raw) for identity,raw in state["stages"].items())
         accepted={stage.request_id:stage for stage in stages if stage.state is RequestStageState.ACCEPTED}
-        if len({stage.request_id for stage in stages})!=len(stages) or len(accepted)!=sum(stage.state is RequestStageState.ACCEPTED for stage in stages) or set(accepted)!=set(state["requests"]) or any(accepted[record.id].task_id!=record.task_id or accepted[record.id].owner!=record.accepted_owner or accepted[record.id].history[-1][1]!=record.transitions[0].cursor.event_receipt for record in records): raise InvariantError("accepted request stage does not match its record")
+        inbox=state["inbox"]
+        if len({stage.request_id for stage in stages})!=len(stages) or any(set(raw)!={"stage_id","task_id","owner","contract_digest"} or raw["stage_id"] not in state["stages"] or state["stages"][raw["stage_id"]]["request_id"]!=identity for identity,raw in inbox.items()): raise InvariantError("request transport inbox does not match its stages")
+        if len(accepted)!=sum(stage.state is RequestStageState.ACCEPTED for stage in stages) or set(accepted)!={record.id for record in records} or any(accepted[record.id].task_id!=record.task_id or accepted[record.id].owner!=record.accepted_owner or accepted[record.id].history[-1][1]!=record.transitions[0].cursor.event_receipt for record in records): raise InvariantError("accepted request stage does not match its Ledger record")
+        events=projection["events"]
+        for request_id,acknowledgements in state["acknowledgements"].items():
+            for acknowledgement in acknowledgements:
+                event=events.get(acknowledgement["event_id"])
+                if event is None or event["request_id"]!=request_id or event["event_digest"]!=acknowledgement["event_digest"] or event["event_seq"]!=acknowledgement["event_seq"]: raise InvariantError("request acknowledgement does not bind a retained Ledger event")
         return records
     def _request_snapshot(self) -> tuple[dict,str,tuple[RequestRecord,...]]:
-        state,digest=self._request_store().read(); return state,digest,self._validate_request_state(state)
+        state,digest=self._request_store().read(); projection=self._request_ledger().project_request_lifecycles()
+        missing=any(event_id not in {item["event_id"] for item in state["acknowledgements"].get(event["request_id"],())} for event_id,event in projection["events"].items())
+        pending_accept=any(item["record"] is not None and self._raw_to_stage(item["stage_id"],state["stages"][item["stage_id"]]).state is RequestStageState.PROVISIONAL for item in projection["records"])
+        if missing or pending_accept:
+            def recover(value):
+                for event_id,event in sorted(projection["events"].items(),key=lambda item:int(item[1]["event_seq"])):
+                    journal=value["acknowledgements"].setdefault(event["request_id"],[])
+                    if event_id not in {item["event_id"] for item in journal}: journal.append({"event_id":event_id,"event_digest":event["event_digest"],"event_seq":event["event_seq"]})
+                for item in projection["records"]:
+                    if item["record"] is None: continue
+                    stage=value["stages"][item["stage_id"]]
+                    if stage["state"]=="PROVISIONAL": stage.update(state="ACCEPTED",history=[stage["history"][0],["ACCEPTED",item["record"]["transitions"][0]["cursor"]["event_receipt"]]])
+            try: state,digest,_=self._request_store()._mutate_validated(recover,expected=(state["sequence"],digest))
+            except RequestStoreError as error: raise InvariantError(str(error)) from error
+        return state,digest,self._validate_request_state(state,projection)
     def _request_route(self, task:Task) -> tuple[str,...]:
         if task.ctrl_mode is CtrlMode.DIRECT: return ("INDEPENDENT_REVIEW","CTRL")
         if not task.owning_lead_id: raise InvariantError("request requires a bound owning LEAD")
@@ -2006,19 +2040,48 @@ class Swarm:
         except InvariantError: return False
         review=task.acceptance_review_receipt
         if record.state is RequestState.COMPLETED: return task.completed_at is not None and (task.state is TaskState.COMPLETE or task.state is TaskState.ARCHIVED and task.archived_at is not None) and self._acceptance_ready(task) and review is not None and dict(review.receipt).get("acceptance") in event.proof_receipts and set(event.proof_receipts).issubset(record.evidence_receipts)
-        return any(value.startswith("usr-") for value in event.proof_receipts) and (record.state is RequestState.CANCELLED or record.successor_id in state["requests"])
+        return any(value.startswith("usr-") for value in event.proof_receipts) and (record.state is RequestState.CANCELLED or record.successor_id in {item.id for item in self._validate_request_state(state)})
     def _mutate_request(self, callback, *, expected:tuple[int,str]|None=None):
         def validated(value): self._validate_request_state(value); result=callback(value); self._validate_request_state(value); return result
         try: return self._request_store()._mutate_validated(validated,expected)
         except RequestStoreError as error: raise InvariantError(str(error)) from error
+    def _append_request_lifecycle(self, state:dict, digest:str, request_id:str, lifecycle_state:str, identity:str, record:RequestRecord|None, *, accept_stage:bool=False) -> RequestView|None:
+        projection=self._request_ledger().project_request_lifecycles(); current=next((item for item in projection["records"] if item["request_id"]==request_id),None)
+        inbox=state["inbox"].get(request_id)
+        if inbox is None: raise InvariantError("request lifecycle requires its retained transport envelope")
+        event_id="request-event:"+sha256(f"{request_id}:{identity}".encode()).hexdigest(); dedupe_key="request-dedupe:"+sha256(f"{request_id}:{identity}".encode()).hexdigest()
+        if event_id in projection["events"]:
+            if current is None or current["event_id"]!=event_id or current["lifecycle_state"]!=lifecycle_state or current["record"]!=(None if record is None else self._record_to_raw(record)): raise InvariantError("request lifecycle replay conflicts with retained Ledger identity")
+            return None if record is None else RequestView(state["sequence"],digest,record)
+        payload={"schema_version":1,"record_type":"REQUEST_LIFECYCLE","event_id":event_id,"dedupe_key":dedupe_key,"request_id":request_id,"stage_id":inbox["stage_id"],"parent_event_id":None if current is None else current["event_id"],"envelope_digest":inbox["contract_digest"],"lifecycle_state":lifecycle_state,"record":None if record is None else self._record_to_raw(record),"route_receipt_ids":[],"release_authority":None}
+        try: appended=self._request_ledger().append_request_lifecycle(payload)
+        except Exception as error: raise InvariantError(str(error)) from error
+        cursor=appended["cursor"]
+        def acknowledge(value):
+            journal=value["acknowledgements"].setdefault(request_id,[])
+            if event_id not in {item["event_id"] for item in journal}: journal.append({"event_id":event_id,"event_digest":cursor["event_digest"],"event_seq":cursor["event_seq"]})
+            if accept_stage:
+                stage=value["stages"][inbox["stage_id"]]
+                if stage["state"]=="PROVISIONAL": stage.update(state="ACCEPTED",history=[stage["history"][0],["ACCEPTED",record.transitions[0].cursor.event_receipt]])
+        try:
+            final_state,final,_=self._request_store()._mutate_validated(acknowledge,expected=(state["sequence"],digest)); self._validate_request_state(final_state)
+        except RequestStoreError as error: raise InvariantError(str(error)) from error
+        return None if record is None else RequestView(final_state["sequence"],final,record)
     def stage_request_task(self, actor:Role, task:Task) -> RequestStage:
         self._role(actor,{Role.CTRL}); self._require_subagent_contract(task); self._validate_task_acceptance(task)
         existing=self.tasks.get(task.id); task=existing or task; self._require_subagent_contract(task); self._validate_task_acceptance(task)
         owner=Role.CTRL.value if task.ctrl_mode is CtrlMode.DIRECT else task.owning_lead_id
         if not owner or owner!="CTRL" and owner not in self.topology or existing is not None and existing.state not in {TaskState.ACTIVE,TaskState.WAITING,TaskState.REVIEW}: raise InvariantError("request staging requires a live task and accountable owner")
-        state,digest,_=self._request_snapshot(); request_id=f"req-{state['sequence']+1:012d}"; stage_id=f"stg-{state['sequence']+1:012d}"; contract=self._request_contract_digest(task,request_id); stage=RequestStage(stage_id,task.id,owner,contract,request_id=request_id,history=(("PROVISIONAL",contract),))
-        def write(value): value["stages"][stage_id]={"task_id":task.id,"owner":owner,"contract_digest":contract,"state":"PROVISIONAL","request_id":request_id,"history":[["PROVISIONAL",contract]]}
-        self._mutate_request(write,expected=(state["sequence"],digest));
+        state,digest,_=self._request_snapshot(); existing_stage=next(((identity,raw) for identity,raw in state["stages"].items() if raw["task_id"]==task.id and raw["state"]=="PROVISIONAL"),None)
+        if existing_stage is None:
+            request_id=f"req-{state['sequence']+1:012d}"; stage_id=f"stg-{state['sequence']+1:012d}"; contract=self._request_contract_digest(task,request_id); stage=RequestStage(stage_id,task.id,owner,contract,request_id=request_id,history=(("PROVISIONAL",contract),))
+            def write(value): value["stages"][stage_id]={"task_id":task.id,"owner":owner,"contract_digest":contract,"state":"PROVISIONAL","request_id":request_id,"history":[["PROVISIONAL",contract]]}; value["inbox"][request_id]={"stage_id":stage_id,"task_id":task.id,"owner":owner,"contract_digest":contract}; value["acknowledgements"][request_id]=[]; value["order"].append(request_id)
+            state,digest,_=self._mutate_request(write,expected=(state["sequence"],digest))
+        else:
+            stage_id,raw=existing_stage; request_id=raw["request_id"]; contract=self._request_contract_digest(task,request_id)
+            if raw["owner"]!=owner or raw["contract_digest"]!=contract: raise InvariantError("provisional request transport conflicts with current task custody")
+            stage=self._raw_to_stage(stage_id,raw)
+        if not any(item["request_id"]==request_id for item in self._request_ledger().project_request_lifecycles()["records"]): self._append_request_lifecycle(state,digest,request_id,"OFFERED",contract,None)
         task.state=TaskState.REQUEST_PENDING; self.tasks[task.id]=task
         worker=self.workers.get(task.owner)
         if worker: worker.task_ids.discard(task.id)
@@ -2032,12 +2095,15 @@ class Swarm:
         return event,cursor
     def accept_request(self, actor:Role, stage_id:str, decision_event_receipt:str, *, accepted_at:int, due:RequestDue) -> RequestView:
         self._role(actor,{Role.CTRL}); state,digest,_=self._request_snapshot(); stage=state["stages"].get(stage_id)
-        if not stage or stage["state"]!="PROVISIONAL": raise InvariantError("request stage is not provisional")
+        if not stage or stage["state"] not in {"PROVISIONAL","ACCEPTED"}: raise InvariantError("request stage is not current")
         task=self.tasks.get(stage["task_id"]); event,cursor=self._published_request_event(stage["request_id"],decision_event_receipt,{CtrlFeedEventKind.DECISION})
         if task is None or task.state is not TaskState.REQUEST_PENDING or stage["contract_digest"]!=self._request_contract_digest(task,stage["request_id"]) or stage["owner"]!=(Role.CTRL.value if task.ctrl_mode is CtrlMode.DIRECT else task.owning_lead_id) or event.task_id!=task.id or not any(value.startswith("usr-") for value in event.proof_receipts): raise InvariantError("request registration requires its current staged contract, owner, route, and user decision")
+        retained=next((item for item in self._request_snapshot()[2] if item.id==stage["request_id"]),None)
+        if stage["state"]=="ACCEPTED":
+            if retained is None or retained.transitions[0].cursor!=cursor: raise InvariantError("accepted request replay conflicts with retained Ledger identity")
+            return RequestView(state["sequence"],digest,retained)
         record=RequestRecord(stage["request_id"],task.goal_id,task.id,stage["owner"],self._request_outcome_identity(task,stage["request_id"]),self._request_route(task),accepted_at,due.event,due.at,event.proof_receipts,(RequestTransition(RequestState.OPEN,event.kind,cursor),))
-        def write(value): value["requests"][record.id]=self._record_to_raw(record); value["order"].append(record.id); value["stages"][stage_id].update(state="ACCEPTED",history=[*stage["history"],["ACCEPTED",event.receipt]])
-        final_state,final,_=self._mutate_request(write,expected=(state["sequence"],digest)); return RequestView(final_state["sequence"],final,record)
+        return self._append_request_lifecycle(state,digest,record.id,"ACKNOWLEDGED",event.receipt,record,accept_stage=True)
     def rollback_request_stage(self, actor:Role, stage_id:str, blocker_event_receipt:str) -> RequestStage:
         self._role(actor,{Role.CTRL}); state,digest,_=self._request_snapshot(); raw=state["stages"].get(stage_id)
         if not raw or raw["state"]!="PROVISIONAL": raise InvariantError("rollback requires a registered provisional stage")
@@ -2056,6 +2122,8 @@ class Swarm:
         if record is None or stage is None or stage.state is not RequestStageState.ACCEPTED or record.task_id!=task_id or record.state is not RequestState.OPEN or task is None or task.state is not TaskState.REQUEST_PENDING or record.outcome_identity!=self._request_outcome_identity(task,request_id) or record.accepting_route!=self._request_route(task): raise InvariantError("accepted request activation requires matching stage, task, owner, route, and outcome")
         if actor is Role.LEAD and task.owning_lead_id!=record.accepted_owner: raise InvariantError("only accepted owning LEAD may activate request")
         if actor is Role.CTRL and task.ctrl_mode is not CtrlMode.DIRECT: raise InvariantError("CTRL activation requires CTRL_DIRECT")
+        current=next(item for item in self._request_ledger().project_request_lifecycles()["records"] if item["request_id"]==request_id)
+        if current["lifecycle_state"]!="ADMITTED": self._append_request_lifecycle(state,self._request_store().read()[1],request_id,"ADMITTED",f"activate:{task_id}",record)
         if task.ctrl_mode is CtrlMode.DIRECT: task.state=TaskState.ACTIVE; return
         worker=self.workers.get(task.owner)
         if worker is None or worker.lead!=task.owning_lead_id or worker.state is WorkerState.RETIRED: raise InvariantError("accepted request has no matching live worker")
@@ -2097,39 +2165,42 @@ class Swarm:
         if owner and actor is not (Role.CTRL if record.accepted_owner=="CTRL" else Role.LEAD): raise InvariantError("request transition requires its current accepted owner")
         event,cursor=self._published_request_event(request_id,event_receipt,kinds)
         if event.task_id!=task.id: raise InvariantError("request event does not match its current task")
-        if event.receipt in {item.cursor.event_receipt for item in record.transitions} or cursor.feed_sequence<=record.transitions[-1].cursor.feed_sequence: raise InvariantError("request transition requires a later unused published event")
+        retained=next((item for item in record.transitions if item.cursor.event_receipt==event.receipt),None)
+        if retained is not None:
+            if retained.cursor!=cursor: raise InvariantError("request transition replay conflicts with retained cursor")
+            return state,digest,record,task,event,True
+        if cursor.feed_sequence<=record.transitions[-1].cursor.feed_sequence: raise InvariantError("request transition requires a later unused published event")
         if due is not None and due.at<=record.next_due_at: raise InvariantError("request transition must advance its due event")
         if fresh_proof and set(event.proof_receipts).issubset(record.evidence_receipts): raise InvariantError("request transition requires new surfaced proof")
         if user and not any(value.startswith("usr-") for value in event.proof_receipts): raise InvariantError("request transition requires explicit user direction")
         if successor_id and not any(item.id==successor_id and item.state in {RequestState.OPEN,RequestState.BLOCKED} for item in self._validate_request_state(state)): raise InvariantError("supersession requires an accepted unresolved successor")
         evidence=record.evidence_receipts+tuple(value for value in event.proof_receipts if append_evidence and value not in record.evidence_receipts)
-        return state,digest,replace(record,evidence_receipts=evidence,transitions=record.transitions+(RequestTransition(next_state or record.state,event.kind,cursor),),successor_id=successor_id or record.successor_id),task,event
-    def _write_request(self,state:dict,digest:str,record:RequestRecord)->RequestView:
-        def write(value): value["requests"][record.id]=self._record_to_raw(record)
-        final_state,final,_=self._mutate_request(write,expected=(state["sequence"],digest)); return RequestView(final_state["sequence"],final,record)
+        return state,digest,replace(record,evidence_receipts=evidence,transitions=record.transitions+(RequestTransition(next_state or record.state,event.kind,cursor),),successor_id=successor_id or record.successor_id),task,event,False
+    def _write_request(self,state:dict,digest:str,record:RequestRecord,lifecycle_state:str,event_identity:str)->RequestView:
+        return self._append_request_lifecycle(state,digest,record.id,lifecycle_state,event_identity,record)
     def advance_request(self, actor:Role, request_id:str, event_receipt:str, due:RequestDue) -> RequestView:
-        state,digest,record,_,_=self._request_transition(actor,request_id,{RequestState.OPEN},event_receipt,{CtrlFeedEventKind.RESULT,CtrlFeedEventKind.HANDOFF},due=due); return self._write_request(state,digest,replace(record,next_due_event=due.event,next_due_at=due.at))
+        state,digest,record,_,event,replay=self._request_transition(actor,request_id,{RequestState.OPEN},event_receipt,{CtrlFeedEventKind.RESULT,CtrlFeedEventKind.HANDOFF},due=due); record=record if replay else replace(record,next_due_event=due.event,next_due_at=due.at); lifecycle="RESULT_PENDING" if event.kind is CtrlFeedEventKind.RESULT else "RUNNING"; return self._write_request(state,digest,record,lifecycle,event.receipt)
     def block_request(self, actor:Role, request_id:str, event_receipt:str, due:RequestDue) -> RequestView:
-        state,digest,record,_,_=self._request_transition(actor,request_id,{RequestState.OPEN},event_receipt,{CtrlFeedEventKind.BLOCKER},next_state=RequestState.BLOCKED,due=due); return self._write_request(state,digest,replace(record,next_due_event=due.event,next_due_at=due.at))
+        state,digest,record,_,event,replay=self._request_transition(actor,request_id,{RequestState.OPEN},event_receipt,{CtrlFeedEventKind.BLOCKER},due=due); record=record if replay else replace(record,next_due_event=due.event,next_due_at=due.at); return self._write_request(state,digest,record,"WAITING",event.receipt)
     def refresh_blocked_request(self, actor:Role, request_id:str, event_receipt:str, due:RequestDue) -> RequestView:
-        state,digest,record,_,_=self._request_transition(actor,request_id,{RequestState.BLOCKED},event_receipt,{CtrlFeedEventKind.BLOCKER},due=due)
-        return self._write_request(state,digest,replace(record,next_due_event=due.event,next_due_at=due.at))
+        state,digest,record,_,event,replay=self._request_transition(actor,request_id,{RequestState.OPEN},event_receipt,{CtrlFeedEventKind.BLOCKER},due=due)
+        record=record if replay else replace(record,next_due_event=due.event,next_due_at=due.at); return self._write_request(state,digest,record,"WAITING",event.receipt)
     def resume_request(self, actor:Role, request_id:str, event_receipt:str, due:RequestDue) -> RequestView:
-        self._role(actor,{Role.CTRL}); state,digest,record,_,event=self._request_transition(actor,request_id,{RequestState.BLOCKED},event_receipt,{CtrlFeedEventKind.DECISION},next_state=RequestState.OPEN,due=due,owner=False,user=True)
-        return self._write_request(state,digest,replace(record,next_due_event=due.event,next_due_at=due.at))
+        self._role(actor,{Role.CTRL}); state,digest,record,_,event,replay=self._request_transition(actor,request_id,{RequestState.OPEN},event_receipt,{CtrlFeedEventKind.DECISION},next_state=RequestState.OPEN,due=due,owner=False,user=True)
+        record=record if replay else replace(record,next_due_event=due.event,next_due_at=due.at); return self._write_request(state,digest,record,"RUNNING",event.receipt)
     def supersede_request(self, actor:Role, request_id:str, successor_id:str, event_receipt:str) -> RequestView:
-        self._role(actor,{Role.CTRL}); state,digest,record,_,_=self._request_transition(actor,request_id,{RequestState.OPEN,RequestState.BLOCKED},event_receipt,{CtrlFeedEventKind.DECISION},next_state=RequestState.SUPERSEDED,successor_id=successor_id,owner=False,user=True); return self._write_request(state,digest,record)
+        self._role(actor,{Role.CTRL}); state,digest,record,_,event,_=self._request_transition(actor,request_id,{RequestState.OPEN,RequestState.BLOCKED},event_receipt,{CtrlFeedEventKind.DECISION},next_state=RequestState.SUPERSEDED,successor_id=successor_id,owner=False,user=True); return self._write_request(state,digest,record,"COMPLETE",event.receipt)
     def cancel_request(self, actor:Role, request_id:str, event_receipt:str) -> RequestView:
-        self._role(actor,{Role.CTRL}); state,digest,record,_,event=self._request_transition(actor,request_id,{RequestState.OPEN,RequestState.BLOCKED},event_receipt,{CtrlFeedEventKind.DECISION},next_state=RequestState.CANCELLED,owner=False,user=True)
-        return self._write_request(state,digest,record)
+        self._role(actor,{Role.CTRL}); state,digest,record,_,event,_=self._request_transition(actor,request_id,{RequestState.OPEN,RequestState.BLOCKED},event_receipt,{CtrlFeedEventKind.DECISION},next_state=RequestState.CANCELLED,owner=False,user=True)
+        return self._write_request(state,digest,record,"COMPLETE",event.receipt)
     def complete_request(self, actor:Role, request_id:str, event_receipt:str, review_receipt:str) -> RequestView:
-        state,digest,record,task,event=self._request_transition(actor,request_id,{RequestState.OPEN},event_receipt,{CtrlFeedEventKind.ACCEPTANCE},next_state=RequestState.COMPLETED,fresh_proof=False,append_evidence=False); review=task.acceptance_review_receipt
+        state,digest,record,task,event,_=self._request_transition(actor,request_id,{RequestState.OPEN},event_receipt,{CtrlFeedEventKind.ACCEPTANCE},next_state=RequestState.COMPLETED,fresh_proof=False,append_evidence=False); review=task.acceptance_review_receipt
         if task.state is not TaskState.COMPLETE or not self._acceptance_ready(task) or review is None or dict(review.receipt).get("acceptance")!=review_receipt or review_receipt not in event.proof_receipts or not set(event.proof_receipts).issubset(record.evidence_receipts): raise InvariantError("request completion requires current exact acceptance proof")
-        return self._write_request(state,digest,record)
+        return self._write_request(state,digest,record,"COMPLETE",event.receipt)
     def reprioritize_requests(self, actor:Role, unresolved_ids:tuple[str,...]) -> RequestAudit:
         self._role(actor,{Role.CTRL})
         def write(payload:dict):
-            current=tuple(identity for identity in payload["order"] if payload["requests"][identity]["transitions"][-1]["state"] in {"OPEN","BLOCKED"})
+            records={item.id:item for item in self._validate_request_state(payload)}; current=tuple(identity for identity in payload["order"] if identity in records and records[identity].state in {RequestState.OPEN,RequestState.BLOCKED})
             if set(current)!=set(unresolved_ids) or len(current)!=len(unresolved_ids): raise InvariantError("reprioritization requires an exact unresolved permutation")
             terminal=[identity for identity in payload["order"] if identity not in current]; payload["order"]=[*unresolved_ids,*terminal]
         self._mutate_request(write); return self.request_audit(0)

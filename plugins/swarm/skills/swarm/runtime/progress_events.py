@@ -79,6 +79,18 @@ ROLE_MANIFEST_FIELDS = frozenset({
 ROLE_PAYLOAD_FIELDS = frozenset({"role_id", "expected_active_version", "assignment_task_id", "manifest"})
 ROLE_SOURCES = frozenset({"builtin", "custom", "user_override"})
 ROLE_ACCENTS = ("#0ea5e9", "#8b5cf6", "#ec4899", "#f97316", "#22c55e", "#eab308")
+REQUEST_LIFECYCLE_EVENT_FIELDS = frozenset({
+    "schema_version", "record_type", "event_id", "dedupe_key", "request_id",
+    "stage_id", "parent_event_id", "envelope_digest", "lifecycle_state",
+    "record", "route_receipt_ids", "release_authority",
+})
+REQUEST_RECORD_FIELDS = frozenset({
+    "id", "goal_id", "task_id", "accepted_owner", "outcome_kind",
+    "outcome_digest", "accepting_route", "accepted_at", "next_due_event",
+    "next_due_at", "evidence_receipts", "transitions", "successor_id",
+})
+REQUEST_TRANSITION_FIELDS = frozenset({"state", "kind", "cursor"})
+REQUEST_CURSOR_FIELDS = frozenset({"event_receipt", "message_id", "surface_receipt", "feed_sequence"})
 
 
 class ProgressLifecycle(StrEnum):
@@ -94,6 +106,23 @@ class ProgressLifecycle(StrEnum):
     USER_PAUSED = "USER_PAUSED"
     ACCEPTED = "ACCEPTED"
     TOMBSTONED = "TOMBSTONED"
+
+
+class LedgerLifecycleState(StrEnum):
+    OFFERED = "OFFERED"
+    ACKNOWLEDGED = "ACKNOWLEDGED"
+    ADMITTED = "ADMITTED"
+    RUNNING = "RUNNING"
+    RESULT_PENDING = "RESULT_PENDING"
+    REVIEW_PENDING = "REVIEW_PENDING"
+    COMPLETE = "COMPLETE"
+    RETRYING = "RETRYING"
+    WAITING = "WAITING"
+    USER_PAUSED = "USER_PAUSED"
+    KEEP_OUT = "KEEP_OUT"
+    NEEDS_AUTHORITY = "NEEDS_AUTHORITY"
+    STALLED = "STALLED"
+    BLOCKED = "BLOCKED"
 
 
 class ProgressMeasurementState(StrEnum):
@@ -184,6 +213,85 @@ def _safe_ids(value: Any, label: str) -> tuple[str, ...]:
 
 def _optional_id(value: Any, label: str) -> str | None:
     return None if value in (None, "") else _safe_id(value, label)
+
+
+def _request_lifecycle_digest(payload: Mapping[str, Any], *, semantic: bool = False) -> str:
+    value = dict(payload)
+    if semantic:
+        value.pop("event_id", None)
+    return hashlib.sha256(json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
+
+
+def validate_request_lifecycle_event(payload: Any) -> dict[str, Any]:
+    if not isinstance(payload, dict):
+        raise ProgressEventError("request lifecycle event must be an object")
+    _exact_fields(payload, REQUEST_LIFECYCLE_EVENT_FIELDS, "request lifecycle event")
+    if payload.get("schema_version") != 1 or payload.get("record_type") != "REQUEST_LIFECYCLE":
+        raise ProgressEventError("request lifecycle event requires schema v1 and typed record")
+    for key in ("event_id", "dedupe_key", "request_id", "stage_id"):
+        _safe_id(payload.get(key), key)
+    parent_event_id = _optional_id(payload.get("parent_event_id"), "parent_event_id")
+    envelope_digest = payload.get("envelope_digest")
+    if not isinstance(envelope_digest, str) or len(envelope_digest) != 64 or any(character not in "0123456789abcdef" for character in envelope_digest):
+        raise ProgressEventError("request lifecycle envelope_digest must be SHA-256")
+    try:
+        lifecycle_state = LedgerLifecycleState(str(payload.get("lifecycle_state") or ""))
+    except ValueError as error:
+        raise ProgressEventError("request lifecycle state is invalid") from error
+    route_receipts = _safe_ids(payload.get("route_receipt_ids"), "route_receipt_ids")
+    release_authority = _optional_id(payload.get("release_authority"), "release_authority")
+    record = payload.get("record")
+    if lifecycle_state is LedgerLifecycleState.OFFERED:
+        if record is not None or parent_event_id is not None:
+            raise ProgressEventError("OFFERED is a transport-bound root event without a lifecycle record")
+    else:
+        if not isinstance(record, dict):
+            raise ProgressEventError("request lifecycle event requires a derived request record")
+        _exact_fields(record, REQUEST_RECORD_FIELDS, "request lifecycle record")
+        if record.get("id") != payload["request_id"]:
+            raise ProgressEventError("request lifecycle record identity does not match its event")
+        for key in ("id", "goal_id", "task_id", "accepted_owner", "outcome_kind", "next_due_event"):
+            _safe_id(record.get(key), f"request record {key}")
+        _optional_id(record.get("successor_id"), "request record successor_id")
+        outcome_digest = record.get("outcome_digest")
+        if not isinstance(outcome_digest, str) or len(outcome_digest) != 64 or any(character not in "0123456789abcdef" for character in outcome_digest):
+            raise ProgressEventError("request lifecycle outcome digest must be SHA-256")
+        accepting_route = record.get("accepting_route")
+        evidence = record.get("evidence_receipts")
+        transitions = record.get("transitions")
+        if not isinstance(accepting_route, list) or not accepting_route or any(_safe_id(value, "accepting route") != value for value in accepting_route):
+            raise ProgressEventError("request lifecycle accepting route is invalid")
+        if not isinstance(evidence, list) or tuple(evidence) != _safe_ids(evidence, "request evidence receipts"):
+            raise ProgressEventError("request lifecycle evidence receipts are invalid")
+        if not isinstance(record.get("accepted_at"), int) or record["accepted_at"] < 0 or not isinstance(record.get("next_due_at"), int) or record["next_due_at"] < 0:
+            raise ProgressEventError("request lifecycle timestamps must be nonnegative integers")
+        if not isinstance(transitions, list) or not transitions:
+            raise ProgressEventError("request lifecycle record requires retained transitions")
+        feed_sequences: list[int] = []
+        for transition in transitions:
+            if not isinstance(transition, dict):
+                raise ProgressEventError("request lifecycle transition must be an object")
+            _exact_fields(transition, REQUEST_TRANSITION_FIELDS, "request lifecycle transition")
+            _safe_id(transition.get("state"), "request lifecycle transition state")
+            _safe_id(transition.get("kind"), "request lifecycle transition kind")
+            cursor = transition.get("cursor")
+            if not isinstance(cursor, dict):
+                raise ProgressEventError("request lifecycle transition cursor must be an object")
+            _exact_fields(cursor, REQUEST_CURSOR_FIELDS, "request lifecycle cursor")
+            for key in ("event_receipt", "message_id", "surface_receipt"):
+                _safe_id(cursor.get(key), f"request lifecycle {key}")
+            feed_sequences.append(_positive_int(cursor.get("feed_sequence"), "request lifecycle feed_sequence"))
+        if feed_sequences != sorted(set(feed_sequences)):
+            raise ProgressEventError("request lifecycle transition cursors must advance exactly once")
+    if lifecycle_state is LedgerLifecycleState.BLOCKED:
+        if len(route_receipts) < 3 or release_authority is None:
+            raise ProgressEventError("terminal BLOCKED requires distinct exhausted routes and exact release authority")
+    elif route_receipts or release_authority is not None:
+        raise ProgressEventError("route exhaustion evidence is reserved for terminal BLOCKED")
+    encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    if len(encoded) > MAX_PROGRESS_EVENT_BYTES:
+        raise ProgressEventError("request lifecycle event exceeds the material event byte limit")
+    return json.loads(encoded.decode("utf-8"))
 
 
 @dataclass(frozen=True)
@@ -661,6 +769,9 @@ def _empty_progress_projection() -> dict[str, Any]:
         "topology_conflicts": [],
         "role_manifests": {},
         "role_assignments": {},
+        "request_event_digests": {},
+        "request_dedupe_digests": {},
+        "request_lifecycles": {},
     }
 
 _LIFECYCLE_TRANSITIONS: dict[ProgressLifecycle, frozenset[ProgressLifecycle]] = {
@@ -676,6 +787,23 @@ _LIFECYCLE_TRANSITIONS: dict[ProgressLifecycle, frozenset[ProgressLifecycle]] = 
     ProgressLifecycle.USER_PAUSED: frozenset({ProgressLifecycle.USER_PAUSED, ProgressLifecycle.READY, ProgressLifecycle.ACTIVE, ProgressLifecycle.WAITING_DEPENDENCY, ProgressLifecycle.WAITING_EXTERNAL, ProgressLifecycle.TOMBSTONED}),
     ProgressLifecycle.ACCEPTED: frozenset({ProgressLifecycle.ACCEPTED, ProgressLifecycle.INVALIDATED_REWORK, ProgressLifecycle.TOMBSTONED}),
     ProgressLifecycle.TOMBSTONED: frozenset({ProgressLifecycle.TOMBSTONED}),
+}
+
+_REQUEST_LIFECYCLE_TRANSITIONS: dict[LedgerLifecycleState, frozenset[LedgerLifecycleState]] = {
+    LedgerLifecycleState.OFFERED: frozenset({LedgerLifecycleState.ACKNOWLEDGED}),
+    LedgerLifecycleState.ACKNOWLEDGED: frozenset({LedgerLifecycleState.ADMITTED, LedgerLifecycleState.WAITING, LedgerLifecycleState.USER_PAUSED, LedgerLifecycleState.KEEP_OUT, LedgerLifecycleState.NEEDS_AUTHORITY, LedgerLifecycleState.STALLED}),
+    LedgerLifecycleState.ADMITTED: frozenset({LedgerLifecycleState.RUNNING, LedgerLifecycleState.RESULT_PENDING, LedgerLifecycleState.RETRYING, LedgerLifecycleState.WAITING, LedgerLifecycleState.USER_PAUSED, LedgerLifecycleState.KEEP_OUT, LedgerLifecycleState.NEEDS_AUTHORITY, LedgerLifecycleState.STALLED}),
+    LedgerLifecycleState.RUNNING: frozenset({LedgerLifecycleState.RUNNING, LedgerLifecycleState.RESULT_PENDING, LedgerLifecycleState.RETRYING, LedgerLifecycleState.WAITING, LedgerLifecycleState.USER_PAUSED, LedgerLifecycleState.KEEP_OUT, LedgerLifecycleState.NEEDS_AUTHORITY, LedgerLifecycleState.STALLED}),
+    LedgerLifecycleState.RESULT_PENDING: frozenset({LedgerLifecycleState.RUNNING, LedgerLifecycleState.RESULT_PENDING, LedgerLifecycleState.REVIEW_PENDING, LedgerLifecycleState.COMPLETE, LedgerLifecycleState.RETRYING, LedgerLifecycleState.WAITING, LedgerLifecycleState.USER_PAUSED, LedgerLifecycleState.KEEP_OUT, LedgerLifecycleState.NEEDS_AUTHORITY, LedgerLifecycleState.STALLED}),
+    LedgerLifecycleState.REVIEW_PENDING: frozenset({LedgerLifecycleState.COMPLETE, LedgerLifecycleState.RETRYING, LedgerLifecycleState.WAITING, LedgerLifecycleState.USER_PAUSED, LedgerLifecycleState.KEEP_OUT, LedgerLifecycleState.NEEDS_AUTHORITY, LedgerLifecycleState.STALLED}),
+    LedgerLifecycleState.RETRYING: frozenset({LedgerLifecycleState.RUNNING, LedgerLifecycleState.RESULT_PENDING, LedgerLifecycleState.COMPLETE, LedgerLifecycleState.WAITING, LedgerLifecycleState.USER_PAUSED, LedgerLifecycleState.KEEP_OUT, LedgerLifecycleState.NEEDS_AUTHORITY, LedgerLifecycleState.STALLED}),
+    LedgerLifecycleState.WAITING: frozenset({LedgerLifecycleState.WAITING, LedgerLifecycleState.RUNNING, LedgerLifecycleState.RESULT_PENDING, LedgerLifecycleState.COMPLETE, LedgerLifecycleState.RETRYING, LedgerLifecycleState.USER_PAUSED, LedgerLifecycleState.KEEP_OUT, LedgerLifecycleState.NEEDS_AUTHORITY, LedgerLifecycleState.STALLED}),
+    LedgerLifecycleState.USER_PAUSED: frozenset({LedgerLifecycleState.USER_PAUSED, LedgerLifecycleState.RUNNING, LedgerLifecycleState.WAITING, LedgerLifecycleState.COMPLETE}),
+    LedgerLifecycleState.KEEP_OUT: frozenset({LedgerLifecycleState.KEEP_OUT, LedgerLifecycleState.RUNNING, LedgerLifecycleState.WAITING, LedgerLifecycleState.COMPLETE}),
+    LedgerLifecycleState.NEEDS_AUTHORITY: frozenset({LedgerLifecycleState.NEEDS_AUTHORITY, LedgerLifecycleState.RUNNING, LedgerLifecycleState.WAITING, LedgerLifecycleState.COMPLETE, LedgerLifecycleState.BLOCKED}),
+    LedgerLifecycleState.STALLED: frozenset({LedgerLifecycleState.RUNNING, LedgerLifecycleState.RETRYING, LedgerLifecycleState.WAITING, LedgerLifecycleState.COMPLETE, LedgerLifecycleState.NEEDS_AUTHORITY, LedgerLifecycleState.BLOCKED}),
+    LedgerLifecycleState.BLOCKED: frozenset({LedgerLifecycleState.BLOCKED}),
+    LedgerLifecycleState.COMPLETE: frozenset({LedgerLifecycleState.COMPLETE}),
 }
 
 
@@ -840,6 +968,48 @@ class ProgressLedger:
         }
 
     @staticmethod
+    def _apply_request_lifecycle(projection: dict[str, Any], payload: dict[str, Any], event_seq: int) -> None:
+        event_digest = _request_lifecycle_digest(payload)
+        semantic_digest = _request_lifecycle_digest(payload, semantic=True)
+        event_id = payload["event_id"]
+        dedupe_key = payload["dedupe_key"]
+        retained_event = projection["request_event_digests"].get(event_id)
+        retained_dedupe = projection["request_dedupe_digests"].get(dedupe_key)
+        if retained_event is not None:
+            if retained_event != event_digest:
+                raise ProgressEventError("request lifecycle event identity conflicts with retained digest")
+            return
+        if retained_dedupe is not None:
+            if retained_dedupe != semantic_digest:
+                raise ProgressEventError("request lifecycle dedupe identity conflicts with retained content")
+            return
+        request_id = payload["request_id"]
+        lifecycle_state = LedgerLifecycleState(payload["lifecycle_state"])
+        current = projection["request_lifecycles"].get(request_id)
+        if current is None:
+            if lifecycle_state is not LedgerLifecycleState.OFFERED:
+                raise ProgressEventError("request lifecycle must begin with OFFERED")
+        else:
+            if payload["parent_event_id"] != current["event_id"]:
+                raise ProgressEventError("request lifecycle parent must bind the current retained event")
+            if payload["stage_id"] != current["stage_id"] or payload["envelope_digest"] != current["envelope_digest"]:
+                raise ProgressEventError("request lifecycle immutable envelope binding conflicts")
+            if lifecycle_state not in _REQUEST_LIFECYCLE_TRANSITIONS[LedgerLifecycleState(current["lifecycle_state"])]:
+                raise ProgressEventError("request lifecycle transition is invalid")
+        projection["request_event_digests"][event_id] = event_digest
+        projection["request_dedupe_digests"][dedupe_key] = semantic_digest
+        projection["request_lifecycles"][request_id] = {
+            "request_id": request_id,
+            "stage_id": payload["stage_id"],
+            "event_id": event_id,
+            "event_digest": event_digest,
+            "event_seq": event_seq,
+            "envelope_digest": payload["envelope_digest"],
+            "lifecycle_state": lifecycle_state.value,
+            "record": payload["record"],
+        }
+
+    @staticmethod
     def _apply(projection: dict[str, Any], event: ProgressMaterialEvent, event_seq: int) -> None:
         if event.schema_version == 2:
             ProgressLedger._apply_topology_record(projection, event, event_seq)
@@ -960,10 +1130,18 @@ class ProgressLedger:
                 raise ProgressEventError("progress ledger record schema is invalid")
             if record["event_seq"] != expected_seq:
                 raise ProgressEventError("progress ledger sequence is not contiguous")
-            event = validate_progress_material_event(record["event"])
-            if record["event_digest"] != event.digest:
-                raise ProgressEventError("progress ledger event digest mismatch")
-            self._apply(projection, event, expected_seq)
+            raw_event = record["event"]
+            if isinstance(raw_event, dict) and raw_event.get("record_type") == "REQUEST_LIFECYCLE":
+                event = validate_request_lifecycle_event(raw_event)
+                event_digest = _request_lifecycle_digest(event)
+                if record["event_digest"] != event_digest:
+                    raise ProgressEventError("request lifecycle ledger event digest mismatch")
+                self._apply_request_lifecycle(projection, event, expected_seq)
+            else:
+                event = validate_progress_material_event(raw_event)
+                if record["event_digest"] != event.digest:
+                    raise ProgressEventError("progress ledger event digest mismatch")
+                self._apply(projection, event, expected_seq)
             records.append(record)
         return projection, records
 
@@ -1026,6 +1204,54 @@ class ProgressLedger:
             "event_digest": event.digest,
             "bytes": len(line),
         }
+
+    def append_request_lifecycle(self, payload: Mapping[str, Any]) -> dict[str, Any]:
+        event = validate_request_lifecycle_event(dict(payload))
+        event_digest = _request_lifecycle_digest(event)
+        semantic_digest = _request_lifecycle_digest(event, semantic=True)
+        with self._state.locked():
+            projection, records = self._replay_unlocked()
+            retained_event = projection["request_event_digests"].get(event["event_id"])
+            if retained_event is not None:
+                if retained_event != event_digest:
+                    raise ProgressEventError("request lifecycle event identity conflicts with retained digest")
+                retained = next(item for item in records if item["event_digest"] == event_digest)
+                return {"status": "unchanged", "cursor": {"event_seq": retained["event_seq"], "event_id": event["event_id"], "event_digest": event_digest}, "event_digest": event_digest}
+            retained_dedupe = projection["request_dedupe_digests"].get(event["dedupe_key"])
+            if retained_dedupe is not None:
+                if retained_dedupe != semantic_digest:
+                    raise ProgressEventError("request lifecycle dedupe identity conflicts with retained content")
+                retained = next(item for item in records if isinstance(item["event"], dict) and item["event"].get("dedupe_key") == event["dedupe_key"])
+                return {"status": "unchanged", "cursor": {"event_seq": retained["event_seq"], "event_id": retained["event"]["event_id"], "event_digest": retained["event_digest"]}, "event_digest": retained["event_digest"]}
+            event_seq = len(records) + 1
+            self._apply_request_lifecycle(projection, event, event_seq)
+            record = {"event_seq": event_seq, "event_digest": event_digest, "event": event}
+            line = json.dumps(record, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8") + b"\n"
+            self._state.path.parent.mkdir(parents=True, exist_ok=True)
+            with self._state.path.open("ab") as handle:
+                handle.write(line)
+                handle.flush()
+                os.fsync(handle.fileno())
+            self._write_projection_unlocked(projection)
+        with self._condition:
+            self._condition.notify_all()
+        return {"status": "appended", "cursor": {"event_seq": event_seq, "event_id": event["event_id"], "event_digest": event_digest}, "event_digest": event_digest, "bytes": len(line)}
+
+    def project_request_lifecycles(self) -> dict[str, Any]:
+        with self._state.locked():
+            projection, records = self._replay_unlocked()
+        rows = sorted(projection["request_lifecycles"].values(), key=lambda item: int(item["event_seq"]))
+        events = {
+            item["event"]["event_id"]: {
+                "event_digest": item["event_digest"],
+                "event_seq": item["event_seq"],
+                "request_id": item["event"]["request_id"],
+                "lifecycle_state": item["event"]["lifecycle_state"],
+            }
+            for item in records
+            if isinstance(item["event"], dict) and item["event"].get("record_type") == "REQUEST_LIFECYCLE"
+        }
+        return {"records": json.loads(json.dumps(rows, sort_keys=True)), "events": events, "event_count": len(events)}
 
     def project_role_manifests(self, builtins: tuple[dict[str, Any], ...]) -> dict[str, Any]:
         builtin_by_id = {manifest["id"]: validate_role_manifest(manifest) for manifest in builtins}
@@ -1152,6 +1378,8 @@ class ProgressLedger:
         events: list[tuple[int, ProgressMaterialEvent]] = []
         conflicts = 0
         for record in records:
+            if isinstance(record["event"], dict) and record["event"].get("record_type") == "REQUEST_LIFECYCLE":
+                continue
             event = validate_progress_material_event(record["event"])
             if event.project_id != project_id or event.scope_version != scope_version or event.block_id not in block_ids:
                 continue
@@ -1417,6 +1645,8 @@ class ProgressLedger:
 
         known: list[tuple[int, ProgressMaterialEvent]] = []
         for record in records[:cursor]:
+            if isinstance(record["event"], dict) and record["event"].get("record_type") == "REQUEST_LIFECYCLE":
+                continue
             event = validate_progress_material_event(record["event"])
             if event.project_id == project_id and event.ctrl_id == ctrl_id:
                 known.append((int(record["event_seq"]), event))

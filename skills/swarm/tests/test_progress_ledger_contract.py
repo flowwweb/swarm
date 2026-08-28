@@ -600,6 +600,41 @@ class ProgressLedgerContractTests(unittest.TestCase):
         projection = ProgressLedger(self.root).project_topology("project-alpha", "ctrl-alpha")
         self.assertIn("crash", projection["source_event_ids"])
 
+    def test_request_lifecycle_replay_conflict_and_nonterminal_guards(self) -> None:
+        envelope = "1" * 64
+        offer = {
+            "schema_version": 1, "record_type": "REQUEST_LIFECYCLE",
+            "event_id": "request-offer-1", "dedupe_key": "request-offer-dedupe-1",
+            "request_id": "request-1", "stage_id": "stage-1", "parent_event_id": None,
+            "envelope_digest": envelope, "lifecycle_state": "OFFERED", "record": None,
+            "route_receipt_ids": [], "release_authority": None,
+        }
+        first = self.ledger.append_request_lifecycle(offer)
+        replay = self.ledger.append_request_lifecycle(offer)
+        self.assertEqual(replay["status"], "unchanged")
+        self.assertEqual(replay["cursor"], first["cursor"])
+        conflict = dict(offer, stage_id="stage-other")
+        with self.assertRaisesRegex(ProgressEventError, "identity conflicts"):
+            self.ledger.append_request_lifecycle(conflict)
+        cursor = {"event_receipt": "event-decision-1", "message_id": "message-decision-1", "surface_receipt": "surface-decision-1", "feed_sequence": 1}
+        record = {
+            "id": "request-1", "goal_id": "goal-1", "task_id": "task-1", "accepted_owner": "lead-1",
+            "outcome_kind": "ARTIFACT", "outcome_digest": "2" * 64,
+            "accepting_route": ["lead-1", "CTRL"], "accepted_at": 1,
+            "next_due_event": "due-1", "next_due_at": 2, "evidence_receipts": ["proof-1"],
+            "transitions": [{"state": "OPEN", "kind": "decision", "cursor": cursor}], "successor_id": "",
+        }
+        acknowledged = dict(offer, event_id="request-ack-1", dedupe_key="request-ack-dedupe-1", parent_event_id=offer["event_id"], lifecycle_state="ACKNOWLEDGED", record=record)
+        self.ledger.append_request_lifecycle(acknowledged)
+        paused = dict(acknowledged, event_id="request-pause-1", dedupe_key="request-pause-dedupe-1", parent_event_id=acknowledged["event_id"], lifecycle_state="USER_PAUSED")
+        self.ledger.append_request_lifecycle(paused)
+        self.assertEqual(self.ledger.project_request_lifecycles()["records"][0]["lifecycle_state"], "USER_PAUSED")
+        blocked = dict(paused, event_id="request-blocked-1", dedupe_key="request-blocked-dedupe-1", parent_event_id=paused["event_id"], lifecycle_state="BLOCKED")
+        before = self.ledger.project_request_lifecycles()["event_count"]
+        with self.assertRaisesRegex(ProgressEventError, "distinct exhausted routes"):
+            self.ledger.append_request_lifecycle(blocked)
+        self.assertEqual(self.ledger.project_request_lifecycles()["event_count"], before)
+
     def test_source_and_plugin_mirrors_are_exact(self) -> None:
         repository = Path(__file__).resolve().parents[3]
         pairs = (
