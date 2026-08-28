@@ -305,6 +305,36 @@ class ProgressLedgerContractTests(unittest.TestCase):
                 project = ledger.project("project-alpha")
                 self.assertEqual((project["admitted_proof_weight"], project["blocks"][0]["latest_event_id"]), (0, "base"))
 
+    def test_wrong_inner_goal_is_attention_without_progress_or_recovery(self) -> None:
+        self.ledger.append(self.event("base", "block-a", committed=1))
+        expected = self.expected_receipt("expected-goal")
+        self.ledger.append_expected_receipt(expected)
+        event = self.event(
+            "wrong-goal", "block-a", kind="PROOF_ADMITTED", committed=1,
+            admitted=1, proof_receipts=["proof-wrong-goal"], observed_at_ms=2,
+        )
+        event["expected_observation"] = self.observation(
+            expected, outcome="TIMEOUT", goal_id="other-goal",
+        )
+        check = self.ledger.append(event)["expected_check"]
+        self.assertEqual((check["status"], check["reason"], check["progress_advanced"]), ("ATTENTION", "WRONG_GOAL", False))
+        self.assertNotIn("retry_action", check)
+        self.assertEqual(self.ledger._retry_topology._attempts, {})
+        restarted = Ledger(self.root)
+        self.assertEqual(restarted.replay()["expected_receipts"][expected["receipt_id"]]["result"]["reason"], "WRONG_GOAL")
+        self.assertEqual(restarted._retry_topology._attempts, {})
+
+    def test_explicit_none_expected_observation_matches_omission_after_restart(self) -> None:
+        omitted = self.event("no-observation", "block-a", committed=1)
+        explicit = {**omitted, "expected_observation": None}
+        omitted_event = validate_progress_material_event(omitted)
+        explicit_event = validate_progress_material_event(explicit)
+        self.assertEqual((explicit_event.digest, explicit_event.semantic_digest), (omitted_event.digest, omitted_event.semantic_digest))
+        self.assertNotIn("expected_observation", explicit_event.canonical_payload())
+        appended = self.ledger.append(explicit)
+        self.assertEqual(Ledger(self.root).replay()["cursor"], appended["cursor"])
+        self.assertEqual(Ledger(self.root).append(omitted)["status"], "unchanged")
+
     def test_repeated_expected_route_reuses_retry_topology_and_requires_a_different_route(self) -> None:
         self.ledger.append(self.event("base", "block-a", committed=1))
         route = hashlib.sha256(b"route-initial").hexdigest()

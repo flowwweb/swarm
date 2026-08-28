@@ -999,7 +999,9 @@ def _validate_progress_material_event(
     canonical = dict(payload)
     if role_manifest is not None:
         canonical["topology"] = {**topology, "role_manifest": role_manifest}
-    if expected_observation is not None:
+    if expected_observation is None:
+        canonical.pop("expected_observation", None)
+    else:
         canonical["expected_observation"] = expected_observation
     encoded = json.dumps(canonical, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
     if len(encoded) > MAX_PROGRESS_EVENT_BYTES:
@@ -1498,7 +1500,8 @@ class Ledger:
                 "reason": None, "event_id": event_id, "event_seq": event_seq,
                 "progress_advanced": False, "matched_event_id": retained["result"]["event_id"],
             }
-        reason = {
+        goal_mismatch = observation["goal_id"] != expected["goal_id"]
+        reason = "WRONG_GOAL" if goal_mismatch else {
             "EMPTY": "EMPTY_OUTPUT", "TIMEOUT": "TIMEOUT", "HTTP_400": "HTTP_400",
             "MISSING_THREAD": "MISSING_THREAD", "REPLAY": "REPLAY",
         }.get(observation["outcome"])
@@ -1510,6 +1513,7 @@ class Ledger:
             (due_generation, expected["due_generation"], "WRONG_DUE_GENERATION"),
             (task_id, expected["task_id"], "WRONG_TASK"),
             (goal_id, expected["goal_id"], "WRONG_GOAL"),
+            (observation["goal_id"], expected["goal_id"], "WRONG_GOAL"),
             (owner_id, expected["owner_id"], "WRONG_OWNER"),
             (observation["owner_id"], expected["owner_id"], "WRONG_OWNER"),
             (lease_version, expected["lease_version"], "WRONG_LEASE"),
@@ -1530,7 +1534,7 @@ class Ledger:
             "reason": reason, "event_id": event_id, "event_seq": event_seq,
             "progress_advanced": reason is None, "route_digest": route_digest,
         }
-        if reason:
+        if reason and not goal_mismatch:
             try:
                 outcome = RetryOutcome(observation["outcome"])
             except ValueError:
