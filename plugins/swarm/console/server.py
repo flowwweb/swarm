@@ -4803,7 +4803,7 @@ def build_overview(codex_home: Path, config_path: Path) -> dict[str, Any]:
         parent
         for parent, child_ids in raw_children.items()
         if parent in fresh_ids
-        and parent not in parent_by_child
+        and parent not in parents_by_child
         and not bool(all_rows[parent]["archived"])
         and str(all_rows[parent]["thread_source"] or "").strip().casefold()
         not in {"subagent", "internal_subagent"}
@@ -4825,7 +4825,7 @@ def build_overview(codex_home: Path, config_path: Path) -> dict[str, Any]:
         parent
         for parent, child_ids in raw_children.items()
         if parent in all_rows
-        and parent not in parent_by_child
+        and parent not in parents_by_child
         and (parent not in parsed_titles or parsed_titles[parent]["role"] == "ctrl")
         and any(
             child in fresh_ids
