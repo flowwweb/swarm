@@ -1786,7 +1786,7 @@ function roleManifestProjectionValue(value) {
   if (!value || value.ok !== true || value.schema_version !== 1 || value.built_in_count !== 24 || !Array.isArray(value.roles) || !Array.isArray(value.assignments)) return null;
   const ids = value.roles.map((role) => String(role?.id || ""));
   const builtIns = value.roles.filter((role) => role?.built_in === true);
-  if (ids.some((id) => !id) || new Set(ids).size !== ids.length || builtIns.length !== 24 || !builtIns.some((role) => role.id === "assistant") || ids.includes("critic")) return null;
+  if (ids.some((id) => !id) || new Set(ids).size !== ids.length || builtIns.length !== 24 || !builtIns.some((role) => role.id === "assistant") || builtIns.some((role) => role.id === "critic")) return null;
   const validSpecializations = value.roles.every((role) => Array.isArray(role.specializations) && role.specializations.length <= 4 && (!role.built_in || role.specializations.length === 4));
   return validSpecializations ? value : null;
 }
@@ -1795,8 +1795,12 @@ function roleManifestProjection() {
   return roleManifestProjectionValue(state.roleManifests);
 }
 
+function roleCurrentRecords(projection = roleManifestProjection()) {
+  return (projection?.roles || []).filter((role) => role.id !== "critic");
+}
+
 function roleRecord(roleId) {
-  return roleManifestProjection()?.roles.find((role) => role.id === roleId) || null;
+  return roleCurrentRecords().find((role) => role.id === roleId) || null;
 }
 
 function roleCommandContract() {
@@ -1846,7 +1850,7 @@ function roleAssignmentsMarkup(roleId) {
   return '<ul class="role-bindings">' + assignments.map((assignment) => {
     const node = nodes.get(assignment.task_id);
     const owner = node?.owner_id || node?.worker || node?.owner || "Unassigned";
-    return '<li><strong>' + escapeHTML(owner) + '</strong><span>' + escapeHTML(assignment.task_id) + '</span></li>';
+    return '<li><strong>' + escapeHTML(owner) + '</strong><span>' + escapeHTML(assignment.task_id + " · " + (assignment.manifest_version || "Unknown version")) + '</span></li>';
   }).join("") + '</ul>';
 }
 
@@ -1861,12 +1865,12 @@ function roleTextList(items, empty) {
 
 function roleAccordionMarkup(role) {
   const editAllowed = roleCanMutate("ROLE_MANIFEST_REVISE");
-  return '<details class="role-card" data-role-id="' + escapeHTML(role.id) + '"><summary>' + roleAvatar(role) + '<span><strong>' + escapeHTML(role.name) + '</strong><small>' + escapeHTML(roleSourceLabel(role) + " · " + (role.active_version || role.version || "Unknown version")) + '</small></span><svg class="lucide role-disclosure" aria-hidden="true"><use href="#lucide-chevron-right"></use></svg></summary><div class="role-card-body"><p class="role-purpose">' + escapeHTML(role.purpose || "Purpose unavailable.") + '</p><div class="role-card-columns"><section><h3>Owns</h3>' + roleTextList(role.owns, "No owned surface declared.") + '</section><section><h3>Default skills</h3>' + roleTextList(role.default_skills, "No default skills.") + '</section><section><h3>Instructions</h3>' + roleTextList(role.instructions, "No instructions.") + '</section><section><h3>Current owners</h3>' + roleAssignmentsMarkup(role.id) + '</section><section><h3>Specializations</h3>' + roleSpecializationsMarkup(role) + '<small>Metadata only · no authority transfer.</small></section><section><h3>Avatar</h3><code>' + escapeHTML(role.avatar_asset_digest || "Unknown") + '</code></section></div>' + reviewerStancesMarkup(role) + '<footer><p>Active tasks retain version ' + escapeHTML(role.active_version || role.version || "Unknown") + '.</p><button class="icon-button" data-role-action="edit" data-role-id="' + escapeHTML(role.id) + '" type="button" aria-label="Edit ' + escapeHTML(role.name) + '" title="Edit role"' + (editAllowed ? "" : ' disabled') + '><svg class="lucide" aria-hidden="true"><use href="#lucide-pencil"></use></svg></button></footer></div></details>';
+  return '<details class="role-card" data-role-id="' + escapeHTML(role.id) + '"><summary>' + roleAvatar(role) + '<span><strong>' + escapeHTML(role.name) + '</strong><small>' + escapeHTML(roleSourceLabel(role) + " · " + (role.active_version || role.version || "Unknown version")) + '</small></span><svg class="lucide role-disclosure" aria-hidden="true"><use href="#lucide-chevron-right"></use></svg></summary><div class="role-card-body"><p class="role-purpose">' + escapeHTML(role.purpose || "Purpose unavailable.") + '</p><div class="role-card-columns"><section><h3>Owns</h3>' + roleTextList(role.owns, "No owned surface declared.") + '</section><section><h3>Default skills</h3>' + roleTextList(role.default_skills, "No default skills.") + '</section><section><h3>Instructions</h3>' + roleTextList(role.instructions, "No instructions.") + '</section><section><h3>Current owners</h3>' + roleAssignmentsMarkup(role.id) + '</section><section><h3>Specializations</h3>' + roleSpecializationsMarkup(role) + '<small>Metadata only · no authority transfer.</small></section><section><h3>Avatar</h3><code>' + escapeHTML(role.avatar_asset_digest || "Unknown") + '</code></section></div>' + reviewerStancesMarkup(role) + '<footer><p>New assignments use version ' + escapeHTML(role.active_version || role.version || "Unknown") + '.</p><button class="icon-button" data-role-action="edit" data-role-id="' + escapeHTML(role.id) + '" type="button" aria-label="Edit ' + escapeHTML(role.name) + '" title="Edit role"' + (editAllowed ? "" : ' disabled') + '><svg class="lucide" aria-hidden="true"><use href="#lucide-pencil"></use></svg></button></footer></div></details>';
 }
 
 function renderRoleLibrary() {
   const projection = roleManifestProjection();
-  const roles = projection?.roles || [];
+  const roles = roleCurrentRecords(projection);
   const create = $("#role-create");
   const active = state.agentsTab === "active";
   create.hidden = active;
@@ -1911,7 +1915,7 @@ function roleAvatarDigestAllowed(value, manifestRoles, retainedAssets) {
 }
 
 function roleAvatarDigestValid(value) {
-  return roleAvatarDigestAllowed(value, roleManifestProjection()?.roles || [], assetItems());
+  return roleAvatarDigestAllowed(value, roleCurrentRecords(), assetItems());
 }
 
 function roleAvatarOptions(role) {
@@ -2002,9 +2006,10 @@ function roleCommandObserved(projection, payload) {
   return projection?.roles?.find((role) => role.id === payload.role_id)?.source_event_ids?.includes(payload.event_id) === true;
 }
 
-function roleCommandResolution(result, failureStatus, reloaded, observed) {
+function roleCommandResolution(result, failure, reloaded, observed) {
   if (observed) return "observed";
-  if (failureStatus === 409) return "conflict";
+  if (failure?.status === 409) return "conflict";
+  if (Number(failure?.status) >= 400 && Number(failure?.status) < 500) return "rejected";
   if (result && !reloaded) return "accepted-unreadable";
   return "ambiguous";
 }
@@ -2030,6 +2035,7 @@ async function submitRoleCommand(action = "save") {
   let payload;
   try { payload = roleEditorCommand(action); }
   catch (error) { updateRoleEditorAuthority(error.message); return; }
+  state.roleManifestMessage = "";
   state.roleManifestSaving = true;
   updateRoleEditorAuthority("Saving role manifest…");
   let result = null;
@@ -2040,7 +2046,7 @@ async function submitRoleCommand(action = "save") {
   } catch (error) { failure = error; }
   const reloaded = await refreshRoleManifests();
   const observed = reloaded && roleCommandObserved(roleManifestProjection(), payload);
-  const resolution = roleCommandResolution(result, failure?.status, reloaded, observed);
+  const resolution = roleCommandResolution(result, failure, reloaded, observed);
   state.roleManifestSaving = false;
   if (resolution === "observed") {
     state.roleManifestRetry = null;
@@ -2054,6 +2060,9 @@ async function submitRoleCommand(action = "save") {
     state.roleManifestMessage = "Role changed elsewhere";
     $("#role-field-version").textContent = roleRecord(payload.role_id)?.active_version || "Unknown";
     updateRoleEditorAuthority("Role changed elsewhere. Latest server version loaded; review your draft and save again.");
+  } else if (resolution === "rejected") {
+    state.roleManifestRetry = null;
+    updateRoleEditorAuthority("Role change rejected: " + (failure?.message || "The server rejected this request."));
   } else if (resolution === "accepted-unreadable") {
     updateRoleEditorAuthority("Command was accepted, but the current server version could not be reloaded. Refresh before continuing.");
   } else {
