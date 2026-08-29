@@ -344,6 +344,48 @@ const runLogEmptyBaselineHarness = vm.runInNewContext(`(() => {
 const emptyBaselineResult = await runLogEmptyBaselineHarness.run();
 assert.deepEqual(Array.from(emptyBaselineResult.announced, (item) => item.event_id), ["event:first"]);
 assert.equal(emptyBaselineResult.record.initialized, true);
+const progressQueueHelperStart = app.indexOf("function projectProgressQueueProjection");
+const progressQueueHelperEnd = app.indexOf("\nfunction projectTabMarkup", progressQueueHelperStart);
+assert.ok(progressQueueHelperStart >= 0 && progressQueueHelperEnd > progressQueueHelperStart);
+const progressQueueHelpers = vm.runInNewContext(`(() => {
+  const state = { projectProgressStatus: "current" };
+  function selectedProgressProjectId() { return "project:alpha"; }
+  ${app.slice(progressQueueHelperStart, progressQueueHelperEnd)}
+  return { projectProgressQueueProjection, progressQueueRowPresentation, projectProgressQueueSegments };
+})()`);
+const progressCursor = { event_seq: 8, event_id: "event-8", event_digest: "digest-8" };
+const progressRow = {
+  scope_binding: { ctrl_id: "ctrl-a", project_id: "project:alpha", cursor: progressCursor },
+  task_id: "task-a", task_name: "Task A", lifecycle: "ACTIVE", queue_state: null, runnable: null,
+  progress: { state: "KNOWN", completed_milestones: 1, total_milestones: 2, percent: 50 },
+  eta: { state: "KNOWN", start_ms: 10, end_ms: 20, confidence: 80, basis_receipt_ids: ["eta-1"] },
+  elapsed: { state: "KNOWN", elapsed_ms: 10 }, freshness: { state: "UNKNOWN", observed_at_ms: 10 },
+};
+const progressQueueFixture = {
+  view_id: "view.project.progress", renderer: "table", project_id: "project:alpha",
+  accepted_cursor: progressCursor, status: "CURRENT", available: true,
+  segments: [
+    { segment_id: "segment.project.progress.active", label: "Active", rows: [progressRow] },
+    { segment_id: "segment.project.progress.queue", label: "Queue", rows: [] },
+  ],
+};
+assert.equal(progressQueueHelpers.projectProgressQueueProjection({ cursor: progressCursor, progress_queue: progressQueueFixture }).status, "CURRENT");
+assert.equal(progressQueueHelpers.projectProgressQueueProjection({ cursor: { ...progressCursor, event_seq: 7 }, progress_queue: progressQueueFixture }), null);
+assert.equal(progressQueueHelpers.projectProgressQueueProjection({ cursor: progressCursor, progress_queue: { ...progressQueueFixture, segments: [...progressQueueFixture.segments].reverse() } }), null);
+const staleProgressRow = progressQueueHelpers.progressQueueRowPresentation(progressRow, true);
+assert.deepEqual(
+  { progress: staleProgressRow.progress.state, eta: staleProgressRow.eta.state, elapsed: staleProgressRow.elapsed.state, queue: staleProgressRow.queue_state, runnable: staleProgressRow.runnable },
+  { progress: "UNKNOWN", eta: "UNKNOWN", elapsed: "UNKNOWN", queue: "UNKNOWN", runnable: false },
+);
+assert.equal(progressQueueHelpers.projectProgressQueueSegments(progressQueueFixture, false)[0].rows[0].progress.percent, 50);
+const progressQueueSource = app.slice(progressQueueHelperStart, progressQueueHelperEnd);
+assert.match(progressQueueSource, /role="progressbar"[^>]*aria-valuetext=/);
+assert.match(progressQueueSource, /<table class="project-progress-table">/);
+assert.match(progressQueueSource, /segment\.project\.progress\.active/);
+assert.match(progressQueueSource, /segment\.project\.progress\.queue/);
+assert.doesNotMatch(progressQueueSource, /localStorage|sessionStorage|setInterval|setTimeout|WebSocket|fetch\(/);
+assert.match(css, /\.project-progress-table-wrap \{[^}]*overflow-x:auto;/);
+assert.match(css, /@media \(max-width: 620px\)[\s\S]*\.project-progress-table tr \{[^}]*display:grid;/);
 assert.match(app, /function yieldChartMarkup\(item\)/);
 assert.match(app, /Observed tokens/);
 assert.match(app, /Admitted scope/);

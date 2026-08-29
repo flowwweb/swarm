@@ -545,6 +545,208 @@ class SwarmConsoleTests(unittest.TestCase):
         for event in events:
             self.assertEqual(app.progress_ledger.append(event)["status"], "appended")
 
+    @classmethod
+    def _progress_queue_event(
+        cls,
+        event_id: str,
+        block_id: str,
+        task_id: str,
+        ctrl_id: str,
+        event_kind: str,
+        lifecycle_state: str,
+        observed_at_ms: int,
+        *,
+        milestone_id: str | None = None,
+        parent_event_id: str | None = None,
+        admitted: int = 0,
+        flags: list[str] | None = None,
+        eta: tuple[int, int, int] | None = None,
+        milestone_acceptance: bool = False,
+        routing: dict[str, object] | None = None,
+    ) -> dict[str, object]:
+        event = cls._notification_event(
+            event_id, block_id, event_kind, lifecycle_state, observed_at_ms,
+            parent_event_id=parent_event_id, admitted_proof_weight=admitted,
+            proof_receipt_ids=[f"proof-{event_id}"] if admitted else [],
+            proof_required_classes=["MILESTONE_ACCEPTANCE"] if milestone_acceptance else ["SOURCE"],
+            flags=flags, milestone_id=milestone_id or block_id, committed_weight=1,
+        )
+        event.update(ctrl_id=ctrl_id, task_id=task_id, owner_id=f"owner-{task_id}")
+        event["material_update_sentence"] = f"Accepted signal for {task_id}."
+        if eta is not None:
+            event["eta"] = {
+                "start_ms": eta[0], "end_ms": eta[1], "confidence": eta[2],
+                "basis_receipt_ids": [f"eta-{event_id}"],
+            }
+        if routing is not None:
+            event["schema_version"] = 2
+            event["measurement"] = {
+                "state": "UNMEASURED", "committed_weight": None,
+                "admitted_proof_weight": 0, "basis_receipt_ids": [],
+            }
+            event["proof"] = {"required_classes": [], "receipt_ids": [], "claim_limit": "Routing evidence only."}
+            event["material_update_sentence"] = None
+            event["topology"] = {
+                "node_kind": "BLOCK", "input_receipt_ids": [],
+                "dispatch_receipt_id": None, "completion_receipt_id": None,
+                "cost_receipt_ids": [], "release_receipt_ids": [],
+                "routing_evidence": routing,
+            }
+        return event
+
+    def test_project_progress_queue_is_atomic_ctrl_first_and_receipt_bound(self) -> None:
+        self._confirm_root_ctrl()
+        self._add_same_project_ctrl()
+        app = console.App(self.codex_home, self.config)
+        events = [
+            self._progress_queue_event("m1-start", "m1", "task", "root", "BLOCK_CREATED", "ACTIVE", 10, milestone_acceptance=True),
+            self._progress_queue_event("m1-review", "m1", "task", "root", "STATE_CHANGED", "REVIEW", 20, parent_event_id="m1-start", milestone_acceptance=True),
+            self._progress_queue_event("m1-verified", "m1", "task", "root", "PROOF_ADMITTED", "VERIFIED", 21, parent_event_id="m1-review", admitted=1, milestone_acceptance=True),
+            self._progress_queue_event("m1-done", "m1", "task", "root", "ACCEPTED", "ACCEPTED", 22, parent_event_id="m1-verified", admitted=1, milestone_acceptance=True),
+            self._progress_queue_event("m2-start", "m2", "task", "root", "BLOCK_CREATED", "ACTIVE", 30, eta=(40, 80, 75), milestone_acceptance=True),
+            self._progress_queue_event("ready", "ready", "review", "root", "BLOCK_CREATED", "READY", 40),
+            self._progress_queue_event("lead-start", "lead-block", "lead", "root", "BLOCK_CREATED", "ACTIVE", 50),
+            self._progress_queue_event(
+                "lead-blocked", "lead-block", "lead", "root", "STATE_CHANGED", "WAITING_EXTERNAL", 60,
+                parent_event_id="lead-start", flags=["blocked", "waiting_external"], routing={
+                    "disposition": "KEEP_ROLE", "route": "hard_blocked", "selected_owner": "owner-lead",
+                    "selected_task_id": "lead", "project_active": False, "release_event": "authority-release",
+                    "scope": {"goal_id": "goal", "request_id": "request", "task_id": "lead", "mutable_surface": "surface:lead", "owner_id": "owner-lead"},
+                    "critical_path": False,
+                    "recovery": {
+                        "state": "CONTROL_PATH_FAILURE", "action": "request_authority", "attempts": 3,
+                        "permitted_route_ids": ["route-a"], "failed_route_id": "route-a",
+                        "evidence_receipt_ids": ["lead-start"], "release_condition": "Owner releases the lane.",
+                        "responsible_authority": "owner-lead", "smallest_solution": "Release the exact lane.",
+                    },
+                },
+            ),
+            self._progress_queue_event("other-active", "other-m1", "other-task", "other-ctrl", "BLOCK_CREATED", "ACTIVE", 70),
+        ]
+        for event in events:
+            with self.subTest(event_id=event["event_id"]):
+                self.assertEqual(app.progress_ledger.append(event)["status"], "appended")
+        self.assertEqual(app.progress_ledger.append(events[-1])["status"], "unchanged")
+
+        result = app.measurable_progress("project:alpha")
+        projection = result["progress_queue"]
+        self.assertEqual(projection["status"], "CURRENT")
+        self.assertEqual(projection["accepted_cursor"], result["cursor"])
+        active, queue = projection["segments"]
+        self.assertEqual(active["segment_id"], "segment.project.progress.active")
+        self.assertEqual(queue["segment_id"], "segment.project.progress.queue")
+        self.assertEqual([row["task_id"] for row in active["rows"]], ["other-task", "task"])
+        task = next(row for row in active["rows"] if row["task_id"] == "task")
+        self.assertEqual(task["scope_binding"]["ctrl_id"], "root")
+        self.assertEqual(task["progress"], {
+            "state": "KNOWN", "completed_milestones": 1, "total_milestones": 2, "percent": 50.0,
+        })
+        self.assertEqual(task["eta"]["state"], "KNOWN")
+        self.assertEqual(task["eta"]["basis_receipt_ids"], ["eta-m2-start"])
+        ready = next(row for row in queue["rows"] if row["task_id"] == "review")
+        blocked = next(row for row in queue["rows"] if row["task_id"] == "lead")
+        self.assertEqual((ready["queue_state"], ready["runnable"]), ("QUEUED_NOT_STARTED", True))
+        self.assertEqual((blocked["queue_state"], blocked["runnable"]), ("SCOPED_BLOCKED", False))
+        self.assertEqual(blocked["blocked_recovery"]["blocked_release_condition"]["condition"], "Owner releases the lane.")
+        self.assertFalse(blocked["blocked_recovery"]["blocked_critical_path"])
+        self.assertEqual({row["scope_binding"]["ctrl_id"] for row in active["rows"]}, {"root", "other-ctrl"})
+        self.assertEqual(len([row for row in active["rows"] if row["task_id"] == "other-task"]), 1)
+
+        restarted = console.App(self.codex_home, self.config)
+        self.assertEqual(restarted.measurable_progress("project:alpha")["progress_queue"], projection)
+
+    def test_project_progress_queue_rejects_cross_ctrl_and_clears_stale_live_values(self) -> None:
+        self._confirm_root_ctrl()
+        self._add_same_project_ctrl()
+        app = console.App(self.codex_home, self.config)
+        app.progress_ledger.append(self._progress_queue_event(
+            "cross-scope", "cross", "other-task", "root", "BLOCK_CREATED", "ACTIVE", 10,
+            eta=(20, 30, 80), milestone_acceptance=True,
+        ))
+        rejected = app.measurable_progress("project:alpha")["progress_queue"]
+        self.assertEqual((rejected["status"], rejected["reason"], rejected["segments"][0]["rows"]), ("RESYNC_REQUIRED", "MIXED_SCOPE_REJECTED", []))
+
+        isolated_home = self.root / "stale-codex"
+        isolated_home.mkdir()
+        isolated_home.joinpath("state_5.sqlite").write_bytes(self.database.read_bytes())
+        stale_app = console.App(isolated_home, self.config, self.root / "console" / "stale.sqlite3")
+        stale_app.progress_ledger.append(self._progress_queue_event(
+            "stale-start", "stale-milestone", "task", "root", "BLOCK_CREATED", "ACTIVE", 10,
+            eta=(20, 30, 80), milestone_acceptance=True,
+        ))
+        stale_app.progress_ledger.append(self._progress_queue_event(
+            "stale-mark", "stale-milestone", "task", "root", "STATE_CHANGED", "ACTIVE", 20,
+            parent_event_id="stale-start", flags=["stale"], eta=(20, 30, 80), milestone_acceptance=True,
+        ))
+        stale_projection = stale_app.measurable_progress("project:alpha")["progress_queue"]
+        stale_row = stale_projection["segments"][1]["rows"][0]
+        self.assertEqual((stale_row["queue_state"], stale_row["runnable"]), ("UNKNOWN", False))
+        self.assertEqual((stale_row["progress"]["state"], stale_row["eta"]["state"], stale_row["elapsed"]["state"]), ("UNKNOWN", "UNKNOWN", "UNKNOWN"))
+
+    def test_project_progress_queue_gap_requires_snapshot_resync(self) -> None:
+        self._confirm_root_ctrl()
+        app = console.App(self.codex_home, self.config)
+        app.progress_ledger.append(self._progress_queue_event(
+            "gap-source", "gap-block", "task", "root", "BLOCK_CREATED", "ACTIVE", 10,
+        ))
+        record = json.loads(app.progress_ledger._state.path.read_text(encoding="utf-8"))
+        record["event_seq"] = 2
+        app.progress_ledger._state.path.write_text(json.dumps(record) + "\n", encoding="utf-8")
+        result = app.measurable_progress("project:alpha")
+        self.assertEqual(result["status"], "UNKNOWN")
+        self.assertEqual((result["progress_queue"]["status"], result["progress_queue"]["reason"]), ("RESYNC_REQUIRED", "RESYNC_REQUIRED"))
+
+    def test_project_progress_queue_distinguishes_typed_non_runnable_states(self) -> None:
+        self._confirm_root_ctrl()
+        now = 2_000_000_200_000
+        task_ids = ["dependency-task", "capacity-task", "review-task", "failed-task", "unknown-task"]
+        with closing(sqlite3.connect(self.database)) as connection:
+            for task_id in task_ids:
+                connection.execute(
+                    "INSERT INTO threads VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    (task_id, task_id.replace("-", " ").title(), "C:/work/alpha", now // 1000, now // 1000,
+                     now, now, "gpt-5.6-luna", "medium", 1, 0, "", "main", "", "", "", 0),
+                )
+                connection.execute("INSERT INTO thread_spawn_edges VALUES (?,?,?)", ("root", task_id, "open"))
+            connection.commit()
+        app = console.App(self.codex_home, self.config)
+
+        def waiting_route(state: str, task_id: str) -> dict[str, object]:
+            return {
+                "disposition": "KEEP_ROLE", "route": "waiting", "selected_owner": f"owner-{task_id}",
+                "selected_task_id": task_id, "project_active": True, "release_event": f"release-{task_id}",
+                "scope": {"goal_id": "goal", "request_id": f"request-{task_id}", "task_id": task_id, "mutable_surface": f"surface:{task_id}", "owner_id": f"owner-{task_id}"},
+                "critical_path": False,
+                "recovery": {
+                    "state": state, "action": "wait_for_release", "attempts": 1,
+                    "permitted_route_ids": ["route-a"], "failed_route_id": "route-a",
+                    "evidence_receipt_ids": [], "release_condition": f"Release {task_id}.",
+                    "responsible_authority": f"owner-{task_id}", "smallest_solution": "Wait for the retained release.",
+                },
+            }
+
+        events = [
+            self._progress_queue_event("capacity-start", "capacity-block", "capacity-task", "root", "BLOCK_CREATED", "ACTIVE", 10),
+            self._progress_queue_event("capacity-wait", "capacity-block", "capacity-task", "root", "WAIT_CHANGED", "WAITING_EXTERNAL", 20, parent_event_id="capacity-start", routing=waiting_route("WAITING_FOR_CAPACITY", "capacity-task")),
+            self._progress_queue_event("dependency", "dependency-block", "dependency-task", "root", "BLOCK_CREATED", "WAITING_DEPENDENCY", 30),
+            self._progress_queue_event("review-gate", "review-block", "review-task", "root", "BLOCK_CREATED", "REVIEW", 40),
+            self._progress_queue_event("failed-start", "failed-block", "failed-task", "root", "BLOCK_CREATED", "ACTIVE", 50),
+            self._progress_queue_event("failed-wait", "failed-block", "failed-task", "root", "WAIT_CHANGED", "WAITING_EXTERNAL", 60, parent_event_id="failed-start", routing=waiting_route("CONTROL_PATH_FAILURE", "failed-task")),
+            self._progress_queue_event("unknown", "unknown-block", "unknown-task", "root", "BLOCK_CREATED", "PLANNED", 70),
+        ]
+        events[2]["dependency_ids"] = ["capacity-block"]
+        for event in events:
+            app.progress_ledger.append(event)
+        rows = app.measurable_progress("project:alpha")["progress_queue"]["segments"][1]["rows"]
+        states = {row["task_id"]: (row["queue_state"], row["runnable"]) for row in rows}
+        self.assertEqual(states, {
+            "capacity-task": ("WAITING_FOR_CAPACITY", False),
+            "dependency-task": ("WAITING_FOR_DEPENDENCY", False),
+            "failed-task": ("FAILED", False),
+            "review-task": ("REVIEW_GATED", False),
+            "unknown-task": ("UNKNOWN", False),
+        })
+
     def test_notification_feed_is_pure_filtered_and_ledger_bound(self) -> None:
         self._confirm_root_ctrl()
         app = console.App(self.codex_home, self.config)

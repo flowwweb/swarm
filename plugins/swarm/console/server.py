@@ -7873,6 +7873,419 @@ class App:
             selected.append(item)
         return selected, self._proof_reconciliation_status(reconciliation), cursor
 
+    @staticmethod
+    def _unknown_project_progress_queue(
+        project_id: str,
+        reason: str,
+        *,
+        cursor: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        resync_reasons = {
+            "RESYNC_REQUIRED", "SOURCE_CURSOR_CHANGED", "INVALID_CURSOR",
+            "TOPOLOGY_SCOPE_CONFLICT", "MIXED_SCOPE_REJECTED",
+        }
+        return {
+            "schema_version": 1,
+            "view_id": "view.project.progress",
+            "renderer": "table",
+            "project_id": project_id,
+            "accepted_cursor": copy.deepcopy(cursor),
+            "status": "RESYNC_REQUIRED" if reason in resync_reasons else "UNKNOWN",
+            "reason": reason,
+            "available": False,
+            "segments": [
+                {"segment_id": "segment.project.progress.active", "label": "Active", "order": 10, "rows": []},
+                {"segment_id": "segment.project.progress.queue", "label": "Queue", "order": 20, "rows": []},
+            ],
+            "source_digests": {},
+            "claim_limit": (
+                "Progress, ETA, readiness, and recovery stay UNKNOWN until one exact CTRL-first project "
+                "scope and retained Ledger cursor can be accepted atomically."
+            ),
+        }
+
+    @staticmethod
+    def _progress_queue_blocked_recovery(
+        block: dict[str, Any],
+        topology_node: dict[str, Any],
+        event_digests: dict[str, str],
+        scope_binding: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        routing = topology_node.get("routing_evidence")
+        if not isinstance(routing, dict) or routing.get("route") != "hard_blocked":
+            return None
+        recovery = routing.get("recovery")
+        if not isinstance(recovery, dict):
+            return None
+        attempts = recovery.get("attempts")
+        release_condition = recovery.get("release_condition")
+        authority = recovery.get("responsible_authority")
+        event_id = block.get("latest_event_id")
+        event_digest = block.get("latest_event_digest")
+        if (
+            not isinstance(attempts, int) or isinstance(attempts, bool) or attempts < 3
+            or not isinstance(release_condition, str) or not release_condition.strip()
+            or not isinstance(authority, str) or not authority.strip()
+            or not isinstance(event_id, str) or event_digests.get(event_id) != event_digest
+        ):
+            return None
+        evidence_refs = [{"event_id": event_id, "event_digest": event_digest}]
+        for receipt_id in recovery.get("evidence_receipt_ids", []):
+            digest = event_digests.get(receipt_id)
+            if not isinstance(digest, str):
+                return None
+            evidence_refs.append({"event_id": receipt_id, "event_digest": digest})
+        detail = {
+            "blocked_attempts": attempts,
+            "blocked_release_condition": {
+                "release_event_id": event_id,
+                "release_event_digest": event_digest,
+                "condition": release_condition.strip(),
+            },
+            "blocked_critical_path": bool(routing.get("critical_path")),
+            "blocked_suggested_recovery": {
+                "action": str(recovery.get("action") or ""),
+                "route_id": str(recovery.get("failed_route_id") or ""),
+                "responsible_authority": authority.strip(),
+                "evidence_receipt_refs": evidence_refs,
+            },
+        }
+        detail_digest = hashlib.sha256(
+            json.dumps(detail, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        ).hexdigest()
+        return {
+            **detail,
+            "detail_reference": {
+                "detail_ref_id": f"progress-recovery:{event_id}",
+                "scope_binding": copy.deepcopy(scope_binding),
+                "detail_digest": detail_digest,
+            },
+        }
+
+    def _project_progress_queue_projection(
+        self,
+        project_id: str,
+        *,
+        expected_cursor: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Normalize one read-only Active/Queue view from existing accepted sources."""
+        try:
+            overview, host_nodes, _, _ = self._observed_scope(project_id=project_id)
+            navigation = self._navigation_payload(overview)
+            project = next(
+                (
+                    item for item in navigation.get("projects", [])
+                    if item.get("id") == project_id
+                    and item.get("project_eligibility") == "swarm_ctrl"
+                    and item.get("visibility") == "visible"
+                    and item.get("archived") is False
+                ),
+                None,
+            )
+            if project is None:
+                return self._unknown_project_progress_queue(project_id, "PROJECT_SCOPE_UNAVAILABLE", cursor=expected_cursor)
+            ctrl_ids = tuple(project.get("ctrl_ids") or ())
+            if not ctrl_ids or any(not isinstance(ctrl_id, str) or not ctrl_id for ctrl_id in ctrl_ids):
+                return self._unknown_project_progress_queue(project_id, "CTRL_SCOPE_UNAVAILABLE", cursor=expected_cursor)
+
+            ledger = self.progress_ledger.replay()
+            cursor = ledger.get("cursor")
+            if cursor != expected_cursor or not isinstance(cursor, dict):
+                return self._unknown_project_progress_queue(project_id, "SOURCE_CURSOR_CHANGED", cursor=expected_cursor)
+            event_seq = cursor.get("event_seq")
+            if not isinstance(event_seq, int) or isinstance(event_seq, bool) or event_seq < 0:
+                return self._unknown_project_progress_queue(project_id, "INVALID_CURSOR", cursor=expected_cursor)
+
+            tail_records, source_truncated = self.progress_ledger._bounded_tail_records()
+            tail_cursor = max(tail_records, key=lambda item: int(item["event_seq"]), default=None)
+            observed_tail_cursor = {
+                "event_seq": 0,
+                "event_id": None,
+                "event_digest": None,
+            } if tail_cursor is None else {
+                "event_seq": int(tail_cursor["event_seq"]),
+                "event_id": tail_cursor["_record_id"],
+                "event_digest": tail_cursor["event_digest"],
+            }
+            if observed_tail_cursor != cursor:
+                return self._unknown_project_progress_queue(project_id, "SOURCE_CURSOR_CHANGED", cursor=expected_cursor)
+
+            scope_version = int(ledger.get("scopes", {}).get(project_id, 0))
+            blocks = [
+                copy.deepcopy(block) for block in ledger.get("blocks", {}).values()
+                if isinstance(block, dict)
+                and block.get("project_id") == project_id
+                and int(block.get("scope_version") or 0) == scope_version
+                and block.get("lifecycle_state") != "TOMBSTONED"
+            ]
+            host_by_id = {
+                str(node["id"]): node for node in host_nodes
+                if isinstance(node, dict) and node.get("id") and not node.get("virtual")
+            }
+            event_digests = ledger.get("events")
+            if not isinstance(event_digests, dict):
+                raise ProgressEventError("progress event identities are unavailable")
+
+            topologies: dict[str, dict[str, Any]] = {}
+            topology_nodes: dict[tuple[str, str], dict[str, Any]] = {}
+            for ctrl_id in ctrl_ids:
+                topology = self.progress_ledger.project_topology(
+                    project_id, ctrl_id, through_cursor=event_seq,
+                )
+                if (
+                    topology.get("project_id") != project_id
+                    or topology.get("ctrl_id") != ctrl_id
+                    or topology.get("through_cursor") != event_seq
+                    or topology.get("conflicts")
+                ):
+                    return self._unknown_project_progress_queue(project_id, "TOPOLOGY_SCOPE_CONFLICT", cursor=cursor)
+                topologies[ctrl_id] = topology
+                for node in topology.get("nodes", []):
+                    block_id = node.get("node_id") if isinstance(node, dict) else None
+                    if block_id and node.get("node_kind") != "CTRL":
+                        topology_nodes[(ctrl_id, str(block_id))] = node
+
+            for block in blocks:
+                ctrl_id = block.get("ctrl_id")
+                task_id = block.get("task_id")
+                host = host_by_id.get(str(task_id or ""))
+                topology_node = topology_nodes.get((str(ctrl_id or ""), str(block.get("block_id") or "")))
+                if (
+                    ctrl_id not in ctrl_ids
+                    or host is None
+                    or host.get("project_id") != project_id
+                    or (task_id != ctrl_id and ctrl_id not in host.get("controller_ids", []))
+                    or topology_node is None
+                    or topology_node.get("project_id") != project_id
+                    or topology_node.get("ctrl_id") != ctrl_id
+                    or topology_node.get("task_id") != task_id
+                ):
+                    return self._unknown_project_progress_queue(project_id, "MIXED_SCOPE_REJECTED", cursor=cursor)
+
+            event_by_identity: dict[tuple[str, str], tuple[int, Any]] = {}
+            event_by_id: dict[str, tuple[int, Any]] = {}
+            task_events: dict[tuple[str, str], list[tuple[int, Any]]] = {}
+            observed_boundary_ms: int | None = None
+            for record in tail_records:
+                event = record.get("_event")
+                if event is None or event.project_id != project_id or event.ctrl_id not in ctrl_ids:
+                    continue
+                identity = (event.event_id, str(record["event_digest"]))
+                event_by_identity[identity] = (int(record["event_seq"]), event)
+                event_by_id[event.event_id] = (int(record["event_seq"]), event)
+                task_events.setdefault((event.ctrl_id, event.task_id), []).append((int(record["event_seq"]), event))
+                observed_boundary_ms = max(observed_boundary_ms or 0, event.observed_at_ms)
+
+            active_lifecycles = {"ACTIVE", "RUNNING", "RETRYING", "RESULT_PENDING"}
+            terminal_lifecycles = {"VERIFIED", "ACCEPTED", "TOMBSTONED"}
+            grouped: dict[tuple[str, str], list[dict[str, Any]]] = {}
+            for block in blocks:
+                ctrl_id = str(block["ctrl_id"])
+                topology_node = topology_nodes[(ctrl_id, str(block["block_id"]))]
+                latest_event_id = str(topology_node.get("latest_event_id") or block.get("latest_event_id") or "")
+                latest_record = event_by_id.get(latest_event_id)
+                latest_event = None if latest_record is None else latest_record[1]
+                effective = {
+                    **block,
+                    "owner_id": topology_node.get("owner_id") or block.get("owner_id"),
+                    "lifecycle_state": topology_node.get("lifecycle_state") or block.get("lifecycle_state"),
+                    "latest_event_id": latest_event_id,
+                    "latest_event_seq": latest_record[0] if latest_record is not None else block.get("latest_event_seq"),
+                    "latest_event_digest": event_digests.get(latest_event_id),
+                    "observed_at_ms": topology_node.get("effective_at_ms") or block.get("observed_at_ms"),
+                    "flags": list(latest_event.flags) if latest_event is not None else list(block.get("flags", [])),
+                    "eta": (
+                        {
+                            "start_ms": latest_event.eta_start_ms,
+                            "end_ms": latest_event.eta_end_ms,
+                            "confidence": latest_event.eta_confidence,
+                            "basis_receipt_ids": list(latest_event.eta_receipt_ids),
+                        }
+                        if latest_event is not None else copy.deepcopy(block.get("eta"))
+                    ),
+                }
+                grouped.setdefault((ctrl_id, str(block["task_id"])), []).append(effective)
+
+            active_rows: list[dict[str, Any]] = []
+            queue_rows: list[dict[str, Any]] = []
+            for (ctrl_id, task_id), task_blocks in sorted(grouped.items()):
+                active_blocks = [block for block in task_blocks if block.get("lifecycle_state") in active_lifecycles]
+                nonterminal_blocks = [block for block in task_blocks if block.get("lifecycle_state") not in terminal_lifecycles]
+                candidates = active_blocks or nonterminal_blocks
+                if not candidates:
+                    continue
+                current = max(candidates, key=lambda item: (int(item.get("latest_event_seq") or 0), str(item.get("block_id") or "")))
+                topology_node = topology_nodes[(ctrl_id, str(current["block_id"]))]
+                scope_binding = {"ctrl_id": ctrl_id, "project_id": project_id, "cursor": copy.deepcopy(cursor)}
+                flags = {str(flag).casefold() for flag in current.get("flags", [])}
+                stale = bool(flags & {"stale", "conflicted"}) or bool(topology_node.get("unknown_receipt_ids"))
+
+                milestone_roots = {
+                    str(block["milestone_id"]): block for block in task_blocks
+                    if block.get("block_id") == block.get("milestone_id")
+                    and block.get("parent_block_id") is None
+                    and "MILESTONE_ACCEPTANCE" in block.get("proof_required_classes", [])
+                }
+                completed_milestones = sum(
+                    block.get("lifecycle_state") == "ACCEPTED"
+                    and block.get("committed_weight") is not None
+                    and block.get("admitted_proof_weight") == block.get("committed_weight")
+                    and bool(block.get("proof_receipt_ids"))
+                    for block in milestone_roots.values()
+                )
+                total_milestones = len(milestone_roots)
+                progress = {
+                    "state": "KNOWN",
+                    "completed_milestones": completed_milestones,
+                    "total_milestones": total_milestones,
+                    "percent": round(completed_milestones * 100 / total_milestones, 2),
+                } if total_milestones and not stale else {
+                    "state": "UNKNOWN", "completed_milestones": None,
+                    "total_milestones": None, "percent": None,
+                }
+
+                eta_value = current.get("eta")
+                eta = {"state": "UNKNOWN", "start_ms": None, "end_ms": None, "confidence": None, "basis_receipt_ids": []}
+                if (
+                    not stale and isinstance(eta_value, dict)
+                    and isinstance(eta_value.get("start_ms"), int) and not isinstance(eta_value.get("start_ms"), bool)
+                    and isinstance(eta_value.get("end_ms"), int) and not isinstance(eta_value.get("end_ms"), bool)
+                    and eta_value["start_ms"] <= eta_value["end_ms"]
+                    and eta_value.get("confidence") is not None
+                    and isinstance(eta_value.get("basis_receipt_ids"), list) and eta_value["basis_receipt_ids"]
+                ):
+                    eta = {"state": "KNOWN", **copy.deepcopy(eta_value)}
+
+                signal_record = event_by_identity.get((str(current.get("latest_event_id") or ""), str(current.get("latest_event_digest") or "")))
+                signal = None
+                if signal_record is not None:
+                    signal_event = signal_record[1]
+                    signal = {
+                        "event_id": signal_event.event_id,
+                        "event_digest": signal_event.digest,
+                        "event_seq": signal_record[0],
+                        "observed_at_ms": signal_event.observed_at_ms,
+                        "summary": signal_event.material_update_sentence,
+                    }
+                events = task_events.get((ctrl_id, task_id), [])
+                started_at_ms = min(
+                    (event.observed_at_ms for _, event in events if event.lifecycle_state.value in active_lifecycles),
+                    default=None,
+                )
+                elapsed = (
+                    {"state": "KNOWN", "elapsed_ms": max(0, observed_boundary_ms - started_at_ms)}
+                    if not stale and not source_truncated and observed_boundary_ms is not None and started_at_ms is not None
+                    else {"state": "UNKNOWN", "elapsed_ms": None}
+                )
+
+                queue_state = None
+                runnable = False
+                blocked_recovery = None
+                routing = topology_node.get("routing_evidence") if isinstance(topology_node, dict) else None
+                lifecycle = str(current.get("lifecycle_state") or "UNKNOWN")
+                if stale:
+                    queue_state = "UNKNOWN"
+                elif lifecycle in active_lifecycles:
+                    queue_state = None
+                elif lifecycle == "READY":
+                    queue_state, runnable = "QUEUED_NOT_STARTED", True
+                elif lifecycle == "WAITING_DEPENDENCY" and topology_node.get("dependency_ids"):
+                    queue_state = "WAITING_FOR_DEPENDENCY"
+                elif lifecycle == "REVIEW":
+                    queue_state = "REVIEW_GATED"
+                elif lifecycle == "WAITING_EXTERNAL" and isinstance(routing, dict) and routing.get("route") == "hard_blocked":
+                    blocked_recovery = self._progress_queue_blocked_recovery(current, topology_node, event_digests, scope_binding)
+                    queue_state = "SCOPED_BLOCKED" if blocked_recovery is not None else "UNKNOWN"
+                elif (
+                    lifecycle == "WAITING_EXTERNAL"
+                    and isinstance(routing, dict)
+                    and isinstance(routing.get("recovery"), dict)
+                    and routing["recovery"].get("state") == "WAITING_FOR_CAPACITY"
+                ):
+                    queue_state = "WAITING_FOR_CAPACITY"
+                elif flags & {"failed", "control_path_failure"} or (
+                    isinstance(routing, dict)
+                    and isinstance(routing.get("recovery"), dict)
+                    and routing["recovery"].get("state") == "CONTROL_PATH_FAILURE"
+                ):
+                    queue_state = "FAILED"
+                else:
+                    queue_state = "UNKNOWN"
+
+                host = host_by_id[task_id]
+                row = {
+                    "scope_binding": scope_binding,
+                    "task_id": task_id,
+                    "task_name": str(host.get("artifact") or host.get("title") or task_id),
+                    "role": str(host.get("role_label") or host.get("role") or ""),
+                    "owner_id": str(current.get("owner_id") or ""),
+                    "lifecycle": lifecycle,
+                    "progress": progress,
+                    "last_accepted_signal": signal,
+                    "freshness": {
+                        "state": "STALE" if stale else "UNKNOWN",
+                        "observed_at_ms": None if signal is None else signal["observed_at_ms"],
+                    },
+                    "elapsed": elapsed,
+                    "eta": eta,
+                    "queue_state": queue_state,
+                    "runnable": runnable if queue_state is not None else None,
+                    "next_operation_or_release_event": (
+                        routing.get("release_event") if isinstance(routing, dict) else None
+                    ),
+                    "blocked_recovery": blocked_recovery,
+                }
+                (active_rows if queue_state is None else queue_rows).append(row)
+
+            source_digests = {
+                "ledger": str(cursor.get("event_digest") or ""),
+                "topology": {ctrl_id: topology["projection_digest"] for ctrl_id, topology in sorted(topologies.items())},
+                "host_scope": hashlib.sha256(json.dumps(
+                    sorted((
+                        str(node.get("id") or ""), str(node.get("project_id") or ""),
+                        tuple(sorted(str(item) for item in node.get("controller_ids", []))),
+                        str(node.get("role") or ""), str(node.get("artifact") or node.get("title") or ""),
+                    ) for node in host_nodes if isinstance(node, dict)),
+                    ensure_ascii=False, sort_keys=True, separators=(",", ":"),
+                ).encode("utf-8")).hexdigest(),
+                "feed": hashlib.sha256(json.dumps(
+                    sorted((
+                        int(record["event_seq"]), record["_record_id"], str(record["event_digest"]),
+                    ) for record in tail_records if record.get("_event") is not None
+                    and record["_event"].project_id == project_id and record["_event"].ctrl_id in ctrl_ids),
+                    ensure_ascii=False, sort_keys=True, separators=(",", ":"),
+                ).encode("utf-8")).hexdigest(),
+            }
+            projection_digest = hashlib.sha256(
+                json.dumps(
+                    {"project_id": project_id, "cursor": cursor, "source_digests": source_digests, "active": active_rows, "queue": queue_rows},
+                    ensure_ascii=False, sort_keys=True, separators=(",", ":"),
+                ).encode("utf-8")
+            ).hexdigest()
+            return {
+                "schema_version": 1,
+                "view_id": "view.project.progress",
+                "renderer": "table",
+                "project_id": project_id,
+                "accepted_cursor": copy.deepcopy(cursor),
+                "status": "CURRENT",
+                "reason": None,
+                "available": bool(active_rows or queue_rows),
+                "segments": [
+                    {"segment_id": "segment.project.progress.active", "label": "Active", "order": 10, "rows": active_rows},
+                    {"segment_id": "segment.project.progress.queue", "label": "Queue", "order": 20, "rows": queue_rows},
+                ],
+                "source_digests": source_digests,
+                "projection_digest": projection_digest,
+                "claim_limit": (
+                    "Rows are a read-only CTRL-first projection of one retained Ledger cursor. Progress counts only "
+                    "typed whole-milestone acceptance; ETA requires a same-row receipt basis; only Queued is runnable."
+                ),
+            }
+        except (AttributeError, ConsoleError, OSError, ProgressEventError, TypeError, ValueError) as error:
+            reason = "RESYNC_REQUIRED" if isinstance(error, ProgressEventError) else "SOURCE_UNAVAILABLE"
+            return self._unknown_project_progress_queue(project_id, reason, cursor=expected_cursor)
+
     def project_progress_feed(self, project_id: str, *, after_cursor: int = 0) -> dict[str, Any]:
         """Build one lazy project feed snapshot from canonical material events."""
         if not isinstance(project_id, str) or not project_id.strip():
@@ -7929,9 +8342,39 @@ class App:
         if not isinstance(project_id, str) or not project_id.strip():
             raise ConsoleError("project_id is required")
         try:
-            return {"ok": True, **self.progress_ledger.project(project_id.strip())}
+            normalized_project_id = project_id.strip()
+            projection = self.progress_ledger.project(normalized_project_id)
+            return {
+                "ok": True,
+                **projection,
+                "progress_queue": self._project_progress_queue_projection(
+                    normalized_project_id, expected_cursor=projection["cursor"],
+                ),
+            }
         except ProgressEventError as error:
-            raise ConsoleError(str(error)) from error
+            normalized_project_id = project_id.strip()
+            return {
+                "ok": True,
+                "project_id": normalized_project_id,
+                "scope_version": None,
+                "status": "UNKNOWN",
+                "percent": None,
+                "admitted_proof_weight": 0,
+                "committed_measured_weight": 0,
+                "unmeasured_block_count": 0,
+                "provisional_block_count": 0,
+                "rework_weight": 0,
+                "overlays": ["CONFLICTED"],
+                "blocks": [],
+                "cursor": {"event_seq": None, "event_id": None, "event_digest": None},
+                "progress_queue": self._unknown_project_progress_queue(
+                    normalized_project_id, "RESYNC_REQUIRED",
+                ),
+                "claim_limit": (
+                    "The retained progress source could not be replayed contiguously; current progress, ETA, "
+                    "readiness, and recovery are unavailable until an accepted snapshot resync."
+                ),
+            }
 
     def role_manifest_projection(self) -> dict[str, Any]:
         try:

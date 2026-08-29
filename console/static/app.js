@@ -1742,12 +1742,104 @@ function projectViewMarkup() {
   }).join("") + '</div></header>' + content + '<p class="project-ui-claim">' + escapeHTML(projection.claim_limit || "Project UI is read-only.") + '</p></section>';
 }
 
+function projectProgressQueueProjection(progress) {
+  const projection = progress?.progress_queue;
+  const cursor = progress?.cursor;
+  if (!projection || projection.view_id !== "view.project.progress" || projection.renderer !== "table") return null;
+  if (projection.project_id !== selectedProgressProjectId() || !cursor || !projection.accepted_cursor) return null;
+  if (["event_seq", "event_id", "event_digest"].some((field) => projection.accepted_cursor[field] !== cursor[field])) return null;
+  if (!Array.isArray(projection.segments)) return null;
+  const expected = ["segment.project.progress.active", "segment.project.progress.queue"];
+  if (projection.segments.length !== expected.length || projection.segments.some((segment, index) => segment?.segment_id !== expected[index] || !Array.isArray(segment.rows))) return null;
+  return projection;
+}
+
+function progressQueueRowPresentation(row, stale = false) {
+  const forceUnknown = stale || row?.freshness?.state === "STALE";
+  return {
+    ...row,
+    progress: forceUnknown ? { state: "UNKNOWN", completed_milestones: null, total_milestones: null, percent: null } : row?.progress,
+    eta: forceUnknown ? { state: "UNKNOWN", start_ms: null, end_ms: null, confidence: null, basis_receipt_ids: [] } : row?.eta,
+    elapsed: forceUnknown ? { state: "UNKNOWN", elapsed_ms: null } : row?.elapsed,
+    queue_state: forceUnknown ? "UNKNOWN" : row?.queue_state,
+    runnable: forceUnknown ? false : row?.runnable,
+    blocked_recovery: forceUnknown ? null : row?.blocked_recovery,
+  };
+}
+
+function projectProgressQueueSegments(projection, stale = false) {
+  if (!projection || !Array.isArray(projection.segments)) return [];
+  return projection.segments.map((segment) => ({
+    ...segment,
+    rows: segment.rows.map((row) => progressQueueRowPresentation(row, stale)),
+  }));
+}
+
+function progressQueueStateLabel(row, segmentId) {
+  if (segmentId === "segment.project.progress.active" && row.queue_state == null) return humanize(row.lifecycle || "Active");
+  const labels = {
+    QUEUED_NOT_STARTED: "Queued",
+    WAITING_FOR_DEPENDENCY: "Waiting for dependency",
+    WAITING_FOR_CAPACITY: "Waiting for capacity",
+    REVIEW_GATED: "Waiting for review",
+    SCOPED_BLOCKED: "Blocked",
+    FAILED: "Failed",
+    UNKNOWN: "Unknown",
+  };
+  return labels[row.queue_state] || "Unknown";
+}
+
+function progressQueueProgressMarkup(row) {
+  const progress = row?.progress;
+  if (progress?.state !== "KNOWN" || !Number.isFinite(Number(progress.percent))) {
+    return '<span class="project-progress-unknown" aria-label="Progress unavailable">— <small>UNKNOWN</small></span>';
+  }
+  const label = String(progress.completed_milestones) + " of " + String(progress.total_milestones) + " accepted milestones";
+  return '<div class="project-progress-cell"><div class="project-progress-meter" role="progressbar" aria-label="' + escapeHTML(row.task_name + " milestone progress") + '" aria-valuemin="0" aria-valuemax="100" aria-valuenow="' + escapeHTML(progress.percent) + '" aria-valuetext="' + escapeHTML(label) + '"><i style="width:' + escapeHTML(progress.percent) + '%"></i></div><small>' + escapeHTML(label) + '</small></div>';
+}
+
+function progressQueueEtaMarkup(row) {
+  const eta = row?.eta;
+  if (eta?.state !== "KNOWN") return '<span aria-label="ETA unavailable">— <small>UNKNOWN</small></span>';
+  const start = new Date(Number(eta.start_ms));
+  const end = new Date(Number(eta.end_ms));
+  if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) return '<span aria-label="ETA unavailable">— <small>UNKNOWN</small></span>';
+  return '<span class="project-progress-eta"><time datetime="' + escapeHTML(start.toISOString()) + '">' + escapeHTML(formatEta(eta.start_ms)) + '</time><span aria-hidden="true">–</span><time datetime="' + escapeHTML(end.toISOString()) + '">' + escapeHTML(formatEta(eta.end_ms)) + '</time><small>' + escapeHTML(String(eta.confidence)) + ' confidence</small></span>';
+}
+
+function progressQueueRecoveryMarkup(row) {
+  const recovery = row?.blocked_recovery;
+  if (!recovery) return "";
+  const release = recovery.blocked_release_condition?.condition;
+  const suggested = recovery.blocked_suggested_recovery;
+  if (!release || !suggested?.action || !suggested?.responsible_authority) return "";
+  return '<details class="project-progress-recovery"><summary>Recovery details</summary><dl><div><dt>Release</dt><dd>' + escapeHTML(release) + '</dd></div><div><dt>Recovery</dt><dd>' + escapeHTML(suggested.action) + '</dd></div><div><dt>Authority</dt><dd>' + escapeHTML(suggested.responsible_authority) + '</dd></div><div><dt>Attempts</dt><dd>' + escapeHTML(recovery.blocked_attempts) + '</dd></div></dl></details>';
+}
+
+function projectProgressQueueRowMarkup(row, segmentId) {
+  const stateLabel = progressQueueStateLabel(row, segmentId);
+  const signal = row?.last_accepted_signal?.summary;
+  const elapsed = row?.elapsed?.state === "KNOWN" ? formatDuration(row.elapsed.elapsed_ms) : "—";
+  const release = row?.next_operation_or_release_event;
+  return '<tr data-progress-task="' + escapeHTML(row.task_id) + '" data-progress-ctrl="' + escapeHTML(row.scope_binding?.ctrl_id || "") + '"><th scope="row" data-label="Task"><strong>' + escapeHTML(row.task_name || row.task_id) + '</strong><small>' + escapeHTML([row.role, row.owner_id].filter(Boolean).join(" · ") || "Owner unknown") + '</small></th><td data-label="State"><span class="project-progress-state" data-state="' + escapeHTML(row.queue_state || row.lifecycle || "UNKNOWN") + '">' + escapeHTML(stateLabel) + '</span>' + (release ? '<small>' + escapeHTML(release) + '</small>' : '') + progressQueueRecoveryMarkup(row) + '</td><td data-label="Progress">' + progressQueueProgressMarkup(row) + '</td><td data-label="Last accepted signal"><span>' + escapeHTML(signal || "—") + '</span><small>' + escapeHTML(row?.freshness?.state || "UNKNOWN") + '</small></td><td data-label="Elapsed"><span aria-label="' + escapeHTML(elapsed === "—" ? "Elapsed unavailable" : "Elapsed " + elapsed) + '">' + escapeHTML(elapsed) + '</span>' + (elapsed === "—" ? '<small>UNKNOWN</small>' : '') + '</td><td data-label="ETA">' + progressQueueEtaMarkup(row) + '</td></tr>';
+}
+
+function projectProgressQueueMarkup(progress) {
+  const projection = projectProgressQueueProjection(progress);
+  if (!projection) return "";
+  const stale = ["stale", "unavailable"].includes(state.projectProgressStatus) || projection.status !== "CURRENT";
+  const segments = projectProgressQueueSegments(projection, stale);
+  if (!segments.some((segment) => segment.rows.length)) return "";
+  const tables = segments.map((segment) => '<section class="project-progress-segment" aria-labelledby="' + escapeHTML(segment.segment_id) + '"><header><h3 id="' + escapeHTML(segment.segment_id) + '">' + escapeHTML(segment.label) + '</h3><span>' + escapeHTML(segment.rows.length) + '</span></header>' + (segment.rows.length ? '<div class="project-progress-table-wrap"><table class="project-progress-table"><thead><tr><th scope="col">Task</th><th scope="col">State</th><th scope="col">Progress</th><th scope="col">Last accepted signal</th><th scope="col">Elapsed</th><th scope="col">ETA</th></tr></thead><tbody>' + segment.rows.map((row) => projectProgressQueueRowMarkup(row, segment.segment_id)).join("") + '</tbody></table></div>' : '<p class="empty-state">No ' + escapeHTML(segment.label.toLowerCase()) + ' work at this cursor.</p>') + '</section>').join("");
+  return '<section class="panel project-progress-view" aria-labelledby="project-progress-view-title"><header class="overview-section-head"><div><p class="eyebrow">Accepted project scope</p><h2 id="project-progress-view-title">Project Progress</h2></div><p>' + (stale ? 'Last accepted identity · live fields unavailable' : 'Through event ' + escapeHTML(projection.accepted_cursor.event_seq)) + '</p></header>' + tables + '</section>';
+}
+
 function projectTabMarkup(tab, progress, nodes) {
   const blocks = progress?.blocks || [];
   const milestones = projectMilestones(blocks);
   if (tab === "overview") {
     const efficiency = verifiedYieldItem("project", selectedProgressProjectId());
-    return '<section class="project-overview-grid"><div class="milestone-rings">' + (milestones.length ? milestones.slice(0, 4).map(([id, items]) => { const summary = milestoneSummary(items); return '<article><div class="milestone-ring ' + (summary.percent === 100 ? "is-complete" : "") + '" style="--progress:' + (summary.percent ?? 0) + '%"><strong>' + escapeHTML(summary.percent == null ? "—" : Math.round(summary.percent) + "%") + '</strong></div><h3>' + escapeHTML(id) + '</h3><small>' + escapeHTML(summary.admitted + " / " + summary.committed + " admitted") + '</small></article>'; }).join("") : '<p class="empty-state">No measured milestones yet.</p>') + '</div>' + yieldChartMarkup(efficiency) + '<section class="panel project-updates"><header class="overview-section-head"><div><p class="eyebrow">Material events</p><h2>Latest updates</h2></div><p>Newest first</p></header>' + projectFeedMarkup(4) + '</section></section>';
+    return '<section class="project-overview-grid">' + projectProgressQueueMarkup(progress) + '<div class="milestone-rings">' + (milestones.length ? milestones.slice(0, 4).map(([id, items]) => { const summary = milestoneSummary(items); return '<article><div class="milestone-ring ' + (summary.percent === 100 ? "is-complete" : "") + '" style="--progress:' + (summary.percent ?? 0) + '%"><strong>' + escapeHTML(summary.percent == null ? "—" : Math.round(summary.percent) + "%") + '</strong></div><h3>' + escapeHTML(id) + '</h3><small>' + escapeHTML(summary.admitted + " / " + summary.committed + " admitted") + '</small></article>'; }).join("") : '<p class="empty-state">No measured milestones yet.</p>') + '</div>' + yieldChartMarkup(efficiency) + '<section class="panel project-updates"><header class="overview-section-head"><div><p class="eyebrow">Material events</p><h2>Latest updates</h2></div><p>Newest first</p></header>' + projectFeedMarkup(4) + '</section></section>';
   }
   if (tab === "roadmap") return '<section class="project-roadmap">' + (milestones.length ? milestones.map(([id, items], index) => '<article><span>' + String(index + 1) + '</span><div><h3>' + escapeHTML(id) + '</h3><p>' + escapeHTML(items.length + " block" + (items.length === 1 ? "" : "s") + " · " + milestoneSummary(items).admitted + " admitted") + '</p></div></article>').join("") : '<p class="empty-state">No roadmap receipts yet.</p>') + '</section>';
   if (tab === "lanes") { const owners = new Map(); blocks.forEach((block) => { const id = block.owner_id || "Unassigned"; owners.set(id, [...(owners.get(id) || []), block]); }); return '<section class="project-lanes">' + ([...owners.entries()].map(([owner, items]) => '<section class="panel"><header><h3>' + escapeHTML(owner) + '</h3><span>' + items.length + '</span></header>' + items.map(projectBlockRow).join("") + '</section>').join("") || '<p class="empty-state">No owner lanes yet.</p>') + '</section>'; }
