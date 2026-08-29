@@ -5577,7 +5577,7 @@ class App:
             graph = None
         if isinstance(graph, dict):
             allowed_graph = {"schema_version", "flowchart_id", "version", "nodes", "edges"}
-            if set(graph) != allowed_graph or graph.get("schema_version") != 1:
+            if set(graph) != allowed_graph or type(graph.get("schema_version")) is not int or graph["schema_version"] != 1:
                 raise ConsoleError("project view Map JSON schema is unsupported")
             flowchart_id = cls._project_view_text(graph.get("flowchart_id"), "flowchart id")
             version = graph.get("version")

@@ -3748,6 +3748,14 @@ class SwarmConsoleTests(unittest.TestCase):
         self.assertEqual(normalized["edges"][0]["id"], "edge-overview-review")
         self.assertEqual(screens[0]["evidence"][0]["device"], "desktop")
 
+        for invalid_version in (True, 1.0, "1", 0, 2):
+            invalid_schema = copy.deepcopy(graph)
+            invalid_schema["schema_version"] = invalid_version
+            with self.subTest(schema_version=invalid_version), self.assertRaisesRegex(
+                console.ConsoleError, "schema is unsupported",
+            ):
+                app._project_view_graph(json.dumps(invalid_schema).encode(), screens)
+
         cases = []
         duplicate_node = copy.deepcopy(graph)
         duplicate_node["nodes"].append(copy.deepcopy(duplicate_node["nodes"][0]))
