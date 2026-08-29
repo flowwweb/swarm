@@ -87,6 +87,14 @@ function runLogAnnouncement(items) {
   return String(appended.length) + " new run log entries. Latest, " + String(latest.event_seq) + ": " + String(latest.summary).trim();
 }
 
+function runLogReplaceSnapshot(previous, retention) {
+  return previous?.initialized !== true || retention?.stale_cursor === true;
+}
+
+function runLogCanAnnounce(previous, replace) {
+  return previous?.initialized === true && !replace;
+}
+
 function escapeHTML(value) {
   return String(value ?? "").replace(/[&<>'"]/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "'": "&#39;", '"': "&quot;" })[char]);
 }
@@ -652,7 +660,7 @@ function markRunLogNewEntries(bindingKey, items) {
 
 async function refreshRunLogBinding(binding) {
   const key = runLogBindingKey(binding);
-  const previous = state.runLogs.get(key) || { items: [], cursor: 0, retention: null, status: "idle", error: "" };
+  const previous = state.runLogs.get(key) || { initialized: false, items: [], cursor: 0, retention: null, status: "idle", error: "" };
   const generation = (state.runLogRequestGenerations.get(key) || 0) + 1;
   state.runLogRequestGenerations.set(key, generation);
   state.runLogs.set(key, { ...previous, status: previous.items.length ? "refreshing" : "loading", error: "" });
@@ -665,10 +673,10 @@ async function refreshRunLogBinding(binding) {
     if (!result.items.every((item) => item.project_id === binding.projectId && item.ctrl_id === binding.ctrlId)) throw new Error("Run log entry escaped the selected CTRL scope.");
     const nextCursor = Number(result.cursor?.next_event_seq);
     if (!Number.isInteger(nextCursor) || nextCursor < 0) throw new Error("Run log cursor was invalid.");
-    const replace = !previous.cursor || result.retention?.stale_cursor === true;
+    const replace = runLogReplaceSnapshot(previous, result.retention);
     const merged = mergeRunLogItems(previous.items, result.items, replace);
-    state.runLogs.set(key, { items: merged.items, cursor: nextCursor, retention: result.retention || null, status: "current", error: "" });
-    if (previous.items.length && !replace) markRunLogNewEntries(key, merged.addedItems);
+    state.runLogs.set(key, { initialized: true, items: merged.items, cursor: nextCursor, retention: result.retention || null, status: "current", error: "" });
+    if (runLogCanAnnounce(previous, replace)) markRunLogNewEntries(key, merged.addedItems);
   } catch (error) {
     if (state.runLogRequestGenerations.get(key) !== generation) return;
     state.runLogs.set(key, { ...previous, status: previous.items.length ? "stale" : "unavailable", error: error.message || "Run log unavailable" });
@@ -1543,8 +1551,10 @@ function renderProjectDetail() {
   $("#project-detail-summary").innerHTML = '<p><span>Progress</span><strong>' + escapeHTML(measured ? progress.percent + "%" : "—") + '</strong></p><p><span>Live ETA</span><strong><svg class="lucide" aria-hidden="true"><use href="#lucide-clock"></use></svg>' + escapeHTML(projectEta(nodes)) + '</strong></p><p><span>Next gate</span><strong>' + escapeHTML(nextGate ? humanize(nextGate.lifecycle_state) : "—") + '</strong></p>';
   const selectedTabId = "project-tab-" + state.projectTab;
   $$('[data-project-tab]').forEach((button) => { const selected = button.dataset.projectTab === state.projectTab; button.classList.toggle("is-active", selected); button.setAttribute("aria-selected", String(selected)); button.tabIndex = selected ? 0 : -1; });
-  $("#project-tab-panel").setAttribute("aria-labelledby", selectedTabId);
-  $("#project-tab-panel").innerHTML = projectTabMarkup(state.projectTab, progress, nodes);
+  const tabPanel = $("#project-tab-panel");
+  tabPanel.setAttribute("aria-labelledby", selectedTabId);
+  const retainedRunLogMount = state.projectTab === "logs" && $('[data-run-log-surface="project"]', tabPanel);
+  if (!retainedRunLogMount) tabPanel.innerHTML = projectTabMarkup(state.projectTab, progress, nodes);
 }
 
 function proofReviewState(item) {

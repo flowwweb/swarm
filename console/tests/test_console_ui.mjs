@@ -158,7 +158,7 @@ assert.match(indexHtml, /id="project-detail" hidden aria-labelledby="project-det
 assert.match(indexHtml, /id="project-tab-panel" role="tabpanel" aria-labelledby="project-tab-overview"/);
 assert.match(app, /function renderProjectDetail\(\)/);
 assert.match(app, /const selectedTabId = "project-tab-" \+ state\.projectTab/);
-assert.match(app, /\$\("#project-tab-panel"\)\.setAttribute\("aria-labelledby", selectedTabId\)/);
+assert.match(app, /tabPanel\.setAttribute\("aria-labelledby", selectedTabId\)/);
 assert.match(app, /function projectTabMarkup\(tab, progress, nodes\)/);
 assert.match(indexHtml, /id="run-log-overview"[^>]*data-run-log-surface="overview"[^>]*hidden/);
 assert.match(indexHtml, /id="run-log-agent"[^>]*data-run-log-surface="agent"[^>]*hidden/);
@@ -192,7 +192,7 @@ assert.match(css, /@media \(max-width: 620px\)[\s\S]*\.run-log-new \{ min-height
 const runLogHelperStart = app.indexOf("function runLogBindingKey");
 const runLogHelperEnd = app.indexOf("\nfunction escapeHTML", runLogHelperStart);
 assert.ok(runLogHelperStart >= 0 && runLogHelperEnd > runLogHelperStart);
-const runLogHelpers = vm.runInNewContext(`(() => { const RUN_LOG_CLIENT_LIMIT = 200; ${app.slice(runLogHelperStart, runLogHelperEnd)}; return { runLogBindingKey, runLogPlanBindingKey, runLogSurfaceStateKey, runLogItemIdentity, runLogResponseMatches, mergeRunLogItems, runLogNearBottom, runLogAnnouncement }; })()`);
+const runLogHelpers = vm.runInNewContext(`(() => { const RUN_LOG_CLIENT_LIMIT = 200; ${app.slice(runLogHelperStart, runLogHelperEnd)}; return { runLogBindingKey, runLogPlanBindingKey, runLogSurfaceStateKey, runLogItemIdentity, runLogResponseMatches, mergeRunLogItems, runLogNearBottom, runLogAnnouncement, runLogReplaceSnapshot, runLogCanAnnounce }; })()`);
 const runLogBinding = { projectId: "project:one", ctrlId: "ctrl:one", agentId: "owner:one" };
 assert.equal(runLogHelpers.runLogBindingKey(runLogBinding), "project:one|ctrl:one|owner:one");
 assert.equal(runLogHelpers.runLogPlanBindingKey({ bindings: [{ projectId: "project:one", ctrlId: "ctrl:two" }, { projectId: "project:one", ctrlId: "ctrl:one" }] }), '["project:one|ctrl:one|","project:one|ctrl:two|"]');
@@ -213,6 +213,12 @@ assert.equal(runLogHelpers.runLogNearBottom(1000, 660, 300), true);
 assert.equal(runLogHelpers.runLogNearBottom(1000, 400, 300), false);
 assert.equal(runLogHelpers.runLogAnnouncement([runLogB]), "New run log entry 5: Review was requested.");
 assert.equal(runLogHelpers.runLogAnnouncement([runLogA, runLogB]), "2 new run log entries. Latest, 5: Review was requested.");
+assert.equal(runLogHelpers.runLogReplaceSnapshot({ initialized: false, items: [], cursor: 0 }, {}), true);
+assert.equal(runLogHelpers.runLogCanAnnounce({ initialized: false, items: [], cursor: 0 }, true), false);
+assert.equal(runLogHelpers.runLogReplaceSnapshot({ initialized: true, items: [], cursor: 0 }, {}), false);
+assert.equal(runLogHelpers.runLogCanAnnounce({ initialized: true, items: [], cursor: 0 }, false), true);
+assert.equal(runLogHelpers.runLogReplaceSnapshot({ initialized: true, items: [runLogA], cursor: 4 }, { stale_cursor: true }), true);
+assert.equal(runLogHelpers.runLogCanAnnounce({ initialized: true, items: [runLogA], cursor: 4 }, true), false);
 const runLogStateStart = app.indexOf("function runLogSurfaceState(surface, bindingKey)");
 const runLogStateEnd = app.indexOf("\nfunction runLogEntries", runLogStateStart);
 const runLogStateKeyStart = app.indexOf("function runLogSurfaceStateKey");
@@ -231,7 +237,71 @@ assert.match(runLogRenderSource, /const sameBinding = mount\.dataset\.runLogBind
 assert.match(runLogRenderSource, /const viewport = sameBinding \? captureRunLogViewport\(mount\) : null/);
 assert.match(runLogRenderSource, /announcer\.dataset\.revision !== String\(surfaceState\.announcementRevision\)/);
 assert.match(runLogSource, /runLogSurfaceState\(surface, runLogPlanBindingKey\(plan\)\)/);
-assert.match(runLogSource, /if \(previous\.items\.length && !replace\) markRunLogNewEntries\(key, merged\.addedItems\)/);
+assert.match(runLogSource, /if \(runLogCanAnnounce\(previous, replace\)\) markRunLogNewEntries\(key, merged\.addedItems\)/);
+const projectDetailSource = app.slice(app.indexOf("function renderProjectDetail"), app.indexOf("function proofReviewState"));
+assert.match(projectDetailSource, /const retainedRunLogMount = state\.projectTab === "logs" && \$\('\[data-run-log-surface="project"\]', tabPanel\)/);
+assert.match(projectDetailSource, /if \(!retainedRunLogMount\) tabPanel\.innerHTML = projectTabMarkup/);
+const renderOverviewSource = app.slice(app.indexOf("function renderOverview"), app.indexOf("function observedAgentRole"));
+const refreshMonitoringSource = app.slice(app.indexOf("async function refreshMonitoring"), app.indexOf("async function refreshCtrlSettings"));
+const runLogOuterRenderHarness = vm.runInNewContext(`(() => {
+  const runLogMount = { identity: "stable-project-run-log" };
+  let panelWrites = 0;
+  const tabPanel = {
+    setAttribute() {},
+    querySelector(selector) { return selector === '[data-run-log-surface="project"]' ? runLogMount : null; },
+    get innerHTML() { return ""; },
+    set innerHTML(value) { panelWrites += 1; },
+  };
+  const element = () => ({ hidden: false, textContent: "", innerHTML: "", setAttribute() {} });
+  const elements = new Map([
+    ["#projects-portfolio", element()], ["#project-detail", element()], ["#view-title", element()], ["#view-subtitle", element()],
+    ["#project-detail-title", element()], ["#project-detail-status", element()], ["#project-detail-summary", element()],
+    ["#project-tab-panel", tabPanel], ["#sync-time", element()],
+  ]);
+  const tabs = [{ dataset: { projectTab: "logs" }, classList: { toggle() {} }, setAttribute() {}, tabIndex: 0 }];
+  const state = { view: "overview", projectTab: "logs", projectProgressStatus: "current", connectionStatus: "reconnecting", proofSequence: 0, overview: null };
+  function $(selector, root) { return root === tabPanel ? tabPanel.querySelector(selector) : elements.get(selector); }
+  function $$(selector) { return selector === '[data-project-tab]' ? tabs : []; }
+  function selectedProgressProjectId() { return "project:one"; }
+  function projectGroups() { return [{ id: "project:one", label: "Project One" }]; }
+  function selectedProjectProgress() { return null; }
+  function scopedNodes() { return []; }
+  function projectEta() { return "—"; }
+  function humanize(value) { return String(value || ""); }
+  function escapeHTML(value) { return String(value ?? ""); }
+  function projectTabMarkup() { return '<section data-run-log-surface="project"></section>'; }
+  function renderVerifiedYieldSummary() {} function renderVerifiedYieldRows() {} function renderOverviewProjectCards() {}
+  function renderEvidenceGallery() {} function renderUsage() {} function renderProjectProgressFeed() {} function renderOverviewHealth() {} function renderNotifications() {}
+  function clearConnectionState() {} function setDataStatus() {} function renderProjectNavigation() {} function renderAgents() {} function renderReview() {} function renderAssets() {} function renderRunLogSurfaces() {}
+  async function api() { return { generated_at: 1 }; }
+  async function refreshUsageHistory() {} async function refreshNotifications() {} async function refreshRunLogs() {} async function refreshProof() {}
+  ${projectDetailSource}
+  ${renderOverviewSource}
+  ${refreshMonitoringSource}
+  return { run: async () => { await refreshMonitoring(0); return { panelWrites, sameMount: tabPanel.querySelector('[data-run-log-surface="project"]') === runLogMount }; } };
+})()`);
+assert.deepEqual({ ...(await runLogOuterRenderHarness.run()) }, { panelWrites: 0, sameMount: true });
+const refreshRunLogBindingSource = app.slice(app.indexOf("async function refreshRunLogBinding"), app.indexOf("async function refreshRunLogs"));
+const runLogEmptyBaselineHarness = vm.runInNewContext(`(() => {
+  const RUN_LOG_CLIENT_LIMIT = 200;
+  ${app.slice(runLogHelperStart, runLogHelperEnd)}
+  const binding = { projectId: "project:one", ctrlId: "ctrl:one", agentId: "" };
+  const appended = { event_id: "event:first", event_digest: "digest:first", event_seq: 1, project_id: "project:one", ctrl_id: "ctrl:one", summary: "First material event." };
+  const responses = [
+    { ok: true, scope: { project_id: "project:one", ctrl_id: "ctrl:one", agent_id: "" }, items: [], cursor: { next_event_seq: 0 }, retention: {} },
+    { ok: true, scope: { project_id: "project:one", ctrl_id: "ctrl:one", agent_id: "" }, items: [appended], cursor: { next_event_seq: 1 }, retention: {} },
+    { ok: true, scope: { project_id: "project:one", ctrl_id: "ctrl:one", agent_id: "" }, items: [appended], cursor: { next_event_seq: 1 }, retention: { stale_cursor: true } },
+  ];
+  const state = { runLogs: new Map(), runLogRequestGenerations: new Map() };
+  const announced = [];
+  async function api() { return responses.shift(); }
+  function markRunLogNewEntries(key, items) { announced.push(...items); }
+  ${refreshRunLogBindingSource}
+  return { run: async () => { await refreshRunLogBinding(binding); await refreshRunLogBinding(binding); await refreshRunLogBinding(binding); return { announced, record: state.runLogs.get(runLogBindingKey(binding)) }; } };
+})()`, { URLSearchParams });
+const emptyBaselineResult = await runLogEmptyBaselineHarness.run();
+assert.deepEqual(Array.from(emptyBaselineResult.announced, (item) => item.event_id), ["event:first"]);
+assert.equal(emptyBaselineResult.record.initialized, true);
 assert.match(app, /function yieldChartMarkup\(item\)/);
 assert.match(app, /Observed tokens/);
 assert.match(app, /Admitted scope/);
