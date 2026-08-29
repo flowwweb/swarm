@@ -143,6 +143,15 @@ Use this routing order:
 3. Add a subagent only for bounded small `GENERAL` capacity within its current
    accountable owner or an already-open lane; never for visual artifact production.
 
+On each material routing change, retain one role-fit disposition as topology
+evidence: keep the current role, use an approved specialization, add another
+instance of the same profession for disjoint work, reassign an existing owner,
+or propose a custom profession for a durable uncovered gap. Profession is not
+singleton and this decision never advances progress or grants authority. The
+nearest escalation is DOER to its owning LEAD, then cross-lane coordination to
+the active Manager, and CTRL only for objective, shared-surface, authority, or
+user-reserved changes.
+
 Hidden subagents are non-recursive leaf sidecars. Route work with
 `may_need_recruitment` or `requires_recursive_delegation` to a visible durable
 owner before dispatch. If a bounded subagent discovers further decomposition,
@@ -304,6 +313,17 @@ Parallelize only disjoint lanes that can return integration-ready artifacts.
 Explicit dependencies wait on their named stage; overlapping mutation is
 serialized by CTRL through an explicit shared-surface receipt. A failure pauses
 only its affected surface while safe independent lanes continue.
+
+Busy, pending, leased, review-gated, dependency-gated, and capacity-gated work
+is `WAITING` scheduling with an exact release event, not failure or `BLOCKED`.
+Inspect disjoint work, a safe split, and permitted alternate owners/routes before
+waiting. `HARD_BLOCKED` requires the existing retry-topology authority to prove
+route exhaustion for one exact goal/request/task/surface/owner scope and retain
+attempts, alternatives, evidence, critical-path fact, release condition,
+responsible authority, and the smallest permitted solution. Exclude only that
+scope; the project stays active while any safe value-bearing item remains. Goal
+`BLOCKED` requires global exhaustion of every accepted value-bearing item or one
+genuine user/external/safety authority gate. Revalidate only on material events.
 
 Configured task counts, lane widths, and review capacity are resource limits,
 never a fixed roster or numeric role ceiling. Within the accepted objective,

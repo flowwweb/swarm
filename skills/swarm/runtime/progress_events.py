@@ -70,8 +70,13 @@ REWORK_FIELDS = frozenset({"attempt", "count", "invalidated_receipt_ids"})
 CUSTODY_FIELDS = frozenset({"surface", "receipt_id"})
 TOPOLOGY_FIELDS = frozenset({
     "node_kind", "input_receipt_ids", "dispatch_receipt_id",
-    "completion_receipt_id", "cost_receipt_ids", "release_receipt_ids", "role_manifest",
+    "completion_receipt_id", "cost_receipt_ids", "release_receipt_ids", "role_manifest", "routing_evidence",
 })
+ROUTING_EVIDENCE_FIELDS = frozenset({"disposition", "route", "selected_owner", "selected_task_id", "project_active", "release_event", "scope", "critical_path", "recovery"})
+ROUTING_SCOPE_FIELDS = frozenset({"goal_id", "request_id", "task_id", "mutable_surface", "owner_id"})
+ROUTING_RECOVERY_FIELDS = frozenset({"state", "action", "attempts", "permitted_route_ids", "failed_route_id", "evidence_receipt_ids", "release_condition", "responsible_authority", "smallest_solution"})
+ROLE_FIT_DISPOSITIONS = frozenset({"KEEP_ROLE", "SPECIALIZE_EXISTING", "ADD_INSTANCE", "REASSIGN_EXISTING", "PROPOSE_CUSTOM_ROLE"})
+EXECUTION_ROUTES = frozenset({"normal_subagent", "normal_task", "degraded_subagent", "waiting", "hard_blocked"})
 TOPOLOGY_NODE_KINDS = frozenset({"CTRL", "LEAD", "SUBAGENT", "TASK", "BLOCK"})
 ROLE_MANIFEST_FIELDS = frozenset({
     "id", "name", "purpose", "owns", "instructions", "boundaries",
@@ -392,6 +397,65 @@ def _validate_expected_observation(payload: Any) -> dict[str, Any] | None:
     }
 
 
+def _validate_routing_evidence(payload: Any) -> dict[str, Any] | None:
+    if payload is None:
+        return None
+    if not isinstance(payload, dict):
+        raise ProgressEventError("routing evidence must be an object")
+    _exact_fields(payload, ROUTING_EVIDENCE_FIELDS, "routing evidence")
+    disposition = _safe_id(payload.get("disposition"), "routing disposition")
+    route = _safe_id(payload.get("route"), "routing route")
+    if disposition not in ROLE_FIT_DISPOSITIONS or route not in EXECUTION_ROUTES:
+        raise ProgressEventError("routing evidence disposition or route is unsupported")
+    project_active = payload.get("project_active")
+    critical_path = payload.get("critical_path")
+    if not isinstance(project_active, bool) or not isinstance(critical_path, bool):
+        raise ProgressEventError("routing evidence activity and critical-path facts must be boolean")
+    raw_scope = payload.get("scope")
+    scope = None
+    if raw_scope is not None:
+        if not isinstance(raw_scope, dict):
+            raise ProgressEventError("routing scope must be an object")
+        _exact_fields(raw_scope, ROUTING_SCOPE_FIELDS, "routing scope")
+        scope = {
+            "goal_id": _safe_id(raw_scope.get("goal_id"), "routing goal_id"),
+            "request_id": _safe_id(raw_scope.get("request_id"), "routing request_id"),
+            "task_id": _safe_id(raw_scope.get("task_id"), "routing task_id"),
+            "mutable_surface": _safe_text(raw_scope.get("mutable_surface"), "routing mutable_surface", maximum=512),
+            "owner_id": _safe_id(raw_scope.get("owner_id"), "routing owner_id"),
+        }
+    raw_recovery = payload.get("recovery")
+    recovery = None
+    if raw_recovery is not None:
+        if not isinstance(raw_recovery, dict):
+            raise ProgressEventError("routing recovery must be an object")
+        _exact_fields(raw_recovery, ROUTING_RECOVERY_FIELDS, "routing recovery")
+        recovery = {
+            "state": _safe_id(raw_recovery.get("state"), "routing recovery state"),
+            "action": _safe_id(raw_recovery.get("action"), "routing recovery action"),
+            "attempts": _positive_int(raw_recovery.get("attempts"), "routing recovery attempts"),
+            "permitted_route_ids": list(_safe_ids(raw_recovery.get("permitted_route_ids"), "routing permitted routes")),
+            "failed_route_id": _safe_id(raw_recovery.get("failed_route_id"), "routing failed route"),
+            "evidence_receipt_ids": list(_safe_ids(raw_recovery.get("evidence_receipt_ids"), "routing recovery evidence")),
+            "release_condition": None if raw_recovery.get("release_condition") in (None, "") else _safe_text(raw_recovery.get("release_condition"), "routing release condition", maximum=1024),
+            "responsible_authority": _optional_id(raw_recovery.get("responsible_authority"), "routing responsible authority"),
+            "smallest_solution": _safe_text(raw_recovery.get("smallest_solution"), "routing smallest solution", maximum=1024),
+        }
+    release_event = None if payload.get("release_event") in (None, "") else _safe_text(payload.get("release_event"), "routing release event", maximum=1024)
+    if route == "waiting" and release_event is None:
+        raise ProgressEventError("WAITING routing evidence requires an exact release event")
+    if route == "hard_blocked":
+        if project_active or scope is None or recovery is None or recovery["attempts"] < 3 or not recovery["permitted_route_ids"] or not recovery["release_condition"] or not recovery["responsible_authority"]:
+            raise ProgressEventError("HARD_BLOCKED routing evidence requires scoped retained exhaustion and release authority")
+    return {
+        "disposition": disposition, "route": route,
+        "selected_owner": _safe_id(payload.get("selected_owner"), "routing selected owner"),
+        "selected_task_id": _optional_id(payload.get("selected_task_id"), "routing selected task"),
+        "project_active": project_active, "release_event": release_event, "scope": scope,
+        "critical_path": critical_path, "recovery": recovery,
+    }
+
+
 def task_handoff_host_binding(payload: Mapping[str, Any]) -> str:
     """Bind one opaque host receipt to the exact task-start or acknowledgement fact."""
     event = validate_task_handoff_event({key: payload.get(key) for key in TASK_HANDOFF_EVENT_FIELDS})
@@ -655,6 +719,7 @@ class ProgressMaterialEvent:
     cost_receipt_ids: tuple[str, ...]
     release_receipt_ids: tuple[str, ...]
     role_manifest: dict[str, Any] | None
+    routing_evidence: dict[str, Any] | None
     expected_observation: dict[str, Any] | None
     digest: str
     semantic_digest: str
@@ -724,6 +789,8 @@ class ProgressMaterialEvent:
             }
             if self.role_manifest is not None:
                 payload["topology"]["role_manifest"] = self.role_manifest
+            if self.routing_evidence is not None:
+                payload["topology"]["routing_evidence"] = self.routing_evidence
         if self.expected_observation is not None:
             payload["expected_observation"] = self.expected_observation
         return payload
@@ -951,6 +1018,7 @@ def _validate_progress_material_event(
         cost_receipt_ids = _safe_ids(topology.get("cost_receipt_ids"), "topology cost_receipt_ids")
         release_receipt_ids = _safe_ids(topology.get("release_receipt_ids"), "topology release_receipt_ids")
         role_payload = topology.get("role_manifest")
+        routing_evidence = _validate_routing_evidence(topology.get("routing_evidence"))
     else:
         if topology is not None:
             raise ProgressEventError("schema-v1 progress events cannot carry topology")
@@ -961,6 +1029,7 @@ def _validate_progress_material_event(
         cost_receipt_ids = ()
         release_receipt_ids = ()
         role_payload = None
+        routing_evidence = None
     role_kinds = {
         ProgressEventKind.ROLE_MANIFEST_CREATE,
         ProgressEventKind.ROLE_MANIFEST_REVISE,
@@ -1000,6 +1069,10 @@ def _validate_progress_material_event(
         if role_payload is not None:
             raise ProgressEventError("non-role progress events cannot carry a role manifest")
         role_manifest = None
+    if routing_evidence is not None:
+        measurement = payload.get("measurement")
+        if measurement_state is not ProgressMeasurementState.UNMEASURED or committed_weight is not None or admitted_proof_weight or proof_receipt_ids or material_update_sentence is not None:
+            raise ProgressEventError("routing evidence is non-progress decision evidence")
     if event_kind is ProgressEventKind.USER_STEERING_ACCEPTED and not steering_receipt_ids:
         raise ProgressEventError("accepted steering requires an exact steering receipt")
     expected_observation = _validate_expected_observation(payload.get("expected_observation"))
@@ -1048,6 +1121,7 @@ def _validate_progress_material_event(
         cost_receipt_ids=cost_receipt_ids,
         release_receipt_ids=release_receipt_ids,
         role_manifest=role_manifest,
+        routing_evidence=routing_evidence,
         expected_observation=expected_observation,
         digest=hashlib.sha256(encoded).hexdigest(),
         semantic_digest=semantic_digest,
@@ -2491,6 +2565,7 @@ class Ledger:
                 "completion_receipt_id": event.completion_receipt_id,
                 "cost_receipt_ids": sorted(event.cost_receipt_ids),
                 "release_receipt_ids": sorted(event.release_receipt_ids),
+                "routing_evidence": event.routing_evidence,
                 "unknown_receipt_ids": sorted(set(node_unknown)),
                 "latest_event_id": event.event_id,
                 "latest_event_digest": authority_digest(event),

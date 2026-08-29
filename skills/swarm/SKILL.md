@@ -74,6 +74,10 @@ Before the first mutable handoff, select the most efficient and smallest graph t
 
 Do not pre-create a profession roster. Materialize only a current ready boundary or artifact: use a LEAD when durable ownership, integration, resumption, or recursive staffing is actually required; use a DOER for bounded production. LEAD is an ownership function, not a prestige default. If the plan cannot explain why each LEAD needs a mutable boundary and why each DOER owns a concrete artifact, it is not ready to create host tasks.
 
+At a material routing trigger, `WorkRoutingFacts -> route_execution` records exactly one role-fit disposition: `KEEP_ROLE`, `SPECIALIZE_EXISTING`, `ADD_INSTANCE`, `REASSIGN_EXISTING`, or `PROPOSE_CUSTOM_ROLE`. This is explainable topology evidence, never progress or authority. Reuse a fitting specialization before adding an instance; propose a custom profession only for a durable uncovered gap. A busy profession is not singleton: disjoint work may add an instance, while the same mutable surface serializes. Escalate DOER to its owning LEAD, cross-lane coordination to the active Manager, and only objective, shared-surface, authority, or user-reserved changes to CTRL.
+
+Busy, pending, leased, review-gated, dependency-gated, and capacity-gated work is scheduling, not failure. Prefer a disjoint lane, safe split, or permitted alternate; otherwise retain `WAITING` with the exact release event. `HARD_BLOCKED` is reserved for existing retry-topology proof of scoped permitted-route exhaustion with a named release condition and authority. Exclude only that exact goal/request/task/surface/owner scope; the project remains active while any safe value-bearing work can continue.
+
 Use the shallowest structure that can finish the accepted objective. `CTRL_DIRECT`
 is limited to exactly one low-risk atomic outcome using `GENERAL` work on one mutable
 surface: read-only inspection, one focused check, or a bounded copy,

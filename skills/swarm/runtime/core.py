@@ -153,7 +153,8 @@ class CtrlPulseReason(StrEnum): MATERIAL_CHANGE="material_change"; BOUNDED_DUE="
 class SubagentException(StrEnum):
     CAPACITY="capacity"; HOST_GATE="host_gate"; COLLISION="collision"; SAFETY="safety"; WHOLE_TASK_COST="whole_task_cost"
 class HostTaskCapacity(StrEnum): AVAILABLE="available"; UNAVAILABLE="unavailable"; REJECTED="rejected"; USAGE_LIMITED="usage_limited"
-class ExecutionRoute(StrEnum): NORMAL_SUBAGENT="normal_subagent"; NORMAL_TASK="normal_task"; DEGRADED_SUBAGENT="degraded_subagent"; HARD_BLOCKED="hard_blocked"
+class ExecutionRoute(StrEnum): NORMAL_SUBAGENT="normal_subagent"; NORMAL_TASK="normal_task"; DEGRADED_SUBAGENT="degraded_subagent"; WAITING="waiting"; HARD_BLOCKED="hard_blocked"
+class RoleFitDisposition(StrEnum): KEEP_ROLE="KEEP_ROLE"; SPECIALIZE_EXISTING="SPECIALIZE_EXISTING"; ADD_INSTANCE="ADD_INSTANCE"; REASSIGN_EXISTING="REASSIGN_EXISTING"; PROPOSE_CUSTOM_ROLE="PROPOSE_CUSTOM_ROLE"
 class StructuralAuthority(StrEnum): CTRL="CTRL"; LEAD="LEAD"; DOER="DOER"
 class StructuralAssignmentKind(StrEnum): LEAD_DIRECT="lead_direct"; NESTED_LEAD="nested_lead"; DOER="doer"
 class SubagentOutcome(StrEnum): COMPLETE="COMPLETE"; PROMOTE_TO_VISIBLE_TASK="PROMOTE_TO_VISIBLE_TASK"
@@ -237,8 +238,15 @@ class RoutingEconomics:
 @dataclass(frozen=True)
 class WorkRoutingFacts:
     size:WorkSize; bounded:bool; low_risk:bool; mutable_surface_count:int; independent_work:bool=False; independent_acceptance:bool=False; separate_handoff:bool=False; useful_durable_boundary:bool=False; interruption_safe_resumption:bool=False; worktree_isolation:bool=False; independent_review:bool=False; work_kind:WorkKind=WorkKind.GENERAL; visual_ownership:VisualOwnership=VisualOwnership.PRODUCT_EXPERIENCE; user_visible_delivery:bool=False; cross_lane_dependency:bool=False; material_heartbeat_obligation:bool=False; may_need_recruitment:bool=False; requires_recursive_delegation:bool=False
+    owner_busy:bool=False; shared_mutable_surface:bool=False; cross_lane_coordination:bool=False; requested_specialization:str=""; available_specializations:tuple[str,...]=(); durable_uncovered_role_gap:bool=False
     def __post_init__(self):
         if not isinstance(self.size,WorkSize) or not isinstance(self.mutable_surface_count,int) or self.mutable_surface_count<1 or not isinstance(self.work_kind,WorkKind) or not isinstance(self.visual_ownership,VisualOwnership): raise InvariantError("routing facts require typed size, work kind, visual ownership, and at least one mutable surface")
+        if any(not isinstance(value,bool) for value in (self.owner_busy,self.shared_mutable_surface,self.cross_lane_coordination,self.durable_uncovered_role_gap)): raise InvariantError("routing scheduling and role-fit facts must be boolean")
+        specialization=self.requested_specialization.strip()
+        available=tuple(item.strip() for item in self.available_specializations)
+        if any(not item or any(character in item for character in "\r\n\t") for item in available) or len(set(item.casefold() for item in available))!=len(available): raise InvariantError("available specializations must be distinct readable labels")
+        if specialization and any(character in specialization for character in "\r\n\t"): raise InvariantError("requested specialization must be a readable label")
+        object.__setattr__(self,"requested_specialization",specialization); object.__setattr__(self,"available_specializations",available)
     def required_visual_profession(self)->str:
         if self.work_kind is WorkKind.DESIGN: return "designer"
         if self.work_kind in {WorkKind.IMAGEGEN,WorkKind.IMAGE_EDIT}: return "artist" if self.visual_ownership is VisualOwnership.EXPRESSIVE_ART else "designer"
@@ -334,11 +342,48 @@ class HostCapacityEvidence:
         if not isinstance(self.task_status,HostTaskCapacity) or not isinstance(self.subagents_available,bool) or not isinstance(self.receipt,str) or not self.receipt.strip(): raise InvariantError("host capacity requires typed availability and an exact receipt")
 
 @dataclass(frozen=True)
+class RoutingScope:
+    goal_id:str; request_id:str; task_id:str; mutable_surface:str; owner_id:str
+    def __post_init__(self):
+        values=(self.goal_id,self.request_id,self.task_id,self.mutable_surface,self.owner_id)
+        if any(not isinstance(value,str) or not value.strip() or len(value)>512 or any(character in value for character in "\r\n\t") for value in values): raise InvariantError("routing scope requires exact readable goal, request, task, surface, and owner")
+        object.__setattr__(self,"goal_id",self.goal_id.strip()); object.__setattr__(self,"request_id",self.request_id.strip()); object.__setattr__(self,"task_id",self.task_id.strip()); object.__setattr__(self,"mutable_surface",self.mutable_surface.strip()); object.__setattr__(self,"owner_id",self.owner_id.strip())
+
+@dataclass(frozen=True)
 class ExecutionRoutingDecision:
     route:ExecutionRoute; accountable_owner:str; authority_chain:tuple[str,...]; reason:str; host_receipt:str; economics:RoutingEconomics
     degraded_exception:DegradedCapacityException|None=None; immutable_checkpoint:str=""; resumption_marker:str=""; unverified_gates:tuple[str,...]=(); pending_route:ExecutionRoute|None=None
+    role_fit:RoleFitDisposition=RoleFitDisposition.KEEP_ROLE; selected_owner:str=""; selected_task_id:str=""; project_active:bool=True; release_event:str=""; scope:RoutingScope|None=None; critical_path:bool=False; recovery:"ControlPathRecoveryDecision|None"=None
     @property
     def subagent_authoritative(self)->bool: return False
+    def topology_evidence(self)->dict[str,object]:
+        recovery=self.recovery
+        return {
+            "disposition":self.role_fit.value,"route":self.route.value,"selected_owner":self.selected_owner or self.accountable_owner,
+            "selected_task_id":self.selected_task_id or None,"project_active":self.project_active,"release_event":self.release_event or None,
+            "scope":None if self.scope is None else {"goal_id":self.scope.goal_id,"request_id":self.scope.request_id,"task_id":self.scope.task_id,"mutable_surface":self.scope.mutable_surface,"owner_id":self.scope.owner_id},
+            "critical_path":self.critical_path,
+            "recovery":None if recovery is None else {
+                "state":recovery.state.value,"action":recovery.action.value,"attempts":recovery.equivalent_failures,
+                "permitted_route_ids":list(recovery.permitted_routes),"failed_route_id":recovery.failure.failed_route,
+                "evidence_receipt_ids":[recovery.failure.completion_receipt_id,*([recovery.release_receipt_id] if recovery.release_receipt_id else [])],
+                "release_condition":recovery.release_condition or None,"responsible_authority":recovery.responsible_authority or None,
+                "smallest_solution":recovery.next_check_or_release,
+            },
+        }
+
+def _role_fit(facts:WorkRoutingFacts, *, accountable_owner:str, manager_owner:str) -> tuple[RoleFitDisposition,str]:
+    if facts.cross_lane_coordination:
+        manager=manager_owner.strip()
+        if not manager: raise InvariantError("cross-lane coordination requires the active Manager owner")
+        return RoleFitDisposition.REASSIGN_EXISTING,manager
+    if facts.requested_specialization and facts.requested_specialization.casefold() in {item.casefold() for item in facts.available_specializations}:
+        return RoleFitDisposition.SPECIALIZE_EXISTING,accountable_owner
+    if facts.durable_uncovered_role_gap:
+        return RoleFitDisposition.PROPOSE_CUSTOM_ROLE,accountable_owner
+    if facts.owner_busy and facts.independent_work and not facts.shared_mutable_surface:
+        return RoleFitDisposition.ADD_INSTANCE,accountable_owner
+    return RoleFitDisposition.KEEP_ROLE,accountable_owner
 
 def _route_candidate(*, facts:WorkRoutingFacts, economics:RoutingEconomics, capacity:HostCapacityEvidence, accountable_owner:str, lead_owner:str, immutable_checkpoint:str, resumption_marker:str, affected_gates:tuple[str,...]) -> ExecutionRoutingDecision:
     owner=accountable_owner.strip() if isinstance(accountable_owner,str) else ""; lead=lead_owner.strip() if isinstance(lead_owner,str) else ""
@@ -364,14 +409,35 @@ def _route_candidate(*, facts:WorkRoutingFacts, economics:RoutingEconomics, capa
     reason="visual work requires the visible assigned visual profession; subagent fallback is prohibited" if facts.requires_visual_profession() else "recursive delegation or recruitment requires a visible owner; hidden subagent fallback is prohibited" if facts.requires_visible_recursive_owner() else "no permitted task or subagent structure can progress"
     return ExecutionRoutingDecision(ExecutionRoute.HARD_BLOCKED,owner,(owner,),reason,capacity.receipt,economics)
 
-def route_execution(*, facts:WorkRoutingFacts, economics:RoutingEconomics, capacity:HostCapacityEvidence, accountable_owner:str, lead_owner:str="", assigned_profession:str="", immutable_checkpoint:str="", resumption_marker:str="", affected_gates:tuple[str,...]=(), current:ExecutionRoutingDecision|None=None, safe_boundary:bool=True) -> ExecutionRoutingDecision:
+def route_execution(*, facts:WorkRoutingFacts, economics:RoutingEconomics, capacity:HostCapacityEvidence, accountable_owner:str, lead_owner:str="", assigned_profession:str="", manager_owner:str="", immutable_checkpoint:str="", resumption_marker:str="", affected_gates:tuple[str,...]=(), current:ExecutionRoutingDecision|None=None, safe_boundary:bool=True, release_event:str="", scope:RoutingScope|None=None, critical_path:bool=False, recovery:"ControlPathRecoveryDecision|None"=None) -> ExecutionRoutingDecision:
     required=facts.required_visual_profession()
     if required:
         if not assigned_profession.strip(): raise InvariantError(f"{facts.visual_ownership.value} {facts.work_kind.value} work requires the {BUILT_IN_PROFESSIONS[required]} profession")
         try: actual=resolve_profession_id(assigned_profession)
         except ValueError as error: raise InvariantError(str(error)) from error
         if actual!=required: raise InvariantError(f"{facts.visual_ownership.value} {facts.work_kind.value} work requires the {BUILT_IN_PROFESSIONS[required]} profession")
-    candidate=_route_candidate(facts=facts,economics=economics,capacity=capacity,accountable_owner=accountable_owner,lead_owner=lead_owner,immutable_checkpoint=immutable_checkpoint,resumption_marker=resumption_marker,affected_gates=affected_gates)
+    role_fit,selected_owner=_role_fit(facts,accountable_owner=accountable_owner,manager_owner=manager_owner)
+    if recovery is not None and not isinstance(recovery,ControlPathRecoveryDecision): raise InvariantError("routing recovery must use the existing retry-topology decision")
+    if recovery is not None and recovery.disjoint_ready_task_ids:
+        candidate=_route_candidate(facts=facts,economics=economics,capacity=capacity,accountable_owner=accountable_owner,lead_owner=lead_owner,immutable_checkpoint=immutable_checkpoint,resumption_marker=resumption_marker,affected_gates=affected_gates)
+        candidate=replace(candidate,role_fit=role_fit,selected_owner=selected_owner,selected_task_id=sorted(recovery.disjoint_ready_task_ids)[0],project_active=True,scope=scope,critical_path=critical_path,recovery=recovery)
+    elif recovery is not None and recovery.terminal_blocked:
+        if scope is None or recovery.equivalent_failures<3 or not recovery.permitted_routes or not recovery.release_condition or not recovery.responsible_authority: raise InvariantError("HARD_BLOCKED requires exact scoped retained route exhaustion and release authority")
+        candidate=ExecutionRoutingDecision(ExecutionRoute.HARD_BLOCKED,accountable_owner,(accountable_owner,),"exact scoped permitted routes are exhausted",capacity.receipt,economics,role_fit=role_fit,selected_owner=selected_owner,project_active=False,release_event=recovery.next_check_or_release,scope=scope,critical_path=critical_path,recovery=recovery)
+    elif recovery is not None:
+        candidate=ExecutionRoutingDecision(ExecutionRoute.WAITING,accountable_owner,(accountable_owner,),"recovery remains nonterminal while its release or alternate route is pending",capacity.receipt,economics,role_fit=role_fit,selected_owner=selected_owner,project_active=True,release_event=recovery.next_check_or_release,scope=scope,critical_path=critical_path,recovery=recovery)
+    elif facts.owner_busy and facts.shared_mutable_surface:
+        release=release_event.strip()
+        if not release: raise InvariantError("shared-surface serialization requires an exact release event")
+        candidate=ExecutionRoutingDecision(ExecutionRoute.WAITING,accountable_owner,(accountable_owner,),"same mutable surface serializes behind its current lease",capacity.receipt,economics,role_fit=RoleFitDisposition.KEEP_ROLE,selected_owner=accountable_owner,project_active=True,release_event=release,scope=scope,critical_path=critical_path)
+    else:
+        candidate=_route_candidate(facts=facts,economics=economics,capacity=capacity,accountable_owner=accountable_owner,lead_owner=lead_owner,immutable_checkpoint=immutable_checkpoint,resumption_marker=resumption_marker,affected_gates=affected_gates)
+        if candidate.route is ExecutionRoute.HARD_BLOCKED:
+            release=release_event.strip()
+            if not release: raise InvariantError("unavailable capacity requires an exact release event")
+            candidate=replace(candidate,route=ExecutionRoute.WAITING,reason="capacity or owner availability is scheduling, not route exhaustion",role_fit=role_fit,selected_owner=selected_owner,project_active=True,release_event=release,scope=scope,critical_path=critical_path)
+        else:
+            candidate=replace(candidate,role_fit=role_fit,selected_owner=selected_owner,scope=scope,critical_path=critical_path)
     if current is not None and candidate.route is not current.route and not safe_boundary:
         return replace(current,reason="topology change deferred until the next safe boundary",pending_route=candidate.route)
     return candidate

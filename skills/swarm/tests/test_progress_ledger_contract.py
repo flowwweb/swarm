@@ -23,7 +23,7 @@ from skills.swarm.runtime.progress_events import (
     validate_progress_material_event,
     validate_role_manifest,
 )
-from skills.swarm.runtime.core import AcceptanceContract, ArtifactIdentity, ControlPathFailure, ControlPathFailureKind, ControlPathRecoveryAction, CustodyMutation, DelegationContract, HostCustodyReceipt, InvariantError, OperationClass, ProofClass, ProfessionAssignment, RecoveryCause, Role, RoleGateDecision, Swarm, Task, TaskStartReceipt, Worker, WorkerState, WorkKind, _HOST_AUTHORITY_GENERATOR, _HOST_AUTHORITY_PRIME, _custody_message, role_gate
+from skills.swarm.runtime.core import AcceptanceContract, ArtifactIdentity, ControlPathFailure, ControlPathFailureKind, ControlPathRecoveryAction, CustodyMutation, DelegationContract, HostCapacityEvidence, HostCustodyReceipt, HostTaskCapacity, InvariantError, OperationClass, ProofClass, ProfessionAssignment, RecoveryCause, Role, RoleFitDisposition, RoleGateDecision, RoutingEconomics, RoutingEvidenceBasis, RoutingScope, Swarm, Task, TaskStartReceipt, Worker, WorkerState, WorkKind, WorkRoutingFacts, WorkSize, _HOST_AUTHORITY_GENERATOR, _HOST_AUTHORITY_PRIME, _custody_message, role_gate, route_execution
 
 
 class ProgressLedgerContractTests(unittest.TestCase):
@@ -972,6 +972,32 @@ class ProgressLedgerContractTests(unittest.TestCase):
             json.dumps(first, sort_keys=True, separators=(",", ":")),
             json.dumps(second, sort_keys=True, separators=(",", ":")),
         )
+
+    def test_role_fit_routing_evidence_replays_once_without_progress_credit(self) -> None:
+        decision = route_execution(
+            facts=WorkRoutingFacts(WorkSize.MEDIUM, True, True, 1, independent_work=True, owner_busy=True),
+            economics=RoutingEconomics(0, 1, 0, 0, 0, 0, 0, RoutingEvidenceBasis.CONSERVATIVE_ASSUMPTION, assumptions=("bounded test",)),
+            capacity=HostCapacityEvidence(HostTaskCapacity.AVAILABLE, True, "host-capacity"),
+            accountable_owner="designer-a", lead_owner="designer-a",
+            scope=RoutingScope("goal-a", "request-a", "task-routing", "console/card.css", "designer-a"),
+        )
+        self.assertEqual(decision.role_fit, RoleFitDisposition.ADD_INSTANCE)
+        event = self.topology_event("routing-event", "routing", task_id="task-routing")
+        event["topology"]["routing_evidence"] = decision.topology_evidence()
+        self.assertEqual(self.ledger.append(event)["status"], "appended")
+        self.assertEqual(self.ledger.append(event)["status"], "unchanged")
+        restarted = self.host_ledger(self.root).project_topology("project-alpha", "ctrl-alpha")
+        node = next(item for item in restarted["nodes"] if item["node_id"] == "routing")
+        self.assertEqual(node["routing_evidence"]["disposition"], "ADD_INSTANCE")
+        self.assertTrue(node["routing_evidence"]["project_active"])
+        self.assertEqual(node["routing_evidence"]["scope"]["mutable_surface"], "console/card.css")
+
+        invalid = self.topology_event("routing-invalid", "routing-invalid", committed=1, admitted=1)
+        invalid["topology"]["routing_evidence"] = decision.topology_evidence()
+        before = self.host_ledger(self.root).project_topology("project-alpha", "ctrl-alpha")
+        with self.assertRaisesRegex(ProgressEventError, "non-progress decision evidence"):
+            self.ledger.append(invalid)
+        self.assertEqual(self.host_ledger(self.root).project_topology("project-alpha", "ctrl-alpha"), before)
 
     def test_projection_separates_effective_time_from_knowledge_cursor(self) -> None:
         self.ledger.append(self.topology_event("late-known-first", "late", observed_at_ms=20))

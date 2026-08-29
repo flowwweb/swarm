@@ -15,7 +15,9 @@ from skills.swarm.runtime.core import (
     ControlPathTruth,
     CustodyMutation,
     DelegationContract,
+    HostCapacityEvidence,
     HostCustodyReceipt,
+    HostTaskCapacity,
     InvariantError,
     MaterialStateKind,
     MaterialStateReceipt,
@@ -27,12 +29,18 @@ from skills.swarm.runtime.core import (
     RetryOutcome,
     RetryTopologyAction,
     RetryTopologyLedger,
+    RoutingEconomics,
+    RoutingEvidenceBasis,
+    RoutingScope,
     Swarm,
     Task,
     TaskState,
     Worker,
     WorkerState,
+    WorkRoutingFacts,
+    WorkSize,
     WatchdogSignal,
+    route_execution,
 )
 
 
@@ -465,6 +473,26 @@ class TopologyOptimizationContractTests(unittest.TestCase):
                 self.assertEqual(waiting.release_condition, release)
                 self.assertEqual(swarm.tasks["task-b"].state, TaskState.ACTIVE)
                 self.assertNotIn(("BLOCKED", "task-a"), swarm.events)
+
+    def test_scoped_wait_keeps_project_active_and_routes_disjoint_ready_work(self) -> None:
+        swarm, artifact = self.delegated_swarm()
+        waiting = swarm.resolve_control_path_failure(
+            Role.CTRL,
+            self.control_failure(artifact, cause=RecoveryCause.DEPENDENCY, affected_edges=("shared-console",)),
+            release_condition="shared-console-released",
+            disjoint_ready_task_ids=("task-b",),
+        )
+        routed = route_execution(
+            facts=WorkRoutingFacts(WorkSize.MEDIUM, True, True, 1),
+            economics=RoutingEconomics(0, 1, 0, 0, 0, 0, 0, RoutingEvidenceBasis.CONSERVATIVE_ASSUMPTION, assumptions=("bounded test",)),
+            capacity=HostCapacityEvidence(HostTaskCapacity.AVAILABLE, True, "host-capacity"),
+            accountable_owner="lead-a", lead_owner="lead-a", recovery=waiting,
+            scope=RoutingScope("goal-a", "request-a", "task-a", "shared-console", "owner-a"),
+        )
+        self.assertEqual(routed.selected_task_id, "task-b")
+        self.assertTrue(routed.project_active)
+        self.assertNotEqual(routed.route.value, "hard_blocked")
+        self.assertEqual(routed.topology_evidence()["recovery"]["state"], "WAITING")
 
     def test_terminal_blocked_requires_bounded_failure_and_exact_release_authority(self) -> None:
         swarm, artifact = self.delegated_swarm()

@@ -54,6 +54,14 @@ SKILLS: any agent may request a role skill with exact source/version or digest, 
 INCIDENTS: LEAD consultation receipt for matching unresolved `.codex/swarm/incidents.jsonl` records.
 ```
 
+One material route decision may be retained in the existing Ledger topology
+envelope. It binds the role-fit disposition, selected owner/task, exact
+goal/request/task/surface/owner scope, route, release event, critical-path fact,
+and existing retry-topology receipt. It is `UNMEASURED`, grants no authority,
+and contributes no progress. Exact replay is a no-op. Scheduling gates remain
+`WAITING`; terminal `HARD_BLOCKED` is valid only with retained scoped route
+exhaustion, release condition, responsible authority, and smallest solution.
+
 ## Delegated return gate
 
 Task creation, dispatch success, commentary, timeout, silence, empty or

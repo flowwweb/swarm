@@ -11,6 +11,8 @@ from skills.swarm.runtime import (
     LeadBottleneckReason,
     LeadCapacityEvidence,
     Role,
+    RoleFitDisposition,
+    RoutingScope,
     RoutingEconomics,
     RoutingEvidenceBasis,
     UsageCapacitySnapshot,
@@ -141,9 +143,10 @@ class RuntimeRoutingTests(unittest.TestCase):
                     immutable_checkpoint="sha256:abc",
                     resumption_marker="resume:visible-owner",
                     affected_gates=("acceptance",),
+                    release_event="host-task-capacity-available",
                 )
-                self.assertEqual(blocked.route, ExecutionRoute.HARD_BLOCKED)
-                self.assertIn("hidden subagent fallback is prohibited", blocked.reason)
+                self.assertEqual(blocked.route, ExecutionRoute.WAITING)
+                self.assertTrue(blocked.project_active)
 
     def test_subagent_is_a_leaf_and_returns_typed_visible_task_promotion(self) -> None:
         complete = subagent_leaf_return(accountable_parent="lead-a")
@@ -201,9 +204,10 @@ class RuntimeRoutingTests(unittest.TestCase):
             economics=economics(savings=20, overhead=60),
             capacity=blocked,
             accountable_owner="CTRL",
+            release_event="host-task-capacity-available",
         )
-        self.assertEqual(no_visible_task.route, ExecutionRoute.HARD_BLOCKED)
-        self.assertIn("no permitted task", no_visible_task.reason)
+        self.assertEqual(no_visible_task.route, ExecutionRoute.WAITING)
+        self.assertTrue(no_visible_task.project_active)
 
     def test_product_design_and_image_generation_require_a_designer_lane(self) -> None:
         for work_kind in (WorkKind.DESIGN, WorkKind.IMAGEGEN):
@@ -235,9 +239,10 @@ class RuntimeRoutingTests(unittest.TestCase):
             capacity=blocked,
             accountable_owner="CTRL",
             assigned_profession="DESIGNER",
+            release_event="designer-lane-capacity-available",
         )
-        self.assertEqual(decision.route, ExecutionRoute.HARD_BLOCKED)
-        self.assertIn("visual work", decision.reason)
+        self.assertEqual(decision.route, ExecutionRoute.WAITING)
+        self.assertEqual(decision.release_event, "designer-lane-capacity-available")
 
     def test_large_or_interruption_prone_single_surface_work_requires_task_without_speedup(self) -> None:
         cases=(facts(WorkSize.LARGE),facts(WorkSize.MEDIUM,interruption_safe_resumption=True))
@@ -263,10 +268,41 @@ class RuntimeRoutingTests(unittest.TestCase):
         self.assertTrue(decision.immutable_checkpoint)
         self.assertTrue(decision.resumption_marker)
 
-    def test_no_permitted_structure_is_hard_blocked(self) -> None:
+    def test_capacity_unavailable_is_waiting_not_route_exhaustion(self) -> None:
         blocked=HostCapacityEvidence(HostTaskCapacity.REJECTED,False,"host:error:task rejected and subagents unavailable")
-        decision=route_execution(facts=facts(WorkSize.LARGE),economics=economics(),capacity=blocked,accountable_owner="lead-a")
-        self.assertEqual(decision.route,ExecutionRoute.HARD_BLOCKED)
+        decision=route_execution(facts=facts(WorkSize.LARGE),economics=economics(),capacity=blocked,accountable_owner="lead-a",release_event="host-capacity-restored")
+        self.assertEqual(decision.route,ExecutionRoute.WAITING)
+        self.assertTrue(decision.project_active)
+
+    def test_role_fit_is_one_evidence_disposition_without_singleton_professions(self) -> None:
+        scope=RoutingScope("goal-design","request-card","task-card","console/card.css","designer-a")
+        added=route_execution(
+            facts=facts(WorkSize.MEDIUM,work_kind=WorkKind.DESIGN,owner_busy=True,independent_work=True),
+            economics=economics(),capacity=AVAILABLE,accountable_owner="designer-a",lead_owner="designer-a",assigned_profession="designer",scope=scope,
+        )
+        self.assertEqual((added.role_fit,added.project_active),(RoleFitDisposition.ADD_INSTANCE,True))
+        specialized=route_execution(
+            facts=facts(requested_specialization="Game Design",available_specializations=("Game Design","UX Design")),
+            economics=economics(),capacity=AVAILABLE,accountable_owner="designer-a",
+        )
+        self.assertEqual(specialized.role_fit,RoleFitDisposition.SPECIALIZE_EXISTING)
+        unchanged=route_execution(
+            facts=facts(requested_specialization="Novel Domain"),economics=economics(),capacity=AVAILABLE,accountable_owner="lead-a",
+        )
+        proposed=route_execution(
+            facts=facts(requested_specialization="Novel Domain",durable_uncovered_role_gap=True),economics=economics(),capacity=AVAILABLE,accountable_owner="lead-a",
+        )
+        self.assertEqual((unchanged.role_fit,proposed.role_fit),(RoleFitDisposition.KEEP_ROLE,RoleFitDisposition.PROPOSE_CUSTOM_ROLE))
+
+    def test_shared_surface_serializes_and_cross_lane_coordination_uses_manager(self) -> None:
+        serialized=route_execution(
+            facts=facts(owner_busy=True,shared_mutable_surface=True),economics=economics(),capacity=AVAILABLE,accountable_owner="designer-a",release_event="console-lease-released",
+        )
+        self.assertEqual((serialized.route,serialized.release_event,serialized.project_active),(ExecutionRoute.WAITING,"console-lease-released",True))
+        reassigned=route_execution(
+            facts=facts(cross_lane_coordination=True,work_kind=WorkKind.DESIGN),economics=economics(),capacity=AVAILABLE,accountable_owner="designer-a",lead_owner="designer-a",assigned_profession="designer",manager_owner="manager-a",
+        )
+        self.assertEqual((reassigned.role_fit,reassigned.selected_owner),(RoleFitDisposition.REASSIGN_EXISTING,"manager-a"))
 
     def test_changed_route_is_deferred_until_safe_boundary(self) -> None:
         current=route_execution(facts=facts(),economics=economics(),capacity=AVAILABLE,accountable_owner="lead-a")
