@@ -1,6 +1,7 @@
-const state = { token: "", overview: null, proof: [], proofCollections: new Map(), proofStatuses: new Map(), proofStatus: "idle", proofSequence: 0, usageHistory: null, usageWindowHours: 24, usageScopeKey: "", usageStatus: "idle", usageError: "", projectProgress: null, projectProgressProjectId: "", projectProgressStatus: "idle", projectProgressError: "", projectProgressFeed: null, projectProgressFeedProjectId: "", projectProgressFeedStatus: "idle", projectProgressFeedError: "", projectTab: "overview", diagnostics: null, health: null, storage: null, config: null, configStatus: "idle", configError: "", chatRelaySaving: false, ctrlSettings: null, auto: null, autoBindingKey: "", autoStatus: "idle", autoError: "", autoSaving: false, skills: null, skillsError: "", roleManifests: null, roleManifestStatus: "unavailable", roleManifestError: "", agentsTab: "active", selectedRoleId: "accountant", roleEditorTrigger: null, assetView: "grid", selectedAssetIdentity: "", onboardingStep: 0, onboardingShown: false, onboardingTrigger: null, notifications: null, notificationBindingKey: "", notificationStatus: "idle", notificationError: "", notificationAckFlight: null, notificationRequestGenerations: new Map(), notificationPresentedIds: new Set(), notificationToast: null, notificationToastTimer: null, notificationTrigger: null, connectionStatus: "reconnecting", view: "overview", projectId: "all", ctrlId: "", settingsCtrlId: "", settingsScopeType: "", settingsScopeId: "", evidenceImages: [], evidenceIndex: 0, evidenceTrigger: null };
+const state = { token: "", overview: null, proof: [], proofCollections: new Map(), proofStatuses: new Map(), proofStatus: "idle", proofSequence: 0, usageHistory: null, usageWindowHours: 24, usageScopeKey: "", usageStatus: "idle", usageError: "", projectProgress: null, projectProgressProjectId: "", projectProgressStatus: "idle", projectProgressError: "", projectProgressFeed: null, projectProgressFeedProjectId: "", projectProgressFeedStatus: "idle", projectProgressFeedError: "", projectTab: "overview", runLogs: new Map(), runLogRequestGenerations: new Map(), runLogSurfaceStates: new Map(), runLogAgent: null, diagnostics: null, health: null, storage: null, config: null, configStatus: "idle", configError: "", chatRelaySaving: false, ctrlSettings: null, auto: null, autoBindingKey: "", autoStatus: "idle", autoError: "", autoSaving: false, skills: null, skillsError: "", roleManifests: null, roleManifestStatus: "unavailable", roleManifestError: "", agentsTab: "active", selectedRoleId: "accountant", roleEditorTrigger: null, assetView: "grid", selectedAssetIdentity: "", onboardingStep: 0, onboardingShown: false, onboardingTrigger: null, notifications: null, notificationBindingKey: "", notificationStatus: "idle", notificationError: "", notificationAckFlight: null, notificationRequestGenerations: new Map(), notificationPresentedIds: new Set(), notificationToast: null, notificationToastTimer: null, notificationTrigger: null, connectionStatus: "reconnecting", view: "overview", projectId: "all", ctrlId: "", settingsCtrlId: "", settingsScopeType: "", settingsScopeId: "", evidenceImages: [], evidenceIndex: 0, evidenceTrigger: null };
 const EVIDENCE_THUMBNAIL_PAGE_SIZE = 24;
 const USAGE_WINDOW_LABELS = { 1: "1h", 24: "1d" };
+const RUN_LOG_CLIENT_LIMIT = 200;
 const ROLE_PROFESSIONS = [
   ["accountant", "Accountant"], ["analyst", "Analyst"], ["architect", "Architect"], ["artist", "Artist"],
   ["auditor", "Auditor"], ["assistant", "Assistant"], ["designer", "Designer"], ["developer", "Developer"],
@@ -16,6 +17,50 @@ const ONBOARDING_STEPS = [
 ];
 const $ = (selector, root = document) => root.querySelector(selector);
 const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
+
+function runLogBindingKey(binding) {
+  return binding ? [binding.projectId, binding.ctrlId, binding.agentId || ""].join("|") : "";
+}
+
+function runLogItemIdentity(item) {
+  const eventId = String(item?.event_id || "").trim();
+  const digest = String(item?.event_digest || "").trim();
+  return eventId && digest ? eventId + "|" + digest : "";
+}
+
+function runLogResponseMatches(result, binding) {
+  const scope = result?.scope;
+  return result?.ok === true
+    && scope?.project_id === binding?.projectId
+    && scope?.ctrl_id === binding?.ctrlId
+    && String(scope?.agent_id || "") === String(binding?.agentId || "")
+    && Array.isArray(result.items);
+}
+
+function mergeRunLogItems(previous, incoming, replace = false, limit = RUN_LOG_CLIENT_LIMIT) {
+  const existing = replace ? [] : (Array.isArray(previous) ? previous : []);
+  const byIdentity = new Map();
+  existing.forEach((item) => {
+    const identity = runLogItemIdentity(item);
+    if (identity) byIdentity.set(identity, item);
+  });
+  let added = 0;
+  (Array.isArray(incoming) ? incoming : []).forEach((item) => {
+    const identity = runLogItemIdentity(item);
+    const sequence = Number(item?.event_seq);
+    if (!identity || !Number.isInteger(sequence) || sequence <= 0 || !String(item?.summary || "").trim()) return;
+    if (!byIdentity.has(identity)) added += 1;
+    byIdentity.set(identity, item);
+  });
+  const items = [...byIdentity.values()]
+    .sort((left, right) => Number(left.event_seq) - Number(right.event_seq) || runLogItemIdentity(left).localeCompare(runLogItemIdentity(right)))
+    .slice(-Math.max(1, Number(limit) || RUN_LOG_CLIENT_LIMIT));
+  return { items, added };
+}
+
+function runLogNearBottom(scrollHeight, scrollTop, clientHeight, threshold = 48) {
+  return Number(scrollHeight) - Number(scrollTop) - Number(clientHeight) <= threshold;
+}
 
 function escapeHTML(value) {
   return String(value ?? "").replace(/[&<>'"]/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "'": "&#39;", '"': "&quot;" })[char]);
@@ -196,6 +241,7 @@ function setDataStatus(status, observedAt = null) {
     snapshot.textContent = "Offline";
   }
   renderNotifications();
+  renderRunLogSurfaces();
 }
 
 function scopedNodes() {
@@ -406,6 +452,178 @@ function renderProjectNavigation() {
     selector.innerHTML = ['<option value="all">All projects</option>'].concat(projects.map((project) => '<option value="' + escapeHTML(project.id) + '">' + escapeHTML(project.label) + '</option>')).join("");
     selector.value = state.projectId === "all" || projects.some((project) => project.id === state.projectId) ? state.projectId : "all";
   }
+}
+
+function runLogBindingForCtrl(ctrlId, agentId = "") {
+  const ctrl = currentWorkControllers().find((item) => item.id === ctrlId);
+  const project = currentWorkProjects().find((item) => item.id === ctrl?.project_id && item.ctrl_ids.includes(ctrlId));
+  return project && ctrl ? { projectId: project.id, ctrlId, agentId: String(agentId || "") } : null;
+}
+
+function runLogBindingsForProject(projectId) {
+  const project = currentWorkProjects().find((item) => item.id === projectId);
+  if (!project) return [];
+  return project.ctrl_ids.map((ctrlId) => runLogBindingForCtrl(ctrlId)).filter(Boolean);
+}
+
+function currentRunLogAgent() {
+  const selection = state.runLogAgent;
+  if (!selection || (state.projectId !== "all" && state.projectId !== selection.projectId)) return null;
+  const binding = runLogBindingForCtrl(selection.ctrlId, selection.agentId);
+  if (!binding || binding.projectId !== selection.projectId) return null;
+  const eligible = (state.overview?.nodes || []).some((node) => {
+    const inCtrl = node.id === binding.ctrlId || (node.controller_ids || []).includes(binding.ctrlId);
+    const agentId = String(node.owner_id || node.id || "");
+    return node.project_id === binding.projectId && inCtrl && agentId === binding.agentId;
+  });
+  return eligible ? { ...selection, ...binding } : null;
+}
+
+function runLogSurfacePlans() {
+  const plans = new Map();
+  const overviewBinding = state.ctrlId ? runLogBindingForCtrl(state.ctrlId) : null;
+  if (overviewBinding) plans.set("overview", { title: "Current CTRL", bindings: [overviewBinding] });
+  const projectId = selectedProgressProjectId();
+  const projectBindings = projectId && state.projectTab === "logs" ? runLogBindingsForProject(projectId) : [];
+  if (projectId && state.projectTab === "logs") plans.set("project", { title: projectBindings.length <= 1 ? "Project run log" : "Project run log · " + projectBindings.length + " CTRLs", bindings: projectBindings, bindingUnavailable: !projectBindings.length });
+  const agent = state.view === "agents" && state.agentsTab === "active" ? currentRunLogAgent() : null;
+  if (agent) plans.set("agent", { title: agent.label || "Selected agent", bindings: [agent] });
+  return plans;
+}
+
+function runLogSurfaceState(surface) {
+  if (!state.runLogSurfaceStates.has(surface)) state.runLogSurfaceStates.set(surface, { nearBottom: true, newEntries: 0 });
+  return state.runLogSurfaceStates.get(surface);
+}
+
+function runLogEntries(plan) {
+  const byIdentity = new Map();
+  plan.bindings.forEach((binding) => {
+    const record = state.runLogs.get(runLogBindingKey(binding));
+    (record?.items || []).forEach((item) => byIdentity.set(runLogItemIdentity(item), item));
+  });
+  return [...byIdentity.values()]
+    .sort((left, right) => Number(left.event_seq) - Number(right.event_seq) || runLogItemIdentity(left).localeCompare(runLogItemIdentity(right)))
+    .slice(-RUN_LOG_CLIENT_LIMIT);
+}
+
+function runLogPresentation(plan) {
+  const records = plan.bindings.map((binding) => state.runLogs.get(runLogBindingKey(binding))).filter(Boolean);
+  const items = runLogEntries(plan);
+  const loading = records.some((record) => ["loading", "refreshing"].includes(record.status));
+  const failed = records.some((record) => ["stale", "unavailable"].includes(record.status));
+  const offline = state.connectionStatus !== "live";
+  const retention = records.map((record) => record.retention || {}).filter(Boolean);
+  let message = items.length ? String(items.length) + " retained material entr" + (items.length === 1 ? "y" : "ies") : "No retained material events in this scope.";
+  if (plan.bindingUnavailable) message = "Run log needs a current host-confirmed CTRL binding.";
+  else if (loading && !items.length) message = "Loading retained material events.";
+  else if (offline && items.length) message = "Offline · showing the last received entries.";
+  else if (offline) message = "Run log unavailable while the console reconnects.";
+  else if (failed && items.length) message = "Showing the last received entries · refresh unavailable.";
+  else if (failed) message = "Run log unavailable. Refresh to try again.";
+  else if (loading) message = "Refreshing · last received entries remain visible.";
+  const notices = [];
+  if (retention.some((item) => item.stale_cursor)) notices.push("Cursor reset to the retained range");
+  if (retention.some((item) => item.page_truncated || item.source_scan_truncated)) notices.push("Showing a bounded retained window");
+  return { items, message, notices, stale: offline || failed, loading };
+}
+
+function runLogEntryMarkup(item) {
+  const observed = Number(item.observed_at_ms);
+  const datetime = Number.isFinite(observed) && observed > 0 ? new Date(observed).toISOString() : "";
+  const owner = item.owner_id || item.task_id || "Unknown owner";
+  const detail = [humanize(item.structural_role || item.profession || "Agent"), humanize(item.kind || item.status || "Material event")].filter(Boolean).join(" · ");
+  return '<li data-run-log-entry="' + escapeHTML(runLogItemIdentity(item)) + '"><time datetime="' + escapeHTML(datetime) + '">' + escapeHTML(formatRelative(observed)) + '</time><div><strong>' + escapeHTML(owner) + '</strong><span>' + escapeHTML(detail) + '</span></div><p>' + escapeHTML(item.summary) + '</p></li>';
+}
+
+function captureRunLogViewport(mount) {
+  const scroller = $(".run-log-list", mount);
+  if (!scroller) return null;
+  const nearBottom = runLogNearBottom(scroller.scrollHeight, scroller.scrollTop, scroller.clientHeight);
+  const top = scroller.getBoundingClientRect().top;
+  const anchor = $$("[data-run-log-entry]", scroller).find((row) => row.getBoundingClientRect().bottom > top + 1);
+  return { nearBottom, scrollTop: scroller.scrollTop, anchorIdentity: anchor?.dataset.runLogEntry || "", anchorOffset: anchor ? anchor.getBoundingClientRect().top - top : 0 };
+}
+
+function restoreRunLogViewport(mount, viewport) {
+  const scroller = $(".run-log-list", mount);
+  if (!scroller) return;
+  if (!viewport || viewport.nearBottom) {
+    scroller.scrollTop = scroller.scrollHeight;
+    return;
+  }
+  const anchor = $$("[data-run-log-entry]", scroller).find((row) => row.dataset.runLogEntry === viewport.anchorIdentity);
+  if (anchor) scroller.scrollTop += anchor.getBoundingClientRect().top - scroller.getBoundingClientRect().top - viewport.anchorOffset;
+  else scroller.scrollTop = Math.min(viewport.scrollTop, Math.max(0, scroller.scrollHeight - scroller.clientHeight));
+}
+
+function renderRunLogSurfaces() {
+  const plans = runLogSurfacePlans();
+  $$('[data-run-log-surface]').forEach((mount) => {
+    const surface = mount.dataset.runLogSurface;
+    const plan = plans.get(surface);
+    if (!plan) {
+      mount.hidden = true;
+      mount.innerHTML = "";
+      return;
+    }
+    const viewport = captureRunLogViewport(mount);
+    if (viewport) runLogSurfaceState(surface).nearBottom = viewport.nearBottom;
+    const presentation = runLogPresentation(plan);
+    const surfaceState = runLogSurfaceState(surface);
+    const headingId = "run-log-" + surface + "-heading";
+    const statusId = "run-log-" + surface + "-status";
+    mount.hidden = false;
+    mount.innerHTML = '<header class="run-log-head"><div><p class="eyebrow">Run log</p><h2 id="' + headingId + '">' + escapeHTML(plan.title) + '</h2></div><p id="' + statusId + '" role="status" class="' + (presentation.stale ? "is-stale" : "") + '">' + escapeHTML(presentation.message) + '</p></header><div class="run-log-frame"><ol class="run-log-list" role="log" aria-live="polite" aria-relevant="additions" aria-labelledby="' + headingId + '" aria-describedby="' + statusId + '" tabindex="0">' + (presentation.items.length ? presentation.items.map(runLogEntryMarkup).join("") : '<li class="empty-state">' + escapeHTML(presentation.message) + '</li>') + '</ol><button class="run-log-new quiet-button" type="button" data-run-log-latest="' + escapeHTML(surface) + '"' + (surfaceState.newEntries ? '' : ' hidden') + '>' + escapeHTML(String(surfaceState.newEntries) + " new " + (surfaceState.newEntries === 1 ? "entry" : "entries")) + '</button></div>' + (presentation.notices.length ? '<p class="run-log-notice">' + escapeHTML(presentation.notices.join(" · ")) + '</p>' : '');
+    restoreRunLogViewport(mount, viewport);
+  });
+}
+
+function markRunLogNewEntries(bindingKey, count) {
+  if (!count) return;
+  runLogSurfacePlans().forEach((plan, surface) => {
+    if (!plan.bindings.some((binding) => runLogBindingKey(binding) === bindingKey)) return;
+    const view = runLogSurfaceState(surface);
+    if (!view.nearBottom) view.newEntries += count;
+  });
+}
+
+async function refreshRunLogBinding(binding) {
+  const key = runLogBindingKey(binding);
+  const previous = state.runLogs.get(key) || { items: [], cursor: 0, retention: null, status: "idle", error: "" };
+  const generation = (state.runLogRequestGenerations.get(key) || 0) + 1;
+  state.runLogRequestGenerations.set(key, generation);
+  state.runLogs.set(key, { ...previous, status: previous.items.length ? "refreshing" : "loading", error: "" });
+  const params = new URLSearchParams({ ctrl_id: binding.ctrlId, project_id: binding.projectId, after_cursor: String(previous.cursor || 0) });
+  if (binding.agentId) params.set("agent_id", binding.agentId);
+  try {
+    const result = await api("/api/run-log?" + params.toString());
+    if (state.runLogRequestGenerations.get(key) !== generation) return;
+    if (!runLogResponseMatches(result, binding)) throw new Error("Run log scope did not match the selected surface.");
+    if (!result.items.every((item) => item.project_id === binding.projectId && item.ctrl_id === binding.ctrlId)) throw new Error("Run log entry escaped the selected CTRL scope.");
+    const nextCursor = Number(result.cursor?.next_event_seq);
+    if (!Number.isInteger(nextCursor) || nextCursor < 0) throw new Error("Run log cursor was invalid.");
+    const replace = !previous.cursor || result.retention?.stale_cursor === true;
+    const merged = mergeRunLogItems(previous.items, result.items, replace);
+    state.runLogs.set(key, { items: merged.items, cursor: nextCursor, retention: result.retention || null, status: "current", error: "" });
+    if (previous.items.length) markRunLogNewEntries(key, merged.added);
+  } catch (error) {
+    if (state.runLogRequestGenerations.get(key) !== generation) return;
+    state.runLogs.set(key, { ...previous, status: previous.items.length ? "stale" : "unavailable", error: error.message || "Run log unavailable" });
+  }
+}
+
+async function refreshRunLogs() {
+  const bindings = new Map();
+  runLogSurfacePlans().forEach((plan) => plan.bindings.forEach((binding) => bindings.set(runLogBindingKey(binding), binding)));
+  if (!bindings.size) {
+    renderRunLogSurfaces();
+    return;
+  }
+  const requests = [...bindings.values()].map(refreshRunLogBinding);
+  renderRunLogSurfaces();
+  await Promise.all(requests);
+  renderRunLogSurfaces();
 }
 
 function drawLine(svg, values, color) {
@@ -1240,8 +1458,7 @@ function projectTabMarkup(tab, progress, nodes) {
   if (tab === "hierarchy") return '<section class="project-hierarchy">' + (nodes.length ? nodes.filter((node) => !isSubagent(node)).map((node) => '<article><svg class="lucide" aria-hidden="true"><use href="#lucide-git-branch"></use></svg><div><strong>' + escapeHTML(node.worker || node.owner || node.role_label || "Unassigned") + '</strong><span>' + escapeHTML(node.artifact || node.title || node.id) + '</span></div><small>' + escapeHTML(observedAgentRole(node) || "TASK") + '</small></article>').join("") : '<p class="empty-state">No hierarchy is observed for this project.</p>') + '</section>';
   if (tab === "proof") { const images = evidenceImagesFor(nodes); state.evidenceImages = images; return '<section class="project-proof-grid">' + (images.length ? images.map((item, index) => '<button class="asset-tile" type="button" data-evidence-open="' + index + '" aria-label="Open proof image"><img loading="lazy" src="' + proofMediaURL(item) + '" alt=""><span>' + escapeHTML(item.caption || item.kind || "Proof") + '</span></button>').join("") : '<p class="empty-state">No image proof is available for this project.</p>') + '</section>'; }
   if (tab === "ledger") return '<section class="panel project-ledger"><header class="overview-section-head"><div><p class="eyebrow">Canonical events</p><h2>Ledger</h2></div><p>' + escapeHTML(progress?.cursor?.event_seq == null ? "No cursor" : "Through " + progress.cursor.event_seq) + '</p></header>' + projectFeedMarkup(10) + '</section>';
-  const latest = state.diagnostics?.latest || {};
-  return '<section class="panel project-logs"><p class="eyebrow">Contextual status</p><h2>' + escapeHTML(humanize(latest.health_state || "Unavailable")) + '</h2><p>Raw host logs are not projected into project scope. Diagnostics remain read-only and do not run models.</p><small>' + escapeHTML(latest.observed_at_ms ? "Observed " + formatRelative(latest.observed_at_ms) : "No diagnostic timestamp") + '</small></section>';
+  return '<section class="panel run-log" data-run-log-surface="project" aria-label="Project run log"></section>';
 }
 
 function renderProjectDetail() {
@@ -1442,18 +1659,26 @@ function observedAgentRole(node) {
   return ["CTRL", "LEAD", "DOER"].includes(role) ? role : "";
 }
 
-function agentRow(node, role) {
+function runLogAgentId(node) {
+  return String(node?.owner_id || node?.id || "");
+}
+
+function agentRow(node, role, binding = null) {
   const status = statusLabel(node || {});
   const title = node?.artifact || node?.title || "Unknown task";
   const owner = node?.worker || node?.owner || node?.id || "Unknown";
   const updated = node?.updated_at || node?.generated_at;
   const efficiency = verifiedYieldItem("owner", node?.owner_id || node?.worker || node?.owner || node?.id || "");
-  return '<div class="agent-row" data-agent-role="' + escapeHTML(role) + '"><span class="agent-role-mark" aria-hidden="true">' + escapeHTML(role.slice(0, 1)) + '</span><div><strong>' + escapeHTML(owner) + '</strong><small>' + escapeHTML(title) + '</small></div><div class="agent-yield"><strong>' + escapeHTML(yieldValue(efficiency)) + '</strong>' + miniSparkline(yieldSeries(efficiency), "Verified yield trend for " + owner) + '<small>Verified yield</small></div><span class="state-pill ' + status[1] + '">' + escapeHTML(status[0] || "Unknown") + '</span><time datetime="' + escapeHTML(updated || "") + '">' + escapeHTML(formatRelative(updated)) + '</time></div>';
+  const selected = binding && currentRunLogAgent()?.projectId === binding.projectId && currentRunLogAgent()?.ctrlId === binding.ctrlId && currentRunLogAgent()?.agentId === binding.agentId;
+  const identity = binding
+    ? '<button class="agent-identity" type="button" data-run-log-agent="' + escapeHTML(binding.agentId) + '" data-project-id="' + escapeHTML(binding.projectId) + '" data-ctrl-id="' + escapeHTML(binding.ctrlId) + '" data-agent-label="' + escapeHTML(owner) + '" aria-pressed="' + String(Boolean(selected)) + '" aria-label="Show run log for ' + escapeHTML(owner) + '"><strong>' + escapeHTML(owner) + '</strong><small>' + escapeHTML(title) + '</small></button>'
+    : '<div><strong>' + escapeHTML(owner) + '</strong><small>' + escapeHTML(title) + '</small></div>';
+  return '<div class="agent-row' + (selected ? ' is-selected' : '') + '" data-agent-role="' + escapeHTML(role) + '"><span class="agent-role-mark" aria-hidden="true">' + escapeHTML(role.slice(0, 1)) + '</span>' + identity + '<div class="agent-yield"><strong>' + escapeHTML(yieldValue(efficiency)) + '</strong>' + miniSparkline(yieldSeries(efficiency), "Verified yield trend for " + owner) + '<small>Verified yield</small></div><span class="state-pill ' + status[1] + '">' + escapeHTML(status[0] || "Unknown") + '</span><time datetime="' + escapeHTML(updated || "") + '">' + escapeHTML(formatRelative(updated)) + '</time></div>';
 }
 
-function agentBranch(node, role, children = []) {
+function agentBranch(node, role, binding = null, children = []) {
   const label = node?.artifact || node?.title || node?.id || "Unknown task";
-  const body = agentRow(node, role) + children.join("");
+  const body = agentRow(node, role, binding) + children.join("");
   return '<details class="agent-branch agent-level-' + role.toLowerCase() + '" open><summary><svg class="lucide" aria-hidden="true"><use href="#lucide-chevron-right"></use></svg><span>' + escapeHTML(label) + '</span><small>' + escapeHTML(role) + '</small></summary><div class="agent-branch-body">' + body + '</div></details>';
 }
 
@@ -1478,9 +1703,11 @@ function renderAgentHierarchy() {
       const ctrlNodes = nodes.filter((node) => node.id !== ctrl.id && (node.controller_ids || []).includes(ctrl.id));
       const leads = ctrlNodes.filter((node) => observedAgentRole(node) === "LEAD");
       const leadIds = new Set(leads.map((lead) => lead.id));
-      const leadBranches = leads.map((lead) => agentBranch(lead, "LEAD", ctrlNodes.filter((node) => observedAgentRole(node) === "DOER" && node.parent_id === lead.id).map((node) => agentRow(node, "DOER"))));
+      const exactCtrlBinding = runLogBindingForCtrl(ctrl.id);
+      const bindingFor = (node) => exactCtrlBinding ? { projectId: exactCtrlBinding.projectId, ctrlId: exactCtrlBinding.ctrlId, agentId: runLogAgentId(node) } : null;
+      const leadBranches = leads.map((lead) => agentBranch(lead, "LEAD", bindingFor(lead), ctrlNodes.filter((node) => observedAgentRole(node) === "DOER" && node.parent_id === lead.id).map((node) => agentRow(node, "DOER", bindingFor(node)))));
       const directDoers = ctrlNodes.filter((node) => observedAgentRole(node) === "DOER" && !leadIds.has(node.parent_id));
-      return agentBranch(ctrl, "CTRL", leadBranches.concat(directDoers.map((node) => agentRow(node, "DOER"))));
+      return agentBranch(ctrl, "CTRL", bindingFor(ctrl), leadBranches.concat(directDoers.map((node) => agentRow(node, "DOER", bindingFor(node)))));
     });
     const unresolved = orphanLeads.map((node) => agentBranch(node, "LEAD")).concat(orphanDoers.map((node) => agentRow(node, "DOER")));
     return '<details class="agent-project" open><summary><svg class="lucide" aria-hidden="true"><use href="#lucide-chevron-right"></use></svg><span>' + escapeHTML(publicLabel(project.goal_label || project.name, "Untitled project")) + '</span><small>' + escapeHTML(nodes.length) + ' observed</small></summary><div class="agent-project-body">' + (ctrlBranches.length || unresolved.length ? ctrlBranches.concat(unresolved).join("") : '<p class="empty-state">No CTRL, LEAD, or DOER authority was observed.</p>') + '</div></details>';
@@ -1785,7 +2012,7 @@ function renderSettings() {
     '<details class="panel settings-advanced settings-wide" id="settings-advanced"><summary>Advanced settings</summary><div class="settings-advanced-grid">' + ctrlAdvanced + chatRelaySettingsMarkup() + '<section class="advanced-setting-group"><h4>Spark and monitoring</h4>' + settingSelect('boost.spark_reasoning', boost.spark_reasoning || 'xhigh', reasoningOptions, 'Spark reasoning') + '<label class="setting-field">Spark model<input id="spark-model" value="' + escapeHTML(boost.spark_model || '') + '" autocomplete="off"' + (!configEditable('boost.spark_model') ? ' disabled' : '') + '></label><label class="setting-field">Heartbeat minutes<input id="heartbeat-minutes" data-config-key="monitoring.heartbeat_minutes" type="number" min="1" value="' + escapeHTML(monitoring.heartbeat_minutes || '') + '"' + (!configEditable('monitoring.heartbeat_minutes') ? ' disabled' : '') + '></label><button class="quiet-button" data-setting-action="save-spark" type="button"' + (!configEditable('boost.spark_model') ? ' disabled' : '') + '>Save Spark model</button>' + settingToggle('role_icons.enabled', roleIcons.enabled, 'Show role icons') + '</section><section class="advanced-setting-group"><h4>' + escapeHTML(storage?.bytes == null ? 'Saved history unavailable' : formatBytes(storage.bytes) + ' saved history' + retention) + '</h4><p>Progress, forecasts, proof, and token history stay available between sessions' + (proofFiles ? ' · ' + proofFiles + ' proof file' + (proofFiles === 1 ? '' : 's') : '') + '.</p><div class="settings-actions-inline"><button class="quiet-button" data-setting-action="clear" type="button">Clear history</button><button class="quiet-button" data-setting-action="restore" type="button">Restore defaults</button></div><small>Clearing history leaves tasks unchanged. Restoring defaults keeps history.</small>' + skillsAdvanced(scope) + '</section></div></details>';
 }
 
-function renderAllViews() { renderOverview(); renderAgents(); renderReview(); renderAssets(); renderSettings(); }
+function renderAllViews() { renderOverview(); renderAgents(); renderReview(); renderAssets(); renderSettings(); renderRunLogSurfaces(); }
 
 async function refreshProof() {
   const projectId = state.projectId;
@@ -1895,12 +2122,13 @@ async function refreshMonitoring(proofSequence) {
     clearConnectionState();
     setDataStatus("current", state.overview?.generated_at);
     renderProjectNavigation();
-    await Promise.all([refreshUsageHistory(), refreshNotifications()]);
+    await Promise.all([refreshUsageHistory(), refreshNotifications(), refreshRunLogs()]);
     if (Number(proofSequence) !== state.proofSequence) await refreshProof();
     renderOverview();
     renderAgents();
     renderReview();
     renderAssets();
+    renderRunLogSurfaces();
   } catch {
     setDataStatus(state.overview ? "stale" : "unavailable", state.overview?.generated_at);
     /* The next manual refresh can recover the complete screen. */
@@ -1976,7 +2204,7 @@ async function refreshOverview(showLoading = true) {
     clearConnectionState();
     setDataStatus("current", state.overview?.generated_at);
     renderProjectNavigation();
-    await Promise.all([refreshProof(), refreshUsageHistory(), refreshProjectProgress(), refreshProjectProgressFeed(), refreshRoleManifests(), refreshNotifications()]);
+    await Promise.all([refreshProof(), refreshUsageHistory(), refreshProjectProgress(), refreshProjectProgressFeed(), refreshRoleManifests(), refreshNotifications(), refreshRunLogs()]);
     const selectedCtrl = state.ctrlId || historicalControllers()[0]?.id || '';
     const previousConfig = state.config;
     const results = await Promise.allSettled([api('/api/diagnostics'), api('/api/health/settings'), api('/api/storage'), selectedCtrl ? api('/api/ctrl-settings?ctrl_id=' + encodeURIComponent(selectedCtrl)) : Promise.resolve(null), api('/api/config')]);
@@ -2051,7 +2279,36 @@ document.addEventListener("click", async (event) => {
   if (projectTab) {
     state.projectTab = projectTab.dataset.projectTab;
     renderProjectDetail();
+    renderRunLogSurfaces();
+    if (state.projectTab === "logs") refreshRunLogs();
     projectTab.focus({ preventScroll: true });
+    return;
+  }
+  const runLogAgent = event.target.closest("[data-run-log-agent]");
+  if (runLogAgent) {
+    state.runLogAgent = {
+      projectId: runLogAgent.dataset.projectId,
+      ctrlId: runLogAgent.dataset.ctrlId,
+      agentId: runLogAgent.dataset.runLogAgent,
+      label: runLogAgent.dataset.agentLabel,
+    };
+    renderAgents();
+    renderRunLogSurfaces();
+    refreshRunLogs();
+    return;
+  }
+  const runLogLatest = event.target.closest("[data-run-log-latest]");
+  if (runLogLatest) {
+    const surface = runLogLatest.dataset.runLogLatest;
+    const mount = $('[data-run-log-surface="' + CSS.escape(surface) + '"]');
+    const scroller = mount ? $(".run-log-list", mount) : null;
+    if (!scroller) return;
+    const view = runLogSurfaceState(surface);
+    view.nearBottom = true;
+    view.newEntries = 0;
+    runLogLatest.hidden = true;
+    scroller.scrollTop = scroller.scrollHeight;
+    scroller.focus({ preventScroll: true });
     return;
   }
   const notificationAction = event.target.closest('[data-notification-action="navigate"][data-notification-id]');
@@ -2229,6 +2486,19 @@ document.addEventListener("keydown", (event) => {
   state.evidenceIndex = nextIndex;
   renderEvidenceLightbox();
 });
+document.addEventListener("scroll", (event) => {
+  const scroller = event.target.closest?.(".run-log-list");
+  if (!scroller) return;
+  const surface = scroller.closest("[data-run-log-surface]")?.dataset.runLogSurface;
+  if (!surface) return;
+  const view = runLogSurfaceState(surface);
+  view.nearBottom = runLogNearBottom(scroller.scrollHeight, scroller.scrollTop, scroller.clientHeight);
+  if (view.nearBottom) {
+    view.newEntries = 0;
+    const affordance = $('[data-run-log-latest="' + CSS.escape(surface) + '"]');
+    if (affordance) affordance.hidden = true;
+  }
+}, true);
 
 $("#project-navigation").addEventListener("click", (event) => {
   const scope = event.target.closest("[data-project-id]");
@@ -2243,7 +2513,7 @@ $("#project-navigation").addEventListener("click", (event) => {
   renderProjectNavigation();
   setView("overview", false);
   renderAllViews();
-  Promise.all([refreshProof(), refreshCtrlSettings(), refreshUsageHistory(), refreshProjectProgress(), refreshProjectProgressFeed(), refreshSkills(), refreshNotifications()]).then(renderAllViews);
+  Promise.all([refreshProof(), refreshCtrlSettings(), refreshUsageHistory(), refreshProjectProgress(), refreshProjectProgressFeed(), refreshSkills(), refreshNotifications(), refreshRunLogs()]).then(renderAllViews);
 });
 $("#refresh").addEventListener("click", refreshOverview);
 $("#retry").addEventListener("click", refreshOverview);
@@ -2273,7 +2543,7 @@ document.addEventListener('change', async (event) => {
     renderProjectNavigation();
     renderAllViews();
     try {
-      await Promise.all([refreshProof(), refreshUsageHistory(), refreshProjectProgress(), refreshProjectProgressFeed(), refreshCtrlSettings(), refreshSkills(), refreshNotifications()]);
+      await Promise.all([refreshProof(), refreshUsageHistory(), refreshProjectProgress(), refreshProjectProgressFeed(), refreshCtrlSettings(), refreshSkills(), refreshNotifications(), refreshRunLogs()]);
       await refreshAutoStatus();
     }
     finally { renderAllViews(); }
@@ -2290,7 +2560,7 @@ document.addEventListener('change', async (event) => {
     renderProjectNavigation();
     renderAllViews();
     try {
-      await Promise.all([refreshProof(), refreshUsageHistory(), refreshProjectProgress(), refreshProjectProgressFeed(), refreshCtrlSettings(), refreshSkills(), refreshNotifications()]);
+      await Promise.all([refreshProof(), refreshUsageHistory(), refreshProjectProgress(), refreshProjectProgressFeed(), refreshCtrlSettings(), refreshSkills(), refreshNotifications(), refreshRunLogs()]);
       await refreshAutoStatus();
     } finally { renderAllViews(); }
     return;
@@ -2435,6 +2705,8 @@ $(".project-tabs").addEventListener("keydown", (event) => {
   event.preventDefault();
   state.projectTab = tabs[next].dataset.projectTab;
   renderProjectDetail();
+  renderRunLogSurfaces();
+  if (state.projectTab === "logs") refreshRunLogs();
   tabs[next].focus();
 });
 
