@@ -2014,8 +2014,14 @@ function roleCommandResolution(result, failure, reloaded, observed) {
   return "ambiguous";
 }
 
+function roleCurrentIdAllowed(value) {
+  const roleId = String(value || "").trim();
+  return /^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/.test(roleId) && roleId.toLowerCase() !== "critic";
+}
+
 function roleEditorCommand(action) {
   const roleId = $("#role-field-id").value.trim();
+  if (!roleCurrentIdAllowed(roleId)) throw new Error("Choose a safe role ID. Critic is retained as history, not available as a current role.");
   const current = roleRecord(roleId);
   const command = action === "reset" ? "ROLE_MANIFEST_RESET" : state.roleEditorMode === "create" ? "ROLE_MANIFEST_CREATE" : "ROLE_MANIFEST_REVISE";
   if (!roleCanMutate(command)) throw new Error("Current server authority is unavailable.");
