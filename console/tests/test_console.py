@@ -662,8 +662,13 @@ class SwarmConsoleTests(unittest.TestCase):
             "run-other", "run-other-block", "BLOCK_CREATED", "ACTIVE", 11,
         )
         other_event.update(ctrl_id="other-ctrl", task_id="other-task", owner_id="other-owner")
+        spoofed_event = self._notification_event(
+            "run-spoofed", "run-spoofed-block", "BLOCK_CREATED", "ACTIVE", 12,
+        )
+        spoofed_event.update(task_id="other-task", owner_id="other-owner")
         self.assertEqual(app.progress_ledger.append(root_event)["status"], "appended")
         self.assertEqual(app.progress_ledger.append(other_event)["status"], "appended")
+        self.assertEqual(app.progress_ledger.append(spoofed_event)["status"], "appended")
         ledger_before = app.progress_ledger._state.path.read_bytes()
         with closing(sqlite3.connect(app.store.path)) as connection:
             store_before = connection.execute("SELECT COUNT(*) FROM store_metadata").fetchone()[0]
@@ -676,6 +681,7 @@ class SwarmConsoleTests(unittest.TestCase):
             unknown = app.run_log("root", project_id="project:alpha", agent_id="unknown-agent")
         self.assertEqual(first, replay)
         self.assertEqual([item["event_id"] for item in first["items"]], ["run-root"])
+        self.assertNotIn("other-owner", json.dumps(first))
         self.assertEqual(task_view["items"], owner_view["items"])
         self.assertEqual(unknown["items"], [])
         item = first["items"][0]

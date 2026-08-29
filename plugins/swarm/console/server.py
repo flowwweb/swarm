@@ -6415,6 +6415,8 @@ class App:
                 continue
             if event.project_id != resolved_project_id:
                 continue
+            if event.task_id not in node_by_id:
+                continue
             if agent_id is not None and agent_id not in {event.task_id, event.owner_id}:
                 continue
             kind = event.event_kind.value
