@@ -3039,8 +3039,15 @@ class SwarmConsoleTests(unittest.TestCase):
         self.assertEqual(view["token_history"][0]["delta_tokens"], 7)
         self.assertEqual(view["analytics"]["burn_rate"]["history"][0]["delta_tokens"], 7)
         self.assertEqual(view["navigation"]["active_ctrl_id"], "ctrl-a")
-        self.assertEqual(view["navigation"]["projects"][0]["goal_label"], "Alpha goal")
-        self.assertEqual(view["navigation"]["projects"][0]["task_count"], 2)
+        self.assertEqual(
+            [project["id"] for project in view["navigation"]["projects"]],
+            ["project:a", "project:b"],
+        )
+        alpha = next(project for project in view["navigation"]["projects"] if project["id"] == "project:a")
+        beta = next(project for project in view["navigation"]["projects"] if project["id"] == "project:b")
+        self.assertEqual(alpha["goal_label"], "Alpha goal")
+        self.assertEqual(alpha["task_count"], 2)
+        self.assertEqual(beta["task_count"], 1)
 
     def test_navigation_eligibility_uses_persisted_ctrl_and_archive_authority(self) -> None:
         now = int(time.time() * 1000)
@@ -3085,8 +3092,9 @@ class SwarmConsoleTests(unittest.TestCase):
         self.assertEqual(stalled["ctrl_ids"], ["ctrl-stalled"])
         self.assertEqual(no_ctrl["project_eligibility"], "no_ctrl")
         self.assertFalse(no_ctrl["archived"])
-        self.assertEqual(archived["visibility"], "hidden")
-        self.assertTrue(archived["archived"])
+        self.assertEqual(archived["visibility"], "visible")
+        self.assertFalse(archived["archived"])
+        self.assertEqual(archived["archive_source"], "host_projects")
         self.assertEqual(archived["project_eligibility"], "no_ctrl")
         self.assertEqual(legacy["project_eligibility"], "no_ctrl")
         self.assertEqual(legacy["eligibility_source"], "unavailable")
@@ -3196,6 +3204,9 @@ class SwarmConsoleTests(unittest.TestCase):
         self.assertIsNone(metrics["active_work"]["active_lanes"])
         self.assertEqual(metrics["field_state"]["active_projects"], "UNKNOWN")
         self.assertEqual(metrics["field_state"]["active_lanes"], "UNKNOWN")
+        scoped = app._project_view(view, "project:alpha")
+        self.assertEqual(scoped["navigation"]["project_inventory"]["state"], "UNKNOWN")
+        self.assertEqual(scoped["navigation"]["projects"], [])
 
     def test_navigation_is_saved_project_feed_with_status_facts_and_stable_inputs(self) -> None:
         self._add_host_project("project:empty", "Empty saved project", "C:/work/empty")
@@ -3215,7 +3226,7 @@ class SwarmConsoleTests(unittest.TestCase):
             "active": False,
             "stalled": False,
             "inactive": True,
-            "source": "host_threads.agent_role+host_threads.archived+host_threads.updated_at_ms",
+            "source": "host CTRL classification+host_threads.archived+host_threads.updated_at_ms",
         })
         self.assertEqual(saved["active_ctrl"], False)
         self.assertEqual(saved["ordering"]["position"], 1)

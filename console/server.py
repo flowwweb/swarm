@@ -6731,6 +6731,7 @@ class App:
     def _project_view(self, overview: dict[str, Any], project_id: str | None) -> dict[str, Any]:
         if not project_id or project_id.casefold() in {"all", "all-projects"}:
             return overview
+        navigation = App._navigation_payload(overview)
         view = copy.deepcopy(overview)
         ctrl_scope = project_id.casefold().startswith("ctrl:")
         selected_ctrl_id = project_id[5:] if ctrl_scope else ""
@@ -6798,7 +6799,7 @@ class App:
             "label": "Local token-count aggregate; not billing.",
         }
         view["progress"] = self._progress_payload(view)
-        view["navigation"] = App._navigation_payload(view)
+        view["navigation"] = navigation
         view["overview_metrics"] = self._overview_metrics(
             view,
             scope_id=selected_ctrl_id if ctrl_scope else selected_project_id,
@@ -7224,7 +7225,6 @@ class App:
             project_controllers = [controller for controller in all_project_controllers if not controller["archived"]]
             ctrl_ids = [controller["id"] for controller in project_controllers]
             active_ids = [controller["id"] for controller in project_controllers if controller["status"] == "active"]
-            project_archived = bool(all_project_controllers) and not bool(project_controllers)
             project_nodes = [
                 node for node in view.get("nodes", [])
                 if node.get("project_id") == project_id and not node.get("virtual")
@@ -7256,13 +7256,9 @@ class App:
                     if all_project_controllers
                     else "unavailable"
                 ),
-                "archived": project_archived,
-                "archive_source": (
-                    "host_threads.archived"
-                    if all_project_controllers
-                    else "unavailable"
-                ),
-                "visibility": "hidden" if project_archived else "visible",
+                "archived": False,
+                "archive_source": "host_projects",
+                "visibility": "visible",
                 "status": status,
                 "status_facts": {
                     "active": active,
