@@ -878,7 +878,8 @@ function renderEvidenceLightbox() {
   failed.hidden = true;
   image.src = proofMediaURL(item);
   image.alt = item.caption || "Evidence image";
-  $("#evidence-lightbox-caption").textContent = String(state.evidenceIndex + 1) + " of " + String(items.length);
+  $("#evidence-lightbox-caption").textContent = String(state.evidenceIndex + 1) + " of " + String(items.length)
+    + (item.project_requirement_summary ? " · " + item.project_requirement_summary : "");
   previous.disabled = state.evidenceIndex === 0;
   next.disabled = state.evidenceIndex === items.length - 1;
   const page = Math.floor(state.evidenceIndex / EVIDENCE_THUMBNAIL_PAGE_SIZE);
@@ -1668,10 +1669,28 @@ function projectViewEvidence(screenKey) {
   return Array.isArray(screen?.evidence) ? screen.evidence : [];
 }
 
+function projectViewRequirementGroup(nodeIds) {
+  const identifiers = new Set((Array.isArray(nodeIds) ? nodeIds : [nodeIds]).filter(Boolean));
+  return currentProjectView()?.requirements?.groups?.find((group) => (group.node_ids || []).some((id) => identifiers.has(id))) || null;
+}
+
+function projectViewRequirementText(nodeIds) {
+  const group = projectViewRequirementGroup(nodeIds);
+  if (!group) return "";
+  const counts = group.counts_by_state || {};
+  const parts = [
+    [counts.KNOWN_SATISFIED, "satisfied"], [counts.PARTIAL, "partial"],
+    [counts.MISSING, "missing"], [counts.UNKNOWN, "unknown"],
+  ].filter(([count]) => Number(count) > 0).map(([count, label]) => String(count) + " " + label);
+  return group.label + (parts.length ? " · " + parts.join(" · ") : "");
+}
+
 function openProjectViewEvidence(screenKey, trigger) {
   const evidence = projectViewEvidence(screenKey);
   if (!evidence.length) return;
-  state.evidenceImages = evidence;
+  const screen = currentProjectView()?.screens?.find((item) => item.id === screenKey);
+  const requirementSummary = projectViewRequirementText([screen?.screen_id, screen?.state_id, screen?.id]);
+  state.evidenceImages = evidence.map((item) => ({ ...item, project_requirement_summary: requirementSummary }));
   openEvidenceLightbox(0, trigger);
 }
 
@@ -1689,7 +1708,8 @@ function projectViewScreenMarkup(screen) {
   const alternatives = Number(screen.alternative_count) > 1
     ? '<span class="project-ui-alternatives">' + escapeHTML(String(screen.alternative_count)) + ' alternatives</span>'
     : "";
-  return '<article class="project-ui-card" data-project-view-screen="' + escapeHTML(screen.id) + '">' + previewMarkup + '<div class="project-ui-card-copy"><p class="eyebrow">' + escapeHTML(screen.screen_id + " · " + screen.state_id) + '</p><h3>' + escapeHTML(label) + '</h3><div><span class="project-ui-status">' + escapeHTML(humanize(screen.status || "UNKNOWN")) + '</span>' + alternatives + '</div>' + deviceMarkup + '</div></article>';
+  const requirements = projectViewRequirementText([screen.screen_id, screen.state_id, screen.id]);
+  return '<article class="project-ui-card" data-project-view-screen="' + escapeHTML(screen.id) + '">' + previewMarkup + '<div class="project-ui-card-copy"><p class="eyebrow">' + escapeHTML(screen.screen_id + " · " + screen.state_id) + '</p><h3>' + escapeHTML(label) + '</h3><div><span class="project-ui-status">' + escapeHTML(humanize(screen.status || "UNKNOWN")) + '</span>' + alternatives + '</div>' + deviceMarkup + (requirements ? '<small class="project-ui-requirements">' + escapeHTML(requirements) + '</small>' : '') + '</div></article>';
 }
 
 function projectViewMapMarkup(projection) {
@@ -1701,7 +1721,8 @@ function projectViewMapMarkup(projection) {
   const edgeMarkup = edges.length ? '<ul class="project-ui-map-edges" aria-label="Map connections">' + edges.map((edge) => '<li><span>' + escapeHTML(nodeLabels.get(edge.source) || edge.source) + '</span><svg class="lucide" aria-hidden="true"><use href="#lucide-chevron-right"></use></svg><span>' + escapeHTML(nodeLabels.get(edge.target) || edge.target) + '</span></li>').join("") + '</ul>' : '<p class="project-ui-map-edges is-empty">No graph connections</p>';
   return '<section class="project-ui-map" aria-label="App Map"><p class="sr-only">' + escapeHTML(edgeSummary || "No graph connections") + '</p><div class="project-ui-map-nodes">' + nodes.map((node) => {
     const interactive = node.screen_key && projectViewEvidence(node.screen_key).length;
-    const content = '<span>' + escapeHTML(node.label || node.id) + '</span><small>' + escapeHTML(node.id) + '</small>';
+    const requirementSummary = projectViewRequirementText([node.id, node.screen_key]);
+    const content = '<span>' + escapeHTML(node.label || node.id) + '</span><small>' + escapeHTML(node.id) + '</small>' + (requirementSummary ? '<small class="project-ui-requirements">' + escapeHTML(requirementSummary) + '</small>' : '');
     return interactive
       ? '<button type="button" data-project-view-evidence="' + escapeHTML(node.screen_key) + '" aria-label="Open evidence for ' + escapeHTML(node.label || node.id) + '">' + content + '</button>'
       : '<div aria-label="' + escapeHTML((node.label || node.id) + ", evidence unavailable") + '">' + content + '</div>';

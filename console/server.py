@@ -4,8 +4,10 @@
 from __future__ import annotations
 
 import argparse
+import base64
 import copy
 import hashlib
+import hmac
 import importlib.util
 import ipaddress
 import json
@@ -84,7 +86,7 @@ NOTIFICATION_SEEN_KEY_PREFIX = "notification_seen_v1"
 NOTIFICATION_UNREAD_LIMIT = 128
 NOTIFICATION_RECENT_SEEN_LIMIT = 64
 RUN_LOG_LIMIT = 200
-PROJECT_VIEW_MAX_BYTES = 64 * 1024
+PROJECT_VIEW_MAX_BYTES = 512 * 1024
 PROJECT_VIEW_RENDERERS = {
     "canvas": frozenset({"network", "spatial", "freeform"}),
     "table": frozenset({"entities", "records", "log"}),
@@ -5099,7 +5101,7 @@ class App:
         self.store = ConsoleStore(state_path or console_state_path(self.codex_home, self.config_path))
         self.progress_ledger = ProgressLedger(self.codex_home)
         self.auto_bridge = auto_bridge or CodexStdioBridge()
-        self.project_view_resolver = project_view_resolver
+        self.project_view_resolver = project_view_resolver or self._default_project_view_resolver
         self.builtin_role_manifests = load_builtin_role_manifests(
             SWARM_SKILL_ROOT / "roles", STATIC_ROOT / "swarm-offline-disconnected.png"
         )
@@ -5188,15 +5190,20 @@ class App:
         link_items: list[Any] = []
         for document in documents:
             if isinstance(document, dict) and isinstance(document.get("links"), list):
-                link_items.extend(
+                candidates = [
                     item for item in document["links"]
                     if isinstance(item, dict) and str(item.get("rel") or "").strip() == "project_views"
-                )
+                ]
+                if candidates and document.get("schema_version") != 1:
+                    return "invalid", None
+                link_items.extend(candidates)
         if not link_items:
             return "absent", None
         if len(link_items) != 1:
             return "invalid", None
         item = link_items[0]
+        if set(item) != {"rel", "ref", "digest"}:
+            return "invalid", None
         try:
             return "present", {
                 "ref": App._project_view_ref(item.get("ref")),
@@ -5216,6 +5223,56 @@ class App:
         if "sha256:" + hashlib.sha256(resolved).hexdigest() != digest:
             raise ConsoleError("project view source digest does not match")
         return resolved
+
+    def _default_project_view_resolver(self, project_id: str, ref: str, digest: str) -> bytes:
+        parsed = urlparse(ref)
+        expected_project = project_id[8:] if project_id.casefold().startswith("project:") else project_id
+        try:
+            has_port = parsed.port is not None
+        except ValueError as exc:
+            raise ConsoleError("project view source reference belongs to another project") from exc
+        if (
+            parsed.scheme != "project" or parsed.netloc != expected_project or parsed.params
+            or parsed.query or parsed.fragment or parsed.username or parsed.password or has_port
+        ):
+            raise ConsoleError("project view source reference belongs to another project")
+        decoded = unquote(parsed.path)
+        parts = [part for part in decoded.split("/") if part]
+        if (
+            not parts or parsed.path != "/" + "/".join(parts)
+            or any(part in {".", ".."} or "\\" in part or ":" in part for part in parts)
+        ):
+            raise ConsoleError("project view source reference contains traversal")
+        root_path = self._canonical_project_root(project_id)
+        try:
+            root_metadata = root_path.lstat()
+            root_attributes = getattr(root_metadata, "st_file_attributes", 0)
+            if root_path.is_symlink() or root_attributes & getattr(stat_module, "FILE_ATTRIBUTE_REPARSE_POINT", 0):
+                raise ConsoleError("project view source cannot traverse a reparse point")
+            root = root_path.resolve(strict=True)
+            target = root.joinpath(*parts)
+            resolved = target.resolve(strict=True)
+            if not resolved.is_relative_to(root):
+                raise ConsoleError("project view source resolves outside the canonical project root")
+            relative = resolved.relative_to(root)
+            current = root
+            for part in relative.parts:
+                current = current / part
+                metadata = current.lstat()
+                attributes = getattr(metadata, "st_file_attributes", 0)
+                if current.is_symlink() or attributes & getattr(stat_module, "FILE_ATTRIBUTE_REPARSE_POINT", 0):
+                    raise ConsoleError("project view source cannot traverse a reparse point")
+            metadata = resolved.stat()
+            if not resolved.is_file() or metadata.st_size <= 0 or metadata.st_size > PROJECT_VIEW_MAX_BYTES:
+                raise ConsoleError("project view source is unavailable or exceeds the delivery guard")
+            raw = resolved.read_bytes()
+        except ConsoleError:
+            raise
+        except OSError as exc:
+            raise ConsoleError("project view source is unavailable") from exc
+        if "sha256:" + hashlib.sha256(raw).hexdigest() != digest:
+            raise ConsoleError("project view source digest does not match")
+        return raw
 
     @classmethod
     def _project_view_sources(cls, view: dict[str, Any], default_kind: str) -> list[dict[str, str]]:
@@ -5439,6 +5496,343 @@ class App:
             "edges": edges,
         }
 
+    @classmethod
+    def _project_view_requirements(cls, manifest: dict[str, Any]) -> dict[str, Any] | None:
+        contract = manifest.get("screen_group_requirements")
+        if contract is None:
+            return None
+        if not isinstance(contract, dict) or contract.get("contract_id") != "screen.groups.requirements.v1" or contract.get("version") != "1.0.0":
+            raise ConsoleError("project view requirement contract is unsupported")
+        states = {"KNOWN_SATISFIED", "PARTIAL", "MISSING", "UNKNOWN"}
+        devices = {"desktop", "tablet", "mobile"}
+        binding_names = {
+            "accepted_artifact_refs", "candidate_or_observed_artifact_refs", "unregistered_artifact_refs",
+            "implementation_evidence_refs", "browser_proof_refs",
+        }
+
+        def requirement(value: Any, *, shared: bool = False) -> dict[str, Any]:
+            if not isinstance(value, dict):
+                raise ConsoleError("project view requirement must be an object")
+            requirement_id = cls._project_view_text(value.get("requirement_id"), "requirement id", 256)
+            label = cls._project_view_text(value.get("short_label"), "requirement label", 256)
+            required = value.get("required")
+            target_devices = value.get("target_devices")
+            state = value.get("derived_state")
+            bindings = value.get("bindings")
+            if not isinstance(required, bool) or not isinstance(target_devices, list) or not target_devices or len(target_devices) > 3:
+                raise ConsoleError("project view requirement targets are invalid")
+            if len(set(target_devices)) != len(target_devices) or any(device not in devices for device in target_devices):
+                raise ConsoleError("project view requirement device is unsupported")
+            if state not in states or not isinstance(bindings, dict) or not set(bindings).issubset(binding_names):
+                raise ConsoleError("project view requirement state or bindings are invalid")
+            normalized_bindings: dict[str, list[dict[str, Any]]] = {}
+            for name in binding_names:
+                refs = bindings.get(name, [])
+                if not isinstance(refs, list) or len(refs) > 64:
+                    raise ConsoleError("project view requirement bindings must be bounded lists")
+                normalized_refs = []
+                for ref in refs:
+                    if not isinstance(ref, dict) or not set(ref).issubset({"record_id", "artifact_id", "digest", "bytes", "disposition", "selection_status", "approval_status", "manifest_id", "manifest_version", "kind", "status"}):
+                        raise ConsoleError("project view requirement binding has unknown fields")
+                    normalized_ref = {
+                        "record_id": cls._project_view_text(ref.get("record_id"), "requirement record id", 256),
+                        "digest": cls._project_view_digest(ref.get("digest")),
+                    }
+                    if ref.get("artifact_id") is not None:
+                        normalized_ref["artifact_id"] = cls._project_view_text(ref.get("artifact_id"), "requirement artifact id", 256)
+                    for optional in ("bytes", "disposition", "selection_status", "approval_status", "manifest_id", "manifest_version", "kind", "status"):
+                        if optional in ref:
+                            normalized_ref[optional] = copy.deepcopy(ref[optional])
+                    normalized_refs.append(normalized_ref)
+                normalized_bindings[name] = normalized_refs
+            missing_devices = value.get("missing_target_devices", [])
+            if "missing" in value:
+                missing = value["missing"]
+                if not isinstance(missing, list) or len(missing) > 64 or any(not isinstance(item, str) or not item.strip() for item in missing):
+                    raise ConsoleError("project view requirement missing reasons are invalid")
+            else:
+                missing = []
+            if not isinstance(missing_devices, list) or len(set(missing_devices)) != len(missing_devices) or any(device not in devices for device in missing_devices):
+                raise ConsoleError("project view requirement missing devices are invalid")
+            normalized = {
+                "requirement_id": requirement_id,
+                "short_label": label,
+                "required": required,
+                "target_devices": list(target_devices),
+                "acceptance_criterion": cls._project_view_text(value.get("acceptance_criterion"), "requirement criterion", 4096),
+                "bindings": normalized_bindings,
+                "derived_state": state,
+                "reason": cls._project_view_text(value.get("reason"), "requirement reason", 4096),
+                "missing_target_devices": list(missing_devices),
+                "missing": list(missing),
+            }
+            if shared:
+                applies = value.get("applies_to_group_ids")
+                if not isinstance(applies, list) or not applies:
+                    raise ConsoleError("shared project view requirement must name groups")
+                normalized["applies_to_group_ids"] = [cls._project_view_text(item, "requirement group id", 256) for item in applies]
+            return normalized
+
+        shared_values = contract.get("shared_requirements")
+        group_values = contract.get("groups")
+        if not isinstance(shared_values, list) or not isinstance(group_values, list) or len(shared_values) != 1 or len(group_values) != 6:
+            raise ConsoleError("project view requirements must contain six groups and one shared requirement")
+        shared = [requirement(item, shared=True) for item in shared_values]
+        shared_ids = {item["requirement_id"] for item in shared}
+        groups = []
+        group_ids: set[str] = set()
+        requirement_ids = set(shared_ids)
+        for order, value in enumerate(group_values):
+            if not isinstance(value, dict):
+                raise ConsoleError("project view requirement group must be an object")
+            group_id = cls._project_view_text(value.get("group_id"), "requirement group id", 256)
+            if group_id in group_ids:
+                raise ConsoleError("project view requirement group identities must be unique")
+            group_ids.add(group_id)
+            node_ids = value.get("node_ids")
+            inherited = value.get("shared_requirement_ids")
+            values = value.get("requirements")
+            if not isinstance(node_ids, list) or not node_ids or len(node_ids) > 64 or not isinstance(inherited, list) or not isinstance(values, list) or not values:
+                raise ConsoleError("project view requirement group is incomplete")
+            normalized_requirements = [requirement(item) for item in values]
+            for item in normalized_requirements:
+                if item["requirement_id"] in requirement_ids:
+                    raise ConsoleError("project view requirement identities must be unique")
+                requirement_ids.add(item["requirement_id"])
+            normalized_inherited = [cls._project_view_text(item, "shared requirement id", 256) for item in inherited]
+            if any(item not in shared_ids for item in normalized_inherited):
+                raise ConsoleError("project view group names an unknown shared requirement")
+            groups.append({
+                "group_id": group_id,
+                "label": cls._project_view_text(value.get("label"), "requirement group label", 256),
+                "order": order,
+                "node_ids": [cls._project_view_text(item, "requirement node id", 256) for item in node_ids],
+                "shared_requirement_ids": normalized_inherited,
+                "requirements": normalized_requirements,
+                "counts_by_state": {
+                    state: sum(item["derived_state"] == state for item in normalized_requirements)
+                    + sum(item["derived_state"] == state for item in shared if item["requirement_id"] in normalized_inherited)
+                    for state in ("KNOWN_SATISFIED", "PARTIAL", "MISSING", "UNKNOWN")
+                },
+            })
+        if len(requirement_ids) != 31 or any(set(item.get("applies_to_group_ids", [])) != group_ids for item in shared):
+            raise ConsoleError("project view requirements must bind exactly thirty-one requirements across six groups")
+        binding = manifest.get("projection_binding")
+        if not isinstance(binding, dict) or set(binding) != {"accepted_scope_id", "accepted_cursor", "status", "reason"}:
+            raise ConsoleError("project view requirement projection binding is invalid")
+        if binding["status"] not in {"KNOWN", "PARTIAL", "UNKNOWN"}:
+            raise ConsoleError("project view requirement projection status is unsupported")
+        if binding["accepted_scope_id"] is not None:
+            cls._project_view_text(binding["accepted_scope_id"], "accepted scope id", 256)
+        if binding["accepted_cursor"] is not None and not isinstance(binding["accepted_cursor"], dict):
+            raise ConsoleError("project view accepted cursor is invalid")
+        counts = Counter(item["derived_state"] for item in shared)
+        counts.update(item["derived_state"] for group in groups for item in group["requirements"])
+        return {
+            "contract_id": contract["contract_id"],
+            "version": contract["version"],
+            "projection_binding": copy.deepcopy(binding),
+            "shared_requirements": shared,
+            "groups": groups,
+            "requirement_count": len(requirement_ids),
+            "counts_by_state": {state: counts.get(state, 0) for state in ("KNOWN_SATISFIED", "PARTIAL", "MISSING", "UNKNOWN")},
+        }
+
+    def _project_ui_page_token(self, payload: dict[str, Any] | None = None, token: str | None = None) -> dict[str, Any] | str:
+        secret = self.token.encode("utf-8")
+        if payload is not None:
+            raw = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+            signature = hmac.new(secret, raw, hashlib.sha256).digest()
+            return base64.urlsafe_b64encode(raw + b"." + signature).decode("ascii").rstrip("=")
+        if not isinstance(token, str) or not token or len(token) > 4096:
+            raise ConsoleError("project UI agent page token is invalid")
+        try:
+            decoded = base64.urlsafe_b64decode(token + "=" * (-len(token) % 4))
+            if len(decoded) < 34 or decoded[-33:-32] != b".":
+                raise ValueError("shape")
+            raw, signature = decoded[:-33], decoded[-32:]
+            if not hmac.compare_digest(signature, hmac.new(secret, raw, hashlib.sha256).digest()):
+                raise ValueError("signature")
+            value = json.loads(raw)
+        except (ValueError, UnicodeError, json.JSONDecodeError) as exc:
+            raise ConsoleError("project UI agent page token is invalid") from exc
+        if not isinstance(value, dict):
+            raise ConsoleError("project UI agent page token is invalid")
+        return value
+
+    def project_ui_agent_read(self, payload: dict[str, Any]) -> dict[str, Any]:
+        if not isinstance(payload, dict):
+            raise ConsoleError("project UI agent request must be an object")
+        operations = {
+            "project_views.list_projects_with_manifests", "project_views.get_normalized_manifest",
+            "project_views.list_screen_groups", "project_views.get_screen_group",
+            "project_views.list_requirements", "project_views.list_missing_requirements",
+            "project_views.get_graph_identity", "project_views.get_evidence_identities",
+            "project_views.get_artifact_identities",
+        }
+        allowed_fields = {
+            "contract_id", "version", "operation", "project_id", "accepted_scope_id", "accepted_cursor",
+            "page_size", "page_token", "group_id", "requirement_id", "requirement_state", "required", "target_device",
+            "requested_operations",
+        }
+        if not set(payload).issubset(allowed_fields):
+            raise ConsoleError("project UI agent request contains an unknown field")
+        if payload.get("contract_id") != "project.ui.agent_read.v1" or payload.get("version") != "1.0.0":
+            raise ConsoleError("project UI agent capability is unsupported")
+        operation = payload.get("operation")
+        requested = payload.get("requested_operations", [operation])
+        if (
+            operation not in operations or not isinstance(requested, list) or operation not in requested
+            or len(requested) != len(set(requested)) or any(item not in operations for item in requested)
+        ):
+            raise ConsoleError("project UI agent capability is unsupported")
+        common = {"contract_id", "version", "operation", "project_id", "accepted_scope_id", "accepted_cursor", "requested_operations"}
+        paged = {"page_size", "page_token"}
+        operation_fields = {
+            "project_views.list_projects_with_manifests": {"project_id"} | paged,
+            "project_views.get_normalized_manifest": set(),
+            "project_views.list_screen_groups": paged,
+            "project_views.get_screen_group": {"group_id"},
+            "project_views.list_requirements": {"group_id", "requirement_state", "required", "target_device"} | paged,
+            "project_views.list_missing_requirements": {"group_id", "target_device"} | paged,
+            "project_views.get_graph_identity": set(),
+            "project_views.get_evidence_identities": {"group_id", "requirement_id"} | paged,
+            "project_views.get_artifact_identities": {"group_id", "requirement_id"} | paged,
+        }
+        if not set(payload).issubset(common | operation_fields[operation]):
+            raise ConsoleError("project UI agent request contains a field unsupported by this operation")
+        page_size = payload.get("page_size", 25)
+        if isinstance(page_size, bool) or not isinstance(page_size, int) or not 1 <= page_size <= 100:
+            raise ConsoleError("project UI agent page size must be between one and one hundred")
+        project_id = str(payload.get("project_id") or "").strip()
+        if operation == "project_views.list_projects_with_manifests":
+            if any(field in payload for field in ("accepted_scope_id", "accepted_cursor", "group_id", "requirement_id", "requirement_state", "required", "target_device")):
+                raise ConsoleError("project UI agent project listing has incompatible filters")
+            projects = []
+            for project in self._navigation_payload(self._host_overview())["projects"]:
+                if project_id and project["id"] != project_id:
+                    continue
+                candidate = self._project_view_projection(project["id"])
+                if candidate and candidate.get("requirements"):
+                    projects.append({
+                        "project_id": project["id"], "manifest_id": candidate["identity"]["manifest_id"],
+                        "manifest_version": candidate["identity"]["manifest_version"], "manifest_digest": candidate["identity"]["manifest_digest"],
+                        "conditional_tabs": [candidate["tab"]], "projection_binding": candidate["requirements"]["projection_binding"],
+                    })
+            data = projects
+            aggregate_digests = sorted({
+                digest for project in projects
+                for digest in [project["manifest_digest"]]
+            })
+            context_projection = {
+                "project_id": "*",
+                "identity": {"manifest_id": "project-view-catalog", "manifest_version": 1, "source_digests": aggregate_digests},
+                "requirements": {"projection_binding": [project["projection_binding"] for project in projects]},
+            }
+        else:
+            projection = self._project_view_projection(project_id) if project_id else None
+            if not project_id or projection is None or projection.get("requirements") is None:
+                raise ConsoleError("project UI agent project projection is unavailable")
+            context_projection = projection
+            binding = projection["requirements"]["projection_binding"]
+            if (
+                binding.get("status") == "UNKNOWN" or binding.get("accepted_scope_id") is None
+                or binding.get("accepted_cursor") is None or "accepted_scope_id" not in payload
+                or "accepted_cursor" not in payload
+            ):
+                raise ConsoleError("project UI agent projection binding is unavailable")
+            if payload.get("accepted_scope_id") != binding.get("accepted_scope_id") or payload.get("accepted_cursor") != binding.get("accepted_cursor"):
+                raise ConsoleError("project UI agent request has a stale cursor")
+            groups = projection["requirements"]["groups"]
+            shared = projection["requirements"]["shared_requirements"]
+            requirements = [
+                {**item, "group_id": "shared"} for item in shared
+            ] + [
+                {**item, "group_id": group["group_id"]} for group in groups for item in group["requirements"]
+            ]
+            group_id = payload.get("group_id")
+            requirement_id = payload.get("requirement_id")
+            if group_id is not None and group_id not in {group["group_id"] for group in groups}:
+                raise ConsoleError("project UI agent group is unknown")
+            if requirement_id is not None and requirement_id not in {item["requirement_id"] for item in requirements}:
+                raise ConsoleError("project UI agent requirement is unknown")
+            if operation == "project_views.get_normalized_manifest":
+                data = {key: copy.deepcopy(projection[key]) for key in ("identity", "tab", "modes", "screens", "map", "requirements")}
+            elif operation == "project_views.list_screen_groups":
+                data = [{
+                    "group_id": group["group_id"], "label": group["label"], "order": group["order"], "node_ids": group["node_ids"],
+                    "requirement_counts": copy.deepcopy(group["counts_by_state"]),
+                } for group in groups]
+            elif operation == "project_views.get_screen_group":
+                data = next((copy.deepcopy(group) for group in groups if group["group_id"] == group_id), None)
+                if data is None:
+                    raise ConsoleError("project UI agent group is unknown")
+            elif operation in {"project_views.list_requirements", "project_views.list_missing_requirements"}:
+                data = requirements
+                if group_id is not None:
+                    data = [item for item in data if item["group_id"] == group_id]
+                if operation.endswith("list_missing_requirements"):
+                    data = [item for item in data if item["derived_state"] in {"MISSING", "PARTIAL", "UNKNOWN"}]
+                if payload.get("requirement_state") is not None:
+                    if payload["requirement_state"] not in {"KNOWN_SATISFIED", "PARTIAL", "MISSING", "UNKNOWN"}:
+                        raise ConsoleError("project UI agent requirement state is unknown")
+                    data = [item for item in data if item["derived_state"] == payload["requirement_state"]]
+                if payload.get("required") is not None:
+                    if not isinstance(payload["required"], bool):
+                        raise ConsoleError("project UI agent required filter must be boolean")
+                    data = [item for item in data if item["required"] is payload["required"]]
+                if payload.get("target_device") is not None:
+                    if payload["target_device"] not in {"desktop", "tablet", "mobile"}:
+                        raise ConsoleError("project UI agent target device is unknown")
+                    data = [item for item in data if payload["target_device"] in item["target_devices"]]
+            elif operation == "project_views.get_graph_identity":
+                data = {"kind": "graph", "source_digests": projection["identity"]["source_digests"], "node_ids": [item["id"] for item in projection["map"]["nodes"]]}
+            else:
+                selected = requirements
+                if group_id is not None:
+                    selected = [item for item in selected if item["group_id"] == group_id]
+                if requirement_id is not None:
+                    selected = [item for item in selected if item["requirement_id"] == requirement_id]
+                if operation == "project_views.get_evidence_identities":
+                    names = ("implementation_evidence_refs", "browser_proof_refs")
+                    data = [{**ref, "kind": name, "requirement_id": item["requirement_id"]} for item in selected for name in names for ref in item["bindings"][name]]
+                else:
+                    names = ("accepted_artifact_refs", "candidate_or_observed_artifact_refs", "unregistered_artifact_refs")
+                    data = [{**ref, "status": name, "requirement_id": item["requirement_id"]} for item in selected for name in names for ref in item["bindings"][name]]
+
+        identity = context_projection.get("identity", {})
+        binding = context_projection.get("requirements", {}).get("projection_binding")
+        filters = {key: payload[key] for key in ("group_id", "requirement_id", "requirement_state", "required", "target_device") if key in payload}
+        context = {
+            "operation": operation, "project_id": project_id, "manifest_id": identity.get("manifest_id"),
+            "manifest_version": identity.get("manifest_version"), "source_digests": identity.get("source_digests", []),
+            "projection_binding": binding, "filters": filters,
+        }
+        context_digest = hashlib.sha256(json.dumps(context, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+        offset = 0
+        if payload.get("page_token") is not None:
+            token_payload = self._project_ui_page_token(token=payload["page_token"])
+            if (
+                token_payload.get("context_digest") != context_digest
+                or isinstance(token_payload.get("offset"), bool)
+                or not isinstance(token_payload.get("offset"), int)
+                or token_payload["offset"] < 0
+            ):
+                raise ConsoleError("project UI agent page token has a stale cursor")
+            offset = token_payload["offset"]
+        if isinstance(data, list):
+            page = data[offset:offset + page_size]
+            next_token = self._project_ui_page_token({"context_digest": context_digest, "offset": offset + page_size}) if offset + page_size < len(data) else None
+        else:
+            if payload.get("page_token") is not None:
+                raise ConsoleError("project UI agent get operation does not accept a page token")
+            page, next_token = data, None
+        return {
+            "contract_id": "project.ui.agent_read.v1", "version": "1.0.0", "operation": operation,
+            "project_id": project_id or None, "manifest_identity": copy.deepcopy(identity),
+            "projection_binding": copy.deepcopy(binding), "data": copy.deepcopy(page), "next_page_token": next_token,
+        }
+
     def _normalize_project_view(self, project_id: str, manifest_bytes: bytes, manifest_digest: str) -> dict[str, Any]:
         manifest = self._project_view_json(manifest_bytes, "manifest")
         if manifest.get("manifest_type") != "swarm.project_views" or manifest.get("schema_version") != 1:
@@ -5480,9 +5874,11 @@ class App:
         digest_by_ref: dict[str, str] = {}
         for view in (screens_view, map_view):
             for source in view["sources"]:
-                previous_digest = digest_by_ref.setdefault(source["ref"], source["digest"])
-                if previous_digest != source["digest"]:
-                    raise ConsoleError("project view source reference has conflicting digests")
+                if source["ref"] in digest_by_ref:
+                    if digest_by_ref[source["ref"]] != source["digest"]:
+                        raise ConsoleError("project view source reference has conflicting digests")
+                    raise ConsoleError("project view source reference is duplicated")
+                digest_by_ref[source["ref"]] = source["digest"]
                 key = (source["ref"], source["digest"])
                 if key not in resolved:
                     resolved[key] = self._resolve_project_view_bytes(project_id, *key)
@@ -5492,6 +5888,7 @@ class App:
             raise ConsoleError("project view Screens or Map source kind is unsupported")
         screens = self._project_view_screens(project_id, resolved[(screens_source["ref"], screens_source["digest"])])
         graph = self._project_view_graph(resolved[(map_source["ref"], map_source["digest"])], screens)
+        requirements = self._project_view_requirements(manifest)
         return {
             "schema_version": 1,
             "project_id": project_id,
@@ -5499,6 +5896,7 @@ class App:
             "modes": [{"id": "screens", "label": "Screens"}, {"id": "map", "label": "Map"}],
             "screens": screens,
             "map": graph,
+            "requirements": requirements,
             "identity": {
                 "manifest_id": manifest_id,
                 "manifest_version": version,

@@ -2680,6 +2680,224 @@ class SwarmConsoleTests(unittest.TestCase):
         for private in ("token", "config_path", "credential", "cookie", "prompt"):
             self.assertNotIn(f'"{private}"', serialized)
 
+    @staticmethod
+    def _project_view_requirements_fixture() -> tuple[dict[str, Any], dict[str, Any]]:
+        states = ("KNOWN_SATISFIED", "PARTIAL", "MISSING", "UNKNOWN")
+        group_names = ("overview", "role_library", "review", "assets", "settings", "onboarding")
+        empty_bindings = {
+            "accepted_artifact_refs": [], "candidate_or_observed_artifact_refs": [],
+            "unregistered_artifact_refs": [], "implementation_evidence_refs": [], "browser_proof_refs": [],
+        }
+        shared = {
+            "requirement_id": "req.shared.accessibility", "short_label": "Accessibility",
+            "required": True, "target_devices": ["desktop", "tablet", "mobile"],
+            "acceptance_criterion": "The surface remains operable with keyboard and touch.",
+            "bindings": copy.deepcopy(empty_bindings), "derived_state": "UNKNOWN",
+            "missing_target_devices": ["tablet"], "reason": "Tablet proof is not retained.",
+            "applies_to_group_ids": [f"group.{name}" for name in group_names],
+        }
+        groups = []
+        for group_index, name in enumerate(group_names):
+            requirements = []
+            for requirement_index in range(5):
+                bindings = copy.deepcopy(empty_bindings)
+                if group_index == 0 and requirement_index == 0:
+                    bindings["accepted_artifact_refs"] = [{
+                        "record_id": "artifact.overview", "artifact_id": "overview-approved",
+                        "digest": "sha256:" + "a" * 64,
+                    }]
+                    bindings["implementation_evidence_refs"] = [{
+                        "record_id": "evidence.overview", "artifact_id": "overview-preview",
+                        "digest": "sha256:" + "b" * 64,
+                    }]
+                requirements.append({
+                    "requirement_id": f"req.{name}.{requirement_index + 1}",
+                    "short_label": f"{name.replace('_', ' ').title()} requirement {requirement_index + 1}",
+                    "required": requirement_index < 4,
+                    "target_devices": ["desktop", "mobile"],
+                    "acceptance_criterion": "Retain exact design and implementation evidence.",
+                    "bindings": bindings,
+                    "derived_state": states[(group_index * 5 + requirement_index) % len(states)],
+                    "missing": [] if requirement_index == 0 else ["accepted evidence"],
+                    "reason": "Derived from retained immutable evidence.",
+                })
+            groups.append({
+                "group_id": f"group.{name}", "label": name.replace("_", " ").title(),
+                "order": group_index, "node_ids": [name],
+                "shared_requirement_ids": ["req.shared.accessibility"], "requirements": requirements,
+            })
+        cursor = {
+            "stream_id": "project-ledger", "project_id": "project:alpha", "sequence": 18,
+            "event_id": "event-18", "event_digest": "sha256:" + "c" * 64,
+        }
+        return {
+            "contract_id": "screen.groups.requirements.v1", "version": "1.0.0",
+            "shared_requirements": [shared], "groups": groups,
+        }, {
+            "accepted_scope_id": "scope:project:alpha:18", "accepted_cursor": cursor,
+            "status": "KNOWN", "reason": "Bound to the accepted project ledger cursor.",
+        }
+
+    def _write_local_project_view_bundle(self, project_id: str, root: Path) -> dict[str, Any]:
+        slug = project_id.removeprefix("project:")
+        root.joinpath("ui").mkdir(parents=True)
+        coverage = json.dumps({"schema_version": 1, "project_id": project_id, "nodes": []}, separators=(",", ":")).encode()
+        graph = b'flowchart LR\n  overview["Overview"] --> review["Review"]\n'
+        coverage_ref = f"project://{slug}/ui/coverage.json"
+        graph_ref = f"project://{slug}/ui/app-flow.mmd"
+        manifest_ref = f"project://{slug}/ui/swarm.project_views.json"
+        digest = lambda value: "sha256:" + hashlib.sha256(value).hexdigest()
+        requirements, binding = self._project_view_requirements_fixture()
+        binding = copy.deepcopy(binding)
+        binding["accepted_scope_id"] = f"scope:{project_id}:18"
+        binding["accepted_cursor"]["project_id"] = project_id
+        manifest = json.dumps({
+            "manifest_type": "swarm.project_views", "schema_version": 1,
+            "manifest_id": f"{slug}-project-views", "manifest_version": 18, "project_id": project_id,
+            "projection_binding": binding, "screen_group_requirements": requirements,
+            "project_tab": {
+                "id": "tab.project.ui", "label": "UI", "visibility": "conditional",
+                "modes": ["view.project.ui.screens", "view.project.ui.map"],
+            },
+            "views": [
+                {
+                    "id": "view.project.ui.screens", "label": "Screens", "renderer": "gallery", "mode": "grid",
+                    "source_refs": [coverage_ref], "source_digests": [digest(coverage)],
+                    "allowed_actions": ["open_artifact"],
+                },
+                {
+                    "id": "view.project.ui.map", "label": "Map", "renderer": "canvas", "mode": "network",
+                    "source_refs": [graph_ref], "source_digests": [digest(graph)],
+                    "allowed_actions": ["open_entity"],
+                },
+            ],
+        }, separators=(",", ":")).encode()
+        manifest_digest = digest(manifest)
+        root.joinpath("ui", "coverage.json").write_bytes(coverage)
+        root.joinpath("ui", "app-flow.mmd").write_bytes(graph)
+        root.joinpath("ui", "swarm.project_views.json").write_bytes(manifest)
+        link = {
+            "schema_version": 1,
+            "links": [{"rel": "project_views", "ref": manifest_ref, "digest": manifest_digest}],
+        }
+        root.joinpath("SWARM.md").write_text("# Project\n\n```json\n" + json.dumps(link) + "\n```\n", encoding="utf-8")
+        return {"manifest": manifest, "manifest_digest": manifest_digest, "link": link, "binding": binding}
+
+    def test_default_project_view_resolver_is_root_bound_and_withholds_incompatible_pilots(self) -> None:
+        alpha_root = self.root / "projects" / "alpha-local"
+        beta_root = self.root / "projects" / "beta-local"
+        alpha = self._write_local_project_view_bundle("project:alpha", alpha_root)
+        beta = self._write_local_project_view_bundle("project:beta", beta_root)
+        self._add_host_project("project:beta", "Beta", str(beta_root))
+        with closing(sqlite3.connect(self.database)) as connection:
+            connection.execute("UPDATE project_roots SET path=? WHERE project_id='project:alpha'", (str(alpha_root),))
+            connection.execute("UPDATE threads SET cwd=? WHERE cwd='C:/work/alpha'", (str(alpha_root),))
+            connection.commit()
+        app = console.App(self.codex_home, self.config, self.root / "console" / "default-project-view.sqlite3")
+        with mock.patch.object(app.store, "proof_feed", return_value=[]):
+            alpha_projection = app._project_view_projection("project:alpha")
+            beta_projection = app._project_view_projection("project:beta")
+        self.assertEqual(alpha_projection["identity"]["manifest_digest"], alpha["manifest_digest"])
+        self.assertEqual(beta_projection["identity"]["manifest_digest"], beta["manifest_digest"])
+        self.assertEqual(alpha_projection["requirements"]["requirement_count"], 31)
+        self.assertEqual(len(alpha_projection["requirements"]["groups"]), 6)
+        self.assertEqual(app._root_project_view_link(alpha_root), (
+            "present", {key: alpha["link"]["links"][0][key] for key in ("ref", "digest")},
+        ))
+
+        with self.assertRaisesRegex(console.ConsoleError, "another project"):
+            app._default_project_view_resolver("project:alpha", "project://beta/ui/coverage.json", "sha256:" + "0" * 64)
+        with self.assertRaisesRegex(console.ConsoleError, "traversal"):
+            app._default_project_view_resolver("project:alpha", "project://alpha/../coverage.json", "sha256:" + "0" * 64)
+        with self.assertRaisesRegex(console.ConsoleError, "digest does not match"):
+            app._default_project_view_resolver("project:alpha", "project://alpha/ui/coverage.json", "sha256:" + "0" * 64)
+        oversized = alpha_root / "ui" / "oversized.json"
+        oversized.write_bytes(b"x" * (console.PROJECT_VIEW_MAX_BYTES + 1))
+        with self.assertRaisesRegex(console.ConsoleError, "exceeds the delivery guard"):
+            app._default_project_view_resolver(
+                "project:alpha", "project://alpha/ui/oversized.json", "sha256:" + hashlib.sha256(oversized.read_bytes()).hexdigest(),
+            )
+        with mock.patch.object(Path, "is_symlink", return_value=True), self.assertRaisesRegex(
+            console.ConsoleError, "reparse point",
+        ):
+            app._default_project_view_resolver("project:alpha", "project://alpha/ui/coverage.json", "sha256:" + hashlib.sha256((alpha_root / "ui" / "coverage.json").read_bytes()).hexdigest())
+
+        invalid_link_root = self.root / "projects" / "invalid-link"
+        invalid_link_root.mkdir(parents=True)
+        invalid_link_root.joinpath("SWARM.md").write_text(
+            "```json\n" + json.dumps({"links": alpha["link"]["links"]}) + "\n```\n", encoding="utf-8",
+        )
+        self.assertEqual(app._root_project_view_link(invalid_link_root), ("invalid", None))
+        invalid_link_root.joinpath("SWARM.md").write_text(
+            "```json\n" + json.dumps({
+                "schema_version": 1, "links": [{**alpha["link"]["links"][0], "title": "Project UI"}],
+            }) + "\n```\n", encoding="utf-8",
+        )
+        self.assertEqual(app._root_project_view_link(invalid_link_root), ("invalid", None))
+
+        legacy_root = self.root / "projects" / "legacy-local"
+        legacy_root.joinpath("ui").mkdir(parents=True)
+        legacy = json.dumps({"version": "0.1", "projectId": "project:legacy", "views": []}, separators=(",", ":")).encode()
+        legacy_digest = "sha256:" + hashlib.sha256(legacy).hexdigest()
+        legacy_root.joinpath("ui", "swarm.project_views.json").write_bytes(legacy)
+        legacy_root.joinpath("SWARM.md").write_text(
+            "```json\n" + json.dumps({"schema_version": 1, "links": [{
+                "rel": "project_views", "ref": "project://legacy/ui/swarm.project_views.json", "digest": legacy_digest,
+            }]}) + "\n```\n", encoding="utf-8",
+        )
+        self._add_host_project("project:legacy", "Legacy", str(legacy_root))
+        with mock.patch.object(app.store, "proof_feed", return_value=[]):
+            self.assertIsNone(app._project_view_projection("project:legacy"))
+
+    def test_project_ui_agent_read_is_digest_cursor_bound_and_fail_closed(self) -> None:
+        root = self.root / "projects" / "alpha-agent"
+        bundle = self._write_local_project_view_bundle("project:alpha", root)
+        with closing(sqlite3.connect(self.database)) as connection:
+            connection.execute("UPDATE project_roots SET path=? WHERE project_id='project:alpha'", (str(root),))
+            connection.execute("UPDATE threads SET cwd=? WHERE cwd='C:/work/alpha'", (str(root),))
+            connection.commit()
+        app = console.App(self.codex_home, self.config, self.root / "console" / "project-agent-read.sqlite3")
+        base = {
+            "contract_id": "project.ui.agent_read.v1", "version": "1.0.0", "project_id": "project:alpha",
+            "accepted_scope_id": bundle["binding"]["accepted_scope_id"],
+            "accepted_cursor": bundle["binding"]["accepted_cursor"],
+        }
+        with mock.patch.object(app.store, "proof_feed", return_value=[]):
+            manifest = app.project_ui_agent_read({**base, "operation": "project_views.get_normalized_manifest"})
+            groups = app.project_ui_agent_read({**base, "operation": "project_views.list_screen_groups"})
+            group = app.project_ui_agent_read({**base, "operation": "project_views.get_screen_group", "group_id": "group.overview"})
+            first = app.project_ui_agent_read({**base, "operation": "project_views.list_requirements", "page_size": 2})
+            second = app.project_ui_agent_read({**base, "operation": "project_views.list_requirements", "page_size": 2, "page_token": first["next_page_token"]})
+            missing = app.project_ui_agent_read({**base, "operation": "project_views.list_missing_requirements", "target_device": "mobile"})
+            graph = app.project_ui_agent_read({**base, "operation": "project_views.get_graph_identity"})
+            evidence = app.project_ui_agent_read({**base, "operation": "project_views.get_evidence_identities", "requirement_id": "req.overview.1"})
+            artifacts = app.project_ui_agent_read({**base, "operation": "project_views.get_artifact_identities", "requirement_id": "req.overview.1"})
+            projects = app.project_ui_agent_read({
+                "contract_id": "project.ui.agent_read.v1", "version": "1.0.0",
+                "operation": "project_views.list_projects_with_manifests", "project_id": "project:alpha",
+            })
+        self.assertEqual(manifest["data"]["requirements"]["requirement_count"], 31)
+        self.assertEqual((len(groups["data"]), group["data"]["group_id"]), (6, "group.overview"))
+        self.assertEqual(len(first["data"]), 2)
+        self.assertNotEqual(first["data"][0]["requirement_id"], second["data"][0]["requirement_id"])
+        self.assertTrue(all(item["derived_state"] != "KNOWN_SATISFIED" for item in missing["data"]))
+        self.assertEqual(graph["data"]["kind"], "graph")
+        self.assertEqual(evidence["data"][0]["artifact_id"], "overview-preview")
+        self.assertEqual(artifacts["data"][0]["artifact_id"], "overview-approved")
+        self.assertEqual([item["project_id"] for item in projects["data"]], ["project:alpha"])
+
+        hostile = [
+            {**base, "operation": "project_views.list_requirements", "unknown": True},
+            {**base, "operation": "project_views.get_normalized_manifest", "accepted_cursor": {**bundle["binding"]["accepted_cursor"], "sequence": 19}},
+            {**base, "operation": "project_views.list_requirements", "page_token": first["next_page_token"][:-1] + "x"},
+            {**base, "operation": "project_views.get_graph_identity", "group_id": "group.overview"},
+            {**base, "operation": "project_views.unknown"},
+        ]
+        with mock.patch.object(app.store, "proof_feed", return_value=[]):
+            for request in hostile:
+                with self.subTest(request=request), self.assertRaises(console.ConsoleError):
+                    app.project_ui_agent_read(request)
+
     def test_project_view_manifest_is_digest_bound_conditional_and_project_generic(self) -> None:
         def encoded(value: dict[str, Any]) -> bytes:
             return json.dumps(value, ensure_ascii=True, separators=(",", ":")).encode("utf-8")
@@ -2840,7 +3058,7 @@ class SwarmConsoleTests(unittest.TestCase):
         }
         app.project_view_resolver = lambda project_id, ref, expected: sources[(ref, expected)]
         root.joinpath("SWARM.md").write_text(
-            "```json\n" + json.dumps({"links": [{"rel": "project_views", "ref": manifest_ref, "digest": manifest_digest}]}) + "\n```\n",
+            "```json\n" + json.dumps({"schema_version": 1, "links": [{"rel": "project_views", "ref": manifest_ref, "digest": manifest_digest}]}) + "\n```\n",
             encoding="utf-8",
         )
         link_status, accepted_link = app._root_project_view_link(root)
@@ -2857,6 +3075,13 @@ class SwarmConsoleTests(unittest.TestCase):
         conflicting_bytes = json.dumps(conflicting, separators=(",", ":")).encode()
         with self.assertRaisesRegex(console.ConsoleError, "conflicting digests"):
             app._normalize_project_view("project:alpha", conflicting_bytes, "sha256:" + hashlib.sha256(conflicting_bytes).hexdigest())
+
+        duplicated = json.loads(manifest)
+        duplicated["views"][1]["source_refs"] = [coverage_ref]
+        duplicated["views"][1]["source_digests"] = [coverage_digest]
+        duplicated_bytes = json.dumps(duplicated, separators=(",", ":")).encode()
+        with self.assertRaisesRegex(console.ConsoleError, "duplicated"):
+            app._normalize_project_view("project:alpha", duplicated_bytes, "sha256:" + hashlib.sha256(duplicated_bytes).hexdigest())
 
         malformed_graph = b'flowchart LR\n  start["Start"] --> finish["Finish"]\n  style start fill:#fff\n'
         malformed_digest = "sha256:" + hashlib.sha256(malformed_graph).hexdigest()
@@ -2908,7 +3133,7 @@ class SwarmConsoleTests(unittest.TestCase):
         unknown_digest = "sha256:" + hashlib.sha256(unknown_bytes).hexdigest()
         sources[(manifest_ref, unknown_digest)] = unknown_bytes
         root.joinpath("SWARM.md").write_text(
-            "```json\n" + json.dumps({"links": [{"rel": "project_views", "ref": manifest_ref, "digest": unknown_digest}]}) + "\n```\n",
+            "```json\n" + json.dumps({"schema_version": 1, "links": [{"rel": "project_views", "ref": manifest_ref, "digest": unknown_digest}]}) + "\n```\n",
             encoding="utf-8",
         )
         with mock.patch.object(app.store, "proof_feed", return_value=[]):

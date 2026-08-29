@@ -191,7 +191,9 @@ assert.match(app, /projection && projection\.project_id === projectId && project
 assert.match(app, /if \(tab === "ui"\) return projectViewMarkup\(\)/);
 assert.match(app, /uiTab\.hidden = !projectView/);
 assert.match(app, /function openProjectViewEvidence\(screenKey, trigger\)/);
-assert.match(app, /state\.evidenceImages = evidence;\s*openEvidenceLightbox\(0, trigger\)/);
+assert.match(app, /function projectViewRequirementGroup\(nodeIds\)/);
+assert.match(app, /state\.evidenceImages = evidence\.map\(\(item\) => \(\{ \.\.\.item, project_requirement_summary: requirementSummary \}\)\)/);
+assert.match(app, /item\.project_requirement_summary \? " · " \+ item\.project_requirement_summary/);
 assert.match(app, /data-project-ui-mode=/);
 assert.match(app, /data-project-view-evidence=/);
 assert.match(app, /class="project-ui-map-edges" aria-label="Map connections"/);
@@ -1063,6 +1065,22 @@ function projectViewFixture() {
       ],
       edges: [{ source: "overview", target: "assets" }],
     },
+    requirements: {
+      contract_id: "screen.groups.requirements.v1",
+      version: "1.0.0",
+      requirement_count: 31,
+      counts_by_state: { KNOWN_SATISFIED: 8, PARTIAL: 8, MISSING: 7, UNKNOWN: 8 },
+      groups: [
+        {
+          group_id: "group.overview", label: "Overview", node_ids: ["overview"],
+          counts_by_state: { KNOWN_SATISFIED: 1, PARTIAL: 1, MISSING: 2, UNKNOWN: 1 },
+        },
+        {
+          group_id: "group.assets", label: "Assets", node_ids: ["assets"],
+          counts_by_state: { KNOWN_SATISFIED: 0, PARTIAL: 0, MISSING: 4, UNKNOWN: 1 },
+        },
+      ],
+    },
     identity: { manifest_id: "fixture-views", manifest_version: 1, manifest_digest: "sha256:" + "a".repeat(64), source_digests: ["sha256:" + "b".repeat(64), "sha256:" + "c".repeat(64)] },
     claim_limit: "Project UI is a read-only digest-bound projection; actions and acceptance remain separate authority.",
   };
@@ -1376,13 +1394,16 @@ const proofFeed = imageProofFixture(6);
     assert.equal(await page.locator('.project-ui-card[data-project-view-screen="overview/default"] .project-ui-alternatives').textContent(), "2 alternatives");
     assert.equal(await page.locator('.project-ui-card[data-project-view-screen="assets/empty"] .project-ui-alternatives').count(), 0);
     assert.equal(await page.locator('.project-ui-card[data-project-view-screen="assets/empty"] .project-ui-devices').count(), 0);
+    assert.match(await page.locator('.project-ui-card[data-project-view-screen="overview/default"] .project-ui-requirements').textContent(), /Overview · 1 satisfied · 1 partial · 2 missing · 1 unknown/);
     await page.locator('.project-ui-card[data-project-view-screen="overview/default"] [data-project-view-evidence]').click();
     assert.equal(await page.locator("#evidence-lightbox").isVisible(), true);
+    assert.match(await page.locator("#evidence-lightbox-caption").textContent(), /Overview · 1 satisfied · 1 partial · 2 missing · 1 unknown/);
     await page.getByRole("button", { name: "Close evidence gallery" }).click();
     await page.getByRole("button", { name: "Map", exact: true }).click();
     assert.equal(await page.locator(".project-ui-map-nodes > button").count(), 1);
     assert.equal(await page.locator(".project-ui-map-nodes > div").count(), 1);
     assert.deepEqual(await page.locator(".project-ui-map-edges li span").allTextContents(), ["Overview", "Assets"]);
+    assert.match(await page.locator('.project-ui-map-nodes [data-project-view-evidence="overview/default"] .project-ui-requirements').textContent(), /Overview · 1 satisfied/);
     await page.locator('.project-ui-map-nodes [data-project-view-evidence="overview/default"]').click();
     assert.equal(await page.locator("#evidence-lightbox").isVisible(), true);
     await page.getByRole("button", { name: "Close evidence gallery" }).click();
