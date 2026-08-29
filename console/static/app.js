@@ -1746,11 +1746,18 @@ function projectProgressQueueProjection(progress) {
   const projection = progress?.progress_queue;
   const cursor = progress?.cursor;
   if (!projection || projection.view_id !== "view.project.progress" || projection.renderer !== "table") return null;
-  if (projection.project_id !== selectedProgressProjectId() || !cursor || !projection.accepted_cursor) return null;
-  if (["event_seq", "event_id", "event_digest"].some((field) => projection.accepted_cursor[field] !== cursor[field])) return null;
+  const projectId = selectedProgressProjectId();
+  const scope = projection.scope_binding;
+  if (projection.project_id !== projectId || scope?.project_id !== projectId || !Array.isArray(scope?.ctrl_ids)) return null;
   if (!Array.isArray(projection.segments)) return null;
   const expected = ["segment.project.progress.active", "segment.project.progress.queue"];
   if (projection.segments.length !== expected.length || projection.segments.some((segment, index) => segment?.segment_id !== expected[index] || !Array.isArray(segment.rows))) return null;
+  if (projection.status !== "CURRENT") {
+    if (progress?.status !== "UNKNOWN" || projection.available !== false || !["UNKNOWN", "RESYNC_REQUIRED"].includes(projection.status)) return null;
+    return projection;
+  }
+  if (!cursor || !projection.accepted_cursor || progress?.status === "UNKNOWN") return null;
+  if (["event_seq", "event_id", "event_digest"].some((field) => projection.accepted_cursor[field] !== cursor[field] || scope.cursor?.[field] !== cursor[field])) return null;
   return projection;
 }
 
@@ -1826,10 +1833,11 @@ function projectProgressQueueRowMarkup(row, segmentId) {
 
 function projectProgressQueueMarkup(progress) {
   const projection = projectProgressQueueProjection(progress);
-  if (!projection) return "";
+  if (!projection || projection.status !== "CURRENT" || projection.available === false) {
+    return '<section class="panel project-progress-view is-unavailable" aria-labelledby="project-progress-view-title"><header class="overview-section-head"><div><p class="eyebrow">Accepted project scope</p><h2 id="project-progress-view-title">Project Progress</h2></div><p>— <span class="sr-only">UNKNOWN</span><small aria-hidden="true">UNKNOWN</small></p></header><p class="empty-state" role="status">Active and queue are unavailable until a fresh accepted scope is restored.</p></section>';
+  }
   const stale = ["stale", "unavailable"].includes(state.projectProgressStatus) || projection.status !== "CURRENT";
   const segments = projectProgressQueueSegments(projection, stale);
-  if (!segments.some((segment) => segment.rows.length)) return "";
   const tables = segments.map((segment) => '<section class="project-progress-segment" aria-labelledby="' + escapeHTML(segment.segment_id) + '"><header><h3 id="' + escapeHTML(segment.segment_id) + '">' + escapeHTML(segment.label) + '</h3><span>' + escapeHTML(segment.rows.length) + '</span></header>' + (segment.rows.length ? '<div class="project-progress-table-wrap"><table class="project-progress-table"><thead><tr><th scope="col">Task</th><th scope="col">State</th><th scope="col">Progress</th><th scope="col">Last accepted signal</th><th scope="col">Elapsed</th><th scope="col">ETA</th></tr></thead><tbody>' + segment.rows.map((row) => projectProgressQueueRowMarkup(row, segment.segment_id)).join("") + '</tbody></table></div>' : '<p class="empty-state">No ' + escapeHTML(segment.label.toLowerCase()) + ' work at this cursor.</p>') + '</section>').join("");
   return '<section class="panel project-progress-view" aria-labelledby="project-progress-view-title"><header class="overview-section-head"><div><p class="eyebrow">Accepted project scope</p><h2 id="project-progress-view-title">Project Progress</h2></div><p>' + (stale ? 'Last accepted identity · live fields unavailable' : 'Through event ' + escapeHTML(projection.accepted_cursor.event_seq)) + '</p></header>' + tables + '</section>';
 }
@@ -2758,7 +2766,7 @@ async function refreshProjectProgress() {
     const result = await api('/api/project-progress?project_id=' + encodeURIComponent(projectId));
     if (projectId !== selectedProgressProjectId()) return;
     state.projectProgress = result;
-    state.projectProgressStatus = "current";
+    state.projectProgressStatus = result?.status === "UNKNOWN" || result?.progress_queue?.status !== "CURRENT" ? "unavailable" : "current";
     state.projectProgressError = "";
   } catch (error) {
     if (projectId !== selectedProgressProjectId()) return;

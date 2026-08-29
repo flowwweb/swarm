@@ -351,7 +351,7 @@ const progressQueueHelpers = vm.runInNewContext(`(() => {
   const state = { projectProgressStatus: "current" };
   function selectedProgressProjectId() { return "project:alpha"; }
   ${app.slice(progressQueueHelperStart, progressQueueHelperEnd)}
-  return { projectProgressQueueProjection, progressQueueRowPresentation, projectProgressQueueSegments };
+  return { projectProgressQueueProjection, progressQueueRowPresentation, projectProgressQueueSegments, projectProgressQueueMarkup };
 })()`);
 const progressCursor = { event_seq: 8, event_id: "event-8", event_digest: "digest-8" };
 const progressRow = {
@@ -363,15 +363,29 @@ const progressRow = {
 };
 const progressQueueFixture = {
   view_id: "view.project.progress", renderer: "table", project_id: "project:alpha",
+  scope_binding: { project_id: "project:alpha", ctrl_ids: ["ctrl-a"], cursor: progressCursor },
   accepted_cursor: progressCursor, status: "CURRENT", available: true,
   segments: [
     { segment_id: "segment.project.progress.active", label: "Active", rows: [progressRow] },
     { segment_id: "segment.project.progress.queue", label: "Queue", rows: [] },
   ],
 };
-assert.equal(progressQueueHelpers.projectProgressQueueProjection({ cursor: progressCursor, progress_queue: progressQueueFixture }).status, "CURRENT");
+assert.equal(progressQueueHelpers.projectProgressQueueProjection({ status: "MEASURED", cursor: progressCursor, progress_queue: progressQueueFixture }).status, "CURRENT");
 assert.equal(progressQueueHelpers.projectProgressQueueProjection({ cursor: { ...progressCursor, event_seq: 7 }, progress_queue: progressQueueFixture }), null);
 assert.equal(progressQueueHelpers.projectProgressQueueProjection({ cursor: progressCursor, progress_queue: { ...progressQueueFixture, segments: [...progressQueueFixture.segments].reverse() } }), null);
+const unavailableQueue = {
+  ...progressQueueFixture,
+  scope_binding: { project_id: "project:alpha", ctrl_ids: ["ctrl-a"], cursor: null },
+  accepted_cursor: null,
+  status: "RESYNC_REQUIRED",
+  reason: "MIXED_SCOPE_REJECTED",
+  available: false,
+  segments: progressQueueFixture.segments.map((segment) => ({ ...segment, rows: [] })),
+};
+const unavailableProgress = { status: "UNKNOWN", cursor: { event_seq: null, event_id: null, event_digest: null }, progress_queue: unavailableQueue };
+assert.equal(progressQueueHelpers.projectProgressQueueProjection(unavailableProgress).status, "RESYNC_REQUIRED");
+assert.match(progressQueueHelpers.projectProgressQueueMarkup(unavailableProgress), /—[\s\S]*UNKNOWN[\s\S]*Active and queue are unavailable until a fresh accepted scope is restored/);
+assert.doesNotMatch(progressQueueHelpers.projectProgressQueueMarkup(unavailableProgress), /<table/);
 const staleProgressRow = progressQueueHelpers.progressQueueRowPresentation(progressRow, true);
 assert.deepEqual(
   { progress: staleProgressRow.progress.state, eta: staleProgressRow.eta.state, elapsed: staleProgressRow.elapsed.state, queue: staleProgressRow.queue_state, runnable: staleProgressRow.runnable },
