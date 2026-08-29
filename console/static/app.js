@@ -1,4 +1,4 @@
-const state = { token: "", overview: null, proof: [], proofCollections: new Map(), proofStatuses: new Map(), proofStatus: "idle", proofSequence: 0, usageHistory: null, usageWindowHours: 24, usageScopeKey: "", usageStatus: "idle", usageError: "", projectProgress: null, projectProgressProjectId: "", projectProgressStatus: "idle", projectProgressError: "", projectProgressFeed: null, projectProgressFeedProjectId: "", projectProgressFeedStatus: "idle", projectProgressFeedError: "", projectTab: "overview", diagnostics: null, health: null, storage: null, config: null, configStatus: "idle", configError: "", chatRelaySaving: false, ctrlSettings: null, auto: null, autoBindingKey: "", autoStatus: "idle", autoError: "", autoSaving: false, skills: null, skillsError: "", roleManifests: null, roleManifestStatus: "unavailable", roleManifestError: "", agentsTab: "active", selectedRoleId: "accountant", roleEditorTrigger: null, assetView: "grid", selectedAssetIdentity: "", onboardingStep: 0, onboardingShown: false, onboardingTrigger: null, notificationLastSeen: 0, notificationTrigger: null, connectionStatus: "reconnecting", view: "overview", projectId: "all", ctrlId: "", settingsCtrlId: "", settingsScopeType: "", settingsScopeId: "", evidenceImages: [], evidenceIndex: 0, evidenceTrigger: null };
+const state = { token: "", overview: null, proof: [], proofCollections: new Map(), proofStatuses: new Map(), proofStatus: "idle", proofSequence: 0, usageHistory: null, usageWindowHours: 24, usageScopeKey: "", usageStatus: "idle", usageError: "", projectProgress: null, projectProgressProjectId: "", projectProgressStatus: "idle", projectProgressError: "", projectProgressFeed: null, projectProgressFeedProjectId: "", projectProgressFeedStatus: "idle", projectProgressFeedError: "", projectTab: "overview", diagnostics: null, health: null, storage: null, config: null, configStatus: "idle", configError: "", chatRelaySaving: false, ctrlSettings: null, auto: null, autoBindingKey: "", autoStatus: "idle", autoError: "", autoSaving: false, skills: null, skillsError: "", roleManifests: null, roleManifestStatus: "unavailable", roleManifestError: "", agentsTab: "active", selectedRoleId: "accountant", roleEditorTrigger: null, assetView: "grid", selectedAssetIdentity: "", onboardingStep: 0, onboardingShown: false, onboardingTrigger: null, notifications: null, notificationBindingKey: "", notificationStatus: "idle", notificationError: "", notificationAckPending: false, notificationPresentedIds: new Set(), notificationToast: null, notificationToastTimer: null, notificationTrigger: null, connectionStatus: "reconnecting", view: "overview", projectId: "all", ctrlId: "", settingsCtrlId: "", settingsScopeType: "", settingsScopeId: "", evidenceImages: [], evidenceIndex: 0, evidenceTrigger: null };
 const EVIDENCE_THUMBNAIL_PAGE_SIZE = 24;
 const USAGE_WINDOW_LABELS = { 1: "1h", 24: "1d" };
 const ROLE_PROFESSIONS = [
@@ -86,6 +86,8 @@ function clearError() {
 function showConnectionState() {
   clearError();
   setDataStatus("unavailable", state.overview?.generated_at);
+  setNotificationsOpen(false);
+  dismissNotificationToast(false);
   $(".app-shell").classList.add("is-disconnected");
   $(".workspace").classList.add("is-disconnected");
   $("#connection-state").hidden = false;
@@ -193,6 +195,7 @@ function setDataStatus(status, observedAt = null) {
     note.textContent = observedAt ? "Last update " + formatRelative(observedAt) : "Console unavailable";
     snapshot.textContent = "Offline";
   }
+  renderNotifications();
 }
 
 function scopedNodes() {
@@ -828,29 +831,224 @@ function yieldChartMarkup(item) {
   return '<div class="project-yield-chart"><header><div><p class="eyebrow">Verified yield</p><h2>' + escapeHTML(yieldValue(item)) + '</h2></div><span>' + escapeHTML(yieldHealth(item)) + '</span></header><svg viewBox="0 0 620 186" role="img" aria-label="Observed tokens against cumulative admitted scope"><path class="yield-axis" d="M34 18v140h562"></path><text x="315" y="181">Observed tokens</text><text class="yield-y-label" x="8" y="91">Admitted scope</text>' + dividers + '<polyline class="yield-primary-line" points="' + line + '"></polyline></svg><footer><span>Token burn ' + (Number.isFinite(observedTokens) ? compactNumber(observedTokens) : '—') + '</span><span>Rework ' + (Number.isFinite(Number(item.rework_drag)) ? Number(item.rework_drag).toFixed(1) + '%' : '—') + '</span><span>' + escapeHTML(item.confidence === "HIGH" ? "High confidence" : item.confidence === "PARTIAL" ? "Partial confidence" : "Confidence unknown") + '</span></footer></div>';
 }
 
-const NOTIFICATION_KINDS = new Set(["BLOCKER", "STALLED", "RETRYING", "ETA_DRIFT", "PROOF_INVALIDATED", "TOKEN_OVERRUN"]);
+const NOTIFICATION_PANEL_UNREAD_LIMIT = 8;
+const NOTIFICATION_SAFE_VIEWS = Object.freeze({ projects: "overview", review: "review", assets: "assets", roles: "agents" });
 
-function attentionItems() {
-  const items = state.overview?.attention_items || [];
+function dedupeNotificationItems(items) {
   const seen = new Set();
-  return items.filter((item) => {
-    const identity = String(item?.id || item?.material_digest || "");
-    if (!identity || seen.has(identity) || !NOTIFICATION_KINDS.has(item.kind)) return false;
+  return (Array.isArray(items) ? items : []).filter((item) => {
+    const identity = typeof item?.id === "string" ? item.id : "";
+    if (!identity || seen.has(identity)) return false;
     seen.add(identity);
     return true;
-  }).sort((a, b) => Number(b.material_sequence || b.observed_at_ms || 0) - Number(a.material_sequence || a.observed_at_ms || 0));
+  });
+}
+
+function notificationToastPlan(unread, presentedIds) {
+  const priority = { critical: 3, warning: 2, info: 1 };
+  const candidates = dedupeNotificationItems(unread).filter((item) => !presentedIds.has(item.id));
+  const ordered = [...candidates].sort((left, right) =>
+    (priority[String(right.severity)] || 0) - (priority[String(left.severity)] || 0)
+      || Number(right.material_sequence || 0) - Number(left.material_sequence || 0)
+      || String(right.id).localeCompare(String(left.id)));
+  return { item: ordered[0] || null, additionalCount: Math.max(0, ordered.length - 1), presentedIds: candidates.map((item) => item.id) };
+}
+
+function notificationAcknowledgePayload(binding, notificationIds) {
+  return { ctrl_id: binding.ctrlId, project_id: binding.projectId, notification_ids: [...notificationIds] };
+}
+
+function notificationDismissIds(toast, interacted) {
+  return interacted && typeof toast?.item?.id === "string" ? [toast.item.id] : [];
+}
+
+function notificationPanelMessage(status, hasLastGood, connectionStatus, error = "") {
+  if (connectionStatus !== "live") return hasLastGood ? "Offline · last received notifications are read-only." : "Notifications are unavailable while the console reconnects.";
+  if (status === "loading") return "Loading notifications.";
+  if (status === "refreshing") return "Refreshing notifications.";
+  if (status === "acknowledging") return "Saving read status.";
+  if (status === "stale") return "Last received notifications are read-only. " + (error || "Refresh failed.");
+  if (status === "unavailable") return error || "Notifications could not be loaded.";
+  if (status === "idle") return "Choose a project to see notifications.";
+  return "Up to date.";
+}
+
+function notificationSafeTarget(target) {
+  const allowedFields = new Set(["view", "project_id", "ctrl_id", "task_id", "subject_id"]);
+  if (!target || Object.keys(target).some((field) => !allowedFields.has(field))) return null;
+  const view = NOTIFICATION_SAFE_VIEWS[String(target?.view || "")];
+  const projectId = typeof target?.project_id === "string" ? target.project_id : "";
+  const ctrlId = typeof target?.ctrl_id === "string" ? target.ctrl_id : "";
+  if (!view || !projectId) return null;
+  return { view, projectId, ctrlId, roleLibrary: String(target.view) === "roles" };
+}
+
+function notificationBinding() {
+  if (state.ctrlId) {
+    const ctrl = historicalControllers().find((item) => item.id === state.ctrlId);
+    const project = ctrl?.project_id ? currentWorkProjects().find((item) => item.id === ctrl.project_id) : null;
+    if (project?.ctrl_ids?.includes(ctrl.id)) return { projectId: project.id, ctrlId: ctrl.id };
+  }
+  if (state.projectId === "all" || state.projectId.startsWith("ctrl:")) return null;
+  const project = currentWorkProjects().find((item) => item.id === state.projectId);
+  if (!project) return null;
+  const ctrlIds = [...new Set(project.ctrl_ids || [])];
+  const ctrlId = ctrlIds.includes(project.active_ctrl_id) ? project.active_ctrl_id : (ctrlIds.length === 1 ? ctrlIds[0] : "");
+  return ctrlId ? { projectId: project.id, ctrlId } : null;
+}
+
+function notificationBindingIdentity(binding = notificationBinding()) {
+  return binding ? binding.projectId + "|" + binding.ctrlId : "";
+}
+
+function notificationData() {
+  const key = notificationBindingIdentity();
+  return key && key === state.notificationBindingKey && state.notifications?.ok === true ? state.notifications : null;
+}
+
+function notificationActionTarget(item) {
+  const target = notificationSafeTarget(item?.action_target);
+  if (!target) return null;
+  const project = currentWorkProjects().find((entry) => entry.id === target.projectId);
+  if (!project || (target.ctrlId && !project.ctrl_ids.includes(target.ctrlId))) return null;
+  return target;
+}
+
+function notificationIcon(item) {
+  if (item.kind === "MILESTONE_COMPLETED") return "check";
+  if (item.kind === "REVIEW_REQUESTED" || item.kind === "REVIEW_COMPLETED") return "shield-check";
+  return "triangle-alert";
+}
+
+function notificationItemMarkup(item, seen = false) {
+  const target = notificationActionTarget(item);
+  const tag = target ? "button" : "article";
+  const action = target ? ' type="button" data-notification-action="navigate"' : ' aria-disabled="true"';
+  const severity = ["critical", "warning", "info"].includes(item.severity) ? item.severity : "info";
+  const context = [item.project_id, item.task_id, item.owner_id].filter(Boolean).join(" · ") || "Project";
+  const timestamp = seen ? item.seen_at_ms || item.observed_at_ms : item.observed_at_ms;
+  return '<' + tag + ' class="notification-item is-' + severity + (seen ? ' is-seen' : '') + '"' + action + ' data-notification-id="' + escapeHTML(item.id) + '"><svg class="lucide" aria-hidden="true"><use href="#lucide-' + notificationIcon(item) + '"></use></svg><span><strong>' + escapeHTML(item.sentence || humanize(item.kind)) + '</strong><small>' + escapeHTML(context) + '</small></span><time>' + escapeHTML((seen ? "Seen " : "") + formatRelative(timestamp)) + '</time></' + tag + '>';
+}
+
+function renderedNotificationUnreadIds() {
+  return $$("#notifications-unread-list [data-notification-id]").filter((item) => !item.hidden).map((item) => item.dataset.notificationId);
+}
+
+function renderNotificationToast() {
+  const host = $("#notification-toast-region");
+  const toast = state.notificationToast;
+  if (!toast?.item) { host.innerHTML = ""; return; }
+  const target = notificationActionTarget(toast.item);
+  const mainTag = target ? "button" : "div";
+  const mainAction = target ? ' type="button" data-notification-toast-action="open"' : "";
+  const more = toast.additionalCount ? '<small>' + String(toast.additionalCount) + ' more notification' + (toast.additionalCount === 1 ? '' : 's') + '</small>' : "";
+  host.innerHTML = '<aside class="notification-toast panel is-' + escapeHTML(toast.item.severity || "info") + '" data-notification-toast-id="' + escapeHTML(toast.item.id) + '" role="status"><' + mainTag + ' class="notification-toast-main"' + mainAction + '><svg class="lucide" aria-hidden="true"><use href="#lucide-' + notificationIcon(toast.item) + '"></use></svg><span><strong>' + escapeHTML(toast.item.sentence || humanize(toast.item.kind)) + '</strong>' + more + '</span></' + mainTag + '><button class="icon-button" type="button" data-notification-toast-action="dismiss" aria-label="Dismiss notification"><svg class="lucide" aria-hidden="true"><use href="#lucide-x"></use></svg></button></aside>';
 }
 
 function renderNotifications() {
-  const items = attentionItems();
-  const unread = items.filter((item) => Number(item.material_sequence) > state.notificationLastSeen).length;
+  const data = notificationData();
+  const unread = dedupeNotificationItems(data?.unread);
+  const recentSeen = dedupeNotificationItems(data?.recent_seen);
   const badge = $("#notification-unread");
-  badge.hidden = unread === 0;
-  badge.textContent = unread > 9 ? "9+" : String(unread);
-  $("#notifications-list").innerHTML = items.length ? items.slice(0, 8).map((item) => {
-    const label = [item.project_id, item.task_id, item.owner_id].filter(Boolean).join(" · ") || "Project";
-    return '<button class="notification-item ' + (item.severity === "critical" ? "is-critical" : "") + '" type="button" data-notification-project="' + escapeHTML(item.project_id || "") + '" data-notification-task="' + escapeHTML(item.task_id || "") + '"><svg class="lucide" aria-hidden="true"><use href="#lucide-triangle-alert"></use></svg><span><strong>' + escapeHTML(label) + '</strong><small>' + escapeHTML(item.sentence || humanize(item.kind)) + '</small></span><time>' + escapeHTML(formatRelative(item.observed_at_ms)) + '</time></button>';
-  }).join("") : '<p class="notifications-empty">All tentacles moving.</p>';
+  badge.hidden = unread.length === 0;
+  badge.textContent = unread.length > 9 ? "9+" : String(unread.length);
+  $("#notifications").setAttribute("aria-label", unread.length ? "Notifications, " + String(unread.length) + " unread" : "Notifications");
+  $("#notifications-panel").setAttribute("aria-busy", String(["loading", "refreshing", "acknowledging"].includes(state.notificationStatus)));
+  $("#notifications-status").textContent = notificationPanelMessage(state.notificationStatus, Boolean(data), state.connectionStatus, state.notificationError);
+  $("#notifications-retry").hidden = !notificationBinding() || !["stale", "unavailable"].includes(state.notificationStatus) || state.connectionStatus !== "live";
+  $("#notifications-unread-list").innerHTML = unread.length
+    ? unread.slice(0, NOTIFICATION_PANEL_UNREAD_LIMIT).map((item) => notificationItemMarkup(item)).join("")
+    : '<p class="notifications-empty">' + (state.notificationStatus === "current" ? "All tentacles moving." : "No current notification list.") + '</p>';
+  $("#notifications-recent-list").innerHTML = recentSeen.length
+    ? recentSeen.map((item) => notificationItemMarkup(item, true)).join("")
+    : '<p class="notifications-empty">No recent history.</p>';
+  renderNotificationToast();
+}
+
+async function dismissNotificationToast(interacted) {
+  const toast = state.notificationToast;
+  if (state.notificationToastTimer) window.clearTimeout(state.notificationToastTimer);
+  state.notificationToastTimer = null;
+  state.notificationToast = null;
+  renderNotificationToast();
+  const ids = notificationDismissIds(toast, interacted);
+  if (ids.length) await acknowledgeNotifications(ids);
+}
+
+function presentNotificationToast(unread) {
+  if (document.visibilityState !== "visible" || !$("#notifications-panel").hidden) return;
+  const plan = notificationToastPlan(unread, state.notificationPresentedIds);
+  if (!plan.item) return;
+  plan.presentedIds.forEach((identity) => state.notificationPresentedIds.add(identity));
+  if (state.notificationToastTimer) window.clearTimeout(state.notificationToastTimer);
+  state.notificationToast = { item: plan.item, additionalCount: plan.additionalCount };
+  renderNotificationToast();
+  state.notificationToastTimer = window.setTimeout(() => dismissNotificationToast(false), 8_000);
+}
+
+async function acknowledgeNotifications(notificationIds) {
+  const binding = notificationBinding();
+  const data = notificationData();
+  const currentIds = new Set(dedupeNotificationItems(data?.unread).map((item) => item.id));
+  const exactIds = [...new Set(notificationIds)].filter((identity) => currentIds.has(identity));
+  if (!binding || !data || !exactIds.length || state.notificationAckPending || state.connectionStatus !== "live") return false;
+  state.notificationAckPending = true;
+  state.notificationStatus = "acknowledging";
+  state.notificationError = "";
+  renderNotifications();
+  try {
+    const result = await api("/api/notifications/seen", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(notificationAcknowledgePayload(binding, exactIds)) });
+    if (notificationBindingIdentity() !== notificationBindingIdentity(binding)) return false;
+    if (result?.feed?.ok !== true || !Array.isArray(result.feed.unread) || !Array.isArray(result.feed.recent_seen)) throw new Error("Notification acknowledgement returned an invalid feed");
+    state.notifications = result.feed;
+    state.notificationStatus = "current";
+    return true;
+  } catch (error) {
+    if (notificationBindingIdentity() === notificationBindingIdentity(binding)) {
+      state.notificationStatus = "stale";
+      state.notificationError = (error.message || "Read status could not be saved") + " Try again.";
+    }
+    return false;
+  } finally {
+    state.notificationAckPending = false;
+    renderNotifications();
+  }
+}
+
+async function refreshNotifications() {
+  const binding = notificationBinding();
+  const bindingKey = notificationBindingIdentity(binding);
+  if (state.notificationBindingKey !== bindingKey) dismissNotificationToast(false);
+  if (!binding) {
+    state.notifications = null;
+    state.notificationBindingKey = "";
+    state.notificationStatus = "idle";
+    state.notificationError = "";
+    renderNotifications();
+    return;
+  }
+  const hasLastGood = state.notificationBindingKey === bindingKey && state.notifications?.ok === true;
+  if (!hasLastGood) state.notifications = null;
+  state.notificationBindingKey = bindingKey;
+  state.notificationStatus = hasLastGood ? "refreshing" : "loading";
+  state.notificationError = "";
+  renderNotifications();
+  try {
+    const params = new URLSearchParams({ ctrl_id: binding.ctrlId, project_id: binding.projectId });
+    const result = await api("/api/notifications?" + params.toString());
+    if (notificationBindingIdentity() !== bindingKey) return;
+    if (result?.ok !== true || !Array.isArray(result.unread) || !Array.isArray(result.recent_seen)) throw new Error("Notification feed returned an invalid response");
+    state.notifications = result;
+    state.notificationStatus = "current";
+    state.notificationError = "";
+    renderNotifications();
+    presentNotificationToast(result.unread);
+  } catch (error) {
+    if (notificationBindingIdentity() !== bindingKey) return;
+    state.notificationStatus = hasLastGood ? "stale" : "unavailable";
+    state.notificationError = error.message || "Notifications could not be loaded.";
+    renderNotifications();
+  }
 }
 
 function setNotificationsOpen(open, returnFocus = false) {
@@ -860,12 +1058,30 @@ function setNotificationsOpen(open, returnFocus = false) {
   trigger.setAttribute("aria-expanded", String(open));
   if (open) {
     state.notificationTrigger = trigger;
-    state.notificationLastSeen = Math.max(state.notificationLastSeen, ...attentionItems().map((item) => Number(item.material_sequence) || 0));
+    dismissNotificationToast(false);
     renderNotifications();
-    panel.focus({ preventScroll: true });
+    requestAnimationFrame(() => {
+      panel.focus({ preventScroll: true });
+      if (state.notificationStatus === "current" && state.connectionStatus === "live") acknowledgeNotifications(renderedNotificationUnreadIds());
+    });
   } else if (returnFocus) {
     state.notificationTrigger?.focus({ preventScroll: true });
   }
+}
+
+function navigateNotification(item) {
+  const target = notificationActionTarget(item);
+  if (!target) return false;
+  state.projectId = target.projectId;
+  state.ctrlId = target.ctrlId;
+  state.projectTab = "overview";
+  if (target.roleLibrary) state.agentsTab = "library";
+  setNotificationsOpen(false);
+  renderProjectNavigation();
+  setView(target.view, false);
+  renderAllViews();
+  Promise.all([refreshProof(), refreshUsageHistory(), refreshProjectProgress(), refreshProjectProgressFeed(), refreshNotifications()]).then(renderAllViews);
+  return true;
 }
 
 function selectedProjectProgress() {
@@ -1590,7 +1806,7 @@ async function refreshMonitoring(proofSequence) {
     clearConnectionState();
     setDataStatus("current", state.overview?.generated_at);
     renderProjectNavigation();
-    await refreshUsageHistory();
+    await Promise.all([refreshUsageHistory(), refreshNotifications()]);
     if (Number(proofSequence) !== state.proofSequence) await refreshProof();
     renderOverview();
     renderAgents();
@@ -1671,7 +1887,7 @@ async function refreshOverview(showLoading = true) {
     clearConnectionState();
     setDataStatus("current", state.overview?.generated_at);
     renderProjectNavigation();
-    await Promise.all([refreshProof(), refreshUsageHistory(), refreshProjectProgress(), refreshProjectProgressFeed(), refreshRoleManifests()]);
+    await Promise.all([refreshProof(), refreshUsageHistory(), refreshProjectProgress(), refreshProjectProgressFeed(), refreshRoleManifests(), refreshNotifications()]);
     const selectedCtrl = state.ctrlId || historicalControllers()[0]?.id || '';
     const previousConfig = state.config;
     const results = await Promise.allSettled([api('/api/diagnostics'), api('/api/health/settings'), api('/api/storage'), selectedCtrl ? api('/api/ctrl-settings?ctrl_id=' + encodeURIComponent(selectedCtrl)) : Promise.resolve(null), api('/api/config')]);
@@ -1727,6 +1943,9 @@ function startPresence() {
 }
 
 document.addEventListener("click", (event) => {
+  if (!$("#notifications-panel").hidden && !event.target.closest("#notifications-panel, #notifications")) {
+    setNotificationsOpen(false);
+  }
   const onboardingDot = event.target.closest("[data-onboarding-step]");
   if (onboardingDot) {
     setOnboardingStep(onboardingDot.dataset.onboardingStep, true);
@@ -1746,16 +1965,23 @@ document.addEventListener("click", (event) => {
     projectTab.focus({ preventScroll: true });
     return;
   }
-  const notificationTarget = event.target.closest("[data-notification-project]");
-  if (notificationTarget) {
-    state.projectId = notificationTarget.dataset.notificationProject || "all";
-    state.ctrlId = "";
-    state.projectTab = "overview";
-    setNotificationsOpen(false);
-    renderProjectNavigation();
-    setView("overview", false);
-    renderAllViews();
-    Promise.all([refreshProof(), refreshUsageHistory(), refreshProjectProgress(), refreshProjectProgressFeed()]).then(renderAllViews);
+  const notificationAction = event.target.closest('[data-notification-action="navigate"][data-notification-id]');
+  if (notificationAction) {
+    const id = notificationAction.dataset.notificationId;
+    const data = notificationData();
+    const item = [...dedupeNotificationItems(data?.unread), ...dedupeNotificationItems(data?.recent_seen)].find((candidate) => candidate.id === id);
+    if (item) {
+      acknowledgeNotifications([item.id]);
+      navigateNotification(item);
+    }
+    return;
+  }
+  const toastAction = event.target.closest("[data-notification-toast-action]");
+  if (toastAction) {
+    const item = state.notificationToast?.item || null;
+    const action = toastAction.dataset.notificationToastAction;
+    dismissNotificationToast(true);
+    if (action === "open" && item) navigateNotification(item);
     return;
   }
   const reviewOpen = event.target.closest("[data-review-open]");
@@ -1927,13 +2153,18 @@ $("#project-navigation").addEventListener("click", (event) => {
   renderProjectNavigation();
   setView("overview", false);
   renderAllViews();
-  Promise.all([refreshProof(), refreshCtrlSettings(), refreshUsageHistory(), refreshProjectProgress(), refreshProjectProgressFeed(), refreshSkills()]).then(renderAllViews);
+  Promise.all([refreshProof(), refreshCtrlSettings(), refreshUsageHistory(), refreshProjectProgress(), refreshProjectProgressFeed(), refreshSkills(), refreshNotifications()]).then(renderAllViews);
 });
 $("#refresh").addEventListener("click", refreshOverview);
 $("#retry").addEventListener("click", refreshOverview);
 $("#connection-retry").addEventListener("click", initialize);
 $("#notifications").addEventListener("click", () => setNotificationsOpen($("#notifications-panel").hidden));
 $("#notifications-close").addEventListener("click", () => setNotificationsOpen(false, true));
+$("#notifications-retry").addEventListener("click", async () => {
+  const ids = renderedNotificationUnreadIds();
+  if (ids.length && notificationData()) await acknowledgeNotifications(ids);
+  else await refreshNotifications();
+});
 $("#role-editor-close").addEventListener("click", closeRoleEditor);
 $("#role-editor-cancel").addEventListener("click", closeRoleEditor);
 $("#role-editor").addEventListener("close", () => { state.roleEditorTrigger?.focus({ preventScroll: true }); state.roleEditorTrigger = null; });
@@ -1952,7 +2183,7 @@ document.addEventListener('change', async (event) => {
     renderProjectNavigation();
     renderAllViews();
     try {
-      await Promise.all([refreshProof(), refreshUsageHistory(), refreshProjectProgress(), refreshProjectProgressFeed(), refreshCtrlSettings(), refreshSkills()]);
+      await Promise.all([refreshProof(), refreshUsageHistory(), refreshProjectProgress(), refreshProjectProgressFeed(), refreshCtrlSettings(), refreshSkills(), refreshNotifications()]);
       await refreshAutoStatus();
     }
     finally { renderAllViews(); }
@@ -1969,7 +2200,7 @@ document.addEventListener('change', async (event) => {
     renderProjectNavigation();
     renderAllViews();
     try {
-      await Promise.all([refreshProof(), refreshUsageHistory(), refreshProjectProgress(), refreshProjectProgressFeed(), refreshCtrlSettings(), refreshSkills()]);
+      await Promise.all([refreshProof(), refreshUsageHistory(), refreshProjectProgress(), refreshProjectProgressFeed(), refreshCtrlSettings(), refreshSkills(), refreshNotifications()]);
       await refreshAutoStatus();
     } finally { renderAllViews(); }
     return;

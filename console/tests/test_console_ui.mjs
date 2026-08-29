@@ -201,11 +201,42 @@ assert.match(app, /Asset revision command is not available/);
 assert.match(app, /Asset approval command is not available/);
 assert.doesNotMatch(app, /REVIEW_FEEDBACK_SUBMIT|PROOF_ADMIT|ASSET_REVISION_CREATE|ASSET_APPROVE/);
 assert.match(indexHtml, /id="notifications"[^>]*aria-expanded="false"[^>]*aria-controls="notifications-panel"/);
-assert.match(indexHtml, /id="notifications-panel"[^>]*hidden tabindex="-1"/);
-assert.match(app, /const NOTIFICATION_KINDS = new Set\(\["BLOCKER", "STALLED", "RETRYING", "ETA_DRIFT", "PROOF_INVALIDATED", "TOKEN_OVERRUN"\]\)/);
+assert.match(indexHtml, /id="notifications-panel" role="dialog"[^>]*aria-labelledby="notifications-heading"[^>]*aria-describedby="notifications-status"[^>]*hidden tabindex="-1"/);
+assert.match(indexHtml, /id="notifications-unread-list"/);
+assert.match(indexHtml, /id="notifications-recent-list"/);
+assert.match(indexHtml, /id="notifications-retry"[^>]*hidden>Try again<\/button>/);
 assert.match(app, /All tentacles moving\./);
-assert.match(app, /notificationLastSeen/);
-assert.doesNotMatch(app, /notification.*(?:POST|PUT|PATCH)/i);
+assert.match(app, /await api\("\/api\/notifications\/seen", \{ method: "POST"/);
+assert.match(app, /api\("\/api\/notifications\?" \+ params\.toString\(\)\)/);
+assert.doesNotMatch(app, /notificationLastSeen|overview\?\.attention_items|localStorage|sessionStorage/);
+const notificationHelperStart = app.indexOf("const NOTIFICATION_PANEL_UNREAD_LIMIT");
+const notificationHelperEnd = app.indexOf("\nfunction notificationBinding", notificationHelperStart);
+assert.ok(notificationHelperStart >= 0 && notificationHelperEnd > notificationHelperStart);
+const notificationHelpers = vm.runInNewContext(`(() => {${app.slice(notificationHelperStart, notificationHelperEnd)}; return { dedupeNotificationItems, notificationToastPlan, notificationAcknowledgePayload, notificationDismissIds, notificationPanelMessage, notificationSafeTarget }; })()`);
+const unreadA = { id: "a".repeat(64), severity: "warning", material_sequence: 4 };
+const unreadB = { id: "b".repeat(64), severity: "critical", material_sequence: 3 };
+assert.deepEqual(Array.from(notificationHelpers.dedupeNotificationItems([unreadA, unreadA, unreadB]), (item) => item.id), [unreadA.id, unreadB.id]);
+const burst = notificationHelpers.notificationToastPlan([unreadA, unreadB], new Set());
+assert.equal(burst.item.id, unreadB.id);
+assert.equal(burst.additionalCount, 1);
+assert.deepEqual(Array.from(burst.presentedIds), [unreadA.id, unreadB.id]);
+assert.equal(notificationHelpers.notificationToastPlan([unreadB, unreadA], new Set(burst.presentedIds)).item, null);
+assert.equal(notificationHelpers.notificationToastPlan([{ ...unreadA, id: "c".repeat(64) }], new Set(burst.presentedIds)).item.id, "c".repeat(64));
+assert.deepEqual(JSON.parse(JSON.stringify(notificationHelpers.notificationAcknowledgePayload({ ctrlId: "ctrl", projectId: "project:one" }, [unreadA.id]))), { ctrl_id: "ctrl", project_id: "project:one", notification_ids: [unreadA.id] });
+assert.deepEqual(Array.from(notificationHelpers.notificationDismissIds({ item: unreadA }, false)), []);
+assert.deepEqual(Array.from(notificationHelpers.notificationDismissIds({ item: unreadA }, true)), [unreadA.id]);
+assert.equal(notificationHelpers.notificationSafeTarget({ view: "review", project_id: "project:one", ctrl_id: "ctrl", task_id: "task", subject_id: "proof" }).view, "review");
+assert.equal(notificationHelpers.notificationSafeTarget({ view: "settings", project_id: "project:one" }), null);
+assert.equal(notificationHelpers.notificationSafeTarget({ view: "projects", project_id: "project:one", route: "https://example.invalid" }), null);
+assert.match(notificationHelpers.notificationPanelMessage("stale", true, "live", "Read status failed."), /read-only.*Read status failed/i);
+assert.match(notificationHelpers.notificationPanelMessage("current", true, "offline"), /Offline.*read-only/i);
+const notificationSource = app.slice(notificationHelperStart, app.indexOf("\nfunction selectedProjectProgress", notificationHelperStart));
+assert.doesNotMatch(notificationSource, /localStorage|sessionStorage|attention_items|setInterval|new Worker|new WebSocket/);
+assert.match(notificationSource, /window\.setTimeout\(\(\) => dismissNotificationToast\(false\), 8_000\)/);
+assert.match(app, /if \(!\$\("#notifications-panel"\)\.hidden && !event\.target\.closest\("#notifications-panel, #notifications"\)\)/);
+assert.match(app, /event\.key === "Escape" && !\$\("#notifications-panel"\)\.hidden/);
+assert.match(app, /panel\.focus\(\{ preventScroll: true \}\)/);
+assert.match(css, /@media \(max-width: 620px\)[\s\S]*\.notification-toast-region \{ top:auto;[^}]*bottom:max\(14px,env\(safe-area-inset-bottom\)\)/);
 assert.match(indexHtml, /id="overview-monitoring-health-state"/);
 assert.match(app, /function renderOverviewHealth\(nodes\)/);
 assert.match(app, /function routeView\(\)/);
@@ -422,7 +453,7 @@ assert.match(app, /delta_from_baseline_ms/);
 assert.match(app, /last_material_heartbeat_at_ms/);
 assert.match(app, /skillsError/);
 assert.match(app, /Try again to refresh this scope/);
-assert.match(app, /refreshSkills\(\)\]\)\.then\(renderAllViews\)/);
+assert.match(app, /refreshSkills\(\), refreshNotifications\(\)\]\)\.then\(renderAllViews\)/);
 assert.match(app, /Raw host logs are not projected into project scope/);
 assert.match(app, /\.replace\(\/\\blocalhost\\b\/gi, "console"\)/);
 assert.match(indexHtml, /id="view-agents"[\s\S]*?Active swarm[\s\S]*?Role library/);
@@ -466,7 +497,6 @@ assert.match(app, /<span class="role-avatar"[\s\S]*?<use href="#lucide-circle-us
 assert.doesNotMatch(css, /\.role-avatar i::before|\.role-avatar i::after/);
 assert.match(app, /aria-label="Inspect ' \+ escapeHTML\(role\.name\)/);
 assert.match(app, /Read-only until the server accepts the role-manifest command contract/);
-assert.match(app, /const items = state\.overview\?\.attention_items \|\| \[\]/);
 assert.doesNotMatch(app, /verifiedYieldProjection\(\)\?\.attention_items/);
 assert.doesNotMatch(indexHtml + app + css, /--legacy-browser|mockup|prototype reference/i);
 assert.match(css, /@media \(max-width: 620px\)[\s\S]*\.agents-tabs button \{ min-height:44px; \}/);
@@ -570,11 +600,29 @@ function sameProjectCtrlProofFixture() {
   };
 }
 
+function notificationFixture() {
+  return {
+    ok: true,
+    schema_version: 1,
+    ctrl_id: "ctrl",
+    project_id: "project:fixture",
+    unread: [{
+      id: "a".repeat(64), kind: "REVIEW_REQUESTED", severity: "warning", requires_action: true,
+      project_id: "project:fixture", ctrl_id: "ctrl", task_id: "ctrl", subject_id: "proof-1", owner_id: "CTRL",
+      material_sequence: 3, observed_at_ms: 1712550180000, sentence: "Independent review is required for this artifact.",
+      action_target: { view: "review", project_id: "project:fixture", ctrl_id: "ctrl", task_id: "ctrl", subject_id: "proof-1" },
+    }],
+    recent_seen: [],
+  };
+}
+
 async function mount(page, overview, overrides = {}) {
   const runtimeErrors = [];
   const requests = [];
+  const notificationSeenRequests = [];
   const proofFeed = overrides.proofFeed || fixture.proofFeed;
   const proofControl = overrides.proofControl || { fail: false, feed: proofFeed };
+  const notificationControl = overrides.notificationControl || { failGet: false, failSeen: false, feed: structuredClone(overrides.notifications || notificationFixture()) };
   page.on("console", (message) => { if (message.type() === "error") runtimeErrors.push(message.text()); });
   page.on("pageerror", (error) => runtimeErrors.push(error.message));
   await page.route("http://swarm.test/**", async (route) => {
@@ -597,6 +645,17 @@ async function mount(page, overview, overrides = {}) {
     if (url.pathname === "/api/project-progress-feed") return route.fulfill(response(overrides.projectProgressFeed || fixture.projectProgressFeed));
     if (url.pathname === "/api/project-progress") return route.fulfill(response(overrides.projectProgress || { ok: true, project_id: url.searchParams.get("project_id"), scope_version: 1, status: "UNMEASURED", percent: null, blocks: [], cursor: { event_seq: 0 } }));
     if (url.pathname === "/api/role-manifests") return route.fulfill(response(overrides.roleManifests || { ok: true, schema_version: 1, built_in_count: 24, roles: [], assignments: [], cursor: { event_seq: 0 } }));
+    if (url.pathname === "/api/notifications" && request.method() === "GET") return notificationControl.failGet ? route.fulfill({ status: 503, contentType: "application/json", body: JSON.stringify({ ok: false, error: "notification feed unavailable" }) }) : route.fulfill(response(notificationControl.feed));
+    if (url.pathname === "/api/notifications/seen" && request.method() === "POST") {
+      const payload = request.postDataJSON();
+      notificationSeenRequests.push(payload);
+      if (notificationControl.failSeen) return route.fulfill({ status: 503, contentType: "application/json", body: JSON.stringify({ ok: false, error: "notification acknowledgement unavailable" }) });
+      const acknowledged = new Set(payload.notification_ids || []);
+      const newlySeen = notificationControl.feed.unread.filter((item) => acknowledged.has(item.id)).map((item) => ({ ...item, seen_at_ms: Date.now() }));
+      notificationControl.feed.unread = notificationControl.feed.unread.filter((item) => !acknowledged.has(item.id));
+      notificationControl.feed.recent_seen = [...newlySeen, ...notificationControl.feed.recent_seen];
+      return route.fulfill(response({ ok: true, acknowledged: acknowledged.size, newly_seen: newlySeen.length, pruned: 0, feed: notificationControl.feed }));
+    }
     if (url.pathname === "/api/presence") return route.fulfill(response({ ok: true, proof_sequence: proofFeed.sequence || 0 }));
     if (url.pathname === "/api/config") return route.fulfill(response(fixture.config));
     if (url.pathname === "/api/diagnostics") return route.fulfill(response(fixture.diagnostics));
@@ -613,7 +672,7 @@ async function mount(page, overview, overrides = {}) {
   await page.goto("http://swarm.test/", { waitUntil: "domcontentloaded" });
   if (overrides.waitForConnectionState) {
     await page.locator("#connection-state").waitFor({ state: "visible" });
-    return { runtimeErrors, requests };
+    return { runtimeErrors, requests, notificationSeenRequests };
   }
   try {
     await page.locator("#overview-content").waitFor({ state: "visible" });
@@ -623,7 +682,7 @@ async function mount(page, overview, overrides = {}) {
   }
   await page.locator("#onboarding-dialog").waitFor({ state: "visible" });
   if (!overrides.keepOnboarding) await page.getByRole("button", { name: "Skip for now" }).click();
-  return { runtimeErrors, requests };
+  return { runtimeErrors, requests, notificationSeenRequests };
 }
 
 const browserCandidates = [
@@ -644,7 +703,6 @@ const proofFeed = imageProofFixture(6);
     owners: [{ scope: { type: "owner", id: "CTRL", project_id: "project:fixture" }, measurement_state: "MEASURED", confidence: "PARTIAL", observed_tokens: 50000, yield_per_100k: 2, rework_drag: 0, series: [{ observed_tokens: 50000, net_scope_points: 1, scope_version: 1 }] }],
   };
   const overview = scopedFixture();
-  overview.attention_items = [{ id: "attention-1", kind: "ETA_DRIFT", project_id: "project:fixture", task_id: "ctrl", owner_id: "CTRL", material_sequence: 3, material_digest: "attention-digest", observed_at_ms: 1712550180000, severity: "warning", sentence: "Forecast range widened after a dependency changed." }];
   const projectProgress = {
     ok: true,
     project_id: "project:fixture",
@@ -662,6 +720,7 @@ const proofFeed = imageProofFixture(6);
     usageByHours: { 1: usageHistory, 24: usageHistory },
     projectProgress,
     projectProgressFeed: fixture.projectProgressFeed,
+    notifications: notificationFixture(),
     roleManifests: {
       ok: true,
       schema_version: 1,
@@ -722,12 +781,16 @@ const proofFeed = imageProofFixture(6);
     assert.doesNotMatch(await page.locator("#project-navigation").textContent(), /Archived project|Unassigned planning|Resolve customer export/);
     assert.equal(await page.locator("#profile").isDisabled(), true);
     assert.equal(await page.locator("#verified-yield-heading").textContent(), "2.5");
-    assert.equal(await page.locator("#notification-unread").textContent(), "1");
-    await page.locator("#notifications").click();
-    assert.match(await page.locator("#notifications-list").textContent(), /Forecast range widened/);
-    await page.locator("#notifications-close").click();
     await page.getByRole("button", { name: /^swarm\b/i }).click();
     await page.locator("#project-detail").waitFor({ state: "visible" });
+    await page.locator("#notification-unread").waitFor({ state: "visible" });
+    assert.equal(await page.locator("#notification-unread").textContent(), "1");
+    const seenRequest = page.waitForRequest((request) => new URL(request.url()).pathname === "/api/notifications/seen");
+    await page.locator("#notifications").click();
+    assert.match(await page.locator("#notifications-panel").textContent(), /Independent review is required/);
+    assert.deepEqual((await seenRequest).postDataJSON(), { ctrl_id: "ctrl", project_id: "project:fixture", notification_ids: ["a".repeat(64)] });
+    await page.locator("#notification-unread").waitFor({ state: "hidden" });
+    await page.locator("#notifications-close").click();
     assert.equal(await page.locator("[data-project-tab]").count(), 7);
     assert.match(await page.locator("#project-detail-summary").textContent(), /60%/);
     assert.equal(await page.locator(".milestone-ring").count(), 2);

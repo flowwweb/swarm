@@ -84,7 +84,13 @@
             <button class="profile-button chrome-action" id="profile" type="button" aria-label="Profile unavailable" title="Profile unavailable" disabled aria-disabled="true"><svg class="lucide" aria-hidden="true"><use href="#lucide-circle-user-round"></use></svg><span>Profile</span></button>
           </div>
         </header>
-        <aside class="notifications-panel panel" id="notifications-panel" aria-labelledby="notifications-heading" hidden tabindex="-1"><header><div><p class="eyebrow">Attention</p><h2 id="notifications-heading">Notifications</h2></div><button class="icon-button" id="notifications-close" type="button" aria-label="Close notifications"><svg class="lucide" aria-hidden="true"><use href="#lucide-x"></use></svg></button></header><div id="notifications-list" aria-live="polite"></div></aside>
+        <aside class="notifications-panel panel" id="notifications-panel" role="dialog" aria-labelledby="notifications-heading" aria-describedby="notifications-status" hidden tabindex="-1">
+          <header><div><p class="eyebrow">Attention</p><h2 id="notifications-heading">Notifications</h2></div><button class="icon-button" id="notifications-close" type="button" aria-label="Close notifications"><svg class="lucide" aria-hidden="true"><use href="#lucide-x"></use></svg></button></header>
+          <div class="notifications-status-row"><p id="notifications-status" role="status">Choose a project to see notifications.</p><button class="quiet-button" id="notifications-retry" type="button" hidden>Try again</button></div>
+          <section class="notifications-group" aria-labelledby="notifications-unread-heading"><h3 id="notifications-unread-heading">Unread</h3><div class="notifications-list" id="notifications-unread-list"></div></section>
+          <section class="notifications-group is-history" aria-labelledby="notifications-recent-heading"><h3 id="notifications-recent-heading">Recent</h3><div class="notifications-list" id="notifications-recent-list"></div></section>
+        </aside>
+        <div class="notification-toast-region" id="notification-toast-region" aria-live="polite" aria-atomic="true"></div>
         <section class="view is-active" id="view-overview" data-view-panel="overview" role="tabpanel" aria-labelledby="tab-overview" tabindex="0">
           <div class="overview-loading" id="overview-loading" aria-live="polite"><span class="sr-only">Loading Projects</span><div class="skeleton-grid" aria-hidden="true"><i></i><i></i><i></i><i></i></div><div class="overview-skeleton" aria-hidden="true"></div></div>
           <div class="overview-content" id="overview-content" hidden>
