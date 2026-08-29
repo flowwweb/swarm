@@ -4385,8 +4385,14 @@ def _codex_jsonl_token_count(codex_home: Path, thread_id: str) -> int | None:
 
 
 def _normalized_project_path(value: Any) -> str:
-    path = str(value or "").replace("\\?\\", "").replace("\\", "/").strip().rstrip("/")
-    return re.sub(r"/+", "/", path).casefold()
+    path = str(value or "").strip().replace("\\", "/")
+    if path.casefold().startswith("//?/unc/"):
+        path = f"//{path[8:]}"
+    elif path.casefold().startswith("//?/"):
+        path = path[4:]
+    path = path.rstrip("/")
+    prefix = "//" if path.startswith("//") else ""
+    return f"{prefix}{re.sub(r'/+', '/', path[len(prefix):])}".casefold()
 
 
 def _project_order_key(project: dict[str, Any]) -> tuple[Any, ...]:
@@ -4506,17 +4512,39 @@ def _thread_project_bindings(
     return bindings
 
 
-def _controller_classification(row: sqlite3.Row) -> dict[str, str | None]:
-    """Read the persisted host role field; titles and graph position are not authority."""
+HOST_CTRL_CLASSIFICATION_SOURCES = frozenset({
+    "host_threads.agent_role",
+    "host_thread_spawn_edges.subagent",
+})
+
+
+def _controller_classification(
+    row: sqlite3.Row,
+    *,
+    structural_host_ctrl: bool = False,
+) -> dict[str, str | None]:
+    """Classify CTRL from persisted role or fresh project-bound host spawn evidence."""
     if str(row["agent_role"] or "").strip().casefold() == "ctrl":
         return {
             "controller_classification": "swarm_ctrl",
             "controller_classification_source": "host_threads.agent_role",
         }
+    if structural_host_ctrl:
+        return {
+            "controller_classification": "swarm_ctrl",
+            "controller_classification_source": "host_thread_spawn_edges.subagent",
+        }
     return {
         "controller_classification": "unavailable",
         "controller_classification_source": None,
     }
+
+
+def _is_host_confirmed_ctrl(controller: dict[str, Any]) -> bool:
+    return (
+        controller.get("controller_classification") == "swarm_ctrl"
+        and controller.get("controller_classification_source") in HOST_CTRL_CLASSIFICATION_SOURCES
+    )
 
 
 def _role_from_title(
@@ -4750,6 +4778,24 @@ def build_overview(codex_home: Path, config_path: Path) -> dict[str, Any]:
         thread_id
         for thread_id, row in all_rows.items()
         if _epoch_ms(row["updated_at_ms"], row["updated_at"]) >= fresh_after_ms
+    }
+    structural_controller_ids = {
+        parent
+        for parent, child_ids in raw_children.items()
+        if parent in fresh_ids
+        and parent not in parent_by_child
+        and not bool(all_rows[parent]["archived"])
+        and parent in project_bindings
+        and any(
+            child in fresh_ids
+            and edge_status.get(child) == "open"
+            and not bool(all_rows[child]["archived"])
+            and str(all_rows[child]["thread_source"] or "").strip().casefold()
+            in {"subagent", "internal_subagent"}
+            and project_bindings.get(child, {}).get("id") == project_bindings[parent]["id"]
+            for child in child_ids
+            if child in all_rows
+        )
     }
     root_candidate_ids = {
         parent
@@ -5001,7 +5047,10 @@ def build_overview(codex_home: Path, config_path: Path) -> dict[str, Any]:
                 "status": controller["status"],
                 "archived": bool(controller.get("archived", False)),
                 "archive_source": "host_threads.archived",
-                **_controller_classification(all_rows[controller_id]),
+                **_controller_classification(
+                    all_rows[controller_id],
+                    structural_host_ctrl=controller_id in structural_controller_ids,
+                ),
                 "virtual": controller["virtual"],
                 "nodes": len(descendants),
                 "active": sum(nodes[node_id]["status"] == "active" for node_id in descendants),
@@ -6017,8 +6066,7 @@ class App:
         project = next((item for item in navigation["projects"] if item["id"] == project_id), None)
         if (
             ctrl is None or ctrl.get("project_id") != project_id
-            or ctrl.get("controller_classification") != "swarm_ctrl"
-            or ctrl.get("controller_classification_source") != "host_threads.agent_role"
+            or not _is_host_confirmed_ctrl(ctrl)
             or ctrl.get("visibility") != "visible"
             or project is None or ctrl_id not in project.get("ctrl_ids", [])
         ):
@@ -6595,8 +6643,7 @@ class App:
         stale_after_ms = max(1, int(view.get("heartbeat_minutes") or 30)) * PROGRESS_FRESHNESS_WINDOWS * 60_000
         visible_controllers = [
             controller for controller in view.get("controllers", [])
-            if controller.get("controller_classification") == "swarm_ctrl"
-            and controller.get("controller_classification_source") == "host_threads.agent_role"
+            if _is_host_confirmed_ctrl(controller)
             and not controller.get("archived", False)
             and (node := nodes_by_id.get(str(controller.get("id")))) is not None
             and not node.get("virtual")
@@ -7139,8 +7186,7 @@ class App:
         ]
         authoritative_controllers = [
             controller for controller in controllers
-            if controller["controller_classification"] == "swarm_ctrl"
-            and controller["controller_classification_source"] == "host_threads.agent_role"
+            if _is_host_confirmed_ctrl(controller)
         ]
         visible_controllers = [controller for controller in authoritative_controllers if not controller["archived"]]
         active_controllers = [controller for controller in visible_controllers if controller["status"] == "active"]
@@ -7179,7 +7225,10 @@ class App:
                 "ctrl_ids": ctrl_ids,
                 "project_eligibility": "swarm_ctrl" if ctrl_ids else "no_ctrl",
                 "eligibility_source": (
-                    "host_threads.agent_role"
+                    "+".join(sorted({
+                        str(controller["controller_classification_source"])
+                        for controller in all_project_controllers
+                    }))
                     if all_project_controllers
                     else "unavailable"
                 ),
@@ -7195,7 +7244,7 @@ class App:
                     "active": active,
                     "stalled": stalled,
                     "inactive": not active and not stalled,
-                    "source": "host_threads.agent_role+host_threads.archived+host_threads.updated_at_ms",
+                    "source": "host CTRL classification+host_threads.archived+host_threads.updated_at_ms",
                 },
                 "status_source": "host_threads.updated_at_ms",
                 "task_count": len(project_nodes),
@@ -7233,9 +7282,9 @@ class App:
             "projects": projects,
             "project_inventory": project_inventory,
             "claim_limit": (
-                "Current Work eligibility requires persisted host agent_role=ctrl classification and a non-archived "
-                "host thread; titles, root position, and runtime status never establish CTRL identity. Legacy rows "
-                "without classification fail closed as no_ctrl. Saved project inventory is sourced only from the host "
+                "Current Work eligibility requires persisted host agent_role=ctrl or fresh, open, project-bound host "
+                "spawn evidence to an actual subagent. Titles and runtime status never establish CTRL identity. Legacy, "
+                "stale, closed, or unbound rows fail closed as no_ctrl. Saved project inventory is sourced only from the host "
                 "projects table; task metadata cannot create a project, and status facts remain read-only observation."
             ),
         }
@@ -7293,8 +7342,7 @@ class App:
                 or controller_id not in project_ctrl_ids[project_id]
                 or controller.get("visibility") != "visible"
                 or controller.get("archived") is not False
-                or controller.get("controller_classification") != "swarm_ctrl"
-                or controller.get("controller_classification_source") != "host_threads.agent_role"
+                or not _is_host_confirmed_ctrl(controller)
             ):
                 continue
             seen_controller_ids.add(controller_id)
@@ -8058,8 +8106,7 @@ class App:
         )
         if (
             controller is None or controller.get("project_id") != resolved_project_id
-            or controller.get("controller_classification") != "swarm_ctrl"
-            or controller.get("controller_classification_source") != "host_threads.agent_role"
+            or not _is_host_confirmed_ctrl(controller)
             or controller.get("visibility") != "visible"
             or project is None or ctrl_id not in project.get("ctrl_ids", [])
         ):

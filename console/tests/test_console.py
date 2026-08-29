@@ -1397,6 +1397,93 @@ class SwarmConsoleTests(unittest.TestCase):
         self.assertNotIn("private user objective", json.dumps(overview))
         self.assertNotIn("private child prompt", json.dumps(overview))
 
+    def test_extended_windows_project_path_binds_structural_host_ctrl(self) -> None:
+        now = 2_000_000_000_000
+        self._add_host_project(
+            "project:swarm", "swarm", r"C:\Users\peikg\Documents\Codex\Projects\flowwweb\swarm",
+        )
+        connection = sqlite3.connect(self.database)
+        connection.execute("ALTER TABLE threads ADD COLUMN project_id TEXT")
+        columns = (
+            "id,title,cwd,created_at,updated_at,created_at_ms,updated_at_ms,model,"
+            "reasoning_effort,tokens_used,archived,git_origin_url,git_branch,thread_source,"
+            "agent_nickname,agent_role,is_pinned,project_id"
+        )
+        connection.executemany(
+            f"INSERT INTO threads ({columns}) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            [
+                ("structural-root", "private objective", r"\\?\C:\Users\peikg\Documents\Codex\Projects\flowwweb\swarm", now // 1000, now // 1000, now, now, "gpt-5.6-sol", "high", 1, 0, "", "main", "", "", "", 0, None),
+                ("structural-child", "private delegation", r"\\?\C:\Users\peikg\Documents\Codex\Projects\flowwweb\swarm", now // 1000, now // 1000, now, now, "gpt-5.6-terra", "high", 1, 0, "", "main", "subagent", "Ada", "", 0, None),
+            ],
+        )
+        connection.execute(
+            "INSERT INTO thread_spawn_edges VALUES (?,?,?)",
+            ("structural-root", "structural-child", "open"),
+        )
+        connection.commit()
+        connection.close()
+
+        first = console.build_overview(self.codex_home, self.config)
+        second = console.build_overview(self.codex_home, self.config)
+        navigation = console.App._navigation_payload(first)
+        controller = next(item for item in navigation["controllers"] if item["id"] == "structural-root")
+        child = next(item for item in first["nodes"] if item["id"] == "structural-child")
+        project = next(item for item in navigation["projects"] if item["id"] == "project:swarm")
+        self.assertEqual(console._normalized_project_path(r"\\?\C:\Work\SWARM"), "c:/work/swarm")
+        self.assertEqual(console._normalized_project_path(r"\\?\UNC\server\share\SWARM"), "//server/share/swarm")
+        self.assertEqual(controller["controller_classification"], "swarm_ctrl")
+        self.assertEqual(controller["controller_classification_source"], "host_thread_spawn_edges.subagent")
+        self.assertEqual(project["ctrl_ids"], ["structural-root"])
+        self.assertEqual((child["role"], child["worker_role"]), ("doer", "AGENT"))
+        self.assertEqual(first["nodes"], second["nodes"])
+        self.assertEqual(first["controllers"], second["controllers"])
+        self.assertEqual(first["projects"], second["projects"])
+
+    def test_structural_ctrl_requires_fresh_open_project_bound_subagent(self) -> None:
+        now = 2_000_000_000_000
+        old = now - 3 * 60 * 60 * 1000
+        self._add_host_project("project:structural", "structural", "C:/work/structural")
+        connection = sqlite3.connect(self.database)
+        rows = [
+            ("title-only", "🐙CTRL - Legacy title", "C:/work/structural", now, "", ""),
+            ("closed-root", "private", "C:/work/structural", now, "", ""),
+            ("closed-child", "private", "C:/work/structural", now, "subagent", ""),
+            ("stale-root", "private", "C:/work/structural", old, "", ""),
+            ("stale-child", "private", "C:/work/structural", old, "subagent", ""),
+            ("ordinary-root", "private", "C:/work/structural", now, "", ""),
+            ("ordinary-child", "private", "C:/work/structural", now, "agent", ""),
+            ("unbound-root", "private", "C:/other/unbound", now, "", ""),
+            ("unbound-child", "private", "C:/other/unbound", now, "subagent", ""),
+        ]
+        connection.executemany(
+            "INSERT INTO threads VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            [
+                (thread_id, title, cwd, updated // 1000, updated // 1000, updated, updated, "gpt-5.6-sol", "high", 1, 0, "", "main", source, "", role, 0)
+                for thread_id, title, cwd, updated, source, role in rows
+            ],
+        )
+        connection.executemany(
+            "INSERT INTO thread_spawn_edges VALUES (?,?,?)",
+            [
+                ("closed-root", "closed-child", "closed"),
+                ("stale-root", "stale-child", "open"),
+                ("ordinary-root", "ordinary-child", "open"),
+                ("unbound-root", "unbound-child", "open"),
+            ],
+        )
+        connection.commit()
+        connection.close()
+
+        navigation = console.App._navigation_payload(console.build_overview(self.codex_home, self.config))
+        controllers = {item["id"]: item for item in navigation["controllers"]}
+        for controller_id in ("title-only", "closed-root", "ordinary-root", "unbound-root"):
+            if controller_id in controllers:
+                self.assertEqual(controllers[controller_id]["controller_classification"], "unavailable")
+        project = next(item for item in navigation["projects"] if item["id"] == "project:structural")
+        self.assertNotIn("title-only", project["ctrl_ids"])
+        self.assertNotIn("closed-root", project["ctrl_ids"])
+        self.assertNotIn("ordinary-root", project["ctrl_ids"])
+
     def test_projects_require_canonical_host_identity_and_preserve_unbound_tasks(self) -> None:
         now = 2_000_000_000_000
         self._add_host_project("project:real-hyphen", "real-project-with-hyphens", "C:/saved/real-project")
