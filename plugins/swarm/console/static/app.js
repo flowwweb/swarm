@@ -1,4 +1,4 @@
-const state = { token: "", overview: null, proof: [], proofCollections: new Map(), proofStatuses: new Map(), proofStatus: "idle", proofSequence: 0, usageHistory: null, usageWindowHours: 24, usageScopeKey: "", usageStatus: "idle", usageError: "", projectProgress: null, projectProgressProjectId: "", projectProgressStatus: "idle", projectProgressError: "", projectProgressFeed: null, projectProgressFeedProjectId: "", projectProgressFeedStatus: "idle", projectProgressFeedError: "", projectTab: "overview", projectUiMode: "screens", runLogs: new Map(), runLogRequestGenerations: new Map(), runLogSurfaceStates: new Map(), runLogAgent: null, diagnostics: null, health: null, storage: null, config: null, configStatus: "idle", configError: "", chatRelaySaving: false, ctrlSettings: null, auto: null, autoBindingKey: "", autoStatus: "idle", autoError: "", autoSaving: false, skills: null, skillsError: "", roleManifests: null, roleManifestStatus: "unavailable", roleManifestError: "", roleManifestMessage: "", roleManifestSaving: false, roleManifestRetry: null, roleEditorMode: "", agentsTab: "active", roleEditorTrigger: null, roleSearch: "", roleTypes: new Set(["builtin", "custom"]), roleSearchFields: new Set(["profession", "specialization", "alias", "skills", "purpose"]), selectedRoleId: "", assetView: "grid", selectedAssetIdentity: "", onboardingStep: 0, onboardingShown: false, onboardingTrigger: null, onboardingConfigPending: new Map(), onboardingConfigFailures: new Map(), notifications: null, notificationBindingKey: "", notificationStatus: "idle", notificationError: "", notificationAckFlight: null, notificationRequestGenerations: new Map(), notificationPresentedIds: new Set(), notificationToast: null, notificationToastTimer: null, notificationTrigger: null, connectionStatus: "reconnecting", view: "overview", projectId: "all", ctrlId: "", settingsCtrlId: "", settingsScopeType: "", settingsScopeId: "", evidenceImages: [], evidenceIndex: 0, evidenceTrigger: null };
+const state = { token: "", overview: null, proof: [], proofCollections: new Map(), proofStatuses: new Map(), proofStatus: "idle", proofSequence: 0, usageHistory: null, usageWindowHours: 24, usageScopeKey: "", usageStatus: "idle", usageError: "", projectProgress: null, projectProgressProjectId: "", projectProgressStatus: "idle", projectProgressError: "", projectProgressFeed: null, projectProgressFeedProjectId: "", projectProgressFeedStatus: "idle", projectProgressFeedError: "", projectTab: "overview", projectUiMode: "screens", projectUiGroupId: "", runLogs: new Map(), runLogRequestGenerations: new Map(), runLogSurfaceStates: new Map(), runLogAgent: null, diagnostics: null, health: null, storage: null, config: null, configStatus: "idle", configError: "", chatRelaySaving: false, ctrlSettings: null, auto: null, autoBindingKey: "", autoStatus: "idle", autoError: "", autoSaving: false, skills: null, skillsError: "", roleManifests: null, roleManifestStatus: "unavailable", roleManifestError: "", roleManifestMessage: "", roleManifestSaving: false, roleManifestRetry: null, roleEditorMode: "", agentsTab: "active", roleEditorTrigger: null, roleSearch: "", roleTypes: new Set(["builtin", "custom"]), roleSearchFields: new Set(["profession", "specialization", "alias", "skills", "purpose"]), selectedRoleId: "", assetView: "grid", selectedAssetIdentity: "", onboardingStep: 0, onboardingShown: false, onboardingTrigger: null, onboardingConfigPending: new Map(), onboardingConfigFailures: new Map(), notifications: null, notificationBindingKey: "", notificationStatus: "idle", notificationError: "", notificationAckFlight: null, notificationRequestGenerations: new Map(), notificationPresentedIds: new Set(), notificationToast: null, notificationToastTimer: null, notificationTrigger: null, connectionStatus: "reconnecting", view: "overview", projectId: "all", ctrlId: "", settingsCtrlId: "", settingsScopeType: "", settingsScopeId: "", evidenceImages: [], evidenceIndex: 0, evidenceTrigger: null };
 let configMutationTail = Promise.resolve();
 let configAuthorityGeneration = 0;
 const EVIDENCE_THUMBNAIL_PAGE_SIZE = 24;
@@ -737,6 +737,7 @@ async function selectProjectScope(projectId) {
   state.settingsScopeType = selectedId === "all" ? "global" : "project";
   state.settingsScopeId = selectedId === "all" ? "global" : selectedId;
   state.projectTab = "overview";
+  state.projectUiGroupId = "";
   renderProjectNavigation();
   setView("overview", false);
   if (mobileDrawerQuery.matches) setMobileDrawer(false, true);
@@ -1889,21 +1890,125 @@ function projectViewScreenMarkup(screen) {
   return '<article class="project-ui-card" data-project-view-screen="' + escapeHTML(screen.id) + '">' + previewMarkup + '<div class="project-ui-card-copy"><p class="eyebrow">' + escapeHTML(screen.screen_id + " · " + screen.state_id) + '</p><h3>' + escapeHTML(label) + '</h3><div><span class="project-ui-status">' + escapeHTML(humanize(screen.status || "UNKNOWN")) + '</span>' + alternatives + '</div>' + deviceMarkup + (requirements ? '<small class="project-ui-requirements">' + escapeHTML(requirements) + '</small>' : '') + '</div></article>';
 }
 
+function projectViewMapModel(projection, selectedGroupId = "") {
+  const graph = projection?.map;
+  if (!graph || !Array.isArray(graph.nodes) || !Array.isArray(graph.edges) || !graph.nodes.length || graph.nodes.length > 200 || graph.edges.length > 500) return null;
+  const nodes = [];
+  const nodesById = new Map();
+  for (const raw of graph.nodes) {
+    const id = typeof raw?.id === "string" ? raw.id.trim() : "";
+    const label = typeof raw?.label === "string" ? raw.label.trim() : "";
+    const visibility = String(raw?.visibility || "visible").toLowerCase();
+    const type = String(raw?.type || "screen").toLowerCase();
+    const groupId = String(raw?.group_id || raw?.parent_id || "").trim();
+    if (!id || !label || nodesById.has(id) || !["visible", "conditional", "hidden"].includes(visibility)) return null;
+    const node = { ...raw, id, label, type, visibility, groupId, order: Number.isFinite(Number(raw.order)) ? Number(raw.order) : 0 };
+    nodes.push(node);
+    nodesById.set(id, node);
+  }
+  if (nodes.some((node) => node.groupId && !nodesById.has(node.groupId))) return null;
+  const edges = [];
+  const edgeIds = new Set();
+  for (let index = 0; index < graph.edges.length; index += 1) {
+    const raw = graph.edges[index];
+    const source = typeof raw?.source === "string" ? raw.source.trim() : "";
+    const target = typeof raw?.target === "string" ? raw.target.trim() : "";
+    const id = typeof raw?.id === "string" && raw.id.trim() ? raw.id.trim() : source + "--" + target + "--" + index;
+    if (!source || !target || source === target || !nodesById.has(source) || !nodesById.has(target) || edgeIds.has(id)) return null;
+    edgeIds.add(id);
+    edges.push({ ...raw, id, source, target });
+  }
+  const presentable = (node) => node.visibility !== "hidden" && !["runtime", "data", "state"].includes(node.type);
+  const selectedGroup = selectedGroupId ? nodesById.get(selectedGroupId) : null;
+  if (selectedGroupId && (!selectedGroup || !presentable(selectedGroup))) return null;
+  const visibleNodes = nodes.filter((node) => presentable(node) && (selectedGroup ? node.groupId === selectedGroup.id : !node.groupId));
+  if (!visibleNodes.length) return null;
+  const visibleIds = new Set(visibleNodes.map((node) => node.id));
+  const visibleEdges = edges.filter((edge) => visibleIds.has(edge.source) && visibleIds.has(edge.target));
+  const outgoing = new Map(visibleNodes.map((node) => [node.id, []]));
+  const indegree = new Map(visibleNodes.map((node) => [node.id, 0]));
+  visibleEdges.forEach((edge) => {
+    outgoing.get(edge.source).push(edge.target);
+    indegree.set(edge.target, indegree.get(edge.target) + 1);
+  });
+  const stable = (left, right) => left.order - right.order || left.id.localeCompare(right.id);
+  const pending = visibleNodes.filter((node) => indegree.get(node.id) === 0).sort(stable);
+  const depths = new Map(pending.map((node) => [node.id, 0]));
+  const visited = new Set();
+  while (pending.length) {
+    const node = pending.shift();
+    if (visited.has(node.id)) continue;
+    visited.add(node.id);
+    for (const targetId of outgoing.get(node.id)) {
+      depths.set(targetId, Math.max(depths.get(targetId) || 0, (depths.get(node.id) || 0) + 1));
+      indegree.set(targetId, indegree.get(targetId) - 1);
+      if (indegree.get(targetId) === 0) pending.push(nodesById.get(targetId));
+    }
+    pending.sort(stable);
+  }
+  const cycleDepth = depths.size ? Math.max(...depths.values()) + 1 : 0;
+  visibleNodes.filter((node) => !visited.has(node.id)).sort(stable).forEach((node) => depths.set(node.id, cycleDepth));
+  const layers = [];
+  visibleNodes.sort(stable).forEach((node) => {
+    const depth = depths.get(node.id) || 0;
+    (layers[depth] ||= []).push(node);
+  });
+  return { nodes, nodesById, edges: visibleEdges, layers: layers.filter(Boolean), selectedGroup };
+}
+
+function projectViewMapNodeMarkup(node, model) {
+  const hasChildren = model.nodes.some((candidate) => candidate.groupId === node.id && candidate.visibility !== "hidden" && !["runtime", "data", "state"].includes(candidate.type));
+  const hasEvidence = Boolean(node.screen_key && projectViewEvidence(node.screen_key).length);
+  const requirementSummary = projectViewRequirementText([node.id, node.screen_key]);
+  const action = hasChildren ? ' data-project-map-group="' + escapeHTML(node.id) + '"' : hasEvidence ? ' data-project-view-evidence="' + escapeHTML(node.screen_key) + '"' : ' aria-disabled="true"';
+  const actionLabel = hasChildren ? "Open " + node.label + " group" : hasEvidence ? "Open evidence for " + node.label : node.label + ", evidence unavailable";
+  const kind = hasChildren ? '<span class="project-ui-node-kind">Group</span>' : node.visibility === "conditional" ? '<span class="project-ui-node-kind">Conditional</span>' : "";
+  return '<button class="project-ui-flowchart-node' + (hasChildren ? " is-group" : "") + '" type="button" data-project-map-node="' + escapeHTML(node.id) + '"' + action + ' aria-label="' + escapeHTML(actionLabel) + '"><span>' + escapeHTML(node.label) + '</span><small>' + escapeHTML(node.id) + '</small>' + kind + (requirementSummary ? '<small class="project-ui-requirements">' + escapeHTML(requirementSummary) + '</small>' : '') + '</button>';
+}
+
 function projectViewMapMarkup(projection) {
-  const nodes = Array.isArray(projection?.map?.nodes) ? projection.map.nodes : [];
-  const edges = Array.isArray(projection?.map?.edges) ? projection.map.edges : [];
-  if (!nodes.length) return '<p class="empty-state">No accepted map nodes are available.</p>';
-  const nodeLabels = new Map(nodes.map((node) => [node.id, node.label || node.id]));
-  const edgeSummary = edges.map((edge) => edge.source + " to " + edge.target).join("; ");
-  const edgeMarkup = edges.length ? '<ul class="project-ui-map-edges" aria-label="Map connections">' + edges.map((edge) => '<li><span>' + escapeHTML(nodeLabels.get(edge.source) || edge.source) + '</span><svg class="lucide" aria-hidden="true"><use href="#lucide-chevron-right"></use></svg><span>' + escapeHTML(nodeLabels.get(edge.target) || edge.target) + '</span></li>').join("") + '</ul>' : '<p class="project-ui-map-edges is-empty">No graph connections</p>';
-  return '<section class="project-ui-map" aria-label="App Map"><p class="sr-only">' + escapeHTML(edgeSummary || "No graph connections") + '</p><div class="project-ui-map-nodes">' + nodes.map((node) => {
-    const interactive = node.screen_key && projectViewEvidence(node.screen_key).length;
-    const requirementSummary = projectViewRequirementText([node.id, node.screen_key]);
-    const content = '<span>' + escapeHTML(node.label || node.id) + '</span><small>' + escapeHTML(node.id) + '</small>' + (requirementSummary ? '<small class="project-ui-requirements">' + escapeHTML(requirementSummary) + '</small>' : '');
-    return interactive
-      ? '<button type="button" data-project-view-evidence="' + escapeHTML(node.screen_key) + '" aria-label="Open evidence for ' + escapeHTML(node.label || node.id) + '">' + content + '</button>'
-      : '<div aria-label="' + escapeHTML((node.label || node.id) + ", evidence unavailable") + '">' + content + '</div>';
-  }).join("") + '</div>' + edgeMarkup + '</section>';
+  const model = projectViewMapModel(projection, state.projectUiGroupId);
+  if (!model) return '<section class="project-ui-map is-unavailable" aria-label="App Map"><p class="empty-state" role="status">Flowchart unavailable. The accepted map projection could not be rendered safely.</p></section>';
+  const parentGroupId = model.selectedGroup?.groupId || "";
+  const heading = model.selectedGroup
+    ? '<header class="project-ui-map-heading"><button class="icon-button" type="button" data-project-map-back data-project-map-parent="' + escapeHTML(parentGroupId) + '" aria-label="Back to ' + escapeHTML(parentGroupId ? (model.nodesById.get(parentGroupId)?.label || "parent group") : "App Map") + '"><svg class="lucide" aria-hidden="true"><use href="#lucide-chevron-left"></use></svg></button><div><p class="eyebrow">App Map group</p><h3>' + escapeHTML(model.selectedGroup.label) + '</h3></div></header>'
+    : "";
+  const connectionList = model.edges.length
+    ? model.edges.map((edge) => '<li>' + escapeHTML((model.nodesById.get(edge.source)?.label || edge.source) + " to " + (model.nodesById.get(edge.target)?.label || edge.target) + (edge.label ? ": " + edge.label : "")) + '</li>').join("")
+    : '<li>No graph connections</li>';
+  const paths = model.edges.map((edge) => '<path data-project-map-edge="' + escapeHTML(edge.id) + '" data-source="' + escapeHTML(edge.source) + '" data-target="' + escapeHTML(edge.target) + '" marker-end="url(#project-map-arrow)"></path>').join("");
+  const layers = model.layers.map((layer, index) => '<div class="project-ui-flowchart-layer" data-flow-layer="' + index + '">' + layer.map((node) => projectViewMapNodeMarkup(node, model)).join("") + '</div>').join("");
+  return '<section class="project-ui-map" aria-label="App Map">' + heading + '<div class="project-ui-flowchart"><svg class="project-ui-flowchart-connectors" aria-hidden="true" focusable="false"><defs><marker id="project-map-arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z"></path></marker></defs>' + paths + '</svg><div class="project-ui-flowchart-layers">' + layers + '</div><ul class="sr-only" aria-label="Map connections">' + connectionList + '</ul></div></section>';
+}
+
+function drawProjectViewConnectors() {
+  const stage = $(".project-ui-flowchart");
+  if (!stage) return;
+  const svg = $(".project-ui-flowchart-connectors", stage);
+  if (!svg) return;
+  const stageRect = stage.getBoundingClientRect();
+  if (!stageRect.width || !stageRect.height) return;
+  svg.setAttribute("viewBox", "0 0 " + stage.clientWidth + " " + stage.clientHeight);
+  svg.setAttribute("width", String(stage.clientWidth));
+  svg.setAttribute("height", String(stage.clientHeight));
+  const nodeById = new Map($$("[data-project-map-node]", stage).map((node) => [node.dataset.projectMapNode, node]));
+  $$("[data-project-map-edge]", svg).forEach((path) => {
+    const source = nodeById.get(path.dataset.source);
+    const target = nodeById.get(path.dataset.target);
+    if (!source || !target) { path.removeAttribute("d"); return; }
+    const from = source.getBoundingClientRect();
+    const to = target.getBoundingClientRect();
+    const x1 = from.left + from.width / 2 - stageRect.left;
+    const y1 = from.bottom - stageRect.top;
+    const x2 = to.left + to.width / 2 - stageRect.left;
+    const y2 = to.top - stageRect.top;
+    const bend = Math.max(24, Math.abs(y2 - y1) / 2);
+    path.setAttribute("d", "M " + x1 + " " + y1 + " C " + x1 + " " + (y1 + bend) + ", " + x2 + " " + (y2 - bend) + ", " + x2 + " " + y2);
+  });
+}
+
+function scheduleProjectViewConnectors() {
+  if (state.projectTab === "ui" && state.projectUiMode === "map") requestAnimationFrame(drawProjectViewConnectors);
 }
 
 function projectViewMarkup() {
@@ -2067,6 +2172,7 @@ function renderProjectDetail() {
   tabPanel.setAttribute("aria-labelledby", selectedTabId);
   const retainedRunLogMount = state.projectTab === "logs" && $('[data-run-log-surface="project"]', tabPanel);
   if (!retainedRunLogMount) tabPanel.innerHTML = projectTabMarkup(state.projectTab, progress, nodes);
+  scheduleProjectViewConnectors();
 }
 
 function proofReviewState(item) {
@@ -3132,8 +3238,24 @@ document.addEventListener("click", async (event) => {
   const projectUiMode = event.target.closest("[data-project-ui-mode]");
   if (projectUiMode) {
     state.projectUiMode = projectUiMode.dataset.projectUiMode === "map" ? "map" : "screens";
+    state.projectUiGroupId = "";
     renderProjectDetail();
     $('[data-project-ui-mode="' + state.projectUiMode + '"]')?.focus({ preventScroll: true });
+    return;
+  }
+  const projectMapBack = event.target.closest("[data-project-map-back]");
+  if (projectMapBack) {
+    const previousGroupId = state.projectUiGroupId;
+    state.projectUiGroupId = projectMapBack.dataset.projectMapParent || "";
+    renderProjectDetail();
+    requestAnimationFrame(() => $('[data-project-map-group="' + previousGroupId + '"]')?.focus({ preventScroll: true }));
+    return;
+  }
+  const projectMapGroup = event.target.closest("[data-project-map-group]");
+  if (projectMapGroup) {
+    state.projectUiGroupId = projectMapGroup.dataset.projectMapGroup;
+    renderProjectDetail();
+    requestAnimationFrame(() => $("[data-project-map-node]")?.focus({ preventScroll: true }));
     return;
   }
   const projectViewEvidenceTrigger = event.target.closest("[data-project-view-evidence]");
@@ -3627,6 +3749,7 @@ $(".project-tabs").addEventListener("keydown", (event) => {
 });
 
 document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible") reportPresence(); });
+window.addEventListener("resize", scheduleProjectViewConnectors);
 window.addEventListener("pagehide", () => { if (presenceTimer) clearInterval(presenceTimer); });
 
 syncMobileDrawer();

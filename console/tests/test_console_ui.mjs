@@ -235,11 +235,19 @@ assert.match(app, /state\.evidenceImages = evidence\.map\(\(item\) => \(\{ \.\.\
 assert.match(app, /item\.project_requirement_summary \? " · " \+ item\.project_requirement_summary/);
 assert.match(app, /data-project-ui-mode=/);
 assert.match(app, /data-project-view-evidence=/);
-assert.match(app, /class="project-ui-map-edges" aria-label="Map connections"/);
+assert.match(app, /function projectViewMapModel\(projection, selectedGroupId = ""\)/);
+assert.match(app, /class="project-ui-flowchart-connectors" aria-hidden="true"/);
+assert.match(app, /data-project-map-group=/);
+assert.match(app, /function drawProjectViewConnectors\(\)/);
+assert.match(app, /\["runtime", "data", "state"\]\.includes\(node\.type\)/);
+assert.match(app, /Flowchart unavailable\. The accepted map projection could not be rendered safely\./);
 assert.doesNotMatch(app, /Sanguine|D&D|Dungeon|project:\/\/swarm/i);
 assert.doesNotMatch(app, /setInterval\([^)]*projectView|localStorage[^\n]*projectView|sessionStorage[^\n]*projectView/i);
 assert.match(css, /\.project-ui-screens \{[^}]*grid-template-columns:repeat\(3,minmax\(0,1fr\)\)/);
-assert.match(css, /@media \(max-width: 620px\)[\s\S]*\.project-ui-screens,\.project-ui-map-nodes \{ grid-template-columns:1fr; \}/);
+assert.match(css, /\.project-ui-flowchart-connectors \{[^}]*position:absolute;[^}]*z-index:0/);
+assert.match(css, /\.project-ui-flowchart-layers \{[^}]*position:relative;[^}]*z-index:1/);
+assert.match(css, /@media \(max-width: 620px\)[\s\S]*\.project-ui-flowchart-layer \{[^}]*flex-direction:column/);
+assert.match(css, /@media \(prefers-reduced-motion: reduce\)/);
 assert.match(indexHtml, /id="run-log-overview"[^>]*data-run-log-surface="overview"[^>]*hidden/);
 assert.match(indexHtml, /id="run-log-agent"[^>]*data-run-log-surface="agent"[^>]*hidden/);
 assert.match(app, /data-run-log-surface="project" aria-label="Project run log"/);
@@ -1199,20 +1207,26 @@ function projectViewFixture() {
     screens: [
       {
         id: "overview/default", screen_id: "overview", state_id: "default", label: "Projects overview",
-        status: "DESIGNED", devices: ["desktop", "mobile"], alternative_count: 2,
+        status: "DESIGNED", devices: ["desktop", "tablet", "mobile"], alternative_count: 3,
         evidence: [
           { evidence_id: "fixture-image-1", digest: "1".padStart(64, "0"), media_type: "image/png", caption: "Overview desktop", device: "desktop", alternative_id: "overview-default" },
-          { evidence_id: "fixture-image-2", digest: "2".padStart(64, "0"), media_type: "image/png", caption: "Overview mobile", device: "mobile", alternative_id: "overview-mobile" },
+          { evidence_id: "fixture-image-2", digest: "2".padStart(64, "0"), media_type: "image/png", caption: "Overview tablet", device: "tablet", alternative_id: "overview-tablet" },
+          { evidence_id: "fixture-image-3", digest: "3".padStart(64, "0"), media_type: "image/png", caption: "Overview mobile", device: "mobile", alternative_id: "overview-mobile" },
         ],
       },
       { id: "assets/empty", screen_id: "assets", state_id: "empty", label: "Assets empty", status: "MISSING_DESIGN", devices: [], alternative_count: 0, evidence: [] },
     ],
     map: {
+      schema_version: 1,
+      flowchart_id: "fixture-app-map",
+      version: 1,
       nodes: [
-        { id: "overview", label: "Overview", screen_key: "overview/default" },
-        { id: "assets", label: "Assets", screen_key: "assets/empty" },
+        { id: "workspace", label: "Workspace", type: "group", visibility: "visible", order: 0 },
+        { id: "overview", label: "Overview", type: "screen", visibility: "visible", group_id: "workspace", order: 0, screen_key: "overview/default" },
+        { id: "assets", label: "Assets", type: "screen", visibility: "conditional", group_id: "workspace", order: 1, screen_key: "assets/empty" },
+        { id: "runtime-state", label: "Runtime state", type: "runtime", visibility: "visible", order: 2 },
       ],
-      edges: [{ source: "overview", target: "assets" }],
+      edges: [{ id: "overview-assets", source: "overview", target: "assets", label: "Open assets" }],
     },
     requirements: {
       contract_id: "screen.groups.requirements.v1",
@@ -1766,7 +1780,7 @@ const proofFeed = imageProofFixture(6);
     assert.ok(offline.requests.filter((request) => request === "/api/bootstrap").length >= 2);
     await offlinePage.close();
 
-    const page = await browser.newPage({ viewport: { width: 1440, height: 1000 } });
+    const page = await browser.newPage({ viewport: { width: 1536, height: 1024 } });
     const desktop = await mount(page, overview, overrides);
     for (const view of ["overview", "agents", "review", "assets", "settings"]) assert.equal(await page.locator('.nav-item[data-view="' + view + '"]').count(), 1);
     assert.equal(await page.getByRole("tab", { name: "Projects", exact: true }).count(), 0);
@@ -1839,8 +1853,8 @@ const proofFeed = imageProofFixture(6);
     assert.equal(await page.locator("#project-tab-panel").getAttribute("aria-labelledby"), "project-tab-ui");
     assert.deepEqual(await page.locator("[data-project-tab]:visible").allTextContents(), ["Overview", "Roadmap", "Lanes", "Hierarchy", "Proof", "Ledger", "Logs", "UI"]);
     assert.equal(await page.locator(".project-ui-card").count(), 2);
-    assert.deepEqual(await page.locator('.project-ui-card[data-project-view-screen="overview/default"] .project-ui-devices li').allTextContents(), ["Desktop", "Mobile"]);
-    assert.equal(await page.locator('.project-ui-card[data-project-view-screen="overview/default"] .project-ui-alternatives').textContent(), "2 alternatives");
+    assert.deepEqual(await page.locator('.project-ui-card[data-project-view-screen="overview/default"] .project-ui-devices li').allTextContents(), ["Desktop", "Tablet", "Mobile"]);
+    assert.equal(await page.locator('.project-ui-card[data-project-view-screen="overview/default"] .project-ui-alternatives').textContent(), "3 alternatives");
     assert.equal(await page.locator('.project-ui-card[data-project-view-screen="assets/empty"] .project-ui-alternatives').count(), 0);
     assert.equal(await page.locator('.project-ui-card[data-project-view-screen="assets/empty"] .project-ui-devices').count(), 0);
     assert.match(await page.locator('.project-ui-card[data-project-view-screen="overview/default"] .project-ui-requirements').textContent(), /Overview · 1 satisfied · 1 partial · 2 missing · 1 unknown/);
@@ -1849,13 +1863,49 @@ const proofFeed = imageProofFixture(6);
     assert.match(await page.locator("#evidence-lightbox-caption").textContent(), /Overview · 1 satisfied · 1 partial · 2 missing · 1 unknown/);
     await page.getByRole("button", { name: "Close evidence gallery" }).click();
     await page.getByRole("button", { name: "Map", exact: true }).click();
-    assert.equal(await page.locator(".project-ui-map-nodes > button").count(), 1);
-    assert.equal(await page.locator(".project-ui-map-nodes > div").count(), 1);
-    assert.deepEqual(await page.locator(".project-ui-map-edges li span").allTextContents(), ["Overview", "Assets"]);
-    assert.match(await page.locator('.project-ui-map-nodes [data-project-view-evidence="overview/default"] .project-ui-requirements').textContent(), /Overview · 1 satisfied/);
-    await page.locator('.project-ui-map-nodes [data-project-view-evidence="overview/default"]').click();
+    assert.equal(await page.locator('[data-project-map-node="runtime-state"]').count(), 0);
+    const groupNode = page.locator('[data-project-map-group="workspace"]');
+    assert.equal(await groupNode.count(), 1);
+    await groupNode.focus();
+    await page.keyboard.press("Enter");
+    assert.equal(await page.locator(".project-ui-flowchart-node").count(), 2);
+    assert.equal(await page.locator('[data-project-map-edge="overview-assets"]').count(), 1);
+    await page.waitForFunction(() => Boolean(document.querySelector('[data-project-map-edge="overview-assets"]')?.getAttribute("d")));
+    assert.match(await page.locator('.project-ui-flowchart [aria-label="Map connections"]').textContent(), /Overview to Assets: Open assets/);
+    assert.equal(await page.locator(".project-ui-flowchart").evaluate((stage) => {
+      const svg = stage.querySelector(".project-ui-flowchart-connectors");
+      const layers = stage.querySelector(".project-ui-flowchart-layers");
+      return Boolean(svg.compareDocumentPosition(layers) & Node.DOCUMENT_POSITION_FOLLOWING);
+    }), true);
+    const firstLayout = await page.locator(".project-ui-flowchart").evaluate((stage) => ({ layers: [...stage.querySelectorAll("[data-flow-layer]")].map((layer) => [...layer.querySelectorAll("[data-project-map-node]")].map((node) => node.dataset.projectMapNode)), edge: stage.querySelector('[data-project-map-edge="overview-assets"]')?.getAttribute("d") }));
+    await page.evaluate(() => renderProjectDetail());
+    await page.waitForFunction(() => Boolean(document.querySelector('[data-project-map-edge="overview-assets"]')?.getAttribute("d")));
+    const secondLayout = await page.locator(".project-ui-flowchart").evaluate((stage) => ({ layers: [...stage.querySelectorAll("[data-flow-layer]")].map((layer) => [...layer.querySelectorAll("[data-project-map-node]")].map((node) => node.dataset.projectMapNode)), edge: stage.querySelector('[data-project-map-edge="overview-assets"]')?.getAttribute("d") }));
+    assert.deepEqual(secondLayout, firstLayout);
+    assert.match(await page.locator('[data-project-view-evidence="overview/default"] .project-ui-requirements').textContent(), /Overview · 1 satisfied/);
+    await page.locator('[data-project-view-evidence="overview/default"]').click();
     assert.equal(await page.locator("#evidence-lightbox").isVisible(), true);
+    assert.equal(await page.locator("#evidence-lightbox-thumbnails .evidence-lightbox-thumbnail").count(), 3);
     await page.getByRole("button", { name: "Close evidence gallery" }).click();
+    await page.getByRole("button", { name: "Back to App Map" }).click();
+    assert.equal(await page.evaluate(() => document.activeElement?.getAttribute("data-project-map-group")), "workspace");
+    await page.evaluate(() => {
+      const projection = state.overview.project_view;
+      projection.map.edges = [{ id: "bad-edge", source: "overview", target: "missing" }];
+      state.projectUiGroupId = "workspace";
+      renderProjectDetail();
+    });
+    assert.match(await page.locator(".project-ui-map[role], .project-ui-map").textContent(), /Flowchart unavailable/);
+    assert.equal(await page.locator("[data-project-map-node]").count(), 0);
+    await page.evaluate(() => {
+      state.overview.project_view.map.edges = [{ id: "overview-assets", source: "overview", target: "assets", label: "Open assets" }];
+      state.projectUiGroupId = "";
+      renderProjectDetail();
+    });
+    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth), true);
+    await page.emulateMedia({ reducedMotion: "reduce" });
+    assert.equal(await page.locator(".project-ui-flowchart-node").evaluate((node) => parseFloat(getComputedStyle(node).transitionDuration) <= 0.001), true);
+    await page.emulateMedia({ reducedMotion: "no-preference" });
     await page.getByRole("tab", { name: "Agents", exact: true }).click();
     assert.match(await page.locator("#agent-hierarchy").textContent(), /CTRL/);
     await page.getByRole("tab", { name: "Role library", exact: true }).click();
@@ -1938,6 +1988,18 @@ const proofFeed = imageProofFixture(6);
       const box = element.getBoundingClientRect();
       return box.height >= 44 && box.right <= document.documentElement.clientWidth;
     })), true);
+    await tabletPage.evaluate(() => selectProjectScope("project:fixture"));
+    await tabletPage.getByRole("tab", { name: "UI", exact: true }).click();
+    await tabletPage.getByRole("button", { name: "Map", exact: true }).click();
+    await tabletPage.locator('[data-project-map-group="workspace"]').click();
+    await tabletPage.waitForFunction(() => Boolean(document.querySelector('[data-project-map-edge="overview-assets"]')?.getAttribute("d")));
+    const tabletFlow = await tabletPage.locator(".project-ui-flowchart").evaluate((stage) => {
+      const box = stage.getBoundingClientRect();
+      return { left: box.left, right: box.right, viewport: innerWidth, scrollWidth: stage.scrollWidth, clientWidth: stage.clientWidth };
+    });
+    assert.ok(tabletFlow.left >= 0 && tabletFlow.right <= tabletFlow.viewport && tabletFlow.scrollWidth <= tabletFlow.clientWidth, JSON.stringify(tabletFlow));
+    assert.equal(await tabletPage.locator(".project-ui-flowchart-node").evaluateAll((nodes) => nodes.every((node) => node.getBoundingClientRect().height >= 44)), true);
+    assert.equal(await tabletPage.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth), true);
     await tabletPage.locator('[data-view="agents"]').click();
     await tabletPage.getByRole("tab", { name: "Role library", exact: true }).click();
     const tabletGrid = tabletPage.locator("#role-library-grid");
@@ -2049,6 +2111,17 @@ const proofFeed = imageProofFixture(6);
     assert.equal(await mobilePage.locator(".project-ui-card").count(), 2);
     assert.equal(await mobilePage.locator(".project-ui-toolbar .segmented-control button").evaluateAll((elements) => elements.every((element) => element.getBoundingClientRect().height >= 44)), true);
     assert.equal(await mobilePage.locator(".project-ui-screens").evaluate((element) => getComputedStyle(element).gridTemplateColumns.split(" ").length), 1);
+    await mobilePage.getByRole("button", { name: "Map", exact: true }).click();
+    await mobilePage.locator('[data-project-map-group="workspace"]').click();
+    await mobilePage.waitForFunction(() => Boolean(document.querySelector('[data-project-map-edge="overview-assets"]')?.getAttribute("d")));
+    assert.equal(await mobilePage.locator(".project-ui-flowchart").evaluate((stage) => {
+      const box = stage.getBoundingClientRect();
+      return box.left >= 0 && box.right <= innerWidth && stage.scrollWidth <= stage.clientWidth;
+    }), true);
+    assert.equal(await mobilePage.locator(".project-ui-flowchart-node").evaluateAll((nodes) => nodes.every((node) => {
+      const box = node.getBoundingClientRect();
+      return box.height >= 44 && box.left >= 0 && box.right <= innerWidth;
+    })), true);
     assert.equal(await mobilePage.locator("[data-qc-scope]").evaluate((element) => element.scrollWidth > element.clientWidth + 1), false);
     assert.deepEqual(mobile.runtimeErrors, []);
     await mobilePage.close();
