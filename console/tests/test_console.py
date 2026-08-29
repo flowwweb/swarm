@@ -2389,6 +2389,31 @@ class SwarmConsoleTests(unittest.TestCase):
         with self.assertRaisesRegex(console.ConsoleError, "plain project language"):
             store.record_proof_media({**base, "evidence_id": "internal-copy", "caption": "Localhost proof", "disposition": "PENDING"}, now_ms=4)
 
+    def test_proof_cursor_is_monotonic_and_detects_same_timestamp_media(self) -> None:
+        first_path = self.root / "same-ms-first.png"
+        second_path = self.root / "same-ms-second.png"
+        first_path.write_bytes(b"\x89PNG\r\n\x1a\nfirst")
+        second_path.write_bytes(b"\x89PNG\r\n\x1a\nsecond")
+        store = console.ConsoleStore(self.root / "console" / "same-ms-proof.sqlite3")
+
+        def payload(evidence_id: str, locator: Path) -> dict[str, str]:
+            return {
+                "source": "CtrlEvidence", "evidence_id": evidence_id, "task_id": "task-1",
+                "project_id": "project:alpha", "kind": "screenshot", "locator": str(locator),
+                "caption": f"Proof {evidence_id}", "claim_limit": "Local screenshot only.",
+                "receipt": f"proof-event:{evidence_id}", "disposition": "PENDING",
+            }
+
+        store.record_proof_media(payload("same-ms-first", first_path), now_ms=77)
+        first_cursor = store.proof_cursor()
+        self.assertEqual(first_cursor["sequence"], 1)
+        self.assertEqual(store.proof_cursor(), first_cursor)
+        store.record_proof_media(payload("same-ms-second", second_path), now_ms=77)
+        second_cursor = store.proof_cursor()
+        self.assertEqual(second_cursor["sequence"], 2)
+        self.assertNotEqual(second_cursor["identity"], first_cursor["identity"])
+        self.assertEqual(store.proof_sequence(), second_cursor["sequence"])
+
     def test_store_migration_normalizes_available_rows_but_preserves_withheld(self) -> None:
         media_path = self.root / "legacy.png"
         media_path.write_bytes(b"\x89PNG\r\n\x1a\nlegacy")
@@ -2565,6 +2590,55 @@ class SwarmConsoleTests(unittest.TestCase):
         self.assertGreater(metrics["verified_progress"]["total"], 0)
         self.assertIn(metrics["field_state"]["percent"], {"KNOWN", "PARTIAL", "UNKNOWN"})
 
+    def test_overview_metrics_match_navigation_current_work_inventory(self) -> None:
+        self._confirm_root_ctrl()
+        self._add_host_project("project:archived", "archived", "C:/work/archived")
+        self._add_host_project("project:legacy", "legacy", "C:/work/legacy")
+        now = 2_000_000_100_000
+        with closing(sqlite3.connect(self.database)) as connection:
+            connection.executemany(
+                "INSERT INTO threads VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                [
+                    (
+                        "archived-ctrl", "🐙CTRL - Archived", "C:/work/archived", now // 1000,
+                        now // 1000, now, now, "gpt-5.6-sol", "high", 1, 1, "", "main",
+                        "", "", "ctrl", 0,
+                    ),
+                    (
+                        "legacy-ctrl", "🐙CTRL - Legacy", "C:/work/legacy", now // 1000,
+                        now // 1000, now, now, "gpt-5.6-sol", "high", 1, 0, "", "main",
+                        "", "", "", 0,
+                    ),
+                ],
+            )
+            connection.commit()
+
+        app = console.App(self.codex_home, self.config, self.root / "console" / "filtered-metrics.sqlite3")
+        view = app.overview()
+        metrics = view["overview_metrics"]
+        navigation = view["navigation"]
+        self.assertEqual(metrics["active_work"], {"active_projects": 1, "active_lanes": 1})
+        self.assertEqual(metrics["field_state"]["active_projects"], "KNOWN")
+        self.assertEqual(metrics["field_state"]["active_lanes"], "KNOWN")
+        self.assertNotIn("archived-ctrl", navigation["active_ctrl_ids"])
+        self.assertNotIn("legacy-ctrl", navigation["active_ctrl_ids"])
+
+    def test_missing_canonical_project_inventory_is_unknown_not_zero(self) -> None:
+        with closing(sqlite3.connect(self.database)) as connection:
+            connection.execute("DROP TABLE projects")
+            connection.commit()
+
+        app = console.App(self.codex_home, self.config, self.root / "console" / "missing-projects.sqlite3")
+        view = app.overview()
+        metrics = view["overview_metrics"]
+        self.assertEqual(view["project_inventory"]["state"], "UNKNOWN")
+        self.assertFalse(view["project_inventory"]["available"])
+        self.assertEqual(view["navigation"]["project_inventory"]["state"], "UNKNOWN")
+        self.assertIsNone(metrics["active_work"]["active_projects"])
+        self.assertIsNone(metrics["active_work"]["active_lanes"])
+        self.assertEqual(metrics["field_state"]["active_projects"], "UNKNOWN")
+        self.assertEqual(metrics["field_state"]["active_lanes"], "UNKNOWN")
+
     def test_navigation_is_saved_project_feed_with_status_facts_and_stable_inputs(self) -> None:
         self._add_host_project("project:empty", "Empty saved project", "C:/work/empty")
         with closing(sqlite3.connect(self.database)) as connection:
@@ -2622,6 +2696,31 @@ class SwarmConsoleTests(unittest.TestCase):
         replay = app.project_progress_feed("project:alpha")
         self.assertEqual(feed["proof_items"], replay["proof_items"])
         self.assertEqual([item["evidence_id"] for item in feed["proof_items"]], ["feed-proof"])
+
+    def test_proof_store_failures_are_explicit_unavailable_or_partial(self) -> None:
+        self._confirm_root_ctrl()
+        app = console.App(self.codex_home, self.config, self.root / "console" / "proof-status.sqlite3")
+        self._append_notification_fixture(app)
+        with mock.patch.object(
+            app.store, "proof_feed", side_effect=sqlite3.OperationalError("proof store unavailable")
+        ):
+            run_log = app.run_log("root", project_id="project:alpha")
+            project_feed = app.project_progress_feed("project:alpha")
+        self.assertEqual(run_log["proof_status"], "unavailable")
+        self.assertEqual(run_log["proof_cursor"], {"sequence": None, "identity": None})
+        self.assertEqual(project_feed["proof_status"], "unavailable")
+        self.assertEqual(project_feed["proof_cursor"], {"sequence": None, "identity": None})
+
+        with mock.patch.object(
+            app, "_ingest_proof_events_if_changed",
+            return_value={
+                "imported": 0, "duplicates": 0, "rejected": 1,
+                "retryable": 0, "capped": 0, "enumerated": 1,
+            },
+        ):
+            partial = app.run_log("root", project_id="project:alpha")
+        self.assertEqual(partial["proof_status"], "partial")
+        self.assertIsInstance(partial["proof_cursor"]["identity"], str)
 
     def test_proof_media_delivery_requires_registered_surface_and_current_digest(self) -> None:
         media_path = self.root / "proof.png"

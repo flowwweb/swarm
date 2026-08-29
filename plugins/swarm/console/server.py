@@ -112,6 +112,7 @@ HEALTH_THRESHOLDS = {
 MEDIA_MAX_HASH_BYTES = 64 * 1024 * 1024
 MAX_PROOF_EVENT_FILES = 1024
 PROOF_EVENT_SCAN_STATE_KEY = "proof_event_scan_state_v2"
+PROOF_FEED_CURSOR_KEY = "proof_feed_cursor_v1"
 PROOF_EVENT_PREFIX_ALPHABET = "abcdefghijklmnopqrstuvwxyz0123456789-._"
 PROOF_EVENT_PRIVATE_FIELDS = frozenset({
     "prompt", "prompts", "response", "responses", "message", "messages",
@@ -2861,18 +2862,85 @@ class ConsoleStore:
             args.append(task_id)
         with self._lock, closing(self._connect()) as connection:
             rows = connection.execute(
-                "SELECT * FROM proof_media WHERE " + " AND ".join(conditions) + " ORDER BY updated_at_ms DESC",
+                "SELECT * FROM proof_media WHERE " + " AND ".join(conditions)
+                + " ORDER BY updated_at_ms DESC, evidence_id DESC",
                 tuple(args),
             ).fetchall()
         return [self._public_proof_row(row) for row in rows]
 
-    def proof_sequence(self) -> int:
-        """Return a cheap local cursor for surfaced proof feed changes."""
+    @staticmethod
+    def _proof_feed_identity(connection: sqlite3.Connection) -> tuple[str, bool]:
+        columns = (
+            "evidence_id", "task_id", "project_id", "kind", "locator", "caption",
+            "claim_limit", "disposition", "receipt", "surface_kind", "media_type",
+            "mtime_ns", "size_bytes", "digest", "registered_at_ms", "updated_at_ms",
+        )
+        rows = connection.execute(
+            "SELECT " + ", ".join(columns)
+            + " FROM proof_media WHERE disposition='PENDING' ORDER BY evidence_id"
+        ).fetchall()
+        material = [[row[column] for column in columns] for row in rows]
+        identity = hashlib.sha256(
+            json.dumps(material, ensure_ascii=True, separators=(",", ":")).encode("utf-8")
+        ).hexdigest()
+        return identity, bool(rows)
+
+    @staticmethod
+    def _stored_proof_cursor(connection: sqlite3.Connection) -> tuple[int, str | None]:
+        row = connection.execute(
+            "SELECT value FROM store_metadata WHERE key = ?",
+            (PROOF_FEED_CURSOR_KEY,),
+        ).fetchone()
+        if row is None:
+            return 0, None
+        try:
+            state = json.loads(str(row["value"]))
+        except (json.JSONDecodeError, TypeError, ValueError):
+            return 0, None
+        if not isinstance(state, dict):
+            return 0, None
+        sequence = state.get("sequence")
+        sequence = sequence if isinstance(sequence, int) and not isinstance(sequence, bool) and sequence >= 0 else 0
+        identity = state.get("identity")
+        identity = identity if isinstance(identity, str) and re.fullmatch(r"[0-9a-f]{64}", identity) else None
+        return sequence, identity
+
+    @staticmethod
+    def _persist_proof_cursor(connection: sqlite3.Connection, sequence: int, identity: str) -> None:
+        connection.execute(
+            "INSERT INTO store_metadata(key, value) VALUES (?, ?) "
+            "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            (
+                PROOF_FEED_CURSOR_KEY,
+                json.dumps(
+                    {"sequence": sequence, "identity": identity},
+                    ensure_ascii=True, sort_keys=True, separators=(",", ":"),
+                ),
+            ),
+        )
+
+    def _advance_proof_cursor(self, connection: sqlite3.Connection) -> dict[str, Any]:
+        identity, has_rows = self._proof_feed_identity(connection)
+        prior_sequence, prior_identity = self._stored_proof_cursor(connection)
+        sequence = prior_sequence
+        if prior_identity != identity:
+            sequence = prior_sequence + 1 if has_rows or prior_identity is not None else prior_sequence
+            self._persist_proof_cursor(connection, sequence, identity)
+        return {"sequence": sequence, "identity": identity}
+
+    def proof_cursor(self) -> dict[str, Any]:
+        """Return a stable proof-feed cursor without mutating the read path."""
         with self._lock, closing(self._connect()) as connection:
-            row = connection.execute(
-                "SELECT COALESCE(MAX(updated_at_ms), 0) sequence FROM proof_media WHERE disposition='PENDING'"
-            ).fetchone()
-        return int(row["sequence"] or 0)
+            identity, has_rows = self._proof_feed_identity(connection)
+            prior_sequence, prior_identity = self._stored_proof_cursor(connection)
+        sequence = prior_sequence
+        if prior_identity != identity:
+            sequence = prior_sequence + 1 if has_rows or prior_identity is not None else prior_sequence
+        return {"sequence": sequence, "identity": identity}
+
+    def proof_sequence(self) -> int:
+        """Return the UI-compatible sequence from the durable proof cursor."""
+        return int(self.proof_cursor()["sequence"])
 
     def proof_media_item(self, evidence_id: str, digest: str, *, allowed_root: Path | None = None) -> dict[str, Any]:
         evidence_id = _safe_metadata_text(evidence_id, "evidence_id", maximum=256)
@@ -3006,6 +3074,7 @@ class ConsoleStore:
                     now_ms,
                 ),
             )
+            self._advance_proof_cursor(connection)
             connection.commit()
             row = connection.execute("SELECT * FROM proof_media WHERE evidence_id=?", (evidence_id,)).fetchone()
         return self._public_proof_row(row)
@@ -4582,6 +4651,11 @@ def build_overview(codex_home: Path, config_path: Path) -> dict[str, Any]:
     observed_after_ms = now_ms - observation_window_ms
     active_goal_ids = active_goal_thread_ids(codex_home, observed_after_ms=observed_after_ms)
     with closing(_readonly_connection(database)) as connection:
+        host_tables = {
+            str(row["name"])
+            for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
+        }
+        project_inventory_available = "projects" in host_tables
         thread_columns = {
             str(row["name"])
             for row in connection.execute("PRAGMA table_info(threads)").fetchall()
@@ -4942,6 +5016,15 @@ def build_overview(codex_home: Path, config_path: Path) -> dict[str, Any]:
         "generated_at": datetime.now(UTC).isoformat(),
         "heartbeat_minutes": heartbeat,
         "observation_window_ms": observation_window_ms,
+        "project_inventory": {
+            "state": "KNOWN" if project_inventory_available else "UNKNOWN",
+            "available": project_inventory_available,
+            "source": "host_projects",
+            "claim_limit": (
+                "Saved project identity is available only when the canonical host projects table is present; "
+                "absence is unavailable, not an empty project inventory."
+            ),
+        },
         "nodes": sorted(nodes.values(), key=lambda node: (node["project"], node["created_at"] or 0)),
         "links": links,
         "roots": roots,
@@ -6233,11 +6316,37 @@ class App:
                 "task_count": len(project_nodes),
             })
         projects.sort(key=_project_order_key)
+        raw_project_inventory = view.get("project_inventory")
+        if (
+            isinstance(raw_project_inventory, dict)
+            and raw_project_inventory.get("state") == "KNOWN"
+            and raw_project_inventory.get("available") is True
+        ):
+            project_inventory = {
+                "state": "KNOWN",
+                "available": True,
+                "source": str(raw_project_inventory.get("source") or "host_projects"),
+                "claim_limit": str(
+                    raw_project_inventory.get("claim_limit")
+                    or "Saved project identity is sourced from the canonical host projects table."
+                ),
+            }
+        else:
+            project_inventory = {
+                "state": "UNKNOWN",
+                "available": False,
+                "source": "host_projects",
+                "claim_limit": (
+                    "Saved project identity is unavailable; an empty navigation list is not a known empty "
+                    "canonical project inventory."
+                ),
+            }
         return {
             "active_ctrl_id": active_controllers[0]["id"] if active_controllers else None,
             "active_ctrl_ids": [controller["id"] for controller in active_controllers],
             "controllers": controllers,
             "projects": projects,
+            "project_inventory": project_inventory,
             "claim_limit": (
                 "Current Work eligibility requires persisted host agent_role=ctrl classification and a non-archived "
                 "host thread; titles, root position, and runtime status never establish CTRL identity. Legacy rows "
@@ -6245,6 +6354,74 @@ class App:
                 "projects table; task metadata cannot create a project, and status facts remain read-only observation."
             ),
         }
+
+    @staticmethod
+    def _current_work_inventory(
+        navigation: dict[str, Any],
+    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], bool]:
+        """Return the exact visible, non-archived CTRL inventory used by navigation."""
+        project_inventory = navigation.get("project_inventory")
+        projects = navigation.get("projects")
+        controllers = navigation.get("controllers")
+        if (
+            not isinstance(project_inventory, dict)
+            or project_inventory.get("state") != "KNOWN"
+            or project_inventory.get("available") is not True
+            or not isinstance(projects, list)
+            or not isinstance(controllers, list)
+            or any(not isinstance(project, dict) for project in projects)
+            or any(not isinstance(controller, dict) for controller in controllers)
+        ):
+            return [], [], False
+
+        eligible_projects: list[dict[str, Any]] = []
+        project_ctrl_ids: dict[str, set[str]] = {}
+        for project in projects:
+            project_id = project.get("id")
+            raw_ctrl_ids = project.get("ctrl_ids")
+            if (
+                not isinstance(project_id, str)
+                or not project_id
+                or project.get("visibility") != "visible"
+                or project.get("archived") is not False
+                or project.get("project_eligibility") != "swarm_ctrl"
+                or not isinstance(raw_ctrl_ids, list)
+                or not raw_ctrl_ids
+                or any(not isinstance(ctrl_id, str) or not ctrl_id for ctrl_id in raw_ctrl_ids)
+                or project_id in project_ctrl_ids
+            ):
+                continue
+            project_ctrl_ids[project_id] = set(raw_ctrl_ids)
+            eligible_projects.append(project)
+
+        eligible_controllers: list[dict[str, Any]] = []
+        seen_controller_ids: set[str] = set()
+        for controller in controllers:
+            controller_id = controller.get("id")
+            project_id = controller.get("project_id")
+            if (
+                not isinstance(controller_id, str)
+                or not controller_id
+                or controller_id in seen_controller_ids
+                or not isinstance(project_id, str)
+                or project_id not in project_ctrl_ids
+                or controller_id not in project_ctrl_ids[project_id]
+                or controller.get("visibility") != "visible"
+                or controller.get("archived") is not False
+                or controller.get("controller_classification") != "swarm_ctrl"
+                or controller.get("controller_classification_source") != "host_threads.agent_role"
+            ):
+                continue
+            seen_controller_ids.add(controller_id)
+            eligible_controllers.append(controller)
+
+        if any(
+            ctrl_id not in seen_controller_ids
+            for ctrl_ids in project_ctrl_ids.values()
+            for ctrl_id in ctrl_ids
+        ):
+            return [], [], False
+        return eligible_projects, eligible_controllers, True
 
     def _overview_metrics(
         self,
@@ -6266,10 +6443,11 @@ class App:
         navigation = view.get("navigation") if isinstance(view.get("navigation"), dict) else {}
         navigation_projects = navigation.get("projects") if isinstance(navigation.get("projects"), list) else None
         navigation_controllers = navigation.get("controllers") if isinstance(navigation.get("controllers"), list) else None
+        current_work_projects, current_work_controllers, current_work_known = self._current_work_inventory(navigation)
         selected_controller = None
-        if navigation_controllers is not None and scope_type == "ctrl":
+        if scope_type == "ctrl" and current_work_known:
             selected_controller = next(
-                (item for item in navigation_controllers if isinstance(item, dict) and item.get("id") == scope_id),
+                (item for item in current_work_controllers if item.get("id") == scope_id),
                 None,
             )
         selected_project_id = (
@@ -6280,24 +6458,25 @@ class App:
         active_work = {"active_projects": None, "active_lanes": None}
         active_states_known = False
         active_states_partial = False
-        if navigation_projects is not None and navigation_controllers is not None:
+        scope_inventory_known = current_work_known and (scope_type != "ctrl" or selected_controller is not None)
+        if scope_inventory_known:
             active_states_known = True
             if scope_type == "all":
-                selected_projects = list(navigation_projects)
-                selected_controllers = list(navigation_controllers)
+                selected_projects = list(current_work_projects)
+                selected_controllers = list(current_work_controllers)
             elif scope_type == "project":
                 selected_projects = [
-                    project for project in navigation_projects
-                    if isinstance(project, dict) and project.get("id") == selected_project_id
+                    project for project in current_work_projects
+                    if project.get("id") == selected_project_id
                 ]
                 selected_controllers = [
-                    controller for controller in navigation_controllers
-                    if isinstance(controller, dict) and controller.get("project_id") == selected_project_id
+                    controller for controller in current_work_controllers
+                    if controller.get("project_id") == selected_project_id
                 ]
             else:
                 selected_projects = [
-                    project for project in navigation_projects
-                    if isinstance(project, dict) and project.get("id") == selected_project_id
+                    project for project in current_work_projects
+                    if project.get("id") == selected_project_id
                 ]
                 selected_controllers = [selected_controller] if isinstance(selected_controller, dict) else []
             project_statuses = []
@@ -6534,6 +6713,7 @@ class App:
                 for block in selected_blocks
             ),
             "navigation": {
+                "project_inventory": navigation.get("project_inventory"),
                 "projects": navigation_projects,
                 "controllers": navigation_controllers,
             },
@@ -6737,6 +6917,44 @@ class App:
         self._ingest_proof_events_if_changed()
         return self.store.proof_feed(project_id=project_id, task_id=task_id)
 
+    @staticmethod
+    def _proof_reconciliation_status(reconciliation: dict[str, int]) -> str:
+        return "partial" if any(
+            reconciliation.get(field, 0) for field in ("rejected", "retryable", "capped")
+        ) else "available"
+
+    def _proof_feed_projection(
+        self,
+        *,
+        project_id: str | None = None,
+        task_id: str | None = None,
+    ) -> dict[str, Any]:
+        empty_cursor = {"sequence": None, "identity": None}
+        try:
+            reconciliation = self._ingest_proof_events_if_changed()
+            items = self.store.proof_feed(project_id=project_id, task_id=task_id)
+            cursor = self.store.proof_cursor()
+        except (AttributeError, ConsoleError, OSError, sqlite3.Error, TypeError, ValueError):
+            return {
+                "ok": True,
+                "status": "unavailable",
+                "sequence": None,
+                "proof_cursor": empty_cursor,
+                "items": [],
+                "claim_limit": "Proof store unavailable; no conclusion about proof presence or acceptance is emitted.",
+            }
+        return {
+            "ok": True,
+            "status": self._proof_reconciliation_status(reconciliation),
+            "sequence": cursor["sequence"],
+            "proof_cursor": cursor,
+            "items": items,
+            "claim_limit": (
+                "Proof media is retained independently of review annotations; partial means the bounded proof "
+                "reconciliation had rejected, capped, or retryable input, and availability is not acceptance."
+            ),
+        }
+
     def _proof_items_for_scope(
         self,
         project_id: str,
@@ -6745,10 +6963,11 @@ class App:
         task_ids: set[str] | None = None,
         ctrl_id: str | None = None,
         agent_id: str | None = None,
-    ) -> list[dict[str, Any]]:
+    ) -> tuple[list[dict[str, Any]], str, dict[str, Any]]:
         """Surface independently retained proof media without Ledger/review filtering."""
-        self._ingest_proof_events_if_changed(overview)
+        reconciliation = self._ingest_proof_events_if_changed(overview)
         items = self.store.proof_feed(project_id=project_id)
+        cursor = self.store.proof_cursor()
         node_by_id = {
             str(node.get("id")): node for node in overview.get("nodes", [])
             if isinstance(node, dict) and node.get("id")
@@ -6767,7 +6986,7 @@ class App:
             if agent_id is not None and item_task_id != agent_id:
                 continue
             selected.append(item)
-        return selected
+        return selected, self._proof_reconciliation_status(reconciliation), cursor
 
     def project_progress_feed(self, project_id: str, *, after_cursor: int = 0) -> dict[str, Any]:
         """Build one lazy project feed snapshot from canonical material events."""
@@ -6786,7 +7005,8 @@ class App:
                     "cursor": {"event_seq": after_cursor, "event_id": None, "event_digest": None},
                     "items": [],
                     "proof_items": [],
-                    "proof_cursor": {"sequence": None},
+                    "proof_cursor": {"sequence": None, "identity": None},
+                    "proof_status": "disabled",
                     "stale_cursor": False,
                     "transport": {"snapshot": "disabled", "incremental": "disabled", "http_stream": "UNVERIFIED"},
                     "producer": {"status": "typed_runtime_transition_only", "native_host_transport": "UNVERIFIED"},
@@ -6798,17 +7018,23 @@ class App:
                 **self.progress_ledger.feed_snapshot(project_id.strip(), limit=limit, after_cursor=after_cursor),
             }
             snapshot["proof_items"] = []
-            snapshot["proof_cursor"] = {"sequence": None}
+            snapshot["proof_cursor"] = {"sequence": None, "identity": None}
+            snapshot["proof_status"] = "unavailable"
             snapshot["proof_source"] = "independently_retained_ctrl_evidence"
             if hasattr(self, "store"):
                 try:
                     overview = self._host_overview()
-                    snapshot["proof_items"] = self._proof_items_for_scope(
+                    (
+                        snapshot["proof_items"],
+                        snapshot["proof_status"],
+                        snapshot["proof_cursor"],
+                    ) = self._proof_items_for_scope(
                         project_id.strip(), overview=overview,
                     )
-                    snapshot["proof_cursor"] = {"sequence": self.store.proof_sequence()}
-                except (AttributeError, ConsoleError, OSError, sqlite3.Error):
+                except (AttributeError, ConsoleError, OSError, sqlite3.Error, TypeError, ValueError):
                     snapshot["proof_items"] = []
+                    snapshot["proof_cursor"] = {"sequence": None, "identity": None}
+                    snapshot["proof_status"] = "unavailable"
             return snapshot
         except (KeyError, TypeError, ValueError, ProgressEventError) as error:
             raise ConsoleError(str(error)) from error
@@ -6982,19 +7208,18 @@ class App:
             items = pending[:RUN_LOG_LIMIT]
             next_cursor = items[-1]["event_seq"] if page_truncated and items else newest_sequence
         proof_items: list[dict[str, Any]] = []
-        proof_sequence: int | None = None
-        proof_status = "available"
+        proof_cursor: dict[str, Any] = {"sequence": None, "identity": None}
+        proof_status = "unavailable"
         try:
-            proof_items = self._proof_items_for_scope(
+            proof_items, proof_status, proof_cursor = self._proof_items_for_scope(
                 resolved_project_id,
                 overview=overview,
                 task_ids=set(node_by_id),
                 ctrl_id=ctrl_id,
                 agent_id=agent_id,
             )
-            proof_sequence = self.store.proof_sequence()
-        except (ConsoleError, OSError, sqlite3.Error):
-            proof_status = "unavailable"
+        except (AttributeError, ConsoleError, OSError, sqlite3.Error, TypeError, ValueError):
+            pass
         return {
             "ok": True,
             "schema_version": 1,
@@ -7006,7 +7231,7 @@ class App:
             "items": items,
             "cursor": {"after_event_seq": after_cursor, "next_event_seq": next_cursor},
             "proof_items": proof_items,
-            "proof_cursor": {"sequence": proof_sequence},
+            "proof_cursor": proof_cursor,
             "proof_status": proof_status,
             "retention": {
                 "limit": RUN_LOG_LIMIT,
@@ -7268,8 +7493,12 @@ class App:
             allowed_root=self.codex_home / PROOF_MEDIA_ROOT,
         )
 
+    def proof_cursor(self) -> dict[str, Any]:
+        self._ingest_proof_events_if_changed()
+        return self.store.proof_cursor()
+
     def proof_sequence(self) -> int:
-        return self.store.proof_sequence()
+        return int(self.proof_cursor()["sequence"])
 
     def register_proof(self, payload: dict[str, Any]) -> dict[str, Any]:
         task_id = _safe_metadata_text(payload.get("task_id"), "task_id", maximum=256)
@@ -7828,10 +8057,10 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/api/proof-feed":
                 self._json(
                     HTTPStatus.OK,
-                    {"ok": True, "sequence": self.server.app.proof_sequence(), "items": self.server.app.proof_feed(
+                    self.server.app._proof_feed_projection(
                         project_id=query.get("project_id"),
                         task_id=query.get("task_id"),
-                    )},
+                    ),
                 )
                 return
             if path.startswith("/api/proof-media/"):
