@@ -3357,7 +3357,7 @@ class SwarmConsoleTests(unittest.TestCase):
         beta_root = self.root / "projects" / "beta-local"
         alpha = self._write_local_project_view_bundle("project:alpha", alpha_root)
         beta = self._write_local_project_view_bundle("project:beta", beta_root)
-        self._add_host_project("project:beta", "Beta", str(beta_root))
+        self._add_host_project("project:beta", "beta", str(beta_root))
         with closing(sqlite3.connect(self.database)) as connection:
             connection.execute("UPDATE project_roots SET path=? WHERE project_id='project:alpha'", (str(alpha_root),))
             connection.execute("UPDATE threads SET cwd=? WHERE cwd='C:/work/alpha'", (str(alpha_root),))
@@ -3424,6 +3424,58 @@ class SwarmConsoleTests(unittest.TestCase):
         self._add_host_project("project:legacy", "Legacy", str(legacy_root))
         with mock.patch.object(app.store, "proof_feed", return_value=[]):
             self.assertIsNone(app._project_view_projection("project:legacy"))
+
+    def test_project_view_accepts_only_root_bound_runtime_id_or_unique_saved_name(self) -> None:
+        runtime_id = "01a00000-0000-7000-8000-000000000001"
+        root = self.root / "projects" / "swarm-runtime"
+        root.mkdir(parents=True)
+        with closing(sqlite3.connect(self.database)) as connection:
+            connection.execute("INSERT INTO projects VALUES (?,?,?,?,?,?)", (runtime_id, "swarm", "{}", 7, 0, 0))
+            connection.execute("INSERT INTO project_roots VALUES (?,?,?)", (runtime_id, 0, str(root)))
+            connection.commit()
+        app = console.App(self.codex_home, self.config, self.root / "console" / "identity-alias.sqlite3")
+        self.assertEqual(app._canonical_project_identities(runtime_id), frozenset({runtime_id, "swarm"}))
+
+        screens = json.dumps({"schema_version": 1, "project_id": "swarm", "nodes": []}).encode()
+        self.assertEqual(app._project_view_screens(runtime_id, screens), [])
+        runtime_screens = json.dumps({"schema_version": 1, "project_id": runtime_id, "nodes": []}).encode()
+        self.assertEqual(app._project_view_screens(runtime_id, runtime_screens), [])
+        with self.assertRaisesRegex(console.ConsoleError, "another project"):
+            app._project_view_screens(runtime_id, json.dumps({"project_id": "other", "nodes": []}).encode())
+
+        source = root / "coverage.json"
+        source.write_bytes(screens)
+        digest = "sha256:" + hashlib.sha256(screens).hexdigest()
+        self.assertEqual(app._default_project_view_resolver(runtime_id, "project://swarm/coverage.json", digest), screens)
+        with self.assertRaisesRegex(console.ConsoleError, "another project"):
+            app._default_project_view_resolver(runtime_id, "project://other/coverage.json", digest)
+
+        graph = b'flowchart LR\n  overview["Overview"]\n'
+        graph_digest = "sha256:" + hashlib.sha256(graph).hexdigest()
+        manifest = json.dumps({
+            "manifest_type": "swarm.project_views", "schema_version": 1,
+            "manifest_id": "swarm-views", "manifest_version": 1, "project_id": "swarm",
+            "project_tab": {"id": "tab.project.ui", "label": "UI", "visibility": "conditional", "modes": ["view.project.ui.screens", "view.project.ui.map"]},
+            "views": [
+                {"id": "view.project.ui.screens", "label": "Screens", "renderer": "gallery", "mode": "grid", "source_refs": ["project://swarm/coverage.json"], "source_digests": [digest], "allowed_actions": ["open_artifact"]},
+                {"id": "view.project.ui.map", "label": "Map", "renderer": "canvas", "mode": "network", "source_refs": ["project://swarm/graph.mmd"], "source_digests": [graph_digest], "allowed_actions": ["open_entity"]},
+            ],
+        }, separators=(",", ":")).encode()
+        app.project_view_resolver = lambda _project_id, ref, _digest: screens if ref.endswith("coverage.json") else graph
+        with mock.patch.object(app.store, "proof_feed", return_value=[]):
+            normalized = app._normalize_project_view(runtime_id, manifest, "sha256:" + hashlib.sha256(manifest).hexdigest())
+        self.assertEqual(normalized["project_id"], runtime_id)
+
+        with closing(sqlite3.connect(self.database)) as connection:
+            connection.execute("INSERT INTO projects VALUES (?,?,?,?,?,?)", ("duplicate", "swarm", "{}", 8, 0, 0))
+            connection.commit()
+        with self.assertRaisesRegex(console.ConsoleError, "ambiguous"):
+            app._canonical_project_identities(runtime_id)
+        with closing(sqlite3.connect(self.database)) as connection:
+            connection.execute("DELETE FROM projects WHERE id IN (?, ?)", (runtime_id, "duplicate"))
+            connection.commit()
+        with self.assertRaisesRegex(console.ConsoleError, "canonical saved project identity"):
+            app._canonical_project_identities(runtime_id)
 
     def test_project_ui_agent_read_is_digest_cursor_bound_and_fail_closed(self) -> None:
         root = self.root / "projects" / "alpha-agent"

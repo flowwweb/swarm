@@ -5218,6 +5218,21 @@ class App:
             raise ConsoleError(f"{purpose} project root must be an absolute host path")
         return root
 
+    def _canonical_project_identities(self, project_id: str) -> frozenset[str]:
+        self._canonical_project_root(project_id)
+        database = state_database(self.codex_home)
+        with closing(sqlite3.connect(database)) as connection:
+            rows = connection.execute("SELECT id, name FROM projects WHERE id = ?", (project_id,)).fetchall()
+            if len(rows) != 1:
+                raise ConsoleError("Project view requires one canonical saved project identity")
+            name = str(rows[0][1] or "").strip()
+            if not name:
+                raise ConsoleError("Project view canonical saved project name is unavailable")
+            duplicates = connection.execute("SELECT COUNT(*) FROM projects WHERE name = ?", (name,)).fetchone()[0]
+        if duplicates != 1:
+            raise ConsoleError("Project view canonical saved project name is ambiguous")
+        return frozenset({project_id, name})
+
     @staticmethod
     def _project_view_digest(value: Any) -> str:
         digest = str(value or "").strip().casefold()
@@ -5299,13 +5314,13 @@ class App:
 
     def _default_project_view_resolver(self, project_id: str, ref: str, digest: str) -> bytes:
         parsed = urlparse(ref)
-        expected_project = project_id[8:] if project_id.casefold().startswith("project:") else project_id
+        expected_projects = self._canonical_project_identities(project_id)
         try:
             has_port = parsed.port is not None
         except ValueError as exc:
             raise ConsoleError("project view source reference belongs to another project") from exc
         if (
-            parsed.scheme != "project" or parsed.netloc != expected_project or parsed.params
+            parsed.scheme != "project" or parsed.netloc not in expected_projects or parsed.params
             or parsed.query or parsed.fragment or parsed.username or parsed.password or has_port
         ):
             raise ConsoleError("project view source reference belongs to another project")
@@ -5496,7 +5511,7 @@ class App:
 
     def _project_view_screens(self, project_id: str, raw: bytes) -> list[dict[str, Any]]:
         source = self._project_view_json(raw, "Screens")
-        if source.get("project_id") not in {None, project_id}:
+        if source.get("project_id") is not None and source.get("project_id") not in self._canonical_project_identities(project_id):
             raise ConsoleError("project view Screens source belongs to another project")
         nodes = source.get("nodes")
         if not isinstance(nodes, list) or len(nodes) > 256:
@@ -6070,7 +6085,7 @@ class App:
         manifest = self._project_view_json(manifest_bytes, "manifest")
         if manifest.get("manifest_type") != "swarm.project_views" or manifest.get("schema_version") != 1:
             raise ConsoleError("project view manifest type or schema is unsupported")
-        if manifest.get("project_id") != project_id:
+        if manifest.get("project_id") not in self._canonical_project_identities(project_id):
             raise ConsoleError("project view manifest belongs to another project")
         manifest_id = self._project_view_text(manifest.get("manifest_id"), "manifest id")
         version = manifest.get("manifest_version")
