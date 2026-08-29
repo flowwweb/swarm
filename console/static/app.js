@@ -1960,7 +1960,7 @@ function roleAvatar(role) {
   const accent = /^#[0-9a-f]{6}$/i.test(role?.accent || "") ? role.accent : "#8f9db0";
   const retained = assetItems().find((item) => String(item.digest || "").toLowerCase() === String(role?.avatar_asset_digest || "").toLowerCase());
   const visual = retained ? '<img loading="lazy" decoding="async" src="' + proofMediaURL(retained) + '" alt="">' : '<svg class="lucide"><use href="#lucide-circle-user-round"></use></svg><b>' + escapeHTML(roleDisplayName(role).slice(0, 1) || "?") + '</b>';
-  return '<span class="role-avatar" style="--role-accent:' + escapeHTML(accent) + '" aria-hidden="true">' + visual + '</span>';
+  return '<span class="role-avatar ' + (retained ? 'has-image' : 'is-fallback') + '" style="--role-accent:' + escapeHTML(accent) + '" aria-hidden="true">' + visual + '</span>';
 }
 
 function roleHasRetainedAvatar(role) {
@@ -2040,16 +2040,25 @@ function roleTextList(items, empty) {
   return Array.isArray(items) && items.length ? '<ul>' + items.map((item) => '<li>' + escapeHTML(item) + '</li>').join("") + '</ul>' : '<p class="role-specializations-empty">' + escapeHTML(empty) + '</p>';
 }
 
+function roleInstructionsMarkup(items) {
+  const instructions = Array.isArray(items) ? items.map((item) => String(item || "").trim()).filter(Boolean) : [];
+  if (!instructions.length) return '<p class="role-specializations-empty">No instructions.</p>';
+  const preview = instructions.slice(0, 3);
+  const remaining = instructions.slice(3);
+  return '<div class="role-instruction-preview">' + roleTextList(preview, "No instructions.") + (remaining.length ? '<details><summary>Show all ' + escapeHTML(instructions.length) + ' instructions</summary>' + roleTextList(remaining, "") + '</details>' : '') + '</div>';
+}
+
 function roleChooserMarkup(role, match, selected) {
   const displayName = roleDisplayName(role);
-  return '<button class="role-choice' + (selected ? ' is-selected' : '') + '" data-role-select="' + escapeHTML(role.id) + '" id="role-choice-' + escapeHTML(role.id) + '" role="option" aria-selected="' + String(selected) + '" aria-controls="role-library-detail" type="button">' + roleAvatar(role) + '<span><strong>' + escapeHTML(displayName) + '</strong><small>' + escapeHTML(roleSourceLabel(role)) + '</small>' + (match.label ? '<em>' + escapeHTML(match.label) + '</em>' : '') + '</span><svg class="lucide" aria-hidden="true"><use href="#lucide-chevron-right"></use></svg></button>';
+  const sourceLabel = roleSourceLabel(role);
+  return '<button class="role-choice' + (selected ? ' is-selected' : '') + '" data-role-select="' + escapeHTML(role.id) + '" id="role-choice-' + escapeHTML(role.id) + '" role="option" aria-label="' + escapeHTML(displayName + ', ' + sourceLabel) + '" aria-selected="' + String(selected) + '" aria-controls="role-library-detail" type="button">' + roleAvatar(role) + '<span><strong>' + escapeHTML(displayName) + '</strong><small class="role-choice-source">' + escapeHTML(sourceLabel) + '</small>' + (match.label ? '<em>' + escapeHTML(match.label) + '</em>' : '') + '</span></button>';
 }
 
 function roleDetailMarkup(role, match = { label: "" }) {
   if (!role) return '<p class="empty-state">Choose a role to inspect its server-owned manifest.</p>';
   const displayName = roleDisplayName(role);
   const editAllowed = roleCanMutate("ROLE_MANIFEST_REVISE");
-  return '<header class="role-detail-head">' + roleAvatar(role) + '<div><p class="eyebrow">' + escapeHTML(roleSourceLabel(role)) + '</p><h3 id="role-detail-title">' + escapeHTML(displayName) + '</h3><p>' + escapeHTML(role.purpose || "Purpose unavailable.") + '</p></div><div class="role-detail-actions"><button class="icon-button" data-role-action="generate-avatar" type="button" disabled aria-label="Generate avatar" title="Generate avatar unavailable"><svg class="lucide" aria-hidden="true"><use href="#lucide-sparkles"></use></svg></button><button class="icon-button" data-role-action="edit" data-role-id="' + escapeHTML(role.id) + '" type="button" aria-label="Edit ' + escapeHTML(displayName) + '" title="Edit role"' + (editAllowed ? "" : ' disabled') + '><svg class="lucide" aria-hidden="true"><use href="#lucide-pencil"></use></svg></button></div></header>' + (match.label ? '<p class="role-match">' + escapeHTML(match.label) + '</p>' : '') + '<div class="role-detail-sections"><section><h4>Owns</h4>' + roleTextList(role.owns, "No owned surface declared.") + '</section><section><h4>Default skills</h4>' + roleTextList(role.default_skills, "No default skills.") + '</section><section><h4>Instructions</h4>' + roleTextList(role.instructions, "No instructions.") + '</section><section><h4>Boundaries</h4>' + roleTextList(role.boundaries, "No boundaries declared.") + '</section><section><h4>Current owners</h4>' + roleAssignmentsMarkup(role.id) + '</section><section><h4>Specializations</h4>' + roleSpecializationsMarkup(role) + '<small>Metadata only · no authority transfer.</small></section></div>' + reviewerStancesMarkup(role) + '<footer><span>' + escapeHTML(roleHasRetainedAvatar(role) ? "Retained avatar" : "Accent fallback") + '</span><span>Active tasks retain their accepted role version.</span></footer>';
+  return '<header class="role-detail-head">' + roleAvatar(role) + '<div><p class="eyebrow">' + escapeHTML(roleSourceLabel(role)) + '</p><h3 id="role-detail-title">' + escapeHTML(displayName) + '</h3><p>Profession · not authority</p></div><div class="role-detail-actions"><button class="icon-button" data-role-action="generate-avatar" type="button" disabled aria-label="Generate avatar" title="Generate avatar unavailable"><svg class="lucide" aria-hidden="true"><use href="#lucide-sparkles"></use></svg></button><button class="icon-button" data-role-action="edit" data-role-id="' + escapeHTML(role.id) + '" type="button" aria-label="Edit ' + escapeHTML(displayName) + '" title="Edit role"' + (editAllowed ? "" : ' disabled') + '><svg class="lucide" aria-hidden="true"><use href="#lucide-pencil"></use></svg></button></div></header>' + (match.label ? '<p class="role-match">' + escapeHTML(match.label) + '</p>' : '') + '<div class="role-detail-sections"><section><h4>Purpose</h4><p class="role-detail-copy">' + escapeHTML(role.purpose || "Purpose unavailable.") + '</p></section><section><h4>Owns</h4>' + roleTextList(role.owns, "No owned surface declared.") + '</section><section><h4>Instructions</h4>' + roleInstructionsMarkup(role.instructions) + '</section><section><h4>Current owners</h4>' + roleAssignmentsMarkup(role.id) + '</section><section><h4>Specializations</h4><div>' + roleSpecializationsMarkup(role) + '<small>Metadata only · no authority transfer.</small></div></section>' + reviewerStancesMarkup(role) + '<section><h4>Default skills</h4>' + roleTextList(role.default_skills, "No default skills.") + '</section><section><h4>Boundaries</h4>' + roleTextList(role.boundaries, "No boundaries declared.") + '</section></div><footer><span>' + escapeHTML(roleHasRetainedAvatar(role) ? "Retained avatar" : "Accent fallback") + '</span><span>Active tasks retain their accepted role version.</span></footer>';
 }
 
 function renderRoleLibrary() {
@@ -2813,7 +2822,9 @@ document.addEventListener("click", async (event) => {
   if (roleSelect) {
     state.selectedRoleId = roleSelect.dataset.roleSelect;
     renderRoleLibrary();
-    $('[data-role-select="' + CSS.escape(state.selectedRoleId) + '"]')?.focus({ preventScroll: true });
+    const selectedRole = $('[data-role-select="' + CSS.escape(state.selectedRoleId) + '"]');
+    selectedRole?.focus({ preventScroll: true });
+    selectedRole?.scrollIntoView({ block: "nearest", inline: "nearest" });
     return;
   }
   const roleAction = event.target.closest("[data-role-action]");
