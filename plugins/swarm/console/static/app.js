@@ -1,4 +1,5 @@
 const state = { token: "", overview: null, proof: [], proofCollections: new Map(), proofStatuses: new Map(), proofStatus: "idle", proofSequence: 0, usageHistory: null, usageWindowHours: 24, usageScopeKey: "", usageStatus: "idle", usageError: "", projectProgress: null, projectProgressProjectId: "", projectProgressStatus: "idle", projectProgressError: "", projectProgressFeed: null, projectProgressFeedProjectId: "", projectProgressFeedStatus: "idle", projectProgressFeedError: "", projectTab: "overview", projectUiMode: "screens", runLogs: new Map(), runLogRequestGenerations: new Map(), runLogSurfaceStates: new Map(), runLogAgent: null, diagnostics: null, health: null, storage: null, config: null, configStatus: "idle", configError: "", chatRelaySaving: false, ctrlSettings: null, auto: null, autoBindingKey: "", autoStatus: "idle", autoError: "", autoSaving: false, skills: null, skillsError: "", roleManifests: null, roleManifestStatus: "unavailable", roleManifestError: "", roleManifestMessage: "", roleManifestSaving: false, roleManifestRetry: null, roleEditorMode: "", agentsTab: "active", roleEditorTrigger: null, roleSearch: "", roleTypes: new Set(["builtin", "custom"]), roleSearchFields: new Set(["profession", "specialization", "alias", "skills", "purpose"]), selectedRoleId: "", assetView: "grid", selectedAssetIdentity: "", onboardingStep: 0, onboardingShown: false, onboardingTrigger: null, onboardingConfigPending: new Map(), onboardingConfigFailures: new Map(), notifications: null, notificationBindingKey: "", notificationStatus: "idle", notificationError: "", notificationAckFlight: null, notificationRequestGenerations: new Map(), notificationPresentedIds: new Set(), notificationToast: null, notificationToastTimer: null, notificationTrigger: null, connectionStatus: "reconnecting", view: "overview", projectId: "all", ctrlId: "", settingsCtrlId: "", settingsScopeType: "", settingsScopeId: "", evidenceImages: [], evidenceIndex: 0, evidenceTrigger: null };
+let configMutationTail = Promise.resolve();
 const EVIDENCE_THUMBNAIL_PAGE_SIZE = 24;
 const USAGE_WINDOW_LABELS = { 1: "1h", 24: "1d" };
 const RUN_LOG_CLIENT_LIMIT = 200;
@@ -176,7 +177,9 @@ function onboardingConfigDraft(key, fallback) {
 
 function onboardingControlIdentity(element) {
   if (!(element instanceof HTMLElement)) return "";
-  const control = element.closest("[data-config-key],[data-onboarding-control]");
+  const summaryOwner = element.matches("summary") ? element.closest("details[data-onboarding-control]") : null;
+  if (summaryOwner) return "summary:" + summaryOwner.dataset.onboardingControl;
+  const control = element.matches("[data-config-key],[data-onboarding-control]") ? element : element.closest("[data-config-key],[data-onboarding-control]");
   if (!control) return "";
   if (control.dataset.configKey) return "config:" + control.dataset.configKey;
   return control.dataset.onboardingControl ? "control:" + control.dataset.onboardingControl : "";
@@ -186,18 +189,19 @@ function onboardingControlForIdentity(root, identity) {
   if (!root || !identity) return null;
   const [kind, ...parts] = identity.split(":");
   const value = parts.join(":");
+  if (kind === "summary") return $$('details[data-onboarding-control]', root).find((details) => details.dataset.onboardingControl === value)?.querySelector("summary") || null;
   const attribute = kind === "config" ? "configKey" : "onboardingControl";
   return $$('[data-' + attribute.replace(/[A-Z]/g, (letter) => "-" + letter.toLowerCase()) + ']', root).find((element) => element.dataset[attribute] === value) || null;
 }
 
 function onboardingConfigSelect(key, value, options, label) {
-  const editable = configEditable(key);
+  const editable = configEditable(key) && !state.onboardingConfigPending.has(key);
   const draft = onboardingConfigDraft(key, value);
   return '<label class="setting-field">' + escapeHTML(label) + '<select data-config-key="' + escapeHTML(key) + '"' + (editable ? '' : ' disabled') + '>' + options.map((option) => '<option value="' + escapeHTML(option.value) + '"' + (option.value === draft ? ' selected' : '') + '>' + escapeHTML(option.label) + '</option>').join('') + '</select></label>' + (editable ? '' : '<small>Managed by the current configuration.</small>');
 }
 
 function onboardingConfigToggle(key, value, label) {
-  const editable = configEditable(key);
+  const editable = configEditable(key) && !state.onboardingConfigPending.has(key);
   const draft = onboardingConfigDraft(key, value);
   return '<label class="toggle-row"><input data-config-key="' + escapeHTML(key) + '" type="checkbox"' + (draft === true ? ' checked' : '') + (editable ? '' : ' disabled') + '><span>' + escapeHTML(label) + '</span></label>' + (editable ? '' : '<small>Managed by the current configuration.</small>');
 }
@@ -232,9 +236,9 @@ function onboardingConfigurationMarkup() {
     '<section class="onboarding-config-group"><h3>Usage</h3>' + onboardingConfigToggle("execution.usage_saver", execution.usage_saver, "Usage saver") +
     '<details data-onboarding-control="usage-policy"><summary>Usage saver policy</summary><div class="onboarding-config-disclosure">' + onboardingConfigToggle("chat_relay.enabled", settings.chat_relay?.enabled, "Use ChatGPT for eligible work") + onboardingConfigToggle("boost.spark_enabled", boost.spark_enabled, "Use an efficient model for eligible work") + '<small>Code, local state, and acceptance stay with Codex unless accepted routing authority says otherwise.</small></div></details></section>' +
     '<section class="onboarding-config-group"><h3>Visibility</h3>' + onboardingConfigToggle("console.project_progress_feed_enabled", consoleSettings.project_progress_feed_enabled, "Progress feed") +
-    '<label class="setting-field">Updates shown<input data-config-key="console.project_progress_feed_lines" type="number" min="1" max="10" value="' + escapeHTML(updates) + '"' + (configEditable("console.project_progress_feed_lines") ? '' : ' disabled') + '></label></section>' +
+    '<label class="setting-field">Updates shown<input data-config-key="console.project_progress_feed_lines" type="number" min="1" max="10" value="' + escapeHTML(updates) + '"' + (configEditable("console.project_progress_feed_lines") && !state.onboardingConfigPending.has("console.project_progress_feed_lines") ? '' : ' disabled') + '></label></section>' +
     '<section class="onboarding-config-group onboarding-config-wide"><details data-onboarding-control="advanced"><summary>Advanced</summary><div class="onboarding-config-disclosure"><label class="onboarding-readonly">Parallel lanes<input value="' + escapeHTML(lanes) + '" disabled></label><small>The accepted server setting is shown. Unlimited is available only when the server projects it.</small></div></details></section>' +
-    '<div class="onboarding-config-save ' + (failures.length ? 'is-error' : '') + '" id="onboarding-config-status" role="status"><span>' + escapeHTML(status) + '</span>' + (failures.length ? '<button class="quiet-button" type="button" data-onboarding-control="retry-config">Retry</button>' : '') + '</div>';
+    '<div class="onboarding-config-save ' + (failures.length ? 'is-error' : '') + '" id="onboarding-config-status" data-onboarding-control="config-status" role="status" tabindex="-1"><span>' + escapeHTML(status) + '</span>' + (failures.length ? '<button class="quiet-button" type="button" data-onboarding-control="retry-config">Retry</button>' : '') + '</div>';
 }
 
 function renderOnboarding() {
@@ -274,7 +278,10 @@ function renderOnboarding() {
     $$("details[data-onboarding-control]", root).forEach((details) => { details.open = openControls.has(details.dataset.onboardingControl); });
     root.scrollTop = scrollTop;
     const restored = onboardingControlForIdentity(root, focusIdentity);
-    if (restored && !restored.disabled) requestAnimationFrame(() => restored.focus({ preventScroll: true }));
+    const focusTarget = restored && !restored.disabled
+      ? restored
+      : (focusIdentity ? $("#onboarding-config-status", root) : null);
+    if (focusTarget) requestAnimationFrame(() => focusTarget.focus({ preventScroll: true }));
   }
 }
 
@@ -308,20 +315,35 @@ function closeOnboarding(openProjects = false) {
   return true;
 }
 
+function onboardingCanDismiss() {
+  return state.onboardingStep !== ONBOARDING_STEPS.length - 1 || !onboardingConfigBlocked();
+}
+
 function setOnboardingStep(step, focusDot = false) {
   state.onboardingStep = Math.min(Math.max(0, Number(step) || 0), ONBOARDING_STEPS.length - 1);
   renderOnboarding();
   if (focusDot) $('[data-onboarding-step="' + state.onboardingStep + '"]')?.focus({ preventScroll: true });
 }
 
+async function saveConfigMutation(changes) {
+  const operation = configMutationTail.then(async () => {
+    const config = await api('/api/config', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ changes }) });
+    state.config = config;
+    state.configStatus = "current";
+    return config;
+  });
+  configMutationTail = operation.then(() => undefined, () => undefined);
+  return operation;
+}
+
 async function saveOnboardingConfig(key, value) {
   if (!configEditable(key) || state.onboardingConfigPending.has(key)) return false;
+  const focusIdentity = onboardingControlIdentity(document.activeElement);
   state.onboardingConfigFailures.delete(key);
-  state.onboardingConfigPending.set(key, { value });
+  state.onboardingConfigPending.set(key, { value, focusIdentity });
   renderAllViews();
   try {
-    state.config = await api('/api/config', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ changes: { [key]: value } }) });
-    state.configStatus = "current";
+    await saveConfigMutation({ [key]: value });
     if (key === 'console.project_progress_feed_enabled' || key === 'console.project_progress_feed_lines') await refreshProjectProgressFeed();
     return true;
   } catch (error) {
@@ -330,12 +352,20 @@ async function saveOnboardingConfig(key, value) {
   } finally {
     state.onboardingConfigPending.delete(key);
     renderAllViews();
+    const root = $("#onboarding-configuration");
+    const target = onboardingControlForIdentity(root, focusIdentity)
+      || (focusIdentity === "control:retry-config" ? $("#onboarding-config-status", root) : null);
+    requestAnimationFrame(() => target?.focus({ preventScroll: true }));
   }
 }
 
 async function retryOnboardingConfig() {
   const failures = [...state.onboardingConfigFailures.entries()];
   for (const [key, failure] of failures) await saveOnboardingConfig(key, failure.value);
+  const target = state.onboardingConfigFailures.size
+    ? $('[data-onboarding-control="retry-config"]', $("#onboarding-configuration"))
+    : $("#onboarding-config-status", $("#onboarding-configuration"));
+  requestAnimationFrame(() => target?.focus({ preventScroll: true }));
 }
 
 function connectionFailure(message) {
@@ -3250,9 +3280,16 @@ $(".onboarding-progress").addEventListener("keydown", (event) => {
   setOnboardingStep(next, true);
 });
 $("#onboarding-dialog").addEventListener("close", () => {
-  markOnboardingSeen();
   state.onboardingTrigger?.focus({ preventScroll: true });
   state.onboardingTrigger = null;
+});
+$("#onboarding-dialog").addEventListener("cancel", (event) => {
+  event.preventDefault();
+  if (onboardingCanDismiss()) closeOnboarding();
+  else {
+    renderOnboarding();
+    requestAnimationFrame(() => ($('[data-onboarding-control="retry-config"]', $("#onboarding-configuration")) || $("#onboarding-config-status", $("#onboarding-configuration")) || $("#onboarding-primary"))?.focus({ preventScroll: true }));
+  }
 });
 
 $("#evidence-lightbox").addEventListener("close", () => {
@@ -3441,8 +3478,7 @@ document.addEventListener('change', async (event) => {
     state.configError = "";
     renderSettings();
     try {
-      state.config = await api('/api/config', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(chatRelayMutation(requestedValue)) });
-      state.configStatus = "current";
+      await saveConfigMutation(chatRelayMutation(requestedValue).changes);
     } catch (error) {
       const saveError = error.message || "Chat relay setting could not be saved.";
       try {
@@ -3479,7 +3515,7 @@ document.addEventListener('change', async (event) => {
       return;
     }
     try {
-      state.config = await api('/api/config', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ changes: { [key]: value } }) });
+      await saveConfigMutation({ [key]: value });
       if (key === 'console.project_progress_feed_enabled' || key === 'console.project_progress_feed_lines') await refreshProjectProgressFeed();
       renderAllViews();
     } catch (error) { showError(error.message); renderSettings(); }
@@ -3531,7 +3567,7 @@ document.addEventListener('click', async (event) => {
       return;
     }
     if (action === 'save-ctrl' && state.ctrlSettings) state.ctrlSettings = await api('/api/ctrl-settings', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ctrl_id: state.ctrlSettings.ctrl_id, expected_revision: state.ctrlSettings.revision, changes: { model: $('#ctrl-model').value.trim(), reasoning: $('#ctrl-reasoning').value } }) });
-    if (action === 'save-spark' && configEditable('boost.spark_model')) state.config = await api('/api/config', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ changes: { 'boost.spark_model': $('#spark-model').value.trim() } }) });
+    if (action === 'save-spark' && configEditable('boost.spark_model')) await saveConfigMutation({ 'boost.spark_model': $('#spark-model').value.trim() });
     await refreshOverview();
   } catch (error) { showError(error.message); }
 });
