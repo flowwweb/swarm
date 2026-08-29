@@ -1,4 +1,4 @@
-const state = { token: "", overview: null, proof: [], proofCollections: new Map(), proofStatuses: new Map(), proofStatus: "idle", proofSequence: 0, usageHistory: null, usageWindowHours: 24, usageScopeKey: "", usageStatus: "idle", usageError: "", projectProgress: null, projectProgressProjectId: "", projectProgressStatus: "idle", projectProgressError: "", projectProgressFeed: null, projectProgressFeedProjectId: "", projectProgressFeedStatus: "idle", projectProgressFeedError: "", projectTab: "overview", diagnostics: null, health: null, storage: null, config: null, configStatus: "idle", configError: "", chatRelaySaving: false, ctrlSettings: null, auto: null, autoBindingKey: "", autoStatus: "idle", autoError: "", autoSaving: false, skills: null, skillsError: "", roleManifests: null, roleManifestStatus: "unavailable", roleManifestError: "", agentsTab: "active", selectedRoleId: "accountant", roleEditorTrigger: null, assetView: "grid", selectedAssetIdentity: "", onboardingStep: 0, onboardingShown: false, onboardingTrigger: null, notifications: null, notificationBindingKey: "", notificationStatus: "idle", notificationError: "", notificationAckPending: false, notificationPresentedIds: new Set(), notificationToast: null, notificationToastTimer: null, notificationTrigger: null, connectionStatus: "reconnecting", view: "overview", projectId: "all", ctrlId: "", settingsCtrlId: "", settingsScopeType: "", settingsScopeId: "", evidenceImages: [], evidenceIndex: 0, evidenceTrigger: null };
+const state = { token: "", overview: null, proof: [], proofCollections: new Map(), proofStatuses: new Map(), proofStatus: "idle", proofSequence: 0, usageHistory: null, usageWindowHours: 24, usageScopeKey: "", usageStatus: "idle", usageError: "", projectProgress: null, projectProgressProjectId: "", projectProgressStatus: "idle", projectProgressError: "", projectProgressFeed: null, projectProgressFeedProjectId: "", projectProgressFeedStatus: "idle", projectProgressFeedError: "", projectTab: "overview", diagnostics: null, health: null, storage: null, config: null, configStatus: "idle", configError: "", chatRelaySaving: false, ctrlSettings: null, auto: null, autoBindingKey: "", autoStatus: "idle", autoError: "", autoSaving: false, skills: null, skillsError: "", roleManifests: null, roleManifestStatus: "unavailable", roleManifestError: "", agentsTab: "active", selectedRoleId: "accountant", roleEditorTrigger: null, assetView: "grid", selectedAssetIdentity: "", onboardingStep: 0, onboardingShown: false, onboardingTrigger: null, notifications: null, notificationBindingKey: "", notificationStatus: "idle", notificationError: "", notificationAckPending: false, notificationRequestGenerations: new Map(), notificationPresentedIds: new Set(), notificationToast: null, notificationToastTimer: null, notificationTrigger: null, connectionStatus: "reconnecting", view: "overview", projectId: "all", ctrlId: "", settingsCtrlId: "", settingsScopeType: "", settingsScopeId: "", evidenceImages: [], evidenceIndex: 0, evidenceTrigger: null };
 const EVIDENCE_THUMBNAIL_PAGE_SIZE = 24;
 const USAGE_WINDOW_LABELS = { 1: "1h", 24: "1d" };
 const ROLE_PROFESSIONS = [
@@ -873,13 +873,44 @@ function notificationPanelMessage(status, hasLastGood, connectionStatus, error =
   return "Up to date.";
 }
 
-function notificationSafeTarget(target) {
+function notificationNextGeneration(generations, bindingKey) {
+  const generation = Number(generations.get(bindingKey) || 0) + 1;
+  generations.set(bindingKey, generation);
+  return generation;
+}
+
+function notificationGenerationIsCurrent(generations, bindingKey, generation, currentBindingKey) {
+  return bindingKey === currentBindingKey && generations.get(bindingKey) === generation;
+}
+
+function notificationFeedMatchesBinding(feed, binding) {
+  return feed?.ok === true && feed.project_id === binding?.projectId && feed.ctrl_id === binding?.ctrlId
+    && Array.isArray(feed.unread) && Array.isArray(feed.recent_seen);
+}
+
+async function notificationFeedResult(generations, bindingKey, generation, currentBindingKey, request) {
+  const result = await request();
+  return notificationGenerationIsCurrent(generations, bindingKey, generation, currentBindingKey()) ? result : null;
+}
+
+async function notificationActionAfterAcknowledgement(item, acknowledge, navigate) {
+  if (!item?.id || !await acknowledge(item.id)) return false;
+  navigate(item);
+  return true;
+}
+
+function notificationSafeTarget(item, binding) {
+  const target = item?.action_target;
   const allowedFields = new Set(["view", "project_id", "ctrl_id", "task_id", "subject_id"]);
   if (!target || Object.keys(target).some((field) => !allowedFields.has(field))) return null;
   const view = NOTIFICATION_SAFE_VIEWS[String(target?.view || "")];
   const projectId = typeof target?.project_id === "string" ? target.project_id : "";
   const ctrlId = typeof target?.ctrl_id === "string" ? target.ctrl_id : "";
-  if (!view || !projectId) return null;
+  if (
+    !view || !projectId || !ctrlId || !binding
+    || item.project_id !== projectId || item.ctrl_id !== ctrlId
+    || binding.projectId !== projectId || binding.ctrlId !== ctrlId
+  ) return null;
   return { view, projectId, ctrlId, roleLibrary: String(target.view) === "roles" };
 }
 
@@ -893,7 +924,7 @@ function notificationBinding() {
   const project = currentWorkProjects().find((item) => item.id === state.projectId);
   if (!project) return null;
   const ctrlIds = [...new Set(project.ctrl_ids || [])];
-  const ctrlId = ctrlIds.includes(project.active_ctrl_id) ? project.active_ctrl_id : (ctrlIds.length === 1 ? ctrlIds[0] : "");
+  const ctrlId = ctrlIds.includes(project.active_ctrl_id) ? project.active_ctrl_id : "";
   return ctrlId ? { projectId: project.id, ctrlId } : null;
 }
 
@@ -907,11 +938,9 @@ function notificationData() {
 }
 
 function notificationActionTarget(item) {
-  const target = notificationSafeTarget(item?.action_target);
-  if (!target) return null;
-  const project = currentWorkProjects().find((entry) => entry.id === target.projectId);
-  if (!project || (target.ctrlId && !project.ctrl_ids.includes(target.ctrlId))) return null;
-  return target;
+  const binding = notificationBinding();
+  if (!binding || notificationBindingIdentity(binding) !== state.notificationBindingKey) return null;
+  return notificationSafeTarget(item, binding);
 }
 
 function notificationIcon(item) {
@@ -942,7 +971,8 @@ function renderNotificationToast() {
   const mainTag = target ? "button" : "div";
   const mainAction = target ? ' type="button" data-notification-toast-action="open"' : "";
   const more = toast.additionalCount ? '<small>' + String(toast.additionalCount) + ' more notification' + (toast.additionalCount === 1 ? '' : 's') + '</small>' : "";
-  host.innerHTML = '<aside class="notification-toast panel is-' + escapeHTML(toast.item.severity || "info") + '" data-notification-toast-id="' + escapeHTML(toast.item.id) + '" role="status"><' + mainTag + ' class="notification-toast-main"' + mainAction + '><svg class="lucide" aria-hidden="true"><use href="#lucide-' + notificationIcon(toast.item) + '"></use></svg><span><strong>' + escapeHTML(toast.item.sentence || humanize(toast.item.kind)) + '</strong>' + more + '</span></' + mainTag + '><button class="icon-button" type="button" data-notification-toast-action="dismiss" aria-label="Dismiss notification"><svg class="lucide" aria-hidden="true"><use href="#lucide-x"></use></svg></button></aside>';
+  const error = state.notificationStatus === "stale" && state.notificationError ? '<small>' + escapeHTML(state.notificationError) + '</small>' : "";
+  host.innerHTML = '<aside class="notification-toast panel is-' + escapeHTML(toast.item.severity || "info") + '" data-notification-toast-id="' + escapeHTML(toast.item.id) + '" role="status"><' + mainTag + ' class="notification-toast-main"' + mainAction + '><svg class="lucide" aria-hidden="true"><use href="#lucide-' + notificationIcon(toast.item) + '"></use></svg><span><strong>' + escapeHTML(toast.item.sentence || humanize(toast.item.kind)) + '</strong>' + more + error + '</span></' + mainTag + '><button class="icon-button" type="button" data-notification-toast-action="dismiss" aria-label="Dismiss notification"><svg class="lucide" aria-hidden="true"><use href="#lucide-x"></use></svg></button></aside>';
 }
 
 function renderNotifications() {
@@ -965,14 +995,21 @@ function renderNotifications() {
   renderNotificationToast();
 }
 
-async function dismissNotificationToast(interacted) {
-  const toast = state.notificationToast;
+function clearNotificationToast() {
   if (state.notificationToastTimer) window.clearTimeout(state.notificationToastTimer);
   state.notificationToastTimer = null;
   state.notificationToast = null;
   renderNotificationToast();
+}
+
+async function dismissNotificationToast(interacted) {
+  const toast = state.notificationToast;
   const ids = notificationDismissIds(toast, interacted);
-  if (ids.length) await acknowledgeNotifications(ids);
+  if (!ids.length) { clearNotificationToast(); return true; }
+  const acknowledged = await acknowledgeNotifications(ids);
+  if (acknowledged) clearNotificationToast();
+  else renderNotificationToast();
+  return acknowledged;
 }
 
 function presentNotificationToast(unread) {
@@ -988,23 +1025,28 @@ function presentNotificationToast(unread) {
 
 async function acknowledgeNotifications(notificationIds) {
   const binding = notificationBinding();
+  const bindingKey = notificationBindingIdentity(binding);
   const data = notificationData();
   const currentIds = new Set(dedupeNotificationItems(data?.unread).map((item) => item.id));
   const exactIds = [...new Set(notificationIds)].filter((identity) => currentIds.has(identity));
   if (!binding || !data || !exactIds.length || state.notificationAckPending || state.connectionStatus !== "live") return false;
+  notificationNextGeneration(state.notificationRequestGenerations, bindingKey);
   state.notificationAckPending = true;
   state.notificationStatus = "acknowledging";
   state.notificationError = "";
   renderNotifications();
   try {
     const result = await api("/api/notifications/seen", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(notificationAcknowledgePayload(binding, exactIds)) });
-    if (notificationBindingIdentity() !== notificationBindingIdentity(binding)) return false;
-    if (result?.feed?.ok !== true || !Array.isArray(result.feed.unread) || !Array.isArray(result.feed.recent_seen)) throw new Error("Notification acknowledgement returned an invalid feed");
+    if (!notificationFeedMatchesBinding(result?.feed, binding)) throw new Error("Notification acknowledgement returned an invalid feed");
+    notificationNextGeneration(state.notificationRequestGenerations, bindingKey);
+    if (notificationBindingIdentity() !== bindingKey || state.notificationBindingKey !== bindingKey) return false;
     state.notifications = result.feed;
     state.notificationStatus = "current";
+    state.notificationError = "";
     return true;
   } catch (error) {
-    if (notificationBindingIdentity() === notificationBindingIdentity(binding)) {
+    notificationNextGeneration(state.notificationRequestGenerations, bindingKey);
+    if (state.notificationBindingKey === bindingKey) {
       state.notificationStatus = "stale";
       state.notificationError = (error.message || "Read status could not be saved") + " Try again.";
     }
@@ -1028,6 +1070,7 @@ async function refreshNotifications() {
     return;
   }
   const hasLastGood = state.notificationBindingKey === bindingKey && state.notifications?.ok === true;
+  const generation = notificationNextGeneration(state.notificationRequestGenerations, bindingKey);
   if (!hasLastGood) state.notifications = null;
   state.notificationBindingKey = bindingKey;
   state.notificationStatus = hasLastGood ? "refreshing" : "loading";
@@ -1035,16 +1078,22 @@ async function refreshNotifications() {
   renderNotifications();
   try {
     const params = new URLSearchParams({ ctrl_id: binding.ctrlId, project_id: binding.projectId });
-    const result = await api("/api/notifications?" + params.toString());
-    if (notificationBindingIdentity() !== bindingKey) return;
-    if (result?.ok !== true || !Array.isArray(result.unread) || !Array.isArray(result.recent_seen)) throw new Error("Notification feed returned an invalid response");
+    const result = await notificationFeedResult(
+      state.notificationRequestGenerations,
+      bindingKey,
+      generation,
+      notificationBindingIdentity,
+      () => api("/api/notifications?" + params.toString()),
+    );
+    if (!result) return;
+    if (!notificationFeedMatchesBinding(result, binding)) throw new Error("Notification feed returned an invalid response");
     state.notifications = result;
     state.notificationStatus = "current";
     state.notificationError = "";
     renderNotifications();
     presentNotificationToast(result.unread);
   } catch (error) {
-    if (notificationBindingIdentity() !== bindingKey) return;
+    if (!notificationGenerationIsCurrent(state.notificationRequestGenerations, bindingKey, generation, notificationBindingIdentity())) return;
     state.notificationStatus = hasLastGood ? "stale" : "unavailable";
     state.notificationError = error.message || "Notifications could not be loaded.";
     renderNotifications();
@@ -1942,7 +1991,7 @@ function startPresence() {
   presenceTimer = setInterval(reportPresence, 60_000);
 }
 
-document.addEventListener("click", (event) => {
+document.addEventListener("click", async (event) => {
   if (!$("#notifications-panel").hidden && !event.target.closest("#notifications-panel, #notifications")) {
     setNotificationsOpen(false);
   }
@@ -1970,18 +2019,20 @@ document.addEventListener("click", (event) => {
     const id = notificationAction.dataset.notificationId;
     const data = notificationData();
     const item = [...dedupeNotificationItems(data?.unread), ...dedupeNotificationItems(data?.recent_seen)].find((candidate) => candidate.id === id);
-    if (item) {
-      acknowledgeNotifications([item.id]);
-      navigateNotification(item);
-    }
+    if (item) await notificationActionAfterAcknowledgement(item, (identity) => acknowledgeNotifications([identity]), navigateNotification);
     return;
   }
   const toastAction = event.target.closest("[data-notification-toast-action]");
   if (toastAction) {
     const item = state.notificationToast?.item || null;
     const action = toastAction.dataset.notificationToastAction;
-    dismissNotificationToast(true);
-    if (action === "open" && item) navigateNotification(item);
+    if (action === "dismiss") await dismissNotificationToast(true);
+    if (action === "open" && item) {
+      await notificationActionAfterAcknowledgement(item, (identity) => acknowledgeNotifications([identity]), (notification) => {
+        clearNotificationToast();
+        navigateNotification(notification);
+      });
+    }
     return;
   }
   const reviewOpen = event.target.closest("[data-review-open]");
