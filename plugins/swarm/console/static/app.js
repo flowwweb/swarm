@@ -339,6 +339,12 @@ async function saveConfigMutation(changes) {
 }
 
 async function readConfigState(previousConfig = state.config, saveError = "") {
+  let pendingWrites = configMutationTail;
+  await pendingWrites;
+  while (pendingWrites !== configMutationTail) {
+    pendingWrites = configMutationTail;
+    await pendingWrites;
+  }
   const generation = configAuthorityGeneration;
   try {
     const config = await api('/api/config');

@@ -139,7 +139,7 @@ assert.match(app, /let configMutationTail = Promise\.resolve\(\)/);
 assert.match(app, /let configAuthorityGeneration = 0/);
 assert.match(app, /function saveConfigMutation\(changes\)[\s\S]*?configMutationTail = operation\.then/);
 assert.match(app, /function saveConfigMutation\(changes\)[\s\S]*?configAuthorityGeneration \+= 1/);
-assert.match(app, /function readConfigState\(previousConfig = state\.config, saveError = ""\)[\s\S]*?const generation = configAuthorityGeneration[\s\S]*?generation !== configAuthorityGeneration/);
+assert.match(app, /function readConfigState\(previousConfig = state\.config, saveError = ""\)[\s\S]*?let pendingWrites = configMutationTail[\s\S]*?while \(pendingWrites !== configMutationTail\)[\s\S]*?const generation = configAuthorityGeneration[\s\S]*?generation !== configAuthorityGeneration/);
 assert.match(app, /state\.onboardingConfigPending\.set\(key, \{ value, focusIdentity \}\)/);
 assert.match(app, /state\.onboardingConfigFailures\.set\(key, \{ value, error:/);
 assert.match(app, /configEditable\(key\) && !state\.onboardingConfigPending\.has\(key\)/);
@@ -1434,6 +1434,7 @@ async function mount(page, overview, overrides = {}) {
     if (url.pathname === "/api/config") {
       if (request.method() === "GET") {
         const snapshot = structuredClone(configControl.feed);
+        if (Array.isArray(configControl.getSnapshots)) configControl.getSnapshots.push(snapshot);
         const deferredGet = Array.isArray(configControl.deferredGets) ? configControl.deferredGets.shift() : configControl.deferredGet;
         if (deferredGet) await deferredGet;
         if (configControl.failGet) return route.fulfill({ status: 503, contentType: "application/json", body: JSON.stringify({ ok: false, error: "settings readback unavailable" }) });
@@ -1667,6 +1668,34 @@ const proofFeed = imageProofFixture(6);
     assert.equal(await serialPage.locator("#onboarding-panel-5").getByLabel("Usage saver").isChecked(), true);
     assert.deepEqual(serial.runtimeErrors, []);
     await serialPage.close();
+
+    let releaseWriteBeforeRead;
+    const writeBeforeReadControl = {
+      failPost: false,
+      feed: structuredClone(fixture.config),
+      deferredPost: new Promise((resolve) => { releaseWriteBeforeRead = resolve; }),
+      getSnapshots: [],
+    };
+    const writeBeforeReadPage = await browser.newPage({ viewport: { width: 1024, height: 760 } });
+    const writeBeforeRead = await mount(writeBeforeReadPage, scopedFixture(), { ...overrides, configControl: writeBeforeReadControl });
+    writeBeforeReadControl.getSnapshots.length = 0;
+    const writeFirstRequest = writeBeforeReadPage.waitForRequest((request) => request.url().endsWith("/api/config") && request.method() === "POST");
+    await writeBeforeReadPage.evaluate(() => { window.__configWriteBeforeRead = saveConfigMutation({ "execution.fast_mode": true }); });
+    await writeFirstRequest;
+    await writeBeforeReadPage.evaluate(() => { window.__configReadAfterWrite = readConfigState(); });
+    await writeBeforeReadPage.waitForTimeout(80);
+    assert.equal(writeBeforeReadControl.getSnapshots.length, 0, "a read queued behind an in-flight write must not capture the old config");
+    const orderedGetRequest = writeBeforeReadPage.waitForRequest((request) => request.url().endsWith("/api/config") && request.method() === "GET");
+    releaseWriteBeforeRead();
+    writeBeforeReadControl.deferredPost = null;
+    await orderedGetRequest;
+    await writeBeforeReadPage.evaluate(() => Promise.all([window.__configWriteBeforeRead, window.__configReadAfterWrite]));
+    assert.equal(writeBeforeReadControl.getSnapshots.length, 1);
+    assert.equal(writeBeforeReadControl.getSnapshots[0].settings.execution.fast_mode, true);
+    assert.equal(await writeBeforeReadPage.evaluate(() => state.config.settings.execution.fast_mode), true, "the acknowledged write survives its ordered readback");
+    assert.deepEqual(writeBeforeRead.configRequests, [{ changes: { "execution.fast_mode": true } }]);
+    assert.deepEqual(writeBeforeRead.runtimeErrors, []);
+    await writeBeforeReadPage.close();
 
     let releaseStaleConfigGet;
     const readRaceControl = {
