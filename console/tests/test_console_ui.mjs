@@ -58,12 +58,15 @@ assert.match(app, /\$\("\.app-shell"\)\.classList\.add\("is-disconnected"\)/);
 assert.match(app, /\$\("\.app-shell"\)\.classList\.remove\("is-disconnected"\)/);
 assert.match(css, /\.app-shell\.is-disconnected > \.mobile-app-bar,[\s\S]*?\.app-shell\.is-disconnected > \.drawer,[\s\S]*?\.app-shell\.is-disconnected > \.drawer-backdrop \{ display:none; \}/);
 assert.match(css, /\.app-shell\.is-disconnected \.workspace > :not\(#connection-state\) \{ display:none; \}/);
+assert.match(indexHtml, /id="system-health-control"[^>]*aria-label="System health: Reconnecting"[^>]*title="System health: Reconnecting"[^>]*aria-controls="system-health-panel"/);
+assert.match(indexHtml, /id="system-health-panel"[^>]*tabindex="-1"[^>]*aria-labelledby="system-health-heading"[\s\S]*?System health[\s\S]*?Reconnecting/);
 assert.match(indexHtml, /id="snapshot-status-dot"[^>]*class="status-dot is-reconnecting"|class="status-dot is-reconnecting" id="snapshot-status-dot"/);
+assert.doesNotMatch(indexHtml, /class="snapshot-status"|>System healthy</);
 for (const status of ["Live", "Reconnecting", "Offline"]) assert.match(app, new RegExp(`(?:title|snapshot)\\.textContent = "${status}`));
 assert.match(css, /\.status-dot\.is-reconnecting/);
 assert.match(css, /\.status-dot\.is-offline/);
 
-for (const [tab, icon] of [["overview", "folder"], ["agents", "users"], ["review", "shield-check"], ["assets", "image"], ["settings", "settings"]]) {
+for (const [tab, icon] of [["overview", "layout-dashboard"], ["agents", "users"], ["review", "shield-check"], ["assets", "image"], ["settings", "settings"]]) {
   assert.match(indexHtml, new RegExp(`id="tab-${tab}"[\\s\\S]*?<use href="#lucide-${icon}"></use>`));
   assert.match(indexHtml, new RegExp(`id="lucide-${icon}" viewBox="0 0 24 24"`));
 }
@@ -74,6 +77,9 @@ assert.match(indexHtml, /id="mobile-menu-button"[^>]*aria-label="Open navigation
 assert.match(indexHtml, /class="mobile-app-bar"[\s\S]*?<img src="\/assets\/swarm-wordmark\.png" alt="SWARM"/);
 assert.equal((indexHtml.match(/class="nav-list"/g) || []).length, 1);
 assert.match(indexHtml, /class="nav-footer"[\s\S]*?id="tab-settings"/);
+assert.match(indexHtml, /id="tab-overview"[\s\S]*?<b>Overview<\/b>/);
+assert.equal((indexHtml.match(/id="project-navigation-heading"/g) || []).length, 1);
+assert.match(indexHtml, /id="project-navigation-heading">Projects<\/p>[\s\S]*?id="project-navigation"/);
 assert.match(indexHtml, /id="project-scope-filter" aria-label="Project scope"/);
 assert.match(indexHtml, /id="notifications"[^>]*aria-label="Notifications"/);
 assert.match(indexHtml, /id="profile"[^>]*aria-label="Profile unavailable"[^>]*disabled/);
@@ -476,6 +482,30 @@ assert.match(app, /panel\.focus\(\{ preventScroll: true \}\)/);
 assert.match(css, /@media \(max-width: 620px\)[\s\S]*\.notification-toast-region \{ top:auto;[^}]*bottom:max\(14px,env\(safe-area-inset-bottom\)\)/);
 assert.match(indexHtml, /id="overview-monitoring-health-state"/);
 assert.match(app, /function renderOverviewHealth\(nodes\)/);
+const healthPresentationStart = app.indexOf("function systemHealthPresentation");
+const healthPresentationEnd = app.indexOf("\nfunction renderSystemHealth", healthPresentationStart);
+const healthPresentationHarness = vm.runInNewContext(`(() => {
+  const state = { connectionStatus: "live", diagnostics: null };
+  ${app.slice(healthPresentationStart, healthPresentationEnd)}
+  return {
+    run(connectionStatus, diagnostics) {
+      state.connectionStatus = connectionStatus;
+      state.diagnostics = diagnostics;
+      return systemHealthPresentation();
+    },
+  };
+})()`);
+assert.equal(healthPresentationHarness.run("reconnecting", null).label, "Reconnecting");
+assert.equal(healthPresentationHarness.run("offline", null).label, "Offline");
+assert.equal(healthPresentationHarness.run("live", null).label, "Unknown");
+assert.equal(healthPresentationHarness.run("live", { ok: true, config_valid: true, latest: { payload: { health_state: "HEALTHY" } }, health: { incidents: [], open_requests: [] } }).label, "Healthy");
+assert.equal(healthPresentationHarness.run("live", { ok: true, config_valid: true, latest: { payload: { health_state: "HEALTHY" } }, health: { incidents: [{}], open_requests: [] } }).label, "Needs attention");
+assert.match(app, /function openSystemHealth\(\)[\s\S]*?setView\("settings"\)[\s\S]*?panel\?\.focus\(\{ preventScroll: true \}\)/);
+assert.match(app, /chromeDot\.className = "status-dot" \+ \(presentation\.className \? " " \+ presentation\.className : ""\)/);
+assert.match(app, /\$\("#system-health-control"\)\.addEventListener\("click", openSystemHealth\)/);
+assert.match(app, /id="system-health-panel"[\s\S]*?Diagnostics[\s\S]*?System health/);
+assert.match(css, /\.system-health-control[\s\S]*?\.status-dot\.is-attention/);
+assert.match(css, /@media \(max-width: 620px\)[\s\S]*?\.icon-button \{ flex: 0 0 46px; height: 46px; \}/);
 assert.match(app, /function routeView\(\)/);
 assert.match(app, /\["overview", "agents", "review", "assets", "settings"\]/);
 assert.doesNotMatch(app.slice(app.indexOf("function routeView"), app.indexOf("function setView")), /dashboard|hierarchy|kanban|diagnostics/);
@@ -1081,7 +1111,8 @@ const proofFeed = imageProofFixture(6);
 
     const page = await browser.newPage({ viewport: { width: 1440, height: 1000 } });
     const desktop = await mount(page, overview, overrides);
-    for (const label of ["Projects", "Agents", "Review", "Assets", "Settings"]) assert.equal(await page.getByRole("tab", { name: label, exact: true }).count(), 1);
+    for (const label of ["Overview", "Agents", "Review", "Assets", "Settings"]) assert.equal(await page.getByRole("tab", { name: label, exact: true }).count(), 1);
+    assert.equal(await page.getByRole("tab", { name: "Projects", exact: true }).count(), 0);
     for (const retired of ["Dashboard", "Hierarchy", "Kanban", "Diagnostics"]) assert.equal(await page.getByRole("tab", { name: retired, exact: true }).count(), 0);
     assert.equal(await page.locator("#project-scope-filter").isVisible(), true);
     assert.deepEqual(await page.locator("#project-navigation button").evaluateAll((elements) => elements.map((element) => element.getAttribute("aria-label") || element.textContent.trim())), [

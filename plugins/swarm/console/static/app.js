@@ -242,6 +242,51 @@ async function api(path, options = {}) {
   }
 }
 
+function systemHealthPresentation() {
+  if (state.connectionStatus === "offline") return { label: "Offline", className: "is-offline", note: "The local console is unavailable." };
+  if (state.connectionStatus === "reconnecting") return { label: "Reconnecting", className: "is-reconnecting", note: "Waiting for a fresh console response." };
+  const diagnostics = state.diagnostics;
+  if (!diagnostics?.ok) return { label: "Unknown", className: "", note: "Diagnostics are unavailable." };
+  const incidents = Array.isArray(diagnostics.health?.incidents) ? diagnostics.health.incidents.length : 0;
+  const requests = Array.isArray(diagnostics.health?.open_requests) ? diagnostics.health.open_requests.length : 0;
+  const reported = String(diagnostics.latest?.payload?.health_state || "").trim().toUpperCase();
+  if (diagnostics.config_valid === false || incidents || requests || (reported && !["HEALTHY", "OK"].includes(reported))) {
+    const count = incidents + requests;
+    return { label: "Needs attention", className: "is-attention", note: count ? count + " open health signal" + (count === 1 ? "" : "s") + "." : "The latest diagnostic state needs attention." };
+  }
+  if (["HEALTHY", "OK"].includes(reported)) return { label: "Healthy", className: "is-live", note: "The latest diagnostic receipt reports healthy." };
+  return { label: "Unknown", className: "", note: "No current health receipt is available." };
+}
+
+function renderSystemHealth() {
+  const presentation = systemHealthPresentation();
+  const control = $("#system-health-control");
+  if (control) {
+    control.classList.remove("is-live", "is-reconnecting", "is-offline", "is-attention");
+    if (presentation.className) control.classList.add(presentation.className);
+    control.setAttribute("aria-label", "System health: " + presentation.label);
+    control.title = "System health: " + presentation.label;
+  }
+  const chromeDot = $("#snapshot-status-dot");
+  if (chromeDot) chromeDot.className = "status-dot" + (presentation.className ? " " + presentation.className : "");
+  const panel = $("#system-health-panel");
+  if (panel) {
+    $("#system-health-state").textContent = presentation.label;
+    $("#system-health-note").textContent = presentation.note;
+    const dot = $("#system-health-panel-dot");
+    dot.className = "status-dot" + (presentation.className ? " " + presentation.className : "");
+  }
+}
+
+function openSystemHealth() {
+  setView("settings");
+  requestAnimationFrame(() => {
+    const panel = $("#system-health-panel");
+    panel?.scrollIntoView({ block: "nearest" });
+    panel?.focus({ preventScroll: true });
+  });
+}
+
 function setDataStatus(status, observedAt = null) {
   const title = $("#data-status-title");
   const note = $("#data-status-note");
@@ -269,6 +314,7 @@ function setDataStatus(status, observedAt = null) {
     note.textContent = observedAt ? "Last update " + formatRelative(observedAt) : "Console unavailable";
     snapshot.textContent = "Offline";
   }
+  renderSystemHealth();
   renderNotifications();
   renderRunLogSurfaces();
 }
@@ -331,7 +377,7 @@ function setView(view, focus, syncRoute = true) {
   const selectedView = allowed.includes(view) ? view : "overview";
   state.view = selectedView;
   const titles = {
-    overview: ["Projects", "Portfolio progress and project scope."],
+    overview: ["Overview", "Portfolio progress and project scope."],
     agents: ["Agents", "Active ownership and the role library."],
     review: ["Review", "Proof, decisions, and handoff acknowledgements."],
     assets: ["Assets", "Approved project and role assets."],
@@ -2250,8 +2296,10 @@ function renderSettings() {
   const reasoningOptions = ["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"];
   const retention = storage?.retention_days == null ? "" : " · retain " + storage.retention_days + " days";
   const proofFiles = Number(storage?.proof_files) || 0;
+  const systemHealth = systemHealthPresentation();
   const ctrlAdvanced = selectedCtrl ? '<section class="advanced-setting-group"><h4>CTRL override</h4><p><strong>' + escapeHTML(publicLabel(selectedCtrl.project, "Project") + " / " + ctrlLabel(selectedCtrl)) + '</strong><br><span>' + escapeHTML(setting?.customized ? "Custom settings" : "Inherits global defaults") + '</span></p><label class="toggle-row"><input id="ctrl-customize" type="checkbox"' + (setting?.customized ? ' checked' : '') + '><span>Customize this CTRL separately</span></label>' + (setting?.customized ? '<div class="ctrl-fields"><label>Model<input id="ctrl-model" value="' + escapeHTML(effective.model || '') + '" autocomplete="off"></label><label>Reasoning<select id="ctrl-reasoning">' + reasoningOptions.map((option) => '<option value="' + option + '"' + (option === effective.reasoning ? ' selected' : '') + '>' + option + '</option>').join('') + '</select></label></div><button class="quiet-button" data-setting-action="save-ctrl" type="button">Save CTRL settings</button>' : '') + '<button class="quiet-button" data-setting-action="reset" type="button"' + (!setting?.customized ? ' disabled' : '') + '>Use global defaults</button></section>' : '';
   $("#settings-grid").innerHTML =
+    '<section class="panel settings-card system-health-card" id="system-health-panel" tabindex="-1" aria-labelledby="system-health-heading"><p class="eyebrow">Diagnostics</p><h3 id="system-health-heading">System health</h3><p class="system-health-summary"><span class="status-dot' + (systemHealth.className ? ' ' + systemHealth.className : '') + '" id="system-health-panel-dot" aria-hidden="true"></span><strong id="system-health-state">' + escapeHTML(systemHealth.label) + '</strong></p><p id="system-health-note">' + escapeHTML(systemHealth.note) + '</p></section>' +
     '<section class="panel settings-card"><p class="eyebrow">Settings scope</p><h3>Where changes apply</h3><label class="setting-field">Scope<select id="settings-scope">' + settingsScopeOptions() + '</select></label><p class="scope-setting-status"><strong>' + escapeHTML(selectedCtrl ? publicLabel(selectedCtrl.project, "Project") + " / " + ctrlLabel(selectedCtrl) : scope.type === "project" ? scopeLabel() : "Global defaults") + '</strong><span>' + escapeHTML(selectedCtrl ? (setting?.customized ? "Custom settings" : "Inherits global defaults") : "Uses the current server-owned settings") + '</span></p><small>Per-CTRL overrides are in Advanced settings.</small></section>' +
     '<section class="panel settings-card"><p class="eyebrow">Work routing</p><h3>How work is handled</h3>' +
       settingSelect('execution.max_reasoning', execution.max_reasoning || 'medium', reasoningOptions, 'Default reasoning') +
@@ -2263,7 +2311,8 @@ function renderSettings() {
       '<label class="setting-field">Updates shown<input data-config-key="console.project_progress_feed_lines" type="number" min="1" max="10" value="' + escapeHTML(consoleSettings.project_progress_feed_lines ?? 4) + '"' + (!configEditable('console.project_progress_feed_lines') ? ' disabled' : '') + '></label>' +
       settingToggle('console.open_on_start', consoleSettings.open_on_start, 'Open SWARM when Codex starts') +
       '<label class="toggle-row"><input id="auto-health" type="checkbox"' + (state.health?.enabled ? ' checked' : '') + '><span>Request health review when needed</span></label><small>Passive monitoring does not run models.</small></section>' +
-    '<details class="panel settings-advanced settings-wide" id="settings-advanced"><summary>Advanced settings</summary><div class="settings-advanced-grid">' + ctrlAdvanced + chatRelaySettingsMarkup() + '<section class="advanced-setting-group"><h4>Spark and monitoring</h4>' + settingSelect('boost.spark_reasoning', boost.spark_reasoning || 'xhigh', reasoningOptions, 'Spark reasoning') + '<label class="setting-field">Spark model<input id="spark-model" value="' + escapeHTML(boost.spark_model || '') + '" autocomplete="off"' + (!configEditable('boost.spark_model') ? ' disabled' : '') + '></label><label class="setting-field">Heartbeat minutes<input id="heartbeat-minutes" data-config-key="monitoring.heartbeat_minutes" type="number" min="1" value="' + escapeHTML(monitoring.heartbeat_minutes || '') + '"' + (!configEditable('monitoring.heartbeat_minutes') ? ' disabled' : '') + '></label><button class="quiet-button" data-setting-action="save-spark" type="button"' + (!configEditable('boost.spark_model') ? ' disabled' : '') + '>Save Spark model</button>' + settingToggle('role_icons.enabled', roleIcons.enabled, 'Show role icons') + '</section><section class="advanced-setting-group"><h4>' + escapeHTML(storage?.bytes == null ? 'Saved history unavailable' : formatBytes(storage.bytes) + ' saved history' + retention) + '</h4><p>Progress, forecasts, proof, and token history stay available between sessions' + (proofFiles ? ' · ' + proofFiles + ' proof file' + (proofFiles === 1 ? '' : 's') : '') + '.</p><div class="settings-actions-inline"><button class="quiet-button" data-setting-action="clear" type="button">Clear history</button><button class="quiet-button" data-setting-action="restore" type="button">Restore defaults</button></div><small>Clearing history leaves tasks unchanged. Restoring defaults keeps history.</small>' + skillsAdvanced(scope) + '</section></div></details>';
+      '<details class="panel settings-advanced settings-wide" id="settings-advanced"><summary>Advanced settings</summary><div class="settings-advanced-grid">' + ctrlAdvanced + chatRelaySettingsMarkup() + '<section class="advanced-setting-group"><h4>Spark and monitoring</h4>' + settingSelect('boost.spark_reasoning', boost.spark_reasoning || 'xhigh', reasoningOptions, 'Spark reasoning') + '<label class="setting-field">Spark model<input id="spark-model" value="' + escapeHTML(boost.spark_model || '') + '" autocomplete="off"' + (!configEditable('boost.spark_model') ? ' disabled' : '') + '></label><label class="setting-field">Heartbeat minutes<input id="heartbeat-minutes" data-config-key="monitoring.heartbeat_minutes" type="number" min="1" value="' + escapeHTML(monitoring.heartbeat_minutes || '') + '"' + (!configEditable('monitoring.heartbeat_minutes') ? ' disabled' : '') + '></label><button class="quiet-button" data-setting-action="save-spark" type="button"' + (!configEditable('boost.spark_model') ? ' disabled' : '') + '>Save Spark model</button>' + settingToggle('role_icons.enabled', roleIcons.enabled, 'Show role icons') + '</section><section class="advanced-setting-group"><h4>' + escapeHTML(storage?.bytes == null ? 'Saved history unavailable' : formatBytes(storage.bytes) + ' saved history' + retention) + '</h4><p>Progress, forecasts, proof, and token history stay available between sessions' + (proofFiles ? ' · ' + proofFiles + ' proof file' + (proofFiles === 1 ? '' : 's') : '') + '.</p><div class="settings-actions-inline"><button class="quiet-button" data-setting-action="clear" type="button">Clear history</button><button class="quiet-button" data-setting-action="restore" type="button">Restore defaults</button></div><small>Clearing history leaves tasks unchanged. Restoring defaults keeps history.</small>' + skillsAdvanced(scope) + '</section></div></details>';
+  renderSystemHealth();
 }
 
 function renderAllViews() { renderOverview(); renderAgents(); renderReview(); renderAssets(); renderSettings(); renderRunLogSurfaces(); }
@@ -2770,6 +2819,7 @@ $("#project-navigation").addEventListener("click", (event) => {
   Promise.all([refreshProof(), refreshCtrlSettings(), refreshUsageHistory(), refreshProjectProgress(), refreshProjectProgressFeed(), refreshSkills(), refreshNotifications(), refreshRunLogs()]).then(renderAllViews);
 });
 $("#refresh").addEventListener("click", refreshOverview);
+$("#system-health-control").addEventListener("click", openSystemHealth);
 $("#retry").addEventListener("click", refreshOverview);
 $("#connection-retry").addEventListener("click", initialize);
 $("#notifications").addEventListener("click", () => setNotificationsOpen($("#notifications-panel").hidden));
