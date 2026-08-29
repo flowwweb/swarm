@@ -849,6 +849,43 @@ class SwarmConsoleTests(unittest.TestCase):
         restarted = console.App(self.codex_home, self.config, self.root / "console" / "conflict-restart.sqlite3")
         self.assertEqual(restarted.measurable_progress("project:alpha"), rejected)
 
+    def test_project_progress_queue_rejects_aggregate_topology_unknowns(self) -> None:
+        self._confirm_root_ctrl()
+        app = console.App(self.codex_home, self.config)
+
+        def route() -> dict[str, object]:
+            return {
+                "disposition": "KEEP_ROLE", "route": "normal_task",
+                "selected_owner": "owner-task", "selected_task_id": "task",
+                "project_active": True, "release_event": None,
+                "scope": {
+                    "goal_id": "goal", "request_id": "request-task", "task_id": "task",
+                    "mutable_surface": "surface:task", "owner_id": "owner-task",
+                },
+                "critical_path": False, "recovery": None,
+            }
+
+        app.progress_ledger.append(self._progress_queue_event(
+            "aggregate-start", "aggregate-block", "task", "root", "BLOCK_CREATED", "ACTIVE", 10,
+        ))
+        app.progress_ledger.append(self._progress_queue_event(
+            "aggregate-gap", "aggregate-block", "task", "root", "STATE_CHANGED", "ACTIVE", 20,
+            parent_event_id="missing-parent-event", routing=route(),
+        ))
+        app.progress_ledger.append(self._progress_queue_event(
+            "aggregate-latest", "aggregate-block", "task", "root", "STATE_CHANGED", "ACTIVE", 30,
+            parent_event_id="aggregate-gap", routing=route(),
+        ))
+
+        rejected = app.measurable_progress("project:alpha")
+        self.assertEqual((rejected["status"], rejected["percent"], rejected["blocks"]), ("UNKNOWN", None, []))
+        self.assertEqual(
+            (rejected["progress_queue"]["status"], rejected["progress_queue"]["reason"]),
+            ("RESYNC_REQUIRED", "TOPOLOGY_SCOPE_CONFLICT"),
+        )
+        restarted = console.App(self.codex_home, self.config, self.root / "console" / "aggregate-restart.sqlite3")
+        self.assertEqual(restarted.measurable_progress("project:alpha"), rejected)
+
     def test_project_progress_queue_conflict_cursor_and_eta_fail_atomically(self) -> None:
         self._confirm_root_ctrl()
         app = console.App(self.codex_home, self.config)

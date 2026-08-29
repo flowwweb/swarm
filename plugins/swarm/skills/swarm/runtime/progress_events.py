@@ -2935,6 +2935,11 @@ class Ledger:
                     or topology.get("ctrl_id") != ctrl_id
                     or topology.get("through_cursor") != event_seq
                     or topology.get("conflicts")
+                    or topology.get("unknown_receipt_ids")
+                    or any(
+                        isinstance(node, dict) and node.get("unknown_receipt_ids")
+                        for node in topology.get("nodes", [])
+                    )
                     for ctrl_id, topology in topologies.items()
                 ):
                     return self.unknown_project_progress_bundle(
@@ -2981,10 +2986,6 @@ class Ledger:
                         ):
                             return self.unknown_project_progress_bundle(
                                 project_id, "MIXED_SCOPE_REJECTED", ctrl_ids=ctrl_ids, cursor=cursor,
-                            )
-                        if node.get("unknown_receipt_ids"):
-                            return self.unknown_project_progress_bundle(
-                                project_id, "STALE_SOURCE", ctrl_ids=ctrl_ids, cursor=cursor,
                             )
                         topology_nodes[(ctrl_id, str(node.get("node_id") or ""))] = node
 
