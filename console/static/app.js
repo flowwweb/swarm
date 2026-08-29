@@ -1,4 +1,4 @@
-const state = { token: "", overview: null, proof: [], proofCollections: new Map(), proofStatuses: new Map(), proofStatus: "idle", proofSequence: 0, usageHistory: null, usageWindowHours: 24, usageScopeKey: "", usageStatus: "idle", usageError: "", projectProgress: null, projectProgressProjectId: "", projectProgressStatus: "idle", projectProgressError: "", projectProgressFeed: null, projectProgressFeedProjectId: "", projectProgressFeedStatus: "idle", projectProgressFeedError: "", projectTab: "overview", diagnostics: null, health: null, storage: null, config: null, configStatus: "idle", configError: "", chatRelaySaving: false, ctrlSettings: null, auto: null, autoBindingKey: "", autoStatus: "idle", autoError: "", autoSaving: false, skills: null, skillsError: "", roleManifests: null, roleManifestStatus: "unavailable", roleManifestError: "", agentsTab: "active", selectedRoleId: "accountant", roleEditorTrigger: null, assetView: "grid", selectedAssetIdentity: "", onboardingStep: 0, onboardingShown: false, onboardingTrigger: null, notifications: null, notificationBindingKey: "", notificationStatus: "idle", notificationError: "", notificationAckPending: false, notificationRequestGenerations: new Map(), notificationPresentedIds: new Set(), notificationToast: null, notificationToastTimer: null, notificationTrigger: null, connectionStatus: "reconnecting", view: "overview", projectId: "all", ctrlId: "", settingsCtrlId: "", settingsScopeType: "", settingsScopeId: "", evidenceImages: [], evidenceIndex: 0, evidenceTrigger: null };
+const state = { token: "", overview: null, proof: [], proofCollections: new Map(), proofStatuses: new Map(), proofStatus: "idle", proofSequence: 0, usageHistory: null, usageWindowHours: 24, usageScopeKey: "", usageStatus: "idle", usageError: "", projectProgress: null, projectProgressProjectId: "", projectProgressStatus: "idle", projectProgressError: "", projectProgressFeed: null, projectProgressFeedProjectId: "", projectProgressFeedStatus: "idle", projectProgressFeedError: "", projectTab: "overview", diagnostics: null, health: null, storage: null, config: null, configStatus: "idle", configError: "", chatRelaySaving: false, ctrlSettings: null, auto: null, autoBindingKey: "", autoStatus: "idle", autoError: "", autoSaving: false, skills: null, skillsError: "", roleManifests: null, roleManifestStatus: "unavailable", roleManifestError: "", agentsTab: "active", selectedRoleId: "accountant", roleEditorTrigger: null, assetView: "grid", selectedAssetIdentity: "", onboardingStep: 0, onboardingShown: false, onboardingTrigger: null, notifications: null, notificationBindingKey: "", notificationStatus: "idle", notificationError: "", notificationAckFlight: null, notificationRequestGenerations: new Map(), notificationPresentedIds: new Set(), notificationToast: null, notificationToastTimer: null, notificationTrigger: null, connectionStatus: "reconnecting", view: "overview", projectId: "all", ctrlId: "", settingsCtrlId: "", settingsScopeType: "", settingsScopeId: "", evidenceImages: [], evidenceIndex: 0, evidenceTrigger: null };
 const EVIDENCE_THUMBNAIL_PAGE_SIZE = 24;
 const USAGE_WINDOW_LABELS = { 1: "1h", 24: "1d" };
 const ROLE_PROFESSIONS = [
@@ -899,6 +899,32 @@ async function notificationActionAfterAcknowledgement(item, acknowledge, navigat
   return true;
 }
 
+function notificationActionEntry(data, notificationId) {
+  const unread = dedupeNotificationItems(data?.unread).find((item) => item.id === notificationId);
+  if (unread) return { item: unread, requiresAcknowledgement: true };
+  const seen = dedupeNotificationItems(data?.recent_seen).find((item) => item.id === notificationId);
+  return seen ? { item: seen, requiresAcknowledgement: false } : null;
+}
+
+async function notificationNavigateEntry(entry, acknowledge, navigate) {
+  if (!entry) return false;
+  if (entry.requiresAcknowledgement) return notificationActionAfterAcknowledgement(entry.item, acknowledge, navigate);
+  navigate(entry.item);
+  return true;
+}
+
+function notificationAcknowledgementFlight(currentFlight, bindingKey, notificationIds, start) {
+  const identities = [...new Set(notificationIds)];
+  if (currentFlight) {
+    const activeIds = new Set(currentFlight.notificationIds);
+    return currentFlight.bindingKey === bindingKey && identities.every((identity) => activeIds.has(identity))
+      ? { flight: currentFlight, started: false }
+      : { flight: null, started: false };
+  }
+  const flight = { bindingKey, notificationIds: identities, promise: start() };
+  return { flight, started: true };
+}
+
 function notificationSafeTarget(item, binding) {
   const target = item?.action_target;
   const allowedFields = new Set(["view", "project_id", "ctrl_id", "task_id", "subject_id"]);
@@ -1023,15 +1049,8 @@ function presentNotificationToast(unread) {
   state.notificationToastTimer = window.setTimeout(() => dismissNotificationToast(false), 8_000);
 }
 
-async function acknowledgeNotifications(notificationIds) {
-  const binding = notificationBinding();
-  const bindingKey = notificationBindingIdentity(binding);
-  const data = notificationData();
-  const currentIds = new Set(dedupeNotificationItems(data?.unread).map((item) => item.id));
-  const exactIds = [...new Set(notificationIds)].filter((identity) => currentIds.has(identity));
-  if (!binding || !data || !exactIds.length || state.notificationAckPending || state.connectionStatus !== "live") return false;
+async function performNotificationAcknowledgement(binding, bindingKey, exactIds) {
   notificationNextGeneration(state.notificationRequestGenerations, bindingKey);
-  state.notificationAckPending = true;
   state.notificationStatus = "acknowledging";
   state.notificationError = "";
   renderNotifications();
@@ -1052,8 +1071,29 @@ async function acknowledgeNotifications(notificationIds) {
     }
     return false;
   } finally {
-    state.notificationAckPending = false;
     renderNotifications();
+  }
+}
+
+async function acknowledgeNotifications(notificationIds) {
+  const binding = notificationBinding();
+  const bindingKey = notificationBindingIdentity(binding);
+  const data = notificationData();
+  const currentIds = new Set(dedupeNotificationItems(data?.unread).map((item) => item.id));
+  const exactIds = [...new Set(notificationIds)].filter((identity) => currentIds.has(identity));
+  if (!binding || !data || !exactIds.length || state.connectionStatus !== "live") return false;
+  const selection = notificationAcknowledgementFlight(
+    state.notificationAckFlight,
+    bindingKey,
+    exactIds,
+    () => performNotificationAcknowledgement(binding, bindingKey, exactIds),
+  );
+  if (!selection.flight) return false;
+  if (selection.started) state.notificationAckFlight = selection.flight;
+  try {
+    return await selection.flight.promise;
+  } finally {
+    if (selection.started && state.notificationAckFlight === selection.flight) state.notificationAckFlight = null;
   }
 }
 
@@ -2017,9 +2057,8 @@ document.addEventListener("click", async (event) => {
   const notificationAction = event.target.closest('[data-notification-action="navigate"][data-notification-id]');
   if (notificationAction) {
     const id = notificationAction.dataset.notificationId;
-    const data = notificationData();
-    const item = [...dedupeNotificationItems(data?.unread), ...dedupeNotificationItems(data?.recent_seen)].find((candidate) => candidate.id === id);
-    if (item) await notificationActionAfterAcknowledgement(item, (identity) => acknowledgeNotifications([identity]), navigateNotification);
+    const entry = notificationActionEntry(notificationData(), id);
+    await notificationNavigateEntry(entry, (identity) => acknowledgeNotifications([identity]), navigateNotification);
     return;
   }
   const toastAction = event.target.closest("[data-notification-toast-action]");

@@ -212,7 +212,7 @@ assert.doesNotMatch(app, /notificationLastSeen|overview\?\.attention_items|local
 const notificationHelperStart = app.indexOf("const NOTIFICATION_PANEL_UNREAD_LIMIT");
 const notificationHelperEnd = app.indexOf("\nfunction notificationBinding", notificationHelperStart);
 assert.ok(notificationHelperStart >= 0 && notificationHelperEnd > notificationHelperStart);
-const notificationHelpers = vm.runInNewContext(`(() => {${app.slice(notificationHelperStart, notificationHelperEnd)}; return { dedupeNotificationItems, notificationToastPlan, notificationAcknowledgePayload, notificationDismissIds, notificationPanelMessage, notificationNextGeneration, notificationGenerationIsCurrent, notificationFeedMatchesBinding, notificationFeedResult, notificationActionAfterAcknowledgement, notificationSafeTarget }; })()`);
+const notificationHelpers = vm.runInNewContext(`(() => {${app.slice(notificationHelperStart, notificationHelperEnd)}; return { dedupeNotificationItems, notificationToastPlan, notificationAcknowledgePayload, notificationDismissIds, notificationPanelMessage, notificationNextGeneration, notificationGenerationIsCurrent, notificationFeedMatchesBinding, notificationFeedResult, notificationActionAfterAcknowledgement, notificationActionEntry, notificationNavigateEntry, notificationAcknowledgementFlight, notificationSafeTarget }; })()`);
 const unreadA = { id: "a".repeat(64), severity: "warning", material_sequence: 4 };
 const unreadB = { id: "b".repeat(64), severity: "critical", material_sequence: 3 };
 const notificationBindingFixture = { projectId: "project:one", ctrlId: "ctrl:one" };
@@ -234,9 +234,68 @@ assert.equal(notificationHelpers.notificationSafeTarget({ ...exactActionItem, ct
 assert.equal(notificationHelpers.notificationSafeTarget({ ...exactActionItem, action_target: { ...exactActionItem.action_target, route: "https://example.invalid" } }, notificationBindingFixture), null);
 assert.equal(notificationHelpers.notificationFeedMatchesBinding({ ok: true, project_id: "project:one", ctrl_id: "ctrl:one", unread: [], recent_seen: [] }, notificationBindingFixture), true);
 assert.equal(notificationHelpers.notificationFeedMatchesBinding({ ok: true, project_id: "project:one", ctrl_id: "ctrl:other", unread: [], recent_seen: [] }, notificationBindingFixture), false);
+assert.equal(notificationHelpers.notificationActionEntry({ unread: [exactActionItem], recent_seen: [] }, exactActionItem.id).requiresAcknowledgement, true);
+assert.equal(notificationHelpers.notificationActionEntry({ unread: [], recent_seen: [exactActionItem] }, exactActionItem.id).requiresAcknowledgement, false);
+assert.equal(notificationHelpers.notificationActionEntry({ unread: [], recent_seen: [] }, exactActionItem.id), null);
 let attemptedNavigation = 0;
 assert.equal(await notificationHelpers.notificationActionAfterAcknowledgement(exactActionItem, async () => false, () => { attemptedNavigation += 1; }), false);
 assert.equal(attemptedNavigation, 0);
+let acknowledgementPosts = 0;
+let resolvePanelAcknowledgement;
+const panelAcknowledgementResult = new Promise((resolve) => { resolvePanelAcknowledgement = resolve; });
+const panelAcknowledgement = notificationHelpers.notificationAcknowledgementFlight(null, "project:one|ctrl:one", [unreadA.id, unreadB.id], () => {
+  acknowledgementPosts += 1;
+  return panelAcknowledgementResult;
+});
+const concurrentUnreadAction = notificationHelpers.notificationAcknowledgementFlight(panelAcknowledgement.flight, "project:one|ctrl:one", [unreadA.id], () => {
+  acknowledgementPosts += 1;
+  return Promise.resolve(true);
+});
+assert.equal(panelAcknowledgement.started, true);
+assert.equal(concurrentUnreadAction.started, false);
+assert.equal(concurrentUnreadAction.flight, panelAcknowledgement.flight);
+assert.equal(acknowledgementPosts, 1);
+let concurrentSuccessNavigations = 0;
+const concurrentSuccessAction = notificationHelpers.notificationNavigateEntry(
+  notificationHelpers.notificationActionEntry({ unread: [exactActionItem], recent_seen: [] }, exactActionItem.id),
+  async () => concurrentUnreadAction.flight.promise,
+  () => { concurrentSuccessNavigations += 1; },
+);
+resolvePanelAcknowledgement(true);
+assert.equal(await concurrentSuccessAction, true);
+assert.equal(concurrentSuccessNavigations, 1);
+assert.equal(acknowledgementPosts, 1);
+const reconciledSeenEntry = notificationHelpers.notificationActionEntry({ unread: [], recent_seen: [exactActionItem] }, exactActionItem.id);
+assert.equal(reconciledSeenEntry.requiresAcknowledgement, false);
+let recentSeenNavigations = 0;
+assert.equal(await notificationHelpers.notificationNavigateEntry(
+  reconciledSeenEntry,
+  async () => { acknowledgementPosts += 1; return true; },
+  () => { recentSeenNavigations += 1; },
+), true);
+assert.equal(recentSeenNavigations, 1);
+assert.equal(acknowledgementPosts, 1);
+let resolveFailedPanelAcknowledgement;
+const failedPanelAcknowledgementResult = new Promise((resolve) => { resolveFailedPanelAcknowledgement = resolve; });
+const failedPanelAcknowledgement = notificationHelpers.notificationAcknowledgementFlight(null, "project:one|ctrl:one", [unreadA.id], () => {
+  acknowledgementPosts += 1;
+  return failedPanelAcknowledgementResult;
+});
+const concurrentFailedAction = notificationHelpers.notificationAcknowledgementFlight(failedPanelAcknowledgement.flight, "project:one|ctrl:one", [unreadA.id], () => {
+  acknowledgementPosts += 1;
+  return Promise.resolve(true);
+});
+let concurrentFailureNavigations = 0;
+const failedActionResult = notificationHelpers.notificationNavigateEntry(
+  notificationHelpers.notificationActionEntry({ unread: [exactActionItem], recent_seen: [] }, exactActionItem.id),
+  async () => concurrentFailedAction.flight.promise,
+  () => { concurrentFailureNavigations += 1; },
+);
+resolveFailedPanelAcknowledgement(false);
+assert.equal(await failedActionResult, false);
+assert.equal(concurrentFailureNavigations, 0);
+assert.equal(acknowledgementPosts, 2);
+assert.equal(notificationHelpers.notificationAcknowledgementFlight(failedPanelAcknowledgement.flight, "project:other|ctrl:other", [unreadA.id], () => Promise.resolve(true)).flight, null);
 assert.match(notificationHelpers.notificationPanelMessage("stale", true, "live", "Read status failed. Try again."), /read-only.*Try again/i);
 assert.match(notificationHelpers.notificationPanelMessage("current", true, "offline"), /Offline.*read-only/i);
 const raceGenerations = new Map();
@@ -263,9 +322,11 @@ assert.equal((await notificationHelpers.notificationFeedResult(raceGenerations, 
 const notificationSource = app.slice(notificationHelperStart, app.indexOf("\nfunction selectedProjectProgress", notificationHelperStart));
 assert.doesNotMatch(notificationSource, /localStorage|sessionStorage|attention_items|setInterval|new Worker|new WebSocket/);
 assert.match(notificationSource, /window\.setTimeout\(\(\) => dismissNotificationToast\(false\), 8_000\)/);
-const notificationAckSource = app.slice(app.indexOf("async function acknowledgeNotifications"), app.indexOf("async function refreshNotifications"));
+const notificationAckSource = app.slice(app.indexOf("async function performNotificationAcknowledgement"), app.indexOf("async function refreshNotifications"));
 assert.equal((notificationAckSource.match(/notificationNextGeneration\(state\.notificationRequestGenerations, bindingKey\)/g) || []).length, 3);
-assert.match(app, /await notificationActionAfterAcknowledgement\(item, \(identity\) => acknowledgeNotifications\(\[identity\]\), navigateNotification\)/);
+assert.match(notificationAckSource, /notificationAcknowledgementFlight\([\s\S]*state\.notificationAckFlight/);
+assert.doesNotMatch(notificationAckSource, /notificationAckPending/);
+assert.match(app, /await notificationNavigateEntry\(entry, \(identity\) => acknowledgeNotifications\(\[identity\]\), navigateNotification\)/);
 assert.match(app, /const ctrlId = ctrlIds\.includes\(project\.active_ctrl_id\) \? project\.active_ctrl_id : ""/);
 assert.match(app, /if \(!\$\("#notifications-panel"\)\.hidden && !event\.target\.closest\("#notifications-panel, #notifications"\)\)/);
 assert.match(app, /event\.key === "Escape" && !\$\("#notifications-panel"\)\.hidden/);
