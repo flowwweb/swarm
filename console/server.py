@@ -5320,12 +5320,14 @@ class App:
                 digest = self._project_view_digest(candidate.get("digest"))[7:]
                 registered = proof.get((evidence_id, digest))
                 if registered is None:
-                    continue
+                    raise ConsoleError("project view evidence binding is not retained at its exact digest")
                 key = (evidence_id, digest)
                 if key in evidence_seen:
                     continue
                 evidence_seen.add(key)
                 device = str(candidate.get("device") or "").strip().casefold()
+                if device and device not in {"desktop", "tablet", "mobile"}:
+                    raise ConsoleError("project view evidence device is unsupported")
                 evidence.append({
                     **registered,
                     "artifact_id": artifact_id,
@@ -5379,29 +5381,52 @@ class App:
                     raise ConsoleError("project view Map edge names an unknown node")
                 edges.append({"source": source, "target": target})
         else:
-            if not re.search(r"(?m)^\s*(?:flowchart|graph)\s+(?:TB|TD|BT|RL|LR)\s*$", text):
-                raise ConsoleError("project view Map source must be a bounded Mermaid flowchart")
+            header_pattern = re.compile(r"(?:flowchart|graph)\s+(?:TB|TD|BT|RL|LR)", re.IGNORECASE)
             node_pattern = re.compile(r"([A-Za-z][A-Za-z0-9_.:-]{0,127})(?:\s*\[\s*\"([^\"]{1,256})\"\s*\])?")
+            header_seen = False
             for line in text.splitlines():
                 stripped = line.strip()
-                if not stripped or stripped.startswith(("%%", "flowchart ", "graph ")):
+                if not stripped or stripped.startswith("%%"):
                     continue
+                if header_pattern.fullmatch(stripped):
+                    if header_seen or nodes:
+                        raise ConsoleError("project view Map source has more than one flowchart header")
+                    header_seen = True
+                    continue
+                if not header_seen:
+                    raise ConsoleError("project view Map source must begin with a bounded Mermaid flowchart")
                 safe_line = re.sub(r"<br\s*/?>", " · ", stripped, flags=re.IGNORECASE)
                 if "<" in safe_line:
                     raise ConsoleError("project view Map labels cannot contain markup")
                 parts = safe_line.split("-->")
-                matches = [node_pattern.search(part.split("|")[-1]) for part in parts]
+                if len(parts) > 129:
+                    raise ConsoleError("project view Map edge chain is too large")
+                segments: list[str] = []
+                for index, part in enumerate(parts):
+                    segment = part.strip()
+                    if index and segment.startswith("|"):
+                        labelled = re.fullmatch(r"\|[^|\r\n]{1,256}\|\s*(.+)", segment)
+                        if labelled is None:
+                            raise ConsoleError("project view Map edge label is invalid")
+                        segment = labelled.group(1).strip()
+                    segments.append(segment)
+                matches = [node_pattern.fullmatch(segment) for segment in segments]
                 if any(match is None for match in matches):
-                    continue
+                    raise ConsoleError("project view Map contains unsupported Mermaid syntax")
                 ids = []
                 for match in matches:
-                    if match is None:
-                        continue
+                    if match is None:  # guarded above; keep malformed input fail-closed
+                        raise ConsoleError("project view Map contains unsupported Mermaid syntax")
                     node_id = match.group(1)
-                    nodes[node_id] = (match.group(2) or nodes.get(node_id) or node_id).strip()
+                    label = (match.group(2) or nodes.get(node_id) or node_id).strip()
+                    if node_id in nodes and nodes[node_id] != label:
+                        raise ConsoleError("project view Map node labels conflict")
+                    nodes[node_id] = label
                     ids.append(node_id)
                 edges.extend({"source": source, "target": target} for source, target in zip(ids, ids[1:], strict=False))
-            if not nodes:
+                if len(nodes) > 256 or len(edges) > 512:
+                    raise ConsoleError("project view Map source exceeds the graph bound")
+            if not header_seen or not nodes:
                 raise ConsoleError("project view Map source has no safe nodes")
         screen_keys = {screen["id"]: screen["id"] for screen in screens}
         for screen in screens:
@@ -5451,16 +5476,22 @@ class App:
         map_view = self._project_view_definition(
             by_id.get(expected_modes[1]), expected_id=expected_modes[1], renderer="canvas", mode="network", source_kind="graph.mermaid",
         )
-        resolved: dict[str, bytes] = {}
+        resolved: dict[tuple[str, str], bytes] = {}
+        digest_by_ref: dict[str, str] = {}
         for view in (screens_view, map_view):
             for source in view["sources"]:
-                resolved[source["ref"]] = self._resolve_project_view_bytes(project_id, source["ref"], source["digest"])
+                previous_digest = digest_by_ref.setdefault(source["ref"], source["digest"])
+                if previous_digest != source["digest"]:
+                    raise ConsoleError("project view source reference has conflicting digests")
+                key = (source["ref"], source["digest"])
+                if key not in resolved:
+                    resolved[key] = self._resolve_project_view_bytes(project_id, *key)
         screens_source = next((source for source in screens_view["sources"] if source["kind"] == "coverage.screens"), None)
         map_source = next((source for source in map_view["sources"] if source["kind"] in {"graph.mermaid", "graph.json"}), None)
         if screens_source is None or map_source is None:
             raise ConsoleError("project view Screens or Map source kind is unsupported")
-        screens = self._project_view_screens(project_id, resolved[screens_source["ref"]])
-        graph = self._project_view_graph(resolved[map_source["ref"]], screens)
+        screens = self._project_view_screens(project_id, resolved[(screens_source["ref"], screens_source["digest"])])
+        graph = self._project_view_graph(resolved[(map_source["ref"], map_source["digest"])], screens)
         return {
             "schema_version": 1,
             "project_id": project_id,

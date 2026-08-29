@@ -2687,9 +2687,14 @@ async function refreshProjectProgressFeed() {
   }
 }
 
+function overviewRequestPath() {
+  const projectId = selectedProgressProjectId();
+  return "/api/overview" + (projectId ? "?project_id=" + encodeURIComponent(projectId) : "");
+}
+
 async function refreshMonitoring(proofSequence) {
   try {
-    state.overview = await api("/api/overview", { timeoutMs: 15_000 });
+    state.overview = await api(overviewRequestPath(), { timeoutMs: 15_000 });
     clearConnectionState();
     setDataStatus("current", state.overview?.generated_at);
     renderProjectNavigation();
@@ -2776,7 +2781,7 @@ async function refreshOverview(showLoading = true) {
   clearError();
   setDataStatus("connecting", state.overview?.generated_at);
   try {
-    state.overview = await api("/api/overview", { timeoutMs: 15_000 });
+    state.overview = await api(overviewRequestPath(), { timeoutMs: 15_000 });
     clearConnectionState();
     setDataStatus("current", state.overview?.generated_at);
     renderProjectNavigation();
@@ -3097,7 +3102,7 @@ document.addEventListener("scroll", (event) => {
   }
 }, true);
 
-$("#project-navigation").addEventListener("click", (event) => {
+$("#project-navigation").addEventListener("click", async (event) => {
   const scope = event.target.closest("[data-project-id]");
   if (!scope) return;
   event.preventDefault();
@@ -3110,7 +3115,7 @@ $("#project-navigation").addEventListener("click", (event) => {
   renderProjectNavigation();
   setView("overview", false);
   renderAllViews();
-  Promise.all([refreshProof(), refreshCtrlSettings(), refreshUsageHistory(), refreshProjectProgress(), refreshProjectProgressFeed(), refreshSkills(), refreshNotifications(), refreshRunLogs()]).then(renderAllViews);
+  await refreshOverview(false);
 });
 $("#refresh").addEventListener("click", refreshOverview);
 $("#system-health-control").addEventListener("click", openSystemHealth);
@@ -3182,11 +3187,7 @@ document.addEventListener('change', async (event) => {
     state.settingsScopeId = state.projectId === 'all' ? 'global' : state.projectId;
     renderProjectNavigation();
     renderAllViews();
-    try {
-      await Promise.all([refreshProof(), refreshUsageHistory(), refreshProjectProgress(), refreshProjectProgressFeed(), refreshCtrlSettings(), refreshSkills(), refreshNotifications(), refreshRunLogs()]);
-      await refreshAutoStatus();
-    }
-    finally { renderAllViews(); }
+    await refreshOverview(false);
     return;
   }
   if (event.target.id === 'settings-scope') {

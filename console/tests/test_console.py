@@ -276,7 +276,7 @@ class SwarmConsoleTests(unittest.TestCase):
         self.assertNotIn("Projects are up to date", index)
         self.assertIn('setDataStatus("current", state.overview?.generated_at)', app)
         self.assertIn('setDataStatus(state.overview ? "stale" : "unavailable"', app)
-        self.assertIn('api("/api/overview", { timeoutMs: 15_000 })', app)
+        self.assertIn('api(overviewRequestPath(), { timeoutMs: 15_000 })', app)
         self.assertIn("function publicLabel(value", app)
         self.assertIn(r'.replace(/\blocalhost\b/gi, "console")', app)
         self.assertIn('const label = rawLabel.localeCompare(group.label', app)
@@ -2705,11 +2705,6 @@ class SwarmConsoleTests(unittest.TestCase):
                                 "artifact_id": f"{prefix}-overview", "evidence_id": f"{prefix}-overview",
                                 "digest": f"sha256:{evidence_digest}", "device": "desktop",
                             },
-                            {
-                                "alternative_id": "overview-mobile", "label": "Mobile",
-                                "artifact_id": f"{prefix}-mobile", "evidence_id": f"{prefix}-mobile",
-                                "digest": "sha256:" + "f" * 64, "device": "mobile",
-                            },
                         ],
                         "implementation_evidence": [],
                     },
@@ -2856,6 +2851,55 @@ class SwarmConsoleTests(unittest.TestCase):
             app._normalize_project_view("project:alpha", accepted_bytes, accepted_link["digest"])
             accepted = app._project_view_projection("project:alpha")
         self.assertEqual(accepted["identity"]["manifest_digest"], manifest_digest)
+
+        conflicting = json.loads(manifest)
+        conflicting["views"][1]["source_refs"] = [coverage_ref]
+        conflicting_bytes = json.dumps(conflicting, separators=(",", ":")).encode()
+        with self.assertRaisesRegex(console.ConsoleError, "conflicting digests"):
+            app._normalize_project_view("project:alpha", conflicting_bytes, "sha256:" + hashlib.sha256(conflicting_bytes).hexdigest())
+
+        malformed_graph = b'flowchart LR\n  start["Start"] --> finish["Finish"]\n  style start fill:#fff\n'
+        malformed_digest = "sha256:" + hashlib.sha256(malformed_graph).hexdigest()
+        sources[(graph_ref, malformed_digest)] = malformed_graph
+        malformed = json.loads(manifest)
+        malformed["views"][1]["source_digests"] = [malformed_digest]
+        malformed_bytes = json.dumps(malformed, separators=(",", ":")).encode()
+        with self.assertRaisesRegex(console.ConsoleError, "unsupported Mermaid syntax"):
+            app._normalize_project_view("project:alpha", malformed_bytes, "sha256:" + hashlib.sha256(malformed_bytes).hexdigest())
+
+        missing_evidence_digest = hashlib.sha256(b"missing-evidence").hexdigest()
+        missing_evidence = json.dumps({
+            "project_id": "project:alpha",
+            "nodes": [{
+                "node_kind": "screen_state", "screen_id": "overview", "state_id": "default",
+                "design_alternatives": [{
+                    "artifact_id": "missing", "evidence_id": "missing",
+                    "digest": "sha256:" + missing_evidence_digest, "device": "desktop",
+                }],
+                "implementation_evidence": [],
+            }],
+        }, separators=(",", ":")).encode()
+        with mock.patch.object(app.store, "proof_feed", return_value=[]), self.assertRaisesRegex(
+            console.ConsoleError, "not retained at its exact digest",
+        ):
+            app._project_view_screens("project:alpha", missing_evidence)
+
+        retained_digest = hashlib.sha256(b"retained-evidence").hexdigest()
+        unknown_device = json.dumps({
+            "project_id": "project:alpha",
+            "nodes": [{
+                "node_kind": "screen_state", "screen_id": "overview", "state_id": "default",
+                "design_alternatives": [{
+                    "artifact_id": "retained", "evidence_id": "retained",
+                    "digest": "sha256:" + retained_digest, "device": "watch",
+                }],
+                "implementation_evidence": [],
+            }],
+        }, separators=(",", ":")).encode()
+        with mock.patch.object(app.store, "proof_feed", return_value=[{
+            "evidence_id": "retained", "digest": retained_digest, "media_type": "image/png",
+        }]), self.assertRaisesRegex(console.ConsoleError, "device is unsupported"):
+            app._project_view_screens("project:alpha", unknown_device)
 
         unknown = json.loads(manifest)
         unknown["manifest_version"] = 2
