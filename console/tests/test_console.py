@@ -3722,6 +3722,70 @@ class SwarmConsoleTests(unittest.TestCase):
         with mock.patch.object(fresh.store, "proof_feed", return_value=[]):
             self.assertIsNone(fresh._project_view_projection("project:alpha"))
 
+    def test_project_view_flowchart_json_is_typed_screen_bound_and_fail_closed(self) -> None:
+        app = console.App(self.codex_home, self.config)
+        screens = [
+            {"id": "overview/default", "screen_id": "overview", "state_id": "default", "evidence": [{"device": "desktop"}, {"device": "tablet"}, {"device": "mobile"}]},
+            {"id": "review/default", "screen_id": "review", "state_id": "default", "evidence": []},
+        ]
+        graph = {
+            "schema_version": 1,
+            "flowchart_id": "main-flow",
+            "version": 3,
+            "nodes": [
+                {"id": "group-main", "label": "Main", "type": "group", "visibility": "visible", "order": 0},
+                {"id": "overview-node", "label": "Overview", "screen_ref": "overview/default", "group_id": "group-main", "type": "screen", "visibility": "visible", "order": 1, "layout": {"x": 10, "y": 20}},
+                {"id": "review-node", "label": "Review", "screen_ref": "review", "group_id": "group-main", "type": "screen", "visibility": "conditional", "order": 2},
+            ],
+            "edges": [
+                {"id": "edge-overview-review", "source": "overview-node", "target": "review-node", "label": "Continue", "type": "navigation", "condition": "review available"},
+            ],
+        }
+        normalized = app._project_view_graph(json.dumps(graph).encode(), screens)
+        self.assertEqual((normalized["flowchart_id"], normalized["version"]), ("main-flow", 3))
+        self.assertEqual(normalized["nodes"][1]["screen_key"], "overview/default")
+        self.assertEqual(normalized["nodes"][2]["screen_key"], "review/default")
+        self.assertEqual(normalized["edges"][0]["id"], "edge-overview-review")
+        self.assertEqual(screens[0]["evidence"][0]["device"], "desktop")
+
+        cases = []
+        duplicate_node = copy.deepcopy(graph)
+        duplicate_node["nodes"].append(copy.deepcopy(duplicate_node["nodes"][0]))
+        cases.append((duplicate_node, "node identities"))
+        duplicate_edge = copy.deepcopy(graph)
+        duplicate_edge["edges"].append(copy.deepcopy(duplicate_edge["edges"][0]))
+        cases.append((duplicate_edge, "edge identities"))
+        unknown_ref = copy.deepcopy(graph)
+        unknown_ref["nodes"][1]["screen_ref"] = "missing"
+        cases.append((unknown_ref, "unknown or ambiguous"))
+        unknown_version = copy.deepcopy(graph)
+        unknown_version["schema_version"] = 2
+        cases.append((unknown_version, "schema is unsupported"))
+        unknown_field = copy.deepcopy(graph)
+        unknown_field["extra"] = True
+        cases.append((unknown_field, "schema is unsupported"))
+        executable = copy.deepcopy(graph)
+        executable["nodes"][1]["component"] = "javascript:run()"
+        cases.append((executable, "executable links|node is invalid"))
+        missing_endpoint = copy.deepcopy(graph)
+        missing_endpoint["edges"][0]["target"] = "missing"
+        cases.append((missing_endpoint, "unknown node"))
+        for candidate, message in cases:
+            with self.subTest(message=message), self.assertRaisesRegex(console.ConsoleError, message):
+                app._project_view_graph(json.dumps(candidate).encode(), screens)
+
+        ambiguous_screens = screens + [
+            {"id": "overview/empty", "screen_id": "overview", "state_id": "empty", "evidence": []},
+        ]
+        ambiguous = copy.deepcopy(graph)
+        ambiguous["nodes"][1]["screen_ref"] = "overview"
+        with self.assertRaisesRegex(console.ConsoleError, "unknown or ambiguous"):
+            app._project_view_graph(json.dumps(ambiguous).encode(), ambiguous_screens)
+
+        mermaid = app._project_view_graph(b'flowchart LR\n  overview["Overview"] --> review["Review"]\n', screens)
+        self.assertNotIn("flowchart_id", mermaid)
+        self.assertEqual(mermaid["nodes"][0]["screen_key"], "overview/default")
+
     def test_proof_visuals_are_immediate_replay_safe_and_independent_of_review_annotations(self) -> None:
         self._confirm_root_ctrl()
         app = console.App(self.codex_home, self.config, self.root / "console" / "proof-feed.sqlite3")

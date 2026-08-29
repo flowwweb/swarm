@@ -5576,23 +5576,100 @@ class App:
         except json.JSONDecodeError:
             graph = None
         if isinstance(graph, dict):
+            allowed_graph = {"schema_version", "flowchart_id", "version", "nodes", "edges"}
+            if set(graph) != allowed_graph or graph.get("schema_version") != 1:
+                raise ConsoleError("project view Map JSON schema is unsupported")
+            flowchart_id = cls._project_view_text(graph.get("flowchart_id"), "flowchart id")
+            version = graph.get("version")
+            if not isinstance(version, int) or isinstance(version, bool) or version < 1:
+                raise ConsoleError("project view Map version must be positive")
             graph_nodes = graph.get("nodes")
             graph_edges = graph.get("edges")
             if not isinstance(graph_nodes, list) or not isinstance(graph_edges, list) or len(graph_nodes) > 256 or len(graph_edges) > 512:
                 raise ConsoleError("project view Map JSON is invalid")
+            screen_identities = {screen["id"] for screen in screens}
+            aliases: dict[str, set[str]] = {}
+            for screen in screens:
+                aliases.setdefault(screen["screen_id"], set()).add(screen["id"])
+            normalized_nodes: dict[str, dict[str, Any]] = {}
             for node in graph_nodes:
-                if not isinstance(node, dict):
+                allowed_node = {"id", "label", "screen_ref", "parent_id", "group_id", "type", "visibility", "order", "layout"}
+                if not isinstance(node, dict) or not set(node).issubset(allowed_node):
                     raise ConsoleError("project view Map node is invalid")
                 node_id = cls._project_view_text(node.get("id"), "Map node id")
-                nodes[node_id] = cls._project_view_text(node.get("label") or node_id, "Map node label", 256)
+                if node_id in normalized_nodes:
+                    raise ConsoleError("project view Map node identities must be unique")
+                screen_ref = node.get("screen_ref")
+                screen_key = None
+                if screen_ref is not None:
+                    screen_ref = cls._project_view_text(screen_ref, "Map screen ref")
+                    candidates = {screen_ref} if screen_ref in screen_identities else aliases.get(screen_ref, set())
+                    if len(candidates) != 1:
+                        raise ConsoleError("project view Map screen ref is unknown or ambiguous")
+                    screen_key = next(iter(candidates))
+                node_type = cls._project_view_text(node.get("type") or "screen", "Map node type", 64)
+                if screen_key is None and node_type not in {"group", "container"}:
+                    raise ConsoleError("project view Map screen node requires an exact screen ref")
+                visibility = cls._project_view_text(node.get("visibility") or "visible", "Map node visibility", 32)
+                if visibility not in {"visible", "hidden", "conditional"}:
+                    raise ConsoleError("project view Map node visibility is unsupported")
+                order = node.get("order", 0)
+                if not isinstance(order, int) or isinstance(order, bool) or not 0 <= order <= 10_000:
+                    raise ConsoleError("project view Map node order is invalid")
+                layout = node.get("layout")
+                if layout is not None:
+                    if not isinstance(layout, dict) or not set(layout).issubset({"x", "y", "width", "height"}) or any(
+                        not isinstance(value, (int, float)) or isinstance(value, bool) or not -100_000 <= value <= 100_000
+                        for value in layout.values()
+                    ):
+                        raise ConsoleError("project view Map node layout is invalid")
+                normalized_nodes[node_id] = {
+                    "id": node_id,
+                    "label": cls._project_view_text(node.get("label") or node_id, "Map node label", 256),
+                    "screen_key": screen_key,
+                    "parent_id": node.get("parent_id"),
+                    "group_id": node.get("group_id"),
+                    "type": node_type,
+                    "visibility": visibility,
+                    "order": order,
+                    **({"layout": layout} if layout is not None else {}),
+                }
+            for node in normalized_nodes.values():
+                for field in ("parent_id", "group_id"):
+                    if node[field] is not None:
+                        node[field] = cls._project_view_text(node[field], f"Map node {field}")
+                        if node[field] not in normalized_nodes or node[field] == node["id"]:
+                            raise ConsoleError("project view Map grouping reference is invalid")
+            edge_ids: set[str] = set()
+            normalized_edges: list[dict[str, Any]] = []
             for edge in graph_edges:
-                if not isinstance(edge, dict):
+                allowed_edge = {"id", "source", "target", "label", "type", "condition"}
+                if not isinstance(edge, dict) or not set(edge).issubset(allowed_edge):
                     raise ConsoleError("project view Map edge is invalid")
+                edge_id = cls._project_view_text(edge.get("id"), "Map edge id")
+                if edge_id in edge_ids:
+                    raise ConsoleError("project view Map edge identities must be unique")
+                edge_ids.add(edge_id)
                 source = cls._project_view_text(edge.get("source"), "Map edge source")
                 target = cls._project_view_text(edge.get("target"), "Map edge target")
-                if source not in nodes or target not in nodes:
+                if source not in normalized_nodes or target not in normalized_nodes:
                     raise ConsoleError("project view Map edge names an unknown node")
-                edges.append({"source": source, "target": target})
+                normalized_edges.append({
+                    "id": edge_id,
+                    "source": source,
+                    "target": target,
+                    **{
+                        field: cls._project_view_text(edge[field], f"Map edge {field}", 256)
+                        for field in ("label", "type", "condition") if edge.get(field) is not None
+                    },
+                })
+            return {
+                "schema_version": 1,
+                "flowchart_id": flowchart_id,
+                "version": version,
+                "nodes": list(normalized_nodes.values()),
+                "edges": normalized_edges,
+            }
         else:
             header_pattern = re.compile(r"(?:flowchart|graph)\s+(?:TB|TD|BT|RL|LR)", re.IGNORECASE)
             node_pattern = re.compile(r"([A-Za-z][A-Za-z0-9_.:-]{0,127})(?:\s*\[\s*\"([^\"]{1,256})\"\s*\])?")
