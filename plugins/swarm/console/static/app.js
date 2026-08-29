@@ -131,18 +131,6 @@ function statusLabel(node) {
   return ["Pending", "is-pending"];
 }
 
-const attentionStates = ["blocked", "at_risk", "stalled", "critical"];
-
-function attentionStatus(node) {
-  return [node?.status, node?.eta?.status]
-    .map((status) => String(status || "").toLowerCase())
-    .find((status) => attentionStates.includes(status)) || "";
-}
-
-function needsAttention(node) {
-  return Boolean(attentionStatus(node));
-}
-
 function humanize(value) {
   return String(value || "").replaceAll("_", " ").replace(/\b\w/g, (character) => character.toUpperCase());
 }
@@ -613,56 +601,86 @@ function projectGroups() {
 
 const PROJECT_NAVIGATION_STATUS_RANK = { active: 0, stalled: 1, inactive: 2 };
 
-function projectNavigationStatus(project) {
-  const projectStatus = String(project.status || "").toLowerCase();
-  const controllerStatuses = (state.overview?.navigation?.controllers || [])
-    .filter((controller) => controller.visibility === "visible" && controller.archived === false && controller.project_id === project.id && project.ctrl_ids.includes(controller.id))
-    .map((controller) => String(controller.status || "").toLowerCase());
-  if (project.active_ctrl === true) return "active";
-  if (projectStatus === "stalled" || controllerStatuses.includes("stalled")) return "stalled";
-  if (project.active_ctrl === false) return "inactive";
-  return [projectStatus, ...controllerStatuses].some((status) => ["active", "running", "in_progress"].includes(status)) ? "active" : "inactive";
-}
-
-function projectNavigationEntries() {
-  const summaries = new Map((state.overview?.projects || []).map((project) => [project.id, project]));
-  return currentWorkProjects()
-    .map((project) => {
-      const summary = summaries.get(project.id) || {};
-      return {
-        id: project.id,
-        label: publicLabel(project.goal_label || project.name || summary.goal_label || summary.name, "Untitled project"),
-        status: projectNavigationStatus(project),
-      };
-    })
-    .sort((a, b) => PROJECT_NAVIGATION_STATUS_RANK[a.status] - PROJECT_NAVIGATION_STATUS_RANK[b.status] || a.label.localeCompare(b.label) || a.id.localeCompare(b.id));
+function savedProjectRoster() {
+  const navigation = state.overview?.navigation;
+  const inventory = navigation?.project_inventory;
+  if (inventory?.state !== "KNOWN" || inventory.available !== true || !Array.isArray(navigation?.projects)) return { state: "UNKNOWN", projects: [] };
+  const projects = navigation.projects.map((project) => {
+    const status = String(project?.status || "").toLowerCase();
+    const facts = project?.status_facts;
+    const ctrlIds = project?.ctrl_ids;
+    const validStatus = Object.hasOwn(PROJECT_NAVIGATION_STATUS_RANK, status)
+      && facts && facts[status] === true
+      && ["active", "stalled", "inactive"].filter((name) => facts[name] === true).length === 1;
+    if (!project || typeof project.id !== "string" || !project.id || project.archived !== false || project.visibility !== "visible" || !Array.isArray(ctrlIds) || !validStatus) return null;
+    return {
+      id: project.id,
+      label: publicLabel(project.goal_label || project.name || project.id, "Untitled project"),
+      status,
+      ctrlIds: [...ctrlIds],
+      activeCtrlId: typeof project.active_ctrl_id === "string" ? project.active_ctrl_id : "",
+      taskCount: Number.isInteger(project.task_count) && project.task_count >= 0 ? project.task_count : null,
+      eligibility: project.project_eligibility === "swarm_ctrl" ? "swarm_ctrl" : "no_ctrl",
+    };
+  });
+  if (projects.some((project) => !project)) return { state: "UNKNOWN", projects: [] };
+  return {
+    state: "KNOWN",
+    projects: projects.sort((a, b) => PROJECT_NAVIGATION_STATUS_RANK[a.status] - PROJECT_NAVIGATION_STATUS_RANK[b.status] || a.label.localeCompare(b.label) || a.id.localeCompare(b.id)),
+  };
 }
 
 function scopeLabel() {
   if (state.projectId === "all") return "All projects";
-  const group = projectGroups().find((item) => item.id === state.projectId);
+  const project = savedProjectRoster().projects.find((item) => item.id === state.projectId);
   const ctrl = historicalControllers().find((item) => item.id === state.ctrlId);
-  return ctrl && state.ctrlId ? ctrlLabel(ctrl) : (group?.label || "All projects");
+  return ctrl && state.ctrlId ? ctrlLabel(ctrl) : (project?.label || "All projects");
 }
 
 function renderProjectNavigation() {
-  const projects = projectNavigationEntries();
+  const roster = savedProjectRoster();
+  const projects = roster.projects;
+  const selector = $("#project-scope-filter");
+  if (roster.state !== "KNOWN") {
+    $("#project-navigation").innerHTML = '<p class="project-roster-state" role="status">Saved projects unavailable</p>';
+    if (selector) { selector.disabled = true; selector.setAttribute("aria-label", "Project scope unavailable"); }
+    return;
+  }
   if (state.projectId !== "all" && !projects.some((project) => project.id === state.projectId)) {
     state.projectId = "all";
     state.ctrlId = "";
   }
-  const entries = ['<button class="project-scope-button ' + (state.projectId === "all" ? "is-selected" : "") + '" data-project-id="all" type="button" aria-pressed="' + (state.projectId === "all") + '"><span aria-hidden="true">◇</span>All projects</button>'];
+  const entries = [];
   projects.forEach((project) => {
     const current = state.projectId === project.id && !state.ctrlId;
     const statusLabel = project.status[0].toUpperCase() + project.status.slice(1);
     entries.push('<button class="project-scope-button ' + (current ? "is-selected" : "") + '" data-project-id="' + escapeHTML(project.id) + '" type="button" aria-label="' + escapeHTML(project.label + ", " + statusLabel) + '" aria-pressed="' + current + '"><span class="scope-dot is-' + project.status + '" aria-hidden="true"></span><span class="project-scope-label" title="' + escapeHTML(project.label) + '">' + escapeHTML(project.label) + '</span></button>');
   });
-  $("#project-navigation").innerHTML = entries.join("");
-  const selector = $("#project-scope-filter");
+  $("#project-navigation").innerHTML = entries.length ? entries.join("") : '<p class="project-roster-state" role="status">No saved projects</p>';
   if (selector) {
+    selector.disabled = false;
+    selector.setAttribute("aria-label", "Project scope");
     selector.innerHTML = ['<option value="all">All projects</option>'].concat(projects.map((project) => '<option value="' + escapeHTML(project.id) + '">' + escapeHTML(project.label) + '</option>')).join("");
     selector.value = state.projectId === "all" || projects.some((project) => project.id === state.projectId) ? state.projectId : "all";
   }
+}
+
+async function selectProjectScope(projectId) {
+  const roster = savedProjectRoster();
+  const selectedId = String(projectId || "all");
+  if (selectedId !== "all" && (roster.state !== "KNOWN" || !roster.projects.some((project) => project.id === selectedId))) return false;
+  state.projectId = selectedId;
+  state.ctrlId = "";
+  state.settingsCtrlId = "";
+  state.settingsScopeType = selectedId === "all" ? "global" : "project";
+  state.settingsScopeId = selectedId === "all" ? "global" : selectedId;
+  state.projectTab = "overview";
+  renderProjectNavigation();
+  setView("overview", false);
+  if (mobileDrawerQuery.matches) setMobileDrawer(false, true);
+  renderAllViews();
+  await refreshOverview(false);
+  return true;
 }
 
 function runLogBindingForCtrl(ctrlId, agentId = "") {
@@ -895,33 +913,6 @@ function isSubagent(node) {
   if (node?.is_subagent === true) return true;
   const surface = String(node?.surface ?? node?.thread_source ?? "").trim().toLowerCase();
   return ["subagent", "internal_subagent"].includes(surface);
-}
-
-function taskTree(nodes) {
-  const byId = new Map(nodes.map((node) => [node.id, node]));
-  const parent = new Map();
-  const children = new Map();
-  const linkedParent = new Map((state.overview?.links || []).map((link) => [link.target, link.source]));
-  nodes.forEach((node) => {
-    const candidate = node.parent_id || linkedParent.get(node.id);
-    if (!candidate || candidate === node.id || !byId.has(candidate)) return;
-    parent.set(node.id, candidate);
-    const list = children.get(candidate) || [];
-    list.push(node);
-    children.set(candidate, list);
-  });
-  return { byId, parent, children };
-}
-
-function subagentDescendants(nodeId, tree) {
-  const descendants = [];
-  const pending = [...(tree.children.get(nodeId) || [])];
-  while (pending.length) {
-    const node = pending.shift();
-    if (isSubagent(node)) descendants.push(node);
-    pending.unshift(...(tree.children.get(node.id) || []));
-  }
-  return descendants;
 }
 
 function proofMediaURL(item) {
@@ -2124,48 +2115,28 @@ function renderProjectProgressFeed() {
   }).join("") : '<li class="empty-state">No material project updates yet.</li>';
 }
 
-function renderOverviewProjectCards(nodes) {
-  const scopeAvailable = !currentWorkScopeUnavailable();
-  const cards = overviewCards(nodes);
-  const tree = taskTree(nodes);
-  const allProjects = state.projectId === "all" && !state.ctrlId;
-  const scopedCards = cards.filter((card) => card.nodes.length);
-  const visibleCards = allProjects ? scopedCards.slice(0, 5) : scopedCards;
-  const moreCards = allProjects ? scopedCards.slice(5) : [];
-  const renderCard = (card) => {
-    const tasks = observedTasks(card.nodes);
-    const progress = progressPresentation(authoritativeProgress(card.projectId, card.ctrlId));
-    const blocker = tasks.find(needsAttention);
-    const receipt = latestReceipt(card.nodes);
-    const primary = card.nodes.find((node) => node.id === card.ctrlId) || tasks[0];
-    const current = tasks.find((task) => !["done", "archived"].includes(String(task.status).toLowerCase())) || primary;
-    const efficiency = verifiedYieldItem(current?.id ? "task" : "project", current?.id || card.projectId) || verifiedYieldItem("project", card.projectId);
-    const stateLabel = primary ? statusLabel(primary)[0] : "No task state";
-    const ringClass = needsAttention(primary) ? "is-attention" : (statusLabel(primary || {})[1] || "is-pending");
-    const subagents = card.ctrlId ? subagentDescendants(card.ctrlId, tree) : [];
-    const subagentDisclosure = subagents.length ? '<details class="overview-subagents" data-overview-subagents="' + escapeHTML(card.ctrlId) + '"><summary>Subagents <span>' + subagents.length + '</span></summary><ul>' + subagents.map((node) => '<li><strong>' + escapeHTML(node.artifact || node.title || node.id) + '</strong><span>' + escapeHTML(statusLabel(node)[0]) + '</span></li>').join('') + '</ul></details>' : '<span class="overview-subagent-empty">No subagents</span>';
-    const progressDisplay = progress.display === "Unmeasured" ? "—" : progress.display;
-    const progressFreshness = progress.freshness === "Unmeasured" ? "UNKNOWN" : progress.freshness;
-    const efficiencyHealth = yieldHealth(efficiency) === "Unmeasured" ? "UNKNOWN" : yieldHealth(efficiency);
-    return '<article class="overview-project-card panel"><div class="overview-progress-ring ' + ringClass + '" style="--progress:' + (progress.percent == null ? 0 : progress.percent) + '%" aria-label="' + escapeHTML(progressDisplay + ' receipt-backed progress · ' + progressFreshness) + '"><strong>' + escapeHTML(progressDisplay) + '</strong><span>' + escapeHTML(progressFreshness) + '</span></div><div class="overview-project-main"><p class="eyebrow">' + escapeHTML(stateLabel) + '</p><h3>' + escapeHTML(card.label) + '</h3><p>' + escapeHTML(current?.artifact || "No current task observed") + '</p></div><dl class="overview-project-facts"><div><dt>Current work</dt><dd>' + escapeHTML(current?.artifact || "None observed") + '</dd></div><div><dt>Latest receipt</dt><dd>' + escapeHTML(receipt?.caption || receipt?.kind || "None received") + '</dd></div><div><dt>Blocker</dt><dd class="' + (blocker ? 'risk-text' : '') + '">' + escapeHTML(blocker?.artifact || "None observed") + '</dd></div></dl><div class="overview-yield"><span>Verified yield ' + yieldWarnings(efficiency) + '</span><strong>' + escapeHTML(yieldValue(efficiency)) + '</strong>' + miniSparkline(yieldSeries(efficiency), "Verified yield trend for " + card.label) + '<small>' + escapeHTML(efficiencyHealth) + '</small></div><div class="overview-project-subagents">' + subagentDisclosure + '</div></article>';
-  };
-  $("#overview-summary").textContent = allProjects
-    ? (scopedCards.length ? String(scopedCards.length) + " project scope" + (scopedCards.length === 1 ? "" : "s") : "No classified Current Work")
-    : (scopedCards.length ? "Current scope" : "No classified Current Work");
-  const empty = !scopeAvailable
-    ? '<p class="empty-state overview-empty">Current Work needs host-reported CTRL classification. Task history remains available in project views.</p>'
-    : allProjects
-      ? '<p class="empty-state overview-empty">No classified Current Work is available.</p>'
-      : '<p class="empty-state overview-empty">No classified Current Work is available in ' + escapeHTML(scopeLabel()) + '.</p>';
-  $("#overview-project-cards").innerHTML = visibleCards.length
-    ? visibleCards.map(renderCard).join("") + (moreCards.length ? '<details class="overview-more"><summary>' + String(moreCards.length) + ' more project scope' + (moreCards.length === 1 ? '' : 's') + '</summary><div>' + moreCards.map(renderCard).join("") + '</div></details>' : '')
-    : empty;
+function renderOverviewProjectCards() {
+  const roster = savedProjectRoster();
+  const host = $("#overview-project-cards");
+  if (roster.state !== "KNOWN") {
+    $("#overview-summary").textContent = "Project inventory unavailable";
+    host.innerHTML = '<p class="empty-state overview-empty" role="status">Saved projects are unavailable. Refresh when the console can read the host project inventory.</p>';
+    return;
+  }
+  $("#overview-summary").textContent = roster.projects.length ? String(roster.projects.length) + " saved project" + (roster.projects.length === 1 ? "" : "s") : "No saved projects";
+  host.innerHTML = roster.projects.length ? roster.projects.map((project) => {
+    const selected = state.projectId === project.id && !state.ctrlId;
+    const statusLabel = project.status[0].toUpperCase() + project.status.slice(1);
+    const ctrlLabel = project.ctrlIds.length ? String(project.ctrlIds.length) + " CTRL" + (project.ctrlIds.length === 1 ? "" : "s") : "No CTRL";
+    const taskLabel = project.taskCount == null ? "—" : String(project.taskCount);
+    return '<article class="overview-project-card panel' + (selected ? ' is-selected' : '') + '"><button class="overview-project-main" type="button" data-overview-project-id="' + escapeHTML(project.id) + '" aria-label="Open ' + escapeHTML(project.label) + '"><span class="scope-dot is-' + project.status + '" aria-hidden="true"></span><span><strong title="' + escapeHTML(project.label) + '">' + escapeHTML(project.label) + '</strong><small>' + escapeHTML(project.eligibility === "swarm_ctrl" ? "SWARM project" : "Saved project") + '</small></span><svg class="lucide" aria-hidden="true"><use href="#lucide-chevron-right"></use></svg></button><dl class="overview-project-facts"><div><dt>Status</dt><dd>' + escapeHTML(statusLabel) + '</dd></div><div><dt>CTRLs</dt><dd>' + escapeHTML(ctrlLabel) + '</dd></div><div><dt>Tasks</dt><dd' + (project.taskCount == null ? ' aria-label="UNKNOWN"' : '') + '>' + escapeHTML(taskLabel) + '</dd></div></dl></article>';
+  }).join("") : '<p class="empty-state overview-empty" role="status">No saved projects are available.</p>';
 }
 
 function renderOverview() {
   const nodes = scopedNodes();
   renderOverviewMetrics();
-  renderOverviewProjectCards(nodes);
+  renderOverviewProjectCards();
   renderEvidenceGallery(nodes, "#overview-evidence-gallery", "#overview-evidence-note", 4);
   renderUsage();
   renderProjectProgressFeed();
@@ -3354,16 +3325,11 @@ $("#project-navigation").addEventListener("click", async (event) => {
   const scope = event.target.closest("[data-project-id]");
   if (!scope) return;
   event.preventDefault();
-  state.projectId = scope.dataset.projectId;
-  state.ctrlId = scope.dataset.ctrlId || "";
-  state.settingsCtrlId = state.ctrlId;
-  state.settingsScopeType = state.ctrlId ? 'ctrl' : (state.projectId === 'all' ? 'global' : 'project');
-  state.settingsScopeId = state.ctrlId || (state.projectId === 'all' ? 'global' : state.projectId);
-  state.projectTab = "overview";
-  renderProjectNavigation();
-  setView("overview", false);
-  renderAllViews();
-  await refreshOverview(false);
+  await selectProjectScope(scope.dataset.projectId);
+});
+$("#overview-project-cards").addEventListener("click", async (event) => {
+  const project = event.target.closest("[data-overview-project-id]");
+  if (project) await selectProjectScope(project.dataset.overviewProjectId);
 });
 $("#refresh").addEventListener("click", refreshOverview);
 $("#system-health-control").addEventListener("click", openSystemHealth);
@@ -3427,15 +3393,7 @@ document.addEventListener('change', async (event) => {
     return;
   }
   if (event.target.id === 'project-scope-filter') {
-    state.projectId = event.target.value || 'all';
-    state.ctrlId = '';
-    state.projectTab = 'overview';
-    state.settingsCtrlId = '';
-    state.settingsScopeType = state.projectId === 'all' ? 'global' : 'project';
-    state.settingsScopeId = state.projectId === 'all' ? 'global' : state.projectId;
-    renderProjectNavigation();
-    renderAllViews();
-    await refreshOverview(false);
+    await selectProjectScope(event.target.value || 'all');
     return;
   }
   if (event.target.id === 'settings-scope') {

@@ -176,7 +176,7 @@ assert.match(app, /event\.key === "Tab" && \$\("\.app-shell"\)\.classList\.conta
 assert.match(app, /drawer\.inert = !expanded/);
 assert.match(app, /event\.key === "Escape" && \$\("\.app-shell"\)\.classList\.contains\("is-drawer-open"\)/);
 
-for (const label of ["Current work", "Latest updates", "Recent images", "Tokens · 1d", "Where changes apply", "Manage", "Advanced settings"]) {
+for (const label of ["Projects", "Latest updates", "Recent images", "Tokens · 1d", "Where changes apply", "Manage", "Advanced settings"]) {
   assert.match(indexHtml + app, new RegExp(label));
 }
 assert.match(app, /\/api\/usage-history\?/);
@@ -674,7 +674,8 @@ assert.match(app, /function openSystemHealth\(\)[\s\S]*?setView\("settings"\)[\s
 assert.match(app, /chromeDot\.className = "status-dot" \+ \(presentation\.className \? " " \+ presentation\.className : ""\)/);
 assert.match(app, /\$\("#system-health-control"\)\.addEventListener\("click", openSystemHealth\)/);
 assert.match(app, /function overviewRequestPath\(\)[\s\S]*?project_id=" \+ encodeURIComponent\(projectId\)/);
-assert.match(app, /\$\("#project-navigation"\)\.addEventListener\("click", async \(event\) =>[\s\S]*?await refreshOverview\(false\)/);
+assert.match(app, /\$\("#project-navigation"\)\.addEventListener\("click", async \(event\) =>[\s\S]*?await selectProjectScope\(scope\.dataset\.projectId\)/);
+assert.match(app, /async function selectProjectScope\(projectId\)[\s\S]*?await refreshOverview\(false\)/);
 assert.match(app, /id="system-health-panel"[\s\S]*?Diagnostics[\s\S]*?System health/);
 assert.match(css, /\.system-health-control[\s\S]*?\.status-dot\.is-attention/);
 assert.match(css, /@media \(max-width: 620px\)[\s\S]*?\.icon-button \{ flex: 0 0 46px; height: 46px; \}/);
@@ -687,10 +688,12 @@ for (const retiredView of ["dashboard", "hierarchy", "kanban", "diagnostics"]) {
 for (const retiredRenderer of ["renderDashboard", "renderHierarchy", "renderKanban", "renderDiagnostics", "renderMetrics", "renderTable", "renderProof", "renderBurnRate", "renderOverviewDiagnostics"]) {
   assert.doesNotMatch(app, new RegExp(`function ${retiredRenderer}\\(`));
 }
-assert.match(app, /renderOverviewProjectCards\(nodes\)/);
+assert.match(app, /renderOverviewProjectCards\(\)/);
 const overviewProjectCardsSource = app.slice(app.indexOf("function renderOverviewProjectCards"), app.indexOf("function renderOverview()"));
-assert.doesNotMatch(overviewProjectCardsSource, />Unmeasured|escapeHTML\(progress\.display\)|escapeHTML\(yieldHealth\(efficiency\)\)/);
-assert.match(overviewProjectCardsSource, /progressDisplay = progress\.display === "Unmeasured" \? "—"/);
+assert.match(overviewProjectCardsSource, /const roster = savedProjectRoster\(\)/);
+assert.match(overviewProjectCardsSource, /Saved projects are unavailable/);
+assert.match(overviewProjectCardsSource, /No CTRL/);
+assert.doesNotMatch(overviewProjectCardsSource, /currentWorkProjects\(\)|overviewCards\(|scopedCards|slice\(0, 5\)|Unmeasured/);
 assert.match(app, /function authoritativeProgress\(projectId, ctrlId = ""\)/);
 assert.match(app, /function progressPresentation\(summary\)/);
 assert.match(app, /if \(ctrlId\) return summaries\.controllers\?\.\[ctrlId\] \?\? null/);
@@ -705,39 +708,56 @@ assert.match(app, /function currentWorkControllers\(\)/);
 assert.match(app, /function currentWorkScopeUnavailable\(\)/);
 assert.match(app, /function historicalProjects\(\)/);
 assert.match(app, /function historicalControllers\(\)/);
-assert.match(app, /function projectNavigationStatus\(project\)/);
-assert.match(app, /function projectNavigationEntries\(\)/);
+assert.match(app, /function savedProjectRoster\(\)/);
 assert.match(app, /project\.visibility === "visible" && project\.archived === false && project\.project_eligibility === "swarm_ctrl"/);
 assert.match(app, /controller\.visibility === "visible" && controller\.archived === false && allowedControllerProjects\.get\(controller\.id\) === controller\.project_id/);
 assert.match(app, /project\.ctrl_ids\.includes\(ctrl\.id\)/);
 assert.doesNotMatch(app, /function activeControllers\(\)/);
 assert.doesNotMatch(app, /function hasCurrentOverviewWork\(card\)/);
-assert.match(app, /Current Work needs host-reported CTRL classification/);
-assert.equal((app.match(/Current Work needs host-reported CTRL classification/g) || []).length, 1);
 assert.match(app, /expectedControllerIds\.some\(\(ctrlId\) => !resolvedControllerIds\.has\(ctrlId\)\)/);
 assert.match(app, /if \(currentWorkScopeUnavailable\(\)\) return \[\]/);
-assert.match(app, /cards\.filter\(\(card\) => card\.nodes\.length\)/);
-assert.match(app, /scopedCards\.slice\(0, 5\)/);
-assert.match(app, /class="overview-more"/);
-assert.match(app, /No classified Current Work is available/);
 const currentWorkProjectsSource = app.slice(app.indexOf("function currentWorkProjects"), app.indexOf("function currentWorkControllers"));
 const currentWorkControllersSource = app.slice(app.indexOf("function currentWorkControllers"), app.indexOf("function publicLabel"));
 const projectGroupsSource = app.slice(app.indexOf("function projectGroups"), app.indexOf("const PROJECT_NAVIGATION_STATUS_RANK"));
-const projectNavigationEntriesSource = app.slice(app.indexOf("function projectNavigationEntries"), app.indexOf("function scopeLabel"));
-const projectNavigationSource = app.slice(app.indexOf("function renderProjectNavigation"), app.indexOf("function drawLine"));
+const savedProjectRosterSource = app.slice(app.indexOf("const PROJECT_NAVIGATION_STATUS_RANK"), app.indexOf("function scopeLabel"));
+const projectNavigationSource = app.slice(app.indexOf("function renderProjectNavigation"), app.indexOf("function runLogBindingForCtrl"));
 const overviewCardsSource = app.slice(app.indexOf("function overviewCards"), app.indexOf("function latestReceipt"));
 assert.doesNotMatch(currentWorkProjectsSource, /project\.status|active_ctrl/);
 assert.doesNotMatch(currentWorkControllersSource, /controller\.status/);
 assert.match(projectGroupsSource, /historicalProjects\(\)|historicalControllers\(\)/);
 assert.doesNotMatch(projectGroupsSource, /currentWorkProjects\(\)|currentWorkControllers\(\)/);
-assert.match(projectNavigationEntriesSource, /return currentWorkProjects\(\)/);
-assert.doesNotMatch(projectNavigationEntriesSource, /historicalProjects\(\)|historicalControllers\(\)|projectGroups\(\)/);
-assert.match(projectNavigationEntriesSource, /PROJECT_NAVIGATION_STATUS_RANK\[a\.status\] - PROJECT_NAVIGATION_STATUS_RANK\[b\.status\]/);
-assert.match(projectNavigationSource, /const projects = projectNavigationEntries\(\)/);
+assert.match(savedProjectRosterSource, /navigation\?\.project_inventory/);
+assert.match(savedProjectRosterSource, /inventory\?\.state !== "KNOWN"/);
+assert.match(savedProjectRosterSource, /PROJECT_NAVIGATION_STATUS_RANK\[a\.status\] - PROJECT_NAVIGATION_STATUS_RANK\[b\.status\]/);
+assert.doesNotMatch(savedProjectRosterSource, /currentWorkProjects\(\)|historicalProjects\(\)|historicalControllers\(\)|projectGroups\(\)/);
+assert.match(projectNavigationSource, /const roster = savedProjectRoster\(\)/);
 assert.match(projectNavigationSource, /scope-dot is-' \+ project\.status/);
-assert.doesNotMatch(projectNavigationSource, /scope-dot is-live|projectGroups\(\)/);
+assert.match(projectNavigationSource, /Saved projects unavailable/);
+assert.doesNotMatch(projectNavigationSource, /data-project-id="all"|scope-dot is-live|projectGroups\(\)|currentWorkProjects\(\)/);
 assert.doesNotMatch(projectNavigationSource, /data-ctrl-id|data-project-toggle|ctrl-subpages/);
 assert.doesNotMatch(overviewCardsSource, /node\.role|node\.title/);
+const savedProjectRosterHarness = vm.runInNewContext(`((overview) => {
+  const state = { overview };
+  const publicLabel = (value, fallback) => String(value || fallback);
+  ${savedProjectRosterSource}
+  return savedProjectRoster();
+})`);
+const rosterFixture = {
+  navigation: {
+    project_inventory: { state: "KNOWN", available: true },
+    projects: [
+      { id: "inactive", name: "Zulu", archived: false, visibility: "visible", project_eligibility: "no_ctrl", ctrl_ids: [], active_ctrl_id: null, task_count: 0, status: "inactive", status_facts: { active: false, stalled: false, inactive: true } },
+      { id: "stalled", name: "Beta", archived: false, visibility: "visible", project_eligibility: "swarm_ctrl", ctrl_ids: ["ctrl-b"], active_ctrl_id: null, task_count: 2, status: "stalled", status_facts: { active: false, stalled: true, inactive: false } },
+      { id: "active-b", name: "Charlie", archived: false, visibility: "visible", project_eligibility: "swarm_ctrl", ctrl_ids: ["ctrl-c"], active_ctrl_id: "ctrl-c", task_count: 3, status: "active", status_facts: { active: true, stalled: false, inactive: false } },
+      { id: "active-a", name: "Alpha", archived: false, visibility: "visible", project_eligibility: "no_ctrl", ctrl_ids: [], active_ctrl_id: null, task_count: 0, status: "active", status_facts: { active: true, stalled: false, inactive: false } },
+    ],
+  },
+};
+assert.deepEqual(Array.from(savedProjectRosterHarness(rosterFixture).projects, (project) => project.id), ["active-a", "active-b", "stalled", "inactive"]);
+assert.equal(savedProjectRosterHarness({ navigation: { project_inventory: { state: "UNKNOWN", available: false }, projects: [] } }).state, "UNKNOWN");
+const conflictedRoster = structuredClone(rosterFixture);
+conflictedRoster.navigation.projects[0].status_facts.active = true;
+assert.equal(savedProjectRosterHarness(conflictedRoster).state, "UNKNOWN");
 assert.equal(fixture.overview.progress.controllers.ctrl.progress.percent, 80);
 assert.equal(fixture.overview.progress.controllers.ctrl.progress.source, "material_receipts");
 assert.equal(fixture.overview.navigation.projects[0].project_eligibility, "swarm_ctrl");
@@ -746,12 +766,10 @@ assert.match(css, /\.project-navigation \{ display:flex; min-height:0; flex:1; f
 assert.match(css, /#project-navigation \{[^}]*min-height:0;[^}]*overflow-y:auto;[^}]*overscroll-behavior:contain;/);
 assert.match(css, /\.nav-footer \{[^}]*flex:0 0 auto;[^}]*margin-top:auto;/);
 assert.match(css, /\.project-scope-button \{[^}]*min-height: 44px;/);
+assert.ok(indexHtml.indexOf('id="project-tab-logs"') < indexHtml.indexOf('id="project-tab-ui"'));
 for (const status of ["active", "stalled", "inactive"]) assert.match(css, new RegExp(`\\.scope-dot\\.is-${status}`));
 assert.doesNotMatch(indexHtml, /id="(?:task-table|proof-feed|burn-chart|overview-diagnostics-heading)"/);
 assert.match(app, /Needs attention/);
-assert.match(app, /function attentionStatus\(node\)/);
-assert.match(app, /\[node\?\.status, node\?\.eta\?\.status\]/);
-assert.match(app, /tasks\.find\(needsAttention\)/);
 assert.match(app, /project_id: request\.projectId/);
 assert.match(app, /ctrl_id: request\.ctrlId/);
 assert.match(app, /setInterval\(reportPresence, 60_000\)/);
@@ -766,7 +784,6 @@ assert.match(app, /active \? \(group\?\.label \|\| "Project"\) : "Overview"/);
 assert.match(app, /setDataStatus\("current", state\.overview\?\.generated_at\)/);
 assert.match(app, /setDataStatus\(state\.overview \? "stale" : "unavailable"/);
 assert.match(app, /Project data request timed out/);
-assert.match(app, /data-overview-subagents/);
 assert.match(app, /#overview-evidence-gallery/);
 assert.match(indexHtml, /id="evidence-lightbox"/);
 assert.match(indexHtml, /id="evidence-lightbox-thumbnails"/);
@@ -795,10 +812,8 @@ assert.match(app, /renderEvidenceGallery\(nodes, "#overview-evidence-gallery", "
 assert.doesNotMatch(app, /figcaption/);
 assert.match(css, /\.evidence-lightbox/);
 assert.match(css, /\.evidence-gallery-item/);
-assert.match(app, /subagentDescendants\(card\.ctrlId, tree\)/);
 assert.match(app, /params\.set\("project_id", projectId\)/);
 assert.doesNotMatch(app, /params\.set\("task_id", state\.ctrlId\)/);
-assert.match(app, /\["blocked", "at_risk", "stalled", "critical"\]/);
 const overviewMetricsRenderSource = app.slice(app.indexOf("function renderOverviewMetrics"), app.indexOf("function yieldChartMarkup"));
 assert.doesNotMatch(overviewMetricsRenderSource, /scopedNodes|projectGroups|usageHistory|verifiedYieldProjection|attentionStatus/);
 assert.doesNotMatch(app, /Number\(project\.active_threads \?\? project\.active\) > 0/);
@@ -897,7 +912,7 @@ assert.match(app, /delta_from_baseline_ms/);
 assert.match(app, /last_material_heartbeat_at_ms/);
 assert.match(app, /skillsError/);
 assert.match(app, /Try again to refresh this scope/);
-assert.match(app, /\$\("#project-navigation"\)\.addEventListener\("click", async \(event\) =>[\s\S]*?await refreshOverview\(false\)/);
+assert.match(app, /\$\("#project-navigation"\)\.addEventListener\("click", async \(event\) =>[\s\S]*?await selectProjectScope\(scope\.dataset\.projectId\)/);
 assert.doesNotMatch(app, /Raw host logs|terminal output|hidden paths/);
 assert.match(app, /\.replace\(\/\\blocalhost\\b\/gi, "console"\)/);
 assert.match(indexHtml, /id="view-agents"[\s\S]*?Active swarm[\s\S]*?Role library/);
@@ -919,9 +934,14 @@ function roleManifestFixture() {
     roles: expectedProfessions.map((name, index) => {
       const id = name.toLowerCase();
       const digest = String(index + 1).padStart(64, "0");
+      const specializations = id === "developer"
+        ? ["Game Development", "Developer two", "Developer three", "Developer four"]
+        : id === "designer"
+          ? ["Game Design", "Designer two", "Designer three", "Designer four"]
+          : [`${name} one`, `${name} two`, `${name} three`, `${name} four`];
       return {
         id, name, purpose: `${name} purpose`, owns: [`${name} surface`], instructions: [`Use ${name} judgment`], boundaries: ["No authority transfer"],
-        default_skills: [`${id}-skill`], specializations: [`${name} one`, `${name} two`, `${name} three`, `${name} four`],
+        default_skills: [`${id}-skill`], specializations,
         avatar_asset_digest: digest, accent: "#ff6948", version: `${id}-v1`, source: "builtin", provenance: ["fixture"],
         built_in: true, active_version: `${id}-v1`, canonical_version: `${id}-v1`, override_active: false,
         versions: [], source_event_ids: [],
@@ -1236,9 +1256,25 @@ function scopedFixture() {
     { id: "project:atlas", name: "Atlas", archived: false, visibility: "visible", project_eligibility: "swarm_ctrl", ctrl_ids: ["atlas-ctrl"], active_ctrl_id: "atlas-ctrl", active_ctrl: true },
     { id: "project:idle", name: "Idle project", archived: false, visibility: "visible", project_eligibility: "swarm_ctrl", ctrl_ids: ["idle-ctrl"], active_ctrl_id: null, active_ctrl: false },
     { id: "project:stalled", name: "Stalled project", archived: false, visibility: "visible", project_eligibility: "swarm_ctrl", ctrl_ids: ["stalled-ctrl"], active_ctrl_id: null, active_ctrl: false },
-    { id: "project:archived", name: "Archived project", archived: true, visibility: "archived", project_eligibility: "swarm_ctrl", ctrl_ids: ["archived-ctrl"], active_ctrl_id: null, active_ctrl: false },
     { id: "project:waiting", name: "Unassigned planning", archived: false, visibility: "visible", project_eligibility: "no_ctrl", ctrl_ids: [], active_ctrl_id: null, active_ctrl: false }
   );
+  const projectStatuses = new Map([
+    ["project:fixture", "active"], ["project:branch", "active"], ["project:arc", "active"], ["project:atlas", "active"],
+    ["project:stalled", "stalled"], ["project:idle", "inactive"], ["project:waiting", "inactive"],
+  ]);
+  overview.navigation.project_inventory = { state: "KNOWN", available: true, source: "host_projects", claim_limit: "Fixture saved-project inventory" };
+  overview.project_inventory = structuredClone(overview.navigation.project_inventory);
+  overview.navigation.projects = overview.navigation.projects.map((project, position) => {
+    const status = projectStatuses.get(project.id);
+    return {
+      ...project,
+      ordering: { position, normalized_name: project.name.toLowerCase(), project_id: project.id },
+      status,
+      status_facts: { active: status === "active", stalled: status === "stalled", inactive: status === "inactive", source: "fixture" },
+      status_source: "fixture",
+      task_count: overview.nodes.filter((node) => node.project_id === project.id).length,
+    };
+  });
   overview.navigation.controllers.push(
     { id: "nested-ctrl", project_id: "project:fixture", status: "active", archived: false, visibility: "visible" },
     { id: "branch-ctrl", project_id: "project:branch", status: "active", archived: false, visibility: "visible" },
@@ -1252,6 +1288,29 @@ function scopedFixture() {
     overview.progress.controllers[id] = { progress: null, freshness: { state: "unavailable", observed_at_ms: null } };
   }
   overview.project_view = projectViewFixture();
+  return overview;
+}
+
+function overflowingProjectFixture(count = 24) {
+  const overview = scopedFixture();
+  for (let index = 1; index <= count; index += 1) {
+    const id = "project:overflow-" + String(index).padStart(2, "0");
+    overview.navigation.projects.push({
+      id,
+      name: "Saved project " + String(index).padStart(2, "0"),
+      archived: false,
+      visibility: "visible",
+      project_eligibility: "no_ctrl",
+      ctrl_ids: [],
+      active_ctrl_id: null,
+      active_ctrl: false,
+      ordering: { position: overview.navigation.projects.length, normalized_name: id, project_id: id },
+      status: "inactive",
+      status_facts: { active: false, stalled: false, inactive: true, source: "fixture" },
+      status_source: "fixture",
+      task_count: 0,
+    });
+  }
   return overview;
 }
 
@@ -1571,42 +1630,60 @@ const proofFeed = imageProofFixture(6);
 
     const page = await browser.newPage({ viewport: { width: 1440, height: 1000 } });
     const desktop = await mount(page, overview, overrides);
-    for (const label of ["Overview", "Agents", "Review", "Assets", "Settings"]) assert.equal(await page.getByRole("tab", { name: label, exact: true }).count(), 1);
+    for (const view of ["overview", "agents", "review", "assets", "settings"]) assert.equal(await page.locator('.nav-item[data-view="' + view + '"]').count(), 1);
     assert.equal(await page.getByRole("tab", { name: "Projects", exact: true }).count(), 0);
-    for (const retired of ["Dashboard", "Hierarchy", "Kanban", "Diagnostics"]) assert.equal(await page.getByRole("tab", { name: retired, exact: true }).count(), 0);
+    for (const retired of ["dashboard", "hierarchy", "kanban", "diagnostics"]) assert.equal(await page.locator('.nav-item[data-view="' + retired + '"]').count(), 0);
     assert.equal(await page.locator("#project-scope-filter").isVisible(), true);
     assert.deepEqual(await page.locator("#project-navigation button").evaluateAll((elements) => elements.map((element) => element.getAttribute("aria-label") || element.textContent.trim())), [
-      "All projects",
       "Arc, Active",
       "Atlas, Active",
       "Flowwweb, Active",
       "swarm, Active",
       "Stalled project, Stalled",
       "Idle project, Inactive",
+      "Unassigned planning, Inactive",
     ]);
     assert.deepEqual(await page.locator("#project-navigation .scope-dot").evaluateAll((elements) => elements.map((element) => [...element.classList].find((name) => name.startsWith("is-")))), [
-      "is-active", "is-active", "is-active", "is-active", "is-stalled", "is-inactive",
+      "is-active", "is-active", "is-active", "is-active", "is-stalled", "is-inactive", "is-inactive",
     ]);
-    assert.doesNotMatch(await page.locator("#project-navigation").textContent(), /Archived project|Unassigned planning|Resolve customer export/);
+    assert.doesNotMatch(await page.locator("#project-navigation").textContent(), /All projects|Archived project|Resolve customer export/);
+    assert.deepEqual(await page.locator("#project-scope-filter option").allTextContents(), ["All projects", "Arc", "Atlas", "Flowwweb", "swarm", "Stalled project", "Idle project", "Unassigned planning"]);
     assert.equal(await page.locator("#profile").isDisabled(), true);
     assert.deepEqual(await page.locator(".overview-metric-card > header > span").allTextContents(), ["Active work", "Needs attention", "Verified progress", "Usage"]);
     assert.deepEqual(await page.locator(".overview-metric-card > strong").allTextContents(), ["3 / 5", "2", "75%", "125k used"]);
     assert.equal(await page.locator("#overview-monitoring-heading").isVisible(), true);
+    assert.deepEqual(await page.locator("#overview-project-cards [data-overview-project-id] strong").allTextContents(), ["Arc", "Atlas", "Flowwweb", "swarm", "Stalled project", "Idle project", "Unassigned planning"]);
+    assert.match(await page.locator('[data-overview-project-id="project:waiting"]').locator("xpath=..").textContent(), /No CTRL/);
+    assert.equal(await page.locator(".overview-metrics").evaluate((metrics) => metrics.getBoundingClientRect().bottom <= document.querySelector("#overview-monitoring-heading").closest(".overview-section").getBoundingClientRect().top), true);
+    const keyboardScopeRequest = page.waitForRequest((request) => {
+      const url = new URL(request.url());
+      return url.pathname === "/api/overview" && url.searchParams.get("project_id") === "project:arc";
+    });
+    await page.locator('#project-navigation [data-project-id="project:arc"]').focus();
+    await page.keyboard.press("Enter");
+    await keyboardScopeRequest;
+    assert.equal(await page.locator('#project-navigation [data-project-id="project:arc"]').getAttribute("aria-pressed"), "true");
+    assert.equal(await page.locator('#project-navigation [data-project-id="project:waiting"]').count(), 1);
     const scopedOverviewRequest = page.waitForRequest((request) => {
       const url = new URL(request.url());
       return url.pathname === "/api/overview" && url.searchParams.get("project_id") === "project:fixture";
     });
-    await page.getByRole("button", { name: /^swarm\b/i }).click();
+    await page.locator('#project-navigation [data-project-id="project:fixture"]').click();
     await scopedOverviewRequest;
     await page.locator("#project-detail").waitFor({ state: "visible" });
     assert.ok(desktop.requests.includes("/api/overview?project_id=project%3Afixture"));
+    assert.equal(await page.locator('#project-navigation [data-project-id="project:waiting"]').count(), 1);
     await page.locator("#notification-unread").waitFor({ state: "visible" });
+    await page.waitForFunction(() => document.querySelector("#notification-unread")?.textContent === "1");
     assert.equal(await page.locator("#notification-unread").textContent(), "1");
     const seenRequest = page.waitForRequest((request) => new URL(request.url()).pathname === "/api/notifications/seen");
     await page.locator("#notifications").click();
     assert.match(await page.locator("#notifications-panel").textContent(), /Independent review is required/);
     assert.deepEqual((await seenRequest).postDataJSON(), { ctrl_id: "ctrl", project_id: "project:fixture", notification_ids: ["a".repeat(64)] });
-    await page.locator("#notification-unread").waitFor({ state: "hidden" });
+    await page.waitForFunction(() => {
+      const unread = document.querySelector("#notification-unread");
+      return unread?.hidden === true && unread.textContent === "0";
+    });
     await page.locator("#notifications-close").click();
     assert.equal(await page.locator("[data-project-tab]").count(), 8);
     assert.equal(await page.getByRole("tab", { name: "UI", exact: true }).isVisible(), true);
@@ -1622,6 +1699,7 @@ const proofFeed = imageProofFixture(6);
     assert.match(await page.locator("#project-tab-panel").textContent(), /Console surfaces/);
     await page.getByRole("tab", { name: "UI", exact: true }).click();
     assert.equal(await page.locator("#project-tab-panel").getAttribute("aria-labelledby"), "project-tab-ui");
+    assert.deepEqual(await page.locator("[data-project-tab]:visible").allTextContents(), ["Overview", "Roadmap", "Lanes", "Hierarchy", "Proof", "Ledger", "Logs", "UI"]);
     assert.equal(await page.locator(".project-ui-card").count(), 2);
     assert.deepEqual(await page.locator('.project-ui-card[data-project-view-screen="overview/default"] .project-ui-devices li').allTextContents(), ["Desktop", "Mobile"]);
     assert.equal(await page.locator('.project-ui-card[data-project-view-screen="overview/default"] .project-ui-alternatives').textContent(), "2 alternatives");
@@ -1664,8 +1742,9 @@ const proofFeed = imageProofFixture(6);
     assert.match(await page.locator('#role-library-detail').textContent(), /Reviewer one[\s\S]*Reviewer four/);
     assert.doesNotMatch(await page.locator('#role-library-detail').textContent(), /Friendly|Hostile/);
     await page.locator('.role-choice[data-role-select="developer"]').click();
-    await page.getByRole("button", { name: "Edit Developer" }).click();
-    assert.equal(await page.getByRole("button", { name: "Generate avatar" }).isDisabled(), true);
+    await page.getByRole("button", { name: "Edit Developer" }).focus();
+    await page.keyboard.press("Enter");
+    assert.equal(await page.locator("#role-editor").getByRole("button", { name: "Generate avatar" }).isDisabled(), true);
     assert.equal((await page.locator("#role-field-specializations").inputValue()).split("\n").length, 4);
     await page.getByRole("button", { name: "Close role editor" }).click();
     await page.getByRole("tab", { name: "Review", exact: true }).click();
@@ -1695,13 +1774,32 @@ const proofFeed = imageProofFixture(6);
     const noManifestOverview = scopedFixture();
     delete noManifestOverview.project_view;
     const noManifest = await mount(noManifestPage, noManifestOverview, overrides);
-    await noManifestPage.getByRole("button", { name: /^swarm\b/i }).click();
+    await noManifestPage.locator('#project-navigation [data-project-id="project:fixture"]').click();
     assert.equal(await noManifestPage.getByRole("tab", { name: "UI", exact: true }).isVisible(), false);
     assert.deepEqual(noManifest.runtimeErrors, []);
     await noManifestPage.close();
 
+    const unknownPage = await browser.newPage({ viewport: { width: 1024, height: 760 } });
+    const unknownOverview = scopedFixture();
+    unknownOverview.project_inventory = { state: "UNKNOWN", available: false, source: "host_projects" };
+    unknownOverview.navigation.project_inventory = structuredClone(unknownOverview.project_inventory);
+    unknownOverview.navigation.projects = [];
+    const unknown = await mount(unknownPage, unknownOverview, overrides);
+    assert.equal(await unknownPage.locator("#project-navigation").textContent(), "Saved projects unavailable");
+    assert.equal(await unknownPage.locator("#project-scope-filter").isDisabled(), true);
+    assert.match(await unknownPage.locator("#overview-project-cards").textContent(), /Saved projects are unavailable/);
+    assert.equal(await unknownPage.locator("#overview-summary").textContent(), "Project inventory unavailable");
+    assert.deepEqual(unknown.runtimeErrors, []);
+    await unknownPage.close();
+
     const tabletPage = await browser.newPage({ viewport: { width: 834, height: 1112 } });
     const tablet = await mount(tabletPage, scopedFixture(), overrides);
+    assert.equal(await tabletPage.locator("#overview-project-cards .overview-project-card").count(), 7);
+    assert.equal(await tabletPage.evaluate(() => document.documentElement.scrollWidth > document.documentElement.clientWidth), false);
+    assert.equal(await tabletPage.locator("#overview-project-cards [data-overview-project-id]").evaluateAll((elements) => elements.every((element) => {
+      const box = element.getBoundingClientRect();
+      return box.height >= 44 && box.right <= document.documentElement.clientWidth;
+    })), true);
     await tabletPage.locator('[data-view="agents"]').click();
     await tabletPage.getByRole("tab", { name: "Role library", exact: true }).click();
     const tabletGrid = tabletPage.locator("#role-library-grid");
@@ -1713,7 +1811,7 @@ const proofFeed = imageProofFixture(6);
     await tabletPage.keyboard.press("ArrowRight");
     assert.equal(await tabletPage.locator('.role-choice[aria-selected="true"]').getAttribute("data-role-select"), "analyst");
     await tabletPage.keyboard.press("ArrowDown");
-    assert.equal(await tabletPage.locator('.role-choice[aria-selected="true"]').getAttribute("data-role-select"), "assistant");
+    assert.equal(await tabletPage.locator('.role-choice[aria-selected="true"]').getAttribute("data-role-select"), "auditor");
     await tabletPage.keyboard.press("Home");
     assert.equal(await tabletPage.locator('.role-choice[aria-selected="true"]').getAttribute("data-role-select"), "accountant");
     await tabletPage.keyboard.press("End");
@@ -1749,7 +1847,7 @@ const proofFeed = imageProofFixture(6);
     await tabletPage.close();
 
     const mobilePage = await browser.newPage({ viewport: { width: 390, height: 844 } });
-    const mobile = await mount(mobilePage, scopedFixture(), overrides);
+    const mobile = await mount(mobilePage, overflowingProjectFixture(), overrides);
     const menuButton = mobilePage.locator("#mobile-menu-button");
     const menuBox = await menuButton.boundingBox();
     assert.ok(menuBox && menuBox.width >= 44 && menuBox.height >= 44);
@@ -1762,8 +1860,11 @@ const proofFeed = imageProofFixture(6);
     assert.equal(await mobilePage.locator(".workspace").evaluate((element) => element.inert), true);
     assert.equal(await mobilePage.locator("#project-navigation button").evaluateAll((elements) => elements.every((element) => element.getBoundingClientRect().height >= 44)), true);
     assert.equal(await mobilePage.locator("#project-navigation").evaluate((element) => getComputedStyle(element).overflowY), "auto");
+    assert.equal(await mobilePage.locator("#project-navigation").evaluate((element) => element.scrollHeight > element.clientHeight), true);
     assert.equal(await mobilePage.locator(".project-navigation").evaluate((element) => getComputedStyle(element).overflowY), "hidden");
     assert.equal(await mobilePage.locator(".nav-footer").evaluate((element) => element.getBoundingClientRect().bottom <= document.querySelector("#console-drawer").getBoundingClientRect().bottom), true);
+    assert.equal(await mobilePage.locator("#project-navigation").textContent().then((text) => text.includes("All projects")), false);
+    assert.equal(await mobilePage.locator('#project-navigation [data-project-id="project:overflow-24"]').count(), 1);
     await mobilePage.keyboard.press("Escape");
     assert.equal(await menuButton.evaluate((element) => element === document.activeElement), true);
     await menuButton.click();
