@@ -12,6 +12,7 @@ from skills.swarm.runtime.progress_events import (
     Ledger,
     PROGRESS_LEDGER_PATH,
     PROGRESS_PROJECTION_PATH,
+    ROLE_ACCENTS,
     ProgressEventError,
     ProgressLifecycle,
     ProgressLedger,
@@ -626,6 +627,39 @@ class ProgressLedgerContractTests(unittest.TestCase):
                 role_id="manager", manifest=malformed, expected_active_version=manager["version"],
                 assignment_task_id=None, provenance="receipt:malformed", observed_at_ms=4,
             )
+
+    def test_builtin_role_accents_are_exact_unique_and_order_independent(self) -> None:
+        expected = {
+            "manager": "#FF6B4A", "strategist": "#F97316", "researcher": "#22D3EE", "analyst": "#38BDF8",
+            "specialist": "#6366F1", "inventor": "#D946EF", "architect": "#FBBF24", "designer": "#F72585",
+            "artist": "#8B5CF6", "writer": "#C084FC", "developer": "#2563EB", "producer": "#F43F5E",
+            "tester": "#14B8A6", "assistant": "#818CF8", "security": "#FF4D2E", "auditor": "#CBD5E1",
+            "legal": "#E11D48", "reviewer": "#A3E635", "operator": "#10B981", "marketer": "#FB7185",
+            "support": "#5EEAD4", "accountant": "#2DD4BF", "recruiter": "#A855F7", "educator": "#FDE047",
+        }
+        self.assertEqual(ROLE_ACCENTS, expected)
+        self.assertEqual((len(ROLE_ACCENTS), len(set(ROLE_ACCENTS.values()))), (24, 24))
+
+        builtins = self.role_manifests()
+        actual = {role["id"]: role["accent"] for role in builtins}
+        self.assertEqual(actual, {role_id: accent.casefold() for role_id, accent in expected.items()})
+        self.assertTrue(all(validate_role_manifest(role) == role for role in builtins))
+
+        from skills.swarm.runtime import progress_events
+        reversed_roles = dict(reversed(tuple(progress_events.BUILT_IN_PROFESSIONS.items())))
+        repository = Path(__file__).resolve().parents[3]
+        with mock.patch.object(progress_events, "BUILT_IN_PROFESSIONS", reversed_roles):
+            reordered = load_builtin_role_manifests(
+                repository / "skills" / "swarm" / "roles",
+                repository / "console" / "static" / "swarm-offline-disconnected.png",
+            )
+        self.assertEqual({role["id"]: role["accent"] for role in reordered}, actual)
+        self.assertEqual({role["id"]: role["version"] for role in reordered}, {role["id"]: role["version"] for role in builtins})
+
+        manager = next(role for role in builtins if role["id"] == "manager")
+        historical = build_role_manifest("custom-guide", self.role_draft(manager, accent="#123456"), "custom", ["retained:custom"])
+        self.assertEqual(validate_role_manifest(historical), historical)
+        self.assertNotEqual(historical["version"], manager["version"])
 
     def test_role_specializations_are_bounded_metadata_and_version_bound(self) -> None:
         builtins = self.role_manifests()

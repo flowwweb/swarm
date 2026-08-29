@@ -84,7 +84,14 @@ ROLE_MANIFEST_FIELDS = frozenset({
 })
 ROLE_PAYLOAD_FIELDS = frozenset({"role_id", "expected_active_version", "assignment_task_id", "manifest"})
 ROLE_SOURCES = frozenset({"builtin", "custom", "user_override"})
-ROLE_ACCENTS = ("#0ea5e9", "#8b5cf6", "#ec4899", "#f97316", "#22c55e", "#eab308")
+ROLE_ACCENTS = {
+    "manager": "#FF6B4A", "strategist": "#F97316", "researcher": "#22D3EE", "analyst": "#38BDF8",
+    "specialist": "#6366F1", "inventor": "#D946EF", "architect": "#FBBF24", "designer": "#F72585",
+    "artist": "#8B5CF6", "writer": "#C084FC", "developer": "#2563EB", "producer": "#F43F5E",
+    "tester": "#14B8A6", "assistant": "#818CF8", "security": "#FF4D2E", "auditor": "#CBD5E1",
+    "legal": "#E11D48", "reviewer": "#A3E635", "operator": "#10B981", "marketer": "#FB7185",
+    "support": "#5EEAD4", "accountant": "#2DD4BF", "recruiter": "#A855F7", "educator": "#FDE047",
+}
 BUILT_IN_ROLE_SPECIALIZATIONS = {
     "manager": ("Product Manager", "Project Manager", "Program Manager", "Operations Manager"),
     "strategist": ("Product Strategist", "Brand Strategist", "Growth Strategist", "Go-to-Market Strategist"),
@@ -861,11 +868,11 @@ def build_role_manifest(role_id: str, draft: Mapping[str, Any], source: str, pro
 
 def load_builtin_role_manifests(roles_root: Path, avatar_path: Path) -> tuple[dict[str, Any], ...]:
     cards = {path.stem: path for path in Path(roles_root).glob("*.md") if path.is_file()}
-    if set(cards) != set(BUILT_IN_PROFESSIONS) or set(BUILT_IN_ROLE_SPECIALIZATIONS) != set(BUILT_IN_PROFESSIONS) or not Path(avatar_path).is_file():
+    if set(cards) != set(BUILT_IN_PROFESSIONS) or set(BUILT_IN_ROLE_SPECIALIZATIONS) != set(BUILT_IN_PROFESSIONS) or set(ROLE_ACCENTS) != set(BUILT_IN_PROFESSIONS) or not Path(avatar_path).is_file():
         raise ProgressEventError("built-in role inventory must remain exactly 24 roles with one avatar asset")
     avatar_digest = hashlib.sha256(Path(avatar_path).read_bytes()).hexdigest()
     manifests = []
-    for index, (role_id, name) in enumerate(BUILT_IN_PROFESSIONS.items()):
+    for role_id, name in BUILT_IN_PROFESSIONS.items():
         text = cards[role_id].read_text(encoding="utf-8")
         instructions = [match.group(1) for line in text.splitlines() if (match := re.fullmatch(r"\d+\.\s+(.+)", line))]
         manifests.append(build_role_manifest(role_id, {
@@ -880,7 +887,7 @@ def load_builtin_role_manifests(roles_root: Path, avatar_path: Path) -> tuple[di
             "default_skills": [],
             "specializations": list(BUILT_IN_ROLE_SPECIALIZATIONS[role_id]),
             "avatar_asset_digest": avatar_digest,
-            "accent": ROLE_ACCENTS[index % len(ROLE_ACCENTS)],
+            "accent": ROLE_ACCENTS[role_id],
         }, "builtin", [f"role-card:{role_id}:{hashlib.sha256(text.encode()).hexdigest()}"]))
     return tuple(manifests)
 
