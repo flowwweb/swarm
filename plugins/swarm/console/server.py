@@ -5262,10 +5262,7 @@ class App:
                 attributes = getattr(metadata, "st_file_attributes", 0)
                 if current.is_symlink() or attributes & getattr(stat_module, "FILE_ATTRIBUTE_REPARSE_POINT", 0):
                     raise ConsoleError("project view source cannot traverse a reparse point")
-            metadata = resolved.stat()
-            if not resolved.is_file() or metadata.st_size <= 0 or metadata.st_size > PROJECT_VIEW_MAX_BYTES:
-                raise ConsoleError("project view source is unavailable or exceeds the delivery guard")
-            raw = resolved.read_bytes()
+            raw = self._read_project_view_handle(root, resolved)
         except ConsoleError:
             raise
         except OSError as exc:
@@ -5273,6 +5270,92 @@ class App:
         if "sha256:" + hashlib.sha256(raw).hexdigest() != digest:
             raise ConsoleError("project view source digest does not match")
         return raw
+
+    @staticmethod
+    def _read_project_view_handle(root: Path, path: Path) -> bytes:
+        if os.name != "nt":
+            raise ConsoleError("secure project view source reads are unavailable on this host")
+        import ctypes
+        import msvcrt
+        from ctypes import wintypes
+
+        class FileInformation(ctypes.Structure):
+            _fields_ = [
+                ("attributes", wintypes.DWORD), ("creation_time", wintypes.FILETIME),
+                ("last_access_time", wintypes.FILETIME), ("last_write_time", wintypes.FILETIME),
+                ("volume_serial", wintypes.DWORD), ("size_high", wintypes.DWORD),
+                ("size_low", wintypes.DWORD), ("links", wintypes.DWORD),
+                ("file_index_high", wintypes.DWORD), ("file_index_low", wintypes.DWORD),
+            ]
+
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        create_file = kernel32.CreateFileW
+        create_file.argtypes = [
+            wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD, wintypes.LPVOID,
+            wintypes.DWORD, wintypes.DWORD, wintypes.HANDLE,
+        ]
+        create_file.restype = wintypes.HANDLE
+        get_information = kernel32.GetFileInformationByHandle
+        get_information.argtypes = [wintypes.HANDLE, ctypes.POINTER(FileInformation)]
+        get_information.restype = wintypes.BOOL
+        get_final_path = kernel32.GetFinalPathNameByHandleW
+        get_final_path.argtypes = [wintypes.HANDLE, wintypes.LPWSTR, wintypes.DWORD, wintypes.DWORD]
+        get_final_path.restype = wintypes.DWORD
+        close_handle = kernel32.CloseHandle
+        close_handle.argtypes = [wintypes.HANDLE]
+        close_handle.restype = wintypes.BOOL
+
+        handle = create_file(
+            str(path), 0x80000000, 0x00000001, None, 3,
+            0x00200000 | 0x08000000, None,
+        )
+        invalid_handle = wintypes.HANDLE(-1).value
+        if handle == invalid_handle:
+            raise ConsoleError("project view source is unavailable")
+        descriptor: int | None = None
+        try:
+            information = FileInformation()
+            if not get_information(handle, ctypes.byref(information)):
+                raise ConsoleError("project view source identity is unavailable")
+            if information.attributes & (0x00000010 | 0x00000400):
+                raise ConsoleError("project view source cannot be a directory or reparse point")
+            size = (int(information.size_high) << 32) | int(information.size_low)
+            if size <= 0 or size > PROJECT_VIEW_MAX_BYTES:
+                raise ConsoleError("project view source is unavailable or exceeds the delivery guard")
+            buffer = ctypes.create_unicode_buffer(32768)
+            length = get_final_path(handle, buffer, len(buffer), 0)
+            if not length or length >= len(buffer):
+                raise ConsoleError("project view source identity is unavailable")
+            final_path = buffer.value
+            if final_path.startswith("\\\\?\\UNC\\"):
+                final_path = "\\\\" + final_path[8:]
+            elif final_path.startswith("\\\\?\\"):
+                final_path = final_path[4:]
+            root_name = os.path.normcase(os.path.abspath(str(root)))
+            final_name = os.path.normcase(os.path.abspath(final_path))
+            try:
+                if os.path.commonpath((root_name, final_name)) != root_name:
+                    raise ConsoleError("project view source resolves outside the canonical project root")
+            except ValueError as exc:
+                raise ConsoleError("project view source resolves outside the canonical project root") from exc
+            descriptor = msvcrt.open_osfhandle(handle, os.O_RDONLY | getattr(os, "O_BINARY", 0))
+            handle = invalid_handle
+            chunks = []
+            remaining = size
+            while remaining:
+                chunk = os.read(descriptor, min(remaining, 64 * 1024))
+                if not chunk:
+                    raise ConsoleError("project view source changed while it was retained")
+                chunks.append(chunk)
+                remaining -= len(chunk)
+            if os.read(descriptor, 1):
+                raise ConsoleError("project view source changed while it was retained")
+            return b"".join(chunks)
+        finally:
+            if descriptor is not None:
+                os.close(descriptor)
+            elif handle != invalid_handle:
+                close_handle(handle)
 
     @classmethod
     def _project_view_sources(cls, view: dict[str, Any], default_kind: str) -> list[dict[str, str]]:

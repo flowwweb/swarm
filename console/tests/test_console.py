@@ -2804,6 +2804,13 @@ class SwarmConsoleTests(unittest.TestCase):
         self.assertEqual(app._root_project_view_link(alpha_root), (
             "present", {key: alpha["link"]["links"][0][key] for key in ("ref", "digest")},
         ))
+        coverage_path = alpha_root / "ui" / "coverage.json"
+        coverage_bytes = coverage_path.read_bytes()
+        with mock.patch.object(Path, "read_bytes", side_effect=AssertionError("pathname reopen")):
+            self.assertEqual(app._default_project_view_resolver(
+                "project:alpha", "project://alpha/ui/coverage.json",
+                "sha256:" + hashlib.sha256(coverage_bytes).hexdigest(),
+            ), coverage_bytes)
 
         with self.assertRaisesRegex(console.ConsoleError, "another project"):
             app._default_project_view_resolver("project:alpha", "project://beta/ui/coverage.json", "sha256:" + "0" * 64)
