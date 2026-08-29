@@ -834,8 +834,8 @@ assert.equal(evaluateRoleCurrentRecords(historicalCriticProjection).length, 24);
 const roleDisplayStart = app.indexOf("function roleDisplayName");
 const roleDisplayEnd = app.indexOf("\nfunction roleAvatar", roleDisplayStart);
 const evaluateRoleDisplayName = vm.runInNewContext(`(() => { ${app.slice(roleDisplayStart, roleDisplayEnd)}; return roleDisplayName; })()`);
-assert.equal(evaluateRoleDisplayName({ id: "dev", name: "Dev" }), "Developer");
-assert.equal(evaluateRoleDisplayName({ id: "developer", name: "Dev" }), "Developer");
+assert.equal(evaluateRoleDisplayName({ id: "dev", name: "Dev" }), "Dev");
+assert.equal(evaluateRoleDisplayName({ id: "developer", name: "Software builder" }), "Software builder");
 assert.equal(evaluateRoleDisplayName({ id: "designer", name: "Designer" }), "Designer");
 const roleSearchStart = app.indexOf("function roleSearchBuckets");
 const roleSearchEnd = app.indexOf("\nfunction roleFilterChipsMarkup", roleSearchStart);
@@ -932,9 +932,33 @@ assert.match(app, /function roleInstructionsMarkup\(items\)/);
 assert.match(app, /instructions\.slice\(0, 3\)/);
 assert.match(app, /<summary>Show all ' \+ escapeHTML\(instructions\.length\) \+ ' instructions<\/summary>/);
 assert.match(app, /aria-label="Edit ' \+ escapeHTML\(displayName\)/);
-assert.match(app, /\["dev", "developer"\]\.includes\(String\(role\?\.id \|\| ""\)\.toLowerCase\(\)\) \? "Developer"/);
 assert.doesNotMatch(app.slice(app.indexOf("function roleChooserMarkup"), app.indexOf("function renderRoleLibrary")), /active_version|avatar_asset_digest|<code>/);
-assert.match(app, /Friendly<\/dt>[\s\S]*?Hostile<\/dt>/);
+assert.doesNotMatch(app, /reviewerStancesMarkup|Collaborative strengths, gaps, and clear repairs|Red-team the artifact/);
+const roleContentStart = app.indexOf("function roleTextList");
+const roleContentEnd = app.indexOf("\nfunction renderRoleLibrary", roleContentStart);
+const roleContentRenderers = vm.runInNewContext(`(() => {
+  const escapeHTML = (value) => String(value ?? "");
+  const roleDisplayName = (role) => role?.name || role?.id || "Unknown role";
+  const roleAvatar = () => "";
+  const roleSourceLabel = (role) => role?.source === "builtin" ? "Built in" : "Custom role";
+  const roleCanMutate = () => true;
+  const roleAssignmentsMarkup = () => '<p>No current owners.</p>';
+  const roleSpecializationsMarkup = (role) => '<ul>' + role.specializations.map((item) => '<li>' + escapeHTML(item) + '</li>').join("") + '</ul>';
+  const roleHasRetainedAvatar = () => false;
+  ${app.slice(roleContentStart, roleContentEnd)}
+  return { roleChooserMarkup, roleDetailMarkup };
+})()`);
+const manifestDrivenReviewer = {
+  id: "reviewer", name: "Fixture review lead", source: "builtin", purpose: "Fixture purpose", owns: ["Fixture surface"],
+  instructions: ["Fixture instruction one", "Fixture instruction two", "Fixture instruction three", "Fixture instruction four"],
+  specializations: ["Careful", "Adversarial", "Evidence", "Repair"], default_skills: ["fixture-skill"], boundaries: ["Fixture boundary"],
+};
+const manifestCard = roleContentRenderers.roleChooserMarkup(manifestDrivenReviewer, { label: "Matched: Fixture review lead · profession" }, true);
+const manifestDetail = roleContentRenderers.roleDetailMarkup(manifestDrivenReviewer);
+for (const value of ["Fixture review lead", "Fixture purpose", "Fixture surface", "Fixture instruction one", "Fixture instruction four", "Careful", "Adversarial", "fixture-skill", "Fixture boundary"]) assert.match(manifestCard + manifestDetail, new RegExp(value));
+assert.doesNotMatch(manifestCard + manifestDetail, /Friendly|Hostile/);
+const fixtureStances = roleContentRenderers.roleDetailMarkup({ ...manifestDrivenReviewer, specializations: ["Friendly", "Hostile", "Evidence", "Repair"] });
+assert.match(fixtureStances, /Friendly[\s\S]*Hostile/);
 assert.match(app, /server exposes no generation command/);
 assert.match(app, /generate\.disabled = true/);
 assert.match(indexHtml, /id="role-create"[\s\S]*?aria-label="Create custom role"[\s\S]*?<svg[\s\S]*?<\/svg><\/button>/);
@@ -1293,7 +1317,8 @@ const proofFeed = imageProofFixture(6);
     assert.equal(await page.locator('#role-library-detail .role-specializations li').count(), 4);
     assert.match(await page.locator('#role-library-detail').textContent(), /Developer[\s\S]*Boundaries/);
     await page.locator('.role-choice[data-role-select="reviewer"]').click();
-    assert.match(await page.locator('#role-library-detail').textContent(), /Friendly[\s\S]*Hostile/);
+    assert.match(await page.locator('#role-library-detail').textContent(), /Reviewer one[\s\S]*Reviewer four/);
+    assert.doesNotMatch(await page.locator('#role-library-detail').textContent(), /Friendly|Hostile/);
     await page.locator('.role-choice[data-role-select="developer"]').click();
     await page.getByRole("button", { name: "Edit Developer" }).click();
     assert.equal(await page.getByRole("button", { name: "Generate avatar" }).isDisabled(), true);

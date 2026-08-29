@@ -1953,7 +1953,7 @@ function roleCanMutate(command) {
 }
 
 function roleDisplayName(role) {
-  return ["dev", "developer"].includes(String(role?.id || "").toLowerCase()) ? "Developer" : (role?.name || role?.id || "Unknown role");
+  return role?.name || role?.id || "Unknown role";
 }
 
 function roleAvatar(role) {
@@ -2031,11 +2031,6 @@ function roleAssignmentsMarkup(roleId) {
   }).join("") + '</ul>';
 }
 
-function reviewerStancesMarkup(role) {
-  if (role?.id !== "reviewer") return "";
-  return '<section class="reviewer-stances" aria-label="Reviewer stances"><h4>Reviewer stances</h4><dl><div><dt>Friendly</dt><dd>Collaborative strengths, gaps, and clear repairs.</dd></div><div><dt>Hostile</dt><dd>Red-team the artifact with counterexamples, hidden assumptions, edge cases, and failure tests.</dd></div></dl><small>Stance changes neither authority nor the verdict evidence bar.</small></section>';
-}
-
 function roleTextList(items, empty) {
   return Array.isArray(items) && items.length ? '<ul>' + items.map((item) => '<li>' + escapeHTML(item) + '</li>').join("") + '</ul>' : '<p class="role-specializations-empty">' + escapeHTML(empty) + '</p>';
 }
@@ -2058,7 +2053,7 @@ function roleDetailMarkup(role, match = { label: "" }) {
   if (!role) return '<p class="empty-state">Choose a role to inspect its server-owned manifest.</p>';
   const displayName = roleDisplayName(role);
   const editAllowed = roleCanMutate("ROLE_MANIFEST_REVISE");
-  return '<header class="role-detail-head">' + roleAvatar(role) + '<div><p class="eyebrow">' + escapeHTML(roleSourceLabel(role)) + '</p><h3 id="role-detail-title">' + escapeHTML(displayName) + '</h3><p>Profession · not authority</p></div><div class="role-detail-actions"><button class="icon-button" data-role-action="generate-avatar" type="button" disabled aria-label="Generate avatar" title="Generate avatar unavailable"><svg class="lucide" aria-hidden="true"><use href="#lucide-sparkles"></use></svg></button><button class="icon-button" data-role-action="edit" data-role-id="' + escapeHTML(role.id) + '" type="button" aria-label="Edit ' + escapeHTML(displayName) + '" title="Edit role"' + (editAllowed ? "" : ' disabled') + '><svg class="lucide" aria-hidden="true"><use href="#lucide-pencil"></use></svg></button></div></header>' + (match.label ? '<p class="role-match">' + escapeHTML(match.label) + '</p>' : '') + '<div class="role-detail-sections"><section><h4>Purpose</h4><p class="role-detail-copy">' + escapeHTML(role.purpose || "Purpose unavailable.") + '</p></section><section><h4>Owns</h4>' + roleTextList(role.owns, "No owned surface declared.") + '</section><section><h4>Instructions</h4>' + roleInstructionsMarkup(role.instructions) + '</section><section><h4>Current owners</h4>' + roleAssignmentsMarkup(role.id) + '</section><section><h4>Specializations</h4><div>' + roleSpecializationsMarkup(role) + '<small>Metadata only · no authority transfer.</small></div></section>' + reviewerStancesMarkup(role) + '<section><h4>Default skills</h4>' + roleTextList(role.default_skills, "No default skills.") + '</section><section><h4>Boundaries</h4>' + roleTextList(role.boundaries, "No boundaries declared.") + '</section></div><footer><span>' + escapeHTML(roleHasRetainedAvatar(role) ? "Retained avatar" : "Accent fallback") + '</span><span>Active tasks retain their accepted role version.</span></footer>';
+  return '<header class="role-detail-head">' + roleAvatar(role) + '<div><p class="eyebrow">' + escapeHTML(roleSourceLabel(role)) + '</p><h3 id="role-detail-title">' + escapeHTML(displayName) + '</h3><p>Profession · not authority</p></div><div class="role-detail-actions"><button class="icon-button" data-role-action="generate-avatar" type="button" disabled aria-label="Generate avatar" title="Generate avatar unavailable"><svg class="lucide" aria-hidden="true"><use href="#lucide-sparkles"></use></svg></button><button class="icon-button" data-role-action="edit" data-role-id="' + escapeHTML(role.id) + '" type="button" aria-label="Edit ' + escapeHTML(displayName) + '" title="Edit role"' + (editAllowed ? "" : ' disabled') + '><svg class="lucide" aria-hidden="true"><use href="#lucide-pencil"></use></svg></button></div></header>' + (match.label ? '<p class="role-match">' + escapeHTML(match.label) + '</p>' : '') + '<div class="role-detail-sections"><section><h4>Purpose</h4><p class="role-detail-copy">' + escapeHTML(role.purpose || "Purpose unavailable.") + '</p></section><section><h4>Owns</h4>' + roleTextList(role.owns, "No owned surface declared.") + '</section><section><h4>Instructions</h4>' + roleInstructionsMarkup(role.instructions) + '</section><section><h4>Current owners</h4>' + roleAssignmentsMarkup(role.id) + '</section><section><h4>Specializations</h4><div>' + roleSpecializationsMarkup(role) + '<small>Metadata only · no authority transfer.</small></div></section><section><h4>Default skills</h4>' + roleTextList(role.default_skills, "No default skills.") + '</section><section><h4>Boundaries</h4>' + roleTextList(role.boundaries, "No boundaries declared.") + '</section></div><footer><span>' + escapeHTML(roleHasRetainedAvatar(role) ? "Retained avatar" : "Accent fallback") + '</span><span>Active tasks retain their accepted role version.</span></footer>';
 }
 
 function renderRoleLibrary() {
