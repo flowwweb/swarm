@@ -1,5 +1,6 @@
 const state = { token: "", overview: null, proof: [], proofCollections: new Map(), proofStatuses: new Map(), proofStatus: "idle", proofSequence: 0, usageHistory: null, usageWindowHours: 24, usageScopeKey: "", usageStatus: "idle", usageError: "", projectProgress: null, projectProgressProjectId: "", projectProgressStatus: "idle", projectProgressError: "", projectProgressFeed: null, projectProgressFeedProjectId: "", projectProgressFeedStatus: "idle", projectProgressFeedError: "", projectTab: "overview", projectUiMode: "screens", runLogs: new Map(), runLogRequestGenerations: new Map(), runLogSurfaceStates: new Map(), runLogAgent: null, diagnostics: null, health: null, storage: null, config: null, configStatus: "idle", configError: "", chatRelaySaving: false, ctrlSettings: null, auto: null, autoBindingKey: "", autoStatus: "idle", autoError: "", autoSaving: false, skills: null, skillsError: "", roleManifests: null, roleManifestStatus: "unavailable", roleManifestError: "", roleManifestMessage: "", roleManifestSaving: false, roleManifestRetry: null, roleEditorMode: "", agentsTab: "active", roleEditorTrigger: null, roleSearch: "", roleTypes: new Set(["builtin", "custom"]), roleSearchFields: new Set(["profession", "specialization", "alias", "skills", "purpose"]), selectedRoleId: "", assetView: "grid", selectedAssetIdentity: "", onboardingStep: 0, onboardingShown: false, onboardingTrigger: null, onboardingConfigPending: new Map(), onboardingConfigFailures: new Map(), notifications: null, notificationBindingKey: "", notificationStatus: "idle", notificationError: "", notificationAckFlight: null, notificationRequestGenerations: new Map(), notificationPresentedIds: new Set(), notificationToast: null, notificationToastTimer: null, notificationTrigger: null, connectionStatus: "reconnecting", view: "overview", projectId: "all", ctrlId: "", settingsCtrlId: "", settingsScopeType: "", settingsScopeId: "", evidenceImages: [], evidenceIndex: 0, evidenceTrigger: null };
 let configMutationTail = Promise.resolve();
+let configAuthorityGeneration = 0;
 const EVIDENCE_THUMBNAIL_PAGE_SIZE = 24;
 const USAGE_WINDOW_LABELS = { 1: "1h", 24: "1d" };
 const RUN_LOG_CLIENT_LIMIT = 200;
@@ -326,6 +327,7 @@ function setOnboardingStep(step, focusDot = false) {
 }
 
 async function saveConfigMutation(changes) {
+  configAuthorityGeneration += 1;
   const operation = configMutationTail.then(async () => {
     const config = await api('/api/config', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ changes }) });
     state.config = config;
@@ -334,6 +336,36 @@ async function saveConfigMutation(changes) {
   });
   configMutationTail = operation.then(() => undefined, () => undefined);
   return operation;
+}
+
+async function readConfigState(previousConfig = state.config, saveError = "") {
+  const generation = configAuthorityGeneration;
+  try {
+    const config = await api('/api/config');
+    if (generation !== configAuthorityGeneration) {
+      if (saveError) state.configError = saveError + " Current settings changed before the reload completed.";
+      return false;
+    }
+    if (saveError) Object.assign(state, chatRelayFailureState(previousConfig, config, saveError));
+    else {
+      state.config = config;
+      state.configStatus = "current";
+      state.configError = "";
+    }
+    return true;
+  } catch (error) {
+    if (generation !== configAuthorityGeneration) {
+      if (saveError) state.configError = saveError + " Current settings changed before the reload completed.";
+      return false;
+    }
+    if (saveError) Object.assign(state, chatRelayFailureState(previousConfig, null, saveError));
+    else {
+      state.config = previousConfig;
+      state.configStatus = previousConfig ? "stale" : "unavailable";
+      state.configError = error.message || "Settings could not be loaded.";
+    }
+    throw error;
+  }
 }
 
 async function saveOnboardingConfig(key, value) {
@@ -3037,16 +3069,8 @@ async function refreshOverview(showLoading = true) {
     await Promise.all([refreshProof(), refreshUsageHistory(), refreshProjectProgress(), refreshProjectProgressFeed(), refreshRoleManifests(), refreshNotifications(), refreshRunLogs()]);
     const selectedCtrl = state.ctrlId || historicalControllers()[0]?.id || '';
     const previousConfig = state.config;
-    const results = await Promise.allSettled([api('/api/diagnostics'), api('/api/health/settings'), api('/api/storage'), selectedCtrl ? api('/api/ctrl-settings?ctrl_id=' + encodeURIComponent(selectedCtrl)) : Promise.resolve(null), api('/api/config')]);
-    [state.diagnostics, state.health, state.storage, state.ctrlSettings, state.config] = results.map((result) => result.status === 'fulfilled' ? result.value : null);
-    if (results[4].status === 'fulfilled') {
-      state.configStatus = "current";
-      state.configError = "";
-    } else {
-      state.config = previousConfig;
-      state.configStatus = previousConfig ? "stale" : "unavailable";
-      state.configError = results[4].reason?.message || "Settings could not be loaded.";
-    }
+    const results = await Promise.allSettled([api('/api/diagnostics'), api('/api/health/settings'), api('/api/storage'), selectedCtrl ? api('/api/ctrl-settings?ctrl_id=' + encodeURIComponent(selectedCtrl)) : Promise.resolve(null), readConfigState(previousConfig)]);
+    [state.diagnostics, state.health, state.storage, state.ctrlSettings] = results.slice(0, 4).map((result) => result.status === 'fulfilled' ? result.value : null);
     await Promise.all([refreshSkills(), refreshAutoStatus()]);
     renderAllViews();
   } catch (error) {
@@ -3481,11 +3505,8 @@ document.addEventListener('change', async (event) => {
       await saveConfigMutation(chatRelayMutation(requestedValue).changes);
     } catch (error) {
       const saveError = error.message || "Chat relay setting could not be saved.";
-      try {
-        Object.assign(state, chatRelayFailureState(previousConfig, await api('/api/config'), saveError));
-      } catch (reloadError) {
-        Object.assign(state, chatRelayFailureState(previousConfig, null, saveError));
-      }
+      try { await readConfigState(previousConfig, saveError); }
+      catch (reloadError) { /* readConfigState retains the truthful failure state. */ }
     } finally {
       state.chatRelaySaving = false;
       renderSettings();

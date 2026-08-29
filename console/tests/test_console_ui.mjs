@@ -136,7 +136,10 @@ assert.match(app, /element\.matches\("summary"\)[\s\S]*?return "summary:" \+ sum
 assert.match(app, /kind === "summary"[\s\S]*?querySelector\("summary"\)/);
 assert.match(app, /function saveOnboardingConfig\(key, value\)/);
 assert.match(app, /let configMutationTail = Promise\.resolve\(\)/);
+assert.match(app, /let configAuthorityGeneration = 0/);
 assert.match(app, /function saveConfigMutation\(changes\)[\s\S]*?configMutationTail = operation\.then/);
+assert.match(app, /function saveConfigMutation\(changes\)[\s\S]*?configAuthorityGeneration \+= 1/);
+assert.match(app, /function readConfigState\(previousConfig = state\.config, saveError = ""\)[\s\S]*?const generation = configAuthorityGeneration[\s\S]*?generation !== configAuthorityGeneration/);
 assert.match(app, /state\.onboardingConfigPending\.set\(key, \{ value, focusIdentity \}\)/);
 assert.match(app, /state\.onboardingConfigFailures\.set\(key, \{ value, error:/);
 assert.match(app, /configEditable\(key\) && !state\.onboardingConfigPending\.has\(key\)/);
@@ -911,7 +914,9 @@ assert.deepEqual([relayReadbackFailed.config.settings.chat_relay.enabled, relayR
 assert.match(relayReadbackFailed.configError, /current server value could not be reloaded/);
 assert.equal(evaluateChatRelayFailure(null, null, "Save failed.").configStatus, "unavailable");
 assert.match(app, /await saveConfigMutation\(chatRelayMutation\(requestedValue\)\.changes\)/);
-assert.match(app, /Object\.assign\(state, chatRelayFailureState\(previousConfig, await api\('\/api\/config'\), saveError\)\)/);
+assert.match(app, /await readConfigState\(previousConfig, saveError\)/);
+assert.match(app, /readConfigState\(previousConfig\)/);
+assert.equal((app.match(/api\('\/api\/config'\)/g) || []).length, 1, "all config GET readbacks use the guarded authority seam");
 assert.doesNotMatch(settingsSource, /api\('\/api\/config'/);
 assert.doesNotMatch(app, /\/api\/(?:chat-relay|relay)|CodexAppServerAdapter|chat_relay\.(?:provider|surface|mode)/);
 assert.match(app, /function forecastSummary\(node\)/);
@@ -1413,7 +1418,13 @@ async function mount(page, overview, overrides = {}) {
     }
     if (url.pathname === "/api/presence") return route.fulfill(response({ ok: true, proof_sequence: proofFeed.sequence || 0 }));
     if (url.pathname === "/api/config") {
-      if (request.method() === "GET") return route.fulfill(response(configControl.feed));
+      if (request.method() === "GET") {
+        const snapshot = structuredClone(configControl.feed);
+        const deferredGet = Array.isArray(configControl.deferredGets) ? configControl.deferredGets.shift() : configControl.deferredGet;
+        if (deferredGet) await deferredGet;
+        if (configControl.failGet) return route.fulfill({ status: 503, contentType: "application/json", body: JSON.stringify({ ok: false, error: "settings readback unavailable" }) });
+        return route.fulfill(response(snapshot));
+      }
       const payload = request.postDataJSON();
       configRequests.push(payload);
       const deferredPost = Array.isArray(configControl.deferredPosts) ? configControl.deferredPosts.shift() : configControl.deferredPost;
@@ -1642,6 +1653,68 @@ const proofFeed = imageProofFixture(6);
     assert.equal(await serialPage.locator("#onboarding-panel-5").getByLabel("Usage saver").isChecked(), true);
     assert.deepEqual(serial.runtimeErrors, []);
     await serialPage.close();
+
+    let releaseStaleConfigGet;
+    const readRaceControl = {
+      failPost: false,
+      feed: structuredClone(fixture.config),
+      deferredGet: null,
+    };
+    const readRacePage = await browser.newPage({ viewport: { width: 1024, height: 760 } });
+    const readRace = await mount(readRacePage, scopedFixture(), { ...overrides, configControl: readRaceControl });
+    readRaceControl.deferredGet = new Promise((resolve) => { releaseStaleConfigGet = resolve; });
+    const staleGetRequest = readRacePage.waitForRequest((request) => request.url().endsWith("/api/config") && request.method() === "GET");
+    const staleRefresh = readRacePage.evaluate(() => refreshOverview(false));
+    await staleGetRequest;
+    const newerPostRequest = readRacePage.waitForRequest((request) => request.url().endsWith("/api/config") && request.method() === "POST");
+    await readRacePage.evaluate(() => saveConfigMutation({ "execution.fast_mode": true }));
+    await newerPostRequest;
+    assert.equal(await readRacePage.evaluate(() => state.config.settings.execution.fast_mode), true);
+    releaseStaleConfigGet();
+    readRaceControl.deferredGet = null;
+    await staleRefresh;
+    assert.equal(await readRacePage.evaluate(() => state.config.settings.execution.fast_mode), true, "a GET started before an acknowledged POST cannot overwrite its config");
+    assert.deepEqual(readRace.configRequests, [{ changes: { "execution.fast_mode": true } }]);
+    assert.deepEqual(readRace.runtimeErrors, []);
+    await readRacePage.close();
+
+    let releaseFailedWriteReadback;
+    const failedReadbackRaceControl = {
+      failPost: false,
+      feed: {
+        ...structuredClone(fixture.config),
+        editable: [...fixture.config.editable, "chat_relay.enabled"],
+        settings: { ...structuredClone(fixture.config.settings), chat_relay: { enabled: false } },
+      },
+      deferredGet: null,
+    };
+    const failedReadbackRacePage = await browser.newPage({ viewport: { width: 1024, height: 760 } });
+    const failedReadbackRace = await mount(failedReadbackRacePage, scopedFixture(), { ...overrides, configControl: failedReadbackRaceControl });
+    await failedReadbackRacePage.evaluate(() => setView("settings"));
+    await failedReadbackRacePage.locator("#settings-advanced > summary").click();
+    await failedReadbackRacePage.locator("#chat-relay-enabled").waitFor({ state: "visible" });
+    failedReadbackRaceControl.failPost = true;
+    failedReadbackRaceControl.deferredGet = new Promise((resolve) => { releaseFailedWriteReadback = resolve; });
+    const failedRelayPost = failedReadbackRacePage.waitForRequest((request) => request.url().endsWith("/api/config") && request.method() === "POST");
+    const delayedReadback = failedReadbackRacePage.waitForRequest((request) => request.url().endsWith("/api/config") && request.method() === "GET");
+    await failedReadbackRacePage.locator("#chat-relay-enabled").click();
+    await failedRelayPost;
+    await delayedReadback;
+    failedReadbackRaceControl.failPost = false;
+    const replacementPost = failedReadbackRacePage.waitForRequest((request) => request.url().endsWith("/api/config") && request.method() === "POST");
+    await failedReadbackRacePage.evaluate(() => saveConfigMutation({ "execution.usage_saver": true }));
+    await replacementPost;
+    assert.equal(await failedReadbackRacePage.evaluate(() => state.config.settings.execution.usage_saver), true);
+    releaseFailedWriteReadback();
+    failedReadbackRaceControl.deferredGet = null;
+    await failedReadbackRacePage.waitForFunction(() => state.chatRelaySaving === false);
+    assert.equal(await failedReadbackRacePage.evaluate(() => state.config.settings.execution.usage_saver), true, "a failed-write readback cannot overwrite a later acknowledged config");
+    assert.equal(await failedReadbackRacePage.evaluate(() => state.configStatus), "current");
+    assert.match(await failedReadbackRacePage.evaluate(() => state.configError), /setting acknowledgement unavailable[\s\S]*Current settings changed before the reload completed/);
+    assert.deepEqual(failedReadbackRace.configRequests, [{ changes: { "chat_relay.enabled": true } }, { changes: { "execution.usage_saver": true } }]);
+    assert.equal(failedReadbackRace.runtimeErrors.length, 1);
+    assert.match(failedReadbackRace.runtimeErrors[0], /503 \(Service Unavailable\)/);
+    await failedReadbackRacePage.close();
 
     const failedConfigControl = { failPost: true, feed: structuredClone(fixture.config), deferredPost: null };
     const failedPage = await browser.newPage({ viewport: { width: 1024, height: 760 } });
