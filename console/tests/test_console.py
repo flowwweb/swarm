@@ -1439,6 +1439,16 @@ class SwarmConsoleTests(unittest.TestCase):
         self.assertEqual(first["controllers"], second["controllers"])
         self.assertEqual(first["projects"], second["projects"])
 
+        app = console.App(self.codex_home, self.config)
+        with self.assertRaisesRegex(console.ConsoleError, "host-confirmed CTRL/project binding"):
+            app.auto_status("structural-root", "project:swarm")
+        connection = sqlite3.connect(self.database)
+        connection.execute("UPDATE threads SET agent_role='ctrl' WHERE id='structural-root'")
+        connection.commit()
+        connection.close()
+        restarted = console.App(self.codex_home, self.config)
+        self.assertFalse(restarted.auto_status("structural-root", "project:swarm")["enabled"])
+
     def test_structural_ctrl_requires_fresh_open_project_bound_subagent(self) -> None:
         now = 2_000_000_000_000
         old = now - 3 * 60 * 60 * 1000

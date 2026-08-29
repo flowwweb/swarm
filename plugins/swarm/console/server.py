@@ -4540,10 +4540,17 @@ def _controller_classification(
     }
 
 
-def _is_host_confirmed_ctrl(controller: dict[str, Any]) -> bool:
+def _is_observed_ctrl_for_projection(controller: dict[str, Any]) -> bool:
     return (
         controller.get("controller_classification") == "swarm_ctrl"
         and controller.get("controller_classification_source") in HOST_CTRL_CLASSIFICATION_SOURCES
+    )
+
+
+def _is_authoritative_ctrl_for_execution(controller: dict[str, Any]) -> bool:
+    return (
+        controller.get("controller_classification") == "swarm_ctrl"
+        and controller.get("controller_classification_source") == "host_threads.agent_role"
     )
 
 
@@ -6066,7 +6073,7 @@ class App:
         project = next((item for item in navigation["projects"] if item["id"] == project_id), None)
         if (
             ctrl is None or ctrl.get("project_id") != project_id
-            or not _is_host_confirmed_ctrl(ctrl)
+            or not _is_authoritative_ctrl_for_execution(ctrl)
             or ctrl.get("visibility") != "visible"
             or project is None or ctrl_id not in project.get("ctrl_ids", [])
         ):
@@ -6643,7 +6650,7 @@ class App:
         stale_after_ms = max(1, int(view.get("heartbeat_minutes") or 30)) * PROGRESS_FRESHNESS_WINDOWS * 60_000
         visible_controllers = [
             controller for controller in view.get("controllers", [])
-            if _is_host_confirmed_ctrl(controller)
+            if _is_observed_ctrl_for_projection(controller)
             and not controller.get("archived", False)
             and (node := nodes_by_id.get(str(controller.get("id")))) is not None
             and not node.get("virtual")
@@ -7186,7 +7193,7 @@ class App:
         ]
         authoritative_controllers = [
             controller for controller in controllers
-            if _is_host_confirmed_ctrl(controller)
+            if _is_observed_ctrl_for_projection(controller)
         ]
         visible_controllers = [controller for controller in authoritative_controllers if not controller["archived"]]
         active_controllers = [controller for controller in visible_controllers if controller["status"] == "active"]
@@ -7342,7 +7349,7 @@ class App:
                 or controller_id not in project_ctrl_ids[project_id]
                 or controller.get("visibility") != "visible"
                 or controller.get("archived") is not False
-                or not _is_host_confirmed_ctrl(controller)
+                or not _is_observed_ctrl_for_projection(controller)
             ):
                 continue
             seen_controller_ids.add(controller_id)
@@ -8106,7 +8113,7 @@ class App:
         )
         if (
             controller is None or controller.get("project_id") != resolved_project_id
-            or not _is_host_confirmed_ctrl(controller)
+            or not _is_observed_ctrl_for_projection(controller)
             or controller.get("visibility") != "visible"
             or project is None or ctrl_id not in project.get("ctrl_ids", [])
         ):
