@@ -696,7 +696,6 @@ assert.match(app, /\.replace\(\/\\blocalhost\\b\/gi, "console"\)/);
 assert.match(indexHtml, /id="view-agents"[\s\S]*?Active swarm[\s\S]*?Role library/);
 assert.match(indexHtml, /id="agents-panel-active"[\s\S]*?id="agents-panel-library"/);
 assert.match(indexHtml, /id="role-library-status" role="status"/);
-assert.match(app, /Role manifests unavailable · built-in names only/);
 assert.match(app, /function renderAgentHierarchy\(\)/);
 assert.match(app, /<details class="agent-project" open>/);
 assert.match(app, /agentBranch\(ctrl, "CTRL"/);
@@ -705,20 +704,79 @@ assert.match(app, /agentRow\(node, "DOER"\)/);
 assert.match(app, /project\.visibility !== "archived" && project\.archived !== true/);
 assert.match(app, /Unknown task/);
 const expectedProfessions = ["Accountant", "Analyst", "Architect", "Artist", "Auditor", "Assistant", "Designer", "Developer", "Educator", "Inventor", "Legal", "Manager", "Marketer", "Operator", "Producer", "Recruiter", "Researcher", "Reviewer", "Security", "Specialist", "Strategist", "Support", "Tester", "Writer"];
-for (const profession of expectedProfessions) assert.match(app, new RegExp(`\\["[a-z]+", "${profession}"`));
-assert.equal((app.match(/\["[a-z]+", "(?:Accountant|Analyst|Architect|Artist|Auditor|Assistant|Designer|Developer|Educator|Inventor|Legal|Manager|Marketer|Operator|Producer|Recruiter|Researcher|Reviewer|Security|Specialist|Strategist|Support|Tester|Writer)"/g) || []).length, 24);
-assert.doesNotMatch(app, /\["critic", "Critic"\]/);
+function roleManifestFixture() {
+  return {
+    ok: true,
+    schema_version: 1,
+    built_in_count: 24,
+    roles: expectedProfessions.map((name, index) => {
+      const id = name.toLowerCase();
+      const digest = String(index + 1).padStart(64, "0");
+      return {
+        id, name, purpose: `${name} purpose`, owns: [`${name} surface`], instructions: [`Use ${name} judgment`], boundaries: ["No authority transfer"],
+        default_skills: [`${id}-skill`], specializations: [`${name} one`, `${name} two`, `${name} three`, `${name} four`],
+        avatar_asset_digest: digest, accent: "#ff6948", version: `${id}-v1`, source: "builtin", provenance: ["fixture"],
+        built_in: true, active_version: `${id}-v1`, canonical_version: `${id}-v1`, override_active: false,
+        versions: [], source_event_ids: [],
+      };
+    }),
+    assignments: [{ task_id: "nested-task", role_id: "developer", manifest_version: "developer-v1", event_id: "assignment-1", event_seq: 1 }],
+    cursor: { event_seq: 1 },
+    hierarchy_binding: { project_field: "project_id", ctrl_membership_field: "controller_ids", task_identity_field: "id", assignment_task_field: "task_id", levels: ["PROJECT", "CTRL", "LEAD", "DOER"] },
+    command_contract: {
+      endpoint: "/api/role-manifests/commands",
+      commands: ["ROLE_MANIFEST_CREATE", "ROLE_MANIFEST_REVISE", "ROLE_MANIFEST_RESET"],
+      optimistic_concurrency_field: "expected_active_version",
+      avatar: { selection_field: "avatar_asset_digest", selection_commands: ["ROLE_MANIFEST_CREATE", "ROLE_MANIFEST_REVISE"], requires_retained_immutable_asset: true, generation_command: null },
+    },
+    claim_limit: "Server-owned role manifests are projected without transferring task authority.",
+  };
+}
+assert.doesNotMatch(app, /ROLE_PROFESSIONS|\["accountant", "Accountant"\]|\["critic", "Critic"\]/);
 assert.match(app, /function roleManifestProjection\(\)/);
-assert.match(app, /state\.roleManifests && Array\.isArray\(state\.roleManifests\.roles\)/);
+assert.match(app, /roles\.map\(roleAccordionMarkup\)\.join\(""\)/);
+const roleProjectionStart = app.indexOf("function roleManifestProjectionValue");
+const roleProjectionEnd = app.indexOf("\nfunction roleManifestProjection()", roleProjectionStart);
+const evaluateRoleProjection = vm.runInNewContext(`(() => { ${app.slice(roleProjectionStart, roleProjectionEnd)}; return roleManifestProjectionValue; })()`);
+const validRoleProjection = roleManifestFixture();
+assert.equal(evaluateRoleProjection(validRoleProjection).roles.length, 24);
+assert.equal(evaluateRoleProjection({ ...validRoleProjection, roles: validRoleProjection.roles.filter((role) => role.id !== "assistant") }), null);
+assert.equal(evaluateRoleProjection({ ...validRoleProjection, roles: [...validRoleProjection.roles, { ...validRoleProjection.roles[0], id: "critic", built_in: false }] }), null);
+assert.equal(evaluateRoleProjection({ ...validRoleProjection, roles: validRoleProjection.roles.map((role) => role.id === "developer" ? { ...role, specializations: role.specializations.slice(0, 3) } : role) }), null);
+const customRoleProjection = { ...validRoleProjection, roles: [...validRoleProjection.roles, { ...validRoleProjection.roles[0], id: "custom-helper", name: "Custom helper", source: "custom", built_in: false, specializations: [] }] };
+assert.equal(evaluateRoleProjection(customRoleProjection).roles.length, 25);
+assert.equal(evaluateRoleProjection({ ...customRoleProjection, roles: customRoleProjection.roles.map((role) => role.id === "custom-helper" ? { ...role, specializations: ["1", "2", "3", "4", "5"] } : role) }), null);
+const roleCommandStart = app.indexOf("function roleCommandPayload");
+const roleCommandEnd = app.indexOf("\nfunction roleEditorCommand", roleCommandStart);
+const roleCommandHelpers = vm.runInNewContext(`(() => { ${app.slice(roleCommandStart, roleCommandEnd)}; return { roleCommandPayload, roleCommandFingerprint, roleCommandReceiptMatches, roleCommandObserved, roleCommandResolution }; })()`);
+const manifestDraft = { name: "Custom helper", purpose: "Help", owns: [], instructions: [], boundaries: [], default_skills: [], specializations: [], avatar_asset_digest: "f".repeat(64), accent: "#ff6948" };
+const createPayload = roleCommandHelpers.roleCommandPayload("ROLE_MANIFEST_CREATE", "custom-helper", null, manifestDraft, "event-create", "dedupe-create", 100);
+assert.deepEqual(JSON.parse(JSON.stringify(createPayload)), { command: "ROLE_MANIFEST_CREATE", role_id: "custom-helper", event_id: "event-create", dedupe_key: "dedupe-create", expected_active_version: null, provenance: "console:role-library", observed_at_ms: 100, manifest: manifestDraft });
+const revisePayload = roleCommandHelpers.roleCommandPayload("ROLE_MANIFEST_REVISE", "developer", "developer-v1", manifestDraft, "event-revise", "dedupe-revise", 101);
+assert.equal(revisePayload.expected_active_version, "developer-v1");
+const resetPayload = roleCommandHelpers.roleCommandPayload("ROLE_MANIFEST_RESET", "developer", "developer-v2", null, "event-reset", "dedupe-reset", 102);
+assert.equal(Object.hasOwn(resetPayload, "manifest"), false);
+assert.equal(roleCommandHelpers.roleCommandReceiptMatches({ ok: true, receipt: { command: "ROLE_MANIFEST_REVISE", role_id: "developer", event_id: "event-revise" } }, revisePayload), true);
+assert.equal(roleCommandHelpers.roleCommandObserved({ roles: [{ id: "developer", source_event_ids: ["event-revise"] }] }, revisePayload), true);
+assert.equal(roleCommandHelpers.roleCommandResolution(null, 409, true, false), "conflict");
+assert.equal(roleCommandHelpers.roleCommandResolution({ ok: true }, null, false, false), "accepted-unreadable");
+assert.equal(roleCommandHelpers.roleCommandResolution(null, null, true, false), "ambiguous");
+assert.equal(roleCommandHelpers.roleCommandResolution(null, 409, true, true), "observed");
+const roleAvatarStart = app.indexOf("function roleAvatarDigestAllowed");
+const roleAvatarEnd = app.indexOf("\nfunction roleAvatarDigestValid", roleAvatarStart);
+const evaluateRoleAvatarDigest = vm.runInNewContext(`(() => { ${app.slice(roleAvatarStart, roleAvatarEnd)}; return roleAvatarDigestAllowed; })()`);
+assert.equal(evaluateRoleAvatarDigest("a".repeat(64), [{ avatar_asset_digest: "a".repeat(64) }], []), true);
+assert.equal(evaluateRoleAvatarDigest("b".repeat(64), [], [{ digest: "b".repeat(64) }]), true);
+assert.equal(evaluateRoleAvatarDigest("c".repeat(64), [], []), false);
 assert.doesNotMatch(app, /localStorage|sessionStorage/);
 assert.match(indexHtml, /id="role-editor" aria-labelledby="role-editor-title"/);
 for (const field of ["role-field-id", "role-field-name", "role-field-purpose", "role-field-owns", "role-field-instructions", "role-field-boundaries", "role-field-skills", "role-field-avatar", "role-field-accent", "role-field-specializations", "role-field-version", "role-field-source"]) assert.match(indexHtml, new RegExp(`id="${field}"`));
 assert.match(indexHtml, /Tasks already in progress keep the version they started with/);
-assert.match(indexHtml, /Choose or upload an approved avatar through Assets/);
-assert.match(indexHtml, /data-role-action="choose-avatar" type="button" disabled>Choose in Assets/);
+assert.match(indexHtml, /Choose a retained immutable image asset/);
+assert.doesNotMatch(indexHtml, /Choose in Assets/);
 assert.match(indexHtml, /data-role-action="generate-avatar" type="button" disabled aria-label="Generate avatar" title="Generate avatar"/);
 assert.match(app, /function roleSpecializations\(role\)/);
-assert.match(app, /role\.specializations\.slice\(0, 4\)/);
+assert.match(app, /role\.specializations[\s\S]*?\.slice\(0, 4\)/);
 assert.match(app, /Specializations<\/h3>' \+ roleSpecializationsMarkup\(role\)/);
 assert.doesNotMatch(indexHtml + app, /Game Development|Game Design/);
 assert.match(indexHtml, /id="role-save" type="submit" disabled/);
@@ -726,17 +784,28 @@ assert.match(indexHtml, /id="role-reset" data-role-action="reset" type="button" 
 assert.match(app, /state\.roleEditorTrigger\?\.focus/);
 assert.match(app, /\.showModal\(\)/);
 assert.match(app, /await api\('\/api\/role-manifests'\)/);
-assert.doesNotMatch(app, /ROLE_MANIFEST_CREATE|ROLE_MANIFEST_REVISE|ROLE_MANIFEST_RESET/);
+assert.match(app, /await api\("\/api\/role-manifests\/commands"/);
+assert.match(app, /const reloaded = await refreshRoleManifests\(\)/);
+assert.match(app, /failure\?\.status, reloaded, observed/);
 assert.match(css, /\.role-avatar/);
 assert.match(css, /\.role-library-grid/);
 assert.match(css, /\.role-editor::backdrop/);
-assert.match(app, /<span class="role-avatar"[\s\S]*?<use href="#lucide-circle-user-round"><\/use><\/svg>/);
+assert.match(app, /const visual = retained \? '<img[\s\S]*?<use href="#lucide-circle-user-round"><\/use><\/svg>/);
+assert.match(app, /return '<span class="role-avatar"/);
 assert.doesNotMatch(css, /\.role-avatar i::before|\.role-avatar i::after/);
-assert.match(app, /aria-label="Inspect ' \+ escapeHTML\(role\.name\)/);
-assert.match(app, /Read-only until the server accepts the role-manifest command contract/);
+assert.match(app, /<details class="role-card" data-role-id=/);
+assert.match(app, /aria-label="Edit ' \+ escapeHTML\(role\.name\)/);
+assert.match(app, /Friendly<\/dt>[\s\S]*?Hostile<\/dt>/);
+assert.match(app, /server exposes no generation command/);
+assert.match(app, /generate\.disabled = true/);
+assert.match(indexHtml, /id="role-create"[\s\S]*?aria-label="Create custom role"[\s\S]*?<svg[\s\S]*?<\/svg><\/button>/);
+assert.doesNotMatch(indexHtml, /id="role-create"[^>]*>[\s\S]*?Create role<\/button>/);
 assert.doesNotMatch(app, /verifiedYieldProjection\(\)\?\.attention_items/);
 assert.doesNotMatch(indexHtml + app + css, /--legacy-browser|mockup|prototype reference/i);
 assert.match(css, /@media \(max-width: 620px\)[\s\S]*\.agents-tabs button \{ min-height:44px; \}/);
+assert.match(css, /\.role-card > summary \{[\s\S]*?min-height:76px/);
+assert.match(css, /@media \(max-width: 620px\)[\s\S]*\.role-card > summary \{ min-height:72px; \}[\s\S]*\.role-card-columns,.reviewer-stances dl \{ grid-template-columns:1fr; \}/);
+assert.match(css, /\.role-editor-fields input,.role-editor-fields textarea,.role-editor-fields select[\s\S]*?\.role-editor-fields input,.role-editor-fields select \{ min-height:44px; \}/);
 assert.match(css, /@media \(max-width: 620px\)[\s\S]*\.project-tabs button \{ min-height:44px; \}/);
 assert.match(css, /@media \(max-width: 620px\)[\s\S]*\.review-actions \.icon-button,\.review-actions summary \{ width:44px; height:44px; \}/);
 assert.match(css, /@media \(max-width: 620px\)[\s\S]*\.settings-card input,\.settings-card select,\.settings-card \.quiet-button \{ min-height:44px; \}/);
@@ -881,7 +950,7 @@ async function mount(page, overview, overrides = {}) {
     }
     if (url.pathname === "/api/project-progress-feed") return route.fulfill(response(overrides.projectProgressFeed || fixture.projectProgressFeed));
     if (url.pathname === "/api/project-progress") return route.fulfill(response(overrides.projectProgress || { ok: true, project_id: url.searchParams.get("project_id"), scope_version: 1, status: "UNMEASURED", percent: null, blocks: [], cursor: { event_seq: 0 } }));
-    if (url.pathname === "/api/role-manifests") return route.fulfill(response(overrides.roleManifests || { ok: true, schema_version: 1, built_in_count: 24, roles: [], assignments: [], cursor: { event_seq: 0 } }));
+    if (url.pathname === "/api/role-manifests") return route.fulfill(response(overrides.roleManifests || roleManifestFixture()));
     if (url.pathname === "/api/notifications" && request.method() === "GET") return notificationControl.failGet ? route.fulfill({ status: 503, contentType: "application/json", body: JSON.stringify({ ok: false, error: "notification feed unavailable" }) }) : route.fulfill(response(notificationControl.feed));
     if (url.pathname === "/api/notifications/seen" && request.method() === "POST") {
       const payload = request.postDataJSON();
@@ -958,14 +1027,7 @@ const proofFeed = imageProofFixture(6);
     projectProgress,
     projectProgressFeed: fixture.projectProgressFeed,
     notifications: notificationFixture(),
-    roleManifests: {
-      ok: true,
-      schema_version: 1,
-      built_in_count: 24,
-      roles: [{ id: "developer", name: "Developer", source: "builtin", version: "developer-v1", specializations: ["Web applications", "Native applications", "Developer tooling", "Runtime systems"] }],
-      assignments: [],
-      cursor: { event_seq: 1 },
-    },
+    roleManifests: roleManifestFixture(),
   };
   try {
     const onboardingPage = await browser.newPage({ viewport: { width: 1024, height: 760 } });
@@ -1043,12 +1105,13 @@ const proofFeed = imageProofFixture(6);
     assert.match(await page.locator("#agent-hierarchy").textContent(), /CTRL/);
     await page.getByRole("tab", { name: "Role library", exact: true }).click();
     assert.equal(await page.locator(".role-card").count(), 24);
-    assert.match(await page.locator("#role-library-status").textContent(), /server-owned|unavailable|No role manifests/i);
-    await page.locator('.role-card[data-role-id="developer"]').click();
-    assert.equal(await page.locator("#role-detail .role-specializations li").count(), 4);
-    await page.getByRole("button", { name: "Inspect Developer" }).click();
+    assert.match(await page.locator("#role-library-status").textContent(), /24 server-owned role manifests/);
+    await page.locator('.role-card[data-role-id="developer"] > summary').click();
+    assert.equal(await page.locator('.role-card[data-role-id="developer"] .role-specializations li').count(), 4);
+    assert.match(await page.locator('.role-card[data-role-id="reviewer"]').textContent(), /Friendly[\s\S]*Hostile/);
+    await page.getByRole("button", { name: "Edit Developer" }).click();
     assert.equal(await page.getByRole("button", { name: "Generate avatar" }).isDisabled(), true);
-    assert.equal(await page.locator("#role-field-specializations input").count(), 4);
+    assert.equal((await page.locator("#role-field-specializations").inputValue()).split("\n").length, 4);
     await page.getByRole("button", { name: "Close role editor" }).click();
     await page.getByRole("tab", { name: "Review", exact: true }).click();
     assert.equal(await page.locator(".review-row").count(), 6);

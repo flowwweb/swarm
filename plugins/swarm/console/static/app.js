@@ -1,15 +1,7 @@
-const state = { token: "", overview: null, proof: [], proofCollections: new Map(), proofStatuses: new Map(), proofStatus: "idle", proofSequence: 0, usageHistory: null, usageWindowHours: 24, usageScopeKey: "", usageStatus: "idle", usageError: "", projectProgress: null, projectProgressProjectId: "", projectProgressStatus: "idle", projectProgressError: "", projectProgressFeed: null, projectProgressFeedProjectId: "", projectProgressFeedStatus: "idle", projectProgressFeedError: "", projectTab: "overview", runLogs: new Map(), runLogRequestGenerations: new Map(), runLogSurfaceStates: new Map(), runLogAgent: null, diagnostics: null, health: null, storage: null, config: null, configStatus: "idle", configError: "", chatRelaySaving: false, ctrlSettings: null, auto: null, autoBindingKey: "", autoStatus: "idle", autoError: "", autoSaving: false, skills: null, skillsError: "", roleManifests: null, roleManifestStatus: "unavailable", roleManifestError: "", agentsTab: "active", selectedRoleId: "accountant", roleEditorTrigger: null, assetView: "grid", selectedAssetIdentity: "", onboardingStep: 0, onboardingShown: false, onboardingTrigger: null, notifications: null, notificationBindingKey: "", notificationStatus: "idle", notificationError: "", notificationAckFlight: null, notificationRequestGenerations: new Map(), notificationPresentedIds: new Set(), notificationToast: null, notificationToastTimer: null, notificationTrigger: null, connectionStatus: "reconnecting", view: "overview", projectId: "all", ctrlId: "", settingsCtrlId: "", settingsScopeType: "", settingsScopeId: "", evidenceImages: [], evidenceIndex: 0, evidenceTrigger: null };
+const state = { token: "", overview: null, proof: [], proofCollections: new Map(), proofStatuses: new Map(), proofStatus: "idle", proofSequence: 0, usageHistory: null, usageWindowHours: 24, usageScopeKey: "", usageStatus: "idle", usageError: "", projectProgress: null, projectProgressProjectId: "", projectProgressStatus: "idle", projectProgressError: "", projectProgressFeed: null, projectProgressFeedProjectId: "", projectProgressFeedStatus: "idle", projectProgressFeedError: "", projectTab: "overview", runLogs: new Map(), runLogRequestGenerations: new Map(), runLogSurfaceStates: new Map(), runLogAgent: null, diagnostics: null, health: null, storage: null, config: null, configStatus: "idle", configError: "", chatRelaySaving: false, ctrlSettings: null, auto: null, autoBindingKey: "", autoStatus: "idle", autoError: "", autoSaving: false, skills: null, skillsError: "", roleManifests: null, roleManifestStatus: "unavailable", roleManifestError: "", roleManifestMessage: "", roleManifestSaving: false, roleManifestRetry: null, roleEditorMode: "", agentsTab: "active", roleEditorTrigger: null, assetView: "grid", selectedAssetIdentity: "", onboardingStep: 0, onboardingShown: false, onboardingTrigger: null, notifications: null, notificationBindingKey: "", notificationStatus: "idle", notificationError: "", notificationAckFlight: null, notificationRequestGenerations: new Map(), notificationPresentedIds: new Set(), notificationToast: null, notificationToastTimer: null, notificationTrigger: null, connectionStatus: "reconnecting", view: "overview", projectId: "all", ctrlId: "", settingsCtrlId: "", settingsScopeType: "", settingsScopeId: "", evidenceImages: [], evidenceIndex: 0, evidenceTrigger: null };
 const EVIDENCE_THUMBNAIL_PAGE_SIZE = 24;
 const USAGE_WINDOW_LABELS = { 1: "1h", 24: "1d" };
 const RUN_LOG_CLIENT_LIMIT = 200;
-const ROLE_PROFESSIONS = [
-  ["accountant", "Accountant"], ["analyst", "Analyst"], ["architect", "Architect"], ["artist", "Artist"],
-  ["auditor", "Auditor"], ["assistant", "Assistant"], ["designer", "Designer"], ["developer", "Developer"],
-  ["educator", "Educator"], ["inventor", "Inventor"], ["legal", "Legal"], ["manager", "Manager"],
-  ["marketer", "Marketer"], ["operator", "Operator"], ["producer", "Producer"], ["recruiter", "Recruiter"],
-  ["researcher", "Researcher"], ["reviewer", "Reviewer"], ["security", "Security"], ["specialist", "Specialist"],
-  ["strategist", "Strategist"], ["support", "Support"], ["tester", "Tester"], ["writer", "Writer"],
-].map(([id, name]) => ({ id, name }));
 const ONBOARDING_STEPS = [
   { name: "Welcome", primary: "Start guided tour" },
   { name: "Owned lanes", primary: "Continue" },
@@ -235,7 +227,11 @@ async function api(path, options = {}) {
   try {
     const response = await fetch(path, { ...fetchOptions, ...(controller ? { signal: controller.signal } : {}), headers: { ...(state.token ? { "X-Swarm-Token": state.token } : {}), ...(fetchOptions.headers || {}) } });
     const data = await response.json();
-    if (!response.ok) throw new Error(data.error || "Request failed (" + response.status + ")");
+    if (!response.ok) {
+      const requestError = new Error(data.error || "Request failed (" + response.status + ")");
+      requestError.status = response.status;
+      throw requestError;
+    }
     return data;
   } catch (error) {
     if (error?.name === "AbortError") throw connectionFailure("Project data request timed out");
@@ -1786,76 +1782,114 @@ function renderAgentHierarchy() {
   }).join("") : '<p class="empty-state agents-empty">No CTRL, LEAD, or DOER authority is available in this project scope.</p>';
 }
 
+function roleManifestProjectionValue(value) {
+  if (!value || value.ok !== true || value.schema_version !== 1 || value.built_in_count !== 24 || !Array.isArray(value.roles) || !Array.isArray(value.assignments)) return null;
+  const ids = value.roles.map((role) => String(role?.id || ""));
+  const builtIns = value.roles.filter((role) => role?.built_in === true);
+  if (ids.some((id) => !id) || new Set(ids).size !== ids.length || builtIns.length !== 24 || !builtIns.some((role) => role.id === "assistant") || ids.includes("critic")) return null;
+  const validSpecializations = value.roles.every((role) => Array.isArray(role.specializations) && role.specializations.length <= 4 && (!role.built_in || role.specializations.length === 4));
+  return validSpecializations ? value : null;
+}
+
 function roleManifestProjection() {
-  return state.roleManifests && Array.isArray(state.roleManifests.roles) ? state.roleManifests : null;
+  return roleManifestProjectionValue(state.roleManifests);
 }
 
 function roleRecord(roleId) {
   return roleManifestProjection()?.roles.find((role) => role.id === roleId) || null;
 }
 
-function rolePresentation(roleId) {
-  const builtIn = ROLE_PROFESSIONS.find((role) => role.id === roleId);
-  const record = roleRecord(roleId);
-  return { ...builtIn, ...(record || {}), manifestAvailable: Boolean(record) };
+function roleCommandContract() {
+  const contract = roleManifestProjection()?.command_contract;
+  const commands = ["ROLE_MANIFEST_CREATE", "ROLE_MANIFEST_REVISE", "ROLE_MANIFEST_RESET"];
+  return contract?.endpoint === "/api/role-manifests/commands"
+    && contract.optimistic_concurrency_field === "expected_active_version"
+    && commands.every((command) => contract.commands?.includes(command))
+    && contract.avatar?.selection_field === "avatar_asset_digest"
+    && contract.avatar?.requires_retained_immutable_asset === true
+    && contract.avatar?.generation_command == null ? contract : null;
+}
+
+function roleCanMutate(command) {
+  return state.roleManifestStatus === "current" && roleCommandContract()?.commands.includes(command) === true && !state.roleManifestSaving;
 }
 
 function roleAvatar(role) {
-  const accent = /^#[0-9a-f]{6}$/i.test(role.accent || "") ? role.accent : "#8f9db0";
-  return '<span class="role-avatar" style="--role-accent:' + escapeHTML(accent) + '" aria-hidden="true"><svg class="lucide"><use href="#lucide-circle-user-round"></use></svg><b>' + escapeHTML(role.name?.slice(0, 1) || "?") + '</b></span>';
+  const accent = /^#[0-9a-f]{6}$/i.test(role?.accent || "") ? role.accent : "#8f9db0";
+  const retained = assetItems().find((item) => String(item.digest || "").toLowerCase() === String(role?.avatar_asset_digest || "").toLowerCase());
+  const visual = retained ? '<img loading="lazy" decoding="async" src="' + proofMediaURL(retained) + '" alt="">' : '<svg class="lucide"><use href="#lucide-circle-user-round"></use></svg><b>' + escapeHTML(role?.name?.slice(0, 1) || "?") + '</b>';
+  return '<span class="role-avatar" style="--role-accent:' + escapeHTML(accent) + '" aria-hidden="true">' + visual + '</span>';
 }
 
 function roleSourceLabel(role) {
-  if (!role.manifestAvailable) return "Unknown";
-  return role.source === "builtin" ? "Built in" : role.source === "user_override" ? "Custom version" : humanize(role.source || "Unknown");
+  return role?.source === "builtin" ? "Built in" : role?.source === "user_override" ? "Custom version" : role?.source === "custom" ? "Custom role" : "Unknown";
 }
 
 function roleSpecializations(role) {
   if (!Array.isArray(role?.specializations)) return [];
-  return role.specializations.slice(0, 4).map((item) => {
-    if (typeof item === "string") return { id: item, name: item };
-    return { id: String(item?.id || item?.name || ""), name: String(item?.name || item?.label || item?.id || "") };
-  }).filter((item) => item.id && item.name);
+  return role.specializations.map((item) => String(typeof item === "string" ? item : item?.name || item?.label || item?.id || "").trim()).filter(Boolean).slice(0, 4);
 }
 
-function roleSpecializationsMarkup(role, editable = false) {
+function roleSpecializationsMarkup(role) {
   const items = roleSpecializations(role);
-  if (!items.length) return '<p class="role-specializations-empty">Not provided by the server.</p>';
-  return '<ul class="role-specializations">' + items.map((item) => '<li>' + (editable ? '<label><input type="checkbox" disabled> ' : '') + escapeHTML(item.name) + (editable ? '</label>' : '') + '</li>').join("") + '</ul>';
+  return items.length ? '<ul class="role-specializations">' + items.map((item) => '<li>' + escapeHTML(item) + '</li>').join("") + '</ul>' : '<p class="role-specializations-empty">No specializations.</p>';
 }
 
-function renderRoleDetail() {
-  const role = rolePresentation(state.selectedRoleId);
-  const owns = Array.isArray(role.owns) && role.owns.length ? role.owns : ["Unknown"];
-  const skills = Array.isArray(role.default_skills) && role.default_skills.length ? role.default_skills : ["Unknown"];
-  $("#role-detail").innerHTML = '<div class="role-detail-head">' + roleAvatar(role) + '<div><p class="eyebrow">' + escapeHTML(roleSourceLabel(role)) + '</p><h2>' + escapeHTML(role.name) + '</h2></div><button class="icon-button" data-role-action="edit" data-role-id="' + escapeHTML(role.id) + '" type="button" aria-label="Inspect ' + escapeHTML(role.name) + '"><svg class="lucide" aria-hidden="true"><use href="#lucide-pencil"></use></svg></button></div><p class="role-purpose">' + escapeHTML(role.purpose || "Unknown") + '</p><section><h3>Owns</h3><ul>' + owns.map((item) => '<li>' + escapeHTML(item) + '</li>').join("") + '</ul></section><section><h3>Default skills</h3><div class="role-skill-list">' + skills.map((item) => '<span>' + escapeHTML(item) + '</span>').join("") + '</div></section><section><h3>Specializations</h3>' + roleSpecializationsMarkup(role) + '<small>Manifest metadata only · authority is unchanged.</small></section><dl class="role-detail-meta"><div><dt>Version</dt><dd>' + escapeHTML(role.version || "Unknown") + '</dd></div><div><dt>Avatar asset</dt><dd>' + escapeHTML(role.avatar_asset_digest || "Unknown") + '</dd></div></dl><p class="role-retention-note">Tasks already in progress keep the role version they started with.</p>';
+function roleAssignments(roleId) {
+  return (roleManifestProjection()?.assignments || []).filter((item) => item.role_id === roleId);
+}
+
+function roleAssignmentsMarkup(roleId) {
+  const nodes = new Map((state.overview?.nodes || []).map((node) => [node.id, node]));
+  const assignments = roleAssignments(roleId);
+  if (!assignments.length) return '<p class="role-specializations-empty">No current owners.</p>';
+  return '<ul class="role-bindings">' + assignments.map((assignment) => {
+    const node = nodes.get(assignment.task_id);
+    const owner = node?.owner_id || node?.worker || node?.owner || "Unassigned";
+    return '<li><strong>' + escapeHTML(owner) + '</strong><span>' + escapeHTML(assignment.task_id) + '</span></li>';
+  }).join("") + '</ul>';
+}
+
+function reviewerStancesMarkup(role) {
+  if (role?.id !== "reviewer") return "";
+  return '<section class="reviewer-stances" aria-label="Reviewer stances"><h4>Reviewer stances</h4><dl><div><dt>Friendly</dt><dd>Collaborative strengths, gaps, and clear repairs.</dd></div><div><dt>Hostile</dt><dd>Red-team the artifact with counterexamples, hidden assumptions, edge cases, and failure tests.</dd></div></dl><small>Stance changes neither authority nor the verdict evidence bar.</small></section>';
+}
+
+function roleTextList(items, empty) {
+  return Array.isArray(items) && items.length ? '<ul>' + items.map((item) => '<li>' + escapeHTML(item) + '</li>').join("") + '</ul>' : '<p class="role-specializations-empty">' + escapeHTML(empty) + '</p>';
+}
+
+function roleAccordionMarkup(role) {
+  const editAllowed = roleCanMutate("ROLE_MANIFEST_REVISE");
+  return '<details class="role-card" data-role-id="' + escapeHTML(role.id) + '"><summary>' + roleAvatar(role) + '<span><strong>' + escapeHTML(role.name) + '</strong><small>' + escapeHTML(roleSourceLabel(role) + " · " + (role.active_version || role.version || "Unknown version")) + '</small></span><svg class="lucide role-disclosure" aria-hidden="true"><use href="#lucide-chevron-right"></use></svg></summary><div class="role-card-body"><p class="role-purpose">' + escapeHTML(role.purpose || "Purpose unavailable.") + '</p><div class="role-card-columns"><section><h3>Owns</h3>' + roleTextList(role.owns, "No owned surface declared.") + '</section><section><h3>Default skills</h3>' + roleTextList(role.default_skills, "No default skills.") + '</section><section><h3>Instructions</h3>' + roleTextList(role.instructions, "No instructions.") + '</section><section><h3>Current owners</h3>' + roleAssignmentsMarkup(role.id) + '</section><section><h3>Specializations</h3>' + roleSpecializationsMarkup(role) + '<small>Metadata only · no authority transfer.</small></section><section><h3>Avatar</h3><code>' + escapeHTML(role.avatar_asset_digest || "Unknown") + '</code></section></div>' + reviewerStancesMarkup(role) + '<footer><p>Active tasks retain version ' + escapeHTML(role.active_version || role.version || "Unknown") + '.</p><button class="icon-button" data-role-action="edit" data-role-id="' + escapeHTML(role.id) + '" type="button" aria-label="Edit ' + escapeHTML(role.name) + '" title="Edit role"' + (editAllowed ? "" : ' disabled') + '><svg class="lucide" aria-hidden="true"><use href="#lucide-pencil"></use></svg></button></footer></div></details>';
 }
 
 function renderRoleLibrary() {
-  const manifestCount = roleManifestProjection()?.roles.length || 0;
-  const roleStatus = state.roleManifestStatus === "current" && manifestCount
-    ? manifestCount + " role manifest" + (manifestCount === 1 ? "" : "s") + " · server-owned versions"
-    : state.roleManifestStatus === "current"
-      ? "No role manifests returned · built-in names only"
+  const projection = roleManifestProjection();
+  const roles = projection?.roles || [];
+  const create = $("#role-create");
+  const active = state.agentsTab === "active";
+  create.hidden = active;
+  create.disabled = !roleCanMutate("ROLE_MANIFEST_CREATE");
+  create.setAttribute("aria-disabled", String(create.disabled));
+  let status = state.roleManifestStatus === "loading" || state.roleManifestStatus === "refreshing"
+    ? "Loading server-owned role manifests"
     : state.roleManifestStatus === "stale"
-      ? "Last received role manifests · refresh failed"
-      : state.roleManifestStatus === "loading"
-        ? "Loading server-owned role manifests"
-        : (state.roleManifestError || "Role manifests unavailable · built-in names only");
-  $("#role-library-status").textContent = roleStatus;
-  $("#role-library-grid").innerHTML = ROLE_PROFESSIONS.map(({ id }) => {
-    const role = rolePresentation(id);
-    const selected = state.selectedRoleId === id;
-    return '<button class="role-card ' + (selected ? 'is-selected' : '') + '" data-role-id="' + escapeHTML(id) + '" type="button" aria-pressed="' + String(selected) + '">' + roleAvatar(role) + '<span><strong>' + escapeHTML(role.name) + '</strong><small>' + escapeHTML(roleSourceLabel(role)) + '</small></span></button>';
-  }).join("");
-  renderRoleDetail();
+      ? "Showing the last received role manifests · refresh failed"
+      : state.roleManifestStatus === "current" && projection
+        ? roles.length + " server-owned role manifest" + (roles.length === 1 ? "" : "s")
+        : state.roleManifestStatus === "current"
+          ? "Role manifest response was invalid"
+          : (state.roleManifestError || "Role manifests unavailable");
+  if (state.roleManifestMessage) status += " · " + state.roleManifestMessage;
+  $("#role-library-status").textContent = status;
+  $("#role-library-grid").innerHTML = roles.length ? roles.map(roleAccordionMarkup).join("") : '<p class="empty-state">No authoritative role manifests are available.</p>';
 }
 
 function renderAgents() {
   const active = state.agentsTab === "active";
   $$('[data-agents-tab]').forEach((tab) => { const selected = tab.dataset.agentsTab === state.agentsTab; tab.classList.toggle("is-active", selected); tab.setAttribute("aria-selected", String(selected)); tab.tabIndex = selected ? 0 : -1; });
   $$('[data-agents-panel]').forEach((panel) => { panel.hidden = panel.dataset.agentsPanel !== state.agentsTab; });
-  $("#role-create").hidden = active;
   renderAgentHierarchy();
   renderRoleLibrary();
 }
@@ -1865,9 +1899,53 @@ function roleFieldValue(id, value) {
   if (field) field.value = value == null ? "" : String(value);
 }
 
+function roleLines(value) {
+  return String(value || "").split(/\r?\n/).map((item) => item.trim()).filter(Boolean);
+}
+
+function roleAvatarDigestAllowed(value, manifestRoles, retainedAssets) {
+  const digest = String(value || "").trim().toLowerCase();
+  if (!/^[0-9a-f]{64}$/.test(digest)) return false;
+  return manifestRoles.some((role) => String(role.avatar_asset_digest || "").toLowerCase() === digest)
+    || retainedAssets.some((item) => String(item.digest || "").toLowerCase() === digest);
+}
+
+function roleAvatarDigestValid(value) {
+  return roleAvatarDigestAllowed(value, roleManifestProjection()?.roles || [], assetItems());
+}
+
+function roleAvatarOptions(role) {
+  const options = new Map();
+  if (/^[0-9a-f]{64}$/i.test(role?.avatar_asset_digest || "")) options.set(role.avatar_asset_digest.toLowerCase(), "Current avatar");
+  assetItems().forEach((item) => {
+    const digest = String(item.digest || "").toLowerCase();
+    if (/^[0-9a-f]{64}$/.test(digest)) options.set(digest, item.caption || item.kind || "Retained asset");
+  });
+  return [...options].map(([digest, label]) => '<option value="' + digest + '">' + escapeHTML(label + " · " + digest.slice(0, 12)) + '</option>').join("");
+}
+
+function updateRoleEditorAuthority(message = "") {
+  const roleId = $("#role-field-id").value.trim();
+  const role = roleRecord(roleId);
+  const editing = state.roleEditorMode === "edit";
+  const command = editing ? "ROLE_MANIFEST_REVISE" : "ROLE_MANIFEST_CREATE";
+  const allowed = roleCanMutate(command);
+  $$("#role-editor input, #role-editor textarea, #role-editor select").forEach((field) => { field.disabled = !allowed; });
+  $("#role-field-id").readOnly = editing;
+  $("#role-save").disabled = !allowed || !roleAvatarDigestValid($("#role-field-avatar").value);
+  $("#role-reset").disabled = !(editing && role?.built_in && role.override_active && roleCanMutate("ROLE_MANIFEST_RESET"));
+  const generate = $('[data-role-action="generate-avatar"]');
+  generate.disabled = true;
+  generate.title = "Generate avatar is unavailable because the server exposes no generation command";
+  $("#role-editor-status").textContent = message || (allowed ? "Saving creates a new server-owned version." : "Role changes are unavailable until current server authority is available.");
+}
+
 function openRoleEditor(roleId = "", trigger = null) {
+  const role = roleId ? roleRecord(roleId) : { id: "", name: "", purpose: "", owns: [], instructions: [], boundaries: [], default_skills: [], specializations: [], avatar_asset_digest: "", accent: "#4da8ff", active_version: null, source: "custom" };
+  if (!role) return;
   const editing = Boolean(roleId);
-  const role = editing ? rolePresentation(roleId) : { id: "", name: "", purpose: "", owns: [], instructions: [], boundaries: [], default_skills: [], avatar_asset_digest: "", accent: "#4da8ff", version: "Unknown", source: "custom", manifestAvailable: false };
+  state.roleEditorMode = editing ? "edit" : "create";
+  state.roleManifestRetry = null;
   state.roleEditorTrigger = trigger;
   $("#role-editor-title").textContent = editing ? role.name + " manifest" : "Create role";
   roleFieldValue("#role-field-id", role.id);
@@ -1877,22 +1955,111 @@ function openRoleEditor(roleId = "", trigger = null) {
   roleFieldValue("#role-field-instructions", (role.instructions || []).join("\n"));
   roleFieldValue("#role-field-boundaries", (role.boundaries || []).join("\n"));
   roleFieldValue("#role-field-skills", (role.default_skills || []).join("\n"));
+  $("#role-field-avatar").innerHTML = roleAvatarOptions(role);
   roleFieldValue("#role-field-avatar", role.avatar_asset_digest);
   roleFieldValue("#role-field-accent", role.accent || "#4da8ff");
-  $("#role-field-specializations").innerHTML = roleSpecializationsMarkup(role, true);
-  $$("#role-editor input, #role-editor textarea").forEach((field) => { field.readOnly = true; });
-  $("#role-field-accent").disabled = true;
-  $("#role-field-version").textContent = role.version || "Unknown";
+  roleFieldValue("#role-field-specializations", roleSpecializations(role).join("\n"));
+  $("#role-field-version").textContent = role.active_version || role.version || "New role";
   $("#role-field-source").textContent = roleSourceLabel(role);
-  $("#role-reset").disabled = true;
-  $("#role-save").disabled = true;
-  $("#role-editor-status").textContent = "Read-only until the server accepts the role-manifest command contract.";
+  updateRoleEditorAuthority(!$("#role-field-avatar").value ? "Choose a retained image asset before saving." : "");
   $("#role-editor").showModal();
   requestAnimationFrame(() => (editing ? $("#role-field-name") : $("#role-field-id")).focus());
 }
 
 function closeRoleEditor() {
   if ($("#role-editor").open) $("#role-editor").close();
+}
+
+function roleEditorDraft() {
+  const specializations = roleLines($("#role-field-specializations").value);
+  if (specializations.length > 4) throw new Error("Choose no more than four specializations.");
+  if (roleRecord($("#role-field-id").value.trim())?.built_in && specializations.length !== 4) throw new Error("Built-in professions require exactly four specializations.");
+  const avatar = $("#role-field-avatar").value.trim().toLowerCase();
+  if (!roleAvatarDigestValid(avatar)) throw new Error("Choose a retained avatar asset.");
+  return {
+    name: $("#role-field-name").value.trim(), purpose: $("#role-field-purpose").value.trim(),
+    owns: roleLines($("#role-field-owns").value), instructions: roleLines($("#role-field-instructions").value),
+    boundaries: roleLines($("#role-field-boundaries").value), default_skills: roleLines($("#role-field-skills").value),
+    specializations, avatar_asset_digest: avatar, accent: $("#role-field-accent").value.toLowerCase(),
+  };
+}
+
+function roleCommandPayload(command, roleId, expectedVersion, manifest, eventId, dedupeKey, observedAtMs) {
+  const payload = { command, role_id: roleId, event_id: eventId, dedupe_key: dedupeKey, expected_active_version: expectedVersion, provenance: "console:role-library", observed_at_ms: observedAtMs };
+  if (command !== "ROLE_MANIFEST_RESET") payload.manifest = manifest;
+  return payload;
+}
+
+function roleCommandFingerprint(payload) {
+  return JSON.stringify({ command: payload.command, role_id: payload.role_id, expected_active_version: payload.expected_active_version, manifest: payload.manifest || null });
+}
+
+function roleCommandReceiptMatches(result, payload) {
+  return result?.ok === true && result.receipt?.command === payload.command && result.receipt?.role_id === payload.role_id && result.receipt?.event_id === payload.event_id;
+}
+
+function roleCommandObserved(projection, payload) {
+  return projection?.roles?.find((role) => role.id === payload.role_id)?.source_event_ids?.includes(payload.event_id) === true;
+}
+
+function roleCommandResolution(result, failureStatus, reloaded, observed) {
+  if (observed) return "observed";
+  if (failureStatus === 409) return "conflict";
+  if (result && !reloaded) return "accepted-unreadable";
+  return "ambiguous";
+}
+
+function roleEditorCommand(action) {
+  const roleId = $("#role-field-id").value.trim();
+  const current = roleRecord(roleId);
+  const command = action === "reset" ? "ROLE_MANIFEST_RESET" : state.roleEditorMode === "create" ? "ROLE_MANIFEST_CREATE" : "ROLE_MANIFEST_REVISE";
+  if (!roleCanMutate(command)) throw new Error("Current server authority is unavailable.");
+  const manifest = command === "ROLE_MANIFEST_RESET" ? null : roleEditorDraft();
+  const expected = command === "ROLE_MANIFEST_CREATE" ? null : current?.active_version;
+  const draft = roleCommandPayload(command, roleId, expected, manifest, "", "", 0);
+  const fingerprint = roleCommandFingerprint(draft);
+  if (state.roleManifestRetry?.fingerprint === fingerprint) return state.roleManifestRetry.payload;
+  if (!globalThis.crypto?.randomUUID) throw new Error("Secure command identity is unavailable.");
+  const payload = roleCommandPayload(command, roleId, expected, manifest, crypto.randomUUID(), crypto.randomUUID(), Date.now());
+  state.roleManifestRetry = { fingerprint, payload };
+  return payload;
+}
+
+async function submitRoleCommand(action = "save") {
+  if (state.roleManifestSaving) return;
+  let payload;
+  try { payload = roleEditorCommand(action); }
+  catch (error) { updateRoleEditorAuthority(error.message); return; }
+  state.roleManifestSaving = true;
+  updateRoleEditorAuthority("Saving role manifest…");
+  let result = null;
+  let failure = null;
+  try {
+    result = await api("/api/role-manifests/commands", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
+    if (!roleCommandReceiptMatches(result, payload)) throw new Error("Role command receipt did not match the submitted operation.");
+  } catch (error) { failure = error; }
+  const reloaded = await refreshRoleManifests();
+  const observed = reloaded && roleCommandObserved(roleManifestProjection(), payload);
+  const resolution = roleCommandResolution(result, failure?.status, reloaded, observed);
+  state.roleManifestSaving = false;
+  if (resolution === "observed") {
+    state.roleManifestRetry = null;
+    state.roleManifestMessage = failure ? "Role change reconciled from the server" : "Role change saved";
+    closeRoleEditor();
+    renderRoleLibrary();
+    return;
+  }
+  if (resolution === "conflict") {
+    state.roleManifestRetry = null;
+    state.roleManifestMessage = "Role changed elsewhere";
+    $("#role-field-version").textContent = roleRecord(payload.role_id)?.active_version || "Unknown";
+    updateRoleEditorAuthority("Role changed elsewhere. Latest server version loaded; review your draft and save again.");
+  } else if (resolution === "accepted-unreadable") {
+    updateRoleEditorAuthority("Command was accepted, but the current server version could not be reloaded. Refresh before continuing.");
+  } else {
+    updateRoleEditorAuthority("Save outcome is unverified. Retry reuses the same operation identity.");
+  }
+  renderRoleLibrary();
 }
 
 function configEditable(key) {
@@ -2254,16 +2421,21 @@ async function refreshAutoStatus() {
 }
 
 async function refreshRoleManifests() {
-  const hasLastGood = Array.isArray(state.roleManifests?.roles);
+  const lastGood = roleManifestProjectionValue(state.roleManifests);
+  const hasLastGood = Boolean(lastGood);
   state.roleManifestStatus = hasLastGood ? "refreshing" : "loading";
   try {
-    state.roleManifests = await api('/api/role-manifests');
+    const result = await api('/api/role-manifests');
+    if (!roleManifestProjectionValue(result)) throw new Error("Role manifest response was invalid.");
+    state.roleManifests = result;
     state.roleManifestStatus = "current";
     state.roleManifestError = "";
+    return true;
   } catch (error) {
-    if (!hasLastGood) state.roleManifests = null;
+    state.roleManifests = lastGood;
     state.roleManifestStatus = hasLastGood ? "stale" : "unavailable";
     state.roleManifestError = error.message || "Role library unavailable";
+    return false;
   }
 }
 
@@ -2422,17 +2594,11 @@ document.addEventListener("click", async (event) => {
     $("#agents-tab-" + state.agentsTab)?.focus({ preventScroll: true });
     return;
   }
-  const roleCard = event.target.closest(".role-card[data-role-id]");
-  if (roleCard) {
-    state.selectedRoleId = roleCard.dataset.roleId;
-    renderRoleLibrary();
-    $(".role-card[data-role-id='" + CSS.escape(state.selectedRoleId) + "']")?.focus({ preventScroll: true });
-    return;
-  }
   const roleAction = event.target.closest("[data-role-action]");
   if (roleAction) {
     if (roleAction.dataset.roleAction === "edit") openRoleEditor(roleAction.dataset.roleId, roleAction);
     if (roleAction.dataset.roleAction === "create" && !roleAction.disabled) openRoleEditor("", roleAction);
+    if (roleAction.dataset.roleAction === "reset" && !roleAction.disabled) await submitRoleCommand("reset");
     return;
   }
   const evidenceOpen = event.target.closest("[data-evidence-open]");
@@ -2601,7 +2767,11 @@ $("#notifications-retry").addEventListener("click", async () => {
 $("#role-editor-close").addEventListener("click", closeRoleEditor);
 $("#role-editor-cancel").addEventListener("click", closeRoleEditor);
 $("#role-editor").addEventListener("close", () => { state.roleEditorTrigger?.focus({ preventScroll: true }); state.roleEditorTrigger = null; });
-$("#role-editor-form").addEventListener("submit", (event) => { event.preventDefault(); $("#role-editor-status").textContent = "Role changes are unavailable until the server accepts the role-manifest command contract."; });
+$("#role-editor-form").addEventListener("input", () => {
+  state.roleManifestRetry = null;
+  updateRoleEditorAuthority(!$("#role-field-avatar").value ? "Choose a retained image asset before saving." : "");
+});
+$("#role-editor-form").addEventListener("submit", async (event) => { event.preventDefault(); await submitRoleCommand("save"); });
 $("#mobile-menu-button").addEventListener("click", () => setMobileDrawer(!$(".app-shell").classList.contains("is-drawer-open"), true));
 $("#drawer-backdrop").addEventListener("click", () => setMobileDrawer(false, true));
 mobileDrawerQuery.addEventListener("change", syncMobileDrawer);
