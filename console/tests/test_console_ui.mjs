@@ -94,8 +94,8 @@ assert.equal((indexHtml.match(/data-onboarding-step=/g) || []).length, 5);
 assert.match(indexHtml, /data-onboarding-step="0"[^>]*aria-label="Show welcome"[^>]*aria-controls="onboarding-panel-1"[^>]*aria-selected="true"[^>]*aria-current="step"/);
 for (const control of ["onboarding-close", "onboarding-skip", "onboarding-primary"]) assert.match(indexHtml, new RegExp(`id="${control}"[^>]*type="button"`));
 assert.match(indexHtml, /SWARM coordinates focused roles, clear ownership, and proof you can review\./);
-assert.match(css, /\.onboarding-dialog \{ width:min\(1120px,calc\(100vw - 48px\)\); height:min\(760px,calc\(100dvh - 48px\)\);/);
-assert.match(css, /\.onboarding-shell \{[^}]*padding:clamp\(18px,2\.6vw,32px\);/);
+assert.match(css, /\.onboarding-dialog \{ width:min\(1040px,calc\(100vw - 48px\)\); height:min\(720px,calc\(100dvh - 48px\)\);/);
+assert.match(css, /\.onboarding-shell \{[^}]*padding:clamp\(16px,2\.2vw,28px\);/);
 assert.match(css, /\.onboarding-mascot \{ width:clamp\(144px,17vw,196px\);/);
 assert.match(css, /\.onboarding-actions \{[^}]*display:grid;[^}]*grid-template-columns:minmax\(44px,1fr\) minmax\(220px,auto\) minmax\(44px,1fr\);/);
 assert.match(css, /\.onboarding-actions \.onboarding-skip \{ grid-column:2; grid-row:2;[^}]*\}/);
@@ -106,19 +106,27 @@ assert.match(indexHtml, /<link rel="icon" type="image\/png" sizes="64x64" href="
 assert.doesNotMatch(indexHtml, /swarm-favicon\.svg|<div class="onboarding-mascot"/);
 assert.match(indexHtml, /<h2>One prompt\. A coordinated team\.<\/h2>/);
 assert.match(indexHtml, /Prompt[\s\S]*?CTRL[\s\S]*?Designer[\s\S]*?Developer[\s\S]*?Reviewer/);
-assert.match(indexHtml, /data-onboarding-visual-gate="step-2-selection"/);
-assert.match(css, /@media \(max-width: 620px\)[\s\S]*?\.onboarding-flow \{[^}]*grid-template-areas:"prompt arrow ctrl" "roles roles roles"/);
-assert.match(css, /\.onboarding-flow-roles b \{[^}]*min-height:44px;[^}]*font-size:9px/);
+assert.match(indexHtml, /class="onboarding-flag-mascot"[\s\S]*?swarm-mascot-512\.png[\s\S]*?class="onboarding-flag"/);
+assert.match(indexHtml, /class="onboarding-flow" role="img" aria-label="A prompt enters CTRL, which routes work through three connected lines to Designer, Developer, and Reviewer\."/);
+assert.equal((indexHtml.match(/class="onboarding-flow-fanout"[\s\S]*?<i><\/i>/g) || []).length, 1);
+assert.match(css, /\.onboarding-flag i \{[^}]*conic-gradient\([^}]*#fff4df[^}]*#ff7a18/);
+assert.match(css, /\.onboarding-flow-node\.is-ctrl \{[^}]*clip-path:polygon\(18% 0,82% 0,100% 50%,82% 100%,18% 100%,0 50%\)/);
+assert.match(css, /\.onboarding-flow-fanout i:nth-child\(3\) \{ top:83\.33%; \}/);
+assert.match(css, /@media \(max-width: 620px\)[\s\S]*?\.onboarding-flow \{[^}]*grid-template-columns:66px 24px 70px 28px minmax\(88px,1fr\)/);
 assert.match(indexHtml, /<h2>A role for every kind of work\.<\/h2>/);
-for (const role of ["Developer", "Designer", "Architect", "Security"]) assert.match(indexHtml, new RegExp(`<strong>${role}</strong>`));
 assert.match(indexHtml, /CTRL brings in the right mix for your prompt\./);
-assert.match(indexHtml, /data-role-media-state="awaiting-admitted-registry"/);
-assert.doesNotMatch(indexHtml.match(/class="onboarding-role-examples"[\s\S]*?<\/div>/)?.[0] || "", /<svg|lucide/);
-assert.match(indexHtml, /<h2>Your project becomes a shared map\.<\/h2>/);
-assert.match(indexHtml, /Project manifest[\s\S]*?Screens &amp; designs[\s\S]*?Flow map[\s\S]*?Tables[\s\S]*?Agent-readable data/);
+assert.match(indexHtml, /id="onboarding-role-examples"[\s\S]*?data-role-media-state="unavailable"/);
+assert.match(app, /const ONBOARDING_ROLE_IDS = \["developer", "designer", "architect", "security"\]/);
+assert.match(app, /function onboardingRoleExamplesMarkup\(\)[\s\S]*?roleRecord\(roleId\)[\s\S]*?roleHasRetainedAvatar\(role\)[\s\S]*?roleAvatar\(role\)/);
+assert.match(app, /function renderOnboardingRoleExamples\(\)[\s\S]*?roleMediaState = [\s\S]*?"current" : "unavailable"/);
+assert.match(indexHtml, /<h2>Your project finds its shape\.<\/h2>/);
+assert.match(indexHtml, /SWARM turns a project into the useful views it needs—screens, flow maps, tables, and shared project data—automatically\./);
+const projectViewsPanel = indexHtml.match(/id="onboarding-panel-4"[\s\S]*?<\/section>/)?.[0] || "";
+assert.match(projectViewsPanel, /Your project[\s\S]*?Screens[\s\S]*?App map[\s\S]*?Tables[\s\S]*?Shared data/);
+assert.doesNotMatch(projectViewsPanel, /manifest|schema|digest|source of truth/i);
 assert.match(indexHtml, /id="onboarding-panel-5"[\s\S]*?<h2>Choose how SWARM works\.<\/h2>[\s\S]*?id="onboarding-configuration"/);
 assert.doesNotMatch(indexHtml, /class="onboarding-(topology|evidence)"/);
-assert.equal((indexHtml.match(/class="onboarding-mascot"/g) || []).length, 1);
+assert.equal((indexHtml.match(/swarm-mascot-512\.png/g) || []).length, 2);
 assert.match(app, /const ONBOARDING_STEPS = \[/);
 assert.match(app, /function renderOnboarding\(\)/);
 assert.match(app, /dot\.toggleAttribute\("aria-current", selected\)/);
@@ -1486,6 +1494,12 @@ const browserCandidates = [
 const executablePath = browserCandidates.find((candidate) => fs.existsSync(candidate));
 const browser = await chromium.launch({ headless: true, ...(executablePath ? { executablePath } : {}) });
 const proofFeed = imageProofFixture(6);
+  const onboardingProofFeed = structuredClone(proofFeed);
+  onboardingProofFeed.items.push(
+    { task_id: "ctrl", evidence_id: "role-avatar-designer", digest: String(7).padStart(64, "0"), media_type: "image/png", caption: "Designer role avatar" },
+    { task_id: "ctrl", evidence_id: "role-avatar-developer", digest: String(8).padStart(64, "0"), media_type: "image/png", caption: "Developer role avatar" },
+    { task_id: "ctrl", evidence_id: "role-avatar-security", digest: String(19).padStart(64, "0"), media_type: "image/png", caption: "Security role avatar" },
+  );
   const usageHistory = structuredClone(fixture.usageHistory);
   usageHistory.verified_yield = {
     schema_version: 1,
@@ -1519,7 +1533,7 @@ const proofFeed = imageProofFixture(6);
   };
   try {
     const onboardingPage = await browser.newPage({ viewport: { width: 1536, height: 1024 } });
-    const onboarding = await mount(onboardingPage, scopedFixture(), { ...overrides, keepOnboarding: true });
+    const onboarding = await mount(onboardingPage, scopedFixture(), { ...overrides, proofFeed: onboardingProofFeed, keepOnboarding: true });
     assert.equal(await onboardingPage.getByText(/^Step [1-5] of 5$/).count(), 0);
     assert.equal(await onboardingPage.locator('[data-onboarding-step][aria-current="step"]').getAttribute("data-onboarding-step"), "0");
     const desktopGeometry = await onboardingPage.locator("#onboarding-dialog").evaluate((dialog) => {
@@ -1529,7 +1543,7 @@ const proofFeed = imageProofFixture(6);
       const controls = [...dialog.querySelectorAll("button")].filter((button) => !button.hidden).map(rect);
       return { dialog: rect(dialog), primary, skip, controls, viewport: { width: innerWidth, height: innerHeight }, documentWidth: document.documentElement.scrollWidth };
     });
-    assert.ok(desktopGeometry.dialog.width <= 1121 && desktopGeometry.dialog.height <= 761);
+    assert.ok(desktopGeometry.dialog.width <= 1041 && desktopGeometry.dialog.height <= 721);
     assert.ok(desktopGeometry.dialog.left >= 0 && desktopGeometry.dialog.right <= desktopGeometry.viewport.width);
     assert.ok(desktopGeometry.dialog.top >= 0 && desktopGeometry.dialog.bottom <= desktopGeometry.viewport.height);
     assert.ok(desktopGeometry.controls.every((control) => control.width >= 44 && control.height >= 44));
@@ -1538,11 +1552,18 @@ const proofFeed = imageProofFixture(6);
     assert.ok(desktopGeometry.documentWidth <= desktopGeometry.viewport.width);
     await onboardingPage.getByRole("button", { name: "Start guided tour" }).click();
     assert.equal(await onboardingPage.locator('[data-onboarding-step][aria-current="step"]').getAttribute("data-onboarding-step"), "1");
+    assert.equal(await onboardingPage.locator(".onboarding-flow-fanout i").count(), 3);
+    assert.match(await onboardingPage.locator(".onboarding-flow .is-ctrl").evaluate((element) => getComputedStyle(element).clipPath), /polygon/);
+    assert.match(await onboardingPage.locator(".onboarding-flag i").evaluate((element) => getComputedStyle(element).backgroundImage), /conic-gradient/);
     await onboardingPage.getByRole("button", { name: "Continue" }).click();
     assert.equal(await onboardingPage.locator('[data-onboarding-step][aria-current="step"]').getAttribute("data-onboarding-step"), "2");
     assert.equal(await onboardingPage.getByRole("list", { name: "Example SWARM roles" }).getByRole("listitem").count(), 4);
+    assert.equal(await onboardingPage.locator('#onboarding-role-examples[data-role-media-state="current"] img').count(), 4);
+    assert.deepEqual(await onboardingPage.locator("#onboarding-role-examples strong").allTextContents(), ["Developer", "Designer", "Architect", "Security"]);
     await onboardingPage.getByRole("button", { name: "Continue" }).click();
     assert.equal(await onboardingPage.locator('[data-onboarding-step][aria-current="step"]').getAttribute("data-onboarding-step"), "3");
+    assert.equal(await onboardingPage.locator('.onboarding-project-views[role="img"]').count(), 1);
+    assert.match(await onboardingPage.locator("#onboarding-panel-4").textContent(), /useful views it needs/);
     await onboardingPage.getByRole("button", { name: "Continue" }).click();
     assert.equal(await onboardingPage.locator('[data-onboarding-step][aria-current="step"]').getAttribute("data-onboarding-step"), "4");
     assert.equal(await onboardingPage.getByRole("button", { name: "Start using SWARM" }).count(), 1);
@@ -1568,20 +1589,47 @@ const proofFeed = imageProofFixture(6);
     assert.deepEqual(onboarding.runtimeErrors, []);
     await onboardingPage.close();
 
+    const onboardingTabletPage = await browser.newPage({ viewport: { width: 834, height: 1112 } });
+    const onboardingTablet = await mount(onboardingTabletPage, scopedFixture(), { ...overrides, proofFeed: onboardingProofFeed, keepOnboarding: true });
+    await onboardingTabletPage.getByRole("button", { name: "Start guided tour" }).click();
+    const tabletFlowGeometry = await onboardingTabletPage.locator(".onboarding-flow-scene").evaluate((scene) => {
+      const roleNodes = [...scene.querySelectorAll(".onboarding-flow-roles b")];
+      return {
+        sceneWidth: scene.scrollWidth,
+        sceneClientWidth: scene.clientWidth,
+        roleTargets: roleNodes.map((node) => ({ width: node.getBoundingClientRect().width, height: node.getBoundingClientRect().height })),
+        documentWidth: document.documentElement.scrollWidth,
+        viewportWidth: innerWidth,
+      };
+    });
+    assert.ok(tabletFlowGeometry.sceneWidth <= tabletFlowGeometry.sceneClientWidth + 1);
+    assert.ok(tabletFlowGeometry.roleTargets.every((role) => role.width >= 44 && role.height >= 44));
+    assert.ok(tabletFlowGeometry.documentWidth <= tabletFlowGeometry.viewportWidth);
+    await onboardingTabletPage.getByRole("button", { name: "Continue" }).click();
+    assert.equal(await onboardingTabletPage.locator('#onboarding-role-examples[data-role-media-state="current"] img').count(), 4);
+    await onboardingTabletPage.getByRole("button", { name: "Continue" }).click();
+    assert.ok(await onboardingTabletPage.locator(".onboarding-project-views").evaluate((node) => node.scrollWidth <= node.clientWidth + 1));
+    assert.deepEqual(onboardingTablet.runtimeErrors, []);
+    await onboardingTabletPage.close();
+
     const onboardingMobilePage = await browser.newPage({ viewport: { width: 390, height: 844 } });
-    const onboardingMobile = await mount(onboardingMobilePage, scopedFixture(), { ...overrides, keepOnboarding: true });
+    const onboardingMobile = await mount(onboardingMobilePage, scopedFixture(), { ...overrides, proofFeed: onboardingProofFeed, keepOnboarding: true });
     await onboardingMobilePage.getByRole("button", { name: "Start guided tour" }).click();
     const mobileFlowGeometry = await onboardingMobilePage.locator(".onboarding-flow").evaluate((flow) => {
-      const rect = (element) => { const value = element.getBoundingClientRect(); return { top: value.top, bottom: value.bottom, width: value.width, height: value.height }; };
+      const rect = (element) => { const value = element.getBoundingClientRect(); return { left: value.left, right: value.right, top: value.top, bottom: value.bottom, width: value.width, height: value.height }; };
       const ctrl = rect(flow.querySelector(".is-ctrl"));
       const roles = [...flow.querySelectorAll(".onboarding-flow-roles b")].map((element) => ({ ...rect(element), fontSize: parseFloat(getComputedStyle(element).fontSize) }));
-      return { ctrl, roles };
+      return { ctrl, roles, scrollWidth: flow.scrollWidth, clientWidth: flow.clientWidth };
     });
     assert.equal(mobileFlowGeometry.roles.length, 3);
-    assert.ok(mobileFlowGeometry.roles.every((role) => role.width >= 90 && role.height >= 44 && role.fontSize >= 9));
-    assert.ok(mobileFlowGeometry.roles.every((role) => role.top > mobileFlowGeometry.ctrl.bottom));
+    assert.ok(mobileFlowGeometry.roles.every((role) => role.width >= 88 && role.height >= 44 && role.fontSize >= 9));
+    assert.ok(mobileFlowGeometry.roles.every((role) => role.left > mobileFlowGeometry.ctrl.right));
+    assert.ok(mobileFlowGeometry.roles[0].top < mobileFlowGeometry.roles[1].top && mobileFlowGeometry.roles[1].top < mobileFlowGeometry.roles[2].top);
+    assert.ok(mobileFlowGeometry.scrollWidth <= mobileFlowGeometry.clientWidth + 1);
     await onboardingMobilePage.getByRole("button", { name: "Continue" }).click();
+    assert.equal(await onboardingMobilePage.locator('#onboarding-role-examples[data-role-media-state="current"] img').count(), 4);
     await onboardingMobilePage.getByRole("button", { name: "Continue" }).click();
+    assert.ok(await onboardingMobilePage.locator(".onboarding-project-views").evaluate((node) => node.scrollWidth <= node.clientWidth + 1));
     await onboardingMobilePage.getByRole("button", { name: "Continue" }).click();
     const mobileGeometry = await onboardingMobilePage.locator("#onboarding-dialog").evaluate((dialog) => {
       const rect = (element) => { const value = element.getBoundingClientRect(); return { left: value.left, top: value.top, right: value.right, bottom: value.bottom, width: value.width, height: value.height }; };

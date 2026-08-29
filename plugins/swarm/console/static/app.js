@@ -9,9 +9,10 @@ const ONBOARDING_STEPS = [
   { name: "Welcome", primary: "Start guided tour" },
   { name: "Coordinated roles", primary: "Continue" },
   { name: "Role variety", primary: "Continue" },
-  { name: "Project manifest", primary: "Continue" },
+  { name: "Project views", primary: "Continue" },
   { name: "Configuration", primary: "Start using SWARM" },
 ];
+const ONBOARDING_ROLE_IDS = ["developer", "designer", "architect", "security"];
 const $ = (selector, root = document) => root.querySelector(selector);
 const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
 
@@ -242,6 +243,25 @@ function onboardingConfigurationMarkup() {
     '<div class="onboarding-config-save ' + (failures.length ? 'is-error' : '') + '" id="onboarding-config-status" data-onboarding-control="config-status" role="status" tabindex="-1"><span>' + escapeHTML(status) + '</span>' + (failures.length ? '<button class="quiet-button" type="button" data-onboarding-control="retry-config">Retry</button>' : '') + '</div>';
 }
 
+function onboardingRoleExamplesMarkup() {
+  return ONBOARDING_ROLE_IDS.map((roleId) => {
+    const role = roleRecord(roleId);
+    const admitted = role && roleHasRetainedAvatar(role);
+    const name = role ? roleDisplayName(role) : humanize(roleId);
+    const visual = admitted
+      ? roleAvatar(role)
+      : '<span class="onboarding-role-media is-unavailable" role="img" aria-label="' + escapeHTML(name) + ' avatar unavailable"><svg class="lucide" aria-hidden="true"><use href="#lucide-image-off"></use></svg></span>';
+    return '<article role="listitem" data-role-media-id="' + escapeHTML(roleId) + '" data-role-media-admitted="' + String(Boolean(admitted)) + '">' + visual + '<strong>' + escapeHTML(name) + '</strong></article>';
+  }).join("");
+}
+
+function renderOnboardingRoleExamples() {
+  const root = $("#onboarding-role-examples");
+  if (!root) return;
+  root.innerHTML = onboardingRoleExamplesMarkup();
+  root.dataset.roleMediaState = $$('[data-role-media-admitted="true"]', root).length === ONBOARDING_ROLE_IDS.length ? "current" : "unavailable";
+}
+
 function renderOnboarding() {
   const step = Math.min(Math.max(0, state.onboardingStep), ONBOARDING_STEPS.length - 1);
   state.onboardingStep = step;
@@ -270,6 +290,7 @@ function renderOnboarding() {
   $("#onboarding-primary").textContent = current.primary;
   $("#onboarding-primary").disabled = blocked;
   $("#onboarding-primary").toggleAttribute("aria-busy", finalStep && state.onboardingConfigPending.size > 0);
+  if (step === 2) renderOnboardingRoleExamples();
   if (finalStep) {
     const root = $("#onboarding-configuration");
     const focusIdentity = onboardingControlIdentity(document.activeElement);

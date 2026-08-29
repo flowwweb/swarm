@@ -179,7 +179,7 @@
             <button type="button" role="tab" id="onboarding-dot-1" data-onboarding-step="0" aria-label="Show welcome" aria-controls="onboarding-panel-1" aria-selected="true" aria-current="step"><span aria-hidden="true"></span></button>
             <button type="button" role="tab" id="onboarding-dot-2" data-onboarding-step="1" aria-label="Show coordinated roles" aria-controls="onboarding-panel-2" aria-selected="false" tabindex="-1"><span aria-hidden="true"></span></button>
             <button type="button" role="tab" id="onboarding-dot-3" data-onboarding-step="2" aria-label="Show role variety" aria-controls="onboarding-panel-3" aria-selected="false" tabindex="-1"><span aria-hidden="true"></span></button>
-            <button type="button" role="tab" id="onboarding-dot-4" data-onboarding-step="3" aria-label="Show project manifest" aria-controls="onboarding-panel-4" aria-selected="false" tabindex="-1"><span aria-hidden="true"></span></button>
+            <button type="button" role="tab" id="onboarding-dot-4" data-onboarding-step="3" aria-label="Show project views" aria-controls="onboarding-panel-4" aria-selected="false" tabindex="-1"><span aria-hidden="true"></span></button>
             <button type="button" role="tab" id="onboarding-dot-5" data-onboarding-step="4" aria-label="Show configuration" aria-controls="onboarding-panel-5" aria-selected="false" tabindex="-1"><span aria-hidden="true"></span></button>
           </div>
           <button class="icon-button onboarding-close" id="onboarding-close" type="button" aria-label="Close onboarding"><svg class="lucide" aria-hidden="true"><use href="#lucide-x"></use></svg></button>
@@ -194,32 +194,29 @@
           <section class="onboarding-panel" id="onboarding-panel-2" data-onboarding-panel="1" role="tabpanel" aria-labelledby="onboarding-dot-2" hidden>
             <h2>One prompt. A coordinated team.</h2>
             <p>Tell CTRL what you need. It routes the work to focused roles and brings the result back to you.</p>
-            <div class="onboarding-flow" aria-hidden="true" data-onboarding-visual-gate="step-2-selection">
-              <span class="onboarding-flow-node is-prompt">Prompt</span><svg class="lucide onboarding-flow-arrow"><use href="#lucide-chevron-right"></use></svg><span class="onboarding-flow-node is-ctrl">CTRL</span><svg class="lucide onboarding-flow-branch"><use href="#lucide-git-branch"></use></svg><span class="onboarding-flow-roles"><b>Designer</b><b>Developer</b><b>Reviewer</b></span>
+            <div class="onboarding-flow-scene">
+              <div class="onboarding-flag-mascot" aria-hidden="true"><img src="/assets/swarm-mascot-512.png" width="512" height="512" alt="" decoding="async" /><span class="onboarding-flag"><i></i></span></div>
+              <div class="onboarding-flow" role="img" aria-label="A prompt enters CTRL, which routes work through three connected lines to Designer, Developer, and Reviewer.">
+                <span class="onboarding-flow-node is-prompt">Prompt</span><span class="onboarding-flow-input" aria-hidden="true"><i></i></span><span class="onboarding-flow-node is-ctrl">CTRL</span><span class="onboarding-flow-fanout" aria-hidden="true"><i></i><i></i><i></i></span><span class="onboarding-flow-roles"><b>Designer</b><b>Developer</b><b>Reviewer</b></span>
+              </div>
             </div>
-            <p class="sr-only">Your prompt goes to CTRL. CTRL coordinates Designer, Developer, and Reviewer roles, then brings their work back together.</p>
           </section>
           <section class="onboarding-panel" id="onboarding-panel-3" data-onboarding-panel="2" role="tabpanel" aria-labelledby="onboarding-dot-3" hidden>
             <h2>A role for every kind of work.</h2>
             <p>Developer, Designer, Architect, Security—and 20 more. CTRL brings in the right mix for your prompt.</p>
-            <div class="onboarding-role-examples" role="list" aria-label="Example SWARM roles" data-role-media-state="awaiting-admitted-registry">
-              <article role="listitem" data-role-media-id="developer"><span class="onboarding-role-media" aria-hidden="true"></span><strong>Developer</strong></article>
-              <article role="listitem" data-role-media-id="designer"><span class="onboarding-role-media" aria-hidden="true"></span><strong>Designer</strong></article>
-              <article role="listitem" data-role-media-id="architect"><span class="onboarding-role-media" aria-hidden="true"></span><strong>Architect</strong></article>
-              <article role="listitem" data-role-media-id="security"><span class="onboarding-role-media" aria-hidden="true"></span><strong>Security</strong></article>
-            </div>
+            <div class="onboarding-role-examples" id="onboarding-role-examples" role="list" aria-label="Example SWARM roles" data-role-media-state="unavailable"></div>
           </section>
           <section class="onboarding-panel" id="onboarding-panel-4" data-onboarding-panel="3" role="tabpanel" aria-labelledby="onboarding-dot-4" hidden>
-            <h2>Your project becomes a shared map.</h2>
-            <p>One accepted project manifest turns your plan into synchronized screens and designs, a flow map, tables, and data agents can read.</p>
-            <div class="onboarding-manifest" aria-hidden="true">
-              <span class="onboarding-manifest-root"><svg class="lucide"><use href="#lucide-file-clock"></use></svg><b>Project manifest</b></span>
-              <span><svg class="lucide"><use href="#lucide-layout-dashboard"></use></svg><b>Screens &amp; designs</b></span>
-              <span><svg class="lucide"><use href="#lucide-git-branch"></use></svg><b>Flow map</b></span>
-              <span><svg class="lucide"><use href="#lucide-list-tree"></use></svg><b>Tables</b></span>
-              <span><svg class="lucide"><use href="#lucide-users"></use></svg><b>Agent-readable data</b></span>
+            <h2>Your project finds its shape.</h2>
+            <p>SWARM turns a project into the useful views it needs—screens, flow maps, tables, and shared project data—automatically.</p>
+            <div class="onboarding-project-views" role="img" aria-label="An app project becomes linked Screens, App map, Tables, and Shared data views.">
+              <span class="onboarding-project-root"><svg class="lucide" aria-hidden="true"><use href="#lucide-box"></use></svg><b>Your project</b></span>
+              <span class="onboarding-project-connector" aria-hidden="true"></span>
+              <span><svg class="lucide" aria-hidden="true"><use href="#lucide-layout-dashboard"></use></svg><b>Screens</b></span>
+              <span><svg class="lucide" aria-hidden="true"><use href="#lucide-git-branch"></use></svg><b>App map</b></span>
+              <span><svg class="lucide" aria-hidden="true"><use href="#lucide-table-properties"></use></svg><b>Tables</b></span>
+              <span><svg class="lucide" aria-hidden="true"><use href="#lucide-refresh-cw"></use></svg><b>Shared data</b></span>
             </div>
-            <p class="sr-only">One accepted project manifest synchronizes screens and designs, the flow map, tables, and agent-readable data without creating a second source of truth.</p>
           </section>
           <section class="onboarding-panel onboarding-panel-config" id="onboarding-panel-5" data-onboarding-panel="4" role="tabpanel" aria-labelledby="onboarding-dot-5" hidden>
             <h2>Choose how SWARM works.</h2>
