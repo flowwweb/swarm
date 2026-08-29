@@ -401,6 +401,8 @@ button:focus-visible, select:focus-visible { outline: 2px solid #fff; outline-of
   .scope-context { flex: 1; }
   .system-health-control { margin-left:auto; }
   .role-library-layout { height:auto; grid-template-columns:1fr; overflow:visible; }.role-library-grid { max-height:420px; grid-template-columns:repeat(3,minmax(0,1fr)); }.role-library-detail { height:auto; overflow:visible; }
+  .role-detail-actions .icon-button,.role-editor-head .icon-button { width:44px; height:44px; flex-basis:44px; }
+  .role-editor-actions .quiet-button,.role-editor-actions .primary-action { min-height:44px; }
 }
 @media (max-width: 620px) {
   .error-surface { top:calc(64px + env(safe-area-inset-top) + 8px); right:12px; bottom:auto; width:calc(100vw - 24px); max-height:calc(100dvh - 88px - env(safe-area-inset-top)); overflow:auto; z-index:25; }

@@ -2046,7 +2046,7 @@ function roleInstructionsMarkup(items) {
 function roleChooserMarkup(role, match, selected) {
   const displayName = roleDisplayName(role);
   const sourceLabel = roleSourceLabel(role);
-  return '<button class="role-choice' + (selected ? ' is-selected' : '') + '" data-role-select="' + escapeHTML(role.id) + '" id="role-choice-' + escapeHTML(role.id) + '" role="option" aria-label="' + escapeHTML(displayName + ', ' + sourceLabel) + '" aria-selected="' + String(selected) + '" aria-controls="role-library-detail" type="button">' + roleAvatar(role) + '<span><strong>' + escapeHTML(displayName) + '</strong><small class="role-choice-source">' + escapeHTML(sourceLabel) + '</small>' + (match.label ? '<em>' + escapeHTML(match.label) + '</em>' : '') + '</span></button>';
+  return '<button class="role-choice' + (selected ? ' is-selected' : '') + '" data-role-select="' + escapeHTML(role.id) + '" id="role-choice-' + escapeHTML(role.id) + '" role="option" aria-label="' + escapeHTML(displayName + ', ' + sourceLabel) + '" aria-selected="' + String(selected) + '" aria-controls="role-library-detail" tabindex="' + (selected ? '0' : '-1') + '" type="button">' + roleAvatar(role) + '<span><strong>' + escapeHTML(displayName) + '</strong><small class="role-choice-source">' + escapeHTML(sourceLabel) + '</small>' + (match.label ? '<em>' + escapeHTML(match.label) + '</em>' : '') + '</span></button>';
 }
 
 function roleDetailMarkup(role, match = { label: "" }) {
@@ -2056,10 +2056,40 @@ function roleDetailMarkup(role, match = { label: "" }) {
   return '<header class="role-detail-head">' + roleAvatar(role) + '<div><p class="eyebrow">' + escapeHTML(roleSourceLabel(role)) + '</p><h3 id="role-detail-title">' + escapeHTML(displayName) + '</h3><p>Profession · not authority</p></div><div class="role-detail-actions"><button class="icon-button" data-role-action="generate-avatar" type="button" disabled aria-label="Generate avatar" title="Generate avatar unavailable"><svg class="lucide" aria-hidden="true"><use href="#lucide-sparkles"></use></svg></button><button class="icon-button" data-role-action="edit" data-role-id="' + escapeHTML(role.id) + '" type="button" aria-label="Edit ' + escapeHTML(displayName) + '" title="Edit role"' + (editAllowed ? "" : ' disabled') + '><svg class="lucide" aria-hidden="true"><use href="#lucide-pencil"></use></svg></button></div></header>' + (match.label ? '<p class="role-match">' + escapeHTML(match.label) + '</p>' : '') + '<div class="role-detail-sections"><section><h4>Purpose</h4><p class="role-detail-copy">' + escapeHTML(role.purpose || "Purpose unavailable.") + '</p></section><section><h4>Owns</h4>' + roleTextList(role.owns, "No owned surface declared.") + '</section><section><h4>Instructions</h4>' + roleInstructionsMarkup(role.instructions) + '</section><section><h4>Current owners</h4>' + roleAssignmentsMarkup(role.id) + '</section><section><h4>Specializations</h4><div>' + roleSpecializationsMarkup(role) + '<small>Metadata only · no authority transfer.</small></div></section><section><h4>Default skills</h4>' + roleTextList(role.default_skills, "No default skills.") + '</section><section><h4>Boundaries</h4>' + roleTextList(role.boundaries, "No boundaries declared.") + '</section></div><footer><span>' + escapeHTML(roleHasRetainedAvatar(role) ? "Retained avatar" : "Accent fallback") + '</span><span>Active tasks retain their accepted role version.</span></footer>';
 }
 
-function renderRoleLibrary() {
+function focusRoleChoice(roleId) {
+  if (!roleId) return;
+  const choice = $('[data-role-select="' + CSS.escape(roleId) + '"]');
+  choice?.focus({ preventScroll: true });
+  choice?.scrollIntoView({ block: "nearest", inline: "nearest" });
+}
+
+function selectRoleChoice(roleId) {
+  state.selectedRoleId = roleId;
+  renderRoleLibrary(roleId);
+}
+
+function roleGridColumnCount(grid) {
+  const columns = getComputedStyle(grid).gridTemplateColumns.trim();
+  return Math.max(1, columns ? columns.split(/\s+/).length : 1);
+}
+
+function roleGridTargetIndex(key, index, count, columns) {
+  if (!count || index < 0) return index;
+  if (key === "Home") return 0;
+  if (key === "End") return count - 1;
+  if (key === "ArrowUp") return Math.max(0, index - columns);
+  if (key === "ArrowDown") return Math.min(count - 1, index + columns);
+  if (key === "ArrowLeft") return index % columns ? index - 1 : index;
+  if (key === "ArrowRight") return index % columns < columns - 1 && index + 1 < count ? index + 1 : index;
+  return index;
+}
+
+function renderRoleLibrary(focusRoleId = "") {
   const projection = roleManifestProjection();
   const roles = roleCurrentRecords(projection);
   const filtered = roleFilterRecords(roles, state.roleSearch, state.roleTypes, state.roleSearchFields);
+  const grid = $("#role-library-grid");
+  const focusedRoleId = grid.contains(document.activeElement) ? document.activeElement.closest("[data-role-select]")?.dataset.roleSelect || "" : "";
   const create = $("#role-create");
   const active = state.agentsTab === "active";
   create.hidden = active;
@@ -2079,8 +2109,9 @@ function renderRoleLibrary() {
   $("#role-filter-chips").innerHTML = roleFilterChipsMarkup(state.roleTypes);
   if (!filtered.some(({ role }) => role.id === state.selectedRoleId)) state.selectedRoleId = filtered[0]?.role.id || "";
   const selected = filtered.find(({ role }) => role.id === state.selectedRoleId) || null;
-  $("#role-library-grid").innerHTML = filtered.length ? filtered.map(({ role, match }) => roleChooserMarkup(role, match, role.id === state.selectedRoleId)).join("") : '<p class="empty-state">No roles match these filters. Clear the search or filters to see the server roster.</p>';
+  grid.innerHTML = filtered.length ? filtered.map(({ role, match }) => roleChooserMarkup(role, match, role.id === state.selectedRoleId)).join("") : '<p class="empty-state">No roles match these filters. Clear the search or filters to see the server roster.</p>';
   $("#role-library-detail").innerHTML = roleDetailMarkup(selected?.role, selected?.match);
+  focusRoleChoice(focusRoleId || focusedRoleId);
 }
 
 function renderAgents() {
@@ -2143,7 +2174,9 @@ function openRoleEditor(roleId = "", trigger = null) {
   const editing = Boolean(roleId);
   state.roleEditorMode = editing ? "edit" : "create";
   state.roleManifestRetry = null;
-  state.roleEditorTrigger = trigger;
+  state.roleEditorTrigger = trigger?.dataset.roleAction === "edit"
+    ? { action: "edit", roleId: trigger.dataset.roleId || roleId }
+    : trigger?.dataset.roleAction === "create" ? { action: "create" } : null;
   $("#role-editor-title").textContent = editing ? roleDisplayName(role) + " manifest" : "Create role";
   roleFieldValue("#role-field-id", role.id);
   roleFieldValue("#role-field-name", role.name);
@@ -2165,6 +2198,24 @@ function openRoleEditor(roleId = "", trigger = null) {
 
 function closeRoleEditor() {
   if ($("#role-editor").open) $("#role-editor").close();
+}
+
+function roleEditorReturnTarget(origin) {
+  const trigger = origin?.action === "edit" && origin.roleId
+    ? $('[data-role-action="edit"][data-role-id="' + CSS.escape(origin.roleId) + '"]')
+    : origin?.action === "create" ? $("#role-create") : null;
+  if (trigger && !trigger.disabled && !trigger.hidden) return trigger;
+  return $("#role-search") || $("#agents-tab-library");
+}
+
+function restoreRoleEditorFocus() {
+  const origin = state.roleEditorTrigger;
+  state.roleEditorTrigger = null;
+  requestAnimationFrame(() => {
+    const target = roleEditorReturnTarget(origin);
+    target?.focus({ preventScroll: true });
+    target?.scrollIntoView({ block: "nearest", inline: "nearest" });
+  });
 }
 
 function roleEditorDraft() {
@@ -2815,11 +2866,7 @@ document.addEventListener("click", async (event) => {
   }
   const roleSelect = event.target.closest("[data-role-select]");
   if (roleSelect) {
-    state.selectedRoleId = roleSelect.dataset.roleSelect;
-    renderRoleLibrary();
-    const selectedRole = $('[data-role-select="' + CSS.escape(state.selectedRoleId) + '"]');
-    selectedRole?.focus({ preventScroll: true });
-    selectedRole?.scrollIntoView({ block: "nearest", inline: "nearest" });
+    selectRoleChoice(roleSelect.dataset.roleSelect);
     return;
   }
   const roleAction = event.target.closest("[data-role-action]");
@@ -2996,7 +3043,8 @@ $("#notifications-retry").addEventListener("click", async () => {
 });
 $("#role-editor-close").addEventListener("click", closeRoleEditor);
 $("#role-editor-cancel").addEventListener("click", closeRoleEditor);
-$("#role-editor").addEventListener("close", () => { state.roleEditorTrigger?.focus({ preventScroll: true }); state.roleEditorTrigger = null; });
+$("#role-editor").addEventListener("cancel", (event) => { event.preventDefault(); closeRoleEditor(); });
+$("#role-editor").addEventListener("close", restoreRoleEditorFocus);
 $("#role-editor-form").addEventListener("input", () => {
   state.roleManifestRetry = null;
   updateRoleEditorAuthority(!$("#role-field-avatar").value ? "Choose a retained image asset before saving." : "");
@@ -3005,6 +3053,16 @@ $("#role-editor-form").addEventListener("submit", async (event) => { event.preve
 $("#role-search").addEventListener("input", (event) => {
   state.roleSearch = event.target.value;
   renderRoleLibrary();
+});
+$("#role-library-grid").addEventListener("keydown", (event) => {
+  if (!["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
+  const current = event.target.closest("[data-role-select]");
+  if (!current) return;
+  const choices = $$("#role-library-grid [data-role-select]");
+  const index = choices.indexOf(current);
+  const nextIndex = roleGridTargetIndex(event.key, index, choices.length, roleGridColumnCount($("#role-library-grid")));
+  event.preventDefault();
+  if (nextIndex !== index) selectRoleChoice(choices[nextIndex].dataset.roleSelect);
 });
 $("#role-filter-reset").addEventListener("click", () => {
   state.roleSearch = "";
