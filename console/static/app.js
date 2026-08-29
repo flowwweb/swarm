@@ -705,6 +705,14 @@ function scopeLabel() {
   return ctrl && state.ctrlId ? ctrlLabel(ctrl) : (project?.label || "All projects");
 }
 
+function setProjectSelection(projectId, ctrlId = "") {
+  const nextProjectId = String(projectId || "all");
+  const nextCtrlId = String(ctrlId || "");
+  if (state.projectId !== nextProjectId || state.ctrlId !== nextCtrlId) state.projectUiGroupId = "";
+  state.projectId = nextProjectId;
+  state.ctrlId = nextCtrlId;
+}
+
 function renderProjectNavigation() {
   const roster = savedProjectRoster();
   const projects = roster.projects;
@@ -715,8 +723,7 @@ function renderProjectNavigation() {
     return;
   }
   if (state.projectId !== "all" && !projects.some((project) => project.id === state.projectId)) {
-    state.projectId = "all";
-    state.ctrlId = "";
+    setProjectSelection("all");
   }
   const entries = [];
   projects.forEach((project) => {
@@ -737,8 +744,7 @@ async function selectProjectScope(projectId) {
   const roster = savedProjectRoster();
   const selectedId = String(projectId || "all");
   if (selectedId !== "all" && (roster.state !== "KNOWN" || !roster.projects.some((project) => project.id === selectedId))) return false;
-  state.projectId = selectedId;
-  state.ctrlId = "";
+  setProjectSelection(selectedId);
   state.settingsCtrlId = "";
   state.settingsScopeType = selectedId === "all" ? "global" : "project";
   state.settingsScopeId = selectedId === "all" ? "global" : selectedId;
@@ -1775,8 +1781,7 @@ function setNotificationsOpen(open, returnFocus = false) {
 function navigateNotification(item) {
   const target = notificationActionTarget(item);
   if (!target) return false;
-  state.projectId = target.projectId;
-  state.ctrlId = target.ctrlId;
+  setProjectSelection(target.projectId, target.ctrlId);
   state.projectTab = "overview";
   if (target.roleLibrary) state.agentsTab = "library";
   setNotificationsOpen(false);
@@ -3254,7 +3259,7 @@ document.addEventListener("click", async (event) => {
     const previousGroupId = state.projectUiGroupId;
     state.projectUiGroupId = projectMapBack.dataset.projectMapParent || "";
     renderProjectDetail();
-    requestAnimationFrame(() => $('[data-project-map-group="' + previousGroupId + '"]')?.focus({ preventScroll: true }));
+    requestAnimationFrame(() => $$('[data-project-map-group]').find((element) => element.dataset.projectMapGroup === previousGroupId)?.focus({ preventScroll: true }));
     return;
   }
   const projectMapGroup = event.target.closest("[data-project-map-group]");
@@ -3591,8 +3596,7 @@ document.addEventListener('change', async (event) => {
     state.settingsScopeType = ['global', 'project', 'ctrl'].includes(scopeType) ? scopeType : 'global';
     state.settingsScopeId = scopeId || 'global';
     state.settingsCtrlId = ctrl ? ctrl.id : '';
-    state.ctrlId = ctrl ? ctrl.id : '';
-    state.projectId = scopeType === 'project' ? scopeId : ctrl ? (ctrl.project_id || 'ctrl:' + ctrl.id) : 'all';
+    setProjectSelection(scopeType === 'project' ? scopeId : ctrl ? (ctrl.project_id || 'ctrl:' + ctrl.id) : 'all', ctrl ? ctrl.id : '');
     renderProjectNavigation();
     renderAllViews();
     try {

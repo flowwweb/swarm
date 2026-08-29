@@ -239,6 +239,9 @@ assert.match(app, /function projectViewMapModel\(projection, selectedGroupId = "
 assert.match(app, /class="project-ui-flowchart-connectors" aria-hidden="true"/);
 assert.match(app, /data-project-map-group=/);
 assert.match(app, /function drawProjectViewConnectors\(\)/);
+assert.match(app, /function setProjectSelection\(projectId, ctrlId = ""\)[\s\S]*?state\.projectUiGroupId = ""/);
+assert.match(app, /\$\$\('\[data-project-map-group\]'\)\.find\(\(element\) => element\.dataset\.projectMapGroup === previousGroupId\)/);
+assert.doesNotMatch(app, /data-project-map-group=\\?"['"]?\s*\+\s*previousGroupId/);
 assert.match(app, /\["runtime", "data", "state"\]\.includes\(node\.type\)/);
 assert.match(app, /Flowchart unavailable\. The accepted map projection could not be rendered safely\./);
 assert.doesNotMatch(app, /Sanguine|D&D|Dungeon|project:\/\/swarm/i);
@@ -1918,6 +1921,24 @@ const proofFeed = imageProofFixture(6);
     await page.getByRole("button", { name: "Close evidence gallery" }).click();
     await page.getByRole("button", { name: "Back to App Map" }).click();
     assert.equal(await page.evaluate(() => document.activeElement?.getAttribute("data-project-map-group")), "workspace");
+    const hostileGroupId = 'group\'"][data-project-map-group="spoof';
+    await page.evaluate((groupId) => {
+      const nodes = state.overview.project_view.map.nodes;
+      nodes.find((node) => node.id === "workspace").id = groupId;
+      nodes.filter((node) => ["overview", "assets"].includes(node.id)).forEach((node) => { node.group_id = groupId; });
+      state.projectUiGroupId = "";
+      renderProjectDetail();
+    }, hostileGroupId);
+    await page.getByRole("button", { name: "Open Workspace group" }).click();
+    await page.getByRole("button", { name: "Back to App Map" }).click();
+    assert.equal(await page.evaluate(() => document.activeElement?.dataset.projectMapGroup), hostileGroupId);
+    await page.evaluate((groupId) => {
+      const nodes = state.overview.project_view.map.nodes;
+      nodes.find((node) => node.id === groupId).id = "workspace";
+      nodes.filter((node) => ["overview", "assets"].includes(node.id)).forEach((node) => { node.group_id = "workspace"; });
+      state.projectUiGroupId = "";
+      renderProjectDetail();
+    }, hostileGroupId);
     await page.evaluate(() => {
       const projection = state.overview.project_view;
       projection.map.edges = [{ id: "bad-edge", source: "overview", target: "missing" }];
@@ -1935,6 +1956,23 @@ const proofFeed = imageProofFixture(6);
     await page.emulateMedia({ reducedMotion: "reduce" });
     assert.equal(await page.locator(".project-ui-flowchart-node").evaluate((node) => parseFloat(getComputedStyle(node).transitionDuration) <= 0.001), true);
     await page.emulateMedia({ reducedMotion: "no-preference" });
+    await page.evaluate(() => {
+      state.projectUiGroupId = "workspace";
+      state.projectId = "project:fixture";
+      state.ctrlId = "branch-ctrl";
+      state.notificationBindingKey = "project:branch|branch-ctrl";
+      navigateNotification({
+        project_id: "project:branch", ctrl_id: "branch-ctrl",
+        action_target: { view: "review", project_id: "project:branch", ctrl_id: "branch-ctrl", task_id: "branch-ctrl", subject_id: "proof-branch" },
+      });
+    });
+    assert.deepEqual(await page.evaluate(() => ({ projectId: state.projectId, ctrlId: state.ctrlId, groupId: state.projectUiGroupId })), { projectId: "project:branch", ctrlId: "branch-ctrl", groupId: "" });
+    await page.evaluate(() => selectProjectScope("project:fixture"));
+    await page.evaluate(() => { state.projectUiGroupId = "workspace"; setView("settings"); renderSettings(); });
+    await page.locator("#settings-scope").selectOption("project|project:branch");
+    await page.waitForFunction(() => state.projectId === "project:branch" && state.projectUiGroupId === "");
+    assert.deepEqual(await page.evaluate(() => ({ projectId: state.projectId, ctrlId: state.ctrlId, groupId: state.projectUiGroupId })), { projectId: "project:branch", ctrlId: "", groupId: "" });
+    await page.evaluate(() => selectProjectScope("project:fixture"));
     await page.getByRole("tab", { name: "Agents", exact: true }).click();
     assert.match(await page.locator("#agent-hierarchy").textContent(), /CTRL/);
     await page.getByRole("tab", { name: "Role library", exact: true }).click();
