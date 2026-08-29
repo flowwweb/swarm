@@ -2680,6 +2680,203 @@ class SwarmConsoleTests(unittest.TestCase):
         for private in ("token", "config_path", "credential", "cookie", "prompt"):
             self.assertNotIn(f'"{private}"', serialized)
 
+    def test_project_view_manifest_is_digest_bound_conditional_and_project_generic(self) -> None:
+        def encoded(value: dict[str, Any]) -> bytes:
+            return json.dumps(value, ensure_ascii=True, separators=(",", ":")).encode("utf-8")
+
+        def digest(value: bytes) -> str:
+            return "sha256:" + hashlib.sha256(value).hexdigest()
+
+        def bundle(project_id: str, root: Path, prefix: str) -> tuple[dict[tuple[str, str], bytes], dict[str, Any]]:
+            coverage_ref = f"project://{prefix}/ui/coverage"
+            graph_ref = f"project://{prefix}/ui/app-flow"
+            manifest_ref = f"project://{prefix}/ui/project-views"
+            evidence_digest = hashlib.sha256(f"{prefix}-image".encode("utf-8")).hexdigest()
+            coverage = encoded({
+                "schema_version": 1,
+                "project_id": project_id,
+                "nodes": [
+                    {
+                        "node_kind": "screen_state", "screen_id": "overview", "state_id": "default",
+                        "label": f"{prefix.title()} overview", "coverage_state": "DESIGNED",
+                        "design_alternatives": [
+                            {
+                                "alternative_id": "overview-default", "label": "Default",
+                                "artifact_id": f"{prefix}-overview", "evidence_id": f"{prefix}-overview",
+                                "digest": f"sha256:{evidence_digest}", "device": "desktop",
+                            },
+                            {
+                                "alternative_id": "overview-mobile", "label": "Mobile",
+                                "artifact_id": f"{prefix}-mobile", "evidence_id": f"{prefix}-mobile",
+                                "digest": "sha256:" + "f" * 64, "device": "mobile",
+                            },
+                        ],
+                        "implementation_evidence": [],
+                    },
+                    {
+                        "node_kind": "screen_state", "screen_id": "assets", "state_id": "empty",
+                        "label": "Assets empty", "coverage_state": "MISSING_DESIGN",
+                        "design_alternatives": [], "implementation_evidence": [],
+                    },
+                ],
+            })
+            graph = (
+                'flowchart LR\n'
+                '  overview["Overview"] --> assets["Assets<br/>empty"]\n'
+            ).encode("utf-8")
+            manifest = encoded({
+                "manifest_type": "swarm.project_views", "schema_version": 1,
+                "manifest_id": f"{prefix}-project-views", "manifest_version": 1,
+                "project_id": project_id,
+                "project_tab": {
+                    "id": "tab.project.ui", "label": "UI", "visibility": "conditional",
+                    "modes": ["view.project.ui.screens", "view.project.ui.map"],
+                },
+                "views": [
+                    {
+                        "id": "view.project.ui.screens", "label": "Screens", "renderer": "gallery", "mode": "grid",
+                        "source_refs": [coverage_ref], "source_digests": [digest(coverage)],
+                        "allowed_actions": ["open_artifact", "send_feedback"],
+                    },
+                    {
+                        "id": "view.project.ui.map", "label": "Map", "renderer": "canvas", "mode": "network",
+                        "source_refs": [graph_ref], "source_digests": [digest(graph)],
+                        "allowed_actions": ["open_entity", "send_feedback"],
+                    },
+                ],
+            })
+            manifest_digest = digest(manifest)
+            root.mkdir(parents=True)
+            root.joinpath("SWARM.md").write_text(
+                "# Project\n\n```json\n" + json.dumps({
+                    "schema_version": 1,
+                    "links": [{"rel": "project_views", "ref": manifest_ref, "digest": manifest_digest}],
+                }) + "\n```\n",
+                encoding="utf-8",
+            )
+            return {
+                (manifest_ref, manifest_digest): manifest,
+                (coverage_ref, digest(coverage)): coverage,
+                (graph_ref, digest(graph)): graph,
+            }, {
+                "evidence_id": f"{prefix}-overview", "task_id": "task", "project_id": project_id,
+                "kind": "screenshot", "caption": f"{prefix.title()} overview", "claim_limit": "source preview",
+                "disposition": "PENDING", "surface_kind": "browser", "media_type": "image/png",
+                "size_bytes": 1, "digest": evidence_digest, "registered_at_ms": 1, "updated_at_ms": 1,
+            }
+
+        alpha_root = self.root / "projects" / "alpha"
+        alpha_sources, alpha_proof = bundle("project:alpha", alpha_root, "alpha")
+        beta_root = self.root / "projects" / "beta"
+        beta_sources, beta_proof = bundle("project:beta", beta_root, "beta")
+        self._add_host_project("project:beta", "beta", str(beta_root))
+        with closing(sqlite3.connect(self.database)) as connection:
+            connection.execute("UPDATE project_roots SET path=? WHERE project_id='project:alpha'", (str(alpha_root),))
+            connection.execute("UPDATE threads SET cwd=? WHERE cwd='C:/work/alpha'", (str(alpha_root),))
+            connection.commit()
+        sources = {**alpha_sources, **beta_sources}
+        calls: list[tuple[str, str, str]] = []
+
+        def resolve(project_id: str, ref: str, expected_digest: str) -> bytes:
+            calls.append((project_id, ref, expected_digest))
+            return sources[(ref, expected_digest)]
+
+        app = console.App(
+            self.codex_home, self.config, self.root / "console" / "project-views.sqlite3",
+            project_view_resolver=resolve,
+        )
+        link_status, alpha_link = app._root_project_view_link(alpha_root)
+        self.assertEqual(link_status, "present")
+        self.assertIsNotNone(alpha_link)
+        with mock.patch.object(app.store, "proof_feed", side_effect=lambda *, project_id=None, task_id=None: [
+            item for item in (alpha_proof, beta_proof) if project_id in {None, item["project_id"]}
+        ]):
+            alpha_bytes = app._resolve_project_view_bytes("project:alpha", alpha_link["ref"], alpha_link["digest"])
+            app._normalize_project_view("project:alpha", alpha_bytes, alpha_link["digest"])
+            alpha = app.overview("project:alpha")["project_view"]
+            beta = app._project_view_projection("project:beta")
+        self.assertEqual(alpha["tab"], {"id": "ui", "label": "UI"})
+        self.assertEqual([mode["label"] for mode in alpha["modes"]], ["Screens", "Map"])
+        self.assertEqual([screen["id"] for screen in alpha["screens"]], ["overview/default", "assets/empty"])
+        self.assertEqual(alpha["screens"][0]["devices"], ["desktop"])
+        self.assertEqual(alpha["screens"][0]["alternative_count"], 1)
+        self.assertEqual(alpha["screens"][1]["evidence"], [])
+        self.assertEqual(alpha["map"]["nodes"][0]["screen_key"], "overview/default")
+        self.assertEqual(beta["project_id"], "project:beta")
+        self.assertEqual(beta["screens"][0]["label"], "Beta overview")
+        self.assertTrue(any(call[0] == "project:alpha" for call in calls))
+        self.assertTrue(any(call[0] == "project:beta" for call in calls))
+        self.assertNotIn(str(alpha_root), json.dumps(alpha))
+        self.assertNotIn(str(beta_root), json.dumps(beta))
+
+    def test_project_view_manifest_failure_is_withheld_or_preserves_last_good(self) -> None:
+        root = self.root / "projects" / "alpha"
+        root.mkdir(parents=True)
+        with closing(sqlite3.connect(self.database)) as connection:
+            connection.execute("UPDATE project_roots SET path=? WHERE project_id='project:alpha'", (str(root),))
+            connection.commit()
+        app = console.App(
+            self.codex_home, self.config, self.root / "console" / "project-view-failure.sqlite3",
+            project_view_resolver=lambda *_: b"{}",
+        )
+        self.assertIsNone(app._project_view_projection("project:alpha"))
+
+        coverage = json.dumps({"project_id": "project:alpha", "nodes": []}, separators=(",", ":")).encode()
+        graph = b'flowchart LR\n  start["Start"] --> finish["Finish"]\n'
+        coverage_digest = "sha256:" + hashlib.sha256(coverage).hexdigest()
+        graph_digest = "sha256:" + hashlib.sha256(graph).hexdigest()
+        manifest_ref = "project://alpha/ui/project-views"
+        coverage_ref = "project://alpha/ui/coverage"
+        graph_ref = "project://alpha/ui/app-flow"
+        manifest = json.dumps({
+            "manifest_type": "swarm.project_views", "schema_version": 1,
+            "manifest_id": "alpha-views", "manifest_version": 1, "project_id": "project:alpha",
+            "project_tab": {"id": "tab.project.ui", "label": "UI", "visibility": "conditional", "modes": ["view.project.ui.screens", "view.project.ui.map"]},
+            "views": [
+                {"id": "view.project.ui.screens", "label": "Screens", "renderer": "gallery", "mode": "grid", "source_refs": [coverage_ref], "source_digests": [coverage_digest], "allowed_actions": ["open_artifact"]},
+                {"id": "view.project.ui.map", "label": "Map", "renderer": "canvas", "mode": "network", "source_refs": [graph_ref], "source_digests": [graph_digest], "allowed_actions": ["open_entity"]},
+            ],
+        }, separators=(",", ":")).encode()
+        manifest_digest = "sha256:" + hashlib.sha256(manifest).hexdigest()
+        sources = {
+            (manifest_ref, manifest_digest): manifest,
+            (coverage_ref, coverage_digest): coverage,
+            (graph_ref, graph_digest): graph,
+        }
+        app.project_view_resolver = lambda project_id, ref, expected: sources[(ref, expected)]
+        root.joinpath("SWARM.md").write_text(
+            "```json\n" + json.dumps({"links": [{"rel": "project_views", "ref": manifest_ref, "digest": manifest_digest}]}) + "\n```\n",
+            encoding="utf-8",
+        )
+        link_status, accepted_link = app._root_project_view_link(root)
+        self.assertEqual(link_status, "present")
+        self.assertIsNotNone(accepted_link)
+        with mock.patch.object(app.store, "proof_feed", return_value=[]):
+            accepted_bytes = app._resolve_project_view_bytes("project:alpha", accepted_link["ref"], accepted_link["digest"])
+            app._normalize_project_view("project:alpha", accepted_bytes, accepted_link["digest"])
+            accepted = app._project_view_projection("project:alpha")
+        self.assertEqual(accepted["identity"]["manifest_digest"], manifest_digest)
+
+        unknown = json.loads(manifest)
+        unknown["manifest_version"] = 2
+        unknown["views"][0]["renderer"] = "arbitrary-component"
+        unknown_bytes = json.dumps(unknown, separators=(",", ":")).encode()
+        unknown_digest = "sha256:" + hashlib.sha256(unknown_bytes).hexdigest()
+        sources[(manifest_ref, unknown_digest)] = unknown_bytes
+        root.joinpath("SWARM.md").write_text(
+            "```json\n" + json.dumps({"links": [{"rel": "project_views", "ref": manifest_ref, "digest": unknown_digest}]}) + "\n```\n",
+            encoding="utf-8",
+        )
+        with mock.patch.object(app.store, "proof_feed", return_value=[]):
+            retained = app._project_view_projection("project:alpha")
+        self.assertEqual(retained, accepted)
+        fresh = console.App(
+            self.codex_home, self.config, self.root / "console" / "project-view-fresh.sqlite3",
+            project_view_resolver=lambda project_id, ref, expected: sources[(ref, expected)],
+        )
+        with mock.patch.object(fresh.store, "proof_feed", return_value=[]):
+            self.assertIsNone(fresh._project_view_projection("project:alpha"))
+
     def test_proof_visuals_are_immediate_replay_safe_and_independent_of_review_annotations(self) -> None:
         self._confirm_root_ctrl()
         app = console.App(self.codex_home, self.config, self.root / "console" / "proof-feed.sqlite3")

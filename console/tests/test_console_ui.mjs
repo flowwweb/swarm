@@ -175,16 +175,29 @@ assert.match(app, /function renderProjectProgressFeed\(\)/);
 assert.match(app, /settingToggle\('console\.project_progress_feed_enabled'/);
 assert.match(app, /data-config-key="console\.project_progress_feed_lines"/);
 assert.doesNotMatch(app, /setInterval\([^)]*projectProgress|setInterval\([^)]*progressFeed/);
-for (const tab of ["overview", "roadmap", "lanes", "hierarchy", "proof", "ledger", "logs"]) {
+for (const tab of ["overview", "roadmap", "lanes", "hierarchy", "proof", "ledger", "ui", "logs"]) {
   assert.match(indexHtml, new RegExp(`id="project-tab-${tab}"[^>]*data-project-tab="${tab}"[^>]*role="tab"[^>]*aria-controls="project-tab-panel"`));
 }
-assert.equal((indexHtml.match(/data-project-tab=/g) || []).length, 7);
+assert.equal((indexHtml.match(/data-project-tab=/g) || []).length, 8);
+assert.match(indexHtml, /id="project-tab-ui"[^>]*hidden>UI<\/button>/);
 assert.match(indexHtml, /id="project-detail" hidden aria-labelledby="project-detail-title"/);
 assert.match(indexHtml, /id="project-tab-panel" role="tabpanel" aria-labelledby="project-tab-overview"/);
 assert.match(app, /function renderProjectDetail\(\)/);
 assert.match(app, /const selectedTabId = "project-tab-" \+ state\.projectTab/);
 assert.match(app, /tabPanel\.setAttribute\("aria-labelledby", selectedTabId\)/);
 assert.match(app, /function projectTabMarkup\(tab, progress, nodes\)/);
+assert.match(app, /function currentProjectView\(\)/);
+assert.match(app, /projection && projection\.project_id === projectId && projection\.tab\?\.id === "ui"/);
+assert.match(app, /if \(tab === "ui"\) return projectViewMarkup\(\)/);
+assert.match(app, /uiTab\.hidden = !projectView/);
+assert.match(app, /function openProjectViewEvidence\(screenKey, trigger\)/);
+assert.match(app, /state\.evidenceImages = evidence;\s*openEvidenceLightbox\(0, trigger\)/);
+assert.match(app, /data-project-ui-mode=/);
+assert.match(app, /data-project-view-evidence=/);
+assert.doesNotMatch(app, /Sanguine|D&D|Dungeon|project:\/\/swarm/i);
+assert.doesNotMatch(app, /setInterval\([^)]*projectView|localStorage[^\n]*projectView|sessionStorage[^\n]*projectView/i);
+assert.match(css, /\.project-ui-screens \{[^}]*grid-template-columns:repeat\(3,minmax\(0,1fr\)\)/);
+assert.match(css, /@media \(max-width: 620px\)[\s\S]*\.project-ui-screens,\.project-ui-map-nodes \{ grid-template-columns:1fr; \}/);
 assert.match(indexHtml, /id="run-log-overview"[^>]*data-run-log-surface="overview"[^>]*hidden/);
 assert.match(indexHtml, /id="run-log-agent"[^>]*data-run-log-surface="agent"[^>]*hidden/);
 assert.match(app, /data-run-log-surface="project" aria-label="Project run log"/);
@@ -281,13 +294,14 @@ const runLogOuterRenderHarness = vm.runInNewContext(`(() => {
   const elements = new Map([
     ["#projects-portfolio", element()], ["#project-detail", element()], ["#view-title", element()], ["#view-subtitle", element()],
     ["#project-detail-title", element()], ["#project-detail-status", element()], ["#project-detail-summary", element()],
-    ["#project-tab-panel", tabPanel], ["#sync-time", element()],
+    ["#project-tab-panel", tabPanel], ["#project-tab-ui", element()], ["#sync-time", element()],
   ]);
   const tabs = [{ dataset: { projectTab: "logs" }, classList: { toggle() {} }, setAttribute() {}, tabIndex: 0 }];
   const state = { view: "overview", projectTab: "logs", projectProgressStatus: "current", connectionStatus: "reconnecting", proofSequence: 0, overview: null };
   function $(selector, root) { return root === tabPanel ? tabPanel.querySelector(selector) : elements.get(selector); }
   function $$(selector) { return selector === '[data-project-tab]' ? tabs : []; }
   function selectedProgressProjectId() { return "project:one"; }
+  function currentProjectView() { return null; }
   function projectGroups() { return [{ id: "project:one", label: "Project One" }]; }
   function selectedProjectProgress() { return null; }
   function scopedNodes() { return []; }
@@ -1022,6 +1036,35 @@ function response(body) {
   return { status: 200, contentType: "application/json", body: JSON.stringify(body) };
 }
 
+function projectViewFixture() {
+  return {
+    schema_version: 1,
+    project_id: "project:fixture",
+    tab: { id: "ui", label: "UI" },
+    modes: [{ id: "screens", label: "Screens" }, { id: "map", label: "Map" }],
+    screens: [
+      {
+        id: "overview/default", screen_id: "overview", state_id: "default", label: "Projects overview",
+        status: "DESIGNED", devices: ["desktop", "mobile"], alternative_count: 2,
+        evidence: [
+          { evidence_id: "fixture-image-1", digest: "1".padStart(64, "0"), media_type: "image/png", caption: "Overview desktop", device: "desktop", alternative_id: "overview-default" },
+          { evidence_id: "fixture-image-2", digest: "2".padStart(64, "0"), media_type: "image/png", caption: "Overview mobile", device: "mobile", alternative_id: "overview-mobile" },
+        ],
+      },
+      { id: "assets/empty", screen_id: "assets", state_id: "empty", label: "Assets empty", status: "MISSING_DESIGN", devices: [], alternative_count: 0, evidence: [] },
+    ],
+    map: {
+      nodes: [
+        { id: "overview", label: "Overview", screen_key: "overview/default" },
+        { id: "assets", label: "Assets", screen_key: "assets/empty" },
+      ],
+      edges: [{ source: "overview", target: "assets" }],
+    },
+    identity: { manifest_id: "fixture-views", manifest_version: 1, manifest_digest: "sha256:" + "a".repeat(64), source_digests: ["sha256:" + "b".repeat(64), "sha256:" + "c".repeat(64)] },
+    claim_limit: "Project UI is a read-only digest-bound projection; actions and acceptance remain separate authority.",
+  };
+}
+
 function scopedFixture() {
   const overview = structuredClone(fixture.overview);
   overview.nodes.push(
@@ -1071,6 +1114,7 @@ function scopedFixture() {
   for (const id of ["nested-ctrl", "branch-ctrl", "arc-ctrl", "atlas-ctrl", "idle-ctrl", "stalled-ctrl"]) {
     overview.progress.controllers[id] = { progress: null, freshness: { state: "unavailable", observed_at_ms: null } };
   }
+  overview.project_view = projectViewFixture();
   return overview;
 }
 
@@ -1304,7 +1348,8 @@ const proofFeed = imageProofFixture(6);
     assert.deepEqual((await seenRequest).postDataJSON(), { ctrl_id: "ctrl", project_id: "project:fixture", notification_ids: ["a".repeat(64)] });
     await page.locator("#notification-unread").waitFor({ state: "hidden" });
     await page.locator("#notifications-close").click();
-    assert.equal(await page.locator("[data-project-tab]").count(), 7);
+    assert.equal(await page.locator("[data-project-tab]").count(), 8);
+    assert.equal(await page.getByRole("tab", { name: "UI", exact: true }).isVisible(), true);
     assert.match(await page.locator("#project-detail-summary").textContent(), /60%/);
     assert.equal(await page.locator(".milestone-ring").count(), 2);
     assert.equal(await page.locator(".project-yield-chart").count(), 1);
@@ -1315,6 +1360,22 @@ const proofFeed = imageProofFixture(6);
     await page.getByRole("tab", { name: "Lanes", exact: true }).click();
     assert.equal(await page.locator("#project-tab-panel").getAttribute("aria-labelledby"), "project-tab-lanes");
     assert.match(await page.locator("#project-tab-panel").textContent(), /Console surfaces/);
+    await page.getByRole("tab", { name: "UI", exact: true }).click();
+    assert.equal(await page.locator("#project-tab-panel").getAttribute("aria-labelledby"), "project-tab-ui");
+    assert.equal(await page.locator(".project-ui-card").count(), 2);
+    assert.deepEqual(await page.locator('.project-ui-card[data-project-view-screen="overview/default"] .project-ui-devices li').allTextContents(), ["Desktop", "Mobile"]);
+    assert.equal(await page.locator('.project-ui-card[data-project-view-screen="overview/default"] .project-ui-alternatives').textContent(), "2 alternatives");
+    assert.equal(await page.locator('.project-ui-card[data-project-view-screen="assets/empty"] .project-ui-alternatives').count(), 0);
+    assert.equal(await page.locator('.project-ui-card[data-project-view-screen="assets/empty"] .project-ui-devices').count(), 0);
+    await page.locator('.project-ui-card[data-project-view-screen="overview/default"] [data-project-view-evidence]').click();
+    assert.equal(await page.locator("#evidence-lightbox").isVisible(), true);
+    await page.getByRole("button", { name: "Close evidence gallery" }).click();
+    await page.getByRole("button", { name: "Map", exact: true }).click();
+    assert.equal(await page.locator(".project-ui-map-nodes > button").count(), 1);
+    assert.equal(await page.locator(".project-ui-map-nodes > div").count(), 1);
+    await page.locator('.project-ui-map-nodes [data-project-view-evidence="overview/default"]').click();
+    assert.equal(await page.locator("#evidence-lightbox").isVisible(), true);
+    await page.getByRole("button", { name: "Close evidence gallery" }).click();
     await page.getByRole("tab", { name: "Agents", exact: true }).click();
     assert.match(await page.locator("#agent-hierarchy").textContent(), /CTRL/);
     await page.getByRole("tab", { name: "Role library", exact: true }).click();
@@ -1364,6 +1425,15 @@ const proofFeed = imageProofFixture(6);
     assert.equal(await page.locator("[data-qc-scope]").evaluate((element) => element.scrollWidth > element.clientWidth + 1), false);
     assert.deepEqual(desktop.runtimeErrors, []);
     await page.close();
+
+    const noManifestPage = await browser.newPage({ viewport: { width: 1024, height: 760 } });
+    const noManifestOverview = scopedFixture();
+    delete noManifestOverview.project_view;
+    const noManifest = await mount(noManifestPage, noManifestOverview, overrides);
+    await noManifestPage.getByRole("button", { name: /^swarm\b/i }).click();
+    assert.equal(await noManifestPage.getByRole("tab", { name: "UI", exact: true }).isVisible(), false);
+    assert.deepEqual(noManifest.runtimeErrors, []);
+    await noManifestPage.close();
 
     const tabletPage = await browser.newPage({ viewport: { width: 834, height: 1112 } });
     const tablet = await mount(tabletPage, scopedFixture(), overrides);
@@ -1469,6 +1539,12 @@ const proofFeed = imageProofFixture(6);
     await mobilePage.waitForTimeout(50);
     assert.equal(await mobilePage.locator("#role-editor").isVisible(), false);
     assert.equal(await mobilePage.evaluate(() => document.activeElement?.getAttribute("aria-label")), "Edit Accountant");
+    await menuButton.click();
+    await mobilePage.getByRole("button", { name: /^swarm\b/i }).click();
+    await mobilePage.getByRole("tab", { name: "UI", exact: true }).click();
+    assert.equal(await mobilePage.locator(".project-ui-card").count(), 2);
+    assert.equal(await mobilePage.locator(".project-ui-toolbar .segmented-control button").evaluateAll((elements) => elements.every((element) => element.getBoundingClientRect().height >= 44)), true);
+    assert.equal(await mobilePage.locator(".project-ui-screens").evaluate((element) => getComputedStyle(element).gridTemplateColumns.split(" ").length), 1);
     assert.equal(await mobilePage.locator("[data-qc-scope]").evaluate((element) => element.scrollWidth > element.clientWidth + 1), false);
     assert.deepEqual(mobile.runtimeErrors, []);
     await mobilePage.close();

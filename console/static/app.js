@@ -1,4 +1,4 @@
-const state = { token: "", overview: null, proof: [], proofCollections: new Map(), proofStatuses: new Map(), proofStatus: "idle", proofSequence: 0, usageHistory: null, usageWindowHours: 24, usageScopeKey: "", usageStatus: "idle", usageError: "", projectProgress: null, projectProgressProjectId: "", projectProgressStatus: "idle", projectProgressError: "", projectProgressFeed: null, projectProgressFeedProjectId: "", projectProgressFeedStatus: "idle", projectProgressFeedError: "", projectTab: "overview", runLogs: new Map(), runLogRequestGenerations: new Map(), runLogSurfaceStates: new Map(), runLogAgent: null, diagnostics: null, health: null, storage: null, config: null, configStatus: "idle", configError: "", chatRelaySaving: false, ctrlSettings: null, auto: null, autoBindingKey: "", autoStatus: "idle", autoError: "", autoSaving: false, skills: null, skillsError: "", roleManifests: null, roleManifestStatus: "unavailable", roleManifestError: "", roleManifestMessage: "", roleManifestSaving: false, roleManifestRetry: null, roleEditorMode: "", agentsTab: "active", roleEditorTrigger: null, roleSearch: "", roleTypes: new Set(["builtin", "custom"]), roleSearchFields: new Set(["profession", "specialization", "alias", "skills", "purpose"]), selectedRoleId: "", assetView: "grid", selectedAssetIdentity: "", onboardingStep: 0, onboardingShown: false, onboardingTrigger: null, notifications: null, notificationBindingKey: "", notificationStatus: "idle", notificationError: "", notificationAckFlight: null, notificationRequestGenerations: new Map(), notificationPresentedIds: new Set(), notificationToast: null, notificationToastTimer: null, notificationTrigger: null, connectionStatus: "reconnecting", view: "overview", projectId: "all", ctrlId: "", settingsCtrlId: "", settingsScopeType: "", settingsScopeId: "", evidenceImages: [], evidenceIndex: 0, evidenceTrigger: null };
+const state = { token: "", overview: null, proof: [], proofCollections: new Map(), proofStatuses: new Map(), proofStatus: "idle", proofSequence: 0, usageHistory: null, usageWindowHours: 24, usageScopeKey: "", usageStatus: "idle", usageError: "", projectProgress: null, projectProgressProjectId: "", projectProgressStatus: "idle", projectProgressError: "", projectProgressFeed: null, projectProgressFeedProjectId: "", projectProgressFeedStatus: "idle", projectProgressFeedError: "", projectTab: "overview", projectUiMode: "screens", runLogs: new Map(), runLogRequestGenerations: new Map(), runLogSurfaceStates: new Map(), runLogAgent: null, diagnostics: null, health: null, storage: null, config: null, configStatus: "idle", configError: "", chatRelaySaving: false, ctrlSettings: null, auto: null, autoBindingKey: "", autoStatus: "idle", autoError: "", autoSaving: false, skills: null, skillsError: "", roleManifests: null, roleManifestStatus: "unavailable", roleManifestError: "", roleManifestMessage: "", roleManifestSaving: false, roleManifestRetry: null, roleEditorMode: "", agentsTab: "active", roleEditorTrigger: null, roleSearch: "", roleTypes: new Set(["builtin", "custom"]), roleSearchFields: new Set(["profession", "specialization", "alias", "skills", "purpose"]), selectedRoleId: "", assetView: "grid", selectedAssetIdentity: "", onboardingStep: 0, onboardingShown: false, onboardingTrigger: null, notifications: null, notificationBindingKey: "", notificationStatus: "idle", notificationError: "", notificationAckFlight: null, notificationRequestGenerations: new Map(), notificationPresentedIds: new Set(), notificationToast: null, notificationToastTimer: null, notificationTrigger: null, connectionStatus: "reconnecting", view: "overview", projectId: "all", ctrlId: "", settingsCtrlId: "", settingsScopeType: "", settingsScopeId: "", evidenceImages: [], evidenceIndex: 0, evidenceTrigger: null };
 const EVIDENCE_THUMBNAIL_PAGE_SIZE = 24;
 const USAGE_WINDOW_LABELS = { 1: "1h", 24: "1d" };
 const RUN_LOG_CLIENT_LIMIT = 200;
@@ -1657,6 +1657,68 @@ function projectBlockRow(block) {
   return '<article class="project-block"><div class="project-block-state ' + (complete ? "is-complete" : "") + '">' + (complete ? '<svg class="lucide" aria-label="Proof admitted"><use href="#lucide-check"></use></svg>' : '<span aria-hidden="true"></span>') + '</div><div><header><strong>' + escapeHTML(block.block_id) + '</strong><span>' + escapeHTML(block.owner_id || "Unassigned") + '</span></header><p>' + escapeHTML(report) + '</p><div class="project-block-meter"><i style="width:' + (progress.percent == null ? 0 : progress.percent) + '%"></i></div><small>' + escapeHTML(progress.display + " · " + humanize(block.lifecycle_state || "Unknown") + " · ETA " + (block.eta?.end_ms ? formatDuration(Math.max(0, Number(block.eta.end_ms) - Date.now())) : "—")) + '</small></div></article>';
 }
 
+function currentProjectView() {
+  const projection = state.overview?.project_view;
+  const projectId = selectedProgressProjectId();
+  return projection && projection.project_id === projectId && projection.tab?.id === "ui" ? projection : null;
+}
+
+function projectViewEvidence(screenKey) {
+  const screen = currentProjectView()?.screens?.find((item) => item.id === screenKey);
+  return Array.isArray(screen?.evidence) ? screen.evidence : [];
+}
+
+function openProjectViewEvidence(screenKey, trigger) {
+  const evidence = projectViewEvidence(screenKey);
+  if (!evidence.length) return;
+  state.evidenceImages = evidence;
+  openEvidenceLightbox(0, trigger);
+}
+
+function projectViewScreenMarkup(screen) {
+  const evidence = Array.isArray(screen.evidence) ? screen.evidence : [];
+  const preview = evidence[0];
+  const devices = Array.isArray(screen.devices) ? screen.devices : [];
+  const label = screen.label || screen.id;
+  const previewMarkup = preview
+    ? '<button class="project-ui-preview" type="button" data-project-view-evidence="' + escapeHTML(screen.id) + '" aria-label="Open evidence for ' + escapeHTML(label) + '"><img loading="lazy" decoding="async" src="' + proofMediaURL(preview) + '" alt=""></button>'
+    : '<div class="project-ui-preview is-empty" aria-label="No bound image evidence"><svg class="lucide" aria-hidden="true"><use href="#lucide-image"></use></svg><span>Evidence unavailable</span></div>';
+  const deviceMarkup = devices.length
+    ? '<ul class="project-ui-devices" aria-label="Bound devices">' + devices.map((device) => '<li>' + escapeHTML(humanize(device)) + '</li>').join("") + '</ul>'
+    : "";
+  const alternatives = Number(screen.alternative_count) > 1
+    ? '<span class="project-ui-alternatives">' + escapeHTML(String(screen.alternative_count)) + ' alternatives</span>'
+    : "";
+  return '<article class="project-ui-card" data-project-view-screen="' + escapeHTML(screen.id) + '">' + previewMarkup + '<div class="project-ui-card-copy"><p class="eyebrow">' + escapeHTML(screen.screen_id + " · " + screen.state_id) + '</p><h3>' + escapeHTML(label) + '</h3><div><span class="project-ui-status">' + escapeHTML(humanize(screen.status || "UNKNOWN")) + '</span>' + alternatives + '</div>' + deviceMarkup + '</div></article>';
+}
+
+function projectViewMapMarkup(projection) {
+  const nodes = Array.isArray(projection?.map?.nodes) ? projection.map.nodes : [];
+  const edges = Array.isArray(projection?.map?.edges) ? projection.map.edges : [];
+  if (!nodes.length) return '<p class="empty-state">No accepted map nodes are available.</p>';
+  const edgeSummary = edges.map((edge) => edge.source + " to " + edge.target).join("; ");
+  return '<section class="project-ui-map" aria-label="App Map"><p class="sr-only">' + escapeHTML(edgeSummary || "No graph connections") + '</p><div class="project-ui-map-nodes">' + nodes.map((node) => {
+    const interactive = node.screen_key && projectViewEvidence(node.screen_key).length;
+    const content = '<span>' + escapeHTML(node.label || node.id) + '</span><small>' + escapeHTML(node.id) + '</small>';
+    return interactive
+      ? '<button type="button" data-project-view-evidence="' + escapeHTML(node.screen_key) + '" aria-label="Open evidence for ' + escapeHTML(node.label || node.id) + '">' + content + '</button>'
+      : '<div aria-label="' + escapeHTML((node.label || node.id) + ", evidence unavailable") + '">' + content + '</div>';
+  }).join("") + '</div></section>';
+}
+
+function projectViewMarkup() {
+  const projection = currentProjectView();
+  if (!projection) return '<p class="empty-state">UI evidence is unavailable for this project.</p>';
+  const mode = state.projectUiMode === "map" ? "map" : "screens";
+  const content = mode === "map"
+    ? projectViewMapMarkup(projection)
+    : '<section class="project-ui-screens" aria-label="Project screens">' + ((projection.screens || []).map(projectViewScreenMarkup).join("") || '<p class="empty-state">No accepted screen states are available.</p>') + '</section>';
+  return '<section class="project-ui"><header class="project-ui-toolbar"><div><p class="eyebrow">Digest-bound project view</p><h2>' + escapeHTML(projection.tab.label || "UI") + '</h2></div><div class="segmented-control" aria-label="UI view mode">' + (projection.modes || []).map((item) => {
+    const selected = item.id === mode;
+    return '<button type="button" data-project-ui-mode="' + escapeHTML(item.id) + '" aria-pressed="' + String(selected) + '" class="' + (selected ? "is-selected" : "") + '">' + escapeHTML(item.label) + '</button>';
+  }).join("") + '</div></header>' + content + '<p class="project-ui-claim">' + escapeHTML(projection.claim_limit || "Project UI is read-only.") + '</p></section>';
+}
+
 function projectTabMarkup(tab, progress, nodes) {
   const blocks = progress?.blocks || [];
   const milestones = projectMilestones(blocks);
@@ -1669,6 +1731,7 @@ function projectTabMarkup(tab, progress, nodes) {
   if (tab === "hierarchy") return '<section class="project-hierarchy">' + (nodes.length ? nodes.filter((node) => !isSubagent(node)).map((node) => '<article><svg class="lucide" aria-hidden="true"><use href="#lucide-git-branch"></use></svg><div><strong>' + escapeHTML(node.worker || node.owner || node.role_label || "Unassigned") + '</strong><span>' + escapeHTML(node.artifact || node.title || node.id) + '</span></div><small>' + escapeHTML(observedAgentRole(node) || "TASK") + '</small></article>').join("") : '<p class="empty-state">No hierarchy is observed for this project.</p>') + '</section>';
   if (tab === "proof") { const images = evidenceImagesFor(nodes); state.evidenceImages = images; return '<section class="project-proof-grid">' + (images.length ? images.map((item, index) => '<button class="asset-tile" type="button" data-evidence-open="' + index + '" aria-label="Open proof image"><img loading="lazy" src="' + proofMediaURL(item) + '" alt=""><span>' + escapeHTML(item.caption || item.kind || "Proof") + '</span></button>').join("") : '<p class="empty-state">No image proof is available for this project.</p>') + '</section>'; }
   if (tab === "ledger") return '<section class="panel project-ledger"><header class="overview-section-head"><div><p class="eyebrow">Canonical events</p><h2>Ledger</h2></div><p>' + escapeHTML(progress?.cursor?.event_seq == null ? "No cursor" : "Through " + progress.cursor.event_seq) + '</p></header>' + projectFeedMarkup(10) + '</section>';
+  if (tab === "ui") return projectViewMarkup();
   return '<section class="panel run-log" data-run-log-surface="project" aria-label="Project run log"></section>';
 }
 
@@ -1690,8 +1753,13 @@ function renderProjectDetail() {
   const measured = progress?.status === "MEASURED" && Number.isFinite(Number(progress.percent));
   const nextGate = (progress?.blocks || []).find((block) => ["REVIEW", "WAITING_DEPENDENCY", "WAITING_EXTERNAL", "USER_PAUSED"].includes(block.lifecycle_state));
   $("#project-detail-summary").innerHTML = '<p><span>Progress</span><strong>' + escapeHTML(measured ? progress.percent + "%" : "—") + '</strong></p><p><span>Live ETA</span><strong><svg class="lucide" aria-hidden="true"><use href="#lucide-clock"></use></svg>' + escapeHTML(projectEta(nodes)) + '</strong></p><p><span>Next gate</span><strong>' + escapeHTML(nextGate ? humanize(nextGate.lifecycle_state) : "—") + '</strong></p>';
+  const projectView = currentProjectView();
+  const uiTab = $("#project-tab-ui");
+  uiTab.hidden = !projectView;
+  uiTab.textContent = projectView?.tab?.label || "UI";
+  if (state.projectTab === "ui" && !projectView) state.projectTab = "overview";
   const selectedTabId = "project-tab-" + state.projectTab;
-  $$('[data-project-tab]').forEach((button) => { const selected = button.dataset.projectTab === state.projectTab; button.classList.toggle("is-active", selected); button.setAttribute("aria-selected", String(selected)); button.tabIndex = selected ? 0 : -1; });
+  $$('[data-project-tab]').forEach((button) => { const selected = !button.hidden && button.dataset.projectTab === state.projectTab; button.classList.toggle("is-active", selected); button.setAttribute("aria-selected", String(selected)); button.tabIndex = selected ? 0 : -1; });
   const tabPanel = $("#project-tab-panel");
   tabPanel.setAttribute("aria-labelledby", selectedTabId);
   const retainedRunLogMount = state.projectTab === "logs" && $('[data-run-log-surface="project"]', tabPanel);
@@ -2781,6 +2849,18 @@ document.addEventListener("click", async (event) => {
     $('[data-asset-view="' + state.assetView + '"]')?.focus({ preventScroll: true });
     return;
   }
+  const projectUiMode = event.target.closest("[data-project-ui-mode]");
+  if (projectUiMode) {
+    state.projectUiMode = projectUiMode.dataset.projectUiMode === "map" ? "map" : "screens";
+    renderProjectDetail();
+    $('[data-project-ui-mode="' + state.projectUiMode + '"]')?.focus({ preventScroll: true });
+    return;
+  }
+  const projectViewEvidenceTrigger = event.target.closest("[data-project-view-evidence]");
+  if (projectViewEvidenceTrigger) {
+    openProjectViewEvidence(projectViewEvidenceTrigger.dataset.projectViewEvidence, projectViewEvidenceTrigger);
+    return;
+  }
   const projectTab = event.target.closest("[data-project-tab]");
   if (projectTab) {
     state.projectTab = projectTab.dataset.projectTab;
@@ -3261,7 +3341,7 @@ $(".agents-tabs").addEventListener("keydown", (event) => {
 
 $(".project-tabs").addEventListener("keydown", (event) => {
   if (!["ArrowRight", "ArrowLeft", "Home", "End"].includes(event.key)) return;
-  const tabs = $$('[data-project-tab]');
+  const tabs = $$('[data-project-tab]').filter((tab) => !tab.hidden);
   const index = tabs.indexOf(document.activeElement);
   const next = event.key === "Home" ? 0 : event.key === "End" ? tabs.length - 1 : (index + (event.key === "ArrowRight" ? 1 : -1) + tabs.length) % tabs.length;
   event.preventDefault();

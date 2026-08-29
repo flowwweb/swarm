@@ -84,6 +84,18 @@ NOTIFICATION_SEEN_KEY_PREFIX = "notification_seen_v1"
 NOTIFICATION_UNREAD_LIMIT = 128
 NOTIFICATION_RECENT_SEEN_LIMIT = 64
 RUN_LOG_LIMIT = 200
+PROJECT_VIEW_MAX_BYTES = 64 * 1024
+PROJECT_VIEW_RENDERERS = {
+    "canvas": frozenset({"network", "spatial", "freeform"}),
+    "table": frozenset({"entities", "records", "log"}),
+    "timeline": frozenset({"ordered", "sessions", "milestones"}),
+    "gallery": frozenset({"grid", "list"}),
+    "compare": frozenset({"single", "side_by_side"}),
+    "document": frozenset({"blocks"}),
+}
+PROJECT_VIEW_ACTIONS = frozenset({
+    "open_artifact", "open_entity", "send_feedback",
+})
 TOKEN_RETENTION_DAYS = 30
 TOKEN_SOURCE_SQLITE = "host_reported_cumulative_delta"
 TOKEN_SOURCE_CODEX_JSONL = "codex_jsonl_token_count"
@@ -5080,13 +5092,14 @@ class SwarmHTTPServer(ThreadingHTTPServer):
 class App:
     def __init__(
         self, codex_home: Path, config_path: Path, state_path: Path | None = None,
-        *, auto_bridge: Any | None = None,
+        *, auto_bridge: Any | None = None, project_view_resolver: Any | None = None,
     ):
         self.codex_home = codex_home.resolve()
         self.config_path = config_path.resolve()
         self.store = ConsoleStore(state_path or console_state_path(self.codex_home, self.config_path))
         self.progress_ledger = ProgressLedger(self.codex_home)
         self.auto_bridge = auto_bridge or CodexStdioBridge()
+        self.project_view_resolver = project_view_resolver
         self.builtin_role_manifests = load_builtin_role_manifests(
             SWARM_SKILL_ROOT / "roles", STATIC_ROOT / "swarm-offline-disconnected.png"
         )
@@ -5109,10 +5122,14 @@ class App:
         self._last_open_claim_at: float | None = None
         self._last_observed_fingerprint: tuple[tuple[str, int, int], ...] | None = None
         self._progress_pulse_fingerprint: tuple[tuple[str, int, int], ...] | None = None
+        self._project_view_cache: dict[str, dict[str, Any]] = {}
         self._observer_stop = threading.Event()
         self._observer_thread: threading.Thread | None = None
 
     def _auto_project_root(self, project_id: str) -> Path:
+        return self._canonical_project_root(project_id, "Auto")
+
+    def _canonical_project_root(self, project_id: str, purpose: str = "Project view") -> Path:
         database = state_database(self.codex_home)
         with closing(sqlite3.connect(database)) as connection:
             row = connection.execute(
@@ -5120,11 +5137,366 @@ class App:
                 (project_id,),
             ).fetchone()
         if row is None:
-            raise ConsoleError("Auto requires a canonical host project root")
+            raise ConsoleError(f"{purpose} requires a canonical host project root")
         root = Path(str(row[0]))
         if not root.is_absolute():
-            raise ConsoleError("Auto project root must be an absolute host path")
+            raise ConsoleError(f"{purpose} project root must be an absolute host path")
         return root
+
+    @staticmethod
+    def _project_view_digest(value: Any) -> str:
+        digest = str(value or "").strip().casefold()
+        if not re.fullmatch(r"sha256:[0-9a-f]{64}", digest):
+            raise ConsoleError("project view digest must be an exact sha256 reference")
+        return digest
+
+    @staticmethod
+    def _project_view_text(value: Any, label: str, maximum: int = 128) -> str:
+        text = str(value or "").strip()
+        if not text or len(text.encode("utf-8")) > maximum or any(ord(character) < 32 for character in text):
+            raise ConsoleError(f"project view {label} is invalid")
+        return text
+
+    @classmethod
+    def _project_view_ref(cls, value: Any) -> str:
+        ref = cls._project_view_text(value, "source reference", 512)
+        if not re.fullmatch(r"project://[A-Za-z0-9._~:/-]+", ref):
+            raise ConsoleError("project view source reference must be opaque project data")
+        return ref
+
+    @staticmethod
+    def _root_project_view_link(root: Path) -> tuple[str, dict[str, str] | None]:
+        path = root / "SWARM.md"
+        try:
+            if not path.is_file() or path.stat().st_size > PROJECT_VIEW_MAX_BYTES:
+                return "absent", None
+            text = path.read_text(encoding="utf-8")
+        except (OSError, UnicodeError):
+            return "invalid", None
+        documents: list[Any] = []
+        stripped = text.strip()
+        if stripped.startswith("{"):
+            try:
+                documents.append(json.loads(stripped))
+            except json.JSONDecodeError:
+                return "invalid", None
+        for block in re.findall(r"```json\s*([\s\S]*?)\s*```", text, flags=re.IGNORECASE):
+            try:
+                documents.append(json.loads(block))
+            except json.JSONDecodeError:
+                return "invalid", None
+        link_items: list[Any] = []
+        for document in documents:
+            if isinstance(document, dict) and isinstance(document.get("links"), list):
+                link_items.extend(
+                    item for item in document["links"]
+                    if isinstance(item, dict) and str(item.get("rel") or "").strip() == "project_views"
+                )
+        if not link_items:
+            return "absent", None
+        if len(link_items) != 1:
+            return "invalid", None
+        item = link_items[0]
+        try:
+            return "present", {
+                "ref": App._project_view_ref(item.get("ref")),
+                "digest": App._project_view_digest(item.get("digest")),
+            }
+        except ConsoleError:
+            return "invalid", None
+
+    def _resolve_project_view_bytes(self, project_id: str, ref: str, digest: str) -> bytes:
+        if self.project_view_resolver is None:
+            raise ConsoleError("project view source resolver is unavailable")
+        resolved = self.project_view_resolver(project_id, ref, digest)
+        if isinstance(resolved, str):
+            resolved = resolved.encode("utf-8")
+        if not isinstance(resolved, bytes) or not resolved or len(resolved) > PROJECT_VIEW_MAX_BYTES:
+            raise ConsoleError("project view source is unavailable or exceeds the delivery guard")
+        if "sha256:" + hashlib.sha256(resolved).hexdigest() != digest:
+            raise ConsoleError("project view source digest does not match")
+        return resolved
+
+    @classmethod
+    def _project_view_sources(cls, view: dict[str, Any], default_kind: str) -> list[dict[str, str]]:
+        sources = view.get("sources")
+        if isinstance(sources, list):
+            normalized = []
+            for source in sources:
+                if not isinstance(source, dict) or set(source) != {"kind", "ref", "digest"}:
+                    raise ConsoleError("project view sources must use the exact typed source contract")
+                normalized.append({
+                    "kind": cls._project_view_text(source.get("kind"), "source kind", 64),
+                    "ref": cls._project_view_ref(source.get("ref")),
+                    "digest": cls._project_view_digest(source.get("digest")),
+                })
+        else:
+            refs = view.get("source_refs")
+            digests = view.get("source_digests")
+            if not isinstance(refs, list) or not isinstance(digests, list) or len(refs) != len(digests):
+                raise ConsoleError("project view source references and digests must align")
+            normalized = [
+                {"kind": default_kind, "ref": cls._project_view_ref(ref), "digest": cls._project_view_digest(digest)}
+                for ref, digest in zip(refs, digests, strict=True)
+            ]
+        if not normalized or len(normalized) > 16:
+            raise ConsoleError("project view must have one to sixteen sources")
+        return normalized
+
+    @classmethod
+    def _project_view_definition(
+        cls, view: Any, *, expected_id: str, renderer: str, mode: str, source_kind: str,
+    ) -> dict[str, Any]:
+        if not isinstance(view, dict):
+            raise ConsoleError("project view definition must be an object")
+        view_id = cls._project_view_text(view.get("id"), "id")
+        label = cls._project_view_text(view.get("label"), "label", 256)
+        actual_renderer = cls._project_view_text(view.get("renderer"), "renderer", 32)
+        actual_mode = cls._project_view_text(view.get("mode"), "mode", 32)
+        if actual_renderer not in PROJECT_VIEW_RENDERERS:
+            raise ConsoleError("project view renderer is not registered")
+        if actual_mode not in PROJECT_VIEW_RENDERERS[actual_renderer]:
+            raise ConsoleError("project view mode is not registered")
+        if (view_id, label, actual_renderer, actual_mode) != (expected_id, "Screens" if renderer == "gallery" else "Map", renderer, mode):
+            raise ConsoleError("project UI view does not match the bounded Screens and Map contract")
+        actions = view.get("allowed_actions", [])
+        if not isinstance(actions, list) or len(actions) > 16 or any(action not in PROJECT_VIEW_ACTIONS for action in actions):
+            raise ConsoleError("project view action is not registered")
+        return {
+            "id": view_id,
+            "label": label,
+            "renderer": actual_renderer,
+            "mode": actual_mode,
+            "sources": cls._project_view_sources(view, source_kind),
+            "allowed_actions": list(dict.fromkeys(actions)),
+        }
+
+    @staticmethod
+    def _project_view_json(raw: bytes, label: str) -> dict[str, Any]:
+        try:
+            value = json.loads(raw.decode("utf-8"))
+        except (UnicodeError, json.JSONDecodeError) as exc:
+            raise ConsoleError(f"project view {label} source must be bounded JSON") from exc
+        if not isinstance(value, dict):
+            raise ConsoleError(f"project view {label} source must be an object")
+        return value
+
+    def _project_view_screens(self, project_id: str, raw: bytes) -> list[dict[str, Any]]:
+        source = self._project_view_json(raw, "Screens")
+        if source.get("project_id") not in {None, project_id}:
+            raise ConsoleError("project view Screens source belongs to another project")
+        nodes = source.get("nodes")
+        if not isinstance(nodes, list) or len(nodes) > 256:
+            raise ConsoleError("project view Screens source must contain bounded nodes")
+        proof = {
+            (str(item.get("evidence_id") or ""), str(item.get("digest") or "").casefold()): item
+            for item in self.store.proof_feed(project_id=project_id)
+            if str(item.get("media_type") or "").startswith("image/")
+        }
+        screens: list[dict[str, Any]] = []
+        identities: set[str] = set()
+        for node in nodes:
+            if not isinstance(node, dict) or node.get("node_kind") != "screen_state":
+                continue
+            screen_id = self._project_view_text(node.get("screen_id"), "screen id")
+            state_id = self._project_view_text(node.get("state_id"), "state id")
+            identity = f"{screen_id}/{state_id}"
+            if identity in identities:
+                raise ConsoleError("project view screen identities must be unique")
+            identities.add(identity)
+            evidence: list[dict[str, Any]] = []
+            evidence_seen: set[tuple[str, str]] = set()
+            candidates = []
+            for field in ("design_alternatives", "implementation_evidence"):
+                values = node.get(field, [])
+                if not isinstance(values, list) or len(values) > 64:
+                    raise ConsoleError("project view evidence bindings must be bounded lists")
+                candidates.extend(values)
+            for candidate in candidates:
+                if not isinstance(candidate, dict):
+                    raise ConsoleError("project view evidence binding must be an object")
+                artifact_id = self._project_view_text(candidate.get("artifact_id"), "artifact id", 256)
+                evidence_id = self._project_view_text(candidate.get("evidence_id") or artifact_id, "evidence id", 256)
+                digest = self._project_view_digest(candidate.get("digest"))[7:]
+                registered = proof.get((evidence_id, digest))
+                if registered is None:
+                    continue
+                key = (evidence_id, digest)
+                if key in evidence_seen:
+                    continue
+                evidence_seen.add(key)
+                device = str(candidate.get("device") or "").strip().casefold()
+                evidence.append({
+                    **registered,
+                    "artifact_id": artifact_id,
+                    "alternative_id": str(candidate.get("alternative_id") or "").strip() or None,
+                    "label": str(candidate.get("label") or registered.get("caption") or "Artifact")[:256],
+                    "device": device if device in {"desktop", "tablet", "mobile"} else None,
+                })
+            screens.append({
+                "id": identity,
+                "screen_id": screen_id,
+                "state_id": state_id,
+                "label": self._project_view_text(node.get("label") or identity, "screen label", 256),
+                "status": self._project_view_text(node.get("coverage_state") or "UNKNOWN", "coverage state", 64),
+                "evidence": evidence,
+                "devices": [device for device in ("desktop", "tablet", "mobile") if any(item["device"] == device for item in evidence)],
+                "alternative_count": len({item["alternative_id"] for item in evidence if item["alternative_id"]}),
+            })
+        return screens
+
+    @classmethod
+    def _project_view_graph(cls, raw: bytes, screens: list[dict[str, Any]]) -> dict[str, Any]:
+        try:
+            text = raw.decode("utf-8")
+        except UnicodeError as exc:
+            raise ConsoleError("project view Map source must be UTF-8") from exc
+        lowered = text.casefold()
+        if any(token in lowered for token in ("javascript:", "data:", "vbscript:", "file:", "blob:", "click ", "href ", "<script")):
+            raise ConsoleError("project view Map source contains executable links")
+        nodes: dict[str, str] = {}
+        edges: list[dict[str, str]] = []
+        try:
+            graph = json.loads(text)
+        except json.JSONDecodeError:
+            graph = None
+        if isinstance(graph, dict):
+            graph_nodes = graph.get("nodes")
+            graph_edges = graph.get("edges")
+            if not isinstance(graph_nodes, list) or not isinstance(graph_edges, list) or len(graph_nodes) > 256 or len(graph_edges) > 512:
+                raise ConsoleError("project view Map JSON is invalid")
+            for node in graph_nodes:
+                if not isinstance(node, dict):
+                    raise ConsoleError("project view Map node is invalid")
+                node_id = cls._project_view_text(node.get("id"), "Map node id")
+                nodes[node_id] = cls._project_view_text(node.get("label") or node_id, "Map node label", 256)
+            for edge in graph_edges:
+                if not isinstance(edge, dict):
+                    raise ConsoleError("project view Map edge is invalid")
+                source = cls._project_view_text(edge.get("source"), "Map edge source")
+                target = cls._project_view_text(edge.get("target"), "Map edge target")
+                if source not in nodes or target not in nodes:
+                    raise ConsoleError("project view Map edge names an unknown node")
+                edges.append({"source": source, "target": target})
+        else:
+            if not re.search(r"(?m)^\s*(?:flowchart|graph)\s+(?:TB|TD|BT|RL|LR)\s*$", text):
+                raise ConsoleError("project view Map source must be a bounded Mermaid flowchart")
+            node_pattern = re.compile(r"([A-Za-z][A-Za-z0-9_.:-]{0,127})(?:\s*\[\s*\"([^\"]{1,256})\"\s*\])?")
+            for line in text.splitlines():
+                stripped = line.strip()
+                if not stripped or stripped.startswith(("%%", "flowchart ", "graph ")):
+                    continue
+                safe_line = re.sub(r"<br\s*/?>", " · ", stripped, flags=re.IGNORECASE)
+                if "<" in safe_line:
+                    raise ConsoleError("project view Map labels cannot contain markup")
+                parts = safe_line.split("-->")
+                matches = [node_pattern.search(part.split("|")[-1]) for part in parts]
+                if any(match is None for match in matches):
+                    continue
+                ids = []
+                for match in matches:
+                    if match is None:
+                        continue
+                    node_id = match.group(1)
+                    nodes[node_id] = (match.group(2) or nodes.get(node_id) or node_id).strip()
+                    ids.append(node_id)
+                edges.extend({"source": source, "target": target} for source, target in zip(ids, ids[1:], strict=False))
+            if not nodes:
+                raise ConsoleError("project view Map source has no safe nodes")
+        screen_keys = {screen["id"]: screen["id"] for screen in screens}
+        for screen in screens:
+            screen_keys.setdefault(screen["screen_id"], screen["id"])
+        return {
+            "nodes": [
+                {"id": node_id, "label": label, "screen_key": screen_keys.get(node_id)}
+                for node_id, label in nodes.items()
+            ],
+            "edges": edges,
+        }
+
+    def _normalize_project_view(self, project_id: str, manifest_bytes: bytes, manifest_digest: str) -> dict[str, Any]:
+        manifest = self._project_view_json(manifest_bytes, "manifest")
+        if manifest.get("manifest_type") != "swarm.project_views" or manifest.get("schema_version") != 1:
+            raise ConsoleError("project view manifest type or schema is unsupported")
+        if manifest.get("project_id") != project_id:
+            raise ConsoleError("project view manifest belongs to another project")
+        manifest_id = self._project_view_text(manifest.get("manifest_id"), "manifest id")
+        version = manifest.get("manifest_version")
+        if not isinstance(version, int) or isinstance(version, bool) or version < 1:
+            raise ConsoleError("project view manifest version must be positive")
+        tab = manifest.get("project_tab")
+        if not isinstance(tab, dict) or tab.get("id") != "tab.project.ui" or tab.get("visibility") != "conditional":
+            raise ConsoleError("project view manifest must declare one conditional UI tab")
+        label = self._project_view_text(tab.get("label"), "tab label", 64)
+        if label != "UI":
+            raise ConsoleError("project view tab label must be UI")
+        modes = tab.get("modes")
+        expected_modes = ["view.project.ui.screens", "view.project.ui.map"]
+        if modes != expected_modes:
+            raise ConsoleError("project view UI tab must expose exactly Screens and Map")
+        views = manifest.get("views")
+        if not isinstance(views, list) or len(views) > 64:
+            raise ConsoleError("project view manifest views must be bounded")
+        for candidate in views:
+            if not isinstance(candidate, dict):
+                raise ConsoleError("project view manifest view is invalid")
+            renderer = str(candidate.get("renderer") or "")
+            mode = str(candidate.get("mode") or "")
+            if renderer not in PROJECT_VIEW_RENDERERS or mode not in PROJECT_VIEW_RENDERERS[renderer]:
+                raise ConsoleError("project view manifest includes an unknown renderer or mode")
+        by_id = {str(view.get("id") or ""): view for view in views}
+        screens_view = self._project_view_definition(
+            by_id.get(expected_modes[0]), expected_id=expected_modes[0], renderer="gallery", mode="grid", source_kind="coverage.screens",
+        )
+        map_view = self._project_view_definition(
+            by_id.get(expected_modes[1]), expected_id=expected_modes[1], renderer="canvas", mode="network", source_kind="graph.mermaid",
+        )
+        resolved: dict[str, bytes] = {}
+        for view in (screens_view, map_view):
+            for source in view["sources"]:
+                resolved[source["ref"]] = self._resolve_project_view_bytes(project_id, source["ref"], source["digest"])
+        screens_source = next((source for source in screens_view["sources"] if source["kind"] == "coverage.screens"), None)
+        map_source = next((source for source in map_view["sources"] if source["kind"] in {"graph.mermaid", "graph.json"}), None)
+        if screens_source is None or map_source is None:
+            raise ConsoleError("project view Screens or Map source kind is unsupported")
+        screens = self._project_view_screens(project_id, resolved[screens_source["ref"]])
+        graph = self._project_view_graph(resolved[map_source["ref"]], screens)
+        return {
+            "schema_version": 1,
+            "project_id": project_id,
+            "tab": {"id": "ui", "label": label},
+            "modes": [{"id": "screens", "label": "Screens"}, {"id": "map", "label": "Map"}],
+            "screens": screens,
+            "map": graph,
+            "identity": {
+                "manifest_id": manifest_id,
+                "manifest_version": version,
+                "manifest_digest": manifest_digest,
+                "source_digests": [
+                    source["digest"] for view in (screens_view, map_view) for source in view["sources"]
+                ],
+            },
+            "claim_limit": "Project UI is a read-only digest-bound projection; actions and acceptance remain separate authority.",
+        }
+
+    def _project_view_projection(self, project_id: str) -> dict[str, Any] | None:
+        try:
+            root = self._canonical_project_root(project_id)
+        except (ConsoleError, OSError, sqlite3.Error):
+            return copy.deepcopy(self._project_view_cache.get(project_id))
+        status, link = self._root_project_view_link(root)
+        if status == "absent":
+            self._project_view_cache.pop(project_id, None)
+            return None
+        if status != "present" or link is None:
+            return copy.deepcopy(self._project_view_cache.get(project_id))
+        try:
+            manifest_bytes = self._resolve_project_view_bytes(project_id, link["ref"], link["digest"])
+            projection = self._normalize_project_view(project_id, manifest_bytes, link["digest"])
+        except (ConsoleError, OSError, UnicodeError, ValueError, TypeError, sqlite3.Error):
+            return copy.deepcopy(self._project_view_cache.get(project_id))
+        self._project_view_cache[project_id] = projection
+        return copy.deepcopy(projection)
 
     def _auto_scope(self, ctrl_id: str, project_id: str) -> dict[str, Any]:
         overview = self._host_overview()
@@ -5849,6 +6221,7 @@ class App:
             scope_id=selected_ctrl_id if ctrl_scope else selected_project_id,
             scope_type="ctrl" if ctrl_scope else "project",
         )
+        view["project_view"] = None if ctrl_scope else self._project_view_projection(selected_project_id)
         return view
 
     def _observed_scope(
