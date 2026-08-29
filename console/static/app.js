@@ -1,7 +1,8 @@
-const state = { token: "", overview: null, proof: [], proofCollections: new Map(), proofStatuses: new Map(), proofStatus: "idle", proofSequence: 0, usageHistory: null, usageWindowHours: 24, usageScopeKey: "", usageStatus: "idle", usageError: "", projectProgress: null, projectProgressProjectId: "", projectProgressStatus: "idle", projectProgressError: "", projectProgressFeed: null, projectProgressFeedProjectId: "", projectProgressFeedStatus: "idle", projectProgressFeedError: "", projectTab: "overview", runLogs: new Map(), runLogRequestGenerations: new Map(), runLogSurfaceStates: new Map(), runLogAgent: null, diagnostics: null, health: null, storage: null, config: null, configStatus: "idle", configError: "", chatRelaySaving: false, ctrlSettings: null, auto: null, autoBindingKey: "", autoStatus: "idle", autoError: "", autoSaving: false, skills: null, skillsError: "", roleManifests: null, roleManifestStatus: "unavailable", roleManifestError: "", roleManifestMessage: "", roleManifestSaving: false, roleManifestRetry: null, roleEditorMode: "", agentsTab: "active", roleEditorTrigger: null, roleSearch: "", roleTypes: new Set(["builtin", "custom"]), roleSearchFields: new Set(["profession", "specialization", "alias", "skills", "purpose"]), assetView: "grid", selectedAssetIdentity: "", onboardingStep: 0, onboardingShown: false, onboardingTrigger: null, notifications: null, notificationBindingKey: "", notificationStatus: "idle", notificationError: "", notificationAckFlight: null, notificationRequestGenerations: new Map(), notificationPresentedIds: new Set(), notificationToast: null, notificationToastTimer: null, notificationTrigger: null, connectionStatus: "reconnecting", view: "overview", projectId: "all", ctrlId: "", settingsCtrlId: "", settingsScopeType: "", settingsScopeId: "", evidenceImages: [], evidenceIndex: 0, evidenceTrigger: null };
+const state = { token: "", overview: null, proof: [], proofCollections: new Map(), proofStatuses: new Map(), proofStatus: "idle", proofSequence: 0, usageHistory: null, usageWindowHours: 24, usageScopeKey: "", usageStatus: "idle", usageError: "", projectProgress: null, projectProgressProjectId: "", projectProgressStatus: "idle", projectProgressError: "", projectProgressFeed: null, projectProgressFeedProjectId: "", projectProgressFeedStatus: "idle", projectProgressFeedError: "", projectTab: "overview", runLogs: new Map(), runLogRequestGenerations: new Map(), runLogSurfaceStates: new Map(), runLogAgent: null, diagnostics: null, health: null, storage: null, config: null, configStatus: "idle", configError: "", chatRelaySaving: false, ctrlSettings: null, auto: null, autoBindingKey: "", autoStatus: "idle", autoError: "", autoSaving: false, skills: null, skillsError: "", roleManifests: null, roleManifestStatus: "unavailable", roleManifestError: "", roleManifestMessage: "", roleManifestSaving: false, roleManifestRetry: null, roleEditorMode: "", agentsTab: "active", roleEditorTrigger: null, roleSearch: "", roleTypes: new Set(["builtin", "custom"]), roleSearchFields: new Set(["profession", "specialization", "alias", "skills", "purpose"]), selectedRoleId: "", assetView: "grid", selectedAssetIdentity: "", onboardingStep: 0, onboardingShown: false, onboardingTrigger: null, notifications: null, notificationBindingKey: "", notificationStatus: "idle", notificationError: "", notificationAckFlight: null, notificationRequestGenerations: new Map(), notificationPresentedIds: new Set(), notificationToast: null, notificationToastTimer: null, notificationTrigger: null, connectionStatus: "reconnecting", view: "overview", projectId: "all", ctrlId: "", settingsCtrlId: "", settingsScopeType: "", settingsScopeId: "", evidenceImages: [], evidenceIndex: 0, evidenceTrigger: null };
 const EVIDENCE_THUMBNAIL_PAGE_SIZE = 24;
 const USAGE_WINDOW_LABELS = { 1: "1h", 24: "1d" };
 const RUN_LOG_CLIENT_LIMIT = 200;
+const ONBOARDING_PRESENTATION_KEY = "swarm.onboarding.v1.seen";
 const ONBOARDING_STEPS = [
   { name: "Welcome", primary: "Start guided tour" },
   { name: "Owned lanes", primary: "Continue" },
@@ -191,11 +192,21 @@ function renderOnboarding() {
   $("#onboarding-primary").textContent = current.primary;
 }
 
-function openOnboarding() {
-  if (state.onboardingShown || !state.overview || $(".workspace").classList.contains("is-disconnected")) return;
+function onboardingSeen(storage = window.localStorage) {
+  try { return storage.getItem(ONBOARDING_PRESENTATION_KEY) === "1"; }
+  catch { return false; }
+}
+
+function markOnboardingSeen(storage = window.localStorage) {
+  try { storage.setItem(ONBOARDING_PRESENTATION_KEY, "1"); }
+  catch { /* Presentation state remains safely ephemeral when storage is unavailable. */ }
+}
+
+function openOnboarding(force = false, trigger = null) {
+  if ((!force && (state.onboardingShown || onboardingSeen())) || !state.overview || $(".workspace").classList.contains("is-disconnected")) return;
   state.onboardingShown = true;
   state.onboardingStep = 0;
-  state.onboardingTrigger = document.activeElement instanceof HTMLElement && document.activeElement !== document.body ? document.activeElement : $("#tab-overview");
+  state.onboardingTrigger = trigger || (document.activeElement instanceof HTMLElement && document.activeElement !== document.body ? document.activeElement : $("#tab-overview"));
   renderOnboarding();
   const dialog = $("#onboarding-dialog");
   if (!dialog.open) dialog.showModal();
@@ -203,6 +214,7 @@ function openOnboarding() {
 }
 
 function closeOnboarding(openProjects = false) {
+  markOnboardingSeen();
   const dialog = $("#onboarding-dialog");
   if (dialog.open) dialog.close();
   if (openProjects) setView("overview", false);
@@ -1940,11 +1952,20 @@ function roleCanMutate(command) {
   return state.roleManifestStatus === "current" && roleCommandContract()?.commands.includes(command) === true && !state.roleManifestSaving;
 }
 
+function roleDisplayName(role) {
+  return String(role?.id || "").toLowerCase() === "dev" ? "Developer" : (role?.name || role?.id || "Unknown role");
+}
+
 function roleAvatar(role) {
   const accent = /^#[0-9a-f]{6}$/i.test(role?.accent || "") ? role.accent : "#8f9db0";
   const retained = assetItems().find((item) => String(item.digest || "").toLowerCase() === String(role?.avatar_asset_digest || "").toLowerCase());
-  const visual = retained ? '<img loading="lazy" decoding="async" src="' + proofMediaURL(retained) + '" alt="">' : '<svg class="lucide"><use href="#lucide-circle-user-round"></use></svg><b>' + escapeHTML(role?.name?.slice(0, 1) || "?") + '</b>';
+  const visual = retained ? '<img loading="lazy" decoding="async" src="' + proofMediaURL(retained) + '" alt="">' : '<svg class="lucide"><use href="#lucide-circle-user-round"></use></svg><b>' + escapeHTML(roleDisplayName(role).slice(0, 1) || "?") + '</b>';
   return '<span class="role-avatar" style="--role-accent:' + escapeHTML(accent) + '" aria-hidden="true">' + visual + '</span>';
+}
+
+function roleHasRetainedAvatar(role) {
+  const digest = String(role?.avatar_asset_digest || "").toLowerCase();
+  return /^[0-9a-f]{64}$/.test(digest) && assetItems().some((item) => String(item.digest || "").toLowerCase() === digest);
 }
 
 function roleSourceLabel(role) {
@@ -2019,9 +2040,16 @@ function roleTextList(items, empty) {
   return Array.isArray(items) && items.length ? '<ul>' + items.map((item) => '<li>' + escapeHTML(item) + '</li>').join("") + '</ul>' : '<p class="role-specializations-empty">' + escapeHTML(empty) + '</p>';
 }
 
-function roleAccordionMarkup(role, match = { label: "" }) {
+function roleChooserMarkup(role, match, selected) {
+  const displayName = roleDisplayName(role);
+  return '<button class="role-choice' + (selected ? ' is-selected' : '') + '" data-role-select="' + escapeHTML(role.id) + '" id="role-choice-' + escapeHTML(role.id) + '" role="option" aria-selected="' + String(selected) + '" aria-controls="role-library-detail" type="button">' + roleAvatar(role) + '<span><strong>' + escapeHTML(displayName) + '</strong><small>' + escapeHTML(roleSourceLabel(role)) + '</small>' + (match.label ? '<em>' + escapeHTML(match.label) + '</em>' : '') + '</span><svg class="lucide" aria-hidden="true"><use href="#lucide-chevron-right"></use></svg></button>';
+}
+
+function roleDetailMarkup(role, match = { label: "" }) {
+  if (!role) return '<p class="empty-state">Choose a role to inspect its server-owned manifest.</p>';
+  const displayName = roleDisplayName(role);
   const editAllowed = roleCanMutate("ROLE_MANIFEST_REVISE");
-  return '<details class="role-card" data-role-id="' + escapeHTML(role.id) + '"' + (match.label ? ' open' : '') + '><summary>' + roleAvatar(role) + '<span><strong>' + escapeHTML(role.name) + '</strong><small>' + escapeHTML(roleSourceLabel(role) + " · " + (role.active_version || role.version || "Unknown version")) + '</small></span><svg class="lucide role-disclosure" aria-hidden="true"><use href="#lucide-chevron-right"></use></svg></summary><div class="role-card-body">' + (match.label ? '<p class="role-match">' + escapeHTML(match.label) + '</p>' : '') + '<p class="role-purpose">' + escapeHTML(role.purpose || "Purpose unavailable.") + '</p><div class="role-card-columns"><section><h3>Owns</h3>' + roleTextList(role.owns, "No owned surface declared.") + '</section><section><h3>Default skills</h3>' + roleTextList(role.default_skills, "No default skills.") + '</section><section><h3>Instructions</h3>' + roleTextList(role.instructions, "No instructions.") + '</section><section><h3>Current owners</h3>' + roleAssignmentsMarkup(role.id) + '</section><section><h3>Specializations</h3>' + roleSpecializationsMarkup(role) + '<small>Metadata only · no authority transfer.</small></section><section><h3>Avatar</h3><code>' + escapeHTML(role.avatar_asset_digest || "Unknown") + '</code></section></div>' + reviewerStancesMarkup(role) + '<footer><p>New assignments use version ' + escapeHTML(role.active_version || role.version || "Unknown") + '.</p><button class="icon-button" data-role-action="edit" data-role-id="' + escapeHTML(role.id) + '" type="button" aria-label="Edit ' + escapeHTML(role.name) + '" title="Edit role"' + (editAllowed ? "" : ' disabled') + '><svg class="lucide" aria-hidden="true"><use href="#lucide-pencil"></use></svg></button></footer></div></details>';
+  return '<header class="role-detail-head">' + roleAvatar(role) + '<div><p class="eyebrow">' + escapeHTML(roleSourceLabel(role)) + '</p><h3 id="role-detail-title">' + escapeHTML(displayName) + '</h3><p>' + escapeHTML(role.purpose || "Purpose unavailable.") + '</p></div><div class="role-detail-actions"><button class="icon-button" data-role-action="generate-avatar" type="button" disabled aria-label="Generate avatar" title="Generate avatar unavailable"><svg class="lucide" aria-hidden="true"><use href="#lucide-sparkles"></use></svg></button><button class="icon-button" data-role-action="edit" data-role-id="' + escapeHTML(role.id) + '" type="button" aria-label="Edit ' + escapeHTML(displayName) + '" title="Edit role"' + (editAllowed ? "" : ' disabled') + '><svg class="lucide" aria-hidden="true"><use href="#lucide-pencil"></use></svg></button></div></header>' + (match.label ? '<p class="role-match">' + escapeHTML(match.label) + '</p>' : '') + '<div class="role-detail-sections"><section><h4>Owns</h4>' + roleTextList(role.owns, "No owned surface declared.") + '</section><section><h4>Default skills</h4>' + roleTextList(role.default_skills, "No default skills.") + '</section><section><h4>Instructions</h4>' + roleTextList(role.instructions, "No instructions.") + '</section><section><h4>Boundaries</h4>' + roleTextList(role.boundaries, "No boundaries declared.") + '</section><section><h4>Current owners</h4>' + roleAssignmentsMarkup(role.id) + '</section><section><h4>Specializations</h4>' + roleSpecializationsMarkup(role) + '<small>Metadata only · no authority transfer.</small></section></div>' + reviewerStancesMarkup(role) + '<footer><span>' + escapeHTML(roleHasRetainedAvatar(role) ? "Retained avatar" : "Accent fallback") + '</span><span>Active tasks retain their accepted role version.</span></footer>';
 }
 
 function renderRoleLibrary() {
@@ -2045,7 +2073,10 @@ function renderRoleLibrary() {
   if (state.roleManifestMessage) status += " · " + state.roleManifestMessage;
   $("#role-library-status").textContent = status;
   $("#role-filter-chips").innerHTML = roleFilterChipsMarkup(state.roleTypes);
-  $("#role-library-grid").innerHTML = filtered.length ? filtered.map(({ role, match }) => roleAccordionMarkup(role, match)).join("") : '<p class="empty-state">No roles match these filters. Clear the search or filters to see the server roster.</p>';
+  if (!filtered.some(({ role }) => role.id === state.selectedRoleId)) state.selectedRoleId = filtered[0]?.role.id || "";
+  const selected = filtered.find(({ role }) => role.id === state.selectedRoleId) || null;
+  $("#role-library-grid").innerHTML = filtered.length ? filtered.map(({ role, match }) => roleChooserMarkup(role, match, role.id === state.selectedRoleId)).join("") : '<p class="empty-state">No roles match these filters. Clear the search or filters to see the server roster.</p>';
+  $("#role-library-detail").innerHTML = roleDetailMarkup(selected?.role, selected?.match);
 }
 
 function renderAgents() {
@@ -2096,7 +2127,7 @@ function updateRoleEditorAuthority(message = "") {
   $("#role-field-id").readOnly = editing;
   $("#role-save").disabled = !allowed || !roleAvatarDigestValid($("#role-field-avatar").value);
   $("#role-reset").disabled = !(editing && role?.built_in && role.override_active && roleCanMutate("ROLE_MANIFEST_RESET"));
-  const generate = $('[data-role-action="generate-avatar"]');
+  const generate = $('#role-editor [data-role-action="generate-avatar"]');
   generate.disabled = true;
   generate.title = "Generate avatar is unavailable because the server exposes no generation command";
   $("#role-editor-status").textContent = message || (allowed ? "Saving creates a new server-owned version." : "Role changes are unavailable until current server authority is available.");
@@ -2109,7 +2140,7 @@ function openRoleEditor(roleId = "", trigger = null) {
   state.roleEditorMode = editing ? "edit" : "create";
   state.roleManifestRetry = null;
   state.roleEditorTrigger = trigger;
-  $("#role-editor-title").textContent = editing ? role.name + " manifest" : "Create role";
+  $("#role-editor-title").textContent = editing ? roleDisplayName(role) + " manifest" : "Create role";
   roleFieldValue("#role-field-id", role.id);
   roleFieldValue("#role-field-name", role.name);
   roleFieldValue("#role-field-purpose", role.purpose);
@@ -2422,7 +2453,7 @@ function renderSettings() {
       settingToggle('console.project_progress_feed_enabled', consoleSettings.project_progress_feed_enabled, 'Progress feed') +
       '<label class="setting-field">Updates shown<input data-config-key="console.project_progress_feed_lines" type="number" min="1" max="10" value="' + escapeHTML(consoleSettings.project_progress_feed_lines ?? 4) + '"' + (!configEditable('console.project_progress_feed_lines') ? ' disabled' : '') + '></label>' +
       settingToggle('console.open_on_start', consoleSettings.open_on_start, 'Open SWARM when Codex starts') +
-      '<label class="toggle-row"><input id="auto-health" type="checkbox"' + (state.health?.enabled ? ' checked' : '') + '><span>Request health review when needed</span></label><small>Passive monitoring does not run models.</small></section>' +
+      '<label class="toggle-row"><input id="auto-health" type="checkbox"' + (state.health?.enabled ? ' checked' : '') + '><span>Request health review when needed</span></label><small>Passive monitoring does not run models.</small><div class="guided-tour-setting"><span><strong>Guided tour</strong><small>Replay the current console introduction.</small></span><button class="quiet-button" data-setting-action="replay-tour" type="button">Replay tour</button></div></section>' +
       '<details class="panel settings-advanced settings-wide" id="settings-advanced"><summary>Advanced settings</summary><div class="settings-advanced-grid">' + ctrlAdvanced + chatRelaySettingsMarkup() + '<section class="advanced-setting-group"><h4>Spark and monitoring</h4>' + settingSelect('boost.spark_reasoning', boost.spark_reasoning || 'xhigh', reasoningOptions, 'Spark reasoning') + '<label class="setting-field">Spark model<input id="spark-model" value="' + escapeHTML(boost.spark_model || '') + '" autocomplete="off"' + (!configEditable('boost.spark_model') ? ' disabled' : '') + '></label><label class="setting-field">Heartbeat minutes<input id="heartbeat-minutes" data-config-key="monitoring.heartbeat_minutes" type="number" min="1" value="' + escapeHTML(monitoring.heartbeat_minutes || '') + '"' + (!configEditable('monitoring.heartbeat_minutes') ? ' disabled' : '') + '></label><button class="quiet-button" data-setting-action="save-spark" type="button"' + (!configEditable('boost.spark_model') ? ' disabled' : '') + '>Save Spark model</button>' + settingToggle('role_icons.enabled', roleIcons.enabled, 'Show role icons') + '</section><section class="advanced-setting-group"><h4>' + escapeHTML(storage?.bytes == null ? 'Saved history unavailable' : formatBytes(storage.bytes) + ' saved history' + retention) + '</h4><p>Progress, forecasts, proof, and token history stay available between sessions' + (proofFiles ? ' · ' + proofFiles + ' proof file' + (proofFiles === 1 ? '' : 's') : '') + '.</p><div class="settings-actions-inline"><button class="quiet-button" data-setting-action="clear" type="button">Clear history</button><button class="quiet-button" data-setting-action="restore" type="button">Restore defaults</button></div><small>Clearing history leaves tasks unchanged. Restoring defaults keeps history.</small>' + skillsAdvanced(scope) + '</section></div></details>';
   renderSystemHealth();
 }
@@ -2778,6 +2809,13 @@ document.addEventListener("click", async (event) => {
     $("#role-search").focus({ preventScroll: true });
     return;
   }
+  const roleSelect = event.target.closest("[data-role-select]");
+  if (roleSelect) {
+    state.selectedRoleId = roleSelect.dataset.roleSelect;
+    renderRoleLibrary();
+    $('[data-role-select="' + CSS.escape(state.selectedRoleId) + '"]')?.focus({ preventScroll: true });
+    return;
+  }
   const roleAction = event.target.closest("[data-role-action]");
   if (roleAction) {
     if (roleAction.dataset.roleAction === "edit") openRoleEditor(roleAction.dataset.roleId, roleAction);
@@ -2853,6 +2891,7 @@ $(".onboarding-progress").addEventListener("keydown", (event) => {
   setOnboardingStep(next, true);
 });
 $("#onboarding-dialog").addEventListener("close", () => {
+  markOnboardingSeen();
   state.onboardingTrigger?.focus({ preventScroll: true });
   state.onboardingTrigger = null;
 });
@@ -3105,6 +3144,10 @@ document.addEventListener('change', async (event) => {
 document.addEventListener('click', async (event) => {
   const action = event.target.closest('[data-setting-action]')?.dataset.settingAction;
   if (!action) return;
+  if (action === 'replay-tour') {
+    openOnboarding(true, event.target.closest('[data-setting-action]'));
+    return;
+  }
   const messages = { clear: 'Clear saved SWARM history? Your tasks will stay unchanged.', restore: 'Restore default settings? Your history will stay unchanged.', reset: 'Use global defaults for this CTRL?', 'reset-skills': 'Restore inherited skill settings for this scope?' };
   if (messages[action] && !confirm(messages[action])) return;
   try {
