@@ -1817,18 +1817,21 @@ function progressQueueEtaMarkup(row) {
 function progressQueueRecoveryMarkup(row) {
   const recovery = row?.blocked_recovery;
   if (!recovery) return "";
-  const release = recovery.blocked_release_condition?.condition;
+  const release = recovery.blocked_release_condition;
   const suggested = recovery.blocked_suggested_recovery;
-  if (!release || !suggested?.action || !suggested?.responsible_authority) return "";
-  return '<details class="project-progress-recovery"><summary>Recovery details</summary><dl><div><dt>Release</dt><dd>' + escapeHTML(release) + '</dd></div><div><dt>Recovery</dt><dd>' + escapeHTML(suggested.action) + '</dd></div><div><dt>Authority</dt><dd>' + escapeHTML(suggested.responsible_authority) + '</dd></div><div><dt>Attempts</dt><dd>' + escapeHTML(recovery.blocked_attempts) + '</dd></div></dl></details>';
+  const evidence = Array.isArray(suggested?.evidence_receipt_refs) ? suggested.evidence_receipt_refs : [];
+  if (!release?.condition || !release?.release_event_id || !release?.release_event_digest || !suggested?.action || !suggested?.route_id || !suggested?.responsible_authority || !Number.isInteger(recovery.blocked_attempts) || typeof recovery.blocked_critical_path !== "boolean" || !evidence.length || evidence.some((receipt) => !receipt?.event_id || !receipt?.event_digest)) return "";
+  const evidenceMarkup = evidence.map((receipt) => '<li><span>' + escapeHTML(receipt.event_id) + '</span><code>' + escapeHTML(receipt.event_digest) + '</code></li>').join("");
+  return '<details class="project-progress-recovery"><summary>Recovery details</summary><dl><div><dt>Release</dt><dd>' + escapeHTML(release.condition) + '</dd></div><div><dt>Route</dt><dd>' + escapeHTML(suggested.route_id) + '</dd></div><div><dt>Critical path</dt><dd>' + escapeHTML(recovery.blocked_critical_path ? "Yes" : "No") + '</dd></div><div><dt>Release event</dt><dd><span>' + escapeHTML(release.release_event_id) + '</span><code>' + escapeHTML(release.release_event_digest) + '</code></dd></div><div><dt>Recovery</dt><dd>' + escapeHTML(suggested.action) + '</dd></div><div><dt>Authority</dt><dd>' + escapeHTML(suggested.responsible_authority) + '</dd></div><div><dt>Attempts</dt><dd>' + escapeHTML(recovery.blocked_attempts) + '</dd></div><div><dt>Evidence</dt><dd><ul>' + evidenceMarkup + '</ul></dd></div></dl></details>';
 }
 
 function projectProgressQueueRowMarkup(row, segmentId) {
   const stateLabel = progressQueueStateLabel(row, segmentId);
   const signal = row?.last_accepted_signal?.summary;
   const elapsed = row?.elapsed?.state === "KNOWN" ? formatDuration(row.elapsed.elapsed_ms) : "—";
-  const release = row?.next_operation_or_release_event;
-  return '<tr data-progress-task="' + escapeHTML(row.task_id) + '" data-progress-ctrl="' + escapeHTML(row.scope_binding?.ctrl_id || "") + '"><th scope="row" data-label="Task"><strong>' + escapeHTML(row.task_name || row.task_id) + '</strong><small>' + escapeHTML([row.role, row.owner_id].filter(Boolean).join(" · ") || "Owner unknown") + '</small></th><td data-label="State"><span class="project-progress-state" data-state="' + escapeHTML(row.queue_state || row.lifecycle || "UNKNOWN") + '">' + escapeHTML(stateLabel) + '</span>' + (release ? '<small>' + escapeHTML(release) + '</small>' : '') + progressQueueRecoveryMarkup(row) + '</td><td data-label="Progress">' + progressQueueProgressMarkup(row) + '</td><td data-label="Last accepted signal"><span>' + escapeHTML(signal || "—") + '</span><small>' + escapeHTML(row?.freshness?.state || "UNKNOWN") + '</small></td><td data-label="Elapsed"><span aria-label="' + escapeHTML(elapsed === "—" ? "Elapsed unavailable" : "Elapsed " + elapsed) + '">' + escapeHTML(elapsed) + '</span>' + (elapsed === "—" ? '<small>UNKNOWN</small>' : '') + '</td><td data-label="ETA">' + progressQueueEtaMarkup(row) + '</td></tr>';
+  const ctrlId = row?.scope_binding?.ctrl_id || "UNKNOWN";
+  const taskContext = ["CTRL " + ctrlId, row.role, row.owner_id].filter(Boolean).join(" · ");
+  return '<tr data-progress-task="' + escapeHTML(row.task_id) + '" data-progress-ctrl="' + escapeHTML(ctrlId) + '"><th scope="row" data-label="Task"><strong>' + escapeHTML(row.task_name || row.task_id) + '</strong><small>' + escapeHTML(taskContext) + '</small></th><td data-label="State"><span class="project-progress-state" data-state="' + escapeHTML(row.queue_state || row.lifecycle || "UNKNOWN") + '">' + escapeHTML(stateLabel) + '</span>' + progressQueueRecoveryMarkup(row) + '</td><td data-label="Progress">' + progressQueueProgressMarkup(row) + '</td><td data-label="Last accepted signal"><span>' + escapeHTML(signal || "—") + '</span><small>' + escapeHTML(row?.freshness?.state || "UNKNOWN") + '</small></td><td data-label="Elapsed"><span aria-label="' + escapeHTML(elapsed === "—" ? "Elapsed unavailable" : "Elapsed " + elapsed) + '">' + escapeHTML(elapsed) + '</span>' + (elapsed === "—" ? '<small>UNKNOWN</small>' : '') + '</td><td data-label="ETA">' + progressQueueEtaMarkup(row) + '</td></tr>';
 }
 
 function projectProgressQueueMarkup(progress) {

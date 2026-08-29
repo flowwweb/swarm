@@ -350,8 +350,12 @@ assert.ok(progressQueueHelperStart >= 0 && progressQueueHelperEnd > progressQueu
 const progressQueueHelpers = vm.runInNewContext(`(() => {
   const state = { projectProgressStatus: "current" };
   function selectedProgressProjectId() { return "project:alpha"; }
+  function escapeHTML(value) { return String(value ?? ""); }
+  function humanize(value) { return String(value ?? ""); }
+  function formatDuration(value) { return String(value) + " ms"; }
+  function formatEta(value) { return String(value); }
   ${app.slice(progressQueueHelperStart, progressQueueHelperEnd)}
-  return { projectProgressQueueProjection, progressQueueRowPresentation, projectProgressQueueSegments, projectProgressQueueMarkup };
+  return { projectProgressQueueProjection, progressQueueRowPresentation, projectProgressQueueSegments, projectProgressQueueRowMarkup, projectProgressQueueMarkup };
 })()`);
 const progressCursor = { event_seq: 8, event_id: "event-8", event_digest: "digest-8" };
 const progressRow = {
@@ -392,6 +396,23 @@ assert.deepEqual(
   { progress: "UNKNOWN", eta: "UNKNOWN", elapsed: "UNKNOWN", queue: "UNKNOWN", runnable: false },
 );
 assert.equal(progressQueueHelpers.projectProgressQueueSegments(progressQueueFixture, false)[0].rows[0].progress.percent, 50);
+const blockedRow = {
+  ...progressRow,
+  lifecycle: "ACTIVE", queue_state: "SCOPED_BLOCKED", runnable: false,
+  blocked_recovery: {
+    blocked_attempts: 3,
+    blocked_critical_path: true,
+    blocked_release_condition: { release_event_id: "release-1", release_event_digest: "release-digest", condition: "Owner releases the lane." },
+    blocked_suggested_recovery: {
+      action: "request_authority", route_id: "route-a", responsible_authority: "owner-lead",
+      evidence_receipt_refs: [{ event_id: "receipt-1", event_digest: "receipt-digest" }],
+    },
+  },
+};
+const blockedMarkup = progressQueueHelpers.projectProgressQueueRowMarkup(blockedRow, "segment.project.progress.queue");
+for (const visible of ["CTRL ctrl-a", "Owner releases the lane.", "route-a", "Critical path", "Yes", "release-1", "release-digest", "request_authority", "owner-lead", "3", "receipt-1", "receipt-digest"]) assert.match(blockedMarkup, new RegExp(visible));
+assert.match(blockedMarkup, /<details class="project-progress-recovery"><summary>Recovery details<\/summary>/);
+assert.doesNotMatch(progressQueueHelpers.projectProgressQueueRowMarkup({ ...blockedRow, blocked_recovery: { ...blockedRow.blocked_recovery, blocked_suggested_recovery: { ...blockedRow.blocked_recovery.blocked_suggested_recovery, route_id: "" } } }, "segment.project.progress.queue"), /Recovery details/);
 const progressQueueSource = app.slice(progressQueueHelperStart, progressQueueHelperEnd);
 assert.match(progressQueueSource, /role="progressbar"[^>]*aria-valuetext=/);
 assert.match(progressQueueSource, /<table class="project-progress-table">/);

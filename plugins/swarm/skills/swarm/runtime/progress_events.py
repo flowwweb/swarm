@@ -2718,7 +2718,7 @@ class Ledger:
         }
         resync_reasons = {
             "RESYNC_REQUIRED", "SOURCE_CURSOR_CHANGED", "INVALID_CURSOR",
-            "TOPOLOGY_SCOPE_CONFLICT", "MIXED_SCOPE_REJECTED", "SOURCE_DIGEST_CONFLICT",
+            "TOPOLOGY_SCOPE_CONFLICT", "MIXED_SCOPE_REJECTED", "SOURCE_DIGEST_CONFLICT", "STALE_SOURCE",
         }
         queue_status = "RESYNC_REQUIRED" if reason in resync_reasons else "UNKNOWN"
         return {
@@ -2841,6 +2841,9 @@ class Ledger:
         """Map accepted typed lifecycle/routing facts without inventing readiness."""
         if stale:
             return "UNKNOWN", False
+        hard_blocked = isinstance(routing, Mapping) and routing.get("route") == "hard_blocked"
+        if hard_blocked:
+            return ("SCOPED_BLOCKED", False) if has_blocked_recovery else ("UNKNOWN", False)
         if lifecycle in {"ACTIVE", "RUNNING", "RETRYING", "RESULT_PENDING"}:
             return None, False
         if lifecycle == "READY":
@@ -2859,7 +2862,7 @@ class Ledger:
         if lifecycle in {"REVIEW", "REVIEW_PENDING"}:
             return "REVIEW_GATED", False
         if lifecycle == "BLOCKED":
-            return "SCOPED_BLOCKED", False
+            return ("SCOPED_BLOCKED", False) if has_blocked_recovery else ("UNKNOWN", False)
         if lifecycle == "FAILED":
             return "FAILED", False
         if lifecycle == "WAITING_EXTERNAL" and isinstance(routing, Mapping):
@@ -2940,6 +2943,7 @@ class Ledger:
 
                 material_records: list[tuple[int, ProgressMaterialEvent]] = []
                 event_by_id: dict[tuple[str, str], tuple[int, ProgressMaterialEvent]] = {}
+                selected_event_digests: dict[str, str] = {}
                 observed_boundary_ms: int | None = None
                 for record in records:
                     raw_event = record["event"]
@@ -2951,6 +2955,12 @@ class Ledger:
                             return self.unknown_project_progress_bundle(
                                 project_id, "MIXED_SCOPE_REJECTED", ctrl_ids=ctrl_ids, cursor=cursor,
                             )
+                        retained_digest = selected_event_digests.get(event.event_id)
+                        if retained_digest is not None and retained_digest != event.digest:
+                            return self.unknown_project_progress_bundle(
+                                project_id, "SOURCE_DIGEST_CONFLICT", ctrl_ids=ctrl_ids, cursor=cursor,
+                            )
+                        selected_event_digests[event.event_id] = event.digest
                         material_records.append((int(record["event_seq"]), event))
                         event_by_id[(event.ctrl_id, event.event_id)] = (int(record["event_seq"]), event)
                         observed_boundary_ms = max(observed_boundary_ms or 0, event.observed_at_ms)
@@ -2972,9 +2982,21 @@ class Ledger:
                             return self.unknown_project_progress_bundle(
                                 project_id, "MIXED_SCOPE_REJECTED", ctrl_ids=ctrl_ids, cursor=cursor,
                             )
+                        if node.get("unknown_receipt_ids"):
+                            return self.unknown_project_progress_bundle(
+                                project_id, "STALE_SOURCE", ctrl_ids=ctrl_ids, cursor=cursor,
+                            )
                         topology_nodes[(ctrl_id, str(node.get("node_id") or ""))] = node
 
                 completion = self._project_from_projection(project_id, projection)
+                if "CONFLICTED" in completion["overlays"]:
+                    return self.unknown_project_progress_bundle(
+                        project_id, "SOURCE_DIGEST_CONFLICT", ctrl_ids=ctrl_ids, cursor=cursor,
+                    )
+                if "STALE" in completion["overlays"]:
+                    return self.unknown_project_progress_bundle(
+                        project_id, "STALE_SOURCE", ctrl_ids=ctrl_ids, cursor=cursor,
+                    )
                 blocks = completion["blocks"]
                 for block in blocks:
                     ctrl_id = str(block.get("ctrl_id") or "")
@@ -3023,6 +3045,10 @@ class Ledger:
                     latest_seq, latest_event = latest
                     flags = {str(flag).casefold() for flag in latest_event.flags}
                     stale = bool(flags & {"stale", "conflicted"}) or bool(topology_node.get("unknown_receipt_ids"))
+                    if stale:
+                        return self.unknown_project_progress_bundle(
+                            project_id, "STALE_SOURCE", ctrl_ids=ctrl_ids, cursor=cursor,
+                        )
 
                     milestone_roots = {
                         str(block["milestone_id"]): block for block in task_blocks
@@ -3096,7 +3122,7 @@ class Ledger:
                         lifecycle = str(direct["lifecycle_state"])
                     routing = latest_event.routing_evidence
                     blocked_recovery = None
-                    if lifecycle == "WAITING_EXTERNAL" and isinstance(routing, dict) and routing.get("route") == "hard_blocked":
+                    if isinstance(routing, dict) and routing.get("route") == "hard_blocked":
                         release_id = routing.get("release_event")
                         retained_release = event_by_id.get((ctrl_id, str(release_id or "")))
                         if retained_release is not None and retained_release[0] <= latest_seq and retained_release[1].task_id == task_id:

@@ -641,7 +641,7 @@ class SwarmConsoleTests(unittest.TestCase):
                 routing=blocked_route("lead-release", condition="Owner releases the lane.", authority="owner-lead"),
             ),
             self._progress_queue_event(
-                "lead-blocked", "lead-block", "lead", "root", "STATE_CHANGED", "WAITING_EXTERNAL", 61,
+                "lead-blocked", "lead-block", "lead", "root", "STATE_CHANGED", "ACTIVE", 61,
                 parent_event_id="lead-release", flags=["blocked", "waiting_external"],
                 routing=blocked_route("lead-release", condition="Wrong latest event must not replace release truth.", authority="wrong-owner"),
             ),
@@ -712,11 +712,14 @@ class SwarmConsoleTests(unittest.TestCase):
             "stale-mark", "stale-milestone", "task", "root", "STATE_CHANGED", "ACTIVE", 20,
             parent_event_id="stale-start", flags=["stale"], eta=(20, 30, 80), milestone_acceptance=True,
         ))
-        stale_projection = stale_app.measurable_progress("project:alpha")["progress_queue"]
-        stale_row = stale_projection["segments"][1]["rows"][0]
-        self.assertEqual((stale_row["queue_state"], stale_row["runnable"]), ("UNKNOWN", False))
-        self.assertEqual((stale_row["progress"]["state"], stale_row["eta"]["state"], stale_row["elapsed"]["state"]), ("UNKNOWN", "UNKNOWN", "UNKNOWN"))
-        self.assertEqual(stale_row["freshness"]["state"], "STALE")
+        stale_result = stale_app.measurable_progress("project:alpha")
+        self.assertEqual((stale_result["status"], stale_result["percent"], stale_result["blocks"]), ("UNKNOWN", None, []))
+        self.assertEqual(
+            (stale_result["progress_queue"]["status"], stale_result["progress_queue"]["reason"], stale_result["progress_queue"]["available"]),
+            ("RESYNC_REQUIRED", "STALE_SOURCE", False),
+        )
+        restarted_stale = console.App(isolated_home, self.config, self.root / "console" / "stale-restart.sqlite3")
+        self.assertEqual(restarted_stale.measurable_progress("project:alpha"), stale_result)
 
     def test_project_progress_queue_gap_requires_snapshot_resync(self) -> None:
         self._confirm_root_ctrl()
@@ -798,9 +801,53 @@ class SwarmConsoleTests(unittest.TestCase):
             "owner_id": "owner", "has_dependencies": False, "has_blocked_recovery": False,
         }
         self.assertEqual(classify("REVIEW_PENDING", **common), ("REVIEW_GATED", False))
-        self.assertEqual(classify("BLOCKED", **common), ("SCOPED_BLOCKED", False))
+        self.assertEqual(classify("BLOCKED", **common), ("UNKNOWN", False))
         self.assertEqual(classify("FAILED", **common), ("FAILED", False))
         self.assertEqual(classify("READY", **common), ("UNKNOWN", False))
+        hard_blocked = {**common, "routing": {"route": "hard_blocked"}}
+        self.assertEqual(classify("ACTIVE", **hard_blocked), ("UNKNOWN", False))
+        self.assertEqual(classify("ACTIVE", **{**hard_blocked, "has_blocked_recovery": True}), ("SCOPED_BLOCKED", False))
+
+    def test_project_progress_queue_rejects_event_identity_conflict_across_ctrls(self) -> None:
+        self._confirm_root_ctrl()
+        self._add_same_project_ctrl()
+        app = console.App(self.codex_home, self.config)
+
+        def route(task_id: str) -> dict[str, object]:
+            return {
+                "disposition": "KEEP_ROLE", "route": "normal_task",
+                "selected_owner": f"owner-{task_id}", "selected_task_id": task_id,
+                "project_active": True, "release_event": None,
+                "scope": {
+                    "goal_id": "goal", "request_id": f"request-{task_id}", "task_id": task_id,
+                    "mutable_surface": f"surface:{task_id}", "owner_id": f"owner-{task_id}",
+                },
+                "critical_path": False, "recovery": None,
+            }
+
+        app.progress_ledger.append(self._progress_queue_event(
+            "root-start", "root-block", "task", "root", "BLOCK_CREATED", "ACTIVE", 10,
+        ))
+        app.progress_ledger.append(self._progress_queue_event(
+            "other-start", "other-block", "other-task", "other-ctrl", "BLOCK_CREATED", "ACTIVE", 11,
+        ))
+        app.progress_ledger.append(self._progress_queue_event(
+            "shared-route", "root-block", "task", "root", "STATE_CHANGED", "ACTIVE", 20,
+            parent_event_id="root-start", routing=route("task"),
+        ))
+        self.assertEqual(app.progress_ledger.append(self._progress_queue_event(
+            "shared-route", "other-block", "other-task", "other-ctrl", "STATE_CHANGED", "ACTIVE", 21,
+            parent_event_id="other-start", routing=route("other-task"),
+        ))["status"], "conflicted")
+
+        rejected = app.measurable_progress("project:alpha")
+        self.assertEqual((rejected["status"], rejected["percent"], rejected["blocks"]), ("UNKNOWN", None, []))
+        self.assertEqual(
+            (rejected["progress_queue"]["status"], rejected["progress_queue"]["reason"]),
+            ("RESYNC_REQUIRED", "SOURCE_DIGEST_CONFLICT"),
+        )
+        restarted = console.App(self.codex_home, self.config, self.root / "console" / "conflict-restart.sqlite3")
+        self.assertEqual(restarted.measurable_progress("project:alpha"), rejected)
 
     def test_project_progress_queue_conflict_cursor_and_eta_fail_atomically(self) -> None:
         self._confirm_root_ctrl()
