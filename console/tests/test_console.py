@@ -2515,6 +2515,114 @@ class SwarmConsoleTests(unittest.TestCase):
         self.assertEqual(by_controller["legacy-title"]["visibility"], "hidden")
         self.assertNotIn("ctrl-archived", navigation["active_ctrl_ids"])
 
+    def test_overview_metrics_share_one_cursor_and_fail_closed_without_receipts(self) -> None:
+        app = console.App(self.codex_home, self.config, self.root / "console" / "metrics.sqlite3")
+        first = app.overview()["overview_metrics"]
+        second = app.overview()["overview_metrics"]
+        self.assertEqual(first, second)
+        self.assertEqual(first["accepted_scope_id"], "all")
+        self.assertEqual(first["accepted_cursor"]["type"], "overview_metrics_v1")
+        self.assertEqual(set(first["field_state"]), set(console.OVERVIEW_METRIC_FIELDS))
+        self.assertEqual(first["field_state"]["remaining_tokens"], "UNKNOWN")
+        self.assertIsNone(first["usage"]["remaining_tokens"])
+        self.assertEqual(first["field_state"]["admitted_proof"], "UNKNOWN")
+        self.assertIsNone(first["verified_progress"]["admitted_proof"])
+        self.assertNotEqual(first["accepted_cursor"]["digest"], "0" * 64)
+
+    def test_overview_metrics_invalid_retained_weight_stays_unknown(self) -> None:
+        app = console.App(self.codex_home, self.config, self.root / "console" / "invalid-metrics.sqlite3")
+        view = console.build_overview(self.codex_home, self.config)
+        view["navigation"] = console.App._navigation_payload(view)
+        view["token_history"] = []
+        invalid_projection = {
+            "cursor": {"event_seq": 1},
+            "scopes": {"project:alpha": 1},
+            "blocks": {
+                "invalid": {
+                    "project_id": "project:alpha", "ctrl_id": "root", "block_id": "invalid",
+                    "scope_version": 1, "lifecycle_state": "ACTIVE", "flags": [],
+                    "observed_at_ms": 1, "admitted_proof_weight": None, "committed_weight": 1,
+                },
+            },
+        }
+        with mock.patch.object(app.progress_ledger, "replay", return_value=invalid_projection) as replay:
+            metrics = app._overview_metrics(view, scope_id="all")
+        self.assertEqual(replay.call_count, 1)
+        self.assertEqual(metrics["field_state"]["admitted_proof"], "UNKNOWN")
+        self.assertIsNone(metrics["verified_progress"]["admitted_proof"])
+
+    def test_overview_metrics_use_one_ledger_projection_for_known_progress_and_attention(self) -> None:
+        self._confirm_root_ctrl()
+        app = console.App(self.codex_home, self.config, self.root / "console" / "known-metrics.sqlite3")
+        self._append_notification_fixture(app)
+        metrics = app.overview()["overview_metrics"]
+        self.assertEqual(metrics["accepted_scope_id"], metrics["accepted_cursor"]["scope_id"])
+        self.assertEqual(metrics["active_work"]["active_projects"], 1)
+        self.assertEqual(metrics["active_work"]["active_lanes"], 1)
+        self.assertEqual(metrics["field_state"]["actionable_items"], "KNOWN")
+        self.assertGreater(metrics["needs_attention"]["actionable_items"], 0)
+        self.assertEqual(metrics["field_state"]["total"], "KNOWN")
+        self.assertGreater(metrics["verified_progress"]["total"], 0)
+        self.assertIn(metrics["field_state"]["percent"], {"KNOWN", "PARTIAL", "UNKNOWN"})
+
+    def test_navigation_is_saved_project_feed_with_status_facts_and_stable_inputs(self) -> None:
+        self._add_host_project("project:empty", "Empty saved project", "C:/work/empty")
+        with closing(sqlite3.connect(self.database)) as connection:
+            connection.execute("UPDATE projects SET position=4 WHERE id='project:alpha'")
+            connection.execute("UPDATE projects SET position=1 WHERE id='project:empty'")
+            connection.commit()
+        overview = console.build_overview(self.codex_home, self.config)
+        navigation = console.App._navigation_payload(overview)
+        self.assertEqual(
+            [project["id"] for project in navigation["projects"][:2]],
+            ["project:empty", "project:alpha"],
+        )
+        saved = next(project for project in navigation["projects"] if project["id"] == "project:empty")
+        self.assertEqual(saved["status"], "inactive")
+        self.assertEqual(saved["status_facts"], {
+            "active": False,
+            "stalled": False,
+            "inactive": True,
+            "source": "host_threads.agent_role+host_threads.archived+host_threads.updated_at_ms",
+        })
+        self.assertEqual(saved["active_ctrl"], False)
+        self.assertEqual(saved["ordering"]["position"], 1)
+        self.assertNotIn("task", {project["id"] for project in navigation["projects"]})
+        self.assertNotIn("C:/work/alpha", json.dumps(navigation["projects"]))
+
+    def test_profile_presentation_is_avatar_ready_without_identity_or_secrets(self) -> None:
+        app = console.App(self.codex_home, self.config, self.root / "console" / "profile.sqlite3")
+        result = app.profile_presentation()
+        self.assertEqual(result["state"], "KNOWN")
+        self.assertEqual(result["profile"]["display_name"], "SWARM")
+        avatar = result["profile"]["avatar"]
+        self.assertEqual(avatar["url"], "/swarm-icon-64.png")
+        self.assertEqual(avatar["media_type"], "image/png")
+        self.assertEqual(
+            avatar["digest"],
+            hashlib.sha256((console.STATIC_ROOT / "swarm-icon-64.png").read_bytes()).hexdigest(),
+        )
+        serialized = json.dumps(result).casefold()
+        for private in ("token", "config_path", "credential", "cookie", "prompt"):
+            self.assertNotIn(f'"{private}"', serialized)
+
+    def test_proof_visuals_are_immediate_replay_safe_and_independent_of_review_annotations(self) -> None:
+        self._confirm_root_ctrl()
+        app = console.App(self.codex_home, self.config, self.root / "console" / "proof-feed.sqlite3")
+        self._append_notification_fixture(app)
+        self._write_proof_event("feed-proof", "task")
+        first = app.run_log("root", project_id="project:alpha")
+        second = app.run_log("root", project_id="project:alpha")
+        self.assertEqual(first["proof_items"], second["proof_items"])
+        self.assertEqual([item["evidence_id"] for item in first["proof_items"]], ["feed-proof"])
+        self.assertEqual(first["proof_status"], "available")
+        self.assertEqual(first["proof_cursor"], second["proof_cursor"])
+        self.assertIn("review-requested", {item["event_id"] for item in first["items"]})
+        feed = app.project_progress_feed("project:alpha")
+        replay = app.project_progress_feed("project:alpha")
+        self.assertEqual(feed["proof_items"], replay["proof_items"])
+        self.assertEqual([item["evidence_id"] for item in feed["proof_items"]], ["feed-proof"])
+
     def test_proof_media_delivery_requires_registered_surface_and_current_digest(self) -> None:
         media_path = self.root / "proof.png"
         media_path.write_bytes(b"\x89PNG\r\n\x1a\nproof")

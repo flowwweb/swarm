@@ -134,6 +134,16 @@ MEDIA_EXTENSIONS = frozenset({".png", ".jpg", ".jpeg", ".webp", ".gif", ".mp4", 
 MEDIA_TYPES = frozenset({
     "image/png", "image/jpeg", "image/webp", "image/gif", "video/mp4", "video/webm",
 })
+OVERVIEW_METRIC_FIELDS = (
+    "active_projects", "active_lanes", "actionable_items", "oldest_wait",
+    "admitted_milestones", "admitted_proof", "completed", "total", "percent", "trend",
+    "window", "used_tokens", "remaining_tokens", "burn_rate_series", "coverage",
+)
+OVERVIEW_WAIT_STATES = frozenset({
+    "WAITING", "WAITING_DEPENDENCY", "WAITING_EXTERNAL", "USER_PAUSED", "KEEP_OUT",
+    "NEEDS_AUTHORITY", "STALLED", "BLOCKED",
+})
+OVERVIEW_COMPLETED_STATES = frozenset({"VERIFIED", "ACCEPTED"})
 
 STATIC_FILES = {
     "/": ("index.html", "text/html; charset=utf-8"),
@@ -4296,9 +4306,22 @@ def _normalized_project_path(value: Any) -> str:
     return re.sub(r"/+", "/", path).casefold()
 
 
+def _project_order_key(project: dict[str, Any]) -> tuple[Any, ...]:
+    ordering = project.get("ordering") if isinstance(project.get("ordering"), dict) else {}
+    position = ordering.get("position")
+    created_at_ms = ordering.get("created_at_ms")
+    return (
+        0 if isinstance(position, int) and not isinstance(position, bool) else 1,
+        position if isinstance(position, int) and not isinstance(position, bool) else 0,
+        created_at_ms if isinstance(created_at_ms, int) and not isinstance(created_at_ms, bool) else 0,
+        str(project.get("name") or "").casefold(),
+        str(project.get("id") or ""),
+    )
+
+
 def _host_project_catalog(
     connection: sqlite3.Connection,
-) -> tuple[dict[str, dict[str, str]], tuple[tuple[str, str], ...]]:
+) -> tuple[dict[str, dict[str, Any]], tuple[tuple[str, str], ...]]:
     """Read canonical host projects without inventing identity from task metadata."""
     tables = {
         str(row["name"])
@@ -4306,14 +4329,32 @@ def _host_project_catalog(
     }
     if "projects" not in tables:
         return {}, ()
-    projects = {
-        str(row["id"]): {
-            "id": str(row["id"]),
-            "name": str(row["name"]).strip(),
-        }
-        for row in connection.execute("SELECT id, name FROM projects").fetchall()
-        if str(row["id"] or "").strip() and str(row["name"] or "").strip()
+    project_columns = {
+        str(row["name"])
+        for row in connection.execute("PRAGMA table_info(projects)").fetchall()
     }
+    ordering_columns = tuple(
+        column for column in ("position", "created_at_ms", "updated_at_ms") if column in project_columns
+    )
+    selected_columns = ", ".join(("id", "name", *ordering_columns))
+    projects: dict[str, dict[str, Any]] = {}
+    for row in connection.execute(f"SELECT {selected_columns} FROM projects").fetchall():
+        project_id = str(row["id"] or "").strip()
+        name = str(row["name"] or "").strip()
+        if not project_id or not name:
+            continue
+        ordering = {
+            column: row[column]
+            if column in ordering_columns
+            and isinstance(row[column], int) and not isinstance(row[column], bool)
+            else None
+            for column in ("position", "created_at_ms", "updated_at_ms")
+        }
+        projects[project_id] = {
+            "id": project_id,
+            "name": name,
+            "ordering": ordering,
+        }
     if "project_roots" not in tables:
         return projects, ()
     roots = tuple(
@@ -4331,9 +4372,9 @@ def _host_project_catalog(
 
 def _canonical_project_binding(
     row: sqlite3.Row,
-    projects: dict[str, dict[str, str]],
+    projects: dict[str, dict[str, Any]],
     project_roots: tuple[tuple[str, str], ...],
-) -> tuple[dict[str, str] | None, str]:
+) -> tuple[dict[str, Any] | None, str]:
     project_id = str(row["project_id"] or "").strip()
     if project_id:
         return (projects.get(project_id), "direct" if project_id in projects else "stale")
@@ -4355,10 +4396,10 @@ def _canonical_project_binding(
 def _thread_project_bindings(
     rows: dict[str, sqlite3.Row],
     parent_by_child: dict[str, str],
-    projects: dict[str, dict[str, str]],
+    projects: dict[str, dict[str, Any]],
     project_roots: tuple[tuple[str, str], ...],
-) -> dict[str, dict[str, str]]:
-    bindings: dict[str, dict[str, str]] = {}
+) -> dict[str, dict[str, Any]]:
+    bindings: dict[str, dict[str, Any]] = {}
     blocked: set[str] = set()
     for thread_id, row in rows.items():
         project, state = _canonical_project_binding(row, projects, project_roots)
@@ -4596,6 +4637,7 @@ def build_overview(codex_home: Path, config_path: Path) -> dict[str, Any]:
             "name": project["name"],
             "goal_label": project["name"],
             "label_source": "host_projects.name",
+            "ordering": dict(project.get("ordering") or {}),
             "observed_threads": 0,
             "active_threads": 0,
             "updated_at": 0,
@@ -4744,6 +4786,7 @@ def build_overview(codex_home: Path, config_path: Path) -> dict[str, Any]:
                     "name": project_name,
                     "goal_label": project_name,
                     "label_source": "host_projects.name",
+                    "ordering": dict(project_binding.get("ordering") or {}),
                     "nodes": 0,
                     "tokens": 0,
                     "active": 0,
@@ -4819,6 +4862,7 @@ def build_overview(codex_home: Path, config_path: Path) -> dict[str, Any]:
                 "name": inventory["name"],
                 "goal_label": inventory["goal_label"],
                 "label_source": inventory["label_source"],
+                "ordering": dict(inventory.get("ordering") or {}),
                 "nodes": 0,
                 "tokens": 0,
                 "active": 0,
@@ -4902,7 +4946,7 @@ def build_overview(codex_home: Path, config_path: Path) -> dict[str, Any]:
         "links": links,
         "roots": roots,
         "controllers": sorted(controllers, key=lambda item: (-item["updated_at"], -item["nodes"], item["artifact"])),
-        "projects": sorted(projects.values(), key=lambda item: (-item["active_threads"], -item["updated_at"], item["name"])),
+        "projects": sorted(projects.values(), key=_project_order_key),
         "analytics": {
             "swarms": len(roots),
             "tasks": sum(1 for node in nodes.values() if not node["virtual"]),
@@ -5650,7 +5694,27 @@ class App:
         if not project_id or project_id.casefold() in {"all", "all-projects"}:
             return overview
         view = copy.deepcopy(overview)
-        nodes = [node for node in view["nodes"] if node.get("project_id") == project_id]
+        ctrl_scope = project_id.casefold().startswith("ctrl:")
+        selected_ctrl_id = project_id[5:] if ctrl_scope else ""
+        if ctrl_scope and not selected_ctrl_id:
+            raise ConsoleError("project_id ctrl alias must name an observed host CTRL")
+        selected_controller = next(
+            (controller for controller in view.get("controllers", []) if controller.get("id") == selected_ctrl_id),
+            None,
+        ) if ctrl_scope else None
+        if ctrl_scope and selected_controller is None:
+            raise ConsoleError("project_id ctrl alias must name an observed host CTRL")
+        selected_project_id = (
+            str(selected_controller.get("project_id") or "")
+            if selected_controller is not None else project_id
+        )
+        nodes = [
+            node for node in view["nodes"]
+            if (
+                (selected_ctrl_id in node.get("controller_ids", []) or node.get("id") == selected_ctrl_id)
+                if ctrl_scope else node.get("project_id") == selected_project_id
+            )
+        ]
         node_ids = {node["id"] for node in nodes}
         view["nodes"] = nodes
         view["links"] = [
@@ -5660,10 +5724,13 @@ class App:
         view["roots"] = [node_id for node_id in view["roots"] if node_id in node_ids]
         view["controllers"] = [
             controller for controller in view["controllers"]
-            if controller.get("project_id") == project_id
+            if (
+                controller.get("id") == selected_ctrl_id
+                if ctrl_scope else controller.get("project_id") == selected_project_id
+            )
         ]
         view["projects"] = [
-            project for project in view["projects"] if project.get("id") == project_id
+            project for project in view["projects"] if project.get("id") == selected_project_id
         ]
         view["analytics"] = {
             **view["analytics"],
@@ -5680,7 +5747,10 @@ class App:
                 node.get("role", "unknown") for node in nodes if not node.get("virtual")
             )),
         }
-        history = self.store.token_history(project_id=project_id)
+        history = (
+            self.store.token_history(project_id=selected_project_id, thread_ids=node_ids)
+            if ctrl_scope else self.store.token_history(project_id=selected_project_id)
+        )
         view["token_history"] = history
         view["analytics"]["burn_rate"] = {
             "tokens_per_minute": history[-1]["delta_tokens"] if history else 0,
@@ -5691,6 +5761,11 @@ class App:
         }
         view["progress"] = self._progress_payload(view)
         view["navigation"] = App._navigation_payload(view)
+        view["overview_metrics"] = self._overview_metrics(
+            view,
+            scope_id=selected_ctrl_id if ctrl_scope else selected_project_id,
+            scope_type="ctrl" if ctrl_scope else "project",
+        )
         return view
 
     def _observed_scope(
@@ -6078,11 +6153,12 @@ class App:
                 "id": controller["id"],
                 "project_id": controller.get("project_id", ""),
                 "title": controller.get("title", "CTRL"),
-                "status": controller.get("status", "unknown"),
+                "status": str(controller.get("status", "unknown") or "unknown").strip().casefold(),
                 "archived": bool(controller.get("archived", False)),
                 "archive_source": controller.get("archive_source"),
                 "controller_classification": controller.get("controller_classification", "unavailable"),
                 "controller_classification_source": controller.get("controller_classification_source"),
+                "status_source": "host_threads.updated_at_ms",
                 "visibility": (
                     "hidden"
                     if controller.get("archived", False)
@@ -6111,12 +6187,27 @@ class App:
             ctrl_ids = [controller["id"] for controller in project_controllers]
             active_ids = [controller["id"] for controller in project_controllers if controller["status"] == "active"]
             project_archived = bool(all_project_controllers) and not bool(project_controllers)
+            project_nodes = [
+                node for node in view.get("nodes", [])
+                if node.get("project_id") == project_id and not node.get("virtual")
+            ]
+            stalled = any(
+                controller["status"] in {"stalled", "blocked"}
+                for controller in project_controllers
+            ) or any(
+                str(node.get("status") or "").casefold() in {"stalled", "blocked"}
+                for node in project_nodes
+            )
+            active = bool(active_ids)
+            status = "active" if active else ("stalled" if stalled else "inactive")
             projects.append({
                 "id": project_id,
                 "name": project.get("name", project_id),
                 "goal_label": project.get("goal_label", project.get("name", project_id)),
                 "label_source": project.get("label_source", "unknown"),
+                "ordering": dict(project.get("ordering") or {}),
                 "active_ctrl_id": active_ids[0] if active_ids else None,
+                "active_ctrl": active,
                 "ctrl_ids": ctrl_ids,
                 "project_eligibility": "swarm_ctrl" if ctrl_ids else "no_ctrl",
                 "eligibility_source": (
@@ -6131,11 +6222,17 @@ class App:
                     else "unavailable"
                 ),
                 "visibility": "hidden" if project_archived else "visible",
-                "task_count": sum(
-                    1 for node in view.get("nodes", [])
-                    if node.get("project_id") == project_id and not node.get("virtual")
-                ),
+                "status": status,
+                "status_facts": {
+                    "active": active,
+                    "stalled": stalled,
+                    "inactive": not active and not stalled,
+                    "source": "host_threads.agent_role+host_threads.archived+host_threads.updated_at_ms",
+                },
+                "status_source": "host_threads.updated_at_ms",
+                "task_count": len(project_nodes),
             })
+        projects.sort(key=_project_order_key)
         return {
             "active_ctrl_id": active_controllers[0]["id"] if active_controllers else None,
             "active_ctrl_ids": [controller["id"] for controller in active_controllers],
@@ -6144,7 +6241,336 @@ class App:
             "claim_limit": (
                 "Current Work eligibility requires persisted host agent_role=ctrl classification and a non-archived "
                 "host thread; titles, root position, and runtime status never establish CTRL identity. Legacy rows "
-                "without classification fail closed as no_ctrl, and this remains read-only observation."
+                "without classification fail closed as no_ctrl. Saved project inventory is sourced only from the host "
+                "projects table; task metadata cannot create a project, and status facts remain read-only observation."
+            ),
+        }
+
+    def _overview_metrics(
+        self,
+        view: dict[str, Any],
+        *,
+        scope_id: str,
+        scope_type: str = "all",
+    ) -> dict[str, Any]:
+        """Project four cards from one host view and one opaque snapshot cursor."""
+        scope_id = str(scope_id or "all").strip() or "all"
+        if scope_type not in {"all", "project", "ctrl"}:
+            scope_type = "all"
+
+        def field_state(known: bool, partial: bool = False) -> str:
+            if not known:
+                return "UNKNOWN"
+            return "PARTIAL" if partial else "KNOWN"
+
+        navigation = view.get("navigation") if isinstance(view.get("navigation"), dict) else {}
+        navigation_projects = navigation.get("projects") if isinstance(navigation.get("projects"), list) else None
+        navigation_controllers = navigation.get("controllers") if isinstance(navigation.get("controllers"), list) else None
+        selected_controller = None
+        if navigation_controllers is not None and scope_type == "ctrl":
+            selected_controller = next(
+                (item for item in navigation_controllers if isinstance(item, dict) and item.get("id") == scope_id),
+                None,
+            )
+        selected_project_id = (
+            str(selected_controller.get("project_id") or "")
+            if isinstance(selected_controller, dict) else scope_id if scope_type == "project" else None
+        )
+
+        active_work = {"active_projects": None, "active_lanes": None}
+        active_states_known = False
+        active_states_partial = False
+        if navigation_projects is not None and navigation_controllers is not None:
+            active_states_known = True
+            if scope_type == "all":
+                selected_projects = list(navigation_projects)
+                selected_controllers = list(navigation_controllers)
+            elif scope_type == "project":
+                selected_projects = [
+                    project for project in navigation_projects
+                    if isinstance(project, dict) and project.get("id") == selected_project_id
+                ]
+                selected_controllers = [
+                    controller for controller in navigation_controllers
+                    if isinstance(controller, dict) and controller.get("project_id") == selected_project_id
+                ]
+            else:
+                selected_projects = [
+                    project for project in navigation_projects
+                    if isinstance(project, dict) and project.get("id") == selected_project_id
+                ]
+                selected_controllers = [selected_controller] if isinstance(selected_controller, dict) else []
+            project_statuses = []
+            for project in selected_projects:
+                status = str(project.get("status") or "").casefold() if isinstance(project, dict) else ""
+                if status not in {"active", "stalled", "inactive"}:
+                    active_states_partial = True
+                project_statuses.append(status)
+            controller_statuses = []
+            for controller in selected_controllers:
+                status = str(controller.get("status") or "").casefold() if isinstance(controller, dict) else ""
+                if status not in {"active", "stalled", "inactive", "idle", "quiet", "done"}:
+                    active_states_partial = True
+                controller_statuses.append(status)
+            active_work = {
+                "active_projects": sum(status == "active" for status in project_statuses),
+                "active_lanes": sum(status == "active" for status in controller_statuses),
+            }
+        active_state = field_state(active_states_known, active_states_partial)
+
+        ledger_projection: dict[str, Any] | None = None
+        ledger_partial = False
+        try:
+            candidate = self.progress_ledger.replay()
+            if (
+                not isinstance(candidate, dict)
+                or not isinstance(candidate.get("cursor"), dict)
+                or not isinstance(candidate.get("scopes"), dict)
+                or not isinstance(candidate.get("blocks"), dict)
+            ):
+                raise ProgressEventError("overview metrics Ledger projection is invalid")
+            ledger_projection = candidate
+            ledger_partial = bool(candidate.get("topology_conflicts"))
+        except (AttributeError, OSError, ProgressEventError, TypeError, ValueError):
+            ledger_projection = None
+
+        selected_blocks: list[dict[str, Any]] = []
+        block_input_partial = False
+        if ledger_projection is not None:
+            scopes = ledger_projection["scopes"]
+            for raw_block in ledger_projection["blocks"].values():
+                if not isinstance(raw_block, dict):
+                    block_input_partial = True
+                    continue
+                project_id = str(raw_block.get("project_id") or "")
+                if not project_id:
+                    block_input_partial = True
+                    continue
+                if selected_project_id is not None and project_id != selected_project_id:
+                    continue
+                if scope_type == "ctrl" and raw_block.get("ctrl_id") != scope_id:
+                    continue
+                scope_version = scopes.get(project_id)
+                if not isinstance(scope_version, int) or isinstance(scope_version, bool) or scope_version <= 0:
+                    block_input_partial = True
+                    continue
+                if raw_block.get("scope_version") != scope_version:
+                    continue
+                if raw_block.get("lifecycle_state") == "TOMBSTONED":
+                    continue
+                if (
+                    not isinstance(raw_block.get("block_id"), str)
+                    or not raw_block.get("block_id")
+                    or not isinstance(raw_block.get("lifecycle_state"), str)
+                    or not isinstance(raw_block.get("flags"), list)
+                    or not isinstance(raw_block.get("observed_at_ms"), int)
+                    or isinstance(raw_block.get("observed_at_ms"), bool)
+                ):
+                    block_input_partial = True
+                selected_blocks.append(raw_block)
+
+        attention = {"actionable_items": None, "oldest_wait": None}
+        attention_states = {"actionable_items": "UNKNOWN", "oldest_wait": "UNKNOWN"}
+        if selected_blocks:
+            wait_blocks = [
+                block for block in selected_blocks
+                if str(block.get("lifecycle_state") or "").casefold().upper() in OVERVIEW_WAIT_STATES
+                or any(
+                    str(flag).casefold() in {"blocked", "stalled"}
+                    for flag in (block.get("flags") if isinstance(block.get("flags"), list) else [])
+                )
+            ]
+            attention["actionable_items"] = len(wait_blocks)
+            oldest = min(
+                wait_blocks,
+                key=lambda block: (
+                    block.get("observed_at_ms") if isinstance(block.get("observed_at_ms"), int) else 0,
+                    str(block.get("block_id") or ""),
+                ),
+                default=None,
+            )
+            if oldest is not None:
+                attention["oldest_wait"] = {
+                    "reason": str(oldest.get("lifecycle_state") or "Waiting"),
+                    "block_id": str(oldest.get("block_id") or ""),
+                    "observed_at_ms": oldest.get("observed_at_ms"),
+                }
+            attention_partial = ledger_partial or block_input_partial
+            attention_states = {
+                "actionable_items": field_state(True, attention_partial),
+                "oldest_wait": field_state(True, attention_partial),
+            }
+
+        progress = {
+            "admitted_milestones": None,
+            "admitted_proof": None,
+            "completed": None,
+            "total": None,
+            "percent": None,
+            "trend": [],
+        }
+        progress_states = {field: "UNKNOWN" for field in (
+            "admitted_milestones", "admitted_proof", "completed", "total", "percent", "trend",
+        )}
+        if selected_blocks:
+            progress_partial = ledger_partial or block_input_partial
+            completed_blocks = [
+                block for block in selected_blocks
+                if str(block.get("lifecycle_state") or "").upper() in OVERVIEW_COMPLETED_STATES
+            ]
+            milestone_ids = {
+                str(block.get("milestone_id")) for block in completed_blocks if str(block.get("milestone_id") or "")
+            }
+            admitted_values = [block.get("admitted_proof_weight") for block in selected_blocks]
+            committed_values = [block.get("committed_weight") for block in selected_blocks]
+            admitted_values_valid = all(
+                isinstance(value, int) and not isinstance(value, bool) and value >= 0
+                for value in admitted_values
+            )
+            committed_values_valid = all(
+                value is None
+                or (isinstance(value, int) and not isinstance(value, bool) and value > 0)
+                for value in committed_values
+            )
+            if not admitted_values_valid or not committed_values_valid:
+                progress_partial = True
+            admitted = sum(admitted_values) if admitted_values_valid else None
+            denominator = (
+                sum(committed_values)
+                if committed_values
+                and all(isinstance(value, int) and not isinstance(value, bool) and value > 0 for value in committed_values)
+                else None
+            )
+            progress.update({
+                "admitted_milestones": len(milestone_ids),
+                "admitted_proof": admitted,
+                "completed": len(completed_blocks),
+                "total": len(selected_blocks),
+            })
+            for field in ("admitted_milestones", "admitted_proof", "completed", "total"):
+                progress_states[field] = (
+                    "UNKNOWN"
+                    if field == "admitted_proof" and admitted is None
+                    else field_state(True, progress_partial)
+                )
+            if denominator is not None and admitted is not None and admitted <= denominator:
+                progress["percent"] = round(admitted * 100 / denominator, 2)
+                progress_states["percent"] = field_state(True, progress_partial)
+            elif progress_partial:
+                progress_states["percent"] = "PARTIAL"
+
+        usage = {
+            "window": None,
+            "used_tokens": None,
+            "remaining_tokens": None,
+            "burn_rate_series": [],
+            "coverage": None,
+        }
+        usage_states = {field: "UNKNOWN" for field in (
+            "window", "used_tokens", "remaining_tokens", "burn_rate_series", "coverage",
+        )}
+        history = view.get("token_history")
+        valid_history = isinstance(history, list) and all(
+            isinstance(item, dict)
+            and isinstance(item.get("bucket_ms"), int) and not isinstance(item.get("bucket_ms"), bool)
+            and isinstance(item.get("delta_tokens"), int) and not isinstance(item.get("delta_tokens"), bool)
+            and item.get("delta_tokens") >= 0
+            for item in history
+        )
+        coverage_observed: int | None = None
+        expected_thread_ids = {
+            str(node.get("id")) for node in view.get("nodes", [])
+            if isinstance(node, dict) and node.get("id") and not node.get("virtual")
+        }
+        if valid_history and history:
+            usage.update({
+                "window": "24h",
+                "used_tokens": sum(int(item["delta_tokens"]) for item in history),
+                "burn_rate_series": [
+                    {"observed_at_ms": int(item["bucket_ms"]), "tokens": int(item["delta_tokens"])}
+                    for item in history
+                ],
+            })
+            usage_states["window"] = "KNOWN"
+            usage_states["used_tokens"] = "KNOWN"
+            usage_states["burn_rate_series"] = "KNOWN"
+            if expected_thread_ids:
+                try:
+                    project_filter = selected_project_id if selected_project_id is not None else None
+                    coverage_observed = self.store.token_sample_thread_count(
+                        project_id=project_filter, thread_ids=expected_thread_ids, hours=24,
+                    )
+                except (AttributeError, OSError, sqlite3.Error, TypeError, ValueError):
+                    coverage_observed = None
+                if coverage_observed is not None:
+                    usage["coverage"] = (
+                        "complete" if coverage_observed >= len(expected_thread_ids) else "partial"
+                    )
+                    usage_states["coverage"] = (
+                        "KNOWN" if coverage_observed >= len(expected_thread_ids) else "PARTIAL"
+                    )
+
+        metrics_without_cursor = {
+            "active_work": active_work,
+            "needs_attention": attention,
+            "verified_progress": progress,
+            "usage": usage,
+        }
+        cursor_basis = {
+            "scope_type": scope_type,
+            "scope_id": scope_id,
+            "ledger_cursor": ledger_projection.get("cursor") if ledger_projection is not None else None,
+            "selected_blocks": sorted(
+                (
+                    str(block.get("project_id") or ""),
+                    str(block.get("ctrl_id") or ""),
+                    str(block.get("block_id") or ""),
+                    block.get("latest_event_seq"),
+                    block.get("latest_event_digest"),
+                    block.get("lifecycle_state"),
+                    block.get("committed_weight"),
+                    block.get("admitted_proof_weight"),
+                )
+                for block in selected_blocks
+            ),
+            "navigation": {
+                "projects": navigation_projects,
+                "controllers": navigation_controllers,
+            },
+            "token_history": history if valid_history else None,
+            "coverage_observed": coverage_observed,
+            "metrics": metrics_without_cursor,
+        }
+        cursor_digest = hashlib.sha256(
+            json.dumps(cursor_basis, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        ).hexdigest()
+        return {
+            "schema_version": 1,
+            "accepted_scope_id": scope_id,
+            "accepted_cursor": {"type": "overview_metrics_v1", "scope_id": scope_id, "digest": cursor_digest},
+            **metrics_without_cursor,
+            "field_state": {
+                "active_projects": active_state,
+                "active_lanes": active_state,
+                "actionable_items": attention_states["actionable_items"],
+                "oldest_wait": attention_states["oldest_wait"],
+                "admitted_milestones": progress_states["admitted_milestones"],
+                "admitted_proof": progress_states["admitted_proof"],
+                "completed": progress_states["completed"],
+                "total": progress_states["total"],
+                "percent": progress_states["percent"],
+                "trend": progress_states["trend"],
+                "window": usage_states["window"],
+                "used_tokens": usage_states["used_tokens"],
+                "remaining_tokens": "UNKNOWN",
+                "burn_rate_series": usage_states["burn_rate_series"],
+                "coverage": usage_states["coverage"],
+            },
+            "source": "one_host_view_plus_canonical_progress_ledger_plus_persisted_token_samples",
+            "claim_limit": (
+                "All four cards share one accepted scope and opaque snapshot cursor. UNKNOWN means the selected "
+                "authoritative receipt set is absent or invalid; zero is emitted only when the retained source "
+                "establishes an empty count. Usage is local observation, not provider quota or billing."
             ),
         }
 
@@ -6185,6 +6611,7 @@ class App:
         }
         view["progress"] = self._progress_payload(view)
         view["navigation"] = self._navigation_payload(view)
+        view["overview_metrics"] = self._overview_metrics(view, scope_id="all", scope_type="all")
         return view
 
     def overview(self, project_id: str | None = None) -> dict[str, Any]:
@@ -6273,9 +6700,74 @@ class App:
         if self._observer_thread:
             self._observer_thread.join(timeout=2)
 
+    def profile_presentation(self) -> dict[str, Any]:
+        """Expose only the canonical local console presentation asset."""
+        avatar_path = STATIC_ROOT / "swarm-icon-64.png"
+        avatar = None
+        try:
+            if not _is_reparse_point(avatar_path) and avatar_path.is_file():
+                avatar = {
+                    "url": "/swarm-icon-64.png",
+                    "alt": "SWARM console",
+                    "media_type": "image/png",
+                    "digest": hashlib.sha256(avatar_path.read_bytes()).hexdigest(),
+                }
+        except OSError:
+            avatar = None
+        return {
+            "ok": True,
+            "schema_version": 1,
+            "state": "KNOWN" if avatar is not None else "PARTIAL",
+            "profile": {
+                "display_name": "SWARM",
+                "avatar": avatar,
+                "source": "canonical_console_static_asset",
+            },
+            "field_state": {
+                "display_name": "KNOWN",
+                "avatar": "KNOWN" if avatar is not None else "UNKNOWN",
+            },
+            "claim_limit": (
+                "Presentation-only console branding. This response does not identify a user or expose account "
+                "identity, credentials, provider data, configuration secrets, or authorization material."
+            ),
+        }
+
     def proof_feed(self, *, project_id: str | None = None, task_id: str | None = None) -> list[dict[str, Any]]:
         self._ingest_proof_events_if_changed()
         return self.store.proof_feed(project_id=project_id, task_id=task_id)
+
+    def _proof_items_for_scope(
+        self,
+        project_id: str,
+        *,
+        overview: dict[str, Any],
+        task_ids: set[str] | None = None,
+        ctrl_id: str | None = None,
+        agent_id: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """Surface independently retained proof media without Ledger/review filtering."""
+        self._ingest_proof_events_if_changed(overview)
+        items = self.store.proof_feed(project_id=project_id)
+        node_by_id = {
+            str(node.get("id")): node for node in overview.get("nodes", [])
+            if isinstance(node, dict) and node.get("id")
+        }
+        selected: list[dict[str, Any]] = []
+        for item in items:
+            item_task_id = str(item.get("task_id") or "")
+            if task_ids is not None and item_task_id not in task_ids:
+                continue
+            node = node_by_id.get(item_task_id)
+            if ctrl_id is not None and (
+                node is None
+                or item_task_id != ctrl_id and ctrl_id not in node.get("controller_ids", [])
+            ):
+                continue
+            if agent_id is not None and item_task_id != agent_id:
+                continue
+            selected.append(item)
+        return selected
 
     def project_progress_feed(self, project_id: str, *, after_cursor: int = 0) -> dict[str, Any]:
         """Build one lazy project feed snapshot from canonical material events."""
@@ -6293,16 +6785,31 @@ class App:
                     "project_id": project_id.strip(),
                     "cursor": {"event_seq": after_cursor, "event_id": None, "event_digest": None},
                     "items": [],
+                    "proof_items": [],
+                    "proof_cursor": {"sequence": None},
                     "stale_cursor": False,
                     "transport": {"snapshot": "disabled", "incremental": "disabled", "http_stream": "UNVERIFIED"},
                     "producer": {"status": "typed_runtime_transition_only", "native_host_transport": "UNVERIFIED"},
                     "claim_limit": "Feed delivery is disabled; canonical progress audit history and execution liveness are retained independently.",
                 }
-            return {
+            snapshot = {
                 "ok": True,
                 "enabled": True,
                 **self.progress_ledger.feed_snapshot(project_id.strip(), limit=limit, after_cursor=after_cursor),
             }
+            snapshot["proof_items"] = []
+            snapshot["proof_cursor"] = {"sequence": None}
+            snapshot["proof_source"] = "independently_retained_ctrl_evidence"
+            if hasattr(self, "store"):
+                try:
+                    overview = self._host_overview()
+                    snapshot["proof_items"] = self._proof_items_for_scope(
+                        project_id.strip(), overview=overview,
+                    )
+                    snapshot["proof_cursor"] = {"sequence": self.store.proof_sequence()}
+                except (AttributeError, ConsoleError, OSError, sqlite3.Error):
+                    snapshot["proof_items"] = []
+            return snapshot
         except (KeyError, TypeError, ValueError, ProgressEventError) as error:
             raise ConsoleError(str(error)) from error
 
@@ -6474,6 +6981,20 @@ class App:
             page_truncated = len(pending) > RUN_LOG_LIMIT
             items = pending[:RUN_LOG_LIMIT]
             next_cursor = items[-1]["event_seq"] if page_truncated and items else newest_sequence
+        proof_items: list[dict[str, Any]] = []
+        proof_sequence: int | None = None
+        proof_status = "available"
+        try:
+            proof_items = self._proof_items_for_scope(
+                resolved_project_id,
+                overview=overview,
+                task_ids=set(node_by_id),
+                ctrl_id=ctrl_id,
+                agent_id=agent_id,
+            )
+            proof_sequence = self.store.proof_sequence()
+        except (ConsoleError, OSError, sqlite3.Error):
+            proof_status = "unavailable"
         return {
             "ok": True,
             "schema_version": 1,
@@ -6484,6 +7005,9 @@ class App:
             },
             "items": items,
             "cursor": {"after_event_seq": after_cursor, "next_event_seq": next_cursor},
+            "proof_items": proof_items,
+            "proof_cursor": {"sequence": proof_sequence},
+            "proof_status": proof_status,
             "retention": {
                 "limit": RUN_LOG_LIMIT,
                 "returned": len(items),
@@ -6495,7 +7019,9 @@ class App:
             "source": "canonical_ledger_typed_material_events",
             "claim_limit": (
                 "This is a bounded read-only projection of retained typed Ledger events; it excludes raw prompts, "
-                "model reasoning, terminal output, secrets, and non-material activity."
+                "model reasoning, terminal output, secrets, and non-material activity. Independently retained proof "
+                "media is surfaced in proof_items with its own cursor; review annotations never hide availability, "
+                "and availability is not acceptance."
             ),
         }
 
@@ -7170,6 +7696,9 @@ class Handler(BaseHTTPRequestHandler):
                 return
             if path == "/api/bootstrap":
                 self._json(HTTPStatus.OK, self._bootstrap_payload())
+                return
+            if path == "/api/profile":
+                self._json(HTTPStatus.OK, self.server.app.profile_presentation())
                 return
             if path == "/api/auto":
                 if not self._authorized_auto():
