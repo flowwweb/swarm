@@ -22,6 +22,14 @@ function runLogBindingKey(binding) {
   return binding ? [binding.projectId, binding.ctrlId, binding.agentId || ""].join("|") : "";
 }
 
+function runLogPlanBindingKey(plan) {
+  return JSON.stringify((plan?.bindings || []).map(runLogBindingKey).filter(Boolean).sort());
+}
+
+function runLogSurfaceStateKey(surface, bindingKey) {
+  return String(surface || "") + "|" + String(bindingKey || "");
+}
+
 function runLogItemIdentity(item) {
   const eventId = String(item?.event_id || "").trim();
   const digest = String(item?.event_digest || "").trim();
@@ -38,28 +46,45 @@ function runLogResponseMatches(result, binding) {
 }
 
 function mergeRunLogItems(previous, incoming, replace = false, limit = RUN_LOG_CLIENT_LIMIT) {
-  const existing = replace ? [] : (Array.isArray(previous) ? previous : []);
+  const prior = Array.isArray(previous) ? previous : [];
+  const existing = replace ? [] : prior;
+  const knownIdentities = new Set(prior.map(runLogItemIdentity).filter(Boolean));
   const byIdentity = new Map();
   existing.forEach((item) => {
     const identity = runLogItemIdentity(item);
     if (identity) byIdentity.set(identity, item);
   });
-  let added = 0;
+  const addedItems = [];
   (Array.isArray(incoming) ? incoming : []).forEach((item) => {
     const identity = runLogItemIdentity(item);
     const sequence = Number(item?.event_seq);
     if (!identity || !Number.isInteger(sequence) || sequence <= 0 || !String(item?.summary || "").trim()) return;
-    if (!byIdentity.has(identity)) added += 1;
+    if (!knownIdentities.has(identity)) {
+      addedItems.push(item);
+      knownIdentities.add(identity);
+    }
     byIdentity.set(identity, item);
   });
   const items = [...byIdentity.values()]
     .sort((left, right) => Number(left.event_seq) - Number(right.event_seq) || runLogItemIdentity(left).localeCompare(runLogItemIdentity(right)))
     .slice(-Math.max(1, Number(limit) || RUN_LOG_CLIENT_LIMIT));
-  return { items, added };
+  const retainedIdentities = new Set(items.map(runLogItemIdentity));
+  const retainedAddedItems = addedItems.filter((item) => retainedIdentities.has(runLogItemIdentity(item)));
+  return { items, added: retainedAddedItems.length, addedItems: retainedAddedItems };
 }
 
 function runLogNearBottom(scrollHeight, scrollTop, clientHeight, threshold = 48) {
   return Number(scrollHeight) - Number(scrollTop) - Number(clientHeight) <= threshold;
+}
+
+function runLogAnnouncement(items) {
+  const appended = (Array.isArray(items) ? items : [])
+    .filter((item) => runLogItemIdentity(item) && String(item?.summary || "").trim())
+    .sort((left, right) => Number(left.event_seq) - Number(right.event_seq));
+  if (!appended.length) return "";
+  const latest = appended[appended.length - 1];
+  if (appended.length === 1) return "New run log entry " + String(latest.event_seq) + ": " + String(latest.summary).trim();
+  return String(appended.length) + " new run log entries. Latest, " + String(latest.event_seq) + ": " + String(latest.summary).trim();
 }
 
 function escapeHTML(value) {
@@ -491,9 +516,14 @@ function runLogSurfacePlans() {
   return plans;
 }
 
-function runLogSurfaceState(surface) {
-  if (!state.runLogSurfaceStates.has(surface)) state.runLogSurfaceStates.set(surface, { nearBottom: true, newEntries: 0 });
-  return state.runLogSurfaceStates.get(surface);
+function runLogSurfaceState(surface, bindingKey) {
+  const key = runLogSurfaceStateKey(surface, bindingKey);
+  const prefix = String(surface || "") + "|";
+  if (!state.runLogSurfaceStates.has(key)) {
+    [...state.runLogSurfaceStates.keys()].filter((candidate) => candidate.startsWith(prefix)).forEach((candidate) => state.runLogSurfaceStates.delete(candidate));
+    state.runLogSurfaceStates.set(key, { nearBottom: true, newEntries: 0, pendingAnnouncements: [], announcement: "", announcementRevision: 0 });
+  }
+  return state.runLogSurfaceStates.get(key);
 }
 
 function runLogEntries(plan) {
@@ -557,6 +587,13 @@ function restoreRunLogViewport(mount, viewport) {
   else scroller.scrollTop = Math.min(viewport.scrollTop, Math.max(0, scroller.scrollHeight - scroller.clientHeight));
 }
 
+function ensureRunLogShell(mount, surface) {
+  if ($(".run-log-list", mount)) return;
+  const headingId = "run-log-" + surface + "-heading";
+  const statusId = "run-log-" + surface + "-status";
+  mount.innerHTML = '<header class="run-log-head"><div><p class="eyebrow">Run log</p><h2 id="' + headingId + '"></h2></div><p id="' + statusId + '"></p></header><div class="run-log-frame"><ol class="run-log-list" role="log" aria-labelledby="' + headingId + '" aria-describedby="' + statusId + '" tabindex="0"></ol><button class="run-log-new quiet-button" type="button" data-run-log-latest="' + escapeHTML(surface) + '" hidden></button></div><p class="run-log-announcer sr-only" role="status" aria-live="polite" aria-atomic="true"></p><p class="run-log-notice" hidden></p>';
+}
+
 function renderRunLogSurfaces() {
   const plans = runLogSurfacePlans();
   $$('[data-run-log-surface]').forEach((mount) => {
@@ -564,27 +601,52 @@ function renderRunLogSurfaces() {
     const plan = plans.get(surface);
     if (!plan) {
       mount.hidden = true;
-      mount.innerHTML = "";
       return;
     }
-    const viewport = captureRunLogViewport(mount);
-    if (viewport) runLogSurfaceState(surface).nearBottom = viewport.nearBottom;
+    ensureRunLogShell(mount, surface);
+    const bindingKey = runLogPlanBindingKey(plan);
+    const sameBinding = mount.dataset.runLogBindingKey === bindingKey;
+    const surfaceState = runLogSurfaceState(surface, bindingKey);
+    const viewport = sameBinding ? captureRunLogViewport(mount) : null;
+    if (viewport) surfaceState.nearBottom = viewport.nearBottom;
+    mount.dataset.runLogBindingKey = bindingKey;
     const presentation = runLogPresentation(plan);
-    const surfaceState = runLogSurfaceState(surface);
-    const headingId = "run-log-" + surface + "-heading";
-    const statusId = "run-log-" + surface + "-status";
+    const heading = $(".run-log-head h2", mount);
+    const status = $(".run-log-head > p", mount);
+    const list = $(".run-log-list", mount);
+    const latest = $("[data-run-log-latest]", mount);
+    const announcer = $(".run-log-announcer", mount);
+    const notice = $(".run-log-notice", mount);
     mount.hidden = false;
-    mount.innerHTML = '<header class="run-log-head"><div><p class="eyebrow">Run log</p><h2 id="' + headingId + '">' + escapeHTML(plan.title) + '</h2></div><p id="' + statusId + '" role="status" class="' + (presentation.stale ? "is-stale" : "") + '">' + escapeHTML(presentation.message) + '</p></header><div class="run-log-frame"><ol class="run-log-list" role="log" aria-live="polite" aria-relevant="additions" aria-labelledby="' + headingId + '" aria-describedby="' + statusId + '" tabindex="0">' + (presentation.items.length ? presentation.items.map(runLogEntryMarkup).join("") : '<li class="empty-state">' + escapeHTML(presentation.message) + '</li>') + '</ol><button class="run-log-new quiet-button" type="button" data-run-log-latest="' + escapeHTML(surface) + '"' + (surfaceState.newEntries ? '' : ' hidden') + '>' + escapeHTML(String(surfaceState.newEntries) + " new " + (surfaceState.newEntries === 1 ? "entry" : "entries")) + '</button></div>' + (presentation.notices.length ? '<p class="run-log-notice">' + escapeHTML(presentation.notices.join(" · ")) + '</p>' : '');
+    heading.textContent = plan.title;
+    status.textContent = presentation.message;
+    status.classList.toggle("is-stale", presentation.stale);
+    list.innerHTML = presentation.items.length ? presentation.items.map(runLogEntryMarkup).join("") : '<li class="empty-state">' + escapeHTML(presentation.message) + '</li>';
+    latest.textContent = String(surfaceState.newEntries) + " new " + (surfaceState.newEntries === 1 ? "entry" : "entries");
+    latest.hidden = !surfaceState.newEntries;
+    notice.textContent = presentation.notices.join(" · ");
+    notice.hidden = !presentation.notices.length;
+    if (surfaceState.pendingAnnouncements.length) {
+      const byIdentity = new Map(surfaceState.pendingAnnouncements.map((item) => [runLogItemIdentity(item), item]));
+      surfaceState.announcement = runLogAnnouncement([...byIdentity.values()]);
+      surfaceState.announcementRevision += 1;
+      surfaceState.pendingAnnouncements = [];
+    }
+    if (announcer.dataset.revision !== String(surfaceState.announcementRevision)) {
+      announcer.textContent = surfaceState.announcement;
+      announcer.dataset.revision = String(surfaceState.announcementRevision);
+    }
     restoreRunLogViewport(mount, viewport);
   });
 }
 
-function markRunLogNewEntries(bindingKey, count) {
-  if (!count) return;
+function markRunLogNewEntries(bindingKey, items) {
+  if (!items?.length) return;
   runLogSurfacePlans().forEach((plan, surface) => {
     if (!plan.bindings.some((binding) => runLogBindingKey(binding) === bindingKey)) return;
-    const view = runLogSurfaceState(surface);
-    if (!view.nearBottom) view.newEntries += count;
+    const view = runLogSurfaceState(surface, runLogPlanBindingKey(plan));
+    view.pendingAnnouncements.push(...items);
+    if (!view.nearBottom) view.newEntries += items.length;
   });
 }
 
@@ -606,7 +668,7 @@ async function refreshRunLogBinding(binding) {
     const replace = !previous.cursor || result.retention?.stale_cursor === true;
     const merged = mergeRunLogItems(previous.items, result.items, replace);
     state.runLogs.set(key, { items: merged.items, cursor: nextCursor, retention: result.retention || null, status: "current", error: "" });
-    if (previous.items.length) markRunLogNewEntries(key, merged.added);
+    if (previous.items.length && !replace) markRunLogNewEntries(key, merged.addedItems);
   } catch (error) {
     if (state.runLogRequestGenerations.get(key) !== generation) return;
     state.runLogs.set(key, { ...previous, status: previous.items.length ? "stale" : "unavailable", error: error.message || "Run log unavailable" });
@@ -2303,7 +2365,7 @@ document.addEventListener("click", async (event) => {
     const mount = $('[data-run-log-surface="' + CSS.escape(surface) + '"]');
     const scroller = mount ? $(".run-log-list", mount) : null;
     if (!scroller) return;
-    const view = runLogSurfaceState(surface);
+    const view = runLogSurfaceState(surface, mount.dataset.runLogBindingKey || "");
     view.nearBottom = true;
     view.newEntries = 0;
     runLogLatest.hidden = true;
@@ -2491,7 +2553,8 @@ document.addEventListener("scroll", (event) => {
   if (!scroller) return;
   const surface = scroller.closest("[data-run-log-surface]")?.dataset.runLogSurface;
   if (!surface) return;
-  const view = runLogSurfaceState(surface);
+  const mount = scroller.closest("[data-run-log-surface]");
+  const view = runLogSurfaceState(surface, mount?.dataset.runLogBindingKey || "");
   view.nearBottom = runLogNearBottom(scroller.scrollHeight, scroller.scrollTop, scroller.clientHeight);
   if (view.nearBottom) {
     view.newEntries = 0;
