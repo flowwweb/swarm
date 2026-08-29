@@ -83,6 +83,9 @@ assert.match(indexHtml, /id="project-navigation-heading">Projects<\/p>[\s\S]*?id
 assert.match(indexHtml, /id="project-scope-filter" aria-label="Project scope"/);
 assert.match(indexHtml, /id="notifications"[^>]*aria-label="Notifications"/);
 assert.match(indexHtml, /id="profile"[^>]*aria-label="Profile unavailable"[^>]*disabled/);
+assert.match(indexHtml, /id="profile"[^>]*><svg[\s\S]*?<use href="#lucide-circle-user-round"><\/use><\/svg><\/button>/);
+assert.doesNotMatch(indexHtml, /id="profile"[^>]*>[\s\S]*?<span>Profile<\/span>/);
+assert.match(css, /\.profile-button \{[^}]*width:40px;[^}]*height:40px;[^}]*border-radius:50%/);
 assert.match(indexHtml, /id="onboarding-dialog"[^>]*aria-labelledby="onboarding-dialog-title"[^>]*aria-describedby="onboarding-step-status"/);
 assert.match(indexHtml, /id="onboarding-step-status" aria-live="polite">Welcome\. Step 1 of 3\.<\/p>/);
 const onboardingWithoutNonvisualStatus = indexHtml.replace(/<p class="sr-only" id="onboarding-step-status"[\s\S]*?<\/p>/, "");
@@ -276,8 +279,8 @@ const runLogOuterRenderHarness = vm.runInNewContext(`(() => {
   function humanize(value) { return String(value || ""); }
   function escapeHTML(value) { return String(value ?? ""); }
   function projectTabMarkup() { return '<section data-run-log-surface="project"></section>'; }
-  function renderVerifiedYieldSummary() {} function renderVerifiedYieldRows() {} function renderOverviewProjectCards() {}
-  function renderEvidenceGallery() {} function renderUsage() {} function renderProjectProgressFeed() {} function renderOverviewHealth() {} function renderNotifications() {}
+  function renderOverviewMetrics() {} function renderOverviewProjectCards() {}
+  function renderEvidenceGallery() {} function renderUsage() {} function renderProjectProgressFeed() {} function renderNotifications() {}
   function clearConnectionState() {} function setDataStatus() {} function renderProjectNavigation() {} function renderAgents() {} function renderReview() {} function renderAssets() {} function renderRunLogSurfaces() {}
   async function api() { return { generated_at: 1 }; }
   async function refreshUsageHistory() {} async function refreshNotifications() {} async function refreshRunLogs() {} async function refreshProof() {}
@@ -312,8 +315,37 @@ assert.match(app, /function yieldChartMarkup\(item\)/);
 assert.match(app, /Observed tokens/);
 assert.match(app, /Admitted scope/);
 assert.match(app, /yield-scope-divider/);
-assert.match(indexHtml, /id="verified-yield-rows" aria-label="Verified yield by project and task"/);
-assert.match(app, /Net admitted scope points per 100k observed tokens/);
+assert.match(indexHtml, /id="overview-metrics" aria-label="Overview diagnostics"/);
+assert.deepEqual([...indexHtml.matchAll(/data-overview-metric="([^"]+)"/g)].map((match) => match[1]), ["active-work", "needs-attention", "verified-progress", "usage"]);
+assert.doesNotMatch(indexHtml, /verified-yield-summary|verified-yield-rows|overview-monitoring-health-state|>Unmeasured</);
+assert.match(css, /\.overview-metrics \{[^}]*grid-template-columns:repeat\(4,minmax\(0,1fr\)\)/);
+assert.match(css, /\.overview-metric-card \{[^}]*min-height:108px/);
+assert.match(app, /function overviewMetricsProjectionValue\(value, expectedScopeId = ""\)/);
+assert.match(app, /overviewMetricsProjectionValue\(state\.overview\?\.overview_metrics, overviewMetricsScopeId\(\)\)/);
+const overviewMetricsStart = app.indexOf("const OVERVIEW_METRIC_FIELDS");
+const overviewMetricsEnd = app.indexOf("\nfunction renderOverviewMetric", overviewMetricsStart);
+const overviewMetricHelpers = vm.runInNewContext(`(() => { ${app.slice(overviewMetricsStart, overviewMetricsEnd)}; return { overviewMetricsProjectionValue, overviewMetricPresentation }; })()`);
+const knownMetricState = Object.fromEntries(["active_projects", "active_lanes", "actionable_items", "oldest_wait", "admitted_milestones", "admitted_proof", "completed", "total", "percent", "trend", "window", "used_tokens", "remaining_tokens", "burn_rate_series", "coverage"].map((field) => [field, "KNOWN"]));
+const overviewMetricFixture = {
+  accepted_scope_id: "all", accepted_cursor: { event_seq: 12 },
+  active_work: { active_projects: 3, active_lanes: 5 },
+  needs_attention: { actionable_items: 2, oldest_wait: { reason: "Waiting for capacity", release_condition: "Capacity returns" } },
+  verified_progress: { admitted_milestones: 4, admitted_proof: 7, completed: 6, total: 8, percent: 75, trend: [40, 60, 75] },
+  usage: { window: "24h", used_tokens: 125000, remaining_tokens: 75000, burn_rate_series: [1000, 1200, 900], coverage: "complete" },
+  field_state: knownMetricState,
+};
+const acceptedOverviewMetrics = overviewMetricHelpers.overviewMetricsProjectionValue(overviewMetricFixture, "all");
+assert.equal(acceptedOverviewMetrics.accepted_scope_id, "all");
+assert.equal(overviewMetricHelpers.overviewMetricsProjectionValue(overviewMetricFixture, "project:other"), null);
+assert.equal(overviewMetricHelpers.overviewMetricsProjectionValue({ ...overviewMetricFixture, accepted_cursor: null }, "all"), null);
+assert.equal(overviewMetricHelpers.overviewMetricsProjectionValue({ ...overviewMetricFixture, field_state: { ...knownMetricState, active_lanes: "STALE" } }, "all"), null);
+assert.equal(overviewMetricHelpers.overviewMetricsProjectionValue({ ...overviewMetricFixture, active_work: { ...overviewMetricFixture.active_work, active_projects: null } }, "all"), null);
+const metricPresentation = overviewMetricHelpers.overviewMetricPresentation(acceptedOverviewMetrics);
+assert.deepEqual([metricPresentation.active.value, metricPresentation.attention.value, metricPresentation.progress.value, metricPresentation.usage.value], ["3 / 5", "2", "75%", "125k used"]);
+assert.match(metricPresentation.attention.note, /Waiting for capacity · Capacity returns/);
+const unknownMetricPresentation = overviewMetricHelpers.overviewMetricPresentation(null);
+assert.deepEqual([unknownMetricPresentation.active.value, unknownMetricPresentation.attention.value, unknownMetricPresentation.progress.value, unknownMetricPresentation.usage.value], ["—", "—", "—", "—"]);
+assert.ok(Object.values(unknownMetricPresentation).filter((item) => item && typeof item === "object").every((item) => item.state === "UNKNOWN"));
 assert.doesNotMatch(indexHtml + app, /lines of code|productivity score|leaderboard/i);
 assert.match(app, /node\?\.owner_id \|\| node\?\.worker/);
 assert.match(indexHtml, /id="view-review"[\s\S]*id="review-list"/);
@@ -480,8 +512,8 @@ assert.match(app, /if \(!\$\("#notifications-panel"\)\.hidden && !event\.target\
 assert.match(app, /event\.key === "Escape" && !\$\("#notifications-panel"\)\.hidden/);
 assert.match(app, /panel\.focus\(\{ preventScroll: true \}\)/);
 assert.match(css, /@media \(max-width: 620px\)[\s\S]*\.notification-toast-region \{ top:auto;[^}]*bottom:max\(14px,env\(safe-area-inset-bottom\)\)/);
-assert.match(indexHtml, /id="overview-monitoring-health-state"/);
-assert.match(app, /function renderOverviewHealth\(nodes\)/);
+assert.doesNotMatch(indexHtml, /id="overview-monitoring-health-state"/);
+assert.doesNotMatch(app, /function renderOverviewHealth\(nodes\)/);
 const healthPresentationStart = app.indexOf("function systemHealthPresentation");
 const healthPresentationEnd = app.indexOf("\nfunction renderSystemHealth", healthPresentationStart);
 const healthPresentationHarness = vm.runInNewContext(`(() => {
@@ -516,6 +548,9 @@ for (const retiredRenderer of ["renderDashboard", "renderHierarchy", "renderKanb
   assert.doesNotMatch(app, new RegExp(`function ${retiredRenderer}\\(`));
 }
 assert.match(app, /renderOverviewProjectCards\(nodes\)/);
+const overviewProjectCardsSource = app.slice(app.indexOf("function renderOverviewProjectCards"), app.indexOf("function renderOverview()"));
+assert.doesNotMatch(overviewProjectCardsSource, />Unmeasured|escapeHTML\(progress\.display\)|escapeHTML\(yieldHealth\(efficiency\)\)/);
+assert.match(overviewProjectCardsSource, /progressDisplay = progress\.display === "Unmeasured" \? "—"/);
 assert.match(app, /function authoritativeProgress\(projectId, ctrlId = ""\)/);
 assert.match(app, /function progressPresentation\(summary\)/);
 assert.match(app, /if \(ctrlId\) return summaries\.controllers\?\.\[ctrlId\] \?\? null/);
@@ -623,7 +658,8 @@ assert.match(app, /subagentDescendants\(card\.ctrlId, tree\)/);
 assert.match(app, /params\.set\("project_id", projectId\)/);
 assert.doesNotMatch(app, /params\.set\("task_id", state\.ctrlId\)/);
 assert.match(app, /\["blocked", "at_risk", "stalled", "critical"\]/);
-assert.match(app, /const lanes = nodes\.filter\(\(node\) => !isSubagent\(node\)\);/);
+const overviewMetricsRenderSource = app.slice(app.indexOf("function renderOverviewMetrics"), app.indexOf("function yieldChartMarkup"));
+assert.doesNotMatch(overviewMetricsRenderSource, /scopedNodes|projectGroups|usageHistory|verifiedYieldProjection|attentionStatus/);
 assert.doesNotMatch(app, /Number\(project\.active_threads \?\? project\.active\) > 0/);
 assert.match(app, /function configEditable\(key\)/);
 assert.match(app, /id="settings-scope"/);
@@ -764,7 +800,7 @@ function roleManifestFixture() {
 }
 assert.doesNotMatch(app, /ROLE_PROFESSIONS|\["accountant", "Accountant"\]|\["critic", "Critic"\]/);
 assert.match(app, /function roleManifestProjection\(\)/);
-assert.match(app, /roles\.map\(roleAccordionMarkup\)\.join\(""\)/);
+assert.match(app, /filtered\.map\(\(\{ role, match \}\) => roleAccordionMarkup\(role, match\)\)\.join\(""\)/);
 const roleProjectionStart = app.indexOf("function roleManifestProjectionValue");
 const roleProjectionEnd = app.indexOf("\nfunction roleManifestProjection()", roleProjectionStart);
 const evaluateRoleProjection = vm.runInNewContext(`(() => { ${app.slice(roleProjectionStart, roleProjectionEnd)}; return roleManifestProjectionValue; })()`);
@@ -778,6 +814,18 @@ const roleCurrentEnd = app.indexOf("\nfunction roleRecord", roleCurrentStart);
 const evaluateRoleCurrentRecords = vm.runInNewContext(`(() => { ${app.slice(roleCurrentStart, roleCurrentEnd)}; return roleCurrentRecords; })()`);
 assert.equal(evaluateRoleCurrentRecords(historicalCriticProjection).some((role) => role.id === "critic"), false);
 assert.equal(evaluateRoleCurrentRecords(historicalCriticProjection).length, 24);
+const roleSearchStart = app.indexOf("function roleSearchBuckets");
+const roleSearchEnd = app.indexOf("\nfunction roleFilterChipsMarkup", roleSearchStart);
+const roleSearchHelpers = vm.runInNewContext(`(() => { function roleSpecializations(role) { return role.specializations || []; } ${app.slice(roleSearchStart, roleSearchEnd)}; return { roleSearchMatch, roleFilterRecords }; })()`);
+const searchableRole = { id: "developer", name: "Developer", built_in: true, specializations: ["Game Development"], aliases: ["Coder"], tags: ["Software"], default_skills: ["javascript"], purpose: "Build reliable products" };
+for (const [query, label] of [["developer", "profession"], ["game", "specialization"], ["coder", "alias or tag"], ["javascript", "skill"], ["reliable", "purpose"]]) {
+  const result = roleSearchHelpers.roleSearchMatch(searchableRole, query, new Set(["profession", "specialization", "alias", "skills", "purpose"]));
+  assert.equal(result.matched, true);
+  assert.match(result.label, new RegExp(label));
+}
+assert.equal(roleSearchHelpers.roleSearchMatch(searchableRole, "coder", new Set(["profession"])).matched, false);
+assert.equal(roleSearchHelpers.roleFilterRecords([searchableRole], "game", new Set(["builtin"]), new Set(["specialization"])).length, 1);
+assert.equal(roleSearchHelpers.roleFilterRecords([searchableRole], "game", new Set(["custom"]), new Set(["specialization"])).length, 0);
 assert.equal(evaluateRoleProjection({ ...validRoleProjection, roles: validRoleProjection.roles.map((role) => role.id === "developer" ? { ...role, specializations: role.specializations.slice(0, 3) } : role) }), null);
 const customRoleProjection = { ...validRoleProjection, roles: [...validRoleProjection.roles, { ...validRoleProjection.roles[0], id: "custom-helper", name: "Custom helper", source: "custom", built_in: false, specializations: [] }] };
 assert.equal(evaluateRoleProjection(customRoleProjection).roles.length, 25);
@@ -815,6 +863,12 @@ assert.equal(evaluateRoleAvatarDigest("b".repeat(64), [], [{ digest: "b".repeat(
 assert.equal(evaluateRoleAvatarDigest("c".repeat(64), [], []), false);
 assert.doesNotMatch(app, /localStorage|sessionStorage/);
 assert.match(indexHtml, /id="role-editor" aria-labelledby="role-editor-title"/);
+assert.match(indexHtml, /id="role-search" type="search" autocomplete="off" placeholder="Search roles"/);
+assert.match(indexHtml, /class="role-filter"[\s\S]*aria-label="Filter roles"[\s\S]*data-role-search-field="profession"[\s\S]*data-role-search-field="specialization"[\s\S]*data-role-search-field="alias"[\s\S]*data-role-search-field="skills"[\s\S]*data-role-search-field="purpose"/);
+assert.match(indexHtml, /data-role-type="builtin" checked[\s\S]*data-role-type="custom" checked/);
+assert.match(app, /roleSearchFields: new Set\(\["profession", "specialization", "alias", "skills", "purpose"\]\)/);
+assert.match(app, /filtered\.map\(\(\{ role, match \}\) => roleAccordionMarkup\(role, match\)\)/);
+assert.doesNotMatch(app, /Game Development|Game Design/);
 for (const field of ["role-field-id", "role-field-name", "role-field-purpose", "role-field-owns", "role-field-instructions", "role-field-boundaries", "role-field-skills", "role-field-avatar", "role-field-accent", "role-field-specializations", "role-field-version", "role-field-source"]) assert.match(indexHtml, new RegExp(`id="${field}"`));
 assert.match(indexHtml, /Tasks already in progress keep the version they started with/);
 assert.match(indexHtml, /Choose a retained immutable image asset/);
@@ -1058,6 +1112,7 @@ const proofFeed = imageProofFixture(6);
     owners: [{ scope: { type: "owner", id: "CTRL", project_id: "project:fixture" }, measurement_state: "MEASURED", confidence: "PARTIAL", observed_tokens: 50000, yield_per_100k: 2, rework_drag: 0, series: [{ observed_tokens: 50000, net_scope_points: 1, scope_version: 1 }] }],
   };
   const overview = scopedFixture();
+  overview.overview_metrics = structuredClone(overviewMetricFixture);
   const projectProgress = {
     ok: true,
     project_id: "project:fixture",
@@ -1129,7 +1184,9 @@ const proofFeed = imageProofFixture(6);
     ]);
     assert.doesNotMatch(await page.locator("#project-navigation").textContent(), /Archived project|Unassigned planning|Resolve customer export/);
     assert.equal(await page.locator("#profile").isDisabled(), true);
-    assert.equal(await page.locator("#verified-yield-heading").textContent(), "2.5");
+    assert.deepEqual(await page.locator(".overview-metric-card > header > span").allTextContents(), ["Active work", "Needs attention", "Verified progress", "Usage"]);
+    assert.deepEqual(await page.locator(".overview-metric-card > strong").allTextContents(), ["3 / 5", "2", "75%", "125k used"]);
+    assert.equal(await page.locator("#overview-monitoring-heading").isVisible(), true);
     await page.getByRole("button", { name: /^swarm\b/i }).click();
     await page.locator("#project-detail").waitFor({ state: "visible" });
     await page.locator("#notification-unread").waitFor({ state: "visible" });
@@ -1156,6 +1213,18 @@ const proofFeed = imageProofFixture(6);
     await page.getByRole("tab", { name: "Role library", exact: true }).click();
     assert.equal(await page.locator(".role-card").count(), 24);
     assert.match(await page.locator("#role-library-status").textContent(), /24 server-owned role manifests/);
+    await page.locator("#role-search").fill("Game Development");
+    assert.equal(await page.locator(".role-card").count(), 1);
+    assert.equal(await page.locator('.role-card[data-role-id="developer"]').getAttribute("open"), "");
+    assert.match(await page.locator('.role-card[data-role-id="developer"] .role-match').textContent(), /Matched: Game Development · specialization/);
+    await page.locator("#role-search").fill("");
+    await page.locator(".role-filter > summary").click();
+    await page.locator('[data-role-type="custom"]').uncheck();
+    assert.equal(await page.locator(".role-card").count(), 24);
+    await page.locator('[data-role-type="builtin"]').uncheck();
+    assert.equal(await page.locator(".role-card").count(), 0);
+    await page.locator("#role-filter-reset").click();
+    assert.equal(await page.locator(".role-card").count(), 24);
     await page.locator('.role-card[data-role-id="developer"] > summary').click();
     assert.equal(await page.locator('.role-card[data-role-id="developer"] .role-specializations li').count(), 4);
     assert.match(await page.locator('.role-card[data-role-id="reviewer"]').textContent(), /Friendly[\s\S]*Hostile/);

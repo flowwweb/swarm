@@ -1,4 +1,4 @@
-const state = { token: "", overview: null, proof: [], proofCollections: new Map(), proofStatuses: new Map(), proofStatus: "idle", proofSequence: 0, usageHistory: null, usageWindowHours: 24, usageScopeKey: "", usageStatus: "idle", usageError: "", projectProgress: null, projectProgressProjectId: "", projectProgressStatus: "idle", projectProgressError: "", projectProgressFeed: null, projectProgressFeedProjectId: "", projectProgressFeedStatus: "idle", projectProgressFeedError: "", projectTab: "overview", runLogs: new Map(), runLogRequestGenerations: new Map(), runLogSurfaceStates: new Map(), runLogAgent: null, diagnostics: null, health: null, storage: null, config: null, configStatus: "idle", configError: "", chatRelaySaving: false, ctrlSettings: null, auto: null, autoBindingKey: "", autoStatus: "idle", autoError: "", autoSaving: false, skills: null, skillsError: "", roleManifests: null, roleManifestStatus: "unavailable", roleManifestError: "", roleManifestMessage: "", roleManifestSaving: false, roleManifestRetry: null, roleEditorMode: "", agentsTab: "active", roleEditorTrigger: null, assetView: "grid", selectedAssetIdentity: "", onboardingStep: 0, onboardingShown: false, onboardingTrigger: null, notifications: null, notificationBindingKey: "", notificationStatus: "idle", notificationError: "", notificationAckFlight: null, notificationRequestGenerations: new Map(), notificationPresentedIds: new Set(), notificationToast: null, notificationToastTimer: null, notificationTrigger: null, connectionStatus: "reconnecting", view: "overview", projectId: "all", ctrlId: "", settingsCtrlId: "", settingsScopeType: "", settingsScopeId: "", evidenceImages: [], evidenceIndex: 0, evidenceTrigger: null };
+const state = { token: "", overview: null, proof: [], proofCollections: new Map(), proofStatuses: new Map(), proofStatus: "idle", proofSequence: 0, usageHistory: null, usageWindowHours: 24, usageScopeKey: "", usageStatus: "idle", usageError: "", projectProgress: null, projectProgressProjectId: "", projectProgressStatus: "idle", projectProgressError: "", projectProgressFeed: null, projectProgressFeedProjectId: "", projectProgressFeedStatus: "idle", projectProgressFeedError: "", projectTab: "overview", runLogs: new Map(), runLogRequestGenerations: new Map(), runLogSurfaceStates: new Map(), runLogAgent: null, diagnostics: null, health: null, storage: null, config: null, configStatus: "idle", configError: "", chatRelaySaving: false, ctrlSettings: null, auto: null, autoBindingKey: "", autoStatus: "idle", autoError: "", autoSaving: false, skills: null, skillsError: "", roleManifests: null, roleManifestStatus: "unavailable", roleManifestError: "", roleManifestMessage: "", roleManifestSaving: false, roleManifestRetry: null, roleEditorMode: "", agentsTab: "active", roleEditorTrigger: null, roleSearch: "", roleTypes: new Set(["builtin", "custom"]), roleSearchFields: new Set(["profession", "specialization", "alias", "skills", "purpose"]), assetView: "grid", selectedAssetIdentity: "", onboardingStep: 0, onboardingShown: false, onboardingTrigger: null, notifications: null, notificationBindingKey: "", notificationStatus: "idle", notificationError: "", notificationAckFlight: null, notificationRequestGenerations: new Map(), notificationPresentedIds: new Set(), notificationToast: null, notificationToastTimer: null, notificationTrigger: null, connectionStatus: "reconnecting", view: "overview", projectId: "all", ctrlId: "", settingsCtrlId: "", settingsScopeType: "", settingsScopeId: "", evidenceImages: [], evidenceIndex: 0, evidenceTrigger: null };
 const EVIDENCE_THUMBNAIL_PAGE_SIZE = 24;
 const USAGE_WINDOW_LABELS = { 1: "1h", 24: "1d" };
 const RUN_LOG_CLIENT_LIMIT = 200;
@@ -1108,34 +1108,121 @@ function yieldWarnings(item) {
   return warnings.join("");
 }
 
-function renderVerifiedYieldSummary() {
-  const type = state.projectId === "all" ? "portfolio" : "project";
-  const item = verifiedYieldItem(type, state.projectId);
-  $("#verified-yield-heading").textContent = yieldValue(item);
-  $("#verified-yield-health").textContent = yieldHealth(item);
-  $("#verified-yield-note").textContent = item?.measurement_state === "MEASURED"
-    ? "Net admitted scope points per 100k observed tokens"
-    : "Admitted scope or token coverage is incomplete";
-  drawLine($("#verified-yield-chart"), yieldSeries(item), "#ff9c3d");
+const OVERVIEW_METRIC_FIELDS = [
+  "active_projects", "active_lanes", "actionable_items", "oldest_wait",
+  "admitted_milestones", "admitted_proof", "completed", "total", "percent", "trend",
+  "window", "used_tokens", "remaining_tokens", "burn_rate_series", "coverage",
+];
+const OVERVIEW_METRIC_STATES = new Set(["KNOWN", "PARTIAL", "UNKNOWN"]);
+
+function overviewMetricsProjectionValue(value, expectedScopeId = "") {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  if (!String(value.accepted_scope_id || "").trim() || value.accepted_cursor == null) return null;
+  if (expectedScopeId && String(value.accepted_scope_id) !== String(expectedScopeId)) return null;
+  if (!value.active_work || !value.needs_attention || !value.verified_progress || !value.usage || !value.field_state) return null;
+  if (!OVERVIEW_METRIC_FIELDS.every((field) => OVERVIEW_METRIC_STATES.has(value.field_state[field]))) return null;
+  const numericFields = {
+    active_projects: value.active_work.active_projects, active_lanes: value.active_work.active_lanes,
+    actionable_items: value.needs_attention.actionable_items,
+    admitted_milestones: value.verified_progress.admitted_milestones, admitted_proof: value.verified_progress.admitted_proof,
+    completed: value.verified_progress.completed, total: value.verified_progress.total, percent: value.verified_progress.percent,
+    used_tokens: value.usage.used_tokens, remaining_tokens: value.usage.remaining_tokens,
+  };
+  if (Object.entries(numericFields).some(([field, number]) => value.field_state[field] !== "UNKNOWN" && (typeof number !== "number" || !Number.isFinite(number) || number < 0))) return null;
+  if (["active_projects", "active_lanes", "actionable_items", "admitted_milestones", "admitted_proof", "completed", "total"].some((field) => value.field_state[field] !== "UNKNOWN" && !Number.isInteger(numericFields[field]))) return null;
+  if (value.field_state.percent !== "UNKNOWN" && value.verified_progress.percent > 100) return null;
+  if (value.field_state.trend !== "UNKNOWN" && !Array.isArray(value.verified_progress.trend)) return null;
+  if (value.field_state.burn_rate_series !== "UNKNOWN" && !Array.isArray(value.usage.burn_rate_series)) return null;
+  return value;
 }
 
-function verifiedYieldScopeLabel(item) {
-  const id = item?.scope?.id || "Unknown";
-  if (item?.scope?.type === "project") return projectGroups().find((project) => project.id === id)?.label || id;
-  if (item?.scope?.type === "task") {
-    const node = (state.overview?.nodes || []).find((candidate) => candidate.id === id);
-    return node?.artifact || node?.title || id;
-  }
-  return id;
+function overviewMetricsScopeId() {
+  return state.ctrlId || (state.projectId !== "all" ? state.projectId : "all");
 }
 
-function renderVerifiedYieldRows() {
-  const container = $("#verified-yield-rows");
-  const projection = verifiedYieldProjection();
-  const items = [...(projection?.projects || []), ...(projection?.tasks || [])];
-  container.hidden = state.projectId !== "all" || state.ctrlId !== "";
-  if (container.hidden) return;
-  container.innerHTML = items.length ? '<header><div><p class="eyebrow">Receipt-backed efficiency</p><h2>Projects and tasks</h2></div><span>' + items.length + ' scope row' + (items.length === 1 ? '' : 's') + '</span></header><div class="verified-yield-table">' + items.map((item) => '<article><span class="yield-scope-kind">' + escapeHTML(humanize(item.scope?.type || "scope")) + '</span><strong>' + escapeHTML(verifiedYieldScopeLabel(item)) + '</strong>' + miniSparkline(yieldSeries(item), "Verified yield trend for " + verifiedYieldScopeLabel(item)) + '<b>' + escapeHTML(yieldValue(item)) + '</b><small>' + escapeHTML(yieldHealth(item)) + yieldWarnings(item) + '</small></article>').join("") + '</div>' : '<p class="empty-state">Verified yield appears after admitted scope and matching token receipts are observed.</p>';
+function overviewMetricCombinedState(record, fields) {
+  if (!record) return "UNKNOWN";
+  const states = fields.map((field) => record.field_state[field]);
+  if (states.every((status) => status === "KNOWN")) return "KNOWN";
+  if (states.every((status) => status === "UNKNOWN")) return "UNKNOWN";
+  return "PARTIAL";
+}
+
+function overviewMetricNumber(record, field, value) {
+  return record && record.field_state[field] !== "UNKNOWN" && typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+function compactMetricNumber(value) {
+  if (value == null) return "—";
+  if (Math.abs(value) >= 1_000_000) return (value / 1_000_000).toFixed(value >= 10_000_000 ? 0 : 1).replace(/\.0$/, "") + "m";
+  if (Math.abs(value) >= 1_000) return (value / 1_000).toFixed(value >= 100_000 ? 0 : 1).replace(/\.0$/, "") + "k";
+  return String(value);
+}
+
+function overviewMetricSeries(record, field, value, keys) {
+  if (!record || record.field_state[field] === "UNKNOWN" || !Array.isArray(value)) return [];
+  return value.map((item) => {
+    if (typeof item === "number" && Number.isFinite(item)) return item;
+    if (!item || typeof item !== "object") return null;
+    const key = keys.find((candidate) => typeof item[candidate] === "number" && Number.isFinite(item[candidate]));
+    return key ? item[key] : null;
+  }).filter((item) => item != null);
+}
+
+function overviewMetricWaitLabel(record) {
+  if (!record || record.field_state.oldest_wait === "UNKNOWN") return "Oldest wait —";
+  const wait = record.needs_attention.oldest_wait;
+  if (wait == null) return "No accepted wait";
+  if (typeof wait === "string") return "Oldest wait · " + wait;
+  const reason = wait.reason || wait.label || wait.state || "Waiting";
+  const release = wait.release_condition ? " · " + wait.release_condition : "";
+  return "Oldest wait · " + reason + release;
+}
+
+function overviewMetricPresentation(record) {
+  const activeProjects = overviewMetricNumber(record, "active_projects", record?.active_work?.active_projects);
+  const activeLanes = overviewMetricNumber(record, "active_lanes", record?.active_work?.active_lanes);
+  const actionable = overviewMetricNumber(record, "actionable_items", record?.needs_attention?.actionable_items);
+  const milestones = overviewMetricNumber(record, "admitted_milestones", record?.verified_progress?.admitted_milestones);
+  const proof = overviewMetricNumber(record, "admitted_proof", record?.verified_progress?.admitted_proof);
+  const completed = overviewMetricNumber(record, "completed", record?.verified_progress?.completed);
+  const total = overviewMetricNumber(record, "total", record?.verified_progress?.total);
+  const percent = overviewMetricNumber(record, "percent", record?.verified_progress?.percent);
+  const used = overviewMetricNumber(record, "used_tokens", record?.usage?.used_tokens);
+  const remaining = overviewMetricNumber(record, "remaining_tokens", record?.usage?.remaining_tokens);
+  const window = record?.field_state.window === "UNKNOWN" ? null : String(record?.usage?.window || "").trim();
+  const coverage = record?.field_state.coverage === "UNKNOWN" ? null : String(record?.usage?.coverage || "").trim();
+  return {
+    binding: record ? "Scope " + record.accepted_scope_id + " · cursor " + (typeof record.accepted_cursor === "object" ? JSON.stringify(record.accepted_cursor) : record.accepted_cursor) : "Metrics unavailable · UNKNOWN",
+    active: { state: overviewMetricCombinedState(record, ["active_projects", "active_lanes"]), value: activeProjects == null && activeLanes == null ? "—" : compactMetricNumber(activeProjects) + " / " + compactMetricNumber(activeLanes), note: compactMetricNumber(activeProjects) + " projects · " + compactMetricNumber(activeLanes) + " lanes" },
+    attention: { state: overviewMetricCombinedState(record, ["actionable_items", "oldest_wait"]), value: compactMetricNumber(actionable), note: overviewMetricWaitLabel(record) },
+    progress: { state: overviewMetricCombinedState(record, ["admitted_milestones", "admitted_proof", "completed", "total", "percent", "trend"]), value: percent != null ? compactMetricNumber(percent) + "%" : completed != null || total != null ? compactMetricNumber(completed) + " / " + compactMetricNumber(total) : "—", note: compactMetricNumber(milestones) + " milestones · " + compactMetricNumber(proof) + " proof", series: overviewMetricSeries(record, "trend", record?.verified_progress?.trend, ["value", "percent", "admitted_scope", "completed"]) },
+    usage: { state: overviewMetricCombinedState(record, ["window", "used_tokens", "remaining_tokens", "burn_rate_series", "coverage"]), value: used == null ? "—" : compactMetricNumber(used) + " used", note: compactMetricNumber(remaining) + " remaining" + (window ? " · " + window : "") + (coverage ? " · " + coverage : ""), series: overviewMetricSeries(record, "burn_rate_series", record?.usage?.burn_rate_series, ["value", "tokens_per_minute", "burn_rate", "tokens"]) },
+  };
+}
+
+function renderOverviewMetric(name, presentation) {
+  const value = $("#metric-" + name + "-value");
+  const status = $("#metric-" + name + "-state");
+  value.textContent = presentation.value;
+  value.setAttribute("aria-label", presentation.value === "—" ? "UNKNOWN" : presentation.value);
+  status.textContent = presentation.state;
+  status.className = "is-" + presentation.state.toLowerCase();
+  $("#metric-" + name + "-note").textContent = presentation.note;
+}
+
+function renderOverviewMetrics() {
+  const record = overviewMetricsProjectionValue(state.overview?.overview_metrics, overviewMetricsScopeId());
+  const presentation = overviewMetricPresentation(record);
+  $("#overview-metrics-binding").textContent = presentation.binding;
+  renderOverviewMetric("active", presentation.active);
+  renderOverviewMetric("attention", presentation.attention);
+  renderOverviewMetric("progress", presentation.progress);
+  renderOverviewMetric("usage", presentation.usage);
+  drawLine($("#metric-progress-trend"), presentation.progress.series || [], "#4cda85");
+  drawLine($("#metric-usage-trend"), presentation.usage.series || [], "#4da8ff");
+  $("#metric-progress-trend").setAttribute("aria-label", presentation.progress.series?.length ? "Accepted verified progress trend" : "Verified progress trend unavailable");
+  $("#metric-usage-trend").setAttribute("aria-label", presentation.usage.series?.length ? "Accepted usage burn rate" : "Usage burn rate unavailable");
 }
 
 function yieldChartMarkup(item) {
@@ -1707,18 +1794,6 @@ function renderProjectProgressFeed() {
   }).join("") : '<li class="empty-state">No material project updates yet.</li>';
 }
 
-function renderHealth(nodes, stateSelector, noteSelector) {
-  const lanes = nodes.filter((node) => !isSubagent(node));
-  const attention = lanes.filter(needsAttention);
-  $(stateSelector).textContent = attention.length ? 'Needs attention' : (lanes.length ? 'On track' : 'Waiting for work');
-  $(stateSelector).className = attention.length ? 'risk-text' : 'healthy-text';
-  $(noteSelector).textContent = attention.length ? String(attention.length) + ' visible lane' + (attention.length === 1 ? ' needs attention' : 's need attention') : (lanes.length ? String(lanes.length) + ' visible lanes without an attention signal' : 'No visible lanes');
-}
-
-function renderOverviewHealth(nodes) {
-  renderHealth(nodes, "#overview-monitoring-health-state", "#overview-monitoring-health-note");
-}
-
 function renderOverviewProjectCards(nodes) {
   const scopeAvailable = !currentWorkScopeUnavailable();
   const cards = overviewCards(nodes);
@@ -1739,7 +1814,10 @@ function renderOverviewProjectCards(nodes) {
     const ringClass = needsAttention(primary) ? "is-attention" : (statusLabel(primary || {})[1] || "is-pending");
     const subagents = card.ctrlId ? subagentDescendants(card.ctrlId, tree) : [];
     const subagentDisclosure = subagents.length ? '<details class="overview-subagents" data-overview-subagents="' + escapeHTML(card.ctrlId) + '"><summary>Subagents <span>' + subagents.length + '</span></summary><ul>' + subagents.map((node) => '<li><strong>' + escapeHTML(node.artifact || node.title || node.id) + '</strong><span>' + escapeHTML(statusLabel(node)[0]) + '</span></li>').join('') + '</ul></details>' : '<span class="overview-subagent-empty">No subagents</span>';
-    return '<article class="overview-project-card panel"><div class="overview-progress-ring ' + ringClass + '" style="--progress:' + (progress.percent == null ? 0 : progress.percent) + '%" aria-label="' + escapeHTML(progress.display + ' receipt-backed progress · ' + progress.freshness) + '"><strong>' + escapeHTML(progress.display) + '</strong><span>' + escapeHTML(progress.freshness) + '</span></div><div class="overview-project-main"><p class="eyebrow">' + escapeHTML(stateLabel) + '</p><h3>' + escapeHTML(card.label) + '</h3><p>' + escapeHTML(current?.artifact || "No current task observed") + '</p></div><dl class="overview-project-facts"><div><dt>Current work</dt><dd>' + escapeHTML(current?.artifact || "None observed") + '</dd></div><div><dt>Latest receipt</dt><dd>' + escapeHTML(receipt?.caption || receipt?.kind || "None received") + '</dd></div><div><dt>Blocker</dt><dd class="' + (blocker ? 'risk-text' : '') + '">' + escapeHTML(blocker?.artifact || "None observed") + '</dd></div></dl><div class="overview-yield"><span>Verified yield ' + yieldWarnings(efficiency) + '</span><strong>' + escapeHTML(yieldValue(efficiency)) + '</strong>' + miniSparkline(yieldSeries(efficiency), "Verified yield trend for " + card.label) + '<small>' + escapeHTML(yieldHealth(efficiency)) + '</small></div><div class="overview-project-subagents">' + subagentDisclosure + '</div></article>';
+    const progressDisplay = progress.display === "Unmeasured" ? "—" : progress.display;
+    const progressFreshness = progress.freshness === "Unmeasured" ? "UNKNOWN" : progress.freshness;
+    const efficiencyHealth = yieldHealth(efficiency) === "Unmeasured" ? "UNKNOWN" : yieldHealth(efficiency);
+    return '<article class="overview-project-card panel"><div class="overview-progress-ring ' + ringClass + '" style="--progress:' + (progress.percent == null ? 0 : progress.percent) + '%" aria-label="' + escapeHTML(progressDisplay + ' receipt-backed progress · ' + progressFreshness) + '"><strong>' + escapeHTML(progressDisplay) + '</strong><span>' + escapeHTML(progressFreshness) + '</span></div><div class="overview-project-main"><p class="eyebrow">' + escapeHTML(stateLabel) + '</p><h3>' + escapeHTML(card.label) + '</h3><p>' + escapeHTML(current?.artifact || "No current task observed") + '</p></div><dl class="overview-project-facts"><div><dt>Current work</dt><dd>' + escapeHTML(current?.artifact || "None observed") + '</dd></div><div><dt>Latest receipt</dt><dd>' + escapeHTML(receipt?.caption || receipt?.kind || "None received") + '</dd></div><div><dt>Blocker</dt><dd class="' + (blocker ? 'risk-text' : '') + '">' + escapeHTML(blocker?.artifact || "None observed") + '</dd></div></dl><div class="overview-yield"><span>Verified yield ' + yieldWarnings(efficiency) + '</span><strong>' + escapeHTML(yieldValue(efficiency)) + '</strong>' + miniSparkline(yieldSeries(efficiency), "Verified yield trend for " + card.label) + '<small>' + escapeHTML(efficiencyHealth) + '</small></div><div class="overview-project-subagents">' + subagentDisclosure + '</div></article>';
   };
   $("#overview-summary").textContent = allProjects
     ? (scopedCards.length ? String(scopedCards.length) + " project scope" + (scopedCards.length === 1 ? "" : "s") : "No classified Current Work")
@@ -1756,13 +1834,11 @@ function renderOverviewProjectCards(nodes) {
 
 function renderOverview() {
   const nodes = scopedNodes();
-  renderVerifiedYieldSummary();
-  renderVerifiedYieldRows();
+  renderOverviewMetrics();
   renderOverviewProjectCards(nodes);
   renderEvidenceGallery(nodes, "#overview-evidence-gallery", "#overview-evidence-note", 4);
   renderUsage();
   renderProjectProgressFeed();
-  renderOverviewHealth(nodes);
   renderProjectDetail();
   renderNotifications();
   if (state.connectionStatus === "live") $("#sync-time").textContent = state.overview?.generated_at ? "Live · " + formatRelative(state.overview.generated_at) : "Live";
@@ -1885,6 +1961,40 @@ function roleSpecializationsMarkup(role) {
   return items.length ? '<ul class="role-specializations">' + items.map((item) => '<li>' + escapeHTML(item) + '</li>').join("") + '</ul>' : '<p class="role-specializations-empty">No specializations.</p>';
 }
 
+function roleSearchBuckets(role) {
+  const texts = (value) => Array.isArray(value) ? value.map((item) => String(item || "").trim()).filter(Boolean) : [];
+  return [
+    { field: "profession", label: "profession", values: [role?.name, role?.id].map((item) => String(item || "").trim()).filter(Boolean) },
+    { field: "specialization", label: "specialization", values: roleSpecializations(role) },
+    { field: "alias", label: "alias or tag", values: [...texts(role?.aliases), ...texts(role?.tags)] },
+    { field: "skills", label: "skill", values: texts(role?.default_skills) },
+    { field: "purpose", label: "purpose", values: [role?.purpose].map((item) => String(item || "").trim()).filter(Boolean) },
+  ];
+}
+
+function roleSearchMatch(role, query, fields) {
+  const needle = String(query || "").trim().toLocaleLowerCase();
+  if (!needle) return { matched: true, label: "" };
+  for (const bucket of roleSearchBuckets(role)) {
+    if (!fields.has(bucket.field)) continue;
+    const value = bucket.values.find((item) => item.toLocaleLowerCase().includes(needle));
+    if (value) return { matched: true, label: "Matched: " + value + " · " + bucket.label };
+  }
+  return { matched: false, label: "" };
+}
+
+function roleFilterRecords(roles, query, types, fields) {
+  return roles.map((role) => ({ role, match: roleSearchMatch(role, query, fields) }))
+    .filter(({ role, match }) => types.has(role.built_in ? "builtin" : "custom") && match.matched);
+}
+
+function roleFilterChipsMarkup(types) {
+  const chips = [];
+  if (types.size === 1 && types.has("builtin")) chips.push('<button type="button" data-role-filter-clear="type">Built-in <span aria-hidden="true">×</span><span class="sr-only">Remove Built-in filter</span></button>');
+  if (types.size === 1 && types.has("custom")) chips.push('<button type="button" data-role-filter-clear="type">Custom <span aria-hidden="true">×</span><span class="sr-only">Remove Custom filter</span></button>');
+  return chips.join("");
+}
+
 function roleAssignments(roleId) {
   return (roleManifestProjection()?.assignments || []).filter((item) => item.role_id === roleId);
 }
@@ -1909,14 +2019,15 @@ function roleTextList(items, empty) {
   return Array.isArray(items) && items.length ? '<ul>' + items.map((item) => '<li>' + escapeHTML(item) + '</li>').join("") + '</ul>' : '<p class="role-specializations-empty">' + escapeHTML(empty) + '</p>';
 }
 
-function roleAccordionMarkup(role) {
+function roleAccordionMarkup(role, match = { label: "" }) {
   const editAllowed = roleCanMutate("ROLE_MANIFEST_REVISE");
-  return '<details class="role-card" data-role-id="' + escapeHTML(role.id) + '"><summary>' + roleAvatar(role) + '<span><strong>' + escapeHTML(role.name) + '</strong><small>' + escapeHTML(roleSourceLabel(role) + " · " + (role.active_version || role.version || "Unknown version")) + '</small></span><svg class="lucide role-disclosure" aria-hidden="true"><use href="#lucide-chevron-right"></use></svg></summary><div class="role-card-body"><p class="role-purpose">' + escapeHTML(role.purpose || "Purpose unavailable.") + '</p><div class="role-card-columns"><section><h3>Owns</h3>' + roleTextList(role.owns, "No owned surface declared.") + '</section><section><h3>Default skills</h3>' + roleTextList(role.default_skills, "No default skills.") + '</section><section><h3>Instructions</h3>' + roleTextList(role.instructions, "No instructions.") + '</section><section><h3>Current owners</h3>' + roleAssignmentsMarkup(role.id) + '</section><section><h3>Specializations</h3>' + roleSpecializationsMarkup(role) + '<small>Metadata only · no authority transfer.</small></section><section><h3>Avatar</h3><code>' + escapeHTML(role.avatar_asset_digest || "Unknown") + '</code></section></div>' + reviewerStancesMarkup(role) + '<footer><p>New assignments use version ' + escapeHTML(role.active_version || role.version || "Unknown") + '.</p><button class="icon-button" data-role-action="edit" data-role-id="' + escapeHTML(role.id) + '" type="button" aria-label="Edit ' + escapeHTML(role.name) + '" title="Edit role"' + (editAllowed ? "" : ' disabled') + '><svg class="lucide" aria-hidden="true"><use href="#lucide-pencil"></use></svg></button></footer></div></details>';
+  return '<details class="role-card" data-role-id="' + escapeHTML(role.id) + '"' + (match.label ? ' open' : '') + '><summary>' + roleAvatar(role) + '<span><strong>' + escapeHTML(role.name) + '</strong><small>' + escapeHTML(roleSourceLabel(role) + " · " + (role.active_version || role.version || "Unknown version")) + '</small></span><svg class="lucide role-disclosure" aria-hidden="true"><use href="#lucide-chevron-right"></use></svg></summary><div class="role-card-body">' + (match.label ? '<p class="role-match">' + escapeHTML(match.label) + '</p>' : '') + '<p class="role-purpose">' + escapeHTML(role.purpose || "Purpose unavailable.") + '</p><div class="role-card-columns"><section><h3>Owns</h3>' + roleTextList(role.owns, "No owned surface declared.") + '</section><section><h3>Default skills</h3>' + roleTextList(role.default_skills, "No default skills.") + '</section><section><h3>Instructions</h3>' + roleTextList(role.instructions, "No instructions.") + '</section><section><h3>Current owners</h3>' + roleAssignmentsMarkup(role.id) + '</section><section><h3>Specializations</h3>' + roleSpecializationsMarkup(role) + '<small>Metadata only · no authority transfer.</small></section><section><h3>Avatar</h3><code>' + escapeHTML(role.avatar_asset_digest || "Unknown") + '</code></section></div>' + reviewerStancesMarkup(role) + '<footer><p>New assignments use version ' + escapeHTML(role.active_version || role.version || "Unknown") + '.</p><button class="icon-button" data-role-action="edit" data-role-id="' + escapeHTML(role.id) + '" type="button" aria-label="Edit ' + escapeHTML(role.name) + '" title="Edit role"' + (editAllowed ? "" : ' disabled') + '><svg class="lucide" aria-hidden="true"><use href="#lucide-pencil"></use></svg></button></footer></div></details>';
 }
 
 function renderRoleLibrary() {
   const projection = roleManifestProjection();
   const roles = roleCurrentRecords(projection);
+  const filtered = roleFilterRecords(roles, state.roleSearch, state.roleTypes, state.roleSearchFields);
   const create = $("#role-create");
   const active = state.agentsTab === "active";
   create.hidden = active;
@@ -1927,13 +2038,14 @@ function renderRoleLibrary() {
     : state.roleManifestStatus === "stale"
       ? "Showing the last received role manifests · refresh failed"
       : state.roleManifestStatus === "current" && projection
-        ? roles.length + " server-owned role manifest" + (roles.length === 1 ? "" : "s")
+        ? (filtered.length === roles.length ? roles.length : filtered.length + " of " + roles.length) + " server-owned role manifest" + (roles.length === 1 ? "" : "s")
         : state.roleManifestStatus === "current"
           ? "Role manifest response was invalid"
           : (state.roleManifestError || "Role manifests unavailable");
   if (state.roleManifestMessage) status += " · " + state.roleManifestMessage;
   $("#role-library-status").textContent = status;
-  $("#role-library-grid").innerHTML = roles.length ? roles.map(roleAccordionMarkup).join("") : '<p class="empty-state">No authoritative role manifests are available.</p>';
+  $("#role-filter-chips").innerHTML = roleFilterChipsMarkup(state.roleTypes);
+  $("#role-library-grid").innerHTML = filtered.length ? filtered.map(({ role, match }) => roleAccordionMarkup(role, match)).join("") : '<p class="empty-state">No roles match these filters. Clear the search or filters to see the server roster.</p>';
 }
 
 function renderAgents() {
@@ -2658,6 +2770,14 @@ document.addEventListener("click", async (event) => {
     $("#agents-tab-" + state.agentsTab)?.focus({ preventScroll: true });
     return;
   }
+  const roleFilterClear = event.target.closest("[data-role-filter-clear]");
+  if (roleFilterClear) {
+    state.roleTypes = new Set(["builtin", "custom"]);
+    $$('[data-role-type]').forEach((input) => { input.checked = true; });
+    renderRoleLibrary();
+    $("#role-search").focus({ preventScroll: true });
+    return;
+  }
   const roleAction = event.target.closest("[data-role-action]");
   if (roleAction) {
     if (roleAction.dataset.roleAction === "edit") openRoleEditor(roleAction.dataset.roleId, roleAction);
@@ -2837,10 +2957,37 @@ $("#role-editor-form").addEventListener("input", () => {
   updateRoleEditorAuthority(!$("#role-field-avatar").value ? "Choose a retained image asset before saving." : "");
 });
 $("#role-editor-form").addEventListener("submit", async (event) => { event.preventDefault(); await submitRoleCommand("save"); });
+$("#role-search").addEventListener("input", (event) => {
+  state.roleSearch = event.target.value;
+  renderRoleLibrary();
+});
+$("#role-filter-reset").addEventListener("click", () => {
+  state.roleSearch = "";
+  state.roleTypes = new Set(["builtin", "custom"]);
+  state.roleSearchFields = new Set(["profession", "specialization", "alias", "skills", "purpose"]);
+  $("#role-search").value = "";
+  $$('[data-role-type],[data-role-search-field]').forEach((input) => { input.checked = true; });
+  renderRoleLibrary();
+  $("#role-search").focus({ preventScroll: true });
+});
 $("#mobile-menu-button").addEventListener("click", () => setMobileDrawer(!$(".app-shell").classList.contains("is-drawer-open"), true));
 $("#drawer-backdrop").addEventListener("click", () => setMobileDrawer(false, true));
 mobileDrawerQuery.addEventListener("change", syncMobileDrawer);
 document.addEventListener('change', async (event) => {
+  if (event.target.matches('[data-role-type]')) {
+    const type = event.target.dataset.roleType;
+    if (event.target.checked) state.roleTypes.add(type);
+    else state.roleTypes.delete(type);
+    renderRoleLibrary();
+    return;
+  }
+  if (event.target.matches('[data-role-search-field]')) {
+    const field = event.target.dataset.roleSearchField;
+    if (event.target.checked) state.roleSearchFields.add(field);
+    else state.roleSearchFields.delete(field);
+    renderRoleLibrary();
+    return;
+  }
   if (event.target.id === 'project-scope-filter') {
     state.projectId = event.target.value || 'all';
     state.ctrlId = '';
