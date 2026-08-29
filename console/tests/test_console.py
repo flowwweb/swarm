@@ -314,6 +314,30 @@ class SwarmConsoleTests(unittest.TestCase):
             connection.execute("UPDATE threads SET agent_role = 'ctrl' WHERE id = 'root'")
             connection.commit()
 
+    def _add_same_project_ctrl(self) -> None:
+        now = 2_000_000_100_000
+        with closing(sqlite3.connect(self.database)) as connection:
+            connection.executemany(
+                "INSERT INTO threads VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                [
+                    (
+                        "other-ctrl", "🐙CTRL - Other", "C:/work/alpha", now // 1000,
+                        now // 1000, now, now, "gpt-5.6-sol", "high", 1, 0, "", "main",
+                        "", "", "ctrl", 0,
+                    ),
+                    (
+                        "other-task", "🔨DEV - Other", "C:/work/alpha", now // 1000,
+                        now // 1000, now, now, "gpt-5.6-luna", "medium", 1, 0, "", "main",
+                        "", "", "", 0,
+                    ),
+                ],
+            )
+            connection.execute(
+                "INSERT INTO thread_spawn_edges VALUES (?,?,?)",
+                ("other-ctrl", "other-task", "open"),
+            )
+            connection.commit()
+
     @staticmethod
     def _notification_event(
         event_id: str, block_id: str, event_kind: str, lifecycle_state: str,
@@ -625,6 +649,134 @@ class SwarmConsoleTests(unittest.TestCase):
         write_rejected.do_POST()
         write_rejected._error.assert_called_once_with(console.HTTPStatus.FORBIDDEN, "invalid console write token")
         app.mark_notifications_seen.assert_not_called()
+
+    def test_run_log_is_ctrl_first_agent_filtered_private_and_pure(self) -> None:
+        self._confirm_root_ctrl()
+        self._add_same_project_ctrl()
+        app = console.App(self.codex_home, self.config)
+        root_event = self._notification_event(
+            "run-root", "run-root-block", "BLOCK_CREATED", "ACTIVE", 10,
+        )
+        root_event["material_update_sentence"] = "PRIVATE_PROMPT_7a secret-token-7a stdout-marker-7a"
+        other_event = self._notification_event(
+            "run-other", "run-other-block", "BLOCK_CREATED", "ACTIVE", 11,
+        )
+        other_event.update(ctrl_id="other-ctrl", task_id="other-task", owner_id="other-owner")
+        self.assertEqual(app.progress_ledger.append(root_event)["status"], "appended")
+        self.assertEqual(app.progress_ledger.append(other_event)["status"], "appended")
+        ledger_before = app.progress_ledger._state.path.read_bytes()
+        with closing(sqlite3.connect(app.store.path)) as connection:
+            store_before = connection.execute("SELECT COUNT(*) FROM store_metadata").fetchone()[0]
+        with mock.patch.object(app.auto_bridge, "run", side_effect=AssertionError("read must not invoke a model")), \
+             mock.patch.object(app.auto_bridge, "reconcile", side_effect=AssertionError("read must not invoke a model")):
+            first = app.run_log("root")
+            replay = app.run_log("root", project_id="project:alpha")
+            task_view = app.run_log("root", project_id="project:alpha", agent_id="task")
+            owner_view = app.run_log("root", project_id="project:alpha", agent_id="owner-task")
+            unknown = app.run_log("root", project_id="project:alpha", agent_id="unknown-agent")
+        self.assertEqual(first, replay)
+        self.assertEqual([item["event_id"] for item in first["items"]], ["run-root"])
+        self.assertEqual(task_view["items"], owner_view["items"])
+        self.assertEqual(unknown["items"], [])
+        item = first["items"][0]
+        self.assertEqual(
+            (item["project_id"], item["ctrl_id"], item["agent_id"], item["summary"]),
+            ("project:alpha", "root", "task", "Work was added."),
+        )
+        serialized = json.dumps(first)
+        for private in ("PRIVATE_PROMPT_7a", "secret-token-7a", "stdout-marker-7a", "provenance", "claim_limit\": \"Source"):
+            self.assertNotIn(private, serialized)
+        self.assertEqual(app.progress_ledger._state.path.read_bytes(), ledger_before)
+        with closing(sqlite3.connect(app.store.path)) as connection:
+            self.assertEqual(connection.execute("SELECT COUNT(*) FROM store_metadata").fetchone()[0], store_before)
+        with self.assertRaisesRegex(console.ConsoleError, "does not belong|observed project"):
+            app.run_log("root", project_id="project:missing")
+        with self.assertRaisesRegex(console.ConsoleError, "observed host CTRL|host-confirmed"):
+            app.run_log("lead", project_id="project:alpha")
+
+    def test_run_log_cursor_is_monotonic_bounded_and_reports_truncation(self) -> None:
+        self._confirm_root_ctrl()
+        app = console.App(self.codex_home, self.config)
+        for index in range(205):
+            self.assertEqual(app.progress_ledger.append(self._notification_event(
+                f"run-{index:03d}", f"run-block-{index:03d}", "BLOCK_CREATED", "ACTIVE", index + 1,
+            ))["status"], "appended")
+        initial = app.run_log("root", project_id="project:alpha")
+        sequences = [item["event_seq"] for item in initial["items"]]
+        self.assertEqual((len(sequences), sequences[0], sequences[-1]), (200, 6, 205))
+        self.assertEqual(sequences, sorted(set(sequences)))
+        self.assertTrue(initial["retention"]["page_truncated"])
+        self.assertEqual(initial["cursor"]["next_event_seq"], 205)
+
+        self.assertEqual(app.progress_ledger.append(self._notification_event(
+            "run-new", "run-block-new", "BLOCK_CREATED", "ACTIVE", 206,
+        ))["status"], "appended")
+        delta = app.run_log("root", project_id="project:alpha", after_cursor=205)
+        self.assertEqual([item["event_id"] for item in delta["items"]], ["run-new"])
+        self.assertEqual(delta["cursor"]["next_event_seq"], 206)
+        self.assertEqual(app.run_log(
+            "root", project_id="project:alpha", after_cursor=206,
+        )["items"], [])
+
+        records, _ = app._strict_run_log_records()
+        with mock.patch.object(app, "_strict_run_log_records", return_value=(records[10:], True)):
+            stale = app.run_log("root", project_id="project:alpha", after_cursor=1)
+        self.assertTrue(stale["retention"]["source_scan_truncated"])
+        self.assertTrue(stale["retention"]["stale_cursor"])
+        self.assertEqual(stale["cursor"]["next_event_seq"], 206)
+        with self.assertRaisesRegex(console.ConsoleError, "newer than"):
+            app.run_log("root", project_id="project:alpha", after_cursor=999)
+
+    def test_run_log_fails_closed_on_corruption_and_route_requires_exact_authorization(self) -> None:
+        self._confirm_root_ctrl()
+        app = console.App(self.codex_home, self.config)
+        app.progress_ledger.append(self._notification_event(
+            "run-one", "run-one-block", "BLOCK_CREATED", "ACTIVE", 1,
+        ))
+        with app.progress_ledger._state.path.open("ab") as handle:
+            handle.write(b"{corrupt\n")
+        with self.assertRaisesRegex(console.ConsoleError, "source Ledger is corrupt"):
+            app.run_log("root", project_id="project:alpha")
+        with self.assertRaisesRegex(console.ConsoleError, "non-negative"):
+            app.run_log("root", project_id="project:alpha", after_cursor=-1)
+
+        routed = console.App(self.codex_home, self.config)
+        routed.run_log = mock.Mock(return_value={"ok": True, "items": []})
+        rejected = self._handler(
+            "127.0.0.1", "127.0.0.1:4788", origin="http://evil.example", token=routed.token,
+        )
+        rejected.server = SimpleNamespace(app=routed)
+        rejected.path = "/api/run-log?ctrl_id=root&project_id=project%3Aalpha"
+        rejected._error = mock.Mock()
+        rejected._json = mock.Mock()
+        rejected.do_GET()
+        rejected._error.assert_called_once_with(
+            console.HTTPStatus.FORBIDDEN, "run log requires local same-origin authorization",
+        )
+        routed.run_log.assert_not_called()
+
+        allowed = self._handler(
+            "127.0.0.1", "127.0.0.1:4788", origin="http://127.0.0.1:4788", token=routed.token,
+        )
+        allowed.server = SimpleNamespace(app=routed)
+        allowed.path = "/api/run-log?ctrl_id=root&project_id=project%3Aalpha&agent_id=task&after_cursor=3"
+        allowed._json = mock.Mock()
+        allowed.do_GET()
+        routed.run_log.assert_called_once_with(
+            "root", project_id="project:alpha", agent_id="task", after_cursor=3,
+        )
+
+        malformed = self._handler(
+            "127.0.0.1", "127.0.0.1:4788", origin="http://127.0.0.1:4788", token=routed.token,
+        )
+        malformed.server = SimpleNamespace(app=routed)
+        malformed.path = "/api/run-log?project_id=project%3Aalpha&extra=1"
+        malformed._error = mock.Mock()
+        malformed._json = mock.Mock()
+        malformed.do_GET()
+        malformed._error.assert_called_once_with(
+            console.HTTPStatus.BAD_REQUEST, "run log requires ctrl_id and bounded filters",
+        )
 
     def test_overview_is_safe_and_hierarchical(self) -> None:
         overview = console.build_overview(self.codex_home, self.config)

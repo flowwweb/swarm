@@ -42,6 +42,7 @@ if str(SWARM_SKILL_ROOT) not in sys.path:
     sys.path.insert(0, str(SWARM_SKILL_ROOT))
 
 from runtime.progress_events import (  # noqa: E402
+    MAX_FEED_SCAN_BYTES,
     MAX_PULSE_BYTES,
     MAX_PULSE_FILES,
     PULSE_ROOT,
@@ -82,6 +83,7 @@ AUTO_PURPOSE = "swarm-auto-continuation"
 NOTIFICATION_SEEN_KEY_PREFIX = "notification_seen_v1"
 NOTIFICATION_UNREAD_LIMIT = 128
 NOTIFICATION_RECENT_SEEN_LIMIT = 64
+RUN_LOG_LIMIT = 200
 TOKEN_RETENTION_DAYS = 30
 TOKEN_SOURCE_SQLITE = "host_reported_cumulative_delta"
 TOKEN_SOURCE_CODEX_JSONL = "codex_jsonl_token_count"
@@ -205,6 +207,24 @@ NOTIFICATION_RULES: dict[str, tuple[str, bool, str, str]] = {
     "MILESTONE_COMPLETED": ("info", False, "projects", "A whole-milestone acceptance receipt has been admitted."),
     "REVIEW_REQUESTED": ("warning", True, "review", "Independent review is required for this artifact."),
     "REVIEW_COMPLETED": ("info", False, "review", "An independent-review receipt has been admitted."),
+}
+
+RUN_LOG_SUMMARIES: dict[str, str] = {
+    "BLOCK_CREATED": "Work was added.",
+    "SCOPE_REVISED": "Scope was revised.",
+    "STATE_CHANGED": "Work state changed.",
+    "CURRENT_ACTION_CHANGED": "The current action changed.",
+    "PROOF_ADMITTED": "Proof was admitted.",
+    "PROOF_INVALIDATED": "Proof was invalidated.",
+    "ETA_CHANGED": "The delivery estimate changed.",
+    "WAIT_CHANGED": "A wait condition changed.",
+    "REWORK_REQUESTED": "Rework was requested.",
+    "USER_STEERING_ACCEPTED": "User direction was admitted.",
+    "LIVENESS_STALE": "Work needs attention.",
+    "LIVENESS_RECOVERED": "Work resumed.",
+    "RETRY_STARTED": "A recovery attempt started.",
+    "TAKEOVER_STARTED": "Custody transfer started.",
+    "ACCEPTED": "Outcome accepted.",
 }
 
 
@@ -6301,6 +6321,182 @@ class App:
         except ProgressEventError as error:
             raise ConsoleError(str(error)) from error
 
+    def _strict_run_log_records(self) -> tuple[list[dict[str, Any]], bool]:
+        """Read one stable, validated Ledger tail; skipped/corrupt records fail closed."""
+        path = self.progress_ledger._state.path
+
+        def window() -> tuple[int, bytes]:
+            if not path.exists():
+                return 0, b""
+            size = path.stat().st_size
+            start = max(0, size - MAX_FEED_SCAN_BYTES)
+            with path.open("rb") as handle:
+                handle.seek(start)
+                return start, handle.read(MAX_FEED_SCAN_BYTES)
+
+        before = window()
+        records, truncated = self.progress_ledger._bounded_tail_records()
+        after = window()
+        if before != after:
+            raise ConsoleError("run log source Ledger changed during read; retry")
+        start, payload = before
+        lines = payload.splitlines()
+        if start and lines:
+            lines = lines[1:]
+        if len(lines) != len(records):
+            raise ConsoleError("run log source Ledger is corrupt")
+        sequences: list[int] = []
+        for line, record in zip(lines, records, strict=True):
+            try:
+                raw = json.loads(line)
+                sequence = raw["event_seq"]
+                if (
+                    not isinstance(sequence, int) or isinstance(sequence, bool) or sequence <= 0
+                    or sequence != record["event_seq"]
+                    or raw["event_digest"] != record["event_digest"]
+                ):
+                    raise ValueError
+            except (json.JSONDecodeError, KeyError, TypeError, ValueError) as error:
+                raise ConsoleError("run log source Ledger is corrupt") from error
+            sequences.append(sequence)
+        if sequences and sequences != list(range(sequences[0], sequences[-1] + 1)):
+            raise ConsoleError("run log source Ledger sequence is not contiguous")
+        return records, truncated
+
+    def run_log(
+        self,
+        ctrl_id: str,
+        *,
+        project_id: str | None = None,
+        agent_id: str | None = None,
+        after_cursor: int = 0,
+    ) -> dict[str, Any]:
+        """Project a bounded user-relevant run log from retained typed Ledger events."""
+        ctrl_id = _auto_id(ctrl_id, "ctrl_id")
+        project_id = _auto_id(project_id, "project_id") if project_id is not None else None
+        agent_id = _auto_id(agent_id, "agent_id") if agent_id is not None else None
+        if not isinstance(after_cursor, int) or isinstance(after_cursor, bool) or after_cursor < 0:
+            raise ConsoleError("after_cursor must be a non-negative Ledger sequence")
+
+        overview, nodes, _, scope = self._observed_scope(project_id=project_id, ctrl_id=ctrl_id)
+        navigation = self._navigation_payload(overview)
+        controller = next((item for item in navigation["controllers"] if item["id"] == ctrl_id), None)
+        resolved_project_id = str(scope.get("project_id") or "")
+        project = next(
+            (item for item in navigation["projects"] if item["id"] == resolved_project_id), None,
+        )
+        if (
+            controller is None or controller.get("project_id") != resolved_project_id
+            or controller.get("controller_classification") != "swarm_ctrl"
+            or controller.get("controller_classification_source") != "host_threads.agent_role"
+            or controller.get("visibility") != "visible"
+            or project is None or ctrl_id not in project.get("ctrl_ids", [])
+        ):
+            raise ConsoleError("run log requires a current host-confirmed CTRL/project binding")
+
+        node_by_id = {str(node["id"]): node for node in nodes}
+        records, source_truncated = self._strict_run_log_records()
+        if records:
+            oldest_sequence = int(records[0]["event_seq"])
+            newest_sequence = int(records[-1]["event_seq"])
+            if after_cursor > newest_sequence:
+                raise ConsoleError("after_cursor is newer than the retained Ledger")
+        else:
+            oldest_sequence = newest_sequence = 0
+            if after_cursor:
+                raise ConsoleError("after_cursor is outside the retained Ledger")
+        stale_cursor = bool(source_truncated and after_cursor and after_cursor < oldest_sequence)
+
+        candidates: list[dict[str, Any]] = []
+        identities: dict[str, str] = {}
+        for record in records:
+            event = record.get("_event")
+            if event is None or event.ctrl_id != ctrl_id:
+                continue
+            if event.project_id != resolved_project_id:
+                continue
+            if agent_id is not None and agent_id not in {event.task_id, event.owner_id}:
+                continue
+            kind = event.event_kind.value
+            summary = RUN_LOG_SUMMARIES.get(kind)
+            if summary is None:
+                continue
+            event_digest = str(record["event_digest"])
+            prior_digest = identities.setdefault(event.event_id, event_digest)
+            if prior_digest != event_digest:
+                raise ConsoleError("run log source Ledger contains a conflicting event identity")
+            node = node_by_id.get(event.task_id, {})
+            evidence_refs = list(dict.fromkeys([
+                event.event_id,
+                event_digest,
+                *event.proof_receipt_ids,
+                *event.weight_basis_receipt_ids,
+                *event.invalidated_receipt_ids,
+                *event.steering_receipt_ids,
+                *([event.dispatch_receipt_id] if event.dispatch_receipt_id else []),
+                *([event.completion_receipt_id] if event.completion_receipt_id else []),
+                *event.cost_receipt_ids,
+                *event.release_receipt_ids,
+            ]))[:12]
+            candidates.append({
+                "event_id": event.event_id,
+                "event_digest": event_digest,
+                "event_seq": int(record["event_seq"]),
+                "observed_at_ms": event.observed_at_ms,
+                "kind": kind,
+                "status": event.lifecycle_state.value,
+                "project_id": resolved_project_id,
+                "ctrl_id": ctrl_id,
+                "task_id": event.task_id,
+                "owner_id": event.owner_id,
+                "agent_id": event.task_id,
+                "structural_role": node.get("role"),
+                "profession": node.get("worker_role"),
+                "summary": summary,
+                "evidence_refs": evidence_refs,
+                "action_target": {
+                    "view": "review" if kind in {"PROOF_ADMITTED", "PROOF_INVALIDATED"} else "projects",
+                    "project_id": resolved_project_id,
+                    "ctrl_id": ctrl_id,
+                    "task_id": event.task_id,
+                    "subject_id": event.block_id,
+                },
+            })
+        candidates.sort(key=lambda item: (item["event_seq"], item["event_id"]))
+        if not after_cursor or stale_cursor:
+            page_truncated = len(candidates) > RUN_LOG_LIMIT
+            items = candidates[-RUN_LOG_LIMIT:]
+            next_cursor = newest_sequence
+        else:
+            pending = [item for item in candidates if item["event_seq"] > after_cursor]
+            page_truncated = len(pending) > RUN_LOG_LIMIT
+            items = pending[:RUN_LOG_LIMIT]
+            next_cursor = items[-1]["event_seq"] if page_truncated and items else newest_sequence
+        return {
+            "ok": True,
+            "schema_version": 1,
+            "scope": {
+                "ctrl_id": ctrl_id,
+                "project_id": resolved_project_id,
+                "agent_id": agent_id,
+            },
+            "items": items,
+            "cursor": {"after_event_seq": after_cursor, "next_event_seq": next_cursor},
+            "retention": {
+                "limit": RUN_LOG_LIMIT,
+                "returned": len(items),
+                "page_truncated": page_truncated,
+                "source_scan_truncated": source_truncated,
+                "stale_cursor": stale_cursor,
+                "oldest_retained_event_seq": oldest_sequence or None,
+            },
+            "source": "canonical_ledger_typed_material_events",
+            "claim_limit": (
+                "This is a bounded read-only projection of retained typed Ledger events; it excludes raw prompts, "
+                "model reasoning, terminal output, secrets, and non-material activity."
+            ),
+        }
+
     @staticmethod
     def _notification_principal() -> str:
         return f"local:{INSTANCE_ID}"
@@ -6990,6 +7186,28 @@ class Handler(BaseHTTPRequestHandler):
                 self._json(
                     HTTPStatus.OK,
                     self.server.app.notification_feed(query["ctrl_id"], query["project_id"]),
+                )
+                return
+            if path == "/api/run-log":
+                if not self._authorized_write():
+                    self._error(HTTPStatus.FORBIDDEN, "run log requires local same-origin authorization")
+                    return
+                allowed = {"ctrl_id", "project_id", "agent_id", "after_cursor"}
+                if "ctrl_id" not in query or not set(query).issubset(allowed):
+                    self._error(HTTPStatus.BAD_REQUEST, "run log requires ctrl_id and bounded filters")
+                    return
+                try:
+                    after_cursor = int(query.get("after_cursor", "0"))
+                except ValueError as exc:
+                    raise ConsoleError("after_cursor must be a non-negative Ledger sequence") from exc
+                self._json(
+                    HTTPStatus.OK,
+                    self.server.app.run_log(
+                        query["ctrl_id"],
+                        project_id=query.get("project_id"),
+                        agent_id=query.get("agent_id"),
+                        after_cursor=after_cursor,
+                    ),
                 )
                 return
             if path == "/api/overview":
