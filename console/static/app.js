@@ -1953,7 +1953,7 @@ function roleCanMutate(command) {
 }
 
 function roleDisplayName(role) {
-  return String(role?.id || "").toLowerCase() === "dev" ? "Developer" : (role?.name || role?.id || "Unknown role");
+  return ["dev", "developer"].includes(String(role?.id || "").toLowerCase()) ? "Developer" : (role?.name || role?.id || "Unknown role");
 }
 
 function roleAvatar(role) {
