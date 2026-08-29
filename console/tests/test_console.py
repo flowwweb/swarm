@@ -1494,6 +1494,47 @@ class SwarmConsoleTests(unittest.TestCase):
         self.assertNotIn("closed-root", project["ctrl_ids"])
         self.assertNotIn("ordinary-root", project["ctrl_ids"])
 
+    def test_structural_ctrl_rejects_conflicting_parentage_and_subagent_roots(self) -> None:
+        now = 2_000_000_000_000
+        self._add_host_project("project:conflict", "conflict", "C:/work/conflict")
+        connection = sqlite3.connect(self.database)
+        rows = [
+            ("root-a", "private", "", ""),
+            ("root-b", "private", "", ""),
+            ("shared-child", "private", "subagent", ""),
+            ("status-root", "private", "", ""),
+            ("status-child", "private", "subagent", ""),
+            ("nested-parent", "private", "subagent", ""),
+            ("nested-child", "private", "subagent", ""),
+        ]
+        connection.executemany(
+            "INSERT INTO threads VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            [
+                (thread_id, title, "C:/work/conflict", now // 1000, now // 1000, now, now, "gpt-5.6-sol", "high", 1, 0, "", "main", source, "", role, 0)
+                for thread_id, title, source, role in rows
+            ],
+        )
+        connection.executemany(
+            "INSERT INTO thread_spawn_edges VALUES (?,?,?)",
+            [
+                ("root-a", "shared-child", "open"),
+                ("root-b", "shared-child", "open"),
+                ("status-root", "status-child", "open"),
+                ("status-root", "status-child", "closed"),
+                ("nested-parent", "nested-child", "open"),
+            ],
+        )
+        connection.commit()
+        connection.close()
+
+        navigation = console.App._navigation_payload(console.build_overview(self.codex_home, self.config))
+        controllers = {item["id"]: item for item in navigation["controllers"]}
+        for controller_id in ("root-a", "root-b", "status-root", "nested-parent"):
+            if controller_id in controllers:
+                self.assertEqual(controllers[controller_id]["controller_classification"], "unavailable")
+        project = next(item for item in navigation["projects"] if item["id"] == "project:conflict")
+        self.assertEqual(project["ctrl_ids"], [])
+
     def test_projects_require_canonical_host_identity_and_preserve_unbound_tasks(self) -> None:
         now = 2_000_000_000_000
         self._add_host_project("project:real-hyphen", "real-project-with-hyphens", "C:/saved/real-project")

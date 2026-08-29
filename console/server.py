@@ -4746,11 +4746,24 @@ def build_overview(codex_home: Path, config_path: Path) -> dict[str, Any]:
             )
         )
     }
-    parent_by_child = {edge["child_thread_id"]: edge["parent_thread_id"] for edge in edge_rows}
-    edge_status = {edge["child_thread_id"]: edge["status"] for edge in edge_rows}
+    parents_by_child: dict[str, set[str]] = {}
+    statuses_by_child: dict[str, set[str]] = {}
     raw_children: dict[str, list[str]] = {}
     for edge in edge_rows:
-        raw_children.setdefault(edge["parent_thread_id"], []).append(edge["child_thread_id"])
+        parent_id = str(edge["parent_thread_id"])
+        child_id = str(edge["child_thread_id"])
+        parents_by_child.setdefault(child_id, set()).add(parent_id)
+        statuses_by_child.setdefault(child_id, set()).add(str(edge["status"] or "").strip().casefold())
+        raw_children.setdefault(parent_id, []).append(child_id)
+    parent_by_child = {
+        child_id: next(iter(parent_ids))
+        for child_id, parent_ids in parents_by_child.items()
+        if len(parent_ids) == 1 and len(statuses_by_child.get(child_id, ())) == 1
+    }
+    edge_status = {
+        child_id: next(iter(statuses_by_child[child_id]))
+        for child_id in parent_by_child
+    }
     project_bindings = _thread_project_bindings(
         all_rows, parent_by_child, host_project_catalog, project_roots
     )
@@ -4792,15 +4805,19 @@ def build_overview(codex_home: Path, config_path: Path) -> dict[str, Any]:
         if parent in fresh_ids
         and parent not in parent_by_child
         and not bool(all_rows[parent]["archived"])
+        and str(all_rows[parent]["thread_source"] or "").strip().casefold()
+        not in {"subagent", "internal_subagent"}
         and parent in project_bindings
         and any(
             child in fresh_ids
+            and parents_by_child.get(child) == {parent}
+            and statuses_by_child.get(child) == {"open"}
             and edge_status.get(child) == "open"
             and not bool(all_rows[child]["archived"])
             and str(all_rows[child]["thread_source"] or "").strip().casefold()
             in {"subagent", "internal_subagent"}
             and project_bindings.get(child, {}).get("id") == project_bindings[parent]["id"]
-            for child in child_ids
+            for child in set(child_ids)
             if child in all_rows
         )
     }
