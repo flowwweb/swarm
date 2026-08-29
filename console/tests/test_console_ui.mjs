@@ -622,6 +622,7 @@ assert.match(app, /api\("\/api\/overview", \{ timeoutMs: 15_000 \}\)/);
 assert.match(indexHtml, /id="data-status-title">Connecting</);
 assert.match(indexHtml, /id="data-status-note">Waiting for data</);
 assert.doesNotMatch(indexHtml, /Projects are up to date|<strong>Connected<\/strong>/);
+assert.match(app, /active \? \(group\?\.label \|\| "Project"\) : "Overview"/);
 assert.match(app, /setDataStatus\("current", state\.overview\?\.generated_at\)/);
 assert.match(app, /setDataStatus\(state\.overview \? "stale" : "unavailable"/);
 assert.match(app, /Project data request timed out/);

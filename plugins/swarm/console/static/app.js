@@ -1667,7 +1667,7 @@ function renderProjectDetail() {
   $("#project-detail").hidden = !active;
   const group = projectGroups().find((item) => item.id === projectId);
   if (state.view === "overview") {
-    $("#view-title").textContent = active ? (group?.label || "Project") : "Projects";
+    $("#view-title").textContent = active ? (group?.label || "Project") : "Overview";
     $("#view-subtitle").textContent = active ? "Project progress, proof, ownership, and ledger." : "Portfolio progress and project scope.";
   }
   if (!active) return;
