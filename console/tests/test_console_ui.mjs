@@ -87,25 +87,37 @@ assert.match(indexHtml, /id="profile"[^>]*><svg[\s\S]*?<use href="#lucide-circle
 assert.doesNotMatch(indexHtml, /id="profile"[^>]*>[\s\S]*?<span>Profile<\/span>/);
 assert.match(css, /\.profile-button \{[^}]*width:40px;[^}]*height:40px;[^}]*border-radius:50%/);
 assert.match(indexHtml, /id="onboarding-dialog"[^>]*aria-labelledby="onboarding-dialog-title"[^>]*aria-describedby="onboarding-step-status"/);
-assert.match(indexHtml, /id="onboarding-step-status" aria-live="polite">Welcome\. Step 1 of 3\.<\/p>/);
+assert.match(indexHtml, /id="onboarding-step-status" aria-live="polite">Welcome\. Step 1 of 5\.<\/p>/);
 const onboardingWithoutNonvisualStatus = indexHtml.replace(/<p class="sr-only" id="onboarding-step-status"[\s\S]*?<\/p>/, "");
-assert.doesNotMatch(onboardingWithoutNonvisualStatus, /Step [123] of 3/i);
-assert.equal((indexHtml.match(/data-onboarding-step=/g) || []).length, 3);
+assert.doesNotMatch(onboardingWithoutNonvisualStatus, /Step [1-5] of 5/i);
+assert.equal((indexHtml.match(/data-onboarding-step=/g) || []).length, 5);
 assert.match(indexHtml, /data-onboarding-step="0"[^>]*aria-label="Show welcome"[^>]*aria-controls="onboarding-panel-1"[^>]*aria-selected="true"[^>]*aria-current="step"/);
 for (const control of ["onboarding-close", "onboarding-skip", "onboarding-primary"]) assert.match(indexHtml, new RegExp(`id="${control}"[^>]*type="button"`));
+assert.match(indexHtml, /SWARM coordinates focused roles, clear ownership, and proof you can review\./);
+assert.match(css, /\.onboarding-dialog \{ width:min\(1120px,calc\(100vw - 48px\)\); height:min\(760px,calc\(100dvh - 48px\)\);/);
+assert.match(css, /\.onboarding-shell \{[^}]*padding:clamp\(18px,2\.6vw,32px\);/);
+assert.match(css, /\.onboarding-mascot \{ width:clamp\(144px,17vw,196px\);/);
+assert.match(css, /\.onboarding-actions \{[^}]*display:grid;[^}]*grid-template-columns:minmax\(44px,1fr\) minmax\(220px,auto\) minmax\(44px,1fr\);/);
+assert.match(css, /\.onboarding-actions \.onboarding-skip \{ grid-column:2; grid-row:2;[^}]*\}/);
+assert.match(css, /\.onboarding-actions \.primary-action \{ grid-column:2; grid-row:1;[^}]*\}/);
 assert.match(indexHtml, /id="onboarding-close"[^>]*aria-label="Close onboarding"/);
 assert.match(indexHtml, /class="onboarding-mascot" src="\/assets\/swarm-mascot-512\.png" width="512" height="512" alt="" aria-hidden="true"/);
 assert.match(indexHtml, /<link rel="icon" type="image\/png" sizes="64x64" href="\/swarm-icon-64\.png"/);
 assert.doesNotMatch(indexHtml, /swarm-favicon\.svg|<div class="onboarding-mascot"/);
-assert.match(indexHtml, /<h2>One outcome\. The right tentacles\.<\/h2>/);
-assert.match(indexHtml, /CTRL turns your request into owned lanes\. LEADs coordinate; DOERs change one bounded surface\./);
-assert.match(indexHtml, /class="onboarding-topology" aria-hidden="true"/);
-assert.match(indexHtml, /CTRL owns the outcome and branches into two independent LEAD lanes\./);
-assert.match(indexHtml, /<h2>Progress means proof\.<\/h2>/);
-assert.match(indexHtml, /Source, tests, browser, package, and live state are separate gates—missing proof stays Unverified\./);
-assert.match(indexHtml, /class="onboarding-evidence" aria-hidden="true"/);
-for (const gate of ["Source", "Tests", "Review", "Package", "Live"]) assert.match(indexHtml, new RegExp(`<b>${gate}</b>`));
-assert.match(indexHtml, /A checked earlier gate does not imply a later gate\./);
+assert.match(indexHtml, /<h2>One prompt\. A coordinated team\.<\/h2>/);
+assert.match(indexHtml, /Prompt[\s\S]*?CTRL[\s\S]*?Designer[\s\S]*?Developer[\s\S]*?Reviewer/);
+assert.match(indexHtml, /data-onboarding-visual-gate="step-2-selection"/);
+assert.match(css, /@media \(max-width: 620px\)[\s\S]*?\.onboarding-flow \{[^}]*grid-template-areas:"prompt arrow ctrl" "roles roles roles"/);
+assert.match(css, /\.onboarding-flow-roles b \{[^}]*min-height:44px;[^}]*font-size:9px/);
+assert.match(indexHtml, /<h2>A role for every kind of work\.<\/h2>/);
+for (const role of ["Developer", "Designer", "Architect", "Security"]) assert.match(indexHtml, new RegExp(`<strong>${role}</strong>`));
+assert.match(indexHtml, /CTRL brings in the right mix for your prompt\./);
+assert.match(indexHtml, /data-role-media-state="awaiting-admitted-registry"/);
+assert.doesNotMatch(indexHtml.match(/class="onboarding-role-examples"[\s\S]*?<\/div>/)?.[0] || "", /<svg|lucide/);
+assert.match(indexHtml, /<h2>Your project becomes a shared map\.<\/h2>/);
+assert.match(indexHtml, /Project manifest[\s\S]*?Screens &amp; designs[\s\S]*?Flow map[\s\S]*?Tables[\s\S]*?Agent-readable data/);
+assert.match(indexHtml, /id="onboarding-panel-5"[\s\S]*?<h2>Choose how SWARM works\.<\/h2>[\s\S]*?id="onboarding-configuration"/);
+assert.doesNotMatch(indexHtml, /class="onboarding-(topology|evidence)"/);
 assert.equal((indexHtml.match(/class="onboarding-mascot"/g) || []).length, 1);
 assert.match(app, /const ONBOARDING_STEPS = \[/);
 assert.match(app, /function renderOnboarding\(\)/);
@@ -115,14 +127,28 @@ assert.match(app, /panel\.hidden = !selected/);
 assert.match(app, /function setOnboardingStep\(step, focusDot = false\)/);
 assert.match(app, /state\.onboardingStep === ONBOARDING_STEPS\.length - 1/);
 assert.match(app, /state\.onboardingTrigger\?\.focus/);
-assert.match(app, /const ONBOARDING_PRESENTATION_KEY = "swarm\.onboarding\.v1\.seen"/);
+assert.match(app, /const ONBOARDING_PRESENTATION_KEY = "swarm\.onboarding\.v2\.seen"/);
+assert.match(app, /\{ name: "Configuration", primary: "Start using SWARM" \}/);
+assert.match(app, /function onboardingConfigurationMarkup\(\)/);
+assert.match(app, /function onboardingControlIdentity\(element\)/);
+assert.match(app, /function onboardingControlForIdentity\(root, identity\)/);
+assert.match(app, /function saveOnboardingConfig\(key, value\)/);
+assert.match(app, /state\.onboardingConfigPending\.set\(key, \{ value \}\)/);
+assert.match(app, /state\.onboardingConfigFailures\.set\(key, \{ value, error:/);
+assert.match(app, /if \(state\.onboardingStep === ONBOARDING_STEPS\.length - 1 && onboardingConfigBlocked\(\)\) return false/);
+assert.match(app, /\$\("#onboarding-primary"\)\.disabled = blocked/);
+assert.match(app, /data-onboarding-control="retry-config">Retry/);
+assert.match(app, /Task lifetime and handoff/);
+assert.match(app, /Use ChatGPT for eligible work/);
+assert.match(app, /Unlimited is available only when the server projects it/);
+assert.doesNotMatch(app, /artifact-13|config-usage-first/i);
 assert.match(app, /function openOnboarding\(force = false, trigger = null\)/);
 assert.match(app, /\(!force && \(state\.onboardingShown \|\| onboardingSeen\(\)\)\)/);
 assert.match(app, /data-setting-action="replay-tour" type="button">Replay tour<\/button>/);
 assert.match(app, /if \(action === 'replay-tour'\)[\s\S]*openOnboarding\(true, event\.target\.closest\('\[data-setting-action\]'\)\)/);
 const onboardingPersistenceStart = app.indexOf("function onboardingSeen");
 const onboardingPersistenceEnd = app.indexOf("\nfunction openOnboarding", onboardingPersistenceStart);
-const onboardingPersistence = vm.runInNewContext(`(() => { const ONBOARDING_PRESENTATION_KEY = "swarm.onboarding.v1.seen"; ${app.slice(onboardingPersistenceStart, onboardingPersistenceEnd)}; return { onboardingSeen, markOnboardingSeen }; })()`);
+const onboardingPersistence = vm.runInNewContext(`(() => { const ONBOARDING_PRESENTATION_KEY = "swarm.onboarding.v2.seen"; ${app.slice(onboardingPersistenceStart, onboardingPersistenceEnd)}; return { onboardingSeen, markOnboardingSeen }; })()`);
 const presentationValues = new Map([["unrelated.presentation", "preserve"]]);
 const presentationStorage = { getItem: (key) => presentationValues.get(key) ?? null, setItem: (key, value) => presentationValues.set(key, value) };
 assert.equal(onboardingPersistence.onboardingSeen(presentationStorage), false);
@@ -132,6 +158,8 @@ assert.equal(presentationValues.get("unrelated.presentation"), "preserve");
 assert.equal(onboardingPersistence.onboardingSeen({ getItem() { throw new Error("unavailable"); } }), false);
 assert.doesNotThrow(() => onboardingPersistence.markOnboardingSeen({ setItem() { throw new Error("unavailable"); } }));
 assert.match(css, /\.onboarding-progress button \{[^}]*width:44px; height:44px/);
+assert.match(css, /\.onboarding-panel-config \{[^}]*overflow:hidden/);
+assert.match(css, /\.onboarding-configuration \{[^}]*overflow-x:hidden; overflow-y:auto/);
 assert.match(css, /@media \(max-width: 620px\)[\s\S]*\.onboarding-dialog \{ width:100vw; height:100dvh;/);
 assert.match(css, /--base: #091321;/);
 assert.match(css, /--surface: rgba\(16, 29, 47, \.9\);/);
@@ -728,7 +756,7 @@ assert.match(app, /project_id: request\.projectId/);
 assert.match(app, /ctrl_id: request\.ctrlId/);
 assert.match(app, /setInterval\(reportPresence, 60_000\)/);
 assert.match(app, /async function refreshMonitoring/);
-assert.match(app, /function renderAllViews\(\) \{ renderOverview\(\); renderAgents\(\); renderReview\(\); renderAssets\(\); renderSettings\(\); renderRunLogSurfaces\(\); \}/);
+assert.match(app, /function renderAllViews\(\) \{ renderOverview\(\); renderAgents\(\); renderReview\(\); renderAssets\(\); renderSettings\(\); renderRunLogSurfaces\(\); if \(\$\("#onboarding-dialog"\)\?\.open\) renderOnboarding\(\); \}/);
 assert.doesNotMatch(app, /\/api\/diagnostics\/history/);
 assert.match(app, /api\(overviewRequestPath\(\), \{ timeoutMs: 15_000 \}\)/);
 assert.match(indexHtml, /id="data-status-title">Connecting</);
@@ -1118,6 +1146,17 @@ function response(body) {
   return { status: 200, contentType: "application/json", body: JSON.stringify(body) };
 }
 
+function applyConfigChanges(config, changes) {
+  const next = structuredClone(config);
+  for (const [key, value] of Object.entries(changes || {})) {
+    const parts = key.split(".");
+    let cursor = next.settings;
+    parts.slice(0, -1).forEach((part) => { cursor = cursor[part] ||= {}; });
+    cursor[parts.at(-1)] = value;
+  }
+  return next;
+}
+
 function projectViewFixture() {
   return {
     schema_version: 1,
@@ -1260,13 +1299,15 @@ async function mount(page, overview, overrides = {}) {
   const runtimeErrors = [];
   const requests = [];
   const notificationSeenRequests = [];
+  const configRequests = [];
   const proofFeed = overrides.proofFeed || fixture.proofFeed;
   const proofControl = overrides.proofControl || { fail: false, feed: proofFeed };
   const notificationControl = overrides.notificationControl || { failGet: false, failSeen: false, feed: structuredClone(overrides.notifications || notificationFixture()) };
+  const configControl = overrides.configControl || { failPost: false, deferredPost: null, feed: structuredClone(fixture.config) };
   if (!overrides.preserveOnboardingPresentation) {
     await page.addInitScript(() => {
       if (sessionStorage.getItem("swarm-test-onboarding-initialized") === "1") return;
-      localStorage.removeItem("swarm.onboarding.v1.seen");
+      localStorage.removeItem("swarm.onboarding.v2.seen");
       sessionStorage.setItem("swarm-test-onboarding-initialized", "1");
     });
   }
@@ -1304,7 +1345,15 @@ async function mount(page, overview, overrides = {}) {
       return route.fulfill(response({ ok: true, acknowledged: acknowledged.size, newly_seen: newlySeen.length, pruned: 0, feed: notificationControl.feed }));
     }
     if (url.pathname === "/api/presence") return route.fulfill(response({ ok: true, proof_sequence: proofFeed.sequence || 0 }));
-    if (url.pathname === "/api/config") return route.fulfill(response(fixture.config));
+    if (url.pathname === "/api/config") {
+      if (request.method() === "GET") return route.fulfill(response(configControl.feed));
+      const payload = request.postDataJSON();
+      configRequests.push(payload);
+      if (configControl.deferredPost) await configControl.deferredPost;
+      if (configControl.failPost) return route.fulfill({ status: 503, contentType: "application/json", body: JSON.stringify({ ok: false, error: "setting acknowledgement unavailable" }) });
+      configControl.feed = applyConfigChanges(configControl.feed, payload.changes);
+      return route.fulfill(response(configControl.feed));
+    }
     if (url.pathname === "/api/diagnostics") return route.fulfill(response(fixture.diagnostics));
     if (url.pathname === "/api/health/settings") return route.fulfill(response(fixture.healthSettings));
     if (url.pathname === "/api/storage") return route.fulfill(response(fixture.storage));
@@ -1319,7 +1368,7 @@ async function mount(page, overview, overrides = {}) {
   await page.goto("http://swarm.test/", { waitUntil: "domcontentloaded" });
   if (overrides.waitForConnectionState) {
     await page.locator("#connection-state").waitFor({ state: "visible" });
-    return { runtimeErrors, requests, notificationSeenRequests };
+    return { runtimeErrors, requests, notificationSeenRequests, configRequests };
   }
   try {
     await page.locator("#overview-content").waitFor({ state: "visible" });
@@ -1329,7 +1378,7 @@ async function mount(page, overview, overrides = {}) {
   }
   await page.locator("#onboarding-dialog").waitFor({ state: "visible" });
   if (!overrides.keepOnboarding) await page.getByRole("button", { name: "Skip for now" }).click();
-  return { runtimeErrors, requests, notificationSeenRequests };
+  return { runtimeErrors, requests, notificationSeenRequests, configRequests };
 }
 
 const browserCandidates = [
@@ -1372,32 +1421,139 @@ const proofFeed = imageProofFixture(6);
     roleManifests: roleManifestFixture(),
   };
   try {
-    const onboardingPage = await browser.newPage({ viewport: { width: 1024, height: 760 } });
+    const onboardingPage = await browser.newPage({ viewport: { width: 1536, height: 1024 } });
     const onboarding = await mount(onboardingPage, scopedFixture(), { ...overrides, keepOnboarding: true });
-    assert.equal(await onboardingPage.getByText(/^Step [123] of 3$/).count(), 0);
+    assert.equal(await onboardingPage.getByText(/^Step [1-5] of 5$/).count(), 0);
     assert.equal(await onboardingPage.locator('[data-onboarding-step][aria-current="step"]').getAttribute("data-onboarding-step"), "0");
+    const desktopGeometry = await onboardingPage.locator("#onboarding-dialog").evaluate((dialog) => {
+      const rect = (element) => { const value = element.getBoundingClientRect(); return { left: value.left, top: value.top, right: value.right, bottom: value.bottom, width: value.width, height: value.height }; };
+      const primary = rect(document.querySelector("#onboarding-primary"));
+      const skip = rect(document.querySelector("#onboarding-skip"));
+      const controls = [...dialog.querySelectorAll("button")].filter((button) => !button.hidden).map(rect);
+      return { dialog: rect(dialog), primary, skip, controls, viewport: { width: innerWidth, height: innerHeight }, documentWidth: document.documentElement.scrollWidth };
+    });
+    assert.ok(desktopGeometry.dialog.width <= 1121 && desktopGeometry.dialog.height <= 761);
+    assert.ok(desktopGeometry.dialog.left >= 0 && desktopGeometry.dialog.right <= desktopGeometry.viewport.width);
+    assert.ok(desktopGeometry.dialog.top >= 0 && desktopGeometry.dialog.bottom <= desktopGeometry.viewport.height);
+    assert.ok(desktopGeometry.controls.every((control) => control.width >= 44 && control.height >= 44));
+    assert.ok(Math.abs((desktopGeometry.primary.left + desktopGeometry.primary.width / 2) - (desktopGeometry.skip.left + desktopGeometry.skip.width / 2)) <= 1);
+    assert.ok(desktopGeometry.skip.top >= desktopGeometry.primary.bottom);
+    assert.ok(desktopGeometry.documentWidth <= desktopGeometry.viewport.width);
     await onboardingPage.getByRole("button", { name: "Start guided tour" }).click();
     assert.equal(await onboardingPage.locator('[data-onboarding-step][aria-current="step"]').getAttribute("data-onboarding-step"), "1");
     await onboardingPage.getByRole("button", { name: "Continue" }).click();
     assert.equal(await onboardingPage.locator('[data-onboarding-step][aria-current="step"]').getAttribute("data-onboarding-step"), "2");
+    assert.equal(await onboardingPage.getByRole("list", { name: "Example SWARM roles" }).getByRole("listitem").count(), 4);
+    await onboardingPage.getByRole("button", { name: "Continue" }).click();
+    assert.equal(await onboardingPage.locator('[data-onboarding-step][aria-current="step"]').getAttribute("data-onboarding-step"), "3");
+    await onboardingPage.getByRole("button", { name: "Continue" }).click();
+    assert.equal(await onboardingPage.locator('[data-onboarding-step][aria-current="step"]').getAttribute("data-onboarding-step"), "4");
+    assert.equal(await onboardingPage.getByRole("button", { name: "Start using SWARM" }).count(), 1);
+  const onboardingConfigPanel = onboardingPage.locator("#onboarding-panel-5");
+  assert.equal(await onboardingConfigPanel.getByLabel("Codex model").inputValue(), "gpt-5.6-sol");
+  assert.equal(await onboardingConfigPanel.getByLabel("Fast Mode").isChecked(), false);
+  assert.equal(await onboardingConfigPanel.getByLabel("Progress feed").isChecked(), true);
     assert.equal(await onboardingPage.getByRole("button", { name: "Close onboarding" }).count(), 1);
     assert.equal(await onboardingPage.getByRole("button", { name: "Skip for now" }).count(), 1);
-    assert.equal(await onboardingPage.getByRole("button", { name: "Open Projects" }).count(), 1);
-    await onboardingPage.getByRole("button", { name: "Open Projects" }).click();
+    await onboardingPage.getByRole("button", { name: "Start using SWARM" }).click();
     assert.equal(await onboardingPage.locator("#onboarding-dialog").isVisible(), false);
-    assert.equal(await onboardingPage.evaluate(() => localStorage.getItem("swarm.onboarding.v1.seen")), "1");
+    assert.equal(await onboardingPage.evaluate(() => localStorage.getItem("swarm.onboarding.v2.seen")), "1");
     await onboardingPage.reload({ waitUntil: "domcontentloaded" });
-    await onboardingPage.locator("#overview-content").waitFor({ state: "visible" });
+    await onboardingPage.waitForFunction(() => !document.querySelector("#overview-content")?.hasAttribute("hidden"));
     assert.equal(await onboardingPage.locator("#onboarding-dialog").isVisible(), false);
     await onboardingPage.getByRole("tab", { name: "Settings", exact: true }).click();
     await onboardingPage.getByRole("button", { name: "Replay tour" }).click();
     assert.equal(await onboardingPage.locator('[data-onboarding-step][aria-current="step"]').getAttribute("data-onboarding-step"), "0");
     await onboardingPage.getByRole("button", { name: "Skip for now" }).click();
     await onboardingPage.reload({ waitUntil: "domcontentloaded" });
-    await onboardingPage.locator("#overview-content").waitFor({ state: "visible" });
+    await onboardingPage.waitForFunction(() => !document.querySelector("#overview-content")?.hasAttribute("hidden"));
     assert.equal(await onboardingPage.locator("#onboarding-dialog").isVisible(), false);
     assert.deepEqual(onboarding.runtimeErrors, []);
     await onboardingPage.close();
+
+    const onboardingMobilePage = await browser.newPage({ viewport: { width: 390, height: 844 } });
+    const onboardingMobile = await mount(onboardingMobilePage, scopedFixture(), { ...overrides, keepOnboarding: true });
+    await onboardingMobilePage.getByRole("button", { name: "Start guided tour" }).click();
+    const mobileFlowGeometry = await onboardingMobilePage.locator(".onboarding-flow").evaluate((flow) => {
+      const rect = (element) => { const value = element.getBoundingClientRect(); return { top: value.top, bottom: value.bottom, width: value.width, height: value.height }; };
+      const ctrl = rect(flow.querySelector(".is-ctrl"));
+      const roles = [...flow.querySelectorAll(".onboarding-flow-roles b")].map((element) => ({ ...rect(element), fontSize: parseFloat(getComputedStyle(element).fontSize) }));
+      return { ctrl, roles };
+    });
+    assert.equal(mobileFlowGeometry.roles.length, 3);
+    assert.ok(mobileFlowGeometry.roles.every((role) => role.width >= 90 && role.height >= 44 && role.fontSize >= 9));
+    assert.ok(mobileFlowGeometry.roles.every((role) => role.top > mobileFlowGeometry.ctrl.bottom));
+    await onboardingMobilePage.getByRole("button", { name: "Continue" }).click();
+    await onboardingMobilePage.getByRole("button", { name: "Continue" }).click();
+    await onboardingMobilePage.getByRole("button", { name: "Continue" }).click();
+    const mobileGeometry = await onboardingMobilePage.locator("#onboarding-dialog").evaluate((dialog) => {
+      const rect = (element) => { const value = element.getBoundingClientRect(); return { left: value.left, top: value.top, right: value.right, bottom: value.bottom, width: value.width, height: value.height }; };
+      const primary = rect(document.querySelector("#onboarding-primary"));
+      const skip = rect(document.querySelector("#onboarding-skip"));
+      const panel = document.querySelector("#onboarding-panel-5");
+      const configuration = document.querySelector("#onboarding-configuration");
+      const controls = [...dialog.querySelectorAll("button")].filter((control) => !control.hidden && getComputedStyle(control).display !== "none").map(rect);
+      const configControls = [...configuration.querySelectorAll("input,select,summary,button")].filter((control) => !control.hidden && getComputedStyle(control).display !== "none" && control.getClientRects().length).map((control) => rect(control.matches('input[type="checkbox"]') ? control.closest(".toggle-row") : control));
+      return { dialog: rect(dialog), primary, skip, controls, configControls, panel: { scrollWidth: panel.scrollWidth, clientWidth: panel.clientWidth, overflowY: getComputedStyle(panel).overflowY }, configuration: { scrollWidth: configuration.scrollWidth, clientWidth: configuration.clientWidth, scrollHeight: configuration.scrollHeight, clientHeight: configuration.clientHeight, overflowY: getComputedStyle(configuration).overflowY }, viewport: { width: innerWidth, height: innerHeight }, documentWidth: document.documentElement.scrollWidth };
+    });
+    assert.ok(Math.abs(mobileGeometry.dialog.width - 390) <= 1 && Math.abs(mobileGeometry.dialog.height - 844) <= 1);
+    assert.ok(mobileGeometry.controls.every((control) => control.width >= 44 && control.height >= 44));
+    assert.ok(Math.abs((mobileGeometry.primary.left + mobileGeometry.primary.width / 2) - (mobileGeometry.skip.left + mobileGeometry.skip.width / 2)) <= 1);
+    assert.ok(mobileGeometry.skip.top >= mobileGeometry.primary.bottom);
+    assert.ok(mobileGeometry.panel.scrollWidth <= mobileGeometry.panel.clientWidth + 1);
+    assert.equal(mobileGeometry.panel.overflowY, "hidden");
+    assert.equal(mobileGeometry.configuration.overflowY, "auto");
+    assert.ok(mobileGeometry.configuration.scrollWidth <= mobileGeometry.configuration.clientWidth + 1);
+    assert.ok(mobileGeometry.configuration.scrollHeight > mobileGeometry.configuration.clientHeight);
+    assert.ok(mobileGeometry.configControls.every((control) => control.width >= 44 && control.height >= 44), JSON.stringify(mobileGeometry.configControls));
+    assert.ok(mobileGeometry.documentWidth <= mobileGeometry.viewport.width);
+    assert.deepEqual(onboardingMobile.runtimeErrors, []);
+    await onboardingMobilePage.close();
+
+    let releaseConfigPost;
+    const pendingConfigControl = { failPost: false, feed: structuredClone(fixture.config), deferredPost: new Promise((resolve) => { releaseConfigPost = resolve; }) };
+    const pendingPage = await browser.newPage({ viewport: { width: 1024, height: 760 } });
+    const pending = await mount(pendingPage, scopedFixture(), { ...overrides, keepOnboarding: true, configControl: pendingConfigControl });
+    await pendingPage.getByRole("button", { name: "Start guided tour" }).click();
+    for (let step = 0; step < 3; step += 1) await pendingPage.getByRole("button", { name: "Continue" }).click();
+    const pendingFastMode = pendingPage.locator("#onboarding-panel-5").getByLabel("Fast Mode");
+    await pendingFastMode.focus();
+    const pendingRequest = pendingPage.waitForRequest((request) => request.url().endsWith("/api/config") && request.method() === "POST");
+    await pendingFastMode.click();
+    await pendingRequest;
+    await pendingPage.waitForFunction(() => document.activeElement?.dataset.configKey === "execution.fast_mode");
+    assert.equal(await pendingPage.getByRole("button", { name: "Start using SWARM" }).isDisabled(), true);
+    assert.equal(await pendingPage.locator("#onboarding-config-status").textContent().then((text) => /Saving/.test(text)), true);
+    releaseConfigPost();
+    pendingConfigControl.deferredPost = null;
+    await pendingPage.getByRole("button", { name: "Start using SWARM" }).waitFor({ state: "visible" });
+    await pendingPage.waitForFunction(() => !document.querySelector("#onboarding-primary")?.disabled);
+    assert.equal(await pendingPage.evaluate(() => document.activeElement?.dataset.configKey), "execution.fast_mode");
+    assert.deepEqual(pending.configRequests, [{ changes: { "execution.fast_mode": true } }]);
+    assert.deepEqual(pending.runtimeErrors, []);
+    await pendingPage.close();
+
+    const failedConfigControl = { failPost: true, feed: structuredClone(fixture.config), deferredPost: null };
+    const failedPage = await browser.newPage({ viewport: { width: 1024, height: 760 } });
+    const failed = await mount(failedPage, scopedFixture(), { ...overrides, keepOnboarding: true, configControl: failedConfigControl });
+    await failedPage.getByRole("button", { name: "Start guided tour" }).click();
+    for (let step = 0; step < 3; step += 1) await failedPage.getByRole("button", { name: "Continue" }).click();
+    await failedPage.locator("#onboarding-panel-5").getByLabel("Fast Mode").click();
+    await failedPage.getByRole("button", { name: "Retry" }).waitFor({ state: "visible" });
+    assert.equal(await failedPage.getByRole("button", { name: "Start using SWARM" }).isDisabled(), true);
+    assert.equal(await failedPage.locator("#onboarding-dialog").isVisible(), true);
+    assert.equal(await failedPage.evaluate(() => localStorage.getItem("swarm.onboarding.v2.seen")), null);
+    assert.equal(await failedPage.locator("#onboarding-panel-5").getByLabel("Fast Mode").isChecked(), true);
+    failedConfigControl.failPost = false;
+    await failedPage.getByRole("button", { name: "Retry" }).click();
+    await failedPage.waitForFunction(() => !document.querySelector("#onboarding-primary")?.disabled);
+    assert.deepEqual(failed.configRequests, [{ changes: { "execution.fast_mode": true } }, { changes: { "execution.fast_mode": true } }]);
+    await failedPage.getByRole("button", { name: "Start using SWARM" }).click();
+    assert.equal(await failedPage.locator("#onboarding-dialog").isVisible(), false);
+    assert.equal(await failedPage.evaluate(() => localStorage.getItem("swarm.onboarding.v2.seen")), "1");
+    assert.equal(failed.runtimeErrors.filter((message) => /503 \(Service Unavailable\)/.test(message)).length, 1);
+    assert.deepEqual(failed.runtimeErrors.filter((message) => !/503 \(Service Unavailable\)/.test(message)), []);
+    await failedPage.close();
 
     const offlinePage = await browser.newPage({ viewport: { width: 1024, height: 760 } });
     const connection = { offline: true };
@@ -1528,7 +1684,8 @@ const proofFeed = imageProofFixture(6);
     assert.equal(await page.getByRole("button", { name: "Approve digest", exact: true }).first().isDisabled(), true);
     assert.match(await page.locator("#asset-detail").textContent(), /Revision history/);
     await page.getByRole("tab", { name: "Settings", exact: true }).click();
-    assert.equal(await page.locator("#settings-grid > .settings-card").count(), 3);
+    assert.equal(await page.locator("#settings-grid > .settings-card").count(), 4);
+    assert.equal(await page.getByRole("button", { name: "Replay tour" }).count(), 1);
     assert.equal(await page.locator("#settings-advanced").count(), 1);
     assert.equal(await page.locator("[data-qc-scope]").evaluate((element) => element.scrollWidth > element.clientWidth + 1), false);
     assert.deepEqual(desktop.runtimeErrors, []);

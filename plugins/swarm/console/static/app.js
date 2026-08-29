@@ -1,12 +1,14 @@
-const state = { token: "", overview: null, proof: [], proofCollections: new Map(), proofStatuses: new Map(), proofStatus: "idle", proofSequence: 0, usageHistory: null, usageWindowHours: 24, usageScopeKey: "", usageStatus: "idle", usageError: "", projectProgress: null, projectProgressProjectId: "", projectProgressStatus: "idle", projectProgressError: "", projectProgressFeed: null, projectProgressFeedProjectId: "", projectProgressFeedStatus: "idle", projectProgressFeedError: "", projectTab: "overview", projectUiMode: "screens", runLogs: new Map(), runLogRequestGenerations: new Map(), runLogSurfaceStates: new Map(), runLogAgent: null, diagnostics: null, health: null, storage: null, config: null, configStatus: "idle", configError: "", chatRelaySaving: false, ctrlSettings: null, auto: null, autoBindingKey: "", autoStatus: "idle", autoError: "", autoSaving: false, skills: null, skillsError: "", roleManifests: null, roleManifestStatus: "unavailable", roleManifestError: "", roleManifestMessage: "", roleManifestSaving: false, roleManifestRetry: null, roleEditorMode: "", agentsTab: "active", roleEditorTrigger: null, roleSearch: "", roleTypes: new Set(["builtin", "custom"]), roleSearchFields: new Set(["profession", "specialization", "alias", "skills", "purpose"]), selectedRoleId: "", assetView: "grid", selectedAssetIdentity: "", onboardingStep: 0, onboardingShown: false, onboardingTrigger: null, notifications: null, notificationBindingKey: "", notificationStatus: "idle", notificationError: "", notificationAckFlight: null, notificationRequestGenerations: new Map(), notificationPresentedIds: new Set(), notificationToast: null, notificationToastTimer: null, notificationTrigger: null, connectionStatus: "reconnecting", view: "overview", projectId: "all", ctrlId: "", settingsCtrlId: "", settingsScopeType: "", settingsScopeId: "", evidenceImages: [], evidenceIndex: 0, evidenceTrigger: null };
+const state = { token: "", overview: null, proof: [], proofCollections: new Map(), proofStatuses: new Map(), proofStatus: "idle", proofSequence: 0, usageHistory: null, usageWindowHours: 24, usageScopeKey: "", usageStatus: "idle", usageError: "", projectProgress: null, projectProgressProjectId: "", projectProgressStatus: "idle", projectProgressError: "", projectProgressFeed: null, projectProgressFeedProjectId: "", projectProgressFeedStatus: "idle", projectProgressFeedError: "", projectTab: "overview", projectUiMode: "screens", runLogs: new Map(), runLogRequestGenerations: new Map(), runLogSurfaceStates: new Map(), runLogAgent: null, diagnostics: null, health: null, storage: null, config: null, configStatus: "idle", configError: "", chatRelaySaving: false, ctrlSettings: null, auto: null, autoBindingKey: "", autoStatus: "idle", autoError: "", autoSaving: false, skills: null, skillsError: "", roleManifests: null, roleManifestStatus: "unavailable", roleManifestError: "", roleManifestMessage: "", roleManifestSaving: false, roleManifestRetry: null, roleEditorMode: "", agentsTab: "active", roleEditorTrigger: null, roleSearch: "", roleTypes: new Set(["builtin", "custom"]), roleSearchFields: new Set(["profession", "specialization", "alias", "skills", "purpose"]), selectedRoleId: "", assetView: "grid", selectedAssetIdentity: "", onboardingStep: 0, onboardingShown: false, onboardingTrigger: null, onboardingConfigPending: new Map(), onboardingConfigFailures: new Map(), notifications: null, notificationBindingKey: "", notificationStatus: "idle", notificationError: "", notificationAckFlight: null, notificationRequestGenerations: new Map(), notificationPresentedIds: new Set(), notificationToast: null, notificationToastTimer: null, notificationTrigger: null, connectionStatus: "reconnecting", view: "overview", projectId: "all", ctrlId: "", settingsCtrlId: "", settingsScopeType: "", settingsScopeId: "", evidenceImages: [], evidenceIndex: 0, evidenceTrigger: null };
 const EVIDENCE_THUMBNAIL_PAGE_SIZE = 24;
 const USAGE_WINDOW_LABELS = { 1: "1h", 24: "1d" };
 const RUN_LOG_CLIENT_LIMIT = 200;
-const ONBOARDING_PRESENTATION_KEY = "swarm.onboarding.v1.seen";
+const ONBOARDING_PRESENTATION_KEY = "swarm.onboarding.v2.seen";
 const ONBOARDING_STEPS = [
   { name: "Welcome", primary: "Start guided tour" },
-  { name: "Owned lanes", primary: "Continue" },
-  { name: "Proof gates", primary: "Open Projects" },
+  { name: "Coordinated roles", primary: "Continue" },
+  { name: "Role variety", primary: "Continue" },
+  { name: "Project manifest", primary: "Continue" },
+  { name: "Configuration", primary: "Start using SWARM" },
 ];
 const $ = (selector, root = document) => root.querySelector(selector);
 const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
@@ -170,6 +172,83 @@ function clearConnectionState() {
   $("#connection-state").hidden = true;
 }
 
+function onboardingReasoningStops(current) {
+  const stops = ["none", "low", "medium", "high", "max"];
+  if (current && !stops.includes(current)) stops[3] = current;
+  return stops.map((value) => ({ value, label: humanize(value) }));
+}
+
+function onboardingConfigBlocked() {
+  return state.onboardingConfigPending.size > 0 || state.onboardingConfigFailures.size > 0;
+}
+
+function onboardingConfigDraft(key, fallback) {
+  return state.onboardingConfigPending.get(key)?.value ?? state.onboardingConfigFailures.get(key)?.value ?? fallback;
+}
+
+function onboardingControlIdentity(element) {
+  if (!(element instanceof HTMLElement)) return "";
+  const control = element.closest("[data-config-key],[data-onboarding-control]");
+  if (!control) return "";
+  if (control.dataset.configKey) return "config:" + control.dataset.configKey;
+  return control.dataset.onboardingControl ? "control:" + control.dataset.onboardingControl : "";
+}
+
+function onboardingControlForIdentity(root, identity) {
+  if (!root || !identity) return null;
+  const [kind, ...parts] = identity.split(":");
+  const value = parts.join(":");
+  const attribute = kind === "config" ? "configKey" : "onboardingControl";
+  return $$('[data-' + attribute.replace(/[A-Z]/g, (letter) => "-" + letter.toLowerCase()) + ']', root).find((element) => element.dataset[attribute] === value) || null;
+}
+
+function onboardingConfigSelect(key, value, options, label) {
+  const editable = configEditable(key);
+  const draft = onboardingConfigDraft(key, value);
+  return '<label class="setting-field">' + escapeHTML(label) + '<select data-config-key="' + escapeHTML(key) + '"' + (editable ? '' : ' disabled') + '>' + options.map((option) => '<option value="' + escapeHTML(option.value) + '"' + (option.value === draft ? ' selected' : '') + '>' + escapeHTML(option.label) + '</option>').join('') + '</select></label>' + (editable ? '' : '<small>Managed by the current configuration.</small>');
+}
+
+function onboardingConfigToggle(key, value, label) {
+  const editable = configEditable(key);
+  const draft = onboardingConfigDraft(key, value);
+  return '<label class="toggle-row"><input data-config-key="' + escapeHTML(key) + '" type="checkbox"' + (draft === true ? ' checked' : '') + (editable ? '' : ' disabled') + '><span>' + escapeHTML(label) + '</span></label>' + (editable ? '' : '<small>Managed by the current configuration.</small>');
+}
+
+function onboardingConfigurationMarkup() {
+  const settings = state.config?.settings || {};
+  const execution = settings.execution || {};
+  const lifecycle = settings.lifecycle || {};
+  const automation = settings.automation || {};
+  const consoleSettings = settings.console || {};
+  const portfolio = settings.portfolio || {};
+  const boost = settings.boost || {};
+  const model = state.ctrlSettings?.effective?.model || state.ctrlSettings?.global_defaults?.model || "Unavailable";
+  const skillsMode = state.skills?.settings?.inheritance_enabled === true ? "Auto" : state.skills ? "Manual" : "Unavailable";
+  const lifetime = Number.isInteger(lifecycle.task_lifetime_hours) ? String(lifecycle.task_lifetime_hours) : "Unavailable";
+  const lanes = Number.isInteger(portfolio.default_parallel_tasks) ? String(portfolio.default_parallel_tasks) : "Unavailable";
+  const automationOptions = [{ value: "standard", label: "Auto" }, { value: "manual", label: "Manual" }];
+  const minReasoning = execution.min_reasoning || "none";
+  const maxReasoning = execution.max_reasoning || "max";
+  const updates = onboardingConfigDraft("console.project_progress_feed_lines", consoleSettings.project_progress_feed_lines ?? 4);
+  const pending = state.onboardingConfigPending.size;
+  const failures = [...state.onboardingConfigFailures.values()];
+  const status = pending ? 'Saving ' + pending + ' setting' + (pending === 1 ? '' : 's') + '…' : failures.length ? (failures[0].error || 'A setting was not saved.') : 'Changes are saved when acknowledged by SWARM.';
+  return '<section class="onboarding-config-group"><h3>Execution</h3>' +
+    onboardingConfigSelect("automation.mode", automation.mode || "standard", automationOptions, "Auto mode") +
+    '<label class="onboarding-readonly">Task lifetime and handoff<input value="' + escapeHTML(lifetime) + '" aria-label="Task lifetime hours" disabled></label><small>Hours until a safe handoff becomes due. This never deletes work.</small>' +
+    onboardingConfigToggle("execution.fast_mode", execution.fast_mode, "Fast Mode") +
+    '<label class="onboarding-readonly">Skills<select aria-label="Skills mode" disabled><option>' + escapeHTML(skillsMode) + '</option></select></label></section>' +
+    '<section class="onboarding-config-group"><h3>Codex</h3><label class="onboarding-readonly">Model<select aria-label="Codex model" disabled><option>' + escapeHTML(model) + '</option></select></label>' +
+    onboardingConfigSelect("execution.min_reasoning", minReasoning, onboardingReasoningStops(minReasoning), "Minimum reasoning") +
+    onboardingConfigSelect("execution.max_reasoning", maxReasoning, onboardingReasoningStops(maxReasoning), "Maximum reasoning") + '</section>' +
+    '<section class="onboarding-config-group"><h3>Usage</h3>' + onboardingConfigToggle("execution.usage_saver", execution.usage_saver, "Usage saver") +
+    '<details data-onboarding-control="usage-policy"><summary>Usage saver policy</summary><div class="onboarding-config-disclosure">' + onboardingConfigToggle("chat_relay.enabled", settings.chat_relay?.enabled, "Use ChatGPT for eligible work") + onboardingConfigToggle("boost.spark_enabled", boost.spark_enabled, "Use an efficient model for eligible work") + '<small>Code, local state, and acceptance stay with Codex unless accepted routing authority says otherwise.</small></div></details></section>' +
+    '<section class="onboarding-config-group"><h3>Visibility</h3>' + onboardingConfigToggle("console.project_progress_feed_enabled", consoleSettings.project_progress_feed_enabled, "Progress feed") +
+    '<label class="setting-field">Updates shown<input data-config-key="console.project_progress_feed_lines" type="number" min="1" max="10" value="' + escapeHTML(updates) + '"' + (configEditable("console.project_progress_feed_lines") ? '' : ' disabled') + '></label></section>' +
+    '<section class="onboarding-config-group onboarding-config-wide"><details data-onboarding-control="advanced"><summary>Advanced</summary><div class="onboarding-config-disclosure"><label class="onboarding-readonly">Parallel lanes<input value="' + escapeHTML(lanes) + '" disabled></label><small>The accepted server setting is shown. Unlimited is available only when the server projects it.</small></div></details></section>' +
+    '<div class="onboarding-config-save ' + (failures.length ? 'is-error' : '') + '" id="onboarding-config-status" role="status"><span>' + escapeHTML(status) + '</span>' + (failures.length ? '<button class="quiet-button" type="button" data-onboarding-control="retry-config">Retry</button>' : '') + '</div>';
+}
+
 function renderOnboarding() {
   const step = Math.min(Math.max(0, state.onboardingStep), ONBOARDING_STEPS.length - 1);
   state.onboardingStep = step;
@@ -188,8 +267,27 @@ function renderOnboarding() {
   });
   const current = ONBOARDING_STEPS[step];
   $("#onboarding-step-status").textContent = current.name + ". Step " + String(step + 1) + " of " + String(ONBOARDING_STEPS.length) + ".";
+  const finalStep = step === ONBOARDING_STEPS.length - 1;
+  const blocked = finalStep && onboardingConfigBlocked();
   $("#onboarding-back").hidden = step === 0;
+  $("#onboarding-back").disabled = blocked;
+  $("#onboarding-close").disabled = blocked;
+  $("#onboarding-skip").disabled = blocked;
+  $$('[data-onboarding-step]').forEach((dot) => { dot.disabled = blocked; });
   $("#onboarding-primary").textContent = current.primary;
+  $("#onboarding-primary").disabled = blocked;
+  $("#onboarding-primary").toggleAttribute("aria-busy", finalStep && state.onboardingConfigPending.size > 0);
+  if (finalStep) {
+    const root = $("#onboarding-configuration");
+    const focusIdentity = onboardingControlIdentity(document.activeElement);
+    const scrollTop = root.scrollTop;
+    const openControls = new Set($$("details[open][data-onboarding-control]", root).map((details) => details.dataset.onboardingControl));
+    root.innerHTML = onboardingConfigurationMarkup();
+    $$("details[data-onboarding-control]", root).forEach((details) => { details.open = openControls.has(details.dataset.onboardingControl); });
+    root.scrollTop = scrollTop;
+    const restored = onboardingControlForIdentity(root, focusIdentity);
+    if (restored && !restored.disabled) requestAnimationFrame(() => restored.focus({ preventScroll: true }));
+  }
 }
 
 function onboardingSeen(storage = window.localStorage) {
@@ -214,16 +312,42 @@ function openOnboarding(force = false, trigger = null) {
 }
 
 function closeOnboarding(openProjects = false) {
+  if (state.onboardingStep === ONBOARDING_STEPS.length - 1 && onboardingConfigBlocked()) return false;
   markOnboardingSeen();
   const dialog = $("#onboarding-dialog");
   if (dialog.open) dialog.close();
   if (openProjects) setView("overview", false);
+  return true;
 }
 
 function setOnboardingStep(step, focusDot = false) {
   state.onboardingStep = Math.min(Math.max(0, Number(step) || 0), ONBOARDING_STEPS.length - 1);
   renderOnboarding();
   if (focusDot) $('[data-onboarding-step="' + state.onboardingStep + '"]')?.focus({ preventScroll: true });
+}
+
+async function saveOnboardingConfig(key, value) {
+  if (!configEditable(key) || state.onboardingConfigPending.has(key)) return false;
+  state.onboardingConfigFailures.delete(key);
+  state.onboardingConfigPending.set(key, { value });
+  renderAllViews();
+  try {
+    state.config = await api('/api/config', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ changes: { [key]: value } }) });
+    state.configStatus = "current";
+    if (key === 'console.project_progress_feed_enabled' || key === 'console.project_progress_feed_lines') await refreshProjectProgressFeed();
+    return true;
+  } catch (error) {
+    state.onboardingConfigFailures.set(key, { value, error: error.message || "This setting could not be saved." });
+    return false;
+  } finally {
+    state.onboardingConfigPending.delete(key);
+    renderAllViews();
+  }
+}
+
+async function retryOnboardingConfig() {
+  const failures = [...state.onboardingConfigFailures.entries()];
+  for (const [key, failure] of failures) await saveOnboardingConfig(key, failure.value);
 }
 
 function connectionFailure(message) {
@@ -2707,7 +2831,7 @@ function renderSettings() {
   renderSystemHealth();
 }
 
-function renderAllViews() { renderOverview(); renderAgents(); renderReview(); renderAssets(); renderSettings(); renderRunLogSurfaces(); }
+function renderAllViews() { renderOverview(); renderAgents(); renderReview(); renderAssets(); renderSettings(); renderRunLogSurfaces(); if ($("#onboarding-dialog")?.open) renderOnboarding(); }
 
 async function refreshProof() {
   const projectId = state.projectId;
@@ -3392,6 +3516,10 @@ document.addEventListener('change', async (event) => {
     const key = event.target.dataset.configKey;
     if (!configEditable(key)) return;
     const value = event.target.type === 'checkbox' ? event.target.checked : event.target.type === 'number' ? Number(event.target.value) : event.target.value;
+    if (event.target.closest("#onboarding-configuration")) {
+      await saveOnboardingConfig(key, value);
+      return;
+    }
     try {
       state.config = await api('/api/config', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ changes: { [key]: value } }) });
       if (key === 'console.project_progress_feed_enabled' || key === 'console.project_progress_feed_lines') await refreshProjectProgressFeed();
@@ -3413,6 +3541,10 @@ document.addEventListener('change', async (event) => {
   }
 });
 document.addEventListener('click', async (event) => {
+  if (event.target.closest('[data-onboarding-control="retry-config"]')) {
+    await retryOnboardingConfig();
+    return;
+  }
   const action = event.target.closest('[data-setting-action]')?.dataset.settingAction;
   if (!action) return;
   if (action === 'replay-tour') {
