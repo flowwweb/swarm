@@ -464,7 +464,12 @@ def validate_task_handoff_event(payload: Any) -> dict[str, Any]:
     observation = _validate_expected_observation(payload.get("expected_observation"))
     if observation is not None and event_kind is not TaskHandoffEventKind.HANDOFF_DUE:
         raise ProgressEventError("only an admitted lease-expiry event may evaluate an expected receipt")
-    return {**payload, "expected_observation": observation} if "expected_observation" in payload else dict(payload)
+    canonical = dict(payload)
+    if observation is None:
+        canonical.pop("expected_observation", None)
+    else:
+        canonical["expected_observation"] = observation
+    return canonical
 
 
 def validate_request_lifecycle_event(payload: Any) -> dict[str, Any]:
@@ -554,8 +559,11 @@ def validate_request_lifecycle_event(payload: Any) -> dict[str, Any]:
     observation = _validate_expected_observation(payload.get("expected_observation"))
     if observation is not None and lifecycle_state is not LedgerLifecycleState.RESULT_PENDING:
         raise ProgressEventError("only an admitted turn-completion event may evaluate an expected receipt")
-    if observation is not None:
-        payload = {**payload, "expected_observation": observation}
+    payload = dict(payload)
+    if observation is None:
+        payload.pop("expected_observation", None)
+    else:
+        payload["expected_observation"] = observation
     encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
     if len(encoded) > MAX_PROGRESS_EVENT_BYTES:
         raise ProgressEventError("request lifecycle event exceeds the material event byte limit")
@@ -1500,13 +1508,7 @@ class Ledger:
                 "reason": None, "event_id": event_id, "event_seq": event_seq,
                 "progress_advanced": False, "matched_event_id": retained["result"]["event_id"],
             }
-        goal_mismatch = observation["goal_id"] != expected["goal_id"]
-        reason = "WRONG_GOAL" if goal_mismatch else {
-            "EMPTY": "EMPTY_OUTPUT", "TIMEOUT": "TIMEOUT", "HTTP_400": "HTTP_400",
-            "MISSING_THREAD": "MISSING_THREAD", "REPLAY": "REPLAY",
-        }.get(observation["outcome"])
-        if observation["source_cursor"] <= retained["last_source_cursor"]:
-            reason = reason or "STALE_CURSOR"
+        binding_reason = None
         for actual, wanted, mismatch in (
             (event_kind, expected["expected_event_kind"], "WRONG_EVENT_KIND"),
             (due_event, expected["due_event"], "WRONG_DUE_EVENT"),
@@ -1522,19 +1524,26 @@ class Ledger:
             (observation["artifact_digest"], expected["artifact_digest"], "WRONG_ARTIFACT"),
         ):
             if actual != wanted:
-                reason = reason or mismatch
+                binding_reason = mismatch
                 break
+        reason = binding_reason or {
+            "EMPTY": "EMPTY_OUTPUT", "TIMEOUT": "TIMEOUT", "HTTP_400": "HTTP_400",
+            "MISSING_THREAD": "MISSING_THREAD", "REPLAY": "REPLAY",
+        }.get(observation["outcome"])
+        if binding_reason is None and observation["source_cursor"] <= retained["last_source_cursor"]:
+            reason = reason or "STALE_CURSOR"
         if not tuple(dict.fromkeys((*evidence_receipt_ids, *observation["evidence_receipt_ids"]))):
             reason = reason or "MISSING_EVIDENCE"
         route_digest = observation["route_digest"]
-        retained["last_source_cursor"] = max(retained["last_source_cursor"], observation["source_cursor"])
+        if binding_reason is None:
+            retained["last_source_cursor"] = max(retained["last_source_cursor"], observation["source_cursor"])
         result = {
             "expected_receipt_id": expected["receipt_id"],
             "status": "ATTENTION" if reason else "MATCHED",
             "reason": reason, "event_id": event_id, "event_seq": event_seq,
             "progress_advanced": reason is None, "route_digest": route_digest,
         }
-        if reason and not goal_mismatch:
+        if reason and binding_reason is None:
             try:
                 outcome = RetryOutcome(observation["outcome"])
             except ValueError:

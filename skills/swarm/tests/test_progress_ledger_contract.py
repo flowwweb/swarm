@@ -280,6 +280,8 @@ class ProgressLedgerContractTests(unittest.TestCase):
             "wrong-artifact": ({"artifact_digest": hashlib.sha256(b"other").hexdigest()}, {}),
             "wrong-owner": ({"owner_id": "other-owner"}, {}),
             "wrong-lease": ({"lease_version": 2}, {}),
+            "wrong-task": ({}, {"task_id": "other-task"}),
+            "wrong-outer-owner": ({}, {"owner_id": "other-owner"}),
             "stale": ({"source_cursor": 10}, {}),
             "wrong-event": ({}, {"kind": "STATE_CHANGED"}),
             "missing-evidence": ({"evidence_receipt_ids": []}, {"admitted": 0, "proof_receipts": []}),
@@ -293,9 +295,12 @@ class ProgressLedgerContractTests(unittest.TestCase):
                 ledger.append_expected_receipt(expected)
                 event = self.event(
                     f"observed-{index}", "block-a", kind=event_changes.get("kind", "PROOF_ADMITTED"),
+                    task_id=event_changes.get("task_id"),
                     committed=1, admitted=event_changes.get("admitted", 1),
                     proof_receipts=event_changes.get("proof_receipts", [f"proof-{index}"]), observed_at_ms=2,
                 )
+                if "owner_id" in event_changes:
+                    event["owner_id"] = event_changes["owner_id"]
                 observation = self.observation(expected)
                 observation.update(observation_changes)
                 event["expected_observation"] = observation
@@ -304,6 +309,10 @@ class ProgressLedgerContractTests(unittest.TestCase):
                 self.assertFalse(result["expected_check"]["progress_advanced"])
                 project = ledger.project("project-alpha")
                 self.assertEqual((project["admitted_proof_weight"], project["blocks"][0]["latest_event_id"]), (0, "base"))
+                if label.startswith("wrong-"):
+                    retained = ledger.replay()["expected_receipts"][expected["receipt_id"]]
+                    self.assertEqual(retained["last_source_cursor"], expected["source_cursor"])
+                    self.assertEqual(ledger._retry_topology._attempts, {})
 
     def test_wrong_inner_goal_is_attention_without_progress_or_recovery(self) -> None:
         self.ledger.append(self.event("base", "block-a", committed=1))
@@ -314,15 +323,63 @@ class ProgressLedgerContractTests(unittest.TestCase):
             admitted=1, proof_receipts=["proof-wrong-goal"], observed_at_ms=2,
         )
         event["expected_observation"] = self.observation(
-            expected, outcome="TIMEOUT", goal_id="other-goal",
+            expected, source_cursor=999, outcome="TIMEOUT", goal_id="other-goal",
         )
         check = self.ledger.append(event)["expected_check"]
         self.assertEqual((check["status"], check["reason"], check["progress_advanced"]), ("ATTENTION", "WRONG_GOAL", False))
         self.assertNotIn("retry_action", check)
         self.assertEqual(self.ledger._retry_topology._attempts, {})
+        retained = self.ledger.replay()["expected_receipts"][expected["receipt_id"]]
+        self.assertEqual((retained["last_source_cursor"], retained["result"]["reason"]), (10, "WRONG_GOAL"))
+        valid = self.event(
+            "valid-goal", "block-a", kind="PROOF_ADMITTED", committed=1,
+            admitted=1, proof_receipts=["proof-valid-goal"], observed_at_ms=3,
+        )
+        valid["expected_observation"] = self.observation(expected, source_cursor=11)
+        self.assertEqual(self.ledger.append(valid)["expected_check"]["status"], "MATCHED")
         restarted = Ledger(self.root)
-        self.assertEqual(restarted.replay()["expected_receipts"][expected["receipt_id"]]["result"]["reason"], "WRONG_GOAL")
+        replayed = restarted.replay()["expected_receipts"][expected["receipt_id"]]
+        self.assertEqual((replayed["last_source_cursor"], replayed["result"]["status"]), (11, "MATCHED"))
         self.assertEqual(restarted._retry_topology._attempts, {})
+
+    def test_outer_handoff_bindings_fail_before_expected_cursor_or_retry_mutation(self) -> None:
+        cases = {
+            "goal": ({"goal_id": "other-goal"}, "WRONG_GOAL"),
+            "task": ({"task_id": "other-task"}, "WRONG_TASK"),
+            "owner": ({"old_owner": "other-owner"}, "WRONG_OWNER"),
+            "lease": ({"lease_version": 2}, "WRONG_LEASE"),
+        }
+        for index, (label, (changes, expected_reason)) in enumerate(cases.items(), 1):
+            with self.subTest(binding=label):
+                root = self.root / f"outer-{label}"
+                ledger = self.host_ledger(root)
+                expected = self.expected_receipt(
+                    f"expected-outer-{label}", goal_id="goal-outer", task_id="task-outer",
+                    owner_id="owner-outer", expected_event_kind="HANDOFF_DUE",
+                    due_event="LEASE_EXPIRY", due_generation=changes.get("lease_version", 1),
+                )
+                ledger.append_expected_receipt(expected)
+                handoff = {
+                    "schema_version": 1, "record_type": "TASK_HANDOFF",
+                    "event_id": f"handoff-outer-{label}", "dedupe_key": f"handoff-outer-{label}-dedupe",
+                    "handoff_id": f"handoff-outer-{label}", "parent_event_id": None,
+                    "event_kind": "HANDOFF_DUE", "goal_id": "goal-outer", "task_id": "task-outer",
+                    "old_owner": "owner-outer", "new_owner": None, "checkpoint_digest": None,
+                    "scope_version": 1, "lease_version": 1, "receipt_id": str(index) * 64,
+                    "host_issued_at_ms": 1, "observed_at_ms": 2,
+                    "expected_observation": self.observation(expected, source_cursor=999),
+                    **changes,
+                }
+                custody = Swarm(request_lifecycle_ledger=ledger)
+                receipt = self.host_receipt(
+                    custody, handoff["receipt_id"], handoff["task_id"],
+                    task_handoff_host_binding(handoff), handoff["host_issued_at_ms"],
+                )
+                check = ledger.append_task_handoff(handoff, custody_receipt=receipt)["expected_check"]
+                self.assertEqual((check["status"], check["reason"]), ("ATTENTION", expected_reason))
+                retained = ledger.replay()["expected_receipts"][expected["receipt_id"]]
+                self.assertEqual(retained["last_source_cursor"], expected["source_cursor"])
+                self.assertEqual(ledger._retry_topology._attempts, {})
 
     def test_explicit_none_expected_observation_matches_omission_after_restart(self) -> None:
         omitted = self.event("no-observation", "block-a", committed=1)
@@ -335,10 +392,52 @@ class ProgressLedgerContractTests(unittest.TestCase):
         self.assertEqual(Ledger(self.root).replay()["cursor"], appended["cursor"])
         self.assertEqual(Ledger(self.root).append(omitted)["status"], "unchanged")
 
+        request_root = self.root / "request"
+        request = {
+            "schema_version": 1, "record_type": "REQUEST_LIFECYCLE",
+            "event_id": "request-offer", "dedupe_key": "request-offer-dedupe",
+            "request_id": "request-none", "stage_id": "stage-none", "parent_event_id": None,
+            "envelope_digest": "1" * 64, "lifecycle_state": "OFFERED", "record": None,
+            "route_receipt_ids": [], "permitted_route_ids": [], "failed_goal_turn_receipt_ids": [],
+            "release_authority": None, "release_receipt_id": None, "release_issued_at_ms": None,
+        }
+        request_ledger = self.host_ledger(request_root)
+        request_first = request_ledger.append_request_lifecycle({**request, "expected_observation": None})
+        request_record = json.loads((request_root / PROGRESS_LEDGER_PATH).read_text(encoding="utf-8"))
+        self.assertNotIn("expected_observation", request_record["event"])
+        request_restart = self.host_ledger(request_root)
+        self.assertEqual(
+            request_restart.project_request_lifecycles()["records"][0]["event_id"],
+            request_first["cursor"]["event_id"],
+        )
+        self.assertEqual(request_restart.append_request_lifecycle(request)["status"], "unchanged")
+
+        handoff_root = self.root / "handoff"
+        handoff_ledger = self.host_ledger(handoff_root)
+        handoff = {
+            "schema_version": 1, "record_type": "TASK_HANDOFF",
+            "event_id": "handoff-due", "dedupe_key": "handoff-due-dedupe",
+            "handoff_id": "handoff-none", "parent_event_id": None, "event_kind": "HANDOFF_DUE",
+            "goal_id": "goal-none", "task_id": "task-none", "old_owner": "owner-none",
+            "new_owner": None, "checkpoint_digest": None, "scope_version": 1, "lease_version": 1,
+            "receipt_id": "a" * 64, "host_issued_at_ms": 1, "observed_at_ms": 2,
+        }
+        custody = Swarm(request_lifecycle_ledger=handoff_ledger)
+        receipt = self.host_receipt(custody, "a" * 64, "task-none", task_handoff_host_binding(handoff), 1)
+        handoff_first = handoff_ledger.append_task_handoff({**handoff, "expected_observation": None}, custody_receipt=receipt)
+        handoff_record = json.loads((handoff_root / PROGRESS_LEDGER_PATH).read_text(encoding="utf-8"))
+        self.assertNotIn("expected_observation", handoff_record["event"])
+        handoff_restart = self.host_ledger(handoff_root)
+        handoff_restart.retain_host_custody_receipt(receipt)
+        self.assertEqual(handoff_restart.replay()["cursor"], handoff_first["cursor"])
+        self.assertEqual(handoff_restart.append_task_handoff(handoff, custody_receipt=receipt)["status"], "unchanged")
+
     def test_repeated_expected_route_reuses_retry_topology_and_requires_a_different_route(self) -> None:
         self.ledger.append(self.event("base", "block-a", committed=1))
         route = hashlib.sha256(b"route-initial").hexdigest()
-        expected = self.expected_receipt("expected-retry", attempted_route_digests=[route])
+        expected = self.expected_receipt(
+            "expected-retry", attempted_route_digests=[route], expected_event_kind="STATE_CHANGED",
+        )
         self.ledger.append_expected_receipt(expected)
         actions = []
         for index in (1, 2):
@@ -368,7 +467,7 @@ class ProgressLedgerContractTests(unittest.TestCase):
         self.ledger.append(self.event("base-b", "block-b", committed=1, observed_at_ms=4))
         followup = self.expected_receipt(
             "expected-followup", goal_id="goal-beta", task_id="task-block-b",
-            owner_id="owner-block-b", source_cursor=20,
+            owner_id="owner-block-b", source_cursor=20, expected_event_kind="STATE_CHANGED",
         )
         self.ledger.append_expected_receipt(followup)
         failed = self.event("failed-b", "block-b", kind="STATE_CHANGED", committed=1, observed_at_ms=5)
