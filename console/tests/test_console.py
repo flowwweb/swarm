@@ -163,6 +163,95 @@ class SwarmConsoleTests(unittest.TestCase):
             {"ok": False, "error": "role manifest create cannot replace an existing role"},
         )
 
+    def test_critic_role_commands_fail_closed_while_history_remains_readable(self) -> None:
+        app = console.App(self.codex_home, self.config)
+        projection = app.role_manifest_projection()
+        assistant = next(role for role in projection["roles"] if role["id"] == "assistant")
+        draft = {key: assistant[key] for key in (
+            "name", "purpose", "owns", "instructions", "boundaries",
+            "default_skills", "specializations", "avatar_asset_digest", "accent",
+        )}
+        ledger_path = app.progress_ledger._state.path
+
+        def ledger_bytes() -> bytes:
+            return ledger_path.read_bytes() if ledger_path.exists() else b""
+
+        for index, role_id in enumerate(("critic", " CrItIc "), start=1):
+            before = ledger_bytes()
+            with self.subTest(command="create", role_id=role_id), self.assertRaisesRegex(
+                console.ConsoleError, "retained as history"
+            ):
+                app.role_manifest_command({
+                    "command": "ROLE_MANIFEST_CREATE",
+                    "role_id": role_id,
+                    "event_id": f"critic-create-{index}",
+                    "dedupe_key": f"critic-create-{index}-dedupe",
+                    "expected_active_version": None,
+                    "manifest": {**draft, "name": "Critic"},
+                    "provenance": "localhost-command:critic-create",
+                    "observed_at_ms": index,
+                })
+            self.assertEqual(ledger_bytes(), before)
+
+        historical = console.build_role_manifest(
+            "critic",
+            {
+                **draft,
+                "name": "Critic",
+                "purpose": "Decode one retained historical role revision.",
+                "boundaries": ["No current routing or review authority."],
+                "specializations": [],
+            },
+            "custom",
+            ["history:critic:v1"],
+        )
+        app.progress_ledger.append(console.role_material_event(
+            "ROLE_MANIFEST_CREATE",
+            event_id="historical-critic",
+            dedupe_key="historical-critic-dedupe",
+            role_id="critic",
+            manifest=historical,
+            expected_active_version=None,
+            assignment_task_id=None,
+            provenance="history:critic:v1",
+            observed_at_ms=10,
+        ))
+        retained = next(role for role in app.role_manifest_projection()["roles"] if role["id"] == "critic")
+        self.assertFalse(retained["built_in"])
+        self.assertEqual(retained["active_version"], historical["version"])
+
+        for index, role_id in enumerate(("critic", "CrItIc"), start=11):
+            before = ledger_bytes()
+            with self.subTest(command="revise", role_id=role_id), self.assertRaisesRegex(
+                console.ConsoleError, "retained as history"
+            ):
+                app.role_manifest_command({
+                    "command": "ROLE_MANIFEST_REVISE",
+                    "role_id": role_id,
+                    "event_id": f"critic-revise-{index}",
+                    "dedupe_key": f"critic-revise-{index}-dedupe",
+                    "expected_active_version": historical["version"],
+                    "manifest": {**draft, "name": "Critic revised"},
+                    "provenance": "localhost-command:critic-revise",
+                    "observed_at_ms": index,
+                })
+            self.assertEqual(ledger_bytes(), before)
+
+        valid = app.role_manifest_command({
+            "command": "ROLE_MANIFEST_CREATE",
+            "role_id": "custom-assistant-helper",
+            "event_id": "custom-assistant-helper-create",
+            "dedupe_key": "custom-assistant-helper-create-dedupe",
+            "expected_active_version": None,
+            "manifest": {**draft, "name": "Assistant helper", "specializations": []},
+            "provenance": "localhost-command:custom-assistant-helper",
+            "observed_at_ms": 20,
+        })
+        self.assertEqual(valid["receipt"]["status"], "appended")
+        current_ids = {role["id"] for role in valid["projection"]["roles"]}
+        self.assertIn("assistant", current_ids)
+        self.assertIn("custom-assistant-helper", current_ids)
+
     def test_new_console_copy_is_swarm_first(self) -> None:
         static = (Path(__file__).resolve().parents[1] / "static")
         index = (static / "index.html").read_text(encoding="utf-8")

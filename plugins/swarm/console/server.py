@@ -6684,6 +6684,8 @@ class App:
             else:
                 source = "user_override" if role_id in builtins else "custom"
                 manifest = build_role_manifest(role_id, payload.get("manifest"), source, [provenance])
+                if manifest["id"].casefold() == "critic":
+                    raise ProgressEventError("Critic is retained as history and cannot be established as a current role")
             event = role_material_event(
                 command, event_id=payload.get("event_id"), dedupe_key=payload.get("dedupe_key"),
                 role_id=role_id, manifest=manifest,
