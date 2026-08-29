@@ -1696,14 +1696,16 @@ function projectViewMapMarkup(projection) {
   const nodes = Array.isArray(projection?.map?.nodes) ? projection.map.nodes : [];
   const edges = Array.isArray(projection?.map?.edges) ? projection.map.edges : [];
   if (!nodes.length) return '<p class="empty-state">No accepted map nodes are available.</p>';
+  const nodeLabels = new Map(nodes.map((node) => [node.id, node.label || node.id]));
   const edgeSummary = edges.map((edge) => edge.source + " to " + edge.target).join("; ");
+  const edgeMarkup = edges.length ? '<ul class="project-ui-map-edges" aria-label="Map connections">' + edges.map((edge) => '<li><span>' + escapeHTML(nodeLabels.get(edge.source) || edge.source) + '</span><svg class="lucide" aria-hidden="true"><use href="#lucide-chevron-right"></use></svg><span>' + escapeHTML(nodeLabels.get(edge.target) || edge.target) + '</span></li>').join("") + '</ul>' : '<p class="project-ui-map-edges is-empty">No graph connections</p>';
   return '<section class="project-ui-map" aria-label="App Map"><p class="sr-only">' + escapeHTML(edgeSummary || "No graph connections") + '</p><div class="project-ui-map-nodes">' + nodes.map((node) => {
     const interactive = node.screen_key && projectViewEvidence(node.screen_key).length;
     const content = '<span>' + escapeHTML(node.label || node.id) + '</span><small>' + escapeHTML(node.id) + '</small>';
     return interactive
       ? '<button type="button" data-project-view-evidence="' + escapeHTML(node.screen_key) + '" aria-label="Open evidence for ' + escapeHTML(node.label || node.id) + '">' + content + '</button>'
       : '<div aria-label="' + escapeHTML((node.label || node.id) + ", evidence unavailable") + '">' + content + '</div>';
-  }).join("") + '</div></section>';
+  }).join("") + '</div>' + edgeMarkup + '</section>';
 }
 
 function projectViewMarkup() {

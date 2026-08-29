@@ -302,6 +302,10 @@ button:focus-visible, select:focus-visible { outline: 2px solid #fff; outline-of
 .project-ui-map-nodes button { cursor:pointer; }
 .project-ui-map-nodes button:hover { border-color:var(--orange); }
 .project-ui-map-nodes small { overflow:hidden; color:var(--faint); font-family:var(--mono); font-size:9px; text-overflow:ellipsis; white-space:nowrap; }
+.project-ui-map-edges { display:flex; min-width:0; flex-wrap:wrap; gap:8px; margin:14px 0 0; padding:0; list-style:none; }
+.project-ui-map-edges li { display:flex; min-height:32px; align-items:center; gap:7px; padding:6px 9px; border:1px solid var(--line); border-radius:999px; background:rgba(5,12,23,.9); color:var(--muted); font-size:10px; }
+.project-ui-map-edges .lucide { width:14px; height:14px; color:var(--orange); }
+.project-ui-map-edges.is-empty { color:var(--faint); font-size:10px; }
 .project-ui-claim { margin:0; color:var(--faint); font-size:10px; }
 .project-overview-grid { display:grid; grid-template-columns:minmax(0,1.25fr) minmax(320px,.75fr); gap:12px; }
 .milestone-rings { display:grid; grid-template-columns:repeat(4,minmax(110px,1fr)); gap:10px; padding:16px; border:1px solid var(--line); border-radius:var(--radius); background:linear-gradient(145deg,rgba(20,35,55,.97),rgba(12,23,39,.94)); }
