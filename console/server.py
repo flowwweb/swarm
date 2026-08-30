@@ -254,6 +254,45 @@ class ConsoleError(RuntimeError):
     """Expected, user-visible console failure."""
 
 
+def _preferred_image_media_type(accept: str) -> str:
+    value = str(accept or "").strip().casefold()
+    if not value:
+        return "image/png"
+    supported = ("image/avif", "image/webp", "image/png")
+    quality: dict[str, tuple[float, int]] = {media_type: (-1.0, -1) for media_type in supported}
+    for item in value.split(","):
+        parts = [part.strip() for part in item.split(";")]
+        media_range = parts[0]
+        q = 1.0
+        for parameter in parts[1:]:
+            if parameter.startswith("q="):
+                try:
+                    q = float(parameter[2:])
+                except ValueError:
+                    q = 0.0
+        if not 0.0 <= q <= 1.0:
+            q = 0.0
+        for media_type in supported:
+            if media_range == media_type:
+                specificity = 2
+            elif media_range == "image/*":
+                specificity = 1
+            elif media_range == "*/*":
+                specificity = 0
+            else:
+                continue
+            quality[media_type] = max(quality[media_type], (q, specificity))
+    choices = [media_type for media_type in supported if quality[media_type][0] > 0]
+    if not choices:
+        raise ConsoleError("no acceptable role avatar image format")
+    return max(
+        choices,
+        key=lambda media_type: (
+            quality[media_type][0], quality[media_type][1], -supported.index(media_type)
+        ),
+    )
+
+
 NOTIFICATION_RULES: dict[str, tuple[str, bool, str, str]] = {
     "BLOCKER": ("critical", True, "projects", "This task is waiting on an exact user, safety, or external release."),
     "MILESTONE_COMPLETED": ("info", False, "projects", "A whole-milestone acceptance receipt has been admitted."),
@@ -12606,16 +12645,13 @@ class App:
         record = self.builtin_role_avatar_assets.get(role_id)
         if record is None:
             raise ConsoleError("role avatar not found")
-        accepted = str(accept or "").casefold()
-        if "image/avif" in accepted:
+        media_type = _preferred_image_media_type(accept)
+        if media_type == "image/avif":
             selected = record["derivatives"][(128, "avif")]
-            media_type = "image/avif"
-        elif "image/webp" in accepted:
+        elif media_type == "image/webp":
             selected = record["derivatives"][(128, "webp")]
-            media_type = "image/webp"
         else:
             selected = record["source"]
-            media_type = "image/png"
         path = selected["file"]
         body = path.read_bytes()
         if len(body) != selected["bytes"] or hashlib.sha256(body).hexdigest() != selected["sha256"]:
@@ -14400,7 +14436,7 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_response(HTTPStatus.OK)
                 self.send_header("Content-Type", item["media_type"])
                 self.send_header("Content-Length", str(len(body)))
-                self.send_header("Cache-Control", "public, max-age=31536000, immutable")
+                self.send_header("Cache-Control", "public, max-age=3600")
                 self.send_header("ETag", f'"{item["digest"]}"')
                 self.send_header("Vary", "Accept")
                 self.send_header("X-Content-Type-Options", "nosniff")

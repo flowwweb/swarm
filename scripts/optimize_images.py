@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Iterable
 
 from PIL import Image, features
+from PIL import __version__ as PILLOW_VERSION
 
 
 SCHEMA_VERSION = 1
@@ -20,6 +21,15 @@ FORMAT_OPTIONS = {
     "webp": {"format": "WEBP", "quality": 82, "method": 6, "exact": True},
     "avif": {"format": "AVIF", "quality": 58, "speed": 6},
 }
+
+
+def encoder_identity() -> dict[str, str]:
+    """Bind derivative bytes to the exact encoder toolchain that produced them."""
+    return {
+        "pillow": PILLOW_VERSION,
+        "webp": str(features.version("webp") or "unavailable"),
+        "avif": str(features.version("avif") or "unavailable"),
+    }
 
 
 class OptimizationError(RuntimeError):
@@ -172,7 +182,11 @@ def optimize_directory(
 
     manifest = {
         "schema_version": SCHEMA_VERSION,
-        "settings": {"sizes": list(sizes), "formats": list(formats)},
+        "settings": {
+            "sizes": list(sizes),
+            "formats": list(formats),
+            "encoders": encoder_identity(),
+        },
         "assets": records,
     }
     manifest_payload = (json.dumps(manifest, indent=2, sort_keys=True) + "\n").encode("utf-8")

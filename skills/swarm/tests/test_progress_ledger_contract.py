@@ -8,6 +8,8 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+from PIL import Image
+
 from skills.swarm.runtime.progress_events import (
     Ledger,
     PROGRESS_LEDGER_PATH,
@@ -962,6 +964,19 @@ class ProgressLedgerContractTests(unittest.TestCase):
             set(assets["producer"]["derivatives"]),
             {(size, image_format) for size in (64, 128, 256, 512) for image_format in ("webp", "avif")},
         )
+        for record in assets.values():
+            for (size, image_format), derivative in record["derivatives"].items():
+                with Image.open(derivative["file"]) as decoded:
+                    self.assertEqual(decoded.format.casefold(), image_format)
+                    self.assertEqual(decoded.size, (size, size))
+                    self.assertIn("A", decoded.getbands())
+                    self.assertEqual(decoded.getchannel("A").getextrema(), (0, 255))
+        from skills.swarm.runtime import progress_events
+        with mock.patch.object(progress_events, "BUILTIN_ROLE_AVATAR_MANIFEST_SHA256", "0" * 64):
+            with self.assertRaisesRegex(ProgressEventError, "admitted production object"):
+                load_builtin_role_avatar_assets(
+                    repository / "skills" / "swarm" / "assets" / "role-avatars"
+                )
 
     def test_role_specializations_are_bounded_metadata_and_version_bound(self) -> None:
         builtins = self.role_manifests()

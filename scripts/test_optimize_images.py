@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import tempfile
 import unittest
+import subprocess
+import sys
 from pathlib import Path
 
 from PIL import Image
@@ -35,6 +37,25 @@ class OptimizeImagesTests(unittest.TestCase):
             (output / "sample-16.webp").write_bytes(b"stale")
             with self.assertRaisesRegex(OptimizationError, "missing or stale"):
                 optimize_directory(source, output, sizes=(16, 32), formats=("webp", "avif"), require_alpha=True, check=True)
+
+    def test_cli_is_byte_stable_across_processes_for_the_recorded_toolchain(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "source"
+            source.mkdir()
+            image = Image.new("RGBA", (32, 32), (255, 106, 61, 255))
+            image.putpixel((0, 0), (0, 0, 0, 0))
+            image.save(source / "sample.png")
+            script = Path(__file__).with_name("optimize_images.py")
+            outputs = [root / "first", root / "second"]
+            for output in outputs:
+                subprocess.run([
+                    sys.executable, str(script), "--source", str(source), "--output", str(output),
+                    "--sizes", "16,32", "--formats", "webp,avif", "--require-alpha",
+                ], check=True, capture_output=True, text=True)
+            first = {path.name: path.read_bytes() for path in outputs[0].iterdir()}
+            second = {path.name: path.read_bytes() for path in outputs[1].iterdir()}
+            self.assertEqual(first, second)
 
     def test_rejects_opaque_source_when_alpha_is_required(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

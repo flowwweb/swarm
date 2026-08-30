@@ -60,13 +60,18 @@ class SwarmConsoleTests(unittest.TestCase):
         png = app.role_avatar_response("manager", "image/png")
         webp = app.role_avatar_response("manager", "image/webp,image/*")
         avif = app.role_avatar_response("manager", "image/avif,image/webp")
+        rejected_avif = app.role_avatar_response("manager", "image/avif;q=0,image/webp")
+        preferred_webp = app.role_avatar_response("manager", "image/avif;q=.4,image/webp;q=.9")
         self.assertEqual((png["media_type"], png["body"][:8]), ("image/png", b"\x89PNG\r\n\x1a\n"))
         self.assertEqual((webp["media_type"], webp["body"][:4]), ("image/webp", b"RIFF"))
         self.assertEqual(avif["media_type"], "image/avif")
+        self.assertEqual((rejected_avif["media_type"], preferred_webp["media_type"]), ("image/webp", "image/webp"))
         self.assertIn(b"ftypavif", avif["body"][:32])
         self.assertLess(len(avif["body"]), len(png["body"]))
         with self.assertRaisesRegex(console.ConsoleError, "not found"):
             app.role_avatar_response("unknown", "image/avif")
+        with self.assertRaisesRegex(console.ConsoleError, "no acceptable"):
+            app.role_avatar_response("manager", "image/avif;q=0,image/webp;q=0,image/png;q=0")
         draft = {key: manager[key] for key in (
             "name", "purpose", "owns", "instructions", "boundaries",
             "default_skills", "specializations", "avatar_asset_digest", "accent",

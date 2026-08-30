@@ -84,6 +84,7 @@ ROLE_MANIFEST_FIELDS = frozenset({
 })
 ROLE_PAYLOAD_FIELDS = frozenset({"role_id", "expected_active_version", "assignment_task_id", "manifest"})
 ROLE_SOURCES = frozenset({"builtin", "custom", "user_override"})
+BUILTIN_ROLE_AVATAR_MANIFEST_SHA256 = "7e5719911e72d5ddca8ff1579e580a0bec24f0be83bd8ef6238575b448113c3b"
 ROLE_ACCENTS = {
     "manager": "#FF6B4A", "strategist": "#F97316", "researcher": "#22D3EE", "analyst": "#38BDF8",
     "specialist": "#6366F1", "inventor": "#D946EF", "architect": "#FBBF24", "designer": "#F72585",
@@ -923,12 +924,19 @@ def load_builtin_role_avatar_assets(avatar_root: Path) -> dict[str, dict[str, An
     if not source_root.is_dir() or source_root.is_symlink() or not optimized_root.is_dir() or optimized_root.is_symlink() or not manifest_path.is_file() or manifest_path.is_symlink():
         raise ProgressEventError("built-in role avatar inventory is unavailable")
     try:
-        payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest_bytes = manifest_path.read_bytes()
+        if hashlib.sha256(manifest_bytes).hexdigest() != BUILTIN_ROLE_AVATAR_MANIFEST_SHA256:
+            raise ProgressEventError("built-in role avatar manifest is not the admitted production object")
+        payload = json.loads(manifest_bytes.decode("utf-8"))
     except (OSError, UnicodeError, json.JSONDecodeError) as error:
         raise ProgressEventError("built-in role avatar manifest is invalid") from error
     if not isinstance(payload, dict) or set(payload) != {"schema_version", "settings", "assets"} or payload["schema_version"] != 1:
         raise ProgressEventError("built-in role avatar manifest is invalid")
-    if payload["settings"] != {"formats": ["webp", "avif"], "sizes": [64, 128, 256, 512]} or not isinstance(payload["assets"], list):
+    if payload["settings"] != {
+        "formats": ["webp", "avif"],
+        "sizes": [64, 128, 256, 512],
+        "encoders": {"pillow": "12.2.0", "webp": "1.6.0", "avif": "1.4.1"},
+    } or not isinstance(payload["assets"], list):
         raise ProgressEventError("built-in role avatar derivative policy is invalid")
     expected_ids = set(BUILT_IN_PROFESSIONS)
     source_files = {path.stem: path for path in source_root.glob("*.png") if path.is_file() and not path.is_symlink()}
