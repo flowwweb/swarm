@@ -247,7 +247,7 @@ icon = "🎨"
 icon = "✍️"
 [professions.developer]
 icon = "💻"
-[professions.content_creator]
+[professions.producer]
 icon = "🎬"
 [professions.tester]
 icon = "🧪"

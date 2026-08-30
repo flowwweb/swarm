@@ -33,7 +33,7 @@ class RoleGateDecision(StrEnum):
 PROFESSION_GROUPS = (
     ("Direction", (("manager", "Manager"), ("strategist", "Strategist"))),
     ("Discovery", (("researcher", "Researcher"), ("analyst", "Analyst"), ("specialist", "Specialist"), ("inventor", "Inventor"))),
-    ("Creation", (("architect", "Architect"), ("designer", "Designer"), ("artist", "Artist"), ("writer", "Writer"), ("developer", "Dev"), ("content_creator", "Content Creator"))),
+    ("Creation", (("architect", "Architect"), ("designer", "Designer"), ("artist", "Artist"), ("writer", "Writer"), ("developer", "Dev"), ("producer", "Producer"))),
     ("Assurance", (("tester", "Tester"), ("assistant", "Assistant"), ("security", "Security"), ("auditor", "Auditor"), ("legal", "Legal"), ("reviewer", "Reviewer"))),
     ("Delivery", (("operator", "Operator"), ("marketer", "Marketer"), ("support", "Support"))),
     ("Foundation", (("accountant", "Accountant"), ("recruiter", "Recruiter"), ("educator", "Educator"))),
@@ -48,7 +48,7 @@ PROFESSION_ALIASES = {
     "data_analyst": "analyst", "financial_analyst": "analyst",
     "content_strategist": "strategist", "social_strategist": "strategist", "sales_strategist": "strategist",
     "brand_strategist": "strategist", "security_engineer": "security", "support_specialist": "support",
-    "dev": "developer", "producer": "content_creator",
+    "dev": "developer",
 }
 
 def resolve_profession_id(value: str) -> str:
@@ -1321,7 +1321,7 @@ def select_graph(intake:TaskIntake, *, profile:GraphProfile|None=None)->GraphSel
             GraphNodeSpec("game_design","DESIGNER","DOER","Define the player contract, rules, UX, and content scope.",("studio_lead",)),
             GraphNodeSpec("game_engineering","DEV","DOER","Build deterministic runtime, platform, and integration surfaces.",("studio_lead",)),
             GraphNodeSpec("game_art","ARTIST","DOER","Produce the visual direction and production assets.",("studio_lead",)),
-            GraphNodeSpec("game_audio","ARTIST","DOER","Produce the sound and music direction and assets.",("studio_lead",)),
+            GraphNodeSpec("game_audio","PRODUCER","DOER","Produce the sound and music direction and assets.",("studio_lead",)),
             GraphNodeSpec("playtest_qa","TESTER","DOER","Independently exercise the integrated build and verify the player contract.",("game_design","game_engineering","game_art","game_audio")),
             GraphNodeSpec("release","OPERATOR","DOER","Package, publish, and verify the accepted release surface.",("playtest_qa",)),
         )

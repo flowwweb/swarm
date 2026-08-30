@@ -43,8 +43,8 @@ class SwarmConfigTests(unittest.TestCase):
         self.assertEqual(config.BUILT_IN_PROFESSIONS,BUILT_IN_PROFESSIONS)
         self.assertEqual(len(BUILT_IN_PROFESSIONS), 24)
         self.assertIn("assistant", BUILT_IN_PROFESSIONS)
-        self.assertIn("content_creator", BUILT_IN_PROFESSIONS)
-        self.assertNotIn("producer", BUILT_IN_PROFESSIONS)
+        self.assertIn("producer", BUILT_IN_PROFESSIONS)
+        self.assertNotIn("content_creator", BUILT_IN_PROFESSIONS)
         self.assertNotIn("critic", BUILT_IN_PROFESSIONS)
         self.assertNotIn("mother", BUILT_IN_PROFESSIONS)
 
@@ -146,23 +146,13 @@ class SwarmConfigTests(unittest.TestCase):
         with self.assertRaisesRegex(config.ConfigError,"unknown profession: critic"):
             config.resolve_profession_assignment(effective,"Critic")
 
-    def test_legacy_producer_resolves_to_content_creator_without_new_authority(self) -> None:
+    def test_producer_is_canonical_and_content_creator_is_not_registered(self) -> None:
         effective, _ = config.load(config.TEMPLATE_PATH)
-        for value in ("producer", "Producer", "content creator", "content_creator"):
-            assignment = config.resolve_profession_assignment(effective, value)
-            self.assertEqual((assignment["profession_id"], assignment["label"], assignment["authority"]), ("content_creator", "Content Creator", "none"))
-        self.assertNotIn("producer", effective["professions"])
-        with tempfile.TemporaryDirectory() as directory:
-            legacy = Path(directory) / "legacy-producer.toml"
-            legacy.write_text('[professions.Producer]\nicon = "📹"\n', encoding="utf-8")
-            migrated, _ = config.load(legacy)
-            self.assertNotIn("Producer", migrated["professions"])
-            self.assertEqual(migrated["professions"]["content_creator"]["icon"], "📹")
-
-            conflict = Path(directory) / "conflicting-producer.toml"
-            conflict.write_text('[professions.producer]\nicon = "📹"\n[professions.content_creator]\nicon = "🎬"\n', encoding="utf-8")
-            with self.assertRaisesRegex(config.ConfigError, "aliases for the same profession"):
-                config.load(conflict)
+        assignment = config.resolve_profession_assignment(effective, "Producer")
+        self.assertEqual((assignment["profession_id"], assignment["label"], assignment["authority"]), ("producer", "Producer", "none"))
+        for value in ("Content Creator", "content_creator"):
+            with self.assertRaisesRegex(config.ConfigError, "unknown profession"):
+                config.resolve_profession_assignment(effective, value)
 
     def test_role_icons_accept_custom_ctrl_and_disabled_contrast(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

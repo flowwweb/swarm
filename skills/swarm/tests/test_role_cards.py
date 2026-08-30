@@ -13,7 +13,7 @@ EXPECTED_CARDS = {
     "manager": "Manager", "strategist": "Strategist", "researcher": "Researcher",
     "analyst": "Analyst", "specialist": "Specialist", "inventor": "Inventor",
     "architect": "Architect", "designer": "Designer", "artist": "Artist",
-    "writer": "Writer", "developer": "Dev", "content_creator": "Content Creator",
+    "writer": "Writer", "developer": "Dev", "producer": "Producer",
     "tester": "Tester", "assistant": "Assistant", "security": "Security",
     "auditor": "Auditor", "legal": "Legal", "reviewer": "Reviewer",
     "operator": "Operator", "marketer": "Marketer", "support": "Support",
@@ -51,7 +51,7 @@ class RoleCardTests(unittest.TestCase):
         self.assertFalse((ROLE_ROOT / "watchdog.md").exists())
         self.assertFalse((ROLE_ROOT / "ctrl.md").exists())
         self.assertFalse((ROLE_ROOT / "critic.md").exists())
-        self.assertFalse((ROLE_ROOT / "producer.md").exists())
+        self.assertFalse((ROLE_ROOT / "content_creator.md").exists())
 
     def test_assistant_and_reviewer_cards_preserve_authority_boundaries(self) -> None:
         assistant = (ROLE_ROOT / "assistant.md").read_text(encoding="utf-8")

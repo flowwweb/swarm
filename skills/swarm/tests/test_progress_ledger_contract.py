@@ -784,71 +784,33 @@ class ProgressLedgerContractTests(unittest.TestCase):
         self.assertEqual(assignments["task-after"]["manifest_version"], revised["version"])
         self.assertNotEqual(assignments["task-before"]["manifest_version"], assignments["task-after"]["manifest_version"])
 
-    def test_parent_producer_manifest_and_assignment_migrate_to_content_creator(self) -> None:
-        def retained_records(root: Path, events: list[dict]) -> bytes:
-            records = []
-            for event_seq, event in enumerate(events, 1):
-                event_digest = hashlib.sha256(json.dumps(event, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
-                records.append(json.dumps({"event_seq": event_seq, "event_digest": event_digest, "event": event}, ensure_ascii=False, sort_keys=True, separators=(",", ":")))
-            path = root / PROGRESS_LEDGER_PATH
-            path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_bytes(("\n".join(records) + "\n").encode("utf-8"))
-            return path.read_bytes()
-
+    def test_retained_producer_manifest_and_assignment_remain_byte_and_version_truthful(self) -> None:
         builtins = self.role_manifests()
-        current = next(role for role in builtins if role["id"] == "content_creator")
-        producer = build_role_manifest(
-            "producer",
-            self.role_draft(
-                current,
-                name="Producer",
-                purpose="Apply the Producer profession perspective to one bounded SWARM assignment.",
-                owns=["Producer profession guidance for the assigned surface."],
-                specializations=["Creative Producer", "Technical Producer", "Content Producer", "Release Producer"],
-            ),
-            "builtin",
-            ["role-card:producer:parent-ledger"],
-        )
+        producer = next(role for role in builtins if role["id"] == "producer")
         assignment = role_material_event(
-            "ROLE_ASSIGNMENT_BOUND", event_id="parent-producer-assignment", dedupe_key="parent-producer-assignment-dedupe",
+            "ROLE_ASSIGNMENT_BOUND", event_id="retained-producer-assignment", dedupe_key="retained-producer-assignment-dedupe",
             role_id="producer", manifest=producer, expected_active_version=producer["version"],
-            assignment_task_id="task-parent-producer", provenance="parent-ledger:producer", observed_at_ms=1,
+            assignment_task_id="task-retained-producer", provenance="retained:producer", observed_at_ms=1,
         )
-        retained_bytes = retained_records(self.root, [assignment])
+        event_digest = hashlib.sha256(json.dumps(assignment, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+        record = json.dumps({"event_seq": 1, "event_digest": event_digest, "event": assignment}, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode() + b"\n"
+        ledger_path = self.root / PROGRESS_LEDGER_PATH
+        ledger_path.parent.mkdir(parents=True, exist_ok=True)
+        ledger_path.write_bytes(record)
 
         projected = ProgressLedger(self.root).project_role_manifests(builtins)
         roles = {role["id"]: role for role in projected["roles"]}
         self.assertEqual((projected["built_in_count"], len(roles)), (24, 24))
-        self.assertNotIn("producer", roles)
-        self.assertIn(producer["version"], {version["version"] for version in roles["content_creator"]["versions"]})
-        self.assertTrue(all(version["id"] == "content_creator" for version in roles["content_creator"]["versions"]))
+        self.assertIn("producer", roles)
+        self.assertNotIn("content_creator", roles)
+        self.assertIn(producer["version"], {version["version"] for version in roles["producer"]["versions"]})
+        self.assertTrue(all(version["id"] == "producer" for version in roles["producer"]["versions"]))
         self.assertEqual(projected["assignments"], [{
-            "task_id": "task-parent-producer", "role_id": "content_creator", "manifest_version": producer["version"],
-            "event_id": "parent-producer-assignment", "event_seq": 1,
+            "task_id": "task-retained-producer", "role_id": "producer", "manifest_version": producer["version"],
+            "event_id": "retained-producer-assignment", "event_seq": 1,
         }])
         self.assertEqual(ProgressLedger(self.root).project_role_manifests(builtins), projected)
-        self.assertEqual((self.root / PROGRESS_LEDGER_PATH).read_bytes(), retained_bytes)
-
-        conflict_root = self.root / "producer-content-creator-conflict"
-        producer_custom = build_role_manifest("producer", self.role_draft(current, name="Legacy Producer"), "custom", ["retained:producer"])
-        creator_custom = build_role_manifest("content_creator", self.role_draft(current, name="Custom Content Creator"), "custom", ["retained:content-creator"])
-        conflict_events = [
-            role_material_event(
-                "ROLE_MANIFEST_CREATE", event_id="retained-producer", dedupe_key="retained-producer-dedupe",
-                role_id="producer", manifest=producer_custom, expected_active_version=None,
-                assignment_task_id=None, provenance="retained:producer", observed_at_ms=1,
-            ),
-            role_material_event(
-                "ROLE_MANIFEST_CREATE", event_id="retained-content-creator", dedupe_key="retained-content-creator-dedupe",
-                role_id="content_creator", manifest=creator_custom, expected_active_version=None,
-                assignment_task_id=None, provenance="retained:content-creator", observed_at_ms=2,
-            ),
-        ]
-        conflict_bytes = retained_records(conflict_root, conflict_events)
-        for _ in range(2):
-            with self.assertRaisesRegex(ProgressEventError, "active versions conflict"):
-                ProgressLedger(conflict_root).project_role_manifests(builtins)
-        self.assertEqual((conflict_root / PROGRESS_LEDGER_PATH).read_bytes(), conflict_bytes)
+        self.assertEqual(ledger_path.read_bytes(), record)
 
     def test_role_avatar_digest_and_version_are_content_bound(self) -> None:
         builtins = self.role_manifests()
@@ -867,7 +829,7 @@ class ProgressLedgerContractTests(unittest.TestCase):
         expected = {
             "manager": "#FF6B4A", "strategist": "#F97316", "researcher": "#22D3EE", "analyst": "#38BDF8",
             "specialist": "#6366F1", "inventor": "#D946EF", "architect": "#FBBF24", "designer": "#F72585",
-            "artist": "#8B5CF6", "writer": "#C084FC", "developer": "#2563EB", "content_creator": "#F43F5E",
+            "artist": "#8B5CF6", "writer": "#C084FC", "developer": "#2563EB", "producer": "#F43F5E",
             "tester": "#14B8A6", "assistant": "#818CF8", "security": "#FF4D2E", "auditor": "#CBD5E1",
             "legal": "#E11D48", "reviewer": "#A3E635", "operator": "#10B981", "marketer": "#FB7185",
             "support": "#5EEAD4", "accountant": "#2DD4BF", "recruiter": "#A855F7", "educator": "#FDE047",
@@ -903,8 +865,8 @@ class ProgressLedgerContractTests(unittest.TestCase):
         by_id = {role["id"]: role for role in builtins}
         self.assertIn("Game Development", by_id["developer"]["specializations"])
         self.assertIn("Game Design", by_id["designer"]["specializations"])
-        self.assertEqual(by_id["content_creator"]["specializations"], ["YouTube Creator", "Social Media Creator", "Podcast Creator", "Content Production"])
-        self.assertNotIn("producer", by_id)
+        self.assertEqual(by_id["producer"]["specializations"], ["Creative Producer", "Technical Producer", "Content Producer", "Release Producer"])
+        self.assertNotIn("content_creator", by_id)
         self.assertNotIn("Friendly", by_id["reviewer"]["specializations"])
         self.assertNotIn("Hostile", by_id["reviewer"]["specializations"])
         self.assertNotIn("critic", by_id)

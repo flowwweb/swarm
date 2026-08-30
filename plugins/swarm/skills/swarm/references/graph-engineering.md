@@ -50,15 +50,15 @@ CTRL
   -> MANAGER LEAD
        -> DESIGNER DOER   ┐
        -> DEV DOER        ├─ independent production lanes
-       -> ARTIST DOER     │ visual production
-       -> ARTIST DOER     ┘ game audio
+       -> ARTIST DOER     │
+       -> PRODUCER DOER   ┘
             -> TESTER DOER / playtest
                  -> OPERATOR DOER
 ```
 
 The game-studio lead owns the integrated plan. Design owns the player contract
-and rules; engineering owns deterministic runtime and integration; separately
-leased Artist lanes own visual production and game audio; the independent Tester
+and rules; engineering owns deterministic runtime and integration; art owns
+visual production; the Producer owns sound and music; the independent Tester
 verifies the integrated player contract; the Operator owns packaging and
 publication checks.
 These are conventional production dependencies encoded as a SWARM profile,

@@ -87,7 +87,7 @@ ROLE_SOURCES = frozenset({"builtin", "custom", "user_override"})
 ROLE_ACCENTS = {
     "manager": "#FF6B4A", "strategist": "#F97316", "researcher": "#22D3EE", "analyst": "#38BDF8",
     "specialist": "#6366F1", "inventor": "#D946EF", "architect": "#FBBF24", "designer": "#F72585",
-    "artist": "#8B5CF6", "writer": "#C084FC", "developer": "#2563EB", "content_creator": "#F43F5E",
+    "artist": "#8B5CF6", "writer": "#C084FC", "developer": "#2563EB", "producer": "#F43F5E",
     "tester": "#14B8A6", "assistant": "#818CF8", "security": "#FF4D2E", "auditor": "#CBD5E1",
     "legal": "#E11D48", "reviewer": "#A3E635", "operator": "#10B981", "marketer": "#FB7185",
     "support": "#5EEAD4", "accountant": "#2DD4BF", "recruiter": "#A855F7", "educator": "#FDE047",
@@ -104,7 +104,7 @@ BUILT_IN_ROLE_SPECIALIZATIONS = {
     "artist": ("Brand Artist", "Concept Artist", "3D Artist", "Motion Artist"),
     "writer": ("Technical Writer", "UX Writer", "Copywriter", "Documentation Writer"),
     "developer": ("Frontend Developer", "Backend Developer", "Full-stack Developer", "Game Development"),
-    "content_creator": ("YouTube Creator", "Social Media Creator", "Podcast Creator", "Content Production"),
+    "producer": ("Creative Producer", "Technical Producer", "Content Producer", "Release Producer"),
     "tester": ("QA Tester", "Automation Tester", "Performance Tester", "Accessibility Tester"),
     "assistant": ("Executive Assistant", "Project Assistant", "Research Assistant", "Administrative Assistant"),
     "security": ("Application Security", "Cloud Security", "Infrastructure Security", "Security Operations"),
@@ -2227,65 +2227,21 @@ class Ledger:
         }
         return {"records": json.loads(json.dumps(rows, sort_keys=True)), "events": events, "event_count": len(events)}
 
-    @staticmethod
-    def _project_current_role_states(raw_roles: Mapping[str, Any]) -> dict[str, Any]:
-        def copied(role_id: str, state: Mapping[str, Any]) -> dict[str, Any]:
-            versions = {}
-            for version, retained in state["versions"].items():
-                manifest = dict(retained)
-                if role_id == "producer":
-                    if manifest.get("id") != "producer":
-                        raise ProgressEventError("retained Producer manifest identity conflicts")
-                    manifest["id"] = "content_creator"
-                versions[version] = manifest
-            return {
-                "active_version": state["active_version"],
-                "canonical_version": state["canonical_version"],
-                "versions": versions,
-                "events": list(state["events"]),
-            }
-
-        roles = {
-            role_id: copied(role_id, state)
-            for role_id, state in raw_roles.items()
-            if role_id not in {"producer", "content_creator"}
-        }
-        legacy = copied("producer", raw_roles["producer"]) if "producer" in raw_roles else None
-        current = copied("content_creator", raw_roles["content_creator"]) if "content_creator" in raw_roles else None
-        if legacy is None and current is None:
-            return roles
-        if legacy is None or current is None:
-            roles["content_creator"] = current or legacy
-            return roles
-
-        versions = dict(legacy["versions"])
-        for version, manifest in current["versions"].items():
-            retained = versions.get(version)
-            if retained is not None and retained != manifest:
-                raise ProgressEventError("retained Producer and Content Creator manifest versions conflict")
-            versions[version] = manifest
-        legacy_active = legacy["active_version"]
-        current_active = current["active_version"]
-        if legacy_active and current_active and legacy_active != current_active:
-            legacy_manifest = legacy["versions"].get(legacy_active)
-            current_manifest = current["versions"].get(current_active)
-            if not legacy_manifest or not current_manifest or legacy_manifest["source"] != "builtin" or current_manifest["source"] == "custom":
-                raise ProgressEventError("retained Producer and Content Creator active versions conflict")
-        roles["content_creator"] = {
-            "active_version": current_active or legacy_active,
-            "canonical_version": current["canonical_version"] or legacy["canonical_version"],
-            "versions": versions,
-            "events": list(dict.fromkeys([*legacy["events"], *current["events"]])),
-        }
-        return roles
-
     def project_role_manifests(self, builtins: tuple[dict[str, Any], ...]) -> dict[str, Any]:
         builtin_by_id = {manifest["id"]: validate_role_manifest(manifest) for manifest in builtins}
         if set(builtin_by_id) != set(BUILT_IN_PROFESSIONS) or len(builtin_by_id) != 24:
             raise ProgressEventError("role projection requires the exact 24 built-ins")
         with self._state.locked():
             projection, _ = self._replay_unlocked()
-        roles = self._project_current_role_states(projection["role_manifests"])
+        roles = {
+            role_id: {
+                "active_version": state["active_version"],
+                "canonical_version": state["canonical_version"],
+                "versions": dict(state["versions"]),
+                "events": list(state["events"]),
+            }
+            for role_id, state in projection["role_manifests"].items()
+        }
         for role_id, builtin in builtin_by_id.items():
             role = roles.setdefault(role_id, {"active_version": None, "canonical_version": None, "versions": {}, "events": []})
             role["versions"].setdefault(builtin["version"], builtin)
@@ -2311,10 +2267,7 @@ class Ledger:
             })
         return {
             "schema_version": 1, "built_in_count": 24, "roles": result,
-            "assignments": sorted(
-                ({**item, "role_id": "content_creator" if item["role_id"] == "producer" else item["role_id"]} for item in projection["role_assignments"].values()),
-                key=lambda item: item["task_id"],
-            ),
+            "assignments": sorted(projection["role_assignments"].values(), key=lambda item: item["task_id"]),
             "cursor": projection["cursor"],
             "hierarchy_binding": {
                 "project_field": "project_id", "ctrl_membership_field": "controller_ids",
