@@ -10,7 +10,9 @@ from typing import Iterable
 CSS_COLOR_4_SOURCE = "W3C CSS Color Module Level 4 named colors"
 CURATED_EXTENSION_SOURCE = "SWARM curated friendly display colors v1"
 HEX_COLOR = re.compile(r"#[0-9A-F]{6}\Z")
-FRIENDLY_NAME = re.compile(r"[A-Z][A-Za-z0-9]*(?:-[A-Z0-9][A-Za-z0-9]*)*\Z")
+FRIENDLY_NAME = re.compile(r"[A-Z][A-Za-z]*\Z")
+ROMAN_SUFFIX = re.compile(r"M{0,3}(?:CM|CD|D?C{0,3})(?:XC|XL|L?X{0,3})(?:IX|IV|V?I{0,3})\Z")
+DISPLAY_NAME = re.compile(r"[A-Z][A-Za-z]*(?: [IVXLCDM]+)?\Z")
 
 
 @dataclass(frozen=True, slots=True)
@@ -71,6 +73,7 @@ _CSS_SEED = (
 )
 
 _EXTENSIONS = (
+    ("Mint", "#3EB489"), ("Rose", "#E63E62"), ("Amber", "#FFBF00"),
     ("Aurora Teal", "#008F8C"), ("Berry Punch", "#B23A8A"), ("Bluebell", "#5B6EE1"),
     ("Canyon Clay", "#C65D3B"), ("Cedar Green", "#3F7D5B"), ("Citrine", "#D9A600"),
     ("Cloudberry", "#E06C9F"), ("Cobalt Bloom", "#2855D9"), ("Copper Glow", "#C77832"),
@@ -94,7 +97,9 @@ def _registry() -> tuple[AgentColor, ...]:
     result: list[AgentColor] = []
     for source, values in ((CSS_COLOR_4_SOURCE, _CSS_SEED), (CURATED_EXTENSION_SOURCE, _EXTENSIONS)):
         for raw_name, color in values:
-            name = "-".join(raw_name.split())
+            if not FRIENDLY_NAME.fullmatch(raw_name):
+                continue
+            name = raw_name
             if color in seen:
                 continue
             seen.add(color)
@@ -103,6 +108,28 @@ def _registry() -> tuple[AgentColor, ...]:
 
 
 AGENT_COLOR_REGISTRY = _registry()
+
+
+def valid_display_name(value: str) -> bool:
+    if not isinstance(value, str) or not DISPLAY_NAME.fullmatch(value):
+        return False
+    parts = value.split(" ", 1)
+    return len(parts) == 1 or (parts[1] != "I" and bool(ROMAN_SUFFIX.fullmatch(parts[1])))
+
+
+def _roman(value: int) -> str:
+    if not isinstance(value, int) or isinstance(value, bool) or not 2 <= value <= 3999:
+        raise ValueError("agent identity suffix must be between II and MMMCMXCIX")
+    parts: list[str] = []
+    remaining = value
+    for number, token in (
+        (1000, "M"), (900, "CM"), (500, "D"), (400, "CD"),
+        (100, "C"), (90, "XC"), (50, "L"), (40, "XL"),
+        (10, "X"), (9, "IX"), (5, "V"), (4, "IV"), (1, "I"),
+    ):
+        count, remaining = divmod(remaining, number)
+        parts.append(token * count)
+    return "".join(parts)
 
 
 def _oklab(color: str) -> tuple[float, float, float]:
@@ -139,7 +166,10 @@ def assign_agent_color(
         occupied.add(name.casefold())
     existing = retained.get(agent_id)
     if existing is not None:
-        base = existing.rsplit("-", 1)[0] if existing.rsplit("-", 1)[-1].isdigit() else existing
+        parts = existing.split(" ", 1)
+        if not valid_display_name(existing):
+            raise ValueError("retained agent identity has invalid display grammar")
+        base = parts[0]
         match = next((item for item in AGENT_COLOR_REGISTRY if item.name.casefold() == base.casefold()), None)
         if match is None:
             raise ValueError("retained agent identity is not in the registry")
@@ -149,22 +179,17 @@ def assign_agent_color(
         AGENT_COLOR_REGISTRY,
         key=lambda item: (sum((left - right) ** 2 for left, right in zip(_oklab(item.hex), target)), item.name.casefold()),
     )
-    free = [item for item in ranked if item.name.casefold() not in occupied]
-    single_word = next((item for item in free if "-" not in item.name), None)
-    if single_word is not None:
-        return single_word
-    compound = next(iter(free), None)
-    if compound is not None:
-        return compound
-    base = ranked[0]
-    suffix = 2
-    while f"{base.name}-{suffix}".casefold() in occupied:
-        suffix += 1
-    return AgentColor(f"{base.name}-{suffix}", base.hex, base.source)
+    available = next((item for item in ranked if item.name.casefold() not in occupied), None)
+    if available is not None:
+        return available
+    for suffix in range(2, 4000):
+        roman = _roman(suffix)
+        available = next((item for item in ranked if f"{item.name} {roman}".casefold() not in occupied), None)
+        if available is not None:
+            return AgentColor(f"{available.name} {roman}", available.hex, available.source)
+    raise ValueError("agent identity registry and bounded Roman suffixes are exhausted")
 
 
-if len(AGENT_COLOR_REGISTRY) <= 120:
-    raise RuntimeError("agent color registry must contain more than 120 colors")
 if len({item.name.casefold() for item in AGENT_COLOR_REGISTRY}) != len(AGENT_COLOR_REGISTRY):
     raise RuntimeError("agent color names must be unique case-insensitively")
 if not all(FRIENDLY_NAME.fullmatch(item.name) for item in AGENT_COLOR_REGISTRY):

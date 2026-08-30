@@ -3,18 +3,24 @@ import unittest
 from skills.swarm.runtime.agent_colors import (
     AGENT_COLOR_REGISTRY,
     CSS_COLOR_4_SOURCE,
+    DISPLAY_NAME,
     FRIENDLY_NAME,
     assign_agent_color,
+    valid_display_name,
 )
 
 
 class AgentColorContractTests(unittest.TestCase):
-    def test_registry_is_large_unique_and_provenanced(self) -> None:
-        self.assertGreater(len(AGENT_COLOR_REGISTRY), 120)
+    def test_registry_is_single_word_unique_and_provenanced(self) -> None:
+        self.assertEqual(len(AGENT_COLOR_REGISTRY), 83)
         self.assertEqual(len({item.name.casefold() for item in AGENT_COLOR_REGISTRY}), len(AGENT_COLOR_REGISTRY))
         self.assertEqual(len({item.hex for item in AGENT_COLOR_REGISTRY}), len(AGENT_COLOR_REGISTRY))
         self.assertTrue(all(item.source and item.hex.startswith("#") and len(item.hex) == 7 for item in AGENT_COLOR_REGISTRY))
-        self.assertGreater(sum(item.source == CSS_COLOR_4_SOURCE for item in AGENT_COLOR_REGISTRY), 100)
+        self.assertGreater(sum(item.source == CSS_COLOR_4_SOURCE for item in AGENT_COLOR_REGISTRY), 50)
+        by_name = {item.name: item.hex for item in AGENT_COLOR_REGISTRY}
+        self.assertEqual({name: by_name[name] for name in ("Mint", "Rose", "Amber")}, {
+            "Mint": "#3EB489", "Rose": "#E63E62", "Amber": "#FFBF00",
+        })
         self.assertTrue(all(FRIENDLY_NAME.fullmatch(item.name) for item in AGENT_COLOR_REGISTRY))
         self.assertTrue(all(not any(character.isspace() for character in item.name) and "_" not in item.name for item in AGENT_COLOR_REGISTRY))
 
@@ -26,28 +32,23 @@ class AgentColorContractTests(unittest.TestCase):
         self.assertEqual(replay, first)
         self.assertNotEqual(second.name.casefold(), first.name.casefold())
 
-    def test_palette_exhaustion_uses_stable_numeric_suffix(self) -> None:
+    def test_palette_exhaustion_uses_stable_roman_suffix(self) -> None:
         occupied = tuple((f"agent-{index}", item.name) for index, item in enumerate(AGENT_COLOR_REGISTRY))
         first = assign_agent_color("overflow-a", "#FF0000", occupied)
-        second = assign_agent_color("overflow-b", "#FF0000", (*occupied, ("overflow-a", first.name)))
-        self.assertEqual(first.name, "Red-2")
-        self.assertEqual(second.name, "Red-3")
+        occupied_ii = tuple((f"roman-{index}", f"{item.name} II") for index, item in enumerate(AGENT_COLOR_REGISTRY))
+        second = assign_agent_color("overflow-b", "#FF0000", (*occupied, *occupied_ii))
+        self.assertEqual(first.name, "Red II")
+        self.assertEqual(second.name, "Red III")
         self.assertEqual(first.hex, "#FF0000")
 
-    def test_single_word_pool_precedes_nearer_compound_then_suffixes(self) -> None:
-        singles = tuple(item for item in AGENT_COLOR_REGISTRY if "-" not in item.name)
-        compounds = tuple(item for item in AGENT_COLOR_REGISTRY if "-" in item.name)
-        self.assertTrue(singles)
-        self.assertTrue(compounds)
-        nearest_red_single = assign_agent_color("single", "#F0F8FF", ())
-        self.assertNotIn("-", nearest_red_single.name)
-        occupied_singles = tuple((f"single-{index}", item.name) for index, item in enumerate(singles))
-        reserve = assign_agent_color("reserve", "#F0F8FF", occupied_singles)
-        self.assertIn("-", reserve.name)
-        self.assertFalse(reserve.name.rsplit("-", 1)[-1].isdigit())
-        occupied_all = tuple((f"all-{index}", item.name) for index, item in enumerate(AGENT_COLOR_REGISTRY))
-        exhausted = assign_agent_color("exhausted", "#F0F8FF", occupied_all)
-        self.assertTrue(exhausted.name.rsplit("-", 1)[-1].isdigit())
+    def test_display_grammar_allows_only_bounded_roman_whitespace(self) -> None:
+        examples = ("Violet", "Violet II", "Violet III", "Violet MMMCMXCIX")
+        self.assertTrue(all(valid_display_name(name) for name in examples))
+        self.assertFalse(valid_display_name("Orange Red"))
+        self.assertFalse(valid_display_name("Orange-Red"))
+        self.assertFalse(valid_display_name("Violet I"))
+        self.assertFalse(valid_display_name("Violet  II"))
+        self.assertFalse(valid_display_name("Violet_II"))
 
     def test_invalid_or_conflicting_input_fails_closed(self) -> None:
         with self.assertRaisesRegex(ValueError, "#RRGGBB"):
