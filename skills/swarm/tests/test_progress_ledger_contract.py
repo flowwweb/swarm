@@ -255,6 +255,31 @@ class ProgressLedgerContractTests(unittest.TestCase):
         restarted.append_connector_receipt({**base, "receipt_id": "local-3", "receipt_index": 3, "status": "RESULT", "observed_root_digest": "1" * 64, "observed_at_ms": 12})
         self.assertTrue(restarted.replay()["connector_receipts"]["local-key"]["terminal"])
 
+    def test_connector_command_reservation_is_atomic_replay_or_conflict(self) -> None:
+        command = {
+            "schema_version": 1, "record_type": "CONNECTOR", "receipt_id": "reserve-receipt",
+            "command_id": "reserve-command", "receipt_index": 0, "idempotency_key": "reserve-key",
+            "command_digest": "2" * 64, "project_id": "project-alpha", "root_digest": "3" * 64,
+            "action": "TASK", "status": "COMMAND", "thread_id": None, "turn_id": None,
+            "observed_root_digest": None, "observed_at_ms": 1,
+        }
+        appended = self.ledger.reserve_connector_command(command, expected_revision=0)
+        replay = self.ledger.reserve_connector_command(command, expected_revision=0)
+        self.assertEqual((appended["status"], replay["status"]), ("APPENDED", "REPLAY"))
+        self.assertEqual(appended["cursor"], replay["cursor"])
+        for changed in (
+            {"command_digest": "4" * 64},
+            {"idempotency_key": "other-key"},
+            {"command_id": "other-command"},
+            {"receipt_id": "other-receipt"},
+        ):
+            result = self.ledger.reserve_connector_command({**command, **changed}, expected_revision=1)
+            self.assertEqual(result["status"], "CONFLICT")
+        stale = self.host_ledger(self.root / "stale")
+        self.assertEqual(stale.reserve_connector_command(command, expected_revision=1)["status"], "CONFLICT")
+        self.assertFalse((self.root / "stale" / PROGRESS_LEDGER_PATH).exists())
+        self.assertEqual(len(self.ledger.replay()["connector_receipts"]), 1)
+
     @staticmethod
     def event(
         event_id: str,

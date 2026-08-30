@@ -2037,6 +2037,37 @@ class Ledger:
             self._condition.notify_all()
         return {"status": "appended", "cursor": projection["cursor"], "event_digest": event_digest, "bytes": len(line)}
 
+    def reserve_connector_command(self, payload: Mapping[str, Any], *, expected_revision: int) -> dict[str, Any]:
+        event = _validate_connector_receipt(dict(payload))
+        if event["status"] != "COMMAND" or event["receipt_index"] != 0:
+            raise ProgressEventError("connector reservation requires COMMAND index zero")
+        expected_revision = _positive_int(expected_revision, "connector expected revision", allow_zero=True)
+        event_digest = _connector_receipt_digest(event)
+        with self._state.locked():
+            projection, records = self._replay_unlocked()
+            command = projection["connector_receipts"].get(event["idempotency_key"])
+            retained_digest = projection["connector_receipt_ids"].get(event["receipt_id"])
+            command_binding = projection["connector_command_ids"].get(event["command_id"])
+            if command is not None:
+                retained = command["receipts"][0]
+                if retained["event_digest"] == event_digest:
+                    return {"status": "REPLAY", "command": json.loads(json.dumps(command, sort_keys=True)), "cursor": {"event_seq": retained["event_seq"], "event_id": event["receipt_id"], "event_digest": event_digest}}
+                return {"status": "CONFLICT", "command": json.loads(json.dumps(command, sort_keys=True)), "cursor": projection["cursor"]}
+            if retained_digest is not None or command_binding is not None or len(records) != expected_revision:
+                return {"status": "CONFLICT", "command": None, "cursor": projection["cursor"]}
+            event_seq = len(records) + 1
+            trial = json.loads(json.dumps(projection, sort_keys=True))
+            self._apply_connector_receipt(trial, event, event_seq, event_digest)
+            record = {"event_seq": event_seq, "event_digest": event_digest, "event": event}
+            line = json.dumps(record, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8") + b"\n"
+            self._state.path.parent.mkdir(parents=True, exist_ok=True)
+            with self._state.path.open("ab") as handle:
+                handle.write(line); handle.flush(); os.fsync(handle.fileno())
+            self._write_projection_unlocked(trial)
+        with self._condition:
+            self._condition.notify_all()
+        return {"status": "APPENDED", "command": json.loads(json.dumps(trial["connector_receipts"][event["idempotency_key"]], sort_keys=True)), "cursor": trial["cursor"]}
+
     def append(self, payload: Mapping[str, Any]) -> dict[str, Any]:
         event = validate_progress_material_event(dict(payload))
         with self._state.locked():

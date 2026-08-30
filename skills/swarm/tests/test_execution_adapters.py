@@ -47,10 +47,27 @@ from skills.swarm.runtime import (
     WorkSize,
     Worker,
     HostServiceTierReceipt,
+    HQAuthorizationReceipt,
+    HQCommandAction,
+    HQCommandEnvelope,
+    HQTargetIntent,
     ServiceTierTruth,
     TopologyMaterializationPlan,
+    UniversalHQConnector,
+    host_hq_authorization,
     route_execution,
 )
+from skills.swarm.runtime.progress_events import Ledger
+
+
+class FakeCodexTransport:
+    def __init__(self, response=None):
+        self.response = response or {"threadId": "thread-1", "turnId": "turn-1", "rootDigest": "a" * 64}
+        self.calls = []
+
+    def request(self, method, params):
+        self.calls.append((method, dict(params)))
+        return dict(self.response)
 
 
 class ExecutionAdapterTests(unittest.TestCase):
@@ -235,6 +252,64 @@ class ExecutionAdapterTests(unittest.TestCase):
                 ),
                 enabled=True,
             )
+
+    def test_universal_connector_reserves_once_and_never_launches_process(self) -> None:
+        import tempfile
+        from pathlib import Path
+        transport = FakeCodexTransport()
+        adapter = CodexAppServerAdapter(transport=transport)
+        self.assertEqual(adapter.entrypoint, ())
+        connector = UniversalHQConnector(adapter)
+        envelope = HQCommandEnvelope("hq-1", "key-1", HQCommandAction.TASK, "project-a", "a" * 64, "ctrl-a", HQTargetIntent.EXISTING_THREAD, "thread-existing", "b" * 64, 0, 1, 100)
+        auth = host_hq_authorization(HQAuthorizationReceipt("auth-1", envelope.digest, "project-a", "a" * 64, "ctrl-a", (HQCommandAction.TASK,), 100))
+        with tempfile.TemporaryDirectory() as directory:
+            ledger = Ledger(Path(directory))
+            result = connector.execute(envelope, auth, ledger, now_ms=1, observed_project_id="project-a", observed_root_digest="a" * 64)
+            replay = connector.execute(envelope, auth, ledger, now_ms=2, observed_project_id="project-a", observed_root_digest="a" * 64)
+            self.assertEqual((result.status, result.thread_id, result.turn_id), ("RESULT", "thread-1", "turn-1"))
+            self.assertEqual(replay.status, "REPLAY")
+            self.assertEqual(len(transport.calls), 1)
+            self.assertNotIn("projectId", repr(transport.calls))
+            self.assertNotIn("agent_role", repr(transport.calls))
+            self.assertEqual([item["status"] for item in ledger.replay()["connector_receipts"]["key-1"]["receipts"]], ["COMMAND", "ACKNOWLEDGED", "RESULT"])
+
+    def test_universal_connector_guards_unsupported_and_local_paths(self) -> None:
+        import tempfile
+        from pathlib import Path
+        with tempfile.TemporaryDirectory() as directory:
+            ledger = Ledger(Path(directory))
+            missing_transport = FakeCodexTransport()
+            adapter = CodexAppServerAdapter(transport=None)
+            connector = UniversalHQConnector(adapter)
+            envelope = HQCommandEnvelope("hq-u", "key-u", HQCommandAction.TASK, "project-a", "a" * 64, "ctrl-a", HQTargetIntent.EXISTING_THREAD, "thread-existing", "b" * 64, 0, 1, 100)
+            auth = host_hq_authorization(HQAuthorizationReceipt("auth-u", envelope.digest, "project-a", "a" * 64, "ctrl-a", (HQCommandAction.TASK,), 100))
+            self.assertEqual(connector.execute(envelope, auth, ledger, now_ms=1, observed_project_id="project-a", observed_root_digest="a" * 64).status, "UNSUPPORTED")
+            self.assertEqual(missing_transport.calls, [])
+        with tempfile.TemporaryDirectory() as directory:
+            ledger = Ledger(Path(directory))
+            transport = FakeCodexTransport()
+            connector = UniversalHQConnector(CodexAppServerAdapter(transport=transport))
+            local = HQCommandEnvelope("hq-local", "key-local", HQCommandAction.LOCAL_HQ, "project-a", "a" * 64, "", HQTargetIntent.LOCAL, "", "b" * 64, 0, 1, 100)
+            auth = host_hq_authorization(HQAuthorizationReceipt("auth-local", local.digest, "project-a", "a" * 64, "", (HQCommandAction.LOCAL_HQ,), 100))
+            result = connector.execute(local, auth, ledger, now_ms=1, observed_project_id="project-a", observed_root_digest="a" * 64)
+            self.assertEqual(result.status, "LOCAL_PLAN")
+            self.assertEqual(transport.calls, [])
+
+    def test_universal_connector_rejects_scope_before_ledger_or_transport(self) -> None:
+        import tempfile
+        from pathlib import Path
+        transport = FakeCodexTransport()
+        connector = UniversalHQConnector(CodexAppServerAdapter(transport=transport))
+        envelope = HQCommandEnvelope("hq-f", "key-f", HQCommandAction.AUTO, "project-a", "a" * 64, "ctrl-a", HQTargetIntent.EXISTING_THREAD, "thread-existing", "b" * 64, 0, 1, 10)
+        auth = host_hq_authorization(HQAuthorizationReceipt("auth-f", envelope.digest, "project-a", "a" * 64, "ctrl-a", (HQCommandAction.AUTO,), 10, auto_grant=True))
+        for change in ({"now_ms": 11}, {"observed_project_id": "project-b"}, {"observed_root_digest": "c" * 64}):
+            with tempfile.TemporaryDirectory() as directory:
+                ledger = Ledger(Path(directory))
+                kwargs = {"now_ms": 1, "observed_project_id": "project-a", "observed_root_digest": "a" * 64, **change}
+                with self.assertRaises(InvariantError):
+                    connector.execute(envelope, auth, ledger, **kwargs)
+                self.assertEqual(transport.calls, [])
+                self.assertFalse((Path(directory) / ".swarm" / "progress-events.jsonl").exists())
 
 
 class ExecutionDispatchLedgerTests(unittest.TestCase):

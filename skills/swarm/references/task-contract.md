@@ -1,5 +1,7 @@
 # Compact task contract
 
+An HQ execution request is authoritative only when a host-owned authorization receipt exactly binds its immutable `HQCommandEnvelope`: action, project, canonical root digest, CTRL where applicable, target intent/thread, payload digest, expected Ledger revision, acknowledgement requirement, submission time, and expiry. Ledger COMMAND reservation precedes transport. CONNECTOR receipts retain safe digests and host thread/turn/root identities only; they grant no progress, proof, review, or acceptance authority and never retain prompts, responses, credentials, or provider payloads.
+
 Use CORE + role + these fields. Atomic/simple tasks omit every inapplicable field. A durable task keeps only its exact current decision and proof boundary. SWARM is Codex-native: Codex is the only agent host this contract routes; provider proof terms name real external services, not alternate execution hosts.
 
 For every user-authorized new SWARM objective, CTRL asks or confirms the goal

@@ -11,7 +11,7 @@ from enum import StrEnum
 from hashlib import sha256
 import json
 from pathlib import PurePosixPath, PureWindowsPath
-from typing import Mapping
+from typing import Mapping, Protocol
 
 from .core import (
     ArtifactIdentity,
@@ -67,6 +67,172 @@ class ChatGPTRouteStatus(StrEnum):
     READY = "ready"
     FALLBACK = "fallback"
     UNAVAILABLE = "unavailable"
+
+
+class HQCommandAction(StrEnum):
+    AUTO = "AUTO"
+    MANUAL_AGENT = "MANUAL_AGENT"
+    TASK = "TASK"
+    TOPOLOGY_MATERIALIZE = "TOPOLOGY_MATERIALIZE"
+    REPAIR = "REPAIR"
+    LOCAL_HQ = "LOCAL_HQ"
+
+
+class HQTargetIntent(StrEnum):
+    NEW_THREAD = "NEW_THREAD"
+    EXISTING_THREAD = "EXISTING_THREAD"
+    LOCAL = "LOCAL"
+
+
+HQ_ACTION_CAPABILITIES = {
+    HQCommandAction.AUTO: ("turn.start", HQTargetIntent.EXISTING_THREAD),
+    HQCommandAction.MANUAL_AGENT: ("thread.start", HQTargetIntent.NEW_THREAD),
+    HQCommandAction.TASK: ("turn.start", HQTargetIntent.EXISTING_THREAD),
+    HQCommandAction.TOPOLOGY_MATERIALIZE: ("thread.start", HQTargetIntent.NEW_THREAD),
+    HQCommandAction.REPAIR: ("turn.steer", HQTargetIntent.EXISTING_THREAD),
+    HQCommandAction.LOCAL_HQ: ("local", HQTargetIntent.LOCAL),
+}
+
+
+@dataclass(frozen=True)
+class HQCommandEnvelope:
+    command_id: str
+    idempotency_key: str
+    action: HQCommandAction
+    project_id: str
+    root_digest: str
+    ctrl_id: str
+    target_intent: HQTargetIntent
+    target_thread_id: str
+    payload_digest: str
+    expected_ledger_revision: int
+    submitted_at_ms: int
+    expires_at_ms: int
+    acknowledgement_required: bool = True
+    digest: str = field(init=False)
+
+    def __post_init__(self) -> None:
+        for value, label in ((self.command_id, "HQ command"), (self.idempotency_key, "HQ idempotency key"), (self.project_id, "HQ project")):
+            _text(value, label)
+        if not isinstance(self.action, HQCommandAction) or not isinstance(self.target_intent, HQTargetIntent):
+            raise InvariantError("HQ action and target intent must be typed")
+        expected_capability, expected_target = HQ_ACTION_CAPABILITIES[self.action]
+        if self.target_intent is not expected_target:
+            raise InvariantError("HQ target intent conflicts with action")
+        if self.ctrl_id:
+            _text(self.ctrl_id, "HQ CTRL")
+        if self.target_intent is HQTargetIntent.EXISTING_THREAD:
+            _text(self.target_thread_id, "HQ target thread")
+        elif self.target_thread_id:
+            raise InvariantError("new-thread and local commands cannot name an existing thread")
+        object.__setattr__(self, "root_digest", _digest(self.root_digest, "HQ root"))
+        object.__setattr__(self, "payload_digest", _digest(self.payload_digest, "HQ payload"))
+        if not isinstance(self.expected_ledger_revision, int) or isinstance(self.expected_ledger_revision, bool) or self.expected_ledger_revision < 0:
+            raise InvariantError("HQ expected Ledger revision must be nonnegative")
+        if not isinstance(self.submitted_at_ms, int) or isinstance(self.submitted_at_ms, bool) or self.submitted_at_ms < 0 or not isinstance(self.expires_at_ms, int) or isinstance(self.expires_at_ms, bool) or self.expires_at_ms < self.submitted_at_ms or self.acknowledgement_required is not True:
+            raise InvariantError("HQ command requires bounded submission, expiry, and acknowledgement")
+        object.__setattr__(self, "digest", _canonical_digest({
+            "command_id": self.command_id, "idempotency_key": self.idempotency_key, "action": self.action.value,
+            "project_id": self.project_id, "root_digest": self.root_digest, "ctrl_id": self.ctrl_id,
+            "target_intent": self.target_intent.value, "target_thread_id": self.target_thread_id,
+            "payload_digest": self.payload_digest, "expected_ledger_revision": self.expected_ledger_revision,
+            "submitted_at_ms": self.submitted_at_ms, "expires_at_ms": self.expires_at_ms, "acknowledgement_required": True,
+        }))
+
+
+@dataclass(frozen=True)
+class HQAuthorizationReceipt:
+    receipt_id: str
+    envelope_digest: str
+    project_id: str
+    root_digest: str
+    ctrl_id: str
+    actions: tuple[HQCommandAction, ...]
+    expires_at_ms: int
+    auto_grant: bool = False
+    _authority: object | None = field(default=None, init=False, repr=False, compare=False)
+
+    def __post_init__(self) -> None:
+        _text(self.receipt_id, "HQ authorization receipt")
+        object.__setattr__(self, "envelope_digest", _digest(self.envelope_digest, "HQ authorization envelope"))
+        object.__setattr__(self, "root_digest", _digest(self.root_digest, "HQ authorization root"))
+        _text(self.project_id, "HQ authorization project")
+        if self.ctrl_id:
+            _text(self.ctrl_id, "HQ authorization CTRL")
+        if not self.actions or any(not isinstance(action, HQCommandAction) for action in self.actions):
+            raise InvariantError("HQ authorization actions must be typed")
+        if not isinstance(self.expires_at_ms, int) or isinstance(self.expires_at_ms, bool) or self.expires_at_ms < 1:
+            raise InvariantError("HQ authorization expiry must be positive")
+
+
+_HQ_AUTHORITY = object()
+
+
+def host_hq_authorization(receipt: HQAuthorizationReceipt) -> HQAuthorizationReceipt:
+    if not isinstance(receipt, HQAuthorizationReceipt):
+        raise InvariantError("host HQ authorization must be typed")
+    object.__setattr__(receipt, "_authority", _HQ_AUTHORITY)
+    return receipt
+
+
+class CodexAppServerTransport(Protocol):
+    def request(self, method: str, params: Mapping[str, object]) -> Mapping[str, object]: ...
+
+
+@dataclass(frozen=True)
+class HQConnectorResult:
+    status: str
+    command_digest: str
+    thread_id: str = ""
+    turn_id: str = ""
+    local_plan: Mapping[str, str] | None = None
+
+
+class UniversalHQConnector:
+    def __init__(self, adapter: "CodexAppServerAdapter") -> None:
+        if not isinstance(adapter, CodexAppServerAdapter):
+            raise InvariantError("universal connector requires the Codex adapter")
+        self.adapter = adapter
+
+    @staticmethod
+    def _receipt(envelope: HQCommandEnvelope, *, receipt_id: str, index: int, status: str, observed_at_ms: int, thread_id: str | None = None, turn_id: str | None = None, observed_root_digest: str | None = None) -> dict[str, object]:
+        return {"schema_version": 1, "record_type": "CONNECTOR", "receipt_id": receipt_id, "command_id": envelope.command_id, "receipt_index": index, "idempotency_key": envelope.idempotency_key, "command_digest": envelope.digest, "project_id": envelope.project_id, "root_digest": envelope.root_digest, "action": envelope.action.value, "status": status, "thread_id": thread_id, "turn_id": turn_id, "observed_root_digest": observed_root_digest, "observed_at_ms": observed_at_ms}
+
+    def execute(self, envelope: HQCommandEnvelope, authorization: HQAuthorizationReceipt, ledger: object, *, now_ms: int, observed_project_id: str, observed_root_digest: str) -> HQConnectorResult:
+        if not isinstance(envelope, HQCommandEnvelope) or not isinstance(authorization, HQAuthorizationReceipt) or authorization._authority is not _HQ_AUTHORITY:
+            raise InvariantError("connector requires host-owned typed authorization")
+        if now_ms > min(envelope.expires_at_ms, authorization.expires_at_ms):
+            raise InvariantError("HQ command authorization expired")
+        if authorization.auto_grant != (envelope.action is HQCommandAction.AUTO):
+            raise InvariantError("HQ authorization kind conflicts with command")
+        if authorization.envelope_digest != envelope.digest or envelope.action not in authorization.actions:
+            raise InvariantError("HQ authorization does not bind the command")
+        if (authorization.project_id, authorization.root_digest, authorization.ctrl_id) != (envelope.project_id, envelope.root_digest, envelope.ctrl_id):
+            raise InvariantError("HQ authorization scope conflicts")
+        if (observed_project_id, _digest(observed_root_digest, "observed HQ root")) != (envelope.project_id, envelope.root_digest):
+            raise InvariantError("HQ observed project root conflicts")
+        command = self._receipt(envelope, receipt_id=f"{envelope.command_id}-command", index=0, status="COMMAND", observed_at_ms=envelope.submitted_at_ms)
+        reservation = ledger.reserve_connector_command(command, expected_revision=envelope.expected_ledger_revision)
+        if reservation["status"] == "REPLAY":
+            return HQConnectorResult("REPLAY", envelope.digest)
+        if reservation["status"] != "APPENDED":
+            raise InvariantError("HQ command reservation conflicts")
+        capability, _ = HQ_ACTION_CAPABILITIES[envelope.action]
+        if capability == "local":
+            return HQConnectorResult("LOCAL_PLAN", envelope.digest, local_plan={"command_id": envelope.command_id, "project_id": envelope.project_id, "root_digest": envelope.root_digest})
+        if self.adapter.matrix.state_for(capability) is not AdapterCapabilityState.NATIVE or self.adapter.transport is None:
+            ledger.append_connector_receipt(self._receipt(envelope, receipt_id=f"{envelope.command_id}-unsupported", index=1, status="UNSUPPORTED", observed_at_ms=now_ms))
+            return HQConnectorResult("UNSUPPORTED", envelope.digest)
+        response = self.adapter.dispatch(envelope, capability)
+        thread_id, turn_id = str(response.get("threadId") or ""), str(response.get("turnId") or "")
+        cwd_digest = str(response.get("rootDigest") or "")
+        if cwd_digest != envelope.root_digest or not thread_id:
+            raise InvariantError("Codex host response has ambiguous or conflicting root identity")
+        ledger.append_connector_receipt(self._receipt(envelope, receipt_id=f"{envelope.command_id}-ack", index=1, status="ACKNOWLEDGED", observed_at_ms=now_ms, thread_id=thread_id, observed_root_digest=cwd_digest))
+        if not turn_id:
+            raise InvariantError("Codex host result omitted turn identity")
+        ledger.append_connector_receipt(self._receipt(envelope, receipt_id=f"{envelope.command_id}-result", index=2, status="RESULT", observed_at_ms=now_ms, thread_id=thread_id, turn_id=turn_id, observed_root_digest=cwd_digest))
+        return HQConnectorResult("RESULT", envelope.digest, thread_id, turn_id)
 
 
 @dataclass(frozen=True)
@@ -754,7 +920,7 @@ class CodexAppServerAdapter(ExecutionAdapter):
 
     ADAPTER_ID = "codex-app-server"
 
-    def __init__(self, *, enabled: bool = True) -> None:
+    def __init__(self, *, enabled: bool = True, transport: CodexAppServerTransport | None = None) -> None:
         docs = "official OpenAI Codex App Server protocol"
         matrix = AdapterCapabilityMatrix(
             adapter_id=self.ADAPTER_ID,
@@ -774,7 +940,17 @@ class CodexAppServerAdapter(ExecutionAdapter):
                 AdapterCapability("host.task_mutation", AdapterCapabilityState.UNSUPPORTED, "SWARM user-custody contract", "No title, pin, folder, order, archive, or other host task mutation is exposed."),
             ),
         )
-        super().__init__(matrix, entrypoint=("codex", "app-server", "--listen", "stdio://"), protocol="json-rpc-2.0-jsonl", enabled=enabled)
+        super().__init__(matrix, entrypoint=(), protocol="json-rpc-2.0-jsonl", enabled=enabled)
+        self.transport = transport
+
+    def dispatch(self, envelope: HQCommandEnvelope, capability: str) -> Mapping[str, object]:
+        if self.transport is None:
+            raise InvariantError("Codex App Server transport is unavailable")
+        params: dict[str, object] = {"cwdDigest": envelope.root_digest, "payloadDigest": envelope.payload_digest}
+        method = capability.replace(".", "/")
+        if envelope.target_thread_id:
+            params["threadId"] = envelope.target_thread_id
+        return self.transport.request(method, params)
 
     @staticmethod
     def initialize_request(client_name: str, *, request_id: int = 0) -> dict[str, object]:

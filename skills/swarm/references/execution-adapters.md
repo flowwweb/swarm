@@ -5,6 +5,14 @@ Codex host protocol. It never chooses the owner, stores prompt or response
 bodies, reviews its own work, accepts an artifact, mutates a host task, or grants
 external-provider authority.
 
+## Universal HQ connector
+
+Explicit HQ commands and scoped Auto continuation use one `HQCommandEnvelope`, one host-injected authorization receipt, `UniversalHQConnector`, and the existing Ledger CONNECTOR receipts. Fixed actions are AUTO, MANUAL_AGENT, TASK, TOPOLOGY_MATERIALIZE, REPAIR, and LOCAL_HQ. A command is reserved atomically before transport; only `APPENDED` may dispatch, while exact `REPLAY` never dispatches again.
+
+`CodexAppServerAdapter` receives a host-owned `CodexAppServerTransport`; it has no subprocess or argv launch authority. It uses only capabilities the host exposes and retains returned thread/turn identities plus the observed root digest. App Server is never claimed to return project ID, agent role, or a binding receipt.
+
+Localhost migration replaces private `CodexStdioBridge` Auto dispatch and routes manual-agent, task, topology, and repair commands through this envelope. Explicit HQ submission is single-use user authorization; a current scoped Auto grant is the only reusable authorization. Explicit commands no longer depend on unavailable `host_threads.agent_role` or host project fields. Structural Current Work observation remains read-only. LOCAL_HQ bypasses Codex transport and returns a digest-bound plan for later localhost execution and acknowledgement. Console wiring remains a separate owner/path slice.
+
 ## Capability matrix
 
 Every adapter declares each capability as exactly one of:
