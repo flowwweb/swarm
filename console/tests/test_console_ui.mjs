@@ -142,7 +142,7 @@ assert.match(css, /\.onboarding-actions \{[^}]*display:grid;[^}]*grid-template-c
 assert.match(css, /\.onboarding-actions \.onboarding-skip \{ grid-column:2; grid-row:2;[^}]*\}/);
 assert.match(css, /\.onboarding-actions \.primary-action \{ grid-column:2; grid-row:1;[^}]*\}/);
 assert.match(indexHtml, /id="onboarding-close"[^>]*aria-label="Close onboarding"/);
-assert.match(indexHtml, /class="onboarding-slide1-guide onboarding-artwork" src="\/assets\/swarm-guided-tour-slide1\.png" width="1920" height="1080" alt="" aria-hidden="true"/);
+assert.match(indexHtml, /class="onboarding-slide1-guide onboarding-artwork" src="\/assets\/swarm-guided-tour-slide1\.png" width="1920" height="1080" alt="" aria-hidden="true" loading="eager" fetchpriority="high" decoding="sync"/);
 assert.match(indexHtml, /<link rel="icon" type="image\/png" sizes="64x64" href="\/swarm-icon-64\.png"/);
 assert.doesNotMatch(indexHtml, /swarm-favicon\.svg|<div class="onboarding-mascot"/);
 assert.match(indexHtml, /<h2>One prompt\. A coordinated team\.<\/h2>/);
@@ -178,7 +178,7 @@ assert.doesNotMatch(onboardingMotionSource, /setTimeout|setInterval|requestAnima
 assert.match(indexHtml, /<h2>The project tool that builds itself\.<\/h2>/);
 assert.match(indexHtml, /Give SWARM your project\. It creates the diagrams, views, libraries, and controls that make it easy to manage\./);
 const projectViewsPanel = indexHtml.match(/id="onboarding-panel-4"[\s\S]*?<\/section>/)?.[0] || "";
-assert.match(projectViewsPanel, /<img class="onboarding-project-tool onboarding-supporting-visual" src="\/assets\/swarm-guided-tour-project-tool\.png" width="1536" height="1024" alt="The orange SWARM mascot controls connected flowchart, timeline, asset-library, and table views\." loading="lazy" decoding="async" \/>/);
+assert.match(projectViewsPanel, /<img class="onboarding-project-tool onboarding-supporting-visual" src="\/assets\/swarm-guided-tour-project-tool\.png" width="1536" height="1024" alt="The orange SWARM mascot controls connected flowchart, timeline, asset-library, and table views\." loading="eager" decoding="sync" \/>/);
 assert.equal((projectViewsPanel.match(/<img\b/g) || []).length, 1);
 assert.doesNotMatch(projectViewsPanel, /onboarding-project-views|Your project finds its shape|App map|Shared data/);
 assert.doesNotMatch(projectViewsPanel, /manifest|schema|digest|source of truth/i);
@@ -1650,8 +1650,84 @@ const executablePath = browserCandidates.find((candidate) => fs.existsSync(candi
 const browser = await chromium.launch({ headless: true, ...(executablePath ? { executablePath } : {}) });
 const evidenceDir = process.env.SWARM_UI_EVIDENCE_DIR || "";
 if (evidenceDir) fs.mkdirSync(evidenceDir, { recursive: true });
+async function settleOnboardingImage(image) {
+  await image.waitFor({ state: "visible" });
+  await image.evaluate(async (node) => {
+    if (!node.complete) {
+      await new Promise((resolve, reject) => {
+        node.addEventListener("load", resolve, { once: true });
+        node.addEventListener("error", () => reject(new Error(`Failed to load ${node.currentSrc || node.src}`)), { once: true });
+      });
+    }
+    await node.decode();
+    await Promise.all(node.getAnimations().map((animation) => animation.finished.catch(() => undefined)));
+    await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+  });
+}
+
+async function settleCurrentOnboardingImages(page) {
+  const images = page.locator(".onboarding-panel.is-active img");
+  for (let index = 0; index < await images.count(); index += 1) await settleOnboardingImage(images.nth(index));
+}
+
+async function assertDecodedVisibleOnboardingImage(page, selector, expectedWidth, expectedHeight) {
+  const image = page.locator(selector);
+  await settleOnboardingImage(image);
+  const proof = await image.evaluate((node, expected) => {
+    const rect = node.getBoundingClientRect();
+    const style = getComputedStyle(node);
+    const centerX = rect.left + rect.width / 2;
+    const centerY = rect.top + rect.height / 2;
+    const hit = document.elementFromPoint(centerX, centerY);
+    const canvas = document.createElement("canvas");
+    canvas.width = 96;
+    canvas.height = 96;
+    const context = canvas.getContext("2d", { willReadFrequently: true });
+    context.drawImage(node, 0, 0, canvas.width, canvas.height);
+    const pixels = context.getImageData(0, 0, canvas.width, canvas.height).data;
+    let paintedPixels = 0;
+    let chromaticPixels = 0;
+    for (let index = 0; index < pixels.length; index += 4) {
+      const red = pixels[index];
+      const green = pixels[index + 1];
+      const blue = pixels[index + 2];
+      const alpha = pixels[index + 3];
+      if (alpha > 8) paintedPixels += 1;
+      if (alpha > 8 && Math.max(red, green, blue) - Math.min(red, green, blue) > 24) chromaticPixels += 1;
+    }
+    return {
+      complete: node.complete,
+      naturalWidth: node.naturalWidth,
+      naturalHeight: node.naturalHeight,
+      rect: { left: rect.left, top: rect.top, right: rect.right, bottom: rect.bottom, width: rect.width, height: rect.height },
+      display: style.display,
+      visibility: style.visibility,
+      opacity: Number(style.opacity),
+      inViewport: rect.right > 0 && rect.bottom > 0 && rect.left < innerWidth && rect.top < innerHeight,
+      centerNotOccluded: hit === node || Boolean(hit && node.contains(hit)),
+      paintedPixels,
+      chromaticPixels,
+      expected,
+    };
+  }, { width: expectedWidth, height: expectedHeight });
+  assert.equal(proof.complete, true);
+  assert.equal(proof.naturalWidth, expectedWidth);
+  assert.equal(proof.naturalHeight, expectedHeight);
+  assert.ok(proof.rect.width >= 180 && proof.rect.height >= 100, JSON.stringify(proof));
+  assert.notEqual(proof.display, "none");
+  assert.notEqual(proof.visibility, "hidden");
+  assert.ok(proof.opacity >= 0.99, JSON.stringify(proof));
+  assert.equal(proof.inViewport, true);
+  assert.equal(proof.centerNotOccluded, true);
+  assert.ok(proof.paintedPixels >= 120 && proof.chromaticPixels >= 40, JSON.stringify(proof));
+  const clippedScreenshot = await image.screenshot({ animations: "disabled" });
+  assert.ok(clippedScreenshot.byteLength >= 4000, `Expected pixel-bearing screenshot region for ${selector}`);
+  return proof;
+}
+
 async function captureOnboardingEvidence(page, name) {
   if (!evidenceDir) return;
+  await settleCurrentOnboardingImages(page);
   await page.screenshot({ path: path.join(evidenceDir, name + ".png"), fullPage: false, animations: "disabled" });
 }
 const proofFeed = imageProofFixture(6);
@@ -1689,7 +1765,7 @@ const proofFeed = imageProofFixture(6);
   try {
     const onboardingPage = await browser.newPage({ viewport: { width: 1440, height: 1000 } });
     const onboarding = await mount(onboardingPage, scopedFixture(), { ...overrides, keepOnboarding: true });
-    assert.equal(await onboardingPage.locator("#onboarding-panel-1 img").evaluate((image) => image.complete && image.naturalWidth === 1920 && image.naturalHeight === 1080), true);
+    await assertDecodedVisibleOnboardingImage(onboardingPage, "#onboarding-panel-1 img", 1920, 1080);
     await captureOnboardingEvidence(onboardingPage, "01-slide-1-desktop-1440x1000");
     assert.equal(await onboardingPage.getByText(/^Step [1-5] of 5$/).count(), 0);
     assert.equal(await onboardingPage.locator('[data-onboarding-step][aria-current="step"]').getAttribute("data-onboarding-step"), "0");
@@ -1733,7 +1809,8 @@ const proofFeed = imageProofFixture(6);
     assert.equal(await onboardingPage.locator('[data-onboarding-step][aria-current="step"]').getAttribute("data-onboarding-step"), "3");
     assert.equal(await onboardingPage.locator('.onboarding-project-tool').count(), 1);
     assert.equal(await onboardingPage.locator('.onboarding-project-tool').getAttribute("alt"), "The orange SWARM mascot controls connected flowchart, timeline, asset-library, and table views.");
-    assert.ok(await onboardingPage.locator('.onboarding-project-tool').evaluate((image) => image.complete && image.naturalWidth === 1536 && image.naturalHeight === 1024 && image.scrollWidth <= image.closest(".onboarding-panel").clientWidth + 1));
+    const desktopProjectToolProof = await assertDecodedVisibleOnboardingImage(onboardingPage, ".onboarding-project-tool", 1536, 1024);
+    assert.ok(desktopProjectToolProof.rect.width <= await onboardingPage.locator("#onboarding-panel-4").evaluate((panel) => panel.clientWidth + 1));
     assert.match(await onboardingPage.locator("#onboarding-panel-4").textContent(), /project tool that builds itself/);
     await captureOnboardingEvidence(onboardingPage, "04-slide-4-desktop-1440x1000");
     await onboardingPage.getByRole("button", { name: "Continue" }).click();
