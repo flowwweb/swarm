@@ -517,6 +517,29 @@ class ExecutionAdapterTests(unittest.TestCase):
             self.assertEqual(tuple(call[0] for call in transport.calls), ("thread/resume",))
             self.assertEqual([item["status"] for item in ledger.replay()["connector_receipts"]["key-repair-root"]["receipts"]], ["COMMAND"])
 
+    def test_repair_reconciliation_requires_the_exact_target_turn_before_ack(self) -> None:
+        import tempfile
+        from pathlib import Path
+        material = HQDispatchMaterial("C:/work/project-a", b"Reconcile the exact active repair turn.")
+        cases = (
+            ({"threadId": "thread-1", "cwd": "C:/work/project-a"}, "ATTENTION", ["COMMAND"]),
+            ({"threadId": "thread-1", "turnId": "turn-other", "cwd": "C:/work/project-a"}, "ATTENTION", ["COMMAND"]),
+            ({"threadId": "thread-1", "turnId": "turn-active", "cwd": "C:/work/project-a"}, "RESULT", ["COMMAND", "ACKNOWLEDGED", "RESULT"]),
+        )
+        for index, (reconciliation, expected_status, expected_receipts) in enumerate(cases):
+            envelope = HQCommandEnvelope(f"hq-repair-reconcile-{index}", f"key-repair-reconcile-{index}", HQCommandAction.REPAIR, "project-a", "a" * 64, "ctrl-a", HQTargetIntent.EXISTING_THREAD, "thread-1", material.digest, 0, 1, 100, target_turn_id="turn-active")
+            transport = FakeCodexTransport([{"threadId": "thread-1"}], reconciliations=[reconciliation])
+            with self.subTest(reconciliation=reconciliation), tempfile.TemporaryDirectory() as directory:
+                ledger = Ledger(Path(directory))
+                first = self.connector(transport, material).execute(envelope, self.explicit(envelope), ledger, now_ms=2, observed_project_id="project-a", observed_root_digest="a" * 64)
+                self.assertEqual(first.status, "PENDING")
+                replay = self.connector(transport, material).execute(envelope, self.explicit(envelope), Ledger(Path(directory)), now_ms=3, observed_project_id="project-a", observed_root_digest="a" * 64)
+                self.assertEqual(replay.status, expected_status)
+                receipts = Ledger(Path(directory)).replay()["connector_receipts"][envelope.idempotency_key]["receipts"]
+                self.assertEqual([item["status"] for item in receipts], expected_receipts)
+                if expected_status == "RESULT":
+                    self.assertEqual((replay.thread_id, replay.turn_id), ("thread-1", "turn-active"))
+
     def test_authorization_is_host_verified_scoped_and_has_no_public_minter(self) -> None:
         import tempfile
         from pathlib import Path

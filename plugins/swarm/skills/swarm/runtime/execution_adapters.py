@@ -405,6 +405,8 @@ class UniversalHQConnector:
             thread_id, turn_id, verified_root_digest = self._require_root_bound_thread(response, envelope, thread_id=known_thread)
         except InvariantError:
             return HQConnectorResult("ATTENTION", envelope.digest, known_thread, attention="HOST_IDENTITY_CONFLICT")
+        if envelope.action is HQCommandAction.REPAIR and not turn_id:
+            return HQConnectorResult("ATTENTION", envelope.digest, known_thread, attention="HOST_IDENTITY_CONFLICT")
         if not turn_id:
             if ack is None:
                 ledger.append_connector_receipt(self._receipt(envelope, receipt_id=f"{envelope.command_id}-ack", index=1, status="ACKNOWLEDGED", observed_at_ms=now_ms, thread_id=thread_id, observed_root_digest=verified_root_digest))
