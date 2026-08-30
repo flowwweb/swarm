@@ -118,7 +118,7 @@ class FakeHQMaterialResolver:
 
 
 class FakeHQRootVerifier:
-    def __init__(self, *, canonical_cwd=None, root_digest="a" * 64, accepted=True):
+    def __init__(self, *, canonical_cwd=None, root_digest=None, accepted=True):
         self.canonical_cwd = canonical_cwd
         self.root_digest = root_digest
         self.accepted = accepted
@@ -126,7 +126,8 @@ class FakeHQRootVerifier:
 
     def observe(self, cwd):
         self.calls.append(("observe", cwd))
-        return HQRootObservation("root-observation", self.canonical_cwd or cwd, self.root_digest)
+        root_digest = self.root_digest or ("a" * 64 if cwd == "C:/work/project-a" else "b" * 64)
+        return HQRootObservation("root-observation", self.canonical_cwd or cwd, root_digest)
 
     def verify(self, observation, envelope):
         self.calls.append(("verify", observation.receipt_id, envelope.command_id))
@@ -368,7 +369,7 @@ class ExecutionAdapterTests(unittest.TestCase):
         from pathlib import Path
         material = HQDispatchMaterial("C:/work/project-a", b"Start a thread before a turn.")
         envelope = HQCommandEnvelope("hq-thread-only", "key-thread-only", HQCommandAction.MANUAL_AGENT, "project-a", "a" * 64, "ctrl-a", HQTargetIntent.NEW_THREAD, "", material.digest, 0, 1, 100)
-        transport = FakeCodexTransport([{"threadId": "thread-1", "turnId": "turn-fabricated"}])
+        transport = FakeCodexTransport([{"threadId": "thread-1", "turnId": "turn-fabricated", "cwd": "C:/work/project-a"}])
         with tempfile.TemporaryDirectory() as directory:
             ledger = Ledger(Path(directory))
             result = self.connector(transport, material).execute(envelope, self.explicit(envelope), ledger, now_ms=2, observed_project_id="project-a", observed_root_digest="a" * 64)
@@ -379,7 +380,7 @@ class ExecutionAdapterTests(unittest.TestCase):
     def test_existing_task_resumes_then_starts_turn_and_repair_steers(self) -> None:
         import tempfile
         from pathlib import Path
-        for action, methods in ((HQCommandAction.AUTO, ("thread/resume", "turn/start")), (HQCommandAction.TASK, ("thread/resume", "turn/start")), (HQCommandAction.REPAIR, ("turn/steer",))):
+        for action, methods in ((HQCommandAction.AUTO, ("thread/resume", "turn/start")), (HQCommandAction.TASK, ("thread/resume", "turn/start")), (HQCommandAction.REPAIR, ("thread/resume", "turn/steer"))):
             material = HQDispatchMaterial("C:/work/project-a", f"Execute {action.value}.".encode())
             envelope = HQCommandEnvelope(f"hq-{action.value}", f"key-{action.value}", action, "project-a", "a" * 64, "ctrl-a", HQTargetIntent.EXISTING_THREAD, "thread-1", material.digest, 0, 1, 100, target_turn_id="turn-active" if action is HQCommandAction.REPAIR else "")
             transport = FakeCodexTransport()
@@ -433,23 +434,23 @@ class ExecutionAdapterTests(unittest.TestCase):
         cases = (
             (
                 HQCommandEnvelope("hq-alias", "key-alias", HQCommandAction.MANUAL_AGENT, "project-a", "a" * 64, "ctrl-a", HQTargetIntent.NEW_THREAD, "", material.digest, 0, 1, 100),
-                [{"threadId": "thread-1", "thread": {"id": "thread-2"}}],
+                [{"threadId": "thread-1", "thread": {"id": "thread-2"}, "cwd": "C:/work/project-a"}],
                 ["COMMAND"],
             ),
             (
                 HQCommandEnvelope("hq-type", "key-type", HQCommandAction.MANUAL_AGENT, "project-a", "a" * 64, "ctrl-a", HQTargetIntent.NEW_THREAD, "", material.digest, 0, 1, 100),
-                [{"thread": {"id": 7}}],
+                [{"thread": {"id": 7}, "cwd": "C:/work/project-a"}],
                 ["COMMAND"],
             ),
             (
                 HQCommandEnvelope("hq-turn-alias", "key-turn-alias", HQCommandAction.MANUAL_AGENT, "project-a", "a" * 64, "ctrl-a", HQTargetIntent.NEW_THREAD, "", material.digest, 0, 1, 100),
-                [{"thread": {"id": "thread-1"}}, {"turnId": "turn-1", "turn": {"id": "turn-2"}}],
+                [{"thread": {"id": "thread-1"}, "cwd": "C:/work/project-a"}, {"turnId": "turn-1", "turn": {"id": "turn-2"}}],
                 ["COMMAND", "ACKNOWLEDGED"],
             ),
             (
                 HQCommandEnvelope("hq-repair-target", "key-repair-target", HQCommandAction.REPAIR, "project-a", "a" * 64, "ctrl-a", HQTargetIntent.EXISTING_THREAD, "thread-1", material.digest, 0, 1, 100, target_turn_id="turn-active"),
-                [{"turnId": "turn-other"}],
-                ["COMMAND"],
+                [{"threadId": "thread-1", "cwd": "C:/work/project-a"}, {"turnId": "turn-other"}],
+                ["COMMAND", "ACKNOWLEDGED"],
             ),
         )
         for envelope, responses, expected_statuses in cases:
@@ -460,6 +461,61 @@ class ExecutionAdapterTests(unittest.TestCase):
                 receipts = ledger.replay()["connector_receipts"][envelope.idempotency_key]["receipts"]
                 self.assertEqual([item["status"] for item in receipts], expected_statuses)
                 self.assertNotIn("RESULT", [item["status"] for item in receipts])
+
+    def test_thread_response_cwd_is_required_root_bound_and_conflict_free(self) -> None:
+        import tempfile
+        from pathlib import Path
+        material = HQDispatchMaterial("C:/work/project-a", b"Bind the returned host thread root.")
+        envelope = HQCommandEnvelope("hq-thread-root", "key-thread-root", HQCommandAction.TASK, "project-a", "a" * 64, "ctrl-a", HQTargetIntent.EXISTING_THREAD, "thread-1", material.digest, 0, 1, 100)
+        invalid = (
+            {"threadId": "thread-1"},
+            {"threadId": "thread-1", "cwd": "C:/work/other"},
+            {"cwd": "C:/work/project-a", "thread": {"id": "thread-1", "cwd": "C:/work/other"}},
+            {"threadId": "thread-1", "cwd": 7},
+        )
+        for response in invalid:
+            with self.subTest(response=response), tempfile.TemporaryDirectory() as directory:
+                ledger = Ledger(Path(directory))
+                transport = FakeCodexTransport([response])
+                result = self.connector(transport, material).execute(envelope, self.explicit(envelope), ledger, now_ms=2, observed_project_id="project-a", observed_root_digest="a" * 64)
+                self.assertEqual((result.status, result.attention), ("PENDING", "HOST_THREAD_OUTCOME_PENDING"))
+                self.assertEqual(tuple(call[0] for call in transport.calls), ("thread/resume",))
+                self.assertEqual([item["status"] for item in ledger.replay()["connector_receipts"]["key-thread-root"]["receipts"]], ["COMMAND"])
+        with tempfile.TemporaryDirectory() as directory:
+            nested = FakeCodexTransport([
+                {"thread": {"id": "thread-1", "cwd": "C:/work/project-a"}},
+                {"turn": {"id": "turn-1"}},
+            ])
+            result = self.connector(nested, material).execute(envelope, self.explicit(envelope), Ledger(Path(directory)), now_ms=2, observed_project_id="project-a", observed_root_digest="a" * 64)
+            self.assertEqual(result.status, "RESULT")
+
+    def test_reconcile_and_repair_require_root_bound_host_thread_without_false_result(self) -> None:
+        import tempfile
+        from pathlib import Path
+        material = HQDispatchMaterial("C:/work/project-a", b"Reconcile only a root-bound thread.")
+        for index, reconciliation in enumerate((
+            {"threadId": "thread-1", "turnId": "turn-1"},
+            {"threadId": "thread-1", "turnId": "turn-1", "cwd": "C:/work/other"},
+            {"threadId": "thread-1", "turnId": "turn-1", "cwd": "C:/work/project-a", "thread": {"id": "thread-1", "cwd": "C:/work/other"}},
+        )):
+            envelope = HQCommandEnvelope(f"hq-reconcile-root-{index}", f"key-reconcile-root-{index}", HQCommandAction.TASK, "project-a", "a" * 64, "ctrl-a", HQTargetIntent.EXISTING_THREAD, "thread-1", material.digest, 0, 1, 100)
+            transport = FakeCodexTransport([{"threadId": "thread-1"}], reconciliations=[reconciliation])
+            with self.subTest(reconciliation=reconciliation), tempfile.TemporaryDirectory() as directory:
+                ledger = Ledger(Path(directory))
+                first = self.connector(transport, material).execute(envelope, self.explicit(envelope), ledger, now_ms=2, observed_project_id="project-a", observed_root_digest="a" * 64)
+                self.assertEqual(first.status, "PENDING")
+                replay = self.connector(transport, material).execute(envelope, self.explicit(envelope), Ledger(Path(directory)), now_ms=3, observed_project_id="project-a", observed_root_digest="a" * 64)
+                self.assertEqual(replay.status, "ATTENTION")
+                receipts = Ledger(Path(directory)).replay()["connector_receipts"][envelope.idempotency_key]["receipts"]
+                self.assertEqual([item["status"] for item in receipts], ["COMMAND"])
+        repair = HQCommandEnvelope("hq-repair-root", "key-repair-root", HQCommandAction.REPAIR, "project-a", "a" * 64, "ctrl-a", HQTargetIntent.EXISTING_THREAD, "thread-1", material.digest, 0, 1, 100, target_turn_id="turn-active")
+        with tempfile.TemporaryDirectory() as directory:
+            ledger = Ledger(Path(directory))
+            transport = FakeCodexTransport([{"threadId": "thread-1", "cwd": "C:/work/other"}])
+            result = self.connector(transport, material).execute(repair, self.explicit(repair), ledger, now_ms=2, observed_project_id="project-a", observed_root_digest="a" * 64)
+            self.assertEqual((result.status, result.attention), ("PENDING", "HOST_THREAD_OUTCOME_PENDING"))
+            self.assertEqual(tuple(call[0] for call in transport.calls), ("thread/resume",))
+            self.assertEqual([item["status"] for item in ledger.replay()["connector_receipts"]["key-repair-root"]["receipts"]], ["COMMAND"])
 
     def test_authorization_is_host_verified_scoped_and_has_no_public_minter(self) -> None:
         import tempfile
@@ -517,9 +573,9 @@ class ExecutionAdapterTests(unittest.TestCase):
         material = HQDispatchMaterial("C:/work/project-a", b"Start then reconcile.")
         envelope = HQCommandEnvelope("hq-pending", "key-pending", HQCommandAction.MANUAL_AGENT, "project-a", "a" * 64, "ctrl-a", HQTargetIntent.NEW_THREAD, "", material.digest, 0, 1, 2)
         transport = FakeCodexTransport([
-            {"thread": {"id": "thread-1"}},
+            {"thread": {"id": "thread-1"}, "cwd": "C:/work/project-a"},
             {"threadId": "thread-1"},
-        ], reconciliations=[{"threadId": "thread-1", "turnId": "turn-9"}])
+        ], reconciliations=[{"threadId": "thread-1", "turnId": "turn-9", "cwd": "C:/work/project-a"}])
         with tempfile.TemporaryDirectory() as directory:
             ledger = Ledger(Path(directory))
             first = self.connector(transport, material).execute(envelope, self.explicit(envelope), ledger, now_ms=2, observed_project_id="project-a", observed_root_digest="a" * 64)
@@ -530,7 +586,7 @@ class ExecutionAdapterTests(unittest.TestCase):
                 CodexAppServerAdapter(transport=transport),
                 authorization_verifier=FakeHQAuthorizationVerifier(False),
                 material_resolver=unavailable,
-                root_verifier=FakeHQRootVerifier(accepted=False),
+                root_verifier=FakeHQRootVerifier(),
             )
             second = restarted_connector.execute(envelope, self.explicit(envelope), restarted, now_ms=3, observed_project_id="project-a", observed_root_digest="a" * 64)
             self.assertEqual((second.status, second.turn_id), ("RESULT", "turn-9"))
@@ -545,7 +601,7 @@ class ExecutionAdapterTests(unittest.TestCase):
         material = HQDispatchMaterial("C:/work/project-a", b"Retain exact command identity.")
         envelope = HQCommandEnvelope("hq-retained", "key-retained", HQCommandAction.TASK, "project-a", "a" * 64, "ctrl-a", HQTargetIntent.EXISTING_THREAD, "thread-1", material.digest, 0, 1, 2)
         transport = FakeCodexTransport([
-            {"threadId": "thread-1"},
+            {"threadId": "thread-1", "cwd": "C:/work/project-a"},
             {"threadId": "thread-1"},
         ])
         with tempfile.TemporaryDirectory() as directory:
@@ -579,7 +635,7 @@ class ExecutionAdapterTests(unittest.TestCase):
         from pathlib import Path
         material = HQDispatchMaterial("C:/work/project-a", b"Race one exact reservation.")
         envelope = HQCommandEnvelope("hq-race", "key-race", HQCommandAction.TASK, "project-a", "a" * 64, "ctrl-a", HQTargetIntent.EXISTING_THREAD, "thread-1", material.digest, 0, 1, 100)
-        transport = FakeCodexTransport(reconciliations=[{"threadId": "thread-1", "turnId": "turn-race"}])
+        transport = FakeCodexTransport(reconciliations=[{"threadId": "thread-1", "turnId": "turn-race", "cwd": "C:/work/project-a"}])
         with tempfile.TemporaryDirectory() as directory:
             retained = Ledger(Path(directory))
 
