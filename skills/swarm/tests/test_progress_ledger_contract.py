@@ -968,6 +968,10 @@ class ProgressLedgerContractTests(unittest.TestCase):
             with Image.open(record["source"]["file"]) as decoded_source:
                 self.assertEqual(decoded_source.format, "PNG")
                 self.assertEqual(decoded_source.mode, "RGBA")
+                self.assertEqual(
+                    decoded_source.size,
+                    (record["source"]["width"], record["source"]["height"]),
+                )
                 self.assertEqual(decoded_source.getchannel("A").getextrema(), (0, 255))
             for (size, image_format), derivative in record["derivatives"].items():
                 with Image.open(derivative["file"]) as decoded:
