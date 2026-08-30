@@ -25,6 +25,7 @@ import sys
 import tempfile
 import threading
 import time
+import tomllib
 import webbrowser
 import uuid
 from collections import Counter
@@ -126,7 +127,30 @@ CONSOLE_LOG_PATH_ENV = "SWARM_CONSOLE_LOG_PATH"
 HEALTH_STATES = frozenset({"HEALTHY", "DEGRADED", "PRESSURED", "CRITICAL", "UNKNOWN"})
 HEALTH_CHECK_STATUSES = frozenset({"PASS", "WARN", "FAIL", "UNKNOWN"})
 AUTO_REPAIR_SETTING_KEY = "monitoring.auto_health_enabled"
-AUTO_REPAIR_LABEL = "Auto repair"
+AUTO_REPAIR_LABEL = "Auto fix"
+AUTO_REPAIR_HELP = "SWARM attempts to recover from issues automatically. This may start repair tasks and increase usage."
+CONFIG_CONTRACT_VERSION = 1
+CONFIG_EVENT_KIND = "CONFIG_MUTATION"
+CONFIG_TEXT_MAX_BYTES = MAX_BODY_BYTES
+CONFIG_PRIVATE_PATHS = frozenset({"feedback.destination"})
+CONFIG_PRIVATE_SEGMENTS = frozenset({
+    "secret", "secrets", "token", "password", "credential", "credentials",
+    "api_key", "apikey", "private_key", "privatekey",
+})
+CONFIG_DEPRECATED_PATHS = frozenset({
+    "fast_mode", "current_mode", "execution.service_tier", "execution.current_mode",
+    "lifecycle.archive_completed_tasks", "portfolio.title_prefix", "role_icons.task_choices",
+})
+CONFIG_DEPRECATED_VALUES = frozenset({("efficiency.mode", "FAST")})
+CONFIG_INTERNAL_PATHS = frozenset({"schema_version", "recovery.max_attempts"})
+CONFIG_HIGH_VALUE_PATHS = frozenset({
+    "automation.mode", "execution.fast_mode", "execution.usage_profile",
+    "execution.min_reasoning", "execution.max_reasoning", "execution.usage_saver",
+    "monitoring.auto_health_enabled", "lifecycle.task_lifetime_hours",
+    "role_icons.enabled", "console.open_on_start", "console.project_progress_feed_enabled",
+    "console.project_progress_feed_lines",
+})
+CONFIG_RESTART_PATHS = frozenset({"console.open_on_start"})
 HEALTH_THRESHOLDS = {
     "cpu_degraded": 85.0,
     "cpu_critical": 95.0,
@@ -216,51 +240,10 @@ STATIC_ASSETS = {
     ),
 }
 
-EDITABLE_SETTINGS: dict[str, type] = {
-    "portfolio.max_active_tasks": int,
-    "portfolio.default_parallel_tasks": int,
-    "portfolio.reuse_existing_tasks": bool,
-    "execution.usage_profile": str,
-    "execution.fast_mode": bool,
-    "execution.min_reasoning": str,
-    "execution.max_reasoning": str,
-    "execution.usage_saver": bool,
-    "skills.inheritance_enabled": bool,
-    "skills.default_profile": str,
-    "logging.task_event_limit": int,
-    "console.open_on_start": bool,
-    "console.project_progress_feed_enabled": bool,
-    "console.project_progress_feed_lines": int,
-    "chat_relay.enabled": bool,
-    "automation.mode": str,
-    "boost.enabled": bool,
-    "boost.spark_enabled": bool,
-    "boost.spark_model": str,
-    "boost.spark_reasoning": str,
-    "coordination.allow_coordinators": bool,
-    "coordination.coordinator_min_children": int,
-    "coordination.preferred_lane_width": int,
-    "subagents.enabled": bool,
-    "subagents.max_per_task": int,
-    "review.task_enabled": bool,
-    "review.max_parallel_tasks": int,
-    "review.scale_when_queue_reaches": int,
-    "monitoring.heartbeat_minutes": int,
-    "monitoring.auto_health_enabled": bool,
-    "recovery.stall_after_updates": int,
-    "lifecycle.pin_created_tasks": bool,
-    "feedback.enabled": bool,
-    "feedback.include_diagnostics": bool,
-    "feedback.prompt_on_close": bool,
-    "labels.lead": str,
-    "labels.doer": str,
-    "labels.review": str,
-    "role_icons.enabled": bool,
-    "role_icons.ctrl": str,
-    "role_icons.lead": str,
-    "role_icons.review": str,
-    "role_icons.fallback": str,
-}
+# Populated from the canonical config module after its loader is available.  It
+# remains a compatibility view for the older changes-based helper; it is not a
+# second schema or defaults table.
+EDITABLE_SETTINGS: dict[str, type] = {}
 
 
 class ConsoleError(RuntimeError):
@@ -477,6 +460,149 @@ def load_config_module() -> Any:
     return module
 
 
+def _config_leaf_items(value: Any, prefix: str = "") -> list[tuple[str, Any]]:
+    """Flatten canonical TOML leaves without inventing schema entries."""
+    if not isinstance(value, dict):
+        return [(prefix, value)] if prefix else []
+    leaves: list[tuple[str, Any]] = []
+    for key in sorted(value):
+        child = f"{prefix}.{key}" if prefix else str(key)
+        leaves.extend(_config_leaf_items(value[key], child))
+    return leaves
+
+
+def _config_value_at(value: Any, dotted_path: str) -> Any:
+    current = value
+    for part in dotted_path.split("."):
+        if not isinstance(current, dict) or part not in current:
+            return None
+        current = current[part]
+    return current
+
+
+def _config_private_path(dotted_path: str) -> bool:
+    normalized = dotted_path.casefold()
+    if normalized in CONFIG_PRIVATE_PATHS:
+        return True
+    return bool(set(normalized.split(".")) & CONFIG_PRIVATE_SEGMENTS)
+
+
+def _config_internal_path(dotted_path: str) -> bool:
+    return dotted_path in CONFIG_INTERNAL_PATHS
+
+
+def _config_classification(dotted_path: str) -> tuple[str, str | None]:
+    if _config_private_path(dotted_path):
+        return "unsupported", "Private values are retained only through immutable opaque placeholders."
+    if _config_internal_path(dotted_path):
+        return "internal", "Schema metadata or a fixed SWARM invariant is not a user setting."
+    return "exposed", None
+
+
+def _config_type(value: Any, dotted_path: str, module: Any | None = None) -> str:
+    if _config_private_path(dotted_path):
+        return "secret"
+    if isinstance(value, bool):
+        return "boolean"
+    if isinstance(value, int) and not isinstance(value, bool):
+        return "integer"
+    if isinstance(value, float):
+        return "number"
+    if isinstance(value, list):
+        return "list"
+    if isinstance(value, str):
+        return "enum" if _config_allowed_enum(dotted_path, module=module) else "string"
+    return "string"
+
+
+def _config_allowed_enum(dotted_path: str, *, module: Any | None = None) -> list[str] | None:
+    """Expose enum values only when the canonical module exports the set."""
+    try:
+        module = module or load_config_module()
+    except ConsoleError:
+        return None
+    normalized = dotted_path.casefold()
+    if normalized == "execution.usage_profile":
+        values = getattr(module, "USAGE_PROFILES", None)
+    elif normalized.endswith("_reasoning") or normalized.endswith(".reasoning"):
+        values = getattr(module, "REASONING_SCALE", None)
+    elif normalized == "boost.strategies" or normalized.endswith(".workloads"):
+        values = getattr(module, "BOOST_STRATEGIES", None) if normalized == "boost.strategies" else getattr(module, "MODEL_WORKLOADS", None)
+    elif normalized == "boost.goal_levels":
+        values = getattr(module, "BOOST_LEVELS", None)
+    elif normalized == "subagents.allowed_for":
+        values = getattr(module, "ALLOWED_SUBAGENT_WORK", None)
+    else:
+        values = None
+    if isinstance(values, (set, frozenset, tuple, list)) and all(isinstance(item, str) for item in values):
+        return sorted(set(values))
+    return None
+
+
+def _config_section(dotted_path: str) -> str:
+    root = dotted_path.split(".", 1)[0]
+    if dotted_path in CONFIG_HIGH_VALUE_PATHS:
+        return "Essentials"
+    if root == "execution":
+        return "Execution"
+    if root in {"models", "model_capabilities"}:
+        return "Models & reasoning"
+    if root in {"lifecycle", "coordination", "subagents", "review", "recovery", "goals", "hive"}:
+        return "Tasks & handoffs"
+    if root in {"roles", "professions", "labels"}:
+        return "Roles & agents"
+    if root in {"role_icons", "console", "chat_relay"}:
+        return "Interface"
+    if root in {"portfolio", "boost", "turbo", "efficiency"}:
+        return "Usage"
+    if root in {"proof", "monitoring", "logging"}:
+        return "Logs & diagnostics"
+    if root == "feedback":
+        return "Integrations & paths"
+    return "Advanced"
+
+
+def _config_label_help(dotted_path: str) -> tuple[str, str]:
+    labels = {
+        "automation.mode": ("Auto mode", "Keep eligible SWARM lifecycle actions automatic or require manual confirmation."),
+        "execution.fast_mode": ("Speed", "Request the canonical Fast service for newly resolved work."),
+        "execution.usage_profile": ("Usage profile", "Select the canonical relative model and reasoning profile."),
+        "execution.min_reasoning": ("Minimum reasoning", "Set the global reasoning floor applied to new work."),
+        "execution.max_reasoning": ("Maximum reasoning", "Set the global reasoning ceiling applied to new work."),
+        "execution.usage_saver": ("Usage saver · Experimental", "Reduce coordination churn and model usage when smart routing can safely do so."),
+        "monitoring.auto_health_enabled": ("Auto fix", AUTO_REPAIR_HELP),
+        "lifecycle.task_lifetime_hours": ("Task life", "Choose how long a task may remain in one continuity window."),
+        "role_icons.enabled": ("Emoji use", "Use the canonical role emoji in SWARM task titles."),
+        "console.open_on_start": ("HQ open on start", "Open the localhost console when SWARM starts it."),
+        "console.project_progress_feed_enabled": ("Project progress feed", "Show the on-demand project progress feed."),
+        "console.project_progress_feed_lines": ("Progress feed lines", "Bound the number of material project feed lines."),
+    }
+    if dotted_path in labels:
+        return labels[dotted_path]
+    leaf = dotted_path.rsplit(".", 1)[-1].replace("_", " ").strip()
+    return leaf[:1].upper() + leaf[1:], f"Canonical SWARM setting: {dotted_path}."
+
+
+def _canonical_editable_settings() -> dict[str, type]:
+    """Build the legacy compatibility map from DEFAULTS, never from a copy."""
+    try:
+        module = load_config_module()
+        defaults = module.DEFAULTS
+    except (ConsoleError, AttributeError, TypeError):
+        return {}
+    result: dict[str, type] = {}
+    for dotted_path, value in _config_leaf_items(defaults):
+        if len(dotted_path.split(".")) != 2:
+            continue
+        classification, _ = _config_classification(dotted_path)
+        if classification == "exposed":
+            result[dotted_path] = type(value)
+    return result
+
+
+EDITABLE_SETTINGS = _canonical_editable_settings()
+
+
 def load_config(config_path: Path) -> tuple[Any, dict[str, Any], bool]:
     module = load_config_module()
     try:
@@ -490,18 +616,441 @@ def resolve_config_path(config_path: Path|None=None) -> Path:
 
 
 def redacted_config_snapshot(config_path: Path) -> dict[str, Any]:
-    _, effective, exists = load_config(config_path)
-    safe = json.loads(json.dumps(effective))
-    destination = safe.get("feedback", {}).get("destination", "")
-    if "feedback" in safe:
-        safe["feedback"]["destination"] = ""
-        safe["feedback"]["destination_configured"] = bool(destination)
+    module, effective, exists = load_config(config_path)
+    safe, _ = _config_redacted_settings(effective)
     return {
+        "schema_version": int(getattr(module, "DEFAULTS", {}).get("schema_version", 0)),
         "exists": exists,
         "path": str(config_path),
         "settings": safe,
         "editable": sorted(EDITABLE_SETTINGS),
     }
+
+
+def _config_sha256(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()
+
+
+def _config_bytes(path: Path, *, fallback: Path) -> tuple[bytes, bool]:
+    try:
+        if path.exists():
+            return path.read_bytes(), True
+        return fallback.read_bytes(), False
+    except (OSError, ValueError) as exc:
+        raise ConsoleError("canonical SWARM config source is unreadable") from exc
+
+
+def _config_reject_deprecated(raw: dict[str, Any]) -> None:
+    for dotted_path in sorted(CONFIG_DEPRECATED_PATHS):
+        if _config_value_present(raw, dotted_path):
+            raise ConsoleError(f"deprecated config setting is not accepted by Edit config: {dotted_path}")
+    for dotted_path, value in sorted(CONFIG_DEPRECATED_VALUES):
+        if _config_value_at(raw, dotted_path) == value:
+            raise ConsoleError(
+                f"deprecated config value is not accepted by Edit config: {dotted_path}={value}"
+            )
+
+
+def _config_value_present(value: Any, dotted_path: str) -> bool:
+    current = value
+    for part in dotted_path.split("."):
+        if not isinstance(current, dict) or part not in current:
+            return False
+        current = current[part]
+    return True
+
+
+def _config_parse_text(
+    module: Any,
+    text: str,
+    *,
+    scope_type: str,
+) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
+    if not isinstance(text, str):
+        raise ConsoleError("config text must be a string")
+    try:
+        encoded = text.encode("utf-8")
+    except UnicodeEncodeError as exc:
+        raise ConsoleError("config text must be valid UTF-8") from exc
+    if len(encoded) > CONFIG_TEXT_MAX_BYTES:
+        raise ConsoleError("config text exceeds the 65536-byte editor limit")
+    if "\x00" in text:
+        raise ConsoleError("config text contains an unsafe NUL character")
+    try:
+        raw = tomllib.loads(text)
+    except (tomllib.TOMLDecodeError, TypeError, ValueError) as exc:
+        raise ConsoleError(f"config TOML is invalid: {str(exc)[:256]}") from exc
+    if not isinstance(raw, dict):
+        raise ConsoleError("config TOML must contain a table")
+    _config_reject_deprecated(raw)
+    canonical_schema = getattr(module, "DEFAULTS", {}).get("schema_version")
+    declared_schema = raw.get("schema_version")
+    if scope_type == "global":
+        if declared_schema != canonical_schema:
+            raise ConsoleError("config schema_version must match the canonical schema")
+    elif declared_schema is not None and declared_schema != canonical_schema:
+        raise ConsoleError("project config schema_version must match the canonical schema")
+    validation_raw = copy.deepcopy(raw)
+    if scope_type == "project" and "schema_version" not in validation_raw:
+        validation_raw["schema_version"] = canonical_schema
+    try:
+        normalized = module.normalize_legacy_task_role(validation_raw)
+        module.validate(normalized)
+        effective = module.apply_turbo(module.merge(normalized))
+    except Exception as exc:  # ConfigError is owned by the loaded canonical module.
+        raise ConsoleError(f"config validation failed: {str(exc)[:256]}") from exc
+    return raw, normalized, effective
+
+
+def _config_scalar_literal(literal: str) -> Any:
+    try:
+        parsed = tomllib.loads(f"value = {literal}\n")
+    except (tomllib.TOMLDecodeError, TypeError, ValueError):
+        return None
+    return parsed.get("value")
+
+
+def _config_value_bounds(line: str, equal_index: int) -> tuple[int, int] | None:
+    start = equal_index + 1
+    while start < len(line) and line[start] in " \t":
+        start += 1
+    if start >= len(line):
+        return None
+    if line.startswith('"""', start) or line.startswith("'''", start):
+        delimiter = line[start : start + 3]
+        end = line.find(delimiter, start + 3)
+        if end < 0:
+            return None
+        return start, end + 3
+    if line[start] in {'"', "'"}:
+        delimiter = line[start]
+        index = start + 1
+        escaped = False
+        while index < len(line):
+            character = line[index]
+            if delimiter == '"' and escaped:
+                escaped = False
+            elif delimiter == '"' and character == "\\":
+                escaped = True
+            elif character == delimiter:
+                return start, index + 1
+            index += 1
+        return None
+    index = start
+    while index < len(line) and line[index] != "#":
+        index += 1
+    end = index
+    while end > start and line[end - 1] in " \t":
+        end -= 1
+    return start, end
+
+
+def _config_key_path(raw_key: str) -> str:
+    """Normalize bare or quoted TOML key components for redaction only."""
+    parts: list[str] = []
+    current: list[str] = []
+    quote = ""
+    escaped = False
+    for character in raw_key:
+        if quote:
+            current.append(character)
+            if quote == '"' and escaped:
+                escaped = False
+            elif quote == '"' and character == "\\":
+                escaped = True
+            elif character == quote:
+                quote = ""
+            continue
+        if character in {'"', "'"}:
+            quote = character
+            current.append(character)
+        elif character == ".":
+            parts.append("".join(current).strip())
+            current = []
+        else:
+            current.append(character)
+    parts.append("".join(current).strip())
+    decoded: list[str] = []
+    for part in parts:
+        if len(part) >= 2 and part[0] == part[-1] and part[0] in {'"', "'"}:
+            try:
+                parsed = tomllib.loads(f"{part} = true\n")
+                part = str(next(iter(parsed)))
+            except (tomllib.TOMLDecodeError, TypeError, ValueError):
+                part = part[1:-1]
+        decoded.append(part)
+    return ".".join(decoded)
+
+
+def _config_private_entries(text: str) -> dict[str, dict[str, Any]]:
+    section = ""
+    entries: dict[str, dict[str, Any]] = {}
+    offset = 0
+    for line_number, raw_line in enumerate(text.splitlines(keepends=True)):
+        line = raw_line.rstrip("\r\n")
+        section_match = re.match(r"^\s*\[([^\[\]]+)\]\s*(?:#.*)?$", line)
+        if section_match:
+            section = _config_key_path(section_match.group(1))
+            offset += len(raw_line)
+            continue
+        key_match = re.match(
+            r"^\s*((?:[A-Za-z0-9_-]+|\"(?:\\.|[^\"])*\"|'[^']+')(?:\s*\.\s*(?:[A-Za-z0-9_-]+|\"(?:\\.|[^\"])*\"|'[^']+'))*)\s*=",
+            line,
+        )
+        if not key_match:
+            offset += len(raw_line)
+            continue
+        key_path = _config_key_path(key_match.group(1))
+        dotted_path = f"{section}.{key_path}" if section else key_path
+        if not _config_private_path(dotted_path):
+            offset += len(raw_line)
+            continue
+        equal_index = line.find("=", key_match.start(1) + len(key_match.group(1)))
+        bounds = _config_value_bounds(line, equal_index)
+        if bounds is not None:
+            start, end = bounds
+            if dotted_path in entries:
+                raise ConsoleError(f"private config setting is duplicated: {dotted_path}")
+            entries[dotted_path] = {
+                "line_number": line_number,
+                "line": line,
+                "start": start,
+                "end": end,
+                "literal": line[start:end],
+                "offset": offset + start,
+            }
+        offset += len(raw_line)
+    return entries
+
+
+def _config_opaque_token(dotted_path: str, revision: str) -> str:
+    return f"__SWARM_OPAQUE_V1__:{dotted_path}:{revision}"
+
+
+def _config_redacted_text(text: str, revision: str) -> tuple[str, list[dict[str, str]]]:
+    entries = _config_private_entries(text)
+    replacements: dict[int, list[tuple[int, int, str]]] = {}
+    placeholders: list[dict[str, str]] = []
+    for dotted_path, entry in entries.items():
+        value = _config_scalar_literal(str(entry["literal"]))
+        if value in (None, ""):
+            continue
+        token = _config_opaque_token(dotted_path, revision)
+        replacements.setdefault(int(entry["line_number"]), []).append(
+            (int(entry["start"]), int(entry["end"]), json.dumps(token, ensure_ascii=False))
+        )
+        placeholders.append({
+            "kind": "opaque",
+            "path": dotted_path,
+            "token": token,
+            "value_type": "string",
+            "revision": revision,
+        })
+    if not replacements:
+        return text, placeholders
+    lines = text.splitlines(keepends=True)
+    for line_number, line_replacements in replacements.items():
+        line = lines[line_number]
+        for start, end, replacement in sorted(line_replacements, reverse=True):
+            lines[line_number] = line[:start] + replacement + line[end:]
+            line = lines[line_number]
+    return "".join(lines), sorted(placeholders, key=lambda item: item["path"])
+
+
+def _config_resolve_opaque_text(submitted: str, current: str, revision: str) -> str:
+    current_entries = _config_private_entries(current)
+    submitted_entries = _config_private_entries(submitted)
+    replacements: dict[int, list[tuple[int, int, str]]] = {}
+    for dotted_path, current_entry in current_entries.items():
+        current_value = _config_scalar_literal(str(current_entry["literal"]))
+        submitted_entry = submitted_entries.get(dotted_path)
+        if current_value not in (None, ""):
+            token = _config_opaque_token(dotted_path, revision)
+            if submitted_entry is None or _config_scalar_literal(str(submitted_entry["literal"])) != token:
+                raise ConsoleError(f"private setting {dotted_path} must retain its current opaque placeholder")
+            replacements.setdefault(int(submitted_entry["line_number"]), []).append(
+                (int(submitted_entry["start"]), int(submitted_entry["end"]), str(current_entry["literal"]))
+            )
+        elif submitted_entry is not None:
+            submitted_value = _config_scalar_literal(str(submitted_entry["literal"]))
+            if submitted_value not in (None, ""):
+                raise ConsoleError(f"private setting {dotted_path} cannot be added through Edit config")
+    for dotted_path, submitted_entry in submitted_entries.items():
+        if dotted_path not in current_entries:
+            submitted_value = _config_scalar_literal(str(submitted_entry["literal"]))
+            if submitted_value not in (None, ""):
+                raise ConsoleError(f"private setting {dotted_path} cannot be added through Edit config")
+    reserved_tokens = set(re.findall(r"__SWARM_OPAQUE_V1__:[A-Za-z0-9_.-]+:[0-9a-f]{64}", submitted))
+    expected_tokens = {
+        _config_opaque_token(path, revision)
+        for path, entry in current_entries.items()
+        if _config_scalar_literal(str(entry["literal"])) not in (None, "")
+    }
+    if reserved_tokens - expected_tokens:
+        raise ConsoleError("config contains an unbound opaque placeholder")
+    if not replacements:
+        return submitted
+    lines = submitted.splitlines(keepends=True)
+    for line_number, line_replacements in replacements.items():
+        line = lines[line_number]
+        for start, end, replacement in sorted(line_replacements, reverse=True):
+            lines[line_number] = line[:start] + replacement + line[end:]
+            line = lines[line_number]
+    return "".join(lines)
+
+
+def _config_redacted_settings(effective: dict[str, Any]) -> tuple[dict[str, Any], dict[str, bool]]:
+    safe = copy.deepcopy(effective)
+    configured: dict[str, bool] = {}
+    for dotted_path, _ in _config_leaf_items(effective):
+        if not _config_private_path(dotted_path):
+            continue
+        value = _config_value_at(effective, dotted_path)
+        configured[dotted_path] = bool(value)
+        target = safe
+        parts = dotted_path.split(".")
+        for part in parts[:-1]:
+            if not isinstance(target, dict) or part not in target:
+                break
+            target = target[part]
+        else:
+            if isinstance(target, dict):
+                target[parts[-1]] = ""
+    if isinstance(safe.get("feedback"), dict) and "feedback.destination" in configured:
+        safe["feedback"]["destination_configured"] = configured["feedback.destination"]
+    return safe, configured
+
+
+def _config_scope_revision(
+    scope_type: str,
+    project_id: str | None,
+    cursor: dict[str, Any] | None,
+    global_revision: str,
+    overlay_text: str,
+) -> str:
+    return _auto_digest({
+        "contract_version": CONFIG_CONTRACT_VERSION,
+        "scope_type": scope_type,
+        "project_id": project_id,
+        "accepted_cursor": cursor,
+        "global_revision": global_revision,
+        "overlay_digest": _config_sha256(overlay_text.encode("utf-8")),
+    })
+
+
+def _config_changed_paths(before: dict[str, Any], after: dict[str, Any]) -> list[str]:
+    paths = {path for path, _ in _config_leaf_items(before)} | {path for path, _ in _config_leaf_items(after)}
+    return sorted(
+        path for path in paths
+        if _config_value_at(before, path) != _config_value_at(after, path)
+        and path != "schema_version"
+    )
+
+
+def _config_merge_overlay(base: dict[str, Any], overlay: dict[str, Any]) -> dict[str, Any]:
+    """Apply a partial project TOML overlay without copying global values."""
+    result = copy.deepcopy(base)
+
+    def merge_table(target: dict[str, Any], updates: dict[str, Any], prefix: str = "") -> None:
+        for key, value in updates.items():
+            dotted_path = f"{prefix}.{key}" if prefix else str(key)
+            if dotted_path == "schema_version":
+                continue
+            if isinstance(value, dict) and isinstance(target.get(key), dict):
+                merge_table(target[key], value, dotted_path)
+            else:
+                target[key] = copy.deepcopy(value)
+
+    merge_table(result, overlay)
+    return result
+
+
+def _config_public_value(value: Any, *, private: bool, known: bool = True) -> Any:
+    if private:
+        if not known:
+            return {"state": "unknown"}
+        return {"state": "configured" if bool(value) else "empty"}
+    return copy.deepcopy(value) if known else None
+
+
+def _config_descriptor_rows(
+    module: Any,
+    defaults: dict[str, Any],
+    effective: dict[str, Any],
+    *,
+    global_raw: dict[str, Any],
+    overlay_raw: dict[str, Any] | None,
+    revision: str,
+    scope_type: str,
+    values_known: bool,
+) -> list[dict[str, Any]]:
+    paths = {
+        path
+        for path, _ in _config_leaf_items(defaults)
+    } | {
+        path
+        for path, _ in _config_leaf_items(effective)
+    }
+    rows: list[dict[str, Any]] = []
+    for dotted_path in sorted(paths):
+        classification, reason = _config_classification(dotted_path)
+        private = _config_private_path(dotted_path)
+        default_value = _config_value_at(defaults, dotted_path)
+        current_value = _config_value_at(effective, dotted_path)
+        sample_value = default_value if default_value is not None else current_value
+        enum_values = _config_allowed_enum(dotted_path, module=module)
+        if overlay_raw is not None and _config_value_present(overlay_raw, dotted_path):
+            source = "project_override"
+        elif _config_value_present(global_raw, dotted_path):
+            source = "global"
+        else:
+            source = "canonical_default"
+        label, help_text = _config_label_help(dotted_path)
+        rows.append({
+            "key": dotted_path,
+            "section": _config_section(dotted_path),
+            "label": label,
+            "help": help_text,
+            "type": _config_type(sample_value, dotted_path, module),
+            "default": _config_public_value(default_value, private=private),
+            "current": _config_public_value(current_value, private=private, known=values_known),
+            "allowed_enum": enum_values,
+            "allowed_range": None,
+            "advanced": dotted_path not in CONFIG_HIGH_VALUE_PATHS,
+            "restart_required": dotted_path in CONFIG_RESTART_PATHS,
+            "reload_required": True,
+            "reload_requirement": "next_scheduled_operation",
+            "scope": "global_or_project",
+            "sensitivity": "private" if private else "normal",
+            "revision": revision,
+            "classification": classification,
+            "reason": reason,
+            "source": source,
+            "editable": classification == "exposed",
+            "value_state": "KNOWN" if values_known else "UNKNOWN",
+        })
+    return rows
+
+
+def _atomic_config_write(path: Path, data: bytes, module: Any) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(mode="wb", dir=path.parent, delete=False) as handle:
+            handle.write(data)
+            handle.flush()
+            os.fsync(handle.fileno())
+            temporary = Path(handle.name)
+        module.load(temporary)
+        if path.exists():
+            shutil.copy2(path, path.with_suffix(".toml.swarm-console.bak"))
+        os.replace(temporary, path)
+        temporary = None
+    except Exception as exc:
+        raise ConsoleError(str(exc)[:256]) from exc
+    finally:
+        if temporary and temporary.exists():
+            temporary.unlink(missing_ok=True)
 
 
 def _toml_value(value: Any) -> str:
@@ -1522,6 +2071,9 @@ class ConsoleStore:
                     profile TEXT NOT NULL,
                     preferred_ids_json TEXT NOT NULL,
                     updated_at_ms INTEGER NOT NULL,
+                    config_text TEXT NOT NULL DEFAULT '',
+                    config_revision INTEGER NOT NULL DEFAULT 0,
+                    config_updated_at_ms INTEGER NOT NULL DEFAULT 0,
                     PRIMARY KEY(scope_type, scope_id)
                 );
                 CREATE TABLE IF NOT EXISTS task_heartbeats (
@@ -1667,6 +2219,17 @@ class ConsoleStore:
                 "CREATE UNIQUE INDEX IF NOT EXISTS execution_event_identity "
                 "ON execution_event_receipts(event_kind, identity) WHERE identity != ''"
             )
+            overlay_columns = {
+                str(row[1])
+                for row in connection.execute("PRAGMA table_info(skill_scope_overlays)").fetchall()
+            }
+            for name, definition in {
+                "config_text": "TEXT NOT NULL DEFAULT ''",
+                "config_revision": "INTEGER NOT NULL DEFAULT 0",
+                "config_updated_at_ms": "INTEGER NOT NULL DEFAULT 0",
+            }.items():
+                if name not in overlay_columns:
+                    connection.execute(f"ALTER TABLE skill_scope_overlays ADD COLUMN {name} {definition}")
             connection.execute("DROP TABLE IF EXISTS auto_ctrl_state")
             eta_columns = {
                 str(row[1])
@@ -3003,6 +3566,228 @@ class ConsoleStore:
             "preferred_ids": json.loads(row["preferred_ids_json"]),
             "updated_at_ms": int(row["updated_at_ms"]),
         }
+
+    def config_overlay(self, project_id: str) -> dict[str, Any] | None:
+        """Read the config namespace of the existing project overlay row."""
+        project_id = _safe_metadata_text(project_id, "project_id", maximum=256)
+        with self._lock, closing(self._connect()) as connection:
+            row = connection.execute(
+                "SELECT config_text, config_revision, config_updated_at_ms "
+                "FROM skill_scope_overlays WHERE scope_type = 'project' AND scope_id = ?",
+                (project_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        text = row["config_text"]
+        if not isinstance(text, str) or len(text.encode("utf-8")) > CONFIG_TEXT_MAX_BYTES:
+            raise ConsoleError("retained project config overlay is unreadable")
+        revision = row["config_revision"]
+        if not isinstance(revision, int) or isinstance(revision, bool) or revision < 0:
+            raise ConsoleError("retained project config overlay revision is invalid")
+        updated_at_ms = row["config_updated_at_ms"]
+        if not isinstance(updated_at_ms, int) or isinstance(updated_at_ms, bool) or updated_at_ms < 0:
+            raise ConsoleError("retained project config overlay timestamp is invalid")
+        return {
+            "project_id": project_id,
+            "text": text,
+            "config_revision": int(revision),
+            "updated_at_ms": int(updated_at_ms),
+        }
+
+    @classmethod
+    def _retain_config_event_unlocked(
+        cls,
+        connection: sqlite3.Connection,
+        *,
+        operation_id: str,
+        payload: dict[str, Any],
+        now_ms: int,
+    ) -> bool:
+        if not isinstance(payload, dict) or any(
+            key in payload for key in ("text", "config_text", "raw_text", "raw_config")
+        ):
+            raise ConsoleError("config audit payload cannot contain config text")
+        encoded = json.dumps(payload, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
+        digest = hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+        retained = connection.execute(
+            "SELECT payload_digest FROM execution_event_receipts WHERE event_kind = ? AND identity = ?",
+            (CONFIG_EVENT_KIND, operation_id),
+        ).fetchone()
+        if retained is not None:
+            if str(retained["payload_digest"]) != digest:
+                raise ConsoleConflict("config operation identity conflicts with retained audit content")
+            return False
+        connection.execute(
+            "INSERT INTO execution_event_receipts(event_digest, retained_at_ms, event_kind, identity, payload_json, payload_digest) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (digest, now_ms, CONFIG_EVENT_KIND, operation_id, encoded, digest),
+        )
+        return True
+
+    def config_event(self, operation_id: str) -> dict[str, Any] | None:
+        operation_id = _safe_metadata_text(operation_id, "operation_id", maximum=256)
+        with self._lock, closing(self._connect()) as connection:
+            row = connection.execute(
+                "SELECT payload_json, payload_digest FROM execution_event_receipts "
+                "WHERE event_kind = ? AND identity = ?",
+                (CONFIG_EVENT_KIND, operation_id),
+            ).fetchone()
+        if row is None:
+            return None
+        try:
+            payload = json.loads(str(row["payload_json"]))
+        except (TypeError, ValueError, json.JSONDecodeError) as exc:
+            raise ConsoleError("retained config audit event is unreadable") from exc
+        if not isinstance(payload, dict):
+            raise ConsoleError("retained config audit event is invalid")
+        encoded = json.dumps(payload, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
+        if hashlib.sha256(encoded.encode("utf-8")).hexdigest() != str(row["payload_digest"]):
+            raise ConsoleError("retained config audit event digest is invalid")
+        return payload
+
+    def retain_config_event(
+        self,
+        operation_id: str,
+        payload: dict[str, Any],
+        *,
+        now_ms: int,
+    ) -> bool:
+        operation_id = _safe_metadata_text(operation_id, "operation_id", maximum=256)
+        if not isinstance(now_ms, int) or isinstance(now_ms, bool) or now_ms < 0:
+            raise ConsoleError("config audit timestamp is invalid")
+        with self._lock, closing(self._connect()) as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            fresh = self._retain_config_event_unlocked(
+                connection, operation_id=operation_id, payload=payload, now_ms=now_ms,
+            )
+            connection.commit()
+        return fresh
+
+    def update_config_overlay(
+        self,
+        project_id: str,
+        text: str,
+        *,
+        expected_config_revision: int,
+        operation_id: str,
+        audit_payload: dict[str, Any],
+        now_ms: int,
+    ) -> dict[str, Any]:
+        project_id = _safe_metadata_text(project_id, "project_id", maximum=256)
+        operation_id = _safe_metadata_text(operation_id, "operation_id", maximum=256)
+        if not isinstance(text, str) or len(text.encode("utf-8")) > CONFIG_TEXT_MAX_BYTES:
+            raise ConsoleError("project config text is invalid or oversized")
+        if not isinstance(expected_config_revision, int) or isinstance(expected_config_revision, bool) or expected_config_revision < 0:
+            raise ConsoleError("project config revision is invalid")
+        with self._lock, closing(self._connect()) as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            retained_event = connection.execute(
+                "SELECT payload_json, payload_digest FROM execution_event_receipts "
+                "WHERE event_kind = ? AND identity = ?",
+                (CONFIG_EVENT_KIND, operation_id),
+            ).fetchone()
+            if retained_event is not None:
+                try:
+                    retained_payload = json.loads(str(retained_event["payload_json"]))
+                except (TypeError, ValueError, json.JSONDecodeError) as exc:
+                    connection.rollback()
+                    raise ConsoleError("retained config audit event is unreadable") from exc
+                retained_encoded = json.dumps(retained_payload, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
+                audit_encoded = json.dumps(audit_payload, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
+                if hashlib.sha256(retained_encoded.encode("utf-8")).hexdigest() != hashlib.sha256(audit_encoded.encode("utf-8")).hexdigest():
+                    connection.rollback()
+                    raise ConsoleConflict("config operation identity conflicts with retained audit content")
+                connection.commit()
+                return self.config_overlay(project_id) or {
+                    "project_id": project_id, "text": "", "config_revision": 0, "updated_at_ms": 0,
+                }
+            row = connection.execute(
+                "SELECT config_text, config_revision FROM skill_scope_overlays "
+                "WHERE scope_type = 'project' AND scope_id = ?",
+                (project_id,),
+            ).fetchone()
+            current_text = "" if row is None else str(row["config_text"] or "")
+            current_revision = 0 if row is None else int(row["config_revision"])
+            if current_revision != expected_config_revision:
+                connection.rollback()
+                raise ConsoleConflict("project config overlay changed; reload before saving")
+            next_revision = current_revision + (1 if current_text != text else 0)
+            if row is None:
+                connection.execute(
+                    "INSERT INTO skill_scope_overlays("
+                    "scope_type, scope_id, revision, inheritance_enabled, profile, preferred_ids_json, updated_at_ms, "
+                    "config_text, config_revision, config_updated_at_ms) VALUES (?, ?, 0, NULL, ?, ?, ?, ?, ?, ?)",
+                    (
+                        "project", project_id, "default", "[]", now_ms,
+                        text, next_revision, now_ms,
+                    ),
+                )
+            else:
+                connection.execute(
+                    "UPDATE skill_scope_overlays SET config_text = ?, config_revision = ?, config_updated_at_ms = ? "
+                    "WHERE scope_type = 'project' AND scope_id = ?",
+                    (text, next_revision, now_ms, project_id),
+                )
+            self._retain_config_event_unlocked(
+                connection, operation_id=operation_id, payload=audit_payload, now_ms=now_ms,
+            )
+            connection.commit()
+        return self.config_overlay(project_id) or {
+            "project_id": project_id, "text": text, "config_revision": next_revision, "updated_at_ms": now_ms,
+        }
+
+    def reset_config_overlay(
+        self,
+        project_id: str,
+        *,
+        expected_config_revision: int,
+        operation_id: str,
+        audit_payload: dict[str, Any],
+        now_ms: int,
+    ) -> dict[str, Any] | None:
+        project_id = _safe_metadata_text(project_id, "project_id", maximum=256)
+        operation_id = _safe_metadata_text(operation_id, "operation_id", maximum=256)
+        if not isinstance(expected_config_revision, int) or isinstance(expected_config_revision, bool) or expected_config_revision < 0:
+            raise ConsoleError("project config revision is invalid")
+        with self._lock, closing(self._connect()) as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            retained_event = connection.execute(
+                "SELECT payload_json FROM execution_event_receipts WHERE event_kind = ? AND identity = ?",
+                (CONFIG_EVENT_KIND, operation_id),
+            ).fetchone()
+            if retained_event is not None:
+                try:
+                    retained_payload = json.loads(str(retained_event["payload_json"]))
+                except (TypeError, ValueError, json.JSONDecodeError) as exc:
+                    connection.rollback()
+                    raise ConsoleError("retained config audit event is unreadable") from exc
+                if retained_payload != audit_payload:
+                    connection.rollback()
+                    raise ConsoleConflict("config operation identity conflicts with retained audit content")
+                connection.commit()
+                return self.config_overlay(project_id)
+            row = connection.execute(
+                "SELECT config_text, config_revision FROM skill_scope_overlays "
+                "WHERE scope_type = 'project' AND scope_id = ?",
+                (project_id,),
+            ).fetchone()
+            current_text = "" if row is None else str(row["config_text"] or "")
+            current_revision = 0 if row is None else int(row["config_revision"])
+            if current_revision != expected_config_revision:
+                connection.rollback()
+                raise ConsoleConflict("project config overlay changed; reload before resetting")
+            next_revision = current_revision + (1 if current_text else 0)
+            if row is not None and current_text:
+                connection.execute(
+                    "UPDATE skill_scope_overlays SET config_text = '', config_revision = ?, config_updated_at_ms = ? "
+                    "WHERE scope_type = 'project' AND scope_id = ?",
+                    (next_revision, now_ms, project_id),
+                )
+            self._retain_config_event_unlocked(
+                connection, operation_id=operation_id, payload=audit_payload, now_ms=now_ms,
+            )
+            connection.commit()
+        return self.config_overlay(project_id)
 
     def update_skill_scope(
         self,
@@ -10324,6 +11109,562 @@ class App:
             raise ConsoleError("project settings require one unambiguous canonical project root")
         return record, cursor, root_owners
 
+    @staticmethod
+    def _config_scope(scope: Any, *, require_cursor: bool = False) -> dict[str, Any]:
+        if not isinstance(scope, dict) or not isinstance(scope.get("type"), str):
+            raise ConsoleError("config scope must identify global or one saved project")
+        scope_type = scope["type"].strip().casefold()
+        if scope_type == "global":
+            if set(scope) != {"type"}:
+                raise ConsoleError("global config scope must contain only type=global")
+            return {"type": "global"}
+        if scope_type != "project":
+            raise ConsoleError("config scope type must be global or project")
+        required = {"type", "project_id"}
+        if require_cursor:
+            required.add("accepted_cursor")
+        allowed = required if require_cursor else required | {"accepted_cursor"}
+        if set(scope) != required and set(scope) != allowed:
+            raise ConsoleError("project config scope requires exact project_id and accepted_cursor fields")
+        project_id = _safe_metadata_text(scope.get("project_id"), "project_id", maximum=256)
+        result: dict[str, Any] = {"type": "project", "project_id": project_id}
+        if "accepted_cursor" in scope:
+            cursor = scope.get("accepted_cursor")
+            if (
+                not isinstance(cursor, dict)
+                or set(cursor) != {"type", "digest"}
+                or cursor.get("type") != "codex_project_roster_v1"
+                or not isinstance(cursor.get("digest"), str)
+                or not re.fullmatch(r"[0-9a-f]{64}", cursor["digest"])
+            ):
+                raise ConsoleError("accepted_cursor must be the exact project roster cursor")
+            result["accepted_cursor"] = copy.deepcopy(cursor)
+        return result
+
+    def _config_scope_binding(
+        self,
+        scope: Any,
+        *,
+        require_cursor: bool = False,
+    ) -> dict[str, Any]:
+        normalized = self._config_scope(scope, require_cursor=require_cursor)
+        if normalized["type"] == "global":
+            return {
+                "scope": normalized,
+                "record": None,
+                "cursor": None,
+                "root_binding": None,
+            }
+        record, cursor, root_owners = self._require_saved_project(normalized["project_id"])
+        if "accepted_cursor" in normalized and normalized["accepted_cursor"] != cursor:
+            raise ConsoleConflict("project roster changed; reload before saving config")
+        root_binding = self._project_root_binding(record, root_owners)
+        if root_binding.get("status") != "KNOWN":
+            raise ConsoleError("config requires one unambiguous canonical project root")
+        return {
+            "scope": {
+                "type": "project",
+                "project_id": record["id"],
+                "accepted_cursor": copy.deepcopy(cursor),
+            },
+            "record": record,
+            "cursor": cursor,
+            "root_binding": root_binding,
+        }
+
+    @staticmethod
+    def _config_redacted_source_text(text: str, revision: str) -> tuple[str, list[dict[str, str]]]:
+        try:
+            return _config_redacted_text(text, revision)
+        except (ConsoleError, TypeError, ValueError):
+            # A malformed source may not be safely tokenized.  Returning no
+            # editor text is safer than accidentally returning a private value.
+            return "", []
+
+    def _config_global_state(self, module: Any) -> dict[str, Any]:
+        fallback = Path(getattr(module, "TEMPLATE_PATH", SWARM_SKILL_ROOT / "assets" / "swarm-config.toml"))
+        raw_bytes, exists = _config_bytes(self.config_path, fallback=fallback)
+        revision = _config_sha256(raw_bytes)
+        try:
+            text = raw_bytes.decode("utf-8")
+        except UnicodeDecodeError as exc:
+            text = ""
+            parse_error = f"config source is not valid UTF-8: {str(exc)[:160]}"
+            raw: dict[str, Any] = {}
+            effective = copy.deepcopy(module.DEFAULTS)
+            effective = module.apply_turbo(effective)
+            return {
+                "state": "INVALID",
+                "error": parse_error,
+                "module": module,
+                "global_raw": raw,
+                "global_effective": effective,
+                "global_text": text,
+                "global_exists": exists,
+                "global_revision": revision,
+                "source_kind": "global_config_file" if exists else "packaged_config_template",
+                "source_path": str(self.config_path),
+            }
+        try:
+            raw, _, effective = _config_parse_text(module, text, scope_type="global")
+            state = "KNOWN"
+            error = None
+        except ConsoleError as exc:
+            try:
+                parsed = tomllib.loads(text)
+                raw = parsed if isinstance(parsed, dict) else {}
+            except (tomllib.TOMLDecodeError, TypeError, ValueError):
+                raw = {}
+            effective = copy.deepcopy(module.DEFAULTS)
+            effective = module.apply_turbo(effective)
+            state = "INVALID"
+            error = str(exc)[:256]
+        return {
+            "state": state,
+            "error": error,
+            "module": module,
+            "global_raw": raw,
+            "global_effective": effective,
+            "global_text": text,
+            "global_exists": exists,
+            "global_revision": revision,
+            "source_kind": "global_config_file" if exists else "packaged_config_template",
+            "source_path": str(self.config_path),
+        }
+
+    def _config_state(self, scope: Any, *, require_cursor: bool = False) -> dict[str, Any]:
+        binding = self._config_scope_binding(scope, require_cursor=require_cursor)
+        module = load_config_module()
+        global_state = self._config_global_state(module)
+        scope_type = binding["scope"]["type"]
+        if scope_type == "global":
+            raw_text = global_state["global_text"]
+            revision = global_state["global_revision"]
+            return {
+                **global_state,
+                "scope": binding["scope"],
+                "project_id": None,
+                "cursor": None,
+                "record": None,
+                "root_binding": None,
+                "overlay_raw": None,
+                "overlay_text": "",
+                "overlay_revision": 0,
+                "raw_text": raw_text,
+                "revision": revision,
+                "effective": copy.deepcopy(global_state["global_effective"]),
+                "values_known": global_state["state"] == "KNOWN",
+                "source_kind": global_state["source_kind"],
+                "source_path": global_state["source_path"],
+            }
+
+        record = binding["record"]
+        cursor = binding["cursor"]
+        overlay = self.store.config_overlay(record["id"])
+        overlay_text = "" if overlay is None else str(overlay.get("text") or "")
+        overlay_raw: dict[str, Any] = {}
+        effective = copy.deepcopy(global_state["global_effective"])
+        state = global_state["state"]
+        error = global_state["error"]
+        overlay_revision = 0 if overlay is None else int(overlay["config_revision"])
+        if state == "KNOWN" and overlay_text:
+            try:
+                overlay_raw, overlay_normalized, _ = _config_parse_text(
+                    module, overlay_text, scope_type="project",
+                )
+                effective = _config_merge_overlay(effective, overlay_normalized)
+                effective = module.apply_turbo(effective)
+                module.validate(copy.deepcopy(effective))
+            except ConsoleError as exc:
+                state = "INVALID"
+                error = str(exc)[:256]
+                try:
+                    parsed = tomllib.loads(overlay_text)
+                    overlay_raw = parsed if isinstance(parsed, dict) else {}
+                except (tomllib.TOMLDecodeError, TypeError, ValueError):
+                    overlay_raw = {}
+        elif overlay_text:
+            try:
+                parsed = tomllib.loads(overlay_text)
+                overlay_raw = parsed if isinstance(parsed, dict) else {}
+            except (tomllib.TOMLDecodeError, TypeError, ValueError):
+                overlay_raw = {}
+        revision = _config_scope_revision(
+            "project", record["id"], cursor, global_state["global_revision"], overlay_text,
+        )
+        return {
+            **global_state,
+            "state": state,
+            "error": error,
+            "scope": binding["scope"],
+            "project_id": record["id"],
+            "cursor": cursor,
+            "record": record,
+            "root_binding": binding["root_binding"],
+            "overlay_raw": overlay_raw,
+            "overlay_text": overlay_text,
+            "overlay_revision": overlay_revision,
+            "raw_text": overlay_text,
+            "revision": revision,
+            "effective": effective,
+            "values_known": state == "KNOWN",
+            "source_kind": "project_skill_scope_overlay",
+            "source_path": None,
+        }
+
+    def _config_projection_from_state(self, state: dict[str, Any]) -> dict[str, Any]:
+        module = state["module"]
+        defaults = copy.deepcopy(module.DEFAULTS)
+        defaults_effective = module.apply_turbo(defaults)
+        redacted_text, placeholders = self._config_redacted_source_text(
+            state["raw_text"], state["revision"],
+        )
+        safe_effective, _ = _config_redacted_settings(state["effective"])
+        safe_global, _ = _config_redacted_settings(state["global_effective"])
+        overlay_raw = state.get("overlay_raw") if state["scope"]["type"] == "project" else None
+        descriptors = _config_descriptor_rows(
+            module,
+            defaults_effective,
+            state["effective"],
+            global_raw=state["global_raw"],
+            overlay_raw=overlay_raw,
+            revision=state["revision"],
+            scope_type=state["scope"]["type"],
+            values_known=bool(state["values_known"]),
+        )
+        overridden_paths = sorted(
+            path
+            for path, _ in _config_leaf_items(overlay_raw or {})
+            if path != "schema_version"
+        )
+        descriptor_paths = [row["key"] for row in descriptors]
+        inherited_paths = [path for path in descriptor_paths if path not in overridden_paths]
+        validation = {
+            "state": "KNOWN" if state["state"] == "KNOWN" else "UNKNOWN",
+            "status": "VALID" if state["state"] == "KNOWN" else "INVALID",
+            "schema_version": defaults_effective.get("schema_version"),
+            "errors": [] if state["state"] == "KNOWN" else [state["error"] or "config source is invalid"],
+        }
+        scope = copy.deepcopy(state["scope"])
+        project = None
+        if state["scope"]["type"] == "project":
+            project = {
+                "id": state["record"]["id"],
+                "display_name": state["record"]["display_name"],
+                "root": state["root_binding"].get("value"),
+                "root_binding": copy.deepcopy(state["root_binding"]),
+            }
+        warning = (
+            "This project has no config overrides; it inherits global values."
+            if state["scope"]["type"] == "project" and not overridden_paths
+            else "Project overrides stop following global changes for the listed paths; all other paths continue inheriting global values."
+            if state["scope"]["type"] == "project"
+            else "Global values are the canonical defaults for all saved projects unless a project overlay overrides a path."
+        )
+        return {
+            "ok": True,
+            "contract_version": CONFIG_CONTRACT_VERSION,
+            "schema_version": int(defaults_effective.get("schema_version", 0)),
+            "config_schema_version": int(defaults_effective.get("schema_version", 0)),
+            "state": state["state"],
+            "available": state["state"] == "KNOWN",
+            "scope": scope,
+            "project": project,
+            "source": state["source_kind"],
+            "source_kind": state["source_kind"],
+            "source_path": state["source_path"],
+            "path": state["source_path"],
+            "exists": bool(state["global_exists"]),
+            "revision": state["revision"],
+            "global_revision": state["global_revision"],
+            "text": redacted_text,
+            "editable_text": redacted_text,
+            "opaque_placeholders": placeholders,
+            "validation": validation,
+            "settings": safe_effective,
+            "effective_settings": safe_effective,
+            "global_settings": safe_global,
+            "overridden_paths": overridden_paths,
+            "inherited_paths": inherited_paths,
+            "inheritance": {
+                "project_overlay": state["scope"]["type"] == "project",
+                "global_revision": state["global_revision"],
+                "warning": warning,
+            },
+            "descriptors": descriptors,
+            "editable": [row["key"] for row in descriptors if row["editable"]],
+            "write_contract": {
+                "endpoint": "/api/config",
+                "reset_endpoint": "/api/config/reset",
+                "method": "POST",
+                "scope_field": "scope",
+                "expected_revision_field": "expected_revision",
+                "acknowledgement_field": "acknowledge",
+                "operation_id_field": "operation_id",
+                "text_field": "text",
+                "project_cursor_field": "scope.accepted_cursor",
+                "reset_project_only": True,
+            },
+            "health": {"auto_repair": self._auto_repair_policy()},
+            "claim_limit": (
+                "This projection uses the canonical SWARM validator and the existing global config file. "
+                "Project text is a partial overlay retained in the existing skill-scope row; it is not a copied "
+                "global file or a second project registry. Private values are never returned."
+            ),
+        }
+
+    def config_projection(self, scope: Any = None) -> dict[str, Any]:
+        normalized = {"type": "global"} if scope is None else scope
+        return self._config_projection_from_state(self._config_state(normalized))
+
+    @staticmethod
+    def _config_operation_audit(
+        *,
+        action: str,
+        operation_id: str,
+        scope: dict[str, Any],
+        expected_revision: str,
+        request_digest: str,
+        new_revision: str,
+        changed_paths: list[str],
+        source_kind: str,
+    ) -> dict[str, Any]:
+        # Keep the durable event useful for review while making raw config text
+        # and private values structurally impossible to retain.
+        return {
+            "action": action,
+            "operation_id": operation_id,
+            "scope_type": scope["type"],
+            "project_id": scope.get("project_id"),
+            "accepted_cursor": copy.deepcopy(scope.get("accepted_cursor")),
+            "expected_revision": expected_revision,
+            "request_digest": request_digest,
+            "new_revision": new_revision,
+            "changed_paths": sorted(changed_paths),
+            "acknowledged": True,
+            "source_kind": source_kind,
+            "schema_version": CONFIG_CONTRACT_VERSION,
+        }
+
+    @staticmethod
+    def _config_revision(value: Any, label: str = "expected_revision") -> str:
+        if not isinstance(value, str) or not re.fullmatch(r"[0-9a-f]{64}", value):
+            raise ConsoleError(f"{label} must be an exact 64-character revision digest")
+        return value
+
+    def _config_replay_receipt(
+        self,
+        retained: dict[str, Any] | None,
+        *,
+        action: str,
+        operation_id: str,
+        scope: dict[str, Any],
+        expected_revision: str,
+        request_digest: str,
+    ) -> dict[str, Any] | None:
+        if retained is None:
+            return None
+        comparable = {
+            "action": action,
+            "operation_id": operation_id,
+            "scope_type": scope["type"],
+            "project_id": scope.get("project_id"),
+            "accepted_cursor": scope.get("accepted_cursor"),
+            "expected_revision": expected_revision,
+            "request_digest": request_digest,
+        }
+        if any(retained.get(key) != value for key, value in comparable.items()):
+            raise ConsoleConflict("config operation identity conflicts with retained audit content")
+        return {
+            "accepted": True,
+            "action": action,
+            "operation_id": operation_id,
+            "replayed": True,
+            "expected_revision": expected_revision,
+            "new_revision": retained.get("new_revision"),
+            "changed_paths": copy.deepcopy(retained.get("changed_paths", [])),
+            "acknowledged": True,
+            "audit_event": CONFIG_EVENT_KIND,
+            "source_kind": retained.get("source_kind"),
+            "claim_limit": "This is an idempotent replay of one retained local config mutation receipt.",
+        }
+
+    def update_config_source(self, payload: dict[str, Any]) -> dict[str, Any]:
+        required = {"scope", "expected_revision", "acknowledge", "text", "operation_id"}
+        if not isinstance(payload, dict) or set(payload) != required:
+            raise ConsoleError("config update requires exact scope, expected_revision, acknowledge, text, and operation_id fields")
+        if payload["acknowledge"] is not True:
+            raise ConsoleError("config update requires acknowledge=true")
+        operation_id = _auto_id(payload["operation_id"], "operation_id")
+        expected_revision = self._config_revision(payload["expected_revision"])
+        text = payload["text"]
+        if not isinstance(text, str):
+            raise ConsoleError("config text is invalid or oversized")
+        try:
+            text_bytes = text.encode("utf-8")
+        except UnicodeEncodeError as exc:
+            raise ConsoleError("config text must be valid UTF-8") from exc
+        if len(text_bytes) > CONFIG_TEXT_MAX_BYTES:
+            raise ConsoleError("config text is invalid or oversized")
+        binding = self._config_scope_binding(payload["scope"], require_cursor=True)
+        state = self._config_state(binding["scope"], require_cursor=True)
+        request_digest = _config_sha256(text_bytes)
+        retained = self.store.config_event(operation_id)
+        replay = self._config_replay_receipt(
+            retained,
+            action="config_update",
+            operation_id=operation_id,
+            scope=state["scope"],
+            expected_revision=expected_revision,
+            request_digest=request_digest,
+        )
+        if replay is not None:
+            projection = self._config_projection_from_state(state)
+            projection["mutation_receipt"] = replay
+            return projection
+        if expected_revision != state["revision"]:
+            raise ConsoleConflict("config revision changed; reload before saving")
+        resolved_text = _config_resolve_opaque_text(text, state["raw_text"], state["revision"])
+        _, next_normalized, next_effective = _config_parse_text(
+            state["module"], resolved_text, scope_type=state["scope"]["type"],
+        )
+        if state["scope"]["type"] == "project":
+            # The validator's effective result is default-filled.  Merge only
+            # the submitted normalized partial overlay so future global
+            # changes continue to flow through non-overridden paths.
+            next_effective = _config_merge_overlay(state["global_effective"], next_normalized)
+            next_effective = state["module"].apply_turbo(next_effective)
+            try:
+                state["module"].validate(copy.deepcopy(next_effective))
+            except Exception as exc:
+                raise ConsoleError(f"project config validation failed: {str(exc)[:256]}") from exc
+            new_revision = _config_scope_revision(
+                "project", state["project_id"], state["cursor"],
+                state["global_revision"], resolved_text,
+            )
+        else:
+            new_revision = _config_sha256(resolved_text.encode("utf-8"))
+        changed_paths = _config_changed_paths(state["effective"], next_effective)
+        audit = self._config_operation_audit(
+            action="config_update",
+            operation_id=operation_id,
+            scope=state["scope"],
+            expected_revision=expected_revision,
+            request_digest=request_digest,
+            new_revision=new_revision,
+            changed_paths=changed_paths,
+            source_kind=state["source_kind"],
+        )
+        if state["scope"]["type"] == "global":
+            _atomic_config_write(
+                self.config_path, resolved_text.encode("utf-8"), state["module"],
+            )
+            self.store.retain_config_event(operation_id, audit, now_ms=int(time.time() * 1000))
+        else:
+            self.store.update_config_overlay(
+                state["project_id"], resolved_text,
+                expected_config_revision=state["overlay_revision"],
+                operation_id=operation_id,
+                audit_payload=audit,
+                now_ms=int(time.time() * 1000),
+            )
+        with self.overview_lock:
+            self._store_generation += 1
+            self._overview_fingerprint = None
+            self._view_fingerprint = None
+        projection = self.config_projection(state["scope"])
+        projection["mutation_receipt"] = {
+            "accepted": True,
+            "action": "config_update",
+            "operation_id": operation_id,
+            "replayed": False,
+            "scope": copy.deepcopy(state["scope"]),
+            "expected_revision": expected_revision,
+            "new_revision": new_revision,
+            "changed_paths": changed_paths,
+            "acknowledged": True,
+            "audit_event": CONFIG_EVENT_KIND,
+            "source_kind": state["source_kind"],
+            "claim_limit": "This receipt records one canonical local config write; it does not create runtime or host task authority.",
+        }
+        return projection
+
+    def reset_config_source(self, payload: dict[str, Any]) -> dict[str, Any]:
+        required = {"scope", "expected_revision", "acknowledge", "operation_id"}
+        if not isinstance(payload, dict) or set(payload) != required:
+            raise ConsoleError("config reset requires exact scope, expected_revision, acknowledge, and operation_id fields")
+        if payload["acknowledge"] is not True:
+            raise ConsoleError("config reset requires acknowledge=true")
+        operation_id = _auto_id(payload["operation_id"], "operation_id")
+        expected_revision = self._config_revision(payload["expected_revision"])
+        binding = self._config_scope_binding(payload["scope"], require_cursor=True)
+        state = self._config_state(binding["scope"], require_cursor=True)
+        if state["scope"]["type"] != "project":
+            raise ConsoleError("global config reset is unsupported; edit the canonical global source explicitly")
+        request_digest = _config_sha256(b"project-config-reset")
+        retained = self.store.config_event(operation_id)
+        replay = self._config_replay_receipt(
+            retained,
+            action="project_config_reset",
+            operation_id=operation_id,
+            scope=state["scope"],
+            expected_revision=expected_revision,
+            request_digest=request_digest,
+        )
+        if replay is not None:
+            projection = self._config_projection_from_state(state)
+            projection["mutation_receipt"] = replay
+            return projection
+        if expected_revision != state["revision"]:
+            raise ConsoleConflict("config revision changed; reload before resetting")
+        new_revision = _config_scope_revision(
+            "project", state["project_id"], state["cursor"],
+            state["global_revision"], "",
+        )
+        audit = self._config_operation_audit(
+            action="project_config_reset",
+            operation_id=operation_id,
+            scope=state["scope"],
+            expected_revision=expected_revision,
+            request_digest=request_digest,
+            new_revision=new_revision,
+            changed_paths=sorted(
+                path
+                for path, _ in _config_leaf_items(state.get("overlay_raw") or {})
+                if path != "schema_version"
+            ),
+            source_kind=state["source_kind"],
+        )
+        self.store.reset_config_overlay(
+            state["project_id"],
+            expected_config_revision=state["overlay_revision"],
+            operation_id=operation_id,
+            audit_payload=audit,
+            now_ms=int(time.time() * 1000),
+        )
+        with self.overview_lock:
+            self._store_generation += 1
+        projection = self.config_projection(state["scope"])
+        projection["mutation_receipt"] = {
+            "accepted": True,
+            "action": "project_config_reset",
+            "operation_id": operation_id,
+            "replayed": False,
+            "scope": copy.deepcopy(state["scope"]),
+            "expected_revision": expected_revision,
+            "new_revision": new_revision,
+            "changed_paths": sorted(
+                path
+                for path, _ in _config_leaf_items(state.get("overlay_raw") or {})
+                if path != "schema_version"
+            ),
+            "acknowledged": True,
+            "audit_event": CONFIG_EVENT_KIND,
+            "source_kind": state["source_kind"],
+            "claim_limit": "Only this project's existing config overlay was removed; global values remain canonical.",
+        }
+        return projection
+
     def _project_settings_projection(
         self,
         record: dict[str, Any],
@@ -11528,7 +12869,7 @@ class App:
             "dispatch": "disabled",
             "automatic_request_mode": "bounded_existing_health_requests",
             "claim_limit": (
-                "The canonical monitoring.auto_health_enabled setting is presented as Auto repair. "
+                "The canonical monitoring.auto_health_enabled setting is presented as Auto fix. "
                 "It gates only the existing bounded advisory health-request path; repair dispatch, model use, "
                 "and source, config, host, listener, or provider mutation remain disabled."
             ),
@@ -11557,7 +12898,7 @@ class App:
                 "status": "UNAVAILABLE",
                 "enabled": False,
                 "automatic_request_mode": "none",
-                "reason": "canonical config is missing monitoring.auto_health_enabled; Auto repair is fail-closed",
+                "reason": "canonical config is missing monitoring.auto_health_enabled; Auto fix is fail-closed",
             }
         enabled = bool(monitoring["auto_health_enabled"])
         return {
@@ -11567,11 +12908,11 @@ class App:
             "enabled": enabled,
             "automatic_request_mode": "bounded_existing_health_requests" if enabled else "none",
             "reason": (
-                "Auto repair is ON through canonical monitoring.auto_health_enabled; only the existing bounded "
+                "Auto fix is ON through canonical monitoring.auto_health_enabled; only the existing bounded "
                 "advisory health-request path may record requests, while repair dispatch remains disabled because "
                 "the path is not an allowlisted low-risk repair executor."
                 if enabled else
-                "Auto repair is OFF through canonical monitoring.auto_health_enabled; deterministic health checks "
+                "Auto fix is OFF through canonical monitoring.auto_health_enabled; deterministic health checks "
                 "remain active and automatic health requests, model use, and repair dispatch are disabled."
             ),
         }
@@ -11832,11 +13173,11 @@ class App:
             checks.append(_health_check(
                 "config.schema_compatibility_redaction",
                 "WARN" if policy["state"] == "UNAVAILABLE" else "PASS",
-                "Canonical config validation succeeded, but the canonical Auto repair setting is unavailable."
+                "Canonical config validation succeeded, but the canonical Auto fix setting is unavailable."
                 if policy["state"] == "UNAVAILABLE" else "Canonical config validation and redacted settings access succeeded.",
                 observed_at_ms=now_ms, evidence=("local:config",),
                 recommended_action=(
-                    "Keep Auto repair disabled and restore monitoring.auto_health_enabled through the canonical schema owner."
+                    "Keep Auto fix disabled and restore monitoring.auto_health_enabled through the canonical schema owner."
                     if policy["state"] == "UNAVAILABLE" else "No repair action is required."
                 ),
                 details={
@@ -11887,7 +13228,7 @@ class App:
             "claim_limit": (
                 "Checks use existing local process, host DB, config, ledger, and console-store facts. "
                 "They do not poll providers, call models, mutate source/config/host/listener state, or dispatch "
-                "repair work. monitoring.auto_health_enabled is the only canonical Auto repair preference: OFF "
+                "repair work. monitoring.auto_health_enabled is the only canonical Auto fix preference: OFF "
                 "keeps deterministic checks active while suppressing automatic health requests; ON permits only "
                 "the existing bounded advisory health-request path, not repair execution."
             ),
@@ -11997,7 +13338,7 @@ class App:
                 "cooldown_seconds": HEALTH_COOLDOWN_SECONDS,
             },
             "claim_limit": (
-                "monitoring.auto_health_enabled is the canonical setting presented as Auto repair. OFF leaves "
+                "monitoring.auto_health_enabled is the canonical setting presented as Auto fix. OFF leaves "
                 "deterministic checks active without automatic health requests or model use. ON can record only "
                 "bounded existing advisory health requests; repair dispatch remains disabled because this path is "
                 "broader than an allowlisted low-risk repair executor. Manual preparation remains acknowledgement-gated."
@@ -12291,14 +13632,58 @@ class Handler(BaseHTTPRequestHandler):
             "read_only": not local,
         }
 
-    def _config_payload(self) -> dict[str, Any]:
-        payload = redacted_config_snapshot(self.server.app.config_path)
-        policy_getter = getattr(self.server.app, "_auto_repair_policy", None)
-        if callable(policy_getter):
-            payload["health"] = {"auto_repair": policy_getter()}
-        if not self._peer_is_trusted_local():
-            payload["path"] = ""
-            payload["read_only"] = True
+    def _config_payload(self, query: dict[str, str] | None = None) -> dict[str, Any]:
+        query = query or {}
+        if not query:
+            scope: dict[str, Any] = {"type": "global"}
+        elif set(query) == {"scope"} and query.get("scope", "").casefold() == "global":
+            scope = {"type": "global"}
+        elif set(query) == {"scope", "project_id"} and query.get("scope", "").casefold() == "project":
+            scope = {"type": "project", "project_id": query.get("project_id", "")}
+        else:
+            raise ConsoleError("config GET accepts no query or exact scope=global/project selection")
+        projection = getattr(self.server.app, "config_projection", None)
+        if callable(projection):
+            payload = projection(scope)
+        else:
+            # Keep lightweight handler fixtures and older local embedders
+            # readable while the production App owns the revisioned editor.
+            legacy = redacted_config_snapshot(self.server.app.config_path)
+            payload = {
+                **legacy,
+                "ok": True,
+                "scope": scope,
+                "source_path": str(self.server.app.config_path),
+                "path": str(self.server.app.config_path),
+                "text": "",
+                "editable_text": "",
+                "opaque_placeholders": [],
+                "write_contract": {"available": False, "reason": "config source projection is unavailable"},
+            }
+        local = self._peer_is_trusted_local()
+        payload["read_only"] = not local
+        payload["source_path"] = payload["source_path"] if local else ""
+        payload["path"] = payload["path"] if local else ""
+        if not local:
+            payload["text"] = ""
+            payload["editable_text"] = ""
+            payload["opaque_placeholders"] = []
+            payload["write_contract"] = {
+                **payload.get("write_contract", {}),
+                "available": False,
+                "reason": "local same-device access is required for config source reads and writes",
+            }
+            project = payload.get("project")
+            if isinstance(project, dict):
+                project["root"] = None
+                binding = project.get("root_binding")
+                if isinstance(binding, dict):
+                    binding["value"] = None
+        else:
+            payload["write_contract"] = {
+                **payload.get("write_contract", {}),
+                "available": True,
+            }
         return payload
 
     def do_GET(self) -> None:  # noqa: N802
@@ -12577,7 +13962,7 @@ class Handler(BaseHTTPRequestHandler):
                 self._json(HTTPStatus.OK, self.server.app.presence())
                 return
             if path == "/api/config":
-                self._json(HTTPStatus.OK, self._config_payload())
+                self._json(HTTPStatus.OK, self._config_payload(query))
                 return
             asset = STATIC_ASSETS.get(path)
             if asset:
@@ -12667,12 +14052,15 @@ class Handler(BaseHTTPRequestHandler):
                 return
             if path == "/api/config":
                 payload = self._payload()
-                changes = payload.get("changes")
-                if not isinstance(changes, dict):
-                    raise ConsoleError("changes must be an object")
                 with self.server.app.write_lock:
-                    result = update_config(self.server.app.config_path, changes)
-                self._json(HTTPStatus.OK, {"ok": True, **result})
+                    result = self.server.app.update_config_source(payload)
+                self._json(HTTPStatus.OK, result)
+                return
+            if path == "/api/config/reset":
+                payload = self._payload()
+                with self.server.app.write_lock:
+                    result = self.server.app.reset_config_source(payload)
+                self._json(HTTPStatus.OK, result)
                 return
             if path == "/api/auto":
                 if not self._authorized_auto():
@@ -12802,9 +14190,9 @@ class Handler(BaseHTTPRequestHandler):
                 return
             if path == "/api/health/settings":
                 payload = self._payload()
-                if set(payload) != {"enabled"}:
-                    raise ConsoleError("health settings update supports only the canonical enabled field")
-                self._json(HTTPStatus.OK, {"ok": True, **self.server.app.update_health_settings(payload.get("enabled"))})
+                with self.server.app.write_lock:
+                    result = self.server.app.update_config_source(payload)
+                self._json(HTTPStatus.OK, result)
                 return
             if path == "/api/health/repair":
                 payload = self._payload()

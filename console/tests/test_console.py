@@ -5144,7 +5144,7 @@ class SwarmConsoleTests(unittest.TestCase):
         self.assertTrue(all(pointer.startswith("local:") for check in checks.values() for pointer in check["evidence"]))
         self.assertNotIn("C:\\", json.dumps(contract))
         self.assertEqual(contract["repair_policy"]["key"], "monitoring.auto_health_enabled")
-        self.assertEqual(contract["repair_policy"]["label"], "Auto repair")
+        self.assertEqual(contract["repair_policy"]["label"], "Auto fix")
         self.assertEqual(contract["repair_policy"]["state"], "KNOWN")
         self.assertEqual(contract["repair_policy"]["status"], "OFF")
         self.assertFalse(contract["repair_policy"]["enabled"])
@@ -5982,6 +5982,237 @@ class SwarmConsoleTests(unittest.TestCase):
         result = console.update_config(self.config, {"execution.usage_saver": True})
         self.assertTrue(result["settings"]["execution"]["usage_saver"])
 
+    def test_config_projection_is_schema_derived_and_exposes_usage_saver(self) -> None:
+        app = console.App(self.codex_home, self.config)
+        projection = app.config_projection({"type": "global"})
+        self.assertEqual(projection["contract_version"], console.CONFIG_CONTRACT_VERSION)
+        self.assertEqual(projection["schema_version"], 4)
+        self.assertRegex(projection["revision"], r"^[0-9a-f]{64}$")
+        self.assertTrue(projection["text"])
+        descriptors = {row["key"]: row for row in projection["descriptors"]}
+        module = console.load_config_module()
+        _, canonical_effective, _ = console.load_config(self.config)
+        canonical_paths = {path for path, _ in console._config_leaf_items(canonical_effective)}
+        self.assertEqual(set(descriptors), canonical_paths)
+        self.assertTrue(all(row["classification"] in {"exposed", "internal", "unsupported"} for row in descriptors.values()))
+        self.assertEqual(projection["editable"], sorted(
+            path for path, row in descriptors.items() if row["classification"] == "exposed"
+        ))
+
+        usage_saver = descriptors["execution.usage_saver"]
+        self.assertEqual(
+            {
+                usage_saver["section"], usage_saver["type"], usage_saver["default"],
+                usage_saver["current"], usage_saver["advanced"], usage_saver["sensitivity"],
+            },
+            {"Essentials", "boolean", False, False, False, "normal"},
+        )
+        self.assertEqual(usage_saver["label"], "Usage saver · Experimental")
+        self.assertIn("smart routing", usage_saver["help"])
+        self.assertTrue(usage_saver["editable"])
+        auto_fix = descriptors["monitoring.auto_health_enabled"]
+        self.assertEqual(auto_fix["label"], "Auto fix")
+        self.assertEqual(auto_fix["default"], False)
+        self.assertEqual(projection["health"]["auto_repair"]["key"], "monitoring.auto_health_enabled")
+        private = descriptors["feedback.destination"]
+        self.assertEqual(private["type"], "secret")
+        self.assertEqual(private["classification"], "unsupported")
+        self.assertFalse(private["editable"])
+        self.assertNotIn("feedback.destination", projection["editable"])
+        self.assertEqual(SERVER.read_bytes(), (console.PLUGIN_ROOT / "console" / "server.py").read_bytes())
+
+    def test_config_source_global_write_is_revision_safe_replayed_and_fail_closed(self) -> None:
+        app = console.App(self.codex_home, self.config)
+        initial = app.config_projection({"type": "global"})
+        changed_text = initial["text"].replace("fast_mode = false", "fast_mode = true", 1)
+        payload = {
+            "scope": {"type": "global"},
+            "expected_revision": initial["revision"],
+            "acknowledge": True,
+            "text": changed_text,
+            "operation_id": "config-global-1",
+        }
+        before = self.config.read_bytes()
+        with self.assertRaisesRegex(console.ConsoleError, "acknowledge=true"):
+            app.update_config_source({**payload, "acknowledge": False})
+        self.assertEqual(self.config.read_bytes(), before)
+
+        accepted = app.update_config_source(payload)
+        self.assertTrue(accepted["settings"]["execution"]["fast_mode"])
+        self.assertFalse(accepted["mutation_receipt"]["replayed"])
+        self.assertEqual(accepted["mutation_receipt"]["changed_paths"], ["execution.fast_mode"])
+        replayed = app.update_config_source(payload)
+        self.assertTrue(replayed["mutation_receipt"]["replayed"])
+        self.assertEqual(replayed["mutation_receipt"]["new_revision"], accepted["revision"])
+
+        with self.assertRaises(console.ConsoleConflict):
+            app.update_config_source({**payload, "operation_id": "config-global-stale"})
+        current = app.config_projection({"type": "global"})
+        current_bytes = self.config.read_bytes()
+        for invalid_text, message in (
+            (current["text"] + "\n[unknown]\nvalue = true\n", "unknown setting"),
+            (current["text"].replace("[portfolio]\r\n", "[portfolio]\r\ntitle_prefix = \"legacy\"\r\n", 1), "deprecated config setting"),
+            (current["text"].replace('mode = "BALANCED"', 'mode = "FAST"', 1), "deprecated config value"),
+            ("[execution\n", "config TOML is invalid"),
+        ):
+            with self.subTest(message=message), self.assertRaisesRegex(console.ConsoleError, message):
+                app.update_config_source({
+                    "scope": {"type": "global"},
+                    "expected_revision": current["revision"],
+                    "acknowledge": True,
+                    "text": invalid_text,
+                    "operation_id": "config-invalid-" + message.replace(" ", "-"),
+                })
+            self.assertEqual(self.config.read_bytes(), current_bytes)
+        atomic_projection = app.config_projection({"type": "global"})
+        atomic_text = atomic_projection["text"].replace("open_on_start = false", "open_on_start = true", 1)
+        with mock.patch.object(console.os, "replace", side_effect=OSError("replace blocked")):
+            with self.assertRaisesRegex(console.ConsoleError, "replace blocked"):
+                app.update_config_source({
+                    "scope": {"type": "global"},
+                    "expected_revision": atomic_projection["revision"],
+                    "acknowledge": True,
+                    "text": atomic_text,
+                    "operation_id": "config-global-atomic-failure",
+                })
+        self.assertEqual(self.config.read_bytes(), current_bytes)
+        self.assertIsNone(app.store.config_event("config-global-atomic-failure"))
+        audit = app.store.config_event("config-global-1")
+        self.assertIsNotNone(audit)
+        self.assertNotIn("text", audit)
+        self.assertNotIn("raw_config", audit)
+
+        invalid_config = self.root / "invalid-editor" / "config.toml"
+        invalid_config.parent.mkdir()
+        invalid_config.write_bytes(
+            b'"feedback"."destination" = "https://private.example/dotted"\n'
+            b"[execution]\nfast_mode = \"yes\"\n"
+        )
+        invalid_app = console.App(self.codex_home, invalid_config)
+        invalid_projection = invalid_app.config_projection({"type": "global"})
+        self.assertEqual(invalid_projection["state"], "INVALID")
+        self.assertFalse(invalid_projection["available"])
+        self.assertEqual(invalid_projection["validation"]["status"], "INVALID")
+        self.assertNotIn("private.example/dotted", invalid_projection["text"])
+        self.assertEqual(len(invalid_projection["opaque_placeholders"]), 1)
+        fast_descriptor = next(
+            row for row in invalid_projection["descriptors"] if row["key"] == "execution.fast_mode"
+        )
+        self.assertIsNone(fast_descriptor["current"])
+        self.assertEqual(fast_descriptor["value_state"], "UNKNOWN")
+
+    def test_config_editor_opaque_private_round_trip_preserves_source_bytes(self) -> None:
+        private_bytes = self.config.read_bytes().replace(
+            b'destination = ""\r\n',
+            b'  destination\t=\t"https://private.example/a#token"  # retain this\r\n',
+            1,
+        )
+        self.config.write_bytes(private_bytes)
+        app = console.App(self.codex_home, self.config)
+        projection = app.config_projection({"type": "global"})
+        self.assertEqual(len(projection["opaque_placeholders"]), 1)
+        token = projection["opaque_placeholders"][0]["token"]
+        self.assertNotIn("private.example", projection["text"])
+        self.assertIn("destination\t=\t", projection["text"])
+        self.assertIn("# retain this", projection["text"])
+
+        accepted = app.update_config_source({
+            "scope": {"type": "global"},
+            "expected_revision": projection["revision"],
+            "acknowledge": True,
+            "text": projection["text"],
+            "operation_id": "config-private-round-trip",
+        })
+        self.assertEqual(self.config.read_bytes(), private_bytes)
+        self.assertNotIn("private.example", json.dumps(accepted, ensure_ascii=False))
+        self.assertNotIn("private.example", json.dumps(app.store.config_event("config-private-round-trip")))
+
+        tampered = projection["text"].replace(
+            json.dumps(token), '"https://replacement.example/secret"', 1,
+        )
+        with self.assertRaisesRegex(console.ConsoleError, "must retain its current opaque placeholder"):
+            app.update_config_source({
+                "scope": {"type": "global"},
+                "expected_revision": accepted["revision"],
+                "acknowledge": True,
+                "text": tampered,
+                "operation_id": "config-private-replaced",
+            })
+        self.assertEqual(self.config.read_bytes(), private_bytes)
+
+    def test_project_config_overlay_inherits_overrides_resets_and_binds_cursor(self) -> None:
+        app = console.App(self.codex_home, self.config)
+        initial = app.config_projection({"type": "project", "project_id": "project:alpha"})
+        self.assertEqual(initial["text"], "")
+        self.assertEqual(initial["overridden_paths"], [])
+        self.assertEqual(initial["project"]["root"], "C:/work/alpha")
+        self.assertIn("inherits global values", initial["inheritance"]["warning"])
+        global_before = self.config.read_bytes()
+        overlay_text = "[execution]\nfast_mode = true\n"
+        updated = app.update_config_source({
+            "scope": initial["scope"],
+            "expected_revision": initial["revision"],
+            "acknowledge": True,
+            "text": overlay_text,
+            "operation_id": "config-project-1",
+        })
+        self.assertTrue(updated["settings"]["execution"]["fast_mode"])
+        self.assertFalse(updated["global_settings"]["execution"]["fast_mode"])
+        self.assertEqual(updated["overridden_paths"], ["execution.fast_mode"])
+        self.assertIn("stop following global changes", updated["inheritance"]["warning"])
+        self.assertEqual(self.config.read_bytes(), global_before)
+        skill_overlay = app.store.skill_scope("project", "project:alpha")
+        self.assertEqual(skill_overlay["revision"], 0)
+        self.assertEqual(skill_overlay["profile"], "default")
+        self.assertEqual(skill_overlay["preferred_ids"], [])
+
+        global_projection = app.config_projection({"type": "global"})
+        global_updated = app.update_config_source({
+            "scope": {"type": "global"},
+            "expected_revision": global_projection["revision"],
+            "acknowledge": True,
+            "text": global_projection["text"].replace("usage_saver = false", "usage_saver = true", 1),
+            "operation_id": "config-global-inheritance",
+        })
+        global_after = self.config.read_bytes()
+        project_after_global = app.config_projection(updated["scope"])
+        self.assertTrue(project_after_global["settings"]["execution"]["fast_mode"])
+        self.assertTrue(project_after_global["settings"]["execution"]["usage_saver"])
+        self.assertTrue(global_updated["settings"]["execution"]["usage_saver"])
+
+        with self.assertRaises(console.ConsoleConflict):
+            app.update_config_source({
+                "scope": {
+                    **updated["scope"],
+                    "accepted_cursor": {"type": "codex_project_roster_v1", "digest": "0" * 64},
+                },
+                "expected_revision": updated["revision"],
+                "acknowledge": True,
+                "text": "[execution]\nfast_mode = false\n",
+                "operation_id": "config-project-wrong-cursor",
+            })
+
+        reset = app.reset_config_source({
+            "scope": project_after_global["scope"],
+            "expected_revision": project_after_global["revision"],
+            "acknowledge": True,
+            "operation_id": "config-project-reset",
+        })
+        self.assertFalse(reset["settings"]["execution"]["fast_mode"])
+        self.assertEqual(reset["overridden_paths"], [])
+        self.assertEqual(reset["text"], "")
+        self.assertFalse(reset["mutation_receipt"]["replayed"])
+        self.assertEqual(self.config.read_bytes(), global_after)
+
+        with closing(sqlite3.connect(self.database)) as connection:
+            connection.execute(
+                "INSERT INTO project_roots VALUES (?,?,?)",
+                ("project:alpha", 1, "C:/work/other-alpha"),
+            )
+            connection.commit()
+        with self.assertRaisesRegex(console.ConsoleError, "one unambiguous canonical project root"):
+            app.config_projection({"type": "project", "project_id": "project:alpha"})
+
     def test_chat_relay_toggle_uses_only_the_canonical_validated_config_path(self) -> None:
         before = console.redacted_config_snapshot(self.config)
         self.assertFalse(before["settings"]["chat_relay"]["enabled"])
@@ -6025,37 +6256,61 @@ class SwarmConsoleTests(unittest.TestCase):
             console.update_config(invalid, {"chat_relay.enabled": True})
         self.assertEqual(invalid.read_bytes(), retained)
 
-    def test_chat_relay_config_post_retains_existing_write_authority_and_shape(self) -> None:
-        def config_handler(peer: str = "127.0.0.1", *, origin: str = "", token: str = "secret", changes: object = None):
+    def test_config_post_requires_revision_acknowledgement_and_operation_identity(self) -> None:
+        def config_handler(
+            peer: str = "127.0.0.1",
+            *,
+            origin: str = "",
+            token: str | None = None,
+            payload: object = None,
+        ):
+            app = console.App(self.codex_home, self.config)
             handler = self._handler(peer, "localhost:4788", origin=origin, token=token)
+            handler.server.app = app
+            handler.headers["X-Swarm-Token"] = app.token if token is None else token
             handler.path = "/api/config"
-            handler.server.app.write_lock = threading.Lock()
-            handler._payload = mock.Mock(return_value={"changes": {"chat_relay.enabled": True} if changes is None else changes})
+            handler._payload = mock.Mock(
+                return_value={"changes": {"chat_relay.enabled": True}} if payload is None else payload,
+            )
             handler._json = mock.Mock()
             handler._error = mock.Mock()
-            return handler
+            return handler, app
 
-        with mock.patch.object(console, "update_config") as update:
-            for handler in (
+        with mock.patch.object(console, "update_config") as legacy_update:
+            for handler, _ in (
                 config_handler("192.0.2.44"),
                 config_handler(origin="http://evil.example"),
                 config_handler(token="wrong"),
             ):
                 handler.do_POST()
                 handler._error.assert_called_once()
-            update.assert_not_called()
+            legacy_update.assert_not_called()
 
-        malformed = config_handler(changes=[])
-        with mock.patch.object(console, "update_config") as update:
+        malformed, _ = config_handler(payload=[])
+        with mock.patch.object(console, "update_config") as legacy_update:
             malformed.do_POST()
-            update.assert_not_called()
-        malformed._error.assert_called_once_with(console.HTTPStatus.BAD_REQUEST, "changes must be an object")
+            legacy_update.assert_not_called()
+        malformed._error.assert_called_once_with(
+            console.HTTPStatus.BAD_REQUEST,
+            "config update requires exact scope, expected_revision, acknowledge, text, and operation_id fields",
+        )
 
-        authorized = config_handler()
-        result = console.redacted_config_snapshot(self.config)
-        with mock.patch.object(console, "update_config", return_value=result) as update:
+        app = console.App(self.codex_home, self.config)
+        projection = app.config_projection({"type": "global"})
+        authorized, _ = config_handler(
+            payload={
+                "scope": {"type": "global"},
+                "expected_revision": projection["revision"],
+                "acknowledge": True,
+                "text": projection["text"].replace("fast_mode = false", "fast_mode = true", 1),
+                "operation_id": "config-http-1",
+            },
+        )
+        authorized.server.app = app
+        authorized.headers.replace_header("X-Swarm-Token", app.token)
+        with mock.patch.object(console, "update_config") as legacy_update:
             authorized.do_POST()
-            update.assert_called_once_with(self.config, {"chat_relay.enabled": True})
+            legacy_update.assert_not_called()
         authorized._json.assert_called_once()
 
     def test_fast_mode_is_the_only_persisted_fast_control(self) -> None:
