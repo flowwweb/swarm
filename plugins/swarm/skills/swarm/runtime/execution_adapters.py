@@ -170,8 +170,8 @@ class HQDispatchMaterial:
     def instruction(self) -> str:
         return self.instruction_bytes.decode("utf-8")
 
-    def input_items(self) -> list[dict[str, str]]:
-        return [{"type": "text", "text": self.instruction}]
+    def input_items(self) -> list[dict[str, object]]:
+        return [{"type": "text", "text": self.instruction, "text_elements": []}]
 
     def __repr__(self) -> str:
         return "HQDispatchMaterial(<redacted>)"
@@ -228,6 +228,24 @@ class HQDispatchMaterialResolver(Protocol):
     def resolve(self, envelope: HQCommandEnvelope) -> HQDispatchMaterial: ...
 
 
+@dataclass(frozen=True)
+class HQRootObservation:
+    receipt_id: str
+    canonical_cwd: str
+    root_digest: str
+
+    def __post_init__(self) -> None:
+        _text(self.receipt_id, "HQ root observation receipt")
+        _text(self.canonical_cwd, "HQ canonical cwd")
+        object.__setattr__(self, "root_digest", _digest(self.root_digest, "HQ observed root"))
+
+
+class HQRootVerifier(Protocol):
+    def observe(self, cwd: str) -> HQRootObservation: ...
+
+    def verify(self, observation: HQRootObservation, envelope: HQCommandEnvelope) -> bool: ...
+
+
 class CodexAppServerTransport(Protocol):
     def request(self, method: str, params: Mapping[str, object]) -> Mapping[str, object]: ...
 
@@ -245,37 +263,81 @@ class HQConnectorResult:
 
 
 class UniversalHQConnector:
-    def __init__(self, adapter: "CodexAppServerAdapter", *, authorization_verifier: HQAuthorizationVerifier, material_resolver: HQDispatchMaterialResolver) -> None:
+    def __init__(self, adapter: "CodexAppServerAdapter", *, authorization_verifier: HQAuthorizationVerifier, material_resolver: HQDispatchMaterialResolver, root_verifier: HQRootVerifier) -> None:
         if not isinstance(adapter, CodexAppServerAdapter):
             raise InvariantError("universal connector requires the Codex adapter")
         self.adapter = adapter
         self.authorization_verifier = authorization_verifier
         self.material_resolver = material_resolver
+        self.root_verifier = root_verifier
 
     @staticmethod
     def _receipt(envelope: HQCommandEnvelope, *, receipt_id: str, index: int, status: str, observed_at_ms: int, thread_id: str | None = None, turn_id: str | None = None, observed_root_digest: str | None = None) -> dict[str, object]:
         return {"schema_version": 1, "record_type": "CONNECTOR", "receipt_id": receipt_id, "command_id": envelope.command_id, "receipt_index": index, "idempotency_key": envelope.idempotency_key, "command_digest": envelope.digest, "project_id": envelope.project_id, "root_digest": envelope.root_digest, "action": envelope.action.value, "status": status, "thread_id": thread_id, "turn_id": turn_id, "observed_root_digest": observed_root_digest, "observed_at_ms": observed_at_ms}
 
     @staticmethod
-    def _host_binding(response: Mapping[str, object]) -> tuple[str, str, str]:
-        body = response.get("result") if isinstance(response.get("result"), Mapping) else response
-        thread = body.get("thread") if isinstance(body.get("thread"), Mapping) else {}
-        turn = body.get("turn") if isinstance(body.get("turn"), Mapping) else {}
-        thread_id = str(body.get("threadId") or thread.get("id") or turn.get("threadId") or "")
-        turn_id = str(body.get("turnId") or turn.get("id") or "")
-        observed_root = str(body.get("observedRootDigest") or response.get("observedRootDigest") or "")
-        return thread_id, turn_id, observed_root
+    def _host_binding(response: Mapping[str, object]) -> tuple[str, str]:
+        if not isinstance(response, Mapping):
+            raise InvariantError("Codex host response must be an object")
+        bodies = [response]
+        if "result" in response:
+            result = response["result"]
+            if not isinstance(result, Mapping):
+                raise InvariantError("Codex host result must be an object")
+            bodies.append(result)
+
+        def identity(kind: str) -> str:
+            values: list[str] = []
+            for body in bodies:
+                direct = body.get(f"{kind}Id")
+                nested = body.get(kind)
+                candidates = [direct]
+                if nested is not None:
+                    if not isinstance(nested, Mapping):
+                        raise InvariantError(f"Codex host {kind} identity must be an object")
+                    candidates.append(nested.get("id"))
+                if kind == "thread":
+                    turn = body.get("turn")
+                    if turn is not None:
+                        if not isinstance(turn, Mapping):
+                            raise InvariantError("Codex host turn identity must be an object")
+                        candidates.append(turn.get("threadId"))
+                for candidate in candidates:
+                    if candidate is None:
+                        continue
+                    if not isinstance(candidate, str) or not candidate.strip():
+                        raise InvariantError(f"Codex host {kind} identity must be a non-empty string")
+                    values.append(candidate)
+            if len(set(values)) > 1:
+                raise InvariantError(f"Codex host {kind} identity aliases conflict")
+            return values[0] if values else ""
+
+        return identity("thread"), identity("turn")
 
     @staticmethod
     def _require_host_binding(response: Mapping[str, object], envelope: HQCommandEnvelope, *, thread_id: str = "", require_turn: bool) -> tuple[str, str]:
-        observed_thread, observed_turn, observed_root = UniversalHQConnector._host_binding(response)
+        observed_thread, observed_turn = UniversalHQConnector._host_binding(response)
         if not observed_thread and observed_turn and thread_id:
             observed_thread = thread_id
-        if observed_root != envelope.root_digest or not observed_thread or (thread_id and observed_thread != thread_id):
-            raise InvariantError("Codex host response has ambiguous or conflicting root or thread identity")
+        if not observed_thread or (thread_id and observed_thread != thread_id):
+            raise InvariantError("Codex host response has ambiguous or conflicting thread identity")
         if require_turn and not observed_turn:
             raise InvariantError("Codex host turn response omitted turn identity")
+        if envelope.action is HQCommandAction.REPAIR and require_turn and (
+            observed_thread != envelope.target_thread_id or observed_turn != envelope.target_turn_id
+        ):
+            raise InvariantError("Codex repair response conflicts with the targeted thread or turn")
         return observed_thread, observed_turn
+
+    def _validate_material_root(self, envelope: HQCommandEnvelope, material: HQDispatchMaterial) -> None:
+        observation = self.root_verifier.observe(material.cwd)
+        if (
+            not isinstance(observation, HQRootObservation)
+            or observation.canonical_cwd != material.cwd
+            or observation.root_digest != envelope.root_digest
+            or not self.root_verifier.verify(observation, envelope)
+        ):
+            raise InvariantError("HQ dispatch cwd does not bind the authorized canonical root")
 
     def _validate_authorization(self, envelope: HQCommandEnvelope, authorization: HQAuthorizationReceipt | HQAutoGrant, now_ms: int) -> None:
         if isinstance(authorization, HQAuthorizationReceipt):
@@ -333,13 +395,20 @@ class UniversalHQConnector:
     def execute(self, envelope: HQCommandEnvelope, authorization: HQAuthorizationReceipt | HQAutoGrant, ledger: object, *, now_ms: int, observed_project_id: str, observed_root_digest: str) -> HQConnectorResult:
         if not isinstance(envelope, HQCommandEnvelope):
             raise InvariantError("connector requires a typed command envelope")
-        self._validate_authorization(envelope, authorization, now_ms)
         if (observed_project_id, _digest(observed_root_digest, "observed HQ root")) != (envelope.project_id, envelope.root_digest):
             raise InvariantError("HQ observed project root conflicts")
+        command = self._receipt(envelope, receipt_id=f"{envelope.command_id}-command", index=0, status="COMMAND", observed_at_ms=envelope.submitted_at_ms)
+        retained = ledger.replay().get("connector_receipts", {}).get(envelope.idempotency_key)
+        if retained is not None:
+            reservation = ledger.reserve_connector_command(command, expected_revision=envelope.expected_ledger_revision)
+            if reservation["status"] == "REPLAY":
+                return self._reconcile(envelope, ledger, reservation["command"], now_ms=now_ms)
+            raise InvariantError("HQ command reservation conflicts")
+        self._validate_authorization(envelope, authorization, now_ms)
         material = self.material_resolver.resolve(envelope)
         if not isinstance(material, HQDispatchMaterial) or material.digest != envelope.payload_digest:
             raise InvariantError("HQ dispatch material does not match the authorized digest")
-        command = self._receipt(envelope, receipt_id=f"{envelope.command_id}-command", index=0, status="COMMAND", observed_at_ms=envelope.submitted_at_ms)
+        self._validate_material_root(envelope, material)
         reservation = ledger.reserve_connector_command(command, expected_revision=envelope.expected_ledger_revision)
         if reservation["status"] == "REPLAY":
             return self._reconcile(envelope, ledger, reservation["command"], now_ms=now_ms)
@@ -1204,7 +1273,7 @@ class CodexAppServerAdapter(ExecutionAdapter):
             raise InvariantError("Codex adapter request id must be non-negative")
         if method not in {"turn/start", "turn/steer"}:
             raise InvariantError("Codex turn method is unsupported")
-        params: dict[str, object] = {"threadId": target, "input": [{"type": "text", "text": instruction}]}
+        params: dict[str, object] = {"threadId": target, "input": [{"type": "text", "text": instruction, "text_elements": []}]}
         if method == "turn/start":
             params["cwd"] = _text(cwd, "Codex cwd")
             if expected_turn_id:
