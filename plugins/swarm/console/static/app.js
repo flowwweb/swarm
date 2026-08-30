@@ -1,4 +1,4 @@
-const state = { token: "", overview: null, proof: [], proofCollections: new Map(), proofStatuses: new Map(), proofStatus: "idle", proofSequence: 0, usageHistory: null, usageWindowHours: 1, usageScopeKey: "", usageStatus: "idle", usageError: "", projectProgress: null, projectProgressProjectId: "", projectProgressStatus: "idle", projectProgressError: "", projectProgressFeed: null, projectProgressFeedProjectId: "", projectProgressFeedStatus: "idle", projectProgressFeedError: "", projectTab: "overview", projectUiMode: "screens", projectUiGroupId: "", runLogs: new Map(), runLogRequestGenerations: new Map(), runLogSurfaceStates: new Map(), runLogAgent: null, diagnostics: null, health: null, storage: null, config: null, configStatus: "idle", configError: "", chatRelaySaving: false, ctrlSettings: null, auto: null, autoBindingKey: "", autoStatus: "idle", autoError: "", autoSaving: false, skills: null, skillsError: "", roleManifests: null, roleManifestStatus: "unavailable", roleManifestError: "", roleManifestMessage: "", roleManifestSaving: false, roleManifestRetry: null, roleEditorMode: "", roleEditorTrigger: null, roleSearch: "", roleTypes: new Set(["builtin", "custom"]), roleSearchFields: new Set(["profession", "specialization", "alias", "skills", "purpose"]), selectedRoleId: "", assetView: "grid", selectedAssetIdentity: "", assetTrigger: null, onboardingStep: 0, onboardingShown: false, onboardingTrigger: null, onboardingConfigPending: new Map(), onboardingConfigFailures: new Map(), notifications: null, notificationBindingKey: "", notificationStatus: "idle", notificationError: "", notificationAckFlight: null, notificationRequestGenerations: new Map(), notificationPresentedIds: new Set(), notificationToast: null, notificationToastTimer: null, notificationTrigger: null, connectionStatus: "reconnecting", view: "overview", projectId: "all", ctrlId: "", scopeNotice: "", scopeNoticeVisible: false, settingsCtrlId: "", settingsScopeType: "", settingsScopeId: "", evidenceImages: [], evidenceIndex: 0, evidenceTrigger: null };
+const state = { token: "", overview: null, proof: [], proofCollections: new Map(), proofStatuses: new Map(), proofStatus: "idle", proofSequence: 0, usageHistory: null, usageWindowHours: 1, usageScopeKey: "", usageStatus: "idle", usageError: "", projectProgress: null, projectProgressProjectId: "", projectProgressStatus: "idle", projectProgressError: "", projectProgressFeed: null, projectProgressFeedProjectId: "", projectProgressFeedStatus: "idle", projectProgressFeedError: "", projectTab: "overview", projectUiMode: "screens", projectUiGroupId: "", runLogs: new Map(), runLogRequestGenerations: new Map(), runLogSurfaceStates: new Map(), runLogAgent: null, diagnostics: null, health: null, storage: null, config: null, configStatus: "idle", configError: "", chatRelaySaving: false, settingsDraft: new Map(), settingsSaving: false, settingsSaveError: "", settingsSaveMessage: "", configEditorTrigger: null, ctrlSettings: null, auto: null, autoBindingKey: "", autoStatus: "idle", autoError: "", autoSaving: false, skills: null, skillsError: "", roleManifests: null, roleManifestStatus: "unavailable", roleManifestError: "", roleManifestMessage: "", roleManifestSaving: false, roleManifestRetry: null, roleEditorMode: "", roleEditorTrigger: null, roleSearch: "", roleTypes: new Set(["builtin", "custom"]), roleSearchFields: new Set(["profession", "specialization", "alias", "skills", "purpose"]), selectedRoleId: "", assetView: "grid", selectedAssetIdentity: "", assetTrigger: null, onboardingStep: 0, onboardingShown: false, onboardingTrigger: null, onboardingConfigPending: new Map(), onboardingConfigFailures: new Map(), notifications: null, notificationBindingKey: "", notificationStatus: "idle", notificationError: "", notificationAckFlight: null, notificationRequestGenerations: new Map(), notificationPresentedIds: new Set(), notificationToast: null, notificationToastTimer: null, notificationTrigger: null, connectionStatus: "reconnecting", view: "overview", projectId: "all", ctrlId: "", scopeNotice: "", scopeNoticeVisible: false, settingsCtrlId: "", settingsScopeType: "", settingsScopeId: "", evidenceImages: [], evidenceIndex: 0, evidenceTrigger: null };
 let configMutationTail = Promise.resolve();
 let configAuthorityGeneration = 0;
 let lastAppliedHistoryRoute = "";
@@ -348,11 +348,10 @@ function openAdvancedSettingsFromOnboarding() {
   writeRoute('push', 'settings-advanced');
   renderSettings();
   requestAnimationFrame(() => {
-    const details = $('#settings-advanced');
-    if (!details) return;
-    details.open = true;
-    details.scrollIntoView({ block: 'start' });
-    details.querySelector('summary')?.focus({ preventScroll: true });
+    const entry = $('#settings-advanced');
+    if (!entry) return;
+    entry.scrollIntoView({ block: 'start' });
+    $('#settings-edit-config')?.focus({ preventScroll: true });
   });
   return true;
 }
@@ -2958,6 +2957,111 @@ function configEditable(key) {
   return (state.config?.editable || []).includes(key);
 }
 
+function configValue(key) {
+  return key.split(".").reduce((value, part) => value && typeof value === "object" ? value[part] : undefined, state.config?.settings);
+}
+
+function settingsConfigEditable(key) {
+  return currentSettingsScope().type === "global" && state.configStatus === "current" && configEditable(key) && !state.settingsSaving;
+}
+
+function settingsDraftValue(key, fallback) {
+  return state.settingsDraft.has(key) ? state.settingsDraft.get(key) : (configValue(key) ?? fallback);
+}
+
+function stageSettingsDraft(key, value) {
+  if (!settingsConfigEditable(key)) return false;
+  if (Object.is(configValue(key), value)) state.settingsDraft.delete(key);
+  else state.settingsDraft.set(key, value);
+  state.settingsSaveError = "";
+  state.settingsSaveMessage = "";
+  return true;
+}
+
+function settingsDraftChanges() {
+  return Object.fromEntries(state.settingsDraft.entries());
+}
+
+function settingsSwitch(key, value, label, help, options = {}) {
+  const editable = options.editable ?? settingsConfigEditable(key);
+  const checked = value === (options.trueValue ?? true);
+  return '<section class="settings-essential-control"><div><strong>' + escapeHTML(label) + '</strong><small>' + escapeHTML(help) + '</small></div><label class="settings-switch"><input type="checkbox" data-settings-draft-key="' + escapeHTML(key) + '"' + (options.trueValue !== undefined ? ' data-true-value="' + escapeHTML(options.trueValue) + '" data-false-value="' + escapeHTML(options.falseValue) + '"' : '') + (checked ? ' checked' : '') + (editable ? '' : ' disabled') + ' aria-label="' + escapeHTML(label) + '"><span aria-hidden="true"></span></label>' + (editable ? '' : '<em>' + escapeHTML(options.unavailable || 'Managed by the current configuration.') + '</em>') + '</section>';
+}
+
+function settingsSpeedMarkup() {
+  const key = "execution.fast_mode";
+  const fast = settingsDraftValue(key, false) === true;
+  const editable = settingsConfigEditable(key);
+  const choice = (label, selected, value, disabled = false) => '<label><input type="radio" name="settings-speed" data-settings-draft-key="' + key + '" data-config-value="' + String(value) + '"' + (selected ? ' checked' : '') + ((!editable || disabled) ? ' disabled' : '') + ' aria-label="' + escapeHTML(label) + '"><span>' + escapeHTML(label) + '</span></label>';
+  return '<fieldset class="settings-segmented"><legend>Speed</legend><div>' + choice("Default", !fast, false) + choice("Fast", fast, true) + choice("Ultrafast", false, true, true) + '</div><small>' + escapeHTML(editable ? 'Ultrafast is unavailable until SWARM exposes an accepted mode.' : 'Speed is read-only in this scope.') + '</small></fieldset>';
+}
+
+function settingsTaskLifeMarkup() {
+  const labels = ["Short", "Medium", "Balanced", "Long", "Unlimited"];
+  const tooltip = "Short clears context sooner to keep work efficient, with more handovers. Balanced hands over when task efficiency begins to drop. Long reduces handovers, while a larger context can become less efficient over time.";
+  return '<section class="settings-task-life"><div class="settings-task-life-head"><strong>Task life</strong><details><summary class="icon-button" aria-label="About task life"><span aria-hidden="true">i</span></summary><div role="tooltip">' + escapeHTML(tooltip) + '</div></details></div><input type="range" min="0" max="4" step="1" value="2" disabled aria-label="Task life" aria-valuetext="Balanced — unavailable"><div aria-hidden="true">' + labels.map((label) => '<span>' + label + '</span>').join('') + '</div><small>Task life is unavailable until SWARM exposes the accepted five-step setting.</small></section>';
+}
+
+function settingsContextPresentation(scope, selectedCtrl, setting) {
+  if (selectedCtrl) return { title: publicLabel(selectedCtrl.project, "Project") + " / " + ctrlLabel(selectedCtrl), note: setting?.customized ? "Custom CTRL values override global defaults." : "Inherits global defaults." };
+  if (scope.type === "project") return { title: scopeLabel(), note: "Project values inherit global defaults until an accepted override is supplied." };
+  return { title: "Global defaults", note: "Changes apply wherever a project has not overridden them." };
+}
+
+function renderConfigEditor() {
+  const dialog = $("#config-editor-dialog");
+  if (!dialog) return;
+  const scope = currentSettingsScope();
+  const context = settingsContextPresentation(scope, selectedSettingsCtrl(), state.ctrlSettings);
+  $("#config-editor-context").textContent = context.title;
+  $("#config-editor-source").textContent = state.config?.exists ? "Server-owned configuration" : "Unavailable";
+  $("#config-editor-revision").textContent = "Unavailable";
+  $("#config-editor-validation").textContent = state.configStatus === "current" ? "Text authority unavailable" : "Configuration unavailable";
+  $("#config-editor-warning").hidden = scope.type === "global";
+  $("#config-editor-text").value = "";
+  $("#config-editor-text").placeholder = "Exact config text is unavailable from this server.";
+  $("#config-editor-text").readOnly = true;
+  $("#config-editor-status").textContent = "SWARM can read individual settings, but this server does not expose validated config text or revision-safe text saves.";
+  $("#config-editor-save").disabled = true;
+  $("#config-editor-reset").disabled = true;
+}
+
+function openConfigEditor(trigger) {
+  state.configEditorTrigger = trigger || document.activeElement;
+  renderConfigEditor();
+  const dialog = $("#config-editor-dialog");
+  if (!dialog.open) dialog.showModal();
+  requestAnimationFrame(() => $("#config-editor-close").focus({ preventScroll: true }));
+}
+
+function closeConfigEditor() {
+  const dialog = $("#config-editor-dialog");
+  if (dialog.open) dialog.close();
+}
+
+async function saveSettingsDraft() {
+  const changes = settingsDraftChanges();
+  if (!Object.keys(changes).length || state.settingsSaving) return false;
+  state.settingsSaving = true;
+  state.settingsSaveError = "";
+  state.settingsSaveMessage = "Saving…";
+  renderSettings();
+  try {
+    await saveConfigMutation(changes);
+    state.settingsDraft.clear();
+    state.settingsSaveMessage = "Saved";
+    return true;
+  } catch (error) {
+    state.settingsSaveError = error.message || "Settings could not be saved.";
+    state.settingsSaveMessage = "Changes not saved";
+    return false;
+  } finally {
+    state.settingsSaving = false;
+    renderSettings();
+    requestAnimationFrame(() => $("#settings-save")?.focus({ preventScroll: true }));
+  }
+}
+
 function settingToggle(key, value, label) {
   const editable = configEditable(key);
   return '<label class="toggle-row"><input data-config-key="' + escapeHTML(key) + '" type="checkbox"' + (value ? ' checked' : '') + (!editable ? ' disabled' : '') + '><span>' + escapeHTML(label) + '</span></label>' + (!editable ? '<small>Managed by the current configuration.</small>' : '');
@@ -3117,32 +3221,19 @@ function renderSettings() {
   const scope = currentSettingsScope();
   const selectedCtrl = selectedSettingsCtrl();
   const setting = state.ctrlSettings;
-  const storage = state.storage;
-  const boost = state.config?.settings?.boost || {};
-  const execution = state.config?.settings?.execution || {};
-  const consoleSettings = state.config?.settings?.console || {};
-  const monitoring = state.config?.settings?.monitoring || {};
-  const roleIcons = state.config?.settings?.role_icons || {};
-  const effective = setting?.effective || setting?.global_defaults || {};
-  const reasoningOptions = ["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"];
-  const retention = storage?.retention_days == null ? "" : " · retain " + storage.retention_days + " days";
-  const proofFiles = Number(storage?.proof_files) || 0;
+  const automation = state.config?.settings?.automation || {};
+  const context = settingsContextPresentation(scope, selectedCtrl, setting);
+  const autoMode = settingsDraftValue("automation.mode", automation.mode || "manual");
+  const pending = state.settingsDraft.size;
   const systemHealth = systemHealthPresentation();
-  const ctrlAdvanced = selectedCtrl ? '<section class="advanced-setting-group"><h4>CTRL override</h4><p><strong>' + escapeHTML(publicLabel(selectedCtrl.project, "Project") + " / " + ctrlLabel(selectedCtrl)) + '</strong><br><span>' + escapeHTML(setting?.customized ? "Custom settings" : "Inherits global defaults") + '</span></p><label class="toggle-row"><input id="ctrl-customize" type="checkbox"' + (setting?.customized ? ' checked' : '') + '><span>Customize this CTRL separately</span></label>' + (setting?.customized ? '<div class="ctrl-fields"><label>Model<input id="ctrl-model" value="' + escapeHTML(effective.model || '') + '" autocomplete="off"></label><label>Reasoning<select id="ctrl-reasoning">' + reasoningOptions.map((option) => '<option value="' + option + '"' + (option === effective.reasoning ? ' selected' : '') + '>' + option + '</option>').join('') + '</select></label></div><button class="quiet-button" data-setting-action="save-ctrl" type="button">Save CTRL settings</button>' : '') + '<button class="quiet-button" data-setting-action="reset" type="button"' + (!setting?.customized ? ' disabled' : '') + '>Use global defaults</button></section>' : '';
+  const saveStatus = state.settingsSaveError || state.settingsSaveMessage || (pending ? pending + " unsaved change" + (pending === 1 ? "" : "s") : "All changes saved");
   $("#settings-grid").innerHTML =
-    '<section class="panel settings-card system-health-card" id="system-health-panel" tabindex="-1" aria-labelledby="system-health-heading"><p class="eyebrow">Diagnostics</p><h3 id="system-health-heading">System health</h3><p class="system-health-summary"><span class="status-dot' + (systemHealth.className ? ' ' + systemHealth.className : '') + '" id="system-health-panel-dot" aria-hidden="true"></span><strong id="system-health-state">' + escapeHTML(systemHealth.label) + '</strong></p><p id="system-health-note">' + escapeHTML(systemHealth.note) + '</p>' + usageChartMarkup("diagnostics", "diagnostics-usage-trend") + '</section>' +
-    '<section class="panel settings-card"><p class="eyebrow">Settings scope</p><h3>Where changes apply</h3><label class="setting-field">Scope<select id="settings-scope">' + settingsScopeOptions() + '</select></label><p class="scope-setting-status"><strong>' + escapeHTML(selectedCtrl ? publicLabel(selectedCtrl.project, "Project") + " / " + ctrlLabel(selectedCtrl) : scope.type === "project" ? scopeLabel() : "Global defaults") + '</strong><span>' + escapeHTML(selectedCtrl ? (setting?.customized ? "Custom settings" : "Inherits global defaults") : "Uses the current server-owned settings") + '</span></p><small>Per-CTRL overrides are in Advanced settings.</small></section>' +
-    '<section class="panel settings-card"><p class="eyebrow">Work routing</p><h3>How work is handled</h3>' +
-      settingSelect('execution.max_reasoning', execution.max_reasoning || 'medium', reasoningOptions, 'Default reasoning') +
-      settingToggle('execution.fast_mode', execution.fast_mode, 'Fast mode') + '<small>Requests faster service for new assignments. SWARM reports it active only from a host receipt.</small>' +
-      settingToggle('execution.usage_saver', execution.usage_saver, 'Use less usage when possible') +
-      settingToggle('boost.spark_enabled', boost.spark_enabled, 'Use Spark for safe small tasks') + '<small>Spark stays bounded to quick, low-risk work.</small>' + autoSettingsMarkup() + '<h4>Skills</h4>' + skillsSummary(scope) + '</section>' +
-    '<section class="panel settings-card"><p class="eyebrow">Console and data</p><h3>Keep the workspace predictable</h3>' +
-      settingToggle('console.project_progress_feed_enabled', consoleSettings.project_progress_feed_enabled, 'Progress feed') +
-      '<label class="setting-field">Updates shown<input data-config-key="console.project_progress_feed_lines" type="number" min="1" max="10" value="' + escapeHTML(consoleSettings.project_progress_feed_lines ?? 4) + '"' + (!configEditable('console.project_progress_feed_lines') ? ' disabled' : '') + '></label>' +
-      settingToggle('console.open_on_start', consoleSettings.open_on_start, 'Open SWARM when Codex starts') +
-      '<label class="toggle-row"><input id="auto-health" type="checkbox"' + (state.health?.enabled ? ' checked' : '') + '><span>Request health review when needed</span></label><small>Passive monitoring does not run models.</small><div class="guided-tour-setting"><span><strong>Guided tour</strong><small>Replay the current console introduction.</small></span><button class="quiet-button" data-setting-action="replay-tour" type="button">Replay tour</button></div></section>' +
-      '<details class="panel settings-advanced settings-wide" id="settings-advanced"' + (location.hash === '#settings-advanced' ? ' open' : '') + '><summary>Advanced settings</summary><div class="settings-advanced-grid">' + ctrlAdvanced + chatRelaySettingsMarkup() + '<section class="advanced-setting-group"><h4>Spark and monitoring</h4>' + settingSelect('boost.spark_reasoning', boost.spark_reasoning || 'xhigh', reasoningOptions, 'Spark reasoning') + '<label class="setting-field">Spark model<input id="spark-model" value="' + escapeHTML(boost.spark_model || '') + '" autocomplete="off"' + (!configEditable('boost.spark_model') ? ' disabled' : '') + '></label><label class="setting-field">Heartbeat minutes<input id="heartbeat-minutes" data-config-key="monitoring.heartbeat_minutes" type="number" min="1" value="' + escapeHTML(monitoring.heartbeat_minutes || '') + '"' + (!configEditable('monitoring.heartbeat_minutes') ? ' disabled' : '') + '></label><button class="quiet-button" data-setting-action="save-spark" type="button"' + (!configEditable('boost.spark_model') ? ' disabled' : '') + '>Save Spark model</button>' + settingToggle('role_icons.enabled', roleIcons.enabled, 'Show role icons') + '</section><section class="advanced-setting-group"><h4>' + escapeHTML(storage?.bytes == null ? 'Saved history unavailable' : formatBytes(storage.bytes) + ' saved history' + retention) + '</h4><p>Progress, forecasts, proof, and token history stay available between sessions' + (proofFiles ? ' · ' + proofFiles + ' proof file' + (proofFiles === 1 ? '' : 's') : '') + '.</p><div class="settings-actions-inline"><button class="quiet-button" data-setting-action="clear" type="button">Clear history</button><button class="quiet-button" data-setting-action="restore" type="button">Restore defaults</button></div><small>Clearing history leaves tasks unchanged. Restoring defaults keeps history.</small>' + skillsAdvanced(scope) + '</section></div></details>';
+    '<section class="panel settings-essentials settings-wide" id="settings-essentials" tabindex="-1"><header class="settings-essentials-head"><div><p class="eyebrow">Essentials</p><h3>How SWARM runs your work</h3><p>Keep the defaults clear. Exact configuration remains server-owned.</p></div><label class="settings-scope-control">Applies to<select id="settings-scope">' + settingsScopeOptions() + '</select></label></header><div class="settings-context"><strong>' + escapeHTML(context.title) + '</strong><span>' + escapeHTML(context.note) + '</span></div><div class="settings-toggle-grid">' +
+      settingsSwitch("automation.mode", autoMode, "Auto mode", "SWARM keeps eligible work moving until it needs you.", { trueValue: "standard", falseValue: "manual", unavailable: scope.type === "global" ? "Managed by the current configuration." : "Edit global defaults or use an accepted override." }) +
+      settingsSwitch("health.auto_fix", false, "Auto fix", "SWARM attempts to recover from issues automatically. This may start repair tasks and increase usage.", { editable: false, unavailable: "Unavailable. Health checks remain active; no repair is started." }) + '</div><div class="settings-run-controls">' + settingsSpeedMarkup() + settingsTaskLifeMarkup() + '</div><div class="guided-tour-setting"><span><strong>Guided tour</strong><small>Replay the current SWARM introduction.</small></span><button class="quiet-button" data-setting-action="replay-tour" type="button">Replay tour</button></div></section>' +
+    '<section class="panel settings-config-entry settings-wide" id="settings-advanced"><div><p class="eyebrow">Configuration</p><h3>Edit config</h3><p>Review the exact source, inheritance, and validation state in one place.</p><small>Server-owned source · revision unavailable · text authority unavailable</small></div><button class="quiet-button" id="settings-edit-config" data-setting-action="edit-config" type="button">Edit config</button></section>' +
+    '<section class="panel settings-card system-health-card settings-wide" id="system-health-panel" tabindex="-1" aria-labelledby="system-health-heading"><p class="eyebrow">Diagnostics</p><h3 id="system-health-heading">System health</h3><p class="system-health-summary"><span class="status-dot' + (systemHealth.className ? ' ' + systemHealth.className : '') + '" id="system-health-panel-dot" aria-hidden="true"></span><strong id="system-health-state">' + escapeHTML(systemHealth.label) + '</strong></p><p id="system-health-note">' + escapeHTML(systemHealth.note) + '</p>' + usageChartMarkup("diagnostics", "diagnostics-usage-trend") + '</section>' +
+    '<footer class="settings-save-bar settings-wide' + (state.settingsSaveError ? ' is-error' : '') + '" aria-live="polite"><p><strong>' + escapeHTML(saveStatus) + '</strong><span>' + escapeHTML(pending ? "Review and save these server-backed changes." : "Essentials reflect the latest acknowledged configuration.") + '</span></p><div><button class="quiet-button" data-setting-action="discard-settings" type="button"' + (!pending || state.settingsSaving ? ' disabled' : '') + '>Discard</button><button class="primary-action" id="settings-save" data-setting-action="save-settings" type="button"' + (!pending || state.settingsSaving ? ' disabled' : '') + (state.settingsSaving ? ' aria-busy="true"' : '') + '>Save changes</button></div></footer>';
   renderSystemHealth();
   renderUsageCharts();
 }
@@ -3635,6 +3726,16 @@ $("#asset-dialog").addEventListener("close", () => {
   state.assetTrigger?.focus({ preventScroll: true });
   state.assetTrigger = null;
 });
+$("#config-editor-close").addEventListener("click", closeConfigEditor);
+$("#config-editor-cancel").addEventListener("click", closeConfigEditor);
+$("#config-editor-dialog").addEventListener("cancel", (event) => {
+  event.preventDefault();
+  closeConfigEditor();
+});
+$("#config-editor-dialog").addEventListener("close", () => {
+  state.configEditorTrigger?.focus({ preventScroll: true });
+  state.configEditorTrigger = null;
+});
 $("#project-scope-selector").addEventListener("keydown", (event) => {
   const options = $$('[data-project-scope-id]', event.currentTarget);
   if (event.target.id === "project-scope-filter" && ["ArrowDown", "Home", "End"].includes(event.key)) {
@@ -3802,6 +3903,9 @@ document.addEventListener('change', async (event) => {
     state.settingsScopeType = ['global', 'project', 'ctrl'].includes(scopeType) ? scopeType : 'global';
     state.settingsScopeId = scopeId || 'global';
     state.settingsCtrlId = ctrl ? ctrl.id : '';
+    state.settingsDraft.clear();
+    state.settingsSaveError = "";
+    state.settingsSaveMessage = "";
     setProjectSelection(scopeType === 'project' ? scopeId : ctrl ? (ctrl.project_id || 'ctrl:' + ctrl.id) : 'all', ctrl ? ctrl.id : '');
     renderProjectNavigation();
     renderAllViews();
@@ -3809,6 +3913,16 @@ document.addEventListener('change', async (event) => {
       await Promise.all([refreshProof(), refreshUsageHistory(), refreshProjectProgress(), refreshProjectProgressFeed(), refreshCtrlSettings(), refreshSkills(), refreshNotifications(), refreshRunLogs()]);
       await refreshAutoStatus();
     } finally { renderAllViews(); }
+    return;
+  }
+  if (event.target.dataset.settingsDraftKey) {
+    const key = event.target.dataset.settingsDraftKey;
+    const value = event.target.type === "radio"
+      ? event.target.dataset.configValue === "true"
+      : event.target.dataset.trueValue !== undefined
+        ? (event.target.checked ? event.target.dataset.trueValue : event.target.dataset.falseValue)
+        : event.target.checked;
+    if (stageSettingsDraft(key, value)) renderSettings();
     return;
   }
   if (event.target.id === 'auto-continuation') {
@@ -3912,6 +4026,22 @@ document.addEventListener('click', async (event) => {
   if (!action) return;
   if (action === 'replay-tour') {
     openOnboarding(true, event.target.closest('[data-setting-action]'));
+    return;
+  }
+  if (action === 'edit-config') {
+    openConfigEditor(event.target.closest('[data-setting-action]'));
+    return;
+  }
+  if (action === 'discard-settings') {
+    state.settingsDraft.clear();
+    state.settingsSaveError = "";
+    state.settingsSaveMessage = "Changes discarded";
+    renderSettings();
+    requestAnimationFrame(() => $('#settings-scope')?.focus({ preventScroll: true }));
+    return;
+  }
+  if (action === 'save-settings') {
+    await saveSettingsDraft();
     return;
   }
   const messages = { clear: 'Clear saved SWARM history? Your tasks will stay unchanged.', restore: 'Restore default settings? Your history will stay unchanged.', reset: 'Use global defaults for this CTRL?', 'reset-skills': 'Restore inherited skill settings for this scope?' };

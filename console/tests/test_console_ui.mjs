@@ -124,13 +124,13 @@ assert.match(indexHtml, /class="profile-button chrome-action circle-frame"[^>]*i
 assert.match(indexHtml, /class="icon-button circle-frame system-health-control[^>]*id="system-health-control"/);
 for (const icon of ["eye", "trash-2"]) assert.match(indexHtml, new RegExp(`id="lucide-${icon}" viewBox="0 0 24 24"`));
 assert.match(indexHtml, /id="onboarding-dialog"[^>]*aria-labelledby="onboarding-dialog-title"[^>]*aria-describedby="onboarding-step-status"/);
-assert.equal((indexHtml.match(/<dialog\b/g) || []).length, 4);
-for (const shell of ["evidence-lightbox-shell", "role-editor-shell", "asset-dialog-shell", "onboarding-shell"]) {
+assert.equal((indexHtml.match(/<dialog\b/g) || []).length, 5);
+for (const shell of ["evidence-lightbox-shell", "role-editor-shell", "asset-dialog-shell", "config-editor-shell", "onboarding-shell"]) {
   assert.match(indexHtml, new RegExp(`class="dialog-shell ${shell}"`));
 }
-assert.equal((indexHtml.match(/class="dialog-body /g) || []).length, 4);
-assert.equal((indexHtml.match(/class="dialog-body-content /g) || []).length, 4);
-assert.equal((indexHtml.match(/class="dialog-footer /g) || []).length, 4);
+assert.equal((indexHtml.match(/class="dialog-body /g) || []).length, 5);
+assert.equal((indexHtml.match(/class="dialog-body-content /g) || []).length, 5);
+assert.equal((indexHtml.match(/class="dialog-footer /g) || []).length, 5);
 assert.match(css, /\.dialog-shell \{[^}]*grid-template-rows:auto minmax\(0,1fr\) auto;[^}]*overflow:hidden;[^}]*padding:0;/);
 assert.match(css, /\.dialog-body \{[^}]*width:100%;[^}]*min-height:0;[^}]*overflow-x:hidden; overflow-y:auto;[^}]*scrollbar-gutter:stable;[^}]*padding:0;/);
 assert.match(css, /\.dialog-body-content \{ width:100%; min-width:0; \}/);
@@ -252,9 +252,9 @@ assert.match(onboardingConfigSource, /id="onboarding-advanced-settings"[\s\S]*?d
 assert.doesNotMatch(onboardingConfigSource, /onboarding-config-advanced|onboarding-advanced-content|Minimum model|Maximum model|Usage Saver|Use ChatGPT|Automatic health checks|Parallel lanes/);
 assert.doesNotMatch(app, /data-onboarding-control="usage-policy"|onboarding-config-group|onboarding-config-wide/);
 assert.doesNotMatch(app, /artifact-13|config-usage-first/i);
-assert.match(app, /function openAdvancedSettingsFromOnboarding\(\)[\s\S]*?setView\('settings', false, false\)[\s\S]*?writeRoute\('push', 'settings-advanced'\)[\s\S]*?details\.open = true[\s\S]*?querySelector\('summary'\)\?\.focus/);
+assert.match(app, /function openAdvancedSettingsFromOnboarding\(\)[\s\S]*?setView\('settings', false, false\)[\s\S]*?writeRoute\('push', 'settings-advanced'\)[\s\S]*?\$\('#settings-edit-config'\)\?\.focus/);
 assert.match(app, /if \(view === "settings-advanced"\) return "settings"/);
-assert.match(app, /id="settings-advanced"' \+ \(location\.hash === '#settings-advanced' \? ' open' : ''\)/);
+assert.match(app, /class="panel settings-config-entry settings-wide" id="settings-advanced"/);
 assert.match(app, /function openOnboarding\(force = false, trigger = null\)/);
 assert.match(app, /\(!force && \(state\.onboardingShown \|\| onboardingSeen\(\)\)\)/);
 assert.match(app, /data-setting-action="replay-tour" type="button">Replay tour<\/button>/);
@@ -275,7 +275,7 @@ assert.match(css, /\.onboarding-panel-config \{ height:auto; min-height:100%; al
 assert.match(css, /\.onboarding-config-essentials \{[^}]*padding:14px 16px/);
 assert.match(css, /\.onboarding-advanced-link \{[^}]*min-height:44px/);
 assert.doesNotMatch(css, /\.onboarding-config-advanced|\.onboarding-advanced-content|\.onboarding-advanced-group|\.onboarding-model-grid|\.onboarding-readonly/);
-assert.match(css, /\.settings-advanced \{[^}]*scroll-margin-top:72px/);
+assert.match(css, /\.settings-config-entry \{[^}]*scroll-margin-top:72px/);
 assert.match(css, /\.onboarding-task-life input\[type="range"\] \{[^}]*height:44px[^}]*accent-color:var\(--orange\)/);
 assert.match(css, /\.onboarding-task-life-info > summary \{[^}]*width:44px; height:44px/);
 assert.match(css, /\.onboarding-configuration \.toggle-row input \{ accent-color:var\(--orange\); \}/);
@@ -297,7 +297,7 @@ assert.match(app, /event\.key === "Tab" && \$\("\.app-shell"\)\.classList\.conta
 assert.match(app, /drawer\.inert = !expanded/);
 assert.match(app, /event\.key === "Escape" && \$\("\.app-shell"\)\.classList\.contains\("is-drawer-open"\)/);
 
-for (const label of ["Projects", "Latest updates", "Recent images", "Where changes apply", "Manage", "Advanced settings"]) {
+for (const label of ["Projects", "Latest updates", "Recent images", "Applies to", "Replay tour", "Edit config"]) {
   assert.match(indexHtml + app, new RegExp(label));
 }
 assert.match(app, /\/api\/usage-history\?/);
@@ -314,8 +314,6 @@ assert.match(indexHtml, /id="project-progress-section"/);
 assert.match(app, /\/api\/project-progress-feed\?/);
 assert.match(app, /\/api\/project-progress\?/);
 assert.match(app, /function renderProjectProgressFeed\(\)/);
-assert.match(app, /settingToggle\('console\.project_progress_feed_enabled'/);
-assert.match(app, /data-config-key="console\.project_progress_feed_lines"/);
 assert.doesNotMatch(app, /setInterval\([^)]*projectProgress|setInterval\([^)]*progressFeed/);
 for (const tab of ["overview", "roadmap", "lanes", "hierarchy", "proof", "ledger", "ui", "logs"]) {
   assert.match(indexHtml, new RegExp(`id="project-tab-${tab}"[^>]*data-project-tab="${tab}"[^>]*role="tab"[^>]*aria-controls="project-tab-panel"`));
@@ -820,14 +818,14 @@ assert.equal(healthPresentationHarness.run("offline", null).label, "Offline");
 assert.equal(healthPresentationHarness.run("live", null).label, "Unknown");
 assert.equal(healthPresentationHarness.run("live", { ok: true, config_valid: true, latest: { payload: { health_state: "HEALTHY" } }, health: { incidents: [], open_requests: [] } }).label, "Healthy");
 assert.equal(healthPresentationHarness.run("live", { ok: true, config_valid: true, latest: { payload: { health_state: "HEALTHY" } }, health: { incidents: [{}], open_requests: [] } }).label, "Needs attention");
-assert.match(app, /function openSystemHealth\(\)[\s\S]*?setView\("settings"\)[\s\S]*?panel\?\.focus\(\{ preventScroll: true \}\)/);
+assert.match(app, /function openSystemHealth\(\)[\s\S]*?setView\("settings"\)[\s\S]*?\$\("#system-health-panel"\)[\s\S]*?panel\?\.focus\(\{ preventScroll: true \}\)/);
 assert.match(app, /chromeDot\.className = "status-dot" \+ \(presentation\.className \? " " \+ presentation\.className : ""\)/);
 assert.match(app, /\$\("#system-health-control"\)\.addEventListener\("click", openSystemHealth\)/);
 assert.match(app, /function overviewRequestPath\(\)[\s\S]*?project_id=" \+ encodeURIComponent\(projectId\)/);
 assert.match(app, /\$\("#project-navigation"\)\.addEventListener\("click", async \(event\) =>[\s\S]*?await selectProjectScope\(scope\.dataset\.projectId, scope\)/);
 assert.match(app, /async function selectProjectScope\(projectId, trigger = null, historyMode = "push"\)[\s\S]*?await refreshOverview\(false\)/);
 assert.match(app, /\$\("#project-navigation-heading"\)\.addEventListener\("click", async \(event\) =>[\s\S]*?setView\("overview", false, false\)[\s\S]*?await selectProjectScope\("all", event\.currentTarget\)/);
-assert.match(app, /id="system-health-panel"[\s\S]*?Diagnostics[\s\S]*?System health/);
+assert.match(app, /id="system-health-panel"[\s\S]*?Diagnostics[\s\S]*?System health[\s\S]*?usageChartMarkup\("diagnostics", "diagnostics-usage-trend"\)/);
 assert.match(css, /\.system-health-control[\s\S]*?\.status-dot\.is-attention/);
 assert.match(css, /@media \(max-width: 620px\)[\s\S]*?\.icon-button \{ flex: 0 0 46px; height: 46px; \}/);
 assert.match(app, /function routeView\(\)/);
@@ -972,26 +970,26 @@ assert.doesNotMatch(overviewMetricsRenderSource, /scopedNodes|projectGroups|usag
 assert.doesNotMatch(app, /Number\(project\.active_threads \?\? project\.active\) > 0/);
 assert.match(app, /function configEditable\(key\)/);
 assert.match(app, /id="settings-scope"/);
-assert.match(app, /Custom settings/);
+assert.match(app, /Custom CTRL values override global defaults/);
 assert.match(app, /Inherits global defaults/);
-assert.match(app, /settingToggle\('execution\.usage_saver'/);
-assert.match(app, /settingToggle\('execution\.fast_mode'/);
-assert.doesNotMatch(app, /execution\.service_tier/);
-assert.doesNotMatch(app, /ctrl-service-tier/);
-assert.match(app, /settingToggle\('console\.open_on_start'/);
-assert.match(app, /settingToggle\('role_icons\.enabled'/);
-assert.match(app, /settingSelect\('boost\.spark_reasoning'/);
 const settingsSource = app.slice(app.indexOf("function renderSettings"), app.indexOf("function renderAllViews"));
-const settingsMarkupSource = settingsSource.slice(settingsSource.indexOf('$("#settings-grid").innerHTML ='));
-const primarySettingsSource = settingsMarkupSource.slice(0, settingsMarkupSource.indexOf('<details class="panel settings-advanced'));
-const primaryControlCount = (primarySettingsSource.match(/settingToggle\(/g) || []).length
-  + (primarySettingsSource.match(/settingSelect\(/g) || []).length
-  + (primarySettingsSource.match(/autoSettingsMarkup\(\)/g) || []).length
-  + (primarySettingsSource.match(/<input /g) || []).length
-  + (primarySettingsSource.match(/<select /g) || []).length
-  + 1; // Skills Manage action.
-assert.ok(primaryControlCount <= 12, `primary settings controls: ${primaryControlCount}`);
-assert.match(settingsSource, /<details class="panel settings-advanced settings-wide"/);
+assert.match(settingsSource, /class="panel settings-essentials settings-wide"/);
+assert.match(settingsSource, /settingsSwitch\("automation\.mode"[\s\S]*?"Auto mode"/);
+assert.match(settingsSource, /settingsSwitch\("health\.auto_fix"[\s\S]*?"Auto fix"[\s\S]*?SWARM attempts to recover from issues automatically\. This may start repair tasks and increase usage\./);
+assert.match(settingsSource, /settingsSpeedMarkup\(\)[\s\S]*?settingsTaskLifeMarkup\(\)/);
+assert.match(settingsSource, /class="panel settings-config-entry settings-wide" id="settings-advanced"[\s\S]*?data-setting-action="edit-config"/);
+assert.match(settingsSource, /class="settings-save-bar settings-wide/);
+assert.doesNotMatch(settingsSource, /Advanced settings|Spark and monitoring|Use ChatGPT for eligible work|Heartbeat minutes|Show role icons|Use less usage when possible/);
+assert.match(app, /function stageSettingsDraft\(key, value\)[\s\S]*?state\.settingsDraft\.set\(key, value\)/);
+assert.match(app, /function saveSettingsDraft\(\)[\s\S]*?await saveConfigMutation\(changes\)[\s\S]*?state\.settingsDraft\.clear\(\)/);
+assert.match(app, /function settingsConfigEditable\(key\)[\s\S]*?currentSettingsScope\(\)\.type === "global"/);
+assert.match(app, /Short[\s\S]*?Medium[\s\S]*?Balanced[\s\S]*?Long[\s\S]*?Unlimited/);
+assert.match(app, /aria-label="Task life" aria-valuetext="Balanced — unavailable"/);
+assert.match(indexHtml, /Project overrides take priority\. Overridden values stop following global changes; all other values continue to inherit\./);
+assert.match(indexHtml, /id="config-editor-dialog"[\s\S]*?class="dialog-shell config-editor-shell"[\s\S]*?id="config-editor-text"[\s\S]*?readonly/);
+assert.match(indexHtml, /id="config-editor-save"[^>]*disabled/);
+assert.match(app, /does not expose validated config text or revision-safe text saves/);
+assert.doesNotMatch(settingsSource, /api\('/);
 const autoReadSource = app.slice(app.indexOf("async function refreshAutoStatus"), app.indexOf("async function refreshRoleManifests"));
 assert.match(autoReadSource, /await api\('\/api\/auto\?' \+ params\.toString\(\)\)/);
 assert.doesNotMatch(autoReadSource, /method:|'POST'|"POST"/);
@@ -1012,9 +1010,6 @@ assert.equal(evaluateAutoPresentation({ enabled: false, in_flight: false, attent
 assert.equal(evaluateAutoPresentation({ enabled: true, in_flight: false, attention: null })[0], "Enabled");
 assert.match(app, /state\.autoStatus === "stale"[\s\S]*?last known value is shown read-only/);
 assert.match(app, /!current \|\| state\.autoSaving \? ' disabled' : ''/);
-assert.match(primarySettingsSource, /autoSettingsMarkup\(\)/);
-assert.doesNotMatch(primarySettingsSource, /chatRelaySettingsMarkup\(\)/);
-assert.match(settingsSource, /chatRelaySettingsMarkup\(\)/);
 assert.match(app, /aria-label="Use ChatGPT for eligible work" aria-describedby="chat-relay-status"/);
 assert.match(app, /id="chat-relay-status" aria-live="polite"/);
 const chatRelayPresentationStart = app.indexOf("function chatRelayPresentation");
@@ -1287,7 +1282,7 @@ assert.doesNotMatch(css, /\.profile-button[^}]*width:\s*\d+px;|\.profile-button[
 assert.match(css, /\.role-editor-fields input,.role-editor-fields textarea,.role-editor-fields select[\s\S]*?\.role-editor-fields input,.role-editor-fields select \{ min-height:44px; \}/);
 assert.match(css, /@media \(max-width: 620px\)[\s\S]*\.project-tabs button \{ min-height:44px; \}/);
 assert.match(css, /@media \(max-width: 620px\)[\s\S]*\.review-actions \.icon-button,\.review-actions summary \{ width:44px; height:44px; \}/);
-assert.match(css, /@media \(max-width: 620px\)[\s\S]*\.settings-card input,\.settings-card select,\.settings-card \.quiet-button \{ min-height:44px; \}/);
+assert.match(css, /@media \(max-width: 620px\)[\s\S]*\.settings-save-bar button,\.config-editor-footer button \{ flex:1; \}/);
 assert.match(css, /@media \(max-width: 620px\)[\s\S]*\.error-surface \{ top:calc\(64px \+ env\(safe-area-inset-top\) \+ 8px\);/);
 assert.match(css, /@media \(max-width: 620px\)[\s\S]*\.error-surface button \{ min-height:44px; \}/);
 assert.match(css, /\.assets-layout/);
@@ -1315,7 +1310,7 @@ assert.match(app, /if \(trigger && !trigger\.disabled && !trigger\.hidden\) retu
 assert.match(app, /requestAnimationFrame\(\(\) => \{[\s\S]*roleEditorReturnTarget\(origin\)/);
 assert.match(app, /addEventListener\("cancel", \(event\) => \{ event\.preventDefault\(\); closeRoleEditor\(\); \}\)/);
 assert.match(app, /addEventListener\("close", restoreRoleEditorFocus\)/);
-assert.match(app, /<details class="panel settings-advanced settings-wide"/);
+assert.match(app, /class="panel settings-config-entry settings-wide" id="settings-advanced"/);
 for (const forbidden of ["hidden usage", "developer instructions", "prompts", "tools", "credentials"]) {
   assert.equal((indexHtml + app).toLowerCase().includes(forbidden), false, `forbidden copy: ${forbidden}`);
 }
@@ -2056,13 +2051,12 @@ proofFeed.items.push({
     assert.ok(advancedRouteTarget.width >= 44 && advancedRouteTarget.height >= 44);
     const configRequestsBeforeRoute = onboardingAdvancedRoute.configRequests.length;
     await advancedSettingsRoute.click();
-    await onboardingAdvancedRoutePage.waitForFunction(() => location.hash === "#settings-advanced" && document.querySelector('#settings-advanced')?.open);
+    await onboardingAdvancedRoutePage.waitForFunction(() => location.hash === "#settings-advanced" && document.activeElement?.id === "settings-edit-config");
     assert.equal(await onboardingAdvancedRoutePage.locator("#onboarding-dialog").isVisible(), false);
     assert.equal(await onboardingAdvancedRoutePage.locator('[data-view-panel="settings"]').isVisible(), true);
-    assert.equal(await onboardingAdvancedRoutePage.locator("#settings-advanced").getAttribute("open"), "");
-    assert.equal(await onboardingAdvancedRoutePage.evaluate(() => document.activeElement?.textContent?.trim()), "Advanced settings");
-    assert.ok(await onboardingAdvancedRoutePage.locator("#settings-advanced > summary").evaluate((summary) => {
-      const rect = summary.getBoundingClientRect();
+    assert.equal(await onboardingAdvancedRoutePage.evaluate(() => document.activeElement?.textContent?.trim()), "Edit config");
+    assert.ok(await onboardingAdvancedRoutePage.locator("#settings-edit-config").evaluate((button) => {
+      const rect = button.getBoundingClientRect();
       return rect.top >= 0 && rect.bottom <= innerHeight && document.documentElement.scrollWidth <= innerWidth;
     }));
     if (evidenceDir) await onboardingAdvancedRoutePage.screenshot({ path: path.join(evidenceDir, "05c-advanced-settings-route-desktop-1440x1000.png"), fullPage: false, animations: "disabled" });
@@ -2100,7 +2094,7 @@ proofFeed.items.push({
     assert.equal(await onboardingTabletPage.getByRole("button", { name: "Advanced settings" }).isVisible(), true);
     assert.ok(await onboardingTabletPage.locator("#onboarding-configuration").evaluate((node) => node.scrollWidth <= node.clientWidth + 1));
     await onboardingTabletPage.getByRole("button", { name: "Advanced settings" }).click();
-    await onboardingTabletPage.waitForFunction(() => location.hash === "#settings-advanced" && document.querySelector('#settings-advanced')?.open);
+    await onboardingTabletPage.waitForFunction(() => location.hash === "#settings-advanced" && document.activeElement?.id === "settings-edit-config");
     if (evidenceDir) await onboardingTabletPage.screenshot({ path: path.join(evidenceDir, "05e-advanced-settings-route-tablet-834x1112.png"), fullPage: false, animations: "disabled" });
     assert.deepEqual(onboardingTablet.runtimeErrors, []);
     await onboardingTabletPage.close();
@@ -2126,7 +2120,7 @@ proofFeed.items.push({
     await captureOnboardingEvidence(onboardingMobilePage, "09-slide-4-mobile-390x844");
     await onboardingMobilePage.getByRole("button", { name: "Continue" }).click();
     await captureOnboardingEvidence(onboardingMobilePage, "10-slide-5-config-mobile-390x844");
-    const mobileTaskLifeInfo = onboardingMobilePage.locator('summary[aria-label="About task life"]');
+    const mobileTaskLifeInfo = onboardingMobilePage.locator('#onboarding-panel-5 summary[aria-label="About task life"]');
     await mobileTaskLifeInfo.click();
     assert.equal(await onboardingMobilePage.getByRole("tooltip").isVisible(), true);
     await captureOnboardingEvidence(onboardingMobilePage, "10b-slide-5-task-life-tooltip-mobile-390x844");
@@ -2157,9 +2151,9 @@ proofFeed.items.push({
     assert.equal(await onboardingMobilePage.locator("#onboarding-panel-5 .onboarding-config-advanced").count(), 0);
     assert.equal(await onboardingMobilePage.getByRole("button", { name: "Advanced settings" }).isVisible(), true);
     await onboardingMobilePage.getByRole("button", { name: "Advanced settings" }).click();
-    await onboardingMobilePage.waitForFunction(() => location.hash === "#settings-advanced" && document.querySelector('#settings-advanced')?.open);
-    assert.ok(await onboardingMobilePage.locator("#settings-advanced > summary").evaluate((summary) => {
-      const rect = summary.getBoundingClientRect();
+    await onboardingMobilePage.waitForFunction(() => location.hash === "#settings-advanced" && document.activeElement?.id === "settings-edit-config");
+    assert.ok(await onboardingMobilePage.locator("#settings-edit-config").evaluate((button) => {
+      const rect = button.getBoundingClientRect();
       return rect.top >= 0 && rect.bottom <= innerHeight && document.documentElement.scrollWidth <= innerWidth;
     }));
     if (evidenceDir) await onboardingMobilePage.screenshot({ path: path.join(evidenceDir, "10c-advanced-settings-route-mobile-390x844.png"), fullPage: false, animations: "disabled" });
@@ -2206,10 +2200,10 @@ proofFeed.items.push({
     assert.equal(await pendingPage.locator("#onboarding-dialog").isVisible(), true);
     assert.equal(await pendingPage.evaluate(() => localStorage.getItem("swarm.onboarding.v2.seen")), null);
     assert.equal(await pendingPage.locator("#onboarding-config-status").textContent().then((text) => /Saving/.test(text)), true);
-    const pendingTaskLifeInfo = pendingPage.locator('summary[aria-label="About task life"]');
+    const pendingTaskLifeInfo = pendingPage.locator('#onboarding-panel-5 summary[aria-label="About task life"]');
     await pendingTaskLifeInfo.focus();
     await pendingPage.evaluate(() => renderOnboarding());
-    await pendingPage.waitForFunction(() => document.activeElement?.matches('summary[aria-label="About task life"]'));
+    await pendingPage.waitForFunction(() => document.activeElement?.matches('#onboarding-panel-5 summary[aria-label="About task life"]'));
     releaseConfigPost();
     pendingConfigControl.deferredPost = null;
     await pendingPage.getByRole("button", { name: "Start using SWARM" }).waitFor({ state: "visible" });
@@ -2337,7 +2331,7 @@ proofFeed.items.push({
     const failedReadbackRacePage = await browser.newPage({ viewport: { width: 1024, height: 760 } });
     const failedReadbackRace = await mount(failedReadbackRacePage, scopedFixture(), { ...overrides, configControl: failedReadbackRaceControl });
     await failedReadbackRacePage.evaluate(() => setView("settings"));
-    await failedReadbackRacePage.locator("#settings-advanced > summary").click();
+    await failedReadbackRacePage.evaluate(() => document.body.insertAdjacentHTML("beforeend", chatRelaySettingsMarkup()));
     await failedReadbackRacePage.locator("#chat-relay-enabled").waitFor({ state: "visible" });
     failedReadbackRaceControl.failPost = true;
     failedReadbackRaceControl.deferredGet = new Promise((resolve) => { releaseFailedWriteReadback = resolve; });
@@ -2710,9 +2704,44 @@ proofFeed.items.push({
     await page.keyboard.press("Escape");
     assert.equal(await page.locator("#asset-dialog").evaluate((element) => element.open), false);
     await page.getByRole("tab", { name: "Settings", exact: true }).click();
-    assert.equal(await page.locator("#settings-grid > .settings-card").count(), 4);
+    assert.equal(await page.locator("#settings-grid > .settings-essentials").count(), 1);
     assert.equal(await page.getByRole("button", { name: "Replay tour" }).count(), 1);
     assert.equal(await page.locator("#settings-advanced").count(), 1);
+    assert.match(await page.locator("#settings-essentials").textContent(), /Auto mode[\s\S]*Auto fix[\s\S]*Default[\s\S]*Fast[\s\S]*Ultrafast[\s\S]*Task life[\s\S]*Short[\s\S]*Medium[\s\S]*Balanced[\s\S]*Long[\s\S]*Unlimited/);
+    assert.match(await page.locator("#settings-essentials").textContent(), /SWARM attempts to recover from issues automatically\. This may start repair tasks and increase usage\./);
+    assert.equal(await page.getByLabel("Auto fix").isDisabled(), true);
+    assert.equal(await page.getByRole("slider", { name: "Task life" }).isDisabled(), true);
+    assert.equal(await page.getByRole("slider", { name: "Task life" }).getAttribute("aria-valuetext"), "Balanced — unavailable");
+    assert.equal(await page.getByLabel("Auto mode").isDisabled(), true);
+    await page.locator("#settings-scope").selectOption("global|global");
+    await page.waitForFunction(() => state.settingsScopeType === "global" && state.settingsScopeId === "global");
+    assert.equal(await page.getByLabel("Auto mode").isDisabled(), false);
+    const settingsRequestsBefore = desktop.configRequests.length;
+    await page.getByLabel("Auto mode").click();
+    await page.getByLabel("Fast", { exact: true }).click();
+    assert.match(await page.locator(".settings-save-bar").textContent(), /2 unsaved changes/);
+    await page.getByRole("button", { name: "Save changes" }).click();
+    await page.waitForFunction(() => state.settingsSaving === false && state.settingsDraft.size === 0);
+    assert.deepEqual(desktop.configRequests.slice(settingsRequestsBefore), [{ changes: { "automation.mode": "manual", "execution.fast_mode": true } }]);
+    assert.match(await page.locator(".settings-save-bar").textContent(), /Saved/);
+    const editConfigTrigger = page.getByRole("button", { name: "Edit config" });
+    await editConfigTrigger.click();
+    await assertDialogFrame(page, "#config-editor-dialog");
+    assert.equal(await page.locator("#config-editor-text").getAttribute("readonly"), "");
+    assert.equal(await page.getByRole("button", { name: "Save config" }).isDisabled(), true);
+    assert.match(await page.locator("#config-editor-status").textContent(), /does not expose validated config text or revision-safe text saves/);
+    if (evidenceDir) await page.screenshot({ path: path.join(evidenceDir, "19-settings-config-unavailable-desktop-1536x1024.png"), fullPage: false, animations: "disabled" });
+    await page.keyboard.press("Escape");
+    assert.equal(await editConfigTrigger.evaluate((element) => element === document.activeElement), true);
+    await page.locator("#settings-scope").selectOption("project|project:fixture");
+    await page.waitForFunction(() => state.settingsScopeType === "project" && state.settingsScopeId === "project:fixture");
+    await page.getByRole("button", { name: "Edit config" }).click();
+    assert.equal(await page.locator("#config-editor-warning").isVisible(), true);
+    assert.equal(await page.locator("#config-editor-warning").textContent(), "Project overrides take priority. Overridden values stop following global changes; all other values continue to inherit.");
+    await page.keyboard.press("Escape");
+    await page.locator("#settings-scope").selectOption("global|global");
+    await page.waitForFunction(() => state.settingsScopeType === "global" && state.settingsScopeId === "global");
+    if (evidenceDir) await page.screenshot({ path: path.join(evidenceDir, "20-settings-essentials-desktop-1536x1024.png"), fullPage: false, animations: "disabled" });
     assert.equal(await page.locator("[data-qc-scope]").evaluate((element) => element.scrollWidth > element.clientWidth + 1), false);
     assert.deepEqual(desktop.runtimeErrors, []);
     await page.close();
@@ -2824,6 +2853,13 @@ proofFeed.items.push({
     await assertDialogFrame(tabletPage, "#asset-dialog");
     if (evidenceDir) await tabletPage.screenshot({ path: path.join(evidenceDir, "16-assets-dialog-tablet-834x1112.png"), fullPage: false, animations: "disabled" });
     await tabletPage.keyboard.press("Escape");
+    await tabletPage.evaluate(() => setView("settings"));
+    assert.equal(await tabletPage.locator("#settings-essentials").evaluate((element) => element.scrollWidth <= element.clientWidth + 1), true);
+    assert.equal(await tabletPage.locator(".settings-switch").evaluateAll((elements) => elements.every((element) => element.getBoundingClientRect().height >= 44)), true);
+    if (evidenceDir) await tabletPage.screenshot({ path: path.join(evidenceDir, "21-settings-essentials-tablet-834x1112.png"), fullPage: false, animations: "disabled" });
+    await tabletPage.getByRole("button", { name: "Edit config" }).click();
+    await assertDialogFrame(tabletPage, "#config-editor-dialog");
+    await tabletPage.keyboard.press("Escape");
     assert.deepEqual(tablet.runtimeErrors, []);
     await tabletPage.close();
 
@@ -2915,6 +2951,15 @@ proofFeed.items.push({
     await mobilePage.locator(".asset-tile .asset-image-button").first().click();
     await assertDialogFrame(mobilePage, "#asset-dialog");
     if (evidenceDir) await mobilePage.screenshot({ path: path.join(evidenceDir, "17-assets-dialog-mobile-390x844.png"), fullPage: false, animations: "disabled" });
+    await mobilePage.keyboard.press("Escape");
+    await mobilePage.evaluate(() => setView("settings"));
+    assert.equal(await mobilePage.locator("#settings-essentials").evaluate((element) => element.scrollWidth <= element.clientWidth + 1), true);
+    assert.equal(await mobilePage.locator(".settings-switch").evaluateAll((elements) => elements.every((element) => element.getBoundingClientRect().height >= 44)), true);
+    if (evidenceDir) await mobilePage.screenshot({ path: path.join(evidenceDir, "22-settings-essentials-mobile-390x844.png"), fullPage: false, animations: "disabled" });
+    await mobilePage.getByRole("button", { name: "Edit config" }).click();
+    await assertDialogFrame(mobilePage, "#config-editor-dialog");
+    assert.equal(await mobilePage.locator("#config-editor-dialog").evaluate((element) => element.scrollWidth <= element.clientWidth + 1), true);
+    if (evidenceDir) await mobilePage.screenshot({ path: path.join(evidenceDir, "23-settings-config-unavailable-mobile-390x844.png"), fullPage: false, animations: "disabled" });
     await mobilePage.keyboard.press("Escape");
     assert.deepEqual(mobile.runtimeErrors, []);
     await mobilePage.close();
