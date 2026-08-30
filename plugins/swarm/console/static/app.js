@@ -1,4 +1,4 @@
-const state = { token: "", overview: null, proof: [], proofCollections: new Map(), proofStatuses: new Map(), proofStatus: "idle", proofSequence: 0, usageHistory: null, usageWindowHours: 1, usageScopeKey: "", usageStatus: "idle", usageError: "", projectProgress: null, projectProgressProjectId: "", projectProgressStatus: "idle", projectProgressError: "", projectProgressFeed: null, projectProgressFeedProjectId: "", projectProgressFeedStatus: "idle", projectProgressFeedError: "", projectTab: "overview", projectUiMode: "screens", projectUiGroupId: "", runLogs: new Map(), runLogRequestGenerations: new Map(), runLogSurfaceStates: new Map(), runLogAgent: null, diagnostics: null, health: null, storage: null, config: null, configStatus: "idle", configError: "", chatRelaySaving: false, settingsDraft: new Map(), settingsSaving: false, settingsSaveError: "", settingsSaveMessage: "", configEditorTrigger: null, ctrlSettings: null, auto: null, autoBindingKey: "", autoStatus: "idle", autoError: "", autoSaving: false, skills: null, skillsError: "", roleManifests: null, roleManifestStatus: "unavailable", roleManifestError: "", roleManifestMessage: "", roleManifestSaving: false, roleManifestRetry: null, roleEditorMode: "", roleEditorTrigger: null, roleSearch: "", roleTypes: new Set(["builtin", "custom"]), roleSearchFields: new Set(["profession", "specialization", "alias", "skills", "purpose"]), selectedRoleId: "", assets: null, assetBindingKey: "", assetStatus: "idle", assetError: "", assetProjection: "active", assetView: "grid", assetRequestGeneration: 0, assetEventCursors: new Map(), assetMutationPending: null, assetConfirm: null, assetUndo: null, selectedAssetIdentity: "", assetTrigger: null, onboardingStep: 0, onboardingShown: false, onboardingTrigger: null, onboardingConfigPending: new Map(), onboardingConfigFailures: new Map(), notifications: null, notificationBindingKey: "", notificationStatus: "idle", notificationError: "", notificationAckFlight: null, notificationRequestGenerations: new Map(), notificationPresentedIds: new Set(), notificationToast: null, notificationToastTimer: null, notificationTrigger: null, connectionStatus: "reconnecting", view: "overview", projectId: "all", ctrlId: "", scopeNotice: "", scopeNoticeVisible: false, settingsCtrlId: "", settingsScopeType: "", settingsScopeId: "", evidenceImages: [], evidenceIndex: 0, evidenceTrigger: null };
+const state = { token: "", overview: null, proof: [], proofCollections: new Map(), proofStatuses: new Map(), proofStatus: "idle", proofSequence: 0, usageHistory: null, usageWindowHours: 1, usageScopeKey: "", usageStatus: "idle", usageError: "", projectProgress: null, projectProgressProjectId: "", projectProgressStatus: "idle", projectProgressError: "", projectProgressFeed: null, projectProgressFeedProjectId: "", projectProgressFeedStatus: "idle", projectProgressFeedError: "", projectTab: "overview", projectUiMode: "screens", projectUiGroupId: "", runLogs: new Map(), runLogRequestGenerations: new Map(), runLogSurfaceStates: new Map(), runLogAgent: null, agentUpdatesFilter: "all", agentUpdatesPaused: false, agentDetailTrigger: null, diagnostics: null, health: null, storage: null, config: null, configStatus: "idle", configError: "", configResetPending: null, configResetRetry: null, chatRelaySaving: false, settingsDraft: new Map(), settingsSaving: false, settingsSaveError: "", settingsSaveMessage: "", configEditorTrigger: null, ctrlSettings: null, auto: null, autoBindingKey: "", autoStatus: "idle", autoError: "", autoSaving: false, skills: null, skillsError: "", roleManifests: null, roleManifestStatus: "unavailable", roleManifestError: "", roleManifestMessage: "", roleManifestSaving: false, roleManifestRetry: null, roleEditorMode: "", roleEditorTrigger: null, roleSearch: "", roleTypes: new Set(["builtin", "custom"]), roleSearchFields: new Set(["profession", "specialization", "alias", "skills", "purpose"]), selectedRoleId: "", assets: null, assetBindingKey: "", assetStatus: "idle", assetError: "", assetProjection: "active", assetView: "grid", assetRequestGeneration: 0, assetEventCursors: new Map(), assetMutationPending: null, assetConfirm: null, assetUndo: null, selectedAssetIdentity: "", assetTrigger: null, onboardingStep: 0, onboardingShown: false, onboardingTrigger: null, onboardingFlowZoom: 1, onboardingConfigPending: new Map(), onboardingConfigFailures: new Map(), notifications: null, notificationBindingKey: "", notificationStatus: "idle", notificationError: "", notificationAckFlight: null, notificationRequestGenerations: new Map(), notificationPresentedIds: new Set(), notificationToast: null, notificationToastTimer: null, notificationTrigger: null, connectionStatus: "reconnecting", view: "overview", projectId: "all", ctrlId: "", scopeNotice: "", scopeNoticeVisible: false, settingsCtrlId: "", settingsScopeType: "", settingsScopeId: "", evidenceImages: [], evidenceIndex: 0, evidenceTrigger: null };
 let configMutationTail = Promise.resolve();
 let configAuthorityGeneration = 0;
 let lastAppliedHistoryRoute = "";
@@ -11,6 +11,28 @@ const ONBOARDING_STEPS = [
   { name: "Role variety", primary: "Continue" },
   { name: "Project views", primary: "Continue" },
   { name: "Configuration", primary: "Start using SWARM" },
+];
+const ONBOARDING_COORDINATION_GROUPS = [
+  { id: "coo", label: "COO", accent: "#4da8ff", leads: [
+    { id: "operations", label: "Operations", roleId: "operator", icon: "settings" },
+    { id: "delivery", label: "Delivery", roleId: "strategist", icon: "git-branch" },
+    { id: "support", label: "Support", roleId: "support", icon: "message-square" },
+  ] },
+  { id: "cto", label: "CTO", accent: "#9b7cff", leads: [
+    { id: "engineering", label: "Engineering", roleId: "developer", icon: "git-branch" },
+    { id: "architecture", label: "Architecture", roleId: "architect", icon: "list-tree" },
+    { id: "security", label: "Security", roleId: "security", icon: "shield-check" },
+  ] },
+  { id: "cfo", label: "CFO", accent: "#55d59a", leads: [
+    { id: "finance", label: "Finance", roleId: "accountant", icon: "list" },
+    { id: "analytics", label: "Analytics", roleId: "analyst", icon: "layout-dashboard" },
+    { id: "compliance", label: "Compliance", roleId: "auditor", icon: "check" },
+  ] },
+  { id: "cmo", label: "CMO", accent: "#ff6fae", leads: [
+    { id: "design", label: "Design", roleId: "designer", icon: "pencil" },
+    { id: "content", label: "Content", roleId: "content_creator", icon: "file-clock" },
+    { id: "growth", label: "Growth", roleId: "marketer", icon: "sparkles" },
+  ] },
 ];
 const $ = (selector, root = document) => root.querySelector(selector);
 const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
@@ -117,6 +139,13 @@ function formatRelative(value) {
   if (minutes < 60) return String(minutes) + "m ago";
   if (minutes < 2880) return String(Math.round(minutes / 60)) + "h ago";
   return String(Math.round(minutes / 1440)) + "d ago";
+}
+
+function observedTimestampMs(value) {
+  if (value == null || value === "") return 0;
+  const numeric = Number(value);
+  const parsed = Number.isFinite(numeric) && numeric > 0 ? (numeric < 1e12 ? numeric * 1000 : numeric) : new Date(value).getTime();
+  return Number.isFinite(parsed) && parsed >= Date.UTC(2000, 0, 1) ? parsed : 0;
 }
 
 function formatEta(value) {
@@ -245,6 +274,101 @@ function onboardingConfigurationMarkup() {
     '<div class="onboarding-config-save ' + (failures.length ? 'is-error' : '') + '" id="onboarding-config-status" data-onboarding-control="config-status" role="status" tabindex="-1"><span>' + escapeHTML(status) + '</span>' + (failures.length ? '<button class="quiet-button" type="button" data-onboarding-control="retry-config">Retry</button>' : '') + '</div>';
 }
 
+function onboardingRoleAvatar(roleId, label) {
+  return roleAvatar(roleRecord(roleId) || { id: roleId, name: label });
+}
+
+function onboardingCoordinationSignature() {
+  const ids = ["manager", ...ONBOARDING_COORDINATION_GROUPS.flatMap((group) => group.leads.map((lead) => lead.roleId))];
+  return ids.map((id) => {
+    const role = roleRecord(id);
+    return [id, role?.version || "", role?.avatar_asset_digest || ""].join(":");
+  }).join("|");
+}
+
+function onboardingCoordinationMarkup() {
+  let entranceIndex = 1;
+  const paths = [];
+  const connections = [];
+  const groups = ONBOARDING_COORDINATION_GROUPS.map((group) => {
+    const executiveId = "executive-" + group.id;
+    paths.push('<path data-onboarding-edge="ctrl-' + escapeHTML(group.id) + '" data-source="ctrl" data-target="' + escapeHTML(executiveId) + '"></path>');
+    connections.push("CTRL to " + group.label);
+    const executiveIndex = entranceIndex++;
+    const leads = group.leads.map((lead) => {
+      const nodeId = group.id + "-" + lead.id;
+      const leadIndex = entranceIndex++;
+      paths.push('<path data-onboarding-edge="' + escapeHTML(nodeId) + '" data-source="' + escapeHTML(executiveId) + '" data-target="' + escapeHTML(nodeId) + '"></path>');
+      connections.push(group.label + " to " + lead.label);
+      return '<div class="onboarding-lead-node" role="treeitem" aria-level="3" tabindex="-1" data-onboarding-node="lead" data-onboarding-node-id="' + escapeHTML(nodeId) + '" data-onboarding-lead="' + escapeHTML(lead.id) + '" data-role-id="' + escapeHTML(lead.roleId) + '" style="--org-index:' + leadIndex + '">' +
+        onboardingRoleAvatar(lead.roleId, lead.label) +
+        '<span class="onboarding-role-icon" aria-hidden="true"><svg class="lucide"><use href="#lucide-' + escapeHTML(lead.icon) + '"></use></svg></span>' +
+        '<strong>' + escapeHTML(lead.label) + '</strong></div>';
+    }).join("");
+    return '<section class="onboarding-executive-branch" role="group" aria-label="' + escapeHTML(group.label + " team") + '" style="--executive-accent:' + escapeHTML(group.accent) + '">' +
+      '<div class="onboarding-executive-node" role="treeitem" aria-level="2" tabindex="-1" data-onboarding-node="executive" data-onboarding-node-id="' + escapeHTML(executiveId) + '" data-onboarding-executive="' + escapeHTML(group.id) + '" data-role-id="manager" style="--org-index:' + executiveIndex + '">' +
+      onboardingRoleAvatar("manager", "Manager") + '<span><strong>' + escapeHTML(group.label) + '</strong><small>Manager</small></span><i class="onboarding-jack is-input" aria-hidden="true"></i></div>' +
+      '<div class="onboarding-lead-group" role="group" aria-label="' + escapeHTML(group.label + " profession leads") + '">' + leads + '</div></section>';
+  }).join("");
+  return '<div class="onboarding-flow-toolbar" aria-label="Flowchart zoom"><button class="icon-button" type="button" data-onboarding-flow-zoom="out" aria-label="Zoom out">−</button><button class="quiet-button" type="button" data-onboarding-flow-zoom="fit">Fit</button><button class="icon-button" type="button" data-onboarding-flow-zoom="in" aria-label="Zoom in">+</button></div>' +
+    '<div class="onboarding-coordination-stage" style="--flow-zoom:' + state.onboardingFlowZoom + '"><svg class="onboarding-coordination-connectors" aria-hidden="true" focusable="false">' + paths.join("") + '</svg>' +
+    '<div class="onboarding-coordination-content"><div class="onboarding-ctrl-node" role="treeitem" aria-level="1" tabindex="0" data-onboarding-node="ctrl" data-onboarding-node-id="ctrl" style="--org-index:0"><i class="onboarding-jack is-input" aria-hidden="true"></i><img src="/assets/swarm-mascot-512.png" alt="" aria-hidden="true" width="512" height="512"><span class="onboarding-console-face"><strong>CTRL</strong><i class="onboarding-console-dial" aria-hidden="true"></i><span class="onboarding-console-switches" aria-hidden="true"><i></i><i></i></span></span><span class="onboarding-output-jacks" aria-hidden="true"><i></i><i></i><i></i><i></i></span></div>' +
+    '<div class="onboarding-executive-grid" role="group" aria-label="Executive managers and profession leads">' + groups + '</div></div>' +
+    '<ul class="sr-only" aria-label="Coordination connections">' + connections.map((connection) => '<li>' + escapeHTML(connection) + '</li>').join("") + '</ul></div>';
+}
+
+function renderOnboardingCoordination() {
+  const tree = $("#onboarding-coordination-tree");
+  if (!tree) return;
+  const signature = onboardingCoordinationSignature();
+  if (tree.dataset.roleSignature !== signature || !tree.firstElementChild) {
+    const focusedId = document.activeElement?.dataset?.onboardingNodeId || "";
+    tree.innerHTML = onboardingCoordinationMarkup();
+    tree.dataset.roleSignature = signature;
+    if (focusedId) $$('[data-onboarding-node-id]', tree).find((item) => item.dataset.onboardingNodeId === focusedId)?.focus({ preventScroll: true });
+  }
+  tree.style.setProperty("--flow-zoom", String(state.onboardingFlowZoom));
+  $('[data-onboarding-flow-zoom="out"]', tree).disabled = state.onboardingFlowZoom <= .9;
+  $('[data-onboarding-flow-zoom="in"]', tree).disabled = state.onboardingFlowZoom >= 1.1;
+  scheduleProjectViewConnectors();
+}
+
+function drawOnboardingCoordinationConnectors() {
+  const stage = $(".onboarding-coordination-stage", $("#onboarding-coordination-tree"));
+  const svg = stage && $(".onboarding-coordination-connectors", stage);
+  if (!stage || !svg) return;
+  const stageRect = stage.getBoundingClientRect();
+  if (!stageRect.width || !stageRect.height) return;
+  svg.setAttribute("viewBox", "0 0 " + stage.clientWidth + " " + stage.clientHeight);
+  svg.setAttribute("width", String(stage.clientWidth));
+  svg.setAttribute("height", String(stage.clientHeight));
+  const nodeById = new Map($$("[data-onboarding-node-id]", stage).map((node) => [node.dataset.onboardingNodeId, node]));
+  $$('[data-onboarding-edge]', svg).forEach((path) => {
+    const source = nodeById.get(path.dataset.source);
+    const target = nodeById.get(path.dataset.target);
+    if (!source || !target) { path.removeAttribute("d"); return; }
+    const from = source.getBoundingClientRect();
+    const to = target.getBoundingClientRect();
+    const x1 = from.left + from.width / 2 - stageRect.left;
+    const y1 = from.bottom - stageRect.top;
+    const x2 = to.left + to.width / 2 - stageRect.left;
+    const y2 = to.top - stageRect.top;
+    const bend = Math.max(12, (y2 - y1) / 2);
+    path.setAttribute("d", "M " + x1 + " " + y1 + " C " + x1 + " " + (y1 + bend) + ", " + x2 + " " + (y2 - bend) + ", " + x2 + " " + y2);
+  });
+}
+
+function moveOnboardingTreeFocus(event) {
+  if (!["ArrowRight", "ArrowDown", "ArrowLeft", "ArrowUp", "Home", "End"].includes(event.key)) return;
+  const items = $$("[data-onboarding-node-id]", event.currentTarget);
+  const current = items.indexOf(document.activeElement);
+  if (current < 0) return;
+  const next = event.key === "Home" ? 0 : event.key === "End" ? items.length - 1 : (current + (["ArrowRight", "ArrowDown"].includes(event.key) ? 1 : -1) + items.length) % items.length;
+  event.preventDefault();
+  items.forEach((item, index) => { item.tabIndex = index === next ? 0 : -1; });
+  items[next].focus({ preventScroll: false });
+}
+
 function renderOnboarding() {
   const step = Math.min(Math.max(0, state.onboardingStep), ONBOARDING_STEPS.length - 1);
   state.onboardingStep = step;
@@ -275,6 +399,7 @@ function renderOnboarding() {
   $("#onboarding-primary").textContent = current.primary;
   $("#onboarding-primary").disabled = blocked;
   $("#onboarding-primary").toggleAttribute("aria-busy", finalStep && state.onboardingConfigPending.size > 0);
+  if (step === 1) renderOnboardingCoordination();
   if (finalStep) {
     const root = $("#onboarding-configuration");
     const focusIdentity = onboardingControlIdentity(document.activeElement);
@@ -376,6 +501,79 @@ async function saveConfigMutation(changes) {
   });
   configMutationTail = operation.then(() => undefined, () => undefined);
   return operation;
+}
+
+function configResetOperationId(kind) {
+  const values = new Uint32Array(4);
+  window.crypto.getRandomValues(values);
+  return "console-config-reset-" + kind + "-" + [...values].map((value) => value.toString(16).padStart(8, "0")).join("");
+}
+
+function configResetRequest(kind) {
+  if (kind === "ctrl") {
+    const setting = state.ctrlSettings;
+    if (!setting?.ctrl_id || !Number.isInteger(setting.revision)) return null;
+    return {
+      kind,
+      endpoint: "/api/ctrl-settings/reset",
+      binding: { type: "ctrl", id: String(setting.ctrl_id) },
+      payload: { ctrl_id: String(setting.ctrl_id), expected_revision: setting.revision, acknowledge: true },
+    };
+  }
+  const projection = state.config;
+  const scope = projection?.scope;
+  if (!projection || projection.state !== "KNOWN" || projection.write_contract?.available !== true || projection.revision == null) return null;
+  if (kind === "global" && scope?.type === "global") {
+    return { kind, endpoint: "/api/settings/restore", binding: { type: "global", id: "global" }, payload: { scope: { type: "global" }, expected_revision: projection.revision, acknowledge: true } };
+  }
+  if (kind === "project" && scope?.type === "project" && scope.project_id && scope.accepted_cursor) {
+    return {
+      kind,
+      endpoint: "/api/config/reset",
+      binding: { type: "project", id: String(scope.project_id) },
+      payload: { scope: { type: "project", project_id: String(scope.project_id), accepted_cursor: structuredClone(scope.accepted_cursor) }, expected_revision: projection.revision, acknowledge: true },
+    };
+  }
+  return null;
+}
+
+function configResetRequestKey(request) {
+  return request ? request.endpoint + "|" + JSON.stringify(request.payload) : "";
+}
+
+function configResetBindingIsCurrent(request) {
+  const scope = currentSettingsScope();
+  return Boolean(request) && scope.type === request.binding.type && String(scope.id) === request.binding.id;
+}
+
+async function resetSettingsScope(kind) {
+  const base = configResetRequest(kind);
+  if (!base || state.configResetPending) throw new Error("This settings scope cannot be reset from the current accepted projection.");
+  const key = configResetRequestKey(base);
+  const retainedRetry = state.configResetRetry?.key === key ? state.configResetRetry : null;
+  const operationId = retainedRetry?.operationId || configResetOperationId(kind);
+  const request = { ...base, key, operationId, payload: { ...base.payload, operation_id: operationId } };
+  state.configResetPending = request;
+  configAuthorityGeneration += 1;
+  const operation = configMutationTail.then(() => api(request.endpoint, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(request.payload) }));
+  configMutationTail = operation.then(() => undefined, () => undefined);
+  try {
+    const result = await operation;
+    state.configResetRetry = null;
+    if (!configResetBindingIsCurrent(request)) return { applied: false, result };
+    if (kind === "ctrl") state.ctrlSettings = result;
+    else {
+      state.config = result;
+      state.configStatus = "current";
+      state.settingsDraft.clear();
+    }
+    return { applied: true, result };
+  } catch (error) {
+    state.configResetRetry = error?.connectionFailure === true || !Number.isInteger(error?.status) ? { key, operationId } : null;
+    throw error;
+  } finally {
+    if (state.configResetPending?.operationId === operationId) state.configResetPending = null;
+  }
 }
 
 async function readConfigState(previousConfig = state.config, saveError = "") {
@@ -810,7 +1008,16 @@ function scopeLabel() {
 function setProjectSelection(projectId, ctrlId = "") {
   const nextProjectId = String(projectId || "all");
   const nextCtrlId = String(ctrlId || "");
-  if (state.projectId !== nextProjectId || state.ctrlId !== nextCtrlId) state.projectUiGroupId = "";
+  const changed = state.projectId !== nextProjectId || state.ctrlId !== nextCtrlId;
+  if (changed) {
+    state.projectUiGroupId = "";
+    const selectedAgent = state.runLogAgent;
+    if (selectedAgent && nextProjectId !== "all" && selectedAgent.projectId !== nextProjectId) {
+      state.runLogAgent = null;
+      if (state.agentUpdatesFilter === "selected") state.agentUpdatesFilter = "all";
+      if ($("#agent-detail-dialog")?.open) closeAgentDetail(false);
+    }
+  }
   state.projectId = nextProjectId;
   state.ctrlId = nextCtrlId;
 }
@@ -907,14 +1114,23 @@ function runLogBindingsForProject(projectId) {
 function currentRunLogAgent() {
   const selection = state.runLogAgent;
   if (!selection || (state.projectId !== "all" && state.projectId !== selection.projectId)) return null;
-  const binding = runLogBindingForCtrl(selection.ctrlId, selection.agentId);
-  if (!binding || binding.projectId !== selection.projectId) return null;
-  const eligible = (state.overview?.nodes || []).some((node) => {
-    const inCtrl = node.id === binding.ctrlId || (node.controller_ids || []).includes(binding.ctrlId);
-    const agentId = String(node.owner_id || node.id || "");
-    return node.project_id === binding.projectId && inCtrl && agentId === binding.agentId;
+  const record = activeAgentRecords().find((item) => item.binding?.projectId === selection.projectId && item.binding?.ctrlId === selection.ctrlId && item.binding?.agentId === selection.agentId);
+  return record ? { ...selection, ...record.binding, label: record.presentationName } : null;
+}
+
+function agentRunLogPlan() {
+  if (state.view !== "agents") return null;
+  if (state.agentUpdatesFilter === "selected") {
+    const selected = currentRunLogAgent();
+    return { title: "Live updates", bindings: selected ? [selected] : [], bindingUnavailable: !selected, filter: "selected" };
+  }
+  const bindings = new Map();
+  activeAgentRecords().forEach((record) => {
+    if (!record.binding) return;
+    const binding = { projectId: record.binding.projectId, ctrlId: record.binding.ctrlId, agentId: "" };
+    bindings.set(runLogBindingKey(binding), binding);
   });
-  return eligible ? { ...selection, ...binding } : null;
+  return { title: "Live updates", bindings: [...bindings.values()], bindingUnavailable: !bindings.size, filter: state.agentUpdatesFilter };
 }
 
 function runLogSurfacePlans() {
@@ -924,8 +1140,8 @@ function runLogSurfacePlans() {
   const projectId = selectedProgressProjectId();
   const projectBindings = projectId && state.projectTab === "logs" ? runLogBindingsForProject(projectId) : [];
   if (projectId && state.projectTab === "logs") plans.set("project", { title: projectBindings.length <= 1 ? "Project run log" : "Project run log · " + projectBindings.length + " CTRLs", bindings: projectBindings, bindingUnavailable: !projectBindings.length });
-  const agent = state.view === "agents" ? currentRunLogAgent() : null;
-  if (agent) plans.set("agent", { title: agent.label || "Selected agent", bindings: [agent] });
+  const agentPlan = agentRunLogPlan();
+  if (agentPlan) plans.set("agent", agentPlan);
   return plans;
 }
 
@@ -971,9 +1187,15 @@ function runLogPresentation(plan) {
   return { items, message, notices, stale: offline || failed, loading };
 }
 
-function runLogEntryMarkup(item) {
+function runLogEntryMarkup(item, surface = "") {
   const observed = Number(item.observed_at_ms);
   const datetime = Number.isFinite(observed) && observed > 0 ? new Date(observed).toISOString() : "";
+  if (surface === "agent") {
+    const record = activeAgentRecords().find((candidate) => candidate.node.id === item.task_id || candidate.binding?.agentId === item.agent_id);
+    const agent = record?.presentationName || "Agent";
+    const kind = humanize(item.kind || item.status || "Material update");
+    return '<li class="agent-live-entry" data-run-log-entry="' + escapeHTML(runLogItemIdentity(item)) + '"><span class="agent-live-dot" aria-hidden="true"></span><div><p><strong>' + escapeHTML(agent) + '</strong><time datetime="' + escapeHTML(datetime) + '">' + escapeHTML(formatRelative(observed)) + '</time></p><span>' + escapeHTML(item.summary) + '</span><small>' + escapeHTML(kind) + '</small></div></li>';
+  }
   const owner = item.owner_id || item.task_id || "Unknown owner";
   const detail = [humanize(item.structural_role || item.profession || "Agent"), humanize(item.kind || item.status || "Material event")].filter(Boolean).join(" · ");
   return '<li data-run-log-entry="' + escapeHTML(runLogItemIdentity(item)) + '"><time datetime="' + escapeHTML(datetime) + '">' + escapeHTML(formatRelative(observed)) + '</time><div><strong>' + escapeHTML(owner) + '</strong><span>' + escapeHTML(detail) + '</span></div><p>' + escapeHTML(item.summary) + '</p></li>';
@@ -1032,9 +1254,15 @@ function renderRunLogSurfaces() {
     const notice = $(".run-log-notice", mount);
     mount.hidden = false;
     heading.textContent = plan.title;
+    if (surface === "agent" && state.agentUpdatesPaused) {
+      status.textContent = "Paused · received updates remain available when resumed.";
+      status.classList.remove("is-stale");
+      if (!sameBinding) list.innerHTML = '<li class="empty-state">Live updates paused for this scope.</li>';
+      return;
+    }
     status.textContent = presentation.message;
     status.classList.toggle("is-stale", presentation.stale);
-    list.innerHTML = presentation.items.length ? presentation.items.map(runLogEntryMarkup).join("") : '<li class="empty-state">' + escapeHTML(presentation.message) + '</li>';
+    list.innerHTML = presentation.items.length ? presentation.items.map((item) => runLogEntryMarkup(item, surface)).join("") : '<li class="empty-state">' + escapeHTML(presentation.message) + '</li>';
     latest.textContent = String(surfaceState.newEntries) + " new " + (surfaceState.newEntries === 1 ? "entry" : "entries");
     latest.hidden = !surfaceState.newEntries;
     notice.textContent = presentation.notices.join(" · ");
@@ -2138,6 +2366,7 @@ function drawProjectViewConnectors() {
 
 function scheduleProjectViewConnectors() {
   if (state.projectTab === "ui" && state.projectUiMode === "map") requestAnimationFrame(drawProjectViewConnectors);
+  if ($("#onboarding-dialog")?.open && state.onboardingStep === 1) requestAnimationFrame(drawOnboardingCoordinationConnectors);
 }
 
 function projectViewMarkup() {
@@ -2769,55 +2998,186 @@ function runLogAgentId(node) {
   return String(node?.owner_id || node?.id || "");
 }
 
-function agentRow(node, role, binding = null) {
-  const status = statusLabel(node || {});
-  const title = node?.artifact || node?.title || "Unknown task";
-  const owner = node?.worker || node?.owner || node?.id || "Unknown";
-  const updated = node?.updated_at || node?.generated_at;
-  const efficiency = verifiedYieldItem("owner", node?.owner_id || node?.worker || node?.owner || node?.id || "");
-  const selected = binding && currentRunLogAgent()?.projectId === binding.projectId && currentRunLogAgent()?.ctrlId === binding.ctrlId && currentRunLogAgent()?.agentId === binding.agentId;
-  const identity = binding
-    ? '<button class="agent-identity" type="button" data-run-log-agent="' + escapeHTML(binding.agentId) + '" data-project-id="' + escapeHTML(binding.projectId) + '" data-ctrl-id="' + escapeHTML(binding.ctrlId) + '" data-agent-label="' + escapeHTML(owner) + '" aria-pressed="' + String(Boolean(selected)) + '" aria-label="Show run log for ' + escapeHTML(owner) + '"><strong>' + escapeHTML(owner) + '</strong><small>' + escapeHTML(title) + '</small></button>'
-    : '<div><strong>' + escapeHTML(owner) + '</strong><small>' + escapeHTML(title) + '</small></div>';
-  return '<div class="agent-row' + (selected ? ' is-selected' : '') + '" data-agent-role="' + escapeHTML(role) + '"><span class="agent-role-mark circle-frame" aria-hidden="true">' + escapeHTML(role.slice(0, 1)) + '</span>' + identity + '<div class="agent-yield"><strong>' + escapeHTML(yieldValue(efficiency)) + '</strong>' + miniSparkline(yieldSeries(efficiency), "Verified yield trend for " + owner) + '<small>Verified yield</small></div><span class="state-pill ' + status[1] + '">' + escapeHTML(status[0] || "Unknown") + '</span><time datetime="' + escapeHTML(updated || "") + '">' + escapeHTML(formatRelative(updated)) + '</time></div>';
+const AGENT_COLOR_CATALOG = "AliceBlue:#F0F8FF,AntiqueWhite:#FAEBD7,Aqua:#00FFFF,Aquamarine:#7FFFD4,Azure:#F0FFFF,Beige:#F5F5DC,Bisque:#FFE4C4,Black:#000000,BlanchedAlmond:#FFEBCD,Blue:#0000FF,BlueViolet:#8A2BE2,Brown:#A52A2A,BurlyWood:#DEB887,CadetBlue:#5F9EA0,Chartreuse:#7FFF00,Chocolate:#D2691E,Coral:#FF7F50,CornflowerBlue:#6495ED,Cornsilk:#FFF8DC,Crimson:#DC143C,Cyan:#00FFFF,DarkBlue:#00008B,DarkCyan:#008B8B,DarkGoldenRod:#B8860B,DarkGray:#A9A9A9,DarkGreen:#006400,DarkKhaki:#BDB76B,DarkMagenta:#8B008B,DarkOliveGreen:#556B2F,DarkOrange:#FF8C00,DarkOrchid:#9932CC,DarkRed:#8B0000,DarkSalmon:#E9967A,DarkSeaGreen:#8FBC8F,DarkSlateBlue:#483D8B,DarkSlateGray:#2F4F4F,DarkTurquoise:#00CED1,DarkViolet:#9400D3,DeepPink:#FF1493,DeepSkyBlue:#00BFFF,DimGray:#696969,DodgerBlue:#1E90FF,FireBrick:#B22222,FloralWhite:#FFFAF0,ForestGreen:#228B22,Fuchsia:#FF00FF,Gainsboro:#DCDCDC,GhostWhite:#F8F8FF,Gold:#FFD700,GoldenRod:#DAA520,Gray:#808080,Green:#008000,GreenYellow:#ADFF2F,HoneyDew:#F0FFF0,HotPink:#FF69B4,IndianRed:#CD5C5C,Indigo:#4B0082,Ivory:#FFFFF0,Khaki:#F0E68C,Lavender:#E6E6FA,LavenderBlush:#FFF0F5,LawnGreen:#7CFC00,LemonChiffon:#FFFACD,LightBlue:#ADD8E6,LightCoral:#F08080,LightCyan:#E0FFFF,LightGoldenRodYellow:#FAFAD2,LightGray:#D3D3D3,LightGreen:#90EE90,LightPink:#FFB6C1,LightSalmon:#FFA07A,LightSeaGreen:#20B2AA,LightSkyBlue:#87CEFA,LightSlateGray:#778899,LightSteelBlue:#B0C4DE,LightYellow:#FFFFE0,Lime:#00FF00,LimeGreen:#32CD32,Linen:#FAF0E6,Magenta:#FF00FF,Maroon:#800000,MediumAquaMarine:#66CDAA,MediumBlue:#0000CD,MediumOrchid:#BA55D3,MediumPurple:#9370DB,MediumSeaGreen:#3CB371,MediumSlateBlue:#7B68EE,MediumSpringGreen:#00FA9A,MediumTurquoise:#48D1CC,MediumVioletRed:#C71585,MidnightBlue:#191970,MintCream:#F5FFFA,MistyRose:#FFE4E1,Moccasin:#FFE4B5,Navy:#000080,OldLace:#FDF5E6,Olive:#808000,OliveDrab:#6B8E23,Orange:#FFA500,OrangeRed:#FF4500,Orchid:#DA70D6,PaleGoldenRod:#EEE8AA,PaleGreen:#98FB98,PaleTurquoise:#AFEEEE,PaleVioletRed:#DB7093,PapayaWhip:#FFEFD5,PeachPuff:#FFDAB9,Peru:#CD853F,Pink:#FFC0CB,Plum:#DDA0DD,PowderBlue:#B0E0E6,Purple:#800080,RebeccaPurple:#663399,Red:#FF0000,RosyBrown:#BC8F8F,RoyalBlue:#4169E1,SaddleBrown:#8B4513,Salmon:#FA8072,SandyBrown:#F4A460,SeaGreen:#2E8B57,SeaShell:#FFF5EE,Sienna:#A0522D,Silver:#C0C0C0,SkyBlue:#87CEEB,SlateBlue:#6A5ACD,SlateGray:#708090,Snow:#FFFAFA,SpringGreen:#00FF7F,SteelBlue:#4682B4,Tan:#D2B48C,Teal:#008080,Thistle:#D8BFD8,Tomato:#FF6347,Turquoise:#40E0D0,Violet:#EE82EE,Wheat:#F5DEB3,White:#FFFFFF,WhiteSmoke:#F5F5F5,Yellow:#FFFF00,YellowGreen:#9ACD32".split(",").map((entry) => {
+  const [name, hex] = entry.split(":");
+  return { name, hex };
+});
+
+function agentColorRgb(hex) {
+  const match = /^#([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i.exec(String(hex || ""));
+  return match ? match.slice(1).map((value) => Number.parseInt(value, 16)) : null;
 }
 
-function agentBranch(node, role, binding = null, children = []) {
-  const label = node?.artifact || node?.title || node?.id || "Unknown task";
-  const body = agentRow(node, role, binding) + children.join("");
-  return '<details class="agent-branch agent-level-' + role.toLowerCase() + '" open><summary><svg class="lucide" aria-hidden="true"><use href="#lucide-chevron-right"></use></svg><span>' + escapeHTML(label) + '</span><small>' + escapeHTML(role) + '</small></summary><div class="agent-branch-body">' + body + '</div></details>';
+function closestAgentColorName(accent) {
+  const target = agentColorRgb(accent) || agentColorRgb("#708090");
+  return AGENT_COLOR_CATALOG.reduce((best, candidate) => {
+    const rgb = agentColorRgb(candidate.hex);
+    const distance = rgb.reduce((sum, value, index) => sum + (value - target[index]) ** 2, 0);
+    return !best || distance < best.distance || (distance === best.distance && candidate.name.localeCompare(best.name) < 0) ? { ...candidate, distance } : best;
+  }, null).name;
 }
 
-function activeSwarmProjects() {
-  const projects = historicalProjects().filter((project) => project.visibility !== "archived" && project.archived !== true);
-  const selected = state.projectId === "all" ? projects : projects.filter((project) => project.id === state.projectId);
-  const nodes = state.overview?.nodes || [];
-  return selected.map((project) => ({ project, nodes: nodes.filter((node) => node.project_id === project.id && observedAgentRole(node)) })).filter((entry) => entry.nodes.length);
+function romanAgentOrdinal(value) {
+  if (value <= 1) return "";
+  const numerals = [[10, "X"], [9, "IX"], [5, "V"], [4, "IV"], [1, "I"]];
+  let remaining = Math.min(39, value);
+  let result = "";
+  numerals.forEach(([number, numeral]) => { while (remaining >= number) { result += numeral; remaining -= number; } });
+  return result;
 }
 
-function renderAgentHierarchy() {
-  const projects = activeSwarmProjects();
-  const observed = projects.flatMap((entry) => entry.nodes);
-  const roleCounts = ["CTRL", "LEAD", "DOER"].map((role) => [role, observed.filter((node) => observedAgentRole(node) === role).length]);
-  $("#agents-summary").innerHTML = roleCounts.map(([role, count]) => '<p><strong>' + escapeHTML(count) + '</strong><span>' + escapeHTML(role) + '</span></p>').join("") + '<p><strong>' + escapeHTML(projects.length) + '</strong><span>Projects</span></p>';
-  $("#agent-hierarchy").innerHTML = projects.length ? projects.map(({ project, nodes }) => {
-    const ctrlIds = new Set((state.overview?.navigation?.controllers || []).filter((ctrl) => ctrl.project_id === project.id && ctrl.archived !== true && ctrl.visibility !== "archived").map((ctrl) => ctrl.id));
-    const ctrls = nodes.filter((node) => observedAgentRole(node) === "CTRL" && (!ctrlIds.size || ctrlIds.has(node.id)));
-    const orphanLeads = nodes.filter((node) => observedAgentRole(node) === "LEAD" && !(node.controller_ids || []).some((id) => ctrls.some((ctrl) => ctrl.id === id)));
-    const orphanDoers = nodes.filter((node) => observedAgentRole(node) === "DOER" && !(node.controller_ids || []).some((id) => ctrls.some((ctrl) => ctrl.id === id)));
-    const ctrlBranches = ctrls.map((ctrl) => {
-      const ctrlNodes = nodes.filter((node) => node.id !== ctrl.id && (node.controller_ids || []).includes(ctrl.id));
-      const leads = ctrlNodes.filter((node) => observedAgentRole(node) === "LEAD");
-      const leadIds = new Set(leads.map((lead) => lead.id));
-      const exactCtrlBinding = runLogBindingForCtrl(ctrl.id);
-      const bindingFor = (node) => exactCtrlBinding ? { projectId: exactCtrlBinding.projectId, ctrlId: exactCtrlBinding.ctrlId, agentId: runLogAgentId(node) } : null;
-      const leadBranches = leads.map((lead) => agentBranch(lead, "LEAD", bindingFor(lead), ctrlNodes.filter((node) => observedAgentRole(node) === "DOER" && node.parent_id === lead.id).map((node) => agentRow(node, "DOER", bindingFor(node)))));
-      const directDoers = ctrlNodes.filter((node) => observedAgentRole(node) === "DOER" && !leadIds.has(node.parent_id));
-      return agentBranch(ctrl, "CTRL", bindingFor(ctrl), leadBranches.concat(directDoers.map((node) => agentRow(node, "DOER", bindingFor(node)))));
-    });
-    const unresolved = orphanLeads.map((node) => agentBranch(node, "LEAD")).concat(orphanDoers.map((node) => agentRow(node, "DOER")));
-    return '<details class="agent-project" open><summary><svg class="lucide" aria-hidden="true"><use href="#lucide-chevron-right"></use></svg><span>' + escapeHTML(publicLabel(project.goal_label || project.name, "Untitled project")) + '</span><small>' + escapeHTML(nodes.length) + ' observed</small></summary><div class="agent-project-body">' + (ctrlBranches.length || unresolved.length ? ctrlBranches.concat(unresolved).join("") : '<p class="empty-state">No CTRL, LEAD, or DOER authority was observed.</p>') + '</div></details>';
-  }).join("") : '<p class="empty-state agents-empty">No CTRL, LEAD, or DOER authority is available in this project scope.</p>';
+function agentRoleAssignment(node) {
+  return (roleManifestProjection()?.assignments || [])
+    .filter((assignment) => assignment.task_id === node?.id)
+    .sort((left, right) => Number(right.event_seq || 0) - Number(left.event_seq || 0))[0] || null;
+}
+
+function agentRoleRecord(node) {
+  const assignment = agentRoleAssignment(node);
+  return assignment ? roleRecord(assignment.role_id) : null;
+}
+
+function agentProfession(node, role = agentRoleRecord(node)) {
+  if (role) return roleDisplayName(role);
+  const projected = String(node?.worker_role || "").trim();
+  return projected && !["AGENT", "TASK", "CTRL", "LEAD", "DOER", "REVIEW"].includes(projected.toUpperCase()) ? humanize(projected) : "Role pending";
+}
+
+function agentExactBinding(node) {
+  const project = currentWorkProjects().find((item) => item.id === node?.project_id);
+  if (!project) return null;
+  const structural = observedAgentRole(node);
+  const candidates = structural === "CTRL" && project.ctrl_ids.includes(node.id)
+    ? [node.id]
+    : [...new Set((node?.controller_ids || []).filter((ctrlId) => project.ctrl_ids.includes(ctrlId)))];
+  if (candidates.length !== 1) return null;
+  const ctrl = runLogBindingForCtrl(candidates[0]);
+  return ctrl ? { ...ctrl, agentId: runLogAgentId(node) } : null;
+}
+
+function activeAgentRecords() {
+  if (currentWorkScopeUnavailable()) return [];
+  const projects = new Map(savedProjectRoster().projects.map((project) => [project.id, project]));
+  const roleRank = { CTRL: 0, LEAD: 1, DOER: 2 };
+  const records = scopedNodes()
+    .filter((node) => observedAgentRole(node) && ["active", "in_progress"].includes(String(node.status || "").toLowerCase()) && projects.has(node.project_id))
+    .map((node) => {
+      const role = agentRoleRecord(node);
+      const profession = agentProfession(node, role);
+      const accent = /^#[0-9a-f]{6}$/i.test(role?.accent || "") ? role.accent : "#708090";
+      return { node, role, assignment: agentRoleAssignment(node), profession, structuralRole: observedAgentRole(node), accent, baseColorName: closestAgentColorName(accent), binding: agentExactBinding(node), project: projects.get(node.project_id) };
+    })
+    .filter((record) => record.binding)
+    .sort((left, right) => left.project.label.localeCompare(right.project.label) || roleRank[left.structuralRole] - roleRank[right.structuralRole] || String(left.node.id).localeCompare(String(right.node.id)));
+  const ordinals = new Map();
+  return records.map((record) => {
+    const key = record.baseColorName + "|" + record.profession;
+    const ordinal = (ordinals.get(key) || 0) + 1;
+    ordinals.set(key, ordinal);
+    const suffix = romanAgentOrdinal(ordinal);
+    return { ...record, presentationName: record.baseColorName + (suffix ? " " + suffix : "") + " — " + record.profession };
+  });
+}
+
+function agentProgress(record) {
+  if (!record.binding || state.projectId === "all" || state.projectId !== record.binding.projectId || state.projectProgressStatus !== "current") return null;
+  const projection = projectProgressQueueProjection(selectedProjectProgress());
+  if (!projection || projection.status !== "CURRENT") return null;
+  const row = projection.segments.flatMap((segment) => segment.rows).find((item) => item.task_id === record.node.id && item.scope_binding?.ctrl_id === record.binding.ctrlId);
+  const progress = progressQueueRowPresentation(row)?.progress;
+  const percent = Number(progress?.percent);
+  return progress?.state === "KNOWN" && Number.isFinite(percent) && percent >= 0 && percent <= 100 ? { percent, label: String(progress.completed_milestones) + " of " + String(progress.total_milestones) + " accepted milestones" } : null;
+}
+
+function agentAvatarMarkup(record) {
+  return '<span class="agent-avatar-token" style="--agent-accent:' + escapeHTML(record.accent) + '">' + roleAvatar(record.role) + '</span>';
+}
+
+function agentProgressMarkup(record) {
+  const progress = agentProgress(record);
+  if (!progress) return '<span class="agent-progress-unknown" aria-label="Progress UNKNOWN">— <small>UNKNOWN</small></span>';
+  return '<div class="agent-progress"><div role="progressbar" aria-label="' + escapeHTML(record.presentationName + " progress") + '" aria-valuemin="0" aria-valuemax="100" aria-valuenow="' + escapeHTML(progress.percent) + '" aria-valuetext="' + escapeHTML(progress.label) + '"><i style="width:' + escapeHTML(progress.percent) + '%"></i></div><small>' + escapeHTML(Math.round(progress.percent) + "% · " + progress.label) + '</small></div>';
+}
+
+function agentTableRowMarkup(record) {
+  const status = statusLabel(record.node);
+  const updated = observedTimestampMs(record.node.updated_at || record.node.generated_at);
+  const updatedText = updated > 0 ? formatRelative(updated) : "UNKNOWN";
+  const bindingState = record.binding ? record.binding.ctrlId : "Binding unavailable";
+  return '<button class="agent-table-row" type="button" role="row" data-agent-detail="' + escapeHTML(record.node.id) + '" data-agent-project="' + escapeHTML(record.node.project_id) + '" data-agent-ctrl="' + escapeHTML(record.binding?.ctrlId || "") + '" aria-label="Open ' + escapeHTML(record.presentationName + ", " + record.node.artifact) + '"><span class="agent-table-agent" role="cell" data-label="Agent">' + agentAvatarMarkup(record) + '<span><strong>' + escapeHTML(record.presentationName) + '</strong><small>' + escapeHTML(record.profession + " · " + record.structuralRole + " · " + bindingState) + '</small></span></span><span class="agent-table-task" role="cell" data-label="Current task"><strong>' + escapeHTML(record.node.artifact || "Named task unavailable") + '</strong><small>' + escapeHTML(record.node.id) + '</small></span><span role="cell" data-label="Project">' + escapeHTML(record.project.label) + '</span><span role="cell" data-label="Status"><span class="state-pill ' + escapeHTML(status[1]) + '">' + escapeHTML(status[0]) + '</span></span><span role="cell" data-label="Progress">' + agentProgressMarkup(record) + '</span><time role="cell" data-label="Updated" datetime="' + escapeHTML(updated > 0 ? new Date(updated).toISOString() : "") + '"' + (updated > 0 ? "" : ' aria-label="Last update UNKNOWN"') + '>' + escapeHTML(updatedText) + '</time><span class="agent-table-chevron" role="cell" aria-hidden="true"><svg class="lucide"><use href="#lucide-chevron-right"></use></svg></span></button>';
+}
+
+function selectedAgentRecord() {
+  const selection = state.runLogAgent;
+  return selection ? activeAgentRecords().find((record) => record.binding?.projectId === selection.projectId && record.binding?.ctrlId === selection.ctrlId && record.binding?.agentId === selection.agentId) || null : null;
+}
+
+function selectedAgentUpdates(record) {
+  if (!record?.binding) return [];
+  const exact = state.runLogs.get(runLogBindingKey(record.binding))?.items || [];
+  const ctrl = state.runLogs.get(runLogBindingKey({ projectId: record.binding.projectId, ctrlId: record.binding.ctrlId, agentId: "" }))?.items || [];
+  const items = [...exact, ...ctrl].filter((item) => item.task_id === record.node.id || item.agent_id === record.binding.agentId);
+  return [...new Map(items.map((item) => [runLogItemIdentity(item), item])).values()].sort((left, right) => Number(right.event_seq) - Number(left.event_seq)).slice(0, 6);
+}
+
+function renderAgentDetail() {
+  const record = selectedAgentRecord();
+  if (!record) return false;
+  const dialog = $("#agent-detail-dialog");
+  const assignmentVersion = record.assignment?.manifest_version || record.role?.active_version || "UNKNOWN";
+  const updates = selectedAgentUpdates(record);
+  $("#agent-detail-title").textContent = record.presentationName;
+  $("#agent-detail-content").innerHTML = '<section class="agent-detail-identity">' + agentAvatarMarkup(record) + '<div><span class="state-pill is-active">In progress</span><h3>' + escapeHTML(record.presentationName) + '</h3><p>' + escapeHTML(record.structuralRole + " structure · " + record.profession + " profession") + '</p></div></section><dl class="agent-detail-facts"><div><dt>Current task</dt><dd>' + escapeHTML(record.node.artifact || "Named task unavailable") + '</dd></div><div><dt>Project</dt><dd>' + escapeHTML(record.project.label) + '</dd></div><div><dt>CTRL binding</dt><dd>' + escapeHTML(record.binding?.ctrlId || "UNKNOWN") + '</dd></div><div><dt>Role template</dt><dd>' + escapeHTML(record.profession + " · " + assignmentVersion) + '</dd></div></dl><section class="agent-detail-section"><h3>Material updates</h3>' + (updates.length ? '<ol>' + updates.map((item) => { const observed = Number(item.observed_at_ms); const datetime = Number.isFinite(observed) && observed > 0 ? new Date(observed).toISOString() : ""; return '<li><time datetime="' + escapeHTML(datetime) + '">' + escapeHTML(formatRelative(observed)) + '</time><span>' + escapeHTML(item.summary) + '</span></li>'; }).join("") + '</ol>' : '<p class="empty-state">No retained material updates are available for this agent yet.</p>') + '</section><section class="agent-detail-section"><h3>This agent only</h3><p>No agent-specific instruction augmentation was supplied by the server projection. The role template remains read-only here.</p></section>';
+  return dialog.open;
+}
+
+function openAgentDetail(trigger) {
+  const record = activeAgentRecords().find((item) => item.node.id === trigger?.dataset.agentDetail && item.node.project_id === trigger?.dataset.agentProject);
+  if (!record?.binding) return;
+  state.runLogAgent = { ...record.binding, label: record.presentationName };
+  state.agentUpdatesFilter = "selected";
+  state.agentDetailTrigger = trigger;
+  renderAgents();
+  const dialog = $("#agent-detail-dialog");
+  renderAgentDetail();
+  if (!dialog.open) dialog.showModal();
+  requestAnimationFrame(() => $("#agent-detail-close")?.focus({ preventScroll: true }));
+  refreshRunLogs().then(() => { renderRunLogSurfaces(); if (dialog.open) renderAgentDetail(); });
+}
+
+function closeAgentDetail(restoreFocus = true) {
+  const dialog = $("#agent-detail-dialog");
+  if (dialog.open) dialog.close();
+  if (!restoreFocus) return;
+  const trigger = state.agentDetailTrigger;
+  const replacement = trigger?.dataset.agentDetail
+    ? $$('[data-agent-detail]').find((candidate) => candidate.dataset.agentDetail === trigger.dataset.agentDetail && candidate.dataset.agentProject === trigger.dataset.agentProject)
+    : null;
+  (trigger?.isConnected ? trigger : replacement || $("#agents-heading"))?.focus?.({ preventScroll: true });
+}
+
+function renderAgentUpdateControls() {
+  const selectedAvailable = Boolean(currentRunLogAgent());
+  $$('[data-agent-updates-filter]').forEach((button) => {
+    const selected = button.dataset.agentUpdatesFilter === state.agentUpdatesFilter;
+    button.classList.toggle("is-selected", selected);
+    button.setAttribute("aria-pressed", String(selected));
+    button.disabled = button.dataset.agentUpdatesFilter === "selected" && !selectedAvailable;
+  });
+  const pause = $("#agent-updates-pause");
+  pause.textContent = state.agentUpdatesPaused ? "Resume" : "Pause";
+  pause.setAttribute("aria-pressed", String(state.agentUpdatesPaused));
+}
+
+function renderAgentTable() {
+  const unavailable = currentWorkScopeUnavailable();
+  const records = unavailable ? [] : activeAgentRecords();
+  const projects = new Set(records.map((record) => record.project.id));
+  $("#agents-summary").textContent = unavailable ? "Active-agent inventory unavailable" : records.length + " active agent" + (records.length === 1 ? "" : "s") + " across " + projects.size + " project" + (projects.size === 1 ? "" : "s");
+  $("#agents-table-status").textContent = unavailable ? "Accepted project and CTRL bindings are unavailable." : state.projectId === "all" ? "All projects" : scopeLabel();
+  $("#agent-table-body").innerHTML = unavailable
+    ? '<p class="empty-state agents-empty" role="status">Active agents are unavailable until SWARM receives a current project and CTRL projection.</p>'
+    : records.length ? records.map(agentTableRowMarkup).join("") : '<p class="empty-state agents-empty" role="status">No active CTRL, LEAD, or DOER is available in this project scope.</p>';
 }
 
 function roleManifestProjectionValue(value) {
@@ -3014,7 +3374,10 @@ function renderRoleLibrary(focusRoleId = "") {
 }
 
 function renderAgents() {
-  renderAgentHierarchy();
+  renderAgentTable();
+  renderAgentUpdateControls();
+  const dialog = $("#agent-detail-dialog");
+  if (dialog?.open && !renderAgentDetail()) closeAgentDetail();
 }
 
 function renderRoles() {
@@ -3871,14 +4234,14 @@ document.addEventListener("click", async (event) => {
     projectTab.focus({ preventScroll: true });
     return;
   }
-  const runLogAgent = event.target.closest("[data-run-log-agent]");
-  if (runLogAgent) {
-    state.runLogAgent = {
-      projectId: runLogAgent.dataset.projectId,
-      ctrlId: runLogAgent.dataset.ctrlId,
-      agentId: runLogAgent.dataset.runLogAgent,
-      label: runLogAgent.dataset.agentLabel,
-    };
+  const agentDetail = event.target.closest("[data-agent-detail]");
+  if (agentDetail) {
+    openAgentDetail(agentDetail);
+    return;
+  }
+  const agentUpdatesFilter = event.target.closest("[data-agent-updates-filter]");
+  if (agentUpdatesFilter) {
+    state.agentUpdatesFilter = agentUpdatesFilter.dataset.agentUpdatesFilter;
     renderAgents();
     renderRunLogSurfaces();
     refreshRunLogs();
@@ -4052,6 +4415,15 @@ $(".onboarding-progress").addEventListener("keydown", (event) => {
   event.preventDefault();
   setOnboardingStep(next, true);
 });
+$("#onboarding-coordination-tree").addEventListener("keydown", moveOnboardingTreeFocus);
+$("#onboarding-coordination-tree").addEventListener("click", (event) => {
+  const control = event.target.closest("[data-onboarding-flow-zoom]");
+  if (!control) return;
+  const action = control.dataset.onboardingFlowZoom;
+  state.onboardingFlowZoom = action === "fit" ? 1 : Math.min(1.1, Math.max(.9, state.onboardingFlowZoom + (action === "in" ? .1 : -.1)));
+  renderOnboardingCoordination();
+  control.focus({ preventScroll: true });
+});
 $("#onboarding-dialog").addEventListener("close", () => {
   state.onboardingTrigger?.focus({ preventScroll: true });
   state.onboardingTrigger = null;
@@ -4075,6 +4447,25 @@ $("#asset-dialog").addEventListener("close", () => {
   const replacement = state.assetTrigger?.identity ? $('[data-asset-detail="' + CSS.escape(state.assetTrigger.identity) + '"]') : null;
   (trigger?.isConnected ? trigger : replacement)?.focus({ preventScroll: true });
   state.assetTrigger = null;
+});
+$("#agent-updates-pause").addEventListener("click", () => {
+  state.agentUpdatesPaused = !state.agentUpdatesPaused;
+  renderAgentUpdateControls();
+  renderRunLogSurfaces();
+});
+$("#agent-detail-close").addEventListener("click", () => closeAgentDetail());
+$("#agent-detail-done").addEventListener("click", () => closeAgentDetail());
+$("#agent-detail-dialog").addEventListener("cancel", (event) => {
+  event.preventDefault();
+  closeAgentDetail();
+});
+$("#agent-detail-dialog").addEventListener("close", () => {
+  const trigger = state.agentDetailTrigger;
+  const replacement = trigger?.dataset.agentDetail
+    ? $$('[data-agent-detail]').find((candidate) => candidate.dataset.agentDetail === trigger.dataset.agentDetail && candidate.dataset.agentProject === trigger.dataset.agentProject)
+    : null;
+  (trigger?.isConnected ? trigger : replacement || $("#agents-heading"))?.focus?.({ preventScroll: true });
+  state.agentDetailTrigger = null;
 });
 $("#config-editor-close").addEventListener("click", closeConfigEditor);
 $("#config-editor-cancel").addEventListener("click", closeConfigEditor);
@@ -4352,12 +4743,13 @@ document.addEventListener('change', async (event) => {
   }
   if (event.target.id === 'ctrl-customize') {
     if (!state.ctrlSettings) return;
+    if (!event.target.checked && !confirm('Use global defaults for this CTRL?')) { event.target.checked = true; return; }
     try {
       if (event.target.checked) {
         const defaults = state.ctrlSettings.global_defaults || {};
         state.ctrlSettings = await api('/api/ctrl-settings', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ctrl_id: state.ctrlSettings.ctrl_id, expected_revision: state.ctrlSettings.revision, changes: { model: defaults.model, reasoning: defaults.reasoning } }) });
       } else {
-        state.ctrlSettings = await api('/api/ctrl-settings/reset', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ctrl_id: state.ctrlSettings.ctrl_id, expected_revision: state.ctrlSettings.revision }) });
+        await resetSettingsScope('ctrl');
       }
       renderSettings();
     } catch (error) { showError(error.message); await refreshCtrlSettings(); renderSettings(); }
@@ -4394,12 +4786,13 @@ document.addEventListener('click', async (event) => {
     await saveSettingsDraft();
     return;
   }
-  const messages = { clear: 'Clear saved SWARM history? Your tasks will stay unchanged.', restore: 'Restore default settings? Your history will stay unchanged.', reset: 'Use global defaults for this CTRL?', 'reset-skills': 'Restore inherited skill settings for this scope?' };
+  const messages = { clear: 'Clear saved SWARM history? Your tasks will stay unchanged.', restore: 'Restore global defaults? Project and CTRL overrides will stay unchanged.', 'reset-project': 'Reset this project to global settings? Its project override will be removed.', reset: 'Use global defaults for this CTRL?', 'reset-skills': 'Restore inherited skill settings for this scope?' };
   if (messages[action] && !confirm(messages[action])) return;
   try {
     if (action === 'clear') await api('/api/storage/clear', { method: 'POST' });
-    if (action === 'restore') await api('/api/settings/restore', { method: 'POST' });
-    if (action === 'reset' && state.ctrlSettings) await api('/api/ctrl-settings/reset', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ctrl_id: state.ctrlSettings.ctrl_id, expected_revision: state.ctrlSettings.revision }) });
+    if (action === 'restore') await resetSettingsScope('global');
+    if (action === 'reset-project') await resetSettingsScope('project');
+    if (action === 'reset' && state.ctrlSettings) await resetSettingsScope('ctrl');
     if (action === 'manage-skills') {
       const details = $('#settings-advanced');
       if (details) { details.open = true; details.scrollIntoView({ block: 'nearest' }); }

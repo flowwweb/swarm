@@ -111,8 +111,11 @@
           </div>
         </section>
         <section class="view agents-view" id="view-agents" data-view-panel="agents" role="tabpanel" aria-labelledby="tab-agents" tabindex="0" hidden>
-          <header class="view-head"><div><p class="eyebrow">Current work</p><h2>Active agents</h2></div><p>Observed CTRL, LEAD, and DOER ownership.</p></header>
-          <section id="agents-panel-active"><div class="agents-summary" id="agents-summary" aria-live="polite"></div><div class="agent-hierarchy" id="agent-hierarchy"></div><section class="panel run-log" id="run-log-agent" data-run-log-surface="agent" aria-label="Selected agent run log" hidden></section></section>
+          <header class="view-head"><div><p class="eyebrow">Current work</p><h2 id="agents-heading" tabindex="-1">Active agents</h2></div><p id="agents-summary" aria-live="polite">Loading active agents</p></header>
+          <div class="agents-surface-grid">
+            <section class="panel agents-table-panel" aria-labelledby="agents-table-heading"><header><div><p class="eyebrow">Observed now</p><h3 id="agents-table-heading">Agents</h3></div><p id="agents-table-status" role="status">Loading accepted activity</p></header><div class="agent-table" id="agent-table" role="table" aria-label="Active agents"><div class="agent-table-head" role="row"><span role="columnheader">Agent</span><span role="columnheader">Current task</span><span role="columnheader">Project</span><span role="columnheader">Status</span><span role="columnheader">Progress</span><span role="columnheader">Updated</span><span role="columnheader" class="sr-only">Open details</span></div><div class="agent-table-body" id="agent-table-body" role="rowgroup"></div></div></section>
+            <section class="panel agents-live-panel" aria-labelledby="agents-live-heading"><header class="agents-live-head"><div><p class="eyebrow">Run log</p><h3 id="agents-live-heading">Live updates</h3></div><button class="quiet-button" id="agent-updates-pause" type="button" aria-pressed="false">Pause</button></header><div class="agent-update-filters" role="group" aria-label="Live update filter"><button class="is-selected" type="button" data-agent-updates-filter="all" aria-pressed="true">All</button><button type="button" data-agent-updates-filter="selected" aria-pressed="false">Selected</button><button type="button" data-agent-updates-filter="material" aria-pressed="false">Material</button></div><section class="run-log agent-live-log" id="run-log-agent" data-run-log-surface="agent" aria-label="Agent live updates" hidden></section></section>
+          </div>
         </section>
         <section class="view roles-view" id="view-roles" data-view-panel="roles" role="tabpanel" aria-labelledby="tab-roles" tabindex="0" hidden>
           <header class="role-library-head"><div><p class="eyebrow">Server-owned manifests</p><h2>Role library</h2></div><div class="role-library-head-actions"><p id="role-library-status" role="status">Loading server-owned role manifests</p><button class="icon-button" id="role-create" data-role-action="create" type="button" disabled aria-disabled="true" aria-label="Create custom role" title="Create custom role"><svg class="lucide" aria-hidden="true"><use href="#lucide-plus"></use></svg></button></div></header><div class="role-library-controls"><label class="role-search" for="role-search"><svg class="lucide" aria-hidden="true"><use href="#lucide-search"></use></svg><span class="sr-only">Search roles</span><input id="role-search" type="search" autocomplete="off" placeholder="Search roles" /></label><details class="role-filter"><summary class="icon-button" aria-label="Filter roles" title="Filter roles"><svg class="lucide" aria-hidden="true"><use href="#lucide-list-filter"></use></svg></summary><div class="role-filter-popover"><fieldset><legend>Role type</legend><label><input type="checkbox" data-role-type="builtin" checked /> Built-in</label><label><input type="checkbox" data-role-type="custom" checked /> Custom</label></fieldset><fieldset><legend>Match in</legend><label><input type="checkbox" data-role-search-field="profession" checked /> Profession</label><label><input type="checkbox" data-role-search-field="specialization" checked /> Specialization</label><label><input type="checkbox" data-role-search-field="alias" checked /> Aliases and tags</label><label><input type="checkbox" data-role-search-field="skills" checked /> Skills</label><label><input type="checkbox" data-role-search-field="purpose" checked /> Purpose</label></fieldset><button class="quiet-button" id="role-filter-reset" type="button">Clear filters</button></div></details></div><div class="role-filter-chips" id="role-filter-chips" aria-label="Active role filters"></div><div class="role-library-layout"><div class="role-library-grid" id="role-library-grid" role="listbox" aria-label="Roles" aria-live="polite"></div><article class="role-library-detail panel" id="role-library-detail" aria-live="polite"></article></div>
@@ -127,6 +130,13 @@
         <section class="error-surface" id="error-surface" hidden role="alert"><span aria-hidden="true">!</span><div><strong>Console unavailable</strong><p id="error-message"></p><button id="retry" type="button">Try again</button></div></section>
       </main>
     </div>
+    <dialog class="agent-detail-dialog" id="agent-detail-dialog" aria-labelledby="agent-detail-title">
+      <div class="dialog-shell agent-detail-shell">
+        <header class="dialog-header agent-detail-head"><div><p class="eyebrow">Active agent</p><h2 id="agent-detail-title">Agent details</h2></div><button class="icon-button" id="agent-detail-close" type="button" aria-label="Close agent details">×</button></header>
+        <div class="dialog-body edge-scroll agent-detail-body"><div class="dialog-body-content" id="agent-detail-content"></div></div>
+        <footer class="dialog-footer agent-detail-footer"><button class="quiet-button" id="agent-detail-done" type="button">Close</button></footer>
+      </div>
+    </dialog>
     <dialog class="evidence-lightbox" id="evidence-lightbox" aria-labelledby="evidence-lightbox-title">
       <div class="dialog-shell evidence-lightbox-shell">
         <header class="dialog-header evidence-lightbox-head">
@@ -235,12 +245,10 @@
             <h2>Hello. I’m SWARM.</h2>
             <p>SWARM coordinates focused roles, clear ownership, and proof you can review.</p>
           </section>
-          <section class="onboarding-panel" id="onboarding-panel-2" data-onboarding-panel="1" data-visual-status="awaiting-admitted-rgba" role="tabpanel" aria-labelledby="onboarding-dot-2" hidden>
-            <h2>One control. Big impact.</h2>
-            <p>One request becomes coordinated work.</p>
-            <div class="onboarding-coordination-slot onboarding-artwork" data-asset-slot="swarm-guided-tour-coordination-v1" data-asset-status="awaiting-admitted-rgba" role="img" aria-label="A user request enters a SWARM controller and branches to design, development, and security work.">
-              <span>Selected visual awaiting its admitted transparent asset.</span>
-            </div>
+          <section class="onboarding-panel" id="onboarding-panel-2" data-onboarding-panel="1" role="tabpanel" aria-labelledby="onboarding-dot-2" hidden>
+            <h2>One goal. One CTRL.</h2>
+            <p>One command becomes coordinated work.</p>
+            <div class="onboarding-coordination-tree onboarding-artwork" id="onboarding-coordination-tree" role="tree" aria-label="CTRL coordinates four executive managers and twelve profession leads."></div>
           </section>
           <section class="onboarding-panel" id="onboarding-panel-3" data-onboarding-panel="2" role="tabpanel" aria-labelledby="onboarding-dot-3" hidden>
             <h2>A role for every kind of work.</h2>

@@ -122,13 +122,13 @@ assert.match(indexHtml, /class="profile-button chrome-action circle-frame"[^>]*i
 assert.match(indexHtml, /class="icon-button circle-frame system-health-control[^>]*id="system-health-control"/);
 for (const icon of ["eye", "trash-2"]) assert.match(indexHtml, new RegExp(`id="lucide-${icon}" viewBox="0 0 24 24"`));
 assert.match(indexHtml, /id="onboarding-dialog"[^>]*aria-labelledby="onboarding-dialog-title"[^>]*aria-describedby="onboarding-step-status"/);
-assert.equal((indexHtml.match(/<dialog\b/g) || []).length, 5);
-for (const shell of ["evidence-lightbox-shell", "role-editor-shell", "asset-dialog-shell", "config-editor-shell", "onboarding-shell"]) {
+assert.equal((indexHtml.match(/<dialog\b/g) || []).length, 6);
+for (const shell of ["agent-detail-shell", "evidence-lightbox-shell", "role-editor-shell", "asset-dialog-shell", "config-editor-shell", "onboarding-shell"]) {
   assert.match(indexHtml, new RegExp(`class="dialog-shell ${shell}"`));
 }
-assert.equal((indexHtml.match(/class="dialog-body /g) || []).length, 5);
-assert.equal((indexHtml.match(/class="dialog-body-content /g) || []).length, 5);
-assert.equal((indexHtml.match(/class="dialog-footer /g) || []).length, 5);
+assert.equal((indexHtml.match(/class="dialog-body /g) || []).length, 6);
+assert.equal((indexHtml.match(/class="dialog-body-content/g) || []).length, 6);
+assert.equal((indexHtml.match(/class="dialog-footer /g) || []).length, 6);
 assert.match(css, /\.dialog-shell \{[^}]*grid-template-rows:auto minmax\(0,1fr\) auto;[^}]*overflow:hidden;[^}]*padding:0;/);
 assert.match(css, /\.dialog-body \{[^}]*width:100%;[^}]*min-height:0;[^}]*overflow-x:hidden; overflow-y:auto;[^}]*scrollbar-gutter:stable;[^}]*padding:0;/);
 assert.match(css, /\.dialog-body-content \{ width:100%; min-width:0; \}/);
@@ -161,15 +161,27 @@ assert.match(indexHtml, /id="onboarding-close"[^>]*aria-label="Close onboarding"
 assert.match(indexHtml, /class="onboarding-slide1-guide onboarding-artwork" src="\/assets\/swarm-guided-tour-slide1\.png" width="1920" height="1080" alt="" aria-hidden="true" loading="eager" fetchpriority="high" decoding="sync"/);
 assert.match(indexHtml, /<link rel="icon" type="image\/png" sizes="64x64" href="\/swarm-icon-64\.png"/);
 assert.doesNotMatch(indexHtml, /swarm-favicon\.svg|<div class="onboarding-mascot"/);
-assert.match(indexHtml, /<h2>One control\. Big impact\.<\/h2>/);
-assert.match(indexHtml, /<p>One request becomes coordinated work\.<\/p>/);
-assert.match(indexHtml, /id="onboarding-panel-2"[^>]*data-visual-status="awaiting-admitted-rgba"/);
-assert.match(indexHtml, /data-asset-slot="swarm-guided-tour-coordination-v1" data-asset-status="awaiting-admitted-rgba"/);
-assert.match(indexHtml, /aria-label="A user request enters a SWARM controller and branches to design, development, and security work\."/);
-assert.match(indexHtml, /Selected visual awaiting its admitted transparent asset\./);
-assert.doesNotMatch(indexHtml, /onboarding-flag-mascot|onboarding-flow-node|One prompt\. A coordinated team\./);
-assert.match(css, /\.onboarding-coordination-slot \{[^}]*aspect-ratio:16 \/ 9[^}]*border:1px dashed rgba\(255,116,73,\.38\)/);
-assert.match(css, /@media \(max-width: 620px\)[\s\S]*?\.onboarding-coordination-slot \{[^}]*min-height:170px/);
+assert.match(indexHtml, /<h2>One goal\. One CTRL\.<\/h2>/);
+assert.match(indexHtml, /<p>One command becomes coordinated work\.<\/p>/);
+assert.match(indexHtml, /id="onboarding-coordination-tree" role="tree" aria-label="CTRL coordinates four executive managers and twelve profession leads\."/);
+assert.doesNotMatch(indexHtml, /awaiting-admitted-rgba|data-asset-slot="swarm-guided-tour-coordination|onboarding-coordination-slot|Selected visual awaiting/);
+assert.doesNotMatch(indexHtml, /onboarding-flag-mascot|onboarding-flow-node|One prompt\. A coordinated team\.|<img[^>]+coordination|<img[^>]+hierarchy/);
+assert.match(app, /const ONBOARDING_COORDINATION_GROUPS = \[[\s\S]*?id: "coo"[\s\S]*?id: "cto"[\s\S]*?id: "cfo"[\s\S]*?id: "cmo"/);
+assert.equal((app.match(/label: "(?:Operations|Delivery|Support|Engineering|Architecture|Security|Finance|Analytics|Compliance|Design|Content|Growth)", roleId:/g) || []).length, 12);
+assert.match(app, /label: "Content", roleId: "content_creator"/);
+assert.doesNotMatch(app, /label: "Content", roleId: "writer"/);
+assert.match(app, /function onboardingCoordinationMarkup\(\)/);
+assert.match(app, /data-onboarding-node="ctrl"[\s\S]*?swarm-mascot-512\.png/);
+assert.match(app, /data-onboarding-node="executive"/);
+assert.match(app, /data-onboarding-node="lead"/);
+assert.match(app, /onboardingRoleAvatar\("manager", "Manager"\)/);
+assert.match(app, /function onboardingRoleAvatar\(roleId, label\) \{[\s\S]*?roleAvatar\(roleRecord\(roleId\) \|\| \{ id: roleId, name: label \}\)/);
+assert.match(app, /data-onboarding-edge=/);
+assert.match(app, /function drawOnboardingCoordinationConnectors\(\)[\s\S]*?path\.setAttribute\("d", "M "/);
+assert.match(app, /function moveOnboardingTreeFocus\(event\)[\s\S]*?ArrowRight[\s\S]*?Home[\s\S]*?End/);
+assert.match(css, /\.onboarding-executive-grid \{[^}]*grid-template-columns:repeat\(4,minmax\(0,1fr\)\)/);
+assert.match(css, /\.onboarding-lead-node \{[^}]*grid-template-columns:38px 22px minmax\(0,1fr\)/);
+assert.match(css, /\.onboarding-dialog\.is-step-entering \.onboarding-panel\.is-active \[data-onboarding-node\] \{[^}]*animation:swarm-enter[^}]*18ms/);
 assert.match(indexHtml, /<h2>A role for every kind of work\.<\/h2>/);
 assert.match(indexHtml, /24 curated roles, ready to work—from development and design to security and content\./);
 const onboardingRolePanel = indexHtml.match(/id="onboarding-panel-3"[\s\S]*?<\/section>/)?.[0] || "";
@@ -221,6 +233,13 @@ assert.match(app, /let configAuthorityGeneration = 0/);
 assert.match(app, /function saveConfigMutation\(changes\)[\s\S]*?configMutationTail = operation\.then/);
 assert.match(app, /function saveConfigMutation\(changes\)[\s\S]*?configAuthorityGeneration \+= 1/);
 assert.match(app, /function readConfigState\(previousConfig = state\.config, saveError = ""\)[\s\S]*?let pendingWrites = configMutationTail[\s\S]*?while \(pendingWrites !== configMutationTail\)[\s\S]*?const generation = configAuthorityGeneration[\s\S]*?generation !== configAuthorityGeneration/);
+assert.match(app, /function configResetRequest\(kind\)[\s\S]*?endpoint: "\/api\/settings\/restore"[\s\S]*?scope: \{ type: "global" \}[\s\S]*?expected_revision: projection\.revision[\s\S]*?acknowledge: true/);
+assert.match(app, /function configResetRequest\(kind\)[\s\S]*?endpoint: "\/api\/config\/reset"[\s\S]*?accepted_cursor: structuredClone\(scope\.accepted_cursor\)[\s\S]*?expected_revision: projection\.revision/);
+assert.match(app, /function configResetRequest\(kind\)[\s\S]*?endpoint: "\/api\/ctrl-settings\/reset"[\s\S]*?ctrl_id: String\(setting\.ctrl_id\)[\s\S]*?expected_revision: setting\.revision[\s\S]*?acknowledge: true/);
+assert.match(app, /function resetSettingsScope\(kind\)[\s\S]*?configResetRetry\?\.key === key[\s\S]*?operation_id: operationId[\s\S]*?configMutationTail\.then[\s\S]*?configResetBindingIsCurrent\(request\)/);
+assert.match(app, /state\.configResetRetry = error\?\.connectionFailure === true \|\| !Number\.isInteger\(error\?\.status\) \? \{ key, operationId \} : null/);
+assert.doesNotMatch(app, /api\('\/api\/settings\/restore', \{ method: 'POST' \}\)|JSON\.stringify\(\{ ctrl_id: state\.ctrlSettings\.ctrl_id, expected_revision: state\.ctrlSettings\.revision \}\)/);
+assert.match(app, /function observedTimestampMs\(value\)[\s\S]*?numeric < 1e12 \? numeric \* 1000 : numeric[\s\S]*?Date\.UTC\(2000, 0, 1\)/);
 assert.match(app, /state\.onboardingConfigPending\.set\(key, \{ value, focusIdentity \}\)/);
 assert.match(app, /state\.onboardingConfigFailures\.set\(key, \{ value, error:/);
 assert.match(app, /configEditable\(key\) && !state\.onboardingConfigPending\.has\(key\)/);
@@ -373,9 +392,11 @@ assert.match(app, /Offline · showing the last received entries/);
 assert.match(app, /Run log unavailable\. Refresh to try again\./);
 assert.match(app, /Run log needs a current host-confirmed CTRL binding\./);
 assert.match(app, /setDataStatus[\s\S]*renderRunLogSurfaces\(\)/);
-assert.match(app, /class="agent-identity"[^\n]*data-run-log-agent=/);
-assert.match(app, /const exactCtrlBinding = runLogBindingForCtrl\(ctrl\.id\)/);
-assert.match(app, /const bindingFor = \(node\) => exactCtrlBinding \?/);
+assert.match(indexHtml, /id="agent-table"[^>]*role="table"[^>]*aria-label="Active agents"/);
+assert.match(indexHtml, /id="run-log-agent"[^>]*aria-label="Agent live updates"/);
+assert.match(app, /function agentRunLogPlan\(\)/);
+assert.match(app, /state\.agentUpdatesPaused/);
+assert.match(app, /filter: state\.agentUpdatesFilter/);
 assert.match(css, /\.run-log-list \{[^}]*max-height:312px;[^}]*overflow-y:auto/);
 assert.match(css, /\.run-log-list:focus-visible/);
 assert.match(css, /@media \(max-width: 620px\)[\s\S]*\.run-log-new \{ min-height:44px; \}/);
@@ -1087,17 +1108,25 @@ assert.match(app, /Try again to refresh this scope/);
 assert.match(app, /\$\("#project-navigation"\)\.addEventListener\("click", async \(event\) =>[\s\S]*?await selectProjectScope\(scope\.dataset\.projectId, scope\)/);
 assert.doesNotMatch(app, /Raw host logs|terminal output|hidden paths/);
 assert.match(app, /\.replace\(\/\\blocalhost\\b\/gi, "console"\)/);
-assert.match(indexHtml, /id="view-agents"[^>]*aria-labelledby="tab-agents"[\s\S]*?id="agents-panel-active"/);
+assert.match(indexHtml, /id="view-agents"[^>]*aria-labelledby="tab-agents"[\s\S]*?id="agent-table"[\s\S]*?id="run-log-agent"/);
 assert.match(indexHtml, /id="view-roles"[^>]*aria-labelledby="tab-roles"[\s\S]*?Role library[\s\S]*?id="role-library-grid"/);
 assert.doesNotMatch(indexHtml + app, /data-agents-tab|agents-tab-library|state\.agentsTab/);
 assert.match(indexHtml, /id="role-library-status" role="status"/);
-assert.match(app, /function renderAgentHierarchy\(\)/);
-assert.match(app, /<details class="agent-project" open>/);
-assert.match(app, /agentBranch\(ctrl, "CTRL"/);
-assert.match(app, /agentBranch\(lead, "LEAD"/);
-assert.match(app, /agentRow\(node, "DOER"\)/);
-assert.match(app, /project\.visibility !== "archived" && project\.archived !== true/);
-assert.match(app, /Unknown task/);
+assert.match(app, /function activeAgentRecords\(\)/);
+assert.match(app, /\["active", "in_progress"\]\.includes\(String\(node\.status \|\| ""\)\.toLowerCase\(\)\)/);
+assert.match(app, /\.filter\(\(record\) => record\.binding\)/);
+assert.match(app, /function agentTableRowMarkup\(record\)/);
+assert.match(app, /function agentProgressMarkup\(record\)/);
+assert.match(app, /role="progressbar"[^\n]*aria-valuenow=/);
+assert.match(app, /aria-label="Progress UNKNOWN"/);
+assert.match(app, /function openAgentDetail\(trigger\)/);
+assert.match(app, /No agent-specific instruction augmentation was supplied by the server projection/);
+assert.match(app, /function closestAgentColorName\(accent\)/);
+assert.match(app, /function romanAgentOrdinal\(value\)/);
+assert.ok((app.match(/[A-Za-z]+:#[0-9A-F]{6}/g) || []).length >= 100, "agent color naming uses at least 100 deterministic named colors");
+const agentsSource = app.slice(app.indexOf("const AGENT_COLOR_CATALOG"), app.indexOf("function roleManifestProjectionValue"));
+assert.doesNotMatch(agentsSource, /Math\.random\(|robot|data:image\/|OpenAI|provider/i);
+assert.doesNotMatch(app + css, /class="agent-hierarchy|class="agent-project|class="agent-branch|\.agent-hierarchy|\.agent-project|\.agent-branch|\.agent-role-mark/);
 const expectedProfessions = ["Accountant", "Analyst", "Architect", "Artist", "Auditor", "Assistant", "Designer", "Developer", "Educator", "Inventor", "Legal", "Manager", "Marketer", "Operator", "Producer", "Recruiter", "Researcher", "Reviewer", "Security", "Specialist", "Strategist", "Support", "Tester", "Writer"];
 function roleManifestFixture() {
   return {
@@ -1306,8 +1335,8 @@ assert.match(css, /\.settings-toggle-grid \{ grid-template-columns:repeat\(3,min
 assert.match(css, /\.settings-switch input:checked \+ span \{[^}]*background:linear-gradient\(120deg,var\(--orange\),var\(--coral\)\)/);
 assert.match(css, /--orange:\s*#FF7A18;/);
 assert.match(css, /--coral:\s*#FF3D32;/);
-assert.match(css, /\.onboarding-flow-node\.is-ctrl \{[^}]*background:linear-gradient\(135deg,var\(--orange\),var\(--coral\)\)/);
-assert.match(css, /\.onboarding-flag i \{[^}]*background:conic-gradient\([^}]*var\(--orange\)[^}]*var\(--coral\)/);
+assert.match(css, /\.onboarding-ctrl-node \{[^}]*border:1px solid rgba\(255,122,24,\.7\)[^}]*background:linear-gradient\(145deg,rgba\(255,122,24,\.19\)/);
+assert.match(css, /\.onboarding-executive-node \{[^}]*--executive-accent/);
 assert.doesNotMatch(css, /#ff7449|#ff526f|#ff784c|#ff8b25|#ff4937/i);
 assert.match(css, /@media \(max-width: 620px\)[\s\S]*\.circle-frame \{ --circle-size:44px; \}/);
 assert.doesNotMatch(css, /\.profile-button[^}]*width:\s*\d+px;|\.profile-button[^}]*height:\s*\d+px;/);
@@ -1373,6 +1402,10 @@ function applyConfigChanges(config, changes) {
 
 function configDescriptorFixture(config = fixture.config) {
   const next = structuredClone(config);
+  next.state = "KNOWN";
+  next.scope = { type: "global" };
+  next.revision = "global-revision-1";
+  next.write_contract = { available: true };
   next.settings.monitoring ||= {};
   next.settings.monitoring.auto_health_enabled = false;
   next.editable = [...new Set([...(next.editable || []), "monitoring.auto_health_enabled", "execution.usage_saver"])];
@@ -1634,6 +1667,22 @@ function notificationFixture() {
   };
 }
 
+function runLogFixture() {
+  const rows = [
+    ["project:fixture", "nested-ctrl", "nested-task", "nested-task", "Developer", "DOER", "Designer started onboarding settings"],
+    ["project:fixture", "nested-ctrl", "nested-task", "nested-task", "Developer", "DOER", "3 of 5 checks passed"],
+    ["project:branch", "branch-ctrl", "branch-task", "branch-task", "Reviewer", "DOER", "Waiting for review"],
+    ["project:arc", "arc-ctrl", "arc-task", "arc-task", "Writer", "DOER", "Release notes verified"],
+    ["project:atlas", "atlas-ctrl", "atlas-task", "atlas-task", "Analyst", "DOER", "Account status synchronized"],
+  ];
+  return rows.map(([projectId, ctrlId, taskId, agentId, profession, structuralRole, summary], index) => ({
+    event_id: "run-event-" + String(index + 1), event_digest: String(index + 41).padStart(64, "a"), event_seq: index + 1,
+    observed_at_ms: 1788076800000 + index * 1000, kind: index % 2 ? "MILESTONE_COMPLETED" : "REVIEW_REQUESTED", status: "ACTIVE",
+    project_id: projectId, ctrl_id: ctrlId, task_id: taskId, owner_id: agentId, agent_id: agentId,
+    structural_role: structuralRole, profession, summary,
+  }));
+}
+
 async function mount(page, overview, overrides = {}) {
   const runtimeErrors = [];
   const requests = [];
@@ -1644,7 +1693,11 @@ async function mount(page, overview, overrides = {}) {
   const proofControl = overrides.proofControl || { fail: false, feed: proofFeed };
   const notificationControl = overrides.notificationControl || { failGet: false, failSeen: false, feed: structuredClone(overrides.notifications || notificationFixture()) };
   const configControl = overrides.configControl || { failPost: false, deferredPost: null, feed: configDescriptorFixture() };
+  configControl.resetRequests ||= [];
+  configControl.resetOperations ||= new Map();
+  configControl.ctrlFeed ||= structuredClone(fixture.ctrlSettings);
   const assetControl = overrides.assetControl || { library: assetLibraryFixture(), failGet: false, failMutation: false, deferredGets: [], deferredMutations: [], operations: new Map() };
+  const runLogControl = overrides.runLogControl || { items: runLogFixture(), failGet: false, deferredGets: [] };
   assetControl.operations ||= new Map();
   if (!overrides.preserveOnboardingPresentation) {
     await page.addInitScript(() => {
@@ -1735,6 +1788,18 @@ async function mount(page, overview, overrides = {}) {
     if (url.pathname === "/api/project-progress-feed") return route.fulfill(response(overrides.projectProgressFeed || fixture.projectProgressFeed));
     if (url.pathname === "/api/project-progress") return route.fulfill(response(overrides.projectProgress || { ok: true, project_id: url.searchParams.get("project_id"), scope_version: 1, status: "UNMEASURED", percent: null, blocks: [], cursor: { event_seq: 0 } }));
     if (url.pathname === "/api/role-manifests") return route.fulfill(response(overrides.roleManifests || roleManifestFixture()));
+    if (url.pathname === "/api/run-log" && request.method() === "GET") {
+      const projectId = url.searchParams.get("project_id") || "";
+      const ctrlId = url.searchParams.get("ctrl_id") || "";
+      const agentId = url.searchParams.get("agent_id") || "";
+      const after = Number(url.searchParams.get("after_cursor") || 0);
+      const snapshot = structuredClone(runLogControl.items.filter((item) => item.project_id === projectId && item.ctrl_id === ctrlId && (!agentId || item.agent_id === agentId) && item.event_seq > after));
+      const deferred = Array.isArray(runLogControl.deferredGets) ? runLogControl.deferredGets.shift() : null;
+      if (deferred) await deferred;
+      if (runLogControl.failGet) return route.fulfill({ status: 503, contentType: "application/json", body: JSON.stringify({ ok: false, error: "run log unavailable" }) });
+      const cursor = Math.max(after, ...runLogControl.items.filter((item) => item.project_id === projectId && item.ctrl_id === ctrlId).map((item) => item.event_seq), 0);
+      return route.fulfill(response({ ok: true, scope: { project_id: projectId, ctrl_id: ctrlId, agent_id: agentId }, items: snapshot, cursor: { next_event_seq: cursor }, retention: { page_truncated: false, source_scan_truncated: false, stale_cursor: false } }));
+    }
     if (url.pathname === "/api/notifications" && request.method() === "GET") return notificationControl.failGet ? route.fulfill({ status: 503, contentType: "application/json", body: JSON.stringify({ ok: false, error: "notification feed unavailable" }) }) : route.fulfill(response(notificationControl.feed));
     if (url.pathname === "/api/notifications/seen" && request.method() === "POST") {
       const payload = request.postDataJSON();
@@ -1747,6 +1812,25 @@ async function mount(page, overview, overrides = {}) {
       return route.fulfill(response({ ok: true, acknowledged: acknowledged.size, newly_seen: newlySeen.length, pruned: 0, feed: notificationControl.feed }));
     }
     if (url.pathname === "/api/presence") return route.fulfill(response({ ok: true, proof_sequence: proofFeed.sequence || 0 }));
+    if (["/api/settings/restore", "/api/config/reset", "/api/ctrl-settings/reset"].includes(url.pathname) && request.method() === "POST") {
+      const payload = request.postDataJSON();
+      configControl.resetRequests.push({ path: url.pathname, payload });
+      const deferredReset = Array.isArray(configControl.deferredResets) ? configControl.deferredResets.shift() : configControl.deferredReset;
+      if (deferredReset) await deferredReset;
+      if (configControl.failReset === "connection") return route.abort();
+      if (configControl.failReset === "conflict") return route.fulfill({ status: 409, contentType: "application/json", body: JSON.stringify({ ok: false, error: "config revision conflict" }) });
+      if (configControl.resetOperations.has(payload.operation_id)) return route.fulfill(response(configControl.resetOperations.get(payload.operation_id)));
+      let result;
+      if (url.pathname === "/api/ctrl-settings/reset") {
+        configControl.ctrlFeed = { ...configControl.ctrlFeed, revision: Number(configControl.ctrlFeed.revision || 0) + 1, customized: false, override: {}, mutation_receipt: { acknowledged: true, operation_id: payload.operation_id } };
+        result = structuredClone(configControl.ctrlFeed);
+      } else {
+        configControl.feed = { ...configControl.feed, revision: String(configControl.feed.revision) + "-reset", mutation_receipt: { acknowledged: true, operation_id: payload.operation_id } };
+        result = structuredClone(configControl.feed);
+      }
+      configControl.resetOperations.set(payload.operation_id, result);
+      return route.fulfill(response(result));
+    }
     if (url.pathname === "/api/config") {
       if (request.method() === "GET") {
         const snapshot = structuredClone(configControl.feed);
@@ -1767,7 +1851,7 @@ async function mount(page, overview, overrides = {}) {
     if (url.pathname === "/api/diagnostics") return route.fulfill(response(fixture.diagnostics));
     if (url.pathname === "/api/health/settings") return route.fulfill(response(fixture.healthSettings));
     if (url.pathname === "/api/storage") return route.fulfill(response(fixture.storage));
-    if (url.pathname === "/api/ctrl-settings") return route.fulfill(response(fixture.ctrlSettings));
+    if (url.pathname === "/api/ctrl-settings") return route.fulfill(response(configControl.ctrlFeed));
     if (url.pathname === "/api/skills") return route.fulfill(response({ ok: true, settings: { inheritance_enabled: true }, skills: [], overlays: { global: null, project: null, ctrl: null } }));
     if (url.pathname.startsWith("/api/proof-media/")) return route.fulfill({ status: 200, contentType: "image/svg+xml", body: '<svg xmlns="http://www.w3.org/2000/svg" width="160" height="100"><rect width="160" height="100" fill="#0f1726"/></svg>' });
     if (url.pathname === "/assets/swarm-wordmark.png") return route.fulfill({ status: 200, contentType: "image/png", body: wordmarkAsset });
@@ -1782,7 +1866,7 @@ async function mount(page, overview, overrides = {}) {
   await page.goto(overrides.initialURL || "http://swarm.test/", { waitUntil: "domcontentloaded" });
   if (overrides.waitForConnectionState) {
     await page.locator("#connection-state").waitFor({ state: "visible" });
-    return { runtimeErrors, requests, notificationSeenRequests, configRequests, assetRequests, assetControl, configControl };
+    return { runtimeErrors, requests, notificationSeenRequests, configRequests, assetRequests, assetControl, configControl, runLogControl };
   }
   try {
     const initialView = new URL(overrides.initialURL || "http://swarm.test/").hash.replace(/^#/, "") || "overview";
@@ -1794,7 +1878,7 @@ async function mount(page, overview, overrides = {}) {
   }
   await page.locator("#onboarding-dialog").waitFor({ state: "visible" });
   if (!overrides.keepOnboarding) await page.getByRole("button", { name: "Skip for now" }).click();
-  return { runtimeErrors, requests, notificationSeenRequests, configRequests, assetRequests, assetControl, configControl };
+  return { runtimeErrors, requests, notificationSeenRequests, configRequests, assetRequests, assetControl, configControl, runLogControl };
 }
 
 async function assertOnboardingRoleGroup(page, viewportWidth) {
@@ -1819,6 +1903,47 @@ async function assertOnboardingRoleGroup(page, viewportWidth) {
   assert.ok(geometry.image.left >= geometry.panel.left - 1 && geometry.image.right <= geometry.panel.right + 1);
   assert.ok(geometry.image.top >= geometry.panel.top - 1 && geometry.image.bottom <= geometry.panel.bottom + 1);
   assert.ok(geometry.documentWidth <= viewportWidth);
+}
+
+async function assertOnboardingCoordination(page, viewportWidth) {
+  const tree = page.locator("#onboarding-coordination-tree");
+  await tree.waitFor({ state: "visible" });
+  await page.waitForFunction(() => {
+    const paths = [...document.querySelectorAll("#onboarding-coordination-tree [data-onboarding-edge]")];
+    return paths.length === 16 && paths.every((path) => Boolean(path.getAttribute("d")));
+  });
+  assert.equal(await tree.locator('[data-onboarding-node="ctrl"]').count(), 1);
+  assert.equal(await tree.locator("[data-onboarding-executive]").count(), 4);
+  assert.equal(await tree.locator("[data-onboarding-lead]").count(), 12);
+  assert.deepEqual(await tree.locator("[data-onboarding-executive]").evaluateAll((nodes) => nodes.map((node) => node.dataset.onboardingExecutive)), ["coo", "cto", "cfo", "cmo"]);
+  assert.deepEqual(await tree.locator("[data-onboarding-lead]").evaluateAll((nodes) => nodes.map((node) => node.dataset.roleId)), ["operator", "strategist", "support", "developer", "architect", "security", "accountant", "analyst", "auditor", "designer", "content_creator", "marketer"]);
+  assert.equal(await tree.locator('img[src="/assets/swarm-mascot-512.png"]').count(), 1);
+  assert.equal(await tree.locator("img").count(), 1);
+  assert.equal(await tree.locator(".role-avatar.is-pending").count(), 16);
+  const geometry = await tree.evaluate((root) => {
+    const stage = root.querySelector(".onboarding-coordination-stage");
+    const rect = stage.getBoundingClientRect();
+    const branches = [...root.querySelectorAll(".onboarding-executive-branch")].map((branch) => {
+      const box = branch.getBoundingClientRect();
+      return { left: box.left, right: box.right, width: box.width };
+    });
+    return { width: rect.width, height: rect.height, scrollWidth: stage.scrollWidth, clientWidth: stage.clientWidth, branches, documentWidth: document.documentElement.scrollWidth };
+  });
+  assert.ok(geometry.width > 280 && geometry.height >= 300, JSON.stringify(geometry));
+  assert.ok(geometry.scrollWidth <= geometry.clientWidth + 1, JSON.stringify(geometry));
+  assert.ok(geometry.branches.every((branch) => branch.width > 0));
+  assert.ok(geometry.documentWidth <= viewportWidth);
+  const treeItems = tree.locator("[data-onboarding-node-id]");
+  assert.equal(await treeItems.evaluateAll((nodes) => nodes.filter((node) => node.tabIndex === 0).length), 1);
+  await treeItems.first().focus();
+  await page.keyboard.press("End");
+  assert.equal(await page.evaluate(() => document.activeElement?.dataset?.onboardingNodeId), "cmo-growth");
+  await page.keyboard.press("Home");
+  assert.equal(await page.evaluate(() => document.activeElement?.dataset?.onboardingNodeId), "ctrl");
+  await page.keyboard.press("ArrowRight");
+  assert.equal(await page.evaluate(() => document.activeElement?.dataset?.onboardingNodeId), "executive-coo");
+  await page.keyboard.press("Tab");
+  assert.equal(await page.evaluate(() => document.activeElement?.textContent?.trim()), "Continue");
 }
 
 async function assertDialogFrame(page, selector) {
@@ -2076,10 +2201,25 @@ proofFeed.items.push({
     scope_version: 2,
     status: "MEASURED",
     percent: 60,
-    cursor: { event_seq: 2 },
+    cursor: { event_seq: 2, event_id: "progress-event-2", event_digest: "d".repeat(64) },
     blocks: [
       { milestone_id: "Foundation", block_id: "Identity contract", task_id: "ctrl", owner_id: "CTRL", lifecycle_state: "VERIFIED", measurement_state: "MEASURED", committed_weight: 5, admitted_proof_weight: 5, eta: {}, proof_receipt_ids: ["receipt-1"] },
       { milestone_id: "Interface", block_id: "Console surfaces", task_id: "nested-task", owner_id: "Designer", lifecycle_state: "ACTIVE", measurement_state: "MEASURED", committed_weight: 5, admitted_proof_weight: 1, eta: { end_ms: Date.now() + 3600000 }, proof_receipt_ids: [] },
+    ],
+  };
+  projectProgress.progress_queue = {
+    view_id: "view.project.progress", renderer: "table", project_id: "project:fixture", status: "CURRENT", available: true,
+    scope_binding: { project_id: "project:fixture", ctrl_ids: ["ctrl", "nested-ctrl"], cursor: structuredClone(projectProgress.cursor) },
+    accepted_cursor: structuredClone(projectProgress.cursor),
+    segments: [
+      { segment_id: "segment.project.progress.active", label: "Active", rows: [{
+        scope_binding: { project_id: "project:fixture", ctrl_id: "nested-ctrl", cursor: structuredClone(projectProgress.cursor) },
+        task_id: "nested-task", task_name: "Review screenshots", lifecycle: "ACTIVE", queue_state: null, runnable: null,
+        progress: { state: "KNOWN", completed_milestones: 3, total_milestones: 5, percent: 60 },
+        eta: { state: "UNKNOWN", start_ms: null, end_ms: null, confidence: null, basis_receipt_ids: [] },
+        elapsed: { state: "KNOWN", elapsed_ms: 300000 }, freshness: { state: "CURRENT", observed_at_ms: 1788076800000 },
+      }] },
+      { segment_id: "segment.project.progress.queue", label: "Queue", rows: [] },
     ],
   };
   const overrides = {
@@ -2117,7 +2257,8 @@ proofFeed.items.push({
     await assertDialogFrame(onboardingPage, "#onboarding-dialog");
     await onboardingPage.getByRole("button", { name: "Start guided tour" }).click();
     await assertLaterStepNavigation(onboardingPage, "Continue");
-    await captureOnboardingEvidence(onboardingPage, "02-slide-2-pending-desktop-1440x1000");
+    await assertOnboardingCoordination(onboardingPage, 1440);
+    await captureOnboardingEvidence(onboardingPage, "02-slide-2-coordination-desktop-1440x1000");
     assert.equal(await onboardingPage.locator('[data-onboarding-step][aria-current="step"]').getAttribute("data-onboarding-step"), "1");
     const motionTiming = await onboardingPage.locator("#onboarding-dialog").evaluate((dialog) => {
       const timing = (selector) => {
@@ -2128,8 +2269,8 @@ proofFeed.items.push({
     });
     assert.deepEqual(motionTiming.map((item) => Math.round(item.delay)), [0, 55, 110, 220]);
     assert.ok(Math.max(...motionTiming.map((item) => item.delay + item.duration)) <= 550);
-    assert.equal(await onboardingPage.locator('[data-asset-slot="swarm-guided-tour-coordination-v1"][data-asset-status="awaiting-admitted-rgba"]').count(), 1);
-    assert.match(await onboardingPage.locator("#onboarding-panel-2").textContent(), /One control\. Big impact\.[\s\S]*One request becomes coordinated work\.[\s\S]*awaiting its admitted transparent asset/);
+    assert.equal(await onboardingPage.locator('[data-asset-slot="swarm-guided-tour-coordination-v1"]').count(), 0);
+    assert.match(await onboardingPage.locator("#onboarding-panel-2").textContent(), /One goal\. One CTRL\.[\s\S]*One command becomes coordinated work\./);
     await onboardingPage.getByRole("button", { name: "Back" }).focus();
     await onboardingPage.keyboard.press("Enter");
     await onboardingPage.waitForFunction(() => document.activeElement?.id === "onboarding-primary");
@@ -2250,18 +2391,7 @@ proofFeed.items.push({
     await assertDialogFrame(onboardingTabletPage, "#onboarding-dialog");
     await onboardingTabletPage.getByRole("button", { name: "Start guided tour" }).click();
     await assertLaterStepNavigation(onboardingTabletPage, "Continue");
-    const tabletFlowGeometry = await onboardingTabletPage.locator(".onboarding-coordination-slot").evaluate((scene) => {
-      return {
-        sceneWidth: scene.scrollWidth,
-        sceneClientWidth: scene.clientWidth,
-        height: scene.getBoundingClientRect().height,
-        documentWidth: document.documentElement.scrollWidth,
-        viewportWidth: innerWidth,
-      };
-    });
-    assert.ok(tabletFlowGeometry.sceneWidth <= tabletFlowGeometry.sceneClientWidth + 1);
-    assert.ok(tabletFlowGeometry.height >= 170);
-    assert.ok(tabletFlowGeometry.documentWidth <= tabletFlowGeometry.viewportWidth);
+    await assertOnboardingCoordination(onboardingTabletPage, 834);
     await onboardingTabletPage.getByRole("button", { name: "Continue" }).click();
     await assertOnboardingRoleGroup(onboardingTabletPage, 834);
     await onboardingTabletPage.getByRole("button", { name: "Continue" }).click();
@@ -2283,13 +2413,8 @@ proofFeed.items.push({
     await captureOnboardingEvidence(onboardingMobilePage, "06-slide-1-mobile-390x844");
     await onboardingMobilePage.getByRole("button", { name: "Start guided tour" }).click();
     await assertLaterStepNavigation(onboardingMobilePage, "Continue");
-    await captureOnboardingEvidence(onboardingMobilePage, "07-slide-2-pending-mobile-390x844");
-    const mobileFlowGeometry = await onboardingMobilePage.locator(".onboarding-coordination-slot").evaluate((flow) => {
-      const rect = flow.getBoundingClientRect();
-      return { width: rect.width, height: rect.height, scrollWidth: flow.scrollWidth, clientWidth: flow.clientWidth };
-    });
-    assert.ok(mobileFlowGeometry.width > 280 && mobileFlowGeometry.height >= 170);
-    assert.ok(mobileFlowGeometry.scrollWidth <= mobileFlowGeometry.clientWidth + 1);
+    await assertOnboardingCoordination(onboardingMobilePage, 390);
+    await captureOnboardingEvidence(onboardingMobilePage, "07-slide-2-coordination-mobile-390x844");
     await onboardingMobilePage.getByRole("button", { name: "Continue" }).click();
     await assertOnboardingRoleGroup(onboardingMobilePage, 390);
     await captureOnboardingEvidence(onboardingMobilePage, "08-slide-3-mobile-390x844");
@@ -2311,7 +2436,7 @@ proofFeed.items.push({
       const heading = rect(panel.querySelector("h2"));
       const configuration = document.querySelector("#onboarding-configuration");
       const body = document.querySelector("#onboarding-dialog > .onboarding-shell > .onboarding-panels");
-      const controls = [...dialog.querySelectorAll("button")].filter((control) => !control.hidden && getComputedStyle(control).display !== "none").map(rect);
+      const controls = [...dialog.querySelectorAll("button")].filter((control) => !control.hidden && getComputedStyle(control).display !== "none" && control.getClientRects().length).map(rect);
       const configControls = [...configuration.querySelectorAll("input,select,summary,button")].filter((control) => !control.hidden && getComputedStyle(control).display !== "none" && control.getClientRects().length).map((control) => rect(control.matches('input[type="checkbox"]') ? control.closest(".toggle-row") : control.matches('input[type="radio"]') ? control.closest("label") : control));
       return { dialog: rect(dialog), primary, back, heading, controls, configControls, panel: { scrollWidth: panel.scrollWidth, clientWidth: panel.clientWidth, overflowY: getComputedStyle(panel).overflowY }, configuration: { scrollWidth: configuration.scrollWidth, clientWidth: configuration.clientWidth, overflowY: getComputedStyle(configuration).overflowY }, body: { scrollHeight: body.scrollHeight, clientHeight: body.clientHeight, overflowY: getComputedStyle(body).overflowY }, viewport: { width: innerWidth, height: innerHeight }, documentWidth: document.documentElement.scrollWidth };
     });
@@ -2344,6 +2469,7 @@ proofFeed.items.push({
     await reducedMotionPage.getByRole("button", { name: "Start guided tour" }).click();
     const reducedMotionStyles = await reducedMotionPage.locator("#onboarding-dialog").evaluate((dialog) => [
       ".onboarding-panel.is-active .onboarding-artwork",
+      ".onboarding-panel.is-active [data-onboarding-node]",
       ".onboarding-panel.is-active > h2",
       ".onboarding-panel.is-active > p",
       "#onboarding-primary",
@@ -2901,7 +3027,43 @@ proofFeed.items.push({
     assert.deepEqual(await page.evaluate(() => ({ projectId: state.projectId, ctrlId: state.ctrlId, groupId: state.projectUiGroupId })), { projectId: "project:branch", ctrlId: "", groupId: "" });
     await page.evaluate(() => selectProjectScope("project:fixture"));
     await page.getByRole("tab", { name: "Agents", exact: true }).click();
-    assert.match(await page.locator("#agent-hierarchy").textContent(), /CTRL/);
+    await page.waitForFunction(() => document.querySelectorAll("[data-agent-detail]").length >= 2);
+    assert.doesNotMatch(await page.locator("#view-agents").textContent(), /idle-task|stalled-task|standalone-task/);
+    const measuredAgent = page.locator('[data-agent-detail="nested-task"]');
+    assert.equal(await measuredAgent.count(), 1);
+    assert.match(await measuredAgent.textContent(), /Review screenshots[\s\S]*swarm[\s\S]*In progress[\s\S]*60%/i);
+    assert.equal(await measuredAgent.locator('[role="progressbar"][aria-valuenow="60"]').count(), 1);
+    assert.equal(await measuredAgent.locator('time[data-label="Updated"]').getAttribute("datetime"), "2026-08-09T00:00:00.000Z");
+    const unknownAgent = page.locator('[data-agent-detail="nested-ctrl"]');
+    assert.match(await unknownAgent.textContent(), /UNKNOWN/);
+    assert.equal(await unknownAgent.locator('[role="progressbar"]').count(), 0);
+    assert.equal(await page.locator(".agent-avatar-token .role-avatar.is-pending").count(), await page.locator("[data-agent-detail]").count());
+    assert.equal(await page.locator(".agent-avatar-token img,.agent-avatar-token .lucide").count(), 0);
+    assert.match(await measuredAgent.textContent(), /Tomato — Developer[\s\S]*Developer · DOER/);
+    await measuredAgent.focus();
+    await measuredAgent.press("Enter");
+    await page.locator("#agent-detail-dialog").waitFor({ state: "visible" });
+    assert.match(await page.locator("#agent-detail-dialog").textContent(), /Tomato — Developer[\s\S]*Review screenshots[\s\S]*swarm[\s\S]*nested-ctrl[\s\S]*developer-v1[\s\S]*3 of 5 checks passed[\s\S]*No agent-specific instruction augmentation/);
+    await page.keyboard.press("Escape");
+    assert.equal(await page.locator("#agent-detail-dialog").getAttribute("open"), null);
+    assert.equal(await page.evaluate(() => document.activeElement?.dataset.agentDetail), "nested-task");
+    await page.getByRole("button", { name: "Selected", exact: true }).click();
+    await page.waitForFunction(() => document.querySelector("#run-log-agent")?.textContent.includes("3 of 5 checks passed"));
+    const selectedUpdates = await page.locator("#run-log-agent").textContent();
+    assert.match(selectedUpdates, /Designer started onboarding settings|3 of 5 checks passed/);
+    assert.doesNotMatch(selectedUpdates, /Waiting for review/);
+    await page.locator("#agent-updates-pause").click();
+    assert.match(await page.locator("#run-log-agent").textContent(), /Paused/);
+    await page.locator("#agent-updates-pause").click();
+    assert.match(await page.locator("#run-log-agent").textContent(), /retained material entr/);
+    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth), true);
+    if (evidenceDir) await page.screenshot({ path: path.join(evidenceDir, "16-agents-desktop-1536x1024.png"), fullPage: false, animations: "disabled" });
+    await page.evaluate(() => selectProjectScope("project:branch"));
+    await page.waitForFunction(() => state.projectId === "project:branch" && document.querySelectorAll("[data-agent-detail]").length >= 2);
+    assert.deepEqual(await page.evaluate(() => ({ view: state.view, selectedAgent: state.runLogAgent, filter: state.agentUpdatesFilter })), { view: "agents", selectedAgent: null, filter: "all" });
+    assert.doesNotMatch(await page.locator("#view-agents").textContent(), /Review screenshots|3 of 5 checks passed/);
+    assert.match(await page.locator("#view-agents").textContent(), /Confirm webhooks/);
+    await page.evaluate(() => selectProjectScope("project:fixture"));
     await page.getByRole("tab", { name: "Roles", exact: true }).click();
     assert.equal(await page.locator(".role-choice").count(), 24);
     assert.match(await page.locator("#role-library-status").textContent(), /24 server-owned role manifests/);
@@ -2920,8 +3082,8 @@ proofFeed.items.push({
     await page.locator('.role-choice[data-role-select="developer"]').click();
     assert.equal(await page.locator('#role-library-detail .role-specializations li').count(), 4);
     assert.match(await page.locator('#role-library-detail').textContent(), /Developer[\s\S]*Boundaries/);
-    assert.equal(await page.locator('.role-avatar.is-pending[aria-label="Avatar pending for Developer"]').count(), 2);
-    assert.equal(await page.locator(".role-avatar img,.role-avatar .lucide").count(), 0);
+    assert.equal(await page.locator('#view-roles .role-avatar.is-pending[aria-label="Avatar pending for Developer"]').count(), 2);
+    assert.equal(await page.locator("#view-roles .role-avatar img,#view-roles .role-avatar .lucide").count(), 0);
     await page.locator(".role-filter > summary").click();
     if (evidenceDir) await page.screenshot({ path: path.join(evidenceDir, "12-roles-desktop-1536x1024.png"), fullPage: false, animations: "disabled" });
     await page.locator('.role-choice[data-role-select="reviewer"]').click();
@@ -3066,6 +3228,78 @@ proofFeed.items.push({
     assert.deepEqual(desktop.runtimeErrors, []);
     await page.close();
 
+    const resetPage = await browser.newPage({ viewport: { width: 1024, height: 760 } });
+    const resetControl = { failPost: false, deferredPost: null, feed: configDescriptorFixture(), resetRequests: [], resetOperations: new Map() };
+    const resetRuntime = await mount(resetPage, scopedFixture(), { ...overrides, configControl: resetControl });
+    await resetPage.getByRole("tab", { name: "Settings", exact: true }).click();
+    await resetPage.evaluate(() => {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.dataset.settingAction = "restore";
+      button.textContent = "Restore defaults test";
+      document.querySelector("#settings-grid").append(button);
+    });
+    resetPage.once("dialog", (dialog) => dialog.dismiss());
+    await resetPage.getByRole("button", { name: "Restore defaults test" }).click();
+    assert.equal(resetControl.resetRequests.length, 0);
+    resetPage.once("dialog", (dialog) => dialog.accept());
+    await resetPage.getByRole("button", { name: "Restore defaults test" }).click();
+    await resetPage.waitForFunction(() => state.configResetPending === null);
+    assert.equal(resetControl.resetRequests.length, 1);
+    assert.equal(resetControl.resetRequests[0].path, "/api/settings/restore");
+    assert.deepEqual({ ...resetControl.resetRequests[0].payload, operation_id: "<operation>" }, { scope: { type: "global" }, expected_revision: "global-revision-1", acknowledge: true, operation_id: "<operation>" });
+    assert.match(resetControl.resetRequests[0].payload.operation_id, /^console-config-reset-global-/);
+    assert.deepEqual(resetRuntime.runtimeErrors, []);
+    await resetPage.close();
+
+    const retryPage = await browser.newPage({ viewport: { width: 1024, height: 760 } });
+    const retryControl = { failPost: false, feed: configDescriptorFixture(), resetRequests: [], resetOperations: new Map(), failReset: "connection" };
+    const retryRuntime = await mount(retryPage, scopedFixture(), { ...overrides, configControl: retryControl });
+    await retryPage.evaluate(() => resetSettingsScope("global").catch((error) => error.message));
+    const ambiguousOperationId = retryControl.resetRequests.at(-1).payload.operation_id;
+    retryControl.failReset = null;
+    await retryPage.evaluate(() => resetSettingsScope("global"));
+    assert.equal(retryControl.resetRequests.at(-1).payload.operation_id, ambiguousOperationId);
+    retryControl.failReset = "conflict";
+    await retryPage.evaluate(() => resetSettingsScope("global").catch((error) => error.message));
+    const conflictOperationId = retryControl.resetRequests.at(-1).payload.operation_id;
+    retryControl.failReset = null;
+    await retryPage.evaluate(() => resetSettingsScope("global"));
+    assert.notEqual(retryControl.resetRequests.at(-1).payload.operation_id, conflictOperationId);
+    assert.equal(retryRuntime.runtimeErrors.length, 2);
+    assert.match(retryRuntime.runtimeErrors[0], /Failed to load resource: net::ERR_FAILED/);
+    assert.match(retryRuntime.runtimeErrors[1], /status of 409 \(Conflict\)/);
+    await retryPage.close();
+
+    let releaseStaleReset;
+    const staleResetControl = { failPost: false, feed: configDescriptorFixture(), resetRequests: [], resetOperations: new Map(), deferredResets: [new Promise((resolve) => { releaseStaleReset = resolve; })] };
+    const staleResetPage = await browser.newPage({ viewport: { width: 1024, height: 760 } });
+    const staleResetRuntime = await mount(staleResetPage, scopedFixture(), { ...overrides, configControl: staleResetControl });
+    const staleResetPromise = staleResetPage.evaluate(() => resetSettingsScope("global"));
+    await staleResetPage.waitForFunction(() => state.configResetPending !== null);
+    await staleResetPage.evaluate(() => { state.settingsScopeType = "project"; state.settingsScopeId = "project:fixture"; });
+    releaseStaleReset();
+    assert.equal((await staleResetPromise).applied, false);
+    assert.equal(await staleResetPage.evaluate(() => state.config.revision), "global-revision-1");
+    assert.deepEqual(staleResetRuntime.runtimeErrors, []);
+    await staleResetPage.close();
+
+    const scopedResetPage = await browser.newPage({ viewport: { width: 1024, height: 760 } });
+    const projectCursor = { event_seq: 18, event_digest: "f".repeat(64) };
+    const projectConfig = { ...configDescriptorFixture(), scope: { type: "project", project_id: "project:fixture", accepted_cursor: projectCursor }, revision: "project-revision-3" };
+    const scopedResetControl = { failPost: false, feed: projectConfig, resetRequests: [], resetOperations: new Map(), ctrlFeed: structuredClone(fixture.ctrlSettings) };
+    const scopedResetRuntime = await mount(scopedResetPage, scopedFixture(), { ...overrides, configControl: scopedResetControl });
+    await scopedResetPage.evaluate(() => { state.settingsScopeType = "project"; state.settingsScopeId = "project:fixture"; });
+    await scopedResetPage.evaluate(() => resetSettingsScope("project"));
+    assert.deepEqual({ ...scopedResetControl.resetRequests.at(-1).payload, operation_id: "<operation>" }, { scope: { type: "project", project_id: "project:fixture", accepted_cursor: projectCursor }, expected_revision: "project-revision-3", acknowledge: true, operation_id: "<operation>" });
+    assert.equal(scopedResetControl.resetRequests.at(-1).path, "/api/config/reset");
+    await scopedResetPage.evaluate(() => { state.settingsScopeType = "ctrl"; state.settingsScopeId = state.ctrlSettings.ctrl_id; });
+    await scopedResetPage.evaluate(() => resetSettingsScope("ctrl"));
+    assert.deepEqual({ ...scopedResetControl.resetRequests.at(-1).payload, operation_id: "<operation>" }, { ctrl_id: fixture.ctrlSettings.ctrl_id, expected_revision: fixture.ctrlSettings.revision, acknowledge: true, operation_id: "<operation>" });
+    assert.equal(scopedResetControl.resetRequests.at(-1).path, "/api/ctrl-settings/reset");
+    assert.deepEqual(scopedResetRuntime.runtimeErrors, []);
+    await scopedResetPage.close();
+
     const deepLinkPage = await browser.newPage({ viewport: { width: 1024, height: 760 } });
     const deepLink = await mount(deepLinkPage, scopedFixture(), { ...overrides, initialURL: "http://swarm.test/?project=project%3Afixture#roles" });
     assert.deepEqual(await deepLinkPage.evaluate(() => ({ view: state.view, projectId: state.projectId })), { view: "roles", projectId: "project:fixture" });
@@ -3136,6 +3370,14 @@ proofFeed.items.push({
     assert.ok(tabletFlow.left >= 0 && tabletFlow.right <= tabletFlow.viewport && tabletFlow.scrollWidth <= tabletFlow.clientWidth, JSON.stringify(tabletFlow));
     assert.equal(await tabletPage.locator(".project-ui-flowchart-node").evaluateAll((nodes) => nodes.every((node) => node.getBoundingClientRect().height >= 44)), true);
     assert.equal(await tabletPage.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth), true);
+    await tabletPage.evaluate(() => setView("agents"));
+    assert.equal(await tabletPage.locator("[data-agent-detail]").evaluateAll((rows) => rows.length >= 2 && rows.every((row) => row.getBoundingClientRect().height >= 44)), true);
+    assert.equal(await tabletPage.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth), true);
+    await tabletPage.locator('[data-agent-detail="nested-task"]').click();
+    await assertDialogFrame(tabletPage, "#agent-detail-dialog");
+    if (evidenceDir) await tabletPage.screenshot({ path: path.join(evidenceDir, "17-agents-detail-tablet-834x1112.png"), fullPage: false, animations: "disabled" });
+    await tabletPage.keyboard.press("Escape");
+    if (evidenceDir) await tabletPage.screenshot({ path: path.join(evidenceDir, "16-agents-tablet-834x1112.png"), fullPage: false, animations: "disabled" });
     await tabletPage.locator('[data-view="roles"]').click();
     const tabletGrid = tabletPage.locator("#role-library-grid");
     assert.equal(await tabletGrid.evaluate((element) => getComputedStyle(element).gridTemplateColumns.split(" ").length), 3);
@@ -3239,6 +3481,17 @@ proofFeed.items.push({
       const choice = element.getBoundingClientRect();
       return choice.top >= grid.top && choice.bottom <= grid.bottom;
     }), true);
+    await mobilePage.evaluate(async () => { await selectProjectScope("project:fixture"); setView("agents"); });
+    await mobilePage.waitForFunction(() => document.querySelectorAll("[data-agent-detail]").length >= 2);
+    assert.equal(await mobilePage.locator("[data-agent-detail]").evaluateAll((rows) => rows.every((row) => row.getBoundingClientRect().height >= 44)), true);
+    assert.equal(await mobilePage.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth), true);
+    if (evidenceDir) await mobilePage.screenshot({ path: path.join(evidenceDir, "18-agents-mobile-390x844.png"), fullPage: false, animations: "disabled" });
+    await mobilePage.locator('[data-agent-detail="nested-task"]').click();
+    await assertDialogFrame(mobilePage, "#agent-detail-dialog");
+    if (evidenceDir) await mobilePage.screenshot({ path: path.join(evidenceDir, "19-agents-detail-mobile-390x844.png"), fullPage: false, animations: "disabled" });
+    await mobilePage.keyboard.press("Escape");
+    await mobilePage.evaluate(() => setView("roles"));
+    await mobilePage.locator('.role-choice[aria-selected="true"]').focus();
     await mobilePage.keyboard.press("Home");
     await mobilePage.keyboard.press("Tab");
     assert.equal(await mobilePage.evaluate(() => document.activeElement?.getAttribute("aria-label")), "Edit Accountant");
