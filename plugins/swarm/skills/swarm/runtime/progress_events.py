@@ -153,7 +153,14 @@ EXPECTED_OBSERVATION_FIELDS = frozenset({
     "artifact_digest", "source_cursor", "route_digest", "outcome", "evidence_receipt_ids",
 })
 EXPECTED_DUE_EVENTS = frozenset({"MATERIAL_EVENT", "TURN_COMPLETION", "LEASE_EXPIRY", "USER_STEER"})
-NON_MATERIAL_RECORD_TYPES = frozenset({"EXPECTED_RECEIPT", "REQUEST_LIFECYCLE", "TASK_HANDOFF"})
+NON_MATERIAL_RECORD_TYPES = frozenset({"EXPECTED_RECEIPT", "REQUEST_LIFECYCLE", "TASK_HANDOFF", "CONNECTOR"})
+CONNECTOR_RECEIPT_FIELDS = frozenset({
+    "schema_version", "record_type", "receipt_id", "idempotency_key", "command_digest",
+    "project_id", "root_digest", "action", "status", "thread_id", "turn_id",
+    "observed_root_digest", "observed_at_ms",
+})
+CONNECTOR_ACTIONS = frozenset({"AUTO", "MANUAL_AGENT", "TASK", "TOPOLOGY_MATERIALIZE", "REPAIR", "LOCAL_HQ"})
+CONNECTOR_STATUSES = frozenset({"COMMAND", "ACKNOWLEDGED", "RESULT", "UNSUPPORTED"})
 
 
 class ProgressLifecycle(StrEnum):
@@ -673,6 +680,31 @@ def _validate_retained_request_lifecycle_event(payload: Any, event_digest: str) 
         })
     validate_request_lifecycle_event(validation_copy)
     return json.loads(json.dumps(migrated, ensure_ascii=False, sort_keys=True, separators=(",", ":")))
+
+
+def _validate_connector_receipt(payload: Any) -> dict[str, Any]:
+    if not isinstance(payload, dict):
+        raise ProgressEventError("connector receipt must be an object")
+    _exact_fields(payload, CONNECTOR_RECEIPT_FIELDS, "connector receipt")
+    if payload.get("schema_version") != 1 or payload.get("record_type") != "CONNECTOR":
+        raise ProgressEventError("connector receipt schema is unsupported")
+    normalized = dict(payload)
+    for key in ("receipt_id", "idempotency_key", "project_id", "action", "status"):
+        normalized[key] = _safe_id(payload.get(key), f"connector {key}")
+    if normalized["action"] not in CONNECTOR_ACTIONS or normalized["status"] not in CONNECTOR_STATUSES:
+        raise ProgressEventError("connector action or status is unsupported")
+    for key in ("command_digest", "root_digest", "observed_root_digest"):
+        value = payload.get(key)
+        if not isinstance(value, str) or len(value) != 64 or any(character not in "0123456789abcdef" for character in value):
+            raise ProgressEventError(f"connector {key} must be a lowercase SHA-256 digest")
+    for key in ("thread_id", "turn_id"):
+        normalized[key] = None if payload.get(key) is None else _safe_id(payload.get(key), f"connector {key}")
+    normalized["observed_at_ms"] = _positive_int(payload.get("observed_at_ms"), "connector observed_at_ms", allow_zero=True)
+    return json.loads(json.dumps(normalized, ensure_ascii=False, sort_keys=True, separators=(",", ":")))
+
+
+def _connector_receipt_digest(payload: Mapping[str, Any]) -> str:
+    return hashlib.sha256(json.dumps(dict(payload), ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
 
 
 @dataclass(frozen=True)
@@ -1210,6 +1242,7 @@ def _empty_progress_projection() -> dict[str, Any]:
         "task_handoffs": {},
         "task_handoff_leases": {},
         "expected_receipts": {},
+        "connector_receipts": {},
     }
 
 _LIFECYCLE_TRANSITIONS: dict[ProgressLifecycle, frozenset[ProgressLifecycle]] = {
@@ -1317,6 +1350,31 @@ class Ledger:
         ):
             raise ProgressEventError("event requires a retained host-verified custody receipt")
         return receipt
+
+    @staticmethod
+    def _decode_non_material_record(raw_event: Any, retained_digest: str) -> tuple[str, str, dict[str, Any], str] | None:
+        if not isinstance(raw_event, dict) or raw_event.get("record_type") not in NON_MATERIAL_RECORD_TYPES:
+            return None
+        kind = str(raw_event["record_type"])
+        if kind == "EXPECTED_RECEIPT":
+            event = _validate_expected_receipt(raw_event)
+            identity, digest = event["receipt_id"], _expected_receipt_digest(event)
+        elif kind == "REQUEST_LIFECYCLE":
+            event = _validate_retained_request_lifecycle_event(raw_event, retained_digest)
+            identity, digest = event["event_id"], retained_digest
+        elif kind == "TASK_HANDOFF":
+            event = validate_task_handoff_event(raw_event)
+            identity, digest = event["event_id"], _task_handoff_digest(event)
+        else:
+            event = _validate_connector_receipt(raw_event)
+            identity, digest = event["receipt_id"], _connector_receipt_digest(event)
+        if retained_digest != digest:
+            raise ProgressEventError(f"{kind.casefold().replace('_', ' ')} ledger digest mismatch")
+        return kind, identity, event, digest
+
+    @staticmethod
+    def _is_non_material_record(raw_event: Any) -> bool:
+        return isinstance(raw_event, dict) and raw_event.get("record_type") in NON_MATERIAL_RECORD_TYPES
 
     @staticmethod
     def _record(event: ProgressMaterialEvent, event_seq: int) -> dict[str, Any]:
@@ -1825,30 +1883,29 @@ class Ledger:
                 raise ProgressEventError("progress ledger sequence is not contiguous")
             raw_event = record["event"]
             replayed_record = record
-            if isinstance(raw_event, dict) and raw_event.get("record_type") == "EXPECTED_RECEIPT":
-                receipt = _validate_expected_receipt(raw_event)
-                event_digest = _expected_receipt_digest(receipt)
-                if record["event_digest"] != event_digest:
-                    raise ProgressEventError("expected receipt ledger digest mismatch")
-                self._apply_expected_receipt(projection, receipt, expected_seq, event_digest)
-            elif isinstance(raw_event, dict) and raw_event.get("record_type") == "REQUEST_LIFECYCLE":
-                event = _validate_retained_request_lifecycle_event(raw_event, record["event_digest"])
-                self._apply_request_lifecycle(
-                    projection,
-                    event,
-                    expected_seq,
-                    event_digest=record["event_digest"],
-                    semantic_digest=_request_lifecycle_digest(raw_event, semantic=True),
-                )
-                self._apply_request_expected(projection, event, expected_seq, record["event_digest"])
-                replayed_record = {**record, "event": event}
-            elif isinstance(raw_event, dict) and raw_event.get("record_type") == "TASK_HANDOFF":
-                event = validate_task_handoff_event(raw_event)
-                event_digest = _task_handoff_digest(event)
-                if record["event_digest"] != event_digest:
-                    raise ProgressEventError("task handoff ledger event digest mismatch")
-                self._apply_task_handoff(projection, event, expected_seq)
-                self._apply_handoff_expected(projection, event, expected_seq, event_digest)
+            decoded = self._decode_non_material_record(raw_event, record["event_digest"])
+            if decoded is not None:
+                kind, identity, event, event_digest = decoded
+                if kind == "EXPECTED_RECEIPT":
+                    self._apply_expected_receipt(projection, event, expected_seq, event_digest)
+                elif kind == "REQUEST_LIFECYCLE":
+                    self._apply_request_lifecycle(
+                        projection, event, expected_seq, event_digest=event_digest,
+                        semantic_digest=_request_lifecycle_digest(raw_event, semantic=True),
+                    )
+                    self._apply_request_expected(projection, event, expected_seq, event_digest)
+                    replayed_record = {**record, "event": event}
+                elif kind == "TASK_HANDOFF":
+                    self._apply_task_handoff(projection, event, expected_seq)
+                    self._apply_handoff_expected(projection, event, expected_seq, event_digest)
+                else:
+                    retained = projection["connector_receipts"].get(event["idempotency_key"])
+                    if retained is not None and retained["event_digest"] != event_digest:
+                        raise ProgressEventError("connector idempotency identity conflicts with retained digest")
+                    projection["connector_receipts"][event["idempotency_key"]] = {
+                        **event, "event_seq": expected_seq, "event_digest": event_digest,
+                    }
+                    projection["cursor"] = {"event_seq": expected_seq, "event_id": identity, "event_digest": event_digest}
             else:
                 event = _validate_progress_material_event(
                     raw_event,
@@ -1892,6 +1949,29 @@ class Ledger:
             self._state.path.parent.mkdir(parents=True, exist_ok=True)
             with self._state.path.open("ab") as handle:
                 handle.write(line); handle.flush(); os.fsync(handle.fileno())
+            self._write_projection_unlocked(projection)
+        with self._condition:
+            self._condition.notify_all()
+        return {"status": "appended", "cursor": projection["cursor"], "event_digest": event_digest, "bytes": len(line)}
+
+    def append_connector_receipt(self, payload: Mapping[str, Any]) -> dict[str, Any]:
+        event = _validate_connector_receipt(dict(payload))
+        event_digest = _connector_receipt_digest(event)
+        with self._state.locked():
+            projection, records = self._replay_unlocked()
+            retained = projection["connector_receipts"].get(event["idempotency_key"])
+            if retained is not None:
+                if retained["event_digest"] != event_digest:
+                    raise ProgressEventError("connector idempotency identity conflicts with retained digest")
+                return {"status": "unchanged", "cursor": {"event_seq": retained["event_seq"], "event_id": event["receipt_id"], "event_digest": event_digest}, "event_digest": event_digest}
+            event_seq = len(records) + 1
+            record = {"event_seq": event_seq, "event_digest": event_digest, "event": event}
+            line = json.dumps(record, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8") + b"\n"
+            self._state.path.parent.mkdir(parents=True, exist_ok=True)
+            with self._state.path.open("ab") as handle:
+                handle.write(line); handle.flush(); os.fsync(handle.fileno())
+            projection["connector_receipts"][event["idempotency_key"]] = {**event, "event_seq": event_seq, "event_digest": event_digest}
+            projection["cursor"] = {"event_seq": event_seq, "event_id": event["receipt_id"], "event_digest": event_digest}
             self._write_projection_unlocked(projection)
         with self._condition:
             self._condition.notify_all()
@@ -2193,7 +2273,7 @@ class Ledger:
         events: list[tuple[int, ProgressMaterialEvent]] = []
         conflicts = 0
         for record in records:
-            if isinstance(record["event"], dict) and record["event"].get("record_type") in NON_MATERIAL_RECORD_TYPES:
+            if self._is_non_material_record(record["event"]):
                 continue
             event = validate_progress_material_event(record["event"])
             if event.project_id != project_id or event.scope_version != scope_version or event.block_id not in block_ids:
@@ -2478,7 +2558,7 @@ class Ledger:
 
         known: list[tuple[int, ProgressMaterialEvent]] = []
         for record in records[:cursor]:
-            if isinstance(record["event"], dict) and record["event"].get("record_type") in NON_MATERIAL_RECORD_TYPES:
+            if self._is_non_material_record(record["event"]):
                 continue
             event = validate_progress_material_event(record["event"])
             if event.project_id == project_id and event.ctrl_id == ctrl_id:
@@ -2952,7 +3032,7 @@ class Ledger:
                 observed_boundary_ms: int | None = None
                 for record in records:
                     raw_event = record["event"]
-                    if isinstance(raw_event, dict) and raw_event.get("record_type") in NON_MATERIAL_RECORD_TYPES:
+                    if self._is_non_material_record(raw_event):
                         continue
                     event = validate_progress_material_event(raw_event)
                     if event.ctrl_id in normalized:
@@ -3225,19 +3305,10 @@ class Ledger:
                 record = json.loads(line)
                 raw_event = record["event"]
                 record_type = raw_event.get("record_type") if isinstance(raw_event, dict) else None
-                if record_type in NON_MATERIAL_RECORD_TYPES:
-                    if record_type == "EXPECTED_RECEIPT":
-                        event_digest = _expected_receipt_digest(_validate_expected_receipt(raw_event))
-                        record_id = raw_event["receipt_id"]
-                    elif record_type == "REQUEST_LIFECYCLE":
-                        _validate_retained_request_lifecycle_event(raw_event, record["event_digest"])
-                        event_digest = record["event_digest"]
-                        record_id = raw_event["event_id"]
-                    else:
-                        event_digest = _task_handoff_digest(validate_task_handoff_event(raw_event))
-                        record_id = raw_event["event_id"]
-                    if record.get("event_digest") == event_digest:
-                        records.append({**record, "_event": None, "_record_id": record_id, "_record_type": record_type})
+                decoded = self._decode_non_material_record(raw_event, str(record.get("event_digest") or ""))
+                if decoded is not None:
+                    record_type, record_id, _, event_digest = decoded
+                    records.append({**record, "_event": None, "_record_id": record_id, "_record_type": record_type})
                     continue
                 event = validate_progress_material_event(raw_event)
             except (json.JSONDecodeError, KeyError, TypeError, ProgressEventError):

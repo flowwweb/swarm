@@ -111,6 +111,60 @@ class ProgressLedgerContractTests(unittest.TestCase):
         self.assertEqual(blocked.action, ControlPathRecoveryAction.TERMINAL_BLOCKED)
         self.assertEqual(blocked.release_receipt_id, release.receipt)
 
+    def test_connector_receipt_is_non_material_idempotent_and_restart_safe(self) -> None:
+        payload = {
+            "schema_version": 1, "record_type": "CONNECTOR", "receipt_id": "connector-1",
+            "idempotency_key": "command-1", "command_digest": "1" * 64,
+            "project_id": "project-alpha", "root_digest": "2" * 64,
+            "action": "TASK", "status": "ACKNOWLEDGED", "thread_id": "thread-1",
+            "turn_id": "turn-1", "observed_root_digest": "2" * 64, "observed_at_ms": 10,
+        }
+        before = self.ledger.project("project-alpha")
+        first = self.ledger.append_connector_receipt(payload)
+        replay = self.ledger.append_connector_receipt(payload)
+        self.assertEqual((first["status"], replay["status"]), ("appended", "unchanged"))
+        after = self.ledger.project("project-alpha")
+        self.assertEqual(
+            {key: value for key, value in after.items() if key != "cursor"},
+            {key: value for key, value in before.items() if key != "cursor"},
+        )
+        restarted = self.host_ledger(self.root)
+        retained = restarted.replay()
+        self.assertEqual(retained["connector_receipts"]["command-1"]["thread_id"], "thread-1")
+        self.assertEqual(retained["cursor"]["event_seq"], 1)
+
+    def test_non_material_decoder_preserves_bytes_and_fails_closed(self) -> None:
+        receipt = {
+            "schema_version": 1, "record_type": "CONNECTOR", "receipt_id": "connector-corrupt",
+            "idempotency_key": "command-corrupt", "command_digest": "3" * 64,
+            "project_id": "project-alpha", "root_digest": "4" * 64,
+            "action": "TASK", "status": "ACKNOWLEDGED", "thread_id": None,
+            "turn_id": None, "observed_root_digest": "4" * 64, "observed_at_ms": 1,
+        }
+        self.ledger.append_connector_receipt(receipt)
+        path = self.root / PROGRESS_LEDGER_PATH
+        original = path.read_bytes()
+        self.host_ledger(self.root).replay()
+        self.assertEqual(path.read_bytes(), original)
+        record = json.loads(original)
+        record["event"]["unknown"] = True
+        path.write_text(json.dumps(record) + "\n", encoding="utf-8")
+        with self.assertRaises(ProgressEventError):
+            self.host_ledger(self.root).replay()
+
+    def test_connector_receipt_rejects_unknown_action_and_status(self) -> None:
+        base = {
+            "schema_version": 1, "record_type": "CONNECTOR", "receipt_id": "connector-invalid",
+            "idempotency_key": "command-invalid", "command_digest": "5" * 64,
+            "project_id": "project-alpha", "root_digest": "6" * 64,
+            "action": "TASK", "status": "COMMAND", "thread_id": None, "turn_id": None,
+            "observed_root_digest": "6" * 64, "observed_at_ms": 1,
+        }
+        for change in ({"action": "DELETE_EVERYTHING"}, {"status": "SUCCESSISH"}):
+            with self.subTest(change=change), self.assertRaisesRegex(ProgressEventError, "unsupported"):
+                self.ledger.append_connector_receipt({**base, **change})
+        self.assertFalse((self.root / PROGRESS_LEDGER_PATH).exists())
+
     @staticmethod
     def event(
         event_id: str,
