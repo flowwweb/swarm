@@ -155,12 +155,14 @@ EXPECTED_OBSERVATION_FIELDS = frozenset({
 EXPECTED_DUE_EVENTS = frozenset({"MATERIAL_EVENT", "TURN_COMPLETION", "LEASE_EXPIRY", "USER_STEER"})
 NON_MATERIAL_RECORD_TYPES = frozenset({"EXPECTED_RECEIPT", "REQUEST_LIFECYCLE", "TASK_HANDOFF", "CONNECTOR"})
 CONNECTOR_RECEIPT_FIELDS = frozenset({
-    "schema_version", "record_type", "receipt_id", "idempotency_key", "command_digest",
+    "schema_version", "record_type", "receipt_id", "command_id", "receipt_index",
+    "idempotency_key", "command_digest",
     "project_id", "root_digest", "action", "status", "thread_id", "turn_id",
     "observed_root_digest", "observed_at_ms",
 })
 CONNECTOR_ACTIONS = frozenset({"AUTO", "MANUAL_AGENT", "TASK", "TOPOLOGY_MATERIALIZE", "REPAIR", "LOCAL_HQ"})
-CONNECTOR_STATUSES = frozenset({"COMMAND", "ACKNOWLEDGED", "RESULT", "UNSUPPORTED"})
+CONNECTOR_STATUSES = frozenset({"COMMAND", "ACKNOWLEDGED", "PROGRESS", "RESULT", "UNSUPPORTED"})
+CONNECTOR_TERMINAL_STATUSES = frozenset({"RESULT", "UNSUPPORTED"})
 
 
 class ProgressLifecycle(StrEnum):
@@ -689,7 +691,7 @@ def _validate_connector_receipt(payload: Any) -> dict[str, Any]:
     if payload.get("schema_version") != 1 or payload.get("record_type") != "CONNECTOR":
         raise ProgressEventError("connector receipt schema is unsupported")
     normalized = dict(payload)
-    for key in ("receipt_id", "idempotency_key", "project_id", "action", "status"):
+    for key in ("receipt_id", "command_id", "idempotency_key", "project_id", "action", "status"):
         normalized[key] = _safe_id(payload.get(key), f"connector {key}")
     if normalized["action"] not in CONNECTOR_ACTIONS or normalized["status"] not in CONNECTOR_STATUSES:
         raise ProgressEventError("connector action or status is unsupported")
@@ -699,7 +701,16 @@ def _validate_connector_receipt(payload: Any) -> dict[str, Any]:
             raise ProgressEventError(f"connector {key} must be a lowercase SHA-256 digest")
     for key in ("thread_id", "turn_id"):
         normalized[key] = None if payload.get(key) is None else _safe_id(payload.get(key), f"connector {key}")
+    normalized["receipt_index"] = _positive_int(payload.get("receipt_index"), "connector receipt_index", allow_zero=True)
     normalized["observed_at_ms"] = _positive_int(payload.get("observed_at_ms"), "connector observed_at_ms", allow_zero=True)
+    has_host = normalized["thread_id"] is not None or normalized["turn_id"] is not None
+    if normalized["status"] in {"COMMAND", "UNSUPPORTED"} and (has_host or normalized["observed_root_digest"] != normalized["root_digest"]):
+        raise ProgressEventError("connector command or unsupported receipt cannot claim host binding")
+    if normalized["action"] == "LOCAL_HQ" and has_host:
+        raise ProgressEventError("LOCAL_HQ connector receipt cannot claim Codex host ids")
+    if normalized["action"] != "LOCAL_HQ" and normalized["status"] in {"ACKNOWLEDGED", "PROGRESS", "RESULT"}:
+        if not has_host or normalized["observed_root_digest"] != normalized["root_digest"]:
+            raise ProgressEventError("Codex connector lifecycle requires exact host ids and root binding")
     return json.loads(json.dumps(normalized, ensure_ascii=False, sort_keys=True, separators=(",", ":")))
 
 
@@ -1899,13 +1910,30 @@ class Ledger:
                     self._apply_task_handoff(projection, event, expected_seq)
                     self._apply_handoff_expected(projection, event, expected_seq, event_digest)
                 else:
-                    retained = projection["connector_receipts"].get(event["idempotency_key"])
-                    if retained is not None and retained["event_digest"] != event_digest:
-                        raise ProgressEventError("connector idempotency identity conflicts with retained digest")
-                    projection["connector_receipts"][event["idempotency_key"]] = {
-                        **event, "event_seq": expected_seq, "event_digest": event_digest,
-                    }
-                    projection["cursor"] = {"event_seq": expected_seq, "event_id": identity, "event_digest": event_digest}
+                    commands = projection["connector_receipts"]
+                    command = commands.get(event["idempotency_key"])
+                    identity = (event["command_id"], event["command_digest"], event["project_id"], event["root_digest"], event["action"])
+                    if command is None:
+                        if event["status"] != "COMMAND" or event["receipt_index"] != 0:
+                            raise ProgressEventError("connector lifecycle must begin with COMMAND index zero")
+                        command = {"identity": list(identity), "terminal": False, "receipts": []}
+                        commands[event["idempotency_key"]] = command
+                    elif tuple(command["identity"]) != identity:
+                        raise ProgressEventError("connector command identity conflicts with retained command")
+                    existing = next((item for item in command["receipts"] if item["receipt_id"] == event["receipt_id"]), None)
+                    if existing is not None:
+                        if existing["event_digest"] != event_digest:
+                            raise ProgressEventError("connector receipt identity conflicts with retained digest")
+                    else:
+                        if command["terminal"]:
+                            raise ProgressEventError("connector terminal lifecycle is monotonic")
+                        if event["receipt_index"] != len(command["receipts"]):
+                            raise ProgressEventError("connector receipt index must append contiguously")
+                        if event["status"] == "COMMAND" and command["receipts"]:
+                            raise ProgressEventError("connector COMMAND may appear only once")
+                        command["receipts"].append({**event, "event_seq": expected_seq, "event_digest": event_digest})
+                        command["terminal"] = event["status"] in CONNECTOR_TERMINAL_STATUSES
+                    projection["cursor"] = {"event_seq": expected_seq, "event_id": event["receipt_id"], "event_digest": event_digest}
             else:
                 event = _validate_progress_material_event(
                     raw_event,
@@ -1959,19 +1987,40 @@ class Ledger:
         event_digest = _connector_receipt_digest(event)
         with self._state.locked():
             projection, records = self._replay_unlocked()
-            retained = projection["connector_receipts"].get(event["idempotency_key"])
-            if retained is not None:
-                if retained["event_digest"] != event_digest:
-                    raise ProgressEventError("connector idempotency identity conflicts with retained digest")
-                return {"status": "unchanged", "cursor": {"event_seq": retained["event_seq"], "event_id": event["receipt_id"], "event_digest": event_digest}, "event_digest": event_digest}
+            command = projection["connector_receipts"].get(event["idempotency_key"])
+            if command is not None:
+                retained = next((item for item in command["receipts"] if item["receipt_id"] == event["receipt_id"]), None)
+                if retained is not None:
+                    if retained["event_digest"] != event_digest:
+                        raise ProgressEventError("connector receipt identity conflicts with retained digest")
+                    return {"status": "unchanged", "cursor": {"event_seq": retained["event_seq"], "event_id": event["receipt_id"], "event_digest": event_digest}, "event_digest": event_digest}
             event_seq = len(records) + 1
+            trial = json.loads(json.dumps(projection, sort_keys=True))
+            decoded = self._decode_non_material_record(event, event_digest)
+            assert decoded is not None
+            kind, identity, canonical, digest = decoded
+            trial_command = trial["connector_receipts"].get(canonical["idempotency_key"])
+            command_identity = (canonical["command_id"], canonical["command_digest"], canonical["project_id"], canonical["root_digest"], canonical["action"])
+            if trial_command is None:
+                if canonical["status"] != "COMMAND" or canonical["receipt_index"] != 0:
+                    raise ProgressEventError("connector lifecycle must begin with COMMAND index zero")
+                trial_command = {"identity": list(command_identity), "terminal": False, "receipts": []}
+                trial["connector_receipts"][canonical["idempotency_key"]] = trial_command
+            elif tuple(trial_command["identity"]) != command_identity:
+                raise ProgressEventError("connector command identity conflicts with retained command")
+            if trial_command["terminal"]:
+                raise ProgressEventError("connector terminal lifecycle is monotonic")
+            if canonical["receipt_index"] != len(trial_command["receipts"]):
+                raise ProgressEventError("connector receipt index must append contiguously")
+            trial_command["receipts"].append({**canonical, "event_seq": event_seq, "event_digest": digest})
+            trial_command["terminal"] = canonical["status"] in CONNECTOR_TERMINAL_STATUSES
+            trial["cursor"] = {"event_seq": event_seq, "event_id": identity, "event_digest": digest}
             record = {"event_seq": event_seq, "event_digest": event_digest, "event": event}
             line = json.dumps(record, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8") + b"\n"
             self._state.path.parent.mkdir(parents=True, exist_ok=True)
             with self._state.path.open("ab") as handle:
                 handle.write(line); handle.flush(); os.fsync(handle.fileno())
-            projection["connector_receipts"][event["idempotency_key"]] = {**event, "event_seq": event_seq, "event_digest": event_digest}
-            projection["cursor"] = {"event_seq": event_seq, "event_id": event["receipt_id"], "event_digest": event_digest}
+            projection = trial
             self._write_projection_unlocked(projection)
         with self._condition:
             self._condition.notify_all()
