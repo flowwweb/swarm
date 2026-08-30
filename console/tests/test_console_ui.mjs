@@ -23,6 +23,7 @@ const pluginIndexHtml = fs.readFileSync(path.join(pluginStaticRoot, "index.html"
 const server = fs.readFileSync(path.join(consoleRoot, "server.py"), "utf8");
 const pluginServer = fs.readFileSync(path.join(pluginConsoleRoot, "server.py"), "utf8");
 const agentsSourceOnly = process.argv.includes("--agents-source-only");
+const skipServerParity = process.argv.includes("--skip-server-parity");
 const offlineAsset = fs.readFileSync(path.join(staticRoot, "swarm-offline-disconnected.png"));
 const pluginOfflineAsset = fs.readFileSync(path.join(pluginStaticRoot, "swarm-offline-disconnected.png"));
 const mascotAsset = fs.readFileSync(path.join(staticRoot, "swarm-mascot-512.png"));
@@ -46,7 +47,7 @@ function pngIdentity(buffer) {
 const offlineAssetDigest = crypto.createHash("sha256").update(offlineAsset).digest("hex");
 assert.equal(offlineAssetDigest, "6f58eb1dc3c77634c0bb476591843a4226ccd73932589c70aae4a25cf02f8650");
 assert.deepEqual(pluginOfflineAsset, offlineAsset);
-assert.equal(crypto.createHash("sha256").update(mascotAsset).digest("hex"), "afb7e94cb63e994a929211dd8a81d816d2dd5b19d819ec72d81f121474ae8b07");
+assert.equal(crypto.createHash("sha256").update(mascotAsset).digest("hex"), "247fc2a02b5505c13815d78c4cce8765b893f51b70cf9167d1e2d43350209666");
 assert.equal(crypto.createHash("sha256").update(onboardingSlide1Asset).digest("hex"), "7f97baeee650e3e5e0c024b52da0dac9d4f69ad691050630cb90f0237ca9a3ed");
 assert.equal(crypto.createHash("sha256").update(onboardingRoleGroupAsset).digest("hex"), "dc9ed5015aff55402e9f266cfbb59676d2deaa1465a16b634e4064bdf490d48e");
 assert.equal(crypto.createHash("sha256").update(onboardingProjectToolAsset).digest("hex"), "6c8331de54dac15c83d889374c58cda9034dae1a86d64a1c94c3b1a90f9a3551");
@@ -62,7 +63,7 @@ assert.deepEqual(pluginIconAsset, iconAsset);
 assert.equal(pluginCss, css);
 assert.equal(pluginApp, app);
 assert.equal(pluginIndexHtml, indexHtml);
-if (!agentsSourceOnly) assert.equal(pluginServer, server);
+if (!agentsSourceOnly && !skipServerParity) assert.equal(pluginServer, server);
 assert.match(server, /"\/assets\/swarm-offline-disconnected\.png": \("swarm-offline-disconnected\.png", "image\/png"\)/);
 assert.match(server, /"\/assets\/swarm-mascot-512\.png": \("swarm-mascot-512\.png", "image\/png"\)/);
 assert.match(server, /"\/assets\/swarm-guided-tour-slide1\.png": \("swarm-guided-tour-slide1\.png", "image\/png"\)/);
@@ -91,7 +92,7 @@ for (const status of ["Live", "Reconnecting", "Offline"]) assert.match(app, new 
 assert.match(css, /\.status-dot\.is-reconnecting/);
 assert.match(css, /\.status-dot\.is-offline/);
 
-for (const [tab, icon] of [["overview", "layout-dashboard"], ["agents", "users"], ["review", "shield-check"], ["assets", "image"], ["settings", "settings"]]) {
+for (const [tab, icon] of [["overview", "layout-dashboard"], ["agents", "users"], ["roles", "list-tree"], ["review", "shield-check"], ["assets", "image"], ["settings", "settings"]]) {
   assert.match(indexHtml, new RegExp(`id="tab-${tab}"[\\s\\S]*?<use href="#lucide-${icon}"></use>`));
   assert.match(indexHtml, new RegExp(`id="lucide-${icon}" viewBox="0 0 24 24"`));
 }
@@ -100,25 +101,36 @@ assert.doesNotMatch(indexHtml, />Graph<\/b>|data-view="graph"/);
 assert.doesNotMatch(indexHtml, /[⌂▦⑂▥⊙⚙]/);
 assert.match(indexHtml, /id="mobile-menu-button"[^>]*aria-label="Open navigation"[^>]*aria-expanded="false"[^>]*aria-controls="console-drawer"/);
 assert.match(indexHtml, /class="mobile-app-bar"[\s\S]*?<img src="\/assets\/swarm-wordmark\.png" alt="SWARM"/);
+assert.match(indexHtml, /<title>SWARM HQ<\/title>/);
+assert.doesNotMatch(indexHtml + app, /Control Console/i);
+assert.equal((indexHtml.match(/class="brand-hq"/g) || []).length, 3);
+assert.match(css, /--coral: #ff526f;/);
+assert.match(css, /\.brand-hq \{[^}]*background:linear-gradient\(120deg,var\(--orange\),var\(--coral\)\);[^}]*font-style:italic;/);
+assert.match(css, /\.brand-hq::before \{[^}]*background:linear-gradient\(120deg,var\(--orange\),var\(--coral\)\);/);
 assert.equal((indexHtml.match(/class="nav-list"/g) || []).length, 1);
 assert.match(indexHtml, /class="nav-footer"[\s\S]*?id="tab-settings"/);
 assert.match(indexHtml, /id="tab-overview"[\s\S]*?<b>Overview<\/b>/);
 assert.equal((indexHtml.match(/id="project-navigation-heading"/g) || []).length, 1);
-assert.match(indexHtml, /id="project-navigation-heading">Projects<\/p>[\s\S]*?id="project-navigation"/);
-assert.match(indexHtml, /id="project-scope-filter" aria-label="Project scope"/);
+assert.match(indexHtml, /<a id="project-navigation-heading" href="\.\/#overview" aria-label="All projects">Projects<\/a>[\s\S]*?id="project-navigation"/);
+assert.match(css, /\.project-navigation > a \{[^}]*min-height:44px;[^}]*color:var\(--faint\);[^}]*text-decoration:none;[^}]*text-transform:uppercase;/);
+assert.match(css, /\.project-navigation > a:focus-visible \{ outline:2px solid #fff;/);
+assert.match(indexHtml, /<details class="polished-select scope-selector" id="project-scope-selector">[\s\S]*?id="project-scope-filter" aria-label="Project scope"[^>]*aria-haspopup="listbox"[\s\S]*?id="project-scope-options" role="listbox"/);
+assert.doesNotMatch(indexHtml, /<select[^>]*id="project-scope-filter"/);
 assert.match(indexHtml, /id="notifications"[^>]*aria-label="Notifications"/);
 assert.match(indexHtml, /id="profile"[^>]*aria-label="Profile unavailable"[^>]*disabled/);
 assert.match(indexHtml, /id="profile"[^>]*><svg[\s\S]*?<use href="#lucide-circle-user-round"><\/use><\/svg><\/button>/);
 assert.doesNotMatch(indexHtml, /id="profile"[^>]*>[\s\S]*?<span>Profile<\/span>/);
-assert.match(css, /\.profile-button \{[^}]*width:40px;[^}]*height:40px;[^}]*border-radius:50%/);
+assert.match(indexHtml, /class="profile-button chrome-action circle-frame"[^>]*id="profile"/);
+assert.match(indexHtml, /class="icon-button circle-frame system-health-control[^>]*id="system-health-control"/);
+for (const icon of ["eye", "trash-2"]) assert.match(indexHtml, new RegExp(`id="lucide-${icon}" viewBox="0 0 24 24"`));
 assert.match(indexHtml, /id="onboarding-dialog"[^>]*aria-labelledby="onboarding-dialog-title"[^>]*aria-describedby="onboarding-step-status"/);
-assert.equal((indexHtml.match(/<dialog\b/g) || []).length, 3);
-for (const shell of ["evidence-lightbox-shell", "role-editor-shell", "onboarding-shell"]) {
+assert.equal((indexHtml.match(/<dialog\b/g) || []).length, 4);
+for (const shell of ["evidence-lightbox-shell", "role-editor-shell", "asset-dialog-shell", "onboarding-shell"]) {
   assert.match(indexHtml, new RegExp(`class="dialog-shell ${shell}"`));
 }
-assert.equal((indexHtml.match(/class="dialog-body /g) || []).length, 3);
-assert.equal((indexHtml.match(/class="dialog-body-content /g) || []).length, 3);
-assert.equal((indexHtml.match(/class="dialog-footer /g) || []).length, 3);
+assert.equal((indexHtml.match(/class="dialog-body /g) || []).length, 4);
+assert.equal((indexHtml.match(/class="dialog-body-content /g) || []).length, 4);
+assert.equal((indexHtml.match(/class="dialog-footer /g) || []).length, 4);
 assert.match(css, /\.dialog-shell \{[^}]*grid-template-rows:auto minmax\(0,1fr\) auto;[^}]*overflow:hidden;[^}]*padding:0;/);
 assert.match(css, /\.dialog-body \{[^}]*width:100%;[^}]*min-height:0;[^}]*overflow-x:hidden; overflow-y:auto;[^}]*scrollbar-gutter:stable;[^}]*padding:0;/);
 assert.match(css, /\.dialog-body-content \{ width:100%; min-width:0; \}/);
@@ -240,7 +252,7 @@ assert.match(onboardingConfigSource, /id="onboarding-advanced-settings"[\s\S]*?d
 assert.doesNotMatch(onboardingConfigSource, /onboarding-config-advanced|onboarding-advanced-content|Minimum model|Maximum model|Usage Saver|Use ChatGPT|Automatic health checks|Parallel lanes/);
 assert.doesNotMatch(app, /data-onboarding-control="usage-policy"|onboarding-config-group|onboarding-config-wide/);
 assert.doesNotMatch(app, /artifact-13|config-usage-first/i);
-assert.match(app, /function openAdvancedSettingsFromOnboarding\(\)[\s\S]*?history\.pushState\(null, '', '#settings-advanced'\)[\s\S]*?setView\('settings', false, false\)[\s\S]*?details\.open = true[\s\S]*?querySelector\('summary'\)\?\.focus/);
+assert.match(app, /function openAdvancedSettingsFromOnboarding\(\)[\s\S]*?setView\('settings', false, false\)[\s\S]*?writeRoute\('push', 'settings-advanced'\)[\s\S]*?details\.open = true[\s\S]*?querySelector\('summary'\)\?\.focus/);
 assert.match(app, /if \(view === "settings-advanced"\) return "settings"/);
 assert.match(app, /id="settings-advanced"' \+ \(location\.hash === '#settings-advanced' \? ' open' : ''\)/);
 assert.match(app, /function openOnboarding\(force = false, trigger = null\)/);
@@ -285,26 +297,19 @@ assert.match(app, /event\.key === "Tab" && \$\("\.app-shell"\)\.classList\.conta
 assert.match(app, /drawer\.inert = !expanded/);
 assert.match(app, /event\.key === "Escape" && \$\("\.app-shell"\)\.classList\.contains\("is-drawer-open"\)/);
 
-for (const label of ["Projects", "Latest updates", "Recent images", "Tokens · 1d", "Where changes apply", "Manage", "Advanced settings"]) {
+for (const label of ["Projects", "Latest updates", "Recent images", "Where changes apply", "Manage", "Advanced settings"]) {
   assert.match(indexHtml + app, new RegExp(label));
 }
 assert.match(app, /\/api\/usage-history\?/);
-assert.match(app, /usageWindowHours: 24/);
-assert.match(indexHtml, /data-usage-hours="1"/);
-assert.match(indexHtml, /data-usage-hours="24"/);
-assert.doesNotMatch(indexHtml, /data-usage-hours="168"/);
-assert.doesNotMatch(indexHtml, />1w<\/button>/);
-assert.match(indexHtml, /id="usage-rate-sparkline"/);
-assert.match(app, /function usageRateSeries\(series\)/);
-assert.match(app, /function downsampleSeries\(values, maximum = 96\)/);
-assert.match(app, /source\.status === 'no_data'/);
-assert.match(app, /Partial coverage/);
-assert.match(app, /Complete coverage/);
-assert.match(app, /source\.coverage\?\.observed_threads/);
-assert.match(indexHtml, /id="usage-range"/);
-assert.match(indexHtml, /id="usage-sparkline" viewBox="0 0 240 52"/);
-assert.match(css, /\.usage-chart-pair \{ grid-column:2;/);
-assert.match(css, /@media \(max-width: 620px\)[\s\S]*\.usage-chart-pair \{ display:none; \}/);
+assert.match(app, /usageWindowHours: 1/);
+assert.doesNotMatch(indexHtml, /usage-strip|usage-heading|usage-sparkline|usage-rate-sparkline|data-usage-hours/);
+assert.doesNotMatch(css, /\.usage-strip|\.usage-chart-pair|\.usage-window-button/);
+assert.doesNotMatch(app, /function renderUsage\(|function usageRateSeries\(|function downsampleSeries\(/);
+assert.match(app, /function usageHistorySeries\(\)[\s\S]*?bucket_ms[\s\S]*?delta_tokens[\s\S]*?sort\(\(a, b\) => a\.bucket - b\.bucket\)/);
+assert.match(app, /function renderUsageCharts\(\)[\s\S]*?metric-usage-trend[\s\S]*?diagnostics-usage-trend/);
+assert.match(app, /\[1, 24, 168\]\.includes\(hours\)[\s\S]*?await refreshUsageHistory\(\)/);
+assert.doesNotMatch(app.slice(app.indexOf("function drawLine"), app.indexOf("function isSubagent")), /\[0, 0\]/);
+assert.doesNotMatch(app, /setInterval\([^)]*usageHistory|setInterval\([^)]*refreshUsage/);
 assert.match(indexHtml, /id="project-progress-section"/);
 assert.match(app, /\/api\/project-progress-feed\?/);
 assert.match(app, /\/api\/project-progress\?/);
@@ -607,7 +612,11 @@ assert.ok(Object.values(unknownMetricPresentation).filter((item) => item && type
 assert.doesNotMatch(indexHtml + app, /lines of code|productivity score|leaderboard/i);
 assert.match(app, /node\?\.owner_id \|\| node\?\.worker/);
 assert.match(indexHtml, /id="view-review"[\s\S]*id="review-list"/);
-assert.match(indexHtml, /id="view-assets"[\s\S]*id="asset-gallery"[\s\S]*id="asset-detail"/);
+assert.match(indexHtml, /id="view-assets"[\s\S]*id="asset-gallery"/);
+assert.doesNotMatch(indexHtml, /id="asset-detail"/);
+assert.match(indexHtml, /id="asset-dialog"[^>]*aria-labelledby="asset-dialog-title"/);
+assert.match(indexHtml, /id="asset-dialog-content"/);
+assert.match(indexHtml, /id="asset-dialog-footer"/);
 assert.match(indexHtml, /class="asset-view-toggle" role="group" aria-label="Asset view"/);
 assert.match(indexHtml, /data-asset-view="grid" aria-pressed="true"/);
 assert.match(indexHtml, /data-asset-view="list" aria-pressed="false"/);
@@ -621,23 +630,44 @@ assert.match(assetGridSource, /class="asset-image-button"/);
 assert.match(assetGridSource, /class="asset-quick-actions"/);
 assert.match(assetGridSource, /aria-label="Open asset details for/);
 assert.doesNotMatch(assetGridSource, /<strong>|<small>|asset-list-copy|proofReviewState/);
-const assetListSource = app.slice(app.indexOf("function assetListMarkup"), app.indexOf("function renderAssets"));
+const assetListSource = app.slice(app.indexOf("function assetListMarkup"), app.indexOf("function renderAssetDialog"));
 assert.match(assetListSource, /asset-list-copy/);
 assert.match(assetListSource, /proofReviewState\(item\)/);
+assert.match(assetListSource, /Type<\/small>/);
+assert.match(assetListSource, /Updated<\/small>/);
+assert.match(assetListSource, /Status<\/small>/);
+assert.doesNotMatch(assetListSource, /Digest<\/small>|MIME<\/small>|Immutable ID<\/small>|Source<\/small>/);
 assert.match(app, /data-asset-detail/);
 assert.match(app, /state\.assetView = assetView\.dataset\.assetView === "list" \? "list" : "grid"/);
 assert.match(app, /data-asset-image loading="lazy"/);
 assert.match(app, /Preview unavailable/);
 assert.match(css, /\.asset-image-frame img \{[^}]*object-fit:contain/);
-assert.match(css, /\.asset-tile:hover \.asset-quick-actions,\.asset-tile:focus-within \.asset-quick-actions/);
-assert.match(css, /@media \(hover: none\) \{[\s\S]*\.asset-quick-actions \{ opacity:1; pointer-events:auto; \}/);
+assert.match(css, /\.asset-tile:hover \.asset-quick-actions,\.asset-tile:focus-within \.asset-quick-actions \{ opacity:1; \}/);
+assert.match(css, /\.asset-quick-actions \.icon-button \{ width:44px; height:44px; pointer-events:auto; \}/);
+assert.match(css, /@media \(hover: none\) \{[\s\S]*\.asset-quick-actions \{ opacity:1; \}/);
 assert.match(css, /@media \(max-width: 620px\)[\s\S]*\.asset-quick-actions \.icon-button \{ width:44px; height:44px; \}/);
-assert.match(app, /class="asset-revisions" aria-label="Retained asset revisions"/);
-assert.match(app, /Review feedback command is not available/);
-assert.match(app, /Proof admission command is not available/);
-assert.match(app, /Asset revision command is not available/);
-assert.match(app, /Asset approval command is not available/);
+assert.match(css, /@media \(max-width: 620px\)[\s\S]*\.asset-gallery \{ grid-template-columns:1fr;/);
+assert.match(app, /class="asset-revisions" aria-label="Revision history"/);
+assert.match(app, /function assetRevisionItems\(selected, items = assetItems\(\)\)/);
+assert.match(app, /Trash, restore, purge, revision, and approval remain unavailable until accepted server commands exist/);
+assert.match(app, /<summary>Advanced<\/summary>/);
+assert.match(app, /function openAssetDialog\(identity, trigger\)/);
+const openAssetDialogSource = app.slice(app.indexOf("function openAssetDialog"), app.indexOf("function closeAssetDialog"));
+assert.doesNotMatch(openAssetDialogSource, /renderAssets\(\)/);
+assert.match(openAssetDialogSource, /card\.classList\.toggle\("is-selected"/);
+assert.match(app, /state\.assetTrigger\?\.focus/);
 assert.doesNotMatch(app, /REVIEW_FEEDBACK_SUBMIT|PROOF_ADMIT|ASSET_REVISION_CREATE|ASSET_APPROVE/);
+const assetHelperStart = app.indexOf("function assetStage");
+const assetHelperEnd = app.indexOf("\nfunction assetGridMarkup", assetHelperStart);
+const assetHelpers = vm.runInNewContext(`(() => { function humanize(value) { return String(value || ""); } ${app.slice(assetHelperStart, assetHelperEnd)}; return { assetStage, assetRevisionItems }; })()`);
+assert.deepEqual({ ...assetHelpers.assetStage({ generation_stage: "GENERATING", progress_measured: true, progress_percent: 42.4 }) }, { value: "GENERATING", label: "Generating", measured: true, percent: 42 });
+assert.deepEqual({ ...assetHelpers.assetStage({ generation_stage: "VALIDATING", progress_percent: 77 }) }, { value: "VALIDATING", label: "Validating", measured: false, percent: 77 });
+assert.equal(assetHelpers.assetStage({ generation_stage: "UNKNOWN" }), null);
+const revisionRoot = { evidence_id: "root", logical_asset_id: "asset:one", revision: 1 };
+const revisionTwo = { evidence_id: "second", logical_asset_id: "asset:one", revision: 2 };
+const separateOption = { evidence_id: "option", logical_asset_id: "asset:two", revision: 9 };
+assert.deepEqual(Array.from(assetHelpers.assetRevisionItems(revisionRoot, [revisionRoot, separateOption, revisionTwo]), (item) => item.evidence_id), ["second", "root"]);
+assert.deepEqual(Array.from(assetHelpers.assetRevisionItems({ evidence_id: "standalone" }, [revisionRoot]), (item) => item.evidence_id), ["standalone"]);
 assert.match(indexHtml, /id="notifications"[^>]*aria-expanded="false"[^>]*aria-controls="notifications-panel"/);
 assert.match(indexHtml, /id="notifications-panel" role="dialog"[^>]*aria-labelledby="notifications-heading"[^>]*aria-describedby="notifications-status"[^>]*hidden tabindex="-1"/);
 assert.match(indexHtml, /id="notifications-unread-list"/);
@@ -794,13 +824,14 @@ assert.match(app, /function openSystemHealth\(\)[\s\S]*?setView\("settings"\)[\s
 assert.match(app, /chromeDot\.className = "status-dot" \+ \(presentation\.className \? " " \+ presentation\.className : ""\)/);
 assert.match(app, /\$\("#system-health-control"\)\.addEventListener\("click", openSystemHealth\)/);
 assert.match(app, /function overviewRequestPath\(\)[\s\S]*?project_id=" \+ encodeURIComponent\(projectId\)/);
-assert.match(app, /\$\("#project-navigation"\)\.addEventListener\("click", async \(event\) =>[\s\S]*?await selectProjectScope\(scope\.dataset\.projectId\)/);
-assert.match(app, /async function selectProjectScope\(projectId\)[\s\S]*?await refreshOverview\(false\)/);
+assert.match(app, /\$\("#project-navigation"\)\.addEventListener\("click", async \(event\) =>[\s\S]*?await selectProjectScope\(scope\.dataset\.projectId, scope\)/);
+assert.match(app, /async function selectProjectScope\(projectId, trigger = null, historyMode = "push"\)[\s\S]*?await refreshOverview\(false\)/);
+assert.match(app, /\$\("#project-navigation-heading"\)\.addEventListener\("click", async \(event\) =>[\s\S]*?setView\("overview", false, false\)[\s\S]*?await selectProjectScope\("all", event\.currentTarget\)/);
 assert.match(app, /id="system-health-panel"[\s\S]*?Diagnostics[\s\S]*?System health/);
 assert.match(css, /\.system-health-control[\s\S]*?\.status-dot\.is-attention/);
 assert.match(css, /@media \(max-width: 620px\)[\s\S]*?\.icon-button \{ flex: 0 0 46px; height: 46px; \}/);
 assert.match(app, /function routeView\(\)/);
-assert.match(app, /\["overview", "agents", "review", "assets", "settings"\]/);
+assert.match(app, /\["overview", "agents", "roles", "review", "assets", "settings"\]/);
 assert.doesNotMatch(app.slice(app.indexOf("function routeView"), app.indexOf("function setView")), /dashboard|hierarchy|kanban|diagnostics/);
 for (const retiredView of ["dashboard", "hierarchy", "kanban", "diagnostics"]) {
   assert.doesNotMatch(indexHtml, new RegExp(`id="view-${retiredView}"`));
@@ -821,7 +852,8 @@ assert.match(app, /if \(projectId\) return summaries\.projects\?\.\[projectId\] 
 assert.match(app, /validPercent == null \? "Unmeasured"/);
 assert.match(app, /freshness\.state === "fresh" \? "Fresh" : freshness\.state === "stale" \? "Stale" : "Unmeasured"/);
 assert.doesNotMatch(app, /completed \/ total/);
-assert.doesNotMatch(app, /progress_basis\?\.percent|progress_percent/);
+const authoritativeProgressSource = app.slice(app.indexOf("function authoritativeProgress"), app.indexOf("function hasCurrentWorkScopeContract"));
+assert.doesNotMatch(authoritativeProgressSource, /progress_basis\?\.percent|progress_percent/);
 assert.match(app, /function hasCurrentWorkScopeContract\(\)/);
 assert.match(app, /function currentWorkProjects\(\)/);
 assert.match(app, /function currentWorkControllers\(\)/);
@@ -866,17 +898,18 @@ const rosterFixture = {
   navigation: {
     project_inventory: { state: "KNOWN", available: true },
     projects: [
-      { id: "inactive", name: "Zulu", archived: false, visibility: "visible", project_eligibility: "no_ctrl", ctrl_ids: [], active_ctrl_id: null, task_count: 0, status: "inactive", status_facts: { active: false, stalled: false, inactive: true } },
-      { id: "stalled", name: "Beta", archived: false, visibility: "visible", project_eligibility: "swarm_ctrl", ctrl_ids: ["ctrl-b"], active_ctrl_id: null, task_count: 2, status: "stalled", status_facts: { active: false, stalled: true, inactive: false } },
-      { id: "active-b", name: "Charlie", archived: false, visibility: "visible", project_eligibility: "swarm_ctrl", ctrl_ids: ["ctrl-c"], active_ctrl_id: "ctrl-c", task_count: 3, status: "active", status_facts: { active: true, stalled: false, inactive: false } },
-      { id: "active-a", name: "Alpha", archived: false, visibility: "visible", project_eligibility: "no_ctrl", ctrl_ids: [], active_ctrl_id: null, task_count: 0, status: "active", status_facts: { active: true, stalled: false, inactive: false } },
+      { id: "inactive", name: "Zulu", archived: false, visibility: "visible", project_eligibility: "no_ctrl", ctrl_ids: [], active_ctrl_id: null, task_count: 0, activity_status: "inactive", activity_facts: { active_now: false, recently_active: false, inactive: true, unknown: false } },
+      { id: "recent", name: "Beta", archived: false, visibility: "visible", project_eligibility: "swarm_ctrl", ctrl_ids: ["ctrl-b"], active_ctrl_id: null, task_count: 2, activity_status: "recently_active", activity_facts: { active_now: false, recently_active: true, inactive: false, unknown: false } },
+      { id: "active-b", name: "Charlie", archived: false, visibility: "visible", project_eligibility: "swarm_ctrl", ctrl_ids: ["ctrl-c"], active_ctrl_id: "ctrl-c", task_count: 3, activity_status: "active", activity_facts: { active_now: true, recently_active: false, inactive: false, unknown: false } },
+      { id: "active-a", name: "Alpha", archived: false, visibility: "visible", project_eligibility: "no_ctrl", ctrl_ids: [], active_ctrl_id: null, task_count: 0, activity_status: "active", activity_facts: { active_now: true, recently_active: false, inactive: false, unknown: false } },
+      { id: "unknown", name: "Unknown", archived: false, visibility: "visible", project_eligibility: "no_ctrl", ctrl_ids: [], active_ctrl_id: null, task_count: 0, activity_status: "unknown", activity_facts: { active_now: false, recently_active: false, inactive: false, unknown: true } },
     ],
   },
 };
-assert.deepEqual(Array.from(savedProjectRosterHarness(rosterFixture).projects, (project) => project.id), ["active-a", "active-b", "stalled", "inactive"]);
+assert.deepEqual(Array.from(savedProjectRosterHarness(rosterFixture).projects, (project) => project.id), ["active-a", "active-b", "recent", "inactive", "unknown"]);
 assert.equal(savedProjectRosterHarness({ navigation: { project_inventory: { state: "UNKNOWN", available: false }, projects: [] } }).state, "UNKNOWN");
 const conflictedRoster = structuredClone(rosterFixture);
-conflictedRoster.navigation.projects[0].status_facts.active = true;
+conflictedRoster.navigation.projects[0].activity_facts.active_now = true;
 assert.equal(savedProjectRosterHarness(conflictedRoster).state, "UNKNOWN");
 assert.equal(fixture.overview.progress.controllers.ctrl.progress.percent, 80);
 assert.equal(fixture.overview.progress.controllers.ctrl.progress.source, "material_receipts");
@@ -887,14 +920,14 @@ assert.match(css, /#project-navigation \{[^}]*min-height:0;[^}]*overflow-y:auto;
 assert.match(css, /\.nav-footer \{[^}]*flex:0 0 auto;[^}]*margin-top:auto;/);
 assert.match(css, /\.project-scope-button \{[^}]*min-height: 44px;/);
 assert.ok(indexHtml.indexOf('id="project-tab-logs"') < indexHtml.indexOf('id="project-tab-ui"'));
-for (const status of ["active", "stalled", "inactive"]) assert.match(css, new RegExp(`\\.scope-dot\\.is-${status}`));
+for (const status of ["active", "recent", "inactive", "unknown"]) assert.match(css, new RegExp(`\\.scope-dot\\.is-${status}`));
 assert.doesNotMatch(indexHtml, /id="(?:task-table|proof-feed|burn-chart|overview-diagnostics-heading)"/);
 assert.match(app, /Needs attention/);
 assert.match(app, /project_id: request\.projectId/);
 assert.match(app, /ctrl_id: request\.ctrlId/);
 assert.match(app, /setInterval\(reportPresence, 60_000\)/);
 assert.match(app, /async function refreshMonitoring/);
-assert.match(app, /function renderAllViews\(\) \{ renderOverview\(\); renderAgents\(\); renderReview\(\); renderAssets\(\); renderSettings\(\); renderRunLogSurfaces\(\); if \(\$\("#onboarding-dialog"\)\?\.open\) renderOnboarding\(\); \}/);
+assert.match(app, /function renderAllViews\(\) \{ renderOverview\(\); renderAgents\(\); renderRoles\(\); renderReview\(\); renderAssets\(\); renderSettings\(\); renderRunLogSurfaces\(\); if \(\$\("#onboarding-dialog"\)\?\.open\) renderOnboarding\(\); \}/);
 assert.doesNotMatch(app, /\/api\/diagnostics\/history/);
 assert.match(app, /api\(overviewRequestPath\(\), \{ timeoutMs: 15_000 \}\)/);
 assert.match(indexHtml, /id="data-status-title">Connecting</);
@@ -1034,11 +1067,12 @@ assert.match(app, /delta_from_baseline_ms/);
 assert.match(app, /last_material_heartbeat_at_ms/);
 assert.match(app, /skillsError/);
 assert.match(app, /Try again to refresh this scope/);
-assert.match(app, /\$\("#project-navigation"\)\.addEventListener\("click", async \(event\) =>[\s\S]*?await selectProjectScope\(scope\.dataset\.projectId\)/);
+assert.match(app, /\$\("#project-navigation"\)\.addEventListener\("click", async \(event\) =>[\s\S]*?await selectProjectScope\(scope\.dataset\.projectId, scope\)/);
 assert.doesNotMatch(app, /Raw host logs|terminal output|hidden paths/);
 assert.match(app, /\.replace\(\/\\blocalhost\\b\/gi, "console"\)/);
-assert.match(indexHtml, /id="view-agents"[\s\S]*?Active swarm[\s\S]*?Role library/);
-assert.match(indexHtml, /id="agents-panel-active"[\s\S]*?id="agents-panel-library"/);
+assert.match(indexHtml, /id="view-agents"[^>]*aria-labelledby="tab-agents"[\s\S]*?id="agents-panel-active"/);
+assert.match(indexHtml, /id="view-roles"[^>]*aria-labelledby="tab-roles"[\s\S]*?Role library[\s\S]*?id="role-library-grid"/);
+assert.doesNotMatch(indexHtml + app, /data-agents-tab|agents-tab-library|state\.agentsTab/);
 assert.match(indexHtml, /id="role-library-status" role="status"/);
 assert.match(app, /function renderAgentHierarchy\(\)/);
 assert.match(app, /<details class="agent-project" open>/);
@@ -1185,9 +1219,10 @@ assert.match(app, /Active tasks retain their accepted role version/);
 assert.match(css, /\.role-avatar/);
 assert.match(css, /\.role-library-grid/);
 assert.match(css, /\.role-editor::backdrop/);
-assert.match(app, /const visual = retained \? '<img[\s\S]*?<use href="#lucide-circle-user-round"><\/use><\/svg>/);
-assert.match(app, /return '<span class="role-avatar '/);
-assert.match(app, /retained \? 'has-image' : 'is-fallback'/);
+assert.match(app, /function roleAvatar\(role\)[\s\S]*?class="role-avatar is-pending"[\s\S]*?aria-label="Avatar pending for /);
+assert.match(app, /function roleHasRetainedAvatar\(\) \{ return false; \}/);
+assert.doesNotMatch(app.slice(app.indexOf("function roleAvatar(role)"), app.indexOf("function roleSourceLabel")), /assetItems\(|proofMediaURL|lucide-circle-user-round|<img/);
+assert.match(css, /\.role-avatar\.is-pending \{[^}]*border-style:dashed/);
 assert.doesNotMatch(css, /\.role-avatar i::before|\.role-avatar i::after/);
 assert.match(app, /<button class="role-choice/);
 assert.match(app, /role="option" aria-label=/);
@@ -1232,7 +1267,7 @@ assert.match(indexHtml, /id="role-create"[\s\S]*?aria-label="Create custom role"
 assert.doesNotMatch(indexHtml, /id="role-create"[^>]*>[\s\S]*?Create role<\/button>/);
 assert.doesNotMatch(app, /verifiedYieldProjection\(\)\?\.attention_items/);
 assert.doesNotMatch(indexHtml + app + css, /--legacy-browser|mockup|prototype reference/i);
-assert.match(css, /@media \(max-width: 620px\)[\s\S]*\.agents-tabs button \{ min-height:44px; \}/);
+assert.doesNotMatch(css, /\.agents-tabs/);
 assert.match(css, /\.role-library-layout \{[^}]*grid-template-columns:minmax\(680px,1\.55fr\) minmax\(360px,\.75fr\)/);
 assert.match(css, /\.role-library-grid \{[^}]*grid-template-columns:repeat\(4,minmax\(0,1fr\)\)[^}]*overflow-x:hidden; overflow-y:auto; scrollbar-gutter:stable/);
 assert.match(css, /\.role-choice \{[^}]*min-height:154px[^}]*grid-template-rows:96px auto/);
@@ -1245,8 +1280,10 @@ assert.match(css, /@media \(max-width: 860px\)[\s\S]*\.role-detail-actions \.ico
 assert.match(css, /@media \(max-width: 860px\)[\s\S]*\.role-editor-actions \.quiet-button,\.role-editor-actions \.primary-action \{ min-height:44px; \}/);
 assert.match(css, /@media \(max-width: 620px\)[\s\S]*\.role-library-layout \{ grid-template-columns:1fr; \}[\s\S]*\.role-library-grid \{[^}]*grid-template-columns:repeat\(2,minmax\(0,1fr\)\)[\s\S]*\.role-choice \{ min-height:72px/);
 assert.match(css, /@media \(max-width: 620px\)[\s\S]*\.role-filter > summary \{ width:44px; height:44px; \}/);
-assert.match(css, /\.app-shell\[data-current-view="overview"\] \.usage-strip \{ display:none; \}/);
-assert.match(css, /@media \(max-width: 620px\)[\s\S]*\.profile-button \{ position:fixed;[^}]*right:14px/);
+assert.match(css, /\.circle-frame \{ --circle-size:40px;[^}]*inline-size:var\(--circle-size\); block-size:var\(--circle-size\); aspect-ratio:1; flex:0 0 var\(--circle-size\);[^}]*overflow:hidden; border-radius:50%/);
+assert.match(css, /\.circle-frame img \{[^}]*width:100%; height:100%; object-fit:cover/);
+assert.match(css, /@media \(max-width: 620px\)[\s\S]*\.circle-frame \{ --circle-size:44px; \}/);
+assert.doesNotMatch(css, /\.profile-button[^}]*width:\s*\d+px;|\.profile-button[^}]*height:\s*\d+px;/);
 assert.match(css, /\.role-editor-fields input,.role-editor-fields textarea,.role-editor-fields select[\s\S]*?\.role-editor-fields input,.role-editor-fields select \{ min-height:44px; \}/);
 assert.match(css, /@media \(max-width: 620px\)[\s\S]*\.project-tabs button \{ min-height:44px; \}/);
 assert.match(css, /@media \(max-width: 620px\)[\s\S]*\.review-actions \.icon-button,\.review-actions summary \{ width:44px; height:44px; \}/);
@@ -1254,6 +1291,12 @@ assert.match(css, /@media \(max-width: 620px\)[\s\S]*\.settings-card input,\.set
 assert.match(css, /@media \(max-width: 620px\)[\s\S]*\.error-surface \{ top:calc\(64px \+ env\(safe-area-inset-top\) \+ 8px\);/);
 assert.match(css, /@media \(max-width: 620px\)[\s\S]*\.error-surface button \{ min-height:44px; \}/);
 assert.match(css, /\.assets-layout/);
+assert.match(css, /\.asset-dialog \{[^}]*margin:auto;[^}]*padding:0;/);
+assert.match(css, /\.asset-dialog-header \{[^}]*display:flex;[^}]*justify-content:space-between/);
+assert.match(css, /\.asset-dialog-footer \{[^}]*display:flex;[^}]*border-top:1px solid var\(--line\)/);
+assert.match(css, /\.asset-dialog-content \{[^}]*padding:18px 20px/);
+assert.match(css, /\.asset-quick-actions \.icon-button \{ width:44px; height:44px/);
+assert.match(css, /\.asset-list-actions \.icon-button \{ width:44px; height:44px/);
 assert.match(css, /\.project-overview-grid/);
 assert.match(css, /\.notifications-panel/);
 const roleGridTargetStart = app.indexOf("function roleGridTargetIndex");
@@ -1388,7 +1431,7 @@ function scopedFixture() {
   );
   const projectStatuses = new Map([
     ["project:fixture", "active"], ["project:branch", "active"], ["project:arc", "active"], ["project:atlas", "active"],
-    ["project:stalled", "stalled"], ["project:idle", "inactive"], ["project:waiting", "inactive"],
+    ["project:stalled", "recently_active"], ["project:idle", "inactive"], ["project:waiting", "inactive"],
   ]);
   overview.navigation.project_inventory = { state: "KNOWN", available: true, source: "host_projects", claim_limit: "Fixture saved-project inventory" };
   overview.project_inventory = structuredClone(overview.navigation.project_inventory);
@@ -1397,9 +1440,9 @@ function scopedFixture() {
     return {
       ...project,
       ordering: { position, normalized_name: project.name.toLowerCase(), project_id: project.id },
-      status,
-      status_facts: { active: status === "active", stalled: status === "stalled", inactive: status === "inactive", source: "fixture" },
-      status_source: "fixture",
+      activity_status: status,
+      activity_facts: { active_now: status === "active", recently_active: status === "recently_active", inactive: status === "inactive", unknown: status === "unknown", source: "fixture" },
+      activity_source: "fixture",
       task_count: overview.nodes.filter((node) => node.project_id === project.id).length,
     };
   });
@@ -1433,9 +1476,9 @@ function overflowingProjectFixture(count = 24) {
       active_ctrl_id: null,
       active_ctrl: false,
       ordering: { position: overview.navigation.projects.length, normalized_name: id, project_id: id },
-      status: "inactive",
-      status_facts: { active: false, stalled: false, inactive: true, source: "fixture" },
-      status_source: "fixture",
+      activity_status: "inactive",
+      activity_facts: { active_now: false, recently_active: false, inactive: true, unknown: false, source: "fixture" },
+      activity_source: "fixture",
       task_count: 0,
     });
   }
@@ -1563,13 +1606,15 @@ async function mount(page, overview, overrides = {}) {
     if (url.pathname === "/swarm-icon-64.png") return route.fulfill({ status: 200, contentType: "image/png", body: iconAsset });
     return route.abort();
   });
-  await page.goto("http://swarm.test/", { waitUntil: "domcontentloaded" });
+  await page.goto(overrides.initialURL || "http://swarm.test/", { waitUntil: "domcontentloaded" });
   if (overrides.waitForConnectionState) {
     await page.locator("#connection-state").waitFor({ state: "visible" });
     return { runtimeErrors, requests, notificationSeenRequests, configRequests };
   }
   try {
-    await page.locator("#overview-content").waitFor({ state: "visible" });
+    const initialView = new URL(overrides.initialURL || "http://swarm.test/").hash.replace(/^#/, "") || "overview";
+    if (initialView === "overview") await page.locator("#overview-content").waitFor({ state: "visible" });
+    else await page.waitForFunction((view) => Boolean(state.overview) && !document.querySelector('[data-view-panel="' + view + '"]')?.hidden, initialView);
   } catch (error) {
     const message = await page.locator("#error-message").textContent().catch(() => "");
     throw new Error(`${error.message}; console=${runtimeErrors.join(" | ")}; surface=${message}`);
@@ -1661,6 +1706,25 @@ async function assertDialogFrame(page, selector) {
   assert.ok(result.dialogOverflowX <= 1);
   assert.ok(result.shellOverflowX <= 1);
   assert.ok(result.documentOverflowX <= 1);
+}
+
+async function assertCircleFrame(page, selector, minimum = 40) {
+  const result = await page.locator(selector).evaluate((element) => {
+    const box = element.getBoundingClientRect();
+    const style = getComputedStyle(element);
+    return { width: box.width, height: box.height, aspectRatio: style.aspectRatio, borderRadius: style.borderRadius, flex: style.flex, overflow: style.overflow };
+  });
+  assert.ok(result.width >= minimum && result.height >= minimum, JSON.stringify({ selector, result }));
+  assert.ok(Math.abs(result.width - result.height) <= 0.5, JSON.stringify({ selector, result }));
+  assert.equal(result.aspectRatio, "1 / 1");
+  assert.match(result.borderRadius, /50%/);
+  assert.match(result.flex, /0 0/);
+  assert.equal(result.overflow, "hidden");
+}
+
+async function chooseProjectScope(page, projectId) {
+  await page.locator("#project-scope-filter").click();
+  await page.locator('[data-project-scope-id="' + projectId + '"]').click();
 }
 
 async function assertLaterStepNavigation(page, expectedPrimary) {
@@ -1803,7 +1867,7 @@ async function captureOnboardingEvidence(page, name) {
     return {
       header: visibleRect(":scope > .dialog-shell > .dialog-header"),
       footer: visibleRect(":scope > .dialog-shell > .dialog-footer"),
-      wordmark: visibleRect(".onboarding-header > img"),
+      wordmark: visibleRect(".onboarding-header > .brand-lockup img"),
     };
   });
   for (const [part, proof] of Object.entries(chrome)) {
@@ -1817,6 +1881,11 @@ async function captureOnboardingEvidence(page, name) {
   await page.screenshot({ path: path.join(evidenceDir, name + ".png"), fullPage: false, animations: "disabled" });
 }
 const proofFeed = imageProofFixture(6);
+proofFeed.items.push({
+  task_id: "ctrl", project_id: "project:fixture", evidence_id: "fixture-generating-asset", digest: "9".repeat(64),
+  media_type: "image/png", display_name: "Onboarding illustration", asset_type: "illustration",
+  generation_stage: "GENERATING", progress_measured: true, progress_percent: 42, observed_at_ms: 1724900000000,
+});
   const usageHistory = structuredClone(fixture.usageHistory);
   usageHistory.verified_yield = {
     schema_version: 1,
@@ -2346,7 +2415,7 @@ const proofFeed = imageProofFixture(6);
 
     const page = await browser.newPage({ viewport: { width: 1536, height: 1024 } });
     const desktop = await mount(page, overview, overrides);
-    for (const view of ["overview", "agents", "review", "assets", "settings"]) assert.equal(await page.locator('.nav-item[data-view="' + view + '"]').count(), 1);
+    for (const view of ["overview", "agents", "roles", "review", "assets", "settings"]) assert.equal(await page.locator('.nav-item[data-view="' + view + '"]').count(), 1);
     assert.equal(await page.getByRole("tab", { name: "Projects", exact: true }).count(), 0);
     for (const retired of ["dashboard", "hierarchy", "kanban", "diagnostics"]) assert.equal(await page.locator('.nav-item[data-view="' + retired + '"]').count(), 0);
     assert.equal(await page.locator("#project-scope-filter").isVisible(), true);
@@ -2355,18 +2424,74 @@ const proofFeed = imageProofFixture(6);
       "Atlas, Active",
       "Flowwweb, Active",
       "swarm, Active",
-      "Stalled project, Stalled",
+      "Stalled project, Recently active",
       "Idle project, Inactive",
       "Unassigned planning, Inactive",
     ]);
     assert.deepEqual(await page.locator("#project-navigation .scope-dot").evaluateAll((elements) => elements.map((element) => [...element.classList].find((name) => name.startsWith("is-")))), [
-      "is-active", "is-active", "is-active", "is-active", "is-stalled", "is-inactive", "is-inactive",
+      "is-active", "is-active", "is-active", "is-active", "is-recent", "is-inactive", "is-inactive",
     ]);
     assert.doesNotMatch(await page.locator("#project-navigation").textContent(), /All projects|Archived project|Resolve customer export/);
-    assert.deepEqual(await page.locator("#project-scope-filter option").allTextContents(), ["All projects", "Arc", "Atlas", "Flowwweb", "swarm", "Stalled project", "Idle project", "Unassigned planning"]);
+    await page.locator("#project-scope-filter").click();
+    assert.deepEqual(await page.locator("#project-scope-options [data-project-scope-id]").evaluateAll((elements) => elements.map((element) => ({ label: element.querySelector("span:nth-of-type(2)")?.textContent, status: element.querySelector("small")?.textContent }))), [
+      { label: "All projects", status: "Portfolio" },
+      { label: "Arc", status: "Active" },
+      { label: "Atlas", status: "Active" },
+      { label: "Flowwweb", status: "Active" },
+      { label: "swarm", status: "Active" },
+      { label: "Stalled project", status: "Recently active" },
+      { label: "Idle project", status: "Inactive" },
+      { label: "Unassigned planning", status: "Inactive" },
+    ]);
+    await page.keyboard.press("Escape");
+    assert.equal(await page.locator("#project-scope-selector").getAttribute("open"), null);
+    assert.equal(await page.evaluate(() => document.activeElement?.id), "project-scope-filter");
+    await page.keyboard.press("ArrowDown");
+    assert.equal(await page.evaluate(() => document.activeElement?.dataset.projectScopeId), "all");
+    await page.keyboard.press("End");
+    assert.equal(await page.evaluate(() => document.activeElement?.dataset.projectScopeId), "project:waiting");
+    await page.keyboard.press("Home");
+    assert.equal(await page.evaluate(() => document.activeElement?.dataset.projectScopeId), "all");
+    await page.keyboard.press("Escape");
+    const scopedViews = ["overview", "agents", "roles", "review", "assets", "settings"];
+    for (let index = 0; index < scopedViews.length; index += 1) {
+      const view = scopedViews[index];
+      const projectId = index % 2 ? "project:fixture" : "project:branch";
+      await page.locator('[data-view="' + view + '"]').click();
+      await chooseProjectScope(page, projectId);
+      await page.waitForFunction(({ view, projectId }) => state.view === view && state.projectId === projectId, { view, projectId });
+      assert.equal(await page.locator('[data-view-panel="' + view + '"]').isVisible(), true);
+      assert.equal(new URL(page.url()).searchParams.get("project"), projectId);
+      assert.equal(new URL(page.url()).hash, "#" + view);
+    }
+    await page.locator('[data-view="assets"]').click();
+    await chooseProjectScope(page, "project:branch");
+    await page.waitForFunction(() => state.view === "assets" && state.projectId === "project:branch");
+    await chooseProjectScope(page, "project:fixture");
+    await page.waitForFunction(() => state.view === "assets" && state.projectId === "project:fixture");
+    await page.goBack();
+    await page.waitForFunction(() => state.view === "assets" && state.projectId === "project:branch");
+    assert.equal(await page.locator("#view-assets").isVisible(), true);
+    await page.locator("#project-navigation-heading").focus();
+    assert.equal(await page.locator("#project-navigation-heading").getAttribute("aria-label"), "All projects");
+    await page.keyboard.press("Enter");
+    await page.waitForFunction(() => state.view === "overview" && state.projectId === "all");
+    assert.equal(new URL(page.url()).searchParams.has("project"), false);
+    assert.equal(new URL(page.url()).hash, "#overview");
+    if (evidenceDir) await page.screenshot({ path: path.join(evidenceDir, "11-overview-all-projects-link-desktop-1536x1024.png"), fullPage: false, animations: "disabled" });
     assert.equal(await page.locator("#profile").isDisabled(), true);
     assert.deepEqual(await page.locator(".overview-metric-card > header > span").allTextContents(), ["Active work", "Needs attention", "Verified progress", "Usage"]);
     assert.deepEqual(await page.locator(".overview-metric-card > strong").allTextContents(), ["3 / 5", "2", "75%", "125k used"]);
+    assert.equal(await page.locator('[data-usage-chart="overview"] [data-usage-range="1"]').getAttribute("aria-pressed"), "true");
+    assert.equal(await page.locator("#metric-usage-trend").getAttribute("aria-label"), "Usage during the last hour from 2 timestamped samples");
+    assert.ok(await page.locator("#metric-usage-trend polyline.chart-line").count() === 1);
+    const usageDayRequest = page.waitForRequest((request) => new URL(request.url()).pathname === "/api/usage-history" && new URL(request.url()).searchParams.get("hours") === "24");
+    await page.locator('[data-usage-chart="overview"] [data-usage-range="24"]').click();
+    await usageDayRequest;
+    await page.waitForFunction(() => state.usageWindowHours === 24 && state.usageStatus === "current");
+    assert.equal(await page.locator('[data-usage-chart="overview"] [data-usage-range="24"]').getAttribute("aria-pressed"), "true");
+    assert.equal(await page.locator('[data-usage-chart="diagnostics"] [data-usage-range="24"]').getAttribute("aria-pressed"), "true");
+    assert.equal(await page.locator("#diagnostics-usage-trend").getAttribute("aria-label"), "Usage during the last 24 hours from 2 timestamped samples");
     assert.equal(await page.locator("#overview-monitoring-heading").isVisible(), true);
     assert.deepEqual(await page.locator("#overview-project-cards [data-overview-project-id] strong").allTextContents(), ["Arc", "Atlas", "Flowwweb", "swarm", "Stalled project", "Idle project", "Unassigned planning"]);
     assert.match(await page.locator('[data-overview-project-id="project:waiting"]').locator("xpath=..").textContent(), /No CTRL/);
@@ -2514,7 +2639,7 @@ const proofFeed = imageProofFixture(6);
     await page.evaluate(() => selectProjectScope("project:fixture"));
     await page.getByRole("tab", { name: "Agents", exact: true }).click();
     assert.match(await page.locator("#agent-hierarchy").textContent(), /CTRL/);
-    await page.getByRole("tab", { name: "Role library", exact: true }).click();
+    await page.getByRole("tab", { name: "Roles", exact: true }).click();
     assert.equal(await page.locator(".role-choice").count(), 24);
     assert.match(await page.locator("#role-library-status").textContent(), /24 server-owned role manifests/);
     await page.locator("#role-search").fill("Game Development");
@@ -2532,6 +2657,10 @@ const proofFeed = imageProofFixture(6);
     await page.locator('.role-choice[data-role-select="developer"]').click();
     assert.equal(await page.locator('#role-library-detail .role-specializations li').count(), 4);
     assert.match(await page.locator('#role-library-detail').textContent(), /Developer[\s\S]*Boundaries/);
+    assert.equal(await page.locator('.role-avatar.is-pending[aria-label="Avatar pending for Developer"]').count(), 2);
+    assert.equal(await page.locator(".role-avatar img,.role-avatar .lucide").count(), 0);
+    await page.locator(".role-filter > summary").click();
+    if (evidenceDir) await page.screenshot({ path: path.join(evidenceDir, "12-roles-desktop-1536x1024.png"), fullPage: false, animations: "disabled" });
     await page.locator('.role-choice[data-role-select="reviewer"]').click();
     assert.match(await page.locator('#role-library-detail').textContent(), /Reviewer one[\s\S]*Reviewer four/);
     assert.doesNotMatch(await page.locator('#role-library-detail').textContent(), /Friendly|Hostile/);
@@ -2543,20 +2672,43 @@ const proofFeed = imageProofFixture(6);
     await assertDialogFrame(page, "#role-editor");
     await page.getByRole("button", { name: "Close role editor" }).click();
     await page.getByRole("tab", { name: "Review", exact: true }).click();
-    assert.equal(await page.locator(".review-row").count(), 6);
+    assert.equal(await page.locator(".review-row").count(), 7);
     assert.equal(await page.getByRole("button", { name: "Send feedback unavailable" }).first().isDisabled(), true);
     await page.getByRole("tab", { name: "Assets", exact: true }).click();
-    assert.equal(await page.locator(".asset-tile").count(), 6);
+    assert.equal(await page.locator(".asset-tile").count(), 7);
     assert.equal(await page.locator(".asset-tile .asset-list-copy").count(), 0);
-    assert.equal(await page.locator(".asset-tile .asset-quick-actions").count(), 6);
+    assert.equal(await page.locator(".asset-tile .asset-quick-actions").count(), 7);
+    assert.equal(await page.locator('.asset-generation-placeholder[aria-label="Generating"]').count(), 1);
+    assert.match(await page.locator('.asset-generation-placeholder[aria-label="Generating"]').textContent(), /Generating[\s\S]*42%/);
+    assert.equal(await page.locator('.asset-generation-placeholder img').count(), 0);
+    assert.equal(await page.locator(".usage-strip").count(), 0);
+    await assertCircleFrame(page, "#profile");
+    await assertCircleFrame(page, "#system-health-control");
     assert.equal(await page.locator(".asset-tile .asset-image-button").first().getAttribute("aria-label"), "Open asset details for Evidence image 1");
-    await page.locator(".asset-tile .asset-image-button").nth(1).click();
-    assert.match(await page.locator("#asset-detail").textContent(), /Evidence image 2/);
+    const assetTrigger = page.locator(".asset-tile .asset-image-button").nth(1);
+    await assetTrigger.focus();
+    await assetTrigger.click();
+    assert.equal(await page.locator("#asset-dialog").evaluate((element) => element.open), true);
+    assert.match(await page.locator("#asset-dialog").textContent(), /Evidence image 2/);
+    assert.match(await page.locator("#asset-dialog").textContent(), /Created[\s\S]*Updated[\s\S]*File size[\s\S]*Advanced/);
+    assert.equal(await page.getByRole("button", { name: /Move to trash/ }).last().isDisabled(), true);
+    await assertDialogFrame(page, "#asset-dialog");
+    if (evidenceDir) await page.screenshot({ path: path.join(evidenceDir, "15-assets-dialog-desktop-1536x1024.png"), fullPage: false, animations: "disabled" });
+    await page.getByRole("button", { name: "Close asset details" }).click();
+    assert.equal(await assetTrigger.evaluate((element) => element === document.activeElement), true);
+    await page.locator(".asset-tile .asset-image-button").last().click();
+    assert.match(await page.locator("#asset-dialog").textContent(), /Onboarding illustration[\s\S]*Generating[\s\S]*42%/);
+    assert.equal(await page.locator("#asset-dialog img").count(), 0);
+    if (evidenceDir) await page.screenshot({ path: path.join(evidenceDir, "18-assets-generating-desktop-1536x1024.png"), fullPage: false, animations: "disabled" });
+    await page.getByRole("button", { name: "Close asset details" }).click();
     await page.getByRole("button", { name: "List", exact: true }).click();
-    assert.equal(await page.locator(".asset-list-row").count(), 6);
-    assert.equal(await page.getByRole("button", { name: "New revision", exact: true }).first().isDisabled(), true);
-    assert.equal(await page.getByRole("button", { name: "Approve digest", exact: true }).first().isDisabled(), true);
-    assert.match(await page.locator("#asset-detail").textContent(), /Revision history/);
+    assert.equal(await page.locator(".asset-list-row").count(), 7);
+    assert.match(await page.locator(".asset-list-row").first().textContent(), /Type[\s\S]*Updated[\s\S]*Status/);
+    assert.doesNotMatch(await page.locator(".asset-list-row").first().textContent(), /Digest|MIME|Immutable ID|Source path/);
+    await page.locator(".asset-list-row .asset-list-main").first().click();
+    assert.equal(await page.locator("#asset-dialog details.asset-advanced").count(), 1);
+    await page.keyboard.press("Escape");
+    assert.equal(await page.locator("#asset-dialog").evaluate((element) => element.open), false);
     await page.getByRole("tab", { name: "Settings", exact: true }).click();
     assert.equal(await page.locator("#settings-grid > .settings-card").count(), 4);
     assert.equal(await page.getByRole("button", { name: "Replay tour" }).count(), 1);
@@ -2564,6 +2716,20 @@ const proofFeed = imageProofFixture(6);
     assert.equal(await page.locator("[data-qc-scope]").evaluate((element) => element.scrollWidth > element.clientWidth + 1), false);
     assert.deepEqual(desktop.runtimeErrors, []);
     await page.close();
+
+    const deepLinkPage = await browser.newPage({ viewport: { width: 1024, height: 760 } });
+    const deepLink = await mount(deepLinkPage, scopedFixture(), { ...overrides, initialURL: "http://swarm.test/?project=project%3Afixture#roles" });
+    assert.deepEqual(await deepLinkPage.evaluate(() => ({ view: state.view, projectId: state.projectId })), { view: "roles", projectId: "project:fixture" });
+    assert.equal(await deepLinkPage.locator("#view-roles").isVisible(), true);
+    await deepLinkPage.evaluate(() => {
+      state.overview.navigation.projects = state.overview.navigation.projects.filter((project) => project.id !== "project:fixture");
+      renderProjectNavigation();
+    });
+    assert.deepEqual(await deepLinkPage.evaluate(() => ({ view: state.view, projectId: state.projectId })), { view: "roles", projectId: "all" });
+    assert.match(await deepLinkPage.locator("#scope-change-status").textContent(), /is unavailable\. Showing All projects/);
+    assert.equal(await deepLinkPage.locator("#scope-change-status").isVisible(), true);
+    assert.deepEqual(deepLink.runtimeErrors, []);
+    await deepLinkPage.close();
 
     const noManifestPage = await browser.newPage({ viewport: { width: 1024, height: 760 } });
     const noManifestOverview = scopedFixture();
@@ -2581,7 +2747,7 @@ const proofFeed = imageProofFixture(6);
     unknownOverview.navigation.projects = [];
     const unknown = await mount(unknownPage, unknownOverview, overrides);
     assert.equal(await unknownPage.locator("#project-navigation").textContent(), "Saved projects unavailable");
-    assert.equal(await unknownPage.locator("#project-scope-filter").isDisabled(), true);
+    assert.equal(await unknownPage.locator("#project-scope-filter").getAttribute("aria-disabled"), "true");
     assert.match(await unknownPage.locator("#overview-project-cards").textContent(), /Saved projects are unavailable/);
     assert.equal(await unknownPage.locator("#overview-summary").textContent(), "Project inventory unavailable");
     assert.deepEqual(unknown.runtimeErrors, []);
@@ -2591,6 +2757,8 @@ const proofFeed = imageProofFixture(6);
     const tablet = await mount(tabletPage, scopedFixture(), overrides);
     assert.equal(await tabletPage.locator("#overview-project-cards .overview-project-card").count(), 7);
     assert.equal(await tabletPage.evaluate(() => document.documentElement.scrollWidth > document.documentElement.clientWidth), false);
+    await assertCircleFrame(tabletPage, "#profile");
+    await assertCircleFrame(tabletPage, "#system-health-control");
     assert.equal(await tabletPage.locator("#overview-project-cards [data-overview-project-id]").evaluateAll((elements) => elements.every((element) => {
       const box = element.getBoundingClientRect();
       return box.height >= 44 && box.right <= document.documentElement.clientWidth;
@@ -2607,13 +2775,13 @@ const proofFeed = imageProofFixture(6);
     assert.ok(tabletFlow.left >= 0 && tabletFlow.right <= tabletFlow.viewport && tabletFlow.scrollWidth <= tabletFlow.clientWidth, JSON.stringify(tabletFlow));
     assert.equal(await tabletPage.locator(".project-ui-flowchart-node").evaluateAll((nodes) => nodes.every((node) => node.getBoundingClientRect().height >= 44)), true);
     assert.equal(await tabletPage.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth), true);
-    await tabletPage.locator('[data-view="agents"]').click();
-    await tabletPage.getByRole("tab", { name: "Role library", exact: true }).click();
+    await tabletPage.locator('[data-view="roles"]').click();
     const tabletGrid = tabletPage.locator("#role-library-grid");
     assert.equal(await tabletGrid.evaluate((element) => getComputedStyle(element).gridTemplateColumns.split(" ").length), 3);
     assert.equal(await tabletGrid.evaluate((element) => getComputedStyle(element).overflowY), "auto");
     assert.equal(await tabletGrid.evaluate((element) => element.scrollHeight > element.clientHeight), true);
     assert.equal(await tabletPage.locator('.role-choice[tabindex="0"]').count(), 1);
+    if (evidenceDir) await tabletPage.screenshot({ path: path.join(evidenceDir, "13-roles-tablet-834x1112.png"), fullPage: false, animations: "disabled" });
     await tabletPage.locator('.role-choice[tabindex="0"]').focus();
     await tabletPage.keyboard.press("ArrowRight");
     assert.equal(await tabletPage.locator('.role-choice[aria-selected="true"]').getAttribute("data-role-select"), "analyst");
@@ -2651,6 +2819,11 @@ const proofFeed = imageProofFixture(6);
     assert.equal(await tabletPage.locator("#role-editor").isVisible(), false);
     assert.equal(await tabletPage.evaluate(() => document.activeElement?.getAttribute("aria-label")), "Edit Accountant");
     assert.equal(await tabletPage.evaluate(() => document.documentElement.scrollWidth > document.documentElement.clientWidth), false);
+    await tabletPage.evaluate(() => setView("assets"));
+    await tabletPage.locator(".asset-tile .asset-image-button").first().click();
+    await assertDialogFrame(tabletPage, "#asset-dialog");
+    if (evidenceDir) await tabletPage.screenshot({ path: path.join(evidenceDir, "16-assets-dialog-tablet-834x1112.png"), fullPage: false, animations: "disabled" });
+    await tabletPage.keyboard.press("Escape");
     assert.deepEqual(tablet.runtimeErrors, []);
     await tabletPage.close();
 
@@ -2659,6 +2832,8 @@ const proofFeed = imageProofFixture(6);
     const menuButton = mobilePage.locator("#mobile-menu-button");
     const menuBox = await menuButton.boundingBox();
     assert.ok(menuBox && menuBox.width >= 44 && menuBox.height >= 44);
+    await assertCircleFrame(mobilePage, "#profile", 44);
+    await assertCircleFrame(mobilePage, "#system-health-control", 44);
     await mobilePage.evaluate(() => showError("Project refresh failed"));
     const errorBox = await mobilePage.locator("#error-surface").boundingBox();
     assert.ok(errorBox && menuBox && errorBox.y >= menuBox.y + menuBox.height);
@@ -2676,13 +2851,13 @@ const proofFeed = imageProofFixture(6);
     await mobilePage.keyboard.press("Escape");
     assert.equal(await menuButton.evaluate((element) => element === document.activeElement), true);
     await menuButton.click();
-    await mobilePage.locator('[data-view="agents"]').click();
-    await mobilePage.getByRole("tab", { name: "Role library", exact: true }).click();
+    await mobilePage.locator('[data-view="roles"]').click();
     const mobileGrid = mobilePage.locator("#role-library-grid");
     assert.equal(await mobileGrid.evaluate((element) => getComputedStyle(element).gridTemplateColumns.split(" ").length), 2);
     assert.equal(await mobileGrid.evaluate((element) => getComputedStyle(element).overflowY), "auto");
     assert.equal(await mobileGrid.evaluate((element) => element.scrollHeight > element.clientHeight), true);
     assert.equal(await mobilePage.locator('.role-choice[tabindex="0"]').count(), 1);
+    if (evidenceDir) await mobilePage.screenshot({ path: path.join(evidenceDir, "14-roles-mobile-390x844.png"), fullPage: false, animations: "disabled" });
     await mobilePage.locator('.role-choice[tabindex="0"]').focus();
     await mobilePage.keyboard.press("ArrowRight");
     assert.equal(await mobilePage.locator('.role-choice[aria-selected="true"]').getAttribute("data-role-select"), "analyst");
@@ -2717,6 +2892,9 @@ const proofFeed = imageProofFixture(6);
     assert.equal(await mobilePage.evaluate(() => document.activeElement?.getAttribute("aria-label")), "Edit Accountant");
     await menuButton.click();
     await mobilePage.getByRole("button", { name: /^swarm\b/i }).click();
+    assert.equal(await mobilePage.locator("#view-roles").isVisible(), true, "project selection preserves the active Roles route");
+    await menuButton.click();
+    await mobilePage.locator('[data-view="overview"]').click();
     await mobilePage.getByRole("tab", { name: "UI", exact: true }).click();
     assert.equal(await mobilePage.locator(".project-ui-card").count(), 2);
     assert.equal(await mobilePage.locator(".project-ui-toolbar .segmented-control button").evaluateAll((elements) => elements.every((element) => element.getBoundingClientRect().height >= 44)), true);
@@ -2733,6 +2911,11 @@ const proofFeed = imageProofFixture(6);
       return box.height >= 44 && box.left >= 0 && box.right <= innerWidth;
     })), true);
     assert.equal(await mobilePage.locator("[data-qc-scope]").evaluate((element) => element.scrollWidth > element.clientWidth + 1), false);
+    await mobilePage.evaluate(() => setView("assets"));
+    await mobilePage.locator(".asset-tile .asset-image-button").first().click();
+    await assertDialogFrame(mobilePage, "#asset-dialog");
+    if (evidenceDir) await mobilePage.screenshot({ path: path.join(evidenceDir, "17-assets-dialog-mobile-390x844.png"), fullPage: false, animations: "disabled" });
+    await mobilePage.keyboard.press("Escape");
     assert.deepEqual(mobile.runtimeErrors, []);
     await mobilePage.close();
     console.log("SWARM console six-screen UI tests passed");

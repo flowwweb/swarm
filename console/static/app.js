@@ -1,8 +1,8 @@
-const state = { token: "", overview: null, proof: [], proofCollections: new Map(), proofStatuses: new Map(), proofStatus: "idle", proofSequence: 0, usageHistory: null, usageWindowHours: 24, usageScopeKey: "", usageStatus: "idle", usageError: "", projectProgress: null, projectProgressProjectId: "", projectProgressStatus: "idle", projectProgressError: "", projectProgressFeed: null, projectProgressFeedProjectId: "", projectProgressFeedStatus: "idle", projectProgressFeedError: "", projectTab: "overview", projectUiMode: "screens", projectUiGroupId: "", runLogs: new Map(), runLogRequestGenerations: new Map(), runLogSurfaceStates: new Map(), runLogAgent: null, diagnostics: null, health: null, storage: null, config: null, configStatus: "idle", configError: "", chatRelaySaving: false, ctrlSettings: null, auto: null, autoBindingKey: "", autoStatus: "idle", autoError: "", autoSaving: false, skills: null, skillsError: "", roleManifests: null, roleManifestStatus: "unavailable", roleManifestError: "", roleManifestMessage: "", roleManifestSaving: false, roleManifestRetry: null, roleEditorMode: "", agentsTab: "active", roleEditorTrigger: null, roleSearch: "", roleTypes: new Set(["builtin", "custom"]), roleSearchFields: new Set(["profession", "specialization", "alias", "skills", "purpose"]), selectedRoleId: "", assetView: "grid", selectedAssetIdentity: "", onboardingStep: 0, onboardingShown: false, onboardingTrigger: null, onboardingConfigPending: new Map(), onboardingConfigFailures: new Map(), notifications: null, notificationBindingKey: "", notificationStatus: "idle", notificationError: "", notificationAckFlight: null, notificationRequestGenerations: new Map(), notificationPresentedIds: new Set(), notificationToast: null, notificationToastTimer: null, notificationTrigger: null, connectionStatus: "reconnecting", view: "overview", projectId: "all", ctrlId: "", settingsCtrlId: "", settingsScopeType: "", settingsScopeId: "", evidenceImages: [], evidenceIndex: 0, evidenceTrigger: null };
+const state = { token: "", overview: null, proof: [], proofCollections: new Map(), proofStatuses: new Map(), proofStatus: "idle", proofSequence: 0, usageHistory: null, usageWindowHours: 1, usageScopeKey: "", usageStatus: "idle", usageError: "", projectProgress: null, projectProgressProjectId: "", projectProgressStatus: "idle", projectProgressError: "", projectProgressFeed: null, projectProgressFeedProjectId: "", projectProgressFeedStatus: "idle", projectProgressFeedError: "", projectTab: "overview", projectUiMode: "screens", projectUiGroupId: "", runLogs: new Map(), runLogRequestGenerations: new Map(), runLogSurfaceStates: new Map(), runLogAgent: null, diagnostics: null, health: null, storage: null, config: null, configStatus: "idle", configError: "", chatRelaySaving: false, ctrlSettings: null, auto: null, autoBindingKey: "", autoStatus: "idle", autoError: "", autoSaving: false, skills: null, skillsError: "", roleManifests: null, roleManifestStatus: "unavailable", roleManifestError: "", roleManifestMessage: "", roleManifestSaving: false, roleManifestRetry: null, roleEditorMode: "", roleEditorTrigger: null, roleSearch: "", roleTypes: new Set(["builtin", "custom"]), roleSearchFields: new Set(["profession", "specialization", "alias", "skills", "purpose"]), selectedRoleId: "", assetView: "grid", selectedAssetIdentity: "", assetTrigger: null, onboardingStep: 0, onboardingShown: false, onboardingTrigger: null, onboardingConfigPending: new Map(), onboardingConfigFailures: new Map(), notifications: null, notificationBindingKey: "", notificationStatus: "idle", notificationError: "", notificationAckFlight: null, notificationRequestGenerations: new Map(), notificationPresentedIds: new Set(), notificationToast: null, notificationToastTimer: null, notificationTrigger: null, connectionStatus: "reconnecting", view: "overview", projectId: "all", ctrlId: "", scopeNotice: "", scopeNoticeVisible: false, settingsCtrlId: "", settingsScopeType: "", settingsScopeId: "", evidenceImages: [], evidenceIndex: 0, evidenceTrigger: null };
 let configMutationTail = Promise.resolve();
 let configAuthorityGeneration = 0;
+let lastAppliedHistoryRoute = "";
 const EVIDENCE_THUMBNAIL_PAGE_SIZE = 24;
-const USAGE_WINDOW_LABELS = { 1: "1h", 24: "1d" };
 const RUN_LOG_CLIENT_LIMIT = 200;
 const ONBOARDING_PRESENTATION_KEY = "swarm.onboarding.v2.seen";
 const ONBOARDING_STEPS = [
@@ -344,8 +344,8 @@ function openAdvancedSettingsFromOnboarding() {
   if (!onboardingCanDismiss()) return false;
   state.onboardingTrigger = null;
   if (!closeOnboarding()) return false;
-  history.pushState(null, '', '#settings-advanced');
   setView('settings', false, false);
+  writeRoute('push', 'settings-advanced');
   renderSettings();
   requestAnimationFrame(() => {
     const details = $('#settings-advanced');
@@ -600,19 +600,42 @@ function syncMobileDrawer() {
   setMobileDrawer(false);
 }
 
+const TOP_LEVEL_VIEWS = ["overview", "agents", "roles", "review", "assets", "settings"];
+
 function routeView() {
   const view = location.hash.slice(1);
   if (view === "settings-advanced") return "settings";
-  return ["overview", "agents", "review", "assets", "settings"].includes(view) ? view : "overview";
+  return TOP_LEVEL_VIEWS.includes(view) ? view : "overview";
 }
 
-function setView(view, focus, syncRoute = true) {
-  const allowed = ["overview", "agents", "review", "assets", "settings"];
-  const selectedView = allowed.includes(view) ? view : "overview";
+function routeProjectId() {
+  const projectId = new URL(location.href).searchParams.get("project");
+  return projectId && projectId.trim() ? projectId.trim() : "all";
+}
+
+function routeURL(view = state.view, projectId = state.projectId, hashOverride = "") {
+  const url = new URL(location.href);
+  if (projectId && projectId !== "all") url.searchParams.set("project", projectId);
+  else url.searchParams.delete("project");
+  url.hash = "#" + (hashOverride || view);
+  return url.pathname + url.search + url.hash;
+}
+
+function writeRoute(mode = "replace", hashOverride = "") {
+  const method = mode === "push" ? "pushState" : "replaceState";
+  const next = routeURL(state.view, state.projectId, hashOverride);
+  const current = location.pathname + location.search + location.hash;
+  if (next !== current) history[method]({ view: state.view, projectId: state.projectId }, "", next);
+  lastAppliedHistoryRoute = next;
+}
+
+function setView(view, focus = false, syncRoute = true, historyMode = "push") {
+  const selectedView = TOP_LEVEL_VIEWS.includes(view) ? view : "overview";
   state.view = selectedView;
   const titles = {
     overview: ["Overview", "Portfolio progress and project scope."],
-    agents: ["Agents", "Active ownership and the role library."],
+    agents: ["Agents", "Active ownership and current work."],
+    roles: ["Roles", "Profession manifests and role defaults."],
     review: ["Review", "Proof, decisions, and handoff acknowledgements."],
     assets: ["Assets", "Approved project and role assets."],
     settings: ["Settings", "Defaults and optional per-CTRL overrides."],
@@ -634,7 +657,7 @@ function setView(view, focus, syncRoute = true) {
   $("#view-subtitle").textContent = selectedView === "overview" && project ? "Project progress, proof, ownership, and ledger." : titles[selectedView][1];
   if (selectedView === 'settings' && (!state.skills || state.skillsError)) refreshSkills().then(renderSettings);
   if (selectedView === 'settings' && state.token) refreshAutoStatus().then(renderSettings);
-  if (syncRoute && location.hash !== '#' + selectedView) history.replaceState(null, '', '#' + selectedView);
+  if (syncRoute) writeRoute(historyMode);
   if (focus) $("#tab-" + selectedView)?.focus({ preventScroll: true });
 }
 
@@ -709,19 +732,31 @@ function projectGroups() {
   return [...groups.values()].sort((a, b) => a.label.localeCompare(b.label));
 }
 
-const PROJECT_NAVIGATION_STATUS_RANK = { active: 0, stalled: 1, inactive: 2 };
+const PROJECT_NAVIGATION_STATUS_RANK = { active: 0, recent: 1, stalled: 1, inactive: 2, unknown: 3 };
+
+function projectStatusLabel(status) {
+  return { active: "Active", recent: "Recently active", stalled: "Needs attention", inactive: "Inactive", unknown: "Status unknown" }[status] || "Status unknown";
+}
 
 function savedProjectRoster() {
   const navigation = state.overview?.navigation;
   const inventory = navigation?.project_inventory;
   if (inventory?.state !== "KNOWN" || inventory.available !== true || !Array.isArray(navigation?.projects)) return { state: "UNKNOWN", projects: [] };
   const projects = navigation.projects.map((project) => {
-    const status = String(project?.status || "").toLowerCase();
-    const facts = project?.status_facts;
+    const activityStatus = String(project?.activity_status || "").toLowerCase();
+    const activityFacts = project?.activity_facts;
+    const legacyStatus = String(project?.status || "").toLowerCase();
+    const legacyFacts = project?.status_facts;
     const ctrlIds = project?.ctrl_ids;
-    const validStatus = Object.hasOwn(PROJECT_NAVIGATION_STATUS_RANK, status)
-      && facts && facts[status] === true
-      && ["active", "stalled", "inactive"].filter((name) => facts[name] === true).length === 1;
+    const activityKey = activityStatus === "recently_active" ? "recently_active" : activityStatus === "active" ? "active_now" : activityStatus;
+    const validActivity = ["active", "recently_active", "inactive", "unknown"].includes(activityStatus)
+      && activityFacts && activityFacts[activityKey] === true
+      && ["active_now", "recently_active", "inactive", "unknown"].filter((name) => activityFacts[name] === true).length === 1;
+    const validLegacy = ["active", "stalled", "inactive"].includes(legacyStatus)
+      && legacyFacts && legacyFacts[legacyStatus] === true
+      && ["active", "stalled", "inactive"].filter((name) => legacyFacts[name] === true).length === 1;
+    const status = validActivity ? (activityStatus === "recently_active" ? "recent" : activityStatus) : legacyStatus;
+    const validStatus = validActivity || validLegacy;
     if (!project || typeof project.id !== "string" || !project.id || project.archived !== false || project.visibility !== "visible" || !Array.isArray(ctrlIds) || !validStatus) return null;
     return {
       id: project.id,
@@ -755,48 +790,80 @@ function setProjectSelection(projectId, ctrlId = "") {
   state.ctrlId = nextCtrlId;
 }
 
+function renderScopeNotice() {
+  const notice = $("#scope-change-status");
+  if (!notice) return;
+  notice.textContent = state.scopeNotice;
+  notice.classList.toggle("sr-only", !state.scopeNoticeVisible);
+  notice.hidden = !state.scopeNotice;
+}
+
 function renderProjectNavigation() {
   const roster = savedProjectRoster();
   const projects = roster.projects;
   const selector = $("#project-scope-filter");
   if (roster.state !== "KNOWN") {
     $("#project-navigation").innerHTML = '<p class="project-roster-state" role="status">Saved projects unavailable</p>';
-    if (selector) { selector.disabled = true; selector.setAttribute("aria-label", "Project scope unavailable"); }
+    if (selector) {
+      selector.setAttribute("aria-disabled", "true");
+      selector.setAttribute("aria-label", "Project scope unavailable");
+      $("#project-scope-selector").open = false;
+      $("#project-scope-selected-dot").className = "scope-dot is-unknown";
+      $("#project-scope-selected-label").textContent = "Projects unavailable";
+      $("#project-scope-options").innerHTML = '<p class="project-roster-state" role="status">Saved projects unavailable</p>';
+    }
     return;
   }
   if (state.projectId !== "all" && !projects.some((project) => project.id === state.projectId)) {
+    const unavailableId = state.projectId;
     setProjectSelection("all");
+    state.scopeNotice = "Project " + unavailableId + " is unavailable. Showing All projects.";
+    state.scopeNoticeVisible = true;
+    writeRoute("replace");
   }
   const entries = [];
   projects.forEach((project) => {
     const current = state.projectId === project.id && !state.ctrlId;
-    const statusLabel = project.status[0].toUpperCase() + project.status.slice(1);
+    const statusLabel = projectStatusLabel(project.status);
     entries.push('<button class="project-scope-button ' + (current ? "is-selected" : "") + '" data-project-id="' + escapeHTML(project.id) + '" type="button" aria-label="' + escapeHTML(project.label + ", " + statusLabel) + '" aria-pressed="' + current + '"><span class="scope-dot is-' + project.status + '" aria-hidden="true"></span><span class="project-scope-label" title="' + escapeHTML(project.label) + '">' + escapeHTML(project.label) + '</span></button>');
   });
   $("#project-navigation").innerHTML = entries.length ? entries.join("") : '<p class="project-roster-state" role="status">No saved projects</p>';
   if (selector) {
-    selector.disabled = false;
+    const selectedProject = projects.find((project) => project.id === state.projectId);
+    const selectedStatus = selectedProject?.status || "unknown";
+    selector.removeAttribute("aria-disabled");
     selector.setAttribute("aria-label", "Project scope");
-    selector.innerHTML = ['<option value="all">All projects</option>'].concat(projects.map((project) => '<option value="' + escapeHTML(project.id) + '">' + escapeHTML(project.label) + '</option>')).join("");
-    selector.value = state.projectId === "all" || projects.some((project) => project.id === state.projectId) ? state.projectId : "all";
+    $("#project-scope-selected-dot").className = "scope-dot is-" + selectedStatus;
+    $("#project-scope-selected-label").textContent = selectedProject?.label || "All projects";
+    $("#project-scope-options").innerHTML = '<button class="polished-select-option' + (state.projectId === "all" ? ' is-selected' : '') + '" type="button" role="option" data-project-scope-id="all" aria-selected="' + String(state.projectId === "all") + '"><span class="scope-dot is-unknown" aria-hidden="true"></span><span>All projects</span><small>Portfolio</small></button>' + projects.map((project) => '<button class="polished-select-option' + (state.projectId === project.id ? ' is-selected' : '') + '" type="button" role="option" data-project-scope-id="' + escapeHTML(project.id) + '" aria-selected="' + String(state.projectId === project.id) + '" aria-label="' + escapeHTML(project.label + ", " + projectStatusLabel(project.status)) + '"><span class="scope-dot is-' + project.status + '" aria-hidden="true"></span><span>' + escapeHTML(project.label) + '</span><small>' + escapeHTML(projectStatusLabel(project.status)) + '</small></button>').join("");
   }
+  renderScopeNotice();
 }
 
-async function selectProjectScope(projectId) {
+async function selectProjectScope(projectId, trigger = null, historyMode = "push") {
   const roster = savedProjectRoster();
   const selectedId = String(projectId || "all");
-  if (selectedId !== "all" && (roster.state !== "KNOWN" || !roster.projects.some((project) => project.id === selectedId))) return false;
+  if (selectedId !== "all" && (roster.state !== "KNOWN" || !roster.projects.some((project) => project.id === selectedId))) {
+    state.scopeNotice = "That project is unavailable. The current project scope was not changed.";
+    state.scopeNoticeVisible = true;
+    renderScopeNotice();
+    return false;
+  }
   setProjectSelection(selectedId);
   state.settingsCtrlId = "";
   state.settingsScopeType = selectedId === "all" ? "global" : "project";
   state.settingsScopeId = selectedId === "all" ? "global" : selectedId;
-  state.projectTab = "overview";
-  state.projectUiGroupId = "";
+  state.scopeNotice = (selectedId === "all" ? "All projects" : scopeLabel()) + " selected. " + (state.view === "overview" ? "Overview" : $("#view-title")?.textContent || "Current page") + " refreshed.";
+  state.scopeNoticeVisible = false;
+  writeRoute(historyMode);
   renderProjectNavigation();
-  setView("overview", false);
   if (mobileDrawerQuery.matches) setMobileDrawer(false, true);
   renderAllViews();
   await refreshOverview(false);
+  requestAnimationFrame(() => {
+    if (trigger?.id === "project-scope-filter") $("#project-scope-filter")?.focus({ preventScroll: true });
+    else if (trigger) $('[data-project-id="' + CSS.escape(state.projectId) + '"]')?.focus({ preventScroll: true });
+  });
   return true;
 }
 
@@ -832,7 +899,7 @@ function runLogSurfacePlans() {
   const projectId = selectedProgressProjectId();
   const projectBindings = projectId && state.projectTab === "logs" ? runLogBindingsForProject(projectId) : [];
   if (projectId && state.projectTab === "logs") plans.set("project", { title: projectBindings.length <= 1 ? "Project run log" : "Project run log · " + projectBindings.length + " CTRLs", bindings: projectBindings, bindingUnavailable: !projectBindings.length });
-  const agent = state.view === "agents" && state.agentsTab === "active" ? currentRunLogAgent() : null;
+  const agent = state.view === "agents" ? currentRunLogAgent() : null;
   if (agent) plans.set("agent", { title: agent.label || "Selected agent", bindings: [agent] });
   return plans;
 }
@@ -1010,13 +1077,18 @@ async function refreshRunLogs() {
 }
 
 function drawLine(svg, values, color) {
+  if (!svg) return;
+  if (!values.length) {
+    svg.replaceChildren();
+    return;
+  }
   const box = svg.viewBox?.baseVal;
   const width = box?.width || 320;
   const height = box?.height || 138;
   const bottom = height - 10;
   const middle = Math.round(height / 2);
   const top = Math.min(28, Math.max(8, Math.round(height * .2)));
-  const series = values.length ? values : [0, 0];
+  const series = values;
   const high = Math.max(1, ...series);
   const points = series.map((value, index) => {
     const x = series.length === 1 ? width / 2 : (index / (series.length - 1)) * width;
@@ -1257,53 +1329,34 @@ function usageRequestKey(projectId = state.projectId, ctrlId = state.ctrlId, hou
   return projectId + "|" + ctrlId + "|" + String(hours);
 }
 
-function usageSeries(source = state.usageHistory || {}) {
-  return source.history || source.items || [];
+function usageHistorySeries() {
+  if (state.usageScopeKey !== usageRequestKey() || state.usageHistory?.ok !== true) return [];
+  return (Array.isArray(state.usageHistory.history) ? state.usageHistory.history : [])
+    .map((sample) => ({ bucket: Number(sample?.bucket_ms), tokens: Number(sample?.delta_tokens) }))
+    .filter((sample) => Number.isFinite(sample.bucket) && sample.bucket >= 0 && Number.isFinite(sample.tokens) && sample.tokens >= 0)
+    .sort((a, b) => a.bucket - b.bucket)
+    .map((sample) => sample.tokens);
 }
 
-function downsampleSeries(values, maximum = 96) {
-  if (values.length <= maximum) return values;
-  const step = (values.length - 1) / (maximum - 1);
-  return Array.from({ length: maximum }, (_, index) => values[Math.round(index * step)]);
+function usageRangeLabel(hours = state.usageWindowHours) {
+  return hours === 1 ? "last hour" : hours === 24 ? "last 24 hours" : "last 7 days";
 }
 
-function usageRateSeries(series) {
-  const rates = [];
-  for (let index = 1; index < series.length; index += 1) {
-    const previousAt = Number(series[index - 1]?.bucket_ms ?? series[index - 1]?.observed_at_ms);
-    const currentAt = Number(series[index]?.bucket_ms ?? series[index]?.observed_at_ms);
-    const elapsedMinutes = (currentAt - previousAt) / 60000;
-    const tokens = Number(series[index]?.delta_tokens ?? series[index]?.tokens ?? series[index]?.value);
-    if (Number.isFinite(elapsedMinutes) && elapsedMinutes > 0 && Number.isFinite(tokens)) rates.push(Math.max(0, tokens / elapsedMinutes));
-  }
-  return rates;
+function usageChartMarkup(surface, svgId) {
+  return '<div class="usage-chart" data-usage-chart="' + surface + '"><div class="usage-range" role="group" aria-label="Usage range"><button type="button" data-usage-range="1" aria-pressed="' + String(state.usageWindowHours === 1) + '">1h</button><button type="button" data-usage-range="24" aria-pressed="' + String(state.usageWindowHours === 24) + '">24h</button><button type="button" data-usage-range="168" aria-pressed="' + String(state.usageWindowHours === 168) + '">7d</button></div><svg id="' + svgId + '" viewBox="0 0 160 28" preserveAspectRatio="none" aria-label="Usage history unavailable"></svg></div>';
 }
 
-function renderUsage() {
-  const scopeMatches = state.usageScopeKey === usageRequestKey();
-  const source = scopeMatches ? (state.usageHistory || {}) : {};
-  const series = usageSeries(source);
-  const total = Number(source.total_tokens ?? source.tokens ?? source.total ?? source.analytics?.tokens);
-  const observed = Number(source.coverage?.observed_threads);
-  const expected = Number(source.coverage?.expected_threads);
-  const coverage = Number.isFinite(observed) && Number.isFinite(expected) ? String(observed) + ' of ' + String(expected) + ' observed' : '';
-  const values = series.map((item) => Number(item.delta_tokens ?? item.tokens ?? item.value) || 0);
-  const rates = usageRateSeries(series);
-  const reportedRate = Number(source.tokens_per_minute ?? source.usage_now?.tokens_per_minute ?? source.usage_now?.rate);
-  const currentRate = Number.isFinite(reportedRate) ? Math.max(0, reportedRate) : rates.at(-1);
-  const windowLabel = USAGE_WINDOW_LABELS[state.usageWindowHours] || String(state.usageWindowHours) + "h";
-  $("#usage-heading").textContent = "Tokens · " + windowLabel;
-  $("#usage-total").textContent = Number.isFinite(total) ? compactNumber(total) : "—";
-  $("#usage-rate").textContent = Number.isFinite(currentRate) ? compactNumber(currentRate) + " / min" : "—";
-  $("#usage-range").textContent = values.length ? 'Range ' + compactNumber(Math.min(...values)) + '–' + compactNumber(Math.max(...values)) + ' per sample' : 'No historical range';
-  $("#usage-note").textContent = !scopeMatches || state.usageStatus === "loading" ? "Loading usage history" : state.usageStatus === "stale" ? "Last received usage · refresh failed" : state.usageStatus === "error" ? (state.usageError || "Usage history unavailable") : source.status === 'no_data' ? 'No persisted usage in this scope' : source.status === 'partial' ? ('Partial coverage' + (coverage ? ' · ' + coverage : '')) : source.status === 'ok' ? ('Complete coverage' + (coverage ? ' · ' + coverage : '')) : (series.length ? 'Usage status unavailable' : 'No recent history');
-  $$('[data-usage-hours]').forEach((button) => {
-    const selected = Number(button.dataset.usageHours) === state.usageWindowHours;
-    button.classList.toggle('is-selected', selected);
-    button.setAttribute('aria-pressed', String(selected));
+function renderUsageCharts() {
+  const values = usageHistorySeries();
+  const current = state.usageStatus === "current";
+  const label = values.length && current
+    ? "Usage during the " + usageRangeLabel() + " from " + values.length + " timestamped sample" + (values.length === 1 ? "" : "s")
+    : state.usageStatus === "stale" ? "Usage history stale" : "Usage history unavailable";
+  $$('[data-usage-range]').forEach((button) => button.setAttribute("aria-pressed", String(Number(button.dataset.usageRange) === state.usageWindowHours)));
+  [$("#metric-usage-trend"), $("#diagnostics-usage-trend")].filter(Boolean).forEach((svg) => {
+    drawLine(svg, current ? values : [], "#ff6a3d");
+    svg.setAttribute("aria-label", label);
   });
-  drawLine($("#usage-sparkline"), downsampleSeries(values), "#ff9c3d");
-  drawLine($("#usage-rate-sparkline"), downsampleSeries(rates), "#46dfd0");
 }
 
 function verifiedYieldProjection() {
@@ -1465,9 +1518,8 @@ function renderOverviewMetrics() {
   renderOverviewMetric("progress", presentation.progress);
   renderOverviewMetric("usage", presentation.usage);
   drawLine($("#metric-progress-trend"), presentation.progress.series || [], "#4cda85");
-  drawLine($("#metric-usage-trend"), presentation.usage.series || [], "#4da8ff");
   $("#metric-progress-trend").setAttribute("aria-label", presentation.progress.series?.length ? "Accepted verified progress trend" : "Verified progress trend unavailable");
-  $("#metric-usage-trend").setAttribute("aria-label", presentation.usage.series?.length ? "Accepted usage burn rate" : "Usage burn rate unavailable");
+  renderUsageCharts();
 }
 
 function yieldChartMarkup(item) {
@@ -1494,7 +1546,7 @@ function yieldChartMarkup(item) {
 }
 
 const NOTIFICATION_PANEL_UNREAD_LIMIT = 8;
-const NOTIFICATION_SAFE_VIEWS = Object.freeze({ projects: "overview", review: "review", assets: "assets", roles: "agents" });
+const NOTIFICATION_SAFE_VIEWS = Object.freeze({ projects: "overview", review: "review", assets: "assets", roles: "roles" });
 
 function dedupeNotificationItems(items) {
   const seen = new Set();
@@ -1599,7 +1651,7 @@ function notificationSafeTarget(item, binding) {
     || item.project_id !== projectId || item.ctrl_id !== ctrlId
     || binding.projectId !== projectId || binding.ctrlId !== ctrlId
   ) return null;
-  return { view, projectId, ctrlId, roleLibrary: String(target.view) === "roles" };
+  return { view, projectId, ctrlId };
 }
 
 function notificationBinding() {
@@ -1825,7 +1877,6 @@ function navigateNotification(item) {
   if (!target) return false;
   setProjectSelection(target.projectId, target.ctrlId);
   state.projectTab = "overview";
-  if (target.roleLibrary) state.agentsTab = "library";
   setNotificationsOpen(false);
   renderProjectNavigation();
   setView(target.view, false);
@@ -2251,26 +2302,108 @@ function openProofIdentity(identity, trigger) {
 }
 
 function assetImageMarkup(item, detail = false) {
-  return '<span class="asset-image-frame' + (detail ? ' is-detail' : '') + '"><img data-asset-image loading="lazy" src="' + proofMediaURL(item) + '" alt=""><span class="asset-image-failed"' + (detail ? ' role="status"' : '') + ' hidden>Preview unavailable</span></span>';
+  const stage = assetStage(item);
+  if (stage) return '<span class="asset-image-frame asset-generation-placeholder' + (detail ? ' is-detail' : '') + '" role="status" aria-label="' + escapeHTML(stage.label) + '"><span class="asset-generation-shimmer" aria-hidden="true"></span><strong>' + escapeHTML(stage.label) + '</strong>' + (stage.measured ? '<small>' + escapeHTML(stage.percent + "%") + '</small>' : '') + '</span>';
+  return '<span class="asset-image-frame' + (detail ? ' is-detail' : '') + '"><img data-asset-image loading="lazy" decoding="async" src="' + proofMediaURL(item) + '" alt=""><span class="asset-image-failed"' + (detail ? ' role="status"' : '') + ' hidden>Preview unavailable</span></span>';
+}
+
+function assetStage(item) {
+  const value = String(item?.asset_stage || item?.generation_stage || "").trim().toUpperCase();
+  const labels = { QUEUED: "Queued", GENERATING: "Generating", VALIDATING: "Validating" };
+  if (!labels[value]) return null;
+  const percent = Number(item?.progress_percent);
+  return { value, label: labels[value], measured: item?.progress_measured === true && Number.isFinite(percent) && percent >= 0 && percent <= 100, percent: Math.round(percent) };
+}
+
+function assetLabel(item) {
+  return String(item?.display_name || item?.caption || item?.kind || "Asset").trim() || "Asset";
+}
+
+function assetTypeLabel(item) {
+  const kind = String(item?.asset_type || item?.kind || "").trim();
+  if (kind) return humanize(kind);
+  const mime = String(item?.media_type || "").trim();
+  return mime.startsWith("image/") ? humanize(mime.slice(6)) + " image" : "Asset";
+}
+
+function assetDate(item, field = "updated") {
+  const value = field === "created" ? (item?.created_at_ms || item?.created_at || item?.registered_at_ms) : (item?.updated_at_ms || item?.updated_at || item?.observed_at_ms || item?.registered_at_ms);
+  const date = new Date(typeof value === "number" ? value : String(value || ""));
+  return Number.isNaN(date.getTime()) ? "—" : date.toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" });
+}
+
+function assetSize(item) {
+  const bytes = Number(item?.size_bytes);
+  if (!Number.isFinite(bytes) || bytes < 0) return "—";
+  if (bytes < 1024) return Math.round(bytes) + " B";
+  if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(bytes < 10 * 1024 ? 1 : 0) + " KB";
+  return (bytes / (1024 * 1024)).toFixed(bytes < 10 * 1024 * 1024 ? 1 : 0) + " MB";
+}
+
+function assetRevisionItems(selected, items = assetItems()) {
+  const logicalId = String(selected?.logical_asset_id || "").trim();
+  if (!logicalId) return [selected];
+  return items.filter((item) => String(item?.logical_asset_id || "").trim() === logicalId).sort((left, right) => Number(right.revision || right.version || right.updated_at_ms || 0) - Number(left.revision || left.version || left.updated_at_ms || 0));
 }
 
 function assetGridMarkup(item) {
   const identity = proofIdentity(item);
-  const label = item.caption || item.kind || "Asset";
+  const label = assetLabel(item);
   const selected = identity === state.selectedAssetIdentity;
-  return '<article class="asset-tile' + (selected ? ' is-selected' : '') + '" data-asset-card="' + escapeHTML(identity) + '"><button class="asset-image-button" type="button" data-asset-detail="' + escapeHTML(identity) + '" aria-label="Open asset details for ' + escapeHTML(label) + '" aria-current="' + String(selected) + '">' + assetImageMarkup(item) + '</button><div class="asset-quick-actions" aria-label="Quick actions for ' + escapeHTML(label) + '"><button class="icon-button" type="button" data-review-open="' + escapeHTML(identity) + '" aria-label="Open proof for ' + escapeHTML(label) + '" title="Open proof"><svg class="lucide" aria-hidden="true"><use href="#lucide-image"></use></svg></button><button class="icon-button" type="button" disabled aria-label="New revision unavailable for ' + escapeHTML(label) + '" title="Asset revision command is not available"><svg class="lucide" aria-hidden="true"><use href="#lucide-pencil"></use></svg></button><button class="icon-button" type="button" disabled aria-label="Approve digest unavailable for ' + escapeHTML(label) + '" title="Asset approval command is not available"><svg class="lucide" aria-hidden="true"><use href="#lucide-check"></use></svg></button></div></article>';
+  const proofDisabled = Boolean(assetStage(item));
+  return '<article class="asset-tile' + (selected ? ' is-selected' : '') + '" data-asset-card="' + escapeHTML(identity) + '"><button class="asset-image-button" type="button" data-asset-detail="' + escapeHTML(identity) + '" aria-label="Open asset details for ' + escapeHTML(label) + '" aria-current="' + String(selected) + '">' + assetImageMarkup(item) + '</button><div class="asset-quick-actions" aria-label="Quick actions for ' + escapeHTML(label) + '"><button class="icon-button" type="button" data-asset-detail="' + escapeHTML(identity) + '" aria-label="View details for ' + escapeHTML(label) + '" title="View details"><svg class="lucide" aria-hidden="true"><use href="#lucide-eye"></use></svg></button><button class="icon-button" type="button" data-review-open="' + escapeHTML(identity) + '" aria-label="Open preview for ' + escapeHTML(label) + '" title="Open preview"' + (proofDisabled ? ' disabled' : '') + '><svg class="lucide" aria-hidden="true"><use href="#lucide-image"></use></svg></button><button class="icon-button" type="button" disabled aria-label="Move to trash unavailable for ' + escapeHTML(label) + '" title="Trash command is not available"><svg class="lucide" aria-hidden="true"><use href="#lucide-trash-2"></use></svg></button></div></article>';
 }
 
 function assetListMarkup(item) {
   const identity = proofIdentity(item);
-  const label = item.caption || item.kind || "Asset";
+  const label = assetLabel(item);
   const selected = identity === state.selectedAssetIdentity;
-  return '<article class="asset-list-row' + (selected ? ' is-selected' : '') + '"><button class="asset-list-main" type="button" data-asset-detail="' + escapeHTML(identity) + '" aria-label="Open asset details for ' + escapeHTML(label) + '" aria-current="' + String(selected) + '">' + assetImageMarkup(item) + '<span class="asset-list-copy"><strong>' + escapeHTML(label) + '</strong><small>' + escapeHTML([item.project_id || "Unscoped", proofReviewState(item)].join(" · ")) + '</small><code>' + escapeHTML(String(item.digest || "—").slice(0, 16)) + '</code></span></button><div class="asset-list-actions"><button class="quiet-button" type="button" data-review-open="' + escapeHTML(identity) + '">Open proof</button><button class="quiet-button" type="button" disabled title="Asset revision command is not available">New revision</button><button class="quiet-button" type="button" disabled title="Asset approval command is not available">Approve digest</button></div></article>';
+  const project = state.projectId === "all" && item.project_id ? '<span><small>Project</small>' + escapeHTML(item.project_id) + '</span>' : '';
+  return '<article class="asset-list-row' + (selected ? ' is-selected' : '') + '" data-asset-card="' + escapeHTML(identity) + '"><button class="asset-list-main" type="button" data-asset-detail="' + escapeHTML(identity) + '" aria-label="Open asset details for ' + escapeHTML(label) + '" aria-current="' + String(selected) + '">' + assetImageMarkup(item) + '<span class="asset-list-copy"><strong>' + escapeHTML(label) + '</strong>' + (item.description ? '<small>' + escapeHTML(item.description) + '</small>' : '') + '</span><span class="asset-list-facts"><span><small>Type</small>' + escapeHTML(assetTypeLabel(item)) + '</span>' + project + '<span><small>Updated</small>' + escapeHTML(assetDate(item)) + '</span><span><small>Status</small>' + escapeHTML(assetStage(item)?.label || proofReviewState(item)) + '</span></span></button><div class="asset-list-actions"><button class="icon-button" type="button" data-asset-detail="' + escapeHTML(identity) + '" aria-label="View details for ' + escapeHTML(label) + '" title="View details"><svg class="lucide" aria-hidden="true"><use href="#lucide-eye"></use></svg></button><button class="icon-button" type="button" disabled aria-label="Move to trash unavailable for ' + escapeHTML(label) + '" title="Trash command is not available"><svg class="lucide" aria-hidden="true"><use href="#lucide-trash-2"></use></svg></button></div></article>';
+}
+
+function renderAssetDialog(item) {
+  const dialog = $("#asset-dialog");
+  if (!item) {
+    if (dialog.open) dialog.close();
+    return;
+  }
+  const label = assetLabel(item);
+  const stage = assetStage(item);
+  const revisions = assetRevisionItems(item);
+  const creator = String(item.creator_label || item.owner_id || item.source || item.provenance?.kind || "—");
+  const safeRef = String(item.source_ref || "").startsWith("project://") ? item.source_ref : "—";
+  const dimensions = Number(item.width) > 0 && Number(item.height) > 0 ? String(item.width) + " × " + String(item.height) : "—";
+  const revisionMarkup = revisions.length > 1 ? '<section><h3>Revision history</h3><ol class="asset-revisions" aria-label="Revision history">' + revisions.map((revision) => '<li><strong>' + escapeHTML(revision.revision_label || ("Revision " + (revision.revision || revision.version || "—"))) + '</strong><span>' + escapeHTML(proofReviewState(revision)) + '</span><time>' + escapeHTML(assetDate(revision)) + '</time></li>').join("") + '</ol></section>' : '';
+  $("#asset-dialog-kind").textContent = assetTypeLabel(item);
+  $("#asset-dialog-title").textContent = label;
+  $("#asset-dialog-content").innerHTML = '<div class="asset-dialog-preview">' + assetImageMarkup(item, true) + '</div>' + (item.description || item.caption ? '<p class="asset-description">' + escapeHTML(item.description || item.caption) + '</p>' : '') + '<dl class="asset-human-meta"><div><dt>Project</dt><dd>' + escapeHTML(item.project_label || item.project_id || "Unscoped") + '</dd></div><div><dt>Status</dt><dd>' + escapeHTML(stage?.label || proofReviewState(item)) + '</dd></div><div><dt>Created</dt><dd>' + escapeHTML(assetDate(item, "created")) + '</dd></div><div><dt>Updated</dt><dd>' + escapeHTML(assetDate(item)) + '</dd></div><div><dt>File size</dt><dd>' + escapeHTML(assetSize(item)) + '</dd></div><div><dt>Creator</dt><dd>' + escapeHTML(creator) + '</dd></div></dl>' + revisionMarkup + '<details class="asset-advanced"><summary>Advanced</summary><dl class="asset-advanced-meta"><div><dt>Immutable ID</dt><dd>' + escapeHTML(item.evidence_id || "—") + '</dd></div><div><dt>MIME type</dt><dd>' + escapeHTML(item.media_type || "—") + '</dd></div><div><dt>Dimensions</dt><dd>' + escapeHTML(dimensions) + '</dd></div><div><dt>Digest</dt><dd>' + escapeHTML(item.digest || "—") + '</dd></div><div><dt>Source</dt><dd>' + escapeHTML(safeRef) + '</dd></div><div><dt>Parent revision</dt><dd>' + escapeHTML(item.parent_revision_id || "—") + '</dd></div></dl></details>';
+  $("#asset-dialog-footer").innerHTML = '<p class="asset-dialog-note">Trash, restore, purge, revision, and approval remain unavailable until accepted server commands exist.</p><div class="asset-actions"><button class="quiet-button" type="button" data-review-open="' + escapeHTML(proofIdentity(item)) + '"' + (stage ? ' disabled' : '') + '>Open preview</button><button class="quiet-button" type="button" disabled title="Trash command is not available">Move to trash</button><button class="primary-action" id="asset-dialog-done" type="button">Done</button></div>';
+}
+
+function openAssetDialog(identity, trigger) {
+  const item = assetItems().find((candidate) => proofIdentity(candidate) === identity);
+  if (!item) return;
+  state.selectedAssetIdentity = identity;
+  state.assetTrigger = trigger || null;
+  $$('[data-asset-card]').forEach((card) => card.classList.toggle("is-selected", card.dataset.assetCard === identity));
+  $$('[data-asset-detail]').forEach((control) => {
+    if (control.classList.contains("asset-image-button") || control.classList.contains("asset-list-main")) control.setAttribute("aria-current", String(control.dataset.assetDetail === identity));
+  });
+  renderAssetDialog(item);
+  const dialog = $("#asset-dialog");
+  if (!dialog.open) dialog.showModal();
+  requestAnimationFrame(() => $("#asset-dialog-close").focus({ preventScroll: true }));
+}
+
+function closeAssetDialog() {
+  const dialog = $("#asset-dialog");
+  if (dialog.open) dialog.close();
 }
 
 function renderAssets() {
   const items = assetItems();
-  if (!items.some((item) => proofIdentity(item) === state.selectedAssetIdentity)) state.selectedAssetIdentity = proofIdentity(items[0]);
+  if (!items.some((item) => proofIdentity(item) === state.selectedAssetIdentity)) state.selectedAssetIdentity = "";
   const selected = items.find((item) => proofIdentity(item) === state.selectedAssetIdentity) || null;
   $("#assets-status").textContent = currentProofStatus() === "stale" ? "Showing the last received asset inventory" : items.length ? items.length + " digest-bound asset" + (items.length === 1 ? "" : "s") : "No retained assets";
   $$('[data-asset-view]').forEach((button) => { const selectedView = button.dataset.assetView === state.assetView; button.classList.toggle("is-selected", selectedView); button.setAttribute("aria-pressed", String(selectedView)); });
@@ -2278,11 +2411,7 @@ function renderAssets() {
   gallery.classList.toggle("is-list", state.assetView === "list");
   gallery.setAttribute("aria-label", state.assetView === "grid" ? "Asset image grid" : "Asset list");
   gallery.innerHTML = items.length ? items.map(state.assetView === "grid" ? assetGridMarkup : assetListMarkup).join("") : '<p class="empty-state">Assets appear after digest-bound proof is retained.</p>';
-  if (!selected) { $("#asset-detail").innerHTML = '<p class="empty-state">Select an asset to inspect its immutable revision.</p>'; return; }
-  const revisions = items.filter((item) => item.evidence_id === selected.evidence_id);
-  const provenance = selected.source || selected.provenance?.source || selected.provenance?.kind || "Unknown";
-  const revisionMarkup = revisions.map((revision) => '<li><code>' + escapeHTML(String(revision.digest || "—").slice(0, 12)) + '</code><span>' + escapeHTML(proofReviewState(revision)) + '</span><time>' + escapeHTML(formatRelative(revision.observed_at_ms || revision.updated_at)) + '</time></li>').join("");
-  $("#asset-detail").innerHTML = assetImageMarkup(selected, true) + '<p class="eyebrow">' + escapeHTML(proofReviewState(selected)) + '</p><h2>' + escapeHTML(selected.caption || selected.kind || "Asset") + '</h2><dl><div><dt>Digest</dt><dd>' + escapeHTML(selected.digest || "—") + '</dd></div><div><dt>Revision history</dt><dd>' + revisions.length + '</dd></div><div><dt>Provenance</dt><dd>' + escapeHTML(provenance) + '</dd></div></dl><ol class="asset-revisions" aria-label="Retained asset revisions">' + revisionMarkup + '</ol><div class="asset-actions"><button class="quiet-button" type="button" data-review-open="' + escapeHTML(proofIdentity(selected)) + '">Open proof</button><button class="quiet-button" type="button" disabled title="Asset revision command is not available">New revision</button><button class="quiet-button" type="button" disabled title="Asset approval command is not available">Approve digest</button></div><small>Revision and approval actions remain unavailable until their server commands are accepted.</small>';
+  if ($("#asset-dialog").open) renderAssetDialog(selected);
 }
 
 function selectedProgressProjectId() {
@@ -2359,7 +2488,6 @@ function renderOverview() {
   renderOverviewMetrics();
   renderOverviewProjectCards();
   renderEvidenceGallery(nodes, "#overview-evidence-gallery", "#overview-evidence-note", 4);
-  renderUsage();
   renderProjectProgressFeed();
   renderProjectDetail();
   renderNotifications();
@@ -2385,7 +2513,7 @@ function agentRow(node, role, binding = null) {
   const identity = binding
     ? '<button class="agent-identity" type="button" data-run-log-agent="' + escapeHTML(binding.agentId) + '" data-project-id="' + escapeHTML(binding.projectId) + '" data-ctrl-id="' + escapeHTML(binding.ctrlId) + '" data-agent-label="' + escapeHTML(owner) + '" aria-pressed="' + String(Boolean(selected)) + '" aria-label="Show run log for ' + escapeHTML(owner) + '"><strong>' + escapeHTML(owner) + '</strong><small>' + escapeHTML(title) + '</small></button>'
     : '<div><strong>' + escapeHTML(owner) + '</strong><small>' + escapeHTML(title) + '</small></div>';
-  return '<div class="agent-row' + (selected ? ' is-selected' : '') + '" data-agent-role="' + escapeHTML(role) + '"><span class="agent-role-mark" aria-hidden="true">' + escapeHTML(role.slice(0, 1)) + '</span>' + identity + '<div class="agent-yield"><strong>' + escapeHTML(yieldValue(efficiency)) + '</strong>' + miniSparkline(yieldSeries(efficiency), "Verified yield trend for " + owner) + '<small>Verified yield</small></div><span class="state-pill ' + status[1] + '">' + escapeHTML(status[0] || "Unknown") + '</span><time datetime="' + escapeHTML(updated || "") + '">' + escapeHTML(formatRelative(updated)) + '</time></div>';
+  return '<div class="agent-row' + (selected ? ' is-selected' : '') + '" data-agent-role="' + escapeHTML(role) + '"><span class="agent-role-mark circle-frame" aria-hidden="true">' + escapeHTML(role.slice(0, 1)) + '</span>' + identity + '<div class="agent-yield"><strong>' + escapeHTML(yieldValue(efficiency)) + '</strong>' + miniSparkline(yieldSeries(efficiency), "Verified yield trend for " + owner) + '<small>Verified yield</small></div><span class="state-pill ' + status[1] + '">' + escapeHTML(status[0] || "Unknown") + '</span><time datetime="' + escapeHTML(updated || "") + '">' + escapeHTML(formatRelative(updated)) + '</time></div>';
 }
 
 function agentBranch(node, role, binding = null, children = []) {
@@ -2468,15 +2596,11 @@ function roleDisplayName(role) {
 
 function roleAvatar(role) {
   const accent = /^#[0-9a-f]{6}$/i.test(role?.accent || "") ? role.accent : "#8f9db0";
-  const retained = assetItems().find((item) => String(item.digest || "").toLowerCase() === String(role?.avatar_asset_digest || "").toLowerCase());
-  const visual = retained ? '<img loading="lazy" decoding="async" src="' + proofMediaURL(retained) + '" alt="">' : '<svg class="lucide"><use href="#lucide-circle-user-round"></use></svg><b>' + escapeHTML(roleDisplayName(role).slice(0, 1) || "?") + '</b>';
-  return '<span class="role-avatar ' + (retained ? 'has-image' : 'is-fallback') + '" style="--role-accent:' + escapeHTML(accent) + '" aria-hidden="true">' + visual + '</span>';
+  const displayName = roleDisplayName(role);
+  return '<span class="role-avatar is-pending" style="--role-accent:' + escapeHTML(accent) + '" role="img" aria-label="Avatar pending for ' + escapeHTML(displayName) + '"><span>Pending</span></span>';
 }
 
-function roleHasRetainedAvatar(role) {
-  const digest = String(role?.avatar_asset_digest || "").toLowerCase();
-  return /^[0-9a-f]{64}$/.test(digest) && assetItems().some((item) => String(item.digest || "").toLowerCase() === digest);
-}
+function roleHasRetainedAvatar() { return false; }
 
 function roleSourceLabel(role) {
   return role?.source === "builtin" ? "Built in" : role?.source === "user_override" ? "Custom version" : role?.source === "custom" ? "Custom role" : "Unknown";
@@ -2563,7 +2687,7 @@ function roleDetailMarkup(role, match = { label: "" }) {
   if (!role) return '<p class="empty-state">Choose a role to inspect its server-owned manifest.</p>';
   const displayName = roleDisplayName(role);
   const editAllowed = roleCanMutate("ROLE_MANIFEST_REVISE");
-  return '<header class="role-detail-head">' + roleAvatar(role) + '<div><p class="eyebrow">' + escapeHTML(roleSourceLabel(role)) + '</p><h3 id="role-detail-title">' + escapeHTML(displayName) + '</h3><p>Profession · not authority</p></div><div class="role-detail-actions"><button class="icon-button" data-role-action="generate-avatar" type="button" disabled aria-label="Generate avatar" title="Generate avatar unavailable"><svg class="lucide" aria-hidden="true"><use href="#lucide-sparkles"></use></svg></button><button class="icon-button" data-role-action="edit" data-role-id="' + escapeHTML(role.id) + '" type="button" aria-label="Edit ' + escapeHTML(displayName) + '" title="Edit role"' + (editAllowed ? "" : ' disabled') + '><svg class="lucide" aria-hidden="true"><use href="#lucide-pencil"></use></svg></button></div></header>' + (match.label ? '<p class="role-match">' + escapeHTML(match.label) + '</p>' : '') + '<div class="role-detail-sections"><section><h4>Purpose</h4><p class="role-detail-copy">' + escapeHTML(role.purpose || "Purpose unavailable.") + '</p></section><section><h4>Owns</h4>' + roleTextList(role.owns, "No owned surface declared.") + '</section><section><h4>Instructions</h4>' + roleInstructionsMarkup(role.instructions) + '</section><section><h4>Current owners</h4>' + roleAssignmentsMarkup(role.id) + '</section><section><h4>Specializations</h4><div>' + roleSpecializationsMarkup(role) + '<small>Metadata only · no authority transfer.</small></div></section><section><h4>Default skills</h4>' + roleTextList(role.default_skills, "No default skills.") + '</section><section><h4>Boundaries</h4>' + roleTextList(role.boundaries, "No boundaries declared.") + '</section></div><footer><span>' + escapeHTML(roleHasRetainedAvatar(role) ? "Retained avatar" : "Accent fallback") + '</span><span>Active tasks retain their accepted role version.</span></footer>';
+  return '<header class="role-detail-head">' + roleAvatar(role) + '<div><p class="eyebrow">' + escapeHTML(roleSourceLabel(role)) + '</p><h3 id="role-detail-title">' + escapeHTML(displayName) + '</h3><p>Profession · not authority</p></div><div class="role-detail-actions"><button class="icon-button" data-role-action="generate-avatar" type="button" disabled aria-label="Generate avatar" title="Generate avatar unavailable"><svg class="lucide" aria-hidden="true"><use href="#lucide-sparkles"></use></svg></button><button class="icon-button" data-role-action="edit" data-role-id="' + escapeHTML(role.id) + '" type="button" aria-label="Edit ' + escapeHTML(displayName) + '" title="Edit role"' + (editAllowed ? "" : ' disabled') + '><svg class="lucide" aria-hidden="true"><use href="#lucide-pencil"></use></svg></button></div></header>' + (match.label ? '<p class="role-match">' + escapeHTML(match.label) + '</p>' : '') + '<div class="role-detail-sections"><section><h4>Purpose</h4><p class="role-detail-copy">' + escapeHTML(role.purpose || "Purpose unavailable.") + '</p></section><section><h4>Owns</h4>' + roleTextList(role.owns, "No owned surface declared.") + '</section><section><h4>Instructions</h4>' + roleInstructionsMarkup(role.instructions) + '</section><section><h4>Current owners</h4>' + roleAssignmentsMarkup(role.id) + '</section><section><h4>Specializations</h4><div>' + roleSpecializationsMarkup(role) + '<small>Metadata only · no authority transfer.</small></div></section><section><h4>Default skills</h4>' + roleTextList(role.default_skills, "No default skills.") + '</section><section><h4>Boundaries</h4>' + roleTextList(role.boundaries, "No boundaries declared.") + '</section></div><footer><span>' + escapeHTML(roleHasRetainedAvatar(role) ? "Retained avatar" : "Avatar pending admission") + '</span><span>Active tasks retain their accepted role version.</span></footer>';
 }
 
 function focusRoleChoice(roleId) {
@@ -2601,8 +2725,7 @@ function renderRoleLibrary(focusRoleId = "") {
   const grid = $("#role-library-grid");
   const focusedRoleId = grid.contains(document.activeElement) ? document.activeElement.closest("[data-role-select]")?.dataset.roleSelect || "" : "";
   const create = $("#role-create");
-  const active = state.agentsTab === "active";
-  create.hidden = active;
+  create.hidden = false;
   create.disabled = !roleCanMutate("ROLE_MANIFEST_CREATE");
   create.setAttribute("aria-disabled", String(create.disabled));
   let status = state.roleManifestStatus === "loading" || state.roleManifestStatus === "refreshing"
@@ -2625,10 +2748,10 @@ function renderRoleLibrary(focusRoleId = "") {
 }
 
 function renderAgents() {
-  const active = state.agentsTab === "active";
-  $$('[data-agents-tab]').forEach((tab) => { const selected = tab.dataset.agentsTab === state.agentsTab; tab.classList.toggle("is-active", selected); tab.setAttribute("aria-selected", String(selected)); tab.tabIndex = selected ? 0 : -1; });
-  $$('[data-agents-panel]').forEach((panel) => { panel.hidden = panel.dataset.agentsPanel !== state.agentsTab; });
   renderAgentHierarchy();
+}
+
+function renderRoles() {
   renderRoleLibrary();
 }
 
@@ -2715,7 +2838,7 @@ function roleEditorReturnTarget(origin) {
     ? $('[data-role-action="edit"][data-role-id="' + CSS.escape(origin.roleId) + '"]')
     : origin?.action === "create" ? $("#role-create") : null;
   if (trigger && !trigger.disabled && !trigger.hidden) return trigger;
-  return $("#role-search") || $("#agents-tab-library");
+  return $("#role-search") || $("#tab-roles");
 }
 
 function restoreRoleEditorFocus() {
@@ -3007,7 +3130,7 @@ function renderSettings() {
   const systemHealth = systemHealthPresentation();
   const ctrlAdvanced = selectedCtrl ? '<section class="advanced-setting-group"><h4>CTRL override</h4><p><strong>' + escapeHTML(publicLabel(selectedCtrl.project, "Project") + " / " + ctrlLabel(selectedCtrl)) + '</strong><br><span>' + escapeHTML(setting?.customized ? "Custom settings" : "Inherits global defaults") + '</span></p><label class="toggle-row"><input id="ctrl-customize" type="checkbox"' + (setting?.customized ? ' checked' : '') + '><span>Customize this CTRL separately</span></label>' + (setting?.customized ? '<div class="ctrl-fields"><label>Model<input id="ctrl-model" value="' + escapeHTML(effective.model || '') + '" autocomplete="off"></label><label>Reasoning<select id="ctrl-reasoning">' + reasoningOptions.map((option) => '<option value="' + option + '"' + (option === effective.reasoning ? ' selected' : '') + '>' + option + '</option>').join('') + '</select></label></div><button class="quiet-button" data-setting-action="save-ctrl" type="button">Save CTRL settings</button>' : '') + '<button class="quiet-button" data-setting-action="reset" type="button"' + (!setting?.customized ? ' disabled' : '') + '>Use global defaults</button></section>' : '';
   $("#settings-grid").innerHTML =
-    '<section class="panel settings-card system-health-card" id="system-health-panel" tabindex="-1" aria-labelledby="system-health-heading"><p class="eyebrow">Diagnostics</p><h3 id="system-health-heading">System health</h3><p class="system-health-summary"><span class="status-dot' + (systemHealth.className ? ' ' + systemHealth.className : '') + '" id="system-health-panel-dot" aria-hidden="true"></span><strong id="system-health-state">' + escapeHTML(systemHealth.label) + '</strong></p><p id="system-health-note">' + escapeHTML(systemHealth.note) + '</p></section>' +
+    '<section class="panel settings-card system-health-card" id="system-health-panel" tabindex="-1" aria-labelledby="system-health-heading"><p class="eyebrow">Diagnostics</p><h3 id="system-health-heading">System health</h3><p class="system-health-summary"><span class="status-dot' + (systemHealth.className ? ' ' + systemHealth.className : '') + '" id="system-health-panel-dot" aria-hidden="true"></span><strong id="system-health-state">' + escapeHTML(systemHealth.label) + '</strong></p><p id="system-health-note">' + escapeHTML(systemHealth.note) + '</p>' + usageChartMarkup("diagnostics", "diagnostics-usage-trend") + '</section>' +
     '<section class="panel settings-card"><p class="eyebrow">Settings scope</p><h3>Where changes apply</h3><label class="setting-field">Scope<select id="settings-scope">' + settingsScopeOptions() + '</select></label><p class="scope-setting-status"><strong>' + escapeHTML(selectedCtrl ? publicLabel(selectedCtrl.project, "Project") + " / " + ctrlLabel(selectedCtrl) : scope.type === "project" ? scopeLabel() : "Global defaults") + '</strong><span>' + escapeHTML(selectedCtrl ? (setting?.customized ? "Custom settings" : "Inherits global defaults") : "Uses the current server-owned settings") + '</span></p><small>Per-CTRL overrides are in Advanced settings.</small></section>' +
     '<section class="panel settings-card"><p class="eyebrow">Work routing</p><h3>How work is handled</h3>' +
       settingSelect('execution.max_reasoning', execution.max_reasoning || 'medium', reasoningOptions, 'Default reasoning') +
@@ -3021,9 +3144,10 @@ function renderSettings() {
       '<label class="toggle-row"><input id="auto-health" type="checkbox"' + (state.health?.enabled ? ' checked' : '') + '><span>Request health review when needed</span></label><small>Passive monitoring does not run models.</small><div class="guided-tour-setting"><span><strong>Guided tour</strong><small>Replay the current console introduction.</small></span><button class="quiet-button" data-setting-action="replay-tour" type="button">Replay tour</button></div></section>' +
       '<details class="panel settings-advanced settings-wide" id="settings-advanced"' + (location.hash === '#settings-advanced' ? ' open' : '') + '><summary>Advanced settings</summary><div class="settings-advanced-grid">' + ctrlAdvanced + chatRelaySettingsMarkup() + '<section class="advanced-setting-group"><h4>Spark and monitoring</h4>' + settingSelect('boost.spark_reasoning', boost.spark_reasoning || 'xhigh', reasoningOptions, 'Spark reasoning') + '<label class="setting-field">Spark model<input id="spark-model" value="' + escapeHTML(boost.spark_model || '') + '" autocomplete="off"' + (!configEditable('boost.spark_model') ? ' disabled' : '') + '></label><label class="setting-field">Heartbeat minutes<input id="heartbeat-minutes" data-config-key="monitoring.heartbeat_minutes" type="number" min="1" value="' + escapeHTML(monitoring.heartbeat_minutes || '') + '"' + (!configEditable('monitoring.heartbeat_minutes') ? ' disabled' : '') + '></label><button class="quiet-button" data-setting-action="save-spark" type="button"' + (!configEditable('boost.spark_model') ? ' disabled' : '') + '>Save Spark model</button>' + settingToggle('role_icons.enabled', roleIcons.enabled, 'Show role icons') + '</section><section class="advanced-setting-group"><h4>' + escapeHTML(storage?.bytes == null ? 'Saved history unavailable' : formatBytes(storage.bytes) + ' saved history' + retention) + '</h4><p>Progress, forecasts, proof, and token history stay available between sessions' + (proofFiles ? ' · ' + proofFiles + ' proof file' + (proofFiles === 1 ? '' : 's') : '') + '.</p><div class="settings-actions-inline"><button class="quiet-button" data-setting-action="clear" type="button">Clear history</button><button class="quiet-button" data-setting-action="restore" type="button">Restore defaults</button></div><small>Clearing history leaves tasks unchanged. Restoring defaults keeps history.</small>' + skillsAdvanced(scope) + '</section></div></details>';
   renderSystemHealth();
+  renderUsageCharts();
 }
 
-function renderAllViews() { renderOverview(); renderAgents(); renderReview(); renderAssets(); renderSettings(); renderRunLogSurfaces(); if ($("#onboarding-dialog")?.open) renderOnboarding(); }
+function renderAllViews() { renderOverview(); renderAgents(); renderRoles(); renderReview(); renderAssets(); renderSettings(); renderRunLogSurfaces(); if ($("#onboarding-dialog")?.open) renderOnboarding(); }
 
 async function refreshProof() {
   const projectId = state.projectId;
@@ -3273,6 +3397,31 @@ function startPresence() {
 }
 
 document.addEventListener("click", async (event) => {
+  const scopeSelector = $("#project-scope-selector");
+  if (scopeSelector?.open && !event.target.closest("#project-scope-selector")) scopeSelector.open = false;
+  if (event.target.closest("#project-scope-filter")?.getAttribute("aria-disabled") === "true") {
+    event.preventDefault();
+    scopeSelector.open = false;
+    return;
+  }
+  const projectScopeOption = event.target.closest("[data-project-scope-id]");
+  if (projectScopeOption) {
+    event.preventDefault();
+    scopeSelector.open = false;
+    await selectProjectScope(projectScopeOption.dataset.projectScopeId, $("#project-scope-filter"));
+    return;
+  }
+  const usageRange = event.target.closest("[data-usage-range]");
+  if (usageRange) {
+    const hours = Number(usageRange.dataset.usageRange);
+    if (![1, 24, 168].includes(hours) || hours === state.usageWindowHours) return;
+    state.usageWindowHours = hours;
+    state.usageStatus = "loading";
+    renderUsageCharts();
+    await refreshUsageHistory();
+    renderUsageCharts();
+    return;
+  }
   if (!$("#notifications-panel").hidden && !event.target.closest("#notifications-panel, #notifications")) {
     setNotificationsOpen(false);
   }
@@ -3379,16 +3528,11 @@ document.addEventListener("click", async (event) => {
   }
   const asset = event.target.closest("[data-asset-detail]");
   if (asset) {
-    state.selectedAssetIdentity = asset.dataset.assetDetail;
-    renderAssets();
-    $("#asset-detail")?.focus({ preventScroll: true });
+    openAssetDialog(asset.dataset.assetDetail, asset);
     return;
   }
-  const agentsTab = event.target.closest("[data-agents-tab]");
-  if (agentsTab) {
-    state.agentsTab = agentsTab.dataset.agentsTab === "library" ? "library" : "active";
-    renderAgents();
-    $("#agents-tab-" + state.agentsTab)?.focus({ preventScroll: true });
+  if (event.target.closest("#asset-dialog-done")) {
+    closeAssetDialog();
     return;
   }
   const roleFilterClear = event.target.closest("[data-role-filter-clear]");
@@ -3449,15 +3593,6 @@ document.addEventListener("click", async (event) => {
     renderEvidenceLightbox();
     return;
   }
-  const usageWindow = event.target.closest("[data-usage-hours]");
-  if (usageWindow) {
-    const hours = Number(usageWindow.dataset.usageHours);
-    if (!Object.hasOwn(USAGE_WINDOW_LABELS, hours) || hours === state.usageWindowHours) return;
-    state.usageWindowHours = hours;
-    renderAllViews();
-    refreshUsageHistory().then(renderAllViews);
-    return;
-  }
   const tab = event.target.closest("[data-view]");
   if (tab) {
     setView(tab.dataset.view);
@@ -3495,6 +3630,25 @@ $("#evidence-lightbox").addEventListener("close", () => {
   state.evidenceTrigger?.focus();
   state.evidenceTrigger = null;
 });
+$("#asset-dialog-close").addEventListener("click", closeAssetDialog);
+$("#asset-dialog").addEventListener("close", () => {
+  state.assetTrigger?.focus({ preventScroll: true });
+  state.assetTrigger = null;
+});
+$("#project-scope-selector").addEventListener("keydown", (event) => {
+  const options = $$('[data-project-scope-id]', event.currentTarget);
+  if (event.target.id === "project-scope-filter" && ["ArrowDown", "Home", "End"].includes(event.key)) {
+    event.preventDefault();
+    event.currentTarget.open = true;
+    (event.key === "End" ? options.at(-1) : options.find((option) => option.getAttribute("aria-selected") === "true") || options[0])?.focus();
+    return;
+  }
+  const index = options.indexOf(event.target.closest("[data-project-scope-id]"));
+  if (index < 0 || !["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)) return;
+  event.preventDefault();
+  const next = event.key === "Home" ? 0 : event.key === "End" ? options.length - 1 : Math.max(0, Math.min(options.length - 1, index + (event.key === "ArrowDown" ? 1 : -1)));
+  options[next]?.focus();
+});
 $("#evidence-lightbox-image").addEventListener("error", () => {
   $("#evidence-lightbox-image").hidden = true;
   $("#evidence-lightbox-failed").hidden = false;
@@ -3507,6 +3661,12 @@ document.addEventListener("error", (event) => {
   if (failed) failed.hidden = false;
 }, true);
 document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape" && $("#project-scope-selector")?.open) {
+    event.preventDefault();
+    $("#project-scope-selector").open = false;
+    $("#project-scope-filter").focus({ preventScroll: true });
+    return;
+  }
   if (event.key === "Escape" && !$("#notifications-panel").hidden) {
     event.preventDefault();
     setNotificationsOpen(false, true);
@@ -3561,11 +3721,19 @@ $("#project-navigation").addEventListener("click", async (event) => {
   const scope = event.target.closest("[data-project-id]");
   if (!scope) return;
   event.preventDefault();
-  await selectProjectScope(scope.dataset.projectId);
+  await selectProjectScope(scope.dataset.projectId, scope);
+});
+$("#project-scope-selector").addEventListener("toggle", (event) => {
+  $("#project-scope-filter").setAttribute("aria-expanded", String(event.currentTarget.open));
+});
+$("#project-navigation-heading").addEventListener("click", async (event) => {
+  event.preventDefault();
+  setView("overview", false, false);
+  await selectProjectScope("all", event.currentTarget);
 });
 $("#overview-project-cards").addEventListener("click", async (event) => {
   const project = event.target.closest("[data-overview-project-id]");
-  if (project) await selectProjectScope(project.dataset.overviewProjectId);
+  if (project) await selectProjectScope(project.dataset.overviewProjectId, project);
 });
 $("#refresh").addEventListener("click", refreshOverview);
 $("#system-health-control").addEventListener("click", openSystemHealth);
@@ -3626,10 +3794,6 @@ document.addEventListener('change', async (event) => {
     if (event.target.checked) state.roleSearchFields.add(field);
     else state.roleSearchFields.delete(field);
     renderRoleLibrary();
-    return;
-  }
-  if (event.target.id === 'project-scope-filter') {
-    await selectProjectScope(event.target.value || 'all');
     return;
   }
   if (event.target.id === 'settings-scope') {
@@ -3786,17 +3950,6 @@ $(".drawer-navigation").addEventListener("keydown", (event) => {
   setView(tabs[next].dataset.view, true);
 });
 
-$(".agents-tabs").addEventListener("keydown", (event) => {
-  if (!["ArrowRight", "ArrowLeft", "Home", "End"].includes(event.key)) return;
-  const tabs = $$('[data-agents-tab]');
-  const index = tabs.indexOf(document.activeElement);
-  const next = event.key === "Home" ? 0 : event.key === "End" ? tabs.length - 1 : (index + (event.key === "ArrowRight" ? 1 : -1) + tabs.length) % tabs.length;
-  event.preventDefault();
-  state.agentsTab = tabs[next].dataset.agentsTab;
-  renderAgents();
-  tabs[next].focus();
-});
-
 $(".project-tabs").addEventListener("keydown", (event) => {
   if (!["ArrowRight", "ArrowLeft", "Home", "End"].includes(event.key)) return;
   const tabs = $$('[data-project-tab]').filter((tab) => !tab.hidden);
@@ -3815,6 +3968,21 @@ window.addEventListener("resize", scheduleProjectViewConnectors);
 window.addEventListener("pagehide", () => { if (presenceTimer) clearInterval(presenceTimer); });
 
 syncMobileDrawer();
-setView(routeView(), false, routeView() === 'overview' && location.hash !== '#overview');
-window.addEventListener('hashchange', () => setView(routeView(), false, routeView() === 'overview' && location.hash !== '#overview'));
+setProjectSelection(routeProjectId());
+setView(routeView(), false, false);
+writeRoute("replace");
+function applyHistoryRoute() {
+  const route = location.pathname + location.search + location.hash;
+  if (route === lastAppliedHistoryRoute) return;
+  lastAppliedHistoryRoute = route;
+  setProjectSelection(routeProjectId());
+  state.scopeNotice = "Restored " + scopeLabel() + " on " + (routeView() === "overview" ? "Overview" : routeView()) + ".";
+  state.scopeNoticeVisible = false;
+  setView(routeView(), false, false);
+  renderProjectNavigation();
+  renderAllViews();
+  refreshOverview(false);
+}
+window.addEventListener('popstate', applyHistoryRoute);
+window.addEventListener('hashchange', applyHistoryRoute);
 initialize().then(startPresence);
