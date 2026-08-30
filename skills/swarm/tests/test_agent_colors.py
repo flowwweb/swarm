@@ -34,6 +34,21 @@ class AgentColorContractTests(unittest.TestCase):
         self.assertEqual(second.name, "Red-3")
         self.assertEqual(first.hex, "#FF0000")
 
+    def test_single_word_pool_precedes_nearer_compound_then_suffixes(self) -> None:
+        singles = tuple(item for item in AGENT_COLOR_REGISTRY if "-" not in item.name)
+        compounds = tuple(item for item in AGENT_COLOR_REGISTRY if "-" in item.name)
+        self.assertTrue(singles)
+        self.assertTrue(compounds)
+        nearest_red_single = assign_agent_color("single", "#F0F8FF", ())
+        self.assertNotIn("-", nearest_red_single.name)
+        occupied_singles = tuple((f"single-{index}", item.name) for index, item in enumerate(singles))
+        reserve = assign_agent_color("reserve", "#F0F8FF", occupied_singles)
+        self.assertIn("-", reserve.name)
+        self.assertFalse(reserve.name.rsplit("-", 1)[-1].isdigit())
+        occupied_all = tuple((f"all-{index}", item.name) for index, item in enumerate(AGENT_COLOR_REGISTRY))
+        exhausted = assign_agent_color("exhausted", "#F0F8FF", occupied_all)
+        self.assertTrue(exhausted.name.rsplit("-", 1)[-1].isdigit())
+
     def test_invalid_or_conflicting_input_fails_closed(self) -> None:
         with self.assertRaisesRegex(ValueError, "#RRGGBB"):
             assign_agent_color("agent", "red", ())

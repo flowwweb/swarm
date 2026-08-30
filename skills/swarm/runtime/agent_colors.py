@@ -149,9 +149,13 @@ def assign_agent_color(
         AGENT_COLOR_REGISTRY,
         key=lambda item: (sum((left - right) ** 2 for left, right in zip(_oklab(item.hex), target)), item.name.casefold()),
     )
-    available = next((item for item in ranked if item.name.casefold() not in occupied), None)
-    if available is not None:
-        return available
+    free = [item for item in ranked if item.name.casefold() not in occupied]
+    single_word = next((item for item in free if "-" not in item.name), None)
+    if single_word is not None:
+        return single_word
+    compound = next(iter(free), None)
+    if compound is not None:
+        return compound
     base = ranked[0]
     suffix = 2
     while f"{base.name}-{suffix}".casefold() in occupied:
