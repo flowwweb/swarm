@@ -235,6 +235,26 @@ class ProgressLedgerContractTests(unittest.TestCase):
         self.assertEqual(restarted["connector_command_ids"]["command-a"][0], "key-a")
         self.assertEqual(restarted["connector_receipt_ids"]["ack-a"], restarted["connector_receipts"]["key-a"]["receipts"][1]["event_digest"])
 
+    def test_connector_local_progress_and_causal_time_are_restart_safe(self) -> None:
+        base = {
+            "schema_version": 1, "record_type": "CONNECTOR", "command_id": "local-command",
+            "idempotency_key": "local-key", "command_digest": "f" * 64,
+            "project_id": "project-alpha", "root_digest": "1" * 64, "action": "LOCAL_HQ",
+            "thread_id": None, "turn_id": None,
+        }
+        self.ledger.append_connector_receipt({**base, "receipt_id": "local-0", "receipt_index": 0, "status": "COMMAND", "observed_root_digest": None, "observed_at_ms": 10})
+        self.ledger.append_connector_receipt({**base, "receipt_id": "local-1", "receipt_index": 1, "status": "ACKNOWLEDGED", "observed_root_digest": "1" * 64, "observed_at_ms": 11})
+        with self.assertRaisesRegex(ProgressEventError, "exact local observed root"):
+            self.ledger.append_connector_receipt({**base, "receipt_id": "local-wrong-root", "receipt_index": 2, "status": "PROGRESS", "observed_root_digest": None, "observed_at_ms": 12})
+        with self.assertRaisesRegex(ProgressEventError, "cannot regress"):
+            self.ledger.append_connector_receipt({**base, "receipt_id": "local-regress", "receipt_index": 2, "status": "PROGRESS", "observed_root_digest": "1" * 64, "observed_at_ms": 9})
+        self.ledger.append_connector_receipt({**base, "receipt_id": "local-2", "receipt_index": 2, "status": "PROGRESS", "observed_root_digest": "1" * 64, "observed_at_ms": 11})
+        restarted = self.host_ledger(self.root)
+        with self.assertRaisesRegex(ProgressEventError, "cannot regress"):
+            restarted.append_connector_receipt({**base, "receipt_id": "local-result-regress", "receipt_index": 3, "status": "RESULT", "observed_root_digest": "1" * 64, "observed_at_ms": 10})
+        restarted.append_connector_receipt({**base, "receipt_id": "local-3", "receipt_index": 3, "status": "RESULT", "observed_root_digest": "1" * 64, "observed_at_ms": 12})
+        self.assertTrue(restarted.replay()["connector_receipts"]["local-key"]["terminal"])
+
     @staticmethod
     def event(
         event_id: str,

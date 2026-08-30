@@ -711,7 +711,7 @@ def _validate_connector_receipt(payload: Any) -> dict[str, Any]:
         raise ProgressEventError("connector command or unsupported receipt cannot claim host binding")
     if normalized["action"] == "LOCAL_HQ" and (has_thread or has_turn):
         raise ProgressEventError("LOCAL_HQ connector receipt cannot claim Codex host ids")
-    if normalized["action"] == "LOCAL_HQ" and normalized["status"] in {"ACKNOWLEDGED", "RESULT"} and normalized["observed_root_digest"] != normalized["root_digest"]:
+    if normalized["action"] == "LOCAL_HQ" and normalized["status"] in {"ACKNOWLEDGED", "PROGRESS", "RESULT"} and normalized["observed_root_digest"] != normalized["root_digest"]:
         raise ProgressEventError("LOCAL_HQ lifecycle requires the exact local observed root")
     if normalized["action"] != "LOCAL_HQ" and normalized["status"] == "ACKNOWLEDGED" and (not has_thread or has_turn or normalized["observed_root_digest"] != normalized["root_digest"]):
         raise ProgressEventError("Codex connector acknowledgement requires a thread and exact root binding")
@@ -1423,6 +1423,8 @@ class Ledger:
         if event["receipt_index"] != len(command["receipts"]):
             raise ProgressEventError("connector receipt index must append contiguously")
         previous = command["receipts"][-1]["status"] if command["receipts"] else None
+        if command["receipts"] and event["observed_at_ms"] < command["receipts"][-1]["observed_at_ms"]:
+            raise ProgressEventError("connector lifecycle observation time cannot regress")
         if previous is not None and not (
             previous == "COMMAND" and event["status"] in {"ACKNOWLEDGED", "UNSUPPORTED"}
             or previous == "ACKNOWLEDGED" and event["status"] in {"PROGRESS", "RESULT"}
