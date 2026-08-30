@@ -116,7 +116,7 @@ class ProgressLedgerContractTests(unittest.TestCase):
             "schema_version": 1, "record_type": "CONNECTOR", "command_id": "connector-command-1",
             "idempotency_key": "command-1", "command_digest": "1" * 64,
             "project_id": "project-alpha", "root_digest": "2" * 64,
-            "action": "TASK", "observed_root_digest": "2" * 64,
+            "action": "TASK", "observed_root_digest": None,
         }
         before = self.ledger.project("project-alpha")
         command = {**base, "receipt_id": "connector-1", "receipt_index": 0, "status": "COMMAND", "thread_id": None, "turn_id": None, "observed_at_ms": 10}
@@ -124,7 +124,7 @@ class ProgressLedgerContractTests(unittest.TestCase):
         replay = self.ledger.append_connector_receipt(command)
         self.assertEqual((first["status"], replay["status"]), ("appended", "unchanged"))
         for index, status in enumerate(("ACKNOWLEDGED", "PROGRESS", "PROGRESS", "RESULT"), 1):
-            self.ledger.append_connector_receipt({**base, "receipt_id": f"connector-{index + 1}", "receipt_index": index, "status": status, "thread_id": "thread-1", "turn_id": "turn-1", "observed_at_ms": 10 + index})
+            self.ledger.append_connector_receipt({**base, "receipt_id": f"connector-{index + 1}", "receipt_index": index, "status": status, "thread_id": "thread-1", "turn_id": None if status == "ACKNOWLEDGED" else "turn-1", "observed_root_digest": "2" * 64, "observed_at_ms": 10 + index})
         after = self.ledger.project("project-alpha")
         self.assertEqual(
             {key: value for key, value in after.items() if key != "cursor"},
@@ -135,7 +135,7 @@ class ProgressLedgerContractTests(unittest.TestCase):
         self.assertEqual([item["status"] for item in command_projection["receipts"]], ["COMMAND", "ACKNOWLEDGED", "PROGRESS", "PROGRESS", "RESULT"])
         self.assertTrue(command_projection["terminal"])
         with self.assertRaisesRegex(ProgressEventError, "terminal"):
-            restarted.append_connector_receipt({**base, "receipt_id": "connector-late", "receipt_index": 5, "status": "PROGRESS", "thread_id": "thread-1", "turn_id": "turn-1", "observed_at_ms": 20})
+            restarted.append_connector_receipt({**base, "receipt_id": "connector-late", "receipt_index": 5, "status": "PROGRESS", "thread_id": "thread-1", "turn_id": "turn-1", "observed_root_digest": "2" * 64, "observed_at_ms": 20})
 
     def test_non_material_decoder_preserves_bytes_and_fails_closed(self) -> None:
         receipt = {
@@ -143,7 +143,7 @@ class ProgressLedgerContractTests(unittest.TestCase):
             "idempotency_key": "command-corrupt", "command_digest": "3" * 64,
             "project_id": "project-alpha", "root_digest": "4" * 64,
             "action": "TASK", "status": "COMMAND", "thread_id": None,
-            "turn_id": None, "observed_root_digest": "4" * 64, "observed_at_ms": 1,
+            "turn_id": None, "observed_root_digest": None, "observed_at_ms": 1,
         }
         self.ledger.append_connector_receipt(receipt)
         path = self.root / PROGRESS_LEDGER_PATH
@@ -162,7 +162,7 @@ class ProgressLedgerContractTests(unittest.TestCase):
             "idempotency_key": "command-invalid", "command_digest": "5" * 64,
             "project_id": "project-alpha", "root_digest": "6" * 64,
             "action": "TASK", "status": "COMMAND", "thread_id": None, "turn_id": None,
-            "observed_root_digest": "6" * 64, "observed_at_ms": 1,
+            "observed_root_digest": None, "observed_at_ms": 1,
         }
         for change in ({"action": "DELETE_EVERYTHING"}, {"status": "SUCCESSISH"}):
             with self.subTest(change=change), self.assertRaisesRegex(ProgressEventError, "unsupported"):
@@ -173,7 +173,7 @@ class ProgressLedgerContractTests(unittest.TestCase):
         base = {
             "schema_version": 1, "record_type": "CONNECTOR", "receipt_id": "command-receipt", "command_id": "command-id", "receipt_index": 0,
             "idempotency_key": "command-key", "command_digest": "7" * 64, "project_id": "project-alpha", "root_digest": "8" * 64,
-            "action": "TASK", "status": "COMMAND", "thread_id": None, "turn_id": None, "observed_root_digest": "8" * 64, "observed_at_ms": 1,
+            "action": "TASK", "status": "COMMAND", "thread_id": None, "turn_id": None, "observed_root_digest": None, "observed_at_ms": 1,
         }
         self.ledger.append_connector_receipt(base)
         for change in (
@@ -188,10 +188,52 @@ class ProgressLedgerContractTests(unittest.TestCase):
         local = {**base, "receipt_id": "local-command", "command_id": "local-id", "idempotency_key": "local-key", "command_digest": "b" * 64, "action": "LOCAL_HQ"}
         self.ledger.append_connector_receipt(local)
         with self.assertRaisesRegex(ProgressEventError, "LOCAL_HQ"):
-            self.ledger.append_connector_receipt({**local, "receipt_id": "local-result", "receipt_index": 1, "status": "RESULT", "thread_id": "thread"})
+            self.ledger.append_connector_receipt({**local, "receipt_id": "local-result", "receipt_index": 1, "status": "ACKNOWLEDGED", "thread_id": "thread", "observed_root_digest": "8" * 64})
         unsupported = {**base, "receipt_id": "unsupported-command", "command_id": "unsupported-id", "idempotency_key": "unsupported-key", "command_digest": "c" * 64}
         self.ledger.append_connector_receipt(unsupported)
         self.ledger.append_connector_receipt({**unsupported, "receipt_id": "unsupported-result", "receipt_index": 1, "status": "UNSUPPORTED", "observed_at_ms": 2})
+
+    def test_connector_transition_graph_and_global_identities_fail_closed(self) -> None:
+        def command(key: str = "key-a", command_id: str = "command-a", receipt_id: str = "receipt-a") -> dict:
+            return {
+                "schema_version": 1, "record_type": "CONNECTOR", "receipt_id": receipt_id,
+                "command_id": command_id, "receipt_index": 0, "idempotency_key": key,
+                "command_digest": "d" * 64, "project_id": "project-alpha", "root_digest": "e" * 64,
+                "action": "TASK", "status": "COMMAND", "thread_id": None, "turn_id": None,
+                "observed_root_digest": None, "observed_at_ms": 1,
+            }
+
+        invalid_sequences = (
+            ("PROGRESS",), ("RESULT",), ("ACKNOWLEDGED", "ACKNOWLEDGED"),
+            ("ACKNOWLEDGED", "PROGRESS", "ACKNOWLEDGED"),
+            ("ACKNOWLEDGED", "UNSUPPORTED"),
+        )
+        for number, sequence in enumerate(invalid_sequences):
+            root = self.root / f"invalid-{number}"
+            ledger = self.host_ledger(root)
+            base = command()
+            ledger.append_connector_receipt(base)
+            for index, status in enumerate(sequence, 1):
+                payload = {**base, "receipt_id": f"receipt-{number}-{index}", "receipt_index": index, "status": status, "thread_id": "thread", "turn_id": None if status == "ACKNOWLEDGED" else "turn", "observed_root_digest": "e" * 64}
+                if index == len(sequence):
+                    with self.assertRaises(ProgressEventError):
+                        ledger.append_connector_receipt(payload)
+                else:
+                    ledger.append_connector_receipt(payload)
+
+        self.ledger.append_connector_receipt(command())
+        with self.assertRaisesRegex(ProgressEventError, "command_id"):
+            self.ledger.append_connector_receipt(command(key="key-b", receipt_id="receipt-b"))
+        with self.assertRaisesRegex(ProgressEventError, "receipt_id"):
+            self.ledger.append_connector_receipt(command(key="key-b", command_id="command-b", receipt_id="receipt-a"))
+        with self.assertRaisesRegex(ProgressEventError, "thread"):
+            self.ledger.append_connector_receipt({**command(), "receipt_id": "ack-missing-thread", "receipt_index": 1, "status": "ACKNOWLEDGED", "observed_root_digest": "e" * 64})
+        self.ledger.append_connector_receipt({**command(), "receipt_id": "ack-a", "receipt_index": 1, "status": "ACKNOWLEDGED", "thread_id": "thread", "observed_root_digest": "e" * 64})
+        with self.assertRaisesRegex(ProgressEventError, "thread, turn"):
+            self.ledger.append_connector_receipt({**command(), "receipt_id": "progress-missing-turn", "receipt_index": 2, "status": "PROGRESS", "thread_id": "thread", "observed_root_digest": "e" * 64})
+        restarted = self.host_ledger(self.root).replay()
+        self.assertEqual(restarted["connector_command_ids"]["command-a"][0], "key-a")
+        self.assertEqual(restarted["connector_receipt_ids"]["ack-a"], restarted["connector_receipts"]["key-a"]["receipts"][1]["event_digest"])
 
     @staticmethod
     def event(

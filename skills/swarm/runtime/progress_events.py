@@ -695,22 +695,28 @@ def _validate_connector_receipt(payload: Any) -> dict[str, Any]:
         normalized[key] = _safe_id(payload.get(key), f"connector {key}")
     if normalized["action"] not in CONNECTOR_ACTIONS or normalized["status"] not in CONNECTOR_STATUSES:
         raise ProgressEventError("connector action or status is unsupported")
-    for key in ("command_digest", "root_digest", "observed_root_digest"):
+    for key in ("command_digest", "root_digest"):
         value = payload.get(key)
         if not isinstance(value, str) or len(value) != 64 or any(character not in "0123456789abcdef" for character in value):
             raise ProgressEventError(f"connector {key} must be a lowercase SHA-256 digest")
+    observed_root = payload.get("observed_root_digest")
+    if observed_root is not None and (not isinstance(observed_root, str) or len(observed_root) != 64 or any(character not in "0123456789abcdef" for character in observed_root)):
+        raise ProgressEventError("connector observed_root_digest must be null or a lowercase SHA-256 digest")
     for key in ("thread_id", "turn_id"):
         normalized[key] = None if payload.get(key) is None else _safe_id(payload.get(key), f"connector {key}")
     normalized["receipt_index"] = _positive_int(payload.get("receipt_index"), "connector receipt_index", allow_zero=True)
     normalized["observed_at_ms"] = _positive_int(payload.get("observed_at_ms"), "connector observed_at_ms", allow_zero=True)
-    has_host = normalized["thread_id"] is not None or normalized["turn_id"] is not None
-    if normalized["status"] in {"COMMAND", "UNSUPPORTED"} and (has_host or normalized["observed_root_digest"] != normalized["root_digest"]):
+    has_thread, has_turn = normalized["thread_id"] is not None, normalized["turn_id"] is not None
+    if normalized["status"] in {"COMMAND", "UNSUPPORTED"} and (has_thread or has_turn or normalized["observed_root_digest"] is not None):
         raise ProgressEventError("connector command or unsupported receipt cannot claim host binding")
-    if normalized["action"] == "LOCAL_HQ" and has_host:
+    if normalized["action"] == "LOCAL_HQ" and (has_thread or has_turn):
         raise ProgressEventError("LOCAL_HQ connector receipt cannot claim Codex host ids")
-    if normalized["action"] != "LOCAL_HQ" and normalized["status"] in {"ACKNOWLEDGED", "PROGRESS", "RESULT"}:
-        if not has_host or normalized["observed_root_digest"] != normalized["root_digest"]:
-            raise ProgressEventError("Codex connector lifecycle requires exact host ids and root binding")
+    if normalized["action"] == "LOCAL_HQ" and normalized["status"] in {"ACKNOWLEDGED", "RESULT"} and normalized["observed_root_digest"] != normalized["root_digest"]:
+        raise ProgressEventError("LOCAL_HQ lifecycle requires the exact local observed root")
+    if normalized["action"] != "LOCAL_HQ" and normalized["status"] == "ACKNOWLEDGED" and (not has_thread or has_turn or normalized["observed_root_digest"] != normalized["root_digest"]):
+        raise ProgressEventError("Codex connector acknowledgement requires a thread and exact root binding")
+    if normalized["action"] != "LOCAL_HQ" and normalized["status"] in {"PROGRESS", "RESULT"} and (not has_thread or not has_turn or normalized["observed_root_digest"] != normalized["root_digest"]):
+        raise ProgressEventError("Codex connector progress or result requires thread, turn, and exact root binding")
     return json.loads(json.dumps(normalized, ensure_ascii=False, sort_keys=True, separators=(",", ":")))
 
 
@@ -1254,6 +1260,8 @@ def _empty_progress_projection() -> dict[str, Any]:
         "task_handoff_leases": {},
         "expected_receipts": {},
         "connector_receipts": {},
+        "connector_command_ids": {},
+        "connector_receipt_ids": {},
     }
 
 _LIFECYCLE_TRANSITIONS: dict[ProgressLifecycle, frozenset[ProgressLifecycle]] = {
@@ -1386,6 +1394,45 @@ class Ledger:
     @staticmethod
     def _is_non_material_record(raw_event: Any) -> bool:
         return isinstance(raw_event, dict) and raw_event.get("record_type") in NON_MATERIAL_RECORD_TYPES
+
+    @staticmethod
+    def _apply_connector_receipt(projection: dict[str, Any], event: dict[str, Any], event_seq: int, event_digest: str) -> None:
+        commands, command_ids, receipt_ids = (
+            projection["connector_receipts"], projection["connector_command_ids"], projection["connector_receipt_ids"],
+        )
+        identity = (event["command_id"], event["command_digest"], event["project_id"], event["root_digest"], event["action"])
+        command_binding = command_ids.get(event["command_id"])
+        if command_binding is not None and tuple(command_binding) != (event["idempotency_key"], *identity):
+            raise ProgressEventError("connector command_id conflicts with retained command")
+        receipt_binding = receipt_ids.get(event["receipt_id"])
+        if receipt_binding is not None:
+            if receipt_binding != event_digest:
+                raise ProgressEventError("connector receipt_id conflicts with retained event")
+            return
+        command = commands.get(event["idempotency_key"])
+        if command is None:
+            if event["status"] != "COMMAND" or event["receipt_index"] != 0:
+                raise ProgressEventError("connector lifecycle must begin with COMMAND index zero")
+            command = {"identity": list(identity), "terminal": False, "receipts": []}
+            commands[event["idempotency_key"]] = command
+            command_ids[event["command_id"]] = [event["idempotency_key"], *identity]
+        elif tuple(command["identity"]) != identity:
+            raise ProgressEventError("connector command identity conflicts with retained command")
+        if command["terminal"]:
+            raise ProgressEventError("connector terminal lifecycle is monotonic")
+        if event["receipt_index"] != len(command["receipts"]):
+            raise ProgressEventError("connector receipt index must append contiguously")
+        previous = command["receipts"][-1]["status"] if command["receipts"] else None
+        if previous is not None and not (
+            previous == "COMMAND" and event["status"] in {"ACKNOWLEDGED", "UNSUPPORTED"}
+            or previous == "ACKNOWLEDGED" and event["status"] in {"PROGRESS", "RESULT"}
+            or previous == "PROGRESS" and event["status"] in {"PROGRESS", "RESULT"}
+        ):
+            raise ProgressEventError("connector lifecycle transition is invalid")
+        command["receipts"].append({**event, "event_seq": event_seq, "event_digest": event_digest})
+        receipt_ids[event["receipt_id"]] = event_digest
+        command["terminal"] = event["status"] in CONNECTOR_TERMINAL_STATUSES
+        projection["cursor"] = {"event_seq": event_seq, "event_id": event["receipt_id"], "event_digest": event_digest}
 
     @staticmethod
     def _record(event: ProgressMaterialEvent, event_seq: int) -> dict[str, Any]:
@@ -1910,30 +1957,7 @@ class Ledger:
                     self._apply_task_handoff(projection, event, expected_seq)
                     self._apply_handoff_expected(projection, event, expected_seq, event_digest)
                 else:
-                    commands = projection["connector_receipts"]
-                    command = commands.get(event["idempotency_key"])
-                    identity = (event["command_id"], event["command_digest"], event["project_id"], event["root_digest"], event["action"])
-                    if command is None:
-                        if event["status"] != "COMMAND" or event["receipt_index"] != 0:
-                            raise ProgressEventError("connector lifecycle must begin with COMMAND index zero")
-                        command = {"identity": list(identity), "terminal": False, "receipts": []}
-                        commands[event["idempotency_key"]] = command
-                    elif tuple(command["identity"]) != identity:
-                        raise ProgressEventError("connector command identity conflicts with retained command")
-                    existing = next((item for item in command["receipts"] if item["receipt_id"] == event["receipt_id"]), None)
-                    if existing is not None:
-                        if existing["event_digest"] != event_digest:
-                            raise ProgressEventError("connector receipt identity conflicts with retained digest")
-                    else:
-                        if command["terminal"]:
-                            raise ProgressEventError("connector terminal lifecycle is monotonic")
-                        if event["receipt_index"] != len(command["receipts"]):
-                            raise ProgressEventError("connector receipt index must append contiguously")
-                        if event["status"] == "COMMAND" and command["receipts"]:
-                            raise ProgressEventError("connector COMMAND may appear only once")
-                        command["receipts"].append({**event, "event_seq": expected_seq, "event_digest": event_digest})
-                        command["terminal"] = event["status"] in CONNECTOR_TERMINAL_STATUSES
-                    projection["cursor"] = {"event_seq": expected_seq, "event_id": event["receipt_id"], "event_digest": event_digest}
+                    self._apply_connector_receipt(projection, event, expected_seq, event_digest)
             else:
                 event = _validate_progress_material_event(
                     raw_event,
@@ -1999,22 +2023,7 @@ class Ledger:
             decoded = self._decode_non_material_record(event, event_digest)
             assert decoded is not None
             kind, identity, canonical, digest = decoded
-            trial_command = trial["connector_receipts"].get(canonical["idempotency_key"])
-            command_identity = (canonical["command_id"], canonical["command_digest"], canonical["project_id"], canonical["root_digest"], canonical["action"])
-            if trial_command is None:
-                if canonical["status"] != "COMMAND" or canonical["receipt_index"] != 0:
-                    raise ProgressEventError("connector lifecycle must begin with COMMAND index zero")
-                trial_command = {"identity": list(command_identity), "terminal": False, "receipts": []}
-                trial["connector_receipts"][canonical["idempotency_key"]] = trial_command
-            elif tuple(trial_command["identity"]) != command_identity:
-                raise ProgressEventError("connector command identity conflicts with retained command")
-            if trial_command["terminal"]:
-                raise ProgressEventError("connector terminal lifecycle is monotonic")
-            if canonical["receipt_index"] != len(trial_command["receipts"]):
-                raise ProgressEventError("connector receipt index must append contiguously")
-            trial_command["receipts"].append({**canonical, "event_seq": event_seq, "event_digest": digest})
-            trial_command["terminal"] = canonical["status"] in CONNECTOR_TERMINAL_STATUSES
-            trial["cursor"] = {"event_seq": event_seq, "event_id": identity, "event_digest": digest}
+            self._apply_connector_receipt(trial, canonical, event_seq, digest)
             record = {"event_seq": event_seq, "event_digest": event_digest, "event": event}
             line = json.dumps(record, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8") + b"\n"
             self._state.path.parent.mkdir(parents=True, exist_ok=True)
