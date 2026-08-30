@@ -737,6 +737,27 @@ function projectStatusLabel(status) {
   return { active: "Active", recent: "Recently active", stalled: "Needs attention", inactive: "Inactive", unknown: "Status unknown" }[status] || "Status unknown";
 }
 
+function admittedProjectLogo(project) {
+  const logo = project?.logo || project?.identity?.logo;
+  const artifact = logo?.artifact;
+  const url = typeof artifact?.url === "string" ? artifact.url : "";
+  const digest = String(artifact?.digest || "").replace(/^sha256:/i, "");
+  const safePath = /^\/(?!\/)(?!.*(?:^|\/)\.\.(?:\/|$))[a-z0-9._~!$&'()*+,;=:@%/-]+$/i.test(url);
+  return logo?.status === "ADMITTED"
+    && /^image\/(?:png|webp|jpeg|svg\+xml)$/i.test(String(artifact?.media_type || ""))
+    && /^[a-f0-9]{64}$/i.test(digest)
+    && safePath
+    ? { url, alt: String(artifact?.alt || "") }
+    : null;
+}
+
+function projectScopeMark(project) {
+  const logo = admittedProjectLogo(project);
+  return logo
+    ? '<img class="project-scope-logo" src="' + escapeHTML(logo.url) + '" alt="" loading="lazy" decoding="async">'
+    : '<span class="scope-dot is-' + escapeHTML(project?.status || "unknown") + '"></span>';
+}
+
 function savedProjectRoster() {
   const navigation = state.overview?.navigation;
   const inventory = navigation?.project_inventory;
@@ -761,16 +782,21 @@ function savedProjectRoster() {
       id: project.id,
       label: publicLabel(project.goal_label || project.name || project.id, "Untitled project"),
       status,
+      lastActivityAt: Number.isInteger(project.last_activity_at) && project.last_activity_at >= 0 ? project.last_activity_at : null,
       ctrlIds: [...ctrlIds],
       activeCtrlId: typeof project.active_ctrl_id === "string" ? project.active_ctrl_id : "",
       taskCount: Number.isInteger(project.task_count) && project.task_count >= 0 ? project.task_count : null,
       eligibility: project.project_eligibility === "swarm_ctrl" ? "swarm_ctrl" : "no_ctrl",
+      logo: project.logo || project.identity?.logo || null,
     };
   });
   if (projects.some((project) => !project)) return { state: "UNKNOWN", projects: [] };
   return {
     state: "KNOWN",
-    projects: projects.sort((a, b) => PROJECT_NAVIGATION_STATUS_RANK[a.status] - PROJECT_NAVIGATION_STATUS_RANK[b.status] || a.label.localeCompare(b.label) || a.id.localeCompare(b.id)),
+    projects: projects.sort((a, b) => PROJECT_NAVIGATION_STATUS_RANK[a.status] - PROJECT_NAVIGATION_STATUS_RANK[b.status]
+      || (b.lastActivityAt ?? -1) - (a.lastActivityAt ?? -1)
+      || a.label.localeCompare(b.label)
+      || a.id.localeCompare(b.id)),
   };
 }
 
@@ -807,7 +833,7 @@ function renderProjectNavigation() {
       selector.setAttribute("aria-disabled", "true");
       selector.setAttribute("aria-label", "Project scope unavailable");
       $("#project-scope-selector").open = false;
-      $("#project-scope-selected-dot").className = "scope-dot is-unknown";
+      $("#project-scope-selected-mark").innerHTML = '<span class="scope-dot is-unknown"></span>';
       $("#project-scope-selected-label").textContent = "Projects unavailable";
       $("#project-scope-options").innerHTML = '<p class="project-roster-state" role="status">Saved projects unavailable</p>';
     }
@@ -832,9 +858,9 @@ function renderProjectNavigation() {
     const selectedStatus = selectedProject?.status || "unknown";
     selector.removeAttribute("aria-disabled");
     selector.setAttribute("aria-label", "Project scope");
-    $("#project-scope-selected-dot").className = "scope-dot is-" + selectedStatus;
+    $("#project-scope-selected-mark").innerHTML = projectScopeMark(selectedProject || { status: selectedStatus });
     $("#project-scope-selected-label").textContent = selectedProject?.label || "All projects";
-    $("#project-scope-options").innerHTML = '<button class="polished-select-option' + (state.projectId === "all" ? ' is-selected' : '') + '" type="button" role="option" data-project-scope-id="all" aria-selected="' + String(state.projectId === "all") + '"><span class="scope-dot is-unknown" aria-hidden="true"></span><span>All projects</span><small>Portfolio</small></button>' + projects.map((project) => '<button class="polished-select-option' + (state.projectId === project.id ? ' is-selected' : '') + '" type="button" role="option" data-project-scope-id="' + escapeHTML(project.id) + '" aria-selected="' + String(state.projectId === project.id) + '" aria-label="' + escapeHTML(project.label + ", " + projectStatusLabel(project.status)) + '"><span class="scope-dot is-' + project.status + '" aria-hidden="true"></span><span>' + escapeHTML(project.label) + '</span><small>' + escapeHTML(projectStatusLabel(project.status)) + '</small></button>').join("");
+    $("#project-scope-options").innerHTML = '<button class="polished-select-option' + (state.projectId === "all" ? ' is-selected' : '') + '" type="button" role="option" data-project-scope-id="all" aria-selected="' + String(state.projectId === "all") + '"><span class="project-scope-mark" aria-hidden="true"><span class="scope-dot is-unknown"></span></span><span>All projects</span><small>Portfolio</small></button>' + projects.map((project) => '<button class="polished-select-option' + (state.projectId === project.id ? ' is-selected' : '') + '" type="button" role="option" data-project-scope-id="' + escapeHTML(project.id) + '" aria-selected="' + String(state.projectId === project.id) + '" aria-label="' + escapeHTML(project.label + ", " + projectStatusLabel(project.status)) + '"><span class="project-scope-mark" aria-hidden="true">' + projectScopeMark(project) + '</span><span>' + escapeHTML(project.label) + '</span><small>' + escapeHTML(projectStatusLabel(project.status)) + '</small></button>').join("");
   }
   renderScopeNotice();
 }
@@ -2480,12 +2506,25 @@ function assetMutationRequest(action, item) {
   return { action, path, payload, bindingProjectId: assetScopeProjectId(), pending: true, error: "" };
 }
 
+function assetMutationMatches(request) {
+  return Boolean(request?.payload?.operation_id)
+    && state.assetMutationPending?.payload?.operation_id === request.payload.operation_id;
+}
+
+function assetMutationBindingCurrent(request) {
+  return String(request?.bindingProjectId || "") === assetScopeProjectId();
+}
+
 async function runAssetMutation(request) {
   if (!request || state.assetMutationPending?.pending) return false;
   state.assetMutationPending = { ...request, pending: true, error: "" };
   renderAssets();
   try {
     const result = await api(request.path, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(request.payload) });
+    if (!assetMutationBindingCurrent(request)) {
+      if (assetMutationMatches(request)) state.assetMutationPending = null;
+      return false;
+    }
     const item = result?.asset;
     if (result?.ok !== true || result?.mutation?.accepted !== true || assetIdentity(item) !== request.payload.asset_id || String(item?.project_id || "") !== request.payload.project_id) throw new Error("Asset acknowledgement was invalid.");
     ++state.assetRequestGeneration;
@@ -2516,6 +2555,10 @@ async function runAssetMutation(request) {
     renderAssets();
     return true;
   } catch (error) {
+    if (!assetMutationBindingCurrent(request)) {
+      if (assetMutationMatches(request)) state.assetMutationPending = null;
+      return false;
+    }
     state.assetMutationPending = { ...request, pending: false, error: error.message || "Asset update failed." };
     state.assetError = state.assetMutationPending.error;
     renderAssets();
@@ -3185,6 +3228,11 @@ function configValue(key) {
   return key.split(".").reduce((value, part) => value && typeof value === "object" ? value[part] : undefined, state.config?.settings);
 }
 
+function configDescriptor(key) {
+  const rows = Array.isArray(state.config?.descriptors) ? state.config.descriptors : [];
+  return rows.find((row) => row?.key === key) || null;
+}
+
 function settingsConfigEditable(key) {
   return currentSettingsScope().type === "global" && state.configStatus === "current" && configEditable(key) && !state.settingsSaving;
 }
@@ -3209,7 +3257,24 @@ function settingsDraftChanges() {
 function settingsSwitch(key, value, label, help, options = {}) {
   const editable = options.editable ?? settingsConfigEditable(key);
   const checked = value === (options.trueValue ?? true);
-  return '<section class="settings-essential-control"><div><strong>' + escapeHTML(label) + '</strong><small>' + escapeHTML(help) + '</small></div><label class="settings-switch"><input type="checkbox" data-settings-draft-key="' + escapeHTML(key) + '"' + (options.trueValue !== undefined ? ' data-true-value="' + escapeHTML(options.trueValue) + '" data-false-value="' + escapeHTML(options.falseValue) + '"' : '') + (checked ? ' checked' : '') + (editable ? '' : ' disabled') + ' aria-label="' + escapeHTML(label) + '"><span aria-hidden="true"></span></label>' + (editable ? '' : '<em>' + escapeHTML(options.unavailable || 'Managed by the current configuration.') + '</em>') + '</section>';
+  const badge = options.badge ? '<span class="settings-control-badge">' + escapeHTML(options.badge) + '</span>' : '';
+  return '<section class="settings-essential-control"><div><span class="settings-control-title"><strong>' + escapeHTML(label) + '</strong>' + badge + '</span><small>' + escapeHTML(help) + '</small></div><label class="settings-switch"><input type="checkbox" data-settings-draft-key="' + escapeHTML(key) + '"' + (options.trueValue !== undefined ? ' data-true-value="' + escapeHTML(options.trueValue) + '" data-false-value="' + escapeHTML(options.falseValue) + '"' : '') + (checked ? ' checked' : '') + (editable ? '' : ' disabled') + ' aria-label="' + escapeHTML(label) + '"><span aria-hidden="true"></span></label>' + (editable ? '' : '<em>' + escapeHTML(options.unavailable || 'Managed by the current configuration.') + '</em>') + '</section>';
+}
+
+function descriptorBooleanSwitch(key, label, help, options = {}) {
+  const descriptor = configDescriptor(key);
+  const knownBoolean = descriptor?.classification === "exposed"
+    && descriptor?.type === "boolean"
+    && descriptor?.value_state === "KNOWN"
+    && typeof descriptor?.current === "boolean";
+  const value = knownBoolean ? settingsDraftValue(key, descriptor.current) : false;
+  return settingsSwitch(key, value, label, help, {
+    ...options,
+    editable: knownBoolean && descriptor.editable === true && settingsConfigEditable(key),
+    unavailable: knownBoolean
+      ? (options.unavailable || "Read-only in the current scope.")
+      : (options.unsupported || "Unavailable in the current configuration."),
+  });
 }
 
 function settingsSpeedMarkup() {
@@ -3454,7 +3519,8 @@ function renderSettings() {
   $("#settings-grid").innerHTML =
     '<section class="panel settings-essentials settings-wide" id="settings-essentials" tabindex="-1"><header class="settings-essentials-head"><div><p class="eyebrow">Essentials</p><h3>How SWARM runs your work</h3><p>Keep the defaults clear. Exact configuration remains server-owned.</p></div><label class="settings-scope-control">Applies to<select id="settings-scope">' + settingsScopeOptions() + '</select></label></header><div class="settings-context"><strong>' + escapeHTML(context.title) + '</strong><span>' + escapeHTML(context.note) + '</span></div><div class="settings-toggle-grid">' +
       settingsSwitch("automation.mode", autoMode, "Auto mode", "SWARM keeps eligible work moving until it needs you.", { trueValue: "standard", falseValue: "manual", unavailable: scope.type === "global" ? "Managed by the current configuration." : "Edit global defaults or use an accepted override." }) +
-      settingsSwitch("health.auto_fix", false, "Auto fix", "SWARM attempts to recover from issues automatically. This may start repair tasks and increase usage.", { editable: false, unavailable: "Unavailable. Health checks remain active; no repair is started." }) + '</div><div class="settings-run-controls">' + settingsSpeedMarkup() + settingsTaskLifeMarkup() + '</div><div class="guided-tour-setting"><span><strong>Guided tour</strong><small>Replay the current SWARM introduction.</small></span><button class="quiet-button" data-setting-action="replay-tour" type="button">Replay tour</button></div></section>' +
+      descriptorBooleanSwitch("monitoring.auto_health_enabled", "Auto fix", "SWARM attempts to recover from issues automatically. This may start repair tasks and increase usage.", { unsupported: "Unavailable. Health checks remain active; no repair is started." }) +
+      descriptorBooleanSwitch("execution.usage_saver", "Usage Saver", "Smart routing can reduce usage.", { badge: "Experimental", unsupported: "Unavailable until the canonical setting is exposed." }) + '</div><div class="settings-run-controls">' + settingsSpeedMarkup() + settingsTaskLifeMarkup() + '</div><div class="guided-tour-setting"><span><strong>Guided tour</strong><small>Replay the current SWARM introduction.</small></span><button class="quiet-button" data-setting-action="replay-tour" type="button">Replay tour</button></div></section>' +
     '<section class="panel settings-config-entry settings-wide" id="settings-advanced"><div><p class="eyebrow">Configuration</p><h3>Edit config</h3><p>Review the exact source, inheritance, and validation state in one place.</p><small>Server-owned source · revision unavailable · text authority unavailable</small></div><button class="quiet-button" id="settings-edit-config" data-setting-action="edit-config" type="button">Edit config</button></section>' +
     '<section class="panel settings-card system-health-card settings-wide" id="system-health-panel" tabindex="-1" aria-labelledby="system-health-heading"><p class="eyebrow">Diagnostics</p><h3 id="system-health-heading">System health</h3><p class="system-health-summary"><span class="status-dot' + (systemHealth.className ? ' ' + systemHealth.className : '') + '" id="system-health-panel-dot" aria-hidden="true"></span><strong id="system-health-state">' + escapeHTML(systemHealth.label) + '</strong></p><p id="system-health-note">' + escapeHTML(systemHealth.note) + '</p>' + usageChartMarkup("diagnostics", "diagnostics-usage-trend") + '</section>' +
     '<footer class="settings-save-bar settings-wide' + (state.settingsSaveError ? ' is-error' : '') + '" aria-live="polite"><p><strong>' + escapeHTML(saveStatus) + '</strong><span>' + escapeHTML(pending ? "Review and save these server-backed changes." : "Essentials reflect the latest acknowledged configuration.") + '</span></p><div><button class="quiet-button" data-setting-action="discard-settings" type="button"' + (!pending || state.settingsSaving ? ' disabled' : '') + '>Discard</button><button class="primary-action" id="settings-save" data-setting-action="save-settings" type="button"' + (!pending || state.settingsSaving ? ' disabled' : '') + (state.settingsSaving ? ' aria-busy="true"' : '') + '>Save changes</button></div></footer>';

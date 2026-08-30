@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta name="color-scheme" content="dark" />
     <meta name="description" content="SWARM project progress, agents, review, assets, and settings" />
-    <title>SWARM HQ</title>
+    <title>SWARM</title>
     <link rel="icon" type="image/png" sizes="64x64" href="/swarm-icon-64.png" />
     <link rel="stylesheet" href="/styles.css" />
   </head>
@@ -47,15 +47,15 @@
     <div class="app-shell" data-qc-scope>
       <header class="mobile-app-bar">
         <button class="mobile-menu-button" id="mobile-menu-button" type="button" aria-label="Open navigation" aria-expanded="false" aria-controls="console-drawer"><svg class="lucide" aria-hidden="true"><use href="#lucide-menu"></use></svg></button>
-        <span class="brand-lockup"><img src="/assets/swarm-wordmark.png" alt="SWARM" /><span class="brand-hq">HQ</span></span>
+        <span class="brand-lockup"><img src="/assets/swarm-wordmark.png" alt="SWARM" /></span>
       </header>
       <button class="drawer-backdrop" id="drawer-backdrop" type="button" aria-label="Close navigation" tabindex="-1" hidden></button>
-      <aside class="drawer" id="console-drawer" aria-label="SWARM HQ" aria-hidden="false">
-        <a class="brand" href="#overview" aria-label="SWARM HQ">
-          <span class="brand-lockup"><img class="brand-wordmark" src="/assets/swarm-wordmark.png" alt="SWARM" /><span class="brand-hq">HQ</span></span>
+      <aside class="drawer" id="console-drawer" aria-label="SWARM" aria-hidden="false">
+        <a class="brand" href="#overview" aria-label="SWARM">
+          <span class="brand-lockup"><img class="brand-wordmark" src="/assets/swarm-wordmark.png" alt="SWARM" /></span>
         </a>
         <div class="drawer-navigation">
-          <nav class="nav-list" aria-label="SWARM HQ views" role="tablist" aria-orientation="vertical">
+          <nav class="nav-list" aria-label="SWARM views" role="tablist" aria-orientation="vertical">
             <button class="nav-item is-active" data-view="overview" id="tab-overview" role="tab" aria-selected="true" aria-controls="view-overview" type="button"><span class="nav-icon" aria-hidden="true"><svg class="lucide"><use href="#lucide-layout-dashboard"></use></svg></span><b>Overview</b></button>
             <button class="nav-item" data-view="agents" id="tab-agents" role="tab" aria-selected="false" aria-controls="view-agents" type="button"><span class="nav-icon" aria-hidden="true"><svg class="lucide"><use href="#lucide-users"></use></svg></span><b>Agents</b></button>
             <button class="nav-item" data-view="roles" id="tab-roles" role="tab" aria-selected="false" aria-controls="view-roles" type="button"><span class="nav-icon" aria-hidden="true"><svg class="lucide"><use href="#lucide-list-tree"></use></svg></span><b>Roles</b></button>
@@ -66,7 +66,7 @@
             <a id="project-navigation-heading" href="./#overview" aria-label="All projects">Projects</a>
             <div id="project-navigation" aria-live="polite"></div>
           </section>
-          <nav class="nav-footer" aria-label="SWARM HQ settings" role="tablist" aria-orientation="vertical">
+          <nav class="nav-footer" aria-label="SWARM settings" role="tablist" aria-orientation="vertical">
             <button class="nav-item" data-view="settings" id="tab-settings" role="tab" aria-selected="false" aria-controls="view-settings" type="button"><span class="nav-icon" aria-hidden="true"><svg class="lucide"><use href="#lucide-settings"></use></svg></span><b>Settings</b></button>
           </nav>
         </div>
@@ -76,7 +76,7 @@
         <header class="topbar">
           <div><h1 id="view-title">Overview</h1><p id="view-subtitle">Project progress, risks, and proof at a glance.</p></div>
           <div class="top-actions">
-            <div class="scope-context" id="scope-context"><span>Project scope</span><details class="polished-select scope-selector" id="project-scope-selector"><summary id="project-scope-filter" aria-label="Project scope" aria-haspopup="listbox" aria-expanded="false"><span class="scope-dot is-unknown" id="project-scope-selected-dot" aria-hidden="true"></span><strong id="project-scope-selected-label">All projects</strong><svg class="lucide" aria-hidden="true"><use href="#lucide-chevron-down"></use></svg></summary><div class="polished-select-options" id="project-scope-options" role="listbox" aria-label="Projects"></div></details></div>
+            <div class="scope-context" id="scope-context"><span>Project scope</span><details class="polished-select scope-selector" id="project-scope-selector"><summary id="project-scope-filter" aria-label="Project scope" aria-haspopup="listbox" aria-expanded="false"><span class="project-scope-mark" id="project-scope-selected-mark" aria-hidden="true"><span class="scope-dot is-unknown"></span></span><strong id="project-scope-selected-label">All projects</strong><svg class="lucide" aria-hidden="true"><use href="#lucide-chevron-down"></use></svg></summary><div class="polished-select-options edge-scroll" id="project-scope-options" role="listbox" aria-label="Projects"></div></details></div>
             <p class="scope-change-status sr-only" id="scope-change-status" role="status" aria-live="polite"></p>
             <button class="icon-button circle-frame system-health-control is-reconnecting" id="system-health-control" type="button" aria-label="System health: Reconnecting" title="System health: Reconnecting" aria-controls="system-health-panel"><span class="status-dot is-reconnecting" id="snapshot-status-dot" aria-hidden="true"></span><span class="sr-only" id="sync-time" role="status" aria-live="polite">Reconnecting</span></button>
             <button class="icon-button" id="refresh" type="button" aria-label="Refresh overview" title="Refresh overview"><svg class="lucide" aria-hidden="true"><use href="#lucide-refresh-cw"></use></svg></button>
@@ -87,8 +87,8 @@
         <aside class="notifications-panel panel" id="notifications-panel" role="dialog" aria-labelledby="notifications-heading" aria-describedby="notifications-status" hidden tabindex="-1">
           <header><div><p class="eyebrow">Attention</p><h2 id="notifications-heading">Notifications</h2></div><button class="icon-button" id="notifications-close" type="button" aria-label="Close notifications"><svg class="lucide" aria-hidden="true"><use href="#lucide-x"></use></svg></button></header>
           <div class="notifications-status-row"><p id="notifications-status" role="status">Choose a project to see notifications.</p><button class="quiet-button" id="notifications-retry" type="button" hidden>Try again</button></div>
-          <section class="notifications-group" aria-labelledby="notifications-unread-heading"><h3 id="notifications-unread-heading">Unread</h3><div class="notifications-list" id="notifications-unread-list"></div></section>
-          <section class="notifications-group is-history" aria-labelledby="notifications-recent-heading"><h3 id="notifications-recent-heading">Recent</h3><div class="notifications-list" id="notifications-recent-list"></div></section>
+          <section class="notifications-group" aria-labelledby="notifications-unread-heading"><h3 id="notifications-unread-heading">Unread</h3><div class="notifications-list edge-scroll" id="notifications-unread-list"></div></section>
+          <section class="notifications-group is-history" aria-labelledby="notifications-recent-heading"><h3 id="notifications-recent-heading">Recent</h3><div class="notifications-list edge-scroll" id="notifications-recent-list"></div></section>
         </aside>
         <div class="notification-toast-region" id="notification-toast-region" aria-live="polite" aria-atomic="true"></div>
         <section class="view is-active" id="view-overview" data-view-panel="overview" role="tabpanel" aria-labelledby="tab-overview" tabindex="0">
@@ -133,7 +133,7 @@
           <div><p class="eyebrow">Visual evidence</p><h2 id="evidence-lightbox-title">Image preview</h2></div>
           <button class="icon-button" id="evidence-lightbox-close" type="button" aria-label="Close evidence gallery">×</button>
         </header>
-        <div class="dialog-body evidence-lightbox-body">
+        <div class="dialog-body edge-scroll evidence-lightbox-body">
           <div class="dialog-body-content evidence-lightbox-content">
             <div class="evidence-lightbox-stage">
               <img id="evidence-lightbox-image" alt="">
@@ -159,7 +159,7 @@
           <div><p class="eyebrow" id="asset-dialog-kind">Asset</p><h2 id="asset-dialog-title">Asset details</h2></div>
           <button class="icon-button" id="asset-dialog-close" type="button" aria-label="Close asset details"><svg class="lucide" aria-hidden="true"><use href="#lucide-x"></use></svg></button>
         </header>
-        <div class="dialog-body asset-dialog-body">
+        <div class="dialog-body edge-scroll asset-dialog-body">
           <div class="dialog-body-content asset-dialog-content" id="asset-dialog-content"></div>
         </div>
         <footer class="dialog-footer asset-dialog-footer" id="asset-dialog-footer"></footer>
@@ -171,7 +171,7 @@
           <div><p class="eyebrow">Configuration</p><h2 id="config-editor-title">Edit config</h2></div>
           <button class="icon-button" id="config-editor-close" type="button" aria-label="Close config editor"><svg class="lucide" aria-hidden="true"><use href="#lucide-x"></use></svg></button>
         </header>
-        <div class="dialog-body config-editor-body">
+        <div class="dialog-body edge-scroll config-editor-body">
           <div class="dialog-body-content config-editor-content">
             <dl class="config-editor-meta"><div><dt>Scope</dt><dd id="config-editor-context">Global defaults</dd></div><div><dt>Source</dt><dd id="config-editor-source">Unavailable</dd></div><div><dt>Revision</dt><dd id="config-editor-revision">Unavailable</dd></div><div><dt>Validation</dt><dd id="config-editor-validation">Unavailable</dd></div></dl>
             <aside class="config-override-warning" id="config-editor-warning" hidden>Project overrides take priority. Overridden values stop following global changes; all other values continue to inherit.</aside>
@@ -187,7 +187,7 @@
     <dialog class="role-editor" id="role-editor" aria-labelledby="role-editor-title">
       <form class="dialog-shell role-editor-shell" id="role-editor-form" method="dialog">
         <header class="dialog-header role-editor-head"><div><p class="eyebrow">Role manifest</p><h2 id="role-editor-title">Edit role</h2></div><button class="icon-button" id="role-editor-close" type="button" aria-label="Close role editor"><svg class="lucide" aria-hidden="true"><use href="#lucide-x"></use></svg></button></header>
-        <div class="dialog-body role-editor-body">
+        <div class="dialog-body edge-scroll role-editor-body">
           <div class="dialog-body-content role-editor-fields">
           <label>Role ID<input id="role-field-id" name="id" autocomplete="off" required></label>
           <label>Name<input id="role-field-name" name="name" autocomplete="off" required></label>
@@ -214,7 +214,7 @@
       <div class="dialog-shell onboarding-shell">
         <header class="dialog-header onboarding-header">
           <h2 class="sr-only" id="onboarding-dialog-title">Welcome to SWARM</h2>
-          <span class="brand-lockup"><img src="/assets/swarm-wordmark.png" alt="SWARM" /><span class="brand-hq">HQ</span></span>
+          <span class="brand-lockup"><img src="/assets/swarm-wordmark.png" alt="SWARM" /></span>
           <div class="onboarding-progress" role="tablist" aria-label="Onboarding progress">
             <button type="button" role="tab" id="onboarding-dot-1" data-onboarding-step="0" aria-label="Show welcome" aria-controls="onboarding-panel-1" aria-selected="true" aria-current="step"><span aria-hidden="true"></span></button>
             <button type="button" role="tab" id="onboarding-dot-2" data-onboarding-step="1" aria-label="Show coordinated roles" aria-controls="onboarding-panel-2" aria-selected="false" tabindex="-1"><span aria-hidden="true"></span></button>
@@ -225,7 +225,7 @@
           <button class="icon-button onboarding-close" id="onboarding-close" type="button" aria-label="Close onboarding"><svg class="lucide" aria-hidden="true"><use href="#lucide-x"></use></svg></button>
           <p class="sr-only" id="onboarding-step-status" aria-live="polite">Welcome. Step 1 of 5.</p>
         </header>
-        <div class="dialog-body onboarding-panels">
+        <div class="dialog-body edge-scroll onboarding-panels">
           <div class="onboarding-body-nav" id="onboarding-body-nav" hidden>
             <button class="icon-button onboarding-body-back" id="onboarding-back" type="button" aria-label="Back"><svg class="lucide" aria-hidden="true"><use href="#lucide-chevron-right"></use></svg></button>
           </div>

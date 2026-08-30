@@ -101,12 +101,10 @@ assert.doesNotMatch(indexHtml, />Graph<\/b>|data-view="graph"/);
 assert.doesNotMatch(indexHtml, /[⌂▦⑂▥⊙⚙]/);
 assert.match(indexHtml, /id="mobile-menu-button"[^>]*aria-label="Open navigation"[^>]*aria-expanded="false"[^>]*aria-controls="console-drawer"/);
 assert.match(indexHtml, /class="mobile-app-bar"[\s\S]*?<img src="\/assets\/swarm-wordmark\.png" alt="SWARM"/);
-assert.match(indexHtml, /<title>SWARM HQ<\/title>/);
+assert.match(indexHtml, /<title>SWARM<\/title>/);
 assert.doesNotMatch(indexHtml + app, /Control Console/i);
-assert.equal((indexHtml.match(/class="brand-hq"/g) || []).length, 3);
-assert.match(css, /--coral: #ff526f;/);
-assert.match(css, /\.brand-hq \{[^}]*background:linear-gradient\(120deg,var\(--orange\),var\(--coral\)\);[^}]*font-style:italic;/);
-assert.match(css, /\.brand-hq::before \{[^}]*background:linear-gradient\(120deg,var\(--orange\),var\(--coral\)\);/);
+assert.doesNotMatch(indexHtml + css, /brand-hq|SWARM HQ/);
+assert.match(css, /--coral: #FF3D32;/);
 assert.equal((indexHtml.match(/class="nav-list"/g) || []).length, 1);
 assert.match(indexHtml, /class="nav-footer"[\s\S]*?id="tab-settings"/);
 assert.match(indexHtml, /id="tab-overview"[\s\S]*?<b>Overview<\/b>/);
@@ -628,6 +626,10 @@ assert.match(app, /async function refreshAssets\(\)/);
 assert.match(app, /api\("\/api\/assets\?" \+ inventoryParams\.toString\(\)\)/);
 assert.match(app, /api\("\/api\/assets\/events\?" \+ eventParams\.toString\(\)\)/);
 assert.match(app, /generation !== state\.assetRequestGeneration \|\| binding !== assetBindingKey\(\)/);
+assert.match(app, /function assetMutationBindingCurrent\(request\)[\s\S]*?request\?\.bindingProjectId[\s\S]*?assetScopeProjectId\(\)/);
+const assetMutationSource = app.slice(app.indexOf("async function runAssetMutation"), app.indexOf("async function mutateAsset"));
+assert.match(assetMutationSource, /const result = await api[\s\S]*?if \(!assetMutationBindingCurrent\(request\)\)/);
+assert.match(assetMutationSource, /catch \(error\) \{[\s\S]*?if \(!assetMutationBindingCurrent\(request\)\)/);
 const assetRefreshSource = app.slice(app.indexOf("async function refreshAssets"), app.indexOf("function assetImageMarkup"));
 assert.doesNotMatch(assetRefreshSource, /setInterval|setTimeout|WebSocket|EventSource|model|provider/i);
 assert.match(app, /assetView: "grid"/);
@@ -915,15 +917,15 @@ const rosterFixture = {
   navigation: {
     project_inventory: { state: "KNOWN", available: true },
     projects: [
-      { id: "inactive", name: "Zulu", archived: false, visibility: "visible", project_eligibility: "no_ctrl", ctrl_ids: [], active_ctrl_id: null, task_count: 0, activity_status: "inactive", activity_facts: { active_now: false, recently_active: false, inactive: true, unknown: false } },
-      { id: "recent", name: "Beta", archived: false, visibility: "visible", project_eligibility: "swarm_ctrl", ctrl_ids: ["ctrl-b"], active_ctrl_id: null, task_count: 2, activity_status: "recently_active", activity_facts: { active_now: false, recently_active: true, inactive: false, unknown: false } },
-      { id: "active-b", name: "Charlie", archived: false, visibility: "visible", project_eligibility: "swarm_ctrl", ctrl_ids: ["ctrl-c"], active_ctrl_id: "ctrl-c", task_count: 3, activity_status: "active", activity_facts: { active_now: true, recently_active: false, inactive: false, unknown: false } },
-      { id: "active-a", name: "Alpha", archived: false, visibility: "visible", project_eligibility: "no_ctrl", ctrl_ids: [], active_ctrl_id: null, task_count: 0, activity_status: "active", activity_facts: { active_now: true, recently_active: false, inactive: false, unknown: false } },
+      { id: "inactive", name: "Zulu", archived: false, visibility: "visible", project_eligibility: "no_ctrl", ctrl_ids: [], active_ctrl_id: null, task_count: 0, last_activity_at: 10, activity_status: "inactive", activity_facts: { active_now: false, recently_active: false, inactive: true, unknown: false } },
+      { id: "recent", name: "Beta", archived: false, visibility: "visible", project_eligibility: "swarm_ctrl", ctrl_ids: ["ctrl-b"], active_ctrl_id: null, task_count: 2, last_activity_at: 20, activity_status: "recently_active", activity_facts: { active_now: false, recently_active: true, inactive: false, unknown: false } },
+      { id: "active-b", name: "Charlie", archived: false, visibility: "visible", project_eligibility: "swarm_ctrl", ctrl_ids: ["ctrl-c"], active_ctrl_id: "ctrl-c", task_count: 3, last_activity_at: 200, activity_status: "active", activity_facts: { active_now: true, recently_active: false, inactive: false, unknown: false } },
+      { id: "active-a", name: "Alpha", archived: false, visibility: "visible", project_eligibility: "no_ctrl", ctrl_ids: [], active_ctrl_id: null, task_count: 0, last_activity_at: 100, activity_status: "active", activity_facts: { active_now: true, recently_active: false, inactive: false, unknown: false } },
       { id: "unknown", name: "Unknown", archived: false, visibility: "visible", project_eligibility: "no_ctrl", ctrl_ids: [], active_ctrl_id: null, task_count: 0, activity_status: "unknown", activity_facts: { active_now: false, recently_active: false, inactive: false, unknown: true } },
     ],
   },
 };
-assert.deepEqual(Array.from(savedProjectRosterHarness(rosterFixture).projects, (project) => project.id), ["active-a", "active-b", "recent", "inactive", "unknown"]);
+assert.deepEqual(Array.from(savedProjectRosterHarness(rosterFixture).projects, (project) => project.id), ["active-b", "active-a", "recent", "inactive", "unknown"]);
 assert.equal(savedProjectRosterHarness({ navigation: { project_inventory: { state: "UNKNOWN", available: false }, projects: [] } }).state, "UNKNOWN");
 const conflictedRoster = structuredClone(rosterFixture);
 conflictedRoster.navigation.projects[0].activity_facts.active_now = true;
@@ -994,7 +996,8 @@ assert.match(app, /Inherits global defaults/);
 const settingsSource = app.slice(app.indexOf("function renderSettings"), app.indexOf("function renderAllViews"));
 assert.match(settingsSource, /class="panel settings-essentials settings-wide"/);
 assert.match(settingsSource, /settingsSwitch\("automation\.mode"[\s\S]*?"Auto mode"/);
-assert.match(settingsSource, /settingsSwitch\("health\.auto_fix"[\s\S]*?"Auto fix"[\s\S]*?SWARM attempts to recover from issues automatically\. This may start repair tasks and increase usage\./);
+assert.match(settingsSource, /descriptorBooleanSwitch\("monitoring\.auto_health_enabled"[\s\S]*?"Auto fix"[\s\S]*?SWARM attempts to recover from issues automatically\. This may start repair tasks and increase usage\./);
+assert.match(settingsSource, /descriptorBooleanSwitch\("execution\.usage_saver"[\s\S]*?"Usage Saver"[\s\S]*?Smart routing can reduce usage\.[\s\S]*?badge: "Experimental"/);
 assert.match(settingsSource, /settingsSpeedMarkup\(\)[\s\S]*?settingsTaskLifeMarkup\(\)/);
 assert.match(settingsSource, /class="panel settings-config-entry settings-wide" id="settings-advanced"[\s\S]*?data-setting-action="edit-config"/);
 assert.match(settingsSource, /class="settings-save-bar settings-wide/);
@@ -1296,6 +1299,16 @@ assert.match(css, /@media \(max-width: 620px\)[\s\S]*\.role-library-layout \{ gr
 assert.match(css, /@media \(max-width: 620px\)[\s\S]*\.role-filter > summary \{ width:44px; height:44px; \}/);
 assert.match(css, /\.circle-frame \{ --circle-size:40px;[^}]*inline-size:var\(--circle-size\); block-size:var\(--circle-size\); aspect-ratio:1; flex:0 0 var\(--circle-size\);[^}]*overflow:hidden; border-radius:50%/);
 assert.match(css, /\.circle-frame img \{[^}]*width:100%; height:100%; object-fit:cover/);
+assert.match(css, /\.scope-dot \{ --circle-size:7px;[^}]*inline-size:var\(--circle-size\); block-size:var\(--circle-size\); aspect-ratio:1; flex:0 0 var\(--circle-size\);[^}]*border-radius:50%/);
+assert.match(css, /\.status-dot \{ --circle-size:8px;[^}]*inline-size:var\(--circle-size\); block-size:var\(--circle-size\); aspect-ratio:1; flex:0 0 var\(--circle-size\);[^}]*border-radius:50%/);
+assert.match(css, /\.edge-scroll \{[^}]*scrollbar-color:rgba\(91,112,140,\.72\) var\(--base-deep\)/);
+assert.match(css, /\.settings-toggle-grid \{ grid-template-columns:repeat\(3,minmax\(0,1fr\)\); \}/);
+assert.match(css, /\.settings-switch input:checked \+ span \{[^}]*background:linear-gradient\(120deg,var\(--orange\),var\(--coral\)\)/);
+assert.match(css, /--orange:\s*#FF7A18;/);
+assert.match(css, /--coral:\s*#FF3D32;/);
+assert.match(css, /\.onboarding-flow-node\.is-ctrl \{[^}]*background:linear-gradient\(135deg,var\(--orange\),var\(--coral\)\)/);
+assert.match(css, /\.onboarding-flag i \{[^}]*background:conic-gradient\([^}]*var\(--orange\)[^}]*var\(--coral\)/);
+assert.doesNotMatch(css, /#ff7449|#ff526f|#ff784c|#ff8b25|#ff4937/i);
 assert.match(css, /@media \(max-width: 620px\)[\s\S]*\.circle-frame \{ --circle-size:44px; \}/);
 assert.doesNotMatch(css, /\.profile-button[^}]*width:\s*\d+px;|\.profile-button[^}]*height:\s*\d+px;/);
 assert.match(css, /\.role-editor-fields input,.role-editor-fields textarea,.role-editor-fields select[\s\S]*?\.role-editor-fields input,.role-editor-fields select \{ min-height:44px; \}/);
@@ -1352,7 +1365,21 @@ function applyConfigChanges(config, changes) {
     let cursor = next.settings;
     parts.slice(0, -1).forEach((part) => { cursor = cursor[part] ||= {}; });
     cursor[parts.at(-1)] = value;
+    const descriptor = Array.isArray(next.descriptors) ? next.descriptors.find((item) => item?.key === key) : null;
+    if (descriptor) descriptor.current = value;
   }
+  return next;
+}
+
+function configDescriptorFixture(config = fixture.config) {
+  const next = structuredClone(config);
+  next.settings.monitoring ||= {};
+  next.settings.monitoring.auto_health_enabled = false;
+  next.editable = [...new Set([...(next.editable || []), "monitoring.auto_health_enabled", "execution.usage_saver"])];
+  next.descriptors = [
+    { key: "monitoring.auto_health_enabled", type: "boolean", classification: "exposed", value_state: "KNOWN", current: false, default: false, editable: true },
+    { key: "execution.usage_saver", type: "boolean", classification: "exposed", value_state: "KNOWN", current: false, default: false, editable: true },
+  ];
   return next;
 }
 
@@ -1457,6 +1484,8 @@ function scopedFixture() {
       activity_status: status,
       activity_facts: { active_now: status === "active", recently_active: status === "recently_active", inactive: status === "inactive", unknown: status === "unknown", source: "fixture" },
       activity_source: "fixture",
+      last_activity_at: 1788076800000,
+      logo: project.id === "project:fixture" ? { status: "ADMITTED", artifact: { url: "/assets/project-fixture.svg", media_type: "image/svg+xml", digest: "f".repeat(64), alt: "" } } : null,
       task_count: overview.nodes.filter((node) => node.project_id === project.id).length,
     };
   });
@@ -1614,8 +1643,8 @@ async function mount(page, overview, overrides = {}) {
   const proofFeed = overrides.proofFeed || fixture.proofFeed;
   const proofControl = overrides.proofControl || { fail: false, feed: proofFeed };
   const notificationControl = overrides.notificationControl || { failGet: false, failSeen: false, feed: structuredClone(overrides.notifications || notificationFixture()) };
-  const configControl = overrides.configControl || { failPost: false, deferredPost: null, feed: structuredClone(fixture.config) };
-  const assetControl = overrides.assetControl || { library: assetLibraryFixture(), failGet: false, failMutation: false, deferredGets: [], operations: new Map() };
+  const configControl = overrides.configControl || { failPost: false, deferredPost: null, feed: configDescriptorFixture() };
+  const assetControl = overrides.assetControl || { library: assetLibraryFixture(), failGet: false, failMutation: false, deferredGets: [], deferredMutations: [], operations: new Map() };
   assetControl.operations ||= new Map();
   if (!overrides.preserveOnboardingPresentation) {
     await page.addInitScript(() => {
@@ -1693,6 +1722,8 @@ async function mount(page, overview, overrides = {}) {
       assetControl.library.sequence += 1;
       const result = { ok: true, asset: item, mutation: { accepted: true, action, status: item.presentation.status.toLowerCase(), event_cursor: { sequence: assetControl.library.sequence, identity: "asset-cursor" }, retention_policy: "manual_unconfigured" } };
       assetControl.operations.set(payload.operation_id, result);
+      const deferredMutation = Array.isArray(assetControl.deferredMutations) ? assetControl.deferredMutations.shift() : null;
+      if (deferredMutation) await deferredMutation;
       return route.fulfill(response(result));
     }
     if (url.pathname === "/api/proof-feed") return proofControl.fail ? route.fulfill({ status: 200, contentType: "application/json", body: "{" }) : route.fulfill(response(proofControl.feed || proofFeed));
@@ -1740,6 +1771,7 @@ async function mount(page, overview, overrides = {}) {
     if (url.pathname === "/api/skills") return route.fulfill(response({ ok: true, settings: { inheritance_enabled: true }, skills: [], overlays: { global: null, project: null, ctrl: null } }));
     if (url.pathname.startsWith("/api/proof-media/")) return route.fulfill({ status: 200, contentType: "image/svg+xml", body: '<svg xmlns="http://www.w3.org/2000/svg" width="160" height="100"><rect width="160" height="100" fill="#0f1726"/></svg>' });
     if (url.pathname === "/assets/swarm-wordmark.png") return route.fulfill({ status: 200, contentType: "image/png", body: wordmarkAsset });
+    if (url.pathname === "/assets/project-fixture.svg") return route.fulfill({ status: 200, contentType: "image/svg+xml", body: '<svg xmlns="http://www.w3.org/2000/svg" width="48" height="48"><rect width="48" height="48" rx="10" fill="#ff6948"/></svg>' });
     if (url.pathname === "/assets/swarm-mascot-512.png") return route.fulfill({ status: 200, contentType: "image/png", body: mascotAsset });
     if (url.pathname === "/assets/swarm-guided-tour-slide1.png") return route.fulfill({ status: 200, contentType: "image/png", body: onboardingSlide1Asset });
     if (url.pathname === "/assets/swarm-guided-tour-role-group.png") return route.fulfill({ status: 200, contentType: "image/png", body: onboardingRoleGroupAsset });
@@ -1750,7 +1782,7 @@ async function mount(page, overview, overrides = {}) {
   await page.goto(overrides.initialURL || "http://swarm.test/", { waitUntil: "domcontentloaded" });
   if (overrides.waitForConnectionState) {
     await page.locator("#connection-state").waitFor({ state: "visible" });
-    return { runtimeErrors, requests, notificationSeenRequests, configRequests, assetRequests };
+    return { runtimeErrors, requests, notificationSeenRequests, configRequests, assetRequests, assetControl, configControl };
   }
   try {
     const initialView = new URL(overrides.initialURL || "http://swarm.test/").hash.replace(/^#/, "") || "overview";
@@ -1762,7 +1794,7 @@ async function mount(page, overview, overrides = {}) {
   }
   await page.locator("#onboarding-dialog").waitFor({ state: "visible" });
   if (!overrides.keepOnboarding) await page.getByRole("button", { name: "Skip for now" }).click();
-  return { runtimeErrors, requests, notificationSeenRequests, configRequests, assetRequests };
+  return { runtimeErrors, requests, notificationSeenRequests, configRequests, assetRequests, assetControl, configControl };
 }
 
 async function assertOnboardingRoleGroup(page, viewportWidth) {
@@ -2576,6 +2608,52 @@ proofFeed.items.push({
     assert.deepEqual(assetRace.runtimeErrors, []);
     await assetRacePage.close();
 
+    for (const raceCase of [
+      { action: "retry", assetId: "asset-failed", projection: "active", endpoint: "/api/assets/generation/retry" },
+      { action: "trash", assetId: "asset-roadmap", projection: "active", endpoint: "/api/assets/trash" },
+      { action: "restore", assetId: "asset-trashed", projection: "trash", endpoint: "/api/assets/restore" },
+    ]) {
+      let releaseMutation;
+      const raceLibrary = assetLibraryFixture();
+      raceLibrary.active.push(assetFixtureItem("asset-branch", "READY", { name: "Branch asset", projectId: "project:branch" }));
+      raceLibrary.trash.push(assetFixtureItem("asset-branch-trash", "TRASHED", { name: "Branch retired asset", projectId: "project:branch", revision: 2 }));
+      const raceControl = { library: raceLibrary, failGet: false, failMutation: false, deferredGets: [], deferredMutations: [], operations: new Map() };
+      const racePage = await browser.newPage({ viewport: { width: 1024, height: 760 } });
+      const race = await mount(racePage, scopedFixture(), { ...overrides, assetControl: raceControl });
+      try {
+        await racePage.evaluate(() => setView("assets"));
+        await racePage.evaluate(() => selectProjectScope("project:fixture"));
+        if (raceCase.projection === "trash") {
+          await racePage.evaluate(async () => { state.assetProjection = "trash"; await refreshAssets(); renderAssets(); });
+        }
+        raceControl.deferredMutations.push(new Promise((resolve) => { releaseMutation = resolve; }));
+        const postStarted = racePage.waitForRequest((request) => new URL(request.url()).pathname === raceCase.endpoint && request.method() === "POST");
+        await racePage.evaluate(({ action, assetId }) => {
+          const item = assetItems().find((candidate) => assetIdentity(candidate) === assetId);
+          window.__assetMutationRace = mutateAsset(action, item);
+        }, raceCase);
+        await postStarted;
+        await racePage.evaluate(() => selectProjectScope("project:branch"));
+        assert.deepEqual(await racePage.evaluate(() => ({ view: state.view, projectId: state.projectId, projection: state.assetProjection })), { view: "assets", projectId: "project:branch", projection: raceCase.projection });
+        releaseMutation();
+        await racePage.evaluate(() => window.__assetMutationRace);
+        await racePage.waitForFunction(() => state.assetMutationPending === null);
+        assert.deepEqual(await racePage.evaluate(() => ({ view: state.view, projectId: state.projectId, projection: state.assetProjection, undo: state.assetUndo, error: state.assetError, items: assetItems().map((item) => item.asset_id) })), {
+          view: "assets",
+          projectId: "project:branch",
+          projection: raceCase.projection,
+          undo: null,
+          error: "",
+          items: raceCase.projection === "trash" ? ["asset-branch-trash"] : ["asset-branch"],
+        }, `${raceCase.action} acknowledgement from project A must not overwrite project B`);
+        assert.equal(race.assetRequests.at(-1).path, raceCase.endpoint);
+        assert.deepEqual(race.runtimeErrors, []);
+      } finally {
+        releaseMutation?.();
+        await racePage.close();
+      }
+    }
+
     const assetFailureControl = { library: assetLibraryFixture(), failGet: false, failMutation: true, deferredGets: [], operations: new Map() };
     const assetFailurePage = await browser.newPage({ viewport: { width: 1024, height: 760 } });
     const assetFailure = await mount(assetFailurePage, scopedFixture(), { ...overrides, assetControl: assetFailureControl });
@@ -2614,6 +2692,9 @@ proofFeed.items.push({
     ]);
     assert.doesNotMatch(await page.locator("#project-navigation").textContent(), /All projects|Archived project|Resolve customer export/);
     await page.locator("#project-scope-filter").click();
+    assert.equal(await page.locator('#project-scope-options .project-scope-logo[src="/assets/project-fixture.svg"]').count(), 1);
+    assert.equal(await page.locator("#project-scope-options .scope-dot").count(), 7);
+    if (evidenceDir) await page.screenshot({ path: path.join(evidenceDir, "27-project-dropdown-desktop-1536x1024.png"), fullPage: false, animations: "disabled" });
     assert.deepEqual(await page.locator("#project-scope-options [data-project-scope-id]").evaluateAll((elements) => elements.map((element) => ({ label: element.querySelector("span:nth-of-type(2)")?.textContent, status: element.querySelector("small")?.textContent }))), [
       { label: "All projects", status: "Portfolio" },
       { label: "Arc", status: "Active" },
@@ -2645,6 +2726,7 @@ proofFeed.items.push({
       assert.equal(new URL(page.url()).searchParams.get("project"), projectId);
       assert.equal(new URL(page.url()).hash, "#" + view);
     }
+    assert.equal(await page.locator('#project-scope-selected-mark .project-scope-logo[src="/assets/project-fixture.svg"]').count(), 1);
     await page.locator('[data-view="assets"]').click();
     await chooseProjectScope(page, "project:branch");
     await page.waitForFunction(() => state.view === "assets" && state.projectId === "project:branch");
@@ -2851,6 +2933,8 @@ proofFeed.items.push({
     assert.equal(await page.locator("#role-editor").getByRole("button", { name: "Generate avatar" }).isDisabled(), true);
     assert.equal((await page.locator("#role-field-specializations").inputValue()).split("\n").length, 4);
     await assertDialogFrame(page, "#role-editor");
+    assert.doesNotMatch(await page.locator("#role-editor .edge-scroll").evaluate((element) => getComputedStyle(element).scrollbarColor), /^auto$/);
+    if (evidenceDir) await page.screenshot({ path: path.join(evidenceDir, "28-role-editor-edge-scroll-desktop-1536x1024.png"), fullPage: false, animations: "disabled" });
     await page.getByRole("button", { name: "Close role editor" }).click();
     await page.getByRole("tab", { name: "Review", exact: true }).click();
     assert.equal(await page.locator(".review-row").count(), 7);
@@ -2911,11 +2995,16 @@ proofFeed.items.push({
     if (evidenceDir) await page.screenshot({ path: path.join(evidenceDir, "18-assets-generating-desktop-1536x1024.png"), fullPage: false, animations: "disabled" });
     await page.getByRole("button", { name: "Close asset details" }).click();
     await page.getByRole("button", { name: "Open asset details for Settings option" }).click();
+    let releaseRetryAcknowledgement;
+    desktop.assetControl.deferredMutations.push(new Promise((resolve) => { releaseRetryAcknowledgement = resolve; }));
     await page.locator("#asset-dialog").getByRole("button", { name: "Retry generation" }).click();
     const assetRetryRequest = desktop.assetRequests.at(-1);
     assert.equal(assetRetryRequest.path, "/api/assets/generation/retry");
     assert.equal(assetRetryRequest.payload.asset_id, "asset-failed");
     assert.match(assetRetryRequest.payload.generation_job_id, /^generation-/);
+    assert.match(await page.locator("#asset-dialog").textContent(), /Saving this asset change…/);
+    releaseRetryAcknowledgement();
+    await page.waitForFunction(() => state.assetMutationPending === null && assetItems().some((item) => item.asset_id === "asset-failed" && item.presentation?.status === "QUEUED"));
     assert.match(await page.locator("#asset-dialog").textContent(), /Queued/);
     await page.getByRole("button", { name: "Close asset details" }).click();
     await page.getByRole("button", { name: "List", exact: true }).click();
@@ -2930,22 +3019,30 @@ proofFeed.items.push({
     assert.equal(await page.locator("#settings-grid > .settings-essentials").count(), 1);
     assert.equal(await page.getByRole("button", { name: "Replay tour" }).count(), 1);
     assert.equal(await page.locator("#settings-advanced").count(), 1);
-    assert.match(await page.locator("#settings-essentials").textContent(), /Auto mode[\s\S]*Auto fix[\s\S]*Default[\s\S]*Fast[\s\S]*Ultrafast[\s\S]*Task life[\s\S]*Short[\s\S]*Medium[\s\S]*Balanced[\s\S]*Long[\s\S]*Unlimited/);
+    assert.match(await page.locator("#settings-essentials").textContent(), /Auto mode[\s\S]*Auto fix[\s\S]*Usage Saver[\s\S]*Experimental[\s\S]*Default[\s\S]*Fast[\s\S]*Ultrafast[\s\S]*Task life[\s\S]*Short[\s\S]*Medium[\s\S]*Balanced[\s\S]*Long[\s\S]*Unlimited/);
     assert.match(await page.locator("#settings-essentials").textContent(), /SWARM attempts to recover from issues automatically\. This may start repair tasks and increase usage\./);
+    assert.match(await page.locator("#settings-essentials").textContent(), /Smart routing can reduce usage\./);
     assert.equal(await page.getByLabel("Auto fix").isDisabled(), true);
+    assert.equal(await page.getByLabel("Usage Saver").isDisabled(), true);
     assert.equal(await page.getByRole("slider", { name: "Task life" }).isDisabled(), true);
     assert.equal(await page.getByRole("slider", { name: "Task life" }).getAttribute("aria-valuetext"), "Balanced — unavailable");
     assert.equal(await page.getByLabel("Auto mode").isDisabled(), true);
     await page.locator("#settings-scope").selectOption("global|global");
     await page.waitForFunction(() => state.settingsScopeType === "global" && state.settingsScopeId === "global");
     assert.equal(await page.getByLabel("Auto mode").isDisabled(), false);
+    assert.equal(await page.getByLabel("Auto fix").isDisabled(), false);
+    assert.equal(await page.getByLabel("Usage Saver").isDisabled(), false);
+    assert.equal(await page.getByLabel("Usage Saver").isChecked(), false);
+    if (evidenceDir) await page.screenshot({ path: path.join(evidenceDir, "31-settings-essentials-defaults-desktop-1536x1024.png"), fullPage: false, animations: "disabled" });
     const settingsRequestsBefore = desktop.configRequests.length;
     await page.getByLabel("Auto mode").click();
+    await page.getByLabel("Usage Saver").click();
+    assert.match(await page.getByLabel("Usage Saver").locator("xpath=following-sibling::span").evaluate((element) => getComputedStyle(element).backgroundImage), /linear-gradient/);
     await page.getByLabel("Fast", { exact: true }).click();
-    assert.match(await page.locator(".settings-save-bar").textContent(), /2 unsaved changes/);
+    assert.match(await page.locator(".settings-save-bar").textContent(), /3 unsaved changes/);
     await page.getByRole("button", { name: "Save changes" }).click();
     await page.waitForFunction(() => state.settingsSaving === false && state.settingsDraft.size === 0);
-    assert.deepEqual(desktop.configRequests.slice(settingsRequestsBefore), [{ changes: { "automation.mode": "manual", "execution.fast_mode": true } }]);
+    assert.deepEqual(desktop.configRequests.slice(settingsRequestsBefore), [{ changes: { "automation.mode": "manual", "execution.fast_mode": true, "execution.usage_saver": true } }]);
     assert.match(await page.locator(".settings-save-bar").textContent(), /Saved/);
     const editConfigTrigger = page.getByRole("button", { name: "Edit config" });
     await editConfigTrigger.click();
@@ -3004,6 +3101,18 @@ proofFeed.items.push({
     assert.equal(await unknownPage.locator("#overview-summary").textContent(), "Project inventory unavailable");
     assert.deepEqual(unknown.runtimeErrors, []);
     await unknownPage.close();
+
+    const unsupportedConfigPage = await browser.newPage({ viewport: { width: 1024, height: 760 } });
+    const unsupportedConfigFeed = configDescriptorFixture();
+    unsupportedConfigFeed.descriptors = unsupportedConfigFeed.descriptors.filter((descriptor) => descriptor.key !== "execution.usage_saver");
+    unsupportedConfigFeed.editable = unsupportedConfigFeed.editable.filter((key) => key !== "execution.usage_saver");
+    const unsupportedConfig = await mount(unsupportedConfigPage, scopedFixture(), { ...overrides, configControl: { failPost: false, deferredPost: null, feed: unsupportedConfigFeed } });
+    await unsupportedConfigPage.evaluate(() => setView("settings"));
+    await unsupportedConfigPage.locator("#settings-scope").selectOption("global|global");
+    assert.equal(await unsupportedConfigPage.getByLabel("Usage Saver").isDisabled(), true);
+    assert.match(await unsupportedConfigPage.locator("#settings-essentials").textContent(), /Usage Saver[\s\S]*Unavailable until the canonical setting is exposed\./);
+    assert.deepEqual(unsupportedConfig.runtimeErrors, []);
+    await unsupportedConfigPage.close();
 
     const tabletPage = await browser.newPage({ viewport: { width: 834, height: 1112 } });
     const tablet = await mount(tabletPage, scopedFixture(), overrides);
@@ -3145,6 +3254,8 @@ proofFeed.items.push({
     })), true);
     assert.equal(await mobilePage.locator(".role-editor-body").evaluate((element) => getComputedStyle(element).overflowY), "auto");
     assert.equal(await mobilePage.locator(".role-editor-fields").evaluate((element) => getComputedStyle(element).overflowY), "visible");
+    assert.doesNotMatch(await mobilePage.locator("#role-editor .edge-scroll").evaluate((element) => getComputedStyle(element).scrollbarColor), /^auto$/);
+    if (evidenceDir) await mobilePage.screenshot({ path: path.join(evidenceDir, "29-role-editor-edge-scroll-mobile-390x844.png"), fullPage: false, animations: "disabled" });
     await mobilePage.keyboard.press("Escape");
     await mobilePage.waitForTimeout(50);
     assert.equal(await mobilePage.locator("#role-editor").isVisible(), false);
@@ -3190,9 +3301,16 @@ proofFeed.items.push({
     await mobilePage.getByRole("button", { name: "Undo", exact: true }).click();
     await mobilePage.keyboard.press("Escape");
     await mobilePage.evaluate(() => setView("settings"));
+    await mobilePage.locator("#settings-scope").selectOption("global|global");
+    await mobilePage.waitForFunction(() => state.settingsScopeType === "global" && state.settingsScopeId === "global");
     assert.equal(await mobilePage.locator("#settings-essentials").evaluate((element) => element.scrollWidth <= element.clientWidth + 1), true);
     assert.equal(await mobilePage.locator(".settings-switch").evaluateAll((elements) => elements.every((element) => element.getBoundingClientRect().height >= 44)), true);
     if (evidenceDir) await mobilePage.screenshot({ path: path.join(evidenceDir, "22-settings-essentials-mobile-390x844.png"), fullPage: false, animations: "disabled" });
+    await mobilePage.getByLabel("Usage Saver").scrollIntoViewIfNeeded();
+    if (evidenceDir) await mobilePage.screenshot({ path: path.join(evidenceDir, "32-settings-usage-saver-default-mobile-390x844.png"), fullPage: false, animations: "disabled" });
+    await mobilePage.locator("#project-scope-filter").click();
+    if (evidenceDir) await mobilePage.screenshot({ path: path.join(evidenceDir, "30-project-dropdown-mobile-390x844.png"), fullPage: false, animations: "disabled" });
+    await mobilePage.keyboard.press("Escape");
     await mobilePage.getByRole("button", { name: "Edit config" }).click();
     await assertDialogFrame(mobilePage, "#config-editor-dialog");
     assert.equal(await mobilePage.locator("#config-editor-dialog").evaluate((element) => element.scrollWidth <= element.clientWidth + 1), true);
