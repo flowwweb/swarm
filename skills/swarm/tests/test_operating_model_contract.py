@@ -145,13 +145,15 @@ class OperatingModelTests(unittest.TestCase):
     def test_locked_profession_registry_is_orthogonal_to_structural_authority(self):
         from runtime.core import BUILT_IN_PROFESSIONS, PROFESSION_GROUPS, resolve_profession_id
         self.assertEqual(tuple(group for group,_ in PROFESSION_GROUPS),("Direction","Discovery","Creation","Assurance","Delivery","Foundation"))
-        self.assertEqual(tuple(BUILT_IN_PROFESSIONS),("manager","strategist","researcher","analyst","specialist","inventor","architect","designer","artist","writer","developer","producer","tester","assistant","security","auditor","legal","reviewer","operator","marketer","support","accountant","recruiter","educator"))
+        self.assertEqual(tuple(BUILT_IN_PROFESSIONS),("manager","strategist","researcher","analyst","specialist","inventor","architect","designer","artist","writer","developer","content_creator","tester","assistant","security","auditor","legal","reviewer","operator","marketer","support","accountant","recruiter","educator"))
         self.assertEqual(len(BUILT_IN_PROFESSIONS), 24)
         self.assertEqual(BUILT_IN_PROFESSIONS["support"], "Support")
         self.assertEqual(resolve_profession_id("Support Specialist"), "support")
         self.assertEqual(resolve_profession_id("Security Engineer"), "security")
         self.assertEqual(resolve_profession_id("Project Manager"), "manager")
         self.assertEqual(resolve_profession_id("Assistant"), "assistant")
+        self.assertEqual(resolve_profession_id("Producer"), "content_creator")
+        self.assertEqual(resolve_profession_id("Content Creator"), "content_creator")
         self.assertEqual(ProfessionAssignment("Assistant").label, "Assistant")
         for excluded in ("Critic", "ASSIST", "Innovator", "Negotiator", "Seller", "MOTHER", "Red Teamer"):
             with self.assertRaises(ValueError): resolve_profession_id(excluded)

@@ -12,7 +12,7 @@ The built-in profession registry is exactly, in lifecycle display order:
 - Discovery: Researcher (`researcher`), Analyst (`analyst`), Specialist
   (`specialist`), Inventor (`inventor`).
 - Creation: Architect (`architect`), Designer (`designer`), Artist (`artist`),
-  Writer (`writer`), Dev (`developer`), Producer (`producer`).
+  Writer (`writer`), Dev (`developer`), Content Creator (`content_creator`).
 - Assurance: Tester (`tester`), Assistant (`assistant`), Security (`security`),
   Auditor (`auditor`), Legal (`legal`), Reviewer (`reviewer`).
 - Delivery: Operator (`operator`), Marketer (`marketer`), Support (`support`).
@@ -31,15 +31,15 @@ domain and truth surface; it is not the structural SPECIALIST role field.
 Only proven persisted aliases resolve compatibly, without renaming user-owned
 task titles: product, project, and planning management to Manager; data and
 financial analysis to Analyst; content, social, sales, and brand strategy to
-Strategist; Security Engineer to Security; Support Specialist to Support; and
-Dev to `developer`. Unknown labels remain unregistered custom text and cannot
+Strategist; Security Engineer to Security; Support Specialist to Support; Dev
+to `developer`; and legacy Producer to `content_creator`. Unknown labels remain unregistered custom text and cannot
 materialize a profession or grant authority.
 
 Architect owns system shape, ADRs, and interfaces; Dev owns working software;
 Security owns threat resistance and controls. Designer owns usability,
 interaction, and design systems; Artist owns expressive media and craft.
-Manager owns priorities, resources, and organization; Producer owns one
-production from brief through assembled delivery. Inventor owns novel mechanism
+Manager owns priorities, resources, and organization; Content Creator owns one
+bounded content package from accepted brief through platform-ready delivery. Inventor owns novel mechanism
 or method exploration, prior-art checks, feasibility prototypes, failure modes,
 and handoff—not strategy, production implementation, or acceptance.
 

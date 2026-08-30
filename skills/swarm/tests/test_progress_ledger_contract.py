@@ -801,7 +801,7 @@ class ProgressLedgerContractTests(unittest.TestCase):
         expected = {
             "manager": "#FF6B4A", "strategist": "#F97316", "researcher": "#22D3EE", "analyst": "#38BDF8",
             "specialist": "#6366F1", "inventor": "#D946EF", "architect": "#FBBF24", "designer": "#F72585",
-            "artist": "#8B5CF6", "writer": "#C084FC", "developer": "#2563EB", "producer": "#F43F5E",
+            "artist": "#8B5CF6", "writer": "#C084FC", "developer": "#2563EB", "content_creator": "#F43F5E",
             "tester": "#14B8A6", "assistant": "#818CF8", "security": "#FF4D2E", "auditor": "#CBD5E1",
             "legal": "#E11D48", "reviewer": "#A3E635", "operator": "#10B981", "marketer": "#FB7185",
             "support": "#5EEAD4", "accountant": "#2DD4BF", "recruiter": "#A855F7", "educator": "#FDE047",
@@ -837,6 +837,8 @@ class ProgressLedgerContractTests(unittest.TestCase):
         by_id = {role["id"]: role for role in builtins}
         self.assertIn("Game Development", by_id["developer"]["specializations"])
         self.assertIn("Game Design", by_id["designer"]["specializations"])
+        self.assertEqual(by_id["content_creator"]["specializations"], ["YouTube Creator", "Social Media Creator", "Podcast Creator", "Content Production"])
+        self.assertNotIn("producer", by_id)
         self.assertNotIn("Friendly", by_id["reviewer"]["specializations"])
         self.assertNotIn("Hostile", by_id["reviewer"]["specializations"])
         self.assertNotIn("critic", by_id)

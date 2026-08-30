@@ -87,7 +87,7 @@ ROLE_SOURCES = frozenset({"builtin", "custom", "user_override"})
 ROLE_ACCENTS = {
     "manager": "#FF6B4A", "strategist": "#F97316", "researcher": "#22D3EE", "analyst": "#38BDF8",
     "specialist": "#6366F1", "inventor": "#D946EF", "architect": "#FBBF24", "designer": "#F72585",
-    "artist": "#8B5CF6", "writer": "#C084FC", "developer": "#2563EB", "producer": "#F43F5E",
+    "artist": "#8B5CF6", "writer": "#C084FC", "developer": "#2563EB", "content_creator": "#F43F5E",
     "tester": "#14B8A6", "assistant": "#818CF8", "security": "#FF4D2E", "auditor": "#CBD5E1",
     "legal": "#E11D48", "reviewer": "#A3E635", "operator": "#10B981", "marketer": "#FB7185",
     "support": "#5EEAD4", "accountant": "#2DD4BF", "recruiter": "#A855F7", "educator": "#FDE047",
@@ -104,7 +104,7 @@ BUILT_IN_ROLE_SPECIALIZATIONS = {
     "artist": ("Brand Artist", "Concept Artist", "3D Artist", "Motion Artist"),
     "writer": ("Technical Writer", "UX Writer", "Copywriter", "Documentation Writer"),
     "developer": ("Frontend Developer", "Backend Developer", "Full-stack Developer", "Game Development"),
-    "producer": ("Creative Producer", "Technical Producer", "Content Producer", "Release Producer"),
+    "content_creator": ("YouTube Creator", "Social Media Creator", "Podcast Creator", "Content Production"),
     "tester": ("QA Tester", "Automation Tester", "Performance Tester", "Accessibility Tester"),
     "assistant": ("Executive Assistant", "Project Assistant", "Research Assistant", "Administrative Assistant"),
     "security": ("Application Security", "Cloud Security", "Infrastructure Security", "Security Operations"),

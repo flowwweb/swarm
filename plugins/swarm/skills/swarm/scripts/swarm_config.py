@@ -226,7 +226,7 @@ FAST_SERVICE_TIERS = frozenset({"fast", "priority"})
 PROFESSION_GROUPS = (
     ("Direction", (("manager", "Manager"), ("strategist", "Strategist"))),
     ("Discovery", (("researcher", "Researcher"), ("analyst", "Analyst"), ("specialist", "Specialist"), ("inventor", "Inventor"))),
-    ("Creation", (("architect", "Architect"), ("designer", "Designer"), ("artist", "Artist"), ("writer", "Writer"), ("developer", "Dev"), ("producer", "Producer"))),
+    ("Creation", (("architect", "Architect"), ("designer", "Designer"), ("artist", "Artist"), ("writer", "Writer"), ("developer", "Dev"), ("content_creator", "Content Creator"))),
     ("Assurance", (("tester", "Tester"), ("assistant", "Assistant"), ("security", "Security"), ("auditor", "Auditor"), ("legal", "Legal"), ("reviewer", "Reviewer"))),
     ("Delivery", (("operator", "Operator"), ("marketer", "Marketer"), ("support", "Support"))),
     ("Foundation", (("accountant", "Accountant"), ("recruiter", "Recruiter"), ("educator", "Educator"))),
@@ -241,7 +241,7 @@ PROFESSION_ALIASES = {
     "data_analyst": "analyst", "financial_analyst": "analyst",
     "content_strategist": "strategist", "social_strategist": "strategist", "sales_strategist": "strategist",
     "brand_strategist": "strategist", "security_engineer": "security", "support_specialist": "support",
-    "dev": "developer",
+    "dev": "developer", "producer": "content_creator",
 }
 
 def resolve_profession_id(value: str) -> str:
@@ -766,6 +766,11 @@ def normalize_legacy_task_role(raw: dict[str, Any]) -> dict[str, Any]:
             try: profession_id=resolve_profession_id(str(role))
             except ConfigError: continue
             professions.setdefault(profession_id,roles.pop(role))
+        legacy_producer = [name for name in professions if str(name).strip().casefold().replace(" ", "_") == "producer"]
+        if legacy_producer:
+            if len(legacy_producer) != 1 or "content_creator" in professions:
+                raise ConfigError("professions cannot contain aliases for the same profession")
+            professions["content_creator"] = professions.pop(legacy_producer[0])
 
     execution=normalized.setdefault("execution",{})
     legacy_fast_signals=[]
