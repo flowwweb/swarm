@@ -129,29 +129,36 @@
       </main>
     </div>
     <dialog class="evidence-lightbox" id="evidence-lightbox" aria-labelledby="evidence-lightbox-title">
-      <div class="evidence-lightbox-shell">
-        <header class="evidence-lightbox-head">
+      <div class="dialog-shell evidence-lightbox-shell">
+        <header class="dialog-header evidence-lightbox-head">
           <div><p class="eyebrow">Visual evidence</p><h2 id="evidence-lightbox-title">Image preview</h2></div>
           <button class="icon-button" id="evidence-lightbox-close" type="button" aria-label="Close evidence gallery">×</button>
         </header>
-        <div class="evidence-lightbox-stage">
-          <img id="evidence-lightbox-image" alt="">
-          <p class="empty-state" id="evidence-lightbox-empty" hidden>No image evidence is available in this scope.</p>
-          <p class="evidence-lightbox-failed" id="evidence-lightbox-failed" role="status" hidden>This image could not be loaded. Choose another thumbnail or close the gallery.</p>
+        <div class="dialog-body evidence-lightbox-body">
+          <div class="dialog-body-content evidence-lightbox-content">
+            <div class="evidence-lightbox-stage">
+              <img id="evidence-lightbox-image" alt="">
+              <p class="empty-state" id="evidence-lightbox-empty" hidden>No image evidence is available in this scope.</p>
+              <p class="evidence-lightbox-failed" id="evidence-lightbox-failed" role="status" hidden>This image could not be loaded. Choose another thumbnail or close the gallery.</p>
+            </div>
+            <div class="evidence-lightbox-thumbnails" id="evidence-lightbox-thumbnails" role="list" aria-label="Evidence thumbnails"></div>
+          </div>
         </div>
-        <footer class="evidence-lightbox-controls">
-          <button class="quiet-button" id="evidence-lightbox-previous" type="button">Previous</button>
-          <p id="evidence-lightbox-caption" aria-live="polite"></p>
-          <button class="quiet-button" id="evidence-lightbox-next" type="button">Next</button>
+        <footer class="dialog-footer evidence-lightbox-footer">
+          <div class="evidence-lightbox-controls">
+            <button class="quiet-button" id="evidence-lightbox-previous" type="button">Previous</button>
+            <p id="evidence-lightbox-caption" aria-live="polite"></p>
+            <button class="quiet-button" id="evidence-lightbox-next" type="button">Next</button>
+          </div>
+          <div class="evidence-thumbnail-pager" aria-label="Evidence thumbnail pages"><button class="quiet-button" id="evidence-page-previous" type="button">Previous thumbnails</button><span id="evidence-page-status" aria-live="polite">No thumbnails</span><button class="quiet-button" id="evidence-page-next" type="button">Next thumbnails</button></div>
         </footer>
-        <div class="evidence-lightbox-thumbnails" id="evidence-lightbox-thumbnails" role="list" aria-label="Evidence thumbnails"></div>
-        <div class="evidence-thumbnail-pager" aria-label="Evidence thumbnail pages"><button class="quiet-button" id="evidence-page-previous" type="button">Previous thumbnails</button><span id="evidence-page-status" aria-live="polite">No thumbnails</span><button class="quiet-button" id="evidence-page-next" type="button">Next thumbnails</button></div>
       </div>
     </dialog>
     <dialog class="role-editor" id="role-editor" aria-labelledby="role-editor-title">
-      <form class="role-editor-shell" id="role-editor-form" method="dialog">
-        <header class="role-editor-head"><div><p class="eyebrow">Role manifest</p><h2 id="role-editor-title">Edit role</h2></div><button class="icon-button" id="role-editor-close" type="button" aria-label="Close role editor"><svg class="lucide" aria-hidden="true"><use href="#lucide-x"></use></svg></button></header>
-        <div class="role-editor-fields">
+      <form class="dialog-shell role-editor-shell" id="role-editor-form" method="dialog">
+        <header class="dialog-header role-editor-head"><div><p class="eyebrow">Role manifest</p><h2 id="role-editor-title">Edit role</h2></div><button class="icon-button" id="role-editor-close" type="button" aria-label="Close role editor"><svg class="lucide" aria-hidden="true"><use href="#lucide-x"></use></svg></button></header>
+        <div class="dialog-body role-editor-body">
+          <div class="dialog-body-content role-editor-fields">
           <label>Role ID<input id="role-field-id" name="id" autocomplete="off" required></label>
           <label>Name<input id="role-field-name" name="name" autocomplete="off" required></label>
           <label class="span-two">Purpose<textarea id="role-field-purpose" name="purpose" rows="3" required></textarea></label>
@@ -164,16 +171,19 @@
           <label class="role-specializations-field span-two" for="role-field-specializations"><span id="role-specializations-heading">Specializations</span><textarea id="role-field-specializations" name="specializations" rows="4" aria-describedby="role-specializations-help"></textarea><small id="role-specializations-help">Metadata only: exactly four for built-in professions and up to four for custom roles. Specializations never change authority.</small></label>
           <p class="sr-only" id="role-list-help">Enter one item per line.</p>
           <dl class="role-manifest-meta span-two"><div><dt>Version</dt><dd id="role-field-version">Unknown</dd></div><div><dt>Source</dt><dd id="role-field-source">Unknown</dd></div></dl>
+          </div>
         </div>
-        <p class="role-version-note">Saving creates a new role version. Tasks already in progress keep the version they started with.</p>
-        <p class="role-editor-status" id="role-editor-status" role="status">Role changes are unavailable until the server accepts the role-manifest command contract.</p>
-        <footer class="role-editor-actions"><button class="quiet-button" id="role-reset" data-role-action="reset" type="button" disabled><svg class="lucide" aria-hidden="true"><use href="#lucide-rotate-ccw"></use></svg>Reset built-in</button><span></span><button class="quiet-button" id="role-editor-cancel" type="button">Cancel</button><button class="primary-action" id="role-save" type="submit" disabled>Save new version</button></footer>
+        <footer class="dialog-footer role-editor-footer">
+          <p class="role-version-note">Saving creates a new role version. Tasks already in progress keep the version they started with.</p>
+          <p class="role-editor-status" id="role-editor-status" role="status">Role changes are unavailable until the server accepts the role-manifest command contract.</p>
+          <div class="role-editor-actions"><button class="quiet-button" id="role-reset" data-role-action="reset" type="button" disabled><svg class="lucide" aria-hidden="true"><use href="#lucide-rotate-ccw"></use></svg>Reset built-in</button><span></span><button class="quiet-button" id="role-editor-cancel" type="button">Cancel</button><button class="primary-action" id="role-save" type="submit" disabled>Save new version</button></div>
+        </footer>
       </form>
     </dialog>
     <dialog class="onboarding-dialog" id="onboarding-dialog" aria-labelledby="onboarding-dialog-title" aria-describedby="onboarding-step-status">
-      <div class="onboarding-shell">
-        <h2 class="sr-only" id="onboarding-dialog-title">Welcome to SWARM</h2>
-        <header class="onboarding-header">
+      <div class="dialog-shell onboarding-shell">
+        <header class="dialog-header onboarding-header">
+          <h2 class="sr-only" id="onboarding-dialog-title">Welcome to SWARM</h2>
           <img src="/assets/swarm-wordmark.png" alt="SWARM" />
           <div class="onboarding-progress" role="tablist" aria-label="Onboarding progress">
             <button type="button" role="tab" id="onboarding-dot-1" data-onboarding-step="0" aria-label="Show welcome" aria-controls="onboarding-panel-1" aria-selected="true" aria-current="step"><span aria-hidden="true"></span></button>
@@ -183,9 +193,10 @@
             <button type="button" role="tab" id="onboarding-dot-5" data-onboarding-step="4" aria-label="Show configuration" aria-controls="onboarding-panel-5" aria-selected="false" tabindex="-1"><span aria-hidden="true"></span></button>
           </div>
           <button class="icon-button onboarding-close" id="onboarding-close" type="button" aria-label="Close onboarding"><svg class="lucide" aria-hidden="true"><use href="#lucide-x"></use></svg></button>
+          <p class="sr-only" id="onboarding-step-status" aria-live="polite">Welcome. Step 1 of 5.</p>
         </header>
-        <p class="sr-only" id="onboarding-step-status" aria-live="polite">Welcome. Step 1 of 5.</p>
-        <div class="onboarding-panels">
+        <div class="dialog-body onboarding-panels">
+          <div class="dialog-body-content onboarding-panels-content">
           <section class="onboarding-panel is-active" id="onboarding-panel-1" data-onboarding-panel="0" role="tabpanel" aria-labelledby="onboarding-dot-1">
             <img class="onboarding-mascot onboarding-artwork" src="/assets/swarm-mascot-512.png" width="512" height="512" alt="" aria-hidden="true" decoding="async" />
             <h2>Hello. I’m SWARM.</h2>
@@ -223,8 +234,9 @@
             <p>Start with a few defaults. You can change them later in Settings.</p>
             <div class="onboarding-configuration onboarding-supporting-visual" id="onboarding-configuration" aria-label="SWARM configuration"></div>
           </section>
+          </div>
         </div>
-        <footer class="onboarding-actions">
+        <footer class="dialog-footer onboarding-actions">
           <button class="quiet-button" id="onboarding-back" type="button" hidden>Back</button>
           <button class="quiet-button onboarding-skip" id="onboarding-skip" type="button">Skip for now</button>
           <button class="primary-action" id="onboarding-primary" type="button">Start guided tour</button>

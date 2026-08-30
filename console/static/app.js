@@ -273,11 +273,12 @@ function renderOnboarding() {
   if (finalStep) {
     const root = $("#onboarding-configuration");
     const focusIdentity = onboardingControlIdentity(document.activeElement);
-    const scrollTop = root.scrollTop;
+    const scrollOwner = root.closest(".dialog-body");
+    const scrollTop = scrollOwner?.scrollTop || 0;
     const openControls = new Set($$("details[open][data-onboarding-control]", root).map((details) => details.dataset.onboardingControl));
     root.innerHTML = onboardingConfigurationMarkup();
     $$("details[data-onboarding-control]", root).forEach((details) => { details.open = openControls.has(details.dataset.onboardingControl); });
-    root.scrollTop = scrollTop;
+    if (scrollOwner) scrollOwner.scrollTop = scrollTop;
     const restored = onboardingControlForIdentity(root, focusIdentity);
     const focusTarget = restored && !restored.disabled
       ? restored
