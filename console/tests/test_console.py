@@ -5293,7 +5293,23 @@ class SwarmConsoleTests(unittest.TestCase):
         self.assertEqual(updated["revision"], 1)
         with self.assertRaises(console.ConsoleConflict):
             store.update_ctrl_override("ctrl-1", {"reasoning": "high"}, expected_revision=0, now_ms=now)
-        self.assertTrue(store.reset_ctrl_override("ctrl-1", expected_revision=1)["reset"])
+        audit = console.App._config_operation_audit(
+            action="ctrl_settings_reset",
+            operation_id="ctrl-reset-1",
+            scope={"type": "ctrl", "ctrl_id": "ctrl-1"},
+            expected_revision=1,
+            request_digest=console._config_sha256(b"ctrl-settings-reset"),
+            new_revision=0,
+            changed_paths=["ctrl.model"],
+            source_kind="ctrl_settings_overlay",
+        )
+        self.assertTrue(store.reset_ctrl_override(
+            "ctrl-1",
+            expected_revision=1,
+            operation_id="ctrl-reset-1",
+            audit_payload=audit,
+            now_ms=now,
+        )["reset"])
         self.assertEqual(store.get_ctrl_override("ctrl-1")["revision"], 0)
 
     def test_valid_config_update_is_validated_and_backed_up(self) -> None:
@@ -5455,7 +5471,23 @@ class SwarmConsoleTests(unittest.TestCase):
         revision = store.get_ctrl_override("root")["revision"]
         store.update_ctrl_override("root", {"reasoning": "high"}, expected_revision=revision, now_ms=8)
         self.assertTrue(store.auto_status("root", "project:alpha")["enabled"])
-        store.reset_ctrl_override("root", expected_revision=revision + 1)
+        audit = console.App._config_operation_audit(
+            action="ctrl_settings_reset",
+            operation_id="auto-reset-1",
+            scope={"type": "ctrl", "ctrl_id": "root"},
+            expected_revision=revision + 1,
+            request_digest=console._config_sha256(b"ctrl-settings-reset"),
+            new_revision=0,
+            changed_paths=["ctrl.reasoning"],
+            source_kind="ctrl_settings_overlay",
+        )
+        store.reset_ctrl_override(
+            "root",
+            expected_revision=revision + 1,
+            operation_id="auto-reset-1",
+            audit_payload=audit,
+            now_ms=9,
+        )
         self.assertTrue(store.auto_status("root", "project:alpha")["enabled"])
 
     def test_auto_dispatch_is_single_flight_and_idempotent(self) -> None:
@@ -5879,9 +5911,16 @@ class SwarmConsoleTests(unittest.TestCase):
         with self.assertRaises(console.ConsoleError):
             console.update_config(self.config, {"automation.mode": "sometimes"})
 
-    def test_restore_defaults_is_canonical_and_keeps_a_backup(self) -> None:
+    def test_revisioned_global_restore_is_canonical_and_keeps_a_backup(self) -> None:
         console.update_config(self.config, {"monitoring.heartbeat_minutes": 45})
-        result = console.restore_config_defaults(self.config)
+        app = console.App(self.codex_home, self.config)
+        projection = app.config_projection({"type": "global"})
+        result = app.reset_config_source({
+            "scope": {"type": "global"},
+            "expected_revision": projection["revision"],
+            "acknowledge": True,
+            "operation_id": "global-reset-1",
+        })
         self.assertEqual(result["settings"]["monitoring"]["heartbeat_minutes"], 30)
         self.assertTrue(self.config.with_suffix(".toml.swarm-console.bak").exists())
 
@@ -6100,6 +6139,160 @@ class SwarmConsoleTests(unittest.TestCase):
         )
         self.assertIsNone(fast_descriptor["current"])
         self.assertEqual(fast_descriptor["value_state"], "UNKNOWN")
+
+    def test_global_config_audit_failure_rolls_back_bytes_and_revision(self) -> None:
+        app = console.App(self.codex_home, self.config)
+        initial = app.config_projection({"type": "global"})
+        changed_text = initial["text"].replace("fast_mode = false", "fast_mode = true", 1)
+        before = self.config.read_bytes()
+        with mock.patch.object(
+            app.store,
+            "retain_config_event",
+            side_effect=console.ConsoleError("audit append blocked"),
+        ):
+            with self.assertRaisesRegex(console.ConsoleError, "audit append blocked"):
+                app.update_config_source({
+                    "scope": {"type": "global"},
+                    "expected_revision": initial["revision"],
+                    "acknowledge": True,
+                    "text": changed_text,
+                    "operation_id": "config-audit-failure",
+                })
+        self.assertEqual(self.config.read_bytes(), before)
+        restored = app.config_projection({"type": "global"})
+        self.assertEqual(restored["revision"], initial["revision"])
+        self.assertIsNone(app.store.config_event("config-audit-failure"))
+        self.assertEqual(app.store.pending_config_events(), [])
+
+        accepted = app.update_config_source({
+            "scope": {"type": "global"},
+            "expected_revision": initial["revision"],
+            "acknowledge": True,
+            "text": changed_text,
+            "operation_id": "config-audit-retry",
+        })
+        replayed = app.update_config_source({
+            "scope": {"type": "global"},
+            "expected_revision": initial["revision"],
+            "acknowledge": True,
+            "text": changed_text,
+            "operation_id": "config-audit-retry",
+        })
+        self.assertFalse(accepted["mutation_receipt"]["replayed"])
+        self.assertTrue(replayed["mutation_receipt"]["replayed"])
+        self.assertEqual(replayed["revision"], accepted["revision"])
+
+    def test_pending_global_config_transaction_recovers_on_restart(self) -> None:
+        app = console.App(self.codex_home, self.config)
+        initial = app.config_projection({"type": "global"})
+        changed_text = initial["text"].replace("fast_mode = false", "fast_mode = true", 1)
+        before = self.config.read_bytes()
+        with (
+            mock.patch.object(
+                app.store,
+                "retain_config_event",
+                side_effect=console.ConsoleError("audit append blocked"),
+            ),
+            mock.patch.object(
+                app.store,
+                "abort_config_event",
+                side_effect=console.ConsoleError("abort blocked"),
+            ),
+        ):
+            with self.assertRaisesRegex(console.ConsoleError, "recovery could not be proven"):
+                app.update_config_source({
+                    "scope": {"type": "global"},
+                    "expected_revision": initial["revision"],
+                    "acknowledge": True,
+                    "text": changed_text,
+                    "operation_id": "config-restart-recovery",
+                })
+        self.assertEqual(self.config.read_bytes(), before)
+        restarted = console.App(self.codex_home, self.config)
+        self.assertEqual(restarted.config_projection({"type": "global"})["revision"], initial["revision"])
+        self.assertEqual(restarted.store.pending_config_events(), [])
+        self.assertIsNone(restarted.store.config_event("config-restart-recovery"))
+        self.assertFalse(any(self.config.parent.glob(f".{self.config.name}.swarm-console-rollback-*")))
+
+    def test_settings_restore_requires_revision_ack_operation_and_keeps_scopes_explicit(self) -> None:
+        app = console.App(self.codex_home, self.config)
+
+        handler = self._handler("127.0.0.1", "127.0.0.1:4788", token=app.token)
+        handler.server = SimpleNamespace(app=app)
+        handler.path = "/api/settings/restore"
+        handler._payload = mock.Mock(return_value={})
+        handler._json = mock.Mock()
+        handler._error = mock.Mock()
+        handler.do_POST()
+        handler._error.assert_called_once_with(
+            console.HTTPStatus.BAD_REQUEST,
+            "settings restore requires exact scope, expected_revision, acknowledge, and operation_id fields",
+        )
+
+        with self.assertRaisesRegex(console.ConsoleError, "acknowledge=true"):
+            app.restore_settings({
+                "scope": {"type": "global"},
+                "expected_revision": "0" * 64,
+                "acknowledge": False,
+                "operation_id": "restore-no-ack",
+            })
+
+        global_projection = app.config_projection({"type": "global"})
+        app.update_config_source({
+            "scope": global_projection["scope"],
+            "expected_revision": global_projection["revision"],
+            "acknowledge": True,
+            "text": global_projection["text"].replace("heartbeat_minutes = 30", "heartbeat_minutes = 45", 1),
+            "operation_id": "restore-prepare-global",
+        })
+        project_projection = app.config_projection({"type": "project", "project_id": "project:alpha"})
+        project_updated = app.update_config_source({
+            "scope": project_projection["scope"],
+            "expected_revision": project_projection["revision"],
+            "acknowledge": True,
+            "text": "[execution]\nfast_mode = true\n",
+            "operation_id": "restore-prepare-project",
+        })
+        ctrl_projection = app.ctrl_settings("root")
+        ctrl_updated = app.update_ctrl_settings(
+            "root", {"reasoning": "high"}, ctrl_projection["revision"],
+        )
+
+        restored_global = app.restore_settings({
+            "scope": {"type": "global"},
+            "expected_revision": app.config_projection({"type": "global"})["revision"],
+            "acknowledge": True,
+            "operation_id": "restore-global",
+        })
+        self.assertEqual(restored_global["settings"]["monitoring"]["heartbeat_minutes"], 30)
+        self.assertEqual(app.store.config_event("restore-global")["action"], "global_config_reset")
+        self.assertNotIn("text", app.store.config_event("restore-global"))
+
+        after_global = app.config_projection(project_updated["scope"])
+        self.assertEqual(after_global["overridden_paths"], ["execution.fast_mode"])
+        self.assertTrue(after_global["settings"]["execution"]["fast_mode"])
+        self.assertTrue(after_global["global_settings"]["monitoring"]["heartbeat_minutes"] == 30)
+        self.assertTrue(app.ctrl_settings("root")["customized"])
+
+        restored_project = app.restore_settings({
+            "scope": after_global["scope"],
+            "expected_revision": after_global["revision"],
+            "acknowledge": True,
+            "operation_id": "restore-project",
+        })
+        self.assertEqual(restored_project["overridden_paths"], [])
+        self.assertEqual(app.store.config_event("restore-project")["action"], "project_config_reset")
+
+        restored_ctrl = app.restore_settings({
+            "scope": {"type": "ctrl", "ctrl_id": "root"},
+            "expected_revision": ctrl_updated["revision"],
+            "acknowledge": True,
+            "operation_id": "restore-ctrl",
+        })
+        self.assertFalse(restored_ctrl["customized"])
+        self.assertEqual(app.store.config_event("restore-ctrl")["action"], "ctrl_settings_reset")
+        self.assertEqual(restored_ctrl["mutation_receipt"]["audit_event"], console.CONFIG_EVENT_KIND)
+        self.assertEqual(app.config_projection({"type": "global"})["reset_contract"]["ctrl"]["endpoint"], "/api/ctrl-settings/reset")
 
     def test_config_editor_opaque_private_round_trip_preserves_source_bytes(self) -> None:
         private_bytes = self.config.read_bytes().replace(

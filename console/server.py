@@ -131,6 +131,9 @@ AUTO_REPAIR_LABEL = "Auto fix"
 AUTO_REPAIR_HELP = "SWARM attempts to recover from issues automatically. This may start repair tasks and increase usage."
 CONFIG_CONTRACT_VERSION = 1
 CONFIG_EVENT_KIND = "CONFIG_MUTATION"
+CONFIG_TRANSACTION_PREPARED = "PREPARED"
+CONFIG_TRANSACTION_COMMITTED = "COMMITTED"
+CONFIG_TRANSACTION_ABORTED = "ABORTED"
 CONFIG_TEXT_MAX_BYTES = MAX_BODY_BYTES
 CONFIG_PRIVATE_PATHS = frozenset({"feedback.destination"})
 CONFIG_PRIVATE_SEGMENTS = frozenset({
@@ -1212,33 +1215,22 @@ def update_config(config_path: Path, changes: dict[str, Any]) -> dict[str, Any]:
     return result
 
 
-def restore_config_defaults(config_path: Path) -> dict[str, Any]:
-    """Restore the packaged config through the canonical validator, atomically."""
-    module = load_config_module()
-    source = PLUGIN_ROOT / "skills" / "swarm" / "assets" / "swarm-config.toml"
+def _canonical_config_defaults_text(module: Any) -> str:
+    """Read the one canonical packaged source used by revisioned reset."""
+    source = Path(
+        getattr(module, "TEMPLATE_PATH", SWARM_SKILL_ROOT / "assets" / "swarm-config.toml")
+    )
     try:
         text = source.read_text(encoding="utf-8")
     except OSError as exc:
         raise ConsoleError(f"could not read packaged SWARM defaults: {exc}") from exc
-    config_path.parent.mkdir(parents=True, exist_ok=True)
-    temporary: Path | None = None
     try:
-        with tempfile.NamedTemporaryFile(
-            mode="w", encoding="utf-8", newline="\n", dir=config_path.parent, delete=False
-        ) as handle:
-            handle.write(text)
-            temporary = Path(handle.name)
-        module.load(temporary)
-        if config_path.exists():
-            shutil.copy2(config_path, config_path.with_suffix(".toml.swarm-console.bak"))
-        os.replace(temporary, config_path)
-        temporary = None
+        _config_parse_text(module, text, scope_type="global")
+    except ConsoleError:
+        raise
     except Exception as exc:
-        raise ConsoleError(str(exc)) from exc
-    finally:
-        if temporary and temporary.exists():
-            temporary.unlink(missing_ok=True)
-    return redacted_config_snapshot(config_path)
+        raise ConsoleError(f"canonical SWARM defaults are invalid: {str(exc)[:256]}") from exc
+    return text
 
 
 def console_state_path(codex_home: Path, config_path: Path) -> Path:
@@ -2190,7 +2182,9 @@ class ConsoleStore:
                 );
                 CREATE TABLE IF NOT EXISTS execution_event_receipts (
                     event_digest TEXT PRIMARY KEY,
-                    retained_at_ms INTEGER NOT NULL
+                    retained_at_ms INTEGER NOT NULL,
+                    config_commit_state TEXT NOT NULL DEFAULT 'COMMITTED',
+                    config_transaction_json TEXT NOT NULL DEFAULT '{}'
                 );
                 CREATE UNIQUE INDEX IF NOT EXISTS health_requests_open_dedupe
                     ON health_requests(dedupe_key)
@@ -2212,6 +2206,8 @@ class ConsoleStore:
                 "identity": "TEXT NOT NULL DEFAULT ''",
                 "payload_json": "TEXT NOT NULL DEFAULT '{}'",
                 "payload_digest": "TEXT NOT NULL DEFAULT ''",
+                "config_commit_state": "TEXT NOT NULL DEFAULT 'COMMITTED'",
+                "config_transaction_json": "TEXT NOT NULL DEFAULT '{}'",
             }.items():
                 if name not in execution_receipt_columns:
                     connection.execute(f"ALTER TABLE execution_event_receipts ADD COLUMN {name} {definition}")
@@ -3595,6 +3591,24 @@ class ConsoleStore:
         }
 
     @classmethod
+    def _config_encoded_payload(cls, payload: dict[str, Any]) -> tuple[str, str]:
+        def contains_config_text(value: Any) -> bool:
+            if isinstance(value, dict):
+                return any(
+                    key in {"text", "config_text", "raw_text", "raw_config"}
+                    or contains_config_text(child)
+                    for key, child in value.items()
+                )
+            if isinstance(value, list):
+                return any(contains_config_text(child) for child in value)
+            return False
+
+        if not isinstance(payload, dict) or contains_config_text(payload):
+            raise ConsoleError("config audit payload cannot contain config text")
+        encoded = json.dumps(payload, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
+        return encoded, hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+    @classmethod
     def _retain_config_event_unlocked(
         cls,
         connection: sqlite3.Connection,
@@ -3603,19 +3617,17 @@ class ConsoleStore:
         payload: dict[str, Any],
         now_ms: int,
     ) -> bool:
-        if not isinstance(payload, dict) or any(
-            key in payload for key in ("text", "config_text", "raw_text", "raw_config")
-        ):
-            raise ConsoleError("config audit payload cannot contain config text")
-        encoded = json.dumps(payload, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
-        digest = hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+        encoded, digest = cls._config_encoded_payload(payload)
         retained = connection.execute(
-            "SELECT payload_digest FROM execution_event_receipts WHERE event_kind = ? AND identity = ?",
+            "SELECT payload_digest, config_commit_state FROM execution_event_receipts "
+            "WHERE event_kind = ? AND identity = ?",
             (CONFIG_EVENT_KIND, operation_id),
         ).fetchone()
         if retained is not None:
             if str(retained["payload_digest"]) != digest:
                 raise ConsoleConflict("config operation identity conflicts with retained audit content")
+            if str(retained["config_commit_state"] or CONFIG_TRANSACTION_COMMITTED) != CONFIG_TRANSACTION_COMMITTED:
+                raise ConsoleConflict("config operation is not committed")
             return False
         connection.execute(
             "INSERT INTO execution_event_receipts(event_digest, retained_at_ms, event_kind, identity, payload_json, payload_digest) "
@@ -3624,13 +3636,141 @@ class ConsoleStore:
         )
         return True
 
+    @classmethod
+    def _validate_config_transaction(cls, transaction: dict[str, Any]) -> str:
+        required = {
+            "operation_id", "before_revision", "after_revision", "source_path",
+            "source_existed", "rollback_path", "rollback_digest",
+        }
+        if not isinstance(transaction, dict) or set(transaction) != required:
+            raise ConsoleError("config transaction metadata is invalid")
+        for key in ("before_revision", "after_revision"):
+            if not isinstance(transaction[key], str) or not re.fullmatch(r"[0-9a-f]{64}", transaction[key]):
+                raise ConsoleError("config transaction revision metadata is invalid")
+        if transaction["operation_id"] != _auto_id(transaction["operation_id"], "operation_id"):
+            raise ConsoleError("config transaction operation metadata is invalid")
+        for key in ("source_path", "rollback_path"):
+            if not isinstance(transaction[key], str) or not transaction[key] or "\x00" in transaction[key]:
+                raise ConsoleError("config transaction path metadata is invalid")
+        if not isinstance(transaction["source_existed"], bool):
+            raise ConsoleError("config transaction existence metadata is invalid")
+        if not isinstance(transaction["rollback_digest"], str):
+            raise ConsoleError("config transaction rollback metadata is invalid")
+        if transaction["rollback_digest"] and not re.fullmatch(r"[0-9a-f]{64}", transaction["rollback_digest"]):
+            raise ConsoleError("config transaction rollback metadata is invalid")
+        if transaction["source_existed"] and not transaction["rollback_digest"]:
+            raise ConsoleError("config transaction requires a rollback digest")
+        if not transaction["source_existed"] and transaction["rollback_digest"]:
+            raise ConsoleError("config transaction cannot retain a nonexistent source")
+        return json.dumps(transaction, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
+
+    def prepare_config_event(
+        self,
+        operation_id: str,
+        payload: dict[str, Any],
+        *,
+        transaction: dict[str, Any],
+        now_ms: int,
+    ) -> str:
+        operation_id = _safe_metadata_text(operation_id, "operation_id", maximum=256)
+        if not isinstance(now_ms, int) or isinstance(now_ms, bool) or now_ms < 0:
+            raise ConsoleError("config audit timestamp is invalid")
+        encoded, digest = self._config_encoded_payload(payload)
+        transaction_json = self._validate_config_transaction(transaction)
+        with self._lock, closing(self._connect()) as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            retained = connection.execute(
+                "SELECT payload_digest, config_commit_state, config_transaction_json "
+                "FROM execution_event_receipts WHERE event_kind = ? AND identity = ?",
+                (CONFIG_EVENT_KIND, operation_id),
+            ).fetchone()
+            if retained is not None:
+                if str(retained["payload_digest"]) != digest:
+                    connection.rollback()
+                    raise ConsoleConflict("config operation identity conflicts with retained audit content")
+                state = str(retained["config_commit_state"] or CONFIG_TRANSACTION_COMMITTED)
+                if state == CONFIG_TRANSACTION_COMMITTED:
+                    connection.commit()
+                    return CONFIG_TRANSACTION_COMMITTED
+                if state == CONFIG_TRANSACTION_ABORTED:
+                    connection.rollback()
+                    raise ConsoleConflict("config operation was aborted; use a new operation_id")
+                if state != CONFIG_TRANSACTION_PREPARED or str(retained["config_transaction_json"] or "{}") != transaction_json:
+                    connection.rollback()
+                    raise ConsoleConflict("config transaction identity conflicts with retained content")
+                connection.commit()
+                return CONFIG_TRANSACTION_PREPARED
+            connection.execute(
+                "INSERT INTO execution_event_receipts("
+                "event_digest, retained_at_ms, event_kind, identity, payload_json, payload_digest, "
+                "config_commit_state, config_transaction_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    digest, now_ms, CONFIG_EVENT_KIND, operation_id, encoded, digest,
+                    CONFIG_TRANSACTION_PREPARED, transaction_json,
+                ),
+            )
+            connection.commit()
+        return CONFIG_TRANSACTION_PREPARED
+
+    def pending_config_events(self) -> list[dict[str, Any]]:
+        with self._lock, closing(self._connect()) as connection:
+            rows = connection.execute(
+                "SELECT identity, payload_digest, config_transaction_json "
+                "FROM execution_event_receipts WHERE event_kind = ? AND config_commit_state = ? "
+                "ORDER BY retained_at_ms, identity",
+                (CONFIG_EVENT_KIND, CONFIG_TRANSACTION_PREPARED),
+            ).fetchall()
+        result: list[dict[str, Any]] = []
+        for row in rows:
+            try:
+                transaction = json.loads(str(row["config_transaction_json"] or "{}"))
+            except (TypeError, ValueError, json.JSONDecodeError) as exc:
+                raise ConsoleError("retained config transaction is unreadable") from exc
+            self._validate_config_transaction(transaction)
+            result.append({
+                "operation_id": str(row["identity"]),
+                "payload_digest": str(row["payload_digest"]),
+                "transaction": transaction,
+            })
+        return result
+
+    def abort_config_event(self, operation_id: str) -> bool:
+        operation_id = _safe_metadata_text(operation_id, "operation_id", maximum=256)
+        with self._lock, closing(self._connect()) as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT config_commit_state FROM execution_event_receipts "
+                "WHERE event_kind = ? AND identity = ?",
+                (CONFIG_EVENT_KIND, operation_id),
+            ).fetchone()
+            if row is None:
+                connection.commit()
+                return False
+            state = str(row["config_commit_state"] or CONFIG_TRANSACTION_COMMITTED)
+            if state == CONFIG_TRANSACTION_COMMITTED:
+                connection.commit()
+                return False
+            if state == CONFIG_TRANSACTION_ABORTED:
+                connection.commit()
+                return False
+            if state != CONFIG_TRANSACTION_PREPARED:
+                connection.rollback()
+                raise ConsoleError("retained config transaction state is invalid")
+            connection.execute(
+                "UPDATE execution_event_receipts SET config_commit_state = ?, config_transaction_json = '{}' "
+                "WHERE event_kind = ? AND identity = ?",
+                (CONFIG_TRANSACTION_ABORTED, CONFIG_EVENT_KIND, operation_id),
+            )
+            connection.commit()
+        return True
+
     def config_event(self, operation_id: str) -> dict[str, Any] | None:
         operation_id = _safe_metadata_text(operation_id, "operation_id", maximum=256)
         with self._lock, closing(self._connect()) as connection:
             row = connection.execute(
                 "SELECT payload_json, payload_digest FROM execution_event_receipts "
-                "WHERE event_kind = ? AND identity = ?",
-                (CONFIG_EVENT_KIND, operation_id),
+                "WHERE event_kind = ? AND identity = ? AND config_commit_state = ?",
+                (CONFIG_EVENT_KIND, operation_id, CONFIG_TRANSACTION_COMMITTED),
             ).fetchone()
         if row is None:
             return None
@@ -3657,9 +3797,36 @@ class ConsoleStore:
             raise ConsoleError("config audit timestamp is invalid")
         with self._lock, closing(self._connect()) as connection:
             connection.execute("BEGIN IMMEDIATE")
-            fresh = self._retain_config_event_unlocked(
-                connection, operation_id=operation_id, payload=payload, now_ms=now_ms,
-            )
+            encoded, digest = self._config_encoded_payload(payload)
+            retained = connection.execute(
+                "SELECT payload_digest, config_commit_state FROM execution_event_receipts "
+                "WHERE event_kind = ? AND identity = ?",
+                (CONFIG_EVENT_KIND, operation_id),
+            ).fetchone()
+            if retained is None:
+                connection.execute(
+                    "INSERT INTO execution_event_receipts(event_digest, retained_at_ms, event_kind, identity, payload_json, payload_digest) "
+                    "VALUES (?, ?, ?, ?, ?, ?)",
+                    (digest, now_ms, CONFIG_EVENT_KIND, operation_id, encoded, digest),
+                )
+                fresh = True
+            else:
+                if str(retained["payload_digest"]) != digest:
+                    connection.rollback()
+                    raise ConsoleConflict("config operation identity conflicts with retained audit content")
+                state = str(retained["config_commit_state"] or CONFIG_TRANSACTION_COMMITTED)
+                if state == CONFIG_TRANSACTION_PREPARED:
+                    connection.execute(
+                        "UPDATE execution_event_receipts SET config_commit_state = ?, config_transaction_json = '{}' "
+                        "WHERE event_kind = ? AND identity = ?",
+                        (CONFIG_TRANSACTION_COMMITTED, CONFIG_EVENT_KIND, operation_id),
+                    )
+                    fresh = True
+                elif state == CONFIG_TRANSACTION_COMMITTED:
+                    fresh = False
+                else:
+                    connection.rollback()
+                    raise ConsoleConflict("config operation was aborted; use a new operation_id")
             connection.commit()
         return fresh
 
@@ -6077,22 +6244,66 @@ class ConsoleStore:
             connection.commit()
         return {"ctrl_id": ctrl_id, "revision": revision, "override": current}
 
-    def reset_ctrl_override(self, ctrl_id: str, *, expected_revision: int) -> dict[str, Any]:
+    def reset_ctrl_override(
+        self,
+        ctrl_id: str,
+        *,
+        expected_revision: int,
+        operation_id: str,
+        audit_payload: dict[str, Any],
+        now_ms: int,
+    ) -> dict[str, Any]:
+        ctrl_id = _safe_metadata_text(ctrl_id, "ctrl_id", maximum=256)
+        operation_id = _safe_metadata_text(operation_id, "operation_id", maximum=256)
+        if not isinstance(expected_revision, int) or isinstance(expected_revision, bool) or expected_revision < 0:
+            raise ConsoleError("CTRL override revision is invalid")
+        if not isinstance(now_ms, int) or isinstance(now_ms, bool) or now_ms < 0:
+            raise ConsoleError("config audit timestamp is invalid")
+        _, audit_digest = self._config_encoded_payload(audit_payload)
         with self._lock, closing(self._connect()) as connection:
-            row = connection.execute("SELECT revision, fields_json FROM ctrl_overrides WHERE ctrl_id = ?", (ctrl_id,)).fetchone()
+            connection.execute("BEGIN IMMEDIATE")
+            retained_event = connection.execute(
+                "SELECT payload_digest, config_commit_state FROM execution_event_receipts "
+                "WHERE event_kind = ? AND identity = ?",
+                (CONFIG_EVENT_KIND, operation_id),
+            ).fetchone()
+            if retained_event is not None:
+                if str(retained_event["payload_digest"]) != audit_digest:
+                    connection.rollback()
+                    raise ConsoleConflict("config operation identity conflicts with retained audit content")
+                state = str(retained_event["config_commit_state"] or CONFIG_TRANSACTION_COMMITTED)
+                if state == CONFIG_TRANSACTION_COMMITTED:
+                    connection.commit()
+                    return {"ctrl_id": ctrl_id, "revision": 0, "override": {}, "reset": True, "replayed": True}
+                connection.rollback()
+                raise ConsoleConflict("config CTRL reset is not committed")
+            row = connection.execute(
+                "SELECT revision, fields_json FROM ctrl_overrides WHERE ctrl_id = ?",
+                (ctrl_id,),
+            ).fetchone()
             current_revision = 0 if row is None else int(row["revision"])
             if expected_revision != current_revision:
-                raise ConsoleConflict(f"CTRL override revision conflict; expected {expected_revision}, current {current_revision}")
+                connection.rollback()
+                raise ConsoleConflict(
+                    f"CTRL override revision conflict; expected {expected_revision}, current {current_revision}"
+                )
             retained_fields = {} if row is None else json.loads(str(row["fields_json"]))
             if AUTO_CTRL_OVERRIDE_KEY in retained_fields:
                 connection.execute(
-                    "UPDATE ctrl_overrides SET revision = 0, fields_json = ? WHERE ctrl_id = ?",
-                    (json.dumps({AUTO_CTRL_OVERRIDE_KEY: retained_fields[AUTO_CTRL_OVERRIDE_KEY]}, sort_keys=True), ctrl_id),
+                    "UPDATE ctrl_overrides SET revision = 0, fields_json = ?, updated_at_ms = ? WHERE ctrl_id = ?",
+                    (
+                        json.dumps({AUTO_CTRL_OVERRIDE_KEY: retained_fields[AUTO_CTRL_OVERRIDE_KEY]}, sort_keys=True),
+                        now_ms,
+                        ctrl_id,
+                    ),
                 )
-            else:
+            elif row is not None:
                 connection.execute("DELETE FROM ctrl_overrides WHERE ctrl_id = ?", (ctrl_id,))
+            self._retain_config_event_unlocked(
+                connection, operation_id=operation_id, payload=audit_payload, now_ms=now_ms,
+            )
             connection.commit()
-        return {"ctrl_id": ctrl_id, "revision": 0, "override": {}, "reset": True}
+        return {"ctrl_id": ctrl_id, "revision": 0, "override": {}, "reset": True, "replayed": False}
 
     @staticmethod
     def _notification_seen_key(principal_id: str, ctrl_id: str, project_id: str) -> str:
@@ -6216,13 +6427,6 @@ class ConsoleStore:
             connection.execute("PRAGMA wal_checkpoint(TRUNCATE)")
             after = self.storage_stats()
         return {"ok": True, "deleted": deleted, "bytes_before": before["bytes"], "bytes_after": after["bytes"]}
-
-    def reset_overrides(self) -> int:
-        with self._lock, closing(self._connect()) as connection:
-            count = int(connection.execute("SELECT COUNT(*) FROM ctrl_overrides").fetchone()[0])
-            connection.execute("DELETE FROM ctrl_overrides")
-            connection.commit()
-        return count
 
     def storage_stats(self) -> dict[str, Any]:
         paths = [self.path, self.path.with_name(self.path.name + "-wal"), self.path.with_name(self.path.name + "-shm")]
@@ -7256,6 +7460,7 @@ class App:
         self.diagnostics_collector = DiagnosticsCollector(self.codex_home, self.store.path)
         self.token = secrets.token_urlsafe(24)
         self.write_lock = threading.Lock()
+        self._recover_config_transactions()
         self.overview_lock = threading.RLock()
         self.overview_refresh_lock = threading.Lock()
         self.progress_pulse_lock = threading.Lock()
@@ -11403,7 +11608,25 @@ class App:
                 "operation_id_field": "operation_id",
                 "text_field": "text",
                 "project_cursor_field": "scope.accepted_cursor",
-                "reset_project_only": True,
+                "reset_project_only": False,
+            },
+            "reset_contract": {
+                "global": {
+                    "endpoint": "/api/settings/restore",
+                    "scope": {"type": "global"},
+                    "effect": "Restore only the canonical packaged global TOML source; project overlays and CTRL overrides remain unchanged.",
+                    "requires": ["expected_revision", "acknowledge", "operation_id"],
+                },
+                "project": {
+                    "endpoint": "/api/config/reset",
+                    "effect": "Remove only this saved project's config overlay; global values and CTRL overrides remain unchanged.",
+                    "requires": ["expected_revision", "acknowledge", "operation_id", "scope.accepted_cursor"],
+                },
+                "ctrl": {
+                    "endpoint": "/api/ctrl-settings/reset",
+                    "effect": "Remove only this observed CTRL's model/reasoning overlay; global and project values remain unchanged.",
+                    "requires": ["expected_revision", "acknowledge", "operation_id"],
+                },
             },
             "health": {"auto_repair": self._auto_repair_policy()},
             "claim_limit": (
@@ -11423,9 +11646,9 @@ class App:
         action: str,
         operation_id: str,
         scope: dict[str, Any],
-        expected_revision: str,
+        expected_revision: str | int,
         request_digest: str,
-        new_revision: str,
+        new_revision: str | int,
         changed_paths: list[str],
         source_kind: str,
     ) -> dict[str, Any]:
@@ -11436,6 +11659,7 @@ class App:
             "operation_id": operation_id,
             "scope_type": scope["type"],
             "project_id": scope.get("project_id"),
+            "ctrl_id": scope.get("ctrl_id"),
             "accepted_cursor": copy.deepcopy(scope.get("accepted_cursor")),
             "expected_revision": expected_revision,
             "request_digest": request_digest,
@@ -11459,7 +11683,7 @@ class App:
         action: str,
         operation_id: str,
         scope: dict[str, Any],
-        expected_revision: str,
+        expected_revision: str | int,
         request_digest: str,
     ) -> dict[str, Any] | None:
         if retained is None:
@@ -11469,6 +11693,7 @@ class App:
             "operation_id": operation_id,
             "scope_type": scope["type"],
             "project_id": scope.get("project_id"),
+            "ctrl_id": scope.get("ctrl_id"),
             "accepted_cursor": scope.get("accepted_cursor"),
             "expected_revision": expected_revision,
             "request_digest": request_digest,
@@ -11489,12 +11714,195 @@ class App:
             "claim_limit": "This is an idempotent replay of one retained local config mutation receipt.",
         }
 
+    def _config_transaction_rollback_path(self, operation_id: str) -> Path:
+        digest = _config_sha256(operation_id.encode("utf-8"))
+        return self.config_path.with_name(
+            f".{self.config_path.name}.swarm-console-rollback-{digest}"
+        )
+
+    @staticmethod
+    def _config_write_exact(path: Path, data: bytes) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temporary: Path | None = None
+        try:
+            with tempfile.NamedTemporaryFile(mode="wb", dir=path.parent, delete=False) as handle:
+                handle.write(data)
+                handle.flush()
+                os.fsync(handle.fileno())
+                temporary = Path(handle.name)
+            os.replace(temporary, path)
+            temporary = None
+        finally:
+            if temporary and temporary.exists():
+                temporary.unlink(missing_ok=True)
+
+    def _config_write_rollback_snapshot(
+        self,
+        rollback_path: Path,
+        old_bytes: bytes,
+        *,
+        source_existed: bool,
+    ) -> None:
+        if not source_existed:
+            if rollback_path.exists():
+                raise ConsoleError("config rollback snapshot exists for a nonexistent source")
+            return
+        if rollback_path.exists():
+            if rollback_path.is_symlink() or _config_sha256(rollback_path.read_bytes()) != _config_sha256(old_bytes):
+                raise ConsoleError("config rollback snapshot conflicts with the current source")
+            return
+        self._config_write_exact(rollback_path, old_bytes)
+
+    def _config_cleanup_rollback_snapshot(self, transaction: dict[str, Any]) -> None:
+        rollback_path = Path(str(transaction["rollback_path"])).resolve()
+        expected = self._config_transaction_rollback_path(str(transaction["operation_id"])).resolve()
+        if rollback_path != expected:
+            raise ConsoleError("config rollback path is outside the canonical source directory")
+        if rollback_path.exists():
+            if rollback_path.is_symlink():
+                raise ConsoleError("config rollback path is a symlink")
+            rollback_path.unlink()
+
+    def _config_restore_transaction_source(self, transaction: dict[str, Any]) -> None:
+        source_path = Path(str(transaction["source_path"])).resolve()
+        if source_path != self.config_path:
+            raise ConsoleError("config transaction source does not match the canonical source")
+        rollback_path = Path(str(transaction["rollback_path"])).resolve()
+        expected_rollback = self._config_transaction_rollback_path(str(transaction["operation_id"])).resolve()
+        if rollback_path != expected_rollback:
+            raise ConsoleError("config transaction rollback path is not canonical")
+        before_revision = str(transaction["before_revision"])
+        after_revision = str(transaction["after_revision"])
+        source_existed = transaction["source_existed"] is True
+        if self.config_path.is_symlink():
+            raise ConsoleError("config source is a symlink")
+        current_exists = self.config_path.exists()
+        current_bytes = self.config_path.read_bytes() if current_exists else b""
+        current_revision = _config_sha256(current_bytes) if current_exists else None
+        if current_exists and current_revision not in {before_revision, after_revision}:
+            raise ConsoleError("config source changed outside the pending transaction")
+        if not current_exists and source_existed:
+            raise ConsoleError("config source disappeared during the pending transaction")
+        if current_revision == after_revision:
+            if source_existed:
+                if not rollback_path.is_file() or rollback_path.is_symlink():
+                    raise ConsoleError("config rollback snapshot is unavailable")
+                rollback_bytes = rollback_path.read_bytes()
+                if _config_sha256(rollback_bytes) != str(transaction["rollback_digest"]):
+                    raise ConsoleError("config rollback snapshot digest does not match")
+                self._config_write_exact(self.config_path, rollback_bytes)
+            else:
+                self.config_path.unlink()
+        elif current_revision is None and source_existed:
+            raise ConsoleError("config source cannot be recovered from the pending transaction")
+        elif current_revision == before_revision and source_existed:
+            if not current_exists:
+                raise ConsoleError("config source cannot be recovered from the pending transaction")
+
+    def _recover_config_transactions(self) -> None:
+        for retained in self.store.pending_config_events():
+            transaction = retained["transaction"]
+            source_path = Path(str(transaction["source_path"])).resolve()
+            if source_path != self.config_path:
+                continue
+            try:
+                self._config_restore_transaction_source(transaction)
+                self.store.abort_config_event(retained["operation_id"])
+                self._config_cleanup_rollback_snapshot(transaction)
+            except Exception as exc:
+                raise ConsoleError(
+                    "pending config transaction requires recovery before config access"
+                ) from exc
+
+    def _commit_global_config_source(
+        self,
+        state: dict[str, Any],
+        *,
+        operation_id: str,
+        resolved_text: str,
+        audit: dict[str, Any],
+        new_revision: str,
+    ) -> None:
+        if state["scope"]["type"] != "global":
+            raise ConsoleError("global config transaction requires global scope")
+        if self.config_path.is_symlink():
+            raise ConsoleError("config source is a symlink")
+        source_existed = self.config_path.exists()
+        old_bytes = self.config_path.read_bytes() if source_existed else state["global_text"].encode("utf-8")
+        if _config_sha256(old_bytes) != state["global_revision"]:
+            raise ConsoleConflict("config source changed; reload before saving")
+        resolved_bytes = resolved_text.encode("utf-8")
+        if _config_sha256(resolved_bytes) != new_revision:
+            raise ConsoleError("config transaction revision does not match the proposed source")
+        rollback_path = self._config_transaction_rollback_path(operation_id)
+        transaction = {
+            "operation_id": operation_id,
+            "before_revision": state["global_revision"],
+            "after_revision": new_revision,
+            "source_path": str(self.config_path),
+            "source_existed": source_existed,
+            "rollback_path": str(rollback_path),
+            "rollback_digest": _config_sha256(old_bytes) if source_existed else "",
+        }
+        prepared = False
+        try:
+            transaction_state = self.store.prepare_config_event(
+                operation_id,
+                audit,
+                transaction=transaction,
+                now_ms=int(time.time() * 1000),
+            )
+            if transaction_state == CONFIG_TRANSACTION_COMMITTED:
+                raise ConsoleConflict("config operation is already committed; replay the original request")
+            prepared = True
+            self._config_write_rollback_snapshot(
+                rollback_path, old_bytes, source_existed=source_existed,
+            )
+            _atomic_config_write(self.config_path, resolved_bytes, state["module"])
+            self.store.retain_config_event(
+                operation_id, audit, now_ms=int(time.time() * 1000),
+            )
+        except Exception as exc:
+            if not prepared:
+                if rollback_path.exists():
+                    rollback_path.unlink(missing_ok=True)
+                if isinstance(exc, ConsoleError):
+                    raise
+                raise ConsoleError(str(exc)[:256]) from exc
+            try:
+                committed = self.store.config_event(operation_id)
+            except Exception:
+                committed = None
+            if committed is not None:
+                try:
+                    if not self.config_path.exists() or _config_sha256(self.config_path.read_bytes()) != new_revision:
+                        raise ConsoleError("committed config audit does not match the source revision")
+                    self._config_cleanup_rollback_snapshot(transaction)
+                    return
+                except Exception as recovery_exc:
+                    raise ConsoleError(
+                        f"config audit committed without matching source: {str(recovery_exc)[:180]}"
+                    ) from exc
+            try:
+                self._config_restore_transaction_source(transaction)
+                self.store.abort_config_event(operation_id)
+                self._config_cleanup_rollback_snapshot(transaction)
+            except Exception as recovery_exc:
+                raise ConsoleError(
+                    f"config mutation failed and recovery could not be proven: {str(recovery_exc)[:180]}"
+                ) from exc
+            if isinstance(exc, ConsoleError):
+                raise
+            raise ConsoleError(str(exc)[:256]) from exc
+        self._config_cleanup_rollback_snapshot(transaction)
+
     def update_config_source(self, payload: dict[str, Any]) -> dict[str, Any]:
         required = {"scope", "expected_revision", "acknowledge", "text", "operation_id"}
         if not isinstance(payload, dict) or set(payload) != required:
             raise ConsoleError("config update requires exact scope, expected_revision, acknowledge, text, and operation_id fields")
         if payload["acknowledge"] is not True:
             raise ConsoleError("config update requires acknowledge=true")
+        self._recover_config_transactions()
         operation_id = _auto_id(payload["operation_id"], "operation_id")
         expected_revision = self._config_revision(payload["expected_revision"])
         text = payload["text"]
@@ -11556,10 +11964,13 @@ class App:
             source_kind=state["source_kind"],
         )
         if state["scope"]["type"] == "global":
-            _atomic_config_write(
-                self.config_path, resolved_text.encode("utf-8"), state["module"],
+            self._commit_global_config_source(
+                state,
+                operation_id=operation_id,
+                resolved_text=resolved_text,
+                audit=audit,
+                new_revision=new_revision,
             )
-            self.store.retain_config_event(operation_id, audit, now_ms=int(time.time() * 1000))
         else:
             self.store.update_config_overlay(
                 state["project_id"], resolved_text,
@@ -11595,17 +12006,37 @@ class App:
             raise ConsoleError("config reset requires exact scope, expected_revision, acknowledge, and operation_id fields")
         if payload["acknowledge"] is not True:
             raise ConsoleError("config reset requires acknowledge=true")
+        self._recover_config_transactions()
         operation_id = _auto_id(payload["operation_id"], "operation_id")
         expected_revision = self._config_revision(payload["expected_revision"])
         binding = self._config_scope_binding(payload["scope"], require_cursor=True)
         state = self._config_state(binding["scope"], require_cursor=True)
-        if state["scope"]["type"] != "project":
-            raise ConsoleError("global config reset is unsupported; edit the canonical global source explicitly")
-        request_digest = _config_sha256(b"project-config-reset")
+        if state["scope"]["type"] == "global":
+            resolved_text = _canonical_config_defaults_text(state["module"])
+            _, next_normalized, next_effective = _config_parse_text(
+                state["module"], resolved_text, scope_type="global",
+            )
+            del next_normalized
+            request_digest = _config_sha256(resolved_text.encode("utf-8"))
+            new_revision = request_digest
+            changed_paths = _config_changed_paths(state["effective"], next_effective)
+            action = "global_config_reset"
+        else:
+            request_digest = _config_sha256(b"project-config-reset")
+            new_revision = _config_scope_revision(
+                "project", state["project_id"], state["cursor"],
+                state["global_revision"], "",
+            )
+            changed_paths = sorted(
+                path
+                for path, _ in _config_leaf_items(state.get("overlay_raw") or {})
+                if path != "schema_version"
+            )
+            action = "project_config_reset"
         retained = self.store.config_event(operation_id)
         replay = self._config_replay_receipt(
             retained,
-            action="project_config_reset",
+            action=action,
             operation_id=operation_id,
             scope=state["scope"],
             expected_revision=expected_revision,
@@ -11617,37 +12048,40 @@ class App:
             return projection
         if expected_revision != state["revision"]:
             raise ConsoleConflict("config revision changed; reload before resetting")
-        new_revision = _config_scope_revision(
-            "project", state["project_id"], state["cursor"],
-            state["global_revision"], "",
-        )
         audit = self._config_operation_audit(
-            action="project_config_reset",
+            action=action,
             operation_id=operation_id,
             scope=state["scope"],
             expected_revision=expected_revision,
             request_digest=request_digest,
             new_revision=new_revision,
-            changed_paths=sorted(
-                path
-                for path, _ in _config_leaf_items(state.get("overlay_raw") or {})
-                if path != "schema_version"
-            ),
+            changed_paths=changed_paths,
             source_kind=state["source_kind"],
         )
-        self.store.reset_config_overlay(
-            state["project_id"],
-            expected_config_revision=state["overlay_revision"],
-            operation_id=operation_id,
-            audit_payload=audit,
-            now_ms=int(time.time() * 1000),
-        )
+        if state["scope"]["type"] == "global":
+            self._commit_global_config_source(
+                state,
+                operation_id=operation_id,
+                resolved_text=resolved_text,
+                audit=audit,
+                new_revision=new_revision,
+            )
+        else:
+            self.store.reset_config_overlay(
+                state["project_id"],
+                expected_config_revision=state["overlay_revision"],
+                operation_id=operation_id,
+                audit_payload=audit,
+                now_ms=int(time.time() * 1000),
+            )
         with self.overview_lock:
             self._store_generation += 1
+            self._overview_fingerprint = None
+            self._view_fingerprint = None
         projection = self.config_projection(state["scope"])
         projection["mutation_receipt"] = {
             "accepted": True,
-            "action": "project_config_reset",
+            "action": action,
             "operation_id": operation_id,
             "replayed": False,
             "scope": copy.deepcopy(state["scope"]),
@@ -11663,6 +12097,10 @@ class App:
             "source_kind": state["source_kind"],
             "claim_limit": "Only this project's existing config overlay was removed; global values remain canonical.",
         }
+        if action == "global_config_reset":
+            projection["mutation_receipt"]["claim_limit"] = (
+                "Only the canonical global config source was restored; project overlays and CTRL overrides remain unchanged."
+            )
         return projection
 
     def _project_settings_projection(
@@ -13405,6 +13843,11 @@ class App:
             },
             "editable_fields": sorted(CTRL_OVERRIDE_FIELDS),
             "reset_semantics": "Delete the per-CTRL overlay to inherit global defaults.",
+            "reset_contract": {
+                "endpoint": "/api/ctrl-settings/reset",
+                "requires": ["ctrl_id", "expected_revision", "acknowledge", "operation_id"],
+                "audit_event": CONFIG_EVENT_KIND,
+            },
         }
 
     def update_ctrl_settings(self, ctrl_id: str, changes: dict[str, Any], expected_revision: int) -> dict[str, Any]:
@@ -13429,12 +13872,74 @@ class App:
             self._store_generation += 1
         return self.ctrl_settings(result["ctrl_id"])
 
-    def reset_ctrl_settings(self, ctrl_id: str, expected_revision: int) -> dict[str, Any]:
-        self._ctrl_context(ctrl_id)
-        result = self.store.reset_ctrl_override(ctrl_id, expected_revision=expected_revision)
+    def reset_ctrl_settings(
+        self,
+        ctrl_id: str,
+        expected_revision: int,
+        *,
+        acknowledge: Any,
+        operation_id: Any,
+    ) -> dict[str, Any]:
+        _, _, overlay = self._ctrl_context(ctrl_id)
+        if acknowledge is not True:
+            raise ConsoleError("CTRL reset requires acknowledge=true")
+        operation_id = _auto_id(operation_id, "operation_id")
+        if not isinstance(expected_revision, int) or isinstance(expected_revision, bool) or expected_revision < 0:
+            raise ConsoleError("CTRL override revision is invalid")
+        normalized_ctrl_id = _safe_metadata_text(ctrl_id, "ctrl_id", maximum=256)
+        scope = {"type": "ctrl", "ctrl_id": normalized_ctrl_id}
+        request_digest = _config_sha256(b"ctrl-settings-reset")
+        changed_paths = sorted(f"ctrl.{key}" for key in overlay["override"])
+        audit = self._config_operation_audit(
+            action="ctrl_settings_reset",
+            operation_id=operation_id,
+            scope=scope,
+            expected_revision=expected_revision,
+            request_digest=request_digest,
+            new_revision=0,
+            changed_paths=changed_paths,
+            source_kind="ctrl_settings_overlay",
+        )
+        retained = self.store.config_event(operation_id)
+        replay = self._config_replay_receipt(
+            retained,
+            action="ctrl_settings_reset",
+            operation_id=operation_id,
+            scope=scope,
+            expected_revision=expected_revision,
+            request_digest=request_digest,
+        )
+        if replay is not None:
+            return {
+                **self.ctrl_settings(normalized_ctrl_id),
+                "reset": True,
+                "mutation_receipt": replay,
+            }
+        result = self.store.reset_ctrl_override(
+            normalized_ctrl_id,
+            expected_revision=expected_revision,
+            operation_id=operation_id,
+            audit_payload=audit,
+            now_ms=int(time.time() * 1000),
+        )
         with self.overview_lock:
             self._store_generation += 1
-        return {**self.ctrl_settings(ctrl_id), "reset": result["reset"]}
+        projection = {**self.ctrl_settings(normalized_ctrl_id), "reset": result["reset"]}
+        projection["mutation_receipt"] = {
+            "accepted": True,
+            "action": "ctrl_settings_reset",
+            "operation_id": operation_id,
+            "replayed": bool(result.get("replayed")),
+            "scope": scope,
+            "expected_revision": expected_revision,
+            "new_revision": result["revision"],
+            "changed_paths": changed_paths,
+            "acknowledged": True,
+            "audit_event": CONFIG_EVENT_KIND,
+            "source_kind": "ctrl_settings_overlay",
+            "claim_limit": "Only this observed CTRL's model/reasoning overlay was reset; global and project config remain unchanged.",
+        }
+        return projection
 
     def clear_history(self) -> dict[str, Any]:
         with self.write_lock, self.proof_lock:
@@ -13444,15 +13949,21 @@ class App:
             self._store_generation += 1
         return {**result, "proof": proof}
 
-    def restore_defaults(self) -> dict[str, Any]:
-        with self.write_lock:
-            config = restore_config_defaults(self.config_path)
-            reset_count = self.store.reset_overrides()
-        with self.overview_lock:
-            self._store_generation += 1
-            self._overview_fingerprint = None
-            self._view_fingerprint = None
-        return {"config": config, "ctrl_overrides_reset": reset_count}
+    def restore_settings(self, payload: dict[str, Any]) -> dict[str, Any]:
+        required = {"scope", "expected_revision", "acknowledge", "operation_id"}
+        if not isinstance(payload, dict) or set(payload) != required:
+            raise ConsoleError("settings restore requires exact scope, expected_revision, acknowledge, and operation_id fields")
+        scope = payload["scope"]
+        if isinstance(scope, dict) and str(scope.get("type") or "").strip().casefold() == "ctrl":
+            if set(scope) != {"type", "ctrl_id"}:
+                raise ConsoleError("CTRL restore scope requires exact type and ctrl_id fields")
+            return self.reset_ctrl_settings(
+                scope["ctrl_id"],
+                payload["expected_revision"],
+                acknowledge=payload["acknowledge"],
+                operation_id=payload["operation_id"],
+            )
+        return self.reset_config_source(payload)
 
     def mark_presence(self) -> None:
         with self.presence_lock:
@@ -14234,8 +14745,15 @@ class Handler(BaseHTTPRequestHandler):
                 return
             if path == "/api/ctrl-settings/reset":
                 payload = self._payload()
+                if not isinstance(payload, dict) or set(payload) != {"ctrl_id", "expected_revision", "acknowledge", "operation_id"}:
+                    raise ConsoleError(
+                        "CTRL reset requires exact ctrl_id, expected_revision, acknowledge, and operation_id fields"
+                    )
                 result = self.server.app.reset_ctrl_settings(
-                    payload.get("ctrl_id"), payload.get("expected_revision")
+                    payload["ctrl_id"],
+                    payload["expected_revision"],
+                    acknowledge=payload["acknowledge"],
+                    operation_id=payload["operation_id"],
                 )
                 self._json(HTTPStatus.OK, {"ok": True, **result})
                 return
@@ -14243,7 +14761,14 @@ class Handler(BaseHTTPRequestHandler):
                 self._json(HTTPStatus.OK, self.server.app.clear_history())
                 return
             if path == "/api/settings/restore":
-                self._json(HTTPStatus.OK, {"ok": True, **self.server.app.restore_defaults()})
+                payload = self._payload()
+                if not isinstance(payload, dict) or set(payload) != {"scope", "expected_revision", "acknowledge", "operation_id"}:
+                    raise ConsoleError(
+                        "settings restore requires exact scope, expected_revision, acknowledge, and operation_id fields"
+                    )
+                with self.server.app.write_lock:
+                    result = self.server.app.restore_settings(payload)
+                self._json(HTTPStatus.OK, {"ok": True, **result})
                 return
             self._error(HTTPStatus.NOT_FOUND, "not found")
         except (json.JSONDecodeError, UnicodeDecodeError) as exc:
