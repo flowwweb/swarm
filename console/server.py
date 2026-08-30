@@ -164,6 +164,28 @@ MEDIA_EXTENSIONS = frozenset({".png", ".jpg", ".jpeg", ".webp", ".gif", ".mp4", 
 MEDIA_TYPES = frozenset({
     "image/png", "image/jpeg", "image/webp", "image/gif", "video/mp4", "video/webm",
 })
+ASSET_STATUSES = frozenset({"queued", "generating", "validating", "ready", "failed", "cancelled"})
+ASSET_ACTIVE_STATUSES = frozenset({"queued", "generating", "validating"})
+ASSET_TERMINAL_STATUSES = frozenset({"ready", "failed", "cancelled"})
+ASSET_GENERATION_TRANSITIONS = {
+    "queued": frozenset({"generating", "failed"}),
+    "generating": frozenset({"generating", "validating", "failed"}),
+    "validating": frozenset({"validating", "failed"}),
+    "ready": frozenset(),
+    "failed": frozenset(),
+    "cancelled": frozenset(),
+}
+ASSET_ERROR_CLASSES = frozenset({
+    "PROVIDER_UNAVAILABLE", "VALIDATION_FAILED", "MISSING_OUTPUT",
+    "AUTHORIZATION_DENIED", "RUNTIME_UNAVAILABLE", "UNKNOWN_FAILURE",
+})
+ASSET_EVENT_KIND = "ASSET_TRANSITION"
+ASSET_EVENT_CURSOR_KEY = "asset_event_cursor_v1"
+ASSET_RETENTION_POLICY = "manual/unconfigured"
+ASSET_MAX_JSON_BYTES = 16 * 1024
+ASSET_PRESENTATION_FIELDS = frozenset({"display_name", "kind", "description"})
+ASSET_JOB_METADATA_FIELDS = frozenset({"provider", "model", "mode", "option", "attempt"})
+ASSET_PROVENANCE_FIELDS = frozenset({"source", "receipt", "parent_asset_id", "admission"})
 OVERVIEW_METRIC_FIELDS = (
     "active_projects", "active_lanes", "actionable_items", "oldest_wait",
     "admitted_milestones", "admitted_proof", "completed", "total", "percent", "trend",
@@ -755,6 +777,108 @@ def _safe_proof_copy(value: Any, label: str) -> str:
     return copy
 
 
+def _asset_json_bytes(value: Any, label: str) -> str:
+    try:
+        encoded = json.dumps(value, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
+    except (TypeError, ValueError) as exc:
+        raise ConsoleError(f"{label} must be JSON data") from exc
+    if len(encoded.encode("utf-8")) > ASSET_MAX_JSON_BYTES:
+        raise ConsoleError(f"{label} exceeds the asset metadata guard")
+    return encoded
+
+
+def _asset_id(value: Any, label: str) -> str:
+    return _auto_id(value, label)
+
+
+def _asset_time(value: Any, label: str) -> int:
+    if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+        raise ConsoleError(f"{label} must be a nonnegative integer")
+    return value
+
+
+def _asset_optional_text(value: Any, label: str, *, maximum: int = 512) -> str:
+    if value in (None, ""):
+        return ""
+    return _safe_metadata_text(value, label, maximum=maximum)
+
+
+def _asset_presentation(value: Any) -> dict[str, str]:
+    if not isinstance(value, dict) or not set(value).issubset(ASSET_PRESENTATION_FIELDS):
+        raise ConsoleError("asset presentation has unsupported fields")
+    display_name = _safe_metadata_text(value.get("display_name"), "asset presentation display_name", maximum=256)
+    kind = _asset_id(value.get("kind"), "asset presentation kind").casefold()
+    description = _asset_optional_text(value.get("description"), "asset presentation description", maximum=1024)
+    result = {"display_name": display_name, "kind": kind}
+    if description:
+        result["description"] = description
+    return result
+
+
+def _asset_job_metadata(value: Any) -> dict[str, Any]:
+    if value in (None, {}):
+        return {}
+    if not isinstance(value, dict) or not set(value).issubset(ASSET_JOB_METADATA_FIELDS):
+        raise ConsoleError("asset job metadata has unsupported fields")
+    result: dict[str, Any] = {}
+    for key in sorted(value):
+        item = value[key]
+        if key == "attempt":
+            if not isinstance(item, int) or isinstance(item, bool) or item < 1:
+                raise ConsoleError("asset job metadata attempt must be a positive integer")
+            result[key] = item
+        else:
+            result[key] = _asset_id(item, f"asset job metadata {key}")
+    return result
+
+
+def _asset_provenance(value: Any, label: str = "asset provenance") -> dict[str, str]:
+    if not isinstance(value, dict) or not set(value).issubset(ASSET_PROVENANCE_FIELDS):
+        raise ConsoleError(f"{label} has unsupported fields")
+    source = _asset_id(value.get("source"), f"{label} source")
+    result = {"source": source}
+    for key in ("receipt", "parent_asset_id", "admission"):
+        if value.get(key) not in (None, ""):
+            result[key] = _asset_id(value[key], f"{label} {key}")
+    return result
+
+
+def _asset_request_summary(value: Any) -> str:
+    return _safe_metadata_text(value, "asset request_summary", maximum=1024)
+
+
+def _asset_progress(value: Any, provenance: Any) -> tuple[float | None, str | None]:
+    if value is None:
+        if provenance not in (None, ""):
+            raise ConsoleError("measured progress provenance requires measured progress")
+        return None, None
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(float(value)) or not 0 <= float(value) <= 1:
+        raise ConsoleError("measured_progress must be a finite number between 0 and 1")
+    return float(value), _asset_id(provenance, "measured_progress provenance")
+
+
+def _asset_error_class(value: Any) -> str:
+    error_class = _asset_id(value, "asset error_class").upper()
+    if error_class not in ASSET_ERROR_CLASSES:
+        raise ConsoleError("asset error_class is not allowlisted")
+    return error_class
+
+
+def _asset_status_label(status: str) -> str:
+    return {
+        "queued": "Queued",
+        "generating": "Generating",
+        "validating": "Validating",
+        "ready": "Ready",
+        "failed": "Failed",
+        "cancelled": "Cancelled",
+    }.get(status, "Unavailable")
+
+
+def _asset_timestamp_text(value: int) -> str:
+    return datetime.fromtimestamp(value / 1000, tz=UTC).isoformat().replace("+00:00", "Z")
+
+
 def _media_signature(path: Path) -> str:
     try:
         with path.open("rb") as stream:
@@ -1321,6 +1445,41 @@ class ConsoleStore:
                 );
                 CREATE INDEX IF NOT EXISTS proof_media_project_updated
                     ON proof_media(project_id, updated_at_ms DESC);
+                CREATE TABLE IF NOT EXISTS assets (
+                    asset_id TEXT PRIMARY KEY,
+                    logical_asset_id TEXT NOT NULL,
+                    parent_revision_id TEXT,
+                    project_id TEXT NOT NULL,
+                    idempotency_key TEXT NOT NULL,
+                    request_digest TEXT NOT NULL,
+                    presentation_json TEXT NOT NULL,
+                    request_summary TEXT NOT NULL,
+                    job_metadata_json TEXT NOT NULL,
+                    provenance_json TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    generation_job_id TEXT NOT NULL,
+                    operation_id TEXT NOT NULL,
+                    locator TEXT,
+                    media_type TEXT,
+                    size_bytes INTEGER,
+                    digest TEXT,
+                    measured_progress REAL,
+                    measured_progress_provenance TEXT,
+                    error_class TEXT,
+                    retry_eligible INTEGER NOT NULL DEFAULT 0,
+                    created_at_ms INTEGER NOT NULL,
+                    updated_at_ms INTEGER NOT NULL,
+                    trashed_at_ms INTEGER,
+                    trashed_by TEXT,
+                    revision INTEGER NOT NULL,
+                    last_operation_id TEXT NOT NULL,
+                    last_event_sequence INTEGER NOT NULL DEFAULT 0,
+                    last_event_identity TEXT
+                );
+                CREATE UNIQUE INDEX IF NOT EXISTS assets_project_idempotency
+                    ON assets(project_id, idempotency_key);
+                CREATE INDEX IF NOT EXISTS assets_project_updated
+                    ON assets(project_id, trashed_at_ms, updated_at_ms DESC, asset_id DESC);
                 CREATE TABLE IF NOT EXISTS proof_event_receipts (
                     event_name TEXT PRIMARY KEY,
                     event_mtime_ns INTEGER NOT NULL,
@@ -1813,7 +1972,7 @@ class ConsoleStore:
                 "SELECT snapshot_json, snapshot_digest FROM execution_dispatch_state ORDER BY reservation_id"
             ).fetchall()
             event_rows = connection.execute(
-                "SELECT event_digest FROM execution_event_receipts ORDER BY event_digest"
+                "SELECT event_digest FROM execution_event_receipts WHERE event_kind = 'EXECUTION_EVENT' ORDER BY event_digest"
             ).fetchall()
         try:
             generations = []
@@ -3153,6 +3312,930 @@ class ConsoleStore:
             row = connection.execute("SELECT * FROM proof_media WHERE evidence_id=?", (evidence_id,)).fetchone()
         return self._public_proof_row(row)
 
+    @staticmethod
+    def _asset_cursor_from_payload(payload: dict[str, Any]) -> dict[str, Any]:
+        sequence = payload.get("event_sequence")
+        identity = payload.get("event_digest")
+        if not isinstance(sequence, int) or isinstance(sequence, bool) or sequence < 1:
+            raise ConsoleError("asset event cursor is invalid")
+        if not isinstance(identity, str) or not re.fullmatch(r"[0-9a-f]{64}", identity):
+            raise ConsoleError("asset event identity is invalid")
+        return {"sequence": sequence, "identity": identity}
+
+    @staticmethod
+    def _asset_event_cursor_unlocked(connection: sqlite3.Connection) -> dict[str, Any]:
+        row = connection.execute(
+            "SELECT value FROM store_metadata WHERE key = ?",
+            (ASSET_EVENT_CURSOR_KEY,),
+        ).fetchone()
+        if row is not None:
+            try:
+                state = json.loads(str(row["value"]))
+            except (TypeError, ValueError, json.JSONDecodeError):
+                state = None
+            if isinstance(state, dict):
+                sequence = state.get("sequence")
+                identity = state.get("identity")
+                if (
+                    isinstance(sequence, int) and not isinstance(sequence, bool) and sequence >= 0
+                    and (identity is None or re.fullmatch(r"[0-9a-f]{64}", str(identity)))
+                ):
+                    return {"sequence": sequence, "identity": identity}
+        rows = connection.execute(
+            "SELECT payload_json FROM execution_event_receipts WHERE event_kind = ?",
+            (ASSET_EVENT_KIND,),
+        ).fetchall()
+        latest: tuple[int, str] | None = None
+        for item in rows:
+            try:
+                payload = json.loads(str(item["payload_json"]))
+                cursor = ConsoleStore._asset_cursor_from_payload(payload)
+            except (ConsoleError, TypeError, ValueError, json.JSONDecodeError):
+                continue
+            if latest is None or cursor["sequence"] > latest[0]:
+                latest = (cursor["sequence"], cursor["identity"])
+        return {"sequence": 0 if latest is None else latest[0], "identity": None if latest is None else latest[1]}
+
+    def asset_event_cursor(self) -> dict[str, Any]:
+        with self._lock, closing(self._connect()) as connection:
+            return self._asset_event_cursor_unlocked(connection)
+
+    @staticmethod
+    def _append_asset_event(
+        connection: sqlite3.Connection,
+        *,
+        asset_id: str,
+        logical_asset_id: str,
+        project_id: str,
+        action: str,
+        from_status: str | None,
+        to_status: str,
+        operation_id: str,
+        generation_job_id: str,
+        revision: int,
+        observed_at_ms: int,
+        measured_progress: float | None = None,
+        measured_progress_provenance: str | None = None,
+        error_class: str | None = None,
+        retry_eligible: bool = False,
+        trashed_at_ms: int | None = None,
+        trashed_by: str | None = None,
+        content_digest: str | None = None,
+        content_media_type: str | None = None,
+    ) -> dict[str, Any]:
+        identity = f"{asset_id}:{action}:{operation_id}:{revision}"
+        _safe_metadata_text(identity, "asset event identity", maximum=1024)
+        event_fields = {
+            "schema_version": 1,
+            "record_type": "ASSET_TRANSITION",
+            "event_kind": ASSET_EVENT_KIND,
+            "event_id": identity,
+            "asset_id": asset_id,
+            "logical_asset_id": logical_asset_id,
+            "project_id": project_id,
+            "action": action,
+            "from_status": from_status,
+            "to_status": to_status,
+            "operation_id": operation_id,
+            "generation_job_id": generation_job_id,
+            "revision": revision,
+            "observed_at_ms": observed_at_ms,
+            "measured_progress": measured_progress,
+            "measured_progress_provenance": measured_progress_provenance,
+            "error_class": error_class,
+            "retry_eligible": bool(retry_eligible),
+            "trashed_at_ms": trashed_at_ms,
+            "trashed_by": trashed_by,
+            "content_digest": content_digest,
+            "content_media_type": content_media_type,
+        }
+        existing = connection.execute(
+            "SELECT payload_json, payload_digest FROM execution_event_receipts WHERE event_kind = ? AND identity = ?",
+            (ASSET_EVENT_KIND, identity),
+        ).fetchone()
+        if existing is not None:
+            try:
+                retained = json.loads(str(existing["payload_json"]))
+            except (TypeError, ValueError, json.JSONDecodeError) as exc:
+                raise ConsoleError("retained asset event is unreadable") from exc
+            if not isinstance(retained, dict):
+                raise ConsoleError("retained asset event is invalid")
+            retained_without_cursor = dict(retained)
+            retained_without_cursor.pop("event_sequence", None)
+            retained_without_cursor.pop("event_digest", None)
+            if retained_without_cursor != event_fields:
+                raise ConsoleConflict("asset event identity conflicts with retained content")
+            digest = str(existing["payload_digest"] or "")
+            retained_digest_payload = dict(retained)
+            retained_digest_payload.pop("event_digest", None)
+            if not re.fullmatch(r"[0-9a-f]{64}", digest) or _auto_digest(retained_digest_payload) != digest:
+                raise ConsoleError("retained asset event digest is invalid")
+            retained["event_digest"] = digest
+            return ConsoleStore._asset_cursor_from_payload(retained)
+
+        prior = ConsoleStore._asset_event_cursor_unlocked(connection)
+        sequence = int(prior["sequence"]) + 1
+        payload = {**event_fields, "event_sequence": sequence}
+        digest = _auto_digest(payload)
+        payload["event_digest"] = digest
+        encoded = _asset_json_bytes(payload, "asset event")
+        connection.execute(
+            "INSERT INTO execution_event_receipts(event_digest, retained_at_ms, event_kind, identity, payload_json, payload_digest) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (digest, observed_at_ms, ASSET_EVENT_KIND, identity, encoded, digest),
+        )
+        cursor = {"sequence": sequence, "identity": digest}
+        connection.execute(
+            "INSERT INTO store_metadata(key, value) VALUES (?, ?) "
+            "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            (ASSET_EVENT_CURSOR_KEY, json.dumps(cursor, ensure_ascii=True, sort_keys=True, separators=(",", ":"))),
+        )
+        return cursor
+
+    @staticmethod
+    def _asset_row_json(row: sqlite3.Row, field: str) -> dict[str, Any]:
+        try:
+            value = json.loads(str(row[field]))
+        except (TypeError, ValueError, json.JSONDecodeError) as exc:
+            raise ConsoleError(f"asset {field} is unreadable") from exc
+        if not isinstance(value, dict):
+            raise ConsoleError(f"asset {field} is invalid")
+        return value
+
+    def _asset_preview(self, row: sqlite3.Row, *, allowed_root: Path | None) -> dict[str, Any]:
+        status = str(row["status"] or "")
+        if status != "ready":
+            return {
+                "state": "NOT_READY",
+                "url": None,
+                "reason": "The asset file is not published until generation reaches ready.",
+            }
+        locator = str(row["locator"] or "")
+        digest = str(row["digest"] or "").casefold()
+        media_type = str(row["media_type"] or "")
+        if not locator or not re.fullmatch(r"[0-9a-f]{64}", digest) or media_type not in MEDIA_TYPES or allowed_root is None:
+            return {
+                "state": "UNAVAILABLE",
+                "url": None,
+                "reason": "Ready asset provenance is incomplete; no file URL is published.",
+            }
+        try:
+            metadata = _media_metadata(
+                locator,
+                digest,
+                allowed_root=allowed_root,
+                supplied_size=None if row["size_bytes"] is None else int(row["size_bytes"]),
+                supplied_media_type=media_type,
+            )
+        except (ConsoleError, OSError, TypeError, ValueError):
+            return {
+                "state": "UNAVAILABLE",
+                "url": None,
+                "reason": "The retained asset file or provenance no longer validates.",
+            }
+        return {
+            "state": "AVAILABLE",
+            "url": f"/api/assets/{row['asset_id']}/preview?digest={digest}",
+            "media_type": metadata["media_type"],
+            "size_bytes": metadata["size_bytes"],
+        }
+
+    def _public_asset_row(self, row: sqlite3.Row, *, allowed_root: Path | None = None) -> dict[str, Any]:
+        status = str(row["status"] or "").casefold()
+        if status not in ASSET_STATUSES:
+            raise ConsoleError("asset status is invalid")
+        presentation = self._asset_row_json(row, "presentation_json")
+        job_metadata = self._asset_row_json(row, "job_metadata_json")
+        provenance = self._asset_row_json(row, "provenance_json")
+        created_at_ms = int(row["created_at_ms"])
+        updated_at_ms = int(row["updated_at_ms"])
+        cursor = {
+            "sequence": int(row["last_event_sequence"] or 0),
+            "identity": str(row["last_event_identity"] or "") or None,
+        }
+        if cursor["sequence"] and (
+            cursor["identity"] is None or not re.fullmatch(r"[0-9a-f]{64}", str(cursor["identity"]))
+        ):
+            raise ConsoleError("asset event cursor is invalid")
+        storage_state = "BOUND" if row["locator"] else "NOT_PUBLISHED"
+        if status == "ready" and self._asset_preview(row, allowed_root=allowed_root)["state"] != "AVAILABLE":
+            storage_state = "UNAVAILABLE"
+        trashed_at_ms = None if row["trashed_at_ms"] is None else int(row["trashed_at_ms"])
+        return {
+            "asset_id": str(row["asset_id"]),
+            "project_id": str(row["project_id"]),
+            "presentation": {
+                "display_name": str(presentation["display_name"]),
+                "kind": str(presentation["kind"]),
+                "description": str(presentation.get("description") or ""),
+                "status": status,
+                "status_label": _asset_status_label(status),
+                "created_at": _asset_timestamp_text(created_at_ms),
+                "updated_at": _asset_timestamp_text(updated_at_ms),
+            },
+            "technical": {
+                "advanced_debug": True,
+                "asset_id": str(row["asset_id"]),
+                "logical_asset_id": str(row["logical_asset_id"]),
+                "parent_revision_id": row["parent_revision_id"],
+                "revision": int(row["revision"]),
+                "status": status,
+                "created_at_ms": created_at_ms,
+                "updated_at_ms": updated_at_ms,
+                "generation_job_id": str(row["generation_job_id"]),
+                "operation_id": str(row["operation_id"]),
+                "request_summary": str(row["request_summary"]),
+                "job_metadata": job_metadata,
+                "provenance": provenance,
+                "digest": str(row["digest"] or "") or None,
+                "media_type": str(row["media_type"] or "") or None,
+                "size_bytes": None if row["size_bytes"] is None else int(row["size_bytes"]),
+                "storage": {"state": storage_state, "path": None, "path_redacted": bool(row["locator"])},
+                "measured_progress": row["measured_progress"],
+                "measured_progress_provenance": row["measured_progress_provenance"],
+                "error_class": row["error_class"],
+                "retry_eligible": bool(row["retry_eligible"]),
+                "idempotency_key": str(row["idempotency_key"]),
+            },
+            "preview": self._asset_preview(row, allowed_root=allowed_root),
+            "trash": {
+                "trashed": trashed_at_ms is not None,
+                "trashed_at": None if trashed_at_ms is None else _asset_timestamp_text(trashed_at_ms),
+                "trashed_at_ms": trashed_at_ms,
+                "trashed_by": row["trashed_by"],
+            },
+            "event_cursor": cursor,
+            "retention_policy": ASSET_RETENTION_POLICY,
+            "claim_limit": (
+                "Asset identity, state, lineage, and file provenance are server-owned. Presentation omits private paths; "
+                "a preview URL is emitted only after the exact retained file validates. Trash is reversible soft state; "
+                "purge is unavailable because no scheduled retention authority is configured."
+            ),
+        }
+
+    def asset_list(
+        self,
+        *,
+        project_id: str | None = None,
+        projection: str = "active",
+        allowed_root: Path | None = None,
+    ) -> list[dict[str, Any]]:
+        if projection not in {"active", "trash"}:
+            raise ConsoleError("asset projection must be active or trash")
+        conditions = ["trashed_at_ms IS NULL" if projection == "active" else "trashed_at_ms IS NOT NULL"]
+        args: list[Any] = []
+        if project_id:
+            conditions.append("project_id = ?")
+            args.append(_asset_id(project_id, "project_id"))
+        with self._lock, closing(self._connect()) as connection:
+            rows = connection.execute(
+                "SELECT * FROM assets WHERE " + " AND ".join(conditions)
+                + " ORDER BY created_at_ms DESC, asset_id DESC",
+                tuple(args),
+            ).fetchall()
+        return [self._public_asset_row(row, allowed_root=allowed_root) for row in rows]
+
+    def asset_item(self, asset_id: str, *, allowed_root: Path | None = None) -> dict[str, Any]:
+        asset_id = _asset_id(asset_id, "asset_id")
+        with self._lock, closing(self._connect()) as connection:
+            row = connection.execute("SELECT * FROM assets WHERE asset_id = ?", (asset_id,)).fetchone()
+        if row is None:
+            raise ConsoleError("asset was not found")
+        return self._public_asset_row(row, allowed_root=allowed_root)
+
+    def asset_media_item(self, asset_id: str, digest: str, *, allowed_root: Path) -> dict[str, Any]:
+        asset_id = _asset_id(asset_id, "asset_id")
+        digest = _safe_metadata_text(digest, "asset digest", maximum=64).casefold()
+        if not re.fullmatch(r"[0-9a-f]{64}", digest):
+            raise ConsoleError("asset digest must be a SHA-256 hex digest")
+        with self._lock, closing(self._connect()) as connection:
+            row = connection.execute(
+                "SELECT * FROM assets WHERE asset_id = ? AND status = 'ready'",
+                (asset_id,),
+            ).fetchone()
+        if row is None or str(row["digest"] or "").casefold() != digest:
+            raise ConsoleError("ready asset was not found")
+        preview = self._asset_preview(row, allowed_root=allowed_root)
+        if preview.get("state") != "AVAILABLE":
+            raise ConsoleError("ready asset file is unavailable")
+        return {
+            "path": Path(str(row["locator"])),
+            "media_type": str(preview["media_type"]),
+            "size_bytes": int(preview["size_bytes"]),
+            "digest": digest,
+            "asset_id": asset_id,
+        }
+
+    def asset_event_feed(
+        self,
+        *,
+        project_id: str | None = None,
+        after_sequence: int = 0,
+        limit: int = 64,
+    ) -> dict[str, Any]:
+        if not isinstance(after_sequence, int) or isinstance(after_sequence, bool) or after_sequence < 0:
+            raise ConsoleError("asset event after_sequence must be a nonnegative integer")
+        if not isinstance(limit, int) or isinstance(limit, bool) or not 1 <= limit <= 128:
+            raise ConsoleError("asset event limit must be between 1 and 128")
+        project_filter = None if project_id in (None, "") else _asset_id(project_id, "project_id")
+        with self._lock, closing(self._connect()) as connection:
+            rows = connection.execute(
+                "SELECT payload_json FROM execution_event_receipts WHERE event_kind = ?",
+                (ASSET_EVENT_KIND,),
+            ).fetchall()
+            cursor = self._asset_event_cursor_unlocked(connection)
+        items: list[dict[str, Any]] = []
+        for row in rows:
+            try:
+                payload = json.loads(str(row["payload_json"]))
+                item_cursor = self._asset_cursor_from_payload(payload)
+            except (ConsoleError, TypeError, ValueError, json.JSONDecodeError):
+                raise ConsoleError("asset event ledger is unreadable")
+            if project_filter is not None and payload.get("project_id") != project_filter:
+                continue
+            if item_cursor["sequence"] <= after_sequence:
+                continue
+            item = dict(payload)
+            item.pop("event_digest", None)
+            items.append({**item, "cursor": item_cursor})
+        items.sort(key=lambda item: int(item["cursor"]["sequence"]))
+        return {
+            "status": "available",
+            "project_id": project_id,
+            "after_sequence": after_sequence,
+            "cursor": cursor,
+            "items": items[:limit],
+            "retention_policy": ASSET_RETENTION_POLICY,
+            "claim_limit": "Asset transition events are typed local receipts from the existing console event ledger; they are not model summaries or progress percentage evidence.",
+        }
+
+    def reserve_asset_generation(self, payload: dict[str, Any], *, now_ms: int) -> dict[str, Any]:
+        if not isinstance(payload, dict):
+            raise ConsoleError("asset generation request must be an object")
+        project_id = _asset_id(payload.get("project_id"), "project_id")
+        asset_id = _asset_id(payload.get("asset_id") or f"asset-{uuid.uuid4()}", "asset_id")
+        logical_asset_id = _asset_id(payload.get("logical_asset_id") or asset_id, "logical_asset_id")
+        parent_revision_id = payload.get("parent_revision_id")
+        if parent_revision_id not in (None, ""):
+            parent_revision_id = _asset_id(parent_revision_id, "parent_revision_id")
+        generation_job_id = _asset_id(payload.get("generation_job_id"), "generation_job_id")
+        operation_id = _asset_id(payload.get("operation_id"), "operation_id")
+        idempotency_key = _asset_id(payload.get("idempotency_key"), "idempotency_key")
+        request_summary = _asset_request_summary(payload.get("request_summary"))
+        presentation = _asset_presentation(payload.get("presentation"))
+        job_metadata = _asset_job_metadata(payload.get("job_metadata"))
+        provenance = _asset_provenance(payload.get("provenance"))
+        now_ms = _asset_time(now_ms, "asset created_at_ms")
+        canonical = {
+            "asset_id": asset_id,
+            "logical_asset_id": logical_asset_id,
+            "parent_revision_id": parent_revision_id,
+            "project_id": project_id,
+            "generation_job_id": generation_job_id,
+            "operation_id": operation_id,
+            "idempotency_key": idempotency_key,
+            "request_summary": request_summary,
+            "presentation": presentation,
+            "job_metadata": job_metadata,
+            "provenance": provenance,
+        }
+        request_digest = _auto_digest(canonical)
+        with self._lock, closing(self._connect()) as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            existing = connection.execute(
+                "SELECT * FROM assets WHERE project_id = ? AND idempotency_key = ?",
+                (project_id, idempotency_key),
+            ).fetchone()
+            if existing is not None:
+                if str(existing["request_digest"]) != request_digest:
+                    connection.rollback()
+                    raise ConsoleConflict("asset idempotency key conflicts with retained generation request")
+                connection.commit()
+                return self._public_asset_row(existing)
+            identity = connection.execute(
+                "SELECT asset_id, request_digest FROM assets WHERE asset_id = ?",
+                (asset_id,),
+            ).fetchone()
+            if identity is not None:
+                connection.rollback()
+                raise ConsoleConflict("asset_id already names a different retained asset")
+            if parent_revision_id is not None:
+                parent = connection.execute(
+                    "SELECT asset_id, project_id, logical_asset_id FROM assets WHERE asset_id = ?",
+                    (parent_revision_id,),
+                ).fetchone()
+                if (
+                    parent is None
+                    or str(parent["project_id"]) != project_id
+                    or str(parent["logical_asset_id"]) != logical_asset_id
+                    or parent_revision_id == asset_id
+                ):
+                    connection.rollback()
+                    raise ConsoleError("asset parent_revision_id must be a retained revision in the requested logical asset")
+            revision = 1
+            cursor = self._append_asset_event(
+                connection,
+                asset_id=asset_id,
+                logical_asset_id=logical_asset_id,
+                project_id=project_id,
+                action="reserve",
+                from_status=None,
+                to_status="queued",
+                operation_id=operation_id,
+                generation_job_id=generation_job_id,
+                revision=revision,
+                observed_at_ms=now_ms,
+            )
+            connection.execute(
+                """
+                INSERT INTO assets(
+                    asset_id, logical_asset_id, parent_revision_id, project_id,
+                    idempotency_key, request_digest, presentation_json, request_summary,
+                    job_metadata_json, provenance_json, status, generation_job_id,
+                    operation_id, locator, media_type, size_bytes, digest,
+                    measured_progress, measured_progress_provenance, error_class,
+                    retry_eligible, created_at_ms, updated_at_ms, trashed_at_ms,
+                    trashed_by, revision, last_operation_id, last_event_sequence,
+                    last_event_identity
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    asset_id, logical_asset_id, parent_revision_id, project_id,
+                    idempotency_key, request_digest, _asset_json_bytes(presentation, "asset presentation"),
+                    request_summary, _asset_json_bytes(job_metadata, "asset job metadata"),
+                    _asset_json_bytes(provenance, "asset provenance"), "queued", generation_job_id,
+                    operation_id, None, None, None, None, None, None, None, 0,
+                    now_ms, now_ms, None, None, revision, operation_id,
+                    cursor["sequence"], cursor["identity"],
+                ),
+            )
+            connection.commit()
+            row = connection.execute("SELECT * FROM assets WHERE asset_id = ?", (asset_id,)).fetchone()
+        if row is None:
+            raise ConsoleError("asset reservation was written but could not be re-read")
+        return self._public_asset_row(row)
+
+    @staticmethod
+    def _asset_expected_revision(value: Any) -> int:
+        if not isinstance(value, int) or isinstance(value, bool) or value < 1:
+            raise ConsoleError("asset expected_revision must be a positive integer")
+        return value
+
+    def _asset_transition(
+        self,
+        asset_id: str,
+        *,
+        expected_revision: int,
+        operation_id: str,
+        target_status: str,
+        action: str,
+        now_ms: int,
+        measured_progress: float | None = None,
+        measured_progress_provenance: str | None = None,
+        error_class: str | None = None,
+        retry_eligible: bool = False,
+        allow_cancel: bool = False,
+    ) -> dict[str, Any]:
+        asset_id = _asset_id(asset_id, "asset_id")
+        expected_revision = self._asset_expected_revision(expected_revision)
+        operation_id = _asset_id(operation_id, "operation_id")
+        target_status = _asset_id(target_status, "asset status").casefold()
+        action = _asset_id(action, "asset transition action").casefold()
+        now_ms = _asset_time(now_ms, "asset updated_at_ms")
+        if target_status not in ASSET_STATUSES:
+            raise ConsoleError("asset status is unsupported")
+        with self._lock, closing(self._connect()) as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute("SELECT * FROM assets WHERE asset_id = ?", (asset_id,)).fetchone()
+            if row is None:
+                connection.rollback()
+                raise ConsoleError("asset was not found")
+            current_status = str(row["status"] or "").casefold()
+            same_progress = (
+                (row["measured_progress"] is None and measured_progress is None)
+                or (
+                    row["measured_progress"] is not None
+                    and measured_progress is not None
+                    and float(row["measured_progress"]) == float(measured_progress)
+                )
+            )
+            same_progress_provenance = (row["measured_progress_provenance"] or None) == (measured_progress_provenance or None)
+            if (
+                str(row["last_operation_id"] or "") == operation_id
+                and current_status == target_status
+                and (target_status not in {"generating", "validating"} or (same_progress and same_progress_provenance))
+                and (target_status != "failed" or (
+                    str(row["error_class"] or "") == str(error_class or "")
+                    and bool(row["retry_eligible"]) == bool(retry_eligible)
+                ))
+            ):
+                connection.commit()
+                return self._public_asset_row(row)
+            if int(row["revision"]) != expected_revision:
+                connection.rollback()
+                raise ConsoleConflict("asset changed; reload before applying this transition")
+            if target_status not in ASSET_GENERATION_TRANSITIONS.get(current_status, frozenset()):
+                if not (allow_cancel and target_status == "cancelled" and current_status in ASSET_ACTIVE_STATUSES):
+                    connection.rollback()
+                    raise ConsoleError(f"asset transition {current_status}->{target_status} is not allowed")
+            if target_status in {"generating", "validating"} and str(row["operation_id"]) != operation_id:
+                connection.rollback()
+                raise ConsoleConflict("asset transition operation does not match the retained generation operation")
+            revision = int(row["revision"]) + 1
+            cursor = self._append_asset_event(
+                connection,
+                asset_id=asset_id,
+                logical_asset_id=str(row["logical_asset_id"]),
+                project_id=str(row["project_id"]),
+                action=action,
+                from_status=current_status,
+                to_status=target_status,
+                operation_id=operation_id,
+                generation_job_id=str(row["generation_job_id"]),
+                revision=revision,
+                observed_at_ms=now_ms,
+                measured_progress=measured_progress,
+                measured_progress_provenance=measured_progress_provenance,
+                error_class=error_class,
+                retry_eligible=retry_eligible,
+                trashed_at_ms=None if row["trashed_at_ms"] is None else int(row["trashed_at_ms"]),
+                trashed_by=row["trashed_by"],
+            )
+            updated_write = connection.execute(
+                """
+                UPDATE assets
+                   SET status = ?, measured_progress = ?, measured_progress_provenance = ?,
+                       error_class = ?, retry_eligible = ?, updated_at_ms = ?, revision = ?,
+                       last_operation_id = ?, last_event_sequence = ?, last_event_identity = ?
+                 WHERE asset_id = ? AND revision = ?
+                """,
+                (
+                    target_status, measured_progress, measured_progress_provenance,
+                    error_class, int(bool(retry_eligible)), now_ms, revision, operation_id,
+                    cursor["sequence"], cursor["identity"], asset_id, expected_revision,
+                ),
+            )
+            if updated_write.rowcount != 1:
+                connection.rollback()
+                raise ConsoleConflict("asset transition lost retained revision custody")
+            connection.commit()
+            updated = connection.execute("SELECT * FROM assets WHERE asset_id = ?", (asset_id,)).fetchone()
+        if updated is None:
+            raise ConsoleError("asset transition was written but could not be re-read")
+        return self._public_asset_row(updated)
+
+    def advance_asset_generation(
+        self,
+        asset_id: str,
+        *,
+        expected_revision: int,
+        operation_id: str,
+        status: str,
+        now_ms: int,
+        measured_progress: Any = None,
+        measured_progress_provenance: Any = None,
+    ) -> dict[str, Any]:
+        status = _asset_id(status, "asset status").casefold()
+        if status not in {"generating", "validating"}:
+            raise ConsoleError("asset generation transition must target generating or validating")
+        progress, provenance = _asset_progress(measured_progress, measured_progress_provenance)
+        with self._lock, closing(self._connect()) as connection:
+            row = connection.execute("SELECT measured_progress, measured_progress_provenance FROM assets WHERE asset_id = ?", (_asset_id(asset_id, "asset_id"),)).fetchone()
+        if row is None:
+            raise ConsoleError("asset was not found")
+        if progress is None and measured_progress is None:
+            progress = row["measured_progress"]
+            provenance = row["measured_progress_provenance"]
+        return self._asset_transition(
+            asset_id,
+            expected_revision=expected_revision,
+            operation_id=operation_id,
+            target_status=status,
+            action="generation",
+            now_ms=now_ms,
+            measured_progress=progress,
+            measured_progress_provenance=provenance,
+        )
+
+    def fail_asset_generation(
+        self,
+        asset_id: str,
+        *,
+        expected_revision: int,
+        operation_id: str,
+        error_class: str,
+        retry_eligible: bool,
+        now_ms: int,
+    ) -> dict[str, Any]:
+        if not isinstance(retry_eligible, bool):
+            raise ConsoleError("asset retry_eligible must be boolean")
+        return self._asset_transition(
+            asset_id,
+            expected_revision=expected_revision,
+            operation_id=operation_id,
+            target_status="failed",
+            action="failure",
+            now_ms=now_ms,
+            error_class=_asset_error_class(error_class),
+            retry_eligible=retry_eligible,
+        )
+
+    def cancel_asset_generation(
+        self,
+        asset_id: str,
+        *,
+        expected_revision: int,
+        operation_id: str,
+        now_ms: int,
+    ) -> dict[str, Any]:
+        return self._asset_transition(
+            asset_id,
+            expected_revision=expected_revision,
+            operation_id=operation_id,
+            target_status="cancelled",
+            action="cancel",
+            now_ms=now_ms,
+            allow_cancel=True,
+        )
+
+    def admit_asset_file(
+        self,
+        asset_id: str,
+        *,
+        expected_revision: int,
+        operation_id: str,
+        locator: str,
+        digest: str,
+        provenance: dict[str, Any],
+        now_ms: int,
+        allowed_root: Path,
+    ) -> dict[str, Any]:
+        asset_id = _asset_id(asset_id, "asset_id")
+        expected_revision = self._asset_expected_revision(expected_revision)
+        operation_id = _asset_id(operation_id, "operation_id")
+        locator = _safe_metadata_text(locator, "asset locator", maximum=4096)
+        admitted_provenance = _asset_provenance(provenance, "asset admission provenance")
+        if "admission" not in admitted_provenance:
+            raise ConsoleError("asset admission provenance requires an admission receipt")
+        digest = _safe_metadata_text(digest, "asset digest", maximum=64).casefold()
+        if not re.fullmatch(r"[0-9a-f]{64}", digest):
+            raise ConsoleError("asset digest must be a SHA-256 hex digest")
+        try:
+            metadata = _media_metadata(locator, digest, allowed_root=allowed_root)
+        except (ConsoleError, OSError) as exc:
+            raise ConsoleError("asset file admission failed closed") from exc
+        now_ms = _asset_time(now_ms, "asset updated_at_ms")
+        with self._lock, closing(self._connect()) as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute("SELECT * FROM assets WHERE asset_id = ?", (asset_id,)).fetchone()
+            if row is None:
+                connection.rollback()
+                raise ConsoleError("asset was not found")
+            if (
+                str(row["last_operation_id"] or "") == operation_id
+                and str(row["status"] or "") == "ready"
+            ):
+                if str(row["digest"] or "") != metadata["digest"] or str(row["locator"] or "") != metadata["path"]:
+                    connection.rollback()
+                    raise ConsoleConflict("asset ready operation conflicts with retained file binding")
+                connection.commit()
+                return self._public_asset_row(row, allowed_root=allowed_root)
+            if int(row["revision"]) != expected_revision:
+                connection.rollback()
+                raise ConsoleConflict("asset changed; reload before admitting its file")
+            if str(row["operation_id"]) != operation_id or str(row["status"] or "") != "validating":
+                connection.rollback()
+                raise ConsoleError("asset file admission requires the retained validating operation")
+            revision = int(row["revision"]) + 1
+            cursor = self._append_asset_event(
+                connection,
+                asset_id=asset_id,
+                logical_asset_id=str(row["logical_asset_id"]),
+                project_id=str(row["project_id"]),
+                action="admit",
+                from_status="validating",
+                to_status="ready",
+                operation_id=operation_id,
+                generation_job_id=str(row["generation_job_id"]),
+                revision=revision,
+                observed_at_ms=now_ms,
+                measured_progress=None if row["measured_progress"] is None else float(row["measured_progress"]),
+                measured_progress_provenance=row["measured_progress_provenance"],
+                content_digest=metadata["digest"],
+                content_media_type=metadata["media_type"],
+            )
+            updated_write = connection.execute(
+                """
+                UPDATE assets
+                   SET status = 'ready', provenance_json = ?, locator = ?, media_type = ?,
+                       size_bytes = ?, digest = ?, error_class = NULL, retry_eligible = 0,
+                       updated_at_ms = ?, revision = ?, last_operation_id = ?,
+                       last_event_sequence = ?, last_event_identity = ?
+                 WHERE asset_id = ? AND revision = ?
+                """,
+                (
+                    _asset_json_bytes(admitted_provenance, "asset admission provenance"), metadata["path"],
+                    metadata["media_type"], metadata["size_bytes"], metadata["digest"], now_ms,
+                    revision, operation_id, cursor["sequence"], cursor["identity"], asset_id, expected_revision,
+                ),
+            )
+            if updated_write.rowcount != 1:
+                connection.rollback()
+                raise ConsoleConflict("asset ready admission lost retained revision custody")
+            connection.commit()
+            updated = connection.execute("SELECT * FROM assets WHERE asset_id = ?", (asset_id,)).fetchone()
+        if updated is None:
+            raise ConsoleError("asset ready admission was written but could not be re-read")
+        return self._public_asset_row(updated, allowed_root=allowed_root)
+
+    def retry_asset_generation(
+        self,
+        asset_id: str,
+        *,
+        expected_revision: int,
+        operation_id: str,
+        generation_job_id: str,
+        now_ms: int,
+    ) -> dict[str, Any]:
+        asset_id = _asset_id(asset_id, "asset_id")
+        expected_revision = self._asset_expected_revision(expected_revision)
+        operation_id = _asset_id(operation_id, "operation_id")
+        generation_job_id = _asset_id(generation_job_id, "generation_job_id")
+        now_ms = _asset_time(now_ms, "asset updated_at_ms")
+        with self._lock, closing(self._connect()) as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute("SELECT * FROM assets WHERE asset_id = ?", (asset_id,)).fetchone()
+            if row is None:
+                connection.rollback()
+                raise ConsoleError("asset was not found")
+            if str(row["last_operation_id"] or "") == operation_id and str(row["status"] or "") == "queued":
+                if str(row["generation_job_id"]) != generation_job_id:
+                    connection.rollback()
+                    raise ConsoleConflict("asset retry operation conflicts with retained generation job")
+                connection.commit()
+                return self._public_asset_row(row)
+            if int(row["revision"]) != expected_revision:
+                connection.rollback()
+                raise ConsoleConflict("asset changed; reload before retrying generation")
+            if str(row["status"] or "") != "failed" or not bool(row["retry_eligible"]):
+                connection.rollback()
+                raise ConsoleError("asset retry is unavailable for this retained failure")
+            if operation_id == str(row["operation_id"]):
+                connection.rollback()
+                raise ConsoleError("asset retry requires a new operation_id")
+            revision = int(row["revision"]) + 1
+            cursor = self._append_asset_event(
+                connection,
+                asset_id=asset_id,
+                logical_asset_id=str(row["logical_asset_id"]),
+                project_id=str(row["project_id"]),
+                action="retry",
+                from_status="failed",
+                to_status="queued",
+                operation_id=operation_id,
+                generation_job_id=generation_job_id,
+                revision=revision,
+                observed_at_ms=now_ms,
+            )
+            updated_write = connection.execute(
+                """
+                UPDATE assets
+                   SET status = 'queued', generation_job_id = ?, operation_id = ?,
+                       locator = NULL, media_type = NULL, size_bytes = NULL, digest = NULL,
+                       measured_progress = NULL, measured_progress_provenance = NULL,
+                       error_class = NULL, retry_eligible = 0, updated_at_ms = ?, revision = ?,
+                       last_operation_id = ?, last_event_sequence = ?, last_event_identity = ?
+                 WHERE asset_id = ? AND revision = ?
+                """,
+                (
+                    generation_job_id, operation_id, now_ms, revision, operation_id,
+                    cursor["sequence"], cursor["identity"], asset_id, expected_revision,
+                ),
+            )
+            if updated_write.rowcount != 1:
+                connection.rollback()
+                raise ConsoleConflict("asset retry lost retained revision custody")
+            connection.commit()
+            updated = connection.execute("SELECT * FROM assets WHERE asset_id = ?", (asset_id,)).fetchone()
+        if updated is None:
+            raise ConsoleError("asset retry was written but could not be re-read")
+        return self._public_asset_row(updated)
+
+    def trash_asset(
+        self,
+        asset_id: str,
+        *,
+        expected_revision: int,
+        trashed_by: str,
+        operation_id: str,
+        now_ms: int,
+    ) -> dict[str, Any]:
+        return self._trash_restore_asset(
+            asset_id,
+            expected_revision=expected_revision,
+            actor=trashed_by,
+            operation_id=operation_id,
+            now_ms=now_ms,
+            trash=True,
+        )
+
+    def restore_asset(
+        self,
+        asset_id: str,
+        *,
+        expected_revision: int,
+        restored_by: str,
+        operation_id: str,
+        now_ms: int,
+    ) -> dict[str, Any]:
+        return self._trash_restore_asset(
+            asset_id,
+            expected_revision=expected_revision,
+            actor=restored_by,
+            operation_id=operation_id,
+            now_ms=now_ms,
+            trash=False,
+        )
+
+    def _trash_restore_asset(
+        self,
+        asset_id: str,
+        *,
+        expected_revision: int,
+        actor: str,
+        operation_id: str,
+        now_ms: int,
+        trash: bool,
+    ) -> dict[str, Any]:
+        asset_id = _asset_id(asset_id, "asset_id")
+        expected_revision = self._asset_expected_revision(expected_revision)
+        actor = _asset_id(actor, "asset actor")
+        operation_id = _asset_id(operation_id, "asset operation_id")
+        now_ms = _asset_time(now_ms, "asset updated_at_ms")
+        with self._lock, closing(self._connect()) as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute("SELECT * FROM assets WHERE asset_id = ?", (asset_id,)).fetchone()
+            if row is None:
+                connection.rollback()
+                raise ConsoleError("asset was not found")
+            is_trashed = row["trashed_at_ms"] is not None
+            if str(row["last_operation_id"] or "") == operation_id and is_trashed == trash:
+                connection.commit()
+                return self._public_asset_row(row)
+            if int(row["revision"]) != expected_revision:
+                connection.rollback()
+                raise ConsoleConflict("asset changed; reload before changing trash state")
+            if is_trashed == trash:
+                connection.commit()
+                return self._public_asset_row(row)
+            revision = int(row["revision"]) + 1
+            trashed_at_ms = now_ms if trash else None
+            trashed_by = actor if trash else None
+            cursor = self._append_asset_event(
+                connection,
+                asset_id=asset_id,
+                logical_asset_id=str(row["logical_asset_id"]),
+                project_id=str(row["project_id"]),
+                action="trash" if trash else "restore",
+                from_status=str(row["status"]),
+                to_status=str(row["status"]),
+                operation_id=operation_id,
+                generation_job_id=str(row["generation_job_id"]),
+                revision=revision,
+                observed_at_ms=now_ms,
+                measured_progress=None if row["measured_progress"] is None else float(row["measured_progress"]),
+                measured_progress_provenance=row["measured_progress_provenance"],
+                error_class=row["error_class"],
+                retry_eligible=bool(row["retry_eligible"]),
+                trashed_at_ms=trashed_at_ms,
+                trashed_by=trashed_by,
+            )
+            updated_write = connection.execute(
+                """
+                UPDATE assets
+                   SET trashed_at_ms = ?, trashed_by = ?, updated_at_ms = ?, revision = ?,
+                       last_operation_id = ?, last_event_sequence = ?, last_event_identity = ?
+                 WHERE asset_id = ? AND revision = ?
+                """,
+                (
+                    trashed_at_ms, trashed_by, now_ms, revision, operation_id,
+                    cursor["sequence"], cursor["identity"], asset_id, expected_revision,
+                ),
+            )
+            if updated_write.rowcount != 1:
+                connection.rollback()
+                raise ConsoleConflict("asset trash mutation lost retained revision custody")
+            connection.commit()
+            updated = connection.execute("SELECT * FROM assets WHERE asset_id = ?", (asset_id,)).fetchone()
+        if updated is None:
+            raise ConsoleError("asset trash mutation was written but could not be re-read")
+        return self._public_asset_row(updated)
+
+    def purge_assets(self, *, project_id: str | None = None) -> dict[str, Any]:
+        if project_id not in (None, ""):
+            _asset_id(project_id, "project_id")
+        raise ConsoleError(f"asset purge is unavailable; retention_policy={ASSET_RETENTION_POLICY}")
+
     def _proof_event_receipts(self) -> dict[str, dict[str, Any]]:
         with self._lock, closing(self._connect()) as connection:
             rows = connection.execute(
@@ -4363,8 +5446,8 @@ class ConsoleStore:
             counts = {
                 table: int(connection.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0])
                 for table in (
-                    "token_samples", "eta_forecasts", "task_progress_state", "task_progress_receipts", "task_progress_plans",
-                    "task_progress_pulse_files", "proof_media", "proof_event_receipts", "ctrl_overrides",
+                "token_samples", "eta_forecasts", "task_progress_state", "task_progress_receipts", "task_progress_plans",
+                    "task_progress_pulse_files", "proof_media", "assets", "proof_event_receipts", "ctrl_overrides",
                     "diagnostic_samples", "health_incidents", "health_requests",
                 )
             }
@@ -5439,6 +6522,28 @@ class App:
         if duplicates != 1:
             raise ConsoleError("Project view canonical saved project name is ambiguous")
         return frozenset({project_id, name})
+
+    def _asset_project_scope(self, project_id: Any) -> Path:
+        """Bind an asset request to exactly one saved host project and root."""
+        project_id = _asset_id(project_id, "project_id")
+        database = state_database(self.codex_home)
+        with closing(_readonly_connection(database)) as connection:
+            projects = connection.execute(
+                "SELECT id, name FROM projects WHERE id = ?",
+                (project_id,),
+            ).fetchall()
+            roots = connection.execute(
+                "SELECT path FROM project_roots WHERE project_id = ? ORDER BY position",
+                (project_id,),
+            ).fetchall()
+        if len(projects) != 1 or not str(projects[0]["name"] or "").strip():
+            raise ConsoleError("PROJECT_SCOPE_UNAVAILABLE")
+        if len(roots) != 1:
+            raise ConsoleError("PROJECT_ROOT_AMBIGUOUS")
+        raw_root = roots[0]["path"]
+        if not isinstance(raw_root, str) or not self._project_path_is_absolute(raw_root):
+            raise ConsoleError("PROJECT_ROOT_UNAVAILABLE")
+        return Path(raw_root)
 
     @staticmethod
     def _host_project_text(value: Any, maximum: int) -> str | None:
@@ -10178,6 +11283,231 @@ class App:
             self._store_generation += 1
         return result
 
+    def _asset_response(self, asset: dict[str, Any], *, action: str, status: str = "accepted") -> dict[str, Any]:
+        return {
+            "ok": True,
+            "asset": asset,
+            "mutation": {
+                "accepted": True,
+                "action": action,
+                "status": status,
+                "event_cursor": asset.get("event_cursor"),
+                "retention_policy": ASSET_RETENTION_POLICY,
+                "claim_limit": "The mutation is one server-owned local receipt; no provider call, model call, or file URL is fabricated.",
+            },
+        }
+
+    def assets_projection(self, *, project_id: str | None = None, projection: str = "active") -> dict[str, Any]:
+        if project_id not in (None, ""):
+            self._asset_project_scope(project_id)
+            project_id = _asset_id(project_id, "project_id")
+        if projection not in {"active", "trash"}:
+            raise ConsoleError("asset projection must be active or trash")
+        try:
+            items = self.store.asset_list(
+                project_id=project_id,
+                projection=projection,
+                allowed_root=self.codex_home / PROOF_MEDIA_ROOT,
+            )
+            events = self.store.asset_event_feed(project_id=project_id, after_sequence=0)
+            cursor = self.store.asset_event_cursor()
+        except (AttributeError, ConsoleError, OSError, sqlite3.Error, TypeError, ValueError) as error:
+            if project_id not in (None, "") and str(error) in {
+                "PROJECT_SCOPE_UNAVAILABLE", "PROJECT_ROOT_AMBIGUOUS", "PROJECT_ROOT_UNAVAILABLE",
+            }:
+                raise
+            return {
+                "ok": True,
+                "status": "unavailable",
+                "project_id": project_id,
+                "projection": projection,
+                "items": [],
+                "event_cursor": {"sequence": 0, "identity": None},
+                "retention_policy": ASSET_RETENTION_POLICY,
+                "reason": "Asset store or event ledger is unavailable; no asset presence is inferred.",
+            }
+        return {
+            "ok": True,
+            "status": "available",
+            "project_id": project_id,
+            "projection": projection,
+            "items": items,
+            "event_cursor": cursor,
+            "event_count": len(events.get("items") or []),
+            "retention_policy": ASSET_RETENTION_POLICY,
+            "claim_limit": "The default projection excludes soft-trashed assets; the explicit trash projection includes them. Similar files remain distinct assets unless an explicit lineage binds them.",
+        }
+
+    def asset_detail(self, asset_id: str, *, project_id: str | None = None) -> dict[str, Any]:
+        allowed_root = self.codex_home / PROOF_MEDIA_ROOT
+        if project_id not in (None, ""):
+            self._asset_project_scope(project_id)
+            project_id = _asset_id(project_id, "project_id")
+        item = self.store.asset_item(asset_id, allowed_root=allowed_root)
+        if project_id is not None and item.get("project_id") != project_id:
+            raise ConsoleError("asset is not bound to the requested project")
+        return {"ok": True, "status": "available", "asset": item, "retention_policy": ASSET_RETENTION_POLICY}
+
+    def asset_event_projection(
+        self,
+        *,
+        project_id: str | None = None,
+        after_sequence: int = 0,
+        limit: int = 64,
+    ) -> dict[str, Any]:
+        if project_id not in (None, ""):
+            self._asset_project_scope(project_id)
+            project_id = _asset_id(project_id, "project_id")
+        try:
+            return {"ok": True, **self.store.asset_event_feed(
+                project_id=project_id, after_sequence=after_sequence, limit=limit,
+            )}
+        except (AttributeError, ConsoleError, OSError, sqlite3.Error, TypeError, ValueError) as error:
+            if project_id not in (None, "") and str(error) in {
+                "PROJECT_SCOPE_UNAVAILABLE", "PROJECT_ROOT_AMBIGUOUS", "PROJECT_ROOT_UNAVAILABLE",
+            }:
+                raise
+            return {
+                "ok": True,
+                "status": "unavailable",
+                "project_id": project_id,
+                "after_sequence": after_sequence,
+                "cursor": {"sequence": 0, "identity": None},
+                "items": [],
+                "retention_policy": ASSET_RETENTION_POLICY,
+                "claim_limit": "Asset transition events are unavailable; no transition is inferred.",
+            }
+
+    def accept_asset_generation(self, payload: dict[str, Any]) -> dict[str, Any]:
+        self._asset_project_scope(payload.get("project_id"))
+        asset = self.store.reserve_asset_generation(payload, now_ms=int(time.time() * 1000))
+        asset = self.store.asset_item(asset["asset_id"], allowed_root=self.codex_home / PROOF_MEDIA_ROOT)
+        return self._asset_response(asset, action="generation_reserve", status="queued")
+
+    def advance_asset_generation(self, payload: dict[str, Any]) -> dict[str, Any]:
+        self._asset_project_scope(payload.get("project_id"))
+        asset_id = _asset_id(payload.get("asset_id"), "asset_id")
+        current = self.store.asset_item(asset_id, allowed_root=self.codex_home / PROOF_MEDIA_ROOT)
+        if current["project_id"] != _asset_id(payload.get("project_id"), "project_id"):
+            raise ConsoleError("asset is not bound to the requested project")
+        asset = self.store.advance_asset_generation(
+            asset_id,
+            expected_revision=payload.get("expected_revision"),
+            operation_id=payload.get("operation_id"),
+            status=payload.get("status"),
+            measured_progress=payload.get("measured_progress"),
+            measured_progress_provenance=payload.get("measured_progress_provenance"),
+            now_ms=int(time.time() * 1000),
+        )
+        return self._asset_response(asset, action="generation_transition", status=asset["presentation"]["status"])
+
+    def fail_asset_generation(self, payload: dict[str, Any]) -> dict[str, Any]:
+        self._asset_project_scope(payload.get("project_id"))
+        asset_id = _asset_id(payload.get("asset_id"), "asset_id")
+        current = self.store.asset_item(asset_id)
+        if current["project_id"] != _asset_id(payload.get("project_id"), "project_id"):
+            raise ConsoleError("asset is not bound to the requested project")
+        asset = self.store.fail_asset_generation(
+            asset_id,
+            expected_revision=payload.get("expected_revision"),
+            operation_id=payload.get("operation_id"),
+            error_class=payload.get("error_class"),
+            retry_eligible=payload.get("retry_eligible"),
+            now_ms=int(time.time() * 1000),
+        )
+        return self._asset_response(asset, action="generation_failure", status="failed")
+
+    def cancel_asset_generation(self, payload: dict[str, Any]) -> dict[str, Any]:
+        self._asset_project_scope(payload.get("project_id"))
+        asset_id = _asset_id(payload.get("asset_id"), "asset_id")
+        current = self.store.asset_item(asset_id)
+        if current["project_id"] != _asset_id(payload.get("project_id"), "project_id"):
+            raise ConsoleError("asset is not bound to the requested project")
+        asset = self.store.cancel_asset_generation(
+            asset_id,
+            expected_revision=payload.get("expected_revision"),
+            operation_id=payload.get("operation_id"),
+            now_ms=int(time.time() * 1000),
+        )
+        return self._asset_response(asset, action="generation_cancel", status="cancelled")
+
+    def admit_asset_file(self, payload: dict[str, Any]) -> dict[str, Any]:
+        self._asset_project_scope(payload.get("project_id"))
+        asset_id = _asset_id(payload.get("asset_id"), "asset_id")
+        current = self.store.asset_item(asset_id)
+        if current["project_id"] != _asset_id(payload.get("project_id"), "project_id"):
+            raise ConsoleError("asset is not bound to the requested project")
+        asset = self.store.admit_asset_file(
+            asset_id,
+            expected_revision=payload.get("expected_revision"),
+            operation_id=payload.get("operation_id"),
+            locator=payload.get("locator"),
+            digest=payload.get("digest"),
+            provenance=payload.get("provenance"),
+            now_ms=int(time.time() * 1000),
+            allowed_root=self.codex_home / PROOF_MEDIA_ROOT,
+        )
+        return self._asset_response(asset, action="generation_ready", status="ready")
+
+    def retry_asset_generation(self, payload: dict[str, Any]) -> dict[str, Any]:
+        self._asset_project_scope(payload.get("project_id"))
+        asset_id = _asset_id(payload.get("asset_id"), "asset_id")
+        current = self.store.asset_item(asset_id)
+        if current["project_id"] != _asset_id(payload.get("project_id"), "project_id"):
+            raise ConsoleError("asset is not bound to the requested project")
+        asset = self.store.retry_asset_generation(
+            asset_id,
+            expected_revision=payload.get("expected_revision"),
+            operation_id=payload.get("operation_id"),
+            generation_job_id=payload.get("generation_job_id"),
+            now_ms=int(time.time() * 1000),
+        )
+        return self._asset_response(asset, action="generation_retry", status="queued")
+
+    def trash_asset(self, payload: dict[str, Any]) -> dict[str, Any]:
+        self._asset_project_scope(payload.get("project_id"))
+        asset_id = _asset_id(payload.get("asset_id"), "asset_id")
+        current = self.store.asset_item(asset_id)
+        if current["project_id"] != _asset_id(payload.get("project_id"), "project_id"):
+            raise ConsoleError("asset is not bound to the requested project")
+        actor = payload.get("trashed_by") or payload.get("actor") or "user"
+        asset = self.store.trash_asset(
+            asset_id,
+            expected_revision=payload.get("expected_revision"),
+            trashed_by=actor,
+            operation_id=payload.get("operation_id"),
+            now_ms=int(time.time() * 1000),
+        )
+        return self._asset_response(asset, action="trash", status="trashed")
+
+    def restore_asset(self, payload: dict[str, Any]) -> dict[str, Any]:
+        self._asset_project_scope(payload.get("project_id"))
+        asset_id = _asset_id(payload.get("asset_id"), "asset_id")
+        current = self.store.asset_item(asset_id)
+        if current["project_id"] != _asset_id(payload.get("project_id"), "project_id"):
+            raise ConsoleError("asset is not bound to the requested project")
+        actor = payload.get("restored_by") or payload.get("actor") or "user"
+        asset = self.store.restore_asset(
+            asset_id,
+            expected_revision=payload.get("expected_revision"),
+            restored_by=actor,
+            operation_id=payload.get("operation_id"),
+            now_ms=int(time.time() * 1000),
+        )
+        return self._asset_response(asset, action="restore", status="restored")
+
+    def asset_media_item(self, asset_id: str, digest: str) -> dict[str, Any]:
+        return self.store.asset_media_item(
+            asset_id,
+            digest,
+            allowed_root=self.codex_home / PROOF_MEDIA_ROOT,
+        )
+
+    def purge_assets(self, *, project_id: str | None = None) -> dict[str, Any]:
+        if project_id not in (None, ""):
+            self._asset_project_scope(project_id)
+        return self.store.purge_assets(project_id=project_id)
+
     def storage(self) -> dict[str, Any]:
         storage = self.store.storage_stats()
         proof = proof_storage_stats(self.codex_home)
@@ -11144,6 +12474,57 @@ class Handler(BaseHTTPRequestHandler):
                     ),
                 )
                 return
+            if path == "/api/assets":
+                if set(query) - {"project_id", "projection"}:
+                    self._error(HTTPStatus.BAD_REQUEST, "asset listing accepts only project_id and projection")
+                    return
+                self._json(
+                    HTTPStatus.OK,
+                    self.server.app.assets_projection(
+                        project_id=query.get("project_id"),
+                        projection=query.get("projection", "active"),
+                    ),
+                )
+                return
+            if path == "/api/assets/events":
+                if set(query) - {"project_id", "after_sequence", "limit"}:
+                    self._error(HTTPStatus.BAD_REQUEST, "asset events accepts only project_id, after_sequence, and limit")
+                    return
+                try:
+                    after_sequence = int(query.get("after_sequence", "0"))
+                    limit = int(query.get("limit", "64"))
+                except ValueError as exc:
+                    raise ConsoleError("asset event cursor and limit must be integers") from exc
+                self._json(
+                    HTTPStatus.OK,
+                    self.server.app.asset_event_projection(
+                        project_id=query.get("project_id"),
+                        after_sequence=after_sequence,
+                        limit=limit,
+                    ),
+                )
+                return
+            if path.startswith("/api/assets/") and path.endswith("/preview"):
+                if self.headers.get("Origin") and not self._same_origin():
+                    self._error(HTTPStatus.FORBIDDEN, "same-origin asset preview request required")
+                    return
+                asset_id = unquote(path[len("/api/assets/") : -len("/preview")]).strip("/")
+                item = self.server.app.asset_media_item(asset_id, query.get("digest", ""))
+                self._registered_media(item)
+                return
+            if path.startswith("/api/assets/"):
+                if set(query) - {"project_id"}:
+                    self._error(HTTPStatus.BAD_REQUEST, "asset detail accepts only project_id")
+                    return
+                asset_id = unquote(path[len("/api/assets/") :]).strip("/")
+                if not asset_id:
+                    self._error(HTTPStatus.NOT_FOUND, "asset not found")
+                    return
+                self._json(
+                    HTTPStatus.OK,
+                    self.server.app.asset_detail(asset_id, project_id=query.get("project_id")),
+                )
+                return
             if path.startswith("/api/proof-media/"):
                 if self.headers.get("Origin") and not self._same_origin():
                     self._error(HTTPStatus.FORBIDDEN, "same-origin proof media request required")
@@ -11309,6 +12690,95 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/api/role-manifests/commands":
                 with self.server.app.write_lock:
                     result = self.server.app.role_manifest_command(self._payload())
+                self._json(HTTPStatus.OK, result)
+                return
+            if path == "/api/assets/generation":
+                payload = self._payload()
+                required = {
+                    "project_id", "logical_asset_id", "generation_job_id", "operation_id",
+                    "idempotency_key", "request_summary", "presentation", "provenance",
+                }
+                allowed = required | {"asset_id", "parent_revision_id", "job_metadata"}
+                if not required <= set(payload) or not set(payload) <= allowed:
+                    raise ConsoleError(
+                        "asset generation acceptance requires the canonical project, identity, operation, request, presentation, and provenance fields"
+                    )
+                with self.server.app.write_lock:
+                    result = self.server.app.accept_asset_generation(payload)
+                self._json(HTTPStatus.OK, result)
+                return
+            if path == "/api/assets/generation/transition":
+                payload = self._payload()
+                required = {"project_id", "asset_id", "expected_revision", "operation_id", "status"}
+                allowed = required | {"measured_progress", "measured_progress_provenance"}
+                if not required <= set(payload) or not set(payload) <= allowed:
+                    raise ConsoleError("asset generation transition requires exact identity, revision, operation, and status fields")
+                with self.server.app.write_lock:
+                    result = self.server.app.advance_asset_generation(payload)
+                self._json(HTTPStatus.OK, result)
+                return
+            if path == "/api/assets/generation/fail":
+                payload = self._payload()
+                required = {"project_id", "asset_id", "expected_revision", "operation_id", "error_class", "retry_eligible"}
+                if set(payload) != required:
+                    raise ConsoleError("asset generation failure requires exact project, identity, revision, operation, error, and retry fields")
+                with self.server.app.write_lock:
+                    result = self.server.app.fail_asset_generation(payload)
+                self._json(HTTPStatus.OK, result)
+                return
+            if path == "/api/assets/generation/cancel":
+                payload = self._payload()
+                required = {"project_id", "asset_id", "expected_revision", "operation_id"}
+                if set(payload) != required:
+                    raise ConsoleError("asset generation cancellation requires exact project, identity, revision, and operation fields")
+                with self.server.app.write_lock:
+                    result = self.server.app.cancel_asset_generation(payload)
+                self._json(HTTPStatus.OK, result)
+                return
+            if path == "/api/assets/generation/admit":
+                payload = self._payload()
+                required = {"project_id", "asset_id", "expected_revision", "operation_id", "locator", "digest", "provenance"}
+                if set(payload) != required:
+                    raise ConsoleError("asset file admission requires exact project, identity, revision, operation, file digest, locator, and provenance fields")
+                with self.server.app.write_lock:
+                    result = self.server.app.admit_asset_file(payload)
+                self._json(HTTPStatus.OK, result)
+                return
+            if path == "/api/assets/generation/retry":
+                payload = self._payload()
+                required = {"project_id", "asset_id", "expected_revision", "operation_id", "generation_job_id"}
+                if set(payload) != required:
+                    raise ConsoleError("asset generation retry requires exact project, identity, revision, new operation, and new job fields")
+                with self.server.app.write_lock:
+                    result = self.server.app.retry_asset_generation(payload)
+                self._json(HTTPStatus.OK, result)
+                return
+            if path == "/api/assets/trash":
+                payload = self._payload()
+                required = {"project_id", "asset_id", "expected_revision", "operation_id"}
+                allowed = required | {"actor", "trashed_by"}
+                if not required <= set(payload) or not set(payload) <= allowed:
+                    raise ConsoleError("asset trash requires exact project, identity, revision, and operation fields")
+                with self.server.app.write_lock:
+                    result = self.server.app.trash_asset(payload)
+                self._json(HTTPStatus.OK, result)
+                return
+            if path == "/api/assets/restore":
+                payload = self._payload()
+                required = {"project_id", "asset_id", "expected_revision", "operation_id"}
+                allowed = required | {"actor", "restored_by"}
+                if not required <= set(payload) or not set(payload) <= allowed:
+                    raise ConsoleError("asset restore requires exact project, identity, revision, and operation fields")
+                with self.server.app.write_lock:
+                    result = self.server.app.restore_asset(payload)
+                self._json(HTTPStatus.OK, result)
+                return
+            if path == "/api/assets/purge":
+                payload = self._payload()
+                if set(payload) - {"project_id"}:
+                    raise ConsoleError("asset purge accepts only project_id")
+                with self.server.app.write_lock:
+                    result = self.server.app.purge_assets(project_id=payload.get("project_id"))
                 self._json(HTTPStatus.OK, result)
                 return
             if path == "/api/skills/inheritance":

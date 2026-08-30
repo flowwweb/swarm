@@ -409,6 +409,34 @@ class SwarmConsoleTests(unittest.TestCase):
             connection.execute("UPDATE threads SET agent_role = 'ctrl' WHERE id = 'root'")
             connection.commit()
 
+    def _asset_generation_payload(
+        self,
+        asset_id: str = "asset-dashboard-a",
+        *,
+        logical_asset_id: str = "logical-dashboard",
+        parent_revision_id: str | None = None,
+        operation_id: str = "generation-op-a",
+        generation_job_id: str = "generation-job-a",
+        idempotency_key: str = "generation-request-a",
+    ) -> dict[str, object]:
+        return {
+            "project_id": "project:alpha",
+            "asset_id": asset_id,
+            "logical_asset_id": logical_asset_id,
+            "parent_revision_id": parent_revision_id,
+            "generation_job_id": generation_job_id,
+            "operation_id": operation_id,
+            "idempotency_key": idempotency_key,
+            "request_summary": "Render dashboard mockup",
+            "presentation": {
+                "display_name": "Dashboard mockup",
+                "kind": "mockup",
+                "description": "A reviewable dashboard option.",
+            },
+            "job_metadata": {"mode": "draft", "option": "a"},
+            "provenance": {"source": "user-action", "receipt": "asset-request-a"},
+        }
+
     def _add_same_project_ctrl(self) -> None:
         now = 2_000_000_100_000
         with closing(sqlite3.connect(self.database)) as connection:
@@ -3117,6 +3145,197 @@ class SwarmConsoleTests(unittest.TestCase):
         self.assertEqual(second_cursor["sequence"], 2)
         self.assertNotEqual(second_cursor["identity"], first_cursor["identity"])
         self.assertEqual(store.proof_sequence(), second_cursor["sequence"])
+
+    def test_assets_generation_is_durable_typed_and_cursor_bound(self) -> None:
+        app = console.App(self.codex_home, self.config)
+        payload = self._asset_generation_payload()
+        reserved = app.accept_asset_generation(payload)
+        asset = reserved["asset"]
+        self.assertEqual(asset["presentation"]["status"], "queued")
+        self.assertEqual(asset["technical"]["revision"], 1)
+        self.assertEqual(asset["technical"]["created_at_ms"], asset["technical"]["updated_at_ms"])
+        self.assertEqual(asset["preview"]["state"], "NOT_READY")
+        self.assertIsNone(asset["preview"]["url"])
+        self.assertIsNone(asset["technical"]["storage"]["path"])
+        self.assertNotIn("locator", json.dumps(asset))
+        self.assertEqual(asset["event_cursor"]["sequence"], 1)
+
+        replay = app.accept_asset_generation(payload)
+        self.assertEqual(replay["asset"]["event_cursor"], asset["event_cursor"])
+        self.assertEqual(len(app.asset_event_projection(project_id="project:alpha")["items"]), 1)
+
+        generating = app.advance_asset_generation({
+            "project_id": "project:alpha", "asset_id": "asset-dashboard-a",
+            "expected_revision": 1, "operation_id": "generation-op-a", "status": "generating",
+        })["asset"]
+        self.assertEqual(generating["presentation"]["status"], "generating")
+        self.assertIsNone(generating["technical"]["measured_progress"])
+        generating_progress = app.advance_asset_generation({
+            "project_id": "project:alpha", "asset_id": "asset-dashboard-a",
+            "expected_revision": 2, "operation_id": "generation-op-a", "status": "generating",
+            "measured_progress": 0.2, "measured_progress_provenance": "runtime-receipt-progress-a",
+        })["asset"]
+        self.assertEqual(generating_progress["technical"]["revision"], 3)
+        self.assertEqual(generating_progress["technical"]["measured_progress"], 0.2)
+        validating = app.advance_asset_generation({
+            "project_id": "project:alpha", "asset_id": "asset-dashboard-a",
+            "expected_revision": 3, "operation_id": "generation-op-a", "status": "validating",
+            "measured_progress": 0.35, "measured_progress_provenance": "runtime-receipt-a",
+        })["asset"]
+        self.assertEqual(validating["technical"]["measured_progress"], 0.35)
+        self.assertEqual(validating["technical"]["measured_progress_provenance"], "runtime-receipt-a")
+
+        media_root = self.codex_home / console.PROOF_MEDIA_ROOT
+        media_root.mkdir(parents=True)
+        media_path = media_root / "dashboard-a.png"
+        media_path.write_bytes(b"\x89PNG\r\n\x1a\nasset-dashboard-a")
+        digest = hashlib.sha256(media_path.read_bytes()).hexdigest()
+        ready = app.admit_asset_file({
+            "project_id": "project:alpha", "asset_id": "asset-dashboard-a",
+            "expected_revision": 4, "operation_id": "generation-op-a", "locator": str(media_path),
+            "digest": digest,
+            "provenance": {"source": "runtime", "receipt": "file-receipt-a", "admission": "admit-a"},
+        })["asset"]
+        self.assertEqual(ready["presentation"]["status"], "ready")
+        self.assertEqual(ready["technical"]["digest"], digest)
+        self.assertEqual(ready["preview"]["state"], "AVAILABLE")
+        self.assertIn("/api/assets/asset-dashboard-a/preview?digest=", ready["preview"]["url"])
+        self.assertNotIn(str(media_path), json.dumps(ready))
+
+        events = app.asset_event_projection(project_id="project:alpha")
+        self.assertEqual(events["status"], "available")
+        self.assertEqual([item["to_status"] for item in events["items"]], ["queued", "generating", "generating", "validating", "ready"])
+        self.assertEqual(events["cursor"], ready["event_cursor"])
+        self.assertEqual(len({item["cursor"]["identity"] for item in events["items"]}), 5)
+
+        restarted = console.App(self.codex_home, self.config, state_path=app.store.path)
+        retained = restarted.asset_detail("asset-dashboard-a", project_id="project:alpha")["asset"]
+        self.assertEqual(retained["technical"]["revision"], 5)
+        self.assertEqual(retained["preview"]["state"], "AVAILABLE")
+        self.assertEqual(retained["event_cursor"], ready["event_cursor"])
+
+    def test_assets_keep_options_distinct_and_trash_is_reversible(self) -> None:
+        app = console.App(self.codex_home, self.config)
+        first = app.accept_asset_generation(self._asset_generation_payload())["asset"]
+        with self.assertRaisesRegex(console.ConsoleError, "requested logical asset"):
+            app.accept_asset_generation(self._asset_generation_payload(
+                "asset-dashboard-invalid-lineage", logical_asset_id="logical-other",
+                operation_id="generation-op-invalid-lineage", generation_job_id="generation-job-invalid-lineage",
+                idempotency_key="generation-request-invalid-lineage", parent_revision_id="asset-dashboard-a",
+            ))
+        second = app.accept_asset_generation(self._asset_generation_payload(
+            "asset-dashboard-b", operation_id="generation-op-b", generation_job_id="generation-job-b",
+            idempotency_key="generation-request-b", parent_revision_id="asset-dashboard-a",
+        ))["asset"]
+        self.assertNotEqual(first["asset_id"], second["asset_id"])
+        self.assertEqual(second["technical"]["logical_asset_id"], first["technical"]["logical_asset_id"])
+        self.assertEqual(second["technical"]["parent_revision_id"], first["asset_id"])
+        self.assertEqual(len(app.assets_projection(project_id="project:alpha")["items"]), 2)
+
+        trashed = app.trash_asset({
+            "project_id": "project:alpha", "asset_id": "asset-dashboard-a", "expected_revision": 1,
+            "operation_id": "trash-dashboard-a", "trashed_by": "user",
+        })["asset"]
+        self.assertTrue(trashed["trash"]["trashed"])
+        self.assertIsNotNone(trashed["trash"]["trashed_at"])
+        self.assertEqual(trashed["trash"]["trashed_by"], "user")
+        self.assertEqual(len(app.assets_projection(project_id="project:alpha")["items"]), 1)
+        self.assertEqual(len(app.assets_projection(project_id="project:alpha", projection="trash")["items"]), 1)
+        replay = app.trash_asset({
+            "project_id": "project:alpha", "asset_id": "asset-dashboard-a", "expected_revision": 1,
+            "operation_id": "trash-dashboard-a", "trashed_by": "user",
+        })["asset"]
+        self.assertEqual(replay["technical"]["revision"], trashed["technical"]["revision"])
+        restored = app.restore_asset({
+            "project_id": "project:alpha", "asset_id": "asset-dashboard-a", "expected_revision": 2,
+            "operation_id": "restore-dashboard-a", "restored_by": "user",
+        })["asset"]
+        self.assertFalse(restored["trash"]["trashed"])
+        self.assertEqual(len(app.assets_projection(project_id="project:alpha")["items"]), 2)
+        with self.assertRaisesRegex(console.ConsoleError, "manual/unconfigured"):
+            app.purge_assets(project_id="project:alpha")
+
+    def test_assets_fail_retry_cancel_and_reject_stale_generation_events(self) -> None:
+        app = console.App(self.codex_home, self.config)
+        reserved = app.accept_asset_generation(self._asset_generation_payload(
+            "asset-retry", logical_asset_id="logical-retry", operation_id="op-retry-1",
+            generation_job_id="job-retry-1", idempotency_key="request-retry",
+        ))["asset"]
+        generating = app.advance_asset_generation({
+            "project_id": "project:alpha", "asset_id": "asset-retry", "expected_revision": 1,
+            "operation_id": "op-retry-1", "status": "generating",
+        })["asset"]
+        failed = app.fail_asset_generation({
+            "project_id": "project:alpha", "asset_id": "asset-retry", "expected_revision": 2,
+            "operation_id": "op-retry-1", "error_class": "RUNTIME_UNAVAILABLE", "retry_eligible": True,
+        })["asset"]
+        self.assertEqual(failed["presentation"]["status"], "failed")
+        self.assertTrue(failed["technical"]["retry_eligible"])
+        retried = app.retry_asset_generation({
+            "project_id": "project:alpha", "asset_id": "asset-retry", "expected_revision": 3,
+            "operation_id": "op-retry-2", "generation_job_id": "job-retry-2",
+        })["asset"]
+        self.assertEqual(retried["presentation"]["status"], "queued")
+        self.assertEqual(retried["technical"]["operation_id"], "op-retry-2")
+        self.assertEqual(retried["technical"]["logical_asset_id"], reserved["technical"]["logical_asset_id"])
+        self.assertEqual(retried["technical"]["parent_revision_id"], reserved["technical"]["parent_revision_id"])
+        with self.assertRaises(console.ConsoleConflict):
+            app.advance_asset_generation({
+                "project_id": "project:alpha", "asset_id": "asset-retry", "expected_revision": 3,
+                "operation_id": "op-retry-1", "status": "generating",
+            })
+        cancelled = app.cancel_asset_generation({
+            "project_id": "project:alpha", "asset_id": "asset-retry", "expected_revision": 4,
+            "operation_id": "cancel-retry",
+        })["asset"]
+        self.assertEqual(cancelled["presentation"]["status"], "cancelled")
+        self.assertEqual(app.asset_event_projection(project_id="project:alpha")["items"][-1]["to_status"], "cancelled")
+
+    def test_assets_fail_closed_for_file_provenance_and_missing_files(self) -> None:
+        app = console.App(self.codex_home, self.config)
+        app.accept_asset_generation(self._asset_generation_payload(
+            "asset-file-guard", logical_asset_id="logical-file-guard", operation_id="op-file-guard",
+            generation_job_id="job-file-guard", idempotency_key="request-file-guard",
+        ))
+        app.advance_asset_generation({
+            "project_id": "project:alpha", "asset_id": "asset-file-guard", "expected_revision": 1,
+            "operation_id": "op-file-guard", "status": "generating",
+        })
+        app.advance_asset_generation({
+            "project_id": "project:alpha", "asset_id": "asset-file-guard", "expected_revision": 2,
+            "operation_id": "op-file-guard", "status": "validating",
+        })
+        outside = self.root / "outside.png"
+        outside.write_bytes(b"\x89PNG\r\n\x1a\noutside")
+        outside_digest = hashlib.sha256(outside.read_bytes()).hexdigest()
+        with self.assertRaisesRegex(console.ConsoleError, "file admission failed closed"):
+            app.admit_asset_file({
+                "project_id": "project:alpha", "asset_id": "asset-file-guard", "expected_revision": 3,
+                "operation_id": "op-file-guard", "locator": str(outside), "digest": outside_digest,
+                "provenance": {"source": "runtime", "receipt": "file-guard", "admission": "guard"},
+            })
+        with self.assertRaisesRegex(console.ConsoleError, "admission receipt"):
+            app.admit_asset_file({
+                "project_id": "project:alpha", "asset_id": "asset-file-guard", "expected_revision": 3,
+                "operation_id": "op-file-guard", "locator": str(outside), "digest": outside_digest,
+                "provenance": {"source": "runtime", "receipt": "file-guard"},
+            })
+        media_root = self.codex_home / console.PROOF_MEDIA_ROOT
+        media_root.mkdir(parents=True)
+        media_path = media_root / "file-guard.png"
+        media_path.write_bytes(b"\x89PNG\r\n\x1a\nfile-guard")
+        digest = hashlib.sha256(media_path.read_bytes()).hexdigest()
+        ready = app.admit_asset_file({
+            "project_id": "project:alpha", "asset_id": "asset-file-guard", "expected_revision": 3,
+            "operation_id": "op-file-guard", "locator": str(media_path), "digest": digest,
+            "provenance": {"source": "runtime", "receipt": "file-ready", "admission": "guard-ready"},
+        })["asset"]
+        self.assertEqual(ready["preview"]["state"], "AVAILABLE")
+        media_path.unlink()
+        missing = app.asset_detail("asset-file-guard", project_id="project:alpha")["asset"]
+        self.assertEqual(missing["preview"]["state"], "UNAVAILABLE")
+        self.assertIsNone(missing["preview"]["url"])
+        self.assertEqual(missing["technical"]["storage"]["state"], "UNAVAILABLE")
 
     def test_store_migration_normalizes_available_rows_but_preserves_withheld(self) -> None:
         media_path = self.root / "legacy.png"
