@@ -1,4 +1,4 @@
-const state = { token: "", overview: null, proof: [], proofCollections: new Map(), proofStatuses: new Map(), proofStatus: "idle", proofSequence: 0, usageHistory: null, usageWindowHours: 1, usageScopeKey: "", usageStatus: "idle", usageError: "", projectProgress: null, projectProgressProjectId: "", projectProgressStatus: "idle", projectProgressError: "", projectProgressFeed: null, projectProgressFeedProjectId: "", projectProgressFeedStatus: "idle", projectProgressFeedError: "", projectTab: "overview", projectUiMode: "screens", projectUiGroupId: "", runLogs: new Map(), runLogRequestGenerations: new Map(), runLogSurfaceStates: new Map(), runLogAgent: null, diagnostics: null, health: null, storage: null, config: null, configStatus: "idle", configError: "", chatRelaySaving: false, settingsDraft: new Map(), settingsSaving: false, settingsSaveError: "", settingsSaveMessage: "", configEditorTrigger: null, ctrlSettings: null, auto: null, autoBindingKey: "", autoStatus: "idle", autoError: "", autoSaving: false, skills: null, skillsError: "", roleManifests: null, roleManifestStatus: "unavailable", roleManifestError: "", roleManifestMessage: "", roleManifestSaving: false, roleManifestRetry: null, roleEditorMode: "", roleEditorTrigger: null, roleSearch: "", roleTypes: new Set(["builtin", "custom"]), roleSearchFields: new Set(["profession", "specialization", "alias", "skills", "purpose"]), selectedRoleId: "", assetView: "grid", selectedAssetIdentity: "", assetTrigger: null, onboardingStep: 0, onboardingShown: false, onboardingTrigger: null, onboardingConfigPending: new Map(), onboardingConfigFailures: new Map(), notifications: null, notificationBindingKey: "", notificationStatus: "idle", notificationError: "", notificationAckFlight: null, notificationRequestGenerations: new Map(), notificationPresentedIds: new Set(), notificationToast: null, notificationToastTimer: null, notificationTrigger: null, connectionStatus: "reconnecting", view: "overview", projectId: "all", ctrlId: "", scopeNotice: "", scopeNoticeVisible: false, settingsCtrlId: "", settingsScopeType: "", settingsScopeId: "", evidenceImages: [], evidenceIndex: 0, evidenceTrigger: null };
+const state = { token: "", overview: null, proof: [], proofCollections: new Map(), proofStatuses: new Map(), proofStatus: "idle", proofSequence: 0, usageHistory: null, usageWindowHours: 1, usageScopeKey: "", usageStatus: "idle", usageError: "", projectProgress: null, projectProgressProjectId: "", projectProgressStatus: "idle", projectProgressError: "", projectProgressFeed: null, projectProgressFeedProjectId: "", projectProgressFeedStatus: "idle", projectProgressFeedError: "", projectTab: "overview", projectUiMode: "screens", projectUiGroupId: "", runLogs: new Map(), runLogRequestGenerations: new Map(), runLogSurfaceStates: new Map(), runLogAgent: null, diagnostics: null, health: null, storage: null, config: null, configStatus: "idle", configError: "", chatRelaySaving: false, settingsDraft: new Map(), settingsSaving: false, settingsSaveError: "", settingsSaveMessage: "", configEditorTrigger: null, ctrlSettings: null, auto: null, autoBindingKey: "", autoStatus: "idle", autoError: "", autoSaving: false, skills: null, skillsError: "", roleManifests: null, roleManifestStatus: "unavailable", roleManifestError: "", roleManifestMessage: "", roleManifestSaving: false, roleManifestRetry: null, roleEditorMode: "", roleEditorTrigger: null, roleSearch: "", roleTypes: new Set(["builtin", "custom"]), roleSearchFields: new Set(["profession", "specialization", "alias", "skills", "purpose"]), selectedRoleId: "", assets: null, assetBindingKey: "", assetStatus: "idle", assetError: "", assetProjection: "active", assetView: "grid", assetRequestGeneration: 0, assetEventCursors: new Map(), assetMutationPending: null, assetConfirm: null, assetUndo: null, selectedAssetIdentity: "", assetTrigger: null, onboardingStep: 0, onboardingShown: false, onboardingTrigger: null, onboardingConfigPending: new Map(), onboardingConfigFailures: new Map(), notifications: null, notificationBindingKey: "", notificationStatus: "idle", notificationError: "", notificationAckFlight: null, notificationRequestGenerations: new Map(), notificationPresentedIds: new Set(), notificationToast: null, notificationToastTimer: null, notificationTrigger: null, connectionStatus: "reconnecting", view: "overview", projectId: "all", ctrlId: "", scopeNotice: "", scopeNoticeVisible: false, settingsCtrlId: "", settingsScopeType: "", settingsScopeId: "", evidenceImages: [], evidenceIndex: 0, evidenceTrigger: null };
 let configMutationTail = Promise.resolve();
 let configAuthorityGeneration = 0;
 let lastAppliedHistoryRoute = "";
@@ -2289,50 +2289,141 @@ function renderReview() {
 }
 
 function assetItems() {
-  return scopedProofItems().filter((item) => String(item.media_type || "").startsWith("image/"));
+  return state.assets && state.assetBindingKey === assetBindingKey() && Array.isArray(state.assets.items) ? state.assets.items : [];
 }
 
 function openProofIdentity(identity, trigger) {
-  const images = assetItems();
+  const images = scopedProofItems().filter((item) => String(item.media_type || "").startsWith("image/"));
   const index = images.findIndex((item) => proofIdentity(item) === identity);
   if (index < 0) return;
   state.evidenceImages = images;
   openEvidenceLightbox(index, trigger);
 }
 
+function assetScopeProjectId() {
+  return state.projectId === "all" ? "" : String(state.projectId || "");
+}
+
+function assetBindingKey(projection = state.assetProjection, projectId = assetScopeProjectId()) {
+  return String(projectId || "all") + "|" + (projection === "trash" ? "trash" : "active");
+}
+
+function assetIdentity(item) {
+  return String(item?.asset_id || "").trim();
+}
+
+function assetPresentation(item) {
+  return item?.presentation && typeof item.presentation === "object" ? item.presentation : {};
+}
+
+function assetTechnical(item) {
+  return item?.technical && typeof item.technical === "object" ? item.technical : {};
+}
+
+function assetProjectionValue(result, binding, projectId, projection) {
+  if (!result || result.ok !== true || result.status !== "available" || result.projection !== projection || !Array.isArray(result.items)) return null;
+  const responseProject = String(result.project_id || "");
+  if (responseProject !== projectId) return null;
+  const seen = new Set();
+  for (const item of result.items) {
+    const identity = assetIdentity(item);
+    if (!identity || seen.has(identity) || (projectId && String(item?.project_id || "") !== projectId)) return null;
+    seen.add(identity);
+  }
+  return { ...result, items: result.items.slice(), binding };
+}
+
+function assetEventsValue(result, projectId) {
+  if (!result || result.ok !== true || result.status !== "available" || !Array.isArray(result.items)) return null;
+  if (String(result.project_id || "") !== projectId) return null;
+  const sequence = Number(result.cursor?.sequence);
+  return Number.isSafeInteger(sequence) && sequence >= 0 ? sequence : null;
+}
+
+async function refreshAssets() {
+  const projectId = assetScopeProjectId();
+  const projection = state.assetProjection === "trash" ? "trash" : "active";
+  const binding = assetBindingKey(projection, projectId);
+  const generation = ++state.assetRequestGeneration;
+  const hasLastGood = Boolean(state.assets && state.assetBindingKey === binding);
+  state.assetStatus = hasLastGood ? "refreshing" : "loading";
+  state.assetError = "";
+  const inventoryParams = new URLSearchParams({ projection });
+  const eventParams = new URLSearchParams({ after_sequence: String(state.assetEventCursors.get(binding) || 0), limit: "64" });
+  if (projectId) {
+    inventoryParams.set("project_id", projectId);
+    eventParams.set("project_id", projectId);
+  }
+  try {
+    const [inventoryResult, eventResult] = await Promise.all([
+      api("/api/assets?" + inventoryParams.toString()),
+      api("/api/assets/events?" + eventParams.toString()),
+    ]);
+    if (generation !== state.assetRequestGeneration || binding !== assetBindingKey()) return false;
+    const inventory = assetProjectionValue(inventoryResult, binding, projectId, projection);
+    const eventSequence = assetEventsValue(eventResult, projectId);
+    if (!inventory || eventSequence === null) throw new Error("Asset inventory response was invalid.");
+    state.assets = inventory;
+    state.assetBindingKey = binding;
+    state.assetEventCursors.set(binding, eventSequence);
+    state.assetStatus = "current";
+    state.assetError = "";
+    return true;
+  } catch (error) {
+    if (generation !== state.assetRequestGeneration || binding !== assetBindingKey()) return false;
+    if (!hasLastGood) state.assets = null;
+    state.assetBindingKey = binding;
+    state.assetStatus = hasLastGood ? "stale" : "unavailable";
+    state.assetError = error.message || "Assets could not be loaded.";
+    return false;
+  }
+}
+
 function assetImageMarkup(item, detail = false) {
   const stage = assetStage(item);
   if (stage) return '<span class="asset-image-frame asset-generation-placeholder' + (detail ? ' is-detail' : '') + '" role="status" aria-label="' + escapeHTML(stage.label) + '"><span class="asset-generation-shimmer" aria-hidden="true"></span><strong>' + escapeHTML(stage.label) + '</strong>' + (stage.measured ? '<small>' + escapeHTML(stage.percent + "%") + '</small>' : '') + '</span>';
-  return '<span class="asset-image-frame' + (detail ? ' is-detail' : '') + '"><img data-asset-image loading="lazy" decoding="async" src="' + proofMediaURL(item) + '" alt=""><span class="asset-image-failed"' + (detail ? ' role="status"' : '') + ' hidden>Preview unavailable</span></span>';
+  const preview = item?.preview && typeof item.preview === "object" ? item.preview : {};
+  const url = preview.state === "AVAILABLE" && String(preview.url || "").startsWith("/") ? String(preview.url) : "";
+  if (!url) return '<span class="asset-image-frame asset-image-unavailable' + (detail ? ' is-detail' : '') + '" role="status">Preview unavailable</span>';
+  return '<span class="asset-image-frame' + (detail ? ' is-detail' : '') + '"><img data-asset-image loading="' + (detail ? "eager" : "lazy") + '" decoding="async" src="' + escapeHTML(url) + '" alt="' + (detail ? escapeHTML("Preview of " + assetLabel(item)) : "") + '"><span class="asset-image-failed"' + (detail ? ' role="status"' : '') + ' hidden>Preview unavailable</span></span>';
 }
 
 function assetStage(item) {
-  const value = String(item?.asset_stage || item?.generation_stage || "").trim().toUpperCase();
-  const labels = { QUEUED: "Queued", GENERATING: "Generating", VALIDATING: "Validating" };
+  const technical = assetTechnical(item);
+  const value = String(assetPresentation(item).status || technical.status || "").trim().toUpperCase();
+  const labels = { RESERVED: "Queued", QUEUED: "Queued", GENERATING: "Generating", VALIDATING: "Validating" };
   if (!labels[value]) return null;
-  const percent = Number(item?.progress_percent);
-  return { value, label: labels[value], measured: item?.progress_measured === true && Number.isFinite(percent) && percent >= 0 && percent <= 100, percent: Math.round(percent) };
+  const percent = Number(technical.measured_progress);
+  return { value, label: labels[value], measured: technical.measured_progress_provenance === "MEASURED" && Number.isFinite(percent) && percent >= 0 && percent <= 100, percent: Math.round(percent) };
 }
 
 function assetLabel(item) {
-  return String(item?.display_name || item?.caption || item?.kind || "Asset").trim() || "Asset";
+  const presentation = assetPresentation(item);
+  return String(presentation.display_name || "Asset").trim() || "Asset";
 }
 
 function assetTypeLabel(item) {
-  const kind = String(item?.asset_type || item?.kind || "").trim();
+  const kind = String(assetPresentation(item).kind || "").trim();
   if (kind) return humanize(kind);
-  const mime = String(item?.media_type || "").trim();
+  const mime = String(assetTechnical(item).media_type || "").trim();
   return mime.startsWith("image/") ? humanize(mime.slice(6)) + " image" : "Asset";
 }
 
+function assetProjectLabel(item) {
+  const projectId = String(item?.project_id || "");
+  return savedProjectRoster().projects.find((project) => project.id === projectId)?.label || projectId || "Unscoped";
+}
+
 function assetDate(item, field = "updated") {
-  const value = field === "created" ? (item?.created_at_ms || item?.created_at || item?.registered_at_ms) : (item?.updated_at_ms || item?.updated_at || item?.observed_at_ms || item?.registered_at_ms);
+  const presentation = assetPresentation(item);
+  const technical = assetTechnical(item);
+  const value = field === "created" ? (presentation.created_at || technical.created_at_ms) : (presentation.updated_at || technical.updated_at_ms);
   const date = new Date(typeof value === "number" ? value : String(value || ""));
   return Number.isNaN(date.getTime()) ? "—" : date.toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" });
 }
 
 function assetSize(item) {
-  const bytes = Number(item?.size_bytes);
+  const bytes = Number(assetTechnical(item).size_bytes);
   if (!Number.isFinite(bytes) || bytes < 0) return "—";
   if (bytes < 1024) return Math.round(bytes) + " B";
   if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(bytes < 10 * 1024 ? 1 : 0) + " KB";
@@ -2340,25 +2431,126 @@ function assetSize(item) {
 }
 
 function assetRevisionItems(selected, items = assetItems()) {
-  const logicalId = String(selected?.logical_asset_id || "").trim();
+  const selectedTechnical = assetTechnical(selected);
+  const logicalId = String(selectedTechnical.logical_asset_id || "").trim();
   if (!logicalId) return [selected];
-  return items.filter((item) => String(item?.logical_asset_id || "").trim() === logicalId).sort((left, right) => Number(right.revision || right.version || right.updated_at_ms || 0) - Number(left.revision || left.version || left.updated_at_ms || 0));
+  const revisions = items.filter((item) => String(assetTechnical(item).logical_asset_id || "").trim() === logicalId);
+  if (revisions.length < 2 || !revisions.some((item) => String(assetTechnical(item).parent_revision_id || "").trim())) return [selected];
+  return revisions.sort((left, right) => Number(assetTechnical(right).revision || 0) - Number(assetTechnical(left).revision || 0));
+}
+
+function assetStateLabel(item) {
+  return assetStage(item)?.label || String(assetPresentation(item).status_label || humanize(assetPresentation(item).status || assetTechnical(item).status || "Unknown"));
+}
+
+function assetTrashEligible(item) {
+  return state.assetProjection === "active" && !assetStage(item) && Number.isSafeInteger(Number(assetTechnical(item).revision)) && Number(assetTechnical(item).revision) > 0;
+}
+
+function assetRetryEligible(item) {
+  const status = String(assetTechnical(item).status || assetPresentation(item).status || "").toUpperCase();
+  return ["FAILED", "CANCELLED"].includes(status) && assetTechnical(item).retry_eligible === true;
+}
+
+function assetOperationId(prefix) {
+  const suffix = globalThis.crypto?.randomUUID?.() || (Date.now().toString(36) + "-" + Math.random().toString(36).slice(2));
+  return prefix + "-" + suffix;
+}
+
+function replaceAssetItem(item) {
+  const identity = assetIdentity(item);
+  const items = assetItems().filter((candidate) => assetIdentity(candidate) !== identity);
+  state.assets = { ...(state.assets || {}), items: [item, ...items] };
+}
+
+function assetMutationRequest(action, item) {
+  const technical = assetTechnical(item);
+  const operationId = assetOperationId("asset-" + action);
+  const payload = {
+    project_id: String(item.project_id || ""),
+    asset_id: assetIdentity(item),
+    expected_revision: Number(technical.revision),
+    operation_id: operationId,
+  };
+  let path = "/api/assets/" + action;
+  if (action === "retry") {
+    path = "/api/assets/generation/retry";
+    payload.generation_job_id = assetOperationId("generation");
+  }
+  return { action, path, payload, bindingProjectId: assetScopeProjectId(), pending: true, error: "" };
+}
+
+async function runAssetMutation(request) {
+  if (!request || state.assetMutationPending?.pending) return false;
+  state.assetMutationPending = { ...request, pending: true, error: "" };
+  renderAssets();
+  try {
+    const result = await api(request.path, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(request.payload) });
+    const item = result?.asset;
+    if (result?.ok !== true || result?.mutation?.accepted !== true || assetIdentity(item) !== request.payload.asset_id || String(item?.project_id || "") !== request.payload.project_id) throw new Error("Asset acknowledgement was invalid.");
+    ++state.assetRequestGeneration;
+    state.assetMutationPending = null;
+    state.assetConfirm = null;
+    state.assetError = "";
+    if (request.action === "trash") {
+      state.assetProjection = "trash";
+      state.assetBindingKey = assetBindingKey("trash", request.bindingProjectId);
+      state.assets = { ok: true, status: "available", projection: "trash", project_id: request.bindingProjectId || null, items: [item] };
+      state.assetStatus = "current";
+      state.selectedAssetIdentity = assetIdentity(item);
+      state.assetUndo = { item, expectedRevision: Number(assetTechnical(item).revision) };
+    } else if (request.action === "restore") {
+      state.assetProjection = "active";
+      state.assetBindingKey = assetBindingKey("active", request.bindingProjectId);
+      state.assets = { ok: true, status: "available", projection: "active", project_id: request.bindingProjectId || null, items: [item] };
+      state.assetStatus = "current";
+      state.selectedAssetIdentity = assetIdentity(item);
+      state.assetUndo = null;
+    } else {
+      replaceAssetItem(item);
+      state.selectedAssetIdentity = assetIdentity(item);
+    }
+    renderAssets();
+    if (request.action === "trash") closeAssetDialog();
+    await refreshAssets();
+    renderAssets();
+    return true;
+  } catch (error) {
+    state.assetMutationPending = { ...request, pending: false, error: error.message || "Asset update failed." };
+    state.assetError = state.assetMutationPending.error;
+    renderAssets();
+    return false;
+  }
+}
+
+async function mutateAsset(action, item) {
+  if (!item) return false;
+  return runAssetMutation(assetMutationRequest(action, item));
 }
 
 function assetGridMarkup(item) {
-  const identity = proofIdentity(item);
+  const identity = assetIdentity(item);
   const label = assetLabel(item);
   const selected = identity === state.selectedAssetIdentity;
-  const proofDisabled = Boolean(assetStage(item));
-  return '<article class="asset-tile' + (selected ? ' is-selected' : '') + '" data-asset-card="' + escapeHTML(identity) + '"><button class="asset-image-button" type="button" data-asset-detail="' + escapeHTML(identity) + '" aria-label="Open asset details for ' + escapeHTML(label) + '" aria-current="' + String(selected) + '">' + assetImageMarkup(item) + '</button><div class="asset-quick-actions" aria-label="Quick actions for ' + escapeHTML(label) + '"><button class="icon-button" type="button" data-asset-detail="' + escapeHTML(identity) + '" aria-label="View details for ' + escapeHTML(label) + '" title="View details"><svg class="lucide" aria-hidden="true"><use href="#lucide-eye"></use></svg></button><button class="icon-button" type="button" data-review-open="' + escapeHTML(identity) + '" aria-label="Open preview for ' + escapeHTML(label) + '" title="Open preview"' + (proofDisabled ? ' disabled' : '') + '><svg class="lucide" aria-hidden="true"><use href="#lucide-image"></use></svg></button><button class="icon-button" type="button" disabled aria-label="Move to trash unavailable for ' + escapeHTML(label) + '" title="Trash command is not available"><svg class="lucide" aria-hidden="true"><use href="#lucide-trash-2"></use></svg></button></div></article>';
+  const contextAction = state.assetProjection === "trash"
+    ? '<button class="icon-button" type="button" data-asset-action="restore" data-asset-id="' + escapeHTML(identity) + '" aria-label="Restore ' + escapeHTML(label) + '" title="Restore"><svg class="lucide" aria-hidden="true"><use href="#lucide-rotate-ccw"></use></svg></button>'
+    : assetRetryEligible(item)
+      ? '<button class="icon-button" type="button" data-asset-action="retry" data-asset-id="' + escapeHTML(identity) + '" aria-label="Retry generation for ' + escapeHTML(label) + '" title="Retry generation"><svg class="lucide" aria-hidden="true"><use href="#lucide-refresh-cw"></use></svg></button>'
+      : '<button class="icon-button" type="button" data-asset-action="trash" data-asset-id="' + escapeHTML(identity) + '" aria-label="Move ' + escapeHTML(label) + ' to trash" title="' + (assetTrashEligible(item) ? "Move to trash" : "Trash unavailable for this asset") + '"' + (assetTrashEligible(item) ? "" : " disabled") + '><svg class="lucide" aria-hidden="true"><use href="#lucide-trash-2"></use></svg></button>';
+  return '<article class="asset-tile' + (selected ? ' is-selected' : '') + '" data-asset-card="' + escapeHTML(identity) + '"><button class="asset-image-button" type="button" data-asset-detail="' + escapeHTML(identity) + '" aria-label="Open asset details for ' + escapeHTML(label) + '" aria-current="' + String(selected) + '">' + assetImageMarkup(item) + '</button><div class="asset-quick-actions" aria-label="Quick actions for ' + escapeHTML(label) + '"><button class="icon-button" type="button" data-asset-detail="' + escapeHTML(identity) + '" aria-label="View details for ' + escapeHTML(label) + '" title="View details"><svg class="lucide" aria-hidden="true"><use href="#lucide-eye"></use></svg></button>' + contextAction + '</div></article>';
 }
 
 function assetListMarkup(item) {
-  const identity = proofIdentity(item);
+  const identity = assetIdentity(item);
   const label = assetLabel(item);
   const selected = identity === state.selectedAssetIdentity;
-  const project = state.projectId === "all" && item.project_id ? '<span><small>Project</small>' + escapeHTML(item.project_id) + '</span>' : '';
-  return '<article class="asset-list-row' + (selected ? ' is-selected' : '') + '" data-asset-card="' + escapeHTML(identity) + '"><button class="asset-list-main" type="button" data-asset-detail="' + escapeHTML(identity) + '" aria-label="Open asset details for ' + escapeHTML(label) + '" aria-current="' + String(selected) + '">' + assetImageMarkup(item) + '<span class="asset-list-copy"><strong>' + escapeHTML(label) + '</strong>' + (item.description ? '<small>' + escapeHTML(item.description) + '</small>' : '') + '</span><span class="asset-list-facts"><span><small>Type</small>' + escapeHTML(assetTypeLabel(item)) + '</span>' + project + '<span><small>Updated</small>' + escapeHTML(assetDate(item)) + '</span><span><small>Status</small>' + escapeHTML(assetStage(item)?.label || proofReviewState(item)) + '</span></span></button><div class="asset-list-actions"><button class="icon-button" type="button" data-asset-detail="' + escapeHTML(identity) + '" aria-label="View details for ' + escapeHTML(label) + '" title="View details"><svg class="lucide" aria-hidden="true"><use href="#lucide-eye"></use></svg></button><button class="icon-button" type="button" disabled aria-label="Move to trash unavailable for ' + escapeHTML(label) + '" title="Trash command is not available"><svg class="lucide" aria-hidden="true"><use href="#lucide-trash-2"></use></svg></button></div></article>';
+  const project = state.projectId === "all" && item.project_id ? '<span><small>Project</small>' + escapeHTML(assetProjectLabel(item)) + '</span>' : '';
+  const presentation = assetPresentation(item);
+  const action = state.assetProjection === "trash" ? "restore" : assetRetryEligible(item) ? "retry" : "trash";
+  const enabled = action !== "trash" || assetTrashEligible(item);
+  const actionLabel = action === "restore" ? "Restore " + label : action === "retry" ? "Retry generation for " + label : "Move " + label + " to trash";
+  const icon = action === "restore" ? "rotate-ccw" : action === "retry" ? "refresh-cw" : "trash-2";
+  return '<article class="asset-list-row' + (selected ? ' is-selected' : '') + '" data-asset-card="' + escapeHTML(identity) + '"><button class="asset-list-main" type="button" data-asset-detail="' + escapeHTML(identity) + '" aria-label="Open asset details for ' + escapeHTML(label) + '" aria-current="' + String(selected) + '">' + assetImageMarkup(item) + '<span class="asset-list-copy"><strong>' + escapeHTML(label) + '</strong>' + (presentation.description ? '<small>' + escapeHTML(presentation.description) + '</small>' : '') + '</span><span class="asset-list-facts"><span><small>Type</small>' + escapeHTML(assetTypeLabel(item)) + '</span>' + project + '<span><small>Updated</small>' + escapeHTML(assetDate(item)) + '</span><span><small>Status</small>' + escapeHTML(assetStateLabel(item)) + '</span></span></button><div class="asset-list-actions"><button class="icon-button" type="button" data-asset-detail="' + escapeHTML(identity) + '" aria-label="View details for ' + escapeHTML(label) + '" title="View details"><svg class="lucide" aria-hidden="true"><use href="#lucide-eye"></use></svg></button><button class="icon-button" type="button" data-asset-action="' + action + '" data-asset-id="' + escapeHTML(identity) + '" aria-label="' + escapeHTML(actionLabel) + '" title="' + escapeHTML(enabled ? actionLabel : "Trash unavailable for this asset") + '"' + (enabled ? "" : " disabled") + '><svg class="lucide" aria-hidden="true"><use href="#lucide-' + icon + '"></use></svg></button></div></article>';
 }
 
 function renderAssetDialog(item) {
@@ -2367,24 +2559,51 @@ function renderAssetDialog(item) {
     if (dialog.open) dialog.close();
     return;
   }
+  const focusedIdentity = dialog.contains(document.activeElement) ? String(document.activeElement?.dataset?.assetFocus || document.activeElement?.id || "") : "";
   const label = assetLabel(item);
   const stage = assetStage(item);
   const revisions = assetRevisionItems(item);
-  const creator = String(item.creator_label || item.owner_id || item.source || item.provenance?.kind || "—");
-  const safeRef = String(item.source_ref || "").startsWith("project://") ? item.source_ref : "—";
-  const dimensions = Number(item.width) > 0 && Number(item.height) > 0 ? String(item.width) + " × " + String(item.height) : "—";
-  const revisionMarkup = revisions.length > 1 ? '<section><h3>Revision history</h3><ol class="asset-revisions" aria-label="Revision history">' + revisions.map((revision) => '<li><strong>' + escapeHTML(revision.revision_label || ("Revision " + (revision.revision || revision.version || "—"))) + '</strong><span>' + escapeHTML(proofReviewState(revision)) + '</span><time>' + escapeHTML(assetDate(revision)) + '</time></li>').join("") + '</ol></section>' : '';
+  const presentation = assetPresentation(item);
+  const technical = assetTechnical(item);
+  const provenance = technical.provenance && typeof technical.provenance === "object" ? technical.provenance : {};
+  const creator = String(provenance.creator_label || provenance.source_label || technical.job_metadata?.creator_label || "—");
+  const dimensions = Number(provenance.width) > 0 && Number(provenance.height) > 0 ? String(provenance.width) + " × " + String(provenance.height) : "—";
+  const revisionMarkup = revisions.length > 1 ? '<section><h3>Revision history</h3><ol class="asset-revisions" aria-label="Revision history">' + revisions.map((revision) => '<li><strong>Revision ' + escapeHTML(assetTechnical(revision).revision || "—") + '</strong><span>' + escapeHTML(assetStateLabel(revision)) + '</span><time>' + escapeHTML(assetDate(revision)) + '</time></li>').join("") + '</ol></section>' : '';
+  const requestMarkup = stage && technical.request_summary ? '<section class="asset-request"><h3>Request</h3><p>' + escapeHTML(technical.request_summary) + '</p><small>' + escapeHTML(stage.label + (stage.measured ? " · " + stage.percent + "% measured" : "")) + '</small></section>' : '';
   $("#asset-dialog-kind").textContent = assetTypeLabel(item);
   $("#asset-dialog-title").textContent = label;
-  $("#asset-dialog-content").innerHTML = '<div class="asset-dialog-preview">' + assetImageMarkup(item, true) + '</div>' + (item.description || item.caption ? '<p class="asset-description">' + escapeHTML(item.description || item.caption) + '</p>' : '') + '<dl class="asset-human-meta"><div><dt>Project</dt><dd>' + escapeHTML(item.project_label || item.project_id || "Unscoped") + '</dd></div><div><dt>Status</dt><dd>' + escapeHTML(stage?.label || proofReviewState(item)) + '</dd></div><div><dt>Created</dt><dd>' + escapeHTML(assetDate(item, "created")) + '</dd></div><div><dt>Updated</dt><dd>' + escapeHTML(assetDate(item)) + '</dd></div><div><dt>File size</dt><dd>' + escapeHTML(assetSize(item)) + '</dd></div><div><dt>Creator</dt><dd>' + escapeHTML(creator) + '</dd></div></dl>' + revisionMarkup + '<details class="asset-advanced"><summary>Advanced</summary><dl class="asset-advanced-meta"><div><dt>Immutable ID</dt><dd>' + escapeHTML(item.evidence_id || "—") + '</dd></div><div><dt>MIME type</dt><dd>' + escapeHTML(item.media_type || "—") + '</dd></div><div><dt>Dimensions</dt><dd>' + escapeHTML(dimensions) + '</dd></div><div><dt>Digest</dt><dd>' + escapeHTML(item.digest || "—") + '</dd></div><div><dt>Source</dt><dd>' + escapeHTML(safeRef) + '</dd></div><div><dt>Parent revision</dt><dd>' + escapeHTML(item.parent_revision_id || "—") + '</dd></div></dl></details>';
-  $("#asset-dialog-footer").innerHTML = '<p class="asset-dialog-note">Trash, restore, purge, revision, and approval remain unavailable until accepted server commands exist.</p><div class="asset-actions"><button class="quiet-button" type="button" data-review-open="' + escapeHTML(proofIdentity(item)) + '"' + (stage ? ' disabled' : '') + '>Open preview</button><button class="quiet-button" type="button" disabled title="Trash command is not available">Move to trash</button><button class="primary-action" id="asset-dialog-done" type="button">Done</button></div>';
+  $("#asset-dialog-content").innerHTML = '<div class="asset-dialog-preview">' + assetImageMarkup(item, true) + '</div>' + (presentation.description ? '<p class="asset-description">' + escapeHTML(presentation.description) + '</p>' : '') + requestMarkup + '<dl class="asset-human-meta"><div><dt>Project</dt><dd>' + escapeHTML(assetProjectLabel(item)) + '</dd></div><div><dt>Status</dt><dd>' + escapeHTML(assetStateLabel(item)) + '</dd></div><div><dt>Created</dt><dd>' + escapeHTML(assetDate(item, "created")) + '</dd></div><div><dt>Updated</dt><dd>' + escapeHTML(assetDate(item)) + '</dd></div><div><dt>File size</dt><dd>' + escapeHTML(assetSize(item)) + '</dd></div><div><dt>Creator</dt><dd>' + escapeHTML(creator) + '</dd></div></dl>' + revisionMarkup + '<details class="asset-advanced"><summary>Advanced</summary><dl class="asset-advanced-meta"><div><dt>Immutable ID</dt><dd>' + escapeHTML(assetIdentity(item)) + '</dd></div><div><dt>Logical asset</dt><dd>' + escapeHTML(technical.logical_asset_id || "—") + '</dd></div><div><dt>MIME type</dt><dd>' + escapeHTML(technical.media_type || "—") + '</dd></div><div><dt>Dimensions</dt><dd>' + escapeHTML(dimensions) + '</dd></div><div><dt>Digest</dt><dd>' + escapeHTML(technical.digest || "—") + '</dd></div><div><dt>Revision</dt><dd>' + escapeHTML(technical.revision ?? "—") + '</dd></div><div><dt>Parent revision</dt><dd>' + escapeHTML(technical.parent_revision_id || "—") + '</dd></div><div><dt>Operation</dt><dd>' + escapeHTML(technical.operation_id || "—") + '</dd></div></dl></details>';
+  const pending = state.assetMutationPending;
+  const sameMutation = pending?.payload?.asset_id === assetIdentity(item);
+  let note = state.assetProjection === "trash" ? "Purge unavailable · no retention policy is configured." : "Move eligible, revision-bound assets to recoverable Trash.";
+  let controls = "";
+  if (sameMutation && pending.pending) {
+    note = "Saving this asset change…";
+    controls = '<button class="quiet-button" type="button" disabled>Saving…</button>';
+  } else if (sameMutation && pending.error) {
+    note = pending.error;
+    controls = '<button class="quiet-button" type="button" data-asset-mutation-retry data-asset-focus="mutation-retry">Retry</button>';
+  } else if (state.assetConfirm?.assetId === assetIdentity(item)) {
+    note = "Move this revision to Trash? You can restore it afterward.";
+    controls = '<button class="quiet-button" type="button" data-asset-confirm-cancel data-asset-focus="confirm-cancel">Cancel</button><button class="danger-button" type="button" data-asset-confirm data-asset-focus="confirm-trash">Move to Trash</button>';
+  } else if (state.assetProjection === "trash") {
+    controls = '<button class="quiet-button" type="button" data-asset-action="restore" data-asset-id="' + escapeHTML(assetIdentity(item)) + '" data-asset-focus="restore">Restore</button><button class="quiet-button" type="button" disabled title="Purge is unavailable because no retention policy is configured">Purge unavailable</button>';
+  } else {
+    if (assetRetryEligible(item)) controls += '<button class="quiet-button" type="button" data-asset-action="retry" data-asset-id="' + escapeHTML(assetIdentity(item)) + '" data-asset-focus="retry">Retry generation</button>';
+    controls += '<button class="quiet-button" type="button" data-asset-action="trash" data-asset-id="' + escapeHTML(assetIdentity(item)) + '" data-asset-focus="trash"' + (assetTrashEligible(item) ? "" : ' disabled title="Only admitted revision-bound assets can move to Trash"') + '>Move to Trash</button>';
+  }
+  $("#asset-dialog-footer").innerHTML = '<p class="asset-dialog-note" role="status">' + escapeHTML(note) + '</p><div class="asset-actions">' + controls + '<button class="primary-action" id="asset-dialog-done" type="button" data-asset-focus="done">Done</button></div>';
+  if (focusedIdentity) requestAnimationFrame(() => {
+    const target = focusedIdentity === "asset-dialog-done" ? $("#asset-dialog-done") : $('[data-asset-focus="' + CSS.escape(focusedIdentity) + '"]', dialog);
+    (target || $("#asset-dialog-close"))?.focus({ preventScroll: true });
+  });
 }
 
 function openAssetDialog(identity, trigger) {
-  const item = assetItems().find((candidate) => proofIdentity(candidate) === identity);
+  const item = assetItems().find((candidate) => assetIdentity(candidate) === identity);
   if (!item) return;
   state.selectedAssetIdentity = identity;
-  state.assetTrigger = trigger || null;
+  state.assetTrigger = { element: trigger || null, identity };
   $$('[data-asset-card]').forEach((card) => card.classList.toggle("is-selected", card.dataset.assetCard === identity));
   $$('[data-asset-detail]').forEach((control) => {
     if (control.classList.contains("asset-image-button") || control.classList.contains("asset-list-main")) control.setAttribute("aria-current", String(control.dataset.assetDetail === identity));
@@ -2402,14 +2621,19 @@ function closeAssetDialog() {
 
 function renderAssets() {
   const items = assetItems();
-  if (!items.some((item) => proofIdentity(item) === state.selectedAssetIdentity)) state.selectedAssetIdentity = "";
-  const selected = items.find((item) => proofIdentity(item) === state.selectedAssetIdentity) || null;
-  $("#assets-status").textContent = currentProofStatus() === "stale" ? "Showing the last received asset inventory" : items.length ? items.length + " digest-bound asset" + (items.length === 1 ? "" : "s") : "No retained assets";
+  if (!items.some((item) => assetIdentity(item) === state.selectedAssetIdentity)) state.selectedAssetIdentity = "";
+  const selected = items.find((item) => assetIdentity(item) === state.selectedAssetIdentity) || null;
+  const status = state.assetStatus === "loading" ? "Loading assets" : state.assetStatus === "refreshing" ? "Refreshing assets" : state.assetStatus === "stale" ? "Showing last received assets · refresh to retry" : state.assetStatus === "unavailable" ? "Assets unavailable · refresh to retry" : items.length ? items.length + (state.assetProjection === "trash" ? " trashed asset" : " asset") + (items.length === 1 ? "" : "s") : state.assetProjection === "trash" ? "Trash is empty" : "No assets in this scope";
+  $("#assets-status").textContent = status;
+  $$('[data-asset-projection]').forEach((button) => { const active = button.dataset.assetProjection === state.assetProjection; button.classList.toggle("is-selected", active); button.setAttribute("aria-pressed", String(active)); });
   $$('[data-asset-view]').forEach((button) => { const selectedView = button.dataset.assetView === state.assetView; button.classList.toggle("is-selected", selectedView); button.setAttribute("aria-pressed", String(selectedView)); });
   const gallery = $("#asset-gallery");
   gallery.classList.toggle("is-list", state.assetView === "list");
-  gallery.setAttribute("aria-label", state.assetView === "grid" ? "Asset image grid" : "Asset list");
-  gallery.innerHTML = items.length ? items.map(state.assetView === "grid" ? assetGridMarkup : assetListMarkup).join("") : '<p class="empty-state">Assets appear after digest-bound proof is retained.</p>';
+  gallery.setAttribute("aria-label", state.assetProjection === "trash" ? "Trashed assets" : state.assetView === "grid" ? "Asset image grid" : "Asset list");
+  gallery.innerHTML = items.length ? items.map(state.assetView === "grid" ? assetGridMarkup : assetListMarkup).join("") : '<p class="empty-state">' + escapeHTML(state.assetStatus === "unavailable" ? state.assetError || "Asset inventory unavailable." : state.assetProjection === "trash" ? "Trash is empty." : "No assets are available in this project.") + '</p>';
+  const undo = $("#asset-undo-toast");
+  undo.hidden = !state.assetUndo;
+  undo.innerHTML = state.assetUndo ? '<span><strong>' + escapeHTML(assetLabel(state.assetUndo.item)) + '</strong> moved to Trash.</span><button class="quiet-button" type="button" data-asset-undo>Undo</button><button class="icon-button" type="button" data-asset-undo-dismiss aria-label="Dismiss undo"><svg class="lucide" aria-hidden="true"><use href="#lucide-x"></use></svg></button>' : "";
   if ($("#asset-dialog").open) renderAssetDialog(selected);
 }
 
@@ -3353,7 +3577,7 @@ async function refreshMonitoring(proofSequence) {
     clearConnectionState();
     setDataStatus("current", state.overview?.generated_at);
     renderProjectNavigation();
-    await Promise.all([refreshUsageHistory(), refreshNotifications(), refreshRunLogs()]);
+    await Promise.all([refreshUsageHistory(), refreshNotifications(), refreshRunLogs(), refreshAssets()]);
     if (Number(proofSequence) !== state.proofSequence) await refreshProof();
     renderOverview();
     renderAgents();
@@ -3440,7 +3664,7 @@ async function refreshOverview(showLoading = true) {
     clearConnectionState();
     setDataStatus("current", state.overview?.generated_at);
     renderProjectNavigation();
-    await Promise.all([refreshProof(), refreshUsageHistory(), refreshProjectProgress(), refreshProjectProgressFeed(), refreshRoleManifests(), refreshNotifications(), refreshRunLogs()]);
+    await Promise.all([refreshProof(), refreshUsageHistory(), refreshProjectProgress(), refreshProjectProgressFeed(), refreshRoleManifests(), refreshNotifications(), refreshRunLogs(), refreshAssets()]);
     const selectedCtrl = state.ctrlId || historicalControllers()[0]?.id || '';
     const previousConfig = state.config;
     const results = await Promise.allSettled([api('/api/diagnostics'), api('/api/health/settings'), api('/api/storage'), selectedCtrl ? api('/api/ctrl-settings?ctrl_id=' + encodeURIComponent(selectedCtrl)) : Promise.resolve(null), readConfigState(previousConfig)]);
@@ -3519,6 +3743,22 @@ document.addEventListener("click", async (event) => {
   const onboardingDot = event.target.closest("[data-onboarding-step]");
   if (onboardingDot) {
     setOnboardingStep(onboardingDot.dataset.onboardingStep, true);
+    return;
+  }
+  const assetProjection = event.target.closest("[data-asset-projection]");
+  if (assetProjection) {
+    const projection = assetProjection.dataset.assetProjection === "trash" ? "trash" : "active";
+    if (projection !== state.assetProjection) {
+      closeAssetDialog();
+      state.assetProjection = projection;
+      state.selectedAssetIdentity = "";
+      state.assetConfirm = null;
+      state.assetMutationPending = null;
+      renderAssets();
+      await refreshAssets();
+      renderAssets();
+    }
+    $('[data-asset-projection="' + projection + '"]')?.focus({ preventScroll: true });
     return;
   }
   const assetView = event.target.closest("[data-asset-view]");
@@ -3615,6 +3855,48 @@ document.addEventListener("click", async (event) => {
   const reviewOpen = event.target.closest("[data-review-open]");
   if (reviewOpen && !reviewOpen.disabled) {
     openProofIdentity(reviewOpen.dataset.reviewOpen, reviewOpen);
+    return;
+  }
+  const assetAction = event.target.closest("[data-asset-action]");
+  if (assetAction && !assetAction.disabled) {
+    const item = assetItems().find((candidate) => assetIdentity(candidate) === assetAction.dataset.assetId);
+    if (!item) return;
+    const action = assetAction.dataset.assetAction;
+    if (action === "trash") {
+      openAssetDialog(assetIdentity(item), assetAction);
+      state.assetConfirm = { assetId: assetIdentity(item) };
+      renderAssetDialog(item);
+      requestAnimationFrame(() => $('[data-asset-focus="confirm-trash"]', $("#asset-dialog"))?.focus({ preventScroll: true }));
+    } else if (action === "restore" || action === "retry") {
+      await mutateAsset(action, item);
+    }
+    return;
+  }
+  if (event.target.closest("[data-asset-confirm]")) {
+    const item = assetItems().find((candidate) => assetIdentity(candidate) === state.assetConfirm?.assetId);
+    if (item) await mutateAsset("trash", item);
+    return;
+  }
+  if (event.target.closest("[data-asset-confirm-cancel]")) {
+    state.assetConfirm = null;
+    const item = assetItems().find((candidate) => assetIdentity(candidate) === state.selectedAssetIdentity);
+    renderAssetDialog(item);
+    requestAnimationFrame(() => $('[data-asset-focus="trash"]', $("#asset-dialog"))?.focus({ preventScroll: true }));
+    return;
+  }
+  if (event.target.closest("[data-asset-mutation-retry]")) {
+    await runAssetMutation(state.assetMutationPending);
+    return;
+  }
+  if (event.target.closest("[data-asset-undo]")) {
+    const item = state.assetUndo?.item;
+    const identity = assetIdentity(item);
+    if (item && await mutateAsset("restore", item)) requestAnimationFrame(() => $('[data-asset-detail="' + CSS.escape(identity) + '"]')?.focus({ preventScroll: true }));
+    return;
+  }
+  if (event.target.closest("[data-asset-undo-dismiss]")) {
+    state.assetUndo = null;
+    renderAssets();
     return;
   }
   const asset = event.target.closest("[data-asset-detail]");
@@ -3723,7 +4005,9 @@ $("#evidence-lightbox").addEventListener("close", () => {
 });
 $("#asset-dialog-close").addEventListener("click", closeAssetDialog);
 $("#asset-dialog").addEventListener("close", () => {
-  state.assetTrigger?.focus({ preventScroll: true });
+  const trigger = state.assetTrigger?.element;
+  const replacement = state.assetTrigger?.identity ? $('[data-asset-detail="' + CSS.escape(state.assetTrigger.identity) + '"]') : null;
+  (trigger?.isConnected ? trigger : replacement)?.focus({ preventScroll: true });
   state.assetTrigger = null;
 });
 $("#config-editor-close").addEventListener("click", closeConfigEditor);

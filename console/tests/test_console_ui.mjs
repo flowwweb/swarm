@@ -616,10 +616,20 @@ assert.match(indexHtml, /id="asset-dialog"[^>]*aria-labelledby="asset-dialog-tit
 assert.match(indexHtml, /id="asset-dialog-content"/);
 assert.match(indexHtml, /id="asset-dialog-footer"/);
 assert.match(indexHtml, /class="asset-view-toggle" role="group" aria-label="Asset view"/);
+assert.match(indexHtml, /class="asset-projection-toggle" role="group" aria-label="Asset collection"/);
+assert.match(indexHtml, /data-asset-projection="active" aria-pressed="true">Library/);
+assert.match(indexHtml, /data-asset-projection="trash" aria-pressed="false"/);
+assert.match(indexHtml, /id="asset-undo-toast" role="status" aria-live="polite" hidden/);
 assert.match(indexHtml, /data-asset-view="grid" aria-pressed="true"/);
 assert.match(indexHtml, /data-asset-view="list" aria-pressed="false"/);
 assert.match(app, /function renderReview\(\)/);
 assert.match(app, /function renderAssets\(\)/);
+assert.match(app, /async function refreshAssets\(\)/);
+assert.match(app, /api\("\/api\/assets\?" \+ inventoryParams\.toString\(\)\)/);
+assert.match(app, /api\("\/api\/assets\/events\?" \+ eventParams\.toString\(\)\)/);
+assert.match(app, /generation !== state\.assetRequestGeneration \|\| binding !== assetBindingKey\(\)/);
+const assetRefreshSource = app.slice(app.indexOf("async function refreshAssets"), app.indexOf("function assetImageMarkup"));
+assert.doesNotMatch(assetRefreshSource, /setInterval|setTimeout|WebSocket|EventSource|model|provider/i);
 assert.match(app, /assetView: "grid"/);
 assert.match(app, /function assetGridMarkup\(item\)/);
 assert.match(app, /function assetListMarkup\(item\)/);
@@ -630,14 +640,14 @@ assert.match(assetGridSource, /aria-label="Open asset details for/);
 assert.doesNotMatch(assetGridSource, /<strong>|<small>|asset-list-copy|proofReviewState/);
 const assetListSource = app.slice(app.indexOf("function assetListMarkup"), app.indexOf("function renderAssetDialog"));
 assert.match(assetListSource, /asset-list-copy/);
-assert.match(assetListSource, /proofReviewState\(item\)/);
+assert.match(assetListSource, /assetStateLabel\(item\)/);
 assert.match(assetListSource, /Type<\/small>/);
 assert.match(assetListSource, /Updated<\/small>/);
 assert.match(assetListSource, /Status<\/small>/);
 assert.doesNotMatch(assetListSource, /Digest<\/small>|MIME<\/small>|Immutable ID<\/small>|Source<\/small>/);
 assert.match(app, /data-asset-detail/);
 assert.match(app, /state\.assetView = assetView\.dataset\.assetView === "list" \? "list" : "grid"/);
-assert.match(app, /data-asset-image loading="lazy"/);
+assert.match(app, /data-asset-image loading="/);
 assert.match(app, /Preview unavailable/);
 assert.match(css, /\.asset-image-frame img \{[^}]*object-fit:contain/);
 assert.match(css, /\.asset-tile:hover \.asset-quick-actions,\.asset-tile:focus-within \.asset-quick-actions \{ opacity:1; \}/);
@@ -647,25 +657,34 @@ assert.match(css, /@media \(max-width: 620px\)[\s\S]*\.asset-quick-actions \.ico
 assert.match(css, /@media \(max-width: 620px\)[\s\S]*\.asset-gallery \{ grid-template-columns:1fr;/);
 assert.match(app, /class="asset-revisions" aria-label="Revision history"/);
 assert.match(app, /function assetRevisionItems\(selected, items = assetItems\(\)\)/);
-assert.match(app, /Trash, restore, purge, revision, and approval remain unavailable until accepted server commands exist/);
+assert.match(app, /Purge unavailable · no retention policy is configured\./);
+assert.match(app, /expected_revision: Number\(technical\.revision\)/);
+assert.match(app, /operation_id: operationId/);
+assert.match(app, /data-asset-confirm/);
+assert.match(app, /data-asset-undo/);
+assert.match(app, /\/api\/assets\/generation\/retry/);
+assert.doesNotMatch(app.slice(app.indexOf("function assetItems"), app.indexOf("function selectedProgressProjectId")), /\/api\/proof-feed|proofMediaURL\(item\)|ASSET_PURGE|model|provider/i);
 assert.match(app, /<summary>Advanced<\/summary>/);
 assert.match(app, /function openAssetDialog\(identity, trigger\)/);
 const openAssetDialogSource = app.slice(app.indexOf("function openAssetDialog"), app.indexOf("function closeAssetDialog"));
 assert.doesNotMatch(openAssetDialogSource, /renderAssets\(\)/);
 assert.match(openAssetDialogSource, /card\.classList\.toggle\("is-selected"/);
-assert.match(app, /state\.assetTrigger\?\.focus/);
+assert.match(app, /trigger\?\.isConnected \? trigger : replacement/);
 assert.doesNotMatch(app, /REVIEW_FEEDBACK_SUBMIT|PROOF_ADMIT|ASSET_REVISION_CREATE|ASSET_APPROVE/);
-const assetHelperStart = app.indexOf("function assetStage");
+const assetHelperStart = app.indexOf("function assetIdentity");
 const assetHelperEnd = app.indexOf("\nfunction assetGridMarkup", assetHelperStart);
-const assetHelpers = vm.runInNewContext(`(() => { function humanize(value) { return String(value || ""); } ${app.slice(assetHelperStart, assetHelperEnd)}; return { assetStage, assetRevisionItems }; })()`);
-assert.deepEqual({ ...assetHelpers.assetStage({ generation_stage: "GENERATING", progress_measured: true, progress_percent: 42.4 }) }, { value: "GENERATING", label: "Generating", measured: true, percent: 42 });
-assert.deepEqual({ ...assetHelpers.assetStage({ generation_stage: "VALIDATING", progress_percent: 77 }) }, { value: "VALIDATING", label: "Validating", measured: false, percent: 77 });
-assert.equal(assetHelpers.assetStage({ generation_stage: "UNKNOWN" }), null);
-const revisionRoot = { evidence_id: "root", logical_asset_id: "asset:one", revision: 1 };
-const revisionTwo = { evidence_id: "second", logical_asset_id: "asset:one", revision: 2 };
-const separateOption = { evidence_id: "option", logical_asset_id: "asset:two", revision: 9 };
-assert.deepEqual(Array.from(assetHelpers.assetRevisionItems(revisionRoot, [revisionRoot, separateOption, revisionTwo]), (item) => item.evidence_id), ["second", "root"]);
-assert.deepEqual(Array.from(assetHelpers.assetRevisionItems({ evidence_id: "standalone" }, [revisionRoot]), (item) => item.evidence_id), ["standalone"]);
+const assetHelpers = vm.runInNewContext(`(() => { const state = { assetProjection: "active", projectId: "project:one" }; function humanize(value) { return String(value || ""); } ${app.slice(assetHelperStart, assetHelperEnd)}; return { assetStage, assetRevisionItems, assetProjectionValue }; })()`);
+assert.deepEqual({ ...assetHelpers.assetStage({ presentation: { status: "GENERATING" }, technical: { status: "GENERATING", measured_progress: 42.4, measured_progress_provenance: "MEASURED" } }) }, { value: "GENERATING", label: "Generating", measured: true, percent: 42 });
+assert.deepEqual({ ...assetHelpers.assetStage({ presentation: { status: "VALIDATING" }, technical: { status: "VALIDATING", measured_progress: 77, measured_progress_provenance: "UNMEASURED" } }) }, { value: "VALIDATING", label: "Validating", measured: false, percent: 77 });
+assert.equal(assetHelpers.assetStage({ presentation: { status: "UNKNOWN" }, technical: {} }), null);
+const revisionRoot = { asset_id: "root", project_id: "project:one", technical: { logical_asset_id: "asset:one", revision: 1 } };
+const revisionTwo = { asset_id: "second", project_id: "project:one", technical: { logical_asset_id: "asset:one", parent_revision_id: "root", revision: 2 } };
+const separateOption = { asset_id: "option", project_id: "project:one", technical: { logical_asset_id: "asset:two", revision: 9 } };
+assert.deepEqual(Array.from(assetHelpers.assetRevisionItems(revisionRoot, [revisionRoot, separateOption, revisionTwo]), (item) => item.asset_id), ["second", "root"]);
+assert.deepEqual(Array.from(assetHelpers.assetRevisionItems({ asset_id: "standalone", technical: {} }, [revisionRoot]), (item) => item.asset_id), ["standalone"]);
+const acceptedAssets = { ok: true, status: "available", project_id: "project:one", projection: "active", items: [revisionRoot] };
+assert.equal(assetHelpers.assetProjectionValue(acceptedAssets, "project:one|active", "project:one", "active").items.length, 1);
+assert.equal(assetHelpers.assetProjectionValue({ ...acceptedAssets, project_id: "project:other" }, "project:one|active", "project:one", "active"), null);
 assert.match(indexHtml, /id="notifications"[^>]*aria-expanded="false"[^>]*aria-controls="notifications-panel"/);
 assert.match(indexHtml, /id="notifications-panel" role="dialog"[^>]*aria-labelledby="notifications-heading"[^>]*aria-describedby="notifications-status"[^>]*hidden tabindex="-1"/);
 assert.match(indexHtml, /id="notifications-unread-list"/);
@@ -1480,6 +1499,72 @@ function overflowingProjectFixture(count = 24) {
   return overview;
 }
 
+function assetFixtureItem(id, status = "READY", options = {}) {
+  const revision = options.revision || 1;
+  const projectId = options.projectId || "project:fixture";
+  const ready = !["RESERVED", "QUEUED", "GENERATING", "VALIDATING"].includes(status);
+  return {
+    asset_id: id,
+    project_id: projectId,
+    presentation: {
+      display_name: options.name || id.replaceAll("-", " ").replace(/\b\w/g, (letter) => letter.toUpperCase()),
+      kind: options.kind || "illustration",
+      description: options.description || "A retained project visual.",
+      status,
+      status_label: status.replaceAll("_", " ").toLowerCase().replace(/^./, (letter) => letter.toUpperCase()),
+      created_at: "2026-08-28T10:00:00Z",
+      updated_at: "2026-08-29T12:00:00Z",
+    },
+    technical: {
+      advanced_debug: true,
+      asset_id: id,
+      logical_asset_id: options.logicalId || "logical:" + id,
+      parent_revision_id: options.parentRevisionId || null,
+      revision,
+      status,
+      created_at_ms: 1787892000000,
+      updated_at_ms: 1787985600000,
+      generation_job_id: options.generationJobId || null,
+      operation_id: options.operationId || null,
+      request_summary: options.requestSummary || null,
+      job_metadata: { creator_label: options.creator || "SWARM" },
+      provenance: { creator_label: options.creator || "SWARM", source_label: "Project asset" },
+      digest: String(options.digest || id).padEnd(64, "0").slice(0, 64),
+      media_type: "image/png",
+      size_bytes: options.sizeBytes || 184320,
+      storage: { state: ready ? "ADMITTED" : "RESERVED", path: null, path_redacted: true },
+      measured_progress: options.progress ?? null,
+      measured_progress_provenance: options.measured ? "MEASURED" : "UNMEASURED",
+      error_class: options.errorClass || null,
+      retry_eligible: options.retryEligible === true,
+      idempotency_key: options.idempotencyKey || null,
+    },
+    preview: ready && !["FAILED", "CANCELLED"].includes(status)
+      ? { state: "AVAILABLE", url: "/api/assets/" + encodeURIComponent(id) + "/preview", media_type: "image/png", size_bytes: options.sizeBytes || 184320 }
+      : { state: "NOT_READY", url: null, reason: "Preview is admitted only after validation." },
+    trash: { trashed: status === "TRASHED", trashed_at: status === "TRASHED" ? "2026-08-29T13:00:00Z" : null, trashed_at_ms: status === "TRASHED" ? 1787989200000 : null, trashed_by: status === "TRASHED" ? "local-user" : null },
+    retention_policy: "manual_unconfigured",
+  };
+}
+
+function assetLibraryFixture() {
+  const root = assetFixtureItem("asset-overview-r1", "READY", { name: "Overview direction", logicalId: "logical:overview", revision: 1 });
+  const revision = assetFixtureItem("asset-overview-r2", "READY", { name: "Overview direction", logicalId: "logical:overview", revision: 2, parentRevisionId: root.asset_id });
+  return {
+    active: [
+      revision,
+      root,
+      assetFixtureItem("asset-roadmap", "READY", { name: "Roadmap" }),
+      assetFixtureItem("asset-generating", "GENERATING", { name: "Onboarding illustration", generationJobId: "generation:one", requestSummary: "Create the onboarding illustration", progress: 42, measured: true }),
+      assetFixtureItem("asset-validating", "VALIDATING", { name: "Role catalog", generationJobId: "generation:two", requestSummary: "Validate the role catalog" }),
+      assetFixtureItem("asset-failed", "FAILED", { name: "Settings option", generationJobId: "generation:failed", retryEligible: true, errorClass: "RENDER_FAILED" }),
+      assetFixtureItem("asset-cancelled", "CANCELLED", { name: "Cancelled option", generationJobId: "generation:cancelled", retryEligible: true, errorClass: "CANCELLED" }),
+    ],
+    trash: [assetFixtureItem("asset-trashed", "TRASHED", { name: "Retired visual", revision: 3 })],
+    sequence: 8,
+  };
+}
+
 function imageProofFixture(count) {
   return {
     ok: true,
@@ -1525,10 +1610,13 @@ async function mount(page, overview, overrides = {}) {
   const requests = [];
   const notificationSeenRequests = [];
   const configRequests = [];
+  const assetRequests = [];
   const proofFeed = overrides.proofFeed || fixture.proofFeed;
   const proofControl = overrides.proofControl || { fail: false, feed: proofFeed };
   const notificationControl = overrides.notificationControl || { failGet: false, failSeen: false, feed: structuredClone(overrides.notifications || notificationFixture()) };
   const configControl = overrides.configControl || { failPost: false, deferredPost: null, feed: structuredClone(fixture.config) };
+  const assetControl = overrides.assetControl || { library: assetLibraryFixture(), failGet: false, failMutation: false, deferredGets: [], operations: new Map() };
+  assetControl.operations ||= new Map();
   if (!overrides.preserveOnboardingPresentation) {
     await page.addInitScript(() => {
       if (sessionStorage.getItem("swarm-test-onboarding-initialized") === "1") return;
@@ -1549,6 +1637,64 @@ async function mount(page, overview, overrides = {}) {
     if (overrides.connection?.offline && url.pathname.startsWith("/api/")) return route.abort();
     if (url.pathname === "/api/bootstrap") return route.fulfill(response(fixture.bootstrap));
     if (url.pathname === "/api/overview") return route.fulfill(response(overview));
+    if (url.pathname === "/api/assets" && request.method() === "GET") {
+      const projection = url.searchParams.get("projection") === "trash" ? "trash" : "active";
+      const projectId = url.searchParams.get("project_id") || "";
+      const snapshot = structuredClone((assetControl.library?.[projection] || []).filter((item) => !projectId || item.project_id === projectId));
+      const deferred = Array.isArray(assetControl.deferredGets) ? assetControl.deferredGets.shift() : null;
+      if (deferred) await deferred;
+      if (assetControl.failGet) return route.fulfill({ status: 503, contentType: "application/json", body: JSON.stringify({ ok: false, error: "asset inventory unavailable" }) });
+      return route.fulfill(response({ ok: true, status: "available", project_id: projectId || null, projection, items: snapshot, event_cursor: { sequence: assetControl.library?.sequence || 0, identity: "asset-cursor" }, event_count: snapshot.length, retention_policy: "manual_unconfigured" }));
+    }
+    if (url.pathname === "/api/assets/events" && request.method() === "GET") {
+      const projectId = url.searchParams.get("project_id") || "";
+      return route.fulfill(response({ ok: true, status: "available", project_id: projectId || null, after_sequence: Number(url.searchParams.get("after_sequence") || 0), cursor: { sequence: assetControl.library?.sequence || 0, identity: "asset-cursor" }, items: [], retention_policy: "manual_unconfigured" }));
+    }
+    if (/^\/api\/assets\/[^/]+\/preview$/.test(url.pathname) && request.method() === "GET") return route.fulfill({ status: 200, contentType: "image/svg+xml", body: '<svg xmlns="http://www.w3.org/2000/svg" width="320" height="200"><rect width="320" height="200" fill="#101d30"/><circle cx="160" cy="100" r="56" fill="#ff6948"/></svg>' });
+    if (["/api/assets/trash", "/api/assets/restore", "/api/assets/generation/retry"].includes(url.pathname) && request.method() === "POST") {
+      const payload = request.postDataJSON();
+      assetRequests.push({ path: url.pathname, payload });
+      if (assetControl.failMutation) return route.fulfill({ status: 503, contentType: "application/json", body: JSON.stringify({ ok: false, error: "asset update unavailable" }) });
+      if (assetControl.operations.has(payload.operation_id)) return route.fulfill(response(assetControl.operations.get(payload.operation_id)));
+      const action = url.pathname.endsWith("/trash") ? "trash" : url.pathname.endsWith("/restore") ? "restore" : "retry";
+      const sourceName = action === "restore" ? "trash" : "active";
+      const source = assetControl.library?.[sourceName] || [];
+      const index = source.findIndex((item) => item.asset_id === payload.asset_id && item.project_id === payload.project_id);
+      if (index < 0 || Number(source[index].technical.revision) !== Number(payload.expected_revision)) return route.fulfill({ status: 409, contentType: "application/json", body: JSON.stringify({ ok: false, error: "asset revision conflict" }) });
+      const item = structuredClone(source[index]);
+      item.technical.revision += 1;
+      item.technical.operation_id = payload.operation_id;
+      item.technical.updated_at_ms += 1000;
+      item.presentation.updated_at = "2026-08-29T12:00:01Z";
+      if (action === "trash") {
+        item.presentation.status = "TRASHED";
+        item.presentation.status_label = "Trashed";
+        item.technical.status = "TRASHED";
+        item.trash = { trashed: true, trashed_at: "2026-08-29T13:00:00Z", trashed_at_ms: 1787989200000, trashed_by: "local-user" };
+        source.splice(index, 1);
+        assetControl.library.trash.unshift(item);
+      } else if (action === "restore") {
+        item.presentation.status = "READY";
+        item.presentation.status_label = "Ready";
+        item.technical.status = "READY";
+        item.trash = { trashed: false, trashed_at: null, trashed_at_ms: null, trashed_by: null };
+        item.preview = { state: "AVAILABLE", url: "/api/assets/" + encodeURIComponent(item.asset_id) + "/preview", media_type: "image/png", size_bytes: item.technical.size_bytes };
+        source.splice(index, 1);
+        assetControl.library.active.unshift(item);
+      } else {
+        item.presentation.status = "QUEUED";
+        item.presentation.status_label = "Queued";
+        item.technical.status = "QUEUED";
+        item.technical.generation_job_id = payload.generation_job_id;
+        item.technical.retry_eligible = false;
+        item.preview = { state: "NOT_READY", url: null, reason: "Preview is admitted only after validation." };
+        source[index] = item;
+      }
+      assetControl.library.sequence += 1;
+      const result = { ok: true, asset: item, mutation: { accepted: true, action, status: item.presentation.status.toLowerCase(), event_cursor: { sequence: assetControl.library.sequence, identity: "asset-cursor" }, retention_policy: "manual_unconfigured" } };
+      assetControl.operations.set(payload.operation_id, result);
+      return route.fulfill(response(result));
+    }
     if (url.pathname === "/api/proof-feed") return proofControl.fail ? route.fulfill({ status: 200, contentType: "application/json", body: "{" }) : route.fulfill(response(proofControl.feed || proofFeed));
     if (url.pathname === "/api/usage-history") {
       const hours = url.searchParams.get("hours");
@@ -1604,7 +1750,7 @@ async function mount(page, overview, overrides = {}) {
   await page.goto(overrides.initialURL || "http://swarm.test/", { waitUntil: "domcontentloaded" });
   if (overrides.waitForConnectionState) {
     await page.locator("#connection-state").waitFor({ state: "visible" });
-    return { runtimeErrors, requests, notificationSeenRequests, configRequests };
+    return { runtimeErrors, requests, notificationSeenRequests, configRequests, assetRequests };
   }
   try {
     const initialView = new URL(overrides.initialURL || "http://swarm.test/").hash.replace(/^#/, "") || "overview";
@@ -1616,7 +1762,7 @@ async function mount(page, overview, overrides = {}) {
   }
   await page.locator("#onboarding-dialog").waitFor({ state: "visible" });
   if (!overrides.keepOnboarding) await page.getByRole("button", { name: "Skip for now" }).click();
-  return { runtimeErrors, requests, notificationSeenRequests, configRequests };
+  return { runtimeErrors, requests, notificationSeenRequests, configRequests, assetRequests };
 }
 
 async function assertOnboardingRoleGroup(page, viewportWidth) {
@@ -2407,6 +2553,47 @@ proofFeed.items.push({
     assert.ok(offline.requests.filter((request) => request === "/api/bootstrap").length >= 2);
     await offlinePage.close();
 
+    let releaseStaleAssetList;
+    const raceLibrary = assetLibraryFixture();
+    raceLibrary.active.push(assetFixtureItem("asset-branch", "READY", { name: "Branch asset", projectId: "project:branch" }));
+    const assetRaceControl = { library: raceLibrary, failGet: false, failMutation: false, deferredGets: [], operations: new Map() };
+    const assetRacePage = await browser.newPage({ viewport: { width: 1024, height: 760 } });
+    const assetRace = await mount(assetRacePage, scopedFixture(), { ...overrides, assetControl: assetRaceControl });
+    await assetRacePage.evaluate(() => setView("assets"));
+    assetRaceControl.deferredGets.push(new Promise((resolve) => { releaseStaleAssetList = resolve; }));
+    const staleAssetRequest = assetRacePage.waitForRequest((request) => request.url().includes("/api/assets?") && request.url().includes("project_id=project%3Afixture"));
+    await assetRacePage.evaluate(() => { window.__staleAssetScope = selectProjectScope("project:fixture"); });
+    await staleAssetRequest;
+    const freshAssetRequest = assetRacePage.waitForRequest((request) => request.url().includes("/api/assets?") && request.url().includes("project_id=project%3Abranch"));
+    await assetRacePage.evaluate(() => { window.__freshAssetScope = selectProjectScope("project:branch"); });
+    await freshAssetRequest;
+    await assetRacePage.evaluate(() => window.__freshAssetScope);
+    releaseStaleAssetList();
+    await assetRacePage.evaluate(() => window.__staleAssetScope);
+    assert.equal(await assetRacePage.evaluate(() => state.view), "assets");
+    assert.equal(await assetRacePage.evaluate(() => state.projectId), "project:branch");
+    assert.deepEqual(await assetRacePage.evaluate(() => assetItems().map((item) => item.asset_id)), ["asset-branch"]);
+    assert.deepEqual(assetRace.runtimeErrors, []);
+    await assetRacePage.close();
+
+    const assetFailureControl = { library: assetLibraryFixture(), failGet: false, failMutation: true, deferredGets: [], operations: new Map() };
+    const assetFailurePage = await browser.newPage({ viewport: { width: 1024, height: 760 } });
+    const assetFailure = await mount(assetFailurePage, scopedFixture(), { ...overrides, assetControl: assetFailureControl });
+    await assetFailurePage.evaluate(() => setView("assets"));
+    await assetFailurePage.getByRole("button", { name: "Open asset details for Roadmap" }).click();
+    await assetFailurePage.locator("#asset-dialog").getByRole("button", { name: "Move to Trash" }).click();
+    await assetFailurePage.locator("#asset-dialog").getByRole("button", { name: "Move to Trash" }).click();
+    await assetFailurePage.locator("#asset-dialog").getByRole("button", { name: "Retry", exact: true }).waitFor({ state: "visible" });
+    assert.equal(await assetFailurePage.evaluate(() => state.assetProjection), "active");
+    assert.equal(assetFailure.assetRequests.length, 1);
+    assetFailureControl.failMutation = false;
+    await assetFailurePage.locator("#asset-dialog").getByRole("button", { name: "Retry", exact: true }).click();
+    await assetFailurePage.waitForFunction(() => state.assetProjection === "trash");
+    assert.equal(assetFailure.assetRequests.length, 2);
+    assert.deepEqual(assetFailure.assetRequests[1].payload, assetFailure.assetRequests[0].payload, "ambiguous mutation retry must reuse the exact operation identity");
+    assert.ok(assetFailure.runtimeErrors.every((message) => message.includes("503")), assetFailure.runtimeErrors.join(" | "));
+    await assetFailurePage.close();
+
     const page = await browser.newPage({ viewport: { width: 1536, height: 1024 } });
     const desktop = await mount(page, overview, overrides);
     for (const view of ["overview", "agents", "roles", "review", "assets", "settings"]) assert.equal(await page.locator('.nav-item[data-view="' + view + '"]').count(), 1);
@@ -2678,22 +2865,58 @@ proofFeed.items.push({
     assert.equal(await page.locator(".usage-strip").count(), 0);
     await assertCircleFrame(page, "#profile");
     await assertCircleFrame(page, "#system-health-control");
-    assert.equal(await page.locator(".asset-tile .asset-image-button").first().getAttribute("aria-label"), "Open asset details for Evidence image 1");
-    const assetTrigger = page.locator(".asset-tile .asset-image-button").nth(1);
+    assert.equal(await page.locator(".asset-tile .asset-image-button").first().getAttribute("aria-label"), "Open asset details for Overview direction");
+    if (evidenceDir) await page.screenshot({ path: path.join(evidenceDir, "20-assets-ready-desktop-1536x1024.png"), fullPage: false, animations: "disabled" });
+    const assetTrigger = page.getByRole("button", { name: "Open asset details for Roadmap" });
     await assetTrigger.focus();
     await assetTrigger.click();
     assert.equal(await page.locator("#asset-dialog").evaluate((element) => element.open), true);
-    assert.match(await page.locator("#asset-dialog").textContent(), /Evidence image 2/);
+    assert.match(await page.locator("#asset-dialog").textContent(), /Roadmap/);
     assert.match(await page.locator("#asset-dialog").textContent(), /Created[\s\S]*Updated[\s\S]*File size[\s\S]*Advanced/);
-    assert.equal(await page.getByRole("button", { name: /Move to trash/ }).last().isDisabled(), true);
+    assert.equal(await page.locator("#asset-dialog details.asset-advanced").getAttribute("open"), null);
+    await page.locator("#asset-dialog details.asset-advanced").click();
+    assert.match(await page.locator("#asset-dialog").textContent(), /Immutable ID[\s\S]*MIME type[\s\S]*Digest/);
     await assertDialogFrame(page, "#asset-dialog");
     if (evidenceDir) await page.screenshot({ path: path.join(evidenceDir, "15-assets-dialog-desktop-1536x1024.png"), fullPage: false, animations: "disabled" });
+    const requestsBeforeTrash = desktop.assetRequests.length;
+    await page.locator("#asset-dialog").getByRole("button", { name: "Move to Trash" }).click();
+    assert.equal(desktop.assetRequests.length, requestsBeforeTrash);
+    assert.match(await page.locator("#asset-dialog").textContent(), /Move this revision to Trash\? You can restore it afterward\./);
+    await page.locator("#asset-dialog").getByRole("button", { name: "Move to Trash" }).click();
+    await page.locator("#asset-undo-toast").waitFor({ state: "visible" });
+    const trashRequest = desktop.assetRequests.at(-1);
+    assert.equal(trashRequest.path, "/api/assets/trash");
+    assert.equal(trashRequest.payload.asset_id, "asset-roadmap");
+    assert.equal(trashRequest.payload.expected_revision, 1);
+    assert.match(trashRequest.payload.operation_id, /^asset-trash-/);
+    assert.equal(await page.getByRole("button", { name: "Trash", exact: true }).getAttribute("aria-pressed"), "true");
+    assert.equal(await page.locator("#asset-dialog").evaluate((element) => element.open), false);
+    await page.getByRole("button", { name: "Open asset details for Roadmap" }).click();
+    assert.match(await page.locator("#asset-dialog").textContent(), /Purge unavailable · no retention policy is configured\./);
+    assert.equal(await page.locator("#asset-dialog").getByRole("button", { name: "Purge unavailable" }).isDisabled(), true);
     await page.getByRole("button", { name: "Close asset details" }).click();
-    assert.equal(await assetTrigger.evaluate((element) => element === document.activeElement), true);
-    await page.locator(".asset-tile .asset-image-button").last().click();
+    if (evidenceDir) await page.screenshot({ path: path.join(evidenceDir, "21-assets-trash-undo-desktop-1536x1024.png"), fullPage: false, animations: "disabled" });
+    await page.getByRole("button", { name: "Undo", exact: true }).click();
+    await page.waitForFunction(() => state.assetProjection === "active" && state.assetUndo === null);
+    const restoreRequest = desktop.assetRequests.at(-1);
+    assert.equal(restoreRequest.path, "/api/assets/restore");
+    assert.equal(restoreRequest.payload.asset_id, "asset-roadmap");
+    assert.equal(restoreRequest.payload.expected_revision, 2);
+    assert.match(restoreRequest.payload.operation_id, /^asset-restore-/);
+    assert.equal(await page.getByRole("button", { name: "Library", exact: true }).getAttribute("aria-pressed"), "true");
+    assert.equal(await page.getByRole("button", { name: "Open asset details for Roadmap" }).evaluate((element) => element === document.activeElement), true);
+    await page.getByRole("button", { name: "Open asset details for Onboarding illustration" }).click();
     assert.match(await page.locator("#asset-dialog").textContent(), /Onboarding illustration[\s\S]*Generating[\s\S]*42%/);
     assert.equal(await page.locator("#asset-dialog img").count(), 0);
     if (evidenceDir) await page.screenshot({ path: path.join(evidenceDir, "18-assets-generating-desktop-1536x1024.png"), fullPage: false, animations: "disabled" });
+    await page.getByRole("button", { name: "Close asset details" }).click();
+    await page.getByRole("button", { name: "Open asset details for Settings option" }).click();
+    await page.locator("#asset-dialog").getByRole("button", { name: "Retry generation" }).click();
+    const assetRetryRequest = desktop.assetRequests.at(-1);
+    assert.equal(assetRetryRequest.path, "/api/assets/generation/retry");
+    assert.equal(assetRetryRequest.payload.asset_id, "asset-failed");
+    assert.match(assetRetryRequest.payload.generation_job_id, /^generation-/);
+    assert.match(await page.locator("#asset-dialog").textContent(), /Queued/);
     await page.getByRole("button", { name: "Close asset details" }).click();
     await page.getByRole("button", { name: "List", exact: true }).click();
     assert.equal(await page.locator(".asset-list-row").count(), 7);
@@ -2947,10 +3170,24 @@ proofFeed.items.push({
       return box.height >= 44 && box.left >= 0 && box.right <= innerWidth;
     })), true);
     assert.equal(await mobilePage.locator("[data-qc-scope]").evaluate((element) => element.scrollWidth > element.clientWidth + 1), false);
+    if (await mobilePage.locator('[data-notification-toast-action="dismiss"]').isVisible().catch(() => false)) await mobilePage.locator('[data-notification-toast-action="dismiss"]').click();
     await mobilePage.evaluate(() => setView("assets"));
+    if (evidenceDir) await mobilePage.screenshot({ path: path.join(evidenceDir, "24-assets-ready-mobile-390x844.png"), fullPage: false, animations: "disabled" });
     await mobilePage.locator(".asset-tile .asset-image-button").first().click();
     await assertDialogFrame(mobilePage, "#asset-dialog");
     if (evidenceDir) await mobilePage.screenshot({ path: path.join(evidenceDir, "17-assets-dialog-mobile-390x844.png"), fullPage: false, animations: "disabled" });
+    await mobilePage.keyboard.press("Escape");
+    await mobilePage.getByRole("button", { name: "Open asset details for Onboarding illustration" }).click();
+    assert.match(await mobilePage.locator("#asset-dialog").textContent(), /Generating[\s\S]*42%/);
+    if (evidenceDir) await mobilePage.screenshot({ path: path.join(evidenceDir, "25-assets-generating-mobile-390x844.png"), fullPage: false, animations: "disabled" });
+    await mobilePage.keyboard.press("Escape");
+    await mobilePage.getByRole("button", { name: "Open asset details for Roadmap" }).click();
+    await mobilePage.locator("#asset-dialog").getByRole("button", { name: "Move to Trash" }).click();
+    await mobilePage.locator("#asset-dialog").getByRole("button", { name: "Move to Trash" }).click();
+    await mobilePage.locator("#asset-undo-toast").waitFor({ state: "visible" });
+    assert.equal(await mobilePage.locator("#asset-dialog").evaluate((element) => element.open), false);
+    if (evidenceDir) await mobilePage.screenshot({ path: path.join(evidenceDir, "26-assets-trash-undo-mobile-390x844.png"), fullPage: false, animations: "disabled" });
+    await mobilePage.getByRole("button", { name: "Undo", exact: true }).click();
     await mobilePage.keyboard.press("Escape");
     await mobilePage.evaluate(() => setView("settings"));
     assert.equal(await mobilePage.locator("#settings-essentials").evaluate((element) => element.scrollWidth <= element.clientWidth + 1), true);
