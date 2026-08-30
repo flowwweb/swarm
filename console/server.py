@@ -167,6 +167,7 @@ STATIC_FILES = {
     "/styles.css": ("styles.css", "text/css; charset=utf-8"),
     "/swarm-icon-64.png": ("swarm-icon-64.png", "image/png"),
     "/assets/swarm-mascot-512.png": ("swarm-mascot-512.png", "image/png"),
+    "/assets/swarm-guided-tour-role-group.png": ("swarm-guided-tour-role-group.png", "image/png"),
     "/assets/swarm-offline-disconnected.png": ("swarm-offline-disconnected.png", "image/png"),
 }
 STATIC_ASSETS = {

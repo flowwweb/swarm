@@ -27,6 +27,8 @@ const offlineAsset = fs.readFileSync(path.join(staticRoot, "swarm-offline-discon
 const pluginOfflineAsset = fs.readFileSync(path.join(pluginStaticRoot, "swarm-offline-disconnected.png"));
 const mascotAsset = fs.readFileSync(path.join(staticRoot, "swarm-mascot-512.png"));
 const pluginMascotAsset = fs.readFileSync(path.join(pluginStaticRoot, "swarm-mascot-512.png"));
+const onboardingRoleGroupAsset = fs.readFileSync(path.join(staticRoot, "swarm-guided-tour-role-group.png"));
+const pluginOnboardingRoleGroupAsset = fs.readFileSync(path.join(pluginStaticRoot, "swarm-guided-tour-role-group.png"));
 const iconAsset = fs.readFileSync(path.join(staticRoot, "swarm-icon-64.png"));
 const pluginIconAsset = fs.readFileSync(path.join(pluginStaticRoot, "swarm-icon-64.png"));
 const wordmarkAsset = fs.readFileSync(path.join(repositoryRoot, "skills", "swarm", "assets", "swarm-wordmark.png"));
@@ -37,8 +39,10 @@ const offlineAssetDigest = crypto.createHash("sha256").update(offlineAsset).dige
 assert.equal(offlineAssetDigest, "6f58eb1dc3c77634c0bb476591843a4226ccd73932589c70aae4a25cf02f8650");
 assert.deepEqual(pluginOfflineAsset, offlineAsset);
 assert.equal(crypto.createHash("sha256").update(mascotAsset).digest("hex"), "afb7e94cb63e994a929211dd8a81d816d2dd5b19d819ec72d81f121474ae8b07");
+assert.equal(crypto.createHash("sha256").update(onboardingRoleGroupAsset).digest("hex"), "dc9ed5015aff55402e9f266cfbb59676d2deaa1465a16b634e4064bdf490d48e");
 assert.equal(crypto.createHash("sha256").update(iconAsset).digest("hex"), "fbc528b1b7233105a5ddb5a32b1dfed9dbfe1a0db26e0bdb45a4c2d54f3c0bf4");
 assert.deepEqual(pluginMascotAsset, mascotAsset);
+assert.deepEqual(pluginOnboardingRoleGroupAsset, onboardingRoleGroupAsset);
 assert.deepEqual(pluginIconAsset, iconAsset);
 assert.equal(pluginCss, css);
 assert.equal(pluginApp, app);
@@ -46,6 +50,8 @@ assert.equal(pluginIndexHtml, indexHtml);
 if (!agentsSourceOnly) assert.equal(pluginServer, server);
 assert.match(server, /"\/assets\/swarm-offline-disconnected\.png": \("swarm-offline-disconnected\.png", "image\/png"\)/);
 assert.match(server, /"\/assets\/swarm-mascot-512\.png": \("swarm-mascot-512\.png", "image\/png"\)/);
+assert.match(server, /"\/assets\/swarm-guided-tour-role-group\.png": \("swarm-guided-tour-role-group\.png", "image\/png"\)/);
+assert.match(pluginServer, /"\/assets\/swarm-guided-tour-role-group\.png": \("swarm-guided-tour-role-group\.png", "image\/png"\)/);
 assert.match(server, /"\/swarm-icon-64\.png": \("swarm-icon-64\.png", "image\/png"\)/);
 assert.match(indexHtml, /id="connection-state" hidden role="alert" aria-labelledby="connection-state-title"/);
 assert.match(indexHtml, /src="\/assets\/swarm-offline-disconnected\.png" width="1536" height="1024"/);
@@ -101,24 +107,37 @@ assert.match(css, /\.onboarding-actions \{[^}]*display:grid;[^}]*grid-template-c
 assert.match(css, /\.onboarding-actions \.onboarding-skip \{ grid-column:2; grid-row:2;[^}]*\}/);
 assert.match(css, /\.onboarding-actions \.primary-action \{ grid-column:2; grid-row:1;[^}]*\}/);
 assert.match(indexHtml, /id="onboarding-close"[^>]*aria-label="Close onboarding"/);
-assert.match(indexHtml, /class="onboarding-mascot" src="\/assets\/swarm-mascot-512\.png" width="512" height="512" alt="" aria-hidden="true"/);
+assert.match(indexHtml, /class="onboarding-mascot onboarding-artwork" src="\/assets\/swarm-mascot-512\.png" width="512" height="512" alt="" aria-hidden="true"/);
 assert.match(indexHtml, /<link rel="icon" type="image\/png" sizes="64x64" href="\/swarm-icon-64\.png"/);
 assert.doesNotMatch(indexHtml, /swarm-favicon\.svg|<div class="onboarding-mascot"/);
 assert.match(indexHtml, /<h2>One prompt\. A coordinated team\.<\/h2>/);
 assert.match(indexHtml, /Prompt[\s\S]*?CTRL[\s\S]*?Designer[\s\S]*?Developer[\s\S]*?Reviewer/);
-assert.match(indexHtml, /class="onboarding-flag-mascot"[\s\S]*?swarm-mascot-512\.png[\s\S]*?class="onboarding-flag"/);
-assert.match(indexHtml, /class="onboarding-flow" role="img" aria-label="A prompt enters CTRL, which routes work through three connected lines to Designer, Developer, and Reviewer\."/);
+assert.match(indexHtml, /class="onboarding-flag-mascot onboarding-artwork"[\s\S]*?swarm-mascot-512\.png[\s\S]*?class="onboarding-flag"/);
+assert.match(indexHtml, /class="onboarding-flow onboarding-supporting-visual" role="img" aria-label="A prompt enters CTRL, which routes work through three connected lines to Designer, Developer, and Reviewer\."/);
 assert.equal((indexHtml.match(/class="onboarding-flow-fanout"[\s\S]*?<i><\/i>/g) || []).length, 1);
 assert.match(css, /\.onboarding-flag i \{[^}]*conic-gradient\([^}]*#fff4df[^}]*#ff7a18/);
 assert.match(css, /\.onboarding-flow-node\.is-ctrl \{[^}]*clip-path:polygon\(18% 0,82% 0,100% 50%,82% 100%,18% 100%,0 50%\)/);
 assert.match(css, /\.onboarding-flow-fanout i:nth-child\(3\) \{ top:83\.33%; \}/);
 assert.match(css, /@media \(max-width: 620px\)[\s\S]*?\.onboarding-flow \{[^}]*grid-template-columns:66px 24px 70px 28px minmax\(88px,1fr\)/);
 assert.match(indexHtml, /<h2>A role for every kind of work\.<\/h2>/);
-assert.match(indexHtml, /CTRL brings in the right mix for your prompt\./);
-assert.match(indexHtml, /id="onboarding-role-examples"[\s\S]*?data-role-media-state="unavailable"/);
-assert.match(app, /const ONBOARDING_ROLE_IDS = \["developer", "designer", "architect", "security"\]/);
-assert.match(app, /function onboardingRoleExamplesMarkup\(\)[\s\S]*?roleRecord\(roleId\)[\s\S]*?roleHasRetainedAvatar\(role\)[\s\S]*?roleAvatar\(role\)/);
-assert.match(app, /function renderOnboardingRoleExamples\(\)[\s\S]*?roleMediaState = [\s\S]*?"current" : "unavailable"/);
+assert.match(indexHtml, /24 curated roles, ready to work—from development and design to security and content\./);
+const onboardingRolePanel = indexHtml.match(/id="onboarding-panel-3"[\s\S]*?<\/section>/)?.[0] || "";
+assert.match(onboardingRolePanel, /<img class="onboarding-role-group onboarding-artwork" src="\/assets\/swarm-guided-tour-role-group\.png" width="1920" height="1080" alt="Developer, Designer, Architect, and Security SWARM role mascots working together\." loading="lazy" decoding="async" \/>/);
+assert.equal((onboardingRolePanel.match(/<img\b/g) || []).length, 1);
+assert.doesNotMatch(onboardingRolePanel, /onboarding-role-examples|data-role-media|role="list"|<article/);
+assert.doesNotMatch(app, /ONBOARDING_ROLE_IDS|onboardingRoleExamplesMarkup|renderOnboardingRoleExamples/);
+assert.doesNotMatch(css, /onboarding-role-examples|onboarding-role-media/);
+assert.match(css, /\.onboarding-role-group \{[^}]*width:min\(700px,100%\);[^}]*max-height:min\(310px,42dvh\);[^}]*height:auto;[^}]*object-fit:contain;/);
+assert.match(css, /@media \(max-width: 620px\)[\s\S]*?\.onboarding-role-group \{[^}]*width:min\(100%,340px\);[^}]*max-height:min\(220px,30dvh\);/);
+assert.match(css, /--motion-enter-duration: 220ms;[\s\S]*?--motion-enter-distance: 8px;[\s\S]*?--motion-stagger: 55ms;/);
+assert.match(css, /@keyframes swarm-enter \{ from \{ opacity:0; transform:translateY\(var\(--motion-enter-distance\)\); \} to \{ opacity:1; transform:translateY\(0\); \} \}/);
+assert.match(css, /\.view\.is-active:not\(\[hidden\]\) \{ animation:swarm-enter var\(--motion-enter-duration\) var\(--motion-ease\) both; \}/);
+assert.match(css, /#onboarding-primary \{ --motion-enter-delay:calc\(var\(--motion-stagger\) \* 4\); \}[\s\S]*?#onboarding-skip \{ --motion-enter-delay:calc\(var\(--motion-stagger\) \* 5\); \}/);
+assert.match(css, /@media \(prefers-reduced-motion: reduce\)[\s\S]*?animation:none!important; opacity:1!important; transform:none!important;/);
+const onboardingMotionSource = app.match(/function updateOnboardingEntrance\(step\) \{[\s\S]*?\n\}/)?.[0] || "";
+assert.match(onboardingMotionSource, /dialog\.dataset\.motionStep === motionStep/);
+assert.match(onboardingMotionSource, /dialog\.classList\.remove\("is-step-entering"\)[\s\S]*?void dialog\.offsetWidth;[\s\S]*?dialog\.classList\.add\("is-step-entering"\)/);
+assert.doesNotMatch(onboardingMotionSource, /setTimeout|setInterval|requestAnimationFrame/);
 assert.match(indexHtml, /<h2>Your project finds its shape\.<\/h2>/);
 assert.match(indexHtml, /SWARM turns a project into the useful views it needs—screens, flow maps, tables, and shared project data—automatically\./);
 const projectViewsPanel = indexHtml.match(/id="onboarding-panel-4"[\s\S]*?<\/section>/)?.[0] || "";
@@ -1467,6 +1486,7 @@ async function mount(page, overview, overrides = {}) {
     if (url.pathname.startsWith("/api/proof-media/")) return route.fulfill({ status: 200, contentType: "image/svg+xml", body: '<svg xmlns="http://www.w3.org/2000/svg" width="160" height="100"><rect width="160" height="100" fill="#0f1726"/></svg>' });
     if (url.pathname === "/assets/swarm-wordmark.png") return route.fulfill({ status: 200, contentType: "image/png", body: wordmarkAsset });
     if (url.pathname === "/assets/swarm-mascot-512.png") return route.fulfill({ status: 200, contentType: "image/png", body: mascotAsset });
+    if (url.pathname === "/assets/swarm-guided-tour-role-group.png") return route.fulfill({ status: 200, contentType: "image/png", body: onboardingRoleGroupAsset });
     if (url.pathname === "/swarm-icon-64.png") return route.fulfill({ status: 200, contentType: "image/png", body: iconAsset });
     return route.abort();
   });
@@ -1486,6 +1506,30 @@ async function mount(page, overview, overrides = {}) {
   return { runtimeErrors, requests, notificationSeenRequests, configRequests };
 }
 
+async function assertOnboardingRoleGroup(page, viewportWidth) {
+  const image = page.locator("#onboarding-panel-3 .onboarding-role-group");
+  await image.waitFor({ state: "visible" });
+  assert.equal(await image.count(), 1);
+  await image.evaluate((node) => Promise.all(node.getAnimations().map((animation) => animation.finished.catch(() => undefined))));
+  const geometry = await image.evaluate((node) => {
+    const imageRect = node.getBoundingClientRect();
+    const panelRect = node.closest(".onboarding-panel").getBoundingClientRect();
+    return {
+      naturalWidth: node.naturalWidth,
+      naturalHeight: node.naturalHeight,
+      image: { left: imageRect.left, top: imageRect.top, right: imageRect.right, bottom: imageRect.bottom, width: imageRect.width, height: imageRect.height },
+      panel: { left: panelRect.left, top: panelRect.top, right: panelRect.right, bottom: panelRect.bottom },
+      documentWidth: document.documentElement.scrollWidth,
+    };
+  });
+  assert.equal(geometry.naturalWidth, 1920);
+  assert.equal(geometry.naturalHeight, 1080);
+  assert.ok(geometry.image.width > 0 && geometry.image.height > 0);
+  assert.ok(geometry.image.left >= geometry.panel.left - 1 && geometry.image.right <= geometry.panel.right + 1);
+  assert.ok(geometry.image.top >= geometry.panel.top - 1 && geometry.image.bottom <= geometry.panel.bottom + 1);
+  assert.ok(geometry.documentWidth <= viewportWidth);
+}
+
 const browserCandidates = [
   process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH,
   "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
@@ -1494,12 +1538,6 @@ const browserCandidates = [
 const executablePath = browserCandidates.find((candidate) => fs.existsSync(candidate));
 const browser = await chromium.launch({ headless: true, ...(executablePath ? { executablePath } : {}) });
 const proofFeed = imageProofFixture(6);
-  const onboardingProofFeed = structuredClone(proofFeed);
-  onboardingProofFeed.items.push(
-    { task_id: "ctrl", evidence_id: "role-avatar-designer", digest: String(7).padStart(64, "0"), media_type: "image/png", caption: "Designer role avatar" },
-    { task_id: "ctrl", evidence_id: "role-avatar-developer", digest: String(8).padStart(64, "0"), media_type: "image/png", caption: "Developer role avatar" },
-    { task_id: "ctrl", evidence_id: "role-avatar-security", digest: String(19).padStart(64, "0"), media_type: "image/png", caption: "Security role avatar" },
-  );
   const usageHistory = structuredClone(fixture.usageHistory);
   usageHistory.verified_yield = {
     schema_version: 1,
@@ -1533,7 +1571,7 @@ const proofFeed = imageProofFixture(6);
   };
   try {
     const onboardingPage = await browser.newPage({ viewport: { width: 1536, height: 1024 } });
-    const onboarding = await mount(onboardingPage, scopedFixture(), { ...overrides, proofFeed: onboardingProofFeed, keepOnboarding: true });
+    const onboarding = await mount(onboardingPage, scopedFixture(), { ...overrides, keepOnboarding: true });
     assert.equal(await onboardingPage.getByText(/^Step [1-5] of 5$/).count(), 0);
     assert.equal(await onboardingPage.locator('[data-onboarding-step][aria-current="step"]').getAttribute("data-onboarding-step"), "0");
     const desktopGeometry = await onboardingPage.locator("#onboarding-dialog").evaluate((dialog) => {
@@ -1552,14 +1590,23 @@ const proofFeed = imageProofFixture(6);
     assert.ok(desktopGeometry.documentWidth <= desktopGeometry.viewport.width);
     await onboardingPage.getByRole("button", { name: "Start guided tour" }).click();
     assert.equal(await onboardingPage.locator('[data-onboarding-step][aria-current="step"]').getAttribute("data-onboarding-step"), "1");
+    const motionTiming = await onboardingPage.locator("#onboarding-dialog").evaluate((dialog) => {
+      const timing = (selector) => {
+        const style = getComputedStyle(dialog.querySelector(selector));
+        return { delay: parseFloat(style.animationDelay) * 1000, duration: parseFloat(style.animationDuration) * 1000 };
+      };
+      return [timing(".onboarding-panel.is-active .onboarding-artwork"), timing(".onboarding-panel.is-active > h2"), timing(".onboarding-panel.is-active > p"), timing(".onboarding-panel.is-active .onboarding-supporting-visual"), timing("#onboarding-primary"), timing("#onboarding-skip")];
+    });
+    assert.deepEqual(motionTiming.map((item) => Math.round(item.delay)), [0, 55, 110, 165, 220, 275]);
+    assert.ok(Math.max(...motionTiming.map((item) => item.delay + item.duration)) <= 550);
     assert.equal(await onboardingPage.locator(".onboarding-flow-fanout i").count(), 3);
     assert.match(await onboardingPage.locator(".onboarding-flow .is-ctrl").evaluate((element) => getComputedStyle(element).clipPath), /polygon/);
     assert.match(await onboardingPage.locator(".onboarding-flag i").evaluate((element) => getComputedStyle(element).backgroundImage), /conic-gradient/);
     await onboardingPage.getByRole("button", { name: "Continue" }).click();
     assert.equal(await onboardingPage.locator('[data-onboarding-step][aria-current="step"]').getAttribute("data-onboarding-step"), "2");
-    assert.equal(await onboardingPage.getByRole("list", { name: "Example SWARM roles" }).getByRole("listitem").count(), 4);
-    assert.equal(await onboardingPage.locator('#onboarding-role-examples[data-role-media-state="current"] img').count(), 4);
-    assert.deepEqual(await onboardingPage.locator("#onboarding-role-examples strong").allTextContents(), ["Developer", "Designer", "Architect", "Security"]);
+    assert.equal(await onboardingPage.locator("#onboarding-dialog").getAttribute("data-motion-step"), "2");
+    assert.equal(await onboardingPage.evaluate(() => document.activeElement?.id), "onboarding-primary");
+    await assertOnboardingRoleGroup(onboardingPage, 1536);
     await onboardingPage.getByRole("button", { name: "Continue" }).click();
     assert.equal(await onboardingPage.locator('[data-onboarding-step][aria-current="step"]').getAttribute("data-onboarding-step"), "3");
     assert.equal(await onboardingPage.locator('.onboarding-project-views[role="img"]').count(), 1);
@@ -1571,6 +1618,18 @@ const proofFeed = imageProofFixture(6);
   assert.equal(await onboardingConfigPanel.getByLabel("Codex model").inputValue(), "gpt-5.6-sol");
   assert.equal(await onboardingConfigPanel.getByLabel("Fast Mode").isChecked(), false);
   assert.equal(await onboardingConfigPanel.getByLabel("Progress feed").isChecked(), true);
+    await onboardingPage.evaluate(() => {
+      window.__onboardingMotionClassMutations = 0;
+      window.__onboardingMotionObserver = new MutationObserver((records) => { window.__onboardingMotionClassMutations += records.length; });
+      window.__onboardingMotionObserver.observe(document.querySelector("#onboarding-dialog"), { attributes: true, attributeFilter: ["class"] });
+    });
+    await onboardingConfigPanel.getByLabel("Fast Mode").check();
+    await onboardingPage.waitForFunction(() => {
+      const input = document.querySelector('#onboarding-configuration input[data-config-key="execution.fast_mode"]');
+      return input?.checked && !input.disabled;
+    });
+    assert.deepEqual(await onboardingPage.locator("#onboarding-dialog").evaluate((dialog) => ({ step: dialog.dataset.motionStep, classMutations: window.__onboardingMotionClassMutations })), { step: "4", classMutations: 0 });
+    await onboardingPage.evaluate(() => window.__onboardingMotionObserver.disconnect());
     assert.equal(await onboardingPage.getByRole("button", { name: "Close onboarding" }).count(), 1);
     assert.equal(await onboardingPage.getByRole("button", { name: "Skip for now" }).count(), 1);
     await onboardingPage.getByRole("button", { name: "Start using SWARM" }).click();
@@ -1590,7 +1649,7 @@ const proofFeed = imageProofFixture(6);
     await onboardingPage.close();
 
     const onboardingTabletPage = await browser.newPage({ viewport: { width: 834, height: 1112 } });
-    const onboardingTablet = await mount(onboardingTabletPage, scopedFixture(), { ...overrides, proofFeed: onboardingProofFeed, keepOnboarding: true });
+    const onboardingTablet = await mount(onboardingTabletPage, scopedFixture(), { ...overrides, keepOnboarding: true });
     await onboardingTabletPage.getByRole("button", { name: "Start guided tour" }).click();
     const tabletFlowGeometry = await onboardingTabletPage.locator(".onboarding-flow-scene").evaluate((scene) => {
       const roleNodes = [...scene.querySelectorAll(".onboarding-flow-roles b")];
@@ -1606,14 +1665,14 @@ const proofFeed = imageProofFixture(6);
     assert.ok(tabletFlowGeometry.roleTargets.every((role) => role.width >= 44 && role.height >= 44));
     assert.ok(tabletFlowGeometry.documentWidth <= tabletFlowGeometry.viewportWidth);
     await onboardingTabletPage.getByRole("button", { name: "Continue" }).click();
-    assert.equal(await onboardingTabletPage.locator('#onboarding-role-examples[data-role-media-state="current"] img').count(), 4);
+    await assertOnboardingRoleGroup(onboardingTabletPage, 834);
     await onboardingTabletPage.getByRole("button", { name: "Continue" }).click();
     assert.ok(await onboardingTabletPage.locator(".onboarding-project-views").evaluate((node) => node.scrollWidth <= node.clientWidth + 1));
     assert.deepEqual(onboardingTablet.runtimeErrors, []);
     await onboardingTabletPage.close();
 
     const onboardingMobilePage = await browser.newPage({ viewport: { width: 390, height: 844 } });
-    const onboardingMobile = await mount(onboardingMobilePage, scopedFixture(), { ...overrides, proofFeed: onboardingProofFeed, keepOnboarding: true });
+    const onboardingMobile = await mount(onboardingMobilePage, scopedFixture(), { ...overrides, keepOnboarding: true });
     await onboardingMobilePage.getByRole("button", { name: "Start guided tour" }).click();
     const mobileFlowGeometry = await onboardingMobilePage.locator(".onboarding-flow").evaluate((flow) => {
       const rect = (element) => { const value = element.getBoundingClientRect(); return { left: value.left, right: value.right, top: value.top, bottom: value.bottom, width: value.width, height: value.height }; };
@@ -1627,7 +1686,7 @@ const proofFeed = imageProofFixture(6);
     assert.ok(mobileFlowGeometry.roles[0].top < mobileFlowGeometry.roles[1].top && mobileFlowGeometry.roles[1].top < mobileFlowGeometry.roles[2].top);
     assert.ok(mobileFlowGeometry.scrollWidth <= mobileFlowGeometry.clientWidth + 1);
     await onboardingMobilePage.getByRole("button", { name: "Continue" }).click();
-    assert.equal(await onboardingMobilePage.locator('#onboarding-role-examples[data-role-media-state="current"] img').count(), 4);
+    await assertOnboardingRoleGroup(onboardingMobilePage, 390);
     await onboardingMobilePage.getByRole("button", { name: "Continue" }).click();
     assert.ok(await onboardingMobilePage.locator(".onboarding-project-views").evaluate((node) => node.scrollWidth <= node.clientWidth + 1));
     await onboardingMobilePage.getByRole("button", { name: "Continue" }).click();
@@ -1654,6 +1713,25 @@ const proofFeed = imageProofFixture(6);
     assert.ok(mobileGeometry.documentWidth <= mobileGeometry.viewport.width);
     assert.deepEqual(onboardingMobile.runtimeErrors, []);
     await onboardingMobilePage.close();
+
+    const reducedMotionPage = await browser.newPage({ viewport: { width: 834, height: 1112 } });
+    await reducedMotionPage.emulateMedia({ reducedMotion: "reduce" });
+    const reducedMotion = await mount(reducedMotionPage, scopedFixture(), { ...overrides, keepOnboarding: true });
+    await reducedMotionPage.getByRole("button", { name: "Start guided tour" }).click();
+    const reducedMotionStyles = await reducedMotionPage.locator("#onboarding-dialog").evaluate((dialog) => [
+      ".onboarding-panel.is-active .onboarding-artwork",
+      ".onboarding-panel.is-active > h2",
+      ".onboarding-panel.is-active > p",
+      ".onboarding-panel.is-active .onboarding-supporting-visual",
+      "#onboarding-primary",
+      "#onboarding-skip",
+    ].map((selector) => {
+      const style = getComputedStyle(dialog.querySelector(selector));
+      return { animationName: style.animationName, transform: style.transform };
+    }));
+    assert.ok(reducedMotionStyles.every((item) => item.animationName === "none" && item.transform === "none"));
+    assert.deepEqual(reducedMotion.runtimeErrors, []);
+    await reducedMotionPage.close();
 
     let releaseConfigPost;
     const pendingConfigControl = { failPost: false, feed: structuredClone(fixture.config), deferredPost: new Promise((resolve) => { releaseConfigPost = resolve; }) };
