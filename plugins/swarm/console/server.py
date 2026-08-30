@@ -121,6 +121,9 @@ HEALTH_RECOVERY_SECONDS = 600
 HEALTH_COOLDOWN_SECONDS = 900
 CONSOLE_LOG_PATH_ENV = "SWARM_CONSOLE_LOG_PATH"
 HEALTH_STATES = frozenset({"HEALTHY", "DEGRADED", "PRESSURED", "CRITICAL", "UNKNOWN"})
+HEALTH_CHECK_STATUSES = frozenset({"PASS", "WARN", "FAIL", "UNKNOWN"})
+AUTO_REPAIR_SETTING_KEY = "monitoring.auto_health_enabled"
+AUTO_REPAIR_LABEL = "Auto repair"
 HEALTH_THRESHOLDS = {
     "cpu_degraded": 85.0,
     "cpu_critical": 95.0,
@@ -1194,6 +1197,32 @@ def assess_health(sample: dict[str, Any]) -> dict[str, Any]:
         state = "UNKNOWN"
     digest = hashlib.sha256(json.dumps(reasons, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
     return {"state": state, "reasons": reasons, "evidence_digest": digest}
+
+
+def _health_check(
+    check_id: str,
+    status: str,
+    summary: str,
+    *,
+    observed_at_ms: int,
+    evidence: tuple[str, ...] = (),
+    recommended_action: str,
+    details: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    status = str(status).strip().upper()
+    if status not in HEALTH_CHECK_STATUSES:
+        raise ValueError(f"unsupported health check status: {status}")
+    result = {
+        "id": check_id,
+        "status": status,
+        "summary": summary,
+        "observed_at_ms": int(observed_at_ms),
+        "evidence": list(evidence),
+        "recommended_action": recommended_action,
+    }
+    if details:
+        result["details"] = copy.deepcopy(details)
+    return result
 
 
 class ConsoleStore:
@@ -3964,6 +3993,106 @@ class ConsoleStore:
             rows = connection.execute(query, args).fetchall()
         return [{**dict(row), "payload": json.loads(row["payload_json"])} for row in rows]
 
+    def prepare_health_repair(
+        self,
+        checks: list[dict[str, Any]],
+        *,
+        scope: str,
+        acknowledge: bool,
+        dry_run: bool,
+        now_ms: int,
+    ) -> dict[str, Any]:
+        """Persist one sanitized manual repair request; never dispatches work."""
+        if not isinstance(checks, list) or not checks:
+            raise ConsoleError("repair requires at least one health check")
+        if not isinstance(acknowledge, bool) or not isinstance(dry_run, bool):
+            raise ConsoleError("acknowledge and dry_run must be booleans")
+        if not dry_run and not acknowledge:
+            raise ConsoleError("consequential repair preparation requires acknowledgement")
+        scope = _safe_metadata_text(scope or "all", "scope", maximum=256)
+        safe_checks: list[dict[str, Any]] = []
+        for check in checks:
+            if not isinstance(check, dict):
+                raise ConsoleError("repair check must be an object")
+            check_id = _safe_metadata_text(check.get("id"), "check_id", maximum=128)
+            status = str(check.get("status") or "").strip().upper()
+            if check_id is None or status not in HEALTH_CHECK_STATUSES:
+                raise ConsoleError("repair check identity or status is invalid")
+            if status == "PASS":
+                raise ConsoleError("repair requires a non-PASS health check")
+            evidence = check.get("evidence")
+            if not isinstance(evidence, list) or any(
+                not isinstance(item, str) or not item or len(item) > 128 for item in evidence
+            ):
+                raise ConsoleError("repair evidence must contain safe local pointers")
+            safe_checks.append({
+                "id": check_id,
+                "status": status,
+                "summary": _safe_metadata_text(check.get("summary"), "summary", maximum=512) or "",
+                "evidence": list(dict.fromkeys(evidence))[:16],
+                "recommended_action": _safe_metadata_text(
+                    check.get("recommended_action"), "recommended_action", maximum=512
+                ) or "Review the check manually.",
+            })
+        safe_checks.sort(key=lambda item: item["id"])
+        material = {"scope": scope, "checks": safe_checks}
+        digest = hashlib.sha256(
+            json.dumps(material, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        ).hexdigest()
+        dedupe_key = f"manual-repair:{digest}"
+        incident_key = f"manual-repair:{scope}:{digest[:32]}"
+        payload = {
+            "request_type": "diagnostics_repair",
+            "scope": scope,
+            "check_ids": [item["id"] for item in safe_checks],
+            "checks": safe_checks,
+            "dry_run": dry_run,
+            "acknowledged": acknowledge,
+            "acknowledgement_required": True,
+            "auto_dispatch": False,
+            "dispatch_status": "NOT_DISPATCHED",
+            "claim_limit": (
+                "This request is a sanitized diagnostic handoff only. It does not edit source, config, databases, "
+                "host tasks, listener/package state, secrets, providers, or execution authority."
+            ),
+        }
+        now_ms = int(now_ms)
+        with self._lock, closing(self._connect()) as connection:
+            existing = connection.execute(
+                "SELECT * FROM health_requests WHERE dedupe_key=? AND status IN ('OPEN', 'CLAIMED', 'IN_PROGRESS')",
+                (dedupe_key,),
+            ).fetchone()
+            if existing is not None:
+                return {**dict(existing), "payload": json.loads(existing["payload_json"]), "deduplicated": True}
+            request_id = f"health:manual:{digest[:32]}"
+            if connection.execute(
+                "SELECT 1 FROM health_requests WHERE request_id=?", (request_id,)
+            ).fetchone() is not None:
+                request_id = f"{request_id}:{now_ms}"
+            connection.execute(
+                """
+                INSERT INTO health_requests(
+                    request_id, incident_key, dedupe_key, request_type, severity, scope,
+                    evidence_digest, payload_json, status, created_at_ms
+                ) VALUES (?, ?, ?, 'diagnostics_repair', ?, ?, ?, ?, 'OPEN', ?)
+                """,
+                (
+                    request_id,
+                    incident_key,
+                    dedupe_key,
+                    "critical" if any(item["status"] == "FAIL" for item in safe_checks) else "warning",
+                    scope,
+                    digest,
+                    json.dumps(payload, sort_keys=True, separators=(",", ":")),
+                    now_ms,
+                ),
+            )
+            connection.commit()
+            row = connection.execute(
+                "SELECT * FROM health_requests WHERE request_id=?", (request_id,)
+            ).fetchone()
+        return {**dict(row), "payload": json.loads(row["payload_json"]), "deduplicated": False}
+
     def claim_health_request(self, request_id: str, *, now_ms: int) -> dict[str, Any]:
         request_id = _safe_metadata_text(request_id, "request_id", maximum=512)
         with self._lock, closing(self._connect()) as connection:
@@ -4535,7 +4664,7 @@ def _controller_classification(
     *,
     structural_host_ctrl: bool = False,
 ) -> dict[str, str | None]:
-    """Classify CTRL from persisted role or fresh project-bound host spawn evidence."""
+    """Classify CTRL from persisted role or bounded project-bound host spawn evidence."""
     if str(row["agent_role"] or "").strip().casefold() == "ctrl":
         return {
             "controller_classification": "swarm_ctrl",
@@ -4814,14 +4943,14 @@ def build_overview(codex_home: Path, config_path: Path) -> dict[str, Any]:
     structural_controller_ids = {
         parent
         for parent, child_ids in raw_children.items()
-        if parent in fresh_ids
+        if parent in recent_ids
         and parent not in parents_by_child
         and not bool(all_rows[parent]["archived"])
         and str(all_rows[parent]["thread_source"] or "").strip().casefold()
         not in {"subagent", "internal_subagent"}
         and parent in project_bindings
         and any(
-            child in fresh_ids
+            child in recent_ids
             and parents_by_child.get(child) == {parent}
             and statuses_by_child.get(child) == {"open"}
             and edge_status.get(child) == "open"
@@ -4840,7 +4969,7 @@ def build_overview(codex_home: Path, config_path: Path) -> dict[str, Any]:
         and parent not in parents_by_child
         and (parent not in parsed_titles or parsed_titles[parent]["role"] == "ctrl")
         and any(
-            child in fresh_ids
+            child in recent_ids
             for child in child_ids
             if child in all_rows
         )
@@ -4850,7 +4979,9 @@ def build_overview(codex_home: Path, config_path: Path) -> dict[str, Any]:
         thread_id
         for thread_id in recent_parsed_ids
         if parsed_titles[thread_id]["role"] == "ctrl"
-    }.union(root_candidate_ids.intersection(recent_ids)).union(active_goal_ids.intersection(all_rows))
+    }.union(root_candidate_ids.intersection(recent_ids)).union(structural_controller_ids).union(
+        active_goal_ids.intersection(all_rows)
+    )
     descendant_ids: set[str] = set()
     traversed_ids: set[str] = set(controller_seed_ids)
     queue = list(controller_seed_ids)
@@ -5073,6 +5204,10 @@ def build_overview(codex_home: Path, config_path: Path) -> dict[str, Any]:
                 continue
             observed_descendants.add(node_id)
             raw_queue.extend(raw_children.get(node_id, []))
+        last_activity_at = max(
+            (nodes[node_id]["updated_at"] or 0 for node_id in descendants),
+            default=0,
+        )
         controllers.append(
             {
                 "id": controller_id,
@@ -5083,6 +5218,21 @@ def build_overview(codex_home: Path, config_path: Path) -> dict[str, Any]:
                 "status": controller["status"],
                 "archived": bool(controller.get("archived", False)),
                 "archive_source": "host_threads.archived",
+                "active_now": controller["status"] == "active",
+                "recently_active": (
+                    controller["status"] != "active"
+                    and bool(last_activity_at)
+                    and last_activity_at >= observed_after_ms
+                ),
+                "activity_status": (
+                    "active"
+                    if controller["status"] == "active"
+                    else "recently_active"
+                    if last_activity_at and last_activity_at >= observed_after_ms
+                    else "inactive"
+                ),
+                "last_activity_at": last_activity_at or None,
+                "activity_source": "host_threads.updated_at_ms+host_thread_spawn_edges.status",
                 **_controller_classification(
                     all_rows[controller_id],
                     structural_host_ctrl=controller_id in structural_controller_ids,
@@ -5099,7 +5249,7 @@ def build_overview(codex_home: Path, config_path: Path) -> dict[str, Any]:
         )
     controller_rank = {
         item["id"]: index
-        for index, item in enumerate(sorted(controllers, key=lambda item: (-item["nodes"], item["artifact"])))
+        for index, item in enumerate(sorted(controllers, key=lambda item: (-item["nodes"], item["artifact"], item["id"])))
     }
     for node_id, node in nodes.items():
         node["controller_ids"] = sorted(
@@ -5127,7 +5277,7 @@ def build_overview(codex_home: Path, config_path: Path) -> dict[str, Any]:
         "nodes": sorted(nodes.values(), key=lambda node: (node["project"], node["created_at"] or 0)),
         "links": links,
         "roots": roots,
-        "controllers": sorted(controllers, key=lambda item: (-item["updated_at"], -item["nodes"], item["artifact"])),
+        "controllers": sorted(controllers, key=lambda item: (-item["updated_at"], -item["nodes"], item["artifact"], item["id"])),
         "projects": sorted(projects.values(), key=_project_order_key),
         "analytics": {
             "swarms": len(roots),
@@ -5151,7 +5301,7 @@ def build_overview(codex_home: Path, config_path: Path) -> dict[str, Any]:
             "Older descendant lanes are omitted from the graph and counted on their CTRL scope.",
             "Visible-tab refreshes reuse the local snapshot until the host database, its WAL, or config changes.",
             f"Visible overview refreshes and a lightweight hidden-tab ping preserve portal presence; a closed tab expires after {PORTAL_PRESENCE_TTL_SECONDS} seconds.",
-            "Active means recently updated within two heartbeat windows, not guaranteed CPU work.",
+            "Active means the observed CTRL host row was updated within two heartbeat windows; recently_active means its bounded host scope has activity within the 24-hour observation window. Neither proves CPU work.",
             "Tokens are local cumulative thread tokens, not billing or remaining quota.",
             "Usage history prefers local Codex JSONL token_count totals and falls back to the SQLite threads.tokens_used high-water aggregate; prompts, responses, tools, and credentials are not retained.",
             "Only title metadata needed to recognize SWARM naming is read; message bodies, previews, rollout content, credentials, and the logs database are not.",
@@ -7747,6 +7897,16 @@ class App:
                     else "visible"
                 ),
                 "updated_at": controller.get("updated_at"),
+                "active_now": bool(controller.get("active_now", controller.get("status") == "active")),
+                "recently_active": bool(controller.get("recently_active", False)),
+                "activity_status": str(
+                    controller.get("activity_status")
+                    or ("active" if controller.get("status") == "active" else "inactive")
+                ).strip().casefold(),
+                "last_activity_at": controller.get("last_activity_at", controller.get("updated_at")),
+                "activity_source": controller.get(
+                    "activity_source", "host_threads.updated_at_ms+host_thread_spawn_edges.status"
+                ),
             }
             for controller in view.get("controllers", [])
         ]
@@ -7756,6 +7916,10 @@ class App:
         ]
         visible_controllers = [controller for controller in authoritative_controllers if not controller["archived"]]
         active_controllers = [controller for controller in visible_controllers if controller["status"] == "active"]
+        recently_active_controllers = [
+            controller for controller in visible_controllers
+            if controller["activity_status"] == "recently_active"
+        ]
         projects = []
         for project in view.get("projects", []):
             project_id = str(project.get("id", ""))
@@ -7766,6 +7930,25 @@ class App:
             project_controllers = [controller for controller in all_project_controllers if not controller["archived"]]
             ctrl_ids = [controller["id"] for controller in project_controllers]
             active_ids = [controller["id"] for controller in project_controllers if controller["status"] == "active"]
+            recently_active_ids = [
+                controller["id"] for controller in project_controllers
+                if controller["activity_status"] == "recently_active"
+            ]
+            last_activity_at = max(
+                (
+                    controller["last_activity_at"]
+                    for controller in project_controllers
+                    if isinstance(controller.get("last_activity_at"), int)
+                    and not isinstance(controller.get("last_activity_at"), bool)
+                ),
+                default=None,
+            )
+            unavailable_candidate_ids = [
+                controller["id"] for controller in controllers
+                if controller.get("project_id") == project_id
+                and not controller.get("archived", False)
+                and not _is_observed_ctrl_for_projection(controller)
+            ]
             project_nodes = [
                 node for node in view.get("nodes", [])
                 if node.get("project_id") == project_id and not node.get("virtual")
@@ -7787,6 +7970,36 @@ class App:
                 "ordering": dict(project.get("ordering") or {}),
                 "active_ctrl_id": active_ids[0] if active_ids else None,
                 "active_ctrl": active,
+                "active_ctrl_ids": active_ids,
+                "recently_active_ctrl_ids": recently_active_ids,
+                "active_now_count": len(active_ids),
+                "recently_active_count": len(recently_active_ids),
+                "last_activity_at": last_activity_at,
+                "activity_status": (
+                    "active"
+                    if active_ids
+                    else "recently_active"
+                    if recently_active_ids
+                    else "unknown"
+                    if unavailable_candidate_ids
+                    else "inactive"
+                ),
+                "activity_facts": {
+                    "active_now": bool(active_ids),
+                    "recently_active": bool(recently_active_ids),
+                    "unknown": bool(unavailable_candidate_ids) and not active_ids and not recently_active_ids,
+                    "inactive": not active_ids and not recently_active_ids and not unavailable_candidate_ids,
+                    "active_now_count": len(active_ids),
+                    "recently_active_count": len(recently_active_ids),
+                    "last_activity_at": last_activity_at,
+                    "unknown_controller_ids": unavailable_candidate_ids,
+                    "unknown_reason": (
+                        "One or more project-bound host CTRL candidates lacked an accepted persisted role or "
+                        "unambiguous structural classification."
+                        if unavailable_candidate_ids else None
+                    ),
+                    "source": "host_threads.updated_at_ms+host_thread_spawn_edges.status",
+                },
                 "ctrl_ids": ctrl_ids,
                 "project_eligibility": "swarm_ctrl" if ctrl_ids else "no_ctrl",
                 "eligibility_source": (
@@ -7839,13 +8052,15 @@ class App:
         return {
             "active_ctrl_id": active_controllers[0]["id"] if active_controllers else None,
             "active_ctrl_ids": [controller["id"] for controller in active_controllers],
+            "recently_active_ctrl_ids": [controller["id"] for controller in recently_active_controllers],
             "controllers": controllers,
             "projects": projects,
             "project_inventory": project_inventory,
             "claim_limit": (
-                "Current Work eligibility requires persisted host agent_role=ctrl or fresh, open, project-bound host "
-                "spawn evidence to an actual subagent. Titles and runtime status never establish CTRL identity. Legacy, "
-                "stale, closed, or unbound rows fail closed as no_ctrl. Saved project inventory is sourced only from the host "
+                "Current Work eligibility requires persisted host agent_role=ctrl or bounded, open, project-bound host "
+                "spawn evidence to an actual subagent. Titles and runtime status never establish CTRL identity. "
+                "The structural projection may retain a recent open, project-bound host edge for activity display, "
+                "but it never grants Auto or execution authority. Closed, ambiguous, or unbound rows fail closed as no_ctrl. Saved project inventory is sourced only from the host "
                 "projects table; task metadata cannot create a project, and status facts remain read-only observation."
             ),
         }
@@ -9590,6 +9805,400 @@ class App:
             "bytes": storage["bytes"] + proof["bytes"],
         }
 
+    def _auto_repair_policy(self) -> dict[str, Any]:
+        base = {
+            "key": AUTO_REPAIR_SETTING_KEY,
+            "label": AUTO_REPAIR_LABEL,
+            "default": False,
+            "manual_available": True,
+            "dispatch": "disabled",
+            "automatic_request_mode": "bounded_existing_health_requests",
+            "claim_limit": (
+                "The canonical monitoring.auto_health_enabled setting is presented as Auto repair. "
+                "It gates only the existing bounded advisory health-request path; repair dispatch, model use, "
+                "and source, config, host, listener, or provider mutation remain disabled."
+            ),
+        }
+        try:
+            _, effective, _ = load_config(self.config_path)
+        except ConsoleError as exc:
+            return {
+                **base,
+                "state": "UNKNOWN",
+                "status": "UNKNOWN",
+                "enabled": False,
+                "reason": f"canonical config could not be validated: {str(exc)[:256]}",
+            }
+        monitoring = effective.get("monitoring") if isinstance(effective, dict) else None
+        declared = (
+            isinstance(monitoring, dict)
+            and "auto_health_enabled" in monitoring
+            and AUTO_REPAIR_SETTING_KEY in EDITABLE_SETTINGS
+            and isinstance(monitoring.get("auto_health_enabled"), bool)
+        )
+        if not declared:
+            return {
+                **base,
+                "state": "UNAVAILABLE",
+                "status": "UNAVAILABLE",
+                "enabled": False,
+                "automatic_request_mode": "none",
+                "reason": "canonical config is missing monitoring.auto_health_enabled; Auto repair is fail-closed",
+            }
+        enabled = bool(monitoring["auto_health_enabled"])
+        return {
+            **base,
+            "state": "KNOWN",
+            "status": "ON" if enabled else "OFF",
+            "enabled": enabled,
+            "automatic_request_mode": "bounded_existing_health_requests" if enabled else "none",
+            "reason": (
+                "Auto repair is ON through canonical monitoring.auto_health_enabled; only the existing bounded "
+                "advisory health-request path may record requests, while repair dispatch remains disabled because "
+                "the path is not an allowlisted low-risk repair executor."
+                if enabled else
+                "Auto repair is OFF through canonical monitoring.auto_health_enabled; deterministic health checks "
+                "remain active and automatic health requests, model use, and repair dispatch are disabled."
+            ),
+        }
+
+    @staticmethod
+    def _health_contract_status(checks: list[dict[str, Any]]) -> str:
+        statuses = {str(check.get("status") or "UNKNOWN").upper() for check in checks}
+        if "FAIL" in statuses:
+            return "FAIL"
+        if "WARN" in statuses:
+            return "WARN"
+        if "UNKNOWN" in statuses:
+            return "UNKNOWN"
+        return "PASS"
+
+    def health_checks(
+        self,
+        overview: dict[str, Any] | None = None,
+        *,
+        now_ms: int | None = None,
+    ) -> dict[str, Any]:
+        """Return deterministic local health checks without model calls or repair dispatch."""
+        now_ms = int(now_ms if now_ms is not None else time.time() * 1000)
+        checks: list[dict[str, Any]] = []
+
+        source_server = Path(__file__).resolve()
+        mirror_server = PLUGIN_ROOT / "console" / "server.py"
+        try:
+            source_digest = hashlib.sha256(source_server.read_bytes()).hexdigest()
+            mirror_digest = hashlib.sha256(mirror_server.read_bytes()).hexdigest()
+        except (OSError, ValueError):
+            source_digest = mirror_digest = ""
+        if source_digest and source_digest == mirror_digest:
+            checks.append(_health_check(
+                "process.source_mirror_parity", "PASS",
+                "The local server source and plugin mirror have matching content.",
+                observed_at_ms=now_ms,
+                evidence=("local:server-source", "local:server-mirror"),
+                recommended_action="No source-mirror repair action is required.",
+                details={"source_mirror": "match"},
+            ))
+        else:
+            checks.append(_health_check(
+                "process.source_mirror_parity", "FAIL" if source_digest or mirror_digest else "UNKNOWN",
+                "The local server source/mirror parity could not be established.",
+                observed_at_ms=now_ms,
+                evidence=("local:server-source", "local:server-mirror"),
+                recommended_action="Restore one reviewed server source/mirror before claiming local parity.",
+                details={"source_mirror": "mismatch" if source_digest and mirror_digest else "unavailable"},
+            ))
+        checks.append(_health_check(
+            "process.listener_package_parity", "UNKNOWN",
+            "The installed listener PID, loaded package, and manifest are not verified by this source-local probe.",
+            observed_at_ms=now_ms,
+            evidence=("local:process", "local:package-manifest"),
+            recommended_action="Use a controlled local integration check to compare the listener command line, loaded path, and package manifest.",
+            details={"source_mirror": "verified" if source_digest and source_digest == mirror_digest else "unverified", "installed_listener": "unverified"},
+        ))
+
+        roster_state = "UNKNOWN"
+        roster_records: list[dict[str, Any]] = []
+        root_statuses: Counter[str] = Counter()
+        try:
+            roster_state, roster_records, cursor, root_owners = self._host_project_records()
+            if cursor is not None:
+                for record in roster_records:
+                    root_statuses[self._project_root_binding(record, root_owners).get("status", "UNKNOWN")] += 1
+        except (ConsoleError, OSError, sqlite3.Error, TypeError, ValueError):
+            roster_state = "UNKNOWN"
+        if roster_state != "KNOWN":
+            checks.append(_health_check(
+                "project.roster_root_binding", "UNKNOWN",
+                "The canonical saved-project roster or root bindings are unavailable.",
+                observed_at_ms=now_ms,
+                evidence=("local:host-projects",),
+                recommended_action="Restore readable canonical host project and root tables; do not infer projects from task titles or paths.",
+            ))
+        elif any(root_statuses.get(status) for status in ("INVALID", "AMBIGUOUS", "UNKNOWN")):
+            checks.append(_health_check(
+                "project.roster_root_binding", "WARN",
+                "The canonical project roster is readable but one or more root bindings are not usable.",
+                observed_at_ms=now_ms,
+                evidence=("local:host-projects",),
+                recommended_action="Review the exact affected canonical root bindings before selecting or mutating a project.",
+                details={"project_count": len(roster_records), "root_statuses": dict(root_statuses)},
+            ))
+        else:
+            checks.append(_health_check(
+                "project.roster_root_binding", "PASS",
+                "The canonical saved-project roster and root bindings are readable.",
+                observed_at_ms=now_ms,
+                evidence=("local:host-projects",),
+                recommended_action="No repair action is required.",
+                details={"project_count": len(roster_records), "root_statuses": dict(root_statuses)},
+            ))
+
+        if not isinstance(overview, dict):
+            try:
+                overview = self._host_overview()
+            except (ConsoleError, OSError, sqlite3.Error, TypeError, ValueError):
+                overview = None
+        navigation = self._navigation_payload(overview) if isinstance(overview, dict) else {}
+        inventory = navigation.get("project_inventory") if isinstance(navigation, dict) else None
+        nav_projects = navigation.get("projects") if isinstance(navigation, dict) else None
+        nav_controllers = navigation.get("controllers") if isinstance(navigation, dict) else None
+        if (
+            not isinstance(inventory, dict)
+            or inventory.get("state") != "KNOWN"
+            or inventory.get("available") is not True
+            or not isinstance(nav_projects, list)
+            or not isinstance(nav_controllers, list)
+        ):
+            checks.append(_health_check(
+                "projection.ctrl_activity", "UNKNOWN",
+                "CTRL activity cannot be classified while the canonical project inventory is unavailable.",
+                observed_at_ms=now_ms,
+                evidence=("local:host-projects", "local:host-threads"),
+                recommended_action="Restore the canonical host project inventory and refresh the read-only projection.",
+            ))
+        else:
+            activity_fields_valid = all(
+                isinstance(project, dict)
+                and project.get("activity_status") in {"active", "recently_active", "inactive", "unknown"}
+                and isinstance(project.get("activity_facts"), dict)
+                and isinstance(controller, dict)
+                for project in nav_projects
+                for controller in [project]
+            ) and all(
+                isinstance(controller, dict)
+                and controller.get("activity_status") in {"active", "recently_active", "inactive"}
+                for controller in nav_controllers
+            )
+            visible_ctrls = [
+                controller for controller in nav_controllers
+                if controller.get("visibility") == "visible"
+                and controller.get("archived") is False
+                and _is_observed_ctrl_for_projection(controller)
+            ]
+            if not activity_fields_valid:
+                checks.append(_health_check(
+                    "projection.ctrl_activity", "FAIL",
+                    "The activity projection is missing a typed status or activity fact.",
+                    observed_at_ms=now_ms,
+                    evidence=("local:host-threads", "local:navigation"),
+                    recommended_action="Keep the affected projection unavailable until its host fields are complete.",
+                ))
+            else:
+                checks.append(_health_check(
+                    "projection.ctrl_activity", "PASS",
+                    (
+                        f"CTRL activity projection is readable ({len(visible_ctrls)} visible qualifying CTRLs)."
+                        if visible_ctrls else "No qualifying visible CTRLs were observed; the empty result is known."
+                    ),
+                    observed_at_ms=now_ms,
+                    evidence=("local:host-threads", "local:navigation"),
+                    recommended_action="No repair action is required." if visible_ctrls else "Keep the empty result; do not synthesize a CTRL row.",
+                    details={
+                        "active_now": sum(item.get("activity_status") == "active" for item in visible_ctrls),
+                        "recently_active": sum(item.get("activity_status") == "recently_active" for item in visible_ctrls),
+                    },
+                ))
+
+        overview_controllers = overview.get("controllers") if isinstance(overview, dict) else None
+        if not isinstance(overview_controllers, list):
+            checks.append(_health_check(
+                "host.thread_freshness_parent_edges", "UNKNOWN",
+                "Host-thread freshness and parent-edge facts are unavailable.",
+                observed_at_ms=now_ms,
+                evidence=("local:host-threads",),
+                recommended_action="Refresh the read-only host observation before acting on parent or status edges.",
+            ))
+        else:
+            omitted = sum(
+                int(item.get("older_lanes_omitted") or 0)
+                for item in overview_controllers
+                if isinstance(item, dict) and isinstance(item.get("older_lanes_omitted"), int)
+            )
+            unavailable = sum(
+                item.get("controller_classification") == "unavailable"
+                for item in overview_controllers
+                if isinstance(item, dict)
+            )
+            status = "WARN" if omitted or unavailable else "PASS"
+            checks.append(_health_check(
+                "host.thread_freshness_parent_edges", status,
+                "Host freshness and parent-edge ambiguity are retained as bounded display facts." if status == "WARN" else "Host freshness and parent-edge facts are readable.",
+                observed_at_ms=now_ms,
+                evidence=("local:host-threads", "local:spawn-edges"),
+                recommended_action=(
+                    "Review ambiguous or omitted host edges; do not infer authority from them."
+                    if status == "WARN" else "No repair action is required."
+                ),
+                details={"controllers": len(overview_controllers), "older_lanes_omitted": omitted, "unavailable_classifications": unavailable},
+            ))
+
+        try:
+            progress_projection = self.progress_ledger.replay()
+            progress_cursor = progress_projection.get("cursor") if isinstance(progress_projection, dict) else None
+            if not isinstance(progress_cursor, dict):
+                raise ProgressEventError("progress cursor is unavailable")
+            checks.append(_health_check(
+                "ledger.cursor_freshness", "PASS", "The persisted work-ledger cursor is readable.",
+                observed_at_ms=now_ms, evidence=("local:progress-ledger",),
+                recommended_action="No repair action is required.", details={"cursor_fields": sorted(progress_cursor)},
+            ))
+        except (OSError, ProgressEventError, TypeError, ValueError):
+            checks.append(_health_check(
+                "ledger.cursor_freshness", "UNKNOWN", "The persisted work-ledger cursor could not be read.",
+                observed_at_ms=now_ms, evidence=("local:progress-ledger",),
+                recommended_action="Keep progress metrics unavailable until the existing ledger is readable.",
+            ))
+
+        try:
+            proof_cursor = self.store.proof_cursor()
+            proof_items = self.store.proof_feed()
+            if not isinstance(proof_cursor.get("identity"), str):
+                raise ConsoleError("proof cursor identity is unavailable")
+            checks.append(_health_check(
+                "asset.evidence_store", "PASS", "The existing asset/evidence store and cursor are readable.",
+                observed_at_ms=now_ms, evidence=("local:console-store", "local:proof-store"),
+                recommended_action="No repair action is required.", details={"evidence_items": len(proof_items)},
+            ))
+        except (ConsoleError, OSError, sqlite3.Error, TypeError, ValueError):
+            checks.append(_health_check(
+                "asset.evidence_store", "FAIL", "The existing asset/evidence store or cursor is unreadable.",
+                observed_at_ms=now_ms, evidence=("local:console-store", "local:proof-store"),
+                recommended_action="Request a manual diagnostic review; do not fabricate asset availability or file URLs.",
+            ))
+
+        config_ok = True
+        try:
+            load_config(self.config_path)
+        except ConsoleError:
+            config_ok = False
+        if not config_ok:
+            checks.append(_health_check(
+                "config.schema_compatibility_redaction", "FAIL", "The canonical SWARM config failed validation.",
+                observed_at_ms=now_ms, evidence=("local:config",),
+                recommended_action="Review the canonical config through its validator; do not apply unknown keys.",
+            ))
+        else:
+            policy = self._auto_repair_policy()
+            checks.append(_health_check(
+                "config.schema_compatibility_redaction",
+                "WARN" if policy["state"] == "UNAVAILABLE" else "PASS",
+                "Canonical config validation succeeded, but the canonical Auto repair setting is unavailable."
+                if policy["state"] == "UNAVAILABLE" else "Canonical config validation and redacted settings access succeeded.",
+                observed_at_ms=now_ms, evidence=("local:config",),
+                recommended_action=(
+                    "Keep Auto repair disabled and restore monitoring.auto_health_enabled through the canonical schema owner."
+                    if policy["state"] == "UNAVAILABLE" else "No repair action is required."
+                ),
+                details={
+                    "auto_repair": policy["status"],
+                    "setting_key": AUTO_REPAIR_SETTING_KEY,
+                    "redaction": "server_owned",
+                },
+            ))
+
+        checks.append(_health_check(
+            "api.health_endpoint_response", "PASS", "This local health endpoint produced a valid response.",
+            observed_at_ms=now_ms, evidence=("local:api",),
+            recommended_action="No repair action is required.",
+        ))
+
+        refresh_ms = None
+        generated_at = overview.get("generated_at") if isinstance(overview, dict) else None
+        if isinstance(generated_at, str):
+            try:
+                refresh_ms = int(datetime.fromisoformat(generated_at.replace("Z", "+00:00")).timestamp() * 1000)
+            except (TypeError, ValueError, OverflowError):
+                refresh_ms = None
+        heartbeat = int(overview.get("heartbeat_minutes") or 30) if isinstance(overview, dict) else 30
+        refresh_limit_ms = max(5 * 60 * 1000, heartbeat * 2 * 60 * 1000)
+        if refresh_ms is None:
+            checks.append(_health_check(
+                "refresh.last_success", "UNKNOWN", "No successful host refresh timestamp is available.",
+                observed_at_ms=now_ms, evidence=("local:refresh",),
+                recommended_action="Refresh the read-only host projection before relying on its status.",
+            ))
+        else:
+            refresh_status = "PASS" if now_ms - refresh_ms <= refresh_limit_ms else "WARN"
+            checks.append(_health_check(
+                "refresh.last_success", refresh_status,
+                "The last host projection refresh is within the documented freshness window." if refresh_status == "PASS" else "The last host projection refresh is older than the documented freshness window.",
+                observed_at_ms=refresh_ms, evidence=("local:refresh",),
+                recommended_action="Refresh the read-only host projection." if refresh_status == "WARN" else "No repair action is required.",
+                details={"age_ms": max(0, now_ms - refresh_ms), "freshness_window_ms": refresh_limit_ms},
+            ))
+
+        return {
+            "schema_version": 1,
+            "status": self._health_contract_status(checks),
+            "observed_at_ms": now_ms,
+            "last_successful_refresh_at_ms": refresh_ms,
+            "checks": checks,
+            "repair_policy": self._auto_repair_policy(),
+            "claim_limit": (
+                "Checks use existing local process, host DB, config, ledger, and console-store facts. "
+                "They do not poll providers, call models, mutate source/config/host/listener state, or dispatch "
+                "repair work. monitoring.auto_health_enabled is the only canonical Auto repair preference: OFF "
+                "keeps deterministic checks active while suppressing automatic health requests; ON permits only "
+                "the existing bounded advisory health-request path, not repair execution."
+            ),
+        }
+
+    def health_contract(self) -> dict[str, Any]:
+        return {"ok": True, **self.health_checks()}
+
+    def prepare_health_repair(
+        self,
+        check_ids: Any,
+        *,
+        scope: Any,
+        acknowledge: Any,
+        dry_run: Any,
+    ) -> dict[str, Any]:
+        if not isinstance(check_ids, list) or not check_ids:
+            raise ConsoleError("check_ids must be a non-empty list")
+        if len(check_ids) > 16 or any(not isinstance(check_id, str) or not check_id.strip() for check_id in check_ids):
+            raise ConsoleError("check_ids contains an invalid value")
+        if not isinstance(acknowledge, bool) or not isinstance(dry_run, bool):
+            raise ConsoleError("acknowledge and dry_run must be booleans")
+        contract = self.health_checks()
+        by_id = {check["id"]: check for check in contract["checks"]}
+        normalized_ids = list(dict.fromkeys(check_id.strip() for check_id in check_ids))
+        if any(check_id not in by_id for check_id in normalized_ids):
+            raise ConsoleError("repair check id is unknown")
+        selected = [by_id[check_id] for check_id in normalized_ids]
+        if any(check["status"] == "PASS" for check in selected):
+            raise ConsoleError("repair requires only failing, warning, or unknown checks")
+        with self.write_lock:
+            result = self.store.prepare_health_repair(
+                selected,
+                scope=str(scope or "all"),
+                acknowledge=acknowledge,
+                dry_run=dry_run,
+                now_ms=int(time.time() * 1000),
+            )
+        return {"ok": True, "request": result, "repair_policy": contract["repair_policy"]}
+
     def diagnostics(self) -> dict[str, Any]:
         stats = self.storage()
         try:
@@ -9600,6 +10209,7 @@ class App:
         now_ms = int(time.time() * 1000)
         stored_latest = self.store.latest_diagnostics()
         latest = _diagnostic_no_data(now_ms) if stored_latest is None else _diagnostic_record_for_response(stored_latest, now_ms)
+        health_contract = self.health_contract()
         return {
             "ok": True,
             "service": "swarm-console",
@@ -9612,6 +10222,7 @@ class App:
             },
             "latest": latest,
             "health": {
+                **health_contract,
                 "auto_enabled": self._auto_health_enabled(),
                 "incidents": self.store.health_incidents(),
                 "open_requests": self.store.health_requests(status="OPEN"),
@@ -9644,6 +10255,7 @@ class App:
         return {
             "enabled": self._auto_health_enabled(),
             "default": False,
+            "auto_repair": self._auto_repair_policy(),
             "thresholds": {
                 "cpu_degraded_percent": HEALTH_THRESHOLDS["cpu_degraded"],
                 "cpu_critical_percent": HEALTH_THRESHOLDS["cpu_critical"],
@@ -9655,7 +10267,12 @@ class App:
                 "recovery_seconds": HEALTH_RECOVERY_SECONDS,
                 "cooldown_seconds": HEALTH_COOLDOWN_SECONDS,
             },
-            "claim_limit": "Auto Health creates advisory requests only; active CTRL owns task creation through host APIs.",
+            "claim_limit": (
+                "monitoring.auto_health_enabled is the canonical setting presented as Auto repair. OFF leaves "
+                "deterministic checks active without automatic health requests or model use. ON can record only "
+                "bounded existing advisory health requests; repair dispatch remains disabled because this path is "
+                "broader than an allowlisted low-risk repair executor. Manual preparation remains acknowledgement-gated."
+            ),
         }
 
     def update_health_settings(self, enabled: Any) -> dict[str, Any]:
@@ -9947,6 +10564,9 @@ class Handler(BaseHTTPRequestHandler):
 
     def _config_payload(self) -> dict[str, Any]:
         payload = redacted_config_snapshot(self.server.app.config_path)
+        policy_getter = getattr(self.server.app, "_auto_repair_policy", None)
+        if callable(policy_getter):
+            payload["health"] = {"auto_repair": policy_getter()}
         if not self._peer_is_trusted_local():
             payload["path"] = ""
             payload["read_only"] = True
@@ -10146,6 +10766,9 @@ class Handler(BaseHTTPRequestHandler):
                     "usage_consumed": False,
                 })
                 return
+            if path == "/api/health":
+                self._json(HTTPStatus.OK, self.server.app.health_contract())
+                return
             if path == "/api/health/incidents":
                 self._json(HTTPStatus.OK, {
                     "ok": True,
@@ -10310,7 +10933,23 @@ class Handler(BaseHTTPRequestHandler):
                 return
             if path == "/api/health/settings":
                 payload = self._payload()
+                if set(payload) != {"enabled"}:
+                    raise ConsoleError("health settings update supports only the canonical enabled field")
                 self._json(HTTPStatus.OK, {"ok": True, **self.server.app.update_health_settings(payload.get("enabled"))})
+                return
+            if path == "/api/health/repair":
+                payload = self._payload()
+                if set(payload) != {"check_ids", "scope", "acknowledge", "dry_run"}:
+                    raise ConsoleError(
+                        "health repair requires exact check_ids, scope, acknowledge, and dry_run fields"
+                    )
+                result = self.server.app.prepare_health_repair(
+                    payload["check_ids"],
+                    scope=payload["scope"],
+                    acknowledge=payload["acknowledge"],
+                    dry_run=payload["dry_run"],
+                )
+                self._json(HTTPStatus.OK, result)
                 return
             if path.startswith("/api/health/requests/") and path.endswith("/claim"):
                 request_id = path[len("/api/health/requests/") : -len("/claim")].strip("/")

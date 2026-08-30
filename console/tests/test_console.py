@@ -1486,6 +1486,108 @@ class SwarmConsoleTests(unittest.TestCase):
         restarted = console.App(self.codex_home, self.config)
         self.assertFalse(restarted.auto_status("structural-root", "project:swarm")["enabled"])
 
+    def test_active_structural_ctrl_survives_stale_child_and_retains_multiple_project_ctrls(self) -> None:
+        now = int(time.time() * 1000)
+        self._add_host_project("project:swarm", "swarm", "C:/work/swarm")
+        connection = sqlite3.connect(self.database)
+        rows = [
+            ("active-root-a", r"\\?\C:\work\swarm", now, "", ""),
+            ("active-child-a", r"\\?\C:\work\swarm\lane-a", now - 2 * 60 * 60 * 1000, "subagent", ""),
+            ("active-root-b", r"\\?\C:\work\swarm", now - 5 * 60 * 1000, "", ""),
+            ("active-child-b", r"\\?\C:\work\swarm\lane-b", now - 3 * 60 * 60 * 1000, "subagent", ""),
+        ]
+        connection.executemany(
+            "INSERT INTO threads VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            [
+                (thread_id, "private host task", cwd, updated // 1000, updated // 1000, updated, updated,
+                 "gpt-5.6-sol", "high", 1, 0, "", "main", source, "", role, 0)
+                for thread_id, cwd, updated, source, role in rows
+            ],
+        )
+        connection.executemany(
+            "INSERT INTO thread_spawn_edges VALUES (?,?,?)",
+            [
+                ("active-root-a", "active-child-a", "open"),
+                ("active-root-b", "active-child-b", "open"),
+            ],
+        )
+        connection.commit()
+        connection.close()
+
+        overview = console.build_overview(self.codex_home, self.config)
+        navigation = console.App._navigation_payload(overview)
+        controllers = {item["id"]: item for item in navigation["controllers"]}
+        project = next(item for item in navigation["projects"] if item["id"] == "project:swarm")
+
+        self.assertEqual(
+            {controllers["active-root-a"]["controller_classification_source"],
+             controllers["active-root-b"]["controller_classification_source"]},
+            {"host_thread_spawn_edges.subagent"},
+        )
+        self.assertEqual(
+            {controllers["active-root-a"]["activity_status"], controllers["active-root-b"]["activity_status"]},
+            {"active"},
+        )
+        self.assertTrue(controllers["active-root-a"]["active_now"])
+        self.assertTrue(controllers["active-root-b"]["active_now"])
+        self.assertEqual(project["ctrl_ids"], ["active-root-a", "active-root-b"])
+        self.assertEqual(project["active_ctrl_ids"], ["active-root-a", "active-root-b"])
+        self.assertEqual(project["active_now_count"], 2)
+        self.assertEqual(project["recently_active_count"], 0)
+        self.assertEqual(project["activity_status"], "active")
+        self.assertEqual(project["activity_facts"]["active_now_count"], 2)
+        self.assertEqual(navigation["active_ctrl_ids"], ["active-root-a", "active-root-b"])
+
+        app = console.App(self.codex_home, self.config)
+        with self.assertRaisesRegex(console.ConsoleError, "host-confirmed CTRL/project binding"):
+            app.auto_status("active-root-a", "project:swarm")
+
+    def test_recent_activity_uses_one_day_cutoff_and_expired_edges_fail_closed(self) -> None:
+        now = int(time.time() * 1000)
+        self._add_host_project("project:recent", "recent", "C:/work/recent")
+        self._add_host_project("project:expired", "expired", "C:/work/expired")
+        connection = sqlite3.connect(self.database)
+        rows = [
+            ("recent-root", "C:/work/recent", now - 3 * 60 * 60 * 1000, "", ""),
+            ("recent-child", "C:/work/recent/lane", now - 3 * 60 * 60 * 1000, "subagent", ""),
+            ("expired-root", "C:/work/expired", now - 25 * 60 * 60 * 1000, "", ""),
+            ("expired-child", "C:/work/expired/lane", now - 25 * 60 * 60 * 1000, "subagent", ""),
+        ]
+        connection.executemany(
+            "INSERT INTO threads VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            [
+                (thread_id, "private host task", cwd, updated // 1000, updated // 1000, updated, updated,
+                 "gpt-5.6-sol", "high", 1, 0, "", "main", source, "", role, 0)
+                for thread_id, cwd, updated, source, role in rows
+            ],
+        )
+        connection.executemany(
+            "INSERT INTO thread_spawn_edges VALUES (?,?,?)",
+            [
+                ("recent-root", "recent-child", "open"),
+                ("expired-root", "expired-child", "open"),
+            ],
+        )
+        connection.commit()
+        connection.close()
+
+        navigation = console.App._navigation_payload(console.build_overview(self.codex_home, self.config))
+        controllers = {item["id"]: item for item in navigation["controllers"]}
+        recent = next(item for item in navigation["projects"] if item["id"] == "project:recent")
+        expired = next(item for item in navigation["projects"] if item["id"] == "project:expired")
+
+        self.assertEqual(controllers["recent-root"]["activity_status"], "recently_active")
+        self.assertFalse(controllers["recent-root"]["active_now"])
+        self.assertTrue(controllers["recent-root"]["recently_active"])
+        self.assertEqual(recent["activity_status"], "recently_active")
+        self.assertEqual(recent["active_now_count"], 0)
+        self.assertEqual(recent["recently_active_count"], 1)
+        self.assertFalse(recent["activity_facts"]["active_now"])
+        self.assertTrue(recent["activity_facts"]["recently_active"])
+        self.assertEqual(expired["ctrl_ids"], [])
+        self.assertEqual(expired["activity_status"], "inactive")
+        self.assertTrue(expired["activity_facts"]["inactive"])
+
     def test_structural_ctrl_requires_fresh_open_project_bound_subagent(self) -> None:
         now = 2_000_000_000_000
         old = now - 3 * 60 * 60 * 1000
@@ -1606,6 +1708,13 @@ class SwarmConsoleTests(unittest.TestCase):
             self.assertEqual(controllers["ambiguous-root"]["controller_classification"], "unavailable")
         project = next(item for item in navigation["projects"] if item["id"] == "project:incoming")
         self.assertNotIn("ambiguous-root", project["ctrl_ids"])
+        self.assertEqual(project["activity_status"], "unknown")
+        self.assertTrue(project["activity_facts"]["unknown"])
+        self.assertEqual(
+            set(project["activity_facts"]["unknown_controller_ids"]),
+            {"parent-a", "parent-b"},
+        )
+        self.assertIn("unambiguous structural classification", project["activity_facts"]["unknown_reason"])
 
     def test_projects_require_canonical_host_identity_and_preserve_unbound_tasks(self) -> None:
         now = 2_000_000_000_000
@@ -4566,6 +4675,84 @@ class SwarmConsoleTests(unittest.TestCase):
         self.assertEqual(latest["payload"]["availability"]["status"], "no_data")
         self.assertEqual(latest["payload"]["availability"]["unavailable_groups"][0]["group"], "host")
         self.assertFalse(result["usage_consumed"])
+
+    def test_health_contract_is_typed_local_and_reports_repair_policy_without_dispatch(self) -> None:
+        app = console.App(self.codex_home, self.config)
+        contract = app.health_contract()
+        checks = {check["id"]: check for check in contract["checks"]}
+        expected = {
+            "process.source_mirror_parity",
+            "process.listener_package_parity",
+            "project.roster_root_binding",
+            "projection.ctrl_activity",
+            "host.thread_freshness_parent_edges",
+            "ledger.cursor_freshness",
+            "asset.evidence_store",
+            "config.schema_compatibility_redaction",
+            "api.health_endpoint_response",
+            "refresh.last_success",
+        }
+        self.assertEqual(set(checks), expected)
+        self.assertTrue(all(check["status"] in console.HEALTH_CHECK_STATUSES for check in checks.values()))
+        self.assertTrue(all(isinstance(check["observed_at_ms"], int) for check in checks.values()))
+        self.assertTrue(all(pointer.startswith("local:") for check in checks.values() for pointer in check["evidence"]))
+        self.assertNotIn("C:\\", json.dumps(contract))
+        self.assertEqual(contract["repair_policy"]["key"], "monitoring.auto_health_enabled")
+        self.assertEqual(contract["repair_policy"]["label"], "Auto repair")
+        self.assertEqual(contract["repair_policy"]["state"], "KNOWN")
+        self.assertEqual(contract["repair_policy"]["status"], "OFF")
+        self.assertFalse(contract["repair_policy"]["enabled"])
+        self.assertEqual(contract["repair_policy"]["dispatch"], "disabled")
+        self.assertEqual(contract["repair_policy"]["automatic_request_mode"], "none")
+        self.assertIn("deterministic health checks remain active", contract["repair_policy"]["reason"])
+
+        console.update_config(self.config, {"monitoring.auto_health_enabled": True})
+        enabled_policy = console.App(self.codex_home, self.config).health_contract()["repair_policy"]
+        self.assertEqual(enabled_policy["key"], "monitoring.auto_health_enabled")
+        self.assertEqual(enabled_policy["status"], "ON")
+        self.assertTrue(enabled_policy["enabled"])
+        self.assertEqual(enabled_policy["automatic_request_mode"], "bounded_existing_health_requests")
+        self.assertEqual(enabled_policy["dispatch"], "disabled")
+        self.assertIn("not an allowlisted low-risk repair executor", enabled_policy["reason"])
+
+        prepared = app.prepare_health_repair(
+            ["process.listener_package_parity"],
+            scope="all",
+            acknowledge=False,
+            dry_run=True,
+        )
+        request = prepared["request"]
+        self.assertFalse(request["deduplicated"])
+        self.assertEqual(request["payload"]["check_ids"], ["process.listener_package_parity"])
+        self.assertFalse(request["payload"]["auto_dispatch"])
+        self.assertEqual(request["payload"]["dispatch_status"], "NOT_DISPATCHED")
+        replay = app.prepare_health_repair(
+            ["process.listener_package_parity"],
+            scope="all",
+            acknowledge=False,
+            dry_run=True,
+        )
+        self.assertTrue(replay["request"]["deduplicated"])
+        self.assertEqual(replay["request"]["request_id"], request["request_id"])
+
+        with self.assertRaisesRegex(console.ConsoleError, "requires acknowledgement"):
+            app.prepare_health_repair(
+                ["process.listener_package_parity"],
+                scope="all",
+                acknowledge=False,
+                dry_run=False,
+            )
+
+    def test_health_contract_fail_closes_missing_project_inventory_and_keeps_local_checks(self) -> None:
+        with closing(sqlite3.connect(self.database)) as connection:
+            connection.execute("DROP TABLE projects")
+            connection.commit()
+        app = console.App(self.codex_home, self.config)
+        checks = {check["id"]: check for check in app.health_contract()["checks"]}
+        self.assertEqual(checks["project.roster_root_binding"]["status"], "UNKNOWN")
+        self.assertEqual(checks["projection.ctrl_activity"]["status"], "UNKNOWN")
+        self.assertIn(checks["asset.evidence_store"]["status"], {"PASS", "FAIL"})
+        self.assertFalse(app.health_settings()["auto_repair"]["enabled"])
 
     def test_health_classification_persistence_sustain_dedupe_and_recovery(self) -> None:
         self.assertEqual(console.assess_health({})["state"], "UNKNOWN")
