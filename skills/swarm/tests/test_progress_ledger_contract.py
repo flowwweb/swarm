@@ -17,6 +17,7 @@ from skills.swarm.runtime.progress_events import (
     ProgressLifecycle,
     ProgressLedger,
     build_role_manifest,
+    load_builtin_role_avatar_assets,
     load_builtin_role_manifests,
     request_blocked_release_binding,
     role_material_event,
@@ -43,7 +44,7 @@ class ProgressLedgerContractTests(unittest.TestCase):
         repository = Path(__file__).resolve().parents[3]
         return load_builtin_role_manifests(
             repository / "skills" / "swarm" / "roles",
-            repository / "console" / "static" / "swarm-offline-disconnected.png",
+            repository / "skills" / "swarm" / "assets" / "role-avatars",
         )
 
     @staticmethod
@@ -936,7 +937,7 @@ class ProgressLedgerContractTests(unittest.TestCase):
         with mock.patch.object(progress_events, "BUILT_IN_PROFESSIONS", reversed_roles):
             reordered = load_builtin_role_manifests(
                 repository / "skills" / "swarm" / "roles",
-                repository / "console" / "static" / "swarm-offline-disconnected.png",
+                repository / "skills" / "swarm" / "assets" / "role-avatars",
             )
         self.assertEqual({role["id"]: role["accent"] for role in reordered}, actual)
         self.assertEqual({role["id"]: role["version"] for role in reordered}, {role["id"]: role["version"] for role in builtins})
@@ -945,6 +946,22 @@ class ProgressLedgerContractTests(unittest.TestCase):
         historical = build_role_manifest("custom-guide", self.role_draft(manager, accent="#123456"), "custom", ["retained:custom"])
         self.assertEqual(validate_role_manifest(historical), historical)
         self.assertNotEqual(historical["version"], manager["version"])
+
+    def test_builtin_role_avatars_are_distinct_and_derivative_complete(self) -> None:
+        repository = Path(__file__).resolve().parents[3]
+        assets = load_builtin_role_avatar_assets(
+            repository / "skills" / "swarm" / "assets" / "role-avatars"
+        )
+        self.assertEqual(len(assets), 24)
+        self.assertEqual(len({item["source"]["sha256"] for item in assets.values()}), 24)
+        self.assertEqual(
+            assets["developer"]["source"]["sha256"],
+            "436c31517421aaaaab57b46578d306af1eb866a88b142c0ebdf30a0b146e972e",
+        )
+        self.assertEqual(
+            set(assets["producer"]["derivatives"]),
+            {(size, image_format) for size in (64, 128, 256, 512) for image_format in ("webp", "avif")},
+        )
 
     def test_role_specializations_are_bounded_metadata_and_version_bound(self) -> None:
         builtins = self.role_manifests()

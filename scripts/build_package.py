@@ -55,6 +55,8 @@ DEVELOPMENT_ONLY_PATHS = frozenset(
         "scripts/sync_plugin_mirror.py",
         "scripts/run_test_tier.py",
         "scripts/select_ci_scope.py",
+        "scripts/optimize_images.py",
+        "scripts/test_optimize_images.py",
     }
 )
 DEVELOPMENT_ONLY_DIRECTORIES = frozenset(

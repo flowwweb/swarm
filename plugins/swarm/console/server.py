@@ -56,6 +56,7 @@ from runtime.progress_events import (  # noqa: E402
     ProgressEventError,
     ProgressPulseEvent,
     build_role_manifest,
+    load_builtin_role_avatar_assets,
     load_builtin_role_manifests,
     role_material_event,
     validate_progress_pulse,
@@ -7454,8 +7455,13 @@ class App:
         self.progress_ledger = ProgressLedger(self.codex_home)
         self.auto_bridge = auto_bridge or CodexStdioBridge()
         self.project_view_resolver = project_view_resolver or self._default_project_view_resolver
+        self.builtin_role_avatar_assets = load_builtin_role_avatar_assets(
+            SWARM_SKILL_ROOT / "assets" / "role-avatars"
+        )
         self.builtin_role_manifests = load_builtin_role_manifests(
-            SWARM_SKILL_ROOT / "roles", STATIC_ROOT / "swarm-offline-disconnected.png"
+            SWARM_SKILL_ROOT / "roles",
+            SWARM_SKILL_ROOT / "assets" / "role-avatars",
+            avatar_assets=self.builtin_role_avatar_assets,
         )
         self.diagnostics_collector = DiagnosticsCollector(self.codex_home, self.store.path)
         self.token = secrets.token_urlsafe(24)
@@ -12577,9 +12583,44 @@ class App:
 
     def role_manifest_projection(self) -> dict[str, Any]:
         try:
-            return {"ok": True, **self.progress_ledger.project_role_manifests(self.builtin_role_manifests)}
+            projection = self.progress_ledger.project_role_manifests(self.builtin_role_manifests)
+            builtin_by_id = {manifest["id"]: manifest for manifest in self.builtin_role_manifests}
+            roles = []
+            for role in projection["roles"]:
+                builtin = builtin_by_id.get(role["id"])
+                avatar = None
+                if builtin is not None and role.get("avatar_asset_digest") == builtin["avatar_asset_digest"]:
+                    avatar = {
+                        "state": "AVAILABLE",
+                        "digest": builtin["avatar_asset_digest"],
+                        "url": f"/assets/role-avatars/{role['id']}.png",
+                    }
+                roles.append({**role, "avatar": avatar})
+            return {"ok": True, **projection, "roles": roles}
         except ProgressEventError as error:
             raise ConsoleError(str(error)) from error
+
+    def role_avatar_response(self, role_id: str, accept: str) -> dict[str, Any]:
+        if not isinstance(role_id, str) or not re.fullmatch(r"[a-z0-9_]+", role_id):
+            raise ConsoleError("role avatar not found")
+        record = self.builtin_role_avatar_assets.get(role_id)
+        if record is None:
+            raise ConsoleError("role avatar not found")
+        accepted = str(accept or "").casefold()
+        if "image/avif" in accepted:
+            selected = record["derivatives"][(128, "avif")]
+            media_type = "image/avif"
+        elif "image/webp" in accepted:
+            selected = record["derivatives"][(128, "webp")]
+            media_type = "image/webp"
+        else:
+            selected = record["source"]
+            media_type = "image/png"
+        path = selected["file"]
+        body = path.read_bytes()
+        if len(body) != selected["bytes"] or hashlib.sha256(body).hexdigest() != selected["sha256"]:
+            raise ConsoleError("role avatar asset no longer matches its admitted digest")
+        return {"body": body, "media_type": media_type, "digest": selected["sha256"]}
 
     def _strict_run_log_records(self) -> tuple[list[dict[str, Any]], bool]:
         """Read one stable, validated Ledger tail; skipped/corrupt records fail closed."""
@@ -14345,6 +14386,27 @@ class Handler(BaseHTTPRequestHandler):
                 return
             if path == "/api/role-manifests":
                 self._json(HTTPStatus.OK, self.server.app.role_manifest_projection())
+                return
+            role_avatar_match = re.fullmatch(r"/assets/role-avatars/([a-z0-9_]+)\.png", path)
+            if role_avatar_match:
+                try:
+                    item = self.server.app.role_avatar_response(
+                        role_avatar_match.group(1), self.headers.get("Accept", "")
+                    )
+                except ConsoleError as error:
+                    self._error(HTTPStatus.NOT_FOUND, str(error))
+                    return
+                body = item["body"]
+                self.send_response(HTTPStatus.OK)
+                self.send_header("Content-Type", item["media_type"])
+                self.send_header("Content-Length", str(len(body)))
+                self.send_header("Cache-Control", "public, max-age=31536000, immutable")
+                self.send_header("ETag", f'"{item["digest"]}"')
+                self.send_header("Vary", "Accept")
+                self.send_header("X-Content-Type-Options", "nosniff")
+                self.send_header("Content-Security-Policy", "default-src 'none'; frame-ancestors 'none'")
+                self.end_headers()
+                self.wfile.write(body)
                 return
             if path == "/api/skills":
                 self._json(

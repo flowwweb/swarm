@@ -163,7 +163,7 @@ class OperatingModelTests(unittest.TestCase):
     def test_retired_critic_manifest_history_remains_readable_without_builtin_authority(self):
         from runtime.progress_events import ProgressLedger, build_role_manifest, load_builtin_role_manifests, role_material_event
         repository=Path(__file__).resolve().parents[3]
-        builtins=load_builtin_role_manifests(repository/"skills"/"swarm"/"roles",repository/"console"/"static"/"swarm-offline-disconnected.png")
+        builtins=load_builtin_role_manifests(repository/"skills"/"swarm"/"roles",repository/"skills"/"swarm"/"assets"/"role-avatars")
         digest_value=hashlib.sha256(b"historical-critic-avatar").hexdigest()
         historical=build_role_manifest("critic",{
             "name":"Critic","purpose":"Decode one retained historical role revision.",

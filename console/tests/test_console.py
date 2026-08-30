@@ -52,6 +52,21 @@ class SwarmConsoleTests(unittest.TestCase):
         self.assertEqual(projection["command_contract"]["endpoint"], "/api/role-manifests/commands")
         self.assertEqual(projection["hierarchy_binding"]["levels"], ["PROJECT", "CTRL", "LEAD", "DOER"])
         manager = next(role for role in projection["roles"] if role["id"] == "manager")
+        self.assertEqual(manager["avatar"], {
+            "state": "AVAILABLE",
+            "digest": manager["avatar_asset_digest"],
+            "url": "/assets/role-avatars/manager.png",
+        })
+        png = app.role_avatar_response("manager", "image/png")
+        webp = app.role_avatar_response("manager", "image/webp,image/*")
+        avif = app.role_avatar_response("manager", "image/avif,image/webp")
+        self.assertEqual((png["media_type"], png["body"][:8]), ("image/png", b"\x89PNG\r\n\x1a\n"))
+        self.assertEqual((webp["media_type"], webp["body"][:4]), ("image/webp", b"RIFF"))
+        self.assertEqual(avif["media_type"], "image/avif")
+        self.assertIn(b"ftypavif", avif["body"][:32])
+        self.assertLess(len(avif["body"]), len(png["body"]))
+        with self.assertRaisesRegex(console.ConsoleError, "not found"):
+            app.role_avatar_response("unknown", "image/avif")
         draft = {key: manager[key] for key in (
             "name", "purpose", "owns", "instructions", "boundaries",
             "default_skills", "specializations", "avatar_asset_digest", "accent",

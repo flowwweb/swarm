@@ -915,11 +915,88 @@ def build_role_manifest(role_id: str, draft: Mapping[str, Any], source: str, pro
     return validate_role_manifest({"id": role_id, **draft, "source": source, "provenance": provenance})
 
 
-def load_builtin_role_manifests(roles_root: Path, avatar_path: Path) -> tuple[dict[str, Any], ...]:
+def load_builtin_role_avatar_assets(avatar_root: Path) -> dict[str, dict[str, Any]]:
+    root = Path(avatar_root)
+    source_root = root / "source"
+    optimized_root = root / "optimized"
+    manifest_path = optimized_root / "manifest.json"
+    if not source_root.is_dir() or source_root.is_symlink() or not optimized_root.is_dir() or optimized_root.is_symlink() or not manifest_path.is_file() or manifest_path.is_symlink():
+        raise ProgressEventError("built-in role avatar inventory is unavailable")
+    try:
+        payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as error:
+        raise ProgressEventError("built-in role avatar manifest is invalid") from error
+    if not isinstance(payload, dict) or set(payload) != {"schema_version", "settings", "assets"} or payload["schema_version"] != 1:
+        raise ProgressEventError("built-in role avatar manifest is invalid")
+    if payload["settings"] != {"formats": ["webp", "avif"], "sizes": [64, 128, 256, 512]} or not isinstance(payload["assets"], list):
+        raise ProgressEventError("built-in role avatar derivative policy is invalid")
+    expected_ids = set(BUILT_IN_PROFESSIONS)
+    source_files = {path.stem: path for path in source_root.glob("*.png") if path.is_file() and not path.is_symlink()}
+    optimized_files = {path.name: path for path in optimized_root.iterdir() if path.is_file() and not path.is_symlink() and path.name != "manifest.json"}
+    if set(source_files) != expected_ids or len(payload["assets"]) != len(expected_ids):
+        raise ProgressEventError("built-in role avatar inventory must remain exactly 24 roles")
+    records: dict[str, dict[str, Any]] = {}
+    retained_digests: set[str] = set()
+    expected_optimized: set[str] = set()
+    for item in payload["assets"]:
+        if not isinstance(item, dict) or set(item) != {"id", "source", "derivatives"}:
+            raise ProgressEventError("built-in role avatar manifest is invalid")
+        role_id = item["id"]
+        source = item["source"]
+        derivatives = item["derivatives"]
+        if role_id not in expected_ids or role_id in records or not isinstance(source, dict) or not isinstance(derivatives, list):
+            raise ProgressEventError("built-in role avatar manifest is invalid")
+        source_path = source_files[role_id]
+        source_bytes = source_path.read_bytes()
+        source_digest = hashlib.sha256(source_bytes).hexdigest()
+        if (
+            source.get("file") != f"{role_id}.png" or source.get("mode") != "RGBA"
+            or source.get("alpha_min") != 0 or source.get("alpha_max") != 255
+            or source.get("bytes") != len(source_bytes) or source.get("sha256") != source_digest
+            or source_digest in retained_digests
+            or len(source_bytes) < 26 or source_bytes[:8] != b"\x89PNG\r\n\x1a\n"
+            or source_bytes[24] != 8 or source_bytes[25] != 6
+        ):
+            raise ProgressEventError("built-in role avatar source does not match its admitted manifest")
+        retained_digests.add(source_digest)
+        derivative_map: dict[tuple[int, str], dict[str, Any]] = {}
+        for derivative in derivatives:
+            if not isinstance(derivative, dict) or set(derivative) != {"path", "format", "width", "height", "bytes", "sha256", "saved_bytes_vs_source"}:
+                raise ProgressEventError("built-in role avatar derivative is invalid")
+            image_format, width, height = derivative["format"], derivative["width"], derivative["height"]
+            name = f"{role_id}-{width}.{image_format}"
+            path = optimized_files.get(name)
+            if (
+                image_format not in {"webp", "avif"} or width not in {64, 128, 256, 512} or height != width
+                or derivative["path"] != name or path is None or name in expected_optimized
+            ):
+                raise ProgressEventError("built-in role avatar derivative is invalid")
+            derivative_bytes = path.read_bytes()
+            if derivative["bytes"] != len(derivative_bytes) or derivative["sha256"] != hashlib.sha256(derivative_bytes).hexdigest():
+                raise ProgressEventError("built-in role avatar derivative does not match its admitted manifest")
+            expected_optimized.add(name)
+            derivative_map[(width, image_format)] = {**derivative, "file": path}
+        if set(derivative_map) != {(size, image_format) for size in (64, 128, 256, 512) for image_format in ("webp", "avif")}:
+            raise ProgressEventError("built-in role avatar derivatives are incomplete")
+        records[role_id] = {
+            "source": {**source, "file": source_path},
+            "derivatives": derivative_map,
+        }
+    if set(records) != expected_ids or set(optimized_files) != expected_optimized:
+        raise ProgressEventError("built-in role avatar inventory contains missing or unexpected files")
+    return records
+
+
+def load_builtin_role_manifests(
+    roles_root: Path,
+    avatar_root: Path,
+    *,
+    avatar_assets: Mapping[str, Mapping[str, Any]] | None = None,
+) -> tuple[dict[str, Any], ...]:
     cards = {path.stem: path for path in Path(roles_root).glob("*.md") if path.is_file()}
-    if set(cards) != set(BUILT_IN_PROFESSIONS) or set(BUILT_IN_ROLE_SPECIALIZATIONS) != set(BUILT_IN_PROFESSIONS) or set(ROLE_ACCENTS) != set(BUILT_IN_PROFESSIONS) or not Path(avatar_path).is_file():
-        raise ProgressEventError("built-in role inventory must remain exactly 24 roles with one avatar asset")
-    avatar_digest = hashlib.sha256(Path(avatar_path).read_bytes()).hexdigest()
+    assets = dict(avatar_assets or load_builtin_role_avatar_assets(avatar_root))
+    if set(cards) != set(BUILT_IN_PROFESSIONS) or set(BUILT_IN_ROLE_SPECIALIZATIONS) != set(BUILT_IN_PROFESSIONS) or set(ROLE_ACCENTS) != set(BUILT_IN_PROFESSIONS) or set(assets) != set(BUILT_IN_PROFESSIONS):
+        raise ProgressEventError("built-in role inventory must remain exactly 24 roles with distinct admitted avatars")
     manifests = []
     for role_id, name in BUILT_IN_PROFESSIONS.items():
         text = cards[role_id].read_text(encoding="utf-8")
@@ -935,7 +1012,7 @@ def load_builtin_role_manifests(roles_root: Path, avatar_path: Path) -> tuple[di
             ],
             "default_skills": [],
             "specializations": list(BUILT_IN_ROLE_SPECIALIZATIONS[role_id]),
-            "avatar_asset_digest": avatar_digest,
+            "avatar_asset_digest": assets[role_id]["source"]["sha256"],
             "accent": ROLE_ACCENTS[role_id],
         }, "builtin", [f"role-card:{role_id}:{hashlib.sha256(text.encode()).hexdigest()}"]))
     return tuple(manifests)
