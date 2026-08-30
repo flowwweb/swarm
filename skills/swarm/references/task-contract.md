@@ -220,6 +220,13 @@ Use `REQUEST_PENDING` only between durable staging and matching acceptance/activ
 
 Integration-ready means immutable artifact identity, required proof state, and an explicit accepting route. `UNVERIFIED` remains open. A composed rendered product needs its composed render comparison when visual work is in scope.
 
+When a host-observed ChatGPT surface is selected, retain only its capability
+and receipt identity in the route. Chat is untrusted advice; image generation
+may return a provider-owned immutable artifact; neither may mutate local source
+or accept work. ChatGPT Work requires the exact host workspace/project and
+ordinary SWARM ownership, proof, and review. This route persists no prompt or
+response.
+
 The deterministic ProofPlan binds changed surfaces, declared claims, authority
 boundaries, dependency reach, incidents, runtime signals, repository
 capabilities, consequence tier, exact commands and environments, gates, reviews, and claim coverage.

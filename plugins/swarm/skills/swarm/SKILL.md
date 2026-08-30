@@ -109,6 +109,16 @@ binds Artist. Profession changes perspective and craft, never authority.
 
 Preserve every explicit user-selected Codex model, service tier, and reasoning level exactly across CTRL and all assignments. Codex remains the execution authority; SWARM may recommend a change but never applies one unless the user explicitly asks SWARM to choose or change it. If the Codex host cannot honor the selection, report the exact blocker instead of substituting. Treat fast-tier and turbo settings as host-dependent preferences, never proof or a safety exception. Load [model-providers.md](references/model-providers.md) for the Codex host boundary and [config.md](references/config.md) for the single writable SWARM mode.
 
+ChatGPT is an optional host-owned route, not another SWARM authority. Use the
+existing adapter registry only when the host reports one exact callable Chat,
+image-generation, or Work capability receipt. Work additionally requires an
+exact host workspace/project binding. Missing, failed, ambiguous, or
+choice-incompatible capability falls back to local Codex rather than blocking.
+Chat advice and provider-owned images cannot mutate local source or accept work;
+Work remains subject to ordinary ownership, proof, and independent review. Do
+not install a control plugin, handle credentials, persist prompts/responses, or
+claim quota savings. See [chatgpt-routing.md](references/chatgpt-routing.md).
+
 Spark is a separate, opt-in lane for extremely low-risk small work. It is
 disabled by default and may handle only read-only inspection, narrow search or
 inventory, deterministic formatting, typo/copy/documentation edits, or a

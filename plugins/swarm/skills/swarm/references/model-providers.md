@@ -36,6 +36,16 @@ host-task mutation, or external-provider authority. External-provider proof is
 still a distinct evidence class for real service boundaries, not model-host
 execution.
 
+Optional ChatGPT routing is host-owned and capability-observed. Standard Chat
+consultation, provider-owned image generation, and ChatGPT Work are eligible
+only when the host supplies one exact callable capability receipt. Work also
+requires an exact host workspace/project identity. Missing or failed surfaces
+fall back to the existing local Codex route and never block the project. SWARM
+does not install a control plugin or handle credentials. Explicit model and
+reasoning choices are passed only when that host surface declares it can
+preserve them; otherwise Codex fallback preserves the choice. No route claims
+free usage or quota savings.
+
 The packaged catalog keeps `gpt-5.3-codex-spark` on simple shell-only work and
 keeps computer-use work on the configured GPT-5.6 models, including Luna. Spark
 is text-only during its research preview and is not a large-goal fallback. Its

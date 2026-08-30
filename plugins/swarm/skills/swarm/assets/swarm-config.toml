@@ -101,7 +101,8 @@ worker_strategy = "warm_when_useful"
 archive_behavior = "provenance"
 
 [chat_relay]
-# Optional, inert ChatGPT advice relay. It never grants execution authority.
+# Backward-compatible storage for optional host-owned ChatGPT routing.
+# Missing callable host capability falls back to local Codex and never blocks.
 enabled = false
 provider = "codex-chatgpt-control"
 surface = "chat"

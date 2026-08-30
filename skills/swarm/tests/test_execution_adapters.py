@@ -12,6 +12,7 @@ from skills.swarm.runtime import (
     AdapterEvent,
     AdapterPlanStatus,
     AdapterRegistry,
+    ChatGPTRouteStatus,
     ArtifactIdentity,
     CodexAppServerAdapter,
     ContinuationSnapshot,
@@ -27,6 +28,7 @@ from skills.swarm.runtime import (
     ExecutionReservation,
     ExecutionRoute,
     HostCapacityEvidence,
+    HostChatGPTCapability,
     HostTaskCapacity,
     InvariantError,
     LaneKind,
@@ -186,6 +188,53 @@ class ExecutionAdapterTests(unittest.TestCase):
         request = self.request(adapter_id="local-runner", required=("execute", "swarm.routing"))
         plan = AdapterRegistry((adapter,)).plan(request)
         self.assertEqual((plan.status, plan.entrypoint, plan.protocol), (AdapterPlanStatus.READY, ("local-runner", "serve"), "jsonl"))
+
+    def test_chatgpt_routing_uses_only_exact_host_observed_capabilities(self) -> None:
+        registry = AdapterRegistry()
+        chat = HostChatGPTCapability("chat", "host-chat", "receipt-chat")
+        image = HostChatGPTCapability("image", "host-imagegen", "receipt-image")
+        work = HostChatGPTCapability("work", "host-work", "receipt-work", "workspace-alpha")
+
+        disabled = registry.plan_chatgpt("chat", (chat,), enabled=False)
+        self.assertEqual((disabled.status, disabled.adapter_id), (ChatGPTRouteStatus.FALLBACK, CodexAppServerAdapter.ADAPTER_ID))
+        missing = registry.plan_chatgpt("image", (), enabled=True)
+        self.assertEqual(missing.status, ChatGPTRouteStatus.FALLBACK)
+        self.assertIn("local Codex", missing.reason)
+        ready = registry.plan_chatgpt("image", (chat, image), enabled=True)
+        self.assertEqual((ready.status, ready.adapter_id, ready.capability_receipt_id), (ChatGPTRouteStatus.READY, "host-imagegen", "receipt-image"))
+        bounded_work = registry.plan_chatgpt("work", (work,), enabled=True, workspace_id="workspace-alpha")
+        self.assertEqual((bounded_work.status, bounded_work.workspace_id), (ChatGPTRouteStatus.READY, "workspace-alpha"))
+        wrong_workspace = registry.plan_chatgpt("work", (work,), enabled=True, workspace_id="workspace-beta")
+        self.assertEqual(wrong_workspace.status, ChatGPTRouteStatus.FALLBACK)
+
+    def test_chatgpt_routing_preserves_explicit_model_and_reasoning_or_falls_back(self) -> None:
+        registry = AdapterRegistry()
+        fixed = HostChatGPTCapability("chat", "host-chat", "receipt-fixed")
+        selectable = HostChatGPTCapability(
+            "chat", "host-chat-selectable", "receipt-selectable",
+            supports_model_selection=True, supports_reasoning_selection=True,
+        )
+        fallback = registry.plan_chatgpt("chat", (fixed,), enabled=True, explicit_model="user-model")
+        self.assertEqual(fallback.status, ChatGPTRouteStatus.FALLBACK)
+        ready = registry.plan_chatgpt(
+            "chat", (selectable,), enabled=True,
+            explicit_model="user-model", explicit_reasoning="high",
+        )
+        self.assertEqual((ready.model, ready.reasoning), ("user-model", "high"))
+
+    def test_chatgpt_routing_rejects_ambiguous_or_untyped_host_claims(self) -> None:
+        registry = AdapterRegistry()
+        with self.assertRaisesRegex(InvariantError, "typed host capabilities"):
+            registry.plan_chatgpt("chat", (object(),), enabled=True)
+        with self.assertRaisesRegex(InvariantError, "distinct"):
+            registry.plan_chatgpt(
+                "chat",
+                (
+                    HostChatGPTCapability("chat", "duplicate", "receipt-a"),
+                    HostChatGPTCapability("chat", "duplicate", "receipt-b"),
+                ),
+                enabled=True,
+            )
 
 
 class ExecutionDispatchLedgerTests(unittest.TestCase):

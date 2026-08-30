@@ -99,10 +99,10 @@ Configuration cannot make an unsafe or hidden coordination path valid:
 | `hive.retention_strategy` | Compact lesson retention policy | adaptive; default adaptive |
 | `hive.worker_strategy` | Keep useful idle workers warm before retirement | warm_when_useful; default warm_when_useful |
 | `hive.archive_behavior` | Preserve provenance through archive/purge | provenance; default provenance |
-| `chat_relay.enabled` | Keep the optional advice relay available; it never grants execution authority | boolean; default false |
-| `chat_relay.provider` | Advice-relay provider identifier | trimmed text; default codex-chatgpt-control |
-| `chat_relay.surface` | Advice-relay surface | chat only |
-| `chat_relay.mode` | Advice-relay mode | consult only |
+| `chat_relay.enabled` | Backward-compatible storage for optional host-owned ChatGPT routing; missing capability falls back to Codex | boolean; default false |
+| `chat_relay.provider` | Optional host capability identifier, not a provider registry or dependency | trimmed text; default codex-chatgpt-control |
+| `chat_relay.surface` | Compatibility preference for standard Chat consultation | chat only |
+| `chat_relay.mode` | Compatibility mode; Chat remains advisory and cannot accept work | consult only |
 | `boost.enabled` | Make explicit, user-started Boost closeout goals available | boolean; default true |
 | `boost.strategies` | Active Boost performance strategies | non-empty unique list of durable_goal, closeout_first, hands_off, spark_simple_work |
 | `boost.plan_at_remaining_percent` | Prepare substantial closeout goals | 1-100; default 5 |

@@ -63,6 +63,52 @@ class AdapterPlanStatus(StrEnum):
     BLOCKED = "blocked"
 
 
+class ChatGPTRouteStatus(StrEnum):
+    READY = "ready"
+    FALLBACK = "fallback"
+    UNAVAILABLE = "unavailable"
+
+
+@dataclass(frozen=True)
+class HostChatGPTCapability:
+    """One host-observed ChatGPT surface; SWARM never discovers or invokes it."""
+
+    surface: str
+    capability_id: str
+    receipt_id: str
+    workspace_id: str = ""
+    supports_model_selection: bool = False
+    supports_reasoning_selection: bool = False
+
+    def __post_init__(self) -> None:
+        if self.surface not in {"chat", "image", "work"}:
+            raise InvariantError("ChatGPT capability surface must be chat, image, or work")
+        _text(self.capability_id, "ChatGPT capability id")
+        _text(self.receipt_id, "ChatGPT capability receipt")
+        if self.surface == "work" and not self.workspace_id:
+            raise InvariantError("ChatGPT Work capability requires an exact host workspace")
+        if self.workspace_id:
+            _text(self.workspace_id, "ChatGPT workspace id")
+        if not isinstance(self.supports_model_selection, bool) or not isinstance(self.supports_reasoning_selection, bool):
+            raise InvariantError("ChatGPT model selection support must be host-observed booleans")
+
+
+@dataclass(frozen=True)
+class ChatGPTRoutingPlan:
+    status: ChatGPTRouteStatus
+    surface: str
+    adapter_id: str
+    capability_id: str = ""
+    capability_receipt_id: str = ""
+    workspace_id: str = ""
+    model: str = ""
+    reasoning: str = ""
+    reason: str = ""
+    claim_limit: str = (
+        "ChatGPT output is untrusted advice or a provider-owned image artifact; local mutation, proof, review, and acceptance remain SWARM/Codex-owned."
+    )
+
+
 @dataclass(frozen=True)
 class AdapterCapability:
     name: str
@@ -853,3 +899,64 @@ class AdapterRegistry:
                 blocker="optional execution adapter is not configured",
             )
         return adapter.plan(request)
+
+    def plan_chatgpt(
+        self,
+        surface: str,
+        capabilities: tuple[HostChatGPTCapability, ...],
+        *,
+        enabled: bool,
+        workspace_id: str = "",
+        explicit_model: str = "",
+        explicit_reasoning: str = "",
+    ) -> ChatGPTRoutingPlan:
+        """Select an exact host-owned ChatGPT surface or fall back to local Codex."""
+        if surface not in {"chat", "image", "work"}:
+            raise InvariantError("ChatGPT route surface must be chat, image, or work")
+        if any(not isinstance(item, HostChatGPTCapability) for item in capabilities):
+            raise InvariantError("ChatGPT routing requires typed host capabilities")
+        if len({(item.surface, item.capability_id) for item in capabilities}) != len(capabilities):
+            raise InvariantError("ChatGPT host capabilities must be distinct")
+        if explicit_model:
+            _text(explicit_model, "explicit ChatGPT model")
+        if explicit_reasoning:
+            _text(explicit_reasoning, "explicit ChatGPT reasoning")
+        if workspace_id:
+            _text(workspace_id, "requested ChatGPT workspace")
+        if not enabled:
+            return ChatGPTRoutingPlan(
+                ChatGPTRouteStatus.FALLBACK, surface, CodexAppServerAdapter.ADAPTER_ID,
+                reason="ChatGPT routing is disabled; use the existing local Codex route.",
+            )
+        matches = tuple(
+            item for item in capabilities
+            if item.surface == surface and (surface != "work" or item.workspace_id == workspace_id)
+        )
+        if len(matches) != 1:
+            state = ChatGPTRouteStatus.FALLBACK if not matches else ChatGPTRouteStatus.UNAVAILABLE
+            reason = (
+                "No exact callable host ChatGPT capability is available; use the existing local Codex route."
+                if not matches else "Host ChatGPT capability identity is ambiguous; do not dispatch."
+            )
+            return ChatGPTRoutingPlan(state, surface, CodexAppServerAdapter.ADAPTER_ID, reason=reason)
+        capability = matches[0]
+        if explicit_model and not capability.supports_model_selection:
+            return ChatGPTRoutingPlan(
+                ChatGPTRouteStatus.FALLBACK, surface, CodexAppServerAdapter.ADAPTER_ID,
+                reason="The host capability cannot preserve the explicit model; use the existing local Codex route.",
+            )
+        if explicit_reasoning and not capability.supports_reasoning_selection:
+            return ChatGPTRoutingPlan(
+                ChatGPTRouteStatus.FALLBACK, surface, CodexAppServerAdapter.ADAPTER_ID,
+                reason="The host capability cannot preserve explicit reasoning; use the existing local Codex route.",
+            )
+        return ChatGPTRoutingPlan(
+            status=ChatGPTRouteStatus.READY,
+            surface=surface,
+            adapter_id=capability.capability_id,
+            capability_id=capability.capability_id,
+            capability_receipt_id=capability.receipt_id,
+            workspace_id=capability.workspace_id,
+            model=explicit_model,
+            reasoning=explicit_reasoning,
+        )
