@@ -258,6 +258,7 @@ class HQConnectorResult:
     command_digest: str
     thread_id: str = ""
     turn_id: str = ""
+    observed_root_digest: str = ""
     local_plan: Mapping[str, str] | None = None
     attention: str = ""
 
@@ -387,12 +388,19 @@ class UniversalHQConnector:
         if not ack_exists:
             ledger.append_connector_receipt(self._receipt(envelope, receipt_id=f"{envelope.command_id}-ack", index=1, status="ACKNOWLEDGED", observed_at_ms=now_ms, thread_id=thread_id, observed_root_digest=observed_root_digest))
         ledger.append_connector_receipt(self._receipt(envelope, receipt_id=f"{envelope.command_id}-result", index=2, status="RESULT", observed_at_ms=now_ms, thread_id=thread_id, turn_id=turn_id, observed_root_digest=observed_root_digest))
-        return HQConnectorResult("RESULT", envelope.digest, thread_id, turn_id)
+        return HQConnectorResult("RESULT", envelope.digest, thread_id, turn_id, observed_root_digest)
 
     def _reconcile(self, envelope: HQCommandEnvelope, ledger: object, command: Mapping[str, object], *, now_ms: int) -> HQConnectorResult:
         receipts = self._receipts(command)
-        if receipts and str(receipts[-1].get("status") or "") in {"RESULT", "UNSUPPORTED"}:
-            return HQConnectorResult("REPLAY", envelope.digest)
+        terminal = receipts[-1] if receipts and str(receipts[-1].get("status") or "") in {"RESULT", "UNSUPPORTED"} else None
+        if terminal is not None:
+            return HQConnectorResult(
+                "REPLAY",
+                str(terminal.get("command_digest") or ""),
+                str(terminal.get("thread_id") or ""),
+                str(terminal.get("turn_id") or ""),
+                str(terminal.get("observed_root_digest") or ""),
+            )
         ack = receipts[-1] if receipts and str(receipts[-1].get("status") or "") == "ACKNOWLEDGED" else None
         known_thread = str(ack.get("thread_id") or "") if ack else envelope.target_thread_id
         try:
@@ -458,7 +466,7 @@ class UniversalHQConnector:
         except Exception:
             return HQConnectorResult("PENDING", envelope.digest, thread_id, attention="HOST_TURN_OUTCOME_PENDING")
         ledger.append_connector_receipt(self._receipt(envelope, receipt_id=f"{envelope.command_id}-result", index=2, status="RESULT", observed_at_ms=now_ms, thread_id=thread_id, turn_id=turn_id, observed_root_digest=verified_root_digest))
-        return HQConnectorResult("RESULT", envelope.digest, thread_id, turn_id)
+        return HQConnectorResult("RESULT", envelope.digest, thread_id, turn_id, verified_root_digest)
 
 
 @dataclass(frozen=True)

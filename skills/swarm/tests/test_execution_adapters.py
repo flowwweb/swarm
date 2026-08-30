@@ -352,15 +352,27 @@ class ExecutionAdapterTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             ledger = Ledger(Path(directory))
             result = connector.execute(envelope, self.explicit(envelope), ledger, now_ms=2, observed_project_id="project-a", observed_root_digest="a" * 64)
-            replay = connector.execute(envelope, self.explicit(envelope), ledger, now_ms=3, observed_project_id="project-a", observed_root_digest="a" * 64)
+            retained = ledger.replay()["connector_receipts"]["key-new"]["receipts"][-1]
+            unavailable = UnavailableHQMaterialResolver()
+            restarted = UniversalHQConnector(
+                CodexAppServerAdapter(transport=transport),
+                authorization_verifier=FakeHQAuthorizationVerifier(False),
+                material_resolver=unavailable,
+                root_verifier=FakeHQRootVerifier(accepted=False),
+            )
+            replay = restarted.execute(envelope, self.explicit(envelope), Ledger(Path(directory)), now_ms=101, observed_project_id="project-a", observed_root_digest="a" * 64)
             self.assertEqual((result.status, result.thread_id, result.turn_id), ("RESULT", "thread-1", "turn-1"))
-            self.assertEqual(replay.status, "REPLAY")
+            self.assertEqual(
+                (replay.status, replay.command_digest, replay.thread_id, replay.turn_id, replay.observed_root_digest),
+                ("REPLAY", retained["command_digest"], retained["thread_id"], retained["turn_id"], retained["observed_root_digest"]),
+            )
             self.assertEqual(transport.calls, [
                 ("thread/start", {"cwd": material.cwd}),
                 ("turn/start", {"threadId": "thread-1", "input": material.input_items(), "cwd": material.cwd}),
             ])
             self.assertEqual(transport.reconcile_calls, [])
-            replayed = ledger.replay()
+            self.assertEqual(unavailable.calls, [])
+            replayed = Ledger(Path(directory)).replay()
             self.assertNotIn(material.instruction, repr(replayed))
             self.assertEqual([item["status"] for item in replayed["connector_receipts"]["key-new"]["receipts"]], ["COMMAND", "ACKNOWLEDGED", "RESULT"])
 
