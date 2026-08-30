@@ -41,6 +41,9 @@
       <symbol id="lucide-list" viewBox="0 0 24 24"><path d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01"/></symbol>
       <symbol id="lucide-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></symbol>
       <symbol id="lucide-list-filter" viewBox="0 0 24 24"><path d="M3 6h18M6 12h12M10 18h4"/></symbol>
+      <symbol id="lucide-activity" viewBox="0 0 24 24"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></symbol>
+      <symbol id="lucide-upload" viewBox="0 0 24 24"><path d="M12 16V3m0 0-4 4m4-4 4 4M4 15v4a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-4"/></symbol>
+      <symbol id="lucide-send" viewBox="0 0 24 24"><path d="m22 2-7 20-4-9-9-4Z"/><path d="M22 2 11 13"/></symbol>
     </svg>
     <div class="ambient ambient-one" aria-hidden="true"></div>
     <div class="ambient ambient-two" aria-hidden="true"></div>
@@ -61,6 +64,7 @@
             <button class="nav-item" data-view="roles" id="tab-roles" role="tab" aria-selected="false" aria-controls="view-roles" type="button"><span class="nav-icon" aria-hidden="true"><svg class="lucide"><use href="#lucide-list-tree"></use></svg></span><b>Roles</b></button>
             <button class="nav-item" data-view="review" id="tab-review" role="tab" aria-selected="false" aria-controls="view-review" type="button"><span class="nav-icon" aria-hidden="true"><svg class="lucide"><use href="#lucide-shield-check"></use></svg></span><b>Review</b></button>
             <button class="nav-item" data-view="assets" id="tab-assets" role="tab" aria-selected="false" aria-controls="view-assets" type="button"><span class="nav-icon" aria-hidden="true"><svg class="lucide"><use href="#lucide-image"></use></svg></span><b>Assets</b></button>
+            <button class="nav-item" data-view="diagnostics" id="tab-diagnostics" role="tab" aria-selected="false" aria-controls="view-diagnostics" type="button"><span class="nav-icon" aria-hidden="true"><svg class="lucide"><use href="#lucide-activity"></use></svg></span><b>Diagnostics</b></button>
           </nav>
           <section class="project-navigation" aria-labelledby="project-navigation-heading">
             <a id="project-navigation-heading" href="./#overview" aria-label="All projects">Projects</a>
@@ -78,10 +82,10 @@
           <div class="top-actions">
             <div class="scope-context" id="scope-context"><span>Project scope</span><details class="polished-select scope-selector" id="project-scope-selector"><summary id="project-scope-filter" aria-label="Project scope" aria-haspopup="listbox" aria-expanded="false"><span class="project-scope-mark" id="project-scope-selected-mark" aria-hidden="true"><span class="scope-dot is-unknown"></span></span><strong id="project-scope-selected-label">All projects</strong><svg class="lucide" aria-hidden="true"><use href="#lucide-chevron-down"></use></svg></summary><div class="polished-select-options edge-scroll" id="project-scope-options" role="listbox" aria-label="Projects"></div></details></div>
             <p class="scope-change-status sr-only" id="scope-change-status" role="status" aria-live="polite"></p>
-            <button class="icon-button circle-frame system-health-control is-reconnecting" id="system-health-control" type="button" aria-label="System health: Reconnecting" title="System health: Reconnecting" aria-controls="system-health-panel"><span class="status-dot is-reconnecting" id="snapshot-status-dot" aria-hidden="true"></span><span class="sr-only" id="sync-time" role="status" aria-live="polite">Reconnecting</span></button>
+            <button class="icon-button circle-frame system-health-control is-reconnecting" id="system-health-control" type="button" aria-label="System health: Reconnecting" title="System health: Reconnecting" aria-controls="view-diagnostics"><span class="status-dot is-reconnecting" id="snapshot-status-dot" aria-hidden="true"></span><span class="sr-only" id="sync-time" role="status" aria-live="polite">Reconnecting</span></button>
             <button class="icon-button" id="refresh" type="button" aria-label="Refresh overview" title="Refresh overview"><svg class="lucide" aria-hidden="true"><use href="#lucide-refresh-cw"></use></svg></button>
             <button class="icon-button chrome-action notification-trigger" id="notifications" type="button" aria-label="Notifications" title="Notifications" aria-expanded="false" aria-controls="notifications-panel"><svg class="lucide" aria-hidden="true"><use href="#lucide-bell"></use></svg><span id="notification-unread" hidden>0</span></button>
-            <button class="profile-button chrome-action circle-frame" id="profile" type="button" aria-label="Profile unavailable" title="Profile unavailable" disabled aria-disabled="true"><svg class="lucide" aria-hidden="true"><use href="#lucide-circle-user-round"></use></svg></button>
+            <button class="profile-button chrome-action circle-frame" id="profile" type="button" aria-label="Open profile" title="Profile"><svg class="lucide" aria-hidden="true"><use href="#lucide-circle-user-round"></use></svg></button>
           </div>
         </header>
         <aside class="notifications-panel panel" id="notifications-panel" role="dialog" aria-labelledby="notifications-heading" aria-describedby="notifications-status" hidden tabindex="-1">
@@ -122,14 +126,36 @@
         </section>
         <section class="view review-view" id="view-review" data-view-panel="review" role="tabpanel" aria-labelledby="tab-review" tabindex="0" hidden><header class="view-head"><div><p class="eyebrow">Review</p><h2>Proof and decisions</h2></div><p id="review-status" aria-live="polite">Loading proof</p></header><div class="review-list" id="review-list"></div></section>
         <section class="view assets-view" id="view-assets" data-view-panel="assets" role="tabpanel" aria-labelledby="tab-assets" tabindex="0" hidden><header class="view-head assets-view-head"><div><p class="eyebrow">Assets</p><h2>Project assets</h2></div><div class="assets-head-actions"><p id="assets-status" aria-live="polite">Loading assets</p><div class="asset-projection-toggle" role="group" aria-label="Asset collection"><button class="is-selected" type="button" data-asset-projection="active" aria-pressed="true">Library</button><button type="button" data-asset-projection="trash" aria-pressed="false"><svg class="lucide" aria-hidden="true"><use href="#lucide-trash-2"></use></svg>Trash</button></div><div class="asset-view-toggle" role="group" aria-label="Asset view"><button class="is-selected" type="button" data-asset-view="grid" aria-pressed="true"><svg class="lucide" aria-hidden="true"><use href="#lucide-grid-2x2"></use></svg>Grid</button><button type="button" data-asset-view="list" aria-pressed="false"><svg class="lucide" aria-hidden="true"><use href="#lucide-list"></use></svg>List</button></div></div></header><div class="assets-layout"><div class="asset-gallery" id="asset-gallery"></div></div><div class="asset-undo-toast" id="asset-undo-toast" role="status" aria-live="polite" hidden></div></section>
-        <section class="view" id="view-settings" data-view-panel="settings" role="tabpanel" aria-labelledby="tab-settings" tabindex="0" hidden><header class="view-head"><div><p class="eyebrow">Preferences</p><h2>Settings</h2></div><p>Choose defaults for SWARM and each CTRL.</p></header><div class="settings-grid" id="settings-grid"><section class="panel settings-card system-health-card" id="system-health-panel" tabindex="-1" aria-labelledby="system-health-heading"><p class="eyebrow">Diagnostics</p><h3 id="system-health-heading">System health</h3><p class="system-health-summary"><span class="status-dot is-reconnecting" id="system-health-panel-dot" aria-hidden="true"></span><strong id="system-health-state">Reconnecting</strong></p><p id="system-health-note">Waiting for a fresh console response.</p></section></div></section>
+        <section class="view diagnostics-view" id="view-diagnostics" data-view-panel="diagnostics" role="tabpanel" aria-labelledby="tab-diagnostics" tabindex="0" hidden>
+          <header class="view-head diagnostics-view-head"><div><p class="eyebrow">System health</p><h2 id="diagnostics-heading" tabindex="-1">Diagnostics</h2></div><p id="diagnostics-live-note">Deterministic local checks refresh every minute. Rendering and polling do not call a model.</p></header>
+          <div class="diagnostics-summary-grid" id="diagnostics-summary-grid" aria-live="polite"></div>
+          <div class="diagnostics-chart-grid">
+            <section class="panel diagnostics-chart-card" aria-labelledby="diagnostics-health-chart-heading"><header><div><p class="eyebrow">Last hour</p><h3 id="diagnostics-health-chart-heading">Health</h3></div><span id="diagnostics-health-chart-state">Waiting</span></header><svg id="diagnostics-health-trend" viewBox="0 0 320 92" preserveAspectRatio="none" aria-label="Health history unavailable"></svg></section>
+            <section class="panel diagnostics-chart-card" aria-labelledby="diagnostics-usage-chart-heading"><header><div><p class="eyebrow">Last hour</p><h3 id="diagnostics-usage-chart-heading">Usage</h3></div><span id="diagnostics-usage-state">Waiting</span></header><div class="usage-chart diagnostics-usage-chart" data-usage-chart="diagnostics"><div class="usage-range" role="group" aria-label="Usage range"><button type="button" data-usage-range="1" aria-pressed="true">1h</button><button type="button" data-usage-range="24" aria-pressed="false">24h</button><button type="button" data-usage-range="168" aria-pressed="false">7d</button></div><svg id="diagnostics-usage-trend" viewBox="0 0 320 92" preserveAspectRatio="none" aria-label="Usage history unavailable"></svg></div></section>
+          </div>
+          <div class="diagnostics-content-grid">
+            <section class="panel diagnostics-checks-panel" aria-labelledby="diagnostics-checks-heading"><header><div><p class="eyebrow">Local checks</p><h3 id="diagnostics-checks-heading">What SWARM can verify</h3></div><button class="quiet-button" id="diagnostics-select-recommended" type="button">Choose recommended</button></header><div class="diagnostics-check-list" id="diagnostics-check-list"></div><footer><p id="diagnostics-selection-status" role="status">No repair checks selected.</p><button class="primary-action" id="diagnostics-repair" type="button" disabled>Repair with Codex</button></footer></section>
+            <aside class="diagnostics-side-stack"><section class="panel diagnostics-log-panel" aria-labelledby="diagnostics-log-heading"><header><div><p class="eyebrow">Current signals</p><h3 id="diagnostics-log-heading">Errors and logs</h3></div></header><ol id="diagnostics-log-list"></ol></section><section class="panel diagnostics-auto-fix" aria-labelledby="diagnostics-auto-fix-heading"><div><p class="eyebrow">Recovery</p><h3 id="diagnostics-auto-fix-heading">Auto fix</h3><p id="diagnostics-auto-fix-note">Health checks remain active even when Auto fix is off.</p></div><strong id="diagnostics-auto-fix-state">Unknown</strong></section></aside>
+          </div>
+        </section>
+        <section class="view" id="view-settings" data-view-panel="settings" role="tabpanel" aria-labelledby="tab-settings" tabindex="0" hidden><header class="view-head"><div><p class="eyebrow">Preferences</p><h2>Settings</h2></div><p>Choose defaults for SWARM and each CTRL.</p></header><div class="settings-grid" id="settings-grid"></div></section>
         <section class="connection-state" id="connection-state" hidden role="alert" aria-labelledby="connection-state-title">
           <div class="connection-state-visual"><img src="/assets/swarm-offline-disconnected.png" width="1536" height="1024" loading="eager" decoding="async" alt="SWARM octopus holding disconnected cable ends"></div>
           <div class="connection-state-copy"><h2 id="connection-state-title">Connection lost</h2><p>Your work is safe. SWARM will reconnect when the console is available.</p><button class="quiet-button" id="connection-retry" type="button">Retry connection</button></div>
         </section>
         <section class="error-surface" id="error-surface" hidden role="alert"><span aria-hidden="true">!</span><div><strong>Console unavailable</strong><p id="error-message"></p><button id="retry" type="button">Try again</button></div></section>
       </main>
+      <button class="message-launcher" id="message-launcher" type="button" aria-label="Message" title="Message" aria-controls="message-composer" aria-expanded="false"><span class="message-mascot-silhouette" aria-hidden="true"></span></button>
+      <nav class="mobile-message-footer" aria-label="Quick actions"><button class="mobile-message-action" id="mobile-message-action" type="button" aria-label="Message" title="Message" aria-controls="message-composer" aria-expanded="false"><svg class="lucide" aria-hidden="true"><use href="#lucide-message-square"></use></svg></button></nav>
     </div>
+    <section class="message-composer" id="message-composer" role="dialog" aria-modal="false" aria-labelledby="message-title" aria-describedby="message-status" hidden>
+      <header class="message-composer-header"><div><p class="eyebrow">SWARM routing</p><h2 id="message-title">Message</h2></div><button class="icon-button" id="message-close" type="button" aria-label="Close Message"><svg class="lucide" aria-hidden="true"><use href="#lucide-x"></use></svg></button></header>
+      <div class="message-composer-body edge-scroll"><div class="message-composer-content">
+        <label for="message-recipient"><span>Recipient</span><select id="message-recipient"></select></label>
+        <label for="message-draft"><span class="sr-only">Message</span><textarea id="message-draft" rows="5" maxlength="4000" placeholder="What should SWARM know?"></textarea></label>
+      </div></div>
+      <footer class="message-composer-footer"><p id="message-status" role="status">Messaging is unavailable until SWARM exposes the authenticated HQ connector.</p><div><button class="quiet-button" id="message-retry" type="button" hidden>Retry</button><button class="icon-button message-send" id="message-send" type="button" aria-label="Send message" title="Send message" disabled aria-disabled="true"><svg class="lucide" aria-hidden="true"><use href="#lucide-send"></use></svg></button></div></footer>
+    </section>
     <dialog class="agent-detail-dialog" id="agent-detail-dialog" aria-labelledby="agent-detail-title">
       <div class="dialog-shell agent-detail-shell">
         <header class="dialog-header agent-detail-head"><div><p class="eyebrow">Active agent</p><h2 id="agent-detail-title">Agent details</h2></div><button class="icon-button" id="agent-detail-close" type="button" aria-label="Close agent details">×</button></header>
@@ -173,6 +199,25 @@
           <div class="dialog-body-content asset-dialog-content" id="asset-dialog-content"></div>
         </div>
         <footer class="dialog-footer asset-dialog-footer" id="asset-dialog-footer"></footer>
+      </div>
+    </dialog>
+    <dialog class="profile-dialog" id="profile-dialog" aria-labelledby="profile-dialog-title" aria-describedby="profile-status">
+      <form class="dialog-shell profile-dialog-shell" id="profile-form">
+        <header class="dialog-header profile-dialog-header"><div><p class="eyebrow">Local preferences</p><h2 id="profile-dialog-title">Profile</h2></div><button class="icon-button" id="profile-close" type="button" aria-label="Close profile"><svg class="lucide" aria-hidden="true"><use href="#lucide-x"></use></svg></button></header>
+        <div class="dialog-body edge-scroll profile-dialog-body"><div class="dialog-body-content profile-dialog-content">
+          <section class="profile-avatar-editor" aria-labelledby="profile-avatar-heading"><div class="profile-avatar-preview circle-frame"><img id="profile-avatar-preview" alt="" hidden><svg class="lucide" id="profile-avatar-placeholder" aria-hidden="true"><use href="#lucide-circle-user-round"></use></svg></div><div><h3 id="profile-avatar-heading">Avatar</h3><p>Shown only in this local SWARM presentation.</p><label class="quiet-button profile-upload-button" for="profile-avatar-input"><svg class="lucide" aria-hidden="true"><use href="#lucide-upload"></use></svg>Choose image</label><input id="profile-avatar-input" type="file" accept="image/png,image/jpeg,image/webp" hidden><small id="profile-avatar-help">PNG, JPEG, or WebP · up to 5 MB</small></div></section>
+          <label class="profile-field" for="profile-display-name"><span>Display name</span><input id="profile-display-name" name="display_name" autocomplete="name" maxlength="80" required></label>
+          <fieldset class="profile-preferences"><legend>Preferences</legend><label><input id="profile-compact-updates" type="checkbox">Compact live updates</label><label><input id="profile-reduced-motion" type="checkbox">Reduce motion</label></fieldset>
+          <aside class="profile-claim-limit" id="profile-claim-limit">This is a local presentation profile, not an account or provider identity.</aside>
+        </div></div>
+        <footer class="dialog-footer profile-dialog-footer"><p id="profile-status" role="status">Loading profile…</p><div><button class="quiet-button" id="profile-cancel" type="button">Cancel</button><button class="primary-action" id="profile-save" type="submit" disabled>Save profile</button></div></footer>
+      </form>
+    </dialog>
+    <dialog class="repair-dialog" id="repair-dialog" aria-labelledby="repair-dialog-title" aria-describedby="repair-status">
+      <div class="dialog-shell repair-dialog-shell">
+        <header class="dialog-header repair-dialog-header"><div><p class="eyebrow">Repair with Codex</p><h2 id="repair-dialog-title">Review the repair request</h2></div><button class="icon-button" id="repair-close" type="button" aria-label="Close repair preview"><svg class="lucide" aria-hidden="true"><use href="#lucide-x"></use></svg></button></header>
+        <div class="dialog-body edge-scroll repair-dialog-body"><div class="dialog-body-content repair-dialog-content"><div id="repair-preview"></div><label class="repair-acknowledgement"><input id="repair-acknowledge" type="checkbox"><span>I understand this prepares a repair request for the selected checks.</span></label><aside id="repair-dispatch-note"></aside></div></div>
+        <footer class="dialog-footer repair-dialog-footer"><p id="repair-status" role="status">Preview the selected checks before preparing a request.</p><div><button class="quiet-button" id="repair-cancel" type="button">Cancel</button><button class="primary-action" id="repair-confirm" type="button" disabled>Prepare repair request</button></div></footer>
       </div>
     </dialog>
     <dialog class="config-editor-dialog" id="config-editor-dialog" aria-labelledby="config-editor-title" aria-describedby="config-editor-status">

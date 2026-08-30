@@ -1,4 +1,7 @@
-const state = { token: "", overview: null, proof: [], proofCollections: new Map(), proofStatuses: new Map(), proofStatus: "idle", proofSequence: 0, usageHistory: null, usageWindowHours: 1, usageScopeKey: "", usageStatus: "idle", usageError: "", projectProgress: null, projectProgressProjectId: "", projectProgressStatus: "idle", projectProgressError: "", projectProgressFeed: null, projectProgressFeedProjectId: "", projectProgressFeedStatus: "idle", projectProgressFeedError: "", projectTab: "overview", projectUiMode: "screens", projectUiGroupId: "", runLogs: new Map(), runLogRequestGenerations: new Map(), runLogSurfaceStates: new Map(), runLogAgent: null, agentUpdatesFilter: "all", agentUpdatesPaused: false, agentDetailTrigger: null, diagnostics: null, health: null, storage: null, config: null, configStatus: "idle", configError: "", configResetPending: null, configResetRetry: null, chatRelaySaving: false, settingsDraft: new Map(), settingsSaving: false, settingsSaveError: "", settingsSaveMessage: "", configEditorTrigger: null, ctrlSettings: null, auto: null, autoBindingKey: "", autoStatus: "idle", autoError: "", autoSaving: false, skills: null, skillsError: "", roleManifests: null, roleManifestStatus: "unavailable", roleManifestError: "", roleManifestMessage: "", roleManifestSaving: false, roleManifestRetry: null, roleEditorMode: "", roleEditorTrigger: null, roleSearch: "", roleTypes: new Set(["builtin", "custom"]), roleSearchFields: new Set(["profession", "specialization", "alias", "skills", "purpose"]), selectedRoleId: "", assets: null, assetBindingKey: "", assetStatus: "idle", assetError: "", assetProjection: "active", assetView: "grid", assetRequestGeneration: 0, assetEventCursors: new Map(), assetMutationPending: null, assetConfirm: null, assetUndo: null, selectedAssetIdentity: "", assetTrigger: null, onboardingStep: 0, onboardingShown: false, onboardingTrigger: null, onboardingFlowZoom: 1, onboardingConfigPending: new Map(), onboardingConfigFailures: new Map(), notifications: null, notificationBindingKey: "", notificationStatus: "idle", notificationError: "", notificationAckFlight: null, notificationRequestGenerations: new Map(), notificationPresentedIds: new Set(), notificationToast: null, notificationToastTimer: null, notificationTrigger: null, connectionStatus: "reconnecting", view: "overview", projectId: "all", ctrlId: "", scopeNotice: "", scopeNoticeVisible: false, settingsCtrlId: "", settingsScopeType: "", settingsScopeId: "", evidenceImages: [], evidenceIndex: 0, evidenceTrigger: null };
+const state = { token: "", overview: null, proof: [], proofCollections: new Map(), proofStatuses: new Map(), proofStatus: "idle", proofSequence: 0, usageHistory: null, usageWindowHours: 1, usageScopeKey: "", usageStatus: "idle", usageError: "", projectProgress: null, projectProgressProjectId: "", projectProgressStatus: "idle", projectProgressError: "", projectProgressFeed: null, projectProgressFeedProjectId: "", projectProgressFeedStatus: "idle", projectProgressFeedError: "", projectTab: "overview", projectUiMode: "screens", projectUiGroupId: "", runLogs: new Map(), runLogRequestGenerations: new Map(), runLogSurfaceStates: new Map(), runLogAgent: null, agentUpdatesFilter: "all", agentUpdatesPaused: false, agentDetailTrigger: null, diagnostics: null, diagnosticsHistory: null, diagnosticsHistoryStatus: "idle", diagnosticsError: "", diagnosticsSelectedChecks: new Set(), diagnosticsSelectionInitialized: false, diagnosticsRepairPreview: null, diagnosticsRepairPending: false, diagnosticsRepairError: "", diagnosticsRepairTrigger: null, health: null, storage: null, profile: null, profileStatus: "idle", profileError: "", profileUpload: null, profilePreviewUrl: "", profileSaving: false, profileTrigger: null, messageOpen: false, messageTrigger: null, messageDraft: "", messageRecipientId: "", messageStatus: "unavailable", messageError: "", messageReceipt: null, config: null, configStatus: "idle", configError: "", configResetPending: null, configResetRetry: null, chatRelaySaving: false, settingsDraft: new Map(), settingsSaving: false, settingsSaveError: "", settingsSaveMessage: "", configEditorTrigger: null, ctrlSettings: null, auto: null, autoBindingKey: "", autoStatus: "idle", autoError: "", autoSaving: false, skills: null, skillsError: "", roleManifests: null, roleManifestStatus: "unavailable", roleManifestError: "", roleManifestMessage: "", roleManifestSaving: false, roleManifestRetry: null, roleEditorMode: "", roleEditorTrigger: null, roleSearch: "", roleTypes: new Set(["builtin", "custom"]), roleSearchFields: new Set(["profession", "specialization", "alias", "skills", "purpose"]), selectedRoleId: "", assets: null, assetBindingKey: "", assetStatus: "idle", assetError: "", assetProjection: "active", assetView: "grid", assetRequestGeneration: 0, assetEventCursors: new Map(), assetMutationPending: null, assetConfirm: null, assetUndo: null, selectedAssetIdentity: "", assetTrigger: null, onboardingStep: 0, onboardingShown: false, onboardingTrigger: null, onboardingFlowZoom: 1, onboardingConfigPending: new Map(), onboardingConfigFailures: new Map(), notifications: null, notificationBindingKey: "", notificationStatus: "idle", notificationError: "", notificationAckFlight: null, notificationRequestGenerations: new Map(), notificationPresentedIds: new Set(), notificationToast: null, notificationToastTimer: null, notificationTrigger: null, connectionStatus: "reconnecting", view: "overview", projectId: "all", ctrlId: "", scopeNotice: "", scopeNoticeVisible: false, settingsCtrlId: "", settingsScopeType: "", settingsScopeId: "", evidenceImages: [], evidenceIndex: 0, evidenceTrigger: null };
+const PROFILE_API_CONTRACT = Object.freeze({ read: "/api/profile", write: "/api/profile", schemaVersion: 1, avatarField: "avatar", profileField: "profile" });
+const DIAGNOSTICS_HISTORY_HOURS = 1;
+const MESSAGE_CONNECTOR_UNAVAILABLE = "Messaging is unavailable until SWARM exposes the authenticated HQ connector.";
 let configMutationTail = Promise.resolve();
 let configAuthorityGeneration = 0;
 let lastAppliedHistoryRoute = "";
@@ -180,6 +183,7 @@ function showConnectionState() {
   setDataStatus("unavailable", state.overview?.generated_at);
   setNotificationsOpen(false);
   dismissNotificationToast(false);
+  if (state.messageOpen) closeMessageComposer(false);
   $(".app-shell").classList.add("is-disconnected");
   $(".workspace").classList.add("is-disconnected");
   $("#connection-state").hidden = false;
@@ -699,22 +703,12 @@ function renderSystemHealth() {
   }
   const chromeDot = $("#snapshot-status-dot");
   if (chromeDot) chromeDot.className = "status-dot" + (presentation.className ? " " + presentation.className : "");
-  const panel = $("#system-health-panel");
-  if (panel) {
-    $("#system-health-state").textContent = presentation.label;
-    $("#system-health-note").textContent = presentation.note;
-    const dot = $("#system-health-panel-dot");
-    dot.className = "status-dot" + (presentation.className ? " " + presentation.className : "");
-  }
+  renderDiagnosticsSummary(presentation);
 }
 
 function openSystemHealth() {
-  setView("settings");
-  requestAnimationFrame(() => {
-    const panel = $("#system-health-panel");
-    panel?.scrollIntoView({ block: "nearest" });
-    panel?.focus({ preventScroll: true });
-  });
+  setView("diagnostics");
+  requestAnimationFrame(() => $("#diagnostics-heading")?.focus({ preventScroll: true }));
 }
 
 function setDataStatus(status, observedAt = null) {
@@ -797,7 +791,7 @@ function syncMobileDrawer() {
   setMobileDrawer(false);
 }
 
-const TOP_LEVEL_VIEWS = ["overview", "agents", "roles", "review", "assets", "settings"];
+const TOP_LEVEL_VIEWS = ["overview", "agents", "roles", "review", "assets", "diagnostics", "settings"];
 
 function routeView() {
   const view = location.hash.slice(1);
@@ -835,6 +829,7 @@ function setView(view, focus = false, syncRoute = true, historyMode = "push") {
     roles: ["Roles", "Profession manifests and role defaults."],
     review: ["Review", "Proof, decisions, and handoff acknowledgements."],
     assets: ["Assets", "Approved project and role assets."],
+    diagnostics: ["Diagnostics", "Live local health checks and recovery preparation."],
     settings: ["Settings", "Defaults and optional per-CTRL overrides."],
   };
   $(".app-shell").dataset.currentView = selectedView;
@@ -854,7 +849,9 @@ function setView(view, focus = false, syncRoute = true, historyMode = "push") {
   $("#view-subtitle").textContent = selectedView === "overview" && project ? "Project progress, proof, ownership, and ledger." : titles[selectedView][1];
   if (selectedView === 'settings' && (!state.skills || state.skillsError)) refreshSkills().then(renderSettings);
   if (selectedView === 'settings' && state.token) refreshAutoStatus().then(renderSettings);
+  if (selectedView === 'diagnostics' && state.token && state.diagnosticsHistoryStatus === "idle") refreshDiagnostics().then(renderDiagnostics);
   if (syncRoute) writeRoute(historyMode);
+  renderMessageComposer();
   if (focus) $("#tab-" + selectedView)?.focus({ preventScroll: true });
 }
 
@@ -1617,6 +1614,286 @@ function renderUsageCharts() {
     drawLine(svg, current ? values : [], "#ff6a3d");
     svg.setAttribute("aria-label", label);
   });
+}
+
+function diagnosticChecks() {
+  return Array.isArray(state.diagnostics?.health?.checks) ? state.diagnostics.health.checks : [];
+}
+
+function diagnosticStatusClass(status) {
+  const value = String(status || "UNKNOWN").toUpperCase();
+  return value === "PASS" ? "is-pass" : value === "WARN" ? "is-warn" : value === "FAIL" ? "is-fail" : "is-unknown";
+}
+
+function diagnosticCheckFor(...needles) {
+  return diagnosticChecks().find((check) => needles.some((needle) => String(check?.id || "").toLowerCase().includes(needle))) || null;
+}
+
+function diagnosticSummaryItems() {
+  return [
+    ["Endpoint", diagnosticCheckFor("endpoint_response", "api.health")],
+    ["Package", diagnosticCheckFor("package", "source_mirror")],
+    ["Project roots", diagnosticCheckFor("project.root", "root_binding", "canonical_project")],
+    ["CTRL", diagnosticCheckFor("ctrl", "controller")],
+    ["Ledger", diagnosticCheckFor("ledger", "event_cursor")],
+    ["Assets", diagnosticCheckFor("asset", "evidence_store", "proof_store")],
+    ["Config", diagnosticCheckFor("config")],
+    ["Refresh", diagnosticCheckFor("refresh.last_success")],
+  ];
+}
+
+function diagnosticHistorySeries() {
+  const cutoff = Date.now() - DIAGNOSTICS_HISTORY_HOURS * 60 * 60 * 1000;
+  const score = { PASS: 100, HEALTHY: 100, OK: 100, WARN: 68, DEGRADED: 68, UNKNOWN: 38, FAIL: 12, CRITICAL: 12 };
+  return (Array.isArray(state.diagnosticsHistory?.items) ? state.diagnosticsHistory.items : [])
+    .filter((item) => Number(item?.sampled_at_ms) >= cutoff)
+    .sort((left, right) => Number(left.sampled_at_ms) - Number(right.sampled_at_ms))
+    .map((item) => score[String(item?.health_state || item?.payload?.health_state || "UNKNOWN").toUpperCase()] ?? score.UNKNOWN);
+}
+
+function renderDiagnosticsSummary(presentation = systemHealthPresentation()) {
+  const root = $("#diagnostics-summary-grid");
+  if (!root) return;
+  const observed = state.diagnostics?.health?.observed_at_ms;
+  root.innerHTML = diagnosticSummaryItems().map(([label, check]) => {
+    const status = String(check?.status || "UNKNOWN").toUpperCase();
+    const note = check?.summary || check?.reason || "No deterministic receipt is available.";
+    return '<article class="panel diagnostics-summary-card ' + diagnosticStatusClass(status) + '"><header><span>' + escapeHTML(label) + '</span><strong>' + escapeHTML(status) + '</strong></header><p>' + escapeHTML(note) + '</p></article>';
+  }).join("");
+  root.setAttribute("aria-label", presentation.label + " · " + (observed ? "checked " + formatRelative(observed) : "check time unavailable"));
+}
+
+function renderDiagnostics() {
+  if (!$("#view-diagnostics")) return;
+  const presentation = systemHealthPresentation();
+  renderDiagnosticsSummary(presentation);
+  const checks = diagnosticChecks();
+  const validIds = new Set(checks.map((check) => String(check.id)));
+  state.diagnosticsSelectedChecks = new Set([...state.diagnosticsSelectedChecks].filter((id) => validIds.has(id)));
+  if (!state.diagnosticsSelectionInitialized && checks.length) {
+    state.diagnosticsSelectedChecks = new Set(checks.filter((check) => String(check.status).toUpperCase() !== "PASS").map((check) => String(check.id)));
+    state.diagnosticsSelectionInitialized = true;
+  }
+  const list = $("#diagnostics-check-list");
+  list.innerHTML = checks.length ? checks.map((check) => {
+    const id = String(check.id || "");
+    const status = String(check.status || "UNKNOWN").toUpperCase();
+    const selected = state.diagnosticsSelectedChecks.has(id);
+    const disabled = status === "PASS";
+    return '<label class="diagnostics-check ' + diagnosticStatusClass(status) + '"><input type="checkbox" data-diagnostic-check="' + escapeHTML(id) + '"' + (selected ? ' checked' : '') + (disabled ? ' disabled' : '') + '><span class="diagnostics-check-state">' + escapeHTML(status) + '</span><span><strong>' + escapeHTML(humanize(id)) + '</strong><small>' + escapeHTML(check.summary || "No check summary available.") + '</small></span></label>';
+  }).join("") : '<p class="empty-state">Deterministic health checks are unavailable. Refresh to try again.</p>';
+  const selected = state.diagnosticsSelectedChecks.size;
+  $("#diagnostics-selection-status").textContent = selected ? selected + " recommended check" + (selected === 1 ? "" : "s") + " selected." : "No repair checks selected.";
+  $("#diagnostics-repair").disabled = !selected || state.diagnosticsRepairPending;
+  $("#diagnostics-select-recommended").disabled = !checks.some((check) => String(check.status).toUpperCase() !== "PASS");
+  const signals = checks.filter((check) => String(check.status).toUpperCase() !== "PASS");
+  $("#diagnostics-log-list").innerHTML = signals.length ? signals.slice(0, 8).map((check) => '<li><span class="diagnostics-signal ' + diagnosticStatusClass(check.status) + '">' + escapeHTML(String(check.status || "UNKNOWN").toUpperCase()) + '</span><div><strong>' + escapeHTML(humanize(check.id)) + '</strong><p>' + escapeHTML(check.recommended_action || check.summary || "Review this local signal.") + '</p></div></li>').join("") : '<li class="is-clear"><strong>No current errors</strong><p>All available deterministic checks pass.</p></li>';
+  const autoPolicy = state.diagnostics?.health?.repair_policy || state.health?.auto_repair || {};
+  $("#diagnostics-auto-fix-state").textContent = autoPolicy.status || (autoPolicy.enabled === true ? "ON" : autoPolicy.enabled === false ? "OFF" : "UNKNOWN");
+  $("#diagnostics-auto-fix-note").textContent = autoPolicy.reason || "Health checks remain active even when Auto fix is off.";
+  const healthValues = diagnosticHistorySeries();
+  const healthSvg = $("#diagnostics-health-trend");
+  drawLine(healthSvg, healthValues, "#ff6a3d");
+  healthSvg.setAttribute("aria-label", healthValues.length ? "Health during the last hour from " + healthValues.length + " deterministic sample" + (healthValues.length === 1 ? "" : "s") : "Health history unavailable for the last hour");
+  $("#diagnostics-health-chart-state").textContent = state.diagnosticsHistoryStatus === "current" ? (healthValues.length ? presentation.label : "No samples") : state.diagnosticsHistoryStatus === "stale" ? "Stale" : "Unavailable";
+  $("#diagnostics-usage-state").textContent = state.usageStatus === "current" ? "Live" : state.usageStatus === "stale" ? "Stale" : "Unavailable";
+  renderUsageCharts();
+}
+
+async function refreshDiagnostics(render = true) {
+  const hasHistory = Array.isArray(state.diagnosticsHistory?.items);
+  state.diagnosticsHistoryStatus = hasHistory ? "refreshing" : "loading";
+  state.diagnosticsError = "";
+  const results = await Promise.allSettled([
+    api("/api/diagnostics"),
+    api("/api/diagnostics/history?limit=120"),
+    api("/api/health/settings"),
+  ]);
+  if (results[0].status === "fulfilled") state.diagnostics = results[0].value;
+  else state.diagnosticsError = results[0].reason?.message || "Diagnostics unavailable";
+  if (results[1].status === "fulfilled") {
+    state.diagnosticsHistory = results[1].value;
+    state.diagnosticsHistoryStatus = "current";
+  } else {
+    state.diagnosticsHistoryStatus = hasHistory ? "stale" : "unavailable";
+    state.diagnosticsError ||= results[1].reason?.message || "Diagnostic history unavailable";
+  }
+  if (results[2].status === "fulfilled") state.health = results[2].value;
+  if (render) {
+    renderSystemHealth();
+    renderDiagnostics();
+  }
+}
+
+function selectRecommendedDiagnostics() {
+  state.diagnosticsSelectedChecks = new Set(diagnosticChecks().filter((check) => String(check.status).toUpperCase() !== "PASS").map((check) => String(check.id)));
+  state.diagnosticsSelectionInitialized = true;
+  renderDiagnostics();
+  $("#diagnostics-repair")?.focus({ preventScroll: true });
+}
+
+function repairDispatchPresentation() {
+  const policy = state.diagnosticsRepairPreview?.repair_policy || state.diagnostics?.health?.repair_policy || {};
+  return policy.dispatch === "disabled"
+    ? "Dispatch is unavailable from this server. SWARM can prepare an audited request, but it will not start Codex or change your system."
+    : String(policy.claim_limit || "The server did not provide a repair dispatch claim.");
+}
+
+function renderRepairDialog() {
+  const preview = $("#repair-preview");
+  const selected = diagnosticChecks().filter((check) => state.diagnosticsSelectedChecks.has(String(check.id)));
+  preview.innerHTML = '<section class="repair-preview-summary"><strong>' + selected.length + ' check' + (selected.length === 1 ? "" : "s") + '</strong><span>Scope: ' + escapeHTML(state.projectId === "all" ? "All projects" : state.projectId) + '</span></section><ul>' + selected.map((check) => '<li><span class="diagnostics-signal ' + diagnosticStatusClass(check.status) + '">' + escapeHTML(String(check.status).toUpperCase()) + '</span><div><strong>' + escapeHTML(humanize(check.id)) + '</strong><p>' + escapeHTML(check.recommended_action || check.summary || "Review this check.") + '</p></div></li>').join("") + '</ul>';
+  $("#repair-dispatch-note").textContent = repairDispatchPresentation();
+  $("#repair-status").textContent = state.diagnosticsRepairError || (state.diagnosticsRepairPending ? "Preparing preview…" : state.diagnosticsRepairPreview ? "Preview ready. Acknowledgement is required before preparation." : "Preview the selected checks before preparing a request.");
+  $("#repair-acknowledge").disabled = state.diagnosticsRepairPending || !state.diagnosticsRepairPreview;
+  $("#repair-confirm").disabled = state.diagnosticsRepairPending || !state.diagnosticsRepairPreview || !$("#repair-acknowledge").checked;
+}
+
+async function openRepairPreview(trigger) {
+  if (!state.diagnosticsSelectedChecks.size) return;
+  state.diagnosticsRepairTrigger = trigger;
+  state.diagnosticsRepairPreview = null;
+  state.diagnosticsRepairError = "";
+  state.diagnosticsRepairPending = true;
+  $("#repair-acknowledge").checked = false;
+  const dialog = $("#repair-dialog");
+  if (!dialog.open) dialog.showModal();
+  renderRepairDialog();
+  requestAnimationFrame(() => $("#repair-close")?.focus({ preventScroll: true }));
+  try {
+    state.diagnosticsRepairPreview = await api("/api/health/repair", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ check_ids: [...state.diagnosticsSelectedChecks], scope: state.projectId, acknowledge: false, dry_run: true }) });
+  } catch (error) {
+    state.diagnosticsRepairError = error.message || "Repair preview unavailable.";
+  } finally {
+    state.diagnosticsRepairPending = false;
+    renderRepairDialog();
+  }
+}
+
+function closeRepairDialog(restoreFocus = true) {
+  const dialog = $("#repair-dialog");
+  if (dialog.open) dialog.close();
+  if (restoreFocus) state.diagnosticsRepairTrigger?.focus({ preventScroll: true });
+  state.diagnosticsRepairTrigger = null;
+}
+
+async function confirmRepairPreparation() {
+  if (!state.diagnosticsRepairPreview || !$("#repair-acknowledge").checked || state.diagnosticsRepairPending) return;
+  state.diagnosticsRepairPending = true;
+  state.diagnosticsRepairError = "";
+  renderRepairDialog();
+  try {
+    const result = await api("/api/health/repair", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ check_ids: [...state.diagnosticsSelectedChecks], scope: state.projectId, acknowledge: true, dry_run: false }) });
+    state.diagnosticsRepairPreview = result;
+    $("#repair-status").textContent = "Repair request prepared. " + repairDispatchPresentation();
+    $("#repair-acknowledge").checked = false;
+  } catch (error) {
+    state.diagnosticsRepairError = error.message || "Repair request could not be prepared.";
+  } finally {
+    state.diagnosticsRepairPending = false;
+    renderRepairDialog();
+  }
+}
+
+function safeProfileAvatarURL(value) {
+  const url = String(value || "");
+  return /^\/(?:swarm-icon-64\.png|assets\/[a-z0-9_/-]+\.(?:png|jpe?g|webp))$/i.test(url) && !url.includes("..") ? url : "";
+}
+
+function renderProfile() {
+  const profile = state.profile?.profile || {};
+  const avatar = safeProfileAvatarURL(profile?.avatar?.url);
+  const preview = $("#profile-avatar-preview");
+  const previewURL = state.profilePreviewUrl || avatar;
+  preview.hidden = !previewURL;
+  preview.src = previewURL || "";
+  preview.alt = previewURL ? "Profile avatar preview" : "";
+  $("#profile-avatar-placeholder").hidden = Boolean(previewURL);
+  $("#profile-display-name").value = profile.display_name || "";
+  $("#profile-compact-updates").checked = profile.preferences?.compact_updates === true;
+  $("#profile-reduced-motion").checked = profile.preferences?.reduced_motion === true;
+  $("#profile-claim-limit").textContent = state.profile?.claim_limit || "This is a local presentation profile, not an account or provider identity.";
+  const unavailable = state.profileStatus === "unavailable";
+  $("#profile-status").textContent = state.profileError || (state.profileStatus === "loading" ? "Loading profile…" : unavailable ? "Profile editing is unavailable from this server. Your current presentation remains readable." : "Local presentation profile loaded.");
+  $("#profile-save").disabled = state.profileStatus !== "current" || state.profileSaving;
+  [$("#profile-display-name"), $("#profile-avatar-input"), $("#profile-compact-updates"), $("#profile-reduced-motion")].forEach((control) => control.disabled = state.profileStatus !== "current" || state.profileSaving);
+}
+
+async function openProfile(trigger) {
+  state.profileTrigger = trigger;
+  state.profileStatus = "loading";
+  state.profileError = "";
+  state.profileUpload = null;
+  if (state.profilePreviewUrl) URL.revokeObjectURL(state.profilePreviewUrl);
+  state.profilePreviewUrl = "";
+  const dialog = $("#profile-dialog");
+  if (!dialog.open) dialog.showModal();
+  renderProfile();
+  requestAnimationFrame(() => $("#profile-close")?.focus({ preventScroll: true }));
+  try {
+    state.profile = await api(PROFILE_API_CONTRACT.read);
+    state.profileStatus = "current";
+  } catch (error) {
+    state.profile = null;
+    state.profileStatus = "unavailable";
+    state.profileError = error.message || "Profile unavailable.";
+  }
+  renderProfile();
+}
+
+function closeProfile(restoreFocus = true) {
+  const dialog = $("#profile-dialog");
+  if (dialog.open) dialog.close();
+  if (state.profilePreviewUrl) URL.revokeObjectURL(state.profilePreviewUrl);
+  state.profilePreviewUrl = "";
+  state.profileUpload = null;
+  if (restoreFocus) state.profileTrigger?.focus({ preventScroll: true });
+  state.profileTrigger = null;
+}
+
+function selectProfileAvatar(file) {
+  if (!file) return;
+  if (!new Set(["image/png", "image/jpeg", "image/webp"]).has(file.type) || file.size > 5 * 1024 * 1024) {
+    state.profileError = "Choose a PNG, JPEG, or WebP image up to 5 MB.";
+    renderProfile();
+    return;
+  }
+  if (state.profilePreviewUrl) URL.revokeObjectURL(state.profilePreviewUrl);
+  state.profileUpload = file;
+  state.profilePreviewUrl = URL.createObjectURL(file);
+  state.profileError = "";
+  renderProfile();
+}
+
+async function saveProfile(event) {
+  event.preventDefault();
+  if (state.profileStatus !== "current" || state.profileSaving) return;
+  const displayName = $("#profile-display-name").value.trim();
+  if (!displayName) {
+    state.profileError = "Enter a display name.";
+    renderProfile();
+    $("#profile-display-name").focus();
+    return;
+  }
+  const payload = { schema_version: PROFILE_API_CONTRACT.schemaVersion, display_name: displayName, preferences: { compact_updates: $("#profile-compact-updates").checked, reduced_motion: $("#profile-reduced-motion").checked } };
+  const options = state.profileUpload ? (() => { const body = new FormData(); body.append(PROFILE_API_CONTRACT.profileField, JSON.stringify(payload)); body.append(PROFILE_API_CONTRACT.avatarField, state.profileUpload, state.profileUpload.name); return { method: "POST", body }; })() : { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) };
+  state.profileSaving = true;
+  state.profileError = "";
+  renderProfile();
+  try {
+    const result = await api(PROFILE_API_CONTRACT.write, options);
+    state.profile = result;
+    state.profileStatus = "current";
+    state.profileUpload = null;
+    if (state.profilePreviewUrl) URL.revokeObjectURL(state.profilePreviewUrl);
+    state.profilePreviewUrl = "";
+    $("#profile-status").textContent = "Profile saved.";
+  } catch (error) {
+    state.profileError = error.status === 404 || error.status === 405 ? "Profile saving is unavailable from this server. No changes were applied." : (error.message || "Profile could not be saved. No changes were applied.");
+  } finally {
+    state.profileSaving = false;
+    renderProfile();
+  }
 }
 
 function verifiedYieldProjection() {
@@ -3086,15 +3363,115 @@ function activeAgentRecords() {
   });
 }
 
+function messageRecipients() {
+  return activeAgentRecords()
+    .filter((record) => ["CTRL", "LEAD"].includes(record.structuralRole))
+    .filter((record) => state.projectId === "all" || record.binding?.projectId === state.projectId)
+    .map((record) => ({
+      id: record.node.id,
+      projectId: record.binding.projectId,
+      targetCtrlId: record.binding.ctrlId,
+      structuralRole: record.structuralRole,
+      label: record.presentationName,
+      projectLabel: record.project.label,
+    }));
+}
+
+function selectedMessageRecipient(recipients = messageRecipients()) {
+  const selected = recipients.find((recipient) => recipient.id === state.messageRecipientId);
+  if (selected) return selected;
+  const preferred = recipients.find((recipient) => recipient.structuralRole === "CTRL") || recipients[0] || null;
+  state.messageRecipientId = preferred?.id || "";
+  return preferred;
+}
+
+function messageImplicitContext(recipient = selectedMessageRecipient()) {
+  if (!recipient) return null;
+  const projectView = state.projectId !== "all" && state.view === "overview" ? state.projectTab : state.view;
+  return {
+    type: "swarm.project_view_action",
+    schema_version: 1,
+    action_kind: "send_feedback",
+    project_id: recipient.projectId,
+    target_ctrl_id: recipient.targetCtrlId,
+    recipient_id: recipient.id,
+    view_id: projectView,
+    screen_id: state.view,
+    state_id: state.view === "overview" && state.projectId !== "all" ? state.projectTab : "default",
+  };
+}
+
+function messageReceiptPresentation(result) {
+  const code = String(result?.result_code || result?.status || "").toUpperCase();
+  if (["ACKNOWLEDGED", "REPLAYED"].includes(code) && result?.request_id && result?.action_digest && result?.result_event_id && result?.result_event_digest) {
+    return { status: "sent", clearDraft: true };
+  }
+  if (["STALE", "CONFLICT"].includes(code)) return { status: "conflict", clearDraft: false };
+  return { status: "failed", clearDraft: false };
+}
+
+function messageStatusCopy(recipient = selectedMessageRecipient()) {
+  if (!recipient) return "No authorized CTRL or LEAD is available in this project scope.";
+  if (state.messageStatus === "pending") return "Pending · waiting for SWARM acknowledgement.";
+  if (state.messageStatus === "sent") return "Sent to " + recipient.label + ".";
+  if (state.messageStatus === "conflict") return state.messageError || "The project context changed. Review the message and retry.";
+  if (state.messageStatus === "failed") return state.messageError || "The message was not acknowledged. Your draft is still here.";
+  return MESSAGE_CONNECTOR_UNAVAILABLE;
+}
+
+function renderMessageComposer() {
+  const panel = $("#message-composer");
+  if (!panel) return;
+  const recipients = messageRecipients();
+  const recipient = selectedMessageRecipient(recipients);
+  panel.hidden = !state.messageOpen;
+  $("#message-recipient").innerHTML = recipients.length
+    ? recipients.map((item) => '<option value="' + escapeHTML(item.id) + '"' + (item.id === recipient?.id ? " selected" : "") + '>' + escapeHTML(item.label + " · " + item.structuralRole + " · " + item.projectLabel) + '</option>').join("")
+    : '<option value="">No authorized recipients</option>';
+  $("#message-recipient").disabled = !recipients.length || state.messageStatus === "pending";
+  const draft = $("#message-draft");
+  if (draft.value !== state.messageDraft) draft.value = state.messageDraft;
+  draft.disabled = state.messageStatus === "pending";
+  const send = $("#message-send");
+  send.disabled = true;
+  send.setAttribute("aria-disabled", "true");
+  $("#message-retry").hidden = !["failed", "conflict"].includes(state.messageStatus);
+  $("#message-retry").disabled = true;
+  $("#message-status").textContent = messageStatusCopy(recipient);
+  $("#message-launcher").setAttribute("aria-expanded", String(state.messageOpen));
+  $("#mobile-message-action").setAttribute("aria-expanded", String(state.messageOpen));
+  panel.dataset.contextAvailable = String(Boolean(messageImplicitContext(recipient)));
+}
+
+function openMessageComposer(trigger) {
+  state.messageTrigger = trigger || state.messageTrigger;
+  state.messageOpen = true;
+  renderMessageComposer();
+  requestAnimationFrame(() => (selectedMessageRecipient() ? $("#message-draft") : $("#message-close"))?.focus({ preventScroll: true }));
+}
+
+function closeMessageComposer(restoreFocus = true) {
+  state.messageOpen = false;
+  renderMessageComposer();
+  if (restoreFocus) state.messageTrigger?.focus({ preventScroll: true });
+  state.messageTrigger = null;
+}
+
+async function sendMessageFromComposer() {
+  state.messageStatus = "unavailable";
+  state.messageError = MESSAGE_CONNECTOR_UNAVAILABLE;
+  renderMessageComposer();
+}
+
 function agentProgress(record) {
   if (!record.binding) return null;
   if (state.projectId === "all") {
     const observed = state.overview?.progress?.controllers?.[record.binding.ctrlId];
     const freshness = String(observed?.freshness?.state || "").toLowerCase();
     const progress = observed?.progress;
-    const percent = Number(progress?.percent);
-    const completed = Number(progress?.completed_units);
-    const total = Number(progress?.total_units);
+    const percent = progress?.percent;
+    const completed = progress?.completed_units;
+    const total = progress?.total_units;
     if (freshness === "fresh" && Number.isFinite(percent) && percent >= 0 && percent <= 100 && Number.isInteger(completed) && Number.isInteger(total) && completed >= 0 && total > 0 && completed <= total) {
       return { percent, label: String(completed) + " of " + String(total) + " accepted milestones" };
     }
@@ -3240,9 +3617,11 @@ function roleDisplayName(role) {
   return role?.name || role?.id || "Unknown role";
 }
 
-function safeRoleAvatarURL(value) {
+function safeRoleAvatarURL(value, expectedDigest) {
   const url = String(value || "");
-  return (/^\/api\/assets\/[^/?#]+\/preview\?digest=[0-9a-f]{64}$/i.test(url) || /^\/assets\/role-avatars\/[a-z0-9_]+\.png$/i.test(url)) ? url : "";
+  const apiMatch = url.match(/^\/api\/assets\/([a-z0-9_-]+)\/preview\?digest=([0-9a-f]{64})$/i);
+  if (apiMatch) return apiMatch[2].toLowerCase() === expectedDigest ? url : "";
+  return /^\/assets\/role-avatars\/[a-z0-9_]+\.png$/i.test(url) ? url : "";
 }
 
 function retainedRoleAvatar(role) {
@@ -3250,11 +3629,11 @@ function retainedRoleAvatar(role) {
   if (!/^[0-9a-f]{64}$/.test(digest)) return null;
   const embedded = role?.avatar && typeof role.avatar === "object" ? role.avatar : null;
   const embeddedDigest = String(embedded?.digest || "").toLowerCase();
-  const embeddedURL = safeRoleAvatarURL(embedded?.url);
+  const embeddedURL = safeRoleAvatarURL(embedded?.url, digest);
   if (embeddedDigest === digest && embedded?.state === "AVAILABLE" && embeddedURL) return { digest, url: embeddedURL };
   const asset = assetItems().find((item) => String(assetTechnical(item).digest || "").toLowerCase() === digest);
   const preview = asset?.preview && typeof asset.preview === "object" ? asset.preview : null;
-  const previewURL = safeRoleAvatarURL(preview?.url);
+  const previewURL = safeRoleAvatarURL(preview?.url, digest);
   return preview?.state === "AVAILABLE" && previewURL ? { digest, url: previewURL } : null;
 }
 
@@ -3917,7 +4296,6 @@ function renderSettings() {
   const context = settingsContextPresentation(scope, selectedCtrl, setting);
   const autoMode = settingsDraftValue("automation.mode", automation.mode || "manual");
   const pending = state.settingsDraft.size;
-  const systemHealth = systemHealthPresentation();
   const saveStatus = state.settingsSaveError || state.settingsSaveMessage || (pending ? pending + " unsaved change" + (pending === 1 ? "" : "s") : "All changes saved");
   $("#settings-grid").innerHTML =
     '<section class="panel settings-essentials settings-wide" id="settings-essentials" tabindex="-1"><header class="settings-essentials-head"><div><p class="eyebrow">Essentials</p><h3>How SWARM runs your work</h3><p>Keep the defaults clear. Exact configuration remains server-owned.</p></div><label class="settings-scope-control">Applies to<select id="settings-scope">' + settingsScopeOptions() + '</select></label></header><div class="settings-context"><strong>' + escapeHTML(context.title) + '</strong><span>' + escapeHTML(context.note) + '</span></div><div class="settings-toggle-grid">' +
@@ -3925,13 +4303,10 @@ function renderSettings() {
       descriptorBooleanSwitch("monitoring.auto_health_enabled", "Auto fix", "SWARM attempts to recover from issues automatically. This may start repair tasks and increase usage.", { unsupported: "Unavailable. Health checks remain active; no repair is started." }) +
       descriptorBooleanSwitch("execution.usage_saver", "Usage Saver", "Smart routing can reduce usage.", { badge: "Experimental", unsupported: "Unavailable until the canonical setting is exposed." }) + '</div><div class="settings-run-controls">' + settingsSpeedMarkup() + settingsTaskLifeMarkup() + '</div><div class="guided-tour-setting"><span><strong>Guided tour</strong><small>Replay the current SWARM introduction.</small></span><button class="quiet-button" data-setting-action="replay-tour" type="button">Replay tour</button></div></section>' +
     '<section class="panel settings-config-entry settings-wide" id="settings-advanced"><div><p class="eyebrow">Configuration</p><h3>Edit config</h3><p>Review the exact source, inheritance, and validation state in one place.</p><small>Server-owned source · revision unavailable · text authority unavailable</small></div><button class="quiet-button" id="settings-edit-config" data-setting-action="edit-config" type="button">Edit config</button></section>' +
-    '<section class="panel settings-card system-health-card settings-wide" id="system-health-panel" tabindex="-1" aria-labelledby="system-health-heading"><p class="eyebrow">Diagnostics</p><h3 id="system-health-heading">System health</h3><p class="system-health-summary"><span class="status-dot' + (systemHealth.className ? ' ' + systemHealth.className : '') + '" id="system-health-panel-dot" aria-hidden="true"></span><strong id="system-health-state">' + escapeHTML(systemHealth.label) + '</strong></p><p id="system-health-note">' + escapeHTML(systemHealth.note) + '</p>' + usageChartMarkup("diagnostics", "diagnostics-usage-trend") + '</section>' +
     '<footer class="settings-save-bar settings-wide' + (state.settingsSaveError ? ' is-error' : '') + '" aria-live="polite"><p><strong>' + escapeHTML(saveStatus) + '</strong><span>' + escapeHTML(pending ? "Review and save these server-backed changes." : "Essentials reflect the latest acknowledged configuration.") + '</span></p><div><button class="quiet-button" data-setting-action="discard-settings" type="button"' + (!pending || state.settingsSaving ? ' disabled' : '') + '>Discard</button><button class="primary-action" id="settings-save" data-setting-action="save-settings" type="button"' + (!pending || state.settingsSaving ? ' disabled' : '') + (state.settingsSaving ? ' aria-busy="true"' : '') + '>Save changes</button></div></footer>';
-  renderSystemHealth();
-  renderUsageCharts();
 }
 
-function renderAllViews() { renderOverview(); renderAgents(); renderRoles(); renderReview(); renderAssets(); renderSettings(); renderRunLogSurfaces(); if ($("#onboarding-dialog")?.open) renderOnboarding(); }
+function renderAllViews() { renderOverview(); renderAgents(); renderRoles(); renderReview(); renderAssets(); renderDiagnostics(); renderSettings(); renderRunLogSurfaces(); renderMessageComposer(); if ($("#onboarding-dialog")?.open) renderOnboarding(); }
 
 async function refreshProof() {
   const projectId = state.projectId;
@@ -4046,12 +4421,13 @@ async function refreshMonitoring(proofSequence) {
     clearConnectionState();
     setDataStatus("current", state.overview?.generated_at);
     renderProjectNavigation();
-    await Promise.all([refreshUsageHistory(), refreshNotifications(), refreshRunLogs(), refreshAssets()]);
+    await Promise.all([refreshUsageHistory(), refreshNotifications(), refreshRunLogs(), refreshAssets(), refreshDiagnostics(false)]);
     if (Number(proofSequence) !== state.proofSequence) await refreshProof();
     renderOverview();
     renderAgents();
     renderReview();
     renderAssets();
+    renderDiagnostics();
     renderRunLogSurfaces();
   } catch {
     setDataStatus(state.overview ? "stale" : "unavailable", state.overview?.generated_at);
@@ -4136,8 +4512,8 @@ async function refreshOverview(showLoading = true) {
     await Promise.all([refreshProof(), refreshUsageHistory(), refreshProjectProgress(), refreshProjectProgressFeed(), refreshRoleManifests(), refreshNotifications(), refreshRunLogs(), refreshAssets()]);
     const selectedCtrl = state.ctrlId || historicalControllers()[0]?.id || '';
     const previousConfig = state.config;
-    const results = await Promise.allSettled([api('/api/diagnostics'), api('/api/health/settings'), api('/api/storage'), selectedCtrl ? api('/api/ctrl-settings?ctrl_id=' + encodeURIComponent(selectedCtrl)) : Promise.resolve(null), readConfigState(previousConfig)]);
-    [state.diagnostics, state.health, state.storage, state.ctrlSettings] = results.slice(0, 4).map((result) => result.status === 'fulfilled' ? result.value : null);
+    const results = await Promise.allSettled([api('/api/storage'), selectedCtrl ? api('/api/ctrl-settings?ctrl_id=' + encodeURIComponent(selectedCtrl)) : Promise.resolve(null), readConfigState(previousConfig), refreshDiagnostics(false)]);
+    [state.storage, state.ctrlSettings] = results.slice(0, 2).map((result) => result.status === 'fulfilled' ? result.value : null);
     await Promise.all([refreshSkills(), refreshAutoStatus()]);
     renderAllViews();
   } catch (error) {
@@ -4442,6 +4818,26 @@ document.addEventListener("click", async (event) => {
   }
 });
 
+$("#message-launcher").addEventListener("click", (event) => openMessageComposer(event.currentTarget));
+$("#mobile-message-action").addEventListener("click", (event) => openMessageComposer(event.currentTarget));
+$("#message-close").addEventListener("click", () => closeMessageComposer());
+$("#message-draft").addEventListener("input", (event) => {
+  state.messageDraft = event.target.value;
+  if (["failed", "conflict", "sent"].includes(state.messageStatus)) {
+    state.messageStatus = "unavailable";
+    state.messageError = "";
+    renderMessageComposer();
+  }
+});
+$("#message-recipient").addEventListener("change", (event) => {
+  state.messageRecipientId = event.target.value;
+  state.messageStatus = "unavailable";
+  state.messageError = "";
+  renderMessageComposer();
+});
+$("#message-send").addEventListener("click", sendMessageFromComposer);
+$("#message-retry").addEventListener("click", sendMessageFromComposer);
+
 $("#onboarding-close").addEventListener("click", () => closeOnboarding());
 $("#onboarding-skip").addEventListener("click", () => closeOnboarding());
 $("#onboarding-back").addEventListener("click", () => setOnboardingStep(state.onboardingStep - 1, false, "back"));
@@ -4543,6 +4939,11 @@ document.addEventListener("error", (event) => {
   if (failed) failed.hidden = false;
 }, true);
 document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape" && state.messageOpen) {
+    event.preventDefault();
+    closeMessageComposer();
+    return;
+  }
   if (event.key === "Escape" && $("#project-scope-selector")?.open) {
     event.preventDefault();
     $("#project-scope-selector").open = false;
