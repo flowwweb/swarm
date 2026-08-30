@@ -52,6 +52,7 @@ DEVELOPMENT_ONLY_PATHS = frozenset(
         "console/package-lock.json",
         "console/package.json",
         "docs/friction-audit.md",
+        "requirements-dev.txt",
         "scripts/sync_plugin_mirror.py",
         "scripts/run_test_tier.py",
         "scripts/select_ci_scope.py",

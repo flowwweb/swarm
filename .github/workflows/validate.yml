@@ -65,6 +65,7 @@ jobs:
       - name: Run contracts without package integration
         shell: bash
         run: |
+          python -m pip install --disable-pip-version-check -r requirements-dev.txt
           python scripts/sync_plugin_mirror.py --check
           python scripts/run_test_tier.py fast
           python -m unittest discover -s console/tests -p 'test_*.py'

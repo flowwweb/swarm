@@ -965,6 +965,10 @@ class ProgressLedgerContractTests(unittest.TestCase):
             {(size, image_format) for size in (64, 128, 256, 512) for image_format in ("webp", "avif")},
         )
         for record in assets.values():
+            with Image.open(record["source"]["file"]) as decoded_source:
+                self.assertEqual(decoded_source.format, "PNG")
+                self.assertEqual(decoded_source.mode, "RGBA")
+                self.assertEqual(decoded_source.getchannel("A").getextrema(), (0, 255))
             for (size, image_format), derivative in record["derivatives"].items():
                 with Image.open(derivative["file"]) as decoded:
                     self.assertEqual(decoded.format.casefold(), image_format)

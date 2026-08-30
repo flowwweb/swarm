@@ -254,12 +254,16 @@ class ConsoleError(RuntimeError):
     """Expected, user-visible console failure."""
 
 
+class NotAcceptableError(ConsoleError):
+    """The requested representation set excludes every supported image type."""
+
+
 def _preferred_image_media_type(accept: str) -> str:
     value = str(accept or "").strip().casefold()
     if not value:
         return "image/png"
     supported = ("image/avif", "image/webp", "image/png")
-    quality: dict[str, tuple[float, int]] = {media_type: (-1.0, -1) for media_type in supported}
+    quality: dict[str, tuple[int, float]] = {media_type: (-1, 0.0) for media_type in supported}
     for item in value.split(","):
         parts = [part.strip() for part in item.split(";")]
         media_range = parts[0]
@@ -281,14 +285,18 @@ def _preferred_image_media_type(accept: str) -> str:
                 specificity = 0
             else:
                 continue
-            quality[media_type] = max(quality[media_type], (q, specificity))
-    choices = [media_type for media_type in supported if quality[media_type][0] > 0]
+            retained_specificity, retained_q = quality[media_type]
+            if specificity > retained_specificity:
+                quality[media_type] = (specificity, q)
+            elif specificity == retained_specificity:
+                quality[media_type] = (specificity, max(retained_q, q))
+    choices = [media_type for media_type in supported if quality[media_type][1] > 0]
     if not choices:
-        raise ConsoleError("no acceptable role avatar image format")
+        raise NotAcceptableError("no acceptable role avatar image format")
     return max(
         choices,
         key=lambda media_type: (
-            quality[media_type][0], quality[media_type][1], -supported.index(media_type)
+            quality[media_type][1], quality[media_type][0], -supported.index(media_type)
         ),
     )
 
@@ -14429,6 +14437,9 @@ class Handler(BaseHTTPRequestHandler):
                     item = self.server.app.role_avatar_response(
                         role_avatar_match.group(1), self.headers.get("Accept", "")
                     )
+                except NotAcceptableError as error:
+                    self._error(HTTPStatus.NOT_ACCEPTABLE, str(error))
+                    return
                 except ConsoleError as error:
                     self._error(HTTPStatus.NOT_FOUND, str(error))
                     return
