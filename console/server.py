@@ -104,8 +104,11 @@ PROJECT_VIEW_RENDERERS = {
     "compare": frozenset({"single", "side_by_side"}),
     "document": frozenset({"blocks"}),
 }
+PROJECT_VIEW_SOURCE_KINDS = frozenset({
+    "coverage.screens", "graph.json", "graph.mermaid", "document.blocks", "document.text", "events.timeline",
+})
 PROJECT_VIEW_ACTIONS = frozenset({
-    "open_artifact", "open_entity", "send_feedback",
+    "open_artifact", "open_entity", "request_review", "send_feedback",
 })
 TOKEN_RETENTION_DAYS = 30
 TOKEN_SOURCE_SQLITE = "host_reported_cumulative_delta"
@@ -6110,12 +6113,14 @@ class App:
             ]
         if not normalized or len(normalized) > 16:
             raise ConsoleError("project view must have one to sixteen sources")
+        if any(source["kind"] not in PROJECT_VIEW_SOURCE_KINDS for source in normalized):
+            raise ConsoleError("project view source kind is not registered")
+        if len({source["ref"] for source in normalized}) != len(normalized):
+            raise ConsoleError("project view source reference is duplicated")
         return normalized
 
     @classmethod
-    def _project_view_definition(
-        cls, view: Any, *, expected_id: str, renderer: str, mode: str, source_kind: str,
-    ) -> dict[str, Any]:
+    def _project_view_definition(cls, view: Any) -> dict[str, Any]:
         if not isinstance(view, dict):
             raise ConsoleError("project view definition must be an object")
         view_id = cls._project_view_text(view.get("id"), "id")
@@ -6126,8 +6131,13 @@ class App:
             raise ConsoleError("project view renderer is not registered")
         if actual_mode not in PROJECT_VIEW_RENDERERS[actual_renderer]:
             raise ConsoleError("project view mode is not registered")
-        if (view_id, label, actual_renderer, actual_mode) != (expected_id, "Screens" if renderer == "gallery" else "Map", renderer, mode):
-            raise ConsoleError("project UI view does not match the bounded Screens and Map contract")
+        default_source_kinds = {
+            ("gallery", "grid"): "coverage.screens",
+            ("canvas", "network"): "graph.mermaid",
+            ("document", "blocks"): "document.blocks",
+            ("timeline", "milestones"): "events.timeline",
+        }
+        default_source_kind = default_source_kinds.get((actual_renderer, actual_mode), "application.json")
         actions = view.get("allowed_actions", [])
         if not isinstance(actions, list) or len(actions) > 16 or any(action not in PROJECT_VIEW_ACTIONS for action in actions):
             raise ConsoleError("project view action is not registered")
@@ -6136,9 +6146,94 @@ class App:
             "label": label,
             "renderer": actual_renderer,
             "mode": actual_mode,
-            "sources": cls._project_view_sources(view, source_kind),
+            "sources": cls._project_view_sources(view, default_source_kind),
             "allowed_actions": list(dict.fromkeys(actions)),
         }
+
+    @classmethod
+    def _project_view_source_catalog(
+        cls, manifest: dict[str, Any],
+    ) -> tuple[list[dict[str, Any]], dict[tuple[str, str, str], dict[str, Any]]]:
+        raw_sources = manifest.get("sources")
+        if raw_sources is None:
+            return [], {}
+        if not isinstance(raw_sources, dict) or not raw_sources or len(raw_sources) > 128:
+            raise ConsoleError("project view source catalog must be a bounded object")
+        normalized: list[dict[str, Any]] = []
+        by_identity: dict[tuple[str, str, str], dict[str, Any]] = {}
+        refs: dict[str, tuple[str, str]] = {}
+        source_ids: set[str] = set()
+
+        def add_ref(kind: str, ref_value: Any, digest_value: Any) -> dict[str, str]:
+            ref = cls._project_view_ref(ref_value)
+            digest = cls._project_view_digest(digest_value)
+            if ref in refs:
+                previous_kind, previous_digest = refs[ref]
+                if previous_digest != digest:
+                    raise ConsoleError("project view source reference has conflicting digests")
+                raise ConsoleError("project view source reference is duplicated")
+            refs[ref] = (kind, digest)
+            return {"kind": kind, "ref": ref, "digest": digest}
+
+        for raw_id, raw_source in raw_sources.items():
+            source_id = cls._project_view_text(raw_id, "source id", 256)
+            if source_id in source_ids:
+                raise ConsoleError("project view source identities must be unique")
+            source_ids.add(source_id)
+            if not isinstance(raw_source, dict) or not {"kind", "ref", "digest"}.issubset(raw_source):
+                raise ConsoleError("project view source declaration is incomplete")
+            kind = cls._project_view_text(raw_source.get("kind"), "source kind", 64)
+            if kind not in PROJECT_VIEW_SOURCE_KINDS:
+                raise ConsoleError("project view source kind is not registered")
+            source = add_ref(kind, raw_source.get("ref"), raw_source.get("digest"))
+            source_record: dict[str, Any] = {"id": source_id, **source}
+            canonical_ref = raw_source.get("canonical_text_ref")
+            canonical_digest = raw_source.get("canonical_text_digest")
+            if canonical_ref is not None or canonical_digest is not None:
+                if kind != "document.blocks" or canonical_ref is None or canonical_digest is None:
+                    raise ConsoleError("project view canonical text binding is invalid")
+                canonical = add_ref("document.text", canonical_ref, canonical_digest)
+                canonical["id"] = f"{source_id}.canonical_text"
+                source_record["canonical_text"] = canonical
+            identity = (source["kind"], source["ref"], source["digest"])
+            if identity in by_identity:
+                raise ConsoleError("project view source declaration is duplicated")
+            by_identity[identity] = source_record
+            normalized.append(source_record)
+        return normalized, by_identity
+
+    @classmethod
+    def _project_view_binding(cls, value: Any) -> dict[str, Any] | None:
+        if value is None:
+            return None
+        if not isinstance(value, dict):
+            raise ConsoleError("project view projection binding is invalid")
+        required = {"accepted_scope_id", "accepted_cursor", "status", "reason"}
+        if not required.issubset(value) or value.get("status") not in {"KNOWN", "PARTIAL", "UNKNOWN"}:
+            raise ConsoleError("project view projection binding is invalid")
+        scope_id = value.get("accepted_scope_id")
+        if scope_id is not None:
+            scope_id = cls._project_view_text(scope_id, "accepted scope id", 256)
+        cursor = value.get("accepted_cursor")
+        if cursor is not None and not isinstance(cursor, dict):
+            raise ConsoleError("project view accepted cursor is invalid")
+        binding = {
+            "accepted_scope_id": scope_id,
+            "accepted_cursor": copy.deepcopy(cursor),
+            "status": value["status"],
+            "reason": cls._project_view_text(value.get("reason"), "projection binding reason", 4096),
+        }
+        for key in ("source_manifest_id", "source_manifest_version", "source_manifest_digest", "unknown_policy"):
+            if key in value:
+                if key.endswith("_id") or key == "unknown_policy":
+                    binding[key] = cls._project_view_text(value[key], f"projection binding {key}", 4096)
+                elif key.endswith("_version"):
+                    if not isinstance(value[key], int) or isinstance(value[key], bool) or value[key] < 1:
+                        raise ConsoleError("project view projection binding version is invalid")
+                    binding[key] = value[key]
+                else:
+                    binding[key] = cls._project_view_digest(value[key])
+        return binding
 
     @staticmethod
     def _project_view_json(raw: bytes, label: str) -> dict[str, Any]:
@@ -6149,6 +6244,96 @@ class App:
         if not isinstance(value, dict):
             raise ConsoleError(f"project view {label} source must be an object")
         return value
+
+    @classmethod
+    def _project_view_document(cls, raw: bytes) -> dict[str, Any]:
+        source = cls._project_view_json(raw, "document")
+        allowed = {"schema_version", "document_id", "version", "title", "snapshot_at", "canonical_text_ref", "blocks"}
+        if not set(source).issubset(allowed) or source.get("schema_version") != 1:
+            raise ConsoleError("project view document schema is unsupported")
+        document_id = cls._project_view_text(source.get("document_id"), "document id")
+        version = source.get("version")
+        if not isinstance(version, int) or isinstance(version, bool) or version < 1:
+            raise ConsoleError("project view document version must be positive")
+        canonical_text_ref = None
+        if source.get("canonical_text_ref") is not None:
+            canonical_text_ref = cls._project_view_ref(source.get("canonical_text_ref"))
+        blocks = source.get("blocks")
+        if not isinstance(blocks, list) or not blocks or len(blocks) > 128:
+            raise ConsoleError("project view document blocks must be bounded")
+        normalized: list[dict[str, Any]] = []
+        for block in blocks:
+            if not isinstance(block, dict):
+                raise ConsoleError("project view document block is invalid")
+            block_type = cls._project_view_text(block.get("type"), "document block type", 32)
+            if block_type == "heading":
+                if set(block) != {"type", "level", "text"} or block.get("level") not in {2, 3, 4}:
+                    raise ConsoleError("project view document heading is invalid")
+                normalized.append({"type": block_type, "level": block["level"], "text": cls._project_view_text(block.get("text"), "document heading", 512)})
+            elif block_type == "paragraph":
+                if set(block) != {"type", "text"}:
+                    raise ConsoleError("project view document paragraph is invalid")
+                normalized.append({"type": block_type, "text": cls._project_view_text(block.get("text"), "document paragraph", 4096)})
+            elif block_type == "list":
+                items = block.get("items")
+                if set(block) != {"type", "items"} or not isinstance(items, list) or not items or len(items) > 64:
+                    raise ConsoleError("project view document list is invalid")
+                normalized.append({"type": block_type, "items": [cls._project_view_text(item, "document list item", 1024) for item in items]})
+            else:
+                raise ConsoleError("project view document block type is unsupported")
+        return {
+            "schema_version": 1,
+            "document_id": document_id,
+            "version": version,
+            "title": cls._project_view_text(source.get("title"), "document title", 256),
+            "snapshot_at": cls._project_view_text(source.get("snapshot_at"), "document snapshot", 64),
+            **({"canonical_text_ref": canonical_text_ref} if canonical_text_ref is not None else {}),
+            "blocks": normalized,
+        }
+
+    @classmethod
+    def _project_view_timeline(cls, raw: bytes) -> dict[str, Any]:
+        source = cls._project_view_json(raw, "timeline")
+        if set(source) != {"schema_version", "timeline_id", "version", "snapshot_at", "title", "events"} or source.get("schema_version") != 1:
+            raise ConsoleError("project view timeline schema is unsupported")
+        version = source.get("version")
+        events = source.get("events")
+        if not isinstance(version, int) or isinstance(version, bool) or version < 1:
+            raise ConsoleError("project view timeline version must be positive")
+        if not isinstance(events, list) or not events or len(events) > 256:
+            raise ConsoleError("project view timeline events must be bounded")
+        normalized: list[dict[str, Any]] = []
+        ids: set[str] = set()
+        sequences: set[int] = set()
+        for event in events:
+            allowed = {"id", "label", "sequence", "status", "summary", "exit_criteria"}
+            if not isinstance(event, dict) or set(event) != allowed:
+                raise ConsoleError("project view timeline event is invalid")
+            event_id = cls._project_view_text(event.get("id"), "timeline event id")
+            sequence = event.get("sequence")
+            if not isinstance(sequence, int) or isinstance(sequence, bool) or not 0 <= sequence <= 1_000_000:
+                raise ConsoleError("project view timeline identity or sequence is invalid")
+            if event_id in ids or sequence in sequences:
+                raise ConsoleError("project view timeline identity or sequence is invalid")
+            ids.add(event_id)
+            sequences.add(sequence)
+            normalized.append({
+                "id": event_id,
+                "label": cls._project_view_text(event.get("label"), "timeline event label", 256),
+                "sequence": sequence,
+                "status": cls._project_view_text(event.get("status"), "timeline event status", 64),
+                "summary": cls._project_view_text(event.get("summary"), "timeline event summary", 2048),
+                "exit_criteria": cls._project_view_text(event.get("exit_criteria"), "timeline exit criteria", 2048),
+            })
+        normalized.sort(key=lambda item: (item["sequence"], item["id"]))
+        return {
+            "schema_version": 1,
+            "timeline_id": cls._project_view_text(source.get("timeline_id"), "timeline id"),
+            "version": version,
+            "snapshot_at": cls._project_view_text(source.get("snapshot_at"), "timeline snapshot", 64),
+            "title": cls._project_view_text(source.get("title"), "timeline title", 256),
+            "events": normalized,
+        }
 
     def _project_view_screens(self, project_id: str, raw: bytes) -> list[dict[str, Any]]:
         source = self._project_view_json(raw, "Screens")
@@ -6217,7 +6402,9 @@ class App:
         return screens
 
     @classmethod
-    def _project_view_graph(cls, raw: bytes, screens: list[dict[str, Any]]) -> dict[str, Any]:
+    def _project_view_graph(
+        cls, raw: bytes, screens: list[dict[str, Any]], *, require_screen_refs: bool = True,
+    ) -> dict[str, Any]:
         try:
             text = raw.decode("utf-8")
         except UnicodeError as exc:
@@ -6232,8 +6419,9 @@ class App:
         except json.JSONDecodeError:
             graph = None
         if isinstance(graph, dict):
-            allowed_graph = {"schema_version", "flowchart_id", "version", "nodes", "edges"}
-            if set(graph) != allowed_graph or type(graph.get("schema_version")) is not int or graph["schema_version"] != 1:
+            required_graph = {"schema_version", "flowchart_id", "version", "nodes", "edges"}
+            allowed_graph = required_graph | {"title", "authority"}
+            if not required_graph.issubset(graph) or not set(graph).issubset(allowed_graph) or type(graph.get("schema_version")) is not int or graph["schema_version"] != 1:
                 raise ConsoleError("project view Map JSON schema is unsupported")
             flowchart_id = cls._project_view_text(graph.get("flowchart_id"), "flowchart id")
             version = graph.get("version")
@@ -6264,7 +6452,7 @@ class App:
                         raise ConsoleError("project view Map screen ref is unknown or ambiguous")
                     screen_key = next(iter(candidates))
                 node_type = cls._project_view_text(node.get("type") or "screen", "Map node type", 64)
-                if screen_key is None and node_type not in {"group", "container"}:
+                if require_screen_refs and screen_key is None and node_type not in {"group", "container"}:
                     raise ConsoleError("project view Map screen node requires an exact screen ref")
                 visibility = cls._project_view_text(node.get("visibility") or "visible", "Map node visibility", 32)
                 if visibility not in {"visible", "hidden", "conditional"}:
@@ -6323,6 +6511,7 @@ class App:
                 "schema_version": 1,
                 "flowchart_id": flowchart_id,
                 "version": version,
+                **({"title": cls._project_view_text(graph.get("title"), "Map title", 256)} if graph.get("title") is not None else {}),
                 "nodes": list(normalized_nodes.values()),
                 "edges": normalized_edges,
             }
@@ -6602,11 +6791,14 @@ class App:
                 if project_id and project["id"] != project_id:
                     continue
                 candidate = self._project_view_projection(project["id"])
-                if candidate and candidate.get("requirements"):
+                if candidate:
+                    projection_binding = candidate.get("projection_binding")
+                    if projection_binding is None and candidate.get("requirements"):
+                        projection_binding = candidate["requirements"]["projection_binding"]
                     projects.append({
                         "project_id": project["id"], "manifest_id": candidate["identity"]["manifest_id"],
                         "manifest_version": candidate["identity"]["manifest_version"], "manifest_digest": candidate["identity"]["manifest_digest"],
-                        "conditional_tabs": [candidate["tab"]], "projection_binding": candidate["requirements"]["projection_binding"],
+                        "conditional_tabs": [candidate["tab"]], "projection_binding": copy.deepcopy(projection_binding),
                     })
             data = projects
             aggregate_digests = sorted({
@@ -6620,77 +6812,98 @@ class App:
             }
         else:
             projection = self._project_view_projection(project_id) if project_id else None
-            if not project_id or projection is None or projection.get("requirements") is None:
+            if not project_id or projection is None:
                 raise ConsoleError("project UI agent project projection is unavailable")
             context_projection = projection
-            binding = projection["requirements"]["projection_binding"]
-            if (
-                binding.get("status") == "UNKNOWN" or binding.get("accepted_scope_id") is None
-                or binding.get("accepted_cursor") is None or "accepted_scope_id" not in payload
-                or "accepted_cursor" not in payload
-            ):
-                raise ConsoleError("project UI agent projection binding is unavailable")
-            if payload.get("accepted_scope_id") != binding.get("accepted_scope_id") or payload.get("accepted_cursor") != binding.get("accepted_cursor"):
-                raise ConsoleError("project UI agent request has a stale cursor")
-            groups = projection["requirements"]["groups"]
-            shared = projection["requirements"]["shared_requirements"]
-            requirements = [
-                {**item, "group_id": "shared"} for item in shared
-            ] + [
-                {**item, "group_id": group["group_id"]} for group in groups for item in group["requirements"]
-            ]
-            group_id = payload.get("group_id")
-            requirement_id = payload.get("requirement_id")
-            if group_id is not None and group_id not in {group["group_id"] for group in groups}:
-                raise ConsoleError("project UI agent group is unknown")
-            if requirement_id is not None and requirement_id not in {item["requirement_id"] for item in requirements}:
-                raise ConsoleError("project UI agent requirement is unknown")
-            if operation == "project_views.get_normalized_manifest":
-                data = {key: copy.deepcopy(projection[key]) for key in ("identity", "tab", "modes", "screens", "map", "requirements")}
-            elif operation == "project_views.list_screen_groups":
-                data = [{
-                    "group_id": group["group_id"], "label": group["label"], "order": group["order"], "node_ids": group["node_ids"],
-                    "requirement_counts": copy.deepcopy(group["counts_by_state"]),
-                } for group in groups]
-            elif operation == "project_views.get_screen_group":
-                data = next((copy.deepcopy(group) for group in groups if group["group_id"] == group_id), None)
-                if data is None:
+
+            def require_requirements() -> tuple[dict[str, Any], list[dict[str, Any]], list[dict[str, Any]]]:
+                contract = projection.get("requirements")
+                if not isinstance(contract, dict):
+                    raise ConsoleError("project UI agent screen requirements are unavailable")
+                binding = contract["projection_binding"]
+                if (
+                    binding.get("status") == "UNKNOWN" or binding.get("accepted_scope_id") is None
+                    or binding.get("accepted_cursor") is None or "accepted_scope_id" not in payload
+                    or "accepted_cursor" not in payload
+                ):
+                    raise ConsoleError("project UI agent projection binding is unavailable")
+                if payload.get("accepted_scope_id") != binding.get("accepted_scope_id") or payload.get("accepted_cursor") != binding.get("accepted_cursor"):
+                    raise ConsoleError("project UI agent request has a stale cursor")
+                groups = contract["groups"]
+                shared = contract["shared_requirements"]
+                requirements = [
+                    {**item, "group_id": "shared"} for item in shared
+                ] + [
+                    {**item, "group_id": group["group_id"]} for group in groups for item in group["requirements"]
+                ]
+                group_id = payload.get("group_id")
+                requirement_id = payload.get("requirement_id")
+                if group_id is not None and group_id not in {group["group_id"] for group in groups}:
                     raise ConsoleError("project UI agent group is unknown")
-            elif operation in {"project_views.list_requirements", "project_views.list_missing_requirements"}:
-                data = requirements
-                if group_id is not None:
-                    data = [item for item in data if item["group_id"] == group_id]
-                if operation.endswith("list_missing_requirements"):
-                    data = [item for item in data if item["derived_state"] in {"MISSING", "PARTIAL", "UNKNOWN"}]
-                if payload.get("requirement_state") is not None:
-                    if payload["requirement_state"] not in {"KNOWN_SATISFIED", "PARTIAL", "MISSING", "UNKNOWN"}:
-                        raise ConsoleError("project UI agent requirement state is unknown")
-                    data = [item for item in data if item["derived_state"] == payload["requirement_state"]]
-                if payload.get("required") is not None:
-                    if not isinstance(payload["required"], bool):
-                        raise ConsoleError("project UI agent required filter must be boolean")
-                    data = [item for item in data if item["required"] is payload["required"]]
-                if payload.get("target_device") is not None:
-                    if payload["target_device"] not in {"desktop", "tablet", "mobile"}:
-                        raise ConsoleError("project UI agent target device is unknown")
-                    data = [item for item in data if payload["target_device"] in item["target_devices"]]
-            elif operation == "project_views.get_graph_identity":
-                data = {"kind": "graph", "source_digests": projection["identity"]["source_digests"], "node_ids": [item["id"] for item in projection["map"]["nodes"]]}
+                if requirement_id is not None and requirement_id not in {item["requirement_id"] for item in requirements}:
+                    raise ConsoleError("project UI agent requirement is unknown")
+                return binding, groups, requirements
+
+            if operation == "project_views.get_normalized_manifest":
+                if projection.get("requirements") is not None:
+                    require_requirements()
+                data = {
+                    key: copy.deepcopy(projection[key])
+                    for key in (
+                        "identity", "tab", "modes", "views", "source_bindings", "screens", "map",
+                        "requirements", "projection_binding", "authority", "claim_limit",
+                    )
+                }
             else:
-                selected = requirements
-                if group_id is not None:
-                    selected = [item for item in selected if item["group_id"] == group_id]
-                if requirement_id is not None:
-                    selected = [item for item in selected if item["requirement_id"] == requirement_id]
-                if operation == "project_views.get_evidence_identities":
-                    names = ("implementation_evidence_refs", "browser_proof_refs")
-                    data = [{**ref, "kind": name, "requirement_id": item["requirement_id"]} for item in selected for name in names for ref in item["bindings"][name]]
+                binding, groups, requirements = require_requirements()
+                group_id = payload.get("group_id")
+                requirement_id = payload.get("requirement_id")
+                if operation == "project_views.list_screen_groups":
+                    data = [{
+                        "group_id": group["group_id"], "label": group["label"], "order": group["order"], "node_ids": group["node_ids"],
+                        "requirement_counts": copy.deepcopy(group["counts_by_state"]),
+                    } for group in groups]
+                elif operation == "project_views.get_screen_group":
+                    data = next((copy.deepcopy(group) for group in groups if group["group_id"] == group_id), None)
+                    if data is None:
+                        raise ConsoleError("project UI agent group is unknown")
+                elif operation in {"project_views.list_requirements", "project_views.list_missing_requirements"}:
+                    data = requirements
+                    if group_id is not None:
+                        data = [item for item in data if item["group_id"] == group_id]
+                    if operation.endswith("list_missing_requirements"):
+                        data = [item for item in data if item["derived_state"] in {"MISSING", "PARTIAL", "UNKNOWN"}]
+                    if payload.get("requirement_state") is not None:
+                        if payload["requirement_state"] not in {"KNOWN_SATISFIED", "PARTIAL", "MISSING", "UNKNOWN"}:
+                            raise ConsoleError("project UI agent requirement state is unknown")
+                        data = [item for item in data if item["derived_state"] == payload["requirement_state"]]
+                    if payload.get("required") is not None:
+                        if not isinstance(payload["required"], bool):
+                            raise ConsoleError("project UI agent required filter must be boolean")
+                        data = [item for item in data if item["required"] is payload["required"]]
+                    if payload.get("target_device") is not None:
+                        if payload["target_device"] not in {"desktop", "tablet", "mobile"}:
+                            raise ConsoleError("project UI agent target device is unknown")
+                        data = [item for item in data if payload["target_device"] in item["target_devices"]]
+                elif operation == "project_views.get_graph_identity":
+                    data = {"kind": "graph", "source_digests": projection["identity"]["source_digests"], "node_ids": [item["id"] for item in projection["map"]["nodes"]]}
                 else:
-                    names = ("accepted_artifact_refs", "candidate_or_observed_artifact_refs", "unregistered_artifact_refs")
-                    data = [{**ref, "status": name, "requirement_id": item["requirement_id"]} for item in selected for name in names for ref in item["bindings"][name]]
+                    selected = requirements
+                    if group_id is not None:
+                        selected = [item for item in selected if item["group_id"] == group_id]
+                    if requirement_id is not None:
+                        selected = [item for item in selected if item["requirement_id"] == requirement_id]
+                    if operation == "project_views.get_evidence_identities":
+                        names = ("implementation_evidence_refs", "browser_proof_refs")
+                        data = [{**ref, "kind": name, "requirement_id": item["requirement_id"]} for item in selected for name in names for ref in item["bindings"][name]]
+                    else:
+                        names = ("accepted_artifact_refs", "candidate_or_observed_artifact_refs", "unregistered_artifact_refs")
+                        data = [{**ref, "status": name, "requirement_id": item["requirement_id"]} for item in selected for name in names for ref in item["bindings"][name]]
 
         identity = context_projection.get("identity", {})
-        binding = context_projection.get("requirements", {}).get("projection_binding")
+        binding = context_projection.get("projection_binding")
+        if binding is None:
+            binding = context_projection.get("requirements", {}).get("projection_binding")
         filters = {key: payload[key] for key in ("group_id", "requirement_id", "requirement_state", "required", "target_device") if key in payload}
         context = {
             "operation": operation, "project_id": project_id, "manifest_id": identity.get("manifest_id"),
@@ -6729,72 +6942,201 @@ class App:
         if manifest.get("project_id") not in self._canonical_project_identities(project_id):
             raise ConsoleError("project view manifest belongs to another project")
         manifest_id = self._project_view_text(manifest.get("manifest_id"), "manifest id")
+        manifest_digest = self._project_view_digest(manifest_digest)
         version = manifest.get("manifest_version")
         if not isinstance(version, int) or isinstance(version, bool) or version < 1:
             raise ConsoleError("project view manifest version must be positive")
+        registry = manifest.get("renderer_registry")
+        if registry is not None:
+            if not isinstance(registry, dict) or not isinstance(registry.get("registered"), list):
+                raise ConsoleError("project view renderer registry is invalid")
+            registered = registry["registered"]
+            if (
+                any(not isinstance(item, str) for item in registered)
+                or len(registered) != len(set(registered))
+                or set(registered) != set(PROJECT_VIEW_RENDERERS)
+            ):
+                raise ConsoleError("project view renderer registry is not the six registered renderers")
+            if registry.get("unknown_renderer_behavior") not in (None, "FAIL_CLOSED") or registry.get("executable_components") not in (None, False):
+                raise ConsoleError("project view renderer registry is not fail closed")
         tab = manifest.get("project_tab")
         if not isinstance(tab, dict) or tab.get("id") != "tab.project.ui" or tab.get("visibility") != "conditional":
-            raise ConsoleError("project view manifest must declare one conditional UI tab")
+            raise ConsoleError("project view manifest must declare one conditional project tab")
+        tab_id = self._project_view_text(tab.get("id"), "tab id", 256)
         label = self._project_view_text(tab.get("label"), "tab label", 64)
-        if label != "UI":
-            raise ConsoleError("project view tab label must be UI")
         modes = tab.get("modes")
-        expected_modes = ["view.project.ui.screens", "view.project.ui.map"]
-        if modes != expected_modes:
-            raise ConsoleError("project view UI tab must expose exactly Screens and Map")
+        if (
+            not isinstance(modes, list) or not modes or len(modes) > 16
+            or any(not isinstance(mode_id, str) or not mode_id.strip() for mode_id in modes)
+            or len(set(modes)) != len(modes)
+        ):
+            raise ConsoleError("project view tab modes must be a bounded unique list")
         views = manifest.get("views")
         if not isinstance(views, list) or len(views) > 64:
             raise ConsoleError("project view manifest views must be bounded")
+        definitions: dict[str, dict[str, Any]] = {}
         for candidate in views:
             if not isinstance(candidate, dict):
                 raise ConsoleError("project view manifest view is invalid")
-            renderer = str(candidate.get("renderer") or "")
-            mode = str(candidate.get("mode") or "")
-            if renderer not in PROJECT_VIEW_RENDERERS or mode not in PROJECT_VIEW_RENDERERS[renderer]:
-                raise ConsoleError("project view manifest includes an unknown renderer or mode")
-        by_id = {str(view.get("id") or ""): view for view in views}
-        screens_view = self._project_view_definition(
-            by_id.get(expected_modes[0]), expected_id=expected_modes[0], renderer="gallery", mode="grid", source_kind="coverage.screens",
-        )
-        map_view = self._project_view_definition(
-            by_id.get(expected_modes[1]), expected_id=expected_modes[1], renderer="canvas", mode="network", source_kind="graph.mermaid",
-        )
+            definition = self._project_view_definition(candidate)
+            if definition["id"] in definitions:
+                raise ConsoleError("project view identities must be unique")
+            definitions[definition["id"]] = definition
+        if len(modes) != len(definitions) or any(mode_id not in definitions for mode_id in modes):
+            raise ConsoleError("project view tab must list every declared view exactly once")
+
+        catalog, catalog_by_identity = self._project_view_source_catalog(manifest)
         resolved: dict[tuple[str, str], bytes] = {}
-        digest_by_ref: dict[str, str] = {}
-        for view in (screens_view, map_view):
+        source_bindings: list[dict[str, Any]] = []
+        source_digests: list[str] = []
+
+        def resolve(source: dict[str, str]) -> bytes:
+            key = (source["ref"], source["digest"])
+            if key not in resolved:
+                resolved[key] = self._resolve_project_view_bytes(project_id, *key)
+            return resolved[key]
+
+        if catalog:
+            for source in catalog:
+                resolve(source)
+                binding = {key: source[key] for key in ("id", "kind", "ref", "digest")}
+                source_bindings.append(binding)
+                source_digests.append(source["digest"])
+                if source.get("canonical_text") is not None:
+                    canonical = source["canonical_text"]
+                    resolve(canonical)
+                    binding["canonical_text"] = copy.deepcopy(canonical)
+                    source_bindings.append({
+                        "id": canonical["id"],
+                        "kind": canonical["kind"], "ref": canonical["ref"], "digest": canonical["digest"],
+                    })
+                    source_digests.append(canonical["digest"])
+
+        selected_views = [definitions[mode_id] for mode_id in modes]
+        used_refs: dict[str, str] = {}
+        bound_views: list[dict[str, Any]] = []
+        for view in selected_views:
+            sources: list[dict[str, Any]] = []
             for source in view["sources"]:
-                if source["ref"] in digest_by_ref:
-                    if digest_by_ref[source["ref"]] != source["digest"]:
+                if catalog:
+                    declared = catalog_by_identity.get((source["kind"], source["ref"], source["digest"]))
+                    if declared is None:
+                        raise ConsoleError("project view source is not declared by the manifest catalog")
+                    bound = {"source_id": declared["id"], **source}
+                else:
+                    bound = dict(source)
+                previous_digest = used_refs.get(bound["ref"])
+                if previous_digest is not None:
+                    if previous_digest != bound["digest"]:
                         raise ConsoleError("project view source reference has conflicting digests")
                     raise ConsoleError("project view source reference is duplicated")
-                digest_by_ref[source["ref"]] = source["digest"]
-                key = (source["ref"], source["digest"])
-                if key not in resolved:
-                    resolved[key] = self._resolve_project_view_bytes(project_id, *key)
-        screens_source = next((source for source in screens_view["sources"] if source["kind"] == "coverage.screens"), None)
-        map_source = next((source for source in map_view["sources"] if source["kind"] in {"graph.mermaid", "graph.json"}), None)
-        if screens_source is None or map_source is None:
-            raise ConsoleError("project view Screens or Map source kind is unsupported")
-        screens = self._project_view_screens(project_id, resolved[(screens_source["ref"], screens_source["digest"])])
-        graph = self._project_view_graph(resolved[(map_source["ref"], map_source["digest"])], screens)
+                used_refs[bound["ref"]] = bound["digest"]
+                resolve(bound)
+                sources.append(bound)
+            if len(sources) != 1:
+                raise ConsoleError("project view renderer requires exactly one typed source")
+            bound_views.append({**view, "sources": sources})
+
+        screens: list[dict[str, Any]] = []
+        screens_view = next((view for view in bound_views if (view["renderer"], view["mode"]) == ("gallery", "grid")), None)
+        if screens_view is not None:
+            screens_source = next((source for source in screens_view["sources"] if source["kind"] == "coverage.screens"), None)
+            if screens_source is None or len(screens_view["sources"]) != 1:
+                raise ConsoleError("project view Screens source kind is unsupported")
+            screens = self._project_view_screens(project_id, resolved[(screens_source["ref"], screens_source["digest"])])
+
+        projected_views: list[dict[str, Any]] = []
+        canonical_map: dict[str, Any] | None = None
+        for view in bound_views:
+            source = view["sources"][0]
+            raw = resolved[(source["ref"], source["digest"])]
+            renderer_mode = (view["renderer"], view["mode"])
+            if renderer_mode == ("gallery", "grid") and source["kind"] == "coverage.screens":
+                content = {"screens": screens}
+            elif renderer_mode == ("canvas", "network") and source["kind"] in {"graph.mermaid", "graph.json"}:
+                require_screen_refs = False
+                if source["kind"] == "graph.json":
+                    graph_source = self._project_view_json(raw, "Map")
+                    graph_nodes = graph_source.get("nodes")
+                    require_screen_refs = isinstance(graph_nodes, list) and any(
+                        isinstance(node, dict) and "screen_ref" in node for node in graph_nodes
+                    )
+                graph = self._project_view_graph(
+                    raw, screens, require_screen_refs=require_screen_refs,
+                )
+                content = {"graph": graph}
+                if canonical_map is None and any(node.get("screen_key") for node in graph.get("nodes", [])):
+                    canonical_map = graph
+            elif renderer_mode == ("document", "blocks") and source["kind"] == "document.blocks":
+                document = self._project_view_document(raw)
+                declared = catalog_by_identity.get((source["kind"], source["ref"], source["digest"])) if catalog else None
+                canonical = declared.get("canonical_text") if declared else None
+                if canonical is not None:
+                    if document.get("canonical_text_ref") != canonical["ref"]:
+                        raise ConsoleError("project view document canonical text reference does not match")
+                    content = {
+                        "document": document,
+                        "canonical_text": {"ref": canonical["ref"], "digest": canonical["digest"]},
+                    }
+                else:
+                    content = {"document": document}
+            elif renderer_mode == ("timeline", "milestones") and source["kind"] == "events.timeline":
+                content = {"timeline": self._project_view_timeline(raw)}
+            else:
+                raise ConsoleError("project view renderer mode or source kind is not supported by the shared projection")
+            projected_views.append({
+                "id": view["id"], "label": view["label"], "renderer": view["renderer"], "mode": view["mode"],
+                "sources": [
+                    {key: source[key] for key in ("source_id", "kind", "ref", "digest") if key in source}
+                    for source in view["sources"]
+                ],
+                "allowed_actions": view["allowed_actions"], "content": content,
+                "snapshot_only": renderer_mode in {("document", "blocks"), ("timeline", "milestones")},
+            })
         requirements = self._project_view_requirements(manifest)
+        binding = self._project_view_binding(manifest.get("projection_binding"))
+        if not catalog:
+            source_bindings = [
+                {"kind": source["kind"], "ref": source["ref"], "digest": source["digest"]}
+                for view in bound_views for source in view["sources"]
+            ]
+            source_digests = [source["digest"] for view in bound_views for source in view["sources"]]
+        tab_output = {"id": tab_id.rsplit(".", 1)[-1], "label": label}
+        if catalog:
+            tab_output["manifest_id"] = tab_id
+            tab_output["visibility"] = tab["visibility"]
+        modes_output = []
+        for view in projected_views:
+            mode = {"id": view["id"].rsplit(".", 1)[-1], "label": view["label"]}
+            if catalog:
+                mode.update({"view_id": view["id"], "renderer": view["renderer"], "mode": view["mode"]})
+            modes_output.append(mode)
         return {
             "schema_version": 1,
             "project_id": project_id,
-            "tab": {"id": "ui", "label": label},
-            "modes": [{"id": "screens", "label": "Screens"}, {"id": "map", "label": "Map"}],
+            "tab": tab_output,
+            "modes": modes_output,
+            "views": projected_views,
+            "source_bindings": source_bindings,
             "screens": screens,
-            "map": graph,
+            "map": canonical_map or {"nodes": [], "edges": []},
             "requirements": requirements,
+            "projection_binding": copy.deepcopy(binding),
             "identity": {
                 "manifest_id": manifest_id,
                 "manifest_version": version,
                 "manifest_digest": manifest_digest,
-                "source_digests": [
-                    source["digest"] for view in (screens_view, map_view) for source in view["sources"]
+                "source_digests": source_digests,
+            },
+            "authority": {
+                "kind": "project_manifest",
+                "project_metadata_only": True,
+                "runtime_status_authority": "existing_ledger_and_accepted_event_projections",
+                "snapshot_views": [
+                    view["id"] for view in projected_views if view["snapshot_only"]
                 ],
             },
-            "claim_limit": "Project UI is a read-only digest-bound projection; actions and acceptance remain separate authority.",
+            "claim_limit": "Project Workspace is a read-only digest-bound snapshot; plan and timeline content is not runtime status authority, and Ledger plus accepted event projections remain authoritative.",
         }
 
     def _project_view_projection(self, project_id: str) -> dict[str, Any] | None:

@@ -3687,6 +3687,233 @@ class SwarmConsoleTests(unittest.TestCase):
         root.joinpath("SWARM.md").write_text("# Project\n\n```json\n" + json.dumps(link) + "\n```\n", encoding="utf-8")
         return {"manifest": manifest, "manifest_digest": manifest_digest, "link": link, "binding": binding}
 
+    def _write_v6_project_view_bundle(self, project_id: str, root: Path) -> dict[str, Any]:
+        def encoded(value: dict[str, Any]) -> bytes:
+            return json.dumps(value, ensure_ascii=True, separators=(",", ":")).encode("utf-8")
+
+        def digest(value: bytes) -> str:
+            return "sha256:" + hashlib.sha256(value).hexdigest()
+
+        slug = project_id.removeprefix("project:")
+        root.mkdir(parents=True)
+        coverage_ref = f"project://{slug}/dogfood/screens.json"
+        map_ref = f"project://{slug}/dogfood/app-flow.json"
+        mermaid_ref = f"project://{slug}/dogfood/app-flow.mmd"
+        document_ref = f"project://{slug}/dogfood/master-plan.json"
+        text_ref = f"project://{slug}/dogfood/master-plan.md"
+        roadmap_ref = f"project://{slug}/dogfood/roadmap.json"
+        flow_ref = f"project://{slug}/dogfood/delivery-flow.json"
+        coverage = encoded({
+            "schema_version": 1, "project_id": project_id,
+            "nodes": [{
+                "node_kind": "screen_state", "screen_id": "overview", "state_id": "default",
+                "label": "Overview", "coverage_state": "DESIGNED",
+                "design_alternatives": [], "implementation_evidence": [],
+            }],
+        })
+        map_graph = encoded({
+            "schema_version": 1, "flowchart_id": "graph.ui", "version": 1, "title": "UI flow",
+            "nodes": [
+                {"id": "group", "label": "Workspace", "type": "group", "order": 0},
+                {"id": "overview", "label": "Overview", "screen_ref": "overview/default", "type": "screen", "order": 1},
+            ],
+            "edges": [{"id": "open-overview", "source": "group", "target": "overview", "label": "open"}],
+        })
+        mermaid = b'flowchart LR\n  legacy["Legacy"] --> graph["Graph"]\n'
+        document = encoded({
+            "schema_version": 1, "document_id": "document.master", "version": 1,
+            "title": "Master plan", "snapshot_at": "2026-08-30", "canonical_text_ref": text_ref,
+            "blocks": [
+                {"type": "heading", "level": 2, "text": "North star"},
+                {"type": "paragraph", "text": "Build the project tool."},
+            ],
+        })
+        canonical_text = b"# Master plan\n\nBuild the project tool.\n"
+        roadmap = encoded({
+            "schema_version": 1, "timeline_id": "timeline.v1", "version": 1,
+            "snapshot_at": "2026-08-30", "title": "Roadmap",
+            "events": [
+                {"id": "later", "label": "Later", "sequence": 20, "status": "queued", "summary": "Later work", "exit_criteria": "Review"},
+                {"id": "now", "label": "Now", "sequence": 10, "status": "active", "summary": "Current work", "exit_criteria": "Proof"},
+            ],
+        })
+        delivery_flow = encoded({
+            "schema_version": 1, "flowchart_id": "graph.delivery", "version": 1,
+            "title": "Delivery flow",
+            "nodes": [
+                {"id": "goal", "label": "Goal", "type": "input", "order": 10},
+                {"id": "ctrl", "label": "CTRL", "type": "controller", "order": 20},
+            ],
+            "edges": [{"id": "goal-ctrl", "source": "goal", "target": "ctrl", "label": "route"}],
+        })
+        payloads = {
+            coverage_ref: coverage, map_ref: map_graph, mermaid_ref: mermaid,
+            document_ref: document, text_ref: canonical_text, roadmap_ref: roadmap, flow_ref: delivery_flow,
+        }
+        sources = {
+            "coverage.screens": {"kind": "coverage.screens", "ref": coverage_ref, "digest": digest(coverage)},
+            "graph.canonical": {"kind": "graph.json", "ref": map_ref, "digest": digest(map_graph)},
+            "graph.mermaid": {"kind": "graph.mermaid", "ref": mermaid_ref, "digest": digest(mermaid)},
+            "plan.master": {
+                "kind": "document.blocks", "ref": document_ref, "digest": digest(document),
+                "canonical_text_ref": text_ref, "canonical_text_digest": digest(canonical_text),
+            },
+            "plan.roadmap": {"kind": "events.timeline", "ref": roadmap_ref, "digest": digest(roadmap)},
+            "plan.delivery_flow": {"kind": "graph.json", "ref": flow_ref, "digest": digest(delivery_flow)},
+        }
+        manifest = {
+            "manifest_type": "swarm.project_views", "schema_version": 1,
+            "manifest_id": "project-views-v6", "manifest_version": 6, "project_id": project_id,
+            "projection_binding": {
+                "accepted_scope_id": None, "accepted_cursor": None, "status": "UNKNOWN",
+                "source_manifest_id": "source.v1", "source_manifest_version": 1,
+                "source_manifest_digest": "sha256:" + "a" * 64,
+                "reason": "Static project snapshot has no accepted live cursor.",
+                "unknown_policy": "Fail closed.",
+            },
+            "sources": sources,
+            "renderer_registry": {"registered": ["canvas", "table", "timeline", "gallery", "compare", "document"]},
+            "project_tab": {
+                "id": "tab.project.ui", "label": "Workspace", "visibility": "conditional",
+                "modes": [
+                    "view.project.plan.master", "view.project.plan.roadmap", "view.project.plan.flow",
+                    "view.project.ui.screens", "view.project.ui.map",
+                ],
+            },
+            "views": [
+                {"id": "view.project.ui.screens", "label": "Screens", "renderer": "gallery", "mode": "grid", "sources": [sources["coverage.screens"]], "allowed_actions": ["open_artifact", "open_entity"]},
+                {"id": "view.project.ui.map", "label": "Map", "renderer": "canvas", "mode": "network", "sources": [sources["graph.canonical"]], "allowed_actions": ["open_artifact", "open_entity"]},
+                {"id": "view.project.plan.master", "label": "Master plan", "renderer": "document", "mode": "blocks", "sources": [{"kind": "document.blocks", "ref": document_ref, "digest": digest(document)}], "allowed_actions": ["open_entity", "request_review", "send_feedback"]},
+                {"id": "view.project.plan.roadmap", "label": "Roadmap", "renderer": "timeline", "mode": "milestones", "sources": [sources["plan.roadmap"]], "allowed_actions": ["open_entity", "request_review", "send_feedback"]},
+                {"id": "view.project.plan.flow", "label": "Flowchart", "renderer": "canvas", "mode": "network", "sources": [sources["plan.delivery_flow"]], "allowed_actions": ["open_entity", "request_review", "send_feedback"]},
+            ],
+            "authority": {"project_metadata_only": True, "second_status_authority": False},
+        }
+        manifest_bytes = encoded(manifest)
+        manifest_ref = f"project://{slug}/dogfood/project-views.json"
+        manifest_digest = digest(manifest_bytes)
+        root.joinpath("SWARM.md").write_text(
+            "# Project\n\n```json\n" + json.dumps({
+                "schema_version": 1, "links": [{"rel": "project_views", "ref": manifest_ref, "digest": manifest_digest}],
+            }) + "\n```\n",
+            encoding="utf-8",
+        )
+        with closing(sqlite3.connect(self.database)) as connection:
+            connection.execute("UPDATE project_roots SET path=? WHERE project_id=?", (str(root), project_id))
+            connection.commit()
+        return {
+            "manifest": manifest, "manifest_bytes": manifest_bytes, "manifest_ref": manifest_ref,
+            "manifest_digest": manifest_digest,
+            "sources": {
+                (ref, digest(value)): value for ref, value in payloads.items()
+            } | {(manifest_ref, manifest_digest): manifest_bytes},
+        }
+
+    def test_project_view_v6_workspace_projection_is_ordered_typed_and_snapshot_only(self) -> None:
+        root = self.root / "projects" / "v6"
+        bundle = self._write_v6_project_view_bundle("project:alpha", root)
+        calls: list[tuple[str, str]] = []
+
+        def resolve(project_id: str, ref: str, expected_digest: str) -> bytes:
+            calls.append((project_id, ref))
+            return bundle["sources"][(ref, expected_digest)]
+
+        app = console.App(
+            self.codex_home, self.config, self.root / "console" / "project-view-v6.sqlite3",
+            project_view_resolver=resolve,
+        )
+        with mock.patch.object(app.store, "proof_feed", return_value=[]):
+            projection = app._project_view_projection("project:alpha")
+            normalized = app.project_ui_agent_read({
+                "contract_id": "project.ui.agent_read.v1", "version": "1.0.0",
+                "operation": "project_views.get_normalized_manifest", "project_id": "project:alpha",
+            })
+            catalog = app.project_ui_agent_read({
+                "contract_id": "project.ui.agent_read.v1", "version": "1.0.0",
+                "operation": "project_views.list_projects_with_manifests",
+            })
+        self.assertIsNotNone(projection)
+        self.assertEqual(projection["tab"], {
+            "id": "ui", "label": "Workspace", "manifest_id": "tab.project.ui", "visibility": "conditional",
+        })
+        self.assertEqual(
+            [mode["id"] for mode in projection["modes"]],
+            ["master", "roadmap", "flow", "screens", "map"],
+        )
+        self.assertEqual(
+            [view["id"] for view in projection["views"]],
+            [
+                "view.project.plan.master", "view.project.plan.roadmap", "view.project.plan.flow",
+                "view.project.ui.screens", "view.project.ui.map",
+            ],
+        )
+        views = {view["id"]: view for view in projection["views"]}
+        self.assertEqual(views["view.project.plan.master"]["content"]["document"]["blocks"][0]["type"], "heading")
+        self.assertEqual(views["view.project.plan.master"]["content"]["canonical_text"]["digest"], bundle["manifest"]["sources"]["plan.master"]["canonical_text_digest"])
+        self.assertEqual([event["id"] for event in views["view.project.plan.roadmap"]["content"]["timeline"]["events"]], ["now", "later"])
+        self.assertEqual([node["id"] for node in views["view.project.plan.flow"]["content"]["graph"]["nodes"]], ["goal", "ctrl"])
+        self.assertTrue(views["view.project.plan.master"]["snapshot_only"])
+        self.assertTrue(views["view.project.plan.roadmap"]["snapshot_only"])
+        self.assertFalse(views["view.project.plan.flow"]["snapshot_only"])
+        self.assertEqual(views["view.project.ui.map"]["content"]["graph"]["nodes"][1]["screen_key"], "overview/default")
+        self.assertEqual(projection["authority"]["snapshot_views"], ["view.project.plan.master", "view.project.plan.roadmap"])
+        self.assertEqual(normalized["data"]["views"], projection["views"])
+        self.assertEqual([item["project_id"] for item in catalog["data"]], ["project:alpha"])
+        self.assertEqual(catalog["data"][0]["conditional_tabs"][0], projection["tab"])
+        self.assertEqual(len(projection["source_bindings"]), 7)
+        self.assertEqual(len(projection["identity"]["source_digests"]), 7)
+        self.assertTrue(all(project_id == "project:alpha" for project_id, _ in calls))
+        called_refs = {ref for _, ref in calls}
+        expected_refs = {ref for ref, _ in bundle["sources"] if ref != bundle["manifest_ref"]}
+        self.assertTrue(expected_refs.issubset(called_refs))
+
+    def test_project_view_v6_invalid_manifest_preserves_last_accepted_projection(self) -> None:
+        root = self.root / "projects" / "v6-invalid"
+        bundle = self._write_v6_project_view_bundle("project:alpha", root)
+        sources = dict(bundle["sources"])
+        app = console.App(
+            self.codex_home, self.config, self.root / "console" / "project-view-v6-invalid.sqlite3",
+            project_view_resolver=lambda _project_id, ref, expected: sources[(ref, expected)],
+        )
+        with mock.patch.object(app.store, "proof_feed", return_value=[]):
+            accepted = app._project_view_projection("project:alpha")
+        self.assertIsNotNone(accepted)
+
+        unknown_renderer = copy.deepcopy(bundle["manifest"])
+        unknown_renderer["views"][0]["renderer"] = "unknown"
+        unknown_renderer_bytes = json.dumps(unknown_renderer, separators=(",", ":")).encode()
+        with self.assertRaisesRegex(console.ConsoleError, "renderer is not registered"):
+            app._normalize_project_view("project:alpha", unknown_renderer_bytes, "sha256:" + hashlib.sha256(unknown_renderer_bytes).hexdigest())
+
+        unknown_mode = copy.deepcopy(bundle["manifest"])
+        unknown_mode["views"][0]["mode"] = "unknown"
+        unknown_mode_bytes = json.dumps(unknown_mode, separators=(",", ":")).encode()
+        with self.assertRaisesRegex(console.ConsoleError, "mode is not registered"):
+            app._normalize_project_view("project:alpha", unknown_mode_bytes, "sha256:" + hashlib.sha256(unknown_mode_bytes).hexdigest())
+
+        duplicate_source = copy.deepcopy(bundle["manifest"])
+        duplicate_source["sources"]["duplicate"] = copy.deepcopy(duplicate_source["sources"]["graph.canonical"])
+        duplicate_bytes = json.dumps(duplicate_source, separators=(",", ":")).encode()
+        with self.assertRaisesRegex(console.ConsoleError, "source reference is duplicated"):
+            app._normalize_project_view("project:alpha", duplicate_bytes, "sha256:" + hashlib.sha256(duplicate_bytes).hexdigest())
+
+        bad_text = copy.deepcopy(bundle["manifest"])
+        bad_text["sources"]["plan.master"]["canonical_text_digest"] = "sha256:" + "f" * 64
+        bad_text_bytes = json.dumps(bad_text, separators=(",", ":")).encode()
+        sources[(bad_text["sources"]["plan.master"]["canonical_text_ref"], bad_text["sources"]["plan.master"]["canonical_text_digest"])] = sources[(bundle["manifest"]["sources"]["plan.master"]["canonical_text_ref"], bundle["manifest"]["sources"]["plan.master"]["canonical_text_digest"])]
+        with self.assertRaisesRegex(console.ConsoleError, "source digest does not match"):
+            app._normalize_project_view("project:alpha", bad_text_bytes, "sha256:" + hashlib.sha256(bad_text_bytes).hexdigest())
+
+        invalid_digest = "sha256:" + "0" * 64
+        sources[(bundle["manifest_ref"], invalid_digest)] = unknown_renderer_bytes
+        root.joinpath("SWARM.md").write_text(
+            "```json\n" + json.dumps({"schema_version": 1, "links": [{"rel": "project_views", "ref": bundle["manifest_ref"], "digest": invalid_digest}]}) + "\n```\n",
+            encoding="utf-8",
+        )
+        with mock.patch.object(app.store, "proof_feed", return_value=[]):
+            retained = app._project_view_projection("project:alpha")
+        self.assertEqual(retained, accepted)
+
     def test_default_project_view_resolver_is_root_bound_and_withholds_incompatible_pilots(self) -> None:
         alpha_root = self.root / "projects" / "alpha-local"
         beta_root = self.root / "projects" / "beta-local"
