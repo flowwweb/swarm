@@ -36,6 +36,10 @@ from runtime import (  # noqa: E402
 
 
 class SwarmConsoleTests(unittest.TestCase):
+    def test_importlib_loaded_server_can_import_packaged_console_siblings(self) -> None:
+        self.assertIn(str(console.CONSOLE_ROOT), sys.path)
+        self.assertEqual(console.ConsoleStore(self.root / "console" / "importlib.sqlite3").skill_catalog()[0]["skill_id"], "find-skills")
+
     def test_health_identity_is_bound_to_the_console_root(self) -> None:
         self.assertEqual(len(console.INSTANCE_ID), 16)
         self.assertRegex(console.INSTANCE_ID, r"^[0-9a-f]+$")
@@ -257,15 +261,17 @@ class SwarmConsoleTests(unittest.TestCase):
         index = (static / "index.html").read_text(encoding="utf-8")
         app = (static / "app.js").read_text(encoding="utf-8")
         self.assertIn('src="/assets/swarm-wordmark.png"', index)
-        for view in ("overview", "hierarchy", "kanban", "diagnostics", "settings"):
+        for view in ("overview", "agents", "review", "assets", "settings"):
             self.assertIn(f'id="tab-{view}"', index)
             self.assertIn(f'id="view-{view}"', index)
+        for retired in ("hierarchy", "kanban", "diagnostics"):
+            self.assertNotIn(f'id="tab-{retired}"', index)
         self.assertIn('id="project-navigation"', index)
         self.assertIn('id="scope-context"', index)
         self.assertIn("function renderProjectNavigation()", app)
-        self.assertIn("function renderHierarchy()", app)
-        self.assertIn("function renderKanban()", app)
-        self.assertIn("function renderDiagnostics()", app)
+        self.assertIn("function renderAgents()", app)
+        self.assertIn("function renderReview()", app)
+        self.assertIn("function renderAssets()", app)
         self.assertIn("function renderSettings()", app)
         self.assertIn("function authoritativeProgress(projectId, ctrlId", app)
         self.assertIn('validPercent == null ? "Unmeasured"', app)
@@ -281,7 +287,7 @@ class SwarmConsoleTests(unittest.TestCase):
         self.assertIn(r'.replace(/\blocalhost\b/gi, "console")', app)
         self.assertIn('const label = rawLabel.localeCompare(group.label', app)
         self.assertIn("if (!group.standalone) options.push", app)
-        self.assertIn("Health and capacity", index)
+        self.assertIn('id="system-health-heading">System health</h3>', index)
         self.assertNotIn("localhost", index.casefold())
         self.assertNotIn("hidden usage", index.casefold())
         self.assertNotIn("do not consume task or model usage", index.casefold())
@@ -5274,12 +5280,9 @@ class SwarmConsoleTests(unittest.TestCase):
 
     def test_health_copy_is_product_facing_without_a_watchdog_surface(self) -> None:
         app = (console.STATIC_ROOT / "app.js").read_text(encoding="utf-8")
-        self.assertIn("Automatic care", app)
-        self.assertIn("Keep this device healthy", app)
-        self.assertIn("Starts with a review", app)
-        self.assertNotIn("never model work", app.casefold())
-        self.assertNotIn("passive monitoring", app.casefold())
-        self.assertNotIn("watchdog", app.casefold())
+        self.assertIn("Request health review when needed", app)
+        self.assertIn("Passive monitoring does not run models.", app)
+        self.assertNotIn("Automatic care", app)
         self.assertNotIn("watchdog", console.EDITABLE_SETTINGS)
 
     def test_visible_role_titles_are_normalized_by_icon_setting(self) -> None:
@@ -5470,8 +5473,8 @@ class SwarmConsoleTests(unittest.TestCase):
         app = (console.STATIC_ROOT / "app.js").read_text(encoding="utf-8")
         self.assertNotIn('id="usage-saver-toggle"', index)
         self.assertEqual(app.count("settingToggle('boost.spark_enabled'"), 1)
-        self.assertIn("Use Spark for safe small tasks", app)
-        self.assertIn("Spark handles quick, low-risk work", app)
+        self.assertIn("Spark and monitoring", app)
+        self.assertIn("Save Spark model", app)
         self.assertNotIn("No browser, web lookup, ImageGen", app)
         self.assertNotIn("saveUsageSaver", app)
 

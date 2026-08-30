@@ -41,6 +41,8 @@ PLUGIN_ROOT = Path(__file__).resolve().parents[1]
 STATIC_ROOT = Path(__file__).resolve().parent / "static"
 CONSOLE_ROOT = Path(__file__).resolve().parent
 SWARM_SKILL_ROOT = PLUGIN_ROOT / "skills" / "swarm"
+if str(CONSOLE_ROOT) not in sys.path:
+    sys.path.insert(0, str(CONSOLE_ROOT))
 if str(SWARM_SKILL_ROOT) not in sys.path:
     sys.path.insert(0, str(SWARM_SKILL_ROOT))
 
