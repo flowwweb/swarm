@@ -196,6 +196,9 @@
           <p class="sr-only" id="onboarding-step-status" aria-live="polite">Welcome. Step 1 of 5.</p>
         </header>
         <div class="dialog-body onboarding-panels">
+          <div class="onboarding-body-nav" id="onboarding-body-nav" hidden>
+            <button class="icon-button onboarding-body-back" id="onboarding-back" type="button" aria-label="Back"><svg class="lucide" aria-hidden="true"><use href="#lucide-chevron-right"></use></svg></button>
+          </div>
           <div class="dialog-body-content onboarding-panels-content">
           <section class="onboarding-panel is-active" id="onboarding-panel-1" data-onboarding-panel="0" role="tabpanel" aria-labelledby="onboarding-dot-1">
             <img class="onboarding-slide1-guide onboarding-artwork" src="/assets/swarm-guided-tour-slide1.png" width="1920" height="1080" alt="" aria-hidden="true" loading="eager" fetchpriority="high" decoding="sync" />
@@ -230,7 +233,6 @@
           </div>
         </div>
         <footer class="dialog-footer onboarding-actions">
-          <button class="quiet-button" id="onboarding-back" type="button" hidden>Back</button>
           <button class="quiet-button onboarding-skip" id="onboarding-skip" type="button">Skip for now</button>
           <button class="primary-action" id="onboarding-primary" type="button">Start guided tour</button>
         </footer>

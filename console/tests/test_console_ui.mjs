@@ -131,13 +131,19 @@ const onboardingWithoutNonvisualStatus = indexHtml.replace(/<p class="sr-only" i
 assert.doesNotMatch(onboardingWithoutNonvisualStatus, /Step [1-5] of 5/i);
 assert.equal((indexHtml.match(/data-onboarding-step=/g) || []).length, 5);
 assert.match(indexHtml, /data-onboarding-step="0"[^>]*aria-label="Show welcome"[^>]*aria-controls="onboarding-panel-1"[^>]*aria-selected="true"[^>]*aria-current="step"/);
-for (const control of ["onboarding-close", "onboarding-skip", "onboarding-primary"]) assert.match(indexHtml, new RegExp(`id="${control}"[^>]*type="button"`));
+for (const control of ["onboarding-close", "onboarding-back", "onboarding-skip", "onboarding-primary"]) assert.match(indexHtml, new RegExp(`id="${control}"[^>]*type="button"`));
 assert.match(indexHtml, /SWARM coordinates focused roles, clear ownership, and proof you can review\./);
 assert.match(css, /\.onboarding-dialog \{ width:min\(1040px,calc\(100vw - 48px\)\); height:min\(720px,calc\(100dvh - 48px\)\);/);
 assert.match(css, /\.onboarding-shell \{ padding:0; \}/);
 assert.match(css, /\.onboarding-header \{ padding:clamp\(16px,2\.2vw,28px\) clamp\(16px,2\.2vw,28px\) 8px; \}/);
 assert.match(css, /\.onboarding-panels-content \{[^}]*padding:10px clamp\(16px,2\.2vw,28px\);/);
 assert.match(css, /\.onboarding-slide1-guide \{[^}]*width:min\(680px,100%\);[^}]*object-fit:contain;/);
+assert.match(indexHtml, /class="onboarding-body-nav" id="onboarding-body-nav" hidden>[\s\S]*?id="onboarding-back"[^>]*aria-label="Back"[\s\S]*?#lucide-chevron-right/);
+assert.doesNotMatch(indexHtml.match(/<footer class="dialog-footer onboarding-actions">[\s\S]*?<\/footer>/)?.[0] || "", /id="onboarding-back"|>Back</);
+assert.doesNotMatch(indexHtml.replace(/aria-label="Back"/g, ""), />\s*Back\s*</);
+assert.match(css, /\.onboarding-body-nav \{[^}]*position:sticky;[^}]*top:0;[^}]*height:0;[^}]*pointer-events:none;/);
+assert.match(css, /\.onboarding-body-back \{ width:44px; height:44px; pointer-events:auto; \}/);
+assert.match(css, /\.onboarding-body-back \.lucide \{ transform:rotate\(180deg\); \}/);
 assert.match(css, /\.onboarding-actions \{[^}]*display:grid;[^}]*grid-template-columns:minmax\(44px,1fr\) minmax\(220px,auto\) minmax\(44px,1fr\);/);
 assert.match(css, /\.onboarding-actions \.onboarding-skip \{ grid-column:2; grid-row:2;[^}]*\}/);
 assert.match(css, /\.onboarding-actions \.primary-action \{ grid-column:2; grid-row:1;[^}]*\}/);
@@ -190,7 +196,7 @@ assert.match(app, /function renderOnboarding\(\)/);
 assert.match(app, /dot\.toggleAttribute\("aria-current", selected\)/);
 assert.match(app, /if \(selected\) dot\.setAttribute\("aria-current", "step"\)/);
 assert.match(app, /panel\.hidden = !selected/);
-assert.match(app, /function setOnboardingStep\(step, focusDot = false\)/);
+assert.match(app, /function setOnboardingStep\(step, focusDot = false, focusNavigation = ""\)/);
 assert.match(app, /const changed = nextStep !== state\.onboardingStep[\s\S]*?if \(changed\) \$\("\.dialog-body", \$\("#onboarding-dialog"\)\)\.scrollTop = 0/);
 assert.match(app, /state\.onboardingStep === ONBOARDING_STEPS\.length - 1/);
 assert.match(app, /state\.onboardingTrigger\?\.focus/);
@@ -212,6 +218,8 @@ assert.match(app, /state\.onboardingConfigFailures\.set\(key, \{ value, error:/)
 assert.match(app, /configEditable\(key\) && !state\.onboardingConfigPending\.has\(key\)/);
 assert.match(app, /if \(state\.onboardingStep === ONBOARDING_STEPS\.length - 1 && onboardingConfigBlocked\(\)\) return false/);
 assert.match(app, /\$\("#onboarding-primary"\)\.disabled = blocked/);
+assert.match(app, /const laterStep = step > 0;[\s\S]*?\$\("#onboarding-body-nav"\)\.hidden = !laterStep;[\s\S]*?\$\("#onboarding-skip"\)\.hidden = laterStep;/);
+assert.match(app, /setOnboardingStep\(state\.onboardingStep - 1, false, "back"\)/);
 assert.match(app, /data-onboarding-control="retry-config">Retry/);
 const onboardingCloseSource = app.slice(app.indexOf('$("#onboarding-dialog").addEventListener("close"'), app.indexOf('$("#evidence-lightbox").addEventListener("close"'));
 assert.doesNotMatch(onboardingCloseSource, /markOnboardingSeen/);
@@ -1641,6 +1649,46 @@ async function assertDialogFrame(page, selector) {
   assert.ok(result.documentOverflowX <= 1);
 }
 
+async function assertLaterStepNavigation(page, expectedPrimary) {
+  const result = await page.locator("#onboarding-dialog").evaluate((dialog) => {
+    const rect = (element) => {
+      const value = element.getBoundingClientRect();
+      return { left: value.left, top: value.top, right: value.right, bottom: value.bottom, width: value.width, height: value.height };
+    };
+    const body = dialog.querySelector(".dialog-body");
+    const back = dialog.querySelector("#onboarding-back");
+    const icon = back.querySelector(".lucide");
+    const backRect = rect(back);
+    const iconRect = rect(icon);
+    const hit = document.elementFromPoint(backRect.left + backRect.width / 2, backRect.top + backRect.height / 2);
+    const footerButtons = [...dialog.querySelectorAll(".dialog-footer button")]
+      .filter((button) => !button.hidden && getComputedStyle(button).display !== "none")
+      .map((button) => ({ id: button.id, text: button.textContent.trim() }));
+    return {
+      body: rect(body),
+      back: backRect,
+      icon: iconRect,
+      backVisible: !back.hidden && getComputedStyle(back).display !== "none" && getComputedStyle(back).visibility !== "hidden",
+      backUnobscured: hit === back || Boolean(hit && back.contains(hit)),
+      footerButtons,
+      skipHidden: dialog.querySelector("#onboarding-skip").hidden,
+      bodyOverflowY: getComputedStyle(body).overflowY,
+      documentOverflowX: document.documentElement.scrollWidth - innerWidth,
+    };
+  });
+  assert.equal(result.backVisible, true);
+  assert.ok(result.back.width >= 44 && result.back.height >= 44, JSON.stringify(result));
+  assert.ok(Math.abs(result.back.left + result.back.width / 2 - (result.icon.left + result.icon.width / 2)) <= 1);
+  assert.ok(Math.abs(result.back.top + result.back.height / 2 - (result.icon.top + result.icon.height / 2)) <= 1);
+  assert.ok(result.back.top >= result.body.top && result.back.top <= result.body.top + 12, JSON.stringify(result));
+  assert.equal(result.backUnobscured, true);
+  assert.deepEqual(result.footerButtons, [{ id: "onboarding-primary", text: expectedPrimary }]);
+  assert.equal(result.skipHidden, true);
+  assert.equal(result.bodyOverflowY, "auto");
+  assert.ok(result.documentOverflowX <= 1);
+  return result;
+}
+
 const browserCandidates = [
   process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH,
   "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
@@ -1728,6 +1776,29 @@ async function assertDecodedVisibleOnboardingImage(page, selector, expectedWidth
 async function captureOnboardingEvidence(page, name) {
   if (!evidenceDir) return;
   await settleCurrentOnboardingImages(page);
+  const chrome = await page.locator("#onboarding-dialog").evaluate(async (dialog) => {
+    await Promise.all(dialog.getAnimations({ subtree: true }).map((animation) => animation.finished.catch(() => undefined)));
+    await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    const visibleRect = (selector) => {
+      const node = dialog.querySelector(selector);
+      const rect = node.getBoundingClientRect();
+      const style = getComputedStyle(node);
+      const hit = document.elementFromPoint(rect.left + rect.width / 2, rect.top + rect.height / 2);
+      return { width: rect.width, height: rect.height, display: style.display, visibility: style.visibility, opacity: Number(style.opacity), unobscured: hit === node || Boolean(hit && node.contains(hit)), hit: hit?.id || hit?.className || hit?.tagName || "none" };
+    };
+    return {
+      header: visibleRect(":scope > .dialog-shell > .dialog-header"),
+      footer: visibleRect(":scope > .dialog-shell > .dialog-footer"),
+      wordmark: visibleRect(".onboarding-header > img"),
+    };
+  });
+  for (const [part, proof] of Object.entries(chrome)) {
+    assert.ok(proof.width > 0 && proof.height > 0, `${name}: ${part} must have visible geometry`);
+    assert.notEqual(proof.display, "none", `${name}: ${part} must render`);
+    assert.notEqual(proof.visibility, "hidden", `${name}: ${part} must remain visible`);
+    assert.ok(proof.opacity >= 0.99, `${name}: ${part} must be fully visible`);
+    assert.equal(proof.unobscured, true, `${name}: ${part} is obscured by ${proof.hit}`);
+  }
   await page.screenshot({ path: path.join(evidenceDir, name + ".png"), fullPage: false, animations: "disabled" });
 }
 const proofFeed = imageProofFixture(6);
@@ -1773,8 +1844,9 @@ const proofFeed = imageProofFixture(6);
       const rect = (element) => { const value = element.getBoundingClientRect(); return { left: value.left, top: value.top, right: value.right, bottom: value.bottom, width: value.width, height: value.height }; };
       const primary = rect(document.querySelector("#onboarding-primary"));
       const skip = rect(document.querySelector("#onboarding-skip"));
-      const controls = [...dialog.querySelectorAll("button")].filter((button) => !button.hidden).map(rect);
-      return { dialog: rect(dialog), primary, skip, controls, viewport: { width: innerWidth, height: innerHeight }, documentWidth: document.documentElement.scrollWidth };
+      const controls = [...dialog.querySelectorAll("button")].filter((button) => !button.hidden && getComputedStyle(button).display !== "none" && button.getClientRects().length).map(rect);
+      const footerButtons = [...dialog.querySelectorAll(".dialog-footer button")].filter((button) => !button.hidden && getComputedStyle(button).display !== "none").map((button) => ({ id: button.id, text: button.textContent.trim() }));
+      return { dialog: rect(dialog), primary, skip, controls, backVisible: document.querySelector("#onboarding-back").getClientRects().length > 0, footerButtons, viewport: { width: innerWidth, height: innerHeight }, documentWidth: document.documentElement.scrollWidth };
     });
     assert.ok(desktopGeometry.dialog.width <= 1041 && desktopGeometry.dialog.height <= 721);
     assert.ok(desktopGeometry.dialog.left >= 0 && desktopGeometry.dialog.right <= desktopGeometry.viewport.width);
@@ -1782,9 +1854,12 @@ const proofFeed = imageProofFixture(6);
     assert.ok(desktopGeometry.controls.every((control) => control.width >= 44 && control.height >= 44));
     assert.ok(Math.abs((desktopGeometry.primary.left + desktopGeometry.primary.width / 2) - (desktopGeometry.skip.left + desktopGeometry.skip.width / 2)) <= 1);
     assert.ok(desktopGeometry.skip.top >= desktopGeometry.primary.bottom);
+    assert.equal(desktopGeometry.backVisible, false);
+    assert.deepEqual(desktopGeometry.footerButtons, [{ id: "onboarding-skip", text: "Skip for now" }, { id: "onboarding-primary", text: "Start guided tour" }]);
     assert.ok(desktopGeometry.documentWidth <= desktopGeometry.viewport.width);
     await assertDialogFrame(onboardingPage, "#onboarding-dialog");
     await onboardingPage.getByRole("button", { name: "Start guided tour" }).click();
+    await assertLaterStepNavigation(onboardingPage, "Continue");
     await captureOnboardingEvidence(onboardingPage, "02-slide-2-pending-desktop-1440x1000");
     assert.equal(await onboardingPage.locator('[data-onboarding-step][aria-current="step"]').getAttribute("data-onboarding-step"), "1");
     const motionTiming = await onboardingPage.locator("#onboarding-dialog").evaluate((dialog) => {
@@ -1792,17 +1867,27 @@ const proofFeed = imageProofFixture(6);
         const style = getComputedStyle(dialog.querySelector(selector));
         return { delay: parseFloat(style.animationDelay) * 1000, duration: parseFloat(style.animationDuration) * 1000 };
       };
-      return [timing(".onboarding-panel.is-active .onboarding-artwork"), timing(".onboarding-panel.is-active > h2"), timing(".onboarding-panel.is-active > p"), timing(".onboarding-panel.is-active .onboarding-supporting-visual"), timing("#onboarding-primary"), timing("#onboarding-skip")];
+      return [timing(".onboarding-panel.is-active .onboarding-artwork"), timing(".onboarding-panel.is-active > h2"), timing(".onboarding-panel.is-active > p"), timing(".onboarding-panel.is-active .onboarding-supporting-visual"), timing("#onboarding-primary")];
     });
-    assert.deepEqual(motionTiming.map((item) => Math.round(item.delay)), [0, 55, 110, 165, 220, 275]);
+    assert.deepEqual(motionTiming.map((item) => Math.round(item.delay)), [0, 55, 110, 165, 220]);
     assert.ok(Math.max(...motionTiming.map((item) => item.delay + item.duration)) <= 550);
     assert.equal(await onboardingPage.locator(".onboarding-flow-fanout i").count(), 3);
     assert.match(await onboardingPage.locator(".onboarding-flow .is-ctrl").evaluate((element) => getComputedStyle(element).clipPath), /polygon/);
     assert.match(await onboardingPage.locator(".onboarding-flag i").evaluate((element) => getComputedStyle(element).backgroundImage), /conic-gradient/);
+    await onboardingPage.getByRole("button", { name: "Back" }).focus();
+    await onboardingPage.keyboard.press("Enter");
+    await onboardingPage.waitForFunction(() => document.activeElement?.id === "onboarding-primary");
+    assert.equal(await onboardingPage.locator('[data-onboarding-step][aria-current="step"]').getAttribute("data-onboarding-step"), "0");
+    assert.equal(await onboardingPage.getByRole("button", { name: "Skip for now" }).isVisible(), true);
+    assert.equal(await onboardingPage.getByRole("button", { name: "Back" }).isVisible(), false);
+    await onboardingPage.keyboard.press("Enter");
+    assert.equal(await onboardingPage.locator('[data-onboarding-step][aria-current="step"]').getAttribute("data-onboarding-step"), "1");
+    await assertLaterStepNavigation(onboardingPage, "Continue");
     await onboardingPage.getByRole("button", { name: "Continue" }).click();
     assert.equal(await onboardingPage.locator('[data-onboarding-step][aria-current="step"]').getAttribute("data-onboarding-step"), "2");
     assert.equal(await onboardingPage.locator("#onboarding-dialog").getAttribute("data-motion-step"), "2");
     assert.equal(await onboardingPage.evaluate(() => document.activeElement?.id), "onboarding-primary");
+    await assertLaterStepNavigation(onboardingPage, "Continue");
     await assertOnboardingRoleGroup(onboardingPage, 1440);
     await captureOnboardingEvidence(onboardingPage, "03-slide-3-desktop-1440x1000");
     await onboardingPage.getByRole("button", { name: "Continue" }).click();
@@ -1812,11 +1897,13 @@ const proofFeed = imageProofFixture(6);
     const desktopProjectToolProof = await assertDecodedVisibleOnboardingImage(onboardingPage, ".onboarding-project-tool", 1536, 1024);
     assert.ok(desktopProjectToolProof.rect.width <= await onboardingPage.locator("#onboarding-panel-4").evaluate((panel) => panel.clientWidth + 1));
     assert.match(await onboardingPage.locator("#onboarding-panel-4").textContent(), /project tool that builds itself/);
+    await assertLaterStepNavigation(onboardingPage, "Continue");
     await captureOnboardingEvidence(onboardingPage, "04-slide-4-desktop-1440x1000");
     await onboardingPage.getByRole("button", { name: "Continue" }).click();
     assert.equal(await onboardingPage.locator('[data-onboarding-step][aria-current="step"]').getAttribute("data-onboarding-step"), "4");
     assert.equal(await onboardingPage.locator("#onboarding-dialog .dialog-body").evaluate((body) => body.scrollTop), 0);
     assert.equal(await onboardingPage.getByRole("button", { name: "Start using SWARM" }).count(), 1);
+    await assertLaterStepNavigation(onboardingPage, "Start using SWARM");
   const onboardingConfigPanel = onboardingPage.locator("#onboarding-panel-5");
   assert.equal(await onboardingConfigPanel.getByLabel("Minimum model").inputValue(), "5.6 Luna · High");
   assert.equal(await onboardingConfigPanel.getByLabel("Maximum model").inputValue(), "5.6 Sol · High");
@@ -1850,7 +1937,7 @@ const proofFeed = imageProofFixture(6);
     assert.deepEqual(onboarding.configRequests.slice(-2), [{ changes: { "execution.fast_mode": true } }, { changes: { "automation.mode": "manual" } }]);
     await onboardingPage.evaluate(() => window.__onboardingMotionObserver.disconnect());
     assert.equal(await onboardingPage.getByRole("button", { name: "Close onboarding" }).count(), 1);
-    assert.equal(await onboardingPage.getByRole("button", { name: "Skip for now" }).count(), 1);
+    assert.equal(await onboardingPage.getByRole("button", { name: "Skip for now" }).count(), 0);
     await onboardingPage.getByRole("button", { name: "Start using SWARM" }).click();
     assert.equal(await onboardingPage.locator("#onboarding-dialog").isVisible(), false);
     assert.equal(await onboardingPage.evaluate(() => localStorage.getItem("swarm.onboarding.v2.seen")), "1");
@@ -1871,6 +1958,7 @@ const proofFeed = imageProofFixture(6);
     const onboardingTablet = await mount(onboardingTabletPage, scopedFixture(), { ...overrides, keepOnboarding: true });
     await assertDialogFrame(onboardingTabletPage, "#onboarding-dialog");
     await onboardingTabletPage.getByRole("button", { name: "Start guided tour" }).click();
+    await assertLaterStepNavigation(onboardingTabletPage, "Continue");
     const tabletFlowGeometry = await onboardingTabletPage.locator(".onboarding-flow-scene").evaluate((scene) => {
       const roleNodes = [...scene.querySelectorAll(".onboarding-flow-roles b")];
       return {
@@ -1896,6 +1984,7 @@ const proofFeed = imageProofFixture(6);
     await assertDialogFrame(onboardingMobilePage, "#onboarding-dialog");
     await captureOnboardingEvidence(onboardingMobilePage, "06-slide-1-mobile-390x844");
     await onboardingMobilePage.getByRole("button", { name: "Start guided tour" }).click();
+    await assertLaterStepNavigation(onboardingMobilePage, "Continue");
     await captureOnboardingEvidence(onboardingMobilePage, "07-slide-2-pending-mobile-390x844");
     const mobileFlowGeometry = await onboardingMobilePage.locator(".onboarding-flow").evaluate((flow) => {
       const rect = (element) => { const value = element.getBoundingClientRect(); return { left: value.left, right: value.right, top: value.top, bottom: value.bottom, width: value.width, height: value.height }; };
@@ -1919,37 +2008,39 @@ const proofFeed = imageProofFixture(6);
     const mobileGeometry = await onboardingMobilePage.locator("#onboarding-dialog").evaluate((dialog) => {
       const rect = (element) => { const value = element.getBoundingClientRect(); return { left: value.left, top: value.top, right: value.right, bottom: value.bottom, width: value.width, height: value.height }; };
       const primary = rect(document.querySelector("#onboarding-primary"));
-      const skip = rect(document.querySelector("#onboarding-skip"));
+      const back = rect(document.querySelector("#onboarding-back"));
       const panel = document.querySelector("#onboarding-panel-5");
+      const heading = rect(panel.querySelector("h2"));
       const configuration = document.querySelector("#onboarding-configuration");
       const body = document.querySelector("#onboarding-dialog > .onboarding-shell > .onboarding-panels");
       const controls = [...dialog.querySelectorAll("button")].filter((control) => !control.hidden && getComputedStyle(control).display !== "none").map(rect);
       const configControls = [...configuration.querySelectorAll("input,select,summary,button")].filter((control) => !control.hidden && getComputedStyle(control).display !== "none" && control.getClientRects().length).map((control) => rect(control.matches('input[type="checkbox"]') ? control.closest(".toggle-row") : control.matches('input[type="radio"]') ? control.closest("label") : control));
-      return { dialog: rect(dialog), primary, skip, controls, configControls, panel: { scrollWidth: panel.scrollWidth, clientWidth: panel.clientWidth, overflowY: getComputedStyle(panel).overflowY }, configuration: { scrollWidth: configuration.scrollWidth, clientWidth: configuration.clientWidth, overflowY: getComputedStyle(configuration).overflowY }, body: { scrollHeight: body.scrollHeight, clientHeight: body.clientHeight, overflowY: getComputedStyle(body).overflowY }, viewport: { width: innerWidth, height: innerHeight }, documentWidth: document.documentElement.scrollWidth };
+      return { dialog: rect(dialog), primary, back, heading, controls, configControls, panel: { scrollWidth: panel.scrollWidth, clientWidth: panel.clientWidth, overflowY: getComputedStyle(panel).overflowY }, configuration: { scrollWidth: configuration.scrollWidth, clientWidth: configuration.clientWidth, overflowY: getComputedStyle(configuration).overflowY }, body: { scrollHeight: body.scrollHeight, clientHeight: body.clientHeight, overflowY: getComputedStyle(body).overflowY }, viewport: { width: innerWidth, height: innerHeight }, documentWidth: document.documentElement.scrollWidth };
     });
     assert.ok(Math.abs(mobileGeometry.dialog.width - 390) <= 1 && Math.abs(mobileGeometry.dialog.height - 844) <= 1);
     assert.ok(mobileGeometry.controls.every((control) => control.width >= 44 && control.height >= 44));
-    assert.ok(Math.abs((mobileGeometry.primary.left + mobileGeometry.primary.width / 2) - (mobileGeometry.skip.left + mobileGeometry.skip.width / 2)) <= 1);
-    assert.ok(mobileGeometry.skip.top >= mobileGeometry.primary.bottom);
     assert.ok(mobileGeometry.panel.scrollWidth <= mobileGeometry.panel.clientWidth + 1);
     assert.equal(mobileGeometry.panel.overflowY, "visible");
     assert.equal(mobileGeometry.configuration.overflowY, "visible");
     assert.equal(mobileGeometry.body.overflowY, "auto");
     assert.ok(mobileGeometry.configuration.scrollWidth <= mobileGeometry.configuration.clientWidth + 1);
     assert.ok(mobileGeometry.body.scrollHeight > mobileGeometry.body.clientHeight);
+    assert.ok(mobileGeometry.heading.top >= mobileGeometry.back.bottom + 8, JSON.stringify({ back: mobileGeometry.back, heading: mobileGeometry.heading }));
     assert.ok(mobileGeometry.configControls.every((control) => control.width >= 44 && control.height >= 44), JSON.stringify(mobileGeometry.configControls));
     assert.ok(mobileGeometry.documentWidth <= mobileGeometry.viewport.width);
+    const mobileBackTop = await onboardingMobilePage.getByRole("button", { name: "Back" }).evaluate((button) => button.getBoundingClientRect().top);
     await onboardingMobilePage.locator("#onboarding-dialog .dialog-body").evaluate((body) => { body.scrollTop = body.scrollHeight; });
     await captureOnboardingEvidence(onboardingMobilePage, "11-slide-5-config-scrolled-mobile-390x844");
     const scrolledFrame = await onboardingMobilePage.locator("#onboarding-dialog").evaluate((dialog) => {
       const header = dialog.querySelector(".dialog-header").getBoundingClientRect();
       const footer = dialog.querySelector(".dialog-footer").getBoundingClientRect();
       const body = dialog.querySelector(".dialog-body").getBoundingClientRect();
-      return { headerBottom: header.bottom, bodyTop: body.top, bodyBottom: body.bottom, footerTop: footer.top, footerBottom: footer.bottom, dialogBottom: dialog.getBoundingClientRect().bottom };
+      return { headerBottom: header.bottom, bodyTop: body.top, bodyBottom: body.bottom, footerTop: footer.top, footerBottom: footer.bottom, dialogBottom: dialog.getBoundingClientRect().bottom, backTop: dialog.querySelector("#onboarding-back").getBoundingClientRect().top };
     });
     assert.ok(Math.abs(scrolledFrame.headerBottom - scrolledFrame.bodyTop) <= 1);
     assert.ok(Math.abs(scrolledFrame.bodyBottom - scrolledFrame.footerTop) <= 1);
     assert.ok(scrolledFrame.footerBottom <= scrolledFrame.dialogBottom + 1);
+    assert.ok(Math.abs(scrolledFrame.backTop - mobileBackTop) <= 1);
     assert.deepEqual(onboardingMobile.runtimeErrors, []);
     await onboardingMobilePage.close();
 
@@ -1963,7 +2054,6 @@ const proofFeed = imageProofFixture(6);
       ".onboarding-panel.is-active > p",
       ".onboarding-panel.is-active .onboarding-supporting-visual",
       "#onboarding-primary",
-      "#onboarding-skip",
     ].map((selector) => {
       const style = getComputedStyle(dialog.querySelector(selector));
       return { animationName: style.animationName, transform: style.transform };

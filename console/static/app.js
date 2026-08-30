@@ -279,9 +279,11 @@ function renderOnboarding() {
   $("#onboarding-step-status").textContent = current.name + ". Step " + String(step + 1) + " of " + String(ONBOARDING_STEPS.length) + ".";
   const finalStep = step === ONBOARDING_STEPS.length - 1;
   const blocked = finalStep && onboardingConfigBlocked();
-  $("#onboarding-back").hidden = step === 0;
+  const laterStep = step > 0;
+  $("#onboarding-body-nav").hidden = !laterStep;
   $("#onboarding-back").disabled = blocked;
   $("#onboarding-close").disabled = blocked;
+  $("#onboarding-skip").hidden = laterStep;
   $("#onboarding-skip").disabled = blocked;
   $$('[data-onboarding-step]').forEach((dot) => { dot.disabled = blocked; });
   $("#onboarding-primary").textContent = current.primary;
@@ -350,13 +352,14 @@ function onboardingCanDismiss() {
   return state.onboardingStep !== ONBOARDING_STEPS.length - 1 || !onboardingConfigBlocked();
 }
 
-function setOnboardingStep(step, focusDot = false) {
+function setOnboardingStep(step, focusDot = false, focusNavigation = "") {
   const nextStep = Math.min(Math.max(0, Number(step) || 0), ONBOARDING_STEPS.length - 1);
   const changed = nextStep !== state.onboardingStep;
   state.onboardingStep = nextStep;
   renderOnboarding();
   if (changed) $(".dialog-body", $("#onboarding-dialog")).scrollTop = 0;
   if (focusDot) $('[data-onboarding-step="' + state.onboardingStep + '"]')?.focus({ preventScroll: true });
+  else if (focusNavigation) requestAnimationFrame(() => (focusNavigation === "back" && state.onboardingStep > 0 ? $("#onboarding-back") : $("#onboarding-primary")).focus({ preventScroll: true }));
 }
 
 async function saveConfigMutation(changes) {
@@ -3458,7 +3461,7 @@ document.addEventListener("click", async (event) => {
 
 $("#onboarding-close").addEventListener("click", () => closeOnboarding());
 $("#onboarding-skip").addEventListener("click", () => closeOnboarding());
-$("#onboarding-back").addEventListener("click", () => setOnboardingStep(state.onboardingStep - 1));
+$("#onboarding-back").addEventListener("click", () => setOnboardingStep(state.onboardingStep - 1, false, "back"));
 $("#onboarding-primary").addEventListener("click", () => {
   if (state.onboardingStep === ONBOARDING_STEPS.length - 1) closeOnboarding(true);
   else setOnboardingStep(state.onboardingStep + 1);
