@@ -311,7 +311,7 @@ function onboardingCoordinationMarkup() {
       '<div class="onboarding-lead-group" role="group" aria-label="' + escapeHTML(group.label + " profession leads") + '">' + leads + '</div></section>';
   }).join("");
   return '<div class="onboarding-flow-toolbar" aria-label="Flowchart zoom"><button class="icon-button" type="button" data-onboarding-flow-zoom="out" aria-label="Zoom out">−</button><button class="quiet-button" type="button" data-onboarding-flow-zoom="fit">Fit</button><button class="icon-button" type="button" data-onboarding-flow-zoom="in" aria-label="Zoom in">+</button></div>' +
-    '<div class="onboarding-coordination-stage" style="--flow-zoom:' + state.onboardingFlowZoom + '"><svg class="onboarding-coordination-connectors" aria-hidden="true" focusable="false">' + paths.join("") + '</svg>' +
+    '<div class="onboarding-coordination-stage"><svg class="onboarding-coordination-connectors" aria-hidden="true" focusable="false">' + paths.join("") + '</svg>' +
     '<div class="onboarding-coordination-content"><div class="onboarding-ctrl-node" role="treeitem" aria-level="1" tabindex="0" data-onboarding-node="ctrl" data-onboarding-node-id="ctrl" style="--org-index:0"><i class="onboarding-jack is-input" aria-hidden="true"></i><img src="/assets/swarm-mascot-512.png" alt="" aria-hidden="true" width="512" height="512"><span class="onboarding-console-face"><strong>CTRL</strong><i class="onboarding-console-dial" aria-hidden="true"></i><span class="onboarding-console-switches" aria-hidden="true"><i></i><i></i></span></span><span class="onboarding-output-jacks" aria-hidden="true"><i></i><i></i><i></i><i></i></span></div>' +
     '<div class="onboarding-executive-grid" role="group" aria-label="Executive managers and profession leads">' + groups + '</div></div>' +
     '<ul class="sr-only" aria-label="Coordination connections">' + connections.map((connection) => '<li>' + escapeHTML(connection) + '</li>').join("") + '</ul></div>';
@@ -1165,7 +1165,11 @@ function runLogEntries(plan) {
     .sort((left, right) => Number(left.event_seq) - Number(right.event_seq) || runLogItemIdentity(left).localeCompare(runLogItemIdentity(right)))
     .slice(-RUN_LOG_CLIENT_LIMIT);
   if (plan.filter !== "material") return items;
-  const materialKinds = new Set(["ARTIFACT_ADMITTED", "CHECKPOINTED", "MILESTONE_COMPLETED", "REVIEW_ACCEPTED", "TASK_COMPLETED"]);
+  const materialKinds = new Set([
+    "BLOCK_CREATED", "SCOPE_REVISED", "PROOF_ADMITTED", "PROOF_INVALIDATED",
+    "REWORK_REQUESTED", "USER_STEERING_ACCEPTED", "LIVENESS_STALE", "LIVENESS_RECOVERED",
+    "RETRY_STARTED", "TAKEOVER_STARTED", "ACCEPTED",
+  ]);
   return items.filter((item) => materialKinds.has(String(item.kind || item.event_kind || "").toUpperCase()));
 }
 
@@ -3089,9 +3093,9 @@ function agentProgress(record) {
     const freshness = String(observed?.freshness?.state || "").toLowerCase();
     const progress = observed?.progress;
     const percent = Number(progress?.percent);
-    const completed = Number(progress?.completed ?? progress?.completed_milestones);
-    const total = Number(progress?.total ?? progress?.total_milestones);
-    if (["fresh", "current"].includes(freshness) && Number.isFinite(percent) && percent >= 0 && percent <= 100 && Number.isFinite(completed) && Number.isFinite(total) && total > 0) {
+    const completed = Number(progress?.completed_units);
+    const total = Number(progress?.total_units);
+    if (freshness === "fresh" && Number.isFinite(percent) && percent >= 0 && percent <= 100 && Number.isInteger(completed) && Number.isInteger(total) && completed >= 0 && total > 0 && completed <= total) {
       return { percent, label: String(completed) + " of " + String(total) + " accepted milestones" };
     }
     return null;
@@ -3236,17 +3240,22 @@ function roleDisplayName(role) {
   return role?.name || role?.id || "Unknown role";
 }
 
+function safeRoleAvatarURL(value) {
+  const url = String(value || "");
+  return (/^\/api\/assets\/[^/?#]+\/preview\?digest=[0-9a-f]{64}$/i.test(url) || /^\/assets\/role-avatars\/[a-z0-9_]+\.png$/i.test(url)) ? url : "";
+}
+
 function retainedRoleAvatar(role) {
   const digest = String(role?.avatar_asset_digest || "").toLowerCase();
   if (!/^[0-9a-f]{64}$/.test(digest)) return null;
   const embedded = role?.avatar && typeof role.avatar === "object" ? role.avatar : null;
   const embeddedDigest = String(embedded?.digest || "").toLowerCase();
-  const embeddedURL = String(embedded?.url || "");
-  if (embeddedDigest === digest && embedded?.state === "AVAILABLE" && embeddedURL.startsWith("/")) return { digest, url: embeddedURL };
+  const embeddedURL = safeRoleAvatarURL(embedded?.url);
+  if (embeddedDigest === digest && embedded?.state === "AVAILABLE" && embeddedURL) return { digest, url: embeddedURL };
   const asset = assetItems().find((item) => String(assetTechnical(item).digest || "").toLowerCase() === digest);
   const preview = asset?.preview && typeof asset.preview === "object" ? asset.preview : null;
-  const previewURL = String(preview?.url || "");
-  return preview?.state === "AVAILABLE" && previewURL.startsWith("/") ? { digest, url: previewURL } : null;
+  const previewURL = safeRoleAvatarURL(preview?.url);
+  return preview?.state === "AVAILABLE" && previewURL ? { digest, url: previewURL } : null;
 }
 
 function roleAvatar(role) {

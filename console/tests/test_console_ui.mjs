@@ -693,7 +693,7 @@ const openAssetDialogSource = app.slice(app.indexOf("function openAssetDialog"),
 assert.doesNotMatch(openAssetDialogSource, /renderAssets\(\)/);
 assert.match(openAssetDialogSource, /card\.classList\.toggle\("is-selected"/);
 assert.match(app, /trigger\?\.isConnected \? trigger : replacement/);
-assert.doesNotMatch(app, /REVIEW_FEEDBACK_SUBMIT|PROOF_ADMIT|ASSET_REVISION_CREATE|ASSET_APPROVE/);
+assert.doesNotMatch(app, /REVIEW_FEEDBACK_SUBMIT|["']PROOF_ADMIT["']|ASSET_REVISION_CREATE|ASSET_APPROVE/);
 const assetHelperStart = app.indexOf("function assetIdentity");
 const assetHelperEnd = app.indexOf("\nfunction assetGridMarkup", assetHelperStart);
 const assetHelpers = vm.runInNewContext(`(() => { const state = { assetProjection: "active", projectId: "project:one" }; function humanize(value) { return String(value || ""); } ${app.slice(assetHelperStart, assetHelperEnd)}; return { assetStage, assetRevisionItems, assetProjectionValue }; })()`);
@@ -952,7 +952,30 @@ const conflictedRoster = structuredClone(rosterFixture);
 conflictedRoster.navigation.projects[0].activity_facts.active_now = true;
 assert.equal(savedProjectRosterHarness(conflictedRoster).state, "UNKNOWN");
 assert.equal(fixture.overview.progress.controllers.ctrl.progress.percent, 80);
+assert.equal(fixture.overview.progress.controllers.ctrl.progress.completed_units, 4);
+assert.equal(fixture.overview.progress.controllers.ctrl.progress.total_units, 5);
 assert.equal(fixture.overview.progress.controllers.ctrl.progress.source, "material_receipts");
+const agentProgressStart = app.indexOf("function agentProgress(record)");
+const agentProgressEnd = app.indexOf("\nfunction agentAvatarMarkup", agentProgressStart);
+const agentProgressHelpers = vm.runInNewContext(`(() => {
+  const state = { projectId: "all", overview: null, projectProgressStatus: "unknown" };
+  function projectProgressQueueProjection() { return null; }
+  function selectedProjectProgress() { return null; }
+  function progressQueueRowPresentation() { return null; }
+  ${app.slice(agentProgressStart, agentProgressEnd)}
+  return { run(record, overview) { state.overview = overview; return agentProgress(record); } };
+})()`);
+const measuredAgentRecord = { binding: { ctrlId: "ctrl", projectId: "project:fixture" }, node: { id: "ctrl" } };
+assert.equal(agentProgressHelpers.run(measuredAgentRecord, fixture.overview).percent, 80);
+const staleAgentOverview = structuredClone(fixture.overview);
+staleAgentOverview.progress.controllers.ctrl.freshness.state = "stale";
+assert.equal(agentProgressHelpers.run(measuredAgentRecord, staleAgentOverview), null);
+const unmeasuredAgentOverview = structuredClone(fixture.overview);
+unmeasuredAgentOverview.progress.controllers.ctrl.progress = { completed: 4, total: 5, percent: 80 };
+assert.equal(agentProgressHelpers.run(measuredAgentRecord, unmeasuredAgentOverview), null);
+const invalidMeasuredAgentOverview = structuredClone(fixture.overview);
+invalidMeasuredAgentOverview.progress.controllers.ctrl.progress.completed_units = 6;
+assert.equal(agentProgressHelpers.run(measuredAgentRecord, invalidMeasuredAgentOverview), null);
 assert.equal(fixture.overview.navigation.projects[0].project_eligibility, "swarm_ctrl");
 assert.match(css, /\.overview-project-card/);
 assert.match(css, /\.project-navigation \{ display:flex; min-height:0; flex:1; flex-direction:column;[^}]*overflow:hidden; \}/);
@@ -1265,11 +1288,30 @@ assert.match(app, /Active tasks retain their accepted role version/);
 assert.match(css, /\.role-avatar/);
 assert.match(css, /\.role-library-grid/);
 assert.match(css, /\.role-editor::backdrop/);
+assert.match(app, /function safeRoleAvatarURL\(value\)[\s\S]*?\/api\\\/assets\\\/[\s\S]*?\/assets\\\/role-avatars\\\//);
 assert.match(app, /function retainedRoleAvatar\(role\)[\s\S]*?avatar_asset_digest[\s\S]*?assetItems\(\)[\s\S]*?preview\?\.state === "AVAILABLE"/);
 assert.match(app, /function roleAvatar\(role\)[\s\S]*?class="role-avatar has-image"[\s\S]*?<img loading="lazy"[\s\S]*?class="role-avatar is-pending"/);
 assert.match(app, /function roleHasRetainedAvatar\(role\) \{ return Boolean\(retainedRoleAvatar\(role\)\); \}/);
 assert.match(css, /\.role-avatar\.is-pending \{[^}]*border-style:dashed/);
 assert.doesNotMatch(css, /\.role-avatar i::before|\.role-avatar i::after/);
+const roleAvatarHelperStart = app.indexOf("function safeRoleAvatarURL");
+const roleAvatarHelperEnd = app.indexOf("\nfunction roleAvatar", roleAvatarHelperStart);
+const roleAvatarHelpers = vm.runInNewContext(`(() => {
+  let items = [];
+  function assetItems() { return items; }
+  function assetTechnical(item) { return item.technical || {}; }
+  ${app.slice(roleAvatarHelperStart, roleAvatarHelperEnd)}
+  return { retainedRoleAvatar, setItems(next) { items = next; } };
+})()`);
+const avatarDigest = "8".repeat(64);
+assert.equal(roleAvatarHelpers.retainedRoleAvatar({ avatar_asset_digest: avatarDigest, avatar: { digest: avatarDigest, state: "AVAILABLE", url: "//evil.example/avatar.png" } }), null);
+assert.equal(roleAvatarHelpers.retainedRoleAvatar({ avatar_asset_digest: avatarDigest, avatar: { digest: "7".repeat(64), state: "AVAILABLE", url: "/assets/role-avatars/developer.png" } }), null);
+assert.equal(roleAvatarHelpers.retainedRoleAvatar({ avatar_asset_digest: avatarDigest, avatar: { digest: avatarDigest, state: "PENDING", url: "/assets/role-avatars/developer.png" } }), null);
+assert.equal(roleAvatarHelpers.retainedRoleAvatar({ avatar_asset_digest: avatarDigest, avatar: { digest: avatarDigest, state: "AVAILABLE", url: "/assets/role-avatars/developer.png" } }).url, "/assets/role-avatars/developer.png");
+roleAvatarHelpers.setItems([{ technical: { digest: avatarDigest }, preview: { state: "AVAILABLE", url: "/api/assets/role-avatar-developer/preview?digest=" + avatarDigest } }]);
+assert.equal(roleAvatarHelpers.retainedRoleAvatar({ avatar_asset_digest: avatarDigest }).url, "/api/assets/role-avatar-developer/preview?digest=" + avatarDigest);
+roleAvatarHelpers.setItems([{ technical: { digest: avatarDigest }, preview: { state: "UNAVAILABLE", url: "/api/assets/role-avatar-developer/preview?digest=" + avatarDigest } }]);
+assert.equal(roleAvatarHelpers.retainedRoleAvatar({ avatar_asset_digest: avatarDigest }), null);
 assert.match(app, /<button class="role-choice/);
 assert.match(app, /role="option" aria-label=/);
 assert.match(app, /aria-controls="role-library-detail"/);
@@ -1566,6 +1608,7 @@ function assetFixtureItem(id, status = "READY", options = {}) {
   const revision = options.revision || 1;
   const projectId = options.projectId || "project:fixture";
   const ready = !["RESERVED", "QUEUED", "GENERATING", "VALIDATING"].includes(status);
+  const digest = String(options.digest || id).padEnd(64, "0").slice(0, 64);
   return {
     asset_id: id,
     project_id: projectId,
@@ -1592,7 +1635,7 @@ function assetFixtureItem(id, status = "READY", options = {}) {
       request_summary: options.requestSummary || null,
       job_metadata: { creator_label: options.creator || "SWARM" },
       provenance: { creator_label: options.creator || "SWARM", source_label: "Project asset" },
-      digest: String(options.digest || id).padEnd(64, "0").slice(0, 64),
+      digest,
       media_type: "image/png",
       size_bytes: options.sizeBytes || 184320,
       storage: { state: ready ? "ADMITTED" : "RESERVED", path: null, path_redacted: true },
@@ -1603,7 +1646,7 @@ function assetFixtureItem(id, status = "READY", options = {}) {
       idempotency_key: options.idempotencyKey || null,
     },
     preview: ready && !["FAILED", "CANCELLED"].includes(status)
-      ? { state: "AVAILABLE", url: "/api/assets/" + encodeURIComponent(id) + "/preview", media_type: "image/png", size_bytes: options.sizeBytes || 184320 }
+      ? { state: "AVAILABLE", url: "/api/assets/" + encodeURIComponent(id) + "/preview?digest=" + digest, media_type: "image/png", size_bytes: options.sizeBytes || 184320 }
       : { state: "NOT_READY", url: null, reason: "Preview is admitted only after validation." },
     trash: { trashed: status === "TRASHED", trashed_at: status === "TRASHED" ? "2026-08-29T13:00:00Z" : null, trashed_at_ms: status === "TRASHED" ? 1787989200000 : null, trashed_by: status === "TRASHED" ? "local-user" : null },
     retention_policy: "manual_unconfigured",
@@ -1680,7 +1723,7 @@ function runLogFixture() {
   ];
   return rows.map(([projectId, ctrlId, taskId, agentId, profession, structuralRole, summary], index) => ({
     event_id: "run-event-" + String(index + 1), event_digest: String(index + 41).padStart(64, "a"), event_seq: index + 1,
-    observed_at_ms: 1788076800000 + index * 1000, kind: index % 2 ? "MILESTONE_COMPLETED" : "REVIEW_REQUESTED", status: "ACTIVE",
+    observed_at_ms: 1788076800000 + index * 1000, kind: index % 2 ? "PROOF_ADMITTED" : "CURRENT_ACTION_CHANGED", status: "ACTIVE",
     project_id: projectId, ctrl_id: ctrlId, task_id: taskId, owner_id: agentId, agent_id: agentId,
     structural_role: structuralRole, profession, summary,
   }));
@@ -1763,7 +1806,7 @@ async function mount(page, overview, overrides = {}) {
         item.presentation.status_label = "Ready";
         item.technical.status = "READY";
         item.trash = { trashed: false, trashed_at: null, trashed_at_ms: null, trashed_by: null };
-        item.preview = { state: "AVAILABLE", url: "/api/assets/" + encodeURIComponent(item.asset_id) + "/preview", media_type: "image/png", size_bytes: item.technical.size_bytes };
+        item.preview = { state: "AVAILABLE", url: "/api/assets/" + encodeURIComponent(item.asset_id) + "/preview?digest=" + item.technical.digest, media_type: "image/png", size_bytes: item.technical.size_bytes };
         source.splice(index, 1);
         assetControl.library.active.unshift(item);
       } else {
@@ -1937,6 +1980,14 @@ async function assertOnboardingCoordination(page, viewportWidth) {
   assert.ok(geometry.scrollWidth <= geometry.clientWidth + 1, JSON.stringify(geometry));
   assert.ok(geometry.branches.every((branch) => branch.width > 0));
   assert.ok(geometry.documentWidth <= viewportWidth);
+  const initialZoom = Number(await tree.locator(".onboarding-coordination-stage").evaluate((stage) => getComputedStyle(stage).zoom));
+  const initialCtrlWidth = await tree.locator('[data-onboarding-node="ctrl"]').evaluate((node) => node.getBoundingClientRect().width);
+  await tree.getByRole("button", { name: "Zoom in" }).click();
+  const enlargedZoom = Number(await tree.locator(".onboarding-coordination-stage").evaluate((stage) => getComputedStyle(stage).zoom));
+  const enlargedCtrlWidth = await tree.locator('[data-onboarding-node="ctrl"]').evaluate((node) => node.getBoundingClientRect().width);
+  assert.ok(enlargedZoom > initialZoom && enlargedCtrlWidth > initialCtrlWidth, JSON.stringify({ initialZoom, enlargedZoom, initialCtrlWidth, enlargedCtrlWidth }));
+  await tree.getByRole("button", { name: "Fit", exact: true }).click();
+  assert.equal(Number(await tree.locator(".onboarding-coordination-stage").evaluate((stage) => getComputedStyle(stage).zoom)), 1);
   const treeItems = tree.locator("[data-onboarding-node-id]");
   assert.equal(await treeItems.evaluateAll((nodes) => nodes.filter((node) => node.tabIndex === 0).length), 1);
   await treeItems.first().focus();
@@ -3428,11 +3479,11 @@ proofFeed.items.push({
     })), true);
     await tabletPage.evaluate(() => renderRoleLibrary());
     await tabletPage.getByRole("button", { name: "Cancel" }).click();
-    await tabletPage.waitForTimeout(50);
+    await tabletPage.waitForFunction(() => document.activeElement?.getAttribute("aria-label") === "Edit Accountant");
     assert.equal(await tabletPage.evaluate(() => document.activeElement?.getAttribute("aria-label")), "Edit Accountant");
     await tabletPage.getByRole("button", { name: "Edit Accountant" }).click();
     await tabletPage.keyboard.press("Escape");
-    await tabletPage.waitForTimeout(50);
+    await tabletPage.waitForFunction(() => document.activeElement?.getAttribute("aria-label") === "Edit Accountant");
     assert.equal(await tabletPage.locator("#role-editor").isVisible(), false);
     assert.equal(await tabletPage.evaluate(() => document.activeElement?.getAttribute("aria-label")), "Edit Accountant");
     assert.equal(await tabletPage.evaluate(() => document.documentElement.scrollWidth > document.documentElement.clientWidth), false);

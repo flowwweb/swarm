@@ -107,10 +107,10 @@
     },
     "progress": {
       "controllers": {
-        "ctrl": {"progress":{"completed":4,"total":5,"percent":80,"source":"material_receipts"},"freshness":{"state":"fresh","observed_at_ms":1712550060000}}
+          "ctrl": {"progress":{"completed_units":4,"total_units":5,"percent":80,"source":"material_receipts"},"freshness":{"state":"fresh","observed_at_ms":1712550060000}}
       },
       "projects": {
-        "project:fixture": {"progress":{"completed":4,"total":5,"percent":80,"source":"material_receipts"},"freshness":{"state":"fresh","observed_at_ms":1712550060000}}
+          "project:fixture": {"progress":{"completed_units":4,"total_units":5,"percent":80,"source":"material_receipts"},"freshness":{"state":"fresh","observed_at_ms":1712550060000}}
       }
     },
     "analytics": {
