@@ -12087,11 +12087,7 @@ class App:
             "scope": copy.deepcopy(state["scope"]),
             "expected_revision": expected_revision,
             "new_revision": new_revision,
-            "changed_paths": sorted(
-                path
-                for path, _ in _config_leaf_items(state.get("overlay_raw") or {})
-                if path != "schema_version"
-            ),
+            "changed_paths": copy.deepcopy(changed_paths),
             "acknowledged": True,
             "audit_event": CONFIG_EVENT_KIND,
             "source_kind": state["source_kind"],

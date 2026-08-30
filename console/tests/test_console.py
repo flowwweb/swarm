@@ -5915,14 +5915,27 @@ class SwarmConsoleTests(unittest.TestCase):
         console.update_config(self.config, {"monitoring.heartbeat_minutes": 45})
         app = console.App(self.codex_home, self.config)
         projection = app.config_projection({"type": "global"})
-        result = app.reset_config_source({
+        request = {
             "scope": {"type": "global"},
             "expected_revision": projection["revision"],
             "acknowledge": True,
             "operation_id": "global-reset-1",
-        })
+        }
+        result = app.reset_config_source(request)
+        replay = app.reset_config_source(request)
         self.assertEqual(result["settings"]["monitoring"]["heartbeat_minutes"], 30)
         self.assertTrue(self.config.with_suffix(".toml.swarm-console.bak").exists())
+        self.assertEqual(result["revision"], replay["revision"])
+        first_receipt = result["mutation_receipt"]
+        replay_receipt = replay["mutation_receipt"]
+        for key in (
+            "action", "operation_id", "expected_revision", "new_revision", "changed_paths",
+            "acknowledged", "audit_event", "source_kind",
+        ):
+            self.assertEqual(first_receipt[key], replay_receipt[key], key)
+        self.assertTrue(first_receipt["changed_paths"])
+        self.assertFalse(first_receipt["replayed"])
+        self.assertTrue(replay_receipt["replayed"])
 
     def test_role_icon_controls_preserve_boolean_and_custom_ctrl(self) -> None:
         before = console.redacted_config_snapshot(self.config)
