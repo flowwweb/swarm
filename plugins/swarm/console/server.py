@@ -26,6 +26,7 @@ import tempfile
 import threading
 import time
 import webbrowser
+import uuid
 from collections import Counter
 from contextlib import closing
 from datetime import UTC, datetime
@@ -87,6 +88,12 @@ NOTIFICATION_UNREAD_LIMIT = 128
 NOTIFICATION_RECENT_SEEN_LIMIT = 64
 RUN_LOG_LIMIT = 200
 PROJECT_VIEW_MAX_BYTES = 512 * 1024
+PROJECT_BRIEF_MARKER = "swarm-project-brief:schema=1"
+PROJECT_BRIEF_REQUIRED_FIELDS = frozenset({
+    "schema_version", "updated_at", "project", "users_outcomes", "objective", "repo",
+    "authority", "milestones", "decisions", "ownership", "proof_acceptance", "risks_blockers", "links",
+})
+PROJECT_SETTING_FIELDS = frozenset({"inheritance_enabled", "profile", "preferred_ids"})
 PROJECT_VIEW_RENDERERS = {
     "canvas": frozenset({"network", "spatial", "freeform"}),
     "table": frozenset({"entities", "records", "log"}),
@@ -5235,6 +5242,201 @@ class App:
         return frozenset({project_id, name})
 
     @staticmethod
+    def _host_project_text(value: Any, maximum: int) -> str | None:
+        if not isinstance(value, str):
+            return None
+        value = value.strip()
+        if not value or len(value) > maximum or any(ord(character) < 32 for character in value):
+            return None
+        return value
+
+    @staticmethod
+    def _project_path_is_absolute(value: str) -> bool:
+        try:
+            path = Path(value)
+        except (TypeError, ValueError, OSError):
+            return False
+        return path.is_absolute() or bool(re.match(r"^[A-Za-z]:[\\/]", value)) or value.startswith(("//", "\\\\"))
+
+    def _host_project_records(
+        self,
+    ) -> tuple[str, list[dict[str, Any]], dict[str, Any] | None, dict[str, set[str]]]:
+        """Read the host saved-project tables without creating a local registry."""
+        database = state_database(self.codex_home)
+        with closing(_readonly_connection(database)) as connection:
+            tables = {
+                str(row["name"])
+                for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
+            }
+            if "projects" not in tables:
+                return "UNKNOWN", [], None, {}
+            project_columns = {
+                str(row["name"])
+                for row in connection.execute("PRAGMA table_info(projects)").fetchall()
+            }
+            if not {"id", "name"}.issubset(project_columns):
+                return "UNKNOWN", [], None, {}
+            selected = ["id", "name"]
+            selected.extend(column for column in ("position", "created_at_ms", "updated_at_ms") if column in project_columns)
+            project_rows = connection.execute(
+                "SELECT " + ", ".join(selected) + " FROM projects"
+            ).fetchall()
+            records: list[dict[str, Any]] = []
+            inventory_state = "KNOWN"
+            for row in project_rows:
+                project_id = self._host_project_text(row["id"], 256)
+                display_name = self._host_project_text(row["name"], 256)
+                if project_id is None or display_name is None:
+                    inventory_state = "PARTIAL"
+                    continue
+                ordering = {
+                    column: (
+                        row[column]
+                        if column in project_columns
+                        and isinstance(row[column], int)
+                        and not isinstance(row[column], bool)
+                        else None
+                    )
+                    for column in ("position", "created_at_ms", "updated_at_ms")
+                }
+                records.append({
+                    "id": project_id,
+                    "name": display_name,
+                    "display_name": display_name,
+                    "ordering": ordering,
+                    "_root_rows": [],
+                })
+            records_by_id = {record["id"]: record for record in records}
+            root_owners: dict[str, set[str]] = {}
+            if "project_roots" not in tables:
+                inventory_state = "PARTIAL"
+            else:
+                root_columns = {
+                    str(row["name"])
+                    for row in connection.execute("PRAGMA table_info(project_roots)").fetchall()
+                }
+                if not {"project_id", "path"}.issubset(root_columns):
+                    inventory_state = "PARTIAL"
+                else:
+                    root_select = ["project_id", "path"]
+                    if "position" in root_columns:
+                        root_select.append("position")
+                    for row in connection.execute(
+                        "SELECT " + ", ".join(root_select) + " FROM project_roots"
+                    ).fetchall():
+                        project_id = self._host_project_text(row["project_id"], 256)
+                        raw_path = self._host_project_text(row["path"], 4096)
+                        if project_id not in records_by_id or raw_path is None:
+                            inventory_state = "PARTIAL"
+                            continue
+                        normalized = _normalized_project_path(raw_path)
+                        absolute = bool(normalized) and self._project_path_is_absolute(raw_path)
+                        if not absolute:
+                            inventory_state = "PARTIAL"
+                        root_row = {
+                            "path": raw_path,
+                            "normalized": normalized if absolute else "",
+                            "position": (
+                                int(row["position"])
+                                if "position" in root_columns
+                                and isinstance(row["position"], int)
+                                and not isinstance(row["position"], bool)
+                                else 0
+                            ),
+                            "valid": absolute,
+                        }
+                        records_by_id[project_id]["_root_rows"].append(root_row)
+                        if absolute:
+                            root_owners.setdefault(normalized, set()).add(project_id)
+            records.sort(key=_project_order_key)
+            cursor_basis = {
+                "schema_version": 1,
+                "projects": [
+                    {
+                        "id": record["id"],
+                        "name": record["name"],
+                        "ordering": record["ordering"],
+                        "roots": [
+                            {
+                                "position": root["position"],
+                                "path": root["normalized"],
+                                "valid": root["valid"],
+                            }
+                            for root in sorted(
+                                record["_root_rows"],
+                                key=lambda item: (item["position"], item["normalized"], item["path"]),
+                            )
+                        ],
+                    }
+                    for record in records
+                ],
+                "project_roots_table": "project_roots" in tables,
+            }
+            cursor = {
+                "type": "codex_project_roster_v1",
+                "digest": _auto_digest(cursor_basis),
+            }
+            return inventory_state, records, cursor, root_owners
+
+    @staticmethod
+    def _project_root_availability(root: Path) -> str:
+        try:
+            if not root.exists():
+                return "MISSING"
+            if not root.is_dir():
+                return "INVALID"
+            if _is_reparse_point(root):
+                return "INVALID"
+        except OSError:
+            return "UNKNOWN"
+        return "AVAILABLE"
+
+    @classmethod
+    def _project_root_binding(
+        cls,
+        record: dict[str, Any],
+        root_owners: dict[str, set[str]],
+    ) -> dict[str, Any]:
+        rows = list(record.get("_root_rows") or [])
+        valid_rows = [row for row in rows if row.get("valid") and row.get("normalized")]
+        if not rows:
+            return {
+                "status": "UNKNOWN", "value": None, "normalized": None,
+                "availability": "UNKNOWN", "source": "codex.project_roots",
+                "claim_limit": "The host saved project has no canonical root binding.",
+            }
+        if len(valid_rows) != len(rows):
+            return {
+                "status": "INVALID", "value": None, "normalized": None,
+                "availability": "INVALID", "source": "codex.project_roots",
+                "claim_limit": "The host project root binding contains an invalid path.",
+            }
+        normalized = {str(row["normalized"]) for row in valid_rows}
+        if len(normalized) != 1:
+            return {
+                "status": "AMBIGUOUS", "value": None, "normalized": None,
+                "availability": "UNKNOWN", "source": "codex.project_roots",
+                "claim_limit": "The host saved project has more than one canonical root; identity is withheld.",
+            }
+        normalized_root = next(iter(normalized))
+        if len(root_owners.get(normalized_root, set())) != 1:
+            return {
+                "status": "AMBIGUOUS", "value": None, "normalized": None,
+                "availability": "UNKNOWN", "source": "codex.project_roots",
+                "claim_limit": "The canonical root is shared by multiple saved projects; identity is withheld.",
+            }
+        selected = sorted(valid_rows, key=lambda row: (row["position"], row["path"]))[0]
+        root = Path(str(selected["path"]))
+        return {
+            "status": "KNOWN",
+            "value": str(selected["path"]),
+            "normalized": normalized_root,
+            "availability": cls._project_root_availability(root),
+            "source": "codex.project_roots",
+            "claim_limit": "The root string is read from the canonical Codex saved-project binding; filesystem availability is reported separately.",
+        }
+
+    @staticmethod
     def _project_view_digest(value: Any) -> str:
         digest = str(value or "").strip().casefold()
         if not re.fullmatch(r"sha256:[0-9a-f]{64}", digest):
@@ -5256,14 +5458,7 @@ class App:
         return ref
 
     @staticmethod
-    def _root_project_view_link(root: Path) -> tuple[str, dict[str, str] | None]:
-        path = root / "SWARM.md"
-        try:
-            if not path.is_file() or path.stat().st_size > PROJECT_VIEW_MAX_BYTES:
-                return "absent", None
-            text = path.read_text(encoding="utf-8")
-        except (OSError, UnicodeError):
-            return "invalid", None
+    def _project_view_link_from_text(text: str) -> tuple[str, dict[str, str] | None]:
         documents: list[Any] = []
         stripped = text.strip()
         if stripped.startswith("{"):
@@ -5300,6 +5495,255 @@ class App:
             }
         except ConsoleError:
             return "invalid", None
+
+    @staticmethod
+    def _root_project_view_link(root: Path) -> tuple[str, dict[str, str] | None]:
+        path = root / "SWARM.md"
+        try:
+            if not path.is_file() or path.stat().st_size > PROJECT_VIEW_MAX_BYTES:
+                return "absent", None
+            text = path.read_text(encoding="utf-8")
+        except (OSError, UnicodeError):
+            return "invalid", None
+        return App._project_view_link_from_text(text)
+
+    @staticmethod
+    def _project_brief_from_text(
+        text: str,
+        *,
+        project_id: str,
+        display_name: str,
+    ) -> tuple[str, str | None, str]:
+        """Validate the canonical schema-1 SWARM.md brief without returning its contents."""
+        if PROJECT_BRIEF_MARKER not in text:
+            return "INVALID", None, "schema marker is missing"
+
+        def reject_constant(value: str) -> None:
+            raise ValueError(f"non-finite JSON constant: {value}")
+
+        def finite_json(value: Any) -> bool:
+            if isinstance(value, float):
+                return math.isfinite(value)
+            if isinstance(value, list):
+                return all(finite_json(item) for item in value)
+            if isinstance(value, dict):
+                return all(
+                    isinstance(key, str) and finite_json(item)
+                    for key, item in value.items()
+                )
+            return True
+
+        documents: list[dict[str, Any]] = []
+        blocks = re.findall(r"```json\s*([\s\S]*?)\s*```", text, flags=re.IGNORECASE)
+        if len(blocks) != 1:
+            return (
+                "AMBIGUOUS" if len(blocks) > 1 else "INVALID",
+                None,
+                "the root does not contain exactly one canonical project brief",
+            )
+        for block in blocks:
+            try:
+                document = json.loads(block, parse_constant=reject_constant)
+            except (TypeError, ValueError, json.JSONDecodeError):
+                return "INVALID", None, "the brief JSON is invalid"
+            if isinstance(document, dict) and PROJECT_BRIEF_REQUIRED_FIELDS.issubset(document):
+                documents.append(document)
+        if len(documents) != 1:
+            return (
+                "AMBIGUOUS" if len(documents) > 1 else "INVALID",
+                None,
+                "the root does not contain exactly one canonical project brief",
+            )
+        document = documents[0]
+        if (
+            not isinstance(document.get("schema_version"), int)
+            or isinstance(document.get("schema_version"), bool)
+            or document.get("schema_version") != 1
+            or not finite_json(document)
+        ):
+            return "INVALID", None, "the project brief schema is unsupported"
+        if not isinstance(document.get("updated_at"), str) or not document["updated_at"].strip():
+            return "INVALID", None, "the project brief timestamp is invalid"
+        for field in ("project", "objective", "repo", "authority", "ownership", "proof_acceptance"):
+            if not isinstance(document.get(field), dict):
+                return "INVALID", None, f"the project brief field {field} is invalid"
+        for field in ("users_outcomes", "milestones", "decisions", "risks_blockers", "links"):
+            if not isinstance(document.get(field), list):
+                return "INVALID", None, f"the project brief field {field} is invalid"
+        project = document["project"]
+        brief_id = App._host_project_text(project.get("id"), 256)
+        purpose = App._host_project_text(project.get("purpose"), 4096)
+        if brief_id is None or purpose is None:
+            return "INVALID", None, "the project brief identity is invalid"
+        if brief_id.casefold() not in {project_id.casefold(), display_name.casefold()}:
+            return "INVALID", None, "the project brief belongs to another saved project"
+        digest = "sha256:" + hashlib.sha256(
+            json.dumps(document, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        ).hexdigest()
+        return "KNOWN", digest, ""
+
+    def _project_manifest_projection(
+        self,
+        record: dict[str, Any],
+        root_binding: dict[str, Any],
+    ) -> dict[str, Any]:
+        manifest = {
+            "status": "UNAVAILABLE",
+            "path": "SWARM.md",
+            "digest": None,
+            "source": "project_root/SWARM.md",
+        }
+        project_view = {
+            "status": "UNAVAILABLE",
+            "available": False,
+            "manifest_status": "UNKNOWN",
+            "manifest_digest": None,
+            "identity": None,
+        }
+        artifact = {
+            "status": "UNKNOWN",
+            "kind": None,
+            "id": None,
+            "version": None,
+            "digest": None,
+            "source_digests": [],
+        }
+        logo = {
+            "status": "UNKNOWN",
+            "artifact": None,
+            "source": "canonical_project_manifest_schema_v1",
+            "claim_limit": "No canonical project logo binding is retained; no fallback logo is synthesized.",
+        }
+        if root_binding.get("status") != "KNOWN":
+            return {
+                "project_id": record["id"],
+                "display_name": record["display_name"],
+                "root": root_binding.get("value"),
+                "root_binding": root_binding,
+                "manifest": manifest,
+                "project_view": project_view,
+                "logo": logo,
+                "artifact": artifact,
+            }
+        if root_binding.get("availability") != "AVAILABLE":
+            manifest["status"] = "UNAVAILABLE"
+            project_view["status"] = "UNAVAILABLE"
+            project_view["manifest_status"] = "UNAVAILABLE"
+            return {
+                "project_id": record["id"],
+                "display_name": record["display_name"],
+                "root": root_binding.get("value"),
+                "root_binding": root_binding,
+                "manifest": manifest,
+                "project_view": project_view,
+                "logo": logo,
+                "artifact": artifact,
+            }
+
+        root = Path(str(root_binding["value"]))
+        path = root / "SWARM.md"
+        try:
+            if not path.exists():
+                manifest["status"] = "MISSING"
+                project_view["status"] = "ABSENT"
+                project_view["manifest_status"] = "ABSENT"
+                return {
+                    "project_id": record["id"],
+                    "display_name": record["display_name"],
+                    "root": root_binding.get("value"),
+                    "root_binding": root_binding,
+                    "manifest": manifest,
+                    "project_view": project_view,
+                    "logo": logo,
+                    "artifact": artifact,
+                }
+            if _is_reparse_point(path) or not path.is_file():
+                raise ConsoleError("project manifest is not a regular file")
+            if path.stat().st_size > PROJECT_VIEW_MAX_BYTES:
+                raise ConsoleError("project manifest exceeds the delivery guard")
+            text = path.read_text(encoding="utf-8")
+        except FileNotFoundError:
+            manifest["status"] = "MISSING"
+            project_view["status"] = "ABSENT"
+            project_view["manifest_status"] = "ABSENT"
+            return {
+                "project_id": record["id"],
+                "display_name": record["display_name"],
+                "root": root_binding.get("value"),
+                "root_binding": root_binding,
+                "manifest": manifest,
+                "project_view": project_view,
+                "logo": logo,
+                "artifact": artifact,
+            }
+        except (ConsoleError, OSError, UnicodeError):
+            manifest["status"] = "INVALID"
+            project_view["status"] = "INVALID"
+            project_view["manifest_status"] = "INVALID"
+            return {
+                "project_id": record["id"],
+                "display_name": record["display_name"],
+                "root": root_binding.get("value"),
+                "root_binding": root_binding,
+                "manifest": manifest,
+                "project_view": project_view,
+                "logo": logo,
+                "artifact": artifact,
+            }
+
+        brief_status, brief_digest, _ = self._project_brief_from_text(
+            text,
+            project_id=record["id"],
+            display_name=record["display_name"],
+        )
+        manifest["status"] = brief_status
+        manifest["digest"] = brief_digest
+        link_status, link = self._project_view_link_from_text(text)
+        project_view["manifest_status"] = brief_status if brief_status != "KNOWN" else link_status.upper()
+        project_view["manifest_digest"] = link.get("digest") if link else None
+        if brief_status != "KNOWN":
+            project_view["status"] = "INVALID"
+        elif link_status == "absent":
+            project_view["status"] = "ABSENT"
+        elif link_status == "invalid":
+            project_view["status"] = "INVALID"
+        else:
+            try:
+                manifest_bytes = self._resolve_project_view_bytes(
+                    record["id"], link["ref"], link["digest"],
+                )
+                projection = self._normalize_project_view(
+                    record["id"], manifest_bytes, link["digest"],
+                )
+                identity = projection.get("identity") if isinstance(projection, dict) else None
+                if not isinstance(identity, dict):
+                    raise ConsoleError("project view identity is unavailable")
+                project_view.update({
+                    "status": "KNOWN",
+                    "available": True,
+                    "identity": copy.deepcopy(identity),
+                })
+                source_digests = identity.get("source_digests")
+                artifact.update({
+                    "status": "KNOWN",
+                    "kind": "swarm.project_views",
+                    "id": identity.get("manifest_id"),
+                    "version": identity.get("manifest_version"),
+                    "digest": identity.get("manifest_digest"),
+                    "source_digests": list(source_digests) if isinstance(source_digests, list) else [],
+                })
+            except (ConsoleError, OSError, UnicodeError, ValueError, TypeError, sqlite3.Error):
+                project_view["status"] = "UNAVAILABLE"
+        return {
+            "project_id": record["id"],
+            "display_name": record["display_name"],
+            "root": root_binding.get("value"),
+            "root_binding": root_binding,
+            "manifest": manifest,
+            "project_view": project_view,
+            "logo": logo,
+            "artifact": artifact,
+        }
 
     def _resolve_project_view_bytes(self, project_id: str, ref: str, digest: str) -> bytes:
         if self.project_view_resolver is None:
@@ -7954,11 +8398,512 @@ class App:
                 "avatar": "KNOWN" if avatar is not None else "UNKNOWN",
             },
             "claim_limit": (
-                "Presentation-only console branding. This response does not identify a user or expose account "
-                "identity, credentials, provider data, configuration secrets, or authorization material."
+               "Presentation-only console branding. This response does not identify a user or expose account "
+               "identity, credentials, provider data, configuration secrets, or authorization material."
+           ),
+       }
+
+    @staticmethod
+    def _project_identity_unavailable(record: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "project_id": record["id"],
+            "display_name": record["display_name"],
+            "root": None,
+            "root_binding": {
+                "status": "UNKNOWN",
+                "value": None,
+                "normalized": None,
+                "availability": "UNKNOWN",
+                "source": "codex.project_roots",
+                "claim_limit": "The canonical host project root is unavailable; project identity is withheld.",
+            },
+            "manifest": {
+                "status": "UNAVAILABLE",
+                "path": "SWARM.md",
+                "digest": None,
+                "source": "project_root/SWARM.md",
+            },
+            "project_view": {
+                "status": "UNAVAILABLE",
+                "available": False,
+                "manifest_status": "UNKNOWN",
+                "manifest_digest": None,
+                "identity": None,
+            },
+            "logo": {
+                "status": "UNKNOWN",
+                "artifact": None,
+                "source": "canonical_project_manifest_schema_v1",
+                "claim_limit": "No canonical project logo binding is retained; no fallback logo is synthesized.",
+            },
+            "artifact": {
+                "status": "UNKNOWN",
+                "kind": None,
+                "id": None,
+                "version": None,
+                "digest": None,
+                "source_digests": [],
+            },
+        }
+
+    def _project_identity(
+        self,
+        record: dict[str, Any],
+        root_owners: dict[str, set[str]],
+    ) -> dict[str, Any]:
+        root_binding = self._project_root_binding(record, root_owners)
+        try:
+            return self._project_manifest_projection(record, root_binding)
+        except (AttributeError, ConsoleError, OSError, UnicodeError, sqlite3.Error, TypeError, ValueError):
+            return self._project_identity_unavailable(record)
+
+    @staticmethod
+    def _project_navigation_fallback(record: dict[str, Any]) -> dict[str, Any]:
+        """Keep roster enumeration real when the activity view is unavailable."""
+        return {
+            "id": record["id"],
+            "name": record["display_name"],
+            "goal_label": record["display_name"],
+            "label_source": "codex.projects.name",
+            "ordering": dict(record.get("ordering") or {}),
+            "active_ctrl_id": None,
+            "active_ctrl": False,
+            "ctrl_ids": [],
+            "project_eligibility": "unknown",
+            "eligibility_source": "activity_view_unavailable",
+            "archived": False,
+            "archive_source": "codex.projects",
+            "visibility": "visible",
+            "status": "unknown",
+            "status_facts": {
+                "active": None,
+                "stalled": None,
+                "inactive": None,
+                "source": "activity_view_unavailable",
+            },
+            "status_source": "unavailable",
+            "task_count": None,
+        }
+
+    def project_roster(self) -> dict[str, Any]:
+        """Project the host saved-project roster and exact local identity bindings."""
+        unavailable = {
+            "ok": True,
+            "schema_version": 1,
+            "state": "UNKNOWN",
+            "available": False,
+            "cursor": None,
+            "projects": [],
+            "current_work": {
+                "state": "UNKNOWN",
+                "available": False,
+                "project_ids": [],
+                "projects": [],
+                "controllers": [],
+            },
+            "source": "codex_host_projects_and_project_roots",
+            "claim_limit": (
+                "The canonical Codex saved-project inventory is unavailable; an empty list is not a known "
+                "empty project roster."
+            ),
+        }
+        try:
+            inventory_state, records, cursor, root_owners = self._host_project_records()
+        except (ConsoleError, OSError, sqlite3.Error, TypeError, ValueError):
+            return unavailable
+        if inventory_state == "UNKNOWN" or cursor is None:
+            return unavailable
+
+        try:
+            overview = self._host_overview(refresh=True)
+            navigation = self._navigation_payload(overview) if isinstance(overview, dict) else None
+        except (ConsoleError, OSError, sqlite3.Error, TypeError, ValueError):
+            navigation = None
+        navigation = navigation if isinstance(navigation, dict) else {}
+        navigation_by_id = {
+            str(item.get("id")): item
+            for item in navigation.get("projects", [])
+            if isinstance(item, dict) and item.get("id")
+        }
+        projects: list[dict[str, Any]] = []
+        records_by_id = {record["id"]: record for record in records}
+        for record in records:
+            project = copy.deepcopy(
+                navigation_by_id.get(record["id"], self._project_navigation_fallback(record))
+            )
+            identity = self._project_identity(record, root_owners)
+            project.update({
+                "id": record["id"],
+                "name": record["display_name"],
+                "display_name": record["display_name"],
+                "ordering": dict(record.get("ordering") or {}),
+                "root": identity.get("root"),
+                "root_status": (identity.get("root_binding") or {}).get("status", "UNKNOWN"),
+                "manifest": copy.deepcopy(identity.get("manifest")),
+                "project_view": copy.deepcopy(identity.get("project_view")),
+                "logo": copy.deepcopy(identity.get("logo")),
+                "artifact": copy.deepcopy(identity.get("artifact")),
+                "identity": identity,
+                "current_work": False,
+            })
+            projects.append(project)
+        projects.sort(key=_project_order_key)
+
+        current_projects, current_controllers, current_work_known = self._current_work_inventory(navigation)
+        current_project_ids = [
+            str(project.get("id"))
+            for project in current_projects
+            if isinstance(project, dict) and str(project.get("id") or "") in records_by_id
+        ]
+        current_project_id_set = set(current_project_ids)
+        for project in projects:
+            project["current_work"] = project["id"] in current_project_id_set
+        current_state = "UNKNOWN" if not current_work_known else inventory_state
+        current_work = {
+            "state": current_state,
+            "available": current_state == "KNOWN",
+            "project_ids": current_project_ids,
+            "projects": [
+                copy.deepcopy(project)
+                for project in projects
+                if project["id"] in current_project_id_set
+            ],
+            "controllers": copy.deepcopy(current_controllers) if current_work_known else [],
+            "source": "existing_navigation_current_work_inventory",
+            "claim_limit": (
+                "Current Work is the existing navigation subset: visible, non-archived saved projects with a "
+                "complete observed CTRL inventory. It is not a second roster."
+            ),
+        }
+        state_claim = (
+            "The host saved-project inventory and root bindings are complete for this cursor."
+            if inventory_state == "KNOWN"
+            else "The host saved-project inventory is partial; listed rows are detected records, but completeness is not claimed."
+        )
+        return {
+            "ok": True,
+            "schema_version": 1,
+            "state": inventory_state,
+            "available": inventory_state == "KNOWN",
+            "cursor": copy.deepcopy(cursor),
+            "projects": projects,
+            "current_work": current_work,
+            "source": "codex_host_projects_and_project_roots",
+            "claim_limit": (
+                f"{state_claim} Project rows come only from the canonical host projects table; task metadata, "
+                "cwd, worktree names, and titles cannot create pseudo-projects."
             ),
         }
 
+    def _require_saved_project(
+        self,
+        project_id: Any,
+    ) -> tuple[dict[str, Any], dict[str, Any], dict[str, set[str]]]:
+        project_id = self._host_project_text(project_id, 256)
+        if project_id is None:
+            raise ConsoleError("project_id must identify one canonical saved project")
+        try:
+            inventory_state, records, cursor, root_owners = self._host_project_records()
+        except (ConsoleError, OSError, sqlite3.Error, TypeError, ValueError) as exc:
+            raise ConsoleError("canonical saved project inventory is unavailable") from exc
+        if inventory_state != "KNOWN" or cursor is None:
+            raise ConsoleError("canonical saved project inventory is unavailable or partial")
+        record = next((item for item in records if item["id"] == project_id), None)
+        if record is None:
+            raise ConsoleError("project_id is not a canonical saved project")
+        root_binding = self._project_root_binding(record, root_owners)
+        if root_binding.get("status") != "KNOWN":
+            raise ConsoleError("project settings require one unambiguous canonical project root")
+        return record, cursor, root_owners
+
+    def _project_settings_projection(
+        self,
+        record: dict[str, Any],
+        cursor: dict[str, Any],
+        overlay: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        from skills_catalog import resolve
+
+        _, effective, _ = load_config(self.config_path)
+        global_scope = self.store.skill_scope("global", "global")
+        project_scope = overlay if overlay is not None else self.store.skill_scope("project", record["id"])
+        skills_config = effective.get("skills", {}) if isinstance(effective, dict) else {}
+        resolved = resolve(
+            self.store.skill_catalog(),
+            global_scope,
+            project_scope,
+            None,
+            global_enabled=bool(skills_config.get("inheritance_enabled", True)),
+            global_profile=str(skills_config.get("default_profile", "default")),
+            global_preferred=(global_scope or {}).get("preferred_ids", []),
+        )
+        settings = {
+            field: copy.deepcopy(resolved["settings"].get(field))
+            for field in sorted(PROJECT_SETTING_FIELDS)
+        }
+        revision = 0 if project_scope is None else int(project_scope["revision"])
+        accepted_cursor = copy.deepcopy(cursor)
+        return {
+            "ok": True,
+            "schema_version": 1,
+            "state": "KNOWN",
+            "available": True,
+            "project": {
+                "id": record["id"],
+                "display_name": record["display_name"],
+            },
+            "scope": {
+                "type": "project",
+                "id": record["id"],
+                "project_id": record["id"],
+                "accepted_cursor": accepted_cursor,
+                "source": "codex_host_projects_and_project_roots",
+            },
+            "accepted_cursor": accepted_cursor,
+            "revision": revision,
+            "settings": settings,
+            "overlay": copy.deepcopy(project_scope),
+            "editable_fields": sorted(PROJECT_SETTING_FIELDS),
+            "write_contract": {
+                "endpoint": "/api/projects/settings",
+                "method": "POST",
+                "acknowledgement_field": "acknowledge",
+                "accepted_cursor_field": "accepted_cursor",
+                "scope": "project",
+            },
+            "source": "existing_skill_scope_overlays",
+            "claim_limit": (
+                "Only the existing project skill-scope overlay is writable. The accepted cursor binds the change "
+                "to one canonical host project; no project registry or task authority is created."
+            ),
+        }
+
+    def project_settings(self, project_id: Any) -> dict[str, Any]:
+        record, cursor, _ = self._require_saved_project(project_id)
+        return self._project_settings_projection(record, cursor)
+
+    def update_project_settings(
+        self,
+        project_id: Any,
+        changes: Any,
+        expected_revision: Any,
+        accepted_cursor: Any,
+        acknowledge: Any,
+    ) -> dict[str, Any]:
+        if acknowledge is not True:
+            raise ConsoleError("project settings update requires acknowledge=true")
+        if not isinstance(changes, dict) or not changes:
+            raise ConsoleError("project settings changes must be a non-empty object")
+        unknown = set(changes) - PROJECT_SETTING_FIELDS
+        if unknown:
+            raise ConsoleError(
+                "project settings changes are limited to: " + ", ".join(sorted(PROJECT_SETTING_FIELDS))
+            )
+        if not isinstance(expected_revision, int) or isinstance(expected_revision, bool) or expected_revision < 0:
+            raise ConsoleError("expected_revision must be a non-negative integer")
+        if (
+            not isinstance(accepted_cursor, dict)
+            or set(accepted_cursor) != {"type", "digest"}
+            or not all(isinstance(accepted_cursor.get(field), str) for field in ("type", "digest"))
+        ):
+            raise ConsoleError("accepted_cursor must be the exact project roster cursor")
+        record, cursor, _ = self._require_saved_project(project_id)
+        if accepted_cursor != cursor:
+            raise ConsoleConflict("project roster changed; reload before saving project settings")
+        try:
+            overlay = self.store.update_skill_scope(
+                "project", record["id"], changes,
+                expected_revision=expected_revision,
+                now_ms=int(time.time() * 1000),
+            )
+        except ValueError as exc:
+            raise ConsoleError(str(exc)) from exc
+        with self.overview_lock:
+            self._store_generation += 1
+        projection = self._project_settings_projection(record, cursor, overlay)
+        projection["mutation_receipt"] = {
+            "accepted": True,
+            "action": "project_settings_update",
+            "project_id": record["id"],
+            "accepted_cursor": copy.deepcopy(cursor),
+            "changed_fields": sorted(changes),
+            "revision": int(overlay["revision"]),
+            "acknowledged": True,
+            "source": "existing_skill_scope_overlays",
+            "claim_limit": "This receipt acknowledges a local project settings overlay write only; it does not create host task or runtime authority.",
+        }
+        return projection
+
+    @staticmethod
+    def _project_paths_overlap(left: str, right: str) -> bool:
+        left = left.rstrip("/")
+        right = right.rstrip("/")
+        return left == right or left.startswith(right + "/") or right.startswith(left + "/")
+
+    @classmethod
+    def _validated_project_create_root(cls, value: Any) -> tuple[str, str]:
+        raw = cls._host_project_text(value, 4096)
+        if raw is None or not cls._project_path_is_absolute(raw):
+            raise ConsoleError("project root must be an absolute host path")
+        candidate = Path(raw)
+        try:
+            if not candidate.exists() or not candidate.is_dir():
+                raise ConsoleError("project root must be an existing directory")
+            if any(
+                ancestor.exists() and _is_reparse_point(ancestor)
+                for ancestor in (candidate, *candidate.parents)
+            ):
+                raise ConsoleError("project root cannot be a reparse point")
+            resolved = candidate.resolve(strict=True)
+            if _is_reparse_point(resolved):
+                raise ConsoleError("project root cannot be a reparse point")
+        except ConsoleError:
+            raise
+        except OSError as exc:
+            raise ConsoleError("project root is unavailable") from exc
+        normalized = _normalized_project_path(str(resolved))
+        if not normalized or not cls._project_path_is_absolute(str(resolved)):
+            raise ConsoleError("project root must resolve to one absolute host path")
+        return str(resolved), normalized
+
+    def create_project(self, name: Any, root: Any, acknowledge: Any) -> dict[str, Any]:
+        if acknowledge is not True:
+            raise ConsoleError("project creation requires acknowledge=true")
+        display_name = self._host_project_text(name, 256)
+        if display_name is None:
+            raise ConsoleError("project name must be non-empty text up to 256 characters")
+        canonical_root, normalized_root = self._validated_project_create_root(root)
+        inventory_state, records, _, root_owners = self._host_project_records()
+        if inventory_state != "KNOWN":
+            raise ConsoleError("saved project creation requires a complete canonical host project inventory")
+        for record in records:
+            binding = self._project_root_binding(record, root_owners)
+            if binding.get("status") != "KNOWN":
+                raise ConsoleError("saved project creation requires unambiguous existing project roots")
+
+        database = state_database(self.codex_home)
+        try:
+            with closing(sqlite3.connect(database, timeout=2)) as connection:
+                connection.row_factory = sqlite3.Row
+                connection.execute("PRAGMA busy_timeout = 2000")
+                tables = {
+                    str(row["name"])
+                    for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
+                }
+                if not {"projects", "project_roots"}.issubset(tables):
+                    raise ConsoleError("saved project creation is unsupported by the host project schema")
+                project_columns = {
+                    str(row["name"])
+                    for row in connection.execute("PRAGMA table_info(projects)").fetchall()
+                }
+                root_columns = {
+                    str(row["name"])
+                    for row in connection.execute("PRAGMA table_info(project_roots)").fetchall()
+                }
+                if (
+                    not {"id", "name", "metadata", "position", "created_at_ms", "updated_at_ms"}.issubset(project_columns)
+                    or not {"project_id", "position", "path"}.issubset(root_columns)
+                ):
+                    raise ConsoleError("saved project creation is unsupported by the host project schema")
+                connection.execute("BEGIN IMMEDIATE")
+                project_rows = connection.execute(
+                    "SELECT id, name, position FROM projects"
+                ).fetchall()
+                root_rows = connection.execute(
+                    "SELECT project_id, position, path FROM project_roots"
+                ).fetchall()
+                roots_by_project: dict[str, list[tuple[int, str]]] = {}
+                for row in root_rows:
+                    existing_id = self._host_project_text(row["project_id"], 256)
+                    existing_path = self._host_project_text(row["path"], 4096)
+                    if (
+                        existing_id is None
+                        or existing_path is None
+                        or not self._project_path_is_absolute(existing_path)
+                    ):
+                        raise ConsoleError("saved project creation requires valid canonical host project roots")
+                    existing_normalized = _normalized_project_path(existing_path)
+                    roots_by_project.setdefault(existing_id, []).append((
+                        int(row["position"])
+                        if isinstance(row["position"], int) and not isinstance(row["position"], bool)
+                        else 0,
+                        existing_normalized,
+                    ))
+                existing_by_id = {str(row["id"]): row for row in project_rows}
+                for row in project_rows:
+                    existing_id = self._host_project_text(row["id"], 256)
+                    existing_name = self._host_project_text(row["name"], 256)
+                    if existing_id is None or existing_name is None:
+                        raise ConsoleError("saved project creation requires valid canonical host project identities")
+                    existing_roots = roots_by_project.get(existing_id, [])
+                    if len(existing_roots) != 1:
+                        raise ConsoleError("saved project creation requires one unambiguous root per existing project")
+                    existing_normalized = existing_roots[0][1]
+                    if existing_name.casefold() == display_name.casefold():
+                        if existing_normalized == normalized_root:
+                            connection.rollback()
+                            roster = self.project_roster()
+                            project = next(item for item in roster["projects"] if item["id"] == existing_id)
+                            roster["mutation_receipt"] = {
+                                "accepted": True,
+                                "action": "project_create",
+                                "status": "unchanged",
+                                "project_id": existing_id,
+                                "acknowledged": True,
+                                "source": "codex_host_projects_and_project_roots",
+                                "claim_limit": "The explicit create request matched one existing canonical host project; no duplicate row was written.",
+                            }
+                            roster["project"] = project
+                            return roster
+                        raise ConsoleConflict("a saved project with this name already exists")
+                    if self._project_paths_overlap(existing_normalized, normalized_root):
+                        raise ConsoleConflict("project root overlaps an existing saved project root")
+                next_position = max(
+                    (
+                        int(row["position"])
+                        for row in project_rows
+                        if isinstance(row["position"], int) and not isinstance(row["position"], bool)
+                    ),
+                    default=-1,
+                ) + 1
+                project_id = ""
+                while not project_id or project_id in existing_by_id:
+                    project_id = str(uuid.uuid4())
+                now_ms = int(time.time() * 1000)
+                connection.execute(
+                    "INSERT INTO projects(id, name, metadata, position, created_at_ms, updated_at_ms) VALUES (?, ?, ?, ?, ?, ?)",
+                    (project_id, display_name, "{}", next_position, now_ms, now_ms),
+                )
+                connection.execute(
+                    "INSERT INTO project_roots(project_id, position, path) VALUES (?, ?, ?)",
+                    (project_id, 0, canonical_root),
+                )
+                connection.commit()
+        except ConsoleError:
+            raise
+        except (OSError, sqlite3.Error) as exc:
+            raise ConsoleError("saved project creation could not be committed") from exc
+
+        with self.overview_lock:
+            self._overview = None
+            self._view = None
+            self._overview_fingerprint = None
+            self._view_fingerprint = None
+        roster = self.project_roster()
+        project = next((item for item in roster["projects"] if item["id"] == project_id), None)
+        if project is None:
+            raise ConsoleError("saved project was written but could not be re-read from the host roster")
+        roster["project"] = project
+        roster["mutation_receipt"] = {
+            "accepted": True,
+            "action": "project_create",
+            "status": "created",
+            "project_id": project_id,
+            "acknowledged": True,
+            "source": "codex_host_projects_and_project_roots",
+            "claim_limit": "The explicit create request wrote one Codex host projects row and one project_roots binding; no SWARM.md, logo, task, or second registry was created.",
+        }
+        return roster
     def proof_feed(self, *, project_id: str | None = None, task_id: str | None = None) -> list[dict[str, Any]]:
         self._ingest_proof_events_if_changed()
         return self.store.proof_feed(project_id=project_id, task_id=task_id)
@@ -9027,6 +9972,21 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/api/profile":
                 self._json(HTTPStatus.OK, self.server.app.profile_presentation())
                 return
+            if path == "/api/projects":
+                if not self._peer_is_trusted_local():
+                    self._error(HTTPStatus.FORBIDDEN, "project roster requires local access")
+                    return
+                self._json(HTTPStatus.OK, self.server.app.project_roster())
+                return
+            if path == "/api/projects/settings":
+                if not self._peer_is_trusted_local():
+                    self._error(HTTPStatus.FORBIDDEN, "project settings require local access")
+                    return
+                if set(query) != {"project_id"}:
+                    self._error(HTTPStatus.BAD_REQUEST, "project settings requires exact project_id")
+                    return
+                self._json(HTTPStatus.OK, self.server.app.project_settings(query["project_id"]))
+                return
             if path == "/api/auto":
                 if not self._authorized_auto():
                     self._error(HTTPStatus.FORBIDDEN, "Auto status requires local same-origin authorization")
@@ -9275,6 +10235,29 @@ class Handler(BaseHTTPRequestHandler):
             self._json(HTTPStatus.OK, self.server.app.claim_portal_open())
             return
         try:
+            if path == "/api/projects":
+                payload = self._payload()
+                if set(payload) != {"name", "root", "acknowledge"}:
+                    raise ConsoleError("project creation requires exact name, root, and acknowledge fields")
+                with self.server.app.write_lock:
+                    result = self.server.app.create_project(
+                        payload["name"], payload["root"], payload["acknowledge"],
+                    )
+                self._json(HTTPStatus.OK, result)
+                return
+            if path == "/api/projects/settings":
+                payload = self._payload()
+                if set(payload) != {"project_id", "changes", "expected_revision", "accepted_cursor", "acknowledge"}:
+                    raise ConsoleError(
+                        "project settings update requires exact project_id, changes, expected_revision, accepted_cursor, and acknowledge fields"
+                    )
+                with self.server.app.write_lock:
+                    result = self.server.app.update_project_settings(
+                        payload["project_id"], payload["changes"], payload["expected_revision"],
+                        payload["accepted_cursor"], payload["acknowledge"],
+                    )
+                self._json(HTTPStatus.OK, result)
+                return
             if path == "/api/config":
                 payload = self._payload()
                 changes = payload.get("changes")

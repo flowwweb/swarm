@@ -428,6 +428,37 @@ class SwarmConsoleTests(unittest.TestCase):
             connection.commit()
 
     @staticmethod
+    def _write_project_brief(
+        root: Path,
+        project_id: str,
+        *,
+        links: list[dict[str, object]] | None = None,
+    ) -> None:
+        root.mkdir(parents=True, exist_ok=True)
+        brief = {
+            "schema_version": 1,
+            "updated_at": "2026-08-30T00:00:00Z",
+            "project": {"id": project_id, "purpose": "A bounded saved project fixture."},
+            "users_outcomes": [],
+            "objective": {},
+            "repo": {},
+            "authority": {},
+            "milestones": [],
+            "decisions": [],
+            "ownership": {},
+            "proof_acceptance": {},
+            "risks_blockers": [],
+            "links": links or [],
+        }
+        root.joinpath("SWARM.md").write_text(
+            "<!-- swarm-project-brief:schema=1 -->\n"
+            "```json\n"
+            + json.dumps(brief, sort_keys=True)
+            + "\n```\n",
+            encoding="utf-8",
+        )
+
+    @staticmethod
     def _notification_event(
         event_id: str, block_id: str, event_kind: str, lifecycle_state: str,
         observed_at_ms: int, *, parent_event_id: str | None = None,
@@ -3204,6 +3235,10 @@ class SwarmConsoleTests(unittest.TestCase):
         self.assertIsNone(metrics["active_work"]["active_lanes"])
         self.assertEqual(metrics["field_state"]["active_projects"], "UNKNOWN")
         self.assertEqual(metrics["field_state"]["active_lanes"], "UNKNOWN")
+        roster = app.project_roster()
+        self.assertEqual(roster["state"], "UNKNOWN")
+        self.assertFalse(roster["available"])
+        self.assertEqual(roster["projects"], [])
         scoped = app._project_view(view, "project:alpha")
         self.assertEqual(scoped["navigation"]["project_inventory"]["state"], "UNKNOWN")
         self.assertEqual(scoped["navigation"]["projects"], [])
@@ -3232,6 +3267,191 @@ class SwarmConsoleTests(unittest.TestCase):
         self.assertEqual(saved["ordering"]["position"], 1)
         self.assertNotIn("task", {project["id"] for project in navigation["projects"]})
         self.assertNotIn("C:/work/alpha", json.dumps(navigation["projects"]))
+
+    def test_project_roster_enumerates_saved_projects_and_keeps_current_work_separate(self) -> None:
+        self._confirm_root_ctrl()
+        inactive_root = self.root / "inactive-project"
+        inactive_root.mkdir()
+        self._add_host_project("project:inactive", "inactive", str(inactive_root))
+
+        app = console.App(self.codex_home, self.config, self.root / "console" / "project-roster.sqlite3")
+        roster = app.project_roster()
+        self.assertTrue(roster["ok"])
+        self.assertEqual(roster["state"], "KNOWN")
+        self.assertTrue(roster["available"])
+        self.assertEqual(
+            {project["id"] for project in roster["projects"]},
+            {"project:alpha", "project:inactive"},
+        )
+        self.assertNotIn("task", {project["id"] for project in roster["projects"]})
+
+        alpha = next(project for project in roster["projects"] if project["id"] == "project:alpha")
+        inactive = next(project for project in roster["projects"] if project["id"] == "project:inactive")
+        self.assertEqual(alpha["display_name"], "alpha")
+        self.assertEqual(alpha["root"], "C:/work/alpha")
+        self.assertEqual(alpha["root_status"], "KNOWN")
+        self.assertEqual(alpha["status"], "active")
+        self.assertEqual(inactive["status"], "inactive")
+        self.assertEqual(inactive["status_facts"]["inactive"], True)
+        self.assertFalse(inactive["current_work"])
+        self.assertTrue(alpha["current_work"])
+        self.assertEqual(roster["current_work"]["state"], "KNOWN")
+        self.assertEqual(roster["current_work"]["project_ids"], ["project:alpha"])
+        self.assertEqual(
+            [project["id"] for project in roster["current_work"]["projects"]],
+            ["project:alpha"],
+        )
+        self.assertEqual(roster["cursor"]["type"], "codex_project_roster_v1")
+        source = SERVER.read_text(encoding="utf-8")
+        self.assertIn('if path == "/api/projects":', source)
+        self.assertIn('if path == "/api/projects/settings":', source)
+
+    def test_project_roster_withholds_ambiguous_manifest_and_unknown_logo_bindings(self) -> None:
+        identity_root = self.root / "identity-project"
+        self._write_project_brief(identity_root, "project:identity")
+        self._add_host_project("project:identity", "identity", str(identity_root))
+        invalid_root = self.root / "invalid-project"
+        invalid_root.mkdir()
+        invalid_root.joinpath("SWARM.md").write_text("# invalid", encoding="utf-8")
+        self._add_host_project("project:invalid", "invalid", str(invalid_root))
+
+        app = console.App(self.codex_home, self.config, self.root / "console" / "identity.sqlite3")
+        roster = app.project_roster()
+        identity = next(project for project in roster["projects"] if project["id"] == "project:identity")
+        self.assertEqual(identity["manifest"]["status"], "KNOWN")
+        self.assertEqual(identity["project_view"]["status"], "ABSENT")
+        self.assertFalse(identity["project_view"]["available"])
+        self.assertEqual(identity["artifact"]["status"], "UNKNOWN")
+        self.assertIsNone(identity["artifact"]["id"])
+        self.assertEqual(identity["logo"]["status"], "UNKNOWN")
+        self.assertIsNone(identity["logo"]["artifact"])
+
+        self._add_host_project("project:identity-duplicate", "identity-duplicate", str(identity_root))
+        ambiguous = next(
+            project for project in app.project_roster()["projects"] if project["id"] == "project:identity"
+        )
+        self.assertEqual(ambiguous["root_status"], "AMBIGUOUS")
+        self.assertIsNone(ambiguous["root"])
+        self.assertFalse(ambiguous["project_view"]["available"])
+        self.assertEqual(ambiguous["logo"]["status"], "UNKNOWN")
+
+        invalid = next(project for project in app.project_roster()["projects"] if project["id"] == "project:invalid")
+        self.assertEqual(invalid["manifest"]["status"], "INVALID")
+        self.assertEqual(invalid["project_view"]["status"], "INVALID")
+        self.assertFalse(invalid["project_view"]["available"])
+        self.assertEqual(invalid["artifact"]["status"], "UNKNOWN")
+
+    def test_project_roster_reports_only_digest_bound_project_view_artifact(self) -> None:
+        root = self.root / "known-view"
+        bundle = self._write_local_project_view_bundle("project:known-view", root)
+        self._add_host_project("project:known-view", "known-view", str(root))
+        self._write_project_brief(root, "project:known-view", links=bundle["link"]["links"])
+        sources = {
+            bundle["link"]["links"][0]["ref"]: root.joinpath("ui", "swarm.project_views.json").read_bytes(),
+            "project://known-view/ui/coverage.json": root.joinpath("ui", "coverage.json").read_bytes(),
+            "project://known-view/ui/app-flow.mmd": root.joinpath("ui", "app-flow.mmd").read_bytes(),
+        }
+        app = console.App(
+            self.codex_home,
+            self.config,
+            self.root / "console" / "known-view.sqlite3",
+            project_view_resolver=lambda _project_id, ref, _digest: sources[ref],
+        )
+        project = next(item for item in app.project_roster()["projects"] if item["id"] == "project:known-view")
+        self.assertEqual(project["manifest"]["status"], "KNOWN")
+        self.assertTrue(project["project_view"]["available"])
+        self.assertEqual(project["project_view"]["status"], "KNOWN")
+        self.assertEqual(project["artifact"]["status"], "KNOWN")
+        self.assertEqual(project["artifact"]["kind"], "swarm.project_views")
+        self.assertEqual(project["artifact"]["id"], "known-view-project-views")
+        self.assertEqual(project["artifact"]["version"], 18)
+        self.assertEqual(
+            project["artifact"]["digest"],
+            project["project_view"]["identity"]["manifest_digest"],
+        )
+        self.assertEqual(project["logo"]["status"], "UNKNOWN")
+
+    def test_project_settings_bind_existing_overlay_to_saved_project_cursor(self) -> None:
+        app = console.App(self.codex_home, self.config, self.root / "console" / "project-settings.sqlite3")
+        settings = app.project_settings("project:alpha")
+        self.assertEqual(settings["scope"]["type"], "project")
+        self.assertEqual(settings["scope"]["project_id"], "project:alpha")
+        self.assertEqual(settings["revision"], 0)
+        self.assertEqual(set(settings["editable_fields"]), console.PROJECT_SETTING_FIELDS)
+        cursor = settings["accepted_cursor"]
+
+        with self.assertRaisesRegex(console.ConsoleError, "acknowledge=true"):
+            app.update_project_settings("project:alpha", {"profile": "testing"}, 0, cursor, False)
+        with self.assertRaisesRegex(console.ConsoleConflict, "roster changed"):
+            app.update_project_settings(
+                "project:alpha", {"profile": "testing"}, 0,
+                {"type": cursor["type"], "digest": "0" * 64}, True,
+            )
+        with self.assertRaisesRegex(console.ConsoleError, "limited to"):
+            app.update_project_settings("project:alpha", {"display_name": "x"}, 0, cursor, True)
+
+        updated = app.update_project_settings("project:alpha", {"profile": "testing"}, 0, cursor, True)
+        self.assertEqual(updated["mutation_receipt"]["project_id"], "project:alpha")
+        self.assertEqual(updated["mutation_receipt"]["accepted_cursor"], cursor)
+        self.assertEqual(updated["revision"], 1)
+        self.assertEqual(updated["overlay"]["profile"], "testing")
+        self.assertEqual(updated["settings"]["profile"], "testing")
+        with closing(sqlite3.connect(app.store.path)) as connection:
+            row = connection.execute(
+                "SELECT scope_type, scope_id, revision FROM skill_scope_overlays"
+            ).fetchone()
+            table_names = {
+                item[0] for item in connection.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table'"
+                ).fetchall()
+            }
+        self.assertEqual(row, ("project", "project:alpha", 1))
+        self.assertNotIn("projects", table_names)
+
+    def test_project_create_mutates_only_canonical_host_project_tables_and_replays(self) -> None:
+        app = console.App(self.codex_home, self.config, self.root / "console" / "project-create.sqlite3")
+        new_root = self.root / "created-project"
+        new_root.mkdir()
+
+        created = app.create_project("created", str(new_root), True)
+        self.assertEqual(created["mutation_receipt"]["status"], "created")
+        project = created["project"]
+        project_id = project["id"]
+        self.assertNotEqual(project_id, "project:alpha")
+        self.assertEqual(project["display_name"], "created")
+        self.assertEqual(project["root"], str(new_root.resolve()))
+        self.assertEqual(project["manifest"]["status"], "MISSING")
+        self.assertFalse(new_root.joinpath("SWARM.md").exists())
+
+        with closing(sqlite3.connect(self.database)) as connection:
+            host_project = connection.execute(
+                "SELECT id, name, metadata, position FROM projects WHERE id=?", (project_id,)
+            ).fetchone()
+            host_root = connection.execute(
+                "SELECT project_id, position, path FROM project_roots WHERE project_id=?", (project_id,)
+            ).fetchone()
+            host_project_count = connection.execute("SELECT COUNT(*) FROM projects").fetchone()[0]
+        self.assertEqual(host_project[:3], (project_id, "created", "{}"))
+        self.assertEqual(host_root, (project_id, 0, str(new_root.resolve())))
+        self.assertEqual(host_project_count, 2)
+
+        replay = app.create_project("created", str(new_root), True)
+        self.assertEqual(replay["mutation_receipt"]["status"], "unchanged")
+        self.assertEqual(replay["mutation_receipt"]["project_id"], project_id)
+        with closing(sqlite3.connect(self.database)) as connection:
+            self.assertEqual(connection.execute("SELECT COUNT(*) FROM projects").fetchone()[0], 2)
+
+        with self.assertRaisesRegex(console.ConsoleError, "acknowledge=true"):
+            app.create_project("not-created", str(self.root / "not-created"), False)
+        with self.assertRaisesRegex(console.ConsoleError, "absolute host path"):
+            app.create_project("relative", "relative-project", True)
+        with closing(sqlite3.connect(app.store.path)) as connection:
+            table_names = {
+                item[0] for item in connection.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table'"
+                ).fetchall()
+            }
+        self.assertNotIn("projects", table_names)
 
     def test_profile_presentation_is_avatar_ready_without_identity_or_secrets(self) -> None:
         app = console.App(self.codex_home, self.config, self.root / "console" / "profile.sqlite3")
