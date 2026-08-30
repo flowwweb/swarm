@@ -723,6 +723,79 @@ class ProgressLedgerContractTests(unittest.TestCase):
         steer["expected_observation"] = self.observation(steer_expected)
         self.assertEqual(steer_ledger.append(steer)["expected_check"]["status"], "MATCHED")
 
+    def test_request_outer_artifact_mismatch_fails_before_cursor_or_retry_and_recovers_after_restart(self) -> None:
+        ledger = Ledger(self.root / "request-outer-artifact")
+        expected = self.expected_receipt(
+            "expected-request-artifact", task_id="request-task", owner_id="request-owner",
+            goal_id="request-goal", target_id="request-artifact", expected_event_kind="RESULT_PENDING",
+            due_event="TURN_COMPLETION", due_generation=2,
+        )
+        ledger.append_expected_receipt(expected)
+        offer = {
+            "schema_version": 1, "record_type": "REQUEST_LIFECYCLE", "event_id": "request-offer",
+            "dedupe_key": "request-offer-dedupe", "request_id": "request-artifact-check", "stage_id": "stage-artifact-check",
+            "parent_event_id": None, "envelope_digest": "1" * 64, "lifecycle_state": "OFFERED",
+            "record": None, "route_receipt_ids": [], "permitted_route_ids": [],
+            "failed_goal_turn_receipt_ids": [], "release_authority": None,
+            "release_receipt_id": None, "release_issued_at_ms": None,
+        }
+        ledger.append_request_lifecycle(offer)
+        cursor = {
+            "event_receipt": "request-event-1", "message_id": "request-message-1",
+            "surface_receipt": "request-surface-1", "feed_sequence": 1,
+        }
+        record = {
+            "id": "request-artifact-check", "goal_id": "request-goal", "task_id": "request-task",
+            "accepted_owner": "request-owner", "outcome_kind": "ARTIFACT",
+            "outcome_digest": expected["artifact_digest"], "accepting_route": ["request-owner", "CTRL"],
+            "accepted_at": 1, "next_due_event": "request-due", "next_due_at": 2,
+            "evidence_receipts": ["request-proof"],
+            "transitions": [{"state": "OPEN", "kind": "dispatch", "cursor": cursor}], "successor_id": "",
+        }
+        acknowledged = {
+            **offer, "event_id": "request-ack", "dedupe_key": "request-ack-dedupe",
+            "parent_event_id": offer["event_id"], "lifecycle_state": "ACKNOWLEDGED", "record": record,
+        }
+        ledger.append_request_lifecycle(acknowledged)
+        admitted = {
+            **acknowledged, "event_id": "request-admitted", "dedupe_key": "request-admitted-dedupe",
+            "parent_event_id": acknowledged["event_id"], "lifecycle_state": "ADMITTED",
+        }
+        ledger.append_request_lifecycle(admitted)
+        result_record = {
+            **record,
+            "outcome_digest": hashlib.sha256(b"wrong-outer-artifact").hexdigest(),
+            "transitions": [
+                *record["transitions"],
+                {"state": "OPEN", "kind": "result", "cursor": {
+                    **cursor, "event_receipt": "request-event-2", "message_id": "request-message-2",
+                    "surface_receipt": "request-surface-2", "feed_sequence": 2,
+                }},
+            ],
+        }
+        mismatched = {
+            **admitted, "event_id": "request-result-wrong-artifact", "dedupe_key": "request-result-wrong-artifact-dedupe",
+            "parent_event_id": admitted["event_id"], "lifecycle_state": "RESULT_PENDING", "record": result_record,
+            "expected_observation": self.observation(expected, source_cursor=999, outcome="TIMEOUT"),
+        }
+        check = ledger.append_request_lifecycle(mismatched)["expected_check"]
+        self.assertEqual((check["status"], check["reason"], check["progress_advanced"]), ("ATTENTION", "WRONG_ARTIFACT", False))
+        self.assertNotIn("retry_action", check)
+        restarted = Ledger(self.root / "request-outer-artifact")
+        retained = restarted.replay()["expected_receipts"][expected["receipt_id"]]
+        self.assertEqual((retained["last_source_cursor"], retained["result"]["reason"]), (expected["source_cursor"], "WRONG_ARTIFACT"))
+        self.assertEqual(restarted._retry_topology._attempts, {})
+
+        valid = {
+            **mismatched, "event_id": "request-result-valid", "dedupe_key": "request-result-valid-dedupe",
+            "parent_event_id": mismatched["event_id"], "record": {**result_record, "outcome_digest": expected["artifact_digest"]},
+            "expected_observation": self.observation(expected, source_cursor=11),
+        }
+        self.assertEqual(restarted.append_request_lifecycle(valid)["expected_check"]["status"], "MATCHED")
+        replayed = Ledger(self.root / "request-outer-artifact").replay()["expected_receipts"][expected["receipt_id"]]
+        self.assertEqual((replayed["last_source_cursor"], replayed["result"]["status"]), (11, "MATCHED"))
+        self.assertEqual(Ledger(self.root / "request-outer-artifact")._retry_topology._attempts, {})
+
     def test_role_manifest_revision_is_idempotent_and_reset_retains_history(self) -> None:
         builtins = self.role_manifests()
         initial = self.ledger.project_role_manifests(builtins)

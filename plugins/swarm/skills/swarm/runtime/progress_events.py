@@ -1692,6 +1692,7 @@ class Ledger:
         event_id: str, event_digest: str, event_kind: str, due_event: str,
         due_generation: int, task_id: str, goal_id: str, owner_id: str,
         lease_version: int, evidence_receipt_ids: tuple[str, ...],
+        outer_artifact_digest: str | None = None,
     ) -> dict[str, Any]:
         retained = projection["expected_receipts"].get(observation["expected_receipt_id"])
         if retained is None:
@@ -1720,6 +1721,7 @@ class Ledger:
             (lease_version, expected["lease_version"], "WRONG_LEASE"),
             (observation["lease_version"], expected["lease_version"], "WRONG_LEASE"),
             (observation["target_id"], expected["target_id"], "WRONG_TARGET"),
+            (outer_artifact_digest if outer_artifact_digest is not None else expected["artifact_digest"], expected["artifact_digest"], "WRONG_ARTIFACT"),
             (observation["artifact_digest"], expected["artifact_digest"], "WRONG_ARTIFACT"),
         ):
             if actual != wanted:
@@ -1776,6 +1778,7 @@ class Ledger:
             task_id=record["task_id"], goal_id=record["goal_id"],
             owner_id=record["accepted_owner"], lease_version=observation["lease_version"],
             evidence_receipt_ids=tuple(record["evidence_receipts"]),
+            outer_artifact_digest=record["outcome_digest"],
         )
 
     def _apply_handoff_expected(
