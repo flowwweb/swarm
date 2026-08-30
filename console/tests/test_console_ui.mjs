@@ -168,7 +168,7 @@ assert.doesNotMatch(indexHtml, /awaiting-admitted-rgba|data-asset-slot="swarm-gu
 assert.doesNotMatch(indexHtml, /onboarding-flag-mascot|onboarding-flow-node|One prompt\. A coordinated team\.|<img[^>]+coordination|<img[^>]+hierarchy/);
 assert.match(app, /const ONBOARDING_COORDINATION_GROUPS = \[[\s\S]*?id: "coo"[\s\S]*?id: "cto"[\s\S]*?id: "cfo"[\s\S]*?id: "cmo"/);
 assert.equal((app.match(/label: "(?:Operations|Delivery|Support|Engineering|Architecture|Security|Finance|Analytics|Compliance|Design|Content|Growth)", roleId:/g) || []).length, 12);
-assert.match(app, /label: "Content", roleId: "content_creator"/);
+assert.match(app, /label: "Content", roleId: "producer"/);
 assert.doesNotMatch(app, /label: "Content", roleId: "writer"/);
 assert.match(app, /function onboardingCoordinationMarkup\(\)/);
 assert.match(app, /data-onboarding-node="ctrl"[\s\S]*?swarm-mascot-512\.png/);
@@ -1265,9 +1265,9 @@ assert.match(app, /Active tasks retain their accepted role version/);
 assert.match(css, /\.role-avatar/);
 assert.match(css, /\.role-library-grid/);
 assert.match(css, /\.role-editor::backdrop/);
-assert.match(app, /function roleAvatar\(role\)[\s\S]*?class="role-avatar is-pending"[\s\S]*?aria-label="Avatar pending for /);
-assert.match(app, /function roleHasRetainedAvatar\(\) \{ return false; \}/);
-assert.doesNotMatch(app.slice(app.indexOf("function roleAvatar(role)"), app.indexOf("function roleSourceLabel")), /assetItems\(|proofMediaURL|lucide-circle-user-round|<img/);
+assert.match(app, /function retainedRoleAvatar\(role\)[\s\S]*?avatar_asset_digest[\s\S]*?assetItems\(\)[\s\S]*?preview\?\.state === "AVAILABLE"/);
+assert.match(app, /function roleAvatar\(role\)[\s\S]*?class="role-avatar has-image"[\s\S]*?<img loading="lazy"[\s\S]*?class="role-avatar is-pending"/);
+assert.match(app, /function roleHasRetainedAvatar\(role\) \{ return Boolean\(retainedRoleAvatar\(role\)\); \}/);
 assert.match(css, /\.role-avatar\.is-pending \{[^}]*border-style:dashed/);
 assert.doesNotMatch(css, /\.role-avatar i::before|\.role-avatar i::after/);
 assert.match(app, /<button class="role-choice/);
@@ -1337,6 +1337,7 @@ assert.match(css, /--orange:\s*#FF7A18;/);
 assert.match(css, /--coral:\s*#FF3D32;/);
 assert.match(css, /\.onboarding-ctrl-node \{[^}]*border:1px solid rgba\(255,122,24,\.7\)[^}]*background:linear-gradient\(145deg,rgba\(255,122,24,\.19\)/);
 assert.match(css, /\.onboarding-executive-node \{[^}]*--executive-accent/);
+assert.match(css, /\.onboarding-coordination-stage \{[^}]*width:calc\(100% \/ var\(--flow-zoom\)\)[^}]*zoom:var\(--flow-zoom\)/);
 assert.doesNotMatch(css, /#ff7449|#ff526f|#ff784c|#ff8b25|#ff4937/i);
 assert.match(css, /@media \(max-width: 620px\)[\s\S]*\.circle-frame \{ --circle-size:44px; \}/);
 assert.doesNotMatch(css, /\.profile-button[^}]*width:\s*\d+px;|\.profile-button[^}]*height:\s*\d+px;/);
@@ -1612,8 +1613,10 @@ function assetFixtureItem(id, status = "READY", options = {}) {
 function assetLibraryFixture() {
   const root = assetFixtureItem("asset-overview-r1", "READY", { name: "Overview direction", logicalId: "logical:overview", revision: 1 });
   const revision = assetFixtureItem("asset-overview-r2", "READY", { name: "Overview direction", logicalId: "logical:overview", revision: 2, parentRevisionId: root.asset_id });
+  const developerAvatar = assetFixtureItem("role-avatar-developer", "READY", { name: "Developer role avatar", kind: "role_avatar", digest: String(8).padStart(64, "0") });
   return {
     active: [
+      developerAvatar,
       revision,
       root,
       assetFixtureItem("asset-roadmap", "READY", { name: "Roadmap" }),
@@ -1916,10 +1919,11 @@ async function assertOnboardingCoordination(page, viewportWidth) {
   assert.equal(await tree.locator("[data-onboarding-executive]").count(), 4);
   assert.equal(await tree.locator("[data-onboarding-lead]").count(), 12);
   assert.deepEqual(await tree.locator("[data-onboarding-executive]").evaluateAll((nodes) => nodes.map((node) => node.dataset.onboardingExecutive)), ["coo", "cto", "cfo", "cmo"]);
-  assert.deepEqual(await tree.locator("[data-onboarding-lead]").evaluateAll((nodes) => nodes.map((node) => node.dataset.roleId)), ["operator", "strategist", "support", "developer", "architect", "security", "accountant", "analyst", "auditor", "designer", "content_creator", "marketer"]);
+  assert.deepEqual(await tree.locator("[data-onboarding-lead]").evaluateAll((nodes) => nodes.map((node) => node.dataset.roleId)), ["operator", "strategist", "support", "developer", "architect", "security", "accountant", "analyst", "auditor", "designer", "producer", "marketer"]);
   assert.equal(await tree.locator('img[src="/assets/swarm-mascot-512.png"]').count(), 1);
-  assert.equal(await tree.locator("img").count(), 1);
-  assert.equal(await tree.locator(".role-avatar.is-pending").count(), 16);
+  assert.equal(await tree.locator("img").count(), 2);
+  assert.equal(await tree.locator(".role-avatar.is-pending").count(), 15);
+  assert.equal(await tree.locator('[data-role-id="developer"] .role-avatar.has-image img').count(), 1);
   const geometry = await tree.evaluate((root) => {
     const stage = root.querySelector(".onboarding-coordination-stage");
     const rect = stage.getBoundingClientRect();
@@ -3037,8 +3041,8 @@ proofFeed.items.push({
     const unknownAgent = page.locator('[data-agent-detail="nested-ctrl"]');
     assert.match(await unknownAgent.textContent(), /UNKNOWN/);
     assert.equal(await unknownAgent.locator('[role="progressbar"]').count(), 0);
-    assert.equal(await page.locator(".agent-avatar-token .role-avatar.is-pending").count(), await page.locator("[data-agent-detail]").count());
-    assert.equal(await page.locator(".agent-avatar-token img,.agent-avatar-token .lucide").count(), 0);
+    assert.equal(await measuredAgent.locator(".agent-avatar-token .role-avatar.has-image img").count(), 1);
+    assert.ok(await page.locator(".agent-avatar-token .role-avatar.is-pending").count() >= 1);
     assert.match(await measuredAgent.textContent(), /Tomato — Developer[\s\S]*Developer · DOER/);
     await measuredAgent.focus();
     await measuredAgent.press("Enter");
@@ -3052,6 +3056,11 @@ proofFeed.items.push({
     const selectedUpdates = await page.locator("#run-log-agent").textContent();
     assert.match(selectedUpdates, /Designer started onboarding settings|3 of 5 checks passed/);
     assert.doesNotMatch(selectedUpdates, /Waiting for review/);
+    await page.getByRole("button", { name: "Material", exact: true }).click();
+    const materialUpdates = await page.locator("#run-log-agent").textContent();
+    assert.match(materialUpdates, /3 of 5 checks passed/);
+    assert.doesNotMatch(materialUpdates, /Designer started onboarding settings/);
+    await page.getByRole("button", { name: "All", exact: true }).click();
     await page.locator("#agent-updates-pause").click();
     assert.match(await page.locator("#run-log-agent").textContent(), /Paused/);
     await page.locator("#agent-updates-pause").click();
@@ -3064,6 +3073,11 @@ proofFeed.items.push({
     assert.doesNotMatch(await page.locator("#view-agents").textContent(), /Review screenshots|3 of 5 checks passed/);
     assert.match(await page.locator("#view-agents").textContent(), /Confirm webhooks/);
     await page.evaluate(() => selectProjectScope("project:fixture"));
+    await page.evaluate(() => selectProjectScope("all"));
+    await page.waitForFunction(() => state.projectId === "all" && document.querySelector('[data-agent-detail="ctrl"]'));
+    assert.equal(await page.locator('[data-agent-detail="ctrl"] [role="progressbar"][aria-valuenow="80"]').count(), 1);
+    await page.evaluate(() => selectProjectScope("project:fixture"));
+    await page.waitForFunction(() => state.projectId === "project:fixture");
     await page.getByRole("tab", { name: "Roles", exact: true }).click();
     assert.equal(await page.locator(".role-choice").count(), 24);
     assert.match(await page.locator("#role-library-status").textContent(), /24 server-owned role manifests/);
@@ -3082,8 +3096,8 @@ proofFeed.items.push({
     await page.locator('.role-choice[data-role-select="developer"]').click();
     assert.equal(await page.locator('#role-library-detail .role-specializations li').count(), 4);
     assert.match(await page.locator('#role-library-detail').textContent(), /Developer[\s\S]*Boundaries/);
-    assert.equal(await page.locator('#view-roles .role-avatar.is-pending[aria-label="Avatar pending for Developer"]').count(), 2);
-    assert.equal(await page.locator("#view-roles .role-avatar img,#view-roles .role-avatar .lucide").count(), 0);
+    assert.equal(await page.locator('#view-roles .role-avatar.has-image[aria-label="Developer mascot avatar"] img').count(), 2);
+    assert.equal(await page.locator('#view-roles .role-avatar.is-pending[aria-label="Avatar pending for Developer"]').count(), 0);
     await page.locator(".role-filter > summary").click();
     if (evidenceDir) await page.screenshot({ path: path.join(evidenceDir, "12-roles-desktop-1536x1024.png"), fullPage: false, animations: "disabled" });
     await page.locator('.role-choice[data-role-select="reviewer"]').click();
@@ -3102,16 +3116,16 @@ proofFeed.items.push({
     assert.equal(await page.locator(".review-row").count(), 7);
     assert.equal(await page.getByRole("button", { name: "Send feedback unavailable" }).first().isDisabled(), true);
     await page.getByRole("tab", { name: "Assets", exact: true }).click();
-    assert.equal(await page.locator(".asset-tile").count(), 7);
+    assert.equal(await page.locator(".asset-tile").count(), 8);
     assert.equal(await page.locator(".asset-tile .asset-list-copy").count(), 0);
-    assert.equal(await page.locator(".asset-tile .asset-quick-actions").count(), 7);
+    assert.equal(await page.locator(".asset-tile .asset-quick-actions").count(), 8);
     assert.equal(await page.locator('.asset-generation-placeholder[aria-label="Generating"]').count(), 1);
     assert.match(await page.locator('.asset-generation-placeholder[aria-label="Generating"]').textContent(), /Generating[\s\S]*42%/);
     assert.equal(await page.locator('.asset-generation-placeholder img').count(), 0);
     assert.equal(await page.locator(".usage-strip").count(), 0);
     await assertCircleFrame(page, "#profile");
     await assertCircleFrame(page, "#system-health-control");
-    assert.equal(await page.locator(".asset-tile .asset-image-button").first().getAttribute("aria-label"), "Open asset details for Overview direction");
+    assert.ok(await page.getByRole("button", { name: "Open asset details for Overview direction" }).count() >= 1);
     if (evidenceDir) await page.screenshot({ path: path.join(evidenceDir, "20-assets-ready-desktop-1536x1024.png"), fullPage: false, animations: "disabled" });
     const assetTrigger = page.getByRole("button", { name: "Open asset details for Roadmap" });
     await assetTrigger.focus();
@@ -3170,7 +3184,7 @@ proofFeed.items.push({
     assert.match(await page.locator("#asset-dialog").textContent(), /Queued/);
     await page.getByRole("button", { name: "Close asset details" }).click();
     await page.getByRole("button", { name: "List", exact: true }).click();
-    assert.equal(await page.locator(".asset-list-row").count(), 7);
+    assert.equal(await page.locator(".asset-list-row").count(), 8);
     assert.match(await page.locator(".asset-list-row").first().textContent(), /Type[\s\S]*Updated[\s\S]*Status/);
     assert.doesNotMatch(await page.locator(".asset-list-row").first().textContent(), /Digest|MIME|Immutable ID|Source path/);
     await page.locator(".asset-list-row .asset-list-main").first().click();

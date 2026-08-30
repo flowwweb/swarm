@@ -30,7 +30,7 @@ const ONBOARDING_COORDINATION_GROUPS = [
   ] },
   { id: "cmo", label: "CMO", accent: "#ff6fae", leads: [
     { id: "design", label: "Design", roleId: "designer", icon: "pencil" },
-    { id: "content", label: "Content", roleId: "content_creator", icon: "file-clock" },
+    { id: "content", label: "Content", roleId: "producer", icon: "file-clock" },
     { id: "growth", label: "Growth", roleId: "marketer", icon: "sparkles" },
   ] },
 ];
@@ -1161,9 +1161,12 @@ function runLogEntries(plan) {
     const record = state.runLogs.get(runLogBindingKey(binding));
     (record?.items || []).forEach((item) => byIdentity.set(runLogItemIdentity(item), item));
   });
-  return [...byIdentity.values()]
+  const items = [...byIdentity.values()]
     .sort((left, right) => Number(left.event_seq) - Number(right.event_seq) || runLogItemIdentity(left).localeCompare(runLogItemIdentity(right)))
     .slice(-RUN_LOG_CLIENT_LIMIT);
+  if (plan.filter !== "material") return items;
+  const materialKinds = new Set(["ARTIFACT_ADMITTED", "CHECKPOINTED", "MILESTONE_COMPLETED", "REVIEW_ACCEPTED", "TASK_COMPLETED"]);
+  return items.filter((item) => materialKinds.has(String(item.kind || item.event_kind || "").toUpperCase()));
 }
 
 function runLogPresentation(plan) {
@@ -3080,7 +3083,20 @@ function activeAgentRecords() {
 }
 
 function agentProgress(record) {
-  if (!record.binding || state.projectId === "all" || state.projectId !== record.binding.projectId || state.projectProgressStatus !== "current") return null;
+  if (!record.binding) return null;
+  if (state.projectId === "all") {
+    const observed = state.overview?.progress?.controllers?.[record.binding.ctrlId];
+    const freshness = String(observed?.freshness?.state || "").toLowerCase();
+    const progress = observed?.progress;
+    const percent = Number(progress?.percent);
+    const completed = Number(progress?.completed ?? progress?.completed_milestones);
+    const total = Number(progress?.total ?? progress?.total_milestones);
+    if (["fresh", "current"].includes(freshness) && Number.isFinite(percent) && percent >= 0 && percent <= 100 && Number.isFinite(completed) && Number.isFinite(total) && total > 0) {
+      return { percent, label: String(completed) + " of " + String(total) + " accepted milestones" };
+    }
+    return null;
+  }
+  if (state.projectId !== record.binding.projectId || state.projectProgressStatus !== "current") return null;
   const projection = projectProgressQueueProjection(selectedProjectProgress());
   if (!projection || projection.status !== "CURRENT") return null;
   const row = projection.segments.flatMap((segment) => segment.rows).find((item) => item.task_id === record.node.id && item.scope_binding?.ctrl_id === record.binding.ctrlId);
@@ -3220,13 +3236,28 @@ function roleDisplayName(role) {
   return role?.name || role?.id || "Unknown role";
 }
 
+function retainedRoleAvatar(role) {
+  const digest = String(role?.avatar_asset_digest || "").toLowerCase();
+  if (!/^[0-9a-f]{64}$/.test(digest)) return null;
+  const embedded = role?.avatar && typeof role.avatar === "object" ? role.avatar : null;
+  const embeddedDigest = String(embedded?.digest || "").toLowerCase();
+  const embeddedURL = String(embedded?.url || "");
+  if (embeddedDigest === digest && embedded?.state === "AVAILABLE" && embeddedURL.startsWith("/")) return { digest, url: embeddedURL };
+  const asset = assetItems().find((item) => String(assetTechnical(item).digest || "").toLowerCase() === digest);
+  const preview = asset?.preview && typeof asset.preview === "object" ? asset.preview : null;
+  const previewURL = String(preview?.url || "");
+  return preview?.state === "AVAILABLE" && previewURL.startsWith("/") ? { digest, url: previewURL } : null;
+}
+
 function roleAvatar(role) {
   const accent = /^#[0-9a-f]{6}$/i.test(role?.accent || "") ? role.accent : "#8f9db0";
   const displayName = roleDisplayName(role);
+  const avatar = retainedRoleAvatar(role);
+  if (avatar) return '<span class="role-avatar has-image" style="--role-accent:' + escapeHTML(accent) + '" role="img" aria-label="' + escapeHTML(displayName + " mascot avatar") + '"><img loading="lazy" decoding="async" src="' + escapeHTML(avatar.url) + '" alt=""></span>';
   return '<span class="role-avatar is-pending" style="--role-accent:' + escapeHTML(accent) + '" role="img" aria-label="Avatar pending for ' + escapeHTML(displayName) + '"><span>Pending</span></span>';
 }
 
-function roleHasRetainedAvatar() { return false; }
+function roleHasRetainedAvatar(role) { return Boolean(retainedRoleAvatar(role)); }
 
 function roleSourceLabel(role) {
   return role?.source === "builtin" ? "Built in" : role?.source === "user_override" ? "Custom version" : role?.source === "custom" ? "Custom role" : "Unknown";
