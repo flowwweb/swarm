@@ -162,12 +162,6 @@ function clearConnectionState() {
   $("#connection-state").hidden = true;
 }
 
-function onboardingReasoningStops(current) {
-  const stops = ["none", "low", "medium", "high", "max"];
-  if (current && !stops.includes(current)) stops[3] = current;
-  return stops.map((value) => ({ value, label: humanize(value) }));
-}
-
 function onboardingConfigBlocked() {
   return state.onboardingConfigPending.size > 0 || state.onboardingConfigFailures.size > 0;
 }
@@ -195,12 +189,6 @@ function onboardingControlForIdentity(root, identity) {
   return $$('[data-' + attribute.replace(/[A-Z]/g, (letter) => "-" + letter.toLowerCase()) + ']', root).find((element) => element.dataset[attribute] === value) || null;
 }
 
-function onboardingConfigSelect(key, value, options, label) {
-  const editable = configEditable(key) && !state.onboardingConfigPending.has(key);
-  const draft = onboardingConfigDraft(key, value);
-  return '<label class="setting-field">' + escapeHTML(label) + '<select data-config-key="' + escapeHTML(key) + '"' + (editable ? '' : ' disabled') + '>' + options.map((option) => '<option value="' + escapeHTML(option.value) + '"' + (option.value === draft ? ' selected' : '') + '>' + escapeHTML(option.label) + '</option>').join('') + '</select></label>' + (editable ? '' : '<small>Managed by the current configuration.</small>');
-}
-
 function onboardingConfigToggle(key, value, label) {
   const editable = configEditable(key) && !state.onboardingConfigPending.has(key);
   const draft = onboardingConfigDraft(key, value);
@@ -221,41 +209,39 @@ function onboardingSpeedControl(value) {
   return '<fieldset class="onboarding-segmented"><legend>Speed</legend><div>' + choice("default", "Default", !draft, false) + choice("fast", "Fast", draft, true) + choice("ultrafast", "Ultrafast", false, true, true) + '</div></fieldset><small>Ultrafast is unavailable until the server exposes an accepted mode.</small>';
 }
 
-function onboardingTaskLifeControl() {
-  return '<fieldset class="onboarding-segmented is-readonly"><legend>Task life</legend><div><label title="Shorter context and more handovers"><input type="radio" name="onboarding-task-life" disabled><span>Short</span></label><label title="Hands over when efficiency drops"><input type="radio" name="onboarding-task-life" checked disabled><span>Balanced</span></label><label title="No lifetime limit"><input type="radio" name="onboarding-task-life" disabled><span>Long</span></label></div></fieldset><small>Balanced hands over when efficiency drops. Changing this needs an accepted server setting.</small>';
+const ONBOARDING_TASK_LIFE_DETENTS = [
+  { hours: 1, valueText: "Short — 1 hour" },
+  { hours: 2, valueText: "Between Short and Balanced — 2 hours" },
+  { hours: 4, valueText: "Balanced — 4 hours" },
+  { hours: 24, valueText: "Between Balanced and Long — 24 hours" },
+  { hours: 720, valueText: "Long — 30 days" },
+];
+
+function onboardingTaskLifeControl(value) {
+  const key = "lifecycle.task_lifetime_hours";
+  const current = Number.isInteger(value) ? value : 4;
+  const draft = onboardingConfigDraft(key, current);
+  const exactIndex = ONBOARDING_TASK_LIFE_DETENTS.findIndex((detent) => detent.hours === draft);
+  const index = exactIndex >= 0 ? exactIndex : ONBOARDING_TASK_LIFE_DETENTS.reduce((best, detent, position) => Math.abs(detent.hours - draft) < Math.abs(ONBOARDING_TASK_LIFE_DETENTS[best].hours - draft) ? position : best, 0);
+  const editable = Number.isInteger(value) && configEditable(key) && !state.onboardingConfigPending.has(key);
+  const values = ONBOARDING_TASK_LIFE_DETENTS.map((detent) => detent.hours).join(",");
+  const tooltip = "Short clears context sooner to keep work efficient, with more handovers. Balanced hands over when task efficiency begins to drop. Long reduces scheduled handovers, while a larger context can become less efficient over time.";
+  return '<section class="onboarding-task-life"><div class="onboarding-task-life-head"><label for="onboarding-task-life">Task life</label><details class="onboarding-task-life-info" data-onboarding-control="task-life-info"><summary class="icon-button" aria-label="About task life"><span aria-hidden="true">i</span></summary><div class="onboarding-task-life-tooltip" role="tooltip">' + escapeHTML(tooltip) + '</div></details></div>' +
+    '<input id="onboarding-task-life" data-config-key="' + key + '" data-config-values="' + values + '" type="range" min="0" max="4" step="1" value="' + index + '" aria-valuetext="' + escapeHTML(ONBOARDING_TASK_LIFE_DETENTS[index].valueText) + '"' + (editable ? '' : ' disabled') + '>' +
+    '<div class="onboarding-task-life-labels" aria-hidden="true"><span>Short</span><span>Balanced</span><span>Long</span></div>' + (editable ? '' : '<small>Managed by the current configuration.</small>') + '</section>';
 }
 
 function onboardingConfigurationMarkup() {
   const settings = state.config?.settings || {};
   const execution = settings.execution || {};
   const automation = settings.automation || {};
-  const consoleSettings = settings.console || {};
-  const portfolio = settings.portfolio || {};
-  const monitoring = settings.monitoring || {};
-  const boost = settings.boost || {};
-  const skillsMode = state.skills?.settings?.inheritance_enabled === true ? "Auto" : state.skills ? "Manual" : "Unavailable";
-  const lanes = Number.isInteger(portfolio.default_parallel_tasks) ? String(portfolio.default_parallel_tasks) : "Unavailable";
-  const minReasoning = execution.min_reasoning || "high";
-  const maxReasoning = execution.max_reasoning || "high";
-  const updates = onboardingConfigDraft("console.project_progress_feed_lines", consoleSettings.project_progress_feed_lines ?? 4);
+  const lifecycle = settings.lifecycle || {};
   const pending = state.onboardingConfigPending.size;
   const failures = [...state.onboardingConfigFailures.values()];
   const status = pending ? 'Saving ' + pending + ' setting' + (pending === 1 ? '' : 's') + '…' : failures.length ? (failures[0].error || 'A setting was not saved.') : 'Changes are saved when acknowledged by SWARM.';
-  return '<section class="onboarding-config-group"><h3>Execution</h3>' +
-    onboardingConfigModeToggle("automation.mode", automation.mode || "standard", "standard", "manual", "Auto mode") + '<small>SWARM keeps eligible work moving until it needs you.</small>' +
-    onboardingSpeedControl(execution.fast_mode) +
-    onboardingTaskLifeControl() +
-    '<label class="onboarding-readonly">Skills<select aria-label="Skills mode" disabled><option>' + escapeHTML(skillsMode) + '</option></select></label></section>' +
-    '<section class="onboarding-config-group"><h3>Codex</h3><label class="onboarding-readonly">Minimum model<select aria-label="Minimum model" disabled><option>5.6 Luna · High</option></select></label><small>Model choice needs an accepted server setting.</small>' +
-    onboardingConfigSelect("execution.min_reasoning", minReasoning, onboardingReasoningStops(minReasoning), "Minimum reasoning") +
-    '<label class="onboarding-readonly">Maximum model<select aria-label="Maximum model" disabled><option>5.6 Sol · High</option></select></label><small>Model choice needs an accepted server setting.</small>' +
-    onboardingConfigSelect("execution.max_reasoning", maxReasoning, onboardingReasoningStops(maxReasoning), "Maximum reasoning") + '</section>' +
-    '<section class="onboarding-config-group"><h3>Usage <span class="onboarding-experimental">Experimental</span></h3>' + onboardingConfigToggle("execution.usage_saver", execution.usage_saver, "Usage Saver") + '<small>Routes eligible background work to efficient models while keeping verification in SWARM.</small>' +
-    '<details data-onboarding-control="usage-policy"><summary>Smart routing</summary><div class="onboarding-config-disclosure">' + onboardingConfigToggle("chat_relay.enabled", settings.chat_relay?.enabled, "Use ChatGPT for eligible work") + onboardingConfigToggle("boost.spark_enabled", boost.spark_enabled, "Use an efficient model for eligible work") + '<small>Code, local state, and acceptance stay with Codex unless accepted routing authority says otherwise.</small></div></details></section>' +
-    '<section class="onboarding-config-group"><h3>Features and diagnostics</h3>' + onboardingConfigToggle("console.project_progress_feed_enabled", consoleSettings.project_progress_feed_enabled, "Progress feed") +
-    onboardingConfigToggle("console.open_on_start", consoleSettings.open_on_start, "Open console on start") + onboardingConfigToggle("monitoring.auto_health_enabled", monitoring.auto_health_enabled, "Automatic health checks") +
-    '<label class="setting-field">Updates shown<input data-config-key="console.project_progress_feed_lines" type="number" min="1" max="10" value="' + escapeHTML(updates) + '"' + (configEditable("console.project_progress_feed_lines") && !state.onboardingConfigPending.has("console.project_progress_feed_lines") ? '' : ' disabled') + '></label></section>' +
-    '<section class="onboarding-config-group onboarding-config-wide"><details data-onboarding-control="advanced"><summary>Advanced</summary><div class="onboarding-config-disclosure"><label class="onboarding-readonly">Parallel lanes<input value="' + escapeHTML(lanes) + '" disabled></label><small>The accepted server setting is shown. Unlimited is available only when the server projects it.</small></div></details></section>' +
+  return '<section class="onboarding-config-essentials"><header><div><p class="eyebrow">Essentials</p><h3>How SWARM runs your work</h3></div><div>' + onboardingConfigModeToggle("automation.mode", automation.mode || "standard", "standard", "manual", "Auto mode") + '<small>SWARM keeps eligible work moving until it needs you.</small></div></header><div class="onboarding-essentials-controls">' +
+    onboardingSpeedControl(execution.fast_mode) + onboardingTaskLifeControl(lifecycle.task_lifetime_hours) + '</div></section>' +
+    '<button class="onboarding-advanced-link" id="onboarding-advanced-settings" data-onboarding-control="advanced-settings-link" type="button">Advanced settings</button>' +
     '<div class="onboarding-config-save ' + (failures.length ? 'is-error' : '') + '" id="onboarding-config-status" data-onboarding-control="config-status" role="status" tabindex="-1"><span>' + escapeHTML(status) + '</span>' + (failures.length ? '<button class="quiet-button" type="button" data-onboarding-control="retry-config">Retry</button>' : '') + '</div>';
 }
 
@@ -303,6 +289,8 @@ function renderOnboarding() {
       ? restored
       : (focusIdentity ? $("#onboarding-config-status", root) : null);
     if (focusTarget) requestAnimationFrame(() => focusTarget.focus({ preventScroll: true }));
+    const advancedSettings = $("#onboarding-advanced-settings", root);
+    if (advancedSettings) advancedSettings.disabled = blocked;
   }
   updateOnboardingEntrance(step);
 }
@@ -350,6 +338,23 @@ function closeOnboarding(openProjects = false) {
 
 function onboardingCanDismiss() {
   return state.onboardingStep !== ONBOARDING_STEPS.length - 1 || !onboardingConfigBlocked();
+}
+
+function openAdvancedSettingsFromOnboarding() {
+  if (!onboardingCanDismiss()) return false;
+  state.onboardingTrigger = null;
+  if (!closeOnboarding()) return false;
+  history.pushState(null, '', '#settings-advanced');
+  setView('settings', false, false);
+  renderSettings();
+  requestAnimationFrame(() => {
+    const details = $('#settings-advanced');
+    if (!details) return;
+    details.open = true;
+    details.scrollIntoView({ block: 'start' });
+    details.querySelector('summary')?.focus({ preventScroll: true });
+  });
+  return true;
 }
 
 function setOnboardingStep(step, focusDot = false, focusNavigation = "") {
@@ -597,6 +602,7 @@ function syncMobileDrawer() {
 
 function routeView() {
   const view = location.hash.slice(1);
+  if (view === "settings-advanced") return "settings";
   return ["overview", "agents", "review", "assets", "settings"].includes(view) ? view : "overview";
 }
 
@@ -3013,7 +3019,7 @@ function renderSettings() {
       '<label class="setting-field">Updates shown<input data-config-key="console.project_progress_feed_lines" type="number" min="1" max="10" value="' + escapeHTML(consoleSettings.project_progress_feed_lines ?? 4) + '"' + (!configEditable('console.project_progress_feed_lines') ? ' disabled' : '') + '></label>' +
       settingToggle('console.open_on_start', consoleSettings.open_on_start, 'Open SWARM when Codex starts') +
       '<label class="toggle-row"><input id="auto-health" type="checkbox"' + (state.health?.enabled ? ' checked' : '') + '><span>Request health review when needed</span></label><small>Passive monitoring does not run models.</small><div class="guided-tour-setting"><span><strong>Guided tour</strong><small>Replay the current console introduction.</small></span><button class="quiet-button" data-setting-action="replay-tour" type="button">Replay tour</button></div></section>' +
-      '<details class="panel settings-advanced settings-wide" id="settings-advanced"><summary>Advanced settings</summary><div class="settings-advanced-grid">' + ctrlAdvanced + chatRelaySettingsMarkup() + '<section class="advanced-setting-group"><h4>Spark and monitoring</h4>' + settingSelect('boost.spark_reasoning', boost.spark_reasoning || 'xhigh', reasoningOptions, 'Spark reasoning') + '<label class="setting-field">Spark model<input id="spark-model" value="' + escapeHTML(boost.spark_model || '') + '" autocomplete="off"' + (!configEditable('boost.spark_model') ? ' disabled' : '') + '></label><label class="setting-field">Heartbeat minutes<input id="heartbeat-minutes" data-config-key="monitoring.heartbeat_minutes" type="number" min="1" value="' + escapeHTML(monitoring.heartbeat_minutes || '') + '"' + (!configEditable('monitoring.heartbeat_minutes') ? ' disabled' : '') + '></label><button class="quiet-button" data-setting-action="save-spark" type="button"' + (!configEditable('boost.spark_model') ? ' disabled' : '') + '>Save Spark model</button>' + settingToggle('role_icons.enabled', roleIcons.enabled, 'Show role icons') + '</section><section class="advanced-setting-group"><h4>' + escapeHTML(storage?.bytes == null ? 'Saved history unavailable' : formatBytes(storage.bytes) + ' saved history' + retention) + '</h4><p>Progress, forecasts, proof, and token history stay available between sessions' + (proofFiles ? ' · ' + proofFiles + ' proof file' + (proofFiles === 1 ? '' : 's') : '') + '.</p><div class="settings-actions-inline"><button class="quiet-button" data-setting-action="clear" type="button">Clear history</button><button class="quiet-button" data-setting-action="restore" type="button">Restore defaults</button></div><small>Clearing history leaves tasks unchanged. Restoring defaults keeps history.</small>' + skillsAdvanced(scope) + '</section></div></details>';
+      '<details class="panel settings-advanced settings-wide" id="settings-advanced"' + (location.hash === '#settings-advanced' ? ' open' : '') + '><summary>Advanced settings</summary><div class="settings-advanced-grid">' + ctrlAdvanced + chatRelaySettingsMarkup() + '<section class="advanced-setting-group"><h4>Spark and monitoring</h4>' + settingSelect('boost.spark_reasoning', boost.spark_reasoning || 'xhigh', reasoningOptions, 'Spark reasoning') + '<label class="setting-field">Spark model<input id="spark-model" value="' + escapeHTML(boost.spark_model || '') + '" autocomplete="off"' + (!configEditable('boost.spark_model') ? ' disabled' : '') + '></label><label class="setting-field">Heartbeat minutes<input id="heartbeat-minutes" data-config-key="monitoring.heartbeat_minutes" type="number" min="1" value="' + escapeHTML(monitoring.heartbeat_minutes || '') + '"' + (!configEditable('monitoring.heartbeat_minutes') ? ' disabled' : '') + '></label><button class="quiet-button" data-setting-action="save-spark" type="button"' + (!configEditable('boost.spark_model') ? ' disabled' : '') + '>Save Spark model</button>' + settingToggle('role_icons.enabled', roleIcons.enabled, 'Show role icons') + '</section><section class="advanced-setting-group"><h4>' + escapeHTML(storage?.bytes == null ? 'Saved history unavailable' : formatBytes(storage.bytes) + ' saved history' + retention) + '</h4><p>Progress, forecasts, proof, and token history stay available between sessions' + (proofFiles ? ' · ' + proofFiles + ' proof file' + (proofFiles === 1 ? '' : 's') : '') + '.</p><div class="settings-actions-inline"><button class="quiet-button" data-setting-action="clear" type="button">Clear history</button><button class="quiet-button" data-setting-action="restore" type="button">Restore defaults</button></div><small>Clearing history leaves tasks unchanged. Restoring defaults keeps history.</small>' + skillsAdvanced(scope) + '</section></div></details>';
   renderSystemHealth();
 }
 
@@ -3698,7 +3704,9 @@ document.addEventListener('change', async (event) => {
   if (event.target.dataset.configKey) {
     const key = event.target.dataset.configKey;
     if (!configEditable(key)) return;
-    const value = event.target.type === 'radio' && event.target.dataset.configValue !== undefined
+    const value = event.target.type === 'range' && event.target.dataset.configValues
+      ? Number(event.target.dataset.configValues.split(',')[Number(event.target.value)])
+      : event.target.type === 'radio' && event.target.dataset.configValue !== undefined
       ? event.target.dataset.configValue === 'true'
       : event.target.type === 'checkbox' && event.target.dataset.trueValue !== undefined
         ? (event.target.checked ? event.target.dataset.trueValue : event.target.dataset.falseValue)
@@ -3728,6 +3736,10 @@ document.addEventListener('change', async (event) => {
   }
 });
 document.addEventListener('click', async (event) => {
+  if (event.target.closest('#onboarding-advanced-settings')) {
+    openAdvancedSettingsFromOnboarding();
+    return;
+  }
   if (event.target.closest('[data-onboarding-control="retry-config"]')) {
     await retryOnboardingConfig();
     return;

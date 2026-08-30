@@ -133,7 +133,7 @@ assert.equal((indexHtml.match(/data-onboarding-step=/g) || []).length, 5);
 assert.match(indexHtml, /data-onboarding-step="0"[^>]*aria-label="Show welcome"[^>]*aria-controls="onboarding-panel-1"[^>]*aria-selected="true"[^>]*aria-current="step"/);
 for (const control of ["onboarding-close", "onboarding-back", "onboarding-skip", "onboarding-primary"]) assert.match(indexHtml, new RegExp(`id="${control}"[^>]*type="button"`));
 assert.match(indexHtml, /SWARM coordinates focused roles, clear ownership, and proof you can review\./);
-assert.match(css, /\.onboarding-dialog \{ width:min\(1040px,calc\(100vw - 48px\)\); height:min\(720px,calc\(100dvh - 48px\)\);/);
+assert.match(css, /\.onboarding-dialog \{ position:fixed; inset:0; width:min\(1040px,calc\(100vw - 48px\)\); height:min\(720px,calc\(100dvh - 48px\)\);/);
 assert.match(css, /\.onboarding-shell \{ padding:0; \}/);
 assert.match(css, /\.onboarding-header \{ padding:clamp\(16px,2\.2vw,28px\) clamp\(16px,2\.2vw,28px\) 8px; \}/);
 assert.match(css, /\.onboarding-panels-content \{[^}]*padding:10px clamp\(16px,2\.2vw,28px\);/);
@@ -151,17 +151,15 @@ assert.match(indexHtml, /id="onboarding-close"[^>]*aria-label="Close onboarding"
 assert.match(indexHtml, /class="onboarding-slide1-guide onboarding-artwork" src="\/assets\/swarm-guided-tour-slide1\.png" width="1920" height="1080" alt="" aria-hidden="true" loading="eager" fetchpriority="high" decoding="sync"/);
 assert.match(indexHtml, /<link rel="icon" type="image\/png" sizes="64x64" href="\/swarm-icon-64\.png"/);
 assert.doesNotMatch(indexHtml, /swarm-favicon\.svg|<div class="onboarding-mascot"/);
-assert.match(indexHtml, /<h2>One prompt\. A coordinated team\.<\/h2>/);
-assert.match(indexHtml, /id="onboarding-panel-2"[^>]*data-visual-status="pending-selection"/);
-assert.match(indexHtml, /Prompt[\s\S]*?CTRL[\s\S]*?Designer[\s\S]*?Developer[\s\S]*?Reviewer/);
-assert.match(indexHtml, /class="onboarding-flag-mascot onboarding-artwork"[\s\S]*?swarm-mascot-512\.png[\s\S]*?class="onboarding-flag"/);
-assert.match(indexHtml, /class="onboarding-flow onboarding-supporting-visual" role="img" aria-label="A prompt enters CTRL, which routes work through three connected lines to Designer, Developer, and Reviewer\."/);
-assert.equal((indexHtml.match(/class="onboarding-flow-fanout"[\s\S]*?<i><\/i>/g) || []).length, 1);
-assert.match(css, /\.onboarding-flag i \{[^}]*conic-gradient\([^}]*#fff4df[^}]*#ff7a18/);
-assert.match(css, /\.onboarding-flow-node\.is-ctrl \{[^}]*clip-path:polygon\(18% 0,82% 0,100% 50%,82% 100%,18% 100%,0 50%\)/);
-assert.match(css, /\.onboarding-flow-fanout i:nth-child\(3\) \{ top:83\.33%; \}/);
-assert.match(css, /@media \(max-width: 620px\)[\s\S]*?\.onboarding-flow \{[^}]*grid-template-columns:66px 24px 70px 28px minmax\(88px,1fr\)/);
-assert.match(css, /\.onboarding-flow \{ grid-template-columns:64px 20px 66px 24px minmax\(88px,1fr\); \}/);
+assert.match(indexHtml, /<h2>One control\. Big impact\.<\/h2>/);
+assert.match(indexHtml, /<p>One request becomes coordinated work\.<\/p>/);
+assert.match(indexHtml, /id="onboarding-panel-2"[^>]*data-visual-status="awaiting-admitted-rgba"/);
+assert.match(indexHtml, /data-asset-slot="swarm-guided-tour-coordination-v1" data-asset-status="awaiting-admitted-rgba"/);
+assert.match(indexHtml, /aria-label="A user request enters a SWARM controller and branches to design, development, and security work\."/);
+assert.match(indexHtml, /Selected visual awaiting its admitted transparent asset\./);
+assert.doesNotMatch(indexHtml, /onboarding-flag-mascot|onboarding-flow-node|One prompt\. A coordinated team\./);
+assert.match(css, /\.onboarding-coordination-slot \{[^}]*aspect-ratio:16 \/ 9[^}]*border:1px dashed rgba\(255,116,73,\.38\)/);
+assert.match(css, /@media \(max-width: 620px\)[\s\S]*?\.onboarding-coordination-slot \{[^}]*min-height:170px/);
 assert.match(indexHtml, /<h2>A role for every kind of work\.<\/h2>/);
 assert.match(indexHtml, /24 curated roles, ready to work—from development and design to security and content\./);
 const onboardingRolePanel = indexHtml.match(/id="onboarding-panel-3"[\s\S]*?<\/section>/)?.[0] || "";
@@ -190,7 +188,7 @@ assert.doesNotMatch(projectViewsPanel, /onboarding-project-views|Your project fi
 assert.doesNotMatch(projectViewsPanel, /manifest|schema|digest|source of truth/i);
 assert.match(indexHtml, /id="onboarding-panel-5"[\s\S]*?<h2>Choose how SWARM works\.<\/h2>[\s\S]*?id="onboarding-configuration"/);
 assert.doesNotMatch(indexHtml, /class="onboarding-(topology|evidence)"/);
-assert.equal((indexHtml.match(/swarm-mascot-512\.png/g) || []).length, 1);
+assert.equal((indexHtml.match(/swarm-mascot-512\.png/g) || []).length, 0);
 assert.match(app, /const ONBOARDING_STEPS = \[/);
 assert.match(app, /function renderOnboarding\(\)/);
 assert.match(app, /dot\.toggleAttribute\("aria-current", selected\)/);
@@ -227,17 +225,24 @@ assert.match(onboardingCloseSource, /addEventListener\("cancel"[\s\S]*?event\.pr
 assert.match(app, /function onboardingSpeedControl\(value\)/);
 assert.match(app, /Default[\s\S]*?Fast[\s\S]*?Ultrafast/);
 assert.match(app, /Ultrafast is unavailable until the server exposes an accepted mode\./);
-assert.match(app, /function onboardingTaskLifeControl\(\)/);
-assert.match(app, /Short[\s\S]*?Balanced[\s\S]*?Long/);
-assert.match(app, /Balanced hands over when efficiency drops\./);
-assert.match(app, /5\.6 Luna · High/);
-assert.match(app, /5\.6 Sol · High/);
-assert.match(app, /Usage Saver/);
-assert.match(app, /Experimental/);
-assert.match(app, /Use ChatGPT for eligible work/);
-assert.match(app, /Automatic health checks/);
-assert.match(app, /Unlimited is available only when the server projects it/);
+assert.match(app, /function onboardingTaskLifeControl\(value\)/);
+assert.match(app, /ONBOARDING_TASK_LIFE_DETENTS = \[[\s\S]*?hours: 1[\s\S]*?hours: 2[\s\S]*?hours: 4[\s\S]*?hours: 24[\s\S]*?hours: 720/);
+assert.match(app, /data-config-key="["'] \+ key \+ '["'] data-config-values="["'] \+ values/);
+assert.match(app, /type="range" min="0" max="4" step="1"/);
+assert.match(app, /aria-valuetext=/);
+assert.match(app, /Short clears context sooner to keep work efficient, with more handovers\.[\s\S]*?Balanced hands over when task efficiency begins to drop\.[\s\S]*?Long reduces scheduled handovers, while a larger context can become less efficient over time\./);
+assert.match(app, /data-onboarding-control="task-life-info"[\s\S]*?aria-label="About task life"[\s\S]*?role="tooltip"/);
+assert.match(app, /class="onboarding-task-life-labels" aria-hidden="true"><span>Short<\/span><span>Balanced<\/span><span>Long<\/span>/);
+assert.match(app, /Number\.isInteger\(value\) && configEditable\(key\)/);
+const onboardingConfigSource = app.slice(app.indexOf("function onboardingConfigurationMarkup"), app.indexOf("\nfunction renderOnboarding", app.indexOf("function onboardingConfigurationMarkup")));
+assert.match(onboardingConfigSource, /class="onboarding-config-essentials"/);
+assert.match(onboardingConfigSource, /id="onboarding-advanced-settings"[\s\S]*?data-onboarding-control="advanced-settings-link"[\s\S]*?>Advanced settings<\/button>/);
+assert.doesNotMatch(onboardingConfigSource, /onboarding-config-advanced|onboarding-advanced-content|Minimum model|Maximum model|Usage Saver|Use ChatGPT|Automatic health checks|Parallel lanes/);
+assert.doesNotMatch(app, /data-onboarding-control="usage-policy"|onboarding-config-group|onboarding-config-wide/);
 assert.doesNotMatch(app, /artifact-13|config-usage-first/i);
+assert.match(app, /function openAdvancedSettingsFromOnboarding\(\)[\s\S]*?history\.pushState\(null, '', '#settings-advanced'\)[\s\S]*?setView\('settings', false, false\)[\s\S]*?details\.open = true[\s\S]*?querySelector\('summary'\)\?\.focus/);
+assert.match(app, /if \(view === "settings-advanced"\) return "settings"/);
+assert.match(app, /id="settings-advanced"' \+ \(location\.hash === '#settings-advanced' \? ' open' : ''\)/);
 assert.match(app, /function openOnboarding\(force = false, trigger = null\)/);
 assert.match(app, /\(!force && \(state\.onboardingShown \|\| onboardingSeen\(\)\)\)/);
 assert.match(app, /data-setting-action="replay-tour" type="button">Replay tour<\/button>/);
@@ -255,6 +260,15 @@ assert.equal(onboardingPersistence.onboardingSeen({ getItem() { throw new Error(
 assert.doesNotThrow(() => onboardingPersistence.markOnboardingSeen({ setItem() { throw new Error("unavailable"); } }));
 assert.match(css, /\.onboarding-progress button \{[^}]*width:44px; height:44px/);
 assert.match(css, /\.onboarding-panel-config \{ height:auto; min-height:100%; align-self:start; overflow:visible;/);
+assert.match(css, /\.onboarding-config-essentials \{[^}]*padding:14px 16px/);
+assert.match(css, /\.onboarding-advanced-link \{[^}]*min-height:44px/);
+assert.doesNotMatch(css, /\.onboarding-config-advanced|\.onboarding-advanced-content|\.onboarding-advanced-group|\.onboarding-model-grid|\.onboarding-readonly/);
+assert.match(css, /\.settings-advanced \{[^}]*scroll-margin-top:72px/);
+assert.match(css, /\.onboarding-task-life input\[type="range"\] \{[^}]*height:44px[^}]*accent-color:var\(--orange\)/);
+assert.match(css, /\.onboarding-task-life-info > summary \{[^}]*width:44px; height:44px/);
+assert.match(css, /\.onboarding-configuration \.toggle-row input \{ accent-color:var\(--orange\); \}/);
+assert.doesNotMatch(css, /onboarding-segmented\.is-readonly/);
+assert.doesNotMatch(css.match(/\.onboarding-panel-config[\s\S]*?\.onboarding-actions/)?.[0] || "", /accent-color:var\(--(?:cyan|blue)\)|box-shadow:inset 0 -2px var\(--(?:cyan|blue)\)/);
 assert.match(css, /@media \(max-width: 620px\)[\s\S]*\.onboarding-dialog \{ width:100vw; height:100dvh;/);
 assert.match(css, /--base: #091321;/);
 assert.match(css, /--surface: rgba\(16, 29, 47, \.9\);/);
@@ -1784,7 +1798,7 @@ async function captureOnboardingEvidence(page, name) {
       const rect = node.getBoundingClientRect();
       const style = getComputedStyle(node);
       const hit = document.elementFromPoint(rect.left + rect.width / 2, rect.top + rect.height / 2);
-      return { width: rect.width, height: rect.height, display: style.display, visibility: style.visibility, opacity: Number(style.opacity), unobscured: hit === node || Boolean(hit && node.contains(hit)), hit: hit?.id || hit?.className || hit?.tagName || "none" };
+      return { left: rect.left, top: rect.top, right: rect.right, bottom: rect.bottom, width: rect.width, height: rect.height, display: style.display, visibility: style.visibility, opacity: Number(style.opacity), unobscured: hit === node || Boolean(hit && node.contains(hit)), hit: hit?.id || hit?.className || hit?.tagName || "none" };
     };
     return {
       header: visibleRect(":scope > .dialog-shell > .dialog-header"),
@@ -1797,6 +1811,7 @@ async function captureOnboardingEvidence(page, name) {
     assert.notEqual(proof.display, "none", `${name}: ${part} must render`);
     assert.notEqual(proof.visibility, "hidden", `${name}: ${part} must remain visible`);
     assert.ok(proof.opacity >= 0.99, `${name}: ${part} must be fully visible`);
+    assert.ok(proof.left >= 0 && proof.top >= 0 && proof.right <= page.viewportSize().width && proof.bottom <= page.viewportSize().height, `${name}: ${part} left the viewport: ${JSON.stringify(proof)}`);
     assert.equal(proof.unobscured, true, `${name}: ${part} is obscured by ${proof.hit}`);
   }
   await page.screenshot({ path: path.join(evidenceDir, name + ".png"), fullPage: false, animations: "disabled" });
@@ -1867,13 +1882,12 @@ const proofFeed = imageProofFixture(6);
         const style = getComputedStyle(dialog.querySelector(selector));
         return { delay: parseFloat(style.animationDelay) * 1000, duration: parseFloat(style.animationDuration) * 1000 };
       };
-      return [timing(".onboarding-panel.is-active .onboarding-artwork"), timing(".onboarding-panel.is-active > h2"), timing(".onboarding-panel.is-active > p"), timing(".onboarding-panel.is-active .onboarding-supporting-visual"), timing("#onboarding-primary")];
+      return [timing(".onboarding-panel.is-active .onboarding-artwork"), timing(".onboarding-panel.is-active > h2"), timing(".onboarding-panel.is-active > p"), timing("#onboarding-primary")];
     });
-    assert.deepEqual(motionTiming.map((item) => Math.round(item.delay)), [0, 55, 110, 165, 220]);
+    assert.deepEqual(motionTiming.map((item) => Math.round(item.delay)), [0, 55, 110, 220]);
     assert.ok(Math.max(...motionTiming.map((item) => item.delay + item.duration)) <= 550);
-    assert.equal(await onboardingPage.locator(".onboarding-flow-fanout i").count(), 3);
-    assert.match(await onboardingPage.locator(".onboarding-flow .is-ctrl").evaluate((element) => getComputedStyle(element).clipPath), /polygon/);
-    assert.match(await onboardingPage.locator(".onboarding-flag i").evaluate((element) => getComputedStyle(element).backgroundImage), /conic-gradient/);
+    assert.equal(await onboardingPage.locator('[data-asset-slot="swarm-guided-tour-coordination-v1"][data-asset-status="awaiting-admitted-rgba"]').count(), 1);
+    assert.match(await onboardingPage.locator("#onboarding-panel-2").textContent(), /One control\. Big impact\.[\s\S]*One request becomes coordinated work\.[\s\S]*awaiting its admitted transparent asset/);
     await onboardingPage.getByRole("button", { name: "Back" }).focus();
     await onboardingPage.keyboard.press("Enter");
     await onboardingPage.waitForFunction(() => document.activeElement?.id === "onboarding-primary");
@@ -1904,19 +1918,26 @@ const proofFeed = imageProofFixture(6);
     assert.equal(await onboardingPage.locator("#onboarding-dialog .dialog-body").evaluate((body) => body.scrollTop), 0);
     assert.equal(await onboardingPage.getByRole("button", { name: "Start using SWARM" }).count(), 1);
     await assertLaterStepNavigation(onboardingPage, "Start using SWARM");
-  const onboardingConfigPanel = onboardingPage.locator("#onboarding-panel-5");
-  assert.equal(await onboardingConfigPanel.getByLabel("Minimum model").inputValue(), "5.6 Luna · High");
-  assert.equal(await onboardingConfigPanel.getByLabel("Maximum model").inputValue(), "5.6 Sol · High");
-  assert.equal(await onboardingConfigPanel.getByLabel("Default", { exact: true }).isChecked(), true);
-  assert.equal(await onboardingConfigPanel.getByLabel("Ultrafast", { exact: true }).isDisabled(), true);
-  assert.equal(await onboardingConfigPanel.getByLabel("Balanced", { exact: true }).isChecked(), true);
-  assert.equal(await onboardingConfigPanel.getByLabel("Balanced", { exact: true }).isDisabled(), true);
-  assert.equal(await onboardingConfigPanel.getByLabel("Auto mode").isChecked(), true);
-  assert.equal(await onboardingConfigPanel.getByLabel("Usage Saver").isChecked(), false);
-  assert.equal(await onboardingConfigPanel.getByLabel("Open console on start").isChecked(), true);
-  assert.equal(await onboardingConfigPanel.getByLabel("Automatic health checks").isDisabled(), true);
-  assert.equal(await onboardingConfigPanel.getByLabel("Progress feed").isChecked(), true);
+    const onboardingConfigPanel = onboardingPage.locator("#onboarding-panel-5");
+    const taskLife = onboardingConfigPanel.getByRole("slider", { name: "Task life" });
+    const advancedSettingsLink = onboardingConfigPanel.getByRole("button", { name: "Advanced settings" });
+    assert.equal(await onboardingConfigPanel.getByLabel("Default", { exact: true }).isChecked(), true);
+    assert.equal(await onboardingConfigPanel.getByLabel("Ultrafast", { exact: true }).isDisabled(), true);
+    assert.equal(await onboardingConfigPanel.getByLabel("Auto mode").isChecked(), true);
+    assert.equal(await taskLife.inputValue(), "2");
+    assert.equal(await taskLife.getAttribute("aria-valuetext"), "Balanced — 4 hours");
+    assert.equal(await taskLife.isDisabled(), true);
+    assert.equal(await advancedSettingsLink.isVisible(), true);
+    assert.equal(await onboardingConfigPanel.locator(".onboarding-config-advanced,.onboarding-advanced-content").count(), 0);
+    assert.equal(await onboardingConfigPanel.getByLabel("Usage Saver").count(), 0);
     await captureOnboardingEvidence(onboardingPage, "05-slide-5-config-desktop-1440x1000");
+    const taskLifeInfo = onboardingConfigPanel.locator('summary[aria-label="About task life"]');
+    await taskLifeInfo.focus();
+    await onboardingPage.keyboard.press("Enter");
+    assert.equal(await onboardingConfigPanel.getByRole("tooltip").isVisible(), true);
+    assert.match(await onboardingConfigPanel.getByRole("tooltip").textContent(), /Short clears context sooner[\s\S]*Balanced hands over[\s\S]*Long reduces scheduled handovers/);
+    await captureOnboardingEvidence(onboardingPage, "05b-slide-5-task-life-tooltip-desktop-1440x1000");
+    await onboardingPage.keyboard.press("Enter");
     await onboardingPage.evaluate(() => {
       window.__onboardingMotionClassMutations = 0;
       window.__onboardingMotionObserver = new MutationObserver((records) => { window.__onboardingMotionClassMutations += records.length; });
@@ -1954,28 +1975,64 @@ const proofFeed = imageProofFixture(6);
     assert.deepEqual(onboarding.runtimeErrors, []);
     await onboardingPage.close();
 
+    const onboardingAdvancedRoutePage = await browser.newPage({ viewport: { width: 1440, height: 1000 } });
+    const onboardingAdvancedRoute = await mount(onboardingAdvancedRoutePage, scopedFixture(), { ...overrides, keepOnboarding: true });
+    await onboardingAdvancedRoutePage.getByRole("button", { name: "Start guided tour" }).click();
+    for (let step = 0; step < 3; step += 1) await onboardingAdvancedRoutePage.getByRole("button", { name: "Continue" }).click();
+    const advancedSettingsRoute = onboardingAdvancedRoutePage.getByRole("button", { name: "Advanced settings" });
+    const advancedRouteTarget = await advancedSettingsRoute.evaluate((button) => {
+      const rect = button.getBoundingClientRect();
+      return { width: rect.width, height: rect.height };
+    });
+    assert.ok(advancedRouteTarget.width >= 44 && advancedRouteTarget.height >= 44);
+    const configRequestsBeforeRoute = onboardingAdvancedRoute.configRequests.length;
+    await advancedSettingsRoute.click();
+    await onboardingAdvancedRoutePage.waitForFunction(() => location.hash === "#settings-advanced" && document.querySelector('#settings-advanced')?.open);
+    assert.equal(await onboardingAdvancedRoutePage.locator("#onboarding-dialog").isVisible(), false);
+    assert.equal(await onboardingAdvancedRoutePage.locator('[data-view-panel="settings"]').isVisible(), true);
+    assert.equal(await onboardingAdvancedRoutePage.locator("#settings-advanced").getAttribute("open"), "");
+    assert.equal(await onboardingAdvancedRoutePage.evaluate(() => document.activeElement?.textContent?.trim()), "Advanced settings");
+    assert.ok(await onboardingAdvancedRoutePage.locator("#settings-advanced > summary").evaluate((summary) => {
+      const rect = summary.getBoundingClientRect();
+      return rect.top >= 0 && rect.bottom <= innerHeight && document.documentElement.scrollWidth <= innerWidth;
+    }));
+    if (evidenceDir) await onboardingAdvancedRoutePage.screenshot({ path: path.join(evidenceDir, "05c-advanced-settings-route-desktop-1440x1000.png"), fullPage: false, animations: "disabled" });
+    assert.equal(await onboardingAdvancedRoutePage.evaluate(() => localStorage.getItem("swarm.onboarding.v2.seen")), "1");
+    assert.equal(onboardingAdvancedRoute.configRequests.length, configRequestsBeforeRoute);
+    await onboardingAdvancedRoutePage.goBack();
+    await onboardingAdvancedRoutePage.waitForFunction(() => location.hash === "#overview" && !document.querySelector('[data-view-panel="overview"]')?.hidden);
+    assert.deepEqual(onboardingAdvancedRoute.runtimeErrors, []);
+    await onboardingAdvancedRoutePage.close();
+
     const onboardingTabletPage = await browser.newPage({ viewport: { width: 834, height: 1112 } });
     const onboardingTablet = await mount(onboardingTabletPage, scopedFixture(), { ...overrides, keepOnboarding: true });
     await assertDialogFrame(onboardingTabletPage, "#onboarding-dialog");
     await onboardingTabletPage.getByRole("button", { name: "Start guided tour" }).click();
     await assertLaterStepNavigation(onboardingTabletPage, "Continue");
-    const tabletFlowGeometry = await onboardingTabletPage.locator(".onboarding-flow-scene").evaluate((scene) => {
-      const roleNodes = [...scene.querySelectorAll(".onboarding-flow-roles b")];
+    const tabletFlowGeometry = await onboardingTabletPage.locator(".onboarding-coordination-slot").evaluate((scene) => {
       return {
         sceneWidth: scene.scrollWidth,
         sceneClientWidth: scene.clientWidth,
-        roleTargets: roleNodes.map((node) => ({ width: node.getBoundingClientRect().width, height: node.getBoundingClientRect().height })),
+        height: scene.getBoundingClientRect().height,
         documentWidth: document.documentElement.scrollWidth,
         viewportWidth: innerWidth,
       };
     });
     assert.ok(tabletFlowGeometry.sceneWidth <= tabletFlowGeometry.sceneClientWidth + 1);
-    assert.ok(tabletFlowGeometry.roleTargets.every((role) => role.width >= 44 && role.height >= 44));
+    assert.ok(tabletFlowGeometry.height >= 170);
     assert.ok(tabletFlowGeometry.documentWidth <= tabletFlowGeometry.viewportWidth);
     await onboardingTabletPage.getByRole("button", { name: "Continue" }).click();
     await assertOnboardingRoleGroup(onboardingTabletPage, 834);
     await onboardingTabletPage.getByRole("button", { name: "Continue" }).click();
     assert.ok(await onboardingTabletPage.locator(".onboarding-project-tool").evaluate((node) => node.scrollWidth <= node.closest(".onboarding-panel").clientWidth + 1));
+    await onboardingTabletPage.getByRole("button", { name: "Continue" }).click();
+    await captureOnboardingEvidence(onboardingTabletPage, "05d-slide-5-config-tablet-834x1112");
+    assert.equal(await onboardingTabletPage.locator("#onboarding-panel-5 .onboarding-config-advanced").count(), 0);
+    assert.equal(await onboardingTabletPage.getByRole("button", { name: "Advanced settings" }).isVisible(), true);
+    assert.ok(await onboardingTabletPage.locator("#onboarding-configuration").evaluate((node) => node.scrollWidth <= node.clientWidth + 1));
+    await onboardingTabletPage.getByRole("button", { name: "Advanced settings" }).click();
+    await onboardingTabletPage.waitForFunction(() => location.hash === "#settings-advanced" && document.querySelector('#settings-advanced')?.open);
+    if (evidenceDir) await onboardingTabletPage.screenshot({ path: path.join(evidenceDir, "05e-advanced-settings-route-tablet-834x1112.png"), fullPage: false, animations: "disabled" });
     assert.deepEqual(onboardingTablet.runtimeErrors, []);
     await onboardingTabletPage.close();
 
@@ -1986,16 +2043,11 @@ const proofFeed = imageProofFixture(6);
     await onboardingMobilePage.getByRole("button", { name: "Start guided tour" }).click();
     await assertLaterStepNavigation(onboardingMobilePage, "Continue");
     await captureOnboardingEvidence(onboardingMobilePage, "07-slide-2-pending-mobile-390x844");
-    const mobileFlowGeometry = await onboardingMobilePage.locator(".onboarding-flow").evaluate((flow) => {
-      const rect = (element) => { const value = element.getBoundingClientRect(); return { left: value.left, right: value.right, top: value.top, bottom: value.bottom, width: value.width, height: value.height }; };
-      const ctrl = rect(flow.querySelector(".is-ctrl"));
-      const roles = [...flow.querySelectorAll(".onboarding-flow-roles b")].map((element) => ({ ...rect(element), fontSize: parseFloat(getComputedStyle(element).fontSize) }));
-      return { ctrl, roles, scrollWidth: flow.scrollWidth, clientWidth: flow.clientWidth };
+    const mobileFlowGeometry = await onboardingMobilePage.locator(".onboarding-coordination-slot").evaluate((flow) => {
+      const rect = flow.getBoundingClientRect();
+      return { width: rect.width, height: rect.height, scrollWidth: flow.scrollWidth, clientWidth: flow.clientWidth };
     });
-    assert.equal(mobileFlowGeometry.roles.length, 3);
-    assert.ok(mobileFlowGeometry.roles.every((role) => role.width >= 88 && role.height >= 44 && role.fontSize >= 9));
-    assert.ok(mobileFlowGeometry.roles.every((role) => role.left > mobileFlowGeometry.ctrl.right));
-    assert.ok(mobileFlowGeometry.roles[0].top < mobileFlowGeometry.roles[1].top && mobileFlowGeometry.roles[1].top < mobileFlowGeometry.roles[2].top);
+    assert.ok(mobileFlowGeometry.width > 280 && mobileFlowGeometry.height >= 170);
     assert.ok(mobileFlowGeometry.scrollWidth <= mobileFlowGeometry.clientWidth + 1);
     await onboardingMobilePage.getByRole("button", { name: "Continue" }).click();
     await assertOnboardingRoleGroup(onboardingMobilePage, 390);
@@ -2005,6 +2057,11 @@ const proofFeed = imageProofFixture(6);
     await captureOnboardingEvidence(onboardingMobilePage, "09-slide-4-mobile-390x844");
     await onboardingMobilePage.getByRole("button", { name: "Continue" }).click();
     await captureOnboardingEvidence(onboardingMobilePage, "10-slide-5-config-mobile-390x844");
+    const mobileTaskLifeInfo = onboardingMobilePage.locator('summary[aria-label="About task life"]');
+    await mobileTaskLifeInfo.click();
+    assert.equal(await onboardingMobilePage.getByRole("tooltip").isVisible(), true);
+    await captureOnboardingEvidence(onboardingMobilePage, "10b-slide-5-task-life-tooltip-mobile-390x844");
+    await mobileTaskLifeInfo.click();
     const mobileGeometry = await onboardingMobilePage.locator("#onboarding-dialog").evaluate((dialog) => {
       const rect = (element) => { const value = element.getBoundingClientRect(); return { left: value.left, top: value.top, right: value.right, bottom: value.bottom, width: value.width, height: value.height }; };
       const primary = rect(document.querySelector("#onboarding-primary"));
@@ -2024,23 +2081,19 @@ const proofFeed = imageProofFixture(6);
     assert.equal(mobileGeometry.configuration.overflowY, "visible");
     assert.equal(mobileGeometry.body.overflowY, "auto");
     assert.ok(mobileGeometry.configuration.scrollWidth <= mobileGeometry.configuration.clientWidth + 1);
-    assert.ok(mobileGeometry.body.scrollHeight > mobileGeometry.body.clientHeight);
+    assert.ok(mobileGeometry.body.scrollHeight >= mobileGeometry.body.clientHeight);
     assert.ok(mobileGeometry.heading.top >= mobileGeometry.back.bottom + 8, JSON.stringify({ back: mobileGeometry.back, heading: mobileGeometry.heading }));
     assert.ok(mobileGeometry.configControls.every((control) => control.width >= 44 && control.height >= 44), JSON.stringify(mobileGeometry.configControls));
     assert.ok(mobileGeometry.documentWidth <= mobileGeometry.viewport.width);
-    const mobileBackTop = await onboardingMobilePage.getByRole("button", { name: "Back" }).evaluate((button) => button.getBoundingClientRect().top);
-    await onboardingMobilePage.locator("#onboarding-dialog .dialog-body").evaluate((body) => { body.scrollTop = body.scrollHeight; });
-    await captureOnboardingEvidence(onboardingMobilePage, "11-slide-5-config-scrolled-mobile-390x844");
-    const scrolledFrame = await onboardingMobilePage.locator("#onboarding-dialog").evaluate((dialog) => {
-      const header = dialog.querySelector(".dialog-header").getBoundingClientRect();
-      const footer = dialog.querySelector(".dialog-footer").getBoundingClientRect();
-      const body = dialog.querySelector(".dialog-body").getBoundingClientRect();
-      return { headerBottom: header.bottom, bodyTop: body.top, bodyBottom: body.bottom, footerTop: footer.top, footerBottom: footer.bottom, dialogBottom: dialog.getBoundingClientRect().bottom, backTop: dialog.querySelector("#onboarding-back").getBoundingClientRect().top };
-    });
-    assert.ok(Math.abs(scrolledFrame.headerBottom - scrolledFrame.bodyTop) <= 1);
-    assert.ok(Math.abs(scrolledFrame.bodyBottom - scrolledFrame.footerTop) <= 1);
-    assert.ok(scrolledFrame.footerBottom <= scrolledFrame.dialogBottom + 1);
-    assert.ok(Math.abs(scrolledFrame.backTop - mobileBackTop) <= 1);
+    assert.equal(await onboardingMobilePage.locator("#onboarding-panel-5 .onboarding-config-advanced").count(), 0);
+    assert.equal(await onboardingMobilePage.getByRole("button", { name: "Advanced settings" }).isVisible(), true);
+    await onboardingMobilePage.getByRole("button", { name: "Advanced settings" }).click();
+    await onboardingMobilePage.waitForFunction(() => location.hash === "#settings-advanced" && document.querySelector('#settings-advanced')?.open);
+    assert.ok(await onboardingMobilePage.locator("#settings-advanced > summary").evaluate((summary) => {
+      const rect = summary.getBoundingClientRect();
+      return rect.top >= 0 && rect.bottom <= innerHeight && document.documentElement.scrollWidth <= innerWidth;
+    }));
+    if (evidenceDir) await onboardingMobilePage.screenshot({ path: path.join(evidenceDir, "10c-advanced-settings-route-mobile-390x844.png"), fullPage: false, animations: "disabled" });
     assert.deepEqual(onboardingMobile.runtimeErrors, []);
     await onboardingMobilePage.close();
 
@@ -2052,7 +2105,6 @@ const proofFeed = imageProofFixture(6);
       ".onboarding-panel.is-active .onboarding-artwork",
       ".onboarding-panel.is-active > h2",
       ".onboarding-panel.is-active > p",
-      ".onboarding-panel.is-active .onboarding-supporting-visual",
       "#onboarding-primary",
     ].map((selector) => {
       const style = getComputedStyle(dialog.querySelector(selector));
@@ -2075,6 +2127,7 @@ const proofFeed = imageProofFixture(6);
     await pendingRequest;
     await pendingPage.waitForFunction(() => document.activeElement?.id === "onboarding-config-status");
     assert.equal(await pendingPage.getByRole("button", { name: "Start using SWARM" }).isDisabled(), true);
+    assert.equal(await pendingPage.getByRole("button", { name: "Advanced settings" }).isDisabled(), true);
     assert.equal(await pendingPage.locator("#onboarding-config-status").textContent().then((text) => /Saving/.test(text)), true);
     assert.equal(await pendingPage.locator("#onboarding-panel-5").getByLabel("Fast", { exact: true }).isDisabled(), true);
     await pendingPage.locator("#onboarding-panel-5").getByLabel("Fast", { exact: true }).evaluate((input) => input.click());
@@ -2084,10 +2137,10 @@ const proofFeed = imageProofFixture(6);
     assert.equal(await pendingPage.locator("#onboarding-dialog").isVisible(), true);
     assert.equal(await pendingPage.evaluate(() => localStorage.getItem("swarm.onboarding.v2.seen")), null);
     assert.equal(await pendingPage.locator("#onboarding-config-status").textContent().then((text) => /Saving/.test(text)), true);
-    const usageSummary = pendingPage.locator('details[data-onboarding-control="usage-policy"] > summary');
-    await usageSummary.focus();
+    const pendingTaskLifeInfo = pendingPage.locator('summary[aria-label="About task life"]');
+    await pendingTaskLifeInfo.focus();
     await pendingPage.evaluate(() => renderOnboarding());
-    await pendingPage.waitForFunction(() => document.activeElement?.tagName === "SUMMARY" && document.activeElement?.textContent === "Smart routing");
+    await pendingPage.waitForFunction(() => document.activeElement?.matches('summary[aria-label="About task life"]'));
     releaseConfigPost();
     pendingConfigControl.deferredPost = null;
     await pendingPage.getByRole("button", { name: "Start using SWARM" }).waitFor({ state: "visible" });
@@ -2114,19 +2167,41 @@ const proofFeed = imageProofFixture(6);
     const firstSerialRequest = serialPage.waitForRequest((request) => request.url().endsWith("/api/config") && request.method() === "POST");
     await serialPage.locator('#onboarding-panel-5 label:has([data-onboarding-control="speed-fast"])').click();
     await firstSerialRequest;
-    await serialPage.locator("#onboarding-panel-5").getByLabel("Usage saver").click();
+    await serialPage.locator("#onboarding-panel-5").getByLabel("Auto mode").click();
     await serialPage.waitForTimeout(100);
     assert.deepEqual(serial.configRequests, [{ changes: { "execution.fast_mode": true } }]);
-    const secondSerialRequest = serialPage.waitForRequest((request) => request.url().endsWith("/api/config") && request.method() === "POST" && request.postDataJSON().changes["execution.usage_saver"] === true);
+    const secondSerialRequest = serialPage.waitForRequest((request) => request.url().endsWith("/api/config") && request.method() === "POST" && request.postDataJSON().changes["automation.mode"] === "manual");
     releaseFirstConfigPost();
     await secondSerialRequest;
     releaseSecondConfigPost();
     await serialPage.waitForFunction(() => !document.querySelector("#onboarding-primary")?.disabled);
-    assert.deepEqual(serial.configRequests, [{ changes: { "execution.fast_mode": true } }, { changes: { "execution.usage_saver": true } }]);
+    assert.deepEqual(serial.configRequests, [{ changes: { "execution.fast_mode": true } }, { changes: { "automation.mode": "manual" } }]);
     assert.equal(await serialPage.locator("#onboarding-panel-5").getByLabel("Fast", { exact: true }).isChecked(), true);
-    assert.equal(await serialPage.locator("#onboarding-panel-5").getByLabel("Usage saver").isChecked(), true);
+    assert.equal(await serialPage.locator("#onboarding-panel-5").getByLabel("Auto mode").isChecked(), false);
     assert.deepEqual(serial.runtimeErrors, []);
     await serialPage.close();
+
+    const taskLifeConfig = structuredClone(fixture.config);
+    taskLifeConfig.editable = [...taskLifeConfig.editable, "lifecycle.task_lifetime_hours"];
+    taskLifeConfig.settings.lifecycle.task_lifetime_hours = 4;
+    const taskLifeControl = { failPost: false, feed: taskLifeConfig, deferredPost: null };
+    const taskLifePage = await browser.newPage({ viewport: { width: 1024, height: 760 } });
+    const taskLifeRuntime = await mount(taskLifePage, scopedFixture(), { ...overrides, keepOnboarding: true, configControl: taskLifeControl });
+    await taskLifePage.getByRole("button", { name: "Start guided tour" }).click();
+    for (let step = 0; step < 3; step += 1) await taskLifePage.getByRole("button", { name: "Continue" }).click();
+    const enabledTaskLife = taskLifePage.getByRole("slider", { name: "Task life" });
+    assert.equal(await enabledTaskLife.isEnabled(), true);
+    assert.equal(await enabledTaskLife.inputValue(), "2");
+    assert.equal(await enabledTaskLife.getAttribute("aria-valuetext"), "Balanced — 4 hours");
+    await enabledTaskLife.focus();
+    const taskLifeRequest = taskLifePage.waitForRequest((request) => request.url().endsWith("/api/config") && request.method() === "POST");
+    await taskLifePage.keyboard.press("ArrowRight");
+    await taskLifeRequest;
+    await taskLifePage.waitForFunction(() => document.querySelector('#onboarding-task-life')?.getAttribute("aria-valuetext") === "Between Balanced and Long — 24 hours");
+    assert.deepEqual(taskLifeRuntime.configRequests, [{ changes: { "lifecycle.task_lifetime_hours": 24 } }]);
+    assert.equal(await taskLifePage.evaluate(() => document.activeElement?.id), "onboarding-task-life");
+    assert.deepEqual(taskLifeRuntime.runtimeErrors, []);
+    await taskLifePage.close();
 
     let releaseWriteBeforeRead;
     const writeBeforeReadControl = {
@@ -2226,6 +2301,7 @@ const proofFeed = imageProofFixture(6);
     await failedPage.locator('#onboarding-panel-5 label:has([data-onboarding-control="speed-fast"])').click();
     await failedPage.getByRole("button", { name: "Retry" }).waitFor({ state: "visible" });
     assert.equal(await failedPage.getByRole("button", { name: "Start using SWARM" }).isDisabled(), true);
+    assert.equal(await failedPage.getByRole("button", { name: "Advanced settings" }).isDisabled(), true);
     assert.equal(await failedPage.locator("#onboarding-dialog").isVisible(), true);
     assert.equal(await failedPage.evaluate(() => localStorage.getItem("swarm.onboarding.v2.seen")), null);
     assert.equal(await failedPage.locator("#onboarding-panel-5").getByLabel("Fast", { exact: true }).isChecked(), true);
