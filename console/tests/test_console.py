@@ -5283,6 +5283,7 @@ class SwarmConsoleTests(unittest.TestCase):
         self.assertIn("Request health review when needed", app)
         self.assertIn("Passive monitoring does not run models.", app)
         self.assertNotIn("Automatic care", app)
+        self.assertNotIn("watchdog", app.casefold())
         self.assertNotIn("watchdog", console.EDITABLE_SETTINGS)
 
     def test_visible_role_titles_are_normalized_by_icon_setting(self) -> None:
@@ -5473,8 +5474,8 @@ class SwarmConsoleTests(unittest.TestCase):
         app = (console.STATIC_ROOT / "app.js").read_text(encoding="utf-8")
         self.assertNotIn('id="usage-saver-toggle"', index)
         self.assertEqual(app.count("settingToggle('boost.spark_enabled'"), 1)
-        self.assertIn("Spark and monitoring", app)
-        self.assertIn("Save Spark model", app)
+        self.assertIn("Use Spark for safe small tasks", app)
+        self.assertIn("Spark stays bounded to quick, low-risk work.", app)
         self.assertNotIn("No browser, web lookup, ImageGen", app)
         self.assertNotIn("saveUsageSaver", app)
 
