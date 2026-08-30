@@ -4715,6 +4715,7 @@ class SwarmConsoleTests(unittest.TestCase):
         self.assertEqual(enabled_policy["dispatch"], "disabled")
         self.assertIn("not an allowlisted low-risk repair executor", enabled_policy["reason"])
 
+        before_requests = app.store.health_requests()
         prepared = app.prepare_health_repair(
             ["process.listener_package_parity"],
             scope="all",
@@ -4723,6 +4724,9 @@ class SwarmConsoleTests(unittest.TestCase):
         )
         request = prepared["request"]
         self.assertFalse(request["deduplicated"])
+        self.assertFalse(request["persistent"])
+        self.assertEqual(request["status"], "PREVIEW")
+        self.assertEqual(request["payload"]["persistence"], "preview_only")
         self.assertEqual(request["payload"]["check_ids"], ["process.listener_package_parity"])
         self.assertFalse(request["payload"]["auto_dispatch"])
         self.assertEqual(request["payload"]["dispatch_status"], "NOT_DISPATCHED")
@@ -4732,8 +4736,10 @@ class SwarmConsoleTests(unittest.TestCase):
             acknowledge=False,
             dry_run=True,
         )
-        self.assertTrue(replay["request"]["deduplicated"])
+        self.assertFalse(replay["request"]["deduplicated"])
         self.assertEqual(replay["request"]["request_id"], request["request_id"])
+        self.assertFalse(replay["request"]["persistent"])
+        self.assertEqual(app.store.health_requests(), before_requests)
 
         with self.assertRaisesRegex(console.ConsoleError, "requires acknowledgement"):
             app.prepare_health_repair(
@@ -4742,6 +4748,35 @@ class SwarmConsoleTests(unittest.TestCase):
                 acknowledge=False,
                 dry_run=False,
             )
+
+        persisted = app.prepare_health_repair(
+            ["process.listener_package_parity"],
+            scope="all",
+            acknowledge=True,
+            dry_run=False,
+        )
+        self.assertTrue(persisted["request"]["persistent"])
+        self.assertEqual(persisted["request"]["status"], "OPEN")
+        self.assertEqual(len(app.store.health_requests(status="OPEN")), 1)
+
+    def test_health_source_mirror_parity_requires_two_identities(self) -> None:
+        app = console.App(self.codex_home, self.config)
+        source_server, mirror_server = console._server_identity_paths()
+        self.assertNotEqual(source_server, mirror_server)
+        self.assertTrue(source_server.is_file())
+        self.assertTrue(mirror_server.is_file())
+        checks = {check["id"]: check for check in app.health_contract()["checks"]}
+        self.assertEqual(checks["process.source_mirror_parity"]["status"], "PASS")
+        self.assertTrue(checks["process.source_mirror_parity"]["details"]["independent_identities"])
+
+        installed_server = self.root / "installed-package" / "console" / "server.py"
+        installed_server.parent.mkdir(parents=True)
+        installed_server.write_bytes(source_server.read_bytes())
+        with mock.patch.object(console, "__file__", str(installed_server)):
+            installed_checks = {check["id"]: check for check in app.health_contract()["checks"]}
+        installed_parity = installed_checks["process.source_mirror_parity"]
+        self.assertEqual(installed_parity["status"], "UNKNOWN")
+        self.assertEqual(installed_parity["details"]["source_mirror"], "unavailable")
 
     def test_health_contract_fail_closes_missing_project_inventory_and_keeps_local_checks(self) -> None:
         with closing(sqlite3.connect(self.database)) as connection:

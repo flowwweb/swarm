@@ -1225,6 +1225,22 @@ def _health_check(
     return result
 
 
+def _server_identity_paths() -> tuple[Path | None, Path | None]:
+    """Resolve the retained source/mirror pair without comparing a file to itself."""
+    current = Path(__file__).resolve()
+    current_parent = current.parent
+    package_root = current_parent.parent
+    if (
+        package_root.name.casefold() == "swarm"
+        and package_root.parent.name.casefold() == "plugins"
+    ):
+        source_root = package_root.parent.parent
+        source_server = source_root / "console" / "server.py"
+        return (source_server if (source_root / ".git").exists() else None), current
+    mirror_server = package_root / "plugins" / "swarm" / "console" / "server.py"
+    return (current if (package_root / ".git").exists() else None), mirror_server
+
+
 class ConsoleStore:
     """Small console-owned persistence layer; host state remains read-only."""
 
@@ -4002,7 +4018,7 @@ class ConsoleStore:
         dry_run: bool,
         now_ms: int,
     ) -> dict[str, Any]:
-        """Persist one sanitized manual repair request; never dispatches work."""
+        """Return one sanitized manual repair request; dry runs never persist or dispatch work."""
         if not isinstance(checks, list) or not checks:
             raise ConsoleError("repair requires at least one health check")
         if not isinstance(acknowledge, bool) or not isinstance(dry_run, bool):
@@ -4047,6 +4063,7 @@ class ConsoleStore:
             "check_ids": [item["id"] for item in safe_checks],
             "checks": safe_checks,
             "dry_run": dry_run,
+            "persistence": "preview_only" if dry_run else "health_requests",
             "acknowledged": acknowledge,
             "acknowledgement_required": True,
             "auto_dispatch": False,
@@ -4057,14 +4074,34 @@ class ConsoleStore:
             ),
         }
         now_ms = int(now_ms)
+        request_id = f"health:manual:{digest[:32]}"
+        if dry_run:
+            return {
+                "request_id": request_id,
+                "incident_key": incident_key,
+                "dedupe_key": dedupe_key,
+                "request_type": "diagnostics_repair",
+                "severity": "critical" if any(item["status"] == "FAIL" for item in safe_checks) else "warning",
+                "scope": scope,
+                "evidence_digest": digest,
+                "payload": payload,
+                "status": "PREVIEW",
+                "previewed_at_ms": now_ms,
+                "persistent": False,
+                "deduplicated": False,
+            }
         with self._lock, closing(self._connect()) as connection:
             existing = connection.execute(
                 "SELECT * FROM health_requests WHERE dedupe_key=? AND status IN ('OPEN', 'CLAIMED', 'IN_PROGRESS')",
                 (dedupe_key,),
             ).fetchone()
             if existing is not None:
-                return {**dict(existing), "payload": json.loads(existing["payload_json"]), "deduplicated": True}
-            request_id = f"health:manual:{digest[:32]}"
+                return {
+                    **dict(existing),
+                    "payload": json.loads(existing["payload_json"]),
+                    "persistent": True,
+                    "deduplicated": True,
+                }
             if connection.execute(
                 "SELECT 1 FROM health_requests WHERE request_id=?", (request_id,)
             ).fetchone() is not None:
@@ -4091,7 +4128,12 @@ class ConsoleStore:
             row = connection.execute(
                 "SELECT * FROM health_requests WHERE request_id=?", (request_id,)
             ).fetchone()
-        return {**dict(row), "payload": json.loads(row["payload_json"]), "deduplicated": False}
+        return {
+            **dict(row),
+            "payload": json.loads(row["payload_json"]),
+            "persistent": True,
+            "deduplicated": False,
+        }
 
     def claim_health_request(self, request_id: str, *, now_ms: int) -> dict[str, Any]:
         request_id = _safe_metadata_text(request_id, "request_id", maximum=512)
@@ -9883,30 +9925,45 @@ class App:
         now_ms = int(now_ms if now_ms is not None else time.time() * 1000)
         checks: list[dict[str, Any]] = []
 
-        source_server = Path(__file__).resolve()
-        mirror_server = PLUGIN_ROOT / "console" / "server.py"
-        try:
-            source_digest = hashlib.sha256(source_server.read_bytes()).hexdigest()
-            mirror_digest = hashlib.sha256(mirror_server.read_bytes()).hexdigest()
-        except (OSError, ValueError):
-            source_digest = mirror_digest = ""
-        if source_digest and source_digest == mirror_digest:
+        source_server, mirror_server = _server_identity_paths()
+        source_digest = mirror_digest = ""
+        source_mirror_state = "unavailable"
+        distinct = False
+        if source_server is not None and mirror_server is not None:
+            try:
+                distinct = source_server != mirror_server and not os.path.samefile(source_server, mirror_server)
+            except (FileNotFoundError, OSError):
+                distinct = source_server != mirror_server
+        if distinct and source_server.is_file() and mirror_server.is_file():
+            try:
+                source_digest = hashlib.sha256(source_server.read_bytes()).hexdigest()
+                mirror_digest = hashlib.sha256(mirror_server.read_bytes()).hexdigest()
+            except (OSError, ValueError):
+                source_digest = mirror_digest = ""
+            if source_digest and mirror_digest and source_digest == mirror_digest:
+                source_mirror_state = "match"
+            elif source_digest and mirror_digest:
+                source_mirror_state = "mismatch"
+        if source_mirror_state == "match":
             checks.append(_health_check(
                 "process.source_mirror_parity", "PASS",
                 "The local server source and plugin mirror have matching content.",
                 observed_at_ms=now_ms,
                 evidence=("local:server-source", "local:server-mirror"),
                 recommended_action="No source-mirror repair action is required.",
-                details={"source_mirror": "match"},
+                details={"source_mirror": source_mirror_state, "independent_identities": True},
             ))
         else:
             checks.append(_health_check(
-                "process.source_mirror_parity", "FAIL" if source_digest or mirror_digest else "UNKNOWN",
+                "process.source_mirror_parity", "FAIL" if source_mirror_state == "mismatch" else "UNKNOWN",
                 "The local server source/mirror parity could not be established.",
                 observed_at_ms=now_ms,
                 evidence=("local:server-source", "local:server-mirror"),
                 recommended_action="Restore one reviewed server source/mirror before claiming local parity.",
-                details={"source_mirror": "mismatch" if source_digest and mirror_digest else "unavailable"},
+                details={
+                    "source_mirror": source_mirror_state,
+                    "independent_identities": distinct,
+                },
             ))
         checks.append(_health_check(
             "process.listener_package_parity", "UNKNOWN",
