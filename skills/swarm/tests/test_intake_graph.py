@@ -57,8 +57,13 @@ class IntakeGraphTests(unittest.TestCase):
         self.assertEqual({node.agent_type for node in plan.graph.nodes}, {"CTRL", "LEAD", "DOER"})
         self.assertEqual([node.title for node in plan.graph.nodes if node.agent_type == "LEAD"], ["Manager LEAD"])
         self.assertEqual(
-            {node.title for node in production.values()},
-            {"Designer DOER", "Dev DOER", "Artist DOER", "Producer DOER"},
+            {node_id: node.title for node_id, node in production.items()},
+            {
+                "game_design": "Designer DOER",
+                "game_engineering": "Dev DOER",
+                "game_art": "Artist DOER",
+                "game_audio": "Producer DOER",
+            },
         )
         qa = next(node for node in plan.graph.nodes if node.id == "playtest_qa")
         self.assertEqual(qa.title, "Tester DOER")

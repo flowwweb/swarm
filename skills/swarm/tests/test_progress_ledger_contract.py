@@ -786,10 +786,20 @@ class ProgressLedgerContractTests(unittest.TestCase):
 
     def test_retained_producer_manifest_and_assignment_remain_byte_and_version_truthful(self) -> None:
         builtins = self.role_manifests()
-        producer = next(role for role in builtins if role["id"] == "producer")
+        current = next(role for role in builtins if role["id"] == "producer")
+        historical = build_role_manifest(
+            "producer",
+            self.role_draft(
+                current,
+                purpose="Historically coordinate bounded production delivery for accepted artifacts.",
+            ),
+            "builtin",
+            ["role-card:producer:historical-v1"],
+        )
+        self.assertNotEqual(historical["version"], current["version"])
         assignment = role_material_event(
             "ROLE_ASSIGNMENT_BOUND", event_id="retained-producer-assignment", dedupe_key="retained-producer-assignment-dedupe",
-            role_id="producer", manifest=producer, expected_active_version=producer["version"],
+            role_id="producer", manifest=historical, expected_active_version=historical["version"],
             assignment_task_id="task-retained-producer", provenance="retained:producer", observed_at_ms=1,
         )
         event_digest = hashlib.sha256(json.dumps(assignment, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
@@ -803,10 +813,15 @@ class ProgressLedgerContractTests(unittest.TestCase):
         self.assertEqual((projected["built_in_count"], len(roles)), (24, 24))
         self.assertIn("producer", roles)
         self.assertNotIn("content_creator", roles)
-        self.assertIn(producer["version"], {version["version"] for version in roles["producer"]["versions"]})
+        producer = roles["producer"]
+        versions = {version["version"]: version for version in producer["versions"]}
+        self.assertEqual(producer["active_version"], current["version"])
+        self.assertEqual(producer["canonical_version"], current["version"])
+        self.assertEqual(versions[historical["version"]], {**historical, "active": False})
+        self.assertEqual(versions[current["version"]], {**current, "active": True})
         self.assertTrue(all(version["id"] == "producer" for version in roles["producer"]["versions"]))
         self.assertEqual(projected["assignments"], [{
-            "task_id": "task-retained-producer", "role_id": "producer", "manifest_version": producer["version"],
+            "task_id": "task-retained-producer", "role_id": "producer", "manifest_version": historical["version"],
             "event_id": "retained-producer-assignment", "event_seq": 1,
         }])
         self.assertEqual(ProgressLedger(self.root).project_role_manifests(builtins), projected)
