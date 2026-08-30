@@ -85,12 +85,12 @@ class HQTargetIntent(StrEnum):
 
 
 HQ_ACTION_CAPABILITIES = {
-    HQCommandAction.AUTO: ("turn.start", HQTargetIntent.EXISTING_THREAD),
-    HQCommandAction.MANUAL_AGENT: ("thread.start", HQTargetIntent.NEW_THREAD),
-    HQCommandAction.TASK: ("turn.start", HQTargetIntent.EXISTING_THREAD),
-    HQCommandAction.TOPOLOGY_MATERIALIZE: ("thread.start", HQTargetIntent.NEW_THREAD),
-    HQCommandAction.REPAIR: ("turn.steer", HQTargetIntent.EXISTING_THREAD),
-    HQCommandAction.LOCAL_HQ: ("local", HQTargetIntent.LOCAL),
+    HQCommandAction.AUTO: (("thread.resume", "turn.start"), HQTargetIntent.EXISTING_THREAD),
+    HQCommandAction.MANUAL_AGENT: (("thread.start", "turn.start"), HQTargetIntent.NEW_THREAD),
+    HQCommandAction.TASK: (("thread.resume", "turn.start"), HQTargetIntent.EXISTING_THREAD),
+    HQCommandAction.TOPOLOGY_MATERIALIZE: (("thread.start", "turn.start"), HQTargetIntent.NEW_THREAD),
+    HQCommandAction.REPAIR: (("turn.steer",), HQTargetIntent.EXISTING_THREAD),
+    HQCommandAction.LOCAL_HQ: (("local",), HQTargetIntent.LOCAL),
 }
 
 
@@ -108,6 +108,7 @@ class HQCommandEnvelope:
     expected_ledger_revision: int
     submitted_at_ms: int
     expires_at_ms: int
+    target_turn_id: str = ""
     acknowledgement_required: bool = True
     digest: str = field(init=False)
 
@@ -116,7 +117,7 @@ class HQCommandEnvelope:
             _text(value, label)
         if not isinstance(self.action, HQCommandAction) or not isinstance(self.target_intent, HQTargetIntent):
             raise InvariantError("HQ action and target intent must be typed")
-        expected_capability, expected_target = HQ_ACTION_CAPABILITIES[self.action]
+        _, expected_target = HQ_ACTION_CAPABILITIES[self.action]
         if self.target_intent is not expected_target:
             raise InvariantError("HQ target intent conflicts with action")
         if self.ctrl_id:
@@ -125,6 +126,10 @@ class HQCommandEnvelope:
             _text(self.target_thread_id, "HQ target thread")
         elif self.target_thread_id:
             raise InvariantError("new-thread and local commands cannot name an existing thread")
+        if self.action is HQCommandAction.REPAIR:
+            _text(self.target_turn_id, "HQ target turn")
+        elif self.target_turn_id:
+            raise InvariantError("only repair commands may name an active turn")
         object.__setattr__(self, "root_digest", _digest(self.root_digest, "HQ root"))
         object.__setattr__(self, "payload_digest", _digest(self.payload_digest, "HQ payload"))
         if not isinstance(self.expected_ledger_revision, int) or isinstance(self.expected_ledger_revision, bool) or self.expected_ledger_revision < 0:
@@ -135,9 +140,41 @@ class HQCommandEnvelope:
             "command_id": self.command_id, "idempotency_key": self.idempotency_key, "action": self.action.value,
             "project_id": self.project_id, "root_digest": self.root_digest, "ctrl_id": self.ctrl_id,
             "target_intent": self.target_intent.value, "target_thread_id": self.target_thread_id,
+            "target_turn_id": self.target_turn_id,
             "payload_digest": self.payload_digest, "expected_ledger_revision": self.expected_ledger_revision,
             "submitted_at_ms": self.submitted_at_ms, "expires_at_ms": self.expires_at_ms, "acknowledgement_required": True,
         }))
+
+
+@dataclass(frozen=True, repr=False)
+class HQDispatchMaterial:
+    """Ephemeral host-resolved cwd and instruction bytes; never persisted."""
+
+    cwd: str = field(repr=False)
+    instruction_bytes: bytes = field(repr=False)
+    digest: str = field(init=False)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "cwd", _text(self.cwd, "HQ dispatch cwd"))
+        if not isinstance(self.instruction_bytes, bytes) or not self.instruction_bytes or len(self.instruction_bytes) > 32_768:
+            raise InvariantError("HQ dispatch material requires bounded instruction bytes")
+        try:
+            instruction = self.instruction_bytes.decode("utf-8")
+        except UnicodeDecodeError as exc:
+            raise InvariantError("HQ dispatch instruction must be UTF-8") from exc
+        if not instruction.strip() or "\x00" in instruction:
+            raise InvariantError("HQ dispatch instruction must be non-empty text")
+        object.__setattr__(self, "digest", sha256(self.instruction_bytes).hexdigest())
+
+    @property
+    def instruction(self) -> str:
+        return self.instruction_bytes.decode("utf-8")
+
+    def input_items(self) -> list[dict[str, str]]:
+        return [{"type": "text", "text": self.instruction}]
+
+    def __repr__(self) -> str:
+        return "HQDispatchMaterial(<redacted>)"
 
 
 @dataclass(frozen=True)
@@ -149,8 +186,6 @@ class HQAuthorizationReceipt:
     ctrl_id: str
     actions: tuple[HQCommandAction, ...]
     expires_at_ms: int
-    auto_grant: bool = False
-    _authority: object | None = field(default=None, init=False, repr=False, compare=False)
 
     def __post_init__(self) -> None:
         _text(self.receipt_id, "HQ authorization receipt")
@@ -165,18 +200,38 @@ class HQAuthorizationReceipt:
             raise InvariantError("HQ authorization expiry must be positive")
 
 
-_HQ_AUTHORITY = object()
+@dataclass(frozen=True)
+class HQAutoGrant:
+    grant_id: str
+    project_id: str
+    root_digest: str
+    ctrl_id: str
+    actions: tuple[HQCommandAction, ...]
+    expires_at_ms: int
+
+    def __post_init__(self) -> None:
+        _text(self.grant_id, "HQ Auto grant")
+        _text(self.project_id, "HQ Auto project")
+        _text(self.ctrl_id, "HQ Auto CTRL")
+        object.__setattr__(self, "root_digest", _digest(self.root_digest, "HQ Auto root"))
+        if self.actions != (HQCommandAction.AUTO,):
+            raise InvariantError("HQ Auto grant may authorize only AUTO")
+        if not isinstance(self.expires_at_ms, int) or isinstance(self.expires_at_ms, bool) or self.expires_at_ms < 1:
+            raise InvariantError("HQ Auto grant expiry must be positive")
 
 
-def host_hq_authorization(receipt: HQAuthorizationReceipt) -> HQAuthorizationReceipt:
-    if not isinstance(receipt, HQAuthorizationReceipt):
-        raise InvariantError("host HQ authorization must be typed")
-    object.__setattr__(receipt, "_authority", _HQ_AUTHORITY)
-    return receipt
+class HQAuthorizationVerifier(Protocol):
+    def verify(self, authorization: HQAuthorizationReceipt | HQAutoGrant, envelope: HQCommandEnvelope, now_ms: int) -> bool: ...
+
+
+class HQDispatchMaterialResolver(Protocol):
+    def resolve(self, envelope: HQCommandEnvelope) -> HQDispatchMaterial: ...
 
 
 class CodexAppServerTransport(Protocol):
     def request(self, method: str, params: Mapping[str, object]) -> Mapping[str, object]: ...
+
+    def reconcile(self, command_id: str, action: str, target_thread_id: str) -> Mapping[str, object] | None: ...
 
 
 @dataclass(frozen=True)
@@ -186,52 +241,139 @@ class HQConnectorResult:
     thread_id: str = ""
     turn_id: str = ""
     local_plan: Mapping[str, str] | None = None
+    attention: str = ""
 
 
 class UniversalHQConnector:
-    def __init__(self, adapter: "CodexAppServerAdapter") -> None:
+    def __init__(self, adapter: "CodexAppServerAdapter", *, authorization_verifier: HQAuthorizationVerifier, material_resolver: HQDispatchMaterialResolver) -> None:
         if not isinstance(adapter, CodexAppServerAdapter):
             raise InvariantError("universal connector requires the Codex adapter")
         self.adapter = adapter
+        self.authorization_verifier = authorization_verifier
+        self.material_resolver = material_resolver
 
     @staticmethod
     def _receipt(envelope: HQCommandEnvelope, *, receipt_id: str, index: int, status: str, observed_at_ms: int, thread_id: str | None = None, turn_id: str | None = None, observed_root_digest: str | None = None) -> dict[str, object]:
         return {"schema_version": 1, "record_type": "CONNECTOR", "receipt_id": receipt_id, "command_id": envelope.command_id, "receipt_index": index, "idempotency_key": envelope.idempotency_key, "command_digest": envelope.digest, "project_id": envelope.project_id, "root_digest": envelope.root_digest, "action": envelope.action.value, "status": status, "thread_id": thread_id, "turn_id": turn_id, "observed_root_digest": observed_root_digest, "observed_at_ms": observed_at_ms}
 
-    def execute(self, envelope: HQCommandEnvelope, authorization: HQAuthorizationReceipt, ledger: object, *, now_ms: int, observed_project_id: str, observed_root_digest: str) -> HQConnectorResult:
-        if not isinstance(envelope, HQCommandEnvelope) or not isinstance(authorization, HQAuthorizationReceipt) or authorization._authority is not _HQ_AUTHORITY:
-            raise InvariantError("connector requires host-owned typed authorization")
+    @staticmethod
+    def _host_binding(response: Mapping[str, object]) -> tuple[str, str, str]:
+        body = response.get("result") if isinstance(response.get("result"), Mapping) else response
+        thread = body.get("thread") if isinstance(body.get("thread"), Mapping) else {}
+        turn = body.get("turn") if isinstance(body.get("turn"), Mapping) else {}
+        thread_id = str(body.get("threadId") or thread.get("id") or turn.get("threadId") or "")
+        turn_id = str(body.get("turnId") or turn.get("id") or "")
+        observed_root = str(body.get("observedRootDigest") or response.get("observedRootDigest") or "")
+        return thread_id, turn_id, observed_root
+
+    @staticmethod
+    def _require_host_binding(response: Mapping[str, object], envelope: HQCommandEnvelope, *, thread_id: str = "", require_turn: bool) -> tuple[str, str]:
+        observed_thread, observed_turn, observed_root = UniversalHQConnector._host_binding(response)
+        if not observed_thread and observed_turn and thread_id:
+            observed_thread = thread_id
+        if observed_root != envelope.root_digest or not observed_thread or (thread_id and observed_thread != thread_id):
+            raise InvariantError("Codex host response has ambiguous or conflicting root or thread identity")
+        if require_turn and not observed_turn:
+            raise InvariantError("Codex host turn response omitted turn identity")
+        return observed_thread, observed_turn
+
+    def _validate_authorization(self, envelope: HQCommandEnvelope, authorization: HQAuthorizationReceipt | HQAutoGrant, now_ms: int) -> None:
+        if isinstance(authorization, HQAuthorizationReceipt):
+            if authorization.envelope_digest != envelope.digest:
+                raise InvariantError("explicit HQ authorization does not bind the command")
+        elif isinstance(authorization, HQAutoGrant):
+            if envelope.action is not HQCommandAction.AUTO:
+                raise InvariantError("HQ Auto grant cannot authorize this action")
+        else:
+            raise InvariantError("connector requires typed host authorization")
         if now_ms > min(envelope.expires_at_ms, authorization.expires_at_ms):
             raise InvariantError("HQ command authorization expired")
-        if authorization.auto_grant != (envelope.action is HQCommandAction.AUTO):
-            raise InvariantError("HQ authorization kind conflicts with command")
-        if authorization.envelope_digest != envelope.digest or envelope.action not in authorization.actions:
+        if isinstance(authorization, HQAuthorizationReceipt) and authorization.actions != (envelope.action,):
+            raise InvariantError("explicit HQ authorization must bind exactly one action")
+        if envelope.action not in authorization.actions:
             raise InvariantError("HQ authorization does not bind the command")
         if (authorization.project_id, authorization.root_digest, authorization.ctrl_id) != (envelope.project_id, envelope.root_digest, envelope.ctrl_id):
             raise InvariantError("HQ authorization scope conflicts")
+        if not self.authorization_verifier.verify(authorization, envelope, now_ms):
+            raise InvariantError("host verifier rejected HQ authorization")
+
+    @staticmethod
+    def _receipts(command: Mapping[str, object]) -> list[Mapping[str, object]]:
+        receipts = command.get("receipts")
+        return list(receipts) if isinstance(receipts, list) else []
+
+    def _append_complete(self, envelope: HQCommandEnvelope, ledger: object, *, now_ms: int, thread_id: str, turn_id: str, ack_exists: bool) -> HQConnectorResult:
+        if not ack_exists:
+            ledger.append_connector_receipt(self._receipt(envelope, receipt_id=f"{envelope.command_id}-ack", index=1, status="ACKNOWLEDGED", observed_at_ms=now_ms, thread_id=thread_id, observed_root_digest=envelope.root_digest))
+        ledger.append_connector_receipt(self._receipt(envelope, receipt_id=f"{envelope.command_id}-result", index=2, status="RESULT", observed_at_ms=now_ms, thread_id=thread_id, turn_id=turn_id, observed_root_digest=envelope.root_digest))
+        return HQConnectorResult("RESULT", envelope.digest, thread_id, turn_id)
+
+    def _reconcile(self, envelope: HQCommandEnvelope, ledger: object, command: Mapping[str, object], *, now_ms: int) -> HQConnectorResult:
+        receipts = self._receipts(command)
+        if receipts and str(receipts[-1].get("status") or "") in {"RESULT", "UNSUPPORTED"}:
+            return HQConnectorResult("REPLAY", envelope.digest)
+        ack = receipts[-1] if receipts and str(receipts[-1].get("status") or "") == "ACKNOWLEDGED" else None
+        known_thread = str(ack.get("thread_id") or "") if ack else envelope.target_thread_id
+        try:
+            response = self.adapter.reconcile(envelope, thread_id=known_thread)
+        except Exception:
+            return HQConnectorResult("PENDING", envelope.digest, known_thread, attention="HOST_RECONCILIATION_UNAVAILABLE")
+        if response is None:
+            return HQConnectorResult("PENDING", envelope.digest, known_thread, attention="HOST_OUTCOME_PENDING")
+        try:
+            thread_id, turn_id = self._require_host_binding(response, envelope, thread_id=known_thread, require_turn=False)
+        except InvariantError:
+            return HQConnectorResult("ATTENTION", envelope.digest, known_thread, attention="HOST_IDENTITY_CONFLICT")
+        if not turn_id:
+            if ack is None:
+                ledger.append_connector_receipt(self._receipt(envelope, receipt_id=f"{envelope.command_id}-ack", index=1, status="ACKNOWLEDGED", observed_at_ms=now_ms, thread_id=thread_id, observed_root_digest=envelope.root_digest))
+            return HQConnectorResult("PENDING", envelope.digest, thread_id, attention="HOST_TURN_OUTCOME_PENDING")
+        return self._append_complete(envelope, ledger, now_ms=now_ms, thread_id=thread_id, turn_id=turn_id, ack_exists=ack is not None)
+
+    def execute(self, envelope: HQCommandEnvelope, authorization: HQAuthorizationReceipt | HQAutoGrant, ledger: object, *, now_ms: int, observed_project_id: str, observed_root_digest: str) -> HQConnectorResult:
+        if not isinstance(envelope, HQCommandEnvelope):
+            raise InvariantError("connector requires a typed command envelope")
+        self._validate_authorization(envelope, authorization, now_ms)
         if (observed_project_id, _digest(observed_root_digest, "observed HQ root")) != (envelope.project_id, envelope.root_digest):
             raise InvariantError("HQ observed project root conflicts")
+        material = self.material_resolver.resolve(envelope)
+        if not isinstance(material, HQDispatchMaterial) or material.digest != envelope.payload_digest:
+            raise InvariantError("HQ dispatch material does not match the authorized digest")
         command = self._receipt(envelope, receipt_id=f"{envelope.command_id}-command", index=0, status="COMMAND", observed_at_ms=envelope.submitted_at_ms)
         reservation = ledger.reserve_connector_command(command, expected_revision=envelope.expected_ledger_revision)
         if reservation["status"] == "REPLAY":
-            return HQConnectorResult("REPLAY", envelope.digest)
+            return self._reconcile(envelope, ledger, reservation["command"], now_ms=now_ms)
         if reservation["status"] != "APPENDED":
             raise InvariantError("HQ command reservation conflicts")
-        capability, _ = HQ_ACTION_CAPABILITIES[envelope.action]
-        if capability == "local":
+        capabilities, _ = HQ_ACTION_CAPABILITIES[envelope.action]
+        if capabilities == ("local",):
             return HQConnectorResult("LOCAL_PLAN", envelope.digest, local_plan={"command_id": envelope.command_id, "project_id": envelope.project_id, "root_digest": envelope.root_digest})
-        if self.adapter.matrix.state_for(capability) is not AdapterCapabilityState.NATIVE or self.adapter.transport is None:
+        plan = self.adapter.plan_hq(envelope)
+        if not plan.ready:
             ledger.append_connector_receipt(self._receipt(envelope, receipt_id=f"{envelope.command_id}-unsupported", index=1, status="UNSUPPORTED", observed_at_ms=now_ms))
             return HQConnectorResult("UNSUPPORTED", envelope.digest)
-        response = self.adapter.dispatch(envelope, capability)
-        thread_id, turn_id = str(response.get("threadId") or ""), str(response.get("turnId") or "")
-        cwd_digest = str(response.get("rootDigest") or "")
-        if cwd_digest != envelope.root_digest or not thread_id:
-            raise InvariantError("Codex host response has ambiguous or conflicting root identity")
-        ledger.append_connector_receipt(self._receipt(envelope, receipt_id=f"{envelope.command_id}-ack", index=1, status="ACKNOWLEDGED", observed_at_ms=now_ms, thread_id=thread_id, observed_root_digest=cwd_digest))
-        if not turn_id:
-            raise InvariantError("Codex host result omitted turn identity")
-        ledger.append_connector_receipt(self._receipt(envelope, receipt_id=f"{envelope.command_id}-result", index=2, status="RESULT", observed_at_ms=now_ms, thread_id=thread_id, turn_id=turn_id, observed_root_digest=cwd_digest))
+        if envelope.action is HQCommandAction.REPAIR:
+            try:
+                response = self.adapter.dispatch(envelope, material, "turn.steer", thread_id=envelope.target_thread_id)
+                thread_id, turn_id = self._require_host_binding(response, envelope, thread_id=envelope.target_thread_id, require_turn=True)
+            except Exception:
+                return HQConnectorResult("PENDING", envelope.digest, envelope.target_thread_id, attention="HOST_TURN_OUTCOME_PENDING")
+            return self._append_complete(envelope, ledger, now_ms=now_ms, thread_id=thread_id, turn_id=turn_id, ack_exists=False)
+        first_capability = "thread.start" if envelope.target_intent is HQTargetIntent.NEW_THREAD else "thread.resume"
+        try:
+            started = self.adapter.dispatch(envelope, material, first_capability, thread_id=envelope.target_thread_id)
+            thread_id, premature_turn_id = self._require_host_binding(started, envelope, thread_id=envelope.target_thread_id, require_turn=False)
+            if premature_turn_id:
+                raise InvariantError("Codex thread response cannot claim a turn result")
+        except Exception:
+            return HQConnectorResult("PENDING", envelope.digest, envelope.target_thread_id, attention="HOST_THREAD_OUTCOME_PENDING")
+        ledger.append_connector_receipt(self._receipt(envelope, receipt_id=f"{envelope.command_id}-ack", index=1, status="ACKNOWLEDGED", observed_at_ms=now_ms, thread_id=thread_id, observed_root_digest=envelope.root_digest))
+        try:
+            response = self.adapter.dispatch(envelope, material, "turn.start", thread_id=thread_id)
+            thread_id, turn_id = self._require_host_binding(response, envelope, thread_id=thread_id, require_turn=True)
+        except Exception:
+            return HQConnectorResult("PENDING", envelope.digest, thread_id, attention="HOST_TURN_OUTCOME_PENDING")
+        ledger.append_connector_receipt(self._receipt(envelope, receipt_id=f"{envelope.command_id}-result", index=2, status="RESULT", observed_at_ms=now_ms, thread_id=thread_id, turn_id=turn_id, observed_root_digest=envelope.root_digest))
         return HQConnectorResult("RESULT", envelope.digest, thread_id, turn_id)
 
 
@@ -943,14 +1085,49 @@ class CodexAppServerAdapter(ExecutionAdapter):
         super().__init__(matrix, entrypoint=(), protocol="json-rpc-2.0-jsonl", enabled=enabled)
         self.transport = transport
 
-    def dispatch(self, envelope: HQCommandEnvelope, capability: str) -> Mapping[str, object]:
-        if self.transport is None:
+    def plan_hq(self, envelope: HQCommandEnvelope) -> AdapterExecutionPlan:
+        if not isinstance(envelope, HQCommandEnvelope):
+            raise InvariantError("Codex HQ plan requires a typed envelope")
+        capabilities, _ = HQ_ACTION_CAPABILITIES[envelope.action]
+        if not self.enabled or self.transport is None:
+            return AdapterExecutionPlan(AdapterPlanStatus.DISABLED, self.matrix.adapter_id, envelope.digest, self.matrix.digest(), blocker="Codex App Server adapter is disabled or unavailable")
+        unsupported = tuple(capability for capability in capabilities if capability != "local" and self.matrix.state_for(capability) is not AdapterCapabilityState.NATIVE)
+        if unsupported:
+            return AdapterExecutionPlan(AdapterPlanStatus.BLOCKED, self.matrix.adapter_id, envelope.digest, self.matrix.digest(), blocker=f"required capability is unavailable: {unsupported[0]}")
+        return AdapterExecutionPlan(AdapterPlanStatus.READY, self.matrix.adapter_id, envelope.digest, self.matrix.digest(), self.entrypoint, self.protocol)
+
+    def dispatch(self, envelope: HQCommandEnvelope, material: HQDispatchMaterial, capability: str, *, thread_id: str = "") -> Mapping[str, object]:
+        if not self.plan_hq(envelope).ready or self.transport is None:
             raise InvariantError("Codex App Server transport is unavailable")
-        params: dict[str, object] = {"cwdDigest": envelope.root_digest, "payloadDigest": envelope.payload_digest}
-        method = capability.replace(".", "/")
-        if envelope.target_thread_id:
-            params["threadId"] = envelope.target_thread_id
-        return self.transport.request(method, params)
+        if not isinstance(material, HQDispatchMaterial) or material.digest != envelope.payload_digest:
+            raise InvariantError("Codex App Server dispatch material does not match the command")
+        capabilities, _ = HQ_ACTION_CAPABILITIES[envelope.action]
+        if capability not in capabilities or capability == "local":
+            raise InvariantError("Codex App Server capability does not match the command action")
+        if capability == "thread.start":
+            wire = self._thread_wire_request(cwd=material.cwd)
+        elif capability == "thread.resume":
+            wire = self._thread_wire_request(cwd=material.cwd, thread_id=thread_id)
+        elif capability in {"turn.start", "turn.steer"}:
+            wire = self._turn_wire_request(
+                thread_id=thread_id,
+                instruction=material.instruction,
+                instruction_digest=envelope.payload_digest,
+                cwd=material.cwd,
+                method=capability.replace(".", "/"),
+                expected_turn_id=envelope.target_turn_id,
+            )
+        else:
+            raise InvariantError("Codex App Server capability is not dispatchable")
+        return self.transport.request(str(wire["method"]), wire["params"])
+
+    def reconcile(self, envelope: HQCommandEnvelope, *, thread_id: str = "") -> Mapping[str, object] | None:
+        if not self.plan_hq(envelope).ready or self.transport is None:
+            raise InvariantError("Codex App Server reconciliation is unavailable")
+        response = self.transport.reconcile(envelope.command_id, envelope.action.value, thread_id)
+        if response is not None and not isinstance(response, Mapping):
+            raise InvariantError("Codex App Server reconciliation must return an object or null")
+        return response
 
     @staticmethod
     def initialize_request(client_name: str, *, request_id: int = 0) -> dict[str, object]:
@@ -978,6 +1155,17 @@ class CodexAppServerAdapter(ExecutionAdapter):
 
     def thread_request(self, plan: AdapterExecutionPlan, request: ExecutionAdapterRequest, *, request_id: int = 1, thread_id: str = "") -> dict[str, object]:
         self._require_ready(plan, request)
+        return self._thread_wire_request(
+            cwd=request.cwd,
+            request_id=request_id,
+            thread_id=thread_id,
+            model=request.model,
+            approval_policy=request.approval_policy,
+            sandbox=request.sandbox,
+        )
+
+    @staticmethod
+    def _thread_wire_request(*, cwd: str, request_id: int = 1, thread_id: str = "", model: str = "", approval_policy: str = "", sandbox: str = "") -> dict[str, object]:
         if not isinstance(request_id, int) or request_id < 0:
             raise InvariantError("Codex adapter request id must be non-negative")
         params: dict[str, object] = {}
@@ -986,28 +1174,48 @@ class CodexAppServerAdapter(ExecutionAdapter):
             method = "thread/resume"
         else:
             method = "thread/start"
-            params["cwd"] = request.cwd
-        if request.model:
-            params["model"] = request.model
-        if request.approval_policy:
-            params["approvalPolicy"] = request.approval_policy
-        if request.sandbox:
-            params["sandbox"] = request.sandbox
+            params["cwd"] = _text(cwd, "Codex cwd")
+        if model:
+            params["model"] = model
+        if approval_policy:
+            params["approvalPolicy"] = approval_policy
+        if sandbox:
+            params["sandbox"] = sandbox
         return {"method": method, "id": request_id, "params": params}
 
     def turn_request(self, plan: AdapterExecutionPlan, request: ExecutionAdapterRequest, *, thread_id: str, instruction: str, request_id: int = 2) -> dict[str, object]:
         self._require_ready(plan, request)
+        return self._turn_wire_request(
+            thread_id=thread_id,
+            instruction=instruction,
+            instruction_digest=request.instruction_digest,
+            cwd=request.cwd,
+            request_id=request_id,
+            model=request.model,
+            approval_policy=request.approval_policy,
+        )
+
+    @staticmethod
+    def _turn_wire_request(*, thread_id: str, instruction: str, instruction_digest: str, cwd: str, request_id: int = 2, model: str = "", approval_policy: str = "", method: str = "turn/start", expected_turn_id: str = "") -> dict[str, object]:
         target = _text(thread_id, "Codex thread id")
-        if not isinstance(instruction, str) or sha256(instruction.encode("utf-8")).hexdigest() != request.instruction_digest:
+        if not isinstance(instruction, str) or sha256(instruction.encode("utf-8")).hexdigest() != instruction_digest:
             raise InvariantError("Codex turn instruction does not match the authorized request digest")
         if not isinstance(request_id, int) or request_id < 0:
             raise InvariantError("Codex adapter request id must be non-negative")
-        params: dict[str, object] = {"threadId": target, "input": [{"type": "text", "text": instruction}], "cwd": request.cwd}
-        if request.model:
-            params["model"] = request.model
-        if request.approval_policy:
-            params["approvalPolicy"] = request.approval_policy
-        return {"method": "turn/start", "id": request_id, "params": params}
+        if method not in {"turn/start", "turn/steer"}:
+            raise InvariantError("Codex turn method is unsupported")
+        params: dict[str, object] = {"threadId": target, "input": [{"type": "text", "text": instruction}]}
+        if method == "turn/start":
+            params["cwd"] = _text(cwd, "Codex cwd")
+            if expected_turn_id:
+                raise InvariantError("Codex turn start cannot name an active turn")
+        else:
+            params["expectedTurnId"] = _text(expected_turn_id, "Codex expected turn id")
+        if model:
+            params["model"] = model
+        if approval_policy:
+            params["approvalPolicy"] = approval_policy
+        return {"method": method, "id": request_id, "params": params}
 
     def translate_event(self, message: Mapping[str, object]) -> AdapterEvent:
         if not isinstance(message, Mapping):

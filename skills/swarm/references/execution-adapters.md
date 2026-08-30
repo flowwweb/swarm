@@ -7,9 +7,13 @@ external-provider authority.
 
 ## Universal HQ connector
 
-Explicit HQ commands and scoped Auto continuation use one `HQCommandEnvelope`, one host-injected authorization receipt, `UniversalHQConnector`, and the existing Ledger CONNECTOR receipts. Fixed actions are AUTO, MANUAL_AGENT, TASK, TOPOLOGY_MATERIALIZE, REPAIR, and LOCAL_HQ. A command is reserved atomically before transport; only `APPENDED` may dispatch, while exact `REPLAY` never dispatches again.
+Explicit HQ commands and scoped Auto continuation use one `HQCommandEnvelope`, an injected host authorization verifier, `UniversalHQConnector`, and the existing Ledger CONNECTOR receipts. A single-use `HQAuthorizationReceipt` binds one envelope; a separate `HQAutoGrant` may bind reusable AUTO commands only within one project/root/CTRL/action/expiry scope. Constructing either data record does not authorize it. Fixed actions are AUTO, MANUAL_AGENT, TASK, TOPOLOGY_MATERIALIZE, REPAIR, and LOCAL_HQ. A command is reserved atomically before transport; only `APPENDED` may dispatch, while exact `REPLAY` may reconcile retained COMMAND/ACK facts but never dispatches again.
 
-`CodexAppServerAdapter` receives a host-owned `CodexAppServerTransport`; it has no subprocess or argv launch authority. It uses only capabilities the host exposes and retains returned thread/turn identities plus the observed root digest. App Server is never claimed to return project ID, agent role, or a binding receipt.
+`CodexAppServerAdapter` receives a host-owned `CodexAppServerTransport`; it has no subprocess or argv launch authority. An injected resolver returns ephemeral `HQDispatchMaterial` containing the real canonical cwd and exact instruction bytes. Their UTF-8 SHA-256 must match the envelope before Ledger reservation or transport. The adapter reuses the same thread/turn wire builders as ordinary Codex execution, sends the instruction only in the App Server `input` field, redacts the material representation, and never persists it.
+
+New-thread MANUAL_AGENT and TOPOLOGY_MATERIALIZE commands call `thread/start` and admit ACKNOWLEDGED only after that response supplies a root-bound thread identity. They then call `turn/start` with the authorized input and admit RESULT only when the matching response supplies that same thread plus a turn identity. Existing-thread AUTO and TASK call `thread/resume` before `turn/start`; REPAIR uses `turn/steer` with the envelope's exact active `target_turn_id`. A thread start/resume response is never treated as a completed turn. Missing, ambiguous, or conflicting response identity leaves COMMAND or ACKNOWLEDGED as a typed pending lifecycle. Restart calls the injected reconciliation surface by command identity and may append a proven completion, but it never redispatches an uncertain command.
+
+The adapter's existing `AdapterExecutionPlan` is the disabled/readiness gate. Disabled, unavailable, or non-native required capability states produce COMMAND to UNSUPPORTED with zero App Server requests. App Server is never claimed to return project ID, agent role, or a binding receipt.
 
 Localhost migration replaces private `CodexStdioBridge` Auto dispatch and routes manual-agent, task, topology, and repair commands through this envelope. Explicit HQ submission is single-use user authorization; a current scoped Auto grant is the only reusable authorization. Explicit commands no longer depend on unavailable `host_threads.agent_role` or host project fields. Structural Current Work observation remains read-only. LOCAL_HQ bypasses Codex transport and returns a digest-bound plan for later localhost execution and acknowledgement. Console wiring remains a separate owner/path slice.
 
@@ -31,10 +35,11 @@ the only supported execution authority.
 ## Native Codex adapter
 
 The optional `codex-app-server` adapter targets Codex App Server's JSON-RPC 2.0
-JSONL protocol over stdio. It can translate initialization, thread start/resume,
-turn start, and lifecycle events. SWARM stores only safe thread/turn/item IDs,
-status, and an evidence digest; instruction text exists only at the transport
-boundary and must match the authorized digest.
+JSONL protocol. It can translate initialization, thread start/resume, turn
+start/steer, and lifecycle events through an injected host-owned transport.
+SWARM stores only safe thread/turn/item IDs, status, and an evidence digest;
+instruction text exists only at the transport boundary and its UTF-8 SHA-256
+must match the authorized digest.
 
 Codex thread and turn operations are native transport capabilities. SWARM owner
 routing is enforced before translation. Model instructions are instruction-only.
@@ -42,7 +47,8 @@ Independent acceptance and host task title, pin, folder, order, archive, or
 other mutation are unsupported. A successful event is activity, not proof or an
 acceptance receipt.
 
-The adapter only emits an entrypoint and wire messages. A host-owned launcher
-must start, supervise, and stop the process under its own sandbox, approval, and
-credential policy. Enabling the adapter does not prove the Codex binary, model,
-provider, service tier, or host task API was available or used.
+The adapter emits wire messages but no process entrypoint. A host-owned launcher
+and injected transport must start, supervise, and stop App Server under the
+host's sandbox, approval, and credential policy. Enabling the adapter does not
+prove the Codex binary, model, provider, service tier, or host task API was
+available or used.
