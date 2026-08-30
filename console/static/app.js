@@ -207,36 +207,53 @@ function onboardingConfigToggle(key, value, label) {
   return '<label class="toggle-row"><input data-config-key="' + escapeHTML(key) + '" type="checkbox"' + (draft === true ? ' checked' : '') + (editable ? '' : ' disabled') + '><span>' + escapeHTML(label) + '</span></label>' + (editable ? '' : '<small>Managed by the current configuration.</small>');
 }
 
+function onboardingConfigModeToggle(key, value, enabledValue, disabledValue, label) {
+  const editable = configEditable(key) && !state.onboardingConfigPending.has(key);
+  const draft = onboardingConfigDraft(key, value);
+  return '<label class="toggle-row"><input data-config-key="' + escapeHTML(key) + '" data-true-value="' + escapeHTML(enabledValue) + '" data-false-value="' + escapeHTML(disabledValue) + '" type="checkbox"' + (draft === enabledValue ? ' checked' : '') + (editable ? '' : ' disabled') + '><span>' + escapeHTML(label) + '</span></label>' + (editable ? '' : '<small>Managed by the current configuration.</small>');
+}
+
+function onboardingSpeedControl(value) {
+  const key = "execution.fast_mode";
+  const editable = configEditable(key) && !state.onboardingConfigPending.has(key);
+  const draft = onboardingConfigDraft(key, value) === true;
+  const choice = (id, label, selected, configValue, disabled = false) => '<label title="' + escapeHTML(disabled ? label + ' requires server support.' : label + ' mode') + '"><input type="radio" name="onboarding-speed" data-config-key="' + key + '" data-config-value="' + String(configValue) + '" data-onboarding-control="speed-' + id + '"' + (selected ? ' checked' : '') + ((!editable || disabled) ? ' disabled' : '') + '><span>' + escapeHTML(label) + '</span></label>';
+  return '<fieldset class="onboarding-segmented"><legend>Speed</legend><div>' + choice("default", "Default", !draft, false) + choice("fast", "Fast", draft, true) + choice("ultrafast", "Ultrafast", false, true, true) + '</div></fieldset><small>Ultrafast is unavailable until the server exposes an accepted mode.</small>';
+}
+
+function onboardingTaskLifeControl() {
+  return '<fieldset class="onboarding-segmented is-readonly"><legend>Task life</legend><div><label title="Shorter context and more handovers"><input type="radio" name="onboarding-task-life" disabled><span>Short</span></label><label title="Hands over when efficiency drops"><input type="radio" name="onboarding-task-life" checked disabled><span>Balanced</span></label><label title="No lifetime limit"><input type="radio" name="onboarding-task-life" disabled><span>Long</span></label></div></fieldset><small>Balanced hands over when efficiency drops. Changing this needs an accepted server setting.</small>';
+}
+
 function onboardingConfigurationMarkup() {
   const settings = state.config?.settings || {};
   const execution = settings.execution || {};
-  const lifecycle = settings.lifecycle || {};
   const automation = settings.automation || {};
   const consoleSettings = settings.console || {};
   const portfolio = settings.portfolio || {};
+  const monitoring = settings.monitoring || {};
   const boost = settings.boost || {};
-  const model = state.ctrlSettings?.effective?.model || state.ctrlSettings?.global_defaults?.model || "Unavailable";
   const skillsMode = state.skills?.settings?.inheritance_enabled === true ? "Auto" : state.skills ? "Manual" : "Unavailable";
-  const lifetime = Number.isInteger(lifecycle.task_lifetime_hours) ? String(lifecycle.task_lifetime_hours) : "Unavailable";
   const lanes = Number.isInteger(portfolio.default_parallel_tasks) ? String(portfolio.default_parallel_tasks) : "Unavailable";
-  const automationOptions = [{ value: "standard", label: "Auto" }, { value: "manual", label: "Manual" }];
-  const minReasoning = execution.min_reasoning || "none";
-  const maxReasoning = execution.max_reasoning || "max";
+  const minReasoning = execution.min_reasoning || "high";
+  const maxReasoning = execution.max_reasoning || "high";
   const updates = onboardingConfigDraft("console.project_progress_feed_lines", consoleSettings.project_progress_feed_lines ?? 4);
   const pending = state.onboardingConfigPending.size;
   const failures = [...state.onboardingConfigFailures.values()];
   const status = pending ? 'Saving ' + pending + ' setting' + (pending === 1 ? '' : 's') + '…' : failures.length ? (failures[0].error || 'A setting was not saved.') : 'Changes are saved when acknowledged by SWARM.';
   return '<section class="onboarding-config-group"><h3>Execution</h3>' +
-    onboardingConfigSelect("automation.mode", automation.mode || "standard", automationOptions, "Auto mode") +
-    '<label class="onboarding-readonly">Task lifetime and handoff<input value="' + escapeHTML(lifetime) + '" aria-label="Task lifetime hours" disabled></label><small>Hours until a safe handoff becomes due. This never deletes work.</small>' +
-    onboardingConfigToggle("execution.fast_mode", execution.fast_mode, "Fast Mode") +
+    onboardingConfigModeToggle("automation.mode", automation.mode || "standard", "standard", "manual", "Auto mode") + '<small>SWARM keeps eligible work moving until it needs you.</small>' +
+    onboardingSpeedControl(execution.fast_mode) +
+    onboardingTaskLifeControl() +
     '<label class="onboarding-readonly">Skills<select aria-label="Skills mode" disabled><option>' + escapeHTML(skillsMode) + '</option></select></label></section>' +
-    '<section class="onboarding-config-group"><h3>Codex</h3><label class="onboarding-readonly">Model<select aria-label="Codex model" disabled><option>' + escapeHTML(model) + '</option></select></label>' +
+    '<section class="onboarding-config-group"><h3>Codex</h3><label class="onboarding-readonly">Minimum model<select aria-label="Minimum model" disabled><option>5.6 Luna · High</option></select></label><small>Model choice needs an accepted server setting.</small>' +
     onboardingConfigSelect("execution.min_reasoning", minReasoning, onboardingReasoningStops(minReasoning), "Minimum reasoning") +
+    '<label class="onboarding-readonly">Maximum model<select aria-label="Maximum model" disabled><option>5.6 Sol · High</option></select></label><small>Model choice needs an accepted server setting.</small>' +
     onboardingConfigSelect("execution.max_reasoning", maxReasoning, onboardingReasoningStops(maxReasoning), "Maximum reasoning") + '</section>' +
-    '<section class="onboarding-config-group"><h3>Usage</h3>' + onboardingConfigToggle("execution.usage_saver", execution.usage_saver, "Usage saver") +
-    '<details data-onboarding-control="usage-policy"><summary>Usage saver policy</summary><div class="onboarding-config-disclosure">' + onboardingConfigToggle("chat_relay.enabled", settings.chat_relay?.enabled, "Use ChatGPT for eligible work") + onboardingConfigToggle("boost.spark_enabled", boost.spark_enabled, "Use an efficient model for eligible work") + '<small>Code, local state, and acceptance stay with Codex unless accepted routing authority says otherwise.</small></div></details></section>' +
-    '<section class="onboarding-config-group"><h3>Visibility</h3>' + onboardingConfigToggle("console.project_progress_feed_enabled", consoleSettings.project_progress_feed_enabled, "Progress feed") +
+    '<section class="onboarding-config-group"><h3>Usage <span class="onboarding-experimental">Experimental</span></h3>' + onboardingConfigToggle("execution.usage_saver", execution.usage_saver, "Usage Saver") + '<small>Routes eligible background work to efficient models while keeping verification in SWARM.</small>' +
+    '<details data-onboarding-control="usage-policy"><summary>Smart routing</summary><div class="onboarding-config-disclosure">' + onboardingConfigToggle("chat_relay.enabled", settings.chat_relay?.enabled, "Use ChatGPT for eligible work") + onboardingConfigToggle("boost.spark_enabled", boost.spark_enabled, "Use an efficient model for eligible work") + '<small>Code, local state, and acceptance stay with Codex unless accepted routing authority says otherwise.</small></div></details></section>' +
+    '<section class="onboarding-config-group"><h3>Features and diagnostics</h3>' + onboardingConfigToggle("console.project_progress_feed_enabled", consoleSettings.project_progress_feed_enabled, "Progress feed") +
+    onboardingConfigToggle("console.open_on_start", consoleSettings.open_on_start, "Open console on start") + onboardingConfigToggle("monitoring.auto_health_enabled", monitoring.auto_health_enabled, "Automatic health checks") +
     '<label class="setting-field">Updates shown<input data-config-key="console.project_progress_feed_lines" type="number" min="1" max="10" value="' + escapeHTML(updates) + '"' + (configEditable("console.project_progress_feed_lines") && !state.onboardingConfigPending.has("console.project_progress_feed_lines") ? '' : ' disabled') + '></label></section>' +
     '<section class="onboarding-config-group onboarding-config-wide"><details data-onboarding-control="advanced"><summary>Advanced</summary><div class="onboarding-config-disclosure"><label class="onboarding-readonly">Parallel lanes<input value="' + escapeHTML(lanes) + '" disabled></label><small>The accepted server setting is shown. Unlimited is available only when the server projects it.</small></div></details></section>' +
     '<div class="onboarding-config-save ' + (failures.length ? 'is-error' : '') + '" id="onboarding-config-status" data-onboarding-control="config-status" role="status" tabindex="-1"><span>' + escapeHTML(status) + '</span>' + (failures.length ? '<button class="quiet-button" type="button" data-onboarding-control="retry-config">Retry</button>' : '') + '</div>';
@@ -315,6 +332,7 @@ function openOnboarding(force = false, trigger = null) {
   state.onboardingTrigger = trigger || (document.activeElement instanceof HTMLElement && document.activeElement !== document.body ? document.activeElement : $("#tab-overview"));
   renderOnboarding();
   const dialog = $("#onboarding-dialog");
+  $(".dialog-body", dialog).scrollTop = 0;
   if (!dialog.open) dialog.showModal();
   requestAnimationFrame(() => $("#onboarding-primary").focus({ preventScroll: true }));
 }
@@ -333,8 +351,11 @@ function onboardingCanDismiss() {
 }
 
 function setOnboardingStep(step, focusDot = false) {
-  state.onboardingStep = Math.min(Math.max(0, Number(step) || 0), ONBOARDING_STEPS.length - 1);
+  const nextStep = Math.min(Math.max(0, Number(step) || 0), ONBOARDING_STEPS.length - 1);
+  const changed = nextStep !== state.onboardingStep;
+  state.onboardingStep = nextStep;
   renderOnboarding();
+  if (changed) $(".dialog-body", $("#onboarding-dialog")).scrollTop = 0;
   if (focusDot) $('[data-onboarding-step="' + state.onboardingStep + '"]')?.focus({ preventScroll: true });
 }
 
@@ -3674,7 +3695,11 @@ document.addEventListener('change', async (event) => {
   if (event.target.dataset.configKey) {
     const key = event.target.dataset.configKey;
     if (!configEditable(key)) return;
-    const value = event.target.type === 'checkbox' ? event.target.checked : event.target.type === 'number' ? Number(event.target.value) : event.target.value;
+    const value = event.target.type === 'radio' && event.target.dataset.configValue !== undefined
+      ? event.target.dataset.configValue === 'true'
+      : event.target.type === 'checkbox' && event.target.dataset.trueValue !== undefined
+        ? (event.target.checked ? event.target.dataset.trueValue : event.target.dataset.falseValue)
+        : event.target.type === 'checkbox' ? event.target.checked : event.target.type === 'number' ? Number(event.target.value) : event.target.value;
     if (event.target.closest("#onboarding-configuration")) {
       await saveOnboardingConfig(key, value);
       return;
