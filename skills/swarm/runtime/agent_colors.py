@@ -10,6 +10,7 @@ from typing import Iterable
 CSS_COLOR_4_SOURCE = "W3C CSS Color Module Level 4 named colors"
 CURATED_EXTENSION_SOURCE = "SWARM curated friendly display colors v1"
 HEX_COLOR = re.compile(r"#[0-9A-F]{6}\Z")
+FRIENDLY_NAME = re.compile(r"[A-Z][A-Za-z0-9]*(?:-[A-Z0-9][A-Za-z0-9]*)*\Z")
 
 
 @dataclass(frozen=True, slots=True)
@@ -92,7 +93,8 @@ def _registry() -> tuple[AgentColor, ...]:
     seen: set[str] = set()
     result: list[AgentColor] = []
     for source, values in ((CSS_COLOR_4_SOURCE, _CSS_SEED), (CURATED_EXTENSION_SOURCE, _EXTENSIONS)):
-        for name, color in values:
+        for raw_name, color in values:
+            name = "-".join(raw_name.split())
             if color in seen:
                 continue
             seen.add(color)
@@ -137,7 +139,7 @@ def assign_agent_color(
         occupied.add(name.casefold())
     existing = retained.get(agent_id)
     if existing is not None:
-        base = existing.rsplit(" ", 1)[0] if existing.rsplit(" ", 1)[-1].isdigit() else existing
+        base = existing.rsplit("-", 1)[0] if existing.rsplit("-", 1)[-1].isdigit() else existing
         match = next((item for item in AGENT_COLOR_REGISTRY if item.name.casefold() == base.casefold()), None)
         if match is None:
             raise ValueError("retained agent identity is not in the registry")
@@ -152,14 +154,16 @@ def assign_agent_color(
         return available
     base = ranked[0]
     suffix = 2
-    while f"{base.name} {suffix}".casefold() in occupied:
+    while f"{base.name}-{suffix}".casefold() in occupied:
         suffix += 1
-    return AgentColor(f"{base.name} {suffix}", base.hex, base.source)
+    return AgentColor(f"{base.name}-{suffix}", base.hex, base.source)
 
 
 if len(AGENT_COLOR_REGISTRY) <= 120:
     raise RuntimeError("agent color registry must contain more than 120 colors")
 if len({item.name.casefold() for item in AGENT_COLOR_REGISTRY}) != len(AGENT_COLOR_REGISTRY):
     raise RuntimeError("agent color names must be unique case-insensitively")
+if not all(FRIENDLY_NAME.fullmatch(item.name) for item in AGENT_COLOR_REGISTRY):
+    raise RuntimeError("agent color names must be whitespace-free friendly identifiers")
 if len({item.hex for item in AGENT_COLOR_REGISTRY}) != len(AGENT_COLOR_REGISTRY):
     raise RuntimeError("agent color values must be unique")

@@ -3,6 +3,7 @@ import unittest
 from skills.swarm.runtime.agent_colors import (
     AGENT_COLOR_REGISTRY,
     CSS_COLOR_4_SOURCE,
+    FRIENDLY_NAME,
     assign_agent_color,
 )
 
@@ -14,6 +15,8 @@ class AgentColorContractTests(unittest.TestCase):
         self.assertEqual(len({item.hex for item in AGENT_COLOR_REGISTRY}), len(AGENT_COLOR_REGISTRY))
         self.assertTrue(all(item.source and item.hex.startswith("#") and len(item.hex) == 7 for item in AGENT_COLOR_REGISTRY))
         self.assertGreater(sum(item.source == CSS_COLOR_4_SOURCE for item in AGENT_COLOR_REGISTRY), 100)
+        self.assertTrue(all(FRIENDLY_NAME.fullmatch(item.name) for item in AGENT_COLOR_REGISTRY))
+        self.assertTrue(all(not any(character.isspace() for character in item.name) and "_" not in item.name for item in AGENT_COLOR_REGISTRY))
 
     def test_assignment_is_nearest_free_stable_and_case_insensitive(self) -> None:
         first = assign_agent_color("agent-a", "#FF0000", ())
@@ -27,8 +30,8 @@ class AgentColorContractTests(unittest.TestCase):
         occupied = tuple((f"agent-{index}", item.name) for index, item in enumerate(AGENT_COLOR_REGISTRY))
         first = assign_agent_color("overflow-a", "#FF0000", occupied)
         second = assign_agent_color("overflow-b", "#FF0000", (*occupied, ("overflow-a", first.name)))
-        self.assertEqual(first.name, "Red 2")
-        self.assertEqual(second.name, "Red 3")
+        self.assertEqual(first.name, "Red-2")
+        self.assertEqual(second.name, "Red-3")
         self.assertEqual(first.hex, "#FF0000")
 
     def test_invalid_or_conflicting_input_fails_closed(self) -> None:
