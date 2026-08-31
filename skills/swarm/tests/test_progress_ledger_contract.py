@@ -19,16 +19,22 @@ from skills.swarm.runtime.progress_events import (
     ProgressEventError,
     ProgressLifecycle,
     ProgressLedger,
+    build_agent_manifest,
     build_role_manifest,
+    build_task_manifest,
+    identity_manifest_event,
     load_builtin_role_avatar_assets,
     load_builtin_role_manifests,
     request_blocked_release_binding,
     resolve_role_avatar,
     resolve_role_lucide_icon,
+    role_manifest_reference,
     role_material_event,
     task_handoff_host_binding,
     validate_progress_material_event,
+    validate_agent_manifest,
     validate_role_manifest,
+    validate_task_manifest,
 )
 from skills.swarm.runtime.core import AcceptanceContract, ArtifactIdentity, ControlPathFailure, ControlPathFailureKind, ControlPathRecoveryAction, CustodyMutation, DelegationContract, HostCapacityEvidence, HostCustodyReceipt, HostTaskCapacity, InvariantError, OperationClass, ProofClass, ProfessionAssignment, RecoveryCause, Role, RoleFitDisposition, RoleGateDecision, RoutingEconomics, RoutingEvidenceBasis, RoutingScope, Swarm, Task, TaskStartReceipt, Worker, WorkerState, WorkKind, WorkRoutingFacts, WorkSize, _HOST_AUTHORITY_GENERATOR, _HOST_AUTHORITY_PRIME, _custody_message, role_gate, route_execution
 
@@ -964,6 +970,143 @@ class ProgressLedgerContractTests(unittest.TestCase):
         role_ids = {role["id"] for role in projection["roles"]}
         self.assertIn("producer", role_ids)
         self.assertNotIn("content_creator", role_ids)
+
+    def test_agent_task_manifests_are_versioned_joined_and_restart_stable(self) -> None:
+        builtins = self.role_manifests()
+        roles = {role["id"]: role for role in builtins}
+        root = build_agent_manifest(
+            manifest_id="agent-manifest:ctrl", agent_id="agent-ctrl",
+            project_id="project-alpha", ctrl_id="ctrl-alpha", display_name="CTRL",
+            title="SWARM HQ", profession="manager", structural_role="CTRL",
+            avatar_selection="canonical", role_manifest_ref=role_manifest_reference(roles["manager"]),
+        )
+        lead = build_agent_manifest(
+            manifest_id="agent-manifest:lead", agent_id="agent-lead",
+            project_id="project-alpha", ctrl_id="ctrl-alpha", display_name="Cobalt",
+            title="Delivery lane", profession="developer", structural_role="LEAD",
+            avatar_selection="canonical", role_manifest_ref=role_manifest_reference(roles["developer"]),
+        )
+        for index, manifest in enumerate((root, lead), 1):
+            event = identity_manifest_event(
+                manifest, event_id=f"agent-manifest-event-{index}", dedupe_key=f"agent-manifest-dedupe-{index}",
+                observed_at_ms=index, provenance="host-manifest-binding",
+            )
+            self.assertEqual(self.ledger.append(event)["status"], "appended")
+            self.assertEqual(self.ledger.append(event)["status"], "unchanged")
+        task = build_task_manifest(
+            manifest_id="task-manifest:build", task_id="task-build", task_name="Build the manifest join",
+            project_id="project-alpha", ctrl_id="ctrl-alpha",
+            milestones=[{
+                "milestone_id": "milestone-build", "order": 0, "title": "Manifest admitted",
+                "verification_policy": "source-contract", "supersedes_milestone_id": None,
+            }],
+            blocks=[{
+                "block_id": "block-build", "milestone_id": "milestone-build", "order": 0,
+                "title": "Implement schema", "verification_policy": "source-contract",
+                "estimate_minutes": None, "weight": None, "supersedes_block_id": None,
+            }],
+        )
+        self.ledger.append(identity_manifest_event(
+            task, event_id="task-manifest-event", dedupe_key="task-manifest-dedupe",
+            observed_at_ms=3, provenance="host-task-binding",
+        ))
+        projected = self.ledger.project_identity_manifests("project-alpha", "ctrl-alpha", builtins)
+        agents = {item["manifest"]["agent_id"]: item for item in projected["agents"]}
+        tasks = {item["manifest"]["task_id"]: item for item in projected["tasks"]}
+        self.assertNotIn("royal_line", agents["agent-ctrl"])
+        self.assertNotIn("parent_agent_id", agents["agent-lead"]["manifest"])
+        self.assertEqual(agents["agent-lead"]["resolved_lucide_icon"], roles["developer"]["lucide_icon"])
+        self.assertEqual(agents["agent-lead"]["profession_label"], roles["developer"]["name"])
+        self.assertEqual(tasks["task-build"]["active_owner_state"], "UNKNOWN")
+        self.assertNotIn("owner_agent_id", tasks["task-build"]["manifest"])
+        self.assertNotIn("state", tasks["task-build"])
+        self.assertEqual(projected["topology_join_state"], "NOT_PROJECTED")
+        self.assertEqual(ProgressLedger(self.root).project_identity_manifests("project-alpha", "ctrl-alpha", builtins), projected)
+
+        revised = build_agent_manifest(**{
+            **root, "manifest_version": "2", "supersedes_digest": root["manifest_digest"],
+            "title": "SWARM command",
+        })
+        self.assertEqual(self.ledger.append(identity_manifest_event(
+            revised, event_id="agent-manifest-event-revision", dedupe_key="agent-manifest-dedupe-revision",
+            observed_at_ms=4, provenance="host-manifest-binding",
+        ))["status"], "appended")
+        self.assertEqual(
+            ProgressLedger(self.root).project_identity_manifests("project-alpha", "ctrl-alpha", builtins)["agents"][0]["manifest"]["title"],
+            "SWARM command",
+        )
+
+    def test_identity_manifests_fail_closed_without_mutating_projection(self) -> None:
+        builtins = self.role_manifests()
+        roles = {role["id"]: role for role in builtins}
+        root = build_agent_manifest(
+            manifest_id="agent-manifest:ctrl", agent_id="agent-ctrl",
+            project_id="project-alpha", ctrl_id="ctrl-alpha", display_name="CTRL",
+            title="SWARM HQ", profession="manager", structural_role="CTRL",
+            avatar_selection="canonical", role_manifest_ref=role_manifest_reference(roles["manager"]),
+        )
+        self.assertEqual(validate_agent_manifest(root), root)
+        self.ledger.append(identity_manifest_event(
+            root, event_id="root", dedupe_key="root-dedupe", observed_at_ms=1, provenance="host",
+        ))
+        before = self.ledger.replay()
+        hostile = {**root, "parent_agent_id": "agent-parent"}
+        with self.assertRaisesRegex(ProgressEventError, "unsupported field"):
+            validate_agent_manifest(hostile)
+        with self.assertRaisesRegex(ProgressEventError, "digest does not match"):
+            validate_agent_manifest({**root, "title": "Changed without a new content version"})
+        for copied_role_field in ("lucide_icon", "avatar_asset_digest", "color_name", "profession_label"):
+            with self.assertRaisesRegex(ProgressEventError, "unsupported field"):
+                build_agent_manifest(**{**root, copied_role_field: "forbidden"})
+        with self.assertRaisesRegex(ProgressEventError, "profession must match"):
+            build_agent_manifest(**{**root, "profession": "developer"})
+        with self.assertRaisesRegex(ProgressEventError, "CTRL-only"):
+            build_agent_manifest(**{**root, "structural_role": "DOER", "avatar_selection": "command"})
+        task = build_task_manifest(
+            manifest_id="task-manifest:orphan", task_id="task-orphan", task_name="Ownerless by design",
+            project_id="project-alpha", ctrl_id="ctrl-alpha",
+        )
+        self.assertEqual(validate_task_manifest(task), task)
+        with self.assertRaisesRegex(ProgressEventError, "mutable runtime fields"):
+            build_task_manifest(**{**task, "policy": {**task["policy"], "owner_agent_id": "agent-ctrl"}})
+        with self.assertRaisesRegex(ProgressEventError, "prior accepted revision"):
+            invalid_task_revision = build_task_manifest(**{
+                **task, "manifest_version": "2", "supersedes_digest": task["manifest_digest"],
+                "milestones": [{
+                    "milestone_id": "replacement", "order": 0, "title": "Replacement",
+                    "verification_policy": "source-contract", "supersedes_milestone_id": "missing",
+                }],
+            })
+            self.ledger.append(identity_manifest_event(
+                invalid_task_revision, event_id="task-invalid-revision", dedupe_key="task-invalid-revision",
+                observed_at_ms=2, provenance="host",
+            ))
+        bad_revision = build_agent_manifest(**{
+            **root, "manifest_version": "3", "supersedes_digest": root["manifest_digest"], "title": "Skipped",
+        })
+        with self.assertRaisesRegex(ProgressEventError, "exactly supersede"):
+            self.ledger.append(identity_manifest_event(
+                bad_revision, event_id="root-skipped", dedupe_key="root-skipped-dedupe",
+                observed_at_ms=3, provenance="host",
+            ))
+        self.assertEqual(self.ledger.replay(), before)
+
+        mismatched_role = build_agent_manifest(**{
+            **root, "manifest_id": "agent-manifest:mismatch", "manifest_version": "1",
+            "supersedes_digest": None, "agent_id": "agent-mismatch", "display_name": "Cobalt",
+            "profession": "developer", "structural_role": "DOER",
+            "role_manifest_ref": {
+                "manifest_id": "developer", "manifest_version": "builtin:" + "0" * 64,
+                "manifest_digest": "sha256:" + "0" * 64,
+            },
+        })
+        self.ledger.append(identity_manifest_event(
+            mismatched_role, event_id="mismatch", dedupe_key="mismatch-dedupe", observed_at_ms=4, provenance="host",
+        ))
+        projected = self.ledger.project_identity_manifests("project-alpha", "ctrl-alpha", builtins)
+        mismatch = next(item for item in projected["agents"] if item["manifest"]["agent_id"] == "agent-mismatch")
+        self.assertEqual(mismatch["binding_state"], "UNKNOWN")
+        self.assertIsNone(mismatch["resolved_lucide_icon"])
 
     def test_builtin_role_accents_are_exact_unique_and_order_independent(self) -> None:
         expected = {
