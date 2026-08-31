@@ -15,6 +15,7 @@ from skills.swarm.runtime.progress_events import (
     PROGRESS_LEDGER_PATH,
     PROGRESS_PROJECTION_PATH,
     ROLE_ACCENTS,
+    ROLE_LUCIDE_ICON_ALLOWLIST,
     ProgressEventError,
     ProgressLifecycle,
     ProgressLedger,
@@ -22,6 +23,8 @@ from skills.swarm.runtime.progress_events import (
     load_builtin_role_avatar_assets,
     load_builtin_role_manifests,
     request_blocked_release_binding,
+    resolve_role_avatar,
+    resolve_role_lucide_icon,
     role_material_event,
     task_handoff_host_binding,
     validate_progress_material_event,
@@ -55,6 +58,9 @@ class ProgressLedgerContractTests(unittest.TestCase):
             "name", "purpose", "owns", "instructions", "boundaries",
             "default_skills", "specializations", "avatar_asset_digest", "accent",
         )}
+        for optional in ("lucide_icon", "avatar_variants"):
+            if optional in role:
+                draft[optional] = role[optional]
         draft.update(changes)
         return draft
 
@@ -915,6 +921,49 @@ class ProgressLedgerContractTests(unittest.TestCase):
                 role_id="manager", manifest=malformed, expected_active_version=manager["version"],
                 assignment_task_id=None, provenance="receipt:malformed", observed_at_ms=4,
             )
+
+    def test_role_icon_color_projection_and_reserved_command_avatar_fail_closed(self) -> None:
+        builtins = self.role_manifests()
+        self.assertEqual(len(builtins), 24)
+        self.assertTrue(all(role["lucide_icon"] in ROLE_LUCIDE_ICON_ALLOWLIST for role in builtins))
+        manager = next(role for role in builtins if role["id"] == "manager")
+        self.assertEqual(resolve_role_lucide_icon(manager), manager["lucide_icon"])
+
+        legacy_draft = self.role_draft(manager)
+        legacy_draft.pop("lucide_icon")
+        legacy = build_role_manifest("custom-legacy", legacy_draft, "custom", ["retained:legacy"])
+        self.assertEqual(resolve_role_lucide_icon(legacy), "circle-user-round")
+        self.assertNotIn("lucide_icon", legacy)
+        for hostile in ("<svg>", "https://example.invalid/icon.svg", "script"):
+            with self.subTest(hostile=hostile), self.assertRaisesRegex(ProgressEventError, "Lucide icon"):
+                build_role_manifest("custom-hostile", self.role_draft(manager, lucide_icon=hostile), "custom", ["user:hostile"])
+
+        future_digest = hashlib.sha256(b"future-admitted-eight-tentacle-command-avatar").hexdigest()
+        canonical_digest = manager["avatar_asset_digest"]
+        self.assertEqual(resolve_role_avatar(manager, structural_role="CTRL", variant_id="command")["asset_digest"], canonical_digest)
+        self.assertEqual(resolve_role_avatar(manager, structural_role="DOER", variant_id="command", admitted_asset_digests=frozenset({future_digest}))["asset_digest"], canonical_digest)
+        with self.assertRaisesRegex(ProgressEventError, "no admitted command avatar digest"):
+            build_role_manifest(
+                "manager", self.role_draft(manager, avatar_variants=[{
+                    "id": "command", "asset_digest": future_digest, "structural_roles": ["CTRL"],
+                }]), "user_override", ["user:unadmitted-command"],
+            )
+        with self.assertRaisesRegex(ProgressEventError, "CTRL-only"):
+            build_role_manifest(
+                "manager", self.role_draft(manager, avatar_variants=[{
+                    "id": "command", "asset_digest": future_digest, "structural_roles": ["LEAD"],
+                }]), "user_override", ["user:hostile-command"],
+            )
+
+        projection = self.ledger.project_role_manifests(builtins)
+        self.assertGreaterEqual(len(projection["agent_color_registry"]["colors"]), 100)
+        self.assertEqual(projection["agent_color_registry"]["duplicate_suffix"]["first_duplicate"], "II")
+        self.assertIsNone(projection["command_contract"]["avatar"]["command_variant_digest"])
+        self.assertEqual(projection["command_contract"]["avatar"]["command_variant_structural_roles"], ["CTRL"])
+        self.assertFalse(projection["command_contract"]["icon"]["raw_svg_html_url_allowed"])
+        role_ids = {role["id"] for role in projection["roles"]}
+        self.assertIn("producer", role_ids)
+        self.assertNotIn("content_creator", role_ids)
 
     def test_builtin_role_accents_are_exact_unique_and_order_independent(self) -> None:
         expected = {

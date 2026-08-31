@@ -14,6 +14,7 @@ from threading import Condition
 from typing import Any, Mapping
 from weakref import WeakKeyDictionary
 
+from .agent_colors import BUILT_IN_ROLE_ACCENTS as ROLE_ACCENTS, project_agent_color_registry
 from .core import BUILT_IN_PROFESSIONS, CtrlProgressMeasure, CustodyMutation, HostCustodyReceipt, InvariantError, OperationClass, Role, RoleGateDecision, RetryOutcome, RetryTopologyAction, RetryTopologyLedger, Task, _authority_verify, _custody_message, role_gate
 from .private_state import LockedPrivateState
 
@@ -80,19 +81,24 @@ EXECUTION_ROUTES = frozenset({"normal_subagent", "normal_task", "degraded_subage
 TOPOLOGY_NODE_KINDS = frozenset({"CTRL", "LEAD", "SUBAGENT", "TASK", "BLOCK"})
 ROLE_MANIFEST_FIELDS = frozenset({
     "id", "name", "purpose", "owns", "instructions", "boundaries",
-    "default_skills", "specializations", "avatar_asset_digest", "accent", "version", "source", "provenance",
+    "default_skills", "specializations", "avatar_asset_digest", "avatar_variants",
+    "accent", "lucide_icon", "version", "source", "provenance",
 })
 ROLE_PAYLOAD_FIELDS = frozenset({"role_id", "expected_active_version", "assignment_task_id", "manifest"})
 ROLE_SOURCES = frozenset({"builtin", "custom", "user_override"})
 BUILTIN_ROLE_AVATAR_MANIFEST_SHA256 = "7e5719911e72d5ddca8ff1579e580a0bec24f0be83bd8ef6238575b448113c3b"
-ROLE_ACCENTS = {
-    "manager": "#FF6B4A", "strategist": "#F97316", "researcher": "#22D3EE", "analyst": "#38BDF8",
-    "specialist": "#6366F1", "inventor": "#D946EF", "architect": "#FBBF24", "designer": "#F72585",
-    "artist": "#8B5CF6", "writer": "#C084FC", "developer": "#2563EB", "producer": "#F43F5E",
-    "tester": "#14B8A6", "assistant": "#818CF8", "security": "#FF4D2E", "auditor": "#CBD5E1",
-    "legal": "#E11D48", "reviewer": "#A3E635", "operator": "#10B981", "marketer": "#FB7185",
-    "support": "#5EEAD4", "accountant": "#2DD4BF", "recruiter": "#A855F7", "educator": "#FDE047",
+ROLE_LUCIDE_ICONS = {
+    "manager": "briefcase-business", "strategist": "compass", "researcher": "search", "analyst": "chart-no-axes-combined",
+    "specialist": "badge-info", "inventor": "lightbulb", "architect": "landmark", "designer": "palette",
+    "artist": "brush", "writer": "pen-line", "developer": "code-xml", "producer": "clapperboard",
+    "tester": "flask-conical", "assistant": "clipboard-list", "security": "shield-check", "auditor": "file-search",
+    "legal": "scale", "reviewer": "scan-search", "operator": "settings", "marketer": "megaphone",
+    "support": "headset", "accountant": "calculator", "recruiter": "user-search", "educator": "graduation-cap",
 }
+ROLE_LUCIDE_ICON_ALLOWLIST = frozenset({*ROLE_LUCIDE_ICONS.values(), "circle-user-round"})
+ROLE_LUCIDE_FALLBACK = "circle-user-round"
+ROLE_AVATAR_VARIANT_IDS = frozenset({"command"})
+ADMITTED_CTRL_COMMAND_AVATAR_DIGEST: str | None = None
 BUILT_IN_ROLE_SPECIALIZATIONS = {
     "manager": ("Product Manager", "Project Manager", "Program Manager", "Operations Manager"),
     "strategist": ("Product Strategist", "Brand Strategist", "Growth Strategist", "Go-to-Market Strategist"),
@@ -870,6 +876,35 @@ def _role_specializations(value: Any, source: str) -> list[str]:
     return labels
 
 
+def _role_lucide_icon(value: Any) -> str:
+    icon = _safe_id(value, "role Lucide icon", maximum=64)
+    if icon not in ROLE_LUCIDE_ICON_ALLOWLIST:
+        raise ProgressEventError("role Lucide icon is not allowlisted")
+    return icon
+
+
+def _role_avatar_variants(value: Any) -> list[dict[str, Any]]:
+    if not isinstance(value, list) or len(value) > len(ROLE_AVATAR_VARIANT_IDS):
+        raise ProgressEventError("role avatar variants must be a bounded array")
+    result: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for item in value:
+        if not isinstance(item, dict) or set(item) != {"id", "asset_digest", "structural_roles"}:
+            raise ProgressEventError("role avatar variant is invalid")
+        variant_id = _safe_id(item.get("id"), "role avatar variant id", maximum=64)
+        digest = str(item.get("asset_digest") or "").casefold()
+        roles = list(_safe_ids(item.get("structural_roles"), "role avatar structural_roles"))
+        if variant_id not in ROLE_AVATAR_VARIANT_IDS or variant_id in seen:
+            raise ProgressEventError("role avatar variant id is unsupported or duplicated")
+        if roles != ["CTRL"]:
+            raise ProgressEventError("command avatar variant requires one admitted CTRL-only digest")
+        if ADMITTED_CTRL_COMMAND_AVATAR_DIGEST is None or digest != ADMITTED_CTRL_COMMAND_AVATAR_DIGEST:
+            raise ProgressEventError("no admitted command avatar digest is available")
+        seen.add(variant_id)
+        result.append({"id": variant_id, "asset_digest": digest, "structural_roles": roles})
+    return result
+
+
 def _validate_role_manifest(payload: Any) -> dict[str, Any]:
     if not isinstance(payload, dict):
         raise ProgressEventError("role manifest must be an object")
@@ -897,6 +932,10 @@ def _validate_role_manifest(payload: Any) -> dict[str, Any]:
         "provenance": _role_texts(payload.get("provenance"), "role provenance"),
     }
     normalized["specializations"] = _role_specializations(payload["specializations"], source)
+    if "lucide_icon" in payload:
+        normalized["lucide_icon"] = _role_lucide_icon(payload["lucide_icon"])
+    if "avatar_variants" in payload:
+        normalized["avatar_variants"] = _role_avatar_variants(payload["avatar_variants"])
     expected = f"{source}:{hashlib.sha256(json.dumps(normalized, sort_keys=True, separators=(',', ':')).encode()).hexdigest()}"
     version = expected if payload.get("version") in (None, "") else _safe_id(payload.get("version"), "role version")
     if version != expected:
@@ -914,6 +953,35 @@ def build_role_manifest(role_id: str, draft: Mapping[str, Any], source: str, pro
         raise ProgressEventError("role manifest draft must be an object")
     _exact_fields(draft, allowed, "role manifest draft")
     return validate_role_manifest({"id": role_id, **draft, "source": source, "provenance": provenance})
+
+
+def resolve_role_lucide_icon(manifest: Mapping[str, Any]) -> str:
+    """Resolve one data-only icon name; executable/icon markup is never accepted."""
+    validated = validate_role_manifest(dict(manifest))
+    return str(validated.get("lucide_icon") or ROLE_LUCIDE_FALLBACK)
+
+
+def resolve_role_avatar(
+    manifest: Mapping[str, Any],
+    *,
+    structural_role: str,
+    variant_id: str | None = None,
+    admitted_asset_digests: frozenset[str] = frozenset(),
+) -> dict[str, Any]:
+    """Resolve canonical avatar unless a retained CTRL-only alternate is admitted."""
+    validated = validate_role_manifest(dict(manifest))
+    canonical = {
+        "variant_id": "canonical", "asset_digest": validated["avatar_asset_digest"],
+        "fallback": variant_id not in (None, "", "canonical"),
+    }
+    if variant_id in (None, "", "canonical"):
+        return canonical
+    if variant_id != "command" or str(structural_role).strip().upper() != "CTRL":
+        return canonical
+    variant = next((item for item in validated.get("avatar_variants", []) if item["id"] == "command"), None)
+    if variant is None or variant["asset_digest"] not in admitted_asset_digests:
+        return canonical
+    return {"variant_id": "command", "asset_digest": variant["asset_digest"], "fallback": False}
 
 
 def load_builtin_role_avatar_assets(avatar_root: Path) -> dict[str, dict[str, Any]]:
@@ -1003,7 +1071,7 @@ def load_builtin_role_manifests(
 ) -> tuple[dict[str, Any], ...]:
     cards = {path.stem: path for path in Path(roles_root).glob("*.md") if path.is_file()}
     assets = dict(avatar_assets or load_builtin_role_avatar_assets(avatar_root))
-    if set(cards) != set(BUILT_IN_PROFESSIONS) or set(BUILT_IN_ROLE_SPECIALIZATIONS) != set(BUILT_IN_PROFESSIONS) or set(ROLE_ACCENTS) != set(BUILT_IN_PROFESSIONS) or set(assets) != set(BUILT_IN_PROFESSIONS):
+    if set(cards) != set(BUILT_IN_PROFESSIONS) or set(BUILT_IN_ROLE_SPECIALIZATIONS) != set(BUILT_IN_PROFESSIONS) or set(ROLE_ACCENTS) != set(BUILT_IN_PROFESSIONS) or set(ROLE_LUCIDE_ICONS) != set(BUILT_IN_PROFESSIONS) or set(assets) != set(BUILT_IN_PROFESSIONS):
         raise ProgressEventError("built-in role inventory must remain exactly 24 roles with distinct admitted avatars")
     manifests = []
     for role_id, name in BUILT_IN_PROFESSIONS.items():
@@ -1022,6 +1090,7 @@ def load_builtin_role_manifests(
             "specializations": list(BUILT_IN_ROLE_SPECIALIZATIONS[role_id]),
             "avatar_asset_digest": assets[role_id]["source"]["sha256"],
             "accent": ROLE_ACCENTS[role_id],
+            "lucide_icon": ROLE_LUCIDE_ICONS[role_id],
         }, "builtin", [f"role-card:{role_id}:{hashlib.sha256(text.encode()).hexdigest()}"]))
     return tuple(manifests)
 
@@ -2357,6 +2426,7 @@ class Ledger:
             "schema_version": 1, "built_in_count": 24, "roles": result,
             "assignments": sorted(projection["role_assignments"].values(), key=lambda item: item["task_id"]),
             "cursor": projection["cursor"],
+            "agent_color_registry": project_agent_color_registry(),
             "hierarchy_binding": {
                 "project_field": "project_id", "ctrl_membership_field": "controller_ids",
                 "task_identity_field": "id", "assignment_task_field": "task_id",
@@ -2368,9 +2438,17 @@ class Ledger:
                 "optimistic_concurrency_field": "expected_active_version",
                 "avatar": {
                     "selection_field": "avatar_asset_digest",
+                    "alternate_selection_field": "avatar_variants",
+                    "reserved_alternate_ids": ["command"],
+                    "command_variant_structural_roles": ["CTRL"],
+                    "command_variant_digest": ADMITTED_CTRL_COMMAND_AVATAR_DIGEST,
                     "selection_commands": ["ROLE_MANIFEST_CREATE", "ROLE_MANIFEST_REVISE"],
                     "requires_retained_immutable_asset": True,
                     "generation_command": None,
+                },
+                "icon": {
+                    "selection_field": "lucide_icon", "allowlist": sorted(ROLE_LUCIDE_ICON_ALLOWLIST),
+                    "fallback": ROLE_LUCIDE_FALLBACK, "raw_svg_html_url_allowed": False,
                 },
             },
             "claim_limit": "The browser projects server-owned ledger state; role metadata never transfers task authority or proves acceptance.",
