@@ -339,6 +339,10 @@ class SwarmConsoleTests(unittest.TestCase):
         self.assertNotIn('rel="icon" href="/assets/swarm-wordmark.png"', index)
         self.assertEqual(console.STATIC_FILES["/swarm-icon-64.png"], ("swarm-icon-64.png", "image/png"))
         self.assertEqual(console.STATIC_FILES["/assets/swarm-mascot-512.png"], ("swarm-mascot-512.png", "image/png"))
+        self.assertEqual(
+            console.STATIC_FILES["/assets/swarm-state-mascot-concerned.png"],
+            ("swarm-state-mascot-concerned.png", "image/png"),
+        )
         self.assertEqual(icon[:8], b"\x89PNG\r\n\x1a\n")
         self.assertEqual((int.from_bytes(icon[16:20], "big"), int.from_bytes(icon[20:24], "big")), (64, 64))
         self.assertEqual(mascot[:8], b"\x89PNG\r\n\x1a\n")

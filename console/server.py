@@ -237,6 +237,7 @@ STATIC_FILES = {
     "/assets/swarm-guided-tour-role-group.png": ("swarm-guided-tour-role-group.png", "image/png"),
     "/assets/swarm-guided-tour-project-tool.png": ("swarm-guided-tour-project-tool.png", "image/png"),
     "/assets/swarm-offline-disconnected.png": ("swarm-offline-disconnected.png", "image/png"),
+    "/assets/swarm-state-mascot-concerned.png": ("swarm-state-mascot-concerned.png", "image/png"),
 }
 STATIC_ASSETS = {
     "/assets/swarm-wordmark.png": (
