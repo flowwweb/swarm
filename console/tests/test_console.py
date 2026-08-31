@@ -6185,6 +6185,97 @@ class SwarmConsoleTests(unittest.TestCase):
         self.assertIsNone(fast_descriptor["current"])
         self.assertEqual(fast_descriptor["value_state"], "UNKNOWN")
 
+    def test_config_source_replay_retains_scope_and_cursor_across_restart(self) -> None:
+        app = console.App(self.codex_home, self.config)
+        global_initial = app.config_projection({"type": "global"})
+        global_payload = {
+            "scope": global_initial["scope"],
+            "expected_revision": global_initial["revision"],
+            "acknowledge": True,
+            "text": global_initial["text"].replace("fast_mode = false", "fast_mode = true", 1),
+            "operation_id": "config-replay-scope-global",
+        }
+        global_fresh = app.update_config_source(global_payload)
+        applied_bytes = self.config.read_bytes()
+
+        restarted = console.App(self.codex_home, self.config)
+        global_replay = restarted.update_config_source(global_payload)
+        self.assertTrue(global_replay["mutation_receipt"]["replayed"])
+        self.assertEqual(self.config.read_bytes(), applied_bytes)
+        for key in (
+            "accepted",
+            "action",
+            "operation_id",
+            "scope",
+            "expected_revision",
+            "new_revision",
+            "changed_paths",
+            "acknowledged",
+            "audit_event",
+            "source_kind",
+        ):
+            self.assertEqual(
+                global_replay["mutation_receipt"][key],
+                global_fresh["mutation_receipt"][key],
+            )
+
+        project_initial = restarted.config_projection({"type": "project", "project_id": "project:alpha"})
+        project_payload = {
+            "scope": project_initial["scope"],
+            "expected_revision": project_initial["revision"],
+            "acknowledge": True,
+            "text": "[execution]\nfast_mode = true\n",
+            "operation_id": "config-replay-scope-project",
+        }
+        project_fresh = restarted.update_config_source(project_payload)
+        retained = copy.deepcopy(restarted.store.config_event(project_payload["operation_id"]))
+
+        replay_app = console.App(self.codex_home, self.config)
+        project_replay = replay_app.update_config_source(project_payload)
+        self.assertTrue(project_replay["mutation_receipt"]["replayed"])
+        self.assertEqual(
+            project_replay["mutation_receipt"]["scope"]["accepted_cursor"],
+            project_initial["scope"]["accepted_cursor"],
+        )
+        for key in (
+            "accepted",
+            "action",
+            "operation_id",
+            "scope",
+            "expected_revision",
+            "new_revision",
+            "changed_paths",
+            "acknowledged",
+            "audit_event",
+            "source_kind",
+        ):
+            self.assertEqual(
+                project_replay["mutation_receipt"][key],
+                project_fresh["mutation_receipt"][key],
+            )
+
+        with self.assertRaises(console.ConsoleConflict):
+            replay_app.update_config_source({
+                **project_payload,
+                "scope": global_replay["scope"],
+                "expected_revision": global_replay["revision"],
+                "text": global_replay["text"],
+            })
+        with self.assertRaises(console.ConsoleConflict):
+            replay_app.update_config_source({
+                **project_payload,
+                "scope": {
+                    **project_payload["scope"],
+                    "accepted_cursor": {"type": "codex_project_roster_v1", "digest": "0" * 64},
+                },
+            })
+        self.assertEqual(replay_app.store.config_event(project_payload["operation_id"]), retained)
+        self.assertEqual(
+            replay_app.config_projection(project_initial["scope"])["revision"],
+            project_fresh["revision"],
+        )
+        self.assertEqual(self.config.read_bytes(), applied_bytes)
+
     def test_global_config_audit_failure_rolls_back_bytes_and_revision(self) -> None:
         app = console.App(self.codex_home, self.config)
         initial = app.config_projection({"type": "global"})

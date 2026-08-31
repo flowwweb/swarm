@@ -11761,6 +11761,7 @@ class App:
             "action": action,
             "operation_id": operation_id,
             "replayed": True,
+            "scope": copy.deepcopy(scope),
             "expected_revision": expected_revision,
             "new_revision": retained.get("new_revision"),
             "changed_paths": copy.deepcopy(retained.get("changed_paths", [])),
