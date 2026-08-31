@@ -114,7 +114,7 @@ assert.match(app, /const STATE_ILLUSTRATIONS = Object\.freeze\([\s\S]*?offline:[
 assert.match(app, /function stateIllustrationMarkup\(variant = "empty"/);
 assert.match(app, /<picture><source type="image\/webp" srcset=/);
 assert.match(app, /stateMessageMarkup\("empty", "No proof yet"/);
-assert.match(app, /stateMessageMarkup\("recovery", "Proof is temporarily unavailable"/);
+assert.match(app, /stateMessageMarkup\("recovery", "Proof is temporarily unavailable", "Proof will appear here when SWARM receives it again\."/);
 assert.match(css, /\.state-illustration \{[^}]*aspect-ratio:1;[^}]*isolation:isolate;/);
 assert.match(css, /\.state-illustration picture \{[^}]*width:100%;[^}]*height:100%;/);
 assert.match(css, /\.state-message \{[^}]*min-height:260px;/);
@@ -3208,7 +3208,7 @@ proofFeed.items.push({
       await statePage.evaluate(() => { state.proofStatuses.set(proofCollectionKey(), "unavailable"); renderReview(); });
       const reviewRecovery = statePage.locator("#review-list .state-message");
       assert.equal(await reviewRecovery.locator('[data-state-variant="recovery"]').count(), 1);
-      assert.match(await reviewRecovery.textContent(), /Proof is temporarily unavailable[\s\S]*Refresh SWARM/);
+      assert.match(await reviewRecovery.textContent(), /Proof is temporarily unavailable[\s\S]*Proof will appear here when SWARM receives it again\./);
       await statePage.emulateMedia({ reducedMotion: "reduce" });
       assert.equal(await statePage.locator("#review-list .state-illustration").evaluate((surface) => surface.getAnimations({ subtree: true }).length), 0);
       const recoveryGeometry = await reviewRecovery.evaluate((surface) => {
