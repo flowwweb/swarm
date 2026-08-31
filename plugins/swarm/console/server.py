@@ -6825,6 +6825,60 @@ HOST_CTRL_CLASSIFICATION_SOURCES = frozenset({
     "host_threads.agent_role",
     "host_thread_spawn_edges.subagent",
 })
+TOPOLOGY_TERMINAL_STATES = frozenset({"ACCEPTED", "TOMBSTONED", "VERIFIED"})
+TOPOLOGY_TIER = {"CTRL": 0, "LEAD": 1, "DOER": 2}
+TOPOLOGY_ACTIVITY_LABELS = {
+    "BLOCK_CREATED": "Work started",
+    "STATE_CHANGED": "State changed",
+    "CURRENT_ACTION_CHANGED": "Current action updated",
+    "PROGRESS_MEASURED": "Progress measured",
+    "PROOF_ADMITTED": "Proof admitted",
+    "WAIT_CHANGED": "Wait state changed",
+    "REWORK_REQUESTED": "Rework requested",
+    "RETRY_STARTED": "Retry started",
+    "TAKEOVER_STARTED": "Takeover started",
+    "ACCEPTED": "Work accepted",
+}
+
+
+def _topology_id(kind: str, *parts: str) -> str:
+    encoded = json.dumps([kind, *parts], ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    return f"{kind}:{hashlib.sha256(encoded).hexdigest()}"
+
+
+def _topology_activity_text(event_kind: str, lifecycle_state: str) -> str | None:
+    label = TOPOLOGY_ACTIVITY_LABELS.get(event_kind)
+    if label is None or not re.fullmatch(r"[A-Z][A-Z_]{1,31}", lifecycle_state):
+        return None
+    return f"{label} · {lifecycle_state.replace('_', ' ').title()}"[:64]
+
+
+def _topology_payload(state: str, *, reason: str | None = None) -> dict[str, Any]:
+    return {
+        "schema_version": 1,
+        "state": state,
+        "loading": state == "LOADING",
+        "empty": True,
+        "nodes": [],
+        "tasks": [],
+        "agent_edges": [],
+        "task_edges": [],
+        "roots": [],
+        "orphans": [],
+        "hiddenTaskCount": 0,
+        "cursor": None,
+        "reason": reason,
+        "authority": {"execution_authority": False},
+    }
+
+
+def _topology_cursor(payload: dict[str, Any], ledger_cursor: Any) -> dict[str, Any]:
+    basis = {key: value for key, value in payload.items() if key != "cursor"}
+    digest = hashlib.sha256(json.dumps(
+        {"projection": basis, "ledger_cursor": ledger_cursor},
+        ensure_ascii=False, sort_keys=True, separators=(",", ":"),
+    ).encode("utf-8")).hexdigest()
+    return {"type": "overview_topology_v1", "digest": f"sha256:{digest}", "ledger": copy.deepcopy(ledger_cursor)}
 
 
 def _controller_classification(
@@ -7305,7 +7359,10 @@ def build_overview(codex_home: Path, config_path: Path) -> dict[str, Any]:
     for thread_id, node in list(nodes.items()):
         parent = parent_by_child.get(thread_id)
         if parent in nodes:
-            links.append({"source": parent, "target": thread_id, "relationship": "delegated"})
+            links.append({
+                "source": parent, "target": thread_id, "relationship": "delegated",
+                "status": edge_status[thread_id],
+            })
             continue
         if node["role"] == "ctrl" or thread_id in standalone_task_ids:
             continue
@@ -7433,6 +7490,7 @@ def build_overview(codex_home: Path, config_path: Path) -> dict[str, Any]:
         "generated_at": datetime.now(UTC).isoformat(),
         "heartbeat_minutes": heartbeat,
         "observation_window_ms": observation_window_ms,
+        "topology": _topology_payload("LOADING"),
         "project_inventory": {
             "state": "KNOWN" if project_inventory_available else "UNKNOWN",
             "available": project_inventory_available,
@@ -9987,6 +10045,10 @@ class App:
             if link["source"] in node_ids and link["target"] in node_ids
         ]
         view["roots"] = [node_id for node_id in view["roots"] if node_id in node_ids]
+        if isinstance(view.get("topology"), dict):
+            view["topology"] = self._scope_topology_projection(
+                view["topology"], selected_project_id, selected_ctrl_id if ctrl_scope else None,
+            )
         view["controllers"] = [
             controller for controller in view["controllers"]
             if (
@@ -10998,6 +11060,521 @@ class App:
             ),
         }
 
+    def _topology_projection(self, view: dict[str, Any]) -> dict[str, Any]:
+        """Join immutable manifests to observed edges and current Ledger blocks."""
+        try:
+            ledger = self.progress_ledger.replay()
+            collections = (ledger.get("agent_manifests"), ledger.get("task_manifests"))
+            if not all(isinstance(collection, dict) for collection in collections):
+                raise ProgressEventError("identity manifest projection is invalid")
+            scopes: set[tuple[str, str]] = set()
+            for collection in collections:
+                for state in collection.values():
+                    if not isinstance(state, dict):
+                        raise ProgressEventError("identity manifest state is invalid")
+                    manifest = state.get("versions", {}).get(state.get("active_version"))
+                    if not isinstance(manifest, dict):
+                        raise ProgressEventError("identity manifest active version is invalid")
+                    scopes.add((str(manifest.get("project_id") or ""), str(manifest.get("ctrl_id") or "")))
+            if not scopes:
+                empty = _topology_payload("EMPTY")
+                empty["loading"] = False
+                empty["cursor"] = _topology_cursor(empty, ledger.get("cursor"))
+                return empty
+
+            source_nodes = {str(node.get("id") or ""): node for node in view.get("nodes", [])}
+            observed_ctrl_ids = {
+                str(controller.get("id") or "")
+                for controller in view.get("controllers", [])
+                if _is_observed_ctrl_for_projection(controller)
+            }
+            agents: dict[str, dict[str, Any]] = {}
+            task_manifests: list[dict[str, Any]] = []
+            rejected_bindings = 0
+
+            for project_id, ctrl_id in sorted(scopes):
+                identity = self.progress_ledger.project_identity_manifests(
+                    project_id, ctrl_id, self.builtin_role_manifests,
+                )
+                for row in identity.get("agents", []):
+                    manifest = row.get("manifest") if isinstance(row, dict) else None
+                    agent_id = str(manifest.get("agent_id") or "") if isinstance(manifest, dict) else ""
+                    host = source_nodes.get(agent_id)
+                    structural_role = str(manifest.get("structural_role") or "") if isinstance(manifest, dict) else ""
+                    exact_host_binding = (
+                        isinstance(manifest, dict)
+                        and row.get("binding_state") == "KNOWN"
+                        and host is not None
+                        and str(host.get("project_id") or "") == project_id
+                        and structural_role in TOPOLOGY_TIER
+                        and (structural_role != "CTRL" or agent_id in observed_ctrl_ids)
+                        and agent_id not in agents
+                    )
+                    if not exact_host_binding:
+                        rejected_bindings += 1
+                        continue
+                    agents[agent_id] = {
+                        "record_type": "AGENT",
+                        "id": agent_id,
+                        "agent_id": agent_id,
+                        "project_id": project_id,
+                        "ctrl_id": ctrl_id,
+                        "display_name": manifest["display_name"],
+                        "title": manifest["title"],
+                        "profession": manifest["profession"],
+                        "profession_label": row.get("profession_label"),
+                        "structural_role": structural_role,
+                        "tier": TOPOLOGY_TIER[structural_role],
+                        "source_order": None,
+                        "sibling_order": None,
+                        "depth": None,
+                        "lucide_icon": row.get("resolved_lucide_icon"),
+                        "avatar": copy.deepcopy(row.get("resolved_avatar")),
+                        "accent": row.get("resolved_accent"),
+                        "manifest_identity": {
+                            "state": "KNOWN",
+                            "manifest_id": manifest["manifest_id"],
+                            "manifest_version": manifest["manifest_version"],
+                            "manifest_digest": manifest["manifest_digest"],
+                            "role_manifest_ref": copy.deepcopy(manifest["role_manifest_ref"]),
+                        },
+                        "parent_relation": {
+                            "state": "UNKNOWN", "parent_agent_id": None,
+                            "candidate_parent_ids": [], "reason": "MISSING_PARENT",
+                        },
+                        "hierarchy_membership": "UNBOUND",
+                        "royal_line": False,
+                        "children_ids": [],
+                        "task_ids": [],
+                        "visibleTaskCount": 0,
+                        "hiddenTaskCount": 0,
+                        "ports": [],
+                        "input_port_ids": [],
+                        "output_port_ids": [],
+                        "activity": {
+                            "status": str(host.get("status") or "UNKNOWN").upper(),
+                            "online": host.get("status") == "active",
+                            "observed_at_ms": host.get("updated_at") or None,
+                            "source": "host_threads.updated_at_ms",
+                            "execution_authority": False,
+                        },
+                        "live_projection": {
+                            "state": "UNKNOWN", "status": None, "mini_update": None,
+                            "context_rows": [], "event_cursor": None,
+                            "reason": "MISSING_BOUND_EVENT_RECEIPT",
+                        },
+                        "detail_target": {
+                            "agent_id": agent_id, "project_id": project_id, "ctrl_id": ctrl_id,
+                        },
+                    }
+                for row in identity.get("tasks", []):
+                    manifest = row.get("manifest") if isinstance(row, dict) else None
+                    if isinstance(manifest, dict) and row.get("binding_state") == "KNOWN":
+                        task_manifests.append(manifest)
+                    else:
+                        rejected_bindings += 1
+
+            for order, agent in enumerate(sorted(
+                agents.values(),
+                key=lambda item: (
+                    item["project_id"], item["ctrl_id"], item["tier"],
+                    str(item["display_name"]).casefold(), item["agent_id"],
+                ),
+            )):
+                agent["source_order"] = order
+
+            parent_observations: dict[str, list[tuple[str, str]]] = {}
+            for link in view.get("links", []):
+                if not isinstance(link, dict):
+                    rejected_bindings += 1
+                    continue
+                source, target = str(link.get("source") or ""), str(link.get("target") or "")
+                if target in agents:
+                    parent_observations.setdefault(target, []).append((
+                        source, str(link.get("status") or "").strip().casefold(),
+                    ))
+
+            provisional: dict[str, str] = {}
+            for agent_id, agent in agents.items():
+                observations = parent_observations.get(agent_id, [])
+                candidates = sorted({source for source, _ in observations})
+                statuses = {status for _, status in observations}
+                relation = agent["parent_relation"]
+                relation["candidate_parent_ids"] = candidates
+                if not candidates and agent["structural_role"] == "CTRL":
+                    relation.update({"state": "ROOT", "reason": None})
+                    agent["hierarchy_membership"] = "ROOT"
+                elif len(candidates) == 1 and statuses == {"open"}:
+                    parent_id = candidates[0]
+                    parent = agents.get(parent_id)
+                    if (
+                        parent is not None
+                        and parent_id != agent_id
+                        and (parent["project_id"], parent["ctrl_id"]) == (agent["project_id"], agent["ctrl_id"])
+                    ):
+                        provisional[agent_id] = parent_id
+                    else:
+                        relation["reason"] = "UNBOUND_OR_CROSS_SCOPE_PARENT"
+                        rejected_bindings += 1
+                elif len(candidates) > 1:
+                    relation["reason"] = "AMBIGUOUS_PARENT"
+                    rejected_bindings += 1
+                else:
+                    relation["reason"] = "UNSUPPORTED_EDGE_STATUS"
+                    rejected_bindings += 1
+
+            cycle_nodes: set[str] = set()
+            for start in provisional:
+                path: list[str] = []
+                positions: dict[str, int] = {}
+                current = start
+                while current in provisional and current not in positions:
+                    positions[current] = len(path)
+                    path.append(current)
+                    current = provisional[current]
+                if current in positions:
+                    cycle_nodes.update(path[positions[current]:])
+            cycle_descendants = set(cycle_nodes)
+            changed = True
+            while changed:
+                changed = False
+                for child_id, parent_id in provisional.items():
+                    if parent_id in cycle_descendants and child_id not in cycle_descendants:
+                        cycle_descendants.add(child_id)
+                        changed = True
+            for agent_id in cycle_descendants:
+                provisional.pop(agent_id, None)
+                agents[agent_id]["parent_relation"].update({
+                    "reason": "CYCLE" if agent_id in cycle_nodes else "ANCESTOR_CYCLE",
+                    "state": "UNKNOWN",
+                })
+                agents[agent_id]["hierarchy_membership"] = "INVALID"
+            rejected_bindings += len(cycle_descendants)
+
+            agent_edges: list[dict[str, Any]] = []
+            children: dict[str, list[str]] = {}
+            for child_id, parent_id in provisional.items():
+                child, parent = agents[child_id], agents[parent_id]
+                child["parent_relation"].update({
+                    "state": "KNOWN", "parent_agent_id": parent_id, "reason": None,
+                })
+                child["hierarchy_membership"] = "CHILD"
+                child["royal_line"] = parent["structural_role"] == "CTRL"
+                children.setdefault(parent_id, []).append(child_id)
+            for parent_id, child_ids in children.items():
+                child_ids.sort(key=lambda item: (agents[item]["source_order"], item))
+                agents[parent_id]["children_ids"] = child_ids
+                for sibling_order, child_id in enumerate(child_ids):
+                    agents[child_id]["sibling_order"] = sibling_order
+                    edge_id = _topology_id("agent-edge", parent_id, child_id)
+                    agent_edges.append({
+                        "id": edge_id, "edge_kind": "AGENT_CHILD",
+                        "source": parent_id, "target": child_id,
+                        "source_port_id": _topology_id("agent-child-output", parent_id, child_id),
+                        "target_port_id": _topology_id("agent-parent-input", child_id, parent_id),
+                        "execution_authority": False,
+                    })
+
+            roots = sorted(
+                (agent_id for agent_id, agent in agents.items() if agent["parent_relation"]["state"] == "ROOT"),
+                key=lambda item: (agents[item]["source_order"], item),
+            )
+            queue = [(root_id, 0) for root_id in roots]
+            while queue:
+                agent_id, depth = queue.pop(0)
+                agents[agent_id]["depth"] = depth
+                queue.extend((child_id, depth + 1) for child_id in children.get(agent_id, []))
+
+            blocks = ledger.get("blocks", {})
+            scope_versions = ledger.get("scopes", {})
+            if not isinstance(blocks, dict) or not isinstance(scope_versions, dict):
+                raise ProgressEventError("task ownership projection is invalid")
+            valid_tasks_by_owner: dict[str, list[dict[str, Any]]] = {}
+            valid_task_bindings: dict[str, dict[str, Any]] = {}
+            agent_ids = set(agents)
+            for manifest in task_manifests:
+                task_id = str(manifest["task_id"])
+                if task_id in agent_ids:
+                    rejected_bindings += 1
+                    continue
+                scope_version = int(scope_versions.get(manifest["project_id"], 0) or 0)
+                defined_blocks = {str(block["block_id"]) for block in manifest.get("blocks", [])}
+                current = [
+                    block for block in blocks.values()
+                    if isinstance(block, dict)
+                    and block.get("project_id") == manifest["project_id"]
+                    and block.get("ctrl_id") == manifest["ctrl_id"]
+                    and block.get("task_id") == task_id
+                    and int(block.get("scope_version") or 0) == scope_version
+                    and block.get("lifecycle_state") not in TOPOLOGY_TERMINAL_STATES
+                ]
+                if not current:
+                    continue
+                owners = {str(block.get("owner_id") or "") for block in current}
+                owner_id = next(iter(owners)) if len(owners) == 1 else ""
+                owner = agents.get(owner_id)
+                exact = (
+                    scope_version > 0
+                    and owner is not None
+                    and owner["hierarchy_membership"] != "INVALID"
+                    and (owner["project_id"], owner["ctrl_id"]) == (manifest["project_id"], manifest["ctrl_id"])
+                    and all(str(block.get("block_id") or "") in defined_blocks for block in current)
+                )
+                if not exact:
+                    rejected_bindings += 1
+                    continue
+                current.sort(key=lambda block: (int(block.get("latest_event_seq") or 0), str(block.get("block_id") or "")))
+                states = sorted({str(block.get("lifecycle_state") or "UNKNOWN") for block in current})
+                latest = current[-1]
+                task = {
+                    "record_type": "TASK",
+                    "id": task_id,
+                    "task_id": task_id,
+                    "task_name": manifest["task_name"],
+                    "project_id": manifest["project_id"],
+                    "ctrl_id": manifest["ctrl_id"],
+                    "owning_agent_id": owner_id,
+                    "state": states[0] if len(states) == 1 else "MIXED",
+                    "manifest_identity": {
+                        "state": "KNOWN", "manifest_id": manifest["manifest_id"],
+                        "manifest_version": manifest["manifest_version"],
+                        "manifest_digest": manifest["manifest_digest"],
+                    },
+                    "presentation_priority": int(manifest["policy"]["presentation_priority"]),
+                    "order": None,
+                    "ports": [],
+                    "input_port_ids": [],
+                    "output_port_ids": [],
+                    "event_cursor": {
+                        "event_seq": latest.get("latest_event_seq"),
+                        "event_id": latest.get("latest_event_id"),
+                        "event_digest": latest.get("latest_event_digest"),
+                    },
+                    "execution_authority": False,
+                }
+                measured = [block for block in current if block.get("committed_weight") is not None]
+                denominator = sum(int(block.get("committed_weight") or 0) for block in measured)
+                if len(measured) == len(current) and denominator > 0:
+                    task["progress"] = round(
+                        sum(int(block.get("admitted_proof_weight") or 0) for block in measured) * 100 / denominator, 2,
+                    )
+                valid_tasks_by_owner.setdefault(owner_id, []).append(task)
+                valid_task_bindings[task_id] = {
+                    "task": task,
+                    "block_ids": {str(block.get("block_id") or "") for block in current},
+                }
+
+            tasks: list[dict[str, Any]] = []
+            task_edges: list[dict[str, Any]] = []
+            for owner_id, owner_tasks in valid_tasks_by_owner.items():
+                owner_tasks.sort(key=lambda task: (task["presentation_priority"], task["task_id"]))
+                visible = owner_tasks[:3]
+                agents[owner_id]["task_ids"] = [task["task_id"] for task in visible]
+                agents[owner_id]["visibleTaskCount"] = len(visible)
+                agents[owner_id]["hiddenTaskCount"] = len(owner_tasks) - len(visible)
+                for order, task in enumerate(visible):
+                    task["order"] = order
+                    tasks.append(task)
+                    edge_id = _topology_id("task-edge", owner_id, task["task_id"])
+                    task_edges.append({
+                        "id": edge_id, "edge_kind": "AGENT_TASK_OWNERSHIP",
+                        "source": owner_id, "target": task["task_id"],
+                        "source_port_id": _topology_id("agent-task-output", owner_id, task["task_id"]),
+                        "target_port_id": _topology_id("task-owner-input", task["task_id"], owner_id),
+                        "execution_authority": False,
+                    })
+            tasks.sort(key=lambda task: (agents[task["owning_agent_id"]]["source_order"], task["order"], task["task_id"]))
+
+            activity_by_owner: dict[str, list[dict[str, Any]]] = {}
+            for project_id in sorted({
+                task["project_id"] for owner_tasks in valid_tasks_by_owner.values() for task in owner_tasks
+            }):
+                feed = self.progress_ledger.feed_snapshot(project_id, limit=10)
+                for item in feed.get("items", []):
+                    if not isinstance(item, dict):
+                        continue
+                    binding = valid_task_bindings.get(str(item.get("task_id") or ""))
+                    owner_id = str(item.get("owner_id") or "")
+                    text = _topology_activity_text(
+                        str(item.get("event_kind") or ""), str(item.get("lifecycle_state") or ""),
+                    )
+                    if (
+                        binding is None or text is None or owner_id not in agents
+                        or binding["task"]["owning_agent_id"] != owner_id
+                        or str(item.get("block_id") or "") not in binding["block_ids"]
+                    ):
+                        continue
+                    cursor = {
+                        "event_seq": item.get("event_seq"),
+                        "event_id": item.get("event_id"),
+                        "event_digest": item.get("event_digest"),
+                    }
+                    if not all(cursor.values()):
+                        continue
+                    task = binding["task"]
+                    activity_by_owner.setdefault(owner_id, []).append({
+                        "text": text,
+                        "identity": {
+                            "agent_id": owner_id,
+                            "agent_manifest_id": agents[owner_id]["manifest_identity"]["manifest_id"],
+                            "task_id": task["task_id"],
+                            "task_manifest_id": task["manifest_identity"]["manifest_id"],
+                            "role_manifest_id": agents[owner_id]["manifest_identity"]["role_manifest_ref"]["manifest_id"],
+                            "role_manifest_version": agents[owner_id]["manifest_identity"]["role_manifest_ref"]["manifest_version"],
+                        },
+                        "event_kind": item["event_kind"],
+                        "lifecycle_state": item["lifecycle_state"],
+                        "observed_at_ms": item.get("observed_at_ms"),
+                        "event_cursor": cursor,
+                    })
+            for owner_id, rows in activity_by_owner.items():
+                rows.sort(
+                    key=lambda row: (
+                        int(row["event_cursor"]["event_seq"] or 0),
+                        str(row["event_cursor"]["event_id"] or ""),
+                    ),
+                    reverse=True,
+                )
+                retained = rows[:3 if agents[owner_id]["structural_role"] == "CTRL" else 1]
+                latest = retained[0]
+                agents[owner_id]["live_projection"] = {
+                    "state": "KNOWN",
+                    "status": latest["lifecycle_state"],
+                    "mini_update": latest["text"],
+                    "context_rows": retained,
+                    "event_cursor": latest["event_cursor"],
+                    "reason": None,
+                }
+
+            records: dict[str, dict[str, Any]] = {**agents, **{task["id"]: task for task in tasks}}
+            for edge in [*agent_edges, *task_edges]:
+                source, target = records[edge["source"]], records[edge["target"]]
+                source["ports"].append({
+                    "id": edge["source_port_id"], "direction": "output",
+                    "edge_kind": edge["edge_kind"], "edge_id": edge["id"],
+                })
+                source["output_port_ids"].append(edge["source_port_id"])
+                target["ports"].append({
+                    "id": edge["target_port_id"], "direction": "input",
+                    "edge_kind": edge["edge_kind"], "edge_id": edge["id"],
+                })
+                target["input_port_ids"].append(edge["target_port_id"])
+            for record in records.values():
+                record["ports"].sort(key=lambda port: (port["direction"], port["edge_kind"], port["edge_id"]))
+                record["input_port_ids"].sort()
+                record["output_port_ids"].sort()
+                record["port_count"] = len(record["ports"])
+
+            def recursive(agent_id: str) -> dict[str, Any]:
+                node = copy.deepcopy(agents[agent_id])
+                node["children"] = [recursive(child_id) for child_id in children.get(agent_id, [])]
+                return node
+
+            orphan_ids = sorted(
+                (
+                    agent_id for agent_id, agent in agents.items()
+                    if agent["parent_relation"]["state"] == "UNKNOWN"
+                    and agent["hierarchy_membership"] != "INVALID"
+                ),
+                key=lambda item: (agents[item]["source_order"], item),
+            )
+            payload = {
+                "schema_version": 1,
+                "state": "PARTIAL" if rejected_bindings or orphan_ids else "KNOWN",
+                "loading": False,
+                "empty": not agents and not tasks,
+                "nodes": sorted(agents.values(), key=lambda agent: (agent["source_order"], agent["agent_id"])),
+                "tasks": tasks,
+                "agent_edges": sorted(agent_edges, key=lambda edge: (agents[edge["source"]]["source_order"], agents[edge["target"]]["source_order"], edge["id"])),
+                "task_edges": sorted(task_edges, key=lambda edge: (agents[edge["source"]]["source_order"], records[edge["target"]]["order"], edge["id"])),
+                "roots": [recursive(agent_id) for agent_id in roots],
+                "orphans": [recursive(agent_id) for agent_id in orphan_ids],
+                "hiddenTaskCount": sum(agent["hiddenTaskCount"] for agent in agents.values()),
+                "cursor": None,
+                "reason": "MISSING_OR_CONFLICTING_BINDING" if rejected_bindings or orphan_ids else None,
+                "ordering": {
+                    "agents": "manifest_tier_display_name_then_agent_id",
+                    "tasks": "manifest_presentation_priority_then_task_id",
+                    "tiers": ["CTRL", "LEAD", "DOER"],
+                    "max_visible_tasks_per_agent": 3,
+                },
+                "authority": {"execution_authority": False},
+            }
+            if not agents:
+                payload["state"] = "UNKNOWN"
+            payload["cursor"] = _topology_cursor(payload, ledger.get("cursor"))
+            return payload
+        except (ProgressEventError, KeyError, TypeError, ValueError):
+            unknown = _topology_payload("UNKNOWN", reason="INVALID_OR_UNAVAILABLE_MANIFEST_LEDGER")
+            unknown["loading"] = False
+            return unknown
+
+    @staticmethod
+    def _scope_topology_projection(
+        topology: dict[str, Any], project_id: str, root_agent_id: str | None = None,
+    ) -> dict[str, Any]:
+        if topology.get("state") == "LOADING":
+            return copy.deepcopy(topology)
+        scoped = copy.deepcopy(topology)
+        project_nodes = [node for node in topology.get("nodes", []) if node.get("project_id") == project_id]
+        allowed_ids = {node["id"] for node in project_nodes}
+        if root_agent_id is not None:
+            descendants = {root_agent_id}
+            changed = True
+            while changed:
+                changed = False
+                for edge in topology.get("agent_edges", []):
+                    if edge.get("source") in descendants and edge.get("target") not in descendants:
+                        descendants.add(edge["target"])
+                        changed = True
+            allowed_ids.intersection_update(descendants)
+        nodes = [node for node in project_nodes if node["id"] in allowed_ids]
+        node_ids = {node["id"] for node in nodes}
+        tasks = [task for task in topology.get("tasks", []) if task.get("owning_agent_id") in node_ids]
+        task_ids = {task["id"] for task in tasks}
+        agent_edges = [
+            edge for edge in topology.get("agent_edges", [])
+            if edge.get("source") in node_ids and edge.get("target") in node_ids
+        ]
+        task_edges = [
+            edge for edge in topology.get("task_edges", [])
+            if edge.get("source") in node_ids and edge.get("target") in task_ids
+        ]
+        children: dict[str, list[str]] = {}
+        for edge in agent_edges:
+            children.setdefault(edge["source"], []).append(edge["target"])
+        by_id = {node["id"]: node for node in nodes}
+
+        def recursive(agent_id: str) -> dict[str, Any]:
+            node = copy.deepcopy(by_id[agent_id])
+            node["children"] = [recursive(child_id) for child_id in children.get(agent_id, [])]
+            return node
+
+        root_ids = [node["id"] for node in nodes if node.get("parent_relation", {}).get("state") == "ROOT"]
+        orphan_ids = [
+            node["id"] for node in nodes
+            if node.get("parent_relation", {}).get("state") == "UNKNOWN"
+            and node.get("hierarchy_membership") != "INVALID"
+        ]
+        invalid_ids = [
+            node["id"] for node in nodes
+            if node.get("hierarchy_membership") == "INVALID"
+        ]
+        partial = bool(orphan_ids or invalid_ids)
+        scoped.update({
+            "nodes": nodes, "tasks": tasks, "agent_edges": agent_edges, "task_edges": task_edges,
+            "roots": [recursive(agent_id) for agent_id in root_ids],
+            "orphans": [recursive(agent_id) for agent_id in orphan_ids],
+            "hiddenTaskCount": sum(int(node.get("hiddenTaskCount") or 0) for node in nodes),
+            "empty": not nodes and not tasks,
+            "state": "EMPTY" if not nodes and not tasks else "PARTIAL" if partial else "KNOWN",
+            "reason": "MISSING_OR_CONFLICTING_BINDING" if partial else None,
+            "cursor": None,
+        })
+        ledger_cursor = (topology.get("cursor") or {}).get("ledger")
+        scoped["cursor"] = _topology_cursor(scoped, ledger_cursor)
+        return scoped
+
     def _decorate_overview(self, base: dict[str, Any]) -> dict[str, Any]:
         view = copy.deepcopy(base)
         forecasts = self.store.latest_forecasts()
@@ -11036,6 +11613,7 @@ class App:
         view["progress"] = self._progress_payload(view)
         view["navigation"] = self._navigation_payload(view)
         view["overview_metrics"] = self._overview_metrics(view, scope_id="all", scope_type="all")
+        view["topology"] = self._topology_projection(view)
         return view
 
     def overview(self, project_id: str | None = None) -> dict[str, Any]:

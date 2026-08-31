@@ -23,7 +23,14 @@ SPEC = importlib.util.spec_from_file_location("swarm_console_tested", SERVER)
 assert SPEC and SPEC.loader
 console = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(console)
-from runtime.progress_events import validate_progress_material_event, write_progress_pulse  # noqa: E402
+from runtime.progress_events import (  # noqa: E402
+    build_agent_manifest,
+    build_task_manifest,
+    identity_manifest_event,
+    role_manifest_reference,
+    validate_progress_material_event,
+    write_progress_pulse,
+)
 from runtime import (  # noqa: E402
     ArtifactIdentity,
     CodexAppServerAdapter,
@@ -43,8 +50,18 @@ class SwarmConsoleTests(unittest.TestCase):
     def test_health_identity_is_bound_to_the_console_root(self) -> None:
         self.assertEqual(len(console.INSTANCE_ID), 16)
         self.assertRegex(console.INSTANCE_ID, r"^[0-9a-f]+$")
-        self.assertEqual(len(console.SERVER_BUILD_ID), 16)
-        self.assertRegex(console.SERVER_BUILD_ID, r"^[0-9a-f]+$")
+        expected_build_id = hashlib.sha256(SERVER.read_bytes()).hexdigest()[:16]
+        self.assertEqual(console.SERVER_BUILD_ID, expected_build_id)
+        handler = self._handler("127.0.0.1", "127.0.0.1:4788")
+        handler.path = "/healthz"
+        handler._json = mock.Mock()
+        handler.do_GET()
+        handler._json.assert_called_once_with(console.HTTPStatus.OK, {
+            "ok": True,
+            "service": "swarm-console",
+            "instance_id": console.INSTANCE_ID,
+            "build_id": expected_build_id,
+        })
 
     def test_role_manifest_http_contract_is_server_owned_and_asset_bound(self) -> None:
         app = console.App(self.codex_home, self.config)
@@ -440,6 +457,62 @@ class SwarmConsoleTests(unittest.TestCase):
         with closing(sqlite3.connect(self.database)) as connection:
             connection.execute("UPDATE threads SET agent_role = 'ctrl' WHERE id = 'root'")
             connection.commit()
+
+    def _append_topology_manifests(
+        self, app: console.App, *, task_count: int = 4, include_review: bool = False,
+    ) -> None:
+        roles = {manifest["id"]: manifest for manifest in app.builtin_role_manifests}
+        agents = [
+            ("root", "CTRL", "SWARM HQ", "manager", "CTRL"),
+            ("lead", "Cobalt", "Delivery lane", "developer", "LEAD"),
+            ("task", "Mint", "Implementation lane", "tester", "DOER"),
+        ]
+        if include_review:
+            agents.append(("review", "Rose", "Review lane", "reviewer", "DOER"))
+        for index, (agent_id, display_name, title, profession, structural_role) in enumerate(agents, 1):
+            manifest = build_agent_manifest(
+                manifest_id=f"agent-manifest:{agent_id}", agent_id=agent_id,
+                project_id="project:alpha", ctrl_id="root", display_name=display_name,
+                title=title, profession=profession, structural_role=structural_role,
+                avatar_selection="canonical", role_manifest_ref=role_manifest_reference(roles[profession]),
+            )
+            app.progress_ledger.append(identity_manifest_event(
+                manifest, event_id=f"agent-manifest-{index}", dedupe_key=f"agent-manifest-{index}-dedupe",
+                observed_at_ms=index, provenance="console topology fixture",
+            ))
+        priorities = (30, 10, 20, 40)
+        for index in range(task_count):
+            task_id, block_id, milestone_id = f"work-{index + 1}", f"work-block-{index + 1}", f"work-milestone-{index + 1}"
+            manifest = build_task_manifest(
+                manifest_id=f"task-manifest:{task_id}", task_id=task_id,
+                task_name=f"Manifest task {index + 1}", project_id="project:alpha", ctrl_id="root",
+                policy={
+                    "presentation_priority": priorities[index], "weighted_progress": False,
+                    "expected_update_interval_minutes": 30, "amber_freshness_multiplier": 2,
+                    "red_freshness_multiplier": 4, "amber_estimate_ratio_milli": 1000,
+                    "red_estimate_ratio_milli": 1500,
+                },
+                milestones=[{
+                    "milestone_id": milestone_id, "order": 0, "title": "Active work",
+                    "verification_policy": "source-contract", "supersedes_milestone_id": None,
+                }],
+                blocks=[{
+                    "block_id": block_id, "milestone_id": milestone_id, "order": 0,
+                    "title": "Do the work", "verification_policy": "source-contract",
+                    "estimate_minutes": None, "weight": None, "supersedes_block_id": None,
+                }],
+            )
+            app.progress_ledger.append(identity_manifest_event(
+                manifest, event_id=f"task-manifest-{index + 1}",
+                dedupe_key=f"task-manifest-{index + 1}-dedupe",
+                observed_at_ms=10 + index, provenance="console topology fixture",
+            ))
+            event = self._notification_event(
+                f"work-event-{index + 1}", block_id, "BLOCK_CREATED", "ACTIVE", 100 + index,
+                milestone_id=milestone_id,
+            )
+            event.update(task_id=task_id, owner_id="root", ctrl_id="root")
+            app.progress_ledger.append(event)
 
     def _asset_generation_payload(
         self,
@@ -1367,8 +1440,8 @@ class SwarmConsoleTests(unittest.TestCase):
         self.assertEqual(overview["analytics"]["tokens"], 750)
         self.assertTrue(all(project["id"].startswith("project:") for project in overview["projects"]))
         self.assertFalse(any("C:/" in json.dumps(item) for item in overview["projects"]))
-        self.assertIn({"source": "lead", "target": "task", "relationship": "delegated"}, overview["links"])
-        self.assertIn({"source": "root", "target": "lead", "relationship": "delegated"}, overview["links"])
+        self.assertIn({"source": "lead", "target": "task", "relationship": "delegated", "status": "open"}, overview["links"])
+        self.assertIn({"source": "root", "target": "lead", "relationship": "delegated", "status": "open"}, overview["links"])
         observed_edges = {("root", "lead"), ("lead", "task"), ("lead", "review")}
         self.assertTrue(all((link["source"], link["target"]) in observed_edges for link in overview["links"]))
         ctrl = next(node for node in overview["nodes"] if node["id"] == "root")
@@ -1383,6 +1456,193 @@ class SwarmConsoleTests(unittest.TestCase):
         self.assertIn("host activity is not proof", ctrl["proof_snapshot"]["claim_limit"].lower())
         self.assertLess(overview["performance"]["data_bytes"], overview["performance"]["budget"]["data_bytes"])
         self.assertEqual(overview["performance"]["budget"]["cache_hit_ms"], 5)
+
+    def test_topology_loading_and_empty_states_never_fabricate_records(self) -> None:
+        base = console.build_overview(self.codex_home, self.config)["topology"]
+        self.assertEqual((base["state"], base["loading"], base["empty"]), ("LOADING", True, True))
+        self.assertEqual((base["nodes"], base["tasks"], base["agent_edges"], base["task_edges"]), ([], [], [], []))
+
+        projected = console.App(self.codex_home, self.config).overview()["topology"]
+        self.assertEqual((projected["state"], projected["loading"], projected["empty"]), ("EMPTY", False, True))
+        self.assertEqual((projected["nodes"], projected["tasks"], projected["roots"]), ([], [], []))
+
+    def test_manifest_topology_has_exact_ports_task_limit_and_restart_stability(self) -> None:
+        self._confirm_root_ctrl()
+        app = console.App(self.codex_home, self.config)
+        self._append_topology_manifests(app)
+        raw_topology = app.progress_ledger.project_topology("project:alpha", "root")
+        raw_node_ids = {node["node_id"] for node in raw_topology["nodes"]}
+        self.assertTrue({f"work-block-{index}" for index in range(1, 5)} <= raw_node_ids)
+        self.assertFalse({"lead", "task", *(f"work-{index}" for index in range(1, 5))} & raw_node_ids)
+        self.assertFalse(
+            {
+                *(f"agent-manifest-{index}" for index in range(1, 4)),
+                *(f"task-manifest-{index}" for index in range(1, 5)),
+            }
+            & set(raw_topology["source_event_ids"])
+        )
+        for index in range(4):
+            update = self._notification_event(
+                f"work-update-{index + 1}", f"work-block-{index + 1}",
+                "CURRENT_ACTION_CHANGED", "ACTIVE", 200 + index,
+                parent_event_id=f"work-event-{index + 1}", milestone_id=f"work-milestone-{index + 1}",
+            )
+            update.update(
+                task_id=f"work-{index + 1}", owner_id="root", ctrl_id="root",
+                material_update_sentence="🧨 hostile caller prose " + "界" * 100,
+            )
+            app.progress_ledger.append(update)
+        with closing(sqlite3.connect(self.database)) as connection:
+            connection.execute("UPDATE threads SET title = '🧨 hostile raw title' WHERE id = 'root'")
+            connection.execute("UPDATE threads SET title = '🧪 another raw title' WHERE id = 'task'")
+            connection.commit()
+
+        with mock.patch.object(
+            app.progress_ledger, "project_topology",
+            side_effect=AssertionError("Overview consumed raw Ledger topology"),
+        ):
+            topology = app.overview()["topology"]
+        self.assertEqual((topology["state"], topology["loading"], topology["empty"]), ("KNOWN", False, False))
+        by_id = {node["id"]: node for node in topology["nodes"]}
+        self.assertEqual(set(by_id), {"root", "lead", "task"})
+        self.assertFalse(any(node_id.startswith(("agent-manifest:", "task-manifest:")) for node_id in by_id))
+        self.assertEqual((by_id["root"]["display_name"], by_id["root"]["title"]), ("CTRL", "SWARM HQ"))
+        self.assertNotIn("🧨", json.dumps(topology, ensure_ascii=False))
+        self.assertEqual([child["id"] for child in topology["roots"][0]["children"]], ["lead"])
+        self.assertEqual(
+            [child["id"] for child in topology["roots"][0]["children"][0]["children"]],
+            ["task"],
+        )
+        self.assertFalse(by_id["root"]["royal_line"])
+        self.assertTrue(by_id["lead"]["royal_line"])
+        self.assertFalse(by_id["task"]["royal_line"])
+        manager = next(role for role in app.builtin_role_manifests if role["id"] == "manager")
+        self.assertEqual(by_id["root"]["lucide_icon"], manager["lucide_icon"])
+        live = by_id["root"]["live_projection"]
+        self.assertEqual((live["state"], live["mini_update"]), ("KNOWN", "Current action updated · Active"))
+        self.assertEqual(len(live["context_rows"]), 3)
+        self.assertTrue(all(len(row["text"]) <= 64 for row in live["context_rows"]))
+        self.assertNotIn("hostile caller prose", json.dumps(live, ensure_ascii=False))
+        self.assertEqual(live["context_rows"][0]["identity"], {
+            "agent_id": "root", "agent_manifest_id": "agent-manifest:root",
+            "task_id": "work-4", "task_manifest_id": "task-manifest:work-4",
+            "role_manifest_id": "manager", "role_manifest_version": manager["version"],
+        })
+
+        self.assertEqual(by_id["root"]["task_ids"], ["work-2", "work-3", "work-1"])
+        self.assertEqual((by_id["root"]["visibleTaskCount"], by_id["root"]["hiddenTaskCount"]), (3, 1))
+        self.assertEqual(topology["hiddenTaskCount"], 1)
+        self.assertEqual([task["task_id"] for task in topology["tasks"]], ["work-2", "work-3", "work-1"])
+        self.assertEqual(len(topology["task_edges"]), 3)
+        self.assertFalse({task["task_id"] for task in topology["tasks"]} & set(by_id))
+        self.assertTrue(all("structural_role" not in task and "avatar" not in task and "lucide_icon" not in task for task in topology["tasks"]))
+        self.assertTrue(all("progress" not in node for node in topology["nodes"]))
+
+        records = {**by_id, **{task["id"]: task for task in topology["tasks"]}}
+        port_ids: list[str] = []
+        for edge in [*topology["agent_edges"], *topology["task_edges"]]:
+            self.assertIn(edge["source_port_id"], records[edge["source"]]["output_port_ids"])
+            self.assertIn(edge["target_port_id"], records[edge["target"]]["input_port_ids"])
+            port_ids.extend((edge["source_port_id"], edge["target_port_id"]))
+        self.assertEqual(len(port_ids), len(set(port_ids)))
+        for node in topology["nodes"]:
+            expected_inputs = int(node["parent_relation"]["state"] == "KNOWN")
+            expected_outputs = len(node["children_ids"]) + node["visibleTaskCount"]
+            self.assertEqual((len(node["input_port_ids"]), len(node["output_port_ids"])), (expected_inputs, expected_outputs))
+            self.assertEqual(node["port_count"], expected_inputs + expected_outputs)
+        self.assertTrue(all((len(task["input_port_ids"]), len(task["output_port_ids"]), task["port_count"]) == (1, 0, 1) for task in topology["tasks"]))
+
+        restarted = console.App(self.codex_home, self.config).overview()["topology"]
+        self.assertEqual(restarted, topology)
+
+    def test_topology_ambiguous_and_cycle_edges_fail_closed_without_ports(self) -> None:
+        self._confirm_root_ctrl()
+        self._add_same_project_ctrl()
+        app = console.App(self.codex_home, self.config)
+        self._append_topology_manifests(app, task_count=1, include_review=True)
+        roles = {manifest["id"]: manifest for manifest in app.builtin_role_manifests}
+        for index, (agent_id, display_name, profession, structural_role) in enumerate((
+            ("other-ctrl", "Amber", "manager", "CTRL"),
+            ("other-task", "Azure", "developer", "DOER"),
+        ), 1):
+            manifest = build_agent_manifest(
+                manifest_id=f"agent-manifest:{agent_id}", agent_id=agent_id,
+                project_id="project:alpha", ctrl_id="other-ctrl", display_name=display_name,
+                title=f"Valid branch {index}", profession=profession, structural_role=structural_role,
+                avatar_selection="canonical", role_manifest_ref=role_manifest_reference(roles[profession]),
+            )
+            app.progress_ledger.append(identity_manifest_event(
+                manifest, event_id=f"mixed-agent-{index}", dedupe_key=f"mixed-agent-{index}-dedupe",
+                observed_at_ms=60 + index, provenance="console topology fixture",
+            ))
+        base = console.build_overview(self.codex_home, self.config)
+
+        closed = app._topology_projection(base)
+        closed_by_id = {node["id"]: node for node in closed["nodes"]}
+        self.assertEqual(closed_by_id["review"]["parent_relation"]["reason"], "UNSUPPORTED_EDGE_STATUS")
+        self.assertEqual(closed_by_id["review"]["input_port_ids"], [])
+        self.assertNotIn("review", {edge["target"] for edge in closed["agent_edges"]})
+
+        ambiguous = copy.deepcopy(base)
+        ambiguous["links"] = [
+            {"source": "root", "target": "lead", "status": "open"},
+            {"source": "root", "target": "task", "status": "open"},
+            {"source": "lead", "target": "task", "status": "open"},
+            {"source": "lead", "target": "review", "status": "open"},
+        ]
+        projected = app._topology_projection(ambiguous)
+        by_id = {node["id"]: node for node in projected["nodes"]}
+        self.assertEqual((projected["state"], by_id["task"]["parent_relation"]["reason"]), ("PARTIAL", "AMBIGUOUS_PARENT"))
+        self.assertFalse(by_id["task"]["royal_line"])
+        self.assertEqual(by_id["task"]["input_port_ids"], [])
+        self.assertNotIn("task", {edge["target"] for edge in projected["agent_edges"]})
+
+        cyclic = copy.deepcopy(base)
+        cyclic["links"] = [
+            {"source": "root", "target": "lead", "status": "open"},
+            {"source": "lead", "target": "task", "status": "open"},
+            {"source": "task", "target": "root", "status": "open"},
+            {"source": "lead", "target": "review", "status": "open"},
+            {"source": "other-ctrl", "target": "other-task", "status": "open"},
+        ]
+        projected = app._topology_projection(cyclic)
+        by_id = {node["id"]: node for node in projected["nodes"]}
+        self.assertEqual({by_id[node_id]["parent_relation"]["reason"] for node_id in ("root", "lead", "task")}, {"CYCLE"})
+        self.assertEqual(by_id["review"]["parent_relation"]["reason"], "ANCESTOR_CYCLE")
+        self.assertTrue(all(not by_id[node_id]["royal_line"] for node_id in ("root", "lead", "task")))
+        self.assertFalse({"root", "lead", "task", "review"} & {edge["target"] for edge in projected["agent_edges"]})
+        self.assertTrue(all(not by_id[node_id]["ports"] for node_id in ("root", "lead", "task", "review")))
+        self.assertFalse(projected["tasks"])
+        self.assertFalse(projected["task_edges"])
+        self.assertTrue(all(by_id[node_id]["hierarchy_membership"] == "INVALID" for node_id in ("root", "lead", "task", "review")))
+        self.assertFalse({"root", "lead", "task", "review"} & {node["id"] for node in projected["orphans"]})
+        self.assertEqual([root["id"] for root in projected["roots"]], ["other-ctrl"])
+        self.assertEqual([child["id"] for child in projected["roots"][0]["children"]], ["other-task"])
+        scoped = app._scope_topology_projection(projected, "project:alpha", "root")
+        self.assertEqual((scoped["state"], scoped["reason"]), ("PARTIAL", "MISSING_OR_CONFLICTING_BINDING"))
+        self.assertEqual([node["id"] for node in scoped["nodes"]], ["root"])
+        self.assertFalse(scoped["tasks"] or scoped["agent_edges"] or scoped["task_edges"])
+
+    def test_topology_preserves_multiple_manifest_ctrl_roots_in_stable_order(self) -> None:
+        self._confirm_root_ctrl()
+        self._add_same_project_ctrl()
+        app = console.App(self.codex_home, self.config)
+        self._append_topology_manifests(app, task_count=0)
+        manager = next(role for role in app.builtin_role_manifests if role["id"] == "manager")
+        other = build_agent_manifest(
+            manifest_id="agent-manifest:other-ctrl", agent_id="other-ctrl",
+            project_id="project:alpha", ctrl_id="other-ctrl", display_name="Amber",
+            title="Second command", profession="manager", structural_role="CTRL",
+            avatar_selection="canonical", role_manifest_ref=role_manifest_reference(manager),
+        )
+        app.progress_ledger.append(identity_manifest_event(
+            other, event_id="agent-manifest-other-ctrl", dedupe_key="agent-manifest-other-ctrl-dedupe",
+            observed_at_ms=50, provenance="console topology fixture",
+        ))
+        first = app.overview()["topology"]
+        second = console.App(self.codex_home, self.config).overview()["topology"]
+        self.assertEqual([root["id"] for root in first["roots"]], ["other-ctrl", "root"])
+        self.assertEqual(first, second)
 
     def test_parent_ctrl_scope_keeps_nested_ctrl_tree_together(self) -> None:
         now = 2_000_000_000_000
@@ -1435,7 +1695,9 @@ class SwarmConsoleTests(unittest.TestCase):
         self.assertEqual(child["parent_id"], "root")
         self.assertEqual(child["reasoning"], "high")
         self.assertNotIn("private task instructions", json.dumps(overview))
-        self.assertIn({"source": "root", "target": "generic-child", "relationship": "delegated"}, overview["links"])
+        self.assertIn({
+            "source": "root", "target": "generic-child", "relationship": "delegated", "status": "open",
+        }, overview["links"])
 
     def test_unformatted_agent_tree_uses_project_name_without_exposing_private_titles(self) -> None:
         now = 2_000_000_000_000
