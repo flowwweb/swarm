@@ -310,7 +310,10 @@ assert.match(app, /function configWriteRequest\(text, projection = state\.config
 assert.match(app, /function saveConfigText\(text\)[\s\S]*?configAuthorityGeneration \+= 1[\s\S]*?configMutationTail = operation\.then/);
 assert.match(app, /function saveConfigMutation\(changes\) \{\s*return saveConfigText\(\(\) => configTextWithChanges\(state\.config\?\.editable_text, changes\)\);\s*\}/);
 assert.match(app, /function configWriteReceiptMatches\(result, request\)[\s\S]*?JSON\.stringify\(receipt\?\.scope\) === request\.binding[\s\S]*?receipt\?\.acknowledged === true[\s\S]*?receipt\?\.operation_id === request\.operationId[\s\S]*?receipt\?\.expected_revision === request\.payload\.expected_revision/);
-assert.match(app, /configWriteRetry\?\.identity === identity \? configWriteRetry\.operationId : configWriteOperationId\(\)/);
+assert.match(app, /receipt\?\.action === "config_update"[\s\S]*?typeof receipt\?\.replayed === "boolean"/);
+assert.match(app, /retry\?\.exhausted[\s\S]*?const operationId = retry\?\.operationId \|\| configWriteOperationId\(\)/);
+assert.match(app, /configWriteRetry = uncertain && request \? \{ identity: request\.identity, operationId: request\.operationId, exhausted: request\.uncertainRetry \} : null/);
+assert.match(app, /function saveCurrentConfigMutation\(changes\)[\s\S]*?if \(!result\.applied\) throw new Error\("Settings scope changed before the save was acknowledged\. Your unsaved changes are preserved\."\)/);
 assert.match(app, /error\?\.status === 409[\s\S]*?unsaved changes are preserved[\s\S]*?Retry will reuse this exact operation/);
 assert.doesNotMatch(app, /body: JSON\.stringify\(\{ changes \}\)/);
 assert.match(app, /function readConfigState\(previousConfig = state\.config, saveError = ""\)[\s\S]*?let pendingWrites = configMutationTail[\s\S]*?while \(pendingWrites !== configMutationTail\)[\s\S]*?const generation = configAuthorityGeneration[\s\S]*?generation !== configAuthorityGeneration/);
@@ -1138,7 +1141,7 @@ assert.match(settingsSource, /class="panel settings-config-entry settings-wide" 
 assert.match(settingsSource, /class="settings-save-bar settings-wide/);
 assert.doesNotMatch(settingsSource, /Advanced settings|Spark and monitoring|Use ChatGPT for eligible work|Heartbeat minutes|Show role icons|Use less usage when possible/);
 assert.match(app, /function stageSettingsDraft\(key, value\)[\s\S]*?state\.settingsDraft\.set\(key, value\)/);
-assert.match(app, /function saveSettingsDraft\(\)[\s\S]*?await saveConfigMutation\(changes\)[\s\S]*?state\.settingsDraft\.clear\(\)/);
+assert.match(app, /function saveSettingsDraft\(\)[\s\S]*?await saveCurrentConfigMutation\(changes\)[\s\S]*?state\.settingsDraft\.clear\(\)/);
 assert.match(app, /function settingsConfigEditable\(key\)[\s\S]*?currentSettingsScope\(\)\.type === "global"/);
 assert.match(app, /Short[\s\S]*?Medium[\s\S]*?Balanced[\s\S]*?Long[\s\S]*?Unlimited/);
 assert.match(app, /aria-label="Task life" aria-valuetext="Balanced — unavailable"/);
@@ -1207,7 +1210,7 @@ const relayReadbackFailed = evaluateChatRelayFailure(relayOn, null, "Save failed
 assert.deepEqual([relayReadbackFailed.config.settings.chat_relay.enabled, relayReadbackFailed.configStatus], [true, "stale"]);
 assert.match(relayReadbackFailed.configError, /current server value could not be reloaded/);
 assert.equal(evaluateChatRelayFailure(null, null, "Save failed.").configStatus, "unavailable");
-assert.match(app, /await saveConfigMutation\(chatRelayMutation\(requestedValue\)\.changes\)/);
+assert.match(app, /await saveCurrentConfigMutation\(chatRelayMutation\(requestedValue\)\.changes\)/);
 assert.match(app, /await readConfigState\(previousConfig, saveError\)/);
 assert.match(app, /readConfigState\(previousConfig\)/);
 assert.equal((app.match(/api\('\/api\/config'\)/g) || []).length, 1, "all config GET readbacks use the guarded authority seam");
@@ -1913,6 +1916,7 @@ async function mount(page, overview, overrides = {}) {
   configControl.resetRequests ||= [];
   configControl.resetOperations ||= new Map();
   configControl.writeOperations ||= new Map();
+  configControl.receipts ||= [];
   configControl.ctrlFeed ||= structuredClone(fixture.ctrlSettings);
   const assetControl = overrides.assetControl || { library: assetLibraryFixture(), failGet: false, failMutation: false, deferredGets: [], deferredMutations: [], operations: new Map() };
   const runLogControl = overrides.runLogControl || { items: runLogFixture(), failGet: false, deferredGets: [] };
@@ -2085,7 +2089,11 @@ async function mount(page, overview, overrides = {}) {
       assert.deepEqual(Object.keys(payload).sort(), ["acknowledge", "expected_revision", "operation_id", "scope", "text"]);
       assert.equal(payload.acknowledge, true);
       const replay = configControl.writeOperations.get(payload.operation_id);
-      if (replay) return route.fulfill(response({ ...structuredClone(replay), mutation_receipt: { ...replay.mutation_receipt, replayed: true } }));
+      if (replay) {
+        const replayResult = { ...structuredClone(replay), mutation_receipt: { ...replay.mutation_receipt, replayed: true } };
+        configControl.receipts.push(structuredClone(replayResult.mutation_receipt));
+        return route.fulfill(response(replayResult));
+      }
       if (configControl.failPost === "connection") return route.abort();
       if (configControl.failPost === "conflict") return route.fulfill({ status: 409, contentType: "application/json", body: JSON.stringify({ ok: false, error: "settings revision conflict" }) });
       if (configControl.failPost) return route.fulfill({ status: 503, contentType: "application/json", body: JSON.stringify({ ok: false, error: "setting acknowledgement unavailable" }) });
@@ -2097,7 +2105,7 @@ async function mount(page, overview, overrides = {}) {
       configControl.feed.mutation_receipt = {
         accepted: true,
         acknowledged: true,
-        action: "UPDATE_CONFIG_SOURCE",
+        action: "config_update",
         operation_id: payload.operation_id,
         replayed: false,
         scope: structuredClone(payload.scope),
@@ -2108,10 +2116,15 @@ async function mount(page, overview, overrides = {}) {
       configControl.writeOperations.set(payload.operation_id, structuredClone(configControl.feed));
       if (configControl.ambiguousAfterApply) {
         configControl.ambiguousAfterApply = false;
+        if (configControl.restartAfterAmbiguous) {
+          configControl.writeOperations = new Map([...configControl.writeOperations].map(([key, value]) => [key, structuredClone(value)]));
+          configControl.restartCount = Number(configControl.restartCount || 0) + 1;
+        }
         return route.abort();
       }
       const responseMutation = Array.isArray(configControl.responseMutations) ? configControl.responseMutations.shift() : null;
       const result = responseMutation ? responseMutation(structuredClone(configControl.feed), payload) : configControl.feed;
+      configControl.receipts.push(structuredClone(result.mutation_receipt));
       return route.fulfill(response(result));
     }
     if (messageControl && url.pathname === messageControl.endpoint && request.method() === "POST") {
@@ -3032,50 +3045,69 @@ proofFeed.items.push({
     const projectWriteControl = { failPost: false, feed: projectWriteFeed };
     const projectWritePage = await browser.newPage({ viewport: { width: 1024, height: 760 } });
     const projectWrite = await mount(projectWritePage, scopedFixture(), { ...overrides, configControl: projectWriteControl });
-    await projectWritePage.evaluate(() => saveConfigMutation({ "execution.fast_mode": true }));
+    const projectSaved = await projectWritePage.evaluate(() => {
+      state.settingsDraft.set("execution.fast_mode", true);
+      return saveSettingsDraft();
+    });
+    assert.equal(projectSaved, true);
     assert.equal(projectWrite.configRequests.length, 1);
     assertConfigWriteEnvelope(projectWrite.configRequests[0], {
       scope: { type: "project", project_id: "project:fixture", accepted_cursor: projectWriteCursor },
       expectedRevision: "project-config-revision-7",
       values: { "execution.fast_mode": true },
     });
+    assert.equal(projectWriteControl.receipts[0].action, "config_update");
+    assert.equal(projectWriteControl.receipts[0].replayed, false);
+    assert.deepEqual(projectWriteControl.receipts[0].scope, { type: "project", project_id: "project:fixture", accepted_cursor: projectWriteCursor });
     assert.equal(await projectWritePage.evaluate(() => state.config.revision), "project-config-revision-7-write-1");
+    assert.equal(await projectWritePage.evaluate(() => state.settingsDraft.size), 0);
+    assert.equal(await projectWritePage.evaluate(() => state.settingsSaveMessage), "Saved");
     assert.deepEqual(projectWrite.runtimeErrors, []);
     await projectWritePage.close();
 
-    const ambiguousWriteControl = { failPost: false, feed: configDescriptorFixture(), ambiguousAfterApply: true };
+    const ambiguousWriteControl = { failPost: false, feed: configDescriptorFixture(), ambiguousAfterApply: true, restartAfterAmbiguous: true };
     const ambiguousWritePage = await browser.newPage({ viewport: { width: 1024, height: 760 } });
     const ambiguousWrite = await mount(ambiguousWritePage, scopedFixture(), { ...overrides, configControl: ambiguousWriteControl });
-    const uncertainMessage = await ambiguousWritePage.evaluate(async () => {
-      state.settingsDraft = { "execution.fast_mode": true };
-      try { await saveConfigMutation(state.settingsDraft); } catch (error) { return error.message; }
-      return "";
+    const ambiguousFresh = await ambiguousWritePage.evaluate(() => {
+      state.settingsDraft.set("execution.fast_mode", true);
+      return saveSettingsDraft();
     });
-    assert.match(uncertainMessage, /could not confirm the save[\s\S]*reuse this exact operation/);
+    assert.equal(ambiguousFresh, false);
+    assert.match(await ambiguousWritePage.evaluate(() => state.settingsSaveError), /could not confirm the save[\s\S]*reuse this exact operation/);
     const uncertainRequest = structuredClone(ambiguousWrite.configRequests[0]);
-    assert.deepEqual(await ambiguousWritePage.evaluate(() => state.settingsDraft), { "execution.fast_mode": true });
-    await ambiguousWritePage.evaluate(() => saveConfigMutation(state.settingsDraft));
+    assert.deepEqual(await ambiguousWritePage.evaluate(() => [...state.settingsDraft]), [["execution.fast_mode", true]]);
+    assert.equal(await ambiguousWritePage.evaluate(() => state.settingsSaveMessage), "Changes not saved");
+    const ambiguousReplay = await ambiguousWritePage.evaluate(() => saveSettingsDraft());
+    assert.equal(ambiguousReplay, true);
     assert.equal(ambiguousWrite.configRequests.length, 2);
     assert.equal(ambiguousWrite.configRequests[1].operation_id, uncertainRequest.operation_id);
     assert.equal(ambiguousWriteControl.writeOperations.size, 1, "an uncertain replay must not apply the logical write twice");
+    assert.equal(ambiguousWriteControl.restartCount, 1, "the replay fixture must survive a simulated server restart");
+    assert.equal(ambiguousWriteControl.receipts.at(-1).action, "config_update");
+    assert.equal(ambiguousWriteControl.receipts.at(-1).replayed, true);
+    assert.deepEqual(ambiguousWriteControl.receipts.at(-1).scope, { type: "global" });
     assert.equal(await ambiguousWritePage.evaluate(() => state.config.revision), "global-revision-1-write-1");
+    assert.equal(await ambiguousWritePage.evaluate(() => state.settingsDraft.size), 0);
+    assert.equal(await ambiguousWritePage.evaluate(() => state.settingsSaveMessage), "Saved");
     assert.equal(ambiguousWrite.runtimeErrors.filter((message) => /ERR_FAILED/.test(message)).length, 1);
     await ambiguousWritePage.close();
 
     const conflictWriteControl = { failPost: "conflict", feed: configDescriptorFixture() };
     const conflictWritePage = await browser.newPage({ viewport: { width: 1024, height: 760 } });
     const conflictWrite = await mount(conflictWritePage, scopedFixture(), { ...overrides, configControl: conflictWriteControl });
-    const conflictMessage = await conflictWritePage.evaluate(async () => {
-      state.settingsDraft = { "execution.fast_mode": true };
-      try { await saveConfigMutation(state.settingsDraft); } catch (error) { return error.message; }
-      return "";
+    const conflictSaved = await conflictWritePage.evaluate(() => {
+      state.settingsDraft.set("execution.fast_mode", true);
+      return saveSettingsDraft();
     });
-    assert.match(conflictMessage, /changed elsewhere[\s\S]*unsaved changes are preserved/);
-    assert.deepEqual(await conflictWritePage.evaluate(() => state.settingsDraft), { "execution.fast_mode": true });
+    assert.equal(conflictSaved, false);
+    assert.match(await conflictWritePage.evaluate(() => state.settingsSaveError), /changed elsewhere[\s\S]*unsaved changes are preserved/);
+    assert.deepEqual(await conflictWritePage.evaluate(() => [...state.settingsDraft]), [["execution.fast_mode", true]]);
+    assert.equal(await conflictWritePage.evaluate(() => state.settingsSaveMessage), "Changes not saved");
     const conflictWriteOperationId = conflictWrite.configRequests[0].operation_id;
     conflictWriteControl.failPost = false;
-    await conflictWritePage.evaluate(() => saveConfigMutation(state.settingsDraft));
+    assert.equal(await conflictWritePage.evaluate(() => saveSettingsDraft()), true);
     assert.notEqual(conflictWrite.configRequests[1].operation_id, conflictWriteOperationId, "a confirmed conflict requires a new operation identity");
+    assert.equal(await conflictWritePage.evaluate(() => state.settingsDraft.size), 0);
     await conflictWritePage.close();
 
     const changedIdentityControl = { failPost: "connection", feed: configDescriptorFixture() };
@@ -3088,11 +3120,30 @@ proofFeed.items.push({
     assert.notEqual(changedIdentity.configRequests[1].operation_id, priorIdentity, "changed config text must not reuse an uncertain operation identity");
     await changedIdentityPage.close();
 
+    const exhaustedRetryControl = { failPost: "connection", feed: configDescriptorFixture() };
+    const exhaustedRetryPage = await browser.newPage({ viewport: { width: 1024, height: 760 } });
+    const exhaustedRetry = await mount(exhaustedRetryPage, scopedFixture(), { ...overrides, configControl: exhaustedRetryControl });
+    await exhaustedRetryPage.evaluate(() => { state.settingsDraft.set("execution.fast_mode", true); });
+    assert.equal(await exhaustedRetryPage.evaluate(() => saveSettingsDraft()), false);
+    assert.equal(await exhaustedRetryPage.evaluate(() => saveSettingsDraft()), false);
+    assert.equal(exhaustedRetry.configRequests.length, 2);
+    assert.equal(exhaustedRetry.configRequests[0].operation_id, exhaustedRetry.configRequests[1].operation_id);
+    assert.equal(await exhaustedRetryPage.evaluate(() => saveSettingsDraft()), false);
+    assert.equal(exhaustedRetry.configRequests.length, 2, "an exhausted uncertain write must not send a third request");
+    assert.match(await exhaustedRetryPage.evaluate(() => state.settingsSaveError), /after one retry[\s\S]*unsaved changes are preserved/);
+    assert.deepEqual(await exhaustedRetryPage.evaluate(() => [...state.settingsDraft]), [["execution.fast_mode", true]]);
+    assert.notEqual(await exhaustedRetryPage.evaluate(() => state.settingsSaveMessage), "Saved");
+    assert.equal(exhaustedRetry.runtimeErrors.filter((message) => /ERR_FAILED/.test(message)).length, 2);
+    await exhaustedRetryPage.close();
+
     const invalidAcknowledgements = [
       ["operation id", (result) => { result.mutation_receipt.operation_id = "console-config-write-00000000000000000000000000000000"; }],
       ["expected revision", (result) => { result.mutation_receipt.expected_revision = "other-revision"; }],
       ["receipt scope cursor", (result) => { result.mutation_receipt.scope.accepted_cursor.event_seq += 1; }],
       ["projection scope cursor", (result) => { result.scope.accepted_cursor.event_seq += 1; }],
+      ["action", (result) => { result.mutation_receipt.action = "config_reset"; }],
+      ["replay marker", (result) => { result.mutation_receipt.replayed = "false"; }],
+      ["accepted", (result) => { result.mutation_receipt.accepted = false; }],
       ["acknowledgement", (result) => { result.mutation_receipt.acknowledged = false; }],
       ["new revision", (result) => { result.mutation_receipt.new_revision = "other-new-revision"; }],
     ];
@@ -3103,17 +3154,18 @@ proofFeed.items.push({
       const mismatchControl = { failPost: false, feed: mismatchFeed, responseMutations: [(result) => { mutate(result); return result; }] };
       const mismatchPage = await browser.newPage({ viewport: { width: 1024, height: 760 } });
       const mismatchRuntime = await mount(mismatchPage, scopedFixture(), { ...overrides, configControl: mismatchControl });
-      const mismatchMessage = await mismatchPage.evaluate(async () => {
-        state.settingsDraft = { "execution.fast_mode": true };
-        try { await saveConfigMutation(state.settingsDraft); } catch (error) { return error.message; }
-        return "";
+      const mismatchSaved = await mismatchPage.evaluate(() => {
+        state.settingsDraft.set("execution.fast_mode", true);
+        return saveSettingsDraft();
       });
-      assert.match(mismatchMessage, /invalid config acknowledgement/, label);
+      assert.equal(mismatchSaved, false, label);
+      assert.match(await mismatchPage.evaluate(() => state.settingsSaveError), /invalid config acknowledgement/, label);
       assert.equal(await mismatchPage.evaluate(() => state.config.revision), "project-config-revision-7", `${label} must not apply`);
-      assert.deepEqual(await mismatchPage.evaluate(() => state.settingsDraft), { "execution.fast_mode": true }, `${label} must preserve the draft`);
+      assert.deepEqual(await mismatchPage.evaluate(() => [...state.settingsDraft]), [["execution.fast_mode", true]], `${label} must preserve the draft`);
+      assert.notEqual(await mismatchPage.evaluate(() => state.settingsSaveMessage), "Saved", `${label} must not report success`);
       if (label === "operation id") {
         const mismatchedRequestId = mismatchRuntime.configRequests[0].operation_id;
-        await mismatchPage.evaluate(() => saveConfigMutation(state.settingsDraft));
+        assert.equal(await mismatchPage.evaluate(() => saveSettingsDraft()), true);
         assert.equal(mismatchRuntime.configRequests[1].operation_id, mismatchedRequestId, "a valid exact replay keeps the uncertain request identity");
         assert.equal(await mismatchPage.evaluate(() => state.config.revision), "project-config-revision-7-write-1");
       }
@@ -3126,15 +3178,21 @@ proofFeed.items.push({
     const staleWritePage = await browser.newPage({ viewport: { width: 1024, height: 760 } });
     const staleWrite = await mount(staleWritePage, scopedFixture(), { ...overrides, configControl: staleWriteControl });
     const staleWriteRequest = staleWritePage.waitForRequest((request) => request.url().endsWith("/api/config") && request.method() === "POST");
-    await staleWritePage.evaluate(() => { window.__staleConfigWrite = saveConfigMutation({ "execution.fast_mode": true }); });
+    await staleWritePage.evaluate(() => {
+      state.settingsDraft.set("execution.fast_mode", true);
+      window.__staleConfigWrite = saveSettingsDraft();
+    });
     await staleWriteRequest;
     await staleWritePage.evaluate(() => {
       state.config = { ...state.config, scope: { type: "project", project_id: "project:other", accepted_cursor: { event_seq: 44, event_digest: "d".repeat(64) } }, revision: "other-revision" };
     });
     releaseStaleWrite();
     const staleWriteResult = await staleWritePage.evaluate(() => window.__staleConfigWrite);
-    assert.equal(staleWriteResult.applied, false);
+    assert.equal(staleWriteResult, false);
     assert.equal(await staleWritePage.evaluate(() => state.config.revision), "other-revision");
+    assert.deepEqual(await staleWritePage.evaluate(() => [...state.settingsDraft]), [["execution.fast_mode", true]]);
+    assert.equal(await staleWritePage.evaluate(() => state.settingsSaveMessage), "Changes not saved");
+    assert.match(await staleWritePage.evaluate(() => state.settingsSaveError), /scope changed[\s\S]*unsaved changes are preserved/);
     assert.deepEqual(staleWrite.runtimeErrors, []);
     await staleWritePage.close();
 

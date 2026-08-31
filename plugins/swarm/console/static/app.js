@@ -580,10 +580,13 @@ function configWriteRequest(text, projection = state.config) {
     throw new Error("Settings are not writable from the current accepted config projection.");
   }
   const identity = JSON.stringify({ scope, expected_revision: projection.revision, text });
-  const operationId = configWriteRetry?.identity === identity ? configWriteRetry.operationId : configWriteOperationId();
+  const retry = configWriteRetry?.identity === identity ? configWriteRetry : null;
+  if (retry?.exhausted) throw new Error("SWARM could not confirm this save after one retry. Reload before trying again; your unsaved changes are preserved.");
+  const operationId = retry?.operationId || configWriteOperationId();
   return {
     identity,
     operationId,
+    uncertainRetry: Boolean(retry),
     binding: JSON.stringify(scope),
     payload: { scope, expected_revision: projection.revision, acknowledge: true, text, operation_id: operationId },
   };
@@ -596,6 +599,8 @@ function configWriteReceiptMatches(result, request) {
     && JSON.stringify(receipt?.scope) === request.binding
     && result.revision === receipt?.new_revision
     && receipt?.accepted === true
+    && receipt?.action === "config_update"
+    && typeof receipt?.replayed === "boolean"
     && receipt?.acknowledged === true
     && receipt?.operation_id === request.operationId
     && receipt?.expected_revision === request.payload.expected_revision;
@@ -635,8 +640,9 @@ async function saveConfigText(text) {
     return { applied: true, config };
   } catch (error) {
     const uncertain = Boolean(request) && (error?.invalidConfigAcknowledgement === true || error?.connectionFailure === true || !Number.isInteger(error?.status));
-    configWriteRetry = uncertain && request ? { identity: request.identity, operationId: request.operationId } : null;
+    configWriteRetry = uncertain && request ? { identity: request.identity, operationId: request.operationId, exhausted: request.uncertainRetry } : null;
     if (error?.status === 409) error.message = "Settings changed elsewhere. Reload before retrying; your unsaved changes are preserved.";
+    else if (uncertain && request?.uncertainRetry) error.message = "SWARM could not confirm this save after one retry. Reload before trying again; your unsaved changes are preserved.";
     else if (uncertain && error?.invalidConfigAcknowledgement !== true) error.message = "SWARM could not confirm the save. Retry will reuse this exact operation; your unsaved changes are preserved.";
     throw error;
   }
@@ -644,6 +650,12 @@ async function saveConfigText(text) {
 
 async function saveConfigMutation(changes) {
   return saveConfigText(() => configTextWithChanges(state.config?.editable_text, changes));
+}
+
+async function saveCurrentConfigMutation(changes) {
+  const result = await saveConfigMutation(changes);
+  if (!result.applied) throw new Error("Settings scope changed before the save was acknowledged. Your unsaved changes are preserved.");
+  return result;
 }
 
 function configResetOperationId(kind) {
@@ -762,7 +774,7 @@ async function saveOnboardingConfig(key, value) {
   state.onboardingConfigPending.set(key, { value, focusIdentity });
   renderAllViews();
   try {
-    await saveConfigMutation({ [key]: value });
+    await saveCurrentConfigMutation({ [key]: value });
     if (key === 'console.project_progress_feed_enabled' || key === 'console.project_progress_feed_lines') await refreshProjectProgressFeed();
     return true;
   } catch (error) {
@@ -4430,7 +4442,7 @@ async function saveSettingsDraft() {
   state.settingsSaveMessage = "Saving…";
   renderSettings();
   try {
-    await saveConfigMutation(changes);
+    await saveCurrentConfigMutation(changes);
     state.settingsDraft.clear();
     state.settingsSaveMessage = "Saved";
     return true;
@@ -5480,7 +5492,7 @@ document.addEventListener('change', async (event) => {
     state.configError = "";
     renderSettings();
     try {
-      await saveConfigMutation(chatRelayMutation(requestedValue).changes);
+      await saveCurrentConfigMutation(chatRelayMutation(requestedValue).changes);
     } catch (error) {
       const saveError = error.message || "Chat relay setting could not be saved.";
       try { await readConfigState(previousConfig, saveError); }
@@ -5520,7 +5532,7 @@ document.addEventListener('change', async (event) => {
       return;
     }
     try {
-      await saveConfigMutation({ [key]: value });
+      await saveCurrentConfigMutation({ [key]: value });
       if (key === 'console.project_progress_feed_enabled' || key === 'console.project_progress_feed_lines') await refreshProjectProgressFeed();
       renderAllViews();
     } catch (error) { showError(error.message); renderSettings(); }
@@ -5594,7 +5606,7 @@ document.addEventListener('click', async (event) => {
       return;
     }
     if (action === 'save-ctrl' && state.ctrlSettings) state.ctrlSettings = await api('/api/ctrl-settings', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ctrl_id: state.ctrlSettings.ctrl_id, expected_revision: state.ctrlSettings.revision, changes: { model: $('#ctrl-model').value.trim(), reasoning: $('#ctrl-reasoning').value } }) });
-    if (action === 'save-spark' && configEditable('boost.spark_model')) await saveConfigMutation({ 'boost.spark_model': $('#spark-model').value.trim() });
+    if (action === 'save-spark' && configEditable('boost.spark_model')) await saveCurrentConfigMutation({ 'boost.spark_model': $('#spark-model').value.trim() });
     await refreshOverview();
   } catch (error) { showError(error.message); }
 });
