@@ -274,6 +274,12 @@ class ProgressEventKind(StrEnum):
     TASK_MANIFEST_BOUND = "TASK_MANIFEST_BOUND"
 
 
+_TOPOLOGY_DEFINITION_EVENT_KINDS = frozenset({
+    ProgressEventKind.AGENT_MANIFEST_BOUND,
+    ProgressEventKind.TASK_MANIFEST_BOUND,
+})
+
+
 class TaskHandoffEventKind(StrEnum):
     HANDOFF_DUE = "HANDOFF_DUE"
     HANDOFF_OFFERED = "HANDOFF_OFFERED"
@@ -3354,6 +3360,8 @@ class Ledger:
             if self._is_non_material_record(record["event"]):
                 continue
             event = validate_progress_material_event(record["event"])
+            if event.event_kind in _TOPOLOGY_DEFINITION_EVENT_KINDS:
+                continue
             if event.project_id == project_id and event.ctrl_id == ctrl_id:
                 known.append((int(record["event_seq"]), event))
         if effective_at_ms is None:

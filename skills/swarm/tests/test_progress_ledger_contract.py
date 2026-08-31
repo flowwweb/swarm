@@ -1108,6 +1108,69 @@ class ProgressLedgerContractTests(unittest.TestCase):
         self.assertEqual(mismatch["binding_state"], "UNKNOWN")
         self.assertIsNone(mismatch["resolved_lucide_icon"])
 
+    def test_identity_definitions_never_materialize_observed_topology(self) -> None:
+        builtins = self.role_manifests()
+        roles = {role["id"]: role for role in builtins}
+        agent = build_agent_manifest(
+            manifest_id="agent-manifest:definition", agent_id="agent-definition",
+            project_id="project-alpha", ctrl_id="ctrl-alpha", display_name="Definition",
+            title="Runtime architecture", profession="architect", structural_role="LEAD",
+            avatar_selection="canonical", role_manifest_ref=role_manifest_reference(roles["architect"]),
+        )
+        task = build_task_manifest(
+            manifest_id="task-manifest:definition", task_id="task-definition",
+            task_name="Define immutable task identity", project_id="project-alpha", ctrl_id="ctrl-alpha",
+        )
+        agent_event = identity_manifest_event(
+            agent, event_id="agent-definition", dedupe_key="agent-definition-dedupe",
+            observed_at_ms=1, provenance="host-manifest-binding",
+        )
+        task_event = identity_manifest_event(
+            task, event_id="task-definition", dedupe_key="task-definition-dedupe",
+            observed_at_ms=2, provenance="host-task-binding",
+        )
+
+        agent_only = ProgressLedger(self.root / "agent-only")
+        agent_only.append(agent_event)
+        self.assertEqual(
+            agent_only.project_topology("project-alpha", "ctrl-alpha")["nodes"],
+            [{
+                "node_id": "ctrl-alpha", "node_kind": "CTRL", "project_id": "project-alpha",
+                "ctrl_id": "ctrl-alpha", "lifecycle_state": "OBSERVED", "source_event_ids": [],
+            }],
+        )
+        self.assertEqual(agent_only.project_topology("project-alpha", "ctrl-alpha")["source_event_ids"], [])
+
+        task_only = ProgressLedger(self.root / "task-only")
+        task_only.append(task_event)
+        self.assertEqual(task_only.project_topology("project-alpha", "ctrl-alpha")["source_event_ids"], [])
+        self.assertEqual(len(task_only.project_topology("project-alpha", "ctrl-alpha")["nodes"]), 1)
+
+        mixed_root = self.root / "mixed"
+        mixed = ProgressLedger(mixed_root)
+        mixed.append(agent_event)
+        mixed.append(task_event)
+        mixed.append(self.topology_event(
+            "observed-lead", "observed-lead", node_kind="LEAD", lifecycle="ACTIVE", observed_at_ms=3,
+        ))
+        mixed.append(self.event(
+            "historical-block", "historical-block", lifecycle="ACTIVE", observed_at_ms=4,
+        ))
+        topology = mixed.project_topology("project-alpha", "ctrl-alpha")
+        self.assertEqual(
+            {(node["node_id"], node["node_kind"]) for node in topology["nodes"]},
+            {("ctrl-alpha", "CTRL"), ("observed-lead", "LEAD"), ("historical-block", "BLOCK")},
+        )
+        self.assertEqual(topology["source_event_ids"], ["observed-lead", "historical-block"])
+        self.assertEqual(topology["through_cursor"], 4)
+        identities = mixed.project_identity_manifests("project-alpha", "ctrl-alpha", builtins)
+        self.assertEqual(identities["topology_join_state"], "NOT_PROJECTED")
+        self.assertEqual(identities["agents"][0]["manifest"]["manifest_version"], "1")
+        self.assertEqual(identities["tasks"][0]["manifest"]["manifest_version"], "1")
+        self.assertEqual(ProgressLedger(mixed_root).project_topology(
+            "project-alpha", "ctrl-alpha", through_cursor=4,
+        ), topology)
+
     def test_builtin_role_accents_are_exact_unique_and_order_independent(self) -> None:
         expected = {
             "manager": "#FF6B4A", "strategist": "#F97316", "researcher": "#22D3EE", "analyst": "#38BDF8",
