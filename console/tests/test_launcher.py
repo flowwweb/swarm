@@ -107,6 +107,46 @@ class LauncherTests(unittest.TestCase):
         self.assertEqual(result["reason"], "active_tab")
         self.assertEqual(len(calls), 3)
 
+    def test_repeated_autostart_reuses_the_persisted_server_without_a_second_spawn(self) -> None:
+        self._write_setting(open_on_start=False)
+        running = False
+        spawns: list[int] = []
+
+        def fetch(url: str, **_kwargs):
+            if not url.endswith("healthz"):
+                self.fail(f"browser-disabled autostart requested {url}")
+            if running and url.startswith("http://127.0.0.1:4788"):
+                return self._matching_health()
+            raise OSError("not running")
+
+        def spawn(_config: Path, _codex_home: Path, port: int) -> int:
+            nonlocal running
+            running = True
+            spawns.append(port)
+            return 2468
+
+        first = launcher.ensure_portal(
+            config_path=self.config,
+            codex_home=self.codex_home,
+            fetch_json=fetch,
+            spawn_server=spawn,
+            open_browser=lambda *_args, **_kwargs: self.fail("browser-disabled autostart opened a tab"),
+            sleep=lambda _seconds: None,
+        )
+        second = launcher.ensure_portal(
+            config_path=self.config,
+            codex_home=self.codex_home,
+            fetch_json=fetch,
+            spawn_server=spawn,
+            open_browser=lambda *_args, **_kwargs: self.fail("browser-disabled autostart opened a tab"),
+            sleep=lambda _seconds: None,
+        )
+
+        self.assertEqual(spawns, [4788])
+        self.assertEqual(first["reason"], "browser_disabled")
+        self.assertEqual(second["reason"], "browser_disabled")
+        self.assertEqual(second["url"], "http://127.0.0.1:4788")
+
     def test_missing_server_starts_once_and_stale_presence_opens_once(self) -> None:
         self._write_setting()
         health_calls = 0

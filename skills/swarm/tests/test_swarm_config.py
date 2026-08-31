@@ -136,13 +136,26 @@ class SwarmConfigTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             legacy = root / "legacy.toml"
+            original = (
+                "[execution]\nusage_saver = true\n"
+                "[chat_relay]\nenabled = true\ndefault_model = \"gpt-5.6-sol\"\n"
+                "default_effort = \"medium\"\n"
+                "[console]\nopen_on_start = false\n"
+            )
             legacy.write_text(
-                "[chat_relay]\ndefault_model = \"gpt-5.6-sol\"\ndefault_effort = \"medium\"\n",
+                original,
                 encoding="utf-8",
             )
-            effective, _ = config.load(legacy)
-            self.assertNotIn("default_model", effective["chat_relay"])
-            self.assertNotIn("default_effort", effective["chat_relay"])
+            first, _ = config.load(legacy)
+            second, _ = config.load(legacy)
+            self.assertEqual(first, second)
+            self.assertNotIn("default_model", first["chat_relay"])
+            self.assertNotIn("default_effort", first["chat_relay"])
+            self.assertTrue(first["chat_relay"]["enabled"])
+            self.assertTrue(first["execution"]["usage_saver"])
+            self.assertTrue(first["console"]["auto_start"])
+            self.assertFalse(first["console"]["open_on_start"])
+            self.assertEqual(legacy.read_text(encoding="utf-8"), original)
 
             invalid = root / "invalid.toml"
             invalid.write_text("[chat_relay]\ndefault_effort = \"reckless\"\n", encoding="utf-8")
