@@ -51,6 +51,34 @@ class CodexProjectDirectionContractTests(unittest.TestCase):
             self.assertNotIn(unsupported, model_doc)
         self.assertIn("external-provider proof", model_doc.casefold())
 
+    def test_public_readme_matches_current_graph_workspace_and_connector_contracts(self) -> None:
+        readme = (ROOT / "README.md").read_text(encoding="utf-8")
+        plugin_readme = (PLUGIN_ROOT / "README.md").read_text(encoding="utf-8")
+        self.assertEqual(readme, plugin_readme)
+        normalized = re.sub(r"\s+", " ", readme)
+        for required in (
+            "one control point",
+            "smallest graph",
+            "CTRL_DIRECT",
+            "Bounded subagents",
+            "one digest-bound Project Workspace",
+            "`canvas`, `table`, `timeline`, `gallery`, `compare`, and `document`",
+            "Master plan | `document` | `blocks`",
+            "Roadmap | `timeline` | `milestones`",
+            "Flowchart | `canvas` | `network`",
+            "Screens | `gallery` | `grid`",
+            "Map | `canvas` | `network`",
+            "Board, Kanban, and calendar are not registered renderers",
+            "snapshot metadata",
+            "existing Ledger and accepted event projections",
+            "Universal HQ command connector",
+            "Console wiring and end-to-end or live availability are not established",
+            "configuration reference",
+        ):
+            self.assertIn(required, normalized)
+        self.assertNotIn("[execution]\nfast_mode", readme)
+        self.assertNotIn("gpt-5.6-", readme)
+
     def test_unsupported_host_manifests_are_not_advertised(self) -> None:
         for root in (ROOT, PLUGIN_ROOT):
             self.assertFalse((root / ".claude-plugin" / "marketplace.json").exists())

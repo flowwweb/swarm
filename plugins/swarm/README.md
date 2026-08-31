@@ -22,47 +22,49 @@ The hierarchy keeps parallel work understandable: one place to steer, one owner 
 
 ## How the hierarchy works
 
-This example shows a full three-lane swarm. The professions change with the objective; the hierarchy does not.
+SWARM starts with the smallest graph that can finish the objective. There is
+one control point. LEAD and DOER tasks appear only when durable ownership or a
+bounded artifact warrants a visible lane; the dashed routes stay inside the
+current accountable task.
 
 ```mermaid
-%%{init: {"theme":"base","themeVariables":{"lineColor":"#36aeca"},"flowchart":{"nodeSpacing":42,"rankSpacing":152,"curve":"basis","padding":24}}}%%
+%%{init: {"theme":"base","themeVariables":{"lineColor":"#36aeca"},"flowchart":{"nodeSpacing":34,"rankSpacing":74,"curve":"basis","padding":20}}}%%
 flowchart TB
-  C("🐙<br/>CTRL<br/>gpt-5.6-sol · high<br/>Owns the objective")
-
-  C --> P("🧭<br/>MANAGER LEAD<br/>gpt-5.6-terra<br/>Direction")
-  C --> E("🧭<br/>ARCHITECT LEAD<br/>gpt-5.6-terra<br/>Build")
-  C --> Q("🧭<br/>REVIEWER LEAD<br/>gpt-5.6-terra<br/>Proof")
-
-  P --> P1("📚<br/>RESEARCHER DOER<br/>gpt-5.6-luna")
-  P --> P2("🧠<br/>STRATEGIST DOER<br/>gpt-5.6-luna")
-  P --> P3("✏️<br/>WRITER DOER<br/>gpt-5.6-luna")
-
-  E --> E1("💻<br/>DEV DOER<br/>gpt-5.6-luna")
-  E --> E2("🎨<br/>DESIGNER DOER<br/>gpt-5.6-luna")
-  E --> E3("🚀<br/>OPERATOR DOER<br/>gpt-5.6-luna")
-
-  Q --> Q1("🧪<br/>TESTER DOER<br/>gpt-5.6-luna")
-  Q --> Q2("🛡️<br/>SECURITY DOER<br/>gpt-5.6-luna")
-  Q --> Q3("✅<br/>AUDITOR DOER<br/>gpt-5.6-luna")
+  C("🐙<br/>CTRL<br/>Objective, routing, integration")
+  C -->|durable outcome boundary| L("🧭<br/>PROFESSION LEAD<br/>Owns one lane")
+  L -->|bounded artifact when useful| D("🛠️<br/>PROFESSION DOER<br/>Owns one artifact")
+  C -.->|one low-risk atomic GENERAL outcome| X("CTRL_DIRECT<br/>No separate lane")
+  C -.->|bounded GENERAL inspection or check| S("SUBAGENT<br/>No durable ownership")
 
   classDef ctrl fill:#fff1ed,stroke:#ff5b45,color:#172033,stroke-width:3px;
   classDef lead fill:#e9fbff,stroke:#0ea5c6,color:#172033,stroke-width:2px;
   classDef doer fill:#ffffff,stroke:#78cddd,color:#172033,stroke-width:1px;
+  classDef internal fill:#f8fafc,stroke:#94a3b8,color:#172033,stroke-width:1px,stroke-dasharray:4 3;
   class C ctrl;
-  class P,E,Q lead;
-  class P1,P2,P3,E1,E2,E3,Q1,Q2,Q3 doer;
+  class L lead;
+  class D doer;
+  class X,S internal;
   linkStyle default stroke:#36aeca,stroke-width:1.5px;
 ```
 
-The icons match SWARM task titles. Every visible task says both what expertise it brings and whether it is a LEAD or DOER; bare structural titles are rejected before creation.
+The branches are choices, not a roster to pre-create. Every visible lane says
+both what expertise it brings and whether it is a LEAD or DOER; bare structural
+titles are rejected before creation.
 
-- **CTRL** is the sole control point. It understands your objective, chooses the lanes, resolves cross-lane decisions, and returns the combined result.
-- **LEADs** own distinct outcomes. They coordinate their DOERs, integrate the work, and bring back evidence instead of activity reports.
-- **DOERs** complete bounded assignments. They can be developers, researchers, designers, testers, writers, or any other specialist the objective needs.
+- **CTRL** is the sole control point. It owns the objective, chooses the graph,
+  resolves shared-surface decisions, and returns the combined result.
+- **LEAD** appears when an outcome needs durable ownership, integration,
+  resumption, or its own acceptance route.
+- **DOER** appears when a bounded artifact benefits from an explicit producer.
+- **CTRL_DIRECT** is limited to one low-risk atomic `GENERAL` outcome on one
+  mutable surface with no external side effect.
+- **Bounded subagents** may handle small `GENERAL` inspection, search,
+  formatting, or a focused check inside their accountable owner. They never own
+  a durable lane, review, handoff, or acceptance.
 
-The model labels are role defaults for this example, not proof of execution. The
-Codex host owns model, service-tier, and reasoning selection; SWARM reports the
-host-observed values when that metadata is available.
+The Codex host owns model, service-tier, and reasoning selection. SWARM reports
+host-observed values when that metadata is available; a configured preference
+or diagram label is never proof of execution.
 
 ## Small work stays small
 
@@ -94,6 +96,49 @@ for the invariants and profile.
 Every agent may request an approved role skill with an exact source/version or
 digest and task-local scope by default. The host owns installation and audit;
 skills improve execution but never grant authority or turn CTRL into a producer.
+
+## Project Workspace views
+
+A project may expose one digest-bound Project Workspace from its root
+`SWARM.md` brief and `swarm.project_views` manifest. The registered renderers
+are `canvas`, `table`, `timeline`, `gallery`, `compare`, and `document`.
+
+| Current view | Renderer | Mode |
+| --- | --- | --- |
+| Master plan | `document` | `blocks` |
+| Roadmap | `timeline` | `milestones` |
+| Flowchart | `canvas` | `network` |
+| Screens | `gallery` | `grid` |
+| Map | `canvas` | `network` |
+
+`table` and `compare` are registered but are not bound by the current project
+manifest. Board, Kanban, and calendar are not registered renderers. An unknown
+renderer or mode, an unsupported source, or a digest mismatch fails closed; it
+does not become executable UI or replace the last accepted read-only
+projection.
+
+Project-view manifests and plan files are snapshot metadata. Live task state,
+progress, ownership, blockers, proof, and acceptance remain authoritative only
+in the existing Ledger and accepted event projections. Reusing a registered
+renderer is a manifest-only change when its existing source contract fits. A
+new renderer, parser, or dependency is a reviewed source slice with its own
+tests and proof—not a manifest shortcut.
+
+## Universal HQ command connector
+
+The source runtime contains a typed universal HQ command connector for already
+authorized Codex host actions. One immutable command envelope binds project,
+root, CTRL where required, target, payload digest, Ledger revision, expiry, and
+idempotency. The injected host verifier and host-owned App Server transport must
+validate the command before dispatch; exact replay reconciles retained command
+receipts without redispatching.
+
+The connector starts no process, stores no prompt or response body, grants no
+progress or acceptance, and does not make a host task title or project claim.
+`LOCAL_HQ` produces a digest-bound plan without calling Codex transport. Console
+wiring and end-to-end or live availability are not established by this source
+contract. See [execution adapters](skills/swarm/references/execution-adapters.md)
+for the accepted boundary.
 
 ## What you get back
 
@@ -133,8 +178,8 @@ Start a new task after reinstalling.
 ## Configure SWARM
 
 SWARM uses one global TOML file: `~/.agents/swarm/config.toml`. Initialize it
-from the maintained template, edit only the settings you need, then validate
-the result:
+from the maintained current-schema template, edit only the settings you need,
+then validate the complete result:
 
 ```text
 python skills/swarm/scripts/swarm_config.py init
@@ -142,25 +187,13 @@ python skills/swarm/scripts/swarm_config.py validate
 python skills/swarm/scripts/swarm_config.py show
 ```
 
-The common controls are deliberately small:
-
-```toml
-[execution]
-fast_mode = true       # the only Fast-mode switch
-
-[automation]
-mode = "standard"      # or "manual"
-
-[console]
-open_on_start = false
-```
-
-Changes apply at the next safe scheduling boundary; start a new task after a
-plugin update. Fast mode requests the host's faster service tier but is reported
-active only when host response metadata confirms it. Config never overrides an
-explicit user choice or grants task, Git, release, provider, or user-state
-authority. See the [configuration reference](skills/swarm/references/config.md)
-for every supported key and its claim limits.
+The generated template and the
+[configuration reference](skills/swarm/references/config.md) are the schema
+authority; a README excerpt is not. Changes apply at the next safe scheduling
+boundary, and a plugin update takes effect in a new task. Config never overrides
+an explicit user choice or grants task, Git, release, provider, or user-state
+authority. Fast or automation preferences become active only when the relevant
+host/runtime receipt confirms them.
 
 ## Local console
 
@@ -197,7 +230,7 @@ served-tier claims require their own direct receipts.
 - [Hierarchy and role contracts](skills/swarm/references/hierarchy.md)
 - [Configuration and model profiles](skills/swarm/references/config.md)
 - [Review and acceptance](skills/swarm/references/review-contract.md)
-- [Console guide](console/README.md)
+- [Console guide](skills/swarm/references/console.md)
 - [Contributing](CONTRIBUTING.md)
 - [Security](SECURITY.md)
 - [MIT License](LICENSE)
