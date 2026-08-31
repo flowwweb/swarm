@@ -306,8 +306,13 @@ assert.match(app, /kind === "summary"[\s\S]*?querySelector\("summary"\)/);
 assert.match(app, /function saveOnboardingConfig\(key, value\)/);
 assert.match(app, /let configMutationTail = Promise\.resolve\(\)/);
 assert.match(app, /let configAuthorityGeneration = 0/);
-assert.match(app, /function saveConfigMutation\(changes\)[\s\S]*?configMutationTail = operation\.then/);
-assert.match(app, /function saveConfigMutation\(changes\)[\s\S]*?configAuthorityGeneration \+= 1/);
+assert.match(app, /function configWriteRequest\(text, projection = state\.config\)[\s\S]*?payload: \{ scope, expected_revision: projection\.revision, acknowledge: true, text, operation_id: operationId \}/);
+assert.match(app, /function saveConfigText\(text\)[\s\S]*?configAuthorityGeneration \+= 1[\s\S]*?configMutationTail = operation\.then/);
+assert.match(app, /function saveConfigMutation\(changes\) \{\s*return saveConfigText\(\(\) => configTextWithChanges\(state\.config\?\.editable_text, changes\)\);\s*\}/);
+assert.match(app, /function configWriteReceiptMatches\(result, request\)[\s\S]*?JSON\.stringify\(receipt\?\.scope\) === request\.binding[\s\S]*?receipt\?\.acknowledged === true[\s\S]*?receipt\?\.operation_id === request\.operationId[\s\S]*?receipt\?\.expected_revision === request\.payload\.expected_revision/);
+assert.match(app, /configWriteRetry\?\.identity === identity \? configWriteRetry\.operationId : configWriteOperationId\(\)/);
+assert.match(app, /error\?\.status === 409[\s\S]*?unsaved changes are preserved[\s\S]*?Retry will reuse this exact operation/);
+assert.doesNotMatch(app, /body: JSON\.stringify\(\{ changes \}\)/);
 assert.match(app, /function readConfigState\(previousConfig = state\.config, saveError = ""\)[\s\S]*?let pendingWrites = configMutationTail[\s\S]*?while \(pendingWrites !== configMutationTail\)[\s\S]*?const generation = configAuthorityGeneration[\s\S]*?generation !== configAuthorityGeneration/);
 assert.match(app, /function configResetRequest\(kind\)[\s\S]*?endpoint: "\/api\/settings\/restore"[\s\S]*?scope: \{ type: "global" \}[\s\S]*?expected_revision: projection\.revision[\s\S]*?acknowledge: true/);
 assert.match(app, /function configResetRequest\(kind\)[\s\S]*?endpoint: "\/api\/config\/reset"[\s\S]*?accepted_cursor: structuredClone\(scope\.accepted_cursor\)[\s\S]*?expected_revision: projection\.revision/);
@@ -1533,6 +1538,67 @@ function applyConfigChanges(config, changes) {
   return next;
 }
 
+function configEditableText(config) {
+  const lines = [];
+  const sections = new Map();
+  for (const key of config.editable || []) {
+    const [section, name] = String(key).split(".");
+    if (!section || !name) continue;
+    const value = config.settings?.[section]?.[name];
+    if (value === undefined) continue;
+    if (!sections.has(section)) sections.set(section, []);
+    const literal = typeof value === "string" ? JSON.stringify(value) : String(value);
+    sections.get(section).push(`${name} = ${literal}`);
+  }
+  for (const [section, entries] of sections) {
+    if (lines.length) lines.push("");
+    lines.push(`[${section}]`, ...entries);
+  }
+  return `${lines.join("\n")}\n`;
+}
+
+function applyConfigText(config, text) {
+  const changes = {};
+  let section = "";
+  for (const rawLine of String(text).split(/\r?\n/)) {
+    const line = rawLine.trim();
+    const sectionMatch = line.match(/^\[([A-Za-z0-9_-]+)\]$/);
+    if (sectionMatch) {
+      section = sectionMatch[1];
+      continue;
+    }
+    const valueMatch = line.match(/^([A-Za-z0-9_-]+)\s*=\s*(.+)$/);
+    if (!section || !valueMatch) continue;
+    const literal = valueMatch[2].trim();
+    let value;
+    if (literal === "true" || literal === "false") value = literal === "true";
+    else if (/^-?\d+(?:\.\d+)?$/.test(literal)) value = Number(literal);
+    else {
+      try { value = JSON.parse(literal); } catch { continue; }
+    }
+    changes[`${section}.${valueMatch[1]}`] = value;
+  }
+  const next = applyConfigChanges(config, changes);
+  next.editable_text = String(text);
+  return next;
+}
+
+function configRequestValue(payload, key) {
+  const parsed = applyConfigText({ settings: {}, descriptors: [], editable: [] }, payload?.text || "");
+  return key.split(".").reduce((value, part) => value?.[part], parsed.settings);
+}
+
+function assertConfigWriteEnvelope(payload, expected = {}) {
+  assert.deepEqual(Object.keys(payload).sort(), ["acknowledge", "expected_revision", "operation_id", "scope", "text"]);
+  assert.equal(payload.acknowledge, true);
+  assert.equal(typeof payload.text, "string");
+  assert.ok(payload.text.length > 0);
+  assert.match(payload.operation_id, /^console-config-write-[a-f0-9]{32}$/);
+  if (expected.scope) assert.deepEqual(payload.scope, expected.scope);
+  if (expected.expectedRevision) assert.equal(payload.expected_revision, expected.expectedRevision);
+  for (const [key, value] of Object.entries(expected.values || {})) assert.deepEqual(configRequestValue(payload, key), value);
+}
+
 function configDescriptorFixture(config = fixture.config) {
   const next = structuredClone(config);
   next.state = "KNOWN";
@@ -1546,6 +1612,7 @@ function configDescriptorFixture(config = fixture.config) {
     { key: "monitoring.auto_health_enabled", type: "boolean", classification: "exposed", value_state: "KNOWN", current: false, default: false, editable: true },
     { key: "execution.usage_saver", type: "boolean", classification: "exposed", value_state: "KNOWN", current: false, default: false, editable: true },
   ];
+  next.editable_text = configEditableText(next);
   return next;
 }
 
@@ -1839,8 +1906,13 @@ async function mount(page, overview, overrides = {}) {
   const proofControl = overrides.proofControl || { fail: false, feed: proofFeed };
   const notificationControl = overrides.notificationControl || { failGet: false, failSeen: false, feed: structuredClone(overrides.notifications || notificationFixture()) };
   const configControl = overrides.configControl || { failPost: false, deferredPost: null, feed: configDescriptorFixture() };
+  if (configControl.feed?.state !== "KNOWN" || !configControl.feed?.scope || configControl.feed?.revision == null || configControl.feed?.write_contract?.available !== true) {
+    configControl.feed = configDescriptorFixture(configControl.feed);
+  }
+  if (typeof configControl.feed?.editable_text !== "string") configControl.feed.editable_text = configEditableText(configControl.feed);
   configControl.resetRequests ||= [];
   configControl.resetOperations ||= new Map();
+  configControl.writeOperations ||= new Map();
   configControl.ctrlFeed ||= structuredClone(fixture.ctrlSettings);
   const assetControl = overrides.assetControl || { library: assetLibraryFixture(), failGet: false, failMutation: false, deferredGets: [], deferredMutations: [], operations: new Map() };
   const runLogControl = overrides.runLogControl || { items: runLogFixture(), failGet: false, deferredGets: [] };
@@ -2010,9 +2082,37 @@ async function mount(page, overview, overrides = {}) {
       configRequests.push(payload);
       const deferredPost = Array.isArray(configControl.deferredPosts) ? configControl.deferredPosts.shift() : configControl.deferredPost;
       if (deferredPost) await deferredPost;
+      assert.deepEqual(Object.keys(payload).sort(), ["acknowledge", "expected_revision", "operation_id", "scope", "text"]);
+      assert.equal(payload.acknowledge, true);
+      const replay = configControl.writeOperations.get(payload.operation_id);
+      if (replay) return route.fulfill(response({ ...structuredClone(replay), mutation_receipt: { ...replay.mutation_receipt, replayed: true } }));
+      if (configControl.failPost === "connection") return route.abort();
+      if (configControl.failPost === "conflict") return route.fulfill({ status: 409, contentType: "application/json", body: JSON.stringify({ ok: false, error: "settings revision conflict" }) });
       if (configControl.failPost) return route.fulfill({ status: 503, contentType: "application/json", body: JSON.stringify({ ok: false, error: "setting acknowledgement unavailable" }) });
-      configControl.feed = applyConfigChanges(configControl.feed, payload.changes);
-      return route.fulfill(response(configControl.feed));
+      assert.deepEqual(payload.scope, configControl.feed.scope);
+      assert.equal(payload.expected_revision, configControl.feed.revision);
+      const priorRevision = configControl.feed.revision;
+      configControl.feed = applyConfigText(configControl.feed, payload.text);
+      configControl.feed.revision = `${priorRevision}-write-${configControl.writeOperations.size + 1}`;
+      configControl.feed.mutation_receipt = {
+        accepted: true,
+        acknowledged: true,
+        action: "UPDATE_CONFIG_SOURCE",
+        operation_id: payload.operation_id,
+        replayed: false,
+        scope: structuredClone(payload.scope),
+        expected_revision: payload.expected_revision,
+        new_revision: configControl.feed.revision,
+        changed_paths: [],
+      };
+      configControl.writeOperations.set(payload.operation_id, structuredClone(configControl.feed));
+      if (configControl.ambiguousAfterApply) {
+        configControl.ambiguousAfterApply = false;
+        return route.abort();
+      }
+      const responseMutation = Array.isArray(configControl.responseMutations) ? configControl.responseMutations.shift() : null;
+      const result = responseMutation ? responseMutation(structuredClone(configControl.feed), payload) : configControl.feed;
+      return route.fulfill(response(result));
     }
     if (messageControl && url.pathname === messageControl.endpoint && request.method() === "POST") {
       const payload = request.postDataJSON();
@@ -2555,7 +2655,7 @@ proofFeed.items.push({
       const input = document.querySelector('#onboarding-configuration input[data-config-key="automation.mode"]');
       return !input?.checked && !input?.disabled;
     });
-    assert.deepEqual(onboarding.configRequests.slice(-2), [{ changes: { "execution.fast_mode": true } }, { changes: { "automation.mode": "manual" } }]);
+    assert.deepEqual(onboarding.configRequests.slice(-2).map((payload) => [configRequestValue(payload, "execution.fast_mode"), configRequestValue(payload, "automation.mode")]), [[true, "standard"], [true, "manual"]]);
     await onboardingPage.evaluate(() => window.__onboardingMotionObserver.disconnect());
     assert.equal(await onboardingPage.getByRole("button", { name: "Close onboarding" }).count(), 1);
     assert.equal(await onboardingPage.getByRole("button", { name: "Skip for now" }).count(), 0);
@@ -2716,7 +2816,8 @@ proofFeed.items.push({
     assert.equal(await pendingPage.locator("#onboarding-panel-5").getByLabel("Fast", { exact: true }).isDisabled(), true);
     await pendingPage.locator("#onboarding-panel-5").getByLabel("Fast", { exact: true }).evaluate((input) => input.click());
     assert.equal(await pendingPage.locator("#onboarding-panel-5").getByLabel("Fast", { exact: true }).isChecked(), true);
-    assert.deepEqual(pending.configRequests, [{ changes: { "execution.fast_mode": true } }]);
+    assert.equal(pending.configRequests.length, 1);
+    assertConfigWriteEnvelope(pending.configRequests[0], { scope: { type: "global" }, expectedRevision: "global-revision-1", values: { "execution.fast_mode": true } });
     await pendingPage.keyboard.press("Escape");
     assert.equal(await pendingPage.locator("#onboarding-dialog").isVisible(), true);
     assert.equal(await pendingPage.evaluate(() => localStorage.getItem("swarm.onboarding.v2.seen")), null);
@@ -2730,7 +2831,7 @@ proofFeed.items.push({
     await pendingPage.getByRole("button", { name: "Start using SWARM" }).waitFor({ state: "visible" });
     await pendingPage.waitForFunction(() => !document.querySelector("#onboarding-primary")?.disabled);
     assert.equal(await pendingPage.evaluate(() => document.activeElement?.dataset.configKey), "execution.fast_mode");
-    assert.deepEqual(pending.configRequests, [{ changes: { "execution.fast_mode": true } }]);
+    assert.equal(pending.configRequests.length, 1);
     assert.deepEqual(pending.runtimeErrors, []);
     await pendingPage.close();
 
@@ -2753,13 +2854,16 @@ proofFeed.items.push({
     await firstSerialRequest;
     await serialPage.locator("#onboarding-panel-5").getByLabel("Auto mode").click();
     await serialPage.waitForTimeout(100);
-    assert.deepEqual(serial.configRequests, [{ changes: { "execution.fast_mode": true } }]);
-    const secondSerialRequest = serialPage.waitForRequest((request) => request.url().endsWith("/api/config") && request.method() === "POST" && request.postDataJSON().changes["automation.mode"] === "manual");
+    assert.equal(serial.configRequests.length, 1);
+    assert.equal(configRequestValue(serial.configRequests[0], "execution.fast_mode"), true);
+    const secondSerialRequest = serialPage.waitForRequest((request) => request.url().endsWith("/api/config") && request.method() === "POST" && configRequestValue(request.postDataJSON(), "automation.mode") === "manual");
     releaseFirstConfigPost();
     await secondSerialRequest;
     releaseSecondConfigPost();
     await serialPage.waitForFunction(() => !document.querySelector("#onboarding-primary")?.disabled);
-    assert.deepEqual(serial.configRequests, [{ changes: { "execution.fast_mode": true } }, { changes: { "automation.mode": "manual" } }]);
+    assert.equal(serial.configRequests.length, 2);
+    assert.deepEqual(serial.configRequests.map((payload) => configRequestValue(payload, "automation.mode")), ["standard", "manual"]);
+    assert.equal(serial.configRequests[1].expected_revision, "global-revision-1-write-1");
     assert.equal(await serialPage.locator("#onboarding-panel-5").getByLabel("Fast", { exact: true }).isChecked(), true);
     assert.equal(await serialPage.locator("#onboarding-panel-5").getByLabel("Auto mode").isChecked(), false);
     assert.deepEqual(serial.runtimeErrors, []);
@@ -2782,7 +2886,8 @@ proofFeed.items.push({
     await taskLifePage.keyboard.press("ArrowRight");
     await taskLifeRequest;
     await taskLifePage.waitForFunction(() => document.querySelector('#onboarding-task-life')?.getAttribute("aria-valuetext") === "Between Balanced and Long — 24 hours");
-    assert.deepEqual(taskLifeRuntime.configRequests, [{ changes: { "lifecycle.task_lifetime_hours": 24 } }]);
+    assert.equal(taskLifeRuntime.configRequests.length, 1);
+    assert.equal(configRequestValue(taskLifeRuntime.configRequests[0], "lifecycle.task_lifetime_hours"), 24);
     assert.equal(await taskLifePage.evaluate(() => document.activeElement?.id), "onboarding-task-life");
     assert.deepEqual(taskLifeRuntime.runtimeErrors, []);
     await taskLifePage.close();
@@ -2811,7 +2916,8 @@ proofFeed.items.push({
     assert.equal(writeBeforeReadControl.getSnapshots.length, 1);
     assert.equal(writeBeforeReadControl.getSnapshots[0].settings.execution.fast_mode, true);
     assert.equal(await writeBeforeReadPage.evaluate(() => state.config.settings.execution.fast_mode), true, "the acknowledged write survives its ordered readback");
-    assert.deepEqual(writeBeforeRead.configRequests, [{ changes: { "execution.fast_mode": true } }]);
+    assert.equal(writeBeforeRead.configRequests.length, 1);
+    assert.equal(configRequestValue(writeBeforeRead.configRequests[0], "execution.fast_mode"), true);
     assert.deepEqual(writeBeforeRead.runtimeErrors, []);
     await writeBeforeReadPage.close();
 
@@ -2835,7 +2941,8 @@ proofFeed.items.push({
     readRaceControl.deferredGet = null;
     await staleRefresh;
     assert.equal(await readRacePage.evaluate(() => state.config.settings.execution.fast_mode), true, "a GET started before an acknowledged POST cannot overwrite its config");
-    assert.deepEqual(readRace.configRequests, [{ changes: { "execution.fast_mode": true } }]);
+    assert.equal(readRace.configRequests.length, 1);
+    assert.equal(configRequestValue(readRace.configRequests[0], "execution.fast_mode"), true);
     assert.deepEqual(readRace.runtimeErrors, []);
     await readRacePage.close();
 
@@ -2872,7 +2979,9 @@ proofFeed.items.push({
     assert.equal(await failedReadbackRacePage.evaluate(() => state.config.settings.execution.usage_saver), true, "a failed-write readback cannot overwrite a later acknowledged config");
     assert.equal(await failedReadbackRacePage.evaluate(() => state.configStatus), "current");
     assert.match(await failedReadbackRacePage.evaluate(() => state.configError), /setting acknowledgement unavailable[\s\S]*Current settings changed before the reload completed/);
-    assert.deepEqual(failedReadbackRace.configRequests, [{ changes: { "chat_relay.enabled": true } }, { changes: { "execution.usage_saver": true } }]);
+    assert.equal(failedReadbackRace.configRequests.length, 2);
+    assert.equal(configRequestValue(failedReadbackRace.configRequests[0], "chat_relay.enabled"), true);
+    assert.equal(configRequestValue(failedReadbackRace.configRequests[1], "execution.usage_saver"), true);
     assert.equal(failedReadbackRace.runtimeErrors.length, 1);
     assert.match(failedReadbackRace.runtimeErrors[0], /503 \(Service Unavailable\)/);
     await failedReadbackRacePage.close();
@@ -2906,13 +3015,128 @@ proofFeed.items.push({
     failedConfigControl.deferredPost = null;
     await failedPage.waitForFunction(() => !document.querySelector("#onboarding-primary")?.disabled);
     assert.equal(await failedPage.evaluate(() => document.activeElement?.id), "onboarding-config-status");
-    assert.deepEqual(failed.configRequests, [{ changes: { "execution.fast_mode": true } }, { changes: { "execution.fast_mode": true } }]);
+    assert.equal(failed.configRequests.length, 2);
+    assert.equal(configRequestValue(failed.configRequests[0], "execution.fast_mode"), true);
+    assert.equal(configRequestValue(failed.configRequests[1], "execution.fast_mode"), true);
     await failedPage.getByRole("button", { name: "Start using SWARM" }).click();
     assert.equal(await failedPage.locator("#onboarding-dialog").isVisible(), false);
     assert.equal(await failedPage.evaluate(() => localStorage.getItem("swarm.onboarding.v2.seen")), "1");
     assert.equal(failed.runtimeErrors.filter((message) => /503 \(Service Unavailable\)/.test(message)).length, 1);
     assert.deepEqual(failed.runtimeErrors.filter((message) => !/503 \(Service Unavailable\)/.test(message)), []);
     await failedPage.close();
+
+    const projectWriteCursor = { event_seq: 31, event_digest: "c".repeat(64) };
+    const projectWriteFeed = configDescriptorFixture();
+    projectWriteFeed.scope = { type: "project", project_id: "project:fixture", accepted_cursor: projectWriteCursor };
+    projectWriteFeed.revision = "project-config-revision-7";
+    const projectWriteControl = { failPost: false, feed: projectWriteFeed };
+    const projectWritePage = await browser.newPage({ viewport: { width: 1024, height: 760 } });
+    const projectWrite = await mount(projectWritePage, scopedFixture(), { ...overrides, configControl: projectWriteControl });
+    await projectWritePage.evaluate(() => saveConfigMutation({ "execution.fast_mode": true }));
+    assert.equal(projectWrite.configRequests.length, 1);
+    assertConfigWriteEnvelope(projectWrite.configRequests[0], {
+      scope: { type: "project", project_id: "project:fixture", accepted_cursor: projectWriteCursor },
+      expectedRevision: "project-config-revision-7",
+      values: { "execution.fast_mode": true },
+    });
+    assert.equal(await projectWritePage.evaluate(() => state.config.revision), "project-config-revision-7-write-1");
+    assert.deepEqual(projectWrite.runtimeErrors, []);
+    await projectWritePage.close();
+
+    const ambiguousWriteControl = { failPost: false, feed: configDescriptorFixture(), ambiguousAfterApply: true };
+    const ambiguousWritePage = await browser.newPage({ viewport: { width: 1024, height: 760 } });
+    const ambiguousWrite = await mount(ambiguousWritePage, scopedFixture(), { ...overrides, configControl: ambiguousWriteControl });
+    const uncertainMessage = await ambiguousWritePage.evaluate(async () => {
+      state.settingsDraft = { "execution.fast_mode": true };
+      try { await saveConfigMutation(state.settingsDraft); } catch (error) { return error.message; }
+      return "";
+    });
+    assert.match(uncertainMessage, /could not confirm the save[\s\S]*reuse this exact operation/);
+    const uncertainRequest = structuredClone(ambiguousWrite.configRequests[0]);
+    assert.deepEqual(await ambiguousWritePage.evaluate(() => state.settingsDraft), { "execution.fast_mode": true });
+    await ambiguousWritePage.evaluate(() => saveConfigMutation(state.settingsDraft));
+    assert.equal(ambiguousWrite.configRequests.length, 2);
+    assert.equal(ambiguousWrite.configRequests[1].operation_id, uncertainRequest.operation_id);
+    assert.equal(ambiguousWriteControl.writeOperations.size, 1, "an uncertain replay must not apply the logical write twice");
+    assert.equal(await ambiguousWritePage.evaluate(() => state.config.revision), "global-revision-1-write-1");
+    assert.equal(ambiguousWrite.runtimeErrors.filter((message) => /ERR_FAILED/.test(message)).length, 1);
+    await ambiguousWritePage.close();
+
+    const conflictWriteControl = { failPost: "conflict", feed: configDescriptorFixture() };
+    const conflictWritePage = await browser.newPage({ viewport: { width: 1024, height: 760 } });
+    const conflictWrite = await mount(conflictWritePage, scopedFixture(), { ...overrides, configControl: conflictWriteControl });
+    const conflictMessage = await conflictWritePage.evaluate(async () => {
+      state.settingsDraft = { "execution.fast_mode": true };
+      try { await saveConfigMutation(state.settingsDraft); } catch (error) { return error.message; }
+      return "";
+    });
+    assert.match(conflictMessage, /changed elsewhere[\s\S]*unsaved changes are preserved/);
+    assert.deepEqual(await conflictWritePage.evaluate(() => state.settingsDraft), { "execution.fast_mode": true });
+    const conflictWriteOperationId = conflictWrite.configRequests[0].operation_id;
+    conflictWriteControl.failPost = false;
+    await conflictWritePage.evaluate(() => saveConfigMutation(state.settingsDraft));
+    assert.notEqual(conflictWrite.configRequests[1].operation_id, conflictWriteOperationId, "a confirmed conflict requires a new operation identity");
+    await conflictWritePage.close();
+
+    const changedIdentityControl = { failPost: "connection", feed: configDescriptorFixture() };
+    const changedIdentityPage = await browser.newPage({ viewport: { width: 1024, height: 760 } });
+    const changedIdentity = await mount(changedIdentityPage, scopedFixture(), { ...overrides, configControl: changedIdentityControl });
+    await changedIdentityPage.evaluate(() => saveConfigMutation({ "execution.fast_mode": true }).catch(() => undefined));
+    const priorIdentity = changedIdentity.configRequests[0].operation_id;
+    changedIdentityControl.failPost = false;
+    await changedIdentityPage.evaluate(() => saveConfigMutation({ "execution.usage_saver": true }));
+    assert.notEqual(changedIdentity.configRequests[1].operation_id, priorIdentity, "changed config text must not reuse an uncertain operation identity");
+    await changedIdentityPage.close();
+
+    const invalidAcknowledgements = [
+      ["operation id", (result) => { result.mutation_receipt.operation_id = "console-config-write-00000000000000000000000000000000"; }],
+      ["expected revision", (result) => { result.mutation_receipt.expected_revision = "other-revision"; }],
+      ["receipt scope cursor", (result) => { result.mutation_receipt.scope.accepted_cursor.event_seq += 1; }],
+      ["projection scope cursor", (result) => { result.scope.accepted_cursor.event_seq += 1; }],
+      ["acknowledgement", (result) => { result.mutation_receipt.acknowledged = false; }],
+      ["new revision", (result) => { result.mutation_receipt.new_revision = "other-new-revision"; }],
+    ];
+    for (const [label, mutate] of invalidAcknowledgements) {
+      const mismatchFeed = configDescriptorFixture();
+      mismatchFeed.scope = { type: "project", project_id: "project:fixture", accepted_cursor: structuredClone(projectWriteCursor) };
+      mismatchFeed.revision = "project-config-revision-7";
+      const mismatchControl = { failPost: false, feed: mismatchFeed, responseMutations: [(result) => { mutate(result); return result; }] };
+      const mismatchPage = await browser.newPage({ viewport: { width: 1024, height: 760 } });
+      const mismatchRuntime = await mount(mismatchPage, scopedFixture(), { ...overrides, configControl: mismatchControl });
+      const mismatchMessage = await mismatchPage.evaluate(async () => {
+        state.settingsDraft = { "execution.fast_mode": true };
+        try { await saveConfigMutation(state.settingsDraft); } catch (error) { return error.message; }
+        return "";
+      });
+      assert.match(mismatchMessage, /invalid config acknowledgement/, label);
+      assert.equal(await mismatchPage.evaluate(() => state.config.revision), "project-config-revision-7", `${label} must not apply`);
+      assert.deepEqual(await mismatchPage.evaluate(() => state.settingsDraft), { "execution.fast_mode": true }, `${label} must preserve the draft`);
+      if (label === "operation id") {
+        const mismatchedRequestId = mismatchRuntime.configRequests[0].operation_id;
+        await mismatchPage.evaluate(() => saveConfigMutation(state.settingsDraft));
+        assert.equal(mismatchRuntime.configRequests[1].operation_id, mismatchedRequestId, "a valid exact replay keeps the uncertain request identity");
+        assert.equal(await mismatchPage.evaluate(() => state.config.revision), "project-config-revision-7-write-1");
+      }
+      assert.deepEqual(mismatchRuntime.runtimeErrors, []);
+      await mismatchPage.close();
+    }
+
+    let releaseStaleWrite;
+    const staleWriteControl = { failPost: false, feed: configDescriptorFixture(), deferredPost: new Promise((resolve) => { releaseStaleWrite = resolve; }) };
+    const staleWritePage = await browser.newPage({ viewport: { width: 1024, height: 760 } });
+    const staleWrite = await mount(staleWritePage, scopedFixture(), { ...overrides, configControl: staleWriteControl });
+    const staleWriteRequest = staleWritePage.waitForRequest((request) => request.url().endsWith("/api/config") && request.method() === "POST");
+    await staleWritePage.evaluate(() => { window.__staleConfigWrite = saveConfigMutation({ "execution.fast_mode": true }); });
+    await staleWriteRequest;
+    await staleWritePage.evaluate(() => {
+      state.config = { ...state.config, scope: { type: "project", project_id: "project:other", accepted_cursor: { event_seq: 44, event_digest: "d".repeat(64) } }, revision: "other-revision" };
+    });
+    releaseStaleWrite();
+    const staleWriteResult = await staleWritePage.evaluate(() => window.__staleConfigWrite);
+    assert.equal(staleWriteResult.applied, false);
+    assert.equal(await staleWritePage.evaluate(() => state.config.revision), "other-revision");
+    assert.deepEqual(staleWrite.runtimeErrors, []);
+    await staleWritePage.close();
 
     const stateViewports = [
       { name: "desktop", width: 1440, height: 1000 },
@@ -3796,7 +4020,8 @@ proofFeed.items.push({
     assert.match(await page.locator(".settings-save-bar").textContent(), /3 unsaved changes/);
     await page.getByRole("button", { name: "Save changes" }).click();
     await page.waitForFunction(() => state.settingsSaving === false && state.settingsDraft.size === 0);
-    assert.deepEqual(desktop.configRequests.slice(settingsRequestsBefore), [{ changes: { "automation.mode": "manual", "execution.fast_mode": true, "execution.usage_saver": true } }]);
+    assert.equal(desktop.configRequests.length, settingsRequestsBefore + 1);
+    assertConfigWriteEnvelope(desktop.configRequests.at(-1), { values: { "automation.mode": "manual", "execution.fast_mode": true, "execution.usage_saver": true } });
     assert.match(await page.locator(".settings-save-bar").textContent(), /Saved/);
     const editConfigTrigger = page.getByRole("button", { name: "Edit config" });
     await editConfigTrigger.click();

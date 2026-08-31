@@ -4,6 +4,7 @@ const DIAGNOSTICS_HISTORY_HOURS = 1;
 const MESSAGE_CONNECTOR_UNAVAILABLE = "Messaging is unavailable until SWARM exposes the authenticated HQ connector.";
 let configMutationTail = Promise.resolve();
 let configAuthorityGeneration = 0;
+let configWriteRetry = null;
 let lastAppliedHistoryRoute = "";
 const EVIDENCE_THUMBNAIL_PAGE_SIZE = 24;
 const RUN_LOG_CLIENT_LIMIT = 200;
@@ -519,16 +520,130 @@ function setOnboardingStep(step, focusDot = false, focusNavigation = "") {
   else if (focusNavigation) requestAnimationFrame(() => (focusNavigation === "back" && state.onboardingStep > 0 ? $("#onboarding-back") : $("#onboarding-primary")).focus({ preventScroll: true }));
 }
 
-async function saveConfigMutation(changes) {
+function configWriteOperationId() {
+  const values = new Uint32Array(4);
+  window.crypto.getRandomValues(values);
+  return "console-config-write-" + [...values].map((value) => value.toString(16).padStart(8, "0")).join("");
+}
+
+function configWriteScope(projection = state.config) {
+  const scope = projection?.scope;
+  if (scope?.type === "global") return { type: "global" };
+  if (scope?.type === "project" && scope.project_id && scope.accepted_cursor) {
+    return { type: "project", project_id: String(scope.project_id), accepted_cursor: structuredClone(scope.accepted_cursor) };
+  }
+  return null;
+}
+
+function configTomlLiteral(value) {
+  if (typeof value === "boolean") return value ? "true" : "false";
+  if (typeof value === "number" && Number.isFinite(value)) return String(value);
+  if (typeof value === "string") return JSON.stringify(value);
+  if (Array.isArray(value)) return "[" + value.map(configTomlLiteral).join(", ") + "]";
+  throw new Error("This setting cannot be represented in the canonical config text.");
+}
+
+function configTextWithChanges(source, changes) {
+  if (typeof source !== "string") throw new Error("Exact config text is unavailable. Reload Settings before saving.");
+  const newline = source.includes("\r\n") ? "\r\n" : "\n";
+  const lines = source.split(/\r?\n/);
+  for (const [path, value] of Object.entries(changes || {})) {
+    const parts = String(path).split(".").filter(Boolean);
+    if (parts.length < 2 || !parts.every((part) => /^[A-Za-z0-9_-]+$/.test(part))) throw new Error("This setting has an invalid config path.");
+    const key = parts.pop();
+    const section = parts.join(".");
+    let sectionStart = -1;
+    let sectionEnd = lines.length;
+    for (let index = 0; index < lines.length; index += 1) {
+      const match = lines[index].match(/^\s*\[([^\]]+)\]\s*(?:#.*)?$/);
+      if (!match) continue;
+      if (sectionStart >= 0) { sectionEnd = index; break; }
+      if (match[1].trim() === section) sectionStart = index;
+    }
+    const assignment = key + " = " + configTomlLiteral(value);
+    if (sectionStart < 0) {
+      if (lines.length && lines.at(-1).trim()) lines.push("");
+      lines.push("[" + section + "]", assignment);
+      continue;
+    }
+    const keyPattern = new RegExp("^\\s*" + key.replace(/[.*+?^${}()|[\\]\\]/g, "\\$&") + "\\s*=");
+    const existing = lines.findIndex((line, index) => index > sectionStart && index < sectionEnd && keyPattern.test(line));
+    if (existing >= 0) lines[existing] = assignment;
+    else lines.splice(sectionEnd, 0, assignment);
+  }
+  return lines.join(newline);
+}
+
+function configWriteRequest(text, projection = state.config) {
+  const scope = configWriteScope(projection);
+  if (projection?.state !== "KNOWN" || projection?.write_contract?.available !== true || !scope || projection.revision == null || typeof text !== "string") {
+    throw new Error("Settings are not writable from the current accepted config projection.");
+  }
+  const identity = JSON.stringify({ scope, expected_revision: projection.revision, text });
+  const operationId = configWriteRetry?.identity === identity ? configWriteRetry.operationId : configWriteOperationId();
+  return {
+    identity,
+    operationId,
+    binding: JSON.stringify(scope),
+    payload: { scope, expected_revision: projection.revision, acknowledge: true, text, operation_id: operationId },
+  };
+}
+
+function configWriteReceiptMatches(result, request) {
+  const receipt = result?.mutation_receipt;
+  return result?.state === "KNOWN"
+    && JSON.stringify(configWriteScope(result)) === request.binding
+    && JSON.stringify(receipt?.scope) === request.binding
+    && result.revision === receipt?.new_revision
+    && receipt?.accepted === true
+    && receipt?.acknowledged === true
+    && receipt?.operation_id === request.operationId
+    && receipt?.expected_revision === request.payload.expected_revision;
+}
+
+function configWriteBindingIsCurrent(request) {
+  return JSON.stringify(configWriteScope(state.config)) === request.binding
+    && state.config?.revision === request.payload.expected_revision;
+}
+
+async function saveConfigText(text) {
   configAuthorityGeneration += 1;
+  let request = null;
   const operation = configMutationTail.then(async () => {
-    const config = await api('/api/config', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ changes }) });
-    state.config = config;
-    state.configStatus = "current";
+    const resolvedText = typeof text === "function" ? text() : text;
+    request = configWriteRequest(resolvedText);
+    const config = await api('/api/config', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(request.payload),
+    });
     return config;
   });
   configMutationTail = operation.then(() => undefined, () => undefined);
-  return operation;
+  try {
+    const config = await operation;
+    if (!configWriteReceiptMatches(config, request)) {
+      const error = new Error("SWARM returned an invalid config acknowledgement. Your changes are still here; retry this exact save.");
+      error.invalidConfigAcknowledgement = true;
+      throw error;
+    }
+    configWriteRetry = null;
+    if (!configWriteBindingIsCurrent(request)) return { applied: false, config };
+    state.config = config;
+    state.configStatus = "current";
+    state.configError = "";
+    return { applied: true, config };
+  } catch (error) {
+    const uncertain = Boolean(request) && (error?.invalidConfigAcknowledgement === true || error?.connectionFailure === true || !Number.isInteger(error?.status));
+    configWriteRetry = uncertain && request ? { identity: request.identity, operationId: request.operationId } : null;
+    if (error?.status === 409) error.message = "Settings changed elsewhere. Reload before retrying; your unsaved changes are preserved.";
+    else if (uncertain && error?.invalidConfigAcknowledgement !== true) error.message = "SWARM could not confirm the save. Retry will reuse this exact operation; your unsaved changes are preserved.";
+    throw error;
+  }
+}
+
+async function saveConfigMutation(changes) {
+  return saveConfigText(() => configTextWithChanges(state.config?.editable_text, changes));
 }
 
 function configResetOperationId(kind) {
