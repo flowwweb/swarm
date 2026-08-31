@@ -26,6 +26,14 @@ const agentsSourceOnly = process.argv.includes("--agents-source-only");
 const skipServerParity = process.argv.includes("--skip-server-parity");
 const offlineAsset = fs.readFileSync(path.join(staticRoot, "swarm-offline-disconnected.png"));
 const pluginOfflineAsset = fs.readFileSync(path.join(pluginStaticRoot, "swarm-offline-disconnected.png"));
+const concernedAsset = fs.readFileSync(path.join(staticRoot, "swarm-state-mascot-concerned.png"));
+const pluginConcernedAsset = fs.readFileSync(path.join(pluginStaticRoot, "swarm-state-mascot-concerned.png"));
+const offlineWebpAsset = fs.readFileSync(path.join(staticRoot, "swarm-offline-disconnected.webp"));
+const pluginOfflineWebpAsset = fs.readFileSync(path.join(pluginStaticRoot, "swarm-offline-disconnected.webp"));
+const concernedWebpAsset = fs.readFileSync(path.join(staticRoot, "swarm-state-mascot-concerned.webp"));
+const pluginConcernedWebpAsset = fs.readFileSync(path.join(pluginStaticRoot, "swarm-state-mascot-concerned.webp"));
+const stateMascotProvenance = JSON.parse(fs.readFileSync(path.join(staticRoot, "swarm-state-mascot-provenance.json"), "utf8"));
+const pluginStateMascotProvenance = JSON.parse(fs.readFileSync(path.join(pluginStaticRoot, "swarm-state-mascot-provenance.json"), "utf8"));
 const mascotAsset = fs.readFileSync(path.join(staticRoot, "swarm-mascot-512.png"));
 const pluginMascotAsset = fs.readFileSync(path.join(pluginStaticRoot, "swarm-mascot-512.png"));
 const onboardingSlide1Asset = fs.readFileSync(path.join(staticRoot, "swarm-guided-tour-slide1.png"));
@@ -45,8 +53,27 @@ function pngIdentity(buffer) {
 }
 
 const offlineAssetDigest = crypto.createHash("sha256").update(offlineAsset).digest("hex");
-assert.equal(offlineAssetDigest, "6f58eb1dc3c77634c0bb476591843a4226ccd73932589c70aae4a25cf02f8650");
+assert.equal(offlineAssetDigest, "586dc9a24384bf0d86eef402f69172c7bfd30e18ae8b58a48fd41eb89450da1e");
 assert.deepEqual(pluginOfflineAsset, offlineAsset);
+assert.equal(crypto.createHash("sha256").update(concernedAsset).digest("hex"), "6b4cd07fddac1c791eadfd4a63c346eab7a6708531c8141321d968d74111654d");
+assert.deepEqual(pluginConcernedAsset, concernedAsset);
+assert.equal(crypto.createHash("sha256").update(offlineWebpAsset).digest("hex"), "983253ceb56061bec64fdd52ad7b6338986d0916c786fd356ede78349ec18ed3");
+assert.equal(crypto.createHash("sha256").update(concernedWebpAsset).digest("hex"), "f1f3e41bdf3175afe228d3be8b3c39d0748b98a7c4e4d24aa83133d84526d276");
+assert.deepEqual(pluginOfflineWebpAsset, offlineWebpAsset);
+assert.deepEqual(pluginConcernedWebpAsset, concernedWebpAsset);
+assert.deepEqual(pluginStateMascotProvenance, stateMascotProvenance);
+assert.equal(stateMascotProvenance.schema_version, 1);
+assert.equal(stateMascotProvenance.source.sha256, "247fc2a02b5505c13815d78c4cce8765b893f51b70cf9167d1e2d43350209666");
+assert.equal(stateMascotProvenance.transformation.alpha_channel_identical_to_source, true);
+assert.equal(stateMascotProvenance.transformation.webp_transparent_rgb_normalized, true);
+assert.equal(stateMascotProvenance.transformation.webp_nontransparent_pixels_identical_to_png, true);
+assert.equal(stateMascotProvenance.assets[0].primary.sha256, "f1f3e41bdf3175afe228d3be8b3c39d0748b98a7c4e4d24aa83133d84526d276");
+assert.equal(stateMascotProvenance.assets[0].fallback.sha256, "6b4cd07fddac1c791eadfd4a63c346eab7a6708531c8141321d968d74111654d");
+assert.equal(stateMascotProvenance.assets[1].primary.sha256, "983253ceb56061bec64fdd52ad7b6338986d0916c786fd356ede78349ec18ed3");
+assert.equal(stateMascotProvenance.assets[1].fallback.sha256, "586dc9a24384bf0d86eef402f69172c7bfd30e18ae8b58a48fd41eb89450da1e");
+assert.equal(stateMascotProvenance.rejected_format.media_type, "image/avif");
+assert.deepEqual(pngIdentity(offlineAsset), { signature: "PNG", width: 1024, height: 640, colorType: 6 });
+assert.deepEqual(pngIdentity(concernedAsset), { signature: "PNG", width: 512, height: 512, colorType: 6 });
 assert.equal(crypto.createHash("sha256").update(mascotAsset).digest("hex"), "247fc2a02b5505c13815d78c4cce8765b893f51b70cf9167d1e2d43350209666");
 assert.equal(crypto.createHash("sha256").update(onboardingSlide1Asset).digest("hex"), "7f97baeee650e3e5e0c024b52da0dac9d4f69ad691050630cb90f0237ca9a3ed");
 assert.equal(crypto.createHash("sha256").update(onboardingRoleGroupAsset).digest("hex"), "dc9ed5015aff55402e9f266cfbb59676d2deaa1465a16b634e4064bdf490d48e");
@@ -65,6 +92,9 @@ assert.equal(pluginApp, app);
 assert.equal(pluginIndexHtml, indexHtml);
 if (!agentsSourceOnly && !skipServerParity) assert.equal(pluginServer, server);
 assert.match(server, /"\/assets\/swarm-offline-disconnected\.png": \("swarm-offline-disconnected\.png", "image\/png"\)/);
+assert.match(server, /"\/assets\/swarm-state-mascot-concerned\.png": \("swarm-state-mascot-concerned\.png", "image\/png"\)/);
+assert.match(server, /"\/assets\/swarm-offline-disconnected\.webp": \("swarm-offline-disconnected\.webp", "image\/webp"\)/);
+assert.match(server, /"\/assets\/swarm-state-mascot-concerned\.webp": \("swarm-state-mascot-concerned\.webp", "image\/webp"\)/);
 assert.match(server, /"\/assets\/swarm-mascot-512\.png": \("swarm-mascot-512\.png", "image\/png"\)/);
 assert.match(server, /"\/assets\/swarm-guided-tour-slide1\.png": \("swarm-guided-tour-slide1\.png", "image\/png"\)/);
 assert.match(server, /"\/assets\/swarm-guided-tour-role-group\.png": \("swarm-guided-tour-role-group\.png", "image\/png"\)/);
@@ -73,10 +103,21 @@ assert.match(pluginServer, /"\/assets\/swarm-guided-tour-slide1\.png": \("swarm-
 assert.match(pluginServer, /"\/assets\/swarm-guided-tour-role-group\.png": \("swarm-guided-tour-role-group\.png", "image\/png"\)/);
 assert.match(pluginServer, /"\/assets\/swarm-guided-tour-project-tool\.png": \("swarm-guided-tour-project-tool\.png", "image\/png"\)/);
 assert.match(server, /"\/swarm-icon-64\.png": \("swarm-icon-64\.png", "image\/png"\)/);
-assert.match(indexHtml, /id="connection-state" hidden role="alert" aria-labelledby="connection-state-title"/);
-assert.match(indexHtml, /src="\/assets\/swarm-offline-disconnected\.png" width="1536" height="1024"/);
-assert.match(indexHtml, /id="connection-state-title">Connection lost<\/h2><p>Your work is safe\. SWARM will reconnect when the console is available\.<\/p>/);
+assert.match(indexHtml, /id="connection-state" hidden role="alert" aria-labelledby="connection-state-title" aria-describedby="connection-state-detail"/);
+assert.match(indexHtml, /data-state-variant="offline" aria-hidden="true"><picture><source type="image\/webp" srcset="\/assets\/swarm-offline-disconnected\.webp"><img src="\/assets\/swarm-offline-disconnected\.png" width="1024" height="640"[^>]*alt=""/);
+assert.match(indexHtml, /id="connection-state-title">Connection lost<\/h2><p id="connection-state-detail">Your work is safe\. SWARM will reconnect when the console is available\.<\/p>/);
 assert.match(indexHtml, /id="connection-retry"[^>]*>Retry connection<\/button>/);
+assert.match(indexHtml, /id="error-surface" hidden role="alert" aria-labelledby="error-title" aria-describedby="error-message"/);
+assert.match(indexHtml, /data-state-variant="failed" aria-hidden="true"><picture><source type="image\/webp" srcset="\/assets\/swarm-state-mascot-concerned\.webp"><img src="\/assets\/swarm-state-mascot-concerned\.png" width="512" height="512"[^>]*alt=""/);
+assert.match(indexHtml, /id="error-title">SWARM couldn't finish that<\/strong>[^]*?id="retry"[^>]*>Refresh SWARM<\/button>/);
+assert.match(app, /const STATE_ILLUSTRATIONS = Object\.freeze\([\s\S]*?offline:[\s\S]*?failed:[\s\S]*?empty:[\s\S]*?recovery:/);
+assert.match(app, /function stateIllustrationMarkup\(variant = "empty"/);
+assert.match(app, /<picture><source type="image\/webp" srcset=/);
+assert.match(app, /stateMessageMarkup\("empty", "No proof yet"/);
+assert.match(app, /stateMessageMarkup\("recovery", "Proof is temporarily unavailable"/);
+assert.match(css, /\.state-illustration \{[^}]*aspect-ratio:1;[^}]*isolation:isolate;/);
+assert.match(css, /\.state-illustration picture \{[^}]*width:100%;[^}]*height:100%;/);
+assert.match(css, /\.state-message \{[^}]*min-height:260px;/);
 assert.match(app, /if \(error instanceof TypeError\) throw connectionFailure/);
 assert.match(app, /if \(error\.connectionFailure && !state\.overview\) showConnectionState\(\)/);
 assert.match(app, /\$\("#connection-retry"\)\.addEventListener\("click", initialize\)/);
@@ -1437,7 +1478,7 @@ assert.match(css, /@media \(max-width: 620px\)[\s\S]*\.project-tabs button \{ mi
 assert.match(css, /@media \(max-width: 620px\)[\s\S]*\.review-actions \.icon-button,\.review-actions summary \{ width:44px; height:44px; \}/);
 assert.match(css, /@media \(max-width: 620px\)[\s\S]*\.settings-save-bar button,\.config-editor-footer button \{ flex:1; \}/);
 assert.match(css, /@media \(max-width: 620px\)[\s\S]*\.error-surface \{ top:calc\(64px \+ env\(safe-area-inset-top\) \+ 8px\);/);
-assert.match(css, /@media \(max-width: 620px\)[\s\S]*\.error-surface button \{ min-height:44px; \}/);
+assert.match(css, /\.error-surface button \{[^}]*min-height:44px;/);
 assert.match(css, /\.assets-layout/);
 assert.match(css, /\.asset-dialog \{[^}]*margin:auto;[^}]*padding:0;/);
 assert.match(css, /\.asset-dialog-header \{[^}]*display:flex;[^}]*justify-content:space-between/);
@@ -1833,7 +1874,10 @@ async function mount(page, overview, overrides = {}) {
     }
     if (url.pathname === "/styles.css") return route.fulfill({ status: 200, contentType: "text/css", body: css });
     if (url.pathname === "/app.js") return route.fulfill({ status: 200, contentType: "text/javascript", body: app });
+    if (url.pathname === "/assets/swarm-offline-disconnected.webp") return route.fulfill({ status: 200, contentType: "image/webp", body: offlineWebpAsset });
+    if (url.pathname === "/assets/swarm-state-mascot-concerned.webp") return route.fulfill({ status: 200, contentType: "image/webp", body: concernedWebpAsset });
     if (url.pathname === "/assets/swarm-offline-disconnected.png") return route.fulfill({ status: 200, contentType: "image/png", body: offlineAsset });
+    if (url.pathname === "/assets/swarm-state-mascot-concerned.png") return route.fulfill({ status: 200, contentType: "image/png", body: concernedAsset });
     if (overrides.connection?.offline && url.pathname.startsWith("/api/")) return route.abort();
     if (url.pathname === "/api/bootstrap") {
       const bootstrap = structuredClone(fixture.bootstrap);
@@ -2870,19 +2914,87 @@ proofFeed.items.push({
     assert.deepEqual(failed.runtimeErrors.filter((message) => !/503 \(Service Unavailable\)/.test(message)), []);
     await failedPage.close();
 
-    const offlinePage = await browser.newPage({ viewport: { width: 1024, height: 760 } });
-    const connection = { offline: true };
-    const offline = await mount(offlinePage, scopedFixture(), { connection, waitForConnectionState: true });
-    assert.equal(await offlinePage.getByRole("heading", { name: "Connection lost" }).count(), 1);
-    assert.equal(await offlinePage.locator("#sync-time").textContent(), "Offline");
-    assert.equal(await offlinePage.locator('#connection-state img[alt="SWARM octopus holding disconnected cable ends"]').count(), 1);
-    connection.offline = false;
-    await offlinePage.getByRole("button", { name: "Retry connection" }).click();
-    await offlinePage.locator("#overview-content").waitFor({ state: "visible" });
-    assert.equal(await offlinePage.locator("#connection-state").isVisible(), false);
-    assert.match(await offlinePage.locator("#sync-time").textContent(), /^Live/);
-    assert.ok(offline.requests.filter((request) => request === "/api/bootstrap").length >= 2);
-    await offlinePage.close();
+    const stateViewports = [
+      { name: "desktop", width: 1440, height: 1000 },
+      { name: "tablet", width: 834, height: 1112 },
+      { name: "mobile", width: 390, height: 844 },
+    ];
+    for (const viewport of stateViewports) {
+      const statePage = await browser.newPage({ viewport: { width: viewport.width, height: viewport.height } });
+      const connection = { offline: true };
+      const mounted = await mount(statePage, scopedFixture(), { connection, waitForConnectionState: true });
+      const offlineImage = statePage.locator("#connection-state img");
+      await offlineImage.evaluate(async (image) => { if (!image.complete) await new Promise((resolve, reject) => { image.addEventListener("load", resolve, { once: true }); image.addEventListener("error", reject, { once: true }); }); await image.decode(); });
+      assert.equal(await statePage.getByRole("heading", { name: "Connection lost" }).count(), 1);
+      assert.equal(await statePage.locator("#sync-time").textContent(), "Offline");
+      assert.equal(await offlineImage.getAttribute("alt"), "");
+      assert.match(await offlineImage.evaluate((image) => image.currentSrc), /\/assets\/swarm-offline-disconnected\.webp$/);
+      assert.equal(await statePage.locator("#connection-state [aria-hidden=true]").count(), 1);
+      const offlineGeometry = await statePage.locator("#connection-state").evaluate((surface) => {
+        const rect = surface.getBoundingClientRect();
+        const image = surface.querySelector("img");
+        const button = surface.querySelector("button").getBoundingClientRect();
+        return { left: rect.left, top: rect.top, right: rect.right, bottom: rect.bottom, viewportWidth: innerWidth, viewportHeight: innerHeight, documentWidth: document.documentElement.scrollWidth, naturalWidth: image.naturalWidth, naturalHeight: image.naturalHeight, buttonHeight: button.height };
+      });
+      assert.ok(offlineGeometry.left >= 0 && offlineGeometry.top >= 0 && offlineGeometry.right <= offlineGeometry.viewportWidth && offlineGeometry.bottom <= offlineGeometry.viewportHeight, JSON.stringify(offlineGeometry));
+      assert.ok(offlineGeometry.documentWidth <= offlineGeometry.viewportWidth, JSON.stringify(offlineGeometry));
+      assert.deepEqual([offlineGeometry.naturalWidth, offlineGeometry.naturalHeight], [1024, 640]);
+      assert.ok(offlineGeometry.buttonHeight >= 44, JSON.stringify(offlineGeometry));
+      if (evidenceDir) await statePage.screenshot({ path: path.join(evidenceDir, `state-offline-${viewport.name}-${viewport.width}x${viewport.height}.png`), fullPage: false, animations: "disabled" });
+
+      connection.offline = false;
+      await statePage.evaluate(() => localStorage.setItem("swarm.onboarding.v2.seen", "1"));
+      await statePage.getByRole("button", { name: "Retry connection" }).click();
+      await statePage.locator("#overview-content").waitFor({ state: "visible" });
+      await statePage.waitForFunction(() => document.activeElement?.id === "refresh");
+      assert.equal(await statePage.locator("#connection-state").isVisible(), false);
+      assert.match(await statePage.locator("#sync-time").textContent(), /^Live/);
+      assert.ok(mounted.requests.filter((request) => request === "/api/bootstrap").length >= 2);
+
+      await statePage.evaluate(() => showError("The latest project snapshot could not be loaded."));
+      const errorSurface = statePage.locator("#error-surface");
+      await errorSurface.waitFor({ state: "visible" });
+      assert.equal(await errorSurface.locator("img").getAttribute("alt"), "");
+      assert.match(await errorSurface.locator("img").evaluate((image) => image.currentSrc), /\/assets\/swarm-state-mascot-concerned\.webp$/);
+      assert.equal(await errorSurface.locator('[data-state-variant="failed"]').count(), 1);
+      const errorGeometry = await errorSurface.evaluate((surface) => {
+        const rect = surface.getBoundingClientRect();
+        const button = surface.querySelector("button").getBoundingClientRect();
+        return { left: rect.left, top: rect.top, right: rect.right, bottom: rect.bottom, viewportWidth: innerWidth, viewportHeight: innerHeight, documentWidth: document.documentElement.scrollWidth, buttonHeight: button.height };
+      });
+      assert.ok(errorGeometry.left >= 0 && errorGeometry.top >= 0 && errorGeometry.right <= errorGeometry.viewportWidth && errorGeometry.bottom <= errorGeometry.viewportHeight, JSON.stringify(errorGeometry));
+      assert.ok(errorGeometry.documentWidth <= errorGeometry.viewportWidth && errorGeometry.buttonHeight >= 44, JSON.stringify(errorGeometry));
+      if (evidenceDir) await statePage.screenshot({ path: path.join(evidenceDir, `state-failed-${viewport.name}-${viewport.width}x${viewport.height}.png`), fullPage: false, animations: "disabled" });
+      await statePage.getByRole("button", { name: "Refresh SWARM" }).click();
+      await errorSurface.waitFor({ state: "hidden" });
+      await statePage.waitForFunction(() => document.activeElement?.id === "refresh");
+
+      await statePage.evaluate(() => {
+        setView("review");
+        state.proofCollections.set(proofCollectionKey(), []);
+        state.proofStatuses.set(proofCollectionKey(), "idle");
+        renderReview();
+      });
+      const reviewEmpty = statePage.locator("#review-list .state-message");
+      await reviewEmpty.waitFor({ state: "visible" });
+      assert.equal(await reviewEmpty.locator('[data-state-variant="empty"]').count(), 1);
+      assert.match(await reviewEmpty.textContent(), /No proof yet[\s\S]*Accepted proof will appear here/);
+      if (evidenceDir) await statePage.screenshot({ path: path.join(evidenceDir, `state-empty-${viewport.name}-${viewport.width}x${viewport.height}.png`), fullPage: false, animations: "disabled" });
+
+      await statePage.evaluate(() => { state.proofStatuses.set(proofCollectionKey(), "unavailable"); renderReview(); });
+      const reviewRecovery = statePage.locator("#review-list .state-message");
+      assert.equal(await reviewRecovery.locator('[data-state-variant="recovery"]').count(), 1);
+      assert.match(await reviewRecovery.textContent(), /Proof is temporarily unavailable[\s\S]*Refresh SWARM/);
+      await statePage.emulateMedia({ reducedMotion: "reduce" });
+      assert.equal(await statePage.locator("#review-list .state-illustration").evaluate((surface) => surface.getAnimations({ subtree: true }).length), 0);
+      const recoveryGeometry = await reviewRecovery.evaluate((surface) => {
+        const rect = surface.getBoundingClientRect();
+        return { left: rect.left, top: rect.top, right: rect.right, bottom: rect.bottom, viewportWidth: innerWidth, viewportHeight: innerHeight, documentWidth: document.documentElement.scrollWidth };
+      });
+      assert.ok(recoveryGeometry.left >= 0 && recoveryGeometry.right <= recoveryGeometry.viewportWidth && recoveryGeometry.documentWidth <= recoveryGeometry.viewportWidth, JSON.stringify(recoveryGeometry));
+      if (evidenceDir) await statePage.screenshot({ path: path.join(evidenceDir, `state-recovery-${viewport.name}-${viewport.width}x${viewport.height}.png`), fullPage: false, animations: "disabled" });
+      await statePage.close();
+    }
 
     let releaseStaleAssetList;
     const raceLibrary = assetLibraryFixture();
@@ -3940,7 +4052,7 @@ proofFeed.items.push({
     await mobilePage.evaluate(() => showError("Project refresh failed"));
     const errorBox = await mobilePage.locator("#error-surface").boundingBox();
     assert.ok(errorBox && menuBox && errorBox.y >= menuBox.y + menuBox.height);
-    assert.ok((await mobilePage.getByRole("button", { name: "Try again" }).boundingBox())?.height >= 44);
+    assert.ok((await mobilePage.getByRole("button", { name: "Refresh SWARM" }).boundingBox())?.height >= 44);
     await menuButton.click();
     assert.equal(await mobilePage.locator("#console-drawer").getAttribute("aria-hidden"), "false");
     assert.equal(await mobilePage.locator(".workspace").evaluate((element) => element.inert), true);

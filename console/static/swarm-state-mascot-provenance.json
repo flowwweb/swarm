@@ -1,0 +1,77 @@
+{
+  "schema_version": 1,
+  "source": {
+    "path": "swarm-mascot-512.png",
+    "sha256": "247fc2a02b5505c13815d78c4cce8765b893f51b70cf9167d1e2d43350209666",
+    "alpha_sha256": "f4b79ba2db39417045768f580bf07b214e74456a34fd1ac71f2eca100fc6d589",
+    "role": "admitted eight-tentacle body and silhouette"
+  },
+  "expression_donor": {
+    "sha256": "2123e350de18bbcafd3d3e1d504ebb3d487ccdeaa11d2705cd0e3293f45bec95",
+    "role": "expression only",
+    "disposition": "generated body rejected"
+  },
+  "transformation": {
+    "method": "bounded expression composite, partial-alpha dark-edge RGB correction, and separate cable props",
+    "expression_bounds": [212, 198, 302, 262],
+    "expression_changed_pixels_inside_bounds": 2482,
+    "expression_changed_pixels_outside_bounds": 0,
+    "partial_alpha_rgb_changed_pixels": 3218,
+    "opaque_pixels_changed_by_edge_correction": 0,
+    "transparent_pixels_changed_by_edge_correction": 0,
+    "alpha_channel_identical_to_source": true,
+    "webp_transparent_rgb_normalized": true,
+    "webp_nontransparent_pixels_identical_to_png": true,
+    "anatomy": "The admitted source alpha silhouette is retained and the full body shows exactly eight tentacles."
+  },
+  "assets": [
+    {
+      "variant": "concerned_base",
+      "dimensions": [512, 512],
+      "alpha": {
+        "transparent_pixels": 170353,
+        "partial_pixels": 3218,
+        "opaque_pixels": 88573,
+        "bbox": [49, 56, 452, 457]
+      },
+      "primary": {
+        "path": "swarm-state-mascot-concerned.webp",
+        "media_type": "image/webp",
+        "sha256": "f1f3e41bdf3175afe228d3be8b3c39d0748b98a7c4e4d24aa83133d84526d276",
+        "bytes": 98632
+      },
+      "fallback": {
+        "path": "swarm-state-mascot-concerned.png",
+        "media_type": "image/png",
+        "sha256": "6b4cd07fddac1c791eadfd4a63c346eab7a6708531c8141321d968d74111654d",
+        "bytes": 148223
+      }
+    },
+    {
+      "variant": "offline_disconnected",
+      "dimensions": [1024, 640],
+      "alpha": {
+        "transparent_pixels": 549876,
+        "partial_pixels": 6200,
+        "opaque_pixels": 99284,
+        "bbox": [0, 152, 1024, 553]
+      },
+      "primary": {
+        "path": "swarm-offline-disconnected.webp",
+        "media_type": "image/webp",
+        "sha256": "983253ceb56061bec64fdd52ad7b6338986d0916c786fd356ede78349ec18ed3",
+        "bytes": 106364
+      },
+      "fallback": {
+        "path": "swarm-offline-disconnected.png",
+        "media_type": "image/png",
+        "sha256": "586dc9a24384bf0d86eef402f69172c7bfd30e18ae8b58a48fd41eb89450da1e",
+        "bytes": 168209
+      }
+    }
+  ],
+  "rejected_format": {
+    "media_type": "image/avif",
+    "reason": "The encoder expanded the partial-alpha fringe census, so AVIF is not admitted."
+  }
+}

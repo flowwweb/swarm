@@ -169,17 +169,38 @@ function humanize(value) {
   return String(value || "").replaceAll("_", " ").replace(/\b\w/g, (character) => character.toUpperCase());
 }
 
+const STATE_ILLUSTRATIONS = Object.freeze({
+  offline: Object.freeze({ asset: "/assets/swarm-offline-disconnected.png", webp: "/assets/swarm-offline-disconnected.webp", width: 1024, height: 640, prop: "" }),
+  failed: Object.freeze({ asset: "/assets/swarm-state-mascot-concerned.png", webp: "/assets/swarm-state-mascot-concerned.webp", width: 512, height: 512, prop: "!" }),
+  empty: Object.freeze({ asset: "/assets/swarm-state-mascot-concerned.png", webp: "/assets/swarm-state-mascot-concerned.webp", width: 512, height: 512, prop: "—" }),
+  recovery: Object.freeze({ asset: "/assets/swarm-state-mascot-concerned.png", webp: "/assets/swarm-state-mascot-concerned.webp", width: 512, height: 512, prop: "↻" }),
+});
+
+function stateIllustrationMarkup(variant = "empty", { compact = false } = {}) {
+  const resolvedVariant = Object.hasOwn(STATE_ILLUSTRATIONS, variant) ? variant : "empty";
+  const illustration = STATE_ILLUSTRATIONS[resolvedVariant];
+  const prop = illustration.prop ? '<span class="state-illustration-prop">' + illustration.prop + "</span>" : "";
+  return '<div class="state-illustration state-illustration--' + resolvedVariant + (compact ? " state-illustration--compact" : "") + '" data-state-variant="' + resolvedVariant + '" aria-hidden="true"><picture><source type="image/webp" srcset="' + illustration.webp + '"><img src="' + illustration.asset + '" width="' + illustration.width + '" height="' + illustration.height + '" loading="lazy" decoding="async" alt=""></picture>' + prop + "</div>";
+}
+
+function stateMessageMarkup(variant, title, detail, className = "") {
+  return '<section class="empty-state state-message ' + escapeHTML(className) + '" role="status">' + stateIllustrationMarkup(variant, { compact: true }) + '<div><strong>' + escapeHTML(title) + "</strong><p>" + escapeHTML(detail) + "</p></div></section>";
+}
+
 function showError(message) {
   $("#error-message").textContent = message;
   $("#error-surface").hidden = false;
 }
 
-function clearError() {
-  $("#error-surface").hidden = true;
+function clearError(restoreFocus = true) {
+  const surface = $("#error-surface");
+  const restore = restoreFocus && surface.contains(document.activeElement);
+  surface.hidden = true;
+  if (restore) requestAnimationFrame(() => $("#refresh")?.focus({ preventScroll: true }));
 }
 
 function showConnectionState() {
-  clearError();
+  clearError(false);
   setDataStatus("unavailable", state.overview?.generated_at);
   setNotificationsOpen(false);
   dismissNotificationToast(false);
@@ -190,9 +211,12 @@ function showConnectionState() {
 }
 
 function clearConnectionState() {
+  const surface = $("#connection-state");
+  const restore = surface.contains(document.activeElement);
   $(".app-shell").classList.remove("is-disconnected");
   $(".workspace").classList.remove("is-disconnected");
-  $("#connection-state").hidden = true;
+  surface.hidden = true;
+  if (restore) requestAnimationFrame(() => $("#refresh")?.focus({ preventScroll: true }));
 }
 
 function onboardingConfigBlocked() {
@@ -2825,8 +2849,12 @@ function proofReviewState(item) {
 
 function renderReview() {
   const items = scopedProofItems();
-  $("#review-status").textContent = currentProofStatus() === "stale" ? "Showing the last received proof" : items.length ? items.length + " proof item" + (items.length === 1 ? "" : "s") : "No proof in this scope";
-  $("#review-list").innerHTML = items.length ? items.map((item) => { const image = String(item.media_type || "").startsWith("image/"); return '<article class="review-row"><div class="review-kind"><svg class="lucide" aria-hidden="true"><use href="#lucide-shield-check"></use></svg></div><div><strong>' + escapeHTML(item.caption || item.kind || item.evidence_id) + '</strong><p>' + escapeHTML([item.project_id, item.task_id, item.owner_id].filter(Boolean).join(" · ") || "Unscoped proof") + '</p><small>' + escapeHTML(proofReviewState(item) + " · " + formatRelative(item.observed_at_ms || item.updated_at)) + '</small></div><div class="review-actions"><button class="icon-button" type="button" data-review-open="' + escapeHTML(proofIdentity(item)) + '" aria-label="Open proof"' + (image ? '' : ' disabled title="No visual preview is available"') + '><svg class="lucide" aria-hidden="true"><use href="#lucide-image"></use></svg></button><button class="icon-button" type="button" aria-label="Send feedback unavailable" disabled title="Review feedback command is not available"><svg class="lucide" aria-hidden="true"><use href="#lucide-message-square"></use></svg></button><button class="icon-button" type="button" aria-label="Admit proof unavailable" disabled title="Proof admission command is not available"><svg class="lucide" aria-hidden="true"><use href="#lucide-check"></use></svg></button><details><summary aria-label="More proof details"><svg class="lucide" aria-hidden="true"><use href="#lucide-ellipsis"></use></svg></summary><p>Digest ' + escapeHTML(String(item.digest || "—").slice(0, 16)) + ' · ' + escapeHTML(item.claim_limit || "Acceptance is recorded separately.") + '</p></details></div></article>'; }).join("") : '<p class="empty-state review-empty">No proof is available in this scope.</p>';
+  const status = currentProofStatus();
+  $("#review-status").textContent = status === "stale" ? "Showing the last received proof" : items.length ? items.length + " proof item" + (items.length === 1 ? "" : "s") : "No proof in this scope";
+  const empty = status === "stale" || status === "unavailable"
+    ? stateMessageMarkup("recovery", "Proof is temporarily unavailable", "Refresh SWARM to ask for the latest proof.", "review-empty")
+    : stateMessageMarkup("empty", "No proof yet", "Accepted proof will appear here when it reaches this scope.", "review-empty");
+  $("#review-list").innerHTML = items.length ? items.map((item) => { const image = String(item.media_type || "").startsWith("image/"); return '<article class="review-row"><div class="review-kind"><svg class="lucide" aria-hidden="true"><use href="#lucide-shield-check"></use></svg></div><div><strong>' + escapeHTML(item.caption || item.kind || item.evidence_id) + '</strong><p>' + escapeHTML([item.project_id, item.task_id, item.owner_id].filter(Boolean).join(" · ") || "Unscoped proof") + '</p><small>' + escapeHTML(proofReviewState(item) + " · " + formatRelative(item.observed_at_ms || item.updated_at)) + '</small></div><div class="review-actions"><button class="icon-button" type="button" data-review-open="' + escapeHTML(proofIdentity(item)) + '" aria-label="Open proof"' + (image ? '' : ' disabled title="No visual preview is available"') + '><svg class="lucide" aria-hidden="true"><use href="#lucide-image"></use></svg></button><button class="icon-button" type="button" aria-label="Send feedback unavailable" disabled title="Review feedback command is not available"><svg class="lucide" aria-hidden="true"><use href="#lucide-message-square"></use></svg></button><button class="icon-button" type="button" aria-label="Admit proof unavailable" disabled title="Proof admission command is not available"><svg class="lucide" aria-hidden="true"><use href="#lucide-check"></use></svg></button><details><summary aria-label="More proof details"><svg class="lucide" aria-hidden="true"><use href="#lucide-ellipsis"></use></svg></summary><p>Digest ' + escapeHTML(String(item.digest || "—").slice(0, 16)) + ' · ' + escapeHTML(item.claim_limit || "Acceptance is recorded separately.") + '</p></details></div></article>'; }).join("") : empty;
 }
 
 function assetItems() {
