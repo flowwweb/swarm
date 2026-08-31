@@ -93,7 +93,11 @@ def ensure_portal(
             if free_port is None:
                 free_port = candidate_port
             continue
-        if health.get("ok") is True and health.get("instance_id") == console_server.INSTANCE_ID:
+        if (
+            health.get("ok") is True
+            and health.get("instance_id") == console_server.INSTANCE_ID
+            and health.get("build_id") == console_server.SERVER_BUILD_ID
+        ):
             selected_port = candidate_port
             break
 
@@ -119,7 +123,11 @@ def ensure_portal(
                 health = fetch_json(ready_url)
             except (OSError, ValueError, urllib.error.URLError):
                 continue
-            if health.get("ok") is True and health.get("instance_id") == console_server.INSTANCE_ID:
+            if (
+                health.get("ok") is True
+                and health.get("instance_id") == console_server.INSTANCE_ID
+                and health.get("build_id") == console_server.SERVER_BUILD_ID
+            ):
                 break
         else:
             return {

@@ -43,6 +43,8 @@ class SwarmConsoleTests(unittest.TestCase):
     def test_health_identity_is_bound_to_the_console_root(self) -> None:
         self.assertEqual(len(console.INSTANCE_ID), 16)
         self.assertRegex(console.INSTANCE_ID, r"^[0-9a-f]+$")
+        self.assertEqual(len(console.SERVER_BUILD_ID), 16)
+        self.assertRegex(console.SERVER_BUILD_ID, r"^[0-9a-f]+$")
 
     def test_role_manifest_http_contract_is_server_owned_and_asset_bound(self) -> None:
         app = console.App(self.codex_home, self.config)

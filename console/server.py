@@ -72,6 +72,7 @@ from runtime.execution_adapters import (  # noqa: E402
 from runtime.core import ArtifactIdentity  # noqa: E402
 
 INSTANCE_ID = hashlib.sha256(str(CONSOLE_ROOT.resolve()).casefold().encode("utf-8")).hexdigest()[:16]
+SERVER_BUILD_ID = hashlib.sha256(Path(__file__).read_bytes()).hexdigest()[:16]
 CONFIG_SCRIPT = PLUGIN_ROOT / "skills" / "swarm" / "scripts" / "swarm_config.py"
 DEFAULT_CODEX_HOME = Path(os.environ.get("CODEX_HOME", Path.home() / ".codex"))
 DEFAULT_CONFIG_PATH = Path.home() / ".agents" / "swarm" / "config.toml"
@@ -14294,7 +14295,12 @@ class Handler(BaseHTTPRequestHandler):
                 ready = static_ready and asset_ready
                 self._json(
                     HTTPStatus.OK if ready else HTTPStatus.SERVICE_UNAVAILABLE,
-                    {"ok": ready, "service": "swarm-console", "instance_id": INSTANCE_ID},
+                    {
+                        "ok": ready,
+                        "service": "swarm-console",
+                        "instance_id": INSTANCE_ID,
+                        "build_id": SERVER_BUILD_ID,
+                    },
                 )
                 return
             if path == "/api/bootstrap":

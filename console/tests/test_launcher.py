@@ -33,6 +33,14 @@ class LauncherTests(unittest.TestCase):
             encoding="utf-8",
         )
 
+    @staticmethod
+    def _matching_health() -> dict[str, object]:
+        return {
+            "ok": True,
+            "instance_id": launcher.console_server.INSTANCE_ID,
+            "build_id": launcher.console_server.SERVER_BUILD_ID,
+        }
+
     def test_setting_off_never_probes_starts_or_opens(self) -> None:
         self._write_setting(auto_start=False)
         result = launcher.ensure_portal(
@@ -49,7 +57,7 @@ class LauncherTests(unittest.TestCase):
 
         def fetch(url: str, **_kwargs):
             if url.endswith("healthz") and url.startswith("http://127.0.0.1:4788"):
-                return {"ok": True, "instance_id": launcher.console_server.INSTANCE_ID}
+                return self._matching_health()
             self.fail(f"browser-disabled launcher requested {url}")
 
         result = launcher.ensure_portal(
@@ -83,7 +91,7 @@ class LauncherTests(unittest.TestCase):
             calls.append(url)
             if url.endswith("healthz"):
                 if url.startswith("http://127.0.0.1:4788"):
-                    return {"ok": True, "instance_id": launcher.console_server.INSTANCE_ID}
+                    return self._matching_health()
                 raise OSError("not running")
             if url.endswith("bootstrap"):
                 return {"token": "token"}
@@ -112,7 +120,7 @@ class LauncherTests(unittest.TestCase):
                 if health_calls == 1:
                     raise OSError("not running")
                 if url.startswith("http://127.0.0.1:4788"):
-                    return {"ok": True, "instance_id": launcher.console_server.INSTANCE_ID}
+                    return self._matching_health()
                 raise OSError("not running")
             if url.endswith("bootstrap"):
                 return {"token": "token"}
@@ -141,7 +149,7 @@ class LauncherTests(unittest.TestCase):
                 if url.startswith("http://127.0.0.1:4788"):
                     return {"ok": True, "instance_id": "stale-cache-root"}
                 if url.startswith("http://127.0.0.1:4789") and spawned:
-                    return {"ok": True, "instance_id": launcher.console_server.INSTANCE_ID}
+                    return self._matching_health()
                 raise OSError("not running")
             if url.endswith("bootstrap"):
                 return {"token": "token"}
@@ -165,6 +173,42 @@ class LauncherTests(unittest.TestCase):
         self.assertEqual(opens, ["http://127.0.0.1:4789"])
         self.assertTrue(result["opened"])
 
+    def test_same_root_old_build_is_not_reused(self) -> None:
+        self._write_setting(open_on_start=False)
+        spawned = False
+        spawns: list[int] = []
+
+        def fetch(url: str, **_kwargs):
+            if url.endswith("healthz"):
+                if url.startswith("http://127.0.0.1:4788"):
+                    return {
+                        "ok": True,
+                        "instance_id": launcher.console_server.INSTANCE_ID,
+                        "build_id": "0" * 16,
+                    }
+                if url.startswith("http://127.0.0.1:4789") and spawned:
+                    return self._matching_health()
+                raise OSError("not running")
+            self.fail(f"browser-disabled launcher requested {url}")
+
+        def spawn(_config: Path, _codex_home: Path, port: int) -> int:
+            nonlocal spawned
+            spawned = True
+            spawns.append(port)
+            return 2468
+
+        result = launcher.ensure_portal(
+            config_path=self.config,
+            codex_home=self.codex_home,
+            fetch_json=fetch,
+            spawn_server=spawn,
+            open_browser=lambda *_args, **_kwargs: self.fail("browser-disabled launcher opened a tab"),
+            sleep=lambda _seconds: None,
+        )
+        self.assertEqual(spawns, [4789])
+        self.assertEqual(result["reason"], "browser_disabled")
+        self.assertEqual(result["url"], "http://127.0.0.1:4789")
+
     def test_matching_console_on_fallback_port_is_reused(self) -> None:
         self._write_setting()
 
@@ -173,7 +217,7 @@ class LauncherTests(unittest.TestCase):
                 if url.startswith("http://127.0.0.1:4788"):
                     return {"ok": True, "instance_id": "stale-cache-root"}
                 if url.startswith("http://127.0.0.1:4789"):
-                    return {"ok": True, "instance_id": launcher.console_server.INSTANCE_ID}
+                    return self._matching_health()
             if url.endswith("bootstrap"):
                 return {"token": "token"}
             return {"should_open": False, "reason": "active_tab"}
@@ -200,7 +244,7 @@ class LauncherTests(unittest.TestCase):
                 if url.startswith("http://127.0.0.1:4789"):
                     raise ValueError("another local service returned HTML")
                 if url.startswith("http://127.0.0.1:4790") and spawned:
-                    return {"ok": True, "instance_id": launcher.console_server.INSTANCE_ID}
+                    return self._matching_health()
                 raise OSError("not running")
             if url.endswith("bootstrap"):
                 return {"token": "token"}
@@ -229,7 +273,7 @@ class LauncherTests(unittest.TestCase):
         def fetch(url: str, **_kwargs):
             if url.endswith("healthz"):
                 if url.startswith("http://127.0.0.1:4788"):
-                    return {"ok": True, "instance_id": launcher.console_server.INSTANCE_ID}
+                    return self._matching_health()
                 raise OSError("not running")
             if url.endswith("bootstrap"):
                 return {"token": "token"}
