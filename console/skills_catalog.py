@@ -180,6 +180,10 @@ def is_authority_safe(skill: dict[str, Any]) -> bool:
     return not any(skill.get(key) for key in ("authority", "permissions", "capabilities"))
 
 
+def _ordered_unique(*groups: list[str]) -> list[str]:
+    return list(dict.fromkeys(item for group in groups for item in group))
+
+
 def resolve(
     catalog: list[dict[str, Any]],
     global_scope: dict[str, Any] | None,
@@ -192,46 +196,111 @@ def resolve(
     global_profile: str = "default",
     global_preferred: list[str] | None = None,
 ) -> dict[str, Any]:
-    settings = {
-        "inheritance_enabled": global_enabled,
-        "profile": validate_profile(global_profile),
-        "preferred_ids": list(global_preferred or []),
+    profile = validate_profile(global_profile)
+    global_inheritance_enabled = bool(global_enabled)
+    global_preferred_ids: list[str] = []
+    legacy_preferred_ids = list(global_preferred or [])
+    if global_scope:
+        if global_scope.get("inheritance_enabled") is not None:
+            global_inheritance_enabled = bool(
+                global_inheritance_enabled and global_scope["inheritance_enabled"]
+            )
+        if global_scope.get("profile"):
+            profile = validate_profile(global_scope["profile"])
+        if global_scope.get("preferred_ids") is not None:
+            global_preferred_ids = list(global_scope["preferred_ids"])
+        legacy_preferred_ids = []
+
+    scoped_preferred_by_source: dict[str, list[str]] = {
+        "config": legacy_preferred_ids,
+        "project": [],
+        "ctrl": [],
     }
-    for overlay in (project_scope, ctrl_scope):
+    active_scoped_preferred = list(legacy_preferred_ids)
+    disabled_scoped_preferred: list[str] = []
+    for source_scope, overlay in (("project", project_scope), ("ctrl", ctrl_scope)):
         if not overlay:
             continue
-        if overlay.get("inheritance_enabled") is not None:
-            settings["inheritance_enabled"] = bool(overlay["inheritance_enabled"])
         if overlay.get("profile"):
-            settings["profile"] = validate_profile(overlay["profile"])
+            profile = validate_profile(overlay["profile"])
         if overlay.get("preferred_ids") is not None:
-            settings["preferred_ids"] = list(overlay["preferred_ids"])
+            preferred_ids = list(overlay["preferred_ids"])
+            scoped_preferred_by_source[source_scope] = preferred_ids
+            if overlay.get("inheritance_enabled") is False:
+                disabled_scoped_preferred.extend(preferred_ids)
+            else:
+                active_scoped_preferred.extend(preferred_ids)
+
+    global_preferred_ids = _ordered_unique(global_preferred_ids)
+    active_scoped_preferred = _ordered_unique(active_scoped_preferred)
+    all_scoped_preferred = _ordered_unique(*scoped_preferred_by_source.values())
+    disabled_scoped_preferred = _ordered_unique(disabled_scoped_preferred)
+    settings = {
+        "inheritance_enabled": global_inheritance_enabled,
+        "profile": profile,
+        "preferred_ids": _ordered_unique(global_preferred_ids, all_scoped_preferred),
+    }
 
     skills = []
     for skill in sorted(catalog, key=lambda item: str(item.get("skill_id", ""))):
+        skill_id = skill["skill_id"]
         relevant = is_relevant(skill, role, task_kind)
         authority_safe = is_authority_safe(skill)
         approved = authority_safe and (bool(skill.get("builtin")) or skill.get("review_status") in APPROVED_REVIEW_STATES)
         installed = bool(skill.get("installed"))
-        selected = bool(skill.get("builtin")) or (
-            skill["skill_id"] in settings["preferred_ids"]
-            and skill["skill_id"] in PROFILE_SKILL_IDS[settings["profile"]]
+        global_skill = skill_id in global_preferred_ids
+        scoped_preferred = skill_id in all_scoped_preferred
+        scoped_enabled = skill_id in active_scoped_preferred
+        scoped_selected = bool(
+            scoped_enabled and skill_id in PROFILE_SKILL_IDS[settings["profile"]]
         )
-        inherited = bool(settings["inheritance_enabled"] and relevant and approved and installed and selected)
+        builtin_selected = bool(skill.get("builtin"))
+        selected = bool(global_skill or builtin_selected or scoped_selected)
+        global_inherited = global_skill and global_inheritance_enabled and approved and installed
+        builtin_inherited = (
+            not global_skill and builtin_selected and global_inheritance_enabled
+            and relevant and approved and installed
+        )
+        scoped_inherited = (
+            not global_skill and scoped_selected and relevant and approved and installed
+        )
+        inherited = bool(global_inherited or builtin_inherited or scoped_inherited)
         if inherited:
             status = "inherited"
+        elif global_skill and not authority_safe:
+            status = "blocked_authority"
+        elif global_skill and not approved:
+            status = "blocked_unreviewed"
+        elif global_skill and not installed:
+            status = "available_to_install"
+        elif global_skill and not global_inheritance_enabled:
+            status = "inheritance_disabled"
         elif relevant and not authority_safe:
             status = "blocked_authority"
         elif relevant and not approved:
             status = "blocked_unreviewed"
+        elif relevant and scoped_preferred and skill_id in disabled_scoped_preferred and not scoped_enabled:
+            status = "inheritance_disabled"
         elif relevant and not selected:
             status = "not_selected"
         elif relevant and not installed and approved:
             status = "available_to_install"
         else:
             status = "not_relevant"
+        if global_skill:
+            source_scope = "global"
+        elif skill_id in scoped_preferred_by_source["ctrl"]:
+            source_scope = "ctrl"
+        elif skill_id in scoped_preferred_by_source["project"]:
+            source_scope = "project"
+        elif skill_id in scoped_preferred_by_source["config"]:
+            source_scope = "config"
+        elif builtin_selected:
+            source_scope = "builtin"
+        else:
+            source_scope = None
         skills.append({
-            "skill_id": skill["skill_id"],
+            "skill_id": skill_id,
             "source": {
                 "repo": skill["source_repo"],
                 "path": skill["source_path"],
@@ -241,9 +310,11 @@ def resolve(
             "review_status": skill["review_status"],
             "installed": installed,
             "builtin": bool(skill.get("builtin")),
+            "global": global_skill,
+            "source_scope": source_scope,
             "relevant": relevant,
             "status": status,
-            "preferred": skill["skill_id"] in settings["preferred_ids"],
+            "preferred": skill_id in settings["preferred_ids"],
             "selected": selected,
             "popularity": skill.get("popularity", {"status": "informational", "value": "unknown"}),
             "audit": skill.get("audit", {"status": "unknown", "informational": True}),
