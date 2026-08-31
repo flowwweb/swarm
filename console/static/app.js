@@ -1,4 +1,4 @@
-const state = { token: "", overview: null, proof: [], proofCollections: new Map(), proofStatuses: new Map(), proofStatus: "idle", proofSequence: 0, usageHistory: null, usageWindowHours: 1, usageScopeKey: "", usageStatus: "idle", usageError: "", projectProgress: null, projectProgressProjectId: "", projectProgressStatus: "idle", projectProgressError: "", projectProgressFeed: null, projectProgressFeedProjectId: "", projectProgressFeedStatus: "idle", projectProgressFeedError: "", projectTab: "overview", projectUiMode: "screens", projectUiGroupId: "", runLogs: new Map(), runLogRequestGenerations: new Map(), runLogSurfaceStates: new Map(), runLogAgent: null, agentUpdatesFilter: "all", agentUpdatesPaused: false, agentDetailTrigger: null, diagnostics: null, diagnosticsHistory: null, diagnosticsHistoryStatus: "idle", diagnosticsError: "", diagnosticsSelectedChecks: new Set(), diagnosticsSelectionInitialized: false, diagnosticsRepairPreview: null, diagnosticsRepairPending: false, diagnosticsRepairError: "", diagnosticsRepairTrigger: null, health: null, storage: null, profile: null, profileStatus: "idle", profileError: "", profileUpload: null, profilePreviewUrl: "", profileSaving: false, profileTrigger: null, messageOpen: false, messageTrigger: null, messageDraft: "", messageRecipientId: "", messageStatus: "unavailable", messageError: "", messageReceipt: null, config: null, configStatus: "idle", configError: "", configResetPending: null, configResetRetry: null, chatRelaySaving: false, settingsDraft: new Map(), settingsSaving: false, settingsSaveError: "", settingsSaveMessage: "", configEditorTrigger: null, ctrlSettings: null, auto: null, autoBindingKey: "", autoStatus: "idle", autoError: "", autoSaving: false, skills: null, skillsError: "", roleManifests: null, roleManifestStatus: "unavailable", roleManifestError: "", roleManifestMessage: "", roleManifestSaving: false, roleManifestRetry: null, roleEditorMode: "", roleEditorTrigger: null, roleSearch: "", roleTypes: new Set(["builtin", "custom"]), roleSearchFields: new Set(["profession", "specialization", "alias", "skills", "purpose"]), selectedRoleId: "", assets: null, assetBindingKey: "", assetStatus: "idle", assetError: "", assetProjection: "active", assetView: "grid", assetRequestGeneration: 0, assetEventCursors: new Map(), assetMutationPending: null, assetConfirm: null, assetUndo: null, selectedAssetIdentity: "", assetTrigger: null, onboardingStep: 0, onboardingShown: false, onboardingTrigger: null, onboardingFlowZoom: 1, onboardingConfigPending: new Map(), onboardingConfigFailures: new Map(), notifications: null, notificationBindingKey: "", notificationStatus: "idle", notificationError: "", notificationAckFlight: null, notificationRequestGenerations: new Map(), notificationPresentedIds: new Set(), notificationToast: null, notificationToastTimer: null, notificationTrigger: null, connectionStatus: "reconnecting", view: "overview", projectId: "all", ctrlId: "", scopeNotice: "", scopeNoticeVisible: false, settingsCtrlId: "", settingsScopeType: "", settingsScopeId: "", evidenceImages: [], evidenceIndex: 0, evidenceTrigger: null };
+const state = { token: "", overview: null, proof: [], proofCollections: new Map(), proofStatuses: new Map(), proofStatus: "idle", proofSequence: 0, usageHistory: null, usageWindowHours: 1, usageScopeKey: "", usageStatus: "idle", usageError: "", projectProgress: null, projectProgressProjectId: "", projectProgressStatus: "idle", projectProgressError: "", projectProgressFeed: null, projectProgressFeedProjectId: "", projectProgressFeedStatus: "idle", projectProgressFeedError: "", projectTab: "overview", projectUiMode: "screens", projectUiGroupId: "", runLogs: new Map(), runLogRequestGenerations: new Map(), runLogSurfaceStates: new Map(), runLogAgent: null, agentUpdatesFilter: "all", agentUpdatesPaused: false, agentDetailTrigger: null, diagnostics: null, diagnosticsHistory: null, diagnosticsHistoryStatus: "idle", diagnosticsError: "", diagnosticsSelectedChecks: new Set(), diagnosticsSelectionInitialized: false, diagnosticsRepairPreview: null, diagnosticsRepairPending: false, diagnosticsRepairError: "", diagnosticsRepairTrigger: null, health: null, storage: null, profile: null, profileStatus: "idle", profileError: "", profileUpload: null, profilePreviewUrl: "", profileSaving: false, profileTrigger: null, messageOpen: false, messageTrigger: null, messageDraft: "", messageRecipientId: "", messageStatus: "unavailable", messageError: "", messageReceipt: null, messageConnector: null, messageAttachments: [], messagePendingAction: null, config: null, configStatus: "idle", configError: "", configResetPending: null, configResetRetry: null, chatRelaySaving: false, settingsDraft: new Map(), settingsSaving: false, settingsSaveError: "", settingsSaveMessage: "", configEditorTrigger: null, ctrlSettings: null, auto: null, autoBindingKey: "", autoStatus: "idle", autoError: "", autoSaving: false, skills: null, skillsError: "", roleManifests: null, roleManifestStatus: "unavailable", roleManifestError: "", roleManifestMessage: "", roleManifestSaving: false, roleManifestRetry: null, roleEditorMode: "", roleEditorTrigger: null, roleSearch: "", roleTypes: new Set(["builtin", "custom"]), roleSearchFields: new Set(["profession", "specialization", "alias", "skills", "purpose"]), selectedRoleId: "", assets: null, assetBindingKey: "", assetStatus: "idle", assetError: "", assetProjection: "active", assetView: "grid", assetRequestGeneration: 0, assetEventCursors: new Map(), assetMutationPending: null, assetConfirm: null, assetUndo: null, selectedAssetIdentity: "", assetTrigger: null, onboardingStep: 0, onboardingShown: false, onboardingTrigger: null, onboardingFlowZoom: 1, onboardingConfigPending: new Map(), onboardingConfigFailures: new Map(), notifications: null, notificationBindingKey: "", notificationStatus: "idle", notificationError: "", notificationAckFlight: null, notificationRequestGenerations: new Map(), notificationPresentedIds: new Set(), notificationToast: null, notificationToastTimer: null, notificationTrigger: null, connectionStatus: "reconnecting", view: "overview", projectId: "all", ctrlId: "", scopeNotice: "", scopeNoticeVisible: false, settingsCtrlId: "", settingsScopeType: "", settingsScopeId: "", evidenceImages: [], evidenceIndex: 0, evidenceTrigger: null };
 const PROFILE_API_CONTRACT = Object.freeze({ read: "/api/profile", write: "/api/profile", schemaVersion: 1, avatarField: "avatar", profileField: "profile" });
 const DIAGNOSTICS_HISTORY_HOURS = 1;
 const MESSAGE_CONNECTOR_UNAVAILABLE = "Messaging is unavailable until SWARM exposes the authenticated HQ connector.";
@@ -3363,6 +3363,14 @@ function activeAgentRecords() {
   });
 }
 
+function messageConnectorCapability(bootstrap) {
+  const capability = bootstrap?.capabilities?.hq_connector;
+  const endpoint = String(capability?.endpoint || "");
+  const timeoutMs = Number(capability?.timeout_ms);
+  if (capability?.contract !== "swarm.universal_hq_connector.action.v1" || capability?.method !== "POST" || !/^\/api\/[a-z0-9_/-]+$/i.test(endpoint)) return null;
+  return { endpoint, timeoutMs: Number.isInteger(timeoutMs) && timeoutMs >= 50 && timeoutMs <= 30_000 ? timeoutMs : 15_000 };
+}
+
 function messageRecipients() {
   return activeAgentRecords()
     .filter((record) => ["CTRL", "LEAD"].includes(record.structuralRole))
@@ -3385,25 +3393,113 @@ function selectedMessageRecipient(recipients = messageRecipients()) {
   return preferred;
 }
 
-function messageImplicitContext(recipient = selectedMessageRecipient()) {
-  if (!recipient) return null;
-  const projectView = state.projectId !== "all" && state.view === "overview" ? state.projectTab : state.view;
+function normalizedActionDigest(value) {
+  const digest = String(value || "").toLowerCase();
+  const normalized = digest.startsWith("sha256:") ? digest : "sha256:" + digest;
+  return /^sha256:[0-9a-f]{64}$/.test(normalized) ? normalized : "";
+}
+
+function messageCurrentViewId(projection) {
+  if (state.view !== "overview" || state.projectId === "all") return state.view;
+  if (state.projectTab !== "ui") return state.projectTab;
+  const mode = (projection?.modes || []).find((item) => item.id === state.projectUiMode);
+  return mode?.view_id || mode?.id || "";
+}
+
+function messageContextIdentity(recipient = selectedMessageRecipient()) {
+  const projection = state.overview?.project_view;
+  const identity = projection?.identity;
+  const viewId = messageCurrentViewId(projection);
+  const view = (projection?.views || []).find((item) => item?.id === viewId || String(item?.id || "").endsWith("." + viewId));
+  const manifestId = String(identity?.manifest_id || "").trim();
+  const manifestVersion = Number(identity?.manifest_version);
+  const manifestDigest = normalizedActionDigest(identity?.manifest_digest);
+  const declaredViewId = String(view?.id || identity?.view_id || "").trim();
+  const viewDigest = normalizedActionDigest(view?.view_digest || identity?.view_digest);
+  const sourceDigests = (Array.isArray(view?.source_digests) ? view.source_digests : identity?.source_digests || []).map(normalizedActionDigest);
+  const cursor = identity?.observed_cursor || projection?.observed_cursor;
+  const cursorDigest = normalizedActionDigest(cursor?.event_digest);
+  if (!recipient || projection?.project_id !== recipient.projectId || state.projectId !== recipient.projectId) return null;
+  if (!manifestId || !Number.isInteger(manifestVersion) || manifestVersion < 1 || !manifestDigest || !declaredViewId || declaredViewId !== viewId || !viewDigest || !sourceDigests.length || sourceDigests.some((digest) => !digest)) return null;
+  if (!cursor || cursor.project_id !== recipient.projectId || !String(cursor.stream_id || "").trim() || !Number.isInteger(cursor.sequence) || cursor.sequence < 0 || !String(cursor.event_id || "").trim() || !cursorDigest) return null;
   return {
-    type: "swarm.project_view_action",
-    schema_version: 1,
-    action_kind: "send_feedback",
-    project_id: recipient.projectId,
-    target_ctrl_id: recipient.targetCtrlId,
-    recipient_id: recipient.id,
-    view_id: projectView,
-    screen_id: state.view,
-    state_id: state.view === "overview" && state.projectId !== "all" ? state.projectTab : "default",
+    manifest_id: manifestId,
+    manifest_version: manifestVersion,
+    manifest_digest: manifestDigest,
+    view_id: declaredViewId,
+    view_digest: viewDigest,
+    source_digests: sourceDigests,
+    observed_cursor: { stream_id: String(cursor.stream_id), project_id: cursor.project_id, sequence: cursor.sequence, event_id: String(cursor.event_id), event_digest: cursorDigest },
   };
 }
 
-function messageReceiptPresentation(result) {
+function messageAttachments() {
+  if (!Array.isArray(state.messageAttachments) || state.messageAttachments.length > 8) return null;
+  const attachments = state.messageAttachments.map((item) => ({ artifact_id: String(item?.artifact_id || "").trim(), digest: normalizedActionDigest(item?.digest) }));
+  return attachments.every((item) => item.artifact_id && item.digest) ? attachments : null;
+}
+
+function currentMessageArtifact() {
+  if ($("#asset-dialog")?.open) {
+    const asset = selectedAsset();
+    const digest = normalizedActionDigest(assetTechnical(asset).digest);
+    if (asset?.asset_id && digest) return { artifact_id: String(asset.asset_id), artifact_digest: digest };
+  }
+  if ($("#evidence-lightbox")?.open) {
+    const evidence = state.evidenceImages[state.evidenceIndex];
+    const digest = normalizedActionDigest(evidence?.digest);
+    if (evidence?.evidence_id && digest) return { artifact_id: String(evidence.evidence_id), artifact_digest: digest };
+  }
+  return { artifact_id: null, artifact_digest: null };
+}
+
+function messageRequestId() {
+  if (typeof window.crypto?.randomUUID === "function") return window.crypto.randomUUID();
+  const values = new Uint32Array(4);
+  window.crypto.getRandomValues(values);
+  return "message-" + [...values].map((value) => value.toString(16).padStart(8, "0")).join("");
+}
+
+function messageImplicitContext(recipient, requestId) {
+  const identity = messageContextIdentity(recipient);
+  const attachments = messageAttachments();
+  if (!identity || !attachments || !/^[a-z0-9][a-z0-9._:-]{7,127}$/i.test(String(requestId || ""))) return null;
+  const artifact = currentMessageArtifact();
+  return {
+    type: "swarm.project_view_action",
+    schema_version: 1,
+    request_id: requestId,
+    project_id: recipient.projectId,
+    target_ctrl_id: recipient.targetCtrlId,
+    recipient_id: recipient.id,
+    view_id: identity.view_id,
+    screen_id: state.view,
+    state_id: state.view === "overview" && state.projectId !== "all" ? state.projectTab : "default",
+    action_kind: "send_feedback",
+    target: artifact.artifact_id ? { kind: "artifact", artifact_id: artifact.artifact_id } : { kind: "screen_state", screen_id: state.view, state_id: state.view === "overview" && state.projectId !== "all" ? state.projectTab : "default" },
+    artifact_id: artifact.artifact_id,
+    artifact_digest: artifact.artifact_digest,
+    attachments,
+    manifest_id: identity.manifest_id,
+    manifest_version: identity.manifest_version,
+    manifest_digest: identity.manifest_digest,
+    view_digest: identity.view_digest,
+    source_digests: identity.source_digests,
+    observed_cursor: identity.observed_cursor,
+  };
+}
+
+function messageActionBinding(action) {
+  if (!action) return "";
+  return [action.project_id, action.target_ctrl_id, action.recipient_id, action.view_id, action.screen_id, action.state_id, action.manifest_id, action.manifest_version, action.manifest_digest, action.view_digest, JSON.stringify(action.source_digests || []), action.observed_cursor?.stream_id, action.observed_cursor?.sequence, action.observed_cursor?.event_id, action.observed_cursor?.event_digest, action.artifact_id || "", action.artifact_digest || "", JSON.stringify(action.attachments || [])].join("|");
+}
+
+function messageReceiptPresentation(result, request) {
   const code = String(result?.result_code || result?.status || "").toUpperCase();
-  if (["ACKNOWLEDGED", "REPLAYED"].includes(code) && result?.request_id && result?.action_digest && result?.result_event_id && result?.result_event_digest) {
+  const requestMatches = Boolean(request?.request_id) && result?.request_id === request.request_id;
+  const actionDigest = normalizedActionDigest(result?.action_digest);
+  if (!requestMatches || !actionDigest) return { status: "failed", clearDraft: false };
+  if (["ACKNOWLEDGED", "REPLAYED"].includes(code) && String(result?.result_event_id || "").trim() && normalizedActionDigest(result?.result_event_digest)) {
     return { status: "sent", clearDraft: true };
   }
   if (["STALE", "CONFLICT"].includes(code)) return { status: "conflict", clearDraft: false };
@@ -3412,11 +3508,13 @@ function messageReceiptPresentation(result) {
 
 function messageStatusCopy(recipient = selectedMessageRecipient()) {
   if (!recipient) return "No authorized CTRL or LEAD is available in this project scope.";
+  if (!state.messageConnector) return MESSAGE_CONNECTOR_UNAVAILABLE;
+  if (!messageContextIdentity(recipient) || !messageAttachments()) return "Messaging is unavailable because this screen does not have a complete digest and cursor binding.";
   if (state.messageStatus === "pending") return "Pending · waiting for SWARM acknowledgement.";
   if (state.messageStatus === "sent") return "Sent to " + recipient.label + ".";
   if (state.messageStatus === "conflict") return state.messageError || "The project context changed. Review the message and retry.";
   if (state.messageStatus === "failed") return state.messageError || "The message was not acknowledged. Your draft is still here.";
-  return MESSAGE_CONNECTOR_UNAVAILABLE;
+  return "Ready to send through SWARM.";
 }
 
 function renderMessageComposer() {
@@ -3424,6 +3522,10 @@ function renderMessageComposer() {
   if (!panel) return;
   const recipients = messageRecipients();
   const recipient = selectedMessageRecipient(recipients);
+  const identity = messageContextIdentity(recipient);
+  const attachments = messageAttachments();
+  const retryContext = state.messagePendingAction ? messageImplicitContext(recipient, state.messagePendingAction.request_id) : null;
+  const canRetry = Boolean(state.messageConnector && retryContext && messageActionBinding(retryContext) === messageActionBinding(state.messagePendingAction));
   panel.hidden = !state.messageOpen;
   $("#message-recipient").innerHTML = recipients.length
     ? recipients.map((item) => '<option value="' + escapeHTML(item.id) + '"' + (item.id === recipient?.id ? " selected" : "") + '>' + escapeHTML(item.label + " · " + item.structuralRole + " · " + item.projectLabel) + '</option>').join("")
@@ -3433,14 +3535,15 @@ function renderMessageComposer() {
   if (draft.value !== state.messageDraft) draft.value = state.messageDraft;
   draft.disabled = state.messageStatus === "pending";
   const send = $("#message-send");
-  send.disabled = true;
-  send.setAttribute("aria-disabled", "true");
+  send.disabled = !state.messageConnector || !identity || !attachments || !state.messageDraft.trim() || state.messageStatus === "pending";
+  send.setAttribute("aria-disabled", String(send.disabled));
+  send.setAttribute("aria-busy", String(state.messageStatus === "pending"));
   $("#message-retry").hidden = !["failed", "conflict"].includes(state.messageStatus);
-  $("#message-retry").disabled = true;
+  $("#message-retry").disabled = !canRetry || state.messageStatus === "pending";
   $("#message-status").textContent = messageStatusCopy(recipient);
   $("#message-launcher").setAttribute("aria-expanded", String(state.messageOpen));
   $("#mobile-message-action").setAttribute("aria-expanded", String(state.messageOpen));
-  panel.dataset.contextAvailable = String(Boolean(messageImplicitContext(recipient)));
+  panel.dataset.contextAvailable = String(Boolean(identity && attachments));
 }
 
 function openMessageComposer(trigger) {
@@ -3457,10 +3560,53 @@ function closeMessageComposer(restoreFocus = true) {
   state.messageTrigger = null;
 }
 
-async function sendMessageFromComposer() {
-  state.messageStatus = "unavailable";
-  state.messageError = MESSAGE_CONNECTOR_UNAVAILABLE;
+async function sendMessageFromComposer(retry = false) {
+  if (state.messageStatus === "pending") return false;
+  const recipient = selectedMessageRecipient();
+  const request = retry ? state.messagePendingAction : (() => {
+    const context = messageImplicitContext(recipient, messageRequestId());
+    const message = state.messageDraft.trim();
+    return context && message ? { ...context, payload: { message } } : null;
+  })();
+  if (!state.messageConnector || !request) {
+    state.messageStatus = "unavailable";
+    state.messageError = state.messageConnector ? "Messaging is unavailable because this screen does not have a complete digest and cursor binding." : MESSAGE_CONNECTOR_UNAVAILABLE;
+    renderMessageComposer();
+    return false;
+  }
+  state.messagePendingAction = request;
+  state.messageStatus = "pending";
+  state.messageError = "";
+  state.messageReceipt = null;
   renderMessageComposer();
+  try {
+    const result = await api(state.messageConnector.endpoint, { method: "POST", timeoutMs: state.messageConnector.timeoutMs, headers: { "Content-Type": "application/json" }, body: JSON.stringify(request) });
+    const current = messageImplicitContext(selectedMessageRecipient(), request.request_id);
+    if (!current || messageActionBinding(current) !== messageActionBinding(request)) {
+      state.messageStatus = "conflict";
+      state.messageError = "The project context changed before SWARM acknowledged this message. Your draft is still here.";
+      return false;
+    }
+    const presentation = messageReceiptPresentation(result, request);
+    state.messageReceipt = result;
+    state.messageStatus = presentation.status;
+    if (presentation.clearDraft) {
+      state.messageDraft = "";
+      state.messageAttachments = [];
+      state.messagePendingAction = null;
+      state.messageError = "";
+      return true;
+    }
+    state.messageError = presentation.status === "conflict" ? "SWARM reported a stale or conflicting context. Review the message and retry." : "SWARM returned an incomplete acknowledgement. Your draft is still here.";
+    return false;
+  } catch (error) {
+    state.messageStatus = "failed";
+    state.messageError = error.connectionFailure ? error.message + ". Your draft is still here." : (error.message || "The message was not acknowledged. Your draft is still here.");
+    return false;
+  } finally {
+    renderMessageComposer();
+    requestAnimationFrame(() => (["failed", "conflict"].includes(state.messageStatus) ? $("#message-retry") : state.messageStatus === "sent" ? $("#message-close") : $("#message-draft"))?.focus({ preventScroll: true }));
+  }
 }
 
 function agentProgress(record) {
@@ -4530,6 +4676,8 @@ async function initialize() {
   try {
     const bootstrap = await api("/api/bootstrap");
     state.token = bootstrap.token || "";
+    state.messageConnector = messageConnectorCapability(bootstrap);
+    state.messageStatus = state.messageConnector ? "idle" : "unavailable";
   } catch (error) {
     if (error.connectionFailure) showConnectionState();
     else showError(error.message);
@@ -4823,20 +4971,43 @@ $("#mobile-message-action").addEventListener("click", (event) => openMessageComp
 $("#message-close").addEventListener("click", () => closeMessageComposer());
 $("#message-draft").addEventListener("input", (event) => {
   state.messageDraft = event.target.value;
-  if (["failed", "conflict", "sent"].includes(state.messageStatus)) {
-    state.messageStatus = "unavailable";
-    state.messageError = "";
-    renderMessageComposer();
-  }
+  if (["failed", "conflict", "sent"].includes(state.messageStatus)) state.messagePendingAction = null;
+  state.messageStatus = state.messageConnector ? "idle" : "unavailable";
+  state.messageError = "";
+  state.messageReceipt = null;
+  renderMessageComposer();
 });
 $("#message-recipient").addEventListener("change", (event) => {
   state.messageRecipientId = event.target.value;
-  state.messageStatus = "unavailable";
+  state.messagePendingAction = null;
+  state.messageStatus = state.messageConnector ? "idle" : "unavailable";
   state.messageError = "";
+  state.messageReceipt = null;
   renderMessageComposer();
 });
-$("#message-send").addEventListener("click", sendMessageFromComposer);
-$("#message-retry").addEventListener("click", sendMessageFromComposer);
+$("#message-send").addEventListener("click", () => sendMessageFromComposer(false));
+$("#message-retry").addEventListener("click", () => sendMessageFromComposer(true));
+
+$("#profile").addEventListener("click", (event) => openProfile(event.currentTarget));
+$("#profile-close").addEventListener("click", () => closeProfile());
+$("#profile-cancel").addEventListener("click", () => closeProfile());
+$("#profile-form").addEventListener("submit", saveProfile);
+$("#profile-avatar-input").addEventListener("change", (event) => selectProfileAvatar(event.target.files?.[0]));
+$("#profile-dialog").addEventListener("cancel", (event) => {
+  event.preventDefault();
+  closeProfile();
+});
+
+$("#diagnostics-select-recommended").addEventListener("click", selectRecommendedDiagnostics);
+$("#diagnostics-repair").addEventListener("click", (event) => openRepairPreview(event.currentTarget));
+$("#repair-close").addEventListener("click", () => closeRepairDialog());
+$("#repair-cancel").addEventListener("click", () => closeRepairDialog());
+$("#repair-confirm").addEventListener("click", confirmRepairPreparation);
+$("#repair-acknowledge").addEventListener("change", renderRepairDialog);
+$("#repair-dialog").addEventListener("cancel", (event) => {
+  event.preventDefault();
+  closeRepairDialog();
+});
 
 $("#onboarding-close").addEventListener("click", () => closeOnboarding());
 $("#onboarding-skip").addEventListener("click", () => closeOnboarding());
@@ -5065,6 +5236,13 @@ $("#mobile-menu-button").addEventListener("click", () => setMobileDrawer(!$(".ap
 $("#drawer-backdrop").addEventListener("click", () => setMobileDrawer(false, true));
 mobileDrawerQuery.addEventListener("change", syncMobileDrawer);
 document.addEventListener('change', async (event) => {
+  if (event.target.matches('[data-diagnostic-check]')) {
+    const id = event.target.dataset.diagnosticCheck;
+    if (event.target.checked) state.diagnosticsSelectedChecks.add(id);
+    else state.diagnosticsSelectedChecks.delete(id);
+    renderDiagnostics();
+    return;
+  }
   if (event.target.matches('[data-role-type]')) {
     const type = event.target.dataset.roleType;
     if (event.target.checked) state.roleTypes.add(type);

@@ -133,12 +133,21 @@ assert.match(css, /\.message-mascot-silhouette \{[^}]*mask:url\("\/assets\/swarm
 assert.match(css, /\.message-composer \{[^}]*grid-template-rows:auto minmax\(0,1fr\) auto;[^}]*overflow:hidden/);
 assert.match(css, /\.message-composer-body \{[^}]*min-height:0;[^}]*overflow-x:hidden; overflow-y:auto;/);
 assert.match(css, /@media \(max-width: 620px\)[\s\S]*?\.message-launcher \{ display:none; \}[\s\S]*?\.mobile-message-footer \{[^}]*display:grid;/);
-const messageSource = app.match(/function messageRecipients\(\)[\s\S]*?async function sendMessageFromComposer\(\)[\s\S]*?\n\}/)?.[0] || "";
+const messageSource = app.match(/function messageRecipients\(\)[\s\S]*?async function sendMessageFromComposer\([^)]*\)[\s\S]*?\n\}/)?.[0] || "";
 assert.match(messageSource, /\["CTRL", "LEAD"\]\.includes\(record\.structuralRole\)/);
 assert.match(messageSource, /action_kind: "send_feedback"/);
 assert.match(messageSource, /MESSAGE_CONNECTOR_UNAVAILABLE/);
-assert.doesNotMatch(messageSource, /fetch\(|api\(|localStorage|sessionStorage|setInterval|WebSocket/);
-assert.match(app, /function messageReceiptPresentation\(result\)[\s\S]*?\["ACKNOWLEDGED", "REPLAYED"\][\s\S]*?\["STALE", "CONFLICT"\]/);
+assert.match(messageSource, /manifest_id:[\s\S]*?manifest_digest:[\s\S]*?view_digest:[\s\S]*?source_digests:[\s\S]*?observed_cursor:/);
+assert.match(messageSource, /request_id: requestId[\s\S]*?attachments,/);
+assert.match(messageSource, /await api\(state\.messageConnector\.endpoint/);
+assert.doesNotMatch(messageSource, /fetch\(|localStorage|sessionStorage|setInterval|WebSocket/);
+assert.match(app, /function messageConnectorCapability\(bootstrap\)[\s\S]*?swarm\.universal_hq_connector\.action\.v1/);
+assert.match(app, /function messageReceiptPresentation\(result, request\)[\s\S]*?\["ACKNOWLEDGED", "REPLAYED"\][\s\S]*?\["STALE", "CONFLICT"\]/);
+assert.match(app, /\$\("#profile"\)\.addEventListener\("click", \(event\) => openProfile\(event\.currentTarget\)\)/);
+assert.match(app, /\$\("#profile-form"\)\.addEventListener\("submit", saveProfile\)/);
+assert.match(app, /\$\("#profile-dialog"\)\.addEventListener\("cancel", \(event\) => \{[\s\S]*?closeProfile\(\)/);
+assert.match(app, /\$\("#diagnostics-repair"\)\.addEventListener\("click", \(event\) => openRepairPreview\(event\.currentTarget\)\)/);
+assert.match(app, /\$\("#repair-dialog"\)\.addEventListener\("cancel", \(event\) => \{[\s\S]*?closeRepairDialog\(\)/);
 for (const icon of ["eye", "trash-2"]) assert.match(indexHtml, new RegExp(`id="lucide-${icon}" viewBox="0 0 24 24"`));
 assert.match(indexHtml, /id="onboarding-dialog"[^>]*aria-labelledby="onboarding-dialog-title"[^>]*aria-describedby="onboarding-step-status"/);
 assert.equal((indexHtml.match(/<dialog\b/g) || []).length, 8);
@@ -1538,7 +1547,12 @@ function projectViewFixture() {
         },
       ],
     },
-    identity: { manifest_id: "fixture-views", manifest_version: 1, manifest_digest: "sha256:" + "a".repeat(64), source_digests: ["sha256:" + "b".repeat(64), "sha256:" + "c".repeat(64)] },
+    identity: {
+      manifest_id: "fixture-views", manifest_version: 1, manifest_digest: "sha256:" + "a".repeat(64),
+      view_id: "overview", view_digest: "sha256:" + "d".repeat(64),
+      source_digests: ["sha256:" + "b".repeat(64), "sha256:" + "c".repeat(64)],
+      observed_cursor: { stream_id: "project-ledger", project_id: "project:fixture", sequence: 42, event_id: "fixture-event-42", event_digest: "sha256:" + "e".repeat(64) },
+    },
     claim_limit: "Project UI is a read-only digest-bound projection; actions and acceptance remain separate authority.",
   };
 }
@@ -1769,6 +1783,9 @@ async function mount(page, overview, overrides = {}) {
   const notificationSeenRequests = [];
   const configRequests = [];
   const assetRequests = [];
+  const messageRequests = [];
+  const profileRequests = [];
+  const repairRequests = [];
   const proofFeed = overrides.proofFeed || fixture.proofFeed;
   const proofControl = overrides.proofControl || { fail: false, feed: proofFeed };
   const notificationControl = overrides.notificationControl || { failGet: false, failSeen: false, feed: structuredClone(overrides.notifications || notificationFixture()) };
@@ -1778,6 +1795,15 @@ async function mount(page, overview, overrides = {}) {
   configControl.ctrlFeed ||= structuredClone(fixture.ctrlSettings);
   const assetControl = overrides.assetControl || { library: assetLibraryFixture(), failGet: false, failMutation: false, deferredGets: [], deferredMutations: [], operations: new Map() };
   const runLogControl = overrides.runLogControl || { items: runLogFixture(), failGet: false, deferredGets: [] };
+  const messageControl = overrides.messageControl || null;
+  const profileControl = overrides.profileControl || null;
+  const diagnosticsControl = overrides.diagnosticsControl || { feed: fixture.diagnostics, history: fixture.diagnosticHistory, repairResponses: [] };
+  if (messageControl) {
+    messageControl.endpoint ||= "/api/hq/actions";
+    messageControl.timeoutMs ||= 100;
+    messageControl.responses ||= [];
+    messageControl.deferredResponses ||= [];
+  }
   assetControl.operations ||= new Map();
   if (!overrides.preserveOnboardingPresentation) {
     await page.addInitScript(() => {
@@ -1798,7 +1824,11 @@ async function mount(page, overview, overrides = {}) {
     if (url.pathname === "/app.js") return route.fulfill({ status: 200, contentType: "text/javascript", body: app });
     if (url.pathname === "/assets/swarm-offline-disconnected.png") return route.fulfill({ status: 200, contentType: "image/png", body: offlineAsset });
     if (overrides.connection?.offline && url.pathname.startsWith("/api/")) return route.abort();
-    if (url.pathname === "/api/bootstrap") return route.fulfill(response(fixture.bootstrap));
+    if (url.pathname === "/api/bootstrap") {
+      const bootstrap = structuredClone(fixture.bootstrap);
+      if (messageControl) bootstrap.capabilities = { ...(bootstrap.capabilities || {}), hq_connector: { contract: "swarm.universal_hq_connector.action.v1", method: "POST", endpoint: messageControl.endpoint, timeout_ms: messageControl.timeoutMs } };
+      return route.fulfill(response(bootstrap));
+    }
     if (url.pathname === "/api/overview") return route.fulfill(response(overview));
     if (url.pathname === "/api/assets" && request.method() === "GET") {
       const projection = url.searchParams.get("projection") === "trash" ? "trash" : "active";
@@ -1929,8 +1959,43 @@ async function mount(page, overview, overrides = {}) {
       configControl.feed = applyConfigChanges(configControl.feed, payload.changes);
       return route.fulfill(response(configControl.feed));
     }
-    if (url.pathname === "/api/diagnostics") return route.fulfill(response(fixture.diagnostics));
-    if (url.pathname === "/api/diagnostics/history") return route.fulfill(response({ ok: true, items: [] }));
+    if (messageControl && url.pathname === messageControl.endpoint && request.method() === "POST") {
+      const payload = request.postDataJSON();
+      messageRequests.push(structuredClone(payload));
+      const deferred = messageControl.deferredResponses.shift();
+      if (deferred) await deferred;
+      const outcome = messageControl.responses.shift() || { result_code: "ACKNOWLEDGED" };
+      if (outcome.type === "abort") return route.abort();
+      if (outcome.type === "timeout") {
+        await new Promise((resolve) => setTimeout(resolve, messageControl.timeoutMs + 80));
+      }
+      if (outcome.status && outcome.status >= 400) return route.fulfill({ status: outcome.status, contentType: "application/json", body: JSON.stringify({ ok: false, error: outcome.error || "message action failed" }) });
+      const body = outcome.body || {
+        ok: true,
+        result_code: outcome.result_code || "ACKNOWLEDGED",
+        request_id: payload.request_id,
+        action_digest: outcome.action_digest || "sha256:" + "f".repeat(64),
+        result_event_id: outcome.result_event_id === null ? null : (outcome.result_event_id || "message-result-event"),
+        result_event_digest: outcome.result_event_digest === null ? null : (outcome.result_event_digest || "sha256:" + "9".repeat(64)),
+      };
+      return route.fulfill(response(body));
+    }
+    if (profileControl && url.pathname === "/api/profile") {
+      profileRequests.push({ method: request.method(), body: request.postData() });
+      if (profileControl.unavailable) return route.fulfill({ status: 404, contentType: "application/json", body: JSON.stringify({ ok: false, error: "profile authority unavailable" }) });
+      return route.fulfill(response(profileControl.feed));
+    }
+    if (url.pathname === "/api/diagnostics") {
+      diagnosticsControl.getCount = Number(diagnosticsControl.getCount || 0) + 1;
+      return route.fulfill(response(diagnosticsControl.feed));
+    }
+    if (url.pathname === "/api/diagnostics/history") return route.fulfill(response(diagnosticsControl.history));
+    if (url.pathname === "/api/health/repair" && request.method() === "POST") {
+      const payload = request.postDataJSON();
+      repairRequests.push(payload);
+      const result = diagnosticsControl.repairResponses.shift() || { ok: true, repair_policy: { dispatch: "disabled", claim_limit: "Preview only." }, selected_check_ids: payload.check_ids };
+      return route.fulfill(response(result));
+    }
     if (url.pathname === "/api/health/settings") return route.fulfill(response(fixture.healthSettings));
     if (url.pathname === "/api/storage") return route.fulfill(response(fixture.storage));
     if (url.pathname === "/api/ctrl-settings") return route.fulfill(response(configControl.ctrlFeed));
@@ -1950,7 +2015,7 @@ async function mount(page, overview, overrides = {}) {
   await page.goto(overrides.initialURL || "http://swarm.test/", { waitUntil: "domcontentloaded" });
   if (overrides.waitForConnectionState) {
     await page.locator("#connection-state").waitFor({ state: "visible" });
-    return { runtimeErrors, failedRequests, requests, notificationSeenRequests, configRequests, assetRequests, assetControl, configControl, runLogControl };
+    return { runtimeErrors, failedRequests, requests, notificationSeenRequests, configRequests, assetRequests, messageRequests, profileRequests, repairRequests, assetControl, configControl, runLogControl, messageControl, profileControl, diagnosticsControl };
   }
   try {
     const initialView = new URL(overrides.initialURL || "http://swarm.test/").hash.replace(/^#/, "") || "overview";
@@ -1962,7 +2027,7 @@ async function mount(page, overview, overrides = {}) {
   }
   await page.locator("#onboarding-dialog").waitFor({ state: "visible" });
   if (!overrides.keepOnboarding) await page.getByRole("button", { name: "Skip for now" }).click();
-  return { runtimeErrors, failedRequests, requests, notificationSeenRequests, configRequests, assetRequests, assetControl, configControl, runLogControl };
+  return { runtimeErrors, failedRequests, requests, notificationSeenRequests, configRequests, assetRequests, messageRequests, profileRequests, repairRequests, assetControl, configControl, runLogControl, messageControl, profileControl, diagnosticsControl };
 }
 
 async function assertOnboardingRoleGroup(page, viewportWidth) {
@@ -2891,6 +2956,168 @@ proofFeed.items.push({
     assert.ok(assetFailure.runtimeErrors.every((message) => message.includes("503")), assetFailure.runtimeErrors.join(" | "));
     await assetFailurePage.close();
 
+    const messageAckDeferred = {};
+    messageAckDeferred.promise = new Promise((resolve) => { messageAckDeferred.resolve = resolve; });
+    const messageControl = {
+      timeoutMs: 500,
+      deferredResponses: [messageAckDeferred.promise],
+      responses: [
+        { result_code: "ACKNOWLEDGED" },
+        { result_code: "REPLAYED" },
+        { result_code: "STALE" },
+        { result_code: "ACKNOWLEDGED" },
+        { result_code: "ACKNOWLEDGED", result_event_digest: null },
+        { type: "timeout" },
+        { type: "abort" },
+      ],
+    };
+    const messagePage = await browser.newPage({ viewport: { width: 1024, height: 760 } });
+    const messageRuntime = await mount(messagePage, scopedFixture(), { ...overrides, messageControl });
+    await messagePage.evaluate(() => selectProjectScope("project:fixture"));
+    await messagePage.waitForFunction(() => state.projectId === "project:fixture");
+    await messagePage.locator("#message-launcher").click();
+    await messagePage.locator("#message-draft").fill("Please review the selected screen.");
+    await messagePage.evaluate(() => {
+      state.messageAttachments = [{ artifact_id: "fixture-image-1", digest: "sha256:" + "1".repeat(64) }];
+      renderMessageComposer();
+    });
+    assert.equal(await messagePage.getByRole("button", { name: "Send message" }).isDisabled(), false);
+    await messagePage.getByRole("button", { name: "Send message" }).click();
+    await messagePage.waitForFunction(() => state.messageStatus === "pending");
+    assert.match(await messagePage.locator("#message-status").textContent(), /^Pending/);
+    assert.equal(await messagePage.locator("#message-draft").inputValue(), "Please review the selected screen.");
+    assert.deepEqual(await messagePage.evaluate(() => state.messageAttachments), [{ artifact_id: "fixture-image-1", digest: "sha256:" + "1".repeat(64) }]);
+    messageAckDeferred.resolve();
+    await messagePage.waitForFunction(() => state.messageStatus === "sent");
+    assert.match(await messagePage.locator("#message-status").textContent(), /^Sent to /);
+    assert.equal(await messagePage.locator("#message-draft").inputValue(), "");
+    assert.deepEqual(await messagePage.evaluate(() => state.messageAttachments), []);
+    const acknowledgedRequest = messageRuntime.messageRequests[0];
+    assert.equal(acknowledgedRequest.type, "swarm.project_view_action");
+    assert.equal(acknowledgedRequest.action_kind, "send_feedback");
+    assert.equal(acknowledgedRequest.project_id, "project:fixture");
+    assert.equal(acknowledgedRequest.manifest_id, "fixture-views");
+    assert.equal(acknowledgedRequest.manifest_version, 1);
+    assert.equal(acknowledgedRequest.manifest_digest, "sha256:" + "a".repeat(64));
+    assert.equal(acknowledgedRequest.view_id, "overview");
+    assert.equal(acknowledgedRequest.view_digest, "sha256:" + "d".repeat(64));
+    assert.deepEqual(acknowledgedRequest.source_digests, ["sha256:" + "b".repeat(64), "sha256:" + "c".repeat(64)]);
+    assert.deepEqual(acknowledgedRequest.observed_cursor, { stream_id: "project-ledger", project_id: "project:fixture", sequence: 42, event_id: "fixture-event-42", event_digest: "sha256:" + "e".repeat(64) });
+    assert.deepEqual(acknowledgedRequest.attachments, [{ artifact_id: "fixture-image-1", digest: "sha256:" + "1".repeat(64) }]);
+    assert.match(acknowledgedRequest.request_id, /^[a-z0-9][a-z0-9._:-]{7,127}$/i);
+
+    await messagePage.locator("#message-draft").fill("Replay this exact message.");
+    await messagePage.getByRole("button", { name: "Send message" }).click();
+    await messagePage.waitForFunction(() => state.messageStatus === "sent");
+    assert.equal(messageRuntime.messageRequests.length, 2);
+    await messagePage.locator("#message-draft").fill("Keep this draft on conflict.");
+    await messagePage.evaluate(() => { state.messageAttachments = [{ artifact_id: "fixture-image-2", digest: "sha256:" + "2".repeat(64) }]; renderMessageComposer(); });
+    await messagePage.getByRole("button", { name: "Send message" }).click();
+    await messagePage.waitForFunction(() => state.messageStatus === "conflict");
+    assert.equal(await messagePage.getByRole("button", { name: "Retry", exact: true }).isVisible(), true);
+    assert.equal(await messagePage.locator("#message-draft").inputValue(), "Keep this draft on conflict.");
+    if (evidenceDir) await messagePage.screenshot({ path: path.join(evidenceDir, "41-message-stale-retry-desktop-1024x760.png"), fullPage: false, animations: "disabled" });
+    const staleRequest = structuredClone(messageRuntime.messageRequests[2]);
+    await messagePage.getByRole("button", { name: "Retry", exact: true }).click();
+    await messagePage.waitForFunction(() => state.messageStatus === "sent");
+    assert.deepEqual(messageRuntime.messageRequests[3], staleRequest, "Retry must reuse the exact request, context, and attachment identity");
+
+    await messagePage.locator("#message-draft").fill("Do not accept a malformed receipt.");
+    await messagePage.evaluate(() => { state.messageAttachments = [{ artifact_id: "fixture-image-3", digest: "sha256:" + "3".repeat(64) }]; renderMessageComposer(); });
+    await messagePage.getByRole("button", { name: "Send message" }).click();
+    await messagePage.waitForFunction(() => state.messageStatus === "failed");
+    assert.match(await messagePage.locator("#message-status").textContent(), /incomplete acknowledgement/);
+    assert.equal(await messagePage.getByRole("button", { name: "Retry", exact: true }).isVisible(), true);
+    assert.equal(await messagePage.locator("#message-draft").inputValue(), "Do not accept a malformed receipt.");
+    assert.deepEqual(await messagePage.evaluate(() => state.messageAttachments), [{ artifact_id: "fixture-image-3", digest: "sha256:" + "3".repeat(64) }]);
+
+    await messagePage.locator("#message-draft").fill("Keep this draft after timeout.");
+    await messagePage.getByRole("button", { name: "Send message" }).click();
+    await messagePage.waitForFunction(() => state.messageStatus === "failed");
+    assert.match(await messagePage.locator("#message-status").textContent(), /timed out[\s\S]*draft is still here/i);
+    assert.equal(await messagePage.locator("#message-draft").inputValue(), "Keep this draft after timeout.");
+    await messagePage.locator("#message-draft").fill("Keep this draft after transport failure.");
+    await messagePage.getByRole("button", { name: "Send message" }).click();
+    await messagePage.waitForFunction(() => state.messageStatus === "failed");
+    assert.match(await messagePage.locator("#message-status").textContent(), /cannot reach[\s\S]*draft is still here/i);
+    assert.equal(await messagePage.locator("#message-draft").inputValue(), "Keep this draft after transport failure.");
+    assert.ok(messageRuntime.runtimeErrors.every((message) => /ERR_FAILED/.test(message)), messageRuntime.runtimeErrors.join(" | "));
+    await messagePage.close();
+
+    const missingMessageContext = scopedFixture();
+    delete missingMessageContext.project_view.identity.view_digest;
+    const missingMessagePage = await browser.newPage({ viewport: { width: 1024, height: 760 } });
+    const missingMessageRuntime = await mount(missingMessagePage, missingMessageContext, { ...overrides, messageControl: { timeoutMs: 100, responses: [] } });
+    await missingMessagePage.evaluate(() => selectProjectScope("project:fixture"));
+    await missingMessagePage.locator("#message-launcher").click();
+    await missingMessagePage.locator("#message-draft").fill("This context is incomplete.");
+    assert.equal(await missingMessagePage.getByRole("button", { name: "Send message" }).isDisabled(), true);
+    assert.match(await missingMessagePage.locator("#message-status").textContent(), /does not have a complete digest and cursor binding/);
+    assert.deepEqual(missingMessageRuntime.messageRequests, []);
+    await missingMessagePage.close();
+
+    const profilePage = await browser.newPage({ viewport: { width: 1024, height: 760 } });
+    const profileRuntime = await mount(profilePage, scopedFixture(), { ...overrides, profileControl: { unavailable: true } });
+    const profileTrigger = profilePage.getByRole("button", { name: "Open profile" });
+    await profileTrigger.focus();
+    await profileTrigger.click();
+    await profilePage.locator("#profile-dialog").waitFor({ state: "visible" });
+    await profilePage.waitForFunction(() => state.profileStatus === "unavailable");
+    assert.match(await profilePage.locator("#profile-status").textContent(), /profile authority unavailable/i);
+    assert.equal(await profilePage.getByRole("button", { name: "Save profile" }).isDisabled(), true);
+    assert.deepEqual(profileRuntime.profileRequests.map((request) => request.method), ["GET"]);
+    await profilePage.keyboard.press("Escape");
+    assert.equal(await profilePage.locator("#profile-dialog").evaluate((dialog) => dialog.open), false);
+    assert.equal(await profileTrigger.evaluate((element) => element === document.activeElement), true);
+    await profileTrigger.click();
+    await profilePage.waitForFunction(() => state.profileStatus === "unavailable");
+    await profilePage.getByRole("button", { name: "Cancel" }).click();
+    assert.equal(await profileTrigger.evaluate((element) => element === document.activeElement), true);
+    assert.deepEqual(profileRuntime.profileRequests.map((request) => request.method), ["GET", "GET"]);
+    assert.equal(profileRuntime.runtimeErrors.length, 2);
+    assert.ok(profileRuntime.runtimeErrors.every((message) => /404 \(Not Found\)/.test(message)), profileRuntime.runtimeErrors.join(" | "));
+    await profilePage.close();
+
+    const diagnosticsControl = {
+      feed: {
+        ...structuredClone(fixture.diagnostics),
+        health: {
+          incidents: [],
+          open_requests: [],
+          repair_policy: { dispatch: "disabled", reason: "Repair dispatch is not available from this server." },
+          checks: [{ id: "project.ctrl_binding", status: "WARN", summary: "The saved project does not have a current CTRL binding.", recommended_action: "Prepare a scoped CTRL binding repair." }],
+        },
+      },
+      history: structuredClone(fixture.diagnosticHistory),
+      repairResponses: [{ ok: true, repair_policy: { dispatch: "disabled", claim_limit: "Preview only." }, selected_check_ids: ["project.ctrl_binding"] }],
+      getCount: 0,
+    };
+    const diagnosticsPage = await browser.newPage({ viewport: { width: 1024, height: 760 } });
+    const diagnosticsRuntime = await mount(diagnosticsPage, scopedFixture(), { ...overrides, diagnosticsControl });
+    await diagnosticsPage.getByRole("tab", { name: "Diagnostics", exact: true }).click();
+    await diagnosticsPage.waitForFunction(() => state.diagnosticsHistoryStatus === "current");
+    assert.match(await diagnosticsPage.locator("#diagnostics-selection-status").textContent(), /1 recommended check selected/);
+    const diagnosticsReads = diagnosticsControl.getCount;
+    const refreshedDiagnostics = diagnosticsPage.waitForResponse((response) => new URL(response.url()).pathname === "/api/diagnostics");
+    await diagnosticsPage.getByRole("button", { name: "Refresh overview" }).click();
+    await refreshedDiagnostics;
+    assert.ok(diagnosticsControl.getCount > diagnosticsReads, "Refresh must reread the authoritative diagnostics feed");
+    const repairTrigger = diagnosticsPage.getByRole("button", { name: "Repair with Codex" });
+    await repairTrigger.focus();
+    await repairTrigger.click();
+    await diagnosticsPage.locator("#repair-dialog").waitFor({ state: "visible" });
+    await diagnosticsPage.waitForFunction(() => state.diagnosticsRepairPending === false);
+    assert.deepEqual(diagnosticsRuntime.repairRequests, [{ check_ids: ["project.ctrl_binding"], scope: "all", acknowledge: false, dry_run: true }]);
+    assert.match(await diagnosticsPage.locator("#repair-status").textContent(), /Preview ready/);
+    assert.match(await diagnosticsPage.locator("#repair-dispatch-note").textContent(), /Dispatch is unavailable/);
+    assert.equal(await diagnosticsPage.getByRole("button", { name: "Prepare repair request" }).isDisabled(), true);
+    if (evidenceDir) await diagnosticsPage.screenshot({ path: path.join(evidenceDir, "42-diagnostics-repair-preview-desktop-1024x760.png"), fullPage: false, animations: "disabled" });
+    await diagnosticsPage.keyboard.press("Escape");
+    assert.equal(await diagnosticsPage.locator("#repair-dialog").evaluate((dialog) => dialog.open), false);
+    assert.equal(await repairTrigger.evaluate((element) => element === document.activeElement), true);
+    assert.deepEqual(diagnosticsRuntime.runtimeErrors, []);
+    await diagnosticsPage.close();
+
     const page = await browser.newPage({ viewport: { width: 1536, height: 1024 } });
     const desktop = await mount(page, overview, overrides);
     assert.equal(await page.locator("#message-launcher").isVisible(), true);
@@ -2901,10 +3128,6 @@ proofFeed.items.push({
     assert.equal(await page.evaluate(() => document.activeElement?.id), "message-draft");
     assert.ok(await page.locator("#message-recipient option").count() >= 1);
     assert.equal(await page.evaluate(() => messageRecipients().every((recipient) => ["CTRL", "LEAD"].includes(recipient.structuralRole))), true);
-    const messageContext = await page.evaluate(() => messageImplicitContext());
-    assert.equal(messageContext.type, "swarm.project_view_action");
-    assert.equal(messageContext.action_kind, "send_feedback");
-    assert.ok(messageContext.project_id && messageContext.target_ctrl_id && messageContext.recipient_id);
     assert.deepEqual(await page.evaluate(() => ({ sendDisabled: document.querySelector("#message-send").disabled, retryHidden: document.querySelector("#message-retry").hidden })), { sendDisabled: true, retryHidden: true });
     assert.match(await page.locator("#message-status").textContent(), /Messaging is unavailable until SWARM exposes the authenticated HQ connector/);
     await page.locator("#message-draft").fill("Please review this screen.");
@@ -2913,15 +3136,6 @@ proofFeed.items.push({
     assert.equal(await page.evaluate(() => document.activeElement?.id), "message-launcher");
     await page.locator("#message-launcher").click();
     assert.equal(await page.locator("#message-draft").inputValue(), "Please review this screen.");
-    assert.deepEqual(await page.evaluate(() => [
-      messageReceiptPresentation({ status: "ACKNOWLEDGED", request_id: "request-1", action_digest: "a".repeat(64), result_event_id: "event-1", result_event_digest: "b".repeat(64) }),
-      messageReceiptPresentation({ status: "REPLAYED", request_id: "request-1", action_digest: "a".repeat(64), result_event_id: "event-1", result_event_digest: "b".repeat(64) }),
-      messageReceiptPresentation({ status: "CONFLICT" }),
-    ]), [
-      { status: "sent", clearDraft: true },
-      { status: "sent", clearDraft: true },
-      { status: "conflict", clearDraft: false },
-    ]);
     await page.evaluate(() => sendMessageFromComposer());
     assert.deepEqual(desktop.requests.filter((requestPath) => /message|feedback|connector|project-view-action/i.test(requestPath)), []);
     assert.equal(await page.locator("#message-draft").inputValue(), "Please review this screen.");
