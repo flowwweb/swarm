@@ -135,6 +135,8 @@ Configuration cannot make an unsafe or hidden coordination path valid:
 | `review.max_parallel_tasks` | Concurrent REVIEW tasks | 1-8 |
 | `review.scale_when_queue_reaches` | Ready-artifact queue that adds review capacity | 2-8 |
 | `monitoring.heartbeat_minutes` | Fallback cadence for an explicitly bound optional WATCHDOG | 1-120; default 30 |
+| `console.auto_start` | Start or reuse the strict-loopback SWARM HQ when a CTRL starts; repeated launches are idempotent | boolean; default true |
+| `console.open_on_start` | Open HQ in the default browser when a CTRL starts and no recent HQ tab is present; does not control whether HQ runs | boolean; default true |
 | `console.project_progress_feed_enabled` | Deliver the on-demand Project progress feed while its Project screen is open; canonical audit history and execution liveness remain independent | boolean; default true |
 | `console.project_progress_feed_lines` | Material feed lines visible on one Project screen; no filler or reporting-frequency change | 1-10; default/fallback 4 |
 | `monitoring.default_review_horizon_minutes` | Default event-driven goal review horizon | 1-60; default 30 |

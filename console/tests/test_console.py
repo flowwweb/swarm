@@ -6611,12 +6611,18 @@ class SwarmConsoleTests(unittest.TestCase):
         self.assertTrue(result["settings"]["boost"]["spark_enabled"])
         self.assertEqual(result["settings"]["boost"]["spark_reasoning"], "medium")
 
-    def test_portal_start_setting_defaults_off_and_can_be_enabled(self) -> None:
+    def test_hq_start_and_browser_open_are_separate_default_on_settings(self) -> None:
         before = console.redacted_config_snapshot(self.config)
-        self.assertFalse(before["settings"]["console"]["open_on_start"])
+        self.assertTrue(before["settings"]["console"]["auto_start"])
+        self.assertTrue(before["settings"]["console"]["open_on_start"])
+        self.assertIn("console.auto_start", before["editable"])
         self.assertIn("console.open_on_start", before["editable"])
-        result = console.update_config(self.config, {"console.open_on_start": True})
-        self.assertTrue(result["settings"]["console"]["open_on_start"])
+        result = console.update_config(
+            self.config,
+            {"console.auto_start": False, "console.open_on_start": False},
+        )
+        self.assertFalse(result["settings"]["console"]["auto_start"])
+        self.assertFalse(result["settings"]["console"]["open_on_start"])
 
     def test_usage_saver_rejects_non_boolean_without_writing(self) -> None:
         before = self.config.read_bytes()

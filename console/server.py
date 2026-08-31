@@ -151,7 +151,7 @@ CONFIG_HIGH_VALUE_PATHS = frozenset({
     "automation.mode", "execution.fast_mode", "execution.usage_profile",
     "execution.min_reasoning", "execution.max_reasoning", "execution.usage_saver",
     "monitoring.auto_health_enabled", "lifecycle.task_lifetime_hours",
-    "role_icons.enabled", "console.open_on_start", "console.project_progress_feed_enabled",
+    "role_icons.enabled", "console.auto_start", "console.open_on_start", "console.project_progress_feed_enabled",
     "console.project_progress_feed_lines",
 })
 CONFIG_RESTART_PATHS = frozenset({"console.open_on_start"})
@@ -624,7 +624,8 @@ def _config_label_help(dotted_path: str) -> tuple[str, str]:
         "monitoring.auto_health_enabled": ("Auto fix", AUTO_REPAIR_HELP),
         "lifecycle.task_lifetime_hours": ("Task life", "Choose how long a task may remain in one continuity window."),
         "role_icons.enabled": ("Emoji use", "Use the canonical role emoji in SWARM task titles."),
-        "console.open_on_start": ("HQ open on start", "Open the localhost console when SWARM starts it."),
+        "console.auto_start": ("Start HQ automatically", "Start or reuse the local HQ when a CTRL starts."),
+        "console.open_on_start": ("Open HQ on start", "Open HQ in the browser when a CTRL starts and no recent HQ tab is present."),
         "console.project_progress_feed_enabled": ("Project progress feed", "Show the on-demand project progress feed."),
         "console.project_progress_feed_lines": ("Progress feed lines", "Bound the number of material project feed lines."),
     }

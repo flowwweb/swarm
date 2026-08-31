@@ -70,11 +70,13 @@ class SwarmConfigTests(unittest.TestCase):
         self.assertTrue(exists)
         self.assertFalse(effective["execution"]["usage_saver"])
 
-    def test_console_is_opt_in_and_does_not_open_localhost_by_default(self) -> None:
-        self.assertFalse(config.DEFAULTS["console"]["open_on_start"])
+    def test_hq_starts_and_opens_by_default_with_separate_controls(self) -> None:
+        self.assertTrue(config.DEFAULTS["console"]["auto_start"])
+        self.assertTrue(config.DEFAULTS["console"]["open_on_start"])
         effective, exists = config.load(config.TEMPLATE_PATH)
         self.assertTrue(exists)
-        self.assertFalse(effective["console"]["open_on_start"])
+        self.assertTrue(effective["console"]["auto_start"])
+        self.assertTrue(effective["console"]["open_on_start"])
         self.assertTrue(effective["console"]["project_progress_feed_enabled"])
         self.assertEqual(effective["console"]["project_progress_feed_lines"], 4)
 
@@ -129,6 +131,23 @@ class SwarmConfigTests(unittest.TestCase):
                 "mode": "consult",
             },
         )
+
+    def test_obsolete_chat_relay_preferences_are_validated_then_dropped(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            legacy = root / "legacy.toml"
+            legacy.write_text(
+                "[chat_relay]\ndefault_model = \"gpt-5.6-sol\"\ndefault_effort = \"medium\"\n",
+                encoding="utf-8",
+            )
+            effective, _ = config.load(legacy)
+            self.assertNotIn("default_model", effective["chat_relay"])
+            self.assertNotIn("default_effort", effective["chat_relay"])
+
+            invalid = root / "invalid.toml"
+            invalid.write_text("[chat_relay]\ndefault_effort = \"reckless\"\n", encoding="utf-8")
+            with self.assertRaisesRegex(config.ConfigError, "default_effort"):
+                config.load(invalid)
 
     def test_role_icons_default_to_enabled_octopus_ctrl_without_profession_authority_icons(self) -> None:
         self.assertTrue(config.DEFAULTS["role_icons"]["enabled"])

@@ -51,7 +51,8 @@ DEFAULTS: dict[str, Any] = {
         "max_reasoning": "ultra",
     },
     "console": {
-        "open_on_start": False,
+        "auto_start": True,
+        "open_on_start": True,
         "project_progress_feed_enabled": True,
         "project_progress_feed_lines": 4,
     },
@@ -409,6 +410,7 @@ def validate(raw: dict[str, Any]) -> None:
         raise ConfigError("execution.min_reasoning cannot exceed execution.max_reasoning")
     console = _expect_table(raw, "console")
     _expect_keys(console, set(DEFAULTS["console"]), "console")
+    _boolean(console, "auto_start", "console")
     _boolean(console, "open_on_start", "console")
     _boolean(console, "project_progress_feed_enabled", "console")
     _bounded_int(console, "project_progress_feed_lines", 1, 10, "console")
@@ -809,6 +811,18 @@ def normalize_legacy_task_role(raw: dict[str, Any]) -> dict[str, Any]:
             # authority. Loading falls back deterministically; explicit
             # console mutations are validated before their atomic write.
             console["project_progress_feed_lines"]=4
+
+    chat_relay=normalized.get("chat_relay",{})
+    if isinstance(chat_relay,dict):
+        # Personal-plugin 0.4.7 briefly wrote these routing preferences. They
+        # never became canonical execution authority; validate then discard
+        # them so older user configs remain readable without widening schema.
+        if "default_model" in chat_relay:
+            _model_name(chat_relay,"default_model","chat_relay")
+            chat_relay.pop("default_model")
+        if "default_effort" in chat_relay:
+            _reasoning_effort(chat_relay,"default_effort","chat_relay")
+            chat_relay.pop("default_effort")
 
     lifecycle=normalized.get("lifecycle",{})
     automation=normalized.get("automation")

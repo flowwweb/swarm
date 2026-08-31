@@ -65,9 +65,10 @@ def ensure_portal(
     open_browser: Callable[..., bool] = webbrowser.open,
     sleep: Callable[[float], None] = time.sleep,
 ) -> dict[str, Any]:
-    """Reuse only this console instance and open when no tab has fresh presence."""
+    """Start or reuse this HQ instance and optionally open its browser surface."""
     _, effective, _ = console_server.load_config(config_path)
-    if not effective["console"]["open_on_start"]:
+    console_settings = effective["console"]
+    if not console_settings["auto_start"]:
         return {"ok": True, "enabled": False, "opened": False, "reason": "disabled"}
     required_assets = tuple(CONSOLE_ROOT / "static" / name for name in ("index.html", "app.js", "styles.css"))
     missing_assets = tuple(path.name for path in required_assets if not path.is_file())
@@ -131,6 +132,15 @@ def ensure_portal(
             }
 
     url = f"http://127.0.0.1:{selected_port}"
+    if not console_settings["open_on_start"]:
+        return {
+            "ok": True,
+            "enabled": True,
+            "opened": False,
+            "reason": "browser_disabled",
+            "url": url,
+            "pid": pid,
+        }
     try:
         bootstrap = fetch_json(f"{url}/api/bootstrap")
         claim = fetch_json(f"{url}/api/launch-claim", token=bootstrap["token"], method="POST")

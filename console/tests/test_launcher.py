@@ -25,11 +25,16 @@ class LauncherTests(unittest.TestCase):
     def tearDown(self) -> None:
         self.temp.cleanup()
 
-    def _write_setting(self, enabled: bool) -> None:
-        self.config.write_text(f"schema_version = 3\n[console]\nopen_on_start = {str(enabled).lower()}\n", encoding="utf-8")
+    def _write_setting(self, *, auto_start: bool = True, open_on_start: bool = True) -> None:
+        self.config.write_text(
+            "schema_version = 4\n[console]\n"
+            f"auto_start = {str(auto_start).lower()}\n"
+            f"open_on_start = {str(open_on_start).lower()}\n",
+            encoding="utf-8",
+        )
 
     def test_setting_off_never_probes_starts_or_opens(self) -> None:
-        self._write_setting(False)
+        self._write_setting(auto_start=False)
         result = launcher.ensure_portal(
             config_path=self.config,
             codex_home=self.codex_home,
@@ -39,8 +44,26 @@ class LauncherTests(unittest.TestCase):
         )
         self.assertEqual(result["reason"], "disabled")
 
+    def test_browser_setting_off_still_reuses_hq_without_opening_a_tab(self) -> None:
+        self._write_setting(open_on_start=False)
+
+        def fetch(url: str, **_kwargs):
+            if url.endswith("healthz") and url.startswith("http://127.0.0.1:4788"):
+                return {"ok": True, "instance_id": launcher.console_server.INSTANCE_ID}
+            self.fail(f"browser-disabled launcher requested {url}")
+
+        result = launcher.ensure_portal(
+            config_path=self.config,
+            codex_home=self.codex_home,
+            fetch_json=fetch,
+            spawn_server=lambda *_args: self.fail("existing HQ was not reused"),
+            open_browser=lambda *_args, **_kwargs: self.fail("browser-disabled launcher opened a tab"),
+        )
+        self.assertEqual(result["reason"], "browser_disabled")
+        self.assertEqual(result["url"], "http://127.0.0.1:4788")
+
     def test_enabled_launcher_fails_closed_before_server_or_browser_when_assets_are_missing(self) -> None:
-        self._write_setting(True)
+        self._write_setting()
         with mock.patch.object(launcher, "CONSOLE_ROOT", self.root / "missing-console"):
             result = launcher.ensure_portal(
                 config_path=self.config,
@@ -53,7 +76,7 @@ class LauncherTests(unittest.TestCase):
         self.assertEqual(result["missing"], ("index.html", "app.js", "styles.css"))
 
     def test_live_server_and_fresh_presence_skip_open(self) -> None:
-        self._write_setting(True)
+        self._write_setting()
         calls: list[str] = []
 
         def fetch(url: str, **_kwargs):
@@ -77,7 +100,7 @@ class LauncherTests(unittest.TestCase):
         self.assertEqual(len(calls), 3)
 
     def test_missing_server_starts_once_and_stale_presence_opens_once(self) -> None:
-        self._write_setting(True)
+        self._write_setting()
         health_calls = 0
         opens: list[str] = []
         spawns: list[int] = []
@@ -108,7 +131,7 @@ class LauncherTests(unittest.TestCase):
         self.assertTrue(result["opened"])
 
     def test_stale_cache_server_uses_next_free_port(self) -> None:
-        self._write_setting(True)
+        self._write_setting()
         spawned = False
         spawns: list[int] = []
         opens: list[str] = []
@@ -143,7 +166,7 @@ class LauncherTests(unittest.TestCase):
         self.assertTrue(result["opened"])
 
     def test_matching_console_on_fallback_port_is_reused(self) -> None:
-        self._write_setting(True)
+        self._write_setting()
 
         def fetch(url: str, **_kwargs):
             if url.endswith("healthz"):
@@ -166,7 +189,7 @@ class LauncherTests(unittest.TestCase):
         self.assertEqual(result["url"], "http://127.0.0.1:4789")
 
     def test_non_json_service_is_not_treated_as_a_free_port(self) -> None:
-        self._write_setting(True)
+        self._write_setting()
         spawned = False
         spawns: list[int] = []
 
@@ -201,7 +224,7 @@ class LauncherTests(unittest.TestCase):
         self.assertEqual(result["url"], "http://127.0.0.1:4790")
 
     def test_browser_failure_is_reported_without_raising(self) -> None:
-        self._write_setting(True)
+        self._write_setting()
 
         def fetch(url: str, **_kwargs):
             if url.endswith("healthz"):
