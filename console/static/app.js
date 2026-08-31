@@ -1744,7 +1744,9 @@ function renderRepairDialog() {
   const selected = diagnosticChecks().filter((check) => state.diagnosticsSelectedChecks.has(String(check.id)));
   preview.innerHTML = '<section class="repair-preview-summary"><strong>' + selected.length + ' check' + (selected.length === 1 ? "" : "s") + '</strong><span>Scope: ' + escapeHTML(state.projectId === "all" ? "All projects" : state.projectId) + '</span></section><ul>' + selected.map((check) => '<li><span class="diagnostics-signal ' + diagnosticStatusClass(check.status) + '">' + escapeHTML(String(check.status).toUpperCase()) + '</span><div><strong>' + escapeHTML(humanize(check.id)) + '</strong><p>' + escapeHTML(check.recommended_action || check.summary || "Review this check.") + '</p></div></li>').join("") + '</ul>';
   $("#repair-dispatch-note").textContent = repairDispatchPresentation();
-  $("#repair-status").textContent = state.diagnosticsRepairError || (state.diagnosticsRepairPending ? "Preparing preview…" : state.diagnosticsRepairPreview ? "Preview ready. Acknowledgement is required before preparation." : "Preview the selected checks before preparing a request.");
+  const status = $("#repair-status");
+  status.textContent = state.diagnosticsRepairError || (state.diagnosticsRepairPending ? "Preparing preview…" : state.diagnosticsRepairPreview ? "Preview ready. Acknowledgement is required before preparation." : "Preview the selected checks before preparing a request.");
+  status.classList.toggle("is-error", Boolean(state.diagnosticsRepairError));
   $("#repair-acknowledge").disabled = state.diagnosticsRepairPending || !state.diagnosticsRepairPreview;
   $("#repair-confirm").disabled = state.diagnosticsRepairPending || !state.diagnosticsRepairPreview || !$("#repair-acknowledge").checked;
 }
@@ -3399,6 +3401,21 @@ function normalizedActionDigest(value) {
   return /^sha256:[0-9a-f]{64}$/.test(normalized) ? normalized : "";
 }
 
+function canonicalActionValue(value) {
+  if (Array.isArray(value)) return value.map(canonicalActionValue);
+  if (!value || typeof value !== "object") return value;
+  return Object.keys(value).sort().reduce((record, key) => {
+    if (value[key] !== undefined) record[key] = canonicalActionValue(value[key]);
+    return record;
+  }, {});
+}
+
+async function messageActionDigest(envelope) {
+  const bytes = new TextEncoder().encode(JSON.stringify(canonicalActionValue(envelope)));
+  const digest = await window.crypto.subtle.digest("SHA-256", bytes);
+  return "sha256:" + [...new Uint8Array(digest)].map((value) => value.toString(16).padStart(2, "0")).join("");
+}
+
 function messageCurrentViewId(projection) {
   if (state.view !== "overview" || state.projectId === "all") return state.view;
   if (state.projectTab !== "ui") return state.projectTab;
@@ -3497,8 +3514,10 @@ function messageActionBinding(action) {
 function messageReceiptPresentation(result, request) {
   const code = String(result?.result_code || result?.status || "").toUpperCase();
   const requestMatches = Boolean(request?.request_id) && result?.request_id === request.request_id;
+  const expectedDigest = normalizedActionDigest(request?.action_digest);
   const actionDigest = normalizedActionDigest(result?.action_digest);
-  if (!requestMatches || !actionDigest) return { status: "failed", clearDraft: false };
+  if (!requestMatches || !expectedDigest || !actionDigest) return { status: "failed", clearDraft: false, reason: "SWARM returned an incomplete acknowledgement. Your draft is still here." };
+  if (actionDigest !== expectedDigest) return { status: "conflict", clearDraft: false, reason: "SWARM acknowledged a different command. Your draft is still here; retry this exact message." };
   if (["ACKNOWLEDGED", "REPLAYED"].includes(code) && String(result?.result_event_id || "").trim() && normalizedActionDigest(result?.result_event_digest)) {
     return { status: "sent", clearDraft: true };
   }
@@ -3563,11 +3582,15 @@ function closeMessageComposer(restoreFocus = true) {
 async function sendMessageFromComposer(retry = false) {
   if (state.messageStatus === "pending") return false;
   const recipient = selectedMessageRecipient();
-  const request = retry ? state.messagePendingAction : (() => {
+  let request = retry ? state.messagePendingAction : null;
+  if (!retry) {
     const context = messageImplicitContext(recipient, messageRequestId());
     const message = state.messageDraft.trim();
-    return context && message ? { ...context, payload: { message } } : null;
-  })();
+    if (context && message) {
+      const envelope = { ...context, payload: { message } };
+      request = { ...envelope, action_digest: await messageActionDigest(envelope) };
+    }
+  }
   if (!state.messageConnector || !request) {
     state.messageStatus = "unavailable";
     state.messageError = state.messageConnector ? "Messaging is unavailable because this screen does not have a complete digest and cursor binding." : MESSAGE_CONNECTOR_UNAVAILABLE;
@@ -3597,7 +3620,7 @@ async function sendMessageFromComposer(retry = false) {
       state.messageError = "";
       return true;
     }
-    state.messageError = presentation.status === "conflict" ? "SWARM reported a stale or conflicting context. Review the message and retry." : "SWARM returned an incomplete acknowledgement. Your draft is still here.";
+    state.messageError = presentation.reason || (presentation.status === "conflict" ? "SWARM reported a stale or conflicting context. Review the message and retry." : "SWARM returned an incomplete acknowledgement. Your draft is still here.");
     return false;
   } catch (error) {
     state.messageStatus = "failed";

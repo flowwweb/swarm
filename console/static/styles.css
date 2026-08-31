@@ -632,6 +632,29 @@ button:focus-visible, select:focus-visible { outline: 2px solid #fff; outline-of
 .dialog-body { width:100%; min-width:0; min-height:0; overflow-x:hidden; overflow-y:auto; overscroll-behavior:contain; scrollbar-gutter:stable; padding:0; }
 .dialog-body-content { width:100%; min-width:0; }
 
+.repair-dialog { width:min(760px,calc(100vw - 32px)); height:min(650px,calc(100dvh - 32px)); max-width:none; max-height:none; margin:auto; overflow:hidden; padding:0; border:1px solid rgba(159,185,215,.26); border-radius:10px; background:var(--surface); color:var(--ink); box-shadow:0 28px 90px rgba(0,0,0,.62); }
+.repair-dialog::backdrop { background:rgba(0,4,12,.78); backdrop-filter:blur(4px); }
+.repair-dialog-header { display:flex; align-items:flex-start; justify-content:space-between; gap:16px; padding:16px 20px; border-bottom:1px solid var(--line); background:var(--surface-raised); }
+.repair-dialog-header > div { min-width:0; }
+.repair-dialog-header h2 { margin:4px 0 0; font-size:18px; line-height:1.25; }
+.repair-dialog-content { display:grid; align-content:start; gap:18px; padding:20px 24px; }
+.repair-preview-summary { display:flex; flex-wrap:wrap; align-items:center; justify-content:space-between; gap:8px 18px; padding-bottom:12px; border-bottom:1px solid rgba(176,202,231,.12); }
+.repair-preview-summary strong { font-size:14px; }
+.repair-preview-summary span { color:var(--faint); font-family:var(--mono); font-size:9px; }
+#repair-preview > ul { display:grid; gap:8px; margin:0; padding:0; list-style:none; }
+#repair-preview > ul li { display:grid; grid-template-columns:auto minmax(0,1fr); align-items:start; gap:10px; padding:12px; border:1px solid rgba(176,202,231,.14); border-radius:8px; background:rgba(5,13,24,.42); }
+#repair-preview > ul strong,#repair-preview > ul p { margin:0; }
+#repair-preview > ul strong { font-size:11px; }
+#repair-preview > ul p { margin-top:5px; color:var(--muted); font-size:10px; line-height:1.5; }
+.repair-acknowledgement { display:grid; grid-template-columns:20px minmax(0,1fr); min-height:44px; align-items:center; gap:10px; padding:10px 12px; border:1px solid rgba(255,105,72,.25); border-radius:8px; background:rgba(255,105,72,.06); color:var(--muted); font-size:10px; line-height:1.45; }
+.repair-acknowledgement input { width:18px; height:18px; margin:0; accent-color:var(--orange); }
+#repair-dispatch-note { padding:12px 14px; border-left:3px solid var(--orange); border-radius:0 7px 7px 0; background:rgba(255,105,72,.07); color:var(--muted); font-size:10px; line-height:1.55; }
+.repair-dialog-footer { display:flex; align-items:center; justify-content:space-between; gap:12px; padding:12px 20px; border-top:1px solid var(--line); background:var(--surface-raised); }
+.repair-dialog-footer > div { display:flex; flex-wrap:wrap; align-items:center; justify-content:flex-end; gap:8px; margin-left:auto; }
+.repair-dialog-footer > p { min-width:0; margin:0; color:var(--faint); font-size:9px; line-height:1.45; }
+.repair-dialog-footer #repair-status { max-width:410px; }
+.repair-dialog-footer #repair-status.is-error { color:var(--orange); }
+
 .evidence-lightbox { height:min(860px,calc(100dvh - 32px)); max-height:none; overflow:hidden; }
 .evidence-lightbox-shell { gap:0; padding:0; }
 .evidence-lightbox-head { padding:16px; border-bottom:1px solid var(--line); }
@@ -660,6 +683,14 @@ button:focus-visible, select:focus-visible { outline: 2px solid #fff; outline-of
   .evidence-lightbox-head { padding:12px; }
   .evidence-lightbox-content { padding:10px 12px; }
   .evidence-lightbox-footer { padding:10px 12px max(12px,env(safe-area-inset-bottom)); }
+  .repair-dialog-header { padding:max(12px,env(safe-area-inset-top)) 14px 12px; }
+  .repair-dialog-footer { align-items:stretch; flex-direction:column; padding:10px 14px max(10px,env(safe-area-inset-bottom)); }
+  .repair-dialog-footer > div { width:100%; margin-left:0; }
+  .repair-dialog-footer > div button { flex:1; }
+  .repair-dialog { width:100vw; height:100dvh; border:0; border-radius:0; }
+  .repair-dialog-content { gap:14px; padding:14px; }
+  .repair-preview-summary { align-items:flex-start; flex-direction:column; }
+  #repair-preview > ul li { padding:10px; }
   .role-editor-head { padding-top:max(17px,env(safe-area-inset-top)); }
   .role-editor-footer { padding-bottom:env(safe-area-inset-bottom); }
   .role-editor-fields { padding:14px; }

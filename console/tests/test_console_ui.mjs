@@ -142,7 +142,10 @@ assert.match(messageSource, /request_id: requestId[\s\S]*?attachments,/);
 assert.match(messageSource, /await api\(state\.messageConnector\.endpoint/);
 assert.doesNotMatch(messageSource, /fetch\(|localStorage|sessionStorage|setInterval|WebSocket/);
 assert.match(app, /function messageConnectorCapability\(bootstrap\)[\s\S]*?swarm\.universal_hq_connector\.action\.v1/);
-assert.match(app, /function messageReceiptPresentation\(result, request\)[\s\S]*?\["ACKNOWLEDGED", "REPLAYED"\][\s\S]*?\["STALE", "CONFLICT"\]/);
+assert.match(app, /function canonicalActionValue\(value\)[\s\S]*?Object\.keys\(value\)\.sort\(\)/);
+assert.match(app, /function messageActionDigest\(envelope\)[\s\S]*?window\.crypto\.subtle\.digest\("SHA-256", bytes\)/);
+assert.match(app, /function messageReceiptPresentation\(result, request\)[\s\S]*?actionDigest !== expectedDigest[\s\S]*?\["ACKNOWLEDGED", "REPLAYED"\][\s\S]*?\["STALE", "CONFLICT"\]/);
+assert.match(app, /request = \{ \.\.\.envelope, action_digest: await messageActionDigest\(envelope\) \}/);
 assert.match(app, /\$\("#profile"\)\.addEventListener\("click", \(event\) => openProfile\(event\.currentTarget\)\)/);
 assert.match(app, /\$\("#profile-form"\)\.addEventListener\("submit", saveProfile\)/);
 assert.match(app, /\$\("#profile-dialog"\)\.addEventListener\("cancel", \(event\) => \{[\s\S]*?closeProfile\(\)/);
@@ -160,6 +163,10 @@ assert.equal((indexHtml.match(/class="dialog-footer /g) || []).length, 8);
 assert.match(css, /\.dialog-shell \{[^}]*grid-template-rows:auto minmax\(0,1fr\) auto;[^}]*overflow:hidden;[^}]*padding:0;/);
 assert.match(css, /\.dialog-body \{[^}]*width:100%;[^}]*min-height:0;[^}]*overflow-x:hidden; overflow-y:auto;[^}]*scrollbar-gutter:stable;[^}]*padding:0;/);
 assert.match(css, /\.dialog-body-content \{ width:100%; min-width:0; \}/);
+assert.match(css, /\.repair-dialog \{[^}]*width:min\(760px,calc\(100vw - 32px\)\);[^}]*height:min\(650px,calc\(100dvh - 32px\)\);[^}]*overflow:hidden/);
+assert.match(css, /\.repair-dialog-content \{[^}]*display:grid;[^}]*gap:18px;[^}]*padding:20px 24px/);
+assert.match(css, /\.repair-acknowledgement \{[^}]*min-height:44px/);
+assert.match(css, /@media \(max-width: 620px\)[\s\S]*?\.repair-dialog \{ width:100vw; height:100dvh; border:0; border-radius:0; \}/);
 assert.match(css, /\.evidence-lightbox-thumbnails \{ overflow-x:auto; overflow-y:hidden; \}/);
 assert.match(css, /\.role-editor-fields \{ overflow:visible; \}/);
 assert.match(css, /\.onboarding-panels \{ place-items:initial; overflow-x:hidden; overflow-y:auto; \}/);
@@ -1777,6 +1784,7 @@ function runLogFixture() {
 }
 
 async function mount(page, overview, overrides = {}) {
+  const testOrigin = overrides.testOrigin || "http://swarm.test";
   const runtimeErrors = [];
   const failedRequests = [];
   const requests = [];
@@ -1815,11 +1823,14 @@ async function mount(page, overview, overrides = {}) {
   page.on("console", (message) => { if (message.type() === "error") runtimeErrors.push(message.text()); });
   page.on("pageerror", (error) => runtimeErrors.push(error.message));
   page.on("requestfailed", (request) => failedRequests.push(request.url()));
-  await page.route("http://swarm.test/**", async (route) => {
+  const routeConsoleRequest = async (route) => {
     const request = route.request();
     const url = new URL(request.url());
     requests.push(url.pathname + url.search);
-    if (url.pathname === "/") return route.fulfill({ status: 200, contentType: "text/html", body: documentHtml });
+    if (url.pathname === "/") {
+      const body = testOrigin === "http://swarm.test" ? documentHtml : documentHtml.replace('<base href="http://swarm.test/">', '<base href="' + testOrigin + '/">');
+      return route.fulfill({ status: 200, contentType: "text/html", body });
+    }
     if (url.pathname === "/styles.css") return route.fulfill({ status: 200, contentType: "text/css", body: css });
     if (url.pathname === "/app.js") return route.fulfill({ status: 200, contentType: "text/javascript", body: app });
     if (url.pathname === "/assets/swarm-offline-disconnected.png") return route.fulfill({ status: 200, contentType: "image/png", body: offlineAsset });
@@ -1970,11 +1981,12 @@ async function mount(page, overview, overrides = {}) {
         await new Promise((resolve) => setTimeout(resolve, messageControl.timeoutMs + 80));
       }
       if (outcome.status && outcome.status >= 400) return route.fulfill({ status: outcome.status, contentType: "application/json", body: JSON.stringify({ ok: false, error: outcome.error || "message action failed" }) });
+      const alternateDigest = payload.action_digest === "sha256:" + "0".repeat(64) ? "sha256:" + "1".repeat(64) : "sha256:" + "0".repeat(64);
       const body = outcome.body || {
         ok: true,
         result_code: outcome.result_code || "ACKNOWLEDGED",
         request_id: payload.request_id,
-        action_digest: outcome.action_digest || "sha256:" + "f".repeat(64),
+        action_digest: outcome.action_digest === "different" ? alternateDigest : (outcome.action_digest || payload.action_digest),
         result_event_id: outcome.result_event_id === null ? null : (outcome.result_event_id || "message-result-event"),
         result_event_digest: outcome.result_event_digest === null ? null : (outcome.result_event_digest || "sha256:" + "9".repeat(64)),
       };
@@ -1994,6 +2006,7 @@ async function mount(page, overview, overrides = {}) {
       const payload = request.postDataJSON();
       repairRequests.push(payload);
       const result = diagnosticsControl.repairResponses.shift() || { ok: true, repair_policy: { dispatch: "disabled", claim_limit: "Preview only." }, selected_check_ids: payload.check_ids };
+      if (result.status && result.status >= 400) return route.fulfill({ status: result.status, contentType: "application/json", body: JSON.stringify({ ok: false, error: result.error || "repair preview unavailable" }) });
       return route.fulfill(response(result));
     }
     if (url.pathname === "/api/health/settings") return route.fulfill(response(fixture.healthSettings));
@@ -2011,14 +2024,16 @@ async function mount(page, overview, overrides = {}) {
     if (url.pathname.startsWith("/assets/role-avatars/")) return route.fulfill({ status: 200, contentType: "image/png", body: mascotAsset });
     if (url.pathname === "/swarm-icon-64.png") return route.fulfill({ status: 200, contentType: "image/png", body: iconAsset });
     return route.abort();
-  });
-  await page.goto(overrides.initialURL || "http://swarm.test/", { waitUntil: "domcontentloaded" });
+  };
+  await page.route(testOrigin + "/**", routeConsoleRequest);
+  if (testOrigin !== "http://swarm.test") await page.route("http://swarm.test/**", routeConsoleRequest);
+  await page.goto(overrides.initialURL || testOrigin + "/", { waitUntil: "domcontentloaded" });
   if (overrides.waitForConnectionState) {
     await page.locator("#connection-state").waitFor({ state: "visible" });
     return { runtimeErrors, failedRequests, requests, notificationSeenRequests, configRequests, assetRequests, messageRequests, profileRequests, repairRequests, assetControl, configControl, runLogControl, messageControl, profileControl, diagnosticsControl };
   }
   try {
-    const initialView = new URL(overrides.initialURL || "http://swarm.test/").hash.replace(/^#/, "") || "overview";
+    const initialView = new URL(overrides.initialURL || testOrigin + "/").hash.replace(/^#/, "") || "overview";
     if (initialView === "overview") await page.locator("#overview-content").waitFor({ state: "visible" });
     else await page.waitForFunction((view) => Boolean(state.overview) && !document.querySelector('[data-view-panel="' + view + '"]')?.hidden, initialView);
   } catch (error) {
@@ -2964,6 +2979,12 @@ proofFeed.items.push({
       responses: [
         { result_code: "ACKNOWLEDGED" },
         { result_code: "REPLAYED" },
+        { result_code: "ACKNOWLEDGED", action_digest: "different" },
+        { result_code: "ACKNOWLEDGED" },
+        { result_code: "REPLAYED", action_digest: "different" },
+        { result_code: "REPLAYED" },
+        { result_code: "RESULT", action_digest: "different" },
+        { result_code: "ACKNOWLEDGED" },
         { result_code: "STALE" },
         { result_code: "ACKNOWLEDGED" },
         { result_code: "ACKNOWLEDGED", result_event_digest: null },
@@ -2972,7 +2993,7 @@ proofFeed.items.push({
       ],
     };
     const messagePage = await browser.newPage({ viewport: { width: 1024, height: 760 } });
-    const messageRuntime = await mount(messagePage, scopedFixture(), { ...overrides, messageControl });
+    const messageRuntime = await mount(messagePage, scopedFixture(), { ...overrides, messageControl, testOrigin: "http://127.0.0.1" });
     await messagePage.evaluate(() => selectProjectScope("project:fixture"));
     await messagePage.waitForFunction(() => state.projectId === "project:fixture");
     await messagePage.locator("#message-launcher").click();
@@ -3005,11 +3026,54 @@ proofFeed.items.push({
     assert.deepEqual(acknowledgedRequest.observed_cursor, { stream_id: "project-ledger", project_id: "project:fixture", sequence: 42, event_id: "fixture-event-42", event_digest: "sha256:" + "e".repeat(64) });
     assert.deepEqual(acknowledgedRequest.attachments, [{ artifact_id: "fixture-image-1", digest: "sha256:" + "1".repeat(64) }]);
     assert.match(acknowledgedRequest.request_id, /^[a-z0-9][a-z0-9._:-]{7,127}$/i);
+    assert.match(acknowledgedRequest.action_digest, /^sha256:[a-f0-9]{64}$/);
 
     await messagePage.locator("#message-draft").fill("Replay this exact message.");
     await messagePage.getByRole("button", { name: "Send message" }).click();
     await messagePage.waitForFunction(() => state.messageStatus === "sent");
     assert.equal(messageRuntime.messageRequests.length, 2);
+
+    await messagePage.locator("#message-draft").fill("Preserve this ACK draft on digest conflict.");
+    await messagePage.evaluate(() => { state.messageAttachments = [{ artifact_id: "fixture-image-ack", digest: "sha256:" + "4".repeat(64) }]; renderMessageComposer(); });
+    await messagePage.getByRole("button", { name: "Send message" }).click();
+    await messagePage.waitForFunction(() => state.messageStatus === "conflict");
+    assert.match(await messagePage.locator("#message-status").textContent(), /acknowledged a different command/i);
+    assert.equal(await messagePage.locator("#message-draft").inputValue(), "Preserve this ACK draft on digest conflict.");
+    assert.deepEqual(await messagePage.evaluate(() => state.messageAttachments), [{ artifact_id: "fixture-image-ack", digest: "sha256:" + "4".repeat(64) }]);
+    const mismatchedAckRequest = structuredClone(messageRuntime.messageRequests[2]);
+    const mismatchedAckReceipt = await messagePage.evaluate(() => structuredClone(state.messageReceipt));
+    assert.match(mismatchedAckReceipt.action_digest, /^sha256:[a-f0-9]{64}$/);
+    assert.notEqual(mismatchedAckReceipt.action_digest, mismatchedAckRequest.action_digest, "a second valid digest must not admit an unrelated ACK");
+    await messagePage.getByRole("button", { name: "Retry", exact: true }).click();
+    await messagePage.waitForFunction(() => state.messageStatus === "sent");
+    assert.deepEqual(messageRuntime.messageRequests[3], mismatchedAckRequest, "ACK conflict retry must preserve the exact action and request identity");
+
+    await messagePage.locator("#message-draft").fill("Preserve this replay draft on digest conflict.");
+    await messagePage.evaluate(() => { state.messageAttachments = [{ artifact_id: "fixture-image-replay", digest: "sha256:" + "5".repeat(64) }]; renderMessageComposer(); });
+    await messagePage.getByRole("button", { name: "Send message" }).click();
+    await messagePage.waitForFunction(() => state.messageStatus === "conflict");
+    assert.match(await messagePage.locator("#message-status").textContent(), /acknowledged a different command/i);
+    assert.equal(await messagePage.locator("#message-draft").inputValue(), "Preserve this replay draft on digest conflict.");
+    assert.deepEqual(await messagePage.evaluate(() => state.messageAttachments), [{ artifact_id: "fixture-image-replay", digest: "sha256:" + "5".repeat(64) }]);
+    const mismatchedReplayRequest = structuredClone(messageRuntime.messageRequests[4]);
+    const mismatchedReplayReceipt = await messagePage.evaluate(() => structuredClone(state.messageReceipt));
+    assert.match(mismatchedReplayReceipt.action_digest, /^sha256:[a-f0-9]{64}$/);
+    assert.notEqual(mismatchedReplayReceipt.action_digest, mismatchedReplayRequest.action_digest, "a second valid digest must not admit an unrelated replay");
+    await messagePage.getByRole("button", { name: "Retry", exact: true }).click();
+    await messagePage.waitForFunction(() => state.messageStatus === "sent");
+    assert.deepEqual(messageRuntime.messageRequests[5], mismatchedReplayRequest, "Replay conflict retry must preserve the exact action and request identity");
+
+    await messagePage.locator("#message-draft").fill("A RESULT receipt cannot clear this draft.");
+    await messagePage.evaluate(() => { state.messageAttachments = [{ artifact_id: "fixture-image-result", digest: "sha256:" + "6".repeat(64) }]; renderMessageComposer(); });
+    await messagePage.getByRole("button", { name: "Send message" }).click();
+    await messagePage.waitForFunction(() => state.messageStatus === "conflict");
+    assert.equal(await messagePage.locator("#message-draft").inputValue(), "A RESULT receipt cannot clear this draft.");
+    assert.deepEqual(await messagePage.evaluate(() => state.messageAttachments), [{ artifact_id: "fixture-image-result", digest: "sha256:" + "6".repeat(64) }]);
+    const mismatchedResultRequest = structuredClone(messageRuntime.messageRequests[6]);
+    await messagePage.getByRole("button", { name: "Retry", exact: true }).click();
+    await messagePage.waitForFunction(() => state.messageStatus === "sent");
+    assert.deepEqual(messageRuntime.messageRequests[7], mismatchedResultRequest, "RESULT conflict retry must preserve the exact action and request identity");
+
     await messagePage.locator("#message-draft").fill("Keep this draft on conflict.");
     await messagePage.evaluate(() => { state.messageAttachments = [{ artifact_id: "fixture-image-2", digest: "sha256:" + "2".repeat(64) }]; renderMessageComposer(); });
     await messagePage.getByRole("button", { name: "Send message" }).click();
@@ -3017,10 +3081,10 @@ proofFeed.items.push({
     assert.equal(await messagePage.getByRole("button", { name: "Retry", exact: true }).isVisible(), true);
     assert.equal(await messagePage.locator("#message-draft").inputValue(), "Keep this draft on conflict.");
     if (evidenceDir) await messagePage.screenshot({ path: path.join(evidenceDir, "41-message-stale-retry-desktop-1024x760.png"), fullPage: false, animations: "disabled" });
-    const staleRequest = structuredClone(messageRuntime.messageRequests[2]);
+    const staleRequest = structuredClone(messageRuntime.messageRequests[8]);
     await messagePage.getByRole("button", { name: "Retry", exact: true }).click();
     await messagePage.waitForFunction(() => state.messageStatus === "sent");
-    assert.deepEqual(messageRuntime.messageRequests[3], staleRequest, "Retry must reuse the exact request, context, and attachment identity");
+    assert.deepEqual(messageRuntime.messageRequests[9], staleRequest, "Retry must reuse the exact request, context, and attachment identity");
 
     await messagePage.locator("#message-draft").fill("Do not accept a malformed receipt.");
     await messagePage.evaluate(() => { state.messageAttachments = [{ artifact_id: "fixture-image-3", digest: "sha256:" + "3".repeat(64) }]; renderMessageComposer(); });
@@ -3111,12 +3175,73 @@ proofFeed.items.push({
     assert.match(await diagnosticsPage.locator("#repair-status").textContent(), /Preview ready/);
     assert.match(await diagnosticsPage.locator("#repair-dispatch-note").textContent(), /Dispatch is unavailable/);
     assert.equal(await diagnosticsPage.getByRole("button", { name: "Prepare repair request" }).isDisabled(), true);
-    if (evidenceDir) await diagnosticsPage.screenshot({ path: path.join(evidenceDir, "42-diagnostics-repair-preview-desktop-1024x760.png"), fullPage: false, animations: "disabled" });
+    await assertDialogFrame(diagnosticsPage, "#repair-dialog");
+    const repairDesktopGeometry = await diagnosticsPage.locator("#repair-dialog").evaluate((dialog) => {
+      const shell = dialog.querySelector(".repair-dialog-shell");
+      const header = dialog.querySelector(".repair-dialog-header");
+      const close = dialog.querySelector("#repair-close");
+      const footerButtons = [...dialog.querySelectorAll(".repair-dialog-footer button")].map((button) => button.getBoundingClientRect());
+      const rect = shell.getBoundingClientRect();
+      const headerRect = header.getBoundingClientRect();
+      const closeRect = close.getBoundingClientRect();
+      return {
+        width: rect.width,
+        height: rect.height,
+        contained: rect.left >= 0 && rect.top >= 0 && rect.right <= innerWidth && rect.bottom <= innerHeight,
+        closeAligned: closeRect.right <= headerRect.right + 1 && closeRect.top >= headerRect.top - 1,
+        targets: footerButtons.map((box) => ({ width: box.width, height: box.height })),
+        overflowX: document.documentElement.scrollWidth - innerWidth,
+      };
+    });
+    assert.ok(repairDesktopGeometry.width >= 600 && repairDesktopGeometry.height >= 520, JSON.stringify(repairDesktopGeometry));
+    assert.equal(repairDesktopGeometry.contained, true);
+    assert.equal(repairDesktopGeometry.closeAligned, true);
+    assert.ok(repairDesktopGeometry.targets.every((target) => target.width >= 44 && target.height >= 44), JSON.stringify(repairDesktopGeometry));
+    assert.ok(repairDesktopGeometry.overflowX <= 1, JSON.stringify(repairDesktopGeometry));
+    if (evidenceDir) await diagnosticsPage.screenshot({ path: path.join(evidenceDir, "43-diagnostics-repair-preview-desktop-1024x760.png"), fullPage: false, animations: "disabled" });
     await diagnosticsPage.keyboard.press("Escape");
     assert.equal(await diagnosticsPage.locator("#repair-dialog").evaluate((dialog) => dialog.open), false);
     assert.equal(await repairTrigger.evaluate((element) => element === document.activeElement), true);
     assert.deepEqual(diagnosticsRuntime.runtimeErrors, []);
     await diagnosticsPage.close();
+
+    const mobileDiagnosticsControl = {
+      feed: structuredClone(diagnosticsControl.feed),
+      history: structuredClone(fixture.diagnosticHistory),
+      repairResponses: [{ status: 503, error: "Repair preview is temporarily unavailable. Try again from Diagnostics." }],
+      getCount: 0,
+    };
+    const mobileDiagnosticsPage = await browser.newPage({ viewport: { width: 390, height: 844 } });
+    const mobileDiagnosticsRuntime = await mount(mobileDiagnosticsPage, scopedFixture(), { ...overrides, diagnosticsControl: mobileDiagnosticsControl });
+    await mobileDiagnosticsPage.locator("#tab-diagnostics").evaluate((button) => button.click());
+    await mobileDiagnosticsPage.waitForFunction(() => state.diagnosticsHistoryStatus === "current");
+    const mobileRepairTrigger = mobileDiagnosticsPage.getByRole("button", { name: "Repair with Codex" });
+    await mobileRepairTrigger.focus();
+    await mobileRepairTrigger.click();
+    await mobileDiagnosticsPage.locator("#repair-dialog").waitFor({ state: "visible" });
+    await mobileDiagnosticsPage.waitForFunction(() => state.diagnosticsRepairPending === false && Boolean(state.diagnosticsRepairError));
+    assert.match(await mobileDiagnosticsPage.locator("#repair-status").textContent(), /temporarily unavailable/i);
+    assert.equal(await mobileDiagnosticsPage.locator("#repair-status").evaluate((element) => element.classList.contains("is-error")), true);
+    assert.equal(await mobileDiagnosticsPage.getByRole("button", { name: "Prepare repair request" }).isDisabled(), true);
+    await assertDialogFrame(mobileDiagnosticsPage, "#repair-dialog");
+    const repairMobileGeometry = await mobileDiagnosticsPage.locator("#repair-dialog").evaluate((dialog) => {
+      const shell = dialog.querySelector(".repair-dialog-shell").getBoundingClientRect();
+      return {
+        fillsViewport: Math.abs(shell.width - innerWidth) <= 1 && Math.abs(shell.height - innerHeight) <= 1,
+        contained: shell.left >= -1 && shell.top >= -1 && shell.right <= innerWidth + 1 && shell.bottom <= innerHeight + 1,
+        overflowX: document.documentElement.scrollWidth - innerWidth,
+      };
+    });
+    assert.equal(repairMobileGeometry.fillsViewport, true, JSON.stringify(repairMobileGeometry));
+    assert.equal(repairMobileGeometry.contained, true, JSON.stringify(repairMobileGeometry));
+    assert.ok(repairMobileGeometry.overflowX <= 1, JSON.stringify(repairMobileGeometry));
+    if (evidenceDir) await mobileDiagnosticsPage.screenshot({ path: path.join(evidenceDir, "44-diagnostics-repair-error-mobile-390x844.png"), fullPage: false, animations: "disabled" });
+    await mobileDiagnosticsPage.keyboard.press("Escape");
+    assert.equal(await mobileDiagnosticsPage.locator("#repair-dialog").evaluate((dialog) => dialog.open), false);
+    assert.equal(await mobileRepairTrigger.evaluate((element) => element === document.activeElement), true);
+    assert.equal(mobileDiagnosticsRuntime.repairRequests.length, 1);
+    assert.ok(mobileDiagnosticsRuntime.runtimeErrors.every((message) => /503/.test(message)), mobileDiagnosticsRuntime.runtimeErrors.join(" | "));
+    await mobileDiagnosticsPage.close();
 
     const page = await browser.newPage({ viewport: { width: 1536, height: 1024 } });
     const desktop = await mount(page, overview, overrides);
@@ -3215,6 +3340,7 @@ proofFeed.items.push({
     assert.equal(await page.locator("#profile").isDisabled(), false);
     assert.deepEqual(await page.locator(".overview-metric-card > header > span").allTextContents(), ["Active work", "Needs attention", "Verified progress", "Usage"]);
     assert.deepEqual(await page.locator(".overview-metric-card > strong").allTextContents(), ["3 / 5", "2", "75%", "125k used"]);
+    await page.waitForFunction(() => state.usageWindowHours === 1 && state.usageStatus === "current");
     assert.equal(await page.locator('[data-usage-chart="overview"] [data-usage-range="1"]').getAttribute("aria-pressed"), "true");
     assert.equal(await page.locator("#metric-usage-trend").getAttribute("aria-label"), "Usage during the last hour from 2 timestamped samples");
     assert.ok(await page.locator("#metric-usage-trend polyline.chart-line").count() === 1);
