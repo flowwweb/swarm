@@ -312,7 +312,7 @@ assert.match(app, /function saveConfigMutation\(changes\) \{\s*return saveConfig
 assert.match(app, /function configWriteReceiptMatches\(result, request\)[\s\S]*?JSON\.stringify\(receipt\?\.scope\) === request\.binding[\s\S]*?receipt\?\.acknowledged === true[\s\S]*?receipt\?\.operation_id === request\.operationId[\s\S]*?receipt\?\.expected_revision === request\.payload\.expected_revision/);
 assert.match(app, /receipt\?\.action === "config_update"[\s\S]*?typeof receipt\?\.replayed === "boolean"/);
 assert.match(app, /retry\?\.exhausted[\s\S]*?const operationId = retry\?\.operationId \|\| configWriteOperationId\(\)/);
-assert.match(app, /configWriteRetry = uncertain && request \? \{ identity: request\.identity, operationId: request\.operationId, exhausted: request\.uncertainRetry \} : null/);
+assert.match(app, /if \(request\) configWriteRetry = uncertain \? \{ identity: request\.identity, operationId: request\.operationId, exhausted: request\.uncertainRetry \} : null/);
 assert.match(app, /function saveCurrentConfigMutation\(changes\)[\s\S]*?if \(!result\.applied\) throw new Error\("Settings scope changed before the save was acknowledged\. Your unsaved changes are preserved\."\)/);
 assert.match(app, /error\?\.status === 409[\s\S]*?unsaved changes are preserved[\s\S]*?Retry will reuse this exact operation/);
 assert.doesNotMatch(app, /body: JSON\.stringify\(\{ changes \}\)/);
@@ -3130,6 +3130,8 @@ proofFeed.items.push({
     assert.equal(exhaustedRetry.configRequests[0].operation_id, exhaustedRetry.configRequests[1].operation_id);
     assert.equal(await exhaustedRetryPage.evaluate(() => saveSettingsDraft()), false);
     assert.equal(exhaustedRetry.configRequests.length, 2, "an exhausted uncertain write must not send a third request");
+    assert.equal(await exhaustedRetryPage.evaluate(() => saveSettingsDraft()), false);
+    assert.equal(exhaustedRetry.configRequests.length, 2, "the exhausted identity must remain blocked on later attempts");
     assert.match(await exhaustedRetryPage.evaluate(() => state.settingsSaveError), /after one retry[\s\S]*unsaved changes are preserved/);
     assert.deepEqual(await exhaustedRetryPage.evaluate(() => [...state.settingsDraft]), [["execution.fast_mode", true]]);
     assert.notEqual(await exhaustedRetryPage.evaluate(() => state.settingsSaveMessage), "Saved");

@@ -640,7 +640,7 @@ async function saveConfigText(text) {
     return { applied: true, config };
   } catch (error) {
     const uncertain = Boolean(request) && (error?.invalidConfigAcknowledgement === true || error?.connectionFailure === true || !Number.isInteger(error?.status));
-    configWriteRetry = uncertain && request ? { identity: request.identity, operationId: request.operationId, exhausted: request.uncertainRetry } : null;
+    if (request) configWriteRetry = uncertain ? { identity: request.identity, operationId: request.operationId, exhausted: request.uncertainRetry } : null;
     if (error?.status === 409) error.message = "Settings changed elsewhere. Reload before retrying; your unsaved changes are preserved.";
     else if (uncertain && request?.uncertainRetry) error.message = "SWARM could not confirm this save after one retry. Reload before trying again; your unsaved changes are preserved.";
     else if (uncertain && error?.invalidConfigAcknowledgement !== true) error.message = "SWARM could not confirm the save. Retry will reuse this exact operation; your unsaved changes are preserved.";
