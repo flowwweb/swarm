@@ -375,6 +375,10 @@ class SwarmConsoleTests(unittest.TestCase):
             console.STATIC_FILES["/assets/swarm-state-mascot-concerned.webp"],
             ("swarm-state-mascot-concerned.webp", "image/webp"),
         )
+        self.assertEqual(
+            console.STATIC_FILES["/assets/support-caricature-light.webp"],
+            ("support-caricature-light.webp", "image/webp"),
+        )
 
     def test_console_uses_flowwweb_swarm_tokens_without_lime_controls(self) -> None:
         css = (console.STATIC_ROOT / "styles.css").read_text(encoding="utf-8").casefold()

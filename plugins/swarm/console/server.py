@@ -243,6 +243,7 @@ STATIC_FILES = {
     "/assets/swarm-offline-disconnected.webp": ("swarm-offline-disconnected.webp", "image/webp"),
     "/assets/swarm-state-mascot-concerned.png": ("swarm-state-mascot-concerned.png", "image/png"),
     "/assets/swarm-state-mascot-concerned.webp": ("swarm-state-mascot-concerned.webp", "image/webp"),
+    "/assets/support-caricature-light.webp": ("support-caricature-light.webp", "image/webp"),
 }
 STATIC_ASSETS = {
     "/assets/swarm-wordmark.png": (
