@@ -7,6 +7,7 @@ import os
 import re
 import sys
 import tempfile
+import threading
 from pathlib import Path
 from typing import Any, Mapping
 from urllib.parse import urlsplit
@@ -36,6 +37,8 @@ _BRIEF_REQUIRED = {
     "risks_blockers", "links",
 }
 _EDITABLE_COLLECTIONS = frozenset({"milestones", "tasks", "blocks", "risks_blockers"})
+# ponytail: process-local serialization; add a host-owned cross-process lock only if multiple writers are introduced.
+_UPDATE_LOCK = threading.Lock()
 _MAX_BRIEF_BYTES = 512 * 1024
 
 
@@ -118,6 +121,26 @@ def render_project_brief_markdown(text: str, document: Mapping[str, Any]) -> str
 
 
 def update_project_brief(
+    path: Path,
+    *,
+    expected_digest: str,
+    collection: str,
+    record_id: str,
+    state: str,
+    updated_at: str,
+) -> str:
+    with _UPDATE_LOCK:
+        return _update_project_brief(
+            path,
+            expected_digest=expected_digest,
+            collection=collection,
+            record_id=record_id,
+            state=state,
+            updated_at=updated_at,
+        )
+
+
+def _update_project_brief(
     path: Path,
     *,
     expected_digest: str,
@@ -285,6 +308,9 @@ def project_schema1_views(
         raise ProjectModelError("project model source artifact belongs to another project")
     if not re.fullmatch(r"(?:sha256:)?[0-9a-fA-F]{64}", source_artifact.revision):
         raise ProjectModelError("project model source artifact requires an immutable SHA-256 revision")
+    source_digest = source_artifact.revision if source_artifact.revision.startswith("sha256:") else f"sha256:{source_artifact.revision}"
+    if source_digest.casefold() != f"sha256:{_digest(model)}":
+        raise ProjectModelError("project model source artifact digest does not match the model")
 
     objective = model.get("objective") if isinstance(model.get("objective"), Mapping) else {}
     proof_acceptance = model.get("proof_acceptance") if isinstance(model.get("proof_acceptance"), Mapping) else {}
@@ -489,7 +515,6 @@ def project_schema1_views(
         "action": {"kind": "open_entity", "project_id": project_id, "entity_id": agent_id},
     } for agent_id, roles in sorted(agent_roles.items())]
 
-    source_digest = source_artifact.revision if source_artifact.revision.startswith("sha256:") else f"sha256:{source_artifact.revision}"
     content_by_id = {
         "view.project.overview-health": {"blocks": overview_blocks},
         "view.project.roadmap": {"milestones": roadmap},
@@ -501,6 +526,8 @@ def project_schema1_views(
     tabs = []
     for view_id, label, renderer, mode, required_pointers, optional_pointers in VIEW_SPECS:
         unavailable = [pointer for pointer in required_pointers if not _valid_pointer(model, pointer)]
+        if view_id == "view.project.agents":
+            unavailable.extend(pointer for pointer, value in (("/authority", authority), ("/ownership", ownership)) if not value and pointer not in unavailable)
         unavailable.extend(pointer for pointer in optional_pointers if pointer[1:] in model and not _valid_pointer(model, pointer))
         if unavailable:
             diagnostics.append({

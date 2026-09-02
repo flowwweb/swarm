@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import concurrent.futures
 import importlib.util
 import json
 import tempfile
@@ -162,6 +163,9 @@ class ProjectModelViewsTests(unittest.TestCase):
         foreign = views.ArtifactIdentity("project-brief:other", artifact.revision, artifact.purpose)
         with self.assertRaisesRegex(views.ProjectModelError, "belongs to another project"):
             views.project_schema1_views(model, foreign, server.PROJECT_VIEW_RENDERERS, server.PROJECT_VIEW_ACTIONS)
+        forged = views.ArtifactIdentity(artifact.base, "f" * 64, artifact.purpose)
+        with self.assertRaisesRegex(views.ProjectModelError, "digest does not match"):
+            views.project_schema1_views(model, forged, server.PROJECT_VIEW_RENDERERS, server.PROJECT_VIEW_ACTIONS)
 
     def test_unresolved_relationship_is_diagnostic_not_fabricated_node(self):
         model = fixture(tasks=[{"id": "t-1", "dependency_ids": ["missing"]}])
@@ -197,6 +201,11 @@ class ProjectModelViewsTests(unittest.TestCase):
             "reason": "MISSING_OR_INVALID_SOURCE",
             "pointers": "/authority,/ownership",
         }])
+        for field in ("authority", "ownership"):
+            with self.subTest(field=field):
+                model = fixture()
+                model[field] = {}
+                self.assertNotIn("Agents", [tab["label"] for tab in self.project(model)["tabs"]])
 
     def test_real_project_briefs_parse_and_round_trip_without_rewriting(self):
         for name, expected in REAL_PROJECT_FIXTURES.items():
@@ -251,6 +260,34 @@ class ProjectModelViewsTests(unittest.TestCase):
                     updated_at="2026-09-02T01:00:00Z",
                 )
             self.assertEqual(path.read_bytes(), before_conflict)
+
+    def test_concurrent_expected_digest_update_has_one_winner(self):
+        text = markdown_fixture(REAL_PROJECT_FIXTURES["Nemo"])
+        _, digest = views.parse_project_brief_markdown(text)
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "SWARM.md"
+            path.write_text(text, encoding="utf-8")
+
+            def update(state):
+                return views.update_project_brief(
+                    path,
+                    expected_digest=digest,
+                    collection="tasks",
+                    record_id="t-device",
+                    state=state,
+                    updated_at="2026-09-02T00:00:00Z",
+                )
+
+            with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+                futures = [executor.submit(update, state) for state in ("active", "complete")]
+            outcomes = []
+            for future in futures:
+                try:
+                    outcomes.append(future.result())
+                except views.ProjectModelError as exc:
+                    outcomes.append(str(exc))
+            self.assertEqual(sum(item.startswith("sha256:") for item in outcomes), 1)
+            self.assertEqual(outcomes.count("project brief digest conflict"), 1)
 
     def test_parser_and_edit_fail_closed_on_ambiguous_or_uncontrolled_input(self):
         text = markdown_fixture(REAL_PROJECT_FIXTURES["SWARM"])
