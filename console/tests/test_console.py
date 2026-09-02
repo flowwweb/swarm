@@ -366,6 +366,16 @@ class SwarmConsoleTests(unittest.TestCase):
         self.assertEqual(mascot[:8], b"\x89PNG\r\n\x1a\n")
         self.assertEqual((int.from_bytes(mascot[16:20], "big"), int.from_bytes(mascot[20:24], "big")), (512, 512))
 
+    def test_console_exposes_state_mascot_webp_routes(self) -> None:
+        self.assertEqual(
+            console.STATIC_FILES["/assets/swarm-offline-disconnected.webp"],
+            ("swarm-offline-disconnected.webp", "image/webp"),
+        )
+        self.assertEqual(
+            console.STATIC_FILES["/assets/swarm-state-mascot-concerned.webp"],
+            ("swarm-state-mascot-concerned.webp", "image/webp"),
+        )
+
     def test_console_uses_flowwweb_swarm_tokens_without_lime_controls(self) -> None:
         css = (console.STATIC_ROOT / "styles.css").read_text(encoding="utf-8").casefold()
         index = (console.STATIC_ROOT / "index.html").read_text(encoding="utf-8")
