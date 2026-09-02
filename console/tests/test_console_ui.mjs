@@ -32,6 +32,8 @@ const offlineWebpAsset = fs.readFileSync(path.join(staticRoot, "swarm-offline-di
 const pluginOfflineWebpAsset = fs.readFileSync(path.join(pluginStaticRoot, "swarm-offline-disconnected.webp"));
 const concernedWebpAsset = fs.readFileSync(path.join(staticRoot, "swarm-state-mascot-concerned.webp"));
 const pluginConcernedWebpAsset = fs.readFileSync(path.join(pluginStaticRoot, "swarm-state-mascot-concerned.webp"));
+const supportCaricatureAsset = fs.readFileSync(path.join(staticRoot, "support-caricature-light.webp"));
+const pluginSupportCaricatureAsset = fs.readFileSync(path.join(pluginStaticRoot, "support-caricature-light.webp"));
 const stateMascotProvenance = JSON.parse(fs.readFileSync(path.join(staticRoot, "swarm-state-mascot-provenance.json"), "utf8"));
 const pluginStateMascotProvenance = JSON.parse(fs.readFileSync(path.join(pluginStaticRoot, "swarm-state-mascot-provenance.json"), "utf8"));
 const mascotAsset = fs.readFileSync(path.join(staticRoot, "swarm-mascot-512.png"));
@@ -61,6 +63,8 @@ assert.equal(crypto.createHash("sha256").update(offlineWebpAsset).digest("hex"),
 assert.equal(crypto.createHash("sha256").update(concernedWebpAsset).digest("hex"), "f1f3e41bdf3175afe228d3be8b3c39d0748b98a7c4e4d24aa83133d84526d276");
 assert.deepEqual(pluginOfflineWebpAsset, offlineWebpAsset);
 assert.deepEqual(pluginConcernedWebpAsset, concernedWebpAsset);
+assert.deepEqual(pluginSupportCaricatureAsset, supportCaricatureAsset);
+assert.equal(supportCaricatureAsset.subarray(0, 4).toString("ascii"), "RIFF");
 assert.deepEqual(pluginStateMascotProvenance, stateMascotProvenance);
 assert.equal(stateMascotProvenance.schema_version, 1);
 assert.equal(stateMascotProvenance.source.sha256, "247fc2a02b5505c13815d78c4cce8765b893f51b70cf9167d1e2d43350209666");
@@ -95,6 +99,8 @@ assert.match(server, /"\/assets\/swarm-offline-disconnected\.png": \("swarm-offl
 assert.match(server, /"\/assets\/swarm-state-mascot-concerned\.png": \("swarm-state-mascot-concerned\.png", "image\/png"\)/);
 assert.match(server, /"\/assets\/swarm-offline-disconnected\.webp": \("swarm-offline-disconnected\.webp", "image\/webp"\)/);
 assert.match(server, /"\/assets\/swarm-state-mascot-concerned\.webp": \("swarm-state-mascot-concerned\.webp", "image\/webp"\)/);
+assert.match(server, /"\/assets\/support-caricature-light\.webp": \("support-caricature-light\.webp", "image\/webp"\)/);
+assert.match(pluginServer, /"\/assets\/support-caricature-light\.webp": \("support-caricature-light\.webp", "image\/webp"\)/);
 assert.match(server, /"\/assets\/swarm-mascot-512\.png": \("swarm-mascot-512\.png", "image\/png"\)/);
 assert.match(server, /"\/assets\/swarm-guided-tour-slide1\.png": \("swarm-guided-tour-slide1\.png", "image\/png"\)/);
 assert.match(server, /"\/assets\/swarm-guided-tour-role-group\.png": \("swarm-guided-tour-role-group\.png", "image\/png"\)/);
@@ -129,7 +135,7 @@ assert.match(indexHtml, /id="system-health-control"[^>]*aria-label="System healt
 assert.match(indexHtml, /id="view-diagnostics"[^>]*aria-labelledby="tab-diagnostics"[\s\S]*?System health[\s\S]*?Diagnostics/);
 assert.match(indexHtml, /id="snapshot-status-dot"[^>]*class="status-dot is-reconnecting"|class="status-dot is-reconnecting" id="snapshot-status-dot"/);
 assert.doesNotMatch(indexHtml, /class="snapshot-status"|>System healthy</);
-for (const status of ["Live", "Reconnecting", "Offline"]) assert.match(app, new RegExp(`(?:title|snapshot)\\.textContent = "${status}`));
+for (const status of ["Live", "Reconnecting", "Offline"]) assert.match(app, new RegExp(`(?:title|snapshot)\\.textContent = [^;\\n]*"${status}`));
 assert.match(css, /\.status-dot\.is-reconnecting/);
 assert.match(css, /\.status-dot\.is-offline/);
 
@@ -142,28 +148,57 @@ assert.doesNotMatch(indexHtml, />Graph<\/b>|data-view="graph"/);
 assert.doesNotMatch(indexHtml, /[⌂▦⑂▥⊙⚙]/);
 assert.match(indexHtml, /id="mobile-menu-button"[^>]*aria-label="Open navigation"[^>]*aria-expanded="false"[^>]*aria-controls="console-drawer"/);
 assert.match(indexHtml, /class="mobile-app-bar"[\s\S]*?<img src="\/assets\/swarm-wordmark\.png" alt="SWARM"/);
-assert.match(indexHtml, /<title>SWARM<\/title>/);
+assert.match(indexHtml, /class="drawer-head"[\s\S]*?class="brand-wordmark"[^>]*alt="SWARM"[\s\S]*?id="drawer-close"[^>]*aria-label="Close navigation"/);
+assert.match(indexHtml, /id="system-health-control"[\s\S]*?<use href="#lucide-heart-pulse"><\/use>[\s\S]*?id="snapshot-status-dot"/);
+assert.doesNotMatch(indexHtml, /id="refresh"|Refresh overview/);
+assert.doesNotMatch(app, /\$\("#refresh"\)/);
+assert.match(app, /\$\("#drawer-close"\)\.addEventListener\("click", \(\) => setMobileDrawer\(false, true\)\)/);
+assert.match(indexHtml, /<title>SWARM HQ<\/title>/);
+assert.match(app, /function composeDocumentTitle\(\)/);
+assert.doesNotMatch(app, /navigator\.onLine/);
 assert.doesNotMatch(indexHtml + app, /Control Console/i);
-assert.doesNotMatch(indexHtml + css, /brand-hq|SWARM HQ/);
+assert.doesNotMatch(indexHtml + css, /brand-hq/);
 assert.match(css, /--coral: #FF3D32;/);
 assert.equal((indexHtml.match(/class="nav-list"/g) || []).length, 1);
 assert.match(indexHtml, /class="nav-footer"[\s\S]*?id="tab-settings"/);
+assert.match(indexHtml, /class="top-actions"[\s\S]*?id="notifications"[\s\S]*?id="quick-help"[\s\S]*?class="profile-button topbar-profile circle-frame" id="profile"/);
+assert.doesNotMatch(indexHtml.slice(indexHtml.indexOf('<aside class="drawer"'), indexHtml.indexOf('<main class="workspace">')), /drawer-status|data-status-(?:dot|title|note)|>Live</);
 assert.match(indexHtml, /id="tab-overview"[\s\S]*?<b>Overview<\/b>/);
 assert.equal((indexHtml.match(/id="project-navigation-heading"/g) || []).length, 1);
-assert.match(indexHtml, /<a id="project-navigation-heading" href="\.\/#overview" aria-label="All projects">Projects<\/a>[\s\S]*?id="project-navigation"/);
-assert.match(css, /\.project-navigation > a \{[^}]*min-height:44px;[^}]*color:var\(--faint\);[^}]*text-decoration:none;[^}]*text-transform:uppercase;/);
-assert.match(css, /\.project-navigation > a:focus-visible \{ outline:2px solid #fff;/);
+assert.match(indexHtml, /<a id="project-navigation-heading" href="\.\/#overview" aria-label="All projects">Projects<\/a>[\s\S]*?id="project-create"[^>]*aria-label="Create project"[\s\S]*?id="project-navigation"/);
+assert.match(css, /\.project-navigation-header > a \{[^}]*min-height:44px;[^}]*color:var\(--faint\);[^}]*text-decoration:none;[^}]*text-transform:uppercase;/);
+assert.match(css, /\.project-navigation-header > a:focus-visible \{ outline:2px solid #fff;/);
 assert.match(indexHtml, /<details class="polished-select scope-selector" id="project-scope-selector">[\s\S]*?id="project-scope-filter" aria-label="Project scope"[^>]*aria-haspopup="listbox"[\s\S]*?id="project-scope-options" role="listbox"/);
 assert.doesNotMatch(indexHtml, /<select[^>]*id="project-scope-filter"/);
 assert.match(indexHtml, /id="notifications"[^>]*aria-label="Notifications"/);
 assert.match(indexHtml, /id="profile"[^>]*aria-label="Open profile"[^>]*title="Profile"/);
-assert.match(indexHtml, /id="profile"[^>]*><svg[\s\S]*?<use href="#lucide-circle-user-round"><\/use><\/svg><\/button>/);
+assert.match(indexHtml, /id="notifications"[^>]*class="[^"]*circle-frame[^"]*"|class="[^"]*circle-frame[^"]*"[^>]*id="notifications"/);
+assert.match(indexHtml, /id="profile"[^>]*>[\s\S]*?id="profile-initials"[\s\S]*?id="profile-button-placeholder"[\s\S]*?<use href="#lucide-user-round"><\/use>/);
+assert.match(indexHtml, /id="profile-avatar-placeholder"[^>]*>[\s\S]*?<use href="#lucide-user-round"><\/use>/);
 assert.doesNotMatch(indexHtml, /id="profile"[^>]*>[\s\S]*?<span>Profile<\/span>/);
-assert.match(indexHtml, /class="profile-button chrome-action circle-frame"[^>]*id="profile"/);
+assert.match(indexHtml, /class="profile-button topbar-profile circle-frame"[^>]*id="profile"/);
+assert.match(css, /\.topbar-profile \{[^}]*font-size:10px;/);
+assert.match(indexHtml, /id="support-open"[^>]*aria-haspopup="dialog"[^>]*aria-controls="support-dialog"[\s\S]*?<use href="#swarm-octopus-outline"><\/use>[\s\S]*?Support SWARM/);
+assert.match(indexHtml, /id="support-dialog"[^>]*aria-labelledby="support-dialog-title"[^>]*aria-describedby="support-dialog-description support-status"/);
+assert.match(indexHtml, /src="\/assets\/support-caricature-light\.webp"[^>]*width="800"[^>]*height="800"/);
+for (const amount of ["USD 5", "USD 10", "USD 20", "Custom"]) assert.match(indexHtml, new RegExp(`>${amount}<`));
+assert.match(indexHtml, /Continue with Stripe[\s\S]*Buy me a coffee[\s\S]*Address not configured/);
+assert.match(indexHtml, /href="https:\/\/x\.com\/PeikGabriel"[^>]*target="_blank"[^>]*rel="noopener noreferrer"/);
+assert.match(indexHtml, /href="https:\/\/github\.com\/peikgabriel"[^>]*target="_blank"[^>]*rel="noopener noreferrer"/);
+assert.match(indexHtml, /id="support-status"[^>]*>Payment destinations are not configured yet\./);
+assert.match(css, /\.support-dialog \{[^}]*width:min\(1040px,calc\(100vw - 32px\)\);[^}]*height:min\(680px,calc\(100dvh - 32px\)\)/);
+assert.match(css, /\.support-dialog-content \{[^}]*grid-template-columns:minmax\(280px,\.9fr\) minmax\(360px,1\.1fr\)/);
+assert.match(css, /@media \(max-width:620px\)[\s\S]*?\.support-dialog \{ width:100vw; height:100dvh; border:0; border-radius:0; \}/);
+assert.match(app, /function openSupport\(trigger\)[\s\S]*?dialog\.showModal\(\)[\s\S]*?function closeSupport\(restoreFocus = true\)/);
+assert.match(app, /\$\("#support-dialog"\)\.addEventListener\("click", \(event\) => \{ if \(event\.target === event\.currentTarget\) closeSupport\(\); \}\)/);
+assert.doesNotMatch(css, /\.drawer-status/);
 assert.match(indexHtml, /class="icon-button circle-frame system-health-control[^>]*id="system-health-control"/);
 assert.match(indexHtml, /id="message-launcher"[^>]*aria-label="Message"[^>]*aria-controls="message-composer"[^>]*aria-expanded="false"/);
 assert.match(indexHtml, /id="mobile-message-action"[^>]*aria-label="Message"[^>]*aria-controls="message-composer"/);
-assert.match(indexHtml, /id="message-composer"[^>]*role="dialog"[^>]*aria-modal="false"[^>]*aria-labelledby="message-title"[^>]*hidden/);
+assert.match(indexHtml, /class="mobile-message-footer" aria-label="Primary navigation"[\s\S]*?data-view="overview"[\s\S]*?data-view="agents"[\s\S]*?id="mobile-message-action"[\s\S]*?message-mascot-silhouette[\s\S]*?data-view="assets"[\s\S]*?data-view="roles"/);
+assert.match(indexHtml, /<dialog class="message-composer" id="message-composer" aria-modal="false"[^>]*aria-labelledby="message-title"/);
+assert.match(app, /function showMessageComposerDialog\(\)[\s\S]*?panel\.showModal\(\)[\s\S]*?panel\.show\(\)/);
+assert.match(app, /history\.pushState\(\{ \.\.\.\(history\.state \|\| \{\}\), messageComposer: true \}/);
 assert.match(indexHtml, /<h2 id="message-title">Message<\/h2>/);
 assert.match(indexHtml, /id="message-recipient"/);
 assert.match(indexHtml, /id="message-draft"[^>]*maxlength="4000"/);
@@ -172,10 +207,12 @@ assert.match(indexHtml, /Messaging is unavailable until SWARM exposes the authen
 assert.match(css, /\.message-launcher \{[^}]*position:fixed;[^}]*width:64px; height:64px;[^}]*border-radius:50%;[^}]*linear-gradient\(135deg,var\(--orange\),var\(--coral\)\)/);
 assert.match(css, /\.message-mascot-silhouette \{[^}]*mask:url\("\/assets\/swarm-mascot-512\.png"\)/);
 assert.match(css, /\.message-composer \{[^}]*grid-template-rows:auto minmax\(0,1fr\) auto;[^}]*overflow:hidden/);
+assert.match(css, /\.message-composer:not\(\[open\]\) \{ display:none; \}/);
 assert.match(css, /\.message-composer-body \{[^}]*min-height:0;[^}]*overflow-x:hidden; overflow-y:auto;/);
 assert.match(css, /@media \(max-width: 620px\)[\s\S]*?\.message-launcher \{ display:none; \}[\s\S]*?\.mobile-message-footer \{[^}]*display:grid;/);
 const messageSource = app.match(/function messageRecipients\(\)[\s\S]*?async function sendMessageFromComposer\([^)]*\)[\s\S]*?\n\}/)?.[0] || "";
 assert.match(messageSource, /\["CTRL", "LEAD"\]\.includes\(record\.structuralRole\)/);
+assert.match(messageSource, /record\.identityState === "admitted" && record\.binding/);
 assert.match(messageSource, /action_kind: "send_feedback"/);
 assert.match(messageSource, /MESSAGE_CONNECTOR_UNAVAILABLE/);
 assert.match(messageSource, /manifest_id:[\s\S]*?manifest_digest:[\s\S]*?view_digest:[\s\S]*?source_digests:[\s\S]*?observed_cursor:/);
@@ -190,17 +227,21 @@ assert.match(app, /request = \{ \.\.\.envelope, action_digest: await messageActi
 assert.match(app, /\$\("#profile"\)\.addEventListener\("click", \(event\) => openProfile\(event\.currentTarget\)\)/);
 assert.match(app, /\$\("#profile-form"\)\.addEventListener\("submit", saveProfile\)/);
 assert.match(app, /\$\("#profile-dialog"\)\.addEventListener\("cancel", \(event\) => \{[\s\S]*?closeProfile\(\)/);
-assert.match(app, /\$\("#diagnostics-repair"\)\.addEventListener\("click", \(event\) => openRepairPreview\(event\.currentTarget\)\)/);
+assert.match(app, /function reviewDiagnosticWithCtrl\(checkId\)/);
+assert.match(app, /data-diagnostic-review/);
+assert.doesNotMatch(indexHtml, /Choose recommended|diagnostics-auto-fix|id="diagnostics-repair"/);
+assert.doesNotMatch(indexHtml, /data-diagnostic-check|type="checkbox"[^>]*diagnostic/);
+for (const id of ["diagnostics-health-heading", "diagnostics-check-strip", "diagnostics-signal-list", "diagnostics-health-trend", "diagnostics-log-list", "diagnostics-check-list"]) assert.match(indexHtml, new RegExp(`id="${id}"`));
 assert.match(app, /\$\("#repair-dialog"\)\.addEventListener\("cancel", \(event\) => \{[\s\S]*?closeRepairDialog\(\)/);
 for (const icon of ["eye", "trash-2"]) assert.match(indexHtml, new RegExp(`id="lucide-${icon}" viewBox="0 0 24 24"`));
 assert.match(indexHtml, /id="onboarding-dialog"[^>]*aria-labelledby="onboarding-dialog-title"[^>]*aria-describedby="onboarding-step-status"/);
-assert.equal((indexHtml.match(/<dialog\b/g) || []).length, 8);
-for (const shell of ["agent-detail-shell", "evidence-lightbox-shell", "asset-dialog-shell", "profile-dialog-shell", "repair-dialog-shell", "config-editor-shell", "role-editor-shell", "onboarding-shell"]) {
+assert.equal((indexHtml.match(/<dialog\b/g) || []).length, 12);
+for (const shell of ["agent-detail-shell", "evidence-lightbox-shell", "asset-dialog-shell", "profile-dialog-shell", "support-dialog-shell", "quick-help-shell", "project-create-shell", "repair-dialog-shell", "config-editor-shell", "role-editor-shell", "onboarding-shell"]) {
   assert.match(indexHtml, new RegExp(`class="dialog-shell ${shell}"`));
 }
-assert.equal((indexHtml.match(/class="dialog-body /g) || []).length, 8);
-assert.equal((indexHtml.match(/class="dialog-body-content/g) || []).length, 8);
-assert.equal((indexHtml.match(/class="dialog-footer /g) || []).length, 8);
+assert.equal((indexHtml.match(/class="dialog-body(?: |")/g) || []).length, 11);
+assert.equal((indexHtml.match(/class="dialog-body-content/g) || []).length, 11);
+assert.equal((indexHtml.match(/class="dialog-footer(?: |")/g) || []).length, 10);
 assert.match(css, /\.dialog-shell \{[^}]*grid-template-rows:auto minmax\(0,1fr\) auto;[^}]*overflow:hidden;[^}]*padding:0;/);
 assert.match(css, /\.dialog-body \{[^}]*width:100%;[^}]*min-height:0;[^}]*overflow-x:hidden; overflow-y:auto;[^}]*scrollbar-gutter:stable;[^}]*padding:0;/);
 assert.match(css, /\.dialog-body-content \{ width:100%; min-width:0; \}/);
@@ -239,35 +280,20 @@ assert.match(indexHtml, /<link rel="icon" type="image\/png" sizes="64x64" href="
 assert.doesNotMatch(indexHtml, /swarm-favicon\.svg|<div class="onboarding-mascot"/);
 assert.match(indexHtml, /<h2>One goal\. One CTRL\.<\/h2>/);
 assert.match(indexHtml, /<p>One command becomes coordinated work\.<\/p>/);
-assert.match(indexHtml, /id="onboarding-coordination-tree" role="tree" aria-label="CTRL coordinates four executive managers and twelve profession leads\."/);
-assert.doesNotMatch(indexHtml, /awaiting-admitted-rgba|data-asset-slot="swarm-guided-tour-coordination|onboarding-coordination-slot|Selected visual awaiting/);
-assert.doesNotMatch(indexHtml, /onboarding-flag-mascot|onboarding-flow-node|One prompt\. A coordinated team\.|<img[^>]+coordination|<img[^>]+hierarchy/);
-assert.match(app, /const ONBOARDING_COORDINATION_GROUPS = \[[\s\S]*?id: "coo"[\s\S]*?id: "cto"[\s\S]*?id: "cfo"[\s\S]*?id: "cmo"/);
-assert.equal((app.match(/label: "(?:Operations|Delivery|Support|Engineering|Architecture|Security|Finance|Analytics|Compliance|Design|Content|Growth)", roleId:/g) || []).length, 12);
-assert.match(app, /label: "Content", roleId: "producer"/);
-assert.doesNotMatch(app, /label: "Content", roleId: "writer"/);
-assert.match(app, /function onboardingCoordinationMarkup\(\)/);
-assert.match(app, /data-onboarding-node="ctrl"[\s\S]*?swarm-mascot-512\.png/);
-assert.match(app, /data-onboarding-node="executive"/);
-assert.match(app, /data-onboarding-node="lead"/);
-assert.match(app, /onboardingRoleAvatar\("manager", "Manager"\)/);
-assert.match(app, /function onboardingRoleAvatar\(roleId, label\) \{[\s\S]*?roleAvatar\(roleRecord\(roleId\) \|\| \{ id: roleId, name: label \}\)/);
-assert.match(app, /data-onboarding-edge=/);
-assert.match(app, /function drawOnboardingCoordinationConnectors\(\)[\s\S]*?path\.setAttribute\("d", "M "/);
-assert.match(app, /function moveOnboardingTreeFocus\(event\)[\s\S]*?ArrowRight[\s\S]*?Home[\s\S]*?End/);
-assert.match(css, /\.onboarding-executive-grid \{[^}]*grid-template-columns:repeat\(4,minmax\(0,1fr\)\)/);
-assert.match(css, /\.onboarding-lead-node \{[^}]*grid-template-columns:38px 22px minmax\(0,1fr\)/);
-assert.match(css, /\.onboarding-dialog\.is-step-entering \.onboarding-panel\.is-active \[data-onboarding-node\] \{[^}]*animation:swarm-enter[^}]*18ms/);
+assert.match(indexHtml, /class="onboarding-flow-scene onboarding-artwork" aria-label="A prompt goes to CTRL, which coordinates Designer, Developer, and Reviewer roles\."/);
+assert.match(indexHtml, /class="onboarding-flow-node is-prompt">Prompt<[\s\S]*?class="onboarding-flow-node is-ctrl">CTRL<[\s\S]*?<b>Designer<\/b><b>Developer<\/b><b>Reviewer<\/b>/);
+assert.doesNotMatch(indexHtml + app + css, /onboarding-coordination|ONBOARDING_COORDINATION|data-onboarding-edge|data-onboarding-node|onboardingFlowZoom|onboarding-flow-toolbar/);
+assert.doesNotMatch(indexHtml, /role="tree"|Flowchart zoom|Zoom in|Zoom out/);
 assert.match(indexHtml, /<h2>A role for every kind of work\.<\/h2>/);
 assert.match(indexHtml, /24 curated roles, ready to work—from development and design to security and content\./);
 const onboardingRolePanel = indexHtml.match(/id="onboarding-panel-3"[\s\S]*?<\/section>/)?.[0] || "";
-assert.match(onboardingRolePanel, /<img class="onboarding-role-group onboarding-artwork" src="\/assets\/swarm-guided-tour-role-group\.png" width="1920" height="1080" alt="Developer, Designer, Architect, and Security SWARM role mascots working together\." loading="lazy" decoding="async" \/>/);
-assert.equal((onboardingRolePanel.match(/<img\b/g) || []).length, 1);
-assert.doesNotMatch(onboardingRolePanel, /onboarding-role-examples|data-role-media|role="list"|<article/);
+assert.match(onboardingRolePanel, /id="onboarding-role-assets-blocker" role="status">Role preview blocked: the admitted Architect mascot is orange\./);
+assert.equal((onboardingRolePanel.match(/<img\b/g) || []).length, 0);
+assert.doesNotMatch(onboardingRolePanel, /swarm-guided-tour-role-group|style=|filter:|data-role-media|role="list"|<article/);
 assert.doesNotMatch(app, /ONBOARDING_ROLE_IDS|onboardingRoleExamplesMarkup|renderOnboardingRoleExamples/);
 assert.doesNotMatch(css, /onboarding-role-examples|onboarding-role-media/);
-assert.match(css, /\.onboarding-role-group \{[^}]*width:min\(700px,100%\);[^}]*max-height:min\(310px,42dvh\);[^}]*height:auto;[^}]*object-fit:contain;/);
-assert.match(css, /@media \(max-width: 620px\)[\s\S]*?\.onboarding-role-group \{[^}]*width:min\(100%,340px\);[^}]*max-height:min\(220px,30dvh\);/);
+assert.match(indexHtml, /class="onboarding-panel onboarding-panel-role-group"/);
+assert.match(css, /\.onboarding-role-assets-blocker \{[^}]*border:1px solid rgba\(255,172,75,\.45\);/);
 assert.match(css, /--motion-enter-duration: 220ms;[\s\S]*?--motion-enter-distance: 8px;[\s\S]*?--motion-stagger: 55ms;/);
 assert.match(css, /@keyframes swarm-enter \{ from \{ opacity:0; transform:translateY\(var\(--motion-enter-distance\)\); \} to \{ opacity:1; transform:translateY\(0\); \} \}/);
 assert.match(css, /\.view\.is-active:not\(\[hidden\]\) \{ animation:swarm-enter var\(--motion-enter-duration\) var\(--motion-ease\) both; \}/);
@@ -286,7 +312,7 @@ assert.doesNotMatch(projectViewsPanel, /onboarding-project-views|Your project fi
 assert.doesNotMatch(projectViewsPanel, /manifest|schema|digest|source of truth/i);
 assert.match(indexHtml, /id="onboarding-panel-5"[\s\S]*?<h2>Choose how SWARM works\.<\/h2>[\s\S]*?id="onboarding-configuration"/);
 assert.doesNotMatch(indexHtml, /class="onboarding-(topology|evidence)"/);
-assert.equal((indexHtml.match(/swarm-mascot-512\.png/g) || []).length, 0);
+assert.equal((indexHtml.match(/swarm-mascot-512\.png/g) || []).length, 1);
 assert.match(app, /const ONBOARDING_STEPS = \[/);
 assert.match(app, /function renderOnboarding\(\)/);
 assert.match(app, /dot\.toggleAttribute\("aria-current", selected\)/);
@@ -326,7 +352,7 @@ assert.doesNotMatch(app, /api\('\/api\/settings\/restore', \{ method: 'POST' \}\
 assert.match(app, /function observedTimestampMs\(value\)[\s\S]*?numeric < 1e12 \? numeric \* 1000 : numeric[\s\S]*?Date\.UTC\(2000, 0, 1\)/);
 assert.match(app, /state\.onboardingConfigPending\.set\(key, \{ value, focusIdentity \}\)/);
 assert.match(app, /state\.onboardingConfigFailures\.set\(key, \{ value, error:/);
-assert.match(app, /configEditable\(key\) && !state\.onboardingConfigPending\.has\(key\)/);
+assert.match(app, /configEditable\("automation\.mode"\) && !state\.onboardingConfigPending\.has\("automation\.mode"\)/);
 assert.match(app, /if \(state\.onboardingStep === ONBOARDING_STEPS\.length - 1 && onboardingConfigBlocked\(\)\) return false/);
 assert.match(app, /\$\("#onboarding-primary"\)\.disabled = blocked/);
 assert.match(app, /const laterStep = step > 0;[\s\S]*?\$\("#onboarding-body-nav"\)\.hidden = !laterStep;[\s\S]*?\$\("#onboarding-skip"\)\.hidden = laterStep;/);
@@ -335,20 +361,20 @@ assert.match(app, /data-onboarding-control="retry-config">Retry/);
 const onboardingCloseSource = app.slice(app.indexOf('$("#onboarding-dialog").addEventListener("close"'), app.indexOf('$("#evidence-lightbox").addEventListener("close"'));
 assert.doesNotMatch(onboardingCloseSource, /markOnboardingSeen/);
 assert.match(onboardingCloseSource, /addEventListener\("cancel"[\s\S]*?event\.preventDefault\(\)[\s\S]*?onboardingCanDismiss\(\)/);
-assert.match(app, /function onboardingSpeedControl\(value\)/);
+assert.match(app, /function settingsSpeedMarkup\(options = \{\}\)/);
 assert.match(app, /Default[\s\S]*?Fast[\s\S]*?Ultrafast/);
-assert.match(app, /Ultrafast is unavailable until the server exposes an accepted mode\./);
-assert.match(app, /function onboardingTaskLifeControl\(value\)/);
+assert.match(app, /Ultrafast is unavailable until SWARM exposes an accepted mode\./);
+assert.match(app, /function settingsTaskLifeMarkup\(options = \{\}\)/);
 assert.match(app, /ONBOARDING_TASK_LIFE_DETENTS = \[[\s\S]*?hours: 1[\s\S]*?hours: 2[\s\S]*?hours: 4[\s\S]*?hours: 24[\s\S]*?hours: 720/);
-assert.match(app, /data-config-key="["'] \+ key \+ '["'] data-config-values="["'] \+ values/);
+assert.match(app, /data-config-values="["'] \+ ONBOARDING_TASK_LIFE_DETENTS/);
 assert.match(app, /type="range" min="0" max="4" step="1"/);
 assert.match(app, /aria-valuetext=/);
-assert.match(app, /Short clears context sooner to keep work efficient, with more handovers\.[\s\S]*?Balanced hands over when task efficiency begins to drop\.[\s\S]*?Long reduces scheduled handovers, while a larger context can become less efficient over time\./);
+assert.match(app, /Short clears context sooner to keep work efficient, with more handovers\.[\s\S]*?Balanced hands over when task efficiency begins to drop\.[\s\S]*?Long reduces handovers, while a larger context can become less efficient over time\./);
 assert.match(app, /data-onboarding-control="task-life-info"[\s\S]*?aria-label="About task life"[\s\S]*?role="tooltip"/);
-assert.match(app, /class="onboarding-task-life-labels" aria-hidden="true"><span>Short<\/span><span>Balanced<\/span><span>Long<\/span>/);
-assert.match(app, /Number\.isInteger\(value\) && configEditable\(key\)/);
+assert.match(app, /const labels = \["Short", "Medium", "Balanced", "Long", "Unlimited"\]/);
+assert.match(app, /settingsTaskLifeMarkup\(\{ value: life, editable:/);
 const onboardingConfigSource = app.slice(app.indexOf("function onboardingConfigurationMarkup"), app.indexOf("\nfunction renderOnboarding", app.indexOf("function onboardingConfigurationMarkup")));
-assert.match(onboardingConfigSource, /class="onboarding-config-essentials"/);
+assert.match(onboardingConfigSource, /class="settings-essentials onboarding-config-essentials"/);
 assert.match(onboardingConfigSource, /id="onboarding-advanced-settings"[\s\S]*?data-onboarding-control="advanced-settings-link"[\s\S]*?>Advanced settings<\/button>/);
 assert.doesNotMatch(onboardingConfigSource, /onboarding-config-advanced|onboarding-advanced-content|Minimum model|Maximum model|Usage Saver|Use ChatGPT|Automatic health checks|Parallel lanes/);
 assert.doesNotMatch(app, /data-onboarding-control="usage-policy"|onboarding-config-group|onboarding-config-wide/);
@@ -377,9 +403,8 @@ assert.match(css, /\.onboarding-config-essentials \{[^}]*padding:14px 16px/);
 assert.match(css, /\.onboarding-advanced-link \{[^}]*min-height:44px/);
 assert.doesNotMatch(css, /\.onboarding-config-advanced|\.onboarding-advanced-content|\.onboarding-advanced-group|\.onboarding-model-grid|\.onboarding-readonly/);
 assert.match(css, /\.settings-config-entry \{[^}]*scroll-margin-top:72px/);
-assert.match(css, /\.onboarding-task-life input\[type="range"\] \{[^}]*height:44px[^}]*accent-color:var\(--orange\)/);
-assert.match(css, /\.onboarding-task-life-info > summary \{[^}]*width:44px; height:44px/);
-assert.match(css, /\.onboarding-configuration \.toggle-row input \{ accent-color:var\(--orange\); \}/);
+assert.match(css, /\.settings-task-life > input \{[^}]*height:44px;[^}]*accent-color:var\(--orange\)/);
+assert.match(css, /\.settings-task-life-head summary \{[^}]*width:44px; height:44px/);
 assert.doesNotMatch(css, /onboarding-segmented\.is-readonly/);
 assert.doesNotMatch(css.match(/\.onboarding-panel-config[\s\S]*?\.onboarding-actions/)?.[0] || "", /accent-color:var\(--(?:cyan|blue)\)|box-shadow:inset 0 -2px var\(--(?:cyan|blue)\)/);
 assert.match(css, /@media \(max-width: 620px\)[\s\S]*\.onboarding-dialog \{ width:100vw; height:100dvh;/);
@@ -388,7 +413,7 @@ assert.match(css, /--surface: rgba\(16, 29, 47, \.9\);/);
 assert.match(css, /--muted: #c2cedd;/);
 assert.match(css, /--shell-top: clamp\(20px, 2\.5vw, 32px\)/);
 assert.match(css, /padding: max\(var\(--shell-top\), env\(safe-area-inset-top\)\)/);
-assert.match(css, /body\.drawer-open \{ overflow: hidden; \}/);
+assert.match(css, /body\.drawer-open,body\.role-detail-open \{ overflow:hidden; \}/);
 assert.match(css, /@media \(max-width: 620px\)[\s\S]*\.mobile-app-bar \{ position:sticky;/);
 assert.match(css, /\.app-shell\.is-drawer-open \.drawer \{ transform:translateX\(0\); \}/);
 assert.match(app, /function setMobileDrawer\(open, restoreFocus = false\)/);
@@ -416,21 +441,22 @@ assert.match(app, /\/api\/project-progress-feed\?/);
 assert.match(app, /\/api\/project-progress\?/);
 assert.match(app, /function renderProjectProgressFeed\(\)/);
 assert.doesNotMatch(app, /setInterval\([^)]*projectProgress|setInterval\([^)]*progressFeed/);
-for (const tab of ["overview", "roadmap", "lanes", "hierarchy", "proof", "ledger", "ui", "logs"]) {
+for (const tab of ["overview", "roadmap", "lanes", "proof", "ledger", "ui", "logs"]) {
   assert.match(indexHtml, new RegExp(`id="project-tab-${tab}"[^>]*data-project-tab="${tab}"[^>]*role="tab"[^>]*aria-controls="project-tab-panel"`));
 }
-assert.equal((indexHtml.match(/data-project-tab=/g) || []).length, 8);
+assert.equal((indexHtml.match(/data-project-tab=/g) || []).length, 7);
 assert.match(indexHtml, /id="project-tab-ui"[^>]*hidden>UI<\/button>/);
 assert.match(indexHtml, /id="project-detail" hidden aria-labelledby="project-detail-title"/);
 assert.match(indexHtml, /id="project-tab-panel" role="tabpanel" aria-labelledby="project-tab-overview"/);
 assert.match(app, /function renderProjectDetail\(\)/);
-assert.match(app, /const selectedTabId = "project-tab-" \+ state\.projectTab/);
+assert.match(app, /button\.dataset\.projectTab = view\.id;[\s\S]*?button\.dataset\.projectTabManifest = "";[\s\S]*?logsTab\.before\(button\)/);
+assert.match(app, /const selectedTabId = selectedTab\?\.id \|\| "project-tab-overview"/);
 assert.match(app, /tabPanel\.setAttribute\("aria-labelledby", selectedTabId\)/);
 assert.match(app, /function projectTabMarkup\(tab, progress, nodes\)/);
 assert.match(app, /function currentProjectView\(\)/);
 assert.match(app, /projection && projection\.project_id === projectId && projection\.tab\?\.id === "ui"/);
-assert.match(app, /if \(tab === "ui"\) return projectViewMarkup\(\)/);
-assert.match(app, /uiTab\.hidden = !projectView/);
+assert.match(app, /const workspaceViews = projectWorkspaceViews\(currentProjectView\(\)\);[\s\S]*?const workspaceView = workspaceViews\.find\(\(view\) => view\.id === tab\);[\s\S]*?projectWorkspaceTabMarkup\(workspaceView\)[\s\S]*?PROJECT_WORKSPACE_EMBEDDED_TABS\.get\(view\.id\) === tab/);
+assert.match(app, /uiTab\.hidden = !projectView \|\| workspaceViews\.length > 0/);
 assert.match(app, /function openProjectViewEvidence\(screenKey, trigger\)/);
 assert.match(app, /function projectViewRequirementGroup\(nodeIds\)/);
 assert.match(app, /state\.evidenceImages = evidence\.map\(\(item\) => \(\{ \.\.\.item, project_requirement_summary: requirementSummary \}\)\)/);
@@ -441,6 +467,18 @@ assert.match(app, /function projectViewMapModel\(projection, selectedGroupId = "
 assert.match(app, /class="project-ui-flowchart-connectors" aria-hidden="true"/);
 assert.match(app, /data-project-map-group=/);
 assert.match(app, /function drawProjectViewConnectors\(\)/);
+assert.match(app, /const PROJECT_WORKSPACE_RENDERERS = new Set\(\["document\/blocks", "timeline\/milestones", "canvas\/network", "table\/records", "gallery\/list"\]\)/);
+assert.match(app, /function projectWorkspaceViews\(projection\)/);
+assert.match(app, /"document\/blocks", "timeline\/milestones", "canvas\/network", "table\/records", "gallery\/list"/);
+assert.match(app, /function projectWorkspaceDocumentMarkup\(view\)/);
+assert.match(app, /function projectWorkspaceTimelineMarkup\(view\)/);
+assert.match(app, /function projectWorkspaceRecordsMarkup\(view\)/);
+assert.match(app, /PROJECT_WORKSPACE_EMBEDDED_TABS[\s\S]*?view\.project\.overview-health[\s\S]*?view\.project\.roadmap/);
+assert.match(app, /function projectWorkspaceWorkMarkup\(view\)/);
+assert.match(app, /function projectWorkspaceArtifactsMarkup\(view\)/);
+assert.match(app, /typeof candidate\.progress_percent === "number"/);
+assert.match(app, /data-artifact-association=/);
+assert.doesNotMatch(app, /projectId\s*===\s*["'](?:nemo|swarm|sanguine)["']/i);
 assert.match(app, /function setProjectSelection\(projectId, ctrlId = ""\)[\s\S]*?state\.projectUiGroupId = ""/);
 assert.match(app, /\$\$\('\[data-project-map-group\]'\)\.find\(\(element\) => element\.dataset\.projectMapGroup === previousGroupId\)/);
 assert.doesNotMatch(app, /data-project-map-group=\\?"['"]?\s*\+\s*previousGroupId/);
@@ -680,9 +718,9 @@ assert.match(app, /Observed tokens/);
 assert.match(app, /Admitted scope/);
 assert.match(app, /yield-scope-divider/);
 assert.match(indexHtml, /id="overview-metrics" aria-label="Overview diagnostics"/);
-assert.deepEqual([...indexHtml.matchAll(/data-overview-metric="([^"]+)"/g)].map((match) => match[1]), ["active-work", "needs-attention", "verified-progress", "usage"]);
+assert.deepEqual([...indexHtml.matchAll(/data-overview-metric="([^"]+)"/g)].map((match) => match[1]), ["active-work", "needs-attention", "verified-progress", "usage", "health"]);
 assert.doesNotMatch(indexHtml, /verified-yield-summary|verified-yield-rows|overview-monitoring-health-state|>Unmeasured</);
-assert.match(css, /\.overview-metrics \{[^}]*grid-template-columns:repeat\(4,minmax\(0,1fr\)\)/);
+assert.match(css, /\.overview-metrics \{[^}]*grid-template-columns:repeat\(5,minmax\(0,1fr\)\)/);
 assert.match(css, /\.overview-metric-card \{[^}]*min-height:108px/);
 assert.match(app, /function overviewMetricsProjectionValue\(value, expectedScopeId = ""\)/);
 assert.match(app, /overviewMetricsProjectionValue\(state\.overview\?\.overview_metrics, overviewMetricsScopeId\(\)\)/);
@@ -951,7 +989,7 @@ assert.match(app, /function overviewRequestPath\(\)[\s\S]*?project_id=" \+ encod
 assert.match(app, /\$\("#project-navigation"\)\.addEventListener\("click", async \(event\) =>[\s\S]*?await selectProjectScope\(scope\.dataset\.projectId, scope\)/);
 assert.match(app, /async function selectProjectScope\(projectId, trigger = null, historyMode = "push"\)[\s\S]*?await refreshOverview\(false\)/);
 assert.match(app, /\$\("#project-navigation-heading"\)\.addEventListener\("click", async \(event\) =>[\s\S]*?setView\("overview", false, false\)[\s\S]*?await selectProjectScope\("all", event\.currentTarget\)/);
-assert.match(indexHtml, /id="view-diagnostics"[\s\S]*?id="diagnostics-health-trend"[\s\S]*?id="diagnostics-usage-trend"/);
+assert.match(indexHtml, /id="view-diagnostics"[\s\S]*?id="diagnostics-check-strip"[\s\S]*?id="diagnostics-signal-list"[\s\S]*?id="diagnostics-health-trend"[\s\S]*?class="panel diagnostics-log-panel"[\s\S]*?class="panel diagnostics-all-checks"/);
 assert.match(css, /\.system-health-control[\s\S]*?\.status-dot\.is-attention/);
 assert.match(css, /@media \(max-width: 620px\)[\s\S]*?\.icon-button \{ flex: 0 0 46px; height: 46px; \}/);
 assert.match(app, /function routeView\(\)/);
@@ -966,9 +1004,29 @@ for (const retiredRenderer of ["renderDashboard", "renderHierarchy", "renderKanb
 assert.match(app, /renderOverviewProjectCards\(\)/);
 const overviewProjectCardsSource = app.slice(app.indexOf("function renderOverviewProjectCards"), app.indexOf("function renderOverview()"));
 assert.match(overviewProjectCardsSource, /const roster = savedProjectRoster\(\)/);
-assert.match(overviewProjectCardsSource, /Saved projects are unavailable/);
-assert.match(overviewProjectCardsSource, /No CTRL/);
-assert.doesNotMatch(overviewProjectCardsSource, /currentWorkProjects\(\)|overviewCards\(|scopedCards|slice\(0, 5\)|Unmeasured/);
+assert.match(overviewProjectCardsSource, /Project hierarchy is unavailable/);
+assert.match(overviewProjectCardsSource, /activeAgentRecords\(\)/);
+assert.match(overviewProjectCardsSource, /topology\?\.parent_relation/);
+assert.match(overviewProjectCardsSource, /relation\?\.state === "KNOWN"/);
+assert.match(overviewProjectCardsSource, /if \(!hasTopologyProjection\)[\s\S]*?Active agent topology is unavailable/);
+assert.doesNotMatch(overviewProjectCardsSource, /fallbackParent|!topology && record\.structuralRole/);
+assert.match(overviewProjectCardsSource, /rows\.slice\(0, 3\)/);
+assert.match(overviewProjectCardsSource, /hiddenTaskCount \?/);
+assert.match(overviewProjectCardsSource, /overview-node-more/);
+assert.match(overviewProjectCardsSource, /overviewHierarchySkeletonMarkup\(\)/);
+assert.match(overviewProjectCardsSource, /data-overview-output/);
+assert.match(overviewProjectCardsSource, /data-overview-input/);
+assert.match(overviewProjectCardsSource, /data-agent-inspect/);
+assert.match(overviewProjectCardsSource, /#lucide-eye/);
+assert.doesNotMatch(overviewProjectCardsSource, /#lucide-pencil/);
+assert.match(overviewProjectCardsSource, /Hierarchy map controls/);
+assert.match(overviewProjectCardsSource, /Independent host tasks/);
+assert.doesNotMatch(overviewProjectCardsSource, /overviewCards\(|scopedCards|slice\(0, 5\)|Unmeasured|overview-controller-group|overview-hierarchy-tasks/);
+assert.match(css, /\.overview-node-more summary \{[^}]*height:18px/);
+assert.match(css, /\.overview-node-more summary::before \{[^}]*inset:-13px 0/);
+assert.match(css, /\.overview-hierarchy-edges \{[^}]*z-index:0/);
+assert.match(css, /\.overview-hierarchy-canvas \{[^}]*min-width:720px/);
+assert.doesNotMatch(css, /\.overview-hierarchy-edges\s*\{\s*display:none/);
 assert.match(app, /function authoritativeProgress\(projectId, ctrlId = ""\)/);
 assert.match(app, /function progressPresentation\(summary\)/);
 assert.match(app, /if \(ctrlId\) return summaries\.controllers\?\.\[ctrlId\] \?\? null/);
@@ -1071,7 +1129,16 @@ for (const invalid of [null, "", false, true, "80"]) {
   assert.equal(agentProgressHelpers.run(measuredAgentRecord, invalidTypeOverview), null);
 }
 assert.equal(fixture.overview.navigation.projects[0].project_eligibility, "swarm_ctrl");
-assert.match(css, /\.overview-project-card/);
+assert.match(css, /\.overview-hierarchy-project/);
+assert.match(css, /\.overview-hierarchy-node/);
+assert.match(app, /function drawOverviewHierarchyEdges\(\)/);
+assert.match(app, /function agentWorkRows\(record\)/);
+assert.match(app, /function agentWorkMarkup\(record\)/);
+assert.match(app, /<h3>Work<\/h3>/);
+assert.match(app, /<h3>Log<\/h3>/);
+assert.match(app, /<dt>Live ETA<\/dt>/);
+assert.doesNotMatch(indexHtml, /id="project-tab-hierarchy"/);
+assert.doesNotMatch(app, /tab === "hierarchy"/);
 assert.match(css, /\.project-navigation \{ display:flex; min-height:0; flex:1; flex-direction:column;[^}]*overflow:hidden; \}/);
 assert.match(css, /#project-navigation \{[^}]*min-height:0;[^}]*overflow-y:auto;[^}]*overscroll-behavior:contain;/);
 assert.match(css, /\.nav-footer \{[^}]*flex:0 0 auto;[^}]*margin-top:auto;/);
@@ -1084,11 +1151,11 @@ assert.match(app, /project_id: request\.projectId/);
 assert.match(app, /ctrl_id: request\.ctrlId/);
 assert.match(app, /setInterval\(reportPresence, 60_000\)/);
 assert.match(app, /async function refreshMonitoring/);
-assert.match(app, /function renderAllViews\(\) \{ renderOverview\(\); renderAgents\(\); renderRoles\(\); renderReview\(\); renderAssets\(\); renderDiagnostics\(\); renderSettings\(\); renderRunLogSurfaces\(\); renderMessageComposer\(\); if \(\$\("#onboarding-dialog"\)\?\.open\) renderOnboarding\(\); \}/);
+assert.match(app, /function renderAllViews\(\) \{ renderOverview\(\); renderAgents\(\); renderRoles\(\); renderReview\(\); renderAssets\(\); renderDiagnostics\(\); renderSettings\(\); renderRunLogSurfaces\(\); renderMessageComposer\(\); if \(\$\("#onboarding-dialog"\)\?\.open\) renderOnboarding\(\); updateDocumentTitle\(\); \}/);
 assert.match(app, /\/api\/diagnostics\/history\?limit=120/);
 assert.match(app, /api\(overviewRequestPath\(\), \{ timeoutMs: 15_000 \}\)/);
-assert.match(indexHtml, /id="data-status-title">Connecting</);
-assert.match(indexHtml, /id="data-status-note">Waiting for data</);
+assert.match(indexHtml, /id="connection-state-title">Connection lost</);
+assert.match(indexHtml, /id="connection-state-detail">Your work is safe\. SWARM will reconnect when the console is available\.</);
 assert.doesNotMatch(indexHtml, /Projects are up to date|<strong>Connected<\/strong>/);
 assert.match(app, /active \? \(group\?\.label \|\| "Project"\) : "Overview"/);
 assert.match(app, /setDataStatus\("current", state\.overview\?\.generated_at\)/);
@@ -1097,7 +1164,7 @@ assert.match(app, /Project data request timed out/);
 assert.match(app, /#overview-evidence-gallery/);
 assert.match(indexHtml, /id="evidence-lightbox"/);
 assert.match(indexHtml, /id="evidence-lightbox-thumbnails"/);
-assert.match(indexHtml, /id="evidence-page-next"/);
+assert.doesNotMatch(indexHtml, /id="evidence-page-next"/);
 assert.match(indexHtml, /Close evidence gallery/);
 assert.match(indexHtml, /This image could not be loaded/);
 assert.match(app, /function renderEvidenceLightbox\(\)/);
@@ -1110,7 +1177,7 @@ assert.match(app, /ArrowLeft/);
 assert.match(app, /ArrowRight/);
 assert.match(app, /const previews = images\.slice\(0, limit\)/);
 assert.match(app, /const remaining = Math\.max\(0, images\.length - previews\.length\)/);
-assert.match(app, /EVIDENCE_THUMBNAIL_PAGE_SIZE = 24/);
+assert.doesNotMatch(app, /EVIDENCE_THUMBNAIL_PAGE_SIZE|evidenceThumbnailPage/);
 assert.match(app, /proofCollections: new Map\(\)/);
 assert.match(app, /state\.proof = state\.proofCollections\.get\(collectionKey\) \|\| \[\]/);
 assert.match(app, /return items\.filter\(\(item\) => !item\.project_id \|\| item\.project_id === state\.projectId\)/);
@@ -1133,6 +1200,18 @@ assert.match(app, /Custom CTRL values override global defaults/);
 assert.match(app, /Inherits global defaults/);
 const settingsSource = app.slice(app.indexOf("function renderSettings"), app.indexOf("function renderAllViews"));
 assert.match(settingsSource, /class="panel settings-essentials settings-wide"/);
+assert.match(settingsSource, /settingsThemeMarkup\(\)/);
+assert.match(app, /const THEME_STORAGE_KEY = "swarm\.theme\.v1"/);
+assert.match(app, /THEME_OPTIONS = Object\.freeze\(\{ midnight: "Midnight", black: "Black", graphite: "Graphite", pearl: "Pearl" \}\)/);
+assert.match(app, /function setTheme\(theme, storage = window\.localStorage\)[\s\S]*?document\.documentElement\.dataset\.theme = selected[\s\S]*?storage\.setItem\(THEME_STORAGE_KEY, selected\)/);
+assert.match(app, /event\.target\.matches\('\[data-theme-option\]'\)[\s\S]*?setTheme\(event\.target\.dataset\.themeOption\)[\s\S]*?renderSettings\(\)/);
+assert.match(indexHtml, /localStorage\.getItem\("swarm\.theme\.v1"\)[\s\S]*?\^\(midnight\|black\|graphite\|pearl\)\$[\s\S]*?dataset\.theme="midnight"/);
+assert.ok(indexHtml.indexOf('swarm.theme.v1') < indexHtml.indexOf('rel="stylesheet"'));
+assert.doesNotMatch(indexHtml + app + css, /data-theme="slate"|\bSlate\b/);
+for (const theme of ["black", "graphite", "pearl"]) assert.match(css, new RegExp(`html\\[data-theme="${theme}"\\]`));
+assert.match(css, /html\[data-theme="black"\][\s\S]*?--base:#050607; --base-deep:#010203/);
+assert.match(css, /html\[data-theme="graphite"\][\s\S]*?--base:#202123; --base-deep:#17181a/);
+assert.match(css, /html\[data-theme="pearl"\][\s\S]*?color-scheme: light/);
 assert.match(settingsSource, /settingsSwitch\("automation\.mode"[\s\S]*?"Auto mode"/);
 assert.match(settingsSource, /descriptorBooleanSwitch\("monitoring\.auto_health_enabled"[\s\S]*?"Auto fix"[\s\S]*?SWARM attempts to recover from issues automatically\. This may start repair tasks and increase usage\./);
 assert.match(settingsSource, /descriptorBooleanSwitch\("execution\.usage_saver"[\s\S]*?"Usage Saver"[\s\S]*?Smart routing can reduce usage\.[\s\S]*?badge: "Experimental"/);
@@ -1144,7 +1223,7 @@ assert.match(app, /function stageSettingsDraft\(key, value\)[\s\S]*?state\.setti
 assert.match(app, /function saveSettingsDraft\(\)[\s\S]*?await saveCurrentConfigMutation\(changes\)[\s\S]*?state\.settingsDraft\.clear\(\)/);
 assert.match(app, /function settingsConfigEditable\(key\)[\s\S]*?currentSettingsScope\(\)\.type === "global"/);
 assert.match(app, /Short[\s\S]*?Medium[\s\S]*?Balanced[\s\S]*?Long[\s\S]*?Unlimited/);
-assert.match(app, /aria-label="Task life" aria-valuetext="Balanced — unavailable"/);
+assert.match(app, /function settingsTaskLifeMarkup\(options = \{\}\)[\s\S]*?aria-label="Task life" aria-valuetext="' \+ escapeHTML\(valueText\)/);
 assert.match(indexHtml, /Project overrides take priority\. Overridden values stop following global changes; all other values continue to inherit\./);
 assert.match(indexHtml, /id="config-editor-dialog"[\s\S]*?class="dialog-shell config-editor-shell"[\s\S]*?id="config-editor-text"[\s\S]*?readonly/);
 assert.match(indexHtml, /id="config-editor-save"[^>]*disabled/);
@@ -1226,25 +1305,35 @@ assert.match(app, /\$\("#project-navigation"\)\.addEventListener\("click", async
 assert.doesNotMatch(app, /Raw host logs|terminal output|hidden paths/);
 assert.match(app, /\.replace\(\/\\blocalhost\\b\/gi, "console"\)/);
 assert.match(indexHtml, /id="view-agents"[^>]*aria-labelledby="tab-agents"[\s\S]*?id="agent-table"[\s\S]*?id="run-log-agent"/);
-assert.match(indexHtml, /id="view-roles"[^>]*aria-labelledby="tab-roles"[\s\S]*?Role library[\s\S]*?id="role-library-grid"/);
+assert.match(indexHtml, /id="view-roles"[^>]*aria-labelledby="tab-roles"[\s\S]*?id="role-search"[\s\S]*?class="role-library-control-actions"[\s\S]*?id="role-create"[\s\S]*?id="role-library-grid"/);
+assert.doesNotMatch(indexHtml, />Role library<|>Server-owned manifests</);
 assert.doesNotMatch(indexHtml + app, /data-agents-tab|agents-tab-library|state\.agentsTab/);
 assert.match(indexHtml, /id="role-library-status" role="status"/);
 assert.match(app, /function activeAgentRecords\(\)/);
 assert.match(app, /\["active", "in_progress"\]\.includes\(String\(node\.status \|\| ""\)\.toLowerCase\(\)\)/);
-assert.match(app, /\.filter\(\(record\) => record\.binding\)/);
+assert.match(app, /identityState = independent \? "independent" : assignment && role && binding \? "admitted" : "malformed"/);
+assert.match(app, /Reconnect this SWARM task to one valid manifest role and CTRL/);
+assert.match(app, /Anonymous[\s\S]*Independent task/);
 assert.match(app, /function agentTableRowMarkup\(record\)/);
 assert.match(app, /function agentProgressMarkup\(record\)/);
 assert.match(app, /role="progressbar"[^\n]*aria-valuenow=/);
 assert.match(app, /aria-label="Progress UNKNOWN"/);
 assert.match(app, /function openAgentDetail\(trigger\)/);
-assert.match(app, /No agent-specific instruction augmentation was supplied by the server projection/);
-assert.match(app, /function closestAgentColorName\(accent\)/);
-assert.match(app, /function romanAgentOrdinal\(value\)/);
+assert.match(app, /\$\("#agent-detail-dialog"\)\.addEventListener\("click", \(event\) => \{ if \(event\.target === event\.currentTarget\) closeAgentDetail\(\); \}\)/);
+assert.match(app, /No exact accepted work association is available for this agent/);
+assert.match(app, /function agentColorRegistry\(\)/);
+assert.match(app, /function agentColorIdentity\(node\)/);
+assert.match(app, /state\.overview\?\.progress\?\.agent_color_registry \|\| roleManifestProjection\(\)\?\.agent_color_registry/);
+assert.match(app, /Math\.imul\(hash \^ identity\.charCodeAt\(index\), 16777619\)/);
+assert.doesNotMatch(app, /romanAgentOrdinal|#708090|Role pending/);
 assert.ok((app.match(/[A-Za-z]+:#[0-9A-F]{6}/g) || []).length >= 100, "agent color naming uses at least 100 deterministic named colors");
 const agentsSource = app.slice(app.indexOf("const AGENT_COLOR_CATALOG"), app.indexOf("function roleManifestProjectionValue"));
 assert.doesNotMatch(agentsSource, /Math\.random\(|robot|data:image\/|OpenAI|provider/i);
 assert.doesNotMatch(app + css, /class="agent-hierarchy|class="agent-project|class="agent-branch|\.agent-hierarchy|\.agent-project|\.agent-branch|\.agent-role-mark/);
 const expectedProfessions = ["Accountant", "Analyst", "Architect", "Artist", "Auditor", "Assistant", "Designer", "Developer", "Educator", "Inventor", "Legal", "Manager", "Marketer", "Operator", "Producer", "Recruiter", "Researcher", "Reviewer", "Security", "Specialist", "Strategist", "Support", "Tester", "Writer"];
+const roleAvatarFixtures = new Map(["architect", "developer"].map((roleId) => {
+  return [roleId, fs.readFileSync(path.join(repositoryRoot, "skills", "swarm", "assets", "role-avatars", "source", roleId + ".png"))];
+}));
 function roleManifestFixture() {
   return {
     ok: true,
@@ -1259,14 +1348,18 @@ function roleManifestFixture() {
           ? ["Game Design", "Designer two", "Designer three", "Designer four"]
           : [`${name} one`, `${name} two`, `${name} three`, `${name} four`];
       return {
-        id, name, purpose: `${name} purpose`, owns: [`${name} surface`], instructions: [`Use ${name} judgment`], boundaries: ["No authority transfer"],
+        id, name, purpose: `Apply the ${name} bounded SWARM assignment`, owns: [`${name} surface`], instructions: ["Apply the bounded SWARM assignment", `Use ${name} judgment to produce profession-specific evidence`], boundaries: ["No authority transfer"],
         default_skills: [`${id}-skill`], specializations,
-        avatar_asset_digest: digest, accent: "#ff6948", version: `${id}-v1`, source: "builtin", provenance: ["fixture"],
+        avatar_asset_digest: digest, avatar: ["architect", "developer"].includes(id) ? { digest, state: "AVAILABLE", url: `/assets/role-avatars/${id}.png` } : undefined, accent: "#ff6948", version: `${id}-v1`, source: "builtin", provenance: ["fixture"],
         built_in: true, active_version: `${id}-v1`, canonical_version: `${id}-v1`, override_active: false,
         versions: [], source_event_ids: [],
       };
     }),
-    assignments: [{ task_id: "nested-task", role_id: "developer", manifest_version: "developer-v1", event_id: "assignment-1", event_seq: 1 }],
+    assignments: [
+      ["nested-ctrl", "manager"], ["nested-task", "developer"], ["branch-ctrl", "manager"], ["branch-task", "reviewer"],
+      ["arc-ctrl", "manager"], ["arc-task", "writer"], ["atlas-ctrl", "manager"], ["atlas-task", "analyst"],
+    ].map(([task_id, role_id], index) => ({ task_id, role_id, manifest_version: `${role_id}-v1`, event_id: `assignment-${index + 1}`, event_seq: index + 1 })),
+    agent_color_registry: { schema_version: 1, colors: [{ name: "Tomato", hex: "#FF6347" }, { name: "Aqua", hex: "#00FFFF" }, { name: "Gold", hex: "#FFD700" }, { name: "Violet", hex: "#EE82EE" }] },
     cursor: { event_seq: 1 },
     hierarchy_binding: { project_field: "project_id", ctrl_membership_field: "controller_ids", task_identity_field: "id", assignment_task_field: "task_id", levels: ["PROJECT", "CTRL", "LEAD", "DOER"] },
     command_contract: {
@@ -1347,12 +1440,13 @@ const evaluateRoleAvatarDigest = vm.runInNewContext(`(() => { ${app.slice(roleAv
 assert.equal(evaluateRoleAvatarDigest("a".repeat(64), [{ avatar_asset_digest: "a".repeat(64) }], []), true);
 assert.equal(evaluateRoleAvatarDigest("b".repeat(64), [], [{ digest: "b".repeat(64) }]), true);
 assert.equal(evaluateRoleAvatarDigest("c".repeat(64), [], []), false);
-assert.equal((app.match(/window\.localStorage/g) || []).length, 2);
+assert.equal((app.match(/window\.localStorage/g) || []).length, 3);
 assert.doesNotMatch(app, /sessionStorage/);
 assert.match(indexHtml, /id="role-editor" aria-labelledby="role-editor-title"/);
 assert.match(indexHtml, /id="role-search" type="search" autocomplete="off" placeholder="Search roles"/);
-assert.match(indexHtml, /class="role-filter"[\s\S]*aria-label="Filter roles"[\s\S]*data-role-search-field="profession"[\s\S]*data-role-search-field="specialization"[\s\S]*data-role-search-field="alias"[\s\S]*data-role-search-field="skills"[\s\S]*data-role-search-field="purpose"/);
-assert.match(indexHtml, /data-role-type="builtin" checked[\s\S]*data-role-type="custom" checked/);
+assert.match(indexHtml, /class="role-filter"[\s\S]*class="quiet-button role-filter-trigger"[\s\S]*>Filter<[\s\S]*data-role-search-field="profession"[\s\S]*data-role-search-field="specialization"[\s\S]*data-role-search-field="alias"[\s\S]*data-role-search-field="skills"[\s\S]*data-role-search-field="purpose"/);
+assert.match(indexHtml, /class="role-library-control-actions"[\s\S]*class="primary-action role-create-action"[^>]*>[\s\S]*>Add</);
+assert.doesNotMatch(indexHtml, /data-role-type="builtin"|data-role-type="custom"/);
 assert.match(app, /roleSearchFields: new Set\(\["profession", "specialization", "alias", "skills", "purpose"\]\)/);
 assert.match(app, /filtered\.map\(\(\{ role, match \}\) => roleChooserMarkup\(role, match, role\.id === state\.selectedRoleId\)\)/);
 assert.match(indexHtml, /id="role-library-grid" role="listbox" aria-label="Roles"/);
@@ -1362,31 +1456,35 @@ for (const field of ["role-field-id", "role-field-name", "role-field-purpose", "
 assert.match(indexHtml, /Tasks already in progress keep the version they started with/);
 assert.match(indexHtml, /Choose a retained immutable image asset/);
 assert.doesNotMatch(indexHtml, /Choose in Assets/);
-assert.match(indexHtml, /data-role-action="generate-avatar" type="button" disabled aria-label="Generate avatar" title="Generate avatar"/);
+assert.doesNotMatch(indexHtml + app, /data-role-action="generate-avatar"|aria-label="Generate avatar"/);
 assert.match(app, /function roleSpecializations\(role\)/);
 assert.match(app, /role\.specializations[\s\S]*?\.slice\(0, 4\)/);
-assert.match(app, /Specializations<\/h4><div>' \+ roleSpecializationsMarkup\(role\)/);
+assert.match(app, /Specializations<\/h4>' \+ roleSpecializationsMarkup\(role\)/);
 assert.doesNotMatch(indexHtml + app, /Game Development|Game Design/);
 assert.match(indexHtml, /id="role-save" type="submit" disabled/);
 assert.match(indexHtml, /id="role-reset" data-role-action="reset" type="button" disabled/);
-assert.match(app, /state\.roleEditorTrigger = trigger\?\.dataset\.roleAction === "edit"/);
+assert.match(app, /state\.roleEditorTrigger = \["edit", "avatar"\]\.includes\(trigger\?\.dataset\.roleAction\)/);
 assert.match(app, /\.showModal\(\)/);
 assert.match(app, /await api\('\/api\/role-manifests'\)/);
+assert.match(server, /if path == "\/api\/role-manifests":[\s\S]*?role_manifest_projection\(\)/);
+assert.doesNotMatch(server.slice(server.indexOf('if path == "/api/role-manifests":'), server.indexOf("role_avatar_match", server.indexOf('if path == "/api/role-manifests":'))), /limit|cursor|page/);
+assert.match(server, /asset listing accepts only project_id and projection/);
+assert.doesNotMatch(app.slice(app.indexOf("async function refreshAssets"), app.indexOf("function assetImageMarkup")), /inventoryParams\.set\("(?:limit|cursor|page)/);
 assert.match(app, /await api\("\/api\/role-manifests\/commands"/);
 assert.match(app, /const reloaded = await refreshRoleManifests\(\)/);
 assert.match(app, /roleCommandResolution\(result, failure, reloaded, observed\)/);
 assert.match(app, /Role change rejected:/);
 assert.match(app, /if \(!roleCurrentIdAllowed\(roleId\)\) throw new Error\("Choose a safe role ID/);
-assert.match(app, /assignment\.task_id \+ " · " \+ \(assignment\.manifest_version/);
-assert.match(app, /Active tasks retain their accepted role version/);
+assert.doesNotMatch(app, /assignment\.task_id \+ " · " \+ \(assignment\.manifest_version/);
+assert.doesNotMatch(app.slice(app.indexOf("function roleChooserMarkup"), app.indexOf("function renderRoleLibrary")), /Metadata only|server-owned|Profession · not authority|No authority transfer|Active tasks retain/);
 assert.match(css, /\.role-avatar/);
 assert.match(css, /\.role-library-grid/);
 assert.match(css, /\.role-editor::backdrop/);
 assert.match(app, /function safeRoleAvatarURL\(value, expectedDigest\)[\s\S]*?apiMatch\[2\]\.toLowerCase\(\) === expectedDigest[\s\S]*?role-avatars/);
 assert.match(app, /function retainedRoleAvatar\(role\)[\s\S]*?avatar_asset_digest[\s\S]*?assetItems\(\)[\s\S]*?preview\?\.state === "AVAILABLE"/);
-assert.match(app, /function roleAvatar\(role\)[\s\S]*?class="role-avatar has-image"[\s\S]*?<img loading="lazy"[\s\S]*?class="role-avatar is-pending"/);
+assert.match(app, /function roleAvatar\(role\)[\s\S]*?class="role-avatar has-image"[\s\S]*?<img loading="lazy"[\s\S]*?class="role-avatar is-unavailable"[\s\S]*?lucide-circle-user-round/);
 assert.match(app, /function roleHasRetainedAvatar\(role\) \{ return Boolean\(retainedRoleAvatar\(role\)\); \}/);
-assert.match(css, /\.role-avatar\.is-pending \{[^}]*border-style:dashed/);
+assert.match(css, /\.role-avatar\.is-unavailable \{[^}]*border-style:dashed/);
 assert.doesNotMatch(css, /\.role-avatar i::before|\.role-avatar i::after/);
 const roleAvatarHelperStart = app.indexOf("function safeRoleAvatarURL");
 const roleAvatarHelperEnd = app.indexOf("\nfunction roleAvatar", roleAvatarHelperStart);
@@ -1414,11 +1512,12 @@ assert.match(app, /<button class="role-choice/);
 assert.match(app, /role="option" aria-label=/);
 assert.match(app, /aria-controls="role-library-detail"/);
 assert.match(app, /tabindex="' \+ \(selected \? '0' : '-1'\) \+ '"/);
-assert.match(app, /class="role-choice-source">' \+ escapeHTML\(sourceLabel\)/);
+assert.doesNotMatch(app.slice(app.indexOf("function roleChooserMarkup"), app.indexOf("function renderRoleLibrary")), /role-choice-source|Built in|Built-in/);
 assert.match(app, /function roleDetailMarkup\(role/);
 assert.match(app, /function roleInstructionsMarkup\(items\)/);
 assert.match(app, /instructions\.slice\(0, 3\)/);
-assert.match(app, /<summary>Show all ' \+ escapeHTML\(instructions\.length\) \+ ' instructions<\/summary>/);
+assert.match(app, /<summary><span class="role-disclosure-more">Show more<\/span><span class="role-disclosure-less">Show less<\/span><\/summary>/);
+assert.doesNotMatch(app, /Show all .* instructions/);
 assert.match(app, /aria-label="Edit ' \+ escapeHTML\(displayName\)/);
 assert.doesNotMatch(app.slice(app.indexOf("function roleChooserMarkup"), app.indexOf("function renderRoleLibrary")), /active_version|avatar_asset_digest|<code>/);
 assert.doesNotMatch(app, /reviewerStancesMarkup|Collaborative strengths, gaps, and clear repairs|Red-team the artifact/);
@@ -1438,46 +1537,67 @@ const roleContentRenderers = vm.runInNewContext(`(() => {
 })()`);
 const manifestDrivenReviewer = {
   id: "reviewer", name: "Fixture review lead", source: "builtin", purpose: "Fixture purpose", owns: ["Fixture surface"],
-  instructions: ["Fixture instruction one", "Fixture instruction two", "Fixture instruction three", "Fixture instruction four"],
+  instructions: ["Apply the bounded SWARM assignment", "Review evidence against the profession contract", "Fixture instruction three", "Fixture instruction four", "Fixture instruction five"],
   specializations: ["Careful", "Adversarial", "Evidence", "Repair"], default_skills: ["fixture-skill"], boundaries: ["Fixture boundary"],
 };
 const manifestCard = roleContentRenderers.roleChooserMarkup(manifestDrivenReviewer, { label: "Matched: Fixture review lead · profession" }, true);
 const manifestDetail = roleContentRenderers.roleDetailMarkup(manifestDrivenReviewer);
-for (const value of ["Fixture review lead", "Fixture purpose", "Fixture surface", "Fixture instruction one", "Fixture instruction four", "Careful", "Adversarial", "fixture-skill", "Fixture boundary"]) assert.match(manifestCard + manifestDetail, new RegExp(value));
+const shortManifestDetail = roleContentRenderers.roleDetailMarkup({ ...manifestDrivenReviewer, instructions: manifestDrivenReviewer.instructions.slice(0, 3) });
+for (const value of ["Fixture review lead", "Fixture purpose", "Fixture surface", "Review evidence against the profession contract", "Fixture instruction four", "Careful", "Adversarial", "fixture-skill", "Fixture boundary"]) assert.match(manifestCard + manifestDetail, new RegExp(value));
+assert.match(manifestCard, /role-choice-description[\s\S]*Review evidence against the profession contract/);
+assert.doesNotMatch(manifestCard, /Apply the bounded SWARM assignment|Fixture purpose/);
+assert.match(manifestDetail, /Show more[\s\S]*Show less/);
+assert.doesNotMatch(manifestDetail, /Show all|4 instructions/);
+assert.doesNotMatch(shortManifestDetail, /<details>|Show more|Show less/);
 assert.doesNotMatch(manifestCard + manifestDetail, /Friendly|Hostile/);
 const fixtureStances = roleContentRenderers.roleDetailMarkup({ ...manifestDrivenReviewer, specializations: ["Friendly", "Hostile", "Evidence", "Repair"] });
 assert.match(fixtureStances, /Friendly[\s\S]*Hostile/);
-assert.match(app, /server exposes no generation command/);
-assert.match(app, /generate\.disabled = true/);
-assert.match(indexHtml, /id="role-create"[\s\S]*?aria-label="Create custom role"[\s\S]*?<svg[\s\S]*?<\/svg><\/button>/);
+assert.doesNotMatch(app, /data-role-action="generate-avatar"|Generate matching avatar/);
+assert.match(indexHtml, /class="primary-action role-create-action" id="role-create"[\s\S]*?<svg[\s\S]*?<\/svg><span>Add<\/span><\/button>/);
 assert.doesNotMatch(indexHtml, /id="role-create"[^>]*>[\s\S]*?Create role<\/button>/);
 assert.doesNotMatch(app, /verifiedYieldProjection\(\)\?\.attention_items/);
 assert.doesNotMatch(indexHtml + app + css, /--legacy-browser|mockup|prototype reference/i);
 assert.doesNotMatch(css, /\.agents-tabs/);
-assert.match(css, /\.role-library-layout \{[^}]*grid-template-columns:minmax\(680px,1\.55fr\) minmax\(360px,\.75fr\)/);
-assert.match(css, /\.role-library-grid \{[^}]*grid-template-columns:repeat\(4,minmax\(0,1fr\)\)[^}]*overflow-x:hidden; overflow-y:auto; scrollbar-gutter:stable/);
+assert.match(css, /\.role-library-layout \{[^}]*grid-template-columns:minmax\(600px,1\.55fr\) minmax\(340px,\.75fr\)/);
+assert.match(css, /\.role-library-grid \{[^}]*grid-template-columns:repeat\(4,minmax\(0,1fr\)\)[^}]*overflow:visible/);
 assert.match(css, /\.role-choice \{[^}]*min-height:154px[^}]*grid-template-rows:96px auto/);
 assert.match(css, /\.role-choice \.role-avatar \{ width:96px; height:96px; \}/);
+assert.match(css, /\.role-choice-description \{[^}]*-webkit-line-clamp:2[^}]*white-space:normal/);
+assert.match(css, /\.notification-trigger \{ --circle-size:44px;[^}]*position:relative/);
+assert.match(css, /\.loading-skeleton \{[^}]*grid-column:1 \/ -1/);
+assert.match(css, /\.collection-more \.quiet-button \{[^}]*min-height:44px/);
+assert.match(css, /@media \(prefers-reduced-motion: reduce\)[\s\S]*\.loading-skeleton i \{ animation:none!important; \}/);
+assert.match(app, /function boundedCollectionWindow\(items, step\)/);
+assert.doesNotMatch(app, /boundedCollectionPage|collectionPagerMarkup/);
+assert.match(app, /function loadingSkeletonMarkup\(count = 8\)/);
+assert.match(app, /loading \? loadingSkeletonMarkup\(\)/);
+assert.doesNotMatch(app, /collectionLoadMoreMarkup\("roles"/);
+assert.match(app, /collectionLoadMoreMarkup\("assets", collection, "Assets"\)/);
+assert.match(app, /collectionLoadMoreMarkup\("artifacts", collection, "Project artifacts"\)/);
+assert.doesNotMatch(app, /IntersectionObserver|setInterval\([^)]*(?:asset|role|artifact)|setTimeout\([^)]*(?:asset|role|artifact)/i);
 assert.match(app, /choice\?\.scrollIntoView\(\{ block: "nearest", inline: "nearest" \}\)/);
 assert.match(css, /\.role-detail-sections section,\.reviewer-stances \{[^}]*grid-template-columns:128px minmax\(0,1fr\)/);
-assert.match(css, /\.role-library-detail \{[^}]*height:100%[^}]*overflow-y:auto; scrollbar-gutter:stable/);
+assert.match(css, /\.role-library-detail \{[^}]*position:sticky[^}]*overflow-y:auto; scrollbar-gutter:stable/);
+assert.match(css, /\.role-library-detail \{ min-width:0; overflow-x:hidden; overflow-y:auto; overflow-wrap:anywhere; \}/);
 assert.match(css, /@media \(max-width: 1220px\)[\s\S]*\.role-detail-head \{ grid-template-columns:72px minmax\(0,1fr\);[^}]*\}[\s\S]*\.role-detail-actions \{ grid-column:1 \/ -1; justify-content:flex-end; \}/);
 assert.match(css, /@media \(max-width: 860px\)[\s\S]*\.role-detail-actions \.icon-button,\.role-editor-head \.icon-button \{ width:44px; height:44px; flex-basis:44px; \}/);
 assert.match(css, /@media \(max-width: 860px\)[\s\S]*\.role-editor-actions \.quiet-button,\.role-editor-actions \.primary-action \{ min-height:44px; \}/);
-assert.match(css, /@media \(max-width: 620px\)[\s\S]*\.role-library-layout \{ grid-template-columns:1fr; \}[\s\S]*\.role-library-grid \{[^}]*grid-template-columns:repeat\(2,minmax\(0,1fr\)\)[\s\S]*\.role-choice \{ min-height:72px/);
+assert.match(css, /@media \(max-width: 620px\)[\s\S]*\.role-library-layout \{ display:block; \}[\s\S]*\.role-library-grid \{[^}]*grid-template-columns:repeat\(2,minmax\(0,1fr\)\)[^}]*overflow:visible[\s\S]*\.role-choice \{ min-height:60px/);
 assert.match(css, /@media \(max-width: 620px\)[\s\S]*\.role-filter > summary \{ width:44px; height:44px; \}/);
-assert.match(css, /\.circle-frame \{ --circle-size:40px;[^}]*inline-size:var\(--circle-size\); block-size:var\(--circle-size\); aspect-ratio:1; flex:0 0 var\(--circle-size\);[^}]*overflow:hidden; border-radius:50%/);
+assert.match(css, /:is\(\.circle-frame,\.support-mark,\.scope-dot,\.status-dot,\.agent-avatar-token,\.agent-live-dot,\.agent-work-status,\.activity-dot,\.state-illustration-prop,\.message-launcher,\.mobile-message-action,\.milestone-ring,\.project-roadmap article > span,\.project-block-state,\.diagnostics-hero-icon,\.diagnostics-check-token > span,#role-field-accent\) \{[^}]*aspect-ratio:1 \/ 1; flex-shrink:0; border-radius:50%/);
+assert.match(css, /\.circle-frame \{ --circle-size:40px;[^}]*inline-size:var\(--circle-size\); block-size:var\(--circle-size\); flex:0 0 var\(--circle-size\);[^}]*overflow:visible/);
 assert.match(css, /\.circle-frame img \{[^}]*width:100%; height:100%; object-fit:cover/);
-assert.match(css, /\.scope-dot \{ --circle-size:7px;[^}]*inline-size:var\(--circle-size\); block-size:var\(--circle-size\); aspect-ratio:1; flex:0 0 var\(--circle-size\);[^}]*border-radius:50%/);
-assert.match(css, /\.status-dot \{ --circle-size:8px;[^}]*inline-size:var\(--circle-size\); block-size:var\(--circle-size\); aspect-ratio:1; flex:0 0 var\(--circle-size\);[^}]*border-radius:50%/);
-assert.match(css, /\.edge-scroll \{[^}]*scrollbar-color:rgba\(91,112,140,\.72\) var\(--base-deep\)/);
+assert.match(css, /\.scope-dot \{ --circle-size:7px;[^}]*inline-size:var\(--circle-size\); block-size:var\(--circle-size\); flex:0 0 var\(--circle-size\)/);
+assert.match(css, /\.status-dot \{ --circle-size:8px;[^}]*inline-size:var\(--circle-size\); block-size:var\(--circle-size\); flex:0 0 var\(--circle-size\)/);
+assert.match(css, /#role-field-accent \{ inline-size:44px; block-size:44px; min-inline-size:44px;/);
+assert.match(css, /\* \{ scrollbar-width:thin; scrollbar-color:rgba\(91,112,140,\.72\) var\(--base-deep\)/);
+assert.match(css, /\.message-composer \{ top:0; right:0; bottom:0;[^}]*height:100dvh;[^}]*border-radius:0;/);
+assert.match(css, /@media \(max-width: 620px\)[\s\S]*?\.mobile-message-footer \{ grid-template-columns:repeat\(5,minmax\(44px,1fr\)\)[\s\S]*?\.message-composer \{ inset:0; width:100vw; height:100dvh;/);
 assert.match(css, /\.settings-toggle-grid \{ grid-template-columns:repeat\(3,minmax\(0,1fr\)\); \}/);
 assert.match(css, /\.settings-switch input:checked \+ span \{[^}]*background:linear-gradient\(120deg,var\(--orange\),var\(--coral\)\)/);
 assert.match(css, /--orange:\s*#FF7A18;/);
 assert.match(css, /--coral:\s*#FF3D32;/);
-assert.match(css, /\.onboarding-ctrl-node \{[^}]*border:1px solid rgba\(255,122,24,\.7\)[^}]*background:linear-gradient\(145deg,rgba\(255,122,24,\.19\)/);
-assert.match(css, /\.onboarding-executive-node \{[^}]*--executive-accent/);
-assert.match(css, /\.onboarding-coordination-stage \{[^}]*width:calc\(100% \/ var\(--flow-zoom\)\)[^}]*zoom:var\(--flow-zoom\)/);
+assert.doesNotMatch(app + css + indexHtml, /onboarding-ctrl-node|onboarding-executive-node|onboarding-coordination-stage|data-onboarding-edge|onboardingFlowZoom/);
 assert.doesNotMatch(css, /#ff7449|#ff526f|#ff784c|#ff8b25|#ff4937/i);
 assert.match(css, /@media \(max-width: 620px\)[\s\S]*\.circle-frame \{ --circle-size:44px; \}/);
 assert.doesNotMatch(css, /\.profile-button[^}]*width:\s*\d+px;|\.profile-button[^}]*height:\s*\d+px;/);
@@ -1506,7 +1626,7 @@ assert.equal(roleGridTargetIndex("ArrowDown", 22, 24, 3), 23);
 assert.equal(roleGridTargetIndex("ArrowLeft", 3, 24, 3), 3);
 assert.equal(roleGridTargetIndex("Home", 17, 24, 2), 0);
 assert.equal(roleGridTargetIndex("End", 0, 24, 2), 23);
-assert.match(app, /roleEditorTrigger = trigger\?\.dataset\.roleAction === "edit"[\s\S]*\{ action: "edit", roleId:/);
+assert.match(app, /roleEditorTrigger = \["edit", "avatar"\]\.includes\(trigger\?\.dataset\.roleAction\)[\s\S]*\{ action: trigger\.dataset\.roleAction, roleId:/);
 assert.match(app, /function roleEditorReturnTarget\(origin\)/);
 assert.match(app, /if \(trigger && !trigger\.disabled && !trigger\.hidden\) return trigger;/);
 assert.match(app, /requestAnimationFrame\(\(\) => \{[\s\S]*roleEditorReturnTarget\(origin\)/);
@@ -1675,11 +1795,72 @@ function projectViewFixture() {
   };
 }
 
+function projectModelViewFixture() {
+  const overview = {
+    id: "view.project.overview-health", label: "Overview", renderer: "document", mode: "blocks",
+    content: { blocks: [
+      { id: "overview.objective", kind: "objective", label: "Objective", text: "Make project truth easy to inspect." },
+      { id: "risk-device", kind: "risk", label: "Device proof", text: "A qualified device capture is still required." },
+      { id: "overview.proof-acceptance", kind: "proof_acceptance", label: "Proof and acceptance", text: "Source and browser proof remain separate." },
+    ] },
+  };
+  const roadmap = {
+    id: "view.project.roadmap", label: "Roadmap", renderer: "timeline", mode: "milestones",
+    content: { milestones: [
+      { id: "m-model", label: "Normalize the project model", order: 0, rank: 1, dependency_ids: [] },
+      { id: "m-render", label: "Render accepted views", order: 1, rank: 2, dependency_ids: ["m-model"] },
+    ] },
+  };
+  const flow = {
+    id: "view.project.flow", label: "Flow", renderer: "canvas", mode: "network",
+    content: {
+      nodes: [
+        { id: "m-route", kind: "milestone", label: "Routing proof", order: 0 },
+        { id: "t-device", kind: "task", label: "Capture device proof", order: 1 },
+        { id: "b-apk", kind: "block", label: "APK unavailable", order: 2 },
+        { id: "a-source", kind: "artifact", label: "Normalizer source", order: 3 },
+      ],
+      edges: [
+        { id: "contains", source: "m-route", target: "t-device", type: "contains" },
+        { id: "blocked", source: "b-apk", target: "t-device", type: "blocks" },
+        { id: "proof", source: "t-device", target: "a-source", type: "depends_on" },
+      ],
+    },
+  };
+  const work = {
+    id: "view.project.work", label: "Work", renderer: "table", mode: "records",
+    content: {
+      blocks_state: "KNOWN", progress_state: "KNOWN",
+      rows: [
+        { id: "m-route", kind: "milestone", label: "Routing proof", depth: 0, parent_id: null, owner_id: "Release CTRL", progress_percent: null },
+        { id: "t-device", kind: "task", label: "Capture device proof", depth: 1, parent_id: "m-route", owner_id: "Device reviewer", task_id: "nested-task", ctrl_id: "nested-ctrl", status: "active", progress_percent: 60 },
+        { id: "b-apk", kind: "block", label: "Bind the qualified APK", depth: 2, parent_id: "t-device", owner_id: "Release owner", lifecycle_state: "blocked", progress_percent: null },
+      ],
+    },
+  };
+  const artifacts = {
+    id: "view.project.artifacts", label: "Artifacts", renderer: "gallery", mode: "list",
+    content: { artifacts: [
+      { id: "a-source", label: "Normalizer source", revision: "3d23f5bd", proof_class: "SOURCE_STATIC", associated_ids: ["t-device"] },
+      { id: "a-unbound", label: "Unbound note", revision: "1", proof_class: "UNKNOWN", associated_ids: [] },
+    ] },
+  };
+  const agents = {
+    id: "view.project.agents", label: "Agents", renderer: "table", mode: "records",
+    content: { records: [
+      { id: "release-ctrl", label: "Release CTRL", roles: ["active_ctrl"] },
+      { id: "device-reviewer", label: "Device reviewer", roles: ["active_lead", "reviewer"] },
+    ] },
+  };
+  return [overview, roadmap, work, flow, artifacts, agents];
+}
+
 function scopedFixture() {
   const overview = structuredClone(fixture.overview);
   overview.nodes.push(
     { id: "nested-ctrl", role: "ctrl", artifact: "Evidence review", project_id: "project:fixture", project: "swarm", status: "active", updated_at: "2026-08-09T00:00:00Z", controller_ids: ["nested-ctrl"] },
     { id: "nested-task", role: "doer", role_label: "TASK", artifact: "Review screenshots", project_id: "project:fixture", project: "swarm", status: "active", updated_at: "2026-08-09T00:00:00Z", controller_ids: ["nested-ctrl"] },
+    { id: "malformed-task", role: "doer", role_label: "TASK", artifact: "Reconnect role manifest", project_id: "project:fixture", project: "swarm", status: "active", updated_at: "2026-08-09T00:00:00Z", controller_ids: ["nested-ctrl"] },
     { id: "branch-ctrl", role: "ctrl", artifact: "Ship integrations", project_id: "project:branch", project: "Flowwweb", status: "active", updated_at: "2026-08-09T00:00:00Z", controller_ids: ["branch-ctrl"] },
     { id: "branch-task", role: "doer", role_label: "TASK", artifact: "Confirm webhooks", project_id: "project:branch", project: "Flowwweb", status: "active", updated_at: "2026-08-09T00:00:00Z", controller_ids: ["branch-ctrl"] },
     { id: "standalone-ctrl", role: "ctrl", artifact: "Resolve customer export", status: "active", updated_at: "2026-08-09T00:00:00Z", controller_ids: ["standalone-ctrl"] },
@@ -1743,6 +1924,23 @@ function scopedFixture() {
     overview.progress.controllers[id] = { progress: null, freshness: { state: "unavailable", observed_at_ms: null } };
   }
   overview.project_view = projectViewFixture();
+  overview.topology = {
+    schema_version: 1,
+    projection: "recursive_host_topology",
+    nodes: overview.nodes.filter((node) => node.project_id && ["ctrl", "lead", "doer"].includes(String(node.role).toLowerCase())).map((node) => {
+      const parentId = String(node.role).toLowerCase() === "ctrl" ? null : node.controller_ids?.[node.controller_ids.length - 1] || null;
+      return {
+        record_type: "AGENT",
+        agent_id: node.id,
+        project_id: node.project_id,
+        parent_relation: parentId
+          ? { state: "KNOWN", parent_agent_id: parentId, source: "host_thread_spawn_edges" }
+          : { state: "ROOT", parent_agent_id: null, source: "host_thread_spawn_edges" },
+      };
+    }),
+    edges: [],
+    task_edges: [],
+  };
   return overview;
 }
 
@@ -1904,6 +2102,7 @@ async function mount(page, overview, overrides = {}) {
   const assetRequests = [];
   const messageRequests = [];
   const profileRequests = [];
+  const projectRequests = [];
   const repairRequests = [];
   const proofFeed = overrides.proofFeed || fixture.proofFeed;
   const proofControl = overrides.proofControl || { fail: false, feed: proofFeed };
@@ -1921,7 +2120,7 @@ async function mount(page, overview, overrides = {}) {
   const assetControl = overrides.assetControl || { library: assetLibraryFixture(), failGet: false, failMutation: false, deferredGets: [], deferredMutations: [], operations: new Map() };
   const runLogControl = overrides.runLogControl || { items: runLogFixture(), failGet: false, deferredGets: [] };
   const messageControl = overrides.messageControl || null;
-  const profileControl = overrides.profileControl || null;
+  const profileControl = overrides.profileControl || { feed: { ok: true, profile: { display_name: "Peik Gabriel", avatar: { url: null }, preferences: {} } } };
   const diagnosticsControl = overrides.diagnosticsControl || { feed: fixture.diagnostics, history: fixture.diagnosticHistory, repairResponses: [] };
   if (messageControl) {
     messageControl.endpoint ||= "/api/hq/actions";
@@ -1952,6 +2151,7 @@ async function mount(page, overview, overrides = {}) {
     if (url.pathname === "/app.js") return route.fulfill({ status: 200, contentType: "text/javascript", body: app });
     if (url.pathname === "/assets/swarm-offline-disconnected.webp") return route.fulfill({ status: 200, contentType: "image/webp", body: offlineWebpAsset });
     if (url.pathname === "/assets/swarm-state-mascot-concerned.webp") return route.fulfill({ status: 200, contentType: "image/webp", body: concernedWebpAsset });
+    if (url.pathname === "/assets/support-caricature-light.webp") return route.fulfill({ status: 200, contentType: "image/webp", body: supportCaricatureAsset });
     if (url.pathname === "/assets/swarm-offline-disconnected.png") return route.fulfill({ status: 200, contentType: "image/png", body: offlineAsset });
     if (url.pathname === "/assets/swarm-state-mascot-concerned.png") return route.fulfill({ status: 200, contentType: "image/png", body: concernedAsset });
     if (overrides.connection?.offline && url.pathname.startsWith("/api/")) return route.abort();
@@ -2149,6 +2349,11 @@ async function mount(page, overview, overrides = {}) {
       };
       return route.fulfill(response(body));
     }
+    if (url.pathname === "/api/projects" && request.method() === "POST") {
+      const payload = request.postDataJSON();
+      projectRequests.push(payload);
+      return route.fulfill(response({ ok: true, project: { id: "project:created", display_name: payload.name, root: payload.root }, mutation_receipt: { status: "created" } }));
+    }
     if (profileControl && url.pathname === "/api/profile") {
       profileRequests.push({ method: request.method(), body: request.postData() });
       if (profileControl.unavailable) return route.fulfill({ status: 404, contentType: "application/json", body: JSON.stringify({ ok: false, error: "profile authority unavailable" }) });
@@ -2178,7 +2383,12 @@ async function mount(page, overview, overrides = {}) {
     if (url.pathname === "/assets/swarm-guided-tour-slide1.png") return route.fulfill({ status: 200, contentType: "image/png", body: onboardingSlide1Asset });
     if (url.pathname === "/assets/swarm-guided-tour-role-group.png") return route.fulfill({ status: 200, contentType: "image/png", body: onboardingRoleGroupAsset });
     if (url.pathname === "/assets/swarm-guided-tour-project-tool.png") return route.fulfill({ status: 200, contentType: "image/png", body: onboardingProjectToolAsset });
-    if (url.pathname.startsWith("/assets/role-avatars/")) return route.fulfill({ status: 200, contentType: "image/png", body: mascotAsset });
+    if (url.pathname.startsWith("/assets/role-avatars/")) {
+      const roleId = path.basename(url.pathname, ".png");
+      return roleAvatarFixtures.has(roleId)
+        ? route.fulfill({ status: 200, contentType: "image/png", body: roleAvatarFixtures.get(roleId) })
+        : route.fulfill({ status: 404, contentType: "text/plain", body: "Avatar unavailable" });
+    }
     if (url.pathname === "/swarm-icon-64.png") return route.fulfill({ status: 200, contentType: "image/png", body: iconAsset });
     return route.abort();
   };
@@ -2187,7 +2397,7 @@ async function mount(page, overview, overrides = {}) {
   await page.goto(overrides.initialURL || testOrigin + "/", { waitUntil: "domcontentloaded" });
   if (overrides.waitForConnectionState) {
     await page.locator("#connection-state").waitFor({ state: "visible" });
-    return { runtimeErrors, failedRequests, requests, notificationSeenRequests, configRequests, assetRequests, messageRequests, profileRequests, repairRequests, assetControl, configControl, runLogControl, messageControl, profileControl, diagnosticsControl };
+    return { runtimeErrors, failedRequests, requests, notificationSeenRequests, configRequests, assetRequests, messageRequests, profileRequests, projectRequests, repairRequests, assetControl, configControl, runLogControl, messageControl, profileControl, diagnosticsControl };
   }
   try {
     const initialView = new URL(overrides.initialURL || testOrigin + "/").hash.replace(/^#/, "") || "overview";
@@ -2199,81 +2409,33 @@ async function mount(page, overview, overrides = {}) {
   }
   await page.locator("#onboarding-dialog").waitFor({ state: "visible" });
   if (!overrides.keepOnboarding) await page.getByRole("button", { name: "Skip for now" }).click();
-  return { runtimeErrors, failedRequests, requests, notificationSeenRequests, configRequests, assetRequests, messageRequests, profileRequests, repairRequests, assetControl, configControl, runLogControl, messageControl, profileControl, diagnosticsControl };
+  return { runtimeErrors, failedRequests, requests, notificationSeenRequests, configRequests, assetRequests, messageRequests, profileRequests, projectRequests, repairRequests, assetControl, configControl, runLogControl, messageControl, profileControl, diagnosticsControl };
 }
 
-async function assertOnboardingRoleGroup(page, viewportWidth) {
-  const image = page.locator("#onboarding-panel-3 .onboarding-role-group");
-  await image.waitFor({ state: "visible" });
-  assert.equal(await image.count(), 1);
-  await image.evaluate((node) => Promise.all(node.getAnimations().map((animation) => animation.finished.catch(() => undefined))));
-  const geometry = await image.evaluate((node) => {
-    const imageRect = node.getBoundingClientRect();
-    const panelRect = node.closest(".onboarding-panel").getBoundingClientRect();
-    return {
-      naturalWidth: node.naturalWidth,
-      naturalHeight: node.naturalHeight,
-      image: { left: imageRect.left, top: imageRect.top, right: imageRect.right, bottom: imageRect.bottom, width: imageRect.width, height: imageRect.height },
-      panel: { left: panelRect.left, top: panelRect.top, right: panelRect.right, bottom: panelRect.bottom },
-      documentWidth: document.documentElement.scrollWidth,
-    };
+async function assertOnboardingRoleAssetsBlocked(page, viewportWidth) {
+  const blocker = page.locator("#onboarding-panel-3 #onboarding-role-assets-blocker");
+  await blocker.waitFor({ state: "visible" });
+  assert.equal(await page.locator("#onboarding-panel-3 .onboarding-role-group").count(), 0);
+  assert.match(await blocker.textContent(), /admitted Architect mascot is orange[\s\S]*will not recolor or substitute role art[\s\S]*approved white Architect asset/);
+  const geometry = await blocker.evaluate((node) => {
+    const rect = node.getBoundingClientRect();
+    const panel = node.closest(".onboarding-panel").getBoundingClientRect();
+    return { left: rect.left, right: rect.right, top: rect.top, bottom: rect.bottom, panelLeft: panel.left, panelRight: panel.right, documentWidth: document.documentElement.scrollWidth };
   });
-  assert.equal(geometry.naturalWidth, 1920);
-  assert.equal(geometry.naturalHeight, 1080);
-  assert.ok(geometry.image.width > 0 && geometry.image.height > 0);
-  assert.ok(geometry.image.left >= geometry.panel.left - 1 && geometry.image.right <= geometry.panel.right + 1);
-  assert.ok(geometry.image.top >= geometry.panel.top - 1 && geometry.image.bottom <= geometry.panel.bottom + 1);
+  assert.ok(geometry.left >= geometry.panelLeft - 1 && geometry.right <= geometry.panelRight + 1);
   assert.ok(geometry.documentWidth <= viewportWidth);
 }
 
 async function assertOnboardingCoordination(page, viewportWidth) {
-  const tree = page.locator("#onboarding-coordination-tree");
-  await tree.waitFor({ state: "visible" });
-  await page.waitForFunction(() => {
-    const paths = [...document.querySelectorAll("#onboarding-coordination-tree [data-onboarding-edge]")];
-    return paths.length === 16 && paths.every((path) => Boolean(path.getAttribute("d")));
-  });
-  assert.equal(await tree.locator('[data-onboarding-node="ctrl"]').count(), 1);
-  assert.equal(await tree.locator("[data-onboarding-executive]").count(), 4);
-  assert.equal(await tree.locator("[data-onboarding-lead]").count(), 12);
-  assert.deepEqual(await tree.locator("[data-onboarding-executive]").evaluateAll((nodes) => nodes.map((node) => node.dataset.onboardingExecutive)), ["coo", "cto", "cfo", "cmo"]);
-  assert.deepEqual(await tree.locator("[data-onboarding-lead]").evaluateAll((nodes) => nodes.map((node) => node.dataset.roleId)), ["operator", "strategist", "support", "developer", "architect", "security", "accountant", "analyst", "auditor", "designer", "producer", "marketer"]);
-  assert.equal(await tree.locator('img[src="/assets/swarm-mascot-512.png"]').count(), 1);
-  assert.equal(await tree.locator("img").count(), 2);
-  assert.equal(await tree.locator(".role-avatar.is-pending").count(), 15);
-  assert.equal(await tree.locator('[data-role-id="developer"] .role-avatar.has-image img').count(), 1);
-  const geometry = await tree.evaluate((root) => {
-    const stage = root.querySelector(".onboarding-coordination-stage");
-    const rect = stage.getBoundingClientRect();
-    const branches = [...root.querySelectorAll(".onboarding-executive-branch")].map((branch) => {
-      const box = branch.getBoundingClientRect();
-      return { left: box.left, right: box.right, width: box.width };
-    });
-    return { width: rect.width, height: rect.height, scrollWidth: stage.scrollWidth, clientWidth: stage.clientWidth, branches, documentWidth: document.documentElement.scrollWidth };
-  });
-  assert.ok(geometry.width > 280 && geometry.height >= 300, JSON.stringify(geometry));
-  assert.ok(geometry.scrollWidth <= geometry.clientWidth + 1, JSON.stringify(geometry));
-  assert.ok(geometry.branches.every((branch) => branch.width > 0));
+  const flow = page.locator("#onboarding-panel-2 .onboarding-flow-scene");
+  await flow.waitFor({ state: "visible" });
+  assert.equal(await flow.locator(".is-prompt").textContent(), "Prompt");
+  assert.equal(await flow.locator(".is-ctrl").textContent(), "CTRL");
+  assert.deepEqual(await flow.locator(".onboarding-flow-roles b").allTextContents(), ["Designer", "Developer", "Reviewer"]);
+  assert.equal(await page.locator("#onboarding-dialog [role=tree], #onboarding-dialog [data-onboarding-edge]").count(), 0);
+  const geometry = await flow.evaluate((node) => ({ rect: node.getBoundingClientRect().toJSON(), documentWidth: document.documentElement.scrollWidth }));
+  assert.ok(geometry.rect.width > 0 && geometry.rect.height > 0, JSON.stringify(geometry));
   assert.ok(geometry.documentWidth <= viewportWidth);
-  const initialZoom = Number(await tree.locator(".onboarding-coordination-stage").evaluate((stage) => getComputedStyle(stage).zoom));
-  const initialCtrlWidth = await tree.locator('[data-onboarding-node="ctrl"]').evaluate((node) => node.getBoundingClientRect().width);
-  await tree.getByRole("button", { name: "Zoom in" }).click();
-  const enlargedZoom = Number(await tree.locator(".onboarding-coordination-stage").evaluate((stage) => getComputedStyle(stage).zoom));
-  const enlargedCtrlWidth = await tree.locator('[data-onboarding-node="ctrl"]').evaluate((node) => node.getBoundingClientRect().width);
-  assert.ok(enlargedZoom > initialZoom && enlargedCtrlWidth > initialCtrlWidth, JSON.stringify({ initialZoom, enlargedZoom, initialCtrlWidth, enlargedCtrlWidth }));
-  await tree.getByRole("button", { name: "Fit", exact: true }).click();
-  assert.equal(Number(await tree.locator(".onboarding-coordination-stage").evaluate((stage) => getComputedStyle(stage).zoom)), 1);
-  const treeItems = tree.locator("[data-onboarding-node-id]");
-  assert.equal(await treeItems.evaluateAll((nodes) => nodes.filter((node) => node.tabIndex === 0).length), 1);
-  await treeItems.first().focus();
-  await page.keyboard.press("End");
-  assert.equal(await page.evaluate(() => document.activeElement?.dataset?.onboardingNodeId), "cmo-growth");
-  await page.keyboard.press("Home");
-  assert.equal(await page.evaluate(() => document.activeElement?.dataset?.onboardingNodeId), "ctrl");
-  await page.keyboard.press("ArrowRight");
-  assert.equal(await page.evaluate(() => document.activeElement?.dataset?.onboardingNodeId), "executive-coo");
-  await page.keyboard.press("Tab");
-  assert.equal(await page.evaluate(() => document.activeElement?.textContent?.trim()), "Continue");
 }
 
 async function assertDialogFrame(page, selector) {
@@ -2347,7 +2509,24 @@ async function assertCircleFrame(page, selector, minimum = 40) {
   assert.equal(result.aspectRatio, "1 / 1");
   assert.match(result.borderRadius, /50%/);
   assert.match(result.flex, /0 0/);
-  assert.equal(result.overflow, "hidden");
+  assert.equal(result.overflow, "visible");
+}
+
+async function assertSharedCircleGeometry(page, selectors) {
+  for (const selector of selectors) {
+    const result = await page.locator(selector).evaluateAll((elements) => {
+      const values = elements.map((element) => {
+        const box = element.getBoundingClientRect();
+        const style = getComputedStyle(element);
+        return { width: box.width, height: box.height, aspectRatio: style.aspectRatio, borderRadius: style.borderRadius, flexShrink: style.flexShrink };
+      });
+      return values.find((value) => value.width > 0 && value.height > 0) || values[0];
+    });
+    assert.ok(result.width > 0 && Math.abs(result.width - result.height) <= 0.5, JSON.stringify({ selector, result }));
+    assert.equal(result.aspectRatio, "1 / 1");
+    assert.ok(result.borderRadius.includes("50%") || Math.abs(Number.parseFloat(result.borderRadius) - result.width / 2) <= 0.5, JSON.stringify({ selector, result }));
+    assert.equal(result.flexShrink, "0");
+  }
 }
 
 async function chooseProjectScope(page, projectId) {
@@ -2546,7 +2725,7 @@ proofFeed.items.push({
         scope_binding: { project_id: "project:fixture", ctrl_id: "nested-ctrl", cursor: structuredClone(projectProgress.cursor) },
         task_id: "nested-task", task_name: "Review screenshots", lifecycle: "ACTIVE", queue_state: null, runnable: null,
         progress: { state: "KNOWN", completed_milestones: 3, total_milestones: 5, percent: 60 },
-        eta: { state: "UNKNOWN", start_ms: null, end_ms: null, confidence: null, basis_receipt_ids: [] },
+        eta: { state: "KNOWN", start_ms: 1788076800000, end_ms: 1788080400000, confidence: "medium", basis_receipt_ids: ["eta-receipt"] },
         elapsed: { state: "KNOWN", elapsed_ms: 300000 }, freshness: { state: "CURRENT", observed_at_ms: 1788076800000 },
       }] },
       { segment_id: "segment.project.progress.queue", label: "Queue", rows: [] },
@@ -2615,7 +2794,7 @@ proofFeed.items.push({
     assert.equal(await onboardingPage.locator("#onboarding-dialog").getAttribute("data-motion-step"), "2");
     assert.equal(await onboardingPage.evaluate(() => document.activeElement?.id), "onboarding-primary");
     await assertLaterStepNavigation(onboardingPage, "Continue");
-    await assertOnboardingRoleGroup(onboardingPage, 1440);
+    await assertOnboardingRoleAssetsBlocked(onboardingPage, 1440);
     await captureOnboardingEvidence(onboardingPage, "03-slide-3-desktop-1440x1000");
     await onboardingPage.getByRole("button", { name: "Continue" }).click();
     assert.equal(await onboardingPage.locator('[data-onboarding-step][aria-current="step"]').getAttribute("data-onboarding-step"), "3");
@@ -2638,7 +2817,7 @@ proofFeed.items.push({
     assert.equal(await onboardingConfigPanel.getByLabel("Ultrafast", { exact: true }).isDisabled(), true);
     assert.equal(await onboardingConfigPanel.getByLabel("Auto mode").isChecked(), true);
     assert.equal(await taskLife.inputValue(), "2");
-    assert.equal(await taskLife.getAttribute("aria-valuetext"), "Balanced — 4 hours");
+    assert.equal(await taskLife.getAttribute("aria-valuetext"), "Balanced — unavailable");
     assert.equal(await taskLife.isDisabled(), true);
     assert.equal(await advancedSettingsLink.isVisible(), true);
     assert.equal(await onboardingConfigPanel.locator(".onboarding-config-advanced,.onboarding-advanced-content").count(), 0);
@@ -2648,7 +2827,7 @@ proofFeed.items.push({
     await taskLifeInfo.focus();
     await onboardingPage.keyboard.press("Enter");
     assert.equal(await onboardingConfigPanel.getByRole("tooltip").isVisible(), true);
-    assert.match(await onboardingConfigPanel.getByRole("tooltip").textContent(), /Short clears context sooner[\s\S]*Balanced hands over[\s\S]*Long reduces scheduled handovers/);
+    assert.match(await onboardingConfigPanel.getByRole("tooltip").textContent(), /Short clears context sooner[\s\S]*Balanced hands over[\s\S]*Long reduces handovers/);
     await captureOnboardingEvidence(onboardingPage, "05b-slide-5-task-life-tooltip-desktop-1440x1000");
     await onboardingPage.keyboard.press("Enter");
     await onboardingPage.evaluate(() => {
@@ -2663,7 +2842,9 @@ proofFeed.items.push({
     });
     assert.deepEqual(await onboardingPage.locator("#onboarding-dialog").evaluate((dialog) => ({ step: dialog.dataset.motionStep, classMutations: window.__onboardingMotionClassMutations })), { step: "4", classMutations: 0 });
     await onboardingConfigPanel.getByLabel("Auto mode").focus();
+    const autoModeRequest = onboardingPage.waitForRequest((request) => request.url().endsWith("/api/config") && request.method() === "POST" && configRequestValue(request.postDataJSON(), "automation.mode") === "manual");
     await onboardingPage.keyboard.press("Space");
+    await autoModeRequest;
     await onboardingPage.waitForFunction(() => {
       const input = document.querySelector('#onboarding-configuration input[data-config-key="automation.mode"]');
       return !input?.checked && !input?.disabled;
@@ -2723,7 +2904,7 @@ proofFeed.items.push({
     await assertLaterStepNavigation(onboardingTabletPage, "Continue");
     await assertOnboardingCoordination(onboardingTabletPage, 834);
     await onboardingTabletPage.getByRole("button", { name: "Continue" }).click();
-    await assertOnboardingRoleGroup(onboardingTabletPage, 834);
+    await assertOnboardingRoleAssetsBlocked(onboardingTabletPage, 834);
     await onboardingTabletPage.getByRole("button", { name: "Continue" }).click();
     assert.ok(await onboardingTabletPage.locator(".onboarding-project-tool").evaluate((node) => node.scrollWidth <= node.closest(".onboarding-panel").clientWidth + 1));
     await onboardingTabletPage.getByRole("button", { name: "Continue" }).click();
@@ -2746,7 +2927,7 @@ proofFeed.items.push({
     await assertOnboardingCoordination(onboardingMobilePage, 390);
     await captureOnboardingEvidence(onboardingMobilePage, "07-slide-2-coordination-mobile-390x844");
     await onboardingMobilePage.getByRole("button", { name: "Continue" }).click();
-    await assertOnboardingRoleGroup(onboardingMobilePage, 390);
+    await assertOnboardingRoleAssetsBlocked(onboardingMobilePage, 390);
     await captureOnboardingEvidence(onboardingMobilePage, "08-slide-3-mobile-390x844");
     await onboardingMobilePage.getByRole("button", { name: "Continue" }).click();
     assert.ok(await onboardingMobilePage.locator(".onboarding-project-tool").evaluate((node) => node.scrollWidth <= node.closest(".onboarding-panel").clientWidth + 1));
@@ -2767,7 +2948,7 @@ proofFeed.items.push({
       const configuration = document.querySelector("#onboarding-configuration");
       const body = document.querySelector("#onboarding-dialog > .onboarding-shell > .onboarding-panels");
       const controls = [...dialog.querySelectorAll("button")].filter((control) => !control.hidden && getComputedStyle(control).display !== "none" && control.getClientRects().length).map(rect);
-      const configControls = [...configuration.querySelectorAll("input,select,summary,button")].filter((control) => !control.hidden && getComputedStyle(control).display !== "none" && control.getClientRects().length).map((control) => rect(control.matches('input[type="checkbox"]') ? control.closest(".toggle-row") : control.matches('input[type="radio"]') ? control.closest("label") : control));
+      const configControls = [...configuration.querySelectorAll("input,select,summary,button")].filter((control) => !control.hidden && getComputedStyle(control).display !== "none" && control.getClientRects().length).map((control) => rect(control.matches('input[type="checkbox"]') ? control.closest(".settings-switch,.toggle-row") : control.matches('input[type="radio"]') ? control.closest("label") : control));
       return { dialog: rect(dialog), primary, back, heading, controls, configControls, panel: { scrollWidth: panel.scrollWidth, clientWidth: panel.clientWidth, overflowY: getComputedStyle(panel).overflowY }, configuration: { scrollWidth: configuration.scrollWidth, clientWidth: configuration.clientWidth, overflowY: getComputedStyle(configuration).overflowY }, body: { scrollHeight: body.scrollHeight, clientHeight: body.clientHeight, overflowY: getComputedStyle(body).overflowY }, viewport: { width: innerWidth, height: innerHeight }, documentWidth: document.documentElement.scrollWidth };
     });
     assert.ok(Math.abs(mobileGeometry.dialog.width - 390) <= 1 && Math.abs(mobileGeometry.dialog.height - 844) <= 1);
@@ -2778,7 +2959,13 @@ proofFeed.items.push({
     assert.equal(mobileGeometry.body.overflowY, "auto");
     assert.ok(mobileGeometry.configuration.scrollWidth <= mobileGeometry.configuration.clientWidth + 1);
     assert.ok(mobileGeometry.body.scrollHeight >= mobileGeometry.body.clientHeight);
-    assert.ok(mobileGeometry.heading.top >= mobileGeometry.back.bottom + 8, JSON.stringify({ back: mobileGeometry.back, heading: mobileGeometry.heading }));
+    assert.ok(
+      mobileGeometry.heading.top >= mobileGeometry.back.bottom + 8
+      || mobileGeometry.back.top >= mobileGeometry.heading.bottom + 8
+      || mobileGeometry.heading.left >= mobileGeometry.back.right + 8
+      || mobileGeometry.back.left >= mobileGeometry.heading.right + 8,
+      JSON.stringify({ back: mobileGeometry.back, heading: mobileGeometry.heading }),
+    );
     assert.ok(mobileGeometry.configControls.every((control) => control.width >= 44 && control.height >= 44), JSON.stringify(mobileGeometry.configControls));
     assert.ok(mobileGeometry.documentWidth <= mobileGeometry.viewport.width);
     assert.equal(await onboardingMobilePage.locator("#onboarding-panel-5 .onboarding-config-advanced").count(), 0);
@@ -2799,7 +2986,6 @@ proofFeed.items.push({
     await reducedMotionPage.getByRole("button", { name: "Start guided tour" }).click();
     const reducedMotionStyles = await reducedMotionPage.locator("#onboarding-dialog").evaluate((dialog) => [
       ".onboarding-panel.is-active .onboarding-artwork",
-      ".onboarding-panel.is-active [data-onboarding-node]",
       ".onboarding-panel.is-active > h2",
       ".onboarding-panel.is-active > p",
       "#onboarding-primary",
@@ -3230,7 +3416,7 @@ proofFeed.items.push({
       await statePage.evaluate(() => localStorage.setItem("swarm.onboarding.v2.seen", "1"));
       await statePage.getByRole("button", { name: "Retry connection" }).click();
       await statePage.locator("#overview-content").waitFor({ state: "visible" });
-      await statePage.waitForFunction(() => document.activeElement?.id === "refresh");
+      await statePage.waitForFunction(() => document.activeElement?.id === "system-health-control");
       assert.equal(await statePage.locator("#connection-state").isVisible(), false);
       assert.match(await statePage.locator("#sync-time").textContent(), /^Live/);
       assert.ok(mounted.requests.filter((request) => request === "/api/bootstrap").length >= 2);
@@ -3238,8 +3424,10 @@ proofFeed.items.push({
       await statePage.evaluate(() => showError("The latest project snapshot could not be loaded."));
       const errorSurface = statePage.locator("#error-surface");
       await errorSurface.waitFor({ state: "visible" });
-      assert.equal(await errorSurface.locator("img").getAttribute("alt"), "");
-      assert.match(await errorSurface.locator("img").evaluate((image) => image.currentSrc), /\/assets\/swarm-state-mascot-concerned\.webp$/);
+      const errorImage = errorSurface.locator("img");
+      assert.equal(await errorImage.getAttribute("alt"), "");
+      await statePage.waitForFunction((image) => image.complete && image.naturalWidth > 0 && image.currentSrc.length > 0, await errorImage.elementHandle(), { timeout: 5000 });
+      assert.match(await errorImage.evaluate((image) => image.currentSrc), /\/assets\/swarm-state-mascot-concerned\.webp$/);
       assert.equal(await errorSurface.locator('[data-state-variant="failed"]').count(), 1);
       const errorGeometry = await errorSurface.evaluate((surface) => {
         const rect = surface.getBoundingClientRect();
@@ -3251,7 +3439,7 @@ proofFeed.items.push({
       if (evidenceDir) await statePage.screenshot({ path: path.join(evidenceDir, `state-failed-${viewport.name}-${viewport.width}x${viewport.height}.png`), fullPage: false, animations: "disabled" });
       await statePage.getByRole("button", { name: "Refresh SWARM" }).click();
       await errorSurface.waitFor({ state: "hidden" });
-      await statePage.waitForFunction(() => document.activeElement?.id === "refresh");
+      await statePage.waitForFunction(() => document.activeElement?.id === "system-health-control");
 
       await statePage.evaluate(() => {
         setView("review");
@@ -3270,6 +3458,7 @@ proofFeed.items.push({
       assert.equal(await reviewRecovery.locator('[data-state-variant="recovery"]').count(), 1);
       assert.match(await reviewRecovery.textContent(), /Proof is temporarily unavailable[\s\S]*Proof will appear here when SWARM receives it again\./);
       await statePage.emulateMedia({ reducedMotion: "reduce" });
+      await statePage.waitForFunction(() => document.querySelector("#review-list .state-illustration")?.getAnimations({ subtree: true }).length === 0);
       assert.equal(await statePage.locator("#review-list .state-illustration").evaluate((surface) => surface.getAnimations({ subtree: true }).length), 0);
       const recoveryGeometry = await reviewRecovery.evaluate((surface) => {
         const rect = surface.getBoundingClientRect();
@@ -3525,7 +3714,7 @@ proofFeed.items.push({
     await profilePage.waitForFunction(() => state.profileStatus === "unavailable");
     assert.match(await profilePage.locator("#profile-status").textContent(), /profile authority unavailable/i);
     assert.equal(await profilePage.getByRole("button", { name: "Save profile" }).isDisabled(), true);
-    assert.deepEqual(profileRuntime.profileRequests.map((request) => request.method), ["GET"]);
+    assert.deepEqual(profileRuntime.profileRequests.map((request) => request.method), ["GET", "GET"]);
     await profilePage.keyboard.press("Escape");
     assert.equal(await profilePage.locator("#profile-dialog").evaluate((dialog) => dialog.open), false);
     assert.equal(await profileTrigger.evaluate((element) => element === document.activeElement), true);
@@ -3533,10 +3722,65 @@ proofFeed.items.push({
     await profilePage.waitForFunction(() => state.profileStatus === "unavailable");
     await profilePage.getByRole("button", { name: "Cancel" }).click();
     assert.equal(await profileTrigger.evaluate((element) => element === document.activeElement), true);
-    assert.deepEqual(profileRuntime.profileRequests.map((request) => request.method), ["GET", "GET"]);
-    assert.equal(profileRuntime.runtimeErrors.length, 2);
+    assert.deepEqual(profileRuntime.profileRequests.map((request) => request.method), ["GET", "GET", "GET"]);
+    assert.equal(profileRuntime.runtimeErrors.length, 3);
     assert.ok(profileRuntime.runtimeErrors.every((message) => /404 \(Not Found\)/.test(message)), profileRuntime.runtimeErrors.join(" | "));
     await profilePage.close();
+
+    const profileAvatarPage = await browser.newPage({ viewport: { width: 1536, height: 1024 } });
+    await mount(profileAvatarPage, scopedFixture(), { ...overrides, profileControl: { feed: { ok: true, profile: { display_name: "Peik Gabriel", avatar: { url: "/assets/missing-profile.png" }, preferences: {} } } } });
+    await profileAvatarPage.waitForFunction(() => document.querySelector("#profile-button-image")?.hidden === true && document.querySelector("#profile-initials")?.textContent === "PG");
+    assert.equal(await profileAvatarPage.locator("#profile-button-image").isVisible(), false);
+    assert.equal(await profileAvatarPage.locator("#profile-initials").textContent(), "PG");
+    assert.equal(await profileAvatarPage.locator("#profile-button-placeholder").isVisible(), false);
+    if (evidenceDir) await profileAvatarPage.screenshot({ path: path.join(evidenceDir, "profile-avatar-fallback-overview-desktop-1536x1024.png"), fullPage: false, animations: "disabled" });
+    await profileAvatarPage.close();
+
+    const supportPage = await browser.newPage({ viewport: { width: 1024, height: 760 } });
+    await mount(supportPage, scopedFixture(), overrides);
+    const supportTrigger = supportPage.getByRole("button", { name: "Support SWARM" });
+    await supportTrigger.click();
+    await supportPage.locator("#support-dialog").waitFor({ state: "visible" });
+    assert.match(await supportPage.locator("#support-dialog").textContent(), /USD 5[\s\S]*USD 10[\s\S]*USD 20[\s\S]*Custom[\s\S]*Address not configured/);
+    assert.equal(await supportPage.getByRole("button", { name: "Continue with Stripe" }).isDisabled(), true);
+    if (evidenceDir) await supportPage.screenshot({ path: path.join(evidenceDir, "support-modal-midnight-desktop-1024x760.png"), fullPage: false, animations: "disabled" });
+    await supportPage.keyboard.press("Escape");
+    assert.equal(await supportPage.locator("#support-dialog").evaluate((dialog) => dialog.open), false);
+    assert.equal(await supportTrigger.evaluate((element) => element === document.activeElement), true);
+    await supportPage.close();
+
+    const mobileSupportPage = await browser.newPage({ viewport: { width: 390, height: 844 } });
+    await mount(mobileSupportPage, scopedFixture(), overrides);
+    await mobileSupportPage.locator("#support-open").evaluate((button) => button.click());
+    await mobileSupportPage.locator("#support-dialog").waitFor({ state: "visible" });
+    assert.equal(await mobileSupportPage.locator("#support-dialog").evaluate((dialog) => {
+      const box = dialog.getBoundingClientRect();
+      return box.width === innerWidth && box.height === innerHeight && document.documentElement.scrollWidth <= innerWidth;
+    }), true);
+    if (evidenceDir) await mobileSupportPage.screenshot({ path: path.join(evidenceDir, "support-modal-midnight-mobile-390x844.png"), fullPage: false, animations: "disabled" });
+    await mobileSupportPage.close();
+
+    const shellPage = await browser.newPage({ viewport: { width: 1440, height: 900 } });
+    const shellRuntime = await mount(shellPage, scopedFixture(), overrides);
+    await shellPage.getByRole("button", { name: "SWARM quick help" }).click();
+    await shellPage.getByRole("dialog", { name: "SWARM quick help" }).waitFor({ state: "visible" });
+    assert.match(await shellPage.locator("#quick-help-dialog").textContent(), /Ask SWARM[\s\S]*Replay quick tour[\s\S]*Check system health/);
+    await shellPage.keyboard.press("Escape");
+    await shellPage.locator("#ask-anything").fill("Review the current project");
+    await shellPage.locator("#ask-anything-form").press("Enter");
+    assert.equal(await shellPage.locator("#message-composer").evaluate((dialog) => dialog.open), true);
+    assert.equal(await shellPage.locator("#message-draft").inputValue(), "Review the current project");
+    await shellPage.getByRole("button", { name: "Close Message" }).click();
+    await shellPage.waitForFunction(() => !document.querySelector("#message-composer").open);
+    await shellPage.getByRole("button", { name: "Create project" }).click();
+    await shellPage.locator("#project-create-name").fill("Created project");
+    await shellPage.locator("#project-create-root").fill("C:\\Projects\\created-project");
+    await shellPage.locator("#project-create-acknowledge").check();
+    await shellPage.getByRole("button", { name: "Create project", exact: true }).last().click();
+    await shellPage.waitForFunction(() => !document.querySelector("#project-create-dialog").open);
+    assert.deepEqual(shellRuntime.projectRequests, [{ name: "Created project", root: "C:\\Projects\\created-project", acknowledge: true }]);
+    assert.deepEqual(shellRuntime.runtimeErrors, []);
+    await shellPage.close();
 
     const diagnosticsControl = {
       feed: {
@@ -3556,96 +3800,68 @@ proofFeed.items.push({
     const diagnosticsRuntime = await mount(diagnosticsPage, scopedFixture(), { ...overrides, diagnosticsControl });
     await diagnosticsPage.getByRole("tab", { name: "Diagnostics", exact: true }).click();
     await diagnosticsPage.waitForFunction(() => state.diagnosticsHistoryStatus === "current");
-    assert.match(await diagnosticsPage.locator("#diagnostics-selection-status").textContent(), /1 recommended check selected/);
+    assert.match(await diagnosticsPage.locator("#diagnostics-health-heading").textContent(), /Healthy|Needs attention|Unknown/);
+    assert.equal(await diagnosticsPage.locator("#diagnostics-check-strip .diagnostics-check-token").count(), 1);
+    assert.equal(await diagnosticsPage.locator("#diagnostics-signal-list .diagnostics-signal-row").count(), 1);
+    assert.equal(await diagnosticsPage.locator("#diagnostics-check-list input[type=checkbox]").count(), 0);
+    const checkToken = diagnosticsPage.locator("#diagnostics-check-strip .diagnostics-check-token");
+    await checkToken.focus();
+    assert.match(await checkToken.getAttribute("title"), /Project\.Ctrl Binding: The saved project/);
+    await checkToken.press("Enter");
+    assert.equal(await diagnosticsPage.locator(".diagnostics-all-checks").evaluate((details) => details.open), true);
+    assert.equal(await diagnosticsPage.evaluate(() => document.activeElement?.dataset.diagnosticDetail), "project.ctrl_binding");
     const diagnosticsReads = diagnosticsControl.getCount;
     const refreshedDiagnostics = diagnosticsPage.waitForResponse((response) => new URL(response.url()).pathname === "/api/diagnostics");
-    await diagnosticsPage.getByRole("button", { name: "Refresh overview" }).click();
+    await diagnosticsPage.evaluate(() => refreshOverview());
     await refreshedDiagnostics;
     assert.ok(diagnosticsControl.getCount > diagnosticsReads, "Refresh must reread the authoritative diagnostics feed");
-    const repairTrigger = diagnosticsPage.getByRole("button", { name: "Repair with Codex" });
-    await repairTrigger.focus();
-    await repairTrigger.click();
-    await diagnosticsPage.locator("#repair-dialog").waitFor({ state: "visible" });
-    await diagnosticsPage.waitForFunction(() => state.diagnosticsRepairPending === false);
-    assert.deepEqual(diagnosticsRuntime.repairRequests, [{ check_ids: ["project.ctrl_binding"], scope: "all", acknowledge: false, dry_run: true }]);
-    assert.match(await diagnosticsPage.locator("#repair-status").textContent(), /Preview ready/);
-    assert.match(await diagnosticsPage.locator("#repair-dispatch-note").textContent(), /Dispatch is unavailable/);
-    assert.equal(await diagnosticsPage.getByRole("button", { name: "Prepare repair request" }).isDisabled(), true);
-    await assertDialogFrame(diagnosticsPage, "#repair-dialog");
-    const repairDesktopGeometry = await diagnosticsPage.locator("#repair-dialog").evaluate((dialog) => {
-      const shell = dialog.querySelector(".repair-dialog-shell");
-      const header = dialog.querySelector(".repair-dialog-header");
-      const close = dialog.querySelector("#repair-close");
-      const footerButtons = [...dialog.querySelectorAll(".repair-dialog-footer button")].map((button) => button.getBoundingClientRect());
-      const rect = shell.getBoundingClientRect();
-      const headerRect = header.getBoundingClientRect();
-      const closeRect = close.getBoundingClientRect();
-      return {
-        width: rect.width,
-        height: rect.height,
-        contained: rect.left >= 0 && rect.top >= 0 && rect.right <= innerWidth && rect.bottom <= innerHeight,
-        closeAligned: closeRect.right <= headerRect.right + 1 && closeRect.top >= headerRect.top - 1,
-        targets: footerButtons.map((box) => ({ width: box.width, height: box.height })),
-        overflowX: document.documentElement.scrollWidth - innerWidth,
-      };
-    });
-    assert.ok(repairDesktopGeometry.width >= 600 && repairDesktopGeometry.height >= 520, JSON.stringify(repairDesktopGeometry));
-    assert.equal(repairDesktopGeometry.contained, true);
-    assert.equal(repairDesktopGeometry.closeAligned, true);
-    assert.ok(repairDesktopGeometry.targets.every((target) => target.width >= 44 && target.height >= 44), JSON.stringify(repairDesktopGeometry));
-    assert.ok(repairDesktopGeometry.overflowX <= 1, JSON.stringify(repairDesktopGeometry));
-    if (evidenceDir) await diagnosticsPage.screenshot({ path: path.join(evidenceDir, "43-diagnostics-repair-preview-desktop-1024x760.png"), fullPage: false, animations: "disabled" });
+    const ctrlReview = diagnosticsPage.getByRole("button", { name: "Review with CTRL" });
+    await ctrlReview.click();
+    await diagnosticsPage.locator("#agent-detail-dialog").waitFor({ state: "visible" });
+    assert.equal(diagnosticsRuntime.repairRequests.length, 0);
+    if (evidenceDir) await diagnosticsPage.screenshot({ path: path.join(evidenceDir, "43-diagnostics-ctrl-review-desktop-1024x760.png"), fullPage: false, animations: "disabled" });
     await diagnosticsPage.keyboard.press("Escape");
-    assert.equal(await diagnosticsPage.locator("#repair-dialog").evaluate((dialog) => dialog.open), false);
-    assert.equal(await repairTrigger.evaluate((element) => element === document.activeElement), true);
     assert.deepEqual(diagnosticsRuntime.runtimeErrors, []);
     await diagnosticsPage.close();
 
-    const mobileDiagnosticsControl = {
-      feed: structuredClone(diagnosticsControl.feed),
-      history: structuredClone(fixture.diagnosticHistory),
-      repairResponses: [{ status: 503, error: "Repair preview is temporarily unavailable. Try again from Diagnostics." }],
-      getCount: 0,
-    };
+    const mobileDiagnosticsControl = { feed: structuredClone(diagnosticsControl.feed), history: structuredClone(fixture.diagnosticHistory), repairResponses: [], getCount: 0 };
     const mobileDiagnosticsPage = await browser.newPage({ viewport: { width: 390, height: 844 } });
     const mobileDiagnosticsRuntime = await mount(mobileDiagnosticsPage, scopedFixture(), { ...overrides, diagnosticsControl: mobileDiagnosticsControl });
     await mobileDiagnosticsPage.locator("#tab-diagnostics").evaluate((button) => button.click());
     await mobileDiagnosticsPage.waitForFunction(() => state.diagnosticsHistoryStatus === "current");
-    const mobileRepairTrigger = mobileDiagnosticsPage.getByRole("button", { name: "Repair with Codex" });
-    await mobileRepairTrigger.focus();
-    await mobileRepairTrigger.click();
-    await mobileDiagnosticsPage.locator("#repair-dialog").waitFor({ state: "visible" });
-    await mobileDiagnosticsPage.waitForFunction(() => state.diagnosticsRepairPending === false && Boolean(state.diagnosticsRepairError));
-    assert.match(await mobileDiagnosticsPage.locator("#repair-status").textContent(), /temporarily unavailable/i);
-    assert.equal(await mobileDiagnosticsPage.locator("#repair-status").evaluate((element) => element.classList.contains("is-error")), true);
-    assert.equal(await mobileDiagnosticsPage.getByRole("button", { name: "Prepare repair request" }).isDisabled(), true);
-    await assertDialogFrame(mobileDiagnosticsPage, "#repair-dialog");
-    const repairMobileGeometry = await mobileDiagnosticsPage.locator("#repair-dialog").evaluate((dialog) => {
-      const shell = dialog.querySelector(".repair-dialog-shell").getBoundingClientRect();
-      return {
-        fillsViewport: Math.abs(shell.width - innerWidth) <= 1 && Math.abs(shell.height - innerHeight) <= 1,
-        contained: shell.left >= -1 && shell.top >= -1 && shell.right <= innerWidth + 1 && shell.bottom <= innerHeight + 1,
-        overflowX: document.documentElement.scrollWidth - innerWidth,
-      };
-    });
-    assert.equal(repairMobileGeometry.fillsViewport, true, JSON.stringify(repairMobileGeometry));
-    assert.equal(repairMobileGeometry.contained, true, JSON.stringify(repairMobileGeometry));
-    assert.ok(repairMobileGeometry.overflowX <= 1, JSON.stringify(repairMobileGeometry));
-    if (evidenceDir) await mobileDiagnosticsPage.screenshot({ path: path.join(evidenceDir, "44-diagnostics-repair-error-mobile-390x844.png"), fullPage: false, animations: "disabled" });
-    await mobileDiagnosticsPage.keyboard.press("Escape");
-    assert.equal(await mobileDiagnosticsPage.locator("#repair-dialog").evaluate((dialog) => dialog.open), false);
-    assert.equal(await mobileRepairTrigger.evaluate((element) => element === document.activeElement), true);
-    assert.equal(mobileDiagnosticsRuntime.repairRequests.length, 1);
-    assert.ok(mobileDiagnosticsRuntime.runtimeErrors.every((message) => /503/.test(message)), mobileDiagnosticsRuntime.runtimeErrors.join(" | "));
+    assert.equal(await mobileDiagnosticsPage.locator("#view-diagnostics").evaluate((view) => getComputedStyle(view).overflowY), "visible");
+    assert.equal(await mobileDiagnosticsPage.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth), true);
+    assert.equal(await mobileDiagnosticsPage.locator("#diagnostics-check-strip").evaluate((strip) => getComputedStyle(strip).gridTemplateColumns.split(" ").length), 2);
+    if (evidenceDir) await mobileDiagnosticsPage.screenshot({ path: path.join(evidenceDir, "44-diagnostics-mobile-390x844.png"), fullPage: false, animations: "disabled" });
+    assert.equal(mobileDiagnosticsRuntime.repairRequests.length, 0);
+    assert.deepEqual(mobileDiagnosticsRuntime.runtimeErrors, []);
     await mobileDiagnosticsPage.close();
 
     const page = await browser.newPage({ viewport: { width: 1536, height: 1024 } });
-    const desktop = await mount(page, overview, overrides);
+    const sampledAt = Date.now();
+    const desktop = await mount(page, overview, {
+      ...overrides,
+      diagnosticsControl: {
+        feed: fixture.diagnostics,
+        history: { ok: true, items: [{ sampled_at_ms: sampledAt - 40_000, health_state: "WARN" }, { sampled_at_ms: sampledAt - 20_000, health_state: "HEALTHY" }, { sampled_at_ms: sampledAt, health_state: "HEALTHY" }] },
+        repairResponses: [],
+      },
+    });
+    await assertSharedCircleGeometry(page, ["#profile", "#notifications", "#snapshot-status-dot", ".scope-dot", ".agent-avatar-token", "#message-launcher"]);
+    await page.locator("#notifications").click();
+    await page.locator("#notifications-panel").waitFor({ state: "visible" });
+    if (evidenceDir) await page.screenshot({ path: path.join(evidenceDir, "circle-invariant-notifications-desktop-1536x1024.png"), fullPage: false, animations: "disabled" });
+    await page.locator("#notifications-close").click();
+    if (evidenceDir) await page.screenshot({ path: path.join(evidenceDir, "circle-invariant-overview-desktop-1536x1024.png"), fullPage: false, animations: "disabled" });
     assert.equal(await page.locator("#message-launcher").isVisible(), true);
     assert.equal(await page.locator("#mobile-message-action").isVisible(), false);
     await page.locator("#message-launcher").click();
     await page.locator("#message-composer").waitFor({ state: "visible" });
     assert.equal(await page.locator("#message-title").textContent(), "Message");
+    assert.deepEqual(await page.locator("#message-composer").evaluate((element) => {
+      const box = element.getBoundingClientRect();
+      return { top: Math.round(box.top), right: Math.round(innerWidth - box.right), bottom: Math.round(innerHeight - box.bottom), height: Math.round(box.height) };
+    }), { top: 0, right: 0, bottom: 0, height: 1024 });
     assert.equal(await page.evaluate(() => document.activeElement?.id), "message-draft");
     assert.ok(await page.locator("#message-recipient option").count() >= 1);
     assert.equal(await page.evaluate(() => messageRecipients().every((recipient) => ["CTRL", "LEAD"].includes(recipient.structuralRole))), true);
@@ -3709,7 +3925,7 @@ proofFeed.items.push({
     for (let index = 0; index < scopedViews.length; index += 1) {
       const view = scopedViews[index];
       const projectId = index % 2 ? "project:fixture" : "project:branch";
-      await page.locator('[data-view="' + view + '"]').click();
+      await page.locator('.nav-item[data-view="' + view + '"]').click();
       await chooseProjectScope(page, projectId);
       await page.waitForFunction(({ view, projectId }) => state.view === view && state.projectId === projectId, { view, projectId });
       assert.equal(await page.locator('[data-view-panel="' + view + '"]').isVisible(), true);
@@ -3718,7 +3934,7 @@ proofFeed.items.push({
     }
     await chooseProjectScope(page, "project:fixture");
     assert.equal(await page.locator('#project-scope-selected-mark .project-scope-logo[src="/assets/project-fixture.svg"]').count(), 1);
-    await page.locator('[data-view="assets"]').click();
+    await page.locator('.nav-item[data-view="assets"]').click();
     await chooseProjectScope(page, "project:branch");
     await page.waitForFunction(() => state.view === "assets" && state.projectId === "project:branch");
     await chooseProjectScope(page, "project:fixture");
@@ -3734,8 +3950,20 @@ proofFeed.items.push({
     assert.equal(new URL(page.url()).hash, "#overview");
     if (evidenceDir) await page.screenshot({ path: path.join(evidenceDir, "11-overview-all-projects-link-desktop-1536x1024.png"), fullPage: false, animations: "disabled" });
     assert.equal(await page.locator("#profile").isDisabled(), false);
-    assert.deepEqual(await page.locator(".overview-metric-card > header > span").allTextContents(), ["Active work", "Needs attention", "Verified progress", "Usage"]);
-    assert.deepEqual(await page.locator(".overview-metric-card > strong").allTextContents(), ["3 / 5", "2", "75%", "125k used"]);
+    assert.equal(await page.locator(".top-actions #profile").count(), 1);
+    assert.equal(await page.locator("#profile-initials").textContent(), "PG");
+    assert.doesNotMatch(await page.locator("#console-drawer").textContent(), /\bLive\b/);
+    assert.equal(await page.locator("#notifications").evaluate((notification) => {
+      const help = document.querySelector("#quick-help").getBoundingClientRect();
+      const profile = document.querySelector("#profile").getBoundingClientRect();
+      const box = notification.getBoundingClientRect();
+      const header = document.querySelector(".topbar").getBoundingClientRect();
+      return box.left < help.left && help.left < profile.left && Math.abs(profile.right - header.right) <= 1 && box.top >= header.top && profile.bottom <= header.bottom;
+    }), true);
+    if (evidenceDir) await page.screenshot({ path: path.join(evidenceDir, "shell-profile-sidebar-desktop-1536x1024.png"), fullPage: false, animations: "disabled" });
+    assert.deepEqual(await page.locator(".overview-metric-card > header > span").allTextContents(), ["Active work", "Needs attention", "Verified progress", "Usage", "System status"]);
+    assert.deepEqual(await page.locator(".overview-metric-card > strong").allTextContents(), ["3 / 5", "2", "75%", "125k used", "Healthy"]);
+    assert.ok(await page.locator("#metric-health-trend polyline.chart-line").count() === 1);
     await page.waitForFunction(() => state.usageWindowHours === 1 && state.usageStatus === "current");
     assert.equal(await page.locator('[data-usage-chart="overview"] [data-usage-range="1"]').getAttribute("aria-pressed"), "true");
     assert.equal(await page.locator("#metric-usage-trend").getAttribute("aria-label"), "Usage during the last hour from 2 timestamped samples");
@@ -3745,11 +3973,93 @@ proofFeed.items.push({
     await usageDayRequest;
     await page.waitForFunction(() => state.usageWindowHours === 24 && state.usageStatus === "current");
     assert.equal(await page.locator('[data-usage-chart="overview"] [data-usage-range="24"]').getAttribute("aria-pressed"), "true");
-    assert.equal(await page.locator('[data-usage-chart="diagnostics"] [data-usage-range="24"]').getAttribute("aria-pressed"), "true");
-    assert.equal(await page.locator("#diagnostics-usage-trend").getAttribute("aria-label"), "Usage during the last 24 hours from 2 timestamped samples");
     assert.equal(await page.locator("#overview-monitoring-heading").isVisible(), true);
-    assert.deepEqual(await page.locator("#overview-project-cards [data-overview-project-id] strong").allTextContents(), ["Arc", "Atlas", "Flowwweb", "swarm", "Stalled project", "Idle project", "Unassigned planning"]);
-    assert.match(await page.locator('[data-overview-project-id="project:waiting"]').locator("xpath=..").textContent(), /No CTRL/);
+    assert.equal(await page.locator("#overview-monitoring-heading").textContent(), "Hierarchy");
+    assert.deepEqual(await page.locator("#overview-project-cards [data-overview-project-id] strong").allTextContents(), ["Arc", "Atlas", "Flowwweb", "swarm"]);
+    assert.deepEqual(await page.locator("#overview-project-cards [data-overview-hierarchy-project]").evaluateAll((projects) => projects.map((project) => project.dataset.overviewHierarchyProject)), ["project:arc", "project:atlas", "project:branch", "project:fixture"]);
+    assert.match(await page.locator("#overview-project-cards .overview-independent:not(.is-error)").textContent(), /Independent host tasks[\s\S]*Resolve customer export[\s\S]*Inspect export evidence[\s\S]*Anonymous[\s\S]*Independent task/);
+    assert.match(await page.locator("#overview-project-cards .overview-independent.is-error").textContent(), /Role binding needs attention[\s\S]*Reconnect role manifest[\s\S]*Role binding error/);
+    assert.doesNotMatch(await page.locator("#overview-project-cards").textContent(), /Await customer decision|Resolve dependency|Unassigned planning/);
+    await page.waitForFunction(() => [...document.querySelectorAll("[data-overview-hierarchy-edge]")].every((path) => Boolean(path.getAttribute("d"))));
+    if (evidenceDir) await page.screenshot({ path: path.join(evidenceDir, "overview-hierarchy-desktop-1536x1024.png"), fullPage: false, animations: "disabled" });
+    assert.equal(await page.locator("[data-overview-hierarchy-project]").evaluateAll((projects) => projects.every((project) => {
+      const nodes = [...project.querySelectorAll("[data-overview-hierarchy-node]")].map((node) => node.getBoundingClientRect());
+      return nodes.every((left, index) => nodes.slice(index + 1).every((right) => left.right <= right.left || right.right <= left.left || left.bottom <= right.top || right.bottom <= left.top));
+    })), true);
+    assert.equal(await page.locator("#overview-project-cards .overview-node-more").count(), 0);
+    assert.equal(await page.locator("[data-overview-hierarchy-edge]").count(), await page.locator("[data-overview-output]").count());
+    assert.equal(await page.locator('[data-overview-hierarchy-node="nested-ctrl"] [data-overview-output="nested-task"]').count(), 1);
+    assert.equal(await page.locator('[data-overview-hierarchy-node="nested-task"] [data-overview-input]').count(), 1);
+    const missingTopologySnapshot = await page.evaluate(() => structuredClone(state.overview));
+    await page.evaluate(() => {
+      state.overview.topology.nodes = state.overview.topology.nodes.filter((node) => node.agent_id !== "nested-task");
+      renderOverviewProjectCards();
+    });
+    assert.equal(await page.locator('[data-overview-hierarchy-node="nested-task"]').count(), 0);
+    assert.equal(await page.locator('[data-overview-hierarchy-edge][data-target="nested-task"]').count(), 0);
+    await page.evaluate((snapshot) => { state.overview = snapshot; renderOverviewProjectCards(); }, missingTopologySnapshot);
+    await page.waitForFunction(() => [...document.querySelectorAll("[data-overview-hierarchy-edge]")].every((path) => Boolean(path.getAttribute("d"))));
+    assert.equal(await page.evaluate(() => [...document.querySelectorAll("[data-overview-hierarchy-edge]")].every((path) => {
+      const svg = path.ownerSVGElement;
+      const source = document.querySelector('[data-overview-hierarchy-node="' + path.dataset.source + '"]');
+      const target = document.querySelector('[data-overview-hierarchy-node="' + path.dataset.target + '"]');
+      const output = [...source.querySelectorAll("[data-overview-output]")].find((port) => port.dataset.overviewOutput === path.dataset.target);
+      const input = target.querySelector("[data-overview-input]");
+      const svgBox = svg.getBoundingClientRect();
+      const from = output.getBoundingClientRect();
+      const to = input.getBoundingClientRect();
+      const start = path.getPointAtLength(0);
+      const end = path.getPointAtLength(path.getTotalLength());
+      return Math.abs(start.x - (from.left + from.width / 2 - svgBox.left)) <= 1
+        && Math.abs(start.y - (from.top + from.height / 2 - svgBox.top)) <= 1
+        && Math.abs(end.x - (to.left + to.width / 2 - svgBox.left)) <= 1
+        && Math.abs(end.y - (to.top + to.height / 2 - svgBox.top)) <= 1;
+    })), true);
+    const hierarchyOverviewSnapshot = await page.evaluate(() => structuredClone(state.overview));
+    await page.evaluate(() => { delete state.overview.topology; renderOverviewProjectCards(); });
+    assert.equal(await page.locator("[data-overview-hierarchy-node]").count(), 0);
+    assert.equal(await page.locator("[data-overview-hierarchy-edge]").count(), 0);
+    assert.match(await page.locator("#overview-project-cards").textContent(), /Active agent topology is unavailable/);
+    await page.evaluate((snapshot) => { state.overview = snapshot; renderOverviewProjectCards(); }, hierarchyOverviewSnapshot);
+    await page.waitForFunction(() => [...document.querySelectorAll("[data-overview-hierarchy-edge]")].every((path) => Boolean(path.getAttribute("d"))));
+    await page.evaluate(() => { state.overview = null; renderOverviewProjectCards(); });
+    assert.equal(await page.locator("#overview-project-cards").getAttribute("aria-busy"), "true");
+    assert.equal(await page.locator(".overview-hierarchy-skeleton-node").count(), 4);
+    assert.equal(await page.locator(".overview-hierarchy-skeleton-edges path").count(), 1);
+    await page.evaluate((snapshot) => { state.overview = snapshot; renderOverviewProjectCards(); }, hierarchyOverviewSnapshot);
+    await page.waitForFunction(() => [...document.querySelectorAll("[data-overview-hierarchy-edge]")].every((path) => Boolean(path.getAttribute("d"))));
+    const hierarchyWorkView = structuredClone(projectModelViewFixture().find((view) => view.id === "view.project.work"));
+    await page.evaluate((acceptedWorkView) => {
+      state.overview.project_view.views = [acceptedWorkView];
+      const work = acceptedWorkView;
+      work.content.rows.push(...[2, 3, 4].map((ordinal) => ({ id: "nested-work-" + ordinal, kind: "task", label: "Bound work " + ordinal, depth: 1, parent_id: "m-route", owner_id: "nested-task", task_id: "nested-work-" + ordinal, ctrl_id: "nested-ctrl", status: "active", progress_percent: ordinal * 10 })));
+      renderOverview();
+    }, hierarchyWorkView);
+    const nestedHierarchy = page.locator('[data-overview-hierarchy-node="nested-task"]');
+    assert.equal(await nestedHierarchy.locator(":scope > .overview-node-work-list > .overview-node-work").count(), 3);
+    assert.equal(await nestedHierarchy.locator(":scope > .overview-node-work-list > .overview-node-more").count(), 1);
+    assert.equal(await nestedHierarchy.locator(".overview-node-more summary").getAttribute("title"), "2 more work items");
+    assert.equal(await nestedHierarchy.locator(".overview-node-more summary").evaluate((summary) => Math.round(summary.getBoundingClientRect().height)), 18);
+    await nestedHierarchy.locator(".overview-node-more summary").click();
+    assert.equal(await nestedHierarchy.locator(".overview-node-more > div > .overview-node-work").count(), 2);
+    await page.evaluate((legacyProjectView) => { state.overview.project_view = legacyProjectView; renderOverview(); }, projectViewFixture());
+    const overviewAgent = page.locator('#overview-project-cards .overview-node-open[data-agent-detail="nested-task"]');
+    await overviewAgent.focus();
+    await overviewAgent.press("Enter");
+    await page.locator("#agent-detail-dialog").waitFor({ state: "visible" });
+    assert.match(await page.locator("#agent-detail-dialog").textContent(), /Review screenshots[\s\S]*(Tomato|Aqua|Gold|Violet)[\s\S]*Developer[\s\S]*Live ETA[\s\S]*UNKNOWN[\s\S]*Work[\s\S]*Work unavailable\. No accepted project hierarchy is bound\.[\s\S]*Log/);
+    assert.equal(await page.locator("#agent-detail-dialog .agent-work-status[title]").count(), 0);
+    await page.keyboard.press("Escape");
+    assert.equal(await page.evaluate(() => document.activeElement?.dataset.agentDetail), "nested-task");
+    const overviewAgentInspect = page.locator('#overview-project-cards [data-agent-inspect="nested-task"]');
+    await overviewAgentInspect.focus();
+    assert.match(await overviewAgentInspect.getAttribute("aria-label"), /^View .+ details$/);
+    assert.equal(await overviewAgentInspect.getAttribute("title"), "View agent details");
+    assert.equal(await overviewAgentInspect.locator('use[href="#lucide-eye"]').count(), 1);
+    await overviewAgentInspect.press("Enter");
+    await page.locator("#agent-detail-dialog").waitFor({ state: "visible" });
+    await page.keyboard.press("Escape");
+    assert.equal(await page.evaluate(() => document.activeElement?.dataset.agentInspect), "nested-task");
     assert.equal(await page.locator(".overview-metrics").evaluate((metrics) => metrics.getBoundingClientRect().bottom <= document.querySelector("#overview-monitoring-heading").closest(".overview-section").getBoundingClientRect().top), true);
     const keyboardScopeRequest = page.waitForRequest((request) => {
       const url = new URL(request.url());
@@ -3772,6 +4082,7 @@ proofFeed.items.push({
     await page.locator("#notification-unread").waitFor({ state: "visible" });
     await page.waitForFunction(() => document.querySelector("#notification-unread")?.textContent === "1");
     assert.equal(await page.locator("#notification-unread").textContent(), "1");
+    await assertCircleFrame(page, "#notifications", 44);
     const seenRequest = page.waitForRequest((request) => new URL(request.url()).pathname === "/api/notifications/seen");
     await page.locator("#notifications").click();
     assert.match(await page.locator("#notifications-panel").textContent(), /Independent review is required/);
@@ -3781,7 +4092,7 @@ proofFeed.items.push({
       return unread?.hidden === true && unread.textContent === "0";
     });
     await page.locator("#notifications-close").click();
-    assert.equal(await page.locator("[data-project-tab]").count(), 8);
+    assert.equal(await page.locator("[data-project-tab]").count(), 7);
     assert.equal(await page.getByRole("tab", { name: "UI", exact: true }).isVisible(), true);
     assert.match(await page.locator("#project-detail-summary").textContent(), /60%/);
     assert.equal(await page.locator(".milestone-ring").count(), 2);
@@ -3795,7 +4106,7 @@ proofFeed.items.push({
     assert.match(await page.locator("#project-tab-panel").textContent(), /Console surfaces/);
     await page.getByRole("tab", { name: "UI", exact: true }).click();
     assert.equal(await page.locator("#project-tab-panel").getAttribute("aria-labelledby"), "project-tab-ui");
-    assert.deepEqual(await page.locator("[data-project-tab]:visible").allTextContents(), ["Overview", "Roadmap", "Lanes", "Hierarchy", "Proof", "Ledger", "Logs", "UI"]);
+    assert.deepEqual(await page.locator("[data-project-tab]:visible").allTextContents(), ["Overview", "Roadmap", "Lanes", "Proof", "Ledger", "Logs", "UI"]);
     assert.equal(await page.locator(".project-ui-card").count(), 2);
     assert.deepEqual(await page.locator('.project-ui-card[data-project-view-screen="overview/default"] .project-ui-devices li').allTextContents(), ["Desktop", "Tablet", "Mobile"]);
     assert.equal(await page.locator('.project-ui-card[data-project-view-screen="overview/default"] .project-ui-alternatives').textContent(), "3 alternatives");
@@ -3875,6 +4186,108 @@ proofFeed.items.push({
     await page.emulateMedia({ reducedMotion: "reduce" });
     assert.equal(await page.locator(".project-ui-flowchart-node").evaluate((node) => parseFloat(getComputedStyle(node).transitionDuration) <= 0.001), true);
     await page.emulateMedia({ reducedMotion: "no-preference" });
+    await page.evaluate((views) => {
+      state.projectId = "project:fixture";
+      state.ctrlId = "";
+      setView("overview", false, false);
+      renderOverview();
+      state.overview.navigation.projects.find((project) => project.id === "project:fixture").name = "Nemo";
+      state.overview.projects.find((project) => project.id === "project:fixture").name = "Nemo";
+      state.overview.project_view.tab.label = "Project";
+      state.overview.project_view.views = views;
+      state.overview.project_view.modes = views.map(({ id, label, renderer, mode }) => ({ id, label, renderer, mode }));
+      state.projectTab = "view.project.flow";
+      state.projectUiGroupId = "";
+      renderProjectDetail();
+    }, projectModelViewFixture());
+    assert.deepEqual(await page.locator("[data-project-tab-manifest]").allTextContents(), ["Work", "Flow", "Artifacts", "Agents"]);
+    assert.equal(await page.locator('.project-tabs [role="tab"]', { hasText: "Overview" }).count(), 1);
+    assert.equal(await page.locator('.project-tabs [role="tab"]', { hasText: "Roadmap" }).count(), 1);
+    assert.equal(await page.locator("[data-project-ui-mode]").count(), 0);
+    await page.locator("#project-tab-overview").click();
+    assert.equal(await page.locator("[data-project-model-block]").count(), 3);
+    assert.match(await page.locator(".project-model-snapshot").textContent(), /Project brief snapshot[\s\S]*Make project truth easy to inspect/);
+    assert.equal(await page.locator(".project-model-snapshot").evaluate((snapshot) => {
+      const parent = snapshot.parentElement.getBoundingClientRect();
+      const rect = snapshot.getBoundingClientRect();
+      return Math.abs(parent.width - rect.width) <= 2;
+    }), true);
+    if (evidenceDir) await page.screenshot({ path: path.join(evidenceDir, "project-model-overview-desktop-1536x1024.png"), fullPage: false, animations: "disabled" });
+    await page.locator("#project-tab-roadmap").click();
+    assert.equal(await page.locator("[data-project-milestone]").count(), 2);
+    assert.match(await page.locator('[data-project-milestone="m-render"]').textContent(), /After m-model/);
+    await page.getByRole("tab", { name: "Flow", exact: true }).click();
+    assert.equal(await page.locator('[data-project-map-node="m-route"]').count(), 1);
+    assert.equal(await page.locator('[data-project-map-edge="contains"]').count(), 1);
+    await page.waitForFunction(() => Boolean(document.querySelector('[data-project-map-edge="contains"]')?.getAttribute("d")));
+    assert.match(await page.locator('.project-ui-flowchart [aria-label="Map connections"]').textContent(), /Routing proof to Capture device proof/);
+    if (evidenceDir) await page.screenshot({ path: path.join(evidenceDir, "project-workspace-flow-desktop-1536x1024.png"), fullPage: false, animations: "disabled" });
+    await page.getByRole("tab", { name: "Work", exact: true }).click();
+    assert.equal(await page.locator('.project-work [data-work-kind="milestone"]').count(), 1);
+    assert.equal(await page.locator('.project-work [data-work-kind="task"]').count(), 1);
+    assert.equal(await page.locator('.project-work [data-work-kind="block"]').count(), 1);
+    assert.equal(await page.locator(".project-work progress").count(), 1);
+    assert.equal(await page.locator(".project-work progress").getAttribute("value"), "60");
+    assert.match(await page.locator('[data-work-id="t-device"]').textContent(), /Device reviewer/);
+    assert.equal(await page.locator('[data-artifact-association="t-device"]').textContent(), "Normalizer source");
+    assert.equal(await page.locator('[data-artifact-association="m-route"]').count(), 0);
+    assert.equal(await page.locator('[data-artifact-association="b-apk"]').count(), 0);
+    const workHierarchy = await page.locator(".project-work").evaluate((table) => ({
+      taskParent: table.querySelector('[data-work-id="t-device"]')?.closest("details.is-milestone")?.querySelector('[data-work-id="m-route"]')?.dataset.workId,
+      blockParent: table.querySelector('[data-work-id="b-apk"]')?.closest("details.is-task")?.querySelector('[data-work-id="t-device"]')?.dataset.workId,
+      horizontalOverflow: document.documentElement.scrollWidth > document.documentElement.clientWidth,
+    }));
+    assert.deepEqual(workHierarchy, { taskParent: "m-route", blockParent: "t-device", horizontalOverflow: false });
+    if (evidenceDir) await page.screenshot({ path: path.join(evidenceDir, "project-workspace-work-desktop-1536x1024.png"), fullPage: false, animations: "disabled" });
+    await page.setViewportSize({ width: 834, height: 1112 });
+    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth), true);
+    if (evidenceDir) await page.screenshot({ path: path.join(evidenceDir, "project-workspace-work-tablet-834x1112.png"), fullPage: false, animations: "disabled" });
+    await page.setViewportSize({ width: 390, height: 844 });
+    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth), true);
+    assert.ok(await page.locator('.project-work summary').evaluateAll((items) => items.every((item) => item.getBoundingClientRect().height >= 44)));
+    if (evidenceDir) await page.screenshot({ path: path.join(evidenceDir, "project-workspace-work-mobile-390x844.png"), fullPage: false, animations: "disabled" });
+    await page.setViewportSize({ width: 1536, height: 1024 });
+    await page.getByRole("tab", { name: "Artifacts", exact: true }).click();
+    assert.equal(await page.locator(".project-workspace-artifact").count(), 2);
+    assert.match(await page.locator('[data-project-artifact="a-source"]').textContent(), /Linked to t-device/);
+    assert.match(await page.locator('[data-project-artifact="a-unbound"]').textContent(), /No exact work association/);
+    const artifactRequestsBeforePaging = desktop.requests.length;
+    await page.evaluate(() => {
+      const view = state.overview.project_view.views.find((item) => item.id === "view.project.artifacts");
+      view.content.artifacts = Array.from({ length: 20 }, (_, index) => ({ id: "artifact-" + index, label: "Artifact " + index, revision: String(index), proof_class: "SOURCE_STATIC", associated_ids: index ? [] : ["t-device"] }));
+      state.projectArtifactPage = 0;
+      renderProjectDetail();
+    });
+    assert.equal(await page.locator(".project-workspace-artifact").count(), 12);
+    await page.locator('[data-collection-more="artifacts"]').click();
+    assert.equal(await page.locator(".project-workspace-artifact").count(), 20);
+    assert.equal(await page.evaluate(() => document.activeElement?.dataset.collectionStatus), "artifacts");
+    assert.equal(desktop.requests.length, artifactRequestsBeforePaging);
+    await page.locator('[data-project-tab="view.project.agents"]').click();
+    assert.equal(await page.locator("[data-project-record]").count(), 2);
+    assert.match(await page.locator('[data-project-record="release-ctrl"]').textContent(), /Release CTRL[\s\S]*Active ctrl/i);
+    if (evidenceDir) await page.screenshot({ path: path.join(evidenceDir, "project-model-agents-desktop-1536x1024.png"), fullPage: false, animations: "disabled" });
+    await page.evaluate((views) => {
+      state.overview.project_view.views = views;
+      state.overview.project_view.modes = views.map(({ id, label, renderer, mode }) => ({ id, label, renderer, mode }));
+      state.projectArtifactPage = 0;
+      state.projectTab = "view.project.artifacts";
+      renderProjectDetail();
+    }, projectModelViewFixture());
+    await page.evaluate(() => {
+      const work = state.overview.project_view.views.find((view) => view.id === "view.project.work");
+      work.content.rows.push({ ...work.content.rows[0] });
+      state.projectTab = "view.project.work";
+      renderProjectDetail();
+    });
+    assert.match(await page.locator("#project-tab-panel").textContent(), /Work unavailable/);
+    assert.equal(await page.locator("[data-work-id]").count(), 0);
+    await page.evaluate((views) => {
+      state.overview.project_view.views = views;
+      state.overview.project_view.modes = views.map(({ id, label, renderer, mode }) => ({ id, label, renderer, mode }));
+      state.projectTab = "view.project.flow";
+      renderProjectDetail();
+    }, projectModelViewFixture());
     await page.evaluate(() => {
       state.projectUiGroupId = "workspace";
       state.projectId = "project:fixture";
@@ -3892,25 +4305,40 @@ proofFeed.items.push({
     await page.waitForFunction(() => state.projectId === "project:branch" && state.projectUiGroupId === "");
     assert.deepEqual(await page.evaluate(() => ({ projectId: state.projectId, ctrlId: state.ctrlId, groupId: state.projectUiGroupId })), { projectId: "project:branch", ctrlId: "", groupId: "" });
     await page.evaluate(() => selectProjectScope("project:fixture"));
-    await page.getByRole("tab", { name: "Agents", exact: true }).click();
+    await page.evaluate((views) => {
+      state.overview.project_view.views = views;
+      state.overview.project_view.modes = views.map(({ id, label, renderer, mode }) => ({ id, label, renderer, mode }));
+    }, projectModelViewFixture());
+    await page.locator("#tab-agents").click();
     await page.waitForFunction(() => document.querySelectorAll("[data-agent-detail]").length >= 2);
     assert.doesNotMatch(await page.locator("#view-agents").textContent(), /idle-task|stalled-task|standalone-task/);
-    const measuredAgent = page.locator('[data-agent-detail="nested-task"]');
+    const measuredAgent = page.locator('#view-agents [data-agent-detail="nested-task"]');
     assert.equal(await measuredAgent.count(), 1);
     assert.match(await measuredAgent.textContent(), /Review screenshots[\s\S]*swarm[\s\S]*In progress[\s\S]*60%/i);
     assert.equal(await measuredAgent.locator('[role="progressbar"][aria-valuenow="60"]').count(), 1);
     assert.equal(await measuredAgent.locator('time[data-label="Updated"]').getAttribute("datetime"), "2026-08-09T00:00:00.000Z");
-    const unknownAgent = page.locator('[data-agent-detail="nested-ctrl"]');
+    const unknownAgent = page.locator('#view-agents [data-agent-detail="nested-ctrl"]');
     assert.match(await unknownAgent.textContent(), /UNKNOWN/);
     assert.equal(await unknownAgent.locator('[role="progressbar"]').count(), 0);
     assert.equal(await measuredAgent.locator(".agent-avatar-token .role-avatar.has-image img").count(), 1);
-    assert.ok(await page.locator(".agent-avatar-token .role-avatar.is-pending").count() >= 1);
-    assert.match(await measuredAgent.textContent(), /Tomato — Developer[\s\S]*Developer · DOER/);
+    assert.ok(await page.locator(".agent-avatar-token .role-avatar.is-unavailable").count() >= 1);
+    assert.doesNotMatch(await page.locator("#view-agents").textContent(), /Pending/);
+    assert.match(await measuredAgent.textContent(), /Review screenshots[\s\S]*(Tomato|Aqua|Gold|Violet)[\s\S]*Developer[\s\S]*DOER/);
+    assert.doesNotMatch(await measuredAgent.textContent(), /nested-task|01a[0-9a-f-]+/i);
+    const malformedAgent = page.locator('#view-agents [data-agent-detail="malformed-task"]');
+    assert.match(await malformedAgent.textContent(), /Reconnect role manifest[\s\S]*Role binding error[\s\S]*Needs attention/);
+    assert.equal(await malformedAgent.isDisabled(), true);
     await measuredAgent.focus();
     await measuredAgent.press("Enter");
     await page.locator("#agent-detail-dialog").waitFor({ state: "visible" });
-    assert.match(await page.locator("#agent-detail-dialog").textContent(), /Tomato — Developer[\s\S]*Review screenshots[\s\S]*swarm[\s\S]*nested-ctrl[\s\S]*developer-v1[\s\S]*3 of 5 checks passed[\s\S]*No agent-specific instruction augmentation/);
-    await page.keyboard.press("Escape");
+    assert.match(await page.locator("#agent-detail-dialog").textContent(), /Review screenshots[\s\S]*(Tomato|Aqua|Gold|Violet)[\s\S]*Developer[\s\S]*swarm[\s\S]*Live ETA[\s\S]*medium confidence[\s\S]*Work[\s\S]*Routing proof[\s\S]*Capture device proof[\s\S]*Bind the qualified APK[\s\S]*Log[\s\S]*3 of 5 checks passed/);
+    assert.doesNotMatch(await page.locator("#agent-detail-dialog").textContent(), /nested-task|nested-ctrl|developer-v1/);
+    assert.equal(await page.locator("#agent-detail-dialog .agent-work-status[title]").count(), 3);
+    assert.equal(await page.locator("#agent-detail-dialog .agent-block-map").textContent(), "");
+    await page.locator("#agent-detail-dialog .agent-detail-head").click();
+    assert.equal(await page.locator("#agent-detail-dialog").getAttribute("open"), "");
+    await page.mouse.click(40, 100);
+    await page.waitForFunction(() => !document.querySelector("#agent-detail-dialog").open);
     assert.equal(await page.locator("#agent-detail-dialog").getAttribute("open"), null);
     assert.equal(await page.evaluate(() => document.activeElement?.dataset.agentDetail), "nested-task");
     await page.getByRole("button", { name: "Selected", exact: true }).click();
@@ -3941,34 +4369,91 @@ proofFeed.items.push({
     await page.evaluate(() => selectProjectScope("project:fixture"));
     await page.waitForFunction(() => state.projectId === "project:fixture");
     await page.getByRole("tab", { name: "Roles", exact: true }).click();
+    await page.evaluate(() => {
+      window.__roleManifestForLoadingTest = state.roleManifests;
+      state.roleManifests = null;
+      state.roleManifestStatus = "loading";
+      renderRoleLibrary();
+    });
+    assert.equal(await page.locator("#role-library-grid").getAttribute("aria-busy"), "true");
+    assert.equal(await page.locator("#view-roles .loading-skeleton i").count(), 12);
+    await page.emulateMedia({ reducedMotion: "reduce" });
+    assert.equal(await page.locator("#role-library-grid .loading-skeleton i").first().evaluate((node) => parseFloat(getComputedStyle(node).animationDuration) <= 0.001), true);
+    await page.emulateMedia({ reducedMotion: "no-preference" });
+    await page.evaluate(() => {
+      state.roleManifestStatus = "unavailable";
+      state.roleManifestError = "Role roster unavailable for test";
+      renderRoleLibrary();
+    });
+    assert.equal(await page.locator("#role-library-grid .loading-skeleton").count(), 0);
+    assert.match(await page.locator("#role-library-grid").textContent(), /Role roster unavailable for test/);
+    await page.evaluate(() => {
+      state.roleManifests = window.__roleManifestForLoadingTest;
+      state.roleManifestStatus = "current";
+      state.roleManifestError = "";
+      renderRoleLibrary();
+    });
     assert.equal(await page.locator(".role-choice").count(), 24);
-    assert.match(await page.locator("#role-library-status").textContent(), /24 server-owned role manifests/);
+    assert.equal(await page.locator("#role-library-status").textContent(), "24 roles");
+    assert.equal(await page.locator(".role-choice-description").count(), 24);
+    assert.doesNotMatch(await page.locator("#role-library-grid").textContent(), /Apply the .* bounded SWARM assignment/);
+    await page.setViewportSize({ width: 1280, height: 900 });
+    assert.equal(await page.locator(".role-library-layout").evaluate((layout) => layout.scrollWidth <= layout.clientWidth), true);
+    assert.equal(await page.locator("#role-library-detail").evaluate((detail) => detail.getBoundingClientRect().right <= innerWidth), true);
+    await page.setViewportSize({ width: 1536, height: 1024 });
+    const roleFetchesBeforePaging = desktop.requests.filter((request) => request === "/api/role-manifests").length;
+    assert.equal(await page.locator('[data-collection-page="roles"], [data-collection-page-status="roles"]').count(), 0);
+    assert.equal(desktop.requests.filter((request) => request === "/api/role-manifests").length, roleFetchesBeforePaging);
+    assert.doesNotMatch(await page.locator("#view-roles").textContent(), /Role library|Server-owned manifests|24 server-owned role manifests/);
     await page.locator("#role-search").fill("Game Development");
     assert.equal(await page.locator(".role-choice").count(), 1);
     assert.equal(await page.locator('.role-choice[data-role-select="developer"]').getAttribute("aria-selected"), "true");
     assert.match(await page.locator('#role-library-detail .role-match').textContent(), /Matched: Game Development · specialization/);
     await page.locator("#role-search").fill("");
-    await page.locator(".role-filter > summary").click();
-    await page.locator('[data-role-type="custom"]').uncheck();
-    assert.equal(await page.locator(".role-choice").count(), 24);
-    await page.locator('[data-role-type="builtin"]').uncheck();
-    assert.equal(await page.locator(".role-choice").count(), 0);
-    await page.locator("#role-filter-reset").click();
     assert.equal(await page.locator(".role-choice").count(), 24);
     await page.locator('.role-choice[data-role-select="developer"]').click();
     assert.equal(await page.locator('#role-library-detail .role-specializations li').count(), 4);
-    assert.match(await page.locator('#role-library-detail').textContent(), /Developer[\s\S]*Boundaries/);
+    assert.match(await page.locator('#role-library-detail').textContent(), /Developer[\s\S]*Instructions[\s\S]*Current owners[\s\S]*Review screenshots[\s\S]*Specializations/);
+    assert.doesNotMatch(await page.locator('#role-library-detail').textContent(), /nested-task|developer-v1|No authority transfer/);
+    await page.evaluate(() => {
+      const developer = state.roleManifests.roles.find((role) => role.id === "developer");
+      window.__developerInstructionsForDisclosureTest = developer.instructions;
+      developer.instructions = [...developer.instructions, "Inspect the relevant implementation", "Exercise the failure boundary", "Record bounded evidence"];
+      renderRoleLibrary("developer");
+    });
+    const roleDisclosure = page.locator("#role-library-detail .role-instruction-preview details");
+    const roleDisclosureSummary = roleDisclosure.locator("summary");
+    assert.equal(await roleDisclosureSummary.textContent(), "Show moreShow less");
+    assert.equal(await roleDisclosure.evaluate((details) => details.open), false);
+    assert.equal(await roleDisclosureSummary.evaluate((summary) => summary.getBoundingClientRect().height >= 44), true);
+    await roleDisclosureSummary.focus();
+    await page.keyboard.press("Enter");
+    assert.equal(await roleDisclosure.evaluate((details) => details.open), true);
+    assert.equal(await roleDisclosure.locator(".role-disclosure-more").isVisible(), false);
+    assert.equal(await roleDisclosure.locator(".role-disclosure-less").isVisible(), true);
+    assert.equal(await roleDisclosureSummary.evaluate((summary) => summary === document.activeElement), true);
+    await page.keyboard.press("Enter");
+    assert.equal(await roleDisclosure.evaluate((details) => details.open), false);
+    assert.equal(await roleDisclosureSummary.evaluate((summary) => summary === document.activeElement), true);
+    await page.evaluate(() => {
+      state.roleManifests.roles.find((role) => role.id === "developer").instructions = window.__developerInstructionsForDisclosureTest;
+      renderRoleLibrary("developer");
+    });
     assert.equal(await page.locator('#view-roles .role-avatar.has-image[aria-label="Developer mascot avatar"] img').count(), 2);
-    assert.equal(await page.locator('#view-roles .role-avatar.is-pending[aria-label="Avatar pending for Developer"]').count(), 0);
+    assert.equal(await page.locator('#view-roles .role-avatar.is-unavailable[aria-label="Avatar admission pending for Developer"]').count(), 0);
+    assert.doesNotMatch(await page.locator("#view-roles").textContent(), /Pending/);
     await page.locator(".role-filter > summary").click();
     if (evidenceDir) await page.screenshot({ path: path.join(evidenceDir, "12-roles-desktop-1536x1024.png"), fullPage: false, animations: "disabled" });
+    await page.locator('.role-choice[data-role-select="architect"]').click();
+    assert.equal(await page.locator('#role-library-detail .role-avatar.has-image[aria-label="Architect mascot avatar"] img').count(), 1);
+    if (evidenceDir) await page.screenshot({ path: path.join(evidenceDir, "12b-roles-architect-desktop-1536x1024.png"), fullPage: false, animations: "disabled" });
     await page.locator('.role-choice[data-role-select="reviewer"]').click();
     assert.match(await page.locator('#role-library-detail').textContent(), /Reviewer one[\s\S]*Reviewer four/);
     assert.doesNotMatch(await page.locator('#role-library-detail').textContent(), /Friendly|Hostile/);
     await page.locator('.role-choice[data-role-select="developer"]').click();
-    await page.getByRole("button", { name: "Edit Developer" }).focus();
+    await page.getByRole("button", { name: "Edit Developer avatar" }).focus();
     await page.keyboard.press("Enter");
-    assert.equal(await page.locator("#role-editor").getByRole("button", { name: "Generate avatar" }).isDisabled(), true);
+    assert.equal(await page.locator("#role-editor").getByRole("button", { name: /Generate avatar/ }).count(), 0);
     assert.equal((await page.locator("#role-field-specializations").inputValue()).split("\n").length, 4);
     await assertDialogFrame(page, "#role-editor");
     assert.doesNotMatch(await page.locator("#role-editor .edge-scroll").evaluate((element) => getComputedStyle(element).scrollbarColor), /^auto$/);
@@ -3978,6 +4463,48 @@ proofFeed.items.push({
     assert.equal(await page.locator(".review-row").count(), 7);
     assert.equal(await page.getByRole("button", { name: "Send feedback unavailable" }).first().isDisabled(), true);
     await page.getByRole("tab", { name: "Assets", exact: true }).click();
+    await page.evaluate(() => {
+      window.__assetsForLoadingTest = state.assets;
+      state.assets = null;
+      state.assetStatus = "loading";
+      renderAssets();
+    });
+    assert.equal(await page.locator("#asset-gallery").getAttribute("aria-busy"), "true");
+    assert.equal(await page.locator("#asset-gallery .loading-skeleton i").count(), 8);
+    await page.evaluate(() => {
+      state.assetStatus = "unavailable";
+      state.assetError = "Asset inventory unavailable for test";
+      renderAssets();
+    });
+    assert.equal(await page.locator("#asset-gallery .loading-skeleton").count(), 0);
+    assert.match(await page.locator("#asset-gallery").textContent(), /Asset inventory unavailable for test/);
+    await page.evaluate(() => {
+      state.assets = window.__assetsForLoadingTest;
+      state.assetStatus = "current";
+      state.assetError = "";
+      const base = structuredClone(state.assets.items[0]);
+      state.assets = { ...state.assets, items: Array.from({ length: 20 }, (_, index) => {
+        const item = structuredClone(base);
+        item.asset_id = "paged-asset-" + index;
+        item.presentation.display_name = "Paged asset " + index;
+        item.technical.logical_asset_id = "paged-logical-" + index;
+        item.preview.url = "/api/assets/" + item.asset_id + "/preview?digest=" + item.technical.digest;
+        return item;
+      }) };
+      renderAssets();
+    });
+    assert.equal(await page.locator(".asset-tile").count(), 12);
+    assert.ok(await page.locator(".asset-tile img").evaluateAll((images) => images.every((image) => image.loading === "lazy" && image.decoding === "async" && image.src.includes("/api/assets/") && image.src.includes("/preview?digest="))));
+    const assetFetchesBeforePaging = desktop.requests.filter((request) => request.startsWith("/api/assets?")).length;
+    await page.locator('[data-collection-more="assets"]').click();
+    assert.equal(await page.locator(".asset-tile").count(), 20);
+    assert.equal(await page.evaluate(() => document.activeElement?.dataset.collectionStatus), "assets");
+    assert.equal(desktop.requests.filter((request) => request.startsWith("/api/assets?")).length, assetFetchesBeforePaging);
+    await page.evaluate(() => {
+      state.assets = window.__assetsForLoadingTest;
+      state.assetPage = 0;
+      renderAssets();
+    });
     assert.equal(await page.locator(".asset-tile").count(), 8);
     assert.equal(await page.locator(".asset-tile .asset-list-copy").count(), 0);
     assert.equal(await page.locator(".asset-tile .asset-quick-actions").count(), 8);
@@ -4067,6 +4594,41 @@ proofFeed.items.push({
     assert.equal(await page.getByLabel("Auto mode").isDisabled(), true);
     await page.locator("#settings-scope").selectOption("global|global");
     await page.waitForFunction(() => state.settingsScopeType === "global" && state.settingsScopeId === "global");
+    assert.equal(await page.locator('.settings-theme input[type="radio"]').count(), 4);
+    assert.equal(await page.getByRole("radio", { name: "Midnight" }).isChecked(), true);
+    assert.equal(await page.evaluate(() => document.documentElement.dataset.theme), "midnight");
+    assert.equal(await page.evaluate(() => localStorage.getItem("swarm.theme.v1")), null);
+    const themeRequestsBefore = desktop.requests.length;
+    const themeConfigRequestsBefore = desktop.configRequests.length;
+    if (evidenceDir) await page.screenshot({ path: path.join(evidenceDir, "theme-midnight-desktop-1536x1024.png"), fullPage: false, animations: "disabled" });
+    await page.getByRole("radio", { name: "Black" }).click();
+    assert.equal(await page.evaluate(() => document.documentElement.dataset.theme), "black");
+    assert.equal(await page.evaluate(() => localStorage.getItem("swarm.theme.v1")), "black");
+    if (evidenceDir) await page.screenshot({ path: path.join(evidenceDir, "theme-black-desktop-1536x1024.png"), fullPage: false, animations: "disabled" });
+    await page.getByRole("radio", { name: "Graphite" }).focus();
+    await page.keyboard.press("Space");
+    assert.equal(await page.getByRole("radio", { name: "Graphite" }).isChecked(), true);
+    assert.equal(await page.evaluate(() => document.documentElement.dataset.theme), "graphite");
+    if (evidenceDir) await page.screenshot({ path: path.join(evidenceDir, "theme-graphite-desktop-1536x1024.png"), fullPage: false, animations: "disabled" });
+    await page.getByRole("radio", { name: "Pearl" }).click();
+    assert.equal(await page.evaluate(() => document.documentElement.dataset.theme), "pearl");
+    assert.deepEqual(await page.evaluate(() => [
+      getComputedStyle(document.querySelector(".scope-context summary")).color,
+      getComputedStyle(document.querySelector(".top-actions #notifications")).color,
+    ]), ["rgb(244, 248, 255)", "rgb(244, 248, 255)"]);
+    assert.equal(await page.evaluate(() => state.settingsDraft.size), 0);
+    assert.equal(desktop.requests.length, themeRequestsBefore);
+    assert.equal(desktop.configRequests.length, themeConfigRequestsBefore);
+    if (evidenceDir) await page.screenshot({ path: path.join(evidenceDir, "theme-pearl-desktop-1536x1024.png"), fullPage: false, animations: "disabled" });
+    const themeReloadPage = await browser.newPage({ viewport: { width: 1024, height: 760 } });
+    await themeReloadPage.addInitScript(() => { if (!window.name) { localStorage.setItem("swarm.theme.v1", "pearl"); window.name = "theme-seeded"; } });
+    await mount(themeReloadPage, scopedFixture(), overrides);
+    assert.equal(await themeReloadPage.evaluate(() => document.documentElement.dataset.theme), "pearl");
+    await themeReloadPage.evaluate(() => localStorage.setItem("swarm.theme.v1", "invalid"));
+    await themeReloadPage.reload();
+    await themeReloadPage.waitForFunction(() => document.documentElement.dataset.theme === "midnight");
+    await themeReloadPage.close();
+    await page.evaluate(() => setTheme("midnight"));
     assert.equal(await page.getByLabel("Auto mode").isDisabled(), false);
     assert.equal(await page.getByRole("checkbox", { name: "Auto fix" }).isDisabled(), false);
     assert.equal(await page.getByLabel("Usage Saver").isDisabled(), false);
@@ -4208,8 +4770,8 @@ proofFeed.items.push({
     const unknown = await mount(unknownPage, unknownOverview, overrides);
     assert.equal(await unknownPage.locator("#project-navigation").textContent(), "Saved projects unavailable");
     assert.equal(await unknownPage.locator("#project-scope-filter").getAttribute("aria-disabled"), "true");
-    assert.match(await unknownPage.locator("#overview-project-cards").textContent(), /Saved projects are unavailable/);
-    assert.equal(await unknownPage.locator("#overview-summary").textContent(), "Project inventory unavailable");
+    assert.match(await unknownPage.locator("#overview-project-cards").textContent(), /Project hierarchy is unavailable/);
+    assert.equal(await unknownPage.locator("#overview-summary").textContent(), "Hierarchy unavailable");
     assert.deepEqual(unknown.runtimeErrors, []);
     await unknownPage.close();
 
@@ -4227,7 +4789,22 @@ proofFeed.items.push({
 
     const tabletPage = await browser.newPage({ viewport: { width: 834, height: 1112 } });
     const tablet = await mount(tabletPage, scopedFixture(), overrides);
-    assert.equal(await tabletPage.locator("#overview-project-cards .overview-project-card").count(), 7);
+    await assertSharedCircleGeometry(tabletPage, ["#profile", "#notifications", "#snapshot-status-dot", ".scope-dot", ".agent-avatar-token", "#message-launcher"]);
+    assert.equal(await tabletPage.locator("#notifications").evaluate((notification) => {
+      const help = document.querySelector("#quick-help");
+      const profile = document.querySelector("#profile");
+      return Boolean(notification.compareDocumentPosition(help) & Node.DOCUMENT_POSITION_FOLLOWING)
+        && Boolean(help.compareDocumentPosition(profile) & Node.DOCUMENT_POSITION_FOLLOWING)
+        && getComputedStyle(notification.closest(".top-actions")).justifyContent === "flex-end";
+    }), true);
+    assert.equal(await tabletPage.locator(".top-actions #profile").count(), 1);
+    if (evidenceDir) await tabletPage.screenshot({ path: path.join(evidenceDir, "shell-profile-sidebar-tablet-834x1112.png"), fullPage: false, animations: "disabled" });
+    if (evidenceDir) await tabletPage.screenshot({ path: path.join(evidenceDir, "circle-invariant-overview-tablet-834x1112.png"), fullPage: false, animations: "disabled" });
+    assert.equal(await tabletPage.locator("#overview-project-cards .overview-hierarchy-project").count(), 4);
+    await tabletPage.waitForFunction(() => [...document.querySelectorAll("[data-overview-hierarchy-edge]")].every((path) => Boolean(path.getAttribute("d"))));
+    assert.equal(await tabletPage.locator("#overview-project-cards .overview-node-open").evaluateAll((nodes) => nodes.every((node) => node.getBoundingClientRect().height >= 68)), true);
+    assert.equal(await tabletPage.locator("#overview-project-cards [data-overview-zoom]").evaluateAll((controls) => controls.length === 3 && controls.every((control) => control.getBoundingClientRect().width >= 44 && control.getBoundingClientRect().height >= 44)), true);
+    if (evidenceDir) await tabletPage.screenshot({ path: path.join(evidenceDir, "overview-hierarchy-tablet-834x1112.png"), fullPage: false, animations: "disabled" });
     assert.equal(await tabletPage.evaluate(() => document.documentElement.scrollWidth > document.documentElement.clientWidth), false);
     await assertCircleFrame(tabletPage, "#profile");
     await assertCircleFrame(tabletPage, "#system-health-control");
@@ -4248,29 +4825,37 @@ proofFeed.items.push({
     assert.equal(await tabletPage.locator(".project-ui-flowchart-node").evaluateAll((nodes) => nodes.every((node) => node.getBoundingClientRect().height >= 44)), true);
     assert.equal(await tabletPage.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth), true);
     await tabletPage.evaluate(() => setView("agents"));
-    assert.equal(await tabletPage.locator("[data-agent-detail]").evaluateAll((rows) => rows.length >= 2 && rows.every((row) => row.getBoundingClientRect().height >= 44)), true);
+    assert.equal(await tabletPage.locator("#view-agents [data-agent-detail]").evaluateAll((rows) => rows.length >= 2 && rows.every((row) => row.getBoundingClientRect().height >= 44)), true);
     assert.equal(await tabletPage.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth), true);
-    await tabletPage.locator('[data-agent-detail="nested-task"]').click();
+    const tabletAgentTrigger = tabletPage.locator('#view-agents [data-agent-detail="nested-task"]');
+    await tabletAgentTrigger.click();
     await assertDialogFrame(tabletPage, "#agent-detail-dialog");
+    const tabletAgentDrawer = await tabletPage.locator("#agent-detail-dialog").evaluate((dialog) => { const box = dialog.getBoundingClientRect(); return { left: box.left, right: box.right, width: box.width, viewport: innerWidth }; });
+    assert.ok(Math.abs(tabletAgentDrawer.right - tabletAgentDrawer.viewport) <= 1 && tabletAgentDrawer.left > 0 && tabletAgentDrawer.width < tabletAgentDrawer.viewport, JSON.stringify(tabletAgentDrawer));
     if (evidenceDir) await tabletPage.screenshot({ path: path.join(evidenceDir, "17-agents-detail-tablet-834x1112.png"), fullPage: false, animations: "disabled" });
-    await tabletPage.keyboard.press("Escape");
+    await tabletPage.locator("#agent-detail-dialog .agent-detail-head").click();
+    assert.equal(await tabletPage.locator("#agent-detail-dialog").getAttribute("open"), "");
+    await tabletPage.mouse.click(20, 120);
+    await tabletPage.waitForFunction(() => !document.querySelector("#agent-detail-dialog").open);
+    assert.equal(await tabletAgentTrigger.evaluate((element) => element === document.activeElement), true);
     if (evidenceDir) await tabletPage.screenshot({ path: path.join(evidenceDir, "16-agents-tablet-834x1112.png"), fullPage: false, animations: "disabled" });
-    await tabletPage.locator('[data-view="roles"]').click();
+    await tabletPage.locator('.nav-item[data-view="roles"]').click();
     const tabletGrid = tabletPage.locator("#role-library-grid");
-    assert.equal(await tabletGrid.evaluate((element) => getComputedStyle(element).gridTemplateColumns.split(" ").length), 3);
-    assert.equal(await tabletGrid.evaluate((element) => getComputedStyle(element).overflowY), "auto");
-    assert.equal(await tabletGrid.evaluate((element) => element.scrollHeight > element.clientHeight), true);
+    assert.equal(await tabletGrid.evaluate((element) => getComputedStyle(element).gridTemplateColumns.split(" ").length), 2);
+    assert.equal(await tabletGrid.evaluate((element) => getComputedStyle(element).overflowY), "visible");
     assert.equal(await tabletPage.locator('.role-choice[tabindex="0"]').count(), 1);
+    assert.equal(await tabletPage.locator(".role-choice-description").count(), 24);
     if (evidenceDir) await tabletPage.screenshot({ path: path.join(evidenceDir, "13-roles-tablet-834x1112.png"), fullPage: false, animations: "disabled" });
     await tabletPage.locator('.role-choice[tabindex="0"]').focus();
     await tabletPage.keyboard.press("ArrowRight");
     assert.equal(await tabletPage.locator('.role-choice[aria-selected="true"]').getAttribute("data-role-select"), "analyst");
     await tabletPage.keyboard.press("ArrowDown");
-    assert.equal(await tabletPage.locator('.role-choice[aria-selected="true"]').getAttribute("data-role-select"), "auditor");
+    assert.equal(await tabletPage.locator('.role-choice[aria-selected="true"]').getAttribute("data-role-select"), "artist");
     await tabletPage.keyboard.press("Home");
     assert.equal(await tabletPage.locator('.role-choice[aria-selected="true"]').getAttribute("data-role-select"), "accountant");
+    const tabletPageLastRole = await tabletPage.locator(".role-choice").last().getAttribute("data-role-select");
     await tabletPage.keyboard.press("End");
-    assert.equal(await tabletPage.locator('.role-choice[aria-selected="true"]').getAttribute("data-role-select"), "writer");
+    assert.equal(await tabletPage.locator('.role-choice[aria-selected="true"]').getAttribute("data-role-select"), tabletPageLastRole);
     assert.equal(await tabletPage.locator('.role-choice[aria-selected="true"]').evaluate((element) => {
       const grid = document.querySelector("#role-library-grid").getBoundingClientRect();
       const choice = element.getBoundingClientRect();
@@ -4278,12 +4863,12 @@ proofFeed.items.push({
     }), true);
     await tabletPage.keyboard.press("Home");
     await tabletPage.keyboard.press("Tab");
-    assert.equal(await tabletPage.evaluate(() => document.activeElement?.getAttribute("aria-label")), "Edit Accountant");
-    assert.equal(await tabletPage.locator(".role-detail-actions .icon-button").evaluateAll((elements) => elements.every((element) => {
+    assert.equal(await tabletPage.evaluate(() => document.activeElement?.getAttribute("aria-label")), "Edit Accountant avatar");
+    assert.equal(await tabletPage.locator(".role-avatar-trigger").evaluate((element) => {
       const box = element.getBoundingClientRect();
       return box.width >= 44 && box.height >= 44;
-    })), true);
-    await tabletPage.getByRole("button", { name: "Edit Accountant" }).click();
+    }), true);
+    await tabletPage.getByRole("button", { name: "Edit Accountant avatar" }).click();
     await assertDialogFrame(tabletPage, "#role-editor");
     assert.equal(await tabletPage.locator("#role-editor button").evaluateAll((elements) => elements.filter((element) => !element.disabled).every((element) => {
       const box = element.getBoundingClientRect();
@@ -4291,13 +4876,13 @@ proofFeed.items.push({
     })), true);
     await tabletPage.evaluate(() => renderRoleLibrary());
     await tabletPage.getByRole("button", { name: "Cancel" }).click();
-    await tabletPage.waitForFunction(() => document.activeElement?.getAttribute("aria-label") === "Edit Accountant");
-    assert.equal(await tabletPage.evaluate(() => document.activeElement?.getAttribute("aria-label")), "Edit Accountant");
-    await tabletPage.getByRole("button", { name: "Edit Accountant" }).click();
+    await tabletPage.waitForFunction(() => document.activeElement?.getAttribute("aria-label") === "Edit Accountant avatar");
+    assert.equal(await tabletPage.evaluate(() => document.activeElement?.getAttribute("aria-label")), "Edit Accountant avatar");
+    await tabletPage.getByRole("button", { name: "Edit Accountant avatar" }).click();
     await tabletPage.keyboard.press("Escape");
-    await tabletPage.waitForFunction(() => document.activeElement?.getAttribute("aria-label") === "Edit Accountant");
+    await tabletPage.waitForFunction(() => document.activeElement?.getAttribute("aria-label") === "Edit Accountant avatar");
     assert.equal(await tabletPage.locator("#role-editor").isVisible(), false);
-    assert.equal(await tabletPage.evaluate(() => document.activeElement?.getAttribute("aria-label")), "Edit Accountant");
+    assert.equal(await tabletPage.evaluate(() => document.activeElement?.getAttribute("aria-label")), "Edit Accountant avatar");
     assert.equal(await tabletPage.evaluate(() => document.documentElement.scrollWidth > document.documentElement.clientWidth), false);
     await tabletPage.evaluate(() => setView("assets"));
     await tabletPage.locator(".asset-tile .asset-image-button").first().click();
@@ -4308,6 +4893,13 @@ proofFeed.items.push({
     assert.equal(await tabletPage.locator("#settings-essentials").evaluate((element) => element.scrollWidth <= element.clientWidth + 1), true);
     assert.equal(await tabletPage.locator(".settings-switch").evaluateAll((elements) => elements.every((element) => element.getBoundingClientRect().height >= 44)), true);
     if (evidenceDir) await tabletPage.screenshot({ path: path.join(evidenceDir, "21-settings-essentials-tablet-834x1112.png"), fullPage: false, animations: "disabled" });
+    for (const [label, value] of [["Midnight", "midnight"], ["Black", "black"], ["Graphite", "graphite"], ["Pearl", "pearl"]]) {
+      await tabletPage.getByRole("radio", { name: label }).click();
+      assert.equal(await tabletPage.evaluate(() => document.documentElement.dataset.theme), value);
+      assert.equal(await tabletPage.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth), true);
+      if (evidenceDir) await tabletPage.screenshot({ path: path.join(evidenceDir, `theme-${value}-tablet-834x1112.png`), fullPage: false, animations: "disabled" });
+    }
+    await tabletPage.evaluate(() => setTheme("midnight"));
     await tabletPage.getByRole("button", { name: "Edit config" }).click();
     await assertDialogFrame(tabletPage, "#config-editor-dialog");
     await tabletPage.keyboard.press("Escape");
@@ -4316,13 +4908,40 @@ proofFeed.items.push({
 
     const mobilePage = await browser.newPage({ viewport: { width: 390, height: 844 } });
     const mobile = await mount(mobilePage, overflowingProjectFixture(), overrides);
+    await assertSharedCircleGeometry(mobilePage, ["#mobile-message-action", ".agent-avatar-token"]);
+    await mobilePage.locator("#mobile-menu-button").click();
+    await mobilePage.locator("#console-drawer").waitFor({ state: "visible" });
+    await assertSharedCircleGeometry(mobilePage, ["#console-drawer .scope-dot", ".support-mark"]);
+    if (evidenceDir) await mobilePage.screenshot({ path: path.join(evidenceDir, "circle-invariant-drawer-mobile-390x844.png"), fullPage: false, animations: "disabled" });
+    await mobilePage.locator("#drawer-close").click();
+    await mobilePage.waitForFunction(() => [...document.querySelectorAll("[data-overview-hierarchy-edge]")].every((path) => Boolean(path.getAttribute("d"))));
+    assert.equal(await mobilePage.locator("#overview-project-cards .overview-hierarchy-children").evaluateAll((groups) => groups.every((group) => getComputedStyle(group).gridTemplateColumns.split(" ").length === 1)), true);
+    assert.equal(await mobilePage.locator("#overview-project-cards .overview-node-inspect").evaluateAll((inspects) => inspects.every((inspect) => inspect.getBoundingClientRect().width >= 44 && inspect.getBoundingClientRect().height >= 44 && getComputedStyle(inspect).opacity === "1")), true);
+    assert.equal(await mobilePage.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth), true);
+    if (evidenceDir) await mobilePage.screenshot({ path: path.join(evidenceDir, "overview-hierarchy-mobile-390x844.png"), fullPage: false, animations: "disabled" });
+    await mobilePage.evaluate(() => { setView("settings"); renderSettings(); });
+    for (const [label, value] of [["Midnight", "midnight"], ["Black", "black"], ["Graphite", "graphite"], ["Pearl", "pearl"]]) {
+      await mobilePage.getByRole("radio", { name: label }).click();
+      assert.equal(await mobilePage.evaluate(() => document.documentElement.dataset.theme), value);
+      assert.equal(await mobilePage.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth), true);
+      if (evidenceDir) await mobilePage.screenshot({ path: path.join(evidenceDir, `theme-${value}-mobile-390x844.png`), fullPage: false, animations: "disabled" });
+    }
+    await mobilePage.evaluate(() => { setTheme("midnight"); setView("overview"); });
     assert.equal(await mobilePage.locator("#message-launcher").isVisible(), false);
     assert.equal(await mobilePage.locator("#mobile-message-action").isVisible(), true);
+    assert.equal(await mobilePage.locator(".mobile-message-footer .mobile-destination").count(), 4);
+    assert.equal(await mobilePage.locator("#mobile-message-action .message-mascot-silhouette").count(), 1);
+    await mobilePage.locator('.mobile-message-footer [data-view="assets"]').click();
+    assert.equal(await mobilePage.evaluate(() => state.view), "assets");
+    assert.equal(await mobilePage.locator('.mobile-message-footer [data-view="assets"]').getAttribute("aria-current"), "page");
     const mobileMessageBox = await mobilePage.locator("#mobile-message-action").boundingBox();
     assert.ok(mobileMessageBox && mobileMessageBox.width >= 44 && mobileMessageBox.height >= 44);
     await mobilePage.locator("#mobile-message-action").click();
     assert.equal(await mobilePage.locator("#message-composer").isVisible(), true);
-    assert.equal(await mobilePage.locator("#message-composer").evaluate((element) => element.getBoundingClientRect().right <= document.documentElement.clientWidth && element.getBoundingClientRect().left >= 0), true);
+    assert.deepEqual(await mobilePage.locator("#message-composer").evaluate((element) => {
+      const box = element.getBoundingClientRect();
+      return { top: Math.round(box.top), left: Math.round(box.left), right: Math.round(innerWidth - box.right), bottom: Math.round(innerHeight - box.bottom) };
+    }), { top: 0, left: 0, right: 0, bottom: 0 });
     assert.equal(await mobilePage.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth), true);
     await mobilePage.locator("#message-draft").fill("Mobile draft remains local.");
     if (evidenceDir) await mobilePage.screenshot({ path: path.join(evidenceDir, "41-message-unavailable-mobile-390x844.png"), fullPage: false, animations: "disabled" });
@@ -4334,12 +4953,21 @@ proofFeed.items.push({
     assert.ok(menuBox && menuBox.width >= 44 && menuBox.height >= 44);
     await assertCircleFrame(mobilePage, "#profile", 44);
     await assertCircleFrame(mobilePage, "#system-health-control", 44);
+    await assertCircleFrame(mobilePage, "#quick-help", 44);
+    assert.equal(await mobilePage.locator("#notifications").isVisible(), true);
+    await assertCircleFrame(mobilePage, "#notifications", 44);
     await mobilePage.evaluate(() => showError("Project refresh failed"));
     const errorBox = await mobilePage.locator("#error-surface").boundingBox();
     assert.ok(errorBox && menuBox && errorBox.y >= menuBox.y + menuBox.height);
     assert.ok((await mobilePage.getByRole("button", { name: "Refresh SWARM" }).boundingBox())?.height >= 44);
     await menuButton.click();
     assert.equal(await mobilePage.locator("#console-drawer").getAttribute("aria-hidden"), "false");
+    assert.equal(await mobilePage.locator("#profile").isVisible(), false);
+    assert.equal(await mobilePage.locator("#console-drawer #profile").count(), 0);
+    assert.doesNotMatch(await mobilePage.locator("#console-drawer").textContent(), /\bLive\b/);
+    if (evidenceDir) await mobilePage.screenshot({ path: path.join(evidenceDir, "shell-profile-sidebar-mobile-390x844.png"), fullPage: false, animations: "disabled" });
+    assert.equal(await mobilePage.locator("#console-drawer .brand-wordmark").isVisible(), true);
+    assert.ok((await mobilePage.locator("#drawer-close").boundingBox())?.height >= 44);
     assert.equal(await mobilePage.locator(".workspace").evaluate((element) => element.inert), true);
     assert.equal(await mobilePage.locator("#project-navigation button").evaluateAll((elements) => elements.every((element) => element.getBoundingClientRect().height >= 44)), true);
     assert.equal(await mobilePage.locator("#project-navigation").evaluate((element) => getComputedStyle(element).overflowY), "auto");
@@ -4350,22 +4978,42 @@ proofFeed.items.push({
     assert.equal(await mobilePage.locator('#project-navigation [data-project-id="project:overflow-24"]').count(), 1);
     await mobilePage.keyboard.press("Escape");
     assert.equal(await menuButton.evaluate((element) => element === document.activeElement), true);
-    await menuButton.click();
-    await mobilePage.locator('[data-view="roles"]').click();
+    await mobilePage.locator('.mobile-message-footer [data-view="roles"]').click();
     const mobileGrid = mobilePage.locator("#role-library-grid");
     assert.equal(await mobileGrid.evaluate((element) => getComputedStyle(element).gridTemplateColumns.split(" ").length), 2);
-    assert.equal(await mobileGrid.evaluate((element) => getComputedStyle(element).overflowY), "auto");
-    assert.equal(await mobileGrid.evaluate((element) => element.scrollHeight > element.clientHeight), true);
+    assert.equal(await mobileGrid.evaluate((element) => getComputedStyle(element).overflowY), "visible");
     assert.equal(await mobilePage.locator('.role-choice[tabindex="0"]').count(), 1);
+    assert.equal(await mobilePage.locator(".role-choice-description").count(), 24);
+    assert.ok(await mobilePage.locator(".role-choice-description").evaluateAll((items) => items.every((item) => getComputedStyle(item).webkitLineClamp === "2")));
+    await mobilePage.setViewportSize({ width: 610, height: 800 });
+    const mobileHeaderGeometry = await mobilePage.locator(".top-actions").evaluate((actions) => {
+      const scope = document.querySelector(".scope-context").getBoundingClientRect();
+      const controls = [...actions.querySelectorAll(":scope > button")].map((button) => ({ rect: button.getBoundingClientRect().toJSON(), overflow: getComputedStyle(button).overflow }));
+      return { scope: scope.toJSON(), controls, viewport: innerWidth };
+    });
+    assert.ok(mobileHeaderGeometry.scope.width <= 160 && mobileHeaderGeometry.scope.right <= mobileHeaderGeometry.viewport, JSON.stringify(mobileHeaderGeometry));
+    assert.equal(mobileHeaderGeometry.controls.every(({ rect, overflow }) => rect.width >= 44 && rect.height >= 44 && overflow === "visible"), true);
+    const mobileRoleTrigger = mobilePage.locator('.role-choice[data-role-select="developer"]');
+    await mobileRoleTrigger.click();
+    assert.equal(await mobilePage.locator("#role-library-detail").getAttribute("role"), "dialog");
+    assert.equal(await mobilePage.locator("#role-library-detail").getAttribute("aria-modal"), "true");
+    assert.equal(await mobilePage.locator("#role-library-detail").evaluate((detail) => { const box = detail.getBoundingClientRect(); return Math.abs(box.left) <= 1 && Math.abs(box.top) <= 1 && Math.abs(box.width - innerWidth) <= 1 && Math.abs(box.height - innerHeight) <= 1; }), true);
+    assert.doesNotMatch(await mobilePage.locator("#role-library-detail").textContent(), /Metadata only|server-owned|Profession · not authority|No authority transfer|Built in/i);
+    await mobilePage.getByRole("button", { name: "Back to roles" }).click();
+    assert.equal(await mobileRoleTrigger.evaluate((element) => element === document.activeElement), true);
+    await mobilePage.setViewportSize({ width: 390, height: 844 });
+    await mobilePage.evaluate(() => clearError());
     if (evidenceDir) await mobilePage.screenshot({ path: path.join(evidenceDir, "14-roles-mobile-390x844.png"), fullPage: false, animations: "disabled" });
-    await mobilePage.locator('.role-choice[tabindex="0"]').focus();
+    const mobileRoleOrder = await mobilePage.locator(".role-choice").evaluateAll((items) => items.map((item) => item.dataset.roleSelect));
+    await mobilePage.locator(".role-choice").first().focus();
     await mobilePage.keyboard.press("ArrowRight");
-    assert.equal(await mobilePage.locator('.role-choice[aria-selected="true"]').getAttribute("data-role-select"), "analyst");
+    assert.equal(await mobilePage.locator('.role-choice[aria-selected="true"]').getAttribute("data-role-select"), mobileRoleOrder[1]);
     await mobilePage.keyboard.press("ArrowDown");
-    assert.equal(await mobilePage.locator('.role-choice[aria-selected="true"]').getAttribute("data-role-select"), "artist");
+    assert.equal(await mobilePage.locator('.role-choice[aria-selected="true"]').getAttribute("data-role-select"), mobileRoleOrder[3]);
     await mobilePage.keyboard.press("Home");
+    const mobilePageLastRole = await mobilePage.locator(".role-choice").last().getAttribute("data-role-select");
     await mobilePage.keyboard.press("End");
-    assert.equal(await mobilePage.locator('.role-choice[aria-selected="true"]').getAttribute("data-role-select"), "writer");
+    assert.equal(await mobilePage.locator('.role-choice[aria-selected="true"]').getAttribute("data-role-select"), mobilePageLastRole);
     assert.equal(await mobilePage.locator('.role-choice[aria-selected="true"]').evaluate((element) => {
       const grid = document.querySelector("#role-library-grid").getBoundingClientRect();
       const choice = element.getBoundingClientRect();
@@ -4373,19 +5021,24 @@ proofFeed.items.push({
     }), true);
     await mobilePage.evaluate(async () => { await selectProjectScope("project:fixture"); setView("agents"); });
     await mobilePage.waitForFunction(() => document.querySelectorAll("[data-agent-detail]").length >= 2);
-    assert.equal(await mobilePage.locator("[data-agent-detail]").evaluateAll((rows) => rows.every((row) => row.getBoundingClientRect().height >= 44)), true);
+    assert.equal(await mobilePage.locator("#view-agents [data-agent-detail]").evaluateAll((rows) => rows.every((row) => row.getBoundingClientRect().height >= 44)), true);
     assert.equal(await mobilePage.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth), true);
     if (evidenceDir) await mobilePage.screenshot({ path: path.join(evidenceDir, "18-agents-mobile-390x844.png"), fullPage: false, animations: "disabled" });
-    await mobilePage.locator('[data-agent-detail="nested-task"]').click();
+    await mobilePage.locator('#view-agents [data-agent-detail="nested-task"]').click();
     await assertDialogFrame(mobilePage, "#agent-detail-dialog");
+    const mobileAgentDrawer = await mobilePage.locator("#agent-detail-dialog").evaluate((dialog) => { const box = dialog.getBoundingClientRect(); return { left: box.left, top: box.top, width: box.width, height: box.height, viewportWidth: innerWidth, viewportHeight: innerHeight }; });
+    assert.deepEqual(mobileAgentDrawer, { left: 0, top: 0, width: mobileAgentDrawer.viewportWidth, height: mobileAgentDrawer.viewportHeight, viewportWidth: mobileAgentDrawer.viewportWidth, viewportHeight: mobileAgentDrawer.viewportHeight });
     if (evidenceDir) await mobilePage.screenshot({ path: path.join(evidenceDir, "19-agents-detail-mobile-390x844.png"), fullPage: false, animations: "disabled" });
+    await mobilePage.locator("#agent-detail-dialog .agent-detail-head").click();
+    assert.equal(await mobilePage.locator("#agent-detail-dialog").getAttribute("open"), "");
     await mobilePage.keyboard.press("Escape");
     await mobilePage.evaluate(() => setView("roles"));
     await mobilePage.locator('.role-choice[aria-selected="true"]').focus();
     await mobilePage.keyboard.press("Home");
-    await mobilePage.keyboard.press("Tab");
-    assert.equal(await mobilePage.evaluate(() => document.activeElement?.getAttribute("aria-label")), "Edit Accountant");
-    await mobilePage.getByRole("button", { name: "Edit Accountant" }).click();
+    await mobilePage.keyboard.press("Enter");
+    await mobilePage.locator("#role-library-detail.is-mobile-open").waitFor({ state: "visible" });
+    assert.equal(await mobilePage.evaluate(() => document.activeElement?.getAttribute("aria-label")), "Back to roles");
+    await mobilePage.getByRole("button", { name: "Edit Accountant avatar" }).click();
     await assertDialogFrame(mobilePage, "#role-editor");
     assert.equal(await mobilePage.locator("#role-editor").evaluate((element) => {
       const box = element.getBoundingClientRect();
@@ -4402,12 +5055,14 @@ proofFeed.items.push({
     await mobilePage.keyboard.press("Escape");
     await mobilePage.waitForTimeout(50);
     assert.equal(await mobilePage.locator("#role-editor").isVisible(), false);
-    assert.equal(await mobilePage.evaluate(() => document.activeElement?.getAttribute("aria-label")), "Edit Accountant");
+    assert.equal(await mobilePage.evaluate(() => document.activeElement?.getAttribute("aria-label")), "Edit Accountant avatar");
+    assert.equal(await mobilePage.locator("#role-library-detail").isVisible(), true, "Escape closes only the topmost role editor");
+    await mobilePage.keyboard.press("Escape");
+    assert.equal(await mobilePage.locator("#role-library-detail").isVisible(), false);
     await menuButton.click();
     await mobilePage.getByRole("button", { name: /^swarm\b/i }).click();
     assert.equal(await mobilePage.locator("#view-roles").isVisible(), true, "project selection preserves the active Roles route");
-    await menuButton.click();
-    await mobilePage.locator('[data-view="overview"]').click();
+    await mobilePage.locator('.mobile-message-footer [data-view="overview"]').click();
     await mobilePage.getByRole("tab", { name: "UI", exact: true }).click();
     assert.equal(await mobilePage.locator(".project-ui-card").count(), 2);
     assert.equal(await mobilePage.locator(".project-ui-toolbar .segmented-control button").evaluateAll((elements) => elements.every((element) => element.getBoundingClientRect().height >= 44)), true);

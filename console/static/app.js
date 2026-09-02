@@ -1,4 +1,18 @@
-const state = { token: "", overview: null, proof: [], proofCollections: new Map(), proofStatuses: new Map(), proofStatus: "idle", proofSequence: 0, usageHistory: null, usageWindowHours: 1, usageScopeKey: "", usageStatus: "idle", usageError: "", projectProgress: null, projectProgressProjectId: "", projectProgressStatus: "idle", projectProgressError: "", projectProgressFeed: null, projectProgressFeedProjectId: "", projectProgressFeedStatus: "idle", projectProgressFeedError: "", projectTab: "overview", projectUiMode: "screens", projectUiGroupId: "", runLogs: new Map(), runLogRequestGenerations: new Map(), runLogSurfaceStates: new Map(), runLogAgent: null, agentUpdatesFilter: "all", agentUpdatesPaused: false, agentDetailTrigger: null, diagnostics: null, diagnosticsHistory: null, diagnosticsHistoryStatus: "idle", diagnosticsError: "", diagnosticsSelectedChecks: new Set(), diagnosticsSelectionInitialized: false, diagnosticsRepairPreview: null, diagnosticsRepairPending: false, diagnosticsRepairError: "", diagnosticsRepairTrigger: null, health: null, storage: null, profile: null, profileStatus: "idle", profileError: "", profileUpload: null, profilePreviewUrl: "", profileSaving: false, profileTrigger: null, messageOpen: false, messageTrigger: null, messageDraft: "", messageRecipientId: "", messageStatus: "unavailable", messageError: "", messageReceipt: null, messageConnector: null, messageAttachments: [], messagePendingAction: null, config: null, configStatus: "idle", configError: "", configResetPending: null, configResetRetry: null, chatRelaySaving: false, settingsDraft: new Map(), settingsSaving: false, settingsSaveError: "", settingsSaveMessage: "", configEditorTrigger: null, ctrlSettings: null, auto: null, autoBindingKey: "", autoStatus: "idle", autoError: "", autoSaving: false, skills: null, skillsError: "", roleManifests: null, roleManifestStatus: "unavailable", roleManifestError: "", roleManifestMessage: "", roleManifestSaving: false, roleManifestRetry: null, roleEditorMode: "", roleEditorTrigger: null, roleSearch: "", roleTypes: new Set(["builtin", "custom"]), roleSearchFields: new Set(["profession", "specialization", "alias", "skills", "purpose"]), selectedRoleId: "", assets: null, assetBindingKey: "", assetStatus: "idle", assetError: "", assetProjection: "active", assetView: "grid", assetRequestGeneration: 0, assetEventCursors: new Map(), assetMutationPending: null, assetConfirm: null, assetUndo: null, selectedAssetIdentity: "", assetTrigger: null, onboardingStep: 0, onboardingShown: false, onboardingTrigger: null, onboardingFlowZoom: 1, onboardingConfigPending: new Map(), onboardingConfigFailures: new Map(), notifications: null, notificationBindingKey: "", notificationStatus: "idle", notificationError: "", notificationAckFlight: null, notificationRequestGenerations: new Map(), notificationPresentedIds: new Set(), notificationToast: null, notificationToastTimer: null, notificationTrigger: null, connectionStatus: "reconnecting", view: "overview", projectId: "all", ctrlId: "", scopeNotice: "", scopeNoticeVisible: false, settingsCtrlId: "", settingsScopeType: "", settingsScopeId: "", evidenceImages: [], evidenceIndex: 0, evidenceTrigger: null };
+const state = { token: "", overview: null, proof: [], proofCollections: new Map(), proofStatuses: new Map(), proofStatus: "idle", proofSequence: 0, usageHistory: null, usageWindowHours: 1, usageScopeKey: "", usageStatus: "idle", usageError: "", projectProgress: null, projectProgressProjectId: "", projectProgressStatus: "idle", projectProgressError: "", projectProgressFeed: null, projectProgressFeedProjectId: "", projectProgressFeedStatus: "idle", projectProgressFeedError: "", projectTab: "overview", projectUiMode: "screens", projectUiGroupId: "", projectArtifactPage: 0, runLogs: new Map(), runLogRequestGenerations: new Map(), runLogSurfaceStates: new Map(), runLogAgent: null, agentUpdatesFilter: "all", agentUpdatesPaused: false, agentDetailTrigger: null, diagnostics: null, diagnosticsHistory: null, diagnosticsHistoryStatus: "idle", diagnosticsError: "", diagnosticsSelectedChecks: new Set(), diagnosticsSelectionInitialized: false, diagnosticsRepairPreview: null, diagnosticsRepairPending: false, diagnosticsRepairError: "", diagnosticsRepairTrigger: null, health: null, storage: null, profile: null, profileStatus: "idle", profileError: "", profileUpload: null, profilePreviewUrl: "", profileSaving: false, profileTrigger: null, supportTrigger: null, messageOpen: false, messageTrigger: null, messageDraft: "", messageRecipientId: "", messageStatus: "unavailable", messageError: "", messageReceipt: null, messageConnector: null, messageAttachments: [], messagePendingAction: null, config: null, configStatus: "idle", configError: "", configResetPending: null, configResetRetry: null, chatRelaySaving: false, settingsDraft: new Map(), settingsSaving: false, settingsSaveError: "", settingsSaveMessage: "", configEditorTrigger: null, ctrlSettings: null, auto: null, autoBindingKey: "", autoStatus: "idle", autoError: "", autoSaving: false, skills: null, skillsError: "", roleManifests: null, roleManifestStatus: "unavailable", roleManifestError: "", roleManifestMessage: "", roleManifestSaving: false, roleManifestRetry: null, roleEditorMode: "", roleEditorTrigger: null, roleSearch: "", roleTypes: new Set(["builtin", "custom"]), roleSearchFields: new Set(["profession", "specialization", "alias", "skills", "purpose"]), selectedRoleId: "", roleDetailOpen: false, roleDetailTriggerId: "", assets: null, assetBindingKey: "", assetStatus: "idle", assetError: "", assetProjection: "active", assetView: "grid", assetPage: 0, assetRequestGeneration: 0, assetEventCursors: new Map(), assetMutationPending: null, assetConfirm: null, assetUndo: null, selectedAssetIdentity: "", assetTrigger: null, onboardingStep: 0, onboardingShown: false, onboardingTrigger: null, onboardingConfigPending: new Map(), onboardingConfigFailures: new Map(), notifications: null, notificationBindingKey: "", notificationStatus: "idle", notificationError: "", notificationAckFlight: null, notificationRequestGenerations: new Map(), notificationPresentedIds: new Set(), notificationToast: null, notificationToastTimer: null, notificationTrigger: null, connectionStatus: "reconnecting", view: "overview", projectId: "all", ctrlId: "", scopeNotice: "", scopeNoticeVisible: false, settingsCtrlId: "", settingsScopeType: "", settingsScopeId: "", evidenceImages: [], evidenceIndex: 0, evidenceTrigger: null };
+const THEME_STORAGE_KEY = "swarm.theme.v1";
+const THEME_OPTIONS = Object.freeze({ midnight: "Midnight", black: "Black", graphite: "Graphite", pearl: "Pearl" });
+
+function currentTheme() {
+  return Object.hasOwn(THEME_OPTIONS, document.documentElement.dataset.theme) ? document.documentElement.dataset.theme : "midnight";
+}
+
+function setTheme(theme, storage = window.localStorage) {
+  const selected = Object.hasOwn(THEME_OPTIONS, theme) ? theme : "midnight";
+  document.documentElement.dataset.theme = selected;
+  try { storage.setItem(THEME_STORAGE_KEY, selected); } catch { /* Presentation remains applied when storage is unavailable. */ }
+  return selected;
+}
+
 const PROFILE_API_CONTRACT = Object.freeze({ read: "/api/profile", write: "/api/profile", schemaVersion: 1, avatarField: "avatar", profileField: "profile" });
 const DIAGNOSTICS_HISTORY_HOURS = 1;
 const MESSAGE_CONNECTOR_UNAVAILABLE = "Messaging is unavailable until SWARM exposes the authenticated HQ connector.";
@@ -6,7 +20,6 @@ let configMutationTail = Promise.resolve();
 let configAuthorityGeneration = 0;
 let configWriteRetry = null;
 let lastAppliedHistoryRoute = "";
-const EVIDENCE_THUMBNAIL_PAGE_SIZE = 24;
 const RUN_LOG_CLIENT_LIMIT = 200;
 const ONBOARDING_PRESENTATION_KEY = "swarm.onboarding.v2.seen";
 const ONBOARDING_STEPS = [
@@ -15,28 +28,6 @@ const ONBOARDING_STEPS = [
   { name: "Role variety", primary: "Continue" },
   { name: "Project views", primary: "Continue" },
   { name: "Configuration", primary: "Start using SWARM" },
-];
-const ONBOARDING_COORDINATION_GROUPS = [
-  { id: "coo", label: "COO", accent: "#4da8ff", leads: [
-    { id: "operations", label: "Operations", roleId: "operator", icon: "settings" },
-    { id: "delivery", label: "Delivery", roleId: "strategist", icon: "git-branch" },
-    { id: "support", label: "Support", roleId: "support", icon: "message-square" },
-  ] },
-  { id: "cto", label: "CTO", accent: "#9b7cff", leads: [
-    { id: "engineering", label: "Engineering", roleId: "developer", icon: "git-branch" },
-    { id: "architecture", label: "Architecture", roleId: "architect", icon: "list-tree" },
-    { id: "security", label: "Security", roleId: "security", icon: "shield-check" },
-  ] },
-  { id: "cfo", label: "CFO", accent: "#55d59a", leads: [
-    { id: "finance", label: "Finance", roleId: "accountant", icon: "list" },
-    { id: "analytics", label: "Analytics", roleId: "analyst", icon: "layout-dashboard" },
-    { id: "compliance", label: "Compliance", roleId: "auditor", icon: "check" },
-  ] },
-  { id: "cmo", label: "CMO", accent: "#ff6fae", leads: [
-    { id: "design", label: "Design", roleId: "designer", icon: "pencil" },
-    { id: "content", label: "Content", roleId: "producer", icon: "file-clock" },
-    { id: "growth", label: "Growth", roleId: "marketer", icon: "sparkles" },
-  ] },
 ];
 const $ = (selector, root = document) => root.querySelector(selector);
 const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
@@ -122,6 +113,24 @@ function escapeHTML(value) {
   return String(value ?? "").replace(/[&<>'"]/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "'": "&#39;", '"': "&quot;" })[char]);
 }
 
+const COLLECTION_PAGE_SIZE = 12;
+
+function boundedCollectionWindow(items, step) {
+  const total = items.length;
+  const index = Math.max(0, Number.isInteger(step) ? step : 0);
+  const end = Math.min(total, COLLECTION_PAGE_SIZE * (index + 1));
+  return { items: items.slice(0, end), index, total, end, hasMore: end < total };
+}
+
+function collectionLoadMoreMarkup(kind, collection, label) {
+  if (!collection.hasMore) return '<p class="collection-status" data-collection-status="' + kind + '" role="status" aria-live="polite" tabindex="-1">Showing all ' + collection.total + ' ' + escapeHTML(label.toLowerCase()) + '.</p>';
+  return '<div class="collection-more"><button class="quiet-button" type="button" data-collection-more="' + kind + '">Load more</button><p class="collection-status" data-collection-status="' + kind + '" role="status" aria-live="polite" tabindex="-1">Showing ' + collection.end + ' of ' + collection.total + ' ' + escapeHTML(label.toLowerCase()) + '.</p></div>';
+}
+
+function loadingSkeletonMarkup(count = 8) {
+  return '<div class="loading-skeleton" aria-hidden="true">' + Array.from({ length: count }, () => "<i></i>").join("") + '</div>';
+}
+
 function compactNumber(value) {
   return new Intl.NumberFormat(undefined, { notation: "compact", maximumFractionDigits: 1 }).format(Number(value) || 0);
 }
@@ -197,7 +206,7 @@ function clearError(restoreFocus = true) {
   const surface = $("#error-surface");
   const restore = restoreFocus && surface.contains(document.activeElement);
   surface.hidden = true;
-  if (restore) requestAnimationFrame(() => $("#refresh")?.focus({ preventScroll: true }));
+  if (restore) requestAnimationFrame(() => $("#system-health-control")?.focus({ preventScroll: true }));
 }
 
 function showConnectionState() {
@@ -205,10 +214,11 @@ function showConnectionState() {
   setDataStatus("unavailable", state.overview?.generated_at);
   setNotificationsOpen(false);
   dismissNotificationToast(false);
-  if (state.messageOpen) closeMessageComposer(false);
+  if (state.messageOpen) closeMessageComposer(false, true);
   $(".app-shell").classList.add("is-disconnected");
   $(".workspace").classList.add("is-disconnected");
   $("#connection-state").hidden = false;
+  updateDocumentTitle();
 }
 
 function clearConnectionState() {
@@ -217,7 +227,8 @@ function clearConnectionState() {
   $(".app-shell").classList.remove("is-disconnected");
   $(".workspace").classList.remove("is-disconnected");
   surface.hidden = true;
-  if (restore) requestAnimationFrame(() => $("#refresh")?.focus({ preventScroll: true }));
+  updateDocumentTitle();
+  if (restore) requestAnimationFrame(() => $("#system-health-control")?.focus({ preventScroll: true }));
 }
 
 function onboardingConfigBlocked() {
@@ -247,26 +258,6 @@ function onboardingControlForIdentity(root, identity) {
   return $$('[data-' + attribute.replace(/[A-Z]/g, (letter) => "-" + letter.toLowerCase()) + ']', root).find((element) => element.dataset[attribute] === value) || null;
 }
 
-function onboardingConfigToggle(key, value, label) {
-  const editable = configEditable(key) && !state.onboardingConfigPending.has(key);
-  const draft = onboardingConfigDraft(key, value);
-  return '<label class="toggle-row"><input data-config-key="' + escapeHTML(key) + '" type="checkbox"' + (draft === true ? ' checked' : '') + (editable ? '' : ' disabled') + '><span>' + escapeHTML(label) + '</span></label>' + (editable ? '' : '<small>Managed by the current configuration.</small>');
-}
-
-function onboardingConfigModeToggle(key, value, enabledValue, disabledValue, label) {
-  const editable = configEditable(key) && !state.onboardingConfigPending.has(key);
-  const draft = onboardingConfigDraft(key, value);
-  return '<label class="toggle-row"><input data-config-key="' + escapeHTML(key) + '" data-true-value="' + escapeHTML(enabledValue) + '" data-false-value="' + escapeHTML(disabledValue) + '" type="checkbox"' + (draft === enabledValue ? ' checked' : '') + (editable ? '' : ' disabled') + '><span>' + escapeHTML(label) + '</span></label>' + (editable ? '' : '<small>Managed by the current configuration.</small>');
-}
-
-function onboardingSpeedControl(value) {
-  const key = "execution.fast_mode";
-  const editable = configEditable(key) && !state.onboardingConfigPending.has(key);
-  const draft = onboardingConfigDraft(key, value) === true;
-  const choice = (id, label, selected, configValue, disabled = false) => '<label title="' + escapeHTML(disabled ? label + ' requires server support.' : label + ' mode') + '"><input type="radio" name="onboarding-speed" data-config-key="' + key + '" data-config-value="' + String(configValue) + '" data-onboarding-control="speed-' + id + '"' + (selected ? ' checked' : '') + ((!editable || disabled) ? ' disabled' : '') + '><span>' + escapeHTML(label) + '</span></label>';
-  return '<fieldset class="onboarding-segmented"><legend>Speed</legend><div>' + choice("default", "Default", !draft, false) + choice("fast", "Fast", draft, true) + choice("ultrafast", "Ultrafast", false, true, true) + '</div></fieldset><small>Ultrafast is unavailable until the server exposes an accepted mode.</small>';
-}
-
 const ONBOARDING_TASK_LIFE_DETENTS = [
   { hours: 1, valueText: "Short — 1 hour" },
   { hours: 2, valueText: "Between Short and Balanced — 2 hours" },
@@ -274,20 +265,6 @@ const ONBOARDING_TASK_LIFE_DETENTS = [
   { hours: 24, valueText: "Between Balanced and Long — 24 hours" },
   { hours: 720, valueText: "Long — 30 days" },
 ];
-
-function onboardingTaskLifeControl(value) {
-  const key = "lifecycle.task_lifetime_hours";
-  const current = Number.isInteger(value) ? value : 4;
-  const draft = onboardingConfigDraft(key, current);
-  const exactIndex = ONBOARDING_TASK_LIFE_DETENTS.findIndex((detent) => detent.hours === draft);
-  const index = exactIndex >= 0 ? exactIndex : ONBOARDING_TASK_LIFE_DETENTS.reduce((best, detent, position) => Math.abs(detent.hours - draft) < Math.abs(ONBOARDING_TASK_LIFE_DETENTS[best].hours - draft) ? position : best, 0);
-  const editable = Number.isInteger(value) && configEditable(key) && !state.onboardingConfigPending.has(key);
-  const values = ONBOARDING_TASK_LIFE_DETENTS.map((detent) => detent.hours).join(",");
-  const tooltip = "Short clears context sooner to keep work efficient, with more handovers. Balanced hands over when task efficiency begins to drop. Long reduces scheduled handovers, while a larger context can become less efficient over time.";
-  return '<section class="onboarding-task-life"><div class="onboarding-task-life-head"><label for="onboarding-task-life">Task life</label><details class="onboarding-task-life-info" data-onboarding-control="task-life-info"><summary class="icon-button" aria-label="About task life"><span aria-hidden="true">i</span></summary><div class="onboarding-task-life-tooltip" role="tooltip">' + escapeHTML(tooltip) + '</div></details></div>' +
-    '<input id="onboarding-task-life" data-config-key="' + key + '" data-config-values="' + values + '" type="range" min="0" max="4" step="1" value="' + index + '" aria-valuetext="' + escapeHTML(ONBOARDING_TASK_LIFE_DETENTS[index].valueText) + '"' + (editable ? '' : ' disabled') + '>' +
-    '<div class="onboarding-task-life-labels" aria-hidden="true"><span>Short</span><span>Balanced</span><span>Long</span></div>' + (editable ? '' : '<small>Managed by the current configuration.</small>') + '</section>';
-}
 
 function onboardingConfigurationMarkup() {
   const settings = state.config?.settings || {};
@@ -297,105 +274,14 @@ function onboardingConfigurationMarkup() {
   const pending = state.onboardingConfigPending.size;
   const failures = [...state.onboardingConfigFailures.values()];
   const status = pending ? 'Saving ' + pending + ' setting' + (pending === 1 ? '' : 's') + '…' : failures.length ? (failures[0].error || 'A setting was not saved.') : 'Changes are saved when acknowledged by SWARM.';
-  return '<section class="onboarding-config-essentials"><header><div><p class="eyebrow">Essentials</p><h3>How SWARM runs your work</h3></div><div>' + onboardingConfigModeToggle("automation.mode", automation.mode || "standard", "standard", "manual", "Auto mode") + '<small>SWARM keeps eligible work moving until it needs you.</small></div></header><div class="onboarding-essentials-controls">' +
-    onboardingSpeedControl(execution.fast_mode) + onboardingTaskLifeControl(lifecycle.task_lifetime_hours) + '</div></section>' +
+  const binding = { attribute: "data-config-key", control: true };
+  const mode = onboardingConfigDraft("automation.mode", automation.mode || "standard");
+  const fast = onboardingConfigDraft("execution.fast_mode", execution.fast_mode === true);
+  const life = onboardingConfigDraft("lifecycle.task_lifetime_hours", lifecycle.task_lifetime_hours);
+  return '<section class="settings-essentials onboarding-config-essentials"><header class="settings-essentials-head"><div><p class="eyebrow">Essentials</p><h3>How SWARM runs your work</h3><p>Execution-first defaults, shared with Settings.</p></div></header><div class="settings-toggle-grid">' + settingsSwitch("automation.mode", mode, "Auto mode", "SWARM keeps eligible work moving until it needs you.", { trueValue: "standard", falseValue: "manual", editable: configEditable("automation.mode") && !state.onboardingConfigPending.has("automation.mode"), binding }) + '</div><div class="settings-run-controls">' +
+    settingsSpeedMarkup({ value: fast, editable: configEditable("execution.fast_mode") && !state.onboardingConfigPending.has("execution.fast_mode"), binding, name: "onboarding-speed" }) + settingsTaskLifeMarkup({ value: life, editable: Number.isInteger(lifecycle.task_lifetime_hours) && configEditable("lifecycle.task_lifetime_hours") && !state.onboardingConfigPending.has("lifecycle.task_lifetime_hours"), binding, id: "onboarding-task-life" }) + '</div></section>' +
     '<button class="onboarding-advanced-link" id="onboarding-advanced-settings" data-onboarding-control="advanced-settings-link" type="button">Advanced settings</button>' +
     '<div class="onboarding-config-save ' + (failures.length ? 'is-error' : '') + '" id="onboarding-config-status" data-onboarding-control="config-status" role="status" tabindex="-1"><span>' + escapeHTML(status) + '</span>' + (failures.length ? '<button class="quiet-button" type="button" data-onboarding-control="retry-config">Retry</button>' : '') + '</div>';
-}
-
-function onboardingRoleAvatar(roleId, label) {
-  return roleAvatar(roleRecord(roleId) || { id: roleId, name: label });
-}
-
-function onboardingCoordinationSignature() {
-  const ids = ["manager", ...ONBOARDING_COORDINATION_GROUPS.flatMap((group) => group.leads.map((lead) => lead.roleId))];
-  return ids.map((id) => {
-    const role = roleRecord(id);
-    return [id, role?.version || "", role?.avatar_asset_digest || ""].join(":");
-  }).join("|");
-}
-
-function onboardingCoordinationMarkup() {
-  let entranceIndex = 1;
-  const paths = [];
-  const connections = [];
-  const groups = ONBOARDING_COORDINATION_GROUPS.map((group) => {
-    const executiveId = "executive-" + group.id;
-    paths.push('<path data-onboarding-edge="ctrl-' + escapeHTML(group.id) + '" data-source="ctrl" data-target="' + escapeHTML(executiveId) + '"></path>');
-    connections.push("CTRL to " + group.label);
-    const executiveIndex = entranceIndex++;
-    const leads = group.leads.map((lead) => {
-      const nodeId = group.id + "-" + lead.id;
-      const leadIndex = entranceIndex++;
-      paths.push('<path data-onboarding-edge="' + escapeHTML(nodeId) + '" data-source="' + escapeHTML(executiveId) + '" data-target="' + escapeHTML(nodeId) + '"></path>');
-      connections.push(group.label + " to " + lead.label);
-      return '<div class="onboarding-lead-node" role="treeitem" aria-level="3" tabindex="-1" data-onboarding-node="lead" data-onboarding-node-id="' + escapeHTML(nodeId) + '" data-onboarding-lead="' + escapeHTML(lead.id) + '" data-role-id="' + escapeHTML(lead.roleId) + '" style="--org-index:' + leadIndex + '">' +
-        onboardingRoleAvatar(lead.roleId, lead.label) +
-        '<span class="onboarding-role-icon" aria-hidden="true"><svg class="lucide"><use href="#lucide-' + escapeHTML(lead.icon) + '"></use></svg></span>' +
-        '<strong>' + escapeHTML(lead.label) + '</strong></div>';
-    }).join("");
-    return '<section class="onboarding-executive-branch" role="group" aria-label="' + escapeHTML(group.label + " team") + '" style="--executive-accent:' + escapeHTML(group.accent) + '">' +
-      '<div class="onboarding-executive-node" role="treeitem" aria-level="2" tabindex="-1" data-onboarding-node="executive" data-onboarding-node-id="' + escapeHTML(executiveId) + '" data-onboarding-executive="' + escapeHTML(group.id) + '" data-role-id="manager" style="--org-index:' + executiveIndex + '">' +
-      onboardingRoleAvatar("manager", "Manager") + '<span><strong>' + escapeHTML(group.label) + '</strong><small>Manager</small></span><i class="onboarding-jack is-input" aria-hidden="true"></i></div>' +
-      '<div class="onboarding-lead-group" role="group" aria-label="' + escapeHTML(group.label + " profession leads") + '">' + leads + '</div></section>';
-  }).join("");
-  return '<div class="onboarding-flow-toolbar" aria-label="Flowchart zoom"><button class="icon-button" type="button" data-onboarding-flow-zoom="out" aria-label="Zoom out">−</button><button class="quiet-button" type="button" data-onboarding-flow-zoom="fit">Fit</button><button class="icon-button" type="button" data-onboarding-flow-zoom="in" aria-label="Zoom in">+</button></div>' +
-    '<div class="onboarding-coordination-stage"><svg class="onboarding-coordination-connectors" aria-hidden="true" focusable="false">' + paths.join("") + '</svg>' +
-    '<div class="onboarding-coordination-content"><div class="onboarding-ctrl-node" role="treeitem" aria-level="1" tabindex="0" data-onboarding-node="ctrl" data-onboarding-node-id="ctrl" style="--org-index:0"><i class="onboarding-jack is-input" aria-hidden="true"></i><img src="/assets/swarm-mascot-512.png" alt="" aria-hidden="true" width="512" height="512"><span class="onboarding-console-face"><strong>CTRL</strong><i class="onboarding-console-dial" aria-hidden="true"></i><span class="onboarding-console-switches" aria-hidden="true"><i></i><i></i></span></span><span class="onboarding-output-jacks" aria-hidden="true"><i></i><i></i><i></i><i></i></span></div>' +
-    '<div class="onboarding-executive-grid" role="group" aria-label="Executive managers and profession leads">' + groups + '</div></div>' +
-    '<ul class="sr-only" aria-label="Coordination connections">' + connections.map((connection) => '<li>' + escapeHTML(connection) + '</li>').join("") + '</ul></div>';
-}
-
-function renderOnboardingCoordination() {
-  const tree = $("#onboarding-coordination-tree");
-  if (!tree) return;
-  const signature = onboardingCoordinationSignature();
-  if (tree.dataset.roleSignature !== signature || !tree.firstElementChild) {
-    const focusedId = document.activeElement?.dataset?.onboardingNodeId || "";
-    tree.innerHTML = onboardingCoordinationMarkup();
-    tree.dataset.roleSignature = signature;
-    if (focusedId) $$('[data-onboarding-node-id]', tree).find((item) => item.dataset.onboardingNodeId === focusedId)?.focus({ preventScroll: true });
-  }
-  tree.style.setProperty("--flow-zoom", String(state.onboardingFlowZoom));
-  $('[data-onboarding-flow-zoom="out"]', tree).disabled = state.onboardingFlowZoom <= .9;
-  $('[data-onboarding-flow-zoom="in"]', tree).disabled = state.onboardingFlowZoom >= 1.1;
-  scheduleProjectViewConnectors();
-}
-
-function drawOnboardingCoordinationConnectors() {
-  const stage = $(".onboarding-coordination-stage", $("#onboarding-coordination-tree"));
-  const svg = stage && $(".onboarding-coordination-connectors", stage);
-  if (!stage || !svg) return;
-  const stageRect = stage.getBoundingClientRect();
-  if (!stageRect.width || !stageRect.height) return;
-  svg.setAttribute("viewBox", "0 0 " + stage.clientWidth + " " + stage.clientHeight);
-  svg.setAttribute("width", String(stage.clientWidth));
-  svg.setAttribute("height", String(stage.clientHeight));
-  const nodeById = new Map($$("[data-onboarding-node-id]", stage).map((node) => [node.dataset.onboardingNodeId, node]));
-  $$('[data-onboarding-edge]', svg).forEach((path) => {
-    const source = nodeById.get(path.dataset.source);
-    const target = nodeById.get(path.dataset.target);
-    if (!source || !target) { path.removeAttribute("d"); return; }
-    const from = source.getBoundingClientRect();
-    const to = target.getBoundingClientRect();
-    const x1 = from.left + from.width / 2 - stageRect.left;
-    const y1 = from.bottom - stageRect.top;
-    const x2 = to.left + to.width / 2 - stageRect.left;
-    const y2 = to.top - stageRect.top;
-    const bend = Math.max(12, (y2 - y1) / 2);
-    path.setAttribute("d", "M " + x1 + " " + y1 + " C " + x1 + " " + (y1 + bend) + ", " + x2 + " " + (y2 - bend) + ", " + x2 + " " + y2);
-  });
-}
-
-function moveOnboardingTreeFocus(event) {
-  if (!["ArrowRight", "ArrowDown", "ArrowLeft", "ArrowUp", "Home", "End"].includes(event.key)) return;
-  const items = $$("[data-onboarding-node-id]", event.currentTarget);
-  const current = items.indexOf(document.activeElement);
-  if (current < 0) return;
-  const next = event.key === "Home" ? 0 : event.key === "End" ? items.length - 1 : (current + (["ArrowRight", "ArrowDown"].includes(event.key) ? 1 : -1) + items.length) % items.length;
-  event.preventDefault();
-  items.forEach((item, index) => { item.tabIndex = index === next ? 0 : -1; });
-  items[next].focus({ preventScroll: false });
 }
 
 function renderOnboarding() {
@@ -428,7 +314,6 @@ function renderOnboarding() {
   $("#onboarding-primary").textContent = current.primary;
   $("#onboarding-primary").disabled = blocked;
   $("#onboarding-primary").toggleAttribute("aria-busy", finalStep && state.onboardingConfigPending.size > 0);
-  if (step === 1) renderOnboardingCoordination();
   if (finalStep) {
     const root = $("#onboarding-configuration");
     const focusIdentity = onboardingControlIdentity(document.activeElement);
@@ -478,6 +363,7 @@ function openOnboarding(force = false, trigger = null) {
   const dialog = $("#onboarding-dialog");
   $(".dialog-body", dialog).scrollTop = 0;
   if (!dialog.open) dialog.showModal();
+  updateDocumentTitle();
   requestAnimationFrame(() => $("#onboarding-primary").focus({ preventScroll: true }));
 }
 
@@ -486,6 +372,7 @@ function closeOnboarding(openProjects = false) {
   markOnboardingSeen();
   const dialog = $("#onboarding-dialog");
   if (dialog.open) dialog.close();
+  updateDocumentTitle();
   if (openProjects) setView("overview", false);
   return true;
 }
@@ -854,7 +741,6 @@ function renderSystemHealth() {
   }
   const chromeDot = $("#snapshot-status-dot");
   if (chromeDot) chromeDot.className = "status-dot" + (presentation.className ? " " + presentation.className : "");
-  renderDiagnosticsSummary(presentation);
 }
 
 function openSystemHealth() {
@@ -863,30 +749,19 @@ function openSystemHealth() {
 }
 
 function setDataStatus(status, observedAt = null) {
-  const title = $("#data-status-title");
-  const note = $("#data-status-note");
-  const dot = $("#data-status-dot");
   const snapshotDot = $("#snapshot-status-dot");
   const snapshot = $("#sync-time");
-  if (!title || !note || !dot || !snapshotDot || !snapshot) return;
+  if (!snapshotDot || !snapshot) return;
   const connection = status === "current" ? "live" : status === "unavailable" ? "offline" : "reconnecting";
   state.connectionStatus = connection;
-  [dot, snapshotDot].forEach((item) => {
-    item.classList.toggle("is-live", connection === "live");
-    item.classList.toggle("is-reconnecting", connection === "reconnecting");
-    item.classList.toggle("is-offline", connection === "offline");
-  });
+  snapshotDot.classList.toggle("is-live", connection === "live");
+  snapshotDot.classList.toggle("is-reconnecting", connection === "reconnecting");
+  snapshotDot.classList.toggle("is-offline", connection === "offline");
   if (connection === "live") {
-    title.textContent = "Live";
-    note.textContent = observedAt ? "Updated " + formatRelative(observedAt) : "Snapshot received";
     snapshot.textContent = observedAt ? "Live · " + formatRelative(observedAt) : "Live";
   } else if (connection === "reconnecting") {
-    title.textContent = "Reconnecting";
-    note.textContent = observedAt ? "Last update " + formatRelative(observedAt) : "Waiting for data";
     snapshot.textContent = "Reconnecting";
   } else {
-    title.textContent = "Offline";
-    note.textContent = observedAt ? "Last update " + formatRelative(observedAt) : "Console unavailable";
     snapshot.textContent = "Offline";
   }
   renderSystemHealth();
@@ -921,6 +796,7 @@ function setMobileDrawer(open, restoreFocus = false) {
   const backdrop = $("#drawer-backdrop");
   const workspace = $(".workspace");
   const expanded = Boolean(open && mobileDrawerQuery.matches);
+  if (expanded && $("#project-scope-selector")?.open) $("#project-scope-selector").open = false;
   shell.classList.toggle("is-drawer-open", expanded);
   trigger.setAttribute("aria-expanded", String(expanded));
   trigger.setAttribute("aria-label", expanded ? "Close navigation" : "Open navigation");
@@ -963,6 +839,32 @@ function routeURL(view = state.view, projectId = state.projectId, hashOverride =
   return url.pathname + url.search + url.hash;
 }
 
+function titleSegment(value) {
+  const normalized = String(value || "").replace(/[\u{1F000}-\u{1FAFF}\u2600-\u27BF]/gu, "").replace(/\s+/g, " ").trim();
+  return normalized.length > 48 ? normalized.slice(0, 47).trimEnd() + "…" : normalized;
+}
+
+function composeDocumentTitle() {
+  let title = "";
+  if ($("#onboarding-dialog")?.open) title = "Quick Tour";
+  else if ($("#config-editor-dialog")?.open) title = "Advanced Settings";
+  else if ($("#agent-detail-dialog")?.open) title = titleSegment(state.runLogAgent?.label) + " — Agent";
+  else if ($("#role-editor")?.open) title = titleSegment(roleDisplayName(roleRecord($("#role-field-id")?.value))) + " — Role";
+  else if ($("#asset-dialog")?.open) {
+    const item = assetItems().find((candidate) => assetIdentity(candidate) === state.selectedAssetIdentity);
+    title = titleSegment(assetLabel(item)) + " — Asset";
+  } else {
+    const labels = { overview: "Overview", agents: "Agents", roles: "Roles", review: "Review", assets: "Assets", diagnostics: "Diagnostics", settings: "Settings" };
+    title = labels[state.view] || "";
+    const project = state.projectId !== "all" ? projectGroups().find((item) => item.id === state.projectId) : null;
+    if (project) title = titleSegment(project.label) + " — " + title;
+  }
+  const base = (title ? title + " · " : "") + "SWARM HQ";
+  return $(".app-shell")?.classList.contains("is-disconnected") ? "Offline — " + base : base;
+}
+
+function updateDocumentTitle() { document.title = composeDocumentTitle(); }
+
 function writeRoute(mode = "replace", hashOverride = "") {
   const method = mode === "push" ? "pushState" : "replaceState";
   const next = routeURL(state.view, state.projectId, hashOverride);
@@ -973,6 +875,7 @@ function writeRoute(mode = "replace", hashOverride = "") {
 
 function setView(view, focus = false, syncRoute = true, historyMode = "push") {
   const selectedView = TOP_LEVEL_VIEWS.includes(view) ? view : "overview";
+  if (selectedView !== "roles" && state.roleDetailOpen) closeMobileRoleDetail(false);
   state.view = selectedView;
   const titles = {
     overview: ["Overview", "Portfolio progress and project scope."],
@@ -995,6 +898,10 @@ function setView(view, focus = false, syncRoute = true, historyMode = "push") {
     panel.classList.toggle("is-active", selected);
     panel.hidden = !selected;
   });
+  $$(".mobile-destination[data-view]").forEach((button) => {
+    if (button.dataset.view === selectedView) button.setAttribute("aria-current", "page");
+    else button.removeAttribute("aria-current");
+  });
   const project = state.projectId !== "all" && !state.ctrlId ? projectGroups().find((item) => item.id === state.projectId) : null;
   $("#view-title").textContent = selectedView === "overview" && project ? project.label : titles[selectedView][0];
   $("#view-subtitle").textContent = selectedView === "overview" && project ? "Project progress, proof, ownership, and ledger." : titles[selectedView][1];
@@ -1003,6 +910,7 @@ function setView(view, focus = false, syncRoute = true, historyMode = "push") {
   if (selectedView === 'diagnostics' && state.token && state.diagnosticsHistoryStatus === "idle") refreshDiagnostics().then(renderDiagnostics);
   if (syncRoute) writeRoute(historyMode);
   renderMessageComposer();
+  updateDocumentTitle();
   if (focus) $("#tab-" + selectedView)?.focus({ preventScroll: true });
 }
 
@@ -1159,6 +1067,8 @@ function setProjectSelection(projectId, ctrlId = "") {
   const changed = state.projectId !== nextProjectId || state.ctrlId !== nextCtrlId;
   if (changed) {
     state.projectUiGroupId = "";
+    state.assetPage = 0;
+    state.projectArtifactPage = 0;
     const selectedAgent = state.runLogAgent;
     if (selectedAgent && nextProjectId !== "all" && selectedAgent.projectId !== nextProjectId) {
       state.runLogAgent = null;
@@ -1567,20 +1477,14 @@ function renderEvidenceLightbox() {
   const failed = $("#evidence-lightbox-failed");
   const previous = $("#evidence-lightbox-previous");
   const next = $("#evidence-lightbox-next");
-  const pagePrevious = $("#evidence-page-previous");
-  const pageNext = $("#evidence-page-next");
-  const pageStatus = $("#evidence-page-status");
   if (!items.length) {
     image.hidden = true;
     empty.hidden = false;
     failed.hidden = true;
     $("#evidence-lightbox-caption").textContent = "No image selected";
     $("#evidence-lightbox-thumbnails").innerHTML = "";
-    pageStatus.textContent = "No thumbnails";
     previous.disabled = true;
     next.disabled = true;
-    pagePrevious.disabled = true;
-    pageNext.disabled = true;
     return;
   }
   state.evidenceIndex = Math.min(Math.max(0, state.evidenceIndex), items.length - 1);
@@ -1594,11 +1498,7 @@ function renderEvidenceLightbox() {
     + (item.project_requirement_summary ? " · " + item.project_requirement_summary : "");
   previous.disabled = state.evidenceIndex === 0;
   next.disabled = state.evidenceIndex === items.length - 1;
-  const page = Math.floor(state.evidenceIndex / EVIDENCE_THUMBNAIL_PAGE_SIZE);
-  const start = page * EVIDENCE_THUMBNAIL_PAGE_SIZE;
-  const end = Math.min(items.length, start + EVIDENCE_THUMBNAIL_PAGE_SIZE);
-  $("#evidence-lightbox-thumbnails").innerHTML = items.slice(start, end).map((entry, offset) => {
-    const index = start + offset;
+  $("#evidence-lightbox-thumbnails").innerHTML = items.map((entry, index) => {
     return (
     '<button class="evidence-lightbox-thumbnail' + (index === state.evidenceIndex ? " is-selected" : "") +
     '" type="button" data-evidence-thumbnail="' + String(index) + '" data-evidence-id="' + escapeHTML(entry.evidence_id) +
@@ -1607,9 +1507,6 @@ function renderEvidenceLightbox() {
     '"><img loading="lazy" decoding="async" src="' + proofMediaURL(entry) + '" alt=""></button>'
     );
   }).join("");
-  pageStatus.textContent = "Images " + String(start + 1) + "–" + String(end) + " of " + String(items.length);
-  pagePrevious.disabled = start === 0;
-  pageNext.disabled = end >= items.length;
   const dialog = $("#evidence-lightbox");
   if (!dialog.open) dialog.showModal();
 }
@@ -1802,53 +1699,61 @@ function diagnosticHistorySeries() {
     .map((item) => score[String(item?.health_state || item?.payload?.health_state || "UNKNOWN").toUpperCase()] ?? score.UNKNOWN);
 }
 
-function renderDiagnosticsSummary(presentation = systemHealthPresentation()) {
-  const root = $("#diagnostics-summary-grid");
-  if (!root) return;
-  const observed = state.diagnostics?.health?.observed_at_ms;
-  root.innerHTML = diagnosticSummaryItems().map(([label, check]) => {
-    const status = String(check?.status || "UNKNOWN").toUpperCase();
-    const note = check?.summary || check?.reason || "No deterministic receipt is available.";
-    return '<article class="panel diagnostics-summary-card ' + diagnosticStatusClass(status) + '"><header><span>' + escapeHTML(label) + '</span><strong>' + escapeHTML(status) + '</strong></header><p>' + escapeHTML(note) + '</p></article>';
-  }).join("");
-  root.setAttribute("aria-label", presentation.label + " · " + (observed ? "checked " + formatRelative(observed) : "check time unavailable"));
-}
-
 function renderDiagnostics() {
   if (!$("#view-diagnostics")) return;
   const presentation = systemHealthPresentation();
-  renderDiagnosticsSummary(presentation);
   const checks = diagnosticChecks();
-  const validIds = new Set(checks.map((check) => String(check.id)));
-  state.diagnosticsSelectedChecks = new Set([...state.diagnosticsSelectedChecks].filter((id) => validIds.has(id)));
-  if (!state.diagnosticsSelectionInitialized && checks.length) {
-    state.diagnosticsSelectedChecks = new Set(checks.filter((check) => String(check.status).toUpperCase() !== "PASS").map((check) => String(check.id)));
-    state.diagnosticsSelectionInitialized = true;
-  }
+  const observed = Number(state.diagnostics?.health?.observed_at_ms || state.diagnostics?.latest?.observed_at_ms || 0);
+  $("#diagnostics-health-heading").textContent = presentation.label;
+  $("#diagnostics-health-note").textContent = presentation.note;
+  $("#diagnostics-checked-time").textContent = observed > 0 ? "Checked " + formatRelative(observed) : "Check time unavailable";
+  $(".diagnostics-hero").className = "panel diagnostics-hero " + diagnosticStatusClass(presentation.label === "Healthy" ? "PASS" : presentation.label === "Needs attention" ? "WARN" : "UNKNOWN");
+  const strip = $("#diagnostics-check-strip");
+  strip.innerHTML = checks.length ? checks.map((check) => {
+    const id = String(check.id || "");
+    const status = String(check.status || "UNKNOWN").toUpperCase();
+    const detail = check.summary || check.reason || "No deterministic receipt is available.";
+    return '<button type="button" role="listitem" class="diagnostics-check-token ' + diagnosticStatusClass(status) + '" data-diagnostic-inspect="' + escapeHTML(id) + '" title="' + escapeHTML(humanize(id) + ": " + detail) + '"><span aria-hidden="true"></span><strong>' + escapeHTML(humanize(id)) + '</strong><small>' + escapeHTML(status) + '</small></button>';
+  }).join("") : loadingSkeletonMarkup(4);
   const list = $("#diagnostics-check-list");
   list.innerHTML = checks.length ? checks.map((check) => {
     const id = String(check.id || "");
     const status = String(check.status || "UNKNOWN").toUpperCase();
-    const selected = state.diagnosticsSelectedChecks.has(id);
-    const disabled = status === "PASS";
-    return '<label class="diagnostics-check ' + diagnosticStatusClass(status) + '"><input type="checkbox" data-diagnostic-check="' + escapeHTML(id) + '"' + (selected ? ' checked' : '') + (disabled ? ' disabled' : '') + '><span class="diagnostics-check-state">' + escapeHTML(status) + '</span><span><strong>' + escapeHTML(humanize(id)) + '</strong><small>' + escapeHTML(check.summary || "No check summary available.") + '</small></span></label>';
+    return '<article class="diagnostics-check ' + diagnosticStatusClass(status) + '" data-diagnostic-detail="' + escapeHTML(id) + '" tabindex="-1"><span class="diagnostics-check-state">' + escapeHTML(status) + '</span><span><strong>' + escapeHTML(humanize(id)) + '</strong><small>' + escapeHTML(check.summary || "No check summary available.") + '</small></span></article>';
   }).join("") : '<p class="empty-state">Deterministic health checks are unavailable. Refresh to try again.</p>';
-  const selected = state.diagnosticsSelectedChecks.size;
-  $("#diagnostics-selection-status").textContent = selected ? selected + " recommended check" + (selected === 1 ? "" : "s") + " selected." : "No repair checks selected.";
-  $("#diagnostics-repair").disabled = !selected || state.diagnosticsRepairPending;
-  $("#diagnostics-select-recommended").disabled = !checks.some((check) => String(check.status).toUpperCase() !== "PASS");
   const signals = checks.filter((check) => String(check.status).toUpperCase() !== "PASS");
-  $("#diagnostics-log-list").innerHTML = signals.length ? signals.slice(0, 8).map((check) => '<li><span class="diagnostics-signal ' + diagnosticStatusClass(check.status) + '">' + escapeHTML(String(check.status || "UNKNOWN").toUpperCase()) + '</span><div><strong>' + escapeHTML(humanize(check.id)) + '</strong><p>' + escapeHTML(check.recommended_action || check.summary || "Review this local signal.") + '</p></div></li>').join("") : '<li class="is-clear"><strong>No current errors</strong><p>All available deterministic checks pass.</p></li>';
-  const autoPolicy = state.diagnostics?.health?.repair_policy || state.health?.auto_repair || {};
-  $("#diagnostics-auto-fix-state").textContent = autoPolicy.status || (autoPolicy.enabled === true ? "ON" : autoPolicy.enabled === false ? "OFF" : "UNKNOWN");
-  $("#diagnostics-auto-fix-note").textContent = autoPolicy.reason || "Health checks remain active even when Auto fix is off.";
+  $("#diagnostics-signal-count").textContent = signals.length ? signals.length + " open" : "Clear";
+  $("#diagnostics-signal-list").innerHTML = signals.length ? signals.map((check) => '<article class="diagnostics-signal-row ' + diagnosticStatusClass(check.status) + '"><span class="diagnostics-signal">' + escapeHTML(String(check.status || "UNKNOWN").toUpperCase()) + '</span><div><strong>' + escapeHTML(humanize(check.id)) + '</strong><p>' + escapeHTML(check.recommended_action || check.summary || "Review this local signal.") + '</p></div><button class="quiet-button" type="button" data-diagnostic-review="' + escapeHTML(String(check.id || "")) + '">Review with CTRL</button></article>').join("") : '<p class="empty-state is-clear">No actionable signals. The current deterministic checks are healthy.</p>';
+  const recent = [...(state.diagnostics?.health?.incidents || []), ...(state.diagnostics?.health?.open_requests || [])];
+  $("#diagnostics-log-list").innerHTML = recent.length ? recent.slice(0, 8).map((item) => '<li><span class="scope-dot is-stalled" aria-hidden="true"></span><div><strong>' + escapeHTML(item.title || item.kind || item.id || "Health signal") + '</strong><p>' + escapeHTML(item.summary || item.reason || "Review the retained health signal.") + '</p></div></li>').join("") : '<li class="is-clear"><strong>Quiet right now</strong><p>No retained incidents or requests.</p></li>';
+  $("#diagnostics-all-checks-state").textContent = checks.length ? checks.length + " deterministic check" + (checks.length === 1 ? "" : "s") : "Checks unavailable";
   const healthValues = diagnosticHistorySeries();
   const healthSvg = $("#diagnostics-health-trend");
   drawLine(healthSvg, healthValues, "#ff6a3d");
   healthSvg.setAttribute("aria-label", healthValues.length ? "Health during the last hour from " + healthValues.length + " deterministic sample" + (healthValues.length === 1 ? "" : "s") : "Health history unavailable for the last hour");
   $("#diagnostics-health-chart-state").textContent = state.diagnosticsHistoryStatus === "current" ? (healthValues.length ? presentation.label : "No samples") : state.diagnosticsHistoryStatus === "stale" ? "Stale" : "Unavailable";
-  $("#diagnostics-usage-state").textContent = state.usageStatus === "current" ? "Live" : state.usageStatus === "stale" ? "Stale" : "Unavailable";
   renderUsageCharts();
+}
+
+function inspectDiagnosticCheck(checkId) {
+  const details = $(".diagnostics-all-checks");
+  details.open = true;
+  requestAnimationFrame(() => $('[data-diagnostic-detail="' + CSS.escape(checkId) + '"]')?.focus({ preventScroll: false }));
+}
+
+function reviewDiagnosticWithCtrl(checkId) {
+  const check = diagnosticChecks().find((item) => String(item.id) === String(checkId));
+  const record = activeAgentRecords().find((item) => item.identityState === "admitted" && item.structuralRole === "CTRL" && (!check?.project_id || item.project.id === check.project_id) && (!check?.ctrl_id || item.binding?.ctrlId === check.ctrl_id));
+  if (!record) {
+    $("#diagnostics-signal-count").textContent = "CTRL unavailable";
+    return false;
+  }
+  setView("agents");
+  requestAnimationFrame(() => {
+    const trigger = $$('[data-agent-detail]').find((item) => item.dataset.agentDetail === record.node.id && item.dataset.agentProject === record.node.project_id);
+    if (trigger) openAgentDetail(trigger);
+  });
+  return true;
 }
 
 async function refreshDiagnostics(render = true) {
@@ -1953,15 +1858,46 @@ function safeProfileAvatarURL(value) {
   return /^\/(?:swarm-icon-64\.png|assets\/[a-z0-9_/-]+\.(?:png|jpe?g|webp))$/i.test(url) && !url.includes("..") ? url : "";
 }
 
+function renderProfileButton() {
+  const profile = state.profile?.profile || {};
+  const name = String(profile.display_name || "").trim();
+  const initials = name.split(/\s+/).filter(Boolean).slice(0, 2).map((part) => part[0]).join("").toUpperCase();
+  const avatar = safeProfileAvatarURL(profile?.avatar?.url);
+  const image = $("#profile-button-image");
+  image.onerror = () => {
+    image.hidden = true;
+    image.removeAttribute("src");
+    $("#profile-initials").textContent = initials;
+    $("#profile-button-placeholder").toggleAttribute("hidden", Boolean(initials));
+  };
+  image.hidden = !avatar;
+  image.src = avatar || "";
+  $("#profile-initials").textContent = avatar ? "" : initials;
+  $("#profile-button-placeholder").toggleAttribute("hidden", Boolean(avatar || initials));
+  $("#profile").setAttribute("aria-label", name ? "Open profile for " + name : "Open profile");
+}
+
+async function refreshProfileSummary() {
+  if (state.profile) { renderProfileButton(); return; }
+  try { state.profile = await api(PROFILE_API_CONTRACT.read); }
+  catch { state.profile = null; }
+  renderProfileButton();
+}
+
 function renderProfile() {
   const profile = state.profile?.profile || {};
   const avatar = safeProfileAvatarURL(profile?.avatar?.url);
   const preview = $("#profile-avatar-preview");
   const previewURL = state.profilePreviewUrl || avatar;
+  preview.onerror = () => {
+    preview.hidden = true;
+    preview.removeAttribute("src");
+    $("#profile-avatar-placeholder").removeAttribute("hidden");
+  };
   preview.hidden = !previewURL;
   preview.src = previewURL || "";
   preview.alt = previewURL ? "Profile avatar preview" : "";
-  $("#profile-avatar-placeholder").hidden = Boolean(previewURL);
+  $("#profile-avatar-placeholder").toggleAttribute("hidden", Boolean(previewURL));
   $("#profile-display-name").value = profile.display_name || "";
   $("#profile-compact-updates").checked = profile.preferences?.compact_updates === true;
   $("#profile-reduced-motion").checked = profile.preferences?.reduced_motion === true;
@@ -1970,6 +1906,7 @@ function renderProfile() {
   $("#profile-status").textContent = state.profileError || (state.profileStatus === "loading" ? "Loading profile…" : unavailable ? "Profile editing is unavailable from this server. Your current presentation remains readable." : "Local presentation profile loaded.");
   $("#profile-save").disabled = state.profileStatus !== "current" || state.profileSaving;
   [$("#profile-display-name"), $("#profile-avatar-input"), $("#profile-compact-updates"), $("#profile-reduced-motion")].forEach((control) => control.disabled = state.profileStatus !== "current" || state.profileSaving);
+  renderProfileButton();
 }
 
 async function openProfile(trigger) {
@@ -1981,6 +1918,12 @@ async function openProfile(trigger) {
   state.profilePreviewUrl = "";
   const dialog = $("#profile-dialog");
   if (!dialog.open) dialog.showModal();
+  if (state.profile) {
+    state.profileStatus = "current";
+    renderProfile();
+    requestAnimationFrame(() => $("#profile-close")?.focus({ preventScroll: true }));
+    return;
+  }
   renderProfile();
   requestAnimationFrame(() => $("#profile-close")?.focus({ preventScroll: true }));
   try {
@@ -2002,6 +1945,71 @@ function closeProfile(restoreFocus = true) {
   state.profileUpload = null;
   if (restoreFocus) state.profileTrigger?.focus({ preventScroll: true });
   state.profileTrigger = null;
+}
+
+function openSupport(trigger) {
+  state.supportTrigger = trigger;
+  const dialog = $("#support-dialog");
+  if (!dialog.open) dialog.showModal();
+  requestAnimationFrame(() => $("#support-close")?.focus({ preventScroll: true }));
+}
+
+function closeSupport(restoreFocus = true) {
+  const dialog = $("#support-dialog");
+  if (dialog.open) dialog.close();
+  if (restoreFocus) state.supportTrigger?.focus({ preventScroll: true });
+  state.supportTrigger = null;
+}
+
+function openQuickHelp() {
+  const dialog = $("#quick-help-dialog");
+  if (!dialog.open) dialog.showModal();
+  requestAnimationFrame(() => $("#quick-help-close").focus({ preventScroll: true }));
+}
+
+function closeQuickHelp(restoreFocus = true) {
+  const dialog = $("#quick-help-dialog");
+  if (dialog.open) dialog.close();
+  if (restoreFocus) $("#quick-help").focus({ preventScroll: true });
+}
+
+function openProjectCreate() {
+  $("#project-create-form").reset();
+  $("#project-create-status").textContent = "Choose an existing local folder.";
+  const dialog = $("#project-create-dialog");
+  if (!dialog.open) dialog.showModal();
+  requestAnimationFrame(() => $("#project-create-name").focus({ preventScroll: true }));
+}
+
+function closeProjectCreate(restoreFocus = true) {
+  const dialog = $("#project-create-dialog");
+  if (dialog.open) dialog.close();
+  if (restoreFocus) $("#project-create").focus({ preventScroll: true });
+}
+
+async function createProject(event) {
+  event.preventDefault();
+  const submit = $("#project-create-submit");
+  if (submit.disabled) return;
+  submit.disabled = true;
+  $("#project-create-status").textContent = "Creating project…";
+  try {
+    const result = await api("/api/projects", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name: $("#project-create-name").value.trim(), root: $("#project-create-root").value.trim(), acknowledge: $("#project-create-acknowledge").checked }) });
+    const projectId = String(result?.project?.id || "");
+    closeProjectCreate(false);
+    if (projectId) {
+      setProjectSelection(projectId);
+      state.settingsScopeType = "project";
+      state.settingsScopeId = projectId;
+      setView("overview", false, false);
+      writeRoute("push");
+    }
+    await refreshOverview(false);
+  } catch (error) {
+    $("#project-create-status").textContent = error.message || "Project could not be created.";
+  } finally {
+    submit.disabled = false;
+  }
 }
 
 function selectProfileAvatar(file) {
@@ -2209,6 +2217,16 @@ function renderOverviewMetrics() {
   renderOverviewMetric("usage", presentation.usage);
   drawLine($("#metric-progress-trend"), presentation.progress.series || [], "#4cda85");
   $("#metric-progress-trend").setAttribute("aria-label", presentation.progress.series?.length ? "Accepted verified progress trend" : "Verified progress trend unavailable");
+  const health = systemHealthPresentation();
+  const healthValues = diagnosticHistorySeries();
+  const healthState = state.diagnosticsHistoryStatus === "current" ? health.label : state.diagnosticsHistoryStatus === "stale" ? "Stale" : "Unknown";
+  $("#metric-health-state").textContent = healthState;
+  $("#metric-health-state").className = health.label === "Healthy" ? "is-known" : health.label === "Needs attention" ? "is-partial" : "";
+  $("#metric-health-value").textContent = health.label;
+  $("#metric-health-value").setAttribute("aria-label", health.label);
+  $("#metric-health-note").textContent = health.note;
+  drawLine($("#metric-health-trend"), healthValues, "#ff6a3d");
+  $("#metric-health-trend").setAttribute("aria-label", healthValues.length ? "System health during the last hour from " + healthValues.length + " deterministic sample" + (healthValues.length === 1 ? "" : "s") : "Health history unavailable for the last hour");
   renderUsageCharts();
 }
 
@@ -2802,21 +2820,211 @@ function drawProjectViewConnectors() {
 }
 
 function scheduleProjectViewConnectors() {
-  if (state.projectTab === "ui" && state.projectUiMode === "map") requestAnimationFrame(drawProjectViewConnectors);
-  if ($("#onboarding-dialog")?.open && state.onboardingStep === 1) requestAnimationFrame(drawOnboardingCoordinationConnectors);
+  const workspaceView = projectWorkspaceViews(currentProjectView()).find((view) => view.id === state.projectTab);
+  if ((state.projectTab === "ui" && state.projectUiMode === "map") || (workspaceView?.renderer === "canvas" && workspaceView.mode === "network")) requestAnimationFrame(drawProjectViewConnectors);
+}
+
+const PROJECT_WORKSPACE_RENDERERS = new Set(["document/blocks", "timeline/milestones", "canvas/network", "table/records", "gallery/list"]);
+const PROJECT_WORKSPACE_EMBEDDED_TABS = new Map([
+  ["view.project.overview-health", "overview"],
+  ["view.project.roadmap", "roadmap"],
+]);
+
+function projectWorkspaceViews(projection) {
+  const candidates = Array.isArray(projection?.views) && projection.views.length
+    ? projection.views
+    : Array.isArray(projection?.tabs) ? projection.tabs : [];
+  const ids = new Set();
+  const views = [];
+  for (const candidate of candidates) {
+    const id = typeof candidate?.id === "string" ? candidate.id.trim() : "";
+    const label = typeof candidate?.label === "string" ? candidate.label.trim() : "";
+    const renderer = typeof candidate?.renderer === "string" ? candidate.renderer.trim() : "";
+    const mode = typeof candidate?.mode === "string" ? candidate.mode.trim() : "";
+    if (!id || !label || ids.has(id) || !PROJECT_WORKSPACE_RENDERERS.has(renderer + "/" + mode) || !candidate.content || typeof candidate.content !== "object" || Array.isArray(candidate.content)) return [];
+    ids.add(id);
+    views.push({ ...candidate, id, label, renderer, mode });
+  }
+  return views;
+}
+
+function projectWorkspaceFlowMarkup(view) {
+  const graph = view?.content?.graph || (Array.isArray(view?.content?.nodes) && Array.isArray(view?.content?.edges)
+    ? { nodes: view.content.nodes, edges: view.content.edges }
+    : null);
+  if (!graph) return '<p class="empty-state" role="status">Flow unavailable. No accepted relationship projection is bound.</p>';
+  const projection = currentProjectView();
+  return projectViewMapMarkup({ ...projection, map: {
+    ...graph,
+    nodes: (graph.nodes || []).map((node) => ({ ...node, type: node.type || node.kind || "record", visibility: node.visibility || "visible" })),
+  } }).replaceAll("App Map", escapeHTML(view.label));
+}
+
+function projectWorkspaceDocumentMarkup(view) {
+  const source = view?.content?.blocks;
+  if (!Array.isArray(source) || source.length > 128) return '<p class="empty-state" role="status">Project brief unavailable. No accepted document projection is bound.</p>';
+  const ids = new Set();
+  const blocks = source.map((candidate) => {
+    const id = typeof candidate?.id === "string" ? candidate.id.trim() : "";
+    const label = typeof candidate?.label === "string" ? candidate.label.trim() : "";
+    const text = typeof candidate?.text === "string" ? candidate.text.trim() : "";
+    const kind = typeof candidate?.kind === "string" ? candidate.kind.trim() : "";
+    if (!id || !label || !text || !kind || ids.has(id)) return "";
+    ids.add(id);
+    return '<article class="project-model-block" data-project-model-block="' + escapeHTML(id) + '"><p class="eyebrow">' + escapeHTML(humanize(kind)) + '</p><h3>' + escapeHTML(label) + '</h3><p>' + escapeHTML(text) + '</p></article>';
+  });
+  if (blocks.some((block) => !block)) return '<p class="empty-state" role="status">Project brief unavailable. The accepted document projection is malformed.</p>';
+  return '<section class="project-model-document" aria-label="Project brief snapshot">' + (blocks.join("") || '<p class="empty-state" role="status">No accepted project brief blocks are available.</p>') + '</section>';
+}
+
+function projectWorkspaceTimelineMarkup(view) {
+  const source = view?.content?.milestones;
+  if (!Array.isArray(source) || source.length > 128) return '<p class="empty-state" role="status">Roadmap unavailable. No accepted milestone projection is bound.</p>';
+  const ids = new Set();
+  const milestones = source.map((candidate) => {
+    const id = typeof candidate?.id === "string" ? candidate.id.trim() : "";
+    const label = typeof candidate?.label === "string" ? candidate.label.trim() : "";
+    const order = candidate?.order;
+    if (!id || !label || ids.has(id) || !Number.isInteger(order) || order < 0) return "";
+    ids.add(id);
+    const dependencies = Array.isArray(candidate.dependency_ids) ? candidate.dependency_ids.filter((item) => typeof item === "string" && item.trim()) : [];
+    return '<article data-project-milestone="' + escapeHTML(id) + '"><span>' + escapeHTML(String(order + 1)) + '</span><div><h3>' + escapeHTML(label) + '</h3><p>' + escapeHTML(dependencies.length ? "After " + dependencies.join(", ") : "No declared dependency") + '</p></div></article>';
+  });
+  if (milestones.some((milestone) => !milestone)) return '<p class="empty-state" role="status">Roadmap unavailable. The accepted milestone projection is malformed.</p>';
+  return '<section class="project-roadmap project-model-roadmap" aria-label="Project brief roadmap">' + (milestones.join("") || '<p class="empty-state" role="status">No accepted roadmap milestones are available.</p>') + '</section>';
+}
+
+function projectWorkspaceRecordsMarkup(view) {
+  const source = view?.content?.records;
+  if (!Array.isArray(source) || source.length > 256) return '<p class="empty-state" role="status">Records unavailable. No accepted record projection is bound.</p>';
+  const ids = new Set();
+  const rows = source.map((candidate) => {
+    const id = typeof candidate?.id === "string" ? candidate.id.trim() : "";
+    const label = typeof candidate?.label === "string" ? candidate.label.trim() : "";
+    const roles = Array.isArray(candidate?.roles) ? candidate.roles.filter((item) => typeof item === "string" && item.trim()) : [];
+    if (!id || !label || ids.has(id) || roles.length !== (candidate?.roles || []).length) return "";
+    ids.add(id);
+    return '<tr data-project-record="' + escapeHTML(id) + '"><th scope="row">' + escapeHTML(label) + '</th><td>' + escapeHTML(roles.length ? roles.map(humanize).join(", ") : "Unknown") + '</td></tr>';
+  });
+  if (rows.some((row) => !row)) return '<p class="empty-state" role="status">Records unavailable. The accepted record projection is malformed.</p>';
+  return '<div class="project-model-records"><table><thead><tr><th scope="col">Agent</th><th scope="col">Project role</th></tr></thead><tbody>' + rows.join("") + '</tbody></table>' + (rows.length ? "" : '<p class="empty-state" role="status">No accepted records are available.</p>') + '</div>';
+}
+
+function projectWorkRows(view) {
+  const source = view?.content?.rows;
+  if (!Array.isArray(source) || source.length > 512) return null;
+  const rows = [];
+  const byId = new Map();
+  const allowedKinds = new Set(["milestone", "task", "block"]);
+  for (const candidate of source) {
+    const id = typeof candidate?.id === "string" ? candidate.id.trim() : "";
+    const kind = typeof candidate?.kind === "string" ? candidate.kind.trim().toLowerCase() : "";
+    const label = typeof candidate?.label === "string" ? candidate.label.trim() : "";
+    const parentId = typeof candidate?.parent_id === "string" && candidate.parent_id.trim() ? candidate.parent_id.trim() : null;
+    const depth = candidate?.depth;
+    const expectedDepth = kind === "milestone" ? 0 : kind === "task" ? (parentId ? 1 : 0) : (parentId ? (byId.get(parentId)?.kind === "task" ? byId.get(parentId).depth + 1 : -1) : 0);
+    if (!id || !label || byId.has(id) || !allowedKinds.has(kind) || !Number.isInteger(depth) || depth < 0 || depth > 2 || depth !== expectedDepth) return null;
+    if (parentId) {
+      const parent = byId.get(parentId);
+      if (!parent || (kind === "task" && parent.kind !== "milestone") || (kind === "block" && parent.kind !== "task")) return null;
+    }
+    const progress = typeof candidate.progress_percent === "number" && Number.isFinite(candidate.progress_percent) && candidate.progress_percent >= 0 && candidate.progress_percent <= 100 ? candidate.progress_percent : null;
+    const row = { ...candidate, id, kind, label, parentId, depth, progress };
+    rows.push(row);
+    byId.set(id, row);
+  }
+  return rows;
+}
+
+function projectArtifactAssociations(projection) {
+  const artifactView = projectWorkspaceViews(projection).find((view) => view.renderer === "gallery" && view.mode === "list");
+  const artifacts = Array.isArray(artifactView?.content?.artifacts) ? artifactView.content.artifacts : [];
+  const associations = new Map();
+  for (const artifact of artifacts) {
+    const id = typeof artifact?.id === "string" ? artifact.id.trim() : "";
+    const label = typeof artifact?.label === "string" ? artifact.label.trim() : "";
+    const associatedIds = Array.isArray(artifact?.associated_ids) ? artifact.associated_ids : [];
+    if (!id || !label || associatedIds.some((item) => typeof item !== "string" || !item.trim())) continue;
+    associatedIds.forEach((entityId) => {
+      const list = associations.get(entityId) || [];
+      list.push({ id, label });
+      associations.set(entityId, list);
+    });
+  }
+  return associations;
+}
+
+function projectWorkRowMarkup(row, associations, { summary = false } = {}) {
+  const owner = typeof row.owner_id === "string" && row.owner_id.trim() ? row.owner_id.trim() : "Unknown";
+  const progress = row.progress == null ? "" : '<span class="project-work-progress"><progress max="100" value="' + row.progress + '" aria-label="' + escapeHTML(row.label + " progress") + '"></progress><span>' + escapeHTML(String(row.progress) + "%") + '</span></span>';
+  const artifacts = (associations.get(row.id) || []).map((artifact) => '<span class="project-work-artifact" data-artifact-association="' + escapeHTML(row.id) + '" aria-label="Artifact ' + escapeHTML(artifact.label) + ' associated with ' + escapeHTML(row.label) + '"><svg class="lucide" aria-hidden="true"><use href="#lucide-paperclip"></use></svg>' + escapeHTML(artifact.label) + '</span>').join("");
+  const tag = summary ? "span" : "div";
+  return '<' + tag + ' class="project-work-row" role="row" data-work-kind="' + row.kind + '" data-work-id="' + escapeHTML(row.id) + '"><span class="project-work-name" role="cell"><span class="project-work-kind">' + escapeHTML(humanize(row.kind)) + '</span><strong>' + escapeHTML(row.label) + '</strong><small>' + escapeHTML(row.id) + '</small>' + (artifacts ? '<span class="project-work-artifacts">' + artifacts + '</span>' : '') + '</span><span role="cell">' + escapeHTML(owner) + '</span><span role="cell">' + progress + '</span></' + tag + '>';
+}
+
+function projectWorkspaceWorkMarkup(view) {
+  const rows = projectWorkRows(view);
+  if (!rows) return '<p class="empty-state" role="status">Work unavailable. The accepted hierarchy projection is malformed.</p>';
+  const associations = projectArtifactAssociations(currentProjectView());
+  const children = new Map();
+  rows.forEach((row) => { const list = children.get(row.parentId) || []; list.push(row); children.set(row.parentId, list); });
+  const render = (row) => {
+    const nested = children.get(row.id) || [];
+    if (row.kind === "block" || !nested.length) return projectWorkRowMarkup(row, associations);
+    return '<details class="project-work-group is-' + row.kind + '" open><summary>' + projectWorkRowMarkup(row, associations, { summary: true }) + '</summary><div class="project-work-children" role="rowgroup">' + nested.map(render).join("") + '</div></details>';
+  };
+  const blockState = view.content.blocks_state === "UNKNOWN" ? '<p class="project-work-notice" role="status">Block details are unavailable in this accepted project model.</p>' : "";
+  return '<section class="project-work" role="table" aria-label="Milestones, tasks, and blocks"><header class="project-work-row" role="row"><span role="columnheader">Work</span><span role="columnheader">Owner or agent</span><span role="columnheader">Progress</span></header>' + blockState + '<div role="rowgroup">' + (children.get(null) || []).map(render).join("") + '</div></section>';
+}
+
+function projectWorkspaceArtifactsMarkup(view) {
+  const artifacts = Array.isArray(view?.content?.artifacts) ? view.content.artifacts : null;
+  if (!artifacts) return '<p class="empty-state" role="status">Artifacts unavailable. No accepted artifact projection is bound.</p>';
+  const collection = boundedCollectionWindow(artifacts, state.projectArtifactPage);
+  state.projectArtifactPage = collection.index;
+  const cards = collection.items.map((artifact) => {
+    const id = typeof artifact?.id === "string" ? artifact.id.trim() : "";
+    const label = typeof artifact?.label === "string" ? artifact.label.trim() : "";
+    if (!id || !label) return "";
+    const associated = Array.isArray(artifact.associated_ids) ? artifact.associated_ids.filter((item) => typeof item === "string" && item.trim()) : [];
+    return '<article class="project-workspace-artifact" data-project-artifact="' + escapeHTML(id) + '"><svg class="lucide" aria-hidden="true"><use href="#lucide-file"></use></svg><div><h3>' + escapeHTML(label) + '</h3><p>' + escapeHTML(associated.length ? "Linked to " + associated.join(", ") : "No exact work association") + '</p></div></article>';
+  }).join("");
+  return '<section class="project-workspace-artifacts" aria-label="Project artifacts">' + (cards || '<p class="empty-state" role="status">No accepted artifacts are bound.</p>') + '</section>' + (artifacts.length ? collectionLoadMoreMarkup("artifacts", collection, "Project artifacts") : "");
+}
+
+function projectWorkspaceViewMarkup(view) {
+  if (view.renderer === "document" && view.mode === "blocks") return projectWorkspaceDocumentMarkup(view);
+  if (view.renderer === "timeline" && view.mode === "milestones") return projectWorkspaceTimelineMarkup(view);
+  if (view.renderer === "canvas" && view.mode === "network") return projectWorkspaceFlowMarkup(view);
+  if (view.renderer === "table" && view.mode === "records") return Array.isArray(view?.content?.records) ? projectWorkspaceRecordsMarkup(view) : projectWorkspaceWorkMarkup(view);
+  if (view.renderer === "gallery" && view.mode === "list") return projectWorkspaceArtifactsMarkup(view);
+  return '<p class="empty-state" role="status">This project view is unavailable.</p>';
+}
+
+function projectWorkspaceTabMarkup(view, projection = currentProjectView()) {
+  return '<section class="project-ui"><header class="project-ui-toolbar"><div><p class="eyebrow">Project view</p><h2>' + escapeHTML(view.label) + '</h2></div></header>' + projectWorkspaceViewMarkup(view) + '<p class="project-ui-claim">' + escapeHTML(projection?.claim_limit || "Project view is read-only.") + '</p></section>';
 }
 
 function projectViewMarkup() {
   const projection = currentProjectView();
   if (!projection) return '<p class="empty-state">UI evidence is unavailable for this project.</p>';
-  const mode = state.projectUiMode === "map" ? "map" : "screens";
-  const content = mode === "map"
-    ? projectViewMapMarkup(projection)
-    : '<section class="project-ui-screens" aria-label="Project screens">' + ((projection.screens || []).map(projectViewScreenMarkup).join("") || '<p class="empty-state">No accepted screen states are available.</p>') + '</section>';
+  const workspaceViews = projectWorkspaceViews(projection);
+  const legacyModes = Array.isArray(projection.modes) ? projection.modes.filter((item) => ["screens", "map"].includes(item?.id)) : [];
+  const modeItems = workspaceViews.length ? workspaceViews : legacyModes;
+  if (!modeItems.some((item) => item.id === state.projectUiMode)) state.projectUiMode = modeItems[0]?.id || "screens";
+  const mode = state.projectUiMode;
+  const workspaceView = workspaceViews.find((item) => item.id === mode);
+  const content = workspaceView
+    ? projectWorkspaceViewMarkup(workspaceView)
+    : mode === "map" ? projectViewMapMarkup(projection)
+      : '<section class="project-ui-screens" aria-label="Project screens">' + ((projection.screens || []).map(projectViewScreenMarkup).join("") || '<p class="empty-state">No accepted screen states are available.</p>') + '</section>';
   return '<section class="project-ui"><header class="project-ui-toolbar"><div><p class="eyebrow">Digest-bound project view</p><h2>' + escapeHTML(projection.tab.label || "UI") + '</h2></div><div class="segmented-control" aria-label="UI view mode">' + (projection.modes || []).map((item) => {
     const selected = item.id === mode;
     return '<button type="button" data-project-ui-mode="' + escapeHTML(item.id) + '" aria-pressed="' + String(selected) + '" class="' + (selected ? "is-selected" : "") + '">' + escapeHTML(item.label) + '</button>';
-  }).join("") + '</div></header>' + content + '<p class="project-ui-claim">' + escapeHTML(projection.claim_limit || "Project UI is read-only.") + '</p></section>';
+  }).join("") + (workspaceViews.length ? workspaceViews.filter((item) => !(projection.modes || []).some((modeItem) => modeItem.id === item.id)).map((item) => {
+    const selected = item.id === mode;
+    return '<button type="button" data-project-ui-mode="' + escapeHTML(item.id) + '" aria-pressed="' + String(selected) + '" class="' + (selected ? "is-selected" : "") + '">' + escapeHTML(item.label) + '</button>';
+  }).join("") : "") + '</div></header>' + content + '<p class="project-ui-claim">' + escapeHTML(projection.claim_limit || "Project UI is read-only.") + '</p></section>';
 }
 
 function projectProgressQueueProjection(progress) {
@@ -2923,15 +3131,18 @@ function projectProgressQueueMarkup(progress) {
 }
 
 function projectTabMarkup(tab, progress, nodes) {
+  const workspaceViews = projectWorkspaceViews(currentProjectView());
+  const workspaceView = workspaceViews.find((view) => view.id === tab);
+  if (workspaceView) return projectWorkspaceTabMarkup(workspaceView);
+  const embeddedView = workspaceViews.find((view) => PROJECT_WORKSPACE_EMBEDDED_TABS.get(view.id) === tab);
   const blocks = progress?.blocks || [];
   const milestones = projectMilestones(blocks);
   if (tab === "overview") {
     const efficiency = verifiedYieldItem("project", selectedProgressProjectId());
-    return '<section class="project-overview-grid">' + projectProgressQueueMarkup(progress) + '<div class="milestone-rings">' + (milestones.length ? milestones.slice(0, 4).map(([id, items]) => { const summary = milestoneSummary(items); return '<article><div class="milestone-ring ' + (summary.percent === 100 ? "is-complete" : "") + '" style="--progress:' + (summary.percent ?? 0) + '%"><strong>' + escapeHTML(summary.percent == null ? "—" : Math.round(summary.percent) + "%") + '</strong></div><h3>' + escapeHTML(id) + '</h3><small>' + escapeHTML(summary.admitted + " / " + summary.committed + " admitted") + '</small></article>'; }).join("") : '<p class="empty-state">No measured milestones yet.</p>') + '</div>' + yieldChartMarkup(efficiency) + '<section class="panel project-updates"><header class="overview-section-head"><div><p class="eyebrow">Material events</p><h2>Latest updates</h2></div><p>Newest first</p></header>' + projectFeedMarkup(4) + '</section></section>';
+    return '<section class="project-overview-grid">' + (embeddedView ? '<section class="panel project-model-snapshot"><header class="overview-section-head"><div><p class="eyebrow">Project brief snapshot</p><h2>' + escapeHTML(embeddedView.label) + '</h2></div></header>' + projectWorkspaceViewMarkup(embeddedView) + '</section>' : "") + projectProgressQueueMarkup(progress) + '<div class="milestone-rings">' + (milestones.length ? milestones.slice(0, 4).map(([id, items]) => { const summary = milestoneSummary(items); return '<article><div class="milestone-ring ' + (summary.percent === 100 ? "is-complete" : "") + '" style="--progress:' + (summary.percent ?? 0) + '%"><strong>' + escapeHTML(summary.percent == null ? "—" : Math.round(summary.percent) + "%") + '</strong></div><h3>' + escapeHTML(id) + '</h3><small>' + escapeHTML(summary.admitted + " / " + summary.committed + " admitted") + '</small></article>'; }).join("") : '<p class="empty-state">No measured milestones yet.</p>') + '</div>' + yieldChartMarkup(efficiency) + '<section class="panel project-updates"><header class="overview-section-head"><div><p class="eyebrow">Material events</p><h2>Latest updates</h2></div><p>Newest first</p></header>' + projectFeedMarkup(4) + '</section></section>';
   }
-  if (tab === "roadmap") return '<section class="project-roadmap">' + (milestones.length ? milestones.map(([id, items], index) => '<article><span>' + String(index + 1) + '</span><div><h3>' + escapeHTML(id) + '</h3><p>' + escapeHTML(items.length + " block" + (items.length === 1 ? "" : "s") + " · " + milestoneSummary(items).admitted + " admitted") + '</p></div></article>').join("") : '<p class="empty-state">No roadmap receipts yet.</p>') + '</section>';
+  if (tab === "roadmap") return (embeddedView ? '<section class="project-model-snapshot"><header class="overview-section-head"><div><p class="eyebrow">Project brief snapshot</p><h2>' + escapeHTML(embeddedView.label) + '</h2></div></header>' + projectWorkspaceViewMarkup(embeddedView) + '</section>' : "") + '<section class="project-roadmap">' + (milestones.length ? milestones.map(([id, items], index) => '<article><span>' + String(index + 1) + '</span><div><h3>' + escapeHTML(id) + '</h3><p>' + escapeHTML(items.length + " block" + (items.length === 1 ? "" : "s") + " · " + milestoneSummary(items).admitted + " admitted") + '</p></div></article>').join("") : '<p class="empty-state">No roadmap receipts yet.</p>') + '</section>';
   if (tab === "lanes") { const owners = new Map(); blocks.forEach((block) => { const id = block.owner_id || "Unassigned"; owners.set(id, [...(owners.get(id) || []), block]); }); return '<section class="project-lanes">' + ([...owners.entries()].map(([owner, items]) => '<section class="panel"><header><h3>' + escapeHTML(owner) + '</h3><span>' + items.length + '</span></header>' + items.map(projectBlockRow).join("") + '</section>').join("") || '<p class="empty-state">No owner lanes yet.</p>') + '</section>'; }
-  if (tab === "hierarchy") return '<section class="project-hierarchy">' + (nodes.length ? nodes.filter((node) => !isSubagent(node)).map((node) => '<article><svg class="lucide" aria-hidden="true"><use href="#lucide-git-branch"></use></svg><div><strong>' + escapeHTML(node.worker || node.owner || node.role_label || "Unassigned") + '</strong><span>' + escapeHTML(node.artifact || node.title || node.id) + '</span></div><small>' + escapeHTML(observedAgentRole(node) || "TASK") + '</small></article>').join("") : '<p class="empty-state">No hierarchy is observed for this project.</p>') + '</section>';
   if (tab === "proof") { const images = evidenceImagesFor(nodes); state.evidenceImages = images; return '<section class="project-proof-grid">' + (images.length ? images.map((item, index) => '<button class="asset-tile" type="button" data-evidence-open="' + index + '" aria-label="Open proof image"><img loading="lazy" src="' + proofMediaURL(item) + '" alt=""><span>' + escapeHTML(item.caption || item.kind || "Proof") + '</span></button>').join("") : '<p class="empty-state">No image proof is available for this project.</p>') + '</section>'; }
   if (tab === "ledger") return '<section class="panel project-ledger"><header class="overview-section-head"><div><p class="eyebrow">Canonical events</p><h2>Ledger</h2></div><p>' + escapeHTML(progress?.cursor?.event_seq == null ? "No cursor" : "Through " + progress.cursor.event_seq) + '</p></header>' + projectFeedMarkup(10) + '</section>';
   if (tab === "ui") return projectViewMarkup();
@@ -2957,12 +3168,30 @@ function renderProjectDetail() {
   const nextGate = (progress?.blocks || []).find((block) => ["REVIEW", "WAITING_DEPENDENCY", "WAITING_EXTERNAL", "USER_PAUSED"].includes(block.lifecycle_state));
   $("#project-detail-summary").innerHTML = '<p><span>Progress</span><strong>' + escapeHTML(measured ? progress.percent + "%" : "—") + '</strong></p><p><span>Live ETA</span><strong><svg class="lucide" aria-hidden="true"><use href="#lucide-clock"></use></svg>' + escapeHTML(projectEta(nodes)) + '</strong></p><p><span>Next gate</span><strong>' + escapeHTML(nextGate ? humanize(nextGate.lifecycle_state) : "—") + '</strong></p>';
   const projectView = currentProjectView();
+  const workspaceViews = projectWorkspaceViews(projectView);
+  const workspaceTabs = workspaceViews.filter((view) => !PROJECT_WORKSPACE_EMBEDDED_TABS.has(view.id));
+  $$('[data-project-tab-manifest]').forEach((button) => button.remove());
+  const logsTab = $("#project-tab-logs");
+  workspaceTabs.forEach((view, index) => {
+    const button = document.createElement("button");
+    button.id = "project-tab-manifest-" + index;
+    button.dataset.projectTab = view.id;
+    button.dataset.projectTabManifest = "";
+    button.setAttribute("role", "tab");
+    button.setAttribute("aria-selected", "false");
+    button.setAttribute("aria-controls", "project-tab-panel");
+    button.type = "button";
+    button.textContent = view.label;
+    logsTab.before(button);
+  });
   const uiTab = $("#project-tab-ui");
-  uiTab.hidden = !projectView;
+  uiTab.hidden = !projectView || workspaceViews.length > 0;
   uiTab.textContent = projectView?.tab?.label || "UI";
-  if (state.projectTab === "ui" && !projectView) state.projectTab = "overview";
-  const selectedTabId = "project-tab-" + state.projectTab;
+  if (state.projectTab === "ui" && workspaceTabs.length) state.projectTab = workspaceTabs[0].id;
+  if ((state.projectTab === "ui" && !projectView) || !$$('[data-project-tab]').some((button) => !button.hidden && button.dataset.projectTab === state.projectTab)) state.projectTab = "overview";
   $$('[data-project-tab]').forEach((button) => { const selected = !button.hidden && button.dataset.projectTab === state.projectTab; button.classList.toggle("is-active", selected); button.setAttribute("aria-selected", String(selected)); button.tabIndex = selected ? 0 : -1; });
+  const selectedTab = $$('[data-project-tab]').find((button) => !button.hidden && button.dataset.projectTab === state.projectTab);
+  const selectedTabId = selectedTab?.id || "project-tab-overview";
   const tabPanel = $("#project-tab-panel");
   tabPanel.setAttribute("aria-labelledby", selectedTabId);
   const retainedRunLogMount = state.projectTab === "logs" && $('[data-run-log-surface="project"]', tabPanel);
@@ -3044,6 +3273,7 @@ async function refreshAssets() {
   const hasLastGood = Boolean(state.assets && state.assetBindingKey === binding);
   state.assetStatus = hasLastGood ? "refreshing" : "loading";
   state.assetError = "";
+  renderAssets();
   const inventoryParams = new URLSearchParams({ projection });
   const eventParams = new URLSearchParams({ after_sequence: String(state.assetEventCursors.get(binding) || 0), limit: "64" });
   if (projectId) {
@@ -3324,12 +3554,14 @@ function openAssetDialog(identity, trigger) {
   renderAssetDialog(item);
   const dialog = $("#asset-dialog");
   if (!dialog.open) dialog.showModal();
+  updateDocumentTitle();
   requestAnimationFrame(() => $("#asset-dialog-close").focus({ preventScroll: true }));
 }
 
 function closeAssetDialog() {
   const dialog = $("#asset-dialog");
   if (dialog.open) dialog.close();
+  updateDocumentTitle();
 }
 
 function renderAssets() {
@@ -3343,7 +3575,12 @@ function renderAssets() {
   const gallery = $("#asset-gallery");
   gallery.classList.toggle("is-list", state.assetView === "list");
   gallery.setAttribute("aria-label", state.assetProjection === "trash" ? "Trashed assets" : state.assetView === "grid" ? "Asset image grid" : "Asset list");
-  gallery.innerHTML = items.length ? items.map(state.assetView === "grid" ? assetGridMarkup : assetListMarkup).join("") : '<p class="empty-state">' + escapeHTML(state.assetStatus === "unavailable" ? state.assetError || "Asset inventory unavailable." : state.assetProjection === "trash" ? "Trash is empty." : "No assets are available in this project.") + '</p>';
+  const loading = state.assetStatus === "loading" && !items.length;
+  const collection = boundedCollectionWindow(items, state.assetPage);
+  state.assetPage = collection.index;
+  gallery.setAttribute("aria-busy", String(loading));
+  gallery.innerHTML = loading ? loadingSkeletonMarkup() : collection.items.length ? collection.items.map(state.assetView === "grid" ? assetGridMarkup : assetListMarkup).join("") : '<p class="empty-state" role="status">' + escapeHTML(state.assetStatus === "unavailable" ? state.assetError || "Asset inventory unavailable." : state.assetProjection === "trash" ? "Trash is empty." : "No assets are available in this project.") + '</p>';
+  $("#asset-gallery-pager").innerHTML = loading || !items.length ? "" : collectionLoadMoreMarkup("assets", collection, "Assets");
   const undo = $("#asset-undo-toast");
   undo.hidden = !state.assetUndo;
   undo.innerHTML = state.assetUndo ? '<span><strong>' + escapeHTML(assetLabel(state.assetUndo.item)) + '</strong> moved to Trash.</span><button class="quiet-button" type="button" data-asset-undo>Undo</button><button class="icon-button" type="button" data-asset-undo-dismiss aria-label="Dismiss undo"><svg class="lucide" aria-hidden="true"><use href="#lucide-x"></use></svg></button>' : "";
@@ -3402,21 +3639,148 @@ function renderProjectProgressFeed() {
 }
 
 function renderOverviewProjectCards() {
-  const roster = savedProjectRoster();
   const host = $("#overview-project-cards");
-  if (roster.state !== "KNOWN") {
-    $("#overview-summary").textContent = "Project inventory unavailable";
-    host.innerHTML = '<p class="empty-state overview-empty" role="status">Saved projects are unavailable. Refresh when the console can read the host project inventory.</p>';
+  if (!state.overview) {
+    $("#overview-summary").textContent = "Loading hierarchy";
+    host.setAttribute("aria-busy", "true");
+    host.innerHTML = overviewHierarchySkeletonMarkup();
     return;
   }
-  $("#overview-summary").textContent = roster.projects.length ? String(roster.projects.length) + " saved project" + (roster.projects.length === 1 ? "" : "s") : "No saved projects";
-  host.innerHTML = roster.projects.length ? roster.projects.map((project) => {
-    const selected = state.projectId === project.id && !state.ctrlId;
-    const statusLabel = project.status[0].toUpperCase() + project.status.slice(1);
-    const ctrlLabel = project.ctrlIds.length ? String(project.ctrlIds.length) + " CTRL" + (project.ctrlIds.length === 1 ? "" : "s") : "No CTRL";
-    const taskLabel = project.taskCount == null ? "—" : String(project.taskCount);
-    return '<article class="overview-project-card panel' + (selected ? ' is-selected' : '') + '"><button class="overview-project-main" type="button" data-overview-project-id="' + escapeHTML(project.id) + '" aria-label="Open ' + escapeHTML(project.label) + '"><span class="scope-dot is-' + project.status + '" aria-hidden="true"></span><span><strong title="' + escapeHTML(project.label) + '">' + escapeHTML(project.label) + '</strong><small>' + escapeHTML(project.eligibility === "swarm_ctrl" ? "SWARM project" : "Saved project") + '</small></span><svg class="lucide" aria-hidden="true"><use href="#lucide-chevron-right"></use></svg></button><dl class="overview-project-facts"><div><dt>Status</dt><dd>' + escapeHTML(statusLabel) + '</dd></div><div><dt>CTRLs</dt><dd>' + escapeHTML(ctrlLabel) + '</dd></div><div><dt>Tasks</dt><dd' + (project.taskCount == null ? ' aria-label="UNKNOWN"' : '') + '>' + escapeHTML(taskLabel) + '</dd></div></dl></article>';
-  }).join("") : '<p class="empty-state overview-empty" role="status">No saved projects are available.</p>';
+  const roster = savedProjectRoster();
+  if (roster.state !== "KNOWN") {
+    $("#overview-summary").textContent = "Hierarchy unavailable";
+    host.removeAttribute("aria-busy");
+    host.innerHTML = '<p class="empty-state overview-empty" role="status">Project hierarchy is unavailable. Refresh when the console can read the host project inventory.</p>';
+    return;
+  }
+  host.removeAttribute("aria-busy");
+  const hasTopologyProjection = state.overview?.topology?.projection === "recursive_host_topology" && Array.isArray(state.overview.topology.nodes);
+  if (!hasTopologyProjection) {
+    $("#overview-summary").textContent = "Hierarchy unavailable";
+    host.innerHTML = '<p class="empty-state overview-empty" role="status">Active agent topology is unavailable. The hierarchy will appear when SWARM receives an accepted topology projection.</p>';
+    return;
+  }
+  const records = activeAgentRecords();
+  const projectById = new Map(roster.projects.map((project) => [project.id, project]));
+  const grouped = new Map();
+  records.filter((record) => record.identityState === "admitted").forEach((record) => {
+    const projectGroup = grouped.get(record.project.id) || [];
+    projectGroup.push(record);
+    grouped.set(record.project.id, projectGroup);
+  });
+  const topologyNodes = new Map(state.overview.topology.nodes.map((node) => [node.agent_id, node]));
+  const cards = [...grouped.entries()].map(([projectId, projectRecords]) => {
+    const project = projectById.get(projectId);
+    if (!project) return "";
+    if (hasTopologyProjection) {
+      const admittedIds = new Set(projectRecords.map((record) => record.node.id));
+      projectRecords = projectRecords.filter((record) => {
+        const topology = topologyNodes.get(record.node.id);
+        const relation = topology?.parent_relation;
+        return topology?.project_id === projectId && (relation?.state === "ROOT" || (relation?.state === "KNOWN" && admittedIds.has(relation.parent_agent_id)));
+      });
+    }
+    const byId = new Map(projectRecords.map((record) => [record.node.id, record]));
+    const children = new Map(projectRecords.map((record) => [record.node.id, []]));
+    const parentById = new Map();
+    projectRecords.forEach((record) => {
+      const topology = topologyNodes.get(record.node.id);
+      const relation = topology?.parent_relation;
+      const acceptedParent = relation?.state === "KNOWN" && byId.has(relation.parent_agent_id) ? relation.parent_agent_id : null;
+      const parentId = acceptedParent;
+      parentById.set(record.node.id, parentId);
+      if (parentId) children.get(parentId).push(record);
+    });
+    const roots = projectRecords.filter((record) => !parentById.get(record.node.id));
+    const renderBranch = (record, ancestry = new Set()) => {
+      if (ancestry.has(record.node.id)) return "";
+      const next = new Set(ancestry).add(record.node.id);
+      const descendants = children.get(record.node.id) || [];
+      return '<div class="overview-agent-branch" data-agent-mode="' + escapeHTML(record.structuralRole.toLowerCase()) + '">' + overviewHierarchyNodeMarkup(record, descendants) + (descendants.length ? '<div class="overview-hierarchy-children">' + descendants.map((child) => renderBranch(child, next)).join("") + '</div>' : '') + '</div>';
+    };
+    const edges = [...parentById.entries()].filter(([, parentId]) => parentId).map(([childId, parentId]) => '<path data-overview-hierarchy-edge data-source="' + escapeHTML(parentId) + '" data-target="' + escapeHTML(childId) + '"></path>').join("");
+    const ctrlCount = projectRecords.filter((record) => record.structuralRole === "CTRL").length;
+    return '<article class="overview-hierarchy-project" data-overview-hierarchy-project="' + escapeHTML(projectId) + '"><header><button type="button" data-overview-project-id="' + escapeHTML(projectId) + '"><span class="scope-dot is-' + escapeHTML(project.status) + '" aria-hidden="true"></span><span><strong>' + escapeHTML(project.label) + '</strong><small>' + escapeHTML(String(ctrlCount) + " active CTRL" + (ctrlCount === 1 ? "" : "s")) + '</small></span></button><button class="icon-button" type="button" data-overview-project-edit="' + escapeHTML(projectId) + '" aria-label="Edit ' + escapeHTML(project.label) + ' settings"><svg class="lucide" aria-hidden="true"><use href="#lucide-settings"></use></svg></button></header><div class="overview-hierarchy-stage"><svg class="overview-hierarchy-edges" aria-hidden="true" focusable="false">' + edges + '</svg><div class="overview-hierarchy-forest">' + roots.map((record) => renderBranch(record)).join("") + '</div></div></article>';
+  }).join("");
+  const independent = records.filter((record) => record.identityState === "independent");
+  const independentMarkup = independent.length ? '<section class="overview-independent panel"><header><span><strong>Independent host tasks</strong><small>Outside a manifest-bound project</small></span></header><div>' + independent.map((record) => '<article class="overview-independent-task" title="Task ID: ' + escapeHTML(record.node.id) + '"><span class="scope-dot is-active" aria-hidden="true"></span><span><strong>' + escapeHTML(agentTaskTitle(record)) + '</strong><small>' + escapeHTML(record.presentationName + " · Anonymous · Independent task") + '</small></span></article>').join("") + '</div></section>' : "";
+  const malformed = records.filter((record) => record.identityState === "malformed");
+  const malformedMarkup = malformed.length ? '<section class="overview-independent panel is-error" role="alert"><header><span><strong>Role binding needs attention</strong><small>Reconnect each SWARM task to one manifest role and CTRL.</small></span></header><div>' + malformed.map((record) => '<article class="overview-independent-task" title="Task ID: ' + escapeHTML(record.node.id) + '"><span class="scope-dot is-stalled" aria-hidden="true"></span><span><strong>' + escapeHTML(agentTaskTitle(record)) + '</strong><small>' + escapeHTML(record.presentationName + " · Role binding error") + '</small></span></article>').join("") + '</div></section>' : "";
+  $("#overview-summary").textContent = grouped.size ? String(grouped.size) + " active project" + (grouped.size === 1 ? "" : "s") : "No active project hierarchy";
+  const content = cards || independentMarkup || malformedMarkup ? cards + independentMarkup + malformedMarkup : '<p class="empty-state overview-empty" role="status">No active project hierarchy is available.</p>';
+  host.innerHTML = '<div class="overview-hierarchy-toolbar" role="group" aria-label="Hierarchy map controls"><button class="icon-button" type="button" data-overview-zoom="out" aria-label="Zoom out"><svg class="lucide" aria-hidden="true"><use href="#lucide-minus"></use></svg></button><button class="icon-button" type="button" data-overview-zoom="fit" aria-label="Fit hierarchy"><svg class="lucide" aria-hidden="true"><use href="#lucide-scan"></use></svg></button><button class="icon-button" type="button" data-overview-zoom="in" aria-label="Zoom in"><svg class="lucide" aria-hidden="true"><use href="#lucide-plus"></use></svg></button></div><div class="overview-hierarchy-viewport edge-scroll"><div class="overview-hierarchy-canvas">' + content + '</div></div>';
+  scheduleOverviewHierarchyEdges();
+}
+
+function overviewHierarchyWorkRows(record) {
+  const current = { id: record.node.id, label: agentTaskTitle(record), status: record.node.status, progress: agentProgress(record)?.percent ?? null };
+  const projection = state.overview?.project_view;
+  const view = projectWorkspaceViews(projection).find((candidate) => candidate.renderer === "table" && candidate.mode === "records");
+  const rows = projectWorkRows(view);
+  if (!rows) return [current];
+  const bound = rows.filter((row) => row.kind === "task" && (row.task_id === record.node.id || row.owner_id === record.node.id));
+  return [current, ...bound.filter((row) => row.id !== current.id).map((row) => ({ ...row, progress: row.progress }))];
+}
+
+function overviewHierarchyNodeMarkup(record, descendants) {
+  const rows = overviewHierarchyWorkRows(record);
+  const visible = rows.slice(0, 3);
+  const hiddenTaskCount = Math.max(0, rows.length - visible.length);
+  const roleAccent = /^#[0-9a-f]{6}$/i.test(String(record.role?.accent || "")) ? record.role.accent : record.accent;
+  const accent = record.structuralRole === "CTRL" ? "#ff7a18" : roleAccent;
+  const ports = descendants.map((child, index) => '<i class="overview-node-port is-out" data-overview-output="' + escapeHTML(child.node.id) + '" style="--port-index:' + index + ';--port-count:' + descendants.length + '" aria-hidden="true"></i>').join("");
+  const workRow = (row) => {
+    const progress = typeof row.progress === "number" ? Math.max(0, Math.min(100, row.progress)) : null;
+    return '<span class="overview-node-work"><span>' + agentWorkStatusIcon(row) + '<strong title="' + escapeHTML(row.label) + '">' + escapeHTML(row.label) + '</strong>' + (progress === null ? "" : '<small>' + progress + '%</small>') + '</span>' + (progress === null ? "" : '<i style="--task-progress:' + progress + '%" aria-hidden="true"></i>') + '</span>';
+  };
+  const work = visible.map(workRow).join("");
+  const hiddenLabel = hiddenTaskCount + ' more work item' + (hiddenTaskCount === 1 ? "" : "s");
+  const more = hiddenTaskCount ? '<details class="overview-node-more"><summary title="' + hiddenLabel + '"><span aria-hidden="true"><svg class="lucide"><use href="#lucide-chevron-down"></use></svg></span><span class="sr-only">Show ' + hiddenLabel + '</span></summary><div>' + rows.slice(3).map(workRow).join("") + '</div></details>' : "";
+  return '<article class="overview-hierarchy-node is-' + escapeHTML(record.structuralRole.toLowerCase()) + '" data-overview-hierarchy-node="' + escapeHTML(record.node.id) + '" style="--node-accent:' + escapeHTML(accent) + '"><i class="overview-node-port is-in" data-overview-input aria-hidden="true"></i><button class="overview-node-open" type="button" data-agent-detail="' + escapeHTML(record.node.id) + '" data-agent-project="' + escapeHTML(record.node.project_id) + '" data-agent-ctrl="' + escapeHTML(record.binding.ctrlId) + '" aria-label="Open ' + escapeHTML(record.presentationName + ", " + record.profession) + '">' + agentAvatarMarkup(record) + '<span class="overview-node-identity"><strong>' + escapeHTML(record.presentationName) + '</strong><small>' + escapeHTML(record.profession) + '</small></span></button><button class="overview-node-inspect icon-button" type="button" data-agent-inspect="' + escapeHTML(record.node.id) + '" data-agent-detail="' + escapeHTML(record.node.id) + '" data-agent-project="' + escapeHTML(record.node.project_id) + '" data-agent-ctrl="' + escapeHTML(record.binding.ctrlId) + '" aria-label="View ' + escapeHTML(record.presentationName) + ' details" title="View agent details"><svg class="lucide" aria-hidden="true"><use href="#lucide-eye"></use></svg></button><span class="overview-node-work-list">' + work + more + '</span>' + ports + '</article>';
+}
+
+function overviewHierarchySkeletonMarkup() {
+  const node = '<i class="overview-hierarchy-skeleton-node"><b></b><span></span><span></span><small></small></i>';
+  return '<div class="overview-hierarchy-toolbar is-skeleton" aria-hidden="true"></div><div class="overview-hierarchy-viewport"><div class="overview-hierarchy-canvas is-loading" aria-hidden="true"><svg class="overview-hierarchy-skeleton-edges" viewBox="0 0 100 48"><path d="M50 12V22H20V34M50 22H80V34"></path></svg><div class="overview-hierarchy-skeleton-tree">' + node + '<div>' + node + node + node + '</div></div></div></div>';
+}
+
+function drawOverviewHierarchyEdges() {
+  $$(".overview-hierarchy-project").forEach((card) => {
+    const nodes = new Map($$("[data-overview-hierarchy-node]", card).map((node) => [node.dataset.overviewHierarchyNode, node]));
+    $$(".overview-hierarchy-edges", card).forEach((svg) => {
+      const svgRect = svg.getBoundingClientRect();
+      svg.setAttribute("viewBox", "0 0 " + svg.clientWidth + " " + svg.clientHeight);
+      $$('[data-overview-hierarchy-edge]', svg).forEach((path) => {
+        const source = nodes.get(path.dataset.source);
+        const target = nodes.get(path.dataset.target);
+        const output = source && $$('[data-overview-output]', source).find((port) => port.dataset.overviewOutput === path.dataset.target);
+        const input = target?.querySelector('[data-overview-input]');
+        if (!output || !input) { path.removeAttribute("d"); return; }
+        const from = output.getBoundingClientRect();
+        const to = input.getBoundingClientRect();
+        const x1 = from.left + from.width / 2 - svgRect.left;
+        const y1 = from.top + from.height / 2 - svgRect.top;
+        const x2 = to.left + to.width / 2 - svgRect.left;
+        const y2 = to.top + to.height / 2 - svgRect.top;
+        const bend = y1 + Math.max(12, (y2 - y1) / 2);
+        path.setAttribute("d", "M " + x1 + " " + y1 + " V " + bend + " H " + x2 + " V " + y2);
+      });
+    });
+  });
+}
+
+function setOverviewHierarchyZoom(action) {
+  const canvas = $(".overview-hierarchy-canvas");
+  if (!canvas) return;
+  const current = Number(canvas.dataset.zoom || 1);
+  const zoom = action === "fit" ? 1 : Math.max(.7, Math.min(1.3, current + (action === "in" ? .1 : -.1)));
+  canvas.dataset.zoom = String(zoom);
+  canvas.style.setProperty("--overview-zoom", String(zoom));
+  scheduleOverviewHierarchyEdges();
+}
+
+function scheduleOverviewHierarchyEdges() {
+  if (state.view === "overview" && state.projectId === "all") requestAnimationFrame(drawOverviewHierarchyEdges);
 }
 
 function renderOverview() {
@@ -3439,7 +3803,7 @@ function runLogAgentId(node) {
   return String(node?.owner_id || node?.id || "");
 }
 
-const AGENT_COLOR_CATALOG = "AliceBlue:#F0F8FF,AntiqueWhite:#FAEBD7,Aqua:#00FFFF,Aquamarine:#7FFFD4,Azure:#F0FFFF,Beige:#F5F5DC,Bisque:#FFE4C4,Black:#000000,BlanchedAlmond:#FFEBCD,Blue:#0000FF,BlueViolet:#8A2BE2,Brown:#A52A2A,BurlyWood:#DEB887,CadetBlue:#5F9EA0,Chartreuse:#7FFF00,Chocolate:#D2691E,Coral:#FF7F50,CornflowerBlue:#6495ED,Cornsilk:#FFF8DC,Crimson:#DC143C,Cyan:#00FFFF,DarkBlue:#00008B,DarkCyan:#008B8B,DarkGoldenRod:#B8860B,DarkGray:#A9A9A9,DarkGreen:#006400,DarkKhaki:#BDB76B,DarkMagenta:#8B008B,DarkOliveGreen:#556B2F,DarkOrange:#FF8C00,DarkOrchid:#9932CC,DarkRed:#8B0000,DarkSalmon:#E9967A,DarkSeaGreen:#8FBC8F,DarkSlateBlue:#483D8B,DarkSlateGray:#2F4F4F,DarkTurquoise:#00CED1,DarkViolet:#9400D3,DeepPink:#FF1493,DeepSkyBlue:#00BFFF,DimGray:#696969,DodgerBlue:#1E90FF,FireBrick:#B22222,FloralWhite:#FFFAF0,ForestGreen:#228B22,Fuchsia:#FF00FF,Gainsboro:#DCDCDC,GhostWhite:#F8F8FF,Gold:#FFD700,GoldenRod:#DAA520,Gray:#808080,Green:#008000,GreenYellow:#ADFF2F,HoneyDew:#F0FFF0,HotPink:#FF69B4,IndianRed:#CD5C5C,Indigo:#4B0082,Ivory:#FFFFF0,Khaki:#F0E68C,Lavender:#E6E6FA,LavenderBlush:#FFF0F5,LawnGreen:#7CFC00,LemonChiffon:#FFFACD,LightBlue:#ADD8E6,LightCoral:#F08080,LightCyan:#E0FFFF,LightGoldenRodYellow:#FAFAD2,LightGray:#D3D3D3,LightGreen:#90EE90,LightPink:#FFB6C1,LightSalmon:#FFA07A,LightSeaGreen:#20B2AA,LightSkyBlue:#87CEFA,LightSlateGray:#778899,LightSteelBlue:#B0C4DE,LightYellow:#FFFFE0,Lime:#00FF00,LimeGreen:#32CD32,Linen:#FAF0E6,Magenta:#FF00FF,Maroon:#800000,MediumAquaMarine:#66CDAA,MediumBlue:#0000CD,MediumOrchid:#BA55D3,MediumPurple:#9370DB,MediumSeaGreen:#3CB371,MediumSlateBlue:#7B68EE,MediumSpringGreen:#00FA9A,MediumTurquoise:#48D1CC,MediumVioletRed:#C71585,MidnightBlue:#191970,MintCream:#F5FFFA,MistyRose:#FFE4E1,Moccasin:#FFE4B5,Navy:#000080,OldLace:#FDF5E6,Olive:#808000,OliveDrab:#6B8E23,Orange:#FFA500,OrangeRed:#FF4500,Orchid:#DA70D6,PaleGoldenRod:#EEE8AA,PaleGreen:#98FB98,PaleTurquoise:#AFEEEE,PaleVioletRed:#DB7093,PapayaWhip:#FFEFD5,PeachPuff:#FFDAB9,Peru:#CD853F,Pink:#FFC0CB,Plum:#DDA0DD,PowderBlue:#B0E0E6,Purple:#800080,RebeccaPurple:#663399,Red:#FF0000,RosyBrown:#BC8F8F,RoyalBlue:#4169E1,SaddleBrown:#8B4513,Salmon:#FA8072,SandyBrown:#F4A460,SeaGreen:#2E8B57,SeaShell:#FFF5EE,Sienna:#A0522D,Silver:#C0C0C0,SkyBlue:#87CEEB,SlateBlue:#6A5ACD,SlateGray:#708090,Snow:#FFFAFA,SpringGreen:#00FF7F,SteelBlue:#4682B4,Tan:#D2B48C,Teal:#008080,Thistle:#D8BFD8,Tomato:#FF6347,Turquoise:#40E0D0,Violet:#EE82EE,Wheat:#F5DEB3,White:#FFFFFF,WhiteSmoke:#F5F5F5,Yellow:#FFFF00,YellowGreen:#9ACD32".split(",").map((entry) => {
+const AGENT_COLOR_CATALOG = "AliceBlue:#F0F8FF,AntiqueWhite:#FAEBD7,Aqua:#00FFFF,Aquamarine:#7FFFD4,Azure:#F0FFFF,Beige:#F5F5DC,Bisque:#FFE4C4,Black:#000000,BlanchedAlmond:#FFEBCD,Blue:#0000FF,BlueViolet:#8A2BE2,Brown:#A52A2A,BurlyWood:#DEB887,CadetBlue:#5F9EA0,Chartreuse:#7FFF00,Chocolate:#D2691E,Coral:#FF7F50,CornflowerBlue:#6495ED,Cornsilk:#FFF8DC,Crimson:#DC143C,Cyan:#00FFFF,DarkBlue:#00008B,DarkCyan:#008B8B,DarkGoldenRod:#B8860B,DarkGray:#A9A9A9,DarkGreen:#006400,DarkKhaki:#BDB76B,DarkMagenta:#8B008B,DarkOliveGreen:#556B2F,DarkOrange:#FF8C00,DarkOrchid:#9932CC,DarkRed:#8B0000,DarkSalmon:#E9967A,DarkSeaGreen:#8FBC8F,DarkSlateBlue:#483D8B,DarkSlateGray:#2F4F4F,DarkTurquoise:#00CED1,DarkViolet:#9400D3,DeepPink:#FF1493,DeepSkyBlue:#00BFFF,DimGray:#696969,DodgerBlue:#1E90FF,FireBrick:#B22222,FloralWhite:#FFFAF0,ForestGreen:#228B22,Fuchsia:#FF00FF,Gainsboro:#DCDCDC,GhostWhite:#F8F8FF,Gold:#FFD700,GoldenRod:#DAA520,Gray:#808080,Green:#008000,GreenYellow:#ADFF2F,HoneyDew:#F0FFF0,HotPink:#FF69B4,IndianRed:#CD5C5C,Indigo:#4B0082,Ivory:#FFFFF0,Khaki:#F0E68C,Lavender:#E6E6FA,LavenderBlush:#FFF0F5,LawnGreen:#7CFC00,LemonChiffon:#FFFACD,LightBlue:#ADD8E6,LightCoral:#F08080,LightCyan:#E0FFFF,LightGoldenRodYellow:#FAFAD2,LightGray:#D3D3D3,LightGreen:#90EE90,LightPink:#FFB6C1,LightSalmon:#FFA07A,LightSeaGreen:#20B2AA,LightSkyBlue:#87CEFA,LightSlateGray:#778899,LightSteelBlue:#B0C4DE,LightYellow:#FFFFE0,Lime:#00FF00,LimeGreen:#32CD32,Linen:#FAF0E6,Magenta:#FF00FF,Maroon:#800000,MediumAquaMarine:#66CDAA,MediumBlue:#0000CD,MediumOrchid:#BA55D3,MediumPurple:#9370DB,MediumSeaGreen:#3CB371,MediumSlateBlue:#7B68EE,MediumSpringGreen:#00FA9A,MediumTurquoise:#48D1CC,MediumVioletRed:#C71585,MidnightBlue:#191970,MintCream:#F5FFFA,MistyRose:#FFE4E1,Moccasin:#FFE4B5,Navy:#000080,OldLace:#FDF5E6,Olive:#808000,OliveDrab:#6B8E23,Orange:#FFA500,OrangeRed:#FF4500,Orchid:#DA70D6,PaleGoldenRod:#EEE8AA,PaleGreen:#98FB98,PaleTurquoise:#AFEEEE,PaleVioletRed:#DB7093,PapayaWhip:#FFEFD5,PeachPuff:#FFDAB9,Peru:#CD853F,Pink:#FFC0CB,Plum:#DDA0DD,PowderBlue:#B0E0E6,Purple:#800080,RebeccaPurple:#663399,Red:#FF0000,RosyBrown:#BC8F8F,RoyalBlue:#4169E1,SaddleBrown:#8B4513,Salmon:#FA8072,SandyBrown:#F4A460,SeaGreen:#2E8B57,SeaShell:#FFF5EE,Sienna:#A0522D,Silver:#C0C0C0,SkyBlue:#87CEEB,SlateBlue:#6A5ACD,Snow:#FFFAFA,SpringGreen:#00FF7F,SteelBlue:#4682B4,Tan:#D2B48C,Teal:#008080,Thistle:#D8BFD8,Tomato:#FF6347,Turquoise:#40E0D0,Violet:#EE82EE,Wheat:#F5DEB3,White:#FFFFFF,WhiteSmoke:#F5F5F5,Yellow:#FFFF00,YellowGreen:#9ACD32".split(",").map((entry) => {
   const [name, hex] = entry.split(":");
   return { name, hex };
 });
@@ -3449,22 +3813,21 @@ function agentColorRgb(hex) {
   return match ? match.slice(1).map((value) => Number.parseInt(value, 16)) : null;
 }
 
-function closestAgentColorName(accent) {
-  const target = agentColorRgb(accent) || agentColorRgb("#708090");
-  return AGENT_COLOR_CATALOG.reduce((best, candidate) => {
-    const rgb = agentColorRgb(candidate.hex);
-    const distance = rgb.reduce((sum, value, index) => sum + (value - target[index]) ** 2, 0);
-    return !best || distance < best.distance || (distance === best.distance && candidate.name.localeCompare(best.name) < 0) ? { ...candidate, distance } : best;
-  }, null).name;
+function agentColorRegistry() {
+  const projected = state.overview?.progress?.agent_color_registry || roleManifestProjection()?.agent_color_registry;
+  const colors = Array.isArray(projected?.colors) ? projected.colors.filter((color) => /^[A-Za-z]+$/.test(String(color?.name || "")) && /^#[0-9a-f]{6}$/i.test(String(color?.hex || ""))) : [];
+  return colors.length ? colors : AGENT_COLOR_CATALOG.filter((color) => color.name !== "SlateGray");
 }
 
-function romanAgentOrdinal(value) {
-  if (value <= 1) return "";
-  const numerals = [[10, "X"], [9, "IX"], [5, "V"], [4, "IV"], [1, "I"]];
-  let remaining = Math.min(39, value);
-  let result = "";
-  numerals.forEach(([number, numeral]) => { while (remaining >= number) { result += numeral; remaining -= number; } });
-  return result;
+function agentColorIdentity(node) {
+  const colors = agentColorRegistry();
+  const retained = String(node?.agent_color_name || node?.agent_color || "").trim();
+  const exact = colors.find((color) => color.name.toLowerCase() === retained.toLowerCase());
+  if (exact) return exact;
+  const identity = String(node?.owner_id || node?.id || node?.artifact || "independent");
+  let hash = 2166136261;
+  for (let index = 0; index < identity.length; index += 1) hash = Math.imul(hash ^ identity.charCodeAt(index), 16777619) >>> 0;
+  return colors[hash % colors.length];
 }
 
 function agentRoleAssignment(node) {
@@ -3481,7 +3844,7 @@ function agentRoleRecord(node) {
 function agentProfession(node, role = agentRoleRecord(node)) {
   if (role) return roleDisplayName(role);
   const projected = String(node?.worker_role || "").trim();
-  return projected && !["AGENT", "TASK", "CTRL", "LEAD", "DOER", "REVIEW"].includes(projected.toUpperCase()) ? humanize(projected) : "Role pending";
+  return projected && !["AGENT", "TASK", "CTRL", "LEAD", "DOER", "REVIEW"].includes(projected.toUpperCase()) ? humanize(projected) : "";
 }
 
 function agentExactBinding(node) {
@@ -3500,24 +3863,30 @@ function activeAgentRecords() {
   if (currentWorkScopeUnavailable()) return [];
   const projects = new Map(savedProjectRoster().projects.map((project) => [project.id, project]));
   const roleRank = { CTRL: 0, LEAD: 1, DOER: 2 };
-  const records = scopedNodes()
-    .filter((node) => observedAgentRole(node) && ["active", "in_progress"].includes(String(node.status || "").toLowerCase()) && projects.has(node.project_id))
+  return scopedNodes()
+    .filter((node) => observedAgentRole(node) && ["active", "in_progress"].includes(String(node.status || "").toLowerCase()))
     .map((node) => {
+      const assignment = agentRoleAssignment(node);
       const role = agentRoleRecord(node);
       const profession = agentProfession(node, role);
-      const accent = /^#[0-9a-f]{6}$/i.test(role?.accent || "") ? role.accent : "#708090";
-      return { node, role, assignment: agentRoleAssignment(node), profession, structuralRole: observedAgentRole(node), accent, baseColorName: closestAgentColorName(accent), binding: agentExactBinding(node), project: projects.get(node.project_id) };
+      const binding = agentExactBinding(node);
+      const independent = !node.project_id;
+      const identity = agentColorIdentity(node);
+      const identityState = independent ? "independent" : assignment && role && binding ? "admitted" : "malformed";
+      const project = projects.get(node.project_id) || { id: independent ? "independent" : String(node.project_id || "unbound"), label: independent ? "Independent" : "Project unavailable" };
+      return { node, role, assignment, profession, structuralRole: observedAgentRole(node), accent: identity.hex, baseColorName: identity.name, presentationName: identity.name, binding, project, identityState };
     })
-    .filter((record) => record.binding)
-    .sort((left, right) => left.project.label.localeCompare(right.project.label) || roleRank[left.structuralRole] - roleRank[right.structuralRole] || String(left.node.id).localeCompare(String(right.node.id)));
-  const ordinals = new Map();
-  return records.map((record) => {
-    const key = record.baseColorName + "|" + record.profession;
-    const ordinal = (ordinals.get(key) || 0) + 1;
-    ordinals.set(key, ordinal);
-    const suffix = romanAgentOrdinal(ordinal);
-    return { ...record, presentationName: record.baseColorName + (suffix ? " " + suffix : "") + " — " + record.profession };
-  });
+    .sort((left, right) => left.project.label.localeCompare(right.project.label) || (roleRank[left.structuralRole] ?? 3) - (roleRank[right.structuralRole] ?? 3) || String(left.node.artifact || left.node.title || left.node.id).localeCompare(String(right.node.artifact || right.node.title || right.node.id)));
+}
+
+function agentTaskTitle(record) {
+  return String(record?.node?.artifact || record?.node?.title || "Named task unavailable");
+}
+
+function agentRoleState(record) {
+  if (record.identityState === "independent") return { label: "Anonymous", detail: "Independent task", error: "" };
+  if (record.identityState === "admitted") return { label: record.profession, detail: record.structuralRole, error: "" };
+  return { label: "Role binding error", detail: "Reconnect this SWARM task to one valid manifest role and CTRL.", error: "role-binding-error" };
 }
 
 function messageConnectorCapability(bootstrap) {
@@ -3530,6 +3899,7 @@ function messageConnectorCapability(bootstrap) {
 
 function messageRecipients() {
   return activeAgentRecords()
+    .filter((record) => record.identityState === "admitted" && record.binding)
     .filter((record) => ["CTRL", "LEAD"].includes(record.structuralRole))
     .filter((record) => state.projectId === "all" || record.binding?.projectId === state.projectId)
     .map((record) => ({
@@ -3700,7 +4070,6 @@ function renderMessageComposer() {
   const attachments = messageAttachments();
   const retryContext = state.messagePendingAction ? messageImplicitContext(recipient, state.messagePendingAction.request_id) : null;
   const canRetry = Boolean(state.messageConnector && retryContext && messageActionBinding(retryContext) === messageActionBinding(state.messagePendingAction));
-  panel.hidden = !state.messageOpen;
   $("#message-recipient").innerHTML = recipients.length
     ? recipients.map((item) => '<option value="' + escapeHTML(item.id) + '"' + (item.id === recipient?.id ? " selected" : "") + '>' + escapeHTML(item.label + " · " + item.structuralRole + " · " + item.projectLabel) + '</option>').join("")
     : '<option value="">No authorized recipients</option>';
@@ -3720,18 +4089,41 @@ function renderMessageComposer() {
   panel.dataset.contextAvailable = String(Boolean(identity && attachments));
 }
 
+function showMessageComposerDialog() {
+  const panel = $("#message-composer");
+  if (panel.open) panel.close();
+  panel.setAttribute("aria-modal", String(mobileDrawerQuery.matches));
+  if (mobileDrawerQuery.matches) panel.showModal();
+  else panel.show();
+}
+
 function openMessageComposer(trigger) {
+  if (state.messageOpen) return;
   state.messageTrigger = trigger || state.messageTrigger;
   state.messageOpen = true;
   renderMessageComposer();
+  showMessageComposerDialog();
+  if (!history.state?.messageComposer) history.pushState({ ...(history.state || {}), messageComposer: true }, "", location.href);
   requestAnimationFrame(() => (selectedMessageRecipient() ? $("#message-draft") : $("#message-close"))?.focus({ preventScroll: true }));
 }
 
-function closeMessageComposer(restoreFocus = true) {
+function closeMessageComposer(restoreFocus = true, fromHistory = false) {
+  if (!fromHistory && history.state?.messageComposer) {
+    history.back();
+    return;
+  }
   state.messageOpen = false;
+  const panel = $("#message-composer");
+  if (panel.open) panel.close();
   renderMessageComposer();
   if (restoreFocus) state.messageTrigger?.focus({ preventScroll: true });
   state.messageTrigger = null;
+}
+
+function syncMessageComposerMode() {
+  if (!state.messageOpen) return;
+  showMessageComposerDialog();
+  requestAnimationFrame(() => $("#message-draft")?.focus({ preventScroll: true }));
 }
 
 async function sendMessageFromComposer(retry = false) {
@@ -3824,8 +4216,9 @@ function agentTableRowMarkup(record) {
   const status = statusLabel(record.node);
   const updated = observedTimestampMs(record.node.updated_at || record.node.generated_at);
   const updatedText = updated > 0 ? formatRelative(updated) : "UNKNOWN";
-  const bindingState = record.binding ? record.binding.ctrlId : "Binding unavailable";
-  return '<button class="agent-table-row" type="button" role="row" data-agent-detail="' + escapeHTML(record.node.id) + '" data-agent-project="' + escapeHTML(record.node.project_id) + '" data-agent-ctrl="' + escapeHTML(record.binding?.ctrlId || "") + '" aria-label="Open ' + escapeHTML(record.presentationName + ", " + record.node.artifact) + '"><span class="agent-table-agent" role="cell" data-label="Agent">' + agentAvatarMarkup(record) + '<span><strong>' + escapeHTML(record.presentationName) + '</strong><small>' + escapeHTML(record.profession + " · " + record.structuralRole + " · " + bindingState) + '</small></span></span><span class="agent-table-task" role="cell" data-label="Current task"><strong>' + escapeHTML(record.node.artifact || "Named task unavailable") + '</strong><small>' + escapeHTML(record.node.id) + '</small></span><span role="cell" data-label="Project">' + escapeHTML(record.project.label) + '</span><span role="cell" data-label="Status"><span class="state-pill ' + escapeHTML(status[1]) + '">' + escapeHTML(status[0]) + '</span></span><span role="cell" data-label="Progress">' + agentProgressMarkup(record) + '</span><time role="cell" data-label="Updated" datetime="' + escapeHTML(updated > 0 ? new Date(updated).toISOString() : "") + '"' + (updated > 0 ? "" : ' aria-label="Last update UNKNOWN"') + '>' + escapeHTML(updatedText) + '</time><span class="agent-table-chevron" role="cell" aria-hidden="true"><svg class="lucide"><use href="#lucide-chevron-right"></use></svg></span></button>';
+  const roleState = agentRoleState(record);
+  const interactive = record.identityState === "admitted";
+  return '<button class="agent-table-row' + (roleState.error ? ' is-error' : '') + '" type="button" role="row" data-agent-detail="' + escapeHTML(record.node.id) + '" data-agent-project="' + escapeHTML(record.node.project_id || "") + '" data-agent-ctrl="' + escapeHTML(record.binding?.ctrlId || "") + '" aria-label="' + escapeHTML((interactive ? "Open " : "View ") + agentTaskTitle(record) + ", " + record.presentationName) + '" title="Task ID: ' + escapeHTML(record.node.id) + '"' + (interactive ? "" : " disabled") + '><span class="agent-table-agent" role="cell" data-label="Agent">' + agentAvatarMarkup(record) + '<span><strong>' + escapeHTML(agentTaskTitle(record)) + '</strong><small>' + escapeHTML(record.presentationName) + '</small></span></span><span class="agent-table-task" role="cell" data-label="Role"><strong>' + escapeHTML(roleState.label) + '</strong><small>' + escapeHTML(roleState.error ? roleState.detail : [roleState.detail, record.profession && record.identityState === "independent" ? record.profession : ""].filter(Boolean).join(" · ")) + '</small></span><span role="cell" data-label="Project">' + escapeHTML(record.project.label) + '</span><span role="cell" data-label="Status"><span class="state-pill ' + escapeHTML(roleState.error ? "is-warning" : status[1]) + '">' + escapeHTML(roleState.error ? "Needs attention" : status[0]) + '</span></span><span role="cell" data-label="Progress">' + agentProgressMarkup(record) + '</span><time role="cell" data-label="Updated" datetime="' + escapeHTML(updated > 0 ? new Date(updated).toISOString() : "") + '"' + (updated > 0 ? "" : ' aria-label="Last update UNKNOWN"') + '>' + escapeHTML(updatedText) + '</time><span class="agent-table-chevron" role="cell" aria-hidden="true"><svg class="lucide"><use href="#lucide-chevron-right"></use></svg></span></button>';
 }
 
 function selectedAgentRecord() {
@@ -3841,20 +4234,67 @@ function selectedAgentUpdates(record) {
   return [...new Map(items.map((item) => [runLogItemIdentity(item), item])).values()].sort((left, right) => Number(right.event_seq) - Number(left.event_seq)).slice(0, 6);
 }
 
+function agentProgressQueueRow(record) {
+  if (state.projectId !== record?.binding?.projectId) return null;
+  const projection = projectProgressQueueProjection(selectedProjectProgress());
+  if (!projection || projection.status !== "CURRENT") return null;
+  return projectProgressQueueSegments(projection).flatMap((segment) => segment.rows).find((row) => row.task_id === record.node.id && row.scope_binding?.ctrl_id === record.binding.ctrlId) || null;
+}
+
+function agentWorkRows(record) {
+  const projection = state.overview?.project_view;
+  if (!record?.binding || projection?.project_id !== record.binding.projectId) return null;
+  const view = projectWorkspaceViews(projection).find((candidate) => candidate.renderer === "table" && candidate.mode === "records");
+  const rows = projectWorkRows(view);
+  if (!rows) return null;
+  const direct = rows.find((row) => row.task_id === record.node.id && (!row.ctrl_id || row.ctrl_id === record.binding.ctrlId));
+  if (!direct) return [];
+  const byId = new Map(rows.map((row) => [row.id, row]));
+  const included = new Set([direct.id]);
+  let parent = direct.parentId ? byId.get(direct.parentId) : null;
+  while (parent) { included.add(parent.id); parent = parent.parentId ? byId.get(parent.parentId) : null; }
+  rows.filter((row) => row.parentId === direct.id).forEach((row) => included.add(row.id));
+  return rows.filter((row) => included.has(row.id));
+}
+
+function agentWorkStatusIcon(row) {
+  const status = String(row.status || row.lifecycle_state || (row.progress === 100 ? "complete" : "in progress")).toLowerCase();
+  const icon = /complete|accepted|verified/.test(status) ? "check" : /block|fail|error/.test(status) ? "triangle-alert" : /wait|queue|pending/.test(status) ? "clock" : "activity";
+  return '<span class="agent-work-status" role="img" aria-label="' + escapeHTML(humanize(status)) + '" title="' + escapeHTML(humanize(status)) + '"><svg class="lucide" aria-hidden="true"><use href="#lucide-' + icon + '"></use></svg></span>';
+}
+
+function agentWorkMarkup(record) {
+  const rows = agentWorkRows(record);
+  if (rows === null) return '<p class="empty-state" role="status">Work unavailable. No accepted project hierarchy is bound.</p>';
+  if (!rows.length) return '<p class="empty-state" role="status">No exact accepted work association is available for this agent.</p>';
+  const children = new Map();
+  rows.forEach((row) => { const list = children.get(row.parentId) || []; list.push(row); children.set(row.parentId, list); });
+  const render = (row) => {
+    const nested = children.get(row.id) || [];
+    const heading = '<span class="agent-work-heading">' + agentWorkStatusIcon(row) + '<span><small>' + escapeHTML(humanize(row.kind)) + '</small><strong>' + escapeHTML(row.label) + '</strong></span></span>';
+    if (row.kind === "block") return '<div class="agent-work-block" data-agent-work-kind="block">' + heading + '</div>';
+    return '<details class="agent-work-group is-' + escapeHTML(row.kind) + '" open><summary>' + heading + '</summary><div>' + nested.map(render).join("") + '</div></details>';
+  };
+  const roots = rows.filter((row) => !rows.some((candidate) => candidate.id === row.parentId));
+  const blocks = rows.filter((row) => row.kind === "block");
+  const blockMap = '<div class="agent-block-map" role="img" aria-label="' + escapeHTML(blocks.length ? blocks.length + " accepted block" + (blocks.length === 1 ? "" : "s") + " in this work path" : "No accepted blocks in this work path") + '">' + blocks.map((row) => '<i data-block-state="' + escapeHTML(String(row.status || row.lifecycle_state || "unknown").toLowerCase()) + '"></i>').join("") + '</div>';
+  return '<div class="agent-work-tree">' + roots.map(render).join("") + '</div>' + blockMap;
+}
+
 function renderAgentDetail() {
   const record = selectedAgentRecord();
   if (!record) return false;
   const dialog = $("#agent-detail-dialog");
-  const assignmentVersion = record.assignment?.manifest_version || record.role?.active_version || "UNKNOWN";
   const updates = selectedAgentUpdates(record);
-  $("#agent-detail-title").textContent = record.presentationName;
-  $("#agent-detail-content").innerHTML = '<section class="agent-detail-identity">' + agentAvatarMarkup(record) + '<div><span class="state-pill is-active">In progress</span><h3>' + escapeHTML(record.presentationName) + '</h3><p>' + escapeHTML(record.structuralRole + " structure · " + record.profession + " profession") + '</p></div></section><dl class="agent-detail-facts"><div><dt>Current task</dt><dd>' + escapeHTML(record.node.artifact || "Named task unavailable") + '</dd></div><div><dt>Project</dt><dd>' + escapeHTML(record.project.label) + '</dd></div><div><dt>CTRL binding</dt><dd>' + escapeHTML(record.binding?.ctrlId || "UNKNOWN") + '</dd></div><div><dt>Role template</dt><dd>' + escapeHTML(record.profession + " · " + assignmentVersion) + '</dd></div></dl><section class="agent-detail-section"><h3>Material updates</h3>' + (updates.length ? '<ol>' + updates.map((item) => { const observed = Number(item.observed_at_ms); const datetime = Number.isFinite(observed) && observed > 0 ? new Date(observed).toISOString() : ""; return '<li><time datetime="' + escapeHTML(datetime) + '">' + escapeHTML(formatRelative(observed)) + '</time><span>' + escapeHTML(item.summary) + '</span></li>'; }).join("") + '</ol>' : '<p class="empty-state">No retained material updates are available for this agent yet.</p>') + '</section><section class="agent-detail-section"><h3>This agent only</h3><p>No agent-specific instruction augmentation was supplied by the server projection. The role template remains read-only here.</p></section>';
+  const queueRow = agentProgressQueueRow(record);
+  $("#agent-detail-title").textContent = agentTaskTitle(record);
+  $("#agent-detail-content").innerHTML = '<section class="agent-detail-identity">' + agentAvatarMarkup(record) + '<div><span class="state-pill is-active">In progress</span><h3 title="Task ID: ' + escapeHTML(record.node.id) + '">' + escapeHTML(agentTaskTitle(record)) + '</h3><p>' + escapeHTML(record.presentationName + " · " + record.profession + " · " + record.structuralRole) + '</p></div></section><dl class="agent-detail-facts"><div><dt>Project</dt><dd>' + escapeHTML(record.project.label) + '</dd></div><div><dt>Role</dt><dd>' + escapeHTML(record.profession) + '</dd></div><div><dt>Identity</dt><dd>' + escapeHTML(record.presentationName) + '</dd></div><div class="agent-detail-eta"><dt>Live ETA</dt><dd>' + progressQueueEtaMarkup(queueRow) + '</dd></div></dl><section class="agent-detail-section"><h3>Work</h3>' + agentWorkMarkup(record) + '</section><section class="agent-detail-section"><h3>Log</h3>' + (updates.length ? '<ol>' + updates.map((item) => { const observed = Number(item.observed_at_ms); const datetime = Number.isFinite(observed) && observed > 0 ? new Date(observed).toISOString() : ""; return '<li><time datetime="' + escapeHTML(datetime) + '">' + escapeHTML(formatRelative(observed)) + '</time><span>' + escapeHTML(item.summary) + '</span></li>'; }).join("") + '</ol>' : '<p class="empty-state">No retained material updates are available for this agent yet.</p>') + '</section>';
   return dialog.open;
 }
 
 function openAgentDetail(trigger) {
   const record = activeAgentRecords().find((item) => item.node.id === trigger?.dataset.agentDetail && item.node.project_id === trigger?.dataset.agentProject);
-  if (!record?.binding) return;
+  if (record?.identityState !== "admitted" || !record.binding) return;
   state.runLogAgent = { ...record.binding, label: record.presentationName };
   state.agentUpdatesFilter = "selected";
   state.agentDetailTrigger = trigger;
@@ -3862,19 +4302,26 @@ function openAgentDetail(trigger) {
   const dialog = $("#agent-detail-dialog");
   renderAgentDetail();
   if (!dialog.open) dialog.showModal();
+  updateDocumentTitle();
   requestAnimationFrame(() => $("#agent-detail-close")?.focus({ preventScroll: true }));
   refreshRunLogs().then(() => { renderRunLogSurfaces(); if (dialog.open) renderAgentDetail(); });
+}
+
+function agentDetailFocusTarget(trigger) {
+  if (trigger?.isConnected && trigger.getClientRects().length) return trigger;
+  const matches = trigger?.dataset.agentDetail
+    ? $$('[data-agent-detail]').filter((candidate) => candidate.dataset.agentDetail === trigger.dataset.agentDetail && candidate.dataset.agentProject === trigger.dataset.agentProject)
+    : [];
+  return matches.find((candidate) => candidate.getClientRects().length) || matches[0] || $("#agents-heading");
 }
 
 function closeAgentDetail(restoreFocus = true) {
   const dialog = $("#agent-detail-dialog");
   if (dialog.open) dialog.close();
+  updateDocumentTitle();
   if (!restoreFocus) return;
   const trigger = state.agentDetailTrigger;
-  const replacement = trigger?.dataset.agentDetail
-    ? $$('[data-agent-detail]').find((candidate) => candidate.dataset.agentDetail === trigger.dataset.agentDetail && candidate.dataset.agentProject === trigger.dataset.agentProject)
-    : null;
-  (trigger?.isConnected ? trigger : replacement || $("#agents-heading"))?.focus?.({ preventScroll: true });
+  agentDetailFocusTarget(trigger)?.focus?.({ preventScroll: true });
 }
 
 function renderAgentUpdateControls() {
@@ -3966,7 +4413,7 @@ function roleAvatar(role) {
   const displayName = roleDisplayName(role);
   const avatar = retainedRoleAvatar(role);
   if (avatar) return '<span class="role-avatar has-image" style="--role-accent:' + escapeHTML(accent) + '" role="img" aria-label="' + escapeHTML(displayName + " mascot avatar") + '"><img loading="lazy" decoding="async" src="' + escapeHTML(avatar.url) + '" alt=""></span>';
-  return '<span class="role-avatar is-pending" style="--role-accent:' + escapeHTML(accent) + '" role="img" aria-label="Avatar pending for ' + escapeHTML(displayName) + '"><span>Pending</span></span>';
+  return '<span class="role-avatar is-unavailable" style="--role-accent:' + escapeHTML(accent) + '" role="img" aria-label="Mascot avatar unavailable for ' + escapeHTML(displayName) + '; admission pending"><svg class="lucide" aria-hidden="true"><use href="#lucide-circle-user-round"></use></svg></span>';
 }
 
 function roleHasRetainedAvatar(role) { return Boolean(retainedRoleAvatar(role)); }
@@ -4030,7 +4477,8 @@ function roleAssignmentsMarkup(roleId) {
   return '<ul class="role-bindings">' + assignments.map((assignment) => {
     const node = nodes.get(assignment.task_id);
     const owner = node?.owner_id || node?.worker || node?.owner || "Unassigned";
-    return '<li><strong>' + escapeHTML(owner) + '</strong><span>' + escapeHTML(assignment.task_id + " · " + (assignment.manifest_version || "Unknown version")) + '</span></li>';
+    const task = node?.artifact || node?.title || "Assigned task";
+    return '<li title="Task ID: ' + escapeHTML(assignment.task_id) + '"><strong>' + escapeHTML(task) + '</strong><span>' + escapeHTML(owner) + '</span></li>';
   }).join("") + '</ul>';
 }
 
@@ -4043,20 +4491,47 @@ function roleInstructionsMarkup(items) {
   if (!instructions.length) return '<p class="role-specializations-empty">No instructions.</p>';
   const preview = instructions.slice(0, 3);
   const remaining = instructions.slice(3);
-  return '<div class="role-instruction-preview">' + roleTextList(preview, "No instructions.") + (remaining.length ? '<details><summary>Show all ' + escapeHTML(instructions.length) + ' instructions</summary>' + roleTextList(remaining, "") + '</details>' : '') + '</div>';
+  return '<div class="role-instruction-preview">' + roleTextList(preview, "No instructions.") + (remaining.length ? '<details><summary><span class="role-disclosure-more">Show more</span><span class="role-disclosure-less">Show less</span></summary>' + roleTextList(remaining, "") + '</details>' : '') + '</div>';
+}
+
+function rolePresentationText(value) {
+  const text = String(value || "").trim();
+  return text && !/\b(?:authority|provenance|server-owned|metadata only|bounded SWARM assignment|built[ -]?in)\b/i.test(text) ? text : "";
+}
+
+function rolePresentationItems(items) {
+  return (Array.isArray(items) ? items : []).map(rolePresentationText).filter(Boolean);
+}
+
+function roleCardDescription(role) {
+  return rolePresentationItems(Array.isArray(role?.instructions) ? role.instructions.slice(1) : [])[0] || "";
 }
 
 function roleChooserMarkup(role, match, selected) {
   const displayName = roleDisplayName(role);
-  const sourceLabel = roleSourceLabel(role);
-  return '<button class="role-choice' + (selected ? ' is-selected' : '') + '" data-role-select="' + escapeHTML(role.id) + '" id="role-choice-' + escapeHTML(role.id) + '" role="option" aria-label="' + escapeHTML(displayName + ', ' + sourceLabel) + '" aria-selected="' + String(selected) + '" aria-controls="role-library-detail" tabindex="' + (selected ? '0' : '-1') + '" type="button">' + roleAvatar(role) + '<span><strong>' + escapeHTML(displayName) + '</strong><small class="role-choice-source">' + escapeHTML(sourceLabel) + '</small>' + (match.label ? '<em>' + escapeHTML(match.label) + '</em>' : '') + '</span></button>';
+  const description = roleCardDescription(role);
+  return '<button class="role-choice' + (selected ? ' is-selected' : '') + '" data-role-select="' + escapeHTML(role.id) + '" id="role-choice-' + escapeHTML(role.id) + '" role="option" aria-label="' + escapeHTML(displayName) + '" aria-selected="' + String(selected) + '" aria-controls="role-library-detail" tabindex="' + (selected ? '0' : '-1') + '" type="button">' + roleAvatar(role) + '<span><strong>' + escapeHTML(displayName) + '</strong>' + (description ? '<p class="role-choice-description" title="' + escapeHTML(description) + '">' + escapeHTML(description) + '</p>' : '') + (match.label ? '<em>' + escapeHTML(match.label) + '</em>' : '') + '</span></button>';
 }
 
 function roleDetailMarkup(role, match = { label: "" }) {
-  if (!role) return '<p class="empty-state">Choose a role to inspect its server-owned manifest.</p>';
+  if (!role) return '<p class="empty-state">Choose a role to see its details.</p>';
   const displayName = roleDisplayName(role);
-  const editAllowed = roleCanMutate("ROLE_MANIFEST_REVISE");
-  return '<header class="role-detail-head">' + roleAvatar(role) + '<div><p class="eyebrow">' + escapeHTML(roleSourceLabel(role)) + '</p><h3 id="role-detail-title">' + escapeHTML(displayName) + '</h3><p>Profession · not authority</p></div><div class="role-detail-actions"><button class="icon-button" data-role-action="generate-avatar" type="button" disabled aria-label="Generate avatar" title="Generate avatar unavailable"><svg class="lucide" aria-hidden="true"><use href="#lucide-sparkles"></use></svg></button><button class="icon-button" data-role-action="edit" data-role-id="' + escapeHTML(role.id) + '" type="button" aria-label="Edit ' + escapeHTML(displayName) + '" title="Edit role"' + (editAllowed ? "" : ' disabled') + '><svg class="lucide" aria-hidden="true"><use href="#lucide-pencil"></use></svg></button></div></header>' + (match.label ? '<p class="role-match">' + escapeHTML(match.label) + '</p>' : '') + '<div class="role-detail-sections"><section><h4>Purpose</h4><p class="role-detail-copy">' + escapeHTML(role.purpose || "Purpose unavailable.") + '</p></section><section><h4>Owns</h4>' + roleTextList(role.owns, "No owned surface declared.") + '</section><section><h4>Instructions</h4>' + roleInstructionsMarkup(role.instructions) + '</section><section><h4>Current owners</h4>' + roleAssignmentsMarkup(role.id) + '</section><section><h4>Specializations</h4><div>' + roleSpecializationsMarkup(role) + '<small>Metadata only · no authority transfer.</small></div></section><section><h4>Default skills</h4>' + roleTextList(role.default_skills, "No default skills.") + '</section><section><h4>Boundaries</h4>' + roleTextList(role.boundaries, "No boundaries declared.") + '</section></div><footer><span>' + escapeHTML(roleHasRetainedAvatar(role) ? "Retained avatar" : "Avatar pending admission") + '</span><span>Active tasks retain their accepted role version.</span></footer>';
+  const avatarButton = '<button class="role-avatar-trigger" data-role-action="avatar" data-role-id="' + escapeHTML(role.id) + '" type="button" aria-label="Edit ' + escapeHTML(displayName) + ' avatar" title="Edit avatar">' + roleAvatar(role) + '</button>';
+  const purpose = rolePresentationText(role.purpose);
+  const owns = rolePresentationItems(role.owns);
+  const instructions = rolePresentationItems(role.instructions);
+  const skills = rolePresentationItems(role.default_skills);
+  const boundaries = rolePresentationItems(role.boundaries);
+  const sections = [
+    purpose ? '<section><h4>Purpose</h4><p class="role-detail-copy">' + escapeHTML(purpose) + '</p></section>' : "",
+    owns.length ? '<section><h4>Owns</h4>' + roleTextList(owns, "") + '</section>' : "",
+    instructions.length ? '<section><h4>Instructions</h4>' + roleInstructionsMarkup(instructions) + '</section>' : "",
+    '<section><h4>Current owners</h4>' + roleAssignmentsMarkup(role.id) + '</section>',
+    Array.isArray(role.specializations) && role.specializations.length ? '<section><h4>Specializations</h4>' + roleSpecializationsMarkup(role) + '</section>' : "",
+    skills.length ? '<section><h4>Default skills</h4>' + roleTextList(skills, "") + '</section>' : "",
+    boundaries.length ? '<section><h4>Boundaries</h4>' + roleTextList(boundaries, "") + '</section>' : "",
+  ].join("");
+  return '<button class="role-detail-back" type="button" data-role-detail-back aria-label="Back to roles"><svg class="lucide" aria-hidden="true"><use href="#lucide-arrow-left"></use></svg><span>Back</span></button><header class="role-detail-head">' + avatarButton + '<div><h3 id="role-detail-title">' + escapeHTML(displayName) + '</h3></div></header>' + (match.label ? '<p class="role-match">' + escapeHTML(match.label) + '</p>' : '') + '<div class="role-detail-sections">' + sections + '</div>';
 }
 
 function focusRoleChoice(roleId) {
@@ -4066,9 +4541,52 @@ function focusRoleChoice(roleId) {
   choice?.scrollIntoView({ block: "nearest", inline: "nearest" });
 }
 
-function selectRoleChoice(roleId) {
+function isMobileRoleDetail() {
+  return matchMedia("(max-width: 620px)").matches;
+}
+
+function roleDetailFocusable() {
+  return $$('#role-library-detail button:not([disabled]),#role-library-detail summary,#role-library-detail a[href],#role-library-detail [tabindex]:not([tabindex="-1"])').filter((element) => !element.hidden);
+}
+
+function syncRoleDetailPresentation() {
+  const detail = $("#role-library-detail");
+  if (!detail) return;
+  const mobile = isMobileRoleDetail();
+  if (!mobile && state.roleDetailOpen) {
+    state.roleDetailOpen = false;
+    state.roleDetailTriggerId = "";
+  }
+  const open = mobile && state.roleDetailOpen;
+  detail.hidden = mobile && !open;
+  detail.classList.toggle("is-mobile-open", open);
+  if (open) {
+    detail.setAttribute("role", "dialog");
+    detail.setAttribute("aria-modal", "true");
+  } else {
+    detail.removeAttribute("role");
+    detail.removeAttribute("aria-modal");
+  }
+  document.body.classList.toggle("role-detail-open", open);
+}
+
+function closeMobileRoleDetail(restoreFocus = true) {
+  if (!state.roleDetailOpen) return;
+  const roleId = state.roleDetailTriggerId || state.selectedRoleId;
+  state.roleDetailOpen = false;
+  state.roleDetailTriggerId = "";
+  syncRoleDetailPresentation();
+  if (restoreFocus) requestAnimationFrame(() => focusRoleChoice(roleId));
+}
+
+function selectRoleChoice(roleId, openDetail = false) {
   state.selectedRoleId = roleId;
+  if (openDetail && isMobileRoleDetail()) {
+    state.roleDetailOpen = true;
+    state.roleDetailTriggerId = roleId;
+  }
   renderRoleLibrary(roleId);
+  if (state.roleDetailOpen) requestAnimationFrame(() => $("[data-role-detail-back]")?.focus({ preventScroll: true }));
 }
 
 function roleGridColumnCount(grid) {
@@ -4098,21 +4616,34 @@ function renderRoleLibrary(focusRoleId = "") {
   create.disabled = !roleCanMutate("ROLE_MANIFEST_CREATE");
   create.setAttribute("aria-disabled", String(create.disabled));
   let status = state.roleManifestStatus === "loading" || state.roleManifestStatus === "refreshing"
-    ? "Loading server-owned role manifests"
+    ? "Loading roles"
     : state.roleManifestStatus === "stale"
       ? "Showing the last received role manifests · refresh failed"
       : state.roleManifestStatus === "current" && projection
-        ? (filtered.length === roles.length ? roles.length : filtered.length + " of " + roles.length) + " server-owned role manifest" + (roles.length === 1 ? "" : "s")
+        ? (filtered.length === roles.length ? roles.length : filtered.length + " of " + roles.length) + " role" + (roles.length === 1 ? "" : "s")
         : state.roleManifestStatus === "current"
           ? "Role manifest response was invalid"
           : (state.roleManifestError || "Role manifests unavailable");
   if (state.roleManifestMessage) status += " · " + state.roleManifestMessage;
   $("#role-library-status").textContent = status;
   $("#role-filter-chips").innerHTML = roleFilterChipsMarkup(state.roleTypes);
+  const loading = ["loading", "refreshing"].includes(state.roleManifestStatus) && !roles.length;
+  grid.setAttribute("aria-busy", String(loading));
+  if (loading) {
+    grid.innerHTML = loadingSkeletonMarkup();
+    $("#role-library-detail").innerHTML = loadingSkeletonMarkup(4);
+    $("#role-library-pager").innerHTML = "";
+    return;
+  }
   if (!filtered.some(({ role }) => role.id === state.selectedRoleId)) state.selectedRoleId = filtered[0]?.role.id || "";
-  const selected = filtered.find(({ role }) => role.id === state.selectedRoleId) || null;
-  grid.innerHTML = filtered.length ? filtered.map(({ role, match }) => roleChooserMarkup(role, match, role.id === state.selectedRoleId)).join("") : '<p class="empty-state">No roles match these filters. Clear the search or filters to see the server roster.</p>';
-  $("#role-library-detail").innerHTML = roleDetailMarkup(selected?.role, selected?.match);
+  const selected = filtered.find((role) => role.role.id === state.selectedRoleId) || null;
+  const unavailable = !roles.length && state.roleManifestStatus === "unavailable";
+  grid.innerHTML = filtered.length ? filtered.map(({ role, match }) => roleChooserMarkup(role, match, role.id === state.selectedRoleId)).join("") : '<p class="empty-state" role="status">' + escapeHTML(unavailable ? state.roleManifestError || "Role manifests unavailable." : "No roles match these filters. Clear the search or filters to see the roster.") + '</p>';
+  $("#role-library-detail").innerHTML = unavailable ? '<p class="empty-state" role="status">Role details are unavailable until the manifest roster loads.</p>' : roleDetailMarkup(selected?.role, selected?.match);
+  $("#role-library-detail").setAttribute("aria-labelledby", "role-detail-title");
+  $("#role-library-detail").tabIndex = -1;
+  syncRoleDetailPresentation();
+  $("#role-library-pager").innerHTML = "";
   focusRoleChoice(focusRoleId || focusedRoleId);
 }
 
@@ -4167,9 +4698,6 @@ function updateRoleEditorAuthority(message = "") {
   $("#role-field-id").readOnly = editing;
   $("#role-save").disabled = !allowed || !roleAvatarDigestValid($("#role-field-avatar").value);
   $("#role-reset").disabled = !(editing && role?.built_in && role.override_active && roleCanMutate("ROLE_MANIFEST_RESET"));
-  const generate = $('#role-editor [data-role-action="generate-avatar"]');
-  generate.disabled = true;
-  generate.title = "Generate avatar is unavailable because the server exposes no generation command";
   $("#role-editor-status").textContent = message || (allowed ? "Saving creates a new server-owned version." : "Role changes are unavailable until current server authority is available.");
 }
 
@@ -4179,8 +4707,8 @@ function openRoleEditor(roleId = "", trigger = null) {
   const editing = Boolean(roleId);
   state.roleEditorMode = editing ? "edit" : "create";
   state.roleManifestRetry = null;
-  state.roleEditorTrigger = trigger?.dataset.roleAction === "edit"
-    ? { action: "edit", roleId: trigger.dataset.roleId || roleId }
+  state.roleEditorTrigger = ["edit", "avatar"].includes(trigger?.dataset.roleAction)
+    ? { action: trigger.dataset.roleAction, roleId: trigger.dataset.roleId || roleId }
     : trigger?.dataset.roleAction === "create" ? { action: "create" } : null;
   $("#role-editor-title").textContent = editing ? roleDisplayName(role) + " manifest" : "Create role";
   roleFieldValue("#role-field-id", role.id);
@@ -4198,16 +4726,18 @@ function openRoleEditor(roleId = "", trigger = null) {
   $("#role-field-source").textContent = roleSourceLabel(role);
   updateRoleEditorAuthority(!$("#role-field-avatar").value ? "Choose a retained image asset before saving." : "");
   $("#role-editor").showModal();
+  updateDocumentTitle();
   requestAnimationFrame(() => (editing ? $("#role-field-name") : $("#role-field-id")).focus());
 }
 
 function closeRoleEditor() {
   if ($("#role-editor").open) $("#role-editor").close();
+  updateDocumentTitle();
 }
 
 function roleEditorReturnTarget(origin) {
-  const trigger = origin?.action === "edit" && origin.roleId
-    ? $('[data-role-action="edit"][data-role-id="' + CSS.escape(origin.roleId) + '"]')
+  const trigger = ["edit", "avatar"].includes(origin?.action) && origin.roleId
+    ? $('[data-role-action="' + origin.action + '"][data-role-id="' + CSS.escape(origin.roleId) + '"]')
     : origin?.action === "create" ? $("#role-create") : null;
   if (trigger && !trigger.disabled && !trigger.hidden) return trigger;
   return $("#role-search") || $("#tab-roles");
@@ -4364,7 +4894,9 @@ function settingsSwitch(key, value, label, help, options = {}) {
   const editable = options.editable ?? settingsConfigEditable(key);
   const checked = value === (options.trueValue ?? true);
   const badge = options.badge ? '<span class="settings-control-badge">' + escapeHTML(options.badge) + '</span>' : '';
-  return '<section class="settings-essential-control"><div><span class="settings-control-title"><strong>' + escapeHTML(label) + '</strong>' + badge + '</span><small>' + escapeHTML(help) + '</small></div><label class="settings-switch"><input type="checkbox" data-settings-draft-key="' + escapeHTML(key) + '"' + (options.trueValue !== undefined ? ' data-true-value="' + escapeHTML(options.trueValue) + '" data-false-value="' + escapeHTML(options.falseValue) + '"' : '') + (checked ? ' checked' : '') + (editable ? '' : ' disabled') + ' aria-label="' + escapeHTML(label) + '"><span aria-hidden="true"></span></label>' + (editable ? '' : '<em>' + escapeHTML(options.unavailable || 'Managed by the current configuration.') + '</em>') + '</section>';
+  const binding = options.binding?.attribute || "data-settings-draft-key";
+  const control = options.binding?.control ? ' data-onboarding-control="setting-' + escapeHTML(key) + '"' : '';
+  return '<section class="settings-essential-control"><div><span class="settings-control-title"><strong>' + escapeHTML(label) + '</strong>' + badge + '</span><small>' + escapeHTML(help) + '</small></div><label class="settings-switch"><input type="checkbox" ' + binding + '="' + escapeHTML(key) + '"' + control + (options.trueValue !== undefined ? ' data-true-value="' + escapeHTML(options.trueValue) + '" data-false-value="' + escapeHTML(options.falseValue) + '"' : '') + (checked ? ' checked' : '') + (editable ? '' : ' disabled') + ' aria-label="' + escapeHTML(label) + '"><span aria-hidden="true"></span></label>' + (editable ? '' : '<em>' + escapeHTML(options.unavailable || 'Managed by the current configuration.') + '</em>') + '</section>';
 }
 
 function descriptorBooleanSwitch(key, label, help, options = {}) {
@@ -4383,18 +4915,26 @@ function descriptorBooleanSwitch(key, label, help, options = {}) {
   });
 }
 
-function settingsSpeedMarkup() {
+function settingsSpeedMarkup(options = {}) {
   const key = "execution.fast_mode";
-  const fast = settingsDraftValue(key, false) === true;
-  const editable = settingsConfigEditable(key);
-  const choice = (label, selected, value, disabled = false) => '<label><input type="radio" name="settings-speed" data-settings-draft-key="' + key + '" data-config-value="' + String(value) + '"' + (selected ? ' checked' : '') + ((!editable || disabled) ? ' disabled' : '') + ' aria-label="' + escapeHTML(label) + '"><span>' + escapeHTML(label) + '</span></label>';
+  const fast = (options.value ?? settingsDraftValue(key, false)) === true;
+  const editable = options.editable ?? settingsConfigEditable(key);
+  const binding = options.binding?.attribute || "data-settings-draft-key";
+  const choice = (label, selected, value, disabled = false) => '<label><input type="radio" name="' + escapeHTML(options.name || "settings-speed") + '" ' + binding + '="' + key + '" data-config-value="' + String(value) + '"' + (options.binding?.control ? ' data-onboarding-control="speed-' + label.toLowerCase() + '"' : '') + (selected ? ' checked' : '') + ((!editable || disabled) ? ' disabled' : '') + ' aria-label="' + escapeHTML(label) + '"><span>' + escapeHTML(label) + '</span></label>';
   return '<fieldset class="settings-segmented"><legend>Speed</legend><div>' + choice("Default", !fast, false) + choice("Fast", fast, true) + choice("Ultrafast", false, true, true) + '</div><small>' + escapeHTML(editable ? 'Ultrafast is unavailable until SWARM exposes an accepted mode.' : 'Speed is read-only in this scope.') + '</small></fieldset>';
 }
 
-function settingsTaskLifeMarkup() {
+function settingsTaskLifeMarkup(options = {}) {
   const labels = ["Short", "Medium", "Balanced", "Long", "Unlimited"];
   const tooltip = "Short clears context sooner to keep work efficient, with more handovers. Balanced hands over when task efficiency begins to drop. Long reduces handovers, while a larger context can become less efficient over time.";
-  return '<section class="settings-task-life"><div class="settings-task-life-head"><strong>Task life</strong><details><summary class="icon-button" aria-label="About task life"><span aria-hidden="true">i</span></summary><div role="tooltip">' + escapeHTML(tooltip) + '</div></details></div><input type="range" min="0" max="4" step="1" value="2" disabled aria-label="Task life" aria-valuetext="Balanced — unavailable"><div aria-hidden="true">' + labels.map((label) => '<span>' + label + '</span>').join('') + '</div><small>Task life is unavailable until SWARM exposes the accepted five-step setting.</small></section>';
+  const value = Number(options.value);
+  const exactIndex = ONBOARDING_TASK_LIFE_DETENTS.findIndex((item) => item.hours === value);
+  const index = exactIndex >= 0 ? exactIndex : 2;
+  const editable = options.editable === true;
+  const binding = options.binding?.attribute || "";
+  const bindingMarkup = binding ? ' ' + binding + '="lifecycle.task_lifetime_hours" data-config-values="' + ONBOARDING_TASK_LIFE_DETENTS.map((item) => item.hours).join(",") + '"' : '';
+  const valueText = editable ? ONBOARDING_TASK_LIFE_DETENTS[index].valueText : "Balanced — unavailable";
+  return '<section class="settings-task-life"><div class="settings-task-life-head"><strong>Task life</strong><details' + (options.binding?.control ? ' data-onboarding-control="task-life-info"' : '') + '><summary class="icon-button" aria-label="About task life"><span aria-hidden="true">i</span></summary><div role="tooltip">' + escapeHTML(tooltip) + '</div></details></div><input id="' + escapeHTML(options.id || "settings-task-life") + '" type="range" min="0" max="4" step="1" value="' + index + '"' + bindingMarkup + (editable ? '' : ' disabled') + ' aria-label="Task life" aria-valuetext="' + escapeHTML(valueText) + '"><div aria-hidden="true">' + labels.map((label) => '<span>' + label + '</span>').join('') + '</div><small>' + escapeHTML(editable ? 'Balanced hands over when efficiency begins to drop.' : 'Task life is unavailable until SWARM exposes the accepted five-step setting.') + '</small></section>';
 }
 
 function settingsContextPresentation(scope, selectedCtrl, setting) {
@@ -4426,12 +4966,14 @@ function openConfigEditor(trigger) {
   renderConfigEditor();
   const dialog = $("#config-editor-dialog");
   if (!dialog.open) dialog.showModal();
+  updateDocumentTitle();
   requestAnimationFrame(() => $("#config-editor-close").focus({ preventScroll: true }));
 }
 
 function closeConfigEditor() {
   const dialog = $("#config-editor-dialog");
   if (dialog.open) dialog.close();
+  updateDocumentTitle();
 }
 
 async function saveSettingsDraft() {
@@ -4612,6 +5154,12 @@ function skillsAdvanced(scope) {
   return '<section class="skills-panel" id="skills-details"><div><strong>Approved skills</strong><small>Read-only catalog projection for ' + escapeHTML(scope.type === 'global' ? 'global defaults' : scope.type + ' scope') + '.</small></div><ul class="skills-list">' + entries + '</ul><p>This console cannot install or update skills.</p></section>';
 }
 
+function settingsThemeMarkup() {
+  const selected = currentTheme();
+  const options = Object.entries(THEME_OPTIONS).map(([value, label]) => '<label><input type="radio" name="appearance-theme" data-theme-option="' + value + '" value="' + value + '"' + (value === selected ? ' checked' : '') + '><span>' + label + '</span></label>').join('');
+  return '<fieldset class="panel settings-theme settings-wide"><legend>Appearance</legend><p>Choose how SWARM HQ looks on this device.</p><div>' + options + '</div></fieldset>';
+}
+
 function renderSettings() {
   const scope = currentSettingsScope();
   const selectedCtrl = selectedSettingsCtrl();
@@ -4621,7 +5169,7 @@ function renderSettings() {
   const autoMode = settingsDraftValue("automation.mode", automation.mode || "manual");
   const pending = state.settingsDraft.size;
   const saveStatus = state.settingsSaveError || state.settingsSaveMessage || (pending ? pending + " unsaved change" + (pending === 1 ? "" : "s") : "All changes saved");
-  $("#settings-grid").innerHTML =
+  $("#settings-grid").innerHTML = settingsThemeMarkup() +
     '<section class="panel settings-essentials settings-wide" id="settings-essentials" tabindex="-1"><header class="settings-essentials-head"><div><p class="eyebrow">Essentials</p><h3>How SWARM runs your work</h3><p>Keep the defaults clear. Exact configuration remains server-owned.</p></div><label class="settings-scope-control">Applies to<select id="settings-scope">' + settingsScopeOptions() + '</select></label></header><div class="settings-context"><strong>' + escapeHTML(context.title) + '</strong><span>' + escapeHTML(context.note) + '</span></div><div class="settings-toggle-grid">' +
       settingsSwitch("automation.mode", autoMode, "Auto mode", "SWARM keeps eligible work moving until it needs you.", { trueValue: "standard", falseValue: "manual", unavailable: scope.type === "global" ? "Managed by the current configuration." : "Edit global defaults or use an accepted override." }) +
       descriptorBooleanSwitch("monitoring.auto_health_enabled", "Auto fix", "SWARM attempts to recover from issues automatically. This may start repair tasks and increase usage.", { unsupported: "Unavailable. Health checks remain active; no repair is started." }) +
@@ -4630,7 +5178,7 @@ function renderSettings() {
     '<footer class="settings-save-bar settings-wide' + (state.settingsSaveError ? ' is-error' : '') + '" aria-live="polite"><p><strong>' + escapeHTML(saveStatus) + '</strong><span>' + escapeHTML(pending ? "Review and save these server-backed changes." : "Essentials reflect the latest acknowledged configuration.") + '</span></p><div><button class="quiet-button" data-setting-action="discard-settings" type="button"' + (!pending || state.settingsSaving ? ' disabled' : '') + '>Discard</button><button class="primary-action" id="settings-save" data-setting-action="save-settings" type="button"' + (!pending || state.settingsSaving ? ' disabled' : '') + (state.settingsSaving ? ' aria-busy="true"' : '') + '>Save changes</button></div></footer>';
 }
 
-function renderAllViews() { renderOverview(); renderAgents(); renderRoles(); renderReview(); renderAssets(); renderDiagnostics(); renderSettings(); renderRunLogSurfaces(); renderMessageComposer(); if ($("#onboarding-dialog")?.open) renderOnboarding(); }
+function renderAllViews() { renderOverview(); renderAgents(); renderRoles(); renderReview(); renderAssets(); renderDiagnostics(); renderSettings(); renderRunLogSurfaces(); renderMessageComposer(); if ($("#onboarding-dialog")?.open) renderOnboarding(); updateDocumentTitle(); }
 
 async function refreshProof() {
   const projectId = state.projectId;
@@ -4809,6 +5357,7 @@ async function refreshRoleManifests() {
   const lastGood = roleManifestProjectionValue(state.roleManifests);
   const hasLastGood = Boolean(lastGood);
   state.roleManifestStatus = hasLastGood ? "refreshing" : "loading";
+  renderRoleLibrary();
   try {
     const result = await api('/api/role-manifests');
     if (!roleManifestProjectionValue(result)) throw new Error("Role manifest response was invalid.");
@@ -4833,7 +5382,7 @@ async function refreshOverview(showLoading = true) {
     clearConnectionState();
     setDataStatus("current", state.overview?.generated_at);
     renderProjectNavigation();
-    await Promise.all([refreshProof(), refreshUsageHistory(), refreshProjectProgress(), refreshProjectProgressFeed(), refreshRoleManifests(), refreshNotifications(), refreshRunLogs(), refreshAssets()]);
+    await Promise.all([refreshProof(), refreshUsageHistory(), refreshProjectProgress(), refreshProjectProgressFeed(), refreshRoleManifests(), refreshNotifications(), refreshRunLogs(), refreshAssets(), refreshProfileSummary()]);
     const selectedCtrl = state.ctrlId || historicalControllers()[0]?.id || '';
     const previousConfig = state.config;
     const results = await Promise.allSettled([api('/api/storage'), selectedCtrl ? api('/api/ctrl-settings?ctrl_id=' + encodeURIComponent(selectedCtrl)) : Promise.resolve(null), readConfigState(previousConfig), refreshDiagnostics(false)]);
@@ -4883,6 +5432,16 @@ function startPresence() {
 }
 
 document.addEventListener("click", async (event) => {
+  const diagnosticInspect = event.target.closest("[data-diagnostic-inspect]");
+  if (diagnosticInspect) {
+    inspectDiagnosticCheck(diagnosticInspect.dataset.diagnosticInspect);
+    return;
+  }
+  const diagnosticReview = event.target.closest("[data-diagnostic-review]");
+  if (diagnosticReview) {
+    reviewDiagnosticWithCtrl(diagnosticReview.dataset.diagnosticReview);
+    return;
+  }
   const scopeSelector = $("#project-scope-selector");
   if (scopeSelector?.open && !event.target.closest("#project-scope-selector")) scopeSelector.open = false;
   if (event.target.closest("#project-scope-filter")?.getAttribute("aria-disabled") === "true") {
@@ -4911,6 +5470,20 @@ document.addEventListener("click", async (event) => {
   if (!$("#notifications-panel").hidden && !event.target.closest("#notifications-panel, #notifications")) {
     setNotificationsOpen(false);
   }
+  const collectionMore = event.target.closest("[data-collection-more]");
+  if (collectionMore) {
+    const kind = collectionMore.dataset.collectionMore;
+    if (kind === "assets") {
+      closeAssetDialog();
+      state.assetPage += 1;
+      renderAssets();
+    } else if (kind === "artifacts") {
+      state.projectArtifactPage += 1;
+      renderProjectDetail();
+    } else return;
+    requestAnimationFrame(() => { const status = $('[data-collection-status="' + kind + '"]'); status?.scrollIntoView({ block: "nearest" }); status?.focus({ preventScroll: true }); });
+    return;
+  }
   const onboardingDot = event.target.closest("[data-onboarding-step]");
   if (onboardingDot) {
     setOnboardingStep(onboardingDot.dataset.onboardingStep, true);
@@ -4922,6 +5495,7 @@ document.addEventListener("click", async (event) => {
     if (projection !== state.assetProjection) {
       closeAssetDialog();
       state.assetProjection = projection;
+      state.assetPage = 0;
       state.selectedAssetIdentity = "";
       state.assetConfirm = null;
       state.assetMutationPending = null;
@@ -4941,7 +5515,7 @@ document.addEventListener("click", async (event) => {
   }
   const projectUiMode = event.target.closest("[data-project-ui-mode]");
   if (projectUiMode) {
-    state.projectUiMode = projectUiMode.dataset.projectUiMode === "map" ? "map" : "screens";
+    state.projectUiMode = projectUiMode.dataset.projectUiMode || "screens";
     state.projectUiGroupId = "";
     renderProjectDetail();
     $('[data-project-ui-mode="' + state.projectUiMode + '"]')?.focus({ preventScroll: true });
@@ -5089,12 +5663,17 @@ document.addEventListener("click", async (event) => {
   }
   const roleSelect = event.target.closest("[data-role-select]");
   if (roleSelect) {
-    selectRoleChoice(roleSelect.dataset.roleSelect);
+    selectRoleChoice(roleSelect.dataset.roleSelect, true);
+    return;
+  }
+  if (event.target.closest("[data-role-detail-back]")) {
+    closeMobileRoleDetail();
     return;
   }
   const roleAction = event.target.closest("[data-role-action]");
   if (roleAction) {
     if (roleAction.dataset.roleAction === "edit") openRoleEditor(roleAction.dataset.roleId, roleAction);
+    if (roleAction.dataset.roleAction === "avatar") openRoleEditor(roleAction.dataset.roleId, roleAction);
     if (roleAction.dataset.roleAction === "create" && !roleAction.disabled) openRoleEditor("", roleAction);
     if (roleAction.dataset.roleAction === "reset" && !roleAction.disabled) await submitRoleCommand("reset");
     return;
@@ -5125,18 +5704,6 @@ document.addEventListener("click", async (event) => {
     renderEvidenceLightbox();
     return;
   }
-  if (event.target.closest("#evidence-page-previous")) {
-    const page = Math.floor(state.evidenceIndex / EVIDENCE_THUMBNAIL_PAGE_SIZE);
-    state.evidenceIndex = Math.max(0, (page - 1) * EVIDENCE_THUMBNAIL_PAGE_SIZE);
-    renderEvidenceLightbox();
-    return;
-  }
-  if (event.target.closest("#evidence-page-next")) {
-    const page = Math.floor(state.evidenceIndex / EVIDENCE_THUMBNAIL_PAGE_SIZE);
-    state.evidenceIndex = Math.min(state.evidenceImages.length - 1, (page + 1) * EVIDENCE_THUMBNAIL_PAGE_SIZE);
-    renderEvidenceLightbox();
-    return;
-  }
   const tab = event.target.closest("[data-view]");
   if (tab) {
     setView(tab.dataset.view);
@@ -5144,9 +5711,10 @@ document.addEventListener("click", async (event) => {
   }
 });
 
-$("#message-launcher").addEventListener("click", (event) => openMessageComposer(event.currentTarget));
-$("#mobile-message-action").addEventListener("click", (event) => openMessageComposer(event.currentTarget));
-$("#message-close").addEventListener("click", () => closeMessageComposer());
+$("#message-launcher").addEventListener("click", (event) => { event.stopPropagation(); openMessageComposer(event.currentTarget); });
+$("#mobile-message-action").addEventListener("click", (event) => { event.stopPropagation(); openMessageComposer(event.currentTarget); });
+$("#message-composer").addEventListener("click", (event) => event.stopPropagation());
+$("#message-close").addEventListener("click", (event) => { event.stopPropagation(); closeMessageComposer(); });
 $("#message-draft").addEventListener("input", (event) => {
   state.messageDraft = event.target.value;
   if (["failed", "conflict", "sent"].includes(state.messageStatus)) state.messagePendingAction = null;
@@ -5176,8 +5744,49 @@ $("#profile-dialog").addEventListener("cancel", (event) => {
   closeProfile();
 });
 
-$("#diagnostics-select-recommended").addEventListener("click", selectRecommendedDiagnostics);
-$("#diagnostics-repair").addEventListener("click", (event) => openRepairPreview(event.currentTarget));
+$("#support-open").addEventListener("click", (event) => openSupport(event.currentTarget));
+$("#support-close").addEventListener("click", () => closeSupport());
+$("#support-dialog").addEventListener("click", (event) => { if (event.target === event.currentTarget) closeSupport(); });
+$("#support-dialog").addEventListener("cancel", (event) => {
+  event.preventDefault();
+  closeSupport();
+});
+
+$("#quick-help").addEventListener("click", openQuickHelp);
+$("#quick-help-close").addEventListener("click", () => closeQuickHelp());
+$("#quick-help-dialog").addEventListener("click", (event) => { if (event.target === event.currentTarget) closeQuickHelp(); });
+$("#quick-help-dialog").addEventListener("cancel", (event) => { event.preventDefault(); closeQuickHelp(); });
+$("#quick-help-dialog").addEventListener("click", (event) => {
+  const action = event.target.closest("[data-quick-help-action]")?.dataset.quickHelpAction;
+  if (!action) return;
+  closeQuickHelp(false);
+  if (action === "message") openMessageComposer($("#quick-help"));
+  if (action === "tour") openOnboarding(true, $("#quick-help"));
+  if (action === "diagnostics") { setView("diagnostics"); requestAnimationFrame(() => $("#diagnostics-heading")?.focus({ preventScroll: true })); }
+});
+
+$("#project-create").addEventListener("click", openProjectCreate);
+$("#project-create-close").addEventListener("click", () => closeProjectCreate());
+$("#project-create-cancel").addEventListener("click", () => closeProjectCreate());
+$("#project-create-form").addEventListener("submit", createProject);
+$("#project-create-dialog").addEventListener("click", (event) => { if (event.target === event.currentTarget) closeProjectCreate(); });
+$("#project-create-dialog").addEventListener("cancel", (event) => { event.preventDefault(); closeProjectCreate(); });
+
+$("#ask-anything-form").addEventListener("submit", (event) => {
+  event.preventDefault();
+  const value = $("#ask-anything").value.trim();
+  if (value) state.messageDraft = value;
+  $("#ask-anything").value = "";
+  renderMessageComposer();
+  openMessageComposer($("#ask-anything"));
+});
+document.addEventListener("keydown", (event) => {
+  if (event.ctrlKey && !event.altKey && !event.shiftKey && event.key.toLowerCase() === "k") {
+    event.preventDefault();
+    $("#ask-anything").focus({ preventScroll: true });
+  }
+});
+
 $("#repair-close").addEventListener("click", () => closeRepairDialog());
 $("#repair-cancel").addEventListener("click", () => closeRepairDialog());
 $("#repair-confirm").addEventListener("click", confirmRepairPreparation);
@@ -5199,15 +5808,6 @@ $(".onboarding-progress").addEventListener("keydown", (event) => {
   const next = event.key === "Home" ? 0 : event.key === "End" ? ONBOARDING_STEPS.length - 1 : (state.onboardingStep + (event.key === "ArrowRight" ? 1 : -1) + ONBOARDING_STEPS.length) % ONBOARDING_STEPS.length;
   event.preventDefault();
   setOnboardingStep(next, true);
-});
-$("#onboarding-coordination-tree").addEventListener("keydown", moveOnboardingTreeFocus);
-$("#onboarding-coordination-tree").addEventListener("click", (event) => {
-  const control = event.target.closest("[data-onboarding-flow-zoom]");
-  if (!control) return;
-  const action = control.dataset.onboardingFlowZoom;
-  state.onboardingFlowZoom = action === "fit" ? 1 : Math.min(1.1, Math.max(.9, state.onboardingFlowZoom + (action === "in" ? .1 : -.1)));
-  renderOnboardingCoordination();
-  control.focus({ preventScroll: true });
 });
 $("#onboarding-dialog").addEventListener("close", () => {
   state.onboardingTrigger?.focus({ preventScroll: true });
@@ -5240,16 +5840,14 @@ $("#agent-updates-pause").addEventListener("click", () => {
 });
 $("#agent-detail-close").addEventListener("click", () => closeAgentDetail());
 $("#agent-detail-done").addEventListener("click", () => closeAgentDetail());
+$("#agent-detail-dialog").addEventListener("click", (event) => { if (event.target === event.currentTarget) closeAgentDetail(); });
 $("#agent-detail-dialog").addEventListener("cancel", (event) => {
   event.preventDefault();
   closeAgentDetail();
 });
 $("#agent-detail-dialog").addEventListener("close", () => {
   const trigger = state.agentDetailTrigger;
-  const replacement = trigger?.dataset.agentDetail
-    ? $$('[data-agent-detail]').find((candidate) => candidate.dataset.agentDetail === trigger.dataset.agentDetail && candidate.dataset.agentProject === trigger.dataset.agentProject)
-    : null;
-  (trigger?.isConnected ? trigger : replacement || $("#agents-heading"))?.focus?.({ preventScroll: true });
+  agentDetailFocusTarget(trigger)?.focus?.({ preventScroll: true });
   state.agentDetailTrigger = null;
 });
 $("#config-editor-close").addEventListener("click", closeConfigEditor);
@@ -5288,6 +5886,27 @@ document.addEventListener("error", (event) => {
   if (failed) failed.hidden = false;
 }, true);
 document.addEventListener("keydown", (event) => {
+  if (state.roleDetailOpen && isMobileRoleDetail() && !document.querySelector("dialog[open]")) {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      closeMobileRoleDetail();
+      return;
+    }
+    if (event.key === "Tab") {
+      const focusable = roleDetailFocusable();
+      const first = focusable[0];
+      const last = focusable.at(-1);
+      if (!first) { event.preventDefault(); return; }
+      if (event.shiftKey && (document.activeElement === first || !$("#role-library-detail").contains(document.activeElement))) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && (document.activeElement === last || !$("#role-library-detail").contains(document.activeElement))) {
+        event.preventDefault();
+        first.focus();
+      }
+      return;
+    }
+  }
   if (event.key === "Escape" && state.messageOpen) {
     event.preventDefault();
     closeMessageComposer();
@@ -5364,10 +5983,28 @@ $("#project-navigation-heading").addEventListener("click", async (event) => {
   await selectProjectScope("all", event.currentTarget);
 });
 $("#overview-project-cards").addEventListener("click", async (event) => {
+  if (event.target.closest(".overview-node-more summary")) requestAnimationFrame(scheduleOverviewHierarchyEdges);
+  const zoom = event.target.closest("[data-overview-zoom]");
+  if (zoom) {
+    setOverviewHierarchyZoom(zoom.dataset.overviewZoom);
+    zoom.focus({ preventScroll: true });
+    return;
+  }
+  const agentInspect = event.target.closest("[data-agent-inspect]");
+  if (agentInspect) {
+    event.stopPropagation();
+    openAgentDetail(agentInspect);
+    return;
+  }
+  const edit = event.target.closest("[data-overview-project-edit]");
+  if (edit) {
+    await selectProjectScope(edit.dataset.overviewProjectEdit, edit);
+    setView("settings", true);
+    return;
+  }
   const project = event.target.closest("[data-overview-project-id]");
   if (project) await selectProjectScope(project.dataset.overviewProjectId, project);
 });
-$("#refresh").addEventListener("click", refreshOverview);
 $("#system-health-control").addEventListener("click", openSystemHealth);
 $("#retry").addEventListener("click", refreshOverview);
 $("#connection-retry").addEventListener("click", initialize);
@@ -5411,14 +6048,14 @@ $("#role-filter-reset").addEventListener("click", () => {
   $("#role-search").focus({ preventScroll: true });
 });
 $("#mobile-menu-button").addEventListener("click", () => setMobileDrawer(!$(".app-shell").classList.contains("is-drawer-open"), true));
+$("#drawer-close").addEventListener("click", () => setMobileDrawer(false, true));
 $("#drawer-backdrop").addEventListener("click", () => setMobileDrawer(false, true));
 mobileDrawerQuery.addEventListener("change", syncMobileDrawer);
+mobileDrawerQuery.addEventListener("change", syncMessageComposerMode);
 document.addEventListener('change', async (event) => {
-  if (event.target.matches('[data-diagnostic-check]')) {
-    const id = event.target.dataset.diagnosticCheck;
-    if (event.target.checked) state.diagnosticsSelectedChecks.add(id);
-    else state.diagnosticsSelectedChecks.delete(id);
-    renderDiagnostics();
+  if (event.target.matches('[data-theme-option]')) {
+    setTheme(event.target.dataset.themeOption);
+    renderSettings();
     return;
   }
   if (event.target.matches('[data-role-type]')) {
@@ -5634,7 +6271,11 @@ $(".project-tabs").addEventListener("keydown", (event) => {
 });
 
 document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible") reportPresence(); });
-window.addEventListener("resize", scheduleProjectViewConnectors);
+window.addEventListener("resize", () => {
+  scheduleProjectViewConnectors();
+  scheduleOverviewHierarchyEdges();
+  syncRoleDetailPresentation();
+});
 window.addEventListener("pagehide", () => { if (presenceTimer) clearInterval(presenceTimer); });
 
 syncMobileDrawer();
@@ -5654,5 +6295,6 @@ function applyHistoryRoute() {
   refreshOverview(false);
 }
 window.addEventListener('popstate', applyHistoryRoute);
+window.addEventListener('popstate', () => { if (state.messageOpen) closeMessageComposer(true, true); });
 window.addEventListener('hashchange', applyHistoryRoute);
 initialize().then(startPresence);
