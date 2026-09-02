@@ -28,6 +28,7 @@ from runtime.progress_events import (  # noqa: E402
     build_task_manifest,
     identity_manifest_event,
     role_manifest_reference,
+    task_creation_binding_event,
     validate_progress_material_event,
     write_progress_pulse,
 )
@@ -768,6 +769,11 @@ class SwarmConsoleTests(unittest.TestCase):
     def test_project_progress_queue_is_atomic_ctrl_first_and_receipt_bound(self) -> None:
         self._confirm_root_ctrl()
         self._add_same_project_ctrl()
+        with closing(sqlite3.connect(self.database)) as connection:
+            connection.execute(
+                "UPDATE thread_spawn_edges SET status='open' WHERE child_thread_id='review'"
+            )
+            connection.commit()
         app = console.App(self.codex_home, self.config)
 
         def route(task_id: str, route_id: str) -> dict[str, object]:
@@ -824,7 +830,7 @@ class SwarmConsoleTests(unittest.TestCase):
 
         result = app.measurable_progress("project:alpha")
         projection = result["progress_queue"]
-        self.assertEqual(projection["status"], "CURRENT")
+        self.assertEqual(projection["status"], "CURRENT", projection)
         self.assertEqual(projection["accepted_cursor"], result["cursor"])
         self.assertEqual(projection["scope_binding"], {
             "project_id": "project:alpha", "ctrl_ids": ["other-ctrl", "root"], "cursor": result["cursor"],
@@ -1434,10 +1440,12 @@ class SwarmConsoleTests(unittest.TestCase):
         self.assertIn("lead", ids)
         self.assertIn("task", ids)
         self.assertIn("review", ids)
-        self.assertNotIn("unsafe", ids)
+        self.assertIn("unsafe", ids)
         self.assertIn("root", ids)
-        self.assertEqual(overview["analytics"]["tasks"], 4)
-        self.assertEqual(overview["analytics"]["tokens"], 750)
+        self.assertEqual(overview["analytics"]["tasks"], 5)
+        self.assertEqual(overview["analytics"]["tokens"], 1749)
+        unbound = next(node for node in overview["nodes"] if node["id"] == "unsafe")
+        self.assertEqual((unbound["project_id"], unbound["project_binding_state"]), ("", "UNBOUND"))
         self.assertTrue(all(project["id"].startswith("project:") for project in overview["projects"]))
         self.assertFalse(any("C:/" in json.dumps(item) for item in overview["projects"]))
         self.assertIn({"source": "lead", "target": "task", "relationship": "delegated", "status": "open"}, overview["links"])
@@ -1462,9 +1470,140 @@ class SwarmConsoleTests(unittest.TestCase):
         self.assertEqual((base["state"], base["loading"], base["empty"]), ("LOADING", True, True))
         self.assertEqual((base["nodes"], base["tasks"], base["agent_edges"], base["task_edges"]), ([], [], [], []))
 
+        with closing(sqlite3.connect(self.database)) as connection:
+            connection.execute("DELETE FROM thread_spawn_edges")
+            connection.execute("DELETE FROM threads")
+            connection.commit()
         projected = console.App(self.codex_home, self.config).overview()["topology"]
         self.assertEqual((projected["state"], projected["loading"], projected["empty"]), ("EMPTY", False, True))
         self.assertEqual((projected["nodes"], projected["tasks"], projected["roots"]), ([], [], []))
+
+    def test_independent_host_tasks_keep_exact_projects_neutral_identity_and_restart_counts(self) -> None:
+        with closing(sqlite3.connect(self.database)) as connection:
+            connection.execute("ALTER TABLE threads ADD COLUMN project_id TEXT")
+            for index in range(1, 22):
+                project_id = "project:helm" if index == 1 else "project:rightwork" if index == 2 else f"project:extra-{index:02d}"
+                connection.execute(
+                    "INSERT INTO projects VALUES (?,?,?,?,?,?)",
+                    (project_id, project_id.split(":", 1)[1], "{}", index, 0, 0),
+                )
+            now = 2_000_000_100_000
+            rows = (
+                ("helm-designer", "🎨DESIGNER - Helm shell", "project:helm"),
+                ("helm-architect", "🐙CTRL - Not admitted", "project:helm"),
+                ("rightwork-agent", "🧭LEAD - RightWork", "project:rightwork"),
+                ("projectless-agent", "🐙CTRL - Projectless", None),
+            )
+            for offset, (thread_id, title, project_id) in enumerate(rows, 1):
+                connection.execute(
+                    "INSERT INTO threads VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    (
+                        thread_id, title, "C:/unbound/task", now // 1000, now // 1000,
+                        now, now + offset, "gpt-5.6-sol", "high", 1, 0, "", "main",
+                        "", "", "", 0, project_id,
+                    ),
+                )
+            connection.executemany(
+                "INSERT INTO thread_spawn_edges VALUES (?,?,?)",
+                [
+                    ("helm-designer", "helm-architect", "open"),
+                    ("rightwork-agent", "projectless-agent", "closed"),
+                ],
+            )
+            connection.commit()
+
+        first = console.App(self.codex_home, self.config).overview()
+        restarted = console.App(self.codex_home, self.config).overview()
+        self.assertEqual(len(first["projects"]), 22)
+        self.assertEqual([project["id"] for project in first["projects"]], [project["id"] for project in restarted["projects"]])
+        by_id = {node["id"]: node for node in first["nodes"]}
+        for node_id, project_id in (
+            ("helm-designer", "project:helm"),
+            ("helm-architect", "project:helm"),
+            ("rightwork-agent", "project:rightwork"),
+        ):
+            node = by_id[node_id]
+            self.assertEqual((node["node_kind"], node["project_id"]), ("independent_host_task", project_id))
+            self.assertEqual((node["role"], node["structural_role"], node["manifest_identity"]), ("independent", None, None))
+            self.assertEqual((node["artifact"], node["worker"]), ("Codex task", ""))
+            self.assertEqual(node["presentation"], console.INDEPENDENT_HOST_PRESENTATION)
+            self.assertEqual(node["actions"], {"open_detail": True, "edit_manifest": False, "role_actions": False})
+            self.assertFalse(node["execution_authority"] or node["swarm_authority"])
+        projectless = by_id["projectless-agent"]
+        self.assertEqual((projectless["project_id"], projectless["project_binding_state"]), ("", "UNBOUND"))
+        helm = next(project for project in first["projects"] if project["id"] == "project:helm")
+        rightwork = next(project for project in first["projects"] if project["id"] == "project:rightwork")
+        self.assertEqual((helm["task_count"], helm["independent_count"]), (2, 2))
+        self.assertEqual((rightwork["task_count"], rightwork["independent_count"]), (1, 1))
+        self.assertEqual(first["analytics"]["independent_count"], restarted["analytics"]["independent_count"])
+        self.assertEqual(first["topology"]["independent_nodes"], restarted["topology"]["independent_nodes"])
+        self.assertEqual(first["topology"]["independent_count"], restarted["topology"]["independent_count"])
+        self.assertIn(
+            ("helm-designer", "helm-architect", "HOST_SPAWN"),
+            [(edge["source"], edge["target"], edge["edge_kind"]) for edge in first["topology"]["host_edges"]],
+        )
+        self.assertTrue(all(not edge["execution_authority"] and not edge["swarm_authority"] for edge in first["topology"]["host_edges"]))
+        self.assertNotIn("projectless-agent", {edge["target"] for edge in first["topology"]["host_edges"]})
+        self.assertFalse(first["controllers"])
+
+    def test_overview_project_briefs_projects_generic_digest_bound_root_without_product_branch(self) -> None:
+        root = self.root / "nemo-root"
+        self._write_project_brief(root, "nemo")
+        project_id = "local-7df124335c46ab55d00ad4f754a3e26a"
+        self._add_host_project(project_id, "Nemo", str(root))
+        for index in range(20):
+            self._add_host_project(f"project:saved-{index:02d}", f"saved-{index:02d}", str(self.root / f"missing-{index:02d}"))
+
+        first = console.App(self.codex_home, self.config).overview()["project_briefs"]
+        restarted = console.App(self.codex_home, self.config).overview()["project_briefs"]
+        self.assertEqual((first["state"], first["available"], len(first["projects"])), ("KNOWN", True, 22))
+        nemo = next(project for project in first["projects"] if project["project_id"] == project_id)
+        self.assertEqual((nemo["display_name"], nemo["root_binding_status"], nemo["status"]), ("Nemo", "KNOWN", "KNOWN"))
+        self.assertRegex(nemo["digest"], r"^sha256:[0-9a-f]{64}$")
+        self.assertEqual(
+            set(nemo),
+            {"project_id", "display_name", "root_binding_status", "status", "digest", "path", "source"},
+        )
+        self.assertEqual(first, restarted)
+        order = [project["project_id"] for project in first["projects"]]
+
+        self._write_project_brief(root, "nemo", links=[{"kind": "digest-change"}])
+        changed = console.App(self.codex_home, self.config).overview()["project_briefs"]
+        changed_restart = console.App(self.codex_home, self.config).overview()["project_briefs"]
+        self.assertNotEqual(first["cursor"], changed["cursor"])
+        self.assertNotEqual(nemo["digest"], next(
+            project["digest"] for project in changed["projects"] if project["project_id"] == project_id
+        ))
+        self.assertEqual(changed, changed_restart)
+
+        valid_text = root.joinpath("SWARM.md").read_text(encoding="utf-8")
+        root.joinpath("SWARM.md").write_text("not a project brief\n", encoding="utf-8")
+        invalid = console.App(self.codex_home, self.config).overview()["project_briefs"]
+        self.assertEqual(next(
+            project["status"] for project in invalid["projects"] if project["project_id"] == project_id
+        ), "INVALID")
+        self.assertNotEqual(changed["cursor"], invalid["cursor"])
+
+        root.joinpath("SWARM.md").write_text(valid_text + "\n" + valid_text, encoding="utf-8")
+        ambiguous = console.App(self.codex_home, self.config).overview()["project_briefs"]
+        self.assertEqual(next(
+            project["status"] for project in ambiguous["projects"] if project["project_id"] == project_id
+        ), "AMBIGUOUS")
+        self.assertNotEqual(invalid["cursor"], ambiguous["cursor"])
+
+        root.joinpath("SWARM.md").unlink()
+        missing = console.App(self.codex_home, self.config).overview()["project_briefs"]
+        missing_restart = console.App(self.codex_home, self.config).overview()["project_briefs"]
+        self.assertEqual(next(
+            project["status"] for project in missing["projects"] if project["project_id"] == project_id
+        ), "MISSING")
+        self.assertNotEqual(ambiguous["cursor"], missing["cursor"])
+        self.assertEqual(missing, missing_restart)
+        self.assertTrue(all(
+            [project["project_id"] for project in projection["projects"]] == order
+            for projection in (changed, invalid, ambiguous, missing)
+        ))
+        self.assertNotIn(project_id, SERVER.read_text(encoding="utf-8"))
 
     def test_manifest_topology_has_exact_ports_task_limit_and_restart_stability(self) -> None:
         self._confirm_root_ctrl()
@@ -1554,6 +1693,87 @@ class SwarmConsoleTests(unittest.TestCase):
 
         restarted = console.App(self.codex_home, self.config).overview()["topology"]
         self.assertEqual(restarted, topology)
+
+    def test_topology_promotes_only_connector_confirmed_task_creation_binding(self) -> None:
+        self._confirm_root_ctrl()
+        app = console.App(self.codex_home, self.config)
+        self._append_topology_manifests(app, task_count=0)
+        with closing(sqlite3.connect(self.database)) as connection:
+            connection.execute(
+                "INSERT INTO threads VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (
+                    "bound-agent", "private host title", "C:/work/alpha", 2_000_000_000,
+                    2_000_000_000, 2_000_000_000_000, 2_000_000_000_001,
+                    "gpt-5.6-terra", "high", 0, 0, "", "main", "", "", "", 0,
+                ),
+            )
+            connection.commit()
+
+        role = next(item for item in app.builtin_role_manifests if item["id"] == "developer")
+        manifest = build_task_manifest(
+            manifest_id="task-manifest:bound-agent", task_id="bound-agent",
+            task_name="Topology implementation", project_id="project:alpha", ctrl_id="root",
+            role_scope="DOER_SINGLE",
+            milestones=[{
+                "milestone_id": "bound-milestone", "order": 0, "title": "Implementation",
+                "verification_policy": "source-contract", "supersedes_milestone_id": None,
+            }],
+            blocks=[{
+                "block_id": "bound-block", "milestone_id": "bound-milestone", "order": 0,
+                "title": "Build the bounded slice", "verification_policy": "source-contract",
+                "estimate_minutes": 30, "weight": None, "supersedes_block_id": None,
+            }],
+        )
+        connector = {
+            "schema_version": 1, "record_type": "CONNECTOR", "command_id": "command:create-bound",
+            "idempotency_key": "create-bound", "command_digest": "a" * 64,
+            "project_id": "project:alpha", "root_digest": "b" * 64,
+            "action": "MANUAL_AGENT", "thread_id": None, "turn_id": None,
+            "observed_root_digest": None,
+        }
+        app.progress_ledger.append_connector_receipt({
+            **connector, "receipt_id": "create-bound:command", "receipt_index": 0,
+            "status": "COMMAND", "observed_at_ms": 1,
+        })
+        app.progress_ledger.append_connector_receipt({
+            **connector, "receipt_id": "create-bound:ack", "receipt_index": 1,
+            "status": "ACKNOWLEDGED", "thread_id": "bound-agent",
+            "observed_root_digest": "b" * 64, "observed_at_ms": 2,
+        })
+        result = {
+            **connector, "receipt_id": "create-bound:result", "receipt_index": 2,
+            "status": "RESULT", "thread_id": "bound-agent", "turn_id": "turn:bound-agent",
+            "observed_root_digest": "b" * 64, "observed_at_ms": 3,
+        }
+        binding = task_creation_binding_event(
+            operation_id="create-bound", project_id="project:alpha", root_digest="b" * 64,
+            ctrl_id="root", task_id="bound-agent", role_manifest=role, task_manifest=manifest,
+            parent_task_id="root", topology_manifest_receipt_id="create-bound:topology",
+            task_receipt_id="create-bound:task",
+            milestone_receipts=[{"id": "bound-milestone", "receipt_id": "receipt:bound-milestone"}],
+            block_receipts=[{"id": "bound-block", "receipt_id": "receipt:bound-block"}],
+            explicit_empty_work_receipt_id=None, host_result_receipt_id="create-bound:result",
+            observed_at_ms=4,
+        )
+        assert binding is not None
+        app.progress_ledger.append_connector_result_with_task_creation(result, binding)
+
+        overview = app.overview()
+        topology = overview["topology"]
+        node = next(item for item in topology["nodes"] if item["id"] == "bound-agent")
+        public_node = next(item for item in overview["nodes"] if item["id"] == "bound-agent")
+        self.assertEqual(
+            (node["profession"], node["structural_role"], node["parent_relation"]["state"]),
+            ("developer", "DOER", "KNOWN"),
+        )
+        self.assertEqual(node["manifest_identity"]["identity_kind"], "TASK_CREATION_BINDING")
+        self.assertEqual(node["creation_binding"]["operation_id"], "create-bound")
+        self.assertEqual((node["initial_work"]["state"], node["initial_work"]["blocks"][0]["block_id"]), ("KNOWN", "bound-block"))
+        self.assertEqual((public_node["artifact"], public_node["worker"]), ("Topology implementation", ""))
+        self.assertNotIn("private host title", json.dumps(overview))
+        self.assertNotIn("bound-agent", {item["id"] for item in topology["independent_nodes"]})
+        self.assertIn(("root", "bound-agent"), {(edge["source"], edge["target"]) for edge in topology["agent_edges"]})
+        self.assertEqual(console.App(self.codex_home, self.config).overview()["topology"], topology)
 
     def test_topology_ambiguous_and_cycle_edges_fail_closed_without_ports(self) -> None:
         self._confirm_root_ctrl()
@@ -1666,7 +1886,7 @@ class SwarmConsoleTests(unittest.TestCase):
         overview = console.build_overview(self.codex_home, self.config)
         controllers = {item["id"]: item for item in overview["controllers"]}
         by_id = {node["id"]: node for node in overview["nodes"]}
-        self.assertEqual(controllers["root"]["nodes"], 6)
+        self.assertEqual(controllers["root"]["nodes"], 5)
         self.assertEqual(controllers["child-ctrl"]["nodes"], 2)
         self.assertEqual(by_id["child-ctrl"]["controller_ids"], ["root", "child-ctrl"])
         self.assertEqual(by_id["child-doer"]["controller_ids"], ["root", "child-ctrl"])
@@ -2030,8 +2250,9 @@ class SwarmConsoleTests(unittest.TestCase):
             self.assertEqual(controllers["ambiguous-root"]["controller_classification"], "unavailable")
         project = next(item for item in navigation["projects"] if item["id"] == "project:incoming")
         self.assertNotIn("ambiguous-root", project["ctrl_ids"])
-        self.assertEqual(project["activity_status"], "unknown")
-        self.assertTrue(project["activity_facts"]["unknown"])
+        self.assertEqual(project["activity_status"], "active")
+        self.assertTrue(project["activity_facts"]["active_now"])
+        self.assertFalse(project["activity_facts"]["unknown"])
         self.assertEqual(
             set(project["activity_facts"]["unknown_controller_ids"]),
             {"parent-a", "parent-b"},
@@ -3749,18 +3970,18 @@ class SwarmConsoleTests(unittest.TestCase):
         self.assertEqual(idle["ctrl_ids"], ["ctrl-idle"])
         self.assertEqual(stalled["project_eligibility"], "swarm_ctrl")
         self.assertEqual(stalled["ctrl_ids"], ["ctrl-stalled"])
-        self.assertEqual(no_ctrl["project_eligibility"], "no_ctrl")
+        self.assertEqual(no_ctrl["project_eligibility"], "host_tasks")
         self.assertFalse(no_ctrl["archived"])
         self.assertEqual(archived["visibility"], "visible")
         self.assertFalse(archived["archived"])
         self.assertEqual(archived["archive_source"], "host_projects")
         self.assertEqual(archived["project_eligibility"], "no_ctrl")
-        self.assertEqual(legacy["project_eligibility"], "no_ctrl")
+        self.assertEqual(legacy["project_eligibility"], "host_tasks")
         self.assertEqual(legacy["eligibility_source"], "unavailable")
         self.assertEqual(legacy["ctrl_ids"], [])
         self.assertEqual(by_controller["ctrl-idle"]["controller_classification"], "swarm_ctrl")
         self.assertEqual(by_controller["ctrl-idle"]["visibility"], "visible")
-        self.assertEqual(by_controller["ctrl-archived"]["visibility"], "hidden")
+        self.assertNotIn("ctrl-archived", by_controller)
         self.assertEqual(by_controller["legacy-title"]["controller_classification"], "unavailable")
         self.assertEqual(by_controller["legacy-title"]["visibility"], "hidden")
         self.assertNotIn("ctrl-archived", navigation["active_ctrl_ids"])
@@ -3808,7 +4029,7 @@ class SwarmConsoleTests(unittest.TestCase):
         metrics = app.overview()["overview_metrics"]
         self.assertEqual(metrics["accepted_scope_id"], metrics["accepted_cursor"]["scope_id"])
         self.assertEqual(metrics["active_work"]["active_projects"], 1)
-        self.assertEqual(metrics["active_work"]["active_lanes"], 1)
+        self.assertEqual(metrics["active_work"]["active_lanes"], 0)
         self.assertEqual(metrics["field_state"]["actionable_items"], "KNOWN")
         self.assertGreater(metrics["needs_attention"]["actionable_items"], 0)
         self.assertEqual(metrics["field_state"]["total"], "KNOWN")
@@ -3842,7 +4063,7 @@ class SwarmConsoleTests(unittest.TestCase):
         view = app.overview()
         metrics = view["overview_metrics"]
         navigation = view["navigation"]
-        self.assertEqual(metrics["active_work"], {"active_projects": 1, "active_lanes": 1})
+        self.assertEqual(metrics["active_work"], {"active_projects": 2, "active_lanes": 0})
         self.assertEqual(metrics["field_state"]["active_projects"], "KNOWN")
         self.assertEqual(metrics["field_state"]["active_lanes"], "KNOWN")
         self.assertNotIn("archived-ctrl", navigation["active_ctrl_ids"])
@@ -3889,7 +4110,7 @@ class SwarmConsoleTests(unittest.TestCase):
             "active": False,
             "stalled": False,
             "inactive": True,
-            "source": "host CTRL classification+host_threads.archived+host_threads.updated_at_ms",
+            "source": "host manifest admission+host_threads.archived+host_threads.updated_at_ms",
         })
         self.assertEqual(saved["active_ctrl"], False)
         self.assertEqual(saved["ordering"]["position"], 1)
@@ -6260,10 +6481,15 @@ class SwarmConsoleTests(unittest.TestCase):
 
         overview = console.build_overview(self.codex_home, self.config)
         ids = {node["id"] for node in overview["nodes"]}
-        self.assertNotIn("specialist-parent", ids)
-        self.assertNotIn("specialist", ids)
+        self.assertIn("specialist-parent", ids)
+        self.assertIn("specialist", ids)
+        self.assertTrue(all(
+            next(node for node in overview["nodes"] if node["id"] == node_id)["project_binding_state"] == "UNBOUND"
+            for node_id in ("specialist-parent", "specialist")
+        ))
         self.assertFalse(any(node["virtual"] for node in overview["nodes"]))
-        self.assertFalse(any(link["target"] in {"specialist-parent", "specialist"} for link in overview["links"]))
+        edge = next(link for link in overview["links"] if link["target"] == "specialist")
+        self.assertEqual((edge["source"], edge["status"]), ("specialist-parent", "open"))
 
     def test_standalone_formatted_task_without_spawn_edge_is_visible_at_project_level(self) -> None:
         now = 2_000_000_000_000
@@ -6287,10 +6513,11 @@ class SwarmConsoleTests(unittest.TestCase):
         self.assertEqual(orphan["project"], "beta")
         self.assertIsNone(orphan["parent_id"])
         self.assertEqual(orphan["controller_ids"], [])
-        self.assertNotIn("unformatted", {node["id"] for node in overview["nodes"]})
+        unformatted = next(node for node in overview["nodes"] if node["id"] == "unformatted")
+        self.assertEqual((unformatted["project_id"], unformatted["controller_ids"]), (orphan["project_id"], []))
         self.assertFalse(any("orphan-task" in (link["source"], link["target"]) for link in overview["links"]))
         self.assertFalse(any(node["virtual"] for node in overview["nodes"]))
-        self.assertEqual(next(project for project in overview["projects"] if project["id"] == orphan["project_id"])["nodes"], 1)
+        self.assertEqual(next(project for project in overview["projects"] if project["id"] == orphan["project_id"])["nodes"], 2)
 
     def test_health_copy_is_product_facing_without_a_watchdog_surface(self) -> None:
         app = (console.STATIC_ROOT / "app.js").read_text(encoding="utf-8")

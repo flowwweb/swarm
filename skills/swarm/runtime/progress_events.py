@@ -76,7 +76,7 @@ CUSTODY_FIELDS = frozenset({"surface", "receipt_id"})
 TOPOLOGY_FIELDS = frozenset({
     "node_kind", "input_receipt_ids", "dispatch_receipt_id",
     "completion_receipt_id", "cost_receipt_ids", "release_receipt_ids", "role_manifest",
-    "agent_manifest", "task_manifest", "routing_evidence",
+    "agent_manifest", "task_manifest", "routing_evidence", "task_creation_binding",
 })
 ROUTING_EVIDENCE_FIELDS = frozenset({"disposition", "route", "selected_owner", "selected_task_id", "project_active", "release_event", "scope", "critical_path", "recovery"})
 ROUTING_SCOPE_FIELDS = frozenset({"goal_id", "request_id", "task_id", "mutable_surface", "owner_id"})
@@ -90,6 +90,16 @@ ROLE_MANIFEST_FIELDS = frozenset({
     "accent", "lucide_icon", "version", "source", "provenance",
 })
 ROLE_PAYLOAD_FIELDS = frozenset({"role_id", "expected_active_version", "assignment_task_id", "manifest"})
+TASK_CREATION_BINDING_FIELDS = frozenset({
+    "operation_id", "project_id", "root_digest", "task_id", "role_manifest_ref",
+    "parent_edge", "receipts",
+})
+TASK_CREATION_PARENT_FIELDS = frozenset({"state", "parent_task_id"})
+TASK_CREATION_RECEIPT_FIELDS = frozenset({
+    "topology_manifest_receipt_id", "task_receipt_id", "milestone_receipts",
+    "block_receipts", "explicit_empty_work_receipt_id",
+})
+TASK_CREATION_ITEM_RECEIPT_FIELDS = frozenset({"id", "receipt_id"})
 MANIFEST_ENVELOPE_FIELDS = frozenset({
     "schema", "schema_version", "manifest_id", "manifest_version",
     "supersedes_digest", "project_id", "ctrl_id", "manifest_digest",
@@ -97,8 +107,17 @@ MANIFEST_ENVELOPE_FIELDS = frozenset({
 ROLE_MANIFEST_REF_FIELDS = frozenset({"manifest_id", "manifest_version", "manifest_digest"})
 AGENT_MANIFEST_FIELDS = MANIFEST_ENVELOPE_FIELDS | frozenset({
     "agent_id", "display_name", "title", "profession", "structural_role",
-    "avatar_selection", "role_manifest_ref",
+    "avatar_selection", "role_manifest_ref", "routines",
 })
+AGENT_ROUTINE_FIELDS = frozenset({
+    "routine_id", "agent_id", "host_automation_id", "prompt_digest",
+    "schedule", "schedule_digest", "disposition",
+})
+AGENT_ROUTINE_SCHEDULE_FIELDS = frozenset({"kind", "rrule", "timezone"})
+AGENT_ROUTINE_SCHEDULE_KINDS = frozenset({"cron", "heartbeat"})
+AGENT_ROUTINE_DISPOSITIONS = frozenset({"ENABLED", "DISABLED"})
+MAX_AGENT_ROUTINES = 64
+MAX_ROUTINE_PROMPT_BYTES = 16 * 1024
 TASK_POLICY_FIELDS = frozenset({
     "presentation_priority", "weighted_progress", "expected_update_interval_minutes",
     "amber_freshness_multiplier", "red_freshness_multiplier",
@@ -828,6 +847,7 @@ class ProgressMaterialEvent:
     agent_manifest: dict[str, Any] | None
     task_manifest: dict[str, Any] | None
     routing_evidence: dict[str, Any] | None
+    task_creation_binding: dict[str, Any] | None
     expected_observation: dict[str, Any] | None
     digest: str
     semantic_digest: str
@@ -903,6 +923,8 @@ class ProgressMaterialEvent:
                 payload["topology"]["task_manifest"] = self.task_manifest
             if self.routing_evidence is not None:
                 payload["topology"]["routing_evidence"] = self.routing_evidence
+            if self.task_creation_binding is not None:
+                payload["topology"]["task_creation_binding"] = self.task_creation_binding
         if self.expected_observation is not None:
             payload["expected_observation"] = self.expected_observation
         return payload
@@ -1089,6 +1111,95 @@ def _validate_role_manifest_ref(payload: Any) -> dict[str, str]:
     }
 
 
+def _routine_prompt_digest(prompt: Any) -> str:
+    if not isinstance(prompt, str) or not prompt.strip() or "\x00" in prompt:
+        raise ProgressEventError("routine prompt must be nonempty text without NUL bytes")
+    try:
+        encoded = prompt.encode("utf-8")
+    except UnicodeEncodeError as error:
+        raise ProgressEventError("routine prompt must be valid UTF-8 text") from error
+    if len(encoded) > MAX_ROUTINE_PROMPT_BYTES:
+        raise ProgressEventError("routine prompt exceeds the byte limit")
+    return f"sha256:{hashlib.sha256(encoded).hexdigest()}"
+
+
+def _validate_agent_routine_schedule(payload: Any) -> dict[str, Any]:
+    if not isinstance(payload, dict):
+        raise ProgressEventError("routine schedule metadata must be an object")
+    _exact_fields(payload, AGENT_ROUTINE_SCHEDULE_FIELDS, "routine schedule metadata")
+    if not isinstance(payload.get("kind"), str) or payload["kind"] not in AGENT_ROUTINE_SCHEDULE_KINDS:
+        raise ProgressEventError("routine schedule kind is unsupported")
+    if not isinstance(payload.get("rrule"), str):
+        raise ProgressEventError("routine schedule rrule must be text")
+    timezone = payload.get("timezone")
+    if timezone is not None and not isinstance(timezone, str):
+        raise ProgressEventError("routine schedule timezone must be text or null")
+    return {
+        "kind": payload["kind"],
+        "rrule": _manifest_text(payload["rrule"], "routine schedule rrule", 512),
+        "timezone": None if timezone is None else _manifest_text(timezone, "routine schedule timezone", 64),
+    }
+
+
+def _routine_schedule_digest(schedule: Mapping[str, Any]) -> str:
+    encoded = json.dumps(dict(schedule), ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return f"sha256:{hashlib.sha256(encoded).hexdigest()}"
+
+
+def _validate_agent_routine(payload: Any, agent_id: str) -> dict[str, Any]:
+    if not isinstance(payload, dict):
+        raise ProgressEventError("agent routine must be an object")
+    _exact_fields(payload, AGENT_ROUTINE_FIELDS, "agent routine")
+    _reject_manifest_runtime_fields(payload)
+    schedule = _validate_agent_routine_schedule(payload.get("schedule"))
+    routine = {
+        "routine_id": _manifest_id(payload.get("routine_id"), "routine_id"),
+        "agent_id": _manifest_id(payload.get("agent_id"), "routine agent_id"),
+        "host_automation_id": _manifest_id(payload.get("host_automation_id"), "host_automation_id"),
+        "prompt_digest": _manifest_digest(payload.get("prompt_digest"), "routine prompt digest"),
+        "schedule": schedule,
+        "schedule_digest": _manifest_digest(payload.get("schedule_digest"), "routine schedule digest"),
+        "disposition": str(payload.get("disposition") or ""),
+    }
+    if routine["agent_id"] != agent_id:
+        raise ProgressEventError("routine agent_id must match its agent manifest")
+    if routine["schedule_digest"] != _routine_schedule_digest(schedule):
+        raise ProgressEventError("routine schedule digest does not match canonical metadata")
+    if routine["disposition"] not in AGENT_ROUTINE_DISPOSITIONS:
+        raise ProgressEventError("routine disposition must be ENABLED or DISABLED")
+    return routine
+
+
+def _validate_agent_routines(payload: Any, agent_id: str) -> list[dict[str, Any]]:
+    if not isinstance(payload, list) or len(payload) > MAX_AGENT_ROUTINES:
+        raise ProgressEventError("agent routines must be a bounded array")
+    routines = sorted((_validate_agent_routine(item, agent_id) for item in payload), key=lambda item: item["routine_id"])
+    routine_ids = [item["routine_id"] for item in routines]
+    automation_ids = [item["host_automation_id"] for item in routines]
+    if len(routine_ids) != len(set(routine_ids)):
+        raise ProgressEventError("agent routine identities must be unique")
+    if len(automation_ids) != len(set(automation_ids)):
+        raise ProgressEventError("one host automation cannot bind multiple agent routines")
+    return routines
+
+
+def build_agent_routine(
+    *, agent_id: str, routine_id: str, host_automation_id: str, prompt: str,
+    schedule: Mapping[str, Any], disposition: str = "ENABLED",
+) -> dict[str, Any]:
+    """Build a definition-only reference to one host-owned automation."""
+    normalized_schedule = _validate_agent_routine_schedule(dict(schedule) if isinstance(schedule, Mapping) else schedule)
+    return _validate_agent_routine({
+        "routine_id": routine_id,
+        "agent_id": agent_id,
+        "host_automation_id": host_automation_id,
+        "prompt_digest": _routine_prompt_digest(prompt),
+        "schedule": normalized_schedule,
+        "schedule_digest": _routine_schedule_digest(normalized_schedule),
+        "disposition": disposition,
+    }, _manifest_id(agent_id, "agent_id"))
+
+
 def validate_agent_manifest(payload: Any) -> dict[str, Any]:
     if not isinstance(payload, dict):
         raise ProgressEventError("agent manifest must be an object")
@@ -1104,6 +1215,8 @@ def validate_agent_manifest(payload: Any) -> dict[str, Any]:
         "avatar_selection": None if payload.get("avatar_selection") is None else _manifest_id(payload.get("avatar_selection"), "avatar_selection"),
         "role_manifest_ref": _validate_role_manifest_ref(payload.get("role_manifest_ref")),
     }
+    if "routines" in payload:
+        normalized["routines"] = _validate_agent_routines(payload["routines"], normalized["agent_id"])
     if not re.fullmatch(r"[a-z0-9][a-z0-9._-]{0,63}", normalized["profession"]):
         raise ProgressEventError("agent profession lookup key is invalid")
     if normalized["profession"] != normalized["role_manifest_ref"]["manifest_id"]:
@@ -1126,8 +1239,86 @@ def build_agent_manifest(**fields: Any) -> dict[str, Any]:
     payload.setdefault("schema_version", 1)
     payload.setdefault("manifest_version", "1")
     payload.setdefault("supersedes_digest", None)
+    payload["routines"] = _validate_agent_routines(payload.get("routines", []), _manifest_id(payload.get("agent_id"), "agent_id"))
     payload["manifest_digest"] = _canonical_manifest_digest(payload)
     return validate_agent_manifest(payload)
+
+
+def list_agent_routines(manifest: Mapping[str, Any]) -> list[dict[str, Any]]:
+    validated = validate_agent_manifest(dict(manifest))
+    return validated.get("routines", [])
+
+
+def bind_agent_routine_invocation(
+    manifest: Mapping[str, Any], *, invocation_id: str, agent_id: str,
+    routine_id: str, host_automation_id: str, prompt: str,
+    schedule: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Bind an invocation reference; execution remains in the existing host/ledger authorities."""
+    validated = validate_agent_manifest(dict(manifest))
+    bound_agent_id = _manifest_id(agent_id, "invocation agent_id")
+    if validated["agent_id"] != bound_agent_id:
+        raise ProgressEventError("routine invocation agent binding does not match the manifest")
+    wanted_id = _manifest_id(routine_id, "invocation routine_id")
+    routine = next((item for item in validated.get("routines", []) if item["routine_id"] == wanted_id), None)
+    if routine is None:
+        raise ProgressEventError("routine invocation references an unknown or removed routine")
+    if routine["disposition"] != "ENABLED":
+        raise ProgressEventError("disabled routine cannot bind an invocation")
+    normalized_schedule = _validate_agent_routine_schedule(dict(schedule) if isinstance(schedule, Mapping) else schedule)
+    if (
+        routine["host_automation_id"] != _manifest_id(host_automation_id, "invocation host_automation_id")
+        or routine["prompt_digest"] != _routine_prompt_digest(prompt)
+        or routine["schedule"] != normalized_schedule
+        or routine["schedule_digest"] != _routine_schedule_digest(normalized_schedule)
+    ):
+        raise ProgressEventError("routine invocation does not match its exact automation, prompt, and schedule binding")
+    binding = {
+        "schema": "swarm.agent_routine_invocation_binding",
+        "schema_version": 1,
+        "invocation_id": _manifest_id(invocation_id, "invocation_id"),
+        "agent_id": bound_agent_id,
+        "routine_id": wanted_id,
+        "host_automation_id": routine["host_automation_id"],
+        "prompt_digest": routine["prompt_digest"],
+        "schedule_digest": routine["schedule_digest"],
+    }
+    binding["binding_digest"] = _canonical_manifest_digest(binding)
+    return binding
+
+
+def _validate_agent_manifest_revision(
+    collection: Mapping[str, Any], state: Mapping[str, Any] | None, current: Mapping[str, Any],
+) -> None:
+    current_bindings = {item["host_automation_id"] for item in current.get("routines", [])}
+    for agent_id, retained_state in collection.items():
+        if agent_id == current["agent_id"]:
+            continue
+        if any(
+            routine["host_automation_id"] in current_bindings
+            for version in retained_state["versions"].values()
+            for routine in version.get("routines", [])
+        ):
+            raise ProgressEventError("host automation is already bound to another agent routine")
+    if state is None:
+        return
+    active = state["versions"][state["active_version"]]
+    active_ids = {item["routine_id"] for item in active.get("routines", [])}
+    historical_by_id: dict[str, str] = {}
+    historical_by_automation: dict[str, str] = {}
+    for version in state["versions"].values():
+        for routine in version.get("routines", []):
+            historical_by_id.setdefault(routine["routine_id"], routine["host_automation_id"])
+            historical_by_automation.setdefault(routine["host_automation_id"], routine["routine_id"])
+    for routine in current.get("routines", []):
+        routine_id = routine["routine_id"]
+        automation_id = routine["host_automation_id"]
+        if routine_id in historical_by_id and historical_by_id[routine_id] != automation_id:
+            raise ProgressEventError("routine identity cannot be rebound to another host automation")
+        if automation_id in historical_by_automation and historical_by_automation[automation_id] != routine_id:
+            raise ProgressEventError("host automation identity cannot be rebound to another routine")
+        if routine_id in historical_by_id and routine_id not in active_ids:
+            raise ProgressEventError("removed routine identity cannot be reactivated")
 
 
 def _validate_task_policy(payload: Any) -> dict[str, Any]:
@@ -1250,6 +1441,18 @@ def build_task_manifest(**fields: Any) -> dict[str, Any]:
     payload.setdefault("blocks", [])
     payload["manifest_digest"] = _canonical_manifest_digest(payload)
     return validate_task_manifest(payload)
+
+
+def validate_task_manifest_draft(payload: Any) -> dict[str, Any]:
+    """Validate immutable pre-dispatch fields without inventing a future host task ID."""
+    if not isinstance(payload, dict):
+        raise ProgressEventError("task manifest draft must be an object")
+    if "task_id" in payload or "manifest_digest" in payload:
+        raise ProgressEventError("task manifest draft cannot prebind a host task ID or digest")
+    expected = TASK_MANIFEST_FIELDS - {"task_id", "manifest_digest"}
+    _exact_fields(payload, expected, "task manifest draft")
+    validated = build_task_manifest(task_id="host-confirmed-task", **payload)
+    return {key: value for key, value in validated.items() if key not in {"task_id", "manifest_digest"}}
 
 
 def _validate_task_manifest_revision(previous: Mapping[str, Any] | None, current: Mapping[str, Any]) -> None:
@@ -1418,6 +1621,99 @@ def load_builtin_role_manifests(
     return tuple(manifests)
 
 
+def _validate_task_creation_binding(
+    payload: Any,
+    *,
+    role_manifest: Mapping[str, Any] | None,
+    task_manifest: Mapping[str, Any] | None,
+) -> dict[str, Any] | None:
+    if payload is None:
+        return None
+    if not isinstance(payload, dict):
+        raise ProgressEventError("task creation binding must be an object")
+    _exact_fields(payload, TASK_CREATION_BINDING_FIELDS, "task creation binding")
+    if role_manifest is None or task_manifest is None:
+        raise ProgressEventError("task creation binding requires exact role and task manifests")
+    operation_id = _safe_id(payload.get("operation_id"), "task creation operation_id")
+    project_id = _safe_id(payload.get("project_id"), "task creation project_id")
+    task_id = _safe_id(payload.get("task_id"), "task creation task_id")
+    root_digest = str(payload.get("root_digest") or "").lower()
+    if not re.fullmatch(r"[0-9a-f]{64}", root_digest):
+        raise ProgressEventError("task creation root_digest must be a SHA-256 digest")
+    role_ref = _validate_role_manifest_ref(payload.get("role_manifest_ref"))
+    if role_ref != role_manifest_reference(role_manifest):
+        raise ProgressEventError("task creation role reference does not bind the admitted role manifest")
+    if project_id != task_manifest["project_id"] or task_id != task_manifest["task_id"]:
+        raise ProgressEventError("task creation identity conflicts with the task manifest")
+
+    parent = payload.get("parent_edge")
+    if not isinstance(parent, dict):
+        raise ProgressEventError("task creation parent_edge must be an object")
+    _exact_fields(parent, TASK_CREATION_PARENT_FIELDS, "task creation parent_edge")
+    parent_state = str(parent.get("state") or "")
+    parent_task_id = parent.get("parent_task_id")
+    if parent_state == "OPEN":
+        if parent_task_id is not None:
+            raise ProgressEventError("open task creation parent edge cannot name a parent")
+    elif parent_state == "BOUND":
+        parent_task_id = _safe_id(parent_task_id, "task creation parent_task_id")
+        if parent_task_id == task_id:
+            raise ProgressEventError("task creation cannot be its own parent")
+    else:
+        raise ProgressEventError("task creation parent edge must be OPEN or BOUND")
+
+    receipts = payload.get("receipts")
+    if not isinstance(receipts, dict):
+        raise ProgressEventError("task creation receipts must be an object")
+    _exact_fields(receipts, TASK_CREATION_RECEIPT_FIELDS, "task creation receipts")
+
+    def item_receipts(value: Any, label: str) -> list[dict[str, str]]:
+        if not isinstance(value, list) or len(value) > 512:
+            raise ProgressEventError(f"{label} must be a bounded array")
+        result = []
+        for item in value:
+            if not isinstance(item, dict):
+                raise ProgressEventError(f"{label} item must be an object")
+            _exact_fields(item, TASK_CREATION_ITEM_RECEIPT_FIELDS, f"{label} item")
+            result.append({
+                "id": _safe_id(item.get("id"), f"{label} id"),
+                "receipt_id": _safe_id(item.get("receipt_id"), f"{label} receipt_id"),
+            })
+        if len({item["id"] for item in result}) != len(result) or len({item["receipt_id"] for item in result}) != len(result):
+            raise ProgressEventError(f"{label} identities must be unique")
+        return result
+
+    milestone_receipts = item_receipts(receipts.get("milestone_receipts"), "milestone receipts")
+    block_receipts = item_receipts(receipts.get("block_receipts"), "block receipts")
+    explicit_empty = receipts.get("explicit_empty_work_receipt_id")
+    if explicit_empty is not None:
+        explicit_empty = _safe_id(explicit_empty, "explicit empty work receipt_id")
+    milestone_ids = {item["milestone_id"] for item in task_manifest["milestones"]}
+    block_ids = {item["block_id"] for item in task_manifest["blocks"]}
+    if explicit_empty is not None:
+        if milestone_ids or block_ids or milestone_receipts or block_receipts:
+            raise ProgressEventError("explicit-empty work cannot carry milestone or BLOCK definitions or receipts")
+    elif not milestone_ids or not block_ids:
+        raise ProgressEventError("initial work requires milestone and BLOCK definitions")
+    elif {item["id"] for item in milestone_receipts} != milestone_ids or {item["id"] for item in block_receipts} != block_ids:
+        raise ProgressEventError("initial work receipts must exactly cover task milestones and BLOCKs")
+    return {
+        "operation_id": operation_id,
+        "project_id": project_id,
+        "root_digest": root_digest,
+        "task_id": task_id,
+        "role_manifest_ref": role_ref,
+        "parent_edge": {"state": parent_state, "parent_task_id": parent_task_id},
+        "receipts": {
+            "topology_manifest_receipt_id": _safe_id(receipts.get("topology_manifest_receipt_id"), "topology manifest receipt_id"),
+            "task_receipt_id": _safe_id(receipts.get("task_receipt_id"), "task receipt_id"),
+            "milestone_receipts": milestone_receipts,
+            "block_receipts": block_receipts,
+            "explicit_empty_work_receipt_id": explicit_empty,
+        },
+    }
+
+
 def _validate_progress_material_event(
     payload: Any,
     *,
@@ -1553,6 +1849,7 @@ def _validate_progress_material_event(
         role_payload = topology.get("role_manifest")
         agent_payload = topology.get("agent_manifest")
         task_payload = topology.get("task_manifest")
+        creation_payload = topology.get("task_creation_binding")
         routing_evidence = _validate_routing_evidence(topology.get("routing_evidence"))
     else:
         if topology is not None:
@@ -1566,6 +1863,7 @@ def _validate_progress_material_event(
         role_payload = None
         agent_payload = None
         task_payload = None
+        creation_payload = None
         routing_evidence = None
     role_kinds = {
         ProgressEventKind.ROLE_MANIFEST_CREATE,
@@ -1582,9 +1880,21 @@ def _validate_progress_material_event(
         assignment_task = _optional_id(role_payload.get("assignment_task_id"), "role assignment_task_id")
         raw_manifest = role_payload.get("manifest")
         manifest = _validate_role_manifest(raw_manifest)
-        if role_id != manifest["id"] or project_id != "swarm-role-manifests" or block_id != role_id:
+        creation_event = creation_payload is not None
+        if role_id != manifest["id"]:
             raise ProgressEventError("role manifest event identity is not server-bound")
-        if source != "swarm_runtime" or custody_surface != "server:role-manifests":
+        if creation_event:
+            if (
+                event_kind is not ProgressEventKind.ROLE_ASSIGNMENT_BOUND
+                or block_id != task_id
+                or topology_node_kind != "TASK"
+                or source != "swarm_execution_adapter"
+                or custody_surface != "ledger:host-task-creation"
+            ):
+                raise ProgressEventError("task creation role assignment is not host-confirmation-bound")
+        elif project_id != "swarm-role-manifests" or block_id != role_id:
+            raise ProgressEventError("role manifest event identity is not server-bound")
+        elif source != "swarm_runtime" or custody_surface != "server:role-manifests":
             raise ProgressEventError("role manifest event requires server runtime custody")
         if event_kind is ProgressEventKind.ROLE_MANIFEST_CREATE:
             valid = expected_version is None and assignment_task is None and manifest["source"] == "custom"
@@ -1625,25 +1935,52 @@ def _validate_progress_material_event(
         if agent_payload is not None:
             raise ProgressEventError("non-agent progress events cannot carry an agent manifest")
         agent_manifest = None
-    if event_kind is ProgressEventKind.TASK_MANIFEST_BOUND:
+    if event_kind is ProgressEventKind.TASK_MANIFEST_BOUND or (
+        event_kind is ProgressEventKind.ROLE_ASSIGNMENT_BOUND and creation_payload is not None
+    ):
         task_manifest = validate_task_manifest(task_payload)
-        if agent_payload is not None or role_payload is not None:
+        if agent_payload is not None or (role_payload is not None and creation_payload is None):
             raise ProgressEventError("task manifest events cannot carry another manifest payload")
-        if (
-            project_id != task_manifest["project_id"]
-            or ctrl_id != task_manifest["ctrl_id"]
-            or block_id != task_manifest["manifest_id"]
-            or task_id != task_manifest["task_id"]
-            or owner_id != task_manifest["ctrl_id"]
-            or topology_node_kind != "TASK"
-            or source != "swarm_runtime"
-            or custody_surface != "ledger:identity-manifests"
-        ):
+        creation_event = creation_payload is not None
+        if project_id != task_manifest["project_id"] or ctrl_id != task_manifest["ctrl_id"] or task_id != task_manifest["task_id"]:
+            raise ProgressEventError("task manifest event identity is not ledger-bound")
+        if creation_event:
+            valid_task_identity = (
+                block_id == task_id
+                and owner_id == task_manifest["ctrl_id"]
+                and topology_node_kind == "TASK"
+                and source == "swarm_execution_adapter"
+                and custody_surface == "ledger:host-task-creation"
+            )
+        else:
+            valid_task_identity = (
+                block_id == task_manifest["manifest_id"]
+                and owner_id == task_manifest["ctrl_id"]
+                and topology_node_kind == "TASK"
+                and source == "swarm_runtime"
+                and custody_surface == "ledger:identity-manifests"
+            )
+        if not valid_task_identity:
             raise ProgressEventError("task manifest event identity is not ledger-bound")
     else:
         if task_payload is not None:
             raise ProgressEventError("non-task progress events cannot carry a task manifest")
         task_manifest = None
+    task_creation_binding = _validate_task_creation_binding(
+        creation_payload, role_manifest=None if role_manifest is None else role_manifest["manifest"],
+        task_manifest=task_manifest,
+    )
+    if task_creation_binding is not None:
+        parent = task_creation_binding["parent_edge"]
+        expected_parent = parent["parent_task_id"] if parent["state"] == "BOUND" else None
+        if (
+            task_creation_binding["operation_id"] != event_id
+            or dedupe_key != event_id
+            or task_creation_binding["project_id"] != project_id
+            or task_creation_binding["task_id"] != task_id
+            or parent_block_id != expected_parent
+        ):
+            raise ProgressEventError("task creation binding conflicts with the topology event")
     if routing_evidence is not None:
         measurement = payload.get("measurement")
         if measurement_state is not ProgressMeasurementState.UNMEASURED or committed_weight is not None or admitted_proof_weight or proof_receipt_ids or material_update_sentence is not None:
@@ -1655,10 +1992,12 @@ def _validate_progress_material_event(
     canonical = dict(payload)
     if role_manifest is not None:
         canonical["topology"] = {**topology, "role_manifest": role_manifest}
-    elif agent_manifest is not None:
-        canonical["topology"] = {**topology, "agent_manifest": agent_manifest}
-    elif task_manifest is not None:
-        canonical["topology"] = {**topology, "task_manifest": task_manifest}
+    if agent_manifest is not None:
+        canonical["topology"] = {**canonical["topology"], "agent_manifest": agent_manifest}
+    if task_manifest is not None:
+        canonical["topology"] = {**canonical["topology"], "task_manifest": task_manifest}
+    if task_creation_binding is not None:
+        canonical["topology"] = {**canonical["topology"], "task_creation_binding": task_creation_binding}
     if expected_observation is None:
         canonical.pop("expected_observation", None)
     else:
@@ -1703,6 +2042,7 @@ def _validate_progress_material_event(
         agent_manifest=agent_manifest,
         task_manifest=task_manifest,
         routing_evidence=routing_evidence,
+        task_creation_binding=task_creation_binding,
         expected_observation=expected_observation,
         digest=hashlib.sha256(encoded).hexdigest(),
         semantic_digest=semantic_digest,
@@ -1801,6 +2141,77 @@ def identity_manifest_event(
     return validate_progress_material_event(payload).canonical_payload()
 
 
+def task_creation_binding_event(
+    *, operation_id: str, project_id: str, root_digest: str, ctrl_id: str,
+    task_id: str, role_manifest: Mapping[str, Any], task_manifest: Mapping[str, Any],
+    parent_task_id: str | None, topology_manifest_receipt_id: str, task_receipt_id: str,
+    milestone_receipts: list[Mapping[str, Any]], block_receipts: list[Mapping[str, Any]],
+    explicit_empty_work_receipt_id: str | None, host_result_receipt_id: str,
+    observed_at_ms: int, independent_host_task: bool = False,
+) -> dict[str, Any] | None:
+    """Compose one host-confirmed creation record; independent host tasks stay unassigned."""
+    if not isinstance(independent_host_task, bool):
+        raise ProgressEventError("independent_host_task must be boolean")
+    if independent_host_task:
+        return None
+    role = validate_role_manifest(dict(role_manifest))
+    task = validate_task_manifest(dict(task_manifest))
+    operation_id = _safe_id(operation_id, "task creation operation_id")
+    task_id = _safe_id(task_id, "task creation task_id")
+    host_result_receipt_id = _safe_id(host_result_receipt_id, "host result receipt_id")
+    parent = None if parent_task_id is None else _safe_id(parent_task_id, "task creation parent_task_id")
+    receipts = {
+        "topology_manifest_receipt_id": topology_manifest_receipt_id,
+        "task_receipt_id": task_receipt_id,
+        "milestone_receipts": [dict(item) for item in milestone_receipts],
+        "block_receipts": [dict(item) for item in block_receipts],
+        "explicit_empty_work_receipt_id": explicit_empty_work_receipt_id,
+    }
+    input_receipts = [
+        host_result_receipt_id, topology_manifest_receipt_id, task_receipt_id,
+        *(item.get("receipt_id") for item in milestone_receipts),
+        *(item.get("receipt_id") for item in block_receipts),
+    ]
+    if explicit_empty_work_receipt_id is not None:
+        input_receipts.append(explicit_empty_work_receipt_id)
+    payload = {
+        "schema_version": 2, "event_id": operation_id, "dedupe_key": operation_id,
+        "portfolio_id": "swarm", "project_id": project_id, "ctrl_id": ctrl_id,
+        "milestone_id": "task-creation", "block_id": task_id, "task_id": task_id,
+        "owner_id": ctrl_id, "scope_version": 1, "parent_block_id": parent,
+        "dependency_ids": [],
+        "lineage": {"predecessor_block_ids": [], "split_from": None, "merged_from": []},
+        "event_kind": "ROLE_ASSIGNMENT_BOUND", "lifecycle_state": "ACTIVE",
+        "measurement": {"state": "UNMEASURED", "committed_weight": None, "admitted_proof_weight": 0, "basis_receipt_ids": []},
+        "proof": {"required_classes": [], "receipt_ids": [], "claim_limit": "Host-confirmed creation binds identity and initial work only; it is not progress or acceptance proof."},
+        "eta": {"start_ms": None, "end_ms": None, "confidence": None, "basis_receipt_ids": []},
+        "rework": {"attempt": 1, "count": 0, "invalidated_receipt_ids": []},
+        "custody": {"surface": "ledger:host-task-creation", "receipt_id": host_result_receipt_id},
+        "steering_receipt_ids": [], "material_update_sentence": None, "flags": [],
+        "provenance": f"host-confirmed-task-creation:{operation_id}",
+        "source": "swarm_execution_adapter", "observed_at_ms": observed_at_ms,
+        "causation_id": None, "parent_event_id": None,
+        "topology": {
+            "node_kind": "TASK", "input_receipt_ids": input_receipts,
+            "dispatch_receipt_id": host_result_receipt_id, "completion_receipt_id": None,
+            "cost_receipt_ids": [], "release_receipt_ids": [],
+            "role_manifest": {
+                "role_id": role["id"], "expected_active_version": role["version"],
+                "assignment_task_id": task_id, "manifest": role,
+            },
+            "task_manifest": task,
+            "task_creation_binding": {
+                "operation_id": operation_id, "project_id": project_id,
+                "root_digest": root_digest, "task_id": task_id,
+                "role_manifest_ref": role_manifest_reference(role),
+                "parent_edge": {"state": "OPEN" if parent is None else "BOUND", "parent_task_id": parent},
+                "receipts": receipts,
+            },
+        },
+    }
+    return validate_progress_material_event(payload).canonical_payload()
+
+
 def _empty_progress_projection() -> dict[str, Any]:
     return {
         "schema_version": 1,
@@ -1815,6 +2226,8 @@ def _empty_progress_projection() -> dict[str, Any]:
         "role_assignments": {},
         "agent_manifests": {},
         "task_manifests": {},
+        "task_creation_bindings": {},
+        "task_creation_operations_by_task": {},
         "request_event_digests": {},
         "request_dedupe_digests": {},
         "request_lifecycles": {},
@@ -2111,7 +2524,9 @@ class Ledger:
                 raise ProgressEventError("manifest version conflicts with retained content")
             return
         previous = None if state is None else state["versions"][state["active_version"]]
-        if not is_agent:
+        if is_agent:
+            _validate_agent_manifest_revision(collection, state, manifest)
+        else:
             _validate_task_manifest_revision(previous, manifest)
         if state is None:
             if version != "1" or manifest["supersedes_digest"] is not None:
@@ -2127,6 +2542,43 @@ class Ledger:
         state["active_version"] = version
         state["active_digest"] = digest
         state["events"].append({"event_id": event.event_id, "event_seq": event_seq})
+
+    @staticmethod
+    def _apply_task_creation_binding(projection: dict[str, Any], event: ProgressMaterialEvent, event_seq: int) -> None:
+        binding = event.task_creation_binding
+        if binding is None:
+            return
+        operation_id = binding["operation_id"]
+        command = projection["connector_receipts"].get(operation_id)
+        if command is None or not command["terminal"] or not command["receipts"]:
+            raise ProgressEventError("task creation requires a retained terminal connector command")
+        result = command["receipts"][-1]
+        _, _, project_id, root_digest, action = command["identity"]
+        if (
+            result["status"] != "RESULT"
+            or action not in {"MANUAL_AGENT", "TOPOLOGY_MATERIALIZE"}
+            or project_id != binding["project_id"]
+            or root_digest != binding["root_digest"]
+            or result["thread_id"] != binding["task_id"]
+            or result["observed_root_digest"] != binding["root_digest"]
+            or result["receipt_id"] != event.custody_receipt_id
+        ):
+            raise ProgressEventError("task creation conflicts with retained host confirmation")
+        task_operation = projection["task_creation_operations_by_task"].get(binding["task_id"])
+        if task_operation is not None and task_operation != operation_id:
+            raise ProgressEventError("host task is already bound to another creation operation")
+        parent = binding["parent_edge"]
+        if (
+            parent["state"] == "BOUND"
+            and parent["parent_task_id"] != event.ctrl_id
+            and parent["parent_task_id"] not in projection["task_creation_operations_by_task"]
+        ):
+            raise ProgressEventError("bound task creation parent lacks strict persisted creation authority")
+        projection["task_creation_bindings"][operation_id] = {
+            **binding, "event_id": event.event_id, "event_seq": event_seq,
+            "event_digest": event.digest,
+        }
+        projection["task_creation_operations_by_task"][binding["task_id"]] = operation_id
 
     @staticmethod
     def _apply_topology_record(projection: dict[str, Any], event: ProgressMaterialEvent, event_seq: int) -> None:
@@ -2159,6 +2611,7 @@ class Ledger:
         if conflict is not None:
             projection["topology_conflicts"].append(conflict)
         else:
+            Ledger._apply_task_creation_binding(projection, event, event_seq)
             Ledger._apply_role_payload(projection, event, event_seq)
             Ledger._apply_identity_payload(projection, event, event_seq)
             if event.material_update_sentence is not None:
@@ -2653,6 +3106,51 @@ class Ledger:
             self._condition.notify_all()
         return {"status": "appended", "cursor": projection["cursor"], "event_digest": event_digest, "bytes": len(line)}
 
+    def append_connector_result_with_task_creation(
+        self, result_payload: Mapping[str, Any], creation_payload: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        """Commit one connector RESULT and its creation binding under the same Ledger lock."""
+        result = _validate_connector_receipt(dict(result_payload))
+        creation = validate_progress_material_event(dict(creation_payload))
+        if result["status"] != "RESULT" or creation.task_creation_binding is None:
+            raise ProgressEventError("atomic task creation requires connector RESULT and creation binding")
+        if result["receipt_id"] != creation.custody_receipt_id:
+            raise ProgressEventError("task creation custody does not bind the connector RESULT")
+        result_digest = _connector_receipt_digest(result)
+        with self._state.locked():
+            projection, records = self._replay_unlocked()
+            retained_result = projection["connector_receipt_ids"].get(result["receipt_id"])
+            retained_creation = projection["events"].get(creation.event_id)
+            if retained_result is not None and retained_result != result_digest:
+                raise ProgressEventError("connector receipt_id conflicts with retained event")
+            if retained_creation is not None and retained_creation != creation.digest:
+                raise ProgressEventError("task creation operation conflicts with retained binding")
+            if retained_result is not None and retained_creation is not None:
+                return {"status": "unchanged", "cursor": projection["cursor"], "event_digest": creation.digest}
+            trial = json.loads(json.dumps(projection, sort_keys=True))
+            lines: list[bytes] = []
+            if retained_result is None:
+                result_seq = len(records) + 1
+                self._apply_connector_receipt(trial, result, result_seq, result_digest)
+                lines.append(json.dumps(
+                    {"event_seq": result_seq, "event_digest": result_digest, "event": result},
+                    ensure_ascii=False, sort_keys=True, separators=(",", ":"),
+                ).encode("utf-8") + b"\n")
+            creation_seq = len(records) + len(lines) + 1
+            self._apply(trial, creation, creation_seq)
+            lines.append(json.dumps(
+                self._record(creation, creation_seq), ensure_ascii=False,
+                sort_keys=True, separators=(",", ":"),
+            ).encode("utf-8") + b"\n")
+            self._state.path.parent.mkdir(parents=True, exist_ok=True)
+            encoded = b"".join(lines)
+            with self._state.path.open("ab") as handle:
+                handle.write(encoded); handle.flush(); os.fsync(handle.fileno())
+            self._write_projection_unlocked(trial)
+        with self._condition:
+            self._condition.notify_all()
+        return {"status": "appended", "cursor": trial["cursor"], "event_digest": creation.digest, "bytes": len(encoded)}
+
     def reserve_connector_command(self, payload: Mapping[str, Any], *, expected_revision: int) -> dict[str, Any]:
         event = _validate_connector_receipt(dict(payload))
         if event["status"] != "COMMAND" or event["receipt_index"] != 0:
@@ -2847,6 +3345,22 @@ class Ledger:
         with self._state.locked():
             projection, _ = self._replay_unlocked()
         return self._project_role_manifests_from_projection(projection, builtins)
+
+    def project_task_creation_bindings(self, project_id: str | None = None) -> dict[str, Any]:
+        """Project only strict host-confirmed creation records; unbound host tasks remain absent."""
+        selected_project = None if project_id is None else _safe_id(project_id, "project_id")
+        with self._state.locked():
+            projection, _ = self._replay_unlocked()
+        bindings = [
+            dict(binding) for binding in projection["task_creation_bindings"].values()
+            if selected_project is None or binding["project_id"] == selected_project
+        ]
+        return {
+            "schema_version": 1,
+            "bindings": sorted(bindings, key=lambda item: (item["event_seq"], item["operation_id"])),
+            "cursor": projection["cursor"],
+            "claim_limit": "Only retained connector-confirmed task creation is projected; titles, paths, cwd, profession labels, and independent host tasks never backfill authority.",
+        }
 
     @staticmethod
     def _project_role_manifests_from_projection(

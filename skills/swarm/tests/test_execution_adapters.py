@@ -59,7 +59,7 @@ from skills.swarm.runtime import (
     UniversalHQConnector,
     route_execution,
 )
-from skills.swarm.runtime.progress_events import Ledger
+from skills.swarm.runtime.progress_events import Ledger, build_task_manifest, load_builtin_role_manifests
 
 
 class FakeCodexTransport:
@@ -346,7 +346,7 @@ class ExecutionAdapterTests(unittest.TestCase):
         import tempfile
         from pathlib import Path
         material = HQDispatchMaterial("C:/work/project-a", b"Materialize one authorized lane.")
-        envelope = HQCommandEnvelope("hq-new", "key-new", HQCommandAction.MANUAL_AGENT, "project-a", "a" * 64, "ctrl-a", HQTargetIntent.NEW_THREAD, "", material.digest, 0, 1, 100)
+        envelope = HQCommandEnvelope("hq-new", "key-new", HQCommandAction.MANUAL_AGENT, "project-a", "a" * 64, "ctrl-a", HQTargetIntent.NEW_THREAD, "", material.digest, 0, 1, 100, task_creation={"independent_host_task": True})
         transport = FakeCodexTransport()
         connector = self.connector(transport, material)
         with tempfile.TemporaryDirectory() as directory:
@@ -375,12 +375,126 @@ class ExecutionAdapterTests(unittest.TestCase):
             replayed = Ledger(Path(directory)).replay()
             self.assertNotIn(material.instruction, repr(replayed))
             self.assertEqual([item["status"] for item in replayed["connector_receipts"]["key-new"]["receipts"]], ["COMMAND", "ACKNOWLEDGED", "RESULT"])
+            self.assertEqual(ledger.project_task_creation_bindings()["bindings"], [])
+
+    def test_bound_new_thread_creation_is_digest_immutable_and_reconciles_once(self) -> None:
+        import tempfile
+        from pathlib import Path
+        repository = Path(__file__).resolve().parents[3]
+        role = next(item for item in load_builtin_role_manifests(
+            repository / "skills" / "swarm" / "roles",
+            repository / "skills" / "swarm" / "assets" / "role-avatars",
+        ) if item["id"] == "developer")
+        task = build_task_manifest(
+            manifest_id="task-manifest:pending", task_id="discarded-after-validation", task_name="Bound task",
+            project_id="project-a", ctrl_id="ctrl-a",
+        )
+        task_draft = {key: value for key, value in task.items() if key not in {"task_id", "manifest_digest"}}
+        contract = {
+            "role_manifest": role, "task_manifest_draft": task_draft, "parent_task_id": None,
+            "topology_manifest_receipt_id": "topology-receipt", "task_receipt_id": "task-receipt",
+            "milestone_receipts": [], "block_receipts": [],
+            "explicit_empty_work_receipt_id": "explicit-empty-receipt", "independent_host_task": False,
+        }
+        material = HQDispatchMaterial("C:/work/project-a", b"Create one role-bound task.")
+        envelope = HQCommandEnvelope(
+            "hq-bound", "key-bound", HQCommandAction.MANUAL_AGENT, "project-a", "a" * 64,
+            "ctrl-a", HQTargetIntent.NEW_THREAD, "", material.digest, 0, 1, 100,
+            task_creation=contract,
+        )
+        retained_digest = envelope.digest
+        contract["task_manifest_draft"]["task_name"] = "Caller mutation"
+        contract["role_manifest"]["id"] = "wrong"
+        self.assertEqual(envelope.digest, retained_digest)
+        self.assertEqual(envelope.task_creation_contract()["task_manifest_draft"]["task_name"], "Bound task")
+
+        transport = FakeCodexTransport([
+            {"threadId": "thread-unpredictable-9", "cwd": "C:/work/project-a"},
+            {"threadId": "thread-unpredictable-9"},
+        ], reconciliations=[{"threadId": "thread-unpredictable-9", "turnId": "turn-1", "cwd": "C:/work/project-a"}])
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            ledger = Ledger(root)
+            first = self.connector(transport, material).execute(
+                envelope, self.explicit(envelope), ledger, now_ms=2,
+                observed_project_id="project-a", observed_root_digest="a" * 64,
+            )
+            self.assertEqual((first.status, first.attention), ("PENDING", "HOST_TURN_OUTCOME_PENDING"))
+            self.assertEqual(ledger.project_task_creation_bindings()["bindings"], [])
+
+            changed_contract = envelope.task_creation_contract()
+            changed_contract["task_receipt_id"] = "changed-receipt"
+            changed = HQCommandEnvelope(
+                "hq-bound", "key-bound", HQCommandAction.MANUAL_AGENT, "project-a", "a" * 64,
+                "ctrl-a", HQTargetIntent.NEW_THREAD, "", material.digest, 0, 1, 100,
+                task_creation=changed_contract,
+            )
+            with self.assertRaisesRegex(InvariantError, "reservation conflicts"):
+                self.connector(transport, material).execute(
+                    changed, self.explicit(changed), Ledger(root), now_ms=3,
+                    observed_project_id="project-a", observed_root_digest="a" * 64,
+                )
+            self.assertEqual(Ledger(root).project_task_creation_bindings()["bindings"], [])
+
+            restarted = UniversalHQConnector(
+                CodexAppServerAdapter(transport=transport),
+                authorization_verifier=FakeHQAuthorizationVerifier(False),
+                material_resolver=UnavailableHQMaterialResolver(), root_verifier=FakeHQRootVerifier(),
+            )
+            completed = restarted.execute(
+                envelope, self.explicit(envelope), Ledger(root), now_ms=3,
+                observed_project_id="project-a", observed_root_digest="a" * 64,
+            )
+            self.assertEqual((completed.status, completed.thread_id), ("RESULT", "thread-unpredictable-9"))
+            replay = restarted.execute(
+                envelope, self.explicit(envelope), Ledger(root), now_ms=4,
+                observed_project_id="project-a", observed_root_digest="a" * 64,
+            )
+            self.assertEqual(replay.status, "REPLAY")
+            projection = Ledger(root).project_task_creation_bindings("project-a")
+            self.assertEqual(len(projection["bindings"]), 1)
+            self.assertEqual(projection["bindings"][0]["task_id"], "thread-unpredictable-9")
+            persisted_task = Ledger(root).project_identity_manifests(
+                "project-a", "ctrl-a", load_builtin_role_manifests(
+                    repository / "skills" / "swarm" / "roles",
+                    repository / "skills" / "swarm" / "assets" / "role-avatars",
+                ),
+            )["tasks"][0]["manifest"]
+            self.assertEqual(persisted_task["task_id"], "thread-unpredictable-9")
+            self.assertNotIn("discarded-after-validation", (root / "swarm" / "progress-ledger.jsonl").read_text(encoding="utf-8"))
+            self.assertEqual([item["status"] for item in Ledger(root).replay()["connector_receipts"]["key-bound"]["receipts"]], ["COMMAND", "ACKNOWLEDGED", "RESULT"])
+
+        for action, intent in (
+            (HQCommandAction.TASK, HQTargetIntent.EXISTING_THREAD),
+            (HQCommandAction.AUTO, HQTargetIntent.EXISTING_THREAD),
+            (HQCommandAction.LOCAL_HQ, HQTargetIntent.LOCAL),
+        ):
+            with self.subTest(action=action), self.assertRaisesRegex(InvariantError, "creation contract"):
+                HQCommandEnvelope(
+                    f"bad-{action.value}", f"bad-key-{action.value}", action, "project-a", "a" * 64,
+                    "ctrl-a" if action is not HQCommandAction.LOCAL_HQ else "", intent,
+                    "thread-1" if intent is HQTargetIntent.EXISTING_THREAD else "", material.digest,
+                    0, 1, 100, task_creation={"independent_host_task": True},
+                )
+        with self.assertRaisesRegex(InvariantError, "requires one explicit"):
+            HQCommandEnvelope(
+                "missing", "missing-key", HQCommandAction.MANUAL_AGENT, "project-a", "a" * 64,
+                "ctrl-a", HQTargetIntent.NEW_THREAD, "", material.digest, 0, 1, 100,
+            )
+        prebound = envelope.task_creation_contract()
+        prebound["task_manifest_draft"]["task_id"] = "caller-guessed-host-id"
+        with self.assertRaisesRegex(InvariantError, "canonical JSON"):
+            HQCommandEnvelope(
+                "prebound", "prebound-key", HQCommandAction.MANUAL_AGENT, "project-a", "a" * 64,
+                "ctrl-a", HQTargetIntent.NEW_THREAD, "", material.digest, 0, 1, 100,
+                task_creation=prebound,
+            )
 
     def test_thread_start_response_cannot_fabricate_turn_completion(self) -> None:
         import tempfile
         from pathlib import Path
         material = HQDispatchMaterial("C:/work/project-a", b"Start a thread before a turn.")
-        envelope = HQCommandEnvelope("hq-thread-only", "key-thread-only", HQCommandAction.MANUAL_AGENT, "project-a", "a" * 64, "ctrl-a", HQTargetIntent.NEW_THREAD, "", material.digest, 0, 1, 100)
+        envelope = HQCommandEnvelope("hq-thread-only", "key-thread-only", HQCommandAction.MANUAL_AGENT, "project-a", "a" * 64, "ctrl-a", HQTargetIntent.NEW_THREAD, "", material.digest, 0, 1, 100, task_creation={"independent_host_task": True})
         transport = FakeCodexTransport([{"threadId": "thread-1", "turnId": "turn-fabricated", "cwd": "C:/work/project-a"}])
         with tempfile.TemporaryDirectory() as directory:
             ledger = Ledger(Path(directory))
@@ -445,17 +559,17 @@ class ExecutionAdapterTests(unittest.TestCase):
         material = HQDispatchMaterial("C:/work/project-a", b"Reject conflicting host identity.")
         cases = (
             (
-                HQCommandEnvelope("hq-alias", "key-alias", HQCommandAction.MANUAL_AGENT, "project-a", "a" * 64, "ctrl-a", HQTargetIntent.NEW_THREAD, "", material.digest, 0, 1, 100),
+                HQCommandEnvelope("hq-alias", "key-alias", HQCommandAction.MANUAL_AGENT, "project-a", "a" * 64, "ctrl-a", HQTargetIntent.NEW_THREAD, "", material.digest, 0, 1, 100, task_creation={"independent_host_task": True}),
                 [{"threadId": "thread-1", "thread": {"id": "thread-2"}, "cwd": "C:/work/project-a"}],
                 ["COMMAND"],
             ),
             (
-                HQCommandEnvelope("hq-type", "key-type", HQCommandAction.MANUAL_AGENT, "project-a", "a" * 64, "ctrl-a", HQTargetIntent.NEW_THREAD, "", material.digest, 0, 1, 100),
+                HQCommandEnvelope("hq-type", "key-type", HQCommandAction.MANUAL_AGENT, "project-a", "a" * 64, "ctrl-a", HQTargetIntent.NEW_THREAD, "", material.digest, 0, 1, 100, task_creation={"independent_host_task": True}),
                 [{"thread": {"id": 7}, "cwd": "C:/work/project-a"}],
                 ["COMMAND"],
             ),
             (
-                HQCommandEnvelope("hq-turn-alias", "key-turn-alias", HQCommandAction.MANUAL_AGENT, "project-a", "a" * 64, "ctrl-a", HQTargetIntent.NEW_THREAD, "", material.digest, 0, 1, 100),
+                HQCommandEnvelope("hq-turn-alias", "key-turn-alias", HQCommandAction.MANUAL_AGENT, "project-a", "a" * 64, "ctrl-a", HQTargetIntent.NEW_THREAD, "", material.digest, 0, 1, 100, task_creation={"independent_host_task": True}),
                 [{"thread": {"id": "thread-1"}, "cwd": "C:/work/project-a"}, {"turnId": "turn-1", "turn": {"id": "turn-2"}}],
                 ["COMMAND", "ACKNOWLEDGED"],
             ),
@@ -606,7 +720,7 @@ class ExecutionAdapterTests(unittest.TestCase):
         import tempfile
         from pathlib import Path
         material = HQDispatchMaterial("C:/work/project-a", b"Start then reconcile.")
-        envelope = HQCommandEnvelope("hq-pending", "key-pending", HQCommandAction.MANUAL_AGENT, "project-a", "a" * 64, "ctrl-a", HQTargetIntent.NEW_THREAD, "", material.digest, 0, 1, 2)
+        envelope = HQCommandEnvelope("hq-pending", "key-pending", HQCommandAction.MANUAL_AGENT, "project-a", "a" * 64, "ctrl-a", HQTargetIntent.NEW_THREAD, "", material.digest, 0, 1, 2, task_creation={"independent_host_task": True})
         transport = FakeCodexTransport([
             {"thread": {"id": "thread-1"}, "cwd": "C:/work/project-a"},
             {"threadId": "thread-1"},

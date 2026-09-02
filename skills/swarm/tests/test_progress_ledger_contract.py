@@ -19,17 +19,21 @@ from skills.swarm.runtime.progress_events import (
     ProgressEventError,
     ProgressLifecycle,
     ProgressLedger,
+    bind_agent_routine_invocation,
     build_agent_manifest,
+    build_agent_routine,
     build_role_manifest,
     build_task_manifest,
     identity_manifest_event,
     load_builtin_role_avatar_assets,
     load_builtin_role_manifests,
+    list_agent_routines,
     request_blocked_release_binding,
     resolve_role_avatar,
     resolve_role_lucide_icon,
     role_manifest_reference,
     role_material_event,
+    task_creation_binding_event,
     task_handoff_host_binding,
     validate_progress_material_event,
     validate_agent_manifest,
@@ -1107,6 +1111,354 @@ class ProgressLedgerContractTests(unittest.TestCase):
         mismatch = next(item for item in projected["agents"] if item["manifest"]["agent_id"] == "agent-mismatch")
         self.assertEqual(mismatch["binding_state"], "UNKNOWN")
         self.assertIsNone(mismatch["resolved_lucide_icon"])
+
+    def test_host_confirmed_task_creation_binding_is_atomic_idempotent_and_restart_safe(self) -> None:
+        role = next(item for item in self.role_manifests() if item["id"] == "developer")
+
+        def task(task_id: str, *, empty: bool = False) -> dict:
+            milestones = [] if empty else [{
+                "milestone_id": f"{task_id}-milestone", "order": 0, "title": "Implement",
+                "verification_policy": "source-contract", "supersedes_milestone_id": None,
+            }]
+            blocks = [] if empty else [{
+                "block_id": f"{task_id}-block", "milestone_id": f"{task_id}-milestone",
+                "order": 0, "title": "Build the bounded slice", "verification_policy": "source-contract",
+                "estimate_minutes": 30, "weight": None, "supersedes_block_id": None,
+            }]
+            return build_task_manifest(
+                manifest_id=f"task-manifest:{task_id}", task_id=task_id, task_name=f"Task {task_id}",
+                project_id="project-alpha", ctrl_id="ctrl-alpha", milestones=milestones, blocks=blocks,
+            )
+
+        def confirm(ledger: ProgressLedger, operation_id: str, task_id: str) -> dict:
+            base = {
+                "schema_version": 1, "record_type": "CONNECTOR", "command_id": f"command:{operation_id}",
+                "idempotency_key": operation_id, "command_digest": "a" * 64,
+                "project_id": "project-alpha", "root_digest": "b" * 64,
+                "action": "MANUAL_AGENT", "thread_id": None, "turn_id": None,
+                "observed_root_digest": None,
+            }
+            ledger.append_connector_receipt({**base, "receipt_id": f"{operation_id}:command", "receipt_index": 0, "status": "COMMAND", "observed_at_ms": 1})
+            ledger.append_connector_receipt({**base, "receipt_id": f"{operation_id}:ack", "receipt_index": 1, "status": "ACKNOWLEDGED", "thread_id": task_id, "observed_root_digest": "b" * 64, "observed_at_ms": 2})
+            return {**base, "receipt_id": f"{operation_id}:result", "receipt_index": 2, "status": "RESULT", "thread_id": task_id, "turn_id": f"turn:{task_id}", "observed_root_digest": "b" * 64, "observed_at_ms": 3}
+
+        def binding(operation_id: str, manifest: dict, result_id: str, *, parent: str | None = None) -> dict:
+            milestone_receipts = [{"id": item["milestone_id"], "receipt_id": f"receipt:{item['milestone_id']}"} for item in manifest["milestones"]]
+            block_receipts = [{"id": item["block_id"], "receipt_id": f"receipt:{item['block_id']}"} for item in manifest["blocks"]]
+            event = task_creation_binding_event(
+                operation_id=operation_id, project_id="project-alpha", root_digest="b" * 64,
+                ctrl_id="ctrl-alpha", task_id=manifest["task_id"], role_manifest=role,
+                task_manifest=manifest, parent_task_id=parent,
+                topology_manifest_receipt_id=f"{operation_id}:topology", task_receipt_id=f"{operation_id}:task",
+                milestone_receipts=milestone_receipts, block_receipts=block_receipts,
+                explicit_empty_work_receipt_id=f"{operation_id}:empty" if not manifest["milestones"] else None,
+                host_result_receipt_id=result_id, observed_at_ms=4,
+            )
+            assert event is not None
+            return event
+
+        root_task = task("task-root")
+        root_result = confirm(self.ledger, "create-root", root_task["task_id"])
+        event = binding("create-root", root_task, root_result["receipt_id"])
+        first = self.ledger.append_connector_result_with_task_creation(root_result, event)
+        duplicate = self.ledger.append_connector_result_with_task_creation(root_result, event)
+        self.assertEqual((first["status"], duplicate["status"]), ("appended", "unchanged"))
+        projected = self.ledger.project_task_creation_bindings("project-alpha")
+        self.assertEqual(len(projected["bindings"]), 1)
+        self.assertEqual(projected["bindings"][0]["role_manifest_ref"], role_manifest_reference(role))
+        self.assertEqual(projected["bindings"][0]["parent_edge"], {"state": "OPEN", "parent_task_id": None})
+        self.assertEqual(self.ledger.project_role_manifests(self.role_manifests())["assignments"][0]["manifest_version"], role["version"])
+        self.assertEqual(self.ledger.project_identity_manifests("project-alpha", "ctrl-alpha", self.role_manifests())["tasks"][0]["manifest"], root_task)
+        self.assertEqual(self.host_ledger(self.root).project_task_creation_bindings("project-alpha"), projected)
+
+        child = task("task-child", empty=True)
+        child_result = confirm(self.ledger, "create-child", child["task_id"])
+        child_event = binding("create-child", child, child_result["receipt_id"], parent="task-root")
+        self.assertEqual(self.ledger.append_connector_result_with_task_creation(child_result, child_event)["status"], "appended")
+        child_binding = self.ledger.project_task_creation_bindings("project-alpha")["bindings"][1]
+        self.assertEqual(child_binding["parent_edge"], {"state": "BOUND", "parent_task_id": "task-root"})
+        self.assertEqual(child_binding["receipts"]["explicit_empty_work_receipt_id"], "create-child:empty")
+
+        conflicting_task = task("task-conflict")
+        with self.assertRaisesRegex(ProgressEventError, "identity conflicts"):
+            self.ledger.append(binding("create-root", conflicting_task, root_result["receipt_id"]))
+        duplicate_task_result = confirm(self.ledger, "create-root-again", root_task["task_id"])
+        with self.assertRaisesRegex(ProgressEventError, "another creation operation"):
+            self.ledger.append_connector_result_with_task_creation(
+                duplicate_task_result,
+                binding("create-root-again", root_task, duplicate_task_result["receipt_id"]),
+            )
+
+        revised = build_role_manifest(
+            "developer", self.role_draft(role, accent="#123456"), "user_override", ["host:revision"],
+        )
+        self.ledger.append(role_material_event(
+            "ROLE_MANIFEST_REVISE", event_id="developer-revision", dedupe_key="developer-revision",
+            role_id="developer", manifest=revised, expected_active_version=role["version"],
+            assignment_task_id=None, provenance="host:revision", observed_at_ms=5,
+        ))
+        assignments = {item["task_id"]: item for item in self.ledger.project_role_manifests(self.role_manifests())["assignments"]}
+        self.assertEqual(assignments["task-root"]["manifest_version"], role["version"])
+        self.assertEqual(assignments["task-child"]["manifest_version"], role["version"])
+
+    def test_task_creation_binding_fails_closed_without_strict_complete_host_authority(self) -> None:
+        role = next(item for item in self.role_manifests() if item["id"] == "developer")
+        manifest = build_task_manifest(
+            manifest_id="task-manifest:hostile", task_id="task-hostile", task_name="Hostile",
+            project_id="project-alpha", ctrl_id="ctrl-alpha",
+            milestones=[{"milestone_id": "m", "order": 0, "title": "M", "verification_policy": "source", "supersedes_milestone_id": None}],
+            blocks=[{"block_id": "b", "milestone_id": "m", "order": 0, "title": "B", "verification_policy": "source", "estimate_minutes": 1, "weight": None, "supersedes_block_id": None}],
+        )
+
+        def build(**changes: object) -> dict | None:
+            arguments = {
+                "operation_id": "create-hostile", "project_id": "project-alpha", "root_digest": "b" * 64,
+                "ctrl_id": "ctrl-alpha", "task_id": "task-hostile", "role_manifest": role,
+                "task_manifest": manifest, "parent_task_id": None,
+                "topology_manifest_receipt_id": "topology-receipt", "task_receipt_id": "task-receipt",
+                "milestone_receipts": [{"id": "m", "receipt_id": "milestone-receipt"}],
+                "block_receipts": [{"id": "b", "receipt_id": "block-receipt"}],
+                "explicit_empty_work_receipt_id": None, "host_result_receipt_id": "host-result",
+                "observed_at_ms": 4, "independent_host_task": False,
+                **changes,
+            }
+            return task_creation_binding_event(**arguments)
+
+        self.assertIsNone(build(independent_host_task=True))
+        event = build()
+        assert event is not None
+        with self.assertRaisesRegex(ProgressEventError, "retained terminal connector"):
+            self.ledger.append(event)
+        self.assertEqual(self.ledger.project_task_creation_bindings()["bindings"], [])
+
+        for change in (
+            {"root_digest": "not-a-digest"},
+            {"role_manifest": {**role, "id": "wrong"}},
+            {"task_id": "wrong-task"},
+            {"milestone_receipts": []},
+            {"block_receipts": []},
+            {"explicit_empty_work_receipt_id": "cannot-mix"},
+        ):
+            with self.subTest(change=change), self.assertRaises(ProgressEventError):
+                build(**change)
+
+        missing = json.loads(json.dumps(event))
+        missing["topology"].pop("role_manifest")
+        with self.assertRaisesRegex(ProgressEventError, "typed role payload"):
+            validate_progress_material_event(missing)
+        for field in ("task_manifest", "task_creation_binding"):
+            incomplete = json.loads(json.dumps(event))
+            incomplete["topology"].pop(field)
+            with self.subTest(missing=field), self.assertRaises(ProgressEventError):
+                validate_progress_material_event(incomplete)
+        for field in ("project_id", "root_digest", "parent_edge", "receipts"):
+            incomplete = json.loads(json.dumps(event))
+            incomplete["topology"]["task_creation_binding"].pop(field)
+            with self.subTest(missing=field), self.assertRaises(ProgressEventError):
+                validate_progress_material_event(incomplete)
+        inferred = json.loads(json.dumps(event))
+        inferred["topology"]["task_creation_binding"]["title"] = "Developer in cwd project-alpha"
+        with self.assertRaisesRegex(ProgressEventError, "unsupported field"):
+            validate_progress_material_event(inferred)
+
+    def test_agent_routines_add_list_revise_disable_remove_and_replay_without_prompt_disclosure(self) -> None:
+        builtins = self.role_manifests()
+        role = next(item for item in builtins if item["id"] == "developer")
+        schedule = {"kind": "cron", "rrule": "FREQ=DAILY;BYHOUR=9", "timezone": "Asia/Bangkok"}
+        secret_prompt = "Review private customer notes and return only the safe action."
+        root = build_agent_manifest(
+            manifest_id="agent-manifest:routines", agent_id="agent-routines",
+            project_id="project-alpha", ctrl_id="ctrl-alpha", display_name="Routine agent",
+            title="Operations", profession="developer", structural_role="LEAD",
+            avatar_selection="canonical", role_manifest_ref=role_manifest_reference(role),
+        )
+
+        def append(manifest: dict, version: int) -> None:
+            self.assertEqual(self.ledger.append(identity_manifest_event(
+                manifest, event_id=f"routine-manifest-{version}", dedupe_key=f"routine-manifest-{version}",
+                observed_at_ms=version, provenance="host-routine-binding",
+            ))["status"], "appended")
+
+        append(root, 1)
+        routine = build_agent_routine(
+            agent_id="agent-routines", routine_id="daily-review",
+            host_automation_id="host-automation-42", prompt=secret_prompt, schedule=schedule,
+        )
+        added = build_agent_manifest(**{
+            **root, "manifest_version": "2", "supersedes_digest": root["manifest_digest"],
+            "routines": [routine],
+        })
+        append(added, 2)
+        self.assertEqual(list_agent_routines(added), [routine])
+        projected = self.ledger.project_identity_manifests("project-alpha", "ctrl-alpha", builtins)
+        self.assertEqual(projected["agents"][0]["manifest"]["routines"], [routine])
+        self.assertNotIn(secret_prompt, json.dumps(projected, sort_keys=True))
+        self.assertNotIn(secret_prompt, (self.root / PROGRESS_LEDGER_PATH).read_text(encoding="utf-8"))
+        self.assertNotIn(secret_prompt, (self.root / PROGRESS_PROJECTION_PATH).read_text(encoding="utf-8"))
+
+        binding = bind_agent_routine_invocation(
+            added, invocation_id="invocation-1", agent_id="agent-routines",
+            routine_id="daily-review", host_automation_id="host-automation-42",
+            prompt=secret_prompt, schedule=schedule,
+        )
+        self.assertEqual(binding, bind_agent_routine_invocation(
+            added, invocation_id="invocation-1", agent_id="agent-routines",
+            routine_id="daily-review", host_automation_id="host-automation-42",
+            prompt=secret_prompt, schedule=schedule,
+        ))
+        self.assertEqual(set(binding), {
+            "schema", "schema_version", "invocation_id", "agent_id", "routine_id",
+            "host_automation_id", "prompt_digest", "schedule_digest", "binding_digest",
+        })
+        self.assertEqual(set(routine), {
+            "routine_id", "agent_id", "host_automation_id", "prompt_digest",
+            "schedule", "schedule_digest", "disposition",
+        })
+
+        revised_prompt = "Review the notes and return the single safest next action."
+        revised_schedule = {"kind": "cron", "rrule": "FREQ=DAILY;BYHOUR=10", "timezone": "Asia/Bangkok"}
+        revised_routine = build_agent_routine(
+            agent_id="agent-routines", routine_id="daily-review",
+            host_automation_id="host-automation-42", prompt=revised_prompt, schedule=revised_schedule,
+        )
+        revised = build_agent_manifest(**{
+            **added, "manifest_version": "3", "supersedes_digest": added["manifest_digest"],
+            "routines": [revised_routine],
+        })
+        append(revised, 3)
+        disabled = build_agent_manifest(**{
+            **revised, "manifest_version": "4", "supersedes_digest": revised["manifest_digest"],
+            "routines": [{**revised_routine, "disposition": "DISABLED"}],
+        })
+        append(disabled, 4)
+        with self.assertRaisesRegex(ProgressEventError, "disabled routine"):
+            bind_agent_routine_invocation(
+                disabled, invocation_id="invocation-disabled", agent_id="agent-routines",
+                routine_id="daily-review", host_automation_id="host-automation-42",
+                prompt=revised_prompt, schedule=revised_schedule,
+            )
+        removed = build_agent_manifest(**{
+            **disabled, "manifest_version": "5", "supersedes_digest": disabled["manifest_digest"],
+            "routines": [],
+        })
+        append(removed, 5)
+        with self.assertRaisesRegex(ProgressEventError, "unknown or removed"):
+            bind_agent_routine_invocation(
+                removed, invocation_id="invocation-removed", agent_id="agent-routines",
+                routine_id="daily-review", host_automation_id="host-automation-42",
+                prompt=revised_prompt, schedule=revised_schedule,
+            )
+        restarted = ProgressLedger(self.root).project_identity_manifests("project-alpha", "ctrl-alpha", builtins)
+        self.assertEqual(restarted["agents"][0]["manifest"]["routines"], [])
+        self.assertEqual(restarted, self.ledger.project_identity_manifests("project-alpha", "ctrl-alpha", builtins))
+
+    def test_agent_routines_reject_hostile_bindings_and_identity_reuse(self) -> None:
+        role = next(item for item in self.role_manifests() if item["id"] == "developer")
+        schedule = {"kind": "heartbeat", "rrule": "FREQ=HOURLY", "timezone": "UTC"}
+        prompt = "Inspect the existing request and report material progress."
+        routine = build_agent_routine(
+            agent_id="agent-routines", routine_id="pulse", host_automation_id="automation-pulse",
+            prompt=prompt, schedule=schedule,
+        )
+        root = build_agent_manifest(
+            manifest_id="agent-manifest:routines", agent_id="agent-routines",
+            project_id="project-alpha", ctrl_id="ctrl-alpha", display_name="Routine agent",
+            title="Operations", profession="developer", structural_role="LEAD",
+            avatar_selection="canonical", role_manifest_ref=role_manifest_reference(role), routines=[routine],
+        )
+        self.ledger.append(identity_manifest_event(
+            root, event_id="routine-root", dedupe_key="routine-root", observed_at_ms=1, provenance="host",
+        ))
+
+        for changes, message in (
+            ({"agent_id": "agent-other"}, "agent binding"),
+            ({"host_automation_id": "automation-other"}, "exact automation"),
+            ({"prompt": "Different prompt"}, "exact automation"),
+            ({"schedule": {"kind": "heartbeat", "rrule": "FREQ=DAILY", "timezone": "UTC"}}, "exact automation"),
+            ({"routine_id": "unknown"}, "unknown or removed"),
+        ):
+            arguments = {
+                "invocation_id": "hostile", "agent_id": "agent-routines", "routine_id": "pulse",
+                "host_automation_id": "automation-pulse", "prompt": prompt, "schedule": schedule,
+                **changes,
+            }
+            with self.subTest(changes=changes), self.assertRaisesRegex(ProgressEventError, message):
+                bind_agent_routine_invocation(root, **arguments)
+
+        for bad_prompt in (None, "", "\x00", "x" * (16 * 1024 + 1)):
+            with self.subTest(prompt=type(bad_prompt).__name__), self.assertRaises(ProgressEventError):
+                build_agent_routine(
+                    agent_id="agent-routines", routine_id="bad", host_automation_id="automation-bad",
+                    prompt=bad_prompt, schedule=schedule,
+                )
+        for bad_schedule in (
+            None,
+            {"kind": "timer", "rrule": "FREQ=DAILY", "timezone": "UTC"},
+            {"kind": "cron", "rrule": 5, "timezone": "UTC"},
+            {"kind": "cron", "rrule": "FREQ=DAILY", "timezone": "UTC", "next_run": 10},
+        ):
+            with self.subTest(schedule=bad_schedule), self.assertRaises(ProgressEventError):
+                build_agent_routine(
+                    agent_id="agent-routines", routine_id="bad", host_automation_id="automation-bad",
+                    prompt=prompt, schedule=bad_schedule,
+                )
+
+        other = build_agent_routine(
+            agent_id="agent-routines", routine_id="other", host_automation_id="automation-other",
+            prompt=prompt, schedule=schedule,
+        )
+        for routines, message in (
+            ([routine, routine], "identities must be unique"),
+            ([routine, {**other, "host_automation_id": routine["host_automation_id"]}], "cannot bind multiple"),
+            ([{**routine, "agent_id": "agent-other"}], "must match its agent manifest"),
+        ):
+            with self.subTest(message=message), self.assertRaisesRegex(ProgressEventError, message):
+                build_agent_manifest(**{**root, "routines": routines})
+
+        before = self.ledger.replay()
+        rebound = build_agent_manifest(**{
+            **root, "manifest_version": "2", "supersedes_digest": root["manifest_digest"],
+            "routines": [build_agent_routine(
+                agent_id="agent-routines", routine_id="pulse", host_automation_id="automation-rebound",
+                prompt=prompt, schedule=schedule,
+            )],
+        })
+        with self.assertRaisesRegex(ProgressEventError, "cannot be rebound"):
+            self.ledger.append(identity_manifest_event(
+                rebound, event_id="routine-rebound", dedupe_key="routine-rebound", observed_at_ms=2, provenance="host",
+            ))
+        self.assertEqual(self.ledger.replay(), before)
+
+        shared_automation = build_agent_manifest(
+            manifest_id="agent-manifest:shared-automation", agent_id="agent-other",
+            project_id="project-alpha", ctrl_id="ctrl-alpha", display_name="Other routine agent",
+            title="Other operations", profession="developer", structural_role="LEAD",
+            avatar_selection="canonical", role_manifest_ref=role_manifest_reference(role),
+            routines=[build_agent_routine(
+                agent_id="agent-other", routine_id="other-pulse", host_automation_id="automation-pulse",
+                prompt=prompt, schedule=schedule,
+            )],
+        )
+        with self.assertRaisesRegex(ProgressEventError, "already bound to another agent routine"):
+            self.ledger.append(identity_manifest_event(
+                shared_automation, event_id="routine-shared-automation", dedupe_key="routine-shared-automation",
+                observed_at_ms=2, provenance="host",
+            ))
+        self.assertEqual(self.ledger.replay(), before)
+
+        removed = build_agent_manifest(**{
+            **root, "manifest_version": "2", "supersedes_digest": root["manifest_digest"], "routines": [],
+        })
+        self.ledger.append(identity_manifest_event(
+            removed, event_id="routine-removed", dedupe_key="routine-removed", observed_at_ms=2, provenance="host",
+        ))
+        reactivated = build_agent_manifest(**{
+            **removed, "manifest_version": "3", "supersedes_digest": removed["manifest_digest"], "routines": [routine],
+        })
+        with self.assertRaisesRegex(ProgressEventError, "cannot be reactivated"):
+            self.ledger.append(identity_manifest_event(
+                reactivated, event_id="routine-reactivated", dedupe_key="routine-reactivated", observed_at_ms=3, provenance="host",
+            ))
 
     def test_identity_definitions_never_materialize_observed_topology(self) -> None:
         builtins = self.role_manifests()
