@@ -6,7 +6,7 @@ host task state.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import InitVar, dataclass, field
 from enum import StrEnum
 from hashlib import sha256
 import json
@@ -25,6 +25,7 @@ from .core import (
     TaskState,
 )
 from .topology import TopologyDispatchPacket
+from .progress_events import build_task_manifest, task_creation_binding_event, validate_task_manifest_draft
 
 
 _DIGEST_CHARS = frozenset("0123456789abcdef")
@@ -92,6 +93,11 @@ HQ_ACTION_CAPABILITIES = {
     HQCommandAction.REPAIR: (("thread.resume", "turn.steer"), HQTargetIntent.EXISTING_THREAD),
     HQCommandAction.LOCAL_HQ: (("local",), HQTargetIntent.LOCAL),
 }
+HQ_TASK_CREATION_FIELDS = frozenset({
+    "role_manifest", "task_manifest_draft", "parent_task_id", "topology_manifest_receipt_id",
+    "task_receipt_id", "milestone_receipts", "block_receipts",
+    "explicit_empty_work_receipt_id", "independent_host_task",
+})
 
 
 @dataclass(frozen=True)
@@ -110,9 +116,11 @@ class HQCommandEnvelope:
     expires_at_ms: int
     target_turn_id: str = ""
     acknowledgement_required: bool = True
+    task_creation: InitVar[Mapping[str, object] | None] = None
+    _task_creation_json: str = field(init=False, repr=False, default="")
     digest: str = field(init=False)
 
-    def __post_init__(self) -> None:
+    def __post_init__(self, task_creation: Mapping[str, object] | None) -> None:
         for value, label in ((self.command_id, "HQ command"), (self.idempotency_key, "HQ idempotency key"), (self.project_id, "HQ project")):
             _text(value, label)
         if not isinstance(self.action, HQCommandAction) or not isinstance(self.target_intent, HQTargetIntent):
@@ -132,18 +140,56 @@ class HQCommandEnvelope:
             raise InvariantError("only repair commands may name an active turn")
         object.__setattr__(self, "root_digest", _digest(self.root_digest, "HQ root"))
         object.__setattr__(self, "payload_digest", _digest(self.payload_digest, "HQ payload"))
+        creates_task = self.target_intent is HQTargetIntent.NEW_THREAD and self.action in {
+            HQCommandAction.MANUAL_AGENT, HQCommandAction.TOPOLOGY_MATERIALIZE,
+        }
+        if creates_task != (task_creation is not None):
+            raise InvariantError("new-thread creation requires one explicit task creation contract")
+        if task_creation is not None:
+            if not isinstance(task_creation, Mapping):
+                raise InvariantError("task creation contract must be an object")
+            if task_creation.get("independent_host_task") is True:
+                if set(task_creation) != {"independent_host_task"}:
+                    raise InvariantError("independent host task contract must remain anonymous and unassigned")
+            elif set(task_creation) != HQ_TASK_CREATION_FIELDS or task_creation.get("independent_host_task") is not False:
+                raise InvariantError("bound task creation contract is incomplete or malformed")
+            try:
+                normalized = dict(task_creation)
+                if normalized.get("independent_host_task") is False:
+                    draft = validate_task_manifest_draft(normalized["task_manifest_draft"])
+                    normalized["task_manifest_draft"] = draft
+                    final = build_task_manifest(task_id="host-confirmed-task", **draft)
+                    task_creation_binding_event(
+                        operation_id=self.idempotency_key, project_id=self.project_id,
+                        root_digest=self.root_digest, ctrl_id=self.ctrl_id,
+                        task_id="host-confirmed-task", task_manifest=final,
+                        host_result_receipt_id="host-result", observed_at_ms=1,
+                        **{key: value for key, value in normalized.items() if key not in {"task_manifest_draft", "independent_host_task"}},
+                    )
+                task_creation_json = json.dumps(normalized, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
+            except (TypeError, ValueError, KeyError) as error:
+                raise InvariantError("task creation contract must be canonical JSON") from error
+            if len(task_creation_json.encode("utf-8")) > 32_768:
+                raise InvariantError("task creation contract exceeds the size guard")
+            object.__setattr__(self, "_task_creation_json", task_creation_json)
         if not isinstance(self.expected_ledger_revision, int) or isinstance(self.expected_ledger_revision, bool) or self.expected_ledger_revision < 0:
             raise InvariantError("HQ expected Ledger revision must be nonnegative")
         if not isinstance(self.submitted_at_ms, int) or isinstance(self.submitted_at_ms, bool) or self.submitted_at_ms < 0 or not isinstance(self.expires_at_ms, int) or isinstance(self.expires_at_ms, bool) or self.expires_at_ms < self.submitted_at_ms or self.acknowledgement_required is not True:
             raise InvariantError("HQ command requires bounded submission, expiry, and acknowledgement")
-        object.__setattr__(self, "digest", _canonical_digest({
+        digest_payload = {
             "command_id": self.command_id, "idempotency_key": self.idempotency_key, "action": self.action.value,
             "project_id": self.project_id, "root_digest": self.root_digest, "ctrl_id": self.ctrl_id,
             "target_intent": self.target_intent.value, "target_thread_id": self.target_thread_id,
             "target_turn_id": self.target_turn_id,
             "payload_digest": self.payload_digest, "expected_ledger_revision": self.expected_ledger_revision,
             "submitted_at_ms": self.submitted_at_ms, "expires_at_ms": self.expires_at_ms, "acknowledgement_required": True,
-        }))
+        }
+        if self._task_creation_json:
+            digest_payload["task_creation_json"] = self._task_creation_json
+        object.__setattr__(self, "digest", _canonical_digest(digest_payload))
+
+    def task_creation_contract(self) -> dict[str, object] | None:
+        return json.loads(self._task_creation_json) if self._task_creation_json else None
 
 
 @dataclass(frozen=True, repr=False)
@@ -387,13 +433,34 @@ class UniversalHQConnector:
     def _append_complete(self, envelope: HQCommandEnvelope, ledger: object, *, now_ms: int, thread_id: str, turn_id: str, observed_root_digest: str, ack_exists: bool) -> HQConnectorResult:
         if not ack_exists:
             ledger.append_connector_receipt(self._receipt(envelope, receipt_id=f"{envelope.command_id}-ack", index=1, status="ACKNOWLEDGED", observed_at_ms=now_ms, thread_id=thread_id, observed_root_digest=observed_root_digest))
-        ledger.append_connector_receipt(self._receipt(envelope, receipt_id=f"{envelope.command_id}-result", index=2, status="RESULT", observed_at_ms=now_ms, thread_id=thread_id, turn_id=turn_id, observed_root_digest=observed_root_digest))
+        result = self._receipt(envelope, receipt_id=f"{envelope.command_id}-result", index=2, status="RESULT", observed_at_ms=now_ms, thread_id=thread_id, turn_id=turn_id, observed_root_digest=observed_root_digest)
+        contract = envelope.task_creation_contract()
+        if contract is None or contract.get("independent_host_task") is True:
+            ledger.append_connector_receipt(result)
+        else:
+            draft = contract.pop("task_manifest_draft")
+            creation = task_creation_binding_event(
+                operation_id=envelope.idempotency_key, project_id=envelope.project_id,
+                root_digest=envelope.root_digest, ctrl_id=envelope.ctrl_id,
+                task_id=thread_id, host_result_receipt_id=str(result["receipt_id"]),
+                observed_at_ms=now_ms, task_manifest=build_task_manifest(task_id=thread_id, **draft),
+                **contract,
+            )
+            if creation is None:
+                raise InvariantError("bound task creation contract cannot project as independent")
+            ledger.append_connector_result_with_task_creation(result, creation)
         return HQConnectorResult("RESULT", envelope.digest, thread_id, turn_id, observed_root_digest)
 
     def _reconcile(self, envelope: HQCommandEnvelope, ledger: object, command: Mapping[str, object], *, now_ms: int) -> HQConnectorResult:
         receipts = self._receipts(command)
         terminal = receipts[-1] if receipts and str(receipts[-1].get("status") or "") in {"RESULT", "UNSUPPORTED"} else None
         if terminal is not None:
+            if terminal["status"] == "RESULT" and envelope.task_creation_contract() is not None:
+                self._append_complete(
+                    envelope, ledger, now_ms=int(terminal["observed_at_ms"]),
+                    thread_id=str(terminal["thread_id"] or ""), turn_id=str(terminal["turn_id"] or ""),
+                    observed_root_digest=str(terminal["observed_root_digest"] or ""), ack_exists=True,
+                )
             return HQConnectorResult(
                 "REPLAY",
                 str(terminal.get("command_digest") or ""),
@@ -465,8 +532,10 @@ class UniversalHQConnector:
             thread_id, turn_id, _ = self._require_host_binding(response, envelope, thread_id=thread_id, require_turn=True)
         except Exception:
             return HQConnectorResult("PENDING", envelope.digest, thread_id, attention="HOST_TURN_OUTCOME_PENDING")
-        ledger.append_connector_receipt(self._receipt(envelope, receipt_id=f"{envelope.command_id}-result", index=2, status="RESULT", observed_at_ms=now_ms, thread_id=thread_id, turn_id=turn_id, observed_root_digest=verified_root_digest))
-        return HQConnectorResult("RESULT", envelope.digest, thread_id, turn_id, verified_root_digest)
+        return self._append_complete(
+            envelope, ledger, now_ms=now_ms, thread_id=thread_id, turn_id=turn_id,
+            observed_root_digest=verified_root_digest, ack_exists=True,
+        )
 
 
 @dataclass(frozen=True)

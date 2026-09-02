@@ -58,6 +58,9 @@ from runtime.progress_events import (  # noqa: E402
     build_role_manifest,
     load_builtin_role_avatar_assets,
     load_builtin_role_manifests,
+    resolve_role_avatar,
+    resolve_role_lucide_icon,
+    role_manifest_reference,
     role_material_event,
     validate_progress_pulse,
 )
@@ -237,7 +240,9 @@ STATIC_FILES = {
     "/assets/swarm-guided-tour-role-group.png": ("swarm-guided-tour-role-group.png", "image/png"),
     "/assets/swarm-guided-tour-project-tool.png": ("swarm-guided-tour-project-tool.png", "image/png"),
     "/assets/swarm-offline-disconnected.png": ("swarm-offline-disconnected.png", "image/png"),
+    "/assets/swarm-offline-disconnected.webp": ("swarm-offline-disconnected.webp", "image/webp"),
     "/assets/swarm-state-mascot-concerned.png": ("swarm-state-mascot-concerned.png", "image/png"),
+    "/assets/swarm-state-mascot-concerned.webp": ("swarm-state-mascot-concerned.webp", "image/webp"),
 }
 STATIC_ASSETS = {
     "/assets/swarm-wordmark.png": (
@@ -385,7 +390,7 @@ class CodexStdioBridge:
         inbox: queue.Queue[object] = queue.Queue()
         try:
             process = self._process_factory(
-                list(self.adapter.entrypoint), cwd=str(cwd), stdin=subprocess.PIPE,
+                ["codex", "app-server", "--listen", "stdio://"], cwd=str(cwd), stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True,
                 encoding="utf-8", shell=False, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
             )
@@ -6796,11 +6801,13 @@ def _thread_project_bindings(
     parent_by_child: dict[str, str],
     projects: dict[str, dict[str, Any]],
     project_roots: tuple[tuple[str, str], ...],
-) -> dict[str, dict[str, Any]]:
+) -> tuple[dict[str, dict[str, Any]], dict[str, str]]:
     bindings: dict[str, dict[str, Any]] = {}
+    states: dict[str, str] = {}
     blocked: set[str] = set()
     for thread_id, row in rows.items():
         project, state = _canonical_project_binding(row, projects, project_roots)
+        states[thread_id] = state
         if project is not None:
             bindings[thread_id] = project
         elif state in {"stale", "conflicted"}:
@@ -6816,15 +6823,84 @@ def _thread_project_bindings(
                 break
             if parent in bindings:
                 bindings[thread_id] = bindings[parent]
+                states[thread_id] = "open_spawn_parent"
                 break
             parent = parent_by_child.get(parent)
-    return bindings
+    return bindings, states
 
 
 HOST_CTRL_CLASSIFICATION_SOURCES = frozenset({
     "host_threads.agent_role",
     "host_thread_spawn_edges.subagent",
 })
+TOPOLOGY_TERMINAL_STATES = frozenset({"ACCEPTED", "TOMBSTONED", "VERIFIED"})
+TOPOLOGY_TIER = {"CTRL": 0, "LEAD": 1, "DOER": 2}
+INDEPENDENT_HOST_PRESENTATION = {
+    "manifest_id": "builtin:independent-host-task",
+    "manifest_version": "1",
+    "display_name": "Independent task",
+    "title": "Codex task",
+    "lucide_icon": "circle-user-round",
+    "avatar": {"state": "ANONYMOUS", "variant_id": "neutral", "asset_digest": None},
+    "profession": None,
+    "structural_role": None,
+    "swarm_authority": False,
+}
+TOPOLOGY_ACTIVITY_LABELS = {
+    "BLOCK_CREATED": "Work started",
+    "STATE_CHANGED": "State changed",
+    "CURRENT_ACTION_CHANGED": "Current action updated",
+    "PROGRESS_MEASURED": "Progress measured",
+    "PROOF_ADMITTED": "Proof admitted",
+    "WAIT_CHANGED": "Wait state changed",
+    "REWORK_REQUESTED": "Rework requested",
+    "RETRY_STARTED": "Retry started",
+    "TAKEOVER_STARTED": "Takeover started",
+    "ACCEPTED": "Work accepted",
+}
+
+
+def _topology_id(kind: str, *parts: str) -> str:
+    encoded = json.dumps([kind, *parts], ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    return f"{kind}:{hashlib.sha256(encoded).hexdigest()}"
+
+
+def _topology_activity_text(event_kind: str, lifecycle_state: str) -> str | None:
+    label = TOPOLOGY_ACTIVITY_LABELS.get(event_kind)
+    if label is None or not re.fullmatch(r"[A-Z][A-Z_]{1,31}", lifecycle_state):
+        return None
+    return f"{label} · {lifecycle_state.replace('_', ' ').title()}"[:64]
+
+
+def _topology_payload(state: str, *, reason: str | None = None) -> dict[str, Any]:
+    return {
+        "schema_version": 1,
+        "state": state,
+        "loading": state == "LOADING",
+        "empty": True,
+        "nodes": [],
+        "tasks": [],
+        "agent_edges": [],
+        "task_edges": [],
+        "independent_nodes": [],
+        "host_edges": [],
+        "independent_count": 0,
+        "roots": [],
+        "orphans": [],
+        "hiddenTaskCount": 0,
+        "cursor": None,
+        "reason": reason,
+        "authority": {"execution_authority": False},
+    }
+
+
+def _topology_cursor(payload: dict[str, Any], ledger_cursor: Any) -> dict[str, Any]:
+    basis = {key: value for key, value in payload.items() if key != "cursor"}
+    digest = hashlib.sha256(json.dumps(
+        {"projection": basis, "ledger_cursor": ledger_cursor},
+        ensure_ascii=False, sort_keys=True, separators=(",", ":"),
+    ).encode("utf-8")).hexdigest()
+    return {"type": "overview_topology_v1", "digest": f"sha256:{digest}", "ledger": copy.deepcopy(ledger_cursor)}
 
 
 def _controller_classification(
@@ -7073,8 +7149,12 @@ def build_overview(codex_home: Path, config_path: Path) -> dict[str, Any]:
         child_id: next(iter(statuses_by_child[child_id]))
         for child_id in parent_by_child
     }
-    project_bindings = _thread_project_bindings(
-        all_rows, parent_by_child, host_project_catalog, project_roots
+    open_parent_by_child = {
+        child_id: parent_id for child_id, parent_id in parent_by_child.items()
+        if edge_status.get(child_id) == "open"
+    }
+    project_bindings, project_binding_states = _thread_project_bindings(
+        all_rows, open_parent_by_child, host_project_catalog, project_roots
     )
     host_projects: dict[str, dict[str, Any]] = {
         project_id: {
@@ -7101,12 +7181,6 @@ def build_overview(codex_home: Path, config_path: Path) -> dict[str, Any]:
         thread_id
         for thread_id, row in all_rows.items()
         if _epoch_ms(row["updated_at_ms"], row["updated_at"]) >= observed_after_ms
-    }
-    fresh_after_ms = now_ms - heartbeat * 2 * 60_000
-    fresh_ids = {
-        thread_id
-        for thread_id, row in all_rows.items()
-        if _epoch_ms(row["updated_at_ms"], row["updated_at"]) >= fresh_after_ms
     }
     structural_controller_ids = {
         parent
@@ -7150,31 +7224,10 @@ def build_overview(codex_home: Path, config_path: Path) -> dict[str, Any]:
     }.union(root_candidate_ids.intersection(recent_ids)).union(structural_controller_ids).union(
         active_goal_ids.intersection(all_rows)
     )
-    descendant_ids: set[str] = set()
-    traversed_ids: set[str] = set(controller_seed_ids)
-    queue = list(controller_seed_ids)
-    while queue:
-        parent = queue.pop()
-        for child in raw_children.get(parent, []):
-            if child in traversed_ids:
-                continue
-            traversed_ids.add(child)
-            if child in recent_ids and (
-                child in parsed_titles or child in fresh_ids
-            ):
-                descendant_ids.add(child)
-            queue.append(child)
-    # A formatted title is classification evidence, not a spawn receipt. Admit
-    # controllers and tasks reached through their observed host spawn tree, plus
-    # fresh, safely classified standalone tasks without a fabricated parent.
-    standalone_task_ids = {
-        thread_id
-        for thread_id in fresh_ids
-        if thread_id in parsed_titles
-        and thread_id not in parent_by_child
-        and parsed_titles[thread_id]["role"] in {"doer", "lead", "review", "architect"}
+    included_ids = {
+        thread_id for thread_id, row in all_rows.items()
+        if not bool(row["archived"])
     }
-    included_ids = controller_seed_ids.union(descendant_ids).union(standalone_task_ids)
     # Agent replacement preserves the task identity expressed by its lane path.
     # Keep the latest worker receipt instead of turning replacement into a new node.
     latest_by_task: dict[tuple[str, str], str] = {}
@@ -7205,15 +7258,6 @@ def build_overview(codex_home: Path, config_path: Path) -> dict[str, Any]:
         else:
             superseded_ids.add(thread_id)
     included_ids.difference_update(superseded_ids)
-    connected_ids = set(controller_seed_ids.intersection(included_ids)).union(standalone_task_ids)
-    queue = list(connected_ids)
-    while queue:
-        parent = queue.pop()
-        for child in raw_children.get(parent, []):
-            if child in included_ids and child not in connected_ids:
-                connected_ids.add(child)
-                queue.append(child)
-    included_ids.intersection_update(connected_ids)
     parsed: dict[str, dict[str, str]] = {}
     for thread_id in included_ids:
         observed_role = parsed_titles.get(thread_id)
@@ -7270,6 +7314,7 @@ def build_overview(codex_home: Path, config_path: Path) -> dict[str, Any]:
             "title": f"{visible_icon}{visible_role_label} - {role['artifact']}",
             "worker_role": worker_role,
             "project_id": project_key,
+            "project_binding_state": project_binding_states.get(thread_id, "unbound").upper(),
             "project": project_name,
             "status": status,
             "model": row["model"] or "unknown",
@@ -7301,26 +7346,17 @@ def build_overview(codex_home: Path, config_path: Path) -> dict[str, Any]:
             project["active"] += status == "active"
 
     links: list[dict[str, str]] = []
-    unattached_task_ids: list[str] = []
     for thread_id, node in list(nodes.items()):
-        parent = parent_by_child.get(thread_id)
+        parent = open_parent_by_child.get(thread_id)
         if parent in nodes:
-            links.append({"source": parent, "target": thread_id, "relationship": "delegated"})
+            links.append({
+                "source": parent, "target": thread_id, "relationship": "delegated",
+                "status": edge_status[thread_id],
+            })
             continue
-        if node["role"] == "ctrl" or thread_id in standalone_task_ids:
-            continue
-        unattached_task_ids.append(thread_id)
-
-    for thread_id in unattached_task_ids:
-        node = nodes.pop(thread_id)
-        if node["project_id"]:
-            project = projects[node["project_id"]]
-            project["nodes"] -= 1
-            project["tokens"] -= node["tokens"]
-            project["active"] -= node["status"] == "active"
 
     for thread_id, node in nodes.items():
-        parent = parent_by_child.get(thread_id)
+        parent = open_parent_by_child.get(thread_id)
         node["parent_id"] = parent if parent in nodes else None
 
     for project_key, inventory in host_projects.items():
@@ -7433,6 +7469,7 @@ def build_overview(codex_home: Path, config_path: Path) -> dict[str, Any]:
         "generated_at": datetime.now(UTC).isoformat(),
         "heartbeat_minutes": heartbeat,
         "observation_window_ms": observation_window_ms,
+        "topology": _topology_payload("LOADING"),
         "project_inventory": {
             "state": "KNOWN" if project_inventory_available else "UNKNOWN",
             "available": project_inventory_available,
@@ -7450,6 +7487,7 @@ def build_overview(codex_home: Path, config_path: Path) -> dict[str, Any]:
         "analytics": {
             "swarms": len(roots),
             "tasks": sum(1 for node in nodes.values() if not node["virtual"]),
+            "independent_count": 0,
             "tokens": total_tokens,
             "status": dict(status_counts),
             "models": dict(model_counts),
@@ -7473,6 +7511,7 @@ def build_overview(codex_home: Path, config_path: Path) -> dict[str, Any]:
             "Tokens are local cumulative thread tokens, not billing or remaining quota.",
             "Usage history prefers local Codex JSONL token_count totals and falls back to the SQLite threads.tokens_used high-water aggregate; prompts, responses, tools, and credentials are not retained.",
             "Only title metadata needed to recognize SWARM naming is read; message bodies, previews, rollout content, credentials, and the logs database are not.",
+            "Host titles never grant SWARM role or execution authority; without an exact admitted manifest join, a current task uses the shared neutral independent-host presentation.",
         ],
         "source": database.name,
     }
@@ -9987,6 +10026,10 @@ class App:
             if link["source"] in node_ids and link["target"] in node_ids
         ]
         view["roots"] = [node_id for node_id in view["roots"] if node_id in node_ids]
+        if isinstance(view.get("topology"), dict):
+            view["topology"] = self._scope_topology_projection(
+                view["topology"], selected_project_id, selected_ctrl_id if ctrl_scope else None,
+            )
         view["controllers"] = [
             controller for controller in view["controllers"]
             if (
@@ -10001,6 +10044,9 @@ class App:
             **view["analytics"],
             "swarms": len(view["roots"]),
             "tasks": sum(not node.get("virtual") for node in nodes),
+            "independent_count": sum(
+                node.get("node_kind") == "independent_host_task" for node in nodes
+            ),
             "tokens": sum(int(node.get("tokens") or 0) for node in nodes if not node.get("virtual")),
             "status": dict(Counter(node["status"] for node in nodes if not node.get("virtual"))),
             "models": dict(Counter(
@@ -10469,15 +10515,6 @@ class App:
                 controller["id"] for controller in project_controllers
                 if controller["activity_status"] == "recently_active"
             ]
-            last_activity_at = max(
-                (
-                    controller["last_activity_at"]
-                    for controller in project_controllers
-                    if isinstance(controller.get("last_activity_at"), int)
-                    and not isinstance(controller.get("last_activity_at"), bool)
-                ),
-                default=None,
-            )
             unavailable_candidate_ids = [
                 controller["id"] for controller in controllers
                 if controller.get("project_id") == project_id
@@ -10488,6 +10525,16 @@ class App:
                 node for node in view.get("nodes", [])
                 if node.get("project_id") == project_id and not node.get("virtual")
             ]
+            active_project_nodes = [node for node in project_nodes if node.get("status") == "active"]
+            independent_nodes = [
+                node for node in project_nodes if node.get("node_kind") == "independent_host_task"
+            ]
+            activity_times = [controller.get("last_activity_at") for controller in project_controllers]
+            activity_times.extend(node.get("updated_at") for node in project_nodes)
+            last_activity_at = max(
+                (value for value in activity_times if isinstance(value, int) and not isinstance(value, bool)),
+                default=None,
+            )
             stalled = any(
                 controller["status"] in {"stalled", "blocked"}
                 for controller in project_controllers
@@ -10495,7 +10542,7 @@ class App:
                 str(node.get("status") or "").casefold() in {"stalled", "blocked"}
                 for node in project_nodes
             )
-            active = bool(active_ids)
+            active = bool(active_ids or active_project_nodes)
             status = "active" if active else ("stalled" if stalled else "inactive")
             projects.append({
                 "id": project_id,
@@ -10507,12 +10554,12 @@ class App:
                 "active_ctrl": active,
                 "active_ctrl_ids": active_ids,
                 "recently_active_ctrl_ids": recently_active_ids,
-                "active_now_count": len(active_ids),
+                "active_now_count": len(active_project_nodes),
                 "recently_active_count": len(recently_active_ids),
                 "last_activity_at": last_activity_at,
                 "activity_status": (
                     "active"
-                    if active_ids
+                    if active
                     else "recently_active"
                     if recently_active_ids
                     else "unknown"
@@ -10520,11 +10567,11 @@ class App:
                     else "inactive"
                 ),
                 "activity_facts": {
-                    "active_now": bool(active_ids),
+                    "active_now": active,
                     "recently_active": bool(recently_active_ids),
-                    "unknown": bool(unavailable_candidate_ids) and not active_ids and not recently_active_ids,
-                    "inactive": not active_ids and not recently_active_ids and not unavailable_candidate_ids,
-                    "active_now_count": len(active_ids),
+                    "unknown": bool(unavailable_candidate_ids) and not active and not recently_active_ids,
+                    "inactive": not active and not recently_active_ids and not unavailable_candidate_ids,
+                    "active_now_count": len(active_project_nodes),
                     "recently_active_count": len(recently_active_ids),
                     "last_activity_at": last_activity_at,
                     "unknown_controller_ids": unavailable_candidate_ids,
@@ -10536,7 +10583,7 @@ class App:
                     "source": "host_threads.updated_at_ms+host_thread_spawn_edges.status",
                 },
                 "ctrl_ids": ctrl_ids,
-                "project_eligibility": "swarm_ctrl" if ctrl_ids else "no_ctrl",
+                "project_eligibility": "swarm_ctrl" if ctrl_ids else "host_tasks" if project_nodes else "no_ctrl",
                 "eligibility_source": (
                     "+".join(sorted({
                         str(controller["controller_classification_source"])
@@ -10553,10 +10600,11 @@ class App:
                     "active": active,
                     "stalled": stalled,
                     "inactive": not active and not stalled,
-                    "source": "host CTRL classification+host_threads.archived+host_threads.updated_at_ms",
+                    "source": "host manifest admission+host_threads.archived+host_threads.updated_at_ms",
                 },
                 "status_source": "host_threads.updated_at_ms",
                 "task_count": len(project_nodes),
+                "independent_count": len(independent_nodes),
             })
         projects.sort(key=_project_order_key)
         raw_project_inventory = view.get("project_inventory")
@@ -10604,7 +10652,7 @@ class App:
     def _current_work_inventory(
         navigation: dict[str, Any],
     ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], bool]:
-        """Return the exact visible, non-archived CTRL inventory used by navigation."""
+        """Return the exact visible host-work inventory used by navigation."""
         project_inventory = navigation.get("project_inventory")
         projects = navigation.get("projects")
         controllers = navigation.get("controllers")
@@ -10629,9 +10677,8 @@ class App:
                 or not project_id
                 or project.get("visibility") != "visible"
                 or project.get("archived") is not False
-                or project.get("project_eligibility") != "swarm_ctrl"
+                or project.get("project_eligibility") not in {"swarm_ctrl", "host_tasks"}
                 or not isinstance(raw_ctrl_ids, list)
-                or not raw_ctrl_ids
                 or any(not isinstance(ctrl_id, str) or not ctrl_id for ctrl_id in raw_ctrl_ids)
                 or project_id in project_ctrl_ids
             ):
@@ -10998,6 +11045,689 @@ class App:
             ),
         }
 
+    def _topology_projection(self, view: dict[str, Any]) -> dict[str, Any]:
+        """Join immutable manifests to observed edges and current Ledger blocks."""
+        try:
+            ledger = self.progress_ledger.replay()
+            collections = (ledger.get("agent_manifests"), ledger.get("task_manifests"))
+            if not all(isinstance(collection, dict) for collection in collections):
+                raise ProgressEventError("identity manifest projection is invalid")
+            creation_bindings = ledger.get("task_creation_bindings")
+            if not isinstance(creation_bindings, dict):
+                raise ProgressEventError("task creation binding projection is invalid")
+            creation_by_task = {
+                str(binding["task_id"]): binding
+                for binding in creation_bindings.values()
+                if isinstance(binding, dict)
+            }
+            if len(creation_by_task) != len(creation_bindings):
+                raise ProgressEventError("task creation bindings are incomplete or ambiguous")
+            scopes: set[tuple[str, str]] = set()
+            for collection in collections:
+                for state in collection.values():
+                    if not isinstance(state, dict):
+                        raise ProgressEventError("identity manifest state is invalid")
+                    manifest = state.get("versions", {}).get(state.get("active_version"))
+                    if not isinstance(manifest, dict):
+                        raise ProgressEventError("identity manifest active version is invalid")
+                    scopes.add((str(manifest.get("project_id") or ""), str(manifest.get("ctrl_id") or "")))
+            source_nodes = {str(node.get("id") or ""): node for node in view.get("nodes", [])}
+            observed_ctrl_ids = {
+                str(controller.get("id") or "")
+                for controller in view.get("controllers", [])
+                if _is_observed_ctrl_for_projection(controller)
+            }
+            agents: dict[str, dict[str, Any]] = {}
+            task_manifests: list[dict[str, Any]] = []
+            creation_parent_edges: dict[str, dict[str, Any]] = {}
+            rejected_bindings = 0
+
+            for project_id, ctrl_id in sorted(scopes):
+                identity = self.progress_ledger.project_identity_manifests(
+                    project_id, ctrl_id, self.builtin_role_manifests,
+                )
+                for row in identity.get("agents", []):
+                    manifest = row.get("manifest") if isinstance(row, dict) else None
+                    agent_id = str(manifest.get("agent_id") or "") if isinstance(manifest, dict) else ""
+                    host = source_nodes.get(agent_id)
+                    structural_role = str(manifest.get("structural_role") or "") if isinstance(manifest, dict) else ""
+                    exact_host_binding = (
+                        isinstance(manifest, dict)
+                        and row.get("binding_state") == "KNOWN"
+                        and host is not None
+                        and str(host.get("project_id") or "") == project_id
+                        and structural_role in TOPOLOGY_TIER
+                        and (structural_role != "CTRL" or agent_id in observed_ctrl_ids)
+                        and agent_id not in agents
+                    )
+                    if not exact_host_binding:
+                        rejected_bindings += 1
+                        continue
+                    agents[agent_id] = {
+                        "record_type": "AGENT",
+                        "id": agent_id,
+                        "agent_id": agent_id,
+                        "project_id": project_id,
+                        "ctrl_id": ctrl_id,
+                        "display_name": manifest["display_name"],
+                        "title": manifest["title"],
+                        "profession": manifest["profession"],
+                        "profession_label": row.get("profession_label"),
+                        "structural_role": structural_role,
+                        "tier": TOPOLOGY_TIER[structural_role],
+                        "source_order": None,
+                        "sibling_order": None,
+                        "depth": None,
+                        "lucide_icon": row.get("resolved_lucide_icon"),
+                        "avatar": copy.deepcopy(row.get("resolved_avatar")),
+                        "accent": row.get("resolved_accent"),
+                        "manifest_identity": {
+                            "state": "KNOWN",
+                            "manifest_id": manifest["manifest_id"],
+                            "manifest_version": manifest["manifest_version"],
+                            "manifest_digest": manifest["manifest_digest"],
+                            "role_manifest_ref": copy.deepcopy(manifest["role_manifest_ref"]),
+                        },
+                        "parent_relation": {
+                            "state": "UNKNOWN", "parent_agent_id": None,
+                            "candidate_parent_ids": [], "reason": "MISSING_PARENT",
+                        },
+                        "hierarchy_membership": "UNBOUND",
+                        "royal_line": False,
+                        "children_ids": [],
+                        "task_ids": [],
+                        "visibleTaskCount": 0,
+                        "hiddenTaskCount": 0,
+                        "ports": [],
+                        "input_port_ids": [],
+                        "output_port_ids": [],
+                        "activity": {
+                            "status": str(host.get("status") or "UNKNOWN").upper(),
+                            "online": host.get("status") == "active",
+                            "observed_at_ms": host.get("updated_at") or None,
+                            "source": "host_threads.updated_at_ms",
+                            "execution_authority": False,
+                        },
+                        "live_projection": {
+                            "state": "UNKNOWN", "status": None, "mini_update": None,
+                            "context_rows": [], "event_cursor": None,
+                            "reason": "MISSING_BOUND_EVENT_RECEIPT",
+                        },
+                        "detail_target": {
+                            "agent_id": agent_id, "project_id": project_id, "ctrl_id": ctrl_id,
+                        },
+                    }
+                for row in identity.get("tasks", []):
+                    manifest = row.get("manifest") if isinstance(row, dict) else None
+                    task_id = str(manifest.get("task_id") or "") if isinstance(manifest, dict) else ""
+                    binding = creation_by_task.get(task_id)
+                    if isinstance(manifest, dict) and row.get("binding_state") == "KNOWN" and binding is not None:
+                        role_ref = binding.get("role_manifest_ref")
+                        role_state = ledger.get("role_manifests", {}).get(
+                            role_ref.get("manifest_id") if isinstance(role_ref, dict) else None,
+                        )
+                        role = (
+                            role_state.get("versions", {}).get(role_ref.get("manifest_version"))
+                            if isinstance(role_state, dict) and isinstance(role_ref, dict) else None
+                        )
+                        host = source_nodes.get(task_id)
+                        structural_role = {
+                            "CTRL_BOUNDED": "CTRL", "LEAD_SINGLE": "LEAD", "DOER_SINGLE": "DOER",
+                        }.get(str(manifest.get("role_scope") or ""))
+                        exact = (
+                            host is not None
+                            and str(host.get("project_id") or "") == project_id
+                            and binding.get("project_id") == project_id
+                            and role is not None
+                            and role_manifest_reference(role) == role_ref
+                            and structural_role in TOPOLOGY_TIER
+                            and (structural_role != "CTRL" or task_id in observed_ctrl_ids)
+                            and task_id not in agents
+                        )
+                        if not exact:
+                            rejected_bindings += 1
+                            continue
+                        admitted = frozenset(item["asset_digest"] for item in role.get("avatar_variants", []))
+                        agents[task_id] = {
+                            "record_type": "AGENT", "id": task_id, "agent_id": task_id,
+                            "project_id": project_id, "ctrl_id": ctrl_id,
+                            "display_name": manifest["task_name"], "title": manifest["task_name"],
+                            "profession": role["id"], "profession_label": role["name"],
+                            "structural_role": structural_role, "tier": TOPOLOGY_TIER[structural_role],
+                            "source_order": None, "sibling_order": None, "depth": None,
+                            "lucide_icon": resolve_role_lucide_icon(role),
+                            "avatar": resolve_role_avatar(
+                                role, structural_role=structural_role, variant_id="canonical",
+                                admitted_asset_digests=admitted,
+                            ),
+                            "accent": role["accent"],
+                            "manifest_identity": {
+                                "state": "KNOWN", "identity_kind": "TASK_CREATION_BINDING",
+                                "manifest_id": manifest["manifest_id"],
+                                "manifest_version": manifest["manifest_version"],
+                                "manifest_digest": manifest["manifest_digest"],
+                                "role_manifest_ref": copy.deepcopy(role_ref),
+                                "binding_event_id": binding["event_id"],
+                                "binding_event_digest": binding["event_digest"],
+                            },
+                            "creation_binding": {
+                                "state": "KNOWN", "operation_id": binding["operation_id"],
+                                "parent_edge": copy.deepcopy(binding["parent_edge"]),
+                                "receipts": copy.deepcopy(binding["receipts"]),
+                            },
+                            "initial_work": {
+                                "state": "KNOWN" if manifest["blocks"] else "EXPLICIT_EMPTY",
+                                "milestones": copy.deepcopy(manifest["milestones"]),
+                                "blocks": copy.deepcopy(manifest["blocks"]),
+                            },
+                            "parent_relation": {
+                                "state": "UNKNOWN", "parent_agent_id": None,
+                                "candidate_parent_ids": [], "reason": "MISSING_PARENT",
+                            },
+                            "hierarchy_membership": "UNBOUND", "royal_line": False,
+                            "children_ids": [], "task_ids": [], "visibleTaskCount": 0,
+                            "hiddenTaskCount": 0, "ports": [], "input_port_ids": [], "output_port_ids": [],
+                            "activity": {
+                                "status": str(host.get("status") or "UNKNOWN").upper(),
+                                "online": host.get("status") == "active",
+                                "observed_at_ms": host.get("updated_at") or None,
+                                "source": "host_threads.updated_at_ms", "execution_authority": False,
+                            },
+                            "live_projection": {
+                                "state": "UNKNOWN", "status": None, "mini_update": None,
+                                "context_rows": [], "event_cursor": None,
+                                "reason": "MISSING_BOUND_EVENT_RECEIPT",
+                            },
+                            "detail_target": {"agent_id": task_id, "project_id": project_id, "ctrl_id": ctrl_id},
+                        }
+                        creation_parent_edges[task_id] = binding["parent_edge"]
+                    elif isinstance(manifest, dict) and row.get("binding_state") == "KNOWN":
+                        task_manifests.append(manifest)
+                    else:
+                        rejected_bindings += 1
+
+            for order, agent in enumerate(sorted(
+                agents.values(),
+                key=lambda item: (
+                    item["project_id"], item["ctrl_id"], item["tier"],
+                    str(item["display_name"]).casefold(), item["agent_id"],
+                ),
+            )):
+                agent["source_order"] = order
+
+            independent_nodes: dict[str, dict[str, Any]] = {}
+            for order, host in enumerate(sorted(
+                (node for node_id, node in source_nodes.items() if node_id not in agents),
+                key=lambda node: (
+                    str(node.get("project_id") or ""), int(node.get("updated_at") or 0),
+                    str(node.get("id") or ""),
+                ),
+            )):
+                node_id = str(host["id"])
+                independent_nodes[node_id] = {
+                    "record_type": "HOST_TASK",
+                    "node_kind": "independent_host_task",
+                    "id": node_id,
+                    "agent_id": node_id,
+                    "project_id": str(host.get("project_id") or ""),
+                    "project_binding_state": str(host.get("project_binding_state") or "UNBOUND"),
+                    "status": str(host.get("status") or "UNKNOWN").upper(),
+                    "updated_at": host.get("updated_at"),
+                    "source_order": order,
+                    "presentation": copy.deepcopy(INDEPENDENT_HOST_PRESENTATION),
+                    "ports": [], "input_port_ids": [], "output_port_ids": [],
+                    "detail_target": {"surface": "agent_detail", "agent_id": node_id},
+                    "actions": {"open_detail": True, "edit_manifest": False, "role_actions": False},
+                    "execution_authority": False,
+                    "swarm_authority": False,
+                }
+
+            parent_observations: dict[str, list[tuple[str, str]]] = {}
+            for link in view.get("links", []):
+                if not isinstance(link, dict):
+                    rejected_bindings += 1
+                    continue
+                source, target = str(link.get("source") or ""), str(link.get("target") or "")
+                if target in agents and target not in creation_parent_edges:
+                    parent_observations.setdefault(target, []).append((
+                        source, str(link.get("status") or "").strip().casefold(),
+                    ))
+            for task_id, parent_edge in creation_parent_edges.items():
+                if parent_edge["state"] == "BOUND":
+                    parent_observations[task_id] = [(parent_edge["parent_task_id"], "open")]
+
+            provisional: dict[str, str] = {}
+            for agent_id, agent in agents.items():
+                observations = parent_observations.get(agent_id, [])
+                candidates = sorted({source for source, _ in observations})
+                statuses = {status for _, status in observations}
+                relation = agent["parent_relation"]
+                relation["candidate_parent_ids"] = candidates
+                if not candidates and agent["structural_role"] == "CTRL":
+                    relation.update({"state": "ROOT", "reason": None})
+                    agent["hierarchy_membership"] = "ROOT"
+                elif len(candidates) == 1 and statuses == {"open"}:
+                    parent_id = candidates[0]
+                    parent = agents.get(parent_id)
+                    if (
+                        parent is not None
+                        and parent_id != agent_id
+                        and (parent["project_id"], parent["ctrl_id"]) == (agent["project_id"], agent["ctrl_id"])
+                    ):
+                        provisional[agent_id] = parent_id
+                    else:
+                        relation["reason"] = "UNBOUND_OR_CROSS_SCOPE_PARENT"
+                        rejected_bindings += 1
+                elif len(candidates) > 1:
+                    relation["reason"] = "AMBIGUOUS_PARENT"
+                    rejected_bindings += 1
+                else:
+                    relation["reason"] = "UNSUPPORTED_EDGE_STATUS"
+                    rejected_bindings += 1
+
+            cycle_nodes: set[str] = set()
+            for start in provisional:
+                path: list[str] = []
+                positions: dict[str, int] = {}
+                current = start
+                while current in provisional and current not in positions:
+                    positions[current] = len(path)
+                    path.append(current)
+                    current = provisional[current]
+                if current in positions:
+                    cycle_nodes.update(path[positions[current]:])
+            cycle_descendants = set(cycle_nodes)
+            changed = True
+            while changed:
+                changed = False
+                for child_id, parent_id in provisional.items():
+                    if parent_id in cycle_descendants and child_id not in cycle_descendants:
+                        cycle_descendants.add(child_id)
+                        changed = True
+            for agent_id in cycle_descendants:
+                provisional.pop(agent_id, None)
+                agents[agent_id]["parent_relation"].update({
+                    "reason": "CYCLE" if agent_id in cycle_nodes else "ANCESTOR_CYCLE",
+                    "state": "UNKNOWN",
+                })
+                agents[agent_id]["hierarchy_membership"] = "INVALID"
+            rejected_bindings += len(cycle_descendants)
+
+            agent_edges: list[dict[str, Any]] = []
+            children: dict[str, list[str]] = {}
+            for child_id, parent_id in provisional.items():
+                child, parent = agents[child_id], agents[parent_id]
+                child["parent_relation"].update({
+                    "state": "KNOWN", "parent_agent_id": parent_id, "reason": None,
+                })
+                child["hierarchy_membership"] = "CHILD"
+                child["royal_line"] = parent["structural_role"] == "CTRL"
+                children.setdefault(parent_id, []).append(child_id)
+            for parent_id, child_ids in children.items():
+                child_ids.sort(key=lambda item: (agents[item]["source_order"], item))
+                agents[parent_id]["children_ids"] = child_ids
+                for sibling_order, child_id in enumerate(child_ids):
+                    agents[child_id]["sibling_order"] = sibling_order
+                    edge_id = _topology_id("agent-edge", parent_id, child_id)
+                    agent_edges.append({
+                        "id": edge_id, "edge_kind": "AGENT_CHILD",
+                        "source": parent_id, "target": child_id,
+                        "source_port_id": _topology_id("agent-child-output", parent_id, child_id),
+                        "target_port_id": _topology_id("agent-parent-input", child_id, parent_id),
+                        "execution_authority": False,
+                    })
+
+            roots = sorted(
+                (agent_id for agent_id, agent in agents.items() if agent["parent_relation"]["state"] == "ROOT"),
+                key=lambda item: (agents[item]["source_order"], item),
+            )
+            queue = [(root_id, 0) for root_id in roots]
+            while queue:
+                agent_id, depth = queue.pop(0)
+                agents[agent_id]["depth"] = depth
+                queue.extend((child_id, depth + 1) for child_id in children.get(agent_id, []))
+
+            blocks = ledger.get("blocks", {})
+            scope_versions = ledger.get("scopes", {})
+            if not isinstance(blocks, dict) or not isinstance(scope_versions, dict):
+                raise ProgressEventError("task ownership projection is invalid")
+            valid_tasks_by_owner: dict[str, list[dict[str, Any]]] = {}
+            valid_task_bindings: dict[str, dict[str, Any]] = {}
+            agent_ids = set(agents)
+            for manifest in task_manifests:
+                task_id = str(manifest["task_id"])
+                if task_id in agent_ids:
+                    rejected_bindings += 1
+                    continue
+                scope_version = int(scope_versions.get(manifest["project_id"], 0) or 0)
+                defined_blocks = {str(block["block_id"]) for block in manifest.get("blocks", [])}
+                current = [
+                    block for block in blocks.values()
+                    if isinstance(block, dict)
+                    and block.get("project_id") == manifest["project_id"]
+                    and block.get("ctrl_id") == manifest["ctrl_id"]
+                    and block.get("task_id") == task_id
+                    and int(block.get("scope_version") or 0) == scope_version
+                    and block.get("lifecycle_state") not in TOPOLOGY_TERMINAL_STATES
+                ]
+                if not current:
+                    continue
+                owners = {str(block.get("owner_id") or "") for block in current}
+                owner_id = next(iter(owners)) if len(owners) == 1 else ""
+                owner = agents.get(owner_id)
+                exact = (
+                    scope_version > 0
+                    and owner is not None
+                    and owner["hierarchy_membership"] != "INVALID"
+                    and (owner["project_id"], owner["ctrl_id"]) == (manifest["project_id"], manifest["ctrl_id"])
+                    and all(str(block.get("block_id") or "") in defined_blocks for block in current)
+                )
+                if not exact:
+                    rejected_bindings += 1
+                    continue
+                current.sort(key=lambda block: (int(block.get("latest_event_seq") or 0), str(block.get("block_id") or "")))
+                states = sorted({str(block.get("lifecycle_state") or "UNKNOWN") for block in current})
+                latest = current[-1]
+                task = {
+                    "record_type": "TASK",
+                    "id": task_id,
+                    "task_id": task_id,
+                    "task_name": manifest["task_name"],
+                    "project_id": manifest["project_id"],
+                    "ctrl_id": manifest["ctrl_id"],
+                    "owning_agent_id": owner_id,
+                    "state": states[0] if len(states) == 1 else "MIXED",
+                    "manifest_identity": {
+                        "state": "KNOWN", "manifest_id": manifest["manifest_id"],
+                        "manifest_version": manifest["manifest_version"],
+                        "manifest_digest": manifest["manifest_digest"],
+                    },
+                    "presentation_priority": int(manifest["policy"]["presentation_priority"]),
+                    "order": None,
+                    "ports": [],
+                    "input_port_ids": [],
+                    "output_port_ids": [],
+                    "event_cursor": {
+                        "event_seq": latest.get("latest_event_seq"),
+                        "event_id": latest.get("latest_event_id"),
+                        "event_digest": latest.get("latest_event_digest"),
+                    },
+                    "execution_authority": False,
+                }
+                measured = [block for block in current if block.get("committed_weight") is not None]
+                denominator = sum(int(block.get("committed_weight") or 0) for block in measured)
+                if len(measured) == len(current) and denominator > 0:
+                    task["progress"] = round(
+                        sum(int(block.get("admitted_proof_weight") or 0) for block in measured) * 100 / denominator, 2,
+                    )
+                valid_tasks_by_owner.setdefault(owner_id, []).append(task)
+                valid_task_bindings[task_id] = {
+                    "task": task,
+                    "block_ids": {str(block.get("block_id") or "") for block in current},
+                }
+
+            tasks: list[dict[str, Any]] = []
+            task_edges: list[dict[str, Any]] = []
+            for owner_id, owner_tasks in valid_tasks_by_owner.items():
+                owner_tasks.sort(key=lambda task: (task["presentation_priority"], task["task_id"]))
+                visible = owner_tasks[:3]
+                agents[owner_id]["task_ids"] = [task["task_id"] for task in visible]
+                agents[owner_id]["visibleTaskCount"] = len(visible)
+                agents[owner_id]["hiddenTaskCount"] = len(owner_tasks) - len(visible)
+                for order, task in enumerate(visible):
+                    task["order"] = order
+                    tasks.append(task)
+                    edge_id = _topology_id("task-edge", owner_id, task["task_id"])
+                    task_edges.append({
+                        "id": edge_id, "edge_kind": "AGENT_TASK_OWNERSHIP",
+                        "source": owner_id, "target": task["task_id"],
+                        "source_port_id": _topology_id("agent-task-output", owner_id, task["task_id"]),
+                        "target_port_id": _topology_id("task-owner-input", task["task_id"], owner_id),
+                        "execution_authority": False,
+                    })
+            tasks.sort(key=lambda task: (agents[task["owning_agent_id"]]["source_order"], task["order"], task["task_id"]))
+
+            host_edges: list[dict[str, Any]] = []
+            host_records = {**agents, **independent_nodes}
+            for link in view.get("links", []):
+                if not isinstance(link, dict) or str(link.get("status") or "").casefold() != "open":
+                    continue
+                source_id, target_id = str(link.get("source") or ""), str(link.get("target") or "")
+                if target_id not in independent_nodes or source_id not in host_records:
+                    continue
+                if source_id in agents and agents[source_id]["hierarchy_membership"] == "INVALID":
+                    continue
+                edge_id = _topology_id("host-edge", source_id, target_id)
+                host_edges.append({
+                    "id": edge_id, "edge_kind": "HOST_SPAWN",
+                    "source": source_id, "target": target_id,
+                    "source_port_id": _topology_id("host-spawn-output", source_id, target_id),
+                    "target_port_id": _topology_id("host-parent-input", target_id, source_id),
+                    "execution_authority": False,
+                    "swarm_authority": False,
+                })
+
+            activity_by_owner: dict[str, list[dict[str, Any]]] = {}
+            for project_id in sorted({
+                task["project_id"] for owner_tasks in valid_tasks_by_owner.values() for task in owner_tasks
+            }):
+                feed = self.progress_ledger.feed_snapshot(project_id, limit=10)
+                for item in feed.get("items", []):
+                    if not isinstance(item, dict):
+                        continue
+                    binding = valid_task_bindings.get(str(item.get("task_id") or ""))
+                    owner_id = str(item.get("owner_id") or "")
+                    text = _topology_activity_text(
+                        str(item.get("event_kind") or ""), str(item.get("lifecycle_state") or ""),
+                    )
+                    if (
+                        binding is None or text is None or owner_id not in agents
+                        or binding["task"]["owning_agent_id"] != owner_id
+                        or str(item.get("block_id") or "") not in binding["block_ids"]
+                    ):
+                        continue
+                    cursor = {
+                        "event_seq": item.get("event_seq"),
+                        "event_id": item.get("event_id"),
+                        "event_digest": item.get("event_digest"),
+                    }
+                    if not all(cursor.values()):
+                        continue
+                    task = binding["task"]
+                    activity_by_owner.setdefault(owner_id, []).append({
+                        "text": text,
+                        "identity": {
+                            "agent_id": owner_id,
+                            "agent_manifest_id": agents[owner_id]["manifest_identity"]["manifest_id"],
+                            "task_id": task["task_id"],
+                            "task_manifest_id": task["manifest_identity"]["manifest_id"],
+                            "role_manifest_id": agents[owner_id]["manifest_identity"]["role_manifest_ref"]["manifest_id"],
+                            "role_manifest_version": agents[owner_id]["manifest_identity"]["role_manifest_ref"]["manifest_version"],
+                        },
+                        "event_kind": item["event_kind"],
+                        "lifecycle_state": item["lifecycle_state"],
+                        "observed_at_ms": item.get("observed_at_ms"),
+                        "event_cursor": cursor,
+                    })
+            for owner_id, rows in activity_by_owner.items():
+                rows.sort(
+                    key=lambda row: (
+                        int(row["event_cursor"]["event_seq"] or 0),
+                        str(row["event_cursor"]["event_id"] or ""),
+                    ),
+                    reverse=True,
+                )
+                retained = rows[:3 if agents[owner_id]["structural_role"] == "CTRL" else 1]
+                latest = retained[0]
+                agents[owner_id]["live_projection"] = {
+                    "state": "KNOWN",
+                    "status": latest["lifecycle_state"],
+                    "mini_update": latest["text"],
+                    "context_rows": retained,
+                    "event_cursor": latest["event_cursor"],
+                    "reason": None,
+                }
+
+            records: dict[str, dict[str, Any]] = {
+                **agents, **independent_nodes, **{task["id"]: task for task in tasks},
+            }
+            for edge in [*agent_edges, *task_edges, *host_edges]:
+                source, target = records[edge["source"]], records[edge["target"]]
+                source["ports"].append({
+                    "id": edge["source_port_id"], "direction": "output",
+                    "edge_kind": edge["edge_kind"], "edge_id": edge["id"],
+                })
+                source["output_port_ids"].append(edge["source_port_id"])
+                target["ports"].append({
+                    "id": edge["target_port_id"], "direction": "input",
+                    "edge_kind": edge["edge_kind"], "edge_id": edge["id"],
+                })
+                target["input_port_ids"].append(edge["target_port_id"])
+            for record in records.values():
+                record["ports"].sort(key=lambda port: (port["direction"], port["edge_kind"], port["edge_id"]))
+                record["input_port_ids"].sort()
+                record["output_port_ids"].sort()
+                record["port_count"] = len(record["ports"])
+
+            def recursive(agent_id: str) -> dict[str, Any]:
+                node = copy.deepcopy(agents[agent_id])
+                node["children"] = [recursive(child_id) for child_id in children.get(agent_id, [])]
+                return node
+
+            orphan_ids = sorted(
+                (
+                    agent_id for agent_id, agent in agents.items()
+                    if agent["parent_relation"]["state"] == "UNKNOWN"
+                    and agent["hierarchy_membership"] != "INVALID"
+                ),
+                key=lambda item: (agents[item]["source_order"], item),
+            )
+            payload = {
+                "schema_version": 1,
+                "state": "PARTIAL" if rejected_bindings or orphan_ids else "KNOWN",
+                "loading": False,
+                "empty": not agents and not tasks and not independent_nodes,
+                "nodes": sorted(agents.values(), key=lambda agent: (agent["source_order"], agent["agent_id"])),
+                "tasks": tasks,
+                "agent_edges": sorted(agent_edges, key=lambda edge: (agents[edge["source"]]["source_order"], agents[edge["target"]]["source_order"], edge["id"])),
+                "task_edges": sorted(task_edges, key=lambda edge: (agents[edge["source"]]["source_order"], records[edge["target"]]["order"], edge["id"])),
+                "independent_nodes": sorted(
+                    independent_nodes.values(),
+                    key=lambda node: (node["project_id"], node["source_order"], node["id"]),
+                ),
+                "host_edges": sorted(host_edges, key=lambda edge: (edge["source"], edge["target"], edge["id"])),
+                "independent_count": len(independent_nodes),
+                "roots": [recursive(agent_id) for agent_id in roots],
+                "orphans": [recursive(agent_id) for agent_id in orphan_ids],
+                "hiddenTaskCount": sum(agent["hiddenTaskCount"] for agent in agents.values()),
+                "cursor": None,
+                "reason": "MISSING_OR_CONFLICTING_BINDING" if rejected_bindings or orphan_ids else None,
+                "ordering": {
+                    "agents": "manifest_tier_display_name_then_agent_id",
+                    "tasks": "manifest_presentation_priority_then_task_id",
+                    "tiers": ["CTRL", "LEAD", "DOER"],
+                    "max_visible_tasks_per_agent": 3,
+                },
+                "authority": {"execution_authority": False},
+            }
+            if not agents and not independent_nodes:
+                payload["state"] = "UNKNOWN" if rejected_bindings else "EMPTY"
+            payload["cursor"] = _topology_cursor(payload, ledger.get("cursor"))
+            return payload
+        except (ProgressEventError, KeyError, TypeError, ValueError):
+            unknown = _topology_payload("UNKNOWN", reason="INVALID_OR_UNAVAILABLE_MANIFEST_LEDGER")
+            unknown["loading"] = False
+            return unknown
+
+    @staticmethod
+    def _scope_topology_projection(
+        topology: dict[str, Any], project_id: str, root_agent_id: str | None = None,
+    ) -> dict[str, Any]:
+        if topology.get("state") == "LOADING":
+            return copy.deepcopy(topology)
+        scoped = copy.deepcopy(topology)
+        project_nodes = [node for node in topology.get("nodes", []) if node.get("project_id") == project_id]
+        allowed_ids = {node["id"] for node in project_nodes}
+        if root_agent_id is not None:
+            descendants = {root_agent_id}
+            changed = True
+            while changed:
+                changed = False
+                for edge in topology.get("agent_edges", []):
+                    if edge.get("source") in descendants and edge.get("target") not in descendants:
+                        descendants.add(edge["target"])
+                        changed = True
+            allowed_ids.intersection_update(descendants)
+        nodes = [node for node in project_nodes if node["id"] in allowed_ids]
+        node_ids = {node["id"] for node in nodes}
+        tasks = [task for task in topology.get("tasks", []) if task.get("owning_agent_id") in node_ids]
+        task_ids = {task["id"] for task in tasks}
+        independent_nodes = [
+            node for node in topology.get("independent_nodes", [])
+            if node.get("project_id") == project_id
+        ]
+        independent_ids = {node["id"] for node in independent_nodes}
+        if root_agent_id is not None:
+            reachable = {root_agent_id}
+            changed = True
+            while changed:
+                changed = False
+                for edge in topology.get("host_edges", []):
+                    if edge.get("source") in reachable and edge.get("target") not in reachable:
+                        reachable.add(edge["target"])
+                        changed = True
+            independent_nodes = [node for node in independent_nodes if node["id"] in reachable]
+            independent_ids = {node["id"] for node in independent_nodes}
+        agent_edges = [
+            edge for edge in topology.get("agent_edges", [])
+            if edge.get("source") in node_ids and edge.get("target") in node_ids
+        ]
+        task_edges = [
+            edge for edge in topology.get("task_edges", [])
+            if edge.get("source") in node_ids and edge.get("target") in task_ids
+        ]
+        host_edges = [
+            edge for edge in topology.get("host_edges", [])
+            if edge.get("source") in node_ids | independent_ids
+            and edge.get("target") in independent_ids
+        ]
+        children: dict[str, list[str]] = {}
+        for edge in agent_edges:
+            children.setdefault(edge["source"], []).append(edge["target"])
+        by_id = {node["id"]: node for node in nodes}
+
+        def recursive(agent_id: str) -> dict[str, Any]:
+            node = copy.deepcopy(by_id[agent_id])
+            node["children"] = [recursive(child_id) for child_id in children.get(agent_id, [])]
+            return node
+
+        root_ids = [node["id"] for node in nodes if node.get("parent_relation", {}).get("state") == "ROOT"]
+        orphan_ids = [
+            node["id"] for node in nodes
+            if node.get("parent_relation", {}).get("state") == "UNKNOWN"
+            and node.get("hierarchy_membership") != "INVALID"
+        ]
+        invalid_ids = [
+            node["id"] for node in nodes
+            if node.get("hierarchy_membership") == "INVALID"
+        ]
+        partial = bool(orphan_ids or invalid_ids)
+        scoped.update({
+            "nodes": nodes, "tasks": tasks, "agent_edges": agent_edges, "task_edges": task_edges,
+            "independent_nodes": independent_nodes, "host_edges": host_edges,
+            "independent_count": len(independent_nodes),
+            "roots": [recursive(agent_id) for agent_id in root_ids],
+            "orphans": [recursive(agent_id) for agent_id in orphan_ids],
+            "hiddenTaskCount": sum(int(node.get("hiddenTaskCount") or 0) for node in nodes),
+            "empty": not nodes and not tasks and not independent_nodes,
+            "state": "EMPTY" if not nodes and not tasks and not independent_nodes else "PARTIAL" if partial else "KNOWN",
+            "reason": "MISSING_OR_CONFLICTING_BINDING" if partial else None,
+            "cursor": None,
+        })
+        ledger_cursor = (topology.get("cursor") or {}).get("ledger")
+        scoped["cursor"] = _topology_cursor(scoped, ledger_cursor)
+        return scoped
+
     def _decorate_overview(self, base: dict[str, Any]) -> dict[str, Any]:
         view = copy.deepcopy(base)
         forecasts = self.store.latest_forecasts()
@@ -11033,9 +11763,76 @@ class App:
             "token_field": "Codex JSONL token_count total/input+output, SQLite threads.tokens_used fallback",
             "label": "Local token-count aggregate; not billing.",
         }
-        view["progress"] = self._progress_payload(view)
+        progress = self._progress_payload(view)
         view["navigation"] = self._navigation_payload(view)
         view["overview_metrics"] = self._overview_metrics(view, scope_id="all", scope_type="all")
+        view["topology"] = self._topology_projection(view)
+        admitted = {node["id"]: node for node in view["topology"].get("nodes", [])}
+        for node in view.get("nodes", []):
+            identity = admitted.get(node["id"])
+            if identity is None:
+                node.update({
+                    "node_kind": "independent_host_task",
+                    "role": "independent", "role_label": "TASK", "worker_role": "",
+                    "icon": "", "title": INDEPENDENT_HOST_PRESENTATION["title"],
+                    "artifact": INDEPENDENT_HOST_PRESENTATION["title"], "worker": "",
+                    "presentation": copy.deepcopy(INDEPENDENT_HOST_PRESENTATION),
+                    "manifest_identity": None, "profession": None, "structural_role": None,
+                    "controller_ids": [],
+                    "detail_target": {"surface": "agent_detail", "agent_id": node["id"]},
+                    "actions": {"open_detail": True, "edit_manifest": False, "role_actions": False},
+                    "execution_authority": False, "swarm_authority": False,
+                })
+            else:
+                node.update({
+                    "node_kind": "swarm_agent",
+                    "role": identity["structural_role"].casefold(),
+                    "role_label": identity["structural_role"],
+                    "icon": identity["lucide_icon"],
+                    "title": identity["title"], "artifact": identity["title"], "worker": "",
+                    "presentation": {
+                        "display_name": identity["display_name"], "title": identity["title"],
+                        "lucide_icon": identity["lucide_icon"], "avatar": copy.deepcopy(identity["avatar"]),
+                    },
+                    "manifest_identity": copy.deepcopy(identity["manifest_identity"]),
+                    "profession": identity["profession"],
+                    "structural_role": identity["structural_role"],
+                    "detail_target": copy.deepcopy(identity["detail_target"]),
+                    "actions": {"open_detail": True, "edit_manifest": True, "role_actions": True},
+                    "execution_authority": False, "swarm_authority": False,
+                })
+        admitted_ids = set(admitted)
+        view["controllers"] = [
+            controller for controller in view.get("controllers", [])
+            if controller.get("id") in admitted_ids
+            and admitted[controller["id"]]["structural_role"] == "CTRL"
+        ]
+        for link in view.get("links", []):
+            link["relationship"] = (
+                "delegated" if link.get("source") in admitted_ids and link.get("target") in admitted_ids
+                else "host_spawn"
+            )
+            link["execution_authority"] = False
+        view["roots"] = [controller["id"] for controller in view["controllers"]]
+        for project in view.get("projects", []):
+            project_nodes = [node for node in view["nodes"] if node.get("project_id") == project["id"]]
+            project["nodes"] = len(project_nodes)
+            project["task_count"] = len(project_nodes)
+            project["independent_count"] = sum(
+                node.get("node_kind") == "independent_host_task" for node in project_nodes
+            )
+            project["active"] = sum(node.get("status") == "active" for node in project_nodes)
+        view["analytics"]["tasks"] = sum(not node.get("virtual") for node in view["nodes"])
+        view["analytics"]["independent_count"] = sum(
+            node.get("node_kind") == "independent_host_task" for node in view["nodes"]
+        )
+        view["analytics"]["roles"] = dict(Counter(
+            node.get("role", "unknown") for node in view["nodes"] if not node.get("virtual")
+        ))
+        view["progress"] = progress
+        view["navigation"] = self._navigation_payload(view)
+        view["overview_metrics"] = self._overview_metrics(view, scope_id="all", scope_type="all")
+        view["project_briefs"] = self._project_briefs_projection()
         return view
 
     def overview(self, project_id: str | None = None) -> dict[str, Any]:
@@ -11210,6 +12007,48 @@ class App:
             return self._project_manifest_projection(record, root_binding)
         except (AttributeError, ConsoleError, OSError, UnicodeError, sqlite3.Error, TypeError, ValueError):
             return self._project_identity_unavailable(record)
+
+    def _project_briefs_projection(self) -> dict[str, Any]:
+        unavailable = {
+            "state": "UNKNOWN", "available": False, "cursor": None, "projects": [],
+            "source": "codex_host_projects_and_project_roots+project_root/SWARM.md",
+            "claim_limit": (
+                "Saved-project or root-brief identity is unavailable; no brief content or inferred project "
+                "identity is emitted."
+            ),
+        }
+        try:
+            state, records, cursor, root_owners = self._host_project_records()
+        except (ConsoleError, OSError, sqlite3.Error, TypeError, ValueError):
+            return unavailable
+        if state == "UNKNOWN" or cursor is None:
+            return unavailable
+        projects = []
+        for record in records:
+            identity = self._project_identity(record, root_owners)
+            manifest = identity.get("manifest") if isinstance(identity.get("manifest"), dict) else {}
+            projects.append({
+                "project_id": record["id"],
+                "display_name": record["display_name"],
+                "root_binding_status": (identity.get("root_binding") or {}).get("status", "UNKNOWN"),
+                "status": manifest.get("status", "UNAVAILABLE"),
+                "digest": manifest.get("digest"),
+                "path": manifest.get("path", "SWARM.md"),
+                "source": manifest.get("source", "project_root/SWARM.md"),
+            })
+        projection_cursor = {
+            "type": "project_briefs_v1",
+            "digest": _auto_digest({"host_cursor": cursor, "projects": projects}),
+        }
+        return {
+            "state": state, "available": state == "KNOWN", "cursor": projection_cursor,
+            "projects": projects,
+            "source": "codex_host_projects_and_project_roots+project_root/SWARM.md",
+            "claim_limit": (
+                "Digest-bound root briefs are concise intent only; Ledger state, tasks, progress, proof, "
+                "listener state, and execution authority are not copied or inferred."
+            ),
+        }
 
     @staticmethod
     def _project_navigation_fallback(record: dict[str, Any]) -> dict[str, Any]:
