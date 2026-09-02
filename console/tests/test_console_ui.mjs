@@ -4914,12 +4914,23 @@ proofFeed.items.push({
 
     const mobilePage = await browser.newPage({ viewport: { width: 390, height: 844 } });
     const mobile = await mount(mobilePage, overflowingProjectFixture(), overrides);
-    await assertSharedCircleGeometry(mobilePage, ["#mobile-message-action", ".agent-avatar-token"]);
+    await assertSharedCircleGeometry(mobilePage, ["#profile", "#mobile-message-action", ".agent-avatar-token"]);
     await mobilePage.locator("#mobile-menu-button").click();
     await mobilePage.locator("#console-drawer").waitFor({ state: "visible" });
     await assertSharedCircleGeometry(mobilePage, ["#console-drawer .scope-dot", ".support-mark"]);
     if (evidenceDir) await mobilePage.screenshot({ path: path.join(evidenceDir, "circle-invariant-drawer-mobile-390x844.png"), fullPage: false, animations: "disabled" });
     await mobilePage.locator("#drawer-close").click();
+    await mobilePage.evaluate((metrics) => {
+      state.overview.overview_metrics = metrics;
+      renderOverviewMetrics();
+    }, { ...overviewMetricFixture, usage: { ...overviewMetricFixture.usage, used_tokens: 3_207_000_000 } });
+    assert.equal(await mobilePage.locator("#metric-usage-value").textContent(), "3207m used");
+    assert.equal(await mobilePage.locator('.usage-chart-card').evaluate((card) => {
+      const value = card.querySelector("#metric-usage-value").getBoundingClientRect();
+      const range = card.querySelector(".usage-range").getBoundingClientRect();
+      const bounds = card.getBoundingClientRect();
+      return value.bottom <= range.top && range.left >= bounds.left && range.right <= bounds.right;
+    }), true);
     await mobilePage.waitForFunction(() => [...document.querySelectorAll("[data-overview-hierarchy-edge]")].every((path) => Boolean(path.getAttribute("d"))));
     assert.equal(await mobilePage.locator("#overview-project-cards .overview-hierarchy-children").evaluateAll((groups) => groups.every((group) => getComputedStyle(group).gridTemplateColumns.split(" ").length === 1)), true);
     assert.equal(await mobilePage.locator("#overview-project-cards .overview-node-inspect").evaluateAll((inspects) => inspects.every((inspect) => inspect.getBoundingClientRect().width >= 44 && inspect.getBoundingClientRect().height >= 44 && getComputedStyle(inspect).opacity === "1")), true);
