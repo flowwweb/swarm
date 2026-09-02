@@ -718,9 +718,9 @@ assert.match(app, /Observed tokens/);
 assert.match(app, /Admitted scope/);
 assert.match(app, /yield-scope-divider/);
 assert.match(indexHtml, /id="overview-metrics" aria-label="Overview diagnostics"/);
-assert.deepEqual([...indexHtml.matchAll(/data-overview-metric="([^"]+)"/g)].map((match) => match[1]), ["active-work", "needs-attention", "verified-progress", "usage", "health"]);
+assert.deepEqual([...indexHtml.matchAll(/data-overview-metric="([^"]+)"/g)].map((match) => match[1]), ["active-work", "needs-attention", "verified-progress", "usage"]);
 assert.doesNotMatch(indexHtml, /verified-yield-summary|verified-yield-rows|overview-monitoring-health-state|>Unmeasured</);
-assert.match(css, /\.overview-metrics \{[^}]*grid-template-columns:repeat\(5,minmax\(0,1fr\)\)/);
+assert.match(css, /\.overview-metrics \{[^}]*grid-template-columns:repeat\(4,minmax\(0,1fr\)\)/);
 assert.match(css, /\.overview-metric-card \{[^}]*min-height:108px/);
 assert.match(app, /function overviewMetricsProjectionValue\(value, expectedScopeId = ""\)/);
 assert.match(app, /overviewMetricsProjectionValue\(state\.overview\?\.overview_metrics, overviewMetricsScopeId\(\)\)/);
@@ -1311,7 +1311,7 @@ assert.doesNotMatch(indexHtml + app, /data-agents-tab|agents-tab-library|state\.
 assert.match(indexHtml, /id="role-library-status" role="status"/);
 assert.match(app, /function activeAgentRecords\(\)/);
 assert.match(app, /\["active", "in_progress"\]\.includes\(String\(node\.status \|\| ""\)\.toLowerCase\(\)\)/);
-assert.match(app, /identityState = independent \? "independent" : assignment && role && binding \? "admitted" : "malformed"/);
+assert.match(app, /identityState = independent \? "independent" : assignment && role && binding && projectedName \? "admitted" : "malformed"/);
 assert.match(app, /Reconnect this SWARM task to one valid manifest role and CTRL/);
 assert.match(app, /Anonymous[\s\S]*Independent task/);
 assert.match(app, /function agentTableRowMarkup\(record\)/);
@@ -1321,14 +1321,11 @@ assert.match(app, /aria-label="Progress UNKNOWN"/);
 assert.match(app, /function openAgentDetail\(trigger\)/);
 assert.match(app, /\$\("#agent-detail-dialog"\)\.addEventListener\("click", \(event\) => \{ if \(event\.target === event\.currentTarget\) closeAgentDetail\(\); \}\)/);
 assert.match(app, /No exact accepted work association is available for this agent/);
-assert.match(app, /function agentColorRegistry\(\)/);
-assert.match(app, /function agentColorIdentity\(node\)/);
-assert.match(app, /state\.overview\?\.progress\?\.agent_color_registry \|\| roleManifestProjection\(\)\?\.agent_color_registry/);
-assert.match(app, /Math\.imul\(hash \^ identity\.charCodeAt\(index\), 16777619\)/);
+assert.match(app, /node\?\.presentation\?\.display_name/);
+assert.match(app, /projectedName \? "admitted" : "malformed"/);
+assert.doesNotMatch(app, /AGENT_COLOR_CATALOG|agentColorRegistry|agentColorIdentity|Math\.imul\(hash/);
+assert.doesNotMatch(app.match(/function activeAgentRecords\(\)[\s\S]*?\n\}/)?.[0] || "", /Math\.random\(|hash/i);
 assert.doesNotMatch(app, /romanAgentOrdinal|#708090|Role pending/);
-assert.ok((app.match(/[A-Za-z]+:#[0-9A-F]{6}/g) || []).length >= 100, "agent color naming uses at least 100 deterministic named colors");
-const agentsSource = app.slice(app.indexOf("const AGENT_COLOR_CATALOG"), app.indexOf("function roleManifestProjectionValue"));
-assert.doesNotMatch(agentsSource, /Math\.random\(|robot|data:image\/|OpenAI|provider/i);
 assert.doesNotMatch(app + css, /class="agent-hierarchy|class="agent-project|class="agent-branch|\.agent-hierarchy|\.agent-project|\.agent-branch|\.agent-role-mark/);
 const expectedProfessions = ["Accountant", "Analyst", "Architect", "Artist", "Auditor", "Assistant", "Designer", "Developer", "Educator", "Inventor", "Legal", "Manager", "Marketer", "Operator", "Producer", "Recruiter", "Researcher", "Reviewer", "Security", "Specialist", "Strategist", "Support", "Tester", "Writer"];
 const roleAvatarFixtures = new Map(["architect", "developer"].map((roleId) => {
@@ -1875,6 +1872,16 @@ function scopedFixture() {
     { id: "stalled-task", role: "doer", role_label: "TASK", artifact: "Trace dependency", project_id: "project:stalled", project: "Stalled project", status: "stalled", updated_at: "2026-08-09T00:00:00Z", controller_ids: ["stalled-ctrl"] },
     { id: "archived-ctrl", role: "ctrl", artifact: "Archived release", project_id: "project:archived", project: "Archived project", status: "quiet", updated_at: "2026-08-09T00:00:00Z", controller_ids: ["archived-ctrl"] },
   );
+  const projectedAgentIdentity = new Map([
+    ["nested-ctrl", ["CTRL", "#FF6347"]], ["nested-task", ["Violet", "#EE82EE"]],
+    ["branch-ctrl", ["Flowwweb CTRL", "#00FFFF"]], ["branch-task", ["Rose", "#FF69B4"]],
+    ["arc-ctrl", ["Arc CTRL", "#FFD700"]], ["arc-task", ["Azure", "#00FFFF"]],
+    ["atlas-ctrl", ["Atlas CTRL", "#EE82EE"]], ["atlas-task", ["Gold", "#FFD700"]],
+  ]);
+  overview.nodes.forEach((node) => {
+    const identity = projectedAgentIdentity.get(node.id);
+    if (identity) node.presentation = { display_name: identity[0], accent: identity[1] };
+  });
   overview.projects.push({ id: "project:branch", name: "Flowwweb", nodes: 2, tokens: 0, active: 2 });
   overview.projects.push({ id: "project:arc", name: "Arc", nodes: 2, tokens: 0, active: 2 });
   overview.projects.push({ id: "project:atlas", name: "Atlas", nodes: 2, tokens: 0, active: 2 });
@@ -3961,9 +3968,8 @@ proofFeed.items.push({
       return box.left < help.left && help.left < profile.left && Math.abs(profile.right - header.right) <= 1 && box.top >= header.top && profile.bottom <= header.bottom;
     }), true);
     if (evidenceDir) await page.screenshot({ path: path.join(evidenceDir, "shell-profile-sidebar-desktop-1536x1024.png"), fullPage: false, animations: "disabled" });
-    assert.deepEqual(await page.locator(".overview-metric-card > header > span").allTextContents(), ["Active work", "Needs attention", "Verified progress", "Usage", "System status"]);
-    assert.deepEqual(await page.locator(".overview-metric-card > strong").allTextContents(), ["3 / 5", "2", "75%", "125k used", "Healthy"]);
-    assert.ok(await page.locator("#metric-health-trend polyline.chart-line").count() === 1);
+    assert.deepEqual(await page.locator(".overview-metric-card > header > span").allTextContents(), ["Active work", "Needs attention", "Verified progress", "Usage"]);
+    assert.deepEqual(await page.locator(".overview-metric-card > strong").allTextContents(), ["3 / 5", "2", "75%", "125k used"]);
     await page.waitForFunction(() => state.usageWindowHours === 1 && state.usageStatus === "current");
     assert.equal(await page.locator('[data-usage-chart="overview"] [data-usage-range="1"]').getAttribute("aria-pressed"), "true");
     assert.equal(await page.locator("#metric-usage-trend").getAttribute("aria-label"), "Usage during the last hour from 2 timestamped samples");
@@ -4323,15 +4329,15 @@ proofFeed.items.push({
     assert.equal(await measuredAgent.locator(".agent-avatar-token .role-avatar.has-image img").count(), 1);
     assert.ok(await page.locator(".agent-avatar-token .role-avatar.is-unavailable").count() >= 1);
     assert.doesNotMatch(await page.locator("#view-agents").textContent(), /Pending/);
-    assert.match(await measuredAgent.textContent(), /Review screenshots[\s\S]*(Tomato|Aqua|Gold|Violet)[\s\S]*Developer[\s\S]*DOER/);
+    assert.match(await measuredAgent.textContent(), /Review screenshots[\s\S]*Violet[\s\S]*Developer[\s\S]*DOER/);
     assert.doesNotMatch(await measuredAgent.textContent(), /nested-task|01a[0-9a-f-]+/i);
     const malformedAgent = page.locator('#view-agents [data-agent-detail="malformed-task"]');
-    assert.match(await malformedAgent.textContent(), /Reconnect role manifest[\s\S]*Role binding error[\s\S]*Needs attention/);
+    assert.match(await malformedAgent.textContent(), /Reconnect role manifest[\s\S]*Identity unavailable[\s\S]*Role binding error[\s\S]*Needs attention/);
     assert.equal(await malformedAgent.isDisabled(), true);
     await measuredAgent.focus();
     await measuredAgent.press("Enter");
     await page.locator("#agent-detail-dialog").waitFor({ state: "visible" });
-    assert.match(await page.locator("#agent-detail-dialog").textContent(), /Review screenshots[\s\S]*(Tomato|Aqua|Gold|Violet)[\s\S]*Developer[\s\S]*swarm[\s\S]*Live ETA[\s\S]*medium confidence[\s\S]*Work[\s\S]*Routing proof[\s\S]*Capture device proof[\s\S]*Bind the qualified APK[\s\S]*Log[\s\S]*3 of 5 checks passed/);
+    assert.match(await page.locator("#agent-detail-dialog").textContent(), /Review screenshots[\s\S]*Violet[\s\S]*Developer[\s\S]*swarm[\s\S]*Live ETA[\s\S]*medium confidence[\s\S]*Work[\s\S]*Routing proof[\s\S]*Capture device proof[\s\S]*Bind the qualified APK[\s\S]*Log[\s\S]*3 of 5 checks passed/);
     assert.doesNotMatch(await page.locator("#agent-detail-dialog").textContent(), /nested-task|nested-ctrl|developer-v1/);
     assert.equal(await page.locator("#agent-detail-dialog .agent-work-status[title]").count(), 3);
     assert.equal(await page.locator("#agent-detail-dialog .agent-block-map").textContent(), "");
@@ -5037,6 +5043,7 @@ proofFeed.items.push({
     await mobilePage.keyboard.press("Home");
     await mobilePage.keyboard.press("Enter");
     await mobilePage.locator("#role-library-detail.is-mobile-open").waitFor({ state: "visible" });
+    await mobilePage.waitForFunction(() => document.activeElement?.getAttribute("aria-label") === "Back to roles");
     assert.equal(await mobilePage.evaluate(() => document.activeElement?.getAttribute("aria-label")), "Back to roles");
     await mobilePage.getByRole("button", { name: "Edit Accountant avatar" }).click();
     await assertDialogFrame(mobilePage, "#role-editor");

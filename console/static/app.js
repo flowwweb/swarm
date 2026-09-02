@@ -2217,16 +2217,6 @@ function renderOverviewMetrics() {
   renderOverviewMetric("usage", presentation.usage);
   drawLine($("#metric-progress-trend"), presentation.progress.series || [], "#4cda85");
   $("#metric-progress-trend").setAttribute("aria-label", presentation.progress.series?.length ? "Accepted verified progress trend" : "Verified progress trend unavailable");
-  const health = systemHealthPresentation();
-  const healthValues = diagnosticHistorySeries();
-  const healthState = state.diagnosticsHistoryStatus === "current" ? health.label : state.diagnosticsHistoryStatus === "stale" ? "Stale" : "Unknown";
-  $("#metric-health-state").textContent = healthState;
-  $("#metric-health-state").className = health.label === "Healthy" ? "is-known" : health.label === "Needs attention" ? "is-partial" : "";
-  $("#metric-health-value").textContent = health.label;
-  $("#metric-health-value").setAttribute("aria-label", health.label);
-  $("#metric-health-note").textContent = health.note;
-  drawLine($("#metric-health-trend"), healthValues, "#ff6a3d");
-  $("#metric-health-trend").setAttribute("aria-label", healthValues.length ? "System health during the last hour from " + healthValues.length + " deterministic sample" + (healthValues.length === 1 ? "" : "s") : "Health history unavailable for the last hour");
   renderUsageCharts();
 }
 
@@ -3803,33 +3793,6 @@ function runLogAgentId(node) {
   return String(node?.owner_id || node?.id || "");
 }
 
-const AGENT_COLOR_CATALOG = "AliceBlue:#F0F8FF,AntiqueWhite:#FAEBD7,Aqua:#00FFFF,Aquamarine:#7FFFD4,Azure:#F0FFFF,Beige:#F5F5DC,Bisque:#FFE4C4,Black:#000000,BlanchedAlmond:#FFEBCD,Blue:#0000FF,BlueViolet:#8A2BE2,Brown:#A52A2A,BurlyWood:#DEB887,CadetBlue:#5F9EA0,Chartreuse:#7FFF00,Chocolate:#D2691E,Coral:#FF7F50,CornflowerBlue:#6495ED,Cornsilk:#FFF8DC,Crimson:#DC143C,Cyan:#00FFFF,DarkBlue:#00008B,DarkCyan:#008B8B,DarkGoldenRod:#B8860B,DarkGray:#A9A9A9,DarkGreen:#006400,DarkKhaki:#BDB76B,DarkMagenta:#8B008B,DarkOliveGreen:#556B2F,DarkOrange:#FF8C00,DarkOrchid:#9932CC,DarkRed:#8B0000,DarkSalmon:#E9967A,DarkSeaGreen:#8FBC8F,DarkSlateBlue:#483D8B,DarkSlateGray:#2F4F4F,DarkTurquoise:#00CED1,DarkViolet:#9400D3,DeepPink:#FF1493,DeepSkyBlue:#00BFFF,DimGray:#696969,DodgerBlue:#1E90FF,FireBrick:#B22222,FloralWhite:#FFFAF0,ForestGreen:#228B22,Fuchsia:#FF00FF,Gainsboro:#DCDCDC,GhostWhite:#F8F8FF,Gold:#FFD700,GoldenRod:#DAA520,Gray:#808080,Green:#008000,GreenYellow:#ADFF2F,HoneyDew:#F0FFF0,HotPink:#FF69B4,IndianRed:#CD5C5C,Indigo:#4B0082,Ivory:#FFFFF0,Khaki:#F0E68C,Lavender:#E6E6FA,LavenderBlush:#FFF0F5,LawnGreen:#7CFC00,LemonChiffon:#FFFACD,LightBlue:#ADD8E6,LightCoral:#F08080,LightCyan:#E0FFFF,LightGoldenRodYellow:#FAFAD2,LightGray:#D3D3D3,LightGreen:#90EE90,LightPink:#FFB6C1,LightSalmon:#FFA07A,LightSeaGreen:#20B2AA,LightSkyBlue:#87CEFA,LightSlateGray:#778899,LightSteelBlue:#B0C4DE,LightYellow:#FFFFE0,Lime:#00FF00,LimeGreen:#32CD32,Linen:#FAF0E6,Magenta:#FF00FF,Maroon:#800000,MediumAquaMarine:#66CDAA,MediumBlue:#0000CD,MediumOrchid:#BA55D3,MediumPurple:#9370DB,MediumSeaGreen:#3CB371,MediumSlateBlue:#7B68EE,MediumSpringGreen:#00FA9A,MediumTurquoise:#48D1CC,MediumVioletRed:#C71585,MidnightBlue:#191970,MintCream:#F5FFFA,MistyRose:#FFE4E1,Moccasin:#FFE4B5,Navy:#000080,OldLace:#FDF5E6,Olive:#808000,OliveDrab:#6B8E23,Orange:#FFA500,OrangeRed:#FF4500,Orchid:#DA70D6,PaleGoldenRod:#EEE8AA,PaleGreen:#98FB98,PaleTurquoise:#AFEEEE,PaleVioletRed:#DB7093,PapayaWhip:#FFEFD5,PeachPuff:#FFDAB9,Peru:#CD853F,Pink:#FFC0CB,Plum:#DDA0DD,PowderBlue:#B0E0E6,Purple:#800080,RebeccaPurple:#663399,Red:#FF0000,RosyBrown:#BC8F8F,RoyalBlue:#4169E1,SaddleBrown:#8B4513,Salmon:#FA8072,SandyBrown:#F4A460,SeaGreen:#2E8B57,SeaShell:#FFF5EE,Sienna:#A0522D,Silver:#C0C0C0,SkyBlue:#87CEEB,SlateBlue:#6A5ACD,Snow:#FFFAFA,SpringGreen:#00FF7F,SteelBlue:#4682B4,Tan:#D2B48C,Teal:#008080,Thistle:#D8BFD8,Tomato:#FF6347,Turquoise:#40E0D0,Violet:#EE82EE,Wheat:#F5DEB3,White:#FFFFFF,WhiteSmoke:#F5F5F5,Yellow:#FFFF00,YellowGreen:#9ACD32".split(",").map((entry) => {
-  const [name, hex] = entry.split(":");
-  return { name, hex };
-});
-
-function agentColorRgb(hex) {
-  const match = /^#([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i.exec(String(hex || ""));
-  return match ? match.slice(1).map((value) => Number.parseInt(value, 16)) : null;
-}
-
-function agentColorRegistry() {
-  const projected = state.overview?.progress?.agent_color_registry || roleManifestProjection()?.agent_color_registry;
-  const colors = Array.isArray(projected?.colors) ? projected.colors.filter((color) => /^[A-Za-z]+$/.test(String(color?.name || "")) && /^#[0-9a-f]{6}$/i.test(String(color?.hex || ""))) : [];
-  return colors.length ? colors : AGENT_COLOR_CATALOG.filter((color) => color.name !== "SlateGray");
-}
-
-function agentColorIdentity(node) {
-  const colors = agentColorRegistry();
-  const retained = String(node?.agent_color_name || node?.agent_color || "").trim();
-  const exact = colors.find((color) => color.name.toLowerCase() === retained.toLowerCase());
-  if (exact) return exact;
-  const identity = String(node?.owner_id || node?.id || node?.artifact || "independent");
-  let hash = 2166136261;
-  for (let index = 0; index < identity.length; index += 1) hash = Math.imul(hash ^ identity.charCodeAt(index), 16777619) >>> 0;
-  return colors[hash % colors.length];
-}
-
 function agentRoleAssignment(node) {
   return (roleManifestProjection()?.assignments || [])
     .filter((assignment) => assignment.task_id === node?.id)
@@ -3871,10 +3834,11 @@ function activeAgentRecords() {
       const profession = agentProfession(node, role);
       const binding = agentExactBinding(node);
       const independent = !node.project_id;
-      const identity = agentColorIdentity(node);
-      const identityState = independent ? "independent" : assignment && role && binding ? "admitted" : "malformed";
+      const projectedName = String(node?.presentation?.display_name || "").trim();
+      const projectedAccent = String(node?.presentation?.accent || node?.accent || role?.accent || "").trim();
+      const identityState = independent ? "independent" : assignment && role && binding && projectedName ? "admitted" : "malformed";
       const project = projects.get(node.project_id) || { id: independent ? "independent" : String(node.project_id || "unbound"), label: independent ? "Independent" : "Project unavailable" };
-      return { node, role, assignment, profession, structuralRole: observedAgentRole(node), accent: identity.hex, baseColorName: identity.name, presentationName: identity.name, binding, project, identityState };
+      return { node, role, assignment, profession, structuralRole: observedAgentRole(node), accent: /^#[0-9a-f]{6}$/i.test(projectedAccent) ? projectedAccent : "var(--faint)", presentationName: projectedName || (independent ? "Anonymous" : "Identity unavailable"), binding, project, identityState };
     })
     .sort((left, right) => left.project.label.localeCompare(right.project.label) || (roleRank[left.structuralRole] ?? 3) - (roleRank[right.structuralRole] ?? 3) || String(left.node.artifact || left.node.title || left.node.id).localeCompare(String(right.node.artifact || right.node.title || right.node.id)));
 }
