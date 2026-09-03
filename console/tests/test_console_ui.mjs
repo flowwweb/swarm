@@ -2363,7 +2363,7 @@ async function mount(page, overview, overrides = {}) {
     if (url.pathname === "/api/projects" && request.method() === "POST") {
       const payload = request.postDataJSON();
       projectRequests.push(payload);
-      return route.fulfill(response({ ok: true, project: { id: "project:created", display_name: payload.name, root: payload.root }, mutation_receipt: { status: "created" } }));
+      return route.fulfill({ status: 400, contentType: "application/json", body: JSON.stringify({ ok: false, error: "project creation is unavailable until Codex provides a host-owned capability; create the project in Codex, then refresh SWARM HQ" }) });
     }
     if (profileControl && url.pathname === "/api/profile") {
       profileRequests.push({ method: request.method(), body: request.postData() });
@@ -3804,9 +3804,10 @@ proofFeed.items.push({
     await shellPage.locator("#project-create-root").fill("C:\\Projects\\created-project");
     await shellPage.locator("#project-create-acknowledge").check();
     await shellPage.getByRole("button", { name: "Create project", exact: true }).last().click();
-    await shellPage.waitForFunction(() => !document.querySelector("#project-create-dialog").open);
+    await shellPage.getByText(/create the project in Codex, then refresh SWARM HQ/i).waitFor();
+    assert.equal(await shellPage.locator("#project-create-dialog").evaluate((dialog) => dialog.open), true);
     assert.deepEqual(shellRuntime.projectRequests, [{ name: "Created project", root: "C:\\Projects\\created-project", acknowledge: true }]);
-    assert.deepEqual(shellRuntime.runtimeErrors, []);
+    assert.ok(shellRuntime.runtimeErrors.every((message) => /400 \(Bad Request\)/.test(message)), shellRuntime.runtimeErrors.join(" | "));
     await shellPage.close();
 
     const diagnosticsControl = {

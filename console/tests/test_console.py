@@ -4373,50 +4373,43 @@ class SwarmConsoleTests(unittest.TestCase):
         self.assertEqual(row, ("project", "project:alpha", 1))
         self.assertNotIn("projects", table_names)
 
-    def test_project_create_mutates_only_canonical_host_project_tables_and_replays(self) -> None:
+    def test_project_create_fails_closed_without_host_capability_and_preserves_reads(self) -> None:
         app = console.App(self.codex_home, self.config, self.root / "console" / "project-create.sqlite3")
-        new_root = self.root / "created-project"
-        new_root.mkdir()
+        denial = (
+            "project creation is unavailable until Codex provides a host-owned capability; "
+            "create the project in Codex, then refresh SWARM HQ"
+        )
+        roster_before = app.project_roster()
+        host_before = self.database.read_bytes()
+        store_before = app.store.path.read_bytes()
+        ledger_path = app.progress_ledger._state.path
+        ledger_before = ledger_path.read_bytes() if ledger_path.exists() else None
 
-        created = app.create_project("created", str(new_root), True)
-        self.assertEqual(created["mutation_receipt"]["status"], "created")
-        project = created["project"]
-        project_id = project["id"]
-        self.assertNotEqual(project_id, "project:alpha")
-        self.assertEqual(project["display_name"], "created")
-        self.assertEqual(project["root"], str(new_root.resolve()))
-        self.assertEqual(project["manifest"]["status"], "MISSING")
-        self.assertFalse(new_root.joinpath("SWARM.md").exists())
+        with self.assertRaises(console.ConsoleError) as raised:
+            app.create_project("created", str(self.root), True)
+        self.assertEqual(str(raised.exception), denial)
 
-        with closing(sqlite3.connect(self.database)) as connection:
-            host_project = connection.execute(
-                "SELECT id, name, metadata, position FROM projects WHERE id=?", (project_id,)
-            ).fetchone()
-            host_root = connection.execute(
-                "SELECT project_id, position, path FROM project_roots WHERE project_id=?", (project_id,)
-            ).fetchone()
-            host_project_count = connection.execute("SELECT COUNT(*) FROM projects").fetchone()[0]
-        self.assertEqual(host_project[:3], (project_id, "created", "{}"))
-        self.assertEqual(host_root, (project_id, 0, str(new_root.resolve())))
-        self.assertEqual(host_project_count, 2)
+        writer = self._handler("127.0.0.1", "127.0.0.1:4788", token=app.token)
+        writer.server = SimpleNamespace(app=app)
+        writer.path = "/api/projects"
+        writer._payload = mock.Mock(return_value={
+            "name": "created", "root": str(self.root), "acknowledge": True,
+        })
+        writer._json = mock.Mock()
+        writer.do_POST()
+        writer._json.assert_called_once_with(
+            console.HTTPStatus.BAD_REQUEST, {"ok": False, "error": denial},
+        )
+        self.assertEqual(self.database.read_bytes(), host_before)
+        self.assertEqual(app.store.path.read_bytes(), store_before)
+        self.assertEqual(ledger_path.read_bytes() if ledger_path.exists() else None, ledger_before)
 
-        replay = app.create_project("created", str(new_root), True)
-        self.assertEqual(replay["mutation_receipt"]["status"], "unchanged")
-        self.assertEqual(replay["mutation_receipt"]["project_id"], project_id)
-        with closing(sqlite3.connect(self.database)) as connection:
-            self.assertEqual(connection.execute("SELECT COUNT(*) FROM projects").fetchone()[0], 2)
-
-        with self.assertRaisesRegex(console.ConsoleError, "acknowledge=true"):
-            app.create_project("not-created", str(self.root / "not-created"), False)
-        with self.assertRaisesRegex(console.ConsoleError, "absolute host path"):
-            app.create_project("relative", "relative-project", True)
-        with closing(sqlite3.connect(app.store.path)) as connection:
-            table_names = {
-                item[0] for item in connection.execute(
-                    "SELECT name FROM sqlite_master WHERE type='table'"
-                ).fetchall()
-            }
-        self.assertNotIn("projects", table_names)
+        reader = self._handler("127.0.0.1", "127.0.0.1:4788")
+        reader.server = SimpleNamespace(app=app)
+        reader.path = "/api/projects"
+        reader._json = mock.Mock()
+        reader.do_GET()
+        reader._json.assert_called_once_with(console.HTTPStatus.OK, roster_before)
 
     def test_profile_presentation_is_avatar_ready_without_identity_or_secrets(self) -> None:
         app = console.App(self.codex_home, self.config, self.root / "console" / "profile.sqlite3")
