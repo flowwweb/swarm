@@ -5776,6 +5776,18 @@ class SwarmConsoleTests(unittest.TestCase):
         self.assertTrue(all(isinstance(check["observed_at_ms"], int) for check in checks.values()))
         self.assertTrue(all(pointer.startswith("local:") for check in checks.values() for pointer in check["evidence"]))
         self.assertNotIn("C:\\", json.dumps(contract))
+        self.assertEqual(contract["codex_connection"]["status"], "CONNECTED")
+        self.assertEqual(contract["codex_connection"]["source"], "local:codex-state-db+host-project-roster")
+        self.assertEqual(contract["codex_connection"]["connection_scope"], "LOCAL_METADATA_SNAPSHOT")
+        self.assertEqual(contract["codex_connection"]["transport_status"], "UNVERIFIED")
+        self.assertEqual(contract["codex_connection"]["project_count"], 1)
+        self.assertEqual(contract["codex_connection"]["observed_host_tasks"], 5)
+        self.assertEqual(contract["binding_coverage"]["status"], "DEGRADED")
+        self.assertEqual(contract["binding_coverage"]["reason"], "No authoritative SWARM bindings")
+        self.assertEqual(contract["binding_coverage"]["bound_agents"], 0)
+        self.assertEqual(contract["binding_coverage"]["independent_tasks"], 5)
+        self.assertFalse(contract["binding_coverage"]["execution_authority"])
+        self.assertIn("No authoritative SWARM bindings", contract["binding_coverage"]["actionable_repair"])
         self.assertEqual(contract["repair_policy"]["key"], "monitoring.auto_health_enabled")
         self.assertEqual(contract["repair_policy"]["label"], "Auto fix")
         self.assertEqual(contract["repair_policy"]["state"], "KNOWN")
@@ -5862,11 +5874,76 @@ class SwarmConsoleTests(unittest.TestCase):
             connection.execute("DROP TABLE projects")
             connection.commit()
         app = console.App(self.codex_home, self.config)
-        checks = {check["id"]: check for check in app.health_contract()["checks"]}
+        contract = app.health_contract()
+        checks = {check["id"]: check for check in contract["checks"]}
         self.assertEqual(checks["project.roster_root_binding"]["status"], "UNKNOWN")
         self.assertEqual(checks["projection.ctrl_activity"]["status"], "UNKNOWN")
+        self.assertEqual(contract["codex_connection"]["status"], "DEGRADED")
+        self.assertEqual(contract["binding_coverage"]["status"], "UNAVAILABLE")
+        self.assertIsNone(contract["binding_coverage"]["project_count"])
         self.assertIn(checks["asset.evidence_store"]["status"], {"PASS", "FAIL"})
         self.assertFalse(app.health_settings()["auto_repair"]["enabled"])
+
+    def test_health_contract_reports_unavailable_when_codex_state_cannot_be_read(self) -> None:
+        app = console.App(self.codex_home, self.config)
+        with mock.patch.object(app, "_host_project_records", side_effect=console.ConsoleError("missing host DB")), mock.patch.object(
+            app, "_host_overview", side_effect=console.ConsoleError("missing host DB"),
+        ):
+            contract = app.health_contract()
+        self.assertEqual(contract["codex_connection"]["status"], "UNAVAILABLE")
+        self.assertIsNone(contract["codex_connection"]["project_count"])
+        self.assertIsNone(contract["codex_connection"]["observed_host_tasks"])
+        self.assertEqual(contract["binding_coverage"]["status"], "UNAVAILABLE")
+        self.assertIsNone(contract["binding_coverage"]["bound_agents"])
+        self.assertIsNone(contract["binding_coverage"]["observed_at_ms"])
+        self.assertIn("Restore", contract["codex_connection"]["actionable_repair"])
+
+    def test_health_summaries_fail_closed_for_partial_stale_and_unreconciled_inputs(self) -> None:
+        app = console.App(self.codex_home, self.config)
+        roster = app._host_project_records()
+        with mock.patch.object(app, "_host_project_records", return_value=("PARTIAL", *roster[1:])):
+            partial_roster = app.health_contract()
+        self.assertEqual(partial_roster["binding_coverage"]["status"], "DEGRADED")
+        self.assertEqual(partial_roster["binding_coverage"]["reason"], "Project roster is partial")
+        self.assertIn("complete canonical project roster", partial_roster["binding_coverage"]["actionable_repair"])
+
+        independent = [{} for _ in range(5)]
+        with mock.patch.object(app, "_topology_projection", return_value={
+            "state": "PARTIAL", "reason": "MISSING_OR_CONFLICTING_BINDING",
+            "nodes": [], "independent_nodes": independent,
+        }):
+            partial_topology = app.health_contract()
+        self.assertEqual(partial_topology["binding_coverage"]["status"], "DEGRADED")
+        self.assertEqual(partial_topology["binding_coverage"]["reason"], "MISSING_OR_CONFLICTING_BINDING")
+        self.assertIn("missing or conflicting retained bindings", partial_topology["binding_coverage"]["actionable_repair"])
+
+        with mock.patch.object(app, "_topology_projection", return_value={
+            "state": "KNOWN", "nodes": [], "independent_nodes": independent[:-1],
+        }):
+            mismatch = app.health_contract()
+        self.assertEqual(mismatch["binding_coverage"]["reason"], "Binding counts do not reconcile")
+        self.assertIn("counts reconcile", mismatch["binding_coverage"]["actionable_repair"])
+
+        with mock.patch.object(app, "_health_contract_status", return_value="PASS"), mock.patch.object(
+            app, "_topology_projection", return_value={
+                "state": "PARTIAL", "reason": "MISSING_OR_CONFLICTING_BINDING",
+                "nodes": [], "independent_nodes": independent,
+            },
+        ):
+            degraded = app.health_contract()
+        self.assertEqual(degraded["status"], "WARN")
+
+        stale_overview = app._host_overview()
+        stale_overview["generated_at"] = "1970-01-01T00:00:00Z"
+        stale = app.health_checks(stale_overview, now_ms=4_000_000)
+        self.assertEqual(stale["codex_connection"]["status"], "DEGRADED")
+        self.assertEqual(stale["codex_connection"]["observed_at_ms"], 0)
+
+        with mock.patch.object(app, "_topology_projection", side_effect=console.ConsoleError("unavailable")):
+            unavailable = app.health_contract()
+        self.assertEqual(unavailable["binding_coverage"]["status"], "UNAVAILABLE")
+        self.assertEqual(unavailable["status"], "UNKNOWN")
+        self.assertEqual(app._health_contract_status([{"status": "WARN"}, {"status": "UNKNOWN"}]), "UNKNOWN")
 
     def test_health_classification_persistence_sustain_dedupe_and_recovery(self) -> None:
         self.assertEqual(console.assess_health({})["state"], "UNKNOWN")

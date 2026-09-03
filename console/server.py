@@ -14351,10 +14351,10 @@ class App:
         statuses = {str(check.get("status") or "UNKNOWN").upper() for check in checks}
         if "FAIL" in statuses:
             return "FAIL"
-        if "WARN" in statuses:
-            return "WARN"
         if "UNKNOWN" in statuses:
             return "UNKNOWN"
+        if "WARN" in statuses:
+            return "WARN"
         return "PASS"
 
     def health_checks(
@@ -14552,6 +14552,7 @@ class App:
                 details={"controllers": len(overview_controllers), "older_lanes_omitted": omitted, "unavailable_classifications": unavailable},
             ))
 
+        progress_projection: dict[str, Any] | None = None
         try:
             progress_projection = self.progress_ledger.replay()
             progress_cursor = progress_projection.get("cursor") if isinstance(progress_projection, dict) else None
@@ -14647,12 +14648,108 @@ class App:
                 details={"age_ms": max(0, now_ms - refresh_ms), "freshness_window_ms": refresh_limit_ms},
             ))
 
+        overview_nodes = overview.get("nodes") if isinstance(overview, dict) else None
+        observed_host_tasks = (
+            sum(isinstance(node, dict) and not node.get("virtual") for node in overview_nodes)
+            if isinstance(overview_nodes, list) else None
+        )
+        root_degraded = roster_state != "KNOWN" or any(
+            root_statuses.get(status) for status in ("INVALID", "AMBIGUOUS", "UNKNOWN")
+        )
+        snapshot_stale = refresh_ms is None or now_ms - refresh_ms > refresh_limit_ms
+        connection_status = (
+            "UNAVAILABLE" if not isinstance(overview_nodes, list)
+            else "DEGRADED" if root_degraded or snapshot_stale
+            else "CONNECTED"
+        )
+        codex_connection = {
+            "status": connection_status,
+            "connection_scope": "LOCAL_METADATA_SNAPSHOT",
+            "transport_status": "UNVERIFIED",
+            "source": "local:codex-state-db+host-project-roster",
+            "observed_at_ms": refresh_ms,
+            "project_count": len(roster_records) if roster_state != "UNKNOWN" else None,
+            "observed_host_tasks": observed_host_tasks,
+            "actionable_repair": (
+                "Restore the readable canonical Codex state database and required host tables."
+                if connection_status == "UNAVAILABLE" else
+                "Refresh stale metadata or repair ambiguous saved-project root bindings before relying on project-scoped health."
+                if connection_status == "DEGRADED" else
+                "No repair action is required."
+            ),
+            "claim_limit": "CONNECTED means the local metadata snapshot is readable and current; transport remains UNVERIFIED without separate App Server proof.",
+        }
+        topology = None
+        if isinstance(overview, dict) and isinstance(progress_projection, dict):
+            try:
+                topology = self._topology_projection(overview)
+            except (ConsoleError, OSError, sqlite3.Error, ProgressEventError, TypeError, ValueError):
+                topology = None
+        if (
+            roster_state == "UNKNOWN"
+            or not isinstance(topology, dict)
+            or topology.get("state") in {"UNKNOWN", "LOADING"}
+        ):
+            coverage_status, coverage_reason, bound_agents, independent_tasks = (
+                "UNAVAILABLE", "Binding projection unavailable", None, None,
+            )
+        else:
+            bound_agents = len(topology.get("nodes", []))
+            independent_tasks = len(topology.get("independent_nodes", []))
+            reconciled = observed_host_tasks == bound_agents + independent_tasks
+            if roster_state != "KNOWN":
+                coverage_status, coverage_reason = "DEGRADED", "Project roster is partial"
+            elif topology.get("state") == "PARTIAL":
+                coverage_status, coverage_reason = "DEGRADED", str(topology.get("reason") or "Binding projection is partial")
+            elif topology.get("state") in {"KNOWN", "EMPTY"} and reconciled and (observed_host_tasks == 0 or independent_tasks == 0):
+                coverage_status, coverage_reason = "CONNECTED", None
+            elif not reconciled:
+                coverage_status, coverage_reason = "DEGRADED", "Binding counts do not reconcile"
+            elif bound_agents == 0 and independent_tasks:
+                coverage_status, coverage_reason = "DEGRADED", "No authoritative SWARM bindings"
+            else:
+                coverage_status, coverage_reason = "DEGRADED", "Some host tasks remain independent"
+        binding_coverage = {
+            "status": coverage_status,
+            "reason": coverage_reason,
+            "source": "local:host-threads+progress-ledger",
+            "observed_at_ms": refresh_ms,
+            "project_count": len(roster_records) if roster_state != "UNKNOWN" else None,
+            "observed_host_tasks": observed_host_tasks,
+            "bound_agents": bound_agents,
+            "independent_tasks": independent_tasks,
+            "execution_authority": False,
+            "actionable_repair": (
+                "Restore readable host and Ledger projections before evaluating binding coverage."
+                if coverage_status == "UNAVAILABLE" else
+                "No authoritative SWARM bindings. Restore a host-verified custody path before changing topology."
+                if coverage_reason == "No authoritative SWARM bindings" else
+                "Restore the complete canonical project roster before evaluating binding coverage."
+                if coverage_reason == "Project roster is partial" else
+                "Resolve missing or conflicting retained bindings before relying on topology coverage."
+                if topology.get("state") == "PARTIAL" else
+                "Refresh the host and Ledger projections until their binding counts reconcile."
+                if coverage_reason == "Binding counts do not reconcile" else
+                "Review remaining independent tasks; bind only those with exact host authority."
+                if coverage_status == "DEGRADED" else
+                "No repair action is required."
+            ),
+            "claim_limit": "Coverage counts exact retained identity bindings only; execution authority is false and is never inferred from titles, cwd labels, or host activity.",
+        }
+
+        health_status = self._health_contract_status(checks)
+        if health_status != "FAIL" and "UNAVAILABLE" in {connection_status, coverage_status}:
+            health_status = "UNKNOWN"
+        elif health_status == "PASS" and "DEGRADED" in {connection_status, coverage_status}:
+            health_status = "WARN"
         return {
             "schema_version": 1,
-            "status": self._health_contract_status(checks),
+            "status": health_status,
             "observed_at_ms": now_ms,
             "last_successful_refresh_at_ms": refresh_ms,
             "checks": checks,
+            "codex_connection": codex_connection,
+            "binding_coverage": binding_coverage,
             "repair_policy": self._auto_repair_policy(),
             "claim_limit": (
                 "Checks use existing local process, host DB, config, ledger, and console-store facts. "
