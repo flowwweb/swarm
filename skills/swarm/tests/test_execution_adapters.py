@@ -523,6 +523,22 @@ class ExecutionAdapterTests(unittest.TestCase):
             if action is HQCommandAction.REPAIR:
                 self.assertEqual(transport.calls[-1][1], {"threadId": "thread-1", "expectedTurnId": "turn-active", "input": material.input_items()})
 
+    def test_legacy_command_without_creation_identity_replays_through_current_adapter(self) -> None:
+        import tempfile
+        from pathlib import Path
+        material = HQDispatchMaterial("C:/work/project-a", b"Resume retained work.")
+        envelope = HQCommandEnvelope("hq-legacy", "key-legacy", HQCommandAction.TASK, "project-a", "a" * 64, "ctrl-a", HQTargetIntent.EXISTING_THREAD, "thread-1", material.digest, 0, 1, 100)
+        transport = FakeCodexTransport()
+        connector = self.connector(transport, material)
+        legacy = connector._receipt(envelope, receipt_id="hq-legacy-command", index=0, status="COMMAND", observed_at_ms=1)
+        self.assertNotIn("task_creation_identity", legacy)
+        with tempfile.TemporaryDirectory() as directory:
+            ledger = Ledger(Path(directory))
+            self.assertEqual(ledger.reserve_connector_command(legacy, expected_revision=0)["status"], "APPENDED")
+            result = connector.execute(envelope, self.explicit(envelope), ledger, now_ms=2, observed_project_id="project-a", observed_root_digest="a" * 64)
+        self.assertEqual((result.status, result.attention), ("PENDING", "HOST_OUTCOME_PENDING"))
+        self.assertEqual(transport.reconcile_calls, [("hq-legacy", "TASK", "thread-1")])
+
     def test_dispatch_material_and_host_authorization_fail_before_reservation(self) -> None:
         import tempfile
         from pathlib import Path

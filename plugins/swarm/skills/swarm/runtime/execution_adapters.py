@@ -328,7 +328,11 @@ class UniversalHQConnector:
 
     @staticmethod
     def _receipt(envelope: HQCommandEnvelope, *, receipt_id: str, index: int, status: str, observed_at_ms: int, thread_id: str | None = None, turn_id: str | None = None, observed_root_digest: str | None = None) -> dict[str, object]:
-        return {"schema_version": 1, "record_type": "CONNECTOR", "receipt_id": receipt_id, "command_id": envelope.command_id, "receipt_index": index, "idempotency_key": envelope.idempotency_key, "command_digest": envelope.digest, "project_id": envelope.project_id, "root_digest": envelope.root_digest, "action": envelope.action.value, "status": status, "thread_id": thread_id, "turn_id": turn_id, "observed_root_digest": observed_root_digest, "observed_at_ms": observed_at_ms, "task_creation_identity": envelope.task_creation_identity()}
+        receipt = {"schema_version": 1, "record_type": "CONNECTOR", "receipt_id": receipt_id, "command_id": envelope.command_id, "receipt_index": index, "idempotency_key": envelope.idempotency_key, "command_digest": envelope.digest, "project_id": envelope.project_id, "root_digest": envelope.root_digest, "action": envelope.action.value, "status": status, "thread_id": thread_id, "turn_id": turn_id, "observed_root_digest": observed_root_digest, "observed_at_ms": observed_at_ms}
+        identity = envelope.task_creation_identity()
+        if identity is not None:
+            receipt["task_creation_identity"] = identity
+        return receipt
 
     @staticmethod
     def _host_binding(response: Mapping[str, object]) -> tuple[str, str, str]:
