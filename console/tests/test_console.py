@@ -587,6 +587,8 @@ class SwarmConsoleTests(unittest.TestCase):
         project_id: str,
         *,
         links: list[dict[str, object]] | None = None,
+        proposed_lens_ids: list[str] | None = None,
+        extra: dict[str, object] | None = None,
     ) -> None:
         root.mkdir(parents=True, exist_ok=True)
         brief = {
@@ -604,6 +606,9 @@ class SwarmConsoleTests(unittest.TestCase):
             "risks_blockers": [],
             "links": links or [],
         }
+        if proposed_lens_ids is not None:
+            brief["proposed_lens_ids"] = proposed_lens_ids
+        brief.update(extra or {})
         root.joinpath("SWARM.md").write_text(
             "<!-- swarm-project-brief:schema=1 -->\n"
             "```json\n"
@@ -1618,6 +1623,103 @@ class SwarmConsoleTests(unittest.TestCase):
             for projection in (changed, invalid, ambiguous, missing)
         ))
         self.assertNotIn(project_id, SERVER.read_text(encoding="utf-8"))
+
+    def test_root_brief_lenses_project_through_existing_registry_without_product_branch(self) -> None:
+        root = self.root / "portable-root"
+        runtime_id = "local-portable-runtime-id"
+        lens_ids = [
+            "lens-overview-health", "lens-roadmap-milestones", "lens-tasks-kanban",
+            "lens-flow-architecture", "lens-artifacts-proof", "lens-agents",
+        ]
+        self._write_project_brief(
+            root,
+            "portable",
+            proposed_lens_ids=lens_ids,
+            extra={
+                "objective": {"current": "Project one accepted model", "ranked_outcomes": []},
+                "tasks": [],
+                "artifacts": [],
+                "authority": {"ctrl_id": "ctrl-portable"},
+                "ownership": {"active_ctrl_id": "ctrl-portable", "active_lead_ids": []},
+            },
+        )
+        self._add_host_project(runtime_id, "portable", str(root))
+        app = console.App(self.codex_home, self.config, self.root / "console" / "portable.sqlite3")
+
+        briefs = app._project_briefs_projection()
+        stale_briefs = copy.deepcopy(briefs)
+        next(item for item in stale_briefs["projects"] if item["project_id"] == runtime_id)["digest"] = "sha256:" + "0" * 64
+        fresh = console.App(self.codex_home, self.config, self.root / "console" / "portable-fresh.sqlite3")
+        self.assertIsNone(fresh._project_view_projection(runtime_id, stale_briefs))
+
+        projection = app._project_view_projection(runtime_id, briefs)
+        self.assertIsNotNone(projection)
+        self.assertEqual((projection["project_id"], projection["model_project_id"]), (runtime_id, "portable"))
+        self.assertEqual(projection["tab"], {"id": "ui", "label": "Workspace"})
+        self.assertEqual([view["id"] for view in projection["views"]], [
+            "view.project.overview-health", "view.project.roadmap", "view.project.work",
+            "view.project.flow", "view.project.artifacts", "view.project.agents",
+        ])
+        self.assertEqual(projection["views"], projection["tabs"])
+        self.assertEqual(projection["projection_binding"]["project_id"], runtime_id)
+        self.assertEqual(projection["projection_binding"]["model_project_id"], "portable")
+        self.assertEqual(projection["projection_binding"]["locator"], None)
+        self.assertRegex(projection["projection_binding"]["brief_bytes_digest"], r"^sha256:[0-9a-f]{64}$")
+        self.assertRegex(projection["accepted_cursor"]["digest"], r"^sha256:[0-9a-f]{64}$")
+        self.assertTrue(all(
+            source["source_digest"].startswith("sha256:")
+            for view in projection["views"] for source in view["sources"]
+        ))
+        self.assertNotIn(runtime_id, SERVER.read_text(encoding="utf-8"))
+
+        self._write_project_brief(root, "portable", proposed_lens_ids=["future-lens"])
+        self.assertIsNone(app._project_view_projection(runtime_id))
+
+    def test_root_brief_lenses_withhold_invalid_sources_and_retain_last_good_on_invalid_root(self) -> None:
+        root = self.root / "conditional-root"
+        runtime_id = "project:conditional"
+        self._write_project_brief(
+            root,
+            runtime_id,
+            proposed_lens_ids=["lens-overview-health", "lens-roadmap-milestones"],
+        )
+        self._add_host_project(runtime_id, "conditional", str(root))
+        app = console.App(self.codex_home, self.config, self.root / "console" / "conditional.sqlite3")
+        accepted = app._project_view_projection(runtime_id)
+        self.assertEqual([view["id"] for view in accepted["views"]], [
+            "view.project.overview-health", "view.project.roadmap",
+        ])
+
+        self._write_project_brief(
+            root,
+            runtime_id,
+            proposed_lens_ids=["lens-overview-health", "lens-roadmap-milestones"],
+            extra={"milestones": "invalid"},
+        )
+        stale = app._project_view_projection(runtime_id)
+        self.assertEqual(stale["status"], "STALE_LAST_ACCEPTED")
+        self.assertEqual(stale["projection_binding"], accepted["projection_binding"])
+        self.assertEqual(stale["source_digest"], accepted["source_digest"])
+        self.assertEqual(stale["views"], accepted["views"])
+
+        fresh = console.App(self.codex_home, self.config, self.root / "console" / "conditional-fresh.sqlite3")
+        self.assertIsNone(fresh._project_view_projection(runtime_id))
+
+        self._write_project_brief(
+            root,
+            runtime_id,
+            proposed_lens_ids=["lens-overview-health", "lens-roadmap-milestones"],
+            extra={"objective": {"current": "Recovered accepted model", "ranked_outcomes": []}},
+        )
+        recovered = app._project_view_projection(runtime_id)
+        self.assertNotEqual(recovered["source_digest"], accepted["source_digest"])
+        self.assertNotIn("status", recovered)
+        self.assertEqual(recovered["views"][0]["content"]["blocks"][0]["text"], "Recovered accepted model")
+
+        other_root = self.root / "cross-project-root"
+        self._write_project_brief(other_root, "other", proposed_lens_ids=["lens-overview-health"])
+        self._add_host_project("project:cross", "cross", str(other_root))
+        self.assertIsNone(app._project_view_projection("project:cross"))
 
     def test_manifest_topology_has_exact_ports_task_limit_and_restart_stability(self) -> None:
         self._confirm_root_ctrl()
@@ -4660,6 +4762,7 @@ class SwarmConsoleTests(unittest.TestCase):
         )
         with mock.patch.object(app.store, "proof_feed", return_value=[]):
             retained = app._project_view_projection("project:alpha")
+        self.assertEqual(retained.pop("status"), "STALE_LAST_ACCEPTED")
         self.assertEqual(retained, accepted)
 
     def test_default_project_view_resolver_is_root_bound_and_withholds_incompatible_pilots(self) -> None:
@@ -5076,6 +5179,7 @@ class SwarmConsoleTests(unittest.TestCase):
         )
         with mock.patch.object(app.store, "proof_feed", return_value=[]):
             retained = app._project_view_projection("project:alpha")
+        self.assertEqual(retained.pop("status"), "STALE_LAST_ACCEPTED")
         self.assertEqual(retained, accepted)
         fresh = console.App(
             self.codex_home, self.config, self.root / "console" / "project-view-fresh.sqlite3",

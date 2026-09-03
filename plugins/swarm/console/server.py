@@ -73,6 +73,11 @@ from runtime.execution_adapters import (  # noqa: E402
     ExecutionReservation,
 )
 from runtime.core import ArtifactIdentity  # noqa: E402
+from project_model_views import (  # noqa: E402
+    ProjectModelError,
+    parse_project_brief_markdown,
+    project_schema1_views,
+)
 
 INSTANCE_ID = hashlib.sha256(str(CONSOLE_ROOT.resolve()).casefold().encode("utf-8")).hexdigest()[:16]
 SERVER_BUILD_ID = hashlib.sha256(Path(__file__).read_bytes()).hexdigest()[:16]
@@ -9330,22 +9335,80 @@ class App:
             "claim_limit": "Project Workspace is a read-only digest-bound snapshot; plan and timeline content is not runtime status authority, and Ledger plus accepted event projections remain authoritative.",
         }
 
-    def _project_view_projection(self, project_id: str) -> dict[str, Any] | None:
+    def _project_view_projection(
+        self,
+        project_id: str,
+        project_briefs: dict[str, Any] | None = None,
+    ) -> dict[str, Any] | None:
+        def last_accepted() -> dict[str, Any] | None:
+            cached = self._project_view_cache.get(project_id)
+            if not isinstance(cached, dict):
+                return None
+            projection = copy.deepcopy(cached)
+            projection["status"] = "STALE_LAST_ACCEPTED"
+            return projection
+
         try:
             root = self._canonical_project_root(project_id)
         except (ConsoleError, OSError, sqlite3.Error):
-            return copy.deepcopy(self._project_view_cache.get(project_id))
-        status, link = self._root_project_view_link(root)
+            return last_accepted()
+        try:
+            raw_brief = self._read_project_view_handle(root, root / "SWARM.md")
+            brief_text = raw_brief.decode("utf-8")
+        except (ConsoleError, OSError, UnicodeError):
+            return last_accepted()
+        status, link = self._project_view_link_from_text(brief_text)
         if status == "absent":
-            self._project_view_cache.pop(project_id, None)
-            return None
+            try:
+                model, source_digest = parse_project_brief_markdown(brief_text)
+                model_project_id = str(model["project"]["id"]).strip()
+                if model_project_id.casefold() not in {
+                    identity.casefold() for identity in self._canonical_project_identities(project_id)
+                }:
+                    raise ProjectModelError("project brief belongs to another saved project")
+                if not model.get("proposed_lens_ids"):
+                    self._project_view_cache.pop(project_id, None)
+                    return None
+                briefs = project_briefs if isinstance(project_briefs, dict) else self._project_briefs_projection()
+                if briefs.get("state") != "KNOWN" or not briefs.get("available") or not isinstance(briefs.get("cursor"), dict):
+                    raise ProjectModelError("accepted project briefs cursor is unavailable")
+                matches = [
+                    item for item in briefs.get("projects", [])
+                    if isinstance(item, dict) and item.get("project_id") == project_id
+                ]
+                if len(matches) != 1 or matches[0].get("status") != "KNOWN" or matches[0].get("digest") != source_digest:
+                    raise ProjectModelError("project brief projection is stale or mixed-scope")
+                binding = {
+                    "project_id": project_id,
+                    "model_project_id": model_project_id,
+                    "canonical_root": str(root.resolve()),
+                    "brief_bytes_digest": "sha256:" + hashlib.sha256(raw_brief).hexdigest(),
+                    "source_digest": source_digest,
+                    "project_briefs_cursor": copy.deepcopy(briefs["cursor"]),
+                    "locator": None,
+                }
+                projection = project_schema1_views(
+                    model,
+                    ArtifactIdentity(f"project-brief:{project_id}", source_digest, "schema-1-project-model"),
+                    PROJECT_VIEW_RENDERERS,
+                    PROJECT_VIEW_ACTIONS,
+                    runtime_project_id=project_id,
+                    projection_binding=binding,
+                )
+                if not projection.get("views"):
+                    self._project_view_cache.pop(project_id, None)
+                    return None
+            except (ProjectModelError, ConsoleError, OSError, UnicodeError, ValueError, TypeError, sqlite3.Error):
+                return last_accepted()
+            self._project_view_cache[project_id] = projection
+            return copy.deepcopy(projection)
         if status != "present" or link is None:
-            return copy.deepcopy(self._project_view_cache.get(project_id))
+            return last_accepted()
         try:
             manifest_bytes = self._resolve_project_view_bytes(project_id, link["ref"], link["digest"])
             projection = self._normalize_project_view(project_id, manifest_bytes, link["digest"])
         except (ConsoleError, OSError, UnicodeError, ValueError, TypeError, sqlite3.Error):
-            return copy.deepcopy(self._project_view_cache.get(project_id))
+            return last_accepted()
         self._project_view_cache[project_id] = projection
         return copy.deepcopy(projection)
 
@@ -10078,7 +10141,10 @@ class App:
             scope_id=selected_ctrl_id if ctrl_scope else selected_project_id,
             scope_type="ctrl" if ctrl_scope else "project",
         )
-        view["project_view"] = None if ctrl_scope else self._project_view_projection(selected_project_id)
+        view["project_view"] = None if ctrl_scope else self._project_view_projection(
+            selected_project_id,
+            view.get("project_briefs"),
+        )
         return view
 
     def _observed_scope(

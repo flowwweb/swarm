@@ -398,6 +398,8 @@ button:focus-visible, select:focus-visible { outline: 2px solid var(--focus); ou
 .project-detail-summary .lucide { width:15px; height:15px; color:var(--cyan); }
 .project-tabs { display:flex; max-width:100%; gap:4px; overflow-x:auto; padding:3px; border:1px solid var(--line); border-radius:8px; background:rgba(5,12,23,.55); }
 .project-tabs button { flex:0 0 auto; min-height:40px; padding:0 14px; border:0; border-radius:5px; background:transparent; color:var(--faint); font-size:10px; }
+.project-tabs button:not([hidden]) { display:inline-flex; align-items:center; justify-content:center; gap:6px; }
+.project-tabs button .lucide { width:14px; height:14px; }
 .project-tabs button:hover,.project-tabs button.is-active { color:var(--orange); background:var(--surface-raised); }
 .project-tab-panel { min-width:0; }
 .project-ui { display:grid; min-width:0; gap:14px; }
@@ -434,6 +436,7 @@ button:focus-visible, select:focus-visible { outline: 2px solid var(--focus); ou
 .project-ui-flowchart-node small { overflow:hidden; color:var(--faint); font-family:var(--mono); font-size:9px; text-overflow:ellipsis; white-space:nowrap; }
 .project-ui-node-kind { width:max-content; padding:2px 6px; border:1px solid rgba(255,135,43,.35); border-radius:999px; color:var(--orange-soft); font-size:8px; font-weight:700; letter-spacing:.06em; text-transform:uppercase; }
 .project-ui-claim { margin:0; color:var(--faint); font-size:10px; }
+.project-ui-stale { margin:0; padding:8px 10px; border:1px solid rgba(255,179,71,.28); border-radius:7px; background:rgba(255,179,71,.07); color:var(--amber); font-size:10px; }
 .project-work { display:grid; min-width:0; overflow:hidden; border:1px solid var(--line); border-radius:9px; background:var(--surface); }
 .project-work > .project-work-row { background:rgba(5,12,23,.78); color:var(--faint); font-size:9px; font-weight:700; letter-spacing:.06em; text-transform:uppercase; }
 .project-work-row { display:grid; grid-template-columns:minmax(260px,1fr) minmax(120px,.28fr) minmax(130px,.24fr); min-width:0; align-items:center; gap:12px; padding:11px 14px; border-bottom:1px solid rgba(176,202,231,.1); }

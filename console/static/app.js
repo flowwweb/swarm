@@ -2819,6 +2819,15 @@ const PROJECT_WORKSPACE_EMBEDDED_TABS = new Map([
   ["view.project.overview-health", "overview"],
   ["view.project.roadmap", "roadmap"],
 ]);
+const PROJECT_WORKSPACE_TAB_ICONS = new Map([
+  ["view.project.work", "list-tree"], ["view.project.agents", "users"],
+  ["document/blocks", "file-clock"], ["timeline/milestones", "clock"],
+  ["canvas/network", "git-branch"], ["table/records", "list"], ["gallery/list", "image"],
+]);
+
+function projectWorkspaceTabIcon(view) {
+  return PROJECT_WORKSPACE_TAB_ICONS.get(view.id) || PROJECT_WORKSPACE_TAB_ICONS.get(view.renderer + "/" + view.mode) || "";
+}
 
 function projectWorkspaceViews(projection) {
   const candidates = Array.isArray(projection?.views) && projection.views.length
@@ -2991,8 +3000,14 @@ function projectWorkspaceViewMarkup(view) {
   return '<p class="empty-state" role="status">This project view is unavailable.</p>';
 }
 
+function projectViewFreshnessMarkup(projection) {
+  return projection?.status === "STALE_LAST_ACCEPTED"
+    ? '<p class="project-ui-stale" role="status">Last accepted project brief snapshot</p>'
+    : "";
+}
+
 function projectWorkspaceTabMarkup(view, projection = currentProjectView()) {
-  return '<section class="project-ui"><header class="project-ui-toolbar"><div><p class="eyebrow">Project view</p><h2>' + escapeHTML(view.label) + '</h2></div></header>' + projectWorkspaceViewMarkup(view) + '<p class="project-ui-claim">' + escapeHTML(projection?.claim_limit || "Project view is read-only.") + '</p></section>';
+  return '<section class="project-ui"><header class="project-ui-toolbar"><div><p class="eyebrow">Project view</p><h2>' + escapeHTML(view.label) + '</h2></div></header>' + projectViewFreshnessMarkup(projection) + projectWorkspaceViewMarkup(view) + '<p class="project-ui-claim">' + escapeHTML(projection?.claim_limit || "Project view is read-only.") + '</p></section>';
 }
 
 function projectViewMarkup() {
@@ -3014,7 +3029,7 @@ function projectViewMarkup() {
   }).join("") + (workspaceViews.length ? workspaceViews.filter((item) => !(projection.modes || []).some((modeItem) => modeItem.id === item.id)).map((item) => {
     const selected = item.id === mode;
     return '<button type="button" data-project-ui-mode="' + escapeHTML(item.id) + '" aria-pressed="' + String(selected) + '" class="' + (selected ? "is-selected" : "") + '">' + escapeHTML(item.label) + '</button>';
-  }).join("") : "") + '</div></header>' + content + '<p class="project-ui-claim">' + escapeHTML(projection.claim_limit || "Project UI is read-only.") + '</p></section>';
+  }).join("") : "") + '</div></header>' + projectViewFreshnessMarkup(projection) + content + '<p class="project-ui-claim">' + escapeHTML(projection.claim_limit || "Project UI is read-only.") + '</p></section>';
 }
 
 function projectProgressQueueProjection(progress) {
@@ -3171,7 +3186,8 @@ function renderProjectDetail() {
     button.setAttribute("aria-selected", "false");
     button.setAttribute("aria-controls", "project-tab-panel");
     button.type = "button";
-    button.textContent = view.label;
+    const icon = projectWorkspaceTabIcon(view);
+    button.innerHTML = (icon ? '<svg class="lucide" aria-hidden="true"><use href="#lucide-' + icon + '"></use></svg>' : "") + '<span>' + escapeHTML(view.label) + '</span>';
     logsTab.before(button);
   });
   const uiTab = $("#project-tab-ui");

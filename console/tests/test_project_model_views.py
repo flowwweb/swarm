@@ -76,6 +76,7 @@ def fixture(**updates):
         "proof_acceptance": {"claim_limit": "Source/static only"},
         "authority": {"ctrl_id": "ctrl-1", "project_model_lead_id": "lead-1"},
         "ownership": {"active_ctrl_id": "ctrl-1", "active_lead_ids": ["lead-1"]},
+        "proposed_lens_ids": list(views.LENS_VIEW_IDS),
     }
     model.update(updates)
     return model
@@ -188,6 +189,47 @@ class ProjectModelViewsTests(unittest.TestCase):
         self.assertFalse(hasattr(views, "load_schema1_brief"))
         self.assertFalse(hasattr(views, "render_html"))
         self.assertFalse(hasattr(views, "main"))
+
+    def test_lenses_are_conditional_ordered_and_unknown_ids_fail_closed(self):
+        projection = self.project(fixture(proposed_lens_ids=[
+            "lens-agents", "future-lens", "lens-overview-health",
+        ]))
+        self.assertEqual([tab["id"] for tab in projection["tabs"]], [
+            "view.project.agents", "view.project.overview-health",
+        ])
+        self.assertEqual(projection["views"], projection["tabs"])
+        self.assertEqual(projection["tab"], {"id": "ui", "label": "Workspace"})
+        self.assertIn({"code": "UNKNOWN_LENS_WITHHELD", "lens_id": "future-lens"}, projection["diagnostics"])
+        self.assertEqual(self.project(fixture(proposed_lens_ids=[]))["tabs"], [])
+
+    def test_runtime_identity_and_composed_cursor_bind_every_source(self):
+        model, artifact = identity(fixture(proposed_lens_ids=["lens-overview-health"]))
+        runtime_id = "local-123"
+        artifact = views.ArtifactIdentity(f"project-brief:{runtime_id}", artifact.revision, artifact.purpose)
+        binding = {
+            "project_id": runtime_id,
+            "model_project_id": "fixture",
+            "canonical_root": "C:/saved/fixture",
+            "brief_bytes_digest": "sha256:" + "a" * 64,
+            "source_digest": "sha256:" + views._digest(model),
+            "project_briefs_cursor": {"type": "project_briefs_v1", "digest": "b" * 64},
+            "locator": None,
+        }
+        projection = views.project_schema1_views(
+            model, artifact, server.PROJECT_VIEW_RENDERERS, server.PROJECT_VIEW_ACTIONS,
+            runtime_project_id=runtime_id, projection_binding=binding,
+        )
+        self.assertEqual((projection["project_id"], projection["model_project_id"]), (runtime_id, "fixture"))
+        self.assertEqual(projection["projection_binding"], binding)
+        self.assertRegex(projection["accepted_cursor"]["digest"], r"^sha256:[0-9a-f]{64}$")
+        self.assertRegex(projection["tabs"][0]["sources"][0]["source_digest"], r"^sha256:[0-9a-f]{64}$")
+        stale = copy.deepcopy(binding)
+        stale["project_briefs_cursor"] = {"type": "project_briefs_v1", "digest": "not-a-digest"}
+        with self.assertRaisesRegex(views.ProjectModelError, "cursor is invalid"):
+            views.project_schema1_views(
+                model, artifact, server.PROJECT_VIEW_RENDERERS, server.PROJECT_VIEW_ACTIONS,
+                runtime_project_id=runtime_id, projection_binding=stale,
+            )
 
     def test_missing_historical_agent_fields_withhold_only_agents(self):
         model = fixture()

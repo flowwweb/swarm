@@ -28,6 +28,14 @@ VIEW_SPECS = (
     ("view.project.artifacts", "Artifacts", "gallery", "list", ("/artifacts", "/proof_acceptance"), ()),
     ("view.project.agents", "Agents", "table", "records", ("/authority", "/ownership"), ()),
 )
+LENS_VIEW_IDS = {
+    "lens-overview-health": "view.project.overview-health",
+    "lens-roadmap-milestones": "view.project.roadmap",
+    "lens-tasks-kanban": "view.project.work",
+    "lens-flow-architecture": "view.project.flow",
+    "lens-artifacts-proof": "view.project.artifacts",
+    "lens-agents": "view.project.agents",
+}
 _TYPE_ORDER = {"outcome": 0, "milestone": 1, "task": 2, "block": 3, "blocker": 4, "artifact": 5}
 _BRIEF_MARKER = "<!-- swarm-project-brief:schema=1 -->"
 _BRIEF_FENCE = re.compile(r"```json[ \t]*\r?\n(?P<payload>[\s\S]*?)(?=\r?\n```)", re.IGNORECASE)
@@ -274,11 +282,11 @@ def _valid_pointer(model: Mapping[str, Any], pointer: str) -> bool:
     return isinstance(value, list) and all(isinstance(item, dict) for item in value)
 
 
-def _safe_artifact_ref(value: Any, project_id: str) -> str | None:
+def _safe_artifact_ref(value: Any, project_ids: frozenset[str]) -> str | None:
     if not isinstance(value, str) or "\\" in value:
         return None
     parsed = urlsplit(value)
-    if parsed.scheme not in {"project", "artifact"} or parsed.netloc != project_id or parsed.query or parsed.fragment:
+    if parsed.scheme not in {"project", "artifact"} or parsed.netloc not in project_ids or parsed.query or parsed.fragment:
         return None
     parts = tuple(part for part in parsed.path.split("/") if part)
     if not parts or any(part in {".", ".."} for part in parts):
@@ -291,19 +299,20 @@ def project_schema1_views(
     source_artifact: ArtifactIdentity,
     renderer_registry: Mapping[str, Any],
     allowed_actions: set[str] | frozenset[str],
+    *,
+    runtime_project_id: str | None = None,
+    projection_binding: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
-    for _, _, renderer, mode, _, _ in VIEW_SPECS:
-        if renderer not in renderer_registry or mode not in renderer_registry[renderer]:
-            raise ProjectModelError(f"existing RendererRegistry does not admit {renderer}/{mode}")
     if not {"open_entity", "open_artifact"}.issubset(allowed_actions):
         raise ProjectModelError("existing action registry is missing required project-view actions")
 
     project = model.get("project")
     if not isinstance(project, Mapping):
         raise ProjectModelError("project must be an object")
-    project_id = _text(project.get("id"), "")
-    if not project_id:
+    model_project_id = _text(project.get("id"), "")
+    if not model_project_id:
         raise ProjectModelError("project.id is required")
+    project_id = _text(runtime_project_id, model_project_id)
     if source_artifact.base != f"project-brief:{project_id}":
         raise ProjectModelError("project model source artifact belongs to another project")
     if not re.fullmatch(r"(?:sha256:)?[0-9a-fA-F]{64}", source_artifact.revision):
@@ -311,6 +320,51 @@ def project_schema1_views(
     source_digest = source_artifact.revision if source_artifact.revision.startswith("sha256:") else f"sha256:{source_artifact.revision}"
     if source_digest.casefold() != f"sha256:{_digest(model)}":
         raise ProjectModelError("project model source artifact digest does not match the model")
+
+    lens_ids = model.get("proposed_lens_ids", [])
+    if (
+        not isinstance(lens_ids, list)
+        or len(lens_ids) > 32
+        or any(not isinstance(item, str) or not item.strip() for item in lens_ids)
+        or len({item.casefold() for item in lens_ids}) != len(lens_ids)
+    ):
+        raise ProjectModelError("project brief proposed_lens_ids is invalid")
+    specs_by_id = {spec[0]: spec for spec in VIEW_SPECS}
+    selected_specs = tuple(specs_by_id[LENS_VIEW_IDS[item]] for item in lens_ids if item in LENS_VIEW_IDS)
+    for _, _, renderer, mode, _, _ in selected_specs:
+        if renderer not in renderer_registry or mode not in renderer_registry[renderer]:
+            raise ProjectModelError(f"existing RendererRegistry does not admit {renderer}/{mode}")
+
+    binding = dict(projection_binding or {})
+    if projection_binding is not None:
+        required_binding = {
+            "project_id", "model_project_id", "canonical_root", "brief_bytes_digest",
+            "source_digest", "project_briefs_cursor", "locator",
+        }
+        if set(binding) != required_binding or binding.get("project_id") != project_id or binding.get("model_project_id") != model_project_id:
+            raise ProjectModelError("project view projection binding is invalid")
+        if binding.get("source_digest") != source_digest:
+            raise ProjectModelError("project view projection binding source digest is stale")
+        for key in ("brief_bytes_digest", "source_digest"):
+            if not isinstance(binding.get(key), str) or not re.fullmatch(r"sha256:[0-9a-f]{64}", binding[key]):
+                raise ProjectModelError("project view projection binding digest is invalid")
+        if not isinstance(binding.get("canonical_root"), str) or not binding["canonical_root"]:
+            raise ProjectModelError("project view projection root binding is invalid")
+        cursor = binding.get("project_briefs_cursor")
+        if (
+            not isinstance(cursor, Mapping)
+            or set(cursor) != {"type", "digest"}
+            or cursor.get("type") != "project_briefs_v1"
+            or not isinstance(cursor.get("digest"), str)
+            or not re.fullmatch(r"[0-9a-f]{64}", cursor["digest"])
+        ):
+            raise ProjectModelError("project view projection cursor is invalid")
+        if binding.get("locator") is not None:
+            raise ProjectModelError("direct root projection does not accept locator metadata")
+    accepted_cursor = {
+        "type": "schema1_project_views_v1",
+        "digest": f"sha256:{_digest(binding)}",
+    } if binding else None
 
     objective = model.get("objective") if isinstance(model.get("objective"), Mapping) else {}
     proof_acceptance = model.get("proof_acceptance") if isinstance(model.get("proof_acceptance"), Mapping) else {}
@@ -443,7 +497,7 @@ def project_schema1_views(
             if source_id != artifact_id and artifact_id in _ids(source.get("dependency_ids"))
             and indexed[source_id][0] in {"milestone", "task", "block"}
         })
-        ref = _safe_artifact_ref(artifact.get("ref"), project_id)
+        ref = _safe_artifact_ref(artifact.get("ref"), frozenset({project_id, model_project_id}))
         digest = artifact.get("digest") or artifact.get("sha256")
         valid_digest = isinstance(digest, str) and bool(re.fullmatch(r"(?:sha256:)?[0-9a-fA-F]{64}", digest))
         action = None
@@ -524,7 +578,7 @@ def project_schema1_views(
         "view.project.agents": {"records": agent_records},
     }
     tabs = []
-    for view_id, label, renderer, mode, required_pointers, optional_pointers in VIEW_SPECS:
+    for view_id, label, renderer, mode, required_pointers, optional_pointers in selected_specs:
         unavailable = [pointer for pointer in required_pointers if not _valid_pointer(model, pointer)]
         if view_id == "view.project.agents":
             unavailable.extend(pointer for pointer, value in (("/authority", authority), ("/ownership", ownership)) if not value and pointer not in unavailable)
@@ -539,6 +593,8 @@ def project_schema1_views(
             continue
         pointers = required_pointers + tuple(pointer for pointer in optional_pointers if pointer[1:] in model)
         sources = _source_bindings(model, pointers)
+        for source in sources:
+            source["source_digest"] = f"sha256:{_digest({'project_id': project_id, 'model_project_id': model_project_id, 'source_digest': source_digest, 'accepted_cursor': accepted_cursor, **source})}"
         allowed = ["open_artifact", "open_entity"] if view_id == "view.project.artifacts" else ["open_entity"]
         content = content_by_id[view_id]
         tabs.append({
@@ -549,15 +605,23 @@ def project_schema1_views(
             "sources": sources,
             "allowed_actions": allowed,
             "content": content,
-            "view_digest": f"sha256:{_digest({'id': view_id, 'source_digest': source_digest, 'sources': sources, 'content': content})}",
+            "view_digest": f"sha256:{_digest({'id': view_id, 'renderer': renderer, 'mode': mode, 'source_digest': source_digest, 'accepted_cursor': accepted_cursor, 'sources': sources, 'content': content})}",
         })
+    for lens_id in lens_ids:
+        if lens_id not in LENS_VIEW_IDS:
+            diagnostics.append({"code": "UNKNOWN_LENS_WITHHELD", "lens_id": lens_id})
     return {
         "schema_version": 1,
         "project_id": project_id,
-        "project_label": _text(project.get("name") or project.get("purpose"), project_id),
+        "model_project_id": model_project_id,
+        "project_label": _text(project.get("name") or project.get("purpose"), model_project_id),
+        "tab": {"id": "ui", "label": "Workspace"},
+        "views": tabs,
         "source_artifact": _artifact_identity(source_artifact),
         "source_digest": source_digest,
-        "projection_digest": f"sha256:{_digest({'project_id': project_id, 'source_digest': source_digest, 'tabs': tabs})}",
+        "projection_binding": binding or None,
+        "accepted_cursor": accepted_cursor,
+        "projection_digest": f"sha256:{_digest({'project_id': project_id, 'model_project_id': model_project_id, 'source_digest': source_digest, 'accepted_cursor': accepted_cursor, 'tabs': tabs})}",
         "snapshot_only": True,
         "tabs": tabs,
         "diagnostics": sorted(diagnostics, key=lambda item: json.dumps(item, sort_keys=True, separators=(",", ":"))),
