@@ -181,13 +181,12 @@ assert.match(css, /\.topbar-profile \{[^}]*font-size:10px;/);
 assert.match(indexHtml, /id="support-open"[^>]*aria-haspopup="dialog"[^>]*aria-controls="support-dialog"[\s\S]*?<use href="#swarm-octopus-outline"><\/use>[\s\S]*?Support SWARM/);
 assert.match(indexHtml, /id="support-dialog"[^>]*aria-labelledby="support-dialog-title"[^>]*aria-describedby="support-dialog-description support-status"/);
 assert.match(indexHtml, /src="\/assets\/support-caricature-light\.webp"[^>]*width="800"[^>]*height="800"/);
-for (const amount of ["USD 5", "USD 10", "USD 20", "Custom"]) assert.match(indexHtml, new RegExp(`>${amount}<`));
-assert.match(indexHtml, /Continue with Stripe[\s\S]*Buy me a coffee[\s\S]*Address not configured/);
+assert.doesNotMatch(indexHtml, /Buy me a coffee|Continue with Stripe|USD (?:5|10|20)|Address not configured|support-amount/);
 assert.match(indexHtml, /href="https:\/\/x\.com\/PeikGabriel"[^>]*target="_blank"[^>]*rel="noopener noreferrer"/);
 assert.match(indexHtml, /href="https:\/\/github\.com\/peikgabriel"[^>]*target="_blank"[^>]*rel="noopener noreferrer"/);
-assert.match(indexHtml, /id="support-status"[^>]*>Payment destinations are not configured yet\./);
-assert.match(css, /\.support-dialog \{[^}]*width:min\(1040px,calc\(100vw - 32px\)\);[^}]*height:min\(680px,calc\(100dvh - 32px\)\)/);
-assert.match(css, /\.support-dialog-content \{[^}]*grid-template-columns:minmax\(280px,\.9fr\) minmax\(360px,1\.1fr\)/);
+assert.match(indexHtml, /id="support-status"[^>]*>Stripe checkout is not available yet\./);
+assert.match(css, /\.support-dialog \{[^}]*width:min\(760px,calc\(100vw - 32px\)\);[^}]*height:min\(520px,calc\(100dvh - 32px\)\)/);
+assert.match(css, /\.support-dialog-content \{[^}]*grid-template-columns:minmax\(240px,\.9fr\) minmax\(280px,1\.1fr\)/);
 assert.match(css, /@media \(max-width:620px\)[\s\S]*?\.support-dialog \{ width:100vw; height:100dvh; border:0; border-radius:0; \}/);
 assert.match(app, /function openSupport\(trigger\)[\s\S]*?dialog\.showModal\(\)[\s\S]*?function closeSupport\(restoreFocus = true\)/);
 assert.match(app, /\$\("#support-dialog"\)\.addEventListener\("click", \(event\) => \{ if \(event\.target === event\.currentTarget\) closeSupport\(\); \}\)/);
@@ -3748,18 +3747,34 @@ proofFeed.items.push({
     if (evidenceDir) await profileAvatarPage.screenshot({ path: path.join(evidenceDir, "profile-avatar-fallback-overview-desktop-1536x1024.png"), fullPage: false, animations: "disabled" });
     await profileAvatarPage.close();
 
-    const supportPage = await browser.newPage({ viewport: { width: 1024, height: 760 } });
+    const supportPage = await browser.newPage({ viewport: { width: 1440, height: 1000 } });
     await mount(supportPage, scopedFixture(), overrides);
     const supportTrigger = supportPage.getByRole("button", { name: "Support SWARM" });
     await supportTrigger.click();
     await supportPage.locator("#support-dialog").waitFor({ state: "visible" });
-    assert.match(await supportPage.locator("#support-dialog").textContent(), /USD 5[\s\S]*USD 10[\s\S]*USD 20[\s\S]*Custom[\s\S]*Address not configured/);
-    assert.equal(await supportPage.getByRole("button", { name: "Continue with Stripe" }).isDisabled(), true);
-    if (evidenceDir) await supportPage.screenshot({ path: path.join(evidenceDir, "support-modal-midnight-desktop-1024x760.png"), fullPage: false, animations: "disabled" });
+    assert.match(await supportPage.locator("#support-dialog").textContent(), /Stripe checkout is not available yet\./);
+    assert.equal(await supportPage.getByText(/Buy me a coffee|Continue with Stripe|USD (?:5|10|20)|Address not configured/).count(), 0);
+    assert.equal(await supportPage.locator('.support-method a[target="_blank"][rel="noopener noreferrer"]').count(), 2);
+    if (evidenceDir) await supportPage.screenshot({ path: path.join(evidenceDir, "support-modal-midnight-desktop-1440x1000.png"), fullPage: false, animations: "disabled" });
     await supportPage.keyboard.press("Escape");
     assert.equal(await supportPage.locator("#support-dialog").evaluate((dialog) => dialog.open), false);
     assert.equal(await supportTrigger.evaluate((element) => element === document.activeElement), true);
+    await supportTrigger.click();
+    await supportPage.locator("#support-dialog").waitFor({ state: "visible" });
+    await supportPage.mouse.click(40, 100);
+    assert.equal(await supportPage.locator("#support-dialog").evaluate((dialog) => dialog.open), false);
+    assert.equal(await supportTrigger.evaluate((element) => element === document.activeElement), true);
     await supportPage.close();
+
+    const tabletSupportPage = await browser.newPage({ viewport: { width: 834, height: 1112 } });
+    await mount(tabletSupportPage, scopedFixture(), overrides);
+    await tabletSupportPage.locator("#support-open").click();
+    await tabletSupportPage.locator("#support-dialog").waitFor({ state: "visible" });
+    assert.equal(await tabletSupportPage.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
+    if (evidenceDir) await tabletSupportPage.screenshot({ path: path.join(evidenceDir, "support-modal-midnight-tablet-834x1112.png"), fullPage: false, animations: "disabled" });
+    await tabletSupportPage.keyboard.press("Escape");
+    assert.equal(await tabletSupportPage.locator("#support-open").evaluate((element) => element === document.activeElement), true);
+    await tabletSupportPage.close();
 
     const mobileSupportPage = await browser.newPage({ viewport: { width: 390, height: 844 } });
     await mount(mobileSupportPage, scopedFixture(), overrides);
@@ -4371,7 +4386,9 @@ proofFeed.items.push({
     await page.locator("#agent-updates-pause").click();
     assert.match(await page.locator("#run-log-agent").textContent(), /retained material entr/);
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth), true);
-    if (evidenceDir) await page.screenshot({ path: path.join(evidenceDir, "16-agents-desktop-1536x1024.png"), fullPage: false, animations: "disabled" });
+    await page.setViewportSize({ width: 1440, height: 1000 });
+    if (evidenceDir) await page.screenshot({ path: path.join(evidenceDir, "16-agents-desktop-1440x1000.png"), fullPage: false, animations: "disabled" });
+    await page.setViewportSize({ width: 1536, height: 1024 });
     await page.evaluate(() => selectProjectScope("project:branch"));
     await page.waitForFunction(() => state.projectId === "project:branch" && document.querySelectorAll("[data-agent-detail]").length >= 2);
     assert.deepEqual(await page.evaluate(() => ({ view: state.view, selectedAgent: state.runLogAgent, filter: state.agentUpdatesFilter })), { view: "agents", selectedAgent: null, filter: "all" });
@@ -4853,6 +4870,12 @@ proofFeed.items.push({
     await tabletPage.mouse.click(20, 120);
     await tabletPage.waitForFunction(() => !document.querySelector("#agent-detail-dialog").open);
     assert.equal(await tabletAgentTrigger.evaluate((element) => element === document.activeElement), true);
+    assert.equal(await tabletPage.locator('#view-agents [data-label="Progress"]').evaluateAll((cells) => cells.every((cell) => {
+      const box = cell.getBoundingClientRect();
+      const row = cell.closest('.agent-table-row').getBoundingClientRect();
+      return box.width >= 100 && box.left >= row.left && box.right <= row.right - 40 && cell.scrollWidth <= cell.clientWidth;
+    })), true);
+    assert.equal(await tabletPage.locator('.agent-table-row').first().evaluate((row) => getComputedStyle(row).gridTemplateColumns.split(' ').length), 2);
     if (evidenceDir) await tabletPage.screenshot({ path: path.join(evidenceDir, "16-agents-tablet-834x1112.png"), fullPage: false, animations: "disabled" });
     await tabletPage.locator('.nav-item[data-view="roles"]').click();
     const tabletGrid = tabletPage.locator("#role-library-grid");
@@ -5048,7 +5071,13 @@ proofFeed.items.push({
     await mobilePage.evaluate(async () => { await selectProjectScope("project:fixture"); setView("agents"); });
     await mobilePage.waitForFunction(() => document.querySelectorAll("[data-agent-detail]").length >= 2);
     assert.equal(await mobilePage.locator("#view-agents [data-agent-detail]").evaluateAll((rows) => rows.every((row) => row.getBoundingClientRect().height >= 44)), true);
+    assert.equal(await mobilePage.locator('#view-agents [data-label="Progress"]').evaluateAll((cells) => cells.every((cell) => {
+      const box = cell.getBoundingClientRect();
+      const row = cell.closest('.agent-table-row').getBoundingClientRect();
+      return box.width >= 100 && box.left >= row.left && box.right <= row.right - 40 && cell.scrollWidth <= cell.clientWidth;
+    })), true);
     assert.equal(await mobilePage.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth), true);
+    await mobilePage.locator('#view-agents [role="progressbar"]').first().scrollIntoViewIfNeeded();
     if (evidenceDir) await mobilePage.screenshot({ path: path.join(evidenceDir, "18-agents-mobile-390x844.png"), fullPage: false, animations: "disabled" });
     await mobilePage.locator('#view-agents [data-agent-detail="nested-task"]').click();
     await assertDialogFrame(mobilePage, "#agent-detail-dialog");
