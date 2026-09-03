@@ -219,7 +219,7 @@ CONNECTOR_RECEIPT_FIELDS = frozenset({
     "schema_version", "record_type", "receipt_id", "command_id", "receipt_index",
     "idempotency_key", "command_digest",
     "project_id", "root_digest", "action", "status", "thread_id", "turn_id",
-    "observed_root_digest", "observed_at_ms",
+    "observed_root_digest", "observed_at_ms", "task_creation_identity",
 })
 CONNECTOR_ACTIONS = frozenset({"AUTO", "MANUAL_AGENT", "TASK", "TOPOLOGY_MATERIALIZE", "REPAIR", "LOCAL_HQ"})
 CONNECTOR_STATUSES = frozenset({"COMMAND", "ACKNOWLEDGED", "PROGRESS", "RESULT", "UNSUPPORTED"})
@@ -756,7 +756,9 @@ def _validate_retained_request_lifecycle_event(payload: Any, event_digest: str) 
 def _validate_connector_receipt(payload: Any) -> dict[str, Any]:
     if not isinstance(payload, dict):
         raise ProgressEventError("connector receipt must be an object")
-    _exact_fields(payload, CONNECTOR_RECEIPT_FIELDS, "connector receipt")
+    actual_fields = set(payload)
+    if actual_fields != set(CONNECTOR_RECEIPT_FIELDS) and actual_fields != set(CONNECTOR_RECEIPT_FIELDS) - {"task_creation_identity"}:
+        raise ProgressEventError("connector receipt fields are incomplete or unexpected")
     if payload.get("schema_version") != 1 or payload.get("record_type") != "CONNECTOR":
         raise ProgressEventError("connector receipt schema is unsupported")
     normalized = dict(payload)
@@ -775,6 +777,22 @@ def _validate_connector_receipt(payload: Any) -> dict[str, Any]:
         normalized[key] = None if payload.get(key) is None else _safe_id(payload.get(key), f"connector {key}")
     normalized["receipt_index"] = _positive_int(payload.get("receipt_index"), "connector receipt_index", allow_zero=True)
     normalized["observed_at_ms"] = _positive_int(payload.get("observed_at_ms"), "connector observed_at_ms", allow_zero=True)
+    if "task_creation_identity" in payload:
+        identity = payload.get("task_creation_identity")
+        if identity is not None:
+            if not isinstance(identity, dict):
+                raise ProgressEventError("connector task creation identity must be an object or null")
+            _exact_fields(identity, frozenset({"kind", "role_manifest_ref"}), "connector task creation identity")
+            kind = str(identity.get("kind") or "")
+            role_ref = identity.get("role_manifest_ref")
+            if kind == "INDEPENDENT_HOST_TASK":
+                if role_ref is not None:
+                    raise ProgressEventError("independent host task cannot carry a role manifest reference")
+            elif kind == "SWARM_OWNED":
+                role_ref = _validate_role_manifest_ref(role_ref)
+            else:
+                raise ProgressEventError("connector task creation identity kind is invalid")
+            normalized["task_creation_identity"] = {"kind": kind, "role_manifest_ref": role_ref}
     has_thread, has_turn = normalized["thread_id"] is not None, normalized["turn_id"] is not None
     if normalized["status"] in {"COMMAND", "UNSUPPORTED"} and (has_thread or has_turn or normalized["observed_root_digest"] is not None):
         raise ProgressEventError("connector command or unsupported receipt cannot claim host binding")
@@ -1602,16 +1620,36 @@ def load_builtin_role_manifests(
     manifests = []
     for role_id, name in BUILT_IN_PROFESSIONS.items():
         text = cards[role_id].read_text(encoding="utf-8")
-        instructions = [match.group(1) for line in text.splitlines() if (match := re.fullmatch(r"\d+\.\s+(.+)", line))]
+        lines = [line.strip() for line in text.splitlines() if line.strip()]
+        headings = ("## PURPOSE", "## OWNERSHIP", "## BOUNDARIES", "## ESCALATION")
+        heading_indexes = [index for index, line in enumerate(lines) if line.startswith("## ")]
+        if lines[:2] != [f"# {name}", headings[0]] or [lines[index] for index in heading_indexes] != list(headings):
+            raise ProgressEventError(f"built-in role card {role_id} has invalid structure")
+        purpose_lines = lines[heading_indexes[0] + 1:heading_indexes[1]]
+        ownership_lines = lines[heading_indexes[1] + 1:heading_indexes[2]]
+        boundary_lines = lines[heading_indexes[2] + 1:heading_indexes[3]]
+        escalation_lines = lines[heading_indexes[3] + 1:]
+        if (
+            len(purpose_lines) != 1
+            or purpose_lines[0].startswith(("#", "- "))
+            or not 3 <= len(ownership_lines) <= 5
+            or not 1 <= len(boundary_lines) <= 3
+            or not 1 <= len(escalation_lines) <= 2
+            or not all(line.startswith("- ") for line in (*ownership_lines, *boundary_lines, *escalation_lines))
+        ):
+            raise ProgressEventError(
+                f"built-in role card {role_id} requires one purpose paragraph, 3-5 ownership bullets, "
+                "1-3 boundaries, and 1-2 escalation bullets"
+            )
+        ownership = [line.removeprefix("- ").strip() for line in ownership_lines]
+        boundaries = [line.removeprefix("- ").strip() for line in boundary_lines]
+        escalation = [line.removeprefix("- ").strip() for line in escalation_lines]
         manifests.append(build_role_manifest(role_id, {
             "name": name,
-            "purpose": f"Apply the {name} profession perspective to one bounded SWARM assignment.",
-            "owns": [f"{name} profession guidance for the assigned surface."],
-            "instructions": instructions,
-            "boundaries": [
-                "Profession metadata never transfers structural authority.",
-                "User direction, custody, proof, and acceptance remain authoritative.",
-            ],
+            "purpose": purpose_lines[0],
+            "owns": ownership,
+            "instructions": [*ownership, *escalation],
+            "boundaries": boundaries,
             "default_skills": [],
             "specializations": list(BUILT_IN_ROLE_SPECIALIZATIONS[role_id]),
             "avatar_asset_digest": assets[role_id]["source"]["sha256"],
@@ -2390,11 +2428,13 @@ class Ledger:
         if command is None:
             if event["status"] != "COMMAND" or event["receipt_index"] != 0:
                 raise ProgressEventError("connector lifecycle must begin with COMMAND index zero")
-            command = {"identity": list(identity), "terminal": False, "receipts": []}
+            command = {"identity": list(identity), "task_creation_identity": event.get("task_creation_identity"), "terminal": False, "receipts": []}
             commands[event["idempotency_key"]] = command
             command_ids[event["command_id"]] = [event["idempotency_key"], *identity]
         elif tuple(command["identity"]) != identity:
             raise ProgressEventError("connector command identity conflicts with retained command")
+        elif command.get("task_creation_identity") != event.get("task_creation_identity"):
+            raise ProgressEventError("connector task creation identity conflicts with retained command")
         if command["terminal"]:
             raise ProgressEventError("connector terminal lifecycle is monotonic")
         if event["receipt_index"] != len(command["receipts"]):
@@ -2553,6 +2593,7 @@ class Ledger:
         if command is None or not command["terminal"] or not command["receipts"]:
             raise ProgressEventError("task creation requires a retained terminal connector command")
         result = command["receipts"][-1]
+        prepared = command.get("task_creation_identity")
         _, _, project_id, root_digest, action = command["identity"]
         if (
             result["status"] != "RESULT"
@@ -2564,6 +2605,11 @@ class Ledger:
             or result["receipt_id"] != event.custody_receipt_id
         ):
             raise ProgressEventError("task creation conflicts with retained host confirmation")
+        if prepared is not None and (
+            prepared.get("kind") != "SWARM_OWNED"
+            or prepared.get("role_manifest_ref") != binding["role_manifest_ref"]
+        ):
+            raise ProgressEventError("task creation role identity conflicts with retained preparation")
         task_operation = projection["task_creation_operations_by_task"].get(binding["task_id"])
         if task_operation is not None and task_operation != operation_id:
             raise ProgressEventError("host task is already bound to another creation operation")

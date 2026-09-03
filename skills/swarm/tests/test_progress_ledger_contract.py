@@ -1261,6 +1261,33 @@ class ProgressLedgerContractTests(unittest.TestCase):
         with self.assertRaisesRegex(ProgressEventError, "unsupported field"):
             validate_progress_material_event(inferred)
 
+    def test_connector_retains_one_creation_identity_and_rejects_lifecycle_rebinding(self) -> None:
+        roles = {item["id"]: item for item in self.role_manifests()}
+        base = {
+            "schema_version": 1, "record_type": "CONNECTOR", "command_id": "command:prepared",
+            "idempotency_key": "prepared", "command_digest": "a" * 64,
+            "project_id": "project-alpha", "root_digest": "b" * 64, "action": "MANUAL_AGENT",
+            "thread_id": None, "turn_id": None, "observed_root_digest": None,
+            "task_creation_identity": {
+                "kind": "SWARM_OWNED", "role_manifest_ref": role_manifest_reference(roles["developer"]),
+            },
+        }
+        self.ledger.append_connector_receipt({
+            **base, "receipt_id": "prepared:command", "receipt_index": 0,
+            "status": "COMMAND", "observed_at_ms": 1,
+        })
+        changed = json.loads(json.dumps(base))
+        changed["task_creation_identity"]["role_manifest_ref"] = role_manifest_reference(roles["manager"])
+        with self.assertRaisesRegex(ProgressEventError, "creation identity conflicts"):
+            self.ledger.append_connector_receipt({
+                **changed, "receipt_id": "prepared:ack", "receipt_index": 1,
+                "status": "ACKNOWLEDGED", "thread_id": "prepared-task",
+                "observed_root_digest": "b" * 64, "observed_at_ms": 2,
+            })
+        retained = ProgressLedger(self.root).replay()["connector_receipts"]["prepared"]
+        self.assertEqual(retained["task_creation_identity"], base["task_creation_identity"])
+        self.assertEqual([item["status"] for item in retained["receipts"]], ["COMMAND"])
+
     def test_agent_routines_add_list_revise_disable_remove_and_replay_without_prompt_disclosure(self) -> None:
         builtins = self.role_manifests()
         role = next(item for item in builtins if item["id"] == "developer")
@@ -1606,8 +1633,10 @@ class ProgressLedgerContractTests(unittest.TestCase):
         self.assertNotIn("Hostile", by_id["reviewer"]["specializations"])
         self.assertNotIn("critic", by_id)
         self.assertIn("assistant", by_id)
-        self.assertTrue(any("structural ASSIST" in item for item in by_id["assistant"]["instructions"]))
-        self.assertTrue(any("Friendly or Hostile" in item for item in by_id["reviewer"]["instructions"]))
+        self.assertIn("organized", by_id["assistant"]["purpose"])
+        self.assertIn("independently", by_id["reviewer"]["purpose"].lower())
+        self.assertEqual(by_id["developer"]["default_skills"], [])
+        self.assertNotIn("authority", " ".join(by_id["assistant"]["instructions"]).lower())
 
         manager = by_id["manager"]
         custom = build_role_manifest("custom-guide", self.role_draft(manager, specializations=[]), "custom", ["user-command:custom"])

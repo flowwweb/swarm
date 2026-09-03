@@ -25,7 +25,7 @@ from .core import (
     TaskState,
 )
 from .topology import TopologyDispatchPacket
-from .progress_events import build_task_manifest, task_creation_binding_event, validate_task_manifest_draft
+from .progress_events import build_task_manifest, role_manifest_reference, task_creation_binding_event, validate_task_manifest_draft
 
 
 _DIGEST_CHARS = frozenset("0123456789abcdef")
@@ -191,6 +191,14 @@ class HQCommandEnvelope:
     def task_creation_contract(self) -> dict[str, object] | None:
         return json.loads(self._task_creation_json) if self._task_creation_json else None
 
+    def task_creation_identity(self) -> dict[str, object] | None:
+        contract = self.task_creation_contract()
+        if contract is None:
+            return None
+        if contract.get("independent_host_task") is True:
+            return {"kind": "INDEPENDENT_HOST_TASK", "role_manifest_ref": None}
+        return {"kind": "SWARM_OWNED", "role_manifest_ref": role_manifest_reference(contract["role_manifest"])}
+
 
 @dataclass(frozen=True, repr=False)
 class HQDispatchMaterial:
@@ -320,7 +328,7 @@ class UniversalHQConnector:
 
     @staticmethod
     def _receipt(envelope: HQCommandEnvelope, *, receipt_id: str, index: int, status: str, observed_at_ms: int, thread_id: str | None = None, turn_id: str | None = None, observed_root_digest: str | None = None) -> dict[str, object]:
-        return {"schema_version": 1, "record_type": "CONNECTOR", "receipt_id": receipt_id, "command_id": envelope.command_id, "receipt_index": index, "idempotency_key": envelope.idempotency_key, "command_digest": envelope.digest, "project_id": envelope.project_id, "root_digest": envelope.root_digest, "action": envelope.action.value, "status": status, "thread_id": thread_id, "turn_id": turn_id, "observed_root_digest": observed_root_digest, "observed_at_ms": observed_at_ms}
+        return {"schema_version": 1, "record_type": "CONNECTOR", "receipt_id": receipt_id, "command_id": envelope.command_id, "receipt_index": index, "idempotency_key": envelope.idempotency_key, "command_digest": envelope.digest, "project_id": envelope.project_id, "root_digest": envelope.root_digest, "action": envelope.action.value, "status": status, "thread_id": thread_id, "turn_id": turn_id, "observed_root_digest": observed_root_digest, "observed_at_ms": observed_at_ms, "task_creation_identity": envelope.task_creation_identity()}
 
     @staticmethod
     def _host_binding(response: Mapping[str, object]) -> tuple[str, str, str]:
@@ -448,6 +456,8 @@ class UniversalHQConnector:
             )
             if creation is None:
                 raise InvariantError("bound task creation contract cannot project as independent")
+            if creation["topology"]["task_creation_binding"]["role_manifest_ref"] != envelope.task_creation_identity()["role_manifest_ref"]:
+                raise InvariantError("confirmed task role identity conflicts with retained preparation")
             ledger.append_connector_result_with_task_creation(result, creation)
         return HQConnectorResult("RESULT", envelope.digest, thread_id, turn_id, observed_root_digest)
 

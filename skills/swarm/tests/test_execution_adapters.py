@@ -454,6 +454,10 @@ class ExecutionAdapterTests(unittest.TestCase):
             projection = Ledger(root).project_task_creation_bindings("project-a")
             self.assertEqual(len(projection["bindings"]), 1)
             self.assertEqual(projection["bindings"][0]["task_id"], "thread-unpredictable-9")
+            retained_creation = Ledger(root).replay()["connector_receipts"]["key-bound"]["task_creation_identity"]
+            self.assertEqual(retained_creation, {
+                "kind": "SWARM_OWNED", "role_manifest_ref": projection["bindings"][0]["role_manifest_ref"],
+            })
             persisted_task = Ledger(root).project_identity_manifests(
                 "project-a", "ctrl-a", load_builtin_role_manifests(
                     repository / "skills" / "swarm" / "roles",

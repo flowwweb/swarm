@@ -9,6 +9,7 @@ from pathlib import Path
 SKILL_ROOT = Path(__file__).resolve().parents[1]
 REPOSITORY_ROOT = SKILL_ROOT.parents[1]
 ROLE_ROOT = SKILL_ROOT / "roles"
+PLUGIN_ROLE_ROOT = REPOSITORY_ROOT / "plugins" / "swarm" / "skills" / "swarm" / "roles"
 EXPECTED_CARDS = {
     "manager": "Manager", "strategist": "Strategist", "researcher": "Researcher",
     "analyst": "Analyst", "specialist": "Specialist", "inventor": "Inventor",
@@ -19,32 +20,55 @@ EXPECTED_CARDS = {
     "operator": "Operator", "marketer": "Marketer", "support": "Support",
     "accountant": "Accountant", "recruiter": "Recruiter", "educator": "Educator",
 }
+EXPECTED_FOCUS = {
+    "manager": ("plan", "dependencies"), "strategist": ("options", "tradeoffs"),
+    "researcher": ("source", "confidence"), "analyst": ("reproducible", "uncertainty"),
+    "specialist": ("domain", "standards"), "inventor": ("hypothesis", "prototype"),
+    "architect": ("interface", "migration"), "designer": ("interaction", "accessibility"),
+    "artist": ("visual", "reference"), "writer": ("publication", "claims"),
+    "developer": ("implementation", "test"), "producer": ("production", "rights"),
+    "tester": ("scenario", "reproducible"), "assistant": ("organized", "follow-up"),
+    "security": ("threat", "residual risk"), "auditor": ("criteria", "evidence"),
+    "legal": ("jurisdiction", "primary"), "reviewer": ("criteria", "findings"),
+    "operator": ("runbook", "recovery"), "marketer": ("positioning", "measurement"),
+    "support": ("reproduction", "escalation"), "accountant": ("reconcil", "adjustments"),
+    "recruiter": ("scorecard", "candidates"), "educator": ("mastery", "assessment"),
+}
 
 sys.path.insert(0, str(REPOSITORY_ROOT / "scripts"))
 from build_package import source_file_hashes
 
 
 class RoleCardTests(unittest.TestCase):
-    def test_role_cards_are_a_dynamic_filename_registry_and_shipped(self) -> None:
+    def test_role_cards_are_the_exact_four_section_profession_registry(self) -> None:
         cards = sorted(ROLE_ROOT.glob("*.md"))
+        self.assertEqual(len(cards), 24)
         self.assertEqual({card.stem for card in cards}, set(EXPECTED_CARDS))
 
         packaged_files = source_file_hashes(REPOSITORY_ROOT)
         for card in cards:
             with self.subTest(card=card.name):
                 lines = card.read_text(encoding="utf-8").splitlines()
-                self.assertEqual(lines[0], f"# {EXPECTED_CARDS[card.stem]}")
-                content = [line for line in lines[1:] if line.strip()]
-                self.assertEqual(len(content), 12)
-                self.assertTrue(all(re.fullmatch(r"\d+\. .+[.!?]", line) for line in content))
-                self.assertEqual(
-                    [int(line.split(". ", 1)[0]) for line in content], list(range(1, 13))
-                )
-                priority_line = content[0].lower()
-                self.assertTrue(
-                    all(term in priority_line for term in ("user direction", "project truth", "outrank"))
-                )
+                content = [line for line in lines if line.strip()]
+                headings = ["## PURPOSE", "## OWNERSHIP", "## BOUNDARIES", "## ESCALATION"]
+                heading_indexes = [index for index, line in enumerate(content) if line.startswith("## ")]
+                self.assertEqual(content[:2], [f"# {EXPECTED_CARDS[card.stem]}", headings[0]])
+                self.assertEqual([content[index] for index in heading_indexes], headings)
+                purpose = content[heading_indexes[0] + 1:heading_indexes[1]]
+                ownership = content[heading_indexes[1] + 1:heading_indexes[2]]
+                boundaries = content[heading_indexes[2] + 1:heading_indexes[3]]
+                escalation = content[heading_indexes[3] + 1:]
+                self.assertEqual(len(purpose), 1)
+                self.assertTrue(re.fullmatch(r"[^#-].*[.!?]", purpose[0]))
+                self.assertTrue(3 <= len(ownership) <= 5)
+                self.assertTrue(1 <= len(boundaries) <= 3)
+                self.assertTrue(1 <= len(escalation) <= 2)
+                self.assertTrue(all(re.fullmatch(r"- .+[.!?]", line) for line in (*ownership, *boundaries, *escalation)))
+                normalized = "\n".join(content).casefold()
+                for expected in EXPECTED_FOCUS[card.stem]:
+                    self.assertIn(expected, normalized)
                 self.assertIn(f"skills/swarm/roles/{card.name}", packaged_files)
+                self.assertEqual(card.read_bytes(), (PLUGIN_ROLE_ROOT / card.name).read_bytes())
 
     def test_retired_or_structural_labels_are_not_role_cards(self) -> None:
         self.assertFalse((ROLE_ROOT / "mother.md").exists())
@@ -53,16 +77,36 @@ class RoleCardTests(unittest.TestCase):
         self.assertFalse((ROLE_ROOT / "critic.md").exists())
         self.assertFalse((ROLE_ROOT / "content_creator.md").exists())
 
-    def test_assistant_and_reviewer_cards_preserve_authority_boundaries(self) -> None:
-        assistant = (ROLE_ROOT / "assistant.md").read_text(encoding="utf-8")
-        reviewer = (ROLE_ROOT / "reviewer.md").read_text(encoding="utf-8")
-        self.assertIn("profession Assistant as distinct from structural ASSIST", assistant)
-        for forbidden in ("delegate", "own intake", "mutate authority", "review", "accept"):
-            self.assertIn(forbidden, assistant)
-        self.assertIn("exactly one review stance, Friendly or Hostile", reviewer)
-        self.assertIn("stance changes perspective only, never authority or independence", reviewer)
-        self.assertIn("steelmans", reviewer)
-        self.assertIn("hostility targets artifacts, never people", reviewer)
+    def test_cards_are_semantic_not_governance_templates(self) -> None:
+        purposes = []
+        for path in ROLE_ROOT.glob("*.md"):
+            text = path.read_text(encoding="utf-8")
+            lines = [line for line in text.splitlines() if line.strip()]
+            purposes.append(lines[lines.index("## PURPOSE") + 1])
+            self.assertIsNone(re.search(
+                r"\b(SWARM|CTRL|LEAD|DOER|structural|authority|acceptance|user direction|"
+                r"project truth|claim limit|profession perspective|profession guidance)\b",
+                text,
+                re.I,
+            ))
+            self.assertNotIn("Recommendations:", text)
+            for skill_id in (
+                "find-skills", "frontend-design", "systematic-debugging",
+                "test-driven-development", "verification-before-completion", "webapp-testing",
+            ):
+                self.assertNotIn(skill_id, text)
+        self.assertEqual(len(purposes), len(set(purposes)))
+
+    def test_global_guidance_is_composed_once_and_repo_guidance_is_scoped(self) -> None:
+        skill = (SKILL_ROOT / "SKILL.md").read_text(encoding="utf-8")
+        cards = "\n".join(path.read_text(encoding="utf-8") for path in ROLE_ROOT.glob("*.md"))
+        guidance = (REPOSITORY_ROOT / "AGENTS.md").read_text(encoding="utf-8")
+        self.assertEqual(skill.count("Global policy is composed once"), 1)
+        self.assertNotIn("Global policy is composed once", cards)
+        self.assertIn("skills/swarm/SKILL.md", guidance)
+        self.assertIn("plugins/swarm/", guidance)
+        self.assertIn("Commit Guard", guidance)
+        self.assertLessEqual(len(guidance.splitlines()), 100)
 
 
 if __name__ == "__main__":
