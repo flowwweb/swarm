@@ -3810,6 +3810,43 @@ proofFeed.items.push({
     assert.ok(shellRuntime.runtimeErrors.every((message) => /400 \(Bad Request\)/.test(message)), shellRuntime.runtimeErrors.join(" | "));
     await shellPage.close();
 
+    for (const viewport of [
+      { name: "1270x714", width: 1270, height: 714, searchVisible: true },
+      { name: "1280x720", width: 1280, height: 720, searchVisible: true },
+      { name: "1440x900", width: 1440, height: 900, searchVisible: true },
+      { name: "1600x900", width: 1600, height: 900, searchVisible: true },
+      { name: "390x844", width: 390, height: 844, searchVisible: false },
+    ]) {
+      const narrowDesktopPage = await browser.newPage({ viewport: { width: viewport.width, height: viewport.height } });
+      const narrowDesktop = await mount(narrowDesktopPage, scopedFixture(), overrides);
+      const toolbarGeometry = await narrowDesktopPage.evaluate(() => {
+        const search = document.querySelector("#ask-anything-form").getBoundingClientRect();
+        const scope = document.querySelector("#scope-context").getBoundingClientRect();
+        return {
+          search: { left: search.left, top: search.top, right: search.right, bottom: search.bottom },
+          scope: { left: scope.left, top: scope.top, right: scope.right, bottom: scope.bottom },
+          overlaps: search.left < scope.right && search.right > scope.left && search.top < scope.bottom && search.bottom > scope.top,
+          documentWidth: document.documentElement.scrollWidth,
+          viewportWidth: innerWidth,
+        };
+      });
+      if (evidenceDir) await narrowDesktopPage.screenshot({ path: path.join(evidenceDir, `toolbar-${viewport.name}.png`), fullPage: false, animations: "disabled" });
+      assert.equal(await narrowDesktopPage.locator("#ask-anything-form").isVisible(), viewport.searchVisible);
+      assert.equal(toolbarGeometry.overlaps, false, JSON.stringify(toolbarGeometry));
+      assert.ok(toolbarGeometry.documentWidth <= toolbarGeometry.viewportWidth, JSON.stringify(toolbarGeometry));
+      if (viewport.searchVisible) {
+        await narrowDesktopPage.keyboard.press("Control+k");
+        assert.equal(await narrowDesktopPage.evaluate(() => document.activeElement?.id), "ask-anything");
+      }
+      await narrowDesktopPage.locator("#project-scope-filter").focus();
+      await narrowDesktopPage.keyboard.press("ArrowDown");
+      assert.equal(await narrowDesktopPage.evaluate(() => document.activeElement?.dataset.projectScopeId), "all");
+      await narrowDesktopPage.keyboard.press("Escape");
+      assert.equal(await narrowDesktopPage.evaluate(() => document.activeElement?.id), "project-scope-filter");
+      assert.deepEqual(narrowDesktop.runtimeErrors, []);
+      await narrowDesktopPage.close();
+    }
+
     const diagnosticsControl = {
       feed: {
         ...structuredClone(fixture.diagnostics),

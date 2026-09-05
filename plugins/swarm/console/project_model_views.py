@@ -44,7 +44,17 @@ _BRIEF_REQUIRED = {
     "authority", "milestones", "decisions", "ownership", "proof_acceptance",
     "risks_blockers", "links",
 }
-_EDITABLE_COLLECTIONS = frozenset({"milestones", "tasks", "blocks", "risks_blockers"})
+_LIFECYCLE_COLLECTIONS = frozenset({"goals", "milestones", "tasks", "blocks", "risks_blockers"})
+_REOPENABLE_STATES = frozenset({
+    "complete", "completed", "accepted", "cancelled", "canceled", "closed",
+    "archived", "archived_stale", "tombstoned",
+})
+_LIFECYCLE_FIELDS = frozenset({
+    "label", "name", "task_name", "summary", "outcome", "description", "state", "rank", "role_scope",
+    "goal_refs", "milestone_id", "milestone_ref", "task_id", "task_ids", "dependency_ids", "blocker_ids",
+    "affected_ids", "acceptance_criteria", "artifact_ids", "artifact_refs", "release_condition",
+    "suggested_recovery", "critical_path", "attempts", "note",
+})
 # ponytail: process-local serialization; add a host-owned cross-process lock only if multiple writers are introduced.
 _UPDATE_LOCK = threading.Lock()
 _MAX_BRIEF_BYTES = 512 * 1024
@@ -137,24 +147,48 @@ def update_project_brief(
     state: str,
     updated_at: str,
 ) -> str:
+    return mutate_project_brief(
+        path,
+        expected_digest=expected_digest,
+        operation="update",
+        collection=collection,
+        record_id=record_id,
+        changes={"state": state},
+        updated_at=updated_at,
+    )
+
+
+def mutate_project_brief(
+    path: Path,
+    *,
+    expected_digest: str,
+    operation: str,
+    collection: str,
+    record_id: str,
+    changes: Mapping[str, Any],
+    updated_at: str,
+) -> str:
+    """Persist create/update/reopen; a process restart only reparses these bytes."""
     with _UPDATE_LOCK:
-        return _update_project_brief(
+        return _mutate_project_brief(
             path,
             expected_digest=expected_digest,
+            operation=operation,
             collection=collection,
             record_id=record_id,
-            state=state,
+            changes=changes,
             updated_at=updated_at,
         )
 
 
-def _update_project_brief(
+def _mutate_project_brief(
     path: Path,
     *,
     expected_digest: str,
+    operation: str,
     collection: str,
     record_id: str,
-    state: str,
+    changes: Mapping[str, Any],
     updated_at: str,
 ) -> str:
     if path.name != "SWARM.md" or path.is_symlink() or not path.is_file():
@@ -166,21 +200,75 @@ def _update_project_brief(
     document, digest = parse_project_brief_markdown(text)
     if digest != expected_digest:
         raise ProjectModelError("project brief digest conflict")
-    if collection not in _EDITABLE_COLLECTIONS:
+    if collection not in _LIFECYCLE_COLLECTIONS:
         raise ProjectModelError("project brief collection is not editable")
-    if not isinstance(record_id, str) or not record_id.strip():
+    if (
+        not isinstance(record_id, str) or not record_id.strip()
+        or len(record_id.strip().encode("utf-8")) > 128
+        or any(ord(char) < 32 for char in record_id)
+    ):
         raise ProjectModelError("project brief record id is invalid")
-    if not isinstance(state, str) or not 0 < len(state.strip()) <= 64 or any(ord(char) < 32 for char in state):
-        raise ProjectModelError("project brief state is invalid")
+    record_id = record_id.strip()
     if not isinstance(updated_at, str) or not updated_at.strip():
         raise ProjectModelError("project brief timestamp is invalid")
-    records = document.get(collection, [])
+    if operation not in {"create", "update", "reopen"} or collection not in _LIFECYCLE_COLLECTIONS:
+        raise ProjectModelError("project brief lifecycle operation is invalid")
+    if not isinstance(changes, Mapping) or "id" in changes or not changes:
+        raise ProjectModelError("project brief changes are invalid")
+    try:
+        patch = json.loads(json.dumps(dict(changes), ensure_ascii=False, allow_nan=False))
+    except (TypeError, ValueError) as exc:
+        raise ProjectModelError("project brief changes must be finite JSON") from exc
+    if not isinstance(patch, dict):
+        raise ProjectModelError("project brief changes are invalid")
+    if not set(patch) <= _LIFECYCLE_FIELDS:
+        raise ProjectModelError("project brief changes contain authority-owned fields")
+    state = patch.get("state")
+    if "state" in patch and (
+        not isinstance(state, str) or not 0 < len(state.strip()) <= 64 or any(ord(char) < 32 for char in state)
+    ):
+        raise ProjectModelError("project brief state is invalid")
+    if "state" in patch:
+        patch["state"] = state.strip()
+
+    records = document["objective"].setdefault("ranked_outcomes", []) if collection == "goals" else document.setdefault(collection, [])
     if not isinstance(records, list):
         raise ProjectModelError(f"project brief field {collection} is invalid")
-    matches = [item for item in records if isinstance(item, dict) and item.get("id") == record_id]
-    if len(matches) != 1:
-        raise ProjectModelError("project brief edit requires one exact record")
-    matches[0]["state"] = state.strip()
+    all_records = [
+        item
+        for key in _LIFECYCLE_COLLECTIONS
+        for item in (document["objective"].get("ranked_outcomes", []) if key == "goals" else document.get(key, []))
+        if isinstance(item, dict)
+    ]
+    identity_matches = [
+        item for item in all_records
+        if isinstance(item.get("id"), str) and item["id"].casefold() == record_id.casefold()
+    ]
+    if operation == "create":
+        if identity_matches:
+            raise ProjectModelError("project brief record id already exists")
+        records.append({"id": record_id, **patch})
+    else:
+        matches = [item for item in records if isinstance(item, dict) and item.get("id") == record_id]
+        if len(matches) != 1 or len(identity_matches) != 1:
+            raise ProjectModelError("project brief edit requires one exact record")
+        current = matches[0].get("state")
+        target = patch.get("state")
+        if (
+            operation == "update" and "state" in patch
+            and isinstance(current, str) and current.casefold() in _REOPENABLE_STATES
+            and target.casefold() not in _REOPENABLE_STATES
+        ):
+            raise ProjectModelError("project brief terminal record requires explicit reopen")
+        if operation == "reopen":
+            if (
+                set(patch) != {"state"}
+                or not isinstance(current, str) or current.casefold() not in _REOPENABLE_STATES
+                or not isinstance(target, str) or not target.strip()
+                or target.casefold() in _REOPENABLE_STATES
+            ):
+                raise ProjectModelError("project brief reopen requires a terminal record and nonterminal target state")
+        matches[0].update(patch)
     document["updated_at"] = updated_at.strip()
     updated = render_project_brief_markdown(text, document)
     _, new_digest = parse_project_brief_markdown(updated)

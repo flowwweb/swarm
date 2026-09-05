@@ -275,7 +275,7 @@ class ProjectModelViewsTests(unittest.TestCase):
                 expected_digest=digest,
                 collection="tasks",
                 record_id="t-device",
-                state="active",
+                state=" active ",
                 updated_at="2026-09-02T00:00:00Z",
             )
             updated_text = path.read_text(encoding="utf-8")
@@ -302,6 +302,88 @@ class ProjectModelViewsTests(unittest.TestCase):
                     updated_at="2026-09-02T01:00:00Z",
                 )
             self.assertEqual(path.read_bytes(), before_conflict)
+
+    def test_schema1_lifecycle_create_update_reopen_and_restart(self):
+        model = project_fixture(
+            "fixture",
+            objective={"current": "Ship", "ranked_outcomes": []},
+            milestones=[],
+            tasks=[],
+            blocks=[],
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "SWARM.md"
+            path.write_text(markdown_fixture(model), encoding="utf-8")
+            _, digest = views.parse_project_brief_markdown(path.read_text(encoding="utf-8"))
+            operations = (
+                ("goals", "g-1", {"label": "Goal", "state": "active", "milestone_id": "m-1"}),
+                ("milestones", "m-1", {"label": "Milestone", "state": "active", "task_ids": ["t-1"]}),
+                ("tasks", "t-1", {
+                    "task_name": "Task", "state": "active", "milestone_ref": {"milestone_id": "m-1"},
+                    "acceptance_criteria": ["Proof passes"], "artifact_ids": ["a-1"],
+                }),
+                ("blocks", "b-1", {"label": "Block", "state": "planned", "task_id": "t-1"}),
+            )
+            for collection, record_id, changes in operations:
+                digest = views.mutate_project_brief(
+                    path, expected_digest=digest, operation="create", collection=collection,
+                    record_id=record_id, changes=changes, updated_at="2026-09-05T00:00:00Z",
+                )
+            digest = views.mutate_project_brief(
+                path, expected_digest=digest, operation="update", collection="tasks", record_id="t-1",
+                changes={"task_name": "Renamed", "state": " complete "}, updated_at="2026-09-05T00:01:00Z",
+            )
+            digest = views.mutate_project_brief(
+                path, expected_digest=digest, operation="reopen", collection="tasks", record_id="t-1",
+                changes={"state": "active"}, updated_at="2026-09-05T00:02:00Z",
+            )
+
+            restarted = load_module("restarted_project_model_views", CONSOLE_ROOT / "project_model_views.py")
+            observed, observed_digest = restarted.parse_project_brief_markdown(path.read_text(encoding="utf-8"))
+            task = observed["tasks"][0]
+            self.assertEqual(observed_digest, digest)
+            self.assertEqual(observed["objective"]["ranked_outcomes"][0]["id"], "g-1")
+            self.assertEqual(task["task_name"], "Renamed")
+            self.assertEqual(task["state"], "active")
+            self.assertEqual(task["milestone_ref"], {"milestone_id": "m-1"})
+            self.assertEqual(task["acceptance_criteria"], ["Proof passes"])
+            self.assertEqual(task["artifact_ids"], ["a-1"])
+
+    def test_schema1_lifecycle_rejects_duplicate_stale_and_invalid_reopen(self):
+        model = project_fixture("fixture", tasks=[{"id": "t-1", "state": "complete"}], blocks=[])
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "SWARM.md"
+            path.write_text(markdown_fixture(model), encoding="utf-8")
+            _, digest = views.parse_project_brief_markdown(path.read_text(encoding="utf-8"))
+            digest = views.mutate_project_brief(
+                path, expected_digest=digest, operation="update", collection="tasks", record_id="t-1",
+                changes={"task_name": "Still closed"}, updated_at="2026-09-05T00:00:00Z",
+            )
+            digest = views.mutate_project_brief(
+                path, expected_digest=digest, operation="update", collection="tasks", record_id="t-1",
+                changes={"state": "accepted"}, updated_at="2026-09-05T00:01:00Z",
+            )
+            before = path.read_bytes()
+            cases = (
+                {"expected_digest": digest, "operation": "create", "collection": "blocks", "record_id": "t-1", "changes": {"state": "planned"}},
+                {"expected_digest": digest, "operation": "reopen", "collection": "tasks", "record_id": "t-1", "changes": {"state": " complete "}},
+                {"expected_digest": digest, "operation": "update", "collection": "tasks", "record_id": "t-1", "changes": {"state": "active"}},
+                {"expected_digest": digest, "operation": "update", "collection": "tasks", "record_id": "t-1", "changes": {"owner_id": "agent-1"}},
+                {"expected_digest": digest, "operation": "update", "collection": "tasks", "record_id": "t-1", "changes": {"progress_percent": 50}},
+                {"expected_digest": digest, "operation": "update", "collection": "tasks", "record_id": "t-1", "changes": {"acceptance_receipt": "forged"}},
+                {"expected_digest": digest, "operation": "update", "collection": "tasks", "record_id": "t-1", "changes": {"state": None}},
+                {"expected_digest": "sha256:" + "0" * 64, "operation": "update", "collection": "tasks", "record_id": "t-1", "changes": {"state": "complete"}},
+            )
+            for case in cases:
+                with self.subTest(operation=case["operation"]), self.assertRaises(views.ProjectModelError):
+                    views.mutate_project_brief(path, updated_at="2026-09-05T00:00:00Z", **case)
+                self.assertEqual(path.read_bytes(), before)
+            with self.assertRaisesRegex(views.ProjectModelError, "state is invalid"):
+                views.update_project_brief(
+                    path, expected_digest=digest, collection="tasks", record_id="t-1",
+                    state=None, updated_at="2026-09-05T00:00:00Z",
+                )
+            self.assertEqual(path.read_bytes(), before)
 
     def test_concurrent_expected_digest_update_has_one_winner(self):
         text = markdown_fixture(REAL_PROJECT_FIXTURES["Nemo"])
