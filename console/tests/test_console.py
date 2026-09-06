@@ -4717,6 +4717,77 @@ class SwarmConsoleTests(unittest.TestCase):
             } | {(manifest_ref, manifest_digest): manifest_bytes},
         }
 
+    def test_project_view_custom_composes_native_work_without_changing_custom_identity(self) -> None:
+        root = self.root / "composed-work"
+        bundle = self._write_v6_project_view_bundle("project:alpha", root)
+        app = console.App(
+            self.codex_home, self.config, self.root / "console" / "composed.sqlite3",
+            project_view_resolver=lambda project_id, ref, digest: bundle["sources"][(ref, digest)],
+        )
+        custom = app._project_view_projection("project:alpha")
+        link = {"rel": "project_views", "ref": bundle["manifest_ref"], "digest": bundle["manifest_digest"]}
+        self._write_project_brief(root, "project:alpha", links=[link], extra={"tasks": []})
+        original = (root / "SWARM.md").read_bytes()
+        briefs = app._project_briefs_projection()
+        composed = app._project_view_projection("project:alpha", briefs)
+        self.assertEqual(composed["views"][:-1], custom["views"])
+        self.assertEqual(composed["modes"][:-1], custom["modes"])
+        self.assertEqual(composed["identity"], custom["identity"])
+        self.assertEqual(composed["views"][-1]["id"], "view.project.work")
+        native = composed["components"][1]
+        self.assertEqual(native["status"], "CURRENT")
+        self.assertEqual(composed["effective_component_status"], {"custom": "CURRENT", "native_work": "CURRENT"})
+        self.assertEqual(composed["views"][-1]["allowed_actions"], [])
+        self.assertEqual(native["allowed_actions"], [])
+        self.assertEqual(native["projection_binding"]["project_briefs_cursor"], briefs["cursor"])
+        self.assertEqual(native["view_digest"], composed["views"][-1]["view_digest"])
+        self.assertEqual((root / "SWARM.md").read_bytes(), original)
+        self.assertEqual(app._project_view_projection("project:alpha", briefs), composed)
+
+        stale = copy.deepcopy(briefs)
+        next(row for row in stale["projects"] if row["project_id"] == "project:alpha")["digest"] = "sha256:" + "0" * 64
+        withheld = app._project_view_projection("project:alpha", stale)
+        self.assertEqual(withheld["views"], custom["views"])
+        self.assertEqual(withheld["components"][1]["status"], "WITHHELD")
+        self.assertEqual(withheld["identity"], custom["identity"])
+
+        duplicate = copy.deepcopy(custom)
+        duplicate["views"].append(copy.deepcopy(composed["views"][-1]))
+        with mock.patch.object(app, "_normalize_project_view", return_value=duplicate):
+            result = app._project_view_projection("project:alpha", briefs)
+        self.assertEqual(result["views"], duplicate["views"])
+        self.assertEqual(result["components"][1]["reason"], "DUPLICATE_WORK")
+
+        suffix = copy.deepcopy(custom)
+        suffix["views"][0]["id"] = "view.custom.work"
+        suffix["modes"][0].update(id="work", view_id="view.custom.work")
+        with mock.patch.object(app, "_normalize_project_view", return_value=copy.deepcopy(suffix)):
+            collision = app._project_view_projection("project:alpha", briefs)
+        self.assertEqual(collision["views"], suffix["views"])
+        self.assertEqual(collision["modes"], suffix["modes"])
+        self.assertEqual(sum(mode["id"] == "work" for mode in collision["modes"]), 1)
+        self.assertEqual(collision["components"][1]["reason"], "DUPLICATE_WORK")
+        self.assertEqual(collision["effective_component_status"], {"custom": "CURRENT", "native_work": "WITHHELD"})
+
+        self._write_project_brief(root, "project:alpha", links=[link], extra={
+            "tasks": [], "objective": {"current": "Changed accepted brief"},
+        })
+        changed = app._project_view_projection("project:alpha")
+        self.assertEqual(changed["views"][:-1], custom["views"])
+        self.assertNotEqual(changed["components"][1]["source_digest"], native["source_digest"])
+        self.assertNotEqual(changed["composition_digest"], composed["composition_digest"])
+        with mock.patch.object(app, "_resolve_project_view_bytes", side_effect=console.ConsoleError("unavailable")):
+            retained = app._project_view_projection("project:alpha")
+        self.assertEqual(retained.pop("status"), "STALE_LAST_ACCEPTED")
+        self.assertEqual(retained.pop("effective_component_status"), {"custom": "STALE_LAST_ACCEPTED", "native_work": "STALE_LAST_ACCEPTED"})
+        self.assertEqual(retained["views"][-1]["allowed_actions"], [])
+        self.assertEqual(retained, {key: value for key, value in changed.items() if key != "effective_component_status"})
+
+        self._write_project_brief(root, "project:alpha", links=[link], extra={"tasks": "invalid"})
+        invalid = app._project_view_projection("project:alpha")
+        self.assertEqual(invalid["views"], custom["views"])
+        self.assertEqual(invalid["components"][1]["status"], "WITHHELD")
+
     def test_project_view_v6_workspace_projection_is_ordered_typed_and_snapshot_only(self) -> None:
         root = self.root / "projects" / "v6"
         bundle = self._write_v6_project_view_bundle("project:alpha", root)
@@ -4821,7 +4892,8 @@ class SwarmConsoleTests(unittest.TestCase):
         with mock.patch.object(app.store, "proof_feed", return_value=[]):
             retained = app._project_view_projection("project:alpha")
         self.assertEqual(retained.pop("status"), "STALE_LAST_ACCEPTED")
-        self.assertEqual(retained, accepted)
+        self.assertEqual(retained.pop("effective_component_status"), {"custom": "STALE_LAST_ACCEPTED", "native_work": "WITHHELD"})
+        self.assertEqual(retained, {key: value for key, value in accepted.items() if key != "effective_component_status"})
 
     def test_default_project_view_resolver_is_root_bound_and_withholds_incompatible_pilots(self) -> None:
         alpha_root = self.root / "projects" / "alpha-local"
@@ -5238,7 +5310,8 @@ class SwarmConsoleTests(unittest.TestCase):
         with mock.patch.object(app.store, "proof_feed", return_value=[]):
             retained = app._project_view_projection("project:alpha")
         self.assertEqual(retained.pop("status"), "STALE_LAST_ACCEPTED")
-        self.assertEqual(retained, accepted)
+        self.assertEqual(retained.pop("effective_component_status"), {"custom": "STALE_LAST_ACCEPTED", "native_work": "WITHHELD"})
+        self.assertEqual(retained, {key: value for key, value in accepted.items() if key != "effective_component_status"})
         fresh = console.App(
             self.codex_home, self.config, self.root / "console" / "project-view-fresh.sqlite3",
             project_view_resolver=lambda project_id, ref, expected: sources[(ref, expected)],

@@ -9358,6 +9358,12 @@ class App:
                 return None
             projection = copy.deepcopy(cached)
             projection["status"] = "STALE_LAST_ACCEPTED"
+            if "components" in projection:
+                projection["effective_component_status"] = {
+                    component["kind"]: (
+                        "STALE_LAST_ACCEPTED" if component["status"] == "CURRENT" else component["status"]
+                    ) for component in projection["components"]
+                }
             return projection
 
         try:
@@ -9370,44 +9376,48 @@ class App:
         except (ConsoleError, OSError, UnicodeError):
             return last_accepted()
         status, link = self._project_view_link_from_text(brief_text)
+        def native_projection(selected_lens_ids=None):
+            model, source_digest = parse_project_brief_markdown(brief_text)
+            model_project_id = str(model["project"]["id"]).strip()
+            if model_project_id.casefold() not in {
+                identity.casefold() for identity in self._canonical_project_identities(project_id)
+            }:
+                raise ProjectModelError("project brief belongs to another saved project")
+            if selected_lens_ids is None and not model.get("proposed_lens_ids"):
+                return None
+            briefs = project_briefs if isinstance(project_briefs, dict) else self._project_briefs_projection()
+            if briefs.get("state") != "KNOWN" or not briefs.get("available") or not isinstance(briefs.get("cursor"), dict):
+                raise ProjectModelError("accepted project briefs cursor is unavailable")
+            matches = [
+                item for item in briefs.get("projects", [])
+                if isinstance(item, dict) and item.get("project_id") == project_id
+            ]
+            if len(matches) != 1 or matches[0].get("status") != "KNOWN" or matches[0].get("digest") != source_digest:
+                raise ProjectModelError("project brief projection is stale or mixed-scope")
+            binding = {
+                "project_id": project_id,
+                "model_project_id": model_project_id,
+                "canonical_root": str(root.resolve()),
+                "brief_bytes_digest": "sha256:" + hashlib.sha256(raw_brief).hexdigest(),
+                "source_digest": source_digest,
+                "project_briefs_cursor": copy.deepcopy(briefs["cursor"]),
+                "locator": None,
+            }
+            projection = project_schema1_views(
+                model,
+                ArtifactIdentity(f"project-brief:{project_id}", source_digest, "schema-1-project-model"),
+                PROJECT_VIEW_RENDERERS,
+                PROJECT_VIEW_ACTIONS,
+                runtime_project_id=project_id,
+                projection_binding=binding,
+                selected_lens_ids=selected_lens_ids,
+            )
+            return projection
+
         if status == "absent":
             try:
-                model, source_digest = parse_project_brief_markdown(brief_text)
-                model_project_id = str(model["project"]["id"]).strip()
-                if model_project_id.casefold() not in {
-                    identity.casefold() for identity in self._canonical_project_identities(project_id)
-                }:
-                    raise ProjectModelError("project brief belongs to another saved project")
-                if not model.get("proposed_lens_ids"):
-                    self._project_view_cache.pop(project_id, None)
-                    return None
-                briefs = project_briefs if isinstance(project_briefs, dict) else self._project_briefs_projection()
-                if briefs.get("state") != "KNOWN" or not briefs.get("available") or not isinstance(briefs.get("cursor"), dict):
-                    raise ProjectModelError("accepted project briefs cursor is unavailable")
-                matches = [
-                    item for item in briefs.get("projects", [])
-                    if isinstance(item, dict) and item.get("project_id") == project_id
-                ]
-                if len(matches) != 1 or matches[0].get("status") != "KNOWN" or matches[0].get("digest") != source_digest:
-                    raise ProjectModelError("project brief projection is stale or mixed-scope")
-                binding = {
-                    "project_id": project_id,
-                    "model_project_id": model_project_id,
-                    "canonical_root": str(root.resolve()),
-                    "brief_bytes_digest": "sha256:" + hashlib.sha256(raw_brief).hexdigest(),
-                    "source_digest": source_digest,
-                    "project_briefs_cursor": copy.deepcopy(briefs["cursor"]),
-                    "locator": None,
-                }
-                projection = project_schema1_views(
-                    model,
-                    ArtifactIdentity(f"project-brief:{project_id}", source_digest, "schema-1-project-model"),
-                    PROJECT_VIEW_RENDERERS,
-                    PROJECT_VIEW_ACTIONS,
-                    runtime_project_id=project_id,
-                    projection_binding=binding,
-                )
-                if not projection.get("views"):
+                projection = native_projection()
+                if not projection or not projection.get("views"):
                     self._project_view_cache.pop(project_id, None)
                     return None
             except (ProjectModelError, ConsoleError, OSError, UnicodeError, ValueError, TypeError, sqlite3.Error):
@@ -9421,6 +9431,48 @@ class App:
             projection = self._normalize_project_view(project_id, manifest_bytes, link["digest"])
         except (ConsoleError, OSError, UnicodeError, ValueError, TypeError, sqlite3.Error):
             return last_accepted()
+        components = [{
+            "kind": "custom", "project_id": project_id, "status": "CURRENT",
+            "freshness": "INHERIT_PROJECTION_STATUS",
+            "identity": copy.deepcopy(projection.get("identity")),
+            "source_bindings": copy.deepcopy(projection.get("source_bindings", [])),
+            "projection_binding": copy.deepcopy(projection.get("projection_binding")),
+        }]
+        native = {"kind": "native_work", "project_id": project_id, "status": "WITHHELD",
+                  "freshness": "INHERIT_PROJECTION_STATUS"}
+        try:
+            if (any(view.get("id") == "view.project.work" for view in projection.get("views", []))
+                    or any(mode.get("id") == "work" for mode in projection.get("modes", []))):
+                native["reason"] = "DUPLICATE_WORK"
+            else:
+                work = native_projection(["lens-tasks-kanban"])
+                if not work or len(work.get("views", [])) != 1:
+                    native["reason"] = "INVALID_NATIVE_SOURCE"
+                else:
+                    view = copy.deepcopy(work["views"][0])
+                    # Composed native actions have no component-bound consumer yet.
+                    view["allowed_actions"] = []
+                    projection.setdefault("views", []).append(view)
+                    projection.setdefault("modes", []).append({
+                        "id": "work", "label": view["label"], "view_id": view["id"],
+                        "renderer": view["renderer"], "mode": view["mode"],
+                    })
+                    native.update({
+                        "status": "CURRENT", "source_digest": work["source_digest"],
+                        "projection_binding": work["projection_binding"],
+                        "accepted_cursor": work["accepted_cursor"],
+                        "projection_digest": work["projection_digest"],
+                        "sources": copy.deepcopy(view["sources"]), "view_digest": view["view_digest"],
+                        "allowed_actions": [],
+                    })
+        except (ProjectModelError, ConsoleError, OSError, UnicodeError, ValueError, TypeError, sqlite3.Error):
+            native["reason"] = "INVALID_NATIVE_BINDING"
+        components.append(native)
+        projection["components"] = components
+        projection["effective_component_status"] = {component["kind"]: component["status"] for component in components}
+        projection["composition_digest"] = "sha256:" + hashlib.sha256(
+            json.dumps(components, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        ).hexdigest()
         self._project_view_cache[project_id] = projection
         return copy.deepcopy(projection)
 
