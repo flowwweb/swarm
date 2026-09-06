@@ -390,6 +390,7 @@ def project_schema1_views(
     *,
     runtime_project_id: str | None = None,
     projection_binding: Mapping[str, Any] | None = None,
+    selected_lens_ids: list[str] | None = None,
 ) -> dict[str, Any]:
     if not {"open_entity", "open_artifact"}.issubset(allowed_actions):
         raise ProjectModelError("existing action registry is missing required project-view actions")
@@ -409,7 +410,7 @@ def project_schema1_views(
     if source_digest.casefold() != f"sha256:{_digest(model)}":
         raise ProjectModelError("project model source artifact digest does not match the model")
 
-    lens_ids = model.get("proposed_lens_ids", [])
+    lens_ids = model.get("proposed_lens_ids", []) if selected_lens_ids is None else selected_lens_ids
     if (
         not isinstance(lens_ids, list)
         or len(lens_ids) > 32
@@ -417,6 +418,8 @@ def project_schema1_views(
         or len({item.casefold() for item in lens_ids}) != len(lens_ids)
     ):
         raise ProjectModelError("project brief proposed_lens_ids is invalid")
+    if selected_lens_ids is not None and any(item not in LENS_VIEW_IDS for item in lens_ids):
+        raise ProjectModelError("selected_lens_ids contains an unknown lens")
     specs_by_id = {spec[0]: spec for spec in VIEW_SPECS}
     selected_specs = tuple(specs_by_id[LENS_VIEW_IDS[item]] for item in lens_ids if item in LENS_VIEW_IDS)
     for _, _, renderer, mode, _, _ in selected_specs:
@@ -680,11 +683,27 @@ def project_schema1_views(
             })
             continue
         pointers = required_pointers + tuple(pointer for pointer in optional_pointers if pointer[1:] in model)
+        content = content_by_id[view_id]
+        if view_id == "view.project.work" and selected_lens_ids is not None and "ranked_outcomes" in objective:
+            pointer = "/objective/ranked_outcomes"
+            if not _valid_pointer(model, pointer):
+                diagnostics.append({"code": "WITHHELD_VIEW", "view_id": view_id, "reason": "INVALID_GOAL_ASSOCIATIONS"})
+                continue
+            associations = []
+            for goal in ranked_outcomes:
+                target = goal.get("milestone_id")
+                if target is None:
+                    continue
+                if not isinstance(target, str) or target not in indexed or indexed[target][0] != "milestone":
+                    diagnostics.append({"code": "UNRESOLVED_GOAL_ASSOCIATION", "source_id": str(goal["id"])})
+                    continue
+                associations.append({"goal_id": str(goal["id"]).strip(), "milestone_id": target})
+            content = {**content, "goal_associations": associations}
+            pointers += (pointer,)
         sources = _source_bindings(model, pointers)
         for source in sources:
             source["source_digest"] = f"sha256:{_digest({'project_id': project_id, 'model_project_id': model_project_id, 'source_digest': source_digest, 'accepted_cursor': accepted_cursor, **source})}"
         allowed = ["open_artifact", "open_entity"] if view_id == "view.project.artifacts" else ["open_entity"]
-        content = content_by_id[view_id]
         tabs.append({
             "id": view_id,
             "label": label,

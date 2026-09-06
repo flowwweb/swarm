@@ -89,6 +89,39 @@ def identity(model):
 
 
 class ProjectModelViewsTests(unittest.TestCase):
+    def test_explicit_work_selection_preserves_model_and_default(self):
+        model = fixture()
+        before = copy.deepcopy(model)
+        def project(selection=None, artifact=None):
+            return views.project_schema1_views(
+                model, artifact or identity(model)[1], server.PROJECT_VIEW_RENDERERS,
+                server.PROJECT_VIEW_ACTIONS, selected_lens_ids=selection,
+            )
+        self.assertEqual(project(), self.project(model))
+        model.pop("proposed_lens_ids")
+        self.assertEqual(project()["views"], [])
+        work = project(["lens-tasks-kanban"])["views"]
+        self.assertEqual([item["id"] for item in work], ["view.project.work"])
+        self.assertEqual(work[0]["content"]["goal_associations"], [{"goal_id": "o-1", "milestone_id": "m-1"}])
+        self.assertIn("/objective/ranked_outcomes", [source["pointer"] for source in work[0]["sources"]])
+        self.assertEqual(model, {key: value for key, value in before.items() if key != "proposed_lens_ids"})
+        for selection in ("lens-tasks-kanban", ["unknown"], ["lens-tasks-kanban"] * 2, [None], {}, [""]):
+            with self.subTest(selection=selection), self.assertRaises(views.ProjectModelError):
+                project(selection)
+        with self.assertRaisesRegex(views.ProjectModelError, "digest does not match"):
+            project(["lens-tasks-kanban"], identity(before)[1])
+        self.assertEqual(project([])["views"], [])
+        model["objective"]["ranked_outcomes"].append({"id": "o-2", "milestone_id": "m-1"})
+        self.assertEqual(len(project(["lens-tasks-kanban"])["views"][0]["content"]["goal_associations"]), 2)
+        model["objective"]["ranked_outcomes"][0]["milestone_id"] = "missing"
+        self.assertTrue(any(item["code"] == "UNRESOLVED_GOAL_ASSOCIATION" for item in project(["lens-tasks-kanban"])["diagnostics"]))
+        del model["objective"]["ranked_outcomes"]
+        work = project(["lens-tasks-kanban"])["views"][0]
+        self.assertNotIn("goal_associations", work["content"])
+        self.assertNotIn("/objective/ranked_outcomes", [source["pointer"] for source in work["sources"]])
+        model["objective"]["ranked_outcomes"] = "invalid"
+        self.assertEqual(project(["lens-tasks-kanban"])["views"], [])
+
     def project(self, model):
         loaded, artifact = identity(model)
         return views.project_schema1_views(loaded, artifact, server.PROJECT_VIEW_RENDERERS, server.PROJECT_VIEW_ACTIONS)
