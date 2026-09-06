@@ -14,6 +14,8 @@ const staticRoot = path.join(consoleRoot, "static");
 const pluginConsoleRoot = path.join(repositoryRoot, "plugins", "swarm", "console");
 const pluginStaticRoot = path.join(pluginConsoleRoot, "static");
 const fixture = JSON.parse(fs.readFileSync(path.join(testsRoot, "fixtures", "console-ui.json"), "utf8"));
+fixture.usageHistory.items = fixture.usageHistory.history;
+delete fixture.usageHistory.history;
 const css = fs.readFileSync(path.join(staticRoot, "styles.css"), "utf8");
 const app = fs.readFileSync(path.join(staticRoot, "app.js"), "utf8");
 const indexHtml = fs.readFileSync(path.join(staticRoot, "index.html"), "utf8");
@@ -154,6 +156,7 @@ assert.doesNotMatch(indexHtml, /id="refresh"|Refresh overview/);
 assert.doesNotMatch(app, /\$\("#refresh"\)/);
 assert.match(app, /\$\("#drawer-close"\)\.addEventListener\("click", \(\) => setMobileDrawer\(false, true\)\)/);
 assert.match(indexHtml, /<title>SWARM HQ<\/title>/);
+assert.match(indexHtml, /id="overview-monitoring-heading">Team<\/h2>[\s\S]*?id="overview-summary">Loading team<\/p>/);
 assert.match(app, /function composeDocumentTitle\(\)/);
 assert.doesNotMatch(app, /navigator\.onLine/);
 assert.doesNotMatch(indexHtml + app, /Control Console/i);
@@ -161,7 +164,15 @@ assert.doesNotMatch(indexHtml + css, /brand-hq/);
 assert.match(css, /--coral: #FF3D32;/);
 assert.equal((indexHtml.match(/class="nav-list"/g) || []).length, 1);
 assert.match(indexHtml, /class="nav-footer"[\s\S]*?id="tab-settings"/);
-assert.match(indexHtml, /class="top-actions"[\s\S]*?id="notifications"[\s\S]*?id="quick-help"[\s\S]*?class="profile-button topbar-profile circle-frame" id="profile"/);
+assert.match(indexHtml, /class="top-actions"[\s\S]*?id="notifications"[\s\S]*?class="profile-button topbar-profile circle-frame" id="profile"/);
+assert.match(indexHtml, /class="topbar"[\s\S]*?class="header-toolbar"[\s\S]*?id="ask-anything-form"[\s\S]*?class="top-actions"[\s\S]*?id="view-title"/);
+assert.doesNotMatch(indexHtml, /<span>Project scope<\/span>/);
+assert.doesNotMatch(indexHtml + app + css, /quick-help/);
+assert.equal((indexHtml.match(/id="lucide-heart"/g) || []).length, 1);
+assert.equal((indexHtml.match(/id="lucide-chevron-down"/g) || []).length, 1);
+assert.doesNotMatch(indexHtml, /swarm-octopus-outline/);
+assert.match(indexHtml, /id="project-scope-filter"[\s\S]*?<use href="#lucide-chevron-down"><\/use>/);
+assert.doesNotMatch(css, /\.system-health-control\.is-(?:live|reconnecting|offline|attention)\s*\{/);
 assert.doesNotMatch(indexHtml.slice(indexHtml.indexOf('<aside class="drawer"'), indexHtml.indexOf('<main class="workspace">')), /drawer-status|data-status-(?:dot|title|note)|>Live</);
 assert.match(indexHtml, /id="tab-overview"[\s\S]*?<b>Overview<\/b>/);
 assert.equal((indexHtml.match(/id="project-navigation-heading"/g) || []).length, 1);
@@ -178,12 +189,14 @@ assert.match(indexHtml, /id="profile-avatar-placeholder"[^>]*>[\s\S]*?<use href=
 assert.doesNotMatch(indexHtml, /id="profile"[^>]*>[\s\S]*?<span>Profile<\/span>/);
 assert.match(indexHtml, /class="profile-button topbar-profile circle-frame"[^>]*id="profile"/);
 assert.match(css, /\.topbar-profile \{[^}]*font-size:10px;/);
-assert.match(indexHtml, /id="support-open"[^>]*aria-haspopup="dialog"[^>]*aria-controls="support-dialog"[\s\S]*?<use href="#swarm-octopus-outline"><\/use>[\s\S]*?Support SWARM/);
+assert.match(indexHtml, /id="support-open"[^>]*aria-haspopup="dialog"[^>]*aria-controls="support-dialog"[\s\S]*?<use href="#lucide-heart"><\/use>[\s\S]*?Support SWARM/);
 assert.match(indexHtml, /id="support-dialog"[^>]*aria-labelledby="support-dialog-title"[^>]*aria-describedby="support-dialog-description support-status"/);
 assert.match(indexHtml, /src="\/assets\/support-caricature-light\.webp"[^>]*width="800"[^>]*height="800"/);
 assert.doesNotMatch(indexHtml, /Buy me a coffee|Continue with Stripe|USD (?:5|10|20)|Address not configured|support-amount/);
-assert.match(indexHtml, /href="https:\/\/x\.com\/PeikGabriel"[^>]*target="_blank"[^>]*rel="noopener noreferrer"/);
-assert.match(indexHtml, /href="https:\/\/github\.com\/peikgabriel"[^>]*target="_blank"[^>]*rel="noopener noreferrer"/);
+assert.match(indexHtml, /href="https:\/\/x\.com\/PeikGabriel"[^>]*target="_blank"[^>]*rel="noopener noreferrer"[^>]*aria-label="X, @PeikGabriel"[\s\S]*?class="support-brand-icon"/);
+assert.match(indexHtml, /href="https:\/\/github\.com\/peikgabriel"[^>]*target="_blank"[^>]*rel="noopener noreferrer"[^>]*aria-label="GitHub, @peikgabriel"[\s\S]*?class="support-brand-icon"/);
+assert.equal((indexHtml.match(/class="support-brand-icon"/g) || []).length, 2);
+assert.match(css, /\.support-brand-icon \{[^}]*width:18px; height:18px;[^}]*fill:currentColor/);
 assert.match(indexHtml, /id="support-status"[^>]*>Stripe checkout is not available yet\./);
 assert.match(css, /\.support-dialog \{[^}]*width:min\(760px,calc\(100vw - 32px\)\);[^}]*height:min\(520px,calc\(100dvh - 32px\)\)/);
 assert.match(css, /\.support-dialog-content \{[^}]*grid-template-columns:minmax\(240px,\.9fr\) minmax\(280px,1\.1fr\)/);
@@ -199,8 +212,9 @@ assert.match(indexHtml, /<dialog class="message-composer" id="message-composer" 
 assert.match(app, /function showMessageComposerDialog\(\)[\s\S]*?panel\.showModal\(\)[\s\S]*?panel\.show\(\)/);
 assert.match(app, /history\.pushState\(\{ \.\.\.\(history\.state \|\| \{\}\), messageComposer: true \}/);
 assert.match(indexHtml, /<h2 id="message-title">Message<\/h2>/);
-assert.match(indexHtml, /id="message-recipient"/);
-assert.match(indexHtml, /id="message-draft"[^>]*maxlength="4000"/);
+assert.match(indexHtml, /<header class="message-composer-header">[\s\S]*?id="message-recipient"[\s\S]*?<\/header>/);
+assert.match(indexHtml, /class="message-composer-body edge-scroll">[\s\S]*?role="log" aria-label="Conversation"[\s\S]*?Conversation history is unavailable\./);
+assert.match(indexHtml, /<footer class="message-composer-footer">[\s\S]*?id="message-draft"[^>]*maxlength="4000"[\s\S]*?id="message-status"/);
 assert.match(indexHtml, /id="message-send"[^>]*aria-label="Send message"[^>]*disabled[^>]*aria-disabled="true"/);
 assert.match(indexHtml, /Messaging is unavailable until SWARM exposes the authenticated HQ connector\./);
 assert.match(css, /\.message-launcher \{[^}]*position:fixed;[^}]*width:64px; height:64px;[^}]*border-radius:50%;[^}]*linear-gradient\(135deg,var\(--orange\),var\(--coral\)\)/);
@@ -208,9 +222,12 @@ assert.match(css, /\.message-mascot-silhouette \{[^}]*mask:url\("\/assets\/swarm
 assert.match(css, /\.message-composer \{[^}]*grid-template-rows:auto minmax\(0,1fr\) auto;[^}]*overflow:hidden/);
 assert.match(css, /\.message-composer:not\(\[open\]\) \{ display:none; \}/);
 assert.match(css, /\.message-composer-body \{[^}]*min-height:0;[^}]*overflow-x:hidden; overflow-y:auto;/);
+assert.match(css, /\.message-composer-header \{[^}]*grid-template-columns:auto minmax\(130px,1fr\) 44px/);
+assert.match(css, /\.message-composer-footer \{[^}]*display:grid;[^}]*border-top:1px solid var\(--line\)/);
 assert.match(css, /@media \(max-width: 620px\)[\s\S]*?\.message-launcher \{ display:none; \}[\s\S]*?\.mobile-message-footer \{[^}]*display:grid;/);
 const messageSource = app.match(/function messageRecipients\(\)[\s\S]*?async function sendMessageFromComposer\([^)]*\)[\s\S]*?\n\}/)?.[0] || "";
-assert.match(messageSource, /\["CTRL", "LEAD"\]\.includes\(record\.structuralRole\)/);
+assert.match(messageSource, /record\.structuralRole === "CTRL"/);
+assert.doesNotMatch(messageSource, /"LEAD"/);
 assert.match(messageSource, /record\.identityState === "admitted" && record\.binding/);
 assert.match(messageSource, /action_kind: "send_feedback"/);
 assert.match(messageSource, /MESSAGE_CONNECTOR_UNAVAILABLE/);
@@ -234,12 +251,12 @@ for (const id of ["diagnostics-health-heading", "diagnostics-check-strip", "diag
 assert.match(app, /\$\("#repair-dialog"\)\.addEventListener\("cancel", \(event\) => \{[\s\S]*?closeRepairDialog\(\)/);
 for (const icon of ["eye", "trash-2"]) assert.match(indexHtml, new RegExp(`id="lucide-${icon}" viewBox="0 0 24 24"`));
 assert.match(indexHtml, /id="onboarding-dialog"[^>]*aria-labelledby="onboarding-dialog-title"[^>]*aria-describedby="onboarding-step-status"/);
-assert.equal((indexHtml.match(/<dialog\b/g) || []).length, 12);
-for (const shell of ["agent-detail-shell", "evidence-lightbox-shell", "asset-dialog-shell", "profile-dialog-shell", "support-dialog-shell", "quick-help-shell", "project-create-shell", "repair-dialog-shell", "config-editor-shell", "role-editor-shell", "onboarding-shell"]) {
+assert.equal((indexHtml.match(/<dialog\b/g) || []).length, 11);
+for (const shell of ["agent-detail-shell", "evidence-lightbox-shell", "asset-dialog-shell", "profile-dialog-shell", "support-dialog-shell", "project-create-shell", "repair-dialog-shell", "config-editor-shell", "role-editor-shell", "onboarding-shell"]) {
   assert.match(indexHtml, new RegExp(`class="dialog-shell ${shell}"`));
 }
-assert.equal((indexHtml.match(/class="dialog-body(?: |")/g) || []).length, 11);
-assert.equal((indexHtml.match(/class="dialog-body-content/g) || []).length, 11);
+assert.equal((indexHtml.match(/class="dialog-body(?: |")/g) || []).length, 10);
+assert.equal((indexHtml.match(/class="dialog-body-content/g) || []).length, 10);
 assert.equal((indexHtml.match(/class="dialog-footer(?: |")/g) || []).length, 10);
 assert.match(css, /\.dialog-shell \{[^}]*grid-template-rows:auto minmax\(0,1fr\) auto;[^}]*overflow:hidden;[^}]*padding:0;/);
 assert.match(css, /\.dialog-body \{[^}]*width:100%;[^}]*min-height:0;[^}]*overflow-x:hidden; overflow-y:auto;[^}]*scrollbar-gutter:stable;[^}]*padding:0;/);
@@ -459,7 +476,7 @@ assert.match(app, /function projectTabMarkup\(tab, progress, nodes\)/);
 assert.match(app, /function currentProjectView\(\)/);
 assert.match(app, /projection && projection\.project_id === projectId && projection\.tab\?\.id === "ui"/);
 assert.match(app, /const workspaceViews = projectWorkspaceViews\(currentProjectView\(\)\);[\s\S]*?const workspaceView = workspaceViews\.find\(\(view\) => view\.id === tab\);[\s\S]*?projectWorkspaceTabMarkup\(workspaceView\)[\s\S]*?PROJECT_WORKSPACE_EMBEDDED_TABS\.get\(view\.id\) === tab/);
-assert.match(app, /uiTab\.hidden = !projectView \|\| workspaceViews\.length > 0/);
+assert.match(app, /uiTab\.hidden = !projectView \|\| \(!manifestWorkspace && workspaceViews\.length > 0\)/);
 assert.match(app, /function openProjectViewEvidence\(screenKey, trigger\)/);
 assert.match(app, /function projectViewRequirementGroup\(nodeIds\)/);
 assert.match(app, /state\.evidenceImages = evidence\.map\(\(item\) => \(\{ \.\.\.item, project_requirement_summary: requirementSummary \}\)\)/);
@@ -470,10 +487,14 @@ assert.match(app, /function projectViewMapModel\(projection, selectedGroupId = "
 assert.match(app, /class="project-ui-flowchart-connectors" aria-hidden="true"/);
 assert.match(app, /data-project-map-group=/);
 assert.match(app, /function drawProjectViewConnectors\(\)/);
-assert.match(app, /const PROJECT_WORKSPACE_RENDERERS = new Set\(\["document\/blocks", "timeline\/milestones", "canvas\/network", "table\/records", "gallery\/list"\]\)/);
+assert.match(app, /const PROJECT_WORKSPACE_RENDERERS = new Set\(\["document\/blocks", "timeline\/milestones", "canvas\/network", "table\/records", "gallery\/grid", "gallery\/list"\]\)/);
 assert.match(app, /function projectWorkspaceViews\(projection\)/);
+assert.match(app, /function projectWorkspaceModeView\(projection, modeId,[\s\S]*?mode\?\.view_id[\s\S]*?view\.id === viewId/);
+assert.match(app, /const manifestWorkspace = Boolean\(projectView\?\.tab\?\.manifest_id\)[\s\S]*?uiTab\.hidden = !projectView \|\| \(!manifestWorkspace && workspaceViews\.length > 0\)/);
 assert.match(app, /projection\?\.status === "STALE_LAST_ACCEPTED"[\s\S]*Last accepted project brief snapshot/);
-assert.match(app, /"document\/blocks", "timeline\/milestones", "canvas\/network", "table\/records", "gallery\/list"/);
+assert.match(app, /view\?\.content\?\.document[\s\S]*?document\?\.blocks/);
+assert.match(app, /view\?\.content\?\.timeline[\s\S]*?timeline\?\.events/);
+assert.match(app, /view\.renderer === "gallery" && view\.mode === "grid"[\s\S]*?Array\.isArray\(screens\)/);
 assert.match(app, /function projectWorkspaceDocumentMarkup\(view\)/);
 assert.match(app, /function projectWorkspaceTimelineMarkup\(view\)/);
 assert.match(app, /function projectWorkspaceRecordsMarkup\(view\)/);
@@ -490,6 +511,32 @@ assert.match(app, /\["runtime", "data", "state"\]\.includes\(node\.type\)/);
 assert.match(app, /Flowchart unavailable\. The accepted map projection could not be rendered safely\./);
 assert.doesNotMatch(app, /Sanguine|D&D|Dungeon|project:\/\/swarm/i);
 assert.doesNotMatch(app, /setInterval\([^)]*projectView|localStorage[^\n]*projectView|sessionStorage[^\n]*projectView/i);
+const projectWorkspaceSource = app.slice(app.indexOf("const PROJECT_WORKSPACE_RENDERERS"), app.indexOf("\nfunction projectWorkspaceFlowMarkup"));
+const projectWorkspaceSandbox = {};
+vm.runInNewContext(projectWorkspaceSource + "\nthis.projectWorkspaceViews = projectWorkspaceViews; this.projectWorkspaceModeView = projectWorkspaceModeView;", projectWorkspaceSandbox);
+const projectedWorkspaceViews = [
+  ["view.project.plan.master", "Master plan", "document", "blocks"],
+  ["view.project.plan.roadmap", "Roadmap", "timeline", "milestones"],
+  ["view.project.plan.flow", "Flowchart", "canvas", "network"],
+  ["view.project.ui.screens", "Screens", "gallery", "grid"],
+  ["view.project.ui.map", "Map", "canvas", "network"],
+].map(([id, label, renderer, mode]) => ({ id, label, renderer, mode, content: {} }));
+const projectedWorkspace = {
+  modes: projectedWorkspaceViews.map((view) => ({ id: view.id.split(".").at(-1), view_id: view.id, label: view.label, renderer: view.renderer, mode: view.mode })),
+  views: projectedWorkspaceViews,
+};
+assert.equal(projectWorkspaceSandbox.projectWorkspaceViews(projectedWorkspace).length, 5);
+assert.equal(projectWorkspaceSandbox.projectWorkspaceModeView(projectedWorkspace, "master")?.id, "view.project.plan.master");
+assert.equal(projectWorkspaceSandbox.projectWorkspaceModeView(projectedWorkspace, "screens")?.id, "view.project.ui.screens");
+assert.equal(projectWorkspaceSandbox.projectWorkspaceModeView(projectedWorkspace, "missing"), null);
+assert.equal(projectWorkspaceSandbox.projectWorkspaceViews({ ...projectedWorkspace, views: [...projectedWorkspace.views, { id: "unsafe", label: "Unsafe", renderer: "script", mode: "execute", content: {} }] }).length, 0);
+const projectDocumentRenderer = vm.runInNewContext(`(() => { function escapeHTML(value) { return String(value); } function humanize(value) { return String(value); } ${app.slice(app.indexOf("function projectWorkspaceDocumentMarkup"), app.indexOf("\nfunction projectWorkspaceTimelineMarkup"))}; return projectWorkspaceDocumentMarkup; })()`);
+const projectTimelineRenderer = vm.runInNewContext(`(() => { function escapeHTML(value) { return String(value); } ${app.slice(app.indexOf("function projectWorkspaceTimelineMarkup"), app.indexOf("\nfunction projectWorkspaceRecordsMarkup"))}; return projectWorkspaceTimelineMarkup; })()`);
+const masterPlanMarkup = projectDocumentRenderer({ content: { document: { blocks: [{ type: "heading", level: 2, text: "Master plan" }, { type: "paragraph", text: "Coordinate accepted work." }, { type: "list", items: ["Now", "Next"] }] } } });
+assert.equal((masterPlanMarkup.match(/data-project-document-block/g) || []).length, 3);
+assert.match(masterPlanMarkup, /Master plan[\s\S]*Coordinate accepted work\.[\s\S]*Now[\s\S]*Next/);
+const roadmapMarkup = projectTimelineRenderer({ content: { timeline: { events: [{ id: "now", label: "Now", sequence: 0, status: "active", summary: "Current work", exit_criteria: "Accepted" }] } } });
+assert.match(roadmapMarkup, /data-project-milestone="now"[\s\S]*Now[\s\S]*active · Current work · Accepted/);
 assert.match(css, /\.project-ui-screens \{[^}]*grid-template-columns:repeat\(3,minmax\(0,1fr\)\)/);
 assert.match(css, /\.project-ui-flowchart-connectors \{[^}]*position:absolute;[^}]*z-index:0/);
 assert.match(css, /\.project-ui-flowchart-layers \{[^}]*position:relative;[^}]*z-index:1/);
@@ -1007,12 +1054,19 @@ for (const retiredRenderer of ["renderDashboard", "renderHierarchy", "renderKanb
 }
 assert.match(app, /renderOverviewProjectCards\(\)/);
 const overviewProjectCardsSource = app.slice(app.indexOf("function renderOverviewProjectCards"), app.indexOf("function renderOverview()"));
+assert.match(app, /function overviewTopologyProjection\(value\)[\s\S]*?value\.schema_version !== 1[\s\S]*?\["KNOWN", "PARTIAL", "EMPTY"\][\s\S]*?"independent_nodes"/);
+assert.doesNotMatch(app, /recursive_host_topology/);
+const evaluateOverviewTopology = vm.runInNewContext("(" + app.slice(app.indexOf("function overviewTopologyProjection"), app.indexOf("\nfunction renderOverviewProjectCards")) + ")");
+const actualTopologyShape = { schema_version: 1, state: "KNOWN", nodes: [], tasks: [], agent_edges: [], task_edges: [], independent_nodes: [{ id: "host-task", record_type: "INDEPENDENT" }] };
+assert.equal(evaluateOverviewTopology(actualTopologyShape), actualTopologyShape);
+assert.equal(evaluateOverviewTopology({ ...actualTopologyShape, state: "UNKNOWN" }), null);
+assert.equal(evaluateOverviewTopology({ ...actualTopologyShape, nodes: undefined }), null);
 assert.match(overviewProjectCardsSource, /const roster = savedProjectRoster\(\)/);
-assert.match(overviewProjectCardsSource, /Project hierarchy is unavailable/);
+assert.match(overviewProjectCardsSource, /Project team is unavailable/);
 assert.match(overviewProjectCardsSource, /activeAgentRecords\(\)/);
 assert.match(overviewProjectCardsSource, /topology\?\.parent_relation/);
 assert.match(overviewProjectCardsSource, /relation\?\.state === "KNOWN"/);
-assert.match(overviewProjectCardsSource, /if \(!hasTopologyProjection\)[\s\S]*?Active agent topology is unavailable/);
+assert.match(overviewProjectCardsSource, /if \(!topologyProjection\)[\s\S]*?Active agent topology is unavailable/);
 assert.doesNotMatch(overviewProjectCardsSource, /fallbackParent|!topology && record\.structuralRole/);
 assert.match(overviewProjectCardsSource, /rows\.slice\(0, 3\)/);
 assert.match(overviewProjectCardsSource, /hiddenTaskCount \?/);
@@ -1020,16 +1074,22 @@ assert.match(overviewProjectCardsSource, /overview-node-more/);
 assert.match(overviewProjectCardsSource, /overviewHierarchySkeletonMarkup\(\)/);
 assert.match(overviewProjectCardsSource, /data-overview-output/);
 assert.match(overviewProjectCardsSource, /data-overview-input/);
+assert.match(overviewProjectCardsSource, /depth > 1 \? ' is-side'/);
+assert.match(overviewProjectCardsSource, /input\.classList\.contains\("is-side"\)/);
 assert.match(overviewProjectCardsSource, /data-agent-inspect/);
 assert.match(overviewProjectCardsSource, /#lucide-eye/);
 assert.doesNotMatch(overviewProjectCardsSource, /#lucide-pencil/);
-assert.match(overviewProjectCardsSource, /Hierarchy map controls/);
+assert.match(overviewProjectCardsSource, /Team map controls/);
 assert.match(overviewProjectCardsSource, /Independent host tasks/);
 assert.doesNotMatch(overviewProjectCardsSource, /overviewCards\(|scopedCards|slice\(0, 5\)|Unmeasured|overview-controller-group|overview-hierarchy-tasks/);
 assert.match(css, /\.overview-node-more summary \{[^}]*height:18px/);
 assert.match(css, /\.overview-node-more summary::before \{[^}]*inset:-13px 0/);
 assert.match(css, /\.overview-hierarchy-edges \{[^}]*z-index:0/);
 assert.match(css, /\.overview-hierarchy-canvas \{[^}]*min-width:720px/);
+assert.match(css, /\.overview-hierarchy-forest > \.overview-agent-branch > \.overview-hierarchy-node \{[^}]*width:min\(440px,100%\)/);
+assert.match(css, /\.overview-hierarchy-node\.is-ctrl \.agent-avatar-token \{[^}]*width:100px;[^}]*height:100px/);
+assert.match(css, /\.overview-hierarchy-node\.is-ctrl \.overview-node-work-list \{[^}]*margin-left:118px/);
+assert.match(css, /\.overview-node-port\.is-in\.is-side \{[^}]*left:-6px/);
 assert.doesNotMatch(css, /\.overview-hierarchy-edges\s*\{\s*display:none/);
 assert.match(app, /function authoritativeProgress\(projectId, ctrlId = ""\)/);
 assert.match(app, /function progressPresentation\(summary\)/);
@@ -1332,7 +1392,7 @@ assert.doesNotMatch(app.match(/function activeAgentRecords\(\)[\s\S]*?\n\}/)?.[0
 assert.doesNotMatch(app, /romanAgentOrdinal|#708090|Role pending/);
 assert.doesNotMatch(app + css, /class="agent-hierarchy|class="agent-project|class="agent-branch|\.agent-hierarchy|\.agent-project|\.agent-branch|\.agent-role-mark/);
 const expectedProfessions = ["Accountant", "Analyst", "Architect", "Artist", "Auditor", "Assistant", "Designer", "Developer", "Educator", "Inventor", "Legal", "Manager", "Marketer", "Operator", "Producer", "Recruiter", "Researcher", "Reviewer", "Security", "Specialist", "Strategist", "Support", "Tester", "Writer"];
-const roleAvatarFixtures = new Map(["architect", "developer"].map((roleId) => {
+const roleAvatarFixtures = new Map(expectedProfessions.map((name) => name.toLowerCase()).map((roleId) => {
   return [roleId, fs.readFileSync(path.join(repositoryRoot, "skills", "swarm", "assets", "role-avatars", "source", roleId + ".png"))];
 }));
 function roleManifestFixture() {
@@ -1340,9 +1400,9 @@ function roleManifestFixture() {
     ok: true,
     schema_version: 1,
     built_in_count: 24,
-    roles: expectedProfessions.map((name, index) => {
+    roles: expectedProfessions.map((name) => {
       const id = name.toLowerCase();
-      const digest = String(index + 1).padStart(64, "0");
+      const digest = crypto.createHash("sha256").update(roleAvatarFixtures.get(id)).digest("hex");
       const specializations = id === "developer"
         ? ["Game Development", "Developer two", "Developer three", "Developer four"]
         : id === "designer"
@@ -1351,7 +1411,7 @@ function roleManifestFixture() {
       return {
         id, name, purpose: `Apply the ${name} bounded SWARM assignment`, owns: [`${name} surface`], instructions: ["Apply the bounded SWARM assignment", `Use ${name} judgment to produce profession-specific evidence`], boundaries: ["No authority transfer"],
         default_skills: [`${id}-skill`], specializations,
-        avatar_asset_digest: digest, avatar: ["architect", "developer"].includes(id) ? { digest, state: "AVAILABLE", url: `/assets/role-avatars/${id}.png` } : undefined, accent: "#ff6948", version: `${id}-v1`, source: "builtin", provenance: ["fixture"],
+        avatar_asset_digest: digest, avatar: { digest, state: "AVAILABLE", url: `/assets/role-avatars/${id}.png` }, accent: "#ff6948", version: `${id}-v1`, source: "builtin", provenance: ["fixture"],
         built_in: true, active_version: `${id}-v1`, canonical_version: `${id}-v1`, override_active: false,
         versions: [], source_event_ids: [],
       };
@@ -1379,6 +1439,8 @@ const roleProjectionStart = app.indexOf("function roleManifestProjectionValue");
 const roleProjectionEnd = app.indexOf("\nfunction roleManifestProjection()", roleProjectionStart);
 const evaluateRoleProjection = vm.runInNewContext(`(() => { ${app.slice(roleProjectionStart, roleProjectionEnd)}; return roleManifestProjectionValue; })()`);
 const validRoleProjection = roleManifestFixture();
+assert.equal(roleAvatarFixtures.size, 24);
+assert.equal(validRoleProjection.roles.every((role) => roleAvatarFixtures.has(role.id) && role.avatar?.state === "AVAILABLE" && role.avatar.digest === crypto.createHash("sha256").update(roleAvatarFixtures.get(role.id)).digest("hex")), true);
 assert.equal(evaluateRoleProjection(validRoleProjection).roles.length, 24);
 assert.equal(evaluateRoleProjection({ ...validRoleProjection, roles: validRoleProjection.roles.filter((role) => role.id !== "assistant") }), null);
 const historicalCriticProjection = { ...validRoleProjection, roles: [...validRoleProjection.roles, { ...validRoleProjection.roles[0], id: "critic", name: "Critic", built_in: false }] };
@@ -1638,6 +1700,63 @@ for (const forbidden of ["hidden usage", "developer instructions", "prompts", "t
   assert.equal((indexHtml + app).toLowerCase().includes(forbidden), false, `forbidden copy: ${forbidden}`);
 }
 
+{
+  const usageState = { projectId: "all", ctrlId: "", usageWindowHours: 1, usageScopeKey: "all||1", usageStatus: "current", usageHistory: { ok: true, items: [{ bucket_ms: 2, delta_tokens: 9 }], task_usage: [
+    { thread_id: "small", title: "Small", project_id: "p", tokens: 2 },
+    { thread_id: "large", title: "Large", project_id: "p", tokens: 80 },
+    { thread_id: "missing", title: "Missing", project_id: "p", tokens: null },
+    { thread_id: "minutes", title: "Minutes", project_id: "p", active_minutes: 100 },
+  ] } };
+  const usageContext = vm.createContext({ state: usageState });
+  vm.runInContext(app.slice(app.indexOf("function usageRequestKey"), app.indexOf("function usageRangeLabel")) +
+    app.slice(app.indexOf("function highestUsageTaskRows"), app.indexOf("function renderHighestUsageTasks")), usageContext);
+  assert.equal(JSON.stringify(vm.runInContext("highestUsageTaskRows().map(row => row.thread_id)", usageContext)), '["large","small"]');
+  assert.equal(JSON.stringify(vm.runInContext("usageHistorySeries()", usageContext)), "[9]");
+  usageState.usageHistory.items.push({ bucket_ms: 3, delta_tokens: null });
+  assert.equal(JSON.stringify(vm.runInContext("usageHistorySeries()", usageContext)), "[9]");
+  usageState.usageWindowHours = 168;
+  assert.equal(vm.runInContext("highestUsageTaskRows()", usageContext), null);
+  usageState.usageScopeKey = "all||168";
+  usageState.usageHistory.task_usage = Array.from({ length: 15 }, (_, index) => ({ thread_id: String(index), title: "Task", project_id: "p", tokens: index }));
+  assert.equal(vm.runInContext("highestUsageTaskRows().length", usageContext), 10);
+  usageState.projectId = "another";
+  assert.equal(vm.runInContext("highestUsageTaskRows()", usageContext), null);
+  usageState.usageScopeKey = "another||168";
+  assert.equal(vm.runInContext("highestUsageTaskRows().length", usageContext), 0);
+  usageState.usageRequestGeneration = 0;
+  let releaseUsage;
+  const requestContext = vm.createContext({ state: usageState, URLSearchParams, api: () => new Promise((resolve) => { releaseUsage = resolve; }) });
+  vm.runInContext(app.slice(app.indexOf("function usageRequestKey"), app.indexOf("function usageHistorySeries")) +
+    app.slice(app.indexOf("async function refreshUsageHistory"), app.indexOf("async function refreshProjectProgress")), requestContext);
+  const pendingUsage = vm.runInContext("refreshUsageHistory()", requestContext);
+  const retainedUsage = usageState.usageHistory;
+  usageState.projectId = "switched";
+  usageState.ctrlId = "other-ctrl";
+  releaseUsage({ ok: true, task_usage: [{ thread_id: "old", title: "Old scope", project_id: "another", tokens: 900 }] });
+  await pendingUsage;
+  assert.equal(usageState.usageHistory, retainedUsage, "old project/CTRL response cannot replace current scope");
+  for (const staleOutcome of ["success", "error"]) {
+    const deferred = [];
+    requestContext.api = () => new Promise((resolve, reject) => deferred.push({ resolve, reject }));
+    usageState.usageWindowHours = 1;
+    const oldHour = vm.runInContext("refreshUsageHistory()", requestContext);
+    usageState.usageWindowHours = 24;
+    const day = vm.runInContext("refreshUsageHistory()", requestContext);
+    usageState.usageWindowHours = 1;
+    const newHour = vm.runInContext("refreshUsageHistory()", requestContext);
+    const current = { ok: true, items: [{ bucket_ms: 4, delta_tokens: 12 }], task_usage: [] };
+    deferred[2].resolve(current);
+    await newHour;
+    const accepted = [usageState.usageHistory, usageState.usageScopeKey, usageState.usageStatus, usageState.usageError];
+    deferred[1].resolve({ ok: true, items: [], task_usage: [] });
+    await day;
+    if (staleOutcome === "error") deferred[0].reject(new Error("obsolete hour failed"));
+    else deferred[0].resolve({ ok: true, items: [{ bucket_ms: 1, delta_tokens: 900 }], task_usage: [] });
+    await oldHour;
+    assert.deepEqual([usageState.usageHistory, usageState.usageScopeKey, usageState.usageStatus, usageState.usageError], accepted,
+      `1h → 1d → 1h: obsolete ${staleOutcome} cannot replace the latest request`);
+  }
+}
 if (process.argv.includes("--source-only") || agentsSourceOnly) {
   console.log("SWARM console source UI contract passed");
   process.exit(0);
@@ -1935,9 +2054,10 @@ function scopedFixture() {
     overview.progress.controllers[id] = { progress: null, freshness: { state: "unavailable", observed_at_ms: null } };
   }
   overview.project_view = projectViewFixture();
+  overview.overview_metrics = structuredClone(overviewMetricFixture);
   overview.topology = {
     schema_version: 1,
-    projection: "recursive_host_topology",
+    state: "KNOWN",
     nodes: overview.nodes.filter((node) => node.project_id && ["ctrl", "lead", "doer"].includes(String(node.role).toLowerCase())).map((node) => {
       const parentId = String(node.role).toLowerCase() === "ctrl" ? null : node.controller_ids?.[node.controller_ids.length - 1] || null;
       return {
@@ -1949,8 +2069,10 @@ function scopedFixture() {
           : { state: "ROOT", parent_agent_id: null, source: "host_thread_spawn_edges" },
       };
     }),
-    edges: [],
+    tasks: [],
+    agent_edges: [],
     task_edges: [],
+    independent_nodes: [],
   };
   return overview;
 }
@@ -2235,7 +2357,8 @@ async function mount(page, overview, overrides = {}) {
     if (url.pathname === "/api/proof-feed") return proofControl.fail ? route.fulfill({ status: 200, contentType: "application/json", body: "{" }) : route.fulfill(response(proofControl.feed || proofFeed));
     if (url.pathname === "/api/usage-history") {
       const hours = url.searchParams.get("hours");
-      if (!["1", "12", "24"].includes(hours)) return route.fulfill({ status: 400, contentType: "application/json", body: JSON.stringify({ ok: false, error: "unsupported usage window" }) });
+      if (!["1", "12", "24", "168"].includes(hours)) return route.fulfill({ status: 400, contentType: "application/json", body: JSON.stringify({ ok: false, error: "unsupported usage window" }) });
+      if (overrides.usageResponse) return route.fulfill(await overrides.usageResponse(url));
       return route.fulfill(response(overrides.usageByHours?.[hours] || fixture.usageHistory));
     }
     if (url.pathname === "/api/project-progress-feed") return route.fulfill(response(overrides.projectProgressFeed || fixture.projectProgressFeed));
@@ -2752,6 +2875,58 @@ proofFeed.items.push({
   };
   try {
     const onboardingPage = await browser.newPage({ viewport: { width: 1440, height: 1000 } });
+    {
+      const usagePage = await browser.newPage({ viewport: { width: 1440, height: 1000 } });
+      let releaseDay;
+      let delayed = false;
+      const requestedHours = [];
+      const usagePayload = (hours) => ({ ok: true, status: "ok", hours, items: [{ bucket_ms: 1, delta_tokens: 9 }], task_usage_status: "ok", task_usage: [
+        { thread_id: "small", title: "Small task", project_id: "project:fixture", tokens: 5 },
+        { thread_id: "large", title: hours === 168 ? "Weekly leader" : "Hourly leader", project_id: "project:fixture", tokens: hours === 168 ? 700 : 90 },
+        { thread_id: "missing", title: "Missing measurement", project_id: "project:fixture", tokens: null },
+      ] });
+      const usageRuntime = await mount(usagePage, scopedFixture(), { ...overrides, usageResponse: async (url) => {
+        const hours = Number(url.searchParams.get("hours"));
+        requestedHours.push(hours);
+        const body = usagePayload(hours);
+        if (hours === 24 && delayed) { delayed = false; await new Promise((resolve) => { releaseDay = resolve; }); }
+        return response(body);
+      } });
+      const table = usagePage.locator("#highest-usage-tasks");
+      await usagePage.waitForFunction(() => document.querySelector("#highest-usage-tasks").textContent.includes("Hourly leader"));
+      assert.deepEqual(await table.locator("tbody th").allTextContents(), ["Hourly leader", "Small task"]);
+      assert.deepEqual(await table.locator("tbody td:last-child").allTextContents(), ["90 tokens", "5 tokens"]);
+      assert.equal(await table.locator("a,button").count(), 0);
+      const ranges = usagePage.getByRole("group", { name: "Task usage range", exact: true });
+      assert.equal(await ranges.getByRole("button", { name: "1h", exact: true }).getAttribute("aria-pressed"), "true");
+      delayed = true;
+      await ranges.getByRole("button", { name: "1d", exact: true }).click();
+      await usagePage.waitForFunction(() => document.querySelector("#highest-usage-tasks").getAttribute("aria-busy") === "true");
+      await ranges.getByRole("button", { name: "1w", exact: true }).focus();
+      await usagePage.keyboard.press("Enter");
+      await usagePage.waitForFunction(() => document.querySelector("#highest-usage-tasks").textContent.includes("Weekly leader"));
+      releaseDay();
+      await usagePage.waitForTimeout(100);
+      assert.equal(await table.locator("tbody th").first().textContent(), "Weekly leader");
+      assert.deepEqual([...new Set(requestedHours)], [1, 24, 168]);
+      assert.equal(await ranges.getByRole("button", { name: "1w", exact: true }).getAttribute("aria-pressed"), "true");
+      await usagePage.locator(".highest-usage-section").scrollIntoViewIfNeeded();
+      if (evidenceDir) await usagePage.screenshot({ path: path.join(evidenceDir, "highest-usage-desktop-1440x1000.png"), animations: "disabled" });
+      await usagePage.setViewportSize({ width: 390, height: 844 });
+      assert.ok(await usagePage.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1));
+      assert.ok(await ranges.locator("button").evaluateAll((buttons) => buttons.every((button) => { const box = button.getBoundingClientRect(); return box.width >= 44 && box.height >= 44; })));
+      assert.ok(await ranges.locator("button").evaluateAll((buttons) => buttons.every((button) => parseFloat(getComputedStyle(button).fontSize) >= 12)));
+      if (evidenceDir) await usagePage.screenshot({ path: path.join(evidenceDir, "highest-usage-mobile-390x844.png"), animations: "disabled" });
+      await usagePage.evaluate(() => { state.usageHistory.task_usage = []; renderUsageCharts(); });
+      assert.match(await table.textContent(), /No measured task usage/);
+      await usagePage.evaluate(() => { delete state.usageHistory.task_usage; renderUsageCharts(); });
+      assert.match(await table.textContent(), /unavailable/);
+      await usagePage.evaluate(() => { state.usageStatus = "error"; renderUsageCharts(); });
+      assert.match(await table.textContent(), /could not be loaded/);
+      assert.deepEqual(usageRuntime.runtimeErrors, []);
+      assert.deepEqual(usageRuntime.failedRequests, []);
+      await usagePage.close();
+    }
     const onboarding = await mount(onboardingPage, scopedFixture(), { ...overrides, keepOnboarding: true });
     await assertDecodedVisibleOnboardingImage(onboardingPage, "#onboarding-panel-1 img", 1920, 1080);
     await captureOnboardingEvidence(onboardingPage, "01-slide-1-desktop-1440x1000");
@@ -3789,10 +3964,6 @@ proofFeed.items.push({
 
     const shellPage = await browser.newPage({ viewport: { width: 1440, height: 900 } });
     const shellRuntime = await mount(shellPage, scopedFixture(), overrides);
-    await shellPage.getByRole("button", { name: "SWARM quick help" }).click();
-    await shellPage.getByRole("dialog", { name: "SWARM quick help" }).waitFor({ state: "visible" });
-    assert.match(await shellPage.locator("#quick-help-dialog").textContent(), /Ask SWARM[\s\S]*Replay quick tour[\s\S]*Check system health/);
-    await shellPage.keyboard.press("Escape");
     await shellPage.locator("#ask-anything").fill("Review the current project");
     await shellPage.locator("#ask-anything-form").press("Enter");
     assert.equal(await shellPage.locator("#message-composer").evaluate((dialog) => dialog.open), true);
@@ -3815,6 +3986,7 @@ proofFeed.items.push({
       { name: "1280x720", width: 1280, height: 720, searchVisible: true },
       { name: "1440x900", width: 1440, height: 900, searchVisible: true },
       { name: "1600x900", width: 1600, height: 900, searchVisible: true },
+      { name: "834x1112", width: 834, height: 1112, searchVisible: false },
       { name: "390x844", width: 390, height: 844, searchVisible: false },
     ]) {
       const narrowDesktopPage = await browser.newPage({ viewport: { width: viewport.width, height: viewport.height } });
@@ -3822,10 +3994,18 @@ proofFeed.items.push({
       const toolbarGeometry = await narrowDesktopPage.evaluate(() => {
         const search = document.querySelector("#ask-anything-form").getBoundingClientRect();
         const scope = document.querySelector("#scope-context").getBoundingClientRect();
+        const title = document.querySelector("#view-title").getBoundingClientRect();
+        const toolbar = document.querySelector(".header-toolbar").getBoundingClientRect();
+        const profile = document.querySelector("#profile").getBoundingClientRect();
+        const chevron = document.querySelector("#project-scope-filter .lucide").getBoundingClientRect();
         return {
           search: { left: search.left, top: search.top, right: search.right, bottom: search.bottom },
           scope: { left: scope.left, top: scope.top, right: scope.right, bottom: scope.bottom },
+          chevron: { width: chevron.width, height: chevron.height },
+          chevronHref: document.querySelector("#project-scope-filter use").getAttribute("href"),
           overlaps: search.left < scope.right && search.right > scope.left && search.top < scope.bottom && search.bottom > scope.top,
+          desktopRow: search.bottom <= title.top && scope.bottom <= title.top && Math.abs(search.top - scope.top) <= 3,
+          aligned: Math.abs(search.left - title.left) <= 1 && Math.abs(profile.right - toolbar.right) <= 1,
           documentWidth: document.documentElement.scrollWidth,
           viewportWidth: innerWidth,
         };
@@ -3834,7 +4014,11 @@ proofFeed.items.push({
       assert.equal(await narrowDesktopPage.locator("#ask-anything-form").isVisible(), viewport.searchVisible);
       assert.equal(toolbarGeometry.overlaps, false, JSON.stringify(toolbarGeometry));
       assert.ok(toolbarGeometry.documentWidth <= toolbarGeometry.viewportWidth, JSON.stringify(toolbarGeometry));
+      assert.deepEqual(toolbarGeometry.chevron, { width: 14, height: 14 });
+      assert.equal(toolbarGeometry.chevronHref, "#lucide-chevron-down");
       if (viewport.searchVisible) {
+        assert.equal(toolbarGeometry.desktopRow, true, JSON.stringify(toolbarGeometry));
+        assert.equal(toolbarGeometry.aligned, true, JSON.stringify(toolbarGeometry));
         await narrowDesktopPage.keyboard.press("Control+k");
         assert.equal(await narrowDesktopPage.evaluate(() => document.activeElement?.id), "ask-anything");
       }
@@ -3844,6 +4028,7 @@ proofFeed.items.push({
       await narrowDesktopPage.keyboard.press("Escape");
       assert.equal(await narrowDesktopPage.evaluate(() => document.activeElement?.id), "project-scope-filter");
       assert.deepEqual(narrowDesktop.runtimeErrors, []);
+      assert.deepEqual(narrowDesktop.failedRequests, []);
       await narrowDesktopPage.close();
     }
 
@@ -3929,7 +4114,7 @@ proofFeed.items.push({
     }), { top: 0, right: 0, bottom: 0, height: 1024 });
     assert.equal(await page.evaluate(() => document.activeElement?.id), "message-draft");
     assert.ok(await page.locator("#message-recipient option").count() >= 1);
-    assert.equal(await page.evaluate(() => messageRecipients().every((recipient) => ["CTRL", "LEAD"].includes(recipient.structuralRole))), true);
+    assert.equal(await page.evaluate(() => messageRecipients().every((recipient) => recipient.structuralRole === "CTRL")), true);
     assert.deepEqual(await page.evaluate(() => ({ sendDisabled: document.querySelector("#message-send").disabled, retryHidden: document.querySelector("#message-retry").hidden })), { sendDisabled: true, retryHidden: true });
     assert.match(await page.locator("#message-status").textContent(), /Messaging is unavailable until SWARM exposes the authenticated HQ connector/);
     await page.locator("#message-draft").fill("Please review this screen.");
@@ -4019,11 +4204,16 @@ proofFeed.items.push({
     assert.equal(await page.locator("#profile-initials").textContent(), "PG");
     assert.doesNotMatch(await page.locator("#console-drawer").textContent(), /\bLive\b/);
     assert.equal(await page.locator("#notifications").evaluate((notification) => {
-      const help = document.querySelector("#quick-help").getBoundingClientRect();
       const profile = document.querySelector("#profile").getBoundingClientRect();
       const box = notification.getBoundingClientRect();
       const header = document.querySelector(".topbar").getBoundingClientRect();
-      return box.left < help.left && help.left < profile.left && Math.abs(profile.right - header.right) <= 1 && box.top >= header.top && profile.bottom <= header.bottom;
+      return box.left < profile.left && Math.abs(profile.right - header.right) <= 1 && box.top >= header.top && profile.bottom <= header.bottom;
+    }), true);
+    assert.equal(await page.locator("#system-health-control").evaluate((control) => {
+      const glyph = getComputedStyle(control.querySelector(".health-pulse-icon")).color;
+      const chrome = getComputedStyle(document.querySelector("#notifications .lucide")).color;
+      const dot = getComputedStyle(control.querySelector(".status-dot")).backgroundColor;
+      return glyph === chrome && dot !== "rgba(0, 0, 0, 0)";
     }), true);
     if (evidenceDir) await page.screenshot({ path: path.join(evidenceDir, "shell-profile-sidebar-desktop-1536x1024.png"), fullPage: false, animations: "disabled" });
     assert.deepEqual(await page.locator(".overview-metric-card > header > span").allTextContents(), ["Active work", "Needs attention", "Verified progress", "Usage"]);
@@ -4038,7 +4228,7 @@ proofFeed.items.push({
     await page.waitForFunction(() => state.usageWindowHours === 24 && state.usageStatus === "current");
     assert.equal(await page.locator('[data-usage-chart="overview"] [data-usage-range="24"]').getAttribute("aria-pressed"), "true");
     assert.equal(await page.locator("#overview-monitoring-heading").isVisible(), true);
-    assert.equal(await page.locator("#overview-monitoring-heading").textContent(), "Hierarchy");
+    assert.equal(await page.locator("#overview-monitoring-heading").textContent(), "Team");
     assert.deepEqual(await page.locator("#overview-project-cards [data-overview-project-id] strong").allTextContents(), ["Arc", "Atlas", "Flowwweb", "swarm"]);
     assert.deepEqual(await page.locator("#overview-project-cards [data-overview-hierarchy-project]").evaluateAll((projects) => projects.map((project) => project.dataset.overviewHierarchyProject)), ["project:arc", "project:atlas", "project:branch", "project:fixture"]);
     assert.match(await page.locator("#overview-project-cards .overview-independent:not(.is-error)").textContent(), /Independent host tasks[\s\S]*Resolve customer export[\s\S]*Inspect export evidence[\s\S]*Anonymous[\s\S]*Independent task/);
@@ -4840,8 +5030,8 @@ proofFeed.items.push({
     const unknown = await mount(unknownPage, unknownOverview, overrides);
     assert.equal(await unknownPage.locator("#project-navigation").textContent(), "Saved projects unavailable");
     assert.equal(await unknownPage.locator("#project-scope-filter").getAttribute("aria-disabled"), "true");
-    assert.match(await unknownPage.locator("#overview-project-cards").textContent(), /Project hierarchy is unavailable/);
-    assert.equal(await unknownPage.locator("#overview-summary").textContent(), "Hierarchy unavailable");
+    assert.match(await unknownPage.locator("#overview-project-cards").textContent(), /Project team is unavailable/);
+    assert.equal(await unknownPage.locator("#overview-summary").textContent(), "Team unavailable");
     assert.deepEqual(unknown.runtimeErrors, []);
     await unknownPage.close();
 
@@ -4861,10 +5051,8 @@ proofFeed.items.push({
     const tablet = await mount(tabletPage, scopedFixture(), overrides);
     await assertSharedCircleGeometry(tabletPage, ["#profile", "#notifications", "#snapshot-status-dot", ".scope-dot", ".agent-avatar-token", "#message-launcher"]);
     assert.equal(await tabletPage.locator("#notifications").evaluate((notification) => {
-      const help = document.querySelector("#quick-help");
       const profile = document.querySelector("#profile");
-      return Boolean(notification.compareDocumentPosition(help) & Node.DOCUMENT_POSITION_FOLLOWING)
-        && Boolean(help.compareDocumentPosition(profile) & Node.DOCUMENT_POSITION_FOLLOWING)
+      return Boolean(notification.compareDocumentPosition(profile) & Node.DOCUMENT_POSITION_FOLLOWING)
         && getComputedStyle(notification.closest(".top-actions")).justifyContent === "flex-end";
     }), true);
     assert.equal(await tabletPage.locator(".top-actions #profile").count(), 1);
@@ -5040,7 +5228,6 @@ proofFeed.items.push({
     assert.ok(menuBox && menuBox.width >= 44 && menuBox.height >= 44);
     await assertCircleFrame(mobilePage, "#profile", 44);
     await assertCircleFrame(mobilePage, "#system-health-control", 44);
-    await assertCircleFrame(mobilePage, "#quick-help", 44);
     assert.equal(await mobilePage.locator("#notifications").isVisible(), true);
     await assertCircleFrame(mobilePage, "#notifications", 44);
     await mobilePage.evaluate(() => showError("Project refresh failed"));

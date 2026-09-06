@@ -5832,14 +5832,22 @@ class ConsoleStore:
     def token_sample_series(
         self,
         *,
-        project_id: str,
+        project_id: str | None,
         thread_ids: set[str] | frozenset[str] | None = None,
         hours: int = 24,
+        by_task: bool = False,
     ) -> list[dict[str, Any]]:
         """Return bounded task-bound token deltas for ledger projections."""
-        cutoff = int(time.time() * 1000) - max(1, min(24 * 30, int(hours))) * 60 * 60 * 1000
-        conditions = ["bucket_ms >= ?", "project_id = ?"]
-        args: list[Any] = [cutoff, project_id]
+        now_ms = int(time.time() * 1000)
+        cutoff = now_ms - max(1, min(24 * 30, int(hours))) * 60 * 60 * 1000
+        conditions = ["bucket_ms >= ?"]
+        args: list[Any] = [cutoff]
+        if by_task:
+            conditions.append("bucket_ms <= ?")
+            args.append(now_ms)
+        if project_id is not None:
+            conditions.append("project_id = ?")
+            args.append(project_id)
         if thread_ids is not None:
             safe_thread_ids = tuple(sorted(set(thread_ids)))
             if not safe_thread_ids:
@@ -5849,15 +5857,19 @@ class ConsoleStore:
             args.extend(safe_thread_ids)
         with self._lock, closing(self._connect()) as connection:
             rows = connection.execute(
-                "SELECT bucket_ms, thread_id, delta_tokens FROM token_samples WHERE "
+                ("SELECT MAX(bucket_ms) bucket_ms, thread_id, project_id, SUM(delta_tokens) delta_tokens "
+                 if by_task else "SELECT bucket_ms, thread_id, delta_tokens ")
+                + "FROM token_samples WHERE "
                 + " AND ".join(conditions)
-                + " ORDER BY bucket_ms, thread_id",
+                + (" GROUP BY thread_id, project_id ORDER BY delta_tokens DESC, thread_id, project_id"
+                   if by_task else " ORDER BY bucket_ms, thread_id"),
                 tuple(args),
             ).fetchall()
         return [{
             "observed_at_ms": int(row["bucket_ms"]),
             "task_id": str(row["thread_id"]),
             "tokens": int(row["delta_tokens"]),
+            **({"project_id": row["project_id"]} if by_task else {}),
         } for row in rows]
 
     def token_sample_thread_count(
@@ -10336,8 +10348,8 @@ class App:
         target_reset_at_ms: int | None = None,
         remaining_token_budget: int | None = None,
     ) -> dict[str, Any]:
-        if isinstance(hours, bool) or hours not in {1, 12, 24}:
-            raise ConsoleError("hours must be one of 1, 12, or 24")
+        if type(hours) is not int or hours not in {1, 12, 24, 168}:
+            raise ConsoleError("hours must be one of 1, 12, 24, or 168")
         if target_reset_at_ms is not None and (
             isinstance(target_reset_at_ms, bool)
             or not isinstance(target_reset_at_ms, int)
@@ -10354,6 +10366,16 @@ class App:
         project_filter = scope.get("project_id") if scope.get("type") == "project" else None
         history = self.store.token_history(project_id=project_filter, thread_ids=thread_ids, hours=hours)
         coverage_thread_ids = {str(node["id"]) for node in nodes}
+        nodes_by_id = {str(node["id"]): node for node in nodes}
+        task_usage = [{
+            "thread_id": sample["task_id"],
+            "title": nodes_by_id[sample["task_id"]].get("title") or None,
+            "project_id": sample["project_id"],
+            "tokens": sample["tokens"],
+        } for sample in self.store.token_sample_series(
+            project_id=project_filter, thread_ids=coverage_thread_ids, hours=hours, by_task=True,
+        ) if sample["project_id"] == nodes_by_id[sample["task_id"]].get("project_id")]
+        task_observed = len({row["thread_id"] for row in task_usage})
         observed_threads = self.store.token_sample_thread_count(
             project_id=project_filter, thread_ids=coverage_thread_ids, hours=hours,
         )
@@ -10424,6 +10446,10 @@ class App:
             "scope": scope,
             "hours": hours,
             "items": history,
+            "task_usage": task_usage,
+            "task_usage_status": ("no_data" if not task_usage else
+                                  "partial" if task_observed < len(nodes) else "ok"),
+            "task_usage_coverage": {"observed_threads": task_observed, "expected_threads": len(nodes)},
             "total_tokens": total_tokens,
             "elapsed_ms": elapsed_ms,
             "tokens_per_minute": rate,
@@ -15219,7 +15245,7 @@ class Handler(BaseHTTPRequestHandler):
                 try:
                     hours = int(query.get("hours", "24"))
                 except ValueError as exc:
-                    raise ConsoleError("hours must be one of 1, 12, or 24") from exc
+                    raise ConsoleError("hours must be one of 1, 12, 24, or 168") from exc
                 try:
                     target_reset_at_ms = (
                         int(query["target_reset_at_ms"])

@@ -3156,6 +3156,71 @@ class SwarmConsoleTests(unittest.TestCase):
             with self.assertRaises(console.ConsoleError):
                 app.usage_history(hours=2)
 
+    def test_task_usage_ranks_persisted_window_deltas_and_preserves_scope(self) -> None:
+        app = console.App(self.codex_home, self.config)
+        now = 2_000_000_000_000
+        hour = 3_600_000
+        nodes = [
+            {"id": "a", "title": "Alpha", "project_id": "project:a", "controller_ids": ["ctrl-a"]},
+            {"id": "b", "title": "Beta", "project_id": "project:a", "controller_ids": ["ctrl-b"]},
+            {"id": "zero", "title": "Zero", "project_id": "project:a", "controller_ids": ["ctrl-a"]},
+            {"id": "missing", "title": "Missing", "project_id": "project:a", "controller_ids": ["ctrl-a"]},
+            {"id": "foreign", "title": "Foreign", "project_id": "project:b", "controller_ids": ["ctrl-c"]},
+        ]
+        records = [
+            (now-hour, "a", "project:a", 3),
+            (now-1, "a", "project:a", 2),
+            (now-hour-1, "b", "project:a", 20),
+            (now-1, "b", "project:a", 8),
+            (now-1, "zero", "project:a", 0),
+            (now-168*hour, "a", "project:a", 100),
+            (now-168*hour-1, "a", "project:a", 1000),
+            (now+1, "a", "project:a", 2000),
+            (now-1, "foreign", "project:b", 9000),
+            (now-2, "a", "project:b", 8000),
+            (now-1, "not-host-bound", "project:a", 7000),
+        ]
+        with closing(app.store._connect()) as db:
+            db.executemany(
+                "INSERT INTO token_samples VALUES (?,?,?,?,?,?,?)",
+                [(stamp, stamp, project, task, 999999, delta, "sqlite")
+                 for stamp, task, project, delta in records],
+            )
+            db.commit()
+        scope = {"type": "project", "project_id": "project:a"}
+        with mock.patch.object(console.time, "time", return_value=now/1000), \
+             mock.patch.object(app, "_observed_scope", return_value=({}, nodes[:4], {"a", "b", "zero", "missing"}, scope)), \
+             mock.patch.object(app, "_verified_yield", return_value={}), \
+             mock.patch.object(app, "observe_once", side_effect=AssertionError("read mutated observer")):
+            one = app.usage_history(project_id="project:a", hours=1)
+            day = app.usage_history(project_id="project:a", hours=24)
+            week = app.usage_history(project_id="project:a", hours=168)
+            self.assertEqual(app.usage_history(hours=12)["task_usage"], day["task_usage"])
+            self.assertEqual([(r["thread_id"], r["tokens"]) for r in one["task_usage"]],
+                             [("b", 8), ("a", 5), ("zero", 0)])
+            self.assertEqual([(r["thread_id"], r["tokens"]) for r in week["task_usage"]],
+                             [("a", 105), ("b", 28), ("zero", 0)])
+            self.assertEqual(one["task_usage_status"], "partial")
+            self.assertEqual(one["task_usage_coverage"], {"observed_threads": 3, "expected_threads": 4})
+            self.assertEqual(one["task_usage"][0]["title"], "Beta")
+            for invalid in (True, 1.0, 2, 169):
+                with self.assertRaises(console.ConsoleError):
+                    app.usage_history(hours=invalid)
+        with mock.patch.object(console.time, "time", return_value=now/1000):
+            restarted = console.ConsoleStore(app.store.path)
+            self.assertEqual(restarted.token_sample_series(
+                project_id="project:a", thread_ids={"zero"}, hours=1, by_task=True,
+            )[0]["tokens"], 0)
+            self.assertEqual(restarted.token_sample_series(
+                project_id="project:a", thread_ids=set(), hours=168, by_task=True), [])
+            self.assertEqual([(r["task_id"], r["tokens"]) for r in restarted.token_sample_series(
+                project_id="project:a", thread_ids={"a"}, hours=1, by_task=True)], [("a", 5)])
+        with mock.patch.object(app, "_observed_scope", return_value=({}, [], set(), scope)), \
+             mock.patch.object(app, "_verified_yield", return_value={}):
+            empty = app.usage_history(hours=168)
+            self.assertEqual(empty["task_usage"], [])
+            self.assertEqual(empty["task_usage_status"], "no_data")
+
     def test_usage_forecast_requires_explicit_inputs_and_observed_rate(self) -> None:
         app = console.App(self.codex_home, self.config)
         overview = {
@@ -3281,7 +3346,7 @@ class SwarmConsoleTests(unittest.TestCase):
         with mock.patch.object(app, "_host_overview", return_value=overview), \
              mock.patch.object(app.store, "token_history", return_value=history), \
              mock.patch.object(app.store, "token_sample_thread_count", return_value=1), \
-             mock.patch.object(app.store, "token_sample_series", return_value=samples), \
+             mock.patch.object(app.store, "token_sample_series", side_effect=lambda **kw: [] if kw.get("by_task") else samples), \
              mock.patch.object(console.time, "time", return_value=1_100):
             result = app.usage_history(project_id="project:alpha", hours=1)
 

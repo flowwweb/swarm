@@ -1,4 +1,4 @@
-const state = { token: "", overview: null, proof: [], proofCollections: new Map(), proofStatuses: new Map(), proofStatus: "idle", proofSequence: 0, usageHistory: null, usageWindowHours: 1, usageScopeKey: "", usageStatus: "idle", usageError: "", projectProgress: null, projectProgressProjectId: "", projectProgressStatus: "idle", projectProgressError: "", projectProgressFeed: null, projectProgressFeedProjectId: "", projectProgressFeedStatus: "idle", projectProgressFeedError: "", projectTab: "overview", projectUiMode: "screens", projectUiGroupId: "", projectArtifactPage: 0, runLogs: new Map(), runLogRequestGenerations: new Map(), runLogSurfaceStates: new Map(), runLogAgent: null, agentUpdatesFilter: "all", agentUpdatesPaused: false, agentDetailTrigger: null, diagnostics: null, diagnosticsHistory: null, diagnosticsHistoryStatus: "idle", diagnosticsError: "", diagnosticsSelectedChecks: new Set(), diagnosticsSelectionInitialized: false, diagnosticsRepairPreview: null, diagnosticsRepairPending: false, diagnosticsRepairError: "", diagnosticsRepairTrigger: null, health: null, storage: null, profile: null, profileStatus: "idle", profileError: "", profileUpload: null, profilePreviewUrl: "", profileSaving: false, profileTrigger: null, supportTrigger: null, messageOpen: false, messageTrigger: null, messageDraft: "", messageRecipientId: "", messageStatus: "unavailable", messageError: "", messageReceipt: null, messageConnector: null, messageAttachments: [], messagePendingAction: null, config: null, configStatus: "idle", configError: "", configResetPending: null, configResetRetry: null, chatRelaySaving: false, settingsDraft: new Map(), settingsSaving: false, settingsSaveError: "", settingsSaveMessage: "", configEditorTrigger: null, ctrlSettings: null, auto: null, autoBindingKey: "", autoStatus: "idle", autoError: "", autoSaving: false, skills: null, skillsError: "", roleManifests: null, roleManifestStatus: "unavailable", roleManifestError: "", roleManifestMessage: "", roleManifestSaving: false, roleManifestRetry: null, roleEditorMode: "", roleEditorTrigger: null, roleSearch: "", roleTypes: new Set(["builtin", "custom"]), roleSearchFields: new Set(["profession", "specialization", "alias", "skills", "purpose"]), selectedRoleId: "", roleDetailOpen: false, roleDetailTriggerId: "", assets: null, assetBindingKey: "", assetStatus: "idle", assetError: "", assetProjection: "active", assetView: "grid", assetPage: 0, assetRequestGeneration: 0, assetEventCursors: new Map(), assetMutationPending: null, assetConfirm: null, assetUndo: null, selectedAssetIdentity: "", assetTrigger: null, onboardingStep: 0, onboardingShown: false, onboardingTrigger: null, onboardingConfigPending: new Map(), onboardingConfigFailures: new Map(), notifications: null, notificationBindingKey: "", notificationStatus: "idle", notificationError: "", notificationAckFlight: null, notificationRequestGenerations: new Map(), notificationPresentedIds: new Set(), notificationToast: null, notificationToastTimer: null, notificationTrigger: null, connectionStatus: "reconnecting", view: "overview", projectId: "all", ctrlId: "", scopeNotice: "", scopeNoticeVisible: false, settingsCtrlId: "", settingsScopeType: "", settingsScopeId: "", evidenceImages: [], evidenceIndex: 0, evidenceTrigger: null };
+const state = { token: "", overview: null, proof: [], proofCollections: new Map(), proofStatuses: new Map(), proofStatus: "idle", proofSequence: 0, usageHistory: null, usageRequestGeneration: 0, usageWindowHours: 1, usageScopeKey: "", usageStatus: "idle", usageError: "", projectProgress: null, projectProgressProjectId: "", projectProgressStatus: "idle", projectProgressError: "", projectProgressFeed: null, projectProgressFeedProjectId: "", projectProgressFeedStatus: "idle", projectProgressFeedError: "", projectTab: "overview", projectUiMode: "screens", projectUiGroupId: "", projectArtifactPage: 0, runLogs: new Map(), runLogRequestGenerations: new Map(), runLogSurfaceStates: new Map(), runLogAgent: null, agentUpdatesFilter: "all", agentUpdatesPaused: false, agentDetailTrigger: null, diagnostics: null, diagnosticsHistory: null, diagnosticsHistoryStatus: "idle", diagnosticsError: "", diagnosticsSelectedChecks: new Set(), diagnosticsSelectionInitialized: false, diagnosticsRepairPreview: null, diagnosticsRepairPending: false, diagnosticsRepairError: "", diagnosticsRepairTrigger: null, health: null, storage: null, profile: null, profileStatus: "idle", profileError: "", profileUpload: null, profilePreviewUrl: "", profileSaving: false, profileTrigger: null, supportTrigger: null, messageOpen: false, messageTrigger: null, messageDraft: "", messageRecipientId: "", messageStatus: "unavailable", messageError: "", messageReceipt: null, messageConnector: null, messageAttachments: [], messagePendingAction: null, config: null, configStatus: "idle", configError: "", configResetPending: null, configResetRetry: null, chatRelaySaving: false, settingsDraft: new Map(), settingsSaving: false, settingsSaveError: "", settingsSaveMessage: "", configEditorTrigger: null, ctrlSettings: null, auto: null, autoBindingKey: "", autoStatus: "idle", autoError: "", autoSaving: false, skills: null, skillsError: "", roleManifests: null, roleManifestStatus: "unavailable", roleManifestError: "", roleManifestMessage: "", roleManifestSaving: false, roleManifestRetry: null, roleEditorMode: "", roleEditorTrigger: null, roleSearch: "", roleTypes: new Set(["builtin", "custom"]), roleSearchFields: new Set(["profession", "specialization", "alias", "skills", "purpose"]), selectedRoleId: "", roleDetailOpen: false, roleDetailTriggerId: "", assets: null, assetBindingKey: "", assetStatus: "idle", assetError: "", assetProjection: "active", assetView: "grid", assetPage: 0, assetRequestGeneration: 0, assetEventCursors: new Map(), assetMutationPending: null, assetConfirm: null, assetUndo: null, selectedAssetIdentity: "", assetTrigger: null, onboardingStep: 0, onboardingShown: false, onboardingTrigger: null, onboardingConfigPending: new Map(), onboardingConfigFailures: new Map(), notifications: null, notificationBindingKey: "", notificationStatus: "idle", notificationError: "", notificationAckFlight: null, notificationRequestGenerations: new Map(), notificationPresentedIds: new Set(), notificationToast: null, notificationToastTimer: null, notificationTrigger: null, connectionStatus: "reconnecting", view: "overview", projectId: "all", ctrlId: "", scopeNotice: "", scopeNoticeVisible: false, settingsCtrlId: "", settingsScopeType: "", settingsScopeId: "", evidenceImages: [], evidenceIndex: 0, evidenceTrigger: null };
 const THEME_STORAGE_KEY = "swarm.theme.v1";
 const THEME_OPTIONS = Object.freeze({ midnight: "Midnight", black: "Black", graphite: "Graphite", pearl: "Pearl" });
 
@@ -1636,7 +1636,8 @@ function usageRequestKey(projectId = state.projectId, ctrlId = state.ctrlId, hou
 
 function usageHistorySeries() {
   if (state.usageScopeKey !== usageRequestKey() || state.usageHistory?.ok !== true) return [];
-  return (Array.isArray(state.usageHistory.history) ? state.usageHistory.history : [])
+  return (Array.isArray(state.usageHistory.items) ? state.usageHistory.items : [])
+    .filter((sample) => typeof sample?.bucket_ms === "number" && typeof sample?.delta_tokens === "number")
     .map((sample) => ({ bucket: Number(sample?.bucket_ms), tokens: Number(sample?.delta_tokens) }))
     .filter((sample) => Number.isFinite(sample.bucket) && sample.bucket >= 0 && Number.isFinite(sample.tokens) && sample.tokens >= 0)
     .sort((a, b) => a.bucket - b.bucket)
@@ -1652,6 +1653,7 @@ function usageChartMarkup(surface, svgId) {
 }
 
 function renderUsageCharts() {
+  renderHighestUsageTasks();
   const values = usageHistorySeries();
   const current = state.usageStatus === "current";
   const label = values.length && current
@@ -1662,6 +1664,34 @@ function renderUsageCharts() {
     drawLine(svg, current ? values : [], "#ff6a3d");
     svg.setAttribute("aria-label", label);
   });
+}
+
+function highestUsageTaskRows() {
+  if (state.usageStatus !== "current" || state.usageScopeKey !== usageRequestKey()
+    || state.usageHistory?.ok !== true || !Array.isArray(state.usageHistory.task_usage)) return null;
+  return state.usageHistory.task_usage.filter((row) =>
+    typeof row?.thread_id === "string" && row.thread_id && (typeof row.title === "string" || row.title == null)
+    && typeof row.project_id === "string" && typeof row.tokens === "number"
+    && Number.isFinite(row.tokens) && row.tokens >= 0
+    && (state.projectId === "all" || row.project_id === state.projectId))
+    .slice().sort((left, right) => right.tokens - left.tokens || left.thread_id.localeCompare(right.thread_id)).slice(0, 10);
+}
+
+function renderHighestUsageTasks() {
+  const host = $("#highest-usage-tasks");
+  if (!host) return;
+  const rows = highestUsageTaskRows();
+  const loading = ["idle", "loading", "refreshing"].includes(state.usageStatus);
+  host.setAttribute("aria-busy", String(loading));
+  const message = loading ? "Loading task usage…" : state.usageStatus === "error"
+    ? "Task usage could not be loaded. Try another range or refresh."
+    : state.usageStatus === "stale" ? "Task usage is stale. Refresh to see current measurements."
+    : rows === null ? "Task usage is unavailable." : "No measured task usage in this period.";
+  const coverage = state.usageHistory?.task_usage_status === "partial" ? '<p class="usage-task-note">Some tasks have no measurements in this period.</p>' : "";
+  host.innerHTML = rows?.length ? coverage + '<table class="usage-task-table"><caption class="sr-only">Top 10 highest usage tasks, ' + escapeHTML(usageRangeLabel()) + '</caption><thead><tr><th scope="col">Task</th><th scope="col">Project</th><th scope="col">Usage</th></tr></thead><tbody>' + rows.map((row) => {
+    const project = savedProjectRoster().projects.find((item) => item.id === row.project_id);
+    return '<tr><th scope="row">' + escapeHTML(row.title || "Unnamed task") + '</th><td>' + escapeHTML(project?.label || row.project_id || "Unknown project") + '</td><td>' + escapeHTML(row.tokens.toLocaleString()) + ' tokens</td></tr>';
+  }).join("") + '</tbody></table>' : '<p class="empty-state" role="status">' + message + '</p>';
 }
 
 function diagnosticChecks() {
@@ -1959,18 +1989,6 @@ function closeSupport(restoreFocus = true) {
   if (dialog.open) dialog.close();
   if (restoreFocus) state.supportTrigger?.focus({ preventScroll: true });
   state.supportTrigger = null;
-}
-
-function openQuickHelp() {
-  const dialog = $("#quick-help-dialog");
-  if (!dialog.open) dialog.showModal();
-  requestAnimationFrame(() => $("#quick-help-close").focus({ preventScroll: true }));
-}
-
-function closeQuickHelp(restoreFocus = true) {
-  const dialog = $("#quick-help-dialog");
-  if (dialog.open) dialog.close();
-  if (restoreFocus) $("#quick-help").focus({ preventScroll: true });
 }
 
 function openProjectCreate() {
@@ -2810,11 +2828,13 @@ function drawProjectViewConnectors() {
 }
 
 function scheduleProjectViewConnectors() {
-  const workspaceView = projectWorkspaceViews(currentProjectView()).find((view) => view.id === state.projectTab);
+  const projection = currentProjectView();
+  const views = projectWorkspaceViews(projection);
+  const workspaceView = state.projectTab === "ui" ? projectWorkspaceModeView(projection, state.projectUiMode, views) : views.find((view) => view.id === state.projectTab);
   if ((state.projectTab === "ui" && state.projectUiMode === "map") || (workspaceView?.renderer === "canvas" && workspaceView.mode === "network")) requestAnimationFrame(drawProjectViewConnectors);
 }
 
-const PROJECT_WORKSPACE_RENDERERS = new Set(["document/blocks", "timeline/milestones", "canvas/network", "table/records", "gallery/list"]);
+const PROJECT_WORKSPACE_RENDERERS = new Set(["document/blocks", "timeline/milestones", "canvas/network", "table/records", "gallery/grid", "gallery/list"]);
 const PROJECT_WORKSPACE_EMBEDDED_TABS = new Map([
   ["view.project.overview-health", "overview"],
   ["view.project.roadmap", "roadmap"],
@@ -2847,6 +2867,12 @@ function projectWorkspaceViews(projection) {
   return views;
 }
 
+function projectWorkspaceModeView(projection, modeId, views = projectWorkspaceViews(projection)) {
+  const mode = (Array.isArray(projection?.modes) ? projection.modes : []).find((item) => item?.id === modeId);
+  const viewId = typeof mode?.view_id === "string" && mode.view_id.trim() ? mode.view_id.trim() : mode?.id;
+  return views.find((view) => view.id === viewId) || null;
+}
+
 function projectWorkspaceFlowMarkup(view) {
   const graph = view?.content?.graph || (Array.isArray(view?.content?.nodes) && Array.isArray(view?.content?.edges)
     ? { nodes: view.content.nodes, edges: view.content.edges }
@@ -2860,8 +2886,19 @@ function projectWorkspaceFlowMarkup(view) {
 }
 
 function projectWorkspaceDocumentMarkup(view) {
-  const source = view?.content?.blocks;
+  const document = view?.content?.document;
+  const source = Array.isArray(document?.blocks) ? document.blocks : view?.content?.blocks;
   if (!Array.isArray(source) || source.length > 128) return '<p class="empty-state" role="status">Project brief unavailable. No accepted document projection is bound.</p>';
+  if (document) {
+    const blocks = source.map((block) => {
+      if (block?.type === "heading" && [2, 3, 4].includes(block.level) && typeof block.text === "string" && block.text.trim()) return '<article class="project-model-block" data-project-document-block><h' + block.level + '>' + escapeHTML(block.text) + '</h' + block.level + '></article>';
+      if (block?.type === "paragraph" && typeof block.text === "string" && block.text.trim()) return '<article class="project-model-block" data-project-document-block><p>' + escapeHTML(block.text) + '</p></article>';
+      if (block?.type === "list" && Array.isArray(block.items) && block.items.length && block.items.every((item) => typeof item === "string" && item.trim())) return '<article class="project-model-block" data-project-document-block><ul>' + block.items.map((item) => '<li>' + escapeHTML(item) + '</li>').join("") + '</ul></article>';
+      return "";
+    });
+    if (blocks.some((block) => !block)) return '<p class="empty-state" role="status">Project brief unavailable. The accepted document projection is malformed.</p>';
+    return '<section class="project-model-document" aria-label="Project brief snapshot">' + blocks.join("") + '</section>';
+  }
   const ids = new Set();
   const blocks = source.map((candidate) => {
     const id = typeof candidate?.id === "string" ? candidate.id.trim() : "";
@@ -2877,17 +2914,19 @@ function projectWorkspaceDocumentMarkup(view) {
 }
 
 function projectWorkspaceTimelineMarkup(view) {
-  const source = view?.content?.milestones;
+  const timeline = view?.content?.timeline;
+  const source = Array.isArray(timeline?.events) ? timeline.events : view?.content?.milestones;
   if (!Array.isArray(source) || source.length > 128) return '<p class="empty-state" role="status">Roadmap unavailable. No accepted milestone projection is bound.</p>';
   const ids = new Set();
   const milestones = source.map((candidate) => {
     const id = typeof candidate?.id === "string" ? candidate.id.trim() : "";
     const label = typeof candidate?.label === "string" ? candidate.label.trim() : "";
-    const order = candidate?.order;
+    const order = timeline ? candidate?.sequence : candidate?.order;
     if (!id || !label || ids.has(id) || !Number.isInteger(order) || order < 0) return "";
     ids.add(id);
     const dependencies = Array.isArray(candidate.dependency_ids) ? candidate.dependency_ids.filter((item) => typeof item === "string" && item.trim()) : [];
-    return '<article data-project-milestone="' + escapeHTML(id) + '"><span>' + escapeHTML(String(order + 1)) + '</span><div><h3>' + escapeHTML(label) + '</h3><p>' + escapeHTML(dependencies.length ? "After " + dependencies.join(", ") : "No declared dependency") + '</p></div></article>';
+    const detail = timeline ? [candidate.status, candidate.summary, candidate.exit_criteria].filter((item) => typeof item === "string" && item.trim()).join(" · ") : dependencies.length ? "After " + dependencies.join(", ") : "No declared dependency";
+    return '<article data-project-milestone="' + escapeHTML(id) + '"><span>' + escapeHTML(String(order + 1)) + '</span><div><h3>' + escapeHTML(label) + '</h3><p>' + escapeHTML(detail) + '</p></div></article>';
   });
   if (milestones.some((milestone) => !milestone)) return '<p class="empty-state" role="status">Roadmap unavailable. The accepted milestone projection is malformed.</p>';
   return '<section class="project-roadmap project-model-roadmap" aria-label="Project brief roadmap">' + (milestones.join("") || '<p class="empty-state" role="status">No accepted roadmap milestones are available.</p>') + '</section>';
@@ -2996,6 +3035,10 @@ function projectWorkspaceViewMarkup(view) {
   if (view.renderer === "timeline" && view.mode === "milestones") return projectWorkspaceTimelineMarkup(view);
   if (view.renderer === "canvas" && view.mode === "network") return projectWorkspaceFlowMarkup(view);
   if (view.renderer === "table" && view.mode === "records") return Array.isArray(view?.content?.records) ? projectWorkspaceRecordsMarkup(view) : projectWorkspaceWorkMarkup(view);
+  if (view.renderer === "gallery" && view.mode === "grid") {
+    const screens = view?.content?.screens;
+    return Array.isArray(screens) ? '<section class="project-ui-screens" aria-label="Project screens">' + (screens.map(projectViewScreenMarkup).join("") || '<p class="empty-state">No accepted screen states are available.</p>') + '</section>' : '<p class="empty-state" role="status">Screens unavailable. No accepted screen projection is bound.</p>';
+  }
   if (view.renderer === "gallery" && view.mode === "list") return projectWorkspaceArtifactsMarkup(view);
   return '<p class="empty-state" role="status">This project view is unavailable.</p>';
 }
@@ -3014,22 +3057,19 @@ function projectViewMarkup() {
   const projection = currentProjectView();
   if (!projection) return '<p class="empty-state">UI evidence is unavailable for this project.</p>';
   const workspaceViews = projectWorkspaceViews(projection);
-  const legacyModes = Array.isArray(projection.modes) ? projection.modes.filter((item) => ["screens", "map"].includes(item?.id)) : [];
-  const modeItems = workspaceViews.length ? workspaceViews : legacyModes;
+  const declaredModes = Array.isArray(projection.modes) ? projection.modes : [];
+  const modeItems = workspaceViews.length ? declaredModes.filter((item) => projectWorkspaceModeView(projection, item?.id, workspaceViews)) : declaredModes.filter((item) => ["screens", "map"].includes(item?.id));
   if (!modeItems.some((item) => item.id === state.projectUiMode)) state.projectUiMode = modeItems[0]?.id || "screens";
   const mode = state.projectUiMode;
-  const workspaceView = workspaceViews.find((item) => item.id === mode);
+  const workspaceView = projectWorkspaceModeView(projection, mode, workspaceViews);
   const content = workspaceView
     ? projectWorkspaceViewMarkup(workspaceView)
     : mode === "map" ? projectViewMapMarkup(projection)
       : '<section class="project-ui-screens" aria-label="Project screens">' + ((projection.screens || []).map(projectViewScreenMarkup).join("") || '<p class="empty-state">No accepted screen states are available.</p>') + '</section>';
-  return '<section class="project-ui"><header class="project-ui-toolbar"><div><p class="eyebrow">Digest-bound project view</p><h2>' + escapeHTML(projection.tab.label || "UI") + '</h2></div><div class="segmented-control" aria-label="UI view mode">' + (projection.modes || []).map((item) => {
+  return '<section class="project-ui"><header class="project-ui-toolbar"><div><p class="eyebrow">Digest-bound project view</p><h2>' + escapeHTML(projection.tab.label || "UI") + '</h2></div><div class="segmented-control" aria-label="UI view mode">' + modeItems.map((item) => {
     const selected = item.id === mode;
     return '<button type="button" data-project-ui-mode="' + escapeHTML(item.id) + '" aria-pressed="' + String(selected) + '" class="' + (selected ? "is-selected" : "") + '">' + escapeHTML(item.label) + '</button>';
-  }).join("") + (workspaceViews.length ? workspaceViews.filter((item) => !(projection.modes || []).some((modeItem) => modeItem.id === item.id)).map((item) => {
-    const selected = item.id === mode;
-    return '<button type="button" data-project-ui-mode="' + escapeHTML(item.id) + '" aria-pressed="' + String(selected) + '" class="' + (selected ? "is-selected" : "") + '">' + escapeHTML(item.label) + '</button>';
-  }).join("") : "") + '</div></header>' + projectViewFreshnessMarkup(projection) + content + '<p class="project-ui-claim">' + escapeHTML(projection.claim_limit || "Project UI is read-only.") + '</p></section>';
+  }).join("") + '</div></header>' + projectViewFreshnessMarkup(projection) + content + '<p class="project-ui-claim">' + escapeHTML(projection.claim_limit || "Project UI is read-only.") + '</p></section>';
 }
 
 function projectProgressQueueProjection(progress) {
@@ -3174,7 +3214,8 @@ function renderProjectDetail() {
   $("#project-detail-summary").innerHTML = '<p><span>Progress</span><strong>' + escapeHTML(measured ? progress.percent + "%" : "—") + '</strong></p><p><span>Live ETA</span><strong><svg class="lucide" aria-hidden="true"><use href="#lucide-clock"></use></svg>' + escapeHTML(projectEta(nodes)) + '</strong></p><p><span>Next gate</span><strong>' + escapeHTML(nextGate ? humanize(nextGate.lifecycle_state) : "—") + '</strong></p>';
   const projectView = currentProjectView();
   const workspaceViews = projectWorkspaceViews(projectView);
-  const workspaceTabs = workspaceViews.filter((view) => !PROJECT_WORKSPACE_EMBEDDED_TABS.has(view.id));
+  const manifestWorkspace = Boolean(projectView?.tab?.manifest_id);
+  const workspaceTabs = manifestWorkspace ? [] : workspaceViews.filter((view) => !PROJECT_WORKSPACE_EMBEDDED_TABS.has(view.id));
   $$('[data-project-tab-manifest]').forEach((button) => button.remove());
   const logsTab = $("#project-tab-logs");
   workspaceTabs.forEach((view, index) => {
@@ -3191,7 +3232,7 @@ function renderProjectDetail() {
     logsTab.before(button);
   });
   const uiTab = $("#project-tab-ui");
-  uiTab.hidden = !projectView || workspaceViews.length > 0;
+  uiTab.hidden = !projectView || (!manifestWorkspace && workspaceViews.length > 0);
   uiTab.textContent = projectView?.tab?.label || "UI";
   if (state.projectTab === "ui" && workspaceTabs.length) state.projectTab = workspaceTabs[0].id;
   if ((state.projectTab === "ui" && !projectView) || !$$('[data-project-tab]').some((button) => !button.hidden && button.dataset.projectTab === state.projectTab)) state.projectTab = "overview";
@@ -3644,26 +3685,31 @@ function renderProjectProgressFeed() {
   }).join("") : '<li class="empty-state">No material project updates yet.</li>';
 }
 
+function overviewTopologyProjection(value) {
+  if (!value || value.schema_version !== 1 || !["KNOWN", "PARTIAL", "EMPTY"].includes(value.state)) return null;
+  return ["nodes", "tasks", "agent_edges", "task_edges", "independent_nodes"].every((field) => Array.isArray(value[field])) ? value : null;
+}
+
 function renderOverviewProjectCards() {
   const host = $("#overview-project-cards");
   if (!state.overview) {
-    $("#overview-summary").textContent = "Loading hierarchy";
+    $("#overview-summary").textContent = "Loading team";
     host.setAttribute("aria-busy", "true");
     host.innerHTML = overviewHierarchySkeletonMarkup();
     return;
   }
   const roster = savedProjectRoster();
   if (roster.state !== "KNOWN") {
-    $("#overview-summary").textContent = "Hierarchy unavailable";
+    $("#overview-summary").textContent = "Team unavailable";
     host.removeAttribute("aria-busy");
-    host.innerHTML = '<p class="empty-state overview-empty" role="status">Project hierarchy is unavailable. Refresh when the console can read the host project inventory.</p>';
+    host.innerHTML = '<p class="empty-state overview-empty" role="status">Project team is unavailable. Refresh when the console can read the host project inventory.</p>';
     return;
   }
   host.removeAttribute("aria-busy");
-  const hasTopologyProjection = state.overview?.topology?.projection === "recursive_host_topology" && Array.isArray(state.overview.topology.nodes);
-  if (!hasTopologyProjection) {
-    $("#overview-summary").textContent = "Hierarchy unavailable";
-    host.innerHTML = '<p class="empty-state overview-empty" role="status">Active agent topology is unavailable. The hierarchy will appear when SWARM receives an accepted topology projection.</p>';
+  const topologyProjection = overviewTopologyProjection(state.overview?.topology);
+  if (!topologyProjection) {
+    $("#overview-summary").textContent = "Team unavailable";
+    host.innerHTML = '<p class="empty-state overview-empty" role="status">Active agent topology is unavailable. The team will appear when SWARM receives an accepted topology projection.</p>';
     return;
   }
   const records = activeAgentRecords();
@@ -3674,18 +3720,16 @@ function renderOverviewProjectCards() {
     projectGroup.push(record);
     grouped.set(record.project.id, projectGroup);
   });
-  const topologyNodes = new Map(state.overview.topology.nodes.map((node) => [node.agent_id, node]));
+  const topologyNodes = new Map(topologyProjection.nodes.map((node) => [node.agent_id, node]));
   const cards = [...grouped.entries()].map(([projectId, projectRecords]) => {
     const project = projectById.get(projectId);
     if (!project) return "";
-    if (hasTopologyProjection) {
-      const admittedIds = new Set(projectRecords.map((record) => record.node.id));
-      projectRecords = projectRecords.filter((record) => {
-        const topology = topologyNodes.get(record.node.id);
-        const relation = topology?.parent_relation;
-        return topology?.project_id === projectId && (relation?.state === "ROOT" || (relation?.state === "KNOWN" && admittedIds.has(relation.parent_agent_id)));
-      });
-    }
+    const admittedIds = new Set(projectRecords.map((record) => record.node.id));
+    projectRecords = projectRecords.filter((record) => {
+      const topology = topologyNodes.get(record.node.id);
+      const relation = topology?.parent_relation;
+      return topology?.project_id === projectId && (relation?.state === "ROOT" || (relation?.state === "KNOWN" && admittedIds.has(relation.parent_agent_id)));
+    });
     const byId = new Map(projectRecords.map((record) => [record.node.id, record]));
     const children = new Map(projectRecords.map((record) => [record.node.id, []]));
     const parentById = new Map();
@@ -3698,11 +3742,11 @@ function renderOverviewProjectCards() {
       if (parentId) children.get(parentId).push(record);
     });
     const roots = projectRecords.filter((record) => !parentById.get(record.node.id));
-    const renderBranch = (record, ancestry = new Set()) => {
+    const renderBranch = (record, ancestry = new Set(), depth = 0) => {
       if (ancestry.has(record.node.id)) return "";
       const next = new Set(ancestry).add(record.node.id);
       const descendants = children.get(record.node.id) || [];
-      return '<div class="overview-agent-branch" data-agent-mode="' + escapeHTML(record.structuralRole.toLowerCase()) + '">' + overviewHierarchyNodeMarkup(record, descendants) + (descendants.length ? '<div class="overview-hierarchy-children">' + descendants.map((child) => renderBranch(child, next)).join("") + '</div>' : '') + '</div>';
+      return '<div class="overview-agent-branch" data-agent-mode="' + escapeHTML(record.structuralRole.toLowerCase()) + '">' + overviewHierarchyNodeMarkup(record, descendants, depth) + (descendants.length ? '<div class="overview-hierarchy-children">' + descendants.map((child) => renderBranch(child, next, depth + 1)).join("") + '</div>' : '') + '</div>';
     };
     const edges = [...parentById.entries()].filter(([, parentId]) => parentId).map(([childId, parentId]) => '<path data-overview-hierarchy-edge data-source="' + escapeHTML(parentId) + '" data-target="' + escapeHTML(childId) + '"></path>').join("");
     const ctrlCount = projectRecords.filter((record) => record.structuralRole === "CTRL").length;
@@ -3712,9 +3756,9 @@ function renderOverviewProjectCards() {
   const independentMarkup = independent.length ? '<section class="overview-independent panel"><header><span><strong>Independent host tasks</strong><small>Outside a manifest-bound project</small></span></header><div>' + independent.map((record) => '<article class="overview-independent-task" title="Task ID: ' + escapeHTML(record.node.id) + '"><span class="scope-dot is-active" aria-hidden="true"></span><span><strong>' + escapeHTML(agentTaskTitle(record)) + '</strong><small>' + escapeHTML(record.presentationName + " · Anonymous · Independent task") + '</small></span></article>').join("") + '</div></section>' : "";
   const malformed = records.filter((record) => record.identityState === "malformed");
   const malformedMarkup = malformed.length ? '<section class="overview-independent panel is-error" role="alert"><header><span><strong>Role binding needs attention</strong><small>Reconnect each SWARM task to one manifest role and CTRL.</small></span></header><div>' + malformed.map((record) => '<article class="overview-independent-task" title="Task ID: ' + escapeHTML(record.node.id) + '"><span class="scope-dot is-stalled" aria-hidden="true"></span><span><strong>' + escapeHTML(agentTaskTitle(record)) + '</strong><small>' + escapeHTML(record.presentationName + " · Role binding error") + '</small></span></article>').join("") + '</div></section>' : "";
-  $("#overview-summary").textContent = grouped.size ? String(grouped.size) + " active project" + (grouped.size === 1 ? "" : "s") : "No active project hierarchy";
-  const content = cards || independentMarkup || malformedMarkup ? cards + independentMarkup + malformedMarkup : '<p class="empty-state overview-empty" role="status">No active project hierarchy is available.</p>';
-  host.innerHTML = '<div class="overview-hierarchy-toolbar" role="group" aria-label="Hierarchy map controls"><button class="icon-button" type="button" data-overview-zoom="out" aria-label="Zoom out"><svg class="lucide" aria-hidden="true"><use href="#lucide-minus"></use></svg></button><button class="icon-button" type="button" data-overview-zoom="fit" aria-label="Fit hierarchy"><svg class="lucide" aria-hidden="true"><use href="#lucide-scan"></use></svg></button><button class="icon-button" type="button" data-overview-zoom="in" aria-label="Zoom in"><svg class="lucide" aria-hidden="true"><use href="#lucide-plus"></use></svg></button></div><div class="overview-hierarchy-viewport edge-scroll"><div class="overview-hierarchy-canvas">' + content + '</div></div>';
+  $("#overview-summary").textContent = grouped.size ? String(grouped.size) + " active project" + (grouped.size === 1 ? "" : "s") : "No active project team";
+  const content = cards || independentMarkup || malformedMarkup ? cards + independentMarkup + malformedMarkup : '<p class="empty-state overview-empty" role="status">No active project team is available.</p>';
+  host.innerHTML = '<div class="overview-hierarchy-toolbar" role="group" aria-label="Team map controls"><button class="icon-button" type="button" data-overview-zoom="out" aria-label="Zoom out"><svg class="lucide" aria-hidden="true"><use href="#lucide-minus"></use></svg></button><button class="icon-button" type="button" data-overview-zoom="fit" aria-label="Fit team"><svg class="lucide" aria-hidden="true"><use href="#lucide-scan"></use></svg></button><button class="icon-button" type="button" data-overview-zoom="in" aria-label="Zoom in"><svg class="lucide" aria-hidden="true"><use href="#lucide-plus"></use></svg></button></div><div class="overview-hierarchy-viewport edge-scroll"><div class="overview-hierarchy-canvas">' + content + '</div></div>';
   scheduleOverviewHierarchyEdges();
 }
 
@@ -3728,7 +3772,7 @@ function overviewHierarchyWorkRows(record) {
   return [current, ...bound.filter((row) => row.id !== current.id).map((row) => ({ ...row, progress: row.progress }))];
 }
 
-function overviewHierarchyNodeMarkup(record, descendants) {
+function overviewHierarchyNodeMarkup(record, descendants, depth = 0) {
   const rows = overviewHierarchyWorkRows(record);
   const visible = rows.slice(0, 3);
   const hiddenTaskCount = Math.max(0, rows.length - visible.length);
@@ -3742,7 +3786,8 @@ function overviewHierarchyNodeMarkup(record, descendants) {
   const work = visible.map(workRow).join("");
   const hiddenLabel = hiddenTaskCount + ' more work item' + (hiddenTaskCount === 1 ? "" : "s");
   const more = hiddenTaskCount ? '<details class="overview-node-more"><summary title="' + hiddenLabel + '"><span aria-hidden="true"><svg class="lucide"><use href="#lucide-chevron-down"></use></svg></span><span class="sr-only">Show ' + hiddenLabel + '</span></summary><div>' + rows.slice(3).map(workRow).join("") + '</div></details>' : "";
-  return '<article class="overview-hierarchy-node is-' + escapeHTML(record.structuralRole.toLowerCase()) + '" data-overview-hierarchy-node="' + escapeHTML(record.node.id) + '" style="--node-accent:' + escapeHTML(accent) + '"><i class="overview-node-port is-in" data-overview-input aria-hidden="true"></i><button class="overview-node-open" type="button" data-agent-detail="' + escapeHTML(record.node.id) + '" data-agent-project="' + escapeHTML(record.node.project_id) + '" data-agent-ctrl="' + escapeHTML(record.binding.ctrlId) + '" aria-label="Open ' + escapeHTML(record.presentationName + ", " + record.profession) + '">' + agentAvatarMarkup(record) + '<span class="overview-node-identity"><strong>' + escapeHTML(record.presentationName) + '</strong><small>' + escapeHTML(record.profession) + '</small></span></button><button class="overview-node-inspect icon-button" type="button" data-agent-inspect="' + escapeHTML(record.node.id) + '" data-agent-detail="' + escapeHTML(record.node.id) + '" data-agent-project="' + escapeHTML(record.node.project_id) + '" data-agent-ctrl="' + escapeHTML(record.binding.ctrlId) + '" aria-label="View ' + escapeHTML(record.presentationName) + ' details" title="View agent details"><svg class="lucide" aria-hidden="true"><use href="#lucide-eye"></use></svg></button><span class="overview-node-work-list">' + work + more + '</span>' + ports + '</article>';
+  const input = depth ? '<i class="overview-node-port is-in' + (depth > 1 ? ' is-side' : '') + '" data-overview-input aria-hidden="true"></i>' : "";
+  return '<article class="overview-hierarchy-node is-' + escapeHTML(record.structuralRole.toLowerCase()) + '" data-overview-hierarchy-node="' + escapeHTML(record.node.id) + '" style="--node-accent:' + escapeHTML(accent) + '">' + input + '<button class="overview-node-open" type="button" data-agent-detail="' + escapeHTML(record.node.id) + '" data-agent-project="' + escapeHTML(record.node.project_id) + '" data-agent-ctrl="' + escapeHTML(record.binding.ctrlId) + '" aria-label="Open ' + escapeHTML(record.presentationName + ", " + record.profession) + '">' + agentAvatarMarkup(record) + '<span class="overview-node-identity"><strong>' + escapeHTML(record.presentationName) + '</strong><small>' + escapeHTML(record.profession) + '</small></span></button><button class="overview-node-inspect icon-button" type="button" data-agent-inspect="' + escapeHTML(record.node.id) + '" data-agent-detail="' + escapeHTML(record.node.id) + '" data-agent-project="' + escapeHTML(record.node.project_id) + '" data-agent-ctrl="' + escapeHTML(record.binding.ctrlId) + '" aria-label="View ' + escapeHTML(record.presentationName) + ' details" title="View agent details"><svg class="lucide" aria-hidden="true"><use href="#lucide-eye"></use></svg></button><span class="overview-node-work-list">' + work + more + '</span>' + ports + '</article>';
 }
 
 function overviewHierarchySkeletonMarkup() {
@@ -3768,8 +3813,13 @@ function drawOverviewHierarchyEdges() {
         const y1 = from.top + from.height / 2 - svgRect.top;
         const x2 = to.left + to.width / 2 - svgRect.left;
         const y2 = to.top + to.height / 2 - svgRect.top;
-        const bend = y1 + Math.max(12, (y2 - y1) / 2);
-        path.setAttribute("d", "M " + x1 + " " + y1 + " V " + bend + " H " + x2 + " V " + y2);
+        if (input.classList.contains("is-side")) {
+          const trunk = x2 - 24;
+          path.setAttribute("d", "M " + x1 + " " + y1 + " V " + (y1 + 14) + " H " + trunk + " V " + y2 + " H " + x2);
+        } else {
+          const bend = y1 + Math.max(12, (y2 - y1) / 2);
+          path.setAttribute("d", "M " + x1 + " " + y1 + " V " + bend + " H " + x2 + " V " + y2);
+        }
       });
     });
   });
@@ -3880,7 +3930,7 @@ function messageConnectorCapability(bootstrap) {
 function messageRecipients() {
   return activeAgentRecords()
     .filter((record) => record.identityState === "admitted" && record.binding)
-    .filter((record) => ["CTRL", "LEAD"].includes(record.structuralRole))
+    .filter((record) => record.structuralRole === "CTRL")
     .filter((record) => state.projectId === "all" || record.binding?.projectId === state.projectId)
     .map((record) => ({
       id: record.node.id,
@@ -4031,7 +4081,7 @@ function messageReceiptPresentation(result, request) {
 }
 
 function messageStatusCopy(recipient = selectedMessageRecipient()) {
-  if (!recipient) return "No authorized CTRL or LEAD is available in this project scope.";
+  if (!recipient) return "No authorized CTRL is available in this project scope.";
   if (!state.messageConnector) return MESSAGE_CONNECTOR_UNAVAILABLE;
   if (!messageContextIdentity(recipient) || !messageAttachments()) return "Messaging is unavailable because this screen does not have a complete digest and cursor binding.";
   if (state.messageStatus === "pending") return "Pending · waiting for SWARM acknowledgement.";
@@ -5182,6 +5232,7 @@ async function refreshProof() {
 }
 
 async function refreshUsageHistory() {
+  const generation = ++state.usageRequestGeneration;
   const request = { projectId: state.projectId, ctrlId: state.ctrlId, hours: state.usageWindowHours };
   const requestKey = usageRequestKey(request.projectId, request.ctrlId, request.hours);
   const params = new URLSearchParams({ project_id: request.projectId, ctrl_id: request.ctrlId, hours: String(request.hours) });
@@ -5189,13 +5240,13 @@ async function refreshUsageHistory() {
   state.usageStatus = hasLastGood ? "refreshing" : "loading";
   try {
     const result = await api('/api/usage-history?' + params.toString());
-    if (request.projectId !== state.projectId || request.ctrlId !== state.ctrlId || request.hours !== state.usageWindowHours) return;
+    if (generation !== state.usageRequestGeneration || request.projectId !== state.projectId || request.ctrlId !== state.ctrlId || request.hours !== state.usageWindowHours) return;
     state.usageHistory = result;
     state.usageScopeKey = requestKey;
     state.usageStatus = "current";
     state.usageError = "";
   } catch (error) {
-    if (request.projectId !== state.projectId || request.ctrlId !== state.ctrlId || request.hours !== state.usageWindowHours) return;
+    if (generation !== state.usageRequestGeneration || request.projectId !== state.projectId || request.ctrlId !== state.ctrlId || request.hours !== state.usageWindowHours) return;
     if (!hasLastGood) state.usageHistory = null;
     state.usageScopeKey = requestKey;
     state.usageStatus = hasLastGood ? "stale" : "error";
@@ -5730,19 +5781,6 @@ $("#support-dialog").addEventListener("click", (event) => { if (event.target ===
 $("#support-dialog").addEventListener("cancel", (event) => {
   event.preventDefault();
   closeSupport();
-});
-
-$("#quick-help").addEventListener("click", openQuickHelp);
-$("#quick-help-close").addEventListener("click", () => closeQuickHelp());
-$("#quick-help-dialog").addEventListener("click", (event) => { if (event.target === event.currentTarget) closeQuickHelp(); });
-$("#quick-help-dialog").addEventListener("cancel", (event) => { event.preventDefault(); closeQuickHelp(); });
-$("#quick-help-dialog").addEventListener("click", (event) => {
-  const action = event.target.closest("[data-quick-help-action]")?.dataset.quickHelpAction;
-  if (!action) return;
-  closeQuickHelp(false);
-  if (action === "message") openMessageComposer($("#quick-help"));
-  if (action === "tour") openOnboarding(true, $("#quick-help"));
-  if (action === "diagnostics") { setView("diagnostics"); requestAnimationFrame(() => $("#diagnostics-heading")?.focus({ preventScroll: true })); }
 });
 
 $("#project-create").addEventListener("click", openProjectCreate);

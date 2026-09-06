@@ -236,7 +236,7 @@ def _mutate_project_brief(
         raise ProjectModelError(f"project brief field {collection} is invalid")
     all_records = [
         item
-        for key in _LIFECYCLE_COLLECTIONS
+        for key in _LIFECYCLE_COLLECTIONS | {"artifacts"}
         for item in (document["objective"].get("ranked_outcomes", []) if key == "goals" else document.get(key, []))
         if isinstance(item, dict)
     ]

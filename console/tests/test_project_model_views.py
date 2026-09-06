@@ -350,7 +350,12 @@ class ProjectModelViewsTests(unittest.TestCase):
             self.assertEqual(task["artifact_ids"], ["a-1"])
 
     def test_schema1_lifecycle_rejects_duplicate_stale_and_invalid_reopen(self):
-        model = project_fixture("fixture", tasks=[{"id": "t-1", "state": "complete"}], blocks=[])
+        model = project_fixture(
+            "fixture",
+            tasks=[{"id": "t-1", "state": "complete"}],
+            blocks=[],
+            artifacts=[{"id": "a-1", "revision": "abc", "proof_class": "SOURCE_STATIC"}],
+        )
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "SWARM.md"
             path.write_text(markdown_fixture(model), encoding="utf-8")
@@ -366,6 +371,7 @@ class ProjectModelViewsTests(unittest.TestCase):
             before = path.read_bytes()
             cases = (
                 {"expected_digest": digest, "operation": "create", "collection": "blocks", "record_id": "t-1", "changes": {"state": "planned"}},
+                {"expected_digest": digest, "operation": "create", "collection": "tasks", "record_id": "A-1", "changes": {"state": "planned"}},
                 {"expected_digest": digest, "operation": "reopen", "collection": "tasks", "record_id": "t-1", "changes": {"state": " complete "}},
                 {"expected_digest": digest, "operation": "update", "collection": "tasks", "record_id": "t-1", "changes": {"state": "active"}},
                 {"expected_digest": digest, "operation": "update", "collection": "tasks", "record_id": "t-1", "changes": {"owner_id": "agent-1"}},
