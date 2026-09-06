@@ -242,7 +242,7 @@ assert.match(app, /function messageReceiptPresentation\(result, request\)[\s\S]*
 assert.match(app, /request = \{ \.\.\.envelope, action_digest: await messageActionDigest\(envelope\) \}/);
 assert.match(app, /\$\("#profile"\)\.addEventListener\("click", \(event\) => openProfile\(event\.currentTarget\)\)/);
 assert.match(app, /\$\("#profile-form"\)\.addEventListener\("submit", saveProfile\)/);
-assert.match(app, /\$\("#profile-dialog"\)\.addEventListener\("cancel", \(event\) => \{[\s\S]*?closeProfile\(\)/);
+assert.match(app, /\$\("#profile-dialog"\)\.addEventListener\("toggle", \(event\) => \{[\s\S]*?closeProfile\(false\)/);
 assert.match(app, /function reviewDiagnosticWithCtrl\(checkId\)/);
 assert.match(app, /data-diagnostic-review/);
 assert.doesNotMatch(indexHtml, /Choose recommended|diagnostics-auto-fix|id="diagnostics-repair"/);
@@ -251,7 +251,8 @@ for (const id of ["diagnostics-health-heading", "diagnostics-check-strip", "diag
 assert.match(app, /\$\("#repair-dialog"\)\.addEventListener\("cancel", \(event\) => \{[\s\S]*?closeRepairDialog\(\)/);
 for (const icon of ["eye", "trash-2"]) assert.match(indexHtml, new RegExp(`id="lucide-${icon}" viewBox="0 0 24 24"`));
 assert.match(indexHtml, /id="onboarding-dialog"[^>]*aria-labelledby="onboarding-dialog-title"[^>]*aria-describedby="onboarding-step-status"/);
-assert.equal((indexHtml.match(/<dialog\b/g) || []).length, 11);
+assert.equal((indexHtml.match(/<dialog\b/g) || []).length, 10);
+assert.match(indexHtml, /<div popover="auto" role="dialog" class="profile-dialog"/);
 for (const shell of ["agent-detail-shell", "evidence-lightbox-shell", "asset-dialog-shell", "profile-dialog-shell", "support-dialog-shell", "project-create-shell", "repair-dialog-shell", "config-editor-shell", "role-editor-shell", "onboarding-shell"]) {
   assert.match(indexHtml, new RegExp(`class="dialog-shell ${shell}"`));
 }
@@ -3902,14 +3903,18 @@ proofFeed.items.push({
     assert.equal(await profilePage.getByRole("button", { name: "Save profile" }).isDisabled(), true);
     assert.deepEqual(profileRuntime.profileRequests.map((request) => request.method), ["GET", "GET"]);
     await profilePage.keyboard.press("Escape");
-    assert.equal(await profilePage.locator("#profile-dialog").evaluate((dialog) => dialog.open), false);
+    assert.equal(await profilePage.locator("#profile-dialog").evaluate((dialog) => dialog.matches(":popover-open")), false);
     assert.equal(await profileTrigger.evaluate((element) => element === document.activeElement), true);
     await profileTrigger.click();
     await profilePage.waitForFunction(() => state.profileStatus === "unavailable");
     await profilePage.getByRole("button", { name: "Cancel" }).click();
     assert.equal(await profileTrigger.evaluate((element) => element === document.activeElement), true);
-    assert.deepEqual(profileRuntime.profileRequests.map((request) => request.method), ["GET", "GET", "GET"]);
-    assert.equal(profileRuntime.runtimeErrors.length, 3);
+    await profileTrigger.click();
+    await profilePage.locator("#view-title").click();
+    assert.equal(await profilePage.locator("#profile-dialog").evaluate((element) => element.matches(":popover-open")), false);
+    assert.equal(await profileTrigger.getAttribute("aria-expanded"), "false");
+    assert.deepEqual(profileRuntime.profileRequests.map((request) => request.method), ["GET", "GET", "GET", "GET"]);
+    assert.equal(profileRuntime.runtimeErrors.length, 4);
     assert.ok(profileRuntime.runtimeErrors.every((message) => /404 \(Not Found\)/.test(message)), profileRuntime.runtimeErrors.join(" | "));
     await profilePage.close();
 

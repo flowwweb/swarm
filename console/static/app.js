@@ -1931,15 +1931,16 @@ function renderProfile() {
   $("#profile-display-name").value = profile.display_name || "";
   $("#profile-compact-updates").checked = profile.preferences?.compact_updates === true;
   $("#profile-reduced-motion").checked = profile.preferences?.reduced_motion === true;
-  $("#profile-claim-limit").textContent = state.profile?.claim_limit || "This is a local presentation profile, not an account or provider identity.";
+  $("#profile-claim-limit").textContent = "Your HQ profile and preferences stay on this device.";
   const unavailable = state.profileStatus === "unavailable";
-  $("#profile-status").textContent = state.profileError || (state.profileStatus === "loading" ? "Loading profile…" : unavailable ? "Profile editing is unavailable from this server. Your current presentation remains readable." : "Local presentation profile loaded.");
+  $("#profile-status").textContent = state.profileError || (state.profileStatus === "loading" ? "Loading profile…" : unavailable ? "Profile editing is unavailable from this server. Your current presentation remains readable." : "");
   $("#profile-save").disabled = state.profileStatus !== "current" || state.profileSaving;
   [$("#profile-display-name"), $("#profile-avatar-input"), $("#profile-compact-updates"), $("#profile-reduced-motion")].forEach((control) => control.disabled = state.profileStatus !== "current" || state.profileSaving);
   renderProfileButton();
 }
 
 async function openProfile(trigger) {
+  if ($("#profile-dialog").matches(":popover-open")) { closeProfile(); return; }
   state.profileTrigger = trigger;
   state.profileStatus = "loading";
   state.profileError = "";
@@ -1947,7 +1948,8 @@ async function openProfile(trigger) {
   if (state.profilePreviewUrl) URL.revokeObjectURL(state.profilePreviewUrl);
   state.profilePreviewUrl = "";
   const dialog = $("#profile-dialog");
-  if (!dialog.open) dialog.showModal();
+  dialog.showPopover();
+  trigger.setAttribute("aria-expanded", "true");
   if (state.profile) {
     state.profileStatus = "current";
     renderProfile();
@@ -1969,7 +1971,8 @@ async function openProfile(trigger) {
 
 function closeProfile(restoreFocus = true) {
   const dialog = $("#profile-dialog");
-  if (dialog.open) dialog.close();
+  if (dialog.matches(":popover-open")) dialog.hidePopover();
+  $("#profile").setAttribute("aria-expanded", "false");
   if (state.profilePreviewUrl) URL.revokeObjectURL(state.profilePreviewUrl);
   state.profilePreviewUrl = "";
   state.profileUpload = null;
@@ -5190,6 +5193,20 @@ function settingsThemeMarkup() {
   return '<fieldset class="panel settings-theme settings-wide"><legend>Appearance</legend><p>Choose how SWARM HQ looks on this device.</p><div>' + options + '</div></fieldset>';
 }
 
+function settingsConfigSummary() {
+  const scope = currentSettingsScope();
+  const config = state.config;
+  const binding = configWriteScope(config);
+  const label = scope.type === "global" ? "Global" : scope.type === "project" ? "Project" : "CTRL";
+  const matches = binding?.type === scope.type && (scope.type === "global" || binding.project_id === scope.id);
+  if (!matches || state.configStatus !== "current" || config?.state !== "KNOWN" || config.available !== true || !String(config.revision ?? "")) {
+    return label + " configuration unavailable for this scope" + (state.configStatus === "stale" ? " · Last read is stale" : "");
+  }
+  return label + " configuration · revision " + String(config.revision).slice(0, 12) + " · Config text " +
+    (typeof config.editable_text === "string" ? "available" : "unavailable") +
+    (config.read_only !== false || config.write_contract?.available !== true ? " · Read-only" : "");
+}
+
 function renderSettings() {
   const scope = currentSettingsScope();
   const selectedCtrl = selectedSettingsCtrl();
@@ -5204,7 +5221,7 @@ function renderSettings() {
       settingsSwitch("automation.mode", autoMode, "Auto mode", "SWARM keeps eligible work moving until it needs you.", { trueValue: "standard", falseValue: "manual", unavailable: scope.type === "global" ? "Managed by the current configuration." : "Edit global defaults or use an accepted override." }) +
       descriptorBooleanSwitch("monitoring.auto_health_enabled", "Auto fix", "SWARM attempts to recover from issues automatically. This may start repair tasks and increase usage.", { unsupported: "Unavailable. Health checks remain active; no repair is started." }) +
       descriptorBooleanSwitch("execution.usage_saver", "Usage Saver", "Smart routing can reduce usage.", { badge: "Experimental", unsupported: "Unavailable until the canonical setting is exposed." }) + '</div><div class="settings-run-controls">' + settingsSpeedMarkup() + settingsTaskLifeMarkup() + '</div><div class="guided-tour-setting"><span><strong>Guided tour</strong><small>Replay the current SWARM introduction.</small></span><button class="quiet-button" data-setting-action="replay-tour" type="button">Replay tour</button></div></section>' +
-    '<section class="panel settings-config-entry settings-wide" id="settings-advanced"><div><p class="eyebrow">Configuration</p><h3>Edit config</h3><p>Review the exact source, inheritance, and validation state in one place.</p><small>Server-owned source · revision unavailable · text authority unavailable</small></div><button class="quiet-button" id="settings-edit-config" data-setting-action="edit-config" type="button">Edit config</button></section>' +
+    '<section class="panel settings-config-entry settings-wide" id="settings-advanced"><div><p class="eyebrow">Configuration</p><h3>Edit config</h3><p>Review the exact source, inheritance, and validation state in one place.</p><small>' + escapeHTML(settingsConfigSummary()) + '</small></div><button class="quiet-button" id="settings-edit-config" data-setting-action="edit-config" type="button">Edit config</button></section>' +
     '<footer class="settings-save-bar settings-wide' + (state.settingsSaveError ? ' is-error' : '') + '" aria-live="polite"><p><strong>' + escapeHTML(saveStatus) + '</strong><span>' + escapeHTML(pending ? "Review and save these server-backed changes." : "Essentials reflect the latest acknowledged configuration.") + '</span></p><div><button class="quiet-button" data-setting-action="discard-settings" type="button"' + (!pending || state.settingsSaving ? ' disabled' : '') + '>Discard</button><button class="primary-action" id="settings-save" data-setting-action="save-settings" type="button"' + (!pending || state.settingsSaving ? ' disabled' : '') + (state.settingsSaving ? ' aria-busy="true"' : '') + '>Save changes</button></div></footer>';
 }
 
@@ -5770,9 +5787,11 @@ $("#profile-close").addEventListener("click", () => closeProfile());
 $("#profile-cancel").addEventListener("click", () => closeProfile());
 $("#profile-form").addEventListener("submit", saveProfile);
 $("#profile-avatar-input").addEventListener("change", (event) => selectProfileAvatar(event.target.files?.[0]));
-$("#profile-dialog").addEventListener("cancel", (event) => {
-  event.preventDefault();
-  closeProfile();
+$("#profile-dialog").addEventListener("toggle", (event) => {
+  if (event.newState === "closed" && !event.currentTarget.matches(":popover-open")) closeProfile(false);
+});
+$("#profile-dialog").addEventListener("keydown", (event) => {
+  if (event.key === "Escape") { event.preventDefault(); closeProfile(); }
 });
 
 $("#support-open").addEventListener("click", (event) => openSupport(event.currentTarget));

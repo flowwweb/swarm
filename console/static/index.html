@@ -96,7 +96,7 @@
             <p class="scope-change-status sr-only" id="scope-change-status" role="status" aria-live="polite"></p>
             <button class="icon-button circle-frame system-health-control is-reconnecting" id="system-health-control" type="button" aria-label="System health: Reconnecting" title="System health: Reconnecting" aria-controls="view-diagnostics"><svg class="lucide health-pulse-icon" aria-hidden="true"><use href="#lucide-heart-pulse"></use></svg><span class="status-dot is-reconnecting" id="snapshot-status-dot" aria-hidden="true"></span><span class="sr-only" id="sync-time" role="status" aria-live="polite">Reconnecting</span></button>
             <button class="icon-button chrome-action circle-frame notification-trigger" id="notifications" type="button" aria-label="Notifications" title="Notifications" aria-expanded="false" aria-controls="notifications-panel"><svg class="lucide" aria-hidden="true"><use href="#lucide-bell"></use></svg><span id="notification-unread" hidden>0</span></button>
-            <button class="profile-button topbar-profile circle-frame" id="profile" type="button" aria-label="Open profile" title="Profile"><img id="profile-button-image" alt="" hidden><span id="profile-initials" aria-hidden="true"></span><svg class="lucide" id="profile-button-placeholder" aria-hidden="true"><use href="#lucide-user-round"></use></svg></button>
+            <button class="profile-button topbar-profile circle-frame" id="profile" type="button" aria-haspopup="dialog" aria-expanded="false" aria-controls="profile-dialog" aria-label="Open profile" title="Profile"><img id="profile-button-image" alt="" hidden><span id="profile-initials" aria-hidden="true"></span><svg class="lucide" id="profile-button-placeholder" aria-hidden="true"><use href="#lucide-user-round"></use></svg></button>
           </div>
           </div>
           <div><h1 id="view-title">Overview</h1><p id="view-subtitle">Project progress, risks, and proof at a glance.</p></div>
@@ -209,18 +209,18 @@
         <footer class="dialog-footer asset-dialog-footer" id="asset-dialog-footer"></footer>
       </div>
     </dialog>
-    <dialog class="profile-dialog" id="profile-dialog" aria-labelledby="profile-dialog-title" aria-describedby="profile-status">
+    <div popover="auto" role="dialog" class="profile-dialog" id="profile-dialog" aria-labelledby="profile-dialog-title" aria-describedby="profile-status">
       <form class="dialog-shell profile-dialog-shell" id="profile-form">
         <header class="dialog-header profile-dialog-header"><div><p class="eyebrow">Local preferences</p><h2 id="profile-dialog-title">Profile</h2></div><button class="icon-button" id="profile-close" type="button" aria-label="Close profile"><svg class="lucide" aria-hidden="true"><use href="#lucide-x"></use></svg></button></header>
         <div class="dialog-body edge-scroll profile-dialog-body"><div class="dialog-body-content profile-dialog-content">
-          <section class="profile-avatar-editor" aria-labelledby="profile-avatar-heading"><div class="profile-avatar-preview circle-frame"><img id="profile-avatar-preview" alt="" hidden><svg class="lucide" id="profile-avatar-placeholder" aria-hidden="true"><use href="#lucide-user-round"></use></svg></div><div><h3 id="profile-avatar-heading">Avatar</h3><p>Shown only in this local SWARM presentation.</p><label class="quiet-button profile-upload-button" for="profile-avatar-input"><svg class="lucide" aria-hidden="true"><use href="#lucide-upload"></use></svg>Choose image</label><input id="profile-avatar-input" type="file" accept="image/png,image/jpeg,image/webp" hidden><small id="profile-avatar-help">PNG, JPEG, or WebP · up to 5 MB</small></div></section>
+          <section class="profile-avatar-editor" aria-labelledby="profile-avatar-heading"><div class="profile-avatar-preview circle-frame"><img id="profile-avatar-preview" alt="" hidden><svg class="lucide" id="profile-avatar-placeholder" aria-hidden="true"><use href="#lucide-user-round"></use></svg></div><div><h3 id="profile-avatar-heading">Avatar</h3><p>Your image in SWARM HQ.</p><label class="quiet-button profile-upload-button" for="profile-avatar-input"><svg class="lucide" aria-hidden="true"><use href="#lucide-upload"></use></svg>Choose image</label><input id="profile-avatar-input" type="file" accept="image/png,image/jpeg,image/webp" hidden><small id="profile-avatar-help">PNG, JPEG, or WebP · up to 5 MB</small></div></section>
           <label class="profile-field" for="profile-display-name"><span>Display name</span><input id="profile-display-name" name="display_name" autocomplete="name" maxlength="80" required></label>
           <fieldset class="profile-preferences"><legend>Preferences</legend><label><input id="profile-compact-updates" type="checkbox">Compact live updates</label><label><input id="profile-reduced-motion" type="checkbox">Reduce motion</label></fieldset>
-          <aside class="profile-claim-limit" id="profile-claim-limit">This is a local presentation profile, not an account or provider identity.</aside>
+          <aside class="profile-claim-limit" id="profile-claim-limit">Your HQ profile and preferences stay on this device.</aside>
         </div></div>
         <footer class="dialog-footer profile-dialog-footer"><p id="profile-status" role="status">Loading profile…</p><div><button class="quiet-button" id="profile-cancel" type="button">Cancel</button><button class="primary-action" id="profile-save" type="submit" disabled>Save profile</button></div></footer>
       </form>
-    </dialog>
+    </div>
     <dialog class="support-dialog" id="support-dialog" aria-labelledby="support-dialog-title" aria-describedby="support-dialog-description support-status">
       <div class="dialog-shell support-dialog-shell">
         <header class="dialog-header support-dialog-header"><div><h2 id="support-dialog-title">Support SWARM</h2><p id="support-dialog-description">Help keep SWARM independent and improving.</p></div><button class="icon-button" id="support-close" type="button" aria-label="Close support"><svg class="lucide" aria-hidden="true"><use href="#lucide-x"></use></svg></button></header>
