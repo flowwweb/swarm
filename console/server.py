@@ -125,6 +125,8 @@ TOKEN_RETENTION_DAYS = 30
 TOKEN_SOURCE_SQLITE = "host_reported_cumulative_delta"
 TOKEN_SOURCE_CODEX_JSONL = "codex_jsonl_token_count"
 TOKEN_JSONL_SCAN_FILE_LIMIT = 4096
+TOKEN_JSONL_TAIL_BYTES = 1024 * 1024
+TOKEN_JSONL_SCAN_BYTES = 8 * 1024 * 1024
 PROGRESS_FRESHNESS_WINDOWS = 2
 PROGRESS_RECEIPTS_PER_TASK = 128
 DIAGNOSTIC_RETENTION_DAYS = 7
@@ -6679,17 +6681,28 @@ def _codex_jsonl_token_counts(codex_home: Path, thread_ids: set[str]) -> dict[st
                 candidates.append((thread_id, path))
     except OSError:
         return {}
+    remaining = TOKEN_JSONL_SCAN_BYTES
     for thread_id, path in candidates:
+        if remaining <= 0:
+            break
         try:
-            with path.open("r", encoding="utf-8") as stream:
-                for line in stream:
-                    if '"token_count"' not in line or '"total_token_usage"' not in line:
+            with path.open("rb") as stream:
+                size = stream.seek(0, os.SEEK_END)
+                limit = min(TOKEN_JSONL_TAIL_BYTES, remaining)
+                offset = max(0, size - limit)
+                stream.seek(offset)
+                tail = stream.read(limit)
+                remaining -= len(tail)
+                if offset:
+                    tail = tail.partition(b"\n")[2]
+                for line in tail.splitlines():
+                    if b'"token_count"' not in line or b'"total_token_usage"' not in line:
                         continue
                     try:
                         record = json.loads(line)
                     except (json.JSONDecodeError, TypeError):
                         continue
-                    if record.get("type") != "event_msg":
+                    if not isinstance(record, dict) or record.get("type") != "event_msg":
                         continue
                     payload = record.get("payload")
                     if not isinstance(payload, dict) or payload.get("type") != "token_count":
@@ -6699,11 +6712,11 @@ def _codex_jsonl_token_counts(codex_home: Path, thread_ids: set[str]) -> dict[st
                     if not isinstance(usage, dict):
                         continue
                     total = usage.get("total_tokens")
-                    if not isinstance(total, int) or total < 0:
+                    if type(total) is not int or total < 0:
                         input_tokens = usage.get("input_tokens")
                         output_tokens = usage.get("output_tokens")
-                        input_tokens = input_tokens if isinstance(input_tokens, int) and input_tokens >= 0 else 0
-                        output_tokens = output_tokens if isinstance(output_tokens, int) and output_tokens >= 0 else 0
+                        if any(type(value) is not int or value < 0 for value in (input_tokens, output_tokens)):
+                            continue
                         total = input_tokens + output_tokens
                     highest[thread_id] = max(highest.get(thread_id, 0), total)
         except (OSError, UnicodeError):
@@ -12035,6 +12048,10 @@ class App:
             self._store_generation += 1
 
     def _observer_loop(self) -> None:
+        try:
+            self.observe_once("startup")
+        except (ConsoleError, OSError, sqlite3.Error):
+            pass  # Retain unknown/cached state until the existing heartbeat retries.
         while not self._observer_stop.wait(TOKEN_SAMPLE_SECONDS):
             try:
                 fingerprint = observation_fingerprint(self.codex_home, self.config_path)
@@ -12047,12 +12064,6 @@ class App:
     def start_observer(self) -> None:
         if self._observer_thread and self._observer_thread.is_alive():
             return
-        try:
-            self.observe_once("startup")
-        except (ConsoleError, OSError, sqlite3.Error):
-            # A fresh console may start before Codex has created its state DB.
-            # The next heartbeat will retry without blocking the localhost service.
-            pass
         self._observer_stop.clear()
         self._observer_thread = threading.Thread(
             target=self._observer_loop,

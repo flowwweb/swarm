@@ -3054,6 +3054,49 @@ class SwarmConsoleTests(unittest.TestCase):
         final = console.ConsoleStore(path).load_execution_ledger()
         self.assertEqual([item.generation_id for item in final.generations], ["legacy-fast", "generation-standard"])
 
+    def test_start_observer_does_not_block_health_on_slow_observation(self) -> None:
+        app = console.App(self.codex_home, self.config)
+        entered, release = threading.Event(), threading.Event()
+        def slow_observation(trigger):
+            self.assertEqual(trigger, "startup")
+            entered.set()
+            release.wait(5)
+        with mock.patch.object(app, "observe_once", side_effect=slow_observation) as observe:
+            try:
+                started = time.monotonic()
+                app.start_observer()
+                self.assertLess(time.monotonic() - started, 1)
+                self.assertTrue(entered.wait(1))
+                app.start_observer()
+                handler = self._handler("127.0.0.1", "127.0.0.1:4788")
+                handler.path = "/healthz"
+                handler._json = mock.Mock()
+                handler.do_GET()
+                self.assertEqual(handler._json.call_args.args[0], console.HTTPStatus.OK)
+                self.assertFalse(release.is_set())
+                self.assertEqual(observe.call_count, 1)
+            finally:
+                release.set()
+                app.stop_observer()
+            self.assertFalse(app._observer_thread.is_alive())
+
+    def test_codex_jsonl_tail_is_bounded_and_missing_usage_stays_unknown(self) -> None:
+        session = self.codex_home / "sessions" / "rollout-thread-tail.jsonl"
+        session.parent.mkdir(parents=True, exist_ok=True)
+        def event(usage):
+            return json.dumps({"type": "event_msg", "payload": {
+                "type": "token_count", "info": {"total_token_usage": usage},
+            }}).encode() + b"\n"
+        session.write_bytes(event({"total_tokens": 999}) + b"x" * 2048 + b"\n" + event({"total_tokens": 12}))
+        with mock.patch.object(console, "TOKEN_JSONL_TAIL_BYTES", 512), mock.patch.object(console, "TOKEN_JSONL_SCAN_BYTES", 512):
+            self.assertEqual(console._codex_jsonl_token_counts(self.codex_home, {"thread-tail"}), {"thread-tail": 12})
+            session.write_bytes(event({"total_tokens": 999}) + b"x" * 2048 + b"\n" + event({}))
+            self.assertEqual(console._codex_jsonl_token_counts(self.codex_home, {"thread-tail"}), {})
+            session.write_bytes(event({"total_tokens": 0}))
+            self.assertEqual(console._codex_jsonl_token_counts(self.codex_home, {"thread-tail"}), {"thread-tail": 0})
+            session.write_bytes(event({"total_tokens": True}))
+            self.assertEqual(console._codex_jsonl_token_counts(self.codex_home, {"thread-tail"}), {})
+
     def test_codex_jsonl_token_counts_are_high_water_deduped(self) -> None:
         session = self.codex_home / "sessions" / "2026" / "08" / "22" / "rollout-thread-1.jsonl"
         session.parent.mkdir(parents=True)
