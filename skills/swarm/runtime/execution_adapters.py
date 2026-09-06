@@ -562,12 +562,19 @@ class HostChatGPTCapability:
     workspace_id: str = ""
     supports_model_selection: bool = False
     supports_reasoning_selection: bool = False
+    observed_model: str = ""
+    observed_reasoning: str = ""
 
     def __post_init__(self) -> None:
         if self.surface not in {"chat", "image", "work"}:
             raise InvariantError("ChatGPT capability surface must be chat, image, or work")
         _text(self.capability_id, "ChatGPT capability id")
         _text(self.receipt_id, "ChatGPT capability receipt")
+        for value in (self.observed_model, self.observed_reasoning):
+            if not isinstance(value, str):
+                raise InvariantError("Observed ChatGPT selections must be strings")
+            if value:
+                _text(value, "observed ChatGPT selection")
         if self.surface == "work" and not self.workspace_id:
             raise InvariantError("ChatGPT Work capability requires an exact host workspace")
         if self.workspace_id:
@@ -587,6 +594,8 @@ class ChatGPTRoutingPlan:
     model: str = ""
     reasoning: str = ""
     reason: str = ""
+    observed_model: str = ""
+    observed_reasoning: str = ""
     claim_limit: str = (
         "ChatGPT output is untrusted advice or a provider-owned image artifact; local mutation, proof, review, and acceptance remain SWARM/Codex-owned."
     )
@@ -1468,8 +1477,20 @@ class AdapterRegistry:
         workspace_id: str = "",
         explicit_model: str = "",
         explicit_reasoning: str = "",
+        usage_saver: bool = False,
+        computer_use: bool | None = None,
+        local_access: bool | None = None,
+        delivery_uncertain: bool = False,
     ) -> ChatGPTRoutingPlan:
-        """Select an exact host-owned ChatGPT surface or fall back to local Codex."""
+        """Plan one pre-split block; never dispatch or authorize a resend.
+
+        The caller supplies uncertainty from the existing handoff receipt. Only
+        reconciliation of that request can clear it; this planner stores nothing.
+        """
+        if any(type(value) is not bool for value in (enabled, usage_saver, delivery_uncertain)):
+            raise InvariantError("Routing flags must be observed booleans")
+        if usage_saver and any(type(value) is not bool for value in (computer_use, local_access)):
+            raise InvariantError("Usage Saver requires observed per-block access facts")
         if surface not in {"chat", "image", "work"}:
             raise InvariantError("ChatGPT route surface must be chat, image, or work")
         if any(not isinstance(item, HostChatGPTCapability) for item in capabilities):
@@ -1482,6 +1503,34 @@ class AdapterRegistry:
             _text(explicit_reasoning, "explicit ChatGPT reasoning")
         if workspace_id:
             _text(workspace_id, "requested ChatGPT workspace")
+        if delivery_uncertain:
+            return ChatGPTRoutingPlan(
+                ChatGPTRouteStatus.UNAVAILABLE, "chat" if usage_saver else surface, "",
+                model=explicit_model, reasoning=explicit_reasoning,
+                reason="Reconcile the retained request in its existing conversation; do not resend.",
+            )
+        if usage_saver:
+            if computer_use or local_access:
+                return ChatGPTRoutingPlan(
+                    ChatGPTRouteStatus.FALLBACK, "codex", CodexAppServerAdapter.ADAPTER_ID,
+                    reason="Computer use and direct local access remain in Codex; split mixed work first.",
+                )
+            # Reuse capability selection, but never convert its failure to Codex.
+            plan = self.plan_chatgpt(
+                "chat", capabilities, enabled=enabled,
+                explicit_model=explicit_model, explicit_reasoning=explicit_reasoning,
+            )
+            if (plan.status != ChatGPTRouteStatus.READY
+                    or not plan.observed_model or not plan.observed_reasoning
+                    or (explicit_model and explicit_model != plan.observed_model)
+                    or (explicit_reasoning and explicit_reasoning != plan.observed_reasoning)):
+                return ChatGPTRoutingPlan(
+                    ChatGPTRouteStatus.UNAVAILABLE, "chat", "",
+                    model=explicit_model, reasoning=explicit_reasoning,
+                    observed_model=plan.observed_model, observed_reasoning=plan.observed_reasoning,
+                    reason="Recover ordinary Chat capability and exact visible selections; no Codex fallback.",
+                )
+            return plan
         if not enabled:
             return ChatGPTRoutingPlan(
                 ChatGPTRouteStatus.FALLBACK, surface, CodexAppServerAdapter.ADAPTER_ID,
@@ -1518,4 +1567,6 @@ class AdapterRegistry:
             workspace_id=capability.workspace_id,
             model=explicit_model,
             reasoning=explicit_reasoning,
+            observed_model=capability.observed_model,
+            observed_reasoning=capability.observed_reasoning,
         )

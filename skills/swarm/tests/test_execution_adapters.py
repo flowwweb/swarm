@@ -300,6 +300,72 @@ class ExecutionAdapterTests(unittest.TestCase):
         wrong_workspace = registry.plan_chatgpt("work", (work,), enabled=True, workspace_id="workspace-beta")
         self.assertEqual(wrong_workspace.status, ChatGPTRouteStatus.FALLBACK)
 
+    def test_usage_saver_routes_each_split_block_without_cloud_fallback(self) -> None:
+        from itertools import product
+        registry = AdapterRegistry()
+        chat = HostChatGPTCapability(
+            "chat", "ordinary-chat", "visible-selection",
+            supports_model_selection=True, supports_reasoning_selection=True,
+            observed_model="6 Pro", observed_reasoning="Pro",
+        )
+        for computer, local, enabled, available in product((False, True), repeat=4):
+            with self.subTest(computer=computer, local=local, enabled=enabled, available=available):
+                plan = registry.plan_chatgpt(
+                    "work", (chat,) if available else (), enabled=enabled,
+                    usage_saver=True, computer_use=computer, local_access=local,
+                    explicit_model="6 Pro", explicit_reasoning="Pro",
+                )
+                expected = (ChatGPTRouteStatus.FALLBACK if computer or local else
+                            ChatGPTRouteStatus.READY if enabled and available else
+                            ChatGPTRouteStatus.UNAVAILABLE)
+                self.assertEqual(plan.status, expected)
+                self.assertEqual(plan.surface, "codex" if computer or local else "chat")
+                if expected == ChatGPTRouteStatus.UNAVAILABLE:
+                    self.assertEqual(plan.adapter_id, "")
+
+    def test_usage_saver_preserves_requested_and_observed_choices(self) -> None:
+        chat = HostChatGPTCapability(
+            "chat", "ordinary-chat", "selection",
+            supports_model_selection=True, supports_reasoning_selection=True,
+            observed_model="Latest", observed_reasoning="Medium",
+        )
+        def plan(capability, **kwargs):
+            return AdapterRegistry().plan_chatgpt(
+                "chat", (capability,), enabled=True, usage_saver=True,
+                computer_use=False, local_access=False, **kwargs)
+        result = plan(chat, explicit_model="Latest", explicit_reasoning="High")
+        self.assertEqual(result.status, ChatGPTRouteStatus.UNAVAILABLE)
+        self.assertEqual((result.reasoning, result.observed_reasoning), ("High", "Medium"))
+        self.assertEqual(result.adapter_id, "")
+        result = plan(chat, explicit_model="Latest", explicit_reasoning="Medium")
+        self.assertEqual(result.status, ChatGPTRouteStatus.READY)
+        self.assertEqual((result.model, result.observed_model), ("Latest", "Latest"))
+        self.assertEqual(plan(replace(chat, observed_model="")).status, ChatGPTRouteStatus.UNAVAILABLE)
+        work = replace(chat, surface="work", workspace_id="cloud-workspace")
+        self.assertEqual(plan(work).status, ChatGPTRouteStatus.UNAVAILABLE)
+
+    def test_usage_saver_uncertain_delivery_survives_planner_recreation(self) -> None:
+        # The existing handoff owns uncertainty; a recreated planner cannot clear it.
+        for registry in (AdapterRegistry(), AdapterRegistry()):
+            plan = registry.plan_chatgpt(
+                "chat", (), enabled=True, usage_saver=True,
+                computer_use=False, local_access=False, delivery_uncertain=True,
+                explicit_model="Latest", explicit_reasoning="Medium",
+            )
+            self.assertEqual((plan.status, plan.adapter_id), (ChatGPTRouteStatus.UNAVAILABLE, ""))
+            self.assertIn("existing conversation", plan.reason)
+            self.assertEqual((plan.model, plan.reasoning), ("Latest", "Medium"))
+
+    def test_usage_saver_rejects_unknown_or_coerced_facts(self) -> None:
+        values = dict(enabled=True, usage_saver=True, computer_use=False,
+                      local_access=False, delivery_uncertain=False)
+        for name in values:
+            for invalid in (None, 0, "false"):
+                with self.subTest(name=name, invalid=invalid), self.assertRaises(InvariantError):
+                    AdapterRegistry().plan_chatgpt("chat", (), **(values | {name: invalid}))
+        with self.assertRaises(InvariantError):
+            HostChatGPTCapability("chat", "chat", "receipt", observed_model=True)
+
     def test_chatgpt_routing_preserves_explicit_model_and_reasoning_or_falls_back(self) -> None:
         registry = AdapterRegistry()
         fixed = HostChatGPTCapability("chat", "host-chat", "receipt-fixed")
