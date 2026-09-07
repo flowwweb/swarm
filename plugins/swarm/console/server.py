@@ -386,11 +386,58 @@ def _auto_digest(payload: Any) -> str:
     return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
 
+def _codex_app_server_executable() -> tuple[str, str]:
+    """Select an installed, locally verified CLI; never change the requested model."""
+    root = Path(os.environ.get("LOCALAPPDATA", Path.home() / "AppData" / "Local")) / "OpenAI" / "Codex" / "bin"
+    candidates = {root / "codex.exe"}
+    if root.is_dir():
+        children = list(root.iterdir())
+        if len(children) > 64:
+            raise OSError("CODEX_EXECUTABLE_INVENTORY_UNBOUNDED")
+        candidates.update(child / "codex.exe" for child in children if child.is_dir())
+    on_path = shutil.which("codex")
+    if on_path:
+        candidates.add(Path(on_path))
+    verified = []
+    for candidate in sorted(candidates):
+        if not candidate.is_file():
+            continue
+        try:
+            probe = subprocess.run([str(candidate), "--version"], capture_output=True, text=True, timeout=5,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0), check=True)
+            version = re.fullmatch(r"codex-cli (\d+)\.(\d+)\.(\d+)\s*", probe.stdout)
+            # Old 0.144.4 rejects the preserved model; 0.153.4 is the proven host baseline.
+            if version and tuple(map(int, version.groups())) >= (0, 153, 4):
+                verified.append((tuple(map(int, version.groups())), str(candidate.resolve())))
+        except (OSError, subprocess.SubprocessError):
+            continue
+    if not verified:
+        raise OSError("CODEX_COMPATIBLE_EXECUTABLE_UNAVAILABLE")
+    version, executable = max(verified)
+    try:
+        help_text = subprocess.run([executable, "app-server", "--help"], capture_output=True, text=True, timeout=5,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0), check=True).stdout
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise OSError("CODEX_APP_SERVER_CAPABILITY_UNVERIFIED") from exc
+    if "--listen" not in help_text or "stdio://" not in help_text:
+        raise OSError("CODEX_APP_SERVER_CAPABILITY_UNVERIFIED")
+    return executable, ".".join(map(str, version))
+
+
+def _codex_failure_code(value: object) -> str:
+    """Only fixed codes leave the host error surface; never echo raw stderr or payloads."""
+    text = value if isinstance(value, str) else json.dumps(value, ensure_ascii=True)
+    if "requires a newer version of Codex" in text[:8192]:
+        return "CODEX_MODEL_REQUIRES_NEWER_CLI"
+    return "CODEX_HOST_ERROR"
+
+
 class CodexStdioBridge:
     """One bounded private Codex App Server JSONL session; no result prose is retained."""
 
-    def __init__(self, process_factory: Any = subprocess.Popen):
+    def __init__(self, process_factory: Any = subprocess.Popen, *, executable_resolver: Any = None):
         self._process_factory = process_factory
+        self._executable_resolver = executable_resolver or _codex_app_server_executable
         self.adapter = CodexAppServerAdapter()
 
     @staticmethod
@@ -408,6 +455,7 @@ class CodexStdioBridge:
         cleaned = False
         turn_request_id = None
         turn_rejected = False
+        failure_code = ""
         thread_id, turn_id = "", ""
         terminal_pairs: set[tuple[str, str]] = set()
 
@@ -428,16 +476,34 @@ class CodexStdioBridge:
             return bool(thread_id and turn_id and (thread_id, turn_id) in terminal_pairs)
 
         try:
+            executable, version = self._executable_resolver()
+            print(json.dumps({"event": "codex_host_selected", "executable": executable, "version": version}), file=sys.stderr)
             process = self._process_factory(
-                ["codex", "app-server", "--listen", "stdio://"], cwd=str(cwd), stdin=subprocess.PIPE,
-                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True,
+                [executable, "app-server", "--listen", "stdio://"], cwd=str(cwd), stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
                 encoding="utf-8", shell=False, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
             )
             if process.stdin is None or process.stdout is None:
                 raise OSError("Codex App Server stdio is unavailable")
 
+            def read_diagnostics() -> None:
+                # Diagnostic bytes never enter RPC matching or terminal custody.
+                stream = getattr(process, "stderr", None)
+                if stream is None:
+                    return
+                emitted: set[str] = set()
+                try:
+                    while chunk := stream.readline(8192):
+                        code = _codex_failure_code(chunk)
+                        if code not in emitted:
+                            emitted.add(code)  # At most the two fixed diagnostic codes per session.
+                            print(json.dumps({"event": "codex_host_failure", "code": code,
+                                "thread_id": thread_id, "turn_id": turn_id}), file=sys.stderr)
+                except (OSError, ValueError):
+                    pass  # Closed diagnostics cannot change command or process custody.
+
             def read_messages() -> None:
-                nonlocal turn_id, turn_rejected
+                nonlocal turn_id, turn_rejected, failure_code
                 try:
                     for line in process.stdout:
                         try:
@@ -445,6 +511,12 @@ class CodexStdioBridge:
                             if not isinstance(message, dict):
                                 continue
                             with custody_lock:
+                                if message.get("error") is not None or message.get("method") == "error":
+                                    failure_code = _codex_failure_code(message)
+                                    print(json.dumps({"event": "codex_host_failure", "code": failure_code,
+                                        "thread_id": thread_id, "turn_id": turn_id}), file=sys.stderr)
+                                    if message.get("method") == "error" and not released.is_set():
+                                        inbox.put(OSError(failure_code))
                                 if retain_turn and turn_request_id is not None:
                                     if message.get("id") == turn_request_id:
                                         error = message.get("error")
@@ -477,7 +549,8 @@ class CodexStdioBridge:
                                 finish = released.is_set() and (turn_rejected or terminal_matches())
                             if finish:
                                 cleanup()
-                        except (json.JSONDecodeError, UnicodeDecodeError): pass
+                        except (json.JSONDecodeError, UnicodeDecodeError):
+                            pass
                 finally:
                     inbox.put(None)
                     # A broken event stream is not permission to cancel acknowledged work.
@@ -487,6 +560,7 @@ class CodexStdioBridge:
                         if not turn_rejected and not terminal_matches() and process.poll() is None:
                             process.wait()
 
+            threading.Thread(target=read_diagnostics, name="swarm-auto-app-server-stderr", daemon=True).start()
             threading.Thread(target=read_messages, name="swarm-auto-app-server-jsonl", daemon=True).start()
             deadline = time.monotonic() + AUTO_BRIDGE_TIMEOUT_SECONDS
             pending: list[dict[str, Any]] = []
@@ -507,9 +581,11 @@ class CodexStdioBridge:
                     remaining = deadline - time.monotonic()
                     if remaining <= 0: raise TimeoutError("Codex App Server did not reach a terminal event")
                     message = inbox.get(timeout=remaining)
+                    if isinstance(message, OSError):
+                        raise message
                     if message is None: raise OSError("Codex App Server closed its JSONL stream")
                     if predicate(message): return message
-                    if message.get("method") == "turn/completed" or "id" in message:
+                    if message.get("method") in {"turn/completed", "item/completed"} or "id" in message:
                         if len(pending) >= 64: raise OSError("Codex App Server exceeded the bounded control-event buffer")
                         pending.append(message)
 
@@ -551,15 +627,27 @@ class CodexStdioBridge:
                 resolved_turn = self._result_id(turn_message, "turn")
                 if not resolved_turn: return AutoBridgeResult(False, resolved_thread, failure_kind="MISSING_TURN", turn_started=True)
                 if retain_ids is not None: retain_ids(resolved_thread, resolved_turn, True)
-                terminal = receive(lambda item: item.get("method") == "turn/completed")
+                has_result = False
+                while True:
+                    terminal = receive(lambda item: item.get("method") in {"turn/completed", "item/completed"})
+                    params = terminal.get("params", {})
+                    if terminal.get("method") == "turn/completed":
+                        event = self.adapter.translate_event(terminal)
+                        if (event.thread_id, event.turn_id) != (resolved_thread, resolved_turn):
+                            continue
+                        break
+                    item = params.get("item", {})
+                    if (params.get("threadId"), params.get("turnId")) == (resolved_thread, resolved_turn):
+                        has_result |= item.get("type") == "agentMessage" and isinstance(item.get("text"), str) and bool(item["text"].strip())
                 event = self.adapter.translate_event(terminal)
                 status = event.status.casefold()
-                ok = status in {"completed", "complete"}
-                return AutoBridgeResult(ok, event.thread_id or resolved_thread, event.turn_id or resolved_turn, event.evidence_digest, "" if ok else "TURN_FAILED", False, True, True, True)
+                ok = status in {"completed", "complete"} and has_result
+                return AutoBridgeResult(ok, event.thread_id or resolved_thread, event.turn_id or resolved_turn, event.evidence_digest, "" if ok else "TURN_NO_RESULT" if status in {"completed", "complete"} else "TURN_FAILED", False, True, True, True)
 
             return self._session(cwd, transact)
-        except (ConsoleError, OSError, TimeoutError, queue.Empty, subprocess.SubprocessError):
-            return AutoBridgeResult(False, resolved_thread, resolved_turn, failure_kind="TRANSPORT_UNAVAILABLE", transient=True, turn_started=turn_requested)
+        except (ConsoleError, OSError, TimeoutError, queue.Empty, subprocess.SubprocessError) as exc:
+            code = str(exc) if str(exc) in {"CODEX_MODEL_REQUIRES_NEWER_CLI", "CODEX_HOST_ERROR", "CODEX_COMPATIBLE_EXECUTABLE_UNAVAILABLE", "CODEX_APP_SERVER_CAPABILITY_UNVERIFIED", "CODEX_EXECUTABLE_INVENTORY_UNBOUNDED"} else "TRANSPORT_UNAVAILABLE"
+            return AutoBridgeResult(False, resolved_thread, resolved_turn, failure_kind=code, transient=True, turn_started=turn_requested)
 
     def reconcile(self, *, cwd: Path, thread_id: str, turn_id: str) -> AutoBridgeResult:
         """Read one retained App Server turn; never starts or resumes work."""
@@ -588,8 +676,9 @@ class CodexStdioBridge:
                 status = str(retained.get("status") or "").casefold()
                 digest = _auto_digest({"thread_id": thread_id, "turn_id": resolved_turn, "status": status})
                 if status in {"completed", "complete", "interrupted", "failed"}:
-                    ok = status in {"completed", "complete"}
-                    return AutoBridgeResult(ok, thread_id, resolved_turn, digest, "" if ok else "TURN_FAILED", False, True, True, True)
+                    has_result = any(item.get("type") == "agentMessage" and isinstance(item.get("text"), str) and bool(item["text"].strip()) for item in retained.get("items", []) if isinstance(item, dict))
+                    ok = status in {"completed", "complete"} and has_result
+                    return AutoBridgeResult(ok, thread_id, resolved_turn, digest, "" if ok else "TURN_NO_RESULT" if status in {"completed", "complete"} else "TURN_FAILED", False, True, True, True)
                 return AutoBridgeResult(False, thread_id, resolved_turn, digest, "TURN_ACTIVE", True, True, False, True)
 
             return self._session(cwd, transact)

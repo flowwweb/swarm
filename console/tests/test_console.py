@@ -4,6 +4,7 @@ import copy
 import importlib.util
 import hashlib
 import io
+import os
 import json
 import sqlite3
 import sys
@@ -57,7 +58,10 @@ class SwarmConsoleTests(unittest.TestCase):
         self._assert_command_session_custody({"error": {"code": -32602, "message": "invalid input"},
             "result": {"turn": {"id": "owned-turn"}}})
 
-    def _assert_command_session_custody(self, turn_response, *, rejected=False) -> None:
+    def test_command_session_stderr_terminal_cannot_release_custody(self) -> None:
+        self._assert_command_session_custody({"result": {"turn": {"id": "owned-turn"}}}, diagnostic_terminal=True)
+
+    def _assert_command_session_custody(self, turn_response, *, rejected=False, diagnostic_terminal=False) -> None:
         import queue
         events = queue.Queue()
         processed = threading.Event()
@@ -65,6 +69,17 @@ class SwarmConsoleTests(unittest.TestCase):
         terminated = threading.Event()
         written = []
         clock = [0.0]
+        diagnostics = queue.Queue()
+        diagnostic_done = threading.Event()
+
+        class Diagnostics:
+            def readline(self, limit):
+                assert limit == 8192
+                value = diagnostics.get()
+                if value is None:
+                    diagnostic_done.set()
+                    return ""
+                return json.dumps(value) + "\n"
 
         class Output:
             def __iter__(self):
@@ -114,8 +129,10 @@ class SwarmConsoleTests(unittest.TestCase):
                 return 0
 
         process = Process()
+        if diagnostic_terminal:
+            process.stderr = Diagnostics()
         factory = mock.Mock(return_value=process)
-        bridge = console.CodexStdioBridge(factory)
+        bridge = console.CodexStdioBridge(factory, executable_resolver=lambda: ("codex-test", "0.153.4"))
         terminal = {"method": "turn/completed", "params": {
             "threadId": "owned-thread", "turnId": "owned-turn", "status": "completed"}}
 
@@ -146,6 +163,11 @@ class SwarmConsoleTests(unittest.TestCase):
                     self.assertEqual([item["method"] for item in written], ["initialize", "initialized", "thread/start", "turn/start"])
                     return
                 self.assertEqual((process.terminate_count, process.kill_count), (0, 0))
+                if diagnostic_terminal:
+                    diagnostics.put(terminal)
+                    diagnostics.put(None)
+                    self.assertTrue(diagnostic_done.wait(2))
+                    self.assertFalse(terminated.is_set(), "stderr terminal must not release process custody")
                 deliver({"id": 99, "method": "item/commandExecution/requestApproval", "params": {
                     "threadId": "owned-thread", "turnId": "owned-turn"}})
                 self.assertFalse(terminated.is_set(), "approval waiting is neither complete nor canceled")
@@ -6709,6 +6731,67 @@ class SwarmConsoleTests(unittest.TestCase):
         )
         self.assertNotIn("foreign", json.dumps(isolated, sort_keys=True))
 
+    def test_auto_bridge_installed_executable_is_version_and_capability_checked(self) -> None:
+        root = self.root / "OpenAI" / "Codex" / "bin"
+        current = root / "installed-version" / "codex.exe"
+        current.parent.mkdir(parents=True)
+        current.touch()
+        old = root / "codex.exe"
+        old.touch()
+        calls = []
+
+        def probe(argv, **kwargs):
+            calls.append(argv)
+            self.assertEqual(kwargs["timeout"], 5)
+            if argv[1:] == ["--version"]:
+                return SimpleNamespace(stdout="codex-cli 0.153.4\n" if Path(argv[0]) == current else "codex-cli 0.144.4\n")
+            self.assertEqual(argv[1:], ["app-server", "--help"])
+            return SimpleNamespace(stdout="--listen stdio://")
+
+        with mock.patch.dict(os.environ, {"LOCALAPPDATA": str(self.root)}), mock.patch.object(console.shutil, "which", return_value=str(old)), mock.patch.object(console.subprocess, "run", side_effect=probe):
+            self.assertEqual(console._codex_app_server_executable(), (str(current.resolve()), "0.153.4"))
+        self.assertEqual(len(calls), 3)
+        with mock.patch.dict(os.environ, {"LOCALAPPDATA": str(self.root)}), mock.patch.object(console.shutil, "which", return_value=str(old)), mock.patch.object(console.subprocess, "run", return_value=SimpleNamespace(stdout="codex-cli 0.144.4\n")):
+            with self.assertRaisesRegex(OSError, "CODEX_COMPATIBLE_EXECUTABLE_UNAVAILABLE"):
+                console._codex_app_server_executable()
+        with mock.patch.dict(os.environ, {"LOCALAPPDATA": str(self.root)}), mock.patch.object(console.shutil, "which", return_value=None), mock.patch.object(console.subprocess, "run", side_effect=lambda argv, **kw: SimpleNamespace(stdout="codex-cli 0.153.4\n" if argv[1:] == ["--version"] else "unsupported")):
+            with self.assertRaisesRegex(OSError, "CODEX_APP_SERVER_CAPABILITY_UNVERIFIED"):
+                console._codex_app_server_executable()
+
+    def test_auto_bridge_model_error_is_redacted_and_never_success(self) -> None:
+        class Input:
+            def write(self, value): pass
+            def flush(self): pass
+        class Process:
+            stdin = Input()
+            def __init__(self, line, diagnostic):
+                self.stderr = io.StringIO(line + "\n") if diagnostic else io.StringIO()
+                self.stdout = io.StringIO() if diagnostic else io.StringIO(line + "\n")
+            def poll(self): return None
+            def terminate(self): pass
+            def wait(self, timeout=None): return 0
+            def kill(self): pass
+        for diagnostic, line in ((True, "secret-token requires a newer version of Codex"), (False, json.dumps({"method": "error", "params": {"message": "secret-token requires a newer version of Codex"}}))):
+            with self.subTest(line=line), mock.patch.object(console.sys, "stderr", new_callable=io.StringIO) as diagnostics:
+                drained = threading.Event()
+                process = Process(line, diagnostic)
+                class DiagnosticStream(io.StringIO):
+                    def readline(self, limit):
+                        value = super().readline(limit)
+                        if not value: drained.set()
+                        return value
+                process.stderr = DiagnosticStream(line + "\n" if diagnostic else "")
+                result = console.CodexStdioBridge(lambda *args, **kwargs: process, executable_resolver=lambda: ("codex-test", "0.153.4")).run(cwd=self.root, instruction="bounded")
+                self.assertTrue(drained.wait(2))
+                self.assertFalse(result.ok)
+                self.assertEqual(result.failure_kind, "TRANSPORT_UNAVAILABLE" if diagnostic else "CODEX_MODEL_REQUIRES_NEWER_CLI")
+                self.assertIn("CODEX_MODEL_REQUIRES_NEWER_CLI", diagnostics.getvalue())
+                self.assertNotIn("secret-token", diagnostics.getvalue())
+        factory = mock.Mock()
+        bridge = console.CodexStdioBridge(factory, executable_resolver=mock.Mock(side_effect=OSError("CODEX_COMPATIBLE_EXECUTABLE_UNAVAILABLE")))
+        self.assertEqual(bridge.run(cwd=self.root, instruction="bounded").failure_kind, "CODEX_COMPATIBLE_EXECUTABLE_UNAVAILABLE")
+        factory.assert_not_called()
+
     def test_auto_bridge_uses_fixed_argv_jsonl_handshake_and_terminal_event(self) -> None:
         written: list[dict[str, object]] = []
         calls: list[tuple[list[str], dict[str, object]]] = []
@@ -6725,6 +6808,7 @@ class SwarmConsoleTests(unittest.TestCase):
             stdout = io.StringIO("".join(json.dumps(item) + "\n" for item in (
                 {"id": 0, "result": {}},
                 {"id": 1, "result": {"thread": {"id": "thread-auto"}}},
+                {"method": "item/completed", "params": {"threadId": "thread-auto", "turnId": "turn-auto", "item": {"type": "agentMessage", "text": "bounded result"}}},
                 {"method": "turn/completed", "params": {"threadId": "thread-auto", "turnId": "turn-auto", "status": "completed"}},
                 {"id": 2, "result": {"turn": {"id": "turn-auto"}}},
             )))
@@ -6745,13 +6829,49 @@ class SwarmConsoleTests(unittest.TestCase):
             calls.append((argv, kwargs))
             return Process()
 
-        result = console.CodexStdioBridge(factory).run(cwd=self.root, instruction="one bounded action")
+        result = console.CodexStdioBridge(factory, executable_resolver=lambda: ("codex-test", "0.153.4")).run(cwd=self.root, instruction="one bounded action")
         self.assertTrue(result.ok)
         self.assertTrue(result.terminal)
         self.assertEqual([item["method"] for item in written], ["initialize", "initialized", "thread/start", "turn/start"])
-        self.assertEqual(calls[0][0], ["codex", "app-server", "--listen", "stdio://"])
+        self.assertEqual(calls[0][0], ["codex-test", "app-server", "--listen", "stdio://"])
         self.assertFalse(calls[0][1]["shell"])
+        self.assertEqual(calls[0][1]["stderr"], console.subprocess.PIPE)
         self.assertEqual(written[-1]["params"]["input"], [{"type": "text", "text": "one bounded action"}])
+
+        Process.stdout = io.StringIO("".join(json.dumps(item) + "\n" for item in (
+            {"id": 0, "result": {}},
+            {"id": 1, "result": {"thread": {"id": "thread-auto"}}},
+            {"id": 2, "result": {"turn": {"id": "turn-auto"}}},
+            {"method": "item/completed", "params": {"threadId": "other-thread", "turnId": "other-turn", "item": {"type": "agentMessage", "text": "unrelated result"}}},
+            {"method": "turn/completed", "params": {"threadId": "other-thread", "turnId": "other-turn", "status": "completed"}},
+            {"method": "turn/completed", "params": {"threadId": "thread-auto", "turnId": "turn-auto", "status": "completed"}},
+        )))
+        empty = console.CodexStdioBridge(factory, executable_resolver=lambda: ("codex-test", "0.153.4")).run(cwd=self.root, instruction="one bounded action")
+        self.assertEqual((empty.ok, empty.terminal, empty.failure_kind), (False, True, "TURN_NO_RESULT"))
+        self.assertEqual((empty.thread_id, empty.turn_id), ("thread-auto", "turn-auto"))
+
+        spoofed = [
+            {"id": 0, "result": {}},
+            {"id": 1, "result": {"thread": {"id": "thread-auto"}}},
+            {"id": 2, "result": {"turn": {"id": "turn-auto"}}},
+            {"method": "item/completed", "params": {"threadId": "thread-auto", "turnId": "turn-auto", "item": {"type": "agentMessage", "text": "diagnostic not a result"}}},
+            {"method": "turn/completed", "params": {"threadId": "thread-auto", "turnId": "turn-auto", "status": "completed"}},
+        ]
+        for stdout_records, failure in (([], "TRANSPORT_UNAVAILABLE"), (spoofed[:3] + spoofed[-1:], "TURN_NO_RESULT")):
+            drained = threading.Event()
+            class Diagnostics(io.StringIO):
+                def readline(self, limit):
+                    value = super().readline(limit)
+                    if not value: drained.set()
+                    return value
+            Process.stderr = Diagnostics("".join(json.dumps(item) + "\n" for item in spoofed))
+            Process.stdout = io.StringIO("".join(json.dumps(item) + "\n" for item in stdout_records))
+            result = console.CodexStdioBridge(factory, executable_resolver=lambda: ("codex-test", "0.153.4")).run(cwd=self.root, instruction="one bounded action")
+            self.assertTrue(drained.wait(2))
+            self.assertFalse(result.ok)
+            self.assertEqual(result.failure_kind, failure)
+            if not stdout_records:
+                self.assertEqual((result.thread_id, result.turn_id), ("", ""))
 
     def test_auto_post_start_disconnect_retains_ids_and_never_starts_a_duplicate_turn(self) -> None:
         written: list[dict[str, object]] = []
@@ -6775,7 +6895,7 @@ class SwarmConsoleTests(unittest.TestCase):
             def wait(self, timeout=None): return 0
             def kill(self): return None
 
-        result = console.CodexStdioBridge(lambda *_args, **_kwargs: Process()).run(
+        result = console.CodexStdioBridge(lambda *_args, **_kwargs: Process(), executable_resolver=lambda: ("codex-test", "0.153.4")).run(
             cwd=self.root, instruction="bounded", retain_ids=lambda thread, turn, submitted: retained.append((thread, turn, submitted)),
         )
         self.assertFalse(result.ok)
@@ -6786,7 +6906,7 @@ class SwarmConsoleTests(unittest.TestCase):
         def refuse_after_start(thread: str, turn: str, submitted: bool) -> None:
             if turn:
                 raise console.ConsoleError("journal unavailable")
-        failed_retention = console.CodexStdioBridge(lambda *_args, **_kwargs: Process()).run(
+        failed_retention = console.CodexStdioBridge(lambda *_args, **_kwargs: Process(), executable_resolver=lambda: ("codex-test", "0.153.4")).run(
             cwd=self.root, instruction="bounded", retain_ids=refuse_after_start,
         )
         self.assertEqual((failed_retention.thread_id, failed_retention.turn_id, failed_retention.turn_started), ("thread-known", "turn-known", True))
@@ -6801,7 +6921,7 @@ class SwarmConsoleTests(unittest.TestCase):
             stdin = AmbiguousInput()
 
         ambiguous_retained: list[tuple[str, str, bool]] = []
-        ambiguous = console.CodexStdioBridge(lambda *_args, **_kwargs: AmbiguousProcess()).run(
+        ambiguous = console.CodexStdioBridge(lambda *_args, **_kwargs: AmbiguousProcess(), executable_resolver=lambda: ("codex-test", "0.153.4")).run(
             cwd=self.root, instruction="bounded",
             retain_ids=lambda thread, turn, submitted: ambiguous_retained.append((thread, turn, submitted)),
         )
@@ -6818,13 +6938,13 @@ class SwarmConsoleTests(unittest.TestCase):
             stdin = Input()
             stdout = io.StringIO("".join(json.dumps(item) + "\n" for item in (
                 {"id": 0, "result": {}},
-                {"id": 1, "result": {"thread": {"id": "thread-read", "turns": [{"id": "turn-read", "status": "completed"}]}}},
+                {"id": 1, "result": {"thread": {"id": "thread-read", "turns": [{"id": "turn-read", "status": "completed", "items": [{"type": "agentMessage", "text": "result"}]}]}}},
             )))
             def poll(self): return None
             def terminate(self): return None
             def wait(self, timeout=None): return 0
             def kill(self): return None
-        result = console.CodexStdioBridge(lambda *_args, **_kwargs: Process()).reconcile(
+        result = console.CodexStdioBridge(lambda *_args, **_kwargs: Process(), executable_resolver=lambda: ("codex-test", "0.153.4")).reconcile(
             cwd=self.root, thread_id="thread-read", turn_id="turn-read",
         )
         self.assertTrue(result.ok)
@@ -6835,10 +6955,11 @@ class SwarmConsoleTests(unittest.TestCase):
             {"id": 0, "result": {}},
             {"id": 1, "result": {"thread": {"id": "thread-read", "turns": [{"id": "turn-read", "status": "completed"}]}}},
         )))
-        inferred = console.CodexStdioBridge(lambda *_args, **_kwargs: Process()).reconcile(
+        inferred = console.CodexStdioBridge(lambda *_args, **_kwargs: Process(), executable_resolver=lambda: ("codex-test", "0.153.4")).reconcile(
             cwd=self.root, thread_id="thread-read", turn_id="",
         )
-        self.assertEqual((inferred.ok, inferred.turn_id, inferred.terminal), (True, "turn-read", True))
+        self.assertEqual((inferred.ok, inferred.turn_id, inferred.terminal), (False, "turn-read", True))
+        self.assertEqual(inferred.failure_kind, "TURN_NO_RESULT")
         self.assertEqual([message["method"] for message in written], ["initialize", "initialized", "thread/read"])
 
     def test_auto_closed_due_check_is_pure_and_http_status_requires_full_local_auth(self) -> None:
