@@ -719,6 +719,11 @@ const progressQueueFixture = {
   ],
 };
 assert.equal(progressQueueHelpers.projectProgressQueueProjection({ status: "MEASURED", cursor: progressCursor, progress_queue: progressQueueFixture }).status, "CURRENT");
+const emptyRecordedWork = progressQueueHelpers.projectProgressQueueMarkup({ status: "UNMEASURED", cursor: progressCursor,
+  progress_queue: { ...progressQueueFixture, segments: progressQueueFixture.segments.map((segment) => ({ ...segment, rows: [] })) } });
+assert.match(emptyRecordedWork, /No recorded active work/);
+assert.match(emptyRecordedWork, /No recorded queued work/);
+assert.doesNotMatch(emptyRecordedWork, /role="progressbar"|is-unavailable/);
 assert.equal(progressQueueHelpers.projectProgressQueueProjection({ cursor: { ...progressCursor, event_seq: 7 }, progress_queue: progressQueueFixture }), null);
 assert.equal(progressQueueHelpers.projectProgressQueueProjection({ cursor: progressCursor, progress_queue: { ...progressQueueFixture, segments: [...progressQueueFixture.segments].reverse() } }), null);
 const unavailableQueue = {
@@ -1757,6 +1762,41 @@ for (const forbidden of ["hidden usage", "developer instructions", "prompts", "t
     assert.deepEqual([usageState.usageHistory, usageState.usageScopeKey, usageState.usageStatus, usageState.usageError], accepted,
       `1h → 1d → 1h: obsolete ${staleOutcome} cannot replace the latest request`);
   }
+}
+{
+  const hostState = { projectId: "p1", ctrlId: "", connectionStatus: "live", projectProgressStatus: "current", overview: { nodes: [
+    ...["active", "in_progress", "blocked", "done", "waiting"].map((status, index) => ({ id: "host-" + index, title: "Observed " + index, project_id: "p1", status, controller_ids: ["c1"] })),
+    { id: "foreign", title: "Other project", project_id: "p2", status: "active" },
+    { id: "virtual", project_id: "p1", status: "active", virtual: true },
+  ] } };
+  const context = vm.createContext({ state: hostState, selectedProgressProjectId: () => hostState.projectId,
+    activeAgentRecords: () => [], escapeHTML: (value) => String(value).replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll('"', "&quot;") });
+  vm.runInContext(app.slice(app.indexOf("function scopedNodes("), app.indexOf("function setLoading(")), context);
+  vm.runInContext(app.slice(app.indexOf("function projectHostWorkMarkup("), app.indexOf("function renderProjectDetail(")), context);
+  const render = () => vm.runInContext("projectHostWorkMarkup()", context);
+  const current = render();
+  assert.equal((current.match(/data-host-work-id=/g) || []).length, 5);
+  assert.match(current, /2 reported active · 5 observed/);
+  for (const status of ["active", "in_progress", "blocked", "done", "waiting"]) assert.ok(current.includes('data-label="Host status">' + status + '</td>'));
+  assert.doesNotMatch(current, /foreign|virtual|role="progressbar"|aria-valuenow|data-agent-detail=/);
+  assert.equal((current.match(/Block progress not recorded/g) || []).length, 5);
+  context.activeAgentRecords = () => [{node:hostState.overview.nodes[0],identityState:"admitted",binding:{ctrlId:"c1"}}];
+  assert.equal((render().match(/data-agent-detail=/g) || []).length, 1, "only existing admitted detail authority gets a link");
+  context.activeAgentRecords = () => [];
+  hostState.projectProgressStatus = "stale";
+  assert.equal(render(), current, "stale Ledger must not erase current host work");
+  hostState.ctrlId = "other";
+  assert.match(render(), /No host work observed/);
+  hostState.ctrlId = "";
+  hostState.projectId = "p2";
+  assert.equal((render().match(/data-host-work-id=/g) || []).length, 1);
+  assert.doesNotMatch(render(), /Observed 0/);
+  hostState.connectionStatus = "offline";
+  assert.match(render(), /Host work unavailable/);
+  assert.doesNotMatch(render(), /reported active|data-host-work-id=/);
+  hostState.overview = null;
+  assert.match(render(), /Host work unavailable/);
+  assert.match(app, /No recorded ' \+ \(segment.segment_id === "segment.project.progress.active" \? "active" : "queued"\)/);
 }
 if (process.argv.includes("--source-only") || agentsSourceOnly) {
   console.log("SWARM console source UI contract passed");
@@ -2822,6 +2862,48 @@ async function captureOnboardingEvidence(page, name) {
   }
   await page.screenshot({ path: path.join(evidenceDir, name + ".png"), fullPage: false, animations: "disabled" });
 }
+async function assertHostWorkPage() {
+  for (const viewport of [{width:1440,height:1000},{width:390,height:844}]) {
+    const page = await browser.newPage({viewport});
+    const overview = scopedFixture();
+    overview.nodes = ["active", "in_progress", "blocked", "done", "waiting"].map((status, index) => ({id:"host-" + index,title:"Observed host task " + index,project_id:"project:fixture",status}));
+    const cursor = {event_seq:0,event_id:"",event_digest:""};
+    const projectProgress = {ok:true,status:"UNMEASURED",project_id:"project:fixture",cursor,blocks:[],progress_queue:{
+      ...progressQueueFixture,project_id:"project:fixture",accepted_cursor:cursor,
+      scope_binding:{project_id:"project:fixture",ctrl_ids:[],cursor},
+      segments:progressQueueFixture.segments.map((segment) => ({...segment,rows:[]})),
+    }};
+    const runtime = await mount(page, overview, {projectProgress});
+    await page.evaluate(() => selectProjectScope("project:fixture"));
+    const section = page.getByRole("region", {name:"Host work"});
+    await section.scrollIntoViewIfNeeded();
+    assert.equal(await section.locator("[data-host-work-id]").count(), 5);
+    assert.match(await section.textContent(), /2 reported active · 5 observed/);
+    assert.equal(await section.getByRole("progressbar").count(), 0);
+    assert.match(await page.locator("#project-tab-panel").textContent(), /No recorded active work[\s\S]*No recorded queued work/);
+    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1), true);
+    if (evidenceDir) await page.screenshot({path:path.join(evidenceDir,"host-work-"+viewport.width+".png"),animations:"disabled"});
+    await page.evaluate(() => {state.projectProgressStatus="stale";renderProjectDetail();});
+    assert.equal(await section.locator("[data-host-work-id]").count(), 5);
+    assert.deepEqual(runtime.runtimeErrors, []);
+    assert.deepEqual(runtime.failedRequests, []);
+    for (const caller of ["refreshMonitoring", "refreshOverview"]) {
+      assert.equal(await section.locator("[data-host-work-id]").count(), 5);
+      await page.route("**/api/overview*", (route) => route.abort("failed"));
+      await page.evaluate(async (name) => { if (name === "refreshMonitoring") await refreshMonitoring(state.proofSequence); else await refreshOverview(false); }, caller);
+      assert.equal(await page.locator("[data-host-work-id]").count(), 0, caller + " must invalidate rendered host work");
+      assert.match(await page.locator("#project-tab-panel").textContent(), /Host work unavailable · Last snapshot is not current/);
+      assert.doesNotMatch(await page.locator("#project-tab-panel").textContent(), /reported active/);
+      await page.unroute("**/api/overview*");
+      await page.evaluate(() => refreshOverview(false));
+      assert.equal(await section.locator("[data-host-work-id]").count(), 5, "successful refresh restores current host rows");
+    }
+    assert.equal(runtime.failedRequests.length, 2);
+    assert.ok(runtime.failedRequests.every((request) => String(request).includes("/api/overview")));
+    assert.ok(runtime.runtimeErrors.every((error) => /net::ERR_FAILED/.test(error)), runtime.runtimeErrors.join(" | "));
+    await page.close();
+  }
+}
 const proofFeed = imageProofFixture(6);
 proofFeed.items.push({
   task_id: "ctrl", project_id: "project:fixture", evidence_id: "fixture-generating-asset", digest: "9".repeat(64),
@@ -2875,6 +2957,7 @@ proofFeed.items.push({
     roleManifests: roleManifestFixture(),
   };
   try {
+    await assertHostWorkPage();
     const onboardingPage = await browser.newPage({ viewport: { width: 1440, height: 1000 } });
     {
       const usagePage = await browser.newPage({ viewport: { width: 1440, height: 1000 } });

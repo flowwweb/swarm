@@ -754,6 +754,7 @@ function setDataStatus(status, observedAt = null) {
   if (!snapshotDot || !snapshot) return;
   const connection = status === "current" ? "live" : status === "unavailable" ? "offline" : "reconnecting";
   state.connectionStatus = connection;
+  if (connection !== "live" && state.view === "overview") renderProjectDetail();
   snapshotDot.classList.toggle("is-live", connection === "live");
   snapshotDot.classList.toggle("is-reconnecting", connection === "reconnecting");
   snapshotDot.classList.toggle("is-offline", connection === "offline");
@@ -3174,7 +3175,7 @@ function projectProgressQueueMarkup(progress) {
   }
   const stale = ["stale", "unavailable"].includes(state.projectProgressStatus) || projection.status !== "CURRENT";
   const segments = projectProgressQueueSegments(projection, stale);
-  const tables = segments.map((segment) => '<section class="project-progress-segment" aria-labelledby="' + escapeHTML(segment.segment_id) + '"><header><h3 id="' + escapeHTML(segment.segment_id) + '">' + escapeHTML(segment.label) + '</h3><span>' + escapeHTML(segment.rows.length) + '</span></header>' + (segment.rows.length ? '<div class="project-progress-table-wrap"><table class="project-progress-table"><thead><tr><th scope="col">Task</th><th scope="col">State</th><th scope="col">Progress</th><th scope="col">Last accepted signal</th><th scope="col">Elapsed</th><th scope="col">ETA</th></tr></thead><tbody>' + segment.rows.map((row) => projectProgressQueueRowMarkup(row, segment.segment_id)).join("") + '</tbody></table></div>' : '<p class="empty-state">No ' + escapeHTML(segment.label.toLowerCase()) + ' work at this cursor.</p>') + '</section>').join("");
+  const tables = segments.map((segment) => '<section class="project-progress-segment" aria-labelledby="' + escapeHTML(segment.segment_id) + '"><header><h3 id="' + escapeHTML(segment.segment_id) + '">' + escapeHTML(segment.label) + '</h3><span>' + escapeHTML(segment.rows.length) + '</span></header>' + (segment.rows.length ? '<div class="project-progress-table-wrap"><table class="project-progress-table"><thead><tr><th scope="col">Task</th><th scope="col">State</th><th scope="col">Progress</th><th scope="col">Last accepted signal</th><th scope="col">Elapsed</th><th scope="col">ETA</th></tr></thead><tbody>' + segment.rows.map((row) => projectProgressQueueRowMarkup(row, segment.segment_id)).join("") + '</tbody></table></div>' : '<p class="empty-state">No recorded ' + (segment.segment_id === "segment.project.progress.active" ? "active" : "queued") + ' work.</p>') + '</section>').join("");
   return '<section class="panel project-progress-view" aria-labelledby="project-progress-view-title"><header class="overview-section-head"><div><p class="eyebrow">Accepted project scope</p><h2 id="project-progress-view-title">Project Progress</h2></div><p>' + (stale ? 'Last accepted identity · live fields unavailable' : 'Through event ' + escapeHTML(projection.accepted_cursor.event_seq)) + '</p></header>' + tables + '</section>';
 }
 
@@ -3187,7 +3188,7 @@ function projectTabMarkup(tab, progress, nodes) {
   const milestones = projectMilestones(blocks);
   if (tab === "overview") {
     const efficiency = verifiedYieldItem("project", selectedProgressProjectId());
-    return '<section class="project-overview-grid">' + (embeddedView ? '<section class="panel project-model-snapshot"><header class="overview-section-head"><div><p class="eyebrow">Project brief snapshot</p><h2>' + escapeHTML(embeddedView.label) + '</h2></div></header>' + projectWorkspaceViewMarkup(embeddedView) + '</section>' : "") + projectProgressQueueMarkup(progress) + '<div class="milestone-rings">' + (milestones.length ? milestones.slice(0, 4).map(([id, items]) => { const summary = milestoneSummary(items); return '<article><div class="milestone-ring ' + (summary.percent === 100 ? "is-complete" : "") + '" style="--progress:' + (summary.percent ?? 0) + '%"><strong>' + escapeHTML(summary.percent == null ? "—" : Math.round(summary.percent) + "%") + '</strong></div><h3>' + escapeHTML(id) + '</h3><small>' + escapeHTML(summary.admitted + " / " + summary.committed + " admitted") + '</small></article>'; }).join("") : '<p class="empty-state">No measured milestones yet.</p>') + '</div>' + yieldChartMarkup(efficiency) + '<section class="panel project-updates"><header class="overview-section-head"><div><p class="eyebrow">Material events</p><h2>Latest updates</h2></div><p>Newest first</p></header>' + projectFeedMarkup(4) + '</section></section>';
+    return projectHostWorkMarkup() + '<section class="project-overview-grid">' + (embeddedView ? '<section class="panel project-model-snapshot"><header class="overview-section-head"><div><p class="eyebrow">Project brief snapshot</p><h2>' + escapeHTML(embeddedView.label) + '</h2></div></header>' + projectWorkspaceViewMarkup(embeddedView) + '</section>' : "") + projectProgressQueueMarkup(progress) + '<div class="milestone-rings">' + (milestones.length ? milestones.slice(0, 4).map(([id, items]) => { const summary = milestoneSummary(items); return '<article><div class="milestone-ring ' + (summary.percent === 100 ? "is-complete" : "") + '" style="--progress:' + (summary.percent ?? 0) + '%"><strong>' + escapeHTML(summary.percent == null ? "—" : Math.round(summary.percent) + "%") + '</strong></div><h3>' + escapeHTML(id) + '</h3><small>' + escapeHTML(summary.admitted + " / " + summary.committed + " admitted") + '</small></article>'; }).join("") : '<p class="empty-state">No measured milestones yet.</p>') + '</div>' + yieldChartMarkup(efficiency) + '<section class="panel project-updates"><header class="overview-section-head"><div><p class="eyebrow">Material events</p><h2>Latest updates</h2></div><p>Newest first</p></header>' + projectFeedMarkup(4) + '</section></section>';
   }
   if (tab === "roadmap") return (embeddedView ? '<section class="project-model-snapshot"><header class="overview-section-head"><div><p class="eyebrow">Project brief snapshot</p><h2>' + escapeHTML(embeddedView.label) + '</h2></div></header>' + projectWorkspaceViewMarkup(embeddedView) + '</section>' : "") + '<section class="project-roadmap">' + (milestones.length ? milestones.map(([id, items], index) => '<article><span>' + String(index + 1) + '</span><div><h3>' + escapeHTML(id) + '</h3><p>' + escapeHTML(items.length + " block" + (items.length === 1 ? "" : "s") + " · " + milestoneSummary(items).admitted + " admitted") + '</p></div></article>').join("") : '<p class="empty-state">No roadmap receipts yet.</p>') + '</section>';
   if (tab === "lanes") { const owners = new Map(); blocks.forEach((block) => { const id = block.owner_id || "Unassigned"; owners.set(id, [...(owners.get(id) || []), block]); }); return '<section class="project-lanes">' + ([...owners.entries()].map(([owner, items]) => '<section class="panel"><header><h3>' + escapeHTML(owner) + '</h3><span>' + items.length + '</span></header>' + items.map(projectBlockRow).join("") + '</section>').join("") || '<p class="empty-state">No owner lanes yet.</p>') + '</section>'; }
@@ -3195,6 +3196,25 @@ function projectTabMarkup(tab, progress, nodes) {
   if (tab === "ledger") return '<section class="panel project-ledger"><header class="overview-section-head"><div><p class="eyebrow">Canonical events</p><h2>Ledger</h2></div><p>' + escapeHTML(progress?.cursor?.event_seq == null ? "No cursor" : "Through " + progress.cursor.event_seq) + '</p></header>' + projectFeedMarkup(10) + '</section>';
   if (tab === "ui") return projectViewMarkup();
   return '<section class="panel run-log" data-run-log-surface="project" aria-label="Project run log"></section>';
+}
+
+function projectHostWorkMarkup() {
+  const projectId = selectedProgressProjectId();
+  if (!projectId) return "";
+  const heading = '<header class="overview-section-head"><h2>Host work</h2></header>';
+  if (!Array.isArray(state.overview?.nodes) || state.connectionStatus !== "live") {
+    return '<section class="panel project-progress-view">' + heading + '<p class="empty-state" role="status">Host work unavailable' + (state.overview ? ' · Last snapshot is not current' : '') + '.</p></section>';
+  }
+  const nodes = scopedNodes().filter((node) => node.project_id === projectId && node.id && node.virtual !== true);
+  const records = activeAgentRecords();
+  const active = nodes.filter((node) => ["active", "in_progress"].includes(node.status)).length;
+  const rows = nodes.map((node) => {
+    const record = records.find((item) => item.node.id === node.id && item.node.project_id === projectId && item.identityState === "admitted" && item.binding);
+    const title = escapeHTML(node.title || "Task name unavailable");
+    const name = record ? '<button class="quiet-button" type="button" data-agent-detail="' + escapeHTML(node.id) + '" data-agent-project="' + escapeHTML(projectId) + '" data-agent-ctrl="' + escapeHTML(record.binding.ctrlId) + '">' + title + '</button>' : '<strong>' + title + '</strong>';
+    return '<tr data-host-work-id="' + escapeHTML(node.id) + '"><th scope="row" data-label="Task">' + name + '<small>' + escapeHTML(node.id) + '</small></th><td data-label="Host status">' + escapeHTML(node.status || "UNKNOWN") + '</td><td data-label="Block progress"><span aria-label="Block progress UNKNOWN">—</span><small>Block progress not recorded</small></td></tr>';
+  }).join("");
+  return '<section class="panel project-progress-view" aria-label="Host work">' + heading + '<p>' + active + ' reported active · ' + nodes.length + ' observed</p>' + (rows ? '<div class="project-progress-table-wrap"><table class="project-progress-table"><thead><tr><th scope="col">Task</th><th scope="col">Host status</th><th scope="col">Block progress</th></tr></thead><tbody>' + rows + '</tbody></table></div>' : '<p class="empty-state">No host work observed for this scope.</p>') + '</section>';
 }
 
 function renderProjectDetail() {
