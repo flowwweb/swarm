@@ -44,6 +44,256 @@ from runtime import (  # noqa: E402
 
 
 class SwarmConsoleTests(unittest.TestCase):
+    def test_command_session_deadline_preserves_exact_turn_custody(self) -> None:
+        self._assert_command_session_custody({"result": {"turn": {"id": "owned-turn"}}})
+
+    def test_command_session_correlated_rejection_cleans_idle_process(self) -> None:
+        self._assert_command_session_custody({"error": {"code": -32602, "message": "invalid input"}}, rejected=True)
+
+    def test_command_session_unknown_ack_retains_process(self) -> None:
+        self._assert_command_session_custody(None)
+
+    def test_command_session_contradictory_error_retains_process(self) -> None:
+        self._assert_command_session_custody({"error": {"code": -32602, "message": "invalid input"},
+            "result": {"turn": {"id": "owned-turn"}}})
+
+    def _assert_command_session_custody(self, turn_response, *, rejected=False) -> None:
+        import queue
+        events = queue.Queue()
+        processed = threading.Event()
+        reader_done = threading.Event()
+        terminated = threading.Event()
+        written = []
+        clock = [0.0]
+
+        class Output:
+            def __iter__(self):
+                try:
+                    while True:
+                        item = events.get()
+                        if item is None:
+                            return
+                        yield json.dumps(item) + "\n"
+                        processed.set()
+                finally:
+                    reader_done.set()
+
+        class Input:
+            def write(self, value):
+                message = json.loads(value)
+                written.append(message)
+                results = {"initialize": {}, "thread/start": {"thread": {"id": "owned-thread"}}}
+                if message["method"] in results:
+                    events.put({"id": message["id"], "result": results[message["method"]]})
+                elif message["method"] == "turn/start" and turn_response is not None:
+                    events.put({"id": message["id"], **turn_response})
+
+            def flush(self):
+                pass
+
+        class Process:
+            stdin = Input()
+            stdout = Output()
+            terminate_count = 0
+            kill_count = 0
+
+            def poll(self):
+                return 0 if terminated.is_set() else None
+
+            def terminate(self):
+                self.terminate_count += 1
+                terminated.set()
+                events.put(None)
+
+            def kill(self):
+                self.kill_count += 1
+
+            def wait(self, timeout=None):
+                if not terminated.wait(timeout):
+                    raise console.subprocess.TimeoutExpired("fake", timeout)
+                return 0
+
+        process = Process()
+        factory = mock.Mock(return_value=process)
+        bridge = console.CodexStdioBridge(factory)
+        terminal = {"method": "turn/completed", "params": {
+            "threadId": "owned-thread", "turnId": "owned-turn", "status": "completed"}}
+
+        def deliver(event):
+            processed.clear()
+            events.put(event)
+            self.assertTrue(processed.wait(2), "existing reader must consume the event")
+
+        try:
+            with mock.patch.object(console.time, "monotonic", side_effect=lambda: clock[0]):
+                with bridge.command_session(self.root, retain_turn=True) as (send, receive):
+                    send({"id": 1, "method": "thread/start", "params": {"cwd": str(self.root)}})
+                    receive(lambda item: item.get("id") == 1)
+                    send({"id": 2, "method": "turn/start", "params": {"threadId": "owned-thread", "input": []}})
+                    if turn_response is not None:
+                        response = receive(lambda item: item.get("id") == 2)
+                        if rejected:
+                            self.assertIn("error", response)
+                    clock[0] = console.AUTO_BRIDGE_TIMEOUT_SECONDS + 1
+                    if not rejected:
+                        with self.assertRaises(TimeoutError):
+                            receive(lambda item: item.get("method") == "turn/completed")
+                if rejected:
+                    self.assertTrue(terminated.wait(2))
+                    self.assertTrue(reader_done.wait(2))
+                    self.assertEqual((process.terminate_count, process.kill_count), (1, 0))
+                    self.assertEqual(factory.call_count, 1)
+                    self.assertEqual([item["method"] for item in written], ["initialize", "initialized", "thread/start", "turn/start"])
+                    return
+                self.assertEqual((process.terminate_count, process.kill_count), (0, 0))
+                deliver({"id": 99, "method": "item/commandExecution/requestApproval", "params": {
+                    "threadId": "owned-thread", "turnId": "owned-turn"}})
+                self.assertFalse(terminated.is_set(), "approval waiting is neither complete nor canceled")
+                for changes in ({"turnId": "other-turn"}, {"threadId": "other-thread"}, {"status": "inProgress"},
+                    {"turn": {"id": "conflicting-turn"}}):
+                    unrelated = copy.deepcopy(terminal)
+                    unrelated["params"].update(changes)
+                    deliver(unrelated)
+                    self.assertFalse(terminated.is_set())
+                if turn_response is None:
+                    deliver({"id": 2, "result": {"turn": {"id": "owned-turn"}}})
+                deliver(terminal)
+                self.assertTrue(terminated.wait(2))
+                self.assertTrue(reader_done.wait(2))
+                self.assertEqual((process.terminate_count, process.kill_count), (1, 0))
+                self.assertEqual(factory.call_count, 1)
+                self.assertEqual([item["method"] for item in written], ["initialize", "initialized", "thread/start", "turn/start"])
+        finally:
+            if not terminated.is_set():
+                events.put({"id": 2, "result": {"turn": {"id": "owned-turn"}}})
+                events.put(terminal)
+            self.assertTrue(terminated.wait(2), "test process custody must settle")
+            self.assertTrue(reader_done.wait(2), "no unfinished reader session")
+
+    def test_create_bound_task_calls_connector_and_replays_retained_binding(self) -> None:
+        from contextlib import contextmanager
+        with closing(sqlite3.connect(self.database)) as connection:
+            connection.execute("UPDATE project_roots SET path=? WHERE project_id=?", (str(self.root), "project:alpha"))
+            connection.commit()
+        app = console.App(self.codex_home, self.config)
+        root = app._canonical_project_root("project:alpha")
+        role = next(item for item in app.builtin_role_manifests if item["id"] == "developer")
+        task = build_task_manifest(manifest_id="task:test", task_id="draft-only", task_name="Bound task",
+            project_id="project:alpha", ctrl_id="ctrl-a",
+            milestones=[{"milestone_id": "m", "order": 0, "title": "M", "verification_policy": "source", "supersedes_milestone_id": None}],
+            blocks=[{"block_id": "b", "milestone_id": "m", "order": 0, "title": "B", "verification_policy": "source", "estimate_minutes": 1, "weight": None, "supersedes_block_id": None}])
+        contract = {
+            "role_manifest": role,
+            "task_manifest_draft": {key: value for key, value in task.items() if key not in {"task_id", "manifest_digest"}},
+            "parent_task_id": None, "topology_manifest_receipt_id": "topology-receipt",
+            "task_receipt_id": "task-receipt", "milestone_receipts": [{"id": "m", "receipt_id": "m-receipt"}],
+            "block_receipts": [{"id": "b", "receipt_id": "b-receipt"}],
+            "explicit_empty_work_receipt_id": None, "independent_host_task": False,
+        }
+        now = int(time.time() * 1000)
+        instruction = "Create the explicitly authorized task."
+        payload = {"acknowledge": True, "instruction": instruction, "envelope": {
+            "command_id": "create-one", "idempotency_key": "create-one-key", "action": "MANUAL_AGENT",
+            "project_id": "project:alpha", "root_digest": console._auto_digest({"project_id": "project:alpha", "canonical_root": console._normalized_project_path(str(root))}),
+            "ctrl_id": "ctrl-a", "target_intent": "NEW_THREAD", "target_thread_id": "",
+            "payload_digest": hashlib.sha256(instruction.encode()).hexdigest(), "expected_ledger_revision": 0,
+            "submitted_at_ms": now, "expires_at_ms": now + 60000, "task_creation": contract}}
+        sent = []
+        responses = [{"thread": {"id": "host-new", "cwd": str(root)}}, {"turn": {"id": "turn-new"}}]
+        @contextmanager
+        def session(cwd, *, retain_turn=False):
+            self.assertEqual(cwd, root)
+            self.assertTrue(retain_turn)
+            def send(message):
+                sent.append(message)
+                if message["method"] == "thread/start":
+                    self.assertEqual(message["params"], {"cwd": str(root)})
+                elif message["method"] == "turn/start":
+                    self.assertEqual(message["params"], {"threadId": "host-new", "cwd": str(root),
+                        "input": [{"type": "text", "text": instruction, "text_elements": []}]})
+                else:
+                    self.assertEqual(message["method"], "thread/read")
+            def receive(predicate):
+                terminal = {"method": "turn/completed", "params": {"threadId": "host-new", "turnId": "turn-new", "status": "completed"}}
+                if predicate(terminal):
+                    return terminal
+                return {"id": sent[-1]["id"], "result": responses.pop(0)}
+            yield send, receive
+        app.auto_bridge.command_session = session
+
+        def post(body, *, token=None):
+            handler = self._handler("127.0.0.1", "127.0.0.1:4788", token=app.token if token is None else token)
+            handler.server.app = app
+            handler.path = "/api/tasks/create"
+            handler._payload = mock.Mock(return_value=body)
+            handler._json = mock.Mock()
+            handler._error = mock.Mock()
+            handler.do_POST()
+            return handler
+
+        denied = post(payload, token="wrong")
+        denied._error.assert_called_once()
+        self.assertEqual(sent, [])
+        wrong = copy.deepcopy(payload)
+        wrong["envelope"]["root_digest"] = "a" * 64
+        post(wrong)._error.assert_called_once()
+        self.assertEqual(sent, [])
+        for changed in ("acknowledge", "payload_digest", "expires_at_ms"):
+            rejected = copy.deepcopy(payload)
+            if changed == "acknowledge":
+                rejected[changed] = False
+            elif changed == "payload_digest":
+                rejected["envelope"][changed] = "b" * 64
+            else:
+                rejected["envelope"].update(submitted_at_ms=now - 120000, expires_at_ms=now - 60000)
+            post(rejected)._error.assert_called_once()
+            self.assertEqual(sent, [])
+        self.assertEqual(app.progress_ledger.replay()["connector_receipts"], {})
+        result = post(payload)
+        result._error.assert_not_called()
+        receipt = result._json.call_args.args[1]
+        self.assertFalse(app.write_lock.locked(), "HTTP submission must release shared write custody after dispatch")
+        self.assertEqual((receipt["status"], receipt["thread_id"], receipt["turn_id"]), ("RESULT", "host-new", "turn-new"))
+        self.assertFalse(receipt["work_completed"])
+        self.assertEqual(receipt["host_turn_status"], "UNKNOWN")
+        binding = app.progress_ledger.project_task_creation_bindings("project:alpha")
+        self.assertIn("host-new", json.dumps(binding))
+        self.assertIn("b-receipt", json.dumps(binding))
+        before = app.progress_ledger._state.path.read_bytes()
+        self.assertNotIn(instruction.encode(), before)
+        app = console.App(self.codex_home, self.config)
+        app.auto_bridge.command_session = session
+        replay = post(payload)._json.call_args.args[1]
+        self.assertEqual(replay["status"], "REPLAY")
+        self.assertEqual(app.progress_ledger._state.path.read_bytes(), before)
+        self.assertEqual(len(sent), 2)
+
+        uncertain = copy.deepcopy(payload)
+        uncertain["envelope"].update(command_id="uncertain", idempotency_key="uncertain-key",
+            expected_ledger_revision=app.progress_ledger.replay()["cursor"]["event_seq"])
+        responses.extend([{"thread": {"id": "host-new", "cwd": str(root)}}, {}])
+        pending = post(uncertain)._json.call_args.args[1]
+        self.assertEqual(pending["status"], "PENDING")
+        self.assertFalse(pending["work_completed"])
+        facts = app.progress_ledger.replay()["connector_receipts"]["uncertain-key"]["receipts"]
+        self.assertEqual([fact["status"] for fact in facts], ["COMMAND", "ACKNOWLEDGED"])
+        app = console.App(self.codex_home, self.config)
+        app.auto_bridge.command_session = session
+        responses.append({"thread": {"id": "host-new", "cwd": str(root), "turns": []}})
+        self.assertEqual(post(uncertain)._json.call_args.args[1]["status"], "PENDING")
+        self.assertEqual([item["method"] for item in sent], ["thread/start", "turn/start", "thread/start", "turn/start", "thread/read"])
+        self.assertEqual(app.progress_ledger.project_task_creation_bindings("project:alpha")["bindings"], binding["bindings"])
+        wrong_host = copy.deepcopy(payload)
+        wrong_host["envelope"].update(command_id="wrong-host", idempotency_key="wrong-host-key",
+            expected_ledger_revision=app.progress_ledger.replay()["cursor"]["event_seq"])
+        responses.append({"thread": {"id": "foreign", "cwd": str(self.codex_home)}})
+        self.assertEqual(post(wrong_host)._json.call_args.args[1]["status"], "PENDING")
+        self.assertEqual([fact["status"] for fact in app.progress_ledger.replay()["connector_receipts"]["wrong-host-key"]["receipts"]], ["COMMAND"])
+        calls = len(sent)
+        self.assertEqual(post(wrong_host)._json.call_args.args[1]["status"], "PENDING")
+        self.assertEqual(len(sent), calls)
+        self.assertEqual(app.progress_ledger.project_task_creation_bindings("project:alpha")["bindings"], binding["bindings"])
+
     def test_importlib_loaded_server_can_import_packaged_console_siblings(self) -> None:
         self.assertIn(str(console.CONSOLE_ROOT), sys.path)
         self.assertEqual(console.ConsoleStore(self.root / "console" / "importlib.sqlite3").skill_catalog()[0]["skill_id"], "find-skills")

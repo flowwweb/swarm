@@ -29,7 +29,9 @@ import tomllib
 import webbrowser
 import uuid
 from collections import Counter
-from contextlib import closing
+from contextlib import closing, contextmanager, ExitStack
+from dataclasses import asdict
+from types import SimpleNamespace
 from datetime import UTC, datetime
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -65,6 +67,10 @@ from runtime.progress_events import (  # noqa: E402
     validate_progress_pulse,
 )
 from runtime.execution_adapters import (  # noqa: E402
+    HQAuthorizationReceipt,
+    HQCommandEnvelope,
+    HQCommandAction, HQTargetIntent, HQDispatchMaterial, HQRootObservation,
+    UniversalHQConnector,
     CodexAppServerAdapter,
     ExecutionConfigGeneration,
     ExecutionDispatchLedger,
@@ -393,9 +399,34 @@ class CodexStdioBridge:
         nested = result.get(kind) if isinstance(result.get(kind), dict) else {}
         return str(result.get(f"{kind}Id") or nested.get("id") or "")
 
-    def _session(self, cwd: Path, transact: Any) -> AutoBridgeResult:
+    @contextmanager
+    def command_session(self, cwd: Path, *, retain_turn: bool = False):
         process: Any = None
         inbox: queue.Queue[object] = queue.Queue()
+        custody_lock = threading.RLock()
+        released = threading.Event()
+        cleaned = False
+        turn_request_id = None
+        turn_rejected = False
+        thread_id, turn_id = "", ""
+        terminal_pairs: set[tuple[str, str]] = set()
+
+        def cleanup() -> None:
+            nonlocal cleaned
+            with custody_lock:
+                if cleaned:
+                    return
+                cleaned = True
+            if process is not None and process.poll() is None:
+                process.terminate()
+                try:
+                    process.wait(timeout=2)
+                except subprocess.TimeoutExpired:
+                    process.kill(); process.wait(timeout=2)
+
+        def terminal_matches() -> bool:
+            return bool(thread_id and turn_id and (thread_id, turn_id) in terminal_pairs)
+
         try:
             process = self._process_factory(
                 ["codex", "app-server", "--listen", "stdio://"], cwd=str(cwd), stdin=subprocess.PIPE,
@@ -406,20 +437,66 @@ class CodexStdioBridge:
                 raise OSError("Codex App Server stdio is unavailable")
 
             def read_messages() -> None:
+                nonlocal turn_id, turn_rejected
                 try:
                     for line in process.stdout:
                         try:
                             message = json.loads(line)
-                            if isinstance(message, dict): inbox.put(message)
+                            if not isinstance(message, dict):
+                                continue
+                            with custody_lock:
+                                if retain_turn and turn_request_id is not None:
+                                    if message.get("id") == turn_request_id:
+                                        error = message.get("error")
+                                        if (not turn_id and not terminal_pairs and isinstance(error, dict) and
+                                            type(message.get("id")) is type(turn_request_id) and message.get("jsonrpc", "2.0") == "2.0" and
+                                            set(message) <= {"id", "jsonrpc", "error"} and
+                                            set(error) <= {"code", "message", "data"} and
+                                            type(error.get("code")) is int and isinstance(error.get("message"), str) and
+                                            error.get("data") is None):
+                                            turn_rejected = True
+                                        try:
+                                            returned_thread, returned_turn, _ = UniversalHQConnector._host_binding(message)
+                                            if returned_turn and returned_thread in {"", thread_id}:
+                                                turn_id = returned_turn
+                                                turn_rejected = False
+                                        except ValueError:
+                                            pass  # Ambiguous acknowledgement never releases process custody.
+                                    if message.get("method") == "turn/completed":
+                                        try:
+                                            event_thread, event_turn, _ = UniversalHQConnector._host_binding(message.get("params", {}))
+                                            status = self.adapter.translate_event(message).status
+                                            if (event_thread == thread_id and event_turn and
+                                                (not turn_id or event_turn == turn_id) and len(terminal_pairs) < 64 and
+                                                status in {"completed", "failed", "interrupted", "cancelled", "canceled"}):
+                                                terminal_pairs.add((event_thread, event_turn))
+                                        except ValueError:
+                                            pass
+                                if not released.is_set():
+                                    inbox.put(message)
+                                finish = released.is_set() and (turn_rejected or terminal_matches())
+                            if finish:
+                                cleanup()
                         except (json.JSONDecodeError, UnicodeDecodeError): pass
                 finally:
                     inbox.put(None)
+                    # A broken event stream is not permission to cancel acknowledged work.
+                    # This same reader retains the process handle until actual process exit.
+                    if retain_turn and turn_request_id is not None:
+                        released.wait()
+                        if not turn_rejected and not terminal_matches() and process.poll() is None:
+                            process.wait()
 
             threading.Thread(target=read_messages, name="swarm-auto-app-server-jsonl", daemon=True).start()
             deadline = time.monotonic() + AUTO_BRIDGE_TIMEOUT_SECONDS
             pending: list[dict[str, Any]] = []
 
             def send(message: dict[str, object]) -> None:
+                nonlocal turn_request_id, thread_id
+                if retain_turn and message.get("method") in {"turn/start", "turn/steer"}:
+                    with custody_lock:
+                        turn_request_id = message["id"]
+                        thread_id = message["params"]["threadId"]
                 process.stdin.write(json.dumps(message, ensure_ascii=True, separators=(",", ":")) + "\n")
                 process.stdin.flush()
 
@@ -438,16 +515,19 @@ class CodexStdioBridge:
 
             send(self.adapter.initialize_request("swarm-console-auto", request_id=0))
             initialized = receive(lambda item: item.get("id") == 0)
-            if initialized.get("error") is not None: return AutoBridgeResult(False, failure_kind="INITIALIZE_FAILED", transient=True)
+            if initialized.get("error") is not None: raise OSError("Codex App Server initialize failed")
             send(self.adapter.initialized_notification())
-            return transact(send, receive)
+            yield send, receive
         finally:
-            if process is not None and process.poll() is None:
-                process.terminate()
-                try:
-                    process.wait(timeout=2)
-                except subprocess.TimeoutExpired:
-                    process.kill(); process.wait(timeout=2)
+            with custody_lock:
+                released.set()
+                finish = not retain_turn or turn_request_id is None or turn_rejected or terminal_matches()
+            if finish:
+                cleanup()
+
+    def _session(self, cwd: Path, transact: Any) -> AutoBridgeResult:
+        with self.command_session(cwd) as (send, receive):
+            return transact(send, receive)
 
     def run(
         self, *, cwd: Path, instruction: str, thread_id: str = "",
@@ -9489,6 +9569,77 @@ class App:
         self._project_view_cache[project_id] = projection
         return copy.deepcopy(projection)
 
+    def create_bound_task(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """Called only after strict-loopback POST authorization; RESULT is dispatch only."""
+        if set(payload) != {"envelope", "instruction", "acknowledge"} or payload["acknowledge"] is not True:
+            raise ConsoleError("task submission requires envelope, instruction and explicit acknowledgement")
+        try:
+            fields = dict(payload["envelope"])
+            fields["action"] = HQCommandAction(fields["action"])
+            fields["target_intent"] = HQTargetIntent(fields["target_intent"])
+            envelope = HQCommandEnvelope(**fields)
+            if envelope.action is not HQCommandAction.MANUAL_AGENT:
+                raise ValueError("only explicit new-task submission is supported")
+            contract = envelope.task_creation_contract()
+            if not contract or contract.get("independent_host_task") is not False:
+                raise ValueError("an exact bound task creation contract is required")
+            root = self._canonical_project_root(envelope.project_id)
+            material = HQDispatchMaterial(str(root), payload["instruction"].encode("utf-8"))
+            root_digest = _auto_digest({"project_id": envelope.project_id, "canonical_root": _normalized_project_path(str(root))})
+            if envelope.root_digest != root_digest or envelope.payload_digest != material.digest:
+                raise ValueError("task submission root or instruction digest conflicts")
+            auth = HQAuthorizationReceipt(envelope.command_id + "-local-submit", envelope.digest,
+                envelope.project_id, root_digest, envelope.ctrl_id, (envelope.action,), envelope.expires_at_ms)
+        except (ValueError, TypeError, KeyError, AttributeError, ProgressEventError) as exc:
+            raise ConsoleError(str(exc)) from exc
+
+        def observe(cwd):
+            if not isinstance(cwd, str) or Path(cwd).resolve(strict=True) != root:
+                raise ValueError("host cwd conflicts with registered project root")
+            # Recheck host catalog custody, not a title or host-issued project fiction.
+            if self._canonical_project_root(envelope.project_id) != root:
+                raise ValueError("registered project root changed")
+            return HQRootObservation("hq-root", str(root), root_digest)
+
+        with ExitStack() as stack:
+            channel = None
+            request_id = 0
+            host_turn_status = "UNKNOWN"
+            def request(method, params):
+                nonlocal channel, request_id
+                if channel is None:
+                    channel = stack.enter_context(self.auto_bridge.command_session(root, retain_turn=True))
+                send, receive = channel
+                request_id += 1
+                send({"id": request_id, "method": method, "params": params})
+                response = receive(lambda item: item.get("id") == request_id)
+                if response.get("error") is not None or not isinstance(response.get("result"), dict):
+                    raise OSError(f"Codex App Server {method} failed")
+                return response["result"]
+
+            def reconcile(command_id, action, target_thread_id):
+                if not target_thread_id:
+                    return None  # Unknown thread identity cannot be rediscovered by resubmitting.
+                response = request("thread/read", {"threadId": target_thread_id, "includeTurns": True})
+                thread = response.get("thread", {})
+                turns = thread.get("turns", []) if isinstance(thread, dict) else []
+                if len(turns) != 1:
+                    return None  # No guess between turns after an uncertain acknowledgement.
+                return {"thread": thread, "turn": turns[0]}
+
+            connector = UniversalHQConnector(CodexAppServerAdapter(transport=SimpleNamespace(request=request, reconcile=reconcile)),
+                authorization_verifier=SimpleNamespace(verify=lambda receipt, command, now: receipt == auth and command == envelope and now <= auth.expires_at_ms),
+                material_resolver=SimpleNamespace(resolve=lambda command: material),
+                root_verifier=SimpleNamespace(observe=observe, verify=lambda observation, command: observation.canonical_cwd == str(root) and observation.root_digest == command.root_digest))
+            try:
+                result = connector.execute(envelope, auth, self.progress_ledger, now_ms=int(time.time() * 1000),
+                    observed_project_id=envelope.project_id, observed_root_digest=root_digest)
+            except (ValueError, ProgressEventError) as exc:
+                raise ConsoleError(str(exc)) from exc
+        with self.overview_lock:
+            self._store_generation += 1
+        return {"ok": True, **asdict(result), "host_turn_status": host_turn_status, "work_completed": False}
+
     def _auto_scope(self, ctrl_id: str, project_id: str) -> dict[str, Any]:
         overview = self._host_overview()
         navigation = self._navigation_payload(overview)
@@ -15580,6 +15731,14 @@ class Handler(BaseHTTPRequestHandler):
             self._json(HTTPStatus.OK, self.server.app.claim_portal_open())
             return
         try:
+            if path == "/api/tasks/create":
+                if not self._authorized_auto():
+                    self._error(HTTPStatus.FORBIDDEN, "task submission requires strict loopback authorization")
+                    return
+                with self.server.app.write_lock:
+                    result = self.server.app.create_bound_task(self._payload())
+                self._json(HTTPStatus.OK, result)
+                return
             if path == "/api/projects":
                 payload = self._payload()
                 if set(payload) != {"name", "root", "acknowledge"}:
