@@ -2971,6 +2971,50 @@ async function assertCommandApprovalPage() {
   }
 }
 const proofFeed = imageProofFixture(6);
+async function assertObservedTaskAndChat() {
+  for (const viewport of [{width:1440,height:1000},{width:390,height:844}]) {
+    const page = await browser.newPage({viewport});
+    const runtime = await mount(page, scopedFixture());
+    await page.evaluate(() => {
+      state.projectId="project:fixture"; state.ctrlId=""; state.connectionStatus="live";
+      state.overview.nodes=[{id:"observed-chief",project_id:"project:fixture",title:"Observed task",status:"active",role:"independent",agent_role:null}];
+      state.overview.roots=[];
+      renderOverview(); renderAgentTable();
+    });
+    assert.equal(await page.locator('#overview-project-cards [data-active-codex-task="observed-chief"]').count(),1);
+    assert.equal(await page.locator('#agent-table-body [data-active-codex-task="observed-chief"]').count(),1);
+    assert.equal(await page.locator('[data-active-codex-task] [role=progressbar]').count(),0);
+    await page.evaluate(() => {
+      state.overview.nodes.push({id:"ctrl",project_id:"project:fixture",status:"idle"},{id:"foreign-active",project_id:"project:foreign",status:"active",title:"Foreign task"});
+      state.ctrlId="ctrl"; renderOverview();
+    });
+    assert.equal(await page.locator('#overview-project-cards [data-active-codex-task="observed-chief"]').count(),1);
+    assert.equal(await page.locator('#overview-project-cards [data-active-codex-task="foreign-active"]').count(),0);
+    await page.evaluate(() => {state.ctrlId="unresolved";renderOverview();});
+    assert.equal(await page.locator('#overview-project-cards [data-active-codex-task]').count(),0);
+    assert.match(await page.locator('#overview-project-cards').textContent(),/Current host activity is unavailable/);
+    await page.evaluate(() => {state.projectId="all";renderOverview();});
+    assert.equal(await page.locator('#overview-project-cards [data-active-codex-task]').count(),0,"unresolved CTRL is not All");
+    await page.evaluate(() => {state.ctrlId="";renderOverview();});
+    assert.equal(await page.locator('#overview-project-cards [data-active-codex-task="foreign-active"]').count(),1,"explicit All includes foreign project");
+    await page.evaluate(() => {state.projectId="project:fixture";});
+    await page.evaluate(() => {state.connectionStatus="reconnecting";renderOverview();});
+    assert.equal(await page.locator('#overview-project-cards [data-active-codex-task]').count(),0);
+    await page.evaluate(() => {state.connectionStatus="live";openMessageComposer();});
+    const panel=page.locator("#message-composer");
+    await panel.waitFor({state:"visible"});
+    const geometry=await panel.evaluate(el => {
+      const header=el.querySelector("header").getBoundingClientRect(),body=el.querySelector(".message-composer-body").getBoundingClientRect(),footer=el.querySelector("footer").getBoundingClientRect();
+      return {ordered:header.bottom<=body.top+1 && body.bottom<=footer.top+1,inside:footer.bottom<=innerHeight+1,width:document.documentElement.scrollWidth<=innerWidth+1};
+    });
+    assert.deepEqual(geometry,{ordered:true,inside:true,width:true});
+    assert.equal(await page.locator("#message-draft").getAttribute("rows"),"2");
+    assert.match(await page.locator("#message-conversation-state").textContent(),/unavailable|Choose/);
+    await page.keyboard.press("Escape");
+    assert.equal(await panel.isVisible(),false);
+    await page.close();
+  }
+}
 proofFeed.items.push({
   task_id: "ctrl", project_id: "project:fixture", evidence_id: "fixture-generating-asset", digest: "9".repeat(64),
   media_type: "image/png", display_name: "Onboarding illustration", asset_type: "illustration",
@@ -3024,6 +3068,7 @@ proofFeed.items.push({
   };
   try {
     await assertCommandApprovalPage();
+    await assertObservedTaskAndChat();
     await assertHostWorkPage();
     const onboardingPage = await browser.newPage({ viewport: { width: 1440, height: 1000 } });
     {
@@ -4282,6 +4327,8 @@ proofFeed.items.push({
     assert.deepEqual(desktop.requests.filter((requestPath) => /message|feedback|connector|project-view-action/i.test(requestPath)), []);
     assert.equal(await page.locator("#message-draft").inputValue(), "Please review this screen.");
     assert.equal(await page.locator("#message-composer").evaluate((element) => getComputedStyle(element.querySelector(".message-composer-body")).overflowY), "auto");
+    assert.match(await page.locator("#message-conversation-state").textContent(), /unavailable|Choose a recipient/);
+    assert.equal(await page.locator("#message-draft").getAttribute("rows"), "2");
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth), true);
     if (evidenceDir) await page.screenshot({ path: path.join(evidenceDir, "40-message-unavailable-desktop-1536x1024.png"), fullPage: false, animations: "disabled" });
     await page.keyboard.press("Escape");

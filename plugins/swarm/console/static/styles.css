@@ -393,7 +393,7 @@ button:focus-visible, select:focus-visible { outline: 2px solid var(--focus); ou
 .message-conversation-empty span { font-size:10px; line-height:1.5; }
 .message-composer-footer { display:grid; flex:none; gap:10px; padding:13px 14px; border-top:1px solid var(--line); background:rgba(16,29,47,.92); }
 .message-composer-footer label { display:block; min-width:0; }
-.message-composer-footer textarea { width:100%; min-width:0; min-height:108px; max-height:30dvh; resize:vertical; padding:11px 12px; border:1px solid var(--line); border-radius:8px; background:#050d18; color:var(--ink); font:12px/1.55 var(--font); }
+.message-composer-footer textarea { width:100%; min-width:0; min-height:64px; max-height:20dvh; resize:vertical; padding:11px 12px; border:1px solid var(--line); border-radius:8px; background:#050d18; color:var(--ink); font:14px/1.5 var(--font); }
 .message-composer-footer textarea::placeholder { color:var(--faint); }
 .message-composer-footer :is(textarea):focus-visible,.message-recipient-control select:focus-visible { outline:2px solid #fff; outline-offset:2px; }
 .message-composer-actions { display:flex; align-items:flex-end; justify-content:space-between; gap:10px; }
@@ -729,7 +729,7 @@ button:focus-visible, select:focus-visible { outline: 2px solid var(--focus); ou
   .message-composer { right:8px; bottom:max(76px,calc(env(safe-area-inset-bottom) + 70px)); left:8px; width:auto; max-height:calc(100dvh - 96px - env(safe-area-inset-bottom)); border-radius:12px 12px 8px 8px; }
   .message-composer-header,.message-composer-footer { padding:11px 12px; }
   .message-composer-header { grid-template-columns:auto minmax(112px,1fr) 44px; gap:8px; }
-  .message-composer-footer textarea { min-height:96px; max-height:28dvh; }
+  .message-composer-footer textarea { min-height:64px; max-height:20dvh; }
   .message-composer-actions { align-items:stretch; flex-direction:column; }
   .message-composer-actions > div { justify-content:flex-end; }
   .overview-metrics { grid-template-columns:repeat(2,minmax(0,1fr)); gap:7px; }.overview-metric-card { min-height:102px; padding:11px; }.overview-metric-card > strong { font-size:18px; }.overview-metric-card > p { white-space:normal; }.overview-metric-card svg { width:38%; }.usage-chart-card .usage-chart { min-height:52px; }.usage-chart-card .usage-range { position:static; justify-content:flex-end; }

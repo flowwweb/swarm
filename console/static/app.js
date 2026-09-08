@@ -3940,10 +3940,21 @@ function scheduleOverviewHierarchyEdges() {
   if (state.view === "overview" && state.projectId === "all") requestAnimationFrame(drawOverviewHierarchyEdges);
 }
 
+function activeCodexTasksMarkup() {
+  const allProjects = state.projectId === "all" && !state.ctrlId;
+  const binding = state.ctrlId ? runLogBindingForCtrl(state.ctrlId) : null;
+  const projectId = state.ctrlId ? binding?.projectId : selectedProgressProjectId();
+  const scopeValid = allProjects || (projectId && savedProjectRoster().projects.some(project => project.id === projectId) && (!state.ctrlId || state.projectId === projectId || state.projectId === "ctrl:" + state.ctrlId || state.projectId === "all"));
+  if (state.connectionStatus !== "live" || !Array.isArray(state.overview?.nodes) || !scopeValid) return '<section class="panel"><h3>Active Codex tasks</h3><p role="status">Current host activity is unavailable.</p></section>';
+  const nodes = state.overview.nodes.filter(node => node && typeof node.id === "string" && node.status === "active" && (allProjects || node.project_id === projectId));
+  return '<section class="overview-independent panel"><h3>Active Codex tasks</h3><p>Observed host activity · SWARM lane authority and reviewed progress are separate.</p>' + (nodes.length ? nodes.map(node => '<article class="overview-independent-task" data-active-codex-task="' + escapeHTML(node.id) + '"><span class="scope-dot is-active" aria-hidden="true"></span><strong>' + escapeHTML(publicLabel(node.title, "Codex task")) + '</strong><span>Active</span></article>').join("") : '<p>No active Codex tasks in this scope.</p>') + '</section>';
+}
+
 function renderOverview() {
   const nodes = scopedNodes();
   renderOverviewMetrics();
   renderOverviewProjectCards();
+  $("#overview-project-cards").insertAdjacentHTML("beforeend", activeCodexTasksMarkup());
   renderEvidenceGallery(nodes, "#overview-evidence-gallery", "#overview-evidence-note", 4);
   renderProjectProgressFeed();
   renderProjectDetail();
@@ -4215,6 +4226,9 @@ function renderMessageComposer() {
   $("#message-retry").hidden = !["failed", "conflict"].includes(state.messageStatus);
   $("#message-retry").disabled = !canRetry || state.messageStatus === "pending";
   $("#message-status").textContent = messageStatusCopy(recipient);
+  $("#message-conversation-state").textContent = state.connectionStatus !== "live"
+    ? "Conversation unavailable while HQ is disconnected."
+    : recipient ? "Conversation history is unavailable for this recipient." : "Choose a recipient to view a conversation.";
   $("#message-launcher").setAttribute("aria-expanded", String(state.messageOpen));
   $("#mobile-message-action").setAttribute("aria-expanded", String(state.messageOpen));
   panel.dataset.contextAvailable = String(Boolean(identity && attachments));
@@ -4477,6 +4491,7 @@ function renderAgentTable() {
   $("#agent-table-body").innerHTML = unavailable
     ? '<p class="empty-state agents-empty" role="status">Active agents are unavailable until SWARM receives a current project and CTRL projection.</p>'
     : records.length ? records.map(agentTableRowMarkup).join("") : '<p class="empty-state agents-empty" role="status">No active CTRL, LEAD, or DOER is available in this project scope.</p>';
+  $("#agent-table-body").insertAdjacentHTML("beforeend", activeCodexTasksMarkup());
 }
 
 function roleManifestProjectionValue(value) {
