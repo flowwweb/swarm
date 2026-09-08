@@ -23,14 +23,13 @@ class MutationIntegrityContractTests(unittest.TestCase):
         root = Path(__file__).parents[1]
         skill = (root / "SKILL.md").read_text(encoding="utf-8")
         task_contract = (root / "references" / "task-contract.md").read_text(encoding="utf-8")
-        skill_step_zero = skill.split("**Step 0, never defer:**", 1)[1].split("\n\n", 1)[0]
-        task_step_zero = task_contract.split("Step 0 first:", 1)[1].split("\n\n", 1)[0]
-        for step_zero in (skill_step_zero, task_step_zero):
-            self.assertRegex(step_zero, r"(?is)fresh host-owned custody receipt")
-            self.assertRegex(step_zero, r"(?is)SWARM.*never.*(?:calls|requests|authorizes).*pin")
-            self.assertRegex(step_zero, r"(?is)pinned: false.*placement(?:_status)?: placement_unverified")
-            self.assertRegex(step_zero, r"(?is)only (?:the |direct )?host.*exact.*explicit-user.*(?:pin )?request")
-            self.assertRegex(step_zero, r"(?is)otherwise preserve.*user state")
+        skill_step_zero = skill.split("**Step 0, never defer:**", 1)[1].split("After the Step 0 custody check", 1)[0]
+        self.assertRegex(skill_step_zero, r"(?is)Naming authority does not include pinning, unpinning, reordering, archiving")
+        self.assertRegex(skill_step_zero, r"(?is)separate user authority.*plugin runtime never grants it")
+        self.assertIn("Preserve existing pin and placement state", skill_step_zero)
+        self.assertIn("[SKILL.md Step 0](../SKILL.md#start)", task_contract)
+        self.assertRegex(skill, r"(?is)Only direct host consumption of an exact current explicit-user request\s+may pin or unpin")
+        self.assertRegex(skill, r"(?is)plugin runtime.*independent host\s+verification.*cannot mint approval")
         combined = "\n".join((skill, task_contract))
         for forbidden in ("AUTO_PIN", "TEMPORARY_REVIEW_PIN", "concrete ready-review handoff"):
             self.assertNotIn(forbidden, combined)

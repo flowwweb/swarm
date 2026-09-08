@@ -191,6 +191,12 @@ authority.
 
 ## User-state custody and substantive lanes
 
+Host-facing naming follows [SKILL.md Step 0](../SKILL.md#start), including
+explicit CTRL takeovers and verification of the actual host title. A generated
+intake title does not override that user request. The custody rules below
+protect user-selected state and retain independent host verification for runtime
+mutation requests; they do not require a second approval for Step 0 naming.
+
 User-created, renamed, titled, pinned, unpinned, archived, and state-changed host
 tasks always win. SWARM, CTRL, and LEAD cannot undo, normalize, overwrite, revert,
 rebase, rename, pin, unpin, archive, or change that state by inference. A safe

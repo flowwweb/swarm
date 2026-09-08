@@ -12,17 +12,12 @@ the invariants in [graph-engineering.md](graph-engineering.md), including one
 CTRL root, explicit dependencies, independent parallel lanes, and visible
 medium/large task ownership.
 
-For every user-authorized new SWARM objective, the opening user-visible task completes mandatory
-Step 0 first: derive a concise specific objective and resolve `role_icons`. Before any title request,
-obtain a fresh host-owned custody receipt. The host task API may request the exact
-`🐙CTRL - <objective>` title by default (or omit the emoji when `role_icons.enabled = false`).
-SWARM never requests or authorizes automatic pinning; every created CTRL surfaces its ID,
-directive/title, `pinned: false`, and `placement: placement_unverified`. Only direct host
-consumption of an exact current explicit-user request may pin or unpin, and the current host
-may append below pinned folders. Otherwise preserve the current user state. If a tool is
-unavailable or a receipt fails, state the exact blocker and continue only with truthful internal
-CTRL identity. After this Step 0 custody
-check, resolve and validate exactly one root `SWARM.md` project brief, bind its digest to the intake and topology plan, and keep dispatch `UNREADY` until that binding exists. An incompatible schema fails visibly and does not fall back to README or raw prompt content. Then create or continue exactly one matching durable goal before routing work. Its contract
+For a new SWARM objective or an explicit CTRL takeover, complete
+[SKILL.md Step 0](../SKILL.md#start): apply the authorized role title through the
+host task tool and verify the exact returned task ID and title. Record an exact
+tool blocker if naming cannot complete; preserve custom names and separate
+pin/archive authority. The naming rule lives in Step 0, not in a second receipt
+workflow here. Then resolve and validate exactly one root `SWARM.md` project brief, bind its digest to the intake and topology plan, and keep dispatch `UNREADY` until that binding exists. An incompatible schema fails visibly and does not fall back to README or raw prompt content. Then create or continue exactly one matching durable goal before routing work. Its contract
 records the chosen topology and which visible task owns each mutable artifact.
 Hidden subagents are non-recursive leaf capacity, not a replacement for required
 SWARM task ownership. A task that may need recruitment or recursive delegation

@@ -14,16 +14,15 @@ not a claim of another model host or provider-neutral execution.
 
 ## START
 
-User action has custody precedence. User-created, renamed, titled, pinned, unpinned,
-archived, and state-changed host tasks always win; SWARM, CTRL, and LEAD never
-undo, normalize, overwrite, revert, rebase, rename, pin, unpin, archive, or
-change them by inference. The coordination/runtime request ledger may retain a
-safe custody digest and state receipt without raw user text, but the console has
-no host-task mutation authority. A rename, pin/archive, title, or state mutation
-requires the host task API to independently consume a current host-owned
-explicit-user receipt naming the exact operation, target, and scope. If that
-receipt or custody verification is absent or conflicts, no mutation is permitted:
-fail closed, surface the conflict, and wait.
+User action has custody precedence. Preserve user-selected titles, pins, order,
+archive state, and explicit exceptions. An automatically generated intake title
+is not a user-selected custom title. The host-facing agent carries the user's
+explicit naming authority forward as described in Step 0; it uses the host task
+tool directly and verifies its result. The console and plugin runtime retain no
+host-task mutation authority: their requests still require independent host
+verification and cannot mint approval from a naming convention or caller flag.
+If user custody conflicts or the host rejects the operation, preserve the current
+state and report that exact boundary.
 
 Treat user messages as one ordered intent feed, not isolated commands or an
 unconditional last-message-wins register. Reconcile every newly observed message
@@ -49,7 +48,28 @@ unpinned. Only direct host consumption of an exact current explicit-user request
 may pin or unpin; the current host may append below pinned folders. Existing user
 state is always preserved, and SWARM never requests or authorizes pin/unpin.
 
-**Step 0, never defer:** For an unassigned user-facing task explicitly told by the user to use SWARM, derive a concise specific objective and resolve `role_icons`. Before any title request, obtain a fresh host-owned custody receipt. SWARM runtime never calls or authorizes pin or unpin; every created CTRL is surfaced with `pinned: false` and `placement: placement_unverified`. Only the host may consume an exact explicit-user pin request, and current placement may remain below pinned folders. Otherwise preserve the current user state and continue only with truthful internal CTRL identity. If either host control is unavailable or fails, state the exact blocker and never claim the UI changed. A task assigned by an existing CTRL keeps its assigned role. A CTRL cannot create, fork, promote, replace, rename, recover-as-new, or link a successor CTRL unless the user explicitly requests that exact operation. The plugin may prepare a typed single-use request bound to source CTRL, target identity, objective, and scope, but code running in its interpreter cannot authorize the host action. The actual Codex task API must independently consume a host-owned user receipt; without that host enforcement the request is non-authoritative and no new CTRL may be created. Adjacent work stays inside the current CTRL or returns to the user.
+**Step 0, never defer:** A user request to start SWARM, adopt the current task as
+CTRL, or take over an existing CTRL includes naming the current task for that
+role. Reuse the current task for a takeover; create or fork another task only
+when explicitly requested. Derive a concise objective and resolve `role_icons`:
+default `🐙CTRL - <objective>`, or `CTRL - <objective>` when icons are disabled;
+retain a user-requested role icon such as `👑` for royal portfolio control.
+An assigned lane keeps its assigned profession and structural role. Preserve an
+explicit custom title or naming exception unless the user asks to change it.
+
+Before substantive dispatch, call the host `set_thread_title` tool for the exact
+task ID using that authority; do not ask the user to repeat it or invent a
+separate receipt service. Completion requires the returned task ID and title to
+match, or a fresh host read confirming both. A proposed title, internal CTRL
+label, successful message dispatch, or unverified tool response is not a rename.
+If the title already matches, verify it without rewriting it. If the tool is
+unavailable or rejects the call, report the exact naming blocker, keep useful
+authorized work moving, and leave naming incomplete. Verify the successor title
+again before declaring handover complete or archiving its predecessor.
+
+Naming authority does not include pinning, unpinning, reordering, archiving, or
+creating additional tasks. Those actions retain their separate user authority;
+the plugin runtime never grants it. Preserve existing pin and placement state.
 
 After the Step 0 custody check—whether it produced an eligible SWARM receipt or preserved existing user state—resolve exactly one root `SWARM.md` project brief as specified in [project-brief.md](references/project-brief.md). A missing, invalid, incompatible, or digest-unbound brief leaves the project `UNREADY` and prevents new routing; it never authorizes a substitute README, prompt, or hidden state. Then invoke the sibling `scripts/swarm_console.py --start` once. It obeys `console.auto_start`, idempotently starts or reuses the strict-loopback HQ process, reuses an already-open HQ tab, and obeys `console.open_on_start` only for browser opening. A launcher or browser failure is advisory and never blocks SWARM work; each later CTRL continuation may invoke the same launcher to recover a missing HQ process without creating a second lifecycle authority.
 

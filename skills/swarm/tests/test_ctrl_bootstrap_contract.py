@@ -16,10 +16,16 @@ class CtrlBootstrapContractTests(unittest.TestCase):
         skill = (SKILL_ROOT / "SKILL.md").read_text(encoding="utf-8")
         self.assertIn("**Step 0, never defer:**", skill)
         self.assertIn(NEW_TITLE, skill)
-        self.assertRegex(skill, r"(?is)Step 0.*title.*pin.*Verif")
+        step_zero = skill.split("**Step 0, never defer:**", 1)[1].split("After the Step 0 custody check", 1)[0]
+        self.assertIn("take over an existing CTRL includes naming the current task", " ".join(step_zero.split()))
+        self.assertIn("`set_thread_title`", step_zero)
+        self.assertRegex(step_zero, r"(?is)Completion requires the returned task ID and title to\s+match")
+        self.assertRegex(step_zero, r"(?is)Verify the successor title\s+again before declaring handover complete")
+        self.assertRegex(step_zero, r"(?is)Preserve an\s+explicit custom title")
+        self.assertIn("do not ask the user to repeat it", step_zero)
         self.assertIn("After the Step 0 custody check, always ask and capture both intake answers before routing", skill)
         self.assertLess(skill.index("After the Step 0 custody check, always ask and capture both intake answers before routing"), skill.index("Then inspect or create exactly one matching durable goal"))
-        self.assertIn("truthful internal CTRL identity", skill)
+        self.assertIn("leave naming incomplete", step_zero)
         self.assertLess(skill.index("**Step 0, never defer:**"), skill.index("Then inspect or create exactly one matching durable goal"))
 
     def test_public_contracts_use_new_title_and_reject_legacy_title(self) -> None:
@@ -33,7 +39,10 @@ class CtrlBootstrapContractTests(unittest.TestCase):
         for path in contract_paths:
             with self.subTest(path=path):
                 text = path.read_text(encoding="utf-8")
-                self.assertIn(NEW_TITLE, text)
+                if path.name == "task-contract.md":
+                    self.assertIn("[SKILL.md Step 0](../SKILL.md#start)", text)
+                else:
+                    self.assertIn(NEW_TITLE, text)
                 self.assertNotIn(LEGACY_TITLE, text)
 
     def test_intake_evals_contrast_receipted_step_zero_with_late_rename(self) -> None:
