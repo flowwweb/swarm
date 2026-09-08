@@ -9734,6 +9734,80 @@ class App:
         self._project_view_cache[project_id] = projection
         return copy.deepcopy(projection)
 
+    def task_history(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """Authenticated observation only; never admits send/steer authority."""
+        if set(payload) != {"project_id", "thread_id"}:
+            raise ConsoleError("history requires exact project_id and thread_id")
+        project_id = _auto_id(payload["project_id"], "project_id")
+        thread_id = _auto_id(payload["thread_id"], "thread_id")
+
+        def scope():
+            root = self._canonical_project_root(project_id).resolve(strict=True)
+            nodes = self._host_overview(refresh=True).get("nodes", [])
+            matches = [node for node in nodes if node.get("id") == thread_id]
+            if len(matches) != 1 or matches[0].get("project_id") != project_id or matches[0].get("project_binding_state") not in {"DIRECT", "ROOT"}:
+                raise ConsoleError("history requires observed host project membership")
+            return root
+
+        root = scope()  # Reject foreign/unbound tasks before any native call.
+        result = {"project_id": project_id, "thread_id": thread_id, "items": [],
+                  "status": "UNAVAILABLE", "truncated": False, "cursor": None}
+        try:
+            with self.auto_bridge.command_session(root) as (send, receive):
+                send({"id": 1, "method": "thread/read", "params": {"threadId": thread_id, "includeTurns": True}})
+                response = receive(lambda message: message.get("id") == 1 and "method" not in message)
+            if response.get("error") is not None:
+                return {**result, "reason": "HOST_READ_UNAVAILABLE"}
+            thread = response.get("result", {}).get("thread")
+            if not isinstance(thread, dict) or thread.get("id") != thread_id or not isinstance(thread.get("cwd"), str):
+                raise ValueError("invalid host identity")
+            if Path(thread["cwd"]).resolve(strict=True) != root or scope() != root:
+                raise ValueError("changed host root")
+            turns = thread.get("turns")
+            if not isinstance(turns, list) or len(turns) > 2000 or len(json.dumps(thread).encode()) > 524288:
+                return {**result, "reason": "HISTORY_BOUND_EXCEEDED"}
+            items, seen = [], set()
+            for turn in turns:
+                if not isinstance(turn, dict) or not isinstance(turn.get("items"), list):
+                    raise ValueError("invalid turn")
+                turn_id = _auto_id(turn.get("id"), "turn_id")
+                for item in turn["items"]:
+                    if not isinstance(item, dict):
+                        raise ValueError("invalid item")
+                    kind = item.get("type")
+                    if kind not in {"userMessage", "agentMessage"} or item.get("phase") == "analysis":
+                        continue
+                    item_id = _auto_id(item.get("id"), "item_id")
+                    if item_id in seen:
+                        raise ValueError("duplicate item")
+                    seen.add(item_id)
+                    if kind == "userMessage":
+                        content = item.get("content")
+                        if not isinstance(content, list):
+                            raise ValueError("invalid content")
+                        parts = [part.get("text") for part in content if isinstance(part, dict) and part.get("type") == "text"]
+                    else:
+                        parts = [item.get("text")]
+                    if any(not isinstance(part, str) for part in parts):
+                        raise ValueError("invalid text")
+                    text = "\n".join(parts)
+                    # Plain display text only; never return locators or credential-shaped lines.
+                    text = re.sub(r"(?im)^.*(?:password|secret|api[_ -]?key|authorization|bearer|sk-[A-Za-z0-9]).*$", "[redacted]", text)
+                    text = re.sub(r"(?:[A-Za-z]:[\\/]|\\\\|(?<!\w)/)[^\s<>\"']+", "[path]", text)
+                    text = "".join(char for char in text if char in "\n\t" or ord(char) >= 32)
+                    if text.strip():
+                        items.append({"id": item_id, "turn_id": turn_id, "role": "user" if kind == "userMessage" else "assistant", "text": text[:4096]})
+                        result["truncated"] |= len(text) > 4096
+            result["truncated"] |= len(items) > 100
+            items = items[-100:]
+            while len(json.dumps(items).encode()) > 65536:
+                items.pop(0)
+                result["truncated"] = True
+            return {**result, "status": "AVAILABLE" if items else "EMPTY", "items": items,
+                    "cursor": _auto_digest({"project_id": project_id, "thread_id": thread_id, "items": items})}
+        except (ConsoleError, OSError, ValueError, TypeError, AttributeError, TimeoutError, queue.Empty, subprocess.SubprocessError):
+            return {**result, "reason": "HOST_HISTORY_UNVERIFIED"}
+
     def create_bound_task(self, payload: dict[str, Any]) -> dict[str, Any]:
         """Called only after strict-loopback POST authorization; RESULT is dispatch only."""
         if set(payload) != {"envelope", "instruction", "acknowledge"} or payload["acknowledge"] is not True:
@@ -15896,6 +15970,12 @@ class Handler(BaseHTTPRequestHandler):
             self._json(HTTPStatus.OK, self.server.app.claim_portal_open())
             return
         try:
+            if path == "/api/tasks/history":
+                if not self._authorized_auto():
+                    self._error(HTTPStatus.FORBIDDEN, "history requires strict loopback authorization")
+                    return
+                self._json(HTTPStatus.OK, self.server.app.task_history(self._payload()))
+                return
             if path == "/api/tasks/create":
                 if not self._authorized_auto():
                     self._error(HTTPStatus.FORBIDDEN, "task submission requires strict loopback authorization")

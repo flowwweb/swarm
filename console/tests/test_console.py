@@ -290,6 +290,68 @@ class SwarmConsoleTests(unittest.TestCase):
             self.assertTrue(terminated.wait(2), "test process custody must settle")
             self.assertTrue(reader_done.wait(2), "no unfinished reader session")
 
+    def test_task_history_authenticated_observed_independent_bounded_read(self) -> None:
+        from contextlib import contextmanager
+        with closing(sqlite3.connect(self.database)) as connection:
+            connection.execute("UPDATE project_roots SET path=?", (str(self.root),))
+            connection.execute("UPDATE threads SET cwd=?, title='Ordinary task' WHERE id='task'", (str(self.root),))
+            connection.execute("DELETE FROM thread_spawn_edges")
+            connection.commit()
+        app = console.App(self.codex_home, self.config)
+        observed = next(node for node in app._host_overview(refresh=True)["nodes"] if node["id"] == "task")
+        self.assertEqual(observed["project_binding_state"], "ROOT")
+        self.assertFalse(observed.get("agent_role"))
+        messages = [{"type": "userMessage", "id": "u", "content": [{"type": "text", "text": "Hello"}, {"type": "image", "url": "secret"}]},
+                    {"type": "reasoning", "id": "r", "text": "private reasoning"},
+                    {"type": "commandExecution", "id": "c", "aggregatedOutput": "private terminal"},
+                    {"type": "agentMessage", "id": "a", "text": "Done\napi_key=hidden\nC:/private/file"}]
+        response = {"id": 1, "result": {"thread": {"id": "task", "cwd": str(self.root), "turns": [{"id": "turn", "items": messages}]}}}
+        calls = []
+        @contextmanager
+        def session(cwd):
+            self.assertEqual(cwd, self.root.resolve())
+            def send(message):
+                self.assertEqual(message, {"id": 1, "method": "thread/read", "params": {"threadId": "task", "includeTurns": True}})
+                calls.append(message)
+            yield send, lambda predicate: response
+        app.auto_bridge.command_session = session
+        def post(thread_id="task", token=None):
+            handler = self._handler("127.0.0.1", "127.0.0.1:4788", token=app.token if token is None else token)
+            handler.server.app = app
+            handler.path = "/api/tasks/history"
+            handler._payload = mock.Mock(return_value={"project_id": "project:alpha", "thread_id": thread_id})
+            handler._json, handler._error = mock.Mock(), mock.Mock()
+            handler.do_POST()
+            return handler
+        post(token="wrong")._error.assert_called_once()
+        post("unsafe")._error.assert_called_once()
+        self.assertEqual(calls, [])
+        read = post()._json.call_args.args[1]
+        self.assertEqual(read["status"], "AVAILABLE")
+        self.assertEqual([(item["id"], item["role"]) for item in read["items"]], [("u", "user"), ("a", "assistant")])
+        self.assertEqual(read["items"][1]["text"], "Done\n[redacted]\n[path]")
+        self.assertNotIn("reasoning", json.dumps(read))
+        self.assertEqual(post()._json.call_args.args[1]["cursor"], read["cursor"])
+        response["result"]["thread"]["turns"] = []
+        self.assertEqual(post()._json.call_args.args[1]["status"], "EMPTY")
+        response["error"] = {"code": -32601, "message": "unsupported"}
+        self.assertEqual(post()._json.call_args.args[1]["status"], "UNAVAILABLE")
+        del response["error"]
+        response["result"]["thread"]["cwd"] = str(self.codex_home)
+        self.assertEqual(post()._json.call_args.args[1]["status"], "UNAVAILABLE")
+        response["result"]["thread"]["cwd"] = str(self.root)
+        response["result"]["thread"]["turns"] = [{"id": "turn", "items": [{"type": "agentMessage", "id": f"m{i}", "text": "🙂" * 4200} for i in range(110)]}]
+        self.assertEqual(post()._json.call_args.args[1]["reason"], "HISTORY_BOUND_EXCEEDED")
+        response["result"]["thread"]["turns"][0]["items"] = [{"type": "agentMessage", "id": f"m{i}", "text": "🙂" * 100} for i in range(110)]
+        bounded = post()._json.call_args.args[1]
+        self.assertTrue(bounded["truncated"])
+        self.assertLessEqual(len(bounded["items"]), 100)
+        self.assertLessEqual(len(json.dumps(bounded["items"]).encode()), 65536)
+        self.assertEqual(bounded["items"][-1]["id"], "m109")
+        response["result"]["thread"]["turns"][0]["items"] = [messages[0], messages[0]]
+        self.assertEqual(post()._json.call_args.args[1]["status"], "UNAVAILABLE")
+        self.assertEqual(app.progress_ledger.replay()["connector_receipts"], {})
+
     def test_create_bound_task_calls_connector_and_replays_retained_binding(self) -> None:
         from contextlib import contextmanager
         with closing(sqlite3.connect(self.database)) as connection:
