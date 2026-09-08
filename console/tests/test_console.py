@@ -61,7 +61,10 @@ class SwarmConsoleTests(unittest.TestCase):
     def test_command_session_stderr_terminal_cannot_release_custody(self) -> None:
         self._assert_command_session_custody({"result": {"turn": {"id": "owned-turn"}}}, diagnostic_terminal=True)
 
-    def _assert_command_session_custody(self, turn_response, *, rejected=False, diagnostic_terminal=False) -> None:
+    def test_command_session_post_return_approval_is_scoped_once_only(self) -> None:
+        self._assert_command_session_custody({"result": {"turn": {"id": "owned-turn"}}}, approvals=True)
+
+    def _assert_command_session_custody(self, turn_response, *, rejected=False, diagnostic_terminal=False, approvals=False) -> None:
         import queue
         events = queue.Queue()
         processed = threading.Event()
@@ -98,9 +101,13 @@ class SwarmConsoleTests(unittest.TestCase):
                 message = json.loads(value)
                 written.append(message)
                 results = {"initialize": {}, "thread/start": {"thread": {"id": "owned-thread"}}}
+                if "method" not in message:
+                    return
                 if message["method"] in results:
                     events.put({"id": message["id"], "result": results[message["method"]]})
                 elif message["method"] == "turn/start" and turn_response is not None:
+                    if approvals:
+                        events.put({"id": message["id"], "method": "item/tool/requestUserInput", "params": {}})
                     events.put({"id": message["id"], **turn_response})
 
             def flush(self):
@@ -143,12 +150,13 @@ class SwarmConsoleTests(unittest.TestCase):
 
         try:
             with mock.patch.object(console.time, "monotonic", side_effect=lambda: clock[0]):
-                with bridge.command_session(self.root, retain_turn=True) as (send, receive):
+                with bridge.command_session(self.root, retain_turn=True, approval_project_id="project" if approvals else "") as (send, receive):
                     send({"id": 1, "method": "thread/start", "params": {"cwd": str(self.root)}})
                     receive(lambda item: item.get("id") == 1)
                     send({"id": 2, "method": "turn/start", "params": {"threadId": "owned-thread", "input": []}})
                     if turn_response is not None:
                         response = receive(lambda item: item.get("id") == 2)
+                        self.assertNotIn("method", response, "inbound request ID must not satisfy an outbound RPC")
                         if rejected:
                             self.assertIn("error", response)
                     clock[0] = console.AUTO_BRIDGE_TIMEOUT_SECONDS + 1
@@ -163,6 +171,70 @@ class SwarmConsoleTests(unittest.TestCase):
                     self.assertEqual([item["method"] for item in written], ["initialize", "initialized", "thread/start", "turn/start"])
                     return
                 self.assertEqual((process.terminate_count, process.kill_count), (0, 0))
+                if approvals:
+                    request = {"id": 2, "method": "item/commandExecution/requestApproval", "params": {
+                        "threadId": "owned-thread", "turnId": "owned-turn", "itemId": "item-1",
+                        "cwd": str(self.root), "command": "read-only-check", "availableDecisions": ["accept", "decline", "cancel"]}}
+                    deliver(request)
+                    rows = bridge.approval_requests("project", str(self.root))
+                    self.assertEqual(len(rows), 1)
+                    self.assertEqual(bridge.approval_requests("other", str(self.root)), [])
+                    row = rows[0]
+                    for changes in ({"kind": "writeStdin"}, {"kind": None}, {"environmentId": "unbound-remote"}, {"kind": "command", "environmentId": "unbound-local"}):
+                        blocked = copy.deepcopy(request)
+                        blocked["params"].update(changes)
+                        # Same native ID: invalid variants must neither acquire nor replace authority.
+                        deliver(blocked)
+                        self.assertEqual(bridge.approval_requests("project", str(self.root)), rows)
+                        forged = {key: row[key] for key in ("approval_id", "project_id", "thread_id", "turn_id", "request_digest")}
+                        forged.update(request_digest=console._auto_digest(blocked), decision="accept", acknowledge=True)
+                        with self.assertRaises(console.ConsoleError):
+                            bridge.respond_approval(forged, str(self.root))
+                        blocked["id"] = "withheld-" + console._auto_digest(changes)
+                        deliver(blocked)
+                        self.assertEqual(bridge.approval_requests("project", str(self.root)), rows)
+                    payload = {key: row[key] for key in ("approval_id", "project_id", "thread_id", "turn_id", "request_digest")}
+                    payload.update(decision="decline", acknowledge=True)
+                    for field, value in (("acknowledge", False), ("project_id", "other"), ("turn_id", "stale"), ("request_digest", "wrong"), ("decision", "acceptForSession")):
+                        with self.assertRaises(console.ConsoleError):
+                            bridge.respond_approval({**payload, field: value}, str(self.root))
+                    def post_approval(token):
+                        handler = self._handler("127.0.0.1", "127.0.0.1:4788", token=token)
+                        handler.server.app.auto_bridge = bridge
+                        handler.server.app._canonical_project_root = mock.Mock(return_value=self.root)
+                        handler.path = "/api/tasks/approvals/respond"
+                        handler._payload = mock.Mock(return_value=payload)
+                        handler._json = mock.Mock()
+                        handler._error = mock.Mock()
+                        handler.do_POST()
+                        return handler
+                    denied = post_approval("invalid")
+                    denied._error.assert_called_once()
+                    self.assertEqual(len(bridge.approval_requests("project", str(self.root))), 1)
+                    allowed = post_approval("secret")
+                    allowed._error.assert_not_called()
+                    self.assertEqual(allowed._json.call_args.args[1]["status"], "SUBMITTED")
+                    self.assertEqual(written[-1], {"id": 2, "result": {"decision": "decline"}})
+                    with self.assertRaises(console.ConsoleError):
+                        bridge.respond_approval(payload, str(self.root))
+                    self.assertFalse(terminated.is_set())
+                    request["id"] = "uncertain-write"
+                    request["params"].update(kind="command", environmentId=None)
+                    deliver(request)
+                    uncertain = bridge.approval_requests("project", str(self.root))[0]
+                    uncertain_payload = {**payload, "approval_id": uncertain["approval_id"], "request_digest": uncertain["request_digest"]}
+                    with mock.patch.object(process.stdin, "flush", side_effect=OSError("uncertain delivery")):
+                        with self.assertRaises(OSError):
+                            bridge.respond_approval(uncertain_payload, str(self.root))
+                    with self.assertRaises(console.ConsoleError):
+                        bridge.respond_approval(uncertain_payload, str(self.root))
+                    request["id"] = "resolved"
+                    deliver(request)
+                    deliver({"method": "serverRequest/resolved", "params": {"threadId": "owned-thread", "requestId": "resolved"}})
+                    self.assertEqual(bridge.approval_requests("project", str(self.root)), [])
+                    request["id"] = "pending-at-terminal"
+                    deliver(request)
+                    self.assertEqual(len(bridge.approval_requests("project", str(self.root))), 1)
                 if diagnostic_terminal:
                     diagnostics.put(terminal)
                     diagnostics.put(None)
@@ -182,9 +254,11 @@ class SwarmConsoleTests(unittest.TestCase):
                 deliver(terminal)
                 self.assertTrue(terminated.wait(2))
                 self.assertTrue(reader_done.wait(2))
+                if approvals:
+                    self.assertEqual(bridge.approval_requests("project", str(self.root)), [])
                 self.assertEqual((process.terminate_count, process.kill_count), (1, 0))
                 self.assertEqual(factory.call_count, 1)
-                self.assertEqual([item["method"] for item in written], ["initialize", "initialized", "thread/start", "turn/start"])
+                self.assertEqual([item["method"] for item in written if "method" in item], ["initialize", "initialized", "thread/start", "turn/start"])
         finally:
             if not terminated.is_set():
                 events.put({"id": 2, "result": {"turn": {"id": "owned-turn"}}})
@@ -223,7 +297,8 @@ class SwarmConsoleTests(unittest.TestCase):
         sent = []
         responses = [{"thread": {"id": "host-new", "cwd": str(root)}}, {"turn": {"id": "turn-new"}}]
         @contextmanager
-        def session(cwd, *, retain_turn=False):
+        def session(cwd, *, retain_turn=False, approval_project_id=""):
+            self.assertEqual(approval_project_id, "project:alpha")
             self.assertEqual(cwd, root)
             self.assertTrue(retain_turn)
             def send(message):

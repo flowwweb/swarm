@@ -439,6 +439,27 @@ class CodexStdioBridge:
         self._process_factory = process_factory
         self._executable_resolver = executable_resolver or _codex_app_server_executable
         self.adapter = CodexAppServerAdapter()
+        self._approval_lock = threading.RLock()
+        self._approvals: dict[str, Any] = {}  # Live transport handles only; never restart authority.
+
+    def approval_requests(self, project_id: str, root: str) -> list[dict[str, Any]]:
+        with self._approval_lock:
+            return [dict(record) for record, respond in self._approvals.values()
+                if record["project_id"] == project_id and record["root"] == root]
+
+    def respond_approval(self, payload: dict[str, Any], root: str) -> dict[str, Any]:
+        fields = {"approval_id", "project_id", "thread_id", "turn_id", "request_digest", "decision", "acknowledge"}
+        if set(payload) != fields or payload["acknowledge"] is not True or payload["decision"] not in ("accept", "decline", "cancel"):
+            raise ConsoleError("exact one-shot human approval required")
+        with self._approval_lock:
+            entry = self._approvals.get(payload["approval_id"])
+            if entry is None:
+                raise ConsoleError("approval unavailable, stale or already submitted")
+            record, respond = entry
+            if record["root"] != root or any(record[key] != payload[key] for key in ("project_id", "thread_id", "turn_id", "request_digest")):
+                raise ConsoleError("approval scope conflicts")
+            respond(payload["decision"])
+            return {"ok": True, "status": "SUBMITTED", "approval_id": payload["approval_id"], "work_completed": False}
 
     @staticmethod
     def _result_id(message: dict[str, Any], kind: str) -> str:
@@ -447,10 +468,17 @@ class CodexStdioBridge:
         return str(result.get(f"{kind}Id") or nested.get("id") or "")
 
     @contextmanager
-    def command_session(self, cwd: Path, *, retain_turn: bool = False):
+    def command_session(self, cwd: Path, *, retain_turn: bool = False, approval_project_id: str = ""):
         process: Any = None
         inbox: queue.Queue[object] = queue.Queue()
-        custody_lock = threading.RLock()
+        custody_lock = self._approval_lock
+        session_id = uuid.uuid4().hex
+        seen_requests: set[tuple[type, Any]] = set()
+
+        def clear_approvals():
+            for key in list(self._approvals):
+                if key.startswith(session_id + ":"):
+                    del self._approvals[key]
         released = threading.Event()
         cleaned = False
         turn_request_id = None
@@ -465,6 +493,7 @@ class CodexStdioBridge:
                 if cleaned:
                     return
                 cleaned = True
+                clear_approvals()
             if process is not None and process.poll() is None:
                 process.terminate()
                 try:
@@ -511,6 +540,47 @@ class CodexStdioBridge:
                             if not isinstance(message, dict):
                                 continue
                             with custody_lock:
+                                # Inbound requests have their own ID namespace: never match an outbound RPC.
+                                if "method" in message and "id" in message:
+                                    native_id = message["id"]
+                                    params = message.get("params", {})
+                                    if (approval_project_id and type(native_id) in (int, str)
+                                        and message.get("method") == "item/commandExecution/requestApproval"
+                                        and isinstance(params, dict) and params.get("threadId") == thread_id
+                                        and isinstance(params.get("turnId"), str) and params["turnId"]
+                                        and isinstance(params.get("itemId"), str) and params["itemId"]
+                                        and isinstance(params.get("command"), str) and 0 < len(params["command"]) <= 8192
+                                        and params.get("cwd") == str(cwd)
+                                        and params.get("kind", "command") == "command"
+                                        and params.get("environmentId") is None
+                                        and not params.get("networkApprovalContext") and not params.get("additionalPermissions")
+                                        and len(seen_requests) < 64):
+                                        identity = (type(native_id), native_id)
+                                        key = session_id + ":" + _auto_digest([type(native_id).__name__, native_id])
+                                        if identity in seen_requests:
+                                            self._approvals.pop(key, None)  # Ambiguous repeated request: fail closed.
+                                        else:
+                                            seen_requests.add(identity)
+                                            record = {"approval_id": key, "project_id": approval_project_id,
+                                                "root": str(cwd), "thread_id": thread_id, "turn_id": params["turnId"],
+                                                "request_id": native_id, "request_digest": _auto_digest(message),
+                                                "command": params["command"], "item_id": params["itemId"]}
+                                            choices = params.get("availableDecisions")
+                                            def respond(decision, record=record, native_id=native_id, choices=choices):
+                                                if cleaned or process.poll() is not None or terminal_matches() or record["turn_id"] != turn_id:
+                                                    self._approvals.pop(record["approval_id"], None)
+                                                    raise ConsoleError("approval session is no longer current")
+                                                if choices is not None and (not isinstance(choices, list) or decision not in choices):
+                                                    raise ConsoleError("decision not offered by host")
+                                                del self._approvals[record["approval_id"]]  # Consume before uncertain write; never resend.
+                                                send({"id": native_id, "result": {"decision": decision}})
+                                            self._approvals[key] = (record, respond)
+                                    continue
+                                if message.get("method") == "serverRequest/resolved":
+                                    params = message.get("params", {})
+                                    for key, (record, _) in list(self._approvals.items()):
+                                        if key.startswith(session_id + ":") and record["thread_id"] == params.get("threadId") and type(record["request_id"]) is type(params.get("requestId")) and record["request_id"] == params.get("requestId"):
+                                            del self._approvals[key]
                                 if message.get("error") is not None or message.get("method") == "error":
                                     failure_code = _codex_failure_code(message)
                                     print(json.dumps({"event": "codex_host_failure", "code": failure_code,
@@ -542,6 +612,7 @@ class CodexStdioBridge:
                                                 (not turn_id or event_turn == turn_id) and len(terminal_pairs) < 64 and
                                                 status in {"completed", "failed", "interrupted", "cancelled", "canceled"}):
                                                 terminal_pairs.add((event_thread, event_turn))
+                                                clear_approvals()
                                         except ValueError:
                                             pass
                                 if not released.is_set():
@@ -552,6 +623,8 @@ class CodexStdioBridge:
                         except (json.JSONDecodeError, UnicodeDecodeError):
                             pass
                 finally:
+                    with custody_lock:
+                        clear_approvals()
                     inbox.put(None)
                     # A broken event stream is not permission to cancel acknowledged work.
                     # This same reader retains the process handle until actual process exit.
@@ -571,8 +644,9 @@ class CodexStdioBridge:
                     with custody_lock:
                         turn_request_id = message["id"]
                         thread_id = message["params"]["threadId"]
-                process.stdin.write(json.dumps(message, ensure_ascii=True, separators=(",", ":")) + "\n")
-                process.stdin.flush()
+                with custody_lock:
+                    process.stdin.write(json.dumps(message, ensure_ascii=True, separators=(",", ":")) + "\n")
+                    process.stdin.flush()
 
             def receive(predicate: Any) -> dict[str, Any]:
                 while True:
@@ -9697,7 +9771,7 @@ class App:
             def request(method, params):
                 nonlocal channel, request_id
                 if channel is None:
-                    channel = stack.enter_context(self.auto_bridge.command_session(root, retain_turn=True))
+                    channel = stack.enter_context(self.auto_bridge.command_session(root, retain_turn=True, approval_project_id=envelope.project_id))
                 send, receive = channel
                 request_id += 1
                 send({"id": request_id, "method": method, "params": params})
@@ -15826,6 +15900,20 @@ class Handler(BaseHTTPRequestHandler):
                     return
                 with self.server.app.write_lock:
                     result = self.server.app.create_bound_task(self._payload())
+                self._json(HTTPStatus.OK, result)
+                return
+            if path in {"/api/tasks/approvals", "/api/tasks/approvals/respond"}:
+                if not self._authorized_auto():
+                    self._error(HTTPStatus.FORBIDDEN, "approval requires strict loopback authorization")
+                    return
+                payload = self._payload()
+                root = str(self.server.app._canonical_project_root(payload.get("project_id")))
+                if path == "/api/tasks/approvals":
+                    if set(payload) != {"project_id"}:
+                        raise ConsoleError("exact approval project scope required")
+                    result = {"ok": True, "requests": self.server.app.auto_bridge.approval_requests(payload["project_id"], root)}
+                else:
+                    result = self.server.app.auto_bridge.respond_approval(payload, root)
                 self._json(HTTPStatus.OK, result)
                 return
             if path == "/api/projects":
