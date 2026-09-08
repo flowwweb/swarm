@@ -301,6 +301,10 @@ class SwarmConsoleTests(unittest.TestCase):
         observed = next(node for node in app._host_overview(refresh=True)["nodes"] if node["id"] == "task")
         self.assertEqual(observed["project_binding_state"], "ROOT")
         self.assertFalse(observed.get("agent_role"))
+        with closing(sqlite3.connect(self.database)) as connection:
+            connection.execute("UPDATE threads SET updated_at=1,updated_at_ms=1000 WHERE id='task'")
+            connection.commit()
+        self.assertFalse(any(node["id"] == "task" for node in app._host_overview(refresh=True)["nodes"]))
         messages = [{"type": "userMessage", "id": "u", "content": [{"type": "text", "text": "Hello"}, {"type": "image", "url": "secret"}]},
                     {"type": "reasoning", "id": "r", "text": "private reasoning"},
                     {"type": "commandExecution", "id": "c", "aggregatedOutput": "private terminal"},

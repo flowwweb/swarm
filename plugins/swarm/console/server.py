@@ -9743,9 +9743,14 @@ class App:
 
         def scope():
             root = self._canonical_project_root(project_id).resolve(strict=True)
-            nodes = self._host_overview(refresh=True).get("nodes", [])
-            matches = [node for node in nodes if node.get("id") == thread_id]
-            if len(matches) != 1 or matches[0].get("project_id") != project_id or matches[0].get("project_binding_state") not in {"DIRECT", "ROOT"}:
+            # History is not limited to the Overview activity window.
+            with closing(_readonly_connection(state_database(self.codex_home))) as connection:
+                columns = {row["name"] for row in connection.execute("PRAGMA table_info(threads)")}
+                project_column = "project_id" if "project_id" in columns else "'' AS project_id"
+                rows = connection.execute(f"SELECT id,cwd,archived,{project_column} FROM threads WHERE id=?", (thread_id,)).fetchall()
+                projects, roots = _host_project_catalog(connection)
+                project, state = _canonical_project_binding(rows[0], projects, roots) if len(rows) == 1 else (None, "unbound")
+            if project is None or project["id"] != project_id or state not in {"direct", "root"} or rows[0]["archived"]:
                 raise ConsoleError("history requires observed host project membership")
             return root
 
