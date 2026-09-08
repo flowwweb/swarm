@@ -985,3 +985,8 @@ html[data-theme="pearl"] .drawer,html[data-theme="pearl"] .mobile-app-bar,html[d
 }
 
 .profile-dialog-footer p:empty { display:none; }
+#command-approvals { margin-bottom:20px; min-width:0; }
+.command-approval { padding:16px; margin-block:12px; min-width:0; }
+.command-approval pre,.command-approval details { white-space:pre-wrap; overflow-wrap:anywhere; }
+.command-approval .review-actions { flex-wrap:wrap; margin-block:12px; }
+.command-approval button,.command-approval summary { min-height:44px; }

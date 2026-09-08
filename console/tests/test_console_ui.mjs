@@ -2335,6 +2335,7 @@ async function mount(page, overview, overrides = {}) {
       return route.fulfill(response(bootstrap));
     }
     if (url.pathname === "/api/overview") return route.fulfill(response(overview));
+    if (url.pathname === "/api/tasks/approvals") return route.fulfill(response({ok:true,requests:[]}));
     if (url.pathname === "/api/assets" && request.method() === "GET") {
       const projection = url.searchParams.get("projection") === "trash" ? "trash" : "active";
       const projectId = url.searchParams.get("project_id") || "";
@@ -2904,6 +2905,71 @@ async function assertHostWorkPage() {
     await page.close();
   }
 }
+async function assertCommandApprovalPage() {
+  for (const viewport of [{width:1440,height:1000},{width:390,height:844}]) {
+    const page = await browser.newPage({viewport});
+    const runtime = await mount(page,scopedFixture());
+    const request = {approval_id:"approval-"+viewport.width,project_id:"project:fixture",thread_id:"host-thread",turn_id:"host-turn",request_id:7,item_id:"item-1",root:"C:/project",request_digest:"a".repeat(64),command:'echo "<img src=x onerror=alert(1)>"',permitted_decisions:["decline"]};
+    let requests = [request];
+    const sent = [];
+    let fail = false;
+    let listFail = false;
+    await page.route("**/api/tasks/approvals",route => {assert.deepEqual(route.request().postDataJSON(),{project_id:"project:fixture"});return listFail ? route.abort("failed") : route.fulfill(response({ok:true,requests}));});
+    await page.route("**/api/tasks/approvals/respond",route => {sent.push(route.request().postDataJSON());return fail ? route.abort("timedout") : route.fulfill(response({ok:true,status:"SUBMITTED",approval_id:request.approval_id,work_completed:false}));});
+    await page.evaluate(async () => { await selectProjectScope("project:fixture");setView("review"); });
+    await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+    const section = page.locator("#command-approvals");
+    assert.equal(await section.locator("pre").textContent(),request.command);
+    assert.equal(await section.locator("img").count(),0);
+    assert.equal(await section.getByRole("button").count(),1);
+    assert.equal(await section.getByRole("button",{name:"Allow command"}).count(),0);
+    if(evidenceDir) await page.screenshot({path:path.join(evidenceDir,"command-approval-"+viewport.width+".png"),animations:"disabled"});
+    await section.getByRole("button",{name:"Decline command"}).focus();
+    await page.keyboard.press("Enter");
+    await page.waitForFunction(() => document.querySelector("#command-approvals").textContent.includes("Decision sent."));
+    assert.equal(await section.evaluate(el => el === document.activeElement),true,await page.evaluate(() => document.activeElement.outerHTML.slice(0,300)));
+    assert.deepEqual(sent,[{approval_id:request.approval_id,project_id:request.project_id,thread_id:request.thread_id,turn_id:request.turn_id,request_digest:request.request_digest,decision:"decline",acknowledge:true}]);
+    await page.evaluate(() => refreshCommandApprovals());
+    assert.equal(await section.getByRole("button").count(),0,"submitted request must not reappear from stale listing");
+    requests=[{...request,approval_id:"empty",permitted_decisions:[]}];
+    await page.evaluate(() => refreshCommandApprovals());
+    assert.equal(await section.getByRole("button").count(),0);
+    assert.match(await section.textContent(),/No supported decision/);
+    requests=[{...request,approval_id:"uncertain",permitted_decisions:["cancel"]}];fail=true;
+    await page.evaluate(() => refreshCommandApprovals());
+    await section.getByRole("button",{name:"Decline and stop turn"}).click();
+    await page.waitForFunction(() => !commandApprovals.pending);
+    await page.waitForFunction(() => document.querySelector("#command-approvals").textContent.includes("Delivery is unconfirmed"));
+    await page.evaluate(() => refreshCommandApprovals());
+    assert.equal(sent.length,2);
+    assert.equal(await section.getByRole("button").count(),0);
+    assert.match(await section.textContent(),/Delivery is unconfirmed/);
+    listFail=true;
+    await page.evaluate(() => refreshCommandApprovals());
+    assert.match(await section.textContent(),/Delivery is unconfirmed/);
+    assert.doesNotMatch(await section.textContent(),/No decision was sent/);
+    await page.evaluate(() => setDataStatus("stale"));
+    assert.match(await section.textContent(),/Delivery is unconfirmed/);
+    await page.evaluate(() => {setProjectSelection("all");renderCommandApprovals();});
+    assert.doesNotMatch(await section.textContent(),/Delivery is unconfirmed/,"uncertainty must not leak into another scope");
+    await page.evaluate(() => {setProjectSelection("project:fixture");setDataStatus("current");});
+    listFail=false;
+    await page.evaluate(() => refreshCommandApprovals());
+    assert.match(await section.textContent(),/Delivery is unconfirmed/);
+    assert.equal(await section.getByRole("button").count(),0,"reconnect cannot reoffer an attempted request");
+    assert.equal(sent.length,2,"timeout, list failure and reconnect never resend");
+    requests=[{...request,approval_id:"wrong-project",project_id:"foreign"},{...request,approval_id:"bad-digest",request_digest:"invalid"},{...request,approval_id:"bad-decision",permitted_decisions:["approve"]}];
+    await page.evaluate(() => refreshCommandApprovals());
+    assert.equal(await section.getByRole("button").count(),0,"malformed and foreign requests fail closed");
+    requests=[{...request,approval_id:"fresh"}];fail=false;
+    await page.evaluate(() => refreshCommandApprovals());
+    await page.evaluate(() => setDataStatus("stale"));
+    assert.equal(await section.getByRole("button").count(),0);
+    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth+1),true);
+    assert.ok(runtime.runtimeErrors.every(error => /net::ERR_FAILED|net::ERR_TIMED_OUT/.test(error)),runtime.runtimeErrors.join(" | "));
+    await page.close();
+  }
+}
 const proofFeed = imageProofFixture(6);
 proofFeed.items.push({
   task_id: "ctrl", project_id: "project:fixture", evidence_id: "fixture-generating-asset", digest: "9".repeat(64),
@@ -2957,6 +3023,7 @@ proofFeed.items.push({
     roleManifests: roleManifestFixture(),
   };
   try {
+    await assertCommandApprovalPage();
     await assertHostWorkPage();
     const onboardingPage = await browser.newPage({ viewport: { width: 1440, height: 1000 } });
     {

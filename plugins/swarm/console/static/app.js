@@ -754,6 +754,7 @@ function setDataStatus(status, observedAt = null) {
   if (!snapshotDot || !snapshot) return;
   const connection = status === "current" ? "live" : status === "unavailable" ? "offline" : "reconnecting";
   state.connectionStatus = connection;
+  if (connection !== "live") clearCommandApprovals();
   if (connection !== "live" && state.view === "overview") renderProjectDetail();
   snapshotDot.classList.toggle("is-live", connection === "live");
   snapshotDot.classList.toggle("is-reconnecting", connection === "reconnecting");
@@ -1063,6 +1064,7 @@ function scopeLabel() {
 }
 
 function setProjectSelection(projectId, ctrlId = "") {
+  clearCommandApprovals();
   const nextProjectId = String(projectId || "all");
   const nextCtrlId = String(ctrlId || "");
   const changed = state.projectId !== nextProjectId || state.ctrlId !== nextCtrlId;
@@ -3273,7 +3275,83 @@ function proofReviewState(item) {
   return humanize(item.review_status || item.disposition || item.status || "Status unavailable");
 }
 
+const commandApprovals = { projectId: "", generation: 0, requests: [], attempted: new Map(), pending: false, status: "Select a project to review command requests." };
+
+function clearCommandApprovals() {
+  commandApprovals.generation++;
+  commandApprovals.requests = [];
+  commandApprovals.status = "Command requests unavailable until a fresh connection is restored.";
+  renderCommandApprovals();
+}
+
+function renderCommandApprovals() {
+  const host = $("#command-approvals");
+  if (!host) return;
+  const requests = state.connectionStatus === "live" && commandApprovals.projectId === selectedProgressProjectId() ? commandApprovals.requests : [];
+  const labels = { accept: "Allow command", decline: "Decline command", cancel: "Decline and stop turn" };
+host.innerHTML = '<header class="overview-section-head"><h2>Command requests</h2></header><p role="status">' + escapeHTML(commandApprovals.status) + '</p>' + requests.map((request, index) => '<article class="panel command-approval"><pre>' + escapeHTML(request.command) + '</pre><details><summary>Request details</summary><p>' + escapeHTML(request.root) + '</p><p>Task ' + escapeHTML(request.thread_id) + ' · Turn ' + escapeHTML(request.turn_id) + '</p><p>' + escapeHTML(request.request_digest) + '</p></details><div class="review-actions">' + request.permitted_decisions.map((decision) => '<button class="quiet-button" type="button" data-command-approval="' + index + '" data-command-decision="' + decision + '">' + labels[decision] + '</button>').join("") + '</div>' + (request.permitted_decisions.length ? '<small>Your decision is sent once to this running request.</small>' : '<p>No supported decision is offered for this request.</p>') + '</article>').join("");
+  for (const attempt of commandApprovals.attempted.values()) {
+    if (attempt.uncertain && attempt.projectId === selectedProgressProjectId()) host.insertAdjacentHTML("beforeend", '<p role="status">Delivery is unconfirmed for task ' + escapeHTML(attempt.threadId) + '. Do not resend; check the original task in Codex.</p>');
+  }
+}
+
+async function refreshCommandApprovals() {
+  if (commandApprovals.pending) return;
+  const projectId = selectedProgressProjectId();
+  const generation = ++commandApprovals.generation;
+  commandApprovals.projectId = projectId;
+  commandApprovals.requests = [];
+  if (!projectId || state.connectionStatus !== "live") {
+    commandApprovals.status = projectId ? "Command requests unavailable." : "Select a project to review command requests.";
+    renderCommandApprovals(); return;
+  }
+  try {
+    const result = await api("/api/tasks/approvals", {method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({project_id:projectId}),timeoutMs:15000});
+    if (generation !== commandApprovals.generation || projectId !== selectedProgressProjectId()) return;
+    if (result?.ok !== true || !Array.isArray(result.requests)) throw new Error("Invalid command request response.");
+    commandApprovals.requests = result.requests.filter((request) => request?.project_id === projectId &&
+      ["approval_id","thread_id","turn_id","root","command","item_id","request_digest"].every((key) => typeof request[key] === "string" && request[key].length > 0) &&
+      /^[a-f0-9]{64}$/i.test(request.request_digest) && ["string","number"].includes(typeof request.request_id) &&
+      Array.isArray(request.permitted_decisions) && request.permitted_decisions.every((choice) => ["accept","decline","cancel"].includes(choice)) &&
+      !commandApprovals.attempted.has(request.approval_id));
+    commandApprovals.status = commandApprovals.requests.length ? "Review the command before sending a decision." : "No supported live command requests in this project.";
+  } catch {
+    if (generation !== commandApprovals.generation || projectId !== selectedProgressProjectId()) return;
+    commandApprovals.requests = [];
+    commandApprovals.status = "Command requests unavailable.";
+  }
+  renderCommandApprovals();
+}
+
+async function respondCommandApproval(index, decision) {
+  const request = commandApprovals.requests[index];
+  if (!request || state.connectionStatus !== "live" || request.project_id !== selectedProgressProjectId() || !request.permitted_decisions.includes(decision) || commandApprovals.attempted.has(request.approval_id)) return;
+  const payload = Object.fromEntries(["approval_id","project_id","thread_id","turn_id","request_digest"].map((key) => [key,request[key]]));
+  const attempt = { projectId: request.project_id, threadId: request.thread_id, uncertain: true };
+  commandApprovals.attempted.set(request.approval_id, attempt);
+  commandApprovals.pending = true;
+  commandApprovals.requests = [];
+  const generation = ++commandApprovals.generation;
+  commandApprovals.status = "Sending decision…";
+  renderCommandApprovals();
+  $("#command-approvals").focus();
+  try {
+    const result = await api("/api/tasks/approvals/respond", {method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({...payload,decision,acknowledge:true}),timeoutMs:15000});
+    if (generation !== commandApprovals.generation || request.project_id !== selectedProgressProjectId()) return;
+    if (result?.ok !== true || result.status !== "SUBMITTED" || result.approval_id !== request.approval_id || result.work_completed !== false) throw new Error("Unconfirmed delivery");
+    attempt.uncertain = false;
+    commandApprovals.status = "Decision sent. Host acceptance and work completion are not yet confirmed.";
+  } catch {
+    if (generation !== commandApprovals.generation || request.project_id !== selectedProgressProjectId()) return;
+    commandApprovals.status = "Decision receipt unavailable.";
+  } finally {
+    commandApprovals.pending = false;
+  }
+  renderCommandApprovals();
+}
+
 function renderReview() {
+  renderCommandApprovals();
   const items = scopedProofItems();
   const status = currentProofStatus();
   $("#review-status").textContent = status === "stale" ? "Showing the last received proof" : items.length ? items.length + " proof item" + (items.length === 1 ? "" : "s") : "No proof in this scope";
@@ -5361,7 +5439,7 @@ async function refreshMonitoring(proofSequence) {
     clearConnectionState();
     setDataStatus("current", state.overview?.generated_at);
     renderProjectNavigation();
-    await Promise.all([refreshUsageHistory(), refreshNotifications(), refreshRunLogs(), refreshAssets(), refreshDiagnostics(false)]);
+    await Promise.all([refreshUsageHistory(), refreshNotifications(), refreshRunLogs(), refreshAssets(), refreshDiagnostics(false), refreshCommandApprovals()]);
     if (Number(proofSequence) !== state.proofSequence) await refreshProof();
     renderOverview();
     renderAgents();
@@ -5450,7 +5528,7 @@ async function refreshOverview(showLoading = true) {
     clearConnectionState();
     setDataStatus("current", state.overview?.generated_at);
     renderProjectNavigation();
-    await Promise.all([refreshProof(), refreshUsageHistory(), refreshProjectProgress(), refreshProjectProgressFeed(), refreshRoleManifests(), refreshNotifications(), refreshRunLogs(), refreshAssets(), refreshProfileSummary()]);
+    await Promise.all([refreshProof(), refreshUsageHistory(), refreshProjectProgress(), refreshProjectProgressFeed(), refreshRoleManifests(), refreshNotifications(), refreshRunLogs(), refreshAssets(), refreshProfileSummary(), refreshCommandApprovals()]);
     const selectedCtrl = state.ctrlId || historicalControllers()[0]?.id || '';
     const previousConfig = state.config;
     const results = await Promise.allSettled([api('/api/storage'), selectedCtrl ? api('/api/ctrl-settings?ctrl_id=' + encodeURIComponent(selectedCtrl)) : Promise.resolve(null), readConfigState(previousConfig), refreshDiagnostics(false)]);
@@ -5803,6 +5881,10 @@ $("#message-send").addEventListener("click", () => sendMessageFromComposer(false
 $("#message-retry").addEventListener("click", () => sendMessageFromComposer(true));
 
 $("#profile").addEventListener("click", (event) => openProfile(event.currentTarget));
+$("#command-approvals").addEventListener("click", (event) => {
+  const button = event.target.closest("[data-command-approval]");
+  if (button) respondCommandApproval(Number(button.dataset.commandApproval), button.dataset.commandDecision);
+});
 $("#profile-close").addEventListener("click", () => closeProfile());
 $("#profile-cancel").addEventListener("click", () => closeProfile());
 $("#profile-form").addEventListener("submit", saveProfile);
