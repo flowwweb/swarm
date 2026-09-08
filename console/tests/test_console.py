@@ -180,6 +180,7 @@ class SwarmConsoleTests(unittest.TestCase):
                     self.assertEqual(len(rows), 1)
                     self.assertEqual(bridge.approval_requests("other", str(self.root)), [])
                     row = rows[0]
+                    self.assertEqual(row["permitted_decisions"], ["accept", "decline", "cancel"])
                     for changes in ({"kind": "writeStdin"}, {"kind": None}, {"environmentId": "unbound-remote"}, {"kind": "command", "environmentId": "unbound-local"}):
                         blocked = copy.deepcopy(request)
                         blocked["params"].update(changes)
@@ -218,6 +219,29 @@ class SwarmConsoleTests(unittest.TestCase):
                     with self.assertRaises(console.ConsoleError):
                         bridge.respond_approval(payload, str(self.root))
                     self.assertFalse(terminated.is_set())
+                    for offered, expected in ((["cancel", "unknown", "decline"], ["decline", "cancel"]),
+                                              (["unknown", "acceptForSession"], []), (None, ["accept", "decline", "cancel"]), ("accept", [])):
+                        variant = copy.deepcopy(request)
+                        variant["id"] = "offers-" + console._auto_digest(offered)
+                        if offered is None:
+                            variant["params"].pop("availableDecisions")
+                        else:
+                            variant["params"]["availableDecisions"] = offered
+                        deliver(variant)
+                        projected = bridge.approval_requests("project", str(self.root))[0]
+                        self.assertEqual(projected["permitted_decisions"], expected)
+                        projected["permitted_decisions"].append("not-authorized")
+                        self.assertEqual(bridge.approval_requests("project", str(self.root))[0]["permitted_decisions"], expected)
+                        decision_payload = {**payload, "approval_id": projected["approval_id"], "request_digest": projected["request_digest"]}
+                        for decision in ("accept", "decline", "cancel"):
+                            if decision not in expected:
+                                with self.assertRaises(console.ConsoleError):
+                                    bridge.respond_approval({**decision_payload, "decision": decision}, str(self.root))
+                        if expected:
+                            bridge.respond_approval({**decision_payload, "decision": expected[0]}, str(self.root))
+                            self.assertEqual(written[-1], {"id": variant["id"], "result": {"decision": expected[0]}})
+                        else:
+                            deliver({"method": "serverRequest/resolved", "params": {"threadId": "owned-thread", "requestId": variant["id"]}})
                     request["id"] = "uncertain-write"
                     request["params"].update(kind="command", environmentId=None)
                     deliver(request)

@@ -444,7 +444,7 @@ class CodexStdioBridge:
 
     def approval_requests(self, project_id: str, root: str) -> list[dict[str, Any]]:
         with self._approval_lock:
-            return [dict(record) for record, respond in self._approvals.values()
+            return [copy.deepcopy(record) for record, respond in self._approvals.values()
                 if record["project_id"] == project_id and record["root"] == root]
 
     def respond_approval(self, payload: dict[str, Any], root: str) -> dict[str, Any]:
@@ -566,11 +566,13 @@ class CodexStdioBridge:
                                                 "request_id": native_id, "request_digest": _auto_digest(message),
                                                 "command": params["command"], "item_id": params["itemId"]}
                                             choices = params.get("availableDecisions")
-                                            def respond(decision, record=record, native_id=native_id, choices=choices):
+                                            record["permitted_decisions"] = [choice for choice in ("accept", "decline", "cancel")
+                                                if choices is None or isinstance(choices, list) and choice in choices]
+                                            def respond(decision, record=record, native_id=native_id):
                                                 if cleaned or process.poll() is not None or terminal_matches() or record["turn_id"] != turn_id:
                                                     self._approvals.pop(record["approval_id"], None)
                                                     raise ConsoleError("approval session is no longer current")
-                                                if choices is not None and (not isinstance(choices, list) or decision not in choices):
+                                                if decision not in record["permitted_decisions"]:
                                                     raise ConsoleError("decision not offered by host")
                                                 del self._approvals[record["approval_id"]]  # Consume before uncertain write; never resend.
                                                 send({"id": native_id, "result": {"decision": decision}})
