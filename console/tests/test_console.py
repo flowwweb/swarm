@@ -569,6 +569,8 @@ class SwarmConsoleTests(unittest.TestCase):
             handler._error = mock.Mock()
             handler.do_POST()
             return handler
+        prepared = app.task_message_context({"project_id": "project:alpha", "thread_id": "task"})
+        self.assertEqual(prepared["expected_ledger_revision"], payload["envelope"]["expected_ledger_revision"])
         for key, value in (("target_thread_id", "missing"), ("project_id", "foreign"), ("root_digest", "a"*64), ("payload_digest", "b"*64), ("ctrl_id", "invented"), ("expected_ledger_revision", 999)):
             bad = copy.deepcopy(payload)
             bad["envelope"][key] = value
@@ -589,6 +591,12 @@ class SwarmConsoleTests(unittest.TestCase):
         self.assertEqual(post(payload)._json.call_args.args[1]["status"], "REPLAY")
         self.assertEqual(app.progress_ledger._state.path.read_bytes(), before)
         self.assertEqual(len(sent), 2)
+        stale = copy.deepcopy(payload)
+        stale["envelope"].update(command_id="stale-context", idempotency_key="stale-context", expected_ledger_revision=prepared["expected_ledger_revision"])
+        stale_result = post(stale)
+        self.assertTrue(stale_result._error.called or stale_result._json.call_args.args[1].get("status") == "CONFLICT")
+        self.assertEqual(len(sent), 2)
+        self.assertEqual(app.progress_ledger._state.path.read_bytes(), before)
         for name, reply in (("active", {"thread": {"id": "task", "cwd": str(root), "status": {"type": "active"}}}),
                             ("wrong-root", {"thread": {"id": "task", "cwd": str(self.codex_home), "status": {"type": "idle"}}}),
                             ("unknown-state", {"thread": {"id": "task", "cwd": str(root)}})):
@@ -611,6 +619,55 @@ class SwarmConsoleTests(unittest.TestCase):
         self.assertEqual(post(uncertain)._json.call_args.args[1]["status"], "PENDING")
         self.assertEqual(len(sent), calls, "uncertain existing message cannot be mistaken for a historical turn or resent")
         self.assertEqual(app.progress_ledger._state.path.read_bytes(), before)
+
+    def test_task_message_context_is_exact_read_only_preparation(self) -> None:
+        with closing(sqlite3.connect(self.database)) as connection:
+            connection.execute("UPDATE project_roots SET path=? WHERE project_id=?", (str(self.root), "project:alpha"))
+            connection.execute("UPDATE threads SET cwd=? WHERE id='task'", (str(self.root),))
+            connection.commit()
+        app = console.App(self.codex_home, self.config)
+        def post(body, token=None):
+            handler = self._handler("127.0.0.1", "127.0.0.1:4788", token=app.token if token is None else token)
+            handler.server.app = app
+            handler.path = "/api/tasks/message-context"
+            handler._payload = mock.Mock(return_value=body)
+            handler._json = mock.Mock()
+            handler._error = mock.Mock()
+            handler.do_POST()
+            return handler
+        payload = {"project_id": "project:alpha", "thread_id": "task"}
+        before = app.progress_ledger.replay()
+        with mock.patch.object(app.auto_bridge, "command_session", side_effect=AssertionError("context must not dispatch")):
+            response = post(payload)
+        response._error.assert_not_called()
+        context = response._json.call_args.args[1]
+        self.assertEqual(context["project_id"], "project:alpha")
+        self.assertEqual(context["target_thread_id"], "task")
+        self.assertEqual(context["root_digest"], console._auto_digest({"project_id": "project:alpha", "canonical_root": console._normalized_project_path(str(self.root.resolve()))}))
+        self.assertEqual(context["expected_ledger_revision"], before["cursor"]["event_seq"])
+        self.assertEqual(context["expires_at_ms"] - context["submitted_at_ms"], 60000)
+        self.assertEqual((context["action"], context["target_intent"], context["ctrl_id"]), ("TASK", "EXISTING_THREAD", ""))
+        self.assertNotIn("command_id", context)
+        self.assertNotIn("instruction", context)
+        self.assertEqual(app.progress_ledger.replay(), before)
+        post(payload, token="wrong")._error.assert_called_once()
+        post({**payload, "project_id": "foreign"})._error.assert_called_once()
+        post({**payload, "thread_id": "missing"})._error.assert_called_once()
+        with mock.patch.object(app, "_observed_task_root", side_effect=[self.root, self.codex_home]):
+            post(payload)._error.assert_called_once()
+        with closing(sqlite3.connect(self.database)) as connection:
+            connection.execute("UPDATE threads SET archived=1 WHERE id='task'")
+            connection.commit()
+        post(payload)._error.assert_called_once()
+        handler = self._handler("127.0.0.1", "127.0.0.1:4788", token=app.token)
+        handler.server.app = app
+        capability = handler._bootstrap_payload()["capabilities"]["task_message"]
+        self.assertEqual(capability["endpoint"], "/api/tasks/message")
+        self.assertEqual(capability["context_endpoint"], "/api/tasks/message-context")
+        self.assertNotIn("hq_connector", handler._bootstrap_payload()["capabilities"])
+        remote = self._handler("203.0.113.1", "127.0.0.1:4788", token=app.token)
+        remote.server.app = app
+        self.assertEqual(remote._bootstrap_payload()["capabilities"], {})
 
     def test_importlib_loaded_server_can_import_packaged_console_siblings(self) -> None:
         self.assertIn(str(console.CONSOLE_ROOT), sys.path)

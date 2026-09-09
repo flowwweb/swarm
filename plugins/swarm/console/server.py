@@ -9854,6 +9854,22 @@ class App:
     def message_task(self, payload: dict[str, Any]) -> dict[str, Any]:
         return self._submit_task_command(payload, HQCommandAction.TASK)
 
+    def task_message_context(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """Read command inputs, never reserve or authorize a submission."""
+        if set(payload) != {"project_id", "thread_id"}:
+            raise ConsoleError("message context requires exact project and thread")
+        project_id = _auto_id(payload["project_id"], "project_id")
+        thread_id = _auto_id(payload["thread_id"], "thread_id")
+        root = self._observed_task_root(project_id, thread_id)
+        revision = self.progress_ledger.replay()["cursor"]["event_seq"]
+        if type(revision) is not int or revision < 0 or self._observed_task_root(project_id, thread_id) != root:
+            raise ConsoleError("message context changed or is unavailable")
+        now = int(time.time() * 1000)
+        return {"ok": True, "project_id": project_id, "target_thread_id": thread_id,
+                "root_digest": _auto_digest({"project_id": project_id, "canonical_root": _normalized_project_path(str(root))}),
+                "expected_ledger_revision": revision, "submitted_at_ms": now, "expires_at_ms": now + 60000,
+                "action": "TASK", "target_intent": "EXISTING_THREAD", "ctrl_id": ""}
+
     def _submit_task_command(self, payload: dict[str, Any], action: HQCommandAction) -> dict[str, Any]:
         """Called only after strict-loopback POST authorization; RESULT is dispatch only."""
         if set(payload) != {"envelope", "instruction", "acknowledge"} or payload["acknowledge"] is not True:
@@ -15623,6 +15639,8 @@ class Handler(BaseHTTPRequestHandler):
             "config_path": str(self.server.app.config_path) if local else "",
             "local_only": local,
             "read_only": not local,
+            "capabilities": {"task_message": {"contract": "swarm.hq_task_message.v1", "method": "POST",
+                "endpoint": "/api/tasks/message", "context_endpoint": "/api/tasks/message-context"}} if self._peer_is_loopback() else {},
         }
 
     def _config_payload(self, query: dict[str, str] | None = None) -> dict[str, Any]:
@@ -16051,6 +16069,12 @@ class Handler(BaseHTTPRequestHandler):
                 if set(query) - {"task_id"} or ("task_id" in query and (len(query["task_id"]) != 1 or not query["task_id"][0])):
                     raise ConsoleError("invalid startup task identity")
                 self._json(HTTPStatus.OK, self.server.app.claim_portal_open(query.get("task_id", [""])[0]))
+                return
+            if path == "/api/tasks/message-context":
+                if not self._authorized_auto():
+                    self._error(HTTPStatus.FORBIDDEN, "message context requires strict loopback authorization")
+                    return
+                self._json(HTTPStatus.OK, self.server.app.task_message_context(self._payload()))
                 return
             if path in {"/api/tasks/history", "/api/tasks/history-roster"}:
                 if not self._authorized_auto():
