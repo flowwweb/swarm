@@ -2178,7 +2178,10 @@ class Swarm:
         root=Path(repo_root)
         if not root.is_absolute(): raise InvariantError("request continuity requires an explicit absolute repo root")
         from .progress_events import Ledger
-        resolved=root.resolve(); self.request_continuity_enabled=True; self.request_store=RequestStore(resolved); self.request_lifecycle_ledger=Ledger(resolved); audit=self.request_audit(0); self.request_feed_sequence_floor=max((record.transitions[-1].cursor.feed_sequence for record in audit.records),default=0); return audit
+        resolved=root.resolve()
+        if not isinstance(self.request_lifecycle_ledger,Ledger) or self.request_lifecycle_ledger.root!=resolved:
+            raise InvariantError("request continuity requires a construction-bound Ledger for the same repo root")
+        self.request_store=RequestStore(resolved); self.request_continuity_enabled=True; audit=self.request_audit(0); self.request_feed_sequence_floor=max((record.transitions[-1].cursor.feed_sequence for record in audit.records),default=0); return audit
     enable_request_continuity=attach_request_store
     def _request_store(self) -> RequestStore:
         if self.request_store is None: raise InvariantError("durable request store is not attached")

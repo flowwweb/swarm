@@ -10,7 +10,7 @@ import sys
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
 from runtime import AcceptanceContract, ArtifactFileEvidence, ArtifactIdentity, ArtifactParityReceipt, CtrlFeedEventKind, CtrlFeedMessage, CtrlFeedPart, CtrlMode, CtrlSurfaceKind, DelegatedEvidence, DelegatedReceiptVerdict, DelegatedReturnReceipt, DelegationContract, LaneKind, ProofClass, RequestDue, RequestState, ReviewEvidence, ReviewScope, ReviewStrategy, Role, Swarm, Task, TaskState, WatchdogBinding, WatchdogRouteRole, Worker, derive_workflow_graph
 from runtime.request_ledger import RequestStore, RequestStoreError
-from runtime.progress_events import PROGRESS_LEDGER_PATH
+from runtime.progress_events import Ledger, PROGRESS_LEDGER_PATH
 
 SCRIPT=Path(__file__).resolve().parents[1]/"scripts"/"swarm_contract.py"; SPEC=importlib.util.spec_from_file_location("ledger_contract",SCRIPT); bridge=importlib.util.module_from_spec(SPEC); sys.modules[SPEC.name]=bridge; SPEC.loader.exec_module(bridge)
 def task(identity="T"):
@@ -25,7 +25,7 @@ def delegated_accept(value, identity="T"):
     receipt=DelegatedReturnReceipt(f"return-{identity}",identity,contract.owner_id,DelegatedReceiptVerdict.ACCEPT,contract.artifact,"Exact request-ledger owner return.",(evidence,),parity,(),1)
     value.record_delegated_return(Role.DOER,identity,receipt,actor_id=contract.owner_id)
 def swarm(root):
-    value=Swarm(); value.add_lead(Role.CTRL,"L"); value.add_worker(Role.LEAD,Worker("D","L",1)); value.attach_request_store(root); return value
+    value=Swarm(request_lifecycle_ledger=Ledger(root)); value.add_lead(Role.CTRL,"L"); value.add_worker(Role.LEAD,Worker("D","L",1)); value.attach_request_store(root); return value
 def event(value,task_id,request_ids,suffix,kind,proof_prefix="evd",proof_override=""):
     proof=proof_override or f"{proof_prefix}-proof_{suffix}000"; evidence=f"proof-{suffix}"; receipt=f"evt-event_{suffix}000"
     value.register_ctrl_evidence(Role.DOER,task_id,evidence,"test",f"{suffix}.txt"); value.surface_ctrl_evidence(Role.CTRL,evidence,surface_kind=CtrlSurfaceKind.INLINE_RECEIPT,caption="Current proof.",claim_limit="Local only.",surface_receipt=proof)
@@ -34,6 +34,18 @@ def accepted(value,identity="T"):
     staged=value.stage_request_task(Role.CTRL,task(identity)); decision,_=event(value,identity,(staged.request_id,),f"accept{identity}",CtrlFeedEventKind.DECISION,"usr"); view=bridge.register(value,staged.id,decision,accepted_at=1,due=RequestDue("due-accept",2)); value.activate_accepted_task(Role.LEAD,identity,view.record.id); return view
 
 class RequestLedgerTests(unittest.TestCase):
+    def test_attachment_preserves_construction_authority_and_rejects_other_roots_without_mutation(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root=Path(temp); ledger=Ledger(root)
+            for value,target in [(Swarm(),root),(Swarm(request_lifecycle_ledger=ledger),root/"other")]:
+                before=(value.request_continuity_enabled,value.request_store,value.request_lifecycle_ledger,value.request_feed_sequence_floor)
+                with self.assertRaisesRegex(Exception,"construction-bound Ledger"):
+                    value.attach_request_store(target)
+                self.assertEqual((value.request_continuity_enabled,value.request_store,value.request_lifecycle_ledger,value.request_feed_sequence_floor),before)
+            value=Swarm(request_lifecycle_ledger=ledger); value.attach_request_store(root)
+            self.assertIs(value.request_lifecycle_ledger,ledger)
+            self.assertTrue(value.request_continuity_enabled)
+
     def test_request_store_remains_importable_transport_only_surface(self):
         with tempfile.TemporaryDirectory() as temp:
             store=RequestStore(Path(temp)); state,_,attached=store.peek(); self.assertFalse(attached); self.assertEqual(state["version"],2); self.assertNotIn("requests",state); self.assertEqual(set(state),{"version","sequence","order","inbox","acknowledgements","stages"})
