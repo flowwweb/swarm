@@ -754,6 +754,7 @@ function setDataStatus(status, observedAt = null) {
   if (!snapshotDot || !snapshot) return;
   const connection = status === "current" ? "live" : status === "unavailable" ? "offline" : "reconnecting";
   state.connectionStatus = connection;
+  if (connection !== "live") invalidateMessageHistory();
   if (connection !== "live") clearCommandApprovals();
   if (connection !== "live" && state.view === "overview") renderProjectDetail();
   snapshotDot.classList.toggle("is-live", connection === "live");
@@ -1069,6 +1070,7 @@ function setProjectSelection(projectId, ctrlId = "") {
   const nextCtrlId = String(ctrlId || "");
   const changed = state.projectId !== nextProjectId || state.ctrlId !== nextCtrlId;
   if (changed) {
+    invalidateMessageHistory();
     state.projectUiGroupId = "";
     state.assetPage = 0;
     state.projectArtifactPage = 0;
@@ -4057,9 +4059,124 @@ function messageRecipients() {
 function selectedMessageRecipient(recipients = messageRecipients()) {
   const selected = recipients.find((recipient) => recipient.id === state.messageRecipientId);
   if (selected) return selected;
+  if (state.messageRecipientId) return null;
   const preferred = recipients.find((recipient) => recipient.structuralRole === "CTRL") || recipients[0] || null;
   state.messageRecipientId = preferred?.id || "";
   return preferred;
+}
+
+let messageHistoryRequestGeneration = 0;
+let messageRosterRequestGeneration = 0;
+function invalidateMessageHistory() {
+  messageHistoryRequestGeneration += 1;
+  messageRosterRequestGeneration += 1;
+  state.messageHistory = null;
+  state.messageRoster = null;
+  renderMessageHistory();
+}
+
+function messageRosterProjectId() {
+  if (state.connectionStatus !== "live") return "";
+  const projectId = state.ctrlId ? runLogBindingForCtrl(state.ctrlId)?.projectId : selectedProgressProjectId();
+  if (!projectId || (state.ctrlId && !["all", projectId, "ctrl:" + state.ctrlId].includes(state.projectId))) return "";
+  return savedProjectRoster().projects.some(project => project.id === projectId) ? projectId : "";
+}
+
+async function refreshMessageConversation() {
+  if (!state.messageOpen) return;
+  const projectId = messageRosterProjectId();
+  const generation = ++messageRosterRequestGeneration;
+  const scope = JSON.stringify([state.projectId, state.ctrlId, projectId]);
+  if (!projectId || state.messageRoster?.project_id !== projectId || !["AVAILABLE","PARTIAL"].includes(state.messageRoster.status)) {
+    state.messageRoster = {project_id:projectId, status:projectId ? "LOADING" : "UNAVAILABLE", items:[], truncated:false};
+  }
+  renderMessageComposer();
+  if (!projectId) return;
+  try {
+    const result = await api("/api/tasks/history-roster", {method:"POST", timeoutMs:15_000, body:JSON.stringify({project_id:projectId})});
+    if (generation !== messageRosterRequestGeneration || !state.messageOpen || scope !== JSON.stringify([state.projectId, state.ctrlId, messageRosterProjectId()])) return;
+    if (result?.project_id !== projectId || !["AVAILABLE","EMPTY","PARTIAL","UNAVAILABLE"].includes(result.status)
+      || typeof result.truncated !== "boolean" || result.truncated !== (result.status === "PARTIAL")
+      || !Array.isArray(result.items) || result.items.length > 500
+      || result.items.some(item => !item || item.project_id !== projectId || typeof item.thread_id !== "string" || !item.thread_id || typeof item.title !== "string" || [...item.title].length > 160)
+      || new Set(result.items.map(item => item.thread_id)).size !== result.items.length
+      || (result.status === "AVAILABLE" && !result.items.length) || (["EMPTY","UNAVAILABLE"].includes(result.status) && result.items.length)) throw new Error("Invalid conversation roster");
+    state.messageRoster = result;
+  } catch {
+    if (generation !== messageRosterRequestGeneration || !state.messageOpen || scope !== JSON.stringify([state.projectId, state.ctrlId, messageRosterProjectId()])) return;
+    state.messageRoster = {project_id:projectId,status:"UNAVAILABLE",items:[],truncated:false};
+  }
+  renderMessageComposer();
+  await refreshMessageHistory();
+}
+
+function messageHistoryRecipients() {
+  const projectId = messageRosterProjectId();
+  const roster = state.messageRoster;
+  if (!projectId || roster?.project_id !== projectId || !["AVAILABLE","PARTIAL"].includes(roster.status)) return [];
+  const project = savedProjectRoster().projects.find(item => item.id === projectId);
+  return roster.items.map(item => ({id:item.thread_id,projectId,label:publicLabel(item.title,"Codex task"),projectLabel:project.label}));
+}
+
+function messageHistoryBinding() {
+  const recipient = messageHistoryRecipients().find(item => item.id === state.messageRecipientId);
+  return recipient ? JSON.stringify([state.projectId, state.ctrlId, recipient.projectId, recipient.id]) : "";
+}
+
+async function refreshMessageHistory() {
+  if (!state.messageOpen) return;
+  const generation = ++messageHistoryRequestGeneration;
+  const binding = messageHistoryBinding();
+  const recipient = messageHistoryRecipients().find(item => item.id === state.messageRecipientId);
+  if (!binding || state.messageHistory?.binding !== binding || state.messageHistory.status !== "AVAILABLE") {
+    state.messageHistory = {binding, status: recipient ? "LOADING" : "UNAVAILABLE", items: []};
+  }
+  renderMessageHistory();
+  if (!recipient) return;
+  try {
+    const result = await api("/api/tasks/history", {method: "POST", timeoutMs: 15_000,
+      body: JSON.stringify({project_id: recipient.projectId, thread_id: recipient.id})});
+    if (generation !== messageHistoryRequestGeneration || !state.messageOpen || binding !== messageHistoryBinding()) return;
+    const items = result?.items;
+    if (result?.project_id !== recipient.projectId || result?.thread_id !== recipient.id
+      || !["AVAILABLE", "EMPTY", "UNAVAILABLE"].includes(result.status) || typeof result.truncated !== "boolean"
+      || !Array.isArray(items) || items.length > 100 || new TextEncoder().encode(JSON.stringify(items)).length > 65536
+      || items.some(item => !item || typeof item.id !== "string" || !item.id || typeof item.turn_id !== "string" || !item.turn_id
+        || !["user", "assistant"].includes(item.role) || typeof item.text !== "string" || [...item.text].length > 4096)
+      || new Set(items.map(item => item.id)).size !== items.length
+      || (result.status === "AVAILABLE") !== Boolean(items.length)
+      || (result.status !== "UNAVAILABLE" && !normalizedActionDigest(result.cursor))) throw new Error("Invalid conversation snapshot");
+    state.messageHistory = {...result, binding};
+  } catch {
+    if (generation !== messageHistoryRequestGeneration || !state.messageOpen || binding !== messageHistoryBinding()) return;
+    state.messageHistory = {binding, status: "UNAVAILABLE", items: []};
+  }
+  renderMessageHistory();
+}
+
+function renderMessageHistory() {
+  const host = $("#message-conversation-items");
+  if (!host) return;
+  const binding = messageHistoryBinding();
+  const snapshot = binding && state.messageHistory?.binding === binding ? state.messageHistory : null;
+  const status = snapshot?.status || "UNAVAILABLE";
+  const roster = state.messageRoster?.project_id === messageRosterProjectId() ? state.messageRoster : null;
+  const rosterStatus = $("#message-roster-status");
+  if (rosterStatus) rosterStatus.textContent = !messageRosterProjectId() ? "Choose a project to view its conversations."
+    : roster?.status === "LOADING" ? "Loading conversations…"
+    : roster?.status === "PARTIAL" ? "Showing a limited conversation list. Some tasks may be omitted."
+    : roster?.status === "EMPTY" ? "No retained conversations in this project."
+    : roster?.status === "UNAVAILABLE" ? "Conversation list is unavailable. Try refreshing HQ." : "";
+  $("#message-conversation-state").textContent = state.connectionStatus !== "live" ? "Conversation unavailable while HQ is disconnected."
+    : !binding ? "Choose a recipient to view a conversation."
+    : status === "LOADING" ? "Loading conversation…"
+    : status === "EMPTY" ? "No messages yet."
+    : status === "AVAILABLE" ? (snapshot.truncated ? "Showing the latest available messages. Earlier content is omitted." : "")
+    : "Conversation is unavailable. Try refreshing HQ.";
+  host.setAttribute("aria-busy", String(status === "LOADING"));
+  const markup = status === "AVAILABLE" ? snapshot.items.map(item => '<article class="message-history-item" data-message-id="' + escapeHTML(item.id) + '"><strong>'
+    + (item.role === "user" ? "You" : "Assistant") + '</strong><p>' + escapeHTML(item.text) + '</p></article>').join("") : "";
+  if (host.innerHTML !== markup) host.innerHTML = markup;
 }
 
 function normalizedActionDigest(value) {
@@ -4207,15 +4324,17 @@ function renderMessageComposer() {
   const panel = $("#message-composer");
   if (!panel) return;
   const recipients = messageRecipients();
-  const recipient = selectedMessageRecipient(recipients);
+  const historyRecipients = messageHistoryRecipients();
+  if (historyRecipients.length && !historyRecipients.some(item => item.id === state.messageRecipientId)) state.messageRecipientId = historyRecipients[0].id;
+  const recipient = recipients.find(item => item.id === state.messageRecipientId) || null;
   const identity = messageContextIdentity(recipient);
   const attachments = messageAttachments();
   const retryContext = state.messagePendingAction ? messageImplicitContext(recipient, state.messagePendingAction.request_id) : null;
   const canRetry = Boolean(state.messageConnector && retryContext && messageActionBinding(retryContext) === messageActionBinding(state.messagePendingAction));
-  $("#message-recipient").innerHTML = recipients.length
-    ? recipients.map((item) => '<option value="' + escapeHTML(item.id) + '"' + (item.id === recipient?.id ? " selected" : "") + '>' + escapeHTML(item.label + " · " + item.structuralRole + " · " + item.projectLabel) + '</option>').join("")
-    : '<option value="">No authorized recipients</option>';
-  $("#message-recipient").disabled = !recipients.length || state.messageStatus === "pending";
+  $("#message-recipient").innerHTML = historyRecipients.length
+    ? historyRecipients.map(item => '<option value="' + escapeHTML(item.id) + '"' + (item.id === state.messageRecipientId ? " selected" : "") + '>' + escapeHTML(item.label + " · " + item.projectLabel) + '</option>').join("")
+    : '<option value="">No observed conversations</option>';
+  $("#message-recipient").disabled = !historyRecipients.length || state.messageStatus === "pending";
   const draft = $("#message-draft");
   if (draft.value !== state.messageDraft) draft.value = state.messageDraft;
   draft.disabled = state.messageStatus === "pending";
@@ -4226,9 +4345,7 @@ function renderMessageComposer() {
   $("#message-retry").hidden = !["failed", "conflict"].includes(state.messageStatus);
   $("#message-retry").disabled = !canRetry || state.messageStatus === "pending";
   $("#message-status").textContent = messageStatusCopy(recipient);
-  $("#message-conversation-state").textContent = state.connectionStatus !== "live"
-    ? "Conversation unavailable while HQ is disconnected."
-    : recipient ? "Conversation history is unavailable for this recipient." : "Choose a recipient to view a conversation.";
+  renderMessageHistory();
   $("#message-launcher").setAttribute("aria-expanded", String(state.messageOpen));
   $("#mobile-message-action").setAttribute("aria-expanded", String(state.messageOpen));
   panel.dataset.contextAvailable = String(Boolean(identity && attachments));
@@ -4248,6 +4365,7 @@ function openMessageComposer(trigger) {
   state.messageOpen = true;
   renderMessageComposer();
   showMessageComposerDialog();
+  refreshMessageConversation();
   if (!history.state?.messageComposer) history.pushState({ ...(history.state || {}), messageComposer: true }, "", location.href);
   requestAnimationFrame(() => (selectedMessageRecipient() ? $("#message-draft") : $("#message-close"))?.focus({ preventScroll: true }));
 }
@@ -4258,6 +4376,7 @@ function closeMessageComposer(restoreFocus = true, fromHistory = false) {
     return;
   }
   state.messageOpen = false;
+  invalidateMessageHistory();
   const panel = $("#message-composer");
   if (panel.open) panel.close();
   renderMessageComposer();
@@ -5454,7 +5573,7 @@ async function refreshMonitoring(proofSequence) {
     clearConnectionState();
     setDataStatus("current", state.overview?.generated_at);
     renderProjectNavigation();
-    await Promise.all([refreshUsageHistory(), refreshNotifications(), refreshRunLogs(), refreshAssets(), refreshDiagnostics(false), refreshCommandApprovals()]);
+    await Promise.all([refreshUsageHistory(), refreshNotifications(), refreshRunLogs(), refreshAssets(), refreshDiagnostics(false), refreshCommandApprovals(), refreshMessageConversation()]);
     if (Number(proofSequence) !== state.proofSequence) await refreshProof();
     renderOverview();
     renderAgents();
@@ -5543,7 +5662,9 @@ async function refreshOverview(showLoading = true) {
     clearConnectionState();
     setDataStatus("current", state.overview?.generated_at);
     renderProjectNavigation();
-    await Promise.all([refreshProof(), refreshUsageHistory(), refreshProjectProgress(), refreshProjectProgressFeed(), refreshRoleManifests(), refreshNotifications(), refreshRunLogs(), refreshAssets(), refreshProfileSummary(), refreshCommandApprovals()]);
+    renderOverview();
+    if (showLoading) setLoading(false);
+    await Promise.all([refreshProof(), refreshUsageHistory(), refreshProjectProgress(), refreshProjectProgressFeed(), refreshRoleManifests(), refreshNotifications(), refreshRunLogs(), refreshAssets(), refreshProfileSummary(), refreshCommandApprovals(), refreshMessageConversation()]);
     const selectedCtrl = state.ctrlId || historicalControllers()[0]?.id || '';
     const previousConfig = state.config;
     const results = await Promise.allSettled([api('/api/storage'), selectedCtrl ? api('/api/ctrl-settings?ctrl_id=' + encodeURIComponent(selectedCtrl)) : Promise.resolve(null), readConfigState(previousConfig), refreshDiagnostics(false)]);
@@ -5891,6 +6012,7 @@ $("#message-recipient").addEventListener("change", (event) => {
   state.messageError = "";
   state.messageReceipt = null;
   renderMessageComposer();
+  refreshMessageHistory();
 });
 $("#message-send").addEventListener("click", () => sendMessageFromComposer(false));
 $("#message-retry").addEventListener("click", () => sendMessageFromComposer(true));

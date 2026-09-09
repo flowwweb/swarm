@@ -213,7 +213,8 @@ assert.match(app, /function showMessageComposerDialog\(\)[\s\S]*?panel\.showModa
 assert.match(app, /history\.pushState\(\{ \.\.\.\(history\.state \|\| \{\}\), messageComposer: true \}/);
 assert.match(indexHtml, /<h2 id="message-title">Message<\/h2>/);
 assert.match(indexHtml, /<header class="message-composer-header">[\s\S]*?id="message-recipient"[\s\S]*?<\/header>/);
-assert.match(indexHtml, /class="message-composer-body edge-scroll">[\s\S]*?role="log" aria-label="Conversation"[\s\S]*?Conversation history is unavailable\./);
+assert.match(indexHtml, /class="message-composer-body edge-scroll">[\s\S]*?id="message-conversation-state" role="status"[\s\S]*?id="message-conversation-items" role="log" aria-label="Messages"/);
+assert.doesNotMatch(indexHtml, /HQ does not expose a conversation-history feed|Messages will appear here when conversation access is available/);
 assert.match(indexHtml, /<footer class="message-composer-footer">[\s\S]*?id="message-draft"[^>]*maxlength="4000"[\s\S]*?id="message-status"/);
 assert.match(indexHtml, /id="message-send"[^>]*aria-label="Send message"[^>]*disabled[^>]*aria-disabled="true"/);
 assert.match(indexHtml, /Messaging is unavailable until SWARM exposes the authenticated HQ connector\./);
@@ -1798,6 +1799,113 @@ for (const forbidden of ["hidden usage", "developer instructions", "prompts", "t
   assert.match(render(), /Host work unavailable/);
   assert.match(app, /No recorded ' \+ \(segment.segment_id === "segment.project.progress.active" \? "active" : "queued"\)/);
 }
+{
+  const source = app.slice(app.indexOf("function selectedMessageRecipient"), app.indexOf("function canonicalActionValue"));
+  const h = vm.runInNewContext(`(() => {
+    const state = {messageOpen:true, messageRecipientId:"a", projectId:"p1", ctrlId:"", connectionStatus:"live",
+      overview:{nodes:[]},messageRoster:{project_id:"p1",status:"AVAILABLE",truncated:false,items:[{thread_id:"a",project_id:"p1",title:"Retained A"}]}};
+    const elements = new Map();
+    function $(key) { if(!elements.has(key)) elements.set(key,{innerHTML:"",textContent:"",setAttribute(){},classList:{toggle(){}}}); return elements.get(key); }
+    const calls=[];
+    function api(url, options) { return new Promise((resolve,reject)=>calls.push({url,body:JSON.parse(options.body),resolve,reject})); }
+    function savedProjectRoster(){return {projects:[{id:"p1",label:"One"},{id:"p2",label:"Two"}]};}
+    function selectedProgressProjectId(){return state.projectId === "all" ? "" : state.projectId;}
+    function runLogBindingForCtrl(){return state.binding || null;}
+    function publicLabel(value){return value;}
+    function messageRecipients(){return [];}
+    function clearCommandApprovals(){} function renderProjectDetail(){} function renderSystemHealth(){} function renderNotifications(){} function renderRunLogSurfaces(){} function formatRelative(){return "now";}
+    function renderMessageComposer(){renderMessageHistory();}
+    function escapeHTML(value){return String(value).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;");}
+    ${source}
+    ${app.slice(app.indexOf("function setProjectSelection("),app.indexOf("function renderScopeNotice("))}
+    ${app.slice(app.indexOf("function setDataStatus("),app.indexOf("function scopedNodes("))}
+    return {state,calls,read:refreshMessageHistory,roster:refreshMessageConversation,select:setProjectSelection,connection:setDataStatus,render:renderMessageHistory,recipients:messageHistoryRecipients,sendRecipient:selectedMessageRecipient,
+      rosterText:()=>$("#message-roster-status").textContent,text:()=>$("#message-conversation-state").textContent,html:()=>$("#message-conversation-items").innerHTML};
+  })()`, {TextEncoder});
+  const snapshot = (thread_id="a", project_id="p1", text="hello") => ({thread_id,project_id,status:"AVAILABLE",truncated:false,cursor:"a".repeat(64),items:[{id:"m1",turn_id:"t1",role:"assistant",text}]});
+  const roster = (project_id="p1",thread_id="a") => ({project_id,status:"AVAILABLE",truncated:false,items:[{thread_id,project_id,title:"Retained task"}]});
+  assert.deepEqual(Array.from(h.recipients(), x=>x.id),["a"],"read chooser excludes foreign project");
+  h.state.ctrlId="ctrl";h.state.binding={projectId:"p2"};
+  assert.equal(h.recipients().length,0,"conflicting project/CTRL selection fails closed");
+  h.state.binding=null;assert.equal(h.recipients().length,0,"unresolved CTRL is not all projects");h.state.ctrlId="";
+  assert.equal(h.sendRecipient(),null,"observed read access grants no send authority");
+  let flight=h.read();
+  assert.match(h.text(),/Loading/);
+  assert.equal(h.calls[0].url,"/api/tasks/history");
+  assert.deepEqual({...h.calls[0].body},{project_id:"p1",thread_id:"a"});
+  h.calls[0].resolve(snapshot("a","p1",'<img src=x onerror=alert(1)>\nsecond line')); await flight;
+  assert.equal(h.state.messageHistory.status,"AVAILABLE");
+  assert.match(h.html(),/&lt;img/); assert.doesNotMatch(h.html(),/<img/);
+  // A -> B -> A: an older same-key success or failure must not overwrite the latest read.
+  const old=h.read();
+  h.state.projectId="p2";h.state.messageRecipientId="b";h.state.messageRoster=roster("p2","b"); const foreign=h.read();
+  h.state.projectId="p1";h.state.messageRecipientId="a";h.state.messageRoster=roster(); const latest=h.read();
+  h.calls[3].resolve(snapshot("a","p1","newest")); await latest;
+  h.calls[1].resolve(snapshot("a","p1","old"));await old;
+  h.calls[2].reject(new Error("stale transport"));await foreign;
+  assert.match(h.html(),/newest/);assert.doesNotMatch(h.html(),/>old</);
+  const oldError=h.read();const newest=h.read();
+  h.calls[5].resolve(snapshot());await newest;h.calls[4].reject(new Error("old error"));await oldError;
+  assert.equal(h.state.messageHistory.status,"AVAILABLE");
+  for (const [result,status,copy] of [
+    [{...snapshot(),status:"EMPTY",items:[]},"EMPTY",/No messages yet/],
+    [{...snapshot(),status:"UNAVAILABLE",items:[],cursor:null},"UNAVAILABLE",/unavailable/],
+    [snapshot("b","p2"),"UNAVAILABLE",/unavailable/],
+    [{...snapshot(),cursor:null},"UNAVAILABLE",/unavailable/],
+    [{...snapshot(),items:[...snapshot().items,...snapshot().items]},"UNAVAILABLE",/unavailable/],
+    [{...snapshot(),truncated:true},"AVAILABLE",/Earlier content is omitted/],
+  ]) {
+    const run=h.read();h.calls.at(-1).resolve(result);await run;
+    assert.equal(h.state.messageHistory.status,status);assert.match(h.text(),copy);
+  }
+  const pending=h.read();h.state.projectId="p2";h.state.messageRecipientId="b";
+  h.calls.at(-1).resolve(snapshot());await pending;h.render();
+  assert.equal(h.html(),"","scope change hides old transcript even without replacement request");
+  h.state.connectionStatus="reconnecting";h.render();assert.match(h.text(),/disconnected/);assert.equal(h.html(),"");
+  h.state.messageOpen=false;const count=h.calls.length;await h.read();assert.equal(h.calls.length,count,"closed composer does not read");
+  h.state.messageOpen=true;h.state.messageRecipientId="a";h.select("p1");h.connection("current");
+  for (const reject of [false,true]) {
+    h.state.messageRoster=roster();const run=h.read();const call=h.calls.at(-1);
+    h.select("p2");h.select("p1");
+    reject ? call.reject(new Error("old")) : call.resolve(snapshot());await run;
+    assert.equal(h.state.messageHistory,null,"actual scope setters invalidate ABA with no replacement read");
+    h.state.messageRoster=roster();const reconnect=h.read();const response=h.calls.at(-1);
+    h.connection("stale");h.connection("current");
+    reject ? response.reject(new Error("old")) : response.resolve(snapshot());await reconnect;
+    assert.equal(h.state.messageHistory,null,"actual connection setters invalidate reconnect response");
+  }
+  for (const result of [{...roster(),status:"PARTIAL",truncated:true,items:[]},{...roster(),status:"EMPTY",items:[]},{...roster(),status:"UNAVAILABLE",items:[]},roster("p2","b")]) {
+    const run=h.roster();h.calls.at(-1).resolve(result);await run;
+    assert.equal(h.recipients().length,0);
+    assert.match(h.rosterText(),result.status==="PARTIAL" ? /limited.*omitted/ : result.status==="EMPTY" ? /No retained/ : /unavailable/);
+  }
+  const retained=h.roster();h.calls.at(-1).resolve(roster());await Promise.resolve();await Promise.resolve();
+  assert.deepEqual(Array.from(h.recipients(),x=>x.id),["a"],"inactive target absent Overview remains selectable");
+  h.calls.at(-1).resolve(snapshot());await retained;
+  assert.equal(h.state.messageHistory.status,"AVAILABLE");
+  for (const reject of [false,true]) {
+    const oldRoster=h.roster();const call=h.calls.at(-1);h.select("p2");h.select("p1");
+    reject ? call.reject(new Error("old roster")) : call.resolve(roster());await oldRoster;
+    assert.equal(h.state.messageRoster,null,"roster success/error cannot survive setter ABA");
+  }
+  assert.match(app,/refreshCommandApprovals\(\), refreshMessageConversation\(\)/,"history uses existing refresh owner");
+}
+{
+  const source=app.slice(app.indexOf("async function refreshOverview("),app.indexOf("async function initialize("));
+  for(const delayed of ["refreshUsageHistory","refreshMessageConversation","readConfigState"]) {
+    const state={overview:null,config:null};const rendered=[];let loading=false,release;
+    const pending=new Promise(resolve=>release=resolve);
+    const context={state,Promise,setLoading:value=>loading=value,renderOverview:()=>rendered.push(state.overview),renderAllViews:()=>{},
+      api:async()=>({generated_at:123,nodes:[{id:"actual"}]}),overviewRequestPath:()=>"/api/overview",historicalControllers:()=>[],
+      clearError(){},clearConnectionState(){},setDataStatus(){},renderProjectNavigation(){},showError(){},showConnectionState(){}};
+    for(const name of ["refreshProof","refreshUsageHistory","refreshProjectProgress","refreshProjectProgressFeed","refreshRoleManifests","refreshNotifications","refreshRunLogs","refreshAssets","refreshProfileSummary","refreshCommandApprovals","refreshMessageConversation","readConfigState","refreshDiagnostics","refreshSkills","refreshAutoStatus"]) context[name]=name===delayed?()=>pending:async()=>null;
+    const run=vm.runInNewContext(source+";refreshOverview()",context);
+    for(let i=0;i<8;i++)await Promise.resolve();
+    assert.equal(loading,false,delayed+" must not hold the project skeleton");
+    assert.equal(rendered[0],state.overview,"render actual overview before auxiliary completion");
+    release(null);await run;
+  }
+}
 if (process.argv.includes("--source-only") || agentsSourceOnly) {
   console.log("SWARM console source UI contract passed");
   process.exit(0);
@@ -2971,6 +3079,45 @@ async function assertCommandApprovalPage() {
   }
 }
 const proofFeed = imageProofFixture(6);
+async function assertConversationHistoryBrowser() {
+  for (const viewport of [{width:1440,height:1000},{width:390,height:844}]) {
+    const page=await browser.newPage({viewport});
+    const errors=[];page.on("pageerror",error=>errors.push(error.message));
+    await mount(page,scopedFixture());
+    const calls=[];
+    let history={project_id:"project:fixture",thread_id:"observed",status:"AVAILABLE",truncated:false,cursor:"b".repeat(64),
+      items:[{id:"msg",turn_id:"turn",role:"assistant",text:'Literal <img src=x onerror="alert(1)">\n'+"Long message ".repeat(80)}]};
+    await page.route("**/api/tasks/history-roster",async route=>{
+      assert.deepEqual(route.request().postDataJSON(),{project_id:"project:fixture"});
+      await route.fulfill(response({project_id:"project:fixture",status:"PARTIAL",truncated:true,items:[{thread_id:"observed",project_id:"project:fixture",title:"Retained conversation"}]}));
+    });
+    await page.route("**/api/tasks/history", async route=>{
+      calls.push(route.request().postDataJSON());await route.fulfill(response(history));
+    });
+    await page.evaluate(()=>{
+      state.projectId="project:fixture";state.ctrlId="";state.connectionStatus="live";
+      state.overview.nodes=[];
+      state.messageRecipientId="observed";openMessageComposer();
+    });
+    await page.locator('[data-message-id="msg"]').waitFor();
+    assert.match(await page.locator("#message-roster-status").textContent(),/limited.*omitted/);
+    assert.match(await page.locator("#message-conversation-items").textContent(),/Literal <img/);
+    assert.equal(await page.locator("#message-conversation-items img").count(),0);
+    assert.equal(await page.locator("#message-send").isDisabled(),true);
+    assert.deepEqual(calls,[{project_id:"project:fixture",thread_id:"observed"}]);
+    assert.equal(await page.locator("#message-composer").evaluate(el=>{
+      const body=el.querySelector(".message-composer-body"),footer=el.querySelector("footer").getBoundingClientRect();
+      return getComputedStyle(body).overflowY==="auto" && body.scrollWidth<=body.clientWidth+1 && footer.bottom<=innerHeight+1 && document.documentElement.scrollWidth<=innerWidth+1;
+    }),true);
+    history={...history,status:"EMPTY",items:[]};await page.evaluate(()=>refreshMessageHistory());
+    assert.equal(await page.locator("#message-conversation-state").textContent(),"No messages yet.");
+    history={...history,status:"UNAVAILABLE",cursor:null};await page.evaluate(()=>refreshMessageHistory());
+    assert.match(await page.locator("#message-conversation-state").textContent(),/unavailable/);
+    await page.locator("#message-recipient").focus();await page.keyboard.press("Escape");
+    assert.equal(await page.locator("#message-composer").isVisible(),false);
+    assert.deepEqual(errors,[]);await page.close();
+  }
+}
 async function assertObservedTaskAndChat() {
   for (const viewport of [{width:1440,height:1000},{width:390,height:844}]) {
     const page = await browser.newPage({viewport});
@@ -3069,6 +3216,7 @@ proofFeed.items.push({
   try {
     await assertCommandApprovalPage();
     await assertObservedTaskAndChat();
+    await assertConversationHistoryBrowser();
     await assertHostWorkPage();
     const onboardingPage = await browser.newPage({ viewport: { width: 1440, height: 1000 } });
     {
