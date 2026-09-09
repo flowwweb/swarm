@@ -530,6 +530,88 @@ class SwarmConsoleTests(unittest.TestCase):
         self.assertEqual(len(sent), calls)
         self.assertEqual(app.progress_ledger.project_task_creation_bindings("project:alpha")["bindings"], binding["bindings"])
 
+    def test_existing_task_message_http_retains_replay_and_never_reuses_old_turn(self) -> None:
+        from contextlib import contextmanager
+        with closing(sqlite3.connect(self.database)) as connection:
+            connection.execute("UPDATE project_roots SET path=? WHERE project_id=?", (str(self.root), "project:alpha"))
+            connection.execute("UPDATE threads SET cwd=? WHERE id='task'", (str(self.root),))
+            connection.commit()
+        app = console.App(self.codex_home, self.config)
+        root = app._canonical_project_root("project:alpha")
+        instruction = "Reply exactly SWARM_MESSAGE_PROBE_OK."
+        now = int(time.time() * 1000)
+        payload = {"acknowledge": True, "instruction": instruction, "envelope": {
+            "command_id": "message-one", "idempotency_key": "message-key", "action": "TASK",
+            "project_id": "project:alpha", "root_digest": console._auto_digest({"project_id": "project:alpha", "canonical_root": console._normalized_project_path(str(root))}),
+            "ctrl_id": "", "target_intent": "EXISTING_THREAD", "target_thread_id": "task",
+            "payload_digest": hashlib.sha256(instruction.encode()).hexdigest(), "expected_ledger_revision": 0,
+            "submitted_at_ms": now, "expires_at_ms": now + 60000}}
+        sent = []
+        responses = [{"thread": {"id": "task", "cwd": str(root), "status": {"type": "idle"}}}, {"turn": {"id": "message-turn"}}]
+        @contextmanager
+        def session(cwd, **kwargs):
+            self.assertEqual(cwd, root)
+            def send(message):
+                sent.append(message)
+                if message["method"] == "thread/resume":
+                    self.assertEqual(message["params"], {"threadId": "task"})
+                else:
+                    self.assertEqual(message["method"], "turn/start")
+                    self.assertEqual(message["params"], {"threadId": "task", "cwd": str(root), "input": [{"type": "text", "text": instruction, "text_elements": []}]})
+            yield send, lambda predicate: {"id": sent[-1]["id"], "result": responses.pop(0)}
+        app.auto_bridge.command_session = session
+        def post(body, token=None):
+            handler = self._handler("127.0.0.1", "127.0.0.1:4788", token=app.token if token is None else token)
+            handler.server.app = app
+            handler.path = "/api/tasks/message"
+            handler._payload = mock.Mock(return_value=body)
+            handler._json = mock.Mock()
+            handler._error = mock.Mock()
+            handler.do_POST()
+            return handler
+        for key, value in (("target_thread_id", "missing"), ("project_id", "foreign"), ("root_digest", "a"*64), ("payload_digest", "b"*64), ("ctrl_id", "invented"), ("expected_ledger_revision", 999)):
+            bad = copy.deepcopy(payload)
+            bad["envelope"][key] = value
+            response = post(bad)
+            self.assertTrue(response._error.called or response._json.call_args.args[1].get("status") == "CONFLICT")
+        post(payload, token="wrong")._error.assert_called_once()
+        self.assertEqual(sent, [])
+        self.assertEqual(app.progress_ledger.replay()["connector_receipts"], {})
+        result = post(payload)
+        result._error.assert_not_called()
+        result = result._json.call_args.args[1]
+        self.assertEqual((result["status"], result["thread_id"], result["turn_id"]), ("RESULT", "task", "message-turn"))
+        self.assertFalse(result["work_completed"])
+        before = app.progress_ledger._state.path.read_bytes()
+        self.assertNotIn(instruction.encode(), before)
+        app = console.App(self.codex_home, self.config)
+        app.auto_bridge.command_session = session
+        self.assertEqual(post(payload)._json.call_args.args[1]["status"], "REPLAY")
+        self.assertEqual(app.progress_ledger._state.path.read_bytes(), before)
+        self.assertEqual(len(sent), 2)
+        for name, reply in (("active", {"thread": {"id": "task", "cwd": str(root), "status": {"type": "active"}}}),
+                            ("wrong-root", {"thread": {"id": "task", "cwd": str(self.codex_home), "status": {"type": "idle"}}}),
+                            ("unknown-state", {"thread": {"id": "task", "cwd": str(root)}})):
+            bad = copy.deepcopy(payload)
+            bad["envelope"].update(command_id=name, idempotency_key=name, expected_ledger_revision=app.progress_ledger.replay()["cursor"]["event_seq"])
+            responses.append(reply)
+            calls = len(sent)
+            pending = post(bad)._json.call_args.args[1]
+            self.assertEqual(pending["status"], "PENDING")
+            self.assertFalse(pending["work_completed"])
+            self.assertEqual(len(sent), calls+1)
+        uncertain = copy.deepcopy(payload)
+        uncertain["envelope"].update(command_id="uncertain-message", idempotency_key="uncertain-message", expected_ledger_revision=app.progress_ledger.replay()["cursor"]["event_seq"])
+        responses.extend([{"thread": {"id": "task", "cwd": str(root), "status": {"type": "idle"}}}, {}])
+        self.assertEqual(post(uncertain)._json.call_args.args[1]["status"], "PENDING")
+        before = app.progress_ledger._state.path.read_bytes()
+        calls = len(sent)
+        app = console.App(self.codex_home, self.config)
+        app.auto_bridge.command_session = session
+        self.assertEqual(post(uncertain)._json.call_args.args[1]["status"], "PENDING")
+        self.assertEqual(len(sent), calls, "uncertain existing message cannot be mistaken for a historical turn or resent")
+        self.assertEqual(app.progress_ledger._state.path.read_bytes(), before)
+
     def test_importlib_loaded_server_can_import_packaged_console_siblings(self) -> None:
         self.assertIn(str(console.CONSOLE_ROOT), sys.path)
         self.assertEqual(console.ConsoleStore(self.root / "console" / "importlib.sqlite3").skill_catalog()[0]["skill_id"], "find-skills")

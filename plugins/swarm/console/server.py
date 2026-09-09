@@ -9767,6 +9767,18 @@ class App:
         except (ConsoleError, OSError, ValueError, sqlite3.Error):
             return {**result, "reason": "HOST_ROSTER_UNVERIFIED"}
 
+    def _observed_task_root(self, project_id: str, thread_id: str) -> Path:
+        root = self._canonical_project_root(project_id).resolve(strict=True)
+        with closing(_readonly_connection(state_database(self.codex_home))) as connection:
+            columns = {row["name"] for row in connection.execute("PRAGMA table_info(threads)")}
+            project_column = "project_id" if "project_id" in columns else "'' AS project_id"
+            rows = connection.execute(f"SELECT id,cwd,archived,{project_column} FROM threads WHERE id=?", (thread_id,)).fetchall()
+            projects, roots = _host_project_catalog(connection)
+            project, state = _canonical_project_binding(rows[0], projects, roots) if len(rows) == 1 else (None, "unbound")
+        if project is None or project["id"] != project_id or state not in {"direct", "root"} or rows[0]["archived"]:
+            raise ConsoleError("task requires observed host project membership")
+        return root
+
     def task_history(self, payload: dict[str, Any]) -> dict[str, Any]:
         """Authenticated observation only; never admits send/steer authority."""
         if set(payload) != {"project_id", "thread_id"}:
@@ -9775,17 +9787,7 @@ class App:
         thread_id = _auto_id(payload["thread_id"], "thread_id")
 
         def scope():
-            root = self._canonical_project_root(project_id).resolve(strict=True)
-            # History is not limited to the Overview activity window.
-            with closing(_readonly_connection(state_database(self.codex_home))) as connection:
-                columns = {row["name"] for row in connection.execute("PRAGMA table_info(threads)")}
-                project_column = "project_id" if "project_id" in columns else "'' AS project_id"
-                rows = connection.execute(f"SELECT id,cwd,archived,{project_column} FROM threads WHERE id=?", (thread_id,)).fetchall()
-                projects, roots = _host_project_catalog(connection)
-                project, state = _canonical_project_binding(rows[0], projects, roots) if len(rows) == 1 else (None, "unbound")
-            if project is None or project["id"] != project_id or state not in {"direct", "root"} or rows[0]["archived"]:
-                raise ConsoleError("history requires observed host project membership")
-            return root
+            return self._observed_task_root(project_id, thread_id)
 
         root = scope()  # Reject foreign/unbound tasks before any native call.
         result = {"project_id": project_id, "thread_id": thread_id, "items": [],
@@ -9847,6 +9849,12 @@ class App:
             return {**result, "reason": "HOST_HISTORY_UNVERIFIED"}
 
     def create_bound_task(self, payload: dict[str, Any]) -> dict[str, Any]:
+        return self._submit_task_command(payload, HQCommandAction.MANUAL_AGENT)
+
+    def message_task(self, payload: dict[str, Any]) -> dict[str, Any]:
+        return self._submit_task_command(payload, HQCommandAction.TASK)
+
+    def _submit_task_command(self, payload: dict[str, Any], action: HQCommandAction) -> dict[str, Any]:
         """Called only after strict-loopback POST authorization; RESULT is dispatch only."""
         if set(payload) != {"envelope", "instruction", "acknowledge"} or payload["acknowledge"] is not True:
             raise ConsoleError("task submission requires envelope, instruction and explicit acknowledgement")
@@ -9855,12 +9863,15 @@ class App:
             fields["action"] = HQCommandAction(fields["action"])
             fields["target_intent"] = HQTargetIntent(fields["target_intent"])
             envelope = HQCommandEnvelope(**fields)
-            if envelope.action is not HQCommandAction.MANUAL_AGENT:
-                raise ValueError("only explicit new-task submission is supported")
+            if envelope.action is not action:
+                raise ValueError("task action conflicts with submission endpoint")
             contract = envelope.task_creation_contract()
-            if not contract or contract.get("independent_host_task") is not False:
+            if action is HQCommandAction.MANUAL_AGENT and (not contract or contract.get("independent_host_task") is not False):
                 raise ValueError("an exact bound task creation contract is required")
             root = self._canonical_project_root(envelope.project_id)
+            if action is HQCommandAction.TASK:
+                if envelope.ctrl_id or self._observed_task_root(envelope.project_id, envelope.target_thread_id) != root:
+                    raise ValueError("explicit task message requires exact membership, not a CTRL grant")
             material = HQDispatchMaterial(str(root), payload["instruction"].encode("utf-8"))
             root_digest = _auto_digest({"project_id": envelope.project_id, "canonical_root": _normalized_project_path(str(root))})
             if envelope.root_digest != root_digest or envelope.payload_digest != material.digest:
@@ -9876,6 +9887,8 @@ class App:
             # Recheck host catalog custody, not a title or host-issued project fiction.
             if self._canonical_project_root(envelope.project_id) != root:
                 raise ValueError("registered project root changed")
+            if action is HQCommandAction.TASK and self._observed_task_root(envelope.project_id, envelope.target_thread_id) != root:
+                raise ValueError("target task membership changed")
             return HQRootObservation("hq-root", str(root), root_digest)
 
         with ExitStack() as stack:
@@ -9892,9 +9905,15 @@ class App:
                 response = receive(lambda item: item.get("id") == request_id)
                 if response.get("error") is not None or not isinstance(response.get("result"), dict):
                     raise OSError(f"Codex App Server {method} failed")
+                if action is HQCommandAction.TASK and method == "thread/resume":
+                    thread = response["result"].get("thread", {})
+                    if not isinstance(thread, dict) or not isinstance(thread.get("status"), dict) or thread["status"].get("type") not in {"idle", "notLoaded"}:
+                        raise OSError("target task is active or its status is unverified")
                 return response["result"]
 
             def reconcile(command_id, action, target_thread_id):
+                if action == HQCommandAction.TASK.value:
+                    return None  # A historical turn cannot identify an uncertain new message.
                 if not target_thread_id:
                     return None  # Unknown thread identity cannot be rediscovered by resubmitting.
                 response = request("thread/read", {"threadId": target_thread_id, "includeTurns": True})
@@ -16031,12 +16050,13 @@ class Handler(BaseHTTPRequestHandler):
                 read = self.server.app.task_history_roster if path.endswith("-roster") else self.server.app.task_history
                 self._json(HTTPStatus.OK, read(self._payload()))
                 return
-            if path == "/api/tasks/create":
+            if path in {"/api/tasks/create", "/api/tasks/message"}:
                 if not self._authorized_auto():
                     self._error(HTTPStatus.FORBIDDEN, "task submission requires strict loopback authorization")
                     return
                 with self.server.app.write_lock:
-                    result = self.server.app.create_bound_task(self._payload())
+                    submit = self.server.app.create_bound_task if path.endswith("/create") else self.server.app.message_task
+                    result = submit(self._payload())
                 self._json(HTTPStatus.OK, result)
                 return
             if path in {"/api/tasks/approvals", "/api/tasks/approvals/respond"}:
