@@ -95,6 +95,8 @@ class ProgressEventTests(unittest.TestCase):
             {
                 "node_kind", "input_receipt_ids", "dispatch_receipt_id",
                 "completion_receipt_id", "cost_receipt_ids", "release_receipt_ids",
+                "role_manifest", "agent_manifest", "task_manifest",
+                "routing_evidence", "task_creation_binding",
             },
         )
         self.assertIn("topology", MATERIAL_EVENT_FIELDS)
