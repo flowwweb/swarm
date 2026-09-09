@@ -406,6 +406,29 @@ assert.match(app, /data-setting-action="replay-tour" type="button">Replay tour<\
 assert.match(app, /if \(action === 'replay-tour'\)[\s\S]*openOnboarding\(true, event\.target\.closest\('\[data-setting-action\]'\)\)/);
 const onboardingPersistenceStart = app.indexOf("function onboardingSeen");
 const onboardingPersistenceEnd = app.indexOf("\nfunction openOnboarding", onboardingPersistenceStart);
+{
+  let finishRefresh, opened = 0, seen = false, otherDialog = false;
+  const tourState = { overview: {}, messageOpen: false, onboardingShown: false };
+  const dialog = { open: false, showModal() { this.open = true; opened++; }, close() { this.open = false; } };
+  const sandbox = { state: tourState, HTMLElement: class {}, document: { activeElement: null, body: {} },
+    $: selector => selector === '.workspace' ? {classList:{contains:()=>false}} : selector === 'dialog[open]' ? (otherDialog ? {} : null) : selector === '.dialog-body' ? {} : dialog,
+    onboardingSeen: () => seen, markOnboardingSeen: () => { seen = true; }, ONBOARDING_STEPS: [1,2,3,4,5], onboardingConfigBlocked:()=>false,
+    renderOnboarding(){}, updateDocumentTitle(){}, requestAnimationFrame(){}, setDataStatus(){},
+    api: async()=>({}), messageConnectorCapability:()=>null, refreshOverview:()=>new Promise(resolve=>{finishRefresh=resolve;}) };
+  vm.createContext(sandbox);
+  vm.runInContext(app.slice(app.indexOf('function openOnboarding('),app.indexOf('function onboardingCanDismiss(')) + app.slice(app.indexOf('async function initialize()'),app.indexOf('let presenceTimer')),sandbox);
+  const initialized = sandbox.initialize();
+  await new Promise(resolve => setImmediate(resolve));
+  tourState.messageOpen = true;
+  finishRefresh(); await initialized;
+  assert.equal(opened,0,'late initialization must not cover active Message');
+  tourState.messageOpen = false; otherDialog = true; sandbox.openOnboarding();
+  assert.equal(opened,0,'automatic tour must not cover another dialog');
+  otherDialog = false; sandbox.openOnboarding(); assert.equal(opened,1,'first visit still opens');
+  sandbox.closeOnboarding(); tourState.onboardingShown=false; sandbox.openOnboarding();
+  assert.equal(opened,1,'explicit dismissal stays seen');
+  sandbox.openOnboarding(true); assert.equal(opened,2,'manual replay stays available');
+}
 const onboardingPersistence = vm.runInNewContext(`(() => { const ONBOARDING_PRESENTATION_KEY = "swarm.onboarding.v2.seen"; ${app.slice(onboardingPersistenceStart, onboardingPersistenceEnd)}; return { onboardingSeen, markOnboardingSeen }; })()`);
 const presentationValues = new Map([["unrelated.presentation", "preserve"]]);
 const presentationStorage = { getItem: (key) => presentationValues.get(key) ?? null, setItem: (key, value) => presentationValues.set(key, value) };

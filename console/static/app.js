@@ -355,6 +355,7 @@ function markOnboardingSeen(storage = window.localStorage) {
 }
 
 function openOnboarding(force = false, trigger = null) {
+  if (!force && (state.messageOpen || $("dialog[open]"))) return;
   if ((!force && (state.onboardingShown || onboardingSeen())) || !state.overview || $(".workspace").classList.contains("is-disconnected")) return;
   state.onboardingShown = true;
   state.onboardingStep = 0;
