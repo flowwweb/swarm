@@ -290,6 +290,41 @@ class SwarmConsoleTests(unittest.TestCase):
             self.assertTrue(terminated.wait(2), "test process custody must settle")
             self.assertTrue(reader_done.wait(2), "no unfinished reader session")
 
+    def test_task_history_roster_caps_in_memory(self) -> None:
+        class RetainedConnection(sqlite3.Connection):
+            def close(self):
+                pass  # Reuse this in-memory snapshot across the four reads.
+        connection = sqlite3.connect(":memory:", factory=RetainedConnection)
+        connection.row_factory = sqlite3.Row
+        with closing(sqlite3.connect(self.database)) as source:
+            source.backup(connection)
+        connection.execute("DELETE FROM threads")
+        connection.execute("UPDATE project_roots SET path=?", (str(self.root),))
+        connection.commit()
+        app = console.App(self.codex_home, self.config)
+        try:
+            with mock.patch.object(console, "_readonly_connection", return_value=connection), mock.patch.object(
+                app, "_canonical_project_root", return_value=self.root
+            ):
+                def roster(count, cwd):
+                    connection.rollback()
+                    connection.execute("DELETE FROM threads")
+                    connection.executemany("INSERT INTO threads(id,title,cwd,archived) VALUES(?,?,?,0)",
+                        ((f"t{i:05}", "Retained", cwd) for i in range(count)))
+                    connection.commit()
+                    return app.task_history_roster({"project_id": "project:alpha"})
+                exact = roster(500, str(self.root))
+                self.assertEqual((exact["status"], len(exact["items"]), exact["truncated"]), ("AVAILABLE", 500, False))
+                overflow = roster(501, str(self.root))
+                self.assertEqual((overflow["status"], len(overflow["items"]), overflow["truncated"]), ("PARTIAL", 500, True))
+                self.assertEqual(overflow["items"], exact["items"])
+                exact_scan = roster(10000, "C:/foreign")
+                self.assertEqual((exact_scan["status"], exact_scan["items"], exact_scan["truncated"]), ("EMPTY", [], False))
+                scan_overflow = roster(10001, "C:/foreign")
+                self.assertEqual((scan_overflow["status"], scan_overflow["items"], scan_overflow["truncated"]), ("PARTIAL", [], True))
+        finally:
+            sqlite3.Connection.close(connection)
+
     def test_task_history_authenticated_observed_independent_bounded_read(self) -> None:
         from contextlib import contextmanager
         with closing(sqlite3.connect(self.database)) as connection:
@@ -305,6 +340,18 @@ class SwarmConsoleTests(unittest.TestCase):
             connection.execute("UPDATE threads SET updated_at=1,updated_at_ms=1000 WHERE id='task'")
             connection.commit()
         self.assertFalse(any(node["id"] == "task" for node in app._host_overview(refresh=True)["nodes"]))
+        roster = app.task_history_roster({"project_id": "project:alpha"})
+        self.assertEqual(roster["status"], "AVAILABLE")
+        self.assertFalse(roster["truncated"])
+        self.assertEqual(roster["items"], [{"thread_id": "task", "project_id": "project:alpha", "title": "Ordinary task"}])
+        self.assertEqual(app.task_history_roster({"project_id": "missing"})["status"], "UNAVAILABLE")
+        with closing(sqlite3.connect(self.database)) as connection:
+            connection.execute("UPDATE threads SET archived=1 WHERE id='task'")
+            connection.commit()
+        self.assertEqual(app.task_history_roster({"project_id": "project:alpha"})["status"], "EMPTY")
+        with closing(sqlite3.connect(self.database)) as connection:
+            connection.execute("UPDATE threads SET archived=0 WHERE id='task'")
+            connection.commit()
         messages = [{"type": "userMessage", "id": "u", "content": [{"type": "text", "text": "Hello"}, {"type": "image", "url": "secret"}]},
                     {"type": "reasoning", "id": "r", "text": "private reasoning"},
                     {"type": "commandExecution", "id": "c", "aggregatedOutput": "private terminal"},
@@ -319,15 +366,17 @@ class SwarmConsoleTests(unittest.TestCase):
                 calls.append(message)
             yield send, lambda predicate: response
         app.auto_bridge.command_session = session
-        def post(thread_id="task", token=None):
+        def post(thread_id="task", token=None, roster=False):
             handler = self._handler("127.0.0.1", "127.0.0.1:4788", token=app.token if token is None else token)
             handler.server.app = app
-            handler.path = "/api/tasks/history"
-            handler._payload = mock.Mock(return_value={"project_id": "project:alpha", "thread_id": thread_id})
+            handler.path = "/api/tasks/history-roster" if roster else "/api/tasks/history"
+            handler._payload = mock.Mock(return_value={"project_id": "project:alpha"} if roster else {"project_id": "project:alpha", "thread_id": thread_id})
             handler._json, handler._error = mock.Mock(), mock.Mock()
             handler.do_POST()
             return handler
         post(token="wrong")._error.assert_called_once()
+        post(token="wrong", roster=True)._error.assert_called_once()
+        self.assertEqual(post(roster=True)._json.call_args.args[1]["items"], roster["items"])
         post("unsafe")._error.assert_called_once()
         self.assertEqual(calls, [])
         read = post()._json.call_args.args[1]

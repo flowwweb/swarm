@@ -9734,6 +9734,39 @@ class App:
         self._project_view_cache[project_id] = projection
         return copy.deepcopy(projection)
 
+    def task_history_roster(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """Bounded retained read choices, never role or send authority."""
+        if set(payload) != {"project_id"}:
+            raise ConsoleError("history roster requires exact project_id")
+        project_id = _auto_id(payload["project_id"], "project_id")
+        result = {"project_id": project_id, "status": "UNAVAILABLE", "items": [], "truncated": False}
+        try:
+            root = self._canonical_project_root(project_id).resolve(strict=True)
+            with closing(_readonly_connection(state_database(self.codex_home))) as connection:
+                connection.execute("BEGIN")
+                columns = {row["name"] for row in connection.execute("PRAGMA table_info(threads)")}
+                project_column = "project_id" if "project_id" in columns else "'' AS project_id"
+                projects, roots = _host_project_catalog(connection)
+                if project_id not in projects or (_normalized_project_path(str(root)), project_id) not in roots:
+                    raise ConsoleError("history roster project root unavailable")
+                rows = connection.execute(
+                    f"SELECT id,substr(title,1,160) AS title,cwd,{project_column} FROM threads WHERE archived=0 ORDER BY id LIMIT 10001"
+                ).fetchall()
+                items = []
+                for row in rows[:10000]:
+                    project, state = _canonical_project_binding(row, projects, roots)
+                    if project is None or project["id"] != project_id or state not in {"direct", "root"}:
+                        continue
+                    items.append({"thread_id": _auto_id(row["id"], "thread_id"), "project_id": project_id,
+                                  "title": " ".join(str(row["title"] or "").split())[:160]})
+            if self._canonical_project_root(project_id).resolve(strict=True) != root:
+                raise ConsoleError("history roster root changed")
+            truncated = len(rows) > 10000 or len(items) > 500
+            return {**result, "status": "PARTIAL" if truncated else "AVAILABLE" if items else "EMPTY",
+                    "items": items[:500], "truncated": truncated}
+        except (ConsoleError, OSError, ValueError, sqlite3.Error):
+            return {**result, "reason": "HOST_ROSTER_UNVERIFIED"}
+
     def task_history(self, payload: dict[str, Any]) -> dict[str, Any]:
         """Authenticated observation only; never admits send/steer authority."""
         if set(payload) != {"project_id", "thread_id"}:
@@ -15975,11 +16008,12 @@ class Handler(BaseHTTPRequestHandler):
             self._json(HTTPStatus.OK, self.server.app.claim_portal_open())
             return
         try:
-            if path == "/api/tasks/history":
+            if path in {"/api/tasks/history", "/api/tasks/history-roster"}:
                 if not self._authorized_auto():
                     self._error(HTTPStatus.FORBIDDEN, "history requires strict loopback authorization")
                     return
-                self._json(HTTPStatus.OK, self.server.app.task_history(self._payload()))
+                read = self.server.app.task_history_roster if path.endswith("-roster") else self.server.app.task_history
+                self._json(HTTPStatus.OK, read(self._payload()))
                 return
             if path == "/api/tasks/create":
                 if not self._authorized_auto():
