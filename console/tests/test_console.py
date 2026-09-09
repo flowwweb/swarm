@@ -7812,7 +7812,8 @@ class SwarmConsoleTests(unittest.TestCase):
                 })
             self.assertEqual(self.config.read_bytes(), current_bytes)
         atomic_projection = app.config_projection({"type": "global"})
-        atomic_text = atomic_projection["text"].replace("open_on_start = false", "open_on_start = true", 1)
+        atomic_text = atomic_projection["text"].replace("open_on_start = true", "open_on_start = false", 1)
+        self.assertNotEqual(atomic_text, atomic_projection["text"])
         with mock.patch.object(console.os, "replace", side_effect=OSError("replace blocked")):
             with self.assertRaisesRegex(console.ConsoleError, "replace blocked"):
                 app.update_config_source({
@@ -7847,6 +7848,24 @@ class SwarmConsoleTests(unittest.TestCase):
         )
         self.assertIsNone(fast_descriptor["current"])
         self.assertEqual(fast_descriptor["value_state"], "UNKNOWN")
+
+    def test_config_noop_snapshot_failure_retains_source_without_pending_recovery(self) -> None:
+        app = console.App(self.codex_home, self.config)
+        initial = app.config_projection({"type": "global"})
+        before = self.config.read_bytes()
+        with mock.patch.object(console.os, "replace", side_effect=OSError("replace blocked")):
+            with self.assertRaisesRegex(console.ConsoleError, "replace blocked"):
+                app.update_config_source({
+                    "scope": initial["scope"],
+                    "expected_revision": initial["revision"],
+                    "acknowledge": True,
+                    "text": initial["text"],
+                    "operation_id": "config-noop-snapshot-failure",
+                })
+        self.assertEqual(self.config.read_bytes(), before)
+        self.assertEqual(app.store.pending_config_events(), [])
+        self.assertIsNone(app.store.config_event("config-noop-snapshot-failure"))
+        self.assertEqual(app.config_projection(initial["scope"])["revision"], initial["revision"])
 
     def test_config_source_replay_retains_scope_and_cursor_across_restart(self) -> None:
         app = console.App(self.codex_home, self.config)

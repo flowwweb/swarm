@@ -13322,6 +13322,8 @@ class App:
             raise ConsoleError("config source changed outside the pending transaction")
         if not current_exists and source_existed:
             raise ConsoleError("config source disappeared during the pending transaction")
+        if source_existed and current_revision == before_revision:
+            return
         if current_revision == after_revision:
             if source_existed:
                 if not rollback_path.is_file() or rollback_path.is_symlink():
@@ -13332,11 +13334,6 @@ class App:
                 self._config_write_exact(self.config_path, rollback_bytes)
             else:
                 self.config_path.unlink()
-        elif current_revision is None and source_existed:
-            raise ConsoleError("config source cannot be recovered from the pending transaction")
-        elif current_revision == before_revision and source_existed:
-            if not current_exists:
-                raise ConsoleError("config source cannot be recovered from the pending transaction")
 
     def _recover_config_transactions(self) -> None:
         for retained in self.store.pending_config_events():
