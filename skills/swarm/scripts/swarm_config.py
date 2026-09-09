@@ -57,6 +57,12 @@ DEFAULTS: dict[str, Any] = {
         "project_progress_feed_lines": 4,
     },
     "automation": {"mode": "standard"},
+    "reports": {
+        "portfolio_enabled": False,
+        "project_enabled": False,
+        "skip_inactive": False,
+        "scope": "auto",
+    },
     "skills": {"inheritance_enabled": True, "default_profile": "default"},
     "logging": {"task_event_limit": 64},
     "proof": {
@@ -418,6 +424,12 @@ def validate(raw: dict[str, Any]) -> None:
     _expect_keys(automation, set(DEFAULTS["automation"]), "automation")
     if automation.get("mode", DEFAULTS["automation"]["mode"]) not in {"standard", "manual"}:
         raise ConfigError("automation.mode must be standard or manual")
+    reports = _expect_table(raw, "reports")
+    _expect_keys(reports, set(DEFAULTS["reports"]), "reports")
+    for key in ("portfolio_enabled", "project_enabled", "skip_inactive"):
+        _boolean(reports, key, "reports")
+    if reports.get("scope", "auto") not in ("auto", "portfolio", "project"):
+        raise ConfigError("reports.scope must be auto, portfolio, or project")
     skills = _expect_table(raw, "skills")
     _expect_keys(skills, set(DEFAULTS["skills"]), "skills")
     _boolean(skills, "inheritance_enabled", "skills")
@@ -853,6 +865,27 @@ def load(path: Path) -> tuple[dict[str, Any], bool]:
     normalized = normalize_legacy_task_role(raw)
     validate(normalized)
     return apply_turbo(merge(normalized)), True
+
+
+def resolve_report_scope(effective: dict[str, Any], project_count: int) -> str:
+    """Choose an initial report view without enabling either delivery mode."""
+    if not _is_int(project_count) or project_count < 0:
+        raise ConfigError("report project_count must be a nonnegative integer")
+    scope = effective["reports"]["scope"]
+    return ("project" if project_count == 1 else "portfolio") if scope == "auto" else scope
+
+
+def report_enabled(
+    effective: dict[str, Any], scope: str, *,
+    collection_succeeded: bool, has_updates: bool | None,
+) -> bool:
+    """Delivery preference only; failed or unknown collection is never inactivity."""
+    if scope not in ("portfolio", "project"):
+        raise ConfigError("report scope must be portfolio or project")
+    reports = effective["reports"]
+    return reports[f"{scope}_enabled"] and not (
+        reports["skip_inactive"] and collection_succeeded is True and has_updates is False
+    )
 
 
 def apply_turbo(effective: dict[str, Any]) -> dict[str, Any]:

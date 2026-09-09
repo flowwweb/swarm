@@ -19,6 +19,31 @@ SPEC.loader.exec_module(config)
 
 
 class SwarmConfigTests(unittest.TestCase):
+    def test_report_preferences_preserve_opt_in_scope_and_collection_failures(self) -> None:
+        effective = config.merge({})
+        for scope in ("portfolio", "project"):
+            self.assertFalse(config.report_enabled(effective, scope, collection_succeeded=True, has_updates=True))
+        self.assertEqual(config.resolve_report_scope(effective, 1), "project")
+        self.assertEqual(config.resolve_report_scope(effective, 8), "portfolio")
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "reports.toml"
+            path.write_text('[reports]\nportfolio_enabled = true\nproject_enabled = false\nskip_inactive = true\nscope = "portfolio"\n', encoding="utf-8")
+            effective, exists = config.load(path)
+            self.assertTrue(exists)
+            self.assertEqual(config.resolve_report_scope(effective, 1), "portfolio")
+            self.assertFalse(config.report_enabled(effective, "project", collection_succeeded=True, has_updates=True))
+            self.assertFalse(config.report_enabled(effective, "portfolio", collection_succeeded=True, has_updates=False))
+            for succeeded, updates in ((False, False), (False, None), (True, None), (True, True)):
+                self.assertTrue(config.report_enabled(effective, "portfolio", collection_succeeded=succeeded, has_updates=updates))
+            effective["reports"]["scope"] = "project"
+            self.assertEqual(config.resolve_report_scope(effective, 8), "project")
+        for raw in ({"scope": "invalid"}, {"scope": []}, {"portfolio_enabled": "true"}, {"project_enabled": 1}, {"skip_inactive": []}):
+            with self.subTest(raw=raw), self.assertRaises(config.ConfigError):
+                config.validate({"reports": raw})
+        for count in (-1, True, "1"):
+            with self.subTest(count=count), self.assertRaises(config.ConfigError):
+                config.resolve_report_scope(effective, count)
+
     def test_task_lifetime_is_one_bounded_lifecycle_authority(self) -> None:
         effective, exists = config.load(config.TEMPLATE_PATH)
         self.assertTrue(exists)
