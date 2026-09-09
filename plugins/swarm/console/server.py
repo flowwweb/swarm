@@ -15421,7 +15421,20 @@ class App:
                 "ttl_seconds": PORTAL_PRESENCE_TTL_SECONDS,
             }
 
-    def claim_portal_open(self) -> dict[str, Any]:
+    def claim_portal_open(self, task_id: str = "") -> dict[str, Any]:
+        if task_id:
+            task_id = _auto_id(task_id, "task_id")
+            with closing(_readonly_connection(state_database(self.codex_home))) as host:
+                if host.execute("SELECT 1 FROM threads WHERE id=? AND archived=0", (task_id,)).fetchone() is None:
+                    raise ConsoleError("browser startup requires an observed current task")
+            # A startup claim is at-most-once, including uncertain browser delivery.
+            with self.store._lock, closing(self.store._connect()) as connection:
+                claimed = connection.execute(
+                    "INSERT OR IGNORE INTO store_metadata(key,value) VALUES (?,?)",
+                    ("portal-open-task:" + task_id, "claimed"),
+                ).rowcount == 1
+                connection.commit()
+            return {"ok": True, "should_open": claimed, "reason": "open" if claimed else "task_already_claimed"}
         with self.presence_lock:
             now = time.monotonic()
             presence_fresh = (
@@ -16004,10 +16017,13 @@ class Handler(BaseHTTPRequestHandler):
             self.server.app.mark_presence()
             self._json(HTTPStatus.OK, {"ok": True, "proof_sequence": self.server.app.proof_sequence()})
             return
-        if path == "/api/launch-claim":
-            self._json(HTTPStatus.OK, self.server.app.claim_portal_open())
-            return
         try:
+            if path == "/api/launch-claim":
+                query = parse_qs(urlparse(self.path).query, keep_blank_values=True)
+                if set(query) - {"task_id"} or ("task_id" in query and (len(query["task_id"]) != 1 or not query["task_id"][0])):
+                    raise ConsoleError("invalid startup task identity")
+                self._json(HTTPStatus.OK, self.server.app.claim_portal_open(query.get("task_id", [""])[0]))
+                return
             if path in {"/api/tasks/history", "/api/tasks/history-roster"}:
                 if not self._authorized_auto():
                     self._error(HTTPStatus.FORBIDDEN, "history requires strict loopback authorization")

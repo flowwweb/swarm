@@ -15,6 +15,33 @@ SPEC.loader.exec_module(launcher)
 
 
 class LauncherTests(unittest.TestCase):
+    def test_task_identity_reaches_existing_claim_and_chrome_gets_new_tab(self) -> None:
+        self._write_setting()
+        claims = []
+        browser = mock.Mock()
+        browser.open.return_value = True
+        def fetch(url, **kwargs):
+            if url.endswith("healthz"):
+                return self._matching_health()
+            if url.endswith("bootstrap"):
+                return {"token": "token"}
+            claims.append((url, kwargs))
+            return {"should_open": True}
+        with mock.patch.object(launcher, "_chrome_browser", return_value=browser):
+            result = launcher.ensure_portal(config_path=self.config, codex_home=self.codex_home,
+                task_id="exact-task", fetch_json=fetch)
+        self.assertTrue(result["opened"])
+        self.assertEqual(claims, [("http://127.0.0.1:4788/api/launch-claim?task_id=exact-task", {"token": "token", "method": "POST"})])
+        browser.open.assert_called_once_with("http://127.0.0.1:4788", new=2)
+
+    def test_missing_chrome_does_not_consume_task_claim(self) -> None:
+        self._write_setting()
+        with mock.patch.object(launcher, "_chrome_browser", side_effect=OSError("Chrome unavailable")):
+            result = launcher.ensure_portal(config_path=self.config, codex_home=self.codex_home,
+                task_id="exact-task", fetch_json=lambda url: self._matching_health())
+        self.assertFalse(result["opened"])
+        self.assertEqual(result["reason"], "browser_launch_failed")
+
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name)

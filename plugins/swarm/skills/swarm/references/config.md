@@ -189,7 +189,7 @@ current typed host custody receipt, bound to the task and exact target-state
 digest with bounded freshness. Until confirmation, report `archive_unverified` and
 keep the task visible. Active, stalled, blocked, or merely old tasks never close.
 
-The default title hierarchy is `🐙CTRL - <objective>`, an optional advisory
+The default title hierarchy is `🐙 <objective>`, an optional advisory
 specialist such as `🛡️Security - access controls`, a lane owner such as `🔐LEAD - payments`, a
 contextual owner such as `💻DEVELOPER - webhook`, and `🔎REVIEW - webhook`.
 Generic DOER is an authority type, not a required task name: use the concrete

@@ -64,7 +64,7 @@ class LaneMaterialization:
         if self.structural_role is Role.CTRL:
             if parent or self.profession is not None or boundary or artifact or review_target or self.direct_production or self.durable_boundary is not None:
                 raise InvariantError("CTRL is the sole administrator and cannot be materialized as a profession or producer lane")
-            title = f"{icon}CTRL - {responsibility}"
+            title = f"{icon} {responsibility}".strip()
         else:
             if not parent or not isinstance(self.profession, ProfessionAssignment) or not icon:
                 raise InvariantError("every visible LEAD and DOER requires a parent, typed profession, and configured icon")

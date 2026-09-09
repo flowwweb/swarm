@@ -164,7 +164,7 @@ Then ask Codex to use it:
 Use SWARM to ship the next release of this project.
 ```
 
-That task becomes `🐙CTRL - <objective>`: the one place where you direct the work and review what the swarm returns.
+That task becomes `🐙 <objective>`: the one place where you direct the work and review what the swarm returns.
 
 To update an existing installation:
 

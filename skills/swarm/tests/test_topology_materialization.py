@@ -78,7 +78,10 @@ class TopologyMaterializationTests(unittest.TestCase):
             direct_production=True,
         )
         plan = TopologyMaterializationPlan((self.ctrl(), self.lead(), self.doer(), reviewer))
-        self.assertEqual(plan.lanes[0].title, "🐙CTRL - Ship the SWARM release")
+        self.assertEqual(plan.lanes[0].title, "🐙 Ship the SWARM release")
+        self.assertIs(plan.lanes[0].structural_role, Role.CTRL)
+        self.assertEqual(LaneMaterialization("plain", Role.CTRL, "Ship release").title, "Ship release")
+        self.assertEqual(LaneMaterialization("royal", Role.CTRL, "Ship release", icon="👑").title, "👑 Ship release")
         self.assertEqual(plan.lanes[1].title, "🏛️Architect LEAD - Runtime policy")
         self.assertEqual(plan.lanes[2].title, "💻Dev DOER - Codex adapter")
         self.assertEqual(plan.lanes[3].title, "🔎Reviewer DOER - Exact candidate")

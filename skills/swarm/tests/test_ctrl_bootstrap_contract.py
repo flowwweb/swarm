@@ -7,7 +7,7 @@ from pathlib import Path
 
 SKILL_ROOT = Path(__file__).resolve().parents[1]
 PLUGIN_ROOT = SKILL_ROOT.parents[1]
-NEW_TITLE = "🐙CTRL - <objective>"
+NEW_TITLE = "🐙 <objective>"
 LEGACY_TITLE = "🐙CTRL - <project> - <detailed descriptor>"
 
 

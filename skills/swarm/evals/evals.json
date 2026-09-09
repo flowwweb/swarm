@@ -922,10 +922,10 @@
     {
       "id": 72,
       "prompt": "Open a new SWARM task for a broad game-platform objective. Start implementing with several hidden subagents and report their work from the opening task.",
-      "expected_output": "As mandatory Step 0, the opening user-visible task derives a concise specific objective, calls set_thread_title to set 🐙CTRL - <objective> by default, and verifies the exact returned task ID and title before substantive dispatch. It preserves explicit custom names and existing pin state; naming authority does not grant pinning. A tool failure leaves naming incomplete and is reported exactly while useful authorized work continues. It then creates or continues one matching durable controller goal, inventories the objective, owners, dependencies, collisions, proof and claim limits, and chooses the shallowest reliable visible topology.",
+      "expected_output": "As mandatory Step 0, the opening user-visible task derives a concise specific objective, calls set_thread_title to set 🐙 <objective> by default, and verifies the exact returned task ID and title before substantive dispatch. It preserves explicit custom names and existing pin state; naming authority does not grant pinning. A tool failure leaves naming incomplete and is reported exactly while useful authorized work continues. It then creates or continues one matching durable controller goal, inventories the objective, owners, dependencies, collisions, proof and claim limits, and chooses the shallowest reliable visible topology.",
       "files": [],
       "assertions": [
-        "Mandatory Step 0 sets 🐙CTRL - <objective> by default and verifies the exact host task ID and title before substantive dispatch; explicit custom names and pin state remain preserved",
+        "Mandatory Step 0 sets 🐙 <objective> by default and verifies the exact host task ID and title before substantive dispatch; explicit custom names and pin state remain preserved",
         "Unavailable task-management tools or failed receipts are reported exactly and do not permit a false UI-change claim",
         "CTRL creates or continues exactly one matching durable goal",
         "CTRL identifies artifacts, owners, dependencies, collisions, proof, and claim limits",
@@ -939,7 +939,7 @@
     {
       "id": 73,
       "prompt": "Use SWARM to make 10 landing-page mockups.",
-      "expected_output": "The receiving task first completes mandatory Step 0 by using set_thread_title and verifying the exact task ID and 🐙CTRL - <objective> title by default, preserving explicit custom names and pin state. It then continues one durable objective and treats the requested variants as one coherent visual artifact with one atomic DESIGNER owner and later independent REVIEW. Variant count alone does not justify an advisory manager specialist.",
+      "expected_output": "The receiving task first completes mandatory Step 0 by using set_thread_title and verifying the exact task ID and 🐙 <objective> title by default, preserving explicit custom names and pin state. It then continues one durable objective and treats the requested variants as one coherent visual artifact with one atomic DESIGNER owner and later independent REVIEW. Variant count alone does not justify an advisory manager specialist.",
       "files": [],
       "assertions": [
         "Verified CTRL title, goal, and inventory precede artifact work; pinning requires separate user authority",
@@ -975,7 +975,7 @@
     {
       "id": 76,
       "prompt": "Use SWARM for this code change. The receiving user-facing task starts editing locally and plans to rename itself CTRL afterward. The user explicitly asked this current task to take over the old royal CTRL and archive the predecessor after handover.",
-      "expected_output": "Fail the intake contract: an explicit takeover includes naming the current task. Reuse it and call set_thread_title before substantive dispatch: 🐙CTRL - <objective> by default, with the user-requested 👑 icon for royal control. Verify the exact returned task ID and title, and reverify the successor title before declaring handover complete or archiving the predecessor. Preserve an explicit custom title unless the user asks to change it. Do not request duplicate naming approval or infer pinning authority. A tool failure leaves naming incomplete rather than claiming a rename from internal identity or message delivery.",
+      "expected_output": "Fail the intake contract: an explicit takeover includes naming the current task. Reuse it and call set_thread_title before substantive dispatch: 🐙 <objective> by default, with the user-requested 👑 icon for royal control. Verify the exact returned task ID and title, and reverify the successor title before declaring handover complete or archiving the predecessor. Preserve an explicit custom title unless the user asks to change it. Do not request duplicate naming approval or infer pinning authority. A tool failure leaves naming incomplete rather than claiming a rename from internal identity or message delivery.",
       "files": [],
       "assertions": [
         "Local editing before the authorized host title is verified is a failure",

@@ -380,7 +380,7 @@ records the transfer, and the new owner acknowledges before mutation. Peer
 coordination can exchange immutable handoffs but cannot mutate another owner's
 surface or bypass REVIEW.
 
-With role icons enabled, use `🐙CTRL - <objective>` for the root,
+With role icons enabled, use `🐙 <objective>` for the root,
 `<role emoji><PROFESSION> LEAD - <responsibility>` for lane owners, and
 `<role emoji><PROFESSION> DOER - <artifact>` for bounded producers. A separate
 review task uses the same structural title with the selected assurance profession

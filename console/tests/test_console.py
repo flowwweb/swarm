@@ -3065,6 +3065,19 @@ class SwarmConsoleTests(unittest.TestCase):
         with mock.patch.object(console.time, "monotonic", return_value=231.0):
             self.assertTrue(app.claim_portal_open()["should_open"])
 
+    def test_portal_open_claim_is_once_per_observed_task_across_restart(self) -> None:
+        app = console.App(self.codex_home, self.config)
+        app.mark_presence()
+        self.assertTrue(app.claim_portal_open("root")["should_open"])
+        self.assertFalse(app.claim_portal_open("root")["should_open"])
+        self.assertTrue(app.claim_portal_open("lead")["should_open"])
+        restarted = console.App(self.codex_home, self.config)
+        self.assertEqual(restarted.claim_portal_open("root")["reason"], "task_already_claimed")
+        with self.assertRaises(console.ConsoleError):
+            restarted.claim_portal_open("missing")
+        with self.assertRaises(console.ConsoleError):
+            restarted.claim_portal_open("bad/id")
+
     def test_hidden_tab_presence_is_cheap_authenticated_and_stops_on_close(self) -> None:
         app = (console.STATIC_ROOT / "app.js").read_text(encoding="utf-8")
         self.assertIn('document.visibilityState === "hidden"', app)

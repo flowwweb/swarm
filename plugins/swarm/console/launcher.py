@@ -6,11 +6,14 @@ from __future__ import annotations
 import argparse
 import importlib.util
 import json
+import os
+import shutil
 import subprocess
 import sys
 import time
 import urllib.error
 import urllib.request
+from urllib.parse import urlencode
 import webbrowser
 from pathlib import Path
 from typing import Any, Callable
@@ -23,6 +26,17 @@ assert SPEC and SPEC.loader
 console_server = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(console_server)
 PORT_SCAN_LIMIT = 10
+
+
+def _chrome_browser():
+    candidates = [shutil.which("chrome")]
+    for folder in ("PROGRAMFILES", "PROGRAMFILES(X86)", "LOCALAPPDATA"):
+        if os.environ.get(folder):
+            candidates.append(str(Path(os.environ[folder]) / "Google/Chrome/Application/chrome.exe"))
+    executable = next((path for path in candidates if path and Path(path).is_file()), None)
+    if executable is None:
+        raise OSError("Google Chrome executable unavailable")
+    return webbrowser.BackgroundBrowser([executable, "--new-tab", "%s"])
 
 
 def _request_json(url: str, *, token: str = "", method: str = "GET") -> dict[str, Any]:
@@ -60,9 +74,10 @@ def ensure_portal(
     config_path: Path,
     codex_home: Path,
     port: int = console_server.DEFAULT_PORT,
+    task_id: str = "",
     fetch_json: Callable[..., dict[str, Any]] = _request_json,
     spawn_server: Callable[[Path, Path, int], int] = _spawn_server,
-    open_browser: Callable[..., bool] = webbrowser.open,
+    open_browser: Callable[..., bool] | None = None,
     sleep: Callable[[float], None] = time.sleep,
 ) -> dict[str, Any]:
     """Start or reuse this HQ instance and optionally open its browser surface."""
@@ -150,8 +165,11 @@ def ensure_portal(
             "pid": pid,
         }
     try:
+        if open_browser is None:
+            open_browser = _chrome_browser().open
         bootstrap = fetch_json(f"{url}/api/bootstrap")
-        claim = fetch_json(f"{url}/api/launch-claim", token=bootstrap["token"], method="POST")
+        suffix = "?" + urlencode({"task_id": task_id}) if task_id else ""
+        claim = fetch_json(f"{url}/api/launch-claim{suffix}", token=bootstrap["token"], method="POST")
         if not claim["should_open"]:
             return {"ok": True, "enabled": True, "opened": False, "reason": claim["reason"], "url": url, "pid": pid}
         opened = bool(open_browser(url, new=2))
@@ -165,6 +183,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--port", type=int, default=console_server.DEFAULT_PORT)
     parser.add_argument("--codex-home", type=Path, default=console_server.DEFAULT_CODEX_HOME)
     parser.add_argument("--config", type=Path, default=None)
+    parser.add_argument("--task-id", default="", help="exact host task identity for once-per-task Chrome startup")
     return parser.parse_args()
 
 
@@ -174,6 +193,7 @@ def main() -> int:
         config_path=console_server.resolve_config_path(args.config),
         codex_home=args.codex_home.expanduser(),
         port=args.port,
+        task_id=args.task_id,
     )
     print(json.dumps(result, ensure_ascii=False))
     return 0
