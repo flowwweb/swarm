@@ -13800,27 +13800,34 @@ class App:
     def _project_progress_scope(
         self,
         project_id: str,
-    ) -> dict[str, dict[str, dict[str, str]]]:
-        """Bind the Ledger projection to host-confirmed project and CTRL task custody."""
+    ) -> tuple[dict[str, dict[str, dict[str, str]]], dict[str, dict[str, str]]]:
+        """Bind read scope to observed project tasks, independently of dispatch authority."""
         overview, host_nodes, _, _ = self._observed_scope(project_id=project_id)
         navigation = self._navigation_payload(overview)
         project = next((
             item for item in navigation.get("projects", [])
             if item.get("id") == project_id
-            and item.get("project_eligibility") == "swarm_ctrl"
+            and item.get("project_eligibility") in {"swarm_ctrl", "host_tasks"}
             and item.get("visibility") == "visible"
             and item.get("archived") is False
         ), None)
         if project is None:
             raise ConsoleError("PROJECT_SCOPE_UNAVAILABLE")
         ctrl_ids = tuple(project.get("ctrl_ids") or ())
-        if not ctrl_ids or any(not isinstance(ctrl_id, str) or not ctrl_id for ctrl_id in ctrl_ids):
+        if any(not isinstance(ctrl_id, str) or not ctrl_id for ctrl_id in ctrl_ids):
             raise ConsoleError("CTRL_SCOPE_UNAVAILABLE")
         ctrl_tasks: dict[str, dict[str, dict[str, str]]] = {ctrl_id: {} for ctrl_id in ctrl_ids}
+        project_tasks: dict[str, dict[str, str]] = {}
         for node in host_nodes:
             if not isinstance(node, dict) or node.get("virtual") or not node.get("id"):
                 continue
             task_id = str(node["id"])
+            if node.get("project_id") != project_id or task_id in project_tasks:
+                raise ConsoleError("MIXED_SCOPE_REJECTED")
+            project_tasks[task_id] = {
+                "task_name": str(node.get("artifact") or node.get("title") or task_id),
+                "role": str(node.get("role_label") or node.get("role") or ""),
+            }
             memberships = [
                 ctrl_id for ctrl_id in ctrl_ids
                 if task_id == ctrl_id or ctrl_id in node.get("controller_ids", [])
@@ -13835,7 +13842,7 @@ class App:
             }
         if any(not tasks for tasks in ctrl_tasks.values()):
             raise ConsoleError("CTRL_SCOPE_UNAVAILABLE")
-        return ctrl_tasks
+        return ctrl_tasks, project_tasks
 
     def project_progress_feed(self, project_id: str, *, after_cursor: int = 0) -> dict[str, Any]:
         """Build one lazy project feed snapshot from canonical material events."""
@@ -13894,11 +13901,13 @@ class App:
             raise ConsoleError("project_id is required")
         normalized_project_id = project_id.strip()
         try:
+            ctrl_tasks, project_tasks = self._project_progress_scope(normalized_project_id)
             return {
                 "ok": True,
                 **self.progress_ledger.project_progress_queue_bundle(
                     normalized_project_id,
-                    self._project_progress_scope(normalized_project_id),
+                    ctrl_tasks,
+                    project_tasks=project_tasks,
                 ),
             }
         except (ConsoleError, ProgressEventError) as error:

@@ -1353,6 +1353,48 @@ class SwarmConsoleTests(unittest.TestCase):
             }
         return event
 
+    def test_independent_project_progress_is_read_only_and_unmeasured(self) -> None:
+        with closing(sqlite3.connect(self.database)) as connection:
+            connection.execute("DELETE FROM thread_spawn_edges")
+            connection.commit()
+        app = console.App(self.codex_home, self.config)
+        host_before = self.database.read_bytes()
+        result = app.measurable_progress("project:alpha")
+        self.assertEqual(result["status"], "UNMEASURED")
+        self.assertIsNone(result["percent"])
+        self.assertEqual(result["scope_binding"]["ctrl_ids"], [])
+        self.assertEqual(result["progress_queue"]["status"], "CURRENT")
+        self.assertTrue(all(not segment["rows"] for segment in result["progress_queue"]["segments"]))
+        self.assertEqual(self.database.read_bytes(), host_before)
+        self.assertFalse(console._is_authoritative_ctrl_for_execution({"controller_classification": "unavailable"}))
+        self.assertEqual(app.measurable_progress("foreign-project")["status"], "UNKNOWN")
+
+        event = self._progress_queue_event(
+            "independent-start", "independent-block", "task", "retained-owner", "BLOCK_CREATED", "ACTIVE", 10,
+        )
+        app.progress_ledger.append(event)
+        result = app.measurable_progress("project:alpha")
+        self.assertEqual(result["progress_queue"]["status"], "CURRENT")
+        self.assertEqual(result["scope_binding"]["ctrl_ids"], ["retained-owner"])
+        self.assertEqual(result["progress_queue"]["segments"][0]["rows"][0]["task_id"], "task")
+        self.assertEqual(self.database.read_bytes(), host_before)
+        self.assertEqual(console.App(self.codex_home, self.config).measurable_progress("project:alpha"), result)
+
+    def test_independent_project_progress_rejects_foreign_and_mixed_bindings(self) -> None:
+        for foreign in (False, True):
+            with self.subTest(foreign=foreign):
+                ledger = console.ProgressLedger(self.root / f"read-scope-{foreign}.jsonl")
+                first = self._progress_queue_event("read-a", "read-a", "task", "owner-a", "BLOCK_CREATED", "ACTIVE", 10)
+                if foreign:
+                    first["project_id"] = "project:foreign"
+                ledger.append(first)
+                if not foreign:
+                    ledger.append(self._progress_queue_event("read-b", "read-b", "task", "owner-b", "BLOCK_CREATED", "ACTIVE", 20))
+                result = ledger.project_progress_queue_bundle("project:alpha", {}, project_tasks={"task": {"task_name": "Task"}})
+                self.assertEqual(result["status"], "UNKNOWN")
+                self.assertEqual(result["progress_queue"]["reason"], "MIXED_SCOPE_REJECTED")
+                self.assertIsNone(result["percent"])
+
     def test_project_progress_queue_is_atomic_ctrl_first_and_receipt_bound(self) -> None:
         self._confirm_root_ctrl()
         self._add_same_project_ctrl()

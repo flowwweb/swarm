@@ -4322,14 +4322,28 @@ class Ledger:
         self,
         project_id: str,
         ctrl_tasks: Mapping[str, Mapping[str, Mapping[str, str]]],
+        *,
+        project_tasks: Mapping[str, Mapping[str, str]] | None = None,
     ) -> dict[str, Any]:
         """Atomically project completion plus Active/Queue from one typed CTRL-first Ledger snapshot."""
         project_id = _safe_id(project_id, "project_id")
-        if not isinstance(ctrl_tasks, Mapping) or not ctrl_tasks:
+        if not isinstance(ctrl_tasks, Mapping) or (not ctrl_tasks and not project_tasks):
             return self.unknown_project_progress_bundle(project_id, "CTRL_SCOPE_UNAVAILABLE")
         normalized: dict[str, dict[str, dict[str, str]]] = {}
         task_ctrl: dict[str, str] = {}
+        observed_tasks: dict[str, dict[str, str]] = {}
         try:
+            if project_tasks is not None:
+                if not isinstance(project_tasks, Mapping):
+                    raise ProgressEventError("project tasks must be a host-confirmed mapping")
+                for task_id, presentation in project_tasks.items():
+                    task_id = _safe_id(task_id, "task_id")
+                    if not isinstance(presentation, Mapping):
+                        raise ProgressEventError("task presentation must be an object")
+                    observed_tasks[task_id] = {
+                        "task_name": str(presentation.get("task_name") or task_id),
+                        "role": str(presentation.get("role") or ""),
+                    }
             for raw_ctrl_id, raw_tasks in ctrl_tasks.items():
                 ctrl_id = _safe_id(raw_ctrl_id, "ctrl_id")
                 if not isinstance(raw_tasks, Mapping) or not raw_tasks:
@@ -4337,6 +4351,8 @@ class Ledger:
                 normalized[ctrl_id] = {}
                 for raw_task_id, raw_presentation in raw_tasks.items():
                     task_id = _safe_id(raw_task_id, "task_id")
+                    if project_tasks is not None and task_id not in observed_tasks:
+                        raise ProgressEventError("CTRL task is outside the observed project")
                     if task_id in task_ctrl and task_ctrl[task_id] != ctrl_id:
                         raise ProgressEventError("task identity cannot belong to more than one CTRL")
                     if not isinstance(raw_presentation, Mapping):
@@ -4353,6 +4369,25 @@ class Ledger:
         with self._state.locked():
             try:
                 projection, records = self._replay_unlocked()
+                # Read-only ownership comes from retained typed events, never a synthetic CTRL.
+                # Resolve it in this replay so binding and progress cannot use different cursors.
+                if project_tasks is not None:
+                    for record in records:
+                        raw_event = record["event"]
+                        if self._is_non_material_record(raw_event):
+                            continue
+                        event = validate_progress_material_event(raw_event)
+                        if event.task_id not in observed_tasks:
+                            continue
+                        if event.project_id != project_id or (
+                            event.task_id in task_ctrl and task_ctrl[event.task_id] != event.ctrl_id
+                        ):
+                            return self.unknown_project_progress_bundle(
+                                project_id, "MIXED_SCOPE_REJECTED", ctrl_ids=ctrl_ids,
+                            )
+                        task_ctrl[event.task_id] = event.ctrl_id
+                        normalized.setdefault(event.ctrl_id, {})[event.task_id] = observed_tasks[event.task_id]
+                    ctrl_ids = tuple(sorted(normalized))
                 cursor = json.loads(json.dumps(projection["cursor"], sort_keys=True))
                 event_seq = cursor.get("event_seq")
                 if not isinstance(event_seq, int) or isinstance(event_seq, bool) or event_seq < 0:
@@ -4610,6 +4645,11 @@ class Ledger:
                     for ctrl_id, tasks in sorted(normalized.items())
                     for task_id, presentation in sorted(tasks.items())
                 ]
+                if project_tasks is not None:
+                    host_scope_payload.extend(
+                        (None, task_id, item["task_name"], item["role"])
+                        for task_id, item in sorted(observed_tasks.items()) if task_id not in task_ctrl
+                    )
                 selected_records = [
                     (seq, event.event_id, event.digest, event.ctrl_id, event.task_id)
                     for seq, event in material_records
