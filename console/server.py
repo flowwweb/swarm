@@ -9911,8 +9911,15 @@ class App:
             channel = None
             request_id = 0
             host_turn_status = "UNKNOWN"
+            busy_before_turn = False
+            def not_dispatched(reason):
+                return {"ok": True, "status": "NOT_DISPATCHED", "definitive_non_dispatch": True,
+                        "command_id": envelope.command_id, "idempotency_key": envelope.idempotency_key,
+                        "command_digest": envelope.digest, "project_id": envelope.project_id,
+                        "target_thread_id": envelope.target_thread_id, "root_digest": root_digest,
+                        "reason": reason, "work_completed": False}
             def request(method, params):
-                nonlocal channel, request_id
+                nonlocal channel, request_id, busy_before_turn
                 if channel is None:
                     channel = stack.enter_context(self.auto_bridge.command_session(root, retain_turn=True, approval_project_id=envelope.project_id))
                 send, receive = channel
@@ -9923,6 +9930,7 @@ class App:
                     raise OSError(f"Codex App Server {method} failed")
                 if action is HQCommandAction.TASK and method == "thread/resume":
                     thread = response["result"].get("thread", {})
+                    busy_before_turn = isinstance(thread, dict) and isinstance(thread.get("status"), dict) and thread["status"].get("type") == "active"
                     if not isinstance(thread, dict) or not isinstance(thread.get("status"), dict) or thread["status"].get("type") not in {"idle", "notLoaded"}:
                         raise OSError("target task is active or its status is unverified")
                 return response["result"]
@@ -9947,7 +9955,23 @@ class App:
                 result = connector.execute(envelope, auth, self.progress_ledger, now_ms=int(time.time() * 1000),
                     observed_project_id=envelope.project_id, observed_root_digest=root_digest)
             except (ValueError, ProgressEventError) as exc:
+                snapshot = self.progress_ledger.replay()
+                commands = snapshot.get("connector_receipts", {})
+                if action is HQCommandAction.TASK and channel is None and envelope.idempotency_key not in commands and envelope.command_id not in snapshot.get("connector_command_ids", {}) and (
+                    int(time.time() * 1000) > envelope.expires_at_ms or snapshot["cursor"]["event_seq"] > envelope.expected_ledger_revision
+                ):
+                    return not_dispatched("SUBMISSION_EXPIRED_OR_REVISION_STALE")
                 raise ConsoleError(str(exc)) from exc
+            if action is HQCommandAction.TASK:
+                if busy_before_turn:
+                    # No turn/start was called. Use the existing pre-ACK terminal fact, not a new retry store.
+                    self.progress_ledger.append_connector_receipt(connector._receipt(envelope,
+                        receipt_id=f"{envelope.command_id}-unsupported", index=1, status="UNSUPPORTED",
+                        observed_at_ms=int(time.time() * 1000)))
+                retained = self.progress_ledger.replay().get("connector_receipts", {}).get(envelope.idempotency_key, {})
+                receipts = retained.get("receipts", [])
+                if receipts and receipts[-1].get("status") == "UNSUPPORTED" and receipts[-1].get("command_digest") == envelope.digest:
+                    return not_dispatched("RETAINED_UNSUPPORTED")
         with self.overview_lock:
             self._store_generation += 1
         return {"ok": True, **asdict(result), "host_turn_status": host_turn_status, "work_completed": False}

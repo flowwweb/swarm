@@ -4068,7 +4068,9 @@ function selectedMessageRecipient(recipients = messageRecipients()) {
 
 let messageHistoryRequestGeneration = 0;
 let messageRosterRequestGeneration = 0;
+let messageInteractionGeneration = 0;
 function invalidateMessageHistory() {
+  messageInteractionGeneration += 1;
   messageHistoryRequestGeneration += 1;
   messageRosterRequestGeneration += 1;
   state.messageHistory = null;
@@ -4310,7 +4312,80 @@ function messageReceiptPresentation(result, request) {
   return { status: "failed", clearDraft: false };
 }
 
+function taskMessageCapability(bootstrap) {
+  const value = bootstrap?.capabilities?.task_message;
+  return value?.contract === "swarm.hq_task_message.v1" && value.method === "POST" && value.endpoint === "/api/tasks/message" && value.context_endpoint === "/api/tasks/message-context" ? value : null;
+}
+
+async function taskMessageDigest(text) {
+  const digest = await window.crypto.subtle.digest("SHA-256", new TextEncoder().encode(text));
+  return [...new Uint8Array(digest)].map(value => value.toString(16).padStart(2, "0")).join("");
+}
+
+async function sendTaskMessage(retry) {
+  const generation = messageInteractionGeneration;
+  const binding = messageHistoryBinding();
+  const recipient = messageHistoryRecipients().find(item => item.id === state.messageRecipientId);
+  const instruction = state.messageDraft;
+  const capability = state.taskMessageCapability;
+  if (!capability || !state.messageOpen || !binding || !recipient || !instruction.trim() || state.messageAttachments.length || state.messageStatus === "pending") return false;
+  let pending = state.messagePendingAction;
+  if (pending && (!retry || pending.kind !== "task" || pending.binding !== binding || pending.instruction !== instruction || pending.retried)) return false;
+  state.messageStatus = "pending";
+  state.messageError = "";
+  renderMessageComposer();
+  try {
+    if (!pending) {
+      const context = await api(capability.context_endpoint, {method:"POST", timeoutMs:15000, headers:{"Content-Type":"application/json"}, body:JSON.stringify({project_id:recipient.projectId,thread_id:recipient.id})});
+      if (context?.ok !== true || context.project_id !== recipient.projectId || context.target_thread_id !== recipient.id
+        || context.action !== "TASK" || context.target_intent !== "EXISTING_THREAD" || context.ctrl_id !== ""
+        || !/^[a-f0-9]{64}$/.test(context.root_digest || "") || !Number.isSafeInteger(context.expected_ledger_revision) || context.expected_ledger_revision < 0
+        || !Number.isSafeInteger(context.submitted_at_ms) || !Number.isSafeInteger(context.expires_at_ms)
+        || context.expires_at_ms - context.submitted_at_ms !== 60000 || context.expires_at_ms <= Date.now()) throw new Error("Message context is unavailable or stale. Your draft is still here.");
+      const envelope = {command_id:messageRequestId(),idempotency_key:messageRequestId(),action:"TASK",project_id:context.project_id,root_digest:context.root_digest,
+        ctrl_id:"",target_intent:"EXISTING_THREAD",target_thread_id:context.target_thread_id,payload_digest:await taskMessageDigest(instruction),
+        expected_ledger_revision:context.expected_ledger_revision,submitted_at_ms:context.submitted_at_ms,expires_at_ms:context.expires_at_ms,target_turn_id:"",acknowledgement_required:true};
+      const canonical = JSON.stringify(canonicalActionValue(envelope)).replace(/[\u007f-\uffff]/g, char => "\\u" + char.charCodeAt(0).toString(16).padStart(4,"0"));
+      pending = {kind:"task",binding,instruction,envelope,digest:await taskMessageDigest(canonical),retried:false};
+    } else pending.retried = true;
+    if (generation !== messageInteractionGeneration || !state.messageOpen || binding !== messageHistoryBinding() || instruction !== state.messageDraft || state.messageAttachments.length) throw new Error("The recipient or draft changed. Nothing new was sent.");
+    state.messagePendingAction = pending;
+    const result = await api(capability.endpoint, {method:"POST",timeoutMs:15000,headers:{"Content-Type":"application/json"},body:JSON.stringify({envelope:pending.envelope,instruction:pending.instruction,acknowledge:true})});
+    if (generation !== messageInteractionGeneration || !state.messageOpen || binding !== messageHistoryBinding() || instruction !== state.messageDraft) throw new Error("The message scope changed. Your draft is preserved.");
+    if (result?.ok === true && result.status === "NOT_DISPATCHED" && result.definitive_non_dispatch === true && result.work_completed === false
+      && result.command_id === pending.envelope.command_id && result.idempotency_key === pending.envelope.idempotency_key
+      && result.command_digest === pending.digest && result.project_id === pending.envelope.project_id
+      && result.target_thread_id === pending.envelope.target_thread_id && result.root_digest === pending.envelope.root_digest
+      && ["SUBMISSION_EXPIRED_OR_REVISION_STALE", "RETAINED_UNSUPPORTED"].includes(result.reason)) {
+      state.messagePendingAction = null;
+      state.messageStatus = "failed";
+      state.messageError = "Message was not dispatched. Your draft is still here. When the task is ready, send again.";
+      return false;
+    }
+    if (result?.ok !== true || result.command_digest !== pending.digest || result.thread_id !== recipient.id || result.observed_root_digest !== pending.envelope.root_digest
+      || !["RESULT","REPLAY"].includes(result.status) || typeof result.turn_id !== "string" || !result.turn_id || result.work_completed !== false) {
+      throw new Error("Dispatch is unconfirmed or conflicting. Your draft is preserved; do not assume the task completed.");
+    }
+    state.messageReceipt = result;
+    state.messageStatus = "sent";
+    state.messageDraft = "";
+    state.messagePendingAction = null;
+    state.messageError = "";
+    return true;
+  } catch (error) {
+    state.messageStatus = "failed";
+    state.messageError = error.message || "Dispatch is unconfirmed. Your draft is preserved.";
+    return false;
+  } finally { renderMessageComposer(); }
+}
+
 function messageStatusCopy(recipient = selectedMessageRecipient()) {
+  if (state.taskMessageCapability) {
+    if (state.messageStatus === "pending") return "Pending · waiting for dispatch acknowledgement.";
+    if (state.messageStatus === "sent") return "Message dispatched. Task completion is not yet verified.";
+    if (state.messageError) return state.messageError;
+    return state.messageAttachments.length ? "Attachments are unavailable for this task message." : "Send a message to the selected existing task.";
+  }
   if (!recipient) return "No authorized CTRL is available in this project scope.";
   if (!state.messageConnector) return MESSAGE_CONNECTOR_UNAVAILABLE;
   if (!messageContextIdentity(recipient) || !messageAttachments()) return "Messaging is unavailable because this screen does not have a complete digest and cursor binding.";
@@ -4340,11 +4415,15 @@ function renderMessageComposer() {
   if (draft.value !== state.messageDraft) draft.value = state.messageDraft;
   draft.disabled = state.messageStatus === "pending";
   const send = $("#message-send");
-  send.disabled = !state.messageConnector || !identity || !attachments || !state.messageDraft.trim() || state.messageStatus === "pending";
+  send.disabled = state.taskMessageCapability
+    ? !messageHistoryBinding() || Boolean(state.messagePendingAction) || state.messageAttachments.length > 0 || !state.messageDraft.trim() || state.messageStatus === "pending"
+    : !state.messageConnector || !identity || !attachments || !state.messageDraft.trim() || state.messageStatus === "pending";
   send.setAttribute("aria-disabled", String(send.disabled));
   send.setAttribute("aria-busy", String(state.messageStatus === "pending"));
   $("#message-retry").hidden = !["failed", "conflict"].includes(state.messageStatus);
-  $("#message-retry").disabled = !canRetry || state.messageStatus === "pending";
+  $("#message-retry").disabled = state.taskMessageCapability
+    ? state.messageStatus === "pending" || state.messagePendingAction?.kind !== "task" || state.messagePendingAction.retried || state.messagePendingAction.binding !== messageHistoryBinding() || state.messagePendingAction.instruction !== state.messageDraft
+    : !canRetry || state.messageStatus === "pending";
   $("#message-status").textContent = messageStatusCopy(recipient);
   renderMessageHistory();
   $("#message-launcher").setAttribute("aria-expanded", String(state.messageOpen));
@@ -4392,6 +4471,7 @@ function syncMessageComposerMode() {
 }
 
 async function sendMessageFromComposer(retry = false) {
+  if (state.taskMessageCapability) return sendTaskMessage(retry);
   if (state.messageStatus === "pending") return false;
   const recipient = selectedMessageRecipient();
   let request = retry ? state.messagePendingAction : null;
@@ -5687,6 +5767,7 @@ async function initialize() {
     const bootstrap = await api("/api/bootstrap");
     state.token = bootstrap.token || "";
     state.messageConnector = messageConnectorCapability(bootstrap);
+    state.taskMessageCapability = taskMessageCapability(bootstrap);
     state.messageStatus = state.messageConnector ? "idle" : "unavailable";
   } catch (error) {
     if (error.connectionFailure) showConnectionState();
@@ -5999,7 +6080,9 @@ $("#mobile-message-action").addEventListener("click", (event) => { event.stopPro
 $("#message-composer").addEventListener("click", (event) => event.stopPropagation());
 $("#message-close").addEventListener("click", (event) => { event.stopPropagation(); closeMessageComposer(); });
 $("#message-draft").addEventListener("input", (event) => {
+  messageInteractionGeneration += 1;
   state.messageDraft = event.target.value;
+  if (state.messagePendingAction?.kind === "task" || (state.taskMessageCapability && state.messageStatus === "pending")) { renderMessageComposer(); return; }
   if (["failed", "conflict", "sent"].includes(state.messageStatus)) state.messagePendingAction = null;
   state.messageStatus = state.messageConnector ? "idle" : "unavailable";
   state.messageError = "";
@@ -6007,7 +6090,9 @@ $("#message-draft").addEventListener("input", (event) => {
   renderMessageComposer();
 });
 $("#message-recipient").addEventListener("change", (event) => {
+  messageInteractionGeneration += 1;
   state.messageRecipientId = event.target.value;
+  if (state.messagePendingAction?.kind === "task" || (state.taskMessageCapability && state.messageStatus === "pending")) { renderMessageComposer(); refreshMessageHistory(); return; }
   state.messagePendingAction = null;
   state.messageStatus = state.messageConnector ? "idle" : "unavailable";
   state.messageError = "";

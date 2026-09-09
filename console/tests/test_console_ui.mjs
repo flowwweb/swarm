@@ -18,6 +18,69 @@ fixture.usageHistory.items = fixture.usageHistory.history;
 delete fixture.usageHistory.history;
 const css = fs.readFileSync(path.join(staticRoot, "styles.css"), "utf8");
 const app = fs.readFileSync(path.join(staticRoot, "app.js"), "utf8");
+{
+  const state = {messageOpen:true,messageDraft:"  Reply exactly Ω.  ",messageAttachments:[],messageRecipientId:"task",messageStatus:"idle"};
+  const handlers={}; let releaseContext;
+  let binding="project/task", calls=[], mode="RESULT", ids=0, rejectionOverride={};
+  const context={ok:true,project_id:"project",target_thread_id:"task",root_digest:"a".repeat(64),expected_ledger_revision:4,submitted_at_ms:Date.now(),expires_at_ms:Date.now()+60000,action:"TASK",target_intent:"EXISTING_THREAD",ctrl_id:""};
+  context.expires_at_ms=context.submitted_at_ms+60000;
+  const sandbox={state,Date,TextEncoder,Uint8Array,window:{crypto:crypto.webcrypto},messageInteractionGeneration:0,messageHistoryRequestGeneration:0,messageRosterRequestGeneration:0,messageRequestId:()=>"id"+(++ids),renderMessageComposer(){},renderMessageHistory(){},refreshMessageHistory(){},
+    $:selector=>({addEventListener:(event,handler)=>{handlers[selector+event]=handler;}}),
+    messageHistoryBinding:()=>binding,messageHistoryRecipients:()=>[{id:"task",projectId:"project"}],
+    api:async(url,options)=>{const body=JSON.parse(options.body);calls.push({url,body});if(url.endsWith('-context'))return mode==='deferred'?await new Promise(resolve=>{releaseContext=()=>resolve(context);}):context;
+      if(mode==='timeout')throw Error('transport timeout');
+      const digest=crypto.createHash('sha256').update(JSON.stringify(Object.fromEntries(Object.entries(body.envelope).sort()))).digest('hex');
+      if(mode==='NOT_DISPATCHED') return {ok:true,status:mode,definitive_non_dispatch:true,command_id:body.envelope.command_id,idempotency_key:body.envelope.idempotency_key,command_digest:digest,project_id:body.envelope.project_id,target_thread_id:body.envelope.target_thread_id,root_digest:body.envelope.root_digest,reason:'SUBMISSION_EXPIRED_OR_REVISION_STALE',work_completed:false,...rejectionOverride};
+      if(mode==='scope-change')binding='other/task';
+      return {ok:true,status:mode==='scope-change'?'RESULT':mode,command_digest:mode==='mismatch'?'b'.repeat(64):digest,thread_id:'task',turn_id:'turn',observed_root_digest:'a'.repeat(64),work_completed:false};}};
+  vm.createContext(sandbox);
+  vm.runInContext(app.slice(app.indexOf('function canonicalActionValue('),app.indexOf('async function messageActionDigest(')) + app.slice(app.indexOf('function taskMessageCapability('),app.indexOf('function messageStatusCopy(')),sandbox);
+  vm.runInContext(app.slice(app.indexOf('$("#message-draft").addEventListener("input"'),app.indexOf('$("#message-send").addEventListener')) + app.slice(app.indexOf('function invalidateMessageHistory()'),app.indexOf('function messageRosterProjectId()')),sandbox);
+  vm.runInContext(app.slice(app.indexOf('async function sendMessageFromComposer('),app.indexOf('function agentProgress(')) + app.slice(app.indexOf('$("#message-send").addEventListener'),app.indexOf('$("#profile").addEventListener')),sandbox);
+  const capability={contract:'swarm.hq_task_message.v1',method:'POST',endpoint:'/api/tasks/message',context_endpoint:'/api/tasks/message-context'};
+  assert.equal(sandbox.taskMessageCapability({hq_connector:capability}),null);
+  state.taskMessageCapability=sandbox.taskMessageCapability({capabilities:{task_message:capability}});
+  assert.equal(await sandbox.sendTaskMessage(false),true);
+  assert.equal(calls[1].body.instruction,'  Reply exactly Ω.  ');
+  assert.equal(calls[1].body.envelope.payload_digest,crypto.createHash('sha256').update('  Reply exactly Ω.  ').digest('hex'));
+  assert.equal(calls[1].body.acknowledge,true);assert.equal(state.messageDraft,'');
+  state.messageDraft='retry';mode='timeout';calls=[];
+  assert.equal(await sandbox.sendTaskMessage(false),false);const original=calls[1].body;
+  const pendingIdentity=state.messagePendingAction;
+  for(const value of ['edited','retry'])handlers['#message-draftinput']({target:{value}});
+  for(const value of ['other','task'])handlers['#message-recipientchange']({target:{value}});
+  assert.equal(state.messagePendingAction,pendingIdentity,'actual input and recipient handlers retain uncertain identity');
+  assert.equal(await sandbox.sendTaskMessage(false),false,'edit/restore cannot create another command');
+  mode='REPLAY';assert.equal(await sandbox.sendTaskMessage(true),true);assert.deepEqual(calls[2].body,original);
+  state.messageDraft='keep';mode='mismatch';assert.equal(await sandbox.sendTaskMessage(false),false);assert.equal(state.messageDraft,'keep');
+  const count=calls.length;binding='other/task';assert.equal(await sandbox.sendTaskMessage(true),false);assert.equal(calls.length,count);
+  binding='project/task';state.messagePendingAction=null;mode='PENDING';assert.equal(await sandbox.sendTaskMessage(false),false);assert.equal(state.messageDraft,'keep');
+  assert.equal(await sandbox.sendTaskMessage(true),false);const after=calls.length;assert.equal(await sandbox.sendTaskMessage(true),false);assert.equal(calls.length,after);
+  state.messagePendingAction=null;context.project_id='foreign';const beforeBad=calls.length;
+  assert.equal(await sandbox.sendTaskMessage(false),false);assert.equal(calls.length,beforeBad+1,'bad context never dispatches');assert.equal(state.messageDraft,'keep');
+  context.project_id='project';mode='scope-change';assert.equal(await sandbox.sendTaskMessage(false),false);assert.equal(state.messageDraft,'keep');
+  for(const interaction of ['draft','recipient','close']) {
+    binding='project/task';state.messagePendingAction=null;state.messageStatus='idle';mode='deferred';
+    const before=calls.length, flight=sandbox.sendTaskMessage(false);
+    if(interaction==='draft')for(const value of ['changed','keep'])handlers['#message-draftinput']({target:{value}});
+    if(interaction==='recipient')for(const value of ['other','task'])handlers['#message-recipientchange']({target:{value}});
+    if(interaction==='close'){state.messageOpen=false;sandbox.invalidateMessageHistory();state.messageOpen=true;}
+    releaseContext();assert.equal(await flight,false);assert.equal(calls.length,before+1,'context ABA must not dispatch');
+    assert.equal(state.messageDraft,'keep');
+  }
+  for(const reason of ['SUBMISSION_EXPIRED_OR_REVISION_STALE','RETAINED_UNSUPPORTED']) {
+    mode='NOT_DISPATCHED';rejectionOverride={reason};state.messagePendingAction=null;state.messageStatus='idle';
+    handlers['#message-draftinput']({target:{value:'correct me'}});
+    assert.equal(await handlers['#message-sendclick'](),false);const rejectedId=calls.at(-1).body.envelope.command_id;
+    assert.equal(state.messagePendingAction,null);assert.equal(state.messageDraft,'correct me');
+    handlers['#message-draftinput']({target:{value:'corrected'}});context.expected_ledger_revision++;mode='RESULT';
+    assert.equal(await handlers['#message-sendclick'](),true);assert.notEqual(calls.at(-1).body.envelope.command_id,rejectedId);
+  }
+  for(const mismatch of [{command_id:'wrong'},{idempotency_key:'wrong'},{command_digest:'b'.repeat(64)},{project_id:'other'},{target_thread_id:'other'},{root_digest:'b'.repeat(64)},{definitive_non_dispatch:false},{work_completed:true},{reason:'UNKNOWN'}]) {
+    state.messageDraft='retain';state.messagePendingAction=null;state.messageStatus='idle';mode='NOT_DISPATCHED';rejectionOverride=mismatch;
+    assert.equal(await handlers['#message-sendclick'](),false);assert.equal(state.messagePendingAction.kind,'task');assert.equal(state.messageDraft,'retain');
+  }
+}
 const indexHtml = fs.readFileSync(path.join(staticRoot, "index.html"), "utf8");
 const pluginCss = fs.readFileSync(path.join(pluginStaticRoot, "styles.css"), "utf8");
 const pluginApp = fs.readFileSync(path.join(pluginStaticRoot, "app.js"), "utf8");
@@ -414,7 +477,7 @@ const onboardingPersistenceEnd = app.indexOf("\nfunction openOnboarding", onboar
     $: selector => selector === '.workspace' ? {classList:{contains:()=>false}} : selector === 'dialog[open]' ? (otherDialog ? {} : null) : selector === '.dialog-body' ? {} : dialog,
     onboardingSeen: () => seen, markOnboardingSeen: () => { seen = true; }, ONBOARDING_STEPS: [1,2,3,4,5], onboardingConfigBlocked:()=>false,
     renderOnboarding(){}, updateDocumentTitle(){}, requestAnimationFrame(){}, setDataStatus(){},
-    api: async()=>({}), messageConnectorCapability:()=>null, refreshOverview:()=>new Promise(resolve=>{finishRefresh=resolve;}) };
+    api: async()=>({}), messageConnectorCapability:()=>null, taskMessageCapability:()=>null, refreshOverview:()=>new Promise(resolve=>{finishRefresh=resolve;}) };
   vm.createContext(sandbox);
   vm.runInContext(app.slice(app.indexOf('function openOnboarding('),app.indexOf('function onboardingCanDismiss(')) + app.slice(app.indexOf('async function initialize()'),app.indexOf('let presenceTimer')),sandbox);
   const initialized = sandbox.initialize();
@@ -4484,10 +4547,10 @@ proofFeed.items.push({
       return { top: Math.round(box.top), right: Math.round(innerWidth - box.right), bottom: Math.round(innerHeight - box.bottom), height: Math.round(box.height) };
     }), { top: 0, right: 0, bottom: 0, height: 1024 });
     assert.equal(await page.evaluate(() => document.activeElement?.id), "message-draft");
-    assert.ok(await page.locator("#message-recipient option").count() >= 1);
-    assert.equal(await page.evaluate(() => messageRecipients().every((recipient) => recipient.structuralRole === "CTRL")), true);
+    assert.deepEqual(await page.locator("#message-recipient option").allTextContents(), ["No observed conversations"]);
+    assert.equal(await page.locator("#message-recipient").isDisabled(), true);
     assert.deepEqual(await page.evaluate(() => ({ sendDisabled: document.querySelector("#message-send").disabled, retryHidden: document.querySelector("#message-retry").hidden })), { sendDisabled: true, retryHidden: true });
-    assert.match(await page.locator("#message-status").textContent(), /Messaging is unavailable until SWARM exposes the authenticated HQ connector/);
+    assert.equal(await page.locator("#message-status").textContent(), "No authorized CTRL is available in this project scope.");
     await page.locator("#message-draft").fill("Please review this screen.");
     await page.keyboard.press("Escape");
     assert.equal(await page.locator("#message-composer").isVisible(), false);
@@ -4604,7 +4667,7 @@ proofFeed.items.push({
     assert.equal(await page.locator("#overview-monitoring-heading").textContent(), "Team");
     assert.deepEqual(await page.locator("#overview-project-cards [data-overview-project-id] strong").allTextContents(), ["Arc", "Atlas", "Flowwweb", "swarm"]);
     assert.deepEqual(await page.locator("#overview-project-cards [data-overview-hierarchy-project]").evaluateAll((projects) => projects.map((project) => project.dataset.overviewHierarchyProject)), ["project:arc", "project:atlas", "project:branch", "project:fixture"]);
-    assert.match(await page.locator("#overview-project-cards .overview-independent:not(.is-error)").textContent(), /Independent host tasks[\s\S]*Resolve customer export[\s\S]*Inspect export evidence[\s\S]*Anonymous[\s\S]*Independent task/);
+    assert.match(await page.locator("#overview-project-cards .overview-hierarchy-canvas > .overview-independent:not(.is-error)").textContent(), /Independent host tasks[\s\S]*Resolve customer export[\s\S]*Inspect export evidence[\s\S]*Anonymous[\s\S]*Independent task/);
     assert.match(await page.locator("#overview-project-cards .overview-independent.is-error").textContent(), /Role binding needs attention[\s\S]*Reconnect role manifest[\s\S]*Role binding error/);
     assert.doesNotMatch(await page.locator("#overview-project-cards").textContent(), /Await customer decision|Resolve dependency|Unassigned planning/);
     await page.waitForFunction(() => [...document.querySelectorAll("[data-overview-hierarchy-edge]")].every((path) => Boolean(path.getAttribute("d"))));
