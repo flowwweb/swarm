@@ -145,8 +145,8 @@ CONSOLE_LOG_PATH_ENV = "SWARM_CONSOLE_LOG_PATH"
 HEALTH_STATES = frozenset({"HEALTHY", "DEGRADED", "PRESSURED", "CRITICAL", "UNKNOWN"})
 HEALTH_CHECK_STATUSES = frozenset({"PASS", "WARN", "FAIL", "UNKNOWN"})
 AUTO_REPAIR_SETTING_KEY = "monitoring.auto_health_enabled"
-AUTO_REPAIR_LABEL = "Auto fix"
-AUTO_REPAIR_HELP = "SWARM attempts to recover from issues automatically. This may start repair tasks and increase usage."
+AUTO_REPAIR_LABEL = "Automatic health review requests"
+AUTO_REPAIR_HELP = "Allow automatic health review requests. Repairs are not started."
 CONFIG_CONTRACT_VERSION = 1
 CONFIG_EVENT_KIND = "CONFIG_MUTATION"
 CONFIG_TRANSACTION_PREPARED = "PREPARED"
@@ -881,7 +881,7 @@ def _config_label_help(dotted_path: str) -> tuple[str, str]:
         "execution.min_reasoning": ("Minimum reasoning", "Set the global reasoning floor applied to new work."),
         "execution.max_reasoning": ("Maximum reasoning", "Set the global reasoning ceiling applied to new work."),
         "execution.usage_saver": ("Usage saver · Experimental", "Reduce coordination churn and model usage when smart routing can safely do so."),
-        "monitoring.auto_health_enabled": ("Auto fix", AUTO_REPAIR_HELP),
+        "monitoring.auto_health_enabled": ("Automatic health review requests", AUTO_REPAIR_HELP),
         "lifecycle.task_lifetime_hours": ("Task life", "Choose how long a task may remain in one continuity window."),
         "role_icons.enabled": ("Emoji use", "Use the canonical role emoji in SWARM task titles."),
         "console.auto_start": ("Start HQ automatically", "Start or reuse the local HQ when a CTRL starts."),
@@ -14716,7 +14716,7 @@ class App:
             "dispatch": "disabled",
             "automatic_request_mode": "bounded_existing_health_requests",
             "claim_limit": (
-                "The canonical monitoring.auto_health_enabled setting is presented as Auto fix. "
+                "The canonical monitoring.auto_health_enabled setting is presented as Automatic health review requests. "
                 "It gates only the existing bounded advisory health-request path; repair dispatch, model use, "
                 "and source, config, host, listener, or provider mutation remain disabled."
             ),
@@ -14745,7 +14745,7 @@ class App:
                 "status": "UNAVAILABLE",
                 "enabled": False,
                 "automatic_request_mode": "none",
-                "reason": "canonical config is missing monitoring.auto_health_enabled; Auto fix is fail-closed",
+                "reason": "canonical config is missing monitoring.auto_health_enabled; Automatic health review requests are fail-closed",
             }
         enabled = bool(monitoring["auto_health_enabled"])
         return {
@@ -14755,11 +14755,11 @@ class App:
             "enabled": enabled,
             "automatic_request_mode": "bounded_existing_health_requests" if enabled else "none",
             "reason": (
-                "Auto fix is ON through canonical monitoring.auto_health_enabled; only the existing bounded "
+                "Automatic health review requests are ON through canonical monitoring.auto_health_enabled; only the existing bounded "
                 "advisory health-request path may record requests, while repair dispatch remains disabled because "
                 "the path is not an allowlisted low-risk repair executor."
                 if enabled else
-                "Auto fix is OFF through canonical monitoring.auto_health_enabled; deterministic health checks "
+                "Automatic health review requests are OFF through canonical monitoring.auto_health_enabled; deterministic health checks "
                 "remain active and automatic health requests, model use, and repair dispatch are disabled."
             ),
         }
@@ -15021,11 +15021,11 @@ class App:
             checks.append(_health_check(
                 "config.schema_compatibility_redaction",
                 "WARN" if policy["state"] == "UNAVAILABLE" else "PASS",
-                "Canonical config validation succeeded, but the canonical Auto fix setting is unavailable."
+                "Canonical config validation succeeded, but the canonical Automatic health review requests setting is unavailable."
                 if policy["state"] == "UNAVAILABLE" else "Canonical config validation and redacted settings access succeeded.",
                 observed_at_ms=now_ms, evidence=("local:config",),
                 recommended_action=(
-                    "Keep Auto fix disabled and restore monitoring.auto_health_enabled through the canonical schema owner."
+                    "Keep Automatic health review requests disabled and restore monitoring.auto_health_enabled through the canonical schema owner."
                     if policy["state"] == "UNAVAILABLE" else "No repair action is required."
                 ),
                 details={
@@ -15172,7 +15172,7 @@ class App:
             "claim_limit": (
                 "Checks use existing local process, host DB, config, ledger, and console-store facts. "
                 "They do not poll providers, call models, mutate source/config/host/listener state, or dispatch "
-                "repair work. monitoring.auto_health_enabled is the only canonical Auto fix preference: OFF "
+                "repair work. monitoring.auto_health_enabled is the only canonical Automatic health review requests preference: OFF "
                 "keeps deterministic checks active while suppressing automatic health requests; ON permits only "
                 "the existing bounded advisory health-request path, not repair execution."
             ),
@@ -15282,7 +15282,7 @@ class App:
                 "cooldown_seconds": HEALTH_COOLDOWN_SECONDS,
             },
             "claim_limit": (
-                "monitoring.auto_health_enabled is the canonical setting presented as Auto fix. OFF leaves "
+                "monitoring.auto_health_enabled is the canonical setting presented as Automatic health review requests. OFF leaves "
                 "deterministic checks active without automatic health requests or model use. ON can record only "
                 "bounded existing advisory health requests; repair dispatch remains disabled because this path is "
                 "broader than an allowlisted low-risk repair executor. Manual preparation remains acknowledgement-gated."

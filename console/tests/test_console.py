@@ -958,10 +958,10 @@ class SwarmConsoleTests(unittest.TestCase):
         index = (static / "index.html").read_text(encoding="utf-8")
         app = (static / "app.js").read_text(encoding="utf-8")
         self.assertIn('src="/assets/swarm-wordmark.png"', index)
-        for view in ("overview", "agents", "review", "assets", "settings"):
+        for view in ("overview", "agents", "roles", "review", "assets", "diagnostics", "settings"):
             self.assertIn(f'id="tab-{view}"', index)
             self.assertIn(f'id="view-{view}"', index)
-        for retired in ("hierarchy", "kanban", "diagnostics"):
+        for retired in ("hierarchy", "kanban"):
             self.assertNotIn(f'id="tab-{retired}"', index)
         self.assertIn('id="project-navigation"', index)
         self.assertIn('id="scope-context"', index)
@@ -974,8 +974,9 @@ class SwarmConsoleTests(unittest.TestCase):
         self.assertIn('validPercent == null ? "Unmeasured"', app)
         self.assertNotIn("completed / total", app)
         self.assertNotIn("progress_basis?.percent", app)
-        self.assertIn('id="data-status-title">Connecting</strong>', index)
-        self.assertIn('id="data-status-note">Waiting for data</small>', index)
+        self.assertIn('aria-label="System health: Reconnecting"', index)
+        self.assertIn('id="snapshot-status-dot"', index)
+        self.assertIn('id="sync-time" role="status" aria-live="polite"', index)
         self.assertNotIn("Projects are up to date", index)
         self.assertIn('setDataStatus("current", state.overview?.generated_at)', app)
         self.assertIn('setDataStatus(state.overview ? "stale" : "unavailable"', app)
@@ -984,7 +985,7 @@ class SwarmConsoleTests(unittest.TestCase):
         self.assertIn(r'.replace(/\blocalhost\b/gi, "console")', app)
         self.assertIn('const label = rawLabel.localeCompare(group.label', app)
         self.assertIn("if (!group.standalone) options.push", app)
-        self.assertIn('id="system-health-heading">System health</h3>', index)
+        self.assertIn('id="diagnostics-health-heading">Checking health</h3>', index)
         self.assertNotIn("localhost", index.casefold())
         self.assertNotIn("hidden usage", index.casefold())
         self.assertNotIn("do not consume task or model usage", index.casefold())
@@ -1034,13 +1035,14 @@ class SwarmConsoleTests(unittest.TestCase):
     def test_console_uses_flowwweb_swarm_tokens_without_lime_controls(self) -> None:
         css = (console.STATIC_ROOT / "styles.css").read_text(encoding="utf-8").casefold()
         index = (console.STATIC_ROOT / "index.html").read_text(encoding="utf-8")
-        for token in ("#091321", "#46dfd0", "#ff7449"):
+        for token in ("#091321", "#46dfd0", "#ff7a18"):
             self.assertIn(token, css)
         for stale in ("#a8ff4f", "168,255,79", "#8ef2c2"):
             self.assertNotIn(stale, css)
         self.assertIn(".toggle-row input", css)
         self.assertIn("accent-color:var(--cyan)", css)
-        for removed in ("One CTRL", "RAPID UNIFIED", "LIVE HIERARCHY", "Observed pulse"):
+        self.assertIn("<h2>One goal. One CTRL.</h2>", index)
+        for removed in ("RAPID UNIFIED", "LIVE HIERARCHY", "Observed pulse"):
             self.assertNotIn(removed, index)
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory()
@@ -6669,7 +6671,7 @@ class SwarmConsoleTests(unittest.TestCase):
         self.assertFalse(contract["binding_coverage"]["execution_authority"])
         self.assertIn("No authoritative SWARM bindings", contract["binding_coverage"]["actionable_repair"])
         self.assertEqual(contract["repair_policy"]["key"], "monitoring.auto_health_enabled")
-        self.assertEqual(contract["repair_policy"]["label"], "Auto fix")
+        self.assertEqual(contract["repair_policy"]["label"], "Automatic health review requests")
         self.assertEqual(contract["repair_policy"]["state"], "KNOWN")
         self.assertEqual(contract["repair_policy"]["status"], "OFF")
         self.assertFalse(contract["repair_policy"]["enabled"])
@@ -7695,6 +7697,8 @@ class SwarmConsoleTests(unittest.TestCase):
 
     def test_health_copy_is_product_facing_without_a_watchdog_surface(self) -> None:
         app = (console.STATIC_ROOT / "app.js").read_text(encoding="utf-8")
+        self.assertIn('descriptorBooleanSwitch("monitoring.auto_health_enabled", "Automatic health review requests"', app)
+        self.assertNotIn('"Auto fix"', app)
         self.assertIn("Allow automatic health review requests. Repairs are not started.", app)
         self.assertIn("Health checks remain active; no repair is started.", app)
         self.assertNotIn("This may start repair tasks", app)
@@ -7759,7 +7763,8 @@ class SwarmConsoleTests(unittest.TestCase):
         self.assertIn("smart routing", usage_saver["help"])
         self.assertTrue(usage_saver["editable"])
         auto_fix = descriptors["monitoring.auto_health_enabled"]
-        self.assertEqual(auto_fix["label"], "Auto fix")
+        self.assertEqual(auto_fix["label"], "Automatic health review requests")
+        self.assertEqual(auto_fix["help"], "Allow automatic health review requests. Repairs are not started.")
         self.assertEqual(auto_fix["default"], False)
         self.assertEqual(projection["health"]["auto_repair"]["key"], "monitoring.auto_health_enabled")
         private = descriptors["feedback.destination"]
