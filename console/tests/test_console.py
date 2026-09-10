@@ -7695,8 +7695,9 @@ class SwarmConsoleTests(unittest.TestCase):
 
     def test_health_copy_is_product_facing_without_a_watchdog_surface(self) -> None:
         app = (console.STATIC_ROOT / "app.js").read_text(encoding="utf-8")
-        self.assertIn("Request health review when needed", app)
-        self.assertIn("Passive monitoring does not run models.", app)
+        self.assertIn("Allow automatic health review requests. Repairs are not started.", app)
+        self.assertIn("Health checks remain active; no repair is started.", app)
+        self.assertNotIn("This may start repair tasks", app)
         self.assertNotIn("Automatic care", app)
         self.assertNotIn("watchdog", app.casefold())
         self.assertNotIn("watchdog", console.EDITABLE_SETTINGS)
