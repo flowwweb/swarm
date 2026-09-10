@@ -6605,7 +6605,6 @@ document.addEventListener('click', async (event) => {
       return;
     }
     if (action === 'save-ctrl' && state.ctrlSettings) state.ctrlSettings = await api('/api/ctrl-settings', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ctrl_id: state.ctrlSettings.ctrl_id, expected_revision: state.ctrlSettings.revision, changes: { model: $('#ctrl-model').value.trim(), reasoning: $('#ctrl-reasoning').value } }) });
-    if (action === 'save-spark' && configEditable('boost.spark_model')) await saveCurrentConfigMutation({ 'boost.spark_model': $('#spark-model').value.trim() });
     await refreshOverview();
   } catch (error) { showError(error.message); }
 });

@@ -8426,6 +8426,8 @@ class SwarmConsoleTests(unittest.TestCase):
         self.assertIn("boost.spark_enabled", console.redacted_config_snapshot(self.config)["editable"])
         self.assertNotIn("No browser, web lookup, ImageGen", app)
         self.assertNotIn("saveUsageSaver", app)
+        self.assertNotIn("save-spark", app)
+        self.assertNotIn("spark-model", app)
 
     def test_console_ui_fixture_is_structurally_valid(self) -> None:
         fixture_path = Path(__file__).parent / "fixtures" / "console-ui.json"
