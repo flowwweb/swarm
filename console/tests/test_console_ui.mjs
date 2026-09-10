@@ -1370,7 +1370,7 @@ assert.match(css, /html\[data-theme="black"\][\s\S]*?--base:#050607; --base-deep
 assert.match(css, /html\[data-theme="graphite"\][\s\S]*?--base:#202123; --base-deep:#17181a/);
 assert.match(css, /html\[data-theme="pearl"\][\s\S]*?color-scheme: light/);
 assert.match(settingsSource, /settingsSwitch\("automation\.mode"[\s\S]*?"Auto mode"/);
-assert.match(settingsSource, /descriptorBooleanSwitch\("monitoring\.auto_health_enabled"[\s\S]*?"Auto fix"[\s\S]*?SWARM attempts to recover from issues automatically\. This may start repair tasks and increase usage\./);
+assert.match(settingsSource, /descriptorBooleanSwitch\("monitoring\.auto_health_enabled"[\s\S]*?"Automatic health review requests"[\s\S]*?Allow automatic health review requests\. Repairs are not started\./);
 assert.match(settingsSource, /descriptorBooleanSwitch\("execution\.usage_saver"[\s\S]*?"Usage Saver"[\s\S]*?Smart routing can reduce usage\.[\s\S]*?badge: "Experimental"/);
 assert.match(settingsSource, /settingsSpeedMarkup\(\)[\s\S]*?settingsTaskLifeMarkup\(\)/);
 assert.match(settingsSource, /class="panel settings-config-entry settings-wide" id="settings-advanced"[\s\S]*?data-setting-action="edit-config"/);
@@ -5280,10 +5280,10 @@ proofFeed.items.push({
     assert.equal(await page.locator("#settings-grid > .settings-essentials").count(), 1);
     assert.equal(await page.getByRole("button", { name: "Replay tour" }).count(), 1);
     assert.equal(await page.locator("#settings-advanced").count(), 1);
-    assert.match(await page.locator("#settings-essentials").textContent(), /Auto mode[\s\S]*Auto fix[\s\S]*Usage Saver[\s\S]*Experimental[\s\S]*Default[\s\S]*Fast[\s\S]*Ultrafast[\s\S]*Task life[\s\S]*Short[\s\S]*Medium[\s\S]*Balanced[\s\S]*Long[\s\S]*Unlimited/);
-    assert.match(await page.locator("#settings-essentials").textContent(), /SWARM attempts to recover from issues automatically\. This may start repair tasks and increase usage\./);
+    assert.match(await page.locator("#settings-essentials").textContent(), /Auto mode[\s\S]*Automatic health review requests[\s\S]*Usage Saver[\s\S]*Experimental[\s\S]*Default[\s\S]*Fast[\s\S]*Ultrafast[\s\S]*Task life[\s\S]*Short[\s\S]*Medium[\s\S]*Balanced[\s\S]*Long[\s\S]*Unlimited/);
+    assert.match(await page.locator("#settings-essentials").textContent(), /Allow automatic health review requests\. Repairs are not started\./);
     assert.match(await page.locator("#settings-essentials").textContent(), /Smart routing can reduce usage\./);
-    assert.equal(await page.getByRole("checkbox", { name: "Auto fix" }).isDisabled(), true);
+    assert.equal(await page.getByRole("checkbox", { name: "Automatic health review requests" }).isDisabled(), true);
     assert.equal(await page.getByLabel("Usage Saver").isDisabled(), true);
     assert.equal(await page.getByRole("slider", { name: "Task life" }).isDisabled(), true);
     assert.equal(await page.getByRole("slider", { name: "Task life" }).getAttribute("aria-valuetext"), "Balanced — unavailable");
@@ -5326,7 +5326,7 @@ proofFeed.items.push({
     await themeReloadPage.close();
     await page.evaluate(() => setTheme("midnight"));
     assert.equal(await page.getByLabel("Auto mode").isDisabled(), false);
-    assert.equal(await page.getByRole("checkbox", { name: "Auto fix" }).isDisabled(), false);
+    assert.equal(await page.getByRole("checkbox", { name: "Automatic health review requests" }).isDisabled(), false);
     assert.equal(await page.getByLabel("Usage Saver").isDisabled(), false);
     assert.equal(await page.getByLabel("Usage Saver").isChecked(), false);
     if (evidenceDir) await page.screenshot({ path: path.join(evidenceDir, "31-settings-essentials-defaults-desktop-1536x1024.png"), fullPage: false, animations: "disabled" });
