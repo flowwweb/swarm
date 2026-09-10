@@ -123,37 +123,29 @@ class HostContractTests(unittest.TestCase):
         self.assertNotIn("gemini extensions install", readme.lower())
         self.assertNotIn("cross-host certified", readme.lower())
 
-    def test_readme_keeps_one_clear_three_lane_hierarchy(self) -> None:
+    def test_readme_keeps_one_bounded_optional_lane_hierarchy(self) -> None:
         readme = (REPOSITORY_ROOT / "README.md").read_text(encoding="utf-8")
         self.assertEqual(1, readme.count("```mermaid"))
-        self.assertEqual(3, readme.count(" LEAD<br/>gpt-5.6-terra"))
-        self.assertEqual(9, readme.count("<br/>gpt-5.6-luna"))
-        self.assertIn("CTRL<br/>gpt-5.6-sol · high", readme)
+        self.assertEqual(1, readme.count("PROFESSION LEAD<br/>"))
+        self.assertEqual(1, readme.count("PROFESSION DOER<br/>"))
         self.assertIn("🐙<br/>CTRL", readme)
-        self.assertEqual(3, readme.count("🧭<br/>"))
-        spacing = re.search(r'"rankSpacing":(\d+)', readme)
-        self.assertIsNotNone(spacing)
-        self.assertGreaterEqual(int(spacing.group(1)), 120)
+        self.assertIn("CTRL_DIRECT<br/>No separate lane", readme)
+        self.assertIn("SUBAGENT<br/>No durable ownership", readme)
+        self.assertIn("The branches are choices, not a roster to pre-create", readme)
+        self.assertIn("The Codex host owns model, service-tier, and reasoning selection", readme)
+        self.assertIn("diagram label is never proof of execution", readme)
         self.assertNotIn("MOTHER", readme)
-        for title in (
-            "MANAGER LEAD",
-            "ARCHITECT LEAD",
-            "REVIEWER LEAD",
-            "RESEARCHER DOER",
-            "DEV DOER",
-            "TESTER DOER",
-        ):
-            self.assertIn(title, readme)
 
-    def test_readme_has_one_simple_global_config_path_and_fast_switch(self) -> None:
+    def test_readme_has_one_global_config_path_and_defers_to_schema_authority(self) -> None:
         readme = (REPOSITORY_ROOT / "README.md").read_text(encoding="utf-8")
         self.assertIn("`~/.agents/swarm/config.toml`", readme)
         self.assertIn("swarm_config.py init", readme)
         self.assertIn("swarm_config.py validate", readme)
         self.assertIn("swarm_config.py show", readme)
-        self.assertIn("fast_mode = true       # the only Fast-mode switch", readme)
-        self.assertIn('mode = "standard"      # or "manual"', readme)
-        self.assertIn("open_on_start = false", readme)
+        self.assertIn("skills/swarm/references/config.md", readme)
+        self.assertIn("authority; a README excerpt is not", readme)
+        self.assertRegex(readme, r"Config never overrides\s+an explicit user choice")
+        self.assertRegex(readme, r"Fast or automation preferences become active only when the relevant\s+host/runtime receipt confirms them")
 
 
 if __name__ == "__main__":
