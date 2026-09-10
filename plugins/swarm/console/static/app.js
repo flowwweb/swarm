@@ -392,6 +392,7 @@ function openAdvancedSettingsFromOnboarding() {
   requestAnimationFrame(() => {
     const entry = $('#settings-advanced');
     if (!entry) return;
+    entry.open = true;
     entry.scrollIntoView({ block: 'start' });
     $('#settings-edit-config')?.focus({ preventScroll: true });
   });
@@ -891,7 +892,7 @@ function setView(view, focus = false, syncRoute = true, historyMode = "push") {
     settings: ["Settings", "Defaults and optional per-CTRL overrides."],
   };
   $(".app-shell").dataset.currentView = selectedView;
-  $$(".nav-item").forEach((tab) => {
+  $$(".nav-item[data-view]").forEach((tab) => {
     const selected = tab.dataset.view === selectedView;
     tab.classList.toggle("is-active", selected);
     tab.setAttribute("aria-selected", String(selected));
@@ -908,7 +909,9 @@ function setView(view, focus = false, syncRoute = true, historyMode = "push") {
   });
   const project = state.projectId !== "all" && !state.ctrlId ? projectGroups().find((item) => item.id === state.projectId) : null;
   $("#view-title").textContent = selectedView === "overview" && project ? project.label : titles[selectedView][0];
-  $("#view-subtitle").textContent = selectedView === "overview" && project ? "Project progress, proof, ownership, and ledger." : titles[selectedView][1];
+  $("#view-subtitle").textContent = "";
+  $("#view-subtitle").hidden = true;
+  if (["roles", "assets", "diagnostics"].includes(selectedView)) $("#nav-more").open = true;
   if (selectedView === 'settings' && (!state.skills || state.skillsError)) refreshSkills().then(renderSettings);
   if (selectedView === 'settings' && state.token) refreshAutoStatus().then(renderSettings);
   if (selectedView === 'diagnostics' && state.token && state.diagnosticsHistoryStatus === "idle") refreshDiagnostics().then(renderDiagnostics);
@@ -3862,6 +3865,7 @@ function renderOverviewProjectCards() {
   const malformedMarkup = malformed.length ? '<section class="overview-independent panel is-error" role="alert"><header><span><strong>Role binding needs attention</strong><small>Reconnect each SWARM task to one manifest role and CTRL.</small></span></header><div>' + malformed.map((record) => '<article class="overview-independent-task" title="Task ID: ' + escapeHTML(record.node.id) + '"><span class="scope-dot is-stalled" aria-hidden="true"></span><span><strong>' + escapeHTML(agentTaskTitle(record)) + '</strong><small>' + escapeHTML(record.presentationName + " · Role binding error") + '</small></span></article>').join("") + '</div></section>' : "";
   $("#overview-summary").textContent = grouped.size ? String(grouped.size) + " active project" + (grouped.size === 1 ? "" : "s") : "No active project team";
   const content = cards || independentMarkup || malformedMarkup ? cards + independentMarkup + malformedMarkup : '<p class="empty-state overview-empty" role="status">No active project team is available.</p>';
+  if (!cards && !independentMarkup && !malformedMarkup) { host.innerHTML = content; return; }
   host.innerHTML = '<div class="overview-hierarchy-toolbar" role="group" aria-label="Team map controls"><button class="icon-button" type="button" data-overview-zoom="out" aria-label="Zoom out"><svg class="lucide" aria-hidden="true"><use href="#lucide-minus"></use></svg></button><button class="icon-button" type="button" data-overview-zoom="fit" aria-label="Fit team"><svg class="lucide" aria-hidden="true"><use href="#lucide-scan"></use></svg></button><button class="icon-button" type="button" data-overview-zoom="in" aria-label="Zoom in"><svg class="lucide" aria-hidden="true"><use href="#lucide-plus"></use></svg></button></div><div class="overview-hierarchy-viewport edge-scroll"><div class="overview-hierarchy-canvas">' + content + '</div></div>';
   scheduleOverviewHierarchyEdges();
 }
@@ -4118,7 +4122,7 @@ function messageHistoryRecipients() {
   const roster = state.messageRoster;
   if (!projectId || roster?.project_id !== projectId || !["AVAILABLE","PARTIAL"].includes(roster.status)) return [];
   const project = savedProjectRoster().projects.find(item => item.id === projectId);
-  return roster.items.map(item => ({id:item.thread_id,projectId,label:publicLabel(item.title,"Codex task"),projectLabel:project.label}));
+  return roster.items.map(item => ({id:item.thread_id,projectId,label:publicLabel(/[<>]/.test(item.title || "") ? "" : item.title,"Task " + item.thread_id.slice(-8)),projectLabel:project?.label || "Project"}));
 }
 
 function messageHistoryBinding() {
@@ -4384,7 +4388,7 @@ function messageStatusCopy(recipient = selectedMessageRecipient()) {
     if (state.messageStatus === "pending") return "Pending · waiting for dispatch acknowledgement.";
     if (state.messageStatus === "sent") return "Message dispatched. Task completion is not yet verified.";
     if (state.messageError) return state.messageError;
-    return state.messageAttachments.length ? "Attachments are unavailable for this task message." : "Send a message to the selected existing task.";
+    return state.messageAttachments.length ? "Attachments are unavailable for this task message." : "";
   }
   if (!recipient) return "No authorized CTRL is available in this project scope.";
   if (!state.messageConnector) return MESSAGE_CONNECTOR_UNAVAILABLE;
@@ -4393,7 +4397,7 @@ function messageStatusCopy(recipient = selectedMessageRecipient()) {
   if (state.messageStatus === "sent") return "Sent to " + recipient.label + ".";
   if (state.messageStatus === "conflict") return state.messageError || "The project context changed. Review the message and retry.";
   if (state.messageStatus === "failed") return state.messageError || "The message was not acknowledged. Your draft is still here.";
-  return "Ready to send through SWARM.";
+  return "";
 }
 
 function renderMessageComposer() {
@@ -5267,10 +5271,11 @@ function settingsSpeedMarkup(options = {}) {
   const editable = options.editable ?? settingsConfigEditable(key);
   const binding = options.binding?.attribute || "data-settings-draft-key";
   const choice = (label, selected, value, disabled = false) => '<label><input type="radio" name="' + escapeHTML(options.name || "settings-speed") + '" ' + binding + '="' + key + '" data-config-value="' + String(value) + '"' + (options.binding?.control ? ' data-onboarding-control="speed-' + label.toLowerCase() + '"' : '') + (selected ? ' checked' : '') + ((!editable || disabled) ? ' disabled' : '') + ' aria-label="' + escapeHTML(label) + '"><span>' + escapeHTML(label) + '</span></label>';
-  return '<fieldset class="settings-segmented"><legend>Speed</legend><div>' + choice("Default", !fast, false) + choice("Fast", fast, true) + choice("Ultrafast", false, true, true) + '</div><small>' + escapeHTML(editable ? 'Ultrafast is unavailable until SWARM exposes an accepted mode.' : 'Speed is read-only in this scope.') + '</small></fieldset>';
+  return '<fieldset class="settings-segmented"><legend>Speed</legend><div>' + choice("Default", !fast, false) + choice("Fast", fast, true) + '</div>' + (editable ? '' : '<small>Speed is read-only in this scope.</small>') + '</fieldset>';
 }
 
 function settingsTaskLifeMarkup(options = {}) {
+  if (!options.binding && options.editable !== true) return "";
   const labels = ["Short", "Medium", "Balanced", "Long", "Unlimited"];
   const tooltip = "Short clears context sooner to keep work efficient, with more handovers. Balanced hands over when task efficiency begins to drop. Long reduces handovers, while a larger context can become less efficient over time.";
   const value = Number(options.value);
@@ -5529,13 +5534,13 @@ function renderSettings() {
   const autoMode = settingsDraftValue("automation.mode", automation.mode || "manual");
   const pending = state.settingsDraft.size;
   const saveStatus = state.settingsSaveError || state.settingsSaveMessage || (pending ? pending + " unsaved change" + (pending === 1 ? "" : "s") : "All changes saved");
-  $("#settings-grid").innerHTML = settingsThemeMarkup() +
-    '<section class="panel settings-essentials settings-wide" id="settings-essentials" tabindex="-1"><header class="settings-essentials-head"><div><p class="eyebrow">Essentials</p><h3>How SWARM runs your work</h3><p>Keep the defaults clear. Exact configuration remains server-owned.</p></div><label class="settings-scope-control">Applies to<select id="settings-scope">' + settingsScopeOptions() + '</select></label></header><div class="settings-context"><strong>' + escapeHTML(context.title) + '</strong><span>' + escapeHTML(context.note) + '</span></div><div class="settings-toggle-grid">' +
+  $("#settings-grid").innerHTML =
+    '<section class="panel settings-essentials settings-wide" id="settings-essentials" tabindex="-1"><header class="settings-essentials-head"><div><h3>Essentials</h3></div><label class="settings-scope-control">Applies to<select id="settings-scope">' + settingsScopeOptions() + '</select></label></header><div class="settings-context"><strong>' + escapeHTML(context.title) + '</strong><span>' + escapeHTML(context.note) + '</span></div><div class="settings-toggle-grid">' +
       settingsSwitch("automation.mode", autoMode, "Auto mode", "SWARM keeps eligible work moving until it needs you.", { trueValue: "standard", falseValue: "manual", unavailable: scope.type === "global" ? "Managed by the current configuration." : "Edit global defaults or use an accepted override." }) +
       descriptorBooleanSwitch("monitoring.auto_health_enabled", "Automatic health review requests", "Allow automatic health review requests. Repairs are not started.", { unsupported: "Unavailable. Health checks remain active; no repair is started." }) +
       descriptorBooleanSwitch("execution.usage_saver", "Usage Saver", "Smart routing can reduce usage.", { badge: "Experimental", unsupported: "Unavailable until the canonical setting is exposed." }) + '</div><div class="settings-run-controls">' + settingsSpeedMarkup() + settingsTaskLifeMarkup() + '</div><div class="guided-tour-setting"><span><strong>Guided tour</strong><small>Replay the current SWARM introduction.</small></span><button class="quiet-button" data-setting-action="replay-tour" type="button">Replay tour</button></div></section>' +
-    '<section class="panel settings-config-entry settings-wide" id="settings-advanced"><div><p class="eyebrow">Configuration</p><h3>Edit config</h3><p>Review the exact source, inheritance, and validation state in one place.</p><small>' + escapeHTML(settingsConfigSummary()) + '</small></div><button class="quiet-button" id="settings-edit-config" data-setting-action="edit-config" type="button">Edit config</button></section>' +
-    '<footer class="settings-save-bar settings-wide' + (state.settingsSaveError ? ' is-error' : '') + '" aria-live="polite"><p><strong>' + escapeHTML(saveStatus) + '</strong><span>' + escapeHTML(pending ? "Review and save these server-backed changes." : "Essentials reflect the latest acknowledged configuration.") + '</span></p><div><button class="quiet-button" data-setting-action="discard-settings" type="button"' + (!pending || state.settingsSaving ? ' disabled' : '') + '>Discard</button><button class="primary-action" id="settings-save" data-setting-action="save-settings" type="button"' + (!pending || state.settingsSaving ? ' disabled' : '') + (state.settingsSaving ? ' aria-busy="true"' : '') + '>Save changes</button></div></footer>';
+    '<details class="panel settings-config-entry settings-wide" id="settings-advanced"><summary>Advanced settings</summary><div><p class="eyebrow">Configuration</p><h3>Edit config</h3><p>Review the exact source, inheritance, and validation state in one place.</p><small>' + escapeHTML(settingsConfigSummary()) + '</small></div><button class="quiet-button" id="settings-edit-config" data-setting-action="edit-config" type="button">Edit config</button></details>' + settingsThemeMarkup() +
+    '<footer class="settings-save-bar settings-wide' + (state.settingsSaveError ? ' is-error' : '') + '" aria-live="polite"' + (!pending && !state.settingsSaving && !state.settingsSaveError ? ' hidden' : '') + '><p><strong>' + escapeHTML(saveStatus) + '</strong><span>' + escapeHTML(pending ? "Review and save these server-backed changes." : "Essentials reflect the latest acknowledged configuration.") + '</span></p><div><button class="quiet-button" data-setting-action="discard-settings" type="button"' + (!pending || state.settingsSaving ? ' disabled' : '') + '>Discard</button><button class="primary-action" id="settings-save" data-setting-action="save-settings" type="button"' + (!pending || state.settingsSaving ? ' disabled' : '') + (state.settingsSaving ? ' aria-busy="true"' : '') + '>Save changes</button></div></footer>';
 }
 
 function renderAllViews() { renderOverview(); renderAgents(); renderRoles(); renderReview(); renderAssets(); renderDiagnostics(); renderSettings(); renderRunLogSurfaces(); renderMessageComposer(); if ($("#onboarding-dialog")?.open) renderOnboarding(); updateDocumentTitle(); }
@@ -6610,8 +6615,9 @@ document.addEventListener('click', async (event) => {
 });
 $(".drawer-navigation").addEventListener("keydown", (event) => {
   if (!["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)) return;
-  const tabs = $$(".nav-item");
+  const tabs = $$(".nav-item[data-view]").filter(tab => !tab.closest("details") || tab.closest("details").open);
   const index = tabs.indexOf(document.activeElement);
+  if (index < 0) return;
   const next = event.key === "Home" ? 0 : event.key === "End" ? tabs.length - 1 : (index + (event.key === "ArrowDown" ? 1 : -1) + tabs.length) % tabs.length;
   event.preventDefault();
   tabs[next].focus();

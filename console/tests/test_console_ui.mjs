@@ -443,8 +443,8 @@ const onboardingCloseSource = app.slice(app.indexOf('$("#onboarding-dialog").add
 assert.doesNotMatch(onboardingCloseSource, /markOnboardingSeen/);
 assert.match(onboardingCloseSource, /addEventListener\("cancel"[\s\S]*?event\.preventDefault\(\)[\s\S]*?onboardingCanDismiss\(\)/);
 assert.match(app, /function settingsSpeedMarkup\(options = \{\}\)/);
-assert.match(app, /Default[\s\S]*?Fast[\s\S]*?Ultrafast/);
-assert.match(app, /Ultrafast is unavailable until SWARM exposes an accepted mode\./);
+assert.match(app, /choice\("Default"[\s\S]*?choice\("Fast"/);
+assert.doesNotMatch(app, /choice\("Ultrafast"/);
 assert.match(app, /function settingsTaskLifeMarkup\(options = \{\}\)/);
 assert.match(app, /ONBOARDING_TASK_LIFE_DETENTS = \[[\s\S]*?hours: 1[\s\S]*?hours: 2[\s\S]*?hours: 4[\s\S]*?hours: 24[\s\S]*?hours: 720/);
 assert.match(app, /data-config-values="["'] \+ ONBOARDING_TASK_LIFE_DETENTS/);
@@ -1137,6 +1137,14 @@ assert.match(indexHtml, /id="view-diagnostics"[\s\S]*?id="diagnostics-check-stri
 assert.match(css, /\.system-health-control[\s\S]*?\.status-dot\.is-attention/);
 assert.match(css, /@media \(max-width: 620px\)[\s\S]*?\.icon-button \{ flex: 0 0 46px; height: 46px; \}/);
 assert.match(app, /function routeView\(\)/);
+assert.ok(indexHtml.indexOf('class="panel highest-usage-section"') > indexHtml.indexOf('id="project-tab-panel"'), "Usage follows project work");
+assert.ok(indexHtml.includes('<details class="nav-more" id="nav-more">'));
+assert.match(indexHtml, /id="nav-more"><summary[^>]*>More<svg[^>]*aria-hidden="true"><use href="#lucide-chevron-down"/);
+assert.ok(css.includes('.nav-more[open] > summary > .lucide { transform:rotate(180deg); }'));
+assert.ok(css.includes('.settings-save-bar[hidden] { display:none; }'));
+assert.ok(css.includes('@media (min-width:901px) and (pointer:fine)'));
+assert.ok(css.includes('.project-scope-button { min-height:32px; }'));
+assert.ok(app.includes('filter(tab => !tab.closest("details") || tab.closest("details").open)'));
 assert.match(app, /\["overview", "agents", "roles", "review", "assets", "diagnostics", "settings"\]/);
 assert.doesNotMatch(app.slice(app.indexOf("function routeView"), app.indexOf("function setView")), /dashboard|hierarchy|kanban/);
 for (const retiredView of ["dashboard", "hierarchy", "kanban"]) {
@@ -1375,7 +1383,10 @@ assert.match(settingsSource, /descriptorBooleanSwitch\("execution\.usage_saver"[
 assert.match(settingsSource, /settingsSpeedMarkup\(\)[\s\S]*?settingsTaskLifeMarkup\(\)/);
 assert.match(settingsSource, /class="panel settings-config-entry settings-wide" id="settings-advanced"[\s\S]*?data-setting-action="edit-config"/);
 assert.match(settingsSource, /class="settings-save-bar settings-wide/);
-assert.doesNotMatch(settingsSource, /Advanced settings|Spark and monitoring|Use ChatGPT for eligible work|Heartbeat minutes|Show role icons|Use less usage when possible/);
+assert.match(settingsSource, /<details class="panel settings-config-entry settings-wide" id="settings-advanced"><summary>Advanced settings<\/summary>/);
+assert.doesNotMatch(settingsSource, /Spark and monitoring|Use ChatGPT for eligible work|Heartbeat minutes|Show role icons|Use less usage when possible/);
+assert.ok(settingsSource.includes('!pending && !state.settingsSaving && !state.settingsSaveError'));
+assert.ok(css.includes('.message-composer-actions > div { grid-column:2; grid-row:1; }'));
 assert.match(app, /function stageSettingsDraft\(key, value\)[\s\S]*?state\.settingsDraft\.set\(key, value\)/);
 assert.match(app, /function saveSettingsDraft\(\)[\s\S]*?await saveCurrentConfigMutation\(changes\)[\s\S]*?state\.settingsDraft\.clear\(\)/);
 assert.match(app, /function settingsConfigEditable\(key\)[\s\S]*?currentSettingsScope\(\)\.type === "global"/);
@@ -3430,7 +3441,7 @@ proofFeed.items.push({
     const taskLife = onboardingConfigPanel.getByRole("slider", { name: "Task life" });
     const advancedSettingsLink = onboardingConfigPanel.getByRole("button", { name: "Advanced settings" });
     assert.equal(await onboardingConfigPanel.getByLabel("Default", { exact: true }).isChecked(), true);
-    assert.equal(await onboardingConfigPanel.getByLabel("Ultrafast", { exact: true }).isDisabled(), true);
+    assert.equal(await onboardingConfigPanel.getByLabel("Ultrafast", { exact: true }).count(), 0);
     assert.equal(await onboardingConfigPanel.getByLabel("Auto mode").isChecked(), true);
     assert.equal(await taskLife.inputValue(), "2");
     assert.equal(await taskLife.getAttribute("aria-valuetext"), "Balanced — unavailable");
@@ -5280,13 +5291,15 @@ proofFeed.items.push({
     assert.equal(await page.locator("#settings-grid > .settings-essentials").count(), 1);
     assert.equal(await page.getByRole("button", { name: "Replay tour" }).count(), 1);
     assert.equal(await page.locator("#settings-advanced").count(), 1);
-    assert.match(await page.locator("#settings-essentials").textContent(), /Auto mode[\s\S]*Automatic health review requests[\s\S]*Usage Saver[\s\S]*Experimental[\s\S]*Default[\s\S]*Fast[\s\S]*Ultrafast[\s\S]*Task life[\s\S]*Short[\s\S]*Medium[\s\S]*Balanced[\s\S]*Long[\s\S]*Unlimited/);
+    assert.match(await page.locator("#settings-essentials").textContent(), /Auto mode[\s\S]*Automatic health review requests[\s\S]*Usage Saver[\s\S]*Experimental[\s\S]*Default[\s\S]*Fast/);
+    assert.equal(await page.getByLabel("Ultrafast", { exact:true }).count(), 0);
     assert.match(await page.locator("#settings-essentials").textContent(), /Allow automatic health review requests\. Repairs are not started\./);
     assert.match(await page.locator("#settings-essentials").textContent(), /Smart routing can reduce usage\./);
     assert.equal(await page.getByRole("checkbox", { name: "Automatic health review requests" }).isDisabled(), true);
     assert.equal(await page.getByLabel("Usage Saver").isDisabled(), true);
-    assert.equal(await page.getByRole("slider", { name: "Task life" }).isDisabled(), true);
-    assert.equal(await page.getByRole("slider", { name: "Task life" }).getAttribute("aria-valuetext"), "Balanced — unavailable");
+    assert.equal(await page.getByRole("slider", { name: "Task life" }).count(), 0, "Unsupported Settings task life is omitted, not presented as writable");
+    assert.equal(await page.locator("#settings-advanced").evaluate(el=>el.open), false);
+    assert.equal(await page.locator(".settings-save-bar").isVisible(), false);
     assert.equal(await page.getByLabel("Auto mode").isDisabled(), true);
     await page.locator("#settings-scope").selectOption("global|global");
     await page.waitForFunction(() => state.settingsScopeType === "global" && state.settingsScopeId === "global");
