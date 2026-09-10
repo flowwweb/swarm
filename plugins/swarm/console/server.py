@@ -468,7 +468,7 @@ class CodexStdioBridge:
         return str(result.get(f"{kind}Id") or nested.get("id") or "")
 
     @contextmanager
-    def command_session(self, cwd: Path, *, retain_turn: bool = False, approval_project_id: str = ""):
+    def command_session(self, cwd: Path, *, retain_turn: bool = False, approval_project_id: str = "", timeout_seconds: float = AUTO_BRIDGE_TIMEOUT_SECONDS):
         process: Any = None
         inbox: queue.Queue[object] = queue.Queue()
         custody_lock = self._approval_lock
@@ -637,7 +637,7 @@ class CodexStdioBridge:
 
             threading.Thread(target=read_diagnostics, name="swarm-auto-app-server-stderr", daemon=True).start()
             threading.Thread(target=read_messages, name="swarm-auto-app-server-jsonl", daemon=True).start()
-            deadline = time.monotonic() + AUTO_BRIDGE_TIMEOUT_SECONDS
+            deadline = time.monotonic() + timeout_seconds
             pending: list[dict[str, Any]] = []
 
             def send(message: dict[str, object]) -> None:
@@ -680,6 +680,19 @@ class CodexStdioBridge:
     def _session(self, cwd: Path, transact: Any) -> AutoBridgeResult:
         with self.command_session(cwd) as (send, receive):
             return transact(send, receive)
+
+    def read_account_limits(self, cwd: Path) -> dict[str, Any]:
+        """Read usage only; no thread/turn or raw account details are retained."""
+        try:
+            with self.command_session(cwd, timeout_seconds=10) as (send, receive):
+                send({"id": 1, "method": "account/rateLimits/read", "params": None})
+                reply = receive(lambda item: item.get("id") == 1)
+                if reply.get("error") is not None:
+                    code = reply["error"].get("code") if isinstance(reply["error"], dict) else None
+                    return {"status": "UNKNOWN", "reason": "host_error", "error_code": code if type(code) is int else None, "windows": []}
+                return _normalize_account_limits(reply.get("result"))
+        except (OSError, ValueError, TypeError, queue.Empty):
+            return {"status": "UNKNOWN", "reason": "host_unavailable", "windows": []}
 
     def run(
         self, *, cwd: Path, instruction: str, thread_id: str = "",
@@ -1806,6 +1819,95 @@ def _is_reparse_point(path: Path) -> bool:
         return True
     reparse_flag = getattr(stat_module, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
     return path.is_symlink() or bool(getattr(metadata, "st_file_attributes", 0) & reparse_flag)
+
+
+def _normalize_account_limits(result: Any) -> dict[str, Any]:
+    unknown = {"status": "UNKNOWN", "reason": "invalid_or_missing_limits", "windows": []}
+    if not isinstance(result, dict):
+        return unknown
+    account = result.get("accountId")
+    account_key = hashlib.sha256(account.encode()).hexdigest() if isinstance(account, str) and 0 < len(account) <= 256 else None
+    buckets = result.get("rateLimitsByLimitId")
+    if buckets is None:
+        legacy = result.get("rateLimits")
+        if not isinstance(legacy, dict) or not isinstance(legacy.get("limitId"), str):
+            return unknown
+        buckets = {legacy["limitId"]: legacy}
+    if not isinstance(buckets, dict) or not 0 < len(buckets) <= 32:
+        return unknown
+    windows = []
+    for limit_id, bucket in sorted(buckets.items()):
+        if not isinstance(limit_id, str) or not re.fullmatch(r"[A-Za-z0-9_.-]{1,80}", limit_id) or not isinstance(bucket, dict) or bucket.get("limitId") not in (None, limit_id):
+            return unknown
+        for slot in ("primary", "secondary"):
+            value = bucket.get(slot)
+            value = value if isinstance(value, dict) else {}
+            used, duration, reset = (value.get(key) for key in ("usedPercent", "windowDurationMins", "resetsAt"))
+            valid = type(used) is int and 0 <= used <= 100
+            windows.append({"limit_id": limit_id, "window": slot,
+                "status": "KNOWN" if valid else "UNKNOWN",
+                "used_percent": used if valid else None, "remaining_percent": 100 - used if valid else None,
+                "window_minutes": duration if type(duration) is int and duration > 0 else None,
+                "reset_at_ms": reset * 1000 if type(reset) is int and 0 < reset < 10**12 else None})
+    return {"status": "KNOWN" if all(row["status"] == "KNOWN" for row in windows) else "PARTIAL" if any(row["status"] == "KNOWN" for row in windows) else "UNKNOWN",
+            "account_key": account_key, "windows": windows}
+
+
+def _account_limits_projection(records: list[dict[str, Any]], now_ms: int) -> dict[str, Any]:
+    """Existing diagnostics history only; percentages never derive from task tokens."""
+    records = sorted((row for row in records if "account_limits" in row.get("payload", {})),
+                     key=lambda row: row["sampled_at_ms"], reverse=True)
+    latest = records[0] if records else {}
+    sample = latest.get("payload", {}).get("account_limits", {})
+    sampled = latest.get("sampled_at_ms")
+    current = sampled is not None and 0 <= now_ms - sampled <= 300_000
+    result = {"status": "UNKNOWN",
+        "source": "codex_app_server.account/rateLimits/read", "scope": "account",
+        "sampled_at_ms": sampled, "account_key": sample.get("account_key"), "windows": [],
+        "reason": sample.get("reason"), "error_code": sample.get("error_code"),
+        "forecast_policy": {"minimum_interval_ms": 900_000, "maximum_age_ms": 300_000,
+                            "maximum_gap_ms": TOKEN_SAMPLE_SECONDS * 2000, "lookback_ms": 3_600_000}}
+    for window in sample.get("windows", []):
+        row = copy.deepcopy(window)
+        points = []
+        identity = tuple(row[key] for key in ("limit_id", "window", "window_minutes", "reset_at_ms"))
+        for record in records:
+            at = record["sampled_at_ms"]
+            observed = record.get("payload", {}).get("account_limits", {})
+            if sampled - at > 3_600_000 or observed.get("account_key") != sample.get("account_key"):
+                break
+            # Allow one missed heartbeat, not an unobserved interval presented as continuous burn.
+            if points and points[-1]["sampled_at_ms"] - at > result["forecast_policy"]["maximum_gap_ms"]:
+                break
+            match = next((item for item in observed.get("windows", []) if tuple(item[key] for key in ("limit_id", "window", "window_minutes", "reset_at_ms")) == identity), None)
+            if match is None or match["status"] != "KNOWN":
+                break
+            points.append({"sampled_at_ms": at, "remaining_percent": match["remaining_percent"]})
+            if not sample.get("account_key"):
+                break  # An unidentified account cannot join historical observations.
+        points.reverse()
+        forecast = {"status": "UNKNOWN", "rate_percentage_points_per_hour": None, "exhaustion_at_ms": None, "exhausts_before_reset": None}
+        interval = points[-1]["sampled_at_ms"] - points[0]["sampled_at_ms"] if points else 0
+        if current and sample.get("account_key") and row["status"] == "KNOWN" and row["window_minutes"] and row["reset_at_ms"] and row["reset_at_ms"] > now_ms:
+            monotonic = all(a["remaining_percent"] >= b["remaining_percent"] for a, b in zip(points, points[1:]))
+            if row["remaining_percent"] == 0:
+                forecast.update(status="EXHAUSTED", exhaustion_at_ms=sampled, exhausts_before_reset=True)
+            elif interval >= 900_000 and monotonic:
+                rate = (points[0]["remaining_percent"] - points[-1]["remaining_percent"]) * 3_600_000 / interval
+                forecast["rate_percentage_points_per_hour"] = rate
+                forecast["status"] = "NO_MEASURABLE_BURN" if rate == 0 else "ESTIMATED"
+                if rate > 0:
+                    exhaustion = sampled + int(row["remaining_percent"] / rate * 3_600_000)
+                    before = exhaustion <= row["reset_at_ms"]
+                    forecast.update(exhaustion_at_ms=exhaustion if before else None, exhausts_before_reset=before,
+                                    status="ESTIMATED" if before else "RESET_BEFORE_EXHAUSTION")
+        window_current = current and (row["reset_at_ms"] is None or row["reset_at_ms"] > now_ms)
+        row.update(status=row["status"] if window_current else "STALE", history=points, observed_interval_ms=interval, forecast=forecast)
+        result["windows"].append(row)
+    states = {row["status"] for row in result["windows"]}
+    result["status"] = ("KNOWN" if states == {"KNOWN"} else "PARTIAL" if "KNOWN" in states
+                        else "STALE" if "STALE" in states else "UNKNOWN")
+    return result
 
 
 class DiagnosticsCollector:
@@ -11024,6 +11126,7 @@ class App:
             "elapsed_ms": elapsed_ms,
             "tokens_per_minute": rate,
             "usage_now": usage_now,
+            "account_limits": _account_limits_projection(self.store.diagnostics_history(limit=1000), now_ms),
             "forecast": forecast,
             "coverage": {"observed_threads": observed_threads, "expected_threads": expected_threads},
             "status_claim": {
@@ -12540,6 +12643,13 @@ class App:
             pass
         try:
             sample = self.diagnostics_collector.collect()
+            if trigger != "proof":  # Quota follows the existing heartbeat, not proof submissions.
+                reader = getattr(self.auto_bridge, "read_account_limits", None)
+                try:
+                    sample["account_limits"] = reader(self.codex_home) if callable(reader) else {
+                        "status": "UNKNOWN", "reason": "host_capability_unavailable", "windows": []}
+                except (OSError, ValueError, TypeError, queue.Empty):
+                    sample["account_limits"] = {"status": "UNKNOWN", "reason": "host_unavailable", "windows": []}
             self.store.record_diagnostics(
                 sample,
                 now_ms=int(sample["sampled_at_ms"]),

@@ -45,6 +45,134 @@ from runtime import (  # noqa: E402
 
 
 class SwarmConsoleTests(unittest.TestCase):
+    def test_account_limits_native_read_observation_and_usage_handler(self) -> None:
+        from contextlib import contextmanager
+        now = int(time.time() * 1000)
+        wire = {"accountId": "private-account", "rateLimitsByLimitId": {
+            "codex": {"primary": {"usedPercent": 60, "windowDurationMins": 300, "resetsAt": (now + 20_000_000) // 1000}, "secondary": None},
+            "codex-spark": {"primary": {"usedPercent": 0, "windowDurationMins": 10080, "resetsAt": (now + 80_000_000) // 1000}}}}
+        sent = []
+        reply = {"id": 1, "result": wire}
+
+        @contextmanager
+        def session(cwd, *, timeout_seconds):
+            self.assertEqual(cwd, self.codex_home)
+            self.assertEqual(timeout_seconds, 10)
+            def receive(predicate):
+                self.assertFalse(predicate({"id": 2}))
+                self.assertTrue(predicate(reply))
+                return reply
+            yield sent.append, receive
+
+        bridge = console.CodexStdioBridge()
+        with mock.patch.object(bridge, "command_session", session):
+            sample = bridge.read_account_limits(self.codex_home)
+        self.assertEqual(sent, [{"id": 1, "method": "account/rateLimits/read", "params": None}])
+        self.assertEqual(sample["status"], "PARTIAL")
+        self.assertNotIn("private-account", json.dumps(sample))
+        self.assertEqual([row["remaining_percent"] for row in sample["windows"]], [40, None, 100, None])
+        self.assertEqual(sample["windows"][0]["reset_at_ms"], wire["rateLimitsByLimitId"]["codex"]["primary"]["resetsAt"] * 1000)
+        for bad in ({"id": 1, "error": {"code": -32601, "message": "private-account"}}, {"id": 1, "result": None}, {"id": 1, "result": {"rateLimitsByLimitId": []}}):
+            reply = bad
+            with mock.patch.object(bridge, "command_session", session):
+                result = bridge.read_account_limits(self.codex_home)
+            self.assertEqual(result["status"], "UNKNOWN")
+            self.assertEqual(result["windows"], [])
+            self.assertNotIn("private-account", json.dumps(result))
+        with mock.patch.object(bridge, "command_session", side_effect=OSError("private-account")):
+            self.assertEqual(bridge.read_account_limits(self.codex_home)["reason"], "host_unavailable")
+
+        app = console.App(self.codex_home, self.config, auto_bridge=bridge)
+        diagnostic = {"sampled_at_ms": now, "cpu": {"available": True, "percent": 5}}
+        overview = {"nodes": [], "links": [], "heartbeat_minutes": 30}
+        with mock.patch.object(app, "_host_overview", return_value=overview), \
+             mock.patch.object(app, "_ingest_progress_pulses_if_changed", return_value={}), \
+             mock.patch.object(app, "_ingest_proof_events_if_changed"), \
+             mock.patch.object(app, "evaluate_auto_once"), \
+             mock.patch.object(app.diagnostics_collector, "collect", return_value=diagnostic), \
+             mock.patch.object(bridge, "read_account_limits", return_value=sample) as read:
+            app.observe_once()
+        read.assert_called_once_with(self.codex_home)
+        self.assertEqual(app.store.latest_diagnostics()["payload"]["cpu"], diagnostic["cpu"])
+        restarted = console.App(self.codex_home, self.config, auto_bridge=bridge)
+        handler = self._handler("127.0.0.1", "127.0.0.1:4788")
+        handler.server.app = restarted
+        handler.headers.replace_header("X-Swarm-Token", restarted.token)
+        handler.path = "/api/usage-history?hours=1"
+        handler._json = mock.Mock()
+        with mock.patch.object(restarted, "_host_overview", return_value=overview), \
+             mock.patch.object(bridge, "read_account_limits", side_effect=AssertionError("GET must not read host")):
+            handler.do_GET()
+        status, body = handler._json.call_args.args
+        self.assertEqual(status, console.HTTPStatus.OK)
+        quota = body["account_limits"]
+        self.assertEqual(quota["scope"], "account")
+        self.assertEqual(quota["windows"][0]["remaining_percent"], 40)
+        self.assertEqual(quota["windows"][0]["forecast"]["status"], "UNKNOWN")
+        self.assertEqual(body["task_usage"], [])
+        with mock.patch.object(app, "_host_overview", return_value=overview), \
+             mock.patch.object(app, "_ingest_progress_pulses_if_changed", return_value={}), \
+             mock.patch.object(app, "_ingest_proof_events_if_changed"), \
+             mock.patch.object(app, "evaluate_auto_once"), \
+             mock.patch.object(app.diagnostics_collector, "collect", return_value={"sampled_at_ms": now + 1, "cpu": diagnostic["cpu"]}), \
+             mock.patch.object(bridge, "read_account_limits", side_effect=OSError("offline")):
+            app.observe_once()
+        last = app.store.latest_diagnostics()["payload"]
+        self.assertEqual(last["cpu"], diagnostic["cpu"])
+        self.assertEqual(last["account_limits"]["status"], "UNKNOWN")
+        self.assertEqual(console._account_limits_projection(app.store.diagnostics_history(), now + 1)["windows"], [])
+
+    def test_account_limits_forecast_identity_freshness_and_null_contract(self) -> None:
+        now = 10_000_000
+        def record(at, used, *, account="a", reset=50_000, duration=300):
+            result = console._normalize_account_limits({"accountId": account, "rateLimits": {"limitId": "codex",
+                "primary": {"usedPercent": used, "windowDurationMins": duration, "resetsAt": reset}}})
+            return {"sampled_at_ms": at, "payload": {"account_limits": result}}
+        def project(records, time_ms=now):
+            return console._account_limits_projection(records, time_ms)["windows"][0]
+        rows = [record(now - i * 60_000, 60 - i * 10 // 15) for i in range(16)]
+        result = project(rows)
+        self.assertEqual(result["forecast"]["rate_percentage_points_per_hour"], 40)
+        self.assertEqual(result["forecast"]["exhaustion_at_ms"], now + 3_600_000)
+        self.assertEqual(result["observed_interval_ms"], 900_000)
+        self.assertEqual([result["history"][i]["remaining_percent"] for i in (0, -1)], [50, 40])
+        self.assertEqual(len(result["history"]), 16)
+        self.assertEqual(console._account_limits_projection(rows, now)["forecast_policy"]["maximum_gap_ms"], 120_000)
+        self.assertEqual(project([rows[0], *rows[2:]])["forecast"]["status"], "ESTIMATED")
+        for gapped in ([rows[0], *rows[3:]], [rows[0], record(now - 120_001, 59), *rows[3:]], [rows[0], rows[-1]]):
+            stopped = project(gapped)
+            self.assertEqual(stopped["forecast"]["status"], "UNKNOWN")
+            self.assertEqual(len(stopped["history"]), 1)
+        for previous in (record(now - 60_000, 50, account="b"), record(now - 60_000, 50, reset=60_000),
+                         record(now - 60_000, 50, duration=10080), record(now - 60_000, 70)):
+            self.assertEqual(project([rows[0], previous, *rows[2:]])["forecast"]["status"], "UNKNOWN")
+        self.assertEqual(project([rows[0], record(now - 10_000, 50)])["forecast"]["status"], "UNKNOWN")
+        self.assertEqual(project(rows, now + 300_001)["status"], "STALE")
+        self.assertEqual(project(rows, now + 300_001)["forecast"]["status"], "UNKNOWN")
+        expired = project([record(now, 60, reset=10_000)])
+        self.assertEqual(expired["status"], "STALE")
+        self.assertEqual(expired["forecast"]["status"], "UNKNOWN")
+        expired_record = record(now, 60, reset=10_000)
+        expired_record["payload"]["account_limits"]["windows"] = expired_record["payload"]["account_limits"]["windows"][:1]
+        self.assertEqual(console._account_limits_projection([expired_record], now)["status"], "STALE")
+        current_record = record(now, 60)
+        current_record["payload"]["account_limits"]["windows"] = current_record["payload"]["account_limits"]["windows"][:1]
+        self.assertEqual(console._account_limits_projection([current_record], now)["status"], "KNOWN")
+        expired_record["payload"]["account_limits"]["windows"][0]["window"] = "secondary"
+        current_record["payload"]["account_limits"]["windows"].extend(expired_record["payload"]["account_limits"]["windows"])
+        self.assertEqual(console._account_limits_projection([current_record], now)["status"], "PARTIAL")
+        self.assertEqual(project([record(now - i * 60_000, 60) for i in range(16)])["forecast"]["status"], "NO_MEASURABLE_BURN")
+        self.assertEqual(project([record(now, 100)])["forecast"]["status"], "EXHAUSTED")
+        reset_first = project([record(now - i * 60_000, 60 - i * 10 // 15, reset=11_000) for i in range(16)])
+        self.assertEqual(reset_first["forecast"]["status"], "RESET_BEFORE_EXHAUSTION")
+        self.assertIsNone(reset_first["forecast"]["exhaustion_at_ms"])
+        anonymous = project([record(now, 60, account=None), record(now - 900_000, 50, account=None)])
+        self.assertEqual(len(anonymous["history"]), 1)
+        self.assertEqual(anonymous["forecast"]["status"], "UNKNOWN")
+        for used in (None, True, "0", -1, 101):
+            self.assertIsNone(project([record(now, used)])["remaining_percent"])
+        self.assertEqual(console._account_limits_projection([], now)["status"], "UNKNOWN")
+
     def test_docker_status_suppresses_windows_console(self) -> None:
         with mock.patch.object(console.subprocess, "CREATE_NO_WINDOW", 0x08000000, create=True), mock.patch.object(
             console.subprocess, "run", return_value=SimpleNamespace(returncode=0, stdout="swarm-console\n"),
