@@ -8364,7 +8364,10 @@ class SwarmConsoleTests(unittest.TestCase):
         app = (console.STATIC_ROOT / "app.js").read_text(encoding="utf-8")
         self.assertNotIn("ctrl-service-tier", app)
         self.assertNotIn("execution.service_tier", app)
-        self.assertEqual(app.count("settingToggle('execution.fast_mode'"), 1)
+        projection = console.App(self.codex_home, self.config).config_projection({"type": "global"})
+        self.assertEqual([row["key"] for row in projection["descriptors"]].count("execution.fast_mode"), 1)
+        self.assertNotIn("settingToggle('execution.fast_mode'", app)
+        self.assertEqual(app.count("settingsSpeedMarkup()"), 1)
 
     def test_stale_console_cache_fails_with_a_concise_advisory(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -8409,13 +8412,12 @@ class SwarmConsoleTests(unittest.TestCase):
             console.update_config(self.config, {"execution.usage_saver": "yes"})
         self.assertEqual(self.config.read_bytes(), before)
 
-    def test_spark_has_one_bounded_settings_control(self) -> None:
+    def test_spark_remains_configurable_without_a_duplicate_essentials_toggle(self) -> None:
         index = (console.STATIC_ROOT / "index.html").read_text(encoding="utf-8")
         app = (console.STATIC_ROOT / "app.js").read_text(encoding="utf-8")
         self.assertNotIn('id="usage-saver-toggle"', index)
-        self.assertEqual(app.count("settingToggle('boost.spark_enabled'"), 1)
-        self.assertIn("Use Spark for safe small tasks", app)
-        self.assertIn("Spark stays bounded to quick, low-risk work.", app)
+        self.assertNotIn("settingToggle('boost.spark_enabled'", app)
+        self.assertIn("boost.spark_enabled", console.redacted_config_snapshot(self.config)["editable"])
         self.assertNotIn("No browser, web lookup, ImageGen", app)
         self.assertNotIn("saveUsageSaver", app)
 

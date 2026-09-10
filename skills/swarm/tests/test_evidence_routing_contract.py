@@ -155,7 +155,7 @@ class EvidenceRoutingContractTests(unittest.TestCase):
 
     def test_live_feed_doctrine_requires_prompt_surface_and_receipts(self):
         self.assertRegex(self.skill, r"(?is)human review feed.*next safe boundary.*surfaced once.*blocks acceptance")
-        self.assertRegex(self.skill, r"(?is)decision gallery.*every candidate.*complete inventory.*Links.*cannot accept")
+        self.assertRegex(self.skill, r"(?is)one decision set, surface each promptly.*Do not create a consolidated decision gallery unless the user explicitly requests.*supplemental to the separately surfaced candidates.*complete inventory and exact omissions.*Links or an inventory alone cannot accept a decision set")
         self.assertRegex(self.skill, r"(?is)Every CTRL heartbeat.*material-evidence ledger.*Pending material evidence.*first reminder")
 
     def test_heartbeat_reminds_ctrl_to_surface_pending_material_proof(self):
