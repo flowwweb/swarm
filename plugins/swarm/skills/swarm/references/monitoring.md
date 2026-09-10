@@ -59,10 +59,20 @@ through small durable checkpoints. Serialize only predictably large build,
 export, browser, Docker, install, device, or provider jobs. After verifying the
 exact `O:\` root, prefer it for large sequential artifacts, immutable evidence,
 archives, installers, and release bundles; keep active worktrees, databases,
-dependency trees, and random-I/O-heavy caches local. A recovery target such as
-10 GiB is not itself a project freeze gate unless the user explicitly declares
-it critical. Slow or stop only the specific command that is unsafe or would
-approach the exact critical floor.
+dependency trees, and random-I/O-heavy caches local. Use the current host storage
+strategy maintained by Royal and STORAGE LEAD for measured operating reserves;
+an operating reserve is distinct from an individual operation's minimum or
+critical safety floor. Keep changing numeric targets in that strategy, not this
+library. Slow or stop only the specific unsafe operation. Its temporary admission
+constraints expire at closure; retain receipts as history, not limits on other work.
+
+Before creating a checkout or installing dependencies, reconcile `git worktree list`
+with existing task ownership and reuse a matching checkout and compatible installed
+runtime. At owner closeout, settle attributable changes through existing review and
+commit gates, or retain the exact dirty paths, blocker, and recovery owner. Remove a
+worktree only through Git-aware cleanup after verifying retained branch/commit,
+archive recovery, and the storage guards above. Place retained sequential artifacts
+on verified `O:\`; keep active dependencies local and avoid duplicate installs.
 
 Creation age alone is never stale or quiescent evidence. Archive or relocation
 requires explicit idle, completed, or handed-off state; proof that the rollout is
