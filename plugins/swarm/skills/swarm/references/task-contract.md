@@ -4,6 +4,10 @@ An HQ execution request is authoritative only when an injected host verifier acc
 
 Use CORE + role + these fields. Atomic/simple tasks omit every inapplicable field. A durable task keeps only its exact current decision and proof boundary. SWARM is Codex-native: Codex is the only agent host this contract routes; provider proof terms name real external services, not alternate execution hosts.
 
+Compose CORE's [recovery loop](runtime-recovery.md) for every role, including
+resumed work. An error or repeated blocker triggers that shared procedure;
+profession cards do not duplicate or override it.
+
 For every user-authorized new SWARM objective, CTRL asks or confirms the goal
 and the most efficient safe completion strategy before routing. The typed
 intake receipt records both answers and the selected graph profile; a one-shot
@@ -35,7 +39,7 @@ private attribute carries no host authority.
 
 ```text
 ROLE — artifact
-PURPOSE: objective and acceptance/non-negotiables.
+PURPOSE: intended user/context, why the work matters, expected usable outcome, and non-negotiables; apply the user expectation loop in references/review-contract.md.
 OWNERSHIP: owner, exact mutable surface, canonical artifact/version.
 BOUNDARIES: dependencies, proof/claim limits, no hidden scope change.
 ESCALATION: accepting route or exact blocker.
@@ -46,7 +50,7 @@ ACCEPTANCE: typed lane kind, exact ArtifactIdentity, deterministic ProofPlan, bo
 DELEGATION: exact deliverable, owner ID, portable custody roots, immutable artifact and artifact paths, required proof classes, bounded due event, and maximum readable return size.
 TOPOLOGY: structural authority is exactly CTRL, LEAD, or DOER. Freeze one `TopologyMaterializationPlan` before task creation: one CTRL administrator; generated `<icon><Profession> LEAD|DOER - <responsibility>` titles; one parent and boundary/artifact per lane; direct LEAD production, bounded DOER delegation, or typed durable-boundary facts for a nested LEAD; and a span exception receipt when CTRL fanout exceeds the soft preferred width. Dispatch only the current ready wave. A child enters a later packet only after its parent has a retained host-confirmed identity; a same-packet parent, public existing ID, or previously confirmed lane fails closed. Review requires a fresh runtime-issued `TopologyArtifactFreezeReceipt` bound to the producer lane, immutable content-addressed artifact, current accepted proof/review, and exact topology plan; caller labels and plain artifact IDs do not qualify. Reserve each lane identity before a host create attempt; timeout, ambiguous failure, or schema error keeps the reservation pending until exact resolution or explicit cancellation, while confirmation permanently prevents redispatch. Bare roles, profession-only titles, raw prompt titles, future review before its producer freezes, and duplicate retries fail closed. The current Codex host cannot consume the typed packet, so this is instruction-only and live enforcement remains `UNVERIFIED`. No fixed depth, arbitrary ratio, or mandatory pass-through.
 SUBAGENT RETURN: COMPLETE for the bounded leaf result, or PROMOTE_TO_VISIBLE_TASK with remaining deliverable, custody boundary, proof, and accountable parent. A subagent never recruits or accepts.
-RETURN: one bounded readable artifact-bound ACCEPT, REJECT, or BLOCKED receipt with owner-reported evidence, dirty custody, and path/count/byte/hash manifest; final acceptance remains independent.
+RETURN: expected versus observed user outcome, remaining gaps, and one bounded readable artifact-bound ACCEPT, REJECT, or BLOCKED receipt with owner-reported evidence, dirty custody, and path/count/byte/hash manifest; final acceptance remains independent.
 SKILLS: any agent may request a role skill with exact source/version or digest, purpose, destination scope, and host audit/rollback receipt; installation never transfers authority and defaults task-local.
 INCIDENTS: LEAD consultation receipt for matching unresolved `.codex/swarm/incidents.jsonl` records.
 ```

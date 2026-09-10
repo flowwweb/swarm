@@ -103,6 +103,11 @@ class RoleCardTests(unittest.TestCase):
         guidance = (REPOSITORY_ROOT / "AGENTS.md").read_text(encoding="utf-8")
         self.assertEqual(skill.count("Global policy is composed once"), 1)
         self.assertNotIn("Global policy is composed once", cards)
+        recovery = "references/runtime-recovery.md"
+        self.assertIn(f"[runtime-recovery.md]({recovery})", skill)
+        task_contract = (SKILL_ROOT / "references/task-contract.md").read_text(encoding="utf-8")
+        self.assertIn("[recovery loop](runtime-recovery.md)", task_contract)
+        self.assertEqual((SKILL_ROOT / recovery).read_bytes(), (PLUGIN_ROLE_ROOT.parent / recovery).read_bytes())
         self.assertIn("skills/swarm/SKILL.md", guidance)
         self.assertIn("plugins/swarm/", guidance)
         self.assertIn("Commit Guard", guidance)

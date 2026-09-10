@@ -1,5 +1,46 @@
 # Compact review contract
 
+## User expectation loop
+
+Use this loop for every role and profession, scaled to the task. Keep its facts
+in the existing project brief, request and task contract; no second tracker or
+new runtime state is required. A small task may need only one sentence.
+
+1. **Understand the purpose.** Identify who needs the work, their situation,
+   what they need to accomplish, and why the current result falls short. Read
+   the actual request and approved references. Separate explicit expectations,
+   reasonable working assumptions, and unresolved product decisions. Infer
+   routine details; ask only when a missing decision materially changes success.
+2. **Define observable success.** State: "For [user/context], deliver [outcome],
+   so they can [action/result]. Verify it by [observation on the intended
+   surface]." Preserve non-negotiables, failure behavior, approved design, and
+   required delivery location. Name what is outside scope. Define success before
+   choosing implementation or tests; do not derive the expectation from the code.
+3. **Keep implementation tied to that expectation.** Every delegated deliverable
+   names which part of the user outcome it enables and how the integrated result
+   will be checked. Reconcile new corrections with the original purpose. A tool
+   failure, easy substitute, or passing local check does not silently reduce the
+   requested outcome. Recovery returns to this expectation before choosing a fix.
+4. **Compare expected with observed.** The acceptance reviewer reads the original
+   request and references, then exercises the final integrated user journey on
+   the claimed surface. For each expectation, record expected behavior, observed
+   behavior, exact evidence, and the remaining gap. Distinguish met, unmet, and
+   unverified findings in prose; map them to the existing acceptance verdicts.
+   Test success, artifact existence, and dispatch acknowledgement are supporting
+   evidence, not substitutes for the user's actual result.
+5. **Close the gap or close the work.** Repair unmet expectations and rerun their
+   affected checks. Missing evidence stays unverified; an external blocker names
+   the exact missing prerequisite and next permitted action. Complete only when
+   every required expectation is evidenced or the user explicitly changes the
+   scope. Report the usable outcome and its limits, then stop when it passes.
+
+Examples: project data must be visible and selectable in the requested view;
+an API response alone is insufficient. Chat must show the selected CTRL's
+conversation with a usable bottom composer; an empty drawer is not delivery.
+Disk cleanup must preserve protected work and demonstrate reclaimed space;
+a successful command alone does not satisfy the request. These examples guide
+evidence selection, not permission to invent data, send messages, or delete files.
+
 Before completion, release, or archive, audit the explicitly enabled and attached request ledger. Disabled or enabled-but-unattached continuity is `UNVERIFIED`, never evidence of enforcement. Every accepted request must be terminal through current evidence-backed acceptance or explicit user cancellation/supersession. Unresolved, provisional, corrupt, orphaned, or stale-ledger state is `UNVERIFIED`; stored terminal history or event cursors cannot replace the current task, artifact, gate, independent review, published proof, or accepting route.
 
 ## Minimum independent review
