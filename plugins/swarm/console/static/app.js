@@ -1669,7 +1669,7 @@ function renderUsageCharts() {
     ? "Usage during the " + usageRangeLabel() + " from " + values.length + " timestamped sample" + (values.length === 1 ? "" : "s")
     : state.usageStatus === "stale" ? "Usage history stale" : "Usage history unavailable";
   $$('[data-usage-range]').forEach((button) => button.setAttribute("aria-pressed", String(Number(button.dataset.usageRange) === state.usageWindowHours)));
-  [$("#metric-usage-trend"), $("#diagnostics-usage-trend")].filter(Boolean).forEach((svg) => {
+  [$("#diagnostics-usage-trend"), $("#metric-detail-token-trend")].filter(Boolean).forEach((svg) => {
     drawLine(svg, current ? values : [], "#ff6a3d");
     svg.setAttribute("aria-label", label);
   });
@@ -2244,10 +2244,41 @@ function renderOverviewMetrics() {
   renderOverviewMetric("active", presentation.active);
   renderOverviewMetric("attention", presentation.attention);
   renderOverviewMetric("progress", presentation.progress);
-  renderOverviewMetric("usage", presentation.usage);
+  // Account allowance has no accepted projection yet; local tokens are not quota.
+  renderOverviewMetric("usage", { state: "UNKNOWN", value: "—", note: "Remaining allowance unavailable" });
+  drawLine($("#metric-usage-trend"), [], "var(--orange)");
   drawLine($("#metric-progress-trend"), presentation.progress.series || [], "#4cda85");
   $("#metric-progress-trend").setAttribute("aria-label", presentation.progress.series?.length ? "Accepted verified progress trend" : "Verified progress trend unavailable");
   renderUsageCharts();
+  if ($("#metric-detail-dialog")?.open) renderMetricDetail();
+}
+
+function renderMetricDetail() {
+  const dialog = $("#metric-detail-dialog");
+  const focusedRange = dialog.contains(document.activeElement) ? document.activeElement.dataset.usageRange : null;
+  const body = dialog.querySelector('.dialog-body');
+  const scrollTop = body?.scrollTop || 0;
+  const key = dialog.dataset.metric;
+  const names = { "active-work": ["active", "Active work"], "needs-attention": ["attention", "Needs attention"], "verified-progress": ["progress", "Verified progress"], usage: ["usage", "Usage"] };
+  const selected = names[key];
+  if (!selected) return;
+  const presentation = overviewMetricPresentation(overviewMetricsProjectionValue(state.overview?.overview_metrics, overviewMetricsScopeId()))[selected[0]];
+  $("#metric-detail-title").textContent = selected[1];
+  $("#metric-detail-content").innerHTML = key === "usage"
+    ? '<p>Remaining allowance — · UNKNOWN</p><p>Quota reset —</p><p>Estimated exhaustion —</p><p>Account allowance readings are unavailable.</p><h3>Task token usage</h3>' + usageChartMarkup("metric-detail", "metric-detail-token-trend")
+    : '<strong>' + escapeHTML(presentation.value) + '</strong><p>' + escapeHTML(presentation.note) + '</p><p>' + escapeHTML(presentation.state) + '</p><svg id="metric-detail-trend" viewBox="0 0 160 28" role="img" aria-label="Accepted metric history"></svg>' + (presentation.series?.length ? '' : '<p>History unavailable.</p>');
+  if (key === "usage") renderUsageCharts();
+  else drawLine($("#metric-detail-trend"), presentation.series || [], "var(--orange)");
+  if (focusedRange) Array.from(dialog.querySelectorAll('[data-usage-range]')).find(button => button.dataset.usageRange === focusedRange)?.focus({ preventScroll: true });
+  if (body) body.scrollTop = scrollTop;
+}
+
+function openMetricDetail(card) {
+  const dialog = $("#metric-detail-dialog");
+  dialog.dataset.metric = card.dataset.overviewMetric;
+  renderMetricDetail();
+  dialog.onclose = () => card.isConnected && card.focus({ preventScroll: true });
+  dialog.showModal();
 }
 
 function yieldChartMarkup(item) {
@@ -5825,6 +5856,8 @@ document.addEventListener("click", async (event) => {
     await selectProjectScope(projectScopeOption.dataset.projectScopeId, $("#project-scope-filter"));
     return;
   }
+  const metricCard = event.target.closest("[data-overview-metric]");
+  if (metricCard) { openMetricDetail(metricCard); return; }
   const usageRange = event.target.closest("[data-usage-range]");
   if (usageRange) {
     const hours = Number(usageRange.dataset.usageRange);

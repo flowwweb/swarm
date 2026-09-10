@@ -219,7 +219,7 @@ assert.doesNotMatch(indexHtml, /id="refresh"|Refresh overview/);
 assert.doesNotMatch(app, /\$\("#refresh"\)/);
 assert.match(app, /\$\("#drawer-close"\)\.addEventListener\("click", \(\) => setMobileDrawer\(false, true\)\)/);
 assert.match(indexHtml, /<title>SWARM HQ<\/title>/);
-assert.match(indexHtml, /id="overview-monitoring-heading">Team<\/h2>[\s\S]*?id="overview-summary">Loading team<\/p>/);
+assert.match(indexHtml, /id="overview-monitoring-heading">Swarm<\/h2>[\s\S]*?id="overview-summary">Loading swarm<\/p>/);
 assert.match(app, /function composeDocumentTitle\(\)/);
 assert.doesNotMatch(app, /navigator\.onLine/);
 assert.doesNotMatch(indexHtml + app, /Control Console/i);
@@ -315,14 +315,14 @@ for (const id of ["diagnostics-health-heading", "diagnostics-check-strip", "diag
 assert.match(app, /\$\("#repair-dialog"\)\.addEventListener\("cancel", \(event\) => \{[\s\S]*?closeRepairDialog\(\)/);
 for (const icon of ["eye", "trash-2"]) assert.match(indexHtml, new RegExp(`id="lucide-${icon}" viewBox="0 0 24 24"`));
 assert.match(indexHtml, /id="onboarding-dialog"[^>]*aria-labelledby="onboarding-dialog-title"[^>]*aria-describedby="onboarding-step-status"/);
-assert.equal((indexHtml.match(/<dialog\b/g) || []).length, 10);
+assert.equal((indexHtml.match(/<dialog\b/g) || []).length, 11);
 assert.match(indexHtml, /<div popover="auto" role="dialog" class="profile-dialog"/);
 for (const shell of ["agent-detail-shell", "evidence-lightbox-shell", "asset-dialog-shell", "profile-dialog-shell", "support-dialog-shell", "project-create-shell", "repair-dialog-shell", "config-editor-shell", "role-editor-shell", "onboarding-shell"]) {
   assert.match(indexHtml, new RegExp(`class="dialog-shell ${shell}"`));
 }
-assert.equal((indexHtml.match(/class="dialog-body(?: |")/g) || []).length, 10);
-assert.equal((indexHtml.match(/class="dialog-body-content/g) || []).length, 10);
-assert.equal((indexHtml.match(/class="dialog-footer(?: |")/g) || []).length, 10);
+assert.equal((indexHtml.match(/class="dialog-body(?: |")/g) || []).length, 11);
+assert.equal((indexHtml.match(/class="dialog-body-content/g) || []).length, 11);
+assert.equal((indexHtml.match(/class="dialog-footer(?: |")/g) || []).length, 11);
 assert.match(css, /\.dialog-shell \{[^}]*grid-template-rows:auto minmax\(0,1fr\) auto;[^}]*overflow:hidden;[^}]*padding:0;/);
 assert.match(css, /\.dialog-body \{[^}]*width:100%;[^}]*min-height:0;[^}]*overflow-x:hidden; overflow-y:auto;[^}]*scrollbar-gutter:stable;[^}]*padding:0;/);
 assert.match(css, /\.dialog-body-content \{ width:100%; min-width:0; \}/);
@@ -536,7 +536,7 @@ assert.doesNotMatch(indexHtml, /usage-strip|usage-heading|usage-sparkline|usage-
 assert.doesNotMatch(css, /\.usage-strip|\.usage-chart-pair|\.usage-window-button/);
 assert.doesNotMatch(app, /function renderUsage\(|function usageRateSeries\(|function downsampleSeries\(/);
 assert.match(app, /function usageHistorySeries\(\)[\s\S]*?bucket_ms[\s\S]*?delta_tokens[\s\S]*?sort\(\(a, b\) => a\.bucket - b\.bucket\)/);
-assert.match(app, /function renderUsageCharts\(\)[\s\S]*?metric-usage-trend[\s\S]*?diagnostics-usage-trend/);
+assert.match(app, /function renderUsageCharts\(\)[\s\S]*?diagnostics-usage-trend[\s\S]*?metric-detail-token-trend/);
 assert.match(app, /\[1, 24, 168\]\.includes\(hours\)[\s\S]*?await refreshUsageHistory\(\)/);
 assert.doesNotMatch(app.slice(app.indexOf("function drawLine"), app.indexOf("function isSubagent")), /\[0, 0\]/);
 assert.doesNotMatch(app, /setInterval\([^)]*usageHistory|setInterval\([^)]*refreshUsage/);
@@ -1139,6 +1139,37 @@ assert.match(css, /@media \(max-width: 620px\)[\s\S]*?\.icon-button \{ flex: 0 0
 assert.match(app, /function routeView\(\)/);
 assert.ok(indexHtml.indexOf('class="panel highest-usage-section"') > indexHtml.indexOf('id="project-tab-panel"'), "Usage follows project work");
 assert.ok(indexHtml.includes('<details class="nav-more" id="nav-more">'));
+assert.equal((indexHtml.match(/<button type="button" aria-haspopup="dialog" aria-controls="metric-detail-dialog"/g) || []).length, 4);
+assert.match(indexHtml, /id="overview-monitoring-heading">Swarm<\/h2>/);
+assert.ok(indexHtml.indexOf('id="overview-metrics"') < indexHtml.indexOf('id="overview-monitoring-heading"'));
+assert.doesNotMatch(indexHtml.match(/data-overview-metric="usage"[\s\S]*?<\/button>/)?.[0] || '', /data-usage-range/);
+assert.match(app, /Remaining allowance unavailable/);
+assert.match(app, /dialog\.onclose = \(\) => card\.isConnected && card\.focus/);
+{
+  let opened = 0, focused = 0;
+  let rangeFocus = 0;
+  const body = {scrollTop:37};
+  const range = {dataset:{usageRange:'24'},focus(){rangeFocus++;}};
+  const dialog = { dataset: {}, contains:() => true, querySelector:() => body, querySelectorAll:() => [range], showModal() { opened++; } };
+  const title = {}, content = {};
+  const sandbox = { $: id => id === '#metric-detail-dialog' ? dialog : id === '#metric-detail-title' ? title : content,
+    document:{activeElement:range}, state: { overview: {} }, overviewMetricsScopeId: () => '', overviewMetricsProjectionValue: () => null,
+    overviewMetricPresentation: () => ({ active: {value:'—',note:'Unavailable',state:'UNKNOWN'}, usage:{} }),
+    escapeHTML: String, drawLine: () => {}, usageChartMarkup: () => '<svg></svg>', renderUsageCharts: () => {} };
+  vm.createContext(sandbox);
+  vm.runInContext(app.slice(app.indexOf('function renderMetricDetail()'), app.indexOf('function yieldChartMarkup(')), sandbox);
+  for (const metric of ['active-work', 'usage']) {
+    sandbox.openMetricDetail({ dataset:{overviewMetric:metric}, isConnected:true, focus(){ focused++; } });
+    assert.ok(content.innerHTML.includes(metric === 'usage' ? 'Quota reset —' : 'UNKNOWN'));
+    dialog.onclose();
+  }
+  assert.equal(opened,2); assert.equal(focused,2);
+  sandbox.renderMetricDetail();
+  assert.equal(rangeFocus,3); assert.equal(body.scrollTop,37);
+  assert.match(content.innerHTML,/Estimated exhaustion —/);
+  assert.match(content.innerHTML,/Task token usage/);
+}
+assert.doesNotMatch(app.slice(app.indexOf('function renderUsageCharts()'), app.indexOf('function highestUsageTaskRows()')), /#metric-usage-trend/);
 assert.match(indexHtml, /id="nav-more"><summary[^>]*>More<svg[^>]*aria-hidden="true"><use href="#lucide-chevron-down"/);
 assert.ok(css.includes('.nav-more[open] > summary > .lucide { transform:rotate(180deg); }'));
 assert.ok(css.includes('.settings-save-bar[hidden] { display:none; }'));
@@ -2469,6 +2500,27 @@ function runLogFixture() {
     project_id: projectId, ctrl_id: ctrlId, task_id: taskId, owner_id: agentId, agent_id: agentId,
     structural_role: structuralRole, profession, summary,
   }));
+}
+
+async function assertMetricDetailContainment(page) {
+  assert.equal(await page.locator('#metric-detail-dialog').evaluate(dialog => {
+    const box = dialog.getBoundingClientRect();
+    const header = dialog.querySelector('.dialog-header').getBoundingClientRect();
+    const range = dialog.querySelector('.usage-range');
+    const bounds = range.getBoundingClientRect();
+    const close = dialog.querySelector('[aria-label="Close metric details"]').getBoundingClientRect();
+    return getComputedStyle(range).position === 'static' && bounds.top >= header.bottom
+      && bounds.left >= box.left && bounds.right <= box.right
+      && close.bottom <= bounds.top && box.left >= 0 && box.right <= innerWidth
+      && dialog.scrollWidth <= dialog.clientWidth;
+  }), true);
+}
+
+async function openPrimaryView(page, view) {
+  if (["roles", "assets", "diagnostics"].includes(view) && !(await page.locator('#nav-more').getAttribute('open') !== null)) {
+    await page.locator('#nav-more > summary').click();
+  }
+  await page.locator('.nav-item[data-view="' + view + '"]').click();
 }
 
 async function mount(page, overview, overrides = {}) {
@@ -4493,7 +4545,7 @@ proofFeed.items.push({
     };
     const diagnosticsPage = await browser.newPage({ viewport: { width: 1024, height: 760 } });
     const diagnosticsRuntime = await mount(diagnosticsPage, scopedFixture(), { ...overrides, diagnosticsControl });
-    await diagnosticsPage.getByRole("tab", { name: "Diagnostics", exact: true }).click();
+    await openPrimaryView(diagnosticsPage, "diagnostics");
     await diagnosticsPage.waitForFunction(() => state.diagnosticsHistoryStatus === "current");
     assert.match(await diagnosticsPage.locator("#diagnostics-health-heading").textContent(), /Healthy|Needs attention|Unknown/);
     assert.equal(await diagnosticsPage.locator("#diagnostics-check-strip .diagnostics-check-token").count(), 1);
@@ -4631,7 +4683,7 @@ proofFeed.items.push({
     }
     await chooseProjectScope(page, "project:fixture");
     assert.equal(await page.locator('#project-scope-selected-mark .project-scope-logo[src="/assets/project-fixture.svg"]').count(), 1);
-    await page.locator('.nav-item[data-view="assets"]').click();
+    await openPrimaryView(page, "assets");
     await chooseProjectScope(page, "project:branch");
     await page.waitForFunction(() => state.view === "assets" && state.projectId === "project:branch");
     await chooseProjectScope(page, "project:fixture");
@@ -4664,18 +4716,24 @@ proofFeed.items.push({
     }), true);
     if (evidenceDir) await page.screenshot({ path: path.join(evidenceDir, "shell-profile-sidebar-desktop-1536x1024.png"), fullPage: false, animations: "disabled" });
     assert.deepEqual(await page.locator(".overview-metric-card > header > span").allTextContents(), ["Active work", "Needs attention", "Verified progress", "Usage"]);
-    assert.deepEqual(await page.locator(".overview-metric-card > strong").allTextContents(), ["3 / 5", "2", "75%", "125k used"]);
+    assert.deepEqual(await page.locator(".overview-metric-card > strong").allTextContents(), ["3 / 5", "2", "75%", "—"]);
     await page.waitForFunction(() => state.usageWindowHours === 1 && state.usageStatus === "current");
-    assert.equal(await page.locator('[data-usage-chart="overview"] [data-usage-range="1"]').getAttribute("aria-pressed"), "true");
-    assert.equal(await page.locator("#metric-usage-trend").getAttribute("aria-label"), "Usage during the last hour from 2 timestamped samples");
-    assert.ok(await page.locator("#metric-usage-trend polyline.chart-line").count() === 1);
+    await page.locator('[data-overview-metric="usage"]').focus();
+    await page.keyboard.press('Enter');
+    assert.equal(await page.getByRole('dialog', {name:'Usage',exact:true}).isVisible(), true);
+    assert.equal(await page.locator('[data-usage-chart="metric-detail"] [data-usage-range="1"]').getAttribute("aria-pressed"), "true");
+    await assertMetricDetailContainment(page);
+    assert.equal(await page.locator("#metric-usage-trend").getAttribute("aria-label"), "Remaining allowance unavailable");
+    assert.equal(await page.locator("#metric-usage-trend polyline.chart-line").count(), 0);
     const usageDayRequest = page.waitForRequest((request) => new URL(request.url()).pathname === "/api/usage-history" && new URL(request.url()).searchParams.get("hours") === "24");
-    await page.locator('[data-usage-chart="overview"] [data-usage-range="24"]').click();
+    await page.locator('[data-usage-chart="metric-detail"] [data-usage-range="24"]').click();
     await usageDayRequest;
     await page.waitForFunction(() => state.usageWindowHours === 24 && state.usageStatus === "current");
-    assert.equal(await page.locator('[data-usage-chart="overview"] [data-usage-range="24"]').getAttribute("aria-pressed"), "true");
+    assert.equal(await page.locator('[data-usage-chart="metric-detail"] [data-usage-range="24"]').getAttribute("aria-pressed"), "true");
+    await page.keyboard.press('Escape');
+    assert.equal(await page.locator('[data-overview-metric="usage"]').evaluate(el => el === document.activeElement), true);
     assert.equal(await page.locator("#overview-monitoring-heading").isVisible(), true);
-    assert.equal(await page.locator("#overview-monitoring-heading").textContent(), "Team");
+    assert.equal(await page.locator("#overview-monitoring-heading").textContent(), "Swarm");
     assert.deepEqual(await page.locator("#overview-project-cards [data-overview-project-id] strong").allTextContents(), ["Arc", "Atlas", "Flowwweb", "swarm"]);
     assert.deepEqual(await page.locator("#overview-project-cards [data-overview-hierarchy-project]").evaluateAll((projects) => projects.map((project) => project.dataset.overviewHierarchyProject)), ["project:arc", "project:atlas", "project:branch", "project:fixture"]);
     assert.match(await page.locator("#overview-project-cards .overview-hierarchy-canvas > .overview-independent:not(.is-error)").textContent(), /Independent host tasks[\s\S]*Resolve customer export[\s\S]*Inspect export evidence[\s\S]*Anonymous[\s\S]*Independent task/);
@@ -5075,7 +5133,7 @@ proofFeed.items.push({
     assert.equal(await page.locator('[data-agent-detail="ctrl"] [role="progressbar"][aria-valuenow="80"]').count(), 1);
     await page.evaluate(() => selectProjectScope("project:fixture"));
     await page.waitForFunction(() => state.projectId === "project:fixture");
-    await page.getByRole("tab", { name: "Roles", exact: true }).click();
+    await openPrimaryView(page, "roles");
     await page.evaluate(() => {
       window.__roleManifestForLoadingTest = state.roleManifests;
       state.roleManifests = null;
@@ -5169,7 +5227,7 @@ proofFeed.items.push({
     await page.getByRole("tab", { name: "Review", exact: true }).click();
     assert.equal(await page.locator(".review-row").count(), 7);
     assert.equal(await page.getByRole("button", { name: "Send feedback unavailable" }).first().isDisabled(), true);
-    await page.getByRole("tab", { name: "Assets", exact: true }).click();
+    await openPrimaryView(page, "assets");
     await page.evaluate(() => {
       window.__assetsForLoadingTest = state.assets;
       state.assets = null;
@@ -5552,7 +5610,7 @@ proofFeed.items.push({
     })), true);
     assert.equal(await tabletPage.locator('.agent-table-row').first().evaluate((row) => getComputedStyle(row).gridTemplateColumns.split(' ').length), 2);
     if (evidenceDir) await tabletPage.screenshot({ path: path.join(evidenceDir, "16-agents-tablet-834x1112.png"), fullPage: false, animations: "disabled" });
-    await tabletPage.locator('.nav-item[data-view="roles"]').click();
+    await openPrimaryView(tabletPage, "roles");
     const tabletGrid = tabletPage.locator("#role-library-grid");
     assert.equal(await tabletGrid.evaluate((element) => getComputedStyle(element).gridTemplateColumns.split(" ").length), 2);
     assert.equal(await tabletGrid.evaluate((element) => getComputedStyle(element).overflowY), "visible");
@@ -5631,13 +5689,17 @@ proofFeed.items.push({
       state.overview.overview_metrics = metrics;
       renderOverviewMetrics();
     }, { ...overviewMetricFixture, usage: { ...overviewMetricFixture.usage, used_tokens: 3_207_000_000 } });
-    assert.equal(await mobilePage.locator("#metric-usage-value").textContent(), "3207m used");
+    assert.equal(await mobilePage.locator("#metric-usage-value").textContent(), "—");
     assert.equal(await mobilePage.locator('.usage-chart-card').evaluate((card) => {
       const value = card.querySelector("#metric-usage-value").getBoundingClientRect();
-      const range = card.querySelector(".usage-range").getBoundingClientRect();
       const bounds = card.getBoundingClientRect();
-      return value.bottom <= range.top && range.left >= bounds.left && range.right <= bounds.right;
+      return value.left >= bounds.left && value.right <= bounds.right && value.bottom <= bounds.bottom && bounds.right <= innerWidth;
     }), true);
+    await mobilePage.locator('[data-overview-metric="usage"]').focus();
+    await mobilePage.keyboard.press('Space');
+    await assertMetricDetailContainment(mobilePage);
+    await mobilePage.getByRole('button',{name:'Close metric details',exact:true}).click();
+    assert.equal(await mobilePage.locator('[data-overview-metric="usage"]').evaluate(el => el === document.activeElement), true);
     await mobilePage.waitForFunction(() => [...document.querySelectorAll("[data-overview-hierarchy-edge]")].every((path) => Boolean(path.getAttribute("d"))));
     assert.equal(await mobilePage.locator("#overview-project-cards .overview-hierarchy-children").evaluateAll((groups) => groups.every((group) => getComputedStyle(group).gridTemplateColumns.split(" ").length === 1)), true);
     assert.equal(await mobilePage.locator("#overview-project-cards .overview-node-inspect").evaluateAll((inspects) => inspects.every((inspect) => inspect.getBoundingClientRect().width >= 44 && inspect.getBoundingClientRect().height >= 44 && getComputedStyle(inspect).opacity === "1")), true);

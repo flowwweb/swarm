@@ -1008,3 +1008,11 @@ html[data-theme="pearl"] .drawer,html[data-theme="pearl"] .mobile-app-bar,html[d
 .command-approval pre,.command-approval details { white-space:pre-wrap; overflow-wrap:anywhere; }
 .command-approval .review-actions { flex-wrap:wrap; margin-block:12px; }
 .command-approval button,.command-approval summary { min-height:44px; }
+/* Metric cards share the existing dialog shell; graphs never obscure values. */
+.overview-metric-card { text-align:left; color:inherit; font:inherit; cursor:pointer; }
+.overview-metric-card > svg { position:absolute; inset:auto 0 0; width:100%; height:65%; opacity:.12; pointer-events:none; }
+.overview-metric-card > :not(svg) { position:relative; z-index:1; }
+.overview-metric-card:focus-visible { outline:2px solid var(--orange); outline-offset:3px; }
+#metric-detail-content svg { width:100%; height:180px; }
+#metric-detail-content .usage-range { position:static; flex-wrap:wrap; margin-block:12px; }
+#metric-detail-content .usage-range button { min-width:44px; min-height:44px; font-size:12px; }
