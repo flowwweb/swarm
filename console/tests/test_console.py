@@ -3805,6 +3805,29 @@ class SwarmConsoleTests(unittest.TestCase):
             session.write_bytes(event({"total_tokens": True}))
             self.assertEqual(console._codex_jsonl_token_counts(self.codex_home, {"thread-tail"}), {})
 
+    def test_codex_usage_host_locator_skips_old_scan_and_repeat_discovery(self) -> None:
+        session = self.codex_home / "sessions" / "2026" / "09" / "10" / "rollout-task.jsonl"
+        session.parent.mkdir(parents=True)
+        session.write_text(json.dumps({"type": "event_msg", "payload": {"type": "token_count", "info": {"total_token_usage": {"total_tokens": 42}}}}) + "\n", encoding="utf-8")
+        with closing(sqlite3.connect(self.database)) as connection:
+            connection.execute("ALTER TABLE threads ADD COLUMN rollout_path TEXT")
+            connection.execute("UPDATE threads SET rollout_path=? WHERE id='task'", (str(session),))
+            connection.commit()
+        old = [session.parent / f"older-{i}.jsonl" for i in range(4097)]
+        with mock.patch.object(Path, "rglob", return_value=iter([*old, session])) as walk:
+            self.assertEqual(console._codex_jsonl_token_counts(self.codex_home, {"task"}), {"task": 42})
+            self.assertEqual(console._codex_jsonl_token_counts(self.codex_home, {"task"}), {"task": 42})
+            walk.assert_not_called()
+        with mock.patch.object(Path, "rglob", side_effect=OSError("discovery unavailable")):
+            self.assertEqual(console._codex_jsonl_token_counts(self.codex_home, {"task", "unresolved"}), {"task": 42})
+        outside = self.root / "outside-task.jsonl"
+        outside.write_bytes(session.read_bytes())
+        with closing(sqlite3.connect(self.database)) as connection:
+            connection.execute("UPDATE threads SET rollout_path=? WHERE id='task'", (str(outside),))
+            connection.commit()
+        with mock.patch.object(Path, "rglob", return_value=iter([])):
+            self.assertEqual(console._codex_jsonl_token_counts(self.codex_home, {"task"}), {})
+
     def test_codex_jsonl_token_counts_are_high_water_deduped(self) -> None:
         session = self.codex_home / "sessions" / "2026" / "08" / "22" / "rollout-thread-1.jsonl"
         session.parent.mkdir(parents=True)

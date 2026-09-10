@@ -6916,16 +6916,33 @@ def _codex_jsonl_token_counts(codex_home: Path, thread_ids: set[str]) -> dict[st
     highest: dict[str, int] = {}
     candidates: list[tuple[str, Path]] = []
     try:
-        for visited, path in enumerate(sessions.rglob("*.jsonl"), start=1):
+        with closing(_readonly_connection(state_database(codex_home))) as connection:
+            columns = {row["name"] for row in connection.execute("PRAGMA table_info(threads)")}
+            if "rollout_path" in columns:
+                for thread_id in sorted(requested):
+                    row = connection.execute("SELECT rollout_path FROM threads WHERE id=?", (thread_id,)).fetchone()
+                    if row and isinstance(row["rollout_path"], str) and row["rollout_path"]:
+                        path = Path(row["rollout_path"])
+                        try:
+                            resolved = path.resolve(strict=True)
+                            if resolved.is_relative_to(sessions.resolve()) and resolved.suffix == ".jsonl" and resolved.is_file() and thread_id in resolved.name:
+                                candidates.append((thread_id, resolved))
+                        except OSError:
+                            continue
+    except (sqlite3.Error, OSError, ConsoleError):
+        pass
+    unresolved = sorted(requested - {thread_id for thread_id, _ in candidates})
+    try:
+        for visited, path in enumerate(sessions.rglob("*.jsonl") if unresolved else (), start=1):
             if visited > TOKEN_JSONL_SCAN_FILE_LIMIT:
                 break
             if not path.is_file():
                 continue
-            thread_id = next((item for item in requested if item in path.name), None)
+            thread_id = next((item for item in unresolved if item in path.name), None)
             if thread_id is not None:
                 candidates.append((thread_id, path))
     except OSError:
-        return {}
+        pass
     remaining = TOKEN_JSONL_SCAN_BYTES
     for thread_id, path in candidates:
         if remaining <= 0:
