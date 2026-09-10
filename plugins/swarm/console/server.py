@@ -1848,6 +1848,7 @@ class DiagnosticsCollector:
         try:
             result = subprocess.run(
                 ["docker", "ps", "--filter", "name=swarm-console", "--format", "{{.Names}}"],
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
                 capture_output=True,
                 text=True,
                 timeout=2,

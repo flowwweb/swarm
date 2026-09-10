@@ -45,6 +45,16 @@ from runtime import (  # noqa: E402
 
 
 class SwarmConsoleTests(unittest.TestCase):
+    def test_docker_status_suppresses_windows_console(self) -> None:
+        with mock.patch.object(console.subprocess, "CREATE_NO_WINDOW", 0x08000000, create=True), mock.patch.object(
+            console.subprocess, "run", return_value=SimpleNamespace(returncode=0, stdout="swarm-console\n"),
+        ) as run:
+            result = console.DiagnosticsCollector._docker_status()
+        self.assertEqual(run.call_args.kwargs["creationflags"], 0x08000000)
+        self.assertEqual(run.call_args.args[0], ["docker", "ps", "--filter", "name=swarm-console", "--format", "{{.Names}}"])
+        self.assertTrue(result["available"])
+        self.assertEqual(result["container_count"], 1)
+
     def test_command_session_deadline_preserves_exact_turn_custody(self) -> None:
         self._assert_command_session_custody({"result": {"turn": {"id": "owned-turn"}}})
 
