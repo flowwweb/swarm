@@ -1155,9 +1155,9 @@ assert.match(app, /dialog\.onclose = \(\) => card\.isConnected && card\.focus/);
   const sandbox = { $: id => id === '#metric-detail-dialog' ? dialog : id === '#metric-detail-title' ? title : content,
     document:{activeElement:range}, state: { overview: {} }, overviewMetricsScopeId: () => '', overviewMetricsProjectionValue: () => null,
     overviewMetricPresentation: () => ({ active: {value:'—',note:'Unavailable',state:'UNKNOWN'}, usage:{} }),
-    escapeHTML: String, drawLine: () => {}, usageChartMarkup: () => '<svg></svg>', renderUsageCharts: () => {} };
+    escapeHTML: String, drawLine: () => {}, usageChartMarkup: () => '<svg></svg>', renderUsageCharts: () => {}, accountUsageDetails: () => '<p>Quota reset —</p><p>Estimated exhaustion —</p>' };
   vm.createContext(sandbox);
-  vm.runInContext(app.slice(app.indexOf('function renderMetricDetail()'), app.indexOf('function yieldChartMarkup(')), sandbox);
+  vm.runInContext(app.slice(app.indexOf('function renderMetricDetail('), app.indexOf('function yieldChartMarkup(')), sandbox);
   for (const metric of ['active-work', 'usage']) {
     sandbox.openMetricDetail({ dataset:{overviewMetric:metric}, isConnected:true, focus(){ focused++; } });
     assert.ok(content.innerHTML.includes(metric === 'usage' ? 'Quota reset —' : 'UNKNOWN'));
@@ -1168,8 +1168,75 @@ assert.match(app, /dialog\.onclose = \(\) => card\.isConnected && card\.focus/);
   assert.equal(rangeFocus,3); assert.equal(body.scrollTop,37);
   assert.match(content.innerHTML,/Estimated exhaustion —/);
   assert.match(content.innerHTML,/Task token usage/);
+  // Exercise the range refresh owner with an open detail, not only presentation helpers.
+  dialog.open=true; dialog.dataset.metric='usage';
+  const svg = {setAttribute(){}};
+  sandbox.$ = id => id === '#metric-detail-dialog' ? dialog : id === '#metric-detail-title' ? title : id === '#metric-detail-content' ? content : svg;
+  sandbox.$$ = () => [];
+  Object.assign(sandbox, {URLSearchParams, renderHighestUsageTasks(){},renderAccountUsage(){},usageHistorySeries:()=>[],usageRangeLabel:()=>'',usageRequestKey:()=> 'scope'});
+  Object.assign(sandbox.state,{projectId:'all',ctrlId:'',usageWindowHours:1,usageRequestGeneration:0,usageScopeKey:'scope',usageStatus:'current',usageHistory:{ok:true}});
+  sandbox.accountUsageDetails=()=>sandbox.state.usageStatus==='current' ? '<p>Quota '+sandbox.state.usageHistory.quota+'</p><p>ETA supplied</p>' : '<p>UNKNOWN</p>';
+  vm.runInContext(app.slice(app.indexOf('function renderUsageCharts()'),app.indexOf('function accountUsageWindows(')) + app.slice(app.indexOf('async function refreshUsageHistory()'),app.indexOf('async function refreshProjectProgress()')),sandbox);
+  sandbox.api=async()=>({ok:true,quota:42});
+  await sandbox.refreshUsageHistory(); sandbox.renderUsageCharts();
+  assert.match(content.innerHTML,/Quota 42/);
+  sandbox.api=async()=>{throw new Error('Disconnected');};
+  await sandbox.refreshUsageHistory(); sandbox.renderUsageCharts();
+  assert.match(content.innerHTML,/UNKNOWN/);
+  assert.doesNotMatch(content.innerHTML,/Quota 42|ETA supplied/);
+  assert.equal(body.scrollTop,37);
 }
-assert.doesNotMatch(app.slice(app.indexOf('function renderUsageCharts()'), app.indexOf('function highestUsageTaskRows()')), /#metric-usage-trend/);
+assert.doesNotMatch(app.slice(app.indexOf('function renderUsageCharts()'), app.indexOf('function accountUsageWindows(')), /#metric-usage-trend/);
+{
+  const now = 2000000;
+  const state = {usageStatus:'current',usageScopeKey:'scope',usageHistory:{ok:true, account_limits:{status:'KNOWN',scope:'account',source:'codex_app_server.account/rateLimits/read',sampled_at_ms:now, windows:[{status:'KNOWN',limit_id:'main',window:'primary',remaining_percent:60,reset_at_ms:now+3600000,history:[{sampled_at_ms:now-60000,remaining_percent:70},{sampled_at_ms:now,remaining_percent:60}]}]}}};
+  const sandbox = {state,usageRequestKey:()=> 'scope'};
+  vm.createContext(sandbox);
+  vm.runInContext(app.slice(app.indexOf('function accountUsageWindows('),app.indexOf('function renderAccountUsage(')),sandbox);
+  assert.equal(sandbox.accountUsageWindows(now)[0].remaining_percent,60);
+  assert.match(sandbox.accountUsageGraph(state.usageHistory.account_limits.windows[0]),/0.00,8.40 160.00,11.20/);
+  const window = state.usageHistory.account_limits.windows[0];
+  window.forecast = {status:'ESTIMATED',exhaustion_at_ms:now+60000};
+  assert.match(sandbox.accountUsageGraph(window),/stroke-dasharray="3 3"/);
+  window.forecast.exhaustion_at_ms=window.reset_at_ms+1;
+  assert.doesNotMatch(sandbox.accountUsageGraph(window),/stroke-dasharray/);
+  for (const status of ['UNKNOWN','EXHAUSTED','NO_MEASURABLE_BURN','RESET_BEFORE_EXHAUSTION']) {
+    window.forecast={status,exhaustion_at_ms:now+60000};
+    assert.doesNotMatch(sandbox.accountUsageGraph(window),/stroke-dasharray/);
+  }
+  for (const remaining of [null,NaN,Infinity,-1,101]) {
+    state.usageHistory.account_limits.windows[0].remaining_percent=remaining;
+    assert.equal(sandbox.accountUsageWindows(now).length,0);
+  }
+  for (const remaining of [0,100]) {
+    state.usageHistory.account_limits.windows[0].remaining_percent=remaining;
+    assert.equal(sandbox.accountUsageWindows(now).length,1);
+  }
+  assert.equal(sandbox.accountUsageWindows(now+300001).length,0);
+  state.usageScopeKey='old'; assert.equal(sandbox.accountUsageWindows(now).length,0);
+  assert.equal(sandbox.accountUsageGraph({history:[{sampled_at_ms:now,remaining_percent:60}]}),'');
+  assert.equal(sandbox.accountUsageGraph({history:[{sampled_at_ms:0,remaining_percent:70},{sampled_at_ms:now,remaining_percent:60}]}),'');
+  let card;
+  Object.assign(sandbox,{Date:class extends Date {static now(){return now;}},escapeHTML:String,
+    $:()=>({setAttribute(){}}),renderOverviewMetric:(_,value)=>{card=value;}});
+  vm.runInContext(app.slice(app.indexOf('function formatDuration('),app.indexOf('function forecastSummary(')) + app.slice(app.indexOf('function renderAccountUsage('),app.indexOf('function highestUsageTaskRows(')),sandbox);
+  state.usageScopeKey='scope'; window.remaining_percent=40; window.reset_at_ms=now+86400000;
+  window.forecast={status:'ESTIMATED',exhaustion_at_ms:now+14400000,rate_percentage_points_per_hour:10};
+  sandbox.renderAccountUsage();
+  assert.equal(card.value,'40%'); assert.match(card.note,/^~4h left · main/);
+  assert.match(sandbox.accountUsageDetails(),/if the recent rate continues/);
+  for (const [status,copy] of [['EXHAUSTED','Exhausted'],['NO_MEASURABLE_BURN','No measurable burn'],['RESET_BEFORE_EXHAUSTION','Reset occurs before projected exhaustion'],['UNKNOWN','Estimated exhaustion —']]) {
+    window.forecast={status,exhaustion_at_ms:null,rate_percentage_points_per_hour:null};
+    sandbox.renderAccountUsage(); assert.doesNotMatch(card.note,/left/);
+    assert.ok(sandbox.accountUsageDetails().includes(copy));
+  }
+  state.usageHistory.account_limits.status='PARTIAL'; window.limit_id='spark';
+  sandbox.renderAccountUsage(); assert.equal(card.state,'PARTIAL'); assert.match(card.note,/spark/);
+  assert.match(sandbox.accountUsageDetails(),/Some account windows are unavailable/);
+  state.usageStatus='stale'; sandbox.renderAccountUsage(); assert.equal(card.value,'—');
+  assert.match(sandbox.accountUsageDetails(),/UNKNOWN/);
+  assert.doesNotMatch(sandbox.accountUsageDetails(),/40% remaining/);
+}
 assert.match(indexHtml, /id="nav-more"><summary[^>]*>More<svg[^>]*aria-hidden="true"><use href="#lucide-chevron-down"/);
 assert.ok(css.includes('.nav-more[open] > summary > .lucide { transform:rotate(180deg); }'));
 assert.ok(css.includes('.settings-save-bar[hidden] { display:none; }'));

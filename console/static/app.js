@@ -1663,6 +1663,9 @@ function usageChartMarkup(surface, svgId) {
 
 function renderUsageCharts() {
   renderHighestUsageTasks();
+  renderAccountUsage();
+  const detail = $("#metric-detail-dialog");
+  if (detail?.open && detail.dataset.metric === "usage") renderMetricDetail(false);
   const values = usageHistorySeries();
   const current = state.usageStatus === "current";
   const label = values.length && current
@@ -1673,6 +1676,57 @@ function renderUsageCharts() {
     drawLine(svg, current ? values : [], "#ff6a3d");
     svg.setAttribute("aria-label", label);
   });
+}
+
+function accountUsageWindows(now = Date.now()) {
+  const account = state.usageHistory?.account_limits;
+  if (state.usageStatus !== "current" || state.usageScopeKey !== usageRequestKey() || state.usageHistory?.ok !== true
+    || account?.scope !== "account" || account.source !== "codex_app_server.account/rateLimits/read"
+    || !["KNOWN", "PARTIAL"].includes(account.status) || !Number.isFinite(account.sampled_at_ms)
+    || now < account.sampled_at_ms || now - account.sampled_at_ms > 300000) return [];
+  return (Array.isArray(account.windows) ? account.windows : []).filter(row => row.status === "KNOWN"
+    && typeof row.remaining_percent === "number" && Number.isFinite(row.remaining_percent)
+    && row.remaining_percent >= 0 && row.remaining_percent <= 100
+    && (row.reset_at_ms === null || Number.isFinite(row.reset_at_ms) && row.reset_at_ms > now));
+}
+
+function accountUsageGraph(row) {
+  const points = Array.isArray(row?.history) ? row.history : [];
+  if (points.length < 2 || points.some((point, index) => !Number.isFinite(point.sampled_at_ms)
+    || !Number.isFinite(point.remaining_percent) || point.remaining_percent < 0 || point.remaining_percent > 100
+    || index > 0 && (point.sampled_at_ms <= points[index - 1].sampled_at_ms || point.sampled_at_ms - points[index - 1].sampled_at_ms > 120000))) return '';
+  const last = points.at(-1), forecast = row.forecast || {};
+  const end = forecast.status === 'ESTIMATED' && Number.isFinite(forecast.exhaustion_at_ms) && Number.isFinite(row.reset_at_ms)
+    && forecast.exhaustion_at_ms > last.sampled_at_ms && forecast.exhaustion_at_ms <= row.reset_at_ms ? forecast.exhaustion_at_ms : last.sampled_at_ms;
+  const start = points[0].sampled_at_ms, span = end - start;
+  const position = point => ((point.sampled_at_ms - start) / span * 160).toFixed(2) + ',' + (28 - point.remaining_percent / 100 * 28).toFixed(2);
+  return '<polyline fill="none" stroke="var(--orange)" stroke-width="1.5" points="' + points.map(position).join(' ') + '"/>'
+    + (end > last.sampled_at_ms ? '<path stroke="var(--orange)" stroke-dasharray="3 3" fill="none" d="M' + position(last) + ' L160,28"><title>Projected exhaustion if the recent rate continues</title></path>' : '');
+}
+
+function renderAccountUsage() {
+  const rows = accountUsageWindows();
+  const row = rows[0];
+  const eta = row?.forecast?.status === 'ESTIMATED' && Number.isFinite(row.forecast.exhaustion_at_ms) && row.forecast.exhaustion_at_ms > Date.now() && row.forecast.exhaustion_at_ms <= row.reset_at_ms
+    ? '~' + formatDuration(row.forecast.exhaustion_at_ms - Date.now()) + ' left · ' : '';
+  renderOverviewMetric("usage", row ? {state:state.usageHistory.account_limits.status, value:row.remaining_percent + "%", note:eta + row.limit_id + ' · ' + row.window + ' remaining'}
+    : {state:"UNKNOWN", value:"—", note:"Remaining allowance unavailable"});
+  const chart = $("#metric-usage-trend");
+  chart.innerHTML = accountUsageGraph(row);
+  chart.setAttribute('aria-label', row ? 'Remaining allowance percent over observed time' : 'Remaining allowance unavailable');
+}
+
+function accountUsageDetails() {
+  const rows = accountUsageWindows();
+  if (!rows.length) return '<p>Remaining allowance — · UNKNOWN</p><p>Quota reset —</p><p>Estimated exhaustion —</p><p>Account allowance readings are unavailable.</p>';
+  return rows.map(row => {
+    const forecast = row.forecast || {};
+    const time = value => Number.isFinite(value) ? new Date(value).toLocaleString() : '—';
+    const estimate = forecast.status === 'EXHAUSTED' ? 'Exhausted' : forecast.status === 'NO_MEASURABLE_BURN' ? 'No measurable burn in this interval'
+      : forecast.status === 'RESET_BEFORE_EXHAUSTION' ? 'Reset occurs before projected exhaustion'
+      : forecast.status === 'ESTIMATED' && Number.isFinite(forecast.exhaustion_at_ms) ? time(forecast.exhaustion_at_ms) + ' if the recent rate continues' : '—';
+    return '<section><h3>' + escapeHTML(row.limit_id + ' · ' + row.window) + '</h3><strong>' + row.remaining_percent + '% remaining</strong><svg viewBox="0 0 160 28" role="img" aria-label="Remaining allowance percent; observed recent hour">' + accountUsageGraph(row) + '</svg><p>Observed interval ' + (Number.isFinite(row.observed_interval_ms) ? Math.round(row.observed_interval_ms / 60000) + ' min' : '—') + ' · Updated ' + escapeHTML(time(state.usageHistory.account_limits.sampled_at_ms)) + '</p><p>Burn rate ' + (Number.isFinite(forecast.rate_percentage_points_per_hour) ? forecast.rate_percentage_points_per_hour + ' percentage points/hour' : '—') + '</p><p>Estimated exhaustion ' + escapeHTML(estimate) + '</p><p>Quota reset ' + escapeHTML(time(row.reset_at_ms)) + '</p></section>';
+  }).join('') + (state.usageHistory.account_limits.status === 'PARTIAL' ? '<p>Some account windows are unavailable.</p>' : '');
 }
 
 function highestUsageTaskRows() {
@@ -2244,16 +2298,13 @@ function renderOverviewMetrics() {
   renderOverviewMetric("active", presentation.active);
   renderOverviewMetric("attention", presentation.attention);
   renderOverviewMetric("progress", presentation.progress);
-  // Account allowance has no accepted projection yet; local tokens are not quota.
-  renderOverviewMetric("usage", { state: "UNKNOWN", value: "—", note: "Remaining allowance unavailable" });
-  drawLine($("#metric-usage-trend"), [], "var(--orange)");
   drawLine($("#metric-progress-trend"), presentation.progress.series || [], "#4cda85");
   $("#metric-progress-trend").setAttribute("aria-label", presentation.progress.series?.length ? "Accepted verified progress trend" : "Verified progress trend unavailable");
   renderUsageCharts();
-  if ($("#metric-detail-dialog")?.open) renderMetricDetail();
+  if ($("#metric-detail-dialog")?.open && $("#metric-detail-dialog").dataset.metric !== "usage") renderMetricDetail();
 }
 
-function renderMetricDetail() {
+function renderMetricDetail(refreshCharts = true) {
   const dialog = $("#metric-detail-dialog");
   const focusedRange = dialog.contains(document.activeElement) ? document.activeElement.dataset.usageRange : null;
   const body = dialog.querySelector('.dialog-body');
@@ -2265,10 +2316,10 @@ function renderMetricDetail() {
   const presentation = overviewMetricPresentation(overviewMetricsProjectionValue(state.overview?.overview_metrics, overviewMetricsScopeId()))[selected[0]];
   $("#metric-detail-title").textContent = selected[1];
   $("#metric-detail-content").innerHTML = key === "usage"
-    ? '<p>Remaining allowance — · UNKNOWN</p><p>Quota reset —</p><p>Estimated exhaustion —</p><p>Account allowance readings are unavailable.</p><h3>Task token usage</h3>' + usageChartMarkup("metric-detail", "metric-detail-token-trend")
+    ? accountUsageDetails() + '<h3>Task token usage</h3>' + usageChartMarkup("metric-detail", "metric-detail-token-trend")
     : '<strong>' + escapeHTML(presentation.value) + '</strong><p>' + escapeHTML(presentation.note) + '</p><p>' + escapeHTML(presentation.state) + '</p><svg id="metric-detail-trend" viewBox="0 0 160 28" role="img" aria-label="Accepted metric history"></svg>' + (presentation.series?.length ? '' : '<p>History unavailable.</p>');
-  if (key === "usage") renderUsageCharts();
-  else drawLine($("#metric-detail-trend"), presentation.series || [], "var(--orange)");
+  if (key === "usage" && refreshCharts) renderUsageCharts();
+  else if (key !== "usage") drawLine($("#metric-detail-trend"), presentation.series || [], "var(--orange)");
   if (focusedRange) Array.from(dialog.querySelectorAll('[data-usage-range]')).find(button => button.dataset.usageRange === focusedRange)?.focus({ preventScroll: true });
   if (body) body.scrollTop = scrollTop;
 }
