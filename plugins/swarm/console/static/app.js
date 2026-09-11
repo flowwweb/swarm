@@ -206,7 +206,7 @@ function clearError(restoreFocus = true) {
   const surface = $("#error-surface");
   const restore = restoreFocus && surface.contains(document.activeElement);
   surface.hidden = true;
-  if (restore) requestAnimationFrame(() => $("#system-health-control")?.focus({ preventScroll: true }));
+  if (restore) requestAnimationFrame(() => $("#notifications")?.focus({ preventScroll: true }));
 }
 
 function showConnectionState() {
@@ -228,7 +228,7 @@ function clearConnectionState() {
   $(".workspace").classList.remove("is-disconnected");
   surface.hidden = true;
   updateDocumentTitle();
-  if (restore) requestAnimationFrame(() => $("#system-health-control")?.focus({ preventScroll: true }));
+  if (restore) requestAnimationFrame(() => $("#notifications")?.focus({ preventScroll: true }));
 }
 
 function onboardingConfigBlocked() {
@@ -734,20 +734,8 @@ function systemHealthPresentation() {
 
 function renderSystemHealth() {
   const presentation = systemHealthPresentation();
-  const control = $("#system-health-control");
-  if (control) {
-    control.classList.remove("is-live", "is-reconnecting", "is-offline", "is-attention");
-    if (presentation.className) control.classList.add(presentation.className);
-    control.setAttribute("aria-label", "System health: " + presentation.label);
-    control.title = "System health: " + presentation.label;
-  }
   const chromeDot = $("#snapshot-status-dot");
   if (chromeDot) chromeDot.className = "status-dot" + (presentation.className ? " " + presentation.className : "");
-}
-
-function openSystemHealth() {
-  setView("diagnostics");
-  requestAnimationFrame(() => $("#diagnostics-heading")?.focus({ preventScroll: true }));
 }
 
 function setDataStatus(status, observedAt = null) {
@@ -6456,7 +6444,6 @@ $("#overview-project-cards").addEventListener("click", async (event) => {
   const project = event.target.closest("[data-overview-project-id]");
   if (project) await selectProjectScope(project.dataset.overviewProjectId, project);
 });
-$("#system-health-control").addEventListener("click", openSystemHealth);
 $("#retry").addEventListener("click", refreshOverview);
 $("#connection-retry").addEventListener("click", initialize);
 $("#notifications").addEventListener("click", () => setNotificationsOpen($("#notifications-panel").hidden));

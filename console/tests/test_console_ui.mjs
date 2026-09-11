@@ -196,7 +196,7 @@ assert.match(app, /\$\("\.app-shell"\)\.classList\.add\("is-disconnected"\)/);
 assert.match(app, /\$\("\.app-shell"\)\.classList\.remove\("is-disconnected"\)/);
 assert.match(css, /\.app-shell\.is-disconnected > \.mobile-app-bar,[\s\S]*?\.app-shell\.is-disconnected > \.drawer,[\s\S]*?\.app-shell\.is-disconnected > \.drawer-backdrop,[\s\S]*?\.app-shell\.is-disconnected > \.message-launcher,[\s\S]*?\.app-shell\.is-disconnected > \.mobile-message-footer \{ display:none; \}/);
 assert.match(css, /\.app-shell\.is-disconnected \.workspace > :not\(#connection-state\) \{ display:none; \}/);
-assert.match(indexHtml, /id="system-health-control"[^>]*aria-label="System health: Reconnecting"[^>]*title="System health: Reconnecting"[^>]*aria-controls="view-diagnostics"/);
+assert.doesNotMatch(indexHtml, /id="system-health-control"/);
 assert.match(indexHtml, /id="view-diagnostics"[^>]*aria-labelledby="tab-diagnostics"[\s\S]*?System health[\s\S]*?Diagnostics/);
 assert.match(indexHtml, /id="snapshot-status-dot"[^>]*class="status-dot is-reconnecting"|class="status-dot is-reconnecting" id="snapshot-status-dot"/);
 assert.doesNotMatch(indexHtml, /class="snapshot-status"|>System healthy</);
@@ -214,7 +214,6 @@ assert.doesNotMatch(indexHtml, /[⌂▦⑂▥⊙⚙]/);
 assert.match(indexHtml, /id="mobile-menu-button"[^>]*aria-label="Open navigation"[^>]*aria-expanded="false"[^>]*aria-controls="console-drawer"/);
 assert.match(indexHtml, /class="mobile-app-bar"[\s\S]*?<img src="\/assets\/swarm-wordmark\.png" alt="SWARM"/);
 assert.match(indexHtml, /class="drawer-head"[\s\S]*?class="brand-wordmark"[^>]*alt="SWARM"[\s\S]*?id="drawer-close"[^>]*aria-label="Close navigation"/);
-assert.match(indexHtml, /id="system-health-control"[\s\S]*?<use href="#lucide-heart-pulse"><\/use>[\s\S]*?id="snapshot-status-dot"/);
 assert.doesNotMatch(indexHtml, /id="refresh"|Refresh overview/);
 assert.doesNotMatch(app, /\$\("#refresh"\)/);
 assert.match(app, /\$\("#drawer-close"\)\.addEventListener\("click", \(\) => setMobileDrawer\(false, true\)\)/);
@@ -235,7 +234,6 @@ assert.equal((indexHtml.match(/id="lucide-heart"/g) || []).length, 1);
 assert.equal((indexHtml.match(/id="lucide-chevron-down"/g) || []).length, 1);
 assert.doesNotMatch(indexHtml, /swarm-octopus-outline/);
 assert.match(indexHtml, /id="project-scope-filter"[\s\S]*?<use href="#lucide-chevron-down"><\/use>/);
-assert.doesNotMatch(css, /\.system-health-control\.is-(?:live|reconnecting|offline|attention)\s*\{/);
 assert.doesNotMatch(indexHtml.slice(indexHtml.indexOf('<aside class="drawer"'), indexHtml.indexOf('<main class="workspace">')), /drawer-status|data-status-(?:dot|title|note)|>Live</);
 assert.match(indexHtml, /id="tab-overview"[\s\S]*?<b>Overview<\/b>/);
 assert.equal((indexHtml.match(/id="project-navigation-heading"/g) || []).length, 1);
@@ -267,7 +265,6 @@ assert.match(css, /@media \(max-width:620px\)[\s\S]*?\.support-dialog \{ width:1
 assert.match(app, /function openSupport\(trigger\)[\s\S]*?dialog\.showModal\(\)[\s\S]*?function closeSupport\(restoreFocus = true\)/);
 assert.match(app, /\$\("#support-dialog"\)\.addEventListener\("click", \(event\) => \{ if \(event\.target === event\.currentTarget\) closeSupport\(\); \}\)/);
 assert.doesNotMatch(css, /\.drawer-status/);
-assert.match(indexHtml, /class="icon-button circle-frame system-health-control[^>]*id="system-health-control"/);
 assert.match(indexHtml, /id="message-launcher"[^>]*aria-label="Message"[^>]*aria-controls="message-composer"[^>]*aria-expanded="false"/);
 assert.match(indexHtml, /id="mobile-message-action"[^>]*aria-label="Message"[^>]*aria-controls="message-composer"/);
 assert.match(indexHtml, /class="mobile-message-footer" aria-label="Primary navigation"[\s\S]*?data-view="overview"[\s\S]*?data-view="agents"[\s\S]*?id="mobile-message-action"[\s\S]*?message-mascot-silhouette[\s\S]*?data-view="assets"[\s\S]*?data-view="roles"/);
@@ -1126,15 +1123,12 @@ assert.equal(healthPresentationHarness.run("offline", null).label, "Offline");
 assert.equal(healthPresentationHarness.run("live", null).label, "Unknown");
 assert.equal(healthPresentationHarness.run("live", { ok: true, config_valid: true, latest: { payload: { health_state: "HEALTHY" } }, health: { incidents: [], open_requests: [] } }).label, "Healthy");
 assert.equal(healthPresentationHarness.run("live", { ok: true, config_valid: true, latest: { payload: { health_state: "HEALTHY" } }, health: { incidents: [{}], open_requests: [] } }).label, "Needs attention");
-assert.match(app, /function openSystemHealth\(\)[\s\S]*?setView\("diagnostics"\)[\s\S]*?\$\("#diagnostics-heading"\)\?\.focus\(\{ preventScroll: true \}\)/);
 assert.match(app, /chromeDot\.className = "status-dot" \+ \(presentation\.className \? " " \+ presentation\.className : ""\)/);
-assert.match(app, /\$\("#system-health-control"\)\.addEventListener\("click", openSystemHealth\)/);
 assert.match(app, /function overviewRequestPath\(\)[\s\S]*?project_id=" \+ encodeURIComponent\(projectId\)/);
 assert.match(app, /\$\("#project-navigation"\)\.addEventListener\("click", async \(event\) =>[\s\S]*?await selectProjectScope\(scope\.dataset\.projectId, scope\)/);
 assert.match(app, /async function selectProjectScope\(projectId, trigger = null, historyMode = "push"\)[\s\S]*?await refreshOverview\(false\)/);
 assert.match(app, /\$\("#project-navigation-heading"\)\.addEventListener\("click", async \(event\) =>[\s\S]*?setView\("overview", false, false\)[\s\S]*?await selectProjectScope\("all", event\.currentTarget\)/);
 assert.match(indexHtml, /id="view-diagnostics"[\s\S]*?id="diagnostics-check-strip"[\s\S]*?id="diagnostics-signal-list"[\s\S]*?id="diagnostics-health-trend"[\s\S]*?class="panel diagnostics-log-panel"[\s\S]*?class="panel diagnostics-all-checks"/);
-assert.match(css, /\.system-health-control[\s\S]*?\.status-dot\.is-attention/);
 assert.match(css, /@media \(max-width: 620px\)[\s\S]*?\.icon-button \{ flex: 0 0 46px; height: 46px; \}/);
 assert.match(app, /function routeView\(\)/);
 assert.ok(indexHtml.indexOf('class="panel highest-usage-section"') > indexHtml.indexOf('id="project-tab-panel"'), "Usage follows project work");
@@ -4168,7 +4162,7 @@ proofFeed.items.push({
       await statePage.evaluate(() => localStorage.setItem("swarm.onboarding.v2.seen", "1"));
       await statePage.getByRole("button", { name: "Retry connection" }).click();
       await statePage.locator("#overview-content").waitFor({ state: "visible" });
-      await statePage.waitForFunction(() => document.activeElement?.id === "system-health-control");
+      await statePage.waitForFunction(() => document.activeElement?.id === "notifications");
       assert.equal(await statePage.locator("#connection-state").isVisible(), false);
       assert.match(await statePage.locator("#sync-time").textContent(), /^Live/);
       assert.ok(mounted.requests.filter((request) => request === "/api/bootstrap").length >= 2);
@@ -4191,7 +4185,7 @@ proofFeed.items.push({
       if (evidenceDir) await statePage.screenshot({ path: path.join(evidenceDir, `state-failed-${viewport.name}-${viewport.width}x${viewport.height}.png`), fullPage: false, animations: "disabled" });
       await statePage.getByRole("button", { name: "Refresh SWARM" }).click();
       await errorSurface.waitFor({ state: "hidden" });
-      await statePage.waitForFunction(() => document.activeElement?.id === "system-health-control");
+      await statePage.waitForFunction(() => document.activeElement?.id === "notifications");
 
       await statePage.evaluate(() => {
         setView("review");
@@ -4781,12 +4775,8 @@ proofFeed.items.push({
       const header = document.querySelector(".topbar").getBoundingClientRect();
       return box.left < profile.left && Math.abs(profile.right - header.right) <= 1 && box.top >= header.top && profile.bottom <= header.bottom;
     }), true);
-    assert.equal(await page.locator("#system-health-control").evaluate((control) => {
-      const glyph = getComputedStyle(control.querySelector(".health-pulse-icon")).color;
-      const chrome = getComputedStyle(document.querySelector("#notifications .lucide")).color;
-      const dot = getComputedStyle(control.querySelector(".status-dot")).backgroundColor;
-      return glyph === chrome && dot !== "rgba(0, 0, 0, 0)";
-    }), true);
+    assert.equal(await page.locator(".top-actions #system-health-control").count(), 0);
+    assert.deepEqual(await page.locator(".top-actions > button").evaluateAll(items => items.map(item => item.id)), ["notifications", "profile"]);
     if (evidenceDir) await page.screenshot({ path: path.join(evidenceDir, "shell-profile-sidebar-desktop-1536x1024.png"), fullPage: false, animations: "disabled" });
     assert.deepEqual(await page.locator(".overview-metric-card > header > span").allTextContents(), ["Active work", "Needs attention", "Verified progress", "Usage"]);
     assert.deepEqual(await page.locator(".overview-metric-card > strong").allTextContents(), ["3 / 5", "2", "75%", "—"]);
@@ -5351,7 +5341,7 @@ proofFeed.items.push({
     assert.equal(await page.locator('.asset-generation-placeholder img').count(), 0);
     assert.equal(await page.locator(".usage-strip").count(), 0);
     await assertCircleFrame(page, "#profile");
-    await assertCircleFrame(page, "#system-health-control");
+    await assertCircleFrame(page, "#notifications");
     assert.ok(await page.getByRole("button", { name: "Open asset details for Overview direction" }).count() >= 1);
     if (evidenceDir) await page.screenshot({ path: path.join(evidenceDir, "20-assets-ready-desktop-1536x1024.png"), fullPage: false, animations: "disabled" });
     const assetTrigger = page.getByRole("button", { name: "Open asset details for Roadmap" });
@@ -5645,7 +5635,7 @@ proofFeed.items.push({
     if (evidenceDir) await tabletPage.screenshot({ path: path.join(evidenceDir, "overview-hierarchy-tablet-834x1112.png"), fullPage: false, animations: "disabled" });
     assert.equal(await tabletPage.evaluate(() => document.documentElement.scrollWidth > document.documentElement.clientWidth), false);
     await assertCircleFrame(tabletPage, "#profile");
-    await assertCircleFrame(tabletPage, "#system-health-control");
+    await assertCircleFrame(tabletPage, "#notifications");
     assert.equal(await tabletPage.locator("#overview-project-cards [data-overview-project-id]").evaluateAll((elements) => elements.every((element) => {
       const box = element.getBoundingClientRect();
       return box.height >= 44 && box.right <= document.documentElement.clientWidth;
@@ -5811,7 +5801,7 @@ proofFeed.items.push({
     const menuBox = await menuButton.boundingBox();
     assert.ok(menuBox && menuBox.width >= 44 && menuBox.height >= 44);
     await assertCircleFrame(mobilePage, "#profile", 44);
-    await assertCircleFrame(mobilePage, "#system-health-control", 44);
+    await assertCircleFrame(mobilePage, "#notifications", 44);
     assert.equal(await mobilePage.locator("#notifications").isVisible(), true);
     await assertCircleFrame(mobilePage, "#notifications", 44);
     await mobilePage.evaluate(() => showError("Project refresh failed"));
