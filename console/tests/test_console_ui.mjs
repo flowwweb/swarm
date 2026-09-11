@@ -1140,6 +1140,8 @@ assert.match(app, /function routeView\(\)/);
 assert.ok(indexHtml.indexOf('class="panel highest-usage-section"') > indexHtml.indexOf('id="project-tab-panel"'), "Usage follows project work");
 assert.ok(indexHtml.includes('<details class="nav-more" id="nav-more">'));
 assert.equal((indexHtml.match(/<button type="button" aria-haspopup="dialog" aria-controls="metric-detail-dialog"/g) || []).length, 4);
+assert.match(indexHtml, /<dialog class="metric-detail-dialog" id="metric-detail-dialog"/);
+assert.match(css, /#metric-detail-content svg:empty\s*\{\s*display:none;/);
 assert.match(indexHtml, /id="overview-monitoring-heading">Swarm<\/h2>/);
 assert.ok(indexHtml.indexOf('id="overview-metrics"') < indexHtml.indexOf('id="overview-monitoring-heading"'));
 assert.doesNotMatch(indexHtml.match(/data-overview-metric="usage"[\s\S]*?<\/button>/)?.[0] || '', /data-usage-range/);
@@ -2579,7 +2581,11 @@ async function assertMetricDetailContainment(page) {
     return getComputedStyle(range).position === 'static' && bounds.top >= header.bottom
       && bounds.left >= box.left && bounds.right <= box.right
       && close.bottom <= bounds.top && box.left >= 0 && box.right <= innerWidth
-      && dialog.scrollWidth <= dialog.clientWidth;
+      && dialog.scrollWidth <= dialog.clientWidth
+      && (innerWidth <= 600 || Math.abs(box.left + box.width / 2 - document.documentElement.clientWidth / 2) < 2)
+      && box.height <= innerHeight
+      && close.left > header.left + header.width / 2
+      && [...dialog.querySelectorAll('svg:empty')].every(svg => getComputedStyle(svg).display === 'none');
   }), true);
 }
 
