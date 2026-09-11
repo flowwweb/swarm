@@ -19,6 +19,20 @@ delete fixture.usageHistory.history;
 const css = fs.readFileSync(path.join(staticRoot, "styles.css"), "utf8");
 const app = fs.readFileSync(path.join(staticRoot, "app.js"), "utf8");
 {
+  const host = {innerHTML:''};
+  const summary = {freshness:{state:'fresh'},current_milestone:{state:'KNOWN',source:'ledger_active_task_manifest',project_id:'p',name:'Ship <V1>'}};
+  const sandbox = {state:{connectionStatus:'live'},$:()=>host,savedProjectRoster:()=>({state:'KNOWN',projects:[{id:'p',label:'Swarm',status:'recent'}]}),authoritativeProgress:()=>summary,projectScopeMark:()=>'',humanize:String};
+  vm.createContext(sandbox);
+  vm.runInContext(app.slice(app.indexOf('function escapeHTML('),app.indexOf('const COLLECTION_PAGE_SIZE')) + app.slice(app.indexOf('function renderOverviewProjects('),app.indexOf('function renderOverview()')),sandbox);
+  sandbox.renderOverviewProjects(); assert.match(host.innerHTML,/Ship &lt;V1&gt;/);
+  for (const change of [{project_id:'foreign'},{state:'UNKNOWN'},{source:'snapshot'}]) {
+    const saved = {...summary.current_milestone}; Object.assign(summary.current_milestone,change);
+    sandbox.renderOverviewProjects(); assert.match(host.innerHTML,/Current milestone unavailable/);
+    summary.current_milestone=saved;
+  }
+  summary.freshness.state='stale'; sandbox.renderOverviewProjects(); assert.match(host.innerHTML,/Current milestone unavailable/);
+}
+{
   const state = {messageOpen:true,messageDraft:"  Reply exactly Ω.  ",messageAttachments:[],messageRecipientId:"task",messageStatus:"idle"};
   const handlers={}; let releaseContext;
   let binding="project/task", calls=[], mode="RESULT", ids=0, rejectionOverride={};
@@ -524,7 +538,7 @@ assert.match(app, /event\.key === "Tab" && \$\("\.app-shell"\)\.classList\.conta
 assert.match(app, /drawer\.inert = !expanded/);
 assert.match(app, /event\.key === "Escape" && \$\("\.app-shell"\)\.classList\.contains\("is-drawer-open"\)/);
 
-for (const label of ["Projects", "Latest updates", "Recent images", "Applies to", "Replay tour", "Edit config"]) {
+for (const label of ["Projects", "Latest updates", "Applies to", "Replay tour", "Edit config"]) {
   assert.match(indexHtml + app, new RegExp(label));
 }
 assert.match(app, /\/api\/usage-history\?/);
@@ -534,7 +548,7 @@ assert.doesNotMatch(css, /\.usage-strip|\.usage-chart-pair|\.usage-window-button
 assert.doesNotMatch(app, /function renderUsage\(|function usageRateSeries\(|function downsampleSeries\(/);
 assert.match(app, /function usageHistorySeries\(\)[\s\S]*?bucket_ms[\s\S]*?delta_tokens[\s\S]*?sort\(\(a, b\) => a\.bucket - b\.bucket\)/);
 assert.match(app, /function renderUsageCharts\(\)[\s\S]*?diagnostics-usage-trend[\s\S]*?metric-detail-token-trend/);
-assert.match(app, /\[1, 24, 168\]\.includes\(hours\)[\s\S]*?await refreshUsageHistory\(\)/);
+assert.match(app, /\[1, 24, 168, 720\]\.includes\(hours\)[\s\S]*?await refreshUsageHistory\(\)/);
 assert.doesNotMatch(app.slice(app.indexOf("function drawLine"), app.indexOf("function isSubagent")), /\[0, 0\]/);
 assert.doesNotMatch(app, /setInterval\([^)]*usageHistory|setInterval\([^)]*refreshUsage/);
 assert.match(indexHtml, /id="project-progress-section"/);
@@ -859,7 +873,23 @@ assert.match(app, /Observed tokens/);
 assert.match(app, /Admitted scope/);
 assert.match(app, /yield-scope-divider/);
 assert.match(indexHtml, /id="overview-metrics" aria-label="Overview diagnostics"/);
-assert.deepEqual([...indexHtml.matchAll(/data-overview-metric="([^"]+)"/g)].map((match) => match[1]), ["active-work", "needs-attention", "verified-progress", "usage"]);
+assert.deepEqual([...indexHtml.matchAll(/data-overview-metric="([^"]+)"/g)].map((match) => match[1]), ["active-work", "needs-attention", "tbr", "usage"]);
+{
+  const now=1789000000000;
+  const state={usageStatus:'current',usageScopeKey:'scope',usageWindowHours:1,usageHistory:{ok:true,status:'ok',usage_now:{status:'observed',source:'persisted_local_token_deltas',window_hours:1,sampled_at_ms:now,rate_sampled_at_ms:now,rate_tokens_per_minute:1234,rate_coverage:'partial',rate_observed_interval_ms:60000}}};
+  const sandbox={state,usageRequestKey:()=> 'scope',usageRangeLabel:()=> 'last hour',compactMetricNumber:String};
+  vm.createContext(sandbox);
+  vm.runInContext(app.slice(app.indexOf('function tokenBurnRatePresentation('),app.indexOf('function renderOverviewMetrics(')),sandbox);
+  assert.equal(sandbox.tokenBurnRatePresentation(now).value,'1234');
+  state.usageHistory.status='partial'; assert.equal(sandbox.tokenBurnRatePresentation(now).state,'PARTIAL');
+  state.usageScopeKey='other'; assert.equal(sandbox.tokenBurnRatePresentation(now).state,'UNKNOWN');
+  state.usageScopeKey='scope'; assert.equal(sandbox.tokenBurnRatePresentation(now+300001).state,'UNKNOWN');
+  assert.equal(sandbox.tokenBurnRatePresentation(now+300001,true).value,'1234','Historical interval is not made stale by its selected date');
+  state.usageHistory.usage_now.sampled_at_ms=now+300001;
+  assert.equal(sandbox.tokenBurnRatePresentation(now+300001).state,'UNKNOWN','New unqualified token observation cannot refresh old rate');
+  state.usageHistory.usage_now.rate_tokens_per_minute=null; state.usageHistory.tokens=9000;
+  assert.equal(sandbox.tokenBurnRatePresentation(now).value,'—');
+}
 assert.doesNotMatch(indexHtml, /verified-yield-summary|verified-yield-rows|overview-monitoring-health-state|>Unmeasured</);
 assert.match(css, /\.overview-metrics \{[^}]*grid-template-columns:repeat\(4,minmax\(0,1fr\)\)/);
 assert.match(css, /\.overview-metric-card \{[^}]*min-height:108px/);
@@ -1131,10 +1161,12 @@ assert.match(app, /\$\("#project-navigation-heading"\)\.addEventListener\("click
 assert.match(indexHtml, /id="view-diagnostics"[\s\S]*?id="diagnostics-check-strip"[\s\S]*?id="diagnostics-signal-list"[\s\S]*?id="diagnostics-health-trend"[\s\S]*?class="panel diagnostics-log-panel"[\s\S]*?class="panel diagnostics-all-checks"/);
 assert.match(css, /@media \(max-width: 620px\)[\s\S]*?\.icon-button \{ flex: 0 0 46px; height: 46px; \}/);
 assert.match(app, /function routeView\(\)/);
-assert.ok(indexHtml.indexOf('class="panel highest-usage-section"') > indexHtml.indexOf('id="project-tab-panel"'), "Usage follows project work");
+assert.doesNotMatch(indexHtml, /id="highest-usage-tasks"/, "Task usage belongs in TBR, not the Overview page body");
 assert.ok(indexHtml.includes('<details class="nav-more" id="nav-more">'));
 assert.equal((indexHtml.match(/<button type="button" aria-haspopup="dialog" aria-controls="metric-detail-dialog"/g) || []).length, 4);
 assert.match(indexHtml, /<dialog class="metric-detail-dialog" id="metric-detail-dialog"/);
+assert.match(css, /\.metric-detail-dialog \{ width:calc\(100vw - 32px\); height:min\(720px,calc\(100dvh - 32px\)\); margin:auto; border-radius:12px;/, 'Mobile metric dialog retains margins on every side');
+assert.doesNotMatch(css, /\.metric-detail-dialog \{[^}]*margin:auto 0 0/, 'Metric details are not a bottom sheet or inline panel');
 assert.match(css, /#metric-detail-content svg:empty\s*\{\s*display:none;/);
 assert.match(indexHtml, /id="overview-monitoring-heading">Swarm<\/h2>/);
 assert.ok(indexHtml.indexOf('id="overview-metrics"') < indexHtml.indexOf('id="overview-monitoring-heading"'));
@@ -1151,7 +1183,7 @@ assert.match(app, /dialog\.onclose = \(\) => card\.isConnected && card\.focus/);
   const sandbox = { $: id => id === '#metric-detail-dialog' ? dialog : id === '#metric-detail-title' ? title : content,
     document:{activeElement:range}, state: { overview: {} }, overviewMetricsScopeId: () => '', overviewMetricsProjectionValue: () => null,
     overviewMetricPresentation: () => ({ active: {value:'—',note:'Unavailable',state:'UNKNOWN'}, usage:{} }),
-    escapeHTML: String, drawLine: () => {}, usageChartMarkup: () => '<svg></svg>', renderUsageCharts: () => {}, accountUsageDetails: () => '<p>Quota reset —</p><p>Estimated exhaustion —</p>' };
+    escapeHTML: String, drawLine: () => {}, taskUsageHistory:()=>null, usageChartMarkup: () => '<svg></svg>', renderUsageCharts: () => {}, accountUsageDetails: () => '<p>Quota reset —</p><p>Estimated exhaustion —</p>' };
   vm.createContext(sandbox);
   vm.runInContext(app.slice(app.indexOf('function renderMetricDetail('), app.indexOf('function yieldChartMarkup(')), sandbox);
   for (const metric of ['active-work', 'usage']) {
@@ -1163,13 +1195,13 @@ assert.match(app, /dialog\.onclose = \(\) => card\.isConnected && card\.focus/);
   sandbox.renderMetricDetail();
   assert.equal(rangeFocus,3); assert.equal(body.scrollTop,37);
   assert.match(content.innerHTML,/Estimated exhaustion —/);
-  assert.match(content.innerHTML,/Task token usage/);
+  assert.doesNotMatch(content.innerHTML,/Task token usage|By task|metric-detail-token-trend/, 'Usage owns allowance only, not task token views');
   // Exercise the range refresh owner with an open detail, not only presentation helpers.
   dialog.open=true; dialog.dataset.metric='usage';
   const svg = {setAttribute(){}};
   sandbox.$ = id => id === '#metric-detail-dialog' ? dialog : id === '#metric-detail-title' ? title : id === '#metric-detail-content' ? content : svg;
   sandbox.$$ = () => [];
-  Object.assign(sandbox, {URLSearchParams, renderHighestUsageTasks(){},renderAccountUsage(){},usageHistorySeries:()=>[],usageRangeLabel:()=>'',usageRequestKey:()=> 'scope'});
+  Object.assign(sandbox, {URLSearchParams, renderHighestUsageTasks(){},renderAccountUsage(){},renderOverviewMetric(){},tokenBurnRatePresentation:()=>({state:'UNKNOWN'}),usageHistorySeries:()=>[],usageRangeLabel:()=>'',usageRequestKey:()=> 'scope'});
   Object.assign(sandbox.state,{projectId:'all',ctrlId:'',usageWindowHours:1,usageRequestGeneration:0,usageScopeKey:'scope',usageStatus:'current',usageHistory:{ok:true}});
   sandbox.accountUsageDetails=()=>sandbox.state.usageStatus==='current' ? '<p>Quota '+sandbox.state.usageHistory.quota+'</p><p>ETA supplied</p>' : '<p>UNKNOWN</p>';
   vm.runInContext(app.slice(app.indexOf('function renderUsageCharts()'),app.indexOf('function accountUsageWindows(')) + app.slice(app.indexOf('async function refreshUsageHistory()'),app.indexOf('async function refreshProjectProgress()')),sandbox);
@@ -1194,6 +1226,8 @@ assert.doesNotMatch(app.slice(app.indexOf('function renderUsageCharts()'), app.i
   const window = state.usageHistory.account_limits.windows[0];
   window.forecast = {status:'ESTIMATED',exhaustion_at_ms:now+60000};
   assert.match(sandbox.accountUsageGraph(window),/stroke-dasharray="3 3"/);
+  assert.doesNotMatch(sandbox.accountUsageGraph(window, false), /stroke-dasharray/);
+  assert.match(sandbox.accountUsageGraph(window, false), /160.00,11.20/);
   window.forecast.exhaustion_at_ms=window.reset_at_ms+1;
   assert.doesNotMatch(sandbox.accountUsageGraph(window),/stroke-dasharray/);
   for (const status of ['UNKNOWN','EXHAUSTED','NO_MEASURABLE_BURN','RESET_BEFORE_EXHAUSTION']) {
@@ -1219,9 +1253,12 @@ assert.doesNotMatch(app.slice(app.indexOf('function renderUsageCharts()'), app.i
   state.usageScopeKey='scope'; window.remaining_percent=40; window.reset_at_ms=now+86400000;
   window.forecast={status:'ESTIMATED',exhaustion_at_ms:now+14400000,rate_percentage_points_per_hour:10};
   sandbox.renderAccountUsage();
-  assert.equal(card.value,'40%'); assert.match(card.note,/^~4h left · main/);
-  assert.match(sandbox.accountUsageDetails(),/if the recent rate continues/);
-  for (const [status,copy] of [['EXHAUSTED','Exhausted'],['NO_MEASURABLE_BURN','No measurable burn'],['RESET_BEFORE_EXHAUSTION','Reset occurs before projected exhaustion'],['UNKNOWN','Estimated exhaustion —']]) {
+  assert.equal(card.value,'40%'); assert.match(card.note,/^main/); assert.doesNotMatch(card.note,/left|ETA|projected/i);
+  assert.match(sandbox.accountUsageDetails(),/Estimate assumes the recent rate continues/);
+  assert.match(sandbox.accountUsageDetails(), /<strong>40%<\/strong><span>Remaining<\/span>/);
+  assert.match(sandbox.accountUsageDetails(), /<strong>~4h<\/strong><span>At current rate<\/span>/);
+  assert.doesNotMatch(sandbox.accountUsageDetails(), /By task|TBR|Task token usage/);
+  for (const [status,copy] of [['EXHAUSTED','Exhausted'],['NO_MEASURABLE_BURN','No measurable burn'],['RESET_BEFORE_EXHAUSTION','Reset occurs before projected exhaustion'],['UNKNOWN','<strong>—</strong><span>Runs out</span>']]) {
     window.forecast={status,exhaustion_at_ms:null,rate_percentage_points_per_hour:null};
     sandbox.renderAccountUsage(); assert.doesNotMatch(card.note,/left/);
     assert.ok(sandbox.accountUsageDetails().includes(copy));
@@ -1248,6 +1285,49 @@ for (const retiredRenderer of ["renderDashboard", "renderHierarchy", "renderKanb
   assert.doesNotMatch(app, new RegExp(`function ${retiredRenderer}\\(`));
 }
 assert.match(app, /renderOverviewProjectCards\(\)/);
+{
+  const task={record_type:'TASK',id:'task',task_id:'task',task_name:'Actual task',project_id:'project',ctrl_id:'ctrl',owning_agent_id:'agent',state:'ACTIVE',manifest_identity:{state:'KNOWN'},order:0,progress:80};
+  const topology={nodes:[{agent_id:'agent',project_id:'project',ctrl_id:'ctrl',task_ids:['task']}],tasks:[task,{...task}],task_edges:[{edge_kind:'AGENT_TASK_OWNERSHIP',source:'agent',target:'task'}]};
+  const state={connectionStatus:'live',overview:{topology}};
+  const sandbox={state,overviewTopologyProjection:value=>value}; vm.createContext(sandbox);
+  vm.runInContext(app.slice(app.indexOf('function overviewHierarchyWorkRows('),app.indexOf('function overviewHierarchyNodeMarkup(')),sandbox);
+  const record={node:{id:'agent'},binding:{projectId:'project',ctrlId:'ctrl'}};
+  assert.equal(sandbox.overviewHierarchyWorkRows(record).length,1);
+  assert.equal(sandbox.overviewHierarchyWorkRows(record)[0].label,'Actual task');
+  assert.equal(sandbox.overviewHierarchyWorkRows(record)[0].progress,null,'Unqualified current-subset percent cannot become full task completion');
+  task.scope_version=1;
+  task.blocks=[{block_id:'block',title:'Actual block',task_id:'task',project_id:'project',ctrl_id:'ctrl',scope_version:1,committed_weight:10,event_cursor:{event_id:'event',event_digest:'a'.repeat(64)}}];
+  assert.equal(sandbox.overviewHierarchyWorkRows(record)[0].progress,80);
+  assert.equal(sandbox.overviewHierarchyWorkRows(record)[0].blocks[0].title,'Actual block');
+  task.eta={task_id:'task',project_id:'project',status:'in_progress',eta_source:'task_owner_report',eta_start_ms:1000,eta_end_ms:2000,eta_observed_at_ms:500};
+  assert.equal(sandbox.overviewHierarchyWorkRows(record)[0].eta.eta_end_ms,2000,'Exact retained task estimate remains available without claiming freshness');
+  for(const change of [{task_id:'agent'},{project_id:'foreign'},{status:'UNKNOWN'},{eta_source:'controller'},{eta_observed_at_ms:null},{eta_end_ms:1}]) {
+    const exact=task.eta; task.eta={...exact,...change};
+    assert.equal(sandbox.overviewHierarchyWorkRows(record)[0].eta,null); task.eta=exact;
+  }
+  Object.assign(sandbox,{escapeHTML:String,humanize:String,agentWorkStatusIcon:()=>'',agentAvatarMarkup:()=>''});
+  vm.runInContext(app.slice(app.indexOf('function overviewHierarchyNodeMarkup('),app.indexOf('function overviewHierarchySkeletonMarkup(')),sandbox);
+  const markup=()=>sandbox.overviewHierarchyNodeMarkup({...record,structuralRole:'DOER',accent:'#123456'},[]);
+  task.blocks[0].lifecycle_state='ACTIVE'; assert.match(markup(),/overview-work-block is-active/);
+  task.blocks[0].lifecycle_state='ACCEPTED'; assert.match(markup(),/overview-work-block is-complete/);
+  task.blocks[0].lifecycle_state='INVALIDATED_REWORK'; assert.match(markup(),/overview-work-block is-failed/);
+  task.blocks[0].lifecycle_state='UNKNOWN'; assert.match(markup(),/overview-work-block is-unknown/);
+  assert.match(markup(),/Retained estimate:[\s\S]*task owner report · observed/);
+  assert.match(markup(),/aria-label="Actual block · UNKNOWN"/);
+  assert.doesNotMatch(markup(),/countdown|Live ETA/);
+  task.blocks[0].scope_version=2;
+  assert.equal(sandbox.overviewHierarchyWorkRows(record)[0].progress,null,'Mismatched block scope withholds whole-task percentage');
+  assert.equal(sandbox.overviewHierarchyWorkRows(record)[0].blocks.length,0);
+  task.blocks[0].scope_version=1; task.blocks[0].committed_weight=null;
+  assert.equal(sandbox.overviewHierarchyWorkRows(record)[0].progress,null,'Unmeasured block cannot become zero or measured completion');
+  topology.hidden_tasks=[{...task,id:'hidden',task_id:'hidden',task_name:'Overflow task',order:4,blocks:[]},{...task,id:'foreign',task_id:'foreign',project_id:'other'}];
+  assert.equal(sandbox.overviewHierarchyWorkRows(record).length,2,'Only same-scope overflow payload is disclosed');
+  assert.equal(sandbox.overviewHierarchyWorkRows(record)[1].label,'Overflow task');
+  topology.hidden_tasks=[];
+  assert.equal(sandbox.overviewHierarchyWorkRows({...record,binding:{projectId:'other',ctrlId:'ctrl'}}).length,0);
+  topology.task_edges=[]; assert.equal(sandbox.overviewHierarchyWorkRows(record).length,0);
+  state.connectionStatus='offline'; assert.equal(sandbox.overviewHierarchyWorkRows(record).length,0);
+}
 const overviewProjectCardsSource = app.slice(app.indexOf("function renderOverviewProjectCards"), app.indexOf("function renderOverview()"));
 assert.match(app, /function overviewTopologyProjection\(value\)[\s\S]*?value\.schema_version !== 1[\s\S]*?\["KNOWN", "PARTIAL", "EMPTY"\][\s\S]*?"independent_nodes"/);
 assert.doesNotMatch(app, /recursive_host_topology/);
@@ -1282,8 +1362,11 @@ assert.match(css, /\.overview-node-more summary::before \{[^}]*inset:-13px 0/);
 assert.match(css, /\.overview-hierarchy-edges \{[^}]*z-index:0/);
 assert.match(css, /\.overview-hierarchy-canvas \{[^}]*min-width:720px/);
 assert.match(css, /\.overview-hierarchy-forest > \.overview-agent-branch > \.overview-hierarchy-node \{[^}]*width:min\(440px,100%\)/);
-assert.match(css, /\.overview-hierarchy-node\.is-ctrl \.agent-avatar-token \{[^}]*width:100px;[^}]*height:100px/);
-assert.match(css, /\.overview-hierarchy-node\.is-ctrl \.overview-node-work-list \{[^}]*margin-left:118px/);
+assert.match(css, /\.overview-hierarchy-node\.is-ctrl \.agent-avatar-token \{[^}]*width:64px;[^}]*height:64px/);
+assert.match(css, /\.overview-hierarchy-node\.is-lead \.agent-avatar-token \{[^}]*width:48px;[^}]*height:48px/);
+assert.match(css, /\.overview-hierarchy-node \.agent-avatar-token \{[^}]*width:32px;[^}]*height:32px;[^}]*border-radius:50%/);
+assert.match(css, /\.overview-hierarchy-node \.agent-avatar-token \.role-avatar \{[^}]*border-radius:50%/);
+assert.match(css, /\.overview-hierarchy-node\.is-ctrl \.overview-node-work-list \{[^}]*margin-left:82px/);
 assert.match(css, /\.overview-node-port\.is-in\.is-side \{[^}]*left:-6px/);
 assert.doesNotMatch(css, /\.overview-hierarchy-edges\s*\{\s*display:none/);
 assert.match(app, /function authoritativeProgress\(projectId, ctrlId = ""\)/);
@@ -1420,7 +1503,7 @@ assert.match(app, /active \? \(group\?\.label \|\| "Project"\) : "Overview"/);
 assert.match(app, /setDataStatus\("current", state\.overview\?\.generated_at\)/);
 assert.match(app, /setDataStatus\(state\.overview \? "stale" : "unavailable"/);
 assert.match(app, /Project data request timed out/);
-assert.match(app, /#overview-evidence-gallery/);
+assert.doesNotMatch(indexHtml + app, /overview-evidence-gallery|overview-evidence-heading/, 'Overview stays stats, Projects and Swarm; proof remains in project Proof');
 assert.match(indexHtml, /id="evidence-lightbox"/);
 assert.match(indexHtml, /id="evidence-lightbox-thumbnails"/);
 assert.doesNotMatch(indexHtml, /id="evidence-page-next"/);
@@ -1430,12 +1513,11 @@ assert.match(app, /function renderEvidenceLightbox\(\)/);
 assert.match(app, /function openEvidenceLightbox\(index, trigger\)/);
 assert.match(app, /data-evidence-open/);
 assert.match(app, /data-evidence-thumbnail/);
-assert.match(app, /data-evidence-more/);
+assert.match(app, /if \(tab === "proof"\)[\s\S]*?data-evidence-open/);
 assert.match(app, /dialog\.showModal\(\)/);
 assert.match(app, /ArrowLeft/);
 assert.match(app, /ArrowRight/);
-assert.match(app, /const previews = images\.slice\(0, limit\)/);
-assert.match(app, /const remaining = Math\.max\(0, images\.length - previews\.length\)/);
+assert.doesNotMatch(app, /function renderEvidenceGallery\(/);
 assert.doesNotMatch(app, /EVIDENCE_THUMBNAIL_PAGE_SIZE|evidenceThumbnailPage/);
 assert.match(app, /proofCollections: new Map\(\)/);
 assert.match(app, /state\.proof = state\.proofCollections\.get\(collectionKey\) \|\| \[\]/);
@@ -1444,10 +1526,10 @@ const evidenceScopeSource = app.slice(app.indexOf("function scopedProofItems"), 
 assert.ok(evidenceScopeSource.indexOf("if (state.ctrlId)") < evidenceScopeSource.indexOf('if (state.projectId !== "all"'));
 assert.match(app, /function selectedProgressProjectId\(\) \{\s*if \(state\.ctrlId\) return "";/);
 assert.doesNotMatch(app, /catch \{ state\.proof = \[\]; \}/);
-assert.match(app, /renderEvidenceGallery\(nodes, "#overview-evidence-gallery", "#overview-evidence-note", 4\)/);
+assert.match(app, /state\.evidenceImages = evidenceImagesFor\(nodes\)/);
 assert.doesNotMatch(app, /figcaption/);
 assert.match(css, /\.evidence-lightbox/);
-assert.match(css, /\.evidence-gallery-item/);
+assert.match(css, /\.evidence-lightbox-thumbnail:focus-visible/);
 assert.match(app, /params\.set\("project_id", projectId\)/);
 assert.doesNotMatch(app, /params\.set\("task_id", state\.ctrlId\)/);
 const overviewMetricsRenderSource = app.slice(app.indexOf("function renderOverviewMetrics"), app.indexOf("function yieldChartMarkup"));
@@ -1585,7 +1667,9 @@ assert.match(app, /\$\("#agent-detail-dialog"\)\.addEventListener\("click", \(ev
 assert.match(app, /No exact accepted work association is available for this agent/);
 assert.match(app, /node\?\.presentation\?\.display_name/);
 assert.match(app, /projectedName \? "admitted" : "malformed"/);
-assert.doesNotMatch(app, /AGENT_COLOR_CATALOG|agentColorRegistry|agentColorIdentity|Math\.imul\(hash/);
+const taskColorSource = app.slice(app.indexOf('function taskUsageColor('), app.indexOf('function taskUsageGraph('));
+assert.doesNotMatch(taskColorSource, /state\.|agent|manifest|role/i, 'Task chart colors cannot become agent identity');
+assert.doesNotMatch(app.replace(taskColorSource, ''), /AGENT_COLOR_CATALOG|agentColorRegistry|agentColorIdentity|Math\.imul\(hash/);
 assert.doesNotMatch(app.match(/function activeAgentRecords\(\)[\s\S]*?\n\}/)?.[0] || "", /Math\.random\(|hash/i);
 assert.doesNotMatch(app, /romanAgentOrdinal|#708090|Role pending/);
 assert.doesNotMatch(app + css, /class="agent-hierarchy|class="agent-project|class="agent-branch|\.agent-hierarchy|\.agent-project|\.agent-branch|\.agent-role-mark/);
@@ -1898,6 +1982,64 @@ for (const forbidden of ["hidden usage", "developer instructions", "prompts", "t
   assert.equal((indexHtml + app).toLowerCase().includes(forbidden), false, `forbidden copy: ${forbidden}`);
 }
 
+{
+  const window={after_ms:1000000,before_ms:1600000};
+  const point={thread_id:'a',project_id:'p',bucket_start_ms:1000000,bucket_end_ms:1300000,rate_start_ms:1000000,rate_end_ms:1300000,tokens:100,tokens_per_minute:20,model:null};
+  const state={projectId:'all',ctrlId:'',usageWindowHours:24,usageStatus:'current',usageScopeKey:'key',usageHistory:{ok:true,hours:24,scope:{type:'all-projects'},window,task_usage:[{thread_id:'a',project_id:'p',title:'Alpha',tokens:100},{thread_id:'b',project_id:'p',title:'Beta',tokens:50}],task_history:{status:'partial',items:[point,{...point,bucket_start_ms:1300000,bucket_end_ms:1600000,rate_start_ms:1300000,rate_end_ms:1600000}],total_tokens:200}}};
+  const host={setAttribute(){},innerHTML:''}, dialog={dataset:{}};
+  const sandbox={state,Map,Set,Date,escapeHTML:String,usageRequestKey:()=> 'key',usageRangeLabel:()=> 'last 24 hours',$:selector=>selector==='#metric-detail-dialog'?dialog:host};
+  vm.createContext(sandbox);
+  vm.runInContext(app.slice(app.indexOf('function highestUsageTaskRows('),app.indexOf('function diagnosticChecks(')),sandbox);
+  sandbox.renderHighestUsageTasks();
+  assert.match(host.innerHTML, /<th scope="col">Task<\/th><th scope="col">Model<\/th><th scope="col">Tokens<\/th><th scope="col">Share/);
+  assert.match(host.innerHTML,/50.0%/,'Share uses all measured tokens, not top ten sum');
+  assert.match(host.innerHTML,/Historical model unavailable/);
+  assert.match(host.innerHTML,/data-task-usage-id="b" disabled/,'No fabricated history for aggregate-only task');
+  const history=sandbox.taskUsageHistory();
+  const graph=sandbox.taskUsageGraph([state.usageHistory.task_usage[0]],history);
+  assert.match(graph,/M32.00,25.00 L320.00,25.00 L608.00,25.00/,'Steady measured rate is flat, not declining allowance');
+  assert.doesNotMatch(graph,/<circle/);
+  assert.equal(sandbox.taskUsageColor('a'),sandbox.taskUsageColor('a'));
+  assert.notEqual(sandbox.taskUsageColor('a'),sandbox.taskUsageColor('b'));
+  dialog.dataset.taskView='graph'; sandbox.renderHighestUsageTasks();
+  assert.match(host.innerHTML,/Task comparison view/); assert.match(host.innerHTML,/Legend/);
+  dialog.dataset.hiddenTaskIds='["a"]'; sandbox.renderHighestUsageTasks();
+  assert.match(host.innerHTML,/data-task-usage-visible="a" aria-pressed="false"/);
+  assert.doesNotMatch(host.innerHTML,/<title>Alpha<\/title>/);
+  sandbox.renderHighestUsageTasks(); assert.match(host.innerHTML,/data-task-usage-visible="a" aria-pressed="false"/,'Refresh retains task visibility');
+  dialog.dataset.hiddenTaskIds='[]'; sandbox.renderHighestUsageTasks(); assert.match(host.innerHTML,/<title>Alpha<\/title>/);
+  dialog.dataset.taskId='a'; sandbox.renderHighestUsageTasks();
+  assert.match(host.innerHTML,/All tasks/); assert.match(host.innerHTML,/<h3>Alpha/);
+  dialog.dataset.hideLegend='true'; sandbox.renderHighestUsageTasks();
+  assert.doesNotMatch(host.innerHTML,/class="task-usage-legend"/);
+  state.usageHistory.task_history.items[1].rate_start_ms=1400000;
+  assert.match(sandbox.taskUsageGraph([state.usageHistory.task_usage[0]],sandbox.taskUsageHistory()),/M416.00/,'Missing interval remains a gap');
+  state.usageHistory.scope={type:'project',project_id:'foreign'};
+  assert.equal(sandbox.taskUsageHistory(),null);
+  state.usageHistory.scope={type:'all-projects'};state.usageStatus='stale';
+  assert.equal(sandbox.taskUsageHistory(),null);
+}
+{
+  const state={projectId:'all',ctrlId:'',usageWindowHours:24,usageRequestGeneration:0,usageStatus:'current'};
+  const requests=[];
+  const sandbox={state,URLSearchParams,api:url=>new Promise((resolve,reject)=>requests.push({url,resolve,reject}))};
+  vm.createContext(sandbox);
+  vm.runInContext(app.slice(app.indexOf('function usageRequestKey('),app.indexOf('function usageHistorySeries(')) + app.slice(app.indexOf('async function refreshUsageHistory('),app.indexOf('async function refreshProjectProgress(')),sandbox);
+  state.usageDateRange={after_ms:1000,before_ms:2000};
+  const old=sandbox.refreshUsageHistory();
+  state.usageDateRange={after_ms:3000,before_ms:4000};
+  const latest=sandbox.refreshUsageHistory();
+  assert.match(requests[1].url,/after_ms=3000&before_ms=4000/);
+  const result={ok:true,hours:24,scope:{type:'all-projects'},window:{explicit:true,after_ms:3000,before_ms:4000}};
+  requests[1].resolve(result); await latest;
+  requests[0].reject(new Error('Old dates failed')); await old;
+  assert.equal(state.usageHistory,result); assert.equal(state.usageStatus,'current');
+  const mismatch=sandbox.refreshUsageHistory(); requests[2].resolve({...result,window:{...result.window,before_ms:5000}}); await mismatch;
+  assert.equal(state.usageStatus,'stale'); assert.match(state.usageError,/selected dates/);
+  assert.equal(state.usageHistory,result);
+  const wrongScope=sandbox.refreshUsageHistory(); requests[3].resolve({...result,scope:{type:'project',project_id:'foreign'}}); await wrongScope;
+  assert.equal(state.usageStatus,'stale'); assert.match(state.usageError,/selected scope/);
+}
 {
   const usageState = { projectId: "all", ctrlId: "", usageWindowHours: 1, usageScopeKey: "all||1", usageStatus: "current", usageHistory: { ok: true, items: [{ bucket_ms: 2, delta_tokens: 9 }], task_usage: [
     { thread_id: "small", title: "Small", project_id: "p", tokens: 2 },
@@ -2572,12 +2714,13 @@ async function assertMetricDetailContainment(page) {
     const range = dialog.querySelector('.usage-range');
     const bounds = range.getBoundingClientRect();
     const close = dialog.querySelector('[aria-label="Close metric details"]').getBoundingClientRect();
-    return getComputedStyle(range).position === 'static' && bounds.top >= header.bottom
+    const controlsOverlap = bounds.left < close.right && bounds.right > close.left && bounds.top < close.bottom && bounds.bottom > close.top;
+    return getComputedStyle(range).position === 'static' && bounds.top >= header.top && bounds.bottom <= header.bottom
       && bounds.left >= box.left && bounds.right <= box.right
-      && close.bottom <= bounds.top && box.left >= 0 && box.right <= innerWidth
+      && !controlsOverlap && box.left >= 8 && box.right <= innerWidth - 8
       && dialog.scrollWidth <= dialog.clientWidth
       && (innerWidth <= 600 || Math.abs(box.left + box.width / 2 - document.documentElement.clientWidth / 2) < 2)
-      && box.height <= innerHeight
+      && box.height <= innerHeight - 16
       && close.left > header.left + header.width / 2
       && [...dialog.querySelectorAll('svg:empty')].every(svg => getComputedStyle(svg).display === 'none');
   }), true);
@@ -2723,7 +2866,7 @@ async function mount(page, overview, overrides = {}) {
     if (url.pathname === "/api/proof-feed") return proofControl.fail ? route.fulfill({ status: 200, contentType: "application/json", body: "{" }) : route.fulfill(response(proofControl.feed || proofFeed));
     if (url.pathname === "/api/usage-history") {
       const hours = url.searchParams.get("hours");
-      if (!["1", "12", "24", "168"].includes(hours)) return route.fulfill({ status: 400, contentType: "application/json", body: JSON.stringify({ ok: false, error: "unsupported usage window" }) });
+      if (!["1", "12", "24", "168", "720"].includes(hours)) return route.fulfill({ status: 400, contentType: "application/json", body: JSON.stringify({ ok: false, error: "unsupported usage window" }) });
       if (overrides.usageResponse) return route.fulfill(await overrides.usageResponse(url));
       return route.fulfill(response(overrides.usageByHours?.[hours] || fixture.usageHistory));
     }
@@ -3344,24 +3487,26 @@ async function assertObservedTaskAndChat() {
       state.overview.roots=[];
       renderOverview(); renderAgentTable();
     });
-    assert.equal(await page.locator('#overview-project-cards [data-active-codex-task="observed-chief"]').count(),1);
+    assert.equal(await page.locator('#overview-project-cards [data-active-codex-task]').count(),0,"compact Overview does not duplicate host-task discovery");
+    assert.equal(await page.locator('[data-overview-hierarchy-node="observed-chief"]').count(),0,"observed host task is not an admitted hierarchy agent");
     assert.equal(await page.locator('#agent-table-body [data-active-codex-task="observed-chief"]').count(),1);
     assert.equal(await page.locator('[data-active-codex-task] [role=progressbar]').count(),0);
     await page.evaluate(() => {
       state.overview.nodes.push({id:"ctrl",project_id:"project:fixture",status:"idle"},{id:"foreign-active",project_id:"project:foreign",status:"active",title:"Foreign task"});
-      state.ctrlId="ctrl"; renderOverview();
+      state.ctrlId="ctrl"; renderOverview(); renderAgentTable();
     });
-    assert.equal(await page.locator('#overview-project-cards [data-active-codex-task="observed-chief"]').count(),1);
-    assert.equal(await page.locator('#overview-project-cards [data-active-codex-task="foreign-active"]').count(),0);
-    await page.evaluate(() => {state.ctrlId="unresolved";renderOverview();});
-    assert.equal(await page.locator('#overview-project-cards [data-active-codex-task]').count(),0);
-    assert.match(await page.locator('#overview-project-cards').textContent(),/Current host activity is unavailable/);
-    await page.evaluate(() => {state.projectId="all";renderOverview();});
-    assert.equal(await page.locator('#overview-project-cards [data-active-codex-task]').count(),0,"unresolved CTRL is not All");
-    await page.evaluate(() => {state.ctrlId="";renderOverview();});
-    assert.equal(await page.locator('#overview-project-cards [data-active-codex-task="foreign-active"]').count(),1,"explicit All includes foreign project");
+    assert.equal(await page.locator('#agent-table-body [data-active-codex-task="observed-chief"]').count(),1);
+    assert.equal(await page.locator('#agent-table-body [data-active-codex-task="foreign-active"]').count(),0);
+    await page.evaluate(() => {state.ctrlId="unresolved";renderOverview();renderAgentTable();});
+    assert.equal(await page.locator('#agent-table-body [data-active-codex-task]').count(),0);
+    assert.match(await page.locator('#agent-table-body').textContent(),/Current host activity is unavailable/);
+    await page.evaluate(() => {state.projectId="all";renderOverview();renderAgentTable();});
+    assert.equal(await page.locator('#agent-table-body [data-active-codex-task]').count(),0,"unresolved CTRL is not All");
+    await page.evaluate(() => {state.ctrlId="";renderOverview();renderAgentTable();});
+    assert.equal(await page.locator('#agent-table-body [data-active-codex-task="foreign-active"]').count(),1,"explicit All includes foreign project");
     await page.evaluate(() => {state.projectId="project:fixture";});
-    await page.evaluate(() => {state.connectionStatus="reconnecting";renderOverview();});
+    await page.evaluate(() => {state.connectionStatus="reconnecting";renderOverview();renderAgentTable();});
+    assert.equal(await page.locator('#agent-table-body [data-active-codex-task]').count(),0);
     assert.equal(await page.locator('#overview-project-cards [data-active-codex-task]').count(),0);
     await page.evaluate(() => {state.connectionStatus="live";openMessageComposer();});
     const panel=page.locator("#message-composer");
@@ -3452,13 +3597,18 @@ proofFeed.items.push({
         if (hours === 24 && delayed) { delayed = false; await new Promise((resolve) => { releaseDay = resolve; }); }
         return response(body);
       } });
+      await usagePage.locator('[data-overview-metric="tbr"]').click();
+      await usagePage.getByRole('button',{name:'By task',exact:true}).click();
       const table = usagePage.locator("#highest-usage-tasks");
       await usagePage.waitForFunction(() => document.querySelector("#highest-usage-tasks").textContent.includes("Hourly leader"));
       assert.deepEqual(await table.locator("tbody th").allTextContents(), ["Hourly leader", "Small task"]);
-      assert.deepEqual(await table.locator("tbody td:last-child").allTextContents(), ["90 tokens", "5 tokens"]);
-      assert.equal(await table.locator("a,button").count(), 0);
+      assert.deepEqual(await table.locator("tbody td:nth-child(3)").allTextContents(), ["90 tokens", "5 tokens"]);
+      assert.equal(await table.locator("tbody button:disabled").count(), 2, 'Aggregate-only fixture exposes no enabled history action');
       const ranges = usagePage.getByRole("group", { name: "Task usage range", exact: true });
-      assert.equal(await ranges.getByRole("button", { name: "1h", exact: true }).getAttribute("aria-pressed"), "true");
+      assert.equal(await ranges.getByRole("button", { name: "1d", exact: true }).getAttribute("aria-pressed"), "true");
+      assert.equal(await ranges.getByRole("button", { name: "1m", exact: true }).isDisabled(), true);
+      await ranges.getByRole("button", { name: "1w", exact: true }).click();
+      await usagePage.waitForFunction(() => document.querySelector("#highest-usage-tasks").textContent.includes("Weekly leader"));
       delayed = true;
       await ranges.getByRole("button", { name: "1d", exact: true }).click();
       await usagePage.waitForFunction(() => document.querySelector("#highest-usage-tasks").getAttribute("aria-busy") === "true");
@@ -3486,6 +3636,71 @@ proofFeed.items.push({
       assert.deepEqual(usageRuntime.runtimeErrors, []);
       assert.deepEqual(usageRuntime.failedRequests, []);
       await usagePage.close();
+    }
+    {
+      const page = await browser.newPage({viewport:{width:1440,height:1000}});
+      const requested = [];
+      const runtime = await mount(page, scopedFixture(), {...overrides, usageResponse:async url => {
+        const hours=Number(url.searchParams.get('hours')), now=Date.now();
+        const explicit=url.searchParams.has('after_ms');
+        const after=explicit?Number(url.searchParams.get('after_ms')):now-hours*3600000;
+        const before=explicit?Number(url.searchParams.get('before_ms')):now;
+        requested.push({hours,after,before,explicit});
+        const quota={status:'KNOWN',limit_id:'main',window:'primary',remaining_percent:40,reset_at_ms:now+21600000,forecast:{status:'ESTIMATED',exhaustion_at_ms:now+14400000},history:[{sampled_at_ms:now-60000,remaining_percent:60},{sampled_at_ms:now,remaining_percent:40}]};
+        const task_usage=[{thread_id:'alpha',project_id:'project:fixture',title:'Project connections',tokens:100},{thread_id:'beta',project_id:'project:fixture',title:'Usage metrics',tokens:50}];
+        const items=task_usage.flatMap((row,index)=>[0,1].map(offset=>({thread_id:row.thread_id,project_id:row.project_id,bucket_start_ms:after+offset*300000,bucket_end_ms:after+(offset+1)*300000,rate_start_ms:after+offset*300000,rate_end_ms:after+(offset+1)*300000,tokens:row.tokens/2,tokens_per_minute:index?5:10,model:null,model_status:'UNKNOWN'})));
+        return response({ok:true,status:'partial',hours,scope:{type:'all-projects'},window:{after_ms:after,before_ms:before,explicit,retention_days:30},items:[],task_usage,task_usage_status:'partial',task_history:{items,status:'partial',total_tokens:150,truncated:false},rate_history:[0,1].map(offset=>({rate_start_ms:after+offset*300000,rate_end_ms:after+(offset+1)*300000,tokens_per_minute:15,status:'observed'})),usage_now:{status:'observed',source:'persisted_local_token_deltas',window_hours:hours,sampled_at_ms:before,rate_sampled_at_ms:after+600000,rate_observed_interval_ms:600000,rate_coverage:'partial',rate_tokens_per_minute:15},account_limits:{status:'KNOWN',scope:'account',source:'codex_app_server.account/rateLimits/read',sampled_at_ms:now,account_key:'fixture-account',windows:[quota]},account_history:{scope:'account',status:'partial',items:explicit?[]:[{sampled_at_ms:now-60000,account_key:'fixture-account',windows:[{...quota,remaining_percent:60}]},{sampled_at_ms:now,account_key:'fixture-account',windows:[quota]}]}});
+      }});
+      await page.locator('[data-overview-metric="usage"]').click();
+      const dialog=page.locator('#metric-detail-dialog');
+      await page.waitForFunction(()=>document.querySelector('.usage-detail-values')?.textContent.includes('40%'));
+      assert.equal(await dialog.getByRole('button',{name:'By task',exact:true}).count(),0);
+      assert.equal(await dialog.getByRole('button',{name:'1m',exact:true}).isEnabled(),true);
+      await assertMetricDetailContainment(page);
+      if(evidenceDir) await page.screenshot({path:path.join(evidenceDir,'usage-modal-desktop-1440x1000.png'),animations:'disabled'});
+      await page.keyboard.press('Escape');
+      await page.locator('[data-overview-metric="tbr"]').click();
+      await dialog.getByRole('button',{name:'By task',exact:true}).click();
+      assert.deepEqual(await dialog.locator('tbody th').allTextContents(),['Project connections›','Usage metrics›']);
+      assert.equal(await dialog.locator('[aria-label="Historical model unavailable"]').count(),2);
+      await dialog.getByRole('button',{name:'Project connections',exact:false}).click();
+      assert.equal(await dialog.getByRole('button',{name:'← All tasks',exact:true}).count(),1);
+      assert.equal(await dialog.locator('.task-usage-graph circle').count(),0);
+      await dialog.getByRole('button',{name:'← All tasks',exact:true}).click();
+      await dialog.getByRole('group',{name:'Task comparison view'}).getByRole('button',{name:'Graph',exact:true}).click();
+      assert.equal(new Set(await dialog.locator('.task-usage-graph path[stroke]').evaluateAll(paths=>paths.map(path=>path.getAttribute('stroke')))).size,2);
+      const seriesToggle=dialog.locator('[data-task-usage-visible]').first();
+      await seriesToggle.focus(); await page.keyboard.press('Space');
+      assert.equal(await seriesToggle.getAttribute('aria-pressed'),'false');
+      assert.equal(await dialog.locator('.task-usage-graph path[stroke]').count(),1);
+      await page.evaluate(()=>renderOverviewMetrics());
+      assert.equal(await seriesToggle.getAttribute('aria-pressed'),'false');
+      assert.equal(await seriesToggle.evaluate(el=>el===document.activeElement),true);
+      await seriesToggle.click(); assert.equal(await dialog.locator('.task-usage-graph path[stroke]').count(),2);
+      await dialog.getByRole('button',{name:'Legend',exact:true}).click();
+      assert.equal(await dialog.locator('.task-usage-legend').count(),0);
+      await page.evaluate(()=>renderOverviewMetrics());
+      assert.equal(await dialog.getByRole('button',{name:'Legend',exact:true}).getAttribute('aria-pressed'),'false');
+      const gear=dialog.getByLabel('Custom date range',{exact:true});
+      await gear.focus(); await page.keyboard.press('Enter');
+      const dates=await page.evaluate(()=>[2,1].map(days=>{const date=new Date(Date.now()-days*86400000);return new Date(date-date.getTimezoneOffset()*60000).toISOString().slice(0,16);}));
+      await dialog.locator('[name="after"]').fill(dates[0]); await dialog.locator('[name="before"]').fill(dates[1]);
+      await page.evaluate(()=>renderOverviewMetrics());
+      assert.equal(await dialog.locator('[name="after"]').inputValue(),dates[0]);
+      await dialog.getByRole('button',{name:'Apply dates',exact:true}).click();
+      await page.waitForFunction(()=>document.querySelector('#metric-date-status').textContent==='Date range applied.');
+      assert.equal(requested.at(-1).explicit,true);
+      await gear.focus(); await page.keyboard.press('Escape');
+      assert.equal(await dialog.isVisible(),true);
+      await dialog.getByRole('button',{name:'1m',exact:true}).click();
+      await page.waitForFunction(()=>state.usageStatus==='current'&&state.usageWindowHours===720);
+      assert.equal(requested.at(-1).hours,720); assert.equal(requested.at(-1).explicit,false);
+      if(evidenceDir) await page.screenshot({path:path.join(evidenceDir,'tbr-comparison-desktop-1440x1000.png'),animations:'disabled'});
+      await page.setViewportSize({width:390,height:844});
+      await assertMetricDetailContainment(page);
+      if(evidenceDir) await page.screenshot({path:path.join(evidenceDir,'tbr-modal-mobile-390x844.png'),animations:'disabled'});
+      assert.deepEqual(runtime.runtimeErrors,[]); assert.deepEqual(runtime.failedRequests,[]);
+      await page.close();
     }
     const onboarding = await mount(onboardingPage, scopedFixture(), { ...overrides, keepOnboarding: true });
     await assertDecodedVisibleOnboardingImage(onboardingPage, "#onboarding-panel-1 img", 1920, 1080);
@@ -4778,8 +4993,8 @@ proofFeed.items.push({
     assert.equal(await page.locator(".top-actions #system-health-control").count(), 0);
     assert.deepEqual(await page.locator(".top-actions > button").evaluateAll(items => items.map(item => item.id)), ["notifications", "profile"]);
     if (evidenceDir) await page.screenshot({ path: path.join(evidenceDir, "shell-profile-sidebar-desktop-1536x1024.png"), fullPage: false, animations: "disabled" });
-    assert.deepEqual(await page.locator(".overview-metric-card > header > span").allTextContents(), ["Active work", "Needs attention", "Verified progress", "Usage"]);
-    assert.deepEqual(await page.locator(".overview-metric-card > strong").allTextContents(), ["3 / 5", "2", "75%", "—"]);
+    assert.deepEqual(await page.locator(".overview-metric-card > header > span").allTextContents(), ["Active work", "Needs attention", "TBR", "Usage remaining"]);
+    assert.deepEqual(await page.locator(".overview-metric-card > strong").allTextContents(), ["3 / 5", "2", "—", "—"]);
     await page.waitForFunction(() => state.usageWindowHours === 1 && state.usageStatus === "current");
     await page.locator('[data-overview-metric="usage"]').focus();
     await page.keyboard.press('Enter');

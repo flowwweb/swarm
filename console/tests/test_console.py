@@ -2663,6 +2663,82 @@ class SwarmConsoleTests(unittest.TestCase):
         restarted = console.App(self.codex_home, self.config).overview()["topology"]
         self.assertEqual(restarted, topology)
 
+    def test_topology_current_milestone_joins_live_scope_and_manifest_on_restart(self) -> None:
+        self._confirm_root_ctrl()
+        app = console.App(self.codex_home, self.config)
+        self._append_topology_manifests(app, task_count=1)
+        with mock.patch.object(console.time, "time", return_value=1):
+            overview = app.overview()
+            current = overview["progress"]["projects"]["project:alpha"]["current_milestone"]
+            self.assertEqual((current["state"], current["name"], current["milestone_id"], current["task_id"]),
+                             ("KNOWN", "Active work", "work-milestone-1", "work-1"))
+            self.assertEqual((current["project_id"], current["ctrl_id"], current["scope_version"]),
+                             ("project:alpha", "root", 1))
+            self.assertEqual(current["event_cursor"]["event_id"], "work-event-1")
+            self.assertTrue(current["manifest_identity"]["manifest_digest"])
+            for scope in ("project:alpha", "ctrl:root"):
+                scoped = app._project_view(overview, scope)
+                result = scoped["progress"]["projects"]["project:alpha"]["current_milestone"]
+                self.assertEqual(result["name"], current["name"])
+                self.assertEqual(result["cursor"], scoped["topology"]["cursor"])
+            restarted = console.App(self.codex_home, self.config)
+            self.assertEqual(restarted.overview()["progress"]["projects"]["project:alpha"]["current_milestone"], current)
+            foreign = copy.deepcopy(overview["topology"]["tasks"][0])
+            foreign["ctrl_id"] = "other-ctrl"
+            mixed = copy.deepcopy(overview)
+            mixed["topology"]["hidden_tasks"].append(foreign)
+            progress = app._progress_payload(mixed)
+            self.assertEqual(progress["projects"]["project:alpha"]["current_milestone"]["state"], "UNKNOWN")
+            self.assertEqual(progress["controllers"]["root"]["current_milestone"]["name"], "Active work")
+            for changed in ("PARTIAL", "UNKNOWN"):
+                mixed["topology"] = copy.deepcopy(overview["topology"])
+                mixed["topology"]["state"] = changed
+                self.assertEqual(app._progress_payload(mixed)["projects"]["project:alpha"]["current_milestone"]["state"], "UNKNOWN")
+        with mock.patch.object(console.time, "time", return_value=0.01):
+            self.assertEqual(app._progress_payload(overview)["projects"]["project:alpha"]["current_milestone"]["state"], "UNKNOWN")
+
+        # Retained activity is not a fresh current milestone indefinitely.
+        stale = app._project_view(overview, None)["progress"]["projects"]["project:alpha"]["current_milestone"]
+        self.assertEqual((stale["state"], stale["name"], stale["reason"]),
+                         ("UNKNOWN", None, "STALE_MILESTONE"))
+        self.assertEqual(overview["progress"]["projects"]["project:alpha"]["current_milestone"]["state"], "KNOWN")
+        with mock.patch.object(console.time, "time", return_value=1):
+            for kind, state, stamp, admitted in (("STATE_CHANGED", "REVIEW", 110, 0),
+                                                 ("PROOF_ADMITTED", "VERIFIED", 111, 1),
+                                                 ("ACCEPTED", "ACCEPTED", 112, 1)):
+                event = self._notification_event(
+                    f"milestone-{stamp}", "work-block-1", kind, state, stamp,
+                    milestone_id="work-milestone-1", admitted_proof_weight=admitted,
+                    proof_receipt_ids=["proof"] if admitted else [],
+                )
+                event.update(task_id="work-1", owner_id="root")
+                app.progress_ledger.append(event)
+            view = app._decorate_overview(app._host_overview())
+            self.assertEqual(view["progress"]["projects"]["project:alpha"]["current_milestone"]["state"], "UNKNOWN")
+            # Even a valid retained block ID cannot borrow a different milestone's label.
+            event = self._notification_event("wrong-milestone", "work-block-1", "REWORK_REQUESTED",
+                                             "INVALIDATED_REWORK", 113, milestone_id="other-milestone")
+            event.update(task_id="work-1", owner_id="root")
+            app.progress_ledger.append(event)
+            self.assertEqual(app._topology_projection(app._host_overview())["tasks"], [])
+
+    def test_topology_current_milestone_ambiguity_includes_hidden_tasks(self) -> None:
+        self._confirm_root_ctrl()
+        app = console.App(self.codex_home, self.config)
+        self._append_topology_manifests(app)
+        with mock.patch.object(console.time, "time", return_value=1):
+            overview = app.overview()
+            current = overview["progress"]["projects"]["project:alpha"]["current_milestone"]
+            self.assertEqual((current["state"], current["name"], current["reason"]),
+                             ("UNKNOWN", None, "AMBIGUOUS_CURRENT_MILESTONE"))
+            self.assertEqual(len(overview["topology"]["hidden_tasks"]), 1)
+            # A hidden candidate cannot be lost when visible tasks are completed.
+            for task in overview["topology"]["tasks"]:
+                for block in task["blocks"]:
+                    block["lifecycle_state"] = "ACCEPTED"
+            current = app._progress_payload(overview)["projects"]["project:alpha"]["current_milestone"]
+            self.assertEqual(current["task_id"], overview["topology"]["hidden_tasks"][0]["task_id"])
+
     def test_topology_task_progress_includes_completed_scope_and_live_blocks(self) -> None:
         self._confirm_root_ctrl()
         app = console.App(self.codex_home, self.config)

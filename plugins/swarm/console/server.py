@@ -10786,6 +10786,43 @@ class App:
                     else None
                 ),
             )
+        topology = view.get("topology") or {}
+        for summary in [*project_summaries.values(), *controller_summaries.values()]:
+            scope = summary["scope"]
+            candidates = {}
+            for task in [*topology.get("tasks", []), *topology.get("hidden_tasks", [])]:
+                if task["project_id"] != scope["project_id"] or (
+                    scope.get("ctrl_id") and task["ctrl_id"] != scope["ctrl_id"]
+                ):
+                    continue
+                for block in task["blocks"]:
+                    if block["lifecycle_state"] in TOPOLOGY_TERMINAL_STATES:
+                        continue
+                    key = (task["ctrl_id"], task["scope_version"], task["task_id"], block["milestone_id"])
+                    candidates.setdefault(key, []).append((task, block))
+            milestone = {"state": "UNKNOWN", "reason": "NO_CURRENT_MILESTONE", "name": None,
+                         "source": "ledger_active_task_manifest", "cursor": topology.get("cursor")}
+            if len(candidates) > 1:
+                milestone["reason"] = "AMBIGUOUS_CURRENT_MILESTONE"
+            elif candidates:
+                entries = next(iter(candidates.values()))
+                task, block = max(entries, key=lambda entry: entry[1]["event_cursor"]["event_seq"])
+                names = {entry[1].get("milestone_title") for entry in entries}
+                if topology.get("state") != "KNOWN":
+                    milestone["reason"] = "INCOMPLETE_TOPOLOGY"
+                elif len(names) != 1 or not block.get("milestone_title"):
+                    milestone["reason"] = "INVALID_MILESTONE_BINDING"
+                elif any(not 0 <= now_ms - entry[1]["observed_at_ms"] <= stale_after_ms for entry in entries):
+                    milestone["reason"] = "STALE_MILESTONE"
+                else:
+                    milestone.update({"state": "KNOWN", "reason": None, "name": block["milestone_title"],
+                                      "milestone_id": block["milestone_id"], "task_id": task["task_id"],
+                                      "project_id": task["project_id"], "ctrl_id": task["ctrl_id"],
+                                      "scope_version": task["scope_version"],
+                                      "manifest_identity": copy.deepcopy(task["manifest_identity"]),
+                                      "event_cursor": copy.deepcopy(block["event_cursor"]),
+                                      "observed_at_ms": block["observed_at_ms"]})
+            summary["current_milestone"] = milestone
         return {
             "all_projects": cls._progress_for_nodes(
                 nodes,
@@ -10801,7 +10838,7 @@ class App:
 
     def _project_view(self, overview: dict[str, Any], project_id: str | None) -> dict[str, Any]:
         if not project_id or project_id.casefold() in {"all", "all-projects"}:
-            return overview
+            return {**overview, "progress": self._progress_payload(overview)}
         navigation = App._navigation_payload(overview)
         view = copy.deepcopy(overview)
         ctrl_scope = project_id.casefold().startswith("ctrl:")
@@ -12287,7 +12324,7 @@ class App:
                     rejected_bindings += 1
                     continue
                 scope_version = int(scope_versions.get(manifest["project_id"], 0) or 0)
-                defined_blocks = {str(block["block_id"]) for block in manifest.get("blocks", [])}
+                definitions = {block["block_id"]: block for block in manifest["blocks"]}
                 scope_blocks = [
                     block for block in blocks.values()
                     if isinstance(block, dict)
@@ -12308,7 +12345,8 @@ class App:
                     and owner is not None
                     and owner["hierarchy_membership"] != "INVALID"
                     and (owner["project_id"], owner["ctrl_id"]) == (manifest["project_id"], manifest["ctrl_id"])
-                    and all(str(block.get("block_id") or "") in defined_blocks for block in scope_blocks)
+                    and all(definitions.get(block["block_id"], {}).get("milestone_id") == block["milestone_id"]
+                            for block in scope_blocks)
                 )
                 if not exact:
                     rejected_bindings += 1
@@ -12342,7 +12380,7 @@ class App:
                     },
                     "execution_authority": False,
                 }
-                definitions = {block["block_id"]: block for block in manifest["blocks"]}
+                milestone_titles = {item["milestone_id"]: item["title"] for item in manifest["milestones"]}
                 task["scope_version"] = scope_version
                 task["blocks"] = []
                 for block in sorted(scope_blocks, key=lambda item: (definitions[item["block_id"]]["order"], item["block_id"])):
@@ -12352,6 +12390,7 @@ class App:
                         "admitted_proof_weight", "eta", "observed_at_ms",
                     )}
                     detail["title"] = definitions[block["block_id"]]["title"]
+                    detail["milestone_title"] = milestone_titles[block["milestone_id"]]
                     detail["event_cursor"] = {
                         "event_seq": block["latest_event_seq"], "event_id": block["latest_event_id"],
                         "event_digest": block["latest_event_digest"],
@@ -12681,10 +12720,10 @@ class App:
             "token_field": "Codex JSONL token_count total/input+output, SQLite threads.tokens_used fallback",
             "label": "Local token-count aggregate; not billing.",
         }
+        view["topology"] = self._topology_projection(view)
         progress = self._progress_payload(view)
         view["navigation"] = self._navigation_payload(view)
         view["overview_metrics"] = self._overview_metrics(view, scope_id="all", scope_type="all")
-        view["topology"] = self._topology_projection(view)
         admitted = {node["id"]: node for node in view["topology"].get("nodes", [])}
         for node in view.get("nodes", []):
             identity = admitted.get(node["id"])

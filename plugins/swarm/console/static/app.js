@@ -1604,31 +1604,9 @@ function forecastSummary(node) {
   return '<div class="forecast-summary"><strong>' + escapeHTML(remaining) + (revised ? ' <span>Changed</span>' : '') + '</strong><small>' + escapeHTML(String(current.confidence ?? eta.confidence ?? '—') + '% confidence' + (current.eta_start_ms ? ' · range ' + formatEta(current.eta_start_ms) + '–' + formatEta(end) : '')) + (revised ? ' · ' + (drift > 0 ? '+' : '−') + formatDuration(Math.abs(drift)) + ' from original' : '') + '</small>' + details + '</div>';
 }
 
-function renderEvidenceGallery(nodes, gallerySelector, noteSelector, limit = 6) {
-  const images = evidenceImagesFor(nodes);
-  state.evidenceImages = images;
-  if ($("#evidence-lightbox").open) renderEvidenceLightbox();
-  const proofStatus = currentProofStatus();
-  const retained = proofStatus === "stale" ? " · last received" : "";
-  $(noteSelector).textContent = images.length ? String(images.length) + " recent image" + (images.length === 1 ? "" : "s") + retained : (proofStatus === "unavailable" ? "Evidence unavailable" : "No images received");
-  const previews = images.slice(0, limit);
-  const remaining = Math.max(0, images.length - previews.length);
-  const previewTiles = previews.map((item, index) =>
-    '<button class="evidence-gallery-item" type="button" data-evidence-open="' + String(index) +
-    '" data-evidence-id="' + escapeHTML(item.evidence_id) + '" data-evidence-digest="' + escapeHTML(item.digest) +
-    '" aria-label="Open evidence image: ' + escapeHTML(item.caption || "Image evidence") +
-    '"><img loading="lazy" decoding="async" src="' + proofMediaURL(item) + '" alt=""></button>'
-  ).join("");
-  const moreTile = remaining
-    ? '<button class="evidence-gallery-more" type="button" data-evidence-open="' + String(previews.length) +
-      '" data-evidence-more="' + String(remaining) + '" aria-label="Open ' + String(remaining) + ' more images; ' + String(images.length) +
-      ' images in this gallery">+' + String(remaining) + " more</button>"
-    : "";
-  $(gallerySelector).innerHTML = images.length ? previewTiles + moreTile : '<p class="empty-state">Images appear here when they are received.</p>';
-}
 
-function usageRequestKey(projectId = state.projectId, ctrlId = state.ctrlId, hours = state.usageWindowHours) {
-  return projectId + "|" + ctrlId + "|" + String(hours);
+function usageRequestKey(projectId = state.projectId, ctrlId = state.ctrlId, hours = state.usageWindowHours, range = state.usageDateRange) {
+  return projectId + "|" + ctrlId + "|" + String(hours) + (range ? '|' + range.after_ms + '|' + range.before_ms : '');
 }
 
 function usageHistorySeries() {
@@ -1642,7 +1620,8 @@ function usageHistorySeries() {
 }
 
 function usageRangeLabel(hours = state.usageWindowHours) {
-  return hours === 1 ? "last hour" : hours === 24 ? "last 24 hours" : "last 7 days";
+  if (state.usageDateRange) return 'selected dates';
+  return hours === 1 ? "last hour" : hours === 24 ? "last 24 hours" : hours === 720 ? "last 30 days" : "last 7 days";
 }
 
 function usageChartMarkup(surface, svgId) {
@@ -1652,8 +1631,9 @@ function usageChartMarkup(surface, svgId) {
 function renderUsageCharts() {
   renderHighestUsageTasks();
   renderAccountUsage();
+  renderOverviewMetric("progress", tokenBurnRatePresentation());
   const detail = $("#metric-detail-dialog");
-  if (detail?.open && detail.dataset.metric === "usage") renderMetricDetail(false);
+  if (detail?.open && ["usage", "tbr"].includes(detail.dataset.metric)) renderMetricDetail(false);
   const values = usageHistorySeries();
   const current = state.usageStatus === "current";
   const label = values.length && current
@@ -1678,29 +1658,27 @@ function accountUsageWindows(now = Date.now()) {
     && (row.reset_at_ms === null || Number.isFinite(row.reset_at_ms) && row.reset_at_ms > now));
 }
 
-function accountUsageGraph(row) {
+function accountUsageGraph(row, includeForecast = true, window = null) {
   const points = Array.isArray(row?.history) ? row.history : [];
   if (points.length < 2 || points.some((point, index) => !Number.isFinite(point.sampled_at_ms)
     || !Number.isFinite(point.remaining_percent) || point.remaining_percent < 0 || point.remaining_percent > 100
     || index > 0 && (point.sampled_at_ms <= points[index - 1].sampled_at_ms || point.sampled_at_ms - points[index - 1].sampled_at_ms > 120000))) return '';
   const last = points.at(-1), forecast = row.forecast || {};
-  const end = forecast.status === 'ESTIMATED' && Number.isFinite(forecast.exhaustion_at_ms) && Number.isFinite(row.reset_at_ms)
+  const end = includeForecast && forecast.status === 'ESTIMATED' && Number.isFinite(forecast.exhaustion_at_ms) && Number.isFinite(row.reset_at_ms)
     && forecast.exhaustion_at_ms > last.sampled_at_ms && forecast.exhaustion_at_ms <= row.reset_at_ms ? forecast.exhaustion_at_ms : last.sampled_at_ms;
-  const start = points[0].sampled_at_ms, span = end - start;
+  const start = window?.after_ms ?? points[0].sampled_at_ms, span = Math.max(end, window?.before_ms ?? end) - start;
   const position = point => ((point.sampled_at_ms - start) / span * 160).toFixed(2) + ',' + (28 - point.remaining_percent / 100 * 28).toFixed(2);
   return '<polyline fill="none" stroke="var(--orange)" stroke-width="1.5" points="' + points.map(position).join(' ') + '"/>'
-    + (end > last.sampled_at_ms ? '<path stroke="var(--orange)" stroke-dasharray="3 3" fill="none" d="M' + position(last) + ' L160,28"><title>Projected exhaustion if the recent rate continues</title></path>' : '');
+    + (end > last.sampled_at_ms ? '<path stroke="var(--orange)" stroke-dasharray="3 3" fill="none" d="M' + position(last) + ' L' + position({sampled_at_ms:end,remaining_percent:0}) + '"><title>Projected exhaustion if the recent rate continues</title></path>' : '');
 }
 
 function renderAccountUsage() {
   const rows = accountUsageWindows();
   const row = rows[0];
-  const eta = row?.forecast?.status === 'ESTIMATED' && Number.isFinite(row.forecast.exhaustion_at_ms) && row.forecast.exhaustion_at_ms > Date.now() && row.forecast.exhaustion_at_ms <= row.reset_at_ms
-    ? '~' + formatDuration(row.forecast.exhaustion_at_ms - Date.now()) + ' left · ' : '';
-  renderOverviewMetric("usage", row ? {state:state.usageHistory.account_limits.status, value:row.remaining_percent + "%", note:eta + row.limit_id + ' · ' + row.window + ' remaining'}
+  renderOverviewMetric("usage", row ? {state:state.usageHistory.account_limits.status, value:row.remaining_percent + "%", note:row.limit_id + ' · ' + row.window + ' remaining'}
     : {state:"UNKNOWN", value:"—", note:"Remaining allowance unavailable"});
   const chart = $("#metric-usage-trend");
-  chart.innerHTML = accountUsageGraph(row);
+  chart.innerHTML = accountUsageGraph(row, false);
   chart.setAttribute('aria-label', row ? 'Remaining allowance percent over observed time' : 'Remaining allowance unavailable');
 }
 
@@ -1710,10 +1688,27 @@ function accountUsageDetails() {
   return rows.map(row => {
     const forecast = row.forecast || {};
     const time = value => Number.isFinite(value) ? new Date(value).toLocaleString() : '—';
+    const estimated = forecast.status === 'ESTIMATED' && Number.isFinite(forecast.exhaustion_at_ms)
+      && forecast.exhaustion_at_ms > Date.now() && Number.isFinite(row.reset_at_ms) && forecast.exhaustion_at_ms <= row.reset_at_ms;
+    const values = [[row.remaining_percent + '%', 'Remaining'],
+      [estimated ? new Date(forecast.exhaustion_at_ms).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'}) : '—', 'Runs out'],
+      [estimated ? '~' + formatDuration(forecast.exhaustion_at_ms - Date.now()) : '—', 'At current rate']];
     const estimate = forecast.status === 'EXHAUSTED' ? 'Exhausted' : forecast.status === 'NO_MEASURABLE_BURN' ? 'No measurable burn in this interval'
       : forecast.status === 'RESET_BEFORE_EXHAUSTION' ? 'Reset occurs before projected exhaustion'
       : forecast.status === 'ESTIMATED' && Number.isFinite(forecast.exhaustion_at_ms) ? time(forecast.exhaustion_at_ms) + ' if the recent rate continues' : '—';
-    return '<section><h3>' + escapeHTML(row.limit_id + ' · ' + row.window) + '</h3><strong>' + row.remaining_percent + '% remaining</strong><svg viewBox="0 0 160 28" role="img" aria-label="Remaining allowance percent; observed recent hour">' + accountUsageGraph(row) + '</svg><p>Observed interval ' + (Number.isFinite(row.observed_interval_ms) ? Math.round(row.observed_interval_ms / 60000) + ' min' : '—') + ' · Updated ' + escapeHTML(time(state.usageHistory.account_limits.sampled_at_ms)) + '</p><p>Burn rate ' + (Number.isFinite(forecast.rate_percentage_points_per_hour) ? forecast.rate_percentage_points_per_hour + ' percentage points/hour' : '—') + '</p><p>Estimated exhaustion ' + escapeHTML(estimate) + '</p><p>Quota reset ' + escapeHTML(time(row.reset_at_ms)) + '</p></section>';
+    const selection = state.usageHistory.window;
+    const samples = state.usageHistory.account_history;
+    const points = samples?.scope === 'account' && Array.isArray(samples.items) ? samples.items.filter(sample =>
+      sample.account_key && sample.account_key === state.usageHistory.account_limits.account_key
+      && sample.sampled_at_ms >= selection?.after_ms && sample.sampled_at_ms <= selection?.before_ms).flatMap(sample =>
+      (sample.windows || []).filter(item => item.status === 'KNOWN' && item.limit_id === row.limit_id && item.window === row.window && item.reset_at_ms === row.reset_at_ms)
+        .map(item => ({sampled_at_ms:sample.sampled_at_ms,remaining_percent:item.remaining_percent}))) : [];
+    const chartRow = selection ? {...row,history:points,forecast:points.at(-1)?.sampled_at_ms === state.usageHistory.account_limits.sampled_at_ms ? forecast : {}} : row;
+    const chart = accountUsageGraph(chartRow, true, selection);
+    const graphEnd = chartRow.forecast?.status === 'ESTIMATED' && Number.isFinite(chartRow.forecast.exhaustion_at_ms) && chartRow.forecast.exhaustion_at_ms <= row.reset_at_ms ? Math.max(selection?.before_ms || 0, chartRow.forecast.exhaustion_at_ms) : selection?.before_ms;
+    const axis = selection ? '<div class="metric-time-axis"><span>' + escapeHTML(time(selection.after_ms)) + '</span><span>' + escapeHTML(time(graphEnd)) + '</span></div>' : '';
+    const note = estimated ? 'Estimate assumes the recent rate continues.' : estimate === '—' ? '' : estimate;
+    return '<section><h3>' + escapeHTML(row.limit_id + ' · ' + row.window) + '</h3><div class="usage-detail-values">' + values.map(([value,label]) => '<div><strong>' + escapeHTML(value) + '</strong><span>' + label + '</span></div>').join('') + '</div><svg viewBox="0 0 160 28" role="img" aria-label="Remaining allowance percent over observed time">' + chart + '</svg>' + axis + (!chart ? '<p>Allowance history unavailable for this period.</p>' : '') + (note ? '<p>' + escapeHTML(note) + '</p>' : '') + '<p><time>' + escapeHTML(time(row.reset_at_ms)) + '</time> · Reset</p></section>';
   }).join('') + (state.usageHistory.account_limits.status === 'PARTIAL' ? '<p>Some account windows are unavailable.</p>' : '');
 }
 
@@ -1728,6 +1723,63 @@ function highestUsageTaskRows() {
     .slice().sort((left, right) => right.tokens - left.tokens || left.thread_id.localeCompare(right.thread_id)).slice(0, 10);
 }
 
+function taskUsageHistory() {
+  const result = state.usageHistory, window = result?.window, history = result?.task_history;
+  if (state.usageStatus !== 'current' || state.usageScopeKey !== usageRequestKey() || result?.ok !== true
+    || result.hours !== state.usageWindowHours
+    || !window || !Number.isFinite(window.after_ms) || !Number.isFinite(window.before_ms) || window.before_ms <= window.after_ms
+    || window.before_ms > Date.now() || window.before_ms - window.after_ms > 720 * 3600000
+    || !history || !Array.isArray(history.items) || !['partial','no_data'].includes(history.status)) return null;
+  if (state.usageDateRange && (window.explicit !== true || window.after_ms !== state.usageDateRange.after_ms || window.before_ms !== state.usageDateRange.before_ms)) return null;
+  const scope = result.scope;
+  if (state.ctrlId ? scope?.type !== 'ctrl' || scope.ctrl_id !== state.ctrlId || scope.project_id !== state.projectId
+    : state.projectId !== 'all' ? scope?.type !== 'project' || scope.project_id !== state.projectId : scope?.type !== 'all-projects') return null;
+  const tasks = new Map((highestUsageTaskRows() || []).map(row => [row.thread_id, row]));
+  const items = history.items.filter(point => tasks.get(point.thread_id)?.project_id === point.project_id
+    && Number.isFinite(point.bucket_start_ms) && Number.isFinite(point.bucket_end_ms)
+    && point.bucket_start_ms >= window.after_ms && point.bucket_end_ms <= window.before_ms && point.bucket_end_ms > point.bucket_start_ms
+    && Number.isFinite(point.tokens) && point.tokens >= 0);
+  return {...history, items, window, rateHistory:Array.isArray(result.rate_history) ? result.rate_history : []};
+}
+
+function taskUsageColor(id) {
+  let hash = 0;
+  for (const character of id) hash = (Math.imul(hash, 31) + character.codePointAt(0)) >>> 0;
+  return 'hsl(' + ((hash * 137.508) % 360).toFixed(2) + ' 70% 65%)';
+}
+
+function taskUsageGraph(rows, history) {
+  if (!history) return '<p class="empty-state" role="status">Task history unavailable.</p>';
+  if (!rows.length) return '<p class="empty-state" role="status">All task series hidden. Select a task in the legend to show it.</p>';
+  return usageRateGraph(rows.map(row => ({row, points:history.items.filter(point => point.thread_id === row.thread_id)})), history.window);
+}
+
+function usageRateGraph(series, window) {
+  if (!window) return '<p class="empty-state" role="status">Rate history unavailable.</p>';
+  const groups = series.map(group => ({...group, points:group.points.filter(point => Number.isFinite(point.tokens_per_minute)
+    && (point.status === undefined || point.status === 'observed')
+    && point.tokens_per_minute >= 0 && Number.isFinite(point.rate_start_ms) && Number.isFinite(point.rate_end_ms)
+    && point.rate_start_ms >= window.after_ms && point.rate_end_ms <= window.before_ms && point.rate_end_ms > point.rate_start_ms)
+    .sort((a,b) => a.rate_start_ms - b.rate_start_ms)}));
+  const high = Math.max(1, ...groups.flatMap(group => group.points.map(point => point.tokens_per_minute)));
+  const span = window.before_ms - window.after_ms;
+  const paths = groups.map(({row,points}) => {
+    let previous = null;
+    const d = points.map(point => {
+      const x = 32 + (point.rate_end_ms - window.after_ms) / span * 576;
+      const y = 170 - point.tokens_per_minute / high * 145;
+      const command = !previous || point.rate_start_ms > previous.rate_end_ms ? 'M' : 'L';
+      const start = 32 + (point.rate_start_ms - window.after_ms) / span * 576;
+      previous = point;
+      return (command === 'M' ? 'M' + start.toFixed(2) + ',' + y.toFixed(2) + ' L' : 'L') + x.toFixed(2) + ',' + y.toFixed(2);
+    }).join(' ');
+    return d ? '<path d="' + d + '" fill="none" stroke="' + taskUsageColor(row.thread_id) + '" stroke-width="2"><title>' + escapeHTML(row.title || 'Unnamed task') + '</title></path>' : '';
+  }).join('');
+  if (!paths) return '<p class="empty-state" role="status">No measured rate intervals in this period.</p>';
+  const date = ms => new Date(ms).toLocaleString([], {month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'});
+  return '<svg class="task-usage-graph" viewBox="0 0 640 210" role="img" aria-label="Token rates over the selected period; gaps omitted"><path class="chart-grid" d="M32 25H608M32 98H608M32 170H608"/><text x="32" y="16">' + Math.ceil(high) + ' tokens/min</text>' + paths + '<text x="32" y="198">' + escapeHTML(date(window.after_ms)) + '</text><text x="608" y="198" text-anchor="end">' + escapeHTML(date(window.before_ms)) + '</text></svg>';
+}
+
 function renderHighestUsageTasks() {
   const host = $("#highest-usage-tasks");
   if (!host) return;
@@ -1739,10 +1791,20 @@ function renderHighestUsageTasks() {
     : state.usageStatus === "stale" ? "Task usage is stale. Refresh to see current measurements."
     : rows === null ? "Task usage is unavailable." : "No measured task usage in this period.";
   const coverage = state.usageHistory?.task_usage_status === "partial" ? '<p class="usage-task-note">Some tasks have no measurements in this period.</p>' : "";
-  host.innerHTML = rows?.length ? coverage + '<table class="usage-task-table"><caption class="sr-only">Top 10 highest usage tasks, ' + escapeHTML(usageRangeLabel()) + '</caption><thead><tr><th scope="col">Task</th><th scope="col">Project</th><th scope="col">Usage</th></tr></thead><tbody>' + rows.map((row) => {
-    const project = savedProjectRoster().projects.find((item) => item.id === row.project_id);
-    return '<tr><th scope="row">' + escapeHTML(row.title || "Unnamed task") + '</th><td>' + escapeHTML(project?.label || row.project_id || "Unknown project") + '</td><td>' + escapeHTML(row.tokens.toLocaleString()) + ' tokens</td></tr>';
-  }).join("") + '</tbody></table>' : '<p class="empty-state" role="status">' + message + '</p>';
+  if (!rows?.length) { host.innerHTML = '<p class="empty-state" role="status">' + message + '</p>'; return; }
+  const dialog = $('#metric-detail-dialog'), history = taskUsageHistory();
+  const selected = rows.find(row => row.thread_id === dialog.dataset.taskId);
+  const hiddenTasks = new Set(JSON.parse(dialog.dataset.hiddenTaskIds || '[]'));
+  const graph = selected || dialog.dataset.taskView === 'graph';
+  const controls = selected ? '<button class="quiet-button" type="button" data-task-usage-back>← All tasks</button><h3>' + escapeHTML(selected.title || 'Unnamed task') + '</h3>'
+    : '<div class="usage-range" role="group" aria-label="Task comparison view">' + ['table','graph'].map(view => '<button type="button" data-task-usage-view="' + view + '" aria-pressed="' + ((dialog.dataset.taskView || 'table') === view) + '">' + (view === 'table' ? 'Table' : 'Graph') + '</button>').join('') + '</div>';
+  const legend = graph ? '<button class="quiet-button" type="button" data-task-usage-legend aria-pressed="' + (dialog.dataset.hideLegend !== 'true') + '">Legend</button>' + (dialog.dataset.hideLegend === 'true' ? '' : '<div class="task-usage-legend">' + (selected ? [selected] : rows).map(row => '<button type="button" data-task-usage-visible="' + escapeHTML(row.thread_id) + '" aria-pressed="' + !hiddenTasks.has(row.thread_id) + '" title="Toggle task series"><i style="background:' + taskUsageColor(row.thread_id) + '" aria-hidden="true"></i>' + escapeHTML(row.title || 'Unnamed task') + '</button>').join('') + '</div>') : '';
+  const table = '<table class="usage-task-table"><caption class="sr-only">Top 10 tasks · selected-period tokens</caption><thead><tr><th scope="col">Task</th><th scope="col">Model</th><th scope="col">Tokens</th><th scope="col">Share</th></tr></thead><tbody>' + rows.map(row => {
+    const hasHistory = history?.items.some(point => point.thread_id === row.thread_id);
+    const share = history && Number.isFinite(history.total_tokens) && history.total_tokens > 0 && row.tokens <= history.total_tokens ? (100 * row.tokens / history.total_tokens).toFixed(1) + '%' : '—';
+    return '<tr><th scope="row"><button type="button" data-task-usage-id="' + escapeHTML(row.thread_id) + '"' + (hasHistory ? '' : ' disabled title="Task history unavailable"') + '><span>' + escapeHTML(row.title || 'Unnamed task') + '</span><span aria-hidden="true">›</span></button></th><td aria-label="Historical model unavailable">—</td><td>' + row.tokens.toLocaleString() + ' tokens</td><td><span class="task-usage-share">' + (share === '—' ? '' : '<progress max="100" value="' + parseFloat(share) + '" aria-label="Share of measured token total"></progress>') + '<span>' + share + '</span></span></td></tr>';
+  }).join('') + '</tbody></table>';
+  host.innerHTML = controls + coverage + (graph ? taskUsageGraph((selected ? [selected] : rows).filter(row => !hiddenTasks.has(row.thread_id)), history) + legend : table);
 }
 
 function diagnosticChecks() {
@@ -2279,45 +2341,99 @@ function renderOverviewMetric(name, presentation) {
   $("#metric-" + name + "-note").textContent = presentation.note;
 }
 
+function tokenBurnRatePresentation(now = Date.now(), historical = false) {
+  const history = state.usageHistory, reading = history?.usage_now;
+  const valid = state.usageStatus === "current" && state.usageScopeKey === usageRequestKey()
+    && history?.ok === true && ["ok", "partial"].includes(history.status)
+    && reading?.status === "observed" && reading.source === "persisted_local_token_deltas"
+    && reading.rate_coverage === 'partial' && Number.isFinite(reading.rate_observed_interval_ms) && reading.rate_observed_interval_ms > 0
+    && reading.window_hours === state.usageWindowHours && Number.isFinite(reading.rate_sampled_at_ms)
+    && now >= reading.rate_sampled_at_ms && (historical || now - reading.rate_sampled_at_ms <= 300000)
+    && Number.isFinite(reading.rate_tokens_per_minute) && reading.rate_tokens_per_minute >= 0;
+  return {state:valid ? history.status === "partial" ? "PARTIAL" : "KNOWN" : "UNKNOWN",
+    value:valid ? compactMetricNumber(reading.rate_tokens_per_minute) : "—",
+    note:valid ? "tokens/min · " + usageRangeLabel() : "Token burn rate unavailable", series:[]};
+}
+
 function renderOverviewMetrics() {
   const record = overviewMetricsProjectionValue(state.overview?.overview_metrics, overviewMetricsScopeId());
   const presentation = overviewMetricPresentation(record);
   $("#overview-metrics-binding").textContent = presentation.binding;
   renderOverviewMetric("active", presentation.active);
   renderOverviewMetric("attention", presentation.attention);
-  renderOverviewMetric("progress", presentation.progress);
-  drawLine($("#metric-progress-trend"), presentation.progress.series || [], "#4cda85");
-  $("#metric-progress-trend").setAttribute("aria-label", presentation.progress.series?.length ? "Accepted verified progress trend" : "Verified progress trend unavailable");
+  drawLine($("#metric-progress-trend"), [], "#4cda85");
+  $("#metric-progress-trend").setAttribute("aria-label", "Token burn rate history unavailable");
   renderUsageCharts();
-  if ($("#metric-detail-dialog")?.open && $("#metric-detail-dialog").dataset.metric !== "usage") renderMetricDetail();
+  if ($("#metric-detail-dialog")?.open && !["usage", "tbr"].includes($("#metric-detail-dialog").dataset.metric)) renderMetricDetail();
 }
 
 function renderMetricDetail(refreshCharts = true) {
   const dialog = $("#metric-detail-dialog");
   const focusedRange = dialog.contains(document.activeElement) ? document.activeElement.dataset.usageRange : null;
+  const focusedTask = dialog.contains(document.activeElement) ? Object.entries(document.activeElement.dataset || {}).find(([name]) => name.startsWith('taskUsage')) : null;
   const body = dialog.querySelector('.dialog-body');
   const scrollTop = body?.scrollTop || 0;
   const key = dialog.dataset.metric;
-  const names = { "active-work": ["active", "Active work"], "needs-attention": ["attention", "Needs attention"], "verified-progress": ["progress", "Verified progress"], usage: ["usage", "Usage"] };
+  const names = { "active-work": ["active", "Active work"], "needs-attention": ["attention", "Needs attention"], "tbr": ["progress", "TBR"], usage: ["usage", "Usage"] };
   const selected = names[key];
   if (!selected) return;
-  const presentation = overviewMetricPresentation(overviewMetricsProjectionValue(state.overview?.overview_metrics, overviewMetricsScopeId()))[selected[0]];
+  const presentation = key === "tbr" ? tokenBurnRatePresentation(Date.now(), taskUsageHistory() !== null) : overviewMetricPresentation(overviewMetricsProjectionValue(state.overview?.overview_metrics, overviewMetricsScopeId()))[selected[0]];
   $("#metric-detail-title").textContent = selected[1];
+  $("#metric-detail-actions").hidden = !["usage", "tbr"].includes(key);
+  const actions = $('#metric-detail-actions');
+  const supported = taskUsageHistory() !== null;
+  for (const button of actions.querySelectorAll?.('[data-usage-range]') || []) {
+    button.setAttribute('aria-pressed', String(!state.usageDateRange && Number(button.dataset.usageRange) === state.usageWindowHours));
+    if (button.dataset.usageRange === '720') { button.disabled = !supported; button.title = supported ? 'Rolling 30 days' : 'Monthly history unavailable'; }
+  }
+  const dateButton = actions.querySelector?.('[type="submit"]');
+  if (dateButton) dateButton.disabled = !supported;
+  const dateStatus = actions.querySelector?.('#metric-date-status');
+  if (supported && dateStatus?.textContent === 'Custom dates are unavailable from this server.') dateStatus.textContent = 'Choose up to 30 days, in local time.';
+  const history = key === 'tbr' ? taskUsageHistory() : null;
+  const taskScope = state.projectId + '|' + state.ctrlId;
+  if (dialog.dataset.taskScope !== taskScope) { delete dialog.dataset.taskId; delete dialog.dataset.hiddenTaskIds; dialog.dataset.taskScope = taskScope; }
+  const taskPanel = dialog.dataset.tbrPanel === 'tasks';
+  const tabs = '<div class="metric-tabs" role="group" aria-label="TBR view"><button type="button" data-task-usage-panel="graph" aria-pressed="' + !taskPanel + '">Graph</button><button type="button" data-task-usage-panel="tasks" aria-pressed="' + taskPanel + '">By task</button></div>';
   $("#metric-detail-content").innerHTML = key === "usage"
-    ? accountUsageDetails() + '<h3>Task token usage</h3>' + usageChartMarkup("metric-detail", "metric-detail-token-trend")
+    ? accountUsageDetails()
+    : key === 'tbr' ? tabs + (taskPanel ? '<section class="highest-usage-section"><p>Top 10 · selected-period tokens</p><div id="highest-usage-tasks" aria-busy="true"></div></section>'
+      : '<div class="usage-detail-values"><div><strong>' + escapeHTML(presentation.value) + '</strong><span>tokens/min</span></div></div>' + usageRateGraph([{row:{thread_id:'aggregate',title:'Token burn rate'},points:history?.rateHistory || []}], history?.window))
     : '<strong>' + escapeHTML(presentation.value) + '</strong><p>' + escapeHTML(presentation.note) + '</p><p>' + escapeHTML(presentation.state) + '</p><svg id="metric-detail-trend" viewBox="0 0 160 28" role="img" aria-label="Accepted metric history"></svg>' + (presentation.series?.length ? '' : '<p>History unavailable.</p>');
+  if (key === "tbr") renderHighestUsageTasks();
   if (key === "usage" && refreshCharts) renderUsageCharts();
-  else if (key !== "usage") drawLine($("#metric-detail-trend"), presentation.series || [], "var(--orange)");
+  else if (!["usage", "tbr"].includes(key)) drawLine($("#metric-detail-trend"), presentation.series || [], "var(--orange)");
   if (focusedRange) Array.from(dialog.querySelectorAll('[data-usage-range]')).find(button => button.dataset.usageRange === focusedRange)?.focus({ preventScroll: true });
+  if (focusedTask) Array.from(dialog.querySelectorAll('button')).find(button => button.dataset[focusedTask[0]] === focusedTask[1])?.focus({preventScroll:true});
   if (body) body.scrollTop = scrollTop;
 }
 
 function openMetricDetail(card) {
   const dialog = $("#metric-detail-dialog");
   dialog.dataset.metric = card.dataset.overviewMetric;
+  const loadDay = ["usage", "tbr"].includes(dialog.dataset.metric) && state.usageWindowHours === 1;
+  if (loadDay) { state.usageWindowHours = 24; state.usageStatus = "loading"; }
   renderMetricDetail();
   dialog.onclose = () => card.isConnected && card.focus({ preventScroll: true });
   dialog.showModal();
+  if (loadDay) refreshUsageHistory().then(renderUsageCharts);
+}
+
+async function applyUsageDates(event) {
+  event.preventDefault();
+  const form = event.currentTarget, status = $('#metric-date-status');
+  if (!taskUsageHistory()) { status.textContent = 'Custom dates are unavailable from this server.'; return; }
+  const after = new Date(form.elements.namedItem('after').value).getTime();
+  const before = new Date(form.elements.namedItem('before').value).getTime();
+  if (!Number.isFinite(after) || !Number.isFinite(before) || after < 0 || before <= after || before > Date.now() || before - after > 720 * 3600000) {
+    status.textContent = 'Choose a past interval of up to 30 days.'; return;
+  }
+  state.usageDateRange = {after_ms:after,before_ms:before};
+  state.usageStatus = 'loading';
+  renderUsageCharts();
+  await refreshUsageHistory();
+  renderUsageCharts();
+  status.textContent = state.usageStatus === 'current' ? 'Date range applied.' : state.usageError;
 }
 
 function yieldChartMarkup(item) {
@@ -3941,13 +4057,38 @@ function renderOverviewProjectCards() {
 }
 
 function overviewHierarchyWorkRows(record) {
-  const current = { id: record.node.id, label: agentTaskTitle(record), status: record.node.status, progress: agentProgress(record)?.percent ?? null };
-  const projection = state.overview?.project_view;
-  const view = projectWorkspaceViews(projection).find((candidate) => candidate.renderer === "table" && candidate.mode === "records");
-  const rows = projectWorkRows(view);
-  if (!rows) return [current];
-  const bound = rows.filter((row) => row.kind === "task" && (row.task_id === record.node.id || row.owner_id === record.node.id));
-  return [current, ...bound.filter((row) => row.id !== current.id).map((row) => ({ ...row, progress: row.progress }))];
+  const topology = overviewTopologyProjection(state.overview?.topology);
+  if (!topology || state.connectionStatus !== "live" || !record.binding) return [];
+  const owner = topology.nodes.find(node => node.agent_id === record.node.id);
+  if (!owner || owner.project_id !== record.binding.projectId || owner.ctrl_id !== record.binding.ctrlId) return [];
+  const seen = new Set();
+  const hidden = Array.isArray(topology.hidden_tasks) ? topology.hidden_tasks : [];
+  return [...topology.tasks, ...hidden].filter(task => {
+    const valid = task.record_type === "TASK" && task.id === task.task_id && typeof task.task_name === "string"
+      && task.manifest_identity?.state === "KNOWN" && task.project_id === owner.project_id && task.ctrl_id === owner.ctrl_id
+      && task.owning_agent_id === record.node.id
+      && (topology.tasks.includes(task)
+        ? owner.task_ids?.includes(task.task_id) && topology.task_edges.some(edge => edge.edge_kind === "AGENT_TASK_OWNERSHIP" && edge.source === record.node.id && edge.target === task.task_id)
+        : hidden.includes(task))
+      && !seen.has(task.task_id);
+    if (valid) seen.add(task.task_id);
+    return valid;
+  }).sort((a,b) => a.order - b.order || a.task_id.localeCompare(b.task_id)).map(task => {
+    const blocks = Array.isArray(task.blocks) && Number.isInteger(task.scope_version) && task.scope_version > 0
+      && task.blocks.every(block => block.task_id === task.task_id && block.project_id === task.project_id
+        && block.ctrl_id === task.ctrl_id && block.scope_version === task.scope_version && typeof block.block_id === "string"
+        && block.event_cursor?.event_id && block.event_cursor?.event_digest)
+      && new Set(task.blocks.map(block => block.block_id)).size === task.blocks.length ? task.blocks : [];
+    const measured = blocks.length && blocks.every(block => Number.isFinite(block.committed_weight) && block.committed_weight > 0);
+    const eta = task.eta;
+    const retainedEta = eta?.task_id === task.task_id && eta.project_id === task.project_id
+      && eta.eta_source === 'task_owner_report' && ['planned','in_progress','blocked','complete'].includes(eta.status)
+      && Number.isFinite(eta.eta_start_ms) && Number.isFinite(eta.eta_end_ms) && eta.eta_start_ms > 0
+      && eta.eta_end_ms >= eta.eta_start_ms && Number.isFinite(eta.eta_observed_at_ms) && eta.eta_observed_at_ms > 0;
+    return { id:task.task_id, label:task.task_name, status:task.state, blocks,
+      progress:measured && Number.isFinite(task.progress) && task.progress >= 0 && task.progress <= 100 ? task.progress : null,
+      eta:retainedEta ? eta : null };
+  });
 }
 
 function overviewHierarchyNodeMarkup(record, descendants, depth = 0) {
@@ -3959,9 +4100,19 @@ function overviewHierarchyNodeMarkup(record, descendants, depth = 0) {
   const ports = descendants.map((child, index) => '<i class="overview-node-port is-out" data-overview-output="' + escapeHTML(child.node.id) + '" style="--port-index:' + index + ';--port-count:' + descendants.length + '" aria-hidden="true"></i>').join("");
   const workRow = (row) => {
     const progress = typeof row.progress === "number" ? Math.max(0, Math.min(100, row.progress)) : null;
-    return '<span class="overview-node-work"><span>' + agentWorkStatusIcon(row) + '<strong title="' + escapeHTML(row.label) + '">' + escapeHTML(row.label) + '</strong>' + (progress === null ? "" : '<small>' + progress + '%</small>') + '</span>' + (progress === null ? "" : '<i style="--task-progress:' + progress + '%" aria-hidden="true"></i>') + '</span>';
+    const heading = '<span class="overview-node-work"><span>' + agentWorkStatusIcon(row) + '<strong title="' + escapeHTML(row.label) + '">' + escapeHTML(row.label) + '</strong>' + (progress === null ? "" : '<small>' + progress + '%</small>') + '</span>' + (progress === null ? "" : '<i style="--task-progress:' + progress + '%" aria-hidden="true"></i>') + '</span>';
+    const estimate = row.eta ? '<small class="overview-task-estimate">Retained estimate: ' + escapeHTML(new Date(row.eta.eta_start_ms).toLocaleString()) + '–' + escapeHTML(new Date(row.eta.eta_end_ms).toLocaleString()) + ' · task owner report · observed ' + escapeHTML(new Date(row.eta.eta_observed_at_ms).toLocaleString()) + '</small>' : '';
+    if (!row.blocks.length) return heading + estimate;
+    return '<details class="agent-work-group"><summary>' + heading + '</summary>' + estimate + '<div class="overview-work-blocks">' + row.blocks.map(block => {
+      const status = String(block.lifecycle_state || 'UNKNOWN').toUpperCase();
+      const tone = ['ACCEPTED','VERIFIED','COMPLETED_COMMITTED'].includes(status) ? 'complete'
+        : /FAILED|REJECTED|INVALIDATED/.test(status) ? 'failed'
+        : ['ACTIVE','IN_PROGRESS','PLANNED','READY','QUEUED','REVIEW_PENDING','BLOCKED','WAITING'].includes(status) ? 'active' : 'unknown';
+      const label = (block.title || block.block_id) + ' · ' + humanize(status);
+      return '<details class="overview-work-block is-' + tone + '"><summary aria-label="' + escapeHTML(label) + '" title="' + escapeHTML(label) + '"><span aria-hidden="true"></span></summary><p>' + escapeHTML(label) + '</p></details>';
+    }).join('') + '</div></details>';
   };
-  const work = visible.map(workRow).join("");
+  const work = visible.map(workRow).join("") || '<p class="overview-node-work-empty">No current task received</p>';
   const hiddenLabel = hiddenTaskCount + ' more work item' + (hiddenTaskCount === 1 ? "" : "s");
   const more = hiddenTaskCount ? '<details class="overview-node-more"><summary title="' + hiddenLabel + '"><span aria-hidden="true"><svg class="lucide"><use href="#lucide-chevron-down"></use></svg></span><span class="sr-only">Show ' + hiddenLabel + '</span></summary><div>' + rows.slice(3).map(workRow).join("") + '</div></details>' : "";
   const input = depth ? '<i class="overview-node-port is-in' + (depth > 1 ? ' is-side' : '') + '" data-overview-input aria-hidden="true"></i>' : "";
@@ -4027,12 +4178,29 @@ function activeCodexTasksMarkup() {
   return '<section class="overview-independent panel"><h3>Active Codex tasks</h3><p>Observed host activity · SWARM lane authority and reviewed progress are separate.</p>' + (nodes.length ? nodes.map(node => '<article class="overview-independent-task" data-active-codex-task="' + escapeHTML(node.id) + '"><span class="scope-dot is-active" aria-hidden="true"></span><strong>' + escapeHTML(publicLabel(node.title, "Codex task")) + '</strong><span>Active</span></article>').join("") : '<p>No active Codex tasks in this scope.</p>') + '</section>';
 }
 
+function renderOverviewProjects() {
+  const host = $("#overview-project-rows"), roster = savedProjectRoster();
+  if (roster.state !== "KNOWN") { host.innerHTML = '<p role="status">Saved projects unavailable.</p>'; return; }
+  host.innerHTML = roster.projects.length ? '<table class="overview-project-table"><thead><tr><th>Project</th><th>Milestone</th><th>Progress</th></tr></thead><tbody>' + roster.projects.map(project => {
+    const summary = authoritativeProgress(project.id), progress = summary?.progress;
+    const percent = state.connectionStatus === "live" && summary?.freshness?.state === "fresh"
+      && Number.isFinite(progress?.percent) && progress.percent >= 0 && progress.percent <= 100 ? progress.percent : null;
+    const milestone = summary?.current_milestone;
+    const milestoneName = state.connectionStatus === "live" && summary?.freshness?.state === "fresh"
+      && milestone?.state === "KNOWN" && milestone.source === "ledger_active_task_manifest"
+      && milestone.project_id === project.id && typeof milestone.name === "string" ? milestone.name : null;
+    const status = project.status === "recent" ? "Recently active" : humanize(project.status);
+    return '<tr><th scope="row"><button type="button" data-project-id="' + escapeHTML(project.id) + '" aria-label="' + escapeHTML(project.label + ' · ' + status) + '">' + projectScopeMark(project) + '<strong>' + escapeHTML(project.label) + '</strong></button></th><td>' + (milestoneName ? escapeHTML(milestoneName) : '<span aria-label="Current milestone unavailable">—</span>') + '</td><td>' + (percent === null ? '<span aria-label="Progress unavailable">—</span>' : '<span>' + percent + '%</span><progress max="100" value="' + percent + '" aria-label="' + escapeHTML(project.label) + ' progress"></progress>') + '</td></tr>';
+  }).join('') + '</tbody></table>' : '<p role="status">No saved projects.</p>';
+}
+
 function renderOverview() {
   const nodes = scopedNodes();
   renderOverviewMetrics();
+  renderOverviewProjects();
   renderOverviewProjectCards();
-  $("#overview-project-cards").insertAdjacentHTML("beforeend", activeCodexTasksMarkup());
-  renderEvidenceGallery(nodes, "#overview-evidence-gallery", "#overview-evidence-note", 4);
+  state.evidenceImages = evidenceImagesFor(nodes);
+  if ($('#evidence-lightbox').open) renderEvidenceLightbox();
   renderProjectProgressFeed();
   renderProjectDetail();
   renderNotifications();
@@ -5639,19 +5807,26 @@ async function refreshProof() {
 async function refreshUsageHistory() {
   const generation = ++state.usageRequestGeneration;
   const request = { projectId: state.projectId, ctrlId: state.ctrlId, hours: state.usageWindowHours };
-  const requestKey = usageRequestKey(request.projectId, request.ctrlId, request.hours);
+  const range = state.usageDateRange ? {...state.usageDateRange} : null;
+  const requestKey = usageRequestKey(request.projectId, request.ctrlId, request.hours, range);
   const params = new URLSearchParams({ project_id: request.projectId, ctrl_id: request.ctrlId, hours: String(request.hours) });
+  if (range) { params.set('after_ms', String(range.after_ms)); params.set('before_ms', String(range.before_ms)); }
   const hasLastGood = state.usageScopeKey === requestKey && state.usageHistory?.ok === true;
   state.usageStatus = hasLastGood ? "refreshing" : "loading";
   try {
     const result = await api('/api/usage-history?' + params.toString());
-    if (generation !== state.usageRequestGeneration || request.projectId !== state.projectId || request.ctrlId !== state.ctrlId || request.hours !== state.usageWindowHours) return;
+    if (generation !== state.usageRequestGeneration || request.projectId !== state.projectId || request.ctrlId !== state.ctrlId || request.hours !== state.usageWindowHours || requestKey !== usageRequestKey()) return;
+    if (result.window && (result.hours !== request.hours || (request.ctrlId
+      ? result.scope?.type !== 'ctrl' || result.scope.ctrl_id !== request.ctrlId || (request.projectId !== 'all' && result.scope.project_id !== request.projectId)
+      : request.projectId !== 'all' ? result.scope?.type !== 'project' || result.scope.project_id !== request.projectId : result.scope?.type !== 'all-projects'))) throw new Error('Usage response does not match the selected scope.');
+    if (range && (result.window?.explicit !== true || result.window.after_ms !== range.after_ms || result.window.before_ms !== range.before_ms)) throw new Error('Usage response does not match the selected dates.');
+    if (!range && result.window?.explicit === true) throw new Error('Usage response does not match the selected range.');
     state.usageHistory = result;
     state.usageScopeKey = requestKey;
     state.usageStatus = "current";
     state.usageError = "";
   } catch (error) {
-    if (generation !== state.usageRequestGeneration || request.projectId !== state.projectId || request.ctrlId !== state.ctrlId || request.hours !== state.usageWindowHours) return;
+    if (generation !== state.usageRequestGeneration || request.projectId !== state.projectId || request.ctrlId !== state.ctrlId || request.hours !== state.usageWindowHours || requestKey !== usageRequestKey()) return;
     if (!hasLastGood) state.usageHistory = null;
     state.usageScopeKey = requestKey;
     state.usageStatus = hasLastGood ? "stale" : "error";
@@ -5897,10 +6072,29 @@ document.addEventListener("click", async (event) => {
   }
   const metricCard = event.target.closest("[data-overview-metric]");
   if (metricCard) { openMetricDetail(metricCard); return; }
+  const taskUsage = event.target.closest('[data-task-usage-id], [data-task-usage-view], [data-task-usage-back], [data-task-usage-legend], [data-task-usage-panel], [data-task-usage-visible]');
+  if (taskUsage) {
+    const dialog = $('#metric-detail-dialog');
+    if (dialog.dataset.metric !== 'tbr') return;
+    if (taskUsage.hasAttribute('data-task-usage-panel')) { dialog.dataset.tbrPanel = taskUsage.dataset.taskUsagePanel; delete dialog.dataset.taskId; }
+    if (taskUsage.hasAttribute('data-task-usage-id')) dialog.dataset.taskId = taskUsage.dataset.taskUsageId;
+    if (taskUsage.hasAttribute('data-task-usage-view')) { dialog.dataset.taskView = taskUsage.dataset.taskUsageView; delete dialog.dataset.taskId; }
+    if (taskUsage.hasAttribute('data-task-usage-back')) delete dialog.dataset.taskId;
+    if (taskUsage.hasAttribute('data-task-usage-legend')) dialog.dataset.hideLegend = String(dialog.dataset.hideLegend !== 'true');
+    if (taskUsage.hasAttribute('data-task-usage-visible')) {
+      const hidden = new Set(JSON.parse(dialog.dataset.hiddenTaskIds || '[]')), id = taskUsage.dataset.taskUsageVisible;
+      if (hidden.has(id)) hidden.delete(id); else hidden.add(id);
+      dialog.dataset.hiddenTaskIds = JSON.stringify([...hidden]);
+    }
+    renderMetricDetail(false);
+    if (taskUsage.hasAttribute('data-task-usage-id') || taskUsage.hasAttribute('data-task-usage-back')) $('#highest-usage-tasks')?.querySelector('button:not(:disabled)')?.focus({preventScroll:true});
+    return;
+  }
   const usageRange = event.target.closest("[data-usage-range]");
   if (usageRange) {
     const hours = Number(usageRange.dataset.usageRange);
-    if (![1, 24, 168].includes(hours) || hours === state.usageWindowHours) return;
+    if (usageRange.disabled || ![1, 24, 168, 720].includes(hours) || (hours === state.usageWindowHours && !state.usageDateRange)) return;
+    state.usageDateRange = null;
     state.usageWindowHours = hours;
     state.usageStatus = "loading";
     renderUsageCharts();
@@ -6444,7 +6638,18 @@ $("#overview-project-cards").addEventListener("click", async (event) => {
   const project = event.target.closest("[data-overview-project-id]");
   if (project) await selectProjectScope(project.dataset.overviewProjectId, project);
 });
+$("#overview-project-rows").addEventListener("click", async event => {
+  const project = event.target.closest("[data-project-id]");
+  if (project) await selectProjectScope(project.dataset.projectId, project);
+});
 $("#retry").addEventListener("click", refreshOverview);
+$("#metric-date-form").addEventListener("submit", applyUsageDates);
+$('.metric-date-picker').addEventListener('keydown', event => {
+  if (event.key === 'Escape' && event.currentTarget.open) {
+    event.preventDefault(); event.stopPropagation(); event.currentTarget.open = false;
+    event.currentTarget.querySelector('summary').focus();
+  }
+});
 $("#connection-retry").addEventListener("click", initialize);
 $("#notifications").addEventListener("click", () => setNotificationsOpen($("#notifications-panel").hidden));
 $("#notifications-close").addEventListener("click", () => setNotificationsOpen(false, true));
