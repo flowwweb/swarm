@@ -110,6 +110,20 @@ class SwarmConsoleTests(unittest.TestCase):
         self.assertEqual(quota["windows"][0]["remaining_percent"], 40)
         self.assertEqual(quota["windows"][0]["forecast"]["status"], "UNKNOWN")
         self.assertEqual(body["task_usage"], [])
+        handler.path = f"/api/usage-history?hours=720&after_ms={now-1000}&before_ms={now}"
+        with mock.patch.object(restarted, "_host_overview", return_value=overview), \
+             mock.patch.object(bridge, "read_account_limits", side_effect=AssertionError("history read must stay local")):
+            handler.do_GET()
+        status, dated = handler._json.call_args.args
+        self.assertEqual(status, console.HTTPStatus.OK)
+        self.assertEqual(dated["window"]["before_ms"], now)
+        self.assertEqual(dated["account_history"]["items"][0]["sampled_at_ms"], now)
+        self.assertEqual(dated["account_history"]["items"][0]["windows"][0]["remaining_percent"], 40)
+        self.assertNotIn("private-account", json.dumps(dated))
+        handler.path = f"/api/usage-history?after_ms={now-2000}&before_ms={now-1000}"
+        with mock.patch.object(restarted, "_host_overview", return_value=overview):
+            handler.do_GET()
+        self.assertEqual(handler._json.call_args.args[1]["account_history"]["items"], [])
         with mock.patch.object(app, "_host_overview", return_value=overview), \
              mock.patch.object(app, "_ingest_progress_pulses_if_changed", return_value={}), \
              mock.patch.object(app, "_ingest_proof_events_if_changed"), \
@@ -4080,7 +4094,7 @@ class SwarmConsoleTests(unittest.TestCase):
             codex_home=self.codex_home,
         )
 
-        history = store.token_history(hours=24)
+        history = store.token_history(hours=24, before_ms=2_000_000_122_000)
         self.assertEqual(sum(item["delta_tokens"] for item in history), 6)
         self.assertEqual({item["source"] for item in history}, {"codex_jsonl_token_count"})
         connection = sqlite3.connect(self.root / "console" / "console-state.sqlite3")
@@ -4134,8 +4148,8 @@ class SwarmConsoleTests(unittest.TestCase):
         self.assertEqual(result["total_tokens"], 7)
         self.assertEqual(set(result["status_claim"]), {"no_data", "partial", "ok"})
         token_history.assert_has_calls([
-            mock.call(project_id=None, thread_ids={"ctrl-a", "task-a"}, hours=24),
-            mock.call(project_id=None, thread_ids=None, hours=24),
+            mock.call(project_id=None, thread_ids={"ctrl-a", "task-a"}, hours=24, after_ms=mock.ANY, before_ms=mock.ANY),
+            mock.call(project_id=None, thread_ids=None, hours=24, after_ms=mock.ANY, before_ms=mock.ANY),
         ])
         self.assertEqual(token_history.call_count, 2)
         with mock.patch.object(app, "_host_overview", return_value=overview):
@@ -4211,6 +4225,115 @@ class SwarmConsoleTests(unittest.TestCase):
             self.assertEqual(empty["task_usage"], [])
             self.assertEqual(empty["task_usage_status"], "no_data")
 
+    def test_usage_history_explicit_range_month_and_task_rate_provenance(self) -> None:
+        app = console.App(self.codex_home, self.config)
+        now, minute = 2_000_000_000_000, 60_000
+        start = now - 10 * minute
+        nodes = [{"id": "a", "title": "Alpha", "project_id": "project:a", "model": "current-not-history"},
+                 {"id": "b", "title": "Beta", "project_id": "project:a"},
+                 {"id": "missing", "title": "Missing", "project_id": "project:a"}]
+        samples = [(start - 1, "a", "project:a", 999),
+                   (start, "a", "project:a", 10), (start + minute, "a", "project:a", 20),
+                   (start + 3 * minute, "a", "project:a", 60),
+                   (start + 6 * minute, "a", "project:a", 30),
+                   (start + 7 * minute, "a", "project:a", 20),
+                   (start + minute, "b", "project:a", 0),
+                   (start + 2 * minute, "b", "project:a", 0),
+                   (start + minute, "foreign", "project:b", 9999),
+                   (start + 2 * minute, "a", "project:b", 8888),
+                   (now - 30 * 86_400_000, "a", "project:a", 7),
+                   (now - 30 * 86_400_000 - 1, "a", "project:a", 7777),
+                   (now + 1, "a", "project:a", 9999)]
+        with closing(app.store._connect()) as db:
+            db.executemany("INSERT INTO token_samples VALUES (?,?,?,?,?,?,?)",
+                           [(stamp, stamp, project, task, 99999999, tokens, "sqlite")
+                            for stamp, task, project, tokens in samples])
+            db.commit()
+        scope = {"type": "project", "project_id": "project:a"}
+        with mock.patch.object(console.time, "time", return_value=now/1000), \
+             mock.patch.object(app, "_observed_scope", return_value=({}, nodes, {"a", "b", "missing"}, scope)), \
+             mock.patch.object(app, "_verified_yield", return_value={}), \
+             mock.patch.object(app, "observe_once", side_effect=AssertionError("read-only")):
+            result = app.usage_history(project_id="project:a", after_ms=start, before_ms=now)
+            self.assertEqual(result["window"], {"after_ms": start, "before_ms": now, "explicit": True, "retention_days": 30})
+            exact_end = app.usage_history(after_ms=start, before_ms=start + 5 * minute)
+            self.assertTrue(all(row["bucket_start_ms"] < row["bucket_end_ms"] for row in exact_end["task_history"]["items"]))
+            self.assertEqual(result["task_history"]["total_tokens"], 140)
+            self.assertEqual(sum(row["tokens"] for row in result["task_usage"]), 140)
+            rows = result["task_history"]["items"]
+            a = [row for row in rows if row["thread_id"] == "a"]
+            self.assertEqual([row["tokens_per_minute"] for row in a], [26.67, 20.0])
+            self.assertEqual([row["observed_interval_ms"] for row in a], [3 * minute, minute])
+            self.assertEqual([row["rate_tokens"] for row in a], [80, 20])
+            self.assertEqual([row["rate_sample_count"] for row in a], [2, 1])
+            # First interval crosses the selected start; the 3->6 interval crosses bins.
+            # Neither contributes tokens or elapsed time to the reported bin rate.
+            self.assertTrue(all(row["model"] is None and row["model_status"] == "UNKNOWN" for row in rows))
+            self.assertEqual(len(rows), 3)  # Missing buckets/threads never become zero points.
+            self.assertEqual(rows[-1]["bucket_start_ms"], start + 5 * minute)
+            self.assertEqual(result["task_history"]["coverage"], {"observed_threads": 2, "expected_threads": 3})
+            self.assertIsNone(result["usage_now"]["rate_tokens_per_minute"])
+            self.assertIsNone(result["usage_now"]["rate_sampled_at_ms"])
+            self.assertTrue(all(row["tokens_per_minute"] is None for row in result["rate_history"]))
+            self.assertEqual(result["account_history"]["status"], "no_data")
+            month = app.usage_history(hours=720)
+            self.assertEqual(month["task_history"]["total_tokens"], 1146)  # exact 30-day edge included
+            self.assertEqual(month["window"]["after_ms"], now - 30 * 86_400_000)
+            historical = app.usage_history(after_ms=start, before_ms=start + minute)
+            self.assertEqual(historical["task_history"]["total_tokens"], 30)
+            self.assertTrue(all(row["bucket_end_ms"] <= start + minute for row in historical["task_history"]["items"]))
+            for bounds in ({"after_ms": start}, {"before_ms": now},
+                           {"after_ms": True, "before_ms": now}, {"after_ms": start, "before_ms": now + 1},
+                           {"after_ms": now, "before_ms": start},
+                           {"after_ms": now - 31 * 86_400_000, "before_ms": now}):
+                with self.assertRaises(console.ConsoleError):
+                    app.usage_history(**bounds)
+            app.store = console.ConsoleStore(app.store.path)
+            self.assertEqual(app.usage_history(after_ms=start, before_ms=now)["task_history"], result["task_history"])
+        with mock.patch.object(console.time, "time", return_value=now/1000), \
+             mock.patch.object(app, "_observed_scope", return_value=({}, [nodes[1]], {"b"}, {"type": "ctrl", "ctrl_id": "ctrl-b"})), \
+             mock.patch.object(app, "_verified_yield", return_value={}):
+            scoped = app.usage_history(after_ms=start, before_ms=now)
+            self.assertTrue(all(row["thread_id"] == "b" for row in scoped["task_history"]["items"]))
+            self.assertEqual(scoped["task_history"]["total_tokens"], 0)  # observed zero, not absence
+            self.assertEqual(scoped["task_history"]["items"][-1]["tokens_per_minute"], 0)
+            self.assertEqual(scoped["usage_now"]["rate_tokens_per_minute"], 0)
+        with mock.patch.object(console.time, "time", return_value=now/1000), \
+             mock.patch.object(app, "_observed_scope", return_value=({}, [nodes[0]], {"a"}, scope)), \
+             mock.patch.object(app, "_verified_yield", return_value={}):
+            single = app.usage_history(after_ms=start, before_ms=now)
+            self.assertEqual(single["usage_now"]["rate_tokens_per_minute"], 25.0)  # qualified100 /4min, not140/7min
+            self.assertEqual([row["tokens_per_minute"] for row in single["rate_history"]], [26.67, 20.0])
+        with closing(app.store._connect()) as db:
+            db.executemany("INSERT INTO token_samples VALUES (?,?,?,?,?,?,?)",
+                           [(stamp, stamp, "project:a", "late", 999, tokens, "sqlite")
+                            for stamp, tokens in ((start, 10), (start + minute, 20), (now - 1, 30))])
+            db.commit()
+        with mock.patch.object(console.time, "time", return_value=now/1000), \
+             mock.patch.object(app, "_observed_scope", return_value=({}, [{"id": "late", "project_id": "project:a"}], {"late"}, scope)), \
+             mock.patch.object(app, "_verified_yield", return_value={}):
+            late = app.usage_history(after_ms=start, before_ms=now)["usage_now"]
+            self.assertEqual(late["sampled_at_ms"], now - 1)
+            self.assertEqual(late["rate_sampled_at_ms"], start + minute)
+            self.assertEqual(late["rate_tokens_per_minute"], 20.0)
+
+    def test_task_rate_history_exact_project_filter_precedes_cap(self) -> None:
+        app = console.App(self.codex_home, self.config)
+        with closing(app.store._connect()) as db:
+            db.executemany("INSERT INTO token_samples VALUES (?,?,?,?,?,?,?)",
+                           [(index * 60_000, index * 60_000, "stale-project", "a", index, 1, "sqlite")
+                            for index in range(10002)])
+            db.execute("INSERT INTO token_samples VALUES (?,?,?,?,?,?,?)",
+                       (10003 * 60_000, 10003 * 60_000, "project:a", "a", 999999, 5, "sqlite"))
+            db.commit()
+        rows = app.store.token_sample_series(
+            project_id=None, thread_ids={"a"}, after_ms=0, before_ms=10004 * 60_000,
+            bucket_width_ms=60_000, task_projects={"a": "project:a"},
+        )
+        self.assertEqual(len(rows), 1)
+        self.assertEqual((rows[0]["project_id"], rows[0]["tokens"], rows[0]["tokens_per_minute"]),
+                         ("project:a", 5, None))
+
     def test_usage_forecast_requires_explicit_inputs_and_observed_rate(self) -> None:
         app = console.App(self.codex_home, self.config)
         overview = {
@@ -4226,6 +4349,13 @@ class SwarmConsoleTests(unittest.TestCase):
             {"bucket_ms": 800_000, "delta_tokens": 100, "source": "codex_jsonl_token_count"},
             {"bucket_ms": 1_100_000, "delta_tokens": 100, "source": "codex_jsonl_token_count"},
         ]
+        def samples(**kw):
+            if not kw.get("bucket_width_ms"):
+                return []
+            start, end = ((1_000_000, 1_060_000) if kw["hours"] == 1 else (800_000, 1_100_000))
+            return [{"thread_id": "ctrl-a", "project_id": "project:a", "bucket_start_ms": start,
+                     "bucket_end_ms": end, "rate_start_ms": start, "rate_end_ms": end,
+                     "observed_interval_ms": end - start, "rate_tokens": 100}]
         with mock.patch.object(app, "_host_overview", return_value=overview), \
              mock.patch.object(
                  app.store,
@@ -4233,6 +4363,7 @@ class SwarmConsoleTests(unittest.TestCase):
                  side_effect=[one_hour_history, one_hour_history, twelve_hour_history],
              ), \
              mock.patch.object(app.store, "token_sample_thread_count", return_value=1), \
+             mock.patch.object(app.store, "token_sample_series", side_effect=samples), \
              mock.patch.object(console.time, "time", return_value=1_100):
             missing = app.usage_history(hours=1)
             one_hour = app.usage_history(
@@ -4256,7 +4387,8 @@ class SwarmConsoleTests(unittest.TestCase):
         self.assertEqual(one_hour["forecast"]["status"], "estimated")
         self.assertEqual(one_hour["forecast"]["remaining_token_budget"], 600)
         self.assertEqual(one_hour["forecast"]["remaining_tokens"], 600)
-        self.assertEqual(one_hour["forecast"]["exhaustion_at_ms"], 1_220_000)
+        self.assertEqual(one_hour["usage_now"]["rate_tokens_per_minute"], 100.0)
+        self.assertEqual(one_hour["forecast"]["exhaustion_at_ms"], 1_460_000)
         self.assertTrue(one_hour["forecast"]["exhausts_before_reset"])
         self.assertEqual(twelve_hours["forecast"]["remaining_token_budget"], 600)
         self.assertEqual(twelve_hours["forecast"]["remaining_tokens"], 600)
@@ -4336,7 +4468,7 @@ class SwarmConsoleTests(unittest.TestCase):
         with mock.patch.object(app, "_host_overview", return_value=overview), \
              mock.patch.object(app.store, "token_history", return_value=history), \
              mock.patch.object(app.store, "token_sample_thread_count", return_value=1), \
-             mock.patch.object(app.store, "token_sample_series", side_effect=lambda **kw: [] if kw.get("by_task") else samples), \
+             mock.patch.object(app.store, "token_sample_series", side_effect=lambda **kw: [] if kw.get("by_task") or kw.get("bucket_width_ms") else samples), \
              mock.patch.object(console.time, "time", return_value=1_100):
             result = app.usage_history(project_id="project:alpha", hours=1)
 
