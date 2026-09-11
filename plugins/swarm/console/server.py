@@ -10375,6 +10375,7 @@ class App:
             return {"dispatched": False, "reason": "AUTO_CLOSED"}
         overview = overview or self._host_overview()
         projection = self.progress_ledger.replay()
+        waiting = None
         for state in states:
             self._auto_scope(state["ctrl_id"], state["project_id"])
             if state["in_flight"]:
@@ -10430,7 +10431,9 @@ class App:
                     now_ms=int(time.time() * 1000),
                 )
                 retained = {**self.store.auto_status(state["ctrl_id"], state["project_id"]), "replayed": not fresh}
-                return {"dispatched": False, "reason": candidate["disposition"]["disposition"], "state": retained}
+                if waiting is None:
+                    waiting = {"dispatched": False, "reason": candidate["disposition"]["disposition"], "state": retained}
+                continue
             project_root = self._auto_project_root(state["project_id"])
             decision = {key: candidate[key] for key in (
                 "ctrl_id", "project_id", "goal_id", "task_id", "owner_id", "request_id",
@@ -10440,6 +10443,10 @@ class App:
             decision["request_bytes"] = len(candidate["instruction"].encode("utf-8"))
             claim = self.store.claim_auto_dispatch(decision, self._auto_generation(), now_ms=int(time.time() * 1000))
             if not claim["claimed"]:
+                if claim.get("reason") == "REPLAY":
+                    if waiting is None:
+                        waiting = {"dispatched": False, **claim}
+                    continue
                 return {"dispatched": False, **claim}
             result = AutoBridgeResult(False, failure_kind="TRANSPORT_UNAVAILABLE", transient=True)
             retained_thread_id = ""
@@ -10479,7 +10486,7 @@ class App:
                     }
             completed = self.store.finish_auto_dispatch(claim["reservation_id"], result=result, disposition=disposition, now_ms=int(time.time() * 1000))
             return {"dispatched": True, "bridge_ok": result.ok, "state": completed}
-        return {"dispatched": False, "reason": "NO_DUE_DECISION"}
+        return waiting or {"dispatched": False, "reason": "NO_DUE_DECISION"}
 
     def _host_overview(self, *, refresh: bool = False) -> dict[str, Any]:
         with self.overview_lock:

@@ -7869,6 +7869,32 @@ class SwarmConsoleTests(unittest.TestCase):
             console.HTTPStatus.FORBIDDEN, "Auto command requires strict loopback authorization",
         )
 
+    def test_auto_waiting_project_does_not_hide_later_project(self) -> None:
+        app = object.__new__(console.App)
+        states = [{"ctrl_id": name, "project_id": name, "enabled": True, "in_flight": False, "stop_after_turn": False} for name in ("waiting", "next")]
+        app.store = SimpleNamespace(enabled_auto_states=lambda: states, retain_auto_control=mock.Mock(return_value=True), auto_status=lambda *_: {})
+        app.progress_ledger = SimpleNamespace(replay=lambda: {})
+        app._auto_scope = mock.Mock()
+        visited = []
+        def candidate(state, *_):
+            visited.append(state["ctrl_id"])
+            if state["ctrl_id"] == "next": return None
+            return {"ctrl_id": "waiting", "project_id": "waiting", "decision_digest": "wait", "disposition": {"disposition": "WAIT_USER"}, "rubric": {}}
+        app._auto_candidate = candidate
+        self.assertEqual(app.evaluate_auto_once({"current": True})["reason"], "WAIT_USER")
+        self.assertEqual(visited, ["waiting", "next"])
+        app.store.retain_auto_control.assert_called_once()
+        visited.clear()
+        replay = {key: "bound" for key in ("ctrl_id", "project_id", "goal_id", "task_id", "owner_id", "request_id", "observed_turn_id", "decision_digest", "route_digest", "instruction_digest", "instruction")}
+        replay["disposition"] = {"disposition": "RETRY_SAME", "next_operation": "retry"}
+        app._auto_candidate = lambda state, *_: (visited.append(state["ctrl_id"]) or (replay if state["ctrl_id"] == "waiting" else None))
+        app._auto_project_root = lambda _: self.root
+        app._auto_generation = lambda: None
+        app.store.claim_auto_dispatch = mock.Mock(return_value={"claimed": False, "reason": "REPLAY"})
+        self.assertEqual(app.evaluate_auto_once({"current": True})["reason"], "REPLAY")
+        self.assertEqual(visited, ["waiting", "next"])
+        app.store.claim_auto_dispatch.assert_called_once()
+
     def test_auto_due_event_dispatches_once_and_host_completion_is_zero_progress(self) -> None:
         self._confirm_root_ctrl()
         bridge = SimpleNamespace(run=mock.Mock(return_value=console.AutoBridgeResult(
