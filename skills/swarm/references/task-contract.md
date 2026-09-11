@@ -142,10 +142,9 @@ replace the user state.
 SWARM runtime never calls or authorizes pin/unpin. Every user-authorized CTRL creation
 surfaces the created ID, exact directive/title, `pinned: false`, and
 `placement: placement_unverified`. Only the host may consume an exact explicit-user
-pin request, and the current host may append the task below pinned folders.
-Existing user state is always preserved. The host task API independently consumes
-the exact current user request for every pin or unpin mutation; SWARM does not
-authorize or request it.
+pin request. Follow [SKILL.md START](../SKILL.md#start) for the single host
+pin/placement procedure and relative-order readback. Existing user state is always
+preserved; naming alone and runtime policy never authorize that mutation.
 
 Any substantive lane uses a visible senior Codex task/chat with its own cwd, owner,
 and heartbeat. A hidden subagent is bounded sidecar inspection or non-authoritative

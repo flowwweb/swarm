@@ -34,6 +34,19 @@ class MutationIntegrityContractTests(unittest.TestCase):
         for forbidden in ("AUTO_PIN", "TEMPORARY_REVIEW_PIN", "concrete ready-review handoff"):
             self.assertNotIn(forbidden, combined)
 
+    def test_explicit_main_pin_requires_relative_order_readback(self):
+        root = Path(__file__).parents[1]
+        skill = (root / "SKILL.md").read_text(encoding="utf-8")
+        self.assertRegex(skill, r"(?s)explicit main-task pin request.*list_threads.*before and after.*sections.itemKeys.*before pinned project folders")
+        self.assertRegex(skill, r"(?s)pinnedIndex.*mutation acknowledgement alone.*do not prove relative order")
+        self.assertIn("Preserve unrelated order and pins", skill)
+        self.assertRegex(skill, r"(?s)move_thread_to_sidebar_section.*sectionId='pinned'.*freshly read the complete pinned.*task ID list before `reorder_section`.*preserving their relative order.*complete list, never a subset")
+        self.assertRegex(skill, r"(?s)fresh pinned membership.*reorder_section.*moves tasks only, not projects.*Never unpin folders to simulate")
+        self.assertRegex(skill, r"(?s)Discovery omissions do not prove.*list_threads.*move_thread_to_sidebar_section.*actual schemas")
+        self.assertRegex(skill, r"(?s)Never invent a method or arguments.*leave placement unverified")
+        self.assertNotIn("current host may append", skill)
+        self.assertRegex(skill, r"(?s)project name only: emoji \+ project,.*without a visible CTRL label.*only to distinguish.*duplicate mains.*internal structural roles unchanged")
+
     def test_direct_user_ctrl_keep_out_is_scoped_and_releasable(self):
         root = Path(__file__).parents[1]
         combined = "\n".join(

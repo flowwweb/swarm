@@ -41,12 +41,25 @@ that arrived while work was running.
 SWARM runtime never calls or authorizes pin/unpin. Every user-authorized CTRL creation
 must surface the created task ID, exact directive/title, `pinned: false`, and
 `placement: placement_unverified` immediately. Only the host may consume an exact
-explicit-user pin request; the current host may append it below pinned folders.
-The required future host placement capability remains a host concern, not runtime authority.
+explicit-user pin request using its known callable pin operation for the exact task.
 LEAD, DOER, REVIEW, WATCHDOG, storage, sidecar, and nested CTRL tasks default to
 unpinned. Only direct host consumption of an exact current explicit-user request
-may pin or unpin; the current host may append below pinned folders. Existing user
-state is always preserved, and SWARM never requests or authorizes pin/unpin.
+may pin or unpin. For an explicit main-task pin request, read `list_threads`
+before and after placement. Use `move_thread_to_sidebar_section` with
+`sectionId='pinned'` for the exact main, then freshly read the complete pinned
+task ID list before `reorder_section`; move only the main ahead of the other
+tasks, preserving their relative order. Pass the complete list, never a subset.
+Verify fresh pinned membership and `sections.itemKeys` places the main task
+before pinned project folders. `reorder_section` moves tasks only, not projects;
+it does not establish interleaving with folders. Never unpin folders to simulate
+success. `pinnedIndex` and mutation acknowledgement alone
+do not prove relative order. Preserve unrelated order and pins; do not pin other
+tasks automatically. Discovery omissions do not prove a capability unavailable:
+check the known applicable `list_threads`, `move_thread_to_sidebar_section`, and
+`reorder_section` callable routes before escalation, using their actual schemas and only the
+authorized placement. Never invent a method or arguments. If the host cannot
+express the requested placement or expose its order, report that exact boundary
+and leave placement unverified. Runtime still grants no pin or reorder authority.
 
 **Step 0, never defer:** A user request to start SWARM, adopt the current task as
 CTRL, or take over an existing CTRL includes naming the current task for that
@@ -54,6 +67,9 @@ role. Reuse the current task for a takeover; create or fork another task only
 when explicitly requested. Derive a concise objective and resolve `role_icons`:
 default `🐙 <objective>`, or `<objective>` when icons are disabled;
 retain a user-requested role icon such as `👑` for royal portfolio control.
+For the main task, `<objective>` is the project name only: emoji + project,
+without a visible CTRL label. Add a short description only to distinguish
+duplicate mains for that project; keep internal structural roles unchanged.
 An assigned lane keeps its assigned profession and structural role. Preserve an
 explicit custom title or naming exception unless the user asks to change it.
 
