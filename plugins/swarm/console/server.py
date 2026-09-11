@@ -7276,6 +7276,7 @@ def _topology_payload(state: str, *, reason: str | None = None) -> dict[str, Any
         "empty": True,
         "nodes": [],
         "tasks": [],
+        "hidden_tasks": [],
         "agent_edges": [],
         "task_edges": [],
         "independent_nodes": [],
@@ -12167,15 +12168,16 @@ class App:
                     continue
                 scope_version = int(scope_versions.get(manifest["project_id"], 0) or 0)
                 defined_blocks = {str(block["block_id"]) for block in manifest.get("blocks", [])}
-                current = [
+                scope_blocks = [
                     block for block in blocks.values()
                     if isinstance(block, dict)
                     and block.get("project_id") == manifest["project_id"]
                     and block.get("ctrl_id") == manifest["ctrl_id"]
                     and block.get("task_id") == task_id
                     and int(block.get("scope_version") or 0) == scope_version
-                    and block.get("lifecycle_state") not in TOPOLOGY_TERMINAL_STATES
+                    and block.get("lifecycle_state") != "TOMBSTONED"
                 ]
+                current = [block for block in scope_blocks if block.get("lifecycle_state") not in TOPOLOGY_TERMINAL_STATES]
                 if not current:
                     continue
                 owners = {str(block.get("owner_id") or "") for block in current}
@@ -12186,14 +12188,14 @@ class App:
                     and owner is not None
                     and owner["hierarchy_membership"] != "INVALID"
                     and (owner["project_id"], owner["ctrl_id"]) == (manifest["project_id"], manifest["ctrl_id"])
-                    and all(str(block.get("block_id") or "") in defined_blocks for block in current)
+                    and all(str(block.get("block_id") or "") in defined_blocks for block in scope_blocks)
                 )
                 if not exact:
                     rejected_bindings += 1
                     continue
                 current.sort(key=lambda block: (int(block.get("latest_event_seq") or 0), str(block.get("block_id") or "")))
                 states = sorted({str(block.get("lifecycle_state") or "UNKNOWN") for block in current})
-                latest = current[-1]
+                latest = max(scope_blocks, key=lambda block: int(block.get("latest_event_seq") or 0))
                 task = {
                     "record_type": "TASK",
                     "id": task_id,
@@ -12220,9 +12222,35 @@ class App:
                     },
                     "execution_authority": False,
                 }
-                measured = [block for block in current if block.get("committed_weight") is not None]
+                definitions = {block["block_id"]: block for block in manifest["blocks"]}
+                task["scope_version"] = scope_version
+                task["blocks"] = []
+                for block in sorted(scope_blocks, key=lambda item: (definitions[item["block_id"]]["order"], item["block_id"])):
+                    detail = {key: copy.deepcopy(block[key]) for key in (
+                        "block_id", "milestone_id", "task_id", "project_id", "ctrl_id", "owner_id",
+                        "scope_version", "lifecycle_state", "measurement_state", "committed_weight",
+                        "admitted_proof_weight", "eta", "observed_at_ms",
+                    )}
+                    detail["title"] = definitions[block["block_id"]]["title"]
+                    detail["event_cursor"] = {
+                        "event_seq": block["latest_event_seq"], "event_id": block["latest_event_id"],
+                        "event_digest": block["latest_event_digest"],
+                    }
+                    if block["committed_weight"] is not None:
+                        detail["progress"] = round(block["admitted_proof_weight"] * 100 / block["committed_weight"], 2)
+                    task["blocks"].append(detail)
+                eta = source_nodes.get(task_id, {}).get("eta")
+                task["eta"] = {"status": "UNKNOWN", "task_id": task_id, "project_id": manifest["project_id"]}
+                if (isinstance(eta, dict) and eta.get("project_id") == manifest["project_id"]
+                        and source_nodes[task_id].get("project_id") == manifest["project_id"]
+                        and eta.get("eta_source") == "task_owner_report"):
+                    task["eta"].update({key: copy.deepcopy(eta.get(key)) for key in (
+                        "status", "eta_start_ms", "eta_end_ms", "confidence", "revision",
+                        "eta_source", "eta_observed_at_ms", "heartbeat_at_ms", "pulse_state", "reason_code", "claim_limit",
+                    )})
+                measured = [block for block in scope_blocks if block.get("committed_weight") is not None]
                 denominator = sum(int(block.get("committed_weight") or 0) for block in measured)
-                if len(measured) == len(current) and denominator > 0:
+                if len(measured) == len(scope_blocks) and denominator > 0:
                     task["progress"] = round(
                         sum(int(block.get("admitted_proof_weight") or 0) for block in measured) * 100 / denominator, 2,
                     )
@@ -12233,10 +12261,12 @@ class App:
                 }
 
             tasks: list[dict[str, Any]] = []
+            hidden_tasks: list[dict[str, Any]] = []
             task_edges: list[dict[str, Any]] = []
             for owner_id, owner_tasks in valid_tasks_by_owner.items():
                 owner_tasks.sort(key=lambda task: (task["presentation_priority"], task["task_id"]))
                 visible = owner_tasks[:3]
+                hidden_tasks.extend(owner_tasks[3:])
                 agents[owner_id]["task_ids"] = [task["task_id"] for task in visible]
                 agents[owner_id]["visibleTaskCount"] = len(visible)
                 agents[owner_id]["hiddenTaskCount"] = len(owner_tasks) - len(visible)
@@ -12375,6 +12405,7 @@ class App:
                 "empty": not agents and not tasks and not independent_nodes,
                 "nodes": sorted(agents.values(), key=lambda agent: (agent["source_order"], agent["agent_id"])),
                 "tasks": tasks,
+                "hidden_tasks": hidden_tasks,
                 "agent_edges": sorted(agent_edges, key=lambda edge: (agents[edge["source"]]["source_order"], agents[edge["target"]]["source_order"], edge["id"])),
                 "task_edges": sorted(task_edges, key=lambda edge: (agents[edge["source"]]["source_order"], records[edge["target"]]["order"], edge["id"])),
                 "independent_nodes": sorted(
@@ -12480,6 +12511,7 @@ class App:
         partial = bool(orphan_ids or invalid_ids)
         scoped.update({
             "nodes": nodes, "tasks": tasks, "agent_edges": agent_edges, "task_edges": task_edges,
+            "hidden_tasks": [task for task in topology.get("hidden_tasks", []) if task.get("owning_agent_id") in node_ids],
             "independent_nodes": independent_nodes, "host_edges": host_edges,
             "independent_count": len(independent_nodes),
             "roots": [recursive(agent_id) for agent_id in root_ids],

@@ -2620,6 +2620,12 @@ class SwarmConsoleTests(unittest.TestCase):
         self.assertEqual(by_id["root"]["task_ids"], ["work-2", "work-3", "work-1"])
         self.assertEqual((by_id["root"]["visibleTaskCount"], by_id["root"]["hiddenTaskCount"]), (3, 1))
         self.assertEqual(topology["hiddenTaskCount"], 1)
+        self.assertEqual([task["task_id"] for task in topology["hidden_tasks"]], ["work-4"])
+        self.assertEqual(topology["hidden_tasks"][0]["owning_agent_id"], "root")
+        self.assertEqual(topology["hidden_tasks"][0]["ports"], [])
+        self.assertEqual(app._scope_topology_projection(topology, "project:other")["hidden_tasks"], [])
+        self.assertEqual(app._scope_topology_projection(topology, "project:alpha", "lead")["hidden_tasks"], [])
+        self.assertEqual(app._scope_topology_projection(topology, "project:alpha", "root")["hidden_tasks"], topology["hidden_tasks"])
         self.assertEqual([task["task_id"] for task in topology["tasks"]], ["work-2", "work-3", "work-1"])
         self.assertEqual(len(topology["task_edges"]), 3)
         self.assertFalse({task["task_id"] for task in topology["tasks"]} & set(by_id))
@@ -2642,6 +2648,78 @@ class SwarmConsoleTests(unittest.TestCase):
 
         restarted = console.App(self.codex_home, self.config).overview()["topology"]
         self.assertEqual(restarted, topology)
+
+    def test_topology_task_progress_includes_completed_scope_and_live_blocks(self) -> None:
+        self._confirm_root_ctrl()
+        app = console.App(self.codex_home, self.config)
+        self._append_topology_manifests(app, task_count=0)
+        manifest = build_task_manifest(
+            manifest_id="manifest:whole", task_id="whole", task_name="Whole task",
+            project_id="project:alpha", ctrl_id="root",
+            milestones=[{"milestone_id": "m", "order": 0, "title": "Delivery",
+                         "verification_policy": "source-contract", "supersedes_milestone_id": None}],
+            blocks=[{"block_id": name, "milestone_id": "m", "order": index, "title": name,
+                     "verification_policy": "source-contract", "estimate_minutes": None,
+                     "weight": None, "supersedes_block_id": None}
+                    for index, name in enumerate(("done", "active", "removed"))],
+        )
+        app.progress_ledger.append(identity_manifest_event(
+            manifest, event_id="whole-manifest", dedupe_key="whole-manifest",
+            observed_at_ms=10, provenance="test exact task scope",
+        ))
+
+        def append(name, kind, state, stamp, admitted=0, weight=1):
+            event = self._notification_event(
+                f"{name}-{stamp}", name, kind, state, stamp, milestone_id="m",
+                committed_weight=weight, admitted_proof_weight=admitted,
+                proof_receipt_ids=["accepted-proof"] if admitted else [],
+            )
+            event.update(task_id="whole", owner_id="root")
+            app.progress_ledger.append(event)
+
+        for index, name in enumerate(("done", "active", "removed")):
+            append(name, "BLOCK_CREATED", "ACTIVE", 20 + index)
+        append("done", "STATE_CHANGED", "REVIEW", 30)
+        append("done", "PROOF_ADMITTED", "VERIFIED", 31, 1)
+        append("done", "ACCEPTED", "ACCEPTED", 32, 1)
+        append("removed", "TOMBSTONED", "TOMBSTONED", 33)
+        view = app._host_overview(refresh=True)
+        topology = app._topology_projection(view)
+        task = topology["tasks"][0]
+        self.assertEqual((task["task_id"], task["owning_agent_id"], task["state"], task["progress"]),
+                         ("whole", "root", "ACTIVE", 50.0))
+        self.assertEqual([(b["block_id"], b["lifecycle_state"], b["progress"]) for b in task["blocks"]],
+                         [("done", "ACCEPTED", 100.0), ("active", "ACTIVE", 0.0)])
+        self.assertEqual(task["event_cursor"]["event_id"], "done-32")
+        foreign = self._notification_event("foreign", "foreign-block", "BLOCK_CREATED", "ACTIVE", 34,
+                                           committed_weight=100)
+        foreign.update(task_id="whole", owner_id="root", ctrl_id="other-ctrl")
+        app.progress_ledger.append(foreign)
+        self.assertEqual(app._topology_projection(view)["tasks"][0]["progress"], 50.0)
+        self.assertTrue(all(b["task_id"] == "whole" and b["project_id"] == "project:alpha"
+                            and b["ctrl_id"] == "root" and b["event_cursor"]["event_digest"]
+                            for b in task["blocks"]))
+        # Never borrow the owning agent's ETA for another task.
+        view["nodes"][0]["eta"] = {"project_id": "project:alpha", "eta_source": "task_owner_report", "eta_end_ms": 99}
+        self.assertEqual(app._topology_projection(view)["tasks"][0]["eta"]["status"], "UNKNOWN")
+        view["nodes"].append({"id": "whole", "project_id": "project:alpha", "eta": {
+            "project_id": "project:alpha", "eta_source": "task_owner_report", "status": "in_progress",
+            "eta_start_ms": 100, "eta_end_ms": 200, "eta_observed_at_ms": 90, "revision": 2,
+        }})
+        eta = app._topology_projection(view)["tasks"][0]["eta"]
+        self.assertEqual((eta["task_id"], eta["project_id"], eta["eta_end_ms"], eta["revision"]),
+                         ("whole", "project:alpha", 200, 2))
+        view["nodes"][-1]["eta"]["project_id"] = "project:other"
+        self.assertEqual(app._topology_projection(view)["tasks"][0]["eta"]["status"], "UNKNOWN")
+        restarted = console.App(self.codex_home, self.config)
+        self.assertEqual(restarted._topology_projection(app._host_overview(refresh=True))["tasks"], topology["tasks"])
+        append("active", "REWORK_REQUESTED", "INVALIDATED_REWORK", 40)
+        self.assertEqual(app._topology_projection(view)["tasks"][0]["blocks"][1]["lifecycle_state"], "INVALIDATED_REWORK")
+        event = self._notification_event("unmeasured", "active", "STATE_CHANGED", "ACTIVE", 41, milestone_id="m")
+        event.update(task_id="whole", owner_id="root")
+        event["measurement"] = {"state": "UNMEASURED", "committed_weight": None, "admitted_proof_weight": 0, "basis_receipt_ids": []}
+        app.progress_ledger.append(event)
+        self.assertNotIn("progress", app._topology_projection(view)["tasks"][0])
 
     def test_topology_promotes_only_connector_confirmed_task_creation_binding(self) -> None:
         self._confirm_root_ctrl()
