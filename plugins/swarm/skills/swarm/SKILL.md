@@ -72,6 +72,10 @@ without a visible CTRL label. Add a short description only to distinguish
 duplicate mains for that project; keep internal structural roles unchanged.
 An assigned lane keeps its assigned profession and structural role. Preserve an
 explicit custom title or naming exception unless the user asks to change it.
+Visible lane names use a concise responsibility or artifact, with the configured
+icon when enabled; CTRL/LEAD/DOER remain internal roles, not display prefixes.
+The latest explicit naming preference wins: `🐙 Blüprint` stays exactly that,
+not `🐙CTRL - Blüprint Lost Villa delivery`.
 
 Before substantive dispatch, call the host `set_thread_title` tool for the exact
 task ID using that authority; do not ask the user to repeat it or invent a
@@ -82,6 +86,11 @@ If the title already matches, verify it without rewriting it. If the tool is
 unavailable or rejects the call, report the exact naming blocker, keep useful
 authorized work moving, and leave naming incomplete. Verify the successor title
 again before declaring handover complete or archiving its predecessor.
+After creating or updating the durable goal, freshly read this exact task's
+display title before dispatch and reconcile it through this same rule. The
+full goal text is not display-name authority. Preserve an explicit user title;
+repair only an authorized generated-title mismatch, verify the result, and
+leave a failed rename incomplete rather than claiming naming compliance.
 
 Naming authority does not include pinning, unpinning, reordering, archiving, or
 creating additional tasks. Those actions retain their separate user authority;
@@ -343,7 +352,7 @@ Every role contract states only PURPOSE, OWNERSHIP, BOUNDARIES, and ESCALATION. 
 
 Global policy is composed once from this skill and the active structural role contract; profession cards do not restate it. `roles/` filenames are the default profession registry, and an assigned named profession loads its matching lowercase card when present. Each card contains only `PURPOSE`, `OWNERSHIP`, `BOUNDARIES`, and `ESCALATION`; skill choice follows actual task need rather than card defaults. A card refines perspective only; it never transfers role authority or expands model, tool, provider, destructive, review, or acceptance authority, and explicit user direction still wins. Assistant is the routine preparation and organization profession; it is never structural ASSIST and receives no intake, delegation, review, or acceptance authority.
 
-Name roles so responsibility and artifact are unambiguous: use exactly one configured role icon unless disabled; use `🐙 <objective>` for the root, `<role emoji><PROFESSION> LEAD - <responsibility>` for lane owners, and `<role emoji><PROFESSION> DOER - <artifact>` for bounded producers. Name DOERs by their real job; bare `LEAD`, bare `DOER`, and profession-only visible titles fail materialization because they hide either authority or expertise. Independent review runs as a separate LEAD or DOER task with Reviewer, Tester, Auditor, Security, Legal, or another fitting profession; the producer and its LEAD cannot review their own artifact. A title is readability, never authority. Load the hierarchy reference for specialist trigger, free professions, ASSIST/ADVISOR, exact authority, task materialization, and detailed naming.
+Host display names follow Step 0; internal profession and structural roles remain typed topology data, not display-name authority. Independent review runs as a separate LEAD or DOER task with a fitting assurance profession; the producer and its LEAD cannot review their own artifact. Load the hierarchy reference for specialist triggers, free professions, ASSIST/ADVISOR, and task materialization.
 
 ## TASK
 

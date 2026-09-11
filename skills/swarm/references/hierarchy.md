@@ -380,17 +380,15 @@ records the transfer, and the new owner acknowledges before mutation. Peer
 coordination can exchange immutable handoffs but cannot mutate another owner's
 surface or bypass REVIEW.
 
-With role icons enabled, use `🐙 <objective>` for the root,
-`<role emoji><PROFESSION> LEAD - <responsibility>` for lane owners, and
-`<role emoji><PROFESSION> DOER - <artifact>` for bounded producers. A separate
-review task uses the same structural title with the selected assurance profession
+Host display names follow [SKILL.md Step 0](../SKILL.md#start): the root's
+`🐙 <objective>` means the project name, subject to the latest explicit user
+title or exception. Structural roles remain internal; generated topology titles
+do not override host display names. A separate review task uses a fitting assurance profession
 and enters a ready wave only after the runtime issues a fresh
 `TopologyArtifactFreezeReceipt`. That receipt binds the producer lane, immutable
 content-observed `ArtifactIdentity`, current accepted gates and independent review,
 and exact topology plan; a public artifact ID or caller-created receipt fails closed.
-Bare structural titles and profession-only visible titles are invalid because
-they hide either authority or expertise. A title is a
-readability signal, never an authority token; unregistered historical titles
+A title is a readability signal, never an authority token; unregistered historical titles
 remain user-owned text and are never normalized into a profession.
 
 Do not materialize the whole profession registry as a team. Start from the

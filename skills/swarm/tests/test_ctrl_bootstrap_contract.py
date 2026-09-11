@@ -12,6 +12,22 @@ LEGACY_TITLE = "🐙CTRL - <project> - <detailed descriptor>"
 
 
 class CtrlBootstrapContractTests(unittest.TestCase):
+    def test_post_goal_title_verification_preserves_latest_user_preference(self) -> None:
+        skill = (SKILL_ROOT / "SKILL.md").read_text(encoding="utf-8")
+        hierarchy = (SKILL_ROOT / "references/hierarchy.md").read_text(encoding="utf-8")
+        step_zero = skill.split("**Step 0, never defer:**", 1)[1].split("After the Step 0 custody check", 1)[0]
+        self.assertRegex(step_zero, r"(?s)After creating or updating the durable goal.*freshly read.*exact task's.*display title before dispatch")
+        self.assertIn("full goal text is not display-name authority", step_zero)
+        self.assertRegex(step_zero, r"(?s)Preserve an explicit user title;.*repair only an authorized generated-title mismatch.*verify the result.*failed rename incomplete")
+        self.assertIn("`🐙 Blüprint` stays exactly that", step_zero)
+        self.assertIn("not `🐙CTRL - Blüprint Lost Villa delivery`", step_zero)
+        self.assertIn("CTRL/LEAD/DOER remain internal roles, not display prefixes", step_zero)
+        self.assertIn("[SKILL.md Step 0](../SKILL.md#start)", hierarchy)
+        self.assertIn("do not override host display names", hierarchy)
+        for text in (skill, hierarchy):
+            self.assertNotIn("<role emoji><PROFESSION> LEAD -", text)
+            self.assertNotIn("<role emoji><PROFESSION> DOER -", text)
+
     def test_step_zero_precedes_all_substantive_work(self) -> None:
         skill = (SKILL_ROOT / "SKILL.md").read_text(encoding="utf-8")
         self.assertIn("**Step 0, never defer:**", skill)
