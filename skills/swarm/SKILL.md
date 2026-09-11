@@ -157,8 +157,13 @@ Preserve every explicit user-selected Codex model, service tier, and reasoning l
 ChatGPT is an optional host-owned route, not another SWARM authority. Use the
 existing adapter registry only when the host reports one exact callable Chat,
 image-generation, or Work capability receipt. Work additionally requires an
-exact host workspace/project binding. Missing, failed, ambiguous, or
-choice-incompatible capability falls back to local Codex rather than blocking.
+exact host workspace/project binding. With Usage Saver on, cloud-suitable blocks
+use ordinary Chat; missing, failed, ambiguous, disabled, or choice-incompatible
+capability keeps the block pending, never an automatic Codex/imagegen or Work
+fallback. Direct local work stays in Codex. With Usage Saver off, normal routing
+applies. Follow the native-first workflow and capability checks in
+[chatgpt-routing.md](references/chatgpt-routing.md); configuration is permission,
+not dispatch or completion proof.
 Chat advice and provider-owned images cannot mutate local source or accept work;
 Work remains subject to ordinary ownership, proof, and independent review. Do
 not install a control plugin, handle credentials, persist prompts/responses, or

@@ -323,6 +323,29 @@ class ExecutionAdapterTests(unittest.TestCase):
                 if expected == ChatGPTRouteStatus.UNAVAILABLE:
                     self.assertEqual(plan.adapter_id, "")
 
+    def test_usage_saver_image_pending_and_native_workflow_boundaries(self) -> None:
+        from pathlib import Path
+        reference = (Path(__file__).parents[1] / "references/chatgpt-routing.md").read_text(encoding="utf-8")
+        skill = (Path(__file__).parents[1] / "SKILL.md").read_text(encoding="utf-8")
+        route = skill.split("ChatGPT is an optional host-owned route", 1)[1].split("Spark is a separate", 1)[0]
+        self.assertIn("With Usage Saver on, cloud-suitable blocks", route)
+        self.assertIn("keeps the block pending, never an automatic Codex/imagegen or Work", route)
+        self.assertIn("[chatgpt-routing.md](references/chatgpt-routing.md)", route)
+        self.assertNotIn("capability falls back to local Codex", route)
+        for required in ("only when Usage Saver is off", "kind: chatgpt",
+                         "`list_threads`", "`read_thread`", "`send_message_to_thread`",
+                         "`model` and `thinking`", "`wait_threads`", "Codex-only",
+                         "MCP/app tools in the destination", "chatgptWorkCloud",
+                         "not implemented native dispatch enforcement"):
+            self.assertIn(required, reference)
+        for enabled in (False, True):
+            plan = AdapterRegistry().plan_chatgpt(
+                "image", (), enabled=enabled, usage_saver=True,
+                computer_use=False, local_access=False,
+            )
+            self.assertEqual((plan.status, plan.surface, plan.adapter_id),
+                             (ChatGPTRouteStatus.UNAVAILABLE, "chat", ""))
+
     def test_usage_saver_preserves_requested_and_observed_choices(self) -> None:
         chat = HostChatGPTCapability(
             "chat", "ordinary-chat", "selection",
