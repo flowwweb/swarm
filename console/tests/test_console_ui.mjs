@@ -19,6 +19,85 @@ delete fixture.usageHistory.history;
 const css = fs.readFileSync(path.join(staticRoot, "styles.css"), "utf8");
 const app = fs.readFileSync(path.join(staticRoot, "app.js"), "utf8");
 {
+  for (const mode of ['fresh','replay','transport','conflict','mismatch']) {
+    const elements=new Map(), requests=[];
+    const state={configStatus:'current',config:{scope:{type:'global'},state:'KNOWN',available:true,read_only:false,write_contract:{available:true},revision:'r1',editable_text:'original'}};
+    const sandbox={state,structuredClone,configMutationTail:Promise.resolve(),configAuthorityGeneration:0,configWriteRetry:null,configWriteOperationId:()=>`op-${requests.length}`,
+      currentSettingsScope:()=>({type:'global'}),$:id=>{if(!elements.has(id)) elements.set(id,{value:'',focus(){}}); return elements.get(id);},
+      api:async(url,options)=>{
+        assert.equal(url,'/api/config'); const request=JSON.parse(options.body); requests.push(request);
+        assert.deepEqual(Object.keys(request).sort(),['acknowledge','expected_revision','operation_id','scope','text']);
+        assert.equal(request.text,'  exact draft\n'); assert.equal(request.acknowledge,true);
+        if(mode==='transport') throw Object.assign(new Error('disconnected'),{connectionFailure:true});
+        if(mode==='conflict') throw Object.assign(new Error('conflict'),{status:409});
+        return {...state.config,revision:'r2',editable_text:request.text,mutation_receipt:{scope:request.scope,new_revision:'r2',expected_revision:request.expected_revision,operation_id:mode==='mismatch'?'foreign':request.operation_id,accepted:true,acknowledged:true,action:'config_update',replayed:mode==='replay'}};
+      }};
+    vm.createContext(sandbox);
+    vm.runInContext(app.slice(app.indexOf('function configWriteScope('),app.indexOf('function configTomlLiteral('))+app.slice(app.indexOf('function configWriteRequest('),app.indexOf('async function saveConfigMutation('))+app.slice(app.indexOf('function configEditorWritable('),app.indexOf('function renderConfigEditor('))+app.slice(app.indexOf('async function saveConfigEditor('),app.indexOf('async function saveSettingsDraft(')),sandbox);
+    state.configEditorDraft={scope:'{"type":"global"}',binding:'{"type":"global"}',revision:'r1',text:'original',pending:false};
+    const input=sandbox.$('#config-editor-text'); input.value='  exact draft\n'; input.readOnly=false;
+    await sandbox.saveConfigEditor();
+    if(mode==='fresh'||mode==='replay') {
+      assert.equal(state.configEditorDraft.revision,'r2'); assert.equal(sandbox.$('#config-editor-status').textContent,'Saved');
+      assert.equal(sandbox.$('#config-editor-save').disabled,true);
+    } else {
+      assert.equal(input.value,'  exact draft\n'); assert.equal(state.configEditorDraft.text,'original');
+      assert.doesNotMatch(sandbox.$('#config-editor-status').textContent,/^Saved$/);
+      await sandbox.saveConfigEditor();
+      if(mode==='conflict') assert.notEqual(requests[0].operation_id,requests[1].operation_id);
+      else {
+        assert.equal(requests[0].operation_id,requests[1].operation_id);
+        await sandbox.saveConfigEditor(); assert.equal(requests.length,2);
+        assert.match(sandbox.$('#config-editor-status').textContent,/after one retry/);
+      }
+    }
+  }
+}
+{
+  const elements = new Map(); let release; let calls = 0;
+  const scope = {type:'global'};
+  const state = {configStatus:'current',config:{state:'KNOWN',available:true,read_only:false,write_contract:{available:true},revision:'r1',editable_text:'original'}};
+  const sandbox = {state,$:id=>{if(!elements.has(id)) elements.set(id,{value:'',focus(){}}); return elements.get(id);},currentSettingsScope:()=>scope,configWriteScope:()=>({type:'global'}),saveConfigText:async getText=>{calls++; getText(); return await new Promise(resolve=>{release=resolve;});}};
+  vm.createContext(sandbox);
+  vm.runInContext(app.slice(app.indexOf('function configEditorWritable('),app.indexOf('function openConfigEditor(')) + app.slice(app.indexOf('async function saveConfigEditor('),app.indexOf('async function saveSettingsDraft(')),sandbox);
+  state.configEditorDraft={scope:JSON.stringify(scope),binding:JSON.stringify(scope),revision:'r1',text:'original',pending:false};
+  const input=sandbox.$('#config-editor-text'); input.value='unsaved'; input.readOnly=false;
+  const pending=sandbox.saveConfigEditor();
+  assert.equal(calls,1); assert.equal(input.readOnly,true);
+  state.config.revision='r2'; release({applied:false}); await pending;
+  assert.equal(input.value,'unsaved'); assert.equal(input.readOnly,true);
+  assert.equal(sandbox.$('#config-editor-save').disabled,true);
+  assert.doesNotMatch(sandbox.$('#config-editor-status').textContent,/^Saved$/);
+  sandbox.$('#config-editor-dialog').open=true;
+  sandbox.renderConfigEditor(); assert.equal(input.value,'unsaved');
+  input.value='typed after drift'; await sandbox.saveConfigEditor(); assert.equal(calls,1);
+  state.config.revision='r1'; assert.equal(sandbox.configEditorWritable(),true);
+  for (const change of [()=>state.configStatus='stale',()=>state.config.read_only=true,()=>scope.type='project']) {
+    change(); assert.equal(sandbox.configEditorWritable(),false);
+    sandbox.renderConfigEditor(); assert.equal(input.value,'typed after drift'); assert.equal(input.readOnly,true);
+    state.configStatus='current'; state.config.read_only=false; scope.type='global';
+  }
+}
+{
+  const elements = new Map();
+  const state = {configStatus:'current',config:{state:'KNOWN',available:true,revision:'abcdef123456789',editable_text:'[execution]\nusage_saver = false\n',validation:{state:'KNOWN',status:'VALID'}}};
+  let scope = {type:'global'};
+  const sandbox = {state,$:id => {if (!elements.has(id)) elements.set(id,{}); return elements.get(id);},currentSettingsScope:()=>scope,selectedSettingsCtrl:()=>null,settingsContextPresentation:()=>({title:'Global defaults'}),configWriteScope:()=>({type:'global'})};
+  vm.createContext(sandbox);
+  vm.runInContext(app.slice(app.indexOf('function renderConfigEditor('),app.indexOf('function openConfigEditor(')),sandbox);
+  sandbox.renderConfigEditor();
+  assert.equal(elements.get('#config-editor-text').value,state.config.editable_text);
+  assert.equal(elements.get('#config-editor-revision').textContent,'abcdef123456');
+  assert.equal(elements.get('#config-editor-validation').textContent,'VALID');
+  for (const status of ['stale','unavailable']) {
+    state.configStatus=status; sandbox.renderConfigEditor();
+    assert.equal(elements.get('#config-editor-text').value,'');
+    assert.equal(elements.get('#config-editor-save').disabled,true);
+  }
+  state.configStatus='current'; scope={type:'project',id:'other'};
+  sandbox.renderConfigEditor(); assert.equal(elements.get('#config-editor-revision').textContent,'Unavailable');
+}
+{
   const host = {innerHTML:''};
   const summary = {freshness:{state:'fresh'},current_milestone:{state:'KNOWN',source:'ledger_active_task_manifest',project_id:'p',name:'Ship <V1>'}};
   const sandbox = {state:{connectionStatus:'live'},$:()=>host,savedProjectRoster:()=>({state:'KNOWN',projects:[{id:'p',label:'Swarm',status:'recent'}]}),authoritativeProgress:()=>summary,projectScopeMark:()=>'',humanize:String};
@@ -1571,7 +1650,7 @@ assert.match(app, /function settingsTaskLifeMarkup\(options = \{\}\)[\s\S]*?aria
 assert.match(indexHtml, /Project overrides take priority\. Overridden values stop following global changes; all other values continue to inherit\./);
 assert.match(indexHtml, /id="config-editor-dialog"[\s\S]*?class="dialog-shell config-editor-shell"[\s\S]*?id="config-editor-text"[\s\S]*?readonly/);
 assert.match(indexHtml, /id="config-editor-save"[^>]*disabled/);
-assert.match(app, /does not expose validated config text or revision-safe text saves/);
+assert.match(app, /Current configuration is unavailable for this scope/);
 assert.doesNotMatch(settingsSource, /api\('/);
 const autoReadSource = app.slice(app.indexOf("async function refreshAutoStatus"), app.indexOf("async function refreshRoleManifests"));
 assert.match(autoReadSource, /await api\('\/api\/auto\?' \+ params\.toString\(\)\)/);
@@ -3601,7 +3680,7 @@ proofFeed.items.push({
       await usagePage.getByRole('button',{name:'By task',exact:true}).click();
       const table = usagePage.locator("#highest-usage-tasks");
       await usagePage.waitForFunction(() => document.querySelector("#highest-usage-tasks").textContent.includes("Hourly leader"));
-      assert.deepEqual(await table.locator("tbody th").allTextContents(), ["Hourly leader", "Small task"]);
+      assert.deepEqual(await table.locator("tbody th button > span:first-child").allTextContents(), ["Hourly leader", "Small task"]);
       assert.deepEqual(await table.locator("tbody td:nth-child(3)").allTextContents(), ["90 tokens", "5 tokens"]);
       assert.equal(await table.locator("tbody button:disabled").count(), 2, 'Aggregate-only fixture exposes no enabled history action');
       const ranges = usagePage.getByRole("group", { name: "Task usage range", exact: true });
@@ -3617,7 +3696,7 @@ proofFeed.items.push({
       await usagePage.waitForFunction(() => document.querySelector("#highest-usage-tasks").textContent.includes("Weekly leader"));
       releaseDay();
       await usagePage.waitForTimeout(100);
-      assert.equal(await table.locator("tbody th").first().textContent(), "Weekly leader");
+      assert.equal(await table.locator("tbody th button > span:first-child").first().textContent(), "Weekly leader");
       assert.deepEqual([...new Set(requestedHours)], [1, 24, 168]);
       assert.equal(await ranges.getByRole("button", { name: "1w", exact: true }).getAttribute("aria-pressed"), "true");
       await usagePage.locator(".highest-usage-section").scrollIntoViewIfNeeded();
@@ -5695,7 +5774,7 @@ proofFeed.items.push({
     await assertDialogFrame(page, "#config-editor-dialog");
     assert.equal(await page.locator("#config-editor-text").getAttribute("readonly"), "");
     assert.equal(await page.getByRole("button", { name: "Save config" }).isDisabled(), true);
-    assert.match(await page.locator("#config-editor-status").textContent(), /does not expose validated config text or revision-safe text saves/);
+    assert.match(await page.locator("#config-editor-status").textContent(), /Current configuration is unavailable for this scope/);
     if (evidenceDir) await page.screenshot({ path: path.join(evidenceDir, "19-settings-config-unavailable-desktop-1536x1024.png"), fullPage: false, animations: "disabled" });
     await page.keyboard.press("Escape");
     assert.equal(await editConfigTrigger.evaluate((element) => element === document.activeElement), true);

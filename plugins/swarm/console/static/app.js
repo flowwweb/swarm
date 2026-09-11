@@ -5532,27 +5532,52 @@ function settingsContextPresentation(scope, selectedCtrl, setting) {
   return { title: "Global defaults", note: "Changes apply wherever a project has not overridden them." };
 }
 
+function configEditorWritable(draft = state.configEditorDraft) {
+  const scope = currentSettingsScope();
+  const binding = configWriteScope();
+  const config = state.config;
+  return Boolean(draft && draft === state.configEditorDraft && state.configStatus === "current" && config?.state === "KNOWN" && config.available === true && config.read_only === false && config.write_contract?.available === true && config.revision && typeof config.editable_text === "string" && binding?.type === scope.type && (scope.type === "global" || binding.project_id === scope.id) && JSON.stringify(scope) === draft.scope && JSON.stringify(binding) === draft.binding && config.revision === draft.revision);
+}
+
 function renderConfigEditor() {
   const dialog = $("#config-editor-dialog");
   if (!dialog) return;
+  if (dialog.open && state.configEditorDraft) {
+    const writable = configEditorWritable() && !state.configEditorDraft.pending;
+    $("#config-editor-text").readOnly = !writable;
+    $("#config-editor-save").disabled = !writable || $("#config-editor-text").value === state.configEditorDraft.text;
+    return;
+  }
   const scope = currentSettingsScope();
   const context = settingsContextPresentation(scope, selectedSettingsCtrl(), state.ctrlSettings);
+  const config = state.config;
+  const binding = configWriteScope(config);
+  const current = state.configStatus === "current" && config?.state === "KNOWN" && config.available === true &&
+    binding?.type === scope.type && (scope.type === "global" || binding.project_id === scope.id) && Boolean(config.revision);
+  const textAvailable = current && typeof config.editable_text === "string";
   $("#config-editor-context").textContent = context.title;
-  $("#config-editor-source").textContent = state.config?.exists ? "Server-owned configuration" : "Unavailable";
-  $("#config-editor-revision").textContent = "Unavailable";
-  $("#config-editor-validation").textContent = state.configStatus === "current" ? "Text authority unavailable" : "Configuration unavailable";
+  $("#config-editor-source").textContent = current ? context.title : "Unavailable";
+  $("#config-editor-revision").textContent = current ? String(config.revision).slice(0, 12) : "Unavailable";
+  $("#config-editor-validation").textContent = current && config.validation?.state === "KNOWN" ? config.validation.status : "Validation unavailable";
   $("#config-editor-warning").hidden = scope.type === "global";
-  $("#config-editor-text").value = "";
+  $("#config-editor-text").value = textAvailable ? config.editable_text : "";
   $("#config-editor-text").placeholder = "Exact config text is unavailable from this server.";
   $("#config-editor-text").readOnly = true;
-  $("#config-editor-status").textContent = "SWARM can read individual settings, but this server does not expose validated config text or revision-safe text saves.";
+  $("#config-editor-status").textContent = textAvailable ? "Current configuration · Read-only preview" : "Current configuration is unavailable for this scope.";
   $("#config-editor-save").disabled = true;
   $("#config-editor-reset").disabled = true;
+  $("#config-editor-reset").hidden = scope.type !== "project";
+  $("#config-editor-reset").title = "Reset is unavailable here until its acknowledgement can be verified.";
 }
 
 function openConfigEditor(trigger) {
+  if ($("#config-editor-dialog").open) return;
   state.configEditorTrigger = trigger || document.activeElement;
   renderConfigEditor();
+  state.configEditorDraft = { scope: JSON.stringify(currentSettingsScope()), binding: JSON.stringify(configWriteScope()), revision: state.config?.revision, text: $("#config-editor-text").value, pending: false };
+  const writable = configEditorWritable();
+  $("#config-editor-text").readOnly = !writable;
+  $("#config-editor-status").textContent = writable ? "No changes" : $("#config-editor-status").textContent;
   const dialog = $("#config-editor-dialog");
   if (!dialog.open) dialog.showModal();
   updateDocumentTitle();
@@ -5560,9 +5585,42 @@ function openConfigEditor(trigger) {
 }
 
 function closeConfigEditor() {
+  const draft = state.configEditorDraft;
+  if (draft?.pending) return;
+  if (draft && $("#config-editor-text").value !== draft.text && !confirm("Discard unsaved configuration changes?")) return;
   const dialog = $("#config-editor-dialog");
   if (dialog.open) dialog.close();
   updateDocumentTitle();
+}
+
+async function saveConfigEditor() {
+  const draft = state.configEditorDraft;
+  const input = $("#config-editor-text");
+  if (!configEditorWritable(draft) || draft.pending || input.readOnly || input.value === draft.text) return;
+  const text = input.value;
+  draft.pending = true;
+  input.readOnly = true;
+  $("#config-editor-save").disabled = true;
+  $("#config-editor-status").textContent = "Saving…";
+  try {
+    const result = await saveConfigText(() => {
+      if (!configEditorWritable(draft)) throw new Error("Configuration changed. Your text is preserved; reopen the current scope before saving.");
+      return text;
+    });
+    if (!result.applied || JSON.stringify(currentSettingsScope()) !== draft.scope) throw new Error("Scope changed. Your text is preserved; this view has not been saved.");
+    draft.text = text;
+    draft.revision = state.config.revision;
+    $("#config-editor-revision").textContent = String(state.config.revision).slice(0, 12);
+    $("#config-editor-validation").textContent = state.config.validation?.state === "KNOWN" ? state.config.validation.status : "Validation unavailable";
+    $("#config-editor-status").textContent = "Saved";
+  } catch (error) {
+    $("#config-editor-status").textContent = error.message || "Could not save. Your text is preserved.";
+  } finally {
+    draft.pending = false;
+    input.readOnly = !configEditorWritable(draft);
+    $("#config-editor-save").disabled = input.value === draft.text || input.readOnly;
+    input.focus({ preventScroll: true });
+  }
 }
 
 async function saveSettingsDraft() {
@@ -6484,6 +6542,15 @@ $("#agent-detail-dialog").addEventListener("close", () => {
   state.agentDetailTrigger = null;
 });
 $("#config-editor-close").addEventListener("click", closeConfigEditor);
+$("#config-editor-save").addEventListener("click", saveConfigEditor);
+$("#config-editor-text").addEventListener("input", () => {
+  const draft = state.configEditorDraft;
+  const dirty = draft && $("#config-editor-text").value !== draft.text;
+  $("#config-editor-text").readOnly = !configEditorWritable(draft) || Boolean(draft?.pending);
+  $("#config-editor-save").disabled = !dirty || $("#config-editor-text").readOnly;
+  $("#config-editor-status").textContent = dirty ? "Unsaved changes" : "No changes";
+  $("#config-editor-validation").textContent = dirty ? "Not yet validated" : state.config?.validation?.status || "Validation unavailable";
+});
 $("#config-editor-cancel").addEventListener("click", closeConfigEditor);
 $("#config-editor-dialog").addEventListener("cancel", (event) => {
   event.preventDefault();
