@@ -3451,7 +3451,8 @@ function renderProjectDetail() {
   const progress = selectedProjectProgress();
   const nodes = scopedNodes();
   $("#project-detail-title").textContent = group?.label || "Project";
-  $("#project-detail-status").textContent = state.projectProgressStatus === "stale" ? "Last received project ledger" : state.projectProgressStatus === "unavailable" ? "Project ledger unavailable" : progress ? "Scope version " + (progress.scope_version ?? "—") : "Loading project ledger";
+  const hostSnapshot = nodes.length > 0 && state.connectionStatus === "live";
+  $("#project-detail-status").textContent = state.projectProgressStatus === "stale" ? "Last received project ledger" : state.projectProgressStatus === "unavailable" ? (hostSnapshot ? "Host snapshot · provider ledger unavailable" : "Project ledger unavailable") : progress ? "Scope version " + (progress.scope_version ?? "—") : "Loading project ledger";
   const measured = progress?.status === "MEASURED" && Number.isFinite(Number(progress.percent));
   const nextGate = (progress?.blocks || []).find((block) => ["REVIEW", "WAITING_DEPENDENCY", "WAITING_EXTERNAL", "USER_PAUSED"].includes(block.lifecycle_state));
   $("#project-detail-summary").innerHTML = '<p><span>Progress</span><strong>' + escapeHTML(measured ? progress.percent + "%" : "—") + '</strong></p><p><span>Live ETA</span><strong><svg class="lucide" aria-hidden="true"><use href="#lucide-clock"></use></svg>' + escapeHTML(projectEta(nodes)) + '</strong></p><p><span>Next gate</span><strong>' + escapeHTML(nextGate ? humanize(nextGate.lifecycle_state) : "—") + '</strong></p>';
