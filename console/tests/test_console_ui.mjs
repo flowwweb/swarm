@@ -3558,6 +3558,8 @@ async function assertObservedTaskAndChat() {
       state.overview.roots=[];
       renderOverview(); renderAgentTable();
     });
+    assert.match(await page.locator("#agents-summary").textContent(), /1 observed host task · no admitted agents/);
+    assert.equal(await page.locator("#agent-table-body h3").textContent(), "Observed host tasks");
     assert.equal(await page.locator('#overview-project-cards [data-active-codex-task]').count(),0,"compact Overview does not duplicate host-task discovery");
     assert.equal(await page.locator('[data-overview-hierarchy-node="observed-chief"]').count(),0,"observed host task is not an admitted hierarchy agent");
     assert.equal(await page.locator('#agent-table-body [data-active-codex-task="observed-chief"]').count(),1);

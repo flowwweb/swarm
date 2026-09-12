@@ -4170,14 +4170,22 @@ function scheduleOverviewHierarchyEdges() {
   if (state.view === "overview" && state.projectId === "all") requestAnimationFrame(drawOverviewHierarchyEdges);
 }
 
-function activeCodexTasksMarkup() {
+function scopedActiveHostTasks() {
   const allProjects = state.projectId === "all" && !state.ctrlId;
   const binding = state.ctrlId ? runLogBindingForCtrl(state.ctrlId) : null;
   const projectId = state.ctrlId ? binding?.projectId : selectedProgressProjectId();
   const scopeValid = allProjects || (projectId && savedProjectRoster().projects.some(project => project.id === projectId) && (!state.ctrlId || state.projectId === projectId || state.projectId === "ctrl:" + state.ctrlId || state.projectId === "all"));
-  if (state.connectionStatus !== "live" || !Array.isArray(state.overview?.nodes) || !scopeValid) return '<section class="panel"><h3>Active Codex tasks</h3><p role="status">Current host activity is unavailable.</p></section>';
-  const nodes = state.overview.nodes.filter(node => node && typeof node.id === "string" && node.status === "active" && (allProjects || node.project_id === projectId));
-  return '<section class="overview-independent panel"><h3>Active Codex tasks</h3><p>Observed host activity · SWARM lane authority and reviewed progress are separate.</p>' + (nodes.length ? nodes.map(node => '<article class="overview-independent-task" data-active-codex-task="' + escapeHTML(node.id) + '"><span class="scope-dot is-active" aria-hidden="true"></span><strong>' + escapeHTML(publicLabel(node.title, "Codex task")) + '</strong><span>Active</span></article>').join("") : '<p>No active Codex tasks in this scope.</p>') + '</section>';
+  if (state.connectionStatus !== "live" || !Array.isArray(state.overview?.nodes) || !scopeValid) return null;
+  return state.overview.nodes.filter(node => node && typeof node.id === "string" && node.status === "active"
+    && (node.node_kind === "independent_host_task" || String(node.role || node.worker_role || "").toLowerCase() === "independent"
+      || (!String(node.role || node.worker_role || "").trim() && node.agent_role == null))
+    && (allProjects || node.project_id === projectId));
+}
+
+function activeCodexTasksMarkup() {
+  const nodes = scopedActiveHostTasks();
+  if (!nodes) return '<section class="panel"><h3>Observed host tasks</h3><p role="status">Current host activity is unavailable.</p></section>';
+  return '<section class="overview-independent panel"><h3>Observed host tasks</h3><p>Live host activity · SWARM role admission and reviewed progress are separate.</p>' + (nodes.length ? nodes.map(node => '<article class="overview-independent-task" data-active-codex-task="' + escapeHTML(node.id) + '"><span class="scope-dot is-active" aria-hidden="true"></span><span><strong>' + escapeHTML(publicLabel(node.title, "Codex task")) + '</strong><small>' + escapeHTML([node.model || "Codex", node.reasoning ? String(node.reasoning) + " reasoning" : "", "Observed host task"].filter(Boolean).join(" · ")) + '</small></span><span>Active</span></article>').join("") : '<p>No active host tasks in this scope.</p>') + '</section>';
 }
 
 function renderOverviewProjects() {
@@ -4936,12 +4944,17 @@ function renderAgentUpdateControls() {
 function renderAgentTable() {
   const unavailable = currentWorkScopeUnavailable();
   const records = unavailable ? [] : activeAgentRecords();
+  const hostTasks = scopedActiveHostTasks();
   const projects = new Set(records.map((record) => record.project.id));
-  $("#agents-summary").textContent = unavailable ? "Active-agent inventory unavailable" : records.length + " active agent" + (records.length === 1 ? "" : "s") + " across " + projects.size + " project" + (projects.size === 1 ? "" : "s");
+  $("#agents-summary").textContent = hostTasks?.length && !records.length
+    ? hostTasks.length + " observed host task" + (hostTasks.length === 1 ? "" : "s") + " · no admitted agents"
+    : unavailable ? "Active-agent inventory unavailable" : records.length
+      ? records.length + " admitted agent" + (records.length === 1 ? "" : "s") + " across " + projects.size + " project" + (projects.size === 1 ? "" : "s")
+      : "No active agents";
   $("#agents-table-status").textContent = unavailable ? "Accepted project and CTRL bindings are unavailable." : state.projectId === "all" ? "All projects" : scopeLabel();
   $("#agent-table-body").innerHTML = unavailable
     ? '<p class="empty-state agents-empty" role="status">Active agents are unavailable until SWARM receives a current project and CTRL projection.</p>'
-    : records.length ? records.map(agentTableRowMarkup).join("") : '<p class="empty-state agents-empty" role="status">No active CTRL, LEAD, or DOER is available in this project scope.</p>';
+    : records.length ? records.map(agentTableRowMarkup).join("") : '<p class="empty-state agents-empty" role="status">No admitted CTRL, LEAD, or DOER is active in this project scope.</p>';
   $("#agent-table-body").insertAdjacentHTML("beforeend", activeCodexTasksMarkup());
 }
 
