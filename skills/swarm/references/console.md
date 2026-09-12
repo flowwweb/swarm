@@ -58,6 +58,22 @@ the container port to a LAN or public host.
   accepts them only through its explicit loopback bridge.
 - Feedback destinations are redacted and cannot be edited in the console.
 
+## Direct ChatGPT MCP
+
+For ordinary ChatGPT repository work, use the existing Codexify bridge and its
+official Secure MCP Tunnel. SWARM supplies only its read-only domain adapter;
+Codexify supplies file, patch, search, shell, Git, diff, project binding, and
+upstream MCP tools. Configure it with:
+
+```powershell
+python skills/swarm/scripts/swarm_chatgpt_setup.py --check --project-root C:\path\to\repo
+python skills/swarm/scripts/swarm_chatgpt_setup.py --write --project-root C:\path\to\repo
+```
+
+See [direct ChatGPT local MCP](chatgpt-local-mcp.md) for the tunnel, security,
+telemetry, and manual live-acceptance steps. This path is an ordinary Chat
+conversation and does not create a Codex or Work task.
+
 ## Visual contract
 
 Keep the interface distinctive, calm, and operational: dark navy depth,

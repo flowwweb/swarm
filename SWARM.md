@@ -51,11 +51,11 @@
     },
     {
       "id": "chatgpt-codex-connection",
-      "state": "planned",
+      "state": "in_progress",
       "depends_on": ["ledger-p1-acceptance"],
-      "owner": "unleased connector implementation LEAD",
-      "release_condition": "A host-authorized end-to-end ChatGPT route is implemented through the existing universal connector and Ledger, independently accepted, and proven separately from local Codex fallback; no provider or live claim is inferred.",
-      "note": "Command envelopes, Codex App Server transport, connector receipts, and ChatGPT capability planning exist; actual ChatGPT invocation remains unimplemented."
+      "owner": "source integration lane",
+      "release_condition": "An existing local MCP bridge is selected, the thin SWARM adapter and setup path are tested, and the remaining Secure MCP Tunnel plus ordinary ChatGPT write/read-back proof is explicitly tracked as an external acceptance gate.",
+      "note": "Codexify is the selected bridge; SWARM owns only read-only domain projections and bounded local telemetry."
     },
     {
       "id": "lean-core-composed-review",
@@ -83,7 +83,7 @@
     "SWARM is distributed as a Codex plugin/workflow only.",
     "Each project has exactly one root SWARM.md brief; optional domain manifests are digest-bound references, never competing project state.",
     "SWARM.md is the canonical backlog for intent; the Ledger is canonical for observed progress and proof; HQ derives both without becoming an authority.",
-    "ChatGPT is an optional host-owned capability routed through the universal connector, never a second SWARM authority.",
+    "ChatGPT is an optional direct MCP client through an existing local bridge, never a second SWARM authority or agent runtime.",
     "A design set has exactly one selected candidate; every other candidate is rejected after selection."
   ],
   "ownership": {
@@ -102,7 +102,7 @@
   "risks_blockers": [
     "Ledger candidate 069de0e is not independently accepted yet.",
     "The Persistence LEAD hit its Codex usage limit before returning the final immutable receipt.",
-    "No implementation LEAD is currently leased to the end-to-end ChatGPT route.",
+    "Codexify is not installed on the current host, so Secure MCP Tunnel setup and live ordinary-Chat write/read-back remain unverified.",
     "HQ live localhost serves an older shell and source/plugin UI mirrors are under separate reconciliation.",
     "Host transport and live execution receipts remain external gates when not observed."
   ],
@@ -110,6 +110,7 @@
     "skills/swarm/references/project-brief.md",
     "skills/swarm/references/execution-adapters.md",
     "skills/swarm/references/chatgpt-routing.md",
+    "skills/swarm/references/chatgpt-local-mcp.md",
     "skills/swarm/references/lean-core-reset-architecture.md",
     "skills/swarm/references/decision-set.md",
     "skills/swarm/references/review-contract.md"

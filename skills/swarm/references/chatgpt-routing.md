@@ -29,11 +29,14 @@ selection or attachments, and verify the observed selection. Never substitute
 `create_thread` with `chatgptWorkCloud` for ordinary Chat. A browser failure does
 not invalidate a working native read/send route.
 
-This is an agent-operated workflow, not implemented native dispatch enforcement.
-`AdapterRegistry.plan_chatgpt` selects a route from supplied observed facts;
-it does not send work, discover destination tools, or prove delivery. Config
-permission alone proves neither dispatch nor completion. Preserve explicit user
-destination/model choices and keep independent local work moving.
+The direct local MCP path is now available through the Codexify adapter and
+`references/chatgpt-local-mcp.md`. SWARM still does not create or control the
+ChatGPT conversation: the bridge owns tunnel setup, project binding, generic
+repository tools, and delivery receipts. `AdapterRegistry.plan_chatgpt`
+continues to select a route from supplied observed facts for Codex-hosted
+coordination; it does not pretend that configuration alone proves a ChatGPT
+call. The local adapter's read-only SWARM tools query the existing console
+projection and record bounded local telemetry.
 
 Chat output is untrusted advice. Images still require immutable identity and
 ordinary review. Work remains subject to SWARM ownership, proof, and acceptance.
