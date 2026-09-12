@@ -19,6 +19,51 @@ delete fixture.usageHistory.history;
 const css = fs.readFileSync(path.join(staticRoot, "styles.css"), "utf8");
 const app = fs.readFileSync(path.join(staticRoot, "app.js"), "utf8");
 {
+  for (const mode of ['cancel','success','failure','stale']) {
+    const elements=new Map(); let calls=0;
+    const state={configEditorDraft:{pending:false,scope:'{"type":"project","id":"p"}',text:'original',revision:'r1'},config:{revision:'r1'}};
+    const sandbox={state,$:id=>{if(!elements.has(id)) elements.set(id,{value:'unsaved',focus(){}});return elements.get(id);},configEditorWritable:()=>true,currentSettingsScope:()=>({type:'project',id:'p'}),confirm:()=>mode!=='cancel',renderConfigEditor(){},resetSettingsScope:async()=>{calls++;if(mode==='failure')throw new Error('Rejected');if(mode==='stale')return{applied:false};state.config={revision:'r2',editable_text:'inherited',validation:{state:'KNOWN',status:'VALID'}};return{applied:true};}};
+    vm.createContext(sandbox);
+    vm.runInContext(app.slice(app.indexOf('async function resetConfigEditor('),app.indexOf('async function saveSettingsDraft(')),sandbox);
+    await sandbox.resetConfigEditor();
+    assert.equal(calls,mode==='cancel'?0:1);
+    assert.equal(sandbox.$('#config-editor-text').value,mode==='success'?'inherited':'unsaved');
+    assert.equal(state.configEditorDraft.pending,false);
+    if(mode==='success') assert.equal(state.configEditorDraft.revision,'r2');
+  }
+}
+{
+  for (const mode of ['fresh','replay','operation','scope','revision','cursor','stale','transport']) {
+    const scope={type:'project',project_id:'p',accepted_cursor:{sequence:4}};
+    const original={state:'KNOWN',scope,revision:'r1',write_contract:{available:true}};
+    const state={config:original,configStatus:'current',settingsDraft:new Map([['draft',1]])};
+    const requests=[];
+    const sandbox={state,structuredClone,configMutationTail:Promise.resolve(),configAuthorityGeneration:0,currentSettingsScope:()=>({type:'project',id:'p'}),configResetOperationId:()=>`reset-${requests.length}`,api:async(url,options)=>{
+      assert.equal(url,'/api/config/reset'); const payload=JSON.parse(options.body); requests.push(payload);
+      assert.deepEqual(Object.keys(payload).sort(),['acknowledge','expected_revision','operation_id','scope']);
+      if(mode==='transport') throw Object.assign(new Error('offline'),{connectionFailure:true});
+      const result={...original,revision:'r2',mutation_receipt:{accepted:true,action:'project_config_reset',scope:structuredClone(scope),expected_revision:'r1',new_revision:'r2',replayed:mode==='replay',acknowledged:true,operation_id:payload.operation_id}};
+      if(mode==='operation') result.mutation_receipt.operation_id='other';
+      if(mode==='scope') result.scope={type:'global'};
+      if(mode==='revision') result.mutation_receipt.new_revision='other';
+      if(mode==='cursor') result.mutation_receipt.scope.accepted_cursor.sequence=99;
+      if(mode==='stale') state.config={...original,revision:'newer'};
+      return result;
+    }};
+    vm.createContext(sandbox);
+    vm.runInContext(app.slice(app.indexOf('function configWriteScope('),app.indexOf('function configTomlLiteral('))+app.slice(app.indexOf('function configWriteReceiptMatches('),app.indexOf('function configWriteBindingIsCurrent('))+app.slice(app.indexOf('function configResetRequest('),app.indexOf('async function readConfigState(')),sandbox);
+    if(mode==='fresh'||mode==='replay') {
+      assert.equal((await sandbox.resetSettingsScope('project')).applied,true); assert.equal(state.config.revision,'r2'); assert.equal(state.settingsDraft.size,0);
+    } else if(mode==='stale') {
+      assert.equal((await sandbox.resetSettingsScope('project')).applied,false); assert.equal(state.config.revision,'newer'); assert.equal(state.settingsDraft.size,1);
+    } else {
+      await assert.rejects(sandbox.resetSettingsScope('project')); assert.equal(state.config,original); assert.equal(state.settingsDraft.size,1);
+      await assert.rejects(sandbox.resetSettingsScope('project')); assert.equal(requests[0].operation_id,requests[1].operation_id);
+      await assert.rejects(sandbox.resetSettingsScope('project'),/after one retry/); assert.equal(requests.length,2);
+    }
+  }
+}
+{
   for (const mode of ['fresh','replay','transport','conflict','mismatch']) {
     const elements=new Map(), requests=[];
     const state={configStatus:'current',config:{scope:{type:'global'},state:'KNOWN',available:true,read_only:false,write_contract:{available:true},revision:'r1',editable_text:'original'}};
@@ -507,7 +552,7 @@ assert.match(app, /function configWriteRequest\(text, projection = state\.config
 assert.match(app, /function saveConfigText\(text\)[\s\S]*?configAuthorityGeneration \+= 1[\s\S]*?configMutationTail = operation\.then/);
 assert.match(app, /function saveConfigMutation\(changes\) \{\s*return saveConfigText\(\(\) => configTextWithChanges\(state\.config\?\.editable_text, changes\)\);\s*\}/);
 assert.match(app, /function configWriteReceiptMatches\(result, request\)[\s\S]*?JSON\.stringify\(receipt\?\.scope\) === request\.binding[\s\S]*?receipt\?\.acknowledged === true[\s\S]*?receipt\?\.operation_id === request\.operationId[\s\S]*?receipt\?\.expected_revision === request\.payload\.expected_revision/);
-assert.match(app, /receipt\?\.action === "config_update"[\s\S]*?typeof receipt\?\.replayed === "boolean"/);
+assert.match(app, /receipt\?\.action === \(request\.action \|\| "config_update"\)[\s\S]*?typeof receipt\?\.replayed === "boolean"/);
 assert.match(app, /retry\?\.exhausted[\s\S]*?const operationId = retry\?\.operationId \|\| configWriteOperationId\(\)/);
 assert.match(app, /if \(request\) configWriteRetry = uncertain \? \{ identity: request\.identity, operationId: request\.operationId, exhausted: request\.uncertainRetry \} : null/);
 assert.match(app, /function saveCurrentConfigMutation\(changes\)[\s\S]*?if \(!result\.applied\) throw new Error\("Settings scope changed before the save was acknowledged\. Your unsaved changes are preserved\."\)/);
@@ -518,7 +563,7 @@ assert.match(app, /function configResetRequest\(kind\)[\s\S]*?endpoint: "\/api\/
 assert.match(app, /function configResetRequest\(kind\)[\s\S]*?endpoint: "\/api\/config\/reset"[\s\S]*?accepted_cursor: structuredClone\(scope\.accepted_cursor\)[\s\S]*?expected_revision: projection\.revision/);
 assert.match(app, /function configResetRequest\(kind\)[\s\S]*?endpoint: "\/api\/ctrl-settings\/reset"[\s\S]*?ctrl_id: String\(setting\.ctrl_id\)[\s\S]*?expected_revision: setting\.revision[\s\S]*?acknowledge: true/);
 assert.match(app, /function resetSettingsScope\(kind\)[\s\S]*?configResetRetry\?\.key === key[\s\S]*?operation_id: operationId[\s\S]*?configMutationTail\.then[\s\S]*?configResetBindingIsCurrent\(request\)/);
-assert.match(app, /state\.configResetRetry = error\?\.connectionFailure === true \|\| !Number\.isInteger\(error\?\.status\) \? \{ key, operationId \} : null/);
+assert.match(app, /state\.configResetRetry = error\?\.connectionFailure === true \|\| !Number\.isInteger\(error\?\.status\) \? \{ key, operationId, exhausted: Boolean\(retainedRetry\) \} : null/);
 assert.doesNotMatch(app, /api\('\/api\/settings\/restore', \{ method: 'POST' \}\)|JSON\.stringify\(\{ ctrl_id: state\.ctrlSettings\.ctrl_id, expected_revision: state\.ctrlSettings\.revision \}\)/);
 assert.match(app, /function observedTimestampMs\(value\)[\s\S]*?numeric < 1e12 \? numeric \* 1000 : numeric[\s\S]*?Date\.UTC\(2000, 0, 1\)/);
 assert.match(app, /state\.onboardingConfigPending\.set\(key, \{ value, focusIdentity \}\)/);
@@ -617,7 +662,7 @@ assert.match(app, /event\.key === "Tab" && \$\("\.app-shell"\)\.classList\.conta
 assert.match(app, /drawer\.inert = !expanded/);
 assert.match(app, /event\.key === "Escape" && \$\("\.app-shell"\)\.classList\.contains\("is-drawer-open"\)/);
 
-for (const label of ["Projects", "Latest updates", "Applies to", "Replay tour", "Edit config"]) {
+for (const label of ["Projects", "Latest updates", "Applies to", "Replay tour"]) {
   assert.match(indexHtml + app, new RegExp(label));
 }
 assert.match(app, /\/api\/usage-history\?/);
@@ -635,26 +680,18 @@ assert.match(app, /\/api\/project-progress-feed\?/);
 assert.match(app, /\/api\/project-progress\?/);
 assert.match(app, /function renderProjectProgressFeed\(\)/);
 assert.doesNotMatch(app, /setInterval\([^)]*projectProgress|setInterval\([^)]*progressFeed/);
-for (const tab of ["overview", "roadmap", "lanes", "proof", "ledger", "ui", "logs"]) {
-  assert.match(indexHtml, new RegExp(`id="project-tab-${tab}"[^>]*data-project-tab="${tab}"[^>]*role="tab"[^>]*aria-controls="project-tab-panel"`));
-}
-assert.equal((indexHtml.match(/data-project-tab=/g) || []).length, 7);
-assert.match(indexHtml, /id="project-tab-ui"[^>]*hidden>UI<\/button>/);
+assert.doesNotMatch(indexHtml, /data-project-tab=/);
+assert.doesNotMatch(indexHtml, /class="project-tabs"/);
 assert.match(indexHtml, /id="project-detail" hidden aria-labelledby="project-detail-title"/);
-assert.match(indexHtml, /id="project-tab-panel" role="tabpanel" aria-labelledby="project-tab-overview"/);
+assert.match(indexHtml, /id="project-tab-panel" role="region" aria-label="Project overview"/);
 assert.match(app, /function renderProjectDetail\(\)/);
-assert.match(app, /button\.dataset\.projectTab = view\.id;[\s\S]*?button\.dataset\.projectTabManifest = "";[\s\S]*?logsTab\.before\(button\)/);
+assert.match(app, /state\.projectTab = "overview";[\s\S]*?tabPanel\.innerHTML = projectTabMarkup\("overview", progress, nodes\)/);
 assert.match(app, /const PROJECT_WORKSPACE_TAB_ICONS = new Map\(/);
 assert.match(app, /function projectWorkspaceTabIcon\(view\)/);
-assert.match(app, /button\.innerHTML = \(icon \? '<svg class="lucide" aria-hidden="true">/);
-assert.match(css, /\.project-tabs button:not\(\[hidden\]\) \{[^}]*display:inline-flex;[^}]*align-items:center;[^}]*gap:6px/);
-assert.match(app, /const selectedTabId = selectedTab\?\.id \|\| "project-tab-overview"/);
-assert.match(app, /tabPanel\.setAttribute\("aria-labelledby", selectedTabId\)/);
 assert.match(app, /function projectTabMarkup\(tab, progress, nodes\)/);
 assert.match(app, /function currentProjectView\(\)/);
 assert.match(app, /projection && projection\.project_id === projectId && projection\.tab\?\.id === "ui"/);
 assert.match(app, /const workspaceViews = projectWorkspaceViews\(currentProjectView\(\)\);[\s\S]*?const workspaceView = workspaceViews\.find\(\(view\) => view\.id === tab\);[\s\S]*?projectWorkspaceTabMarkup\(workspaceView\)[\s\S]*?PROJECT_WORKSPACE_EMBEDDED_TABS\.get\(view\.id\) === tab/);
-assert.match(app, /uiTab\.hidden = !projectView \|\| \(!manifestWorkspace && workspaceViews\.length > 0\)/);
 assert.match(app, /function openProjectViewEvidence\(screenKey, trigger\)/);
 assert.match(app, /function projectViewRequirementGroup\(nodeIds\)/);
 assert.match(app, /state\.evidenceImages = evidence\.map\(\(item\) => \(\{ \.\.\.item, project_requirement_summary: requirementSummary \}\)\)/);
@@ -668,7 +705,7 @@ assert.match(app, /function drawProjectViewConnectors\(\)/);
 assert.match(app, /const PROJECT_WORKSPACE_RENDERERS = new Set\(\["document\/blocks", "timeline\/milestones", "canvas\/network", "table\/records", "gallery\/grid", "gallery\/list"\]\)/);
 assert.match(app, /function projectWorkspaceViews\(projection\)/);
 assert.match(app, /function projectWorkspaceModeView\(projection, modeId,[\s\S]*?mode\?\.view_id[\s\S]*?view\.id === viewId/);
-assert.match(app, /const manifestWorkspace = Boolean\(projectView\?\.tab\?\.manifest_id\)[\s\S]*?uiTab\.hidden = !projectView \|\| \(!manifestWorkspace && workspaceViews\.length > 0\)/);
+assert.doesNotMatch(app, /const manifestWorkspace =|uiTab\.hidden/);
 assert.match(app, /projection\?\.status === "STALE_LAST_ACCEPTED"[\s\S]*Last accepted project brief snapshot/);
 assert.match(app, /view\?\.content\?\.document[\s\S]*?document\?\.blocks/);
 assert.match(app, /view\?\.content\?\.timeline[\s\S]*?timeline\?\.events/);
@@ -801,49 +838,7 @@ assert.match(runLogRenderSource, /announcer\.dataset\.revision !== String\(surfa
 assert.match(runLogSource, /runLogSurfaceState\(surface, runLogPlanBindingKey\(plan\)\)/);
 assert.match(runLogSource, /if \(runLogCanAnnounce\(previous, replace\)\) markRunLogNewEntries\(key, merged\.addedItems\)/);
 const projectDetailSource = app.slice(app.indexOf("function renderProjectDetail"), app.indexOf("function proofReviewState"));
-assert.match(projectDetailSource, /const retainedRunLogMount = state\.projectTab === "logs" && \$\('\[data-run-log-surface="project"\]', tabPanel\)/);
-assert.match(projectDetailSource, /if \(!retainedRunLogMount\) tabPanel\.innerHTML = projectTabMarkup/);
-const renderOverviewSource = app.slice(app.indexOf("function renderOverview"), app.indexOf("function observedAgentRole"));
-const refreshMonitoringSource = app.slice(app.indexOf("async function refreshMonitoring"), app.indexOf("async function refreshCtrlSettings"));
-const runLogOuterRenderHarness = vm.runInNewContext(`(() => {
-  const runLogMount = { identity: "stable-project-run-log" };
-  let panelWrites = 0;
-  const tabPanel = {
-    setAttribute() {},
-    querySelector(selector) { return selector === '[data-run-log-surface="project"]' ? runLogMount : null; },
-    get innerHTML() { return ""; },
-    set innerHTML(value) { panelWrites += 1; },
-  };
-  const element = () => ({ hidden: false, textContent: "", innerHTML: "", setAttribute() {} });
-  const elements = new Map([
-    ["#projects-portfolio", element()], ["#project-detail", element()], ["#view-title", element()], ["#view-subtitle", element()],
-    ["#project-detail-title", element()], ["#project-detail-status", element()], ["#project-detail-summary", element()],
-    ["#project-tab-panel", tabPanel], ["#project-tab-ui", element()], ["#sync-time", element()],
-  ]);
-  const tabs = [{ dataset: { projectTab: "logs" }, classList: { toggle() {} }, setAttribute() {}, tabIndex: 0 }];
-  const state = { view: "overview", projectTab: "logs", projectProgressStatus: "current", connectionStatus: "reconnecting", proofSequence: 0, overview: null };
-  function $(selector, root) { return root === tabPanel ? tabPanel.querySelector(selector) : elements.get(selector); }
-  function $$(selector) { return selector === '[data-project-tab]' ? tabs : []; }
-  function selectedProgressProjectId() { return "project:one"; }
-  function currentProjectView() { return null; }
-  function projectGroups() { return [{ id: "project:one", label: "Project One" }]; }
-  function selectedProjectProgress() { return null; }
-  function scopedNodes() { return []; }
-  function projectEta() { return "—"; }
-  function humanize(value) { return String(value || ""); }
-  function escapeHTML(value) { return String(value ?? ""); }
-  function projectTabMarkup() { return '<section data-run-log-surface="project"></section>'; }
-  function renderOverviewMetrics() {} function renderOverviewProjectCards() {}
-  function renderEvidenceGallery() {} function renderUsage() {} function renderProjectProgressFeed() {} function renderNotifications() {}
-  function clearConnectionState() {} function setDataStatus() {} function renderProjectNavigation() {} function renderAgents() {} function renderReview() {} function renderAssets() {} function renderRunLogSurfaces() {}
-  async function api() { return { generated_at: 1 }; }
-  async function refreshUsageHistory() {} async function refreshNotifications() {} async function refreshRunLogs() {} async function refreshProof() {}
-  ${projectDetailSource}
-  ${renderOverviewSource}
-  ${refreshMonitoringSource}
-  return { run: async () => { await refreshMonitoring(0); return { panelWrites, sameMount: tabPanel.querySelector('[data-run-log-surface="project"]') === runLogMount }; } };
-})()`);
-assert.deepEqual({ ...(await runLogOuterRenderHarness.run()) }, { panelWrites: 0, sameMount: true });
+assert.match(projectDetailSource, /state\.projectTab = "overview";[\s\S]*?tabPanel\.innerHTML = projectTabMarkup\("overview", progress, nodes\)/);
 const refreshRunLogBindingSource = app.slice(app.indexOf("async function refreshRunLogBinding"), app.indexOf("async function refreshRunLogs"));
 const runLogEmptyBaselineHarness = vm.runInNewContext(`(() => {
   const RUN_LOG_CLIENT_LIMIT = 200;
@@ -1241,7 +1236,7 @@ assert.match(indexHtml, /id="view-diagnostics"[\s\S]*?id="diagnostics-check-stri
 assert.match(css, /@media \(max-width: 620px\)[\s\S]*?\.icon-button \{ flex: 0 0 46px; height: 46px; \}/);
 assert.match(app, /function routeView\(\)/);
 assert.doesNotMatch(indexHtml, /id="highest-usage-tasks"/, "Task usage belongs in TBR, not the Overview page body");
-assert.ok(indexHtml.includes('<details class="nav-more" id="nav-more">'));
+assert.doesNotMatch(indexHtml, /id="nav-more"/);
 assert.equal((indexHtml.match(/<button type="button" aria-haspopup="dialog" aria-controls="metric-detail-dialog"/g) || []).length, 4);
 assert.match(indexHtml, /<dialog class="metric-detail-dialog" id="metric-detail-dialog"/);
 assert.match(css, /\.metric-detail-dialog \{ width:calc\(100vw - 32px\); height:min\(720px,calc\(100dvh - 32px\)\); margin:auto; border-radius:12px;/, 'Mobile metric dialog retains margins on every side');
@@ -1328,7 +1323,7 @@ assert.doesNotMatch(app.slice(app.indexOf('function renderUsageCharts()'), app.i
   let card;
   Object.assign(sandbox,{Date:class extends Date {static now(){return now;}},escapeHTML:String,
     $:()=>({setAttribute(){}}),renderOverviewMetric:(_,value)=>{card=value;}});
-  vm.runInContext(app.slice(app.indexOf('function formatDuration('),app.indexOf('function forecastSummary(')) + app.slice(app.indexOf('function renderAccountUsage('),app.indexOf('function highestUsageTaskRows(')),sandbox);
+  vm.runInContext(app.slice(app.indexOf('function formatDuration('),app.indexOf('function forecastSummary(')) + app.slice(app.indexOf('function accountUsageDisplayWindows('),app.indexOf('function highestUsageTaskRows(')),sandbox);
   state.usageScopeKey='scope'; window.remaining_percent=40; window.reset_at_ms=now+86400000;
   window.forecast={status:'ESTIMATED',exhaustion_at_ms:now+14400000,rate_percentage_points_per_hour:10};
   sandbox.renderAccountUsage();
@@ -1345,12 +1340,11 @@ assert.doesNotMatch(app.slice(app.indexOf('function renderUsageCharts()'), app.i
   state.usageHistory.account_limits.status='PARTIAL'; window.limit_id='spark';
   sandbox.renderAccountUsage(); assert.equal(card.state,'PARTIAL'); assert.match(card.note,/spark/);
   assert.match(sandbox.accountUsageDetails(),/Some account windows are unavailable/);
-  state.usageStatus='stale'; sandbox.renderAccountUsage(); assert.equal(card.value,'—');
-  assert.match(sandbox.accountUsageDetails(),/UNKNOWN/);
-  assert.doesNotMatch(sandbox.accountUsageDetails(),/40% remaining/);
+  state.usageStatus='stale'; sandbox.renderAccountUsage(); assert.equal(card.value,'40%');
+  assert.match(sandbox.accountUsageDetails(),/STALE/);
+  assert.match(sandbox.accountUsageDetails(),/Forecast withheld/);
 }
-assert.match(indexHtml, /id="nav-more"><summary[^>]*>More<svg[^>]*aria-hidden="true"><use href="#lucide-chevron-down"/);
-assert.ok(css.includes('.nav-more[open] > summary > .lucide { transform:rotate(180deg); }'));
+assert.doesNotMatch(indexHtml, /<summary[^>]*>More/);
 assert.ok(css.includes('.settings-save-bar[hidden] { display:none; }'));
 assert.ok(css.includes('@media (min-width:901px) and (pointer:fine)'));
 assert.ok(css.includes('.project-scope-button { min-height:32px; }'));
@@ -1434,7 +1428,7 @@ assert.match(overviewProjectCardsSource, /data-agent-inspect/);
 assert.match(overviewProjectCardsSource, /#lucide-eye/);
 assert.doesNotMatch(overviewProjectCardsSource, /#lucide-pencil/);
 assert.match(overviewProjectCardsSource, /Team map controls/);
-assert.match(overviewProjectCardsSource, /Independent host tasks/);
+assert.match(overviewProjectCardsSource, /Active host tasks/);
 assert.doesNotMatch(overviewProjectCardsSource, /overviewCards\(|scopedCards|slice\(0, 5\)|Unmeasured|overview-controller-group|overview-hierarchy-tasks/);
 assert.match(css, /\.overview-node-more summary \{[^}]*height:18px/);
 assert.match(css, /\.overview-node-more summary::before \{[^}]*inset:-13px 0/);
@@ -1564,7 +1558,7 @@ assert.match(css, /\.project-navigation \{ display:flex; min-height:0; flex:1; f
 assert.match(css, /#project-navigation \{[^}]*min-height:0;[^}]*overflow-y:auto;[^}]*overscroll-behavior:contain;/);
 assert.match(css, /\.nav-footer \{[^}]*flex:0 0 auto;[^}]*margin-top:auto;/);
 assert.match(css, /\.project-scope-button \{[^}]*min-height: 44px;/);
-assert.ok(indexHtml.indexOf('id="project-tab-logs"') < indexHtml.indexOf('id="project-tab-ui"'));
+assert.doesNotMatch(indexHtml, /id="project-tab-(?:logs|ui)"/);
 for (const status of ["active", "recent", "inactive", "unknown"]) assert.match(css, new RegExp(`\\.scope-dot\\.is-${status}`));
 assert.doesNotMatch(indexHtml, /id="(?:task-table|proof-feed|burn-chart|overview-diagnostics-heading)"/);
 assert.match(app, /Needs attention/);
@@ -1883,7 +1877,7 @@ assert.doesNotMatch(indexHtml, /Choose in Assets/);
 assert.doesNotMatch(indexHtml + app, /data-role-action="generate-avatar"|aria-label="Generate avatar"/);
 assert.match(app, /function roleSpecializations\(role\)/);
 assert.match(app, /role\.specializations[\s\S]*?\.slice\(0, 4\)/);
-assert.match(app, /Specializations<\/h4>' \+ roleSpecializationsMarkup\(role\)/);
+assert.match(app, /roleDetailDisclosure\("Specializations", roleSpecializationsMarkup\(role\)\)/);
 assert.doesNotMatch(indexHtml + app, /Game Development|Game Design/);
 assert.match(indexHtml, /id="role-save" type="submit" disabled/);
 assert.match(indexHtml, /id="role-reset" data-role-action="reset" type="button" disabled/);
@@ -2026,7 +2020,7 @@ assert.doesNotMatch(css, /#ff7449|#ff526f|#ff784c|#ff8b25|#ff4937/i);
 assert.match(css, /@media \(max-width: 620px\)[\s\S]*\.circle-frame \{ --circle-size:44px; \}/);
 assert.doesNotMatch(css, /\.profile-button[^}]*width:\s*\d+px;|\.profile-button[^}]*height:\s*\d+px;/);
 assert.match(css, /\.role-editor-fields input,.role-editor-fields textarea,.role-editor-fields select[\s\S]*?\.role-editor-fields input,.role-editor-fields select \{ min-height:44px; \}/);
-assert.match(css, /@media \(max-width: 620px\)[\s\S]*\.project-tabs button \{ min-height:44px; \}/);
+assert.doesNotMatch(indexHtml, /class="project-tabs"/);
 assert.match(css, /@media \(max-width: 620px\)[\s\S]*\.review-actions \.icon-button,\.review-actions summary \{ width:44px; height:44px; \}/);
 assert.match(css, /@media \(max-width: 620px\)[\s\S]*\.settings-save-bar button,\.config-editor-footer button \{ flex:1; \}/);
 assert.match(css, /@media \(max-width: 620px\)[\s\S]*\.error-surface \{ top:calc\(64px \+ env\(safe-area-inset-top\) \+ 8px\);/);
@@ -2806,9 +2800,6 @@ async function assertMetricDetailContainment(page) {
 }
 
 async function openPrimaryView(page, view) {
-  if (["roles", "assets", "diagnostics"].includes(view) && !(await page.locator('#nav-more').getAttribute('open') !== null)) {
-    await page.locator('#nav-more > summary').click();
-  }
   await page.locator('.nav-item[data-view="' + view + '"]').click();
 }
 
@@ -2989,7 +2980,8 @@ async function mount(page, overview, overrides = {}) {
         configControl.ctrlFeed = { ...configControl.ctrlFeed, revision: Number(configControl.ctrlFeed.revision || 0) + 1, customized: false, override: {}, mutation_receipt: { acknowledged: true, operation_id: payload.operation_id } };
         result = structuredClone(configControl.ctrlFeed);
       } else {
-        configControl.feed = { ...configControl.feed, revision: String(configControl.feed.revision) + "-reset", mutation_receipt: { acknowledged: true, operation_id: payload.operation_id } };
+        const revision = String(configControl.feed.revision) + "-reset";
+        configControl.feed = { ...configControl.feed, revision, mutation_receipt: { accepted: true, action: payload.scope.type + "_config_reset", scope: structuredClone(payload.scope), expected_revision: payload.expected_revision, new_revision: revision, replayed: false, acknowledged: true, operation_id: payload.operation_id } };
         result = structuredClone(configControl.feed);
       }
       configControl.resetOperations.set(payload.operation_id, result);
@@ -3921,14 +3913,10 @@ proofFeed.items.push({
     assert.ok(advancedRouteTarget.width >= 44 && advancedRouteTarget.height >= 44);
     const configRequestsBeforeRoute = onboardingAdvancedRoute.configRequests.length;
     await advancedSettingsRoute.click();
-    await onboardingAdvancedRoutePage.waitForFunction(() => location.hash === "#settings-advanced" && document.activeElement?.id === "settings-edit-config");
+    await onboardingAdvancedRoutePage.waitForFunction(() => location.hash === "#settings-advanced" && !document.querySelector('[data-view-panel="settings"]')?.hidden);
     assert.equal(await onboardingAdvancedRoutePage.locator("#onboarding-dialog").isVisible(), false);
     assert.equal(await onboardingAdvancedRoutePage.locator('[data-view-panel="settings"]').isVisible(), true);
-    assert.equal(await onboardingAdvancedRoutePage.evaluate(() => document.activeElement?.textContent?.trim()), "Edit config");
-    assert.ok(await onboardingAdvancedRoutePage.locator("#settings-edit-config").evaluate((button) => {
-      const rect = button.getBoundingClientRect();
-      return rect.top >= 0 && rect.bottom <= innerHeight && document.documentElement.scrollWidth <= innerWidth;
-    }));
+    assert.equal(await onboardingAdvancedRoutePage.locator("#settings-advanced").count(), 1);
     if (evidenceDir) await onboardingAdvancedRoutePage.screenshot({ path: path.join(evidenceDir, "05c-advanced-settings-route-desktop-1440x1000.png"), fullPage: false, animations: "disabled" });
     assert.equal(await onboardingAdvancedRoutePage.evaluate(() => localStorage.getItem("swarm.onboarding.v2.seen")), "1");
     assert.equal(onboardingAdvancedRoute.configRequests.length, configRequestsBeforeRoute);
@@ -4955,7 +4943,7 @@ proofFeed.items.push({
         repairResponses: [],
       },
     });
-    await assertSharedCircleGeometry(page, ["#profile", "#notifications", "#snapshot-status-dot", ".scope-dot", ".agent-avatar-token", "#message-launcher"]);
+    await assertSharedCircleGeometry(page, ["#profile", "#notifications", ".scope-dot", ".agent-avatar-token", "#message-launcher"]);
     await page.locator("#notifications").click();
     await page.locator("#notifications-panel").waitFor({ state: "visible" });
     if (evidenceDir) await page.screenshot({ path: path.join(evidenceDir, "circle-invariant-notifications-desktop-1536x1024.png"), fullPage: false, animations: "disabled" });
@@ -5078,22 +5066,21 @@ proofFeed.items.push({
     await page.locator('[data-overview-metric="usage"]').focus();
     await page.keyboard.press('Enter');
     assert.equal(await page.getByRole('dialog', {name:'Usage',exact:true}).isVisible(), true);
-    assert.equal(await page.locator('[data-usage-chart="metric-detail"] [data-usage-range="1"]').getAttribute("aria-pressed"), "true");
+    const usageRanges = page.getByRole("group", { name: "Task usage range", exact: true });
+    assert.equal(await usageRanges.getByRole("button", { name: "1d", exact: true }).getAttribute("aria-pressed"), "true");
     await assertMetricDetailContainment(page);
-    assert.equal(await page.locator("#metric-usage-trend").getAttribute("aria-label"), "Remaining allowance unavailable");
-    assert.equal(await page.locator("#metric-usage-trend polyline.chart-line").count(), 0);
-    const usageDayRequest = page.waitForRequest((request) => new URL(request.url()).pathname === "/api/usage-history" && new URL(request.url()).searchParams.get("hours") === "24");
-    await page.locator('[data-usage-chart="metric-detail"] [data-usage-range="24"]').click();
-    await usageDayRequest;
-    await page.waitForFunction(() => state.usageWindowHours === 24 && state.usageStatus === "current");
-    assert.equal(await page.locator('[data-usage-chart="metric-detail"] [data-usage-range="24"]').getAttribute("aria-pressed"), "true");
+    const usageWeekRequest = page.waitForRequest((request) => new URL(request.url()).pathname === "/api/usage-history" && new URL(request.url()).searchParams.get("hours") === "168");
+    await usageRanges.getByRole("button", { name: "1w", exact: true }).click();
+    await usageWeekRequest;
+    await page.waitForFunction(() => state.usageWindowHours === 168 && state.usageStatus === "current");
+    assert.equal(await usageRanges.getByRole("button", { name: "1w", exact: true }).getAttribute("aria-pressed"), "true");
     await page.keyboard.press('Escape');
     assert.equal(await page.locator('[data-overview-metric="usage"]').evaluate(el => el === document.activeElement), true);
     assert.equal(await page.locator("#overview-monitoring-heading").isVisible(), true);
     assert.equal(await page.locator("#overview-monitoring-heading").textContent(), "Swarm");
     assert.deepEqual(await page.locator("#overview-project-cards [data-overview-project-id] strong").allTextContents(), ["Arc", "Atlas", "Flowwweb", "swarm"]);
     assert.deepEqual(await page.locator("#overview-project-cards [data-overview-hierarchy-project]").evaluateAll((projects) => projects.map((project) => project.dataset.overviewHierarchyProject)), ["project:arc", "project:atlas", "project:branch", "project:fixture"]);
-    assert.match(await page.locator("#overview-project-cards .overview-hierarchy-canvas > .overview-independent:not(.is-error)").textContent(), /Independent host tasks[\s\S]*Resolve customer export[\s\S]*Inspect export evidence[\s\S]*Anonymous[\s\S]*Independent task/);
+    assert.match(await page.locator("#overview-project-cards .overview-hierarchy-canvas > .overview-independent:not(.is-error)").textContent(), /Active host tasks[\s\S]*Resolve customer export[\s\S]*Inspect export evidence[\s\S]*Anonymous[\s\S]*Independent task/);
     assert.match(await page.locator("#overview-project-cards .overview-independent.is-error").textContent(), /Role binding needs attention[\s\S]*Reconnect role manifest[\s\S]*Role binding error/);
     assert.doesNotMatch(await page.locator("#overview-project-cards").textContent(), /Await customer decision|Resolve dependency|Unassigned planning/);
     await page.waitForFunction(() => [...document.querySelectorAll("[data-overview-hierarchy-edge]")].every((path) => Boolean(path.getAttribute("d"))));
@@ -5152,12 +5139,8 @@ proofFeed.items.push({
       renderOverview();
     }, hierarchyWorkView);
     const nestedHierarchy = page.locator('[data-overview-hierarchy-node="nested-task"]');
-    assert.equal(await nestedHierarchy.locator(":scope > .overview-node-work-list > .overview-node-work").count(), 3);
-    assert.equal(await nestedHierarchy.locator(":scope > .overview-node-work-list > .overview-node-more").count(), 1);
-    assert.equal(await nestedHierarchy.locator(".overview-node-more summary").getAttribute("title"), "2 more work items");
-    assert.equal(await nestedHierarchy.locator(".overview-node-more summary").evaluate((summary) => Math.round(summary.getBoundingClientRect().height)), 18);
-    await nestedHierarchy.locator(".overview-node-more summary").click();
-    assert.equal(await nestedHierarchy.locator(".overview-node-more > div > .overview-node-work").count(), 2);
+    assert.equal(await nestedHierarchy.locator(":scope > .overview-node-work-list > .overview-node-work").count(), 0);
+    assert.equal(await nestedHierarchy.locator(":scope > .overview-node-work-list > .overview-node-more").count(), 0);
     await page.evaluate((legacyProjectView) => { state.overview.project_view = legacyProjectView; renderOverview(); }, projectViewFixture());
     const overviewAgent = page.locator('#overview-project-cards .overview-node-open[data-agent-detail="nested-task"]');
     await overviewAgent.focus();
@@ -5208,206 +5191,13 @@ proofFeed.items.push({
       return unread?.hidden === true && unread.textContent === "0";
     });
     await page.locator("#notifications-close").click();
-    assert.equal(await page.locator("[data-project-tab]").count(), 7);
-    assert.equal(await page.getByRole("tab", { name: "UI", exact: true }).isVisible(), true);
+    assert.equal(await page.locator("[data-project-tab]").count(), 0);
+    assert.equal(await page.locator("#project-tab-panel").getAttribute("aria-label"), "Project overview");
     assert.match(await page.locator("#project-detail-summary").textContent(), /60%/);
     assert.equal(await page.locator(".milestone-ring").count(), 2);
-    assert.equal(await page.locator(".project-yield-chart").count(), 1);
+    assert.equal(await page.locator(".project-yield-chart").count(), 0);
+    assert.equal(await page.locator(".project-yield-empty").count(), 1);
     assert.equal(await page.locator(".project-detail-feed > li").count(), 2);
-    await page.getByRole("tab", { name: "Roadmap", exact: true }).click();
-    assert.equal(await page.locator("#project-tab-panel").getAttribute("aria-labelledby"), "project-tab-roadmap");
-    assert.match(await page.locator("#project-tab-panel").textContent(), /Foundation/);
-    await page.getByRole("tab", { name: "Lanes", exact: true }).click();
-    assert.equal(await page.locator("#project-tab-panel").getAttribute("aria-labelledby"), "project-tab-lanes");
-    assert.match(await page.locator("#project-tab-panel").textContent(), /Console surfaces/);
-    await page.getByRole("tab", { name: "UI", exact: true }).click();
-    assert.equal(await page.locator("#project-tab-panel").getAttribute("aria-labelledby"), "project-tab-ui");
-    await page.evaluate(() => { state.overview.project_view.status = "STALE_LAST_ACCEPTED"; renderProjectDetail(); });
-    assert.equal(await page.locator(".project-ui-stale").textContent(), "Last accepted project brief snapshot");
-    await page.evaluate(() => { delete state.overview.project_view.status; renderProjectDetail(); });
-    assert.equal(await page.locator(".project-ui-stale").count(), 0);
-    assert.deepEqual(await page.locator("[data-project-tab]:visible").allTextContents(), ["Overview", "Roadmap", "Lanes", "Proof", "Ledger", "Logs", "UI"]);
-    assert.equal(await page.locator(".project-ui-card").count(), 2);
-    assert.deepEqual(await page.locator('.project-ui-card[data-project-view-screen="overview/default"] .project-ui-devices li').allTextContents(), ["Desktop", "Tablet", "Mobile"]);
-    assert.equal(await page.locator('.project-ui-card[data-project-view-screen="overview/default"] .project-ui-alternatives').textContent(), "3 alternatives");
-    assert.equal(await page.locator('.project-ui-card[data-project-view-screen="assets/empty"] .project-ui-alternatives').count(), 0);
-    assert.equal(await page.locator('.project-ui-card[data-project-view-screen="assets/empty"] .project-ui-devices').count(), 0);
-    assert.match(await page.locator('.project-ui-card[data-project-view-screen="overview/default"] .project-ui-requirements').textContent(), /Overview · 1 satisfied · 1 partial · 2 missing · 1 unknown/);
-    await page.locator('.project-ui-card[data-project-view-screen="overview/default"] [data-project-view-evidence]').click();
-    assert.equal(await page.locator("#evidence-lightbox").isVisible(), true);
-    assert.match(await page.locator("#evidence-lightbox-caption").textContent(), /Overview · 1 satisfied · 1 partial · 2 missing · 1 unknown/);
-    await assertDialogFrame(page, "#evidence-lightbox");
-    await page.setViewportSize({ width: 834, height: 1112 });
-    await assertDialogFrame(page, "#evidence-lightbox");
-    await page.setViewportSize({ width: 390, height: 844 });
-    await assertDialogFrame(page, "#evidence-lightbox");
-    await page.setViewportSize({ width: 1536, height: 1024 });
-    await page.getByRole("button", { name: "Close evidence gallery" }).click();
-    assert.equal(await page.evaluate(() => document.activeElement?.getAttribute("data-project-view-evidence")), "overview/default");
-    await page.getByRole("button", { name: "Map", exact: true }).click();
-    assert.equal(await page.locator('[data-project-map-node="runtime-state"]').count(), 0);
-    const groupNode = page.locator('[data-project-map-group="workspace"]');
-    assert.equal(await groupNode.count(), 1);
-    await groupNode.focus();
-    await page.keyboard.press("Enter");
-    assert.equal(await page.locator(".project-ui-flowchart-node").count(), 2);
-    assert.equal(await page.locator('[data-project-map-edge="overview-assets"]').count(), 1);
-    await page.waitForFunction(() => Boolean(document.querySelector('[data-project-map-edge="overview-assets"]')?.getAttribute("d")));
-    assert.match(await page.locator('.project-ui-flowchart [aria-label="Map connections"]').textContent(), /Overview to Assets: Open assets/);
-    assert.equal(await page.locator(".project-ui-flowchart").evaluate((stage) => {
-      const svg = stage.querySelector(".project-ui-flowchart-connectors");
-      const layers = stage.querySelector(".project-ui-flowchart-layers");
-      return Boolean(svg.compareDocumentPosition(layers) & Node.DOCUMENT_POSITION_FOLLOWING);
-    }), true);
-    const firstLayout = await page.locator(".project-ui-flowchart").evaluate((stage) => ({ layers: [...stage.querySelectorAll("[data-flow-layer]")].map((layer) => [...layer.querySelectorAll("[data-project-map-node]")].map((node) => node.dataset.projectMapNode)), edge: stage.querySelector('[data-project-map-edge="overview-assets"]')?.getAttribute("d") }));
-    await page.evaluate(() => renderProjectDetail());
-    await page.waitForFunction(() => Boolean(document.querySelector('[data-project-map-edge="overview-assets"]')?.getAttribute("d")));
-    const secondLayout = await page.locator(".project-ui-flowchart").evaluate((stage) => ({ layers: [...stage.querySelectorAll("[data-flow-layer]")].map((layer) => [...layer.querySelectorAll("[data-project-map-node]")].map((node) => node.dataset.projectMapNode)), edge: stage.querySelector('[data-project-map-edge="overview-assets"]')?.getAttribute("d") }));
-    assert.deepEqual(secondLayout, firstLayout);
-    assert.match(await page.locator('[data-project-view-evidence="overview/default"] .project-ui-requirements').textContent(), /Overview · 1 satisfied/);
-    await page.locator('[data-project-view-evidence="overview/default"]').click();
-    assert.equal(await page.locator("#evidence-lightbox").isVisible(), true);
-    assert.equal(await page.locator("#evidence-lightbox-thumbnails .evidence-lightbox-thumbnail").count(), 3);
-    await page.getByRole("button", { name: "Close evidence gallery" }).click();
-    await page.getByRole("button", { name: "Back to App Map" }).click();
-    assert.equal(await page.evaluate(() => document.activeElement?.getAttribute("data-project-map-group")), "workspace");
-    const hostileGroupId = 'group\'"][data-project-map-group="spoof';
-    await page.evaluate((groupId) => {
-      const nodes = state.overview.project_view.map.nodes;
-      nodes.find((node) => node.id === "workspace").id = groupId;
-      nodes.filter((node) => ["overview", "assets"].includes(node.id)).forEach((node) => { node.group_id = groupId; });
-      state.projectUiGroupId = "";
-      renderProjectDetail();
-    }, hostileGroupId);
-    await page.getByRole("button", { name: "Open Workspace group" }).click();
-    await page.getByRole("button", { name: "Back to App Map" }).click();
-    assert.equal(await page.evaluate(() => document.activeElement?.dataset.projectMapGroup), hostileGroupId);
-    await page.evaluate((groupId) => {
-      const nodes = state.overview.project_view.map.nodes;
-      nodes.find((node) => node.id === groupId).id = "workspace";
-      nodes.filter((node) => ["overview", "assets"].includes(node.id)).forEach((node) => { node.group_id = "workspace"; });
-      state.projectUiGroupId = "";
-      renderProjectDetail();
-    }, hostileGroupId);
-    await page.evaluate(() => {
-      const projection = state.overview.project_view;
-      projection.map.edges = [{ id: "bad-edge", source: "overview", target: "missing" }];
-      state.projectUiGroupId = "workspace";
-      renderProjectDetail();
-    });
-    assert.match(await page.locator(".project-ui-map[role], .project-ui-map").textContent(), /Flowchart unavailable/);
-    assert.equal(await page.locator("[data-project-map-node]").count(), 0);
-    await page.evaluate(() => {
-      state.overview.project_view.map.edges = [{ id: "overview-assets", source: "overview", target: "assets", label: "Open assets" }];
-      state.projectUiGroupId = "";
-      renderProjectDetail();
-    });
-    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth), true);
-    await page.emulateMedia({ reducedMotion: "reduce" });
-    assert.equal(await page.locator(".project-ui-flowchart-node").evaluate((node) => parseFloat(getComputedStyle(node).transitionDuration) <= 0.001), true);
-    await page.emulateMedia({ reducedMotion: "no-preference" });
-    await page.evaluate((views) => {
-      state.projectId = "project:fixture";
-      state.ctrlId = "";
-      setView("overview", false, false);
-      renderOverview();
-      state.overview.navigation.projects.find((project) => project.id === "project:fixture").name = "Nemo";
-      state.overview.projects.find((project) => project.id === "project:fixture").name = "Nemo";
-      state.overview.project_view.tab.label = "Project";
-      state.overview.project_view.views = views;
-      state.overview.project_view.modes = views.map(({ id, label, renderer, mode }) => ({ id, label, renderer, mode }));
-      state.projectTab = "view.project.flow";
-      state.projectUiGroupId = "";
-      renderProjectDetail();
-    }, projectModelViewFixture());
-    assert.deepEqual(await page.locator("[data-project-tab-manifest]").allTextContents(), ["Work", "Flow", "Artifacts", "Agents"]);
-    assert.equal(await page.locator('.project-tabs [role="tab"]', { hasText: "Overview" }).count(), 1);
-    assert.equal(await page.locator('.project-tabs [role="tab"]', { hasText: "Roadmap" }).count(), 1);
-    assert.equal(await page.locator("[data-project-ui-mode]").count(), 0);
-    await page.locator("#project-tab-overview").click();
-    assert.equal(await page.locator("[data-project-model-block]").count(), 3);
-    assert.match(await page.locator(".project-model-snapshot").textContent(), /Project brief snapshot[\s\S]*Make project truth easy to inspect/);
-    assert.equal(await page.locator(".project-model-snapshot").evaluate((snapshot) => {
-      const parent = snapshot.parentElement.getBoundingClientRect();
-      const rect = snapshot.getBoundingClientRect();
-      return Math.abs(parent.width - rect.width) <= 2;
-    }), true);
-    if (evidenceDir) await page.screenshot({ path: path.join(evidenceDir, "project-model-overview-desktop-1536x1024.png"), fullPage: false, animations: "disabled" });
-    await page.locator("#project-tab-roadmap").click();
-    assert.equal(await page.locator("[data-project-milestone]").count(), 2);
-    assert.match(await page.locator('[data-project-milestone="m-render"]').textContent(), /After m-model/);
-    await page.getByRole("tab", { name: "Flow", exact: true }).click();
-    assert.equal(await page.locator('[data-project-map-node="m-route"]').count(), 1);
-    assert.equal(await page.locator('[data-project-map-edge="contains"]').count(), 1);
-    await page.waitForFunction(() => Boolean(document.querySelector('[data-project-map-edge="contains"]')?.getAttribute("d")));
-    assert.match(await page.locator('.project-ui-flowchart [aria-label="Map connections"]').textContent(), /Routing proof to Capture device proof/);
-    if (evidenceDir) await page.screenshot({ path: path.join(evidenceDir, "project-workspace-flow-desktop-1536x1024.png"), fullPage: false, animations: "disabled" });
-    await page.getByRole("tab", { name: "Work", exact: true }).click();
-    assert.equal(await page.locator('.project-work [data-work-kind="milestone"]').count(), 1);
-    assert.equal(await page.locator('.project-work [data-work-kind="task"]').count(), 1);
-    assert.equal(await page.locator('.project-work [data-work-kind="block"]').count(), 1);
-    assert.equal(await page.locator(".project-work progress").count(), 1);
-    assert.equal(await page.locator(".project-work progress").getAttribute("value"), "60");
-    assert.match(await page.locator('[data-work-id="t-device"]').textContent(), /Device reviewer/);
-    assert.equal(await page.locator('[data-artifact-association="t-device"]').textContent(), "Normalizer source");
-    assert.equal(await page.locator('[data-artifact-association="m-route"]').count(), 0);
-    assert.equal(await page.locator('[data-artifact-association="b-apk"]').count(), 0);
-    const workHierarchy = await page.locator(".project-work").evaluate((table) => ({
-      taskParent: table.querySelector('[data-work-id="t-device"]')?.closest("details.is-milestone")?.querySelector('[data-work-id="m-route"]')?.dataset.workId,
-      blockParent: table.querySelector('[data-work-id="b-apk"]')?.closest("details.is-task")?.querySelector('[data-work-id="t-device"]')?.dataset.workId,
-      horizontalOverflow: document.documentElement.scrollWidth > document.documentElement.clientWidth,
-    }));
-    assert.deepEqual(workHierarchy, { taskParent: "m-route", blockParent: "t-device", horizontalOverflow: false });
-    if (evidenceDir) await page.screenshot({ path: path.join(evidenceDir, "project-workspace-work-desktop-1536x1024.png"), fullPage: false, animations: "disabled" });
-    await page.setViewportSize({ width: 834, height: 1112 });
-    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth), true);
-    if (evidenceDir) await page.screenshot({ path: path.join(evidenceDir, "project-workspace-work-tablet-834x1112.png"), fullPage: false, animations: "disabled" });
-    await page.setViewportSize({ width: 390, height: 844 });
-    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth), true);
-    assert.ok(await page.locator('.project-work summary').evaluateAll((items) => items.every((item) => item.getBoundingClientRect().height >= 44)));
-    if (evidenceDir) await page.screenshot({ path: path.join(evidenceDir, "project-workspace-work-mobile-390x844.png"), fullPage: false, animations: "disabled" });
-    await page.setViewportSize({ width: 1536, height: 1024 });
-    await page.getByRole("tab", { name: "Artifacts", exact: true }).click();
-    assert.equal(await page.locator(".project-workspace-artifact").count(), 2);
-    assert.match(await page.locator('[data-project-artifact="a-source"]').textContent(), /Linked to t-device/);
-    assert.match(await page.locator('[data-project-artifact="a-unbound"]').textContent(), /No exact work association/);
-    const artifactRequestsBeforePaging = desktop.requests.length;
-    await page.evaluate(() => {
-      const view = state.overview.project_view.views.find((item) => item.id === "view.project.artifacts");
-      view.content.artifacts = Array.from({ length: 20 }, (_, index) => ({ id: "artifact-" + index, label: "Artifact " + index, revision: String(index), proof_class: "SOURCE_STATIC", associated_ids: index ? [] : ["t-device"] }));
-      state.projectArtifactPage = 0;
-      renderProjectDetail();
-    });
-    assert.equal(await page.locator(".project-workspace-artifact").count(), 12);
-    await page.locator('[data-collection-more="artifacts"]').click();
-    assert.equal(await page.locator(".project-workspace-artifact").count(), 20);
-    assert.equal(await page.evaluate(() => document.activeElement?.dataset.collectionStatus), "artifacts");
-    assert.equal(desktop.requests.length, artifactRequestsBeforePaging);
-    await page.locator('[data-project-tab="view.project.agents"]').click();
-    assert.equal(await page.locator("[data-project-record]").count(), 2);
-    assert.match(await page.locator('[data-project-record="release-ctrl"]').textContent(), /Release CTRL[\s\S]*Active ctrl/i);
-    if (evidenceDir) await page.screenshot({ path: path.join(evidenceDir, "project-model-agents-desktop-1536x1024.png"), fullPage: false, animations: "disabled" });
-    await page.evaluate((views) => {
-      state.overview.project_view.views = views;
-      state.overview.project_view.modes = views.map(({ id, label, renderer, mode }) => ({ id, label, renderer, mode }));
-      state.projectArtifactPage = 0;
-      state.projectTab = "view.project.artifacts";
-      renderProjectDetail();
-    }, projectModelViewFixture());
-    await page.evaluate(() => {
-      const work = state.overview.project_view.views.find((view) => view.id === "view.project.work");
-      work.content.rows.push({ ...work.content.rows[0] });
-      state.projectTab = "view.project.work";
-      renderProjectDetail();
-    });
-    assert.match(await page.locator("#project-tab-panel").textContent(), /Work unavailable/);
-    assert.equal(await page.locator("[data-work-id]").count(), 0);
-    await page.evaluate((views) => {
-      state.overview.project_view.views = views;
-      state.overview.project_view.modes = views.map(({ id, label, renderer, mode }) => ({ id, label, renderer, mode }));
-      state.projectTab = "view.project.flow";
-      renderProjectDetail();
-    }, projectModelViewFixture());
     await page.evaluate(() => {
       state.projectUiGroupId = "workspace";
       state.projectId = "project:fixture";
@@ -5543,16 +5333,16 @@ proofFeed.items.push({
       developer.instructions = [...developer.instructions, "Inspect the relevant implementation", "Exercise the failure boundary", "Record bounded evidence"];
       renderRoleLibrary("developer");
     });
-    const roleDisclosure = page.locator("#role-library-detail .role-instruction-preview details");
-    const roleDisclosureSummary = roleDisclosure.locator("summary");
-    assert.equal(await roleDisclosureSummary.textContent(), "Show moreShow less");
+    const roleDisclosure = page.locator("#role-library-detail .role-detail-disclosure").filter({ hasText: "Instructions" });
+    const roleDisclosureSummary = roleDisclosure.locator(":scope > summary");
+    assert.equal(await roleDisclosure.count(), 1);
     assert.equal(await roleDisclosure.evaluate((details) => details.open), false);
+    assert.equal(await roleDisclosureSummary.textContent(), "Instructions");
     assert.equal(await roleDisclosureSummary.evaluate((summary) => summary.getBoundingClientRect().height >= 44), true);
     await roleDisclosureSummary.focus();
     await page.keyboard.press("Enter");
     assert.equal(await roleDisclosure.evaluate((details) => details.open), true);
-    assert.equal(await roleDisclosure.locator(".role-disclosure-more").isVisible(), false);
-    assert.equal(await roleDisclosure.locator(".role-disclosure-less").isVisible(), true);
+    assert.ok(await roleDisclosure.locator(".role-detail-disclosure-body").isVisible());
     assert.equal(await roleDisclosureSummary.evaluate((summary) => summary === document.activeElement), true);
     await page.keyboard.press("Enter");
     assert.equal(await roleDisclosure.evaluate((details) => details.open), false);
@@ -5769,23 +5559,6 @@ proofFeed.items.push({
     assert.equal(desktop.configRequests.length, settingsRequestsBefore + 1);
     assertConfigWriteEnvelope(desktop.configRequests.at(-1), { values: { "automation.mode": "manual", "execution.fast_mode": true, "execution.usage_saver": true } });
     assert.match(await page.locator(".settings-save-bar").textContent(), /Saved/);
-    const editConfigTrigger = page.getByRole("button", { name: "Edit config" });
-    await editConfigTrigger.click();
-    await assertDialogFrame(page, "#config-editor-dialog");
-    assert.equal(await page.locator("#config-editor-text").getAttribute("readonly"), "");
-    assert.equal(await page.getByRole("button", { name: "Save config" }).isDisabled(), true);
-    assert.match(await page.locator("#config-editor-status").textContent(), /Current configuration is unavailable for this scope/);
-    if (evidenceDir) await page.screenshot({ path: path.join(evidenceDir, "19-settings-config-unavailable-desktop-1536x1024.png"), fullPage: false, animations: "disabled" });
-    await page.keyboard.press("Escape");
-    assert.equal(await editConfigTrigger.evaluate((element) => element === document.activeElement), true);
-    await page.locator("#settings-scope").selectOption("project|project:fixture");
-    await page.waitForFunction(() => state.settingsScopeType === "project" && state.settingsScopeId === "project:fixture");
-    await page.getByRole("button", { name: "Edit config" }).click();
-    assert.equal(await page.locator("#config-editor-warning").isVisible(), true);
-    assert.equal(await page.locator("#config-editor-warning").textContent(), "Project overrides take priority. Overridden values stop following global changes; all other values continue to inherit.");
-    await page.keyboard.press("Escape");
-    await page.locator("#settings-scope").selectOption("global|global");
-    await page.waitForFunction(() => state.settingsScopeType === "global" && state.settingsScopeId === "global");
     if (evidenceDir) await page.screenshot({ path: path.join(evidenceDir, "20-settings-essentials-desktop-1536x1024.png"), fullPage: false, animations: "disabled" });
     assert.equal(await page.locator("[data-qc-scope]").evaluate((element) => element.scrollWidth > element.clientWidth + 1), false);
     assert.deepEqual(desktop.runtimeErrors, []);
@@ -5882,7 +5655,7 @@ proofFeed.items.push({
     delete noManifestOverview.project_view;
     const noManifest = await mount(noManifestPage, noManifestOverview, overrides);
     await noManifestPage.locator('#project-navigation [data-project-id="project:fixture"]').click();
-    assert.equal(await noManifestPage.getByRole("tab", { name: "UI", exact: true }).isVisible(), false);
+    assert.equal(await noManifestPage.locator("[data-project-tab]").count(), 0);
     assert.deepEqual(noManifest.runtimeErrors, []);
     await noManifestPage.close();
 
@@ -5913,7 +5686,7 @@ proofFeed.items.push({
 
     const tabletPage = await browser.newPage({ viewport: { width: 834, height: 1112 } });
     const tablet = await mount(tabletPage, scopedFixture(), overrides);
-    await assertSharedCircleGeometry(tabletPage, ["#profile", "#notifications", "#snapshot-status-dot", ".scope-dot", ".agent-avatar-token", "#message-launcher"]);
+    await assertSharedCircleGeometry(tabletPage, ["#profile", "#notifications", ".scope-dot", ".agent-avatar-token", "#message-launcher"]);
     assert.equal(await tabletPage.locator("#notifications").evaluate((notification) => {
       const profile = document.querySelector("#profile");
       return Boolean(notification.compareDocumentPosition(profile) & Node.DOCUMENT_POSITION_FOLLOWING)
@@ -5935,17 +5708,6 @@ proofFeed.items.push({
       return box.height >= 44 && box.right <= document.documentElement.clientWidth;
     })), true);
     await tabletPage.evaluate(() => selectProjectScope("project:fixture"));
-    await tabletPage.getByRole("tab", { name: "UI", exact: true }).click();
-    await tabletPage.getByRole("button", { name: "Map", exact: true }).click();
-    await tabletPage.locator('[data-project-map-group="workspace"]').click();
-    await tabletPage.waitForFunction(() => Boolean(document.querySelector('[data-project-map-edge="overview-assets"]')?.getAttribute("d")));
-    const tabletFlow = await tabletPage.locator(".project-ui-flowchart").evaluate((stage) => {
-      const box = stage.getBoundingClientRect();
-      return { left: box.left, right: box.right, viewport: innerWidth, scrollWidth: stage.scrollWidth, clientWidth: stage.clientWidth };
-    });
-    assert.ok(tabletFlow.left >= 0 && tabletFlow.right <= tabletFlow.viewport && tabletFlow.scrollWidth <= tabletFlow.clientWidth, JSON.stringify(tabletFlow));
-    assert.equal(await tabletPage.locator(".project-ui-flowchart-node").evaluateAll((nodes) => nodes.every((node) => node.getBoundingClientRect().height >= 44)), true);
-    assert.equal(await tabletPage.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth), true);
     await tabletPage.evaluate(() => setView("agents"));
     assert.equal(await tabletPage.locator("#view-agents [data-agent-detail]").evaluateAll((rows) => rows.length >= 2 && rows.every((row) => row.getBoundingClientRect().height >= 44)), true);
     assert.equal(await tabletPage.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth), true);
@@ -5969,7 +5731,7 @@ proofFeed.items.push({
     if (evidenceDir) await tabletPage.screenshot({ path: path.join(evidenceDir, "16-agents-tablet-834x1112.png"), fullPage: false, animations: "disabled" });
     await openPrimaryView(tabletPage, "roles");
     const tabletGrid = tabletPage.locator("#role-library-grid");
-    assert.equal(await tabletGrid.evaluate((element) => getComputedStyle(element).gridTemplateColumns.split(" ").length), 2);
+    assert.equal(await tabletGrid.evaluate((element) => getComputedStyle(element).gridTemplateColumns.split(" ").length), 3);
     assert.equal(await tabletGrid.evaluate((element) => getComputedStyle(element).overflowY), "visible");
     assert.equal(await tabletPage.locator('.role-choice[tabindex="0"]').count(), 1);
     assert.equal(await tabletPage.locator(".role-choice-description").count(), 24);
@@ -5978,7 +5740,7 @@ proofFeed.items.push({
     await tabletPage.keyboard.press("ArrowRight");
     assert.equal(await tabletPage.locator('.role-choice[aria-selected="true"]').getAttribute("data-role-select"), "analyst");
     await tabletPage.keyboard.press("ArrowDown");
-    assert.equal(await tabletPage.locator('.role-choice[aria-selected="true"]').getAttribute("data-role-select"), "artist");
+    assert.equal(await tabletPage.locator('.role-choice[aria-selected="true"]').getAttribute("data-role-select"), "auditor");
     await tabletPage.keyboard.press("Home");
     assert.equal(await tabletPage.locator('.role-choice[aria-selected="true"]').getAttribute("data-role-select"), "accountant");
     const tabletPageLastRole = await tabletPage.locator(".role-choice").last().getAttribute("data-role-select");
@@ -6019,6 +5781,7 @@ proofFeed.items.push({
     await tabletPage.keyboard.press("Escape");
     await tabletPage.evaluate(() => setView("settings"));
     assert.equal(await tabletPage.locator("#settings-essentials").evaluate((element) => element.scrollWidth <= element.clientWidth + 1), true);
+    await tabletPage.waitForFunction(() => { const elements = [...document.querySelectorAll(".settings-switch")]; return elements.length > 0 && elements.every((element) => element.getBoundingClientRect().height >= 44); });
     assert.equal(await tabletPage.locator(".settings-switch").evaluateAll((elements) => elements.every((element) => element.getBoundingClientRect().height >= 44)), true);
     if (evidenceDir) await tabletPage.screenshot({ path: path.join(evidenceDir, "21-settings-essentials-tablet-834x1112.png"), fullPage: false, animations: "disabled" });
     for (const [label, value] of [["Midnight", "midnight"], ["Black", "black"], ["Graphite", "graphite"], ["Pearl", "pearl"]]) {
@@ -6028,9 +5791,6 @@ proofFeed.items.push({
       if (evidenceDir) await tabletPage.screenshot({ path: path.join(evidenceDir, `theme-${value}-tablet-834x1112.png`), fullPage: false, animations: "disabled" });
     }
     await tabletPage.evaluate(() => setTheme("midnight"));
-    await tabletPage.getByRole("button", { name: "Edit config" }).click();
-    await assertDialogFrame(tabletPage, "#config-editor-dialog");
-    await tabletPage.keyboard.press("Escape");
     assert.deepEqual(tablet.runtimeErrors, []);
     await tabletPage.close();
 
@@ -6212,22 +5972,6 @@ proofFeed.items.push({
     await mobilePage.getByRole("button", { name: /^swarm\b/i }).click();
     assert.equal(await mobilePage.locator("#view-roles").isVisible(), true, "project selection preserves the active Roles route");
     await mobilePage.locator('.mobile-message-footer [data-view="overview"]').click();
-    await mobilePage.getByRole("tab", { name: "UI", exact: true }).click();
-    assert.equal(await mobilePage.locator(".project-ui-card").count(), 2);
-    assert.equal(await mobilePage.locator(".project-ui-toolbar .segmented-control button").evaluateAll((elements) => elements.every((element) => element.getBoundingClientRect().height >= 44)), true);
-    assert.equal(await mobilePage.locator(".project-ui-screens").evaluate((element) => getComputedStyle(element).gridTemplateColumns.split(" ").length), 1);
-    await mobilePage.getByRole("button", { name: "Map", exact: true }).click();
-    await mobilePage.locator('[data-project-map-group="workspace"]').click();
-    await mobilePage.waitForFunction(() => Boolean(document.querySelector('[data-project-map-edge="overview-assets"]')?.getAttribute("d")));
-    assert.equal(await mobilePage.locator(".project-ui-flowchart").evaluate((stage) => {
-      const box = stage.getBoundingClientRect();
-      return box.left >= 0 && box.right <= innerWidth && stage.scrollWidth <= stage.clientWidth;
-    }), true);
-    assert.equal(await mobilePage.locator(".project-ui-flowchart-node").evaluateAll((nodes) => nodes.every((node) => {
-      const box = node.getBoundingClientRect();
-      return box.height >= 44 && box.left >= 0 && box.right <= innerWidth;
-    })), true);
-    assert.equal(await mobilePage.locator("[data-qc-scope]").evaluate((element) => element.scrollWidth > element.clientWidth + 1), false);
     if (await mobilePage.locator('[data-notification-toast-action="dismiss"]').isVisible().catch(() => false)) await mobilePage.locator('[data-notification-toast-action="dismiss"]').click();
     await mobilePage.evaluate(() => setView("assets"));
     if (evidenceDir) await mobilePage.screenshot({ path: path.join(evidenceDir, "24-assets-ready-mobile-390x844.png"), fullPage: false, animations: "disabled" });
@@ -6250,18 +5994,14 @@ proofFeed.items.push({
     await mobilePage.evaluate(() => setView("settings"));
     await mobilePage.locator("#settings-scope").selectOption("global|global");
     await mobilePage.waitForFunction(() => state.settingsScopeType === "global" && state.settingsScopeId === "global");
+    await mobilePage.waitForFunction(() => { const elements = [...document.querySelectorAll(".settings-switch")].filter((element) => element.getClientRects().length); return elements.length > 0 && elements.every((element) => element.getBoundingClientRect().height >= 44); });
     assert.equal(await mobilePage.locator("#settings-essentials").evaluate((element) => element.scrollWidth <= element.clientWidth + 1), true);
-    assert.equal(await mobilePage.locator(".settings-switch").evaluateAll((elements) => elements.every((element) => element.getBoundingClientRect().height >= 44)), true);
+    assert.equal(await mobilePage.locator(".settings-switch").evaluateAll((elements) => elements.filter((element) => element.getClientRects().length).every((element) => element.getBoundingClientRect().height >= 44)), true);
     if (evidenceDir) await mobilePage.screenshot({ path: path.join(evidenceDir, "22-settings-essentials-mobile-390x844.png"), fullPage: false, animations: "disabled" });
     await mobilePage.getByLabel("Usage Saver").scrollIntoViewIfNeeded();
     if (evidenceDir) await mobilePage.screenshot({ path: path.join(evidenceDir, "32-settings-usage-saver-default-mobile-390x844.png"), fullPage: false, animations: "disabled" });
     await mobilePage.locator("#project-scope-filter").click();
     if (evidenceDir) await mobilePage.screenshot({ path: path.join(evidenceDir, "30-project-dropdown-mobile-390x844.png"), fullPage: false, animations: "disabled" });
-    await mobilePage.keyboard.press("Escape");
-    await mobilePage.getByRole("button", { name: "Edit config" }).click();
-    await assertDialogFrame(mobilePage, "#config-editor-dialog");
-    assert.equal(await mobilePage.locator("#config-editor-dialog").evaluate((element) => element.scrollWidth <= element.clientWidth + 1), true);
-    if (evidenceDir) await mobilePage.screenshot({ path: path.join(evidenceDir, "23-settings-config-unavailable-mobile-390x844.png"), fullPage: false, animations: "disabled" });
     await mobilePage.keyboard.press("Escape");
     assert.deepEqual(mobile.runtimeErrors, []);
     await mobilePage.close();

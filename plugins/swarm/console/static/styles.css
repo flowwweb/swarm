@@ -1023,6 +1023,7 @@ html[data-theme="pearl"] .drawer,html[data-theme="pearl"] .mobile-app-bar,html[d
 #metric-detail-actions:not([hidden]) { display:flex; align-items:center; gap:4px; margin-left:auto; }
 #metric-detail-actions .usage-range { position:static; display:flex; }
 #metric-detail-actions button,#metric-detail-actions summary { min-width:44px; min-height:44px; }
+#metric-detail-actions .usage-range button { font-size:12px; }
 .metric-date-picker { position:relative; }
 .metric-date-picker > summary { list-style:none; }
 .metric-date-picker > summary::-webkit-details-marker { display:none; }
@@ -1073,3 +1074,22 @@ html[data-theme="pearl"] .drawer,html[data-theme="pearl"] .mobile-app-bar,html[d
 .overview-work-block > summary:focus-visible { outline:2px solid var(--blue); outline-offset:-2px; }
 .overview-work-block > p,.overview-task-estimate { display:block; margin:4px; font-size:10px; line-height:1.4; overflow-wrap:anywhere; color:var(--muted); }
 .task-usage-legend button[aria-pressed="false"] { opacity:.55; text-decoration:line-through; }
+
+/* Roles stay scannable: identity first, detail on demand. */
+.role-library-grid { grid-template-columns:repeat(3,minmax(0,1fr)); }
+.role-choice { min-height:132px; grid-template-rows:84px auto; align-content:center; }
+.role-choice .role-avatar { width:84px; height:84px; border-radius:50%; }
+.role-choice-description,.role-choice em { display:none; }
+.role-detail-sections { gap:6px; }
+.role-detail-disclosure { overflow:hidden; border:1px solid rgba(176,202,231,.13); border-radius:8px; background:rgba(6,14,25,.34); }
+.role-detail-disclosure > summary { display:flex; min-height:44px; align-items:center; justify-content:space-between; gap:12px; padding:0 12px; cursor:pointer; color:var(--ink); font-size:11px; font-weight:650; list-style:none; }
+.role-detail-disclosure > summary::-webkit-details-marker { display:none; }
+.role-detail-disclosure > summary .lucide { width:15px; height:15px; color:var(--faint); transition:transform .14s ease; }
+.role-detail-disclosure[open] > summary { color:var(--orange); }
+.role-detail-disclosure[open] > summary .lucide { transform:rotate(180deg); }
+.role-detail-disclosure-body { padding:0 12px 12px; color:var(--muted); font-size:10px; line-height:1.5; }
+@media (max-width:620px) {
+  .role-library-grid { grid-template-columns:repeat(2,minmax(0,1fr)); }
+  .role-choice { min-height:60px; grid-template-columns:44px minmax(0,1fr); grid-template-rows:auto; align-items:center; justify-items:start; gap:8px; padding:7px; }
+  .role-choice .role-avatar { width:44px; height:44px; }
+}

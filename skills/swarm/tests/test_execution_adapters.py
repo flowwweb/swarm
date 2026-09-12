@@ -336,7 +336,7 @@ class ExecutionAdapterTests(unittest.TestCase):
                          "`list_threads`", "`read_thread`", "`send_message_to_thread`",
                          "`model` and `thinking`", "`wait_threads`", "Codex-only",
                          "MCP/app tools in the destination", "chatgptWorkCloud",
-                         "not implemented native dispatch enforcement"):
+                         "does not create or control"):
             self.assertIn(required, reference)
         for enabled in (False, True):
             plan = AdapterRegistry().plan_chatgpt(

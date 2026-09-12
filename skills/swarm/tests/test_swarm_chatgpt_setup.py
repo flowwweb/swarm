@@ -75,6 +75,23 @@ class SetupTests(unittest.TestCase):
             self.assertEqual(report["doctor"]["status"], "not_run")
             self.assertFalse(path.exists())
 
+    def test_malformed_file_credential_is_reported_without_echoing_value(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            secret = root / "tunnel.key"
+            secret.write_text("not-a-key", encoding="utf-8")
+            path = root / "config.json"
+            path.write_text(json.dumps({"openaiTunnel": {"tunnelId": "private-id", "apiKeyRef": f"file:{secret}"}}))
+            bridge = root / "codexify.exe"
+            bridge.write_bytes(b"test executable")
+            argv = ["--project-root", directory, "--config", str(path), "--bridge", str(bridge), "--check"]
+            with patch.object(setup.shutil, "which", return_value=str(bridge)), patch.object(setup, "BRIDGE_SHA256", setup.hashlib.sha256(bridge.read_bytes()).hexdigest()), contextlib.redirect_stdout(io.StringIO()) as output:
+                self.assertEqual(setup.main(argv), 2)
+            report = json.loads(output.getvalue())
+            self.assertEqual(report["credential_status"], "file_malformed")
+            self.assertIn("Tunnel credential file malformed", report["errors"])
+            self.assertNotIn("not-a-key", output.getvalue())
+
 
 if __name__ == "__main__":
     unittest.main()

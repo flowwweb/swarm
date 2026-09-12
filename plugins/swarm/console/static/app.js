@@ -488,7 +488,7 @@ function configWriteReceiptMatches(result, request) {
     && JSON.stringify(receipt?.scope) === request.binding
     && result.revision === receipt?.new_revision
     && receipt?.accepted === true
-    && receipt?.action === "config_update"
+    && receipt?.action === (request.action || "config_update")
     && typeof receipt?.replayed === "boolean"
     && receipt?.acknowledged === true
     && receipt?.operation_id === request.operationId
@@ -587,7 +587,8 @@ function configResetRequestKey(request) {
 
 function configResetBindingIsCurrent(request) {
   const scope = currentSettingsScope();
-  return Boolean(request) && scope.type === request.binding.type && String(scope.id) === request.binding.id;
+  return Boolean(request) && scope.type === request.binding.type && String(scope.id) === request.binding.id &&
+    (request.kind === "ctrl" || (state.configStatus === "current" && state.config?.revision === request.payload.expected_revision && JSON.stringify(configWriteScope()) === JSON.stringify(request.payload.scope)));
 }
 
 async function resetSettingsScope(kind) {
@@ -595,14 +596,21 @@ async function resetSettingsScope(kind) {
   if (!base || state.configResetPending) throw new Error("This settings scope cannot be reset from the current accepted projection.");
   const key = configResetRequestKey(base);
   const retainedRetry = state.configResetRetry?.key === key ? state.configResetRetry : null;
+  if (retainedRetry?.exhausted) throw new Error("SWARM could not confirm this reset after one retry. Reload before trying again.");
   const operationId = retainedRetry?.operationId || configResetOperationId(kind);
   const request = { ...base, key, operationId, payload: { ...base.payload, operation_id: operationId } };
   state.configResetPending = request;
   configAuthorityGeneration += 1;
-  const operation = configMutationTail.then(() => api(request.endpoint, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(request.payload) }));
+  const operation = configMutationTail.then(() => {
+    if (!configResetBindingIsCurrent(request)) throw Object.assign(new Error("Settings changed before reset. Reload the current scope."), { status: 409 });
+    return api(request.endpoint, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(request.payload) });
+  });
   configMutationTail = operation.then(() => undefined, () => undefined);
   try {
     const result = await operation;
+    if (kind !== "ctrl" && !configWriteReceiptMatches(result, { ...request, binding: JSON.stringify(request.payload.scope), action: kind + "_config_reset" })) {
+      throw new Error("SWARM returned an invalid reset acknowledgement. Retry this exact reset; current settings are preserved.");
+    }
     state.configResetRetry = null;
     if (!configResetBindingIsCurrent(request)) return { applied: false, result };
     if (kind === "ctrl") state.ctrlSettings = result;
@@ -613,7 +621,7 @@ async function resetSettingsScope(kind) {
     }
     return { applied: true, result };
   } catch (error) {
-    state.configResetRetry = error?.connectionFailure === true || !Number.isInteger(error?.status) ? { key, operationId } : null;
+    state.configResetRetry = error?.connectionFailure === true || !Number.isInteger(error?.status) ? { key, operationId, exhausted: Boolean(retainedRetry) } : null;
     throw error;
   } finally {
     if (state.configResetPending?.operationId === operationId) state.configResetPending = null;
@@ -899,7 +907,6 @@ function setView(view, focus = false, syncRoute = true, historyMode = "push") {
   $("#view-title").textContent = selectedView === "overview" && project ? project.label : titles[selectedView][0];
   $("#view-subtitle").textContent = "";
   $("#view-subtitle").hidden = true;
-  if (["roles", "assets", "diagnostics"].includes(selectedView)) $("#nav-more").open = true;
   if (selectedView === 'settings' && (!state.skills || state.skillsError)) refreshSkills().then(renderSettings);
   if (selectedView === 'settings' && state.token) refreshAutoStatus().then(renderSettings);
   if (selectedView === 'diagnostics' && state.token && state.diagnosticsHistoryStatus === "idle") refreshDiagnostics().then(renderDiagnostics);
@@ -1629,10 +1636,11 @@ function usageChartMarkup(surface, svgId) {
 }
 
 function renderUsageCharts() {
-  renderHighestUsageTasks();
+  const detail = $("#metric-detail-dialog");
+  const taskDetailOpen = detail?.open && detail.dataset.metric === "tbr";
+  if (!taskDetailOpen) renderHighestUsageTasks();
   renderAccountUsage();
   renderOverviewMetric("progress", tokenBurnRatePresentation());
-  const detail = $("#metric-detail-dialog");
   if (detail?.open && ["usage", "tbr"].includes(detail.dataset.metric)) renderMetricDetail(false);
   const values = usageHistorySeries();
   const current = state.usageStatus === "current";
@@ -1658,6 +1666,21 @@ function accountUsageWindows(now = Date.now()) {
     && (row.reset_at_ms === null || Number.isFinite(row.reset_at_ms) && row.reset_at_ms > now));
 }
 
+function accountUsageDisplayWindows(now = Date.now()) {
+  const current = accountUsageWindows(now);
+  if (current.length || state.usageStatus !== "stale") return current;
+  const account = state.usageHistory?.account_limits;
+  if (state.usageScopeKey !== usageRequestKey() || state.usageHistory?.ok !== true
+    || account?.scope !== "account" || account.source !== "codex_app_server.account/rateLimits/read"
+    || !Number.isFinite(account.sampled_at_ms) || now < account.sampled_at_ms
+    || !["KNOWN", "PARTIAL", "STALE"].includes(account.status)) return [];
+  return (Array.isArray(account.windows) ? account.windows : []).filter(row => row.status === "KNOWN"
+    && typeof row.remaining_percent === "number" && Number.isFinite(row.remaining_percent)
+    && row.remaining_percent >= 0 && row.remaining_percent <= 100
+    && (row.reset_at_ms === null || Number.isFinite(row.reset_at_ms)))
+    .map(row => ({...row, status: "STALE", forecast: {status: "UNKNOWN", exhaustion_at_ms: null}, stale_sampled_at_ms: account.sampled_at_ms}));
+}
+
 function accountUsageGraph(row, includeForecast = true, window = null) {
   const points = Array.isArray(row?.history) ? row.history : [];
   if (points.length < 2 || points.some((point, index) => !Number.isFinite(point.sampled_at_ms)
@@ -1673,17 +1696,17 @@ function accountUsageGraph(row, includeForecast = true, window = null) {
 }
 
 function renderAccountUsage() {
-  const rows = accountUsageWindows();
+  const rows = accountUsageDisplayWindows();
   const row = rows[0];
-  renderOverviewMetric("usage", row ? {state:state.usageHistory.account_limits.status, value:row.remaining_percent + "%", note:row.limit_id + ' · ' + row.window + ' remaining'}
+  renderOverviewMetric("usage", row ? {state:row.status === "STALE" ? "STALE" : state.usageHistory.account_limits.status, value:row.remaining_percent + "%", note:row.limit_id + ' · ' + row.window + (row.status === "STALE" ? ' · last observed ' + new Date(row.stale_sampled_at_ms).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'}) : ' remaining')}
     : {state:"UNKNOWN", value:"—", note:"Remaining allowance unavailable"});
   const chart = $("#metric-usage-trend");
   chart.innerHTML = accountUsageGraph(row, false);
-  chart.setAttribute('aria-label', row ? 'Remaining allowance percent over observed time' : 'Remaining allowance unavailable');
+  chart.setAttribute('aria-label', row ? (row.status === "STALE" ? 'Last observed remaining allowance percent; refresh pending' : 'Remaining allowance percent over observed time') : 'Remaining allowance unavailable');
 }
 
 function accountUsageDetails() {
-  const rows = accountUsageWindows();
+  const rows = accountUsageDisplayWindows();
   if (!rows.length) return '<p>Remaining allowance — · UNKNOWN</p><p>Quota reset —</p><p>Estimated exhaustion —</p><p>Account allowance readings are unavailable.</p>';
   return rows.map(row => {
     const forecast = row.forecast || {};
@@ -1707,8 +1730,8 @@ function accountUsageDetails() {
     const chart = accountUsageGraph(chartRow, true, selection);
     const graphEnd = chartRow.forecast?.status === 'ESTIMATED' && Number.isFinite(chartRow.forecast.exhaustion_at_ms) && chartRow.forecast.exhaustion_at_ms <= row.reset_at_ms ? Math.max(selection?.before_ms || 0, chartRow.forecast.exhaustion_at_ms) : selection?.before_ms;
     const axis = selection ? '<div class="metric-time-axis"><span>' + escapeHTML(time(selection.after_ms)) + '</span><span>' + escapeHTML(time(graphEnd)) + '</span></div>' : '';
-    const note = estimated ? 'Estimate assumes the recent rate continues.' : estimate === '—' ? '' : estimate;
-    return '<section><h3>' + escapeHTML(row.limit_id + ' · ' + row.window) + '</h3><div class="usage-detail-values">' + values.map(([value,label]) => '<div><strong>' + escapeHTML(value) + '</strong><span>' + label + '</span></div>').join('') + '</div><svg viewBox="0 0 160 28" role="img" aria-label="Remaining allowance percent over observed time">' + chart + '</svg>' + axis + (!chart ? '<p>Allowance history unavailable for this period.</p>' : '') + (note ? '<p>' + escapeHTML(note) + '</p>' : '') + '<p><time>' + escapeHTML(time(row.reset_at_ms)) + '</time> · Reset</p></section>';
+    const note = row.status === 'STALE' ? 'Last observed ' + time(row.stale_sampled_at_ms) + '. Forecast withheld until the account reading recovers.' : estimated ? 'Estimate assumes the recent rate continues.' : estimate === '—' ? '' : estimate;
+    return '<section><h3>' + escapeHTML(row.limit_id + ' · ' + row.window + (row.status === 'STALE' ? ' · STALE' : '')) + '</h3><div class="usage-detail-values">' + values.map(([value,label]) => '<div><strong>' + escapeHTML(value) + '</strong><span>' + label + '</span></div>').join('') + '</div><svg viewBox="0 0 160 28" role="img" aria-label="Remaining allowance percent over observed time">' + chart + '</svg>' + axis + (!chart ? '<p>Allowance history unavailable for this period.</p>' : '') + (note ? '<p>' + escapeHTML(note) + '</p>' : '') + '<p><time>' + escapeHTML(time(row.reset_at_ms)) + '</time> · Reset</p></section>';
   }).join('') + (state.usageHistory.account_limits.status === 'PARTIAL' ? '<p>Some account windows are unavailable.</p>' : '');
 }
 
@@ -3429,37 +3452,9 @@ function renderProjectDetail() {
   const measured = progress?.status === "MEASURED" && Number.isFinite(Number(progress.percent));
   const nextGate = (progress?.blocks || []).find((block) => ["REVIEW", "WAITING_DEPENDENCY", "WAITING_EXTERNAL", "USER_PAUSED"].includes(block.lifecycle_state));
   $("#project-detail-summary").innerHTML = '<p><span>Progress</span><strong>' + escapeHTML(measured ? progress.percent + "%" : "—") + '</strong></p><p><span>Live ETA</span><strong><svg class="lucide" aria-hidden="true"><use href="#lucide-clock"></use></svg>' + escapeHTML(projectEta(nodes)) + '</strong></p><p><span>Next gate</span><strong>' + escapeHTML(nextGate ? humanize(nextGate.lifecycle_state) : "—") + '</strong></p>';
-  const projectView = currentProjectView();
-  const workspaceViews = projectWorkspaceViews(projectView);
-  const manifestWorkspace = Boolean(projectView?.tab?.manifest_id);
-  const workspaceTabs = manifestWorkspace ? [] : workspaceViews.filter((view) => !PROJECT_WORKSPACE_EMBEDDED_TABS.has(view.id));
-  $$('[data-project-tab-manifest]').forEach((button) => button.remove());
-  const logsTab = $("#project-tab-logs");
-  workspaceTabs.forEach((view, index) => {
-    const button = document.createElement("button");
-    button.id = "project-tab-manifest-" + index;
-    button.dataset.projectTab = view.id;
-    button.dataset.projectTabManifest = "";
-    button.setAttribute("role", "tab");
-    button.setAttribute("aria-selected", "false");
-    button.setAttribute("aria-controls", "project-tab-panel");
-    button.type = "button";
-    const icon = projectWorkspaceTabIcon(view);
-    button.innerHTML = (icon ? '<svg class="lucide" aria-hidden="true"><use href="#lucide-' + icon + '"></use></svg>' : "") + '<span>' + escapeHTML(view.label) + '</span>';
-    logsTab.before(button);
-  });
-  const uiTab = $("#project-tab-ui");
-  uiTab.hidden = !projectView || (!manifestWorkspace && workspaceViews.length > 0);
-  uiTab.textContent = projectView?.tab?.label || "UI";
-  if (state.projectTab === "ui" && workspaceTabs.length) state.projectTab = workspaceTabs[0].id;
-  if ((state.projectTab === "ui" && !projectView) || !$$('[data-project-tab]').some((button) => !button.hidden && button.dataset.projectTab === state.projectTab)) state.projectTab = "overview";
-  $$('[data-project-tab]').forEach((button) => { const selected = !button.hidden && button.dataset.projectTab === state.projectTab; button.classList.toggle("is-active", selected); button.setAttribute("aria-selected", String(selected)); button.tabIndex = selected ? 0 : -1; });
-  const selectedTab = $$('[data-project-tab]').find((button) => !button.hidden && button.dataset.projectTab === state.projectTab);
-  const selectedTabId = selectedTab?.id || "project-tab-overview";
+  state.projectTab = "overview";
   const tabPanel = $("#project-tab-panel");
-  tabPanel.setAttribute("aria-labelledby", selectedTabId);
-  const retainedRunLogMount = state.projectTab === "logs" && $('[data-run-log-surface="project"]', tabPanel);
-  if (!retainedRunLogMount) tabPanel.innerHTML = projectTabMarkup(state.projectTab, progress, nodes);
+  tabPanel.innerHTML = projectTabMarkup("overview", progress, nodes);
   scheduleProjectViewConnectors();
 }
 
@@ -4046,10 +4041,14 @@ function renderOverviewProjectCards() {
     return '<article class="overview-hierarchy-project" data-overview-hierarchy-project="' + escapeHTML(projectId) + '"><header><button type="button" data-overview-project-id="' + escapeHTML(projectId) + '"><span class="scope-dot is-' + escapeHTML(project.status) + '" aria-hidden="true"></span><span><strong>' + escapeHTML(project.label) + '</strong><small>' + escapeHTML(String(ctrlCount) + " active CTRL" + (ctrlCount === 1 ? "" : "s")) + '</small></span></button><button class="icon-button" type="button" data-overview-project-edit="' + escapeHTML(projectId) + '" aria-label="Edit ' + escapeHTML(project.label) + ' settings"><svg class="lucide" aria-hidden="true"><use href="#lucide-settings"></use></svg></button></header><div class="overview-hierarchy-stage"><svg class="overview-hierarchy-edges" aria-hidden="true" focusable="false">' + edges + '</svg><div class="overview-hierarchy-forest">' + roots.map((record) => renderBranch(record)).join("") + '</div></div></article>';
   }).join("");
   const independent = records.filter((record) => record.identityState === "independent");
-  const independentMarkup = independent.length ? '<section class="overview-independent panel"><header><span><strong>Independent host tasks</strong><small>Outside a manifest-bound project</small></span></header><div>' + independent.map((record) => '<article class="overview-independent-task" title="Task ID: ' + escapeHTML(record.node.id) + '"><span class="scope-dot is-active" aria-hidden="true"></span><span><strong>' + escapeHTML(agentTaskTitle(record)) + '</strong><small>' + escapeHTML(record.presentationName + " · Anonymous · Independent task") + '</small></span></article>').join("") + '</div></section>' : "";
+  const independentNodes = state.connectionStatus === "live" ? (state.overview?.nodes || []).filter((node) => node && node.project_id === "" && ["active", "in_progress"].includes(String(node.status || "").toLowerCase())) : [];
+  const independentRecordIds = new Set(independent.map((record) => record.node.id));
+  const observedIndependentNodes = independentNodes.filter((node) => !independentRecordIds.has(node.id));
+  const independentItems = independent.map((record) => '<article class="overview-independent-task" title="Task ID: ' + escapeHTML(record.node.id) + '"><span class="scope-dot is-active" aria-hidden="true"></span><span><strong>' + escapeHTML(agentTaskTitle(record)) + '</strong><small>' + escapeHTML(record.presentationName + " · Anonymous · Independent task") + '</small></span></article>').join("") + observedIndependentNodes.map((node) => '<article class="overview-independent-task" title="Task ID: ' + escapeHTML(node.id) + '"><span class="scope-dot is-active" aria-hidden="true"></span><span><strong>' + escapeHTML(publicLabel(node.title || node.artifact, "Codex task")) + '</strong><small>' + escapeHTML(String(node.model || "Codex") + " · " + String(node.reasoning || "unknown") + " reasoning") + '</small></span></article>').join("");
+  const independentMarkup = independentItems ? '<section class="overview-independent panel"><header><span><strong>Active host tasks</strong><small>Observed locally; no accepted project hierarchy binding</small></span></header><div>' + independentItems + '</div></section>' : "";
   const malformed = records.filter((record) => record.identityState === "malformed");
   const malformedMarkup = malformed.length ? '<section class="overview-independent panel is-error" role="alert"><header><span><strong>Role binding needs attention</strong><small>Reconnect each SWARM task to one manifest role and CTRL.</small></span></header><div>' + malformed.map((record) => '<article class="overview-independent-task" title="Task ID: ' + escapeHTML(record.node.id) + '"><span class="scope-dot is-stalled" aria-hidden="true"></span><span><strong>' + escapeHTML(agentTaskTitle(record)) + '</strong><small>' + escapeHTML(record.presentationName + " · Role binding error") + '</small></span></article>').join("") + '</div></section>' : "";
-  $("#overview-summary").textContent = grouped.size ? String(grouped.size) + " active project" + (grouped.size === 1 ? "" : "s") : "No active project team";
+  $("#overview-summary").textContent = grouped.size ? String(grouped.size) + " active project" + (grouped.size === 1 ? "" : "s") : independentNodes.length ? String(independentNodes.length) + " active host task" + (independentNodes.length === 1 ? "" : "s") : "No active project team";
   const content = cards || independentMarkup || malformedMarkup ? cards + independentMarkup + malformedMarkup : '<p class="empty-state overview-empty" role="status">No active project team is available.</p>';
   if (!cards && !independentMarkup && !malformedMarkup) { host.innerHTML = content; return; }
   host.innerHTML = '<div class="overview-hierarchy-toolbar" role="group" aria-label="Team map controls"><button class="icon-button" type="button" data-overview-zoom="out" aria-label="Zoom out"><svg class="lucide" aria-hidden="true"><use href="#lucide-minus"></use></svg></button><button class="icon-button" type="button" data-overview-zoom="fit" aria-label="Fit team"><svg class="lucide" aria-hidden="true"><use href="#lucide-scan"></use></svg></button><button class="icon-button" type="button" data-overview-zoom="in" aria-label="Zoom in"><svg class="lucide" aria-hidden="true"><use href="#lucide-plus"></use></svg></button></div><div class="overview-hierarchy-viewport edge-scroll"><div class="overview-hierarchy-canvas">' + content + '</div></div>';
@@ -5095,6 +5094,10 @@ function roleCardDescription(role) {
   return rolePresentationItems(Array.isArray(role?.instructions) ? role.instructions.slice(1) : [])[0] || "";
 }
 
+function roleDetailDisclosure(label, body) {
+  return '<details class="role-detail-disclosure"><summary><span>' + escapeHTML(label) + '</span><svg class="lucide" aria-hidden="true"><use href="#lucide-chevron-down"></use></svg></summary><div class="role-detail-disclosure-body">' + body + '</div></details>';
+}
+
 function roleChooserMarkup(role, match, selected) {
   const displayName = roleDisplayName(role);
   const description = roleCardDescription(role);
@@ -5111,13 +5114,13 @@ function roleDetailMarkup(role, match = { label: "" }) {
   const skills = rolePresentationItems(role.default_skills);
   const boundaries = rolePresentationItems(role.boundaries);
   const sections = [
-    purpose ? '<section><h4>Purpose</h4><p class="role-detail-copy">' + escapeHTML(purpose) + '</p></section>' : "",
-    owns.length ? '<section><h4>Owns</h4>' + roleTextList(owns, "") + '</section>' : "",
-    instructions.length ? '<section><h4>Instructions</h4>' + roleInstructionsMarkup(instructions) + '</section>' : "",
-    '<section><h4>Current owners</h4>' + roleAssignmentsMarkup(role.id) + '</section>',
-    Array.isArray(role.specializations) && role.specializations.length ? '<section><h4>Specializations</h4>' + roleSpecializationsMarkup(role) + '</section>' : "",
-    skills.length ? '<section><h4>Default skills</h4>' + roleTextList(skills, "") + '</section>' : "",
-    boundaries.length ? '<section><h4>Boundaries</h4>' + roleTextList(boundaries, "") + '</section>' : "",
+    purpose ? roleDetailDisclosure("Purpose", '<p class="role-detail-copy">' + escapeHTML(purpose) + '</p>') : "",
+    owns.length ? roleDetailDisclosure("Owns", roleTextList(owns, "")) : "",
+    instructions.length ? roleDetailDisclosure("Instructions", roleInstructionsMarkup(instructions)) : "",
+    roleDetailDisclosure("Current owners", roleAssignmentsMarkup(role.id)),
+    Array.isArray(role.specializations) && role.specializations.length ? roleDetailDisclosure("Specializations", roleSpecializationsMarkup(role)) : "",
+    skills.length ? roleDetailDisclosure("Default skills", roleTextList(skills, "")) : "",
+    boundaries.length ? roleDetailDisclosure("Boundaries", roleTextList(boundaries, "")) : "",
   ].join("");
   return '<button class="role-detail-back" type="button" data-role-detail-back aria-label="Back to roles"><svg class="lucide" aria-hidden="true"><use href="#lucide-arrow-left"></use></svg><span>Back</span></button><header class="role-detail-head">' + avatarButton + '<div><h3 id="role-detail-title">' + escapeHTML(displayName) + '</h3></div></header>' + (match.label ? '<p class="role-match">' + escapeHTML(match.label) + '</p>' : '') + '<div class="role-detail-sections">' + sections + '</div>';
 }
@@ -5546,6 +5549,7 @@ function renderConfigEditor() {
     const writable = configEditorWritable() && !state.configEditorDraft.pending;
     $("#config-editor-text").readOnly = !writable;
     $("#config-editor-save").disabled = !writable || $("#config-editor-text").value === state.configEditorDraft.text;
+    $("#config-editor-reset").disabled = !writable || currentSettingsScope().type !== "project" || !configResetRequest("project");
     return;
   }
   const scope = currentSettingsScope();
@@ -5567,7 +5571,7 @@ function renderConfigEditor() {
   $("#config-editor-save").disabled = true;
   $("#config-editor-reset").disabled = true;
   $("#config-editor-reset").hidden = scope.type !== "project";
-  $("#config-editor-reset").title = "Reset is unavailable here until its acknowledgement can be verified.";
+  $("#config-editor-reset").title = "Remove this project's overrides; inherited global settings remain unchanged.";
 }
 
 function openConfigEditor(trigger) {
@@ -5577,6 +5581,7 @@ function openConfigEditor(trigger) {
   state.configEditorDraft = { scope: JSON.stringify(currentSettingsScope()), binding: JSON.stringify(configWriteScope()), revision: state.config?.revision, text: $("#config-editor-text").value, pending: false };
   const writable = configEditorWritable();
   $("#config-editor-text").readOnly = !writable;
+  $("#config-editor-reset").disabled = !writable || currentSettingsScope().type !== "project" || !configResetRequest("project");
   $("#config-editor-status").textContent = writable ? "No changes" : $("#config-editor-status").textContent;
   const dialog = $("#config-editor-dialog");
   if (!dialog.open) dialog.showModal();
@@ -5602,6 +5607,7 @@ async function saveConfigEditor() {
   input.readOnly = true;
   $("#config-editor-save").disabled = true;
   $("#config-editor-status").textContent = "Saving…";
+  $("#config-editor-reset").disabled = true;
   try {
     const result = await saveConfigText(() => {
       if (!configEditorWritable(draft)) throw new Error("Configuration changed. Your text is preserved; reopen the current scope before saving.");
@@ -5619,7 +5625,33 @@ async function saveConfigEditor() {
     draft.pending = false;
     input.readOnly = !configEditorWritable(draft);
     $("#config-editor-save").disabled = input.value === draft.text || input.readOnly;
+    $("#config-editor-reset").disabled = input.readOnly || currentSettingsScope().type !== "project" || !configResetRequest("project");
     input.focus({ preventScroll: true });
+  }
+}
+
+async function resetConfigEditor() {
+  const draft = state.configEditorDraft;
+  if (!configEditorWritable(draft) || draft.pending || currentSettingsScope().type !== "project") return;
+  if (!confirm("Remove this project's overrides and discard this editor's unsaved text? These values will follow global settings again.")) return;
+  draft.pending = true;
+  renderConfigEditor();
+  $("#config-editor-status").textContent = "Resetting…";
+  try {
+    const outcome = await resetSettingsScope("project");
+    if (!outcome.applied || JSON.stringify(currentSettingsScope()) !== draft.scope) throw new Error("Scope changed. Your editor text is preserved.");
+    draft.revision = state.config.revision;
+    draft.text = state.config.editable_text;
+    $("#config-editor-text").value = draft.text;
+    $("#config-editor-revision").textContent = String(draft.revision).slice(0, 12);
+    $("#config-editor-validation").textContent = state.config.validation?.state === "KNOWN" ? state.config.validation.status : "Validation unavailable";
+    $("#config-editor-status").textContent = "Project overrides removed";
+  } catch (error) {
+    $("#config-editor-status").textContent = error.message || "Could not reset. Your text is preserved.";
+  } finally {
+    draft.pending = false;
+    renderConfigEditor();
+    $("#config-editor-text").focus({ preventScroll: true });
   }
 }
 
@@ -6543,6 +6575,7 @@ $("#agent-detail-dialog").addEventListener("close", () => {
 });
 $("#config-editor-close").addEventListener("click", closeConfigEditor);
 $("#config-editor-save").addEventListener("click", saveConfigEditor);
+$("#config-editor-reset").addEventListener("click", resetConfigEditor);
 $("#config-editor-text").addEventListener("input", () => {
   const draft = state.configEditorDraft;
   const dirty = draft && $("#config-editor-text").value !== draft.text;
@@ -6967,7 +7000,7 @@ $(".drawer-navigation").addEventListener("keydown", (event) => {
   setView(tabs[next].dataset.view, true);
 });
 
-$(".project-tabs").addEventListener("keydown", (event) => {
+$(".project-tabs")?.addEventListener("keydown", (event) => {
   if (!["ArrowRight", "ArrowLeft", "Home", "End"].includes(event.key)) return;
   const tabs = $$('[data-project-tab]').filter((tab) => !tab.hidden);
   const index = tabs.indexOf(document.activeElement);
