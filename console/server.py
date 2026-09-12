@@ -14812,6 +14812,8 @@ class App:
         }
 
     def assets_projection(self, *, project_id: str | None = None, projection: str = "active") -> dict[str, Any]:
+        if isinstance(project_id, str) and project_id.strip().lower() in {"all", "all-projects"}:
+            project_id = None
         if project_id not in (None, ""):
             self._asset_project_scope(project_id)
             project_id = _asset_id(project_id, "project_id")
@@ -14869,6 +14871,8 @@ class App:
         after_sequence: int = 0,
         limit: int = 64,
     ) -> dict[str, Any]:
+        if isinstance(project_id, str) and project_id.strip().lower() in {"all", "all-projects"}:
+            project_id = None
         if project_id not in (None, ""):
             self._asset_project_scope(project_id)
             project_id = _asset_id(project_id, "project_id")

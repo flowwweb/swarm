@@ -5101,6 +5101,8 @@ class SwarmConsoleTests(unittest.TestCase):
         self.assertEqual([item["to_status"] for item in events["items"]], ["queued", "generating", "generating", "validating", "ready"])
         self.assertEqual(events["cursor"], ready["event_cursor"])
         self.assertEqual(len({item["cursor"]["identity"] for item in events["items"]}), 5)
+        self.assertEqual(len(app.assets_projection(project_id="all")["items"]), 1)
+        self.assertEqual(app.asset_event_projection(project_id="all")["status"], "available")
 
         restarted = console.App(self.codex_home, self.config, state_path=app.store.path)
         retained = restarted.asset_detail("asset-dashboard-a", project_id="project:alpha")["asset"]

@@ -5969,11 +5969,13 @@ async function refreshProjectProgress() {
     state.projectProgress = result;
     state.projectProgressStatus = result?.status === "UNKNOWN" || result?.progress_queue?.status !== "CURRENT" ? "unavailable" : "current";
     state.projectProgressError = "";
+    if (state.view === "overview") renderProjectDetail();
   } catch (error) {
     if (projectId !== selectedProgressProjectId()) return;
     if (!hasLastGood) state.projectProgress = null;
     state.projectProgressStatus = hasLastGood ? "stale" : "unavailable";
     state.projectProgressError = error.message || "Project ledger unavailable";
+    if (state.view === "overview") renderProjectDetail();
   }
 }
 
