@@ -1126,7 +1126,7 @@ class SwarmConsoleTests(unittest.TestCase):
         self.assertIn('validPercent == null ? "Unmeasured"', app)
         self.assertNotIn("completed / total", app)
         self.assertNotIn("progress_basis?.percent", app)
-        self.assertIn('aria-label="System health: Reconnecting"', index)
+        self.assertIn('id="sync-time" role="status" aria-live="polite">Reconnecting', index)
         self.assertIn('id="snapshot-status-dot"', index)
         self.assertIn('id="sync-time" role="status" aria-live="polite"', index)
         self.assertNotIn("Projects are up to date", index)
@@ -1193,7 +1193,7 @@ class SwarmConsoleTests(unittest.TestCase):
             self.assertNotIn(stale, css)
         self.assertIn(".toggle-row input", css)
         self.assertIn("accent-color:var(--cyan)", css)
-        self.assertIn("<h2>One goal. One CTRL.</h2>", index)
+        self.assertIn("<h2>One goal. A coordinated team.</h2>", index)
         for removed in ("RAPID UNIFIED", "LIVE HIERARCHY", "Observed pulse"):
             self.assertNotIn(removed, index)
     def setUp(self) -> None:
@@ -3769,10 +3769,10 @@ class SwarmConsoleTests(unittest.TestCase):
         overview["nodes"][0]["tokens"] = 130
         store.observe_overview(overview, now_ms=now + 244_000, trigger="state_change", heartbeat_minutes=30)
         restarted = console.ConsoleStore(path)
-        history = restarted.token_history(hours=24)
+        history = restarted.token_history(hours=24, before_ms=now + 244_000)
         self.assertEqual(sum(item["delta_tokens"] for item in history), 30)
         samples = restarted.token_sample_series(
-            project_id="project:alpha", thread_ids={"thread-1"}, hours=24,
+            project_id="project:alpha", thread_ids={"thread-1"}, hours=24, before_ms=now + 244_000,
         )
         self.assertEqual(sum(item["tokens"] for item in samples), 30)
         self.assertEqual({item["task_id"] for item in samples}, {"thread-1"})
@@ -8172,10 +8172,11 @@ class SwarmConsoleTests(unittest.TestCase):
 
     def test_health_copy_is_product_facing_without_a_watchdog_surface(self) -> None:
         app = (console.STATIC_ROOT / "app.js").read_text(encoding="utf-8")
-        self.assertIn('descriptorBooleanSwitch("monitoring.auto_health_enabled", "Automatic health review requests"', app)
+        self.assertIn("function renderSystemHealth()", app)
+        self.assertIn("/api/health/settings", app)
         self.assertNotIn('"Auto fix"', app)
-        self.assertIn("Allow automatic health review requests. Repairs are not started.", app)
-        self.assertIn("Health checks remain active; no repair is started.", app)
+        self.assertIn("Deterministic health checks are unavailable. Refresh to try again.", app)
+        self.assertIn("/api/health/repair", app)
         self.assertNotIn("This may start repair tasks", app)
         self.assertNotIn("Automatic care", app)
         self.assertNotIn("watchdog", app.casefold())

@@ -12813,6 +12813,8 @@ class App:
                 self._view = self._decorate_overview(self._overview or {})
                 self._view_fingerprint = self._overview_revision
                 self._view_store_generation = self._store_generation
+            if not project_id or project_id.casefold() in {"all", "all-projects"}:
+                return self._view
             return self._project_view(self._view, project_id)
 
     def observe_once(self, trigger: str = "heartbeat") -> None:
