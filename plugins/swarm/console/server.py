@@ -405,7 +405,7 @@ def _codex_app_server_executable() -> tuple[str, str]:
         try:
             probe = subprocess.run([str(candidate), "--version"], capture_output=True, text=True, timeout=5,
                 creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0), check=True)
-            version = re.fullmatch(r"codex-cli (\d+)\.(\d+)\.(\d+)\s*", probe.stdout)
+            version = re.fullmatch(r"codex-cli (\d+)\.(\d+)\.(\d+)(?:[-+][0-9A-Za-z.-]+)?\s*", probe.stdout)
             # Old 0.144.4 rejects the preserved model; 0.153.4 is the proven host baseline.
             if version and tuple(map(int, version.groups())) >= (0, 153, 4):
                 verified.append((tuple(map(int, version.groups())), str(candidate.resolve())))

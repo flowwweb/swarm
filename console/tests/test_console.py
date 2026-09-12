@@ -3606,7 +3606,8 @@ class SwarmConsoleTests(unittest.TestCase):
         first = app.overview()
         self.assertIs(first, app.overview())
         self.config.write_text(self.config.read_text(encoding="utf-8") + "\n# updated\n", encoding="utf-8")
-        app.observe_once("state_change")
+        with mock.patch.object(app.auto_bridge, "read_account_limits", return_value={"status": "UNKNOWN", "windows": []}):
+            app.observe_once("state_change")
         self.assertIsNot(first, app.overview())
 
     def test_overview_refresh_and_reader_do_not_invert_locks(self) -> None:
@@ -3745,7 +3746,8 @@ class SwarmConsoleTests(unittest.TestCase):
         )
         goals.commit()
         goals.close()
-        app.observe_once("state_change")
+        with mock.patch.object(app.auto_bridge, "read_account_limits", return_value={"status": "UNKNOWN", "windows": []}):
+            app.observe_once("state_change")
         self.assertIsNot(first, app.overview())
 
     def test_console_store_survives_restart_and_clamps_counter_resets(self) -> None:
