@@ -394,7 +394,9 @@ function openAdvancedSettingsFromOnboarding() {
     if (!entry) return;
     entry.open = true;
     entry.scrollIntoView({ block: 'start' });
-    $('#settings-edit-config')?.focus({ preventScroll: true });
+    const editConfig = $('#settings-edit-config');
+    editConfig?.focus();
+    editConfig?.scrollIntoView({ block: 'nearest' });
   });
   return true;
 }
@@ -1042,6 +1044,7 @@ function savedProjectRoster() {
       ctrlIds: [...ctrlIds],
       activeCtrlId: typeof project.active_ctrl_id === "string" ? project.active_ctrl_id : "",
       taskCount: Number.isInteger(project.task_count) && project.task_count >= 0 ? project.task_count : null,
+      activeNowCount: Number.isInteger(project.active_now_count) && project.active_now_count >= 0 ? project.active_now_count : null,
       eligibility: project.project_eligibility === "swarm_ctrl" ? "swarm_ctrl" : "no_ctrl",
       logo: project.logo || project.identity?.logo || null,
     };
@@ -3545,7 +3548,7 @@ function renderReview() {
   const empty = status === "stale" || status === "unavailable"
     ? stateMessageMarkup("recovery", "Proof is temporarily unavailable", "Proof will appear here when SWARM receives it again.", "review-empty")
     : stateMessageMarkup("empty", "No proof yet", "Accepted proof will appear here when it reaches this scope.", "review-empty");
-  $("#review-list").innerHTML = items.length ? items.map((item) => { const image = String(item.media_type || "").startsWith("image/"); return '<article class="review-row"><div class="review-kind"><svg class="lucide" aria-hidden="true"><use href="#lucide-shield-check"></use></svg></div><div><strong>' + escapeHTML(item.caption || item.kind || item.evidence_id) + '</strong><p>' + escapeHTML([item.project_id, item.task_id, item.owner_id].filter(Boolean).join(" · ") || "Unscoped proof") + '</p><small>' + escapeHTML(proofReviewState(item) + " · " + formatRelative(item.observed_at_ms || item.updated_at)) + '</small></div><div class="review-actions"><button class="icon-button" type="button" data-review-open="' + escapeHTML(proofIdentity(item)) + '" aria-label="Open proof"' + (image ? '' : ' disabled title="No visual preview is available"') + '><svg class="lucide" aria-hidden="true"><use href="#lucide-image"></use></svg></button><button class="icon-button" type="button" aria-label="Send feedback unavailable" disabled title="Review feedback command is not available"><svg class="lucide" aria-hidden="true"><use href="#lucide-message-square"></use></svg></button><button class="icon-button" type="button" aria-label="Admit proof unavailable" disabled title="Proof admission command is not available"><svg class="lucide" aria-hidden="true"><use href="#lucide-check"></use></svg></button><details><summary aria-label="More proof details"><svg class="lucide" aria-hidden="true"><use href="#lucide-ellipsis"></use></svg></summary><p>Digest ' + escapeHTML(String(item.digest || "—").slice(0, 16)) + ' · ' + escapeHTML(item.claim_limit || "Acceptance is recorded separately.") + '</p></details></div></article>'; }).join("") : empty;
+  $("#review-list").innerHTML = items.length ? items.map((item) => { const image = String(item.media_type || "").startsWith("image/"); const task = String(item.task_id || ""); const digest = String(item.digest || item.evidence_id || ""); return '<article class="review-row"><div class="review-kind"><svg class="lucide" aria-hidden="true"><use href="#lucide-shield-check"></use></svg></div><div><strong>' + escapeHTML(item.caption || item.kind || item.evidence_id) + '</strong><p>' + escapeHTML([item.project_id, item.task_id, item.owner_id].filter(Boolean).join(" · ") || "Unscoped proof") + '</p><small>' + escapeHTML(proofReviewState(item) + " · " + formatRelative(item.observed_at_ms || item.updated_at)) + '</small></div><div class="review-actions"><button class="icon-button" type="button" data-review-open="' + escapeHTML(proofIdentity(item)) + '" aria-label="Open proof"' + (image ? '' : ' disabled title="No visual preview is available"') + '><svg class="lucide" aria-hidden="true"><use href="#lucide-image"></use></svg></button>' + (task ? '<button class="icon-button" type="button" data-review-task="' + escapeHTML(task) + '" aria-label="Open task" title="Open task"><svg class="lucide" aria-hidden="true"><use href="#lucide-chevron-right"></use></svg></button>' : '') + '<button class="icon-button" type="button" data-review-copy="' + escapeHTML(digest) + '" aria-label="Copy proof ID" title="Copy proof ID"><svg class="lucide" aria-hidden="true"><use href="#lucide-check"></use></svg></button><details><summary aria-label="More proof details"><svg class="lucide" aria-hidden="true"><use href="#lucide-ellipsis"></use></svg></summary><p>Digest ' + escapeHTML(digest.slice(0, 16) || "—") + ' · ' + escapeHTML(item.claim_limit || "Acceptance is recorded separately.") + '</p></details></div></article>'; }).join("") : empty;
 }
 
 function assetItems() {
@@ -4189,7 +4192,14 @@ function renderOverviewProjects() {
       && milestone?.state === "KNOWN" && milestone.source === "ledger_active_task_manifest"
       && milestone.project_id === project.id && typeof milestone.name === "string" ? milestone.name : null;
     const status = project.status === "recent" ? "Recently active" : humanize(project.status);
-    return '<tr><th scope="row"><button type="button" data-project-id="' + escapeHTML(project.id) + '" aria-label="' + escapeHTML(project.label + ' · ' + status) + '">' + projectScopeMark(project) + '<strong>' + escapeHTML(project.label) + '</strong></button></th><td>' + (milestoneName ? escapeHTML(milestoneName) : '<span aria-label="Current milestone unavailable">—</span>') + '</td><td>' + (percent === null ? '<span aria-label="Progress unavailable">—</span>' : '<span>' + percent + '%</span><progress max="100" value="' + percent + '" aria-label="' + escapeHTML(project.label) + ' progress"></progress>') + '</td></tr>';
+    const observedTasks = Number.isInteger(project.taskCount) ? project.taskCount : 0;
+    const activeTasks = Number.isInteger(project.activeNowCount) ? project.activeNowCount : (project.status === "active" ? 1 : 0);
+    const observedLabel = observedTasks ? observedTasks + " observed task" + (observedTasks === 1 ? "" : "s") : status;
+    const milestoneFallback = activeTasks ? activeTasks + " active" : observedTasks ? "No active work" : "No task activity";
+    const progressMarkup = percent === null
+      ? '<span class="overview-observed-progress" aria-label="Observed activity, progress unavailable">' + escapeHTML(observedLabel) + '</span><small class="overview-data-note">Completion needs an accepted receipt.</small>'
+      : '<span>' + percent + '%</span><progress max="100" value="' + percent + '" aria-label="' + escapeHTML(project.label) + ' progress"></progress>';
+    return '<tr><th scope="row"><button type="button" data-project-id="' + escapeHTML(project.id) + '" aria-label="' + escapeHTML(project.label + ' · ' + status) + '">' + projectScopeMark(project) + '<strong>' + escapeHTML(project.label) + '</strong></button></th><td>' + (milestoneName ? escapeHTML(milestoneName) : '<span class="overview-observed-milestone" aria-label="Current milestone unavailable; observed project activity">' + escapeHTML(milestoneFallback) + '</span>') + '</td><td>' + progressMarkup + '</td></tr>';
   }).join('') + '</tbody></table>' : '<p role="status">No saved projects.</p>';
 }
 
@@ -5857,17 +5867,20 @@ function renderSettings() {
   const scope = currentSettingsScope();
   const selectedCtrl = selectedSettingsCtrl();
   const setting = state.ctrlSettings;
+  const advancedOpen = $("#settings-advanced")?.open === true;
   const automation = state.config?.settings?.automation || {};
   const context = settingsContextPresentation(scope, selectedCtrl, setting);
   const autoMode = settingsDraftValue("automation.mode", automation.mode || "manual");
   const pending = state.settingsDraft.size;
   const saveStatus = state.settingsSaveError || state.settingsSaveMessage || (pending ? pending + " unsaved change" + (pending === 1 ? "" : "s") : "All changes saved");
   $("#settings-grid").innerHTML =
-    '<section class="panel settings-essentials settings-wide" id="settings-essentials" tabindex="-1"><header class="settings-essentials-head"><div><h3>Essentials</h3></div><label class="settings-scope-control">Applies to<select id="settings-scope">' + settingsScopeOptions() + '</select></label></header><div class="settings-context"><strong>' + escapeHTML(context.title) + '</strong><span>' + escapeHTML(context.note) + '</span></div><div class="settings-toggle-grid">' +
-      settingsSwitch("automation.mode", autoMode, "Auto mode", "SWARM keeps eligible work moving until it needs you.", { trueValue: "standard", falseValue: "manual", unavailable: scope.type === "global" ? "Managed by the current configuration." : "Edit global defaults or use an accepted override." }) +
-      descriptorBooleanSwitch("monitoring.auto_health_enabled", "Automatic health review requests", "Allow automatic health review requests. Repairs are not started.", { unsupported: "Unavailable. Health checks remain active; no repair is started." }) +
-      descriptorBooleanSwitch("execution.usage_saver", "Usage Saver", "Smart routing can reduce usage.", { badge: "Experimental", unsupported: "Unavailable until the canonical setting is exposed." }) + '</div><div class="settings-run-controls">' + settingsSpeedMarkup() + settingsTaskLifeMarkup() + '</div><div class="guided-tour-setting"><span><strong>Guided tour</strong><small>Replay the current SWARM introduction.</small></span><button class="quiet-button" data-setting-action="replay-tour" type="button">Replay tour</button></div></section>' +
-    '<details class="panel settings-config-entry settings-wide" id="settings-advanced"><summary>Advanced settings</summary><div><p class="eyebrow">Configuration</p><h3>Edit config</h3><p>Review the exact source, inheritance, and validation state in one place.</p><small>' + escapeHTML(settingsConfigSummary()) + '</small></div><button class="quiet-button" id="settings-edit-config" data-setting-action="edit-config" type="button">Edit config</button></details>' + settingsThemeMarkup() +
+    '<header class="settings-page-head"><div><p class="eyebrow">Preferences</p><p>Three defaults keep SWARM predictable. Everything else stays behind Advanced.</p></div><label class="settings-scope-control">Applies to<select id="settings-scope">' + settingsScopeOptions() + '</select></label></header>' +
+    '<div class="settings-card-grid">' +
+      '<section class="panel settings-card settings-card-workflow" id="settings-essentials" tabindex="-1"><div class="settings-card-icon" aria-hidden="true"><svg class="lucide"><use href="#lucide-activity"></use></svg></div><h3>Workflow</h3><p>Keep eligible work moving with automatic next steps.</p>' + settingsSwitch("automation.mode", autoMode, "Auto-advance", "Continue to the next admitted item after one completes.", { trueValue: "standard", falseValue: "manual", unavailable: scope.type === "global" ? "Managed by the current configuration." : "Edit global defaults or use an accepted override." }) + '</section>' +
+      '<section class="panel settings-card settings-card-usage"><div class="settings-card-icon" aria-hidden="true"><svg class="lucide"><use href="#lucide-sparkles"></use></svg></div><h3>Usage saver</h3><p>Save resources without slowing down eligible work.</p>' + descriptorBooleanSwitch("execution.usage_saver", "Enable usage saver", "Uses lighter models and reduces background activity when possible.", { unsupported: "Unavailable until the canonical setting is exposed." }) + '</section>' +
+      '<fieldset class="panel settings-card settings-card-appearance"><legend>Appearance</legend><div class="settings-card-icon" aria-hidden="true"><svg class="lucide"><use href="#lucide-settings"></use></svg></div><h3>Appearance</h3><p>Choose the look that feels right for you.</p><div class="settings-theme-choice">' + Object.entries(THEME_OPTIONS).map(([value, label]) => '<label><input type="radio" name="appearance-theme" data-theme-option="' + value + '" value="' + value + '"' + (value === currentTheme() ? ' checked' : '') + '><span>' + label + '</span></label>').join('') + '</div></fieldset>' +
+    '</div>' +
+    '<details class="panel settings-advanced-drawer" id="settings-advanced"' + (advancedOpen ? ' open' : '') + '><summary>Advanced settings</summary><div class="settings-advanced-grid"><section><p class="eyebrow">Scope</p><strong>' + escapeHTML(context.title) + '</strong><small>' + escapeHTML(context.note) + '</small></section><section>' + settingsSpeedMarkup() + settingsTaskLifeMarkup() + '</section><section>' + chatRelaySettingsMarkup() + autoSettingsMarkup() + '</section><section>' + skillsSummary(scope) + skillsAdvanced(scope) + '</section><section class="settings-config-entry"><p class="eyebrow">Configuration</p><h3>Edit config</h3><small>' + escapeHTML(settingsConfigSummary()) + '</small><button class="quiet-button" id="settings-edit-config" data-setting-action="edit-config" type="button">Edit config</button></section><div class="guided-tour-setting"><span><strong>Guided tour</strong><small>Replay the current SWARM introduction.</small></span><button class="quiet-button" data-setting-action="replay-tour" type="button">Replay tour</button></div></div></details>' +
     '<footer class="settings-save-bar settings-wide' + (state.settingsSaveError ? ' is-error' : '') + '" aria-live="polite"' + (!pending && !state.settingsSaving && !state.settingsSaveError ? ' hidden' : '') + '><p><strong>' + escapeHTML(saveStatus) + '</strong><span>' + escapeHTML(pending ? "Review and save these server-backed changes." : "Essentials reflect the latest acknowledged configuration.") + '</span></p><div><button class="quiet-button" data-setting-action="discard-settings" type="button"' + (!pending || state.settingsSaving ? ' disabled' : '') + '>Discard</button><button class="primary-action" id="settings-save" data-setting-action="save-settings" type="button"' + (!pending || state.settingsSaving ? ' disabled' : '') + (state.settingsSaving ? ' aria-busy="true"' : '') + '>Save changes</button></div></footer>';
 }
 
@@ -6325,6 +6338,22 @@ document.addEventListener("click", async (event) => {
   const reviewOpen = event.target.closest("[data-review-open]");
   if (reviewOpen && !reviewOpen.disabled) {
     openProofIdentity(reviewOpen.dataset.reviewOpen, reviewOpen);
+    return;
+  }
+  const reviewTask = event.target.closest("[data-review-task]");
+  if (reviewTask) {
+    setView("agents");
+    requestAnimationFrame(() => {
+      const trigger = $('[data-agent-detail="' + CSS.escape(reviewTask.dataset.reviewTask) + '"]');
+      if (trigger) openAgentDetail(trigger);
+    });
+    return;
+  }
+  const reviewCopy = event.target.closest("[data-review-copy]");
+  if (reviewCopy) {
+    try { await navigator.clipboard.writeText(reviewCopy.dataset.reviewCopy || ""); } catch { /* clipboard is optional */ }
+    reviewCopy.setAttribute("aria-label", "Proof ID copied");
+    reviewCopy.title = "Copied";
     return;
   }
   const assetAction = event.target.closest("[data-asset-action]");
