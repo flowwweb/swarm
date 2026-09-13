@@ -889,13 +889,11 @@ button:focus-visible, select:focus-visible { outline: 2px solid var(--focus); ou
 .role-create-action { min-height:44px; margin:0; }
 .role-library-detail { min-width:0; overflow-x:hidden; overflow-y:auto; overflow-wrap:anywhere; }
 .role-detail-head,.role-detail-sections,.role-detail-sections section,.role-detail-sections ul,.role-bindings,.role-bindings li,.role-library-detail > footer { min-width:0; }
-.onboarding-role-assets-blocker { width:min(640px,100%); padding:22px 24px; border:1px solid rgba(255,172,75,.45); border-radius:10px; background:rgba(255,172,75,.08); color:var(--amber); font-size:12px; line-height:1.55; text-align:left; }
 .message-composer { max-width:none; margin:0 0 0 auto; }
 .message-composer::backdrop { background:rgba(0,4,12,.82); backdrop-filter:blur(4px); }
 @media (max-width: 620px) {
   .role-filter-trigger,.role-create-action { width:44px; min-width:44px; padding:0; justify-content:center; }
   .role-filter-trigger span,.role-create-action span { position:absolute; width:1px; height:1px; overflow:hidden; clip:rect(0 0 0 0); }
-  .onboarding-role-assets-blocker { padding:16px; }
   .message-composer { margin:0; }
 }
 

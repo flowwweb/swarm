@@ -506,6 +506,7 @@ const onboardingRolePanel = indexHtml.match(/id="onboarding-panel-3"[\s\S]*?<\/s
 assert.match(onboardingRolePanel, /class="onboarding-role-group onboarding-artwork" src="\/assets\/swarm-guided-tour-role-group\.png" width="1920" height="1080" alt="Developer, Designer, Architect, and Reviewer SWARM roles"/);
 assert.equal((onboardingRolePanel.match(/<img\b/g) || []).length, 1);
 assert.doesNotMatch(onboardingRolePanel, /onboarding-role-assets-blocker|data-role-media|role="list"|<article/);
+assert.doesNotMatch(css, /onboarding-role-assets-blocker/);
 assert.doesNotMatch(app, /ONBOARDING_ROLE_IDS|onboardingRoleExamplesMarkup|renderOnboardingRoleExamples/);
 assert.doesNotMatch(css, /onboarding-role-examples|onboarding-role-media/);
 assert.match(indexHtml, /class="onboarding-panel onboarding-panel-role-group"/);

@@ -17,7 +17,7 @@ This report puts the approved visual references beside the latest captured imple
 | Project detail | Kanban/project reference | 2026-09-12 live project detail | None checked in | None checked in | Closest reference plus live render |
 | Chat panel | No separate approved mockup artifact | 2026-09-12 live chat panel | None checked in | None checked in | Live evidence only |
 | Usage detail | No separate approved modal mockup artifact | 2026-09-12 live usage modal | None checked in | None checked in | Live/reference capture only |
-| Onboarding | Canonical slide artwork | Five captured slides | None checked in | None checked in | Canonical assets plus five live slides |
+| Onboarding | Canonical slide artwork | Five fresh local captures | None checked in | None checked in | Canonical assets plus current live slides |
 
 The 2026-09-12 images are historical live captures. The 2026-09-13 images are the newer approved-reference/current-capture set. A missing reference is called out rather than inferred from a neighboring screen.
 
@@ -186,6 +186,33 @@ Usage is a separate surface from TBR. The modal provides 1d, 1w, and 1m views, s
 ![Onboarding configuration](../../docs/ui-review/screenshots/2026-09-12/onboarding-05-configuration.png)
 
 The five live slides use the same SWARM shell, typography, orange action, and progress treatment. Slides 1, 3, and 4 now point at the checked-in canonical artwork above. Slide-level visual acceptance remains separate from provider and telemetry proof.
+
+**Fresh local captures from the running console**
+
+![Current onboarding slide 1](../../docs/ui-review/screenshots/2026-09-12/onboarding-01-welcome.png)
+
+![Current onboarding slide 2](../../docs/ui-review/screenshots/2026-09-12/onboarding-02-coordination.png)
+
+![Current onboarding slide 3 with the approved role-group graphic](../../docs/ui-review/screenshots/2026-09-12/onboarding-03-roles.png)
+
+![Current onboarding slide 4 with the approved project-tool graphic](../../docs/ui-review/screenshots/2026-09-12/onboarding-04-projects.png)
+
+![Current onboarding slide 5](../../docs/ui-review/screenshots/2026-09-12/onboarding-05-configuration.png)
+
+Slide 3 is no longer an empty or blocked asset state. The browser capture shows the approved Developer, Designer, Architect, and Reviewer artwork loaded from `/assets/swarm-guided-tour-role-group.png`.
+
+## Visual parity result
+
+The references and captures answer different questions. The reference is the intended contract; the live image proves what the local console rendered. Current status is:
+
+| Surface | Result | Remaining gap |
+| --- | --- | --- |
+| Onboarding slide 1 | Implemented | Fresh capture now uses the approved slide 1 artwork |
+| Onboarding slide 3 | Implemented | Approved role-group graphic is present and loaded |
+| Onboarding slide 4 | Implemented | Fresh capture now uses the approved project-tool artwork |
+| Settings | Partial | Shell is intentionally retained; card spacing and content remain denser than the standalone mockup |
+| Agents, Roles, Review | Partial | Data-safe live views do not yet match the alternate full-screen mockups in markup density and art treatment |
+| Overview and hierarchy | Partial | Canonical hierarchy is present, but project/task feeds still determine whether live rows are populated |
 
 ## Mobile comparisons, side by side
 
