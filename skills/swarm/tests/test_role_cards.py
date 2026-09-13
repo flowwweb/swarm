@@ -105,9 +105,15 @@ class RoleCardTests(unittest.TestCase):
         self.assertNotIn("Global policy is composed once", cards)
         recovery = "references/runtime-recovery.md"
         self.assertIn(f"[runtime-recovery.md]({recovery})", skill)
+        lab = "references/lab-workflow.md"
+        self.assertIn(f"[Lab workflow]({lab})", skill)
+        lab_contract = (SKILL_ROOT / lab).read_text(encoding="utf-8")
+        self.assertRegex(lab_contract, r"existing milestone, task, block, artifact, decision-set, proof, and review\s+contracts")
+        self.assertIn("every role follows", skill)
         task_contract = (SKILL_ROOT / "references/task-contract.md").read_text(encoding="utf-8")
         self.assertIn("[recovery loop](runtime-recovery.md)", task_contract)
         self.assertEqual((SKILL_ROOT / recovery).read_bytes(), (PLUGIN_ROLE_ROOT.parent / recovery).read_bytes())
+        self.assertEqual((SKILL_ROOT / lab).read_bytes(), (PLUGIN_ROLE_ROOT.parent / lab).read_bytes())
         self.assertIn("skills/swarm/SKILL.md", guidance)
         self.assertIn("plugins/swarm/", guidance)
         self.assertIn("Commit Guard", guidance)

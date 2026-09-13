@@ -227,6 +227,12 @@ blocker and must never cause wait-only behavior. Direct user instruction may
 reorient the existing owner within the same lane immediately; create a successor
 or duplicate only when the user-authorized topology explicitly permits it.
 
+Lab-first iteration is a SWARM core pattern. When a feature has a repeatable
+variation space or needs comparative iteration, every role follows the smallest
+named [Lab workflow](references/lab-workflow.md) before promotion into the
+integrated product. A Lab uses existing milestones, tasks, blocks, artifacts,
+proof, and review; it never creates another project or workflow authority.
+
 Design, mockup, image-generation, and image-editing work defaults to
 `CTRL_DELEGATED` and a typed visual ownership assignment, even when the request
 is small. Designer owns product experience, interaction, hierarchy, and design

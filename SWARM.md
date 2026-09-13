@@ -4,7 +4,7 @@
 ```json
 {
   "schema_version": 1,
-  "updated_at": "2026-08-30T18:30:00Z",
+  "updated_at": "2026-09-14T00:00:00Z",
   "project": {
     "id": "swarm",
     "purpose": "Turn Codex into a coordinated AI engineering team with a self-maintaining project harness for plans, ownership, artifacts, proof, and decisions."
@@ -83,6 +83,7 @@
     "SWARM is distributed as a Codex plugin/workflow only.",
     "Each project has exactly one root SWARM.md brief; optional domain manifests are digest-bound references, never competing project state.",
     "SWARM.md is the canonical backlog for intent; the Ledger is canonical for observed progress and proof; HQ derives both without becoming an authority.",
+    "Repeatable feature spaces use named Labs: bounded iteration workflows built from existing milestones, tasks, blocks, artifacts, proof, and review, with one selected result promoted into the product.",
     "ChatGPT is an optional direct MCP client through an existing local bridge, never a second SWARM authority or agent runtime.",
     "A design set has exactly one selected candidate; every other candidate is rejected after selection."
   ],
@@ -108,6 +109,7 @@
   ],
   "links": [
     "skills/swarm/references/project-brief.md",
+    "skills/swarm/references/lab-workflow.md",
     "skills/swarm/references/execution-adapters.md",
     "skills/swarm/references/chatgpt-routing.md",
     "skills/swarm/references/chatgpt-local-mcp.md",
