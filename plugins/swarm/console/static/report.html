@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="dark light" />
+    <meta name="description" content="SWARM daily project report" />
+    <title>Daily report · SWARM HQ</title>
+    <link rel="icon" type="image/png" sizes="64x64" href="/swarm-icon-64.png" />
+    <link rel="stylesheet" href="/report.css" />
+  </head>
+  <body>
+    <main class="report-shell">
+      <header class="report-header">
+        <a href="/" aria-label="Back to SWARM HQ"><img src="/assets/swarm-wordmark.png" width="536" height="119" alt="SWARM" /></a>
+        <div class="report-actions">
+          <label for="report-scope"><span>Report scope</span><select id="report-scope"><option value="all">Portfolio</option></select></label>
+          <button id="print-report" type="button">Save PDF</button>
+        </div>
+      </header>
+      <section class="report-intro" aria-labelledby="report-title">
+        <div><p class="eyebrow">Daily report</p><h1 id="report-title">Portfolio</h1><p id="report-subtitle">Current work and attention items from SWARM HQ.</p></div>
+        <time id="report-time"></time>
+      </section>
+      <p class="report-status" id="report-status" role="status">Loading current work…</p>
+      <section class="metric-grid" id="report-metrics" aria-label="Daily summary"></section>
+      <section class="project-list" id="report-projects" aria-label="Project updates"></section>
+      <footer><p>Derived from current SWARM HQ observations. Missing proof stays unverified.</p></footer>
+    </main>
+    <script src="/report.js"></script>
+  </body>
+</html>

@@ -1,0 +1,69 @@
+:root { color-scheme:dark; --bg:#071422; --panel:#0d1d2e; --line:#24405a; --text:#f4f7fb; --muted:#91a4ba; --orange:#ff7018; --green:#46df91; }
+* { box-sizing:border-box; }
+body { margin:0; background:radial-gradient(circle at 75% 0,#0b2941 0,transparent 36%),var(--bg); color:var(--text); font:15px/1.45 Inter,ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif; }
+button,select { font:inherit; }
+.report-shell { width:min(1120px,calc(100% - 40px)); margin:auto; padding:30px 0 48px; }
+.report-header,.report-intro,.report-actions,.project-head,.project-meta,.work-row { display:flex; align-items:center; }
+.report-header { justify-content:space-between; gap:24px; padding-bottom:24px; border-bottom:1px solid var(--line); }
+.report-header img { display:block; width:176px; height:auto; object-fit:contain; }
+.report-actions { gap:12px; }
+.report-actions label { display:grid; gap:5px; color:var(--muted); font-size:12px; }
+select,button { min-height:42px; border:1px solid var(--line); border-radius:9px; background:#0a1928; color:var(--text); padding:0 14px; }
+button { border-color:var(--orange); cursor:pointer; }
+.report-intro { justify-content:space-between; gap:24px; padding:34px 0 24px; }
+.eyebrow { margin:0 0 5px; color:var(--orange); font-size:11px; font-weight:750; letter-spacing:.13em; text-transform:uppercase; }
+h1,h2,h3,p { margin-top:0; }
+h1 { margin-bottom:4px; font-size:36px; letter-spacing:-.04em; }
+.report-intro p:last-child,.report-intro time,.report-status,footer { color:var(--muted); }
+.report-status:empty { display:none; }
+.metric-grid { display:grid; grid-template-columns:repeat(4,1fr); gap:12px; margin:12px 0 30px; }
+.metric { min-height:110px; padding:18px; border:1px solid var(--line); border-radius:12px; background:linear-gradient(145deg,rgba(16,39,60,.9),rgba(9,25,41,.9)); }
+.metric strong { display:block; font-size:30px; line-height:1.15; }
+.metric span { color:var(--muted); font-size:12px; }
+.project-list { display:grid; gap:14px; }
+.project { break-inside:avoid; overflow:hidden; border:1px solid var(--line); border-radius:14px; background:rgba(13,29,46,.92); }
+.project-head { justify-content:space-between; gap:20px; padding:18px 20px; border-bottom:1px solid var(--line); }
+.project-meta { min-width:0; gap:14px; }
+.project-logo { width:42px; height:42px; border-radius:10px; background:#081522; object-fit:contain; padding:6px; }
+.project h2 { margin:0; font-size:19px; }
+.project-head p { margin:2px 0 0; color:var(--muted); font-size:12px; }
+.status { color:var(--green); font-size:12px; text-transform:capitalize; }
+.work-list { display:grid; }
+.work-row { justify-content:space-between; gap:18px; padding:13px 20px; border-top:1px solid rgba(36,64,90,.65); }
+.work-row:first-child { border-top:0; }
+.work-row div { min-width:0; }
+.work-row strong { display:block; overflow-wrap:anywhere; }
+.work-row small { color:var(--muted); text-transform:capitalize; }
+.work-row time { flex:none; color:var(--muted); font-size:12px; }
+.empty { padding:24px 20px; color:var(--muted); }
+footer { margin-top:28px; font-size:12px; }
+@media (max-width:760px) {
+  .report-shell { width:min(100% - 24px,1120px); padding-top:18px; }
+  .report-header,.report-intro { align-items:flex-start; flex-direction:column; }
+  .report-actions { width:100%; }
+  .report-actions label { flex:1; }
+  .report-actions select { width:100%; }
+  .metric-grid { grid-template-columns:repeat(2,1fr); }
+  h1 { font-size:30px; }
+  .project-head,.work-row { align-items:flex-start; }
+}
+@media (max-width:420px) {
+  .report-shell { width:calc(100% - 20px); }
+  .report-header img { width:145px; }
+  .report-actions { align-items:stretch; flex-direction:column; }
+  .metric-grid { grid-template-columns:1fr 1fr; gap:8px; }
+  .metric { min-height:94px; padding:14px; }
+  .metric strong { font-size:25px; }
+  .project-head { padding:15px; }
+  .work-row { padding:12px 15px; }
+}
+@media print {
+  :root { color-scheme:light; --bg:#fff; --panel:#fff; --line:#d8dee6; --text:#111827; --muted:#5f6b7a; }
+  body { background:#fff; }
+  .report-shell { width:100%; padding:0; }
+  .report-actions { display:none; }
+  .report-header { padding-bottom:16px; }
+  .report-intro { padding:22px 0 16px; }
+  .metric,.project { background:#fff; box-shadow:none; }
+  footer { margin-top:18px; }
+}
