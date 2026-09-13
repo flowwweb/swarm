@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import re
 import shutil
 import sys
 from pathlib import Path
@@ -59,6 +60,24 @@ def _desired(config: dict, *, project_root: Path) -> dict:
     return result
 
 
+def _credential_status(tunnel: object) -> str:
+    if not isinstance(tunnel, dict):
+        return "missing"
+    ref = tunnel.get("apiKeyRef")
+    if not isinstance(ref, str) or not ref.strip():
+        return "missing"
+    if ref.startswith("env:"):
+        return "environment_reference"
+    if not ref.startswith("file:"):
+        return "invalid_reference"
+    path = Path(ref[5:]).expanduser()
+    try:
+        value = path.read_text(encoding="utf-8").strip()
+    except OSError:
+        return "file_missing"
+    return "file_shape_valid" if re.fullmatch(r"sk-[A-Za-z0-9_-]{20,}", value) else "file_malformed"
+
+
 def configure(path: Path, project_root: Path, *, write: bool) -> dict:
     project_root = project_root.expanduser().resolve()
     if not project_root.is_dir():
@@ -104,6 +123,9 @@ def main(argv: list[str] | None = None) -> int:
         # Do not echo parser details: an existing config may contain credentials.
         errors.append(str(exc) if isinstance(exc, ValueError) and not isinstance(exc, json.JSONDecodeError) else "Config unreadable or invalid JSON")
     tunnel = config.get("openaiTunnel")
+    credential_status = _credential_status(tunnel)
+    if credential_status in {"missing", "invalid_reference", "file_missing", "file_malformed"}:
+        errors.append(f"Tunnel credential {credential_status.replace('_', ' ')}")
     print(json.dumps({
         "bridge": "codexify", "bridge_found": bool(bridge), "bridge_path": bridge,
         "required_version": BRIDGE_VERSION, "version_verified": version_ok,
@@ -112,6 +134,7 @@ def main(argv: list[str] | None = None) -> int:
         "project_root": str(args.project_root.expanduser().resolve()),
         "write_requested": args.write, "bootstrap_ready": not errors, "errors": errors,
         "tunnel_reference_present": isinstance(tunnel, dict) and bool(tunnel.get("tunnelId") and tunnel.get("apiKeyRef")),
+        "credential_status": credential_status,
         "doctor": {"status": "not_run", "command": [bridge or "codexify", "doctor", "--config", str(path), "--json"]},
         "connector_status": "unverified",
         "start_status": "not_started; configure native tunnel credentials before starting",

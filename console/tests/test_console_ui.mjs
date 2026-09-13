@@ -503,13 +503,13 @@ assert.doesNotMatch(indexHtml, /role="tree"|Flowchart zoom|Zoom in|Zoom out/);
 assert.match(indexHtml, /<h2>A role for every kind of work\.<\/h2>/);
 assert.match(indexHtml, /24 curated roles, ready to work—from development and design to security and content\./);
 const onboardingRolePanel = indexHtml.match(/id="onboarding-panel-3"[\s\S]*?<\/section>/)?.[0] || "";
-assert.match(onboardingRolePanel, /id="onboarding-role-assets-blocker" role="status">Role preview blocked: the admitted Architect mascot is orange\./);
-assert.equal((onboardingRolePanel.match(/<img\b/g) || []).length, 0);
-assert.doesNotMatch(onboardingRolePanel, /swarm-guided-tour-role-group|style=|filter:|data-role-media|role="list"|<article/);
+assert.match(onboardingRolePanel, /class="onboarding-role-group onboarding-artwork" src="\/assets\/swarm-guided-tour-role-group\.png" width="1920" height="1080" alt="Developer, Designer, Architect, and Reviewer SWARM roles"/);
+assert.equal((onboardingRolePanel.match(/<img\b/g) || []).length, 1);
+assert.doesNotMatch(onboardingRolePanel, /onboarding-role-assets-blocker|data-role-media|role="list"|<article/);
 assert.doesNotMatch(app, /ONBOARDING_ROLE_IDS|onboardingRoleExamplesMarkup|renderOnboardingRoleExamples/);
 assert.doesNotMatch(css, /onboarding-role-examples|onboarding-role-media/);
 assert.match(indexHtml, /class="onboarding-panel onboarding-panel-role-group"/);
-assert.match(css, /\.onboarding-role-assets-blocker \{[^}]*border:1px solid rgba\(255,172,75,\.45\);/);
+assert.match(css, /\.onboarding-role-group \{ display:block; width:min\(700px,100%\);/);
 assert.match(css, /--motion-enter-duration: 220ms;[\s\S]*?--motion-enter-distance: 8px;[\s\S]*?--motion-stagger: 55ms;/);
 assert.match(css, /@keyframes swarm-enter \{ from \{ opacity:0; transform:translateY\(var\(--motion-enter-distance\)\); \} to \{ opacity:1; transform:translateY\(0\); \} \}/);
 assert.match(css, /\.view\.is-active:not\(\[hidden\]\) \{ animation:swarm-enter var\(--motion-enter-duration\) var\(--motion-ease\) both; \}/);
@@ -3126,12 +3126,12 @@ async function mount(page, overview, overrides = {}) {
   return { runtimeErrors, failedRequests, requests, notificationSeenRequests, configRequests, assetRequests, messageRequests, profileRequests, projectRequests, repairRequests, assetControl, configControl, runLogControl, messageControl, profileControl, diagnosticsControl };
 }
 
-async function assertOnboardingRoleAssetsBlocked(page, viewportWidth) {
-  const blocker = page.locator("#onboarding-panel-3 #onboarding-role-assets-blocker");
-  await blocker.waitFor({ state: "visible" });
-  assert.equal(await page.locator("#onboarding-panel-3 .onboarding-role-group").count(), 0);
-  assert.match(await blocker.textContent(), /admitted Architect mascot is orange[\s\S]*will not recolor or substitute role art[\s\S]*approved white Architect asset/);
-  const geometry = await blocker.evaluate((node) => {
+async function assertOnboardingRoleGroup(page, viewportWidth) {
+  const group = page.locator("#onboarding-panel-3 .onboarding-role-group");
+  await group.waitFor({ state: "visible" });
+  assert.equal(await page.locator("#onboarding-panel-3 #onboarding-role-assets-blocker").count(), 0);
+  assert.equal(await group.getAttribute("src"), "/assets/swarm-guided-tour-role-group.png");
+  const geometry = await group.evaluate((node) => {
     const rect = node.getBoundingClientRect();
     const panel = node.closest(".onboarding-panel").getBoundingClientRect();
     return { left: rect.left, right: rect.right, top: rect.top, bottom: rect.bottom, panelLeft: panel.left, panelRight: panel.right, documentWidth: document.documentElement.scrollWidth };
@@ -3828,7 +3828,7 @@ proofFeed.items.push({
     assert.equal(await onboardingPage.locator("#onboarding-dialog").getAttribute("data-motion-step"), "2");
     assert.equal(await onboardingPage.evaluate(() => document.activeElement?.id), "onboarding-primary");
     await assertLaterStepNavigation(onboardingPage, "Continue");
-    await assertOnboardingRoleAssetsBlocked(onboardingPage, 1440);
+    await assertOnboardingRoleGroup(onboardingPage, 1440);
     await captureOnboardingEvidence(onboardingPage, "03-slide-3-desktop-1440x1000");
     await onboardingPage.getByRole("button", { name: "Continue" }).click();
     assert.equal(await onboardingPage.locator('[data-onboarding-step][aria-current="step"]').getAttribute("data-onboarding-step"), "3");
@@ -3935,7 +3935,7 @@ proofFeed.items.push({
     await assertLaterStepNavigation(onboardingTabletPage, "Continue");
     await assertOnboardingCoordination(onboardingTabletPage, 834);
     await onboardingTabletPage.getByRole("button", { name: "Continue" }).click();
-    await assertOnboardingRoleAssetsBlocked(onboardingTabletPage, 834);
+    await assertOnboardingRoleGroup(onboardingTabletPage, 834);
     await onboardingTabletPage.getByRole("button", { name: "Continue" }).click();
     assert.ok(await onboardingTabletPage.locator(".onboarding-project-tool").evaluate((node) => node.scrollWidth <= node.closest(".onboarding-panel").clientWidth + 1));
     await onboardingTabletPage.getByRole("button", { name: "Continue" }).click();
@@ -3958,7 +3958,7 @@ proofFeed.items.push({
     await assertOnboardingCoordination(onboardingMobilePage, 390);
     await captureOnboardingEvidence(onboardingMobilePage, "07-slide-2-coordination-mobile-390x844");
     await onboardingMobilePage.getByRole("button", { name: "Continue" }).click();
-    await assertOnboardingRoleAssetsBlocked(onboardingMobilePage, 390);
+    await assertOnboardingRoleGroup(onboardingMobilePage, 390);
     await captureOnboardingEvidence(onboardingMobilePage, "08-slide-3-mobile-390x844");
     await onboardingMobilePage.getByRole("button", { name: "Continue" }).click();
     assert.ok(await onboardingMobilePage.locator(".onboarding-project-tool").evaluate((node) => node.scrollWidth <= node.closest(".onboarding-panel").clientWidth + 1));
