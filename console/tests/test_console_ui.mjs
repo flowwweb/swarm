@@ -323,6 +323,8 @@ assert.match(reportJs, /project-mark/);
 assert.doesNotMatch(reportJs, /projectLogo|project-logo/);
 assert.match(reportJs, /activity_facts\?\.inactive !== true[\s\S]*project\.activity_status !== "inactive"/);
 assert.match(reportJs, /inactiveTaskStates[\s\S]*work\.slice\(0, 6\)[\s\S]*remainder[\s\S]* more<\/p>/);
+assert.doesNotMatch(reportJs, /role \|\| ""\)\.toLowerCase\(\) !== "ctrl"/);
+assert.match(reportJs, /typeof node\?\.updated_at === "number" \? node\.updated_at : Date\.parse/);
 assert.match(reportJs, /selected \? \(reportableProject\(selected, skipInactive\)[\s\S]*allProjects\.filter\(\(project\) => reportableProject\(project, skipInactive\)\)/);
 assert.match(reportCss, /\.project-mark \{[^}]*border-radius:50%/);
 assert.match(reportCss, /@media \(max-width:420px\)[\s\S]*@media print/);

@@ -16,12 +16,12 @@ function nodeTitle(node) {
 }
 
 function nodeTime(node) {
-  const timestamp = Date.parse(node?.updated_at || "");
+  const timestamp = typeof node?.updated_at === "number" ? node.updated_at : Date.parse(node?.updated_at || "");
   return Number.isFinite(timestamp) ? new Date(timestamp).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "—";
 }
 
 function projectMarkup(project, nodes) {
-  const work = nodes.filter((node) => node.project_id === project.id && String(node.role || "").toLowerCase() !== "ctrl" && !inactiveTaskStates.has(String(node.status || "").toLowerCase()));
+  const work = nodes.filter((node) => node.project_id === project.id && !inactiveTaskStates.has(String(node.status || "").toLowerCase()));
   const shown = work.slice(0, 6);
   const remainder = work.length - shown.length;
   const activity = project.activity_status === "active" ? "active" : "inactive";
@@ -47,7 +47,7 @@ async function load() {
   const projects = selected ? (reportableProject(selected, skipInactive) ? [selected] : []) : allProjects.filter((project) => reportableProject(project, skipInactive));
   const projectIds = new Set(projects.map((project) => project.id));
   const nodes = report.nodes.filter((node) => projectIds.has(node.project_id));
-  const tasks = nodes.filter((node) => String(node.role || "").toLowerCase() !== "ctrl" && !inactiveTaskStates.has(String(node.status || "").toLowerCase()));
+  const tasks = nodes.filter((node) => !inactiveTaskStates.has(String(node.status || "").toLowerCase()));
   const attention = tasks.filter((node) => attentionStates.has(String(node.status || "").toLowerCase()));
   const tokens = nodes.reduce((total, node) => total + (Number.isFinite(Number(node.tokens)) ? Number(node.tokens) : 0), 0);
 
