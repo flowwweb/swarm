@@ -14,17 +14,19 @@ const staticRoot = path.join(consoleRoot, "static");
 const pluginConsoleRoot = path.join(repositoryRoot, "plugins", "swarm", "console");
 const pluginStaticRoot = path.join(pluginConsoleRoot, "static");
 const fixture = JSON.parse(fs.readFileSync(path.join(testsRoot, "fixtures", "console-ui.json"), "utf8"));
+const labCatalogFixture = JSON.parse(fs.readFileSync(path.join(repositoryRoot, "skills", "swarm", "labs", "catalog.json"), "utf8"));
 fixture.usageHistory.items = fixture.usageHistory.history;
 delete fixture.usageHistory.history;
 const css = fs.readFileSync(path.join(staticRoot, "styles.css"), "utf8");
-const app = fs.readFileSync(path.join(staticRoot, "app.js"), "utf8");
+const app = fs.readFileSync(path.join(staticRoot, "app.js"), "utf8").replace(/\r\n/g, "\n");
 const html = fs.readFileSync(path.join(staticRoot, "index.html"), "utf8");
 assert.match(html, /data-view="labs"[\s\S]*id="view-labs"/);
 assert.match(app, /api\('\/api\/labs'\)/);
 assert.match(app, /\/assets\/role-avatars\//);
-assert.match(app, /Start the ['"] \+ lab\.name[\s\S]*openMessageComposer/);
+assert.match(app, /function labManifestMarkup[\s\S]*Block progress/);
+assert.doesNotMatch(app, /function startLab|data-lab-form|data-custom-lab-form/);
 assert.doesNotMatch(app, /LAB_CATALOG|\/api\/labs\/commands/);
-assert.match(css, /\.lab-catalog[\s\S]*grid-template-columns:repeat\(2/);
+assert.match(css, /\.lab-catalog[\s\S]*grid-template-columns:repeat\(3/);
 {
   for (const mode of ['cancel','success','failure','stale']) {
     const elements=new Map(); let calls=0;
@@ -304,11 +306,12 @@ assert.deepEqual(pluginOnboardingSlide1Asset, onboardingSlide1Asset);
 assert.deepEqual(pluginOnboardingRoleGroupAsset, onboardingRoleGroupAsset);
 assert.deepEqual(pluginOnboardingProjectToolAsset, onboardingProjectToolAsset);
 assert.deepEqual(pluginIconAsset, iconAsset);
-assert.equal(pluginCss, css);
-assert.equal(pluginApp, app);
+const normalizedText = (value) => value.replace(/\r\n/g, "\n");
+assert.equal(normalizedText(pluginCss), normalizedText(css));
+assert.equal(normalizedText(pluginApp), normalizedText(app));
 assert.match(app, /compactNumber\(row\.tokens\)/, 'Task token totals use compact notation');
-assert.equal(pluginIndexHtml, indexHtml);
-if (!agentsSourceOnly && !skipServerParity) assert.equal(pluginServer, server);
+assert.equal(normalizedText(pluginIndexHtml), normalizedText(indexHtml));
+if (!agentsSourceOnly && !skipServerParity) assert.equal(normalizedText(pluginServer), normalizedText(server));
 assert.match(server, /"\/assets\/swarm-offline-disconnected\.png": \("swarm-offline-disconnected\.png", "image\/png"\)/);
 assert.match(server, /"\/assets\/swarm-state-mascot-concerned\.png": \("swarm-state-mascot-concerned\.png", "image\/png"\)/);
 assert.match(server, /"\/assets\/swarm-offline-disconnected\.webp": \("swarm-offline-disconnected\.webp", "image\/webp"\)/);
@@ -361,7 +364,7 @@ for (const status of ["Live", "Reconnecting", "Offline"]) assert.match(app, new 
 assert.match(css, /\.status-dot\.is-reconnecting/);
 assert.match(css, /\.status-dot\.is-offline/);
 
-for (const [tab, icon] of [["overview", "layout-dashboard"], ["agents", "users"], ["roles", "list-tree"], ["review", "shield-check"], ["assets", "image"], ["diagnostics", "activity"], ["settings", "settings"]]) {
+for (const [tab, icon] of [["overview", "layout-dashboard"], ["agents", "users"], ["labs", "flask-conical"], ["roles", "list-tree"], ["review", "shield-check"], ["assets", "image"], ["diagnostics", "activity"], ["settings", "settings"]]) {
   assert.match(indexHtml, new RegExp(`id="tab-${tab}"[\\s\\S]*?<use href="#lucide-${icon}"></use>`));
   assert.match(indexHtml, new RegExp(`id="lucide-${icon}" viewBox="0 0 24 24"`));
 }
@@ -1369,7 +1372,7 @@ assert.ok(css.includes('.settings-save-bar[hidden] { display:none; }'));
 assert.ok(css.includes('@media (min-width:901px) and (pointer:fine)'));
 assert.ok(css.includes('.project-scope-button { min-height:32px; }'));
 assert.ok(app.includes('filter(tab => !tab.closest("details") || tab.closest("details").open)'));
-assert.match(app, /\["overview", "agents", "roles", "review", "assets", "diagnostics", "settings"\]/);
+assert.match(app, /\["overview", "agents", "labs", "roles", "review", "assets", "diagnostics", "settings"\]/);
 assert.doesNotMatch(app.slice(app.indexOf("function routeView"), app.indexOf("function setView")), /dashboard|hierarchy|kanban/);
 for (const retiredView of ["dashboard", "hierarchy", "kanban"]) {
   assert.doesNotMatch(indexHtml, new RegExp(`id="view-${retiredView}"`));
@@ -1586,7 +1589,7 @@ assert.match(app, /project_id: request\.projectId/);
 assert.match(app, /ctrl_id: request\.ctrlId/);
 assert.match(app, /setInterval\(reportPresence, 60_000\)/);
 assert.match(app, /async function refreshMonitoring/);
-assert.match(app, /function renderAllViews\(\) \{ renderOverview\(\); renderAgents\(\); renderRoles\(\); renderReview\(\); renderAssets\(\); renderDiagnostics\(\); renderSettings\(\); renderRunLogSurfaces\(\); renderMessageComposer\(\); if \(\$\("#onboarding-dialog"\)\?\.open\) renderOnboarding\(\); updateDocumentTitle\(\); \}/);
+assert.match(app, /function renderAllViews\(\) \{ renderOverview\(\); renderAgents\(\); renderLabs\(\); renderRoles\(\); renderReview\(\); renderAssets\(\); renderDiagnostics\(\); renderSettings\(\); renderRunLogSurfaces\(\); renderMessageComposer\(\); if \(\$\("#onboarding-dialog"\)\?\.open\) renderOnboarding\(\); updateDocumentTitle\(\); \}/);
 assert.match(app, /\/api\/diagnostics\/history\?limit=120/);
 assert.match(app, /api\(overviewRequestPath\(\), \{ timeoutMs: 15_000 \}\)/);
 assert.match(indexHtml, /id="connection-state-title">Connection lost</);
@@ -1632,7 +1635,7 @@ assert.match(app, /function configEditable\(key\)/);
 assert.match(app, /id="settings-scope"/);
 assert.match(app, /Custom CTRL values override global defaults/);
 assert.match(app, /Inherits global defaults/);
-const settingsSource = app.slice(app.indexOf("function renderSettings"), app.indexOf("function renderAllViews"));
+const settingsSource = app.slice(app.indexOf("function renderSettings"), app.indexOf("function renderLabs"));
  assert.match(settingsSource, /class="panel settings-card settings-card-workflow"/);
  assert.match(settingsSource, /class="settings-theme-choice"/);
 assert.match(app, /const THEME_STORAGE_KEY = "swarm\.theme\.v1"/);
@@ -1920,7 +1923,7 @@ assert.match(css, /\.role-library-grid/);
 assert.match(css, /\.role-editor::backdrop/);
 assert.match(app, /function safeRoleAvatarURL\(value, expectedDigest\)[\s\S]*?apiMatch\[2\]\.toLowerCase\(\) === expectedDigest[\s\S]*?role-avatars/);
 assert.match(app, /function retainedRoleAvatar\(role\)[\s\S]*?avatar_asset_digest[\s\S]*?assetItems\(\)[\s\S]*?preview\?\.state === "AVAILABLE"/);
-assert.match(app, /function roleAvatar\(role\)[\s\S]*?class="role-avatar has-image"[\s\S]*?<img loading="lazy"[\s\S]*?class="role-avatar is-unavailable"[\s\S]*?lucide-circle-user-round/);
+assert.match(app, /function roleAvatar\(role\)[\s\S]*?class="role-avatar is-mini"[\s\S]*?class="role-avatar has-image"[\s\S]*?<img loading="lazy"/);
 assert.match(app, /function roleHasRetainedAvatar\(role\) \{ return Boolean\(retainedRoleAvatar\(role\)\); \}/);
 assert.match(css, /\.role-avatar\.is-unavailable \{[^}]*border-style:dashed/);
 assert.doesNotMatch(css, /\.role-avatar i::before|\.role-avatar i::after/);
@@ -2030,7 +2033,7 @@ assert.match(css, /\.status-dot \{ --circle-size:8px;[^}]*inline-size:var\(--cir
 assert.match(css, /#role-field-accent \{ inline-size:44px; block-size:44px; min-inline-size:44px;/);
 assert.match(css, /\* \{ scrollbar-width:thin; scrollbar-color:rgba\(91,112,140,\.72\) var\(--base-deep\)/);
 assert.match(css, /\.message-composer \{ top:0; right:0; bottom:0;[^}]*height:100dvh;[^}]*border-radius:0;/);
-assert.match(css, /@media \(max-width: 620px\)[\s\S]*?\.mobile-message-footer \{ grid-template-columns:repeat\(5,minmax\(44px,1fr\)\)[\s\S]*?\.message-composer \{ inset:0; width:100vw; height:100dvh;/);
+assert.match(css, /@media \(max-width: 620px\)[\s\S]*?\.mobile-message-footer \{ grid-auto-flow:column; grid-auto-columns:minmax\(48px,1fr\); grid-template-columns:none;[\s\S]*?overflow-x:auto;[\s\S]*?\.message-composer \{ inset:0; width:100vw; height:100dvh;/);
 assert.match(css, /\.settings-toggle-grid \{ grid-template-columns:repeat\(3,minmax\(0,1fr\)\); \}/);
 assert.match(css, /\.settings-switch input:checked \+ span \{[^}]*background:linear-gradient\(120deg,var\(--orange\),var\(--coral\)\)/);
 assert.match(css, /--orange:\s*#FF7A18;/);
@@ -3111,6 +3114,7 @@ async function mount(page, overview, overrides = {}) {
     if (url.pathname === "/api/storage") return route.fulfill(response(fixture.storage));
     if (url.pathname === "/api/ctrl-settings") return route.fulfill(response(configControl.ctrlFeed));
     if (url.pathname === "/api/skills") return route.fulfill(response({ ok: true, settings: { inheritance_enabled: true }, skills: [], overlays: { global: null, project: null, ctrl: null } }));
+    if (url.pathname === "/api/labs") return route.fulfill(response({ ok: true, labs: labCatalogFixture.labs, manifest_contract: labCatalogFixture.manifest_contract }));
     if (url.pathname.startsWith("/api/proof-media/")) return route.fulfill({ status: 200, contentType: "image/svg+xml", body: '<svg xmlns="http://www.w3.org/2000/svg" width="160" height="100"><rect width="160" height="100" fill="#0f1726"/></svg>' });
     if (/^\/api\/assets\/[a-z0-9_-]+\/preview$/i.test(url.pathname)) return route.fulfill({ status: 200, contentType: "image/png", body: mascotAsset });
     if (url.pathname === "/assets/swarm-wordmark.png") return route.fulfill({ status: 200, contentType: "image/png", body: wordmarkAsset });
@@ -5003,7 +5007,7 @@ proofFeed.items.push({
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth), true);
     if (evidenceDir) await page.screenshot({ path: path.join(evidenceDir, "40-message-unavailable-desktop-1536x1024.png"), fullPage: false, animations: "disabled" });
     await page.keyboard.press("Escape");
-    for (const view of ["overview", "agents", "roles", "review", "assets", "diagnostics", "settings"]) assert.equal(await page.locator('.nav-item[data-view="' + view + '"]').count(), 1);
+    for (const view of ["overview", "agents", "labs", "roles", "review", "assets", "diagnostics", "settings"]) assert.equal(await page.locator('.nav-item[data-view="' + view + '"]').count(), 1);
     assert.equal(await page.getByRole("tab", { name: "Projects", exact: true }).count(), 0);
     for (const retired of ["dashboard", "hierarchy", "kanban"]) assert.equal(await page.locator('.nav-item[data-view="' + retired + '"]').count(), 0);
     assert.equal(await page.locator("#project-scope-filter").isVisible(), true);
@@ -5044,7 +5048,7 @@ proofFeed.items.push({
     await page.keyboard.press("Home");
     assert.equal(await page.evaluate(() => document.activeElement?.dataset.projectScopeId), "all");
     await page.keyboard.press("Escape");
-    const scopedViews = ["overview", "agents", "roles", "review", "assets", "diagnostics", "settings"];
+    const scopedViews = ["overview", "agents", "labs", "roles", "review", "assets", "diagnostics", "settings"];
     for (let index = 0; index < scopedViews.length; index += 1) {
       const view = scopedViews[index];
       const projectId = index % 2 ? "project:fixture" : "project:branch";
@@ -5255,8 +5259,8 @@ proofFeed.items.push({
     const unknownAgent = page.locator('#view-agents [data-agent-detail="nested-ctrl"]');
     assert.match(await unknownAgent.textContent(), /UNKNOWN/);
     assert.equal(await unknownAgent.locator('[role="progressbar"]').count(), 0);
-    assert.equal(await measuredAgent.locator(".agent-avatar-token .role-avatar.has-image img").count(), 1);
-    assert.ok(await page.locator(".agent-avatar-token .role-avatar.is-unavailable").count() >= 1);
+    assert.equal(await measuredAgent.locator(".agent-avatar-token .role-avatar.is-mini").count(), 1);
+    assert.ok(await page.locator(".agent-avatar-token .role-avatar.is-mini").count() >= 2);
     assert.doesNotMatch(await page.locator("#view-agents").textContent(), /Pending/);
     assert.match(await measuredAgent.textContent(), /Review screenshots[\s\S]*Violet[\s\S]*Developer[\s\S]*DOER/);
     assert.doesNotMatch(await measuredAgent.textContent(), /nested-task|01a[0-9a-f-]+/i);
@@ -5377,13 +5381,12 @@ proofFeed.items.push({
       state.roleManifests.roles.find((role) => role.id === "developer").instructions = window.__developerInstructionsForDisclosureTest;
       renderRoleLibrary("developer");
     });
-    assert.equal(await page.locator('#view-roles .role-avatar.has-image[aria-label="Developer mascot avatar"] img').count(), 2);
-    assert.equal(await page.locator('#view-roles .role-avatar.is-unavailable[aria-label="Avatar admission pending for Developer"]').count(), 0);
+    assert.equal(await page.locator('#view-roles .role-avatar.is-mini[aria-label="Developer mascot avatar"]').count(), 2);
     assert.doesNotMatch(await page.locator("#view-roles").textContent(), /Pending/);
     await page.locator(".role-filter > summary").click();
     if (evidenceDir) await page.screenshot({ path: path.join(evidenceDir, "12-roles-desktop-1536x1024.png"), fullPage: false, animations: "disabled" });
     await page.locator('.role-choice[data-role-select="architect"]').click();
-    assert.equal(await page.locator('#role-library-detail .role-avatar.has-image[aria-label="Architect mascot avatar"] img').count(), 1);
+    assert.equal(await page.locator('#role-library-detail .role-avatar.is-mini[aria-label="Architect mascot avatar"]').count(), 1);
     if (evidenceDir) await page.screenshot({ path: path.join(evidenceDir, "12b-roles-architect-desktop-1536x1024.png"), fullPage: false, animations: "disabled" });
     await page.locator('.role-choice[data-role-select="reviewer"]').click();
     assert.match(await page.locator('#role-library-detail').textContent(), /Reviewer one[\s\S]*Reviewer four/);
@@ -5856,7 +5859,7 @@ proofFeed.items.push({
     await mobilePage.evaluate(() => { setTheme("midnight"); setView("overview"); });
     assert.equal(await mobilePage.locator("#message-launcher").isVisible(), false);
     assert.equal(await mobilePage.locator("#mobile-message-action").isVisible(), true);
-    assert.equal(await mobilePage.locator(".mobile-message-footer .mobile-destination").count(), 4);
+    assert.equal(await mobilePage.locator(".mobile-message-footer .mobile-destination").count(), 5);
     assert.equal(await mobilePage.locator("#mobile-message-action .message-mascot-silhouette").count(), 1);
     await mobilePage.locator('.mobile-message-footer [data-view="assets"]').click();
     assert.equal(await mobilePage.evaluate(() => state.view), "assets");

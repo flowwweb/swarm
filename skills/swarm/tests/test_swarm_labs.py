@@ -39,9 +39,10 @@ class SwarmLabsTests(unittest.TestCase):
 
     def test_user_catalog_is_thin_and_role_bound(self):
         catalog = json.loads(CATALOG.read_text(encoding="utf-8"))
-        self.assertEqual([lab["id"] for lab in catalog["labs"]], ["strategy", "build", "growth", "design"])
-        allowed = {"id", "name", "summary", "outcome", "role_ids", "prompt"}
-        self.assertTrue(all(set(lab) == allowed and lab["role_ids"] for lab in catalog["labs"]))
+        self.assertEqual([lab["id"] for lab in catalog["labs"]], ["strategy", "research", "design", "build", "integration", "qa", "reliability", "data", "automation", "content", "growth", "launch"])
+        allowed = {"id", "name", "icon", "summary", "outcome", "suggested_roles", "guide"}
+        self.assertTrue(all(set(lab) == allowed and lab["suggested_roles"] and 2 <= len(lab["guide"]) <= 4 for lab in catalog["labs"]))
+        self.assertEqual([step["value"] for step in catalog["manifest_contract"]["progress"]["steps"]], [.25, .5, .75, 1])
         self.assertNotIn("status", CATALOG.read_text(encoding="utf-8"))
 
     def test_savings_require_paired_measured_codex_tokens(self):

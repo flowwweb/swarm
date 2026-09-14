@@ -5025,8 +5025,8 @@ function roleAvatar(role) {
   const accent = /^#[0-9a-f]{6}$/i.test(role?.accent || "") ? role.accent : "#8f9db0";
   const displayName = roleDisplayName(role);
   const avatar = retainedRoleAvatar(role);
-  if (avatar) return '<span class="role-avatar has-image" style="--role-accent:' + escapeHTML(accent) + '" role="img" aria-label="' + escapeHTML(displayName + " mascot avatar") + '"><img loading="lazy" decoding="async" src="' + escapeHTML(avatar.url) + '" alt=""></span>';
-  return '<span class="role-avatar is-unavailable" style="--role-accent:' + escapeHTML(accent) + '" role="img" aria-label="Mascot avatar unavailable for ' + escapeHTML(displayName) + '; admission pending"><svg class="lucide" aria-hidden="true"><use href="#lucide-circle-user-round"></use></svg></span>';
+  if (!avatar || (role?.built_in === true && avatar.url.startsWith("/assets/role-avatars/"))) return '<span class="role-avatar is-mini" style="--role-accent:' + escapeHTML(accent) + '" role="img" aria-label="' + escapeHTML(displayName + " mascot avatar") + '"></span>';
+  return '<span class="role-avatar has-image" style="--role-accent:' + escapeHTML(accent) + '" role="img" aria-label="' + escapeHTML(displayName + " mascot avatar") + '"><img loading="lazy" decoding="async" src="' + escapeHTML(avatar.url) + '" alt=""></span>';
 }
 
 function roleHasRetainedAvatar(role) { return Boolean(retainedRoleAvatar(role)); }
@@ -5905,13 +5905,35 @@ function labCatalog() {
 }
 
 function labRoleStack(roleIds) {
-  return '<span class="lab-role-stack" aria-label="' + escapeHTML(roleIds.join(", ")) + '">' + roleIds.slice(0, 3).map((roleId) => '<img src="/assets/role-avatars/' + encodeURIComponent(roleId) + '.png" alt="" title="' + escapeHTML(roleId) + '">').join("") + (roleIds.length > 3 ? '<i aria-hidden="true">+' + (roleIds.length - 3) + '</i>' : '') + '</span>';
+  return '<span class="lab-role-stack" aria-label="Suggested roles: ' + escapeHTML(roleIds.join(", ")) + '">' + roleIds.map((roleId) => {
+    const role = roleRecord(roleId) || { id: roleId, name: humanize(roleId), accent: "#8f9db0", built_in: true };
+    return '<span title="' + escapeHTML(roleDisplayName(role)) + '">' + roleAvatar(role) + '</span>';
+  }).join("") + '</span>';
 }
 
 function selectedLab() {
-  const labs = labCatalog();
+  const labs = [...labCatalog(), customLabTemplate()];
   const id = $("#view-labs")?.dataset.selectedLabId || labs[0]?.id;
   return labs.find((lab) => lab.id === id) || labs[0] || null;
+}
+
+function labManifestMarkup(lab) {
+  const contract = state.labs.manifest_contract;
+  const steps = contract.progress.steps.map((step) => '<li><i style="--lab-progress:' + escapeHTML(step.value * 100) + '%"></i><strong>' + escapeHTML(String(step.value)) + '</strong><span>' + escapeHTML(step.label) + '</span></li>').join("");
+  return '<div class="lab-manifest"><div class="lab-manifest-outcome"><span>Owns</span><strong>' + escapeHTML(lab.outcome) + '</strong></div><ol class="lab-guide">' + lab.guide.map((step) => '<li>' + escapeHTML(step) + '</li>').join("") + '</ol><div class="lab-progress-contract"><span>Block progress</span><ol>' + steps + '</ol></div><p>' + escapeHTML(contract.delegation) + '</p></div>';
+}
+
+function customLabTemplate() {
+  const contract = state.labs.manifest_contract;
+  return {
+    id: "custom",
+    name: "Custom Lab",
+    icon: "plus",
+    summary: "Name any focused build area.",
+    outcome: contract.custom,
+    suggested_roles: [],
+    guide: ["Name the area and intended outcome.", "Choose the smallest useful operating loop.", "Track evidence through normal task blocks."],
+  };
 }
 
 function renderLabs() {
@@ -5920,24 +5942,18 @@ function renderLabs() {
   const labs = labCatalog();
   if (!labs.length) {
     status.textContent = state.labsStatus === "loading" ? "Loading labs" : (state.labsError || "Labs unavailable");
-    catalog.innerHTML = state.labsStatus === "loading" ? '<div class="loading-skeleton lab-loading" aria-hidden="true"><i></i><i></i><i></i><i></i></div>' : '<div class="empty-inline"><strong>Labs unavailable</strong><button class="quiet-button" type="button" data-lab-retry>Retry</button></div>';
+    catalog.innerHTML = state.labsStatus === "loading" ? '<div class="loading-skeleton lab-loading" aria-hidden="true"><i></i><i></i><i></i></div>' : '<div class="empty-inline"><strong>Labs unavailable</strong><button class="quiet-button" type="button" data-lab-retry>Retry</button></div>';
     return;
   }
-  status.textContent = labs.length + " labs ready";
+  status.textContent = labs.length + " Lab manifests ready";
   const active = selectedLab();
-  catalog.innerHTML = labs.map((lab) => {
+  catalog.innerHTML = [...labs, customLabTemplate()].map((lab) => {
     const selected = lab.id === active?.id;
-    return '<article class="lab-card' + (selected ? ' is-selected' : '') + '" role="listitem">' +
-      '<button class="lab-card-select" type="button" data-lab-id="' + lab.id + '" aria-expanded="' + String(selected) + '"><span class="lab-mark" aria-hidden="true"><svg class="lucide"><use href="#lucide-flask-conical"></use></svg></span><span class="lab-card-copy"><strong>' + escapeHTML(lab.name) + '</strong><small>' + escapeHTML(lab.summary) + '</small></span><span class="lab-ready"><i></i>Ready</span>' + labRoleStack(lab.role_ids) + '<svg class="lucide lab-chevron" aria-hidden="true"><use href="#lucide-chevron-down"></use></svg></button>' +
-      (selected ? '<form class="lab-launch" data-lab-form="' + lab.id + '"><label for="lab-question-' + lab.id + '"><span>' + escapeHTML(lab.prompt) + '</span><textarea id="lab-question-' + lab.id + '" rows="2" maxlength="1200" placeholder="Describe the outcome…"></textarea></label><button class="primary-action" type="submit">Start</button></form>' : '') +
+    return '<article class="lab-card' + (selected ? ' is-selected' : '') + (lab.id === "custom" ? ' lab-new-card' : '') + '" role="listitem">' +
+      '<button class="lab-card-select" type="button" data-lab-id="' + lab.id + '" aria-expanded="' + String(selected) + '"><span class="lab-mark" aria-hidden="true"><svg class="lucide"><use href="#lucide-' + escapeHTML(lab.icon) + '"></use></svg></span><span class="lab-card-copy"><strong>' + escapeHTML(lab.name) + '</strong><small>' + escapeHTML(lab.summary) + '</small></span>' + labRoleStack(lab.suggested_roles) + '<svg class="lucide lab-chevron" aria-hidden="true"><use href="#lucide-chevron-down"></use></svg></button>' +
+      (selected ? labManifestMarkup(lab) : '') +
       '</article>';
   }).join("");
-}
-
-function startLab(lab, question = "") {
-  state.messageDraft = 'Start the ' + lab.name + ' for the current project scope: ' + (question.trim() || lab.prompt) + ' Use only the roles needed. Return the selected outcome with proof.';
-  renderMessageComposer();
-  openMessageComposer($("[data-lab-form='" + lab.id + "'] button"));
 }
 
 async function refreshLabs() {
@@ -6611,17 +6627,8 @@ $("#lab-catalog").addEventListener("click", (event) => {
   if (event.target.closest("[data-lab-retry]")) { refreshLabs(); return; }
   const trigger = event.target.closest("[data-lab-id]");
   if (!trigger) return;
-  const panel = $("#view-labs");
-  panel.dataset.selectedLabId = panel.dataset.selectedLabId === trigger.dataset.labId ? "" : trigger.dataset.labId;
+  $("#view-labs").dataset.selectedLabId = trigger.dataset.labId;
   renderLabs();
-  $("[data-lab-form] textarea")?.focus({ preventScroll: true });
-});
-$("#lab-catalog").addEventListener("submit", (event) => {
-  const form = event.target.closest("[data-lab-form]");
-  if (!form) return;
-  event.preventDefault();
-  const lab = labCatalog().find((item) => item.id === form.dataset.labForm);
-  if (lab) startLab(lab, form.querySelector("textarea")?.value || "");
 });
 document.addEventListener("keydown", (event) => {
   if (event.ctrlKey && !event.altKey && !event.shiftKey && event.key.toLowerCase() === "k") {

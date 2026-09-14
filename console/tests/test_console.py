@@ -870,10 +870,11 @@ class SwarmConsoleTests(unittest.TestCase):
     def test_lab_catalog_is_read_only_and_role_bound(self) -> None:
         app = console.App(self.codex_home, self.config)
         projection = app.lab_catalog_projection()
-        self.assertEqual([lab["id"] for lab in projection["labs"]], ["strategy", "build", "growth", "design"])
+        self.assertEqual([lab["id"] for lab in projection["labs"]], ["strategy", "research", "design", "build", "integration", "qa", "reliability", "data", "automation", "content", "growth", "launch"])
         self.assertTrue(projection["read_only"])
         role_ids = {role["id"] for role in app.role_manifest_projection()["roles"]}
-        self.assertTrue(all(set(lab["role_ids"]).issubset(role_ids) for lab in projection["labs"]))
+        self.assertTrue(all(set(lab["suggested_roles"]).issubset(role_ids) for lab in projection["labs"]))
+        self.assertEqual([step["value"] for step in projection["manifest_contract"]["progress"]["steps"]], [.25, .5, .75, 1])
         self.assertIn('if path == "/api/labs":', SERVER.read_text(encoding="utf-8"))
 
     def test_role_manifest_http_contract_is_server_owned_and_asset_bound(self) -> None:

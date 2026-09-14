@@ -1,37 +1,247 @@
 {
   "schema_version": 1,
+  "manifest_contract": {
+    "shape": "One Lab is one normal task under its owning CTRL.",
+    "delegation": "The owning CTRL handles delegation. The Lab chooses the roles and methods needed for its goal.",
+    "progress": {
+      "source": "The Lab task's existing blocks.",
+      "steps": [
+        {
+          "value": 0.25,
+          "label": "Started"
+        },
+        {
+          "value": 0.5,
+          "label": "Review"
+        },
+        {
+          "value": 0.75,
+          "label": "Accepted"
+        },
+        {
+          "value": 1,
+          "label": "Committed"
+        }
+      ]
+    },
+    "custom": "A CTRL may name a new Lab for any focused area and apply this same manifest shape."
+  },
   "labs": [
     {
       "id": "strategy",
       "name": "Strategy Lab",
+      "icon": "scan",
       "summary": "Find the clearest path.",
-      "outcome": "One evidence-backed decision and its stopping rule.",
-      "role_ids": ["strategist", "researcher", "analyst", "reviewer"],
-      "prompt": "What decision should this lab resolve?"
+      "outcome": "One evidence-backed decision and stopping rule.",
+      "suggested_roles": [
+        "strategist",
+        "researcher",
+        "analyst",
+        "reviewer"
+      ],
+      "guide": [
+        "Frame the decision and its stopping rule.",
+        "Test the strongest options against evidence.",
+        "Promote one clear direction."
+      ]
     },
     {
-      "id": "build",
-      "name": "Build Lab",
-      "summary": "Ship a working slice.",
-      "outcome": "One integrated increment with focused proof.",
-      "role_ids": ["developer", "architect", "tester", "reviewer"],
-      "prompt": "What working outcome should this lab ship?"
-    },
-    {
-      "id": "growth",
-      "name": "Growth Lab",
-      "summary": "Test what earns traction.",
-      "outcome": "One measured keep, change, or stop decision.",
-      "role_ids": ["marketer", "researcher", "analyst", "designer"],
-      "prompt": "What growth hypothesis should this lab test?"
+      "id": "research",
+      "name": "Research Lab",
+      "icon": "search",
+      "summary": "Turn questions into insight.",
+      "outcome": "One sourced answer that changes the build.",
+      "suggested_roles": [
+        "researcher",
+        "analyst",
+        "specialist",
+        "reviewer"
+      ],
+      "guide": [
+        "Frame the question and source standard.",
+        "Investigate the smallest useful evidence set.",
+        "Return the finding that changes the build."
+      ]
     },
     {
       "id": "design",
       "name": "Design Lab",
-      "summary": "Compare the strongest experience.",
-      "outcome": "One selected design promoted with responsive and accessibility proof.",
-      "role_ids": ["designer", "researcher", "developer", "reviewer"],
-      "prompt": "What experience should this lab improve?"
+      "icon": "pencil",
+      "summary": "Create intuitive experiences.",
+      "outcome": "One selected experience with responsive proof.",
+      "suggested_roles": [
+        "designer",
+        "researcher",
+        "developer",
+        "reviewer"
+      ],
+      "guide": [
+        "Frame the user outcome and fixed constraints.",
+        "Explore and compare focused candidates.",
+        "Promote one proven experience."
+      ]
+    },
+    {
+      "id": "build",
+      "name": "Build Lab",
+      "icon": "git-branch",
+      "summary": "Ship working software.",
+      "outcome": "One integrated increment with focused proof.",
+      "suggested_roles": [
+        "developer",
+        "architect",
+        "tester",
+        "reviewer"
+      ],
+      "guide": [
+        "Frame the increment and acceptance proof.",
+        "Build in small inspectable blocks.",
+        "Integrate the accepted result."
+      ]
+    },
+    {
+      "id": "integration",
+      "name": "Integration Lab",
+      "icon": "git-branch",
+      "summary": "Connect systems and data.",
+      "outcome": "One proven connection across the real boundary.",
+      "suggested_roles": [
+        "architect",
+        "developer",
+        "operator",
+        "tester"
+      ],
+      "guide": [
+        "Frame both sides of the boundary.",
+        "Prove the smallest real connection.",
+        "Add recovery and integration proof."
+      ]
+    },
+    {
+      "id": "qa",
+      "name": "QA Lab",
+      "icon": "shield-check",
+      "summary": "Keep quality high.",
+      "outcome": "One accepted result with defects resolved.",
+      "suggested_roles": [
+        "tester",
+        "auditor",
+        "reviewer",
+        "developer"
+      ],
+      "guide": [
+        "Frame the user contract and risk.",
+        "Test representative and hostile paths.",
+        "Return clear accept or correction evidence."
+      ]
+    },
+    {
+      "id": "reliability",
+      "name": "Reliability Lab",
+      "icon": "heart-pulse",
+      "summary": "Make it stable and resilient.",
+      "outcome": "One measured reliability risk removed.",
+      "suggested_roles": [
+        "operator",
+        "architect",
+        "security",
+        "tester"
+      ],
+      "guide": [
+        "Frame the failure mode and target.",
+        "Measure before and after the change.",
+        "Keep the smallest durable recovery."
+      ]
+    },
+    {
+      "id": "data",
+      "name": "Data Lab",
+      "icon": "list-tree",
+      "summary": "Turn data into advantage.",
+      "outcome": "One trusted data product or decision.",
+      "suggested_roles": [
+        "analyst",
+        "researcher",
+        "developer",
+        "reviewer"
+      ],
+      "guide": [
+        "Frame the decision the data must support.",
+        "Build the smallest trusted projection.",
+        "Verify provenance and usefulness."
+      ]
+    },
+    {
+      "id": "automation",
+      "name": "Automation Lab",
+      "icon": "settings",
+      "summary": "Eliminate manual work.",
+      "outcome": "One reliable automated path with recovery.",
+      "suggested_roles": [
+        "developer",
+        "operator",
+        "architect",
+        "tester"
+      ],
+      "guide": [
+        "Frame the repeated work and safe stop.",
+        "Automate one reliable path.",
+        "Prove recovery and saved effort."
+      ]
+    },
+    {
+      "id": "content",
+      "name": "Content Lab",
+      "icon": "file-clock",
+      "summary": "Tell the story.",
+      "outcome": "One publishable content system or campaign.",
+      "suggested_roles": [
+        "writer",
+        "designer",
+        "researcher",
+        "reviewer"
+      ],
+      "guide": [
+        "Frame the audience and intended action.",
+        "Create and compare focused versions.",
+        "Promote one publishable result."
+      ]
+    },
+    {
+      "id": "growth",
+      "name": "Growth Lab",
+      "icon": "activity",
+      "summary": "Drive adoption and impact.",
+      "outcome": "One measured keep, change, or stop decision.",
+      "suggested_roles": [
+        "marketer",
+        "analyst",
+        "designer",
+        "researcher"
+      ],
+      "guide": [
+        "Frame the behavior and success signal.",
+        "Run the smallest measurable experiment.",
+        "Keep, change, or stop from evidence."
+      ]
+    },
+    {
+      "id": "launch",
+      "name": "Launch Lab",
+      "icon": "send",
+      "summary": "Get to market with confidence.",
+      "outcome": "One coordinated release with live proof.",
+      "suggested_roles": [
+        "producer",
+        "marketer",
+        "operator",
+        "reviewer"
+      ],
+      "guide": [
+        "Frame the release gate and owner.",
+        "Coordinate the smallest complete release.",
+        "Verify the live result and close the loop."
+      ]
     }
   ]
 }

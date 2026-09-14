@@ -14336,19 +14336,30 @@ class App:
         except (OSError, json.JSONDecodeError) as error:
             raise ConsoleError("lab catalog is unavailable") from error
         labs = payload.get("labs") if isinstance(payload, dict) else None
-        if not isinstance(payload, dict) or payload.get("schema_version") != 1 or not isinstance(labs, list) or not labs:
+        contract = payload.get("manifest_contract") if isinstance(payload, dict) else None
+        if not isinstance(payload, dict) or set(payload) != {"schema_version", "manifest_contract", "labs"} or payload.get("schema_version") != 1 or not isinstance(labs, list) or not labs or not isinstance(contract, dict):
             raise ConsoleError("lab catalog is invalid")
         role_ids = {item["id"] for item in self.builtin_role_manifests}
         lab_ids = {item.get("id") for item in labs if isinstance(item, dict)}
-        required = {"id", "name", "summary", "outcome", "role_ids", "prompt"}
+        required = {"id", "name", "icon", "summary", "outcome", "suggested_roles", "guide"}
         if None in lab_ids or len(lab_ids) != len(labs):
             raise ConsoleError("lab catalog ids must be present and unique")
         for item in labs:
-            if set(item) != required or not all(isinstance(item[field], str) and item[field].strip() for field in ("id", "name", "summary", "outcome", "prompt")):
+            if set(item) != required or not all(isinstance(item[field], str) and item[field].strip() for field in ("id", "name", "icon", "summary", "outcome")):
                 raise ConsoleError("lab catalog item is invalid")
-            if not isinstance(item["role_ids"], list) or not item["role_ids"] or not set(item["role_ids"]).issubset(role_ids):
+            if not isinstance(item["suggested_roles"], list) or not item["suggested_roles"] or not set(item["suggested_roles"]).issubset(role_ids):
                 raise ConsoleError("lab catalog references an unknown role")
-        return {"ok": True, "schema_version": 1, "labs": labs, "read_only": True}
+            if not isinstance(item["guide"], list) or not (2 <= len(item["guide"]) <= 4) or not all(isinstance(step, str) and step.strip() for step in item["guide"]):
+                raise ConsoleError("lab catalog guide is invalid")
+        progress = contract.get("progress")
+        if set(contract) != {"shape", "delegation", "progress", "custom"} or not all(isinstance(contract[field], str) and contract[field].strip() for field in ("shape", "delegation", "custom")):
+            raise ConsoleError("lab manifest contract is invalid")
+        if not isinstance(progress, dict) or set(progress) != {"source", "steps"} or not isinstance(progress.get("source"), str) or not isinstance(progress.get("steps"), list):
+            raise ConsoleError("lab progress contract is invalid")
+        expected_steps = [(0.25, "Started"), (0.5, "Review"), (0.75, "Accepted"), (1, "Committed")]
+        if any(not isinstance(step, dict) or set(step) != {"value", "label"} for step in progress["steps"]) or [(step["value"], step["label"]) for step in progress["steps"]] != expected_steps:
+            raise ConsoleError("lab progress steps are invalid")
+        return {"ok": True, "schema_version": 1, "manifest_contract": contract, "labs": labs, "read_only": True}
 
     def role_avatar_response(self, role_id: str, accept: str) -> dict[str, Any]:
         if not isinstance(role_id, str) or not re.fullmatch(r"[a-z0-9_]+", role_id):

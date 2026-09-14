@@ -2,55 +2,40 @@
 
 ## Product decision
 
-Labs become the preferred way to start repeatable, multi-discipline work. A Lab
-is a preconfigured task template that assembles existing roles around one
-question. Roles remain reusable capabilities inside the Lab. Starting a Lab
-creates normal SWARM milestone, task, block, artifact, proof, and review records;
-the library does not introduce another runtime or source of truth.
+Labs are open operating frameworks for focused work. Each Lab is one normal task
+under a CTRL. The CTRL handles delegation; the Lab self-organizes its roles and
+methods and reports progress through existing task blocks.
 
 ## Page contract
 
-- Show four V1 templates: Strategy Lab, Build Lab, Growth Lab, and Design Lab.
-- Each card carries one outcome line, a quiet `Ready` state, a role-avatar stack,
-  and a chevron. The role stack explains composition without exposing role copy.
-- Selecting a card reveals one field: `What should this lab answer?` and one
-  action: `Start`. Only one card is expanded at a time.
-- `Start a lab` focuses the first template and its question field. It does not
-  open a second catalog or require a setup wizard.
-- Starting creates the smallest viable Lab plan from the chosen template and
-  current project context, then routes the user to the new Lab task.
+- Ship twelve manifests: Strategy, Research, Design, Build, Integration, QA,
+  Reliability, Data, Automation, Content, Growth, and Launch.
+- Each card carries one outcome line, suggested mini role avatars, and a chevron.
+- Selecting a card reveals its owned outcome, short agile loop, suggested roles,
+  and quarter-step block scale.
+- Nothing on the Labs page sends a message or creates another delegation path.
+- Custom Lab documents the same open manifest shape for a CTRL to apply to any
+  focused area.
 
-## Template composition
+## Progress
 
-| Lab | Outcome | Default roles |
-| --- | --- | --- |
-| Strategy Lab | Find the clearest path. | Strategist, Researcher, Analyst, Reviewer |
-| Build Lab | Ship a working slice. | Developer, Architect, Tester, Reviewer |
-| Growth Lab | Test what earns traction. | Marketer, Researcher, Analyst, Designer |
-| Design Lab | Compare the strongest experience. | Designer, Researcher, Developer, Reviewer |
+| Value | Meaning |
+| --- | --- |
+| .25 | Started |
+| .5 | Handed to review |
+| .75 | Accepted |
+| 1 | Completed and committed |
 
-Role composition is a default. SWARM may substitute an equivalent available
-role while preserving the Lab question, proof plan, and review boundary.
+## Interaction
 
-## Interaction details
-
-- Whole-card click or chevron selects and expands a template.
-- Enter submits when the question field is focused; Escape collapses it.
-- Opening and closing uses a 160-200 ms height and opacity transition. Respect
-  reduced motion.
-- `Ready` uses a dot and text so state does not rely on color alone.
-- Minimum touch target is 44 px on mobile. Focus rings use the existing orange
-  accent.
-- Mobile keeps the canonical compact header and a single card column. The
-  selected setup stays inline; no side panel is required.
+- Whole-card click or chevron selects and expands a manifest.
+- Only one card expands at a time.
+- The reveal uses the existing short opacity transition and respects reduced
+  motion.
+- Mobile uses the canonical compact header and one card column.
 
 ## Deliberate omissions
 
-No Lab metrics, progress bars, tabs, long descriptions, duplicate project
-selector, or task preview appears in the template library. Progress belongs on
-the resulting task and hierarchy surfaces after the Lab starts.
-
-## Visual references
-
-- `labs-desktop.png`: desktop library and inline launch state.
-- `labs-mobile.png`: responsive single-column library.
+There is no Lab chat, task-dispatch control, separate progress store, fixed
+team, or prescribed internal topology. CTRL remains the only delegation owner,
+and the existing task/block system remains the only progress authority.

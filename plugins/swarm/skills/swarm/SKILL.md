@@ -227,13 +227,16 @@ blocker and must never cause wait-only behavior. Direct user instruction may
 reorient the existing owner within the same lane immediately; create a successor
 or duplicate only when the user-authorized topology explicitly permits it.
 
-Lab-first iteration is a SWARM core pattern. Start cross-functional outcome work
-from the smallest matching entry in the [Lab catalog](labs/catalog.json). Use a
-normal role task for one known specialist change. When a feature has a repeatable
-variation space or needs comparative iteration, every role follows the smallest
-named [Lab workflow](references/lab-workflow.md) before promotion into the
-integrated product. A Lab uses existing milestones, tasks, blocks, artifacts,
-proof, and review; it never creates another project or workflow authority.
+Lab-first iteration is a SWARM core pattern. A Lab is one normal task under its
+owning CTRL, described by the smallest matching manifest in the [Lab
+catalog](labs/catalog.json). The CTRL handles delegation; the Lab remains free to
+choose the roles and methods that best fit its goal. Use a normal specialist task
+for one known atomic change. When an area benefits from iterative,
+cross-functional work, apply the thin [Lab workflow](references/lab-workflow.md).
+Track progress only through the Lab task's existing blocks: `.25` started, `.5`
+handed to review, `.75` accepted, and `1` completed and committed. A CTRL may
+name a custom Lab for any focused area using the same manifest shape. A Lab
+never creates another project, backlog, delegation system, or workflow authority.
 
 Design, mockup, image-generation, and image-editing work defaults to
 `CTRL_DELEGATED` and a typed visual ownership assignment, even when the request
