@@ -5567,8 +5567,11 @@ class SwarmConsoleTests(unittest.TestCase):
         with mock.patch.object(app, "_host_overview", side_effect=AssertionError("must reuse snapshot")):
             report = app.daily_report()
         self.assertEqual(report["state"], "KNOWN")
+        self.assertEqual(report["settings"], {"skip_inactive": False})
         self.assertEqual(report["projects"][0]["activity_status"], "active")
         self.assertEqual(report["nodes"][0]["id"], "task")
+        self.config.write_text(self.config.read_text(encoding="utf-8") + "\n[reports]\nskip_inactive = true\n", encoding="utf-8")
+        self.assertEqual(app.daily_report()["settings"], {"skip_inactive": True})
 
     def test_project_roster_withholds_ambiguous_manifest_and_unknown_logo_bindings(self) -> None:
         identity_root = self.root / "identity-project"

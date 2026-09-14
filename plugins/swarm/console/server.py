@@ -12825,6 +12825,7 @@ class App:
         overview = self._overview
         if overview is None:
             overview = self._host_overview()
+        _, effective, _ = load_config(self.config_path)
         projects = copy.deepcopy(overview.get("projects", []))
         for project in projects:
             project["activity_status"] = "active" if project.get("active") else "inactive"
@@ -12836,6 +12837,7 @@ class App:
             "ok": True,
             "state": (overview.get("project_inventory") or {}).get("state", "UNKNOWN"),
             "generated_at": overview.get("generated_at"),
+            "settings": {"skip_inactive": effective["reports"]["skip_inactive"]},
             "projects": projects,
             "nodes": copy.deepcopy(overview.get("nodes", [])),
         }

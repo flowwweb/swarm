@@ -318,10 +318,13 @@ assert.match(server, /"\/assets\/swarm-offline-disconnected\.webp": \("swarm-off
 assert.match(server, /"\/report\.html": \("report\.html", "text\/html; charset=utf-8"\)/);
 assert.match(indexHtml, /href="\/report\.html">Daily report<\/a>/);
 assert.match(reportHtml, /\/assets\/swarm-wordmark\.png[\s\S]*id="report-scope"[\s\S]*Save PDF/);
+assert.match(reportJs, /report\.settings\?\.skip_inactive === true/);
+assert.match(reportJs, /project-mark/);
+assert.doesNotMatch(reportJs, /projectLogo|project-logo/);
 assert.match(reportJs, /activity_facts\?\.inactive !== true[\s\S]*project\.activity_status !== "inactive"/);
 assert.match(reportJs, /inactiveTaskStates[\s\S]*work\.slice\(0, 6\)[\s\S]*remainder[\s\S]* more<\/p>/);
-assert.match(reportJs, /requested === "all"[\s\S]*\? \[selected\][\s\S]*allProjects\.filter\(reportableProject\)/);
-assert.match(reportCss, /\.project-logo \{[^}]*object-fit:contain/);
+assert.match(reportJs, /selected \? \(reportableProject\(selected, skipInactive\)[\s\S]*allProjects\.filter\(\(project\) => reportableProject\(project, skipInactive\)\)/);
+assert.match(reportCss, /\.project-mark \{[^}]*border-radius:50%/);
 assert.match(reportCss, /@media \(max-width:420px\)[\s\S]*@media print/);
 assert.match(server, /"\/assets\/swarm-state-mascot-concerned\.webp": \("swarm-state-mascot-concerned\.webp", "image\/webp"\)/);
 assert.match(server, /"\/assets\/support-caricature-light\.webp": \("support-caricature-light\.webp", "image\/webp"\)/);

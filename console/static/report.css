@@ -28,7 +28,8 @@ h1 { margin-bottom:4px; font-size:36px; letter-spacing:-.04em; }
 .project { break-inside:avoid; overflow:hidden; border:1px solid var(--line); border-radius:14px; background:rgba(13,29,46,.92); }
 .project-head { justify-content:space-between; gap:20px; padding:18px 20px; border-bottom:1px solid var(--line); }
 .project-meta { min-width:0; gap:14px; }
-.project-logo { width:42px; height:42px; border-radius:10px; background:#081522; object-fit:contain; padding:6px; }
+.project-mark { width:10px; height:10px; flex:none; border-radius:50%; background:var(--muted); }
+.project-mark.is-active { background:var(--green); box-shadow:0 0 10px rgba(70,223,145,.4); }
 .project h2 { margin:0; font-size:19px; }
 .project-head p { margin:2px 0 0; color:var(--muted); font-size:12px; }
 .status { color:var(--green); font-size:12px; text-transform:capitalize; }

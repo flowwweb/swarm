@@ -7,13 +7,8 @@ function visibleProject(project) {
   return project && project.archived !== true && project.visibility !== "archived";
 }
 
-function reportableProject(project) {
-  return visibleProject(project) && project.activity_facts?.inactive !== true && project.activity_status !== "inactive";
-}
-
-function projectLogo(project) {
-  const artifact = project?.logo?.artifact;
-  return project?.logo?.status === "ADMITTED" && typeof artifact?.url === "string" ? artifact.url : "/assets/swarm-wordmark.png";
+function reportableProject(project, skipInactive) {
+  return visibleProject(project) && (!skipInactive || (project.activity_facts?.inactive !== true && project.activity_status !== "inactive"));
 }
 
 function nodeTitle(node) {
@@ -29,7 +24,8 @@ function projectMarkup(project, nodes) {
   const work = nodes.filter((node) => node.project_id === project.id && String(node.role || "").toLowerCase() !== "ctrl" && !inactiveTaskStates.has(String(node.status || "").toLowerCase()));
   const shown = work.slice(0, 6);
   const remainder = work.length - shown.length;
-  return '<article class="project"><header class="project-head"><div class="project-meta"><img class="project-logo" src="' + escapeHTML(projectLogo(project)) + '" alt="" /><div><h2>' + escapeHTML(project.name || project.display_name || "Project") + '</h2><p>' + work.length + ' current</p></div></div><span class="status">' + escapeHTML(project.activity_status || "observed") + '</span></header><div class="work-list">' + (shown.length ? shown.map((node) => '<div class="work-row"><div><strong>' + escapeHTML(nodeTitle(node)) + '</strong><small>' + escapeHTML(node.presentation?.display_name || node.role_label || node.role || "Agent") + ' · ' + escapeHTML(node.status || "observed") + '</small></div><time>' + escapeHTML(nodeTime(node)) + '</time></div>').join("") + (remainder ? '<p class="empty">+' + remainder + ' more</p>' : "") : '<p class="empty">No current updates.</p>') + '</div></article>';
+  const activity = project.activity_status === "active" ? "active" : "inactive";
+  return '<article class="project"><header class="project-head"><div class="project-meta"><span class="project-mark is-' + activity + '" aria-hidden="true"></span><div><h2>' + escapeHTML(project.name || project.display_name || "Project") + '</h2><p>' + work.length + ' current</p></div></div><span class="status">' + escapeHTML(project.activity_status || "observed") + '</span></header><div class="work-list">' + (shown.length ? shown.map((node) => '<div class="work-row"><div><strong>' + escapeHTML(nodeTitle(node)) + '</strong><small>' + escapeHTML(node.presentation?.display_name || node.role_label || node.role || "Agent") + ' · ' + escapeHTML(node.status || "observed") + '</small></div><time>' + escapeHTML(nodeTime(node)) + '</time></div>').join("") + (remainder ? '<p class="empty">+' + remainder + ' more</p>' : "") : '<p class="empty">No current updates.</p>') + '</div></article>';
 }
 
 function metric(label, value) {
@@ -42,12 +38,13 @@ async function load() {
   if (!response.ok) throw new Error("Report unavailable");
   const report = await response.json();
   if (!Array.isArray(report.projects) || !Array.isArray(report.nodes)) throw new Error("Report unavailable");
+  const skipInactive = report.settings?.skip_inactive === true;
 
   const allProjects = report.projects.filter(visibleProject);
   $("#report-scope").innerHTML = '<option value="all">Portfolio</option>' + allProjects.map((project) => '<option value="' + escapeHTML(project.id) + '">' + escapeHTML(project.name || project.display_name) + '</option>').join("");
   $("#report-scope").value = allProjects.some((project) => project.id === requested) ? requested : "all";
   const selected = requested === "all" ? null : allProjects.find((project) => project.id === requested);
-  const projects = selected ? (reportableProject(selected) ? [selected] : []) : allProjects.filter(reportableProject);
+  const projects = selected ? (reportableProject(selected, skipInactive) ? [selected] : []) : allProjects.filter((project) => reportableProject(project, skipInactive));
   const projectIds = new Set(projects.map((project) => project.id));
   const nodes = report.nodes.filter((node) => projectIds.has(node.project_id));
   const tasks = nodes.filter((node) => String(node.role || "").toLowerCase() !== "ctrl" && !inactiveTaskStates.has(String(node.status || "").toLowerCase()));
