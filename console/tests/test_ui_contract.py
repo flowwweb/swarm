@@ -15,9 +15,11 @@ const app = fs.readFileSync(process.argv[1], 'utf8');
 const state = { projectId: 'all', ctrlId: '', configStatus: 'current', settingsDraft: new Map() };
 const grid = {};
 const context = vm.createContext({ state, structuredClone, $: () => grid,
+  THEME_OPTIONS: { system: 'System', dark: 'Dark', light: 'Light' }, currentTheme: () => 'dark',
   selectedSettingsCtrl: () => null, settingsContextPresentation: () => ({title:'Scope',note:''}),
   settingsDraftValue: (_, value) => value, settingsThemeMarkup: () => '', settingsScopeOptions: () => '',
   settingsSwitch: () => '', descriptorBooleanSwitch: () => '', settingsSpeedMarkup: () => '', settingsTaskLifeMarkup: () => '',
+  chatRelaySettingsMarkup: () => '', autoSettingsMarkup: () => '', skillsSummary: () => '', skillsAdvanced: () => '',
   escapeHTML: value => String(value).replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;') });
 for (const [start, end] of [
   ['function configWriteScope(', 'function configTomlLiteral('],
