@@ -1,4 +1,4 @@
-const state = { token: "", overview: null, proof: [], proofCollections: new Map(), proofStatuses: new Map(), proofStatus: "idle", proofSequence: 0, usageHistory: null, usageRequestGeneration: 0, usageWindowHours: 1, usageScopeKey: "", usageStatus: "idle", usageError: "", projectProgress: null, projectProgressProjectId: "", projectProgressStatus: "idle", projectProgressError: "", projectProgressFeed: null, projectProgressFeedProjectId: "", projectProgressFeedStatus: "idle", projectProgressFeedError: "", projectTab: "overview", projectUiMode: "screens", projectUiGroupId: "", projectArtifactPage: 0, runLogs: new Map(), runLogRequestGenerations: new Map(), runLogSurfaceStates: new Map(), runLogAgent: null, agentUpdatesFilter: "all", agentUpdatesPaused: false, agentDetailTrigger: null, diagnostics: null, diagnosticsHistory: null, diagnosticsHistoryStatus: "idle", diagnosticsError: "", diagnosticsSelectedChecks: new Set(), diagnosticsSelectionInitialized: false, diagnosticsRepairPreview: null, diagnosticsRepairPending: false, diagnosticsRepairError: "", diagnosticsRepairTrigger: null, health: null, storage: null, profile: null, profileStatus: "idle", profileError: "", profileUpload: null, profilePreviewUrl: "", profileSaving: false, profileTrigger: null, supportTrigger: null, messageOpen: false, messageTrigger: null, messageDraft: "", messageRecipientId: "", messageStatus: "unavailable", messageError: "", messageReceipt: null, messageConnector: null, messageAttachments: [], messagePendingAction: null, config: null, configStatus: "idle", configError: "", configResetPending: null, configResetRetry: null, chatRelaySaving: false, settingsDraft: new Map(), settingsSaving: false, settingsSaveError: "", settingsSaveMessage: "", configEditorTrigger: null, ctrlSettings: null, auto: null, autoBindingKey: "", autoStatus: "idle", autoError: "", autoSaving: false, skills: null, skillsError: "", roleManifests: null, roleManifestStatus: "unavailable", roleManifestError: "", roleManifestMessage: "", roleManifestSaving: false, roleManifestRetry: null, roleEditorMode: "", roleEditorTrigger: null, roleSearch: "", roleTypes: new Set(["builtin", "custom"]), roleSearchFields: new Set(["profession", "specialization", "alias", "skills", "purpose"]), selectedRoleId: "", roleDetailOpen: false, roleDetailTriggerId: "", assets: null, assetBindingKey: "", assetStatus: "idle", assetError: "", assetProjection: "active", assetView: "grid", assetPage: 0, assetRequestGeneration: 0, assetEventCursors: new Map(), assetMutationPending: null, assetConfirm: null, assetUndo: null, selectedAssetIdentity: "", assetTrigger: null, onboardingStep: 0, onboardingShown: false, onboardingTrigger: null, onboardingConfigPending: new Map(), onboardingConfigFailures: new Map(), notifications: null, notificationBindingKey: "", notificationStatus: "idle", notificationError: "", notificationAckFlight: null, notificationRequestGenerations: new Map(), notificationPresentedIds: new Set(), notificationToast: null, notificationToastTimer: null, notificationTrigger: null, connectionStatus: "reconnecting", view: "overview", projectId: "all", ctrlId: "", scopeNotice: "", scopeNoticeVisible: false, settingsCtrlId: "", settingsScopeType: "", settingsScopeId: "", evidenceImages: [], evidenceIndex: 0, evidenceTrigger: null };
+const state = { token: "", overview: null, proof: [], proofCollections: new Map(), proofStatuses: new Map(), proofStatus: "idle", proofSequence: 0, usageHistory: null, usageRequestGeneration: 0, usageWindowHours: 1, usageScopeKey: "", usageStatus: "idle", usageError: "", projectProgress: null, projectProgressProjectId: "", projectProgressStatus: "idle", projectProgressError: "", projectProgressFeed: null, projectProgressFeedProjectId: "", projectProgressFeedStatus: "idle", projectProgressFeedError: "", projectTab: "overview", projectUiMode: "screens", projectUiGroupId: "", projectArtifactPage: 0, runLogs: new Map(), runLogRequestGenerations: new Map(), runLogSurfaceStates: new Map(), runLogAgent: null, agentUpdatesFilter: "all", agentUpdatesPaused: false, agentDetailTrigger: null, diagnostics: null, diagnosticsHistory: null, diagnosticsHistoryStatus: "idle", diagnosticsError: "", diagnosticsSelectedChecks: new Set(), diagnosticsSelectionInitialized: false, diagnosticsRepairPreview: null, diagnosticsRepairPending: false, diagnosticsRepairError: "", diagnosticsRepairTrigger: null, health: null, storage: null, profile: null, profileStatus: "idle", profileError: "", profileUpload: null, profilePreviewUrl: "", profileSaving: false, profileTrigger: null, supportTrigger: null, messageOpen: false, messageTrigger: null, messageDraft: "", messageRecipientId: "", messageStatus: "unavailable", messageError: "", messageReceipt: null, messageConnector: null, messageAttachments: [], messagePendingAction: null, config: null, configStatus: "idle", configError: "", configResetPending: null, configResetRetry: null, chatRelaySaving: false, settingsDraft: new Map(), settingsSaving: false, settingsSaveError: "", settingsSaveMessage: "", configEditorTrigger: null, ctrlSettings: null, auto: null, autoBindingKey: "", autoStatus: "idle", autoError: "", autoSaving: false, skills: null, skillsError: "", roleManifests: null, roleManifestStatus: "unavailable", roleManifestError: "", roleManifestMessage: "", roleManifestSaving: false, roleManifestRetry: null, roleEditorMode: "", roleEditorTrigger: null, roleSearch: "", roleTypes: new Set(["builtin", "custom"]), roleSearchFields: new Set(["profession", "specialization", "alias", "skills", "purpose"]), selectedRoleId: "", roleDetailOpen: false, roleDetailTriggerId: "", assets: null, assetBindingKey: "", assetStatus: "idle", assetError: "", assetProjection: "active", assetView: "grid", assetPage: 0, assetRequestGeneration: 0, assetEventCursors: new Map(), assetMutationPending: null, assetConfirm: null, assetUndo: null, selectedAssetIdentity: "", assetTrigger: null, onboardingStep: 0, onboardingShown: false, onboardingTrigger: null, onboardingConfigPending: new Map(), onboardingConfigFailures: new Map(), notifications: null, notificationBindingKey: "", notificationStatus: "idle", notificationError: "", notificationAckFlight: null, notificationRequestGenerations: new Map(), notificationPresentedIds: new Set(), notificationToast: null, notificationToastTimer: null, notificationTrigger: null, connectionStatus: "reconnecting", view: "overview", projectId: "all", ctrlId: "", scopeNotice: "", scopeNoticeVisible: false, settingsCtrlId: "", settingsScopeType: "", settingsScopeId: "", evidenceImages: [], evidenceIndex: 0, evidenceTrigger: null, labs: null, labsStatus: "idle", labsError: "" };
 const THEME_STORAGE_KEY = "swarm.theme.v1";
 const THEME_OPTIONS = Object.freeze({ midnight: "Midnight", black: "Black", graphite: "Graphite", pearl: "Pearl" });
 
@@ -821,7 +821,7 @@ function syncMobileDrawer() {
   setMobileDrawer(false);
 }
 
-const TOP_LEVEL_VIEWS = ["overview", "agents", "roles", "review", "assets", "diagnostics", "settings"];
+const TOP_LEVEL_VIEWS = ["overview", "agents", "labs", "roles", "review", "assets", "diagnostics", "settings"];
 
 function routeView() {
   const view = location.hash.slice(1);
@@ -857,7 +857,7 @@ function composeDocumentTitle() {
     const item = assetItems().find((candidate) => assetIdentity(candidate) === state.selectedAssetIdentity);
     title = titleSegment(assetLabel(item)) + " — Asset";
   } else {
-    const labels = { overview: "Overview", agents: "Agents", roles: "Roles", review: "Review", assets: "Assets", diagnostics: "Diagnostics", settings: "Settings" };
+    const labels = { overview: "Overview", agents: "Agents", labs: "Labs", roles: "Roles", review: "Review", assets: "Assets", diagnostics: "Diagnostics", settings: "Settings" };
     title = labels[state.view] || "";
     const project = state.projectId !== "all" ? projectGroups().find((item) => item.id === state.projectId) : null;
     if (project) title = titleSegment(project.label) + " — " + title;
@@ -883,6 +883,7 @@ function setView(view, focus = false, syncRoute = true, historyMode = "push") {
   const titles = {
     overview: ["Overview", "Portfolio progress and project scope."],
     agents: ["Agents", "Active ownership and current work."],
+    labs: ["Labs", "Preconfigured teams for outcome-driven work."],
     roles: ["Roles", "Profession manifests and role defaults."],
     review: ["Review", "Proof, decisions, and handoff acknowledgements."],
     assets: ["Assets", "Approved project and role assets."],
@@ -911,6 +912,7 @@ function setView(view, focus = false, syncRoute = true, historyMode = "push") {
   $("#view-subtitle").hidden = true;
   if (selectedView === 'settings' && (!state.skills || state.skillsError)) refreshSkills().then(renderSettings);
   if (selectedView === 'settings' && state.token) refreshAutoStatus().then(renderSettings);
+  if (selectedView === 'labs' && state.labsStatus === 'idle') refreshLabs();
   if (selectedView === 'diagnostics' && state.token && state.diagnosticsHistoryStatus === "idle") refreshDiagnostics().then(renderDiagnostics);
   if (syncRoute) writeRoute(historyMode);
   renderMessageComposer();
@@ -1828,7 +1830,7 @@ function renderHighestUsageTasks() {
   const table = '<table class="usage-task-table"><caption class="sr-only">Top 10 tasks · selected-period tokens</caption><thead><tr><th scope="col">Task</th><th scope="col">Model</th><th scope="col">Tokens</th><th scope="col">Share</th></tr></thead><tbody>' + rows.map(row => {
     const hasHistory = history?.items.some(point => point.thread_id === row.thread_id);
     const share = history && Number.isFinite(history.total_tokens) && history.total_tokens > 0 && row.tokens <= history.total_tokens ? (100 * row.tokens / history.total_tokens).toFixed(1) + '%' : '—';
-    return '<tr><th scope="row"><button type="button" data-task-usage-id="' + escapeHTML(row.thread_id) + '"' + (hasHistory ? '' : ' disabled title="Task history unavailable"') + '><span>' + escapeHTML(row.title || 'Unnamed task') + '</span><span aria-hidden="true">›</span></button></th><td aria-label="Historical model unavailable">—</td><td>' + row.tokens.toLocaleString() + ' tokens</td><td><span class="task-usage-share">' + (share === '—' ? '' : '<progress max="100" value="' + parseFloat(share) + '" aria-label="Share of measured token total"></progress>') + '<span>' + share + '</span></span></td></tr>';
+    return '<tr><th scope="row"><button type="button" data-task-usage-id="' + escapeHTML(row.thread_id) + '"' + (hasHistory ? '' : ' disabled title="Task history unavailable"') + '><span>' + escapeHTML(row.title || 'Unnamed task') + '</span><span aria-hidden="true">›</span></button></th><td aria-label="Historical model unavailable">—</td><td>' + compactNumber(row.tokens) + ' tokens</td><td><span class="task-usage-share">' + (share === '—' ? '' : '<progress max="100" value="' + parseFloat(share) + '" aria-label="Share of measured token total"></progress>') + '<span>' + share + '</span></span></td></tr>';
   }).join('') + '</tbody></table>';
   host.innerHTML = controls + coverage + (graph ? taskUsageGraph((selected ? [selected] : rows).filter(row => !hiddenTasks.has(row.thread_id)), history) + legend : table);
 }
@@ -5898,7 +5900,64 @@ function renderSettings() {
     '<footer class="settings-save-bar settings-wide' + (state.settingsSaveError ? ' is-error' : '') + '" aria-live="polite"' + (!pending && !state.settingsSaving && !state.settingsSaveError ? ' hidden' : '') + '><p><strong>' + escapeHTML(saveStatus) + '</strong><span>' + escapeHTML(pending ? "Review and save these server-backed changes." : "Essentials reflect the latest acknowledged configuration.") + '</span></p><div><button class="quiet-button" data-setting-action="discard-settings" type="button"' + (!pending || state.settingsSaving ? ' disabled' : '') + '>Discard</button><button class="primary-action" id="settings-save" data-setting-action="save-settings" type="button"' + (!pending || state.settingsSaving ? ' disabled' : '') + (state.settingsSaving ? ' aria-busy="true"' : '') + '>Save changes</button></div></footer>';
 }
 
-function renderAllViews() { renderOverview(); renderAgents(); renderRoles(); renderReview(); renderAssets(); renderDiagnostics(); renderSettings(); renderRunLogSurfaces(); renderMessageComposer(); if ($("#onboarding-dialog")?.open) renderOnboarding(); updateDocumentTitle(); }
+function labCatalog() {
+  return state.labs?.ok === true && Array.isArray(state.labs.labs) ? state.labs.labs : [];
+}
+
+function labRoleStack(roleIds) {
+  return '<span class="lab-role-stack" aria-label="' + escapeHTML(roleIds.join(", ")) + '">' + roleIds.slice(0, 3).map((roleId) => '<img src="/assets/role-avatars/' + encodeURIComponent(roleId) + '.png" alt="" title="' + escapeHTML(roleId) + '">').join("") + (roleIds.length > 3 ? '<i aria-hidden="true">+' + (roleIds.length - 3) + '</i>' : '') + '</span>';
+}
+
+function selectedLab() {
+  const labs = labCatalog();
+  const id = $("#view-labs")?.dataset.selectedLabId || labs[0]?.id;
+  return labs.find((lab) => lab.id === id) || labs[0] || null;
+}
+
+function renderLabs() {
+  const catalog = $("#lab-catalog"), status = $("#lab-status");
+  if (!catalog || !status) return;
+  const labs = labCatalog();
+  if (!labs.length) {
+    status.textContent = state.labsStatus === "loading" ? "Loading labs" : (state.labsError || "Labs unavailable");
+    catalog.innerHTML = state.labsStatus === "loading" ? '<div class="loading-skeleton lab-loading" aria-hidden="true"><i></i><i></i><i></i><i></i></div>' : '<div class="empty-inline"><strong>Labs unavailable</strong><button class="quiet-button" type="button" data-lab-retry>Retry</button></div>';
+    return;
+  }
+  status.textContent = labs.length + " labs ready";
+  const active = selectedLab();
+  catalog.innerHTML = labs.map((lab) => {
+    const selected = lab.id === active?.id;
+    return '<article class="lab-card' + (selected ? ' is-selected' : '') + '" role="listitem">' +
+      '<button class="lab-card-select" type="button" data-lab-id="' + lab.id + '" aria-expanded="' + String(selected) + '"><span class="lab-mark" aria-hidden="true"><svg class="lucide"><use href="#lucide-flask-conical"></use></svg></span><span class="lab-card-copy"><strong>' + escapeHTML(lab.name) + '</strong><small>' + escapeHTML(lab.summary) + '</small></span><span class="lab-ready"><i></i>Ready</span>' + labRoleStack(lab.role_ids) + '<svg class="lucide lab-chevron" aria-hidden="true"><use href="#lucide-chevron-down"></use></svg></button>' +
+      (selected ? '<form class="lab-launch" data-lab-form="' + lab.id + '"><label for="lab-question-' + lab.id + '"><span>' + escapeHTML(lab.prompt) + '</span><textarea id="lab-question-' + lab.id + '" rows="2" maxlength="1200" placeholder="Describe the outcome…"></textarea></label><button class="primary-action" type="submit">Start</button></form>' : '') +
+      '</article>';
+  }).join("");
+}
+
+function startLab(lab, question = "") {
+  state.messageDraft = 'Start the ' + lab.name + ' for the current project scope: ' + (question.trim() || lab.prompt) + ' Use only the roles needed. Return the selected outcome with proof.';
+  renderMessageComposer();
+  openMessageComposer($("[data-lab-form='" + lab.id + "'] button"));
+}
+
+async function refreshLabs() {
+  const hasLastGood = labCatalog().length > 0;
+  state.labsStatus = hasLastGood ? "refreshing" : "loading";
+  renderLabs();
+  try {
+    const result = await api('/api/labs');
+    if (result?.ok !== true || !Array.isArray(result.labs)) throw new Error("Lab catalog response was invalid.");
+    state.labs = result;
+    state.labsStatus = "current";
+    state.labsError = "";
+  } catch (error) {
+    state.labsStatus = hasLastGood ? "stale" : "unavailable";
+    state.labsError = error.message || "Labs unavailable";
+  }
+  renderLabs();
+}
+
+function renderAllViews() { renderOverview(); renderAgents(); renderLabs(); renderRoles(); renderReview(); renderAssets(); renderDiagnostics(); renderSettings(); renderRunLogSurfaces(); renderMessageComposer(); if ($("#onboarding-dialog")?.open) renderOnboarding(); updateDocumentTitle(); }
 
 async function refreshProof() {
   const projectId = state.projectId;
@@ -6114,7 +6173,7 @@ async function refreshOverview(showLoading = true) {
     renderProjectNavigation();
     renderOverview();
     if (showLoading) setLoading(false);
-    await Promise.all([refreshProof(), refreshUsageHistory(), refreshProjectProgress(), refreshProjectProgressFeed(), refreshRoleManifests(), refreshNotifications(), refreshRunLogs(), refreshAssets(), refreshProfileSummary(), refreshCommandApprovals(), refreshMessageConversation()]);
+    await Promise.all([refreshProof(), refreshUsageHistory(), refreshProjectProgress(), refreshProjectProgressFeed(), refreshRoleManifests(), refreshLabs(), refreshNotifications(), refreshRunLogs(), refreshAssets(), refreshProfileSummary(), refreshCommandApprovals(), refreshMessageConversation()]);
     const selectedCtrl = state.ctrlId || historicalControllers()[0]?.id || '';
     const previousConfig = state.config;
     const results = await Promise.allSettled([api('/api/storage'), selectedCtrl ? api('/api/ctrl-settings?ctrl_id=' + encodeURIComponent(selectedCtrl)) : Promise.resolve(null), readConfigState(previousConfig), refreshDiagnostics(false)]);
@@ -6547,6 +6606,22 @@ $("#ask-anything-form").addEventListener("submit", (event) => {
   $("#ask-anything").value = "";
   renderMessageComposer();
   openMessageComposer($("#ask-anything"));
+});
+$("#lab-catalog").addEventListener("click", (event) => {
+  if (event.target.closest("[data-lab-retry]")) { refreshLabs(); return; }
+  const trigger = event.target.closest("[data-lab-id]");
+  if (!trigger) return;
+  const panel = $("#view-labs");
+  panel.dataset.selectedLabId = panel.dataset.selectedLabId === trigger.dataset.labId ? "" : trigger.dataset.labId;
+  renderLabs();
+  $("[data-lab-form] textarea")?.focus({ preventScroll: true });
+});
+$("#lab-catalog").addEventListener("submit", (event) => {
+  const form = event.target.closest("[data-lab-form]");
+  if (!form) return;
+  event.preventDefault();
+  const lab = labCatalog().find((item) => item.id === form.dataset.labForm);
+  if (lab) startLab(lab, form.querySelector("textarea")?.value || "");
 });
 document.addEventListener("keydown", (event) => {
   if (event.ctrlKey && !event.altKey && !event.shiftKey && event.key.toLowerCase() === "k") {

@@ -14329,6 +14329,27 @@ class App:
         except ProgressEventError as error:
             raise ConsoleError(str(error)) from error
 
+    def lab_catalog_projection(self) -> dict[str, Any]:
+        path = SWARM_SKILL_ROOT / "labs" / "catalog.json"
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as error:
+            raise ConsoleError("lab catalog is unavailable") from error
+        labs = payload.get("labs") if isinstance(payload, dict) else None
+        if not isinstance(payload, dict) or payload.get("schema_version") != 1 or not isinstance(labs, list) or not labs:
+            raise ConsoleError("lab catalog is invalid")
+        role_ids = {item["id"] for item in self.builtin_role_manifests}
+        lab_ids = {item.get("id") for item in labs if isinstance(item, dict)}
+        required = {"id", "name", "summary", "outcome", "role_ids", "prompt"}
+        if None in lab_ids or len(lab_ids) != len(labs):
+            raise ConsoleError("lab catalog ids must be present and unique")
+        for item in labs:
+            if set(item) != required or not all(isinstance(item[field], str) and item[field].strip() for field in ("id", "name", "summary", "outcome", "prompt")):
+                raise ConsoleError("lab catalog item is invalid")
+            if not isinstance(item["role_ids"], list) or not item["role_ids"] or not set(item["role_ids"]).issubset(role_ids):
+                raise ConsoleError("lab catalog references an unknown role")
+        return {"ok": True, "schema_version": 1, "labs": labs, "read_only": True}
+
     def role_avatar_response(self, role_id: str, accept: str) -> dict[str, Any]:
         if not isinstance(role_id, str) or not re.fullmatch(r"[a-z0-9_]+", role_id):
             raise ConsoleError("role avatar not found")
@@ -16240,6 +16261,9 @@ class Handler(BaseHTTPRequestHandler):
                 return
             if path == "/api/role-manifests":
                 self._json(HTTPStatus.OK, self.server.app.role_manifest_projection())
+                return
+            if path == "/api/labs":
+                self._json(HTTPStatus.OK, self.server.app.lab_catalog_projection())
                 return
             role_avatar_match = re.fullmatch(r"/assets/role-avatars/([a-z0-9_]+)\.png", path)
             if role_avatar_match:

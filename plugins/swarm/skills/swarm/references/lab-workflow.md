@@ -7,6 +7,9 @@ contracts. It is not a new role, lifecycle state, backlog, or source of truth.
 
 ## Trigger
 
+Start cross-functional outcome work with the smallest matching template in
+`../labs/catalog.json`. Keep atomic specialist work on its normal role task.
+
 Create the smallest named `<feature> Lab` when either condition is true:
 
 - the feature has a repeatable variation space, such as biomes, levels,
@@ -74,6 +77,21 @@ selected or the evidence supports selecting none, the chosen result is promoted,
 the integrated product passes its required proof and review, and every rejected
 candidate has an explicit retained or cleanup disposition. Open comparison,
 unpromoted output, or Lab-only proof keeps the work incomplete.
+
+## SWARM improvement Labs
+
+The shared frozen corpus and three current improvement Labs live in
+`../labs/labs.json`. Validate the matrix with:
+
+```text
+python skills/swarm/scripts/swarm_labs.py validate
+```
+
+Record actual candidate runs in a separate results JSON and compare them with
+`swarm_labs.py report <results.json>`. Each run requires evidence. Token savings
+remain `UNKNOWN` until the same scenario has measured Codex-token receipts for
+both its baseline and candidate; ChatGPT tokens are shown separately rather
+than treated as Codex quota.
 
 ## Examples
 

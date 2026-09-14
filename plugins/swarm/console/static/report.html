@@ -14,18 +14,17 @@
       <header class="report-header">
         <a href="/" aria-label="Back to SWARM HQ"><img src="/assets/swarm-wordmark.png" width="536" height="119" alt="SWARM" /></a>
         <div class="report-actions">
-          <label for="report-scope"><span>Report scope</span><select id="report-scope"><option value="all">Portfolio</option></select></label>
+          <label for="report-scope"><span class="sr-only">Project</span><select id="report-scope" aria-label="Project"><option value="all">Portfolio</option></select></label>
           <button id="print-report" type="button">Save PDF</button>
         </div>
       </header>
       <section class="report-intro" aria-labelledby="report-title">
-        <div><p class="eyebrow">Daily report</p><h1 id="report-title">Portfolio</h1><p id="report-subtitle">Current work and attention items from SWARM HQ.</p></div>
+        <div><p class="eyebrow">Daily report</p><h1 id="report-title">Portfolio</h1></div>
         <time id="report-time"></time>
       </section>
-      <p class="report-status" id="report-status" role="status">Loading current work…</p>
+      <div class="report-status" id="report-status" role="status" aria-label="Loading report"><span class="spinner" aria-hidden="true"></span></div>
       <section class="metric-grid" id="report-metrics" aria-label="Daily summary"></section>
       <section class="project-list" id="report-projects" aria-label="Project updates"></section>
-      <footer><p>Derived from current SWARM HQ observations. Missing proof stays unverified.</p></footer>
     </main>
     <script src="/report.js"></script>
   </body>

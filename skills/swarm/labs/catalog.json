@@ -1,0 +1,37 @@
+{
+  "schema_version": 1,
+  "labs": [
+    {
+      "id": "strategy",
+      "name": "Strategy Lab",
+      "summary": "Find the clearest path.",
+      "outcome": "One evidence-backed decision and its stopping rule.",
+      "role_ids": ["strategist", "researcher", "analyst", "reviewer"],
+      "prompt": "What decision should this lab resolve?"
+    },
+    {
+      "id": "build",
+      "name": "Build Lab",
+      "summary": "Ship a working slice.",
+      "outcome": "One integrated increment with focused proof.",
+      "role_ids": ["developer", "architect", "tester", "reviewer"],
+      "prompt": "What working outcome should this lab ship?"
+    },
+    {
+      "id": "growth",
+      "name": "Growth Lab",
+      "summary": "Test what earns traction.",
+      "outcome": "One measured keep, change, or stop decision.",
+      "role_ids": ["marketer", "researcher", "analyst", "designer"],
+      "prompt": "What growth hypothesis should this lab test?"
+    },
+    {
+      "id": "design",
+      "name": "Design Lab",
+      "summary": "Compare the strongest experience.",
+      "outcome": "One selected design promoted with responsive and accessibility proof.",
+      "role_ids": ["designer", "researcher", "developer", "reviewer"],
+      "prompt": "What experience should this lab improve?"
+    }
+  ]
+}

@@ -227,7 +227,9 @@ blocker and must never cause wait-only behavior. Direct user instruction may
 reorient the existing owner within the same lane immediately; create a successor
 or duplicate only when the user-authorized topology explicitly permits it.
 
-Lab-first iteration is a SWARM core pattern. When a feature has a repeatable
+Lab-first iteration is a SWARM core pattern. Start cross-functional outcome work
+from the smallest matching entry in the [Lab catalog](labs/catalog.json). Use a
+normal role task for one known specialist change. When a feature has a repeatable
 variation space or needs comparative iteration, every role follows the smallest
 named [Lab workflow](references/lab-workflow.md) before promotion into the
 integrated product. A Lab uses existing milestones, tasks, blocks, artifacts,

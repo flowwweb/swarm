@@ -867,6 +867,15 @@ class SwarmConsoleTests(unittest.TestCase):
             "build_id": expected_build_id,
         })
 
+    def test_lab_catalog_is_read_only_and_role_bound(self) -> None:
+        app = console.App(self.codex_home, self.config)
+        projection = app.lab_catalog_projection()
+        self.assertEqual([lab["id"] for lab in projection["labs"]], ["strategy", "build", "growth", "design"])
+        self.assertTrue(projection["read_only"])
+        role_ids = {role["id"] for role in app.role_manifest_projection()["roles"]}
+        self.assertTrue(all(set(lab["role_ids"]).issubset(role_ids) for lab in projection["labs"]))
+        self.assertIn('if path == "/api/labs":', SERVER.read_text(encoding="utf-8"))
+
     def test_role_manifest_http_contract_is_server_owned_and_asset_bound(self) -> None:
         app = console.App(self.codex_home, self.config)
         projection = app.role_manifest_projection()

@@ -12820,6 +12820,26 @@ class App:
                 return self._view
             return self._project_view(self._view, project_id)
 
+    def daily_report(self) -> dict[str, Any]:
+        """Return the latest immutable host snapshot without rebuilding the decorated HQ view."""
+        overview = self._overview
+        if overview is None:
+            overview = self._host_overview()
+        projects = copy.deepcopy(overview.get("projects", []))
+        for project in projects:
+            project["activity_status"] = "active" if project.get("active") else "inactive"
+            project["activity_facts"] = {"inactive": not bool(project.get("active"))}
+            project["archived"] = False
+            project["visibility"] = "visible"
+            project["logo"] = {"status": "UNKNOWN", "artifact": None}
+        return {
+            "ok": True,
+            "state": (overview.get("project_inventory") or {}).get("state", "UNKNOWN"),
+            "generated_at": overview.get("generated_at"),
+            "projects": projects,
+            "nodes": copy.deepcopy(overview.get("nodes", [])),
+        }
+
     def observe_once(self, trigger: str = "heartbeat") -> None:
         overview = self._host_overview(refresh=trigger in {"startup", "state_change"})
         now_ms = int(time.time() * 1000)
@@ -13082,7 +13102,10 @@ class App:
             return unavailable
 
         try:
-            overview = self._host_overview(refresh=True)
+            # The observer owns refreshes. Reuse its published snapshot here so
+            # the roster and overview can load together without serialising two
+            # full host scans on every page visit.
+            overview = self._host_overview()
             navigation = self._navigation_payload(overview) if isinstance(overview, dict) else None
         except (ConsoleError, OSError, sqlite3.Error, TypeError, ValueError):
             navigation = None
@@ -14305,6 +14328,27 @@ class App:
             return {"ok": True, **projection, "roles": roles}
         except ProgressEventError as error:
             raise ConsoleError(str(error)) from error
+
+    def lab_catalog_projection(self) -> dict[str, Any]:
+        path = SWARM_SKILL_ROOT / "labs" / "catalog.json"
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as error:
+            raise ConsoleError("lab catalog is unavailable") from error
+        labs = payload.get("labs") if isinstance(payload, dict) else None
+        if not isinstance(payload, dict) or payload.get("schema_version") != 1 or not isinstance(labs, list) or not labs:
+            raise ConsoleError("lab catalog is invalid")
+        role_ids = {item["id"] for item in self.builtin_role_manifests}
+        lab_ids = {item.get("id") for item in labs if isinstance(item, dict)}
+        required = {"id", "name", "summary", "outcome", "role_ids", "prompt"}
+        if None in lab_ids or len(lab_ids) != len(labs):
+            raise ConsoleError("lab catalog ids must be present and unique")
+        for item in labs:
+            if set(item) != required or not all(isinstance(item[field], str) and item[field].strip() for field in ("id", "name", "summary", "outcome", "prompt")):
+                raise ConsoleError("lab catalog item is invalid")
+            if not isinstance(item["role_ids"], list) or not item["role_ids"] or not set(item["role_ids"]).issubset(role_ids):
+                raise ConsoleError("lab catalog references an unknown role")
+        return {"ok": True, "schema_version": 1, "labs": labs, "read_only": True}
 
     def role_avatar_response(self, role_id: str, accept: str) -> dict[str, Any]:
         if not isinstance(role_id, str) or not re.fullmatch(r"[a-z0-9_]+", role_id):
@@ -16147,6 +16191,9 @@ class Handler(BaseHTTPRequestHandler):
                     self.server.app.overview(query.get("project_id")),
                 )
                 return
+            if path == "/api/daily-report":
+                self._json(HTTPStatus.OK, self.server.app.daily_report())
+                return
             if path == "/api/usage-history":
                 try:
                     hours = int(query.get("hours", "24"))
@@ -16214,6 +16261,9 @@ class Handler(BaseHTTPRequestHandler):
                 return
             if path == "/api/role-manifests":
                 self._json(HTTPStatus.OK, self.server.app.role_manifest_projection())
+                return
+            if path == "/api/labs":
+                self._json(HTTPStatus.OK, self.server.app.lab_catalog_projection())
                 return
             role_avatar_match = re.fullmatch(r"/assets/role-avatars/([a-z0-9_]+)\.png", path)
             if role_avatar_match:

@@ -1,0 +1,65 @@
+{
+  "schema_version": 1,
+  "shared_metrics": [
+    "accepted",
+    "elapsed_ms",
+    "user_interventions",
+    "nonproductive_retries",
+    "codex_tokens",
+    "chatgpt_tokens"
+  ],
+  "scenarios": [
+    {
+      "id": "small_repo_fix",
+      "kind": "agent",
+      "input": "Fix one bounded UI defect, preserve unrelated work, run the focused proof, and report the exact claim limit."
+    },
+    {
+      "id": "contradictory_blocker",
+      "kind": "agent",
+      "input": "A task reports that its tools are unavailable, while the same tools worked elsewhere in the current session. Recheck the exact route once, recover if possible, and scope any remaining blocker to fresh evidence."
+    },
+    {
+      "id": "cloud_suitable_research",
+      "kind": "agent",
+      "input": "Usage Saver is enabled for a bounded research block that needs no local files or computer use. Route it through the observed Chat capability and retain delivery plus token receipts."
+    },
+    {
+      "id": "hq_attention_scan",
+      "kind": "ui",
+      "input": "From the HQ overview, identify the project needing attention, its responsible agent, current task, progress, ETA, and next action without opening unrelated screens."
+    }
+  ],
+  "labs": [
+    {
+      "id": "prompt_context",
+      "name": "Prompt & Context Lab",
+      "question": "What is the smallest instruction package that preserves intent, authority, scope, and proof?",
+      "scenario_ids": ["small_repo_fix", "contradictory_blocker", "cloud_suitable_research"],
+      "candidates": ["current", "minimal_context", "artifact_first"],
+      "baseline_candidate": "current",
+      "extra_metrics": ["instruction_violations", "correction_turns"],
+      "stopping_condition": "Select a candidate only when it passes every scenario with no authority or proof regression."
+    },
+    {
+      "id": "coordination_recovery",
+      "name": "Coordination & Recovery Lab",
+      "question": "Which shallow execution shape finishes reliably with the least coordination and recovery cost?",
+      "scenario_ids": ["small_repo_fix", "contradictory_blocker", "cloud_suitable_research"],
+      "candidates": ["astra_solo", "shallow_swarm", "parallel_lanes", "recovery_loop", "usage_saver"],
+      "baseline_candidate": "astra_solo",
+      "extra_metrics": ["handoffs", "duplicate_dispatches"],
+      "stopping_condition": "Prefer the least expensive candidate that completes every required gate without repeated user intervention."
+    },
+    {
+      "id": "hq_clarity",
+      "name": "HQ Clarity Lab",
+      "question": "Can a user recognize state and take the right action quickly from the minimal HQ surface?",
+      "scenario_ids": ["hq_attention_scan"],
+      "candidates": ["current", "minimal_status", "minimal_attention"],
+      "baseline_candidate": "current",
+      "extra_metrics": ["wrong_turns", "task_completed"],
+      "stopping_condition": "Promote only a design that reduces wrong turns without hiding required project, agent, task, progress, ETA, or review state."
+    }
+  ]
+}

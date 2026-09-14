@@ -18,6 +18,13 @@ fixture.usageHistory.items = fixture.usageHistory.history;
 delete fixture.usageHistory.history;
 const css = fs.readFileSync(path.join(staticRoot, "styles.css"), "utf8");
 const app = fs.readFileSync(path.join(staticRoot, "app.js"), "utf8");
+const html = fs.readFileSync(path.join(staticRoot, "index.html"), "utf8");
+assert.match(html, /data-view="labs"[\s\S]*id="view-labs"/);
+assert.match(app, /api\('\/api\/labs'\)/);
+assert.match(app, /\/assets\/role-avatars\//);
+assert.match(app, /Start the ['"] \+ lab\.name[\s\S]*openMessageComposer/);
+assert.doesNotMatch(app, /LAB_CATALOG|\/api\/labs\/commands/);
+assert.match(css, /\.lab-catalog[\s\S]*grid-template-columns:repeat\(2/);
 {
   for (const mode of ['cancel','success','failure','stale']) {
     const elements=new Map(); let calls=0;
@@ -299,6 +306,7 @@ assert.deepEqual(pluginOnboardingProjectToolAsset, onboardingProjectToolAsset);
 assert.deepEqual(pluginIconAsset, iconAsset);
 assert.equal(pluginCss, css);
 assert.equal(pluginApp, app);
+assert.match(app, /compactNumber\(row\.tokens\)/, 'Task token totals use compact notation');
 assert.equal(pluginIndexHtml, indexHtml);
 if (!agentsSourceOnly && !skipServerParity) assert.equal(pluginServer, server);
 assert.match(server, /"\/assets\/swarm-offline-disconnected\.png": \("swarm-offline-disconnected\.png", "image\/png"\)/);
@@ -308,7 +316,7 @@ assert.match(server, /"\/report\.html": \("report\.html", "text\/html; charset=u
 assert.match(indexHtml, /href="\/report\.html">Daily report<\/a>/);
 assert.match(reportHtml, /\/assets\/swarm-wordmark\.png[\s\S]*id="report-scope"[\s\S]*Save PDF/);
 assert.match(reportJs, /activity_facts\?\.inactive !== true[\s\S]*project\.activity_status !== "inactive"/);
-assert.match(reportJs, /inactiveTaskStates[\s\S]*work\.slice\(0, 6\)[\s\S]*more current item/);
+assert.match(reportJs, /inactiveTaskStates[\s\S]*work\.slice\(0, 6\)[\s\S]*remainder[\s\S]* more<\/p>/);
 assert.match(reportJs, /requested === "all"[\s\S]*\? \[selected\][\s\S]*allProjects\.filter\(reportableProject\)/);
 assert.match(reportCss, /\.project-logo \{[^}]*object-fit:contain/);
 assert.match(reportCss, /@media \(max-width:420px\)[\s\S]*@media print/);
@@ -2074,6 +2082,8 @@ for (const forbidden of ["hidden usage", "developer instructions", "prompts", "t
   const host={setAttribute(){},innerHTML:''}, dialog={dataset:{}};
   const sandbox={state,Map,Set,Date,escapeHTML:String,usageRequestKey:()=> 'key',usageRangeLabel:()=> 'last 24 hours',$:selector=>selector==='#metric-detail-dialog'?dialog:host};
   vm.createContext(sandbox);
+  vm.runInContext(app.slice(app.indexOf('function compactNumber('),app.indexOf('function formatBytes(')),sandbox);
+  assert.equal(sandbox.compactNumber(2200000000), '2.2B');
   vm.runInContext(app.slice(app.indexOf('function highestUsageTaskRows('),app.indexOf('function diagnosticChecks(')),sandbox);
   sandbox.renderHighestUsageTasks();
   assert.match(host.innerHTML, /<th scope="col">Task<\/th><th scope="col">Model<\/th><th scope="col">Tokens<\/th><th scope="col">Share/);
