@@ -28,29 +28,29 @@
   },
   "labs": [
     {
-      "id": "strategy",
-      "name": "Strategy Lab",
+      "id": "product",
+      "name": "Product Lab",
       "icon": "scan",
-      "summary": "Find the clearest path.",
-      "outcome": "One evidence-backed decision and stopping rule.",
+      "summary": "Own the product and its viability.",
+      "outcome": "One viable product direction with user value, priorities, pricing, and financial constraints aligned.",
       "suggested_roles": [
+        "producer",
         "strategist",
-        "researcher",
         "analyst",
         "reviewer"
       ],
       "guide": [
-        "Frame the decision and its stopping rule.",
-        "Test the strongest options against evidence.",
-        "Promote one clear direction."
+        "Frame the user value, business goal, and constraints.",
+        "Prioritize the smallest viable product direction.",
+        "Review evidence, economics, and the next decision."
       ]
     },
     {
       "id": "research",
       "name": "Research Lab",
       "icon": "search",
-      "summary": "Turn questions into insight.",
-      "outcome": "One sourced answer that changes the build.",
+      "summary": "Turn research, data, and analytics into insight.",
+      "outcome": "One sourced or measured finding that changes a decision.",
       "suggested_roles": [
         "researcher",
         "analyst",
@@ -58,8 +58,8 @@
         "reviewer"
       ],
       "guide": [
-        "Frame the question and source standard.",
-        "Investigate the smallest useful evidence set.",
+        "Frame the question, metric, and evidence standard.",
+        "Research or analyze the smallest useful data set.",
         "Return the finding that changes the build."
       ]
     },
@@ -67,8 +67,8 @@
       "id": "design",
       "name": "Design Lab",
       "icon": "pencil",
-      "summary": "Create intuitive experiences.",
-      "outcome": "One selected experience with responsive proof.",
+      "summary": "Create intuitive UX and UI.",
+      "outcome": "One selected experience with responsive and accessibility proof.",
       "suggested_roles": [
         "designer",
         "researcher",
@@ -85,8 +85,8 @@
       "id": "build",
       "name": "Build Lab",
       "icon": "git-branch",
-      "summary": "Ship working software.",
-      "outcome": "One integrated increment with focused proof.",
+      "summary": "Architect and ship working software.",
+      "outcome": "One integrated increment across architecture, code, integrations, or automation with focused proof.",
       "suggested_roles": [
         "developer",
         "architect",
@@ -100,93 +100,21 @@
       ]
     },
     {
-      "id": "integration",
-      "name": "Integration Lab",
-      "icon": "git-branch",
-      "summary": "Connect systems and data.",
-      "outcome": "One proven connection across the real boundary.",
-      "suggested_roles": [
-        "architect",
-        "developer",
-        "operator",
-        "tester"
-      ],
-      "guide": [
-        "Frame both sides of the boundary.",
-        "Prove the smallest real connection.",
-        "Add recovery and integration proof."
-      ]
-    },
-    {
-      "id": "qa",
-      "name": "QA Lab",
+      "id": "test",
+      "name": "Test Lab",
       "icon": "shield-check",
-      "summary": "Keep quality high.",
-      "outcome": "One accepted result with defects resolved.",
+      "summary": "Prove it works and holds up.",
+      "outcome": "One accepted result with quality, reliability, security, and recovery evidence.",
       "suggested_roles": [
         "tester",
-        "auditor",
         "reviewer",
-        "developer"
-      ],
-      "guide": [
-        "Frame the user contract and risk.",
-        "Test representative and hostile paths.",
-        "Return clear accept or correction evidence."
-      ]
-    },
-    {
-      "id": "reliability",
-      "name": "Reliability Lab",
-      "icon": "heart-pulse",
-      "summary": "Make it stable and resilient.",
-      "outcome": "One measured reliability risk removed.",
-      "suggested_roles": [
-        "operator",
-        "architect",
         "security",
-        "tester"
+        "operator"
       ],
       "guide": [
-        "Frame the failure mode and target.",
-        "Measure before and after the change.",
-        "Keep the smallest durable recovery."
-      ]
-    },
-    {
-      "id": "data",
-      "name": "Data Lab",
-      "icon": "list-tree",
-      "summary": "Turn data into advantage.",
-      "outcome": "One trusted data product or decision.",
-      "suggested_roles": [
-        "analyst",
-        "researcher",
-        "developer",
-        "reviewer"
-      ],
-      "guide": [
-        "Frame the decision the data must support.",
-        "Build the smallest trusted projection.",
-        "Verify provenance and usefulness."
-      ]
-    },
-    {
-      "id": "automation",
-      "name": "Automation Lab",
-      "icon": "settings",
-      "summary": "Eliminate manual work.",
-      "outcome": "One reliable automated path with recovery.",
-      "suggested_roles": [
-        "developer",
-        "operator",
-        "architect",
-        "tester"
-      ],
-      "guide": [
-        "Frame the repeated work and safe stop.",
-        "Automate one reliable path.",
-        "Prove recovery and saved effort."
+        "Frame the user contract, risks, and acceptance proof.",
+        "Test representative, hostile, and recovery paths.",
+        "Accept the result or return precise corrections."
       ]
     },
     {
@@ -226,21 +154,21 @@
       ]
     },
     {
-      "id": "launch",
-      "name": "Launch Lab",
-      "icon": "send",
-      "summary": "Get to market with confidence.",
-      "outcome": "One coordinated release with live proof.",
+      "id": "ops",
+      "name": "Ops Lab",
+      "icon": "settings",
+      "summary": "Deliver and keep it running.",
+      "outcome": "One dependable delivery path with monitoring and recovery.",
       "suggested_roles": [
-        "producer",
-        "marketer",
         "operator",
+        "producer",
+        "developer",
         "reviewer"
       ],
       "guide": [
-        "Frame the release gate and owner.",
-        "Coordinate the smallest complete release.",
-        "Verify the live result and close the loop."
+        "Frame the delivery target and safe operating boundary.",
+        "Connect, automate, launch, and observe the smallest complete path.",
+        "Verify the live result and recovery route."
       ]
     }
   ]

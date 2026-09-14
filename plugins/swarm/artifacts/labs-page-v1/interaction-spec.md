@@ -8,8 +8,8 @@ methods and reports progress through existing task blocks.
 
 ## Page contract
 
-- Ship twelve manifests: Strategy, Research, Design, Build, Integration, QA,
-  Reliability, Data, Automation, Content, Growth, and Launch.
+- Ship eight broad manifests: Product, Research, Design, Build, Test, Content,
+  Growth, and Ops. Specialized domains use Custom Lab.
 - Each card carries one outcome line, suggested mini role avatars, and a chevron.
 - Selecting a card reveals its owned outcome, short agile loop, suggested roles,
   and quarter-step block scale.
