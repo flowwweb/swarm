@@ -5538,6 +5538,28 @@ class SwarmConsoleTests(unittest.TestCase):
         self.assertIn('if path == "/api/projects":', source)
         self.assertIn('if path == "/api/projects/settings":', source)
 
+    def test_project_roster_reuses_the_observer_snapshot(self) -> None:
+        self._confirm_root_ctrl()
+        app = console.App(self.codex_home, self.config, self.root / "console" / "project-roster-cache.sqlite3")
+        with mock.patch.object(app, "_host_overview", wraps=app._host_overview) as overview:
+            roster = app.project_roster()
+        self.assertEqual(roster["state"], "KNOWN")
+        overview.assert_called_once_with()
+
+    def test_daily_report_reuses_the_published_host_snapshot(self) -> None:
+        app = console.App(self.codex_home, self.config, self.root / "console" / "daily-report.sqlite3")
+        app._overview = {
+            "generated_at": "2026-09-14T00:00:00+00:00",
+            "project_inventory": {"state": "KNOWN"},
+            "projects": [{"id": "project:alpha", "name": "alpha", "active": 1}],
+            "nodes": [{"id": "task", "project_id": "project:alpha"}],
+        }
+        with mock.patch.object(app, "_host_overview", side_effect=AssertionError("must reuse snapshot")):
+            report = app.daily_report()
+        self.assertEqual(report["state"], "KNOWN")
+        self.assertEqual(report["projects"][0]["activity_status"], "active")
+        self.assertEqual(report["nodes"][0]["id"], "task")
+
     def test_project_roster_withholds_ambiguous_manifest_and_unknown_logo_bindings(self) -> None:
         identity_root = self.root / "identity-project"
         self._write_project_brief(identity_root, "project:identity")

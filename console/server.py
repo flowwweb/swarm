@@ -12820,6 +12820,26 @@ class App:
                 return self._view
             return self._project_view(self._view, project_id)
 
+    def daily_report(self) -> dict[str, Any]:
+        """Return the latest immutable host snapshot without rebuilding the decorated HQ view."""
+        overview = self._overview
+        if overview is None:
+            overview = self._host_overview()
+        projects = copy.deepcopy(overview.get("projects", []))
+        for project in projects:
+            project["activity_status"] = "active" if project.get("active") else "inactive"
+            project["activity_facts"] = {"inactive": not bool(project.get("active"))}
+            project["archived"] = False
+            project["visibility"] = "visible"
+            project["logo"] = {"status": "UNKNOWN", "artifact": None}
+        return {
+            "ok": True,
+            "state": (overview.get("project_inventory") or {}).get("state", "UNKNOWN"),
+            "generated_at": overview.get("generated_at"),
+            "projects": projects,
+            "nodes": copy.deepcopy(overview.get("nodes", [])),
+        }
+
     def observe_once(self, trigger: str = "heartbeat") -> None:
         overview = self._host_overview(refresh=trigger in {"startup", "state_change"})
         now_ms = int(time.time() * 1000)
@@ -13082,7 +13102,10 @@ class App:
             return unavailable
 
         try:
-            overview = self._host_overview(refresh=True)
+            # The observer owns refreshes. Reuse its published snapshot here so
+            # the roster and overview can load together without serialising two
+            # full host scans on every page visit.
+            overview = self._host_overview()
             navigation = self._navigation_payload(overview) if isinstance(overview, dict) else None
         except (ConsoleError, OSError, sqlite3.Error, TypeError, ValueError):
             navigation = None
@@ -16146,6 +16169,9 @@ class Handler(BaseHTTPRequestHandler):
                     HTTPStatus.OK,
                     self.server.app.overview(query.get("project_id")),
                 )
+                return
+            if path == "/api/daily-report":
+                self._json(HTTPStatus.OK, self.server.app.daily_report())
                 return
             if path == "/api/usage-history":
                 try:
