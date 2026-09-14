@@ -8,7 +8,7 @@ The Labs slice is implemented in the live HQ. It uses the established SWARM shel
 | --- | --- | --- |
 | Labs catalog | Implemented | Eight built-in Labs plus Custom Lab render from the repo-owned catalog. |
 | Lab details | Implemented | One selected Lab exposes its outcome, thin guidance, and `.25 / .5 / .75 / 1` block states. |
-| Role avatars | Implemented | Compact, circular, role-colored SWARM mascots are reused from the shared avatar primitive. |
+| Role avatars | Partial | Compact, circular, role-colored SWARM mascots render on desktop. A fresh isolated mobile load used the gray fallback, so mobile role hydration still needs correction. |
 | Desktop layout | Implemented | Three-column catalog with a single expanded Lab. |
 | Mobile layout | Implemented | One-column cards, sticky app bar, and icon-only footer navigation. |
 | Lab delegation controls | Removed by design | Labs are open task frameworks. CTRL handles delegation. |
@@ -22,7 +22,7 @@ Fresh live capture from `http://127.0.0.1:4788/#labs`, with Design Lab selected.
 
 ## Implemented mobile
 
-Fresh responsive capture of the same implementation.
+Fresh responsive capture of the same implementation. The gray avatars show the remaining mobile role-hydration issue.
 
 ![Implemented Design Lab mobile](design-lab-mobile.png)
 
@@ -30,7 +30,7 @@ Fresh responsive capture of the same implementation.
 
 | Screen | Current status |
 | --- | --- |
-| Labs | Implemented and visually verified on desktop and mobile. |
+| Labs | Layout and disclosure are implemented on desktop and mobile. Mobile avatar color hydration remains open. |
 | Settings | Simplified essentials layout is implemented, including visual theme choices. |
 | Overview | Simplified shell and live project/task observation are implemented. Final hierarchy and usage authority still depend on accepted project receipts. |
 | Agents | Live host tasks render, but the current screen remains denser than the approved minimal direction. |
