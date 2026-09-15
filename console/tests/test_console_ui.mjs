@@ -316,7 +316,8 @@ assert.match(server, /"\/assets\/swarm-offline-disconnected\.png": \("swarm-offl
 assert.match(server, /"\/assets\/swarm-state-mascot-concerned\.png": \("swarm-state-mascot-concerned\.png", "image\/png"\)/);
 assert.match(server, /"\/assets\/swarm-offline-disconnected\.webp": \("swarm-offline-disconnected\.webp", "image\/webp"\)/);
 assert.match(server, /"\/report\.html": \("report\.html", "text\/html; charset=utf-8"\)/);
-assert.match(indexHtml, /href="\/report\.html">Daily report<\/a>/);
+assert.match(indexHtml, /id="daily-report-link" href="\/report\.html">Daily report<\/a>/);
+assert.match(app, /const reportProjectId = selectedProgressProjectId\(\);[\s\S]*#daily-report-link[\s\S]*\/report\.html\?project_id=/);
 assert.match(reportHtml, /\/assets\/swarm-wordmark\.png[\s\S]*id="report-scope"[\s\S]*Save PDF/);
 assert.match(reportJs, /report\.settings\?\.skip_inactive === true/);
 assert.match(reportJs, /project-mark/);

@@ -4216,6 +4216,8 @@ function renderOverviewProjects() {
 
 function renderOverview() {
   const nodes = scopedNodes();
+  const reportProjectId = selectedProgressProjectId();
+  $("#daily-report-link").href = reportProjectId ? "/report.html?project_id=" + encodeURIComponent(reportProjectId) : "/report.html";
   renderOverviewMetrics();
   renderOverviewProjects();
   renderOverviewProjectCards();
