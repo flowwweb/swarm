@@ -4201,7 +4201,7 @@ function activeCodexTasksMarkup() {
 function renderOverviewProjects() {
   const host = $("#overview-project-rows"), roster = savedProjectRoster();
   if (roster.state !== "KNOWN") { host.innerHTML = '<p role="status">Saved projects unavailable.</p>'; return; }
-  host.innerHTML = roster.projects.length ? '<table class="overview-project-table"><thead><tr><th>Project</th><th>Milestone</th><th>Progress</th></tr></thead><tbody>' + roster.projects.map(project => {
+  const rowMarkup = project => {
     const summary = authoritativeProgress(project.id), progress = summary?.progress;
     const percent = state.connectionStatus === "live" && summary?.freshness?.state === "fresh"
       && Number.isFinite(progress?.percent) && progress.percent >= 0 && progress.percent <= 100 ? progress.percent : null;
@@ -4218,7 +4218,14 @@ function renderOverviewProjects() {
       ? '<span class="overview-observed-progress" aria-label="Observed activity, progress unavailable">' + escapeHTML(observedLabel) + '</span><small class="overview-data-note">Completion needs an accepted receipt.</small>'
       : '<span>' + percent + '%</span><progress max="100" value="' + percent + '" aria-label="' + escapeHTML(project.label) + ' progress"></progress>';
     return '<tr><th scope="row"><button type="button" data-project-id="' + escapeHTML(project.id) + '" aria-label="' + escapeHTML(project.label + ' · ' + status) + '">' + projectScopeMark(project) + '<strong>' + escapeHTML(project.label) + '</strong></button></th><td>' + (milestoneName ? escapeHTML(milestoneName) : '<span class="overview-observed-milestone" aria-label="Current milestone unavailable; observed project activity">' + escapeHTML(milestoneFallback) + '</span>') + '</td><td>' + progressMarkup + '</td></tr>';
-  }).join('') + '</tbody></table>' : '<p role="status">No saved projects.</p>';
+  };
+  const tableMarkup = (projects, group, caption) => '<table class="overview-project-table" data-overview-project-group="' + group + '"><caption class="sr-only">' + caption + '</caption><thead><tr><th>Project</th><th>Milestone</th><th>Progress</th></tr></thead><tbody>' + projects.map(rowMarkup).join('') + '</tbody></table>';
+  const current = roster.projects.filter(project => ["active", "recent", "stalled"].includes(project.status));
+  const other = roster.projects.filter(project => !current.includes(project));
+  host.innerHTML = roster.projects.length
+    ? (current.length ? tableMarkup(current, "current", "Current projects") : '<p role="status">No current projects.</p>')
+      + (other.length ? '<details class="overview-other-projects"><summary>' + other.length + ' other project' + (other.length === 1 ? '' : 's') + '</summary>' + tableMarkup(other, "other", "Other projects") + '</details>' : '')
+    : '<p role="status">No saved projects.</p>';
 }
 
 function renderOverview() {

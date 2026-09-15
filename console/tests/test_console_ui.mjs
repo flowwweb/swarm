@@ -154,10 +154,12 @@ assert.match(css, /\.lab-catalog[\s\S]*grid-template-columns:repeat\(3/);
 {
   const host = {innerHTML:''};
   const summary = {freshness:{state:'fresh'},current_milestone:{state:'KNOWN',source:'ledger_active_task_manifest',project_id:'p',name:'Ship <V1>'}};
-  const sandbox = {state:{connectionStatus:'live'},$:()=>host,savedProjectRoster:()=>({state:'KNOWN',projects:[{id:'p',label:'Swarm',status:'recent'}]}),authoritativeProgress:()=>summary,projectScopeMark:()=>'',humanize:String};
+  const sandbox = {state:{connectionStatus:'live'},$:()=>host,savedProjectRoster:()=>({state:'KNOWN',projects:[{id:'p',label:'Swarm',status:'recent'},{id:'i',label:'Idle',status:'inactive'}]}),authoritativeProgress:(id)=>id==='p'?summary:null,projectScopeMark:()=>'',humanize:String};
   vm.createContext(sandbox);
   vm.runInContext(app.slice(app.indexOf('function escapeHTML('),app.indexOf('const COLLECTION_PAGE_SIZE')) + app.slice(app.indexOf('function renderOverviewProjects('),app.indexOf('function renderOverview()')),sandbox);
   sandbox.renderOverviewProjects(); assert.match(host.innerHTML,/Ship &lt;V1&gt;/);
+  assert.match(host.innerHTML,/data-overview-project-group="current"[\s\S]*Swarm/);
+  assert.match(host.innerHTML,/<summary>1 other project<\/summary>[\s\S]*data-overview-project-group="other"[\s\S]*Idle/);
   for (const change of [{project_id:'foreign'},{state:'UNKNOWN'},{source:'snapshot'}]) {
     const saved = {...summary.current_milestone}; Object.assign(summary.current_milestone,change);
     sandbox.renderOverviewProjects(); assert.match(host.innerHTML,/Current milestone unavailable/);
