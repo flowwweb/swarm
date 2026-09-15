@@ -28,6 +28,14 @@ assert.doesNotMatch(app, /function startLab|data-lab-form|data-custom-lab-form/)
 assert.doesNotMatch(app, /LAB_CATALOG|\/api\/labs\/commands/);
 assert.match(css, /\.lab-catalog[\s\S]*grid-template-columns:repeat\(3/);
 {
+  const sandbox={escapeHTML:value=>String(value),milestoneSummary:items=>items[0]};
+  vm.createContext(sandbox);
+  vm.runInContext(app.slice(app.indexOf("function projectMilestonesMarkup("),app.indexOf("function projectTabMarkup(")),sandbox);
+  const markup=sandbox.projectMilestonesMarkup([["V1",[{percent:75}]]]);
+  assert.match(markup,/>V1<[\s\S]*>75%<[\s\S]*<progress/);
+  assert.equal(sandbox.projectMilestonesMarkup(Array.from({length:11},(_,index)=>[String(index),[{percent:index}]])),"");
+}
+{
   for (const mode of ['cancel','success','failure','stale']) {
     const elements=new Map(); let calls=0;
     const state={configEditorDraft:{pending:false,scope:'{"type":"project","id":"p"}',text:'original',revision:'r1'},config:{revision:'r1'}};
@@ -170,10 +178,10 @@ assert.match(css, /\.lab-catalog[\s\S]*grid-template-columns:repeat\(3/);
 {
   const state = {messageOpen:true,messageDraft:"  Reply exactly Ω.  ",messageAttachments:[],messageRecipientId:"task",messageStatus:"idle"};
   const handlers={}; let releaseContext;
-  let binding="project/task", calls=[], mode="RESULT", ids=0, rejectionOverride={};
+  let binding="project/task", calls=[], mode="RESULT", ids=0, refreshes=0, rejectionOverride={};
   const context={ok:true,project_id:"project",target_thread_id:"task",root_digest:"a".repeat(64),expected_ledger_revision:4,submitted_at_ms:Date.now(),expires_at_ms:Date.now()+60000,action:"TASK",target_intent:"EXISTING_THREAD",ctrl_id:""};
   context.expires_at_ms=context.submitted_at_ms+60000;
-  const sandbox={state,Date,TextEncoder,Uint8Array,window:{crypto:crypto.webcrypto},messageInteractionGeneration:0,messageHistoryRequestGeneration:0,messageRosterRequestGeneration:0,messageRequestId:()=>"id"+(++ids),renderMessageComposer(){},renderMessageHistory(){},refreshMessageHistory(){},
+  const sandbox={state,Date,TextEncoder,Uint8Array,window:{crypto:crypto.webcrypto},messageInteractionGeneration:0,messageHistoryRequestGeneration:0,messageRosterRequestGeneration:0,messageRequestId:()=>"id"+(++ids),renderMessageComposer(){},renderMessageHistory(){},refreshMessageHistory(){refreshes+=1;},
     $:selector=>({addEventListener:(event,handler)=>{handlers[selector+event]=handler;}}),
     messageHistoryBinding:()=>binding,messageHistoryRecipients:()=>[{id:"task",projectId:"project"}],
     api:async(url,options)=>{const body=JSON.parse(options.body);calls.push({url,body});if(url.endsWith('-context'))return mode==='deferred'?await new Promise(resolve=>{releaseContext=()=>resolve(context);}):context;
@@ -190,6 +198,7 @@ assert.match(css, /\.lab-catalog[\s\S]*grid-template-columns:repeat\(3/);
   assert.equal(sandbox.taskMessageCapability({hq_connector:capability}),null);
   state.taskMessageCapability=sandbox.taskMessageCapability({capabilities:{task_message:capability}});
   assert.equal(await sandbox.sendTaskMessage(false),true);
+  assert.equal(refreshes,1,'successful dispatch refreshes the visible conversation');
   assert.equal(calls[1].body.instruction,'  Reply exactly Ω.  ');
   assert.equal(calls[1].body.envelope.payload_digest,crypto.createHash('sha256').update('  Reply exactly Ω.  ').digest('hex'));
   assert.equal(calls[1].body.acknowledge,true);assert.equal(state.messageDraft,'');
