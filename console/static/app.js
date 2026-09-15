@@ -3338,6 +3338,13 @@ function projectProgressQueueSegments(projection, stale = false) {
   }));
 }
 
+function projectProgressUnavailableMessage(progress) {
+  const queue = progress?.progress_queue;
+  return queue?.status === "RESYNC_REQUIRED" && queue.reason
+    ? "Progress needs resync · " + humanize(String(queue.reason).toLowerCase())
+    : "Active and queue are unavailable until a fresh accepted scope is restored.";
+}
+
 function progressQueueStateLabel(row, segmentId) {
   if (segmentId === "segment.project.progress.active" && row.queue_state == null) return humanize(row.lifecycle || "Active");
   const labels = {
@@ -3393,7 +3400,7 @@ function projectProgressQueueRowMarkup(row, segmentId) {
 function projectProgressQueueMarkup(progress) {
   const projection = projectProgressQueueProjection(progress);
   if (!projection || projection.status !== "CURRENT" || projection.available === false) {
-    return '<section class="panel project-progress-view is-unavailable" aria-labelledby="project-progress-view-title"><header class="overview-section-head"><div><p class="eyebrow">Accepted project scope</p><h2 id="project-progress-view-title">Project Progress</h2></div><p>— <span class="sr-only">UNKNOWN</span><small aria-hidden="true">UNKNOWN</small></p></header><p class="empty-state" role="status">Active and queue are unavailable until a fresh accepted scope is restored.</p></section>';
+    return '<section class="panel project-progress-view is-unavailable" aria-labelledby="project-progress-view-title"><header class="overview-section-head"><div><p class="eyebrow">Accepted project scope</p><h2 id="project-progress-view-title">Project Progress</h2></div><p>— <span class="sr-only">UNKNOWN</span><small aria-hidden="true">UNKNOWN</small></p></header><p class="empty-state" role="status">' + escapeHTML(projectProgressUnavailableMessage(progress)) + '</p></section>';
   }
   const stale = ["stale", "unavailable"].includes(state.projectProgressStatus) || projection.status !== "CURRENT";
   const segments = projectProgressQueueSegments(projection, stale);
@@ -3454,7 +3461,7 @@ function renderProjectDetail() {
   const nodes = scopedNodes();
   $("#project-detail-title").textContent = group?.label || "Project";
   const hostSnapshot = nodes.length > 0 && state.connectionStatus === "live";
-  $("#project-detail-status").textContent = state.projectProgressStatus === "stale" ? "Last received project ledger" : state.projectProgressStatus === "unavailable" ? (hostSnapshot ? "Host snapshot · provider ledger unavailable" : "Project ledger unavailable") : progress ? "Scope version " + (progress.scope_version ?? "—") : "Loading project ledger";
+  $("#project-detail-status").textContent = state.projectProgressStatus === "stale" ? "Last received project ledger" : state.projectProgressStatus === "unavailable" ? (progress ? projectProgressUnavailableMessage(progress) : hostSnapshot ? "Host snapshot · project ledger unavailable" : "Project ledger unavailable") : progress ? "Scope version " + (progress.scope_version ?? "—") : "Loading project ledger";
   const measured = progress?.status === "MEASURED" && Number.isFinite(Number(progress.percent));
   const nextGate = (progress?.blocks || []).find((block) => ["REVIEW", "WAITING_DEPENDENCY", "WAITING_EXTERNAL", "USER_PAUSED"].includes(block.lifecycle_state));
   $("#project-detail-summary").innerHTML = '<p><span>Progress</span><strong>' + escapeHTML(measured ? progress.percent + "%" : "—") + '</strong></p><p><span>Live ETA</span><strong><svg class="lucide" aria-hidden="true"><use href="#lucide-clock"></use></svg>' + escapeHTML(projectEta(nodes)) + '</strong></p><p><span>Next gate</span><strong>' + escapeHTML(nextGate ? humanize(nextGate.lifecycle_state) : "—") + '</strong></p>';

@@ -938,7 +938,7 @@ const unavailableQueue = {
 };
 const unavailableProgress = { status: "UNKNOWN", cursor: { event_seq: null, event_id: null, event_digest: null }, progress_queue: unavailableQueue };
 assert.equal(progressQueueHelpers.projectProgressQueueProjection(unavailableProgress).status, "RESYNC_REQUIRED");
-assert.match(progressQueueHelpers.projectProgressQueueMarkup(unavailableProgress), /—[\s\S]*UNKNOWN[\s\S]*Active and queue are unavailable until a fresh accepted scope is restored/);
+assert.match(progressQueueHelpers.projectProgressQueueMarkup(unavailableProgress), /—[\s\S]*UNKNOWN[\s\S]*Progress needs resync · mixed_scope_rejected/);
 assert.doesNotMatch(progressQueueHelpers.projectProgressQueueMarkup(unavailableProgress), /<table/);
 const staleProgressRow = progressQueueHelpers.progressQueueRowPresentation(progressRow, true);
 assert.deepEqual(
