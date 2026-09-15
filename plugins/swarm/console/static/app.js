@@ -3408,6 +3408,18 @@ function projectProgressQueueMarkup(progress) {
   return '<section class="panel project-progress-view" aria-labelledby="project-progress-view-title"><header class="overview-section-head"><div><p class="eyebrow">Accepted project scope</p><h2 id="project-progress-view-title">Project Progress</h2></div><p>' + (stale ? 'Last accepted identity · live fields unavailable' : 'Through event ' + escapeHTML(projection.accepted_cursor.event_seq)) + '</p></header>' + tables + '</section>';
 }
 
+function projectMilestonesMarkup(milestones) {
+  if (!milestones.length) return '<section class="project-milestones"><h2>Milestones</h2><p class="empty-state">No measured milestones yet.</p></section>';
+  if (milestones.length > 10) return "";
+  return '<section class="project-milestones" aria-labelledby="project-milestones-title"><h2 id="project-milestones-title">Milestones</h2><div>' + milestones.map(([id, items]) => {
+    const percent = milestoneSummary(items).percent;
+    const value = percent == null ? null : Math.round(percent);
+    return '<article><strong>' + escapeHTML(id) + '</strong>' + (value == null
+      ? '<span aria-label="Progress unavailable">—</span>'
+      : '<span>' + escapeHTML(value) + '%</span><progress max="100" value="' + escapeHTML(value) + '" aria-label="' + escapeHTML(id) + ' progress"></progress>') + '</article>';
+  }).join("") + '</div></section>';
+}
+
 function projectTabMarkup(tab, progress, nodes) {
   const workspaceViews = projectWorkspaceViews(currentProjectView());
   const workspaceView = workspaceViews.find((view) => view.id === tab);
@@ -3417,7 +3429,7 @@ function projectTabMarkup(tab, progress, nodes) {
   const milestones = projectMilestones(blocks);
   if (tab === "overview") {
     const efficiency = verifiedYieldItem("project", selectedProgressProjectId());
-    return projectHostWorkMarkup() + '<section class="project-overview-grid">' + (embeddedView ? '<section class="panel project-model-snapshot"><header class="overview-section-head"><div><p class="eyebrow">Project brief snapshot</p><h2>' + escapeHTML(embeddedView.label) + '</h2></div></header>' + projectWorkspaceViewMarkup(embeddedView) + '</section>' : "") + projectProgressQueueMarkup(progress) + '<div class="milestone-rings">' + (milestones.length ? milestones.slice(0, 4).map(([id, items]) => { const summary = milestoneSummary(items); return '<article><div class="milestone-ring ' + (summary.percent === 100 ? "is-complete" : "") + '" style="--progress:' + (summary.percent ?? 0) + '%"><strong>' + escapeHTML(summary.percent == null ? "—" : Math.round(summary.percent) + "%") + '</strong></div><h3>' + escapeHTML(id) + '</h3><small>' + escapeHTML(summary.admitted + " / " + summary.committed + " admitted") + '</small></article>'; }).join("") : '<p class="empty-state">No measured milestones yet.</p>') + '</div>' + yieldChartMarkup(efficiency) + '<section class="panel project-updates"><header class="overview-section-head"><div><p class="eyebrow">Material events</p><h2>Latest updates</h2></div><p>Newest first</p></header>' + projectFeedMarkup(4) + '</section></section>';
+    return projectHostWorkMarkup() + '<section class="project-overview-grid">' + (embeddedView ? '<section class="panel project-model-snapshot"><header class="overview-section-head"><div><p class="eyebrow">Project brief snapshot</p><h2>' + escapeHTML(embeddedView.label) + '</h2></div></header>' + projectWorkspaceViewMarkup(embeddedView) + '</section>' : "") + projectProgressQueueMarkup(progress) + projectMilestonesMarkup(milestones) + yieldChartMarkup(efficiency) + '<section class="panel project-updates"><header class="overview-section-head"><div><p class="eyebrow">Material events</p><h2>Latest updates</h2></div><p>Newest first</p></header>' + projectFeedMarkup(4) + '</section></section>';
   }
   if (tab === "roadmap") return (embeddedView ? '<section class="project-model-snapshot"><header class="overview-section-head"><div><p class="eyebrow">Project brief snapshot</p><h2>' + escapeHTML(embeddedView.label) + '</h2></div></header>' + projectWorkspaceViewMarkup(embeddedView) + '</section>' : "") + '<section class="project-roadmap">' + (milestones.length ? milestones.map(([id, items], index) => '<article><span>' + String(index + 1) + '</span><div><h3>' + escapeHTML(id) + '</h3><p>' + escapeHTML(items.length + " block" + (items.length === 1 ? "" : "s") + " · " + milestoneSummary(items).admitted + " admitted") + '</p></div></article>').join("") : '<p class="empty-state">No roadmap receipts yet.</p>') + '</section>';
   if (tab === "lanes") { const owners = new Map(); blocks.forEach((block) => { const id = block.owner_id || "Unassigned"; owners.set(id, [...(owners.get(id) || []), block]); }); return '<section class="project-lanes">' + ([...owners.entries()].map(([owner, items]) => '<section class="panel"><header><h3>' + escapeHTML(owner) + '</h3><span>' + items.length + '</span></header>' + items.map(projectBlockRow).join("") + '</section>').join("") || '<p class="empty-state">No owner lanes yet.</p>') + '</section>'; }
@@ -4649,6 +4661,7 @@ async function sendTaskMessage(retry) {
     state.messageDraft = "";
     state.messagePendingAction = null;
     state.messageError = "";
+    await refreshMessageHistory();
     return true;
   } catch (error) {
     state.messageStatus = "failed";
