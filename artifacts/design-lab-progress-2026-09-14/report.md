@@ -1,5 +1,7 @@
 # SWARM Design Lab progress
 
+Refreshed from the live HQ on 2026-09-15.
+
 ## Current result
 
 The Labs slice is implemented in the live HQ. It uses the established SWARM shell, eight broad Lab manifests, compact role avatars, one-at-a-time disclosure, and the existing quarter-point block model. CTRL remains the only delegation authority.
@@ -8,7 +10,7 @@ The Labs slice is implemented in the live HQ. It uses the established SWARM shel
 | --- | --- | --- |
 | Labs catalog | Implemented | Eight built-in Labs plus Custom Lab render from the repo-owned catalog. |
 | Lab details | Implemented | One selected Lab exposes its outcome, thin guidance, and `.25 / .5 / .75 / 1` block states. |
-| Role avatars | Partial | Compact, circular, role-colored SWARM mascots render on desktop. A fresh isolated mobile load used the gray fallback, so mobile role hydration still needs correction. |
+| Role avatars | Implemented | Compact, circular, role-colored SWARM mascots render on desktop and mobile. |
 | Desktop layout | Implemented | Three-column catalog with a single expanded Lab. |
 | Mobile layout | Implemented | One-column cards, sticky app bar, and icon-only footer navigation. |
 | Lab delegation controls | Removed by design | Labs are open task frameworks. CTRL handles delegation. |
@@ -16,13 +18,13 @@ The Labs slice is implemented in the live HQ. It uses the established SWARM shel
 
 ## Implemented desktop
 
-Fresh live capture from `http://127.0.0.1:4788/#labs`, with Design Lab selected.
+Fresh live capture from `http://127.0.0.1:4788/#labs`, with Design Lab selected. Nine cards render without horizontal overflow or page errors.
 
 ![Implemented Design Lab desktop](design-lab-desktop.png)
 
 ## Implemented mobile
 
-Fresh responsive capture of the same implementation. The gray avatars show the remaining mobile role-hydration issue.
+Fresh responsive capture of the same implementation. Role colors now hydrate correctly on mobile.
 
 ![Implemented Design Lab mobile](design-lab-mobile.png)
 
@@ -30,7 +32,7 @@ Fresh responsive capture of the same implementation. The gray avatars show the r
 
 | Screen | Current status |
 | --- | --- |
-| Labs | Layout and disclosure are implemented on desktop and mobile. Mobile avatar color hydration remains open. |
+| Labs | Layout, disclosure, and role-avatar hydration are implemented on desktop and mobile. |
 | Settings | Simplified essentials layout is implemented, including visual theme choices. |
 | Overview | Simplified shell and live project/task observation are implemented. Final hierarchy and usage authority still depend on accepted project receipts. |
 | Agents | Live host tasks render, but the current screen remains denser than the approved minimal direction. |
@@ -45,6 +47,7 @@ Fresh responsive capture of the same implementation. The gray avatars show the r
 
 - Lab catalog and role-binding tests: **PASS**, 6 tests.
 - Plugin mirror: source and packaged plugin are synchronized at the current commit.
-- Full HQ browser suite: **FAIL**, timed out waiting for the message composer to enter `pending` after Send. This is a real open regression and prevents a full-screen green claim.
+- Full HQ browser suite: **PASS**. The six-screen UI contract completed after the message-composer regression was corrected.
+- Fresh Labs runtime capture: **PASS** on 1440 × 1024 and 390 × 844. Nine cards rendered, horizontal overflow was false, and page errors were empty.
 
 The screenshots above are implementation evidence, not generated mockups. Older before images are omitted because the implemented result is available directly.
