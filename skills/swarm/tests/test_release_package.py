@@ -148,6 +148,13 @@ class ReleasePackageTests(unittest.TestCase):
             (root / "README.md").write_text("# SWARM\n", encoding="utf-8")
             self.assertEqual(set(source_file_hashes(root)), {"README.md"})
 
+    def test_source_hashes_ignore_local_environment_file(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / ".env").write_text("SECRET=value\n", encoding="utf-8")
+            (root / "README.md").write_text("# SWARM\n", encoding="utf-8")
+            self.assertEqual(set(source_file_hashes(root)), {"README.md"})
+
     def test_source_verifier_rejects_development_material_in_an_installed_tree(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             source = self.make_plugin(Path(temporary) / "source")

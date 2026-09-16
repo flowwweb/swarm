@@ -98,6 +98,7 @@ OBSERVATION_HEARTBEAT_WINDOWS = 48
 CONSOLE_STATE_PATH_ENV = "SWARM_CONSOLE_STATE_PATH"
 CONSOLE_STATE_DIR_ENV = "SWARM_CONSOLE_DATA_DIR"
 CONSOLE_STATE_FILENAME = "console-state.sqlite3"
+USAGE_SAVER_TUNNEL_METADATA_KEY = "usage-saver-tunnel:v1"
 TOKEN_SAMPLE_SECONDS = 60
 AUTO_BRIDGE_TIMEOUT_SECONDS = 60
 AUTO_CTRL_OVERRIDE_KEY = "_auto"
@@ -6932,6 +6933,39 @@ class ConsoleStore:
             "health_incident_retention_days": HEALTH_INCIDENT_RETENTION_DAYS,
             "counts": counts,
         }
+
+    def usage_saver_tunnel(self) -> dict[str, Any]:
+        with self._lock, closing(self._connect()) as connection:
+            row = connection.execute(
+                "SELECT value FROM store_metadata WHERE key = ?",
+                (USAGE_SAVER_TUNNEL_METADATA_KEY,),
+            ).fetchone()
+        if row is None:
+            return {"state": "NOT_CONFIGURED", "verified_at_ms": None, "connector": "SWARM"}
+        try:
+            value = json.loads(row["value"])
+        except (TypeError, ValueError, json.JSONDecodeError):
+            return {"state": "UNKNOWN", "verified_at_ms": None, "connector": "SWARM"}
+        if not isinstance(value, dict) or value.get("state") not in {"LOCAL_READY", "CONNECTED"}:
+            return {"state": "UNKNOWN", "verified_at_ms": None, "connector": "SWARM"}
+        return {
+            "state": value["state"],
+            "verified_at_ms": value.get("verified_at_ms") if isinstance(value.get("verified_at_ms"), int) else None,
+            "connector": "SWARM",
+        }
+
+    def record_usage_saver_tunnel(self, state: str, *, verified_at_ms: int | None = None) -> dict[str, Any]:
+        if state not in {"LOCAL_READY", "CONNECTED"}:
+            raise ConsoleError("usage saver tunnel state is invalid")
+        value = {"state": state, "verified_at_ms": verified_at_ms, "connector": "SWARM"}
+        with self._lock, closing(self._connect()) as connection:
+            connection.execute(
+                "INSERT INTO store_metadata(key, value) VALUES (?, ?) "
+                "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                (USAGE_SAVER_TUNNEL_METADATA_KEY, json.dumps(value, sort_keys=True, separators=(",", ":"))),
+            )
+            connection.commit()
+        return self.usage_saver_tunnel()
 
 
 class ConsoleConflict(ConsoleError):
@@ -15099,6 +15133,18 @@ class App:
             "bytes": storage["bytes"] + proof["bytes"],
         }
 
+    def usage_saver_tunnel(self) -> dict[str, Any]:
+        return {
+            "ok": True,
+            **self.store.usage_saver_tunnel(),
+            "steps": [
+                "Create an OpenAI secure MCP tunnel.",
+                "Add the SWARM plugin in ChatGPT with Tunnel and No Auth.",
+                "Connect SWARM once, then run a status check.",
+            ],
+            "stores_secret": False,
+        }
+
     def _auto_repair_policy(self) -> dict[str, Any]:
         base = {
             "key": AUTO_REPAIR_SETTING_KEY,
@@ -16383,6 +16429,12 @@ class Handler(BaseHTTPRequestHandler):
                 return
             if path == "/api/storage":
                 self._json(HTTPStatus.OK, {"ok": True, **self.server.app.storage()})
+                return
+            if path == "/api/usage-saver-tunnel":
+                if not self._peer_is_trusted_local():
+                    self._error(HTTPStatus.FORBIDDEN, "usage saver tunnel status requires local access")
+                    return
+                self._json(HTTPStatus.OK, self.server.app.usage_saver_tunnel())
                 return
             if path == "/api/diagnostics":
                 self._json(HTTPStatus.OK, self.server.app.diagnostics())

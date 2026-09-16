@@ -45,7 +45,7 @@ PACKAGING_IGNORED_DIRECTORIES = frozenset(
         "node_modules",
     }
 )
-PACKAGING_IGNORED_FILE_NAMES = frozenset({".DS_Store", ".coverage", "Thumbs.db"})
+PACKAGING_IGNORED_FILE_NAMES = frozenset({".DS_Store", ".coverage", ".env", "Thumbs.db"})
 PACKAGING_IGNORED_SUFFIXES = frozenset({".log", ".pyc", ".pyo", ".sqlite", ".sqlite3"})
 DEVELOPMENT_ONLY_PATHS = frozenset(
     {

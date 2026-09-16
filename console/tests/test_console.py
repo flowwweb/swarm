@@ -8982,6 +8982,19 @@ class SwarmConsoleTests(unittest.TestCase):
         self.assertNotIn("claim-note", index)
         self.assertNotIn("Recent means", index)
 
+    def test_usage_saver_tunnel_persists_status_without_credentials(self) -> None:
+        path = self.root / "console" / "usage-saver.sqlite3"
+        store = console.ConsoleStore(path)
+        self.assertEqual(store.usage_saver_tunnel()["state"], "NOT_CONFIGURED")
+        stored = store.record_usage_saver_tunnel("CONNECTED", verified_at_ms=123)
+        self.assertEqual((stored["state"], stored["verified_at_ms"]), ("CONNECTED", 123))
+        restarted = console.ConsoleStore(path).usage_saver_tunnel()
+        self.assertEqual(restarted, stored)
+        self.assertNotIn("key", json.dumps(restarted).casefold())
+        app = (console.STATIC_ROOT / "app.js").read_text(encoding="utf-8")
+        self.assertIn("usageSaverTunnelMarkup", app)
+        self.assertIn("The API key stays in your environment, never the SWARM database.", app)
+
     def test_invalid_config_update_preserves_source(self) -> None:
         before = self.config.read_bytes()
         with self.assertRaises(console.ConsoleError):
