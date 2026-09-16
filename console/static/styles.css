@@ -1113,6 +1113,13 @@ html[data-theme="pearl"] .drawer,html[data-theme="pearl"] .mobile-app-bar,html[d
 .settings-card .settings-essential-control em { grid-column:1 / -1; }
 .settings-card-usage { border-color:rgba(255,116,73,.65); box-shadow:0 0 0 1px rgba(255,116,73,.18),0 18px 38px rgba(255,116,73,.08); }
 .settings-card-usage .settings-control-badge { display:none; }
+.usage-saver-tunnel { display:grid; gap:7px; margin-top:16px; padding-top:14px; border-top:1px solid var(--line); color:var(--muted); }
+.usage-saver-tunnel summary { color:var(--ink); font-size:11px; font-weight:700; cursor:pointer; }
+.usage-saver-tunnel ol { display:grid; gap:5px; margin:0; padding-left:18px; font-size:10px; line-height:1.45; }
+.usage-saver-tunnel.is-ready { grid-template-columns:8px 1fr; align-items:center; }
+.usage-saver-tunnel.is-ready::before { width:8px; height:8px; border-radius:50%; background:var(--green); box-shadow:0 0 10px color-mix(in srgb,var(--green) 70%,transparent); content:""; }
+.usage-saver-tunnel.is-ready strong,.usage-saver-tunnel.is-ready small { grid-column:2; }
+.usage-saver-tunnel.is-ready strong { color:var(--ink); font-size:11px; }
 .settings-card-appearance legend { position:absolute; width:1px; height:1px; overflow:hidden; clip:rect(0 0 0 0); }
 .settings-theme-choice { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:8px; }
 .settings-theme-choice label { min-width:0; }
