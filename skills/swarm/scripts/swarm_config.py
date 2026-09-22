@@ -47,6 +47,7 @@ DEFAULTS: dict[str, Any] = {
         "usage_profile": "medium",
         "fast_mode": False,
         "usage_saver": False,
+        "jev_model_selection": False,
         "min_reasoning": "none",
         "max_reasoning": "ultra",
     },
@@ -408,6 +409,7 @@ def validate(raw: dict[str, Any]) -> None:
         raise ConfigError("execution.usage_profile must be high, medium, or low")
     _boolean(execution, "fast_mode", "execution")
     _boolean(execution, "usage_saver", "execution")
+    _boolean(execution, "jev_model_selection", "execution")
     _reasoning_effort(execution, "min_reasoning", "execution")
     _reasoning_effort(execution, "max_reasoning", "execution")
     minimum = execution.get("min_reasoning", DEFAULTS["execution"]["min_reasoning"])
@@ -988,9 +990,7 @@ def resolve_model_assignment(
     host_service_tier_receipt: str | None = None,
 ) -> dict[str, Any]:
     """Resolve requested controls without claiming unreported host execution."""
-    if surface not in {"codex_task", "subagent"}: raise ConfigError("surface must be codex_task or subagent")
-    if workload not in MODEL_WORKLOADS: raise ConfigError(f"unknown workload: {workload}")
-    if not isinstance(required_tools, tuple) or any(not isinstance(tool, str) or not tool.strip() for tool in required_tools): raise ConfigError("required_tools must be a tuple of non-empty strings")
+    _validate_model_request(surface, workload, required_tools)
     if (host_actual_model is None) != (host_receipt is None): raise ConfigError("actual model verification requires both host model and receipt")
     if (host_actual_service_tier is None) != (host_service_tier_receipt is None): raise ConfigError("actual service-tier verification requires both host tier and response receipt")
     assignment=resolve_role_assignment(effective, role, route_tier=route_tier, explicit_model=explicit_model, explicit_reasoning=explicit_reasoning)
@@ -1043,6 +1043,95 @@ def resolve_model_assignment(
         "actual_model":host_actual_model or "","actual_model_verification":"verified" if host_actual_model is not None else "UNVERIFIED",
         "host_model_receipt":host_receipt or "",
     }
+
+
+JEV_MODEL_PROFILES = (("routine", "low"), ("analysis", "medium"), ("astra", "high"))
+
+
+def _validate_model_request(surface: str, workload: str, required_tools: tuple[str, ...]) -> None:
+    if surface not in {"codex_task", "subagent"}: raise ConfigError("surface must be codex_task or subagent")
+    if workload not in MODEL_WORKLOADS: raise ConfigError(f"unknown workload: {workload}")
+    if not isinstance(required_tools, tuple) or any(not isinstance(tool, str) or not tool.strip() for tool in required_tools): raise ConfigError("required_tools must be a tuple of non-empty strings")
+
+
+def _role_has_model_lock(effective: dict[str, Any], role: str) -> bool:
+    normalized = role.strip().casefold().replace(" ", "_")
+    if normalized in STRUCTURAL_CONFIG_ROLES:
+        override = next((value for name, value in effective["roles"].items() if name.casefold() == role.casefold()), {})
+    else:
+        profession_id = resolve_profession_id(role)
+        override = next((value for name, value in effective["professions"].items() if resolve_profession_id(name) == profession_id), {})
+    return any(key in override for key in ("model", "reasoning"))
+
+
+def plan_jev_model_selection(
+    effective: dict[str, Any], role: str, *, surface: str,
+    workload: str = "general", required_tools: tuple[str, ...] = (),
+    explicit_model: str | None = None, explicit_reasoning: str | None = None,
+    explicit_provider: str | None = None,
+) -> dict[str, Any]:
+    """Expose distinct eligible pairs for the existing model_profile.v1 question."""
+    _validate_model_request(surface, workload, required_tools)
+    if explicit_model is not None: _model_name({"model": explicit_model}, "model", "explicit assignment")
+    if explicit_reasoning is not None: _reasoning_effort({"reasoning": explicit_reasoning}, "reasoning", "explicit assignment")
+    if explicit_provider is not None: _short_text({"provider": explicit_provider}, "provider", "explicit assignment")
+    if not effective["execution"]["jev_model_selection"]:
+        return {"status": "disabled", "schema_id": "", "eligible_profile_ids": [], "options": []}
+    if any(value is not None for value in (explicit_model, explicit_reasoning, explicit_provider)) or _role_has_model_lock(effective, role):
+        return {"status": "locked", "schema_id": "", "eligible_profile_ids": [], "options": []}
+    options = []
+    pairs = set()
+    for profile_id, usage_profile in JEV_MODEL_PROFILES:
+        candidate = deepcopy(effective)
+        candidate["execution"]["usage_profile"] = usage_profile
+        try:
+            receipt = resolve_model_assignment(
+                candidate, role, surface=surface, workload=workload,
+                required_tools=required_tools,
+            )
+        except ConfigError:
+            continue
+        pair = (receipt["model"], receipt["reasoning_effort"])
+        if pair in pairs:
+            continue
+        pairs.add(pair)
+        options.append({"profile_id": profile_id, "model": pair[0], "reasoning_effort": pair[1]})
+    status = "eligible" if len(options) >= 2 else "no_selection"
+    return {
+        "status": status,
+        "schema_id": "model_profile.v1" if status == "eligible" else "",
+        "eligible_profile_ids": [option["profile_id"] for option in options] if status == "eligible" else [],
+        "options": options,
+    }
+
+
+def resolve_jev_model_assignment(
+    effective: dict[str, Any], role: str, *, selected_profile_id: str,
+    surface: str, workload: str = "general",
+    required_tools: tuple[str, ...] = (),
+    explicit_model: str | None = None, explicit_reasoning: str | None = None,
+    explicit_provider: str | None = None,
+) -> dict[str, Any]:
+    """Apply one Jev advisory only when it names a currently eligible pair."""
+    plan = plan_jev_model_selection(
+        effective, role, surface=surface, workload=workload,
+        required_tools=required_tools,
+        explicit_model=explicit_model, explicit_reasoning=explicit_reasoning,
+        explicit_provider=explicit_provider,
+    )
+    if plan["status"] != "eligible":
+        raise ConfigError(f"Jev model selection is {plan['status']}")
+    selected = next((item for item in plan["options"] if item["profile_id"] == selected_profile_id), None)
+    if selected is None:
+        raise ConfigError("Jev selected an ineligible model profile")
+    receipt = resolve_model_assignment(
+        effective, role, surface=surface, workload=workload,
+        required_tools=required_tools, explicit_model=selected["model"],
+        explicit_reasoning=selected["reasoning_effort"],
+    )
+    receipt["selection_source"] = "jev_advisory"
+    receipt["jev_profile_id"] = selected_profile_id
+    return receipt
 
 
 def resolve_spark_assignment(
@@ -1106,6 +1195,7 @@ def feedback_diagnostics(effective: dict[str, Any], exists: bool) -> dict[str, A
         "config_exists": exists,
         "usage_profile": effective["execution"]["usage_profile"],
         "fast_mode": effective["execution"]["fast_mode"],
+        "jev_model_selection": effective["execution"]["jev_model_selection"],
         "automation_mode": effective["automation"]["mode"],
         "min_reasoning": effective["execution"]["min_reasoning"],
         "max_reasoning": effective["execution"]["max_reasoning"],
@@ -1159,6 +1249,23 @@ def parse_args() -> argparse.Namespace:
     assign.add_argument("--explicit-provider")
     assign.add_argument("--host-actual-model")
     assign.add_argument("--host-receipt")
+    jev_plan = subparsers.add_parser("jev-plan", help="emit eligible model profiles for model_profile.v1")
+    jev_plan.add_argument("--role", required=True)
+    jev_plan.add_argument("--surface", required=True, choices=("codex_task", "subagent"))
+    jev_plan.add_argument("--workload", choices=tuple(sorted(MODEL_WORKLOADS)), default="general")
+    jev_plan.add_argument("--required-tool", action="append", default=[])
+    jev_plan.add_argument("--explicit-model")
+    jev_plan.add_argument("--explicit-reasoning", choices=tuple(REASONING_SCALE))
+    jev_plan.add_argument("--explicit-provider")
+    jev_apply = subparsers.add_parser("jev-apply", help="apply one eligible model_profile.v1 advisory")
+    jev_apply.add_argument("--role", required=True)
+    jev_apply.add_argument("--surface", required=True, choices=("codex_task", "subagent"))
+    jev_apply.add_argument("--profile", required=True, choices=tuple(profile for profile, _ in JEV_MODEL_PROFILES))
+    jev_apply.add_argument("--workload", choices=tuple(sorted(MODEL_WORKLOADS)), default="general")
+    jev_apply.add_argument("--required-tool", action="append", default=[])
+    jev_apply.add_argument("--explicit-model")
+    jev_apply.add_argument("--explicit-reasoning", choices=tuple(REASONING_SCALE))
+    jev_apply.add_argument("--explicit-provider")
     spark = subparsers.add_parser("spark", help="emit a bounded Spark model-assignment receipt")
     spark.add_argument("--role", required=True)
     spark.add_argument("--surface", required=True, choices=("codex_task", "subagent"))
@@ -1221,6 +1328,22 @@ def main() -> int:
                 explicit_provider=args.explicit_provider,
                 host_actual_model=args.host_actual_model,host_receipt=args.host_receipt,
             ),indent=2))
+            return 0
+        if args.command == "jev-plan":
+            print(json.dumps(plan_jev_model_selection(
+                effective, args.role, surface=args.surface, workload=args.workload,
+                required_tools=tuple(args.required_tool), explicit_model=args.explicit_model,
+                explicit_reasoning=args.explicit_reasoning, explicit_provider=args.explicit_provider,
+            ), indent=2))
+            return 0
+        if args.command == "jev-apply":
+            print(json.dumps(resolve_jev_model_assignment(
+                effective, args.role, selected_profile_id=args.profile,
+                surface=args.surface, workload=args.workload,
+                required_tools=tuple(args.required_tool),
+                explicit_model=args.explicit_model, explicit_reasoning=args.explicit_reasoning,
+                explicit_provider=args.explicit_provider,
+            ), indent=2))
             return 0
         if args.command == "spark":
             print(json.dumps(resolve_spark_assignment(

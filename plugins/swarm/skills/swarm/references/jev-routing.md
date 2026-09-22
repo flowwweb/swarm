@@ -2,6 +2,13 @@
 
 Use `python -B scripts/swarm_jev.py --status` to check local configuration without a provider call. The route requires the pinned CLI bundle, key and explicit shared spending cap. Availability is not connectivity proof.
 
+Model selection is opt-in through `execution.jev_model_selection`. Build the
+eligible set with `plan_jev_model_selection`, ask `model_profile.v1` only when it
+returns at least two distinct model/reasoning pairs, then apply the advisory with
+`resolve_jev_model_assignment`. Explicit user selections and model locks always
+win. A disabled route, unavailable transport, abstention, or zero/one eligible
+pair keeps the existing configured assignment without a provider call.
+
 For one atomic classification, routing judgment or relevance score with supplied facts, invoke `python -B scripts/swarm_contract.py jev` with a JSON-stdin envelope containing `schema_id`, `state`, trusted `context`, unique opaque `decision_id`, and `final_decision` (null when no baseline exists). Closed schemas and fields live in runtime/jev_questions.py and runtime/jev_policy.py. Reuse the same decision ID after an uncertain attempt; a different ID is new billable work. The command selects the configured Jev transport only after deterministic policy and sanitization admit the decision.
 
 When `selected_provider` is `jev`, consume the typed `suggestion` as the atomic result. It does not launch a worker or grant authorization. Keep an existing baseline unchanged. On unavailable, uncertain, low-confidence, exhausted or invalid results, continue the existing Codex/ChatGPT route. Coding, open-ended reasoning, protected work, proof and acceptance stay with their existing owners. Preserve explicit model choices. Avoid calls for deterministic work or simply because a new turn began.

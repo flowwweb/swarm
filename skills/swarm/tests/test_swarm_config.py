@@ -278,6 +278,106 @@ class SwarmConfigTests(unittest.TestCase):
             ):
                 config.load(invalid)
 
+    def test_jev_model_selection_is_opt_in_and_requires_real_choice(self) -> None:
+        effective, _ = config.load(config.TEMPLATE_PATH)
+        disabled = config.plan_jev_model_selection(
+            effective, "lead", surface="codex_task",
+        )
+        self.assertEqual((disabled["status"], disabled["options"]), ("disabled", []))
+        for field, value in (
+            ("surface", "invalid"),
+            ("workload", "invalid"),
+            ("required_tools", []),
+            ("explicit_model", ""),
+            ("explicit_reasoning", "invalid"),
+            ("explicit_provider", ""),
+        ):
+            with self.subTest(invalid=field), self.assertRaises(config.ConfigError):
+                arguments = {"surface": "codex_task", field: value}
+                config.plan_jev_model_selection(
+                    effective, "lead", **arguments,
+                )
+
+        enabled = deepcopy(effective)
+        enabled["execution"]["jev_model_selection"] = True
+        plan = config.plan_jev_model_selection(
+            enabled, "lead", surface="codex_task",
+        )
+        self.assertEqual(plan["status"], "eligible")
+        self.assertEqual(plan["schema_id"], "model_profile.v1")
+        self.assertEqual(plan["eligible_profile_ids"], ["routine", "analysis", "astra"])
+        self.assertEqual(len({(item["model"], item["reasoning_effort"]) for item in plan["options"]}), 3)
+
+        locked = config.plan_jev_model_selection(
+            enabled, "lead", surface="codex_task", explicit_model="gpt-5.6-terra",
+        )
+        self.assertEqual((locked["status"], locked["options"]), ("locked", []))
+
+        for field, value in (
+            ("explicit_model", "gpt-5.6-terra"),
+            ("explicit_reasoning", "low"),
+            ("explicit_provider", "openai"),
+        ):
+            with self.subTest(field=field):
+                self.assertEqual(config.plan_jev_model_selection(
+                    enabled, "lead", surface="codex_task", **{field: value},
+                )["status"], "locked")
+                with self.assertRaisesRegex(config.ConfigError, "locked"):
+                    config.resolve_jev_model_assignment(
+                        enabled, "lead", selected_profile_id="routine", surface="codex_task",
+                        **{field: value},
+                    )
+
+        for field, value in (("model", "gpt-5.6-terra"), ("reasoning", "low")):
+            with self.subTest(configured=field):
+                configured = deepcopy(enabled)
+                configured["roles"]["lead"] = {field: value}
+                self.assertEqual(config.plan_jev_model_selection(
+                    configured, "lead", surface="codex_task",
+                )["status"], "locked")
+                with self.assertRaisesRegex(config.ConfigError, "locked"):
+                    config.resolve_jev_model_assignment(
+                        configured, "lead", selected_profile_id="routine", surface="codex_task",
+                    )
+
+        with self.assertRaisesRegex(config.ConfigError, "surface"):
+            config.plan_jev_model_selection(enabled, "lead", surface="invalid")
+
+        enabled["execution"]["min_reasoning"] = "medium"
+        enabled["execution"]["max_reasoning"] = "medium"
+        single = config.plan_jev_model_selection(
+            enabled, "lead", surface="codex_task",
+        )
+        self.assertEqual((single["status"], len(single["options"])), ("no_selection", 1))
+
+    def test_jev_model_selection_applies_only_an_eligible_advisory(self) -> None:
+        effective, _ = config.load(config.TEMPLATE_PATH)
+        effective["execution"]["jev_model_selection"] = True
+        receipt = config.resolve_jev_model_assignment(
+            effective, "lead", selected_profile_id="routine", surface="codex_task",
+        )
+        self.assertEqual(
+            (receipt["model"], receipt["reasoning_effort"], receipt["selection_source"], receipt["jev_profile_id"]),
+            ("gpt-5.6-terra", "low", "jev_advisory", "routine"),
+        )
+        with self.assertRaisesRegex(config.ConfigError, "ineligible"):
+            config.resolve_jev_model_assignment(
+                effective, "lead", selected_profile_id="unknown", surface="codex_task",
+            )
+
+    def test_jev_model_selection_setting_accepts_only_boolean(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "enabled.toml"
+            path.write_text("[execution]\njev_model_selection = true\n", encoding="utf-8")
+            effective, _ = config.load(path)
+            self.assertTrue(effective["execution"]["jev_model_selection"])
+            invalid = Path(directory) / "invalid.toml"
+            invalid.write_text('[execution]\njev_model_selection = "auto"\n', encoding="utf-8")
+            with self.assertRaisesRegex(
+                config.ConfigError, "execution.jev_model_selection must be true or false",
+            ):
+                config.load(invalid)
+
     def test_automation_mode_defaults_standard_and_migrates_legacy_archive_toggle(self) -> None:
         self.assertEqual(config.DEFAULTS["automation"]["mode"], "standard")
         effective, _ = config.load(config.TEMPLATE_PATH)

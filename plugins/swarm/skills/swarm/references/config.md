@@ -81,6 +81,7 @@ Configuration cannot make an unsafe or hidden coordination path valid:
 | `execution.min_reasoning` | Global reasoning floor applied after every profile, role override, and route adjustment | none, minimal, low, medium, high, xhigh, max, ultra; compatibility-neutral default none |
 | `execution.max_reasoning` | Global reasoning ceiling applied after every profile, role override, and route adjustment | none, minimal, low, medium, high, xhigh, max, ultra; compatibility-neutral default ultra; must be at least min |
 | `execution.usage_saver` | Prefer lower-churn coordination for new work without weakening delivery | boolean; default false |
+| `execution.jev_model_selection` | Ask configured Jev to choose among distinct host-eligible model/reasoning pairs; explicit selections and zero/one-option tasks bypass it | boolean; default false |
 | `automation.mode` | Evidence-gated checkpoint, Git, review, release, and host lifecycle requests; `manual` keeps those actions explicit | `standard` or `manual`; default `standard` |
 | `logging.task_event_limit` | Bounded recent task-transition metadata retained in memory; never prompts, responses, artifact bodies, or credentials | 8-256; default 64 |
 | `proof.policy_version` | Deterministic proof-planner policy | trimmed identifier; default lean-v1 |
