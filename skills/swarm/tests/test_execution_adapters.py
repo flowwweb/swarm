@@ -59,7 +59,8 @@ from skills.swarm.runtime import (
     UniversalHQConnector,
     route_execution,
 )
-from skills.swarm.runtime.progress_events import Ledger, build_task_manifest, load_builtin_role_manifests
+from skills.swarm.runtime.progress_events import Ledger, ProgressEventError, build_task_manifest, load_builtin_role_manifests
+from skills.swarm.runtime.execution_adapters import handoff_dispatch_instruction
 
 
 class FakeCodexTransport:
@@ -932,6 +933,338 @@ class ExecutionAdapterTests(unittest.TestCase):
             replay = self.connector(transport, material).execute(envelope, self.explicit(envelope), Ledger(Path(directory)), now_ms=3, observed_project_id="project-a", observed_root_digest="a" * 64)
             self.assertEqual((replay.status, replay.attention), ("PENDING", "HOST_OUTCOME_PENDING"))
             self.assertEqual(len(transport.calls), 1)
+
+
+    def test_uncertain_steering_is_durable_and_reconciliation_never_resends(self) -> None:
+        import tempfile
+        from pathlib import Path
+
+        class AmbiguousSteerTransport(FakeCodexTransport):
+            def request(self, method, params):
+                if method == "turn/steer":
+                    self.calls.append((method, dict(params)))
+                    raise TimeoutError("outcome unknown after host call")
+                return super().request(method, params)
+
+        material = HQDispatchMaterial("C:/work/project-a", b"Repair the exact active turn.")
+        envelope = HQCommandEnvelope(
+            "hq-steer-unresolved", "key-steer-unresolved", HQCommandAction.REPAIR,
+            "project-a", "a" * 64, "ctrl-a", HQTargetIntent.EXISTING_THREAD,
+            "thread-1", material.digest, 0, 1, 100, target_turn_id="turn-active",
+        )
+        transport = AmbiguousSteerTransport()
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            first = self.connector(transport, material).execute(
+                envelope, self.explicit(envelope), Ledger(root), now_ms=2,
+                observed_project_id="project-a", observed_root_digest="a" * 64,
+            )
+            self.assertEqual((first.status, first.thread_id, first.turn_id), ("PENDING", "thread-1", "turn-active"))
+            self.assertEqual(
+                [item["status"] for item in Ledger(root).replay()["connector_receipts"]["key-steer-unresolved"]["receipts"]],
+                ["COMMAND", "ACKNOWLEDGED", "DISPATCHED_UNRESOLVED"],
+            )
+            calls = list(transport.calls)
+            replay = self.connector(transport, material).execute(
+                envelope, self.explicit(envelope), Ledger(root), now_ms=3,
+                observed_project_id="project-a", observed_root_digest="a" * 64,
+            )
+            self.assertEqual((replay.status, replay.attention), ("PENDING", "HOST_OUTCOME_PENDING"))
+            self.assertEqual(transport.calls, calls)
+            transport.reconciliations.append({"threadId": "thread-1", "turnId": "turn-active", "cwd": "C:/work/project-a"})
+            settled = self.connector(transport, material).execute(
+                envelope, self.explicit(envelope), Ledger(root), now_ms=4,
+                observed_project_id="project-a", observed_root_digest="a" * 64,
+            )
+            self.assertEqual((settled.status, settled.thread_id, settled.turn_id), ("RESULT", "thread-1", "turn-active"))
+            self.assertEqual(transport.calls, calls)
+            self.assertEqual(
+                [item["status"] for item in Ledger(root).replay()["connector_receipts"]["key-steer-unresolved"]["receipts"]],
+                ["COMMAND", "ACKNOWLEDGED", "DISPATCHED_UNRESOLVED", "RESULT"],
+            )
+
+    def test_pre_call_steering_failure_never_records_unresolved_delivery(self) -> None:
+        import tempfile
+        from pathlib import Path
+
+        class PreCallFailureAdapter(CodexAppServerAdapter):
+            def dispatch(self, envelope, material, capability, *, thread_id=""):
+                if capability == "turn.steer":
+                    raise InvariantError("pre-call validation failed")
+                return super().dispatch(envelope, material, capability, thread_id=thread_id)
+
+        material = HQDispatchMaterial("C:/work/project-a", b"Repair the exact active turn.")
+        envelope = HQCommandEnvelope(
+            "hq-steer-pre-call", "key-steer-pre-call", HQCommandAction.REPAIR,
+            "project-a", "a" * 64, "ctrl-a", HQTargetIntent.EXISTING_THREAD,
+            "thread-1", material.digest, 0, 1, 100, target_turn_id="turn-active",
+        )
+        transport = FakeCodexTransport()
+        connector = UniversalHQConnector(
+            PreCallFailureAdapter(transport=transport),
+            authorization_verifier=FakeHQAuthorizationVerifier(),
+            material_resolver=FakeHQMaterialResolver(material),
+            root_verifier=FakeHQRootVerifier(),
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            ledger = Ledger(Path(directory))
+            result = connector.execute(
+                envelope, self.explicit(envelope), ledger, now_ms=2,
+                observed_project_id="project-a", observed_root_digest="a" * 64,
+            )
+            self.assertEqual(result.status, "PENDING")
+            self.assertEqual(
+                [item["status"] for item in ledger.replay()["connector_receipts"]["key-steer-pre-call"]["receipts"]],
+                ["COMMAND", "ACKNOWLEDGED"],
+            )
+            self.assertEqual([method for method, _ in transport.calls], ["thread/resume"])
+
+    def test_reconciled_not_delivered_is_terminal_non_success_and_never_resends(self) -> None:
+        import tempfile
+        from pathlib import Path
+
+        class AmbiguousSteerTransport(FakeCodexTransport):
+            def request(self, method, params):
+                if method == "turn/steer":
+                    self.calls.append((method, dict(params)))
+                    raise TimeoutError("outcome unknown after host call")
+                return super().request(method, params)
+
+        material = HQDispatchMaterial("C:/work/project-a", b"Repair the exact active turn.")
+        envelope = HQCommandEnvelope(
+            "hq-steer-not-delivered", "key-steer-not-delivered", HQCommandAction.REPAIR,
+            "project-a", "a" * 64, "ctrl-a", HQTargetIntent.EXISTING_THREAD,
+            "thread-1", material.digest, 0, 1, 100, target_turn_id="turn-active",
+        )
+        transport = AmbiguousSteerTransport(reconciliations=[{
+            "threadId": "thread-1", "cwd": "C:/work/project-a", "delivered": False,
+        }])
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            connector = self.connector(transport, material)
+            connector.execute(envelope, self.explicit(envelope), Ledger(root), now_ms=2, observed_project_id="project-a", observed_root_digest="a" * 64)
+            calls = list(transport.calls)
+            settled = connector.execute(envelope, self.explicit(envelope), Ledger(root), now_ms=3, observed_project_id="project-a", observed_root_digest="a" * 64)
+            self.assertEqual((settled.status, settled.thread_id, settled.turn_id), ("NOT_DELIVERED", "thread-1", "turn-active"))
+            self.assertEqual(transport.calls, calls)
+            replay = connector.execute(envelope, self.explicit(envelope), Ledger(root), now_ms=4, observed_project_id="project-a", observed_root_digest="a" * 64)
+            self.assertEqual(replay.status, "REPLAY")
+            self.assertEqual(transport.calls, calls)
+            self.assertEqual(
+                [item["status"] for item in Ledger(root).replay()["connector_receipts"]["key-steer-not-delivered"]["receipts"]],
+                ["COMMAND", "ACKNOWLEDGED", "DISPATCHED_UNRESOLVED", "RECONCILED_NOT_DELIVERED"],
+            )
+
+    @staticmethod
+    def continuation_events():
+        prepared = {
+            "schema_version": 1, "record_type": "TASK_HANDOFF", "event_id": "continuation-source",
+            "dedupe_key": "continuation-source-dedupe", "handoff_id": "continuation-dispatch",
+            "parent_event_id": None, "event_kind": "CONTINUATION_PREPARED",
+            "handoff_type": "HOST_THREAD_CONTINUATION", "goal_id": "goal-handoff", "task_id": "task-handoff",
+            "old_owner": "lead-handoff", "new_owner": "lead-handoff", "checkpoint_digest": "b" * 64,
+            "scope_version": 1, "lease_version": 1, "receipt_id": "continuation-source-receipt",
+            "host_issued_at_ms": None, "observed_at_ms": 1, "expected_observation": None,
+            "source_thread_id": "thread-old", "destination_thread_id": "thread-new",
+            "continuation_capsule_digest": "c" * 64, "continuation_capsule_bytes": 1024,
+            "publish_receipt_id": None,
+        }
+        return prepared, {
+            **prepared, "event_id": "continuation-terminal", "dedupe_key": "continuation-terminal-dedupe",
+            "parent_event_id": prepared["event_id"], "event_kind": "CONTINUATION_PUBLISHED",
+            "publish_receipt_id": "pending-result-receipt", "host_issued_at_ms": 2, "observed_at_ms": 2,
+        }
+
+    @staticmethod
+    def owner_events():
+        sleeping = {
+            "schema_version": 1, "record_type": "TASK_HANDOFF", "event_id": "wake-sleeping",
+            "dedupe_key": "wake-sleeping-dedupe", "handoff_id": "wake-owner", "parent_event_id": None,
+            "event_kind": "OWNER_SLEEPING", "handoff_type": "OWNER_LIFECYCLE", "goal_id": "goal-wake",
+            "task_id": "task-wake", "old_owner": "lead-wake", "new_owner": "lead-wake",
+            "checkpoint_digest": "d" * 64, "scope_version": 1, "lease_version": 3,
+            "receipt_id": "wake-sleeping-receipt", "host_issued_at_ms": None, "observed_at_ms": 1,
+            "expected_observation": None, "structural_role": "LEAD", "persistent": True,
+            "host_thread_id": "thread-wake", "capacity_reservation_id": None, "host_activity_receipt_id": None,
+        }
+        waking = {
+            **sleeping, "event_id": "wake-waking", "dedupe_key": "wake-waking-dedupe",
+            "parent_event_id": sleeping["event_id"], "event_kind": "OWNER_WAKING",
+            "capacity_reservation_id": "capacity-wake", "observed_at_ms": 2,
+        }
+        return sleeping, waking, {
+            **waking, "event_id": "wake-active", "dedupe_key": "wake-active-dedupe",
+            "parent_event_id": waking["event_id"], "event_kind": "OWNER_ACTIVE",
+            "host_activity_receipt_id": "pending-result-receipt", "observed_at_ms": 3,
+        }
+
+    def test_continuation_dispatch_resumes_exact_thread_and_atomically_publishes_result(self) -> None:
+        import tempfile
+        from pathlib import Path
+
+        prepared, terminal = self.continuation_events()
+        instruction = handoff_dispatch_instruction(prepared, "a" * 64)
+        material = HQDispatchMaterial("C:/work/project-a", instruction.encode("utf-8"))
+        envelope = HQCommandEnvelope(
+            "hq-continuation", "key-continuation", HQCommandAction.TASK, "project-a", "a" * 64,
+            "ctrl-a", HQTargetIntent.EXISTING_THREAD, "thread-new", material.digest, 1, 1, 100,
+        )
+        transport = FakeCodexTransport()
+        with tempfile.TemporaryDirectory() as directory:
+            ledger = Ledger(Path(directory))
+            ledger.append_task_handoff(prepared)
+            result = self.connector(transport, material).execute_handoff(
+                prepared, terminal, envelope, self.explicit(envelope), ledger, now_ms=3,
+                observed_project_id="project-a", observed_root_digest="a" * 64,
+            )
+            self.assertEqual((result.status, result.thread_id, result.turn_id), ("RESULT", "thread-new", "turn-1"))
+            self.assertEqual([method for method, _ in transport.calls], ["thread/resume", "turn/start"])
+            retained = ledger.project_task_handoffs()["records"][0]
+            self.assertEqual((retained["event_kind"], retained["publish_receipt_id"]), ("CONTINUATION_PUBLISHED", "hq-continuation-result"))
+            receipts = ledger.replay()["connector_receipts"]["key-continuation"]["receipts"]
+            self.assertEqual([item["status"] for item in receipts], ["COMMAND", "ACKNOWLEDGED", "RESULT"])
+
+    def test_handoff_binding_failure_and_ambiguous_resume_never_publish(self) -> None:
+        import tempfile
+        from pathlib import Path
+
+        class AmbiguousResumeTransport(FakeCodexTransport):
+            def request(self, method, params):
+                if method == "thread/resume":
+                    self.calls.append((method, dict(params)))
+                    raise TimeoutError("resume outcome unknown")
+                return super().request(method, params)
+
+        prepared, terminal = self.continuation_events()
+        instruction = handoff_dispatch_instruction(prepared, "a" * 64)
+        material = HQDispatchMaterial("C:/work/project-a", instruction.encode("utf-8"))
+        wrong = HQCommandEnvelope(
+            "hq-continuation-wrong", "key-continuation-wrong", HQCommandAction.TASK,
+            "project-a", "a" * 64, "ctrl-a", HQTargetIntent.EXISTING_THREAD,
+            "wrong-thread", material.digest, 0, 1, 100,
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            ledger = Ledger(Path(directory))
+            ledger.append_task_handoff(prepared)
+            untouched = FakeCodexTransport()
+            with self.assertRaisesRegex(InvariantError, "different retained thread"):
+                self.connector(untouched, material).execute_handoff(
+                    prepared, terminal, wrong, self.explicit(wrong), ledger, now_ms=2,
+                    observed_project_id="project-a", observed_root_digest="a" * 64,
+                )
+            self.assertEqual(untouched.calls, [])
+            envelope = HQCommandEnvelope(
+                "hq-continuation-pending", "key-continuation-pending", HQCommandAction.TASK,
+                "project-a", "a" * 64, "ctrl-a", HQTargetIntent.EXISTING_THREAD,
+                "thread-new", material.digest, 1, 1, 100,
+            )
+            transport = AmbiguousResumeTransport()
+            connector = self.connector(transport, material)
+            pending = connector.execute_handoff(
+                prepared, terminal, envelope, self.explicit(envelope), ledger, now_ms=3,
+                observed_project_id="project-a", observed_root_digest="a" * 64,
+            )
+            self.assertEqual(pending.status, "PENDING")
+            self.assertEqual(ledger.project_task_handoffs()["records"][0]["event_kind"], "CONTINUATION_PREPARED")
+            calls = list(transport.calls)
+            replay = connector.execute_handoff(
+                prepared, terminal, envelope, self.explicit(envelope), Ledger(Path(directory)), now_ms=4,
+                observed_project_id="project-a", observed_root_digest="a" * 64,
+            )
+            self.assertEqual(replay.status, "PENDING")
+            self.assertEqual(transport.calls, calls)
+
+    def test_owner_wake_reserves_before_resume_and_activates_only_with_result(self) -> None:
+        import tempfile
+        from pathlib import Path
+
+        sleeping, waking, active = self.owner_events()
+        instruction = handoff_dispatch_instruction(waking, "a" * 64)
+        material = HQDispatchMaterial("C:/work/project-a", instruction.encode("utf-8"))
+        envelope = HQCommandEnvelope(
+            "hq-owner-wake", "key-owner-wake", HQCommandAction.TASK, "project-a", "a" * 64,
+            "ctrl-a", HQTargetIntent.EXISTING_THREAD, "thread-wake", material.digest, 2, 1, 100,
+        )
+        transport = FakeCodexTransport()
+        with tempfile.TemporaryDirectory() as directory:
+            ledger = Ledger(Path(directory))
+            ledger.append_task_handoff(sleeping)
+            result = self.connector(transport, material).execute_handoff(
+                waking, active, envelope, self.explicit(envelope), ledger, now_ms=4,
+                observed_project_id="project-a", observed_root_digest="a" * 64,
+            )
+            self.assertEqual(result.status, "RESULT")
+            self.assertEqual([method for method, _ in transport.calls], ["thread/resume", "turn/start"])
+            retained = ledger.project_task_handoffs()["records"][0]
+            self.assertEqual((retained["event_kind"], retained["capacity_reservation_id"], retained["host_activity_receipt_id"]), ("OWNER_ACTIVE", "capacity-wake", "hq-owner-wake-result"))
+
+    def test_unrelated_same_thread_result_cannot_publish_or_activate_and_changes_no_bytes(self) -> None:
+        import tempfile
+        from pathlib import Path
+
+        for kind in ("continuation", "owner"):
+            with self.subTest(kind=kind), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                ledger = Ledger(root)
+                if kind == "continuation":
+                    source, terminal = self.continuation_events()
+                    ledger.append_task_handoff(source)
+                    target = "thread-new"
+                    receipt_field = "publish_receipt_id"
+                else:
+                    sleeping, source, terminal = self.owner_events()
+                    ledger.append_task_handoff(sleeping)
+                    ledger.append_task_handoff(source)
+                    target = "thread-wake"
+                    receipt_field = "host_activity_receipt_id"
+                material = HQDispatchMaterial("C:/work/project-a", b"UNRELATED TASK PAYLOAD")
+                envelope = HQCommandEnvelope(
+                    f"hq-unrelated-{kind}", f"key-unrelated-{kind}", HQCommandAction.TASK,
+                    "project-a", "a" * 64, "ctrl-a", HQTargetIntent.EXISTING_THREAD,
+                    target, material.digest, len(ledger.replay()["events"]) + len(ledger.replay()["handoff_event_digests"]), 1, 100,
+                )
+                connector = self.connector(FakeCodexTransport(), material)
+                command = connector._receipt(envelope, receipt_id=f"{envelope.command_id}-command", index=0, status="COMMAND", observed_at_ms=1)
+                ack = connector._receipt(envelope, receipt_id=f"{envelope.command_id}-ack", index=1, status="ACKNOWLEDGED", observed_at_ms=2, thread_id=target, observed_root_digest="a" * 64)
+                result = connector._receipt(envelope, receipt_id=f"{envelope.command_id}-result", index=2, status="RESULT", observed_at_ms=3, thread_id=target, turn_id="turn-unrelated", observed_root_digest="a" * 64)
+                ledger.append_connector_receipt(command)
+                ledger.append_connector_receipt(ack)
+                terminal = {**terminal, receipt_field: result["receipt_id"], "observed_at_ms": 3}
+                if kind == "continuation":
+                    terminal["host_issued_at_ms"] = 3
+                before = (root / "swarm" / "progress-ledger.jsonl").read_bytes()
+                with self.assertRaisesRegex(ProgressEventError, "does not bind the retained handoff source"):
+                    ledger.append_connector_result_with_task_handoff(result, terminal)
+                self.assertEqual((root / "swarm" / "progress-ledger.jsonl").read_bytes(), before)
+                self.assertEqual(ledger.project_task_handoffs()["records"][0]["event_kind"], source["event_kind"])
+
+    def test_retained_result_only_restart_atomically_repairs_missing_terminal_without_dispatch(self) -> None:
+        import tempfile
+        from pathlib import Path
+
+        prepared, terminal = self.continuation_events()
+        instruction = handoff_dispatch_instruction(prepared, "a" * 64)
+        material = HQDispatchMaterial("C:/work/project-a", instruction.encode("utf-8"))
+        envelope = HQCommandEnvelope(
+            "hq-result-only", "key-result-only", HQCommandAction.TASK, "project-a", "a" * 64,
+            "ctrl-a", HQTargetIntent.EXISTING_THREAD, "thread-new", material.digest, 1, 1, 100,
+        )
+        transport = FakeCodexTransport()
+        connector = self.connector(transport, material)
+        with tempfile.TemporaryDirectory() as directory:
+            ledger = Ledger(Path(directory))
+            ledger.append_task_handoff(prepared)
+            ledger.append_connector_receipt(connector._receipt(envelope, receipt_id="hq-result-only-command", index=0, status="COMMAND", observed_at_ms=1))
+            ledger.append_connector_receipt(connector._receipt(envelope, receipt_id="hq-result-only-ack", index=1, status="ACKNOWLEDGED", observed_at_ms=2, thread_id="thread-new", observed_root_digest="a" * 64))
+            ledger.append_connector_receipt(connector._receipt(envelope, receipt_id="hq-result-only-result", index=2, status="RESULT", observed_at_ms=3, thread_id="thread-new", turn_id="turn-result", observed_root_digest="a" * 64))
+            replay = connector.execute_handoff(
+                prepared, terminal, envelope, self.explicit(envelope), Ledger(Path(directory)), now_ms=4,
+                observed_project_id="project-a", observed_root_digest="a" * 64,
+            )
+            self.assertEqual(replay.status, "REPLAY")
+            self.assertEqual(transport.calls, [])
+            retained = Ledger(Path(directory)).project_task_handoffs()["records"][0]
+            self.assertEqual((retained["event_kind"], retained["publish_receipt_id"]), ("CONTINUATION_PUBLISHED", "hq-result-only-result"))
 
 
 class ExecutionDispatchLedgerTests(unittest.TestCase):

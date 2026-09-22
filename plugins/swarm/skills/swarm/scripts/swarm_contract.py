@@ -135,8 +135,11 @@ def register(swarm:Swarm, stage_id:str, decision_event_receipt:str, *, accepted_
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("command", choices=("forward-test", "request"))
+    parser.add_argument("command", choices=("forward-test", "request", "jev"))
     args = parser.parse_args()
+    if args.command == "jev":
+        from swarm_jev import main as jev_main
+        return jev_main([])
     if args.command == "forward-test":
         print(json.dumps(forward_cases(), sort_keys=True))
     if args.command == "request":

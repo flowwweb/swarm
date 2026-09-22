@@ -169,6 +169,11 @@ Work remains subject to ordinary ownership, proof, and independent review. Do
 not install a control plugin, handle credentials, persist prompts/responses, or
 claim quota savings. See [chatgpt-routing.md](references/chatgpt-routing.md).
 
+For an eligible atomic typed decision, use the configured Jev route before
+spending a full reasoning turn on that decision. Apply deterministic constraints
+and explicit model locks first. Follow [jev-routing.md](references/jev-routing.md)
+for availability, shared spending cap, fallback, and proof limits.
+
 Spark is a separate, opt-in lane for extremely low-risk small work. It is
 disabled by default and may handle only read-only inspection, narrow search or
 inventory, deterministic formatting, typo/copy/documentation edits, or a
