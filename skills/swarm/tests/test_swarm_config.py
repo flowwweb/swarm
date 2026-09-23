@@ -346,7 +346,7 @@ class SwarmConfigTests(unittest.TestCase):
         enabled["execution"]["min_reasoning"] = "medium"
         enabled["execution"]["max_reasoning"] = "medium"
         single = config.plan_jev_model_selection(
-            enabled, "lead", surface="codex_task",
+            enabled, "lead", surface="codex_task", workload="simple",
         )
         self.assertEqual((single["status"], len(single["options"])), ("no_selection", 1))
 
@@ -358,7 +358,7 @@ class SwarmConfigTests(unittest.TestCase):
         )
         self.assertEqual(
             (receipt["model"], receipt["reasoning_effort"], receipt["selection_source"], receipt["jev_profile_id"]),
-            ("gpt-5.6-terra", "low", "jev_advisory", "routine"),
+            ("gpt-6-sol", "low", "jev_advisory", "routine"),
         )
         with self.assertRaisesRegex(config.ConfigError, "ineligible"):
             config.resolve_jev_model_assignment(
@@ -806,22 +806,24 @@ class SwarmConfigTests(unittest.TestCase):
         self.assertEqual(completed.returncode, 0, completed.stderr)
         self.assertEqual(
             json.loads(completed.stdout),
-            {"model": "gpt-5.6-terra", "reasoning": "high"},
+            {"model": "gpt-6-sol", "reasoning": "high"},
         )
 
-    def test_default_hierarchy_requests_sol_ctrl_terra_lead_and_luna_workers(self) -> None:
+    def test_default_hierarchy_requests_gpt_6_sol_leads_and_luna_workers(self) -> None:
         effective, _ = config.load(config.TEMPLATE_PATH)
-        self.assertEqual(config.resolve_role_assignment(effective, "ctrl")["model"], "gpt-5.6-sol")
-        self.assertEqual(config.resolve_role_assignment(effective, "lead")["model"], "gpt-5.6-terra")
-        self.assertEqual(config.resolve_role_assignment(effective, "doer")["model"], "gpt-5.6-luna")
-        self.assertEqual(config.resolve_role_assignment(effective, "subtask")["model"], "gpt-5.6-luna")
+        self.assertEqual(config.resolve_role_assignment(effective, "ctrl")["model"], "gpt-6-sol")
+        self.assertEqual(config.resolve_role_assignment(effective, "lead")["model"], "gpt-6-sol")
+        self.assertEqual(config.resolve_role_assignment(effective, "doer")["model"], "gpt-6-luna")
+        self.assertEqual(config.resolve_role_assignment(effective, "subtask")["model"], "gpt-6-luna")
+        effective["execution"]["usage_profile"] = "high"
+        self.assertEqual(config.resolve_role_assignment(effective, "ctrl")["model"], "gpt-6-astra")
 
     def test_luna_assignment_is_requested_but_actual_execution_stays_unverified_without_host_metadata(self) -> None:
         effective, _ = config.load(config.TEMPLATE_PATH)
         receipt = config.resolve_model_assignment(
             effective,"doer",surface="subagent",workload="general",required_tools=("shell",),
         )
-        self.assertEqual(receipt["model"],"gpt-5.6-luna")
+        self.assertEqual(receipt["model"],"gpt-6-luna")
         self.assertEqual(receipt["reasoning_effort"],"xhigh")
         self.assertEqual(receipt["actual_model_verification"],"UNVERIFIED")
         self.assertEqual(receipt["actual_model"],"")
@@ -829,12 +831,12 @@ class SwarmConfigTests(unittest.TestCase):
     def test_explicit_model_provider_and_reasoning_are_preserved_without_tier_authority(self) -> None:
         effective, _ = config.load(config.TEMPLATE_PATH)
         receipt=config.resolve_model_assignment(
-            effective,"doer",surface="codex_task",explicit_model="gpt-5.6-terra",explicit_provider="openai",
-            explicit_reasoning="max",host_actual_model="gpt-5.6-terra",host_receipt="host:model:gpt-5.6-terra",
+            effective,"doer",surface="codex_task",explicit_model="gpt-6-sol",explicit_provider="openai",
+            explicit_reasoning="max",host_actual_model="gpt-6-sol",host_receipt="host:model:gpt-6-sol",
         )
         self.assertEqual(
             (receipt["model"],receipt["provider"],receipt["reasoning_effort"],receipt["requested_service_tier"]),
-            ("gpt-5.6-terra","openai","max",None),
+            ("gpt-6-sol","openai","max",None),
         )
         self.assertNotIn("service_tier",receipt)
         self.assertEqual(receipt["selection_source"],"explicit_user")
