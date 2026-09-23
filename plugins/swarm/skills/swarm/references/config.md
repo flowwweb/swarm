@@ -146,7 +146,7 @@ Configuration cannot make an unsafe or hidden coordination path valid:
 | `coordination.ctrl_direct_horizon_minutes` | Maximum measurable CTRL_DIRECT window | 1-60; default 20 |
 | `recovery.max_attempts` | Legacy owner recovery budget; WATCHDOG never consumes it | exactly 1; non-disableable |
 | `recovery.stall_after_updates` | Unchanged owner work updates before a lane stalls; heartbeat observations excluded | 1-5 |
-| `lifecycle.pin_created_tasks` | Explicit opt-in to pin a newly created top-level CTRL through the host; fresh pinned membership and order must be verified before predecessor archive. Other roles and existing user pins stay untouched | boolean; default false |
+| `lifecycle.pin_created_tasks` | Explicit opt-in to pin a newly created or adopted top-level CTRL through the host; fresh pinned membership and order must be verified before predecessor archive. Other roles and existing user pins stay untouched | boolean; default false |
 | `lifecycle.task_lifetime_hours` | Single writable task-continuity horizon. Expiry makes a handoff due at a safe immutable checkpoint; it does not transfer custody or authorize a successor CTRL | integer 1-720; default 4 |
 | `feedback.enabled` | Make the on-demand SWARM feedback workflow available | boolean; default true |
 | `feedback.include_diagnostics` | Include the privacy-safe SWARM diagnostic snapshot | boolean; default true |

@@ -139,8 +139,8 @@ exact operation, target, and scope. Missing or conflicting custody means no
 mutation is permitted: it is a fail-closed blocker, not permission to normalize or
 replace the user state.
 
-SWARM runtime never calls host pin/unpin. A newly created top-level CTRL is
-eligible for host pinning only when `lifecycle.pin_created_tasks = true` is
+SWARM runtime never calls host pin/unpin. A newly created or adopted top-level
+CTRL is eligible for host pinning only when `lifecycle.pin_created_tasks = true` is
 explicitly configured or the user directly requests that exact pin. Follow
 [SKILL.md START](../SKILL.md#start) for the single host pin procedure and fresh
 membership/order readback before archiving a predecessor CTRL. Existing user

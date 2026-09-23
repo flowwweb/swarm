@@ -95,7 +95,7 @@ def pin_policy(
         return PinPolicyDecision(PinDisposition.PRESERVE_USER_STATE, "user task or folder custody is authoritative")
     role_name = role.value if isinstance(role, Role) else str(role).upper()
     if role_name == Role.CTRL.value and top_level and pin_created_tasks:
-        return PinPolicyDecision(PinDisposition.HOST_PIN_REQUIRED, "configured new CTRL requires host pin and fresh placement readback", False)
+        return PinPolicyDecision(PinDisposition.HOST_PIN_REQUIRED, "configured top-level CTRL requires host pin and fresh placement readback", False)
     return PinPolicyDecision(PinDisposition.DEFAULT_UNPINNED, "SWARM runtime never authorizes pinning", False)
 
 

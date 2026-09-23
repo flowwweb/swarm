@@ -35,6 +35,7 @@ class PinPolicyContractTests(unittest.TestCase):
         decision = pin_policy(Role.CTRL, top_level=True, pin_created_tasks=True)
         self.assertEqual(decision.disposition, PinDisposition.HOST_PIN_REQUIRED)
         self.assertTrue(decision.requests_pin)
+        self.assertIn("top-level CTRL", decision.reason)
         self.assertIn("fresh placement readback", decision.reason)
         self.assertFalse(decision.remove_on_close)
 

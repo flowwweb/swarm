@@ -343,7 +343,7 @@ max_attempts = 1
 stall_after_updates = 2
 
 [lifecycle]
-# Opt in to pinning newly created top-level CTRL tasks. The host must verify
+# Opt in to pinning newly created or adopted top-level CTRL tasks. The host must verify
 # pinned membership and order before archiving a predecessor; other roles and
 # existing user pins remain untouched.
 pin_created_tasks = false

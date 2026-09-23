@@ -29,6 +29,8 @@ class MutationIntegrityContractTests(unittest.TestCase):
         self.assertIn("Preserve existing pin and placement state", skill_step_zero)
         self.assertIn("[SKILL.md Step 0](../SKILL.md#start)", task_contract)
         self.assertRegex(skill, r"(?is)configured `lifecycle.pin_created_tasks = true`.*top-level CTRL only")
+        self.assertIn("whether newly created or adopted from an existing task", skill)
+        self.assertIn("newly created or adopted top-level CTRL", skill_step_zero)
         self.assertRegex(skill, r"(?is)unpinning still needs an exact\s+current user request")
         self.assertRegex(skill, r"(?is)Before archiving a predecessor CTRL.*verify.*pinned membership.*sections.itemKeys")
         self.assertRegex(skill, r"(?is)plugin runtime.*independent host\s+verification.*cannot mint approval")

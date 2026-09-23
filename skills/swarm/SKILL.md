@@ -38,16 +38,17 @@ does not consume messages invisibly; after it returns, reconcile all unseen user
 messages before judging the output. Never require the user to repeat a message
 that arrived while work was running.
 
-SWARM runtime never calls host pin/unpin. Every user-authorized CTRL creation
-must surface the created task ID, exact directive/title, and initial placement.
+SWARM runtime never calls host pin/unpin. Every user-authorized top-level CTRL
+setup, whether newly created or adopted from an existing task, must surface its
+task ID, exact directive/title, and initial placement.
 An explicitly configured `lifecycle.pin_created_tasks = true` is standing user
-opt-in to pin that newly created top-level CTRL only. The host must read the
-current config and use its known callable pin operation for the exact task;
+opt-in to pin that top-level CTRL only. The host must read the current config and use its known
+callable pin operation for the exact task;
 the runtime's pin intent is not a host mutation receipt.
 LEAD, DOER, REVIEW, WATCHDOG, storage, sidecar, and nested CTRL tasks default to
 unpinned. Only direct host consumption of an exact current explicit-user request
 or that configured top-level CTRL opt-in may pin; unpinning still needs an exact
-current user request. For an explicit main-task pin request or configured new
+current user request. For an explicit main-task pin request or configured
 top-level CTRL, read `list_threads` before and after placement. Use
 `move_thread_to_sidebar_section` with
 `sectionId='pinned'` for the exact main, then freshly read the complete pinned
@@ -102,6 +103,9 @@ leave a failed rename incomplete rather than claiming naming compliance.
 Naming authority does not include pinning, unpinning, reordering, archiving, or
 creating additional tasks. Those actions retain their separate user authority;
 the plugin runtime never grants it. Preserve existing pin and placement state.
+For a newly created or adopted top-level CTRL, read `lifecycle.pin_created_tasks`
+and apply the START placement procedure before substantive dispatch when enabled;
+preserve an existing user pin and order instead of applying a default.
 
 After the Step 0 custody check—whether it produced an eligible SWARM receipt or preserved existing user state—resolve exactly one root `SWARM.md` project brief as specified in [project-brief.md](references/project-brief.md). A missing, invalid, incompatible, or digest-unbound brief leaves the project `UNREADY` and prevents new routing; it never authorizes a substitute README, prompt, or hidden state. Then invoke the sibling `scripts/swarm_console.py --start --task-id <exact-current-host-task-id>` once. It obeys `console.auto_start`, starts or reuses the strict-loopback HQ process, and opens a new Chrome tab once for that exact task when `console.open_on_start` is enabled. A retained claim suppresses repeat opens for the same task across restart, not new tasks; uncertain browser delivery stays claimed rather than opening duplicates. A launcher or browser failure is advisory and never blocks SWARM work; each later CTRL continuation may invoke the same launcher to recover a missing HQ process without creating a second lifecycle authority.
 
