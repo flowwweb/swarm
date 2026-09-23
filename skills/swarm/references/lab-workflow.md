@@ -1,8 +1,8 @@
 # Lab workflow
 
 A **Lab** is an open operating framework for a focused area of work, like an AI
-lab, design lab, or biome lab. It uses SWARM's existing task, block, artifact,
-proof, and review contracts. It is not a new role, lifecycle state, backlog,
+lab, design lab, or biome lab. It uses SWARM's existing milestone, task, block,
+artifact, decision-set, proof, and review contracts. It is not a new role, lifecycle state, backlog,
 delegation system, or source of truth.
 
 ## When to use one

@@ -108,20 +108,17 @@ class SwarmSkillStructureTests(unittest.TestCase):
         self.assertIn("composed rendered product", review_contract)
         self.assertIn("required proof blocks approval", review_contract)
 
-    def test_task_titles_compress_real_role_authority_and_artifact(self) -> None:
+    def test_task_titles_show_responsibility_without_granting_authority(self) -> None:
         skill = doctrine()
         hierarchy = (SKILL_ROOT / "references" / "hierarchy.md").read_text(
             encoding="utf-8"
         )
 
-        self.assertIn("Name DOERs by their real job", skill)
-        self.assertIn("<role emoji><PROFESSION> LEAD - <responsibility>", skill)
-        self.assertIn("<role emoji><PROFESSION> DOER - <artifact>", skill)
-        self.assertIn("Never create a flat crowd of bare LEADs", skill)
-        self.assertIn("Do not pre-create a profession roster", skill)
-        self.assertIn("LEAD is an ownership function, not a prestige default", skill)
-        self.assertIn("TopologyMaterializationPlan", skill)
-        self.assertIn("exactly one configured role icon", skill)
+        self.assertIn("Visible lane names use a concise responsibility or artifact", skill)
+        self.assertIn("CTRL/LEAD/DOER remain internal roles, not display prefixes", skill)
+        self.assertRegex(skill, r"Preserve an\s+explicit custom title or naming exception")
+        self.assertIn("A visible LEAD exists only for a named durable mutable", hierarchy)
+        self.assertIn("Do not materialize the whole profession registry as a team", hierarchy)
         self.assertRegex(hierarchy,r"A title is a\s+readability signal, never an authority token")
 
     def test_octopus_is_default_configurable_ctrl_title_prefix(self) -> None:
@@ -132,7 +129,7 @@ class SwarmSkillStructureTests(unittest.TestCase):
 
         self.assertIn("# 🐙 SWARM", skill)
         self.assertIn("CTRL is the sole root and owns intake", skill)
-        self.assertIn("With role icons enabled", hierarchy)
+        self.assertIn("default `🐙 <objective>`, or `<objective>` when icons are disabled", skill)
         self.assertIn("🐙 <objective>", skill)
         self.assertIn("🐙 <objective>", hierarchy)
         self.assertIn("`<objective>` when icons are disabled", skill)
