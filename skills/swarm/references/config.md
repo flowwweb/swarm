@@ -288,7 +288,7 @@ The assigning CTRL or LEAD routes by capability before model preference: the
 Codex-host model must be available, its workload must fit, and every required
 tool must be exposed by the host and declared for that model. An unlisted model
 is unverified. The packaged catalog keeps `gpt-5.3-codex-spark` on simple
-shell-only work and declares computer use for the GPT-5.6 models, including
+shell-only work and declares computer use for the GPT-6 models, including
 Luna. Read [model-providers.md](model-providers.md) for the Codex host
 boundary; SWARM does not configure or claim execution on another agent host.
 

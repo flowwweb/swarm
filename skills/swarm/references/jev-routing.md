@@ -1,6 +1,7 @@
 # Jev decision routing
 
 Use `python -B scripts/swarm_jev.py --status` to check local configuration without a provider call. The route requires the pinned CLI bundle, key and explicit shared spending cap. Availability is not connectivity proof.
+If a sandboxed attempt abstains with `transport_failure`, check whether it could write the host budget root before diagnosing the provider. An attempt with no reservation may be retried once through the authorized host route using the same decision ID; a reserved attempt remains uncertain and must not be replayed as new billable work.
 
 Model selection is opt-in through `execution.jev_model_selection`. Build the
 eligible set with `plan_jev_model_selection`, ask `model_profile.v1` only when it
