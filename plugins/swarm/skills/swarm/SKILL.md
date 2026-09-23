@@ -38,14 +38,18 @@ does not consume messages invisibly; after it returns, reconcile all unseen user
 messages before judging the output. Never require the user to repeat a message
 that arrived while work was running.
 
-SWARM runtime never calls or authorizes pin/unpin. Every user-authorized CTRL creation
-must surface the created task ID, exact directive/title, `pinned: false`, and
-`placement: placement_unverified` immediately. Only the host may consume an exact
-explicit-user pin request using its known callable pin operation for the exact task.
+SWARM runtime never calls host pin/unpin. Every user-authorized CTRL creation
+must surface the created task ID, exact directive/title, and initial placement.
+An explicitly configured `lifecycle.pin_created_tasks = true` is standing user
+opt-in to pin that newly created top-level CTRL only. The host must read the
+current config and use its known callable pin operation for the exact task;
+the runtime's pin intent is not a host mutation receipt.
 LEAD, DOER, REVIEW, WATCHDOG, storage, sidecar, and nested CTRL tasks default to
 unpinned. Only direct host consumption of an exact current explicit-user request
-may pin or unpin. For an explicit main-task pin request, read `list_threads`
-before and after placement. Use `move_thread_to_sidebar_section` with
+or that configured top-level CTRL opt-in may pin; unpinning still needs an exact
+current user request. For an explicit main-task pin request or configured new
+top-level CTRL, read `list_threads` before and after placement. Use
+`move_thread_to_sidebar_section` with
 `sectionId='pinned'` for the exact main, then freshly read the complete pinned
 task ID list before `reorder_section`; move only the main ahead of the other
 tasks, preserving their relative order. Pass the complete list, never a subset.
@@ -54,7 +58,10 @@ before pinned project folders. `reorder_section` moves tasks only, not projects;
 it does not establish interleaving with folders. Never unpin folders to simulate
 success. `pinnedIndex` and mutation acknowledgement alone
 do not prove relative order. Preserve unrelated order and pins; do not pin other
-tasks automatically. Discovery omissions do not prove a capability unavailable:
+tasks automatically. Before archiving a predecessor CTRL, freshly verify the
+new CTRL's pinned membership, first `sections.itemKeys` position, and unchanged
+relative order of pre-existing pinned items. A missing or conflicting readback
+keeps the predecessor unarchived and placement unverified. Discovery omissions do not prove a capability unavailable:
 check the known applicable `list_threads`, `move_thread_to_sidebar_section`, and
 `reorder_section` callable routes before escalation, using their actual schemas and only the
 authorized placement. Never invent a method or arguments. If the host cannot

@@ -9,22 +9,21 @@ PLUGIN_ROOT=ROOT.parents[1]/"plugins"/"swarm"/"skills"/"swarm"
 
 
 class PinPolicyContractTests(unittest.TestCase):
-    def test_compatibility_default_never_authorizes_ctrl_auto_pin(self):
-        self.assertTrue(DEFAULTS["lifecycle"]["pin_created_tasks"])
+    def test_default_does_not_request_host_pin(self):
+        self.assertFalse(DEFAULTS["lifecycle"]["pin_created_tasks"])
         decision=pin_policy(Role.CTRL,top_level=True,pin_created_tasks=DEFAULTS["lifecycle"]["pin_created_tasks"])
-        self.assertEqual(decision.disposition,PinDisposition.PLACEMENT_UNVERIFIED)
+        self.assertEqual(decision.disposition,PinDisposition.DEFAULT_UNPINNED)
         self.assertFalse(decision.requests_pin)
 
-    def test_asset_and_config_docs_disclose_host_owned_placement_boundary(self):
+    def test_asset_and_config_docs_disclose_opt_in(self):
         for relative in ("assets/swarm-config.toml","references/config.md"):
             canonical=(ROOT/relative).read_text(encoding="utf-8")
             plugin=(PLUGIN_ROOT/relative).read_text(encoding="utf-8")
             self.assertEqual(canonical,plugin)
-            self.assertIn("never authorizes automatic pinning",canonical)
-            self.assertIn("explicit-user pin request",canonical)
-            self.assertIn("host-owned placement receipt",canonical)
+            self.assertIn("top-level CTRL",canonical)
+            self.assertIn("predecessor",canonical)
         asset=(ROOT/"assets"/"swarm-config.toml").read_text(encoding="utf-8")
-        self.assertIn("pinned=false with placement_unverified",asset)
+        self.assertIn("pin_created_tasks = false",asset)
 
     def test_all_automatic_roles_are_unpinned(self):
         for role, top_level in [(Role.CTRL, True), (Role.LEAD, False), (Role.DOER, False), (Role.REVIEW, False), ("WATCHDOG", False), ("STORAGE", False), ("SIDECAR", False)]:
@@ -32,11 +31,11 @@ class PinPolicyContractTests(unittest.TestCase):
                 decision = pin_policy(role, top_level=top_level)
                 self.assertFalse(decision.requests_pin)
 
-    def test_top_level_ctrl_fails_closed_without_verified_placement(self):
-        decision = pin_policy(Role.CTRL, top_level=True)
-        self.assertEqual(decision.disposition, PinDisposition.PLACEMENT_UNVERIFIED)
-        self.assertFalse(decision.requests_pin)
-        self.assertIn("never pins", decision.reason)
+    def test_configured_top_level_ctrl_requests_host_pin(self):
+        decision = pin_policy(Role.CTRL, top_level=True, pin_created_tasks=True)
+        self.assertEqual(decision.disposition, PinDisposition.HOST_PIN_REQUIRED)
+        self.assertTrue(decision.requests_pin)
+        self.assertIn("fresh placement readback", decision.reason)
         self.assertFalse(decision.remove_on_close)
 
     def test_review_handoff_without_explicit_host_user_receipt_is_unpinned(self):

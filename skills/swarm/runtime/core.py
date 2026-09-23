@@ -60,7 +60,7 @@ def resolve_profession_id(value: str) -> str:
     return resolved
 
 class PinDisposition(StrEnum):
-    DEFAULT_UNPINNED="DEFAULT_UNPINNED"; PRESERVE_USER_STATE="PRESERVE_USER_STATE"; PLACEMENT_UNVERIFIED="PLACEMENT_UNVERIFIED"
+    DEFAULT_UNPINNED="DEFAULT_UNPINNED"; PRESERVE_USER_STATE="PRESERVE_USER_STATE"; HOST_PIN_REQUIRED="HOST_PIN_REQUIRED"
 
 @dataclass(frozen=True)
 class PinPolicyDecision:
@@ -70,14 +70,14 @@ class PinPolicyDecision:
 
     @property
     def requests_pin(self) -> bool:
-        return False
+        return self.disposition is PinDisposition.HOST_PIN_REQUIRED
 
 
 def pin_policy(
     role: Role | str,
     *,
     top_level: bool,
-    pin_created_tasks: bool = True,
+    pin_created_tasks: bool = False,
     explicit_user_pin: bool = False,
     concrete_review_handoff: bool = False,
     user_pinned: bool = False,
@@ -95,7 +95,7 @@ def pin_policy(
         return PinPolicyDecision(PinDisposition.PRESERVE_USER_STATE, "user task or folder custody is authoritative")
     role_name = role.value if isinstance(role, Role) else str(role).upper()
     if role_name == Role.CTRL.value and top_level and pin_created_tasks:
-        return PinPolicyDecision(PinDisposition.PLACEMENT_UNVERIFIED, "top-level CTRL created; SWARM never pins without host user action", False)
+        return PinPolicyDecision(PinDisposition.HOST_PIN_REQUIRED, "configured new CTRL requires host pin and fresh placement readback", False)
     return PinPolicyDecision(PinDisposition.DEFAULT_UNPINNED, "SWARM runtime never authorizes pinning", False)
 
 

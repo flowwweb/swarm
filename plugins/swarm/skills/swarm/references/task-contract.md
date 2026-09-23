@@ -139,12 +139,13 @@ exact operation, target, and scope. Missing or conflicting custody means no
 mutation is permitted: it is a fail-closed blocker, not permission to normalize or
 replace the user state.
 
-SWARM runtime never calls or authorizes pin/unpin. Every user-authorized CTRL creation
-surfaces the created ID, exact directive/title, `pinned: false`, and
-`placement: placement_unverified`. Only the host may consume an exact explicit-user
-pin request. Follow [SKILL.md START](../SKILL.md#start) for the single host
-pin/placement procedure and relative-order readback. Existing user state is always
-preserved; naming alone and runtime policy never authorize that mutation.
+SWARM runtime never calls host pin/unpin. A newly created top-level CTRL is
+eligible for host pinning only when `lifecycle.pin_created_tasks = true` is
+explicitly configured or the user directly requests that exact pin. Follow
+[SKILL.md START](../SKILL.md#start) for the single host pin procedure and fresh
+membership/order readback before archiving a predecessor CTRL. Existing user
+state is always preserved; naming alone and runtime policy never authorize
+that mutation.
 
 Any substantive lane uses a visible senior Codex task/chat with its own cwd, owner,
 and heartbeat. A hidden subagent is bounded sidecar inspection or non-authoritative

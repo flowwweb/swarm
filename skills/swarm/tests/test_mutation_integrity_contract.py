@@ -19,7 +19,7 @@ class MutationIntegrityContractTests(unittest.TestCase):
         self.assertRegex(combined, r"(?is)(?:no mutation.*receipt|receipt.*(?:absent|without|conflicting).*no mutation)")
         self.assertRegex(combined, r"(?is)(?:no raw user text|without raw user text)")
 
-    def test_step_zero_and_lifecycle_never_authorize_automatic_pinning(self):
+    def test_step_zero_and_lifecycle_scope_configured_pinning(self):
         root = Path(__file__).parents[1]
         skill = (root / "SKILL.md").read_text(encoding="utf-8")
         task_contract = (root / "references" / "task-contract.md").read_text(encoding="utf-8")
@@ -28,7 +28,9 @@ class MutationIntegrityContractTests(unittest.TestCase):
         self.assertRegex(skill_step_zero, r"(?is)separate user authority.*plugin runtime never grants it")
         self.assertIn("Preserve existing pin and placement state", skill_step_zero)
         self.assertIn("[SKILL.md Step 0](../SKILL.md#start)", task_contract)
-        self.assertRegex(skill, r"(?is)Only direct host consumption of an exact current explicit-user request\s+may pin or unpin")
+        self.assertRegex(skill, r"(?is)configured `lifecycle.pin_created_tasks = true`.*top-level CTRL only")
+        self.assertRegex(skill, r"(?is)unpinning still needs an exact\s+current user request")
+        self.assertRegex(skill, r"(?is)Before archiving a predecessor CTRL.*verify.*pinned membership.*sections.itemKeys")
         self.assertRegex(skill, r"(?is)plugin runtime.*independent host\s+verification.*cannot mint approval")
         combined = "\n".join((skill, task_contract))
         for forbidden in ("AUTO_PIN", "TEMPORARY_REVIEW_PIN", "concrete ready-review handoff"):

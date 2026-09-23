@@ -154,7 +154,7 @@ class SwarmSkillStructureTests(unittest.TestCase):
         self.assertIn("The specialist persists one exact cross-cutting truth surface", task_contract)
         self.assertIn("Derive a concise objective", skill)
         self.assertIn("Before substantive dispatch, call the host `set_thread_title`", skill)
-        self.assertIn("SWARM runtime never calls or authorizes pin/unpin", skill)
+        self.assertIn("SWARM runtime never calls host pin/unpin", skill)
         self.assertIn("Then inspect or create exactly one matching durable goal", skill)
         self.assertLess(skill.index("**Step 0, never defer:**"), skill.index("Then inspect or create"))
         self.assertNotIn("🐙CTRL - <project> - <detailed descriptor>", skill)
@@ -203,8 +203,8 @@ class SwarmSkillStructureTests(unittest.TestCase):
     def test_closeout_archives_terminal_host_tasks_and_reports_failures(self) -> None:
         skill = doctrine()
         self.assertNotIn("accepting owner inventories every visible task it created or superseded", skill)
-        self.assertIn("SWARM runtime never calls or authorizes pin/unpin", skill)
-        self.assertIn("Only direct host consumption of an exact current explicit-user request", skill)
+        self.assertIn("SWARM runtime never calls host pin/unpin", skill)
+        self.assertIn("configured top-level CTRL opt-in may pin", skill)
 
     def test_topology_and_evolution_are_general_subtractive_contracts(self) -> None:
         skill = doctrine()

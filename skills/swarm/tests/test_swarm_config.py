@@ -49,7 +49,7 @@ class SwarmConfigTests(unittest.TestCase):
         self.assertTrue(exists)
         self.assertEqual(config.DEFAULTS["lifecycle"]["task_lifetime_hours"], 4)
         self.assertEqual(effective["lifecycle"]["task_lifetime_hours"], 4)
-        self.assertTrue(effective["lifecycle"]["pin_created_tasks"])
+        self.assertFalse(effective["lifecycle"]["pin_created_tasks"])
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             custom = root / "custom.toml"

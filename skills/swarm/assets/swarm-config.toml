@@ -343,11 +343,10 @@ max_attempts = 1
 stall_after_updates = 2
 
 [lifecycle]
-# Compatibility signal only; this never authorizes automatic pinning. New tasks
-# remain pinned=false with placement_unverified. Only the host may consume an
-# exact explicit-user pin request, and any claimed placement must be disclosed
-# from a host-owned placement receipt.
-pin_created_tasks = true
+# Opt in to pinning newly created top-level CTRL tasks. The host must verify
+# pinned membership and order before archiving a predecessor; other roles and
+# existing user pins remain untouched.
+pin_created_tasks = false
 # One global continuity horizon. Expiry records a due handoff at the next safe
 # immutable checkpoint; it never grants successor-CTRL authority.
 task_lifetime_hours = 4

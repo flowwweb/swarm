@@ -203,7 +203,7 @@ DEFAULTS: dict[str, Any] = {
         "stall_after_updates": 2,
     },
     "lifecycle": {
-        "pin_created_tasks": True,
+        "pin_created_tasks": False,
         "task_lifetime_hours": 4,
     },
     "hygiene": {"no_review_archive_delay": 0, "low_review_retention": 7, "high_review_retention": 30, "stale_task_archive_delay": 1, "completed_task_retention": 30, "pinned_item_policy": "manual"},
