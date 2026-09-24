@@ -38,8 +38,8 @@ max_reasoning = "ultra"
 # Reduce avoidable coordination churn in new work without changing the selected
 # models, requested outcome, required proof, independent review, or authority.
 usage_saver = false
-# Let configured Jev choose among distinct host-eligible model/reasoning pairs.
-# Explicit user selections and single-option tasks bypass Jev.
+# Optional Jev tie-breaker for unresolved choices between eligible models.
+# Simple work, explicit choices, and reasoning-only choices use direct routing.
 jev_model_selection = false
 
 [console]

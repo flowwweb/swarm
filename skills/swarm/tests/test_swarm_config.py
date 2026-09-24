@@ -346,9 +346,23 @@ class SwarmConfigTests(unittest.TestCase):
         enabled["execution"]["min_reasoning"] = "medium"
         enabled["execution"]["max_reasoning"] = "medium"
         single = config.plan_jev_model_selection(
-            enabled, "lead", surface="codex_task", workload="simple",
+            enabled, "doer", surface="codex_task",
         )
         self.assertEqual((single["status"], len(single["options"])), ("no_selection", 1))
+
+    def test_jev_bypasses_clear_work_and_reasoning_only_choices(self) -> None:
+        effective, _ = config.load(config.TEMPLATE_PATH)
+        effective["execution"]["jev_model_selection"] = True
+        for role, workload, status in (("lead", "simple", "direct"), ("doer", "general", "no_selection")):
+            with self.subTest(role=role, workload=workload):
+                before = config.resolve_model_assignment(effective, role, surface="codex_task", workload=workload)
+                plan = config.plan_jev_model_selection(effective, role, surface="codex_task", workload=workload)
+                self.assertEqual((plan["status"], plan["schema_id"], plan["eligible_profile_ids"]), (status, "", []))
+                with self.assertRaisesRegex(config.ConfigError, status):
+                    config.resolve_jev_model_assignment(effective, role, selected_profile_id="routine", surface="codex_task", workload=workload)
+                self.assertEqual(config.resolve_model_assignment(effective, role, surface="codex_task", workload=workload), before)
+        self.assertGreater(len(plan["options"]), 1)
+        self.assertEqual({option["model"] for option in plan["options"]}, {"gpt-6-luna"})
 
     def test_jev_model_selection_applies_only_an_eligible_advisory(self) -> None:
         effective, _ = config.load(config.TEMPLATE_PATH)

@@ -184,10 +184,10 @@ For an eligible atomic typed decision, use the configured Jev route before
 spending a full reasoning turn on that decision. Apply deterministic constraints
 and explicit model locks first. Follow [jev-routing.md](references/jev-routing.md)
 for availability, shared spending cap, fallback, and proof limits.
-When `execution.jev_model_selection = true`, deterministically filter host model
-capabilities first, then use `model_profile.v1` only if two or more distinct
-model/reasoning pairs remain. An explicit user choice, a model lock, or zero or
-one eligible pair bypasses Jev without a provider call.
+Route clear challenges directly. When `execution.jev_model_selection = true`,
+use `model_profile.v1` only for unresolved choices between distinct eligible
+models. Simple work, explicit model locks, and reasoning-only choices bypass
+Jev without a provider call.
 
 Spark is a separate, opt-in lane for extremely low-risk small work. It is
 disabled by default and may handle only read-only inspection, narrow search or

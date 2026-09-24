@@ -1070,7 +1070,7 @@ def plan_jev_model_selection(
     explicit_model: str | None = None, explicit_reasoning: str | None = None,
     explicit_provider: str | None = None,
 ) -> dict[str, Any]:
-    """Expose distinct eligible pairs for the existing model_profile.v1 question."""
+    """Offer Jev only an unresolved choice between distinct eligible models."""
     _validate_model_request(surface, workload, required_tools)
     if explicit_model is not None: _model_name({"model": explicit_model}, "model", "explicit assignment")
     if explicit_reasoning is not None: _reasoning_effort({"reasoning": explicit_reasoning}, "reasoning", "explicit assignment")
@@ -1079,6 +1079,8 @@ def plan_jev_model_selection(
         return {"status": "disabled", "schema_id": "", "eligible_profile_ids": [], "options": []}
     if any(value is not None for value in (explicit_model, explicit_reasoning, explicit_provider)) or _role_has_model_lock(effective, role):
         return {"status": "locked", "schema_id": "", "eligible_profile_ids": [], "options": []}
+    if workload == "simple":
+        return {"status": "direct", "schema_id": "", "eligible_profile_ids": [], "options": []}
     options = []
     pairs = set()
     for profile_id, usage_profile in JEV_MODEL_PROFILES:
@@ -1096,7 +1098,7 @@ def plan_jev_model_selection(
             continue
         pairs.add(pair)
         options.append({"profile_id": profile_id, "model": pair[0], "reasoning_effort": pair[1]})
-    status = "eligible" if len(options) >= 2 else "no_selection"
+    status = "eligible" if len({option["model"] for option in options}) >= 2 else "no_selection"
     return {
         "status": status,
         "schema_id": "model_profile.v1" if status == "eligible" else "",
