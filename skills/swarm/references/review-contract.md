@@ -123,6 +123,32 @@ Source, static, local, browser, authenticated, provider, payment, deployed,
 device, and human claims are disjoint. Evidence closes only the exact declared
 class; no lower or adjacent class promotes another.
 
+## Capture comparable before and after proof
+
+Before editing observable behavior, reproduce the current outcome and retain
+the smallest useful baseline: a screenshot for UI, an interaction result for a
+flow, or a focused test/probe for nonvisual work. Record the source and running
+candidate, route or command, viewport where relevant, and reproduction state.
+For a new feature, show the prior absence or workflow it replaces. If a baseline
+cannot be captured, say why; never fabricate a before state or present a later
+reconstruction as an original capture.
+
+After the change, repeat the same scenario under comparable conditions and
+inspect the result. Screenshots prove appearance; exercise the affected action
+and assert its outcome to prove behavior. Use a short clip or ordered captures
+only when a transition matters. For performance claims, retain comparable
+measurements and conditions, not just a claimed improvement. A mismatch returns
+the work to repair and affected proof; capturing a file is not acceptance.
+
+Keep one representative before/after pair per materially changed flow, plus
+distinct requested states. Reuse a baseline while its source and conditions
+remain valid; do not record every edit or take screenshots for backend-only
+changes. Register captures through the existing proof/artifact path, keep
+sensitive content out, and embed the useful pair with a short outcome caption
+in the existing handoff or PR. No separate evidence service or public upload
+is required. Missing baseline evidence limits the comparison claim; it does
+not excuse missing final functional or visual proof.
+
 ## Classify proof and final visual artifacts honestly
 
 Classify runtime proof by the authority and transport actually exercised, not

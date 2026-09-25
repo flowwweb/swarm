@@ -49,6 +49,29 @@ returns it to the Lab's next short cycle.
 The Lab may change its internal approach whenever the goal, accepted constraints,
 and proof boundary remain intact.
 
+## Software engineering factory
+
+A factory is a reusable workflow called by a Lab, not another role or backlog.
+The Lab owns the outcome; its existing CTRL routes bounded work to existing
+owners using normal tasks, blocks, artifacts, and acceptance.
+
+1. **Frame and reproduce:** choose a testable slice and capture the baseline
+   using [before/after proof](review-contract.md#capture-comparable-before-and-after-proof).
+2. **Build:** resume the matching owner and checkout; isolate only when mutable
+   work would conflict. Reuse the repo's architecture and route model effort to
+   the challenge through existing routing rules.
+3. **Prove and repair:** exercise the changed behavior, compare the result to
+   the baseline, and repair failures with focused checks. Bind proof to the
+   actual candidate and runtime, not a sibling checkout or stale server.
+4. **Review and integrate:** use existing independent review and risk-based
+   checks; resolve actionable findings and preserve release authority. Stop
+   for a concrete blocker rather than chasing a numeric reviewer score.
+   Verify the integrated outcome and hand settled worktrees to normal cleanup.
+
+Other factories, such as design, may replace the work steps while retaining
+the same ownership and proof contract. Load only the skills needed by the
+current step; do not add a manager or duplicate state for each nested workflow.
+
 ## Completion
 
 A Lab is complete when its task outcome is accepted, selected work is integrated,

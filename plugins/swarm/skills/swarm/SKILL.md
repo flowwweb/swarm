@@ -252,7 +252,11 @@ owning CTRL, described by the smallest matching manifest in the [Lab
 catalog](labs/catalog.json). The CTRL handles delegation; the Lab remains free to
 choose the roles and methods that best fit its goal. Use a normal specialist task
 for one known atomic change. When an area benefits from iterative,
-cross-functional work, apply the thin [Lab workflow](references/lab-workflow.md).
+cross-functional work, apply the thin [Lab workflow](references/lab-workflow.md),
+including callable factory workflows within a Lab.
+Before editing observable behavior, apply
+[comparable before/after proof](references/review-contract.md#capture-comparable-before-and-after-proof)
+so the baseline exists before the change.
 Track progress only through the Lab task's existing blocks: `.25` started, `.5`
 handed to review, `.75` accepted, and `1` completed and committed. A CTRL may
 name a custom Lab for any focused area using the same manifest shape. A Lab
