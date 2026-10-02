@@ -30,7 +30,10 @@ SERVER_READY_ATTEMPTS = 40
 
 
 def _chrome_browser():
-    candidates = [shutil.which("chrome")]
+    candidates = [shutil.which(name) for name in ("chrome", "google-chrome", "google-chrome-stable")]
+    if sys.platform == "darwin":
+        candidates.extend(str(root / "Google Chrome.app/Contents/MacOS/Google Chrome")
+                          for root in (Path("/Applications"), Path.home() / "Applications"))
     for folder in ("PROGRAMFILES", "PROGRAMFILES(X86)", "LOCALAPPDATA"):
         if os.environ.get(folder):
             candidates.append(str(Path(os.environ[folder]) / "Google/Chrome/Application/chrome.exe"))
@@ -45,7 +48,7 @@ def _request_json(url: str, *, token: str = "", method: str = "GET") -> dict[str
     if token:
         headers["X-Swarm-Token"] = token
     request = urllib.request.Request(url, headers=headers, method=method)
-    with urllib.request.urlopen(request, timeout=0.45) as response:  # noqa: S310 - fixed loopback URL
+    with urllib.request.urlopen(request, timeout=2) as response:  # noqa: S310 - fixed loopback URL
         return json.loads(response.read())
 
 

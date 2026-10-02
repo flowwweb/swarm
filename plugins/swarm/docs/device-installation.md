@@ -1,6 +1,6 @@
 # Install SWARM on another device
 
-SWARM 0.4.8+codex.20261002 uses the same tracked source and generated Codex plugin. The plugin icon is the existing approved orange mascot, with exact 64px and 512px assets. No artwork was regenerated.
+SWARM 0.4.9+codex.20261002 uses the same tracked source and generated Codex plugin. The plugin icon is the existing approved orange mascot, with exact 64px and 512px assets. No artwork was regenerated.
 
 Use the same release ref on each device. Until this release is merged to main, use `codex/swarm-device-release-20261002`:
 
@@ -21,6 +21,20 @@ An existing marketplace pinned to another ref keeps that ref. Check `codex plugi
 The release contains no device-specific absolute paths, credentials, global SWARM config, or private benchmark session reports. Each device uses its own Codex login and `~/.agents/swarm/config.toml`. Installing the plugin does not transfer local chats, worktrees, services, project briefs or credentials.
 
 The Python HQ and measurement commands require Python 3.11 or later. Codex owns native task tools and model availability. Platform code paths have local fixture coverage; installation and execution on a second physical device must be verified there.
+
+## Check the installation
+
+Run the bundled smoke check from the installed plugin directory:
+
+```text
+python scripts/smoke_plugin.py
+```
+
+Or run the source copy against an installed package with `--plugin-root <absolute-plugin-directory>`. A successful run exits zero and prints `status: PASS`. It validates shipped metadata and icon paths, resolves the benchmark model, serves HQ files over loopback, and checks server reuse plus task-specific browser claims across restart. It uses temporary synthetic host metadata; it does not change your chats or settings, open Chrome, or call a model.
+
+Chrome startup preserves the exact current task ID and looks for the standard Windows, macOS and Linux Google Chrome executable locations. macOS and Linux discovery have fixture coverage; run the smoke check and verify Chrome startup on each physical device.
+
+If a fresh Codex run can read the installed skill but its Python tool returns a Windows sandbox launch error, treat that as host execution failure. Run the check directly with a working Python 3.11+ interpreter and preserve the exact host error. Installing another SWARM copy does not repair the host sandbox.
 
 ## Benchmark model lock and measurement
 

@@ -35,6 +35,18 @@ class LauncherTests(unittest.TestCase):
         self.assertEqual(claims, [("http://127.0.0.1:4788/api/launch-claim?task_id=exact-task", {"token": "token", "method": "POST"})])
         browser.open.assert_called_once_with("http://127.0.0.1:4788", new=2)
 
+    def test_chrome_discovery_uses_native_platform_locations(self) -> None:
+        cases = (("linux", "/usr/bin/google-chrome"),
+                 ("darwin", "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"))
+        for platform, executable in cases:
+            with (self.subTest(platform=platform),
+                  mock.patch.object(launcher.sys, "platform", platform),
+                  mock.patch.object(launcher.shutil, "which", side_effect=lambda name: executable if platform == "linux" and name == "google-chrome" else None),
+                  mock.patch.object(launcher.Path, "is_file", lambda path: str(path).replace("\\", "/") == executable)):
+                browser = launcher._chrome_browser()
+                self.assertEqual(Path(browser.name), Path(executable))
+                self.assertEqual(browser.args, ["--new-tab", "%s"])
+
     def test_missing_chrome_does_not_consume_task_claim(self) -> None:
         self._write_setting()
         with mock.patch.object(launcher, "_chrome_browser", side_effect=OSError("Chrome unavailable")):
