@@ -1,0 +1,23 @@
+{
+  "hooks": {
+    "SessionStart": [{
+      "matcher": "startup|resume|clear|compact",
+      "hooks": [{
+        "type": "command",
+        "command": "python3 \"${PLUGIN_ROOT}/hooks/activate.py\"",
+        "commandWindows": "python -c \"import os,runpy;runpy.run_path(os.path.join(os.environ['PLUGIN_ROOT'],'hooks','activate.py'),run_name='__main__')\"",
+        "timeout": 5,
+        "statusMessage": "Loading SWARM workflow"
+      }]
+    }],
+    "SubagentStart": [{
+      "hooks": [{
+        "type": "command",
+        "command": "python3 \"${PLUGIN_ROOT}/hooks/activate.py\"",
+        "commandWindows": "python -c \"import os,runpy;runpy.run_path(os.path.join(os.environ['PLUGIN_ROOT'],'hooks','activate.py'),run_name='__main__')\"",
+        "timeout": 5,
+        "statusMessage": "Loading SWARM workflow"
+      }]
+    }]
+  }
+}

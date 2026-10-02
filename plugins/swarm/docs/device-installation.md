@@ -1,6 +1,6 @@
 # Install SWARM on another device
 
-SWARM 0.4.9+codex.20261002 uses the same tracked source and generated Codex plugin. The plugin icon is the existing approved orange mascot, with exact 64px and 512px assets. No artwork was regenerated.
+SWARM 0.4.10+codex.20261002 uses the same tracked source and generated Codex plugin. The plugin icon is the existing approved orange mascot, with exact 64px and 512px assets. No artwork was regenerated.
 
 Use the same release ref on each device. Until this release is merged to main, use `codex/swarm-device-release-20261002`:
 
@@ -21,6 +21,24 @@ An existing marketplace pinned to another ref keeps that ref. Check `codex plugi
 The release contains no device-specific absolute paths, credentials, global SWARM config, or private benchmark session reports. Each device uses its own Codex login and `~/.agents/swarm/config.toml`. Installing the plugin does not transfer local chats, worktrees, services, project briefs or credentials.
 
 The Python HQ and measurement commands require Python 3.11 or later. Codex owns native task tools and model availability. Platform code paths have local fixture coverage; installation and execution on a second physical device must be verified there.
+
+## Activate the workflow for tasks
+
+Installing a skill makes it discoverable; Codex otherwise decides whether to load it from its description. SWARM now bundles native `SessionStart` and `SubagentStart` hooks that explicitly direct each task to the installed canonical workflow. The startup hook also covers resume, clear and compaction. The same small pointer is emitted at each boundary; the workflow stays in one skill file.
+
+After installation, open `/hooks` in Codex CLI, review the SWARM hooks and trust their exact definitions. Codex skips untrusted plugin hooks, even when the plugin is enabled. Repeat the review when a hook definition changes. The hook prints an instruction pointing to the shipped skill and appends a bounded activation receipt to the existing `~/.agents/swarm/mcp-telemetry.jsonl` stream. It creates no chats, services or model calls. Each device needs a working `python3` command on macOS/Linux or `python` on Windows.
+
+Until the hooks are trusted, explicitly invoke `$swarm` in the task. An existing running turn does not gain a newly installed hook retroactively. Verify a resumed or fresh task reads the installed `skills/swarm/SKILL.md` before project work. Hook delivery proves activation instructions; following the workflow, delegation, independent review and completion still require task evidence. Loading SWARM preserves assigned roles and explicit user opt-outs.
+
+If marketplace registration already exists, inspect `codex plugin marketplace list` and `codex plugin list --marketplace flowwweb --json` before changing its source. Refreshing preserves its current ref; it does not switch a registration from another source or branch. Preserve other installed plugins and report an unresolved registration instead of claiming the new release was installed.
+
+Official behavior: [skill activation](https://developers.openai.com/codex/skills), [hook trust and startup context](https://learn.chatgpt.com/docs/hooks).
+
+## Inspect activation telemetry
+
+`swarm_status` now includes a `device` projection: host name, running package version and the last 50 activation receipts within the last 64 KiB of the existing telemetry stream. Each receipt binds the emitted startup pointer to the hook event, hashed session identity, package version and skill SHA-256. Prompts, responses and raw session IDs are excluded. A telemetry write failure reports a fixed diagnostic on stderr while preserving the startup instructions.
+
+`OBSERVED_HOOK_OUTPUT` means the hook emitted its context. Host delivery, reading the skill and following the workflow still need task evidence. `NO_ACTIVATION_RECEIPTS` does not mean a task ignored SWARM: an older package, an untrusted hook or an inactive hook may produce no record. The projection is local to the connected device; it does not collect other devices. An advertised connector tool returning `Unknown tool` is a connector registration failure, not proof of absent telemetry or failed project work.
 
 ## Check the installation
 

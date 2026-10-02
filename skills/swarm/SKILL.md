@@ -1,6 +1,6 @@
 ---
 name: swarm
-description: Compact SWARM coordination doctrine for directing coordinated coding agents from one control task.
+description: Use SWARM for Codex project work, including planning, building, debugging, review, and multi-agent coordination. Preserve the assigned task role and explicit user opt-outs.
 ---
 
 # 🐙 SWARM
