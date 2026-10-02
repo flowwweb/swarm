@@ -37,7 +37,7 @@ from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, NamedTuple
-from urllib.parse import parse_qs, unquote, urlparse
+from urllib.parse import parse_qs, unquote, urlencode, urlparse
 
 
 PLUGIN_ROOT = Path(__file__).resolve().parents[1]
@@ -90,6 +90,7 @@ SERVER_BUILD_ID = hashlib.sha256(Path(__file__).read_bytes()).hexdigest()[:16]
 CONFIG_SCRIPT = PLUGIN_ROOT / "skills" / "swarm" / "scripts" / "swarm_config.py"
 DEFAULT_CODEX_HOME = Path(os.environ.get("CODEX_HOME", Path.home() / ".codex"))
 DEFAULT_CONFIG_PATH = Path.home() / ".agents" / "swarm" / "config.toml"
+PROJECT_ORGANIZER_ROOT = Path.home() / "Documents" / "Codex" / "Projects"
 DEFAULT_PORT = 4788
 MAX_BODY_BYTES = 64 * 1024
 PORTAL_PRESENCE_TTL_SECONDS = 150
@@ -185,6 +186,11 @@ HEALTH_THRESHOLDS = {
     "disk_recover_bytes": 8 * 1024**3,
 }
 MEDIA_MAX_HASH_BYTES = 64 * 1024 * 1024
+PROJECT_ASSET_INDEX_EXTENSIONS = frozenset({
+    ".avif", ".gif", ".glb", ".gltf", ".jpeg", ".jpg", ".mp3", ".mp4", ".png", ".svg", ".wav", ".webm", ".webp",
+})
+PROJECT_ASSET_INDEX_MAX_FILES = 256
+PROJECT_ASSET_INDEX_MAX_BYTES = 64 * 1024 * 1024
 MAX_PROOF_EVENT_FILES = 1024
 PROOF_EVENT_SCAN_STATE_KEY = "proof_event_scan_state_v2"
 PROOF_FEED_CURSOR_KEY = "proof_feed_cursor_v1"
@@ -682,7 +688,8 @@ class CodexStdioBridge:
                 cleanup()
 
     def _session(self, cwd: Path, transact: Any) -> AutoBridgeResult:
-        with self.command_session(cwd) as (send, receive):
+        # Observation expiry is not authority to cancel a submitted host turn.
+        with self.command_session(cwd, retain_turn=True) as (send, receive):
             return transact(send, receive)
 
     def read_account_limits(self, cwd: Path) -> dict[str, Any]:
@@ -8045,6 +8052,7 @@ class App:
         )
         self.diagnostics_collector = DiagnosticsCollector(self.codex_home, self.store.path)
         self.token = secrets.token_urlsafe(24)
+        self.http_server: SwarmHTTPServer | None = None
         self.write_lock = threading.Lock()
         self._recover_config_transactions()
         self.overview_lock = threading.RLock()
@@ -8066,6 +8074,31 @@ class App:
         self._project_view_cache: dict[str, dict[str, Any]] = {}
         self._observer_stop = threading.Event()
         self._observer_thread: threading.Thread | None = None
+
+    def console_status(self) -> dict[str, Any]:
+        server = self.http_server
+        if server is None:
+            return {"ok": True, "status": "starting", "pid": os.getpid(), "url": None}
+        host, port = server.server_address[:2]
+        display_host = "127.0.0.1" if host in {"0.0.0.0", "::"} else host
+        return {
+            "ok": True,
+            "status": "running",
+            "pid": os.getpid(),
+            "url": f"http://{display_host}:{port}",
+            "docker": {"enabled": False, "optional": True},
+        }
+
+    def console_control(self, action: str) -> dict[str, Any]:
+        if action == "start":
+            return {**self.console_status(), "action": "already_running"}
+        if action != "stop":
+            raise ConsoleError("console action must be start or stop")
+        server = self.http_server
+        if server is None:
+            raise ConsoleError("SWARM Console is not running")
+        threading.Thread(target=server.shutdown, name="swarm-console-stop", daemon=True).start()
+        return {**self.console_status(), "status": "stopping", "action": "stop_requested"}
 
     def _auto_project_root(self, project_id: str) -> Path:
         return self._canonical_project_root(project_id, "Auto")
@@ -11518,6 +11551,9 @@ class App:
                 "goal_label": project.get("goal_label", project.get("name", project_id)),
                 "label_source": project.get("label_source", "unknown"),
                 "ordering": dict(project.get("ordering") or {}),
+                "root": project.get("root"),
+                "root_status": project.get("root_status", "UNKNOWN"),
+                "organizer_in_scope": project.get("organizer_in_scope"),
                 "active_ctrl_id": active_ids[0] if active_ids else None,
                 "active_ctrl": active,
                 "active_ctrl_ids": active_ids,
@@ -11585,6 +11621,12 @@ class App:
                 "state": "KNOWN",
                 "available": True,
                 "source": str(raw_project_inventory.get("source") or "host_projects"),
+                "organizer_mode": raw_project_inventory.get("organizer_mode"),
+                "scope_root": raw_project_inventory.get("scope_root"),
+                "scope_root_normalized": raw_project_inventory.get("scope_root_normalized"),
+                "in_scope_count": raw_project_inventory.get("in_scope_count"),
+                "omitted_project_count": raw_project_inventory.get("omitted_project_count"),
+                "unresolved_project_count": raw_project_inventory.get("unresolved_project_count"),
                 "claim_limit": str(
                     raw_project_inventory.get("claim_limit")
                     or "Saved project identity is sourced from the canonical host projects table."
@@ -12731,6 +12773,7 @@ class App:
 
     def _decorate_overview(self, base: dict[str, Any]) -> dict[str, Any]:
         view = copy.deepcopy(base)
+        self._decorate_project_organizer_scope(view)
         forecasts = self.store.latest_forecasts()
         progress_states = self.store.latest_progress()
         for node in view["nodes"]:
@@ -12835,6 +12878,64 @@ class App:
         view["overview_metrics"] = self._overview_metrics(view, scope_id="all", scope_type="all")
         view["project_briefs"] = self._project_briefs_projection()
         return view
+
+    def _decorate_project_organizer_scope(self, view: dict[str, Any]) -> None:
+        """Expose the host-root scope without creating a second project catalog."""
+        scope_root = _normalized_project_path(str(PROJECT_ORGANIZER_ROOT))
+        project_inventory = view.get("project_inventory")
+        if not isinstance(project_inventory, dict):
+            project_inventory = {}
+            view["project_inventory"] = project_inventory
+        project_inventory.update({
+            "organizer_mode": "read_only",
+            "scope_root": str(PROJECT_ORGANIZER_ROOT),
+            "scope_root_normalized": scope_root,
+        })
+        try:
+            inventory_state, records, _cursor, root_owners = self._host_project_records()
+        except (ConsoleError, OSError, sqlite3.Error, TypeError, ValueError):
+            return
+        if inventory_state == "UNKNOWN":
+            return
+        records_by_id = {record["id"]: record for record in records}
+        in_scope = 0
+        omitted = 0
+        unresolved = 0
+        for project in view.get("projects", []):
+            project_id = str(project.get("id") or "")
+            record = records_by_id.get(project_id)
+            if record is None:
+                continue
+            identity = self._project_identity(record, root_owners)
+            binding = identity.get("root_binding") if isinstance(identity, dict) else {}
+            root = identity.get("root") if isinstance(identity, dict) else None
+            normalized = str(binding.get("normalized") or "") if isinstance(binding, dict) else ""
+            root_status = str(binding.get("status") or "UNKNOWN") if isinstance(binding, dict) else "UNKNOWN"
+            project["root"] = root
+            project["root_status"] = root_status
+            project["organizer_in_scope"] = bool(
+                root_status == "KNOWN"
+                and scope_root
+                and (normalized == scope_root or normalized.startswith(scope_root + "/"))
+            )
+            if project["organizer_in_scope"]:
+                in_scope += 1
+            else:
+                omitted += 1
+                if root_status != "KNOWN":
+                    unresolved += 1
+        project_inventory = view.setdefault("project_inventory", {})
+        if isinstance(project_inventory, dict):
+            project_inventory.update({
+                "in_scope_count": in_scope,
+                "omitted_project_count": omitted,
+                "unresolved_project_count": unresolved,
+                "claim_limit": (
+                    "HQ reads the canonical host project catalog and exposes only projects whose unambiguous root "
+                    f"is under {PROJECT_ORGANIZER_ROOT}. Other host projects are omitted from this organizer view; "
+                    "no project store, migration, copy, or asset duplication is performed."
+                ),
+            })
 
     def overview(self, project_id: str | None = None) -> dict[str, Any]:
         # Never call _host_overview while holding overview_lock. The refresh
@@ -13815,7 +13916,8 @@ class App:
                 self._config_cleanup_rollback_snapshot(transaction)
             except Exception as recovery_exc:
                 raise ConsoleError(
-                    f"config mutation failed and recovery could not be proven: {str(recovery_exc)[:180]}"
+                    f"config mutation failed ({str(exc)[:120]}) and recovery could not be proven: "
+                    f"{str(recovery_exc)[:180]}"
                 ) from exc
             if isinstance(exc, ConsoleError):
                 raise
@@ -14906,6 +15008,198 @@ class App:
                 "claim_limit": "The mutation is one server-owned local receipt; no provider call, model call, or file URL is fabricated.",
             },
         }
+
+    def project_assets_projection(self, *, project_id: str | None = None) -> dict[str, Any]:
+        requested = _asset_id(project_id, "project_id") if project_id not in (None, "") else None
+        try:
+            inventory_state, records, cursor, root_owners = self._host_project_records()
+        except (ConsoleError, OSError, sqlite3.Error, TypeError, ValueError) as error:
+            raise ConsoleError("canonical saved project inventory is unavailable") from error
+        if inventory_state != "KNOWN" or cursor is None:
+            raise ConsoleError("canonical saved project inventory is unavailable or partial")
+        scope_root = _normalized_project_path(str(PROJECT_ORGANIZER_ROOT))
+        projects: list[dict[str, Any]] = []
+        all_items: list[dict[str, Any]] = []
+        for record in records:
+            if requested is not None and record["id"] != requested:
+                continue
+            identity = self._project_identity(record, root_owners)
+            binding = identity.get("root_binding") if isinstance(identity, dict) else {}
+            normalized = str(binding.get("normalized") or "") if isinstance(binding, dict) else ""
+            root_status = str(binding.get("status") or "UNKNOWN") if isinstance(binding, dict) else "UNKNOWN"
+            in_scope = root_status == "KNOWN" and (
+                normalized == scope_root or normalized.startswith(scope_root + "/")
+            )
+            if requested is not None and not in_scope:
+                raise ConsoleError("project is outside the read-only organizer root")
+            if not in_scope:
+                continue
+            root = Path(str(binding.get("value") or ""))
+            items: list[dict[str, Any]] = []
+            total_bytes = 0
+            truncated = False
+            pending: list[tuple[Path, Path]] = [(root, Path())]
+            if not root.is_dir() or _is_reparse_point(root):
+                truncated = True
+                pending = []
+            while pending and len(items) < PROJECT_ASSET_INDEX_MAX_FILES and total_bytes < PROJECT_ASSET_INDEX_MAX_BYTES:
+                current, relative_dir = pending.pop()
+                try:
+                    entries = sorted(os.scandir(current), key=lambda entry: entry.name.casefold(), reverse=True)
+                except OSError:
+                    truncated = True
+                    continue
+                for entry in entries:
+                    relative = relative_dir / entry.name
+                    path = Path(entry.path)
+                    try:
+                        if entry.is_dir(follow_symlinks=False):
+                            if entry.name not in {".git", ".venv", "__pycache__", "node_modules"} and not _is_reparse_point(path):
+                                pending.append((path, relative))
+                            continue
+                        if not entry.is_file(follow_symlinks=False) or path.suffix.casefold() not in PROJECT_ASSET_INDEX_EXTENSIONS:
+                            continue
+                        if _is_reparse_point(path):
+                            continue
+                        metadata = entry.stat(follow_symlinks=False)
+                    except OSError:
+                        continue
+                    size = int(metadata.st_size)
+                    if len(items) >= PROJECT_ASSET_INDEX_MAX_FILES or total_bytes + size > PROJECT_ASSET_INDEX_MAX_BYTES:
+                        truncated = True
+                        continue
+                    relative_path = relative.as_posix()
+                    media_type = mimetypes.guess_type(entry.name)[0] or "application/octet-stream"
+                    preview: dict[str, Any] = {"state": "UNAVAILABLE", "url": None}
+                    if (
+                        media_type in MEDIA_TYPES
+                        and media_type.startswith("image/")
+                        and 0 < size <= MEDIA_MAX_HASH_BYTES
+                    ):
+                        try:
+                            signature = _media_signature(path)
+                        except ConsoleError:
+                            pass
+                        else:
+                            if signature == media_type:
+                                preview = {
+                                    "state": "AVAILABLE",
+                                    "url": "/api/project-assets/preview?" + urlencode({
+                                        "project_id": record["id"],
+                                        "path": relative_path,
+                                    }),
+                                    "media_type": media_type,
+                                    "size_bytes": size,
+                                }
+                    item = {
+                        "asset_id": f"project-file:{record['id']}:{relative_path}",
+                        "project_id": record["id"],
+                        "presentation": {
+                            "display_name": entry.name,
+                            "description": relative_path,
+                            "kind": "project_file",
+                            "status": "AVAILABLE",
+                        },
+                        "technical": {
+                            "media_type": media_type,
+                            "size_bytes": size,
+                            "modified_at_ms": int(metadata.st_mtime_ns // 1_000_000),
+                            "status": "AVAILABLE",
+                            "provenance": {"source": "canonical_project_root", "path_kind": "relative"},
+                        },
+                        "preview": preview,
+                    }
+                    items.append(item)
+                    total_bytes += size
+            if pending:
+                truncated = True
+            items.sort(key=lambda item: str(item["presentation"]["description"]).casefold())
+            projects.append({
+                "project_id": record["id"],
+                "name": record["display_name"],
+                "root_status": root_status,
+                "items": items,
+                "file_count": len(items),
+                "total_bytes": total_bytes,
+                "truncated": truncated,
+            })
+            all_items.extend(items)
+        return {
+            "ok": True,
+            "status": "available",
+            "projection": "active",
+            "project_id": requested or "",
+            "items": all_items,
+            "projects": projects,
+            "scope_root": str(PROJECT_ORGANIZER_ROOT),
+            "cursor": cursor,
+            "claim_limit": (
+                "Read-only index of regular files with approved media extensions under unambiguous canonical roots. "
+                "It returns relative paths only, skips reparse points, and is bounded to 256 files and 64 MiB. "
+                "Allowlisted raster previews are type-checked during indexing and streamed read-only from the "
+                "same-origin endpoint after digesting the requested file; no project files are written."
+            ),
+        }
+
+    def project_asset_media_item(
+        self,
+        project_id: str,
+        relative_path: str,
+        digest: str = "",
+    ) -> dict[str, Any]:
+        requested = _asset_id(project_id, "project_id")
+        if (
+            not isinstance(relative_path, str)
+            or not relative_path
+            or len(relative_path) > 4096
+            or any(part in {"", ".", ".."} or ":" in part or "\\" in part for part in relative_path.split("/"))
+        ):
+            raise ConsoleError("project asset path must be a bounded relative path")
+        try:
+            inventory_state, records, cursor, root_owners = self._host_project_records()
+        except (ConsoleError, OSError, sqlite3.Error, TypeError, ValueError) as error:
+            raise ConsoleError("canonical saved project inventory is unavailable") from error
+        if inventory_state != "KNOWN" or cursor is None:
+            raise ConsoleError("canonical saved project inventory is unavailable or partial")
+        record = next((item for item in records if item["id"] == requested), None)
+        if record is None:
+            raise ConsoleError("saved project was not found")
+        identity = self._project_identity(record, root_owners)
+        binding = identity.get("root_binding") if isinstance(identity, dict) else {}
+        normalized = str(binding.get("normalized") or "") if isinstance(binding, dict) else ""
+        scope_root = _normalized_project_path(str(PROJECT_ORGANIZER_ROOT))
+        if (
+            not isinstance(binding, dict)
+            or binding.get("status") != "KNOWN"
+            or not (normalized == scope_root or normalized.startswith(scope_root + "/"))
+        ):
+            raise ConsoleError("project is outside the read-only organizer root")
+        root = Path(str(binding.get("value") or ""))
+        try:
+            resolved_scope = Path(PROJECT_ORGANIZER_ROOT).resolve(strict=True)
+            resolved_root = root.resolve(strict=True)
+        except OSError as error:
+            raise ConsoleError("project asset root is unavailable") from error
+        if (
+            not resolved_root.is_dir()
+            or _is_reparse_point(root)
+            or not resolved_root.is_relative_to(resolved_scope)
+        ):
+            raise ConsoleError("project asset root is outside the read-only organizer root")
+        candidate = root
+        for part in relative_path.split("/"):
+            candidate = candidate / part
+            if _is_reparse_point(candidate):
+                raise ConsoleError("project asset path must not cross a reparse point")
+        if (
+            candidate.suffix.casefold() not in {".png", ".jpg", ".jpeg", ".webp", ".gif"}
+            or not candidate.is_file()
+        ):
+            raise ConsoleError("project asset preview is unavailable")
+        media = _media_metadata(str(candidate), digest, allowed_root=resolved_root)
+        if not media["media_type"].startswith("image/"):
+            raise ConsoleError("project asset preview is unavailable")
+        return media
 
     def assets_projection(self, *, project_id: str | None = None, projection: str = "active") -> dict[str, Any]:
         if isinstance(project_id, str) and project_id.strip().lower() in {"all", "all-projects"}:
@@ -16031,7 +16325,7 @@ class Handler(BaseHTTPRequestHandler):
             raise
 
     def _registered_media(self, item: dict[str, Any]) -> None:
-        path = item["path"]
+        path = Path(item["path"])
         with path.open("rb") as stream:
             self.send_response(HTTPStatus.OK)
             self.send_header("Content-Type", item["media_type"])
@@ -16368,6 +16662,30 @@ class Handler(BaseHTTPRequestHandler):
                     ),
                 )
                 return
+            if path == "/api/project-assets/preview":
+                fetch_site = self.headers.get("Sec-Fetch-Site", "").casefold()
+                if (
+                    (self.headers.get("Origin") and not self._same_origin())
+                    or fetch_site not in {"", "none", "same-origin"}
+                ):
+                    self._error(HTTPStatus.FORBIDDEN, "same-origin project asset preview request required")
+                    return
+                if not {"project_id", "path"}.issubset(query) or set(query) - {"project_id", "path", "digest"}:
+                    self._error(HTTPStatus.BAD_REQUEST, "project asset preview requires project_id and path")
+                    return
+                item = self.server.app.project_asset_media_item(
+                    query["project_id"], query["path"], query.get("digest", "")
+                )
+                self._registered_media(item)
+                return
+            if path == "/api/project-assets":
+                if set(query) - {"project_id"}:
+                    raise ConsoleError("project asset listing accepts only project_id")
+                self._json(
+                    HTTPStatus.OK,
+                    self.server.app.project_assets_projection(project_id=query.get("project_id")),
+                )
+                return
             if path == "/api/assets":
                 if set(query) - {"project_id", "projection"}:
                     self._error(HTTPStatus.BAD_REQUEST, "asset listing accepts only project_id and projection")
@@ -16465,6 +16783,9 @@ class Handler(BaseHTTPRequestHandler):
                 return
             if path == "/api/health/settings":
                 self._json(HTTPStatus.OK, {"ok": True, **self.server.app.health_settings()})
+                return
+            if path == "/api/console":
+                self._json(HTTPStatus.OK, self.server.app.console_status())
                 return
             if path == "/api/ctrl-settings":
                 ctrl_id = query.get("ctrl_id", "")
@@ -16609,6 +16930,12 @@ class Handler(BaseHTTPRequestHandler):
                 with self.server.app.write_lock:
                     result = self.server.app.update_config_source(payload)
                 self._json(HTTPStatus.OK, result)
+                return
+            if path == "/api/console":
+                payload = self._payload()
+                if set(payload) != {"action"} or payload["action"] not in {"start", "stop"}:
+                    raise ConsoleError("console control requires an exact start or stop action")
+                self._json(HTTPStatus.OK, self.server.app.console_control(payload["action"]))
                 return
             if path == "/api/config/reset":
                 payload = self._payload()
@@ -16857,6 +17184,7 @@ def main() -> int:
         return 2
     app = App(args.codex_home, resolve_config_path(args.config))
     server = SwarmHTTPServer((args.host, args.port), Handler, app)
+    app.http_server = server
     display_host = "127.0.0.1" if args.host == "0.0.0.0" else args.host
     url = f"http://{display_host}:{args.port}"
     print(f"SWARM Console: {url}")

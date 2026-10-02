@@ -150,6 +150,9 @@ for the accepted boundary.
 
 ## Install in Codex
 
+For a pinned release, another device, or per-model token and cost tracking, see
+[device installation and benchmark accounting](docs/device-installation.md).
+
 Add the Flowwweb marketplace:
 
 ```text

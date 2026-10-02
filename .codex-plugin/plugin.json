@@ -1,6 +1,6 @@
 {
   "name": "swarm",
-  "version": "0.4.2+codex.20260903192236",
+  "version": "0.4.8+codex.20261002",
   "description": "Structured Workflows for Autonomous Role Management.",
   "author": {
     "name": "Flowwweb",
@@ -17,6 +17,8 @@
   ],
   "skills": "./skills/",
   "interface": {
+    "composerIcon": "./console/static/swarm-icon-64.png",
+    "logo": "./console/static/swarm-mascot-512.png",
     "displayName": "\ud83d\udc19 SWARM",
     "shortDescription": "Control a coordinated Codex team from one task",
     "longDescription": "SWARM is an open-source control plane for Codex. Route bounded work to in-task helpers or durable lanes, preserve human authority, and prove each result with the smallest sufficient independent acceptance path.",

@@ -26,6 +26,7 @@ assert SPEC and SPEC.loader
 console_server = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(console_server)
 PORT_SCAN_LIMIT = 10
+SERVER_READY_ATTEMPTS = 40
 
 
 def _chrome_browser():
@@ -57,16 +58,26 @@ def _spawn_server(config_path: Path, codex_home: Path, port: int) -> int:
         "--config", str(config_path),
         "--codex-home", str(codex_home),
     ]
-    kwargs: dict[str, Any] = {
-        "stdin": subprocess.DEVNULL,
-        "stdout": subprocess.DEVNULL,
-        "stderr": subprocess.DEVNULL,
-    }
+    log_path = codex_home / "swarm-console-launcher.log"
+    codex_home.mkdir(parents=True, exist_ok=True)
+    kwargs: dict[str, Any] = {"stdin": subprocess.DEVNULL}
     if sys.platform == "win32":
         kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW | subprocess.DETACHED_PROCESS
     else:
         kwargs["start_new_session"] = True
-    return subprocess.Popen(command, **kwargs).pid
+    with log_path.open("ab") as log:
+        kwargs["stdout"] = log
+        kwargs["stderr"] = subprocess.STDOUT
+        return subprocess.Popen(command, **kwargs).pid
+
+
+def _startup_log(codex_home: Path) -> str:
+    try:
+        return (codex_home / "swarm-console-launcher.log").read_text(
+            encoding="utf-8", errors="replace"
+        )[-4000:]
+    except OSError:
+        return ""
 
 
 def ensure_portal(
@@ -132,7 +143,7 @@ def ensure_portal(
         except OSError as exc:
             return {"ok": False, "enabled": True, "opened": False, "reason": "server_start_failed", "error": str(exc)}
         ready_url = f"http://127.0.0.1:{selected_port}/healthz"
-        for _ in range(12):
+        for _ in range(SERVER_READY_ATTEMPTS):
             sleep(0.15)
             try:
                 health = fetch_json(ready_url)
@@ -145,7 +156,7 @@ def ensure_portal(
             ):
                 break
         else:
-            return {
+            result = {
                 "ok": False,
                 "enabled": True,
                 "opened": False,
@@ -153,6 +164,10 @@ def ensure_portal(
                 "pid": pid,
                 "port": selected_port,
             }
+            startup_log = _startup_log(codex_home)
+            if startup_log:
+                result["startup_log"] = startup_log
+            return result
 
     url = f"http://127.0.0.1:{selected_port}"
     if not console_settings["open_on_start"]:
@@ -196,7 +211,7 @@ def main() -> int:
         task_id=args.task_id,
     )
     print(json.dumps(result, ensure_ascii=False))
-    return 0
+    return 0 if result.get("ok") is True else 1
 
 
 if __name__ == "__main__":

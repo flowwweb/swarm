@@ -19,7 +19,7 @@ class MutationIntegrityContractTests(unittest.TestCase):
         self.assertRegex(combined, r"(?is)(?:no mutation.*receipt|receipt.*(?:absent|without|conflicting).*no mutation)")
         self.assertRegex(combined, r"(?is)(?:no raw user text|without raw user text)")
 
-    def test_step_zero_and_lifecycle_never_authorize_automatic_pinning(self):
+    def test_step_zero_and_lifecycle_scope_configured_pinning(self):
         root = Path(__file__).parents[1]
         skill = (root / "SKILL.md").read_text(encoding="utf-8")
         task_contract = (root / "references" / "task-contract.md").read_text(encoding="utf-8")
@@ -28,7 +28,11 @@ class MutationIntegrityContractTests(unittest.TestCase):
         self.assertRegex(skill_step_zero, r"(?is)separate user authority.*plugin runtime never grants it")
         self.assertIn("Preserve existing pin and placement state", skill_step_zero)
         self.assertIn("[SKILL.md Step 0](../SKILL.md#start)", task_contract)
-        self.assertRegex(skill, r"(?is)Only direct host consumption of an exact current explicit-user request\s+may pin or unpin")
+        self.assertRegex(skill, r"(?is)configured `lifecycle.pin_created_tasks = true`.*top-level CTRL only")
+        self.assertIn("whether newly created or adopted from an existing task", skill)
+        self.assertIn("newly created or adopted top-level CTRL", skill_step_zero)
+        self.assertRegex(skill, r"(?is)unpinning still needs an exact\s+current user request")
+        self.assertRegex(skill, r"(?is)Before archiving a predecessor CTRL.*verify.*pinned membership.*sections.itemKeys")
         self.assertRegex(skill, r"(?is)plugin runtime.*independent host\s+verification.*cannot mint approval")
         combined = "\n".join((skill, task_contract))
         for forbidden in ("AUTO_PIN", "TEMPORARY_REVIEW_PIN", "concrete ready-review handoff"):
@@ -45,7 +49,10 @@ class MutationIntegrityContractTests(unittest.TestCase):
         self.assertRegex(skill, r"(?s)Discovery omissions do not prove.*list_threads.*move_thread_to_sidebar_section.*actual schemas")
         self.assertRegex(skill, r"(?s)Never invent a method or arguments.*leave placement unverified")
         self.assertNotIn("current host may append", skill)
-        self.assertRegex(skill, r"(?s)project name only: emoji \+ project,.*without a visible CTRL label.*only to distinguish.*duplicate mains.*internal structural roles unchanged")
+        self.assertRegex(skill, r"(?s)project name only: emoji \+ project,.*exactly one space.*Never add a CTRL label, suffix or duplicate-main description.*internal structural roles unchanged")
+        for title in ("🐙 Nemo", "🧱 BLÖCKS", "⚓ Helm"):
+            self.assertIn(title, skill)
+        self.assertNotIn("Add a short description only to distinguish", skill)
 
     def test_direct_user_ctrl_keep_out_is_scoped_and_releasable(self):
         root = Path(__file__).parents[1]

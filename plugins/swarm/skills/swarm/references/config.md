@@ -81,6 +81,7 @@ Configuration cannot make an unsafe or hidden coordination path valid:
 | `execution.min_reasoning` | Global reasoning floor applied after every profile, role override, and route adjustment | none, minimal, low, medium, high, xhigh, max, ultra; compatibility-neutral default none |
 | `execution.max_reasoning` | Global reasoning ceiling applied after every profile, role override, and route adjustment | none, minimal, low, medium, high, xhigh, max, ultra; compatibility-neutral default ultra; must be at least min |
 | `execution.usage_saver` | Prefer lower-churn coordination for new work without weakening delivery | boolean; default false |
+| `execution.jev_model_selection` | Ask configured Jev to choose among distinct host-eligible model/reasoning pairs; explicit selections and zero/one-option tasks bypass it | boolean; default false |
 | `automation.mode` | Evidence-gated checkpoint, Git, review, release, and host lifecycle requests; `manual` keeps those actions explicit | `standard` or `manual`; default `standard` |
 | `logging.task_event_limit` | Bounded recent task-transition metadata retained in memory; never prompts, responses, artifact bodies, or credentials | 8-256; default 64 |
 | `proof.policy_version` | Deterministic proof-planner policy | trimmed identifier; default lean-v1 |
@@ -145,7 +146,7 @@ Configuration cannot make an unsafe or hidden coordination path valid:
 | `coordination.ctrl_direct_horizon_minutes` | Maximum measurable CTRL_DIRECT window | 1-60; default 20 |
 | `recovery.max_attempts` | Legacy owner recovery budget; WATCHDOG never consumes it | exactly 1; non-disableable |
 | `recovery.stall_after_updates` | Unchanged owner work updates before a lane stalls; heartbeat observations excluded | 1-5 |
-| `lifecycle.pin_created_tasks` | Retained compatibility signal only; it never authorizes automatic pinning. New tasks remain `pinned: false` with `placement: placement_unverified`; only the host may consume an exact explicit-user pin request, and any claimed placement requires a disclosed host-owned placement receipt | boolean; default true |
+| `lifecycle.pin_created_tasks` | Explicit opt-in to pin a newly created or adopted top-level CTRL through the host; fresh pinned membership and order must be verified before predecessor archive. Other roles and existing user pins stay untouched | boolean; default false |
 | `lifecycle.task_lifetime_hours` | Single writable task-continuity horizon. Expiry makes a handoff due at a safe immutable checkpoint; it does not transfer custody or authorize a successor CTRL | integer 1-720; default 4 |
 | `feedback.enabled` | Make the on-demand SWARM feedback workflow available | boolean; default true |
 | `feedback.include_diagnostics` | Include the privacy-safe SWARM diagnostic snapshot | boolean; default true |
@@ -287,7 +288,7 @@ The assigning CTRL or LEAD routes by capability before model preference: the
 Codex-host model must be available, its workload must fit, and every required
 tool must be exposed by the host and declared for that model. An unlisted model
 is unverified. The packaged catalog keeps `gpt-5.3-codex-spark` on simple
-shell-only work and declares computer use for the GPT-5.6 models, including
+shell-only work and declares computer use for the GPT-6 models, including
 Luna. Read [model-providers.md](model-providers.md) for the Codex host
 boundary; SWARM does not configure or claim execution on another agent host.
 
@@ -386,7 +387,7 @@ off a dedicated REVIEW task never turns off QC.
 
 The role emoji system is active by default. Set `role_icons.enabled = false`
 only to remove emojis from all SWARM task titles; direct user instruction still
-wins for the requested task. CTRL uses `role_icons.ctrl`, default `🐙`.
+wins for the requested task. CTRL chooses the emoji best suited to the project; `role_icons.ctrl` (default `🐙`) is the fallback when no project match is clear. Explicit user emoji choices always win. CTRL titles contain only that emoji, one space and the project name, or the project name when icons are disabled.
 Hierarchy roles use their matching `role_icons` setting. Contextual tasks use `roles.<ROLE>.icon` when present;
 otherwise select automatically from `role_icons.doer_choices` by conventional
 literal meaning. Prefer a familiar object or action understandable without a

@@ -22,8 +22,6 @@ playwright-report/
 test-results/
 .playwright/
 
-.env
-.env.*
 !.env.example
 .codex/
 generated_images/
@@ -33,9 +31,9 @@ generated_images/
 *.swp
 
 .idea/
-.vscode/
 *.log
 *.sqlite*
 *.db
 .DS_Store
 Thumbs.db
+config.bat

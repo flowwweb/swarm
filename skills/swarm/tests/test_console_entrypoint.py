@@ -33,6 +33,15 @@ class ConsoleEntrypointTests(unittest.TestCase):
         target = ENTRYPOINT.parents[3] / "console" / "server.py"
         execv.assert_called_once_with(sys.executable, [sys.executable, str(target), "--open"])
 
+    def test_start_accepts_task_identity_without_forwarding_it_to_launcher(self) -> None:
+        with (
+            mock.patch.object(sys, "argv", ["swarm_console.py", "--start", "--task-id", "task-1", "--port", "4888"]),
+            mock.patch.object(entrypoint.os, "execv") as execv,
+        ):
+            self.assertEqual(entrypoint.main(), 0)
+        target = ENTRYPOINT.parents[3] / "console" / "launcher.py"
+        execv.assert_called_once_with(sys.executable, [sys.executable, str(target), "--port", "4888"])
+
 
 if __name__ == "__main__":
     unittest.main()

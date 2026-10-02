@@ -38,14 +38,19 @@ does not consume messages invisibly; after it returns, reconcile all unseen user
 messages before judging the output. Never require the user to repeat a message
 that arrived while work was running.
 
-SWARM runtime never calls or authorizes pin/unpin. Every user-authorized CTRL creation
-must surface the created task ID, exact directive/title, `pinned: false`, and
-`placement: placement_unverified` immediately. Only the host may consume an exact
-explicit-user pin request using its known callable pin operation for the exact task.
+SWARM runtime never calls host pin/unpin. Every user-authorized top-level CTRL
+setup, whether newly created or adopted from an existing task, must surface its
+task ID, exact directive/title, and initial placement.
+An explicitly configured `lifecycle.pin_created_tasks = true` is standing user
+opt-in to pin that top-level CTRL only. The host must read the current config and use its known
+callable pin operation for the exact task;
+the runtime's pin intent is not a host mutation receipt.
 LEAD, DOER, REVIEW, WATCHDOG, storage, sidecar, and nested CTRL tasks default to
 unpinned. Only direct host consumption of an exact current explicit-user request
-may pin or unpin. For an explicit main-task pin request, read `list_threads`
-before and after placement. Use `move_thread_to_sidebar_section` with
+or that configured top-level CTRL opt-in may pin; unpinning still needs an exact
+current user request. For an explicit main-task pin request or configured
+top-level CTRL, read `list_threads` before and after placement. Use
+`move_thread_to_sidebar_section` with
 `sectionId='pinned'` for the exact main, then freshly read the complete pinned
 task ID list before `reorder_section`; move only the main ahead of the other
 tasks, preserving their relative order. Pass the complete list, never a subset.
@@ -54,7 +59,10 @@ before pinned project folders. `reorder_section` moves tasks only, not projects;
 it does not establish interleaving with folders. Never unpin folders to simulate
 success. `pinnedIndex` and mutation acknowledgement alone
 do not prove relative order. Preserve unrelated order and pins; do not pin other
-tasks automatically. Discovery omissions do not prove a capability unavailable:
+tasks automatically. Before archiving a predecessor CTRL, freshly verify the
+new CTRL's pinned membership, first `sections.itemKeys` position, and unchanged
+relative order of pre-existing pinned items. A missing or conflicting readback
+keeps the predecessor unarchived and placement unverified. Discovery omissions do not prove a capability unavailable:
 check the known applicable `list_threads`, `move_thread_to_sidebar_section`, and
 `reorder_section` callable routes before escalation, using their actual schemas and only the
 authorized placement. Never invent a method or arguments. If the host cannot
@@ -65,11 +73,10 @@ and leave placement unverified. Runtime still grants no pin or reorder authority
 CTRL, or take over an existing CTRL includes naming the current task for that
 role. Reuse the current task for a takeover; create or fork another task only
 when explicitly requested. Derive a concise objective and resolve `role_icons`:
-default `🐙 <objective>`, or `<objective>` when icons are disabled;
+choose the emoji best suited to the project, or `<objective>` when icons are disabled;
 retain a user-requested role icon such as `👑` for royal portfolio control.
 For the main task, `<objective>` is the project name only: emoji + project,
-without a visible CTRL label. Add a short description only to distinguish
-duplicate mains for that project; keep internal structural roles unchanged.
+with exactly one space between the emoji and project name. Never add a CTRL label, suffix or duplicate-main description. Examples: `🐙 Nemo`, `🧱 BLÖCKS`, `⚓ Helm`. For SWARM, `🐙 <objective>` follows the same project-only rule; keep internal structural roles unchanged.
 An assigned lane keeps its assigned profession and structural role. Preserve an
 explicit custom title or naming exception unless the user asks to change it.
 Visible lane names use a concise responsibility or artifact, with the configured
@@ -95,6 +102,9 @@ leave a failed rename incomplete rather than claiming naming compliance.
 Naming authority does not include pinning, unpinning, reordering, archiving, or
 creating additional tasks. Those actions retain their separate user authority;
 the plugin runtime never grants it. Preserve existing pin and placement state.
+For a newly created or adopted top-level CTRL, read `lifecycle.pin_created_tasks`
+and apply the START placement procedure before substantive dispatch when enabled;
+preserve an existing user pin and order instead of applying a default.
 
 After the Step 0 custody check—whether it produced an eligible SWARM receipt or preserved existing user state—resolve exactly one root `SWARM.md` project brief as specified in [project-brief.md](references/project-brief.md). A missing, invalid, incompatible, or digest-unbound brief leaves the project `UNREADY` and prevents new routing; it never authorizes a substitute README, prompt, or hidden state. Then invoke the sibling `scripts/swarm_console.py --start --task-id <exact-current-host-task-id>` once. It obeys `console.auto_start`, starts or reuses the strict-loopback HQ process, and opens a new Chrome tab once for that exact task when `console.open_on_start` is enabled. A retained claim suppresses repeat opens for the same task across restart, not new tasks; uncertain browser delivery stays claimed rather than opening duplicates. A launcher or browser failure is advisory and never blocks SWARM work; each later CTRL continuation may invoke the same launcher to recover a missing HQ process without creating a second lifecycle authority.
 
@@ -169,6 +179,15 @@ Work remains subject to ordinary ownership, proof, and independent review. Do
 not install a control plugin, handle credentials, persist prompts/responses, or
 claim quota savings. See [chatgpt-routing.md](references/chatgpt-routing.md).
 
+For an eligible atomic typed decision, use the configured Jev route before
+spending a full reasoning turn on that decision. Apply deterministic constraints
+and explicit model locks first. Follow [jev-routing.md](references/jev-routing.md)
+for availability, shared spending cap, fallback, and proof limits.
+Route clear challenges directly. When `execution.jev_model_selection = true`,
+use `model_profile.v1` only for unresolved choices between distinct eligible
+models. Simple work, explicit model locks, and reasoning-only choices bypass
+Jev without a provider call.
+
 Spark is a separate, opt-in lane for extremely low-risk small work. It is
 disabled by default and may handle only read-only inspection, narrow search or
 inventory, deterministic formatting, typo/copy/documentation edits, or a
@@ -232,7 +251,11 @@ owning CTRL, described by the smallest matching manifest in the [Lab
 catalog](labs/catalog.json). The CTRL handles delegation; the Lab remains free to
 choose the roles and methods that best fit its goal. Use a normal specialist task
 for one known atomic change. When an area benefits from iterative,
-cross-functional work, apply the thin [Lab workflow](references/lab-workflow.md).
+cross-functional work, apply the thin [Lab workflow](references/lab-workflow.md),
+including callable factory workflows within a Lab.
+Before editing observable behavior, apply
+[comparable before/after proof](references/review-contract.md#capture-comparable-before-and-after-proof)
+so the baseline exists before the change.
 Track progress only through the Lab task's existing blocks: `.25` started, `.5`
 handed to review, `.75` accepted, and `1` completed and committed. A CTRL may
 name a custom Lab for any focused area using the same manifest shape. A Lab

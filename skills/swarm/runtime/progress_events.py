@@ -203,6 +203,14 @@ TASK_HANDOFF_EVENT_FIELDS = frozenset({
     "new_owner", "checkpoint_digest", "scope_version", "lease_version",
     "receipt_id", "host_issued_at_ms", "observed_at_ms", "expected_observation",
 })
+CONTINUATION_HANDOFF_FIELDS = TASK_HANDOFF_EVENT_FIELDS | frozenset({
+    "handoff_type", "source_thread_id", "destination_thread_id",
+    "continuation_capsule_digest", "continuation_capsule_bytes", "publish_receipt_id",
+})
+OWNER_HANDOFF_FIELDS = TASK_HANDOFF_EVENT_FIELDS | frozenset({
+    "handoff_type", "structural_role", "persistent", "host_thread_id",
+    "capacity_reservation_id", "host_activity_receipt_id",
+})
 EXPECTED_RECEIPT_FIELDS = frozenset({
     "schema_version", "record_type", "receipt_id", "goal_id",
     "task_id", "owner_id", "lease_version", "target_id", "artifact_digest",
@@ -217,13 +225,16 @@ EXPECTED_DUE_EVENTS = frozenset({"MATERIAL_EVENT", "TURN_COMPLETION", "LEASE_EXP
 NON_MATERIAL_RECORD_TYPES = frozenset({"EXPECTED_RECEIPT", "REQUEST_LIFECYCLE", "TASK_HANDOFF", "CONNECTOR"})
 CONNECTOR_RECEIPT_FIELDS = frozenset({
     "schema_version", "record_type", "receipt_id", "command_id", "receipt_index",
-    "idempotency_key", "command_digest",
+    "idempotency_key", "command_digest", "payload_digest",
     "project_id", "root_digest", "action", "status", "thread_id", "turn_id",
     "observed_root_digest", "observed_at_ms", "task_creation_identity",
 })
 CONNECTOR_ACTIONS = frozenset({"AUTO", "MANUAL_AGENT", "TASK", "TOPOLOGY_MATERIALIZE", "REPAIR", "LOCAL_HQ"})
-CONNECTOR_STATUSES = frozenset({"COMMAND", "ACKNOWLEDGED", "PROGRESS", "RESULT", "UNSUPPORTED"})
-CONNECTOR_TERMINAL_STATUSES = frozenset({"RESULT", "UNSUPPORTED"})
+CONNECTOR_STATUSES = frozenset({
+    "COMMAND", "ACKNOWLEDGED", "PROGRESS", "DISPATCHED_UNRESOLVED",
+    "RESULT", "RECONCILED_NOT_DELIVERED", "UNSUPPORTED",
+})
+CONNECTOR_TERMINAL_STATUSES = frozenset({"RESULT", "RECONCILED_NOT_DELIVERED", "UNSUPPORTED"})
 
 
 class ProgressLifecycle(StrEnum):
@@ -304,6 +315,11 @@ class TaskHandoffEventKind(StrEnum):
     HANDOFF_OFFERED = "HANDOFF_OFFERED"
     HANDOFF_ACKNOWLEDGED = "HANDOFF_ACKNOWLEDGED"
     CUSTODY_TRANSFERRED = "CUSTODY_TRANSFERRED"
+    CONTINUATION_PREPARED = "CONTINUATION_PREPARED"
+    CONTINUATION_PUBLISHED = "CONTINUATION_PUBLISHED"
+    OWNER_SLEEPING = "OWNER_SLEEPING"
+    OWNER_WAKING = "OWNER_WAKING"
+    OWNER_ACTIVE = "OWNER_ACTIVE"
 
 
 PROGRESS_FLAGS = frozenset({
@@ -556,6 +572,57 @@ def task_handoff_host_binding(payload: Mapping[str, Any]) -> str:
     return hashlib.sha256(json.dumps(values, ensure_ascii=True, separators=(",", ":")).encode("utf-8")).hexdigest()
 
 
+def task_handoff_activity_binding(payload: Mapping[str, Any]) -> str:
+    """Bind host custody to continuation publication or resumed-owner activity."""
+    event = validate_task_handoff_event(dict(payload))
+    kind = TaskHandoffEventKind(event["event_kind"])
+    if kind is TaskHandoffEventKind.CONTINUATION_PUBLISHED:
+        values = (
+            "continuation-published", event["handoff_id"], event["task_id"],
+            event["old_owner"], event["source_thread_id"], event["destination_thread_id"],
+            event["checkpoint_digest"], event["continuation_capsule_digest"],
+            event["continuation_capsule_bytes"], event["publish_receipt_id"],
+            event["scope_version"], event["lease_version"], event["host_issued_at_ms"],
+        )
+    elif kind is TaskHandoffEventKind.OWNER_ACTIVE:
+        values = (
+            "owner-active", event["handoff_id"], event["task_id"], event["old_owner"],
+            event["host_thread_id"], event["checkpoint_digest"], event["capacity_reservation_id"],
+            event["host_activity_receipt_id"], event["scope_version"], event["lease_version"],
+            event["observed_at_ms"],
+        )
+    else:
+        raise ProgressEventError("host activity custody binds only publication or resumed owner activity")
+    return hashlib.sha256(json.dumps(values, ensure_ascii=True, separators=(",", ":")).encode("utf-8")).hexdigest()
+
+
+def task_handoff_dispatch_instruction(payload: Mapping[str, Any], root_digest: str) -> str:
+    """Derive the content-free host instruction from one retained continuation/wake state."""
+    event = validate_task_handoff_event(dict(payload))
+    root = _sha256(root_digest, "handoff root")
+    if event["event_kind"] == TaskHandoffEventKind.CONTINUATION_PREPARED.value:
+        binding = {
+            "kind": event["event_kind"], "handoff_id": event["handoff_id"],
+            "goal_id": event["goal_id"], "task_id": event["task_id"], "owner_id": event["old_owner"],
+            "source_thread_id": event["source_thread_id"], "destination_thread_id": event["destination_thread_id"],
+            "checkpoint_digest": event["checkpoint_digest"], "continuation_capsule_digest": event["continuation_capsule_digest"],
+            "continuation_capsule_bytes": event["continuation_capsule_bytes"],
+            "scope_version": event["scope_version"], "lease_version": event["lease_version"],
+        }
+    elif event["event_kind"] == TaskHandoffEventKind.OWNER_WAKING.value:
+        binding = {
+            "kind": event["event_kind"], "handoff_id": event["handoff_id"],
+            "goal_id": event["goal_id"], "task_id": event["task_id"], "owner_id": event["old_owner"],
+            "host_thread_id": event["host_thread_id"], "checkpoint_digest": event["checkpoint_digest"],
+            "capacity_reservation_id": event["capacity_reservation_id"],
+            "scope_version": event["scope_version"], "lease_version": event["lease_version"],
+        }
+    else:
+        raise ProgressEventError("host handoff dispatch requires a prepared continuation or waking owner")
+    binding["root_digest"] = root
+    return json.dumps(binding, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
+
+
 def request_blocked_release_binding(payload: Mapping[str, Any]) -> str:
     """Bind terminal release authority to the retained exhausted-route evidence."""
     event = validate_request_lifecycle_event(dict(payload))
@@ -573,7 +640,13 @@ def request_blocked_release_binding(payload: Mapping[str, Any]) -> str:
 def validate_task_handoff_event(payload: Any) -> dict[str, Any]:
     if not isinstance(payload, dict):
         raise ProgressEventError("task handoff event must be an object")
-    _exact_fields(payload, TASK_HANDOFF_EVENT_FIELDS, "task handoff event")
+    handoff_type = str(payload.get("handoff_type") or "CUSTODY")
+    fields = (
+        CONTINUATION_HANDOFF_FIELDS if handoff_type == "HOST_THREAD_CONTINUATION"
+        else OWNER_HANDOFF_FIELDS if handoff_type == "OWNER_LIFECYCLE"
+        else TASK_HANDOFF_EVENT_FIELDS
+    )
+    _exact_fields(payload, fields, "task handoff event")
     if payload.get("schema_version") != 1 or payload.get("record_type") != "TASK_HANDOFF":
         raise ProgressEventError("task handoff event requires schema v1 and typed record")
     for key in ("event_id", "dedupe_key", "handoff_id", "goal_id", "task_id", "old_owner", "receipt_id"):
@@ -597,7 +670,46 @@ def validate_task_handoff_event(payload: Any) -> dict[str, Any]:
         event_kind = TaskHandoffEventKind(str(payload.get("event_kind") or ""))
     except ValueError as error:
         raise ProgressEventError("task handoff event kind is invalid") from error
-    if event_kind is TaskHandoffEventKind.HANDOFF_DUE:
+    if handoff_type == "HOST_THREAD_CONTINUATION":
+        if event_kind not in {TaskHandoffEventKind.CONTINUATION_PREPARED, TaskHandoffEventKind.CONTINUATION_PUBLISHED}:
+            raise ProgressEventError("continuation handoff event kind is invalid")
+        source_thread = _safe_id(payload.get("source_thread_id"), "source_thread_id")
+        destination_thread = _safe_id(payload.get("destination_thread_id"), "destination_thread_id")
+        capsule_digest = payload.get("continuation_capsule_digest")
+        capsule_bytes = _positive_int(payload.get("continuation_capsule_bytes"), "continuation_capsule_bytes")
+        publish_receipt = _optional_id(payload.get("publish_receipt_id"), "publish_receipt_id")
+        if source_thread == destination_thread or not re.fullmatch(r"[0-9a-f]{64}", str(capsule_digest or "")) or capsule_bytes > 16 * 1024:
+            raise ProgressEventError("continuation capsule requires distinct host threads and a bounded content-free digest")
+        if new_owner != payload["old_owner"] or checkpoint_digest is None:
+            raise ProgressEventError("continuation preserves the same owner and frozen checkpoint")
+        if event_kind is TaskHandoffEventKind.CONTINUATION_PREPARED:
+            if parent_event_id is not None or publish_receipt is not None or host_issued_at_ms is not None:
+                raise ProgressEventError("continuation must be durably prepared before host publication")
+        elif parent_event_id is None or publish_receipt is None or host_issued_at_ms is None:
+            raise ProgressEventError("published continuation requires its durable parent and exact host receipt")
+    elif handoff_type == "OWNER_LIFECYCLE":
+        if event_kind not in {TaskHandoffEventKind.OWNER_SLEEPING, TaskHandoffEventKind.OWNER_WAKING, TaskHandoffEventKind.OWNER_ACTIVE}:
+            raise ProgressEventError("owner lifecycle handoff event kind is invalid")
+        structural_role = str(payload.get("structural_role") or "")
+        persistent = payload.get("persistent")
+        _safe_id(payload.get("host_thread_id"), "host_thread_id")
+        capacity = _optional_id(payload.get("capacity_reservation_id"), "capacity_reservation_id")
+        activity = _optional_id(payload.get("host_activity_receipt_id"), "host_activity_receipt_id")
+        if structural_role not in {"LEAD", "SPECIALIST"} or not isinstance(persistent, bool) or structural_role == "SPECIALIST" and not persistent:
+            raise ProgressEventError("sleeping ownership requires a LEAD or persistent SPECIALIST")
+        if new_owner != payload["old_owner"] or checkpoint_digest is None or host_issued_at_ms is not None:
+            raise ProgressEventError("owner sleep and wake preserve owner, custody, lease, and checkpoint")
+        if event_kind is TaskHandoffEventKind.OWNER_SLEEPING:
+            if parent_event_id is not None or capacity is not None or activity is not None:
+                raise ProgressEventError("sleeping owner cannot claim wake capacity or activity")
+        elif event_kind is TaskHandoffEventKind.OWNER_WAKING:
+            if parent_event_id is None or capacity is None or activity is not None:
+                raise ProgressEventError("waking owner requires a prior sleep and capacity reservation")
+        elif parent_event_id is None or capacity is None or activity is None:
+            raise ProgressEventError("active owner requires waking capacity and exact host activity proof")
+    elif handoff_type != "CUSTODY":
+        raise ProgressEventError("task handoff type is invalid")
+    elif event_kind is TaskHandoffEventKind.HANDOFF_DUE:
         if parent_event_id is not None or new_owner is not None or checkpoint_digest is not None or host_issued_at_ms is None:
             raise ProgressEventError("HANDOFF_DUE cannot claim a target owner or checkpoint")
     elif parent_event_id is None or new_owner is None or checkpoint_digest is None:
@@ -606,7 +718,7 @@ def validate_task_handoff_event(payload: Any) -> dict[str, Any]:
         raise ProgressEventError("handoff acknowledgement requires host issuance time")
     elif event_kind is not TaskHandoffEventKind.HANDOFF_ACKNOWLEDGED and host_issued_at_ms is not None:
         raise ProgressEventError("host issuance time is reserved for task start and acknowledgement")
-    if new_owner == payload["old_owner"]:
+    if handoff_type == "CUSTODY" and new_owner == payload["old_owner"]:
         raise ProgressEventError("task handoff requires a distinct target owner")
     if event_kind in {TaskHandoffEventKind.HANDOFF_DUE, TaskHandoffEventKind.HANDOFF_ACKNOWLEDGED} and not re.fullmatch(r"[0-9a-f]{64}", payload["receipt_id"]):
         raise ProgressEventError("task start and acknowledgement require an opaque host receipt")
@@ -757,7 +869,8 @@ def _validate_connector_receipt(payload: Any) -> dict[str, Any]:
     if not isinstance(payload, dict):
         raise ProgressEventError("connector receipt must be an object")
     actual_fields = set(payload)
-    if actual_fields != set(CONNECTOR_RECEIPT_FIELDS) and actual_fields != set(CONNECTOR_RECEIPT_FIELDS) - {"task_creation_identity"}:
+    required = set(CONNECTOR_RECEIPT_FIELDS) - {"task_creation_identity", "payload_digest"}
+    if not required <= actual_fields or actual_fields - set(CONNECTOR_RECEIPT_FIELDS):
         raise ProgressEventError("connector receipt fields are incomplete or unexpected")
     if payload.get("schema_version") != 1 or payload.get("record_type") != "CONNECTOR":
         raise ProgressEventError("connector receipt schema is unsupported")
@@ -770,6 +883,8 @@ def _validate_connector_receipt(payload: Any) -> dict[str, Any]:
         value = payload.get(key)
         if not isinstance(value, str) or len(value) != 64 or any(character not in "0123456789abcdef" for character in value):
             raise ProgressEventError(f"connector {key} must be a lowercase SHA-256 digest")
+    if "payload_digest" in payload:
+        normalized["payload_digest"] = _sha256(payload.get("payload_digest"), "connector payload_digest")
     observed_root = payload.get("observed_root_digest")
     if observed_root is not None and (not isinstance(observed_root, str) or len(observed_root) != 64 or any(character not in "0123456789abcdef" for character in observed_root)):
         raise ProgressEventError("connector observed_root_digest must be null or a lowercase SHA-256 digest")
@@ -802,8 +917,10 @@ def _validate_connector_receipt(payload: Any) -> dict[str, Any]:
         raise ProgressEventError("LOCAL_HQ lifecycle requires the exact local observed root")
     if normalized["action"] != "LOCAL_HQ" and normalized["status"] == "ACKNOWLEDGED" and (not has_thread or has_turn or normalized["observed_root_digest"] != normalized["root_digest"]):
         raise ProgressEventError("Codex connector acknowledgement requires a thread and exact root binding")
-    if normalized["action"] != "LOCAL_HQ" and normalized["status"] in {"PROGRESS", "RESULT"} and (not has_thread or not has_turn or normalized["observed_root_digest"] != normalized["root_digest"]):
+    if normalized["action"] != "LOCAL_HQ" and normalized["status"] in {"PROGRESS", "RESULT", "DISPATCHED_UNRESOLVED", "RECONCILED_NOT_DELIVERED"} and (not has_thread or not has_turn or normalized["observed_root_digest"] != normalized["root_digest"]):
         raise ProgressEventError("Codex connector progress or result requires thread, turn, and exact root binding")
+    if normalized["status"] in {"DISPATCHED_UNRESOLVED", "RECONCILED_NOT_DELIVERED"} and normalized["action"] != "REPAIR":
+        raise ProgressEventError("uncertain steering delivery is reserved for an exact repair target")
     return json.loads(json.dumps(normalized, ensure_ascii=False, sort_keys=True, separators=(",", ":")))
 
 
@@ -2315,6 +2432,9 @@ _TASK_HANDOFF_TRANSITIONS: dict[TaskHandoffEventKind, TaskHandoffEventKind] = {
     TaskHandoffEventKind.HANDOFF_DUE: TaskHandoffEventKind.HANDOFF_OFFERED,
     TaskHandoffEventKind.HANDOFF_OFFERED: TaskHandoffEventKind.HANDOFF_ACKNOWLEDGED,
     TaskHandoffEventKind.HANDOFF_ACKNOWLEDGED: TaskHandoffEventKind.CUSTODY_TRANSFERRED,
+    TaskHandoffEventKind.CONTINUATION_PREPARED: TaskHandoffEventKind.CONTINUATION_PUBLISHED,
+    TaskHandoffEventKind.OWNER_SLEEPING: TaskHandoffEventKind.OWNER_WAKING,
+    TaskHandoffEventKind.OWNER_WAKING: TaskHandoffEventKind.OWNER_ACTIVE,
 }
 
 
@@ -2428,13 +2548,18 @@ class Ledger:
         if command is None:
             if event["status"] != "COMMAND" or event["receipt_index"] != 0:
                 raise ProgressEventError("connector lifecycle must begin with COMMAND index zero")
-            command = {"identity": list(identity), "task_creation_identity": event.get("task_creation_identity"), "terminal": False, "receipts": []}
+            command = {
+                "identity": list(identity), "payload_digest": event.get("payload_digest"),
+                "task_creation_identity": event.get("task_creation_identity"), "terminal": False, "receipts": [],
+            }
             commands[event["idempotency_key"]] = command
             command_ids[event["command_id"]] = [event["idempotency_key"], *identity]
         elif tuple(command["identity"]) != identity:
             raise ProgressEventError("connector command identity conflicts with retained command")
         elif command.get("task_creation_identity") != event.get("task_creation_identity"):
             raise ProgressEventError("connector task creation identity conflicts with retained command")
+        elif command.get("payload_digest") is not None and event.get("payload_digest") != command["payload_digest"]:
+            raise ProgressEventError("connector payload digest conflicts with retained command")
         if command["terminal"]:
             raise ProgressEventError("connector terminal lifecycle is monotonic")
         if event["receipt_index"] != len(command["receipts"]):
@@ -2444,10 +2569,15 @@ class Ledger:
             raise ProgressEventError("connector lifecycle observation time cannot regress")
         if previous is not None and not (
             previous == "COMMAND" and event["status"] in {"ACKNOWLEDGED", "UNSUPPORTED"}
-            or previous == "ACKNOWLEDGED" and event["status"] in {"PROGRESS", "RESULT"}
+            or previous == "ACKNOWLEDGED" and event["status"] in {"PROGRESS", "RESULT", "DISPATCHED_UNRESOLVED"}
             or previous == "PROGRESS" and event["status"] in {"PROGRESS", "RESULT"}
+            or previous == "DISPATCHED_UNRESOLVED" and event["status"] in {"RESULT", "RECONCILED_NOT_DELIVERED"}
         ):
             raise ProgressEventError("connector lifecycle transition is invalid")
+        if previous == "DISPATCHED_UNRESOLVED":
+            prior = command["receipts"][-1]
+            if (event["thread_id"], event["turn_id"]) != (prior["thread_id"], prior["turn_id"]):
+                raise ProgressEventError("steering reconciliation must preserve the exact target thread and turn")
         command["receipts"].append({**event, "event_seq": event_seq, "event_digest": event_digest})
         receipt_ids[event["receipt_id"]] = event_digest
         command["terminal"] = event["status"] in CONNECTOR_TERMINAL_STATUSES
@@ -2735,13 +2865,24 @@ class Ledger:
         handoff_id = payload["handoff_id"]
         event_kind = TaskHandoffEventKind(payload["event_kind"])
         current = projection["task_handoffs"].get(handoff_id)
-        lease_key = f"{payload['task_id']}:{payload['lease_version']}"
+        handoff_type = payload.get("handoff_type", "CUSTODY")
+        lease_key = f"{handoff_type}:{payload['task_id']}:{payload['lease_version']}"
         if current is None:
-            if event_kind is not TaskHandoffEventKind.HANDOFF_DUE:
-                raise ProgressEventError("task handoff must begin with HANDOFF_DUE")
+            if event_kind not in {
+                TaskHandoffEventKind.HANDOFF_DUE,
+                TaskHandoffEventKind.CONTINUATION_PREPARED,
+                TaskHandoffEventKind.OWNER_SLEEPING,
+            }:
+                raise ProgressEventError("task handoff root state is invalid")
             retained_handoff = projection["task_handoff_leases"].get(lease_key)
             if retained_handoff is not None and retained_handoff != handoff_id:
-                raise ProgressEventError("task lease already binds a different handoff")
+                retained = projection["task_handoffs"][retained_handoff]
+                terminal = {
+                    "HOST_THREAD_CONTINUATION": TaskHandoffEventKind.CONTINUATION_PUBLISHED.value,
+                    "OWNER_LIFECYCLE": TaskHandoffEventKind.OWNER_ACTIVE.value,
+                }.get(handoff_type)
+                if terminal is None or retained["event_kind"] != terminal:
+                    raise ProgressEventError("task lease already binds an open handoff")
         else:
             if payload["parent_event_id"] != current["event_id"]:
                 raise ProgressEventError("task handoff parent must bind the current retained event")
@@ -2755,6 +2896,33 @@ class Ledger:
                 raise ProgressEventError("task handoff target owner conflicts")
             if current["checkpoint_digest"] is not None and payload["checkpoint_digest"] != current["checkpoint_digest"]:
                 raise ProgressEventError("task handoff checkpoint conflicts")
+            if handoff_type != current.get("handoff_type", "CUSTODY"):
+                raise ProgressEventError("task handoff subtype conflicts")
+            if handoff_type == "HOST_THREAD_CONTINUATION" and any(
+                payload[key] != current[key]
+                for key in ("source_thread_id", "destination_thread_id", "continuation_capsule_digest", "continuation_capsule_bytes")
+            ):
+                raise ProgressEventError("continuation capsule or host-thread binding conflicts")
+            if handoff_type == "OWNER_LIFECYCLE":
+                if any(payload[key] != current[key] for key in ("structural_role", "persistent", "host_thread_id")):
+                    raise ProgressEventError("owner lifecycle identity or host-thread binding conflicts")
+                retained_capacity = current.get("capacity_reservation_id")
+                if retained_capacity is not None and payload["capacity_reservation_id"] != retained_capacity:
+                    raise ProgressEventError("owner wake capacity reservation conflicts")
+                if event_kind in {TaskHandoffEventKind.OWNER_WAKING, TaskHandoffEventKind.OWNER_ACTIVE}:
+                    task_id = payload["task_id"]
+                    fenced = any(
+                        item["lifecycle_state"] in {LedgerLifecycleState.KEEP_OUT.value, LedgerLifecycleState.USER_PAUSED.value}
+                        and isinstance(item.get("record"), dict) and item["record"].get("task_id") == task_id
+                        for item in projection["request_lifecycles"].values()
+                    )
+                    unresolved = any(
+                        command["receipts"] and command["receipts"][-1]["status"] == "DISPATCHED_UNRESOLVED"
+                        and command["receipts"][-1].get("thread_id") == payload["host_thread_id"]
+                        for command in projection["connector_receipts"].values()
+                    )
+                    if fenced or unresolved:
+                        raise ProgressEventError("owner wake is fenced by paused, keep-out, or unresolved host delivery")
             if payload["observed_at_ms"] < current["observed_at_ms"]:
                 raise ProgressEventError("task handoff observation cannot regress")
         projection["handoff_event_digests"][event_id] = event_digest
@@ -3197,6 +3365,67 @@ class Ledger:
             self._condition.notify_all()
         return {"status": "appended", "cursor": trial["cursor"], "event_digest": creation.digest, "bytes": len(encoded)}
 
+    def append_connector_result_with_task_handoff(
+        self, result_payload: Mapping[str, Any], handoff_payload: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        """Commit one host RESULT and its continuation or wake terminal under one lock."""
+        result = _validate_connector_receipt(dict(result_payload))
+        handoff = validate_task_handoff_event(dict(handoff_payload))
+        kind = TaskHandoffEventKind(handoff["event_kind"])
+        receipt_field = "publish_receipt_id" if kind is TaskHandoffEventKind.CONTINUATION_PUBLISHED else "host_activity_receipt_id"
+        if (
+            result["status"] != "RESULT" or result["action"] != "TASK"
+            or kind not in {TaskHandoffEventKind.CONTINUATION_PUBLISHED, TaskHandoffEventKind.OWNER_ACTIVE}
+            or handoff[receipt_field] != result["receipt_id"]
+            or result["thread_id"] != handoff.get("destination_thread_id", handoff.get("host_thread_id"))
+            or not result["turn_id"] or result.get("payload_digest") is None
+        ):
+            raise ProgressEventError("atomic host handoff requires exact TASK result, target thread, payload, and receipt binding")
+        result_digest = _connector_receipt_digest(result)
+        handoff_digest = _task_handoff_digest(handoff)
+        with self._state.locked():
+            projection, records = self._replay_unlocked()
+            retained_result = projection["connector_receipt_ids"].get(result["receipt_id"])
+            retained_handoff = projection["handoff_event_digests"].get(handoff["event_id"])
+            if retained_result is not None and retained_result != result_digest:
+                raise ProgressEventError("connector receipt_id conflicts with retained event")
+            if retained_handoff is not None and retained_handoff != handoff_digest:
+                raise ProgressEventError("task handoff terminal conflicts with retained event")
+            if retained_result is not None and retained_handoff is not None:
+                return {"status": "unchanged", "cursor": projection["cursor"], "event_digest": handoff_digest}
+            source = projection["task_handoffs"].get(handoff["handoff_id"])
+            if source is None or source["event_id"] != handoff["parent_event_id"]:
+                raise ProgressEventError("atomic host handoff terminal requires its current retained source")
+            source_event = {key: value for key, value in source.items() if key not in {"event_digest", "event_seq"}}
+            expected_payload = hashlib.sha256(
+                task_handoff_dispatch_instruction(source_event, result["root_digest"]).encode("utf-8")
+            ).hexdigest()
+            if result["payload_digest"] != expected_payload:
+                raise ProgressEventError("connector RESULT payload does not bind the retained handoff source")
+            trial = json.loads(json.dumps(projection, sort_keys=True))
+            lines: list[bytes] = []
+            if retained_result is None:
+                result_seq = len(records) + 1
+                self._apply_connector_receipt(trial, result, result_seq, result_digest)
+                lines.append(json.dumps(
+                    {"event_seq": result_seq, "event_digest": result_digest, "event": result},
+                    ensure_ascii=False, sort_keys=True, separators=(",", ":"),
+                ).encode("utf-8") + b"\n")
+            handoff_seq = len(records) + len(lines) + 1
+            self._apply_task_handoff(trial, handoff, handoff_seq)
+            lines.append(json.dumps(
+                {"event_seq": handoff_seq, "event_digest": handoff_digest, "event": handoff},
+                ensure_ascii=False, sort_keys=True, separators=(",", ":"),
+            ).encode("utf-8") + b"\n")
+            self._state.path.parent.mkdir(parents=True, exist_ok=True)
+            encoded = b"".join(lines)
+            with self._state.path.open("ab") as handle:
+                handle.write(encoded); handle.flush(); os.fsync(handle.fileno())
+            self._write_projection_unlocked(trial)
+        with self._condition:
+            self._condition.notify_all()
+        return {"status": "appended", "cursor": trial["cursor"], "event_digest": handoff_digest, "bytes": len(encoded)}
+
     def reserve_connector_command(self, payload: Mapping[str, Any], *, expected_revision: int) -> dict[str, Any]:
         event = _validate_connector_receipt(dict(payload))
         if event["status"] != "COMMAND" or event["receipt_index"] != 0:
@@ -3333,6 +3562,14 @@ class Ledger:
         event = validate_task_handoff_event(dict(payload))
         if event["event_kind"] in {TaskHandoffEventKind.HANDOFF_DUE.value, TaskHandoffEventKind.HANDOFF_ACKNOWLEDGED.value}:
             self.require_host_custody_receipt(custody_receipt, target_id=event["task_id"], binding=task_handoff_host_binding(event), issued_at=event["host_issued_at_ms"])
+        elif event["event_kind"] in {TaskHandoffEventKind.CONTINUATION_PUBLISHED.value, TaskHandoffEventKind.OWNER_ACTIVE.value}:
+            receipt_field = "publish_receipt_id" if event["event_kind"] == TaskHandoffEventKind.CONTINUATION_PUBLISHED.value else "host_activity_receipt_id"
+            if custody_receipt is None or custody_receipt.receipt != event[receipt_field]:
+                raise ProgressEventError("host activity proof must bind its exact retained receipt identity")
+            self.require_host_custody_receipt(
+                custody_receipt, target_id=event["task_id"], binding=task_handoff_activity_binding(event),
+                issued_at=event["host_issued_at_ms"] if receipt_field == "publish_receipt_id" else event["observed_at_ms"],
+            )
         event_digest = _task_handoff_digest(event)
         semantic_digest = _task_handoff_digest(event, semantic=True)
         with self._state.locked():
@@ -3985,6 +4222,14 @@ class Ledger:
                 retained_receipts.add(event.dispatch_receipt_id)
             if event.completion_receipt_id:
                 retained_receipts.add(event.completion_receipt_id)
+            if event.task_creation_binding is not None:
+                receipts = event.task_creation_binding["receipts"]
+                retained_receipts.add(receipts["topology_manifest_receipt_id"])
+                retained_receipts.add(receipts["task_receipt_id"])
+                retained_receipts.update(item["receipt_id"] for item in receipts["milestone_receipts"])
+                retained_receipts.update(item["receipt_id"] for item in receipts["block_receipts"])
+                if receipts["explicit_empty_work_receipt_id"] is not None:
+                    retained_receipts.add(receipts["explicit_empty_work_receipt_id"])
 
         unknown: set[str] = set()
         block_events: dict[str, list[tuple[int, ProgressMaterialEvent]]] = {}

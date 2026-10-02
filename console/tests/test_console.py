@@ -7795,6 +7795,70 @@ class SwarmConsoleTests(unittest.TestCase):
             if not stdout_records:
                 self.assertEqual((result.thread_id, result.turn_id), ("", ""))
 
+    def test_auto_observation_timeout_retains_process_until_matching_terminal(self) -> None:
+        events = console.queue.Queue()
+        stopped = threading.Event()
+        clock = [0.0]
+        written = []
+        class Output:
+            def __iter__(self):
+                while True:
+                    event = events.get()
+                    if event is None:
+                        return
+                    yield json.dumps(event) + "\n"
+        class Input:
+            def write(self, value):
+                request = json.loads(value)
+                written.append(request)
+                method = request.get("method")
+                if method == "initialize":
+                    events.put({"id": request["id"], "result": {}})
+                elif method == "thread/start":
+                    events.put({"id": request["id"], "result": {"thread": {"id": "owned-thread"}}})
+                elif method == "turn/start":
+                    events.put({"id": request["id"], "result": {"turn": {"id": "owned-turn"}}})
+                    clock[0] = console.AUTO_BRIDGE_TIMEOUT_SECONDS + 1
+            def flush(self):
+                pass
+        class Process:
+            stdin = Input()
+            stdout = Output()
+            terminate_count = 0
+            kill_count = 0
+            def poll(self):
+                return 0 if stopped.is_set() else None
+            def terminate(self):
+                self.terminate_count += 1
+                stopped.set()
+                events.put(None)
+            def kill(self):
+                self.kill_count += 1
+                stopped.set()
+            def wait(self, timeout=None):
+                if not stopped.wait(timeout):
+                    raise console.subprocess.TimeoutExpired("fake", timeout)
+                return 0
+        process = Process()
+        factory = mock.Mock(return_value=process)
+        bridge = console.CodexStdioBridge(factory, executable_resolver=lambda: ("codex-test", "0.159.0"))
+        try:
+            with mock.patch.object(console.time, "monotonic", side_effect=lambda: clock[0]):
+                result = bridge.run(cwd=self.root, instruction="bounded", retain_ids=lambda *_: None)
+            self.assertFalse(result.ok)
+            self.assertTrue(result.turn_started)
+            self.assertEqual(result.thread_id, "owned-thread")
+            self.assertEqual((process.terminate_count, process.kill_count), (0, 0))
+            self.assertEqual(factory.call_count, 1)
+            self.assertEqual(sum(item.get("method") == "turn/start" for item in written), 1)
+            events.put({"method": "turn/completed", "params": {
+                "threadId": "owned-thread", "turnId": "owned-turn", "status": "completed"}})
+            self.assertTrue(stopped.wait(2), "matching terminal event must release the existing transport")
+            self.assertEqual((process.terminate_count, process.kill_count), (1, 0))
+        finally:
+            if not stopped.is_set():
+                process.terminate()
+
     def test_auto_post_start_disconnect_retains_ids_and_never_starts_a_duplicate_turn(self) -> None:
         written: list[dict[str, object]] = []
         retained: list[tuple[str, str, bool]] = []
@@ -9011,6 +9075,177 @@ class SwarmConsoleTests(unittest.TestCase):
         self.assertNotIn('"recovery.max_attempts"', app)
         with self.assertRaises(console.ConsoleError):
             console.update_config(self.config, {"recovery.max_attempts": 0})
+
+    def test_observer_start_does_not_block_http_startup_on_host_scan(self) -> None:
+        app = console.App(self.codex_home, self.config)
+        scan_entered = threading.Event()
+        release_scan = threading.Event()
+
+        def delayed_startup(trigger: str) -> None:
+            self.assertEqual(trigger, "startup")
+            scan_entered.set()
+            release_scan.wait(2)
+
+        with mock.patch.object(app, "observe_once", side_effect=delayed_startup):
+            started = time.monotonic()
+            try:
+                app.start_observer()
+                self.assertLess(time.monotonic() - started, 0.5)
+                self.assertTrue(scan_entered.wait(1), "startup scan did not begin in the observer thread")
+            finally:
+                release_scan.set()
+                app.stop_observer()
+
+    def test_project_asset_index_is_read_only_root_bound_and_relative(self) -> None:
+        project_root = self.root / "Projects" / "alpha"
+        (project_root / "art").mkdir(parents=True)
+        image_path = project_root / "art" / "hero final.png"
+        image_path.write_bytes((console.SWARM_SKILL_ROOT / "assets" / "role-avatars" / "source" / "manager.png").read_bytes())
+        (project_root / "art" / "vector.svg").write_text(
+            '<svg xmlns="http://www.w3.org/2000/svg"/>', encoding="utf-8"
+        )
+        (project_root / "notes.txt").write_text("not an asset", encoding="utf-8")
+        with closing(sqlite3.connect(self.database)) as connection:
+            connection.execute("UPDATE project_roots SET path=? WHERE project_id='project:alpha'", (str(project_root),))
+            connection.commit()
+        app = console.App(self.codex_home, self.config, self.root / "console" / "project-assets.sqlite3")
+        with mock.patch.object(console, "PROJECT_ORGANIZER_ROOT", self.root / "Projects"):
+            with mock.patch.object(console, "_media_metadata", wraps=console._media_metadata) as metadata:
+                result = app.project_assets_projection()
+                metadata.assert_not_called()
+            preview = next(item for item in result["items"] if item["presentation"]["display_name"] == image_path.name)
+            vector = next(item for item in result["items"] if item["presentation"]["display_name"] == "vector.svg")
+            query = console.parse_qs(console.urlparse(preview["preview"]["url"]).query)
+            media = app.project_asset_media_item(
+                query["project_id"][0], query["path"][0]
+            )
+            self.assertNotIn("digest", query)
+            with self.assertRaisesRegex(console.ConsoleError, "relative path"):
+                app.project_asset_media_item("project:alpha", "../outside.png")
+            with self.assertRaisesRegex(console.ConsoleError, "digest"):
+                app.project_asset_media_item("project:alpha", "art/hero final.png", "0" * 64)
+            with self.assertRaisesRegex(console.ConsoleError, "unavailable"):
+                app.project_asset_media_item("project:alpha", "art/vector.svg")
+        self.assertEqual(result["status"], "available")
+        self.assertEqual(
+            [item["presentation"]["description"] for item in result["items"]],
+            ["art/hero final.png", "art/vector.svg"],
+        )
+        self.assertEqual(preview["preview"]["state"], "AVAILABLE")
+        self.assertEqual((media["media_type"], media["size_bytes"]), ("image/png", image_path.stat().st_size))
+        self.assertEqual(vector["preview"], {"state": "UNAVAILABLE", "url": None})
+        self.assertEqual(preview["technical"]["provenance"]["path_kind"], "relative")
+        self.assertNotIn(str(project_root), json.dumps(result))
+        self.assertIn("no project files are written", result["claim_limit"])
+
+    def test_project_asset_preview_http_route_dispatches_project_media(self) -> None:
+        handler = self._handler("127.0.0.1", "127.0.0.1:4788")
+        app = handler.server.app
+        app.project_asset_media_item = mock.Mock(return_value={
+            "path": self.root / "preview.png", "media_type": "image/png", "size_bytes": 10,
+        })
+        handler.path = "/api/project-assets/preview?project_id=project%3Aalpha&path=art%2Fhero.png"
+        handler._registered_media = mock.Mock()
+
+        handler.do_GET()
+
+        app.project_asset_media_item.assert_called_once_with("project:alpha", "art/hero.png", "")
+        handler._registered_media.assert_called_once_with(app.project_asset_media_item.return_value)
+
+        blocked = self._handler(
+            "127.0.0.1", "127.0.0.1:4788", origin="https://attacker.example"
+        )
+        blocked.server.app.project_asset_media_item = mock.Mock()
+        blocked.path = handler.path
+        blocked._error = mock.Mock()
+        blocked._registered_media = mock.Mock()
+
+        blocked.do_GET()
+
+        blocked._error.assert_called_once_with(
+            console.HTTPStatus.FORBIDDEN,
+            "same-origin project asset preview request required",
+        )
+        blocked.server.app.project_asset_media_item.assert_not_called()
+        blocked._registered_media.assert_not_called()
+
+        cross_site = self._handler("127.0.0.1", "127.0.0.1:4788")
+        cross_site.headers["Sec-Fetch-Site"] = "cross-site"
+        cross_site.server.app.project_asset_media_item = mock.Mock()
+        cross_site.path = handler.path
+        cross_site._error = mock.Mock()
+        cross_site._registered_media = mock.Mock()
+
+        cross_site.do_GET()
+
+        cross_site._error.assert_called_once_with(
+            console.HTTPStatus.FORBIDDEN,
+            "same-origin project asset preview request required",
+        )
+        cross_site.server.app.project_asset_media_item.assert_not_called()
+        cross_site._registered_media.assert_not_called()
+
+    def test_registered_media_streams_path_strings(self) -> None:
+        media_path = self.root / "project-image.png"
+        media_path.write_bytes(b"image bytes")
+        handler = self._handler("127.0.0.1", "127.0.0.1:4788")
+        handler.send_response = mock.Mock()
+        handler.send_header = mock.Mock()
+        handler.end_headers = mock.Mock()
+        handler.wfile = SimpleNamespace(write=mock.Mock())
+
+        handler._registered_media({
+            "path": str(media_path), "media_type": "image/png", "size_bytes": media_path.stat().st_size,
+        })
+
+        handler.send_response.assert_called_once_with(console.HTTPStatus.OK)
+        self.assertIn(mock.call("Content-Type", "image/png"), handler.send_header.call_args_list)
+        self.assertIn(mock.call("Content-Length", str(media_path.stat().st_size)), handler.send_header.call_args_list)
+        self.assertEqual(b"".join(call.args[0] for call in handler.wfile.write.call_args_list), b"image bytes")
+
+    def test_project_organizer_remains_read_only_when_inventory_is_unavailable(self) -> None:
+        app = console.App(self.codex_home, self.config, self.root / "console" / "organizer-unknown.sqlite3")
+        view = {"projects": [], "project_inventory": {"state": "UNKNOWN", "available": False}}
+        scope_root = self.root / "Projects"
+        with (
+            mock.patch.object(console, "PROJECT_ORGANIZER_ROOT", scope_root),
+            mock.patch.object(app, "_host_project_records", side_effect=console.ConsoleError("inventory unavailable")),
+        ):
+            app._decorate_project_organizer_scope(view)
+        self.assertEqual(view["project_inventory"]["organizer_mode"], "read_only")
+        self.assertEqual(view["project_inventory"]["scope_root"], str(scope_root))
+
+    def test_console_status_and_manual_stop_use_the_current_server(self) -> None:
+        app = console.App(self.codex_home, self.config)
+        self.assertEqual(app.console_status()["status"], "starting")
+        stopped = threading.Event()
+
+        class FakeServer:
+            server_address = ("127.0.0.1", 4788)
+
+            @staticmethod
+            def shutdown() -> None:
+                stopped.set()
+
+        app.http_server = FakeServer()
+        self.assertEqual(app.console_status()["url"], "http://127.0.0.1:4788")
+        self.assertEqual(app.console_control("start")["action"], "already_running")
+        result = app.console_control("stop")
+        self.assertEqual(result["action"], "stop_requested")
+        self.assertEqual(result["status"], "stopping")
+        self.assertTrue(stopped.wait(1))
+        with self.assertRaisesRegex(console.ConsoleError, "must be start or stop"):
+            app.console_control("restart")
+
+    def test_spark_has_one_bounded_settings_control(self) -> None:
+        index = (console.STATIC_ROOT / "index.html").read_text(encoding="utf-8")
+        app = (console.STATIC_ROOT / "app.js").read_text(encoding="utf-8")
+        self.assertNotIn('id="usage-saver-toggle"', index)
+        self.assertEqual(app.count('descriptorBooleanSwitch("boost.spark_enabled"'), 1)
+        self.assertIn("Use Spark for safe small tasks", app)
+        self.assertIn("Spark stays bounded to quick, low-risk work.", app)
+        self.assertNotIn("No browser, web lookup, ImageGen", app)
+        self.assertNotIn("saveUsageSaver", app)
 
 
 if __name__ == "__main__":

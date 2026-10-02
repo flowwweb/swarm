@@ -123,6 +123,32 @@ Source, static, local, browser, authenticated, provider, payment, deployed,
 device, and human claims are disjoint. Evidence closes only the exact declared
 class; no lower or adjacent class promotes another.
 
+## Capture comparable before and after proof
+
+Before editing observable behavior, reproduce the current outcome and retain
+the smallest useful baseline: a screenshot for UI, an interaction result for a
+flow, or a focused test/probe for nonvisual work. Record the source and running
+candidate, route or command, viewport where relevant, and reproduction state.
+For a new feature, show the prior absence or workflow it replaces. If a baseline
+cannot be captured, say why; never fabricate a before state or present a later
+reconstruction as an original capture.
+
+After the change, repeat the same scenario under comparable conditions and
+inspect the result. Screenshots prove appearance; exercise the affected action
+and assert its outcome to prove behavior. Use a short clip or ordered captures
+only when a transition matters. For performance claims, retain comparable
+measurements and conditions, not just a claimed improvement. A mismatch returns
+the work to repair and affected proof; capturing a file is not acceptance.
+
+Keep one representative before/after pair per materially changed flow, plus
+distinct requested states. Reuse a baseline while its source and conditions
+remain valid; do not record every edit or take screenshots for backend-only
+changes. Register captures through the existing proof/artifact path, keep
+sensitive content out, and embed the useful pair with a short outcome caption
+in the existing handoff or PR. No separate evidence service or public upload
+is required. Missing baseline evidence limits the comparison claim; it does
+not excuse missing final functional or visual proof.
+
 ## Classify proof and final visual artifacts honestly
 
 Classify runtime proof by the authority and transport actually exercised, not
@@ -150,6 +176,40 @@ Use the relevant desktop and narrow states and check obvious clipping, overflow,
 contrast, loading, empty, fallback, and error behavior. Surface the highest-signal
 screenshot inline first and keep the remaining requested evidence in a compact
 gallery or lightbox. A source diff, path, or filename is not visual proof.
+
+## Visual QC in the existing review flow
+
+Use the existing Designer/Artist, implementation owner, and independent REVIEW
+handoff; do not create another controller or review roster. Keep one compact
+packet in the existing artifact/proof manifest, bound to the approved target
+and exact build under review:
+
+- Compare the approved target and actual build screenshots at matching state,
+  camera, viewport, scale, and framing. Name the reference and build identities;
+  a generated target or source render cannot substitute for the actual build.
+- Inspect the full screen and each relevant asset, then the asset in composed
+  context. For 3D-like assets inspect rotations, front/back, materials, contact
+  with supporting surfaces, and shadows; a favorable front crop is insufficient.
+- Include mobile landscape with browser chrome and safe areas. Record browser,
+  device/emulation, viewport, orientation, and visible obstructions. Desktop
+  emulation alone cannot prove physical-device behavior or real browser chrome.
+- Exercise the requested interactions and measure relevant load, interaction,
+  frame responsiveness, and memory behavior against the agreed budget. Record
+  the scenario, environment, measurement, and limit; do not infer performance
+  from a screenshot or invent a universal threshold.
+- Report source-test, functional, visual, and physical-device verdicts separately
+  using the existing proof classes and acceptance verdicts. Missing evidence
+  stays UNVERIFIED. Known visual defects block visual approval even when code
+  and functional checks pass; severity does not turn a known defect into a pass.
+- Give each defect an observed consequence, exact surface/state, smallest
+  correction, and directly reviewable before evidence. Verify the correction
+  with matching after evidence and affected interaction/performance checks
+  before presenting a preview as fixed. Reuse unaffected accepted proof.
+
+A clearly marked WIP checkpoint needs proportionate safety and integrity checks,
+not full release visual/device QA. Record its known defects and unverified proof;
+it is not visual approval or release acceptance. Full required release QA remains
+due before publishing. Keep checkpointing and release approval separate.
 
 For taste-led generation, a clear user direction permits generation while a
 reserved choice requires candidates and a wait. Classify each supplied reference

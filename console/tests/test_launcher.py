@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -354,6 +355,41 @@ class LauncherTests(unittest.TestCase):
         )
         self.assertFalse(result["ok"])
         self.assertEqual(result["reason"], "browser_launch_failed")
+
+    def test_cold_server_readiness_allows_more_than_one_point_eight_seconds(self) -> None:
+        self._write_setting(open_on_start=False)
+        probes = 0
+
+        def fetch(url: str, **_kwargs):
+            nonlocal probes
+            if not url.endswith("healthz"):
+                self.fail(f"cold-start probe requested {url}")
+            probes += 1
+            if probes < 24:
+                raise OSError("still starting")
+            return self._matching_health()
+
+        result = launcher.ensure_portal(
+            config_path=self.config,
+            codex_home=self.codex_home,
+            fetch_json=fetch,
+            spawn_server=lambda *_args: 2468,
+            open_browser=lambda *_args, **_kwargs: self.fail("browser-disabled launcher opened a tab"),
+            sleep=lambda _seconds: None,
+        )
+        self.assertEqual(result["reason"], "browser_disabled")
+        self.assertGreaterEqual(probes, 24)
+
+    def test_main_returns_nonzero_when_launcher_reports_failure(self) -> None:
+        with (
+            mock.patch.object(sys, "argv", ["launcher.py"]),
+            mock.patch.object(launcher, "parse_args", return_value=mock.Mock(
+                config=None, codex_home=self.codex_home, port=4788,
+            )),
+            mock.patch.object(launcher.console_server, "resolve_config_path", return_value=self.config),
+            mock.patch.object(launcher, "ensure_portal", return_value={"ok": False, "reason": "server_not_ready"}),
+        ):
+            self.assertEqual(launcher.main(), 1)
 
 
 if __name__ == "__main__":

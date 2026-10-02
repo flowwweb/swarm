@@ -2914,6 +2914,7 @@ async function mount(page, overview, overrides = {}) {
       return route.fulfill(response(bootstrap));
     }
     if (url.pathname === "/api/overview") return route.fulfill(response(overview));
+    if (url.pathname === "/api/usage-saver-tunnel") return route.fulfill(response({ok:true,state:"NOT_CONFIGURED",verified_at_ms:null,connector:"SWARM",stores_secret:false}));
     if (url.pathname === "/api/tasks/approvals") return route.fulfill(response({ok:true,requests:[]}));
     if (url.pathname === "/api/assets" && request.method() === "GET") {
       const projection = url.searchParams.get("projection") === "trash" ? "trash" : "active";
@@ -3467,7 +3468,7 @@ async function assertHostWorkPage() {
     if (evidenceDir) await page.screenshot({path:path.join(evidenceDir,"host-work-"+viewport.width+".png"),animations:"disabled"});
     await page.evaluate(() => {state.projectProgressStatus="stale";renderProjectDetail();});
     assert.equal(await section.locator("[data-host-work-id]").count(), 5);
-    assert.deepEqual(runtime.runtimeErrors, []);
+    assert.deepEqual(runtime.runtimeErrors, [], `failed=${runtime.failedRequests.join(" | ")}`);
     assert.deepEqual(runtime.failedRequests, []);
     for (const caller of ["refreshMonitoring", "refreshOverview"]) {
       assert.equal(await section.locator("[data-host-work-id]").count(), 5);
@@ -5240,7 +5241,7 @@ proofFeed.items.push({
     assert.equal(await page.locator("[data-project-tab]").count(), 0);
     assert.equal(await page.locator("#project-tab-panel").getAttribute("aria-label"), "Project overview");
     assert.match(await page.locator("#project-detail-summary").textContent(), /60%/);
-    assert.equal(await page.locator(".milestone-ring").count(), 2);
+    assert.equal(await page.locator(".project-milestones progress").count(), 2);
     assert.equal(await page.locator(".project-yield-chart").count(), 0);
     assert.equal(await page.locator(".project-yield-empty").count(), 1);
     assert.equal(await page.locator(".project-detail-feed > li").count(), 2);

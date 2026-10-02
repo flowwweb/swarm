@@ -25,7 +25,14 @@ from .core import (
     TaskState,
 )
 from .topology import TopologyDispatchPacket
-from .progress_events import build_task_manifest, role_manifest_reference, task_creation_binding_event, validate_task_manifest_draft
+from .progress_events import (
+    build_task_manifest,
+    role_manifest_reference,
+    task_handoff_dispatch_instruction,
+    task_creation_binding_event,
+    validate_task_handoff_event,
+    validate_task_manifest_draft,
+)
 
 
 _DIGEST_CHARS = frozenset("0123456789abcdef")
@@ -51,6 +58,14 @@ def _canonical_digest(payload: object) -> str:
     return sha256(encoded.encode("utf-8")).hexdigest()
 
 
+def handoff_dispatch_instruction(event: Mapping[str, object], root_digest: str) -> str:
+    """Build the only content-free host instruction admitted for continuation or wake."""
+    try:
+        return task_handoff_dispatch_instruction(event, root_digest)
+    except ValueError as error:
+        raise InvariantError(str(error)) from error
+
+
 class AdapterCapabilityState(StrEnum):
     NATIVE = "native"
     ENFORCED = "enforced"
@@ -62,6 +77,10 @@ class AdapterPlanStatus(StrEnum):
     READY = "ready"
     DISABLED = "disabled"
     BLOCKED = "blocked"
+
+
+class HostDispatchUnresolved(RuntimeError):
+    """A host turn call was attempted, but delivery could not be observed."""
 
 
 class ChatGPTRouteStatus(StrEnum):
@@ -328,7 +347,7 @@ class UniversalHQConnector:
 
     @staticmethod
     def _receipt(envelope: HQCommandEnvelope, *, receipt_id: str, index: int, status: str, observed_at_ms: int, thread_id: str | None = None, turn_id: str | None = None, observed_root_digest: str | None = None) -> dict[str, object]:
-        receipt = {"schema_version": 1, "record_type": "CONNECTOR", "receipt_id": receipt_id, "command_id": envelope.command_id, "receipt_index": index, "idempotency_key": envelope.idempotency_key, "command_digest": envelope.digest, "project_id": envelope.project_id, "root_digest": envelope.root_digest, "action": envelope.action.value, "status": status, "thread_id": thread_id, "turn_id": turn_id, "observed_root_digest": observed_root_digest, "observed_at_ms": observed_at_ms}
+        receipt = {"schema_version": 1, "record_type": "CONNECTOR", "receipt_id": receipt_id, "command_id": envelope.command_id, "receipt_index": index, "idempotency_key": envelope.idempotency_key, "command_digest": envelope.digest, "payload_digest": envelope.payload_digest, "project_id": envelope.project_id, "root_digest": envelope.root_digest, "action": envelope.action.value, "status": status, "thread_id": thread_id, "turn_id": turn_id, "observed_root_digest": observed_root_digest, "observed_at_ms": observed_at_ms}
         identity = envelope.task_creation_identity()
         if identity is not None:
             receipt["task_creation_identity"] = identity
@@ -442,12 +461,20 @@ class UniversalHQConnector:
         receipts = command.get("receipts")
         return list(receipts) if isinstance(receipts, list) else []
 
-    def _append_complete(self, envelope: HQCommandEnvelope, ledger: object, *, now_ms: int, thread_id: str, turn_id: str, observed_root_digest: str, ack_exists: bool) -> HQConnectorResult:
+    def _append_complete(self, envelope: HQCommandEnvelope, ledger: object, *, now_ms: int, thread_id: str, turn_id: str, observed_root_digest: str, ack_exists: bool, result_index: int = 2, terminal_handoff: Mapping[str, object] | None = None) -> HQConnectorResult:
         if not ack_exists:
             ledger.append_connector_receipt(self._receipt(envelope, receipt_id=f"{envelope.command_id}-ack", index=1, status="ACKNOWLEDGED", observed_at_ms=now_ms, thread_id=thread_id, observed_root_digest=observed_root_digest))
-        result = self._receipt(envelope, receipt_id=f"{envelope.command_id}-result", index=2, status="RESULT", observed_at_ms=now_ms, thread_id=thread_id, turn_id=turn_id, observed_root_digest=observed_root_digest)
+        result = self._receipt(envelope, receipt_id=f"{envelope.command_id}-result", index=result_index, status="RESULT", observed_at_ms=now_ms, thread_id=thread_id, turn_id=turn_id, observed_root_digest=observed_root_digest)
         contract = envelope.task_creation_contract()
-        if contract is None or contract.get("independent_host_task") is True:
+        if terminal_handoff is not None:
+            terminal = dict(terminal_handoff)
+            field = "publish_receipt_id" if terminal.get("event_kind") == "CONTINUATION_PUBLISHED" else "host_activity_receipt_id"
+            terminal[field] = result["receipt_id"]
+            terminal["observed_at_ms"] = result["observed_at_ms"]
+            if field == "publish_receipt_id":
+                terminal["host_issued_at_ms"] = result["observed_at_ms"]
+            ledger.append_connector_result_with_task_handoff(result, terminal)
+        elif contract is None or contract.get("independent_host_task") is True:
             ledger.append_connector_receipt(result)
         else:
             draft = contract.pop("task_manifest_draft")
@@ -465,15 +492,16 @@ class UniversalHQConnector:
             ledger.append_connector_result_with_task_creation(result, creation)
         return HQConnectorResult("RESULT", envelope.digest, thread_id, turn_id, observed_root_digest)
 
-    def _reconcile(self, envelope: HQCommandEnvelope, ledger: object, command: Mapping[str, object], *, now_ms: int) -> HQConnectorResult:
+    def _reconcile(self, envelope: HQCommandEnvelope, ledger: object, command: Mapping[str, object], *, now_ms: int, terminal_handoff: Mapping[str, object] | None = None) -> HQConnectorResult:
         receipts = self._receipts(command)
-        terminal = receipts[-1] if receipts and str(receipts[-1].get("status") or "") in {"RESULT", "UNSUPPORTED"} else None
+        terminal = receipts[-1] if receipts and str(receipts[-1].get("status") or "") in {"RESULT", "RECONCILED_NOT_DELIVERED", "UNSUPPORTED"} else None
         if terminal is not None:
-            if terminal["status"] == "RESULT" and envelope.task_creation_contract() is not None:
+            if terminal["status"] == "RESULT" and (envelope.task_creation_contract() is not None or terminal_handoff is not None):
                 self._append_complete(
                     envelope, ledger, now_ms=int(terminal["observed_at_ms"]),
                     thread_id=str(terminal["thread_id"] or ""), turn_id=str(terminal["turn_id"] or ""),
                     observed_root_digest=str(terminal["observed_root_digest"] or ""), ack_exists=True,
+                    terminal_handoff=terminal_handoff,
                 )
             return HQConnectorResult(
                 "REPLAY",
@@ -482,7 +510,8 @@ class UniversalHQConnector:
                 str(terminal.get("turn_id") or ""),
                 str(terminal.get("observed_root_digest") or ""),
             )
-        ack = receipts[-1] if receipts and str(receipts[-1].get("status") or "") == "ACKNOWLEDGED" else None
+        unresolved = receipts[-1] if receipts and str(receipts[-1].get("status") or "") == "DISPATCHED_UNRESOLVED" else None
+        ack = next((item for item in reversed(receipts) if str(item.get("status") or "") == "ACKNOWLEDGED"), None)
         known_thread = str(ack.get("thread_id") or "") if ack else envelope.target_thread_id
         try:
             response = self.adapter.reconcile(envelope, thread_id=known_thread)
@@ -490,6 +519,16 @@ class UniversalHQConnector:
             return HQConnectorResult("PENDING", envelope.digest, known_thread, attention="HOST_RECONCILIATION_UNAVAILABLE")
         if response is None:
             return HQConnectorResult("PENDING", envelope.digest, known_thread, attention="HOST_OUTCOME_PENDING")
+        body = response.get("result") if isinstance(response.get("result"), Mapping) else response
+        if unresolved is not None and isinstance(body, Mapping) and body.get("delivered") is False:
+            thread_id, _, verified_root_digest = self._require_root_bound_thread(response, envelope, thread_id=known_thread)
+            ledger.append_connector_receipt(self._receipt(
+                envelope, receipt_id=f"{envelope.command_id}-not-delivered", index=len(receipts),
+                status="RECONCILED_NOT_DELIVERED", observed_at_ms=now_ms,
+                thread_id=thread_id, turn_id=envelope.target_turn_id,
+                observed_root_digest=verified_root_digest,
+            ))
+            return HQConnectorResult("NOT_DELIVERED", envelope.digest, thread_id, envelope.target_turn_id, verified_root_digest)
         try:
             thread_id, turn_id, verified_root_digest = self._require_root_bound_thread(response, envelope, thread_id=known_thread)
         except InvariantError:
@@ -500,9 +539,13 @@ class UniversalHQConnector:
             if ack is None:
                 ledger.append_connector_receipt(self._receipt(envelope, receipt_id=f"{envelope.command_id}-ack", index=1, status="ACKNOWLEDGED", observed_at_ms=now_ms, thread_id=thread_id, observed_root_digest=verified_root_digest))
             return HQConnectorResult("PENDING", envelope.digest, thread_id, attention="HOST_TURN_OUTCOME_PENDING")
-        return self._append_complete(envelope, ledger, now_ms=now_ms, thread_id=thread_id, turn_id=turn_id, observed_root_digest=verified_root_digest, ack_exists=ack is not None)
+        return self._append_complete(
+            envelope, ledger, now_ms=now_ms, thread_id=thread_id, turn_id=turn_id,
+            observed_root_digest=verified_root_digest, ack_exists=ack is not None,
+            result_index=max(2, len(receipts)), terminal_handoff=terminal_handoff,
+        )
 
-    def execute(self, envelope: HQCommandEnvelope, authorization: HQAuthorizationReceipt | HQAutoGrant, ledger: object, *, now_ms: int, observed_project_id: str, observed_root_digest: str) -> HQConnectorResult:
+    def execute(self, envelope: HQCommandEnvelope, authorization: HQAuthorizationReceipt | HQAutoGrant, ledger: object, *, now_ms: int, observed_project_id: str, observed_root_digest: str, terminal_handoff: Mapping[str, object] | None = None) -> HQConnectorResult:
         if not isinstance(envelope, HQCommandEnvelope):
             raise InvariantError("connector requires a typed command envelope")
         if (observed_project_id, _digest(observed_root_digest, "observed HQ root")) != (envelope.project_id, envelope.root_digest):
@@ -512,7 +555,7 @@ class UniversalHQConnector:
         if retained is not None:
             reservation = ledger.reserve_connector_command(command, expected_revision=envelope.expected_ledger_revision)
             if reservation["status"] == "REPLAY":
-                return self._reconcile(envelope, ledger, reservation["command"], now_ms=now_ms)
+                return self._reconcile(envelope, ledger, reservation["command"], now_ms=now_ms, terminal_handoff=terminal_handoff)
             raise InvariantError("HQ command reservation conflicts")
         self._validate_authorization(envelope, authorization, now_ms)
         material = self.material_resolver.resolve(envelope)
@@ -521,7 +564,7 @@ class UniversalHQConnector:
         self._verify_cwd_root(envelope, material.cwd)
         reservation = ledger.reserve_connector_command(command, expected_revision=envelope.expected_ledger_revision)
         if reservation["status"] == "REPLAY":
-            return self._reconcile(envelope, ledger, reservation["command"], now_ms=now_ms)
+            return self._reconcile(envelope, ledger, reservation["command"], now_ms=now_ms, terminal_handoff=terminal_handoff)
         if reservation["status"] != "APPENDED":
             raise InvariantError("HQ command reservation conflicts")
         capabilities, _ = HQ_ACTION_CAPABILITIES[envelope.action]
@@ -544,11 +587,59 @@ class UniversalHQConnector:
             turn_capability = "turn.steer" if envelope.action is HQCommandAction.REPAIR else "turn.start"
             response = self.adapter.dispatch(envelope, material, turn_capability, thread_id=thread_id)
             thread_id, turn_id, _ = self._require_host_binding(response, envelope, thread_id=thread_id, require_turn=True)
+        except HostDispatchUnresolved:
+            ledger.append_connector_receipt(self._receipt(
+                envelope, receipt_id=f"{envelope.command_id}-unresolved", index=2,
+                status="DISPATCHED_UNRESOLVED", observed_at_ms=now_ms,
+                thread_id=thread_id, turn_id=envelope.target_turn_id,
+                observed_root_digest=verified_root_digest,
+            ))
+            return HQConnectorResult("PENDING", envelope.digest, thread_id, envelope.target_turn_id, attention="HOST_TURN_OUTCOME_PENDING")
         except Exception:
             return HQConnectorResult("PENDING", envelope.digest, thread_id, attention="HOST_TURN_OUTCOME_PENDING")
         return self._append_complete(
             envelope, ledger, now_ms=now_ms, thread_id=thread_id, turn_id=turn_id,
-            observed_root_digest=verified_root_digest, ack_exists=True,
+            observed_root_digest=verified_root_digest, ack_exists=True, terminal_handoff=terminal_handoff,
+        )
+
+    def execute_handoff(
+        self, source_event: Mapping[str, object], terminal_event: Mapping[str, object],
+        envelope: HQCommandEnvelope, authorization: HQAuthorizationReceipt | HQAutoGrant,
+        ledger: object, *, now_ms: int, observed_project_id: str, observed_root_digest: str,
+    ) -> HQConnectorResult:
+        """Resume one exact durable owner/continuation and publish only with host RESULT."""
+        source = validate_task_handoff_event(dict(source_event))
+        terminal = validate_task_handoff_event(dict(terminal_event))
+        pairs = {
+            "CONTINUATION_PREPARED": "CONTINUATION_PUBLISHED",
+            "OWNER_WAKING": "OWNER_ACTIVE",
+        }
+        if (
+            pairs.get(source["event_kind"]) != terminal["event_kind"]
+            or terminal["parent_event_id"] != source["event_id"]
+            or envelope.action is not HQCommandAction.TASK
+            or envelope.target_intent is not HQTargetIntent.EXISTING_THREAD
+        ):
+            raise InvariantError("host handoff dispatch requires one exact prepared-to-terminal transition")
+        target_thread = source.get("destination_thread_id", source.get("host_thread_id"))
+        if envelope.target_thread_id != target_thread:
+            raise InvariantError("host handoff dispatch targets a different retained thread")
+        instruction = handoff_dispatch_instruction(source, envelope.root_digest)
+        if envelope.payload_digest != sha256(instruction.encode("utf-8")).hexdigest():
+            raise InvariantError("host handoff command payload does not bind the retained lifecycle")
+        current = next((
+            item for item in ledger.project_task_handoffs()["records"]
+            if item["handoff_id"] == source["handoff_id"]
+        ), None)
+        if source["event_kind"] == "OWNER_WAKING" and current is not None and current["event_kind"] == "OWNER_SLEEPING":
+            ledger.append_task_handoff(source)
+            current = next(item for item in ledger.project_task_handoffs()["records"] if item["handoff_id"] == source["handoff_id"])
+        if current is None or current["event_id"] != source["event_id"]:
+            raise InvariantError("host handoff source is not the current durable lifecycle record")
+        return self.execute(
+            envelope, authorization, ledger, now_ms=now_ms,
+            observed_project_id=observed_project_id, observed_root_digest=observed_root_digest,
+            terminal_handoff=terminal,
         )
 
 
@@ -1303,7 +1394,12 @@ class CodexAppServerAdapter(ExecutionAdapter):
             )
         else:
             raise InvariantError("Codex App Server capability is not dispatchable")
-        return self.transport.request(str(wire["method"]), wire["params"])
+        try:
+            return self.transport.request(str(wire["method"]), wire["params"])
+        except Exception as error:
+            if capability == "turn.steer":
+                raise HostDispatchUnresolved("Codex steering delivery requires reconciliation") from error
+            raise
 
     def reconcile(self, envelope: HQCommandEnvelope, *, thread_id: str = "") -> Mapping[str, object] | None:
         if not self.plan_hq(envelope).ready or self.transport is None:

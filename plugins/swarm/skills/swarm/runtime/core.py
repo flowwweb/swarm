@@ -60,7 +60,7 @@ def resolve_profession_id(value: str) -> str:
     return resolved
 
 class PinDisposition(StrEnum):
-    DEFAULT_UNPINNED="DEFAULT_UNPINNED"; PRESERVE_USER_STATE="PRESERVE_USER_STATE"; PLACEMENT_UNVERIFIED="PLACEMENT_UNVERIFIED"
+    DEFAULT_UNPINNED="DEFAULT_UNPINNED"; PRESERVE_USER_STATE="PRESERVE_USER_STATE"; HOST_PIN_REQUIRED="HOST_PIN_REQUIRED"
 
 @dataclass(frozen=True)
 class PinPolicyDecision:
@@ -70,14 +70,14 @@ class PinPolicyDecision:
 
     @property
     def requests_pin(self) -> bool:
-        return False
+        return self.disposition is PinDisposition.HOST_PIN_REQUIRED
 
 
 def pin_policy(
     role: Role | str,
     *,
     top_level: bool,
-    pin_created_tasks: bool = True,
+    pin_created_tasks: bool = False,
     explicit_user_pin: bool = False,
     concrete_review_handoff: bool = False,
     user_pinned: bool = False,
@@ -95,7 +95,7 @@ def pin_policy(
         return PinPolicyDecision(PinDisposition.PRESERVE_USER_STATE, "user task or folder custody is authoritative")
     role_name = role.value if isinstance(role, Role) else str(role).upper()
     if role_name == Role.CTRL.value and top_level and pin_created_tasks:
-        return PinPolicyDecision(PinDisposition.PLACEMENT_UNVERIFIED, "top-level CTRL created; SWARM never pins without host user action", False)
+        return PinPolicyDecision(PinDisposition.HOST_PIN_REQUIRED, "configured top-level CTRL requires host pin and fresh placement readback", False)
     return PinPolicyDecision(PinDisposition.DEFAULT_UNPINNED, "SWARM runtime never authorizes pinning", False)
 
 
@@ -671,21 +671,47 @@ def _runtime_environment_fingerprint(environment:dict[str,str]|None=None) -> str
     return _sha256_text(json.dumps(facts,separators=(",",":"),ensure_ascii=True))
 
 def _run_bounded_process(command:tuple[str,...], *, cwd:Path, timeout:int, environment:dict[str,str]) -> int:
-    """Run one gate in its own process group so timeout cleans up descendants."""
+    """Run one gate in a process group or Windows job so timeout cleans up descendants."""
     windows=os.name=="nt"
-    process=subprocess.Popen(command,cwd=str(cwd),env=environment,shell=False,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,start_new_session=not windows,creationflags=getattr(subprocess,"CREATE_NEW_PROCESS_GROUP",0) if windows else 0)
+    job=None
+    if windows:
+        import ctypes
+        from ctypes import wintypes
+        kernel=ctypes.WinDLL("kernel32",use_last_error=True)
+        kernel.CreateJobObjectW.argtypes=(ctypes.c_void_p,wintypes.LPCWSTR)
+        kernel.CreateJobObjectW.restype=wintypes.HANDLE
+        kernel.AssignProcessToJobObject.argtypes=(wintypes.HANDLE,wintypes.HANDLE)
+        kernel.AssignProcessToJobObject.restype=wintypes.BOOL
+        kernel.TerminateJobObject.argtypes=(wintypes.HANDLE,wintypes.UINT)
+        kernel.TerminateJobObject.restype=wintypes.BOOL
+        kernel.CloseHandle.argtypes=(wintypes.HANDLE,)
+        job=kernel.CreateJobObjectW(None,None)
+        if not job: raise OSError(ctypes.get_last_error(),"could not create process job")
     try:
-        process.communicate(timeout=timeout)
-    except subprocess.TimeoutExpired:
-        if windows:
-            subprocess.run(("taskkill","/PID",str(process.pid),"/T","/F"),shell=False,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,check=False)
-        else:
-            try: os.killpg(process.pid,signal.SIGKILL)
-            except ProcessLookupError: pass
-        if process.poll() is None: process.kill()
-        process.communicate()
-        raise
-    return int(process.returncode)
+        process=subprocess.Popen(command,cwd=str(cwd),env=environment,shell=False,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,start_new_session=not windows,creationflags=getattr(subprocess,"CREATE_NEW_PROCESS_GROUP",0) if windows else 0)
+        if windows and not kernel.AssignProcessToJobObject(job,int(process._handle)):
+            error=ctypes.get_last_error()
+            process.kill(); process.communicate()
+            raise OSError(error,"could not assign process job")
+        try:
+            process.communicate(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            if windows:
+                if not kernel.TerminateJobObject(job,1):
+                    cleanup=subprocess.run(("taskkill","/PID",str(process.pid),"/T","/F"),shell=False,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,check=False)
+                    if cleanup.returncode:
+                        if process.poll() is None: process.kill()
+                        process.communicate()
+                        raise OSError("process tree termination failed")
+            else:
+                try: os.killpg(process.pid,signal.SIGKILL)
+                except ProcessLookupError: pass
+            if process.poll() is None: process.kill()
+            process.communicate()
+            raise
+        return int(process.returncode)
+    finally:
+        if job: kernel.CloseHandle(job)
 
 @dataclass(frozen=True)
 class ChangedSurface:
