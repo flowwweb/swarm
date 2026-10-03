@@ -1132,7 +1132,7 @@ def _config_private_entries(text: str) -> dict[str, dict[str, Any]]:
             offset += len(raw_line)
             continue
         key_match = re.match(
-            r"^\s*((?:[A-Za-z0-9_-]+|\"(?:\\.|[^\"])*\"|'[^']+')(?:\s*\.\s*(?:[A-Za-z0-9_-]+|\"(?:\\.|[^\"])*\"|'[^']+'))*)\s*=",
+            r"^\s*((?:[A-Za-z0-9_-]+|\"(?:\\.|[^\"\\])*\"|'[^']+')(?:\s*\.\s*(?:[A-Za-z0-9_-]+|\"(?:\\.|[^\"\\])*\"|'[^']+'))*)\s*=",
             line,
         )
         if not key_match:

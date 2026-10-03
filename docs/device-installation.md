@@ -1,6 +1,11 @@
 # Install SWARM on another device
 
-SWARM 0.4.12+codex.20261003 uses the same tracked source and generated Codex plugin. The plugin icon is the existing approved orange mascot, with exact 64px and 512px assets. No artwork was regenerated.
+SWARM 0.4.13+codex.20261003 uses the same tracked source and generated Codex plugin. The plugin icon is the existing approved orange mascot, with exact 64px and 512px assets. No artwork was regenerated.
+
+Version 0.4.13 keeps console configuration parsing bounded for long malformed
+escaped strings and hardens generated JavaScript literals in the vendored Jev
+bundle. The original Jev revision, disabled retries and external import boundary
+are retained; the bundle is rebuilt from source with reproducibility checks.
 
 Install the current public release from the default branch on each device:
 

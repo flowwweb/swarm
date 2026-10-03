@@ -1509,7 +1509,10 @@ function randomString(length = 10) {
   return str;
 }
 function esc(str) {
-  return JSON.stringify(str);
+  return JSON.stringify(str).replace(
+    /[<>\u2028\u2029]/g,
+    (char) => "\\u" + char.charCodeAt(0).toString(16).padStart(4, "0")
+  );
 }
 function slugify(input2) {
   return input2.toLowerCase().trim().replace(/[^\w\s-]/g, "").replace(/[\s_-]+/g, "-").replace(/^-+|-+$/g, "");
