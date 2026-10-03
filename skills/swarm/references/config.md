@@ -166,7 +166,8 @@ maps to `standard|manual` only when the new setting is absent. The explicit new
 setting wins.
 
 Standard mode records meaningful stable checkpoints, permits only an exact
-owned dirty set to become a coherent commit after proportionate proof, requires
+owned observed index to become a coherent commit after proportionate proof and a
+current operation-bound Git guard receipt, preserves unrelated unstaged work, requires
 a readable independent `ACCEPT` on the immutable candidate, fetches before any
 integration or push, and uses only history-preserving fast-forward or reviewed
 compatible merge. It never emits force-push, rebase, reset, broad staging, or
@@ -174,11 +175,15 @@ cleanup. Package, install, and deployment remain gated by the
 repository-defined release path, source/package proof, and rollback receipt.
 The production `Swarm` runtime adapter normalizes `standard|manual` before every
 decision. Git and release receipts are typed and bound to the exact repository
-identity and absolute root, branch/remote, candidate SHA/tree, operation,
+identity and absolute root, branch/remote, resolved fetch/push URLs and target ref,
+candidate SHA/tree, operation,
 authority, and validity window; remote compatibility additionally binds the
-fetched remote head. A mismatched, stale, caller-only, or missing receipt keeps
+fetched remote head. Integration emits no combined push: its resulting candidate
+must receive affected proof and fresh independent acceptance before publication.
+A mismatched, stale or missing receipt keeps
 the action unavailable. The adapter emits an eligible method or typed request;
-it does not run Git, package tools, or host task mutations itself.
+it does not run Git, package tools, or host task mutations itself. Typed source
+contracts do not prove receipt origin or native commit/push interception.
 
 For a terminal accepted task, standard mode may emit a typed host archive
 request only when no goal, request, handoff, review, correction, user choice, or

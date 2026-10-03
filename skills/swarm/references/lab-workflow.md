@@ -1,4 +1,4 @@
-# Lab workflow
+# Lab and Factory Flows
 
 A **Lab** is an open operating framework for a focused area of work, like an AI
 lab, design lab, or biome lab. It uses SWARM's existing milestone, task, block,
@@ -12,6 +12,11 @@ benefits from iterative or cross-functional work. Keep one known atomic change
 on its normal specialist task. A CTRL may name a custom Lab for any focused area
 and apply the same thin manifest contract.
 
+The six default Labs are Product, Research, Design, Test, Content and Growth.
+Build and Ops are no longer default presets; existing unit identities,
+manifests and history stay intact. Use the matching Factory for production,
+or name a custom Lab when exploration needs a different focus.
+
 ## Shape
 
 Represent every Lab as one normal task under its owning CTRL. CTRL routes the
@@ -19,6 +24,13 @@ request to the unit coordinator; the coordinator delegates bounded producer
 tasks and returns accepted results to CTRL. The Lab may choose and change its
 roles, methods, and internal order as evidence develops. Catalog roles are
 suggestions, not a fixed team.
+
+Lab and Factory coordinators may exchange bounded requests and immutable
+artifacts directly. The receiving coordinator accepts the request within its
+own goal before delegating its own tasks, retaining the owner, scope, evidence
+and stopping condition in the existing contracts. Peers cannot mutate another
+unit's surface, change its goal or bypass independent review. Route shared
+priority decisions, ownership conflicts and new authority to CTRL.
 
 Keep the manifest thin:
 
@@ -74,11 +86,17 @@ while preserving bounded contracts and production-role goal requirements.
 Once bound, unit kind,
 parent identity and goal identity cannot silently change.
 
-A Factory runs a repeatable production workflow. A Lab explores and improves an
+A Factory runs a repeatable production Flow. A Lab explores and improves an
 owned area. Both reuse normal tasks, blocks, artifacts, acceptance and Ledger
 lifecycle; they do not create a second backlog. CTRL routes a request to the
 fitting unit, whose coordinator splits its goal into bounded producer blocks.
 The unit holder coordinates; it is never the whole-factory producer task.
+
+The catalog ships six starting Flows: Software, Web App, Game, Integration,
+Data and Release Factory. Each coordinator chooses or adapts the Flow to its
+own goal, constraints and evidence, then hires only fitting Leads and Doers
+for the next bounded work. Suggested professions are not a fixed crew, and
+independent review remains a separate owner. Custom units use the same contract.
 
 1. **Frame and reproduce:** choose a testable slice and capture the baseline
    using [before/after proof](review-contract.md#capture-comparable-before-and-after-proof).
@@ -95,7 +113,7 @@ The unit holder coordinates; it is never the whole-factory producer task.
 
 Other factories, such as design, may replace the work steps while retaining
 the same ownership and proof contract. Load only the skills needed by the
-current step; do not add a manager or duplicate state for each nested workflow.
+current step; do not add a manager or duplicate state for each nested Flow.
 
 ## Completion
 

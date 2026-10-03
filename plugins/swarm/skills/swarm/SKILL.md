@@ -249,8 +249,13 @@ host mutation authority. Hidden subagents are non-recursive leaves: routing fact
 that may need recruitment or recursive delegation require a visible owner. If a
 leaf discovers that need, it stops and returns `PROMOTE_TO_VISIBLE_TASK` with the
 remaining deliverable, custody boundary, and required proof; the parent reuses
-or creates the visible owner. Internal-helper or read-only-tool approval gates are failed capacity: cancel the attempt, record the host gate, and continue inside
-the same accountable boundary through its eligible owner without asking the user. CTRL reroutes or reports the exact blocker; it never takes over production. That fallback never grants external, provider, destructive, or user-reserved authority.
+or creates the visible owner. For an authorized safe action with an ordinary
+local access failure, its eligible owner requests supported sandbox or access
+approval once before recording host-gate fallback or a blocker. Pending approval
+waits; do not cancel it or count it as route exhaustion. An actual denial remains
+binding. Keep unaffected owned work moving. CTRL relays the decision or reroutes;
+it never takes over production. Recovery never grants external, provider,
+destructive, or user-reserved authority. See [runtime-recovery.md](references/runtime-recovery.md).
 
 CTRL is the operator/orchestrator, not the producer. Economics choose the
 smallest eligible delegate; they never grant CTRL production authority. CTRL
@@ -379,9 +384,9 @@ file-count, byte-count, and hash parity with a recoverable manifest. Creation ag
 alone is never stale evidence; active or growing logs remain protected.
 
 `automation.mode = "standard"` may turn that evidence into bounded requests:
-exact owned commit, separate visible independent review, history-preserving
+exact observed-index commit, separate visible independent review, history-preserving
 integration after fetch and readable `ACCEPT`, repository-defined release with
-rollback, and a host-consumed archive request. Mixed dirty work, silence,
+rollback, and a host-consumed archive request. Mixed staged work, silence,
 in-progress state, `BLOCKED`, unreviewed divergence, open task gates, user
 custody, or missing host custody blocks advancement. The runtime never emits
 force-push, rebase, reset, or host archive authority; `archive_unverified` stays
@@ -390,6 +395,10 @@ The production runtime normalizes raw mode before every decision and accepts
 only typed, fresh receipts bound to repository root/identity, branch/remote,
 candidate SHA/tree, operation, authority, and any fetched remote head. Unbound
 strings and mismatched receipts never authorize Git, release, or archive work.
+Before staging, committing, pushing or merging, load the Git operations section
+of [task-contract.md](references/task-contract.md). The producer follows its
+exact-index, current Ponytail guard, target, fresh-result review and readback rules;
+CTRL coordinates the owner and reports the observed result.
 
 Every durable CTRL, LEAD, and persistent SPECIALIST has one goal with objective, stopping condition, authority boundary, and proof. Profession is a separate typed perspective selected from the 24-card registry; unknown historical titles remain inert user-owned text and never become routable authority. `UNVERIFIED` is an open acceptance failure. Every artifact-producing lane declares its typed lane kind, immutable `ArtifactIdentity`, bound LEAD identity, deterministic `ProofPlan`, and independent `ACCEPTANCE` route. The planner selects the minimum proof from changed surfaces, claims, authority, dependency reach, incident matches, runtime signals, and repository capabilities; unknown input broadens proof. T0 atomic work uses focused contracts, T1 ordinary code adds impacted proof, T2 adds browser proof only for affected or claimed browser/visual surfaces, T3 provider/security/data work adds plan review and authority proof, and T4 release work replaces impacted proof with broad package/parity proof and composed acceptance. Only non-artifact `NON_CODE` work may use an explicit empty contract. Stable exact-input gate receipts may be re-observed and adopted as execution evidence only when plan, command, gate spec, environment, freshness, proof class, claim, and artifact still match; they never carry acceptance authority. Provider, deployed, device, and human claims remain `UNVERIFIED` unless an isolated host verifier records a typed observation with exact plan/spec/artifact/environment bindings, evidence digest, and bounded freshness; in-process commands, signatures, and caller-created receipts cannot close them. T0 independence cannot be disabled by caller assertion. The bound LEAD integrates and records exact-artifact gate results as `PASS`, `FAIL`, or `TIMEOUT`; a timeout never passes and permits at most one typed transient retry. Missing, failed, timed-out, wrong-artifact, uncovered-claim, or source-only receipts stay open; CTRL may surface but never manufacture acceptance. Load [task-contract.md](references/task-contract.md) to record the contract and [review-contract.md](references/review-contract.md) for all acceptance, incident, proof, review, and claim-limit rules.
 

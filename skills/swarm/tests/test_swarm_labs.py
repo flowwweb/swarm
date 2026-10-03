@@ -39,11 +39,25 @@ class SwarmLabsTests(unittest.TestCase):
 
     def test_user_catalog_is_thin_and_role_bound(self):
         catalog = json.loads(CATALOG.read_text(encoding="utf-8"))
-        self.assertEqual([lab["id"] for lab in catalog["labs"]], ["product", "research", "design", "build", "test", "content", "growth", "ops"])
+        self.assertEqual([lab["id"] for lab in catalog["labs"]], ["product", "research", "design", "test", "content", "growth"])
         allowed = {"id", "name", "icon", "summary", "outcome", "suggested_roles", "guide"}
         self.assertTrue(all(set(lab) == allowed and lab["suggested_roles"] and 2 <= len(lab["guide"]) <= 4 for lab in catalog["labs"]))
         self.assertEqual([step["value"] for step in catalog["manifest_contract"]["progress"]["steps"]], [.25, .5, .75, 1])
         self.assertNotIn("status", CATALOG.read_text(encoding="utf-8"))
+
+    def test_factory_catalog_has_six_thin_starting_flows(self):
+        catalog = json.loads(CATALOG.read_text(encoding="utf-8"))
+        self.assertEqual([unit["id"] for unit in catalog["factories"]],
+            ["software", "web_app", "game", "integration", "data", "release"])
+        allowed = {"id", "name", "icon", "summary", "outcome", "suggested_roles", "guide"}
+        icons = (CATALOG.parents[3] / "console/static/index.html").read_text(encoding="utf-8")
+        for unit in catalog["factories"]:
+            with self.subTest(unit=unit["id"]):
+                self.assertEqual(set(unit), allowed)
+                self.assertTrue(unit["suggested_roles"])
+                self.assertTrue(2 <= len(unit["guide"]) <= 4)
+                self.assertIn("Choose or adapt", unit["guide"][0])
+                self.assertIn('id="lucide-' + unit["icon"] + '"', icons)
 
     def test_savings_require_paired_measured_codex_tokens(self):
         runs = swarm_labs.validate_runs(

@@ -767,6 +767,80 @@ class SwarmConsoleTests(unittest.TestCase):
         self.assertEqual(app.unit_catalog_projection("FACTORY")["instances"], [])
         self.assertEqual(app.progress_ledger.replay()["connector_receipts"], {})
 
+    def test_factory_starting_flows_reach_bounded_coordinator_instructions(self) -> None:
+        with closing(sqlite3.connect(self.database)) as connection:
+            connection.execute("UPDATE project_roots SET path=? WHERE project_id=?", (str(self.root), "project:alpha"))
+            connection.commit()
+        app = console.App(self.codex_home, self.config)
+        factories = app.unit_catalog_projection("FACTORY")["factories"]
+        self.assertEqual([unit["id"] for unit in factories], ["software", "web_app", "game", "integration", "data", "release"])
+        request = dict(kind="FACTORY", template_id="software", name="My deliverable", objective="Keep my precise objective",
+            project_id="project:alpha", ctrl_id="ctrl-a", parent_goal_id=None, request_id="factory-flow")
+        for unit in factories:
+            with self.subTest(unit=unit["id"]), mock.patch.object(app, "_auto_scope"):
+                request["template_id"] = unit["id"]
+                prepared = app.prepare_work_unit(request)
+                instruction = prepared["submission"]["instruction"]
+                self.assertIn("Keep my precise objective", instruction)
+                self.assertIn("Starting Flow: " + unit["name"], instruction)
+                self.assertIn(unit["outcome"], instruction)
+                for step in unit["guide"]:
+                    self.assertIn(step, instruction)
+                self.assertIn("not a mandatory method or crew", instruction)
+                self.assertIn("independent review stays with a separate owner", instruction)
+                self.assertIn("Do not assign the whole unit goal to one producer", instruction)
+                self.assertEqual(prepared["submission"]["envelope"]["payload_digest"], hashlib.sha256(instruction.encode()).hexdigest())
+                for other in factories:
+                    if other["id"] != unit["id"]:
+                        self.assertNotIn("Starting Flow: " + other["name"], instruction)
+        request["template_id"] = "unknown"
+        with self.assertRaisesRegex(console.ConsoleError, "unknown work unit template"):
+            app.prepare_work_unit(request)
+        request["template_id"] = "custom"
+        with mock.patch.object(app, "_auto_scope"):
+            instruction = app.prepare_work_unit(request)["submission"]["instruction"]
+        self.assertIn("Custom unit: choose a Flow", instruction)
+        self.assertNotIn("Starting Flow:", instruction)
+        self.assertEqual(app.unit_catalog_projection("FACTORY")["instances"], [])
+        self.assertEqual(app.progress_ledger.replay()["connector_receipts"], {})
+
+    def test_retired_lab_presets_preserve_existing_instances_and_custom_preparation(self) -> None:
+        from contextlib import contextmanager
+        with closing(sqlite3.connect(self.database)) as connection:
+            connection.execute("UPDATE project_roots SET path=? WHERE project_id=?", (str(self.root), "project:alpha"))
+            connection.commit()
+        app = console.App(self.codex_home, self.config)
+        historical = []
+        for retired, name in (("build", "Build Lab"), ("ops", "Ops Lab")):
+            request = dict(kind="LAB", template_id=retired, name=name, objective="Preserve the existing unit",
+                project_id="project:alpha", ctrl_id="ctrl-a", parent_goal_id=None, request_id="retained-" + retired)
+            old_template = dict(id=retired, name=name, outcome="Previously defined Lab outcome",
+                guide=["Frame the outcome", "Return accepted evidence"], suggested_roles=["manager"])
+            # Reproduce the prior catalog at preparation, then read retained native manifests through the new catalog.
+            with mock.patch.object(app, "unit_catalog_projection", return_value={"labs": [old_template]}), mock.patch.object(app, "_auto_scope"):
+                prepared = app.prepare_work_unit(request)
+            @contextmanager
+            def session(cwd, **kwargs):
+                messages = []
+                replies = [{"thread": {"id": "retained-" + retired, "cwd": str(cwd)}}, {"turn": {"id": "turn-" + retired}}]
+                def receive(predicate):
+                    return {"id": messages[-1]["id"], "result": replies.pop(0)}
+                yield messages.append, receive
+            app.auto_bridge.command_session = session
+            with mock.patch.object(app, "_auto_scope"):
+                self.assertEqual(app.create_bound_task(prepared["submission"])["status"], "RESULT")
+            historical = app.unit_catalog_projection("LAB")["instances"]
+            with self.assertRaisesRegex(console.ConsoleError, "unknown work unit template"):
+                app.prepare_work_unit(request)
+        before = app.progress_ledger._state.path.read_bytes()
+        restarted = console.App(self.codex_home, self.config)
+        self.assertEqual(restarted.unit_catalog_projection("LAB")["instances"], historical)
+        self.assertEqual({unit["name"] for unit in historical}, {"Build Lab", "Ops Lab"})
+        request.update(template_id="custom", name="Custom Lab", request_id="custom-lab")
+        with mock.patch.object(restarted, "_auto_scope"):
+            self.assertEqual(restarted.prepare_work_unit(request)["status"], "PREPARED")
+        self.assertEqual(restarted.progress_ledger._state.path.read_bytes(), before)
+
     def test_existing_task_message_http_retains_replay_and_never_reuses_old_turn(self) -> None:
         from contextlib import contextmanager
         with closing(sqlite3.connect(self.database)) as connection:
@@ -955,7 +1029,7 @@ class SwarmConsoleTests(unittest.TestCase):
     def test_lab_catalog_is_read_only_and_role_bound(self) -> None:
         app = console.App(self.codex_home, self.config)
         projection = app.lab_catalog_projection()
-        self.assertEqual([lab["id"] for lab in projection["labs"]], ["product", "research", "design", "build", "test", "content", "growth", "ops"])
+        self.assertEqual([lab["id"] for lab in projection["labs"]], ["product", "research", "design", "test", "content", "growth"])
         self.assertTrue(projection["read_only"])
         role_ids = {role["id"] for role in app.role_manifest_projection()["roles"]}
         self.assertTrue(all(set(lab["suggested_roles"]).issubset(role_ids) for lab in projection["labs"]))

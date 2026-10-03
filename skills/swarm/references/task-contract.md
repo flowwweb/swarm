@@ -172,8 +172,10 @@ own the lane, it acknowledges the exact immutable checkpoint; this handoff does
 not authorize renaming, pinning, archiving, or any other host-task mutation.
 
 With `automation.mode = "standard"`, the checkpoint may produce an exact-path
-commit request only when the complete dirty set equals attributable paths inside
-the recorded custody boundary. Mixed or ambiguous dirty work fails closed. The
+commit request only when observed staged paths exactly match attributable paths
+inside the recorded custody boundary, the staged tree matches the candidate and
+a current operation-bound Git guard receipt is present. Unrelated unstaged work
+is preserved; mixed or ambiguous staged work fails closed. The
 immutable candidate then routes to a separate visible independent review owner;
 creation, commentary, activity, timeout, silence, `BLOCKED`, and in-progress
 state never authorize integration. `manual` emits no Git or lifecycle request.
@@ -182,6 +184,47 @@ integration/push, release, and archive planning through the same fail-closed
 decisions. Every policy or gate receipt is typed and bound to repository root,
 branch/remote, candidate SHA/tree, operation, authority, and freshness; a string
 claim or mismatched receipt cannot authorize an action.
+
+## Git operations
+
+Fetch relationships describe ancestry, not equality alone. `UNCHANGED` means the
+fetched remote head equals or is an ancestor of the reviewed local candidate;
+an ordinary local-ahead branch needs no integration before its guarded push.
+`FAST_FORWARD` means local is a strict ancestor of remote, so local must advance
+first. `DIVERGED` means neither head is an ancestor of the other.
+
+- Read the exact checkout, branch, status, staged diff and worktree diff before
+  mutation. Preserve unrelated changes, including an existing index; never use
+  broad staging, stash/reset/clean, or amend/history rewrites to make custody fit.
+- Stage explicit owned paths with `git --literal-pathspecs add -- <paths>`, including both sides of
+  a rename. Commit one coherent result with a message that says what changed
+  and why. Run the affected proof and inspect the resulting staged paths/tree.
+  If another owner's changes are staged, stop that commit and use the existing
+  owner or isolated checkout; do not unstage their work.
+- Before every commit and every push, invoke `@ponytail-review` on the current
+  diff and review the outgoing commit range. Address or explicitly retain each
+  finding, then run the exact current-diff receipt command printed by Ponytail
+  Commit Guard. Never bypass a denial. Recheck the index/candidate after hooks;
+  changed content invalidates earlier proof, review and guard receipts.
+- Fetch the explicit remote. Verify its resolved fetch and push URLs and exact
+  destination ref rather than trusting an `origin` label or implicit upstream.
+  Use the repository's PR/protected-branch route and required checks; direct
+  protected-branch publication needs its actual repository-policy authority.
+- Review the exact candidate and fetched target before integration. Prepare a
+  divergent merge without committing. Resolve through its producer, test the
+  resulting candidate and obtain fresh independent acceptance. Commit through
+  the same index/guard contract, then fetch and recheck before pushing. A prior
+  source review does not accept a new merge result or changed PR head.
+- Preserve local and remote history. Never force-push, rebase, reset, amend a
+  shared commit or delete remote work as an automated recovery.
+- Read back the resulting SHA/tree/parent and dirty/index custody after a commit
+  or merge. After a push, read the exact destination ref and confirm its SHA.
+  After a PR merge, confirm the merged PR and target head through the existing
+  host/provider route. An exit code or submitted request alone is not success.
+
+The source planner checks typed candidate/index/target bindings and freshness.
+It does not run Git, intercept native commands or authenticate receipt origin;
+the host must observe the configured guard and actual operation/readback.
 
 ## Canonical project brief and design decisions
 

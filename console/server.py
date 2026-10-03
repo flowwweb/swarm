@@ -14619,10 +14619,15 @@ class App:
             work_unit={"kind": kind, "goal_id": None, "parent_goal_id": parent_goal, "parent_unit_task_id": None},
             milestones=[{"milestone_id": "unit-cycle", "order": 0, "title": "First bounded cycle", "verification_policy": "source", "supersedes_milestone_id": None}],
             blocks=[{"block_id": "unit-block-" + str(index), "milestone_id": "unit-cycle", "order": index, "title": title, "verification_policy": "source", "estimate_minutes": 15, "weight": None, "supersedes_block_id": None} for index, title in enumerate(stages)])
+        starting_flow = (f"Starting Flow: {template['name']}. Suggested outcome: {template['outcome']}\n"
+            + "\n".join(f"- {step}" for step in template["guide"])
+            + f"\nSuggested professions, not a fixed crew: {', '.join(template['suggested_roles'])}.\n") if template else "Custom unit: choose a Flow for this objective.\n"
         instruction = (f"Use SWARM. You are the LEAD coordinator of the {kind} work unit {name}. Its objective is: {objective}\n"
             f"Owning CTRL: {ctrl_id}. Parent goal: {parent_goal or 'pending binding; reconcile with CTRL'}. "
             "For goal persistence apply the LAB/FACTORY work-unit startup policy, while retaining LEAD coordination authority. Read goals.use_goals from the current configuration. Unless explicitly disabled, create or resume your own native goal and bind its real ID to this unit manifest before production. An explicit opt-out keeps goal binding pending and preserves bounded task contracts. "
             "A Lab investigates uncertainty; a Factory builds a defined deliverable. Keep this taxonomy separate from structural roles. "
+            "Choose or adapt the smallest useful Flow for the objective, constraints and evidence. A starting Flow is guidance, not a mandatory method or crew. Hire only fitting Leads and Doers for ready bounded work; independent review stays with a separate owner. "
+            + starting_flow +
             "Decompose the next useful outcome into bounded child tasks, with exact owners, custody, evidence, stopping conditions and independent review. "
             "Do not assign the whole unit goal to one producer. Coordinate those tasks and return results through the owning CTRL.")
         root = self._canonical_project_root(project_id)

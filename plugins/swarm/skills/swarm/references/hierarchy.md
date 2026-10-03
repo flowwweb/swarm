@@ -168,10 +168,13 @@ review, or acceptance. Do not disguise a subagent as durable ownership. Artifact
 configured capacity, shared keywords, and a visually complete tree never
 justify a lane.
 
-An internal approval gate is failed capacity, not a user decision. Cancel that
-helper attempt, record the typed host-gate exception, and continue the same
-bounded owner work without asking the user; user-reserved choices retain their
-normal approval gates.
+An ordinary local access failure on an authorized safe action requires one
+supported sandbox or access approval request by the eligible owner before
+host-gate fallback or blocker classification. Pending approval waits; it is not
+failed capacity or route exhaustion. An actual denial remains binding, with its
+exact action and reason retained. Keep unaffected bounded owner work moving;
+user-reserved choices retain their normal approval gates. CTRL coordinates the
+request and result, never performs the producer's action.
 
 Choose the evidence-backed initial topology before the first mutable handoff.
 Recompute it only when material task evidence changes an ownership, dependency,
