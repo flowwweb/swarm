@@ -5039,6 +5039,7 @@ proofFeed.items.push({
     assert.match(await checkToken.getAttribute("title"), /Project\.Ctrl Binding: The saved project/);
     await checkToken.press("Enter");
     assert.equal(await diagnosticsPage.locator(".diagnostics-all-checks").evaluate((details) => details.open), true);
+    await diagnosticsPage.waitForFunction(() => document.activeElement?.dataset.diagnosticDetail === "project.ctrl_binding");
     assert.equal(await diagnosticsPage.evaluate(() => document.activeElement?.dataset.diagnosticDetail), "project.ctrl_binding");
     const diagnosticsReads = diagnosticsControl.getCount;
     const refreshedDiagnostics = diagnosticsPage.waitForResponse((response) => new URL(response.url()).pathname === "/api/diagnostics");
@@ -5099,6 +5100,7 @@ proofFeed.items.push({
     assert.equal(await page.locator("#message-status").textContent(), "No authorized CTRL is available in this project scope.");
     await page.locator("#message-draft").fill("Please review this screen.");
     await page.keyboard.press("Escape");
+    await page.waitForFunction(() => document.activeElement?.id === "message-launcher");
     assert.equal(await page.locator("#message-composer").isVisible(), false);
     assert.equal(await page.evaluate(() => document.activeElement?.id), "message-launcher");
     await page.locator("#message-launcher").click();
@@ -5209,6 +5211,7 @@ proofFeed.items.push({
     await page.waitForFunction(() => state.usageWindowHours === 168 && state.usageStatus === "current");
     assert.equal(await usageRanges.getByRole("button", { name: "1w", exact: true }).getAttribute("aria-pressed"), "true");
     await page.keyboard.press('Escape');
+    await page.waitForFunction(() => document.querySelector('[data-overview-metric="usage"]') === document.activeElement);
     assert.equal(await page.locator('[data-overview-metric="usage"]').evaluate(el => el === document.activeElement), true);
     assert.equal(await page.locator("#overview-monitoring-heading").isVisible(), true);
     assert.equal(await page.locator("#overview-monitoring-heading").textContent(), "Swarm");
@@ -5544,6 +5547,7 @@ proofFeed.items.push({
     const assetFetchesBeforePaging = desktop.requests.filter((request) => request.startsWith("/api/assets?")).length;
     await page.locator('[data-collection-more="assets"]').click();
     assert.equal(await page.locator(".asset-tile").count(), 20);
+    await page.waitForFunction(() => document.activeElement?.dataset.collectionStatus === "assets");
     assert.equal(await page.evaluate(() => document.activeElement?.dataset.collectionStatus), "assets");
     assert.equal(desktop.requests.filter((request) => request.startsWith("/api/assets?")).length, assetFetchesBeforePaging);
     await page.evaluate(() => {
@@ -5599,6 +5603,7 @@ proofFeed.items.push({
     assert.equal(restoreRequest.payload.expected_revision, 2);
     assert.match(restoreRequest.payload.operation_id, /^asset-restore-/);
     assert.equal(await page.getByRole("button", { name: "Library", exact: true }).getAttribute("aria-pressed"), "true");
+    await page.waitForFunction(() => document.activeElement?.getAttribute("aria-label") === "Open asset details for Roadmap");
     assert.equal(await page.getByRole("button", { name: "Open asset details for Roadmap" }).evaluate((element) => element === document.activeElement), true);
     await page.getByRole("button", { name: "Open asset details for Onboarding illustration" }).click();
     assert.match(await page.locator("#asset-dialog").textContent(), /Onboarding illustration[\s\S]*Generating[\s\S]*42%/);
@@ -5948,6 +5953,7 @@ proofFeed.items.push({
     await mobilePage.keyboard.press('Space');
     await assertMetricDetailContainment(mobilePage);
     await mobilePage.getByRole('button',{name:'Close metric details',exact:true}).click();
+    await mobilePage.waitForFunction(() => document.querySelector('[data-overview-metric="usage"]') === document.activeElement);
     assert.equal(await mobilePage.locator('[data-overview-metric="usage"]').evaluate(el => el === document.activeElement), true);
     await mobilePage.waitForFunction(() => [...document.querySelectorAll("[data-overview-hierarchy-edge]")].every((path) => Boolean(path.getAttribute("d"))));
     assert.equal(await mobilePage.locator("#overview-project-cards .overview-hierarchy-children").evaluateAll((groups) => groups.every((group) => getComputedStyle(group).gridTemplateColumns.split(" ").length === 1)), true);
@@ -5981,6 +5987,7 @@ proofFeed.items.push({
     await mobilePage.locator("#message-draft").fill("Mobile draft remains local.");
     if (evidenceDir) await mobilePage.screenshot({ path: path.join(evidenceDir, "41-message-unavailable-mobile-390x844.png"), fullPage: false, animations: "disabled" });
     await mobilePage.keyboard.press("Escape");
+    await mobilePage.waitForFunction(() => document.activeElement?.id === "mobile-message-action");
     assert.equal(await mobilePage.locator("#message-composer").isVisible(), false);
     assert.equal(await mobilePage.evaluate(() => document.activeElement?.id), "mobile-message-action");
     const menuButton = mobilePage.locator("#mobile-menu-button");
@@ -6034,6 +6041,7 @@ proofFeed.items.push({
     assert.equal(await mobilePage.locator("#role-library-detail").evaluate((detail) => { const box = detail.getBoundingClientRect(); return Math.abs(box.left) <= 1 && Math.abs(box.top) <= 1 && Math.abs(box.width - innerWidth) <= 1 && Math.abs(box.height - innerHeight) <= 1; }), true);
     assert.doesNotMatch(await mobilePage.locator("#role-library-detail").textContent(), /Metadata only|server-owned|Profession · not authority|No authority transfer|Built in/i);
     await mobilePage.getByRole("button", { name: "Back to roles" }).click();
+    await mobilePage.waitForFunction(() => document.querySelector('.role-choice[data-role-select="developer"]') === document.activeElement);
     assert.equal(await mobileRoleTrigger.evaluate((element) => element === document.activeElement), true);
     await mobilePage.setViewportSize({ width: 390, height: 844 });
     await mobilePage.evaluate(() => clearError());
@@ -6094,7 +6102,7 @@ proofFeed.items.push({
     assert.doesNotMatch(await mobilePage.locator("#role-editor .edge-scroll").evaluate((element) => getComputedStyle(element).scrollbarColor), /^auto$/);
     if (evidenceDir) await mobilePage.screenshot({ path: path.join(evidenceDir, "29-role-editor-edge-scroll-mobile-390x844.png"), fullPage: false, animations: "disabled" });
     await mobilePage.keyboard.press("Escape");
-    await mobilePage.waitForTimeout(50);
+    await mobilePage.waitForFunction(() => document.activeElement?.getAttribute("aria-label") === "Edit Accountant avatar");
     assert.equal(await mobilePage.locator("#role-editor").isVisible(), false);
     assert.equal(await mobilePage.evaluate(() => document.activeElement?.getAttribute("aria-label")), "Edit Accountant avatar");
     assert.equal(await mobilePage.locator("#role-library-detail").isVisible(), true, "Escape closes only the topmost role editor");
